@@ -75,6 +75,9 @@ const MAX_ARRAY_INDEX = 2 ** 32 - 2;
 
 export interface ContractCheckResult {
   diagnostics: ScrDiagnostic[];
+  /** Performance warnings: InlineArray fields that keep ordinary arrays
+   * (SC6105). */
+  warnings: ScrDiagnostic[];
   contracts: IrContracts | null;
 }
 
@@ -111,6 +114,7 @@ export function checkContracts(
 
 class ContractChecker {
   readonly diagnostics: ScrDiagnostic[] = [];
+  readonly warnings: ScrDiagnostic[] = [];
   private readonly reported = new Set<string>();
   private readonly positions: SourceLocations;
   readonly functions = new Map<string, IrFunction>();
@@ -266,9 +270,10 @@ class ContractChecker {
     int32.run();
     const immutable = new ImmutableContracts(this);
     immutable.run();
-    if (this.diagnostics.length > 0) return { diagnostics: this.diagnostics, contracts: null };
+    if (this.diagnostics.length > 0)
+      return { diagnostics: this.diagnostics, warnings: this.warnings, contracts: null };
     const c = this.contracts;
-    return { diagnostics: [], contracts: this.recorded ? c : null };
+    return { diagnostics: [], warnings: this.warnings, contracts: this.recorded ? c : null };
   }
 
   record(field: keyof IrContracts, values: readonly string[]): void {
@@ -336,8 +341,9 @@ class ContractChecker {
    * every subclass constructor passes it one of its own through super(...),
    * nothing else writes the field, no read of it is compared by identity
    * (two reads need not give the same array), and no instance of the
-   * hierarchy is constructed through a class value or becomes a dynamic
-   * value. */
+   * hierarchy is constructed through a class value. A field whose instances
+   * become dynamic values that generic code may read it through keeps an
+   * ordinary array, with a warning (SC6105). */
   private checkInlineArrays(): void {
     if (this.notes.inlineArrays.size === 0) return;
     const roots = new Set(this.contracts.programLifetime ?? []);
@@ -374,11 +380,22 @@ class ContractChecker {
     for (const r of plan.rejected) {
       const note = notes.get(`${r.declaringClass}\0${r.field}`)!;
       const at = r.loc === undefined ? "" : ` (at ${this.where(r.loc)})`;
+      // A dynamic view reads the field as Node.js does when the elements
+      // stay in an ordinary array.
+      if (r.ordinary) {
+        this.warnings.push({
+          code: "SC6105",
+          loc: note.loc,
+          message: `'${note.name}' keeps its elements in an ordinary array: ${r.reason}${at}`,
+          hint: "read the field in typed code only, and keep the class's instances out of dynamic code that reads it, to keep the elements in the instance",
+        });
+        continue;
+      }
       this.report(
         "SC7009",
         note.loc,
         `'${note.name}' cannot keep its InlineArray contract: ${r.reason}${at}`,
-        "write the field once in the constructor from one of its parameters (subclasses pass theirs through super(...)), never again, and keep the class's instances out of class values and dynamic values",
+        "write the field once in the constructor from one of its parameters (subclasses pass theirs through super(...)), never again, and keep the class's instances out of class values",
       );
     }
     // Where the arrays come from and who writes them (ir/inline-array-sources.ts).

@@ -8,6 +8,7 @@ import {
   BOOL,
   DYN,
   F64,
+  REF_TRUTHY_KINDS,
   STRING,
   UNDEFINED_T,
   VOID,
@@ -28,7 +29,8 @@ import { PoisonError, jsFuncNameOf, neverTaintedJsType } from "../lowerer.js";
 import type { Lowerer } from "../lowerer.js";
 import { lowerIndexMergeHelper } from "../containers/indexed-objects.js";
 import type { IndexMergeContributor } from "../containers/indexed-objects.js";
-import type { KeyOrderSegment } from "../key-order-witness.js";
+import type { KeyOrderSegment, WidthSegment } from "../key-order-witness.js";
+import { recordMayKeepSource } from "../record-sources.js";
 import {
   PERF_ENTRY_MARKER,
   X509_PUBLIC_KEY_FIELD,
@@ -261,6 +263,64 @@ function propertyFunctionName(lowerer: Lowerer, name: ts.PropertyName): string |
   return null;
 }
 
+/** `{ __proto__: value }` (B.3.1): sets the literal's prototype when the
+ * value is an object, a function or null, and does nothing for any other
+ * primitive — unlike Object.setPrototypeOf, which throws. Interned once. */
+function protoLiteralHelper(lowerer: Lowerer, loc: SrcLoc): string {
+  const key = "%dyn.protoLiteral";
+  const existing = lowerer.builtinCallableValueFns.get(key);
+  if (existing !== undefined) return existing;
+  const name = keyedHelperName(lowerer, key, "proto");
+  lowerer.builtinCallableValueFns.set(key, name);
+  const value = (): IrExpr => varRef("value.0", DYN, loc);
+  type PrimitiveTest = "string" | "number" | "boolean" | "undefined" | "symbol" | "bigint";
+  const test = (kind: PrimitiveTest): IrExpr => ({
+    kind: "dynTest",
+    test: kind,
+    value: value(),
+    type: BOOL,
+    loc,
+  });
+  let primitive: IrExpr = test("string");
+  for (const kind of ["number", "boolean", "undefined", "symbol", "bigint"] as PrimitiveTest[])
+    primitive = { kind: "logical", op: "||", left: primitive, right: test(kind), type: BOOL, loc };
+  lowerer.liftedFns.push({
+    name,
+    params: [
+      { localId: "object.0", name: "object", type: DYN },
+      { localId: "value.0", name: "value", type: DYN },
+    ],
+    returnType: VOID,
+    locals: [
+      { id: "object.0", name: "object", type: DYN, mutable: false },
+      { id: "value.0", name: "value", type: DYN, mutable: false },
+    ],
+    body: [
+      {
+        kind: "if",
+        cond: { kind: "unary", op: "!", operand: primitive, type: BOOL, loc },
+        then: [
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "dyn.setPrototype",
+              args: [varRef("object.0", DYN, loc), value()],
+              type: DYN,
+              loc,
+            },
+            loc,
+          },
+        ],
+        else_: null,
+        loc,
+      },
+    ],
+    loc,
+  });
+  return name;
+}
+
 /** The runtime-keyed JS object literal (a computed key that doesn't fold):
  * builds a dyn object member-by-member. Keys evaluate before their values,
  * properties in source order — JS's object-literal evaluation exactly.
@@ -327,20 +387,43 @@ export function lowerDynObjectLiteral(
       !ts.isComputedPropertyName(prop.name) &&
       prop.name.text === "__proto__"
     ) {
-      if (prop.initializer.kind !== ts.SyntaxKind.NullKeyword)
-        lowerer.unsupported(
-          "SC1090",
-          prop,
-          "object-literal prototypes other than null (use Object.setPrototypeOf)",
-        );
       flushFields();
       acc ??= { kind: "dynObjLit", fields: [], type: DYN, loc };
+      const value = lowerer.lowerExprExpecting(prop.initializer, DYN);
+      // B.3.1: a null value sets the prototype; an object or function does
+      // too, through the guarded helper (scr_dyn_set_prototype throws for
+      // primitives, where B.3.1 silently ignores the value).
+      if (prop.initializer.kind === ts.SyntaxKind.NullKeyword) {
+        acc = {
+          kind: "libCall",
+          fn: "dyn.setPrototype",
+          args: [acc, value],
+          type: DYN,
+          loc: locOf(prop),
+        };
+        continue;
+      }
+      const local = lowerer.declareHiddenLocal("%protoLiteral", DYN);
+      const object: IrExpr = { kind: "varRef", localId: local.id, type: DYN, loc };
       acc = {
-        kind: "libCall",
-        fn: "dyn.setPrototype",
-        args: [acc, lowerer.lowerExprExpecting(prop.initializer, DYN)],
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: local.id, init: acc, loc },
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "call",
+              callee: protoLiteralHelper(lowerer, loc),
+              args: [object, value],
+              type: VOID,
+              loc,
+            },
+            loc,
+          },
+        ],
+        result: object,
         type: DYN,
-        loc: locOf(prop),
+        loc,
       };
       continue;
     }
@@ -892,6 +975,24 @@ export function lowerObjectLiteral(
    * whole union, so its contextual type cannot choose the layout. */
   exact = false,
 ): IrExpr {
+  // `__proto__: v` sets the literal's [[Prototype]] as the literal is built.
+  // A record is a native struct with no dynamic prototype slot, so a
+  // JavaScript literal that carries one builds as a checked-dynamic object,
+  // which models the prototype chain like every other JS object. A bare
+  // `__proto__: null` keeps its existing route (both representations model
+  // a null prototype, and the checked-dynamic one is the only one anyway).
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    expr.properties.nodes.some(
+      (prop) =>
+        ts.isPropertyAssignment(prop) &&
+        !ts.isComputedPropertyName(prop.name) &&
+        prop.name.text === "__proto__" &&
+        prop.initializer.kind !== ts.SyntaxKind.NullKeyword,
+    )
+  ) {
+    return lowerDynObjectLiteral(lowerer, expr);
+  }
   // A spread of an untyped (`any`) source into a typed slot: TypeScript
   // types such a literal `any`, and the copy holds whatever own properties
   // the source has at runtime. Build it as a checked-dynamic object, then
@@ -1606,7 +1707,13 @@ export function lowerObjectLiteral(
             lowerer.badType(valueNode, lowerer.typeOf(valueNode));
           overrides.push({ name, value });
         }
-        return { kind: "recordClone", source, overrides, type, loc };
+        return lowerer.keyOrder.clone({
+          kind: "recordClone",
+          source,
+          overrides,
+          type,
+          loc,
+        });
       }
       leadingSpreadLowered = source;
     }
@@ -1636,6 +1743,31 @@ export function lowerObjectLiteral(
     (expr.properties.nodes.some((p) => ts.isSpreadAssignment(p)) ||
       expr.properties.nodes.some(isRuntimeComputedKey))
   ) {
+    // A conditional spread needs the value slot's undefined arm to hold its
+    // empty branch. A slot WITHOUT one (a `null | string` header map) takes
+    // the checked-dynamic literal instead, which writes the key only when
+    // the condition holds and validates the result against the target type;
+    // decide BEFORE any contributor lowers (the fallback re-lowers the
+    // whole literal). Reading the slot's own arm (never coercing a unit
+    // into it) keeps a literal that merges statically byte-identical: the
+    // probe would otherwise register a stranding trap the literal never
+    // needs.
+    const slotHoldsUndefined =
+      shape.indexValue.kind === "dyn" ||
+      (shape.indexValue.kind === "union" &&
+        lowerer.armTag(shape.indexValue.unionId, UNDEFINED_T) >= 0);
+    if (
+      !slotHoldsUndefined &&
+      expr.properties.nodes.some(
+        (p) =>
+          ts.isSpreadAssignment(p) &&
+          (conditionalSpreadOf(p.expression) !== null ||
+            andSpreadOf(lowerer, p.expression) !== null),
+      )
+    ) {
+      const conditionalDyn = conditionalFallback();
+      if (conditionalDyn) return conditionalDyn;
+    }
     const contributors: IndexMergeContributor[] = [];
     let mergeable = true;
     for (const prop of expr.properties.nodes) {
@@ -1763,16 +1895,10 @@ export function lowerObjectLiteral(
       };
     }
   }
-  // Unfoldable computed keys outside the index-signature merge path:
-  // no record shape can hold a runtime-decided name.
+  // Unfoldable computed keys outside the index-signature merge path.
   for (const prop of expr.properties.nodes) {
-    if (isRuntimeComputedKey(prop)) {
-      lowerer.unsupported(
-        "SC1090",
-        (prop as ts.PropertyAssignment).name,
-        "computed property keys (compile-time-known keys fold — a pure expression whose checker type is one string or number literal: consts, enum members, quoted keys, templates of those — `{ [MARKER]: v }`; runtime string keys write through an index-signature target; symbol keys stay out)",
-      );
-    }
+    if (isRuntimeComputedKey(prop))
+      return runtimeKeyedDynLiteral(lowerer, expr, prop, type, expected);
   }
 
   // A declared destination combining fixed records and runtime-keyed
@@ -1898,6 +2024,16 @@ export function lowerObjectLiteral(
   const droppedNames = new Set<string>();
   // The order this literal creates its keys in (key-order-witness.ts).
   const orderSegments: KeyOrderSegment[] = [];
+  // The literal's contributors when a spread drops source keys the target
+  // has no slot for (key-order-witness.ts keepWidthSpreads). Conditional
+  // spreads leave the literal to the static copy.
+  const widthSegments: WidthSegment[] = [];
+  let widthDrops = false;
+  let widthBlocked = false;
+  // A checked-dynamic spread source's own keys are a run-time fact: even
+  // when the checker's shape fits the target, the copied object can hold
+  // more (slice 3).
+  let widthDynSource = false;
   for (const prop of expr.properties.nodes) {
     // A later contributor can mutate an earlier source or overwrite a
     // value with effects. Snapshot pending fields at their source position,
@@ -1911,6 +2047,7 @@ export function lowerObjectLiteral(
     if (ts.isSpreadAssignment(prop)) {
       const cs = conditionalSpreadOf(prop.expression) ?? andSpreadOf(lowerer, prop.expression);
       if (cs && cs !== "unsupported") {
+        widthBlocked = true;
         // `...(c ? { k: v } : {})` — one conditional field per carried
         // property at the spread's own position: cond evaluates exactly
         // once (into a hidden local when several fields test it), each
@@ -2003,6 +2140,11 @@ export function lowerObjectLiteral(
       {
         const narrowed = checkedSpreadSource(lowerer, srcNode, srcLowered);
         if (narrowed !== null) srcLowered = capture(narrowed);
+      }
+      if (condRecord !== null || srcLowered.kind !== "varRef") widthBlocked = true;
+      else {
+        widthSegments.push({ kind: "spread", value: srcLowered });
+        if (srcLowered.type.kind === "dyn") widthDynSource = true;
       }
       // Array callbacks can receive a record-or-undefined ABI even when
       // TypeScript describes a required record. Select the copy strategy
@@ -2120,9 +2262,13 @@ export function lowerObjectLiteral(
           for (const f of srcShape.fields) {
             if (laterNames.has(f.name)) continue;
             const targetType = fieldTypes.get(f.name);
-            // No slot on the target shape: the copy DROPS the field
-            // (divergence 36's stance, same as the plain-record spread).
-            if (!targetType) continue;
+            // No slot on the target shape: the static copy skips the field,
+            // and the literal keeps it through a kept source view when the
+            // program can observe it (keepWidthSpreads).
+            if (!targetType) {
+              widthDrops = true;
+              continue;
+            }
             if (conditionalNames.has(f.name)) {
               const conditionalDyn = conditionalFallback();
               if (conditionalDyn) return conditionalDyn;
@@ -2392,12 +2538,14 @@ export function lowerObjectLiteral(
       for (const f of srcShape.fields) {
         if (laterNames.has(f.name)) continue;
         let targetType = fieldTypes.get(f.name);
-        // A source field with NO slot on the target shape: the copy
-        // DROPS it — a spread of a wider record into a narrower literal
-        // is width subtyping in spread clothing, divergence 36's stance
-        // (Node's object would keep the key); the read is pure, so
-        // skipping evaluates nothing.
-        if (!targetType) continue;
+        // A source field with NO slot on the target shape: the static
+        // copy skips it (the read is pure, so skipping evaluates nothing),
+        // and the literal keeps it through a kept source view when the
+        // program can observe the target (keepWidthSpreads).
+        if (!targetType) {
+          if (srcLowered.type.kind !== "dyn") widthDrops = true;
+          continue;
+        }
         // A runtime-optional source field (an unchecked indexed read the
         // checker calls present) keeps its undefined arm in the copy, as a
         // property initialized from that read would.
@@ -2708,6 +2856,7 @@ export function lowerObjectLiteral(
     if (at >= 0) fields.splice(at, 1);
     fields.push({ name, value });
     orderSegments.push({ kind: "key", name, definite: true });
+    widthSegments.push({ kind: "key", name });
   }
   // Optional fields may be omitted: the field holds its absent state.
   // tsc rejects omission of required fields before lowering.
@@ -2740,6 +2889,13 @@ export function lowerObjectLiteral(
     { kind: "recordLit", fields, type, loc },
     orderSegments,
   );
+  if (
+    !widthBlocked &&
+    spreadStmts.length > 0 &&
+    type.kind === "record" &&
+    recordMayKeepSource(lowerer, type)
+  )
+    lowerer.keyOrder.width(result, widthSegments, widthDrops || widthDynSource);
   return spreadStmts.length === 0
     ? result
     : { kind: "seqExpr", stmts: spreadStmts, result, type, loc };
@@ -3276,9 +3432,32 @@ export function andSpreadOf(
   }
   if (spreadType?.kind !== "union") return null;
   const arms = lowerer.unions.get(spreadType.unionId)?.arms ?? [];
+  // The falsy primitive the condition itself contributes (`c && { k: v }`
+  // with `c: string | undefined` types as `"" | { k } | undefined`).
+  const primitiveFalsyArm = arms.some(
+    (arm) => arm.kind === "bool" || arm.kind === "f64" || arm.kind === "string",
+  );
+  // The checker DROPS a falsy arm the `&&` can never yield (`ttl: "1h" |
+  // undefined` types `ttl && { ttl }` as that record | undefined), leaving
+  // record | unit with no primitive arm. Accept that shape only where the
+  // ordinary path had no answer at all: a condition arm that is neither a
+  // reference the falsy path can trap nor an arm the result can absorb made
+  // that `&&` the union-conversion refusal, so no program that lowered
+  // before reaches this branch. A condition that kept a reference arm
+  // (`obj && { k: v }` with `obj: SomeRecord | undefined`) lowered before
+  // and keeps the ordinary source-copy path.
+  const strandedConditionArm = (() => {
+    const condition = lowerer.mapTypeOf(lowerer.typeOf(e.left));
+    if (condition?.kind !== "union") return false;
+    return (lowerer.unions.get(condition.unionId)?.arms ?? []).some(
+      (arm) =>
+        !isUnitType(arm) &&
+        !REF_TRUTHY_KINDS.has(arm.kind) &&
+        lowerer.armTag(spreadType.unionId, arm) < 0,
+    );
+  })();
   if (
     arms.filter((arm) => arm.kind === "record").length !== 1 ||
-    !arms.some((arm) => arm.kind === "bool" || arm.kind === "f64" || arm.kind === "string") ||
     !arms.every(
       (arm) =>
         arm.kind === "record" ||
@@ -3286,7 +3465,8 @@ export function andSpreadOf(
         arm.kind === "f64" ||
         arm.kind === "string" ||
         isUnitType(arm),
-    )
+    ) ||
+    (!primitiveFalsyArm && !strandedConditionArm)
   )
     return null;
   if (right.properties.nodes.length === 0) return "unsupported";
@@ -3481,6 +3661,79 @@ function dynSpreadLiteral(
   return lowerer.coerceToExpected(lowerDynObjectLiteral(lowerer, expr, undefined, true), type);
 }
 
+/** The PURE index-signature record `candidate` names — every key an overflow
+ * entry, no declared field, no tuple — when a checked-dynamic value converts
+ * into it. Null for any other type. */
+function indexSignatureDestination(
+  lowerer: Lowerer,
+  candidate: IrType | undefined,
+): (IrType & { kind: "record" }) | null {
+  if (candidate?.kind !== "record") return null;
+  const shape = lowerer.shapes.get(candidate.shapeId);
+  if (!shape || shape.tuple || shape.fields.length > 0 || !shape.indexValue) return null;
+  return canDynCheckTo(
+    candidate,
+    (id) => lowerer.shapes.get(id),
+    (id) => lowerer.unions.get(id),
+  )
+    ? candidate
+    : null;
+}
+
+/** Whether the literal's checker CONTEXT is a checked-dynamic value (an
+ * `unknown`/`any` slot, or a record whose values are): that context is the
+ * value's home, so no record layout stands between the literal and its
+ * destination, and each runtime key stays where the source writes it. */
+function checkedDynamicDestination(lowerer: Lowerer, expr: ts.ObjectLiteralExpression): boolean {
+  const contextual = lowerer.checker.getContextualType(expr);
+  return contextual !== undefined && lowerer.mapTypeOf(contextual)?.kind === "dyn";
+}
+
+/** `expr` — a literal whose property name is decided at runtime — as the
+ * checked-dynamic object the literal's own keys describe. No record shape can
+ * hold a runtime-decided name: a record stores declared fields sorted and
+ * overflow entries apart, while Node writes the key where it stands
+ * (`{ [k]: 2, n: 1 }` enumerates `k` first), and TypeScript itself drops a
+ * union-keyed computed property from the literal's inferred type once a
+ * spread joins the literal while the evaluated object keeps the key. The
+ * destination's conversion checks the values afterwards (the same
+ * copy-then-check `dynSpreadLiteral` applies to a runtime-keyed source).
+ * A pure index-signature destination is the value's real home, so coerce
+ * into it directly; a destination with declared fields is left to the
+ * caller's own conversion. */
+function runtimeKeyedDynLiteral(
+  lowerer: Lowerer,
+  expr: ts.ObjectLiteralExpression,
+  prop: ts.ObjectLiteralElementLike,
+  type: IrType,
+  expected?: IrType,
+): IrExpr {
+  const destination =
+    indexSignatureDestination(lowerer, expected) ?? indexSignatureDestination(lowerer, type);
+  if (destination === null && !checkedDynamicDestination(lowerer, expr)) {
+    // A layout that keeps DECLARED fields beside an index signature
+    // (`{ fixed: 1, [key]: 2 }`, inferred as `{ fixed: number; [x: string]:
+    // number }`) stores the declared fields ahead of the overflow a runtime
+    // key lands in, so the value would print them first instead of where
+    // Node writes them. Nothing in that layout can carry the order, so the
+    // form keeps its refusal.
+    const mixedLayout = [expected, type].some((candidate) => {
+      if (candidate?.kind !== "record") return false;
+      const shape = lowerer.shapes.get(candidate.shapeId);
+      return shape !== undefined && !shape.tuple && shape.fields.length > 0 && !!shape.indexValue;
+    });
+    if (mixedLayout) {
+      lowerer.unsupported(
+        "SC1090",
+        prop.name ?? prop,
+        "computed property keys (compile-time-known keys fold — a pure expression whose checker type is one string or number literal: consts, enum members, quoted keys, templates of those — `{ [MARKER]: v }`; runtime string keys write through an index-signature target; symbol keys stay out)",
+      );
+    }
+  }
+  const dyn = lowerDynObjectLiteral(lowerer, expr, undefined, true);
+  return destination === null ? dyn : lowerer.coerceToExpected(dyn, destination);
+}
+
 /** A conditional spread source in a checked-dynamic literal, as the dyn
  * value whose own keys the copy reads. The whole ternary lowers arm by arm
  * (`c && {...}` is `c ? {...} : undefined` — a primitive contributes no
@@ -3576,6 +3829,28 @@ export function conditionalSpreadOf(
   return { cond: e.condition, props, whenTrue: trueCarries };
 }
 
+/** The record arms of a union spread source of the declared-shape merge,
+ * or null unless every arm is a non-tuple record or the null/undefined
+ * unit and at least one arm is a record. Unit arms contribute nothing:
+ * CopyDataProperties skips nullish sources. */
+function declaredMergeUnionArms(
+  lowerer: Lowerer,
+  unionId: string,
+): { tag: number; shapeId: string; shape: IrRecordShape }[] | null {
+  const def = lowerer.unions.get(unionId);
+  if (!def) return null;
+  const arms: { tag: number; shapeId: string; shape: IrRecordShape }[] = [];
+  for (let tag = 0; tag < def.arms.length; tag++) {
+    const arm = def.arms[tag]!;
+    if (arm.kind === "undefinedT" || arm.kind === "nullT") continue;
+    if (arm.kind !== "record") return null;
+    const armShape = lowerer.shapes.get(arm.shapeId);
+    if (!armShape || armShape.tuple) return null;
+    arms.push({ tag, shapeId: arm.shapeId, shape: armShape });
+  }
+  return arms.length > 0 ? arms : null;
+}
+
 /** `{ ...idx, ...idx2 }` typed a DECLARED shape (no index signature) — the
  * defaults-merge idiom over runtime-keyed sources (`{ ...fromEntries(a),
  * ...fromEntries(b) }` typed AppConfig). Lowers to ONE interned helper
@@ -3591,7 +3866,12 @@ export function conditionalSpreadOf(
  * untyped copy would store the lie) — and a key naming NO declared field
  * is DROPPED (the shape cannot represent it; Node keeps it invisibly —
  * divergence 68). Later contributors overwrite earlier ones
- * (last-write-wins). Fixed, hybrid, and pure index records may contribute. */
+ * (last-write-wins). Fixed, hybrid, and pure index records may contribute,
+ * and so may a union of those records with the null/undefined unit: each
+ * record arm copies through its own shape's helper behind its tag test,
+ * a unit arm copies nothing (CopyDataProperties skips nullish sources),
+ * and the union is held in a hidden local, so it still evaluates once, in
+ * order. */
 function lowerDeclaredSpreadMerge(
   lowerer: Lowerer,
   expr: ts.ObjectLiteralExpression,
@@ -3603,6 +3883,11 @@ function lowerDeclaredSpreadMerge(
     value: IrExpr;
     shapeId: string;
     shape?: IrRecordShape;
+    /** A union source (`{ ...model.compat }` of `R | undefined`): each
+     * record arm copies through its own shape's helper behind its tag
+     * test, and a null or undefined arm copies nothing (CopyDataProperties
+     * skips nullish sources). */
+    arms?: { tag: number; shapeId: string; shape: IrRecordShape }[];
   }
   const srcs: Src[] = [];
   for (const prop of expr.properties.nodes) {
@@ -3611,6 +3896,14 @@ function lowerDeclaredSpreadMerge(
     if (value.type.kind === "dyn") {
       srcs.push({ value, shapeId: "dyn" });
       continue;
+    }
+    if (value.type.kind === "union") {
+      const arms = declaredMergeUnionArms(lowerer, value.type.unionId);
+      if (arms) {
+        for (const arm of arms) fenceAccessorSpreadSource(lowerer, prop, arm.shape);
+        srcs.push({ value, shapeId: "union", arms });
+        continue;
+      }
     }
     const srcShape =
       value.type.kind === "record" ? lowerer.shapes.get(value.type.shapeId) : undefined;
@@ -3763,12 +4056,11 @@ function lowerDeclaredSpreadMerge(
       loc,
     },
   ];
-  for (const source of srcs) {
+  const mergeHelper = (source: Src, sourceType: IrType): string => {
     const key = `declmerge-source:${type.shapeId}:${source.shapeId}`;
     let helper = lowerer.valueHelpers.get(key);
     if (!helper) {
       helper = keyedHelperName(lowerer, "%rec.declmerge", key);
-      const sourceType = source.value.type;
       const destination = varRef("out.0", type, loc);
       const receiver = varRef("source.0", sourceType, loc);
       const locals: IrLocal[] = [
@@ -3952,6 +4244,62 @@ function lowerDeclaredSpreadMerge(
       // leave an entry that a later literal could reuse without a body.
       lowerer.valueHelpers.set(key, helper);
     }
+    return helper;
+  };
+  for (const source of srcs) {
+    if (source.arms && source.value.type.kind === "union") {
+      // Evaluate the union once, then copy the running arm's own keys.
+      const unionType = source.value.type;
+      const held = lowerer.declareHiddenLocal("%declMergeSource", unionType);
+      const heldRef = varRef(held.id, unionType, loc);
+      stmts.push({ kind: "varDecl", localId: held.id, init: source.value, loc });
+      for (const arm of source.arms) {
+        const armType: IrType = { kind: "record", shapeId: arm.shapeId };
+        const helper = mergeHelper(
+          { value: heldRef, shapeId: arm.shapeId, shape: arm.shape },
+          armType,
+        );
+        stmts.push({
+          kind: "if",
+          cond: {
+            kind: "unionIsTag",
+            unionId: unionType.unionId,
+            tag: arm.tag,
+            negated: false,
+            value: heldRef,
+            type: BOOL,
+            loc,
+          },
+          then: [
+            {
+              kind: "exprStmt",
+              expr: {
+                kind: "call",
+                callee: helper,
+                args: [
+                  outRef,
+                  {
+                    kind: "unionNarrow",
+                    unionId: unionType.unionId,
+                    tag: arm.tag,
+                    value: heldRef,
+                    type: armType,
+                    loc,
+                  },
+                ],
+                type,
+                loc,
+              },
+              loc,
+            },
+          ],
+          else_: null,
+          loc,
+        });
+      }
+      continue;
+    }
+    const helper = mergeHelper(source, source.value.type);
     stmts.push({
       kind: "exprStmt",
       expr: { kind: "call", callee: helper, args: [outRef, source.value], type, loc },

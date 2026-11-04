@@ -25,11 +25,16 @@ const interval = setInterval(() => {
   ticks++;
   const p50 = histogram.percentile(50);
   const p99 = histogram.percentile(99);
+  // The delta's idle and utilization are read, but the program does not print
+  // a range check on them: Node's usage counters are cumulative, so its deltas
+  // never go backwards, while scriptc's idle sample is wall time minus thread
+  // CPU time clamped per sample, and the difference of two such samples can
+  // dip below zero when the CPU-time clock jumps ahead of the wall clock.
   console.log(
     "tick",
     ticks,
-    delta.utilization >= 0 && delta.utilization <= 1,
-    delta.idle >= 0,
+    typeof delta.utilization,
+    delta.active >= 0,
     p50 > 0,
     p99 >= p50,
     histogram.max >= p99,

@@ -11,6 +11,7 @@
 #include "scr_platform.h"
 #include "scr_runtime.h"
 
+#include <stdio.h>
 #include <string.h>
 
 typedef struct {
@@ -89,24 +90,6 @@ static ScrDyn *scr_tcd_encoder_get(void *rec, const char *key, size_t len) {
   return NULL;
 }
 
-/* decode(input, options): the options object's `stream` member, read
- * with JS truthiness; undefined and null mean no options. */
-static bool scr_tcd_decoder_stream_option(const ScrDyn *options, bool *stream) {
-  *stream = false;
-  if (options->kind == SCR_DYN_UNDEF || options->kind == SCR_DYN_NULL) return true;
-  if (options->kind != SCR_DYN_OBJ && options->kind != SCR_DYN_ARR &&
-      options->kind != SCR_DYN_FUNC && options->kind != SCR_DYN_TYPED_REF &&
-      options->kind != SCR_DYN_HANDLE) {
-    scr_dyn_arg_type_fail("options", "of type object", options);
-    return false;
-  }
-  ScrDyn *value = scr_dyn_obj_read(options, "stream", 6);
-  if (!value) return false;
-  *stream = scr_dyn_truthy(value);
-  scr_dyn_release(value);
-  return !scr_exc_pending();
-}
-
 static ScrDyn *scr_tcd_decoder_invoke(void *rec, ScrDyn *self, const char *method,
                                        ScrDyn *const *args, size_t argc, const char *what) {
   (void)self;
@@ -114,16 +97,15 @@ static ScrDyn *scr_tcd_decoder_invoke(void *rec, ScrDyn *self, const char *metho
     scr_tcd_codec_not_a_function(what);
     return NULL;
   }
-  ScrBytes *input = scr_bytes_buffer_source(scr_tcd_codec_arg(args, argc, 0));
-  if (!input) return NULL;
-  bool stream;
-  if (!scr_tcd_decoder_stream_option(scr_tcd_codec_arg(args, argc, 1), &stream)) {
-    scr_bytes_release(input);
-    return NULL;
-  }
+  /* Node checks the options before it reads the input. */
+  bool stream = scr_text_decode_stream_option(scr_tcd_codec_arg(args, argc, 1));
+  if (scr_exc_pending()) return NULL;
   const ScrTextCodecLayout *layout = &scr_tcd_decoder_layout;
   ScrDyn *state;
   memcpy(&state, (const char *)rec + layout->state, sizeof state);
+  ScrBytes *input = scr_text_decoder_input(scr_tcd_codec_arg(args, argc, 0),
+                                           scr_tcd_decoder_encoding(rec), state, stream);
+  if (!input) return NULL;
   ScrStr *text = scr_text_decode_stream(state, input, scr_tcd_decoder_encoding(rec),
                                         scr_tcd_decoder_flag(rec, layout->fatal),
                                         scr_tcd_decoder_flag(rec, layout->ignore_bom), stream);
@@ -139,6 +121,29 @@ static ScrDyn *scr_tcd_decoder_get(void *rec, const char *key, size_t len) {
   if (len == 9 && memcmp(key, "ignoreBOM", 9) == 0)
     return scr_dyn_new_bool(scr_tcd_decoder_flag(rec, scr_tcd_decoder_layout.ignore_bom));
   return NULL;
+}
+
+/* TextEncoder's inspector inspects `{ encoding: 'utf-8' }` with the
+ * caller's options. */
+static ScrDyn *scr_tcd_encoder_inspect_view(void *rec) {
+  (void)rec;
+  ScrDyn *view = scr_dyn_new_obj();
+  scr_dyn_obj_set(view, "encoding", 8, scr_tcd_str(scr_str_new("utf-8", 5)));
+  return view;
+}
+
+/* TextDecoder's inspector formats its fields with util.inspect's default
+ * options, whatever the caller's are: `TextDecoder { encoding: 'utf-8',
+ * fatal: false, ignoreBOM: false }`, always one line. */
+static ScrStr *scr_tcd_decoder_inspect_text(void *rec) {
+  ScrStr *encoding = scr_text_decoder_name(scr_tcd_decoder_encoding(rec));
+  char text[128];
+  int n = snprintf(text, sizeof text, "TextDecoder { encoding: '%.*s', fatal: %s, ignoreBOM: %s }",
+                   (int)encoding->len, encoding->data,
+                   scr_tcd_decoder_flag(rec, scr_tcd_decoder_layout.fatal) ? "true" : "false",
+                   scr_tcd_decoder_flag(rec, scr_tcd_decoder_layout.ignore_bom) ? "true" : "false");
+  scr_str_release(encoding);
+  return scr_str_new(text, (size_t)n);
 }
 
 static bool scr_tcd_codec_set(void *rec, const char *key, size_t len, const ScrDyn *value) {
@@ -168,6 +173,10 @@ static const ScrDynHandleOps scr_tcd_encoder_ops = {
     .invoke = scr_tcd_encoder_invoke,
     .get = scr_tcd_encoder_get,
     .set = scr_tcd_codec_set,
+    .inspect_view = scr_tcd_encoder_inspect_view,
+    .inspect_view_bare = true,
+    .inspect_bracketed_past_depth = true,
+    .inspect_custom_only = true,
     .json_empty_object = true,
     .methods = scr_tcd_encoder_methods,
     .invalid_this = "Value of \"this\" must be of type TextEncoder",
@@ -181,6 +190,8 @@ static const ScrDynHandleOps scr_tcd_decoder_ops = {
     .invoke = scr_tcd_decoder_invoke,
     .get = scr_tcd_decoder_get,
     .set = scr_tcd_codec_set,
+    .inspect_text = scr_tcd_decoder_inspect_text,
+    .inspect_custom_only = true,
     .json_empty_object = true,
     .methods = scr_tcd_decoder_methods,
     .invalid_this = "Value of \"this\" must be of type TextDecoder",

@@ -14,7 +14,7 @@
 // Copyright 2016 the V8 project authors. All rights reserved.
 
 /* Math's transcendental functions as V8 computes them: a C port of V8's
- * src/base/ieee754.cc (Node v24.22.0's deps/v8), V8's adaptation of
+ * src/base/ieee754.cc (Node v24.22.1's deps/v8), V8's adaptation of
  * fdlibm. Node answers Math.sin, Math.exp, Math.cbrt and the other
  * functions here through that file on every platform, so the compiled
  * Math members call scr_ieee754_* and print the values Node prints. The

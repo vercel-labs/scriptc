@@ -29,6 +29,7 @@ import {
   snapshotNativeArtifactDependencies,
 } from "./native/artifact-stamps.js";
 import { type NativeArtifactDependency } from "./native/contracts.js";
+import { readHelperIdentityDigest, writeHelperIdentity } from "./native/helper-identity-record.js";
 import {
   nativeCodegenTarget,
   nativeCodegenTargetRefusal,
@@ -261,17 +262,32 @@ async function resolveHelper(
   // bless a later WASI request against an older X86-only package.
   const cacheKey = JSON.stringify({ dependencies, targetTriple: target.llvmTriple });
   const load = async (): Promise<ResolvedHelper> => {
+    // An install records its helper digest once; later builds prove the
+    // recorded files are unchanged with a stat of each, instead of reading and
+    // hashing the whole binary for a digest that cannot have changed.
+    const recordedDigest = await readHelperIdentityDigest(
+      packageJsonPath,
+      binaryPath,
+      dependencies,
+    );
     let stdout: string;
-    let binary: Buffer;
+    let binaryDigest: string;
     try {
-      [{ stdout }, binary] = await Promise.all([
-        invoke(binaryPath, ["version", "--format=json"]),
-        readFile(binaryPath),
-      ]);
+      if (recordedDigest !== null) {
+        ({ stdout } = await invoke(binaryPath, ["version", "--format=json"]));
+        binaryDigest = recordedDigest;
+      } else {
+        let binary: Buffer;
+        [{ stdout }, binary] = await Promise.all([
+          invoke(binaryPath, ["version", "--format=json"]),
+          readFile(binaryPath),
+        ]);
+        binaryDigest = createHash("sha256").update(binary).digest("hex");
+      }
     } catch (error) {
       throw new NativeCodegenError(
         "SC3003",
-        `LLVM native helper package ${helper.packageName} could not be read and executed for its identity check: ${error instanceof Error ? error.message : String(error)}; reinstall scriptc`,
+        `LLVM native helper package ${helper.packageName} could not be ${recordedDigest === null ? "read and executed" : "executed"} for its identity check: ${error instanceof Error ? error.message : String(error)}; reinstall scriptc`,
         "identity_probe_failed",
       );
     }
@@ -290,14 +306,22 @@ async function resolveHelper(
         "helper_changed",
       );
     }
+    const version = validateNativeCodegenVersion(rawVersion, target, helper);
+    if (recordedDigest === null) {
+      // The record only saves work on later builds; an install that cannot
+      // hold it, such as a read-only package, builds exactly as before.
+      await writeHelperIdentity(packageJsonPath, binaryPath, binaryDigest, dependencies).catch(
+        () => undefined,
+      );
+    }
     return {
       packageJsonPath,
       binaryPath,
       dependencies,
       identity: {
         packageName: helper.packageName,
-        binaryDigest: createHash("sha256").update(binary).digest("hex"),
-        version: validateNativeCodegenVersion(rawVersion, target, helper),
+        binaryDigest,
+        version,
       },
     };
   };

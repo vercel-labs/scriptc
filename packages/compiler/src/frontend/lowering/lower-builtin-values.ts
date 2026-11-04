@@ -34,6 +34,7 @@ import {
   type BuiltinValueParam,
 } from "./surfaces.js";
 import { CRYPTO_CONSTANTS } from "./crypto-tables.js";
+import { isDynIteratorValue } from "./iterator-prototype.js";
 
 const PROTOTYPE_METHODS: Record<string, readonly string[]> = {
   Date: ["getTime", "valueOf", "toISOString", "toJSON"],
@@ -41,6 +42,7 @@ const PROTOTYPE_METHODS: Record<string, readonly string[]> = {
   Set: ["add", "has", "delete", "clear", "keys", "values", "entries", "forEach"],
   WeakMap: ["get", "set", "has", "delete"],
   WeakSet: ["add", "has", "delete"],
+  Boolean: ["valueOf", "toString"],
   String: [
     "split",
     "startsWith",
@@ -55,10 +57,56 @@ const PROTOTYPE_METHODS: Record<string, readonly string[]> = {
     "replace",
     "toString",
     "valueOf",
+    "trim",
+    "trimStart",
+    "trimEnd",
+    "trimLeft",
+    "trimRight",
   ],
   Number: ["toString", "valueOf"],
   Object: ["hasOwnProperty", "propertyIsEnumerable", "toString", "valueOf"],
+  // Only the callable members: the flag getters and `source` read as values
+  // are data reads, and the RegExp.prototype object itself has no value yet.
+  RegExp: ["exec", "test", "toString"],
 };
+
+/** The canonical name of a string trim method read as a value, or null for
+ * every other member. Annex B's trimLeft/trimRight are the same function
+ * object as trimStart/trimEnd (B.2.3.14-15), so both spellings read the
+ * standard one. */
+export function stringTrimMethodName(name: string): string | null {
+  switch (name) {
+    case "trim":
+    case "trimStart":
+    case "trimEnd":
+      return name;
+    case "trimLeft":
+      return "trimStart";
+    case "trimRight":
+      return "trimEnd";
+    default:
+      return null;
+  }
+}
+
+/** A builtin prototype method as a function value: one interned function
+ * per (prototype, member) in scr_dyn_builtin_methods.c, so
+ * `String.prototype.trim`, `''.trim` and `s.trim` are the same object (and
+ * likewise `RegExp.prototype.exec`, `/a/.exec` and `re.exec`), and
+ * Function.prototype's call/apply run it on any receiver the way the
+ * specification defines the method. */
+export function builtinMethodValue(owner: string, member: string, loc: SrcLoc): IrExpr {
+  return {
+    kind: "libCall",
+    fn: "dyn.builtinMethodValue",
+    args: [
+      { kind: "strLit", value: owner, type: STRING, loc },
+      { kind: "strLit", value: member, type: STRING, loc },
+    ],
+    type: DYN,
+    loc,
+  };
+}
 
 export function builtinPrototypeMethod(
   lowerer: Lowerer,
@@ -67,7 +115,13 @@ export function builtinPrototypeMethod(
   const prototype = expr.expression;
   if (!ts.isPropertyAccessExpression(prototype) || prototype.name.text !== "prototype") return null;
   const owner = stdlibGlobalNameOf(lowerer, prototype.expression);
-  return owner && PROTOTYPE_METHODS[owner]?.includes(expr.name.text) ? owner : null;
+  if (owner === null || !PROTOTYPE_METHODS[owner]?.includes(expr.name.text)) return null;
+  // The Boolean pair has a value form only in a JavaScript source (the
+  // brand-check tests call it on a foreign receiver); a typed source keeps
+  // the SC2020 member fence, since the runtime has no Boolean receiver
+  // branch and `Boolean.prototype.valueOf.call(true)` would be wrong.
+  if (owner === "Boolean" && !isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;
+  return owner;
 }
 
 /** These native callables own their argument checks. Unannotated JS aliases
@@ -100,6 +154,7 @@ export function isNativeBuiltinValueInitializer(
   if (global && !["undefined", "Infinity", "NaN"].includes(global)) return true;
   if (lowerer.isStdlibGlobal(expr, "console")) return true;
   if (ts.isNewExpression(expr) && lowerer.isStdlibGlobal(expr.expression, "Date")) return true;
+  if (isDynIteratorValue(lowerer, expr)) return true;
   if (ts.isConditionalExpression(expr)) {
     return (
       isNativeBuiltinValueInitializer(lowerer, expr.whenTrue, new Set(seen)) ||
@@ -821,7 +876,11 @@ export function checkedNativeCallableValue(
   if (!fnName) {
     fnName = keyedHelperName(lowerer, `%builtin.value.${callee}`, key);
     lowerer.builtinCallableValueFns.set(key, fnName);
-    lowerer.builtinCallableValueNames.set(fnName, display.slice(display.lastIndexOf(".") + 1));
+    lowerer.builtinCallableValueNames.set(
+      fnName,
+      fn.valueName ?? display.slice(display.lastIndexOf(".") + 1),
+    );
+    if (fn.valueNameMainThreadOnly) lowerer.builtinCallableValueMainThreadNames.add(fnName);
     const params = valueParams.map((_, index) => ({
       localId: `arg.${index}`,
       name: `arg${index}`,
@@ -914,6 +973,7 @@ export function boxBuiltinValuesChecked(lowerer: Lowerer, functions: IrFunction[
   const names = lowerer.builtinCallableValueNames;
   if (names.size === 0) return;
   const lengths = lowerer.builtinCallableValueLengths;
+  const mainThreadNames = lowerer.builtinCallableValueMainThreadNames;
   const builtin = (expr: IrExpr | null): expr is Extract<IrExpr, { kind: "closure" }> =>
     expr !== null &&
     expr.kind === "closure" &&
@@ -984,11 +1044,16 @@ export function boxBuiltinValuesChecked(lowerer: Lowerer, functions: IrFunction[
           expr.fnLength ??
           lengths.get(source.fnName) ??
           (value.kind === "closure" ? lengths.get(value.fnName) : undefined);
+        const nameMainThreadOnly =
+          expr.fnNameMainThreadOnly === true ||
+          mainThreadNames.has(source.fnName) ||
+          (value.kind === "closure" && mainThreadNames.has(value.fnName));
         const boxed: IrExpr = {
           ...expr,
           value,
           ...(fnName !== undefined ? { fnName } : {}),
           ...(fnLength !== undefined ? { fnLength } : {}),
+          ...(nameMainThreadOnly ? { fnNameMainThreadOnly: true as const } : {}),
         };
         if (!read) return boxed;
         return {

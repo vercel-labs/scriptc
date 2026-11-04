@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9200-url-namespace-construct.ts"
+ ],
+ "diags": []
+}

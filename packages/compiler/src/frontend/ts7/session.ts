@@ -82,6 +82,28 @@ function project71(data: Ts71ProjectData): Ts7ReportedProjectData {
   };
 }
 
+/** The projects whose reported compiler options changed between two
+ * snapshots. The server tracks source-file CONTENT changes only: a parsed
+ * syntax tree also depends on parse options (jsx, target, module, implied
+ * node format), and a change to them re-parses files the change record does
+ * not list, so those trees must not carry forward. Options are compared
+ * whole; any change costs one snapshot of retention for that project. */
+function reparsedProjects(
+  previous: Ts7SessionSnapshot,
+  next: Ts7SessionSnapshot,
+): ReadonlySet<string> {
+  const before = new Map<string, string>();
+  for (const project of previous.projectData)
+    before.set(project.id, JSON.stringify(project.compilerOptions));
+  const reparsed = new Set<string>();
+  for (const project of next.projectData) {
+    const options = before.get(project.id);
+    if (options !== undefined && options !== JSON.stringify(project.compilerOptions))
+      reparsed.add(project.id);
+  }
+  return reparsed;
+}
+
 export interface Ts7FileChanges {
   changed?: SemanticDocument[];
   created?: SemanticDocument[];
@@ -207,7 +229,13 @@ export class Ts7Session {
       // project's source changed, so its old cache references are not proof
       // that the new source is identical.
       if (previous.isDisposed()) this.cache.release(previous.id);
-      else this.cache.retain(snapshot.id, previous.id, data.changes);
+      else
+        this.cache.retain(
+          snapshot.id,
+          previous.id,
+          data.changes,
+          reparsedProjects(previous, snapshot),
+        );
     }
     this.latest = snapshot;
     this.snapshots.add(snapshot);

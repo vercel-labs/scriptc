@@ -324,6 +324,41 @@ test("CommonJS object reads are recorded for the patch check (H3.4)", () => {
   expect(reads("import * as fs from 'node:fs'; const { readFileSync } = fs;", "mjs")).toEqual([]);
 });
 
+test("global reads are recorded for the implicit-global check (H3.4)", () => {
+  const globals = (source: string, ext = "cjs", kind: "js" | "ts" = "js"): string[] => {
+    const sf = parseSourceFile(`/virtual/g${serial++}.${ext}`, source, kind);
+    return scanModuleFacts(sf).globalReads.map((read) => read.name);
+  };
+  // A name the module declares nowhere resolves on the global object at
+  // run time, where an island's sloppy write can create it.
+  expect(globals("counter = 1; console.log(counter);")).toEqual(["counter"]);
+  expect(globals("if (typeof flag === 'boolean') flag.run();")).toEqual(["flag"]);
+  expect(globals("const o = { counter };")).toEqual(["counter"]);
+  expect(globals("for (key in source) {}")).toEqual(["source"]);
+  expect(globals("use(value);")).toEqual(["use", "value"]);
+  // Declared names, builtins and the CommonJS module scope are not global
+  // reads, and property names, labels and write targets are not reads.
+  expect(globals("const counter = 1; console.log(counter);")).toEqual([]);
+  expect(globals("console.log(process.env.HOME, Buffer.from('x'), globalThis.x);")).toEqual([]);
+  expect(globals("const r = require('r'); module.exports = exports;")).toEqual([]);
+  expect(
+    globals("const o = {}; o.counter = 1; counter = 2; counter++; label: break label;"),
+  ).toEqual([]);
+  // A TypeScript module's type positions and declaration names are not
+  // value reads: only a name used as a value can resolve on the global.
+  expect(
+    globals(
+      "interface Payload { n: number }\nconst p: Payload = { n: 1 };\nconsole.log(p);",
+      "ts",
+      "ts",
+    ),
+  ).toEqual([]);
+  expect(
+    globals("type Id<T> = T;\nfunction id<T>(value: T): T { return value; }\nid(1);", "ts", "ts"),
+  ).toEqual([]);
+  expect(globals("enum Mode { On }\nconsole.log(Mode.On);", "ts", "ts")).toEqual([]);
+});
+
 test("markers come back in source order with their locations", () => {
   const source = "Object.setPrototypeOf(a, b);\neval(x);\n";
   const sf = parseSourceFile(`/virtual/order${serial++}.cjs`, source, "js");

@@ -43,7 +43,14 @@ import { isOptionalReadlineCursorRead } from "../builtins/readline.js";
 import { literalValues } from "../../literal-values.js";
 import { literalUnionArm } from "../../union-discriminants.js";
 import { checkedArmExtraction } from "../coercions/unions.js";
-import { hostedStorageView, hostsAll } from "./hosted-narrowing.js";
+import {
+  assertedOptionalExtension,
+  hostedStorageView,
+  hostsAll,
+  recordViewHosted,
+  viewHostedArmTags,
+} from "./hosted-narrowing.js";
+import { bindingIdentityUse } from "../divergences.js";
 import { nodeThrowExpr, varRef } from "../../../ir/build.js";
 import { InternalCompilerError } from "../../../errors.js";
 import {
@@ -179,6 +186,7 @@ export function lowerTernary(
     // with nested empty-array branches. Carry the whole record layout
     // through those branches before constructing their fresh fields.
     const ownJoin = lowerer.mapTypeOf(lowerer.typeOf(expr));
+    const ownUnion = ownJoin?.kind === "union" ? ownJoin : null;
     const recordJoin =
       ctxMapped?.kind === "record" ? ctxMapped : ownJoin?.kind === "record" ? ownJoin : undefined;
     const lowerArm = (e: ts.Expression, siblingType?: IrType): IrExpr => {
@@ -226,6 +234,19 @@ export function lowerTernary(
           lowerer.widthLiftPlan(ownT, siblingType) === null
         ) {
           return lowerer.lowerArrayLiteral(lit, siblingType);
+        }
+      }
+      // A FRESH array-literal arm whose checker join is a UNION that does
+      // not already hold its own array type (`c ? [{ type: "text", text }]
+      // : replacement.content` joining `Block[]` with `(Image | Text)[]`):
+      // build the literal at the union so lowerExprExpecting's union-slot
+      // rule picks the complete arm. Nothing aliases a fresh literal, so
+      // any complete arm is the checker-accepted value; coercing the bare
+      // literal could only refuse when two array arms fit it.
+      if (lit && ownUnion) {
+        const ownT = lowerer.mapTypeOf(lowerer.typeOf(lit));
+        if (ownT?.kind === "array" && lowerer.widthLiftPlan(ownT, ownUnion) === null) {
+          return lowerer.lowerExprExpecting(lit, ownUnion);
         }
       }
       return lowerer.lowerExpr(e);
@@ -364,7 +385,7 @@ export function lowerTernary(
       (thenRaw.type.kind === "dyn" || elseRaw.type.kind === "dyn") &&
       lowerer.dynConvertible(thenRaw.type) &&
       lowerer.dynConvertible(elseRaw.type);
-    const type =
+    let type =
       callableJoin || checkedJsJoin
         ? DYN
         : thenRaw.type.kind === "array" && typeEquals(thenRaw.type, elseRaw.type)
@@ -372,6 +393,26 @@ export function lowerTernary(
           : dynJoin
             ? DYN
             : (anyJoin ?? (useCtx && ctxMapped ? ctxMapped : lowerer.irTypeOf(expr)));
+    // An arm the checker types at the join can still hold an absent value
+    // at run time (`flag ? empty.a : empty.b`): an unchecked key or element
+    // read whose storage carries the undefined arm. The join keeps that
+    // arm, so the ternary's result represents the missing value instead of
+    // coercing it into the checker's narrower type. The absent-capable
+    // origin is part of the test: an arm holding a declared optional that
+    // the ternary's own guard proved present (`h.via === undefined ? "-" :
+    // h.via`) is not an unchecked read, and its narrowed join stands.
+    const admitsUndefined = (t: IrType): boolean =>
+      t.kind === "union" && lowerer.armTag(t.unionId, UNDEFINED_T) >= 0;
+    if (
+      !admitsUndefined(type) &&
+      ((lowerer.isRuntimeOptionalOrigin(expr.whenTrue) &&
+        lowerer.runtimeOptionalWidening(thenRaw.type, type) !== null) ||
+        (lowerer.isRuntimeOptionalOrigin(expr.whenFalse) &&
+          lowerer.runtimeOptionalWidening(elseRaw.type, type) !== null))
+    ) {
+      const widened = lowerer.runtimeOptionalType(type);
+      if (admitsUndefined(widened)) type = widened;
+    }
     // Each arm flows into the ternary's type through the slot-coercion
     // path: union arms wrap, dyn slots reject the non-dyn arm with
     // SC1101, mismatched record shapes get SC2002; coerceInto is
@@ -389,13 +430,24 @@ export function lowerTernary(
   }
 }
 
-/** Whether `expr` is the checked-dynamic Number/Boolean prototype value a
- * JavaScript source read (jsPrimitivePrototypeValue), or one of its
- * members: the value is the prototype OBJECT, not the wrapper's primitive,
- * so the checker's wrapper type must not extract a scalar from it. */
+/** Whether `expr` is the Number/Boolean prototype value a JavaScript
+ * source read (jsPrimitivePrototypeValue: dyn.builtinPrototype for Number,
+ * wrapper.booleanPrototype for Boolean), or one of its members: the value
+ * is the prototype OBJECT, not the wrapper's primitive, so the checker's
+ * wrapper type must not extract a scalar from it. */
 function isPrimitivePrototypeValue(expr: IrExpr): boolean {
-  if (expr.kind === "libCall") return expr.fn === "dyn.builtinPrototype";
+  if (expr.kind === "libCall")
+    return expr.fn === "dyn.builtinPrototype" || expr.fn === "wrapper.booleanPrototype";
   return expr.kind === "dynKeyGet" && isPrimitivePrototypeValue(expr.value);
+}
+
+/** Whether `expr` is the DataView prototype value a JavaScript source read
+ * (dyn.dataViewPrototype), or one of its members: the value is the
+ * prototype OBJECT, and the interface's own bytes view is a different
+ * representation, so the checker's DataView type must not extract one. */
+export function isDataViewPrototypeValue(expr: IrExpr): boolean {
+  if (expr.kind === "libCall") return expr.fn === "dyn.dataViewPrototype";
+  return expr.kind === "dynKeyGet" && isDataViewPrototypeValue(expr.value);
 }
 
 /** Checker-driven union narrowing. tsc's control-flow analysis narrows a
@@ -443,6 +495,9 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     // prototype OBJECTS, though @types/node declares them with the wrapper
     // interface: extracting the wrapper's numeric value would throw.
     if (isPrimitivePrototypeValue(expr)) return expr;
+    // DataView.prototype (and its members) is the prototype OBJECT, though
+    // @types/node declares the interface: extracting the view would throw.
+    if (isDataViewPrototypeValue(expr)) return expr;
     // A process.versions entry declared as a string can be absent here.
     if (isOptionalProcessVersionsRead(lowerer, node))
       return lowerer.coerceToExpected(expr, lowerer.withUndefinedArm(STRING));
@@ -949,7 +1004,7 @@ export function v8CalleeText(node: ts.Node): string {
 
 /** Node's TypeError for the operation consuming `node` when it holds a
  * value of type `found`, or null where Node would not throw. */
-function staleReadMessage(node: ts.Node, found: IrType): string | null {
+export function staleReadMessage(node: ts.Node, found: IrType): string | null {
   let child: ts.Node = node;
   let parent = node.parent;
   while (ts.isParenthesizedExpression(parent)) {
@@ -1112,8 +1167,24 @@ export function runtimeOptionalReceiverRead(
     // array mutation can leave any of the stored tags in the slot. Use
     // the checked helper so every other arm, including undefined, remains
     // a catchable TypeError rather than an unchecked payload read.
-    const helper = lowerer.narrowedArmHelper(local.type.unionId, narrowed, loc);
-    if (!helper) {
+    let extraction: { helper: string; target: IrType } | null = null;
+    const direct = lowerer.narrowedArmHelper(local.type.unionId, narrowed, loc);
+    if (direct) extraction = { helper: direct, target: narrowed };
+    else if (narrowedNode !== expr) {
+      // An erased wrapper types the WRAPPER, not the capture: `x as T`
+      // names T even where the checker's flow type at `x` itself proves
+      // one stored arm. Node erases the wrapper and the value keeps its
+      // stored layout, which is what the two-arm path reads through
+      // (maybeNarrow, below). Take that proved arm here too instead of
+      // refusing every capture whose storage has several arms.
+      const flow = lowerer.mapTypeOf(lowerer.typeOf(expr));
+      const helper =
+        flow && !isUnitType(flow) && lowerer.armTag(local.type.unionId, flow) >= 0
+          ? lowerer.narrowedArmHelper(local.type.unionId, flow, loc)
+          : null;
+      if (flow && helper) extraction = { helper, target: flow };
+    }
+    if (!extraction) {
       lowerer.unsupported(
         "SC1090",
         expr,
@@ -1121,7 +1192,12 @@ export function runtimeOptionalReceiverRead(
       );
     }
     return holeGuarded(
-      lowerer.checkedNarrowCall(helper, varRef(local.id, local.type, loc), narrowed, loc),
+      lowerer.checkedNarrowCall(
+        extraction.helper,
+        varRef(local.id, local.type, loc),
+        extraction.target,
+        loc,
+      ),
     );
   }
   // A predicate can strengthen a record's fields or narrow a base class
@@ -1375,6 +1451,23 @@ function freshEntriesRecordAssertion(
   return { kind: "dynCheck", value: lowerer.coerceToExpected(inner, DYN), type: target, loc };
 }
 
+/** Whether the assertion `expr` initializes a `const` binding whose identity
+ * a field copy would change: something writes through the binding, or
+ * compares it with `===`/`!==`. Node erases the assertion, so such a binding
+ * must reach the value itself; a read-only view answers the same members
+ * either way and keeps the copy (`divergences.ts`, `bindingIdentityUse`). */
+function assertedBindingUsesIdentity(lowerer: Lowerer, expr: ts.Expression): boolean {
+  let node: ts.Node = expr;
+  while (
+    node.parent !== undefined &&
+    (ts.isParenthesizedExpression(node.parent) || ts.isNonNullExpression(node.parent))
+  )
+    node = node.parent;
+  const decl = node.parent;
+  if (decl === undefined || !ts.isVariableDeclaration(decl)) return false;
+  return bindingIdentityUse(decl, lowerer.checker);
+}
+
 /** `e as T` and the old-style assertion `<T>e` — one node shape (both
  * carry `.type` and `.expression`), one lowering. */
 export function lowerAsExpression(
@@ -1444,13 +1537,40 @@ export function lowerAsExpression(
       (narrowed === null && (lowerer.typeOf(expr.expression).flags & ts.TypeFlags.Any) !== 0);
     if (!bridged) lowerer.unsupported("SC1063", expr);
   }
-  const inner = lowerer.lowerExpr(expr.expression);
+  // `{ ...message, content } as T`: the program claimed the literal's shape,
+  // so a union-valued member converts in a checked context — an arm the
+  // asserted target excludes throws the catchable TypeError (a lying
+  // assertion) instead of refusing the member (coercions.assertedOperand).
+  // Parentheses and non-null assertions name the same literal
+  // (`({ ...message, content }) as T`). An inner assertion or `satisfies`
+  // carries its own operand context.
+  let assertedSource = expr.expression;
+  while (ts.isParenthesizedExpression(assertedSource) || ts.isNonNullExpression(assertedSource))
+    assertedSource = assertedSource.expression;
+  const assertedOperand = assertedSource.kind === ts.SyntaxKind.ObjectLiteralExpression;
+  if (assertedOperand) lowerer.coercions.assertedOperand++;
+  let inner: IrExpr;
+  try {
+    inner = lowerer.lowerExpr(expr.expression);
+  } finally {
+    if (assertedOperand) lowerer.coercions.assertedOperand--;
+  }
   const use = runtimeOptionalUseOf(expr);
   if (inner.type.kind === "union" && runtimeOptionalAssertionErases(lowerer, expr, inner, use))
     return inner;
   if (inner.type.kind !== "dyn") {
     const targetTs0 = lowerer.checker.getTypeFromTypeNode(expr.type);
     const target = lowerer.mapTypeOf(targetTs0);
+    // A static assertion ERASES in Node, but the claim it makes still
+    // answers to the program: a slot this value reaches that no ordinary
+    // conversion covers (SC2002/SC2003) converts it CHECKED instead of
+    // refusing (coercions/asserted.ts) — a value outside the claimed shape
+    // throws the catchable TypeError, never a silent reinterpretation.
+    // Recorded before the branches below so every path carries it, the
+    // erasure included.
+    const claimable = (type: IrType | null | undefined): type is IrType =>
+      type?.kind === "union" || type?.kind === "record" || type?.kind === "array";
+    if (claimable(target) && claimable(inner.type)) lowerer.assertedValues.set(inner, target);
     // A PRESENCE PROBE of a member read through the assertion (`typeof
     // (u as R).member`, `(u as R).member !== undefined`): the read answers
     // off the value actually stored, since Node erases the assertion and an
@@ -1541,18 +1661,61 @@ export function lowerAsExpression(
     if (inner.type.kind === "record" && target && hostsAll(lowerer, inner.type, target)) {
       return inner;
     }
+    // `tagged as Labeled` on a record: the view names members the value
+    // already stores, so the assertion is pure typing (Node keeps the
+    // object) and the stored layout answers every read and write of them.
+    // Only a view with a member the value does not hold copies. A binding
+    // whose identity a copy would change (a write through it, an identity
+    // comparison) keeps the storage; a read-only view is equal either way
+    // and keeps the copy the width-copy report names.
+    if (
+      assertedBindingUsesIdentity(lowerer, expr) &&
+      inner.type.kind === "record" &&
+      target?.kind === "record" &&
+      recordViewHosted(lowerer, inner.type.shapeId, target.shapeId)
+    ) {
+      lowerer.layoutKeptNodes.add(expr);
+      return inner;
+    }
+    // `const { icons } = item as Base & { icons?: unknown }`: the
+    // assertion only ADDS optional members to the record the value has,
+    // and Node erases it, so the pattern reads the properties off the
+    // value itself. The added members have no slot in the stored layout:
+    // the read answers them through the layout's kept source
+    // (assertedOnlyFieldRead), where a width copy would answer its own
+    // absent slot with undefined. The kept source is also why the binding
+    // is not reported as a copy (layoutKeptNodes): a write to an added
+    // member is refused where it happens (assertedOnlyMemberWrite).
+    if (
+      inner.type.kind === "record" &&
+      target &&
+      constSourceUse(expr) &&
+      assertedOptionalExtension(lowerer, inner.type, target)
+    ) {
+      lowerer.layoutKeptNodes.add(expr);
+      return inner;
+    }
     // Static assertions normally erase, but record layouts are
     // monomorphic: a consumer selected from the asserted shape must see
     // that shape physically. Reuse the ordinary slot coercion so plain
     // widths and index-signature captures share their established copy
-    // semantics (and unsupported pairs report SC2002 at this assertion).
+    // semantics.
     if (
       inner.type.kind === "record" &&
       target?.kind === "record" &&
       inner.type.shapeId !== target.shapeId
     ) {
-      lowerer.assertedValues.set(inner, target);
-      return lowerer.coerceInto(expr, inner, target);
+      // A pair outside the width family (an index-signature record asserted
+      // to a record of its own keys: a `Record<string, V>` filled key by
+      // key and cast to `{ k: V }`) converts checked (assertedConversion):
+      // every claimed field validated, the value's own keys kept. The claim
+      // follows the value the assertion PRODUCED, not the operand it read —
+      // a generic body's operand keeps the caller's layout while its
+      // asserted result carries the target's — so later slots check the
+      // shape the assertion actually made.
+      const converted = lowerer.coerceInto(expr, inner, target);
+      if (converted !== inner) lowerer.assertedValues.set(converted, target);
+      return converted;
     }
     // `u as Arm` on a UNION value is `u!`'s spelling with a named arm
     // (`req.headers[h] as string`): the CHECKED single-arm extraction —
@@ -1574,6 +1737,27 @@ export function lowerAsExpression(
         const hosted = hostedStorageView(lowerer, inner, target, locOf(expr));
         if (hosted) return hosted;
       }
+      // A projection of ONE arm (`{ text: string }` over a
+      // `TextBlock | ThinkingBlock` value): that arm's own storage carries
+      // the view, so the checked extraction returns the arm itself and the
+      // binding keeps it — reads and writes through it reach the original
+      // object. A view no single arm presents keeps the coercion below, and
+      // so does a READ-ONLY binding: Node's read answers undefined for an
+      // arm that does not declare the member (`(entry as { when?: number })
+      // .when` over `Stamped | Unstamped`), which the coercion reproduces
+      // and the checked extraction would not (it traps on the other arm).
+      // Only a binding whose identity is observable reaches the arm itself.
+      if (target?.kind === "record" && assertedBindingUsesIdentity(lowerer, expr)) {
+        const tags = viewHostedArmTags(lowerer, inner.type.unionId, target);
+        if (tags !== null && tags.size === 1) {
+          const arm = lowerer.unions.get(inner.type.unionId)!.arms[[...tags][0]!]!;
+          const helper = lowerer.narrowedArmHelper(inner.type.unionId, arm, locOf(expr));
+          if (helper) {
+            lowerer.layoutKeptNodes.add(expr);
+            return lowerer.checkedNarrowCall(helper, inner, arm, locOf(expr));
+          }
+        }
+      }
     }
     // `node.parent as Sub | undefined`: a union target whose class arm is
     // narrower than the stored class gets the same checked class view as
@@ -1586,15 +1770,9 @@ export function lowerAsExpression(
       const asserted = checkedClassUnionAssertion(lowerer, inner, target, locOf(expr));
       if (asserted) return asserted;
     }
-    // The erased value still answers to the assertion: a slot it cannot
-    // reach by an ordinary conversion converts it as asserted
-    // (assertedConversion).
-    if (
-      target &&
-      (target.kind === "union" || target.kind === "record" || target.kind === "array") &&
-      (inner.type.kind === "union" || inner.type.kind === "array")
-    )
-      lowerer.assertedValues.set(inner, target);
+    // The erased value still answers to the assertion (the claim recorded
+    // above): a slot it cannot reach by an ordinary conversion converts it
+    // as asserted (assertedConversion).
     return inner; // erasure, unchanged
   }
 
@@ -1717,9 +1895,24 @@ function checkedDynCast(
     !freshDynSource(lowerer, expr, inner) &&
     !resultOnlyRead(lowerer, expr)
   ) {
+    // An index-signature type keeps the keys it does not declare in an
+    // overflow map, which a record view does not share (plainShape in
+    // record-views.ts): the conversion answers a copy, so a
+    // write through the assertion would reach that copy alone and be lost
+    // to the record the source still names. The value keeps its dynamic
+    // form instead, and every key of the assertion rides the source's own
+    // keyed reads and writes.
+    if (overflowMapRecord(lowerer, target)) return inner;
     return adoptingCast(lowerer, inner, target, locOf(expr), "dyn.adoptShared");
   }
   return { kind: "dynCheck", value: inner, type: target, loc: locOf(expr) };
+}
+
+/** Whether `target` keeps undeclared keys in an overflow map, the one
+ * record storage a checked conversion cannot share with its source. */
+function overflowMapRecord(lowerer: Lowerer, target: IrType): boolean {
+  if (target.kind !== "record") return false;
+  return lowerer.shapes.get(target.shapeId)?.indexValue !== undefined;
 }
 
 /** A cast whose result only serves one read of a primitive member
@@ -1981,4 +2174,28 @@ function adoptingCast(
     type: target,
     loc,
   };
+}
+
+/** Whether this assertion only FEEDS a `const` binding: it is a binding
+ * pattern's source (`const { a } = value as T`) or such a declaration's
+ * initializer, through parentheses. Node erases the assertion, so both
+ * read the members off the value itself; a `let` binding keeps its
+ * declared type (later assignments coerce into it). */
+function constSourceUse(assertion: ts.Expression): boolean {
+  let use: ts.Node = assertion;
+  for (;;) {
+    const parent = use.parent as ts.Node | undefined;
+    if (!parent || !ts.isParenthesizedExpression(parent) || parent.expression !== use) break;
+    use = parent;
+  }
+  const parent = use.parent as ts.Node | undefined;
+  if (parent === undefined || !ts.isVariableDeclaration(parent) || parent.initializer !== use) {
+    return false;
+  }
+  const list = parent.parent;
+  return (
+    list !== undefined &&
+    ts.isVariableDeclarationList(list) &&
+    (list.flags & ts.NodeFlags.Const) !== 0
+  );
 }

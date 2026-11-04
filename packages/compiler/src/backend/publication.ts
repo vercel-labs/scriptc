@@ -4,7 +4,7 @@
 import type { IrExpr, IrModule, IrStmt, IrType } from "../ir/ir.js";
 import { typeKey } from "../ir/ir.js";
 import { eachNodeOfKinds, type IrNodeIndex, type IrNodeKind } from "../ir/node-index.js";
-import { computeConstructionFacts } from "./immutability.js";
+import { computeConstructionFacts, type ConstructionFacts } from "./immutability.js";
 
 /** Array methods that write their receiver (the guarded ones). */
 export const MUTATING_ARRAY_METHODS: ReadonlySet<string> = new Set([
@@ -89,7 +89,12 @@ export class PublishedTypes {
 /** The nodes that publish a value: intrinsics. */
 const PUBLISHING_KINDS: readonly IrNodeKind[] = ["intrinsic"];
 
-export function computePublishedTypes(mod: IrModule, nodes?: IrNodeIndex): PublishedTypes | null {
+export function computePublishedTypes(
+  mod: IrModule,
+  nodes?: IrNodeIndex,
+  /** computeConstructionFacts(mod), when the caller already has it. */
+  construction?: ConstructionFacts,
+): PublishedTypes | null {
   const roots: IrType[] = [];
   const scan = nodes?.scan(PUBLISHING_KINDS);
   for (const fn of mod.functions)
@@ -122,7 +127,7 @@ export function computePublishedTypes(mod: IrModule, nodes?: IrNodeIndex): Publi
   const unions = new Map((mod.unions ?? []).map((u) => [u.id, u]));
   const out = new PublishedTypes();
   for (const key of frozenArrays) out.frozenArrays.add(key);
-  out.privateStores = computeConstructionFacts(mod, nodes).privateStores;
+  out.privateStores = (construction ?? computeConstructionFacts(mod, nodes)).privateStores;
   const seen = new Set<string>();
   const stack = [...roots];
   const addHierarchy = (className: string): void => {

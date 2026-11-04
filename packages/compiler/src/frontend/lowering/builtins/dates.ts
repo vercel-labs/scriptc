@@ -93,6 +93,17 @@ export function lowerDateCall(
   const member = lowerer.stdlibGlobalMember(access, "Date");
   if (member === "now" || member === "parse" || member === "UTC")
     return lowerDateStaticCall(lowerer, call, member);
+  // `Date.prototype` is typed Date by the lib declarations but is not a Date:
+  // its methods are read as members of the prototype OBJECT (a
+  // checked-dynamic value), so a call on one takes the ordinary dynamic
+  // method path — `Date.prototype.hasOwnProperty("getTime")` is
+  // Object.prototype's, and `Date.prototype.getTime()` throws the TypeError
+  // of a method whose receiver has no [[DateValue]].
+  if (
+    ts.isPropertyAccessExpression(access.expression) &&
+    lowerer.stdlibGlobalMember(access.expression, "Date") === "prototype"
+  )
+    return null;
   if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "date") return null;
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;

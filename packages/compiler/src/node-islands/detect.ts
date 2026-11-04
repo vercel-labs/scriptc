@@ -39,6 +39,15 @@ export interface CjsRead {
   loc: SrcLoc;
 }
 
+/** A read of a name the module declares nowhere and no builtin provides:
+ * at run time it resolves on Node's global object. A Node island module's
+ * sloppy implicit-global write creates the name there, which native code
+ * cannot observe (H3.4). */
+export interface GlobalRead {
+  name: string;
+  loc: SrcLoc;
+}
+
 /** Markers past this count in one module add nothing to a report. */
 const MARKER_CAP = 64;
 
@@ -108,6 +117,21 @@ const BUILTIN_GLOBALS = new Set([
   "structuredClone",
 ]);
 
+/** CommonJS module-scope names and JavaScript's value keywords: provided by
+ * the module wrapper or the language, never the global object. */
+const MODULE_SCOPE_NAMES = new Set([
+  "require",
+  "module",
+  "exports",
+  "__dirname",
+  "__filename",
+  "arguments",
+  "eval",
+  "undefined",
+  "NaN",
+  "Infinity",
+]);
+
 /** Writes to builtin members that the native subset models (process
  * state, tuning knobs). */
 const ALLOWED_BUILTIN_WRITES = new Set([
@@ -137,6 +161,22 @@ function builtinModuleName(spec: string): string | null {
   if ((SUPPORTED_BUILTIN_MODULES as readonly string[]).includes(bare)) return bare;
   if (bare === "vm" || bare === "v8" || bare === "module" || bare === "inspector") return bare;
   return null;
+}
+
+/** Subpath modules Node serves as objects of their own rather than as a
+ * member of the module the spec starts with. */
+const STANDALONE_SUBPATH_MODULES = new Set(["stream/web", "stream/consumers"]);
+
+/** The member object a builtin's subpath spec names: `require("fs/promises")`
+ * is `require("fs").promises`, and every other subpath of a supported
+ * builtin is a member object too. Null for the module itself and for a
+ * standalone subpath module, whose members belong to no object of the
+ * module the spec starts with. */
+function memberBaseOf(module: string): string | null {
+  const slash = module.indexOf("/");
+  if (slash < 0) return module;
+  if (STANDALONE_SUBPATH_MODULES.has(module)) return null;
+  return `${module.slice(0, slash)}.${module.slice(slash + 1)}`;
 }
 
 /** Parentheses and the TypeScript wrappers Node erases (`as`,
@@ -281,6 +321,63 @@ function isFunctionBoundary(node: ts.Node): boolean {
   );
 }
 
+/** Whether `node`, an identifier, is read rather than written, declared or
+ * used as a name. A shorthand property and a `typeof` operand are reads. */
+function isReadPosition(node: ts.Identifier, parent: ts.Node): boolean {
+  if (ts.isPropertyAccessExpression(parent) && parent.name === node) return false;
+  if (
+    (ts.isPropertyAssignment(parent) ||
+      ts.isMethodDeclaration(parent) ||
+      ts.isPropertyDeclaration(parent) ||
+      ts.isGetAccessorDeclaration(parent) ||
+      ts.isSetAccessorDeclaration(parent)) &&
+    parent.name === node
+  )
+    return false;
+  if (
+    (ts.isPropertySignature(parent) || ts.isMethodSignatureDeclaration(parent)) &&
+    parent.name === node
+  )
+    return false;
+  if (ts.isLabeledStatement(parent) && parent.label === node) return false;
+  if ((ts.isBreakStatement(parent) || ts.isContinueStatement(parent)) && parent.label === node)
+    return false;
+  if (
+    ts.isBinaryExpression(parent) &&
+    parent.left === node &&
+    isAssignmentOperator(parent.operatorToken.kind)
+  )
+    return false;
+  if (
+    (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent)) &&
+    parent.operand === node &&
+    (parent.operator === ts.SyntaxKind.PlusPlusToken ||
+      parent.operator === ts.SyntaxKind.MinusMinusToken)
+  )
+    return false;
+  if (ts.isDeleteExpression(parent) && parent.expression === node) return false;
+  if ((ts.isForOfStatement(parent) || ts.isForInStatement(parent)) && parent.initializer === node)
+    return false;
+  return true;
+}
+
+/** Whether `node` sits in a type position: a name there is a type, not a
+ * value the global object could provide. */
+function isTypePosition(node: ts.Node): boolean {
+  let current: ts.Node = node;
+  let parent = current.parent;
+  while (parent !== undefined) {
+    if (ts.isTypeNode(parent)) return true;
+    // A declaration's annotation (`const x: T`), a return type, `as` and
+    // `satisfies` all hold their type in a `type` child.
+    if ((parent as { type?: ts.Node }).type === current) return true;
+    if (ts.isExpression(parent) || ts.isStatement(parent)) return false;
+    current = parent;
+    parent = parent.parent;
+  }
+  return false;
+}
+
 /** The name a plain function value is bound to in the same file
  * (`function f`, `var f = function`), for the constructor refinement. */
 function boundFunctionName(fn: ts.FunctionDeclaration | ts.FunctionExpression): string | null {
@@ -324,6 +421,10 @@ class ModuleScanner {
   private readonly cjsBuiltinObjects = new Set<string>();
   /** Members read through a CommonJS builtin object (H3.4). */
   readonly cjsReads: CjsRead[] = [];
+  /** Reads of names the file declares nowhere and no builtin provides: each
+   * resolves on the global object at run time. */
+  readonly globalReads: GlobalRead[] = [];
+  private readonly globalReadNames = new Set<string>();
   /** Names the file constructs with `new`: a constructor's `this` is never
    * the global object, so its `this` uses need no island (decision S5). */
   private readonly constructed = new Set<string>();
@@ -424,6 +525,23 @@ class ModuleScanner {
     );
   }
 
+  /** A member object of a builtin module's CommonJS object
+   * (`require("fs").promises`, `fs.promises`): its own properties are read
+   * through the same object, so `const { readFile } = fs.promises` reads
+   * `fs.promises.readFile`. A namespace import is still not that object. */
+  private isCjsObjectMember(value: ts.Node): boolean {
+    const node = stripWrappers(value);
+    if (!ts.isPropertyAccessExpression(node)) return false;
+    const root = chainRoot(node);
+    if (root !== null) return this.cjsBuiltinObjects.has(root.text);
+    // A chain that starts at the require() call itself
+    // (`require("fs").promises`).
+    let base = stripWrappers(node.expression);
+    while (ts.isPropertyAccessExpression(base) || ts.isElementAccessExpression(base))
+      base = stripWrappers(base.expression);
+    return this.isCjsObjectValue(base);
+  }
+
   /** `require("fs")`, `require("node:util").inherits` → "fs", "util.inherits". */
   private builtinOf(node: ts.Node): string | null {
     const value = stripWrappers(node);
@@ -466,10 +584,26 @@ class ModuleScanner {
       } else if (ts.isClassDeclaration(node) && node.name !== undefined) {
         this.declared.add(node.name.text);
         this.classes.add(node.name.text);
+      } else if (
+        (ts.isInterfaceDeclaration(node) ||
+          ts.isTypeAliasDeclaration(node) ||
+          ts.isEnumDeclaration(node) ||
+          ts.isModuleDeclaration(node)) &&
+        ts.isIdentifier(node.name)
+      ) {
+        this.declared.add(node.name.text);
+      } else if (ts.isTypeParameterDeclaration(node)) {
+        this.declared.add(node.name.text);
+      } else if (ts.isEnumMember(node) && ts.isIdentifier(node.name)) {
+        this.declared.add(node.name.text);
       } else if (ts.isVariableDeclaration(node)) {
         this.bindName(node.name, node.initializer);
       } else if (ts.isParameter(node)) {
         this.bindName(node.name, undefined);
+      } else if (ts.isFunctionExpression(node) && node.name !== undefined) {
+        this.declared.add(node.name.text);
+      } else if (ts.isCatchClause(node) && node.variableDeclaration !== undefined) {
+        this.bindName(node.variableDeclaration.name, undefined);
       } else if (ts.isNewExpression(node) && ts.isIdentifier(node.expression)) {
         this.constructed.add(node.expression.text);
       } else if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
@@ -715,14 +849,22 @@ class ModuleScanner {
    * CommonJS object (`const { readFileSync } = require("fs")`,
    * `({ readFileSync } = fs)`): each property it takes is read when the
    * destructuring runs, so it sees a patch installed before. A rest element
-   * or a computed key reads members the scan cannot name ("fs.*"). */
+   * or a computed key reads members the scan cannot name ("fs.*"). The
+   * source may be one of the module's member objects
+   * (`const { readFile } = require("fs/promises")`, `= fs.promises`): the
+   * pattern then names the member below it. */
   private recordCjsPatternReads(pattern: ts.Node, source: ts.Node | undefined): void {
     if (source === undefined) return;
     const value = stripWrappers(source);
-    if (!this.isCjsObjectValue(value)) return;
+    if (!this.isCjsObjectValue(value) && !this.isCjsObjectMember(value)) return;
     const module = this.builtinOf(value);
-    if (module === null || module.includes(".")) return;
-    this.recordPatternReads(pattern, module);
+    if (module === null) return;
+    // A subpath spec names the member object Node hangs off the module
+    // (`require("fs/promises")` is `require("fs").promises`), so the reads
+    // are spelled through the module the object belongs to.
+    const base = memberBaseOf(module);
+    if (base === null) return;
+    this.recordPatternReads(pattern, base);
   }
 
   private recordPatternReads(pattern: ts.Node, base: string): void {
@@ -1148,6 +1290,7 @@ class ModuleScanner {
 
   private visitIdentifier(node: ts.Identifier): void {
     const name = node.text;
+    this.collectGlobalRead(node);
     if (name !== "WeakRef" && name !== "FinalizationRegistry") return;
     if (this.declared.has(name)) return;
     const parent = node.parent;
@@ -1158,6 +1301,22 @@ class ModuleScanner {
     if ((ts.isPropertyAssignment(parent) || ts.isMethodDeclaration(parent)) && parent.name === node)
       return;
     this.add("R1.6", "weak-ref", `'${name}'`, node);
+  }
+
+  /** Records a read of a name the file declares nowhere and no builtin
+   * provides: Node resolves it on the global object at run time, where an
+   * island module's sloppy implicit-global write may have created it. */
+  private collectGlobalRead(node: ts.Identifier): void {
+    const name = node.text;
+    if (this.declared.has(name) || this.isGlobal(name) || MODULE_SCOPE_NAMES.has(name)) return;
+    if (this.globalReadNames.has(name) || this.globalReads.length >= MARKER_CAP) return;
+    const parent = node.parent;
+    if (parent === undefined || isTypePosition(node) || !isReadPosition(node, parent)) return;
+    this.globalReadNames.add(name);
+    this.globalReads.push({
+      name,
+      loc: { file: this.sf.fileName, start: ts.tokenStartOfNode(node), end: node.end },
+    });
   }
 
   /** Observable `arguments` aliasing in a sloppy function: writes to
@@ -1228,12 +1387,14 @@ interface ArgumentsUse {
 export function scanModuleFacts(sf: ts.SourceFile): {
   markers: NodeIslandMarker[];
   cjsReads: CjsRead[];
+  globalReads: GlobalRead[];
 } {
   const scanner = new ModuleScanner(sf);
   const markers = scanner.scan();
   return {
     markers: markers.sort((a, b) => a.loc.start - b.loc.start),
     cjsReads: scanner.cjsReads.sort((a, b) => a.loc.start - b.loc.start),
+    globalReads: scanner.globalReads.sort((a, b) => a.loc.start - b.loc.start),
   };
 }
 

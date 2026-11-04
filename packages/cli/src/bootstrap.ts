@@ -83,7 +83,10 @@ async function tryFastPath(): Promise<number | null> {
     // The full compiler writes the representation report and keys the heap
     // census build (backend/llvm/repr-report.ts, heap-census.ts).
     (process.env["SCRIPTC_REPR_REPORT"] ?? "") !== "" ||
-    (process.env["SCRIPTC_HEAP_CENSUS"] ?? "") !== ""
+    (process.env["SCRIPTC_HEAP_CENSUS"] ?? "") !== "" ||
+    // An attribution build emits a different way count, and the full compiler
+    // keys the build by it (backend/llvm/js-ic.ts).
+    (process.env["SCRIPTC_DEBUG_JS_IC_WAYS"] ?? "") !== ""
   )
     return null;
   const backend = values.backend;

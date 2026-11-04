@@ -82,6 +82,8 @@ export interface NativeLinkFeatures {
   zlib: boolean;
   /** node:zlib's Brotli forms: scr_brotli.c and the vendored brotli archive. */
   brotli?: boolean;
+  /** node:zlib's zstd forms: scr_zstd.c and the vendored zstd archive. */
+  zstd?: boolean;
   assert: boolean;
   inspect: boolean;
   dynInvoke: boolean;

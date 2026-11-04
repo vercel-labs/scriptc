@@ -73,6 +73,13 @@ static bool scr_dyn_class_reflection_fence(const ScrDyn *value) {
 const ScrNiDynOps *scr_ni_dyn_ops = NULL;
 /* Set by scr_dyn_handle_class.c in programs with handle classes (web streams). */
 const ScrDynHandleClassOps *scr_dyn_handle_class_ops = NULL;
+#ifdef SCR_JS_OBJECT_MODEL
+/* Set by scr_dyn_invoke.c when the object model build links it, so a
+ * DataView's `constructor` is the global's own interned value. A program that
+ * only needs the object model (a .js program that never reads a global
+ * constructor as a value) keeps this NULL and its named refusal. */
+ScrDyn *(*scr_dyn_global_constructor_hook)(const ScrStr *name) = NULL;
+#endif
 
 /* Live dyn-node count for the RC audit lane (-DSCR_RC_AUDIT); same contract
  * as scr_str_live_count in scr_string.c. */
@@ -3897,6 +3904,10 @@ typedef struct {
    * for the view type's fields. */
   void *viewed;
   const size_t *offsets;
+  /* The view holds properties a partial view's writes added, in the order
+   * the writes happened; reflection and serialization answer them after the
+   * record's own keys. */
+  bool extras;
 } ScrRecordSource;
 static SCR_TL ScrRecordSource *scr_record_sources;
 static SCR_TL size_t scr_record_source_capacity, scr_record_source_count;
@@ -4058,6 +4069,39 @@ static size_t scr_record_source_index(const ScrRecordSource *source, const char 
 static bool scr_record_source_declared(const ScrRecordSource *source, const char *key,
                                        size_t key_len) {
   return scr_record_source_index(source, key, key_len) < source->count;
+}
+
+/* The source an entry keeps its properties in: its own for a record, the
+ * viewed record's for a view. */
+static ScrRecordSource *scr_record_view_source(ScrRecordSource *entry) {
+  return entry->capsule ? scr_record_source_find(entry->viewed) : entry;
+}
+
+/* Answers whether a partial view's writes added a property to the record it
+ * views (or to `rec`, which is that record). */
+static bool scr_record_view_has_extras(const void *rec) {
+  ScrRecordSource *entry = scr_record_source_slot(rec);
+  ScrRecordSource *source = entry ? scr_record_view_source(entry) : NULL;
+  return source && source->extras;
+}
+
+/* Adds the properties a partial view's writes added to `snapshot`, a copy
+ * of the viewed record: the record keeps its own fields, and the added
+ * properties follow them in the order the writes happened. */
+static void scr_record_view_extras_apply(ScrDyn *snapshot, const void *rec) {
+  ScrRecordSource *entry = scr_record_source_slot(rec);
+  if (!entry || snapshot->kind != SCR_DYN_OBJ) return;
+  ScrRecordSource *source = scr_record_view_source(entry);
+  if (!source || !source->extras || !source->view) return;
+  const ScrDyn *extras = source->view;
+  for (size_t i = 0; i < extras->v.obj.len; i++) {
+    const ScrDynProp entry_prop = scr_dyn_obj_prop_at(extras, i);
+    const ScrDynProp *prop = &entry_prop;
+    if (!prop->enumerable || prop->accessor) continue;
+    if (scr_record_source_declared(source, prop->key, prop->key_len)) continue;
+    if (scr_dyn_obj_get(snapshot, prop->key, prop->key_len)) continue;
+    scr_dyn_obj_set(snapshot, prop->key, prop->key_len, scr_dyn_retain(prop->value));
+  }
 }
 
 /* Frees the table at thread exit (a worker's table dies with its thread):
@@ -4684,7 +4728,9 @@ void *scr_dyn_record_view(ScrDyn *d, const ScrRecordViewSource *sources, size_t 
    * and their emitted releases ignore the bit (record-views.ts). */
   *(size_t *)view |= SCR_RC_FROZEN;
   ScrRecordSource entry = { .rec = view, .capsule = scr_dyn_retain(d), .viewed = record,
-                            .offsets = source->offsets };
+                            .offsets = source->offsets, .names = source->names,
+                            .lens = source->lens, .name_stride = source->name_stride,
+                            .len_stride = source->len_stride, .count = source->count };
   scr_record_source_put(&entry);
   ScrDynTypedCast *cast = malloc(sizeof *cast);
   if (!cast) scr_trap("scriptc: out of memory\n");
@@ -4707,6 +4753,55 @@ void *scr_record_view_slot(void *view, size_t position) {
   size_t offset = entry->offsets[position];
   if (offset == SIZE_MAX) return NULL;
   return (char *)entry->viewed + offset;
+}
+
+/* A partial view's field the viewed record does not declare: Node's object
+ * simply gains the property when the program writes it, so the viewed record
+ * keeps it beside itself the way a record with undeclared properties does
+ * (scr_record_source_note), and a copy of the record includes it after its
+ * own fields (scr_record_view_extras_apply). The record gains that store on
+ * the first write. `create` starts it; otherwise the property is looked up. */
+static ScrDyn *scr_record_view_extras(void *view, bool create) {
+  ScrRecordSource *entry = scr_record_source_slot(view);
+  if (!entry || !entry->capsule) return NULL;
+  ScrRecordSource *source = scr_record_source_find(entry->viewed);
+  if (!source) {
+    if (!create || !entry->names) return NULL;
+    ScrRecordSource probe = { .rec = entry->viewed, .names = entry->names,
+                              .lens = entry->lens, .name_stride = entry->name_stride,
+                              .len_stride = entry->len_stride, .count = entry->count };
+    scr_record_source_put(&probe);
+    source = scr_record_source_find(entry->viewed);
+    if (!source) return NULL;
+  }
+  if (!source->view) {
+    if (!create) return NULL;
+    ScrDyn *store = scr_dyn_new_obj();
+    source->view = store;
+    /* The record's own fields keep their places in the store, as a kept
+     * source does, so a copy of the record answers its declared order
+     * ahead of the added properties. */
+    for (size_t i = 0; i < source->count; i++) {
+      size_t len;
+      memcpy(&len, source->lens + i * source->len_stride, sizeof len);
+      const char *name;
+      memcpy(&name, source->names + i * source->name_stride, sizeof name);
+      scr_dyn_obj_set(store, name, len, scr_dyn_retain(scr_dyn_undefined()));
+    }
+  }
+  if (create) source->extras = true;
+  return source->view;
+}
+
+ScrDyn *scr_record_view_extra(void *view, const char *name, size_t name_len) {
+  ScrDyn *extras = scr_record_view_extras(view, false);
+  return extras ? scr_dyn_obj_get(extras, name, name_len) : NULL;
+}
+
+void scr_record_view_extra_set(void *view, const char *name, size_t name_len, ScrDyn *value) {
+  ScrDyn *extras = scr_record_view_extras(view, true);
+  if (!extras) scr_trap("scriptc: a record view cannot keep a property\n");
+  scr_dyn_obj_set(extras, name, name_len, value);
 }
 
 /* The address of field `position` of a value of a view target type, whose
@@ -4833,6 +4928,9 @@ ScrDyn *scr_dyn_typed_ref_materialize(const ScrDyn *d) {
     return scr_dyn_retain(scr_dyn_undefined());
   }
   scr_typed_ref_view_numeric_properties(capsule, fresh);
+  /* A partial view's writes added properties to the record this capsule
+   * copies; they follow its own fields. */
+  scr_record_view_extras_apply(fresh, capsule->v.typed_ref.ptr);
   if (!capsule->v.typed_ref.materialized) {
     capsule->v.typed_ref.materialized = fresh;
   } else {
@@ -5108,6 +5206,10 @@ ScrDyn *scr_dyn_typed_ref_own_member(const ScrDyn *d, const char *key, size_t ke
 
 static const ScrDynTypedRecordOps *scr_typed_ref_record_ops(const ScrDyn *d) {
   if (!d->v.typed_ref.record || d->v.typed_ref.materialized) return NULL;
+  /* A partial record view's writes added properties the record's shape does
+   * not name, so the compiled field walk cannot answer for it: reflection
+   * takes the record's copy, which holds them after its own fields. */
+  if (scr_record_view_has_extras(d->v.typed_ref.ptr)) return NULL;
   const ScrDynTypedRecordOps *ops = (const ScrDynTypedRecordOps *)(const void *)d->v.typed_ref.array;
   return ops && ops->select ? ops->select(d->v.typed_ref.ptr) : ops;
 }
@@ -7051,8 +7153,21 @@ ScrDyn *scr_dyn_bytes_key_get(const ScrDyn *value, const ScrStr *key) {
 #endif
   if (key->len == 6 && memcmp(key->data, "buffer", 6) == 0) return scr_array_buffer_from_bytes(bytes);
   if (bytes->is_data_view) {
-    /* A DataView has no length or indexed elements. */
+    /* A DataView has no length or indexed elements. Its constructor is the
+     * interned DataView function value — the same one a JavaScript source
+     * reads from the global — so `dv.constructor === DataView` is exact
+     * (t262-dc C3). Only the object model build answers it, and only when the
+     * program links the unit that holds the interned table; every other build
+     * keeps the named refusal. */
     if (key->len == 11 && memcmp(key->data, "constructor", 11) == 0) {
+#ifdef SCR_JS_OBJECT_MODEL
+      if (scr_dyn_global_constructor_hook) {
+        ScrStr *name = scr_str_new("DataView", sizeof "DataView" - 1);
+        ScrDyn *ctor = scr_dyn_global_constructor_hook(name);
+        scr_str_release(name);
+        return ctor;
+      }
+#endif
       static const char message[] = "DataView's constructor through unknown is not supported yet";
       scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
       return NULL;
@@ -19119,14 +19234,39 @@ static ScrDyn *scr_array_buffer_invoke(void *h, ScrDyn *self, const char *method
   return NULL;
 }
 
+#ifdef SCR_JS_OBJECT_MODEL
+/* Both buffers answer their prototypes' methods as values (`typeof ab.resize`
+ * is "function", `ab.transfer === ab.transfer`), which invoke already reaches
+ * by name. Lengths are Node's Function.prototype.length. SharedArrayBuffer has
+ * slice and grow and no resize/transfer: it cannot detach (t262-dc C3). */
+static const ScrDynHandleMethod scr_array_buffer_methods[] = {
+  {"slice", 2, false, NULL},
+  {"resize", 1, false, NULL},
+  {"transfer", 0, false, NULL},
+  {"transferToFixedLength", 0, false, NULL},
+  {NULL, 0, false, NULL},
+};
+static const ScrDynHandleMethod scr_shared_array_buffer_methods[] = {
+  {"slice", 2, false, NULL},
+  {"grow", 1, false, NULL},
+  {NULL, 0, false, NULL},
+};
+#endif
+
 ScrDyn *scr_array_buffer_from_bytes(ScrBytes *view) {
   static const ScrDynHandleOps ops = {
     "ArrayBuffer", &scr_bytes_retain_v, &scr_bytes_release_v,
     &scr_array_buffer_invoke, &scr_array_buffer_get, &scr_array_buffer_set, NULL,
+#ifdef SCR_JS_OBJECT_MODEL
+    .methods = scr_array_buffer_methods,
+#endif
   };
   static const ScrDynHandleOps shared_ops = {
     "SharedArrayBuffer", &scr_bytes_retain_v, &scr_bytes_release_v,
     &scr_array_buffer_invoke, &scr_array_buffer_get, &scr_array_buffer_set, NULL,
+#ifdef SCR_JS_OBJECT_MODEL
+    .methods = scr_shared_array_buffer_methods,
+#endif
   };
   ScrDynHandleTag tag = view->shared ? SCR_DYNH_SHARED_ARRAY_BUFFER : SCR_DYNH_ARRAY_BUFFER;
   scr_dyn_handle_install(tag, view->shared ? &shared_ops : &ops);

@@ -1233,10 +1233,13 @@ export class LlDyn {
           `${offsetTable} = internal constant [${offsets.length} x ${S}] [${offsets.join(", ")}]`,
         );
         const key = typeKey({ kind: "record", shapeId: sourceId });
-        return `{ ptr, ${S}, ptr } { ptr ${host.cstr(key)}, ${S} ${Buffer.byteLength(key, "utf8")}, ptr ${offsetTable} }`;
+        // The source's declared names describe the record a partial view's
+        // writes add properties to (scr_record_view_extra).
+        const names = this.recordNameTable(sourceId, source);
+        return `{ ptr, ${S}, ptr, ptr, ptr, ${S}, ${S}, ${S} } { ptr ${host.cstr(key)}, ${S} ${Buffer.byteLength(key, "utf8")}, ptr ${offsetTable}, ptr ${names.names}, ptr ${names.lens}, ${S} ${S === "i64" ? 8 : 4}, ${S} ${S === "i64" ? 8 : 4}, ${S} ${source.fields.length} }`;
       });
       this.defs.push(
-        `${table} = internal constant [${entries.length} x { ptr, ${S}, ptr }] [${entries.join(", ")}]`,
+        `${table} = internal constant [${entries.length} x { ptr, ${S}, ptr, ptr, ptr, ${S}, ${S}, ${S} }] [${entries.join(", ")}]`,
         ``,
       );
     }

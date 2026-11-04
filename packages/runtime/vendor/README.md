@@ -58,6 +58,18 @@ The codec behind node:zlib's Brotli functions and streams (see packages/runtime/
 
 The `dec/` and `enc/` directories share file names (`static_init.c`, `state.h`, `prefix.h`), so archive members are named after their directory (`dec-static_init.o`). Brotli-free binaries compile and link none of it.
 
+## zstd/
+
+- Project: https://github.com/facebook/zstd
+- Version: 1.5.7, the release Node v24.22.1 bundles in `deps/zstd`
+- License: BSD-3-Clause (see zstd/LICENSE)
+
+The codec behind node:zlib's zstd functions and streams (see packages/runtime/src/scr_zstd.c). Node's `deps/zstd` carries the upstream release as its `lib/` directory beside the gyp files; `lib/common`, `lib/compress`, `lib/decompress`, `lib/zstd.h`, `lib/zstd_errors.h` and `LICENSE` are vendored in that layout. The dictionary builder, the legacy decoder, the assembly decoder, the programs, tests and build machinery are not, and no vendored file is modified. Because the version is Node's and it compiles the same units with the same defines, compressed frames match Node's for the same parameters.
+
+Each build compiles the units and defines Node's `deps/zstd/zstd.gyp` selects: every `.c` file under those three directories, with `XXH_NAMESPACE=ZSTD_`, `ZSTD_DISABLE_ASM`, and `ZSTD_MULTITHREAD` wherever the target has threads (WASI does not, so its build compresses on one thread). The table is `zstdInputs` in packages/runtime-pack-common/scripts/zstd-inputs.mjs (runtime packs) and in packages/compiler/src/backend/vendor-inputs.ts (Zig cross builds and the sanitized runtime), and a unit test keeps the two identical. To update, copy the same files from the `deps/zstd` of the Node version scriptc follows and bump `ZSTD_VERSION` in vendor-inputs.ts.
+
+Runtime packs archive zstd at `-O3`. Zig cross builds compile the objects lazily on the first zstd-using cross compile into the per-user build cache's `vendor/zstd-<version>-<flavor>-<target>-<toolchain>/` directory, the zlib-objects pattern. Zstd-free binaries compile and link none of it.
+
 ## mbedtls/
 
 - Project: https://github.com/Mbed-TLS/mbedtls

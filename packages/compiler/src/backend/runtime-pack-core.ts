@@ -33,7 +33,7 @@ interface RuntimePackUnit {
 }
 
 interface RuntimePackArchive extends RuntimePackArtifact {
-  id: "quickjs" | "libregexp" | "zlib" | "brotli" | "mbedtls" | "icu";
+  id: "quickjs" | "libregexp" | "zlib" | "brotli" | "zstd" | "mbedtls" | "icu";
   predicate: RuntimePredicate;
 }
 
@@ -137,6 +137,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   stdioWriteSlot: boolean;
   nodeIsland: boolean;
   brotli: boolean;
+  zstd: boolean;
   moduleNamespace: boolean;
   moduleNamespaceDyn: boolean;
   primitiveWrapper: boolean;
@@ -370,6 +371,7 @@ export function effectiveRuntimeFeatures(
     stdioWriteSlot: features.stdioWriteSlot === true,
     nodeIsland: features.nodeIsland === true,
     brotli: features.brotli === true,
+    zstd: features.zstd === true,
     moduleNamespace: features.moduleNamespace === true,
     moduleNamespaceDyn: features.moduleNamespaceDyn === true,
     primitiveWrapper: features.primitiveWrapper === true,

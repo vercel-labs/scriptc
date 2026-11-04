@@ -738,6 +738,12 @@ const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stdin.onData",
   "stdin.onEnd",
   "stdin.onError",
+  "stdin.onReadable",
+  "stdin.pause",
+  "stdin.resume",
+  "stdin.isPaused",
+  "stdin.readableLength",
+  "stdin.read",
   // node:readline rides the stdin unit (scr_readline.c links beside
   // scr_events.c under the same gate).
   "rl.checkCompleter",
@@ -1599,6 +1605,9 @@ const RUNTIME_FEATURE_RULES = {
   /** node:zlib's Brotli forms: zlib.brotliInstall, which %main calls when
    * the program uses Brotli (scr_brotli.c). */
   brotli: rule({ fns: ["zlib.brotliInstall"] }),
+  /** node:zlib's zstd forms: zlib.zstdInstall, which %main calls when the
+   * program uses zstd (scr_zstd.c). */
+  zstd: rule({ fns: ["zlib.zstdInstall"] }),
 };
 
 type RuntimeFeatureName = keyof typeof RUNTIME_FEATURE_RULES;
@@ -1703,6 +1712,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     webcrypto: false,
     zlib: false,
     brotli: false,
+    zstd: false,
   };
 }
 

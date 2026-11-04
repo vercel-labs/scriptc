@@ -40,6 +40,7 @@ const features = {
   stdioWriteSlot: false,
   nodeIsland: false,
   brotli: false,
+  zstd: false,
   moduleNamespace: false,
   moduleNamespaceDyn: false,
   primitiveWrapper: false,

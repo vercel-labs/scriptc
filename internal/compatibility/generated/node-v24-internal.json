@@ -32795,6 +32795,7 @@
           "tests/corpus/caught-system-error-fields.ts",
           "tests/corpus/error-stack-frames.ts",
           "tests/corpus/error-stack-limit.ts",
+          "tests/corpus/zstd-compress.cjs",
           "tests/fixtures/node-types/terminal-error-fields.ts",
           "tests/harness/project-config.test.ts"
         ]
@@ -40089,8 +40090,11 @@
       "anchor": "err_zstd_invalid_param",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_ZSTD_INVALID_PARAM",
+        "tests": [
+          "tests/corpus/zstd-compress.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -116418,7 +116422,10 @@
           "tests/corpus/5415-zlib-dynamic-inputs.cjs",
           "tests/corpus/7714-zlib-brotli-compress.cjs",
           "tests/corpus/7715-zlib-brotli-decompress.cjs",
-          "tests/corpus/7716-zlib-brotli.ts"
+          "tests/corpus/7716-zlib-brotli.ts",
+          "tests/corpus/zstd-compress.cjs",
+          "tests/corpus/zstd-decompress.cjs",
+          "tests/corpus/zstd-streams.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -117370,8 +117377,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.zlib.ZstdCompress",
+        "tests": [
+          "tests/corpus/zstd-streams.ts",
+          "tests/corpus/zstd-compress.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -117393,8 +117404,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.zlib.ZstdDecompress",
+        "tests": [
+          "tests/corpus/zstd-streams.ts",
+          "tests/corpus/zstd-decompress.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -117741,8 +117756,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.zlib.createZstdCompress",
+        "tests": [
+          "tests/corpus/zstd-streams.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -117764,8 +117782,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.zlib.createZstdDecompress",
+        "tests": [
+          "tests/corpus/zstd-streams.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -118369,8 +118390,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.zlib.zstdCompress",
+        "tests": [
+          "tests/corpus/zstd-compress.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -118392,8 +118416,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.zlib.zstdCompressSync",
+        "tests": [
+          "tests/corpus/zstd-compress.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -118415,8 +118442,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.zlib.zstdDecompress",
+        "tests": [
+          "tests/corpus/zstd-decompress.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -118438,8 +118468,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.zlib.zstdDecompressSync",
+        "tests": [
+          "tests/corpus/zstd-decompress.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -118914,8 +118947,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.ZstdOptions",
+        "tests": [
+          "tests/corpus/zstd-streams.ts",
+          "tests/corpus/zstd-compress.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -119542,8 +119579,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.zlib.zstdCompress",
+        "tests": [
+          "tests/corpus/zstd-compress.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -119565,8 +119605,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.zlib.zstdCompressSync",
+        "tests": [
+          "tests/corpus/zstd-compress.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -119588,8 +119631,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.zlib.zstdDecompress",
+        "tests": [
+          "tests/corpus/zstd-decompress.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -119611,8 +119657,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.zlib.zstdDecompressSync",
+        "tests": [
+          "tests/corpus/zstd-decompress.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     }

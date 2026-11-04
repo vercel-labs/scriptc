@@ -5896,6 +5896,18 @@ export class Lowerer {
    * `node:` builtins have no compiled source, so their box comes from the
    * lowering tables instead (moduleNamespaceBuiltinDynValue). */
   moduleNamespaceDyn(ns: IrExpr & { type: IrType & { kind: "moduleNs" } }): IrExpr | null {
+    // A node:path family is Node's module object, not an ECMAScript module
+    // namespace: `require("path")` answers a plain exports object whose
+    // members enumerate in Node's definition order. Its checked-dynamic
+    // value is pathModuleValue (the path-family branch at the call site),
+    // which keeps that order, the plain-object shape and one identity per
+    // family.
+    if (
+      ns.type.moduleId === "builtin:path" ||
+      ns.type.moduleId === "builtin:path/posix" ||
+      ns.type.moduleId === "builtin:path/win32"
+    )
+      return null;
     if (ns.type.moduleId.startsWith("builtin:"))
       return moduleNamespaceBuiltinDynValue(this, ns.type.moduleId, ns.loc);
     if (!ns.type.moduleId.startsWith("file:")) return null;

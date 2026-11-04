@@ -5,6 +5,7 @@ import { mockCallRecordType, mockContextType } from "./mock-shapes.js";
 import * as ts from "./ts7/adapter.js";
 import { bodyReadsArguments } from "./arguments-usage.js";
 import type { IrRecordShape, IrType, IrUnionDef, IrUnionDiscriminant } from "../ir/ir.js";
+import { walkTypeFields, type IrFieldWalker } from "../ir/fields.generated.js";
 import {
   BYTES_ELEMENT_NAME,
   arrayOf,
@@ -862,6 +863,7 @@ export class UnionRegistry {
       this.unions.push(def);
       this.recIds.set(t, id);
       this.pendingRec.add(id);
+      this.unfinishedReach.clear();
     }
     return id;
   }
@@ -886,6 +888,21 @@ export class UnionRegistry {
     return this.pendingRec.has(unionId);
   }
 
+  /** The placeholder id minted for `t`, finished or not. */
+  placeholderId(t: ts.Type): string | undefined {
+    return this.recIds.get(t);
+  }
+
+  /** Whether any recursive placeholder is still unfinished. Outside every
+   * mapping frame, each one belongs to a frame that failed. */
+  hasPendingPlaceholders(): boolean {
+    return this.pendingRec.size > 0;
+  }
+
+  /** reachesUnfinishedPlaceholder's answers by type key, valid while the
+   * set of unfinished placeholders stays the same. */
+  readonly unfinishedReach = new Map<string, boolean>();
+
   /** Completes a recursive placeholder with its canonical arm list and
    * registers the structural key (first writer wins, like shapes). */
   finalizeRecursive(t: ts.Type, arms: IrType[], discriminant?: IrUnionDiscriminant): string {
@@ -899,6 +916,7 @@ export class UnionRegistry {
       def.arms.push(...arms);
       if (discriminant) def.discriminant = discriminant;
       this.pendingRec.delete(id);
+      this.unfinishedReach.clear();
       this.armTags.delete(id);
       this.revision++;
       const key = JSON.stringify([arms.map(typeKey), discriminant]);
@@ -2321,6 +2339,17 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       contextResolutions++;
       ctx.onLenientPiece?.(type);
     }
+    // A recursive frame that failed leaves its placeholder unfinished, and
+    // types built inside it (an arm's `Map<K, Node>` field) keep pointing
+    // at it. Once the top-level mapping is done no frame can finish it, so
+    // a result that reaches it has no representation.
+    if (
+      mapped !== null &&
+      topLevel &&
+      ctx.unions.hasPendingPlaceholders() &&
+      reachesUnfinishedPlaceholder(mapped, ctx)
+    )
+      mapped = null;
     if (
       mapped !== null &&
       memoKey !== null &&
@@ -2350,6 +2379,76 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   } finally {
     mapTypeDepth--;
   }
+}
+
+/** Whether `t` holds the union `unionId` as a Set element, through
+ * arrays, Sets, Map values, promises and union arms alone, without passing
+ * through a record: the position a pending placeholder is accepted in
+ * (Set elements), with no record to break the cycle. */
+function reachesUnionThroughCollections(
+  t: IrType,
+  unionId: string,
+  unions: UnionRegistry,
+  asSetElement = false,
+  seen = new Set<string>(),
+): boolean {
+  switch (t.kind) {
+    case "union": {
+      if (t.unionId === unionId) return asSetElement;
+      if (seen.has(t.unionId)) return false;
+      seen.add(t.unionId);
+      return (unions.get(t.unionId)?.arms ?? []).some((arm) =>
+        reachesUnionThroughCollections(arm, unionId, unions, asSetElement, seen),
+      );
+    }
+    case "array":
+      return reachesUnionThroughCollections(t.elem, unionId, unions, asSetElement, seen);
+    case "set":
+      return reachesUnionThroughCollections(t.elem, unionId, unions, true, seen);
+    case "map":
+      return reachesUnionThroughCollections(t.value, unionId, unions, asSetElement, seen);
+    case "promise":
+      return reachesUnionThroughCollections(t.inner, unionId, unions, asSetElement, seen);
+    default:
+      return false;
+  }
+}
+
+/** Whether `t`, through its record fields and union arms, reaches a
+ * recursive union placeholder that no frame finished. */
+function reachesUnfinishedPlaceholder(t: IrType, ctx: TypeMapperCtx): boolean {
+  const key = typeKey(t);
+  const cached = ctx.unions.unfinishedReach.get(key);
+  if (cached !== undefined) return cached;
+  const found = walkToUnfinishedPlaceholder(t, ctx);
+  ctx.unions.unfinishedReach.set(key, found);
+  return found;
+}
+
+function walkToUnfinishedPlaceholder(t: IrType, ctx: TypeMapperCtx): boolean {
+  const seen = new Set<string>();
+  const pending: IrType[] = [t];
+  let found = false;
+  const walker: IrFieldWalker = {
+    node() {},
+    string(value) {
+      if (found || seen.has(value)) return;
+      seen.add(value);
+      if (ctx.unions.isPendingPlaceholder(value)) {
+        found = true;
+        return;
+      }
+      const union = ctx.unions.get(value);
+      if (union) pending.push(...union.arms);
+      const shape = ctx.shapes.get(value);
+      if (shape) {
+        for (const field of shape.fields) pending.push(field.type);
+        if (shape.indexValue) pending.push(shape.indexValue);
+      }
+    },
+  };
+  while (!found && pending.length > 0) walkTypeFields(pending.pop()!, walker, false);
+  return found;
 }
 
 /** SCRIPTC_TYPE_MEMO_VERIFY: recomputes a shared memo entry in the scope
@@ -3859,10 +3958,13 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     const elem = (args[0]!.flags & ts.TypeFlags.Any) !== 0 ? DYN : mapType(args[0]!, ctx);
     if (
       !elem ||
-      !isSupportedSetElem(
-        elem,
-        elem.kind === "union" ? ctx.unions.get(elem.unionId)?.arms : undefined,
-      )
+      // A recursive union still being mapped (`Set<Task>` inside a Task
+      // arm) has no arms yet; the validator checks the completed module.
+      (!(elem.kind === "union" && ctx.unions.isPendingPlaceholder(elem.unionId)) &&
+        !isSupportedSetElem(
+          elem,
+          elem.kind === "union" ? ctx.unions.get(elem.unionId)?.arms : undefined,
+        ))
     )
       return null;
     return setOf(elem);
@@ -5979,6 +6081,18 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         // same ts.Type answers differently per instantiation — so
         // recursive generic-open unions stay fenced.
         if (contextResolutions !== sensitivityAtEntry) return null;
+        // The union held as its own Set element through collections alone,
+        // with no record in between (`type T = string | Set<T>`,
+        // `string | Set<T>[]`): the checked conversions have no cycle guard
+        // for that knot, so it stays unmapped, as before placeholders were
+        // accepted as Set elements. Through a record (`Set<Task>` inside a
+        // Task arm) it maps.
+        const self = unions.placeholderId(widened);
+        if (
+          self !== undefined &&
+          mergedArms.some((arm) => reachesUnionThroughCollections(arm, self, unions))
+        )
+          return null;
         return {
           kind: "union",
           unionId: unions.finalizeRecursive(widened, mergedArms, discriminant),

@@ -16799,6 +16799,25 @@ ScrStr *scr_util_format_j_text(ScrStr *text) {
 /* The gap of a compact walk; the walks read only its length. */
 static const ScrStr scr_json_compact_gap = { .rc = SIZE_MAX, .len = 0 };
 
+/* util.format's %j over the value a toJSON hook returned (+1): the walk
+ * starts at the write step, so the hook is not applied to its own result
+ * again — Node applies toJSON only to a value read from a holder, never
+ * to the value a hook returned. Members of a returned container still take
+ * the protocol walk, hooks included. "undefined" for a value the walk
+ * drops, "[Circular]" for a circular structure, NULL with any other
+ * exception pending. */
+ScrStr *scr_util_format_j_value(const ScrDyn *d) {
+  if (scr_json_omitted(d)) return scr_str_new("undefined", 9);
+  ScrJsonBuf buffer;
+  scr_jb_init(&buffer);
+  bool ok = scr_json_replaced_write(&buffer, d, scr_dyn_undefined(), NULL, &scr_json_compact_gap, 0);
+  if (!ok) {
+    scr_jb_dispose(&buffer);
+    return scr_exc_pending() ? scr_json_circular_or_rethrow() : NULL;
+  }
+  return scr_jb_finish(&buffer);
+}
+
 /* JSON for a record view: the viewed capsule's. */
 static void scr_jb_put_record_view(ScrJsonBuf *b, const ScrDyn *capsule) {
   scr_json_replaced_write(b, capsule, scr_dyn_undefined(), NULL, &scr_json_compact_gap, b->seen_len);

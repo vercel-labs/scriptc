@@ -62,6 +62,27 @@ async function main(): Promise<void> {
   appendFileSync(logPath, new Uint8Array([0x21, 0x0a]), "utf-8");
   console.log("log bytes", JSON.stringify(readFileSync(logPath, "utf8")));
 
+  // The bare spelling names an encoding expression, not only a literal: a
+  // call statically typed as the accepted name is still evaluated, with its
+  // side effects and its exceptions, before the write.
+  let encodingCalls = 0;
+  function encoding(): "utf8" {
+    encodingCalls++;
+    return "utf8";
+  }
+  appendFileSync(logPath, "four\n", encoding());
+  console.log("encoding evaluated", encodingCalls);
+  function refuseEncoding(): "utf8" {
+    throw new Error("refused encoding");
+  }
+  try {
+    appendFileSync(logPath, "five\n", refuseEncoding());
+    console.log("refused encoding wrote");
+  } catch {
+    console.log("refused encoding threw");
+  }
+  console.log("log after encoding", JSON.stringify(readFileSync(logPath, "utf8")));
+
   // writeFileSync(path, bytes, "utf8"): the bare spelling over byte data
   // writes the view unchanged, exactly like the record form.
   const bareBytes = join(dir, "bare-bytes.bin");

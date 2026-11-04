@@ -1429,8 +1429,68 @@ export function lowerFsAppendOptionsCall(
           type: VOID,
           loc,
         };
+  // The bare encoding spelling names an ordinary expression, not just a
+  // literal: Node evaluates it — side effects and exceptions included —
+  // after the path and the data and before the write, even though the value
+  // only has to be utf8. Stage the two operands so the encoding expression
+  // lands in that order; otherwise a call statically typed as "utf8" fails
+  // to run, or fails to throw.
+  const appendAfterEncoding = (): IrExpr => {
+    const dataType: IrType =
+      unionArms !== null
+        ? (dataIr as Extract<IrType, { kind: "union" }>)
+        : bytesData
+          ? BYTES_U8
+          : STRING;
+    const pathLocal = lowerer.declareHiddenLocal("%appendPath", STRING);
+    const dataLocal = lowerer.declareHiddenLocal("%appendData", dataType);
+    const path = varRef(pathLocal.id, STRING, loc);
+    const data = varRef(dataLocal.id, dataType, loc);
+    return {
+      kind: "seqExpr",
+      stmts: [
+        {
+          kind: "varDecl",
+          localId: pathLocal.id,
+          init: lowerFsPath(lowerer, expr.arguments.nodes[0]!),
+          loc,
+        },
+        {
+          kind: "varDecl",
+          localId: dataLocal.id,
+          init: lowerer.lowerExprExpecting(dataNode, dataType),
+          loc: locOf(dataNode),
+        },
+        {
+          kind: "exprStmt",
+          expr: lowerer.lowerExprExpecting(optsNode, STRING),
+          loc: locOf(optsNode),
+        },
+      ],
+      result:
+        unionArms !== null
+          ? lowerStringOrBytesWrite(
+              lowerer,
+              expr,
+              dataIr as Extract<IrType, { kind: "union" }>,
+              unionArms,
+              true,
+              { path, data },
+            )
+          : {
+              kind: "libCall",
+              fn: bytesData ? "fs.appendFileSyncBytes" : "fs.appendFileSync",
+              args: [path, data],
+              type: VOID,
+              loc,
+            },
+      type: VOID,
+      loc,
+    };
+  };
   const t = lowerer.typeOf(optsNode);
-  if (t.isStringLiteralType() && (t.value === "utf8" || t.value === "utf-8")) return plainAppend();
+  if (t.isStringLiteralType() && (t.value === "utf8" || t.value === "utf-8"))
+    return appendAfterEncoding();
   const literal = optionsLiteralOf(lowerer, optsNode);
   if (literal !== null) {
     let encodingOnly = true;

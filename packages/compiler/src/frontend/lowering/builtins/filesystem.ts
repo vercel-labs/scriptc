@@ -440,6 +440,7 @@ export function lowerStringOrBytesWrite(
   dataType: Extract<IrType, { kind: "union" }>,
   arms: readonly IrType[],
   append: boolean,
+  staged?: { path: IrExpr; data: IrExpr },
 ): IrExpr {
   const loc = locOf(call);
   const key = `fs.${append ? "append" : "write"}:${dataType.unionId}`;
@@ -516,10 +517,14 @@ export function lowerStringOrBytesWrite(
   return {
     kind: "call",
     callee: helper,
-    args: [
-      lowerFsPath(lowerer, call.arguments.nodes[0]!),
-      lowerer.lowerExprExpecting(call.arguments.nodes[1]!, dataType),
-    ],
+    // A caller that already staged the operands (to evaluate an option
+    // expression between them and the write) passes them in.
+    args: staged
+      ? [staged.path, staged.data]
+      : [
+          lowerFsPath(lowerer, call.arguments.nodes[0]!),
+          lowerer.lowerExprExpecting(call.arguments.nodes[1]!, dataType),
+        ],
     type: VOID,
     loc,
   };

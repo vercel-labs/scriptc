@@ -804,14 +804,19 @@ static size_t scr_cyc_growth_base(size_t live_after) {
   return live_after < SCR_CYC_GROWTH_FLOOR ? SCR_CYC_GROWTH_FLOOR : live_after;
 }
 
+/* The live count at which `gen`'s growth rule asks for a pass. */
+static inline __attribute__((always_inline)) size_t scr_cyc_growth_at(unsigned gen) {
+  size_t base = scr_cyc_growth_base(scr_cyc_live_after[gen]);
+  return base + ((base / SCR_CYC_GROWTH_DIV) << scr_cyc_growth_shift[gen]);
+}
+
 /* A pass at `gen` is due once the live heap has grown that level's fraction
  * past what it was when the last pass at that level finished. Since a pass
  * resets its baseline to the live count it leaves behind, an unproductive
  * pass cannot re-trigger itself — the next one waits for another fraction of
  * growth. */
 static SCR_CYC_SCHEDULING bool scr_cyc_grown(unsigned gen) {
-  size_t base = scr_cyc_growth_base(scr_cyc_live_after[gen]);
-  return scr_cyc_live > base + ((base / SCR_CYC_GROWTH_DIV) << scr_cyc_growth_shift[gen]);
+  return scr_cyc_live > scr_cyc_growth_at(gen);
 }
 
 /* The backlog rule for one generation's candidate buffer.
@@ -971,6 +976,18 @@ static SCR_CYC_SCHEDULING void scr_cyc_scheduled_pass(unsigned gen, bool by_grow
                          gen == SCR_CYC_OLD ? old_reclaimed : freed);
 }
 
+/* Whether a growth rule asks for a pass: the allocation counter, or either
+ * level's heap growth. A turn runs these even when its nursery buffer is
+ * empty, because they are what bounds the heap: the arrival counters it
+ * re-arms count candidates, and a turn between every message leaves them
+ * below the trigger however much the heap grows in between. Both levels'
+ * rules are cheap enough to keep in the caller; a turn reads them on every
+ * message, so the arithmetic sits here rather than in a call. */
+static inline __attribute__((always_inline)) bool scr_cyc_growth_due(void) {
+  return scr_cyc_live >= scr_cyc_alloc_trigger || scr_cyc_live > scr_cyc_growth_at(SCR_CYC_OLD)
+         || scr_cyc_live > scr_cyc_growth_at(SCR_CYC_MATURE);
+}
+
 /* The counters a pass re-arms on its way out, for a decision that finds the
  * nursery buffer empty and runs no pass: the release path then counts from
  * the candidates still buffered instead of from the last pass. */
@@ -1047,11 +1064,14 @@ void scr_cyc_collect_scheduled(void) {
    * older buffers against the growth, backlog and death rules, and every
    * release runs the same test when the arrival counters fire. A turn whose
    * nursery buffer is empty holds only older candidates, which the age rule
-   * above and the release path collect, so the decision is skipped here and
+   * above and the release path collect, so those rules are skipped here and
    * the counters are re-armed over the candidates the turn leaves buffered;
    * a program that reaches a turn between every message would otherwise
-   * compare the same numbers on every turn. */
-  if (scr_roots[SCR_CYC_NURSERY].n == 0) {
+   * compare the same numbers on every turn. The growth rules stay: the
+   * re-armed counters count candidates, and a turn that only leaves older
+   * candidates must still collect what the heap grew past its level's
+   * fraction. */
+  if (scr_roots[SCR_CYC_NURSERY].n == 0 && !scr_cyc_growth_due()) {
     scr_cyc_rearm_over_buffered();
     return;
   }

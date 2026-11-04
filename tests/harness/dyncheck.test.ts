@@ -209,6 +209,30 @@ console.log("unreachable", c.host);
     expect(r.stderr).toContain("Uncaught TypeError: expected number at $.port, got string");
   });
 
+  test("a getter-backed field the conversion copies still checks its type", async () => {
+    // The view answers an accessor-backed member through its getter, and
+    // the value it returns goes through the typed boundary's check like any
+    // other: the accessor is how the field is read, not an exemption.
+    const r = await compileAndRun(
+      "getter-boundary-mismatch",
+      `interface Counted { readonly count: number }
+class Tally {
+  private items: string[];
+  constructor(items: string[]) { this.items = items; }
+  get count(): string { return String(this.items.length); }
+}
+try {
+  const counted = new Tally(["a", "b"]) as unknown as Counted;
+  console.log("unreachable", counted.count);
+} catch (error) {
+  console.log("caught", (error as Error).name, (error as Error).message);
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("caught TypeError expected number at $, got string\n");
+  });
+
   test("a record cast from unknown to a dictionary throws at its mismatched read", async () => {
     // An element of an `unknown[]` keeps the record's identity, as an
     // `unknown` binding does: the write lands, and only the read of a
@@ -1894,6 +1918,43 @@ for (const [label, value] of values) {
         "arr [ 1, [length]: 1 ]",
         "sab util.format %o of SharedArrayBuffer values is not supported yet",
         "sabView util.format %o of SharedArrayBuffer values is not supported yet",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("console.dir renders showHidden through the checked-dynamic walk and refuses the kinds it has no hidden view of", async () => {
+    // dir is inspect with customInspect: false, so the hidden entries come
+    // from the walk's showHidden state; the kinds without a hidden view
+    // keep their refusal, naming console.dir.
+    const r = await compileAndRun(
+      "console-dir-show-hidden",
+      `const arr: any = [1, 2];
+arr.extra = 3;
+Object.defineProperty(arr, "hidden", { value: 4, enumerable: false });
+console.dir(arr, { showHidden: true });
+console.dir(arr);
+function f(): void {}
+try {
+  console.dir(f, { showHidden: true });
+} catch (e) {
+  console.log((e as Error).message);
+}
+const sab = new SharedArrayBuffer(1);
+try {
+  console.dir(new Uint8Array(sab), { showHidden: true });
+} catch (e) {
+  console.log((e as Error).message);
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "[ 1, 2, [length]: 2, extra: 3, [hidden]: 4 ]",
+        "[ 1, 2, extra: 3 ]",
+        "console.dir with showHidden of function values is not supported yet",
+        "console.dir with showHidden of SharedArrayBuffer values is not supported yet",
         "",
       ].join("\n"),
     );

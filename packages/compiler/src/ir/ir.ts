@@ -1132,6 +1132,13 @@ export interface IrModule {
    * each one's hierarchy carries a slot word (the slots.* intrinsics;
    * backend/llvm/thread-slots.ts). */
   threadSlotKeys?: string[];
+  /** A JavaScript source may resize, grow or detach an ArrayBuffer
+   * (frontend/lowering/buffers.ts `mutableBuffers`): a view's ScrBytes header
+   * is no longer fixed at construction, so bytes header loads keep their
+   * alias tag but lose `!invariant.load`, and typed-array loop versioning
+   * (bytes-loop-versions.ts) is off for this program. Absent in every other
+   * program, whose IR and LLVM are unchanged. */
+  bytesHeadersMutable?: true;
   /** typeKeys of the array types whose values the program may freeze
    * (frontend frozen-records.ts): their writes test the array's frozen bit
    * (SCR_ARR_FROZEN) and throw Node's TypeError when it is set. */
@@ -1596,6 +1603,12 @@ export interface IrClassDef {
   /** Native instance to the string its inherited Symbol.toStringTag getter
    * answers, read by the runtime for an instance seen as `unknown`. */
   stringTagHelper?: string;
+  /** The class's accessor-backed members, nearest declaration first: one
+   * helper per name a `get` accessor at or above the class answers, which
+   * an instance's checked view installs so a field behind an accessor
+   * reads the value the getter answers. `member` is the accessor's IR
+   * name (`get:<name>`). */
+  viewAccessors?: { member: string; helper: string }[];
   /** Public JavaScript fields record their creation in the shared property
    * bag. Its descriptors preserve presence and insertion order independently
    * of native layout order; field values remain in their native slots. */
@@ -1820,6 +1833,8 @@ export const ZLIB_STREAM_MODES: ReadonlyMap<string, number> = new Map([
   ["Unzip", 7],
   ["BrotliDecompress", 8],
   ["BrotliCompress", 9],
+  ["ZstdCompress", 10],
+  ["ZstdDecompress", 11],
 ]);
 
 export interface IrRecordShape {
@@ -2103,6 +2118,12 @@ export interface IrParam {
   /** Callers pass an owned reference, which the body holds for its whole
    * run, even when the parameter is never rebound. */
   owned?: true;
+  /** Every call passes an array of exactly this many present elements, and
+   * neither the length nor the hole-free prefix changes during the run:
+   * element-count reads are this value, and an index proven in [0, length)
+   * names a present element. Specialized calls set it (constant-length
+   * clones); every other caller leaves it off. */
+  constLength?: number;
 }
 
 export interface IrGlobal {

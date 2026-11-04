@@ -31,7 +31,12 @@ import {
 } from "./region-groups.js";
 import { CYC_BUF, CYC_HDR, CYC_TYPE } from "./alloc.js";
 import { ALLOCATIONS, children, forEachNode, isExpr, type Node } from "./region-ir.js";
-import { planRegionSites, reachableFrom, type RegionSites } from "./region-sites.js";
+import {
+  guardedFunctions,
+  planRegionSites,
+  reachableFrom,
+  type RegionSites,
+} from "./region-sites.js";
 
 /** The count an arena object starts with (scr_arena.h SCR_ARENA_RC). */
 export const ARENA_RC = 2 ** 29;
@@ -61,6 +66,10 @@ export interface ArenaEligibility {
   /** Whether values of `t` can be on a reference cycle (the collector
    * traces them). */
   traced(t: IrType): boolean;
+  /** Whether `def` is a proven tree class (backend/tree-classes.ts):
+   * headerless, uniquely owned and acyclic, so an arena may reclaim its
+   * nodes as a group (arenaTreeClasses). */
+  tree(def: IrClassDef): boolean;
 }
 
 /** Whether `mod` can construct a WeakMap or WeakSet, directly or through
@@ -142,6 +151,8 @@ export function planArenas(mod: IrModule, eligible: ArenaEligibility): ArenaPlan
   }
   if (groups.roots.size === 0 && groups.calls.size === 0) return null;
   groups.reachable = reachableFrom(mod, [...groups.roots, ...groups.calls]);
+  const treeClasses = arenaTreeClasses(mod, groups, sites, defs, eligible);
+  for (const name of treeClasses) classes.add(name);
   const arenaType = (t: IrType): boolean => {
     if (t.kind === "object") return classes.has(t.className);
     if (t.kind === "record") return shapes.has(t.shapeId);
@@ -153,8 +164,23 @@ export function planArenas(mod: IrModule, eligible: ArenaEligibility): ArenaPlan
     return t.kind === "array" && t.elem.kind !== "union" && arenaType(t.elem);
   };
   const keptSite = (e: Node): boolean => sites.arenaSites.has(e) || groups.roots.has(e);
-  for (const r of analyzeClosedGroups(mod, groups, arenaType, keptSite)) groups.closed.add(r);
-  const allClosed = [...groups.roots, ...groups.calls].every((r) => groups.closed.has(r));
+  const close = (): { closed: Set<Node>; allClosed: boolean } => {
+    const closed = analyzeClosedGroups(mod, groups, arenaType, keptSite);
+    return {
+      closed,
+      allClosed: [...groups.roots, ...groups.calls].every((r) => closed.has(r)),
+    };
+  };
+  let { closed, allClosed } = close();
+  // An open (not closed) root caps its arena at SCR_ARENA_CAP and sends the
+  // rest of its allocations to the heap. A tree node has no count, so one
+  // that fell back to the heap would have nothing to free it: adopt tree
+  // classes only when every group is closed and the arena takes every byte.
+  if (!allClosed && treeClasses.size > 0) {
+    for (const name of treeClasses) classes.delete(name);
+    ({ closed, allClosed } = close());
+  }
+  for (const r of closed) groups.closed.add(r);
   return { groups, sites, shapes, classes, allClosed };
 }
 
@@ -225,6 +251,72 @@ function cycleUnsafeFunctions(
   return heap;
 }
 
+/** The tree classes whose nodes a group arena may reclaim, with the proof
+ * that lets it happen: every node of an adopted tree is allocated in the
+ * arena of the tree's root, so the drop reclaims the whole subtree at the
+ * moment the tree dies and no node ever needs a free of its own.
+ *
+ * A tree node is uniquely owned, acyclic and headerless (backend/
+ * tree-classes.ts): nothing outside its owner can reach it, no counted path
+ * ever sees it, and its memory can be reclaimed wholesale like the rest of
+ * its group. Ownership does not change; only where the bytes come from.
+ * What the proof adds is that the node cannot outlive the arena's drop:
+ *
+ * - every `new C` in the module takes an arena, so no instance is one the
+ *   heap fallback allocated. A root opens an arena itself; every other site
+ *   must be a kept site in a function that always runs inside an open arena
+ *   (`guardedFunctions`), so the arena-aware constructor never misses.
+ * - the function holding a non-root site opens no arena of its own, so a
+ *   node lands in the arena of the root it belongs to, not in a nested one
+ *   that closes and drops earlier.
+ *
+ * `guardedFunctions` bounds calls the call graph cannot name by the
+ * module's own function values (every closure body), constructors and
+ * methods, so no statically defined function escapes the check.
+ *
+ * The region plan already proves the root's value dies no later than its
+ * arena's drop, and a tree's nodes are reachable only from that value, so
+ * the drop is the tree's teardown. */
+function arenaTreeClasses(
+  mod: IrModule,
+  groups: RegionGroups,
+  sites: RegionSites,
+  defs: ReadonlyMap<string, IrClassDef>,
+  eligible: ArenaEligibility,
+): Set<string> {
+  const out = new Set<string>();
+  const news = new Map<string, { node: Node; fn: string }[]>();
+  for (const fn of mod.functions)
+    forEachNode(fn.body, (node) => {
+      if (node.kind !== "new") return;
+      const list = news.get(node.className);
+      if (list === undefined) news.set(node.className, [{ node, fn: fn.name }]);
+      else list.push({ node, fn: fn.name });
+    });
+  if (news.size === 0) return out;
+  const unguarded = guardedFunctions(mod, groups, sites);
+  // The functions that open an arena of their own, by name.
+  const opens = new Set<string>();
+  for (const fn of mod.functions)
+    forEachNode(fn.body, (node) => {
+      if (groups.roots.has(node) || groups.calls.has(node)) opens.add(fn.name);
+    });
+  for (const [name, created] of news) {
+    const def = defs.get(name);
+    if (def === undefined || !eligible.tree(def)) continue;
+    const ok = created.every(
+      ({ node, fn }) =>
+        groups.roots.has(node) ||
+        (sites.arenaSites.has(node) &&
+          groups.reachable.has(fn) &&
+          !unguarded.has(fn) &&
+          !opens.has(fn)),
+    );
+    if (ok) out.add(name);
+  }
+  return out;
+}
+
 /** The arena-aware constructor of a record shape or class. */
 export function arenaNewSym(newSym: string): string {
   return `${newSym}.r`;
@@ -243,6 +335,8 @@ export function arenaAware(plan: ArenaPlan | null, fn: IrFunction | undefined): 
 /** What arenaNewLines needs from its host (a subset of ShapeHost). */
 export interface ArenaHost {
   declare(decl: string): void;
+  /** A constant string's LLVM operand. */
+  cstr(text: string): string;
   threadLocalAlloc?: boolean;
   inlineAlloc?: boolean;
   /** The target C ABI's `size_t`: also the pointer width. */
@@ -272,9 +366,12 @@ export function arenaCurrentAddress(host: ArenaHost, dest: string): string[] | n
  * does (with the count ARENA_RC). When `dispose` names a function and the
  * arena is not closed, the object goes on the arena's dispose list, which
  * the drop runs. The heap constructor's object when no arena is open or
- * the arena is full. The bump, the clear, the header and the dispose entry
- * are inline (scr_arena.c's ScrArena ABI); scr_arena_obj takes a new chunk
- * and scr_arena_disposal grows the list.
+ * the arena is full, unless `miss` is `trap`: an adopted tree node has no
+ * count word, so a heap copy of it could never be freed, and the plan
+ * proves the heap path unreachable (arenas.ts, arenaTreeClasses). The bump,
+ * the clear, the header and the dispose entry are inline (scr_arena.c's
+ * ScrArena ABI); scr_arena_obj takes a new chunk and scr_arena_disposal
+ * grows the list.
  *
  * `clear` is what the bump path zeroes: the whole object, or only the
  * collector header, for callers that store every word of the object before
@@ -291,8 +388,13 @@ export function arenaNewLines(
   init: string[],
   result: string,
   clear: "object" | "header" = "object",
+  /** What to do when no arena is open (or the arena cannot take the
+   * object): allocate on the heap, or, for a tree node that has no count
+   * word and so could never be freed there, stop. */
+  miss: "heap" | "trap" = "heap",
 ): string[] {
   const S = host.sizeType;
+  const fail = miss === "trap" ? "miss" : "heap";
   // ScrArena's fields and dispose entries are pointer-sized (scr_arena.c).
   const word = S === "i32" ? 4 : 8;
   host.declare(`declare ptr @scr_arena_obj(ptr, ${S}, ptr)`);
@@ -307,7 +409,7 @@ export function arenaNewLines(
     `entry:`,
     ...current,
     `  %on = icmp ne ptr %a, null`,
-    `  br i1 %on, label %arena, label %heap`,
+    `  br i1 %on, label %arena, label %${fail}`,
     `arena:`,
   ];
   // A traced type's first object registers its descriptor on the slow path.
@@ -355,7 +457,7 @@ export function arenaNewLines(
     `slow:`,
     `  %os = call ptr @scr_arena_obj(ptr %a, ${S} ${size}, ptr ${cyc ?? "null"})`,
     `  %got = icmp ne ptr %os, null`,
-    `  br i1 %got, label %init, label %heap`,
+    `  br i1 %got, label %init, label %${fail}`,
     `init:`,
     `  %o = phi ptr [ %of, %carve ], [ %os, %slow ]`,
     ...init,
@@ -387,14 +489,25 @@ export function arenaNewLines(
       `done:`,
     );
   }
-  lines.push(
-    `  ret ptr ${result}`,
-    `heap:`,
-    `  %h = call ptr @${newSym}()`,
-    `  ret ptr %h`,
-    `}`,
-    ``,
-  );
+  if (miss === "trap") {
+    host.declare(`declare void @scr_trap(ptr)`);
+    lines.push(
+      `  ret ptr ${result}`,
+      `miss:`,
+      `  call void @scr_trap(ptr ${host.cstr("scriptc: internal error: a tree node was allocated outside its arena\n")})`,
+      `  unreachable`,
+      `}`,
+      ``,
+    );
+  } else
+    lines.push(
+      `  ret ptr ${result}`,
+      `heap:`,
+      `  %h = call ptr @${newSym}()`,
+      `  ret ptr %h`,
+      `}`,
+      ``,
+    );
   return lines;
 }
 

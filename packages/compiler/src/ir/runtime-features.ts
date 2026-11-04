@@ -250,6 +250,10 @@ const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.requestDynCb",
   "https.requestDyn",
   "https.requestDynCb",
+  "http.requestUrlDyn",
+  "http.requestUrlDynCb",
+  "https.requestUrlDyn",
+  "https.requestUrlDynCb",
   "rl.createSignal",
   "rl.questionAsyncSignal",
   "sp.finishedOptsSignal",
@@ -358,7 +362,9 @@ const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.arrayPrototype",
   "dyn.builtinFunction",
   "dyn.builtinMethod",
+  "dyn.builtinMethodValue",
   "dyn.stdlibPrototype",
+  "dyn.dataViewPrototype",
   "dyn.defineProperty",
   "dyn.definePropertyShapes",
   "child.propsDefine",
@@ -734,10 +740,17 @@ const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.stdinIsRaw",
   "process.stdioSlot",
   "process.stdioWriteDyn",
+  "process.stdioWriteStr",
   "stdin.nextChunk",
   "stdin.onData",
   "stdin.onEnd",
   "stdin.onError",
+  "stdin.onReadable",
+  "stdin.pause",
+  "stdin.resume",
+  "stdin.isPaused",
+  "stdin.readableLength",
+  "stdin.read",
   // node:readline rides the stdin unit (scr_readline.c links beside
   // scr_events.c under the same gate).
   "rl.checkCompleter",
@@ -993,7 +1006,13 @@ const FS_READ_BYTES_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
  * that no typed program can observe. Empty until the first slice lands
  * (A1 adds dyn.intrinsic); the slices share one SCR_JS_OBJECT_MODEL build
  * of every unit they touch instead of one build column per feature. */
-export const JS_OBJECT_MODEL_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([]);
+export const JS_OBJECT_MODEL_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  // Resizable ArrayBuffers and growable SharedArrayBuffers (t262-dc C2), and
+  // the arming call that turns on the buffer views registry.
+  "arrayBuffer.newResizable",
+  "sharedArrayBuffer.newGrowable",
+  "arrayBuffer.armMutable",
+]);
 
 /** The JavaScript object model build's program facts (t262-da §J): every
  * runtime feature that shares the one SCR_JS_OBJECT_MODEL build ORs in here
@@ -1003,8 +1022,13 @@ export const JS_OBJECT_MODEL_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([]
 export function jsObjectModelFact(features: {
   jsObjectModel?: boolean;
   bigintBytes?: boolean;
+  mutableBuffers?: boolean;
 }): boolean {
-  return features.jsObjectModel === true || features.bigintBytes === true;
+  return (
+    features.jsObjectModel === true ||
+    features.bigintBytes === true ||
+    features.mutableBuffers === true
+  );
 }
 
 /** One rule per runtime feature, sorted by name. A new feature is an
@@ -1147,6 +1171,15 @@ const RUNTIME_FEATURE_RULES = {
   /** A standard library prototype object read as a value in a JavaScript
    * source (scr_dyn_stdlib_prototype.c): `Date.prototype`. */
   stdlibPrototypeValue: rule({ fns: ["dyn.stdlibPrototype"] }),
+  /** DataView.prototype read as a value in a JavaScript source, and its
+   * members through it (scr_data_view_proto.c): the getter/setter family's
+   * prototype object. */
+  dataViewPrototypeValue: rule({ fns: ["dyn.dataViewPrototype"] }),
+  /** The dynamic global object's answer for the Node globals the native
+   * runtime does not implement (scr_global_host_absent.c, plus the
+   * SCR_GLOBAL_HOST_ABSENT build of scr_node_builtin.c): a computed read of
+   * the global object, or `… in globalThis` (host-globals.ts). */
+  hostAbsentGlobals: rule({ fns: ["global.hostAbsent", "dyn.globalHas"] }),
   /** Array.prototype's generic algorithms over array-like receivers
    * (scr_dyn_array_like.c), which delegates every other name to the
    * dyn-invoke unit's array dispatch. */
@@ -1154,6 +1187,9 @@ const RUNTIME_FEATURE_RULES = {
   /** Number.prototype and Boolean.prototype as values
    * (scr_dyn_builtin_prototype.c). */
   builtinPrototypeValue: rule({ fns: ["dyn.builtinPrototype"] }),
+  /** A builtin prototype method as a function value (String's trim family,
+   * RegExp's exec/test/toString; scr_dyn_builtin_methods.c). */
+  builtinMethodValue: rule({ fns: ["dyn.builtinMethodValue"] }),
   dynInvoke: rule({
     initial: (mod) => mod.workers === true,
     scan: computedBufferMemberScan,
@@ -1460,12 +1496,15 @@ const RUNTIME_FEATURE_RULES = {
   streamWriteErrors: rule({ fns: ["writable.writeEcb"] }),
   /** The program reaches the process output streams' write slot — the
    * write method as a value (process.stdioSlot), its replacement, a patched
-   * program's typed writes, or a run-time-typed chunk
-   * (process.stdioWriteDyn): the SCR_STDIO_WRITE_SLOT build of the events
-   * unit carries the shared write body, the dynamic-chunk entry point and
-   * Node's anonymous write function. Every other program links the default
-   * object, byte for byte. */
-  stdioWriteSlot: rule({ fns: ["process.stdioSlot", "process.stdioWriteDyn"] }),
+   * program's typed writes, a run-time-typed chunk
+   * (process.stdioWriteDyn), or the untyped one-string write
+   * (process.stdioWriteStr): the SCR_STDIO_WRITE_SLOT build of the events
+   * unit carries the shared write body, the dynamic-chunk entry point,
+   * the string entry point and Node's anonymous write function. Every
+   * other program links the default object unchanged. */
+  stdioWriteSlot: rule({
+    fns: ["process.stdioSlot", "process.stdioWriteDyn", "process.stdioWriteStr"],
+  }),
   stream: rule({
     initial: (mod) => (mod.classes ?? []).some((c) => RUNTIME_STREAM_CLASSES.has(c.name)),
     fns: [...STREAM_LIB_FNS, "dyn.builtinStreamClass"],
@@ -1476,7 +1515,10 @@ const RUNTIME_FEATURE_RULES = {
   symbol: rule({
     initial: (mod) => (mod.records ?? []).some(isDirentShape),
     fns: [...SYMBOL_LIB_FNS],
-    prefixes: ["sym.", "disposable."],
+    // %Iterator.prototype% (scr_js_iterator.c) defines its Symbol.iterator,
+    // Symbol.toStringTag and Symbol.dispose members with the well-known
+    // symbols scr_sym_well_known makes.
+    prefixes: ["sym.", "disposable.", "iterator."],
     types: ["symbol"],
   }),
   /** Symbol.toPrimitive is read (sym.wellKnown with that name, or a name
@@ -1495,13 +1537,6 @@ const RUNTIME_FEATURE_RULES = {
   utilPromisify: rule({ fns: ["util.promisifyDyn"] }),
   /** process.emitWarning is assigned (process.setEmitWarning). */
   warningReplace: rule({ fns: ["process.setEmitWarning"] }),
-  /** A record literal asserted to a wider record type answers a partial
-   * record view (record-views.ts): the SIZE_MAX sentinel and its trap live in
-   * the SCR_RECORD_VIEW_PARTIAL build of scr_json.c, so neither program
-   * links the other's code. */
-  recordViewPartial: rule({
-    expr: (node) => node.kind === "dynCheck" && node.partialView === true,
-  }),
   /** A BigInt typed-array constructor read as a value (BigInt64Array,
    * BigUint64Array): their element kinds, which no double represents, live
    * in the JavaScript object model build (t262-da §J) of scr_bytes.c,
@@ -1518,10 +1553,21 @@ const RUNTIME_FEATURE_RULES = {
   /** Module namespace objects as checked-dynamic values
    * (scr_module_namespace.c). */
   moduleNamespace: rule({ fns: ["module.namespaceValue"] }),
+  /** A JavaScript source resizes, grows or detaches an ArrayBuffer
+   * (frontend/lowering/buffers.ts): the program arms the buffer views
+   * registry, which lives in the gated unit scr_js_buffers.c, and its bytes
+   * headers stop being invariant (IrModule.bytesHeadersMutable). The fact
+   * ORs into jsObjectModel (jsObjectModelFact), so it selects no build
+   * column of its own. Every other program links no part of the unit. */
+  mutableBuffers: rule({
+    fns: ["arrayBuffer.armMutable", "arrayBuffer.newResizable", "sharedArrayBuffer.newGrowable"],
+  }),
   /** A module namespace boxed for typed code (scr_module_namespace_dyn.c). */
   moduleNamespaceDyn: rule({ fns: ["module.namespaceDyn"] }),
   /** Primitive wrapper objects (scr_js_wrapper.c). */
   primitiveWrapper: rule({ prefixes: ["wrapper."] }),
+  /** %Iterator% and %Iterator.prototype% as values (scr_js_iterator.c). */
+  iteratorProto: rule({ prefixes: ["iterator."] }),
   /** The WebAssembly API (scr_wasm.c). */
   wasm: rule({ prefixes: ["wasm."] }),
   /** crypto.subtle importKey/sign/verify/digest and CryptoKey:
@@ -1586,6 +1632,9 @@ const RUNTIME_FEATURE_RULES = {
   /** node:zlib's Brotli forms: zlib.brotliInstall, which %main calls when
    * the program uses Brotli (scr_brotli.c). */
   brotli: rule({ fns: ["zlib.brotliInstall"] }),
+  /** node:zlib's zstd forms: zlib.zstdInstall, which %main calls when the
+   * program uses zstd (scr_zstd.c). */
+  zstd: rule({ fns: ["zlib.zstdInstall"] }),
 };
 
 type RuntimeFeatureName = keyof typeof RUNTIME_FEATURE_RULES;
@@ -1616,9 +1665,12 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynBuiltinClass: false,
     dynBuiltinStream: false,
     stdlibPrototypeValue: false,
+    dataViewPrototypeValue: false,
+    hostAbsentGlobals: false,
     dynInvoke: false,
     arrayLikeDispatch: false,
     builtinPrototypeValue: false,
+    builtinMethodValue: false,
     dynTier: false,
     ecdh: false,
     x509: false,
@@ -1637,6 +1689,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     icu: false,
     inspect: false,
     jsObjectModel: false,
+    mutableBuffers: false,
     legacyTextDecoder: false,
     mime: false,
     webStreams: false,
@@ -1663,6 +1716,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     moduleNamespace: false,
     moduleNamespaceDyn: false,
     primitiveWrapper: false,
+    iteratorProto: false,
     stream: false,
     strdecDyn: false,
     streamDyn: false,
@@ -1684,12 +1738,12 @@ function noRuntimeFeatures(): RuntimeFeatures {
     tlsCa: false,
     utilPromisify: false,
     warningReplace: false,
-    recordViewPartial: false,
     bigintBytes: false,
     wasm: false,
     webcrypto: false,
     zlib: false,
     brotli: false,
+    zstd: false,
   };
 }
 

@@ -148,7 +148,7 @@ import { streamClassAliasDecl } from "./lower-stream.js";
 import { isAssertClassNew } from "./assert-instances.js";
 import { stdlibGlobalAliasDecl, stdlibGlobalAliasNameOf, stdlibGlobalNameOf } from "./surfaces.js";
 import { isNativeBuiltinValueInitializer } from "./lower-builtin-values.js";
-import { isPromisePrototypeRead } from "./expressions/property-access.js";
+import { isDataViewPrototypeRead, isPromisePrototypeRead } from "./expressions/property-access.js";
 import {
   collectNamespaceStmt,
   nsMemberIdentOf,
@@ -2246,7 +2246,8 @@ export function collectGlobals(
           if (
             (nameNode === decl.name &&
               !decl.type &&
-              isPromisePrototypeRead(lowerer, decl.initializer)) ||
+              (isPromisePrototypeRead(lowerer, decl.initializer) ||
+                isDataViewPrototypeRead(lowerer, decl.initializer))) ||
             (isJsSourceFile(sf) &&
               nameNode === decl.name &&
               initializer &&
@@ -2654,6 +2655,20 @@ export function collectGlobals(
           )
             continue;
           let type = handleT ?? factoryType ?? (inferredJsCall ? DYN : lowerer.irTypeOf(nameNode));
+          // An initializer-less `let` without an annotation takes its
+          // writes' type, as a function's local does (lowerVarDecl's own
+          // binding path): `let stat; try { stat = lstatSync(".") } catch
+          // { stat = null }` holds `Stats | null` rather than an
+          // unchecked-dynamic slot.
+          const evolvedGlobal =
+            type.kind === "dyn" &&
+            isLet &&
+            !isVarDeclared(decl) &&
+            decl.type === undefined &&
+            decl.initializer === undefined
+              ? inferredEvolvingLetType(lowerer, decl)
+              : null;
+          if (evolvedGlobal) type = evolvedGlobal;
           if (
             isJsSourceFile(sf) &&
             !decl.type &&
@@ -2911,7 +2926,11 @@ export function collectGlobals(
           // reads the dyn undefined instead of faulting on NULL — the
           // dyn face of let's documented pre-declaration window (Node
           // throws the TDZ ReferenceError there).
-          if (isVarDeclared(decl) || (g.type.kind === "dyn" && g.mutable)) {
+          if (
+            isVarDeclared(decl) ||
+            evolvedGlobal !== null ||
+            (g.type.kind === "dyn" && g.mutable)
+          ) {
             noteVarGlobalEntryInit(lowerer, sf, g);
           }
         } catch (e) {

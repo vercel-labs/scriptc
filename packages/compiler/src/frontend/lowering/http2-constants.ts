@@ -1,4 +1,4 @@
-/* node:http2 constants — the full table Node v24.22.0 exposes as
+/* node:http2 constants — the full table Node v24.22.1 exposes as
  * http2.constants (240 members: NGHTTP2_* protocol codes, NGHTTP2_ERR_*
  * library codes, HTTP2_HEADER_* names, HTTP2_METHOD_* verbs, and the
  * HTTP_STATUS_* table), generated with

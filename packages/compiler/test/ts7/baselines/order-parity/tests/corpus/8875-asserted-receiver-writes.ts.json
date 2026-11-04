@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8875-asserted-receiver-writes.ts"
+ ],
+ "diags": []
+}

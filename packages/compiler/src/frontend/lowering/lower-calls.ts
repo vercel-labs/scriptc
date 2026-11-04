@@ -1,3 +1,4 @@
+import { lowerIteratorFromDyn } from "./iterator-prototype.js";
 import { programCreatesWrappers } from "./primitive-wrappers.js";
 import {
   arrayClassMemberOwner,
@@ -106,6 +107,7 @@ import {
   RUNTIME_EMITTER_CLASS,
 } from "../../ir/ir.js";
 import { lowerProtocolMethodCall } from "./class-protocol-dispatch.js";
+import { MUTABLE_BUFFER_MEMBERS } from "./buffers.js";
 import { isJsSourceFile, locOf, requireSpecOf } from "../program.js";
 import { isPackageShimFile, isShimIntrinsicName } from "../package-shims.js";
 import { lowerJsonRequireCall } from "./json-require.js";
@@ -138,6 +140,7 @@ import {
   lowerHelperReturnCall,
   lowerIteratorFromCall,
   lowerIteratorHelperCall,
+  lowerWidenedIteratorHelperCall,
 } from "./containers/iterator-helpers.js";
 import {
   lowerObjectAssignIndexShape,
@@ -154,6 +157,7 @@ import {
   lowerBytesStaticCall,
 } from "./containers/bytes.js";
 import {
+  EXTRA_STRING_METHODS,
   lowerRegexMethodCall,
   lowerStringIndexCall,
   lowerStringMethodCall,
@@ -162,6 +166,7 @@ import {
   isDynPrimitiveKindMethod,
   lowerDynPrimitiveMethodCall,
   lowerExtraNumberMethodCall,
+  lowerExtraStringMethodCall,
 } from "./containers/string-and-regexp.js";
 import { createRequireSpecOf } from "./builtins/module-bindings.js";
 import {
@@ -221,6 +226,7 @@ import {
   primitiveCtorClosure,
 } from "./lower-exprs.js";
 import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
+import { nullishLiteral, nullishReadTypeError, throwAfterEach } from "./primitive-throws.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { lowerChildMethodValue, lowerChildPropertyCall } from "./handle-properties.js";
 import { classObjectTag, classToNumberConversion } from "./class-to-primitive.js";
@@ -278,6 +284,7 @@ import {
   nsMemberIdentOf,
   nsUndefRead,
 } from "./lower-namespaces.js";
+import { hostGlobalNameOfRead, hostGlobalPrototypeMemberOf } from "./host-globals.js";
 import { expandoMemberRead } from "./lower-expando.js";
 import {
   fenceNodeModuleMutationCall,
@@ -405,7 +412,58 @@ function receiverlessCalleeOf(callee: ts.Expression): ts.Expression | null {
 
 export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   const loc = locOf(expr);
+  // A JavaScript source calling a member that resizes, grows or detaches a
+  // buffer is the mutableBuffers fact (buffers.ts, t262-dc §2.4). The
+  // receiver may be a checked-dynamic value, so the callee's name decides;
+  // the member read never reaches lowerPropertyAccessExpr when the call
+  // lowers straight through its receiver.
+  if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    const callee = expr.expression;
+    const name = ts.isPropertyAccessExpression(callee)
+      ? callee.name.text
+      : ts.isElementAccessExpression(callee)
+        ? lowerer.foldedStringKeyOf(callee.argumentExpression)
+        : null;
+    if (name !== null && MUTABLE_BUFFER_MEMBERS.has(name)) lowerer.buffersMutable = true;
+  }
+  // `(null).foo()` / `(undefined)["foo"]()`: the MEMBER READ throws Node's
+  // TypeError before the arguments evaluate, exactly as a plain read does.
+  // Only a nullish LITERAL qualifies — every other receiver, a binding or a
+  // property included, has a value the runtime reads and refuses itself,
+  // with the same message and the same order.
+  {
+    const callee = expr.expression;
+    const member =
+      ts.isPropertyAccessExpression(callee) && !callee.questionDotToken
+        ? { base: callee.expression, name: callee.name.text }
+        : ts.isElementAccessExpression(callee) && !callee.questionDotToken
+          ? { base: callee.expression, name: lowerer.foldedStringKeyOf(callee.argumentExpression) }
+          : null;
+    const unit =
+      !expr.questionDotToken && member !== null ? nullishLiteral(lowerer, member.base) : null;
+    if (member !== null && member.name !== null && unit !== null) {
+      const recv = lowerer.lowerExpr(member.base);
+      const t = lowerer.mapTypeOf(lowerer.typeOf(expr)) ?? F64;
+      return throwAfterEach([recv], nullishReadTypeError(unit, member.name, t, loc), loc);
+    }
+  }
   if (lowerer.errorAccessorReflection === null) noteErrorAccessorReflection(lowerer, expr);
+  // Calling a Node 24 global the native runtime does not provide (WebSocket,
+  // FormData, …): the value a read answers refuses the call
+  // (host-global-values.ts), so the call is that refusal — SC2020, which a
+  // JavaScript source defers to the throw at this statement.
+  {
+    const hostGlobal = hostGlobalNameOfRead(lowerer, expr.expression);
+    if (hostGlobal !== null) lowerer.hostGlobalFence(hostGlobal, expr.expression);
+  }
+  // A method on the value's prototype (`FormData.prototype.append(...)`):
+  // the prototype carries the constructor link only, so the method is
+  // surface native code does not have (SC2020, host-global). A call reads
+  // its callee without going through the member-read hook.
+  {
+    const prototypeOf = hostGlobalPrototypeMemberOf(lowerer, expr.expression);
+    if (prototypeOf !== null) lowerer.hostGlobalFence(prototypeOf, expr.expression);
+  }
   // Object's checker return type is `any`. Claim known object inputs
   // before generic checked-dynamic dispatch tries to load the constructor.
   if (
@@ -1788,6 +1846,11 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // (untyped in fallback builds, so before the dyn receiver path) or
       // webcrypto.
       lowerWebCryptoMethodCall(lowerer, expr, expr.expression) ??
+      // A helper call on a JavaScript binding reassigned with a helper
+      // stage (`let it = g(); it = it.filter(...)`): the binding holds the
+      // checked value, and the dyn receiver path would read `filter` as
+      // Array.prototype's. Before it, so the runtime's helper answers.
+      lowerWidenedIteratorHelperCall(lowerer, expr) ??
       // Dyn receivers (JSON.parse-derived `unknown`/`any` values) —
 
       lowerDynReceiverMethodCall(lowerer, expr, expr.expression) ??
@@ -3610,12 +3673,17 @@ function lowerStringPrototypeCall(
   if (access.name.text !== "call" || !ts.isPropertyAccessExpression(access.expression)) return null;
   const methodAccess = access.expression;
   const prototypeAccess = methodAccess.expression;
+  // The Annex B CreateHTML methods, substr, concat and the locale-cased pair
+  // lower only as EXTRA_STRING_METHODS; a `.call` reaches the same lowering
+  // with the receiver as its first argument.
+  const extraMethod = EXTRA_STRING_METHODS.has(methodAccess.name.text);
   if (
     !ts.isPropertyAccessExpression(prototypeAccess) ||
     prototypeAccess.name.text !== "prototype" ||
     !ts.isIdentifier(prototypeAccess.expression) ||
     prototypeAccess.expression.text !== "String" ||
-    (!Object.hasOwn(STR_METHODS, methodAccess.name.text) &&
+    (!extraMethod &&
+      !Object.hasOwn(STR_METHODS, methodAccess.name.text) &&
       !STRING_INDEX_METHODS.has(methodAccess.name.text)) ||
     !lowerer.isStdlibMember(methodAccess)
   )
@@ -3625,9 +3693,11 @@ function lowerStringPrototypeCall(
   const indexMethod = STRING_INDEX_METHODS.has(methodAccess.name.text)
     ? (methodAccess.name.text as "at" | "codePointAt")
     : null;
-  const resultType = indexMethod
-    ? lowerer.withUndefinedArmOf(indexMethod === "at" ? STRING : F64)
-    : entry?.result;
+  const resultType = extraMethod
+    ? STRING
+    : indexMethod
+      ? lowerer.withUndefinedArmOf(indexMethod === "at" ? STRING : F64)
+      : entry?.result;
   if (!resultType) return null;
   const method =
     methodAccess.name.text === "trimStart"
@@ -3698,6 +3768,27 @@ function lowerStringPrototypeCall(
         false));
   // Other methods convert object receivers before lowering their arguments;
   // padding uses a helper that delays conversion until every argument is ready.
+  if (extraMethod) {
+    // Only the receivers the typed extra-method lowering already accepts: a
+    // scalar converts without running code, and the checked-dynamic receiver
+    // took the branch above. An object receiver's ToString can run user code,
+    // which `Function.call` orders after every argument, so it keeps its fence.
+    if (!scalar) {
+      lowerer.noLowering(
+        `String.prototype.${methodAccess.name.text}.call with ${lowerer.fmt(receiverType)} receivers`,
+        call,
+      );
+    }
+    const receiver = lowerer.ensureString(receiverValue, receiverNode);
+    return lowerExtraStringMethodCall(
+      lowerer,
+      call,
+      methodAccess.name.text,
+      receiver,
+      receiverNode,
+      call.arguments.nodes.slice(1),
+    );
+  }
   const objectWithoutMethodArgs =
     entry?.maxArgs === 0 &&
     call.arguments.nodes.length === 1 &&
@@ -8227,6 +8318,11 @@ function lowerIteratorStaticFence(
   if (!lowerer.isStdlibMember(access)) return null;
   const from = lowerIteratorFromCall(lowerer, call, access);
   if (from) return from;
+  // Any other argument in JavaScript: the runtime's Iterator.from.
+  if (access.name.text === "from" && !call.questionDotToken && !access.questionDotToken) {
+    const dynamic = lowerIteratorFromDyn(lowerer, call);
+    if (dynamic) return dynamic;
+  }
   lowerer.noLowering(
     `Iterator.${access.name.text}`,
     call,
@@ -8860,8 +8956,7 @@ function lowerObjectStaticCall(
     }
     const onError = lowerObjectAssignOntoError(lowerer, call);
     if (onError) return onError;
-    const hybrid = lowerObjectAssignHybrid(lowerer, call);
-    if (hybrid) return hybrid;
+    refuseObjectAssignHybrid(lowerer, call);
     // `Object.assign({}, lit)` — an EMPTY fresh-literal target and one
     // object-literal source: the result is a fresh object carrying
     // exactly the source literal's properties, which IS the source
@@ -8952,9 +9047,28 @@ function lowerObjectStaticCall(
           }
         }
       }
-      if (tProbe?.type.kind === "record" && sProbe?.type.kind === "record") {
-        const tShape = lowerer.shapes.get(tProbe.type.shapeId);
-        const sShape = lowerer.shapes.get(sProbe.type.shapeId);
+      // An operand the CHECKER narrowed to one record ARM of its declared
+      // union (`content?.type === "toolCall"` narrows the array element to
+      // ToolCall, whose lowered value still carries the element's
+      // `ToolCall | ToolResult`): the plan runs over the arm, and the
+      // operand lowers through the CHECKED extraction — the same
+      // `%union.narrow` every other arm-typed site uses, so a value that
+      // is not that arm throws the catchable TypeError instead of being
+      // copied through the wrong layout. The extraction yields the arm's
+      // own record, so the write still mutates the value the program holds.
+      const assignOperand = (node: ts.Expression, probe: IrExpr | null): IrType | null => {
+        if (probe?.type.kind === "record") return probe.type;
+        if (probe?.type.kind !== "union") return null;
+        const site = lowerer.mapTypeOf(lowerer.typeOf(node));
+        return site?.kind === "record" && lowerer.armTag(probe.type.unionId, site) >= 0
+          ? site
+          : null;
+      };
+      const tOperand = assignOperand(call.arguments.nodes[0]!, tProbe);
+      const sOperand = assignOperand(call.arguments.nodes[1]!, sProbe);
+      if (tOperand?.kind === "record" && sOperand?.kind === "record") {
+        const tShape = lowerer.shapes.get(tOperand.shapeId);
+        const sShape = lowerer.shapes.get(sOperand.shapeId);
         const ok =
           tShape &&
           sShape &&
@@ -8975,8 +9089,12 @@ function lowerObjectStaticCall(
           });
         if (ok) {
           const loc = locOf(call);
-          const target = lowerer.lowerExpr(call.arguments.nodes[0]!);
-          const source = lowerer.lowerExpr(call.arguments.nodes[1]!);
+          const operand = (node: ts.Expression, arm: IrType): IrExpr => {
+            const value = lowerer.lowerExpr(node);
+            return value.type.kind === "record" ? value : lowerer.coerceToExpected(value, arm);
+          };
+          const target = operand(call.arguments.nodes[0]!, tOperand);
+          const source = operand(call.arguments.nodes[1]!, sOperand);
           if (target.type.kind === "record" && source.type.kind === "record") {
             const helper = recordAssignHelper(
               lowerer,
@@ -9984,11 +10102,32 @@ function lowerObjectStaticCall(
         if (typeEquals(vt, valueT)) return value;
         if (valueT.kind === "dyn" && lowerer.dynConvertible(vt))
           return lowerer.coerceToExpected(value, DYN);
+        if (valueT.kind === "union" && vt.kind === "union") {
+          // A field union that is a PROPER SUBSET of the element union
+          // (`{ accent: number | string; scrollbarThumb: number | string
+          // | undefined }` enumerates as `[string, number | string |
+          // undefined][]`): every arm the field can hold is an arm of the
+          // element union, so the box re-tags onto it — the same runtime
+          // value under the element union's tag numbering.
+          return lowerer.unionRetagMappable(vt.unionId, valueT.unionId)
+            ? lowerer.coerceToExpected(value, valueT)
+            : null;
+        }
         if (valueT.kind === "union" && vt.kind !== "union") {
           const tag = lowerer.armTag(valueT.unionId, vt);
           if (tag >= 0) {
             return { kind: "unionWrap", unionId: valueT.unionId, tag, value, type: valueT, loc };
           }
+          // A field value the element union has no arm for, but which
+          // WIDTH-LIFTS into one: a concrete record field enumerated
+          // against a checker-typed element that is a shared record's
+          // union of layouts (a table of metric definitions whose value
+          // type is the declared `counter | histogram` shape, a settings
+          // map whose declared value type is the option record). The
+          // lift picks the arm and copies the value into it — the same
+          // conversion coerceToExpected applies at a union slot.
+          const lift = lowerer.widthLiftPlan(vt, valueT);
+          if (lift) return lowerer.applyWidthLift(lift, value, valueT, loc);
         }
         return null;
       };
@@ -10030,7 +10169,11 @@ function lowerObjectStaticCall(
           } else {
             return `field '${f.name}' is a multi-arm union that cannot re-tag into the result element type`;
           }
-        } else if (valueT?.kind !== "dyn" && !typeEquals(f.type, valueT ?? f.type)) {
+        } else if (
+          valueT?.kind !== "dyn" &&
+          !typeEquals(f.type, valueT ?? f.type) &&
+          !(valueT?.kind === "union" && lowerer.unionRetagMappable(f.type.unionId, valueT.unionId))
+        ) {
           return `field '${f.name}' is a union that cannot re-tag into the result element type`;
         }
       }
@@ -10352,88 +10495,30 @@ function runtimeOptionalEntriesType(
  * ordinary indirect call through the field's closure value. Deliberately
  * record-only — calling a func-typed CLASS field stays rejected (the
  * generic method-call rejection in lowerCall). */
-/** `Object.assign(fn, { bold, ... })` → a HYBRID record literal: the
- * reserved %call field takes the function, each source object literal's
- * properties fill their declared fields (later sources override, JS's
- * last-write-wins — one entry per name, source values still evaluate in
- * order through the literal lowering's shared rules). Bounded to the
- * chalk shape on purpose: the RESULT type must map to a %call-carrying
- * record, sources must be plain object literals (an `as` cast unwraps),
- * and every declared field must be filled. REPRESENTATION NOTE
- * (SEMANTICS.md): the result is a FRESH record, not the mutated `fn` —
- * `assigned === fn` is false here where JS answers true, and `typeof`
- * would answer object; portless's colors.ts never observes either.
- * Null (→ the stdlib fence) for every other Object.assign form. */
-function lowerObjectAssignHybrid(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
+/** `Object.assign(fn, { bold, ... })` — a FUNCTION-WITH-PROPERTIES
+ * result — is REFUSED by name (SEMANTICS.md). JavaScript mutates the
+ * function object and answers it: `assigned === fn`, a later write through
+ * either name lands on that one object, and `Object.keys(fn)` lists the
+ * copied keys. scriptc keeps a function-with-properties value as a
+ * separate record that holds the function in a reserved %call field, so a
+ * fresh record is NOT the function — the identity, the writes and the
+ * enumeration would each answer differently from Node. Making them agree
+ * needs one representation for a function object (a place on it for its
+ * own properties), not a branch here, so the form stays refused rather
+ * than lowering to a record that claims to be the function. Every other
+ * Object.assign form falls through to the branches below. */
+function refuseObjectAssignHybrid(lowerer: Lowerer, call: ts.CallExpression): void {
   const mapped = lowerer.mapTypeOf(lowerer.typeOf(call));
-  if (mapped?.kind !== "record") return null;
+  if (mapped?.kind !== "record") return;
   const shape = lowerer.shapes.get(mapped.shapeId);
   const callField = shape?.fields.find((f) => f.name === "%call");
-  if (!shape || !callField || callField.type.kind !== "func") return null;
-  if (call.arguments.nodes.length < 2 || call.arguments.nodes.some((a) => ts.isSpreadElement(a)))
-    return null;
-  const loc = locOf(call);
-  const values = new Map<string, IrExpr>();
-  values.set("%call", lowerer.lowerExprExpecting(call.arguments.nodes[0]!, callField.type));
-  for (const argNode of call.arguments.nodes.slice(1)) {
-    let src: ts.Expression = argNode;
-    while (ts.isParenthesizedExpression(src) || ts.isAsExpression(src) || ts.isTypeAssertion(src))
-      src = src.expression;
-    if (!ts.isObjectLiteralExpression(src)) {
-      lowerer.unsupported(
-        "SC1090",
-        argNode,
-        "Object.assign sources other than plain object literals when building a function-with-properties value",
-      );
-    }
-    for (const prop of src.properties.nodes) {
-      const nameOk =
-        (ts.isPropertyAssignment(prop) || ts.isShorthandPropertyAssignment(prop)) &&
-        (ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name));
-      if (!nameOk) {
-        lowerer.unsupported(
-          "SC1090",
-          prop,
-          "this property form in an Object.assign source building a function-with-properties value",
-        );
-      }
-      const name = (prop.name as ts.Identifier | ts.StringLiteral).text;
-      const fieldType = shape.fields.find((f) => f.name === name)?.type;
-      if (!fieldType) {
-        lowerer.unsupported(
-          "SC1090",
-          prop,
-          `the property '${name}' missing from the assigned result type '${lowerer.fmt(mapped)}'`,
-        );
-      }
-      const value = ts.isPropertyAssignment(prop)
-        ? lowerer.lowerExprExpecting(prop.initializer, fieldType)
-        : lowerer.coerceInto(
-            prop,
-            lowerer.lowerShorthandValue(prop as ts.ShorthandPropertyAssignment),
-            fieldType,
-          );
-      values.set(name, value);
-    }
-  }
-  const fields: { name: string; value: IrExpr }[] = [];
-  for (const f of shape.fields) {
-    const v = values.get(f.name);
-    if (!v) {
-      const absent = lowerer.absentFieldValue(f.type, loc);
-      if (!absent) {
-        lowerer.unsupported(
-          "SC1090",
-          call,
-          `Object.assign leaving the required field '${f.name}' of '${lowerer.fmt(mapped)}' unfilled`,
-        );
-      }
-      fields.push({ name: f.name, value: absent });
-      continue;
-    }
-    fields.push({ name: f.name, value: v });
-  }
-  return { kind: "recordLit", fields, type: mapped, loc };
+  if (!callField || callField.type.kind !== "func") return;
+  lowerer.unsupported(
+    "SC1090",
+    call,
+    `Object.assign that adds properties to a function value ('${lowerer.fmt(mapped)}')`,
+    "JavaScript mutates and answers the function object itself — the result IS that function, a write through either name lands on the one object, and Object.keys on it lists the copied keys — while a function-with-properties value is a separate record here; build that value where its type is declared, or keep the properties in a separate object",
+  );
 }
 
 /** The accessed member is an overload set (isOverloadedCallableMemberType),
@@ -10678,9 +10763,11 @@ export function lowerRecordFieldCall(
 /** The URL factories use the constructor's conversion order and parser.
  * URL.revokeObjectURL() with NO argument: Node's ERR_MISSING_ARGS
  * throws before the registry lookup, so the zero-argument contract is
- * exact without any blob machinery. The one-argument form (Node's
- * no-op for unregistered ids) and createObjectURL keep their
- * fences — a compiled program has no blob registry to consult. */
+ * exact without any blob machinery. The one-argument form coerces the
+ * id to a string (a Symbol throws) and finds nothing registered — a
+ * compiled program cannot create a blob URL, so the lookup always
+ * misses and the call is its own coercion. createObjectURL keeps its
+ * fence: there is no blob registry to register into. */
 function lowerUrlStaticCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -10693,14 +10780,25 @@ function lowerUrlStaticCall(
   if (callee.name.text === "canParse" || callee.name.text === "parse") {
     return lowerUrlFactory(lowerer, call, callee.name.text);
   }
-  if (callee.name.text !== "revokeObjectURL" || call.arguments.nodes.length !== 0) return null;
-  return nodeThrowExpr(
-    1,
-    "ERR_MISSING_ARGS",
-    'The "url" argument must be specified',
-    VOID,
-    locOf(call),
-  );
+  if (callee.name.text !== "revokeObjectURL") return null;
+  const args = call.arguments.nodes;
+  if (args.length === 0) {
+    return nodeThrowExpr(
+      1,
+      "ERR_MISSING_ARGS",
+      'The "url" argument must be specified',
+      VOID,
+      locOf(call),
+    );
+  }
+  if (args.length !== 1) return null;
+  const arg = args[0]!;
+  const id = lowerer.lowerExpr(arg);
+  const text: IrExpr =
+    id.type.kind === "url"
+      ? { kind: "libCall", fn: "url.href", args: [id], type: STRING, loc: locOf(arg) }
+      : lowerer.ensureString(id, arg);
+  return { kind: "libCall", fn: "url.revokeObjectURL", args: [text], type: VOID, loc: locOf(call) };
 }
 
 const SP_BRAND_METHODS = new Set([

@@ -67,6 +67,7 @@ const JS_BOUNDARY: ReadonlySet<string> = new Set([
 const DYN_KIND_TESTS: ReadonlySet<string> = new Set([
   "dyn.typedRefIs",
   "dyn.typedRefKeyIs",
+  "dyn.classHash",
   "dyn.classIs",
   "dyn.nativeSetIs",
   "dyn.nativeMapIs",

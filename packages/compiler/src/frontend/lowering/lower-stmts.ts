@@ -1,6 +1,10 @@
 import { lowerStaticPrivateAssignment } from "./private-statics.js";
 import type { DiagnosticCode } from "../../diagnostics/codes.js";
-import { keepsInitializerLayout, notePreservedLayout } from "./structural-instances.js";
+import {
+  keepsCheckedDynamicValue,
+  keepsInitializerLayout,
+  notePreservedLayout,
+} from "./structural-instances.js";
 import { partialFieldRead } from "./partial-assertions.js";
 import { jsGlobalValueByName } from "./global-values.js";
 import { lowerTupleAliasDecl, stripTypeWrappers } from "./typed-arguments.js";
@@ -22,10 +26,12 @@ import {
 import {
   declaredMemberOf,
   fenceDatePrototypeWrite,
+  isDataViewPrototypeRead,
   isPromisePrototypeRead,
   lowerUnionKeyedRead,
 } from "./expressions/property-access.js";
-import { hostedStorageView, hostsAll } from "./expressions/hosted-narrowing.js";
+import { hostedStorageView, hostsAll, recordViewHosted } from "./expressions/hosted-narrowing.js";
+import { assertionViewCopy, bindingIdentityUse, bindingWrite } from "./divergences.js";
 import { requestGeneralStreamSurface } from "./general-streams.js";
 import { lowerForAwaitDynStream, nodeStreamInterfaceSide } from "./dyn-streams.js";
 import { lowerForAwaitValueStream } from "./builtins/hash-stream.js";
@@ -35,7 +41,7 @@ import {
   storedMatchAllRowsReadByElements,
 } from "./containers/match-row-uses.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
-import { runtimeKeyPatternRead } from "./expressions/keyed-field-targets.js";
+import { literalFieldKeys, runtimeKeyPatternRead } from "./expressions/keyed-field-targets.js";
 import { declaresHoistedBinding, staticCondition } from "./static-typeof.js";
 import { lowerCollectionSpread } from "./containers/collection-methods.js";
 import { lowerEventObjectPropertyWrite } from "./lower-event-target.js";
@@ -96,7 +102,12 @@ import {
   lowerYieldStarStatement,
   type GenType,
 } from "./lower-generators.js";
-import { classAsyncGeneratorIterator, lowerForAwaitBuiltin } from "./lower-async-iteration.js";
+import {
+  classAsyncGeneratorIterator,
+  isNodeReadableIteratorSource,
+  isWebReadableIteratorSource,
+  lowerForAwaitBuiltin,
+} from "./lower-async-iteration.js";
 import {
   BOOL,
   BYTES_U8,
@@ -130,6 +141,11 @@ import {
   staticImportNamespaceType,
 } from "./lowerer.js";
 import { enforceLibBoundary, lowerSurplusCalls } from "./lib-boundary.js";
+import {
+  isBuiltinIdentityToken,
+  isPrimitiveValueType,
+  lowerPrimitiveBaseDelete,
+} from "./primitive-throws.js";
 import {
   cjsExportAssignmentOf,
   cjsExportChainOf,
@@ -1467,6 +1483,12 @@ function varBindingType(lowerer: Lowerer, nameNode: ts.Identifier): IrType | nul
     ts.isVariableDeclaration(nameNode.parent) &&
     !nameNode.parent.type &&
     isPromisePrototypeRead(lowerer, nameNode.parent.initializer)
+  )
+    return DYN;
+  if (
+    ts.isVariableDeclaration(nameNode.parent) &&
+    !nameNode.parent.type &&
+    isDataViewPrototypeRead(lowerer, nameNode.parent.initializer)
   )
     return DYN;
   let type = lowerer.mapTypeOf(lowerer.typeOf(nameNode));
@@ -6029,17 +6051,20 @@ function evolvingArrayHolderType(lowerer: Lowerer, decl: ts.VariableDeclaration)
   return evolvingArrayHold(lowerer, decl.initializer) === null ? null : DYN;
 }
 
-/** A single static type for an initializer-less JavaScript `let` whose
- * later plain writes all agree. An evolving JS local reads as `undefined`
- * until control flow proves a write, so a scalar slot is sound only when
- * every ordinary use already has that concrete flow type. A write's call
- * counts when its signature is declared in the standard library, whose
- * return types are declared rather than inferred from JavaScript. A
- * closure capture can observe the local before an outer assignment, and
- * the checker leaves captured evolving lets broad: a captured runtime
- * handle (`let child; if (...) child = spawn(...)`) takes the handle or
- * `undefined`, which nested functions read as a checked-dynamic value
- * (closureDynLets), and other captured bindings stay checked-dynamic. */
+/** A single static type for an initializer-less `let` without an
+ * annotation whose later plain writes all agree. An evolving local reads as
+ * `undefined` until control flow proves a write, so a scalar slot is sound
+ * only when every ordinary use already has that concrete flow type (or an
+ * arm of it). A write of `null` or `undefined` joins the written type as an
+ * optional arm (`let stat; try { stat = lstatSync(".") } catch { stat = null }`
+ * holds `Stats | null`). A write's call counts when its signature is
+ * declared in the standard library, whose return types are declared rather
+ * than inferred from JavaScript. A closure capture can observe the local
+ * before an outer assignment, and the checker leaves captured evolving lets
+ * broad: a captured runtime handle (`let child; if (...) child = spawn(...)`)
+ * takes the handle or `undefined`, which nested functions read as a
+ * checked-dynamic value (closureDynLets), and other captured bindings stay
+ * checked-dynamic. */
 export function inferredEvolvingLetType(
   lowerer: Lowerer,
   decl: ts.VariableDeclaration,
@@ -6099,7 +6124,10 @@ export function inferredEvolvingLetType(
       }
       return "skip";
     }
-    if (ts.isBinaryExpression(node)) {
+    // A compound assignment (`x += 1`) reads and rewrites the binding
+    // through an operator this scan does not model; a comparison
+    // (`x === null`) only reads it, and the read check below covers that.
+    if (ts.isBinaryExpression(node) && ts.isAssignmentOperator(node.operatorToken.kind)) {
       let left = node.left;
       while (ts.isParenthesizedExpression(left)) left = left.expression;
       if (ts.isIdentifier(left) && lowerer.checker.getSymbolAtLocation(left) === symbol) {
@@ -6120,7 +6148,7 @@ export function inferredEvolvingLetType(
           return "stop";
         }
         const mapped = lowerer.mapTypeOf(lowerer.typeOf(node.right));
-        if (!mapped || mapped.kind === "dyn" || mapped.kind === "void" || isUnitType(mapped)) {
+        if (!mapped || mapped.kind === "dyn" || mapped.kind === "void") {
           invalid = true;
           return "stop";
         }
@@ -6147,20 +6175,50 @@ export function inferredEvolvingLetType(
     return undefined;
   };
   ts.walkPreorder(scope, visit);
-  const first = writes[0];
-  if (invalid || first === undefined || !writes.every((write) => typeEquals(write, first)))
-    return null;
+  // A write of an already-unioned value contributes its arms, so a call
+  // declared `Stats | null` reads the same as separate value and unit
+  // writes.
+  const armsOf = (t: IrType): readonly IrType[] =>
+    t.kind === "union" ? (lowerer.unions.get(t.unionId)?.arms ?? [t]) : [t];
+  const valueArms: IrType[] = [];
+  const unitArms: IrType[] = [];
+  for (const write of writes) {
+    for (const arm of armsOf(write)) {
+      const seen = isUnitType(arm) ? unitArms : valueArms;
+      if (!seen.some((other) => typeEquals(other, arm))) seen.push(arm);
+    }
+  }
+  const value = valueArms[0];
+  if (invalid || value === undefined || valueArms.length > 1) return null;
+  const arms = [value];
+  if (unitArms.length > 0) {
+    // An evolving local reads as `undefined` before control flow proves a
+    // write, so the optional storage carries that arm as well.
+    arms.push(UNDEFINED_T);
+    for (const unit of unitArms) {
+      if (unit.kind !== "undefinedT") arms.push(unit);
+    }
+  }
+  const storage: IrType =
+    arms.length === 1 ? value : { kind: "union", unionId: lowerer.unions.intern(arms) };
+  // A narrowed read sees an arm, or a sub-union of arms, of the storage.
   if (
     !reads.every((read) => {
       const mapped = lowerer.mapTypeOf(lowerer.typeOf(read));
-      return mapped !== null && typeEquals(mapped, first);
+      return (
+        mapped !== null && armsOf(mapped).every((arm) => arms.some((own) => typeEquals(own, arm)))
+      );
     })
   )
     return null;
-  if (!captured) return first;
-  if (!DYN_HANDLE_KINDS.has(first.kind)) return null;
+  if (!captured) return storage;
+  if (!DYN_HANDLE_KINDS.has(value.kind)) return null;
   lowerer.closureDynLets.add(symbol);
-  return { kind: "union", unionId: lowerer.unions.intern([first, UNDEFINED_T]) };
+  // A nested function can read the binding before the outer assignment:
+  // the optional arm is what the checked-dynamic read of the closure sees.
+  return storage.kind === "union"
+    ? storage
+    : { kind: "union", unionId: lowerer.unions.intern([value, UNDEFINED_T]) };
 }
 
 /** Whether a call's resolved signature is declared in the standard library
@@ -6529,6 +6587,22 @@ export function lowerVarDecl(
       g.type = raw.type;
       notePreservedLayout(lowerer, decl);
     }
+    // The same for a module const initialized by an assertion: the value's
+    // storage already answers the asserted view (narrowing.ts), so the
+    // module holds that layout and writes through it reach the object.
+    if (
+      !isVarDeclared(decl) &&
+      (ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) !== 0 &&
+      assertionKeepsStorageLayout(lowerer, decl, raw.type, g.type)
+    ) {
+      g.type = raw.type;
+      notePreservedLayout(lowerer, decl);
+    }
+    if (
+      !isVarDeclared(decl) &&
+      keepsCheckedDynamicValue(lowerer, decl.initializer, raw.type, g.type)
+    )
+      g.type = raw.type;
     const arithmetic =
       raw.type.kind === "union" ? lowerer.unions.get(raw.type.unionId)?.arms : undefined;
     if (
@@ -6544,6 +6618,7 @@ export function lowerVarDecl(
       lowerer.runtimeOptionalArithmeticGlobals.add(g);
     }
     const init = lowerer.coerceInto(decl.initializer, raw, g.type);
+    refuseAssertionViewWrite(lowerer, decl);
     return {
       kind: "assign",
       localId: g.id,
@@ -6586,12 +6661,13 @@ export function lowerVarDecl(
     // `let x: number;` — declared, uninitialized. tsc guarantees no read
     // before assignment (TS2454) and rejects uninitialized const (TS1155).
     // Unannotated `let x;` is an evolving `any` — the checked-dynamic
-    // binding fallback (irTypeOf → dynFallbackType).
+    // binding fallback (irTypeOf → dynFallbackType) unless its writes agree
+    // on a type.
     // Undefined-armed unions (`let x: string | undefined;`) are readable
     // immediately (the type covers the unassigned state), so they
     // initialize to the interned undefined arm like an omitted optional.
     let type = lowerer.irTypeOf(decl.name);
-    if (type.kind === "dyn" && isLet && isJsSourceFile(ts.getSourceFileOfNode(decl))) {
+    if (type.kind === "dyn" && isLet && decl.type === undefined) {
       type = inferredEvolvingLetType(lowerer, decl) ?? type;
     }
     // `var v: void;` / `let x: undefined;` — a unit-only binding rides
@@ -6684,6 +6760,15 @@ export function lowerVarDecl(
   // Promise.prototype is an ordinary object the checker types Promise<any>.
   if (!decl.type && !hasJsTypeAnnotation(decl) && isPromisePrototypeRead(lowerer, decl.initializer))
     type = DYN;
+  // DataView.prototype (and its members) is likewise the prototype OBJECT,
+  // though the checker types it DataView, whose lowering is a bytes view:
+  // the binding holds the object the read lowered to.
+  if (
+    !decl.type &&
+    !hasJsTypeAnnotation(decl) &&
+    isDataViewPrototypeRead(lowerer, decl.initializer)
+  )
+    type = DYN;
   // A web stream value in JavaScript keeps its checked-dynamic identity.
   if (
     init.type.kind === "dyn" &&
@@ -6719,6 +6804,11 @@ export function lowerVarDecl(
     type = init.type;
     notePreservedLayout(lowerer, decl);
   }
+  // An index-signature binding whose assertion of an existing value lowered
+  // to that value (narrowing.ts keeps it instead of answering a copy whose
+  // keys live in a map of its own) keeps the value too: converting it here
+  // would take every write through the binding with it.
+  if (keepsCheckedDynamicValue(lowerer, decl.initializer, init.type, type)) type = init.type;
   // A JavaScript binding assigned values outside its declared type
   // (analyzeJsWidenedBindings in lowerer.ts) holds them as checked-dynamic.
   {
@@ -7124,15 +7214,9 @@ export function lowerVarDecl(
   // the stored type hosts (`const view: Route & { order: number } = ...`)
   // keeps it too: coercing into the annotated layout would copy the
   // value and read members the writes have not created yet.
-  if (
-    !isLet &&
-    decl.initializer &&
-    isAssertionInitializer(decl.initializer) &&
-    (settledType.kind === "union" || settledType.kind === "record") &&
-    (init.type.kind === "union" || init.type.kind === "record") &&
-    hostsAll(lowerer, init.type, settledType)
-  ) {
+  if (!isLet && assertionKeepsStorageLayout(lowerer, decl, init.type, settledType)) {
     settledType = init.type;
+    notePreservedLayout(lowerer, decl);
   }
   // An exact class behind a generic interface keeps its native
   // representation so generic calls can specialize against its body.
@@ -7163,6 +7247,7 @@ export function lowerVarDecl(
   // Slot coercion: `const r: A | B = bValue;` wraps implicitly; width
   // subtyping (`const p: {a: number} = wider;`) is rejected, not coerced.
   init = lowerer.coerceInto(decl.initializer, init, settledType);
+  refuseAssertionViewWrite(lowerer, decl);
   const local = lowerer.declareLocal(decl.name, decl.name.text, settledType, isLet);
   if (runtimeStringArithmetic && init.type.kind === "union") {
     lowerer.runtimeOptionalArithmeticLocals.add(lowerer.runtimeOptionalRootOf(local));
@@ -8084,6 +8169,24 @@ function declaresCheckedDynField(lowerer: Lowerer, type: IrType, name: string): 
   return arms.length > 0 && arms.every((arm) => declaresCheckedDynField(lowerer, arm, name));
 }
 
+/** The constant property key of a `delete` target: the name of a dot
+ * access, or the one key of a bracket access spelled as a literal or
+ * proved by a literal-typed binding (`const key = "a"`). A key of several
+ * literals folds to nothing — deleting it would need per-key dispatch, so
+ * the record branch refuses and names the keys. Consistent with keyed
+ * record reads/writes (literalFieldKeys), the key expression is not
+ * evaluated: only a literal or an identifier folds, and an identifier
+ * read is pure. */
+function constantDeleteKey(lowerer: Lowerer, target: ts.Expression): string | null {
+  if (ts.isPropertyAccessExpression(target)) return target.name.text;
+  if (!ts.isElementAccessExpression(target)) return null;
+  const keyNode = target.argumentExpression;
+  if (ts.isStringLiteralLike(keyNode)) return keyNode.text;
+  if (!ts.isIdentifier(keyNode)) return null;
+  const keys = literalFieldKeys(lowerer, keyNode);
+  return keys?.length === 1 ? keys[0]! : null;
+}
+
 /** Statement-position `delete`: process.env keys → process.envUnset
  * (unsetenv), pure `Record<string, T>` keys → recordKeyDelete (the
  * overflow Map delete), declared OPTIONAL fields → the field's ABSENT
@@ -8167,6 +8270,18 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
     if (unionDelete) return unionDelete;
   }
   let obj = lowerer.lowerExpr(target.expression);
+  // A PRIMITIVE receiver: `delete` runs ToObject on the base AFTER the key,
+  // and the base's type decides the answer — null and undefined throw
+  // Node's TypeError, `?.` on a nullish base short-circuits to `true`
+  // without evaluating the key, and every other primitive deletes from its
+  // ToObject wrapper (a String's indexes and `length` refuse the delete).
+  if (isPrimitiveValueType(obj.type) && !isBuiltinIdentityToken(lowerer, target.expression, obj)) {
+    return {
+      kind: "exprStmt",
+      expr: lowerPrimitiveBaseDelete(lowerer, expr, target, obj, VOID),
+      loc,
+    };
+  }
   // `delete this.stack` in an Error subclass that declares a `stack`
   // accessor (quickjs-wasi's JSException): V8 gives each error an own
   // `stack` that shadows the accessor, and the delete removes it so reads
@@ -8244,13 +8359,12 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
       loc,
     };
   }
-  // The constant property key of the target (dot access or a literal
-  // bracket), when there is one.
-  const constantKey = ts.isPropertyAccessExpression(target)
-    ? target.name.text
-    : ts.isStringLiteral(target.argumentExpression)
-      ? target.argumentExpression.text
-      : null;
+  // The constant property key of the target: dot access, a literal
+  // bracket, or an element access whose key is a literal-typed binding
+  // (`const key = "a"; delete r[key]`) — the same stance a keyed record
+  // read/write takes (literalFieldKeys): identifier evaluation is pure, so
+  // skipping it matches JavaScript.
+  const constantKey = constantDeleteKey(lowerer, target);
   // An OPTIONAL `unknown`/`any` field rides the checked-dynamic slot,
   // which has no ABSENT state yet (an omitted such field already reads as
   // present), so it cannot delete. Name that reason instead of calling
@@ -8306,6 +8420,19 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
     }
     if (optionalCheckedDynDelete) {
       lowerer.unsupported("SC1090", expr, OPTIONAL_CHECKED_DYN_DELETE);
+    }
+    // A key of SEVERAL literals names no single slot: say that instead of
+    // blaming a field the caller never named.
+    const keyNames =
+      constantKey === null && ts.isElementAccessExpression(target)
+        ? literalFieldKeys(lowerer, target.argumentExpression)
+        : null;
+    if (keyNames !== null && keyNames.length > 1) {
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        `'delete' through keys of ${keyNames.length} literals (${keyNames.map((k) => `'${k}'`).join(", ")}; delete one constant key at a time, or switch over the key)`,
+      );
     }
     lowerer.unsupported(
       "SC1090",
@@ -11365,7 +11492,14 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
   const awaitArray =
     !!stmt.awaitModifier && lowerer.mapTypeOf(lowerer.typeOf(stmt.expression))?.kind === "array";
   if (stmt.awaitModifier && !awaitArray) {
-    {
+    // A web ReadableStream's and a Node readable's iterator views both type
+    // as AsyncIterableIterator, which lowers like the async protocols — but
+    // the loop consumes each view through its own lowering
+    // (lowerForAwaitBuiltin below).
+    if (
+      !isWebReadableIteratorSource(lowerer, stmt.expression) &&
+      !isNodeReadableIteratorSource(lowerer, stmt.expression)
+    ) {
       const genT =
         lowerer.stageSourceType(stmt.expression) ??
         lowerer.mapTypeOf(lowerer.typeOf(stmt.expression));
@@ -14330,4 +14464,58 @@ function isAssertionInitializer(node: ts.Expression): boolean {
   let e = node;
   while (ts.isParenthesizedExpression(e)) e = e.expression;
   return ts.isAsExpression(e) || ts.isTypeAssertion(e);
+}
+
+/** `const view = route as Route & { order: number }`: the asserted type
+ * refines the record arms the value is stored in (hosted-narrowing.ts), and
+ * a projection (`{ text: string }` over `TextBlock`) only names members the
+ * stored record already holds. Either way Node erases the assertion and
+ * keeps the object, so the binding keeps the value's layout and its writes
+ * reach that object instead of a copy. */
+function assertionKeepsStorageLayout(
+  lowerer: Lowerer,
+  decl: ts.VariableDeclaration,
+  init: IrType,
+  settled: IrType,
+): boolean {
+  if (decl.initializer === undefined || !isAssertionInitializer(decl.initializer)) return false;
+  if (settled.kind !== "union" && settled.kind !== "record") return false;
+  if (init.kind !== "union" && init.kind !== "record") return false;
+  if (hostsAll(lowerer, init, settled)) return true;
+  // A projection (`{ text: string }` over `TextBlock`) keeps the stored
+  // record only when the binding's identity is observable through it
+  // (a write, an identity comparison). A read-only view is equal either
+  // way, keeps the copy narrowing.ts made, and stays reported.
+  if (!bindingIdentityUse(decl, lowerer.checker)) return false;
+  return (
+    init.kind === "record" &&
+    settled.kind === "record" &&
+    recordViewHosted(lowerer, init.shapeId, settled.shapeId)
+  );
+}
+
+/** `const v = x as { a: number; extra?: string }; v.extra = "x"`: the
+ * assertion's view names a member the value's own layout does not, so the
+ * binding receives a COPY of `x` and the write lands on that copy — Node
+ * erases the assertion and adds the property to `x` itself, so the write
+ * must reach a caller-visible object. Reads of a copy are equal either
+ * way, and so is a nested write through a member the copy shares (the same
+ * child object in both), so only a write to the copy's own field is
+ * refused, by name. Where the layouts agree the binding keeps the value's
+ * storage instead (assertionKeepsStorageLayout), narrowing.ts and
+ * lowerVarDecl record that in layoutKeptNodes, and nothing here fires.
+ * Runs for file-scope and local bindings alike, after the declaration has
+ * been lowered (so the keep is known). */
+function refuseAssertionViewWrite(lowerer: Lowerer, decl: ts.VariableDeclaration): void {
+  if (decl.initializer === undefined || !isAssertionInitializer(decl.initializer)) return;
+  if (lowerer.layoutKeptNodes.has(decl.initializer)) return;
+  const copy = assertionViewCopy(lowerer, decl.initializer);
+  if (copy === null) return;
+  const write = bindingWrite(lowerer, decl);
+  if (write === null) return;
+  lowerer.unsupported(
+    "SC1090",
+    decl,
+    `writing '${write.text}' through '${decl.name.getText()}', a copy of the '${copy.source}' value the assertion views as '${copy.target}' (the write would land on the copy; write through the original binding, or declare the member on the value's type)`,
+  );
 }

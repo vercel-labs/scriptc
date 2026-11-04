@@ -550,6 +550,18 @@ static ScrClosure *bcs_adapter(ScrDyn *fn, ScrDyn *self, void *call) {
   return adapter;
 }
 
+/* The listener's checked-dynamic callable: a function value over an adapter
+ * that binds the stream as `this`, so an untyped emit — the empty argument
+ * vector the stream's own events carry — reaches the listener the way Node
+ * calls it, rather than through the listener's bare thunk, whose `this` is
+ * whatever the ambient receiver window holds. The adapter adopts the
+ * listener's identity, so off/removeListener still find the entry. +1. */
+static ScrDyn *bcs_flex_listener(ScrDyn *listener, ScrDyn *self) {
+  ScrClosure *adapter = bcs_adapter(listener, self, (void *)bcs_listener_flex);
+  return scr_dyn_new_func(adapter, bcs_listener_flex, listener->v.fn.arity, listener->v.fn.sig,
+                          listener->v.fn.name);
+}
+
 static bool bcs_is(const ScrStr *name, const char *text) {
   size_t length = strlen(text);
   return name->len == length && memcmp(name->data, text, length) == 0;
@@ -598,26 +610,37 @@ static bool bcs_add_listener(ScrStream *s, ScrDyn *self, ScrDyn *type, ScrDyn *l
   if (!name) return false;
   ScrEmitter *em = (ScrEmitter *)s;
   ScrEmitter *chained = NULL;
-  switch (bcs_event_shape(name)) {
+  int shape = bcs_event_shape(name);
+  /* The fixed tuples run the adapter; the checked-dynamic callable beside
+   * them binds the same receiver for untyped emits. */
+  ScrDyn *flex = listener->kind == SCR_DYN_FUNC && shape >= 0 && shape <= 4
+                     ? bcs_flex_listener(listener, self)
+                     : NULL;
+  switch (shape) {
   case 0:
-    chained = scr_emitter_on_dyn(em, name, listener, bcs_adapter(listener, self, (void *)bcs_listener0),
-                                 scr_ee_inv_fixed0, once, prepend);
+    chained = scr_emitter_on_dyn_bound(em, name, listener, flex,
+                                       bcs_adapter(listener, self, (void *)bcs_listener0),
+                                       scr_ee_inv_fixed0, once, prepend);
     break;
   case 1:
-    chained = scr_emitter_on_dyn(em, name, listener, bcs_adapter(listener, self, (void *)bcs_listener_data),
-                                 scr_ee_inv_fixed3, once, prepend);
+    chained = scr_emitter_on_dyn_bound(em, name, listener, flex,
+                                       bcs_adapter(listener, self, (void *)bcs_listener_data),
+                                       scr_ee_inv_fixed3, once, prepend);
     break;
   case 2:
-    chained = scr_emitter_on_dyn(em, name, listener, bcs_adapter(listener, self, (void *)bcs_listener_error),
-                                 scr_ee_inv_fixed1, once, prepend);
+    chained = scr_emitter_on_dyn_bound(em, name, listener, flex,
+                                       bcs_adapter(listener, self, (void *)bcs_listener_error),
+                                       scr_ee_inv_fixed1, once, prepend);
     break;
   case 3:
-    chained = scr_emitter_on_dyn(em, name, listener, bcs_adapter(listener, self, (void *)bcs_listener_stream),
-                                 scr_ee_inv_fixed1, once, prepend);
+    chained = scr_emitter_on_dyn_bound(em, name, listener, flex,
+                                       bcs_adapter(listener, self, (void *)bcs_listener_stream),
+                                       scr_ee_inv_fixed1, once, prepend);
     break;
   case 4:
-    chained = scr_emitter_on_dyn(em, name, listener, bcs_adapter(listener, self, (void *)bcs_listener_name),
-                                 scr_ee_inv_fixed1, once, prepend);
+    chained = scr_emitter_on_dyn_bound(em, name, listener, flex,
+                                       bcs_adapter(listener, self, (void *)bcs_listener_name),
+                                       scr_ee_inv_fixed1, once, prepend);
     break;
   default: {
     ScrClosure *adapter = bcs_adapter(listener, self, (void *)bcs_listener_flex);
@@ -627,6 +650,7 @@ static bool bcs_add_listener(ScrStream *s, ScrDyn *self, ScrDyn *type, ScrDyn *l
     break;
   }
   }
+  if (flex) scr_dyn_release(flex);
   if (chained) scr_emitter_release(chained);
   scr_str_release(name);
   return !scr_exc_pending();

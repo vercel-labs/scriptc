@@ -95,6 +95,13 @@ void scr_emitter_check_listener(const ScrDyn *cb);
 ScrEmitter *scr_emitter_on_dyn(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
                                 ScrClosure *adapter /*moves*/,
                                 ScrEeInvoke inv, bool once, bool prepend);
+/* on_dyn whose untyped emits call `flex` — a function value over an adapter
+ * that binds the receiver — while `cb` keeps the entry's identity (a
+ * stream's listeners read the stream as `this` on both paths). cb and flex
+ * are borrowed, adapter MOVES; returns em +1. */
+ScrEmitter *scr_emitter_on_dyn_bound(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
+                                     const ScrDyn *flex, ScrClosure *adapter /*moves*/,
+                                     ScrEeInvoke inv, bool once, bool prepend);
 /* Listeners registered as checked-dynamic functions retain the original
  * closure and its checked-dynamic call thunk, preserving the number of
  * arguments passed to an untyped emit. on_dyn entries also carry the typed

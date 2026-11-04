@@ -5589,6 +5589,8 @@ function buildLibFnSignatures() {
     "als.get": { argTypes: [F64], result: DYN },
     "als.run": { argTypes: [F64, DYN, DYN, DYN], result: DYN },
     "als.exitRun": { argTypes: [F64, DYN, DYN], result: DYN },
+    "als.push": { argTypes: [F64, DYN], result: VOID },
+    "als.pop": { argTypes: [], result: VOID },
     "als.enterWith": { argTypes: [F64, DYN], result: VOID },
     "als.disable": { argTypes: [F64], result: VOID },
     /** new AsyncLocalStorage(options) (Node's object check throws; MAY

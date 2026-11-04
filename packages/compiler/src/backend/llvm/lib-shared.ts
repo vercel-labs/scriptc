@@ -1795,6 +1795,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "als.get": "scr_als_get",
   "als.run": "scr_als_run",
   "als.exitRun": "scr_als_exit_run",
+  "als.push": "scr_als_push",
+  "als.pop": "scr_als_pop",
   "als.enterWith": "scr_als_enter_with",
   "als.disable": "scr_als_disable",
   "als.newOptions": "scr_als_new_options",

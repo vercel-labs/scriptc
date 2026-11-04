@@ -44,6 +44,7 @@ export function lowerPrototypeReflectionCall(
   call: ts.CallExpression,
   member: "getPrototypeOf" | "setPrototypeOf",
   loc: SrcLoc,
+  rejectPrimitiveTarget = false,
 ): IrExpr | null {
   let object = lowerer.lowerExpr(call.arguments.nodes[0]!);
   if (object.type.kind === "func") {
@@ -75,13 +76,39 @@ export function lowerPrototypeReflectionCall(
       [ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken].includes(
         parent.operatorToken.kind,
       );
-    return {
+    const answer: IrExpr = {
       kind: "libCall",
       fn: "dyn.getPrototype",
       args: [object],
       type: DYN,
       loc,
       ...(identityOnly ? { prototypeIdentityOnly: true as const } : {}),
+    };
+    if (!rejectPrimitiveTarget) return answer;
+    // Reflect.getPrototypeOf rejects every primitive target with its own
+    // TypeError, where Object.getPrototypeOf boxes it: the target is bound
+    // once and checked before the prototype edge is read.
+    const targetLocal = lowerer.declareHiddenLocal("%reflectProtoTarget", DYN);
+    const targetRef = varRef(targetLocal.id, DYN, loc);
+    return {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: targetLocal.id, init: object, loc },
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "dyn.reflectGetPrototypeTarget",
+            args: [targetRef],
+            type: VOID,
+            loc,
+          },
+          loc,
+        },
+      ],
+      result: { ...answer, args: [targetRef] },
+      type: DYN,
+      loc,
     };
   }
   const prototype = lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN);
@@ -127,7 +154,7 @@ export function lowerReflectCall(
     call.arguments.nodes.length === 1 &&
     !ts.isSpreadElement(call.arguments.nodes[0]!)
   ) {
-    return lowerPrototypeReflectionCall(lowerer, call, "getPrototypeOf", locOf(call));
+    return lowerPrototypeReflectionCall(lowerer, call, "getPrototypeOf", locOf(call), true);
   }
   // Reflect.has(target, key) — the `in` operator's presence query over
   // the target's checked-dynamic view (own and inherited names, proxy

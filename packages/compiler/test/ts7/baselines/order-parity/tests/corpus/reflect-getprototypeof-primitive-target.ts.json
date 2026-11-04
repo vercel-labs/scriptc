@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/reflect-getprototypeof-primitive-target.ts"
+ ],
+ "diags": []
+}

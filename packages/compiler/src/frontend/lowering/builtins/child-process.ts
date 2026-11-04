@@ -1011,6 +1011,10 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
   let envPairs: IrExpr = { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc };
   let cwd: IrExpr = emptyStr;
   let plain = true; // exactly { stdio: "ignore" }: the historical libCall
+  // A scalar union-typed stdio expression feeds all three modes: it is
+  // read once at the call into a hidden local, so a side effect in the
+  // expression runs once and the three modes cannot disagree.
+  let stdioMode: { localId: string; init: IrExpr } | null = null;
 
   if (optsNode && ts.isObjectLiteralExpression(optsNode)) {
     for (const p of optsNode.properties.nodes) {
@@ -1127,7 +1131,9 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
           const t = lowerer.typeOf(m.value);
           const chain = stdioModeChain(lowerer, m.value, { pipe: 3, ignore: 0, inherit: 1 });
           if (chain !== null) {
-            inMode = outMode = errMode = chain;
+            const local = lowerer.declareHiddenLocal("%spawnStdioMode", chain.type);
+            stdioMode = { localId: local.id, init: chain };
+            inMode = outMode = errMode = varRef(local.id, chain.type, loc);
             sawStdio = true;
             plain = false;
             break;
@@ -1218,7 +1224,7 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
   if (plain) {
     return { kind: "libCall", fn: "cp.spawn", args: [cmd, argv], type: CHILD_T, loc };
   }
-  return {
+  const call: IrExpr = {
     kind: "libCall",
     fn: "cp.spawnOpts",
     args: [
@@ -1235,6 +1241,26 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
       envPairs,
       cwd,
     ],
+    type: CHILD_T,
+    loc,
+  };
+  if (stdioMode === null) return call;
+  // Node evaluates the arguments before the options object: the command
+  // and the argument list are bound first, then the stdio member, and the
+  // call reads all three from those locals.
+  const prelude: IrStmt[] = [];
+  const bind = (name: string, value: IrExpr): IrExpr => {
+    const local = lowerer.declareHiddenLocal(name, value.type);
+    prelude.push({ kind: "varDecl", localId: local.id, init: value, loc });
+    return varRef(local.id, value.type, loc);
+  };
+  const cmdArg = bind("%spawnCmd", cmd);
+  const argvArg = bind("%spawnArgs", argv);
+  prelude.push({ kind: "varDecl", localId: stdioMode.localId, init: stdioMode.init, loc });
+  return {
+    kind: "seqExpr",
+    stmts: prelude,
+    result: { ...call, args: [cmdArg, argvArg, ...call.args.slice(2)] },
     type: CHILD_T,
     loc,
   };

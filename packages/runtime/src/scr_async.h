@@ -23,6 +23,7 @@ ScrPromise *scr_tp_set_immediate(void);
 ScrPromise *scr_promise_new(void);
 void scr_promise_share_identity(ScrPromise *dst, ScrPromise *src);
 bool scr_promise_identity_equal(ScrPromise *a, ScrPromise *b);
+void *scr_promise_map_identity(void *promise);
 /* A key every promise sharing `p`'s identity answers (each adapter box of
  * a typed promise), creating the shared cell when `p` has none. */
 const void *scr_promise_identity_key(ScrPromise *p);

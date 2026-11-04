@@ -1472,7 +1472,7 @@ static inline __attribute__((always_inline)) ScrArr *scr_arr_make(ScrElemKind el
   if (a)
     a->rc = SCR_ARENA_RC;
   else {
-    a = scr_mem_alloc(size);
+    a = scr_mem_alloc_ref(size);
     if (!a) scr_arr_oom();
     a->rc = 1;
   }
@@ -1516,7 +1516,7 @@ ScrArr *scr_arr_new_inline(ScrElemKind elem, size_t cap, bool states) {
   }
   if (cap > SCR_ARR_MAX_LENGTH) scr_arr_oom();
   size_t unit = scr_elem_slot_width(elem) + (states ? 1 : 0);
-  ScrArr *a = scr_mem_alloc(SCR_ARR_INLINE_OFFSET + cap * unit);
+  ScrArr *a = scr_mem_alloc_ref(SCR_ARR_INLINE_OFFSET + cap * unit);
   if (!a) scr_arr_oom();
   a->rc = 1;
   a->len = 0;
@@ -1531,6 +1531,21 @@ ScrArr *scr_arr_new_inline(ScrElemKind elem, size_t cap, bool states) {
   scr_live_arrays++;
 #endif
   return a;
+}
+
+ScrArr *scr_arr_window_header(const ScrArr *image, ScrArr **slot) {
+  ScrArr *known = __atomic_load_n(slot, __ATOMIC_ACQUIRE);
+  if (known) return known;
+  ScrArr *made = scr_mem_alloc_ref(sizeof(ScrArr));
+  if (!made) scr_arr_oom();
+  memcpy(made, image, sizeof(ScrArr));
+  /* Other threads reach the copy through the slot. */
+  scr_sa_thread_shares();
+  ScrArr *expected = NULL;
+  if (__atomic_compare_exchange_n(slot, &expected, made, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+    return made;
+  scr_mem_free(made);
+  return expected;
 }
 
 void scr_arr_outline(ScrArr *a) {
@@ -1644,7 +1659,7 @@ static inline __attribute__((always_inline)) ScrArr *scr_arr_make_ops_kind(const
     if (cyc)
       a = scr_cyc_alloc_inline(size, &scr_arr_cyc_type);
     else {
-      a = scr_mem_alloc(size);
+      a = scr_mem_alloc_ref(size);
       if (!a) scr_arr_oom();
     }
     a->rc = 1;

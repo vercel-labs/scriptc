@@ -1,0 +1,27 @@
+early-error-arguments-initializer.js:8:18 - error SC0001: Cannot find name 'arguments'. Did you mean the static member 'Box.arguments'?
+
+  7 | class Box {
+  8 |   value = (() => arguments);
+    |                  ^~~~~~~~~
+  9 |   static {
+
+early-error-arguments-initializer.js:8:18 - error SC0012: 'arguments' is not allowed in a class field initializer or a class static block
+
+  7 | class Box {
+  8 |   value = (() => arguments);
+    |                  ^~~~~~~~~
+  9 |   static {
+
+early-error-arguments-initializer.js:10:10 - error SC0001: Cannot find name 'arguments'. Did you mean the static member 'Box.arguments'?
+
+   9 |   static {
+  10 |     read(arguments);
+     |          ^~~~~~~~~
+  11 |   }
+
+early-error-arguments-initializer.js:10:10 - error SC0012: 'arguments' is not allowed in a class field initializer or a class static block
+
+   9 |   static {
+  10 |     read(arguments);
+     |          ^~~~~~~~~
+  11 |   }

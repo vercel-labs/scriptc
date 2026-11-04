@@ -12,7 +12,8 @@
     "end": 320
    },
    "milestone": "later",
-   "hint": "a write to an undeclared name has no native lowering: sloppy mode makes it a property on Node's global object, which a native binary has none of, and strict mode makes it throw; declare the name, or keep the module in a Node island (sloppy-mode programs route there)"
+   "hint": "declare the name to keep the module native: a sloppy-mode write creates a property on Node's global object, which a native binary has none of (with --node-islands=auto, the default, a required module with this write runs in a Node island instead), and a strict-mode write throws",
+   "reason": "implicit-global-write"
   }
  ]
 }

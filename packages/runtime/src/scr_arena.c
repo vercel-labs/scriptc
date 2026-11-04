@@ -27,6 +27,10 @@
 typedef struct ScrArenaChunk {
   struct ScrArenaChunk *next;
   size_t size; /* bytes, this header included */
+  /* Taken from the allocator window (scr_mem_alloc_ref) rather than the
+   * system allocator, so its objects can be named by a 32-bit field; freed
+   * with scr_mem_free. */
+  bool windowed;
 } ScrArenaChunk;
 
 /* The leading fields are an ABI: emitted arena-aware constructors bump
@@ -70,6 +74,19 @@ static SCR_TL unsigned scr_arena_pooled;
 static SCR_TL ScrArenaChunk *scr_arena_chunk_pool;
 static SCR_TL size_t scr_arena_chunk_bytes;
 
+#if SCR_SMALL_ALLOC
+/* Whether an arena object can be named by a 32-bit field: a program that
+ * stores references in compact class fields (scr_sa_require_window) has
+ * only the window's blocks to name, arena objects included. The compiler
+ * calls scr_sa_require_window at startup, before any arena opens, so a
+ * program's chunks have one source from the start. */
+#if defined(__linux__)
+static inline bool scr_arena_windowed(void) { return scr_sa_refs_required(); }
+#else
+static inline bool scr_arena_windowed(void) { return false; } /* no window */
+#endif
+#endif
+
 void *scr_arena_current(void) { return scr_arena_cur; }
 
 void *scr_arena_suspend(void) {
@@ -100,8 +117,15 @@ void *scr_arena_open(void **list, int32_t closed) {
   a->bytes = 0;
   a->disposals = a->disposal_base;
 #if SCR_SMALL_ALLOC
-  a->bump = a->inline_chunk;
-  a->limit = a->inline_chunk + SCR_ARENA_INLINE;
+  /* The inline chunk is part of this arena, which the system allocator
+   * holds, so a program whose fields name arena objects takes its first
+   * chunk from the window instead (scr_arena_chunk). */
+  if (scr_arena_windowed()) {
+    a->bump = a->limit = NULL;
+  } else {
+    a->bump = a->inline_chunk;
+    a->limit = a->inline_chunk + SCR_ARENA_INLINE;
+  }
 #else
   a->bump = a->limit = NULL;
   a->nblocks = 0;
@@ -149,17 +173,26 @@ void scr_arena_disposal(void *arena, void *obj, ScrArenaDispose dispose) {
 
 #if SCR_SMALL_ALLOC
 static ScrArenaChunk *scr_arena_chunk(size_t want) {
+  bool windowed = scr_arena_windowed();
   for (ScrArenaChunk **p = &scr_arena_chunk_pool; *p; p = &(*p)->next)
-    if ((*p)->size >= want) {
+    if ((*p)->size >= want && (!windowed || (*p)->windowed)) {
       ScrArenaChunk *c = *p;
       *p = c->next;
       scr_arena_chunk_bytes -= c->size;
       return c;
     }
-  ScrArenaChunk *c = malloc(want);
+  /* A window chunk's objects can be truncated by a compact field; one the
+   * window cannot serve ends the process (scr_sa_slow_ref). */
+  ScrArenaChunk *c = windowed ? scr_mem_alloc_ref(want) : malloc(want);
   if (!c) scr_trap("scriptc: out of memory\n");
   c->size = want;
+  c->windowed = windowed;
   return c;
+}
+
+static void scr_arena_chunk_release(ScrArenaChunk *c) {
+  if (c->windowed) scr_mem_free(c);
+  else free(c);
 }
 
 static char *scr_arena_chunk_start(ScrArenaChunk *c) {
@@ -235,7 +268,7 @@ static void scr_arena_free(ScrArena *a) {
       scr_arena_chunk_pool = c;
       scr_arena_chunk_bytes += c->size;
     } else
-      free(c);
+      scr_arena_chunk_release(c);
   }
   if (scr_arena_pooled < SCR_ARENA_POOL) {
     a->next = scr_arena_pool;
@@ -262,7 +295,7 @@ void scr_arena_thread_exit(void) {
 #if SCR_SMALL_ALLOC
   for (ScrArenaChunk *c = scr_arena_chunk_pool, *next; c; c = next) {
     next = c->next;
-    free(c);
+    scr_arena_chunk_release(c);
   }
   scr_arena_chunk_pool = NULL;
   scr_arena_chunk_bytes = 0;

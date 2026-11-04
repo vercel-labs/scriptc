@@ -34,6 +34,20 @@ function drop(u: DynA | DynB): void {
 }
 drop(d);
 
+// A key of SEVERAL literals (a parameter keeps the union; a `const`
+// binding narrows to its initializer's literal and folds) names no single
+// slot statically; the refusal names the key form instead of claiming a
+// field is required.
+interface Two {
+  a?: number;
+  b?: number;
+}
+const two: Two = {};
+function dropTwo(which: "a" | "b"): void {
+  delete two[which];
+}
+dropTwo("a");
+
 // A REQUIRED record field has no absent state to write, so the refusal
 // names that reason (tsc rejects the delete itself; the fence explains
 // the shape decision to a program that reaches lowering through a

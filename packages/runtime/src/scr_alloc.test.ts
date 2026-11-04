@@ -24,6 +24,15 @@ test.each([
     ["-fsanitize=undefined", "-DSCR_WORKERS", "-pthread"],
     { GLIBC_TUNABLES: "glibc.mem.tagging=3" },
   ],
+  // Slices of two chunks, which the checks outgrow.
+  ["size-class", ["-fsanitize=undefined", "-DSCR_SA_SLICE_SHIFT=23"], {}],
+  // A window of four chunks, which the checks fill.
+  ["small window", ["-fsanitize=undefined", "-DSCR_SA_WINDOW_TEST_CHUNKS=4"], {}],
+  [
+    "small window",
+    ["-fsanitize=undefined", "-DSCR_SA_WINDOW_TEST_CHUNKS=4", "-DSCR_WORKERS", "-pthread"],
+    {},
+  ],
 ])("small-object allocator contracts hold (%s, %j, %j)", async (mode, sanitize, extraEnv) => {
   const scratch = await mkdtemp(join(tmpdir(), "scriptc-alloc-"));
   try {

@@ -6695,6 +6695,63 @@ function runtimeRequestOptions(
   return lowerer.coerceToExpected(lowerer.lowerExpr(optsNode), DYN);
 }
 
+/** Whether the second argument of a URL-form client call is the response
+ * callback rather than an options value: a function literal, or a value
+ * whose type is a function. Node's overloads disambiguate the same way —
+ * a RequestOptions value is not callable. */
+function isResponseCallback(lowerer: Lowerer, node: ts.Expression): boolean {
+  if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) return true;
+  const type = lowerer.typeOf(node);
+  // An untyped value stays on the callback side: Node decides
+  // `typeof options === 'function'` at run time, and the two-argument URL
+  // call has always taken an untyped callback (`http.get(url, cb)` with
+  // `cb: any`). The options form needs a value the lowering can hand to
+  // the merge, which an untyped value is not.
+  if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return true;
+  // A callable value is the callback (a function-typed variable, or a union
+  // whose callable arm the checker widens). Everything else the mapper calls
+  // a function is one too.
+  if (lowerer.checker.getCallSignatures(type).length > 0) return true;
+  const t = lowerer.mapTypeOf(type);
+  // An OBJECT-SHAPED value is the options record: `RequestOptions` maps to
+  // the checked-dynamic value, which the URL-form merge reads. A value with
+  // no lowering type keeps the callback path it had.
+  return t === null || t.kind === "func";
+}
+
+/** The options value of request(url, options[, cb]) as the checked-dynamic
+ * record the runtime merges under the URL's fields: an object literal (the
+ * merge reads it at run time, the same walk the options form's non-literal
+ * path takes), or a value that converts to a dyn record. */
+function lowerUrlFormOptions(lowerer: Lowerer, node: ts.Expression): IrExpr {
+  if (ts.isObjectLiteralExpression(node)) return lowerDynObjectLiteral(lowerer, node);
+  const t = lowerer.mapTypeOf(lowerer.typeOf(node));
+  // `request(url, undefined, cb)`: Node's spread contributes no member, so
+  // the URL's fields stand alone. The argument is still evaluated: an
+  // expression with effects there runs, and its throw propagates, before
+  // the request is built.
+  if (t && (t.kind === "void" || t.kind === "undefinedT" || t.kind === "nullT")) {
+    const loc = locOf(node);
+    const value = lowerer.lowerExpr(node);
+    if (value.kind === "unitLit") return dynUndefinedExpr(loc);
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: value, loc }],
+      result: dynUndefinedExpr(loc),
+      type: DYN,
+      loc,
+    };
+  }
+  if (t && (t.kind === "dyn" || (t.kind === "record" && lowerer.dynConvertible(t)))) {
+    return lowerer.coerceToExpected(lowerer.lowerExpr(node), DYN);
+  }
+  lowerer.noLowering(
+    `the options of a URL-form request of '${t === null ? "unknown" : lowerer.fmt(t)}' values`,
+    node,
+    "pass an object literal or a Record value as the options",
+  );
+}
+
 /** http.request(options[, cb]) / http.get(options[, cb]) — the client.
  * The options argument must be an OBJECT LITERAL; the lowered keys are
  * hostname/host, port, path, method, timeout, and headers (a nested
@@ -6729,14 +6786,27 @@ function lowerHttpClientCall(
     return binding!.trueSecure ? c : { kind: "unary", op: "!", operand: c, type: BOOL, loc };
   };
   const args = expr.arguments.nodes;
-  if (args.length < 1 || args.length > 2) {
+  if (args.length < 1 || args.length > 3) {
     lowerer.noLowering(
       `${member} with ${args.length} arguments`,
       expr,
-      `the supported form is ${member}(options[, callback])`,
+      `the supported forms are ${member}(options[, callback]) and ${member}(url, options[, callback])`,
     );
   }
   const optsNode = args[0]!;
+  const optsType = lowerer.mapTypeOf(lowerer.typeOf(optsNode));
+  /** The URL-string / URL-object target of the (url[, options][, cb]) forms. */
+  const urlTarget =
+    !ts.isObjectLiteralExpression(optsNode) &&
+    (optsType?.kind === "string" || optsType?.kind === "url");
+  if (args.length === 3 && !(urlTarget && binding === null)) {
+    // Only the URL form has a middle options argument: (url, options, cb).
+    lowerer.noLowering(
+      `${member} with 3 arguments`,
+      expr,
+      `the supported forms are ${member}(options[, callback]) and ${member}(url, options[, callback])`,
+    );
+  }
   const runtimeOptions =
     binding === null ? runtimeRequestOptions(lowerer, optsNode, secureish) : null;
   if (runtimeOptions !== null) {
@@ -6772,7 +6842,7 @@ function lowerHttpClientCall(
     };
   }
   if (!ts.isObjectLiteralExpression(optsNode)) {
-    const t = lowerer.mapTypeOf(lowerer.typeOf(optsNode));
+    const t = optsType;
     if ((t?.kind === "string" || t?.kind === "url") && binding === null) {
       // The URL-string form — http.get(`http://127.0.0.1:${port}/x`[, cb])
       // and its https spelling: the runtime parses through the WHATWG unit
@@ -6797,6 +6867,50 @@ function lowerHttpClientCall(
       const methodLit: IrExpr = { kind: "strLit", value: "GET", type: STRING, loc };
       const autoEnd = boolLit(member === "get", loc);
       const isTls = secure === true;
+      // The options-carrying forms: (url, options[, cb]). Node's merge
+      // puts the URL's fields under the options' — `{...urlToHttpOptions(
+      // new URL(url)), ...options}` — which the runtime does once, so the
+      // options value travels as a checked-dynamic record (a literal
+      // included: the merge reads it at run time, like Node).
+      let urlOpts: ts.Expression | null = null;
+      let cbNode: ts.Expression | null = null;
+      if (args.length === 3) {
+        urlOpts = args[1]!;
+        cbNode = args[2]!;
+      } else if (args.length === 2) {
+        if (isResponseCallback(lowerer, args[1]!)) cbNode = args[1]!;
+        else urlOpts = args[1]!;
+      }
+      if (urlOpts !== null) {
+        const dynOpts = lowerUrlFormOptions(lowerer, urlOpts);
+        if (cbNode === null) {
+          const fn = isTls ? ("https.requestUrlDyn" as const) : ("http.requestUrlDyn" as const);
+          return {
+            kind: "libCall",
+            fn,
+            args: [url, dynOpts, autoEnd],
+            type: HTTPCLIENTREQ_T,
+            loc,
+          };
+        }
+        const { cb } = lowerCallbackArg(
+          lowerer,
+          cbNode,
+          "response callbacks",
+          1,
+          (p) => p.kind === "httpReq",
+          "use (res) or ()",
+          [HTTPREQ_T],
+        );
+        const fn = isTls ? ("https.requestUrlDynCb" as const) : ("http.requestUrlDynCb" as const);
+        return {
+          kind: "libCall",
+          fn,
+          args: [url, dynOpts, autoEnd, cb],
+          type: HTTPCLIENTREQ_T,
+          loc,
+        };
+      }
       if (args.length === 1) {
         const fn = isTls ? ("https.requestUrl" as const) : ("http.requestUrl" as const);
         return { kind: "libCall", fn, args: [url, methodLit, autoEnd], type: HTTPCLIENTREQ_T, loc };
@@ -6850,6 +6964,11 @@ function lowerHttpClientCall(
   let servername: IrExpr | null = null;
   /** maxHeaderSize: the response head's size bound. */
   let maxHeaderSize: IrExpr | null = null;
+  /** protocol: the scheme the request claims. It dials nothing; Node
+   * compares it against the agent's (the module's when there is no agent
+   * value) and throws ERR_INVALID_PROTOCOL on a mismatch, so the check is
+   * a runtime call before the request is built. */
+  let protocol: IrExpr | null = null;
   for (const prop of optsNode.properties.nodes) {
     // Shorthand entries ({ port } for { port: port }) are the natural
     // spelling at these call sites — the shorthand's VALUE lowering
@@ -6988,16 +7107,41 @@ function lowerHttpClientCall(
         signal = lowerer.coerceToExpected(v, DYN);
         break;
       }
-      case "headers":
-        if (initializer === null) {
+      case "headers": {
+        // A shorthand `{ headers }` is the same option as `headers:
+        // headers` — the entry's value, not the property symbol, is what
+        // carries the record (lowerShorthandValue resolves it).
+        const v =
+          initializer !== null
+            ? lowerClientHeadersOption(lowerer, initializer)
+            : lowerClientHeadersValue(
+                lowerer,
+                lowerer.lowerShorthandValue(prop as ts.ShorthandPropertyAssignment),
+                prop,
+              );
+        headers = v;
+        break;
+      }
+      case "protocol": {
+        // Node's ClientRequest compares the declared scheme against the
+        // agent's and throws ERR_INVALID_PROTOCOL before it dials; a
+        // truthy non-matching value is the error, a falsy one means "the
+        // agent's". The runtime check carries that comparison (any value
+        // coerces, as Node's message does).
+        const v =
+          initializer !== null
+            ? lowerer.lowerExpr(initializer)
+            : lowerer.lowerShorthandValue(prop as ts.ShorthandPropertyAssignment);
+        if (v.type.kind !== "string" && v.type.kind !== "dyn") {
           lowerer.noLowering(
-            `${member} with a shorthand headers option`,
+            `a ${member} 'protocol' option of '${lowerer.fmt(v.type)}' values`,
             prop,
-            "spell it out: headers: theHeaders",
+            "the option value must be a string ('http:' or 'https:')",
           );
         }
-        headers = lowerClientHeadersOption(lowerer, initializer);
+        protocol = v;
         break;
+      }
       case "createConnection": {
         // The caller's own dialer: a `() => net.Socket` closure the
         // runtime invokes once, synchronously (the proxy's loopback
@@ -7121,10 +7265,22 @@ function lowerHttpClientCall(
           member,
           secureish ? HTTPS_CLIENT_DOCUMENTED_OPTIONS : HTTP_CLIENT_DOCUMENTED_OPTIONS,
           secureish
-            ? "hostname/host, port, path, method, timeout, headers, agent, signal, maxHeaderSize, rejectUnauthorized, ca, and servername are the supported options"
-            : "hostname/host, port, path, method, timeout, headers, agent, signal, and maxHeaderSize are the supported options",
+            ? "hostname/host, port, path, method, timeout, headers, agent, signal, maxHeaderSize, protocol, rejectUnauthorized, ca, and servername are the supported options"
+            : "hostname/host, port, path, method, timeout, headers, agent, signal, maxHeaderSize, and protocol are the supported options",
         );
     }
+  }
+  /** A literal request carrying both a protocol option and an Agent VALUE
+   * evaluates the agent expression once, into a hidden local: the protocol
+   * check and the request then read the same object, as Node's options
+   * object does. */
+  let agentInit: IrExpr | null = null;
+  let agentLocalId: string | null = null;
+  if (protocol !== null && agentVal !== null) {
+    const agentLocal = lowerer.declareHiddenLocal("%requestAgent", DYN);
+    agentLocalId = agentLocal.id;
+    agentInit = agentVal;
+    agentVal = varRef(agentLocal.id, DYN, loc);
   }
   if (agentClose !== null) {
     // agent: false → Node sends `Connection: close` (its one-shot Agent
@@ -7214,10 +7370,14 @@ function lowerHttpClientCall(
   // built request (an already aborted signal destroys it at once, like
   // Node's constructor).
   const withSignal = (request: IrExpr): IrExpr => {
-    if (signal === null && servername === null && maxHeaderSize === null) return request;
+    if (signal === null && servername === null && maxHeaderSize === null && protocol === null)
+      return request;
     const local = lowerer.declareHiddenLocal("%requestOptions", HTTPCLIENTREQ_T);
     const ref = (): IrExpr => varRef(local.id, HTTPCLIENTREQ_T, loc);
     const steps: IrStmt[] = [];
+    if (agentInit !== null && agentLocalId !== null) {
+      steps.push({ kind: "varDecl", localId: agentLocalId, init: agentInit, loc });
+    }
     let signalRef: (() => IrExpr) | null = null;
     if (signal !== null) {
       const signalLocal = lowerer.declareHiddenLocal("%requestSignal", DYN);
@@ -7232,6 +7392,35 @@ function lowerHttpClientCall(
           type: VOID,
           loc,
         },
+        loc,
+      });
+    }
+    if (protocol !== null) {
+      // Node's constructor order: the signal's type, then the agent's
+      // scheme against the declared protocol, then the request itself.
+      // An Agent VALUE is the agent whose protocol counts; without one,
+      // the calling module's (or the binding's, at run time).
+      const secureArg: IrExpr = binding !== null ? secureExpr() : boolLit(secure === true, loc);
+      // The runtime compares the coerced value, as Node's message does.
+      const protocolArg = lowerer.coerceToExpected(protocol, DYN);
+      steps.push({
+        kind: "exprStmt",
+        expr:
+          agentVal !== null
+            ? {
+                kind: "libCall",
+                fn: "http.clientProtocolCheckAgent",
+                args: [protocolArg, secureArg, agentVal],
+                type: VOID,
+                loc,
+              }
+            : {
+                kind: "libCall",
+                fn: "http.clientProtocolCheck",
+                args: [protocolArg, secureArg],
+                type: VOID,
+                loc,
+              },
         loc,
       });
     }
@@ -7383,11 +7572,17 @@ function lowerClientHeadersOption(lowerer: Lowerer, node: ts.Expression): IrExpr
     }
     return { kind: "arrayLit", elems, type: arrayOf(STRING), loc };
   }
-  const v = lowerer.lowerExpr(node);
+  return lowerClientHeadersValue(lowerer, lowerer.lowerExpr(node), node);
+}
+
+/** The non-literal arm: a Record whose values are strings (or
+ * `string | undefined`), flattened by the interned env.pairs helper. */
+function lowerClientHeadersValue(lowerer: Lowerer, v: IrExpr, blame: ts.Node): IrExpr {
+  const loc = locOf(blame);
   if (v.type.kind !== "record") {
     lowerer.noLowering(
       `request headers of '${lowerer.fmt(v.type)}' values`,
-      node,
+      blame,
       "pass an object literal or a Record<string, string>",
     );
   }
@@ -7395,7 +7590,7 @@ function lowerClientHeadersOption(lowerer: Lowerer, node: ts.Expression): IrExpr
   if (helper === null) {
     lowerer.noLowering(
       `request headers of '${lowerer.fmt(v.type)}' values`,
-      node,
+      blame,
       "header values must be strings (or string | undefined)",
     );
   }

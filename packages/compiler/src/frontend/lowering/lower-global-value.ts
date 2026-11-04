@@ -11,9 +11,12 @@ export function lowerGlobalValue(lowerer: Lowerer, expr: ts.Expression): IrExpr 
   return lowerGlobalValueOfType(lowerer, lowerer.typeOf(expr), locOf(expr));
 }
 
-/** The global object a sloppy-mode function receives as `this` when it is
- * called with undefined or null: the value `globalThis` reads. */
-export function lowerSloppyGlobalReceiver(lowerer: Lowerer, node: ts.Node, loc: SrcLoc): IrExpr {
+/** The global object itself, whatever spelling reached it — `globalThis`, a
+ * cast (`(globalThis as any)`), or an alias. The name table comes from the
+ * `globalThis` symbol rather than from the read's own type: a cast to a type
+ * the checker knows no members of would otherwise register an empty table and
+ * send every declared name to the runtime's undefined. */
+export function lowerGlobalObjectValue(lowerer: Lowerer, node: ts.Node, loc: SrcLoc): IrExpr {
   const symbol = lowerer.checker.resolveName(
     "globalThis",
     ts.SymbolFlags.Value,
@@ -25,6 +28,12 @@ export function lowerSloppyGlobalReceiver(lowerer: Lowerer, node: ts.Node, loc: 
     symbol === undefined ? undefined : lowerer.checker.getTypeOfSymbol(symbol),
     loc,
   );
+}
+
+/** The global object a sloppy-mode function receives as `this` when it is
+ * called with undefined or null: the value `globalThis` reads. */
+export function lowerSloppyGlobalReceiver(lowerer: Lowerer, node: ts.Node, loc: SrcLoc): IrExpr {
+  return lowerGlobalObjectValue(lowerer, node, loc);
 }
 
 function lowerGlobalValueOfType(lowerer: Lowerer, type: ts.Type | undefined, loc: SrcLoc): IrExpr {

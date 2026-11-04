@@ -436,23 +436,41 @@ test("sanitized native artifacts fail before helper resolution", async () => {
   ).rejects.toMatchObject({ diagnosticCode: "SC3002", detailCode: "sanitize_unsupported" });
 });
 
-test("program partitions depend only on module size", () => {
+test("program partitions follow module size and the host's threads", () => {
   const kilobyte = 1024;
   const megabyte = 1024 * kilobyte;
-  expect(nativeProgramPartitions(128 * kilobyte)).toBe(1);
-  expect(nativeProgramPartitions(128 * kilobyte + 1)).toBe(8);
-  expect(nativeProgramPartitions(32 * megabyte)).toBe(8);
+  const sixteen = 16;
+  expect(nativeProgramPartitions(128 * kilobyte, false, sixteen)).toBe(1);
+  expect(nativeProgramPartitions(128 * kilobyte + 1, false, sixteen)).toBe(8);
+  // Two partitions per thread, up to the most an executable uses, while the
+  // module has MIN_PARTITION_BYTES of text for each.
+  expect(nativeProgramPartitions(megabyte, false, sixteen)).toBe(32);
+  expect(nativeProgramPartitions(20 * megabyte, false, sixteen)).toBe(32);
+  expect(nativeProgramPartitions(100 * megabyte, false, sixteen)).toBe(32);
+  // A module the threads cannot divide finely still keeps its 4 MiB
+  // partitions, so a host with few threads divides it as before.
+  expect(nativeProgramPartitions(1024 * megabyte, false, sixteen)).toBe(64);
   // Powers of two keep every function in its partition across small edits.
-  expect(nativeProgramPartitions(32 * megabyte + 1)).toBe(16);
-  expect(nativeProgramPartitions(100 * megabyte)).toBe(32);
-  expect(nativeProgramPartitions(1024 * megabyte)).toBe(64);
+  expect(nativeProgramPartitions(512 * kilobyte, false, sixteen)).toBe(16);
+  expect(nativeProgramPartitions(256 * kilobyte, false, sixteen)).toBe(8);
+  // A module too small to fill the host's threads at MIN_PARTITION_BYTES each
+  // gets the partitions its text pays for, and a host with few threads keeps
+  // the smallest divided programs at eight.
+  expect(nativeProgramPartitions(256 * kilobyte, false, 64)).toBe(8);
+  expect(nativeProgramPartitions(megabyte, false, 64)).toBe(32);
+  expect(nativeProgramPartitions(20 * megabyte, false, 64)).toBe(64);
+  expect(nativeProgramPartitions(20 * megabyte, false, 4)).toBe(8);
+  expect(nativeProgramPartitions(200 * megabyte, false, 4)).toBe(64);
+  expect(nativeProgramPartitions(200 * megabyte, false, 2)).toBe(64);
+  expect(nativeProgramPartitions(megabyte, false, 1)).toBe(8);
   // Unoptimized (dev) programs are divided from 64 KiB.
-  expect(nativeProgramPartitions(64 * kilobyte, true)).toBe(1);
-  expect(nativeProgramPartitions(64 * kilobyte + 1, true)).toBe(4);
-  expect(nativeProgramPartitions(128 * kilobyte, true)).toBe(4);
-  expect(nativeProgramPartitions(128 * kilobyte + 1, true)).toBe(8);
-  expect(nativeProgramPartitions(megabyte, true)).toBe(8);
-  expect(nativeProgramPartitions(32 * megabyte + 1, true)).toBe(16);
+  expect(nativeProgramPartitions(64 * kilobyte, true, sixteen)).toBe(1);
+  expect(nativeProgramPartitions(64 * kilobyte + 1, true, sixteen)).toBe(4);
+  expect(nativeProgramPartitions(128 * kilobyte, true, sixteen)).toBe(4);
+  expect(nativeProgramPartitions(128 * kilobyte + 1, true, sixteen)).toBe(8);
+  expect(nativeProgramPartitions(megabyte, true, sixteen)).toBe(32);
+  expect(nativeProgramPartitions(32 * megabyte + 1, true, sixteen)).toBe(32);
+  expect(nativeProgramPartitions(64 * kilobyte + 1, true, 4)).toBe(4);
   expect(nativePartitionPaths("/build.d/program.o", 3)).toEqual([
     "/build.d/program.o",
     "/build.d/program.part1.o",

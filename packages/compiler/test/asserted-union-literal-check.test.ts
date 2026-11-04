@@ -181,6 +181,8 @@ console.log("converted", JSON.stringify(wrap({ a: 1, b: 2, mixed: q })));
 `);
     expect(result.error).toBeUndefined();
     expect(result.status).toBe(0);
-    expect(result.stdout.toString()).toBe('converted {"slot":{"a":1}}\n');
+    expect(result.stdout.toString()).toBe(
+      'converted {"slot":{"a":1,"b":2,"mixed":{"type":"q","q":1}}}\n',
+    );
   },
 );

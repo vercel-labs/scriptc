@@ -291,15 +291,19 @@ export function lowerAsyncDelegation(
       );
     }
   }
-  // A never-typed yield channel (an unannotated generator that only
-  // delegates) has no operand form: the delegate's values cannot be named
-  // in it. Refuse plainly instead of emitting the yield the validator
-  // rejects as an internal compiler error.
-  if (gen.yieldT.kind === "void" || gen.yieldT.kind === "undefinedT") {
+  // A `never` yield channel (the VOID sentinel: a generator that never
+  // yields) has no operand form — the delegate's values cannot be named in
+  // it — but the protocol still runs: the delegate's steps, their thrown
+  // errors (with the error's identity) and its completion are the whole of
+  // the delegation. Only a non-done step, impossible in a well-typed
+  // program, ends in the unreachable trap below. An `undefined` channel is
+  // a real suspension whose values would have to be undefined; it keeps
+  // the plain refusal.
+  if (gen.yieldT.kind === "undefinedT") {
     lowerer.unsupported(
       "SC1071",
       expr,
-      "async delegation in a generator whose yield type is never (annotate the generator's yield type)",
+      "async delegation in a generator whose yield type is undefined (annotate the generator's yield type)",
     );
   }
   const slot = (name: string, type: IrType, init: IrExpr) => {
@@ -589,21 +593,40 @@ export function lowerAsyncDelegation(
               kind: "if",
               cond: done.ref,
               then: [setFinished()],
-              else_: [
-                // An assignment, not a declaration: the slot already owns
-                // one scope entry (declared with the other leftovers), and
-                // a second one would release it at the loop's own exit and
-                // again at the function scope's.
-                assign(resume, {
-                  kind: "yieldExpr",
-                  value: lowerer.coerceInto(expr, value.ref, gen.yieldT),
-                  captureCompletion: { returnType },
-                  type: DYN,
-                  loc,
-                }),
-                assign(kind, { kind: "dynCheck", value: get(resume.ref, "kind"), type: F64, loc }),
-                assign(sent, get(resume.ref, "value")),
-              ],
+              else_:
+                gen.yieldT.kind === "void"
+                  ? [
+                      // A value step on a `never` channel: the type says the
+                      // delegate never yields, so this is unreachable. Fail
+                      // loudly rather than store a void operand (rc:void).
+                      {
+                        kind: "runtimeFence",
+                        code: "SC9002",
+                        message:
+                          "unreachable: an async delegate yielded a value into a 'never' channel — please report this",
+                        loc,
+                      },
+                    ]
+                  : [
+                      // An assignment, not a declaration: the slot already owns
+                      // one scope entry (declared with the other leftovers), and
+                      // a second one would release it at the loop's own exit and
+                      // again at the function scope's.
+                      assign(resume, {
+                        kind: "yieldExpr",
+                        value: lowerer.coerceInto(expr, value.ref, gen.yieldT),
+                        captureCompletion: { returnType },
+                        type: DYN,
+                        loc,
+                      }),
+                      assign(kind, {
+                        kind: "dynCheck",
+                        value: get(resume.ref, "kind"),
+                        type: F64,
+                        loc,
+                      }),
+                      assign(sent, get(resume.ref, "value")),
+                    ],
               loc,
             },
           ],

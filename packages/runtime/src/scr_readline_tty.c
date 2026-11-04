@@ -4,7 +4,7 @@
  * linked only by programs whose interfaces can be terminal ones or that
  * use emitKeypressEvents or getCursorPos.
  *
- * Behavior, matching Node v24.22.0:
+ * Behavior, matching Node v24.22.1:
  * - Input runs through emitKeypressEvents' decoder, one per stream and
  *   shared with the stream's 'keypress' listeners, one code point at a
  *   time; an escape at the end of a chunk is resolved after

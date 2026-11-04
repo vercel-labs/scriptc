@@ -434,6 +434,9 @@ async function compileAndRun(file: string): Promise<RunResult> {
   const key = hash
     .update(sanitize ? "san" : "plain")
     .update(speed ? "speed" : "")
+    // Computed-access sites emit different code by default; an opt-out
+    // restores the key path, so the two builds key separately.
+    .update("index-arms:" + (process.env["SCRIPTC_DYN_INDEX_FASTPATH"] ?? "1"))
     .digest("hex")
     .slice(0, 16);
   const outDir = join(cacheDir, key);

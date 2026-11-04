@@ -35,6 +35,7 @@ import {
   type NodeIslandReport,
   type UserModuleIsland,
 } from "./summary.js";
+import type { IslandPackage, NodeIslandSet } from "./boundary.js";
 import { packageDirOf, packageVersionOf } from "./origin.js";
 import { isMarkedUserModule, type NodeIslandPolicy } from "./policy.js";
 import { classRank, reportRank, ruleInfo } from "./rules.js";
@@ -75,6 +76,37 @@ interface PackageState {
   decision: IslandDecision;
   carriedBy: string | null;
   violation: boolean;
+}
+
+/** The packages a report decided run in Node, as the lowering's island set,
+ * for the packages a build would island (`select`: refused, or marked by the
+ * policy). The report is would-be: it also lists the islands a build would
+ * choose for packages it compiles natively today, and those must stay
+ * natively compiled here (a build's island decision skips them too,
+ * executable/prepare.ts's decideNodeIslands). Coverage lowers with the set:
+ * the packages' values are island handles, so a use a build resolves through
+ * its island is not reported as a refusal. A package whose implementation is
+ * not part of the program has no directory in the report; `resolveDir`
+ * supplies the installed one (a build resolves it the same way). */
+export function reportIslandSet(
+  report: NodeIslandReport,
+  select: (name: string) => boolean,
+  resolveDir?: (name: string) => string | null,
+): NodeIslandSet {
+  const packages = new Map<string, IslandPackage>();
+  for (const island of report.islands) {
+    if (!select(island.package)) continue;
+    const dir = island.path ?? resolveDir?.(island.package) ?? null;
+    if (dir === null) continue;
+    packages.set(island.package, {
+      name: island.package,
+      version: island.version,
+      dir,
+      class: island.class,
+      reason: island.reason,
+    });
+  }
+  return { packages, modules: new Map() };
 }
 
 export function buildNodeIslandReport(input: NodeIslandReportInput): NodeIslandReport {

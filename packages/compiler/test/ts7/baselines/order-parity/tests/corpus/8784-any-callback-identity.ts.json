@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8784-any-callback-identity.ts"
+ ],
+ "diags": []
+}

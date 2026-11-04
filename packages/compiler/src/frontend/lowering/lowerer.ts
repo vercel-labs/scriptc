@@ -1529,13 +1529,63 @@ function lowerToIrWithIslands(
     timing(dyn ? "dyn-streams-relower" : "general-streams-relower", { reachable: reachable.size });
     return general;
   };
+  // Localized failure (stage L3): push-down must never cost a failing
+  // program more errors than the whole-slot checked dynamic. A pushed-down
+  // type is baked into the globals, fields and signatures that hold it, so
+  // when the program still fails, the emit runs once more with every
+  // degraded type held whole, and the pass with fewer errors wins (ties
+  // keep push-down). A program that compiles never takes this path.
+  //
+  // The relower lives in its own frame and returns only whether it won, so
+  // when it loses its Lowerer and result are released at once: a pass that
+  // cannot win must not overlap the next pass's tables and IR. A round asks
+  // the comparison once: the retry decision above and the pipeline below ask
+  // the same question of the same push-down result.
+  let wholeSlotDecided: boolean | null = null;
+  const wholeSlotWins = (): boolean => {
+    if (wholeSlotDecided !== null) return wholeSlotDecided;
+    const whole = new Lowerer(program, entry, moduleOrder, {
+      facts,
+      frontendServices: options.frontendServices,
+      projectCheckJs: options.projectCheckJs ?? false,
+      targetPlatform,
+      startupCrash,
+      admittedOpinions: options.admittedOpinions,
+      inlineRequireCycleCalls,
+      ffiImports,
+      libraryCallbacks,
+      forkTargets,
+      workerTargets,
+      externalTypes,
+      externalTypeSpecifiersByFile,
+      tierMode,
+      runtimeOptionalReport,
+      ffiBindingSymbols: ffiValidation.symbolsByName,
+      wholeSlotDegradation: true,
+    });
+    for (const d of extraModuleCycleDiags) whole.pushDiag(d);
+    for (const d of ffiValidation.diagnostics) whole.pushDiag(d);
+    const wholeEmitted = whole.emitReachable(options.libRoots);
+    const won = wholeEmitted.result.diagnostics.length < result.diagnostics.length;
+    if (won) {
+      reachable = wholeEmitted.reachable;
+      result = wholeEmitted.result;
+      resultLowerer = whole;
+    }
+    timing("whole-slot-relower", { reachable: wholeEmitted.reachable.size });
+    wholeSlotDecided = won;
+    return won;
+  };
   // Prepared island rounds only (LowerOptions.stopAfterPushDown): a round
   // whose failing pass already implies a retry with more islands would
   // discard the passes below along with their diagnostics, so the caller's
   // predicate decides the retry from that pass's result and the rest of the
   // pipeline is skipped. A round that compiles, or whose pass implies no
   // retry, runs the full pipeline as before and reports from the pass that
-  // wins.
+  // wins. The retry decision reads the pass the pipeline would keep: a
+  // push-down failure the whole-slot pass clears or reports fewer errors for
+  // is decided from that pass, so a dependency is not islanded for
+  // diagnostics the whole-slot pass never reports.
   //
   // A program whose push-down pass needs the general stream representation
   // is lowered again with it below, and that pass can compile a program
@@ -1556,7 +1606,17 @@ function lowerToIrWithIslands(
       // The predicate reads the result as lowerToIr returns it: module-init
       // fences carry their mark (lowerToIr marks them again, unchanged).
       markModuleInitFences(program, result.runtimeFences);
-      if (stop(result)) {
+      if (result.diagnostics.length > 0 && pushDownEmit.hasPartialDegradedTypes()) {
+        // The whole-slot pass would replace this failure in the pipeline, so
+        // the retry decision is made from its result: a program it compiles
+        // does not retry, and one it reports fewer errors for islands only
+        // what those errors imply.
+        if (wholeSlotWins()) {
+          pushDownEmit = null;
+          markModuleInitFences(program, result.runtimeFences);
+        }
+      }
+      if (result.module === null && stop(result)) {
         timing("stop-after-push-down");
         return result;
       }
@@ -1592,49 +1652,11 @@ function lowerToIrWithIslands(
       resultLowerer = pushDownLowerer;
     }
   }
-  // Localized failure (stage L3): push-down must never cost a failing
-  // program more errors than the whole-slot checked dynamic. A pushed-down
-  // type is baked into the globals, fields and signatures that hold it, so
-  // when the program still fails, the emit runs once more with every
-  // degraded type held whole, and the pass with fewer errors wins (ties
-  // keep push-down). A program that compiles never takes this path.
-  //
-  // The relower lives in its own frame and returns only whether it won, so
-  // when it loses its Lowerer and result are released at once: a pass that
-  // cannot win must not overlap the next pass's tables and IR.
-  const wholeSlotWins = (): boolean => {
-    const whole = new Lowerer(program, entry, moduleOrder, {
-      facts,
-      frontendServices: options.frontendServices,
-      projectCheckJs: options.projectCheckJs ?? false,
-      targetPlatform,
-      startupCrash,
-      admittedOpinions: options.admittedOpinions,
-      inlineRequireCycleCalls,
-      ffiImports,
-      libraryCallbacks,
-      forkTargets,
-      workerTargets,
-      externalTypes,
-      externalTypeSpecifiersByFile,
-      tierMode,
-      runtimeOptionalReport,
-      ffiBindingSymbols: ffiValidation.symbolsByName,
-      wholeSlotDegradation: true,
-    });
-    for (const d of extraModuleCycleDiags) whole.pushDiag(d);
-    for (const d of ffiValidation.diagnostics) whole.pushDiag(d);
-    const wholeEmitted = whole.emitReachable(options.libRoots);
-    const won = wholeEmitted.result.diagnostics.length < result.diagnostics.length;
-    if (won) {
-      reachable = wholeEmitted.reachable;
-      result = wholeEmitted.result;
-      resultLowerer = whole;
-    }
-    timing("whole-slot-relower", { reachable: wholeEmitted.reachable.size });
-    return won;
-  };
-  if (result.diagnostics.length > 0 && pushDownEmit.hasPartialDegradedTypes()) {
+  if (
+    pushDownEmit !== null &&
+    result.diagnostics.length > 0 &&
+    pushDownEmit.hasPartialDegradedTypes()
+  ) {
     // A whole-slot win replaces push-down in every comparison it enters, so
     // release the push-down pass here rather than at the end of the round.
     if (wholeSlotWins()) pushDownEmit = null;

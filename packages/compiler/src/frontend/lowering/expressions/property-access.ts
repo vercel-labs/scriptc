@@ -224,7 +224,7 @@ import { isFsStreamMember, lowerFsStreamProperty } from "../builtins/fs-streams.
 import { keyedFieldRead } from "./keyed-field-targets.js";
 import { heldEnvValueType } from "../builtins/environment.js";
 import { promisePrototypeValue } from "../thenables.js";
-import { lowerChildPropertyRead } from "../handle-properties.js";
+import { lowerChildPropertyRead, lowerHandlePropertyRead } from "../handle-properties.js";
 
 /** True when a property access names an ABSTRACT property declaration
  * (`abstract p: number` — a PropertyDeclaration, not an accessor).
@@ -1764,6 +1764,13 @@ export function lowerPropertyAccessExpr(
   }
   const childProperty = lowerChildPropertyRead(lowerer, expr);
   if (childProperty) return childProperty;
+  // A member a typed handle's class does not declare (a JavaScript read
+  // such as `m.label`): a property table entry of the handle
+  // (scr_dyn_handle_props.c).
+  {
+    const handleProperty = lowerHandlePropertyRead(lowerer, expr, recvLowered);
+    if (handleProperty) return handleProperty;
+  }
   // A member a typed array's type does not declare (a JavaScript read, or
   // one under @ts-ignore), such as the feature probe `typeof bytes.toHex`:
   // when Node's prototype chain for the value lacks the name too, the read
@@ -2626,6 +2633,23 @@ export function lowerIntrinsicProperty(
       const receiver = lowerer.lowerExpr(expr.expression);
       return { kind: "libCall", fn: "child.killed", args: [receiver], type: BOOL, loc };
     }
+    // spawnfile / spawnargs: the file the child was started from, and that
+    // file followed by its arguments. A shell spawn reports the shell and
+    // its invocation (Node's own record of what it ran).
+    if (name === "spawnfile") {
+      const receiver = lowerer.lowerExpr(expr.expression);
+      return { kind: "libCall", fn: "child.spawnfile", args: [receiver], type: STRING, loc };
+    }
+    if (name === "spawnargs") {
+      const receiver = lowerer.lowerExpr(expr.expression);
+      return {
+        kind: "libCall",
+        fn: "child.spawnargs",
+        args: [receiver],
+        type: arrayOf(STRING),
+        loc,
+      };
+    }
     // signalCode: `NodeJS.Signals | null`, the signal that terminated the
     // child (null while running, after a normal exit, and after a spawn
     // failure) — the exit listener's second parameter, read as a property.
@@ -2645,7 +2669,7 @@ export function lowerIntrinsicProperty(
     lowerer.noLowering(
       `ChildProcess.${name}`,
       expr,
-      'on/once("exit" | "close" | "error", cb), pid, exitCode, killed, kill(signal?), and unref() are the supported ChildProcess members',
+      'on/once("exit" | "close" | "error", cb), pid, exitCode, killed, spawnfile, spawnargs, kill(signal?), ref(), and unref() are the supported ChildProcess members',
       lowerer.checker.getSymbolAtLocation(expr.name),
     );
   }

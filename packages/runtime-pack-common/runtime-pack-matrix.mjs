@@ -117,7 +117,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_event_target.c", any("eventTarget", "nativeFetch", "abortSignal")],
   [
     "scr_async_dyn.c",
-    any("dynAsync", "dynInvoke", "dc", "fileHandle", "nativeFetch", "nodeIsland"),
+    any("dynAsync", "dynInvoke", "dc", "fileHandle", "nativeFetch", "nodeIsland", "nodeTest"),
   ],
   // Promise statics with a foreign constructor (Promise.all.call(C, ...)):
   // the specification's algorithms over the checked-dynamic tier. Its
@@ -357,6 +357,12 @@ export function variantsFor(source) {
   if (source === "scr_console_native.c") {
     withJsObjectModel(variants);
   }
+  // The integrity queries answer from the handle property table when the
+  // program's JavaScript object model build carries it (a program whose
+  // JavaScript adds own properties to handles).
+  if (source === "scr_dyn_integrity.c") {
+    withJsObjectModel(variants);
+  }
   // Programs that assign process.emitWarning link the replacement-aware
   // warning paths; every other program keeps the default object.
   if (source === "scr_async_dyn.c") {
@@ -540,6 +546,30 @@ export function variantsFor(source) {
       when: { nodeIsland: true },
       defines: ["SCR_NODE_ISLANDS"],
     });
+    // A checked-dynamic promise whose executor takes a reject parameter
+    // builds its reject closure with scr_make_reject_dyn, the reason being
+    // the program's own value; every other program keeps the default
+    // object, byte for byte. The selector takes the variant with the most
+    // conditions, so each build above needs its counterpart.
+    for (const [id, when, defines] of [
+      ["promise-reject-dyn", { promiseRejectDyn: true }, ["SCR_PROMISE_REJECT_DYN"]],
+      [
+        "native-reactions-promise-reject-dyn",
+        { webStreams: true, promiseRejectDyn: true },
+        ["SCR_NATIVE_REACTIONS", "SCR_PROMISE_REJECT_DYN"],
+      ],
+      [
+        "node-island-promise-reject-dyn",
+        { nodeIsland: true, promiseRejectDyn: true },
+        ["SCR_NODE_ISLANDS", "SCR_PROMISE_REJECT_DYN"],
+      ],
+      [
+        "native-reactions-node-island-promise-reject-dyn",
+        { webStreams: true, nodeIsland: true, promiseRejectDyn: true },
+        ["SCR_NATIVE_REACTIONS", "SCR_NODE_ISLANDS", "SCR_PROMISE_REJECT_DYN"],
+      ],
+    ])
+      variants.push({ id, when, defines });
   }
   // Error-taking write completion callbacks: the stream unit publishes the
   // error each callback receives; every other program keeps the default

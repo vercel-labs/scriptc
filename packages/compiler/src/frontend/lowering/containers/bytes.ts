@@ -2357,6 +2357,43 @@ function lowerBufferInstanceMethod(
     const receiver = lowerer.lowerExprExpecting(access.expression, BYTES_U8);
     return { kind: "bytesIntrinsic", method: name, receiver, args: [], type: BYTES_U8, loc };
   }
+  if (name === "toJSON") {
+    // The declared result is the literal { type: "Buffer", data: [...] }:
+    // a fresh plain object whose data array copies the bytes. The record
+    // form keeps .type/.data reads static; a caller that only stringifies
+    // it sees the same JSON Node prints.
+    if (nArgs !== 0) lowerer.noLowering(`.toJSON with ${nArgs} arguments`, call);
+    const receiver = lowerer.lowerExprExpecting(access.expression, BYTES_U8);
+    const data: IrExpr = {
+      kind: "bytesIntrinsic",
+      method: "toArray",
+      receiver,
+      args: [],
+      type: arrayOf(F64),
+      loc,
+    };
+    const mapped = lowerer.mapTypeOf(lowerer.typeOf(call));
+    if (mapped?.kind === "record") {
+      return {
+        kind: "recordLit",
+        fields: [
+          { name: "type", value: { kind: "strLit", value: "Buffer", type: STRING, loc } },
+          { name: "data", value: data },
+        ],
+        type: mapped,
+        loc,
+      };
+    }
+    return {
+      kind: "dynInvoke",
+      recv: { kind: "dynFrom", value: receiver, type: DYN, loc, liveRef: true },
+      method: "toJSON",
+      calleeName: "Buffer.toJSON",
+      args: [],
+      type: DYN,
+      loc,
+    };
+  }
   if (name === "write") {
     if (nArgs < 1 || nArgs > 4) lowerer.noLowering(`.write with ${nArgs} arguments`, call);
     // (str), (str, enc), (str, offset), (str, offset, enc),

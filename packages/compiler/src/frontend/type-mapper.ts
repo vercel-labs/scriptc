@@ -3536,7 +3536,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // in a declaration file, which recordProvenanceOk rightly refuses for
   // lib type worlds. Map it manually with the executor's own scriptc
   // field shapes (plain-value resolve — () => void for Promise<void> —
-  // and the Error-pinned reject), so both the destructured and the
+  // and the reject the promise's own reason representation picks: Error
+  // for a typed payload, the checked-dynamic value for a promise whose
+  // settled value is unknown), so both the destructured and the
   // record-holding binding forms compile. User-declared literals with
   // these member names keep the ordinary record path (their declarations
   // are not in declaration files).
@@ -3564,7 +3566,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
                 name: "reject",
                 type: {
                   kind: "func",
-                  params: [{ kind: "object", className: "%Error" }],
+                  params: [inner.kind === "dyn" ? DYN : { kind: "object", className: "%Error" }],
                   ret: VOID,
                 },
               },
@@ -4809,13 +4811,19 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       typeKey(a) < typeKey(b) ? -1 : 1,
     );
     const stdio: IrType = { kind: "union", unionId: ctx.unions.intern(stdioArms) };
-    if (!optStr || !optNum || !optBool) return null;
+    // `env?: NodeJS.ProcessEnv` — the same record the inline literal builds
+    // its [k,v,...] pairs from. A runtime record can carry a replacement
+    // environment, so the member maps rather than staying literal-only.
+    const envProp = ctx.checker.getPropertyOfType(type, "env");
+    const env = envProp ? mapType(ctx.checker.getTypeOfSymbol(envProp), ctx) : null;
+    if (!optStr || !optNum || !optBool || !env || env.kind !== "union") return null;
     return {
       kind: "record",
       shapeId: ctx.shapes.intern(
         [
           { name: "cwd", type: optStr },
           { name: "encoding", type: STRING },
+          { name: "env", type: env },
           { name: "input", type: optStr },
           { name: "shell", type: optBool },
           { name: "stdio", type: stdio },
@@ -4824,7 +4832,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         ],
         false,
         undefined,
-        ["encoding", "cwd", "input", "timeout", "shell", "stdio", "windowsHide"],
+        ["encoding", "cwd", "env", "input", "timeout", "shell", "stdio", "windowsHide"],
       ),
     };
   }
@@ -8166,9 +8174,10 @@ function mapErrorMetadataIntersection(type: ts.Type, ctx: TypeMapperCtx): IrType
 /** A conventional primitive brand has one runtime-carrying primitive part
  * and one or more phantom object parts whose fields are literal marker
  * values. The marker can use a string or unique-symbol key, can be imported
- * from a declaration file, and can be expressed through a generic alias;
- * none of those facts changes the runtime value. Empty `{}` refinements are
- * the marker-free form of the same primitive narrowing.
+ * from a declaration file, can be expressed through a generic alias, and can
+ * nest tables of further markers; none of those facts changes the runtime
+ * value. Empty `{}` refinements are the marker-free form of the same
+ * primitive narrowing.
  *
  * Arbitrary primitive/object intersections do not erase here. A companion
  * with a class identity, call/construct/index signature, accessor, or a
@@ -8200,7 +8209,7 @@ function mapBrandedPrimitiveIntersection(widened: ts.Type, ctx: TypeMapperCtx): 
     }
     return null;
   };
-  const markerValue = (value: ts.Type): boolean => {
+  const markerValue = (value: ts.Type, seen = new Set<ts.Type>()): boolean => {
     if (
       value.flags &
       (ts.TypeFlags.StringLiteral |
@@ -8216,15 +8225,44 @@ function mapBrandedPrimitiveIntersection(widened: ts.Type, ctx: TypeMapperCtx): 
     ) {
       return true;
     }
-    if (value.isUnionType()) return ts.constituentTypes(value).every(markerValue);
+    if (value.isUnionType())
+      return ts.constituentTypes(value).every((part) => markerValue(part, seen));
     if (value.flags & ts.TypeFlags.TypeParameter) {
       const bound = resolveTypeParamTs?.(value) ?? null;
       if (bound) {
         contextResolutions++;
-        return markerValue(bound);
+        return markerValue(bound, seen);
       }
     }
-    return false;
+    // A NESTED marker table (`{ readonly ["~effect/Brand"]: { readonly
+    // ProviderDriverKind: "ProviderDriverKind" } }`): an object whose own
+    // members are all markers describes no runtime data, so the nesting
+    // does not make the marker observable. Class identity, call, construct
+    // or index signatures, accessors, and non-literal value fields stay
+    // outside the rule, because those can describe runtime behavior.
+    if ((value.flags & ts.TypeFlags.Object) === 0) return false;
+    if (seen.has(value)) return false;
+    seen.add(value);
+    // `seen` holds the types on the current path only: two sibling fields
+    // that name the same marker type both erase, while a table that refers
+    // to itself stays outside the rule.
+    let marker = false;
+    const sym = value.getSymbol();
+    if (sym === undefined || (sym.flags & ts.SymbolFlags.Class) === 0) {
+      marker =
+        checker.getCallSignatures(value).length === 0 &&
+        checker.getConstructSignatures(value).length === 0 &&
+        checker.getIndexInfosOfType(value).length === 0 &&
+        checker
+          .getPropertiesOfType(value)
+          .every(
+            (prop) =>
+              (prop.flags & (ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor)) === 0 &&
+              markerValue(checker.getTypeOfSymbol(prop), seen),
+          );
+    }
+    seen.delete(value);
+    return marker;
   };
   let primitive: IrType | null = null;
   let markerParts = 0;
@@ -8480,7 +8518,13 @@ export function packageTypeIsData(
     declared = true;
     if (!data) return false;
   }
-  return declared;
+  if (declared) return true;
+  // A union spelled through a package type alias whose members all come
+  // from elsewhere (`type RawData = Buffer | ArrayBuffer | Buffer[]`):
+  // no member carries the package's provenance, but the alias declaration
+  // is the package's data shape, so the type is still data the program
+  // builds and never a value the package's implementation produces.
+  return packageDataPart(type, ctx) === true;
 }
 
 /** The record path's provenance fence. Declared shapes (object literals,

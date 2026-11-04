@@ -35,6 +35,7 @@ const features = {
   builtinValues: false,
   computedRequire: false,
   warningReplace: false,
+  promiseRejectDyn: false,
   jsObjectModel: false,
   stdioExtended: false,
   streamWriteErrors: false,

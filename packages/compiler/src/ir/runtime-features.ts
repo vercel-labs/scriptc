@@ -91,8 +91,9 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "async.awaitDyn",
   // So does SlowBuffer's DEP0030.
   "buffer.slowBuffer",
-  // The child property table adopts thenables through the dyn-async unit.
-  "child.propsInstall",
+  // The handle property table adopts child thenables through the dyn-async
+  // unit.
+  "handle.propsInstall",
   "child.propsResolve",
   "crypto.native",
   // The crypto global's object extends crypto.native's.
@@ -367,6 +368,10 @@ const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.dataViewPrototype",
   "dyn.defineProperty",
   "dyn.definePropertyShapes",
+  "handle.propsDefineProps",
+  // The table's member test reads inherited prototype members through
+  // scr_dyn_invoke.c's scr_dyn_inherited_read.
+  "handle.propsInstall",
   "child.propsDefine",
   "dyn.defineProps",
   "dyn.definePropsShapes",
@@ -1171,12 +1176,14 @@ export const JS_OBJECT_MODEL_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
 export function jsObjectModelFact(features: {
   jsObjectModel?: boolean;
   bigintBytes?: boolean;
+  handleProps?: boolean;
   mutableBuffers?: boolean;
   sparseArrays?: boolean;
 }): boolean {
   return (
     features.jsObjectModel === true ||
     features.bigintBytes === true ||
+    features.handleProps === true ||
     features.mutableBuffers === true ||
     features.sparseArrays === true
   );
@@ -1388,8 +1395,9 @@ const RUNTIME_FEATURE_RULES = {
   streamDyn: rule({
     fns: ["stream.dynNative", "stream.dynNativePipe", "stream.pipeDyn", "stream.unpipeDyn"],
   }),
-  /** Own properties JavaScript adds to children (scr_dyn_handle_props.c). */
-  handleProps: rule({ fns: ["child.propsInstall"] }),
+  /** Own properties JavaScript adds to runtime handles (scr_dyn_handle_props.c):
+   * a Date, RegExp, Map, Set, weak collection, buffer or child. */
+  handleProps: rule({ fns: ["handle.propsInstall", "handle.propsGrant"] }),
   /** The declaration-typed boundary's adoption (scr_decl_adopt.c): its
    * casts, and closures boxed in a boundary program, which adopt their
    * arguments. */
@@ -1704,6 +1712,40 @@ const RUNTIME_FEATURE_RULES = {
       node.args[0]?.kind === "strLit" &&
       BIGINT_BYTES_NAMES.has(node.args[0].value),
   }),
+  /** `new Promise` whose executor takes a checked-dynamic reject parameter,
+   * and `Promise.withResolvers` on a checked-dynamic promise whose resolver
+   * record does: that reason is the program's own value, not an Error, so
+   * the emitter builds the reject closure with scr_make_reject_dyn — which
+   * lives in the SCR_PROMISE_REJECT_DYN build of scr_async.c. A promise
+   * lowered with an Error-taking reject (the typed `util.promisify` family,
+   * even for an unknown settled value; any typed `withResolvers`) keeps the
+   * default object. Every other program links the default object, byte for
+   * byte. */
+  promiseRejectDyn: rule({
+    expr: (node, tables) => {
+      if (node.kind === "newPromise")
+        return (
+          node.type.kind === "promise" &&
+          node.type.inner.kind === "dyn" &&
+          node.executor.type.kind === "func" &&
+          node.executor.type.params.length === 2 &&
+          node.executor.type.params[1] !== undefined &&
+          node.executor.type.params[1].kind === "func" &&
+          node.executor.type.params[1].params[0] !== undefined &&
+          node.executor.type.params[1].params[0].kind === "dyn"
+        );
+      if (node.kind !== "promiseWithResolvers" || node.type.kind !== "record") return false;
+      const shape = tables().records.get(node.type.shapeId);
+      const promT = shape?.fields.find((f) => f.name === "promise")?.type;
+      const rejectT = shape?.fields.find((f) => f.name === "reject")?.type;
+      return (
+        promT?.kind === "promise" &&
+        promT.inner.kind === "dyn" &&
+        rejectT?.kind === "func" &&
+        rejectT.params[0]?.kind === "dyn"
+      );
+    },
+  }),
   /** Sparse arrays (t262 W7): an array whose length exceeds its dense
    * prefix. Only a checked-dynamic member write can produce one, and only a
    * write the source spells an index proves it: a key computed at run time
@@ -1908,6 +1950,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     tlsCa: false,
     utilPromisify: false,
     warningReplace: false,
+    promiseRejectDyn: false,
     bigintBytes: false,
     sparseArrays: false,
     wasm: false,

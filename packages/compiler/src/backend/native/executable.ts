@@ -263,7 +263,10 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
       u.opts.fileHandle ||
       u.nativeFetch ||
       // Island promises cross as dyn promise boxes (scr_node_island_handle.c).
-      u.opts.nodeIsland === true,
+      u.opts.nodeIsland === true ||
+      // t.waitFor polls a dyn condition and returns a dyn promise
+      // (scr_test.c's waitFor entry).
+      u.opts.nodeTest,
     "scr_async_dyn.c",
   ),
   // Promise statics with a foreign constructor (`Promise.all.call(C, …)`):
@@ -490,6 +493,8 @@ const RUNTIME_DEFINES: readonly {
 }[] = [
   { define: "SCR_TEXT_DECODER_LEGACY", when: (opts) => opts.textDecoderLegacy },
   { define: "SCR_WARNING_REPLACE", when: (opts) => opts.warningReplace },
+  // scr_async.c's reject closure for a checked-dynamic promise reason.
+  { define: "SCR_PROMISE_REJECT_DYN", when: (opts) => opts.promiseRejectDyn },
   // scr_node_builtin.c's dynamic global read throws for the plain Node
   // globals the native runtime does not implement; a program with a computed
   // global read or `… in globalThis` selects that build (host-globals.ts).

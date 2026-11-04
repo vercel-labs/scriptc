@@ -192,8 +192,12 @@ ScrClosure *scr_make_resolve_fn(ScrPromise *p, void *fn);
 void scr_resolve_ref_impl(ScrClosure *self, void *v, void *(*retain)(void *), void (*release)(void *), ScrTraceFn trace);
 /* The reject closure: `(reason: Error) => void` — stores the reason as a
  * SCR_EXC_OBJ payload (the thrown-Error representation) and wakes waiters;
- * a reject after any settle is a no-op (first settle wins, exactly JS). */
+ * a reject after any settle is a no-op (first settle wins, exactly JS).
+ * scr_make_reject_dyn is the checked-dynamic promise's closure: its reason
+ * is any value, stored as the dyn payload that catch handlers receive
+ * identity-preserving. */
 ScrClosure *scr_make_reject(ScrPromise *p);
+ScrClosure *scr_make_reject_dyn(ScrPromise *p);
 void scr_promise_run_executor(ScrPromise *p, ScrClosure *exec, ScrClosure *resolve);
 void scr_promise_run_executor0(ScrPromise *p, ScrClosure *exec);
 void scr_promise_run_executor2(ScrPromise *p, ScrClosure *exec, ScrClosure *resolve, ScrClosure *reject);

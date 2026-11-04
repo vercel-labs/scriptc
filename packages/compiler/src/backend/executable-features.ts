@@ -20,6 +20,7 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     ...(features.eventTarget ? { eventTarget: true } : {}),
     ...(features.wasm ? { wasm: true } : {}),
     ...(features.warningReplace ? { warningReplace: true } : {}),
+    ...(features.promiseRejectDyn ? { promiseRejectDyn: true } : {}),
     ...(jsObjectModelFact(features) ? { jsObjectModel: true } : {}),
     mutableBuffers: features.mutableBuffers,
     ...(features.stdioExtended ? { stdioExtended: true } : {}),

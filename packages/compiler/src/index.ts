@@ -843,6 +843,7 @@ async function compileExecutableNative(
     ...(features.eventTarget ? { eventTarget: true } : {}),
     ...(features.wasm ? { wasm: true } : {}),
     ...(features.warningReplace ? { warningReplace: true } : {}),
+    ...(features.promiseRejectDyn ? { promiseRejectDyn: true } : {}),
     ...(jsObjectModelFact(features) ? { jsObjectModel: true } : {}),
     ...(features.mutableBuffers === true ? { mutableBuffers: true } : {}),
     ...(features.stdioExtended ? { stdioExtended: true } : {}),

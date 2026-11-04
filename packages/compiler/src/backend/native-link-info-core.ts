@@ -35,6 +35,11 @@ export interface NativeLinkFeatures {
   /** The program assigns process.emitWarning: links the
    * SCR_WARNING_REPLACE variant of the dyn-async unit. */
   warningReplace?: boolean;
+  /** The program creates a checked-dynamic promise whose executor takes a
+   * reject parameter: links the SCR_PROMISE_REJECT_DYN variant of
+   * scr_async.c. Absent for every other program, so their objects stay
+   * identical. */
+  promiseRejectDyn?: boolean;
   /** The program uses a runtime feature only a JavaScript source reaches:
    * links the SCR_JS_OBJECT_MODEL build of every unit those features touch
    * (t262-da §J). Absent for every other program, so their objects stay

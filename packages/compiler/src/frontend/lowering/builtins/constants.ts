@@ -26,8 +26,8 @@ const BUILTIN_CONSTANTS_TABLES: Record<
     hint: "the table bakes Node v24's crypto.constants members as literals — this name is not one of them",
   },
   buffer: {
-    table: { MAX_LENGTH: 9007199254740991 },
-    hint: "MAX_LENGTH is the baked member; MAX_STRING_LENGTH would need V8's string length limit, which the runtime does not enforce",
+    table: { MAX_LENGTH: 9007199254740991, MAX_STRING_LENGTH: 536870888 },
+    hint: "the table bakes Node v24's buffer.constants members as literals — this name is not one of them",
   },
   zlib: {
     table: ZLIB_CONSTANTS,

@@ -130,3 +130,29 @@ frame.paint("c", { loud: false });
 console.log(frame.out.join(","), frame.modes.join(","));
 console.log(surface.out.join(","), surface.hits);
 console.log(fancy.out.join(","), fancy.modes.join(","), fancy.notes.join(","), tracedCalls);
+
+// A subclass whose added parameter is one of its own type parameters has no
+// type the base can carry: the family reserves nothing, so the base keeps
+// its own shape and base-only code still compiles and lowers. Instantiating
+// the generic subclass is still refused by the override rule, but the
+// refusal names that override instead of putting an unresolved 'T' on the
+// base and taking every use of the base with it.
+class Carrier {
+  events: string[] = [];
+  emit(name: string): void {
+    this.events.push(name);
+  }
+}
+
+class GenericCarrier<T> extends Carrier {
+  payloads: string[] = [];
+  override emit(name: string, payload?: T): void {
+    super.emit(name);
+    this.payloads.push(payload === undefined ? "none" : String(payload));
+  }
+}
+
+const carrier = new Carrier();
+carrier.emit("plain");
+carrier.emit("again");
+console.log(carrier.events.join(","));

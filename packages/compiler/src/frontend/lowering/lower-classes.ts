@@ -51,6 +51,7 @@ import { InternalCompilerError } from "../../errors.js";
  * hierarchy registration. */
 import { fsStreamClassOf, lowerFsStreamNew } from "./builtins/fs-streams.js";
 import { codeGenerationCalleeOf, lowerCodeGenerationCall } from "./code-generation.js";
+import { mentionsTypeParameter } from "./call-signatures.js";
 import { TEMPORAL_GLOBAL } from "../builtin-modules.js";
 import * as ts from "../ts7/adapter.js";
 import { lowerZlibStreamNew, zlibClassName, zlibStreamModeOf } from "./builtins/compression.js";
@@ -8185,6 +8186,11 @@ export function collectOverrideParamReservations(
             // supply, so that override keeps the exactness fence.
             const added = member.parameters.nodes.slice(declaration.parameters.nodes.length);
             if (added.some((p) => !p.questionToken && !p.initializer)) continue;
+            // A slot typed by one of the subclass's type parameters has no
+            // type the ancestor can name: reserving it would put an
+            // unresolved 'T' on the base's shape and refuse every use of the
+            // base, so the family keeps the exactness fence instead.
+            if (added.some((p) => mentionsTypeParameter(lowerer, lowerer.typeOf(p.name)))) continue;
             record(declaration, member.parameters.nodes);
           }
         }

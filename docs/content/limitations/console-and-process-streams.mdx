@@ -23,3 +23,5 @@ Because no write is ever queued, `writableLength` is 0, `writableNeedDrain` is f
 Stored streams do not support piping, encoding changes, arbitrary properties, or other events.
 A TypeScript `NodeJS.WritableStream` parameter that only receives `process.stdout` or `process.stderr` supports `write(string)`.
 When other streams flow into the same parameter, the process streams join them as `Writable` instances with the full writable surface.
+Passing `process.stdout` or `process.stderr` to a custom minimal writer type (a plain `{ write }` interface or type alias, not `NodeJS.WritableStream`) throws `SC2002`.
+Wrap the stream instead: `const sink: Sink = { write: (s: string) => { process.stdout.write(s); } }`.

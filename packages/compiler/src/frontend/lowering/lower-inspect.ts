@@ -3528,7 +3528,16 @@ export function lowerInspectValue(
       );
     }
     // Buffers render fully at any depth and on one line (custom inspect).
-    return { kind: "libCall", fn: "insp.buffer", args: [value], type: STRING, loc };
+    // Their named properties render as an object's members, so the layout
+    // options -- numericSeparator among them -- apply to those entries.
+    return withInspectLayout(
+      lowerer,
+      options,
+      value,
+      "buffer",
+      (input) => ({ kind: "libCall", fn: "insp.buffer", args: [input], type: STRING, loc }),
+      loc,
+    );
   }
   const walk = { recursive: false };
   const reason = inspectSupport(lowerer, value.type, new Set(), walk);

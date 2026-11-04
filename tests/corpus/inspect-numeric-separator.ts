@@ -26,6 +26,16 @@ console.log(util.inspect(new Set([1000, 2000]), { numericSeparator: true }));
 console.log(util.inspect(new Uint32Array([1000, 4000000]), { numericSeparator: true }));
 console.log(util.inspect(Buffer.from("1234"), { numericSeparator: true }));
 
+// A Buffer's named properties render as an object's members, so the option
+// reaches the numbers among them.
+const named = Buffer.from([1, 2, 3]);
+const namedDynamic: any = named;
+namedDynamic.count = 1234567;
+namedDynamic.ratio = 1234.5;
+console.log(util.inspect(named, { numericSeparator: true }));
+const namedOptions: util.InspectOptions = { numericSeparator: true };
+console.log(util.inspect(named, namedOptions));
+
 // A built-in numeric property groups its digits the way the walk's property
 // values do: an array's [length], a typed array's extras, an ArrayBuffer's
 // [byteLength] and a DataView's byte fields. The numbers Node prints from a

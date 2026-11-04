@@ -1,5 +1,9 @@
 import { dynUndefinedExpr } from "./build.js";
-import { exprFunctionReference, moduleFunctionReferences } from "./function-references.js";
+import {
+  exprFunctionReference,
+  FUNCTION_REFERENCE_KINDS,
+  moduleFunctionReferences,
+} from "./function-references.js";
 import { dynamicFieldStores } from "./int32-slots.js";
 import {
   DYN_CLASS_PROPERTIES,
@@ -9,7 +13,12 @@ import {
   type IrModule,
   type IrStmt,
 } from "./ir.js";
-import { everyStmtList, transformStmtList } from "./traverse.js";
+import { eachNodeOfKinds, type IrNodeIndex, type IrNodeKind } from "./node-index.js";
+import { transformStmtList } from "./traverse.js";
+
+/** The nodes the bag analysis reads: stores of a bag, calls and function
+ * references. */
+const BAG_FACT_KINDS: readonly IrNodeKind[] = ["fieldSet", "call", ...FUNCTION_REFERENCE_KINDS];
 
 /** Names of the lowering's lazily created property-bag accessors
  * (class-dynamic-dispatch.ts). Only direct calls reach them. */
@@ -35,13 +44,14 @@ function pureReceiver(expr: IrExpr): boolean {
  * stores). When the program has no dynamic store and no called function
  * stores a hierarchy's bag, the bag stays undefined: the hierarchy's classes
  * keep no slot for it, its reads are undefined, and the uncalled storing
- * accessors are removed. Library builds keep every bag. */
-export function dropUnwrittenPropertyBags(mod: IrModule): IrModule {
+ * accessors are removed. Library builds keep every bag. `nodes`, an index
+ * of `mod`, gives the nodes the analysis reads without walking the bodies. */
+export function dropUnwrittenPropertyBags(mod: IrModule, nodes?: IrNodeIndex): IrModule {
   if (mod.lib !== undefined) return mod;
   const classes = mod.classes ?? [];
   if (!classes.some((cls) => cls.fields.some((field) => field.name === DYN_CLASS_PROPERTIES)))
     return mod;
-  const stores = dynamicFieldStores(mod);
+  const stores = dynamicFieldStores(mod, undefined, undefined, nodes);
   if (stores.all || stores.names.size > 0) return mod;
 
   const byName = new Map(classes.map((cls) => [cls.name, cls]));
@@ -59,22 +69,22 @@ export function dropUnwrittenPropertyBags(mod: IrModule): IrModule {
 
   const called = new Set(moduleFunctionReferences(mod));
   const writes = new Map<string, Set<string>>();
+  const scan = nodes?.scan(BAG_FACT_KINDS);
   for (const fn of mod.functions) {
-    everyStmtList(fn.body, {
-      stmt: (stmt) => {
+    eachNodeOfKinds(fn, scan, (node, statement) => {
+      if (statement) {
+        const stmt = node as IrStmt;
         if (stmt.kind === "fieldSet" && stmt.field === DYN_CLASS_PROPERTIES) {
           const written = writes.get(fn.name) ?? new Set<string>();
           written.add(rootOf(stmt.className));
           writes.set(fn.name, written);
         }
-        return true;
-      },
-      expr: (expr) => {
-        if (expr.kind === "call" && expr.callee !== fn.name) called.add(expr.callee);
-        const referenced = exprFunctionReference(expr);
-        if (referenced !== undefined) called.add(referenced);
-        return true;
-      },
+        return;
+      }
+      const expr = node as IrExpr;
+      if (expr.kind === "call" && expr.callee !== fn.name) called.add(expr.callee);
+      const referenced = exprFunctionReference(expr);
+      if (referenced !== undefined) called.add(referenced);
     });
   }
   // Field presence tracking (JavaScript classes) keeps the bag it records into.

@@ -1013,6 +1013,17 @@ export function streamTypedRefMaterializeAdapter(
         B.startBlock(afterField);
       }
     }
+    // The instance's accessor-backed members answer through their getters.
+    // Own fields are set above, so a field that shadows a getter keeps its
+    // value.
+    if (adapter.classOps !== undefined && (meta.def.viewAccessors?.length ?? 0) > 0) {
+      host.declare(`declare void @scr_dyn_class_view_accessors(ptr, ptr, ptr, ptr, ptr, ptr)`);
+      const rc = vAdapters(host.shapeHost, t);
+      const trace = traceAdapter(host.shapeHost, t) ?? "null";
+      B.line(
+        `call void @scr_dyn_class_view_accessors(ptr ${out}, ptr ${adapter.classOps}, ptr %p, ptr ${rc.retain}, ptr ${rc.release}, ptr ${trace})`,
+      );
+    }
     for (const symbol of meta.def.symbolFields ?? []) {
       const field = meta.def.fields.find((field) => field.name === symbol.field)!;
       const { index } = classFieldIndex(meta, symbol.field);
@@ -1185,10 +1196,18 @@ export function streamTypedRefMaterializeAdapter(
       // A copy linked to its source (IrModule.recordLinks) views as its
       // composed record: the field operations below answer the declared
       // fields from the copy, and the view the source's other properties.
+      // The composed record's live view boxes its records live, and it
+      // holds the copy's own nested records, so writes through the view's
+      // nested records reach the copy's.
       emitLinkedRecordBranches(host.shapeHost, B, t.shapeId, "%p", (sourceT, composed) => {
         const view = B.tmp();
-        B.line(`${view} = call ptr @${host.dyn.toDynHelper(sourceT)}(ptr ${composed})`);
-        return `ret ptr ${view}`;
+        B.line(`${view} = call ptr @${host.liveDynRefAdapter(sourceT).snapshot}(ptr ${composed})`);
+        // The composed record keeps what its source kept (a spread's other
+        // keys), which rejoins the view in their own-key positions.
+        host.declare(`declare ptr @scr_record_source_apply(ptr, ptr)`);
+        const merged = B.tmp();
+        B.line(`${merged} = call ptr @scr_record_source_apply(ptr ${view}, ptr ${composed})`);
+        return `ret ptr ${merged}`;
       });
       host.declare(`declare ptr @scr_dyn_new_obj()`);
       host.declare(`declare void @scr_dyn_obj_set(ptr, ptr, ${host.sizeType}, ptr)`);
@@ -1745,9 +1764,53 @@ function liveClassOps(host: LlvmEmitterContext, snapshot: string, meta: LlClassM
       ``,
     );
   }
+  // Accessor-backed members: the view installs each one's getter, so a
+  // field behind a getter copies the value the getter answers instead of
+  // reading undefined (scr_dyn_class_view_accessors).
+  const accessors = meta.def.viewAccessors ?? [];
+  let accessorNames = "null";
+  let accessorGet = "null";
+  if (accessors.length > 0) {
+    accessorNames = `@${snapshot}_anames`;
+    accessorGet = `@${snapshot}_aget`;
+    // Like the string tag: the runtime lends the instance, each thunk takes
+    // its own reference for the helper's owned receiver.
+    const retain = vAdapters(host.shapeHost, { kind: "object", className: meta.def.name }).retain;
+    const thunks: string[] = [];
+    const getters: string[] = [];
+    accessors.forEach((entry, index) => {
+      const thunk = `${snapshot}_aget${index}`;
+      getters.push(`ptr @${thunk}`);
+      thunks.push(
+        `define internal ptr @${thunk}(ptr %p) ${FN_ATTRS} { ; ${entry.member} of ${meta.def.name}`,
+        `entry:`,
+        `  %owned = call ptr ${retain}(ptr %p)`,
+        `  %value = call ptr @${mangleFunction(entry.helper)}(ptr %owned)`,
+        `  ret ptr %value`,
+        `}`,
+        ``,
+      );
+    });
+    const accessorLiterals = accessors.map(
+      (entry) => `ptr ${host.internLiteral(entry.member.slice("get:".length))}`,
+    );
+    host.resolveThunkDefs.push(
+      ...thunks,
+      `${accessorNames} = internal constant [${accessors.length} x ptr] [${accessorLiterals.join(", ")}]`,
+      `@${snapshot}_agetters = internal constant [${accessors.length} x ptr] [${getters.join(", ")}]`,
+      `define internal ptr ${accessorGet}(ptr %p, ${host.sizeType} %i) ${FN_ATTRS} { ; accessor-backed members of ${meta.def.name}`,
+      `entry:`,
+      `  %slot = getelementptr inbounds [${accessors.length} x ptr], ptr @${snapshot}_agetters, ${host.sizeType} 0, ${host.sizeType} %i`,
+      `  %getter = load ptr, ptr %slot`,
+      `  %value = call ptr %getter(ptr %p)`,
+      `  ret ptr %value`,
+      `}`,
+      ``,
+    );
+  }
   host.resolveThunkDefs.push(
     `@${names} = internal constant [${members.length} x ptr] [${literals.join(", ")}]`,
-    `@${ops} = internal constant { ptr, ${host.sizeType}, ptr, ptr, ptr } { ptr ${exact}, ${host.sizeType} ${members.length}, ptr @${names}, ptr ${className}, ptr ${stringTag} }`,
+    `@${ops} = internal constant { ptr, ${host.sizeType}, ptr, ptr, ptr, ${host.sizeType}, ptr, ptr } { ptr ${exact}, ${host.sizeType} ${members.length}, ptr @${names}, ptr ${className}, ptr ${stringTag}, ${host.sizeType} ${accessors.length}, ptr ${accessorNames}, ptr ${accessorGet} }`,
     ``,
   );
 }

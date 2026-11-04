@@ -80,6 +80,11 @@ function skip(msg) {
   process.exit(0);
 }
 
+function skipIf32Bits() {
+  if (process.arch !== "x64" && process.arch !== "arm64")
+    skip("The tested feature is not available in 32bit builds");
+}
+
 function expectWarning(name, expected, code) {
   if (typeof expected === "string") expected = [[expected, code]];
   else if (expected.length !== 0 && !Array.isArray(expected[0]))
@@ -191,6 +196,7 @@ module.exports = {
   mustNotCall,
   mustSucceed,
   skip,
+  skipIf32Bits,
   expectWarning,
   getArrayBufferViews,
   expectsError,

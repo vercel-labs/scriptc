@@ -161,6 +161,14 @@ static inline size_t scr_bytes_ascii_span(const char *p, size_t n) {
 }
 
 ScrStr *scr_str_new(const char *bytes, size_t len); /* returns +1 */
+/* The shared empty string: immortal, so retain and release are no-ops on
+ * it. Builders that may produce an empty field take this instead of
+ * allocating one per call. */
+ScrStr *scr_str_empty_value(void); /* +1 semantics, never freed */
+/* A +1 string for a byte span: an empty or one-character ASCII span shares
+ * immortal storage, a 2-4 byte span shares the per-thread tiny-span table,
+ * and anything longer is a fresh string. */
+ScrStr *scr_str_intern_span(const char *bytes, size_t len);
 /* Native callback boundary: copy and WHATWG-decode a UTF-8 span, replacing
  * malformed subsequences with U+FFFD. NULL with len == 0 is an empty span. */
 ScrStr *scr_str_from_utf8_lossy(const uint8_t *bytes, size_t len); /* +1 */

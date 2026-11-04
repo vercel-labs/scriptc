@@ -3,7 +3,13 @@
 // exactly, so most misuse is a type error before lowering; these are the
 // forms that TYPECHECK and fence per site.
 
-import { execFile, fork, spawn } from "node:child_process";
+import {
+  execFile,
+  fork,
+  spawn,
+  spawnSync,
+  type SpawnSyncOptionsWithStringEncoding,
+} from "node:child_process";
 
 // The default and explicit "pipe" forms use piped streams.
 // Keep both adjacent to the remaining rejection cases.
@@ -17,7 +23,11 @@ const inherited = spawn("/bin/echo", [], { stdio: "inherit" });
 // A variable options value must fence instead of being dropped.
 const options: { stdio: "ignore"; detached: boolean } = { stdio: "ignore", detached: true };
 spawn("true", [], options);
-spawn("printf", ["unsafe"], { stdio: "ignore", shell: true });
+// The shell forms take the complete command in the first argument; separate
+// args would need Node's DEP0190 warning, which a native build cannot report.
+const shellArgs = ["unsafe"];
+spawn("printf", shellArgs, { stdio: "ignore", shell: true });
+spawnSync("printf", ["%s", "unsafe"], { shell: true });
 const c = spawn("true", [], { stdio: "ignore" });
 
 // Value-returning listeners — inferred, annotated, or async — ADOPT the
@@ -25,10 +35,24 @@ const c = spawn("true", [], { stdio: "ignore" });
 // adapter discards it (tests/corpus/child-listener-return-values.ts).
 // Methods have no bound-value form — call on directly.
 const f = c.on;
-// The callback slice accepts inline utf8/maxBuffer options, but not all of
-// Node's options or the optional-callback overload family.
+// spawnSync's shell must be a literal: a runtime boolean has no value to
+// check at the call, and the shell decision picks the launch shape.
+const shellFlag = true;
+spawnSync("true", [], { shell: shellFlag });
+// Only the typed record (or an inline literal) flows to spawnSync at
+// runtime: a merely structural options value cannot be read member by
+// member.
+const looseOptions: { shell?: boolean } = { shell: true };
+spawnSync("true", [], looseOptions);
+// A typed options value MAY enable the shell at run time, so its call takes
+// no separate args either.
+const typedOptions: SpawnSyncOptionsWithStringEncoding = { encoding: "utf8", shell: true };
+spawnSync("printf %s", ["unsafe"], typedOptions);
+// The callback slice accepts inline utf8/maxBuffer/cwd/shell options, but
+// not all of Node's options or the optional-callback overload family.
 execFile("true");
-execFile("true", [], { cwd: "/tmp" }, () => {});
+execFile("true", [], { killSignal: "SIGTERM" }, () => {});
+execFile("printf", ["%s", "unsafe"], { encoding: "utf8", shell: true }, () => {});
 const bufferLimit = 1024;
 execFile("true", [], { maxBuffer: bufferLimit }, () => {});
 const getEncoding = (): "utf8" => "utf8";

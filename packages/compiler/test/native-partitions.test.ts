@@ -605,7 +605,9 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
       // Copies as --cpu-dispatch emits them: `<name>.base` in #0 and
       // `<name>.v3` in #1. Two callers each, so that every copy is placed by
       // its own name. Each f calls h in its own tier; f and h have 128-bit
-      // vectors, g a 256-bit vector, and s only scalar code.
+      // vectors, g a 256-bit vector, and s only scalar code. t has 128-bit
+      // vectors and calls k, an x86-64-v3 function without copies in #2, as
+      // a --target-cpu=x86-64-v3 build emits its helpers.
       const pairs = 4;
       const copies = (tier: "base" | "v3", group: number): string[] => [
         `define internal void @h.${tier}(ptr %p) #${group} {`,
@@ -633,6 +635,13 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
         "  %y = fadd double %x, 1.0",
         "  ret double %y",
         "}",
+        `define internal void @t.${tier}(ptr %p) #${group} {`,
+        "  %v = load <2 x double>, ptr %p",
+        "  %w = fadd <2 x double> %v, splat (double 5.0)",
+        "  store <2 x double> %w, ptr %p",
+        "  call void @k(ptr %p)",
+        "  ret void",
+        "}",
       ];
       const calls = (result: string): string[] =>
         (["base", "v3"] as const).flatMap((tier) => [
@@ -641,10 +650,15 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
             (_, index) => `  call void @f${index}.${tier}(ptr @sink)`,
           ),
           `  call void @g.${tier}(ptr @sink)`,
+          `  call void @t.${tier}(ptr @sink)`,
           `  %${result}.${tier} = call double @s.${tier}(double 1.0)`,
         ]);
       const source = [
         "@sink = global [4 x double] zeroinitializer",
+        "define internal void @k(ptr %p) #2 {",
+        "  store double 0.0, ptr %p",
+        "  ret void",
+        "}",
         ...copies("base", 0),
         ...copies("v3", 1),
         "define void @other() {",
@@ -657,6 +671,7 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
         "}",
         "attributes #0 = { noinline uwtable }",
         'attributes #1 = { noinline uwtable "target-cpu"="x86-64-v3" "scriptc-cpu-copy" }',
+        'attributes #2 = { noinline uwtable "target-cpu"="x86-64-v3" }',
       ].join("\n");
       // Each function's object and disassembly, by its name without the
       // thin link's `.llvm.<n>` suffix.
@@ -698,6 +713,10 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
       expect(at("g.v3").code).toContain("%ymm");
       expect(at("s.v3").code).toMatch(/\svaddsd\s/);
       expect(at("g.base").code).not.toContain("%ymm");
+      // A baseline copy that calls a function defined for x86-64-v3 does not
+      // give its code to the v3 copy.
+      expect(at("t.v3").code).toMatch(/\svaddpd\s/);
+      expect(at("t.base").code).toMatch(/\saddpd\s/);
       // An instrumented build keeps every copy's code: a baseline body would
       // count the v3 copy's executions against the baseline copy.
       const counted = await disassemble(
@@ -738,6 +757,42 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
       expect(runs("f1.v3").code).not.toMatch(/\svaddpd\s/);
     },
   );
+
+  test("an !invariant.group load whose pointer becomes a constant keeps its own function's value", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-partitions-invariant-group-"));
+    dirs.push(dir);
+    // After inlining, both reads load through `getelementptr (ptr null, 4)`,
+    // a constant whose uses include the other function's load. LLVM 22.1.8's
+    // memory dependence analysis gave each load the other function's load as
+    // its value, and the optimizer crashed (MemoryDependenceAnalysis.cpp).
+    const read = (name: string, type: "i32" | "i64") => [
+      `define ${type} @${name}(ptr %p) {`,
+      "  %tag = call i32 @tag(ptr %p)",
+      "  %other = icmp eq i32 %tag, 0",
+      "  br i1 %other, label %done, label %read",
+      "done:",
+      `  ret ${type} 0`,
+      "read:",
+      "  %field = getelementptr i8, ptr %p, i64 4",
+      "  %value = load i32, ptr %field, !invariant.group !0",
+      ...(type === "i32"
+        ? ["  ret i32 %value"]
+        : ["  %wide = zext i32 %value to i64", "  ret i64 %wide"]),
+      "}",
+    ];
+    const source = [
+      ...read("first", "i32"),
+      ...read("second", "i64"),
+      "define i32 @tag(ptr %p) {",
+      "  %null = icmp eq ptr %p, null",
+      "  %tag = zext i1 %null to i32",
+      "  ret i32 %tag",
+      "}",
+      "!0 = !{}",
+    ].join("\n");
+    const [object] = await emit(dir, source + "\n", { outputs: 1, optLevel: "2", name: "reads" });
+    expect((await readFile(object!)).length).toBeGreaterThan(0);
+  });
 
   test("internal definitions nothing reaches are left out of every partition", async () => {
     const dir = await mkdtemp(join(tmpdir(), "scriptc-partitions-unreachable-"));
@@ -880,6 +935,55 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
     expect(where.get("trampoline")).toBe(where.get("step7"));
     expect(where.get("closure")).not.toBe(where.get("step7"));
     expect(where.get("matcher")).not.toBe(where.get("step9"));
+  });
+
+  test("a fallback body that its referrer calls is placed by its own name", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-partitions-cold-"));
+    dirs.push(dir);
+    const body = (name: string, attrs: string) => [
+      `define internal void @${name}(i64 %value) ${attrs} {`,
+      ...Array.from(
+        { length: 40 },
+        (_, index) => `  %v${index} = add i64 ${index === 0 ? "%value" : `%v${index - 1}`}, 1`,
+      ),
+      "  call void @bump(i64 0)",
+      "  ret void",
+      "}",
+    ];
+    // step7 calls two fallback bodies, one of them unoptimized, and a cold
+    // function without the marker; only the last follows it.
+    const source = program()
+      .split("\n")
+      .flatMap((line) => {
+        if (line === "define internal void @step7(i64 %value) noinline {")
+          return [
+            ...body("fallback", 'noinline cold "scriptc-fallback"'),
+            ...body("plainFallback", 'noinline optnone cold "scriptc-fallback"'),
+            ...body("missPath", "noinline cold"),
+            line,
+            "  call void @fallback(i64 1)",
+            "  call void @plainFallback(i64 1)",
+            "  call void @missPath(i64 1)",
+          ];
+        return [line];
+      })
+      .join("\n");
+    const objects = await emit(dir, source, { outputs: 4, optLevel: "0", name: "cold" });
+    expect(await exitCode(dir, objects, "cold")).toBe(expectedExit());
+    const where = new Map<string, number>();
+    for (const [index, object] of objects.entries()) {
+      const { stdout } = await execFileAsync("nm", [object]);
+      for (const line of stdout.split("\n")) {
+        const defined = /^[0-9a-fA-F]+ [A-Za-z] _?(step7|fallback|plainFallback|missPath)$/.exec(
+          line.trim(),
+        );
+        if (defined !== null) where.set(defined[1]!, index);
+      }
+    }
+    expect(where.size).toBe(4);
+    expect(where.get("missPath")).toBe(where.get("step7"));
+    expect(where.get("fallback")).not.toBe(where.get("step7"));
+    expect(where.get("plainFallback")).not.toBe(where.get("step7"));
   });
 
   test("functions are balanced over a few partitions, and a small edit keeps their places", async () => {

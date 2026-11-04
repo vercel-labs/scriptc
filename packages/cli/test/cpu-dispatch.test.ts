@@ -71,9 +71,10 @@ test.runIf(process.platform === "linux" && process.arch === "x64")(
       expect(await build(["--optimization=speed", "--cpu-dispatch"], true)).toBe(dispatching);
       expect(await build(["--cpu-dispatch"])).toContain("@sc_cpu_level_init()");
       expect(await run("0")).toBe(expected);
-      expect(await build(["--target-cpu=x86-64-v3", "--cpu-dispatch"])).not.toContain(
-        "@sc_cpu_level",
-      );
+      // An x86-64-v3 target ignores --cpu-dispatch: its level is fixed.
+      const target = await build(["--target-cpu=x86-64-v3", "--cpu-dispatch"]);
+      expect(target).toMatch(/^@sc_cpu_level = hidden global i32 3$/m);
+      expect(target).not.toContain("@sc_cpu_level_init");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

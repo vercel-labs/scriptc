@@ -33,13 +33,6 @@ inheritance.ts:76:1 - error SC1090: a call supplying more arguments than the nat
      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   77 | 
 
-inheritance.ts:98:13 - error SC1090: statically-decided 'instanceof' on computed operands (bind the value to a variable first) are not supported yet
-
-  97 | }
-  98 | console.log(new Point() instanceof Point);
-     |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  99 | 
-
 inheritance.ts:107:15 - error SC2004: uses of 'GenericAbstract' inherit the blocker on its declaration
 
   106 | new Impl().usesLimit();

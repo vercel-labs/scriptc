@@ -357,7 +357,7 @@ static void scr_sidx_concat_append(const ScrStr *s, size_t oldlen) {
 
 static ScrStr *scr_str_alloc(size_t len, size_t cap) {
   if (len > cap || cap > SCR_STR_MAX_CAP) scr_oom();
-  ScrStr *s = scr_mem_alloc(sizeof(ScrStr) + cap + 1);
+  ScrStr *s = scr_mem_alloc_ref(sizeof(ScrStr) + cap + 1);
   if (!s) scr_oom();
   s->rc = 1;
   s->len = len;
@@ -470,7 +470,7 @@ ScrStr *scr_str_regrow(ScrStr *s, size_t newcap) {
   scr_short_forget(s);
   scr_str_hash_forget(s);
   scr_sidx_purge(s); /* realloc may move; the old address may be recycled */
-  ScrStr *r = scr_mem_realloc(s, sizeof(ScrStr) + newcap + 1);
+  ScrStr *r = scr_mem_realloc_ref(s, sizeof(ScrStr) + newcap + 1);
   if (!r) scr_oom();
   r->cap = newcap;
   return r;
@@ -1045,6 +1045,8 @@ static const struct { size_t rc; size_t len; size_t cap; char data[1]; }
 
 static ScrStr *scr_str_empty(void) { return (ScrStr *)&scr_lit_empty; }
 
+ScrStr *scr_str_empty_value(void) { return scr_str_empty(); }
+
 /* Empty/ASCII characters are immortal; tiny spans share live heap strings. */
 static ScrStr *scr_str_from_span(const char *bytes, size_t len) {
   if (len == 0) return scr_str_empty();
@@ -1063,6 +1065,8 @@ static ScrStr *scr_str_from_span(const char *bytes, size_t len) {
   }
   return scr_str_new(bytes, len);
 }
+
+ScrStr *scr_str_intern_span(const char *bytes, size_t len) { return scr_str_from_span(bytes, len); }
 
 /* scr_str_from_span for a span of a proven-ASCII string: the result is
  * ASCII without another scan. */
@@ -2614,6 +2618,10 @@ ScrStr *scr_str_trim(ScrStr *s) {
     e = cs;
   }
   return scr_str_from_span(s->data + b, e - b);
+}
+
+ScrStr *scr_str_ascii_char(unsigned code) {
+  return (ScrStr *)&scr_ascii1[code & 0x7f];
 }
 
 ScrStr *scr_str_char_at(ScrStr *s, double i) {

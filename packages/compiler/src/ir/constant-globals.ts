@@ -1,5 +1,14 @@
 import type { IrExpr, IrFunction, IrModule, IrStmt } from "./ir.js";
-import { everyStmtList, mapExprChildren, mapStmtChildren } from "./traverse.js";
+import {
+  eachNodeOfKinds,
+  type IrNodeIndex,
+  type IrNodeKind,
+  LOCAL_BINDING_KINDS,
+} from "./node-index.js";
+import { mapExprChildren, mapStmtChildren } from "./traverse.js";
+
+/** The reads and writes of bindings. */
+const BINDING_KINDS: readonly IrNodeKind[] = [...LOCAL_BINDING_KINDS, "varRef"];
 
 type Literal = (IrExpr & { kind: "numLit" }) | (IrExpr & { kind: "boolLit" });
 
@@ -14,8 +23,10 @@ type Literal = (IrExpr & { kind: "numLit" }) | (IrExpr & { kind: "boolLit" });
  * the store carry the frontend's initialization flag (`initFlag`) or a TDZ
  * sentinel, and those globals are left alone. The store stays, so module
  * namespace views and debuggers still find the value in the global. Library
- * builds keep their globals: a host may observe them across the boundary. */
-export function foldConstantGlobals(mod: IrModule): IrModule {
+ * builds keep their globals: a host may observe them across the boundary.
+ * `nodes`, an index of `mod`, gives the reads and writes without walking
+ * the bodies. */
+export function foldConstantGlobals(mod: IrModule, nodes?: IrNodeIndex): IrModule {
   if (mod.lib || !mod.globals?.length) return mod;
   const candidates = new Set<string>();
   for (const g of mod.globals)
@@ -39,27 +50,21 @@ export function foldConstantGlobals(mod: IrModule): IrModule {
   // Per function, the candidates it reads: the rewrite below visits only the
   // functions that read a constant.
   const readsByFunction = new Map<IrFunction, Set<string>>();
+  const scan = nodes?.scan(BINDING_KINDS);
   for (const fn of mod.functions) {
     let read: Set<string> | undefined;
-    everyStmtList(fn.body, {
-      // Every node other than a read that names the binding is a write
-      // (assignments, loop and catch bindings, compound updates); only a
-      // plain assignment or declaration contributes a value.
-      stmt: (s) => {
-        if (s.kind === "assign") write(s.localId, s.value);
-        else if (s.kind === "varDecl") write(s.localId, s.init);
-        else if ("localId" in s && typeof s.localId === "string") write(s.localId, null);
-        return true;
-      },
-      expr: (e) => {
-        if (e.kind === "varRef") {
-          if (candidates.has(e.localId)) {
-            if (read === undefined) read = new Set();
-            read.add(e.localId);
-          }
-        } else if ("localId" in e && typeof e.localId === "string") write(e.localId, null);
-        return true;
-      },
+    // Every node other than a read that names the binding is a write
+    // (assignments, loop and catch bindings, compound updates); only a
+    // plain assignment or declaration contributes a value.
+    eachNodeOfKinds(fn, scan, (node) => {
+      if (node.kind === "assign") write(node.localId, node.value);
+      else if (node.kind === "varDecl") write(node.localId, node.init);
+      else if (node.kind === "varRef") {
+        if (candidates.has(node.localId)) {
+          if (read === undefined) read = new Set();
+          read.add(node.localId);
+        }
+      } else if ("localId" in node && typeof node.localId === "string") write(node.localId, null);
     });
     if (read !== undefined) readsByFunction.set(fn, read);
   }

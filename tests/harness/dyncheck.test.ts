@@ -1859,14 +1859,16 @@ try {
   });
 
   test("%o refuses the dynamic kinds whose hidden entries have no rendering", async () => {
-    // Node's showHidden adds a function's length/name/prototype, an
-    // error's stack and a typed array's byte fields; %o throws the 'not
-    // supported yet' Error for them instead of printing without them.
+    // Node's showHidden adds a function's length/name/prototype and an
+    // error's enumerable properties; %o throws the 'not supported yet'
+    // Error for them instead of printing without them. A typed array's
+    // byte fields do render; a SharedArrayBuffer's own accessors do not.
     const r = await compileAndRun(
       "format-o-hidden-refusals",
       `import { format } from "node:util";
 function f(): void {}
-const values: [string, unknown][] = [["fn", f], ["err", new Error("e")], ["u8", new Uint8Array(1)], ["arr", [1]]];
+const sab = new SharedArrayBuffer(1);
+const values: [string, unknown][] = [["fn", f], ["err", new Error("e")], ["u8", new Uint8Array(1)], ["arr", [1]], ["sab", sab], ["sabView", new Uint8Array(sab)]];
 for (const [label, value] of values) {
   try {
     console.log(label, format("%o", value));
@@ -1881,8 +1883,92 @@ for (const [label, value] of values) {
       [
         "fn util.format %o of function values is not supported yet",
         "err util.format %o of Error values is not supported yet",
-        "u8 util.format %o of typed array values is not supported yet",
+        "u8 Uint8Array(1) [",
+        "  0,",
+        "  [BYTES_PER_ELEMENT]: 1,",
+        "  [length]: 1,",
+        "  [byteLength]: 1,",
+        "  [byteOffset]: 0,",
+        "  [buffer]: ArrayBuffer { [byteLength]: 1 }",
+        "]",
         "arr [ 1, [length]: 1 ]",
+        "sab util.format %o of SharedArrayBuffer values is not supported yet",
+        "sabView util.format %o of SharedArrayBuffer values is not supported yet",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("console.dir renders showHidden through the checked-dynamic walk and refuses the kinds it has no hidden view of", async () => {
+    // dir is inspect with customInspect: false, so the hidden entries come
+    // from the walk's showHidden state; the kinds without a hidden view
+    // keep their refusal, naming console.dir.
+    const r = await compileAndRun(
+      "console-dir-show-hidden",
+      `const arr: any = [1, 2];
+arr.extra = 3;
+Object.defineProperty(arr, "hidden", { value: 4, enumerable: false });
+console.dir(arr, { showHidden: true });
+console.dir(arr);
+function f(): void {}
+try {
+  console.dir(f, { showHidden: true });
+} catch (e) {
+  console.log((e as Error).message);
+}
+const sab = new SharedArrayBuffer(1);
+try {
+  console.dir(new Uint8Array(sab), { showHidden: true });
+} catch (e) {
+  console.log((e as Error).message);
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "[ 1, 2, [length]: 2, extra: 3, [hidden]: 4 ]",
+        "[ 1, 2, extra: 3 ]",
+        "console.dir with showHidden of function values is not supported yet",
+        "console.dir with showHidden of SharedArrayBuffer values is not supported yet",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("showHidden refuses the renders that would expose a SharedArrayBuffer's byte accessors", async () => {
+    // Node lists a SharedArrayBuffer's own byteLength, maxByteLength and
+    // growable accessors and its toStringTag symbol under showHidden, which
+    // this inspector does not model: the render throws SC2020 instead of
+    // printing without them, for a view's [buffer] as much as the buffer
+    // itself. Without showHidden the buffer and its views print.
+    const r = await compileAndRun(
+      "inspect-shared-array-buffer-hidden",
+      `import { inspect } from "node:util";
+const sab = new SharedArrayBuffer(4);
+const renders: [string, () => string][] = [
+  ["sab", () => inspect(sab, { showHidden: true })],
+  ["view", () => inspect(new Uint8Array(sab, 1, 2), { showHidden: true })],
+  ["dataView", () => inspect(new DataView(sab, 1, 2), { showHidden: true })],
+];
+for (const [label, render] of renders) {
+  try {
+    console.log(label, render());
+  } catch (e) {
+    const err = e as Error & { code?: string };
+    console.log(label, err.code, err.message);
+  }
+}
+console.log(inspect(sab));
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "sab SC2020 util.inspect with showHidden of SharedArrayBuffer values is not supported yet",
+        "view SC2020 util.inspect with showHidden of SharedArrayBuffer values is not supported yet",
+        "dataView SC2020 util.inspect with showHidden of SharedArrayBuffer values is not supported yet",
+        "SharedArrayBuffer { [Uint8Contents]: <00 00 00 00>, [byteLength]: 4 }",
         "",
       ].join("\n"),
     );

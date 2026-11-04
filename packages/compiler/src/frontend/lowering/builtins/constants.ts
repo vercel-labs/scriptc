@@ -10,8 +10,9 @@ import { builtinImportOf } from "./module-bindings.js";
 
 /** The builtin modules whose `constants` object bakes as literals at
  * every access site (the fs.constants precedent, scaled up): http2's
- * full Node v24 table, crypto's OpenSSL-constant table, and zlib's
- * table. The object itself never materializes at runtime. */
+ * full Node v24 table, crypto's OpenSSL-constant table, zlib's table,
+ * and buffer's MAX_LENGTH. The object itself never materializes at
+ * runtime. */
 const BUILTIN_CONSTANTS_TABLES: Record<
   string,
   { table: Record<string, number | string>; hint: string } | undefined
@@ -23,6 +24,10 @@ const BUILTIN_CONSTANTS_TABLES: Record<
   crypto: {
     table: CRYPTO_CONSTANTS,
     hint: "the table bakes Node v24's crypto.constants members as literals — this name is not one of them",
+  },
+  buffer: {
+    table: { MAX_LENGTH: 9007199254740991 },
+    hint: "MAX_LENGTH is the baked member; MAX_STRING_LENGTH would need V8's string length limit, which the runtime does not enforce",
   },
   zlib: {
     table: ZLIB_CONSTANTS,

@@ -1831,15 +1831,18 @@ static ScrBigInt *bi_from_u64_signed(uint64_t value, bool sign) {
   return bi_u64_signed(~value + 1, -1);
 }
 
+/* ERR_OUT_OF_RANGE's "Received" for a bigint: the decimal with Node's
+ * addNumericalSeparator underscores when |value| > 2^32, then 'n'. */
 static void bi_grouped_decimal(const ScrBigInt *value, char **out, size_t *out_len) {
   ScrStr *plain = scr_bigint_to_string((ScrBigInt *)value, 10);
   size_t start = plain->len && plain->data[0] == '-' ? 1 : 0;
   size_t digits = plain->len - start;
-  size_t groups = digits > 3 ? (digits - 1) / 3 : 0;
+  bool grouped = !bi_mag_fits_u64(value) || bi_mag_u64(value) > UINT64_C(4294967296);
+  size_t groups = grouped && digits > 3 ? (digits - 1) / 3 : 0;
   char *buf = bi_malloc(plain->len + groups + 2);
   size_t src = 0, dst = 0;
   if (start) buf[dst++] = plain->data[src++];
-  size_t first = digits % 3;
+  size_t first = groups ? digits % 3 : digits;
   if (!first) first = 3;
   memcpy(buf + dst, plain->data + src, first);
   src += first;
@@ -1879,6 +1882,11 @@ static bool bi_buffer_value(const ScrBigInt *value, bool sign, uint64_t *out) {
   free(received);
   free(msg);
   return false;
+}
+
+bool scr_bigint_buffer_check(const ScrBigInt *value, bool sign) {
+  uint64_t raw;
+  return bi_buffer_value(value, sign, &raw);
 }
 
 ScrBigInt *scr_bigint_buffer_read(ScrBytes *bytes, double offset, bool sign, bool le) {

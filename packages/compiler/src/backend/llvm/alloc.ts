@@ -11,15 +11,17 @@
  * helper does not store itself, and a handful of loads and stores.
  *
  * Soundness does not depend on which runtime the program links against.
- * The runtime defines `scr_sa` in every build; where its allocator is
- * compiled out (AddressSanitizer, the RC audit) the state stays all-zero,
- * so the inline paths find no free block, no bump room and an empty span,
- * and always take the slow path: the same out-of-line calls as before
- * (scr_rt_calloc / scr_cyc_alloc, scr_rt_free) plus the RC-audit object
- * notes. The fast paths skip those notes, which are no-ops whenever the
- * allocator is live (SCR_RC_AUDIT forces it off; scr_runtime.h #errors
- * otherwise). Blocks outside the reservation (system fallbacks) go back
- * through scr_rt_free.
+ * The runtime defines `scr_sa` and the chunk table `scr_sa_chunks` in every
+ * build; where its allocator is compiled out (AddressSanitizer, the RC
+ * audit) the state stays all-zero, so the inline paths find no free block,
+ * no bump room and an empty span, and always take the slow path: the same
+ * out-of-line calls as before (scr_rt_calloc / scr_cyc_alloc, scr_rt_free)
+ * plus the RC-audit object notes. The fast paths skip those notes, which are
+ * no-ops whenever the allocator is live (SCR_RC_AUDIT forces it off;
+ * scr_runtime.h #errors otherwise). An inline free pushes a block onto the
+ * calling thread's free list when the block's chunk carries the thread's
+ * tag in the chunk table; other blocks (another arena's, system fallbacks)
+ * go back through scr_rt_free.
  *
  * Inlining is limited to the targets where the allocator can be live: 64-bit,
  * not WASI, not Windows, and not thread-instanced libraries (whose
@@ -41,6 +43,13 @@ export interface AllocHost {
   /** The allocator state, live count and dispose hook are thread-local
    * (worker executables). */
   readonly threadLocalAlloc?: boolean;
+  /** The runtime places its window below 32 GiB (Linux executables,
+   * LlvmTargetOptions.lowRegion): inline frees of programs with workers find
+   * a block's chunk entry in the chunk map from its address alone (scr_rc.h
+   * scr_sa_chunk_map), and those of programs without workers find a block of
+   * a class's slice from its offset in the window (sliceFreeLines).
+   * Elsewhere they test the window's base and span first. */
+  readonly windowMap?: boolean;
 }
 
 /** The state globals of the inline allocation paths and, in worker
@@ -64,7 +73,9 @@ function threadLocalState(host: AllocHost, prefix: string, lines: string[]): str
   const preamble: string[] = [];
   let text = lines.join("\n");
   for (const [global, offset] of STATE_GLOBALS) {
-    if (!text.includes(`ptr ${global}`)) continue;
+    // Whole names only: `@scr_sa` is not `@scr_sa_chunks`.
+    const use = new RegExp(`ptr ${global.replace("$", "\\$")}(?![-$._A-Za-z0-9])`, "g");
+    if (!use.test(text)) continue;
     if (preamble.length === 0) {
       host.declare(`@scr_thread_hot = external thread_local global ${THREAD_HOT_TYPE}`);
       host.declare(`declare nonnull ptr @llvm.threadlocal.address.p0(ptr nonnull)`);
@@ -72,9 +83,7 @@ function threadLocalState(host: AllocHost, prefix: string, lines: string[]): str
     }
     const local = `%${prefix}.tl.${global.slice(5)}`;
     preamble.push(`  ${local} = getelementptr inbounds i8, ptr ${hot}, i64 ${offset}`);
-    text = text
-      .replaceAll(`ptr ${global},`, `ptr ${local},`)
-      .replaceAll(`ptr ${global}`, `ptr ${local}`);
+    text = text.replace(use, `ptr ${local}`);
   }
   return [...preamble, ...text.split("\n")];
 }
@@ -122,8 +131,17 @@ export function inlineAllocSupported(options: {
 /* ScrSaState layout on 64-bit targets (asserted in scr_runtime.h). */
 const SA_TYPE = "{ i64, i64, i32, [40 x ptr], [40 x ptr], [40 x ptr] }";
 const SA_SPAN = 8;
-const SA_SHIFT = 16;
+/** The arena's tag, (arena + 1) << 8: an entry of the arena's chunks xor
+ * the tag is below 256, and is the entry's size class. */
+const SA_TAG = 16;
 const SA_FREE = 24;
+/** The chunk table (scr_sa_chunks in scr_rc.h): an i16 per window chunk,
+ * the owning arena's tag in the high byte and the size class in the low
+ * one. */
+const SA_CHUNKS = "@scr_sa_chunks";
+const SA_CHUNKS_TYPE = "[7168 x i16]";
+/** log2 of the chunk size (SCR_SA_CHUNK_SHIFT), the same for every arena. */
+const SA_CHUNK_SHIFT = 22;
 const SA_BUMP = 344;
 const SA_LIM = 664;
 /** Classes step by 8 bytes up to SA_FINE_MAX and by 16 above it, and the
@@ -478,23 +496,110 @@ export function emitObjectFree(
   cyc: boolean,
   observers: FreeObservers = "weak",
   keep: string | null = null,
+  size: string | null = null,
 ): string[] {
-  const lines = threadLocalState(host, "sf", freeLines(host, cyc, observers, keep));
+  const lines = threadLocalState(host, "sf", freeLines(host, cyc, observers, keep, size));
   if (host.objectAudit === false) return lines.filter((line) => line !== FREE_NOTE);
   host.declare(`declare void @scr_obj_free_note()`);
   return lines;
 }
 
-/** Lines that put the blocks `first` to `last` (linked through their first
- * words; one block when they are equal) of the class at reservation offset
- * `off` on the calling thread's free list. */
-function freeListPushLines(prefix: string, off: string, first: string, last: string): string[] {
+/** Lines that leave in `%<prefix>.e` the chunk-table entry (i32) of the
+ * block at window offset `off`, which is below the window's span. */
+function chunkEntryLines(host: AllocHost, prefix: string, off: string): string[] {
+  host.declare(`${SA_CHUNKS} = external global ${SA_CHUNKS_TYPE}`);
   return [
-    `  %${prefix}.shp = getelementptr inbounds i8, ptr @scr_sa, i64 ${SA_SHIFT}`,
-    `  %${prefix}.sh32 = load i32, ptr %${prefix}.shp`,
-    `  %${prefix}.sh = zext i32 %${prefix}.sh32 to i64`,
-    `  %${prefix}.c = lshr i64 ${off}, %${prefix}.sh`,
-    `  %${prefix}.c8 = shl i64 %${prefix}.c, 3`,
+    `  %${prefix}.ci = lshr i64 ${off}, ${SA_CHUNK_SHIFT}`,
+    `  %${prefix}.ep = getelementptr inbounds i16, ptr ${SA_CHUNKS}, i64 %${prefix}.ci`,
+    `  %${prefix}.e16 = load i16, ptr %${prefix}.ep`,
+    `  %${prefix}.e = zext i16 %${prefix}.e16 to i32`,
+  ];
+}
+
+/** The chunk map (scr_sa_chunk_map in scr_rc.h): an i16 per 4 MiB of the
+ * first 32 GiB of the address space, the window's chunk-table entries while
+ * the window lies there. */
+const SA_MAP = "@scr_sa_chunk_map";
+const SA_MAP_CHUNKS = 8192;
+
+/** log2 of a class's slice (scr_rc.h SCR_SA_SLICE_SHIFT). */
+const SA_SLICE_SHIFT = 28;
+
+/** Lines that free the block `blk` of a program without workers when it lies
+ * in the classes' slices (scr_rc.h scr_sa_slice_span): onto the free list of
+ * class (blk - base) >> SA_SLICE_SHIFT, or into `keep`. Any other block
+ * branches to `%sf.sys`, so that the inline free stays as small as a
+ * shift-indexed push. */
+function sliceFreeLines(host: AllocHost, blk: string, keep: string | null): string[] {
+  host.declare(`@scr_sa_slice_span = external global i64`);
+  return [
+    `  %sf.sb = load i64, ptr @scr_sa`,
+    `  %sf.sp = ptrtoint ptr ${blk} to i64`,
+    `  %sf.so = sub i64 %sf.sp, %sf.sb`,
+    `  %sf.ss = load i64, ptr @scr_sa_slice_span`,
+    `  %sf.sin = icmp ult i64 %sf.so, %sf.ss`,
+    `  %sf.sinx = call i1 @llvm.expect.i1(i1 %sf.sin, i1 true)`,
+    `  br i1 %sf.sinx, label %sf.slice, label %sf.sys`,
+    `sf.slice:`,
+    `  %sf.sc = lshr i64 %sf.so, ${SA_SLICE_SHIFT}`,
+    ...(keep !== null
+      ? [`  store ptr ${blk}, ptr ${keep}`]
+      : freeListPushLines("sfs", blk, blk, "%sf.sc")),
+    `  br label %sf.done`,
+  ];
+}
+
+/** Lines that branch to `%<prefix>.chunk` with the chunk entry (i32) of the
+ * block `blk` in `%<prefix>.e`, or to `%<prefix>.sys` for a block outside
+ * the window. With the chunk map the address alone indexes it (an empty map
+ * leaves every block to the slow path, as does a tag no entry carries);
+ * otherwise the block's offset in the window does. */
+function blockEntryLines(host: AllocHost, prefix: string, blk: string): string[] {
+  const p = `%${prefix}`;
+  if (host.windowMap === true) {
+    host.declare(`${SA_MAP} = external global [${SA_MAP_CHUNKS} x i16]`);
+    return [
+      `  ${p}.bi = ptrtoint ptr ${blk} to i64`,
+      `  ${p}.ci = lshr i64 ${p}.bi, ${SA_CHUNK_SHIFT}`,
+      `  ${p}.in = icmp ult i64 ${p}.ci, ${SA_MAP_CHUNKS}`,
+      `  ${p}.inx = call i1 @llvm.expect.i1(i1 ${p}.in, i1 true)`,
+      `  br i1 ${p}.inx, label ${p}.chunk, label ${p}.sys`,
+      `${prefix}.chunk:`,
+      `  ${p}.ep = getelementptr inbounds i16, ptr ${SA_MAP}, i64 ${p}.ci`,
+      `  ${p}.e16 = load i16, ptr ${p}.ep`,
+      `  ${p}.e = zext i16 ${p}.e16 to i32`,
+    ];
+  }
+  return [
+    `  ${p}.base = load i64, ptr @scr_sa`,
+    `  ${p}.spanp = getelementptr inbounds i8, ptr @scr_sa, i64 ${SA_SPAN}`,
+    `  ${p}.span = load i64, ptr ${p}.spanp`,
+    `  ${p}.bi = ptrtoint ptr ${blk} to i64`,
+    `  ${p}.off = sub i64 ${p}.bi, ${p}.base`,
+    `  ${p}.in = icmp ult i64 ${p}.off, ${p}.span`,
+    `  ${p}.inx = call i1 @llvm.expect.i1(i1 ${p}.in, i1 true)`,
+    `  br i1 ${p}.inx, label ${p}.chunk, label ${p}.sys`,
+    `${prefix}.chunk:`,
+    ...chunkEntryLines(host, prefix, `${p}.off`),
+  ];
+}
+
+/** Lines that put the blocks `first` to `last` (linked through their first
+ * words; one block when they are equal) of size class `cls` (i64), or by
+ * default of the class in the low byte of the chunk-table entry
+ * `%<prefix>.e`, on the calling thread's free list. */
+function freeListPushLines(prefix: string, first: string, last: string, cls?: string): string[] {
+  const classLines =
+    cls === undefined
+      ? [
+          `  %${prefix}.c32 = and i32 %${prefix}.e, 255`,
+          `  %${prefix}.c = zext i32 %${prefix}.c32 to i64`,
+        ]
+      : [];
+  const c = cls ?? `%${prefix}.c`;
+  return [
+    ...classLines,
+    `  %${prefix}.c8 = shl i64 ${c}, 3`,
     `  %${prefix}.fo = add i64 %${prefix}.c8, ${SA_FREE}`,
     `  %${prefix}.fp = getelementptr inbounds i8, ptr @scr_sa, i64 %${prefix}.fo`,
     `  %${prefix}.head = load ptr, ptr %${prefix}.fp`,
@@ -526,7 +631,8 @@ export function emitSegmentFree(
     `  %${prefix}.base = load i64, ptr @scr_sa`,
     `  %${prefix}.bi = ptrtoint ptr ${first} to i64`,
     `  %${prefix}.off = sub i64 %${prefix}.bi, %${prefix}.base`,
-    ...freeListPushLines(prefix, `%${prefix}.off`, first, last),
+    ...chunkEntryLines(host, prefix, `%${prefix}.off`),
+    ...freeListPushLines(prefix, first, last),
     `  br label %${prefix}.done`,
     `${prefix}.done:`,
   ];
@@ -544,11 +650,29 @@ function observedLines(prefix: string, observers: FreeObservers): string[] {
   ];
 }
 
+/** Lines that leave in `%<prefix>.cls` (i64) the size class of an object of
+ * `size` bytes, with the collector header when `cyc` (scr_sa_class), and in
+ * `%<prefix>.small` whether the allocator serves that size at all. Both fold
+ * to constants for a constant size. */
+function sizeClassLines(prefix: string, size: string, cyc: boolean): string[] {
+  return [
+    `  %${prefix}.n = add i64 ${size}, ${cyc ? CYC_HDR : 0}`,
+    `  %${prefix}.small = icmp ule i64 %${prefix}.n, ${SA_MAX}`,
+    `  %${prefix}.nm1 = sub i64 %${prefix}.n, 1`,
+    `  %${prefix}.k = lshr i64 %${prefix}.nm1, 3`,
+    `  %${prefix}.fine = icmp ule i64 %${prefix}.n, ${SA_FINE_MAX}`,
+    `  %${prefix}.kc = add i64 %${prefix}.k, ${SA_FINE_MAX / 8}`,
+    `  %${prefix}.cc = lshr i64 %${prefix}.kc, 1`,
+    `  %${prefix}.cls = select i1 %${prefix}.fine, i64 %${prefix}.k, i64 %${prefix}.cc`,
+  ];
+}
+
 function freeLines(
   host: AllocHost,
   cyc: boolean,
   observers: FreeObservers,
   keep: string | null,
+  size: string | null,
 ): string[] {
   if (host.inlineAlloc !== true) {
     if (keep !== null) throw new Error("a kept block needs the inline allocation paths");
@@ -606,21 +730,40 @@ function freeLines(
     );
   }
   const blk = cyc ? "%sf.blk" : "%o";
+  if (host.windowMap === true && host.threadLocalAlloc !== true)
+    // A program without workers frees a block of a class's slice inline;
+    // any other block takes the out-of-line free.
+    lines.push(...sliceFreeLines(host, blk, keep));
+  else
+    lines.push(
+      // The block is the calling thread's when its chunk carries the thread's tag.
+      ...blockEntryLines(host, "sf", blk),
+      `  %sf.tagp = getelementptr inbounds i8, ptr @scr_sa, i64 ${SA_TAG}`,
+      `  %sf.tag = load i32, ptr %sf.tagp`,
+      `  %sf.x = xor i32 %sf.e, %sf.tag`,
+      ...(size !== null
+        ? [
+            // The object's size gives its class, so the entry is only compared
+            // with the one the thread's chunks of that class carry, and the push
+            // does not wait for the table load.
+            ...sizeClassLines("sf", size, cyc),
+            `  %sf.cls32 = trunc i64 %sf.cls to i32`,
+            `  %sf.entry = icmp eq i32 %sf.x, %sf.cls32`,
+            `  %sf.mine = and i1 %sf.entry, %sf.small`,
+          ]
+        : [`  %sf.mine = icmp ult i32 %sf.x, 256`, `  %sf.xc = zext i32 %sf.x to i64`]),
+      `  %sf.minex = call i1 @llvm.expect.i1(i1 %sf.mine, i1 true)`,
+      `  br i1 %sf.minex, label %sf.push, label %sf.sys`,
+      `sf.push:`,
+      ...(keep !== null
+        ? [`  store ptr ${blk}, ptr ${keep}`]
+        : size !== null
+          ? freeListPushLines("sf", blk, blk, "%sf.cls")
+          : freeListPushLines("sf", blk, blk, "%sf.xc")),
+      `  br label %sf.done`,
+    );
   lines.push(
-    `  %sf.base = load i64, ptr @scr_sa`,
-    `  %sf.spanp = getelementptr inbounds i8, ptr @scr_sa, i64 ${SA_SPAN}`,
-    `  %sf.span = load i64, ptr %sf.spanp`,
-    `  %sf.bi = ptrtoint ptr ${blk} to i64`,
-    `  %sf.off = sub i64 %sf.bi, %sf.base`,
-    `  %sf.in = icmp ult i64 %sf.off, %sf.span`,
-    `  %sf.inx = call i1 @llvm.expect.i1(i1 %sf.in, i1 true)`,
-    `  br i1 %sf.inx, label %sf.push, label %sf.sys`,
-    `sf.push:`,
-    ...(keep !== null
-      ? [`  store ptr ${blk}, ptr ${keep}`]
-      : freeListPushLines("sf", "%sf.off", blk, blk)),
-    `  br label %sf.done`,
-    `sf.sys: ; outside the reservation, or the allocator is compiled out`,
+    `sf.sys: ; another arena's or the system's block, or the allocator is compiled out`,
     `  call void @scr_obj_free_note()`,
     `  call void @scr_rt_free(ptr ${blk})`,
     `  br label %sf.done`,

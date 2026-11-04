@@ -23,7 +23,7 @@ import {
 } from "../../../ir/ir.js";
 import { staticForkModulePath } from "../../fork-target.js";
 import { tsgoPath } from "../../dts-paths.js";
-import { isPureReadShape, optionMember, stripTypeCasts } from "./arguments.js";
+import { optionMember, stripTypeCasts } from "./arguments.js";
 
 /** The child-process args list: one string[] value. An omitted list
  * completes to an empty literal (Node's default); an array LITERAL
@@ -155,6 +155,13 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
   let shell: IrExpr = boolLit(false, loc);
   let extOptions = false; // cwd, input, or shell present: the extended entry point
   let plain = true; // no behavior-changing option: the historical libCall
+  // A union-typed `input` is read once into a hidden local that its
+  // presence test and its value share, so a getter or a call in the
+  // member runs exactly once, as the options object's evaluation does.
+  let inputRead: { id: string; init: IrExpr } | null = null;
+  // The options whose values reach the call, in source order: the
+  // extended entry point's prelude evaluates them in this order.
+  const optionOrder: ("timeout" | "cwd" | "env" | "input")[] = [];
 
   if (optsNode) {
     if (!ts.isObjectLiteralExpression(optsNode)) {
@@ -267,6 +274,7 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
         }
         case "timeout":
           timeout = lowerer.lowerExprExpecting(m.value, F64);
+          optionOrder.push("timeout");
           plain = false;
           break;
         case "killSignal": {
@@ -292,10 +300,12 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
         case "env":
           // A REPLACEMENT environment, as for spawn and execFileSync.
           envPairs = recordToEnvPairs(lowerer, m.value);
+          optionOrder.push("env");
           plain = false;
           break;
         case "cwd":
           cwd = lowerer.lowerExprExpecting(m.value, STRING);
+          optionOrder.push("cwd");
           extOptions = true;
           plain = false;
           break;
@@ -327,22 +337,19 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
           break;
         case "input": {
           // string | undefined, Node's exact member semantics (see
-          // execFileSync): the undefined arm is an ABSENT option. A
-          // union-typed value re-reads for the presence test, so only
-          // pure reads qualify — the `options?.input` shape verbatim.
+          // execFileSync): the undefined arm is an ABSENT option. The
+          // presence test and the value share ONE read (the hidden local
+          // below), so any expression qualifies and a getter or call in it
+          // runs exactly once, as the options object's evaluation does.
           if (lowerer.typeOf(m.value).flags & ts.TypeFlags.Undefined) break;
           const it = lowerer.mapTypeOf(lowerer.typeOf(m.value));
           const uTag = it?.kind === "union" ? lowerer.armTag(it.unionId, UNDEFINED_T) : -1;
           const sTag = it?.kind === "union" ? lowerer.armTag(it.unionId, STRING) : -1;
           if (it?.kind === "union" && uTag >= 0 && sTag >= 0) {
-            if (!isPureReadShape(m.value)) {
-              lowerer.noLowering(
-                "spawnSync with a computed optional input",
-                m.value,
-                "the undefined test re-reads the expression — bind the input to a const first",
-              );
-            }
-            const read = lowerer.lowerExpr(m.value);
+            const readValue = lowerer.lowerExpr(m.value);
+            const slot = lowerer.declareHiddenLocal("%spawnSyncInput", readValue.type);
+            inputRead = { id: slot.id, init: readValue };
+            const read: IrExpr = varRef(slot.id, readValue.type, loc);
             hasInput = {
               kind: "unionIsTag",
               unionId: it.unionId,
@@ -375,11 +382,13 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
               type: STRING,
               loc,
             };
+            optionOrder.push("input");
             extOptions = true;
             plain = false;
             break;
           }
           input = lowerer.lowerExprExpecting(m.value, STRING);
+          optionOrder.push("input");
           hasInput = boolLit(true, loc);
           extOptions = true;
           plain = false;
@@ -427,26 +436,58 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
     // member before the call — so it stays an argument, and `has_input`
     // false keeps it out of the child's stdin.
     const ignoreInput = !stdinPiped;
-    return {
+    // The call's prelude evaluates the command, the arguments and the
+    // options in source order, each into a hidden local the call reads, so
+    // an earlier option that changes a later one's value (a getter, a call)
+    // is seen as in Node. A union `input` lands in the hidden local its tag
+    // test and its value share. Literals need no local.
+    const prelude: IrStmt[] = [];
+    const bind = (name: string, value: IrExpr): IrExpr => {
+      if (value.kind === "strLit" || value.kind === "numLit" || value.kind === "boolLit")
+        return value;
+      const local = lowerer.declareHiddenLocal(name, value.type);
+      prelude.push({ kind: "varDecl", localId: local.id, init: value, loc });
+      return varRef(local.id, value.type, loc);
+    };
+    const cmdArg = bind("%spawnSyncCmd", cmd);
+    const argvArg = bind("%spawnSyncArgs", argv);
+    let timeoutArg = timeout;
+    let cwdArg = cwd;
+    let inputArg = input;
+    let envArg = envPairs;
+    for (const option of optionOrder) {
+      if (option === "timeout") timeoutArg = bind("%spawnSyncTimeout", timeout);
+      else if (option === "cwd") cwdArg = bind("%spawnSyncCwd", cwd);
+      else if (option === "env" && envPairs !== null) envArg = bind("%spawnSyncEnv", envPairs);
+      else if (option === "input") {
+        if (inputRead !== null)
+          prelude.push({ kind: "varDecl", localId: inputRead.id, init: inputRead.init, loc });
+        else inputArg = bind("%spawnSyncInput", input);
+      }
+    }
+    const call: IrExpr = {
       kind: "libCall",
       fn: envPairs !== null ? "cp.spawnSyncExtEnv" : "cp.spawnSyncExt",
       args: [
-        cmd,
-        argv,
-        timeout,
+        cmdArg,
+        argvArg,
+        timeoutArg,
         killSignal,
         numLit(inMode, loc),
         numLit(outMode, loc),
         numLit(errMode, loc),
-        cwd,
-        input,
+        cwdArg,
+        inputArg,
         ignoreInput ? boolLit(false, loc) : hasInput,
         shell,
-        ...(envPairs !== null ? [envPairs] : []),
+        ...(envArg !== null ? [envArg] : []),
       ],
       type: SPAWNRES_T,
       loc,
     };
+    return prelude.length === 0
+      ? call
+      : { kind: "seqExpr", stmts: prelude, result: call, type: SPAWNRES_T, loc };
   }
   return {
     kind: "libCall",

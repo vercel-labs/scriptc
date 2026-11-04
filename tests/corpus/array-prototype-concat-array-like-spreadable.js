@@ -59,6 +59,23 @@ attempt("proxy-spread", () => {
   const result = Array.prototype.concat.call(spreadProxy, "r");
   return [result.length, result.join(""), trapped.join(",")];
 });
+// A Proxy without a get trap forwards the symbol read to its target, and the
+// target's getter runs with the Proxy as `this`.
+const getterThis = [];
+const receiverTarget = { length: 2, 0: "s", 1: "t" };
+let receiverProxy = null;
+Object.defineProperty(receiverTarget, Symbol.isConcatSpreadable, {
+  configurable: true,
+  get() {
+    getterThis.push(this === receiverProxy ? "proxy" : "target");
+    return true;
+  },
+});
+receiverProxy = new Proxy(receiverTarget, {});
+attempt("proxy-target-getter", () => {
+  const result = Array.prototype.concat.call(receiverProxy, "u");
+  return [result.length, result.join(""), getterThis.join(",")];
+});
 attempt("nothing", () => Array.prototype.concat.call(spreadable));
 attempt("broken", () => Array.prototype.concat.call(broken, "x"));
 attempt("broken-tostring", () => {

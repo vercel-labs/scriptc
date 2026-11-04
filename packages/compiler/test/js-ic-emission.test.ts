@@ -321,6 +321,72 @@ console.log(len2({ x: 3, y: 4 }), typeof parsed);
   }
 });
 
+test("computed sites get element arms by default and the key path on opt-out", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-js-ic-index-"));
+  const source = `
+function dyn(v) { return v; }
+function at(xs, i) { return xs[i]; }
+function put(xs, i, v) { xs[i] = v; }
+var bytes = dyn(new Uint8Array(4));
+var text = dyn("abcd");
+var list = dyn([1, 2, 3]);
+put(bytes, 0, 7);
+put(list, 0, 8);
+put({ k: 1 }, "k", 2);
+console.log(at(bytes, 1), at(text, 2), at(list, 1), at({ k: 9 }, "k"));
+console.log(bytes[0], list[0], text[0]);
+`;
+  const compileWith = async (value: string | undefined): Promise<string> => {
+    // The flag is a load-time constant, so each build compiles against a
+    // fresh module graph in which it is set.
+    if (value === undefined) delete process.env["SCRIPTC_DYN_INDEX_FASTPATH"];
+    else process.env["SCRIPTC_DYN_INDEX_FASTPATH"] = value;
+    vi.resetModules();
+    const fresh = await import("../src/index.js");
+    const { emitLlvmModule: emit } = await import("../src/backend/llvm/emitter.js");
+    const name = value === undefined ? "default" : value;
+    const entry = join(dir, `${name}.js`);
+    const outPath = join(dir, `${name}.ir.json`);
+    await writeFile(entry, source);
+    const result = await fresh.compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    return emit(fresh.deserializeModule(await readFile(outPath, "utf8")));
+  };
+  try {
+    const off = await compileWith("0");
+    // With the opt-out the computed sites form the key string as before.
+    expect(body(off, "at")).not.toContain("@scr_dyn_bytes_index_get(");
+    expect(body(off, "at")).not.toContain("@scr_dyn_string_index_get(");
+    expect(body(off, "put")).not.toContain("@scr_dyn_index_set(");
+
+    for (const arms of [await compileWith(undefined), await compileWith("1")]) {
+      const at = body(arms, "at");
+      // A typed array and a string answer an integral index from the
+      // runtime's own element getters, in front of the keyed probe and the
+      // helper.
+      expect(at).toContain("@scr_dyn_bytes_index_get(");
+      expect(at).toContain("@scr_dyn_string_index_get(");
+      expect(at).toContain("@scr_js_keyed_probe(");
+      expect(at).toMatch(
+        /@sc_b?f__x25_dyn_class_computed_\d+\(ptr %t\d+, ptr %t\d+\) noinline cold/,
+      );
+      // A computed write stores a number key's element through the runtime
+      // and keeps its helper for every other receiver, key and rejected
+      // store.
+      const put = body(arms, "put");
+      expect(put).toContain("@scr_dyn_index_set(");
+      expect(put).toMatch(
+        /@sc_b?f__x25_dyn_class_computed_\d+\(ptr %t\d+, ptr %t\d+, ptr %t\d+\) noinline cold/,
+      );
+    }
+  } finally {
+    delete process.env["SCRIPTC_DYN_INDEX_FASTPATH"];
+    vi.resetModules();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("keyed and length sites read native number arrays in place", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-js-ic-native-"));
   try {

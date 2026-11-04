@@ -1652,7 +1652,7 @@ const BUILTIN_ERROR_SLOT_KEYS: ReadonlySet<string> = new Set([
   "generatedMessage",
 ]);
 
-const OBJECT_PROTOTYPE_KEYS: ReadonlySet<string> = new Set([
+export const OBJECT_PROTOTYPE_KEYS: ReadonlySet<string> = new Set([
   "constructor",
   "__defineGetter__",
   "__defineSetter__",
@@ -1813,15 +1813,91 @@ function immediatelyInvokedArrow(fn: ts.ArrowFunction): boolean {
  * function body runs later (after construction), so it does not see the
  * initializer's position in the field order. An arrow the expression calls
  * on the spot is the exception: its body runs while the initializer does,
- * with the same `this`, so the field order still holds there. */
+ * with the same `this`, so the field order still holds there — up to its
+ * first `await`. An immediately invoked async arrow that suspends resumes
+ * the rest of its body in a later job, once the constructor has returned,
+ * where `this` holds every field (suspendsBefore). */
 function directlyInsideInitializer(initializer: ts.Node, node: ts.Node): boolean {
   for (let current: ts.Node | undefined = node; current; current = current.parent) {
     if (current === initializer) return !ts.isFunctionLike(current);
     if (ts.isFunctionLike(current)) {
       if (!ts.isArrowFunction(current) || !immediatelyInvokedArrow(current)) return false;
+      if (suspendsBefore(current, node)) return false;
     }
   }
   return false;
+}
+
+/** Whether an `await` in `fn`'s own body has run before `node` does, so the
+ * test reaches it in a later job. Only an `await` that runs every path
+ * counts: one inside a branch that may not run leaves the test at the
+ * initializer's position, where the field order still holds. */
+function suspendsBefore(fn: ts.ArrowFunction, node: ts.Node): boolean {
+  if (!ts.isBlock(fn.body)) return awaitBefore(fn.body, node.getStart());
+  let child: ts.Node = node;
+  for (
+    let current: ts.Node | undefined = node.parent;
+    current !== undefined && current !== fn;
+    child = current, current = current.parent
+  ) {
+    if (!ts.isBlock(current)) continue;
+    for (const statement of current.statements.nodes) {
+      if (statement === child) break;
+      if (reachesAwait(statement)) return true;
+    }
+  }
+  return false;
+}
+
+/** Whether executing `node` always reaches an `await` in the same function:
+ * a short-circuit operand, conditional arm, loop body or branch that may
+ * not run does not count. */
+function reachesAwait(node: ts.Node): boolean {
+  if (
+    ts.isFunctionLike(node) ||
+    ts.isClassExpression(node) ||
+    ts.isClassDeclaration(node) ||
+    ts.isForStatement(node) ||
+    ts.isForInStatement(node) ||
+    ts.isForOfStatement(node) ||
+    ts.isWhileStatement(node) ||
+    ts.isDoStatement(node) ||
+    ts.isTryStatement(node) ||
+    ts.isSwitchStatement(node)
+  )
+    return false;
+  if (ts.isAwaitExpression(node)) return true;
+  if (ts.isConditionalExpression(node)) return reachesAwait(node.condition);
+  if (ts.isBinaryExpression(node)) {
+    const kind = node.operatorToken.kind;
+    if (
+      kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+      kind === ts.SyntaxKind.BarBarToken ||
+      kind === ts.SyntaxKind.QuestionQuestionToken
+    )
+      return reachesAwait(node.left);
+  }
+  if (ts.isIfStatement(node))
+    return (
+      node.elseStatement !== undefined &&
+      reachesAwait(node.thenStatement) &&
+      reachesAwait(node.elseStatement)
+    );
+  return ts.forEachChild(node, reachesAwait) === true;
+}
+
+/** Whether an `await` outside a nested function appears before `bound` in
+ * `root`. An arrow with an expression body has no statements to walk, so
+ * the test's position decides. */
+function awaitBefore(root: ts.Node, bound: number): boolean {
+  const visit = (node: ts.Node): boolean | undefined => {
+    if (node.getStart() >= bound) return undefined;
+    if (ts.isFunctionLike(node) || ts.isClassExpression(node) || ts.isClassDeclaration(node))
+      return undefined;
+    if (ts.isAwaitExpression(node)) return true;
+    return ts.forEachChild(node, visit);
+  };
+  return ts.forEachChild(root, visit) === true;
 }
 
 /** `'key' in this` inside one of the class's own field initializers. Node

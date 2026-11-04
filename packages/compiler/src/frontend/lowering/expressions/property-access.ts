@@ -22,7 +22,7 @@ import {
 } from "../builtins/array-classes.js";
 import { indexedUnionArms, lowerIndexedUnionMember } from "../indexed-unions.js";
 import { keyedHelperName } from "../stable-names.js";
-import { builtinNamespaceValue } from "../builtin-namespaces.js";
+import { builtinNamespaceValue, wellKnownSymbolValue } from "../builtin-namespaces.js";
 import { staticallySelected } from "../static-typeof.js";
 import { lowerWebStreamClassRead } from "../builtins/web-streams-dyn.js";
 import { wrapperConstructors } from "../primitive-wrappers.js";
@@ -148,6 +148,7 @@ import { COMMONJS_MODULE_BINDINGS, TEMPORAL_GLOBAL } from "../../builtin-modules
 import { tryLowerExpression } from "./try-lower-expression.js";
 import {
   applyDeferredAssertion,
+  assertedOptionalMemberRead,
   assertedReceiverNode,
   deferredMemberReadTarget,
   deferredProbeReadAccess,
@@ -194,7 +195,12 @@ import {
   createRequireResolveFenceValue,
   createRequireResolveValue,
 } from "../builtins/module-resolution.js";
-import { builtinPrototypeMethod, lowerCheckedPredicateValue } from "../lower-builtin-values.js";
+import {
+  builtinMethodValue,
+  builtinPrototypeMethod,
+  lowerCheckedPredicateValue,
+  stringTrimMethodName,
+} from "../lower-builtin-values.js";
 import { constructorStaticValue, objectFreezeValue } from "../builtin-statics.js";
 import { lowerBufferPrototypeMember, lowerBufferPrototypeObject } from "../containers/bytes.js";
 import { lowerNetAddressStaticRead } from "../builtins/net-address.js";
@@ -2297,7 +2303,17 @@ export function lowerIntrinsicProperty(
   const primitivePrototype = jsPrimitivePrototypeValue(lowerer, expr);
   if (primitivePrototype) return primitivePrototype;
   const builtinPrototype = builtinPrototypeMethod(lowerer, expr);
-  if (builtinPrototype)
+  if (builtinPrototype) {
+    // The trim family and RegExp's methods have a value of their own
+    // (scr_dyn_builtin_methods.c). The invoke unit's table answers a member
+    // read on a receiver it already knows; these values have no receiver at
+    // read time and brand-check whatever `this` they are later called with,
+    // which a receiver-keyed lookup cannot express. The interned value is
+    // shared with the `''.trim` and `/a/.exec` spellings below.
+    const trim = builtinPrototype === "String" ? stringTrimMethodName(expr.name.text) : null;
+    if (trim) return builtinMethodValue("String", trim, locOf(expr));
+    if (builtinPrototype === "RegExp")
+      return builtinMethodValue("RegExp", expr.name.text, locOf(expr));
     return {
       kind: "libCall",
       fn: "dyn.builtinMethod",
@@ -2308,6 +2324,7 @@ export function lowerIntrinsicProperty(
       type: DYN,
       loc: locOf(expr),
     };
+  }
   if (
     ts.isPropertyAccessExpression(expr.expression) &&
     lowerer.stdlibGlobalMember(expr.expression, "Array") === "prototype"
@@ -2334,6 +2351,45 @@ export function lowerIntrinsicProperty(
     return { kind: "libCall", fn: "dyn.functionApply", args: [], type: DYN, loc: locOf(expr) };
   if (lowerer.stdlibGlobalMember(expr, "Array") === "prototype")
     return { kind: "libCall", fn: "dyn.arrayPrototype", args: [], type: DYN, loc: locOf(expr) };
+  // DataView.prototype as a value, and its members read through it: the
+  // prototype object the language defines — its see-through properties
+  // (buffer, byteLength, byteOffset), its getter/setter family and its
+  // constructor — not a view. A DataView method CALLED on the prototype
+  // object itself throws the TypeError its brand check answers. Typed
+  // sources keep the standard-library member fence: their views lower
+  // through the intrinsic path, and only a JavaScript source can pass a
+  // view around as a value.
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    lowerer.stdlibGlobalMember(expr, "DataView") === "prototype"
+  ) {
+    return {
+      kind: "libCall",
+      fn: "dyn.dataViewPrototype",
+      args: [wellKnownSymbolValue("toStringTag", locOf(expr))],
+      type: DYN,
+      loc: locOf(expr),
+    };
+  }
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    ts.isPropertyAccessExpression(expr.expression) &&
+    lowerer.stdlibGlobalMember(expr.expression, "DataView") === "prototype"
+  ) {
+    return {
+      kind: "dynKeyGet",
+      value: {
+        kind: "libCall",
+        fn: "dyn.dataViewPrototype",
+        args: [wellKnownSymbolValue("toStringTag", locOf(expr.expression))],
+        type: DYN,
+        loc: locOf(expr.expression),
+      },
+      key: { kind: "strLit", value: expr.name.text, type: STRING, loc: locOf(expr.name) },
+      type: DYN,
+      loc: locOf(expr),
+    };
+  }
   // Date.prototype as a value, and its members read through it: the
   // prototype object the language defines (an ordinary object carrying the
   // interface's methods), not a Date. `Date.prototype.hasOwnProperty("x")`
@@ -2889,8 +2945,20 @@ export function lowerIntrinsicProperty(
         loc,
       };
     }
-    if (name === "test") {
-      lowerer.unsupported("SC1090", expr, "regex methods as values (call 'test' directly)");
+    // A regex method read as a value: the same interned function
+    // `RegExp.prototype.exec` is (scr_dyn_builtin_methods.c), which
+    // brand-checks its receiver. A compiled regex carries no own member of
+    // any of these names, so the read answers the prototype's method exactly
+    // as Node does. A direct call keeps its intrinsic lowering: it is
+    // statically typed, and the value form would make it a dynamic call.
+    if ((name === "exec" || name === "test" || name === "toString") && !isCalleeOf(expr)) {
+      // The read still evaluates the receiver first: a call that answers the
+      // regex may have side effects or throw before the member is read.
+      return afterReceiver(
+        lowerer.lowerExpr(expr.expression),
+        builtinMethodValue("RegExp", name, locOf(expr)),
+        locOf(expr),
+      );
     }
     return null;
   }
@@ -3101,16 +3169,22 @@ export function lowerIntrinsicProperty(
     // runtime's interned function that runs it on its receiver.
     if (kind === "string" && isJsSourceFile(expr.getSourceFile()) && !expr.questionDotToken) {
       const receiver = lowerer.lowerExpr(expr.expression);
-      const method: IrExpr = {
-        kind: "libCall",
-        fn: "dyn.builtinMethod",
-        args: [
-          { kind: "strLit", value: "String", type: STRING, loc: locOf(expr) },
-          { kind: "strLit", value: name, type: STRING, loc: locOf(expr.name) },
-        ],
-        type: DYN,
-        loc: locOf(expr),
-      };
+      // `''.trim` is the same interned function as String.prototype.trim, so
+      // its call/apply run the method generically (scr_dyn_builtin_methods.c
+      // rather than the invoke unit's table, which has no trim entry).
+      const trim = stringTrimMethodName(name);
+      const method: IrExpr = trim
+        ? builtinMethodValue("String", trim, locOf(expr))
+        : {
+            kind: "libCall",
+            fn: "dyn.builtinMethod",
+            args: [
+              { kind: "strLit", value: "String", type: STRING, loc: locOf(expr) },
+              { kind: "strLit", value: name, type: STRING, loc: locOf(expr.name) },
+            ],
+            type: DYN,
+            loc: locOf(expr),
+          };
       return isSafeToDiscard(receiver)
         ? method
         : {
@@ -3735,6 +3809,15 @@ export function lowerFieldRead(lowerer: Lowerer, expr: ts.PropertyAccessExpressi
         loc: locOf(expr),
       };
     }
+  }
+  // A member only an asserted intersection declares
+  // (`(item as Base & { icons?: unknown }).icons`): the assertion's width
+  // copy has the name but no value in it, while the record the value
+  // actually holds still carries the property in its kept source. Answer
+  // from there (assertedOnlyFieldRead), as the destructuring twin does.
+  {
+    const assertedOnly = assertedOptionalMemberRead(lowerer, expr);
+    if (assertedOnly) return assertedOnly;
   }
   const target = lowerer.fieldTarget(expr);
   if (target) return lowerer.fieldGetExpr(target, locOf(expr), expr);
@@ -6039,6 +6122,27 @@ export function isPromisePrototypeRead(lowerer: Lowerer, expr: ts.Expression | u
     !inner.questionDotToken &&
     inner.name.text === "constructor" &&
     lowerer.mapTypeOf(lowerer.typeOf(inner.expression))?.kind === "promise"
+  );
+}
+
+/** Whether `expr` reads DataView.prototype, or a member read through it, in
+ * a JavaScript source. The checker types the read DataView — whose lowering
+ * is a bytes view — but the value is the prototype OBJECT
+ * (dyn.dataViewPrototype), so a binding inferred from it stays
+ * checked-dynamic: the bytes extraction would throw where Node answers the
+ * object. */
+export function isDataViewPrototypeRead(
+  lowerer: Lowerer,
+  expr: ts.Expression | undefined,
+): boolean {
+  if (!expr) return false;
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  if (!ts.isPropertyAccessExpression(expr) || expr.questionDotToken) return false;
+  if (!isJsSourceFile(ts.getSourceFileOfNode(expr))) return false;
+  if (lowerer.stdlibGlobalMember(expr, "DataView") === "prototype") return true;
+  return (
+    ts.isPropertyAccessExpression(expr.expression) &&
+    lowerer.stdlibGlobalMember(expr.expression, "DataView") === "prototype"
   );
 }
 

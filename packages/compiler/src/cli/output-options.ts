@@ -12,6 +12,7 @@ export interface OutputOptionValues {
   staticLink?: boolean;
   windowsSubsystem?: string;
   detachedExit?: boolean;
+  stdoutBuffering?: boolean;
   largePages?: boolean;
   cpuDispatch?: boolean;
   profileGenerate?: string;
@@ -80,6 +81,9 @@ export function resolveOutputOptions(
   }
   if (values.detachedExit && emit !== "exe") {
     return { ok: false, message: `--detached-exit is only supported with --emit=exe` };
+  }
+  if (values.stdoutBuffering && emit !== "exe") {
+    return { ok: false, message: `--stdout-buffering is only supported with --emit=exe` };
   }
   if (values.largePages && emit !== "exe") {
     return { ok: false, message: `--large-pages is only supported with --emit=exe` };

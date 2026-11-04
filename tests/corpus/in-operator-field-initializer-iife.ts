@@ -31,3 +31,37 @@ class Escape {
 
 const escape = new Escape();
 console.log(escape.getLater());
+
+/**
+ * An immediately invoked async arrow that suspends resumes in a later job,
+ * once the constructor has returned, so a membership test after the await
+ * sees the fields defined after the initializer. A test before the await, or
+ * past an await that does not run, still answers from the field order.
+ */
+class Suspends {
+  first = 1;
+  beforeAwait = (async () => {
+    const seen = "later" in this;
+    await null;
+    return seen;
+  })();
+  afterAwait = (async () => {
+    await null;
+    return "later" in this;
+  })();
+  skippedAwait = (async () => {
+    if (false) await null;
+    return "later" in this;
+  })();
+  expressionBody = (async () => (await null, "later" in this))();
+  later = 2;
+}
+
+const suspends = new Suspends();
+console.log(
+  await suspends.beforeAwait,
+  await suspends.afterAwait,
+  await suspends.skippedAwait,
+  await suspends.expressionBody,
+  "later" in suspends,
+);

@@ -6,42 +6,61 @@
  * not emit anything, and it leaves the IR alone (a plan is a side table
  * keyed by the loop statement, like the contracts).
  *
- * The shapes read a typed array at the induction variable and fold each
- * element into one accumulator:
+ * The shapes read a typed array or a dense `number[]` at the induction
+ * variable:
  *
- *   for (let i = 0; i < a.length; i++) total += a[i]!;
- *   for (let i = 0; i < a.length; i++) if (a[i]! >= limit) count++;
+ *   for (let i = 0; i < a.length; i++) total += a[i]!;              // sum
+ *   for (let i = 0; i < a.length; i++) if (a[i]! >= n) count++;     // count
+ *   for (let i = 0; i < a.length; i++) a[i] = a[i]! * 2;            // store
  *
- * Both are order-free when every partial sum is an integer below 2^53: a
- * sum of integer elements is exact in any order below that bound, and a
- * count is at most the length. The sum's bound is checked at the loop entry
- * by the emitter (`lengthBound`), because it depends on the element type.
+ * Sums and counts are order-free when every partial sum is an integer below
+ * 2^53: a sum of integer elements is exact in any order below that bound,
+ * and a count is at most the length. The sum's bound is checked at the loop
+ * entry by the emitter (`lengthBound`), because it depends on the element
+ * type. A store is order-free because it writes element `i` from element `i`
+ * of the same iteration, so lanes never move a value across an iteration.
+ *
+ * A dense array's slots hold either exact int32s (which are never -0) or
+ * doubles, decided per array at run time; a plan lanes the int32 storage for
+ * a sum or count and the double storage for a store, and the emitter tests
+ * the storage kind at the loop entry.
  *
  * A loop qualifies when:
- * - it is the canonical typed-array loop (`matchIntegerBytesForLoop`), the
- *   receiver is never assigned in the body, and the element type is an
- *   integer narrower than f64;
- * - the body is exactly the shape above, reading `receiver[i]` and writing
- *   the accumulator;
- * - the accumulator is a mutable unboxed `f64` local declared as the literal
- *   0, and it holds exactly +0 wherever the loop is entered. Those facts,
- *   which `entryIsZero` checks, are what the exactness argument needs: the
- *   loop's partial sums then start from +0 and stay inside the bound on
- *   their own.
+ * - it is the canonical loop the integer matchers recognize (typed arrays:
+ *   `matchIntegerBytesForLoop`, dense arrays: `matchIntegerArrayForLoop`),
+ *   the receiver is never assigned in the body, and its elements are
+ *   integers narrower than f64 or, for a store, doubles;
+ * - the body is exactly one of the shapes above, reading `receiver[i]` and
+ *   writing the accumulator or the element;
+ * - for a sum or count the accumulator is a mutable unboxed `f64` local
+ *   declared as the literal 0, and it holds exactly +0 wherever the loop is
+ *   entered. Those facts, which `entryIsZero` checks, are what the exactness
+ *   argument needs: the loop's partial sums then start from +0 and stay
+ *   inside the bound on their own.
  *
  * Everything else keeps its scalar form. */
 
 import { type IrBytesElem, type IrExpr, type IrFunction, type IrLocal, type IrStmt } from "./ir.js";
-import { matchIntegerBytesForLoop } from "./integer-loops.js";
+import { matchIntegerArrayForLoop, matchIntegerBytesForLoop } from "./integer-loops.js";
 import { everyExpr, everyStmt } from "./traverse.js";
 
 /** The shapes this file recognizes. `SCRIPTC_LANES_PLAN` names them. */
-export type LaneShape = "sum" | "count";
+export type LaneShape = "sum" | "count" | "store";
 
-export const LANE_SHAPES: readonly LaneShape[] = ["sum", "count"];
+export const LANE_SHAPES: readonly LaneShape[] = ["sum", "count", "store"];
 
 /** The operator of the count shape's element test. */
 export type LaneCompareOp = "<" | "<=" | ">" | ">=" | "===" | "!==";
+
+/** Where a plan's elements live: a typed array's bytes, or the dense storage
+ * of a `number[]`. */
+export type LaneContainer = "bytes" | "array";
+
+/** The element a plan reads or writes: a typed array's element kind, or a
+ * dense number array's slot (`i32slot` for int32 storage, `f64slot` for
+ * doubles). The dense slot kinds are decided per array at run time, so a
+ * dense plan checks the storage it was planned for at the loop entry. */
+export type LaneElemName = IrBytesElem | "i32slot" | "f64slot";
 
 /** An integer typed-array element a lane loop may read. */
 export interface LaneElem {
@@ -53,7 +72,7 @@ export interface LaneElem {
   max: number;
 }
 
-const LANE_ELEMS: ReadonlyMap<IrBytesElem, LaneElem> = new Map<IrBytesElem, LaneElem>([
+const LANE_ELEMS: ReadonlyMap<LaneElemName, LaneElem> = new Map<LaneElemName, LaneElem>([
   ["u8", { type: "i8", bits: 8, signed: false, max: 255 }],
   // A clamped array reads like a byte array; only its stores clamp.
   ["u8c", { type: "i8", bits: 8, signed: false, max: 255 }],
@@ -62,11 +81,14 @@ const LANE_ELEMS: ReadonlyMap<IrBytesElem, LaneElem> = new Map<IrBytesElem, Lane
   ["i16", { type: "i16", bits: 16, signed: true, max: 32768 }],
   ["u32", { type: "i32", bits: 32, signed: false, max: 4294967295 }],
   ["i32", { type: "i32", bits: 32, signed: true, max: 2147483648 }],
+  // A dense number array's int32 slots hold exact int32s and never -0, so a
+  // sum of them is the sum of the integers the scalar loop adds.
+  ["i32slot", { type: "i32", bits: 32, signed: true, max: 2147483648 }],
 ]);
 
 /** The element an integer typed array loads as, or null for a float or an
  * unknown element. */
-export function laneElem(elem: IrBytesElem): LaneElem | null {
+export function laneElem(elem: LaneElemName): LaneElem | null {
   return LANE_ELEMS.get(elem) ?? null;
 }
 
@@ -81,7 +103,8 @@ export interface LaneSumPlan {
   /** The loop's induction local; the receiver is indexed at it. */
   induction: string;
   receiver: string;
-  elem: IrBytesElem;
+  container: LaneContainer;
+  elem: LaneElemName;
   accumulator: string;
   /** Exclusive bound on the element count. */
   lengthBound: number;
@@ -91,7 +114,8 @@ export interface LaneCountPlan {
   shape: "count";
   induction: string;
   receiver: string;
-  elem: IrBytesElem;
+  container: LaneContainer;
+  elem: LaneElemName;
   accumulator: string;
   /** The element test. `limit` is loop-invariant, which `invariantLimit`
    * checks against the loop's own statements, so the emitter evaluates it
@@ -99,7 +123,32 @@ export interface LaneCountPlan {
   compare: { op: LaneCompareOp; limit: IrExpr };
 }
 
-export type LanePlan = LaneSumPlan | LaneCountPlan;
+/** One node of a stored value's lane form: a leaf, or an arithmetic node
+ * over two nodes. The emitter transcribes the tree lane by lane, so every
+ * node records where its operands come from. */
+export interface LaneValueNode {
+  /** An `invariant` is the same on every iteration; an `induction` is the
+   * counter; an `element` is `receiver[induction]`. */
+  role: "invariant" | "induction" | "element";
+  /** The invariant or element-read expression; null for the induction. */
+  expr: IrExpr | null;
+  op: "+" | "-" | "*" | null;
+  left: LaneValueNode | null;
+  right: LaneValueNode | null;
+}
+
+export interface LaneStorePlan {
+  shape: "store";
+  induction: string;
+  receiver: string;
+  container: LaneContainer;
+  elem: LaneElemName;
+  /** The stored value. Its leaves are the induction, loop invariants whose
+   * cells the loop never writes, and element reads at the induction. */
+  value: LaneValueNode;
+}
+
+export type LanePlan = LaneSumPlan | LaneCountPlan | LaneStorePlan;
 
 /** One step of the statements that enclose a loop: the list, the statement in
  * it that holds the loop, and that statement's condition when it is an `if`. */
@@ -204,26 +253,62 @@ function writesLocal(stmt: IrStmt, id: string): boolean {
 
 const RELATIONAL: ReadonlySet<string> = new Set(["<", "<=", ">", ">=", "===", "!=="]);
 
-/** `e` is `receiver[induction]`. */
-function elementRead(e: IrExpr, receiver: string, induction: string): boolean {
+/** `e` is the induction, as the index of an element access. */
+function atInduction(e: IrExpr, induction: string): boolean {
+  return e.kind === "varRef" && e.localId === induction;
+}
+
+/** `e` is `receiver[induction]` in a typed array. */
+function bytesElementRead(e: IrExpr, receiver: string, induction: string): boolean {
   return (
     e.kind === "bytesIntrinsic" &&
     e.method === "get" &&
     e.receiver.kind === "varRef" &&
     e.receiver.localId === receiver &&
     e.args.length === 1 &&
-    e.args[0]!.kind === "varRef" &&
-    e.args[0]!.localId === induction
+    atInduction(e.args[0]!, induction)
   );
 }
 
+/** `e` is `receiver[induction]` in a dense `number[]`: the strict element
+ * read, or the numeric read a plain `a[i]` compiles to. */
+function arrayElementRead(e: IrExpr, receiver: string, induction: string): boolean {
+  if (e.kind === "arrayGet")
+    return e.arr.kind === "varRef" && e.arr.localId === receiver && atInduction(e.index, induction);
+  return (
+    e.kind === "arrIntrinsic" &&
+    e.method === "getNumber" &&
+    e.receiver.kind === "varRef" &&
+    e.receiver.localId === receiver &&
+    e.args.length === 1 &&
+    atInduction(e.args[0]!, induction)
+  );
+}
+
+/** `e` is `receiver[induction]` in a receiver of the plan's container. */
+function elementRead(
+  e: IrExpr,
+  receiver: string,
+  induction: string,
+  container: LaneContainer,
+): boolean {
+  return container === "bytes"
+    ? bytesElementRead(e, receiver, induction)
+    : arrayElementRead(e, receiver, induction);
+}
+
 /** `acc = acc + receiver[induction]`, in either operand order. */
-function matchSumBody(only: IrStmt, receiver: string, induction: string): string | null {
+function matchSumBody(
+  only: IrStmt,
+  receiver: string,
+  induction: string,
+  container: LaneContainer,
+): string | null {
   if (only.kind !== "assign" || only.value.kind !== "bin" || only.value.op !== "+") return null;
   const { left, right } = only.value;
   const isAcc = (e: IrExpr): boolean => e.kind === "varRef" && e.localId === only.localId;
-  if (isAcc(left) && elementRead(right, receiver, induction)) return only.localId;
-  if (isAcc(right) && elementRead(left, receiver, induction)) return only.localId;
+  if (isAcc(left) && elementRead(right, receiver, induction, container)) return only.localId;
+  if (isAcc(right) && elementRead(left, receiver, induction, container)) return only.localId;
   return null;
 }
 
@@ -249,6 +334,7 @@ function matchCountBody(
   only: IrStmt,
   receiver: string,
   induction: string,
+  container: LaneContainer,
 ): { accumulator: string; compare: { op: LaneCompareOp; limit: IrExpr } } | null {
   if (only.kind !== "if" || only.else_ !== null || only.then.length !== 1) return null;
   const inc = only.then[0]!;
@@ -260,9 +346,9 @@ function matchCountBody(
   const cond = only.cond;
   if (cond.kind !== "bin" || !RELATIONAL.has(cond.op)) return null;
   const op = cond.op as LaneCompareOp;
-  if (elementRead(cond.left, receiver, induction))
+  if (elementRead(cond.left, receiver, induction, container))
     return { accumulator: inc.localId, compare: { op, limit: cond.right } };
-  if (elementRead(cond.right, receiver, induction))
+  if (elementRead(cond.right, receiver, induction, container))
     return { accumulator: inc.localId, compare: { op: flip(op), limit: cond.left } };
   return null;
 }
@@ -280,6 +366,97 @@ function invariantLimit(e: IrExpr, loop: IrStmt, induction: string): boolean {
     e.localId !== induction &&
     !writesLocal(loop, e.localId)
   );
+}
+
+/** The stored value of one elementwise store loop. */
+interface StoreBody {
+  receiver: string;
+  value: IrExpr;
+}
+
+/** The statements of a body without the blocks that only group them. A
+ * versioned union arm loop folds its tag test into a block, and the store
+ * arrives inside one, so the shape is read through them. */
+function flatBody(body: IrStmt[]): IrStmt[] {
+  const out: IrStmt[] = [];
+  for (const s of body) {
+    if (s.kind === "block") out.push(...flatBody(s.body));
+    else out.push(s);
+  }
+  return out;
+}
+
+/** `receiver[induction] = value`, with the value maybe bound to one temp
+ * first, which is how an elementwise store reaches the IR. The loop body
+ * holds nothing else, so the store is its only effect. */
+function matchStoreBody(body: IrStmt[], induction: string): StoreBody | null {
+  const list = flatBody(body);
+  let set: IrStmt | undefined;
+  let temp: string | null = null;
+  if (list.length === 1) set = list[0];
+  else if (list.length === 2 && list[0]!.kind === "varDecl" && list[0]!.init !== null) {
+    temp = list[0]!.localId;
+    set = list[1];
+  }
+  if (set === undefined) return null;
+  if (set.kind !== "bytesSet" && set.kind !== "arraySet") return null;
+  if (!atInduction(set.index, induction)) return null;
+  if (set.kind === "bytesSet") {
+    if (set.arr.kind !== "varRef" || set.arr.type.kind !== "bytes") return null;
+  } else if (set.arr.kind !== "varRef" || set.arr.type.kind !== "array") return null;
+  let value = set.value;
+  if (temp !== null) {
+    if (value.kind !== "varRef" || value.localId !== temp) return null;
+    const decl = list[0]!;
+    if (decl.kind !== "varDecl" || decl.init === null) return null;
+    value = decl.init;
+  }
+  return { receiver: set.arr.localId, value };
+}
+
+/** The lane form of a stored value, or null when the form needs work the
+ * lane body does not do. The forms are a leaf (an invariant, the induction,
+ * or an element read at the induction) and a sum, difference or product of
+ * two of them with at least one invariant operand. Anything else — a call,
+ * a bitwise operator, `Math.sqrt`, a second store — keeps the loop scalar. */
+function storeValueNode(
+  e: IrExpr,
+  receiver: string,
+  induction: string,
+  container: LaneContainer,
+): LaneValueNode | null {
+  const leaf = (
+    role: LaneValueNode["role"],
+    expr: IrExpr | null,
+    lhs: LaneValueNode | null = null,
+    rhs: LaneValueNode | null = null,
+    op: LaneValueNode["op"] = null,
+  ): LaneValueNode => ({ role, expr, op, left: lhs, right: rhs });
+  if (e.kind === "numLit") return leaf("invariant", e);
+  if (e.kind === "varRef")
+    return e.localId === induction && e.type.kind === "f64"
+      ? leaf("induction", null)
+      : e.type.kind === "f64"
+        ? leaf("invariant", e)
+        : null;
+  if (elementRead(e, receiver, induction, container)) return leaf("element", e);
+  if (e.kind !== "bin" || (e.op !== "+" && e.op !== "-" && e.op !== "*")) return null;
+  const left = storeValueNode(e.left, receiver, induction, container);
+  const right = left === null ? null : storeValueNode(e.right, receiver, induction, container);
+  if (left === null || right === null) return null;
+  // One operand must be loop-invariant: an element read or the induction
+  // cannot stand alone beside another element-dependent node here, because
+  // the lane body evaluates the tree once per vector, not per element.
+  const isInvariant = (n: LaneValueNode): boolean => n.role === "invariant" && n.op === null;
+  if (!isInvariant(left) && !isInvariant(right)) return null;
+  return leaf("invariant", null, left, right, e.op);
+}
+
+/** Every local a node's invariants name. */
+function nodeInvariants(node: LaneValueNode, out: Set<string>): void {
+  if (node.left !== null) nodeInvariants(node.left, out);
+  if (node.right !== null) nodeInvariants(node.right, out);
+  if (node.role === "invariant" && node.expr?.kind === "varRef") out.add(node.expr.localId);
 }
 
 /** Whether the accumulator holds exactly +0 wherever this loop is entered.
@@ -368,6 +545,97 @@ function exprWrites(e: IrExpr, id: string): boolean {
   });
 }
 
+/** The element kinds a lane store writes. A half float goes through a
+ * runtime call per element, which lanes cannot make. */
+const STORE_ELEMS: ReadonlySet<LaneElemName> = new Set<LaneElemName>([
+  "u8",
+  "u8c",
+  "i8",
+  "u16",
+  "i16",
+  "u32",
+  "i32",
+  "f32",
+  "f64",
+  // A dense number array's double slots.
+  "f64slot",
+]);
+
+/** The store plan for one loop, or null. The written array is the loop's
+ * limit receiver, so the counter's bound is the array's length and every
+ * lane's index is in range on every iteration of the lane loop. */
+function storePlan(
+  site: LoopSite,
+  loop: { localId: string },
+  limit: { receiver: string; container: LaneContainer; elem: LaneElemName },
+  locals: ReadonlyMap<string, IrLocal>,
+): LaneStorePlan | null {
+  if (!STORE_ELEMS.has(limit.elem)) return null;
+  const stmt = site.stmt;
+  const body = matchStoreBody(stmt.body, loop.localId);
+  if (body === null || body.receiver !== limit.receiver) return null;
+  const view = locals.get(body.receiver);
+  if (view === undefined || view.boxed === true) return null;
+  if (limit.container === "bytes") {
+    if (view.type.kind !== "bytes") return null;
+  } else if (view.type.kind !== "array" || view.type.elem.kind !== "f64") return null;
+  const value = storeValueNode(body.value, body.receiver, loop.localId, limit.container);
+  if (value === null) return null;
+  // The lane body evaluates each invariant once, before the loop, so the
+  // loop must leave it alone.
+  const invariants = new Set<string>();
+  nodeInvariants(value, invariants);
+  for (const id of invariants) if (writesLocal(stmt, id)) return null;
+  return {
+    shape: "store",
+    induction: loop.localId,
+    receiver: body.receiver,
+    container: limit.container,
+    elem: limit.elem,
+    value,
+  };
+}
+
+/** The container, element and receiver of a loop the integer loop matchers
+ * accept, or null. A dense array loop is recognized with no enclosing array
+ * binding, which is every loop that starts at zero; a loop that starts from
+ * an outer counter keeps its scalar form. */
+function loopSource(
+  stmt: IrStmt & { kind: "for" },
+  locals: ReadonlyMap<string, IrLocal>,
+): {
+  induction: string;
+  container: LaneContainer;
+  receiver: string;
+  elem: LaneElemName;
+} | null {
+  const bytes = matchIntegerBytesForLoop(stmt, locals);
+  const loop = bytes ?? matchIntegerArrayForLoop(stmt, locals, new Set<string>());
+  if (loop === null || !loop.stableReceiver) return null;
+  const receiver = loop.limitReceiver;
+  if (receiver.kind !== "varRef") return null;
+  const view = locals.get(receiver.localId);
+  if (view === undefined || view.boxed === true) return null;
+  if (bytes !== null) {
+    if (view.type.kind !== "bytes") return null;
+    return {
+      induction: loop.localId,
+      container: "bytes",
+      receiver: receiver.localId,
+      elem: view.type.elem,
+    };
+  }
+  // A dense number array: its double storage takes elementwise stores, and
+  // int32 storage (exact int32 elements, never -0) takes sums and counts.
+  if (view.type.kind !== "array" || view.type.elem.kind !== "f64") return null;
+  return {
+    induction: loop.localId,
+    container: "array",
+    receiver: receiver.localId,
+    elem: "i32slot",
+  };
+}
+
 /** The lane plan for one loop, or null when it has none. */
 function planLoop(
   site: LoopSite,
@@ -376,30 +644,36 @@ function planLoop(
   shapes: ReadonlySet<LaneShape>,
 ): LanePlan | null {
   const stmt = site.stmt;
-  const loop = matchIntegerBytesForLoop(stmt, locals);
-  if (loop === null || !loop.stableReceiver) return null;
-  const receiver = loop.limitReceiver;
-  if (receiver.kind !== "varRef") return null;
-  const view = locals.get(receiver.localId);
-  if (view === undefined || view.type.kind !== "bytes" || view.boxed === true) return null;
-  const elem = laneElem(view.type.elem);
-  if (elem === null) return null;
+  const source = loopSource(stmt, locals);
+  if (source === null) return null;
+  const { induction, container, receiver, elem } = source;
+  const loop = { localId: induction };
+  if (shapes.has("store")) {
+    // A dense number array's stores are double-slot stores: a plan for the
+    // int32 storage a sum reads would need the element's own conversion.
+    const storeElem: LaneElemName = container === "array" ? "f64slot" : elem;
+    const store = storePlan(site, loop, { receiver, container, elem: storeElem }, locals);
+    if (store !== null) return store;
+  }
+  const lanes = laneElem(elem);
+  if (lanes === null) return null;
   if (stmt.body.length !== 1) return null;
   const only = stmt.body[0]!;
   if (shapes.has("sum")) {
-    const accumulator = matchSumBody(only, receiver.localId, loop.localId);
+    const accumulator = matchSumBody(only, receiver, loop.localId, container);
     if (accumulator !== null && entryIsZero(accumulator, site, locals, facts))
       return {
         shape: "sum",
         induction: loop.localId,
-        receiver: receiver.localId,
-        elem: view.type.elem,
+        receiver,
+        container,
+        elem,
         accumulator,
-        lengthBound: sumLengthBound(elem),
+        lengthBound: sumLengthBound(lanes),
       };
   }
   if (shapes.has("count")) {
-    const matched = matchCountBody(only, receiver.localId, loop.localId);
+    const matched = matchCountBody(only, receiver, loop.localId, container);
     if (
       matched !== null &&
       invariantLimit(matched.compare.limit, stmt, loop.localId) &&
@@ -408,8 +682,9 @@ function planLoop(
       return {
         shape: "count",
         induction: loop.localId,
-        receiver: receiver.localId,
-        elem: view.type.elem,
+        receiver,
+        container,
+        elem,
         accumulator: matched.accumulator,
         compare: matched.compare,
       };

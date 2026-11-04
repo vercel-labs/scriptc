@@ -2201,6 +2201,8 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "http.requestDynCb",
   "https.requestDyn",
   "https.requestDynCb",
+  "https.requestFnDyn",
+  "https.requestFnDynCb",
   "http.requestUrlDyn",
   "http.requestUrlDynCb",
   "https.requestUrlDyn",

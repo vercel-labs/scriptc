@@ -45,6 +45,7 @@ import {
   moduleNamespaceValue,
 } from "./module-namespace-elements.js";
 import { keyedHelperName, moduleTagNumber, portableRelativePath } from "./stable-names.js";
+import { ZLIB_STREAM_FACTORIES, ZLIB_STREAM_T } from "./builtins/compression.js";
 import { positionTag, StructuralPositions } from "./structural-positions.js";
 import {
   activeNodeIslands,
@@ -409,6 +410,7 @@ import {
   builtinModulesArrayLit,
   builtinFenceHintOf,
   builtinModuleFnOf,
+  FS_CALLBACK_VALUE_LENGTHS,
   stdlibMemberFence,
   isStdlibMember,
   isStdlibSymbol,
@@ -868,6 +870,10 @@ export class PoisonError extends Error {
 export type StaticCallableProjection =
   | { kind: "declared-function"; signature: FnSig }
   | { kind: "builtin-function"; module: string; member: string }
+  /** An alias of an http/https client function (`const request =
+   * https.request`). Calls through it keep the module's client lowering;
+   * the value has no function object and fences where it escapes. */
+  | { kind: "client-function"; module: "http" | "https"; member: "request" | "get" }
   | { kind: "promisified-exec-file" }
   | { kind: "promisified-exec" }
   | { kind: "promisified-builtin"; module: string; member: string }
@@ -18184,21 +18190,77 @@ export class Lowerer {
       bi.module === "fs" &&
       builtinModuleFnOf(this, bi.module, bi.member)?.fn === "fs.callbackCall"
     ) {
-      return {
-        kind: "libCall",
-        fn: "fs.callbackValue",
-        args: [{ kind: "strLit", value: bi.member, type: STRING, loc }],
-        type: DYN,
-        loc,
-      };
+      return this.lowerFsCallbackValue(bi.member, loc);
     }
     // The buffer module's Buffer is the global constructor's value.
     if (bi.module === "buffer" && bi.member === "Buffer")
       return { kind: "libCall", fn: "buffer.constructor", args: [], type: DYN, loc };
     if (bi.module === "fs" && (bi.member === "realpathSync" || bi.member === "realpathSync.native"))
       return fsRealpathValue(this, bi.member === "realpathSync.native", loc);
+    if (bi.module === "zlib") {
+      const mode = ZLIB_STREAM_FACTORIES[bi.member];
+      if (mode !== undefined) return this.lowerZlibStreamFactoryValue(bi.member, mode, loc);
+    }
     const fn = builtinModuleFnOf(this, bi.module, bi.member);
     return fn ? this.lowerNativeCallableValue(fn, `${bi.module}.${bi.member}`, loc) : null;
+  }
+
+  /** An error-first filesystem function as a value: the checked-dynamic
+   * function the runtime dispatches every argument through, carrying Node's
+   * own name and length for the member. */
+  lowerFsCallbackValue(member: string, loc: SrcLoc): IrExpr {
+    return {
+      kind: "libCall",
+      fn: "fs.callbackValue",
+      args: [
+        { kind: "strLit", value: member, type: STRING, loc },
+        numLit(FS_CALLBACK_VALUE_LENGTHS[member] ?? 0, loc),
+      ],
+      type: DYN,
+      loc,
+    };
+  }
+
+  /** A zlib stream factory as a value: the options argument reaches the
+   * same runtime constructor the direct call uses, and the value keeps
+   * Node's name and length. */
+  lowerZlibStreamFactoryValue(member: string, mode: number, loc: SrcLoc): IrExpr {
+    const key = `zlib.streamNew:${member}`;
+    let fnName = this.builtinCallableValueFns.get(key);
+    if (!fnName) {
+      fnName = keyedHelperName(this, "%builtin.value.zlib.streamNew", key);
+      this.builtinCallableValueFns.set(key, fnName);
+      this.builtinCallableValueNames.set(fnName, member);
+      this.builtinCallableValueLengths.set(fnName, 1);
+      const options = { localId: "options.0", name: "options", type: DYN };
+      this.liftedFns.push({
+        name: fnName,
+        params: [options],
+        returnType: ZLIB_STREAM_T,
+        locals: [{ id: options.localId, name: options.name, type: options.type, mutable: false }],
+        body: [
+          {
+            kind: "return",
+            value: {
+              kind: "libCall",
+              fn: "zlib.streamNew",
+              args: [numLit(mode, loc), varRef(options.localId, DYN, loc)],
+              type: ZLIB_STREAM_T,
+              loc,
+            },
+            loc,
+          },
+        ],
+        loc,
+      });
+    }
+    return {
+      kind: "closure",
+      fnName,
+      captures: [],
+      type: { kind: "func", params: [DYN], ret: ZLIB_STREAM_T },
+      loc,
+    };
   }
 
   lowerNativeCallableValue(fn: BuiltinModuleFn, display: string, loc: SrcLoc): IrExpr | null {

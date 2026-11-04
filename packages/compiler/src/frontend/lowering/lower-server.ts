@@ -5817,6 +5817,10 @@ export interface HttpClientFnBinding {
   /** true when the ternary's TRUE arm is the https client. */
   trueSecure: boolean;
   member: "request" | "get";
+  /** The declaration-time capture of the condition. Present when the
+   * condition is not a stable identifier read: Node evaluates the ternary
+   * ONCE, so calls read this bool instead of re-evaluating the expression. */
+  secureLocalId?: string;
 }
 
 export function httpClientFnBindingOf(
@@ -5832,8 +5836,40 @@ export function httpClientFnBindingOf(
 function clientFnRefOf(
   lowerer: Lowerer,
   node: ts.Expression,
+  seen = new Set<ts.Symbol>(),
 ): { module: "http" | "https"; member: "request" | "get" } | null {
-  const e = node;
+  let e: ts.Expression = node;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  if (ts.isIdentifier(e)) {
+    // An alias of a client function (`const httpsRequest = https.request`),
+    // registered or not yet lowered: a const binding names the same
+    // function the declaration's initializer names. An import binding
+    // resolves through to the exporting declaration.
+    let sym = lowerer.resolveValueSymbol(e);
+    if (sym && (sym.flags & ts.SymbolFlags.Alias) !== 0) {
+      try {
+        sym = lowerer.checker.getAliasedSymbol(sym);
+      } catch {
+        // Leave the alias symbol in place; its declarations decide.
+      }
+    }
+    if (sym && !seen.has(sym)) {
+      const projection = lowerer.staticCallables.get(sym);
+      if (projection?.kind === "client-function") {
+        return { module: projection.module, member: projection.member };
+      }
+      const decl = sym.declarations[0];
+      if (
+        decl !== undefined &&
+        ts.isVariableDeclaration(decl) &&
+        (ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) !== 0 &&
+        decl.initializer !== undefined
+      ) {
+        seen.add(sym);
+        return clientFnRefOf(lowerer, decl.initializer, seen);
+      }
+    }
+  }
   const bi = ts.isPropertyAccessExpression(e)
     ? lowerer.builtinMemberOf(e)
     : ts.isIdentifier(e)
@@ -5910,21 +5946,23 @@ function neverReassigned(lowerer: Lowerer, sym: ts.Symbol): boolean {
   return !written;
 }
 
-/** Recognizes `const x = cond ? <client A> : <client B>` where A and B
- * are the SAME member (request/get) of https and http (either order) —
- * registers the binding (calls lower; the declaration itself binds
- * nothing) and answers true. A matched ternary whose condition is not a
- * stable identifier fences pointedly; non-client ternaries answer false
- * (the ordinary decl path and its per-arm fences apply). */
-export function registerHttpClientFnBinding(
+interface ClientFnConditional {
+  cond: ts.Expression;
+  trueSecure: boolean;
+  member: "request" | "get";
+}
+
+/** The `cond ? <client A> : <client B>` shape where A and B are the SAME
+ * member (request/get) of https and http (either order) — null for any
+ * other initializer. Every other pair fences pointedly. */
+function clientFnConditionalOf(
   lowerer: Lowerer,
-  nameNode: ts.Node,
   init: ts.Expression | undefined,
-): boolean {
-  if (!init) return false;
+): ClientFnConditional | null {
+  if (!init) return null;
   let e: ts.Expression = init;
   while (ts.isParenthesizedExpression(e)) e = e.expression;
-  if (!ts.isConditionalExpression(e)) return false;
+  if (!ts.isConditionalExpression(e)) return null;
   const unwrap = (a: ts.Expression): ts.Expression => {
     let x = a;
     while (ts.isParenthesizedExpression(x)) x = x.expression;
@@ -5932,7 +5970,7 @@ export function registerHttpClientFnBinding(
   };
   const t = clientFnRefOf(lowerer, unwrap(e.whenTrue));
   const f = clientFnRefOf(lowerer, unwrap(e.whenFalse));
-  if (!t || !f) return false;
+  if (!t || !f) return null;
   if (t.member !== f.member || t.module === f.module) {
     lowerer.noLowering(
       "a conditional between these two client functions",
@@ -5940,24 +5978,75 @@ export function registerHttpClientFnBinding(
       "the lowered shape is `cond ? https.request : http.request` (or the .get pair, either order) — the same member of both modules",
     );
   }
-  const cond = unwrap(e.condition);
-  const condSym = ts.isIdentifier(cond) ? lowerer.resolveValueSymbol(cond) : null;
-  if (!condSym || !neverReassigned(lowerer, condSym)) {
+  return { cond: unwrap(e.condition), trueSecure: t.module === "https", member: t.member };
+}
+
+/** Whether a condition is a bare identifier over a never-reassigned
+ * binding: a pure, stable read that may be re-lowered at each call. */
+function stableConditionOf(lowerer: Lowerer, cond: ts.Expression): boolean {
+  const sym = ts.isIdentifier(cond) ? lowerer.resolveValueSymbol(cond) : null;
+  return sym !== null && neverReassigned(lowerer, sym);
+}
+
+/** Recognizes a `const x = cond ? <client A> : <client B>` declaration and
+ * registers it for the paths that emit no storage: calls lower as the
+ * runtime-secure client, the condition re-lowered per call. Only a stable
+ * identifier read qualifies here — every other condition is captured once
+ * by lowerHttpClientFnBindingDecl. Non-client ternaries answer false (the
+ * ordinary decl path and its per-arm fences apply). */
+export function registerHttpClientFnBinding(
+  lowerer: Lowerer,
+  nameNode: ts.Node,
+  init: ts.Expression | undefined,
+): boolean {
+  const shape = clientFnConditionalOf(lowerer, init);
+  if (!shape) return false;
+  if (!stableConditionOf(lowerer, shape.cond)) {
     lowerer.noLowering(
       "a client-function conditional with this condition shape",
-      e.condition,
-      "the condition must be a bare identifier whose binding is never reassigned (it re-evaluates at each call through the binding)",
+      shape.cond,
+      "the condition is evaluated once at the declaration; this declaration form has no place to keep it — declare the binding as a const statement",
     );
   }
   const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
-  if (symbol) {
-    lowerer.httpClientFnBindings.set(symbol, {
-      cond,
-      trueSecure: t.module === "https",
-      member: t.member,
-    });
-  }
+  if (symbol) lowerer.httpClientFnBindings.set(symbol, shape);
   return true;
+}
+
+/** The declaration of a `cond ? <client A> : <client B>` binding, which
+ * answers false when the initializer is not that shape. A stable
+ * identifier condition emits nothing (calls re-lower the pure read);
+ * every other condition is evaluated ONCE here, exactly Node's ternary,
+ * into a hidden bool that calls read. */
+export function lowerHttpClientFnBindingDecl(
+  lowerer: Lowerer,
+  decl: ts.VariableDeclaration,
+): IrStmt | null | false {
+  const shape = clientFnConditionalOf(lowerer, decl.initializer);
+  if (!shape) return false;
+  const symbol = ts.isIdentifier(decl.name)
+    ? lowerer.checker.getSymbolAtLocation(decl.name)
+    : undefined;
+  if (!symbol) return false;
+  if (stableConditionOf(lowerer, shape.cond)) {
+    lowerer.httpClientFnBindings.set(symbol, shape);
+    return null;
+  }
+  const loc = locOf(decl);
+  const secure = lowerer.lowerCondition(shape.cond);
+  const local = lowerer.declareHiddenLocal("%clientFnSecure", BOOL);
+  lowerer.httpClientFnBindings.set(symbol, { ...shape, secureLocalId: local.id });
+  return { kind: "varDecl", localId: local.id, init: secure, loc };
+}
+
+/** The client-function REFERENCE an expression names (a module member, a
+ * named import binding, or an immutable alias chain to either), for call
+ * sites that are not the direct member form. */
+export function httpClientFnRefOf(
+  lowerer: Lowerer,
+  node: ts.Expression,
+): { module: "http" | "https"; member: "request" | "get" } | null {
+  return clientFnRefOf(lowerer, node);
 }
 
 /** A call THROUGH a registered requestFn binding: the http client
@@ -5969,6 +6058,21 @@ export function lowerHttpClientFnCall(
   loc: SrcLoc,
 ): IrExpr {
   return lowerHttpClientCall(lowerer, expr, binding.member, loc, binding);
+}
+
+/** A call through an immutable alias of a client function
+ * (`const httpsRequest = https.request; httpsRequest(...)`): the same
+ * lowering a direct `https.request(...)` call gets, so the alias adds no
+ * runtime indirection and the secure defaults follow the module it names. */
+export function lowerHttpClientFnRefCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  ref: { module: "http" | "https"; member: "request" | "get" },
+  loc: SrcLoc,
+): IrExpr {
+  return ref.module === "https"
+    ? lowerHttpsModuleCall(lowerer, expr, ref, loc)
+    : lowerHttpModuleCall(lowerer, expr, ref, loc);
 }
 
 /** Module-function calls on https import bindings: createServer(options,
@@ -6779,11 +6883,16 @@ function lowerHttpClientCall(
 ): IrExpr {
   const binding = typeof secure === "object" ? secure : null;
   const secureish = binding !== null || secure === true;
-  /** A FRESH lowering of the binding's secure condition (pure identifier
-   * read — each use is its own IR). */
+  /** The binding's secure condition: the declaration-time capture when the
+   * condition was not a stable identifier read, otherwise a FRESH lowering
+   * of the pure identifier (each use is its own IR). */
   const secureExpr = (): IrExpr => {
-    const c = lowerer.lowerCondition(binding!.cond);
-    return binding!.trueSecure ? c : { kind: "unary", op: "!", operand: c, type: BOOL, loc };
+    const b = binding!;
+    const c =
+      b.secureLocalId !== undefined
+        ? ({ kind: "varRef", localId: b.secureLocalId, type: BOOL, loc } as IrExpr)
+        : lowerer.lowerCondition(b.cond);
+    return b.trueSecure ? c : { kind: "unary", op: "!", operand: c, type: BOOL, loc };
   };
   const args = expr.arguments.nodes;
   if (args.length < 1 || args.length > 3) {
@@ -6807,23 +6916,46 @@ function lowerHttpClientCall(
       `the supported forms are ${member}(options[, callback]) and ${member}(url, options[, callback])`,
     );
   }
-  const runtimeOptions =
-    binding === null ? runtimeRequestOptions(lowerer, optsNode, secureish) : null;
+  const runtimeOptions = runtimeRequestOptions(lowerer, optsNode, secureish);
   if (runtimeOptions !== null) {
     // The options record is read at run time (the ClientRequest
     // constructor's walk in the runtime): a RequestOptions variable, or a
-    // literal that spreads one or sets socketPath.
+    // literal that spreads one or sets socketPath. A binding's secure bool
+    // travels with the walk so the dial follows the same runtime choice.
     const autoEnd = boolLit(member === "get", loc);
     const secureDyn = secure === true;
-    if (args.length === 1) {
+    const call = (cb: IrExpr | null): IrExpr => {
+      if (binding !== null) {
+        const secureArg = secureExpr();
+        return {
+          kind: "libCall",
+          fn: cb === null ? "https.requestFnDyn" : "https.requestFnDynCb",
+          args:
+            cb === null
+              ? [secureArg, runtimeOptions, autoEnd]
+              : [secureArg, runtimeOptions, autoEnd, cb],
+          type: HTTPCLIENTREQ_T,
+          loc,
+        };
+      }
+      if (cb === null) {
+        return {
+          kind: "libCall",
+          fn: secureDyn ? "https.requestDyn" : "http.requestDyn",
+          args: [runtimeOptions, autoEnd],
+          type: HTTPCLIENTREQ_T,
+          loc,
+        };
+      }
       return {
         kind: "libCall",
-        fn: secureDyn ? "https.requestDyn" : "http.requestDyn",
-        args: [runtimeOptions, autoEnd],
+        fn: secureDyn ? "https.requestDynCb" : "http.requestDynCb",
+        args: [runtimeOptions, autoEnd, cb],
         type: HTTPCLIENTREQ_T,
         loc,
       };
-    }
+    };
+    if (args.length === 1) return call(null);
     const { cb } = lowerCallbackArg(
       lowerer,
       args[1]!,
@@ -6833,13 +6965,7 @@ function lowerHttpClientCall(
       "use (res) or ()",
       [HTTPREQ_T],
     );
-    return {
-      kind: "libCall",
-      fn: secureDyn ? "https.requestDynCb" : "http.requestDynCb",
-      args: [runtimeOptions, autoEnd, cb],
-      type: HTTPCLIENTREQ_T,
-      loc,
-    };
+    return call(cb);
   }
   if (!ts.isObjectLiteralExpression(optsNode)) {
     const t = optsType;

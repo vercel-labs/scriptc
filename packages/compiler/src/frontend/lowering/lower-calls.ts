@@ -8965,8 +8965,7 @@ function lowerObjectStaticCall(
     }
     const onError = lowerObjectAssignOntoError(lowerer, call);
     if (onError) return onError;
-    const hybrid = lowerObjectAssignHybrid(lowerer, call);
-    if (hybrid) return hybrid;
+    refuseObjectAssignHybrid(lowerer, call);
     // `Object.assign({}, lit)` — an EMPTY fresh-literal target and one
     // object-literal source: the result is a fresh object carrying
     // exactly the source literal's properties, which IS the source
@@ -10128,6 +10127,16 @@ function lowerObjectStaticCall(
           if (tag >= 0) {
             return { kind: "unionWrap", unionId: valueT.unionId, tag, value, type: valueT, loc };
           }
+          // A field value the element union has no arm for, but which
+          // WIDTH-LIFTS into one: a concrete record field enumerated
+          // against a checker-typed element that is a shared record's
+          // union of layouts (a table of metric definitions whose value
+          // type is the declared `counter | histogram` shape, a settings
+          // map whose declared value type is the option record). The
+          // lift picks the arm and copies the value into it — the same
+          // conversion coerceToExpected applies at a union slot.
+          const lift = lowerer.widthLiftPlan(vt, valueT);
+          if (lift) return lowerer.applyWidthLift(lift, value, valueT, loc);
         }
         return null;
       };
@@ -10495,88 +10504,30 @@ function runtimeOptionalEntriesType(
  * ordinary indirect call through the field's closure value. Deliberately
  * record-only — calling a func-typed CLASS field stays rejected (the
  * generic method-call rejection in lowerCall). */
-/** `Object.assign(fn, { bold, ... })` → a HYBRID record literal: the
- * reserved %call field takes the function, each source object literal's
- * properties fill their declared fields (later sources override, JS's
- * last-write-wins — one entry per name, source values still evaluate in
- * order through the literal lowering's shared rules). Bounded to the
- * chalk shape on purpose: the RESULT type must map to a %call-carrying
- * record, sources must be plain object literals (an `as` cast unwraps),
- * and every declared field must be filled. REPRESENTATION NOTE
- * (SEMANTICS.md): the result is a FRESH record, not the mutated `fn` —
- * `assigned === fn` is false here where JS answers true, and `typeof`
- * would answer object; portless's colors.ts never observes either.
- * Null (→ the stdlib fence) for every other Object.assign form. */
-function lowerObjectAssignHybrid(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
+/** `Object.assign(fn, { bold, ... })` — a FUNCTION-WITH-PROPERTIES
+ * result — is REFUSED by name (SEMANTICS.md). JavaScript mutates the
+ * function object and answers it: `assigned === fn`, a later write through
+ * either name lands on that one object, and `Object.keys(fn)` lists the
+ * copied keys. scriptc keeps a function-with-properties value as a
+ * separate record that holds the function in a reserved %call field, so a
+ * fresh record is NOT the function — the identity, the writes and the
+ * enumeration would each answer differently from Node. Making them agree
+ * needs one representation for a function object (a place on it for its
+ * own properties), not a branch here, so the form stays refused rather
+ * than lowering to a record that claims to be the function. Every other
+ * Object.assign form falls through to the branches below. */
+function refuseObjectAssignHybrid(lowerer: Lowerer, call: ts.CallExpression): void {
   const mapped = lowerer.mapTypeOf(lowerer.typeOf(call));
-  if (mapped?.kind !== "record") return null;
+  if (mapped?.kind !== "record") return;
   const shape = lowerer.shapes.get(mapped.shapeId);
   const callField = shape?.fields.find((f) => f.name === "%call");
-  if (!shape || !callField || callField.type.kind !== "func") return null;
-  if (call.arguments.nodes.length < 2 || call.arguments.nodes.some((a) => ts.isSpreadElement(a)))
-    return null;
-  const loc = locOf(call);
-  const values = new Map<string, IrExpr>();
-  values.set("%call", lowerer.lowerExprExpecting(call.arguments.nodes[0]!, callField.type));
-  for (const argNode of call.arguments.nodes.slice(1)) {
-    let src: ts.Expression = argNode;
-    while (ts.isParenthesizedExpression(src) || ts.isAsExpression(src) || ts.isTypeAssertion(src))
-      src = src.expression;
-    if (!ts.isObjectLiteralExpression(src)) {
-      lowerer.unsupported(
-        "SC1090",
-        argNode,
-        "Object.assign sources other than plain object literals when building a function-with-properties value",
-      );
-    }
-    for (const prop of src.properties.nodes) {
-      const nameOk =
-        (ts.isPropertyAssignment(prop) || ts.isShorthandPropertyAssignment(prop)) &&
-        (ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name));
-      if (!nameOk) {
-        lowerer.unsupported(
-          "SC1090",
-          prop,
-          "this property form in an Object.assign source building a function-with-properties value",
-        );
-      }
-      const name = (prop.name as ts.Identifier | ts.StringLiteral).text;
-      const fieldType = shape.fields.find((f) => f.name === name)?.type;
-      if (!fieldType) {
-        lowerer.unsupported(
-          "SC1090",
-          prop,
-          `the property '${name}' missing from the assigned result type '${lowerer.fmt(mapped)}'`,
-        );
-      }
-      const value = ts.isPropertyAssignment(prop)
-        ? lowerer.lowerExprExpecting(prop.initializer, fieldType)
-        : lowerer.coerceInto(
-            prop,
-            lowerer.lowerShorthandValue(prop as ts.ShorthandPropertyAssignment),
-            fieldType,
-          );
-      values.set(name, value);
-    }
-  }
-  const fields: { name: string; value: IrExpr }[] = [];
-  for (const f of shape.fields) {
-    const v = values.get(f.name);
-    if (!v) {
-      const absent = lowerer.absentFieldValue(f.type, loc);
-      if (!absent) {
-        lowerer.unsupported(
-          "SC1090",
-          call,
-          `Object.assign leaving the required field '${f.name}' of '${lowerer.fmt(mapped)}' unfilled`,
-        );
-      }
-      fields.push({ name: f.name, value: absent });
-      continue;
-    }
-    fields.push({ name: f.name, value: v });
-  }
-  return { kind: "recordLit", fields, type: mapped, loc };
+  if (!callField || callField.type.kind !== "func") return;
+  lowerer.unsupported(
+    "SC1090",
+    call,
+    `Object.assign that adds properties to a function value ('${lowerer.fmt(mapped)}')`,
+    "JavaScript mutates and answers the function object itself — the result IS that function, a write through either name lands on the one object, and Object.keys on it lists the copied keys — while a function-with-properties value is a separate record here; build that value where its type is declared, or keep the properties in a separate object",
+  );
 }
 
 /** The accessed member is an overload set (isOverloadedCallableMemberType),
@@ -10821,9 +10772,11 @@ export function lowerRecordFieldCall(
 /** The URL factories use the constructor's conversion order and parser.
  * URL.revokeObjectURL() with NO argument: Node's ERR_MISSING_ARGS
  * throws before the registry lookup, so the zero-argument contract is
- * exact without any blob machinery. The one-argument form (Node's
- * no-op for unregistered ids) and createObjectURL keep their
- * fences — a compiled program has no blob registry to consult. */
+ * exact without any blob machinery. The one-argument form coerces the
+ * id to a string (a Symbol throws) and finds nothing registered — a
+ * compiled program cannot create a blob URL, so the lookup always
+ * misses and the call is its own coercion. createObjectURL keeps its
+ * fence: there is no blob registry to register into. */
 function lowerUrlStaticCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -10836,14 +10789,25 @@ function lowerUrlStaticCall(
   if (callee.name.text === "canParse" || callee.name.text === "parse") {
     return lowerUrlFactory(lowerer, call, callee.name.text);
   }
-  if (callee.name.text !== "revokeObjectURL" || call.arguments.nodes.length !== 0) return null;
-  return nodeThrowExpr(
-    1,
-    "ERR_MISSING_ARGS",
-    'The "url" argument must be specified',
-    VOID,
-    locOf(call),
-  );
+  if (callee.name.text !== "revokeObjectURL") return null;
+  const args = call.arguments.nodes;
+  if (args.length === 0) {
+    return nodeThrowExpr(
+      1,
+      "ERR_MISSING_ARGS",
+      'The "url" argument must be specified',
+      VOID,
+      locOf(call),
+    );
+  }
+  if (args.length !== 1) return null;
+  const arg = args[0]!;
+  const id = lowerer.lowerExpr(arg);
+  const text: IrExpr =
+    id.type.kind === "url"
+      ? { kind: "libCall", fn: "url.href", args: [id], type: STRING, loc: locOf(arg) }
+      : lowerer.ensureString(id, arg);
+  return { kind: "libCall", fn: "url.revokeObjectURL", args: [text], type: VOID, loc: locOf(call) };
 }
 
 const SP_BRAND_METHODS = new Set([

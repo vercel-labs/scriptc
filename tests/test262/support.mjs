@@ -572,6 +572,11 @@ const ownEarlyErrorCodes = new Set([
   "SC0008",
   "SC0009",
   "SC0010",
+  "SC0011",
+  "SC0012",
+  "SC0013",
+  "SC0014",
+  "SC0015",
 ]);
 
 // tsc appends a "Did you mean ...?" suggestion to some of its messages, and the

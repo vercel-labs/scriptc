@@ -20,6 +20,7 @@ import { DYN, STRING, type IrExpr, type SrcLoc } from "../../ir/ir.js";
 import { INTRINSIC_IDS, INTRINSIC_PROTOTYPE_MEMBERS } from "./intrinsic-ids.generated.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import { stdlibGlobalNameOf } from "./surfaces.js";
+import { builtinPrototypeMethod } from "./lower-builtin-values.js";
 import type { Lowerer } from "./lowerer.js";
 // The module graph already cycles here (lower-exprs imports the expression
 // modules, which import this one); the reference is used inside a function
@@ -162,6 +163,16 @@ const INSTALLED_CONSTRUCTOR_OWNERS: ReadonlySet<string> = new Set([
   "BigInt",
 ]);
 
+/** The owners whose prototype object a dedicated lowering already builds:
+ * `DataView.prototype` is the object `dyn.dataViewPrototype` answers
+ * (scr_data_view_proto.c), whose methods carry the specification's
+ * algorithms, the receiver brand check and the own-key reflection. The
+ * graph's METHOD rows go through the runtime's builtin-method provider
+ * instead, which has no DataView receiver, so a value read out of the graph
+ * would refuse a real view where the language reads its bytes. The read
+ * keeps that lowering; every other owner the table names is the graph's. */
+const DEDICATED_PROTOTYPE_OWNERS: ReadonlySet<string> = new Set(["DataView"]);
+
 /** `X.prototype` for one of those owners (scr_js_wrapper.c): the intrinsic
  * prototype object with the program's own `X` closure installed as its
  * `constructor`, and the closure's `prototype` seeded with the object, so a
@@ -216,6 +227,7 @@ export function lowerIntrinsicMember(
   // `X.prototype`.
   const owner = stdlibGlobalNameOf(lowerer, expr.expression);
   if (owner !== null && lowerer.stdlibGlobalMember(expr, owner) === "prototype") {
+    if (DEDICATED_PROTOTYPE_OWNERS.has(owner)) return null;
     const id = prototypeId(owner);
     return id === null ? null : prototypeObject(lowerer, owner, id, loc);
   }
@@ -229,6 +241,16 @@ export function lowerIntrinsicMember(
     return null;
   const id = prototypeId(innerOwner);
   if (id === null) return null;
+  if (DEDICATED_PROTOTYPE_OWNERS.has(innerOwner)) return null;
+  // A member the builtin-method lowering answers as a value of its own
+  // (String's trim family, RegExp's exec/test/toString, the Map and Set
+  // methods, the wrapper methods): that value carries the receiver brand
+  // check, and for RegExp its RegExpExec step, and it is the same interned
+  // function `''.trim`, `/a/.exec` and `m.get` answer. The graph's METHOD
+  // rows go through the runtime's receiver-keyed provider instead, which
+  // refuses a foreign `this` the language accepts, so those members keep
+  // their dedicated value.
+  if (builtinPrototypeMethod(lowerer, expr) !== null) return null;
   // `Function.prototype.apply` keeps `dyn.functionApply`, the runtime's
   // singleton that `f.apply` also answers; the table's Function.prototype
   // holds the same function, so both reads agree.
@@ -255,6 +277,7 @@ export function lowerIntrinsicElement(
   if (!ts.isPropertyAccessExpression(inner)) return null;
   const owner = stdlibGlobalNameOf(lowerer, inner.expression);
   if (owner === null || lowerer.stdlibGlobalMember(inner, owner) !== "prototype") return null;
+  if (DEDICATED_PROTOTYPE_OWNERS.has(owner)) return null;
   const id = prototypeId(owner);
   if (id === null) return null;
   return {

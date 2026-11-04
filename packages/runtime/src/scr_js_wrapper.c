@@ -47,6 +47,17 @@ static SCR_TL ScrDyn *scr_js_wrapper_boolean_methods[2];
  * instance's member read are the same function object. */
 #define SCR_JS_WRAPPER_MEMBER_SLOTS 64
 static SCR_TL ScrDyn *scr_js_wrapper_member_values[3][SCR_JS_WRAPPER_MEMBER_SLOTS];
+/* The prototypes on which this thread has installed the program's own `X`
+ * closure as `constructor` (t262-da A2). The frontend emits the install at
+ * every `X.prototype` read, so the mark, not the member's current value,
+ * decides whether a read writes: a program that replaces the property
+ * through an alias of the prototype (`const p = String.prototype;
+ * p.constructor = 7;`) keeps its value across a later read, as it does in
+ * Node. The slots are the prototypes the frontend installs on — one each
+ * for String, Number, Boolean and BigInt — and the mark holds a reference
+ * because the object is what a repeat read compares. */
+#define SCR_JS_WRAPPER_INSTALL_SLOTS 4
+static SCR_TL ScrDyn *scr_js_wrapper_installed[SCR_JS_WRAPPER_INSTALL_SLOTS];
 
 static void *scr_js_wrapper_slot_retain(void *p) {
   ((ScrJsWrapperSlot *)p)->rc++;
@@ -93,6 +104,11 @@ static void scr_js_wrapper_cleanup(void) {
       scr_js_wrapper_member_values[kind][slot] = NULL;
       scr_dyn_release(member);
     }
+  for (size_t i = 0; i < SCR_JS_WRAPPER_INSTALL_SLOTS; i++) {
+    ScrDyn *installed = scr_js_wrapper_installed[i];
+    scr_js_wrapper_installed[i] = NULL;
+    scr_dyn_release(installed);
+  }
 }
 
 static void scr_js_wrapper_register_cleanup(void) {
@@ -474,6 +490,29 @@ ScrDyn *scr_js_wrapper_boolean_prototype(ScrDyn *constructor) {
   return scr_dyn_retain(scr_js_wrapper_prototype(SCR_JS_WRAPPER_BOOLEAN, constructor));
 }
 
+/* Whether this thread has already installed a `constructor` on `prototype`. */
+static bool scr_js_wrapper_install_seen(const ScrDyn *prototype) {
+  for (size_t i = 0; i < SCR_JS_WRAPPER_INSTALL_SLOTS; i++)
+    if (scr_js_wrapper_installed[i] == prototype) return true;
+  return false;
+}
+
+/* Records the install on `prototype`. A repeat call with the same object is
+ * the common case (every `X.prototype` read after the first), so it returns
+ * before taking a reference; the list only grows once per prototype. */
+static void scr_js_wrapper_install_mark(ScrDyn *prototype) {
+  if (scr_js_wrapper_install_seen(prototype)) return;
+  for (size_t i = 0; i < SCR_JS_WRAPPER_INSTALL_SLOTS; i++)
+    if (!scr_js_wrapper_installed[i]) {
+      scr_js_wrapper_installed[i] = scr_dyn_retain(prototype);
+      return;
+    }
+  /* The frontend installs on four prototypes (INSTALLED_CONSTRUCTOR_OWNERS
+   * in intrinsics.ts); a fifth needs a slot here rather than a silent
+   * second install on the same object. */
+  scr_trap("scriptc: wrapper prototype install list is full\n");
+}
+
 /* Installs `constructor` — the program's own String, Number, Boolean or
  * BigInt conversion closure, the value a read of that global answers — as the
  * `constructor` of the intrinsic prototype `prototype`, with the attributes
@@ -485,15 +524,21 @@ ScrDyn *scr_js_wrapper_boolean_prototype(ScrDyn *constructor) {
 ScrDyn *scr_js_wrapper_install_constructor(ScrDyn *prototype, ScrDyn *constructor) {
   if (!prototype || !constructor || constructor->kind != SCR_DYN_FUNC)
     return scr_dyn_retain(prototype);
-  /* Every `X.prototype` read emits this install, so a repeat read finds the
-   * value it installed and leaves the row alone, and the seeding below is a
-   * no-op once the closure's `prototype` exists. A program cannot replace the
-   * member in between: `String.prototype.constructor = v` and its
-   * `defineProperty`/`assign` spellings are refused by name on the fenced
-   * wrapper prototypes (fenceIntrinsicPrototypeWrite), and a write through a
-   * dynamic receiver never names the prototype this call is passed. */
-  if (scr_dyn_obj_get(prototype, "constructor", 11) != constructor)
+  /* Every `X.prototype` read emits this install, so the first one replaces
+   * the table's `constructor` with the program's own `X` and marks the
+   * object, and the seeding below is a no-op once the closure's `prototype`
+   * exists. A later read leaves the member alone rather than re-installing:
+   * the syntactic writes to these prototypes are refused by name
+   * (fenceIntrinsicPrototypeWrite), but a program can reach the same object
+   * through an alias and write it — `const p = String.prototype;
+   * p.constructor = 7;` — and reading the prototype again must not undo
+   * that, which it would if the decision compared the member against
+   * `constructor` instead of asking whether the install already ran. */
+  if (!scr_js_wrapper_install_seen(prototype)) {
+    scr_js_wrapper_register_cleanup();
     scr_js_wrapper_define_hidden(prototype, "constructor", scr_dyn_retain(constructor));
+    scr_js_wrapper_install_mark(prototype);
+  }
   scr_js_wrapper_seed_prototype(constructor, prototype);
   return scr_dyn_retain(prototype);
 }

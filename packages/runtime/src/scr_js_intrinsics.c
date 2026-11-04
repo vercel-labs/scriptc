@@ -353,12 +353,50 @@ static ScrDyn *scr_js_intrinsic_sized(size_t index, const char *id);
  * Object.getPrototypeOf path, never a second intrinsic here. +1. */
 static ScrDyn *scr_js_proto_get(ScrDyn *self) { return scr_dyn_get_prototype(self); }
 
+/* Whether `self` carries the brand `owner`'s accessors are defined over: the
+ * receiver's internal slot the accessor reads is part of that brand, so a
+ * `Map.prototype.size` getter reads a Map and a Set receiver — which
+ * surfaces a `size` member of its own — is the incompatible receiver, as in
+ * the language. Owners whose accessors read no brand-specific slot (the
+ * RegExp constructor's last-match statics, `Object.prototype.__proto__`)
+ * accept every receiver; the slot read answers what it finds. */
+static bool scr_js_accessor_brand_ok(const ScrDyn *self, const char *owner) {
+  if (strcmp(owner, "Map.prototype") == 0) return scr_dyn_native_map_is(self);
+  if (strcmp(owner, "Set.prototype") == 0) return scr_dyn_native_set_is(self);
+  /* The regex unit's own brand predicate (scr_dyn_native_regex_is) links
+   * only for the regex fact, and the graph links for the object model, so
+   * the brand is the handle tag here — the test scr_dyn_invoke.c and
+   * scr_dyn_builtin_methods.c make for the same reason. */
+  if (strcmp(owner, "RegExp.prototype") == 0)
+    return self->kind == SCR_DYN_HANDLE && self->v.handle.tag == SCR_DYNH_REGEXP;
+  if (strcmp(owner, "Symbol.prototype") == 0) return self->kind == SCR_DYN_SYMBOL;
+  if (strcmp(owner, "DataView.prototype") == 0) return scr_dyn_data_view_is(self);
+  if (strcmp(owner, "ArrayBuffer.prototype") == 0) return scr_array_buffer_is(self);
+  if (strcmp(owner, "SharedArrayBuffer.prototype") == 0) return scr_shared_array_buffer_is(self);
+  if (strcmp(owner, "%TypedArray%.prototype") == 0)
+    return self->kind == SCR_DYN_BYTES && !self->v.bytes->is_data_view;
+  return true;
+}
+
+/* %TypedArray%.prototype's [[@@toStringTag]]: the receiver's element type
+ * name (+1), or NULL for a receiver that is not a typed array. */
+static ScrDyn *scr_js_typed_array_tag(const ScrDyn *self) {
+  if (self->kind != SCR_DYN_BYTES || self->v.bytes->is_data_view) return NULL;
+  const char *name = scr_bytes_elem_name(self->v.bytes->elem);
+  ScrStr *text = scr_str_new(name, strlen(name));
+  ScrDyn *tag = scr_dyn_new_str(text);
+  scr_str_release(text);
+  return tag;
+}
+
 /* The value the receiver's own internal slot answers for `key` when the
  * accessor reads one — `new Map().size`, a RegExp's `flags`, a typed view's
  * `byteLength`, a symbol's `description` — or NULL when the receiver carries
- * no such slot, which is the incompatible receiver. */
+ * no such slot, which is the incompatible receiver. The brand check keeps a
+ * receiver of another kind from answering a member that happens to have the
+ * accessor's name. */
 static ScrDyn *scr_js_accessor_slot_read(ScrDyn *self, const ScrJsIntrinsicRow *row) {
-  if (row->key[0] == '@' && row->key[1] == '@') return NULL;
+  if (!scr_js_accessor_brand_ok(self, row->owner)) return NULL;
   ScrStr *key = scr_str_new(row->key, strlen(row->key));
   ScrDyn *result = NULL;
   switch (self->kind) {
@@ -394,6 +432,32 @@ static ScrDyn *scr_js_accessor_call(ScrClosure *closure, ScrDyn *const *args, si
     }
     scr_dyn_release(self);
     return result;
+  }
+  if (getter && strcmp(row->key, "@@species") == 0) {
+    /* The language's species getters answer their receiver, whatever it
+     * is — `g.call(1) === 1`, `g.call(undefined) === undefined` — so a
+     * program that reads the constructor's own getter sees the function it
+     * holds, not a refusal. */
+    ScrDyn *receiver = scr_dyn_retain(self);
+    scr_dyn_release(self);
+    return receiver;
+  }
+  if (getter && strcmp(row->key, "@@toStringTag") == 0) {
+    /* The tag getters answer undefined for a receiver of another brand,
+     * and the typed-array one answers its element type, instead of the
+     * incompatible-receiver TypeError; only the typed arrays and
+     * Iterator.prototype carry a tag accessor in the table. */
+    ScrDyn *slot = NULL;
+    if (scr_js_accessor_brand_ok(self, row->owner)) {
+      slot = scr_js_typed_array_tag(self);
+      if (slot == NULL) slot = scr_js_accessor_slot_read(self, row);
+    }
+    if (slot || scr_exc_pending()) {
+      scr_dyn_release(self);
+      return slot;
+    }
+    scr_dyn_release(self);
+    return scr_dyn_retain(scr_dyn_undefined());
   }
   if (getter) {
     ScrDyn *slot = scr_js_accessor_slot_read(self, row);
@@ -495,6 +559,15 @@ static bool scr_js_wrapper_id(const char *id) {
          strcmp(id, "Boolean.prototype") == 0;
 }
 
+/* Whether `id` names one of the typed array constructors the bytes unit
+ * interns (Uint8Array and its siblings), so the graph's constructor object
+ * for it is the function the program's global name answers. */
+static bool scr_js_typed_array_id(const char *id) {
+  for (int i = 0; i < SCR_BYTES_ELEM_COUNT; i++)
+    if (strcmp(id, scr_bytes_elem_name((ScrBytesElem)i)) == 0) return true;
+  return false;
+}
+
 /* Whether `id` names a prototype object rather than a constructor. */
 static bool scr_js_id_is_prototype(const char *id) {
   size_t length = strlen(id);
@@ -527,8 +600,14 @@ static ScrDyn *scr_js_create(const char *id) {
     return scr_js_wrapper_intrinsic_prototype_slot ? scr_js_wrapper_intrinsic_prototype_slot(id)
                                                    : scr_dyn_new_obj();
   if (!scr_js_id_is_prototype(id)) {
+    /* The constructors the runtime keeps as singletons answer here too, so
+     * `ArrayBuffer.prototype.constructor === ArrayBuffer` and the same for
+     * a typed array's prototype: the graph holds the function the global
+     * name answers, not a second fenced stand-in for it. */
+    if (strcmp(id, "ArrayBuffer") == 0) return scr_array_buffer_constructor();
     ScrStr *name = scr_str_new(id, strlen(id));
     ScrDyn *constructor = scr_dyn_global_constructor_known(name) ? scr_dyn_global_constructor(name) : NULL;
+    if (constructor == NULL && scr_js_typed_array_id(id)) constructor = scr_bytes_constructor(name);
     scr_str_release(name);
     if (constructor) return constructor;
     return scr_js_fenced_new(id);

@@ -916,8 +916,15 @@ function buildLibFnSignatures() {
     "os.userName": { argTypes: [], result: STRING },
     "os.userShell": { argTypes: [], result: STRING },
     "os.userHomedir": { argTypes: [], result: STRING },
+    /** The same three fields as Buffers (os.userInfo({ encoding: 'buffer' })). */
+    "os.userNameBuf": { argTypes: [], result: BYTES_U8 },
+    "os.userShellBuf": { argTypes: [], result: BYTES_U8 },
+    "os.userHomedirBuf": { argTypes: [], result: BYTES_U8 },
     "os.userUid": { argTypes: [], result: F64 },
     "os.userGid": { argTypes: [], result: F64 },
+    /** The single passwd lookup the field libCalls above read: one per
+     * userInfo() record instead of one per field. */
+    "os.userInfoBegin": { argTypes: [], result: VOID },
     "os.tmpdir": { argTypes: [], result: STRING },
     // Result is the call site's Dict<NetworkInterfaceInfo[]> record (VOID is
     // the dgram.address sentinel — the libCall case checks the structure).
@@ -1190,6 +1197,10 @@ function buildLibFnSignatures() {
     "url.canParseBase": { argTypes: [STRING, STRING], result: BOOL },
     "url.parse": { argTypes: [STRING], result: DYN },
     "url.parseBase": { argTypes: [STRING, STRING], result: DYN },
+    /** URL.revokeObjectURL(id): the id arrives already converted. A
+     * compiled program registers no blob URLs, so Node's registry lookup
+     * always misses and the call answers undefined. Never throws. */
+    "url.revokeObjectURL": { argTypes: [STRING], result: VOID },
     "url.protocol": { argTypes: [URL_T], result: STRING },
     "url.origin": { argTypes: [URL_T], result: STRING },
     "url.username": { argTypes: [URL_T], result: STRING },
@@ -4019,6 +4030,10 @@ function buildLibFnSignatures() {
     /** process.stdout/stderr.write(chunk) with a run-time chunk: Node's
      * Writable validation, then a synchronous write. */
     "process.stdioWriteDyn": { argTypes: [F64, DYN], result: BOOL },
+    /** process.stdout/stderr.write(text) at an untyped call site: the same
+     * write with the string as the only argument, calling a replaced
+     * method. */
+    "process.stdioWriteStr": { argTypes: [F64, STRING], result: DYN },
     "process.stderrWrite": { argTypes: [STRING], result: BOOL },
     // error.new's result and the receiver slots are builtin-error classes —
     // program-dependent object types, checked in the libCall case.
@@ -4407,10 +4422,19 @@ function buildLibFnSignatures() {
     "dyn.errorCaptureStackTraceFunction": { argTypes: [], result: DYN },
     "dyn.functionApply": { argTypes: [], result: DYN },
     "dyn.builtinMethod": { argTypes: [STRING, STRING], result: DYN },
+    /** A builtin prototype method as a function value, by its prototype
+     * (`String`, `RegExp`) and canonical member name (`trim`, `trimStart`,
+     * `trimEnd`; `exec`, `test`, `toString`): the unit in
+     * scr_dyn_builtin_methods.c. */
+    "dyn.builtinMethodValue": { argTypes: [STRING, STRING], result: DYN },
     /** A standard library prototype object as a value (`Date.prototype` read
      * in a JavaScript source), named by its constructor: the unit in
      * scr_dyn_stdlib_prototype.c. */
     "dyn.stdlibPrototype": { argTypes: [STRING], result: DYN },
+    /** DataView.prototype as a value (`DataView.prototype` read in a
+     * JavaScript source): the getter/setter family's prototype object, the
+     * unit in scr_data_view_proto.c. */
+    "dyn.dataViewPrototype": { argTypes: [DYN], result: DYN },
     /** A builtin prototype or constructor object as an ordinary checked
      * object (`Date.prototype`, `Array.prototype.push` read in a JavaScript
      * source), named by the intrinsic table's id: the unit in

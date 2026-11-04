@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { IR_VERSION } from "./serialize.js";
-import { DYN, STRING, VOID, arrayOf, type IrModule, type IrLibFn } from "./ir.js";
+import { DYN, STRING, VOID, arrayOf, type IrExpr, type IrModule, type IrLibFn } from "./ir.js";
 import {
   JS_OBJECT_MODEL_LIB_FNS,
   jsObjectModelFact,
@@ -282,6 +282,54 @@ describe("runtime feature snapshots", () => {
     // a variant column of its own.
     expect(jsObjectModelFact(moduleRuntimeFeatures(invoked))).toBe(true);
     expect(jsObjectModelFact(moduleRuntimeFeatures(other))).toBe(false);
+  });
+
+  test("gates the Date annexB dispatch on a member read through a computed key", () => {
+    const dyn = { kind: "varRef" as const, localId: "date", type: DYN, loc };
+    const key = { kind: "varRef" as const, localId: "key", type: STRING, loc };
+    const computedRead = (receiver: IrExpr, keyExpr: IrExpr = key): IrModule => {
+      const mod = module();
+      mod.functions[0]!.body.push({
+        kind: "exprStmt",
+        loc,
+        expr: {
+          kind: "dynKeyGet",
+          value: receiver,
+          key: keyExpr,
+          type: DYN,
+          loc,
+        },
+      });
+      return mod;
+    };
+    const makesDate = (mod: IrModule): IrModule => {
+      mod.functions[0]!.body.push(call("date.nativeNewValue"));
+      return mod;
+    };
+    // A computed key reaches scr_native_date_methods, which lists both names,
+    // so a Date value in the module needs the dispatch that answers them.
+    expect(moduleRuntimeFeatures(makesDate(computedRead(dyn))).dateAnnexB).toBe(true);
+    // A Date-typed receiver answers them without the construction call.
+    expect(
+      moduleRuntimeFeatures(
+        computedRead({ kind: "varRef", localId: "d", type: { kind: "date" }, loc }),
+      ).dateAnnexB,
+    ).toBe(true);
+    // Date.prototype always lists getYear and setYear, so a computed read of
+    // the materialized prototype reaches them too.
+    const prototype = computedRead({
+      kind: "libCall",
+      fn: "dyn.stdlibPrototype",
+      args: [{ kind: "strLit", value: "Date", type: STRING, loc }],
+      type: DYN,
+      loc,
+    });
+    expect(moduleRuntimeFeatures(prototype).dateAnnexB).toBe(true);
+    // Without a Date anywhere, the computed key reads some other object.
+    expect(moduleRuntimeFeatures(computedRead(dyn)).dateAnnexB).toBe(false);
+    // A literal name outside the two keeps the default even beside a Date.
+    const literal = computedRead(dyn, { kind: "strLit", value: "getFullYear", type: STRING, loc });
+    expect(moduleRuntimeFeatures(makesDate(literal)).dateAnnexB).toBe(false);
   });
 
   test("the JavaScript object model build owns no entry yet", () => {

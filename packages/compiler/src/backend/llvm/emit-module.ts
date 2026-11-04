@@ -39,6 +39,7 @@ import {
 import { emitLlvmLayouts } from "./layouts.js";
 import { emitArraySearchHelpers } from "./array-search.js";
 import { emitClassMembershipHelper } from "./classes.js";
+import { SCR_ELEM_F64, SCR_ELEM_I32 } from "./dense-array-access.js";
 import { type RegexMatcherCode, compileRegexMatcher } from "./regex-matchers.js";
 import {
   MAP_ITER_DECL,
@@ -1154,6 +1155,23 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     out.push(`@${sym} = internal constant { ptr, ptr, ptr, ptr, ptr, ptr, ptr } { ${body} }`);
   }
   if (emitter.mapOpsConsts.size > 0) out.push(``);
+  for (const c of emitter.arrayConstData.values()) {
+    // A static table's data is the array's own storage, and ScrArr's slot
+    // field is 64-bit: keep the block aligned even for i32 elements. The
+    // header is initialized here too, like a tagged template's: it is a
+    // module's shared image, and a worker build or a thread-instanced
+    // library initializes that image in more than one thread, so writing the
+    // fields after the program starts would be an unsynchronized write to
+    // the same array metadata. `values` holds the rendered literals (emitter
+    // staticArrayData): they cross a chunk's JSON boundary unrounded.
+    const values = c.values.map((v) => `${c.type} ${v}`);
+    const n = c.values.length;
+    out.push(`@${c.sym} = internal constant [${n} x ${c.type}] [ ${values.join(", ")} ], align 8`);
+    out.push(
+      `@${c.sym}_h = internal global %ScrArr { ${emitter.sizeType} -1, i32 ${n}, i32 ${n}, i8 ${c.type === "i32" ? SCR_ELEM_I32 : SCR_ELEM_F64}, i8 0, i16 0, i32 ${n}, ptr @${c.sym} }`,
+    );
+  }
+  if (emitter.arrayConstData.size > 0) out.push(``);
   for (const sym of emitter.methodIdSlots.values()) out.push(`@${sym} = internal global i32 -1`);
   if (emitter.methodIdSlots.size > 0) out.push(``);
 

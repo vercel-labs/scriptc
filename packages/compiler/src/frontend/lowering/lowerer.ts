@@ -1394,6 +1394,7 @@ function lowerToIrWithIslands(
     projectCheckJs: options.projectCheckJs ?? false,
     targetPlatform,
     startupCrash,
+    admittedOpinions: options.admittedOpinions,
     inlineRequireCycleCalls,
     dynamicImportRejections: options.dynamicImportRejections,
     ffiImports,

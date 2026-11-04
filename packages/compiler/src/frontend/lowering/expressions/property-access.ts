@@ -43,6 +43,8 @@ import {
   STDLIB_SURFACE,
   STRING_INDEX_METHODS,
   STR_METHODS,
+  DYN_COLLECTION_CLASSES,
+  type DynCollectionClass,
   isChildSurfaceMember,
   stdlibGlobalNameOf,
 } from "../surfaces.js";
@@ -348,18 +350,23 @@ export function lowerPropertyAccessExpr(
 ): IrExpr {
   const arrayClassConstructor = lowerArrayClassConstructorRead(lowerer, expr, loc);
   if (arrayClassConstructor !== null) return arrayClassConstructor;
-  // `Set.prototype` as a value in a JavaScript source: the runtime's
-  // %Set.prototype% object, whose methods brand-check their receiver and
-  // which carries Symbol.toStringTag. Brand-check tests call through it,
-  // so this must answer BEFORE the builtin-constructor fence
+  // `Set.prototype`, `Map.prototype`, `WeakMap.prototype` and
+  // `WeakSet.prototype` as values in a JavaScript source: the runtime's
+  // %<Class>.prototype% object, whose methods brand-check their receiver and
+  // which carries Symbol.toStringTag. Brand-check tests call through it, so
+  // this must answer BEFORE the builtin-constructor fence
   // (fenceBuiltinConstructorStaticRead) claims the read.
-  if (
-    !expr.questionDotToken &&
-    expr.name.text === "prototype" &&
-    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
-    stdlibGlobalNameOf(lowerer, expr.expression) === "Set"
-  )
-    return { kind: "libCall", fn: "dyn.setPrototypeObject", args: [], type: DYN, loc };
+  {
+    const collection = dynCollectionPrototypeClass(lowerer, expr);
+    if (collection !== null)
+      return {
+        kind: "libCall",
+        fn: "dyn.collectionPrototype",
+        args: [strLit(collection, loc)],
+        type: DYN,
+        loc,
+      };
+  }
   // `R.#x` for a static private on a checked-dynamic receiver: the brand
   // check, then the native storage (private-statics.ts).
   {
@@ -2122,8 +2129,11 @@ function dynCollectionCombineValue(
   const loc = locOf(expr);
   const method: IrExpr = {
     kind: "libCall",
-    fn: "dyn.setMethod",
-    args: [{ kind: "strLit", value: name, type: STRING, loc: locOf(expr.name) }],
+    fn: "dyn.collectionMethod",
+    args: [
+      { kind: "strLit", value: "Set", type: STRING, loc },
+      { kind: "strLit", value: name, type: STRING, loc: locOf(expr.name) },
+    ],
     type: DYN,
     loc,
   };
@@ -5748,16 +5758,31 @@ export function isPromisePrototypeRead(lowerer: Lowerer, expr: ts.Expression | u
   );
 }
 
-/** `Set.prototype` read in a JavaScript source: the runtime's
- * %Set.prototype% object (property-access.ts lowers the read to
- * `dyn.setPrototypeObject`), which the checker types `Set<any>` but which
- * is an ordinary object, so a Set slot holds it as a checked-dynamic
- * value. */
-export function isSetPrototypeRead(lowerer: Lowerer, expr: ts.Expression | undefined): boolean {
-  if (!expr) return false;
+/** `<Class>.prototype` read in a JavaScript source: the runtime's
+ * %<Class>.prototype% object (property-access.ts lowers the read to
+ * `dyn.collectionPrototype`), which the checker types `Set<any>` /
+ * `Map<any, any>` but which is an ordinary object, so a slot holds it as a
+ * checked-dynamic value. */
+export function isCollectionPrototypeRead(
+  lowerer: Lowerer,
+  expr: ts.Expression | undefined,
+): boolean {
+  return dynCollectionPrototypeClass(lowerer, expr) !== null;
+}
+
+/** `<Class>.prototype` read as a value: the class, or null for any other
+ * expression. A JavaScript source lowers the read to the runtime's
+ * %<Class>.prototype% object. */
+export function dynCollectionPrototypeClass(
+  lowerer: Lowerer,
+  expr: ts.Expression | undefined,
+): DynCollectionClass | null {
+  if (!expr || !isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;
   while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
-  if (!ts.isPropertyAccessExpression(expr) || expr.questionDotToken) return false;
-  return lowerer.stdlibGlobalMember(expr, "Set") === "prototype";
+  if (!ts.isPropertyAccessExpression(expr) || expr.questionDotToken) return null;
+  for (const name of DYN_COLLECTION_CLASSES)
+    if (lowerer.stdlibGlobalMember(expr, name) === "prototype") return name;
+  return null;
 }
 
 /** A promise's `constructor` (the Promise constructor value), and

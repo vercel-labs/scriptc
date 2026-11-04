@@ -1049,34 +1049,41 @@ ScrDyn *scr_dyn_new_null(void);
 ScrDyn *scr_dyn_new_bool(bool b);
 ScrDyn *scr_dyn_new_num(double n);
 ScrDyn *scr_dyn_native_set_new(const ScrDyn *seed);
+/* The bulk insert of a constructor seed into an existing native Set or Map
+ * handle, for a collection the checked-dynamic constructor created before it
+ * read the adder. False with the exception pending. */
+bool scr_dyn_native_collection_insert_seed(ScrDyn *collection, const ScrDyn *seed);
 ScrDyn *scr_dyn_native_set(ScrMap *value); /* borrowed backing, +1 box */
 bool scr_dyn_native_set_is(const ScrDyn *value);
-/* The ES2025 compositions over a set-like argument (scr_dyn_set.c): the
- * receiver is brand-checked, `other` runs GetSetRecord and the keys
+/* The ES2025 compositions over a set-like argument (scr_dyn_collections.c):
+ * the receiver is brand-checked, `other` runs GetSetRecord and the keys
  * iterator. +1, or NULL with the exception pending. */
 ScrDyn *scr_dyn_set_combine(ScrDyn *receiver, const ScrStr *name, ScrDyn *other);
-/* Set(iterable) for a JavaScript source: the spec's constructor, which
- * reads `add` off the new set (a program's own Set.prototype.add runs per
- * element) and closes the iterable when that call throws. A program that
- * never materialized %Set.prototype%, or left `add` as the builtin, keeps
+/* Set(iterable) and Map(iterable) for a JavaScript source: the spec's
+ * constructor, which reads the class's adder (`add`/`set`) off the new
+ * collection (a program's own <Class>.prototype member runs per element)
+ * and closes the iterable when that call throws. A program that never
+ * materialized %<Class>.prototype%, or left the adder as the builtin, keeps
  * the native constructor's bulk path. +1, or NULL with the exception
  * pending. */
-ScrDyn *scr_dyn_set_construct(ScrDyn *seed);
+ScrDyn *scr_dyn_collection_construct(const ScrStr *klass, ScrDyn *seed);
 /* The values of a Set handle as a checked-dynamic array in insertion order
- * (scr_dyn_set.c): the typed `new Set(seed)` path adds what a program's own
- * `add` inserted to the native set it keeps. +1, or NULL with the exception
- * pending. */
+ * (scr_dyn_collections.c): the typed `new Set(seed)` path adds what a
+ * program's own `add` inserted to the native set it keeps. +1, or NULL with
+ * the exception pending. */
 ScrDyn *scr_dyn_set_values(ScrDyn *set);
-/* Set.prototype.forEach with an unchecked callback: Node's
- * `<value> is not a function` for a non-callable one. +1 undefined or NULL. */
-ScrDyn *scr_dyn_set_for_each(ScrDyn *receiver, ScrDyn *callback, ScrDyn *this_arg);
-/* The interned method value of one Set.prototype member, and the interned
- * %Set.prototype% object itself (+1). */
-ScrDyn *scr_dyn_set_method(const ScrStr *name);
-ScrDyn *scr_dyn_set_prototype_object(void);
-/* Object.getPrototypeOf: %Set.prototype% for a native Set handle, else the
- * ordinary prototype read. +1, or NULL with the exception pending. */
-ScrDyn *scr_dyn_set_get_prototype(ScrDyn *value);
+/* <Class>.prototype.forEach with an unchecked callback: Node's
+ * `<value> is not a function` for a non-callable one, and (value, key,
+ * collection) visits for a Map. +1 undefined or NULL. */
+ScrDyn *scr_dyn_collection_for_each(ScrDyn *receiver, const ScrStr *klass, ScrDyn *callback,
+                                    ScrDyn *this_arg);
+/* The interned method value of one <Class>.prototype member, and the interned
+ * %<Class>.prototype% object itself (+1). */
+ScrDyn *scr_dyn_collection_method(const ScrStr *klass, const ScrStr *name);
+ScrDyn *scr_dyn_collection_prototype(const ScrStr *klass);
+/* Object.getPrototypeOf: %<Class>.prototype% for a collection handle, else
+ * the ordinary prototype read. +1, or NULL with the exception pending. */
+ScrDyn *scr_dyn_collection_get_prototype(ScrDyn *value);
 ScrDyn *scr_dyn_native_map(ScrMap *value); /* borrowed backing, +1 box */
 /* `new Map(entries)` over a checked-dynamic seed: +1, or NULL with the
  * exception pending. */
@@ -1555,6 +1562,11 @@ ScrDyn *scr_dyn_iter_take(const ScrDyn *src, size_t n, const char *spell);
 /* True for typed capsules that iterate through the protocol (a compiled
  * synchronous generator) rather than through their materialized view. */
 bool scr_dyn_iterates_by_protocol(const ScrDyn *value);
+/* Whether a collection constructor's seed yields its values without running
+ * program code: arrays, strings, bytes, typed views and collections pack, a
+ * native iterator drains. Every other iterable steps through the iterator
+ * protocol, so the constructor inserts one entry per step. */
+bool scr_dyn_seed_packs_natively(const ScrDyn *seed);
 /* Map constructor seeds: retain array inputs for live iteration, accept
  * nullish inputs as empty, and validate each entry before reading 0/1. */
 ScrDyn *scr_dyn_map_seed_entries(const ScrDyn *src);
@@ -1734,6 +1746,13 @@ bool scr_dyn_err_instanceof(const ScrDyn *d, double kind);
  * runtime Error instances inherit their exact builtin constructor token.
  * The result is owned. */
 ScrDyn *scr_dyn_obj_read(const ScrDyn *d, const char *key, size_t key_len);
+/* The same read with an explicit receiver: an accessor found on `d` runs
+ * with `receiver` as `this`. The keyed collection constructor reads the
+ * class's adder off %<Class>.prototype% while the new collection is the
+ * receiver, so a getter-installed member sees the collection. The result is
+ * owned. */
+ScrDyn *scr_dyn_obj_read_with_receiver(const ScrDyn *d, const char *key, size_t key_len,
+                                       const ScrDyn *receiver);
 /* A compiler-emitted read site with a constant key keeps one of these in
  * zero-initialized thread-local storage: the entry position where the key
  * was last found as an own data property and a reference to the interned

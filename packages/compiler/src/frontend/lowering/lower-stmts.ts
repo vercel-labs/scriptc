@@ -23,7 +23,7 @@ import {
   declaredMemberOf,
   fenceDatePrototypeWrite,
   isPromisePrototypeRead,
-  isSetPrototypeRead,
+  isCollectionPrototypeRead,
   lowerUnionKeyedRead,
 } from "./expressions/property-access.js";
 import { hostedStorageView, hostsAll } from "./expressions/hosted-narrowing.js";
@@ -1472,7 +1472,7 @@ function varBindingType(lowerer: Lowerer, nameNode: ts.Identifier): IrType | nul
   if (
     ts.isVariableDeclaration(nameNode.parent) &&
     !nameNode.parent.type &&
-    isSetPrototypeRead(lowerer, nameNode.parent.initializer)
+    isCollectionPrototypeRead(lowerer, nameNode.parent.initializer)
   )
     return DYN;
   let type = lowerer.mapTypeOf(lowerer.typeOf(nameNode));
@@ -6488,12 +6488,13 @@ export function lowerVarDecl(
           (existingValueForm(decl.initializer) || jsHoldsDynObject(lowerer, decl.initializer))))
     )
       g.type = DYN;
-    // %Set.prototype% is an ordinary object the checker types Set<any>.
+    // %Set.prototype% and %Map.prototype% are ordinary objects the checker
+    // types Set<any> / Map<any, any>.
     if (
       isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
       !decl.type &&
       !hasJsTypeAnnotation(decl) &&
-      isSetPrototypeRead(lowerer, decl.initializer)
+      isCollectionPrototypeRead(lowerer, decl.initializer)
     )
       g.type = DYN;
     g.type = inferredOptionalRecordType(lowerer, decl, g.type, raw.type);
@@ -6662,8 +6663,13 @@ export function lowerVarDecl(
   // Promise.prototype is an ordinary object the checker types Promise<any>.
   if (!decl.type && !hasJsTypeAnnotation(decl) && isPromisePrototypeRead(lowerer, decl.initializer))
     type = DYN;
-  // %Set.prototype% is an ordinary object the checker types Set<any>.
-  if (!decl.type && !hasJsTypeAnnotation(decl) && isSetPrototypeRead(lowerer, decl.initializer))
+  // %Set.prototype% and %Map.prototype% are ordinary objects the checker
+  // types Set<any> / Map<any, any>.
+  if (
+    !decl.type &&
+    !hasJsTypeAnnotation(decl) &&
+    isCollectionPrototypeRead(lowerer, decl.initializer)
+  )
     type = DYN;
   // A web stream value in JavaScript keeps its checked-dynamic identity.
   if (

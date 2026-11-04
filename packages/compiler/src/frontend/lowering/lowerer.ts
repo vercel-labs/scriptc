@@ -2229,6 +2229,24 @@ function isAnonymousCallableDefinition(node: ts.Node): boolean {
   return (ts.isFunctionExpression(node) || ts.isClassExpression(node)) && node.name === undefined;
 }
 
+/** The name a property key gives an anonymous definition it initializes
+ * (V8's SetFunctionName): an identifier, quoted string or numeric key, and a
+ * computed key that spells one of those literals. A numeric key names its
+ * canonical string key. Null for any other key, whose value keeps whatever
+ * name it was created with. */
+function propertyKeyName(name: ts.PropertyName): string | null {
+  if (ts.isComputedPropertyName(name)) {
+    const key = name.expression;
+    if (ts.isStringLiteral(key)) return key.text;
+    if (ts.isNumericLiteral(key)) return String(Number(key.text));
+    return null;
+  }
+  if (ts.isIdentifier(name)) return name.text;
+  if (ts.isStringLiteral(name)) return name.text;
+  if (ts.isNumericLiteral(name)) return String(Number(name.text));
+  return null;
+}
+
 /** The JavaScript identity (its `name` and its ExpectedArgumentCount
  * `length`) of the function value `expr` holds, resolved through the
  * checker: the call signature's own declaration, when that declaration is a
@@ -2387,15 +2405,15 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
     const file = ts.getSourceFileOfNode(declared);
     if (file.isDeclarationFile || !isJsSourceFile(file)) return n.name.text;
     if (ts.isMethodDeclaration(declared)) {
-      return ts.isIdentifier(declared.name) ? declared.name.text : null;
+      return propertyKeyName(declared.name);
     }
     if (ts.isPropertyAssignment(declared) || ts.isPropertyDeclaration(declared)) {
-      const key = declared.name;
+      const keyName = propertyKeyName(declared.name);
       const initializer = declared.initializer;
-      if (initializer !== undefined && ts.isIdentifier(key)) {
+      if (initializer !== undefined && keyName !== null) {
         let held: ts.Node = initializer;
         while (ts.isParenthesizedExpression(held)) held = held.expression;
-        if (isAnonymousCallableDefinition(held)) return key.text;
+        if (isAnonymousCallableDefinition(held)) return keyName;
         return jsFuncNameOf(held, lowerer);
       }
     }
@@ -2419,8 +2437,14 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
     if (p && ts.isBindingElement(p) && p.initializer === outer && ts.isIdentifier(p.name)) {
       return p.name.text;
     }
-    if (p && ts.isPropertyAssignment(p) && p.initializer === outer && ts.isIdentifier(p.name)) {
-      return p.name.text;
+    if (p && ts.isPropertyAssignment(p) && p.initializer === outer) {
+      if (ts.isIdentifier(p.name)) return p.name.text;
+      // A quoted or numeric key names the definition it initializes the same
+      // way an identifier key does (`{ "m": function () {} }`).
+      if (js) {
+        const keyName = propertyKeyName(p.name);
+        if (keyName !== null) return keyName;
+      }
     }
     // `f = function () {}`: an assignment whose target is a bare reference
     // names the value it stores (NamedEvaluation of an anonymous
@@ -2441,14 +2465,9 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
     }
     // `class C { f = function () {} }`: a field initializer takes the field's
     // name, exactly like a variable initializer.
-    if (
-      js &&
-      p &&
-      ts.isPropertyDeclaration(p) &&
-      p.initializer === outer &&
-      ts.isIdentifier(p.name)
-    ) {
-      return p.name.text;
+    if (js && p && ts.isPropertyDeclaration(p) && p.initializer === outer) {
+      const keyName = propertyKeyName(p.name);
+      if (keyName !== null) return keyName;
     }
   }
   return null;

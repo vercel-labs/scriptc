@@ -68,6 +68,33 @@ console.log("anonymous initializer", label(table.anon));
 console.log("named initializer", label(table.named));
 console.log("aliased initializer", label(table.alias));
 
+// The key names the definition whatever form it takes: a quoted string, a
+// numeric literal or a computed literal key, read directly and through an
+// alias.
+const quoted = {
+  "quoted": function () {},
+  "arrow": () => {},
+  "named": function inner() {},
+  7: function () {},
+  ["computed"]: function () {},
+};
+console.log("quoted keys", label(quoted.quoted), label(quoted.arrow), label(quoted[7]));
+console.log(
+  "quoted aliases",
+  label(quoted["quoted"]),
+  label(quoted["arrow"]),
+  label(quoted["named"]),
+  label(quoted["computed"]),
+);
+
+// A quoted class field names its initializer the same way.
+class QuotedHolder {
+  "qfield" = function () {};
+  8 = () => {};
+}
+const quotedHolder = new QuotedHolder();
+console.log("quoted fields", label(quotedHolder.qfield), label(quotedHolder[8]));
+
 // Named definitions keep their own names everywhere.
 console.log("declaration", label(long), label(short), label(named), label(arrow));
 

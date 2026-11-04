@@ -60,9 +60,11 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
     ...(features.builtinValues ? { builtinValues: true } : {}),
     ...(features.stdlibPrototypeValue ? { stdlibPrototypeValue: true } : {}),
+    ...(features.dataViewPrototypeValue ? { dataViewPrototypeValue: true } : {}),
     ...(features.hostAbsentGlobals ? { hostAbsentGlobals: true } : {}),
     ...(features.arrayLikeDispatch ? { arrayLikeDispatch: true } : {}),
     ...(features.builtinPrototypeValue ? { builtinPrototypeValue: true } : {}),
+    ...(features.builtinMethodValue ? { builtinMethodValue: true } : {}),
     ...(features.computedRequire ? { computedRequire: true } : {}),
     // Island code's signal and exit listeners join the events unit's
     // registries (scope-B NI-3).

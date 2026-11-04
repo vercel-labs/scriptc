@@ -97,8 +97,13 @@ test("divergences report as warnings, never as blockers", async () => {
 test("record width copies report at every storing site", async () => {
   const { coverage } = analyze(fixture("width-copies.ts"));
   expect(coverage.diagnostics).toEqual([]);
+  // Four sites copy: a narrower parameter, the empty record, a later
+  // assignment, and an array element. The assertions report nothing: `tagged
+  // as Labeled` and the union arm `blocks[0] as { text: string }` name only
+  // members the value itself stores, so the binding keeps the value's storage
+  // and its writes reach that object (as do the unknown-only views at the end
+  // of the fixture, which have no field to copy into).
   expect((coverage.divergences ?? []).map((d) => d.code)).toEqual([
-    "SC6001",
     "SC6001",
     "SC6001",
     "SC6001",

@@ -952,6 +952,28 @@ export function lowerProcessMethodCall(
     if (stream === "stdin" || stream === "stdout" || stream === "stderr") {
       if (call.arguments.nodes.some(ts.isSpreadElement))
         lowerer.noLowering("process stream spread arguments", call);
+      const loc = locOf(call);
+      // The one-argument string form of write: the runtime writes the text
+      // for an unreplaced write, and a replaced write still receives the
+      // call with the string as its only argument. Static for the handle
+      // receivers, which read their write slot when they are called, so
+      // reading it in the runtime keeps the order JavaScript has.
+      const only = call.arguments.nodes[0];
+      if (
+        stream !== "stdin" &&
+        access.name.text === "write" &&
+        call.arguments.nodes.length === 1 &&
+        only !== undefined &&
+        lowerer.mapTypeOf(lowerer.typeOf(only))?.kind === "string"
+      ) {
+        return {
+          kind: "libCall",
+          fn: "process.stdioWriteStr",
+          args: [numLit(stream === "stderr" ? 2 : 1, loc), lowerer.lowerExpr(only)],
+          type: DYN,
+          loc,
+        };
+      }
       return {
         kind: "dynInvoke",
         recv: lowerer.lowerExpr(access.expression),
@@ -959,7 +981,7 @@ export function lowerProcessMethodCall(
         calleeName: ts.getTextOfNode(access),
         args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
         type: DYN,
-        loc: locOf(call),
+        loc,
       };
     }
   }

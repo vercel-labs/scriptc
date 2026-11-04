@@ -363,7 +363,9 @@ const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.arrayPrototype",
   "dyn.builtinFunction",
   "dyn.builtinMethod",
+  "dyn.builtinMethodValue",
   "dyn.stdlibPrototype",
+  "dyn.dataViewPrototype",
   "dyn.defineProperty",
   "dyn.definePropertyShapes",
   "handle.propsDefineProps",
@@ -743,6 +745,7 @@ const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.stdinIsRaw",
   "process.stdioSlot",
   "process.stdioWriteDyn",
+  "process.stdioWriteStr",
   "stdin.nextChunk",
   "stdin.onData",
   "stdin.onEnd",
@@ -1175,6 +1178,10 @@ const RUNTIME_FEATURE_RULES = {
   /** A standard library prototype object read as a value in a JavaScript
    * source (scr_dyn_stdlib_prototype.c): `Date.prototype`. */
   stdlibPrototypeValue: rule({ fns: ["dyn.stdlibPrototype"] }),
+  /** DataView.prototype read as a value in a JavaScript source, and its
+   * members through it (scr_data_view_proto.c): the getter/setter family's
+   * prototype object. */
+  dataViewPrototypeValue: rule({ fns: ["dyn.dataViewPrototype"] }),
   /** The dynamic global object's answer for the Node globals the native
    * runtime does not implement (scr_global_host_absent.c, plus the
    * SCR_GLOBAL_HOST_ABSENT build of scr_node_builtin.c): a computed read of
@@ -1187,6 +1194,9 @@ const RUNTIME_FEATURE_RULES = {
   /** Number.prototype and Boolean.prototype as values
    * (scr_dyn_builtin_prototype.c). */
   builtinPrototypeValue: rule({ fns: ["dyn.builtinPrototype"] }),
+  /** A builtin prototype method as a function value (String's trim family,
+   * RegExp's exec/test/toString; scr_dyn_builtin_methods.c). */
+  builtinMethodValue: rule({ fns: ["dyn.builtinMethodValue"] }),
   dynInvoke: rule({
     initial: (mod) => mod.workers === true,
     scan: computedBufferMemberScan,
@@ -1494,12 +1504,15 @@ const RUNTIME_FEATURE_RULES = {
   streamWriteErrors: rule({ fns: ["writable.writeEcb"] }),
   /** The program reaches the process output streams' write slot — the
    * write method as a value (process.stdioSlot), its replacement, a patched
-   * program's typed writes, or a run-time-typed chunk
-   * (process.stdioWriteDyn): the SCR_STDIO_WRITE_SLOT build of the events
-   * unit carries the shared write body, the dynamic-chunk entry point and
-   * Node's anonymous write function. Every other program links the default
-   * object, byte for byte. */
-  stdioWriteSlot: rule({ fns: ["process.stdioSlot", "process.stdioWriteDyn"] }),
+   * program's typed writes, a run-time-typed chunk
+   * (process.stdioWriteDyn), or the untyped one-string write
+   * (process.stdioWriteStr): the SCR_STDIO_WRITE_SLOT build of the events
+   * unit carries the shared write body, the dynamic-chunk entry point,
+   * the string entry point and Node's anonymous write function. Every
+   * other program links the default object unchanged. */
+  stdioWriteSlot: rule({
+    fns: ["process.stdioSlot", "process.stdioWriteDyn", "process.stdioWriteStr"],
+  }),
   stream: rule({
     initial: (mod) => (mod.classes ?? []).some((c) => RUNTIME_STREAM_CLASSES.has(c.name)),
     fns: [...STREAM_LIB_FNS, "dyn.builtinStreamClass"],
@@ -1660,10 +1673,12 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynBuiltinClass: false,
     dynBuiltinStream: false,
     stdlibPrototypeValue: false,
+    dataViewPrototypeValue: false,
     hostAbsentGlobals: false,
     dynInvoke: false,
     arrayLikeDispatch: false,
     builtinPrototypeValue: false,
+    builtinMethodValue: false,
     dynTier: false,
     ecdh: false,
     x509: false,

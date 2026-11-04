@@ -904,6 +904,7 @@ static void scr_win_run_sync(ScrStr *cmd, ScrArr *args, const ScrStr *input,
   if (in_mode == 2 || out_mode == 2 || err_mode == 2) {
     /* Inherited stdio: flush the parent's buffers first so earlier logs
      * precede the child's writes (Node's practical ordering). */
+    scr_stdout_settle();
     fflush(stdout);
     fflush(stderr);
   }
@@ -1289,6 +1290,7 @@ static ScrStr *scr_exec_run(ScrStr *cmd, ScrArr *args, bool shell,
    * echoes to the parent's stderr AFTER completion, success, failure or
    * timeout. */
   if (stderr_mode == 0 && w.err.len > 0) {
+    scr_stdout_settle();
     fflush(stdout);
     fwrite(w.err.data, 1, w.err.len, stderr);
   }
@@ -2290,6 +2292,7 @@ static void scr_child_writer_fire_error(ScrChildWriter *w) {
 static void scr_child_writer_fire_error_in(ScrChildWriter *w) {
   w->error_pending = false;
   if (w->n_write_err == 0) {
+    scr_stdout_settle();
     fflush(stdout);
     fprintf(stderr, "Unhandled 'error' event: Error: %s\n", w->err_msg->data);
     _Exit(1);
@@ -2379,6 +2382,7 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
                          double err_fd, bool detached, bool shell, bool has_env,
                          ScrArr *env_pairs, ScrStr *cwd) {
   if ((int)out_mode == 1 || (int)err_mode == 1 || (int)out_mode == 2 || (int)err_mode == 2) {
+    scr_stdout_settle();
     fflush(stdout);
     fflush(stderr);
   }
@@ -2871,6 +2875,7 @@ static void scr_child_settle_in(ScrChild *c) {
   }
   if (c->state == SCR_CHILD_SPAWN_FAILED) {
     if (c->n_err == 0 && c->exec_cb == NULL) {
+      scr_stdout_settle();
       fflush(stdout);
       fprintf(stderr, "Unhandled 'error' event: Error: %s\n", c->err_msg->data);
       _Exit(1);
@@ -3374,6 +3379,7 @@ static ScrSpawnRes *scr_spawn_sync_core(ScrStr *cmd, ScrArr *args, double timeou
   if (out_mode == 2 || err_mode == 2) {
     /* Inherited output fds: flush the parent's buffers first so earlier
      * logs precede the child's writes (Node's practical ordering). */
+    scr_stdout_settle();
     fflush(stdout);
     fflush(stderr);
   }
@@ -3712,6 +3718,7 @@ ScrStr *scr_exec_sync_core(ScrStr *cmd, ScrArr *args, const ScrExecOpts *o) {
   if (o->stdout_mode == 2 || o->stderr_mode == 3) {
     /* Inherited output fds: flush the parent's buffers first so earlier
      * logs precede the child's writes (Node's practical ordering). */
+    scr_stdout_settle();
     fflush(stdout);
     fflush(stderr);
   }
@@ -3878,6 +3885,7 @@ ScrStr *scr_exec_sync_core(ScrStr *cmd, ScrArr *args, const ScrExecOpts *o) {
    * echoes to the parent's stderr AFTER completion, success, failure or
    * timeout. */
   if (o->stderr_mode == 0 && err.len > 0) {
+    scr_stdout_settle();
     fflush(stdout);
     fwrite(err.data, 1, err.len, stderr);
   }
@@ -5295,6 +5303,7 @@ static void scr_child_writer_fire_error(ScrChildWriter *w) {
 static void scr_child_writer_fire_error_in(ScrChildWriter *w) {
   w->error_pending = false;
   if (w->n_write_err == 0) {
+    scr_stdout_settle();
     fflush(stdout);
     fprintf(stderr, "Unhandled 'error' event: Error: %s\n", w->err_msg->data);
     _Exit(1);
@@ -5412,6 +5421,7 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
      * output first so everything logged BEFORE the spawn lands before
      * anything the child writes to the same destinations (Node's
      * practical ordering). */
+    scr_stdout_settle();
     fflush(stdout);
     fflush(stderr);
   }
@@ -6003,6 +6013,7 @@ static void scr_child_settle_in(ScrChild *c) {
        * _Exit skips atexit handlers (the RC audit above all) on purpose —
        * the loop dies mid-turn with frames and registries still live,
        * exactly like process.exit(). */
+      scr_stdout_settle();
       fflush(stdout);
       fprintf(stderr, "Unhandled 'error' event: Error: %s\n", c->err_msg->data);
       _Exit(1);
@@ -6128,6 +6139,7 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
   if (out_mode == 2 || err_mode == 2) {
     /* Inherited output fds: flush the parent's buffers first so earlier
      * logs precede the child's writes (Node's practical ordering). */
+    scr_stdout_settle();
     fflush(stdout);
     fflush(stderr);
   }

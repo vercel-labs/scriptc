@@ -235,6 +235,9 @@ async function build(file: string, optimization: "release" | "dev") {
     .update("llvm-" + optimization)
     .update(cpuDispatch ? "cpu-dispatch" : "")
     .update(targetCpu === undefined ? "" : `target-cpu-${targetCpu}`)
+    // Computed-access sites emit different code by default; an opt-out
+    // restores the key path, so the two builds key separately.
+    .update("index-arms:" + (process.env["SCRIPTC_DYN_INDEX_FASTPATH"] ?? "1"))
     .digest("hex")
     .slice(0, 16);
   const outDir = join(cacheDir, key);

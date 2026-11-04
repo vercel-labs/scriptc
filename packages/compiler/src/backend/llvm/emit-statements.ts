@@ -97,9 +97,11 @@ import {
 } from "./string-construction.js";
 import { emitStringInputs } from "./string-lifetimes.js";
 import { LOOPS } from "./loop-state.js";
+import { emitLaneLoop, laneLoopPlan } from "./lanes.js";
 import { loopUnrollAttachment, periodicGuardPeriod } from "./periodic-guards.js";
 import { containsLoop, loopAccessesTypedArrays } from "../loop-polls.js";
 import { emitConstantChoice, matchConstantChoice } from "./constant-choices.js";
+import { emitFusedRecordSet } from "./record-entry-fusion.js";
 
 /** A callback loop version copies the loop; keep the copies small. */
 const MAX_CALLBACK_VERSION_COST = 400;
@@ -311,10 +313,13 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       // Whole-value uses still retain their own copies, so returning or
       // storing the alias preserves the ordinary heap representation.
       // Boxed captures, reassigned sources and projections need ownership.
+      // A tree value has one owner and no copy to lend: the alias would be
+      // a second pointer the source's scope exit still destroys.
       if (
         b.kind === "local" &&
         b.local &&
         isRefCounted(b.type) &&
+        !emitter.isTreeValue(b.type) &&
         emitter.stableCallBindings.has(s.localId) &&
         (emitter.canBorrowCallArgument(s.init) || emitter.unwrittenAlias(s))
       ) {
@@ -773,6 +778,36 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       // whose writes validate and can throw, stay refused), undeclared
       // keys insert/replace in the overflow map. Evaluation order: obj,
       // key, value; the write OWNS the value (+1 moves in).
+      const paired = emitter.recordEntryFusion?.writes.get(s);
+      const pairedIv = paired === undefined ? undefined : emitter.recordShape(s.shapeId).indexValue;
+      if (paired !== undefined && (pairedIv?.kind === "f64" || pairedIv?.kind === "bool")) {
+        // Paired with a fused read of the same object and key binding
+        // (record-entry-fusion.ts): the read already evaluated both and
+        // parked the overflow entry, so the write evaluates only the value
+        // and overwrites the entry's value slot in place. A miss takes the
+        // ordinary insert with the parked map and key.
+        const v = emitter.emitExpr(s.value);
+        const vAcc = pairedIv.kind === "f64" ? "f64" : "bool";
+        if (
+          emitFusedRecordSet(emitter, s, { name: v.name, access: vAcc }, (map, key) =>
+            emitter.mapSet(map, "str", vAcc, key, v.name),
+          )
+        )
+          break;
+        // The paired read took a non-fused lowering: finish with the
+        // ordinary set. Both bindings are plain variables, so reading them
+        // after the value is unobservable.
+        const objFallback = emitter.emitExpr(s.obj);
+        const keyFallback = emitter.emitExpr(s.key);
+        emitter.mapSet(
+          emitter.recordOvfPtr(objFallback.name, s.shapeId),
+          "str",
+          vAcc,
+          keyFallback.name,
+          v.name,
+        );
+        break;
+      }
       const obj = emitter.emitExpr(s.obj);
       const key = emitter.emitExpr(s.key);
       const v = emitter.emitExpr(s.value);
@@ -1525,6 +1560,23 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           B.br(lc, backEdge);
         }
       };
+      // A planned loop runs whole vectors first and leaves the rest to its
+      // own copies, which start at the counter the lane loop leaves behind
+      // (lanes.ts). The plan is consulted here, before any copy is chosen:
+      // the speculative, int32 and strip-mined copies keep their values in
+      // layouts the lane body does not write.
+      const lane =
+        integerLoop !== null && integerSlot !== null && !stripMined && capturedLets.length === 0
+          ? laneLoopPlan(emitter, s)
+          : null;
+      if (lane !== null)
+        emitLaneLoop(
+          emitter,
+          lane,
+          integerLoop!.limitReceiver,
+          integerSlot!,
+          B.newLabel("lane.after"),
+        );
       emitter.emitLoopCopies(s, capturedLets.length === 0, le, (exit) => {
         // Speculative copies resume iterations inside the copy they enter,
         // which must keep its polls.

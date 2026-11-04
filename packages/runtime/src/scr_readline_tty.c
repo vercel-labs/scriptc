@@ -14,7 +14,9 @@
  * - The line and the cursor count UTF-16 units, as JS strings do.
  * - Output goes to the interface's output as Node writes it: each
  *   cursorTo / moveCursor / clearScreenDown and each text is its own
- *   write. Columns are the TTY's for a TTY stdout and Infinity otherwise.
+ *   write. Columns are the output's own: the TTY's for a TTY stdout, and
+ *   the descriptor's for a stream output that is the stdio Writable of
+ *   process.stdout or process.stderr; Infinity otherwise.
  * - Lines enter the history (historySize, removeHistoryDuplicates) and
  *   'history' fires with the history array. */
 #include "scr_readline_internal.h"
@@ -309,8 +311,15 @@ static void tty_move_cursor(ScrRl *rl, double dx, double dy) {
 
 static void tty_clear_screen_down(ScrRl *rl) { tty_write_cstr(rl, "\x1b[0J", 4); }
 
-/* this.columns: the output's columns, or Infinity */
+/* this.columns: the output's columns, or Infinity. A general output that
+ * is the stdio Writable of a process stream (createInterface({ output:
+ * process.stderr })) reports that descriptor's width — Node reads the
+ * output stream's own columns — and any other stream is unbounded. */
 static double tty_columns(ScrRl *rl) {
+  if (rl->out && rl->io) {
+    double cols = rl->io->columns(rl->out);
+    if (cols > 0) return cols;
+  }
   if (rl->out_stdout && !rl->out) {
     double cols = scr_process_columns(1);
     if (cols > 0) return cols;

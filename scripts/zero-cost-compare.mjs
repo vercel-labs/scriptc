@@ -361,6 +361,7 @@ export const DYNAMIC_TIER_PREFIXES = [
   "scr_data_view_prototype",
   "scr_dyn_array_like",
   "scr_dyn_builtin_prototype",
+  "scr_dyn_builtin_method_value",
   "scr_dyn_construct",
   "scr_dyn_function_apply",
   "scr_dyn_fn_get",

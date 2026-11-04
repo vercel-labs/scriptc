@@ -194,7 +194,12 @@ import {
   createRequireResolveFenceValue,
   createRequireResolveValue,
 } from "../builtins/module-resolution.js";
-import { builtinPrototypeMethod, lowerCheckedPredicateValue } from "../lower-builtin-values.js";
+import {
+  builtinMethodValue,
+  builtinPrototypeMethod,
+  lowerCheckedPredicateValue,
+  stringTrimMethodName,
+} from "../lower-builtin-values.js";
 import { constructorStaticValue, objectFreezeValue } from "../builtin-statics.js";
 import { lowerBufferPrototypeMember, lowerBufferPrototypeObject } from "../containers/bytes.js";
 import { lowerNetAddressStaticRead } from "../builtins/net-address.js";
@@ -2284,7 +2289,17 @@ export function lowerIntrinsicProperty(
   const primitivePrototype = jsPrimitivePrototypeValue(lowerer, expr);
   if (primitivePrototype) return primitivePrototype;
   const builtinPrototype = builtinPrototypeMethod(lowerer, expr);
-  if (builtinPrototype)
+  if (builtinPrototype) {
+    // The trim family and RegExp's methods have a value of their own
+    // (scr_dyn_builtin_methods.c). The invoke unit's table answers a member
+    // read on a receiver it already knows; these values have no receiver at
+    // read time and brand-check whatever `this` they are later called with,
+    // which a receiver-keyed lookup cannot express. The interned value is
+    // shared with the `''.trim` and `/a/.exec` spellings below.
+    const trim = builtinPrototype === "String" ? stringTrimMethodName(expr.name.text) : null;
+    if (trim) return builtinMethodValue("String", trim, locOf(expr));
+    if (builtinPrototype === "RegExp")
+      return builtinMethodValue("RegExp", expr.name.text, locOf(expr));
     return {
       kind: "libCall",
       fn: "dyn.builtinMethod",
@@ -2295,6 +2310,7 @@ export function lowerIntrinsicProperty(
       type: DYN,
       loc: locOf(expr),
     };
+  }
   if (
     ts.isPropertyAccessExpression(expr.expression) &&
     lowerer.stdlibGlobalMember(expr.expression, "Array") === "prototype"
@@ -2915,8 +2931,20 @@ export function lowerIntrinsicProperty(
         loc,
       };
     }
-    if (name === "test") {
-      lowerer.unsupported("SC1090", expr, "regex methods as values (call 'test' directly)");
+    // A regex method read as a value: the same interned function
+    // `RegExp.prototype.exec` is (scr_dyn_builtin_methods.c), which
+    // brand-checks its receiver. A compiled regex carries no own member of
+    // any of these names, so the read answers the prototype's method exactly
+    // as Node does. A direct call keeps its intrinsic lowering: it is
+    // statically typed, and the value form would make it a dynamic call.
+    if ((name === "exec" || name === "test" || name === "toString") && !isCalleeOf(expr)) {
+      // The read still evaluates the receiver first: a call that answers the
+      // regex may have side effects or throw before the member is read.
+      return afterReceiver(
+        lowerer.lowerExpr(expr.expression),
+        builtinMethodValue("RegExp", name, locOf(expr)),
+        locOf(expr),
+      );
     }
     return null;
   }
@@ -3127,16 +3155,22 @@ export function lowerIntrinsicProperty(
     // runtime's interned function that runs it on its receiver.
     if (kind === "string" && isJsSourceFile(expr.getSourceFile()) && !expr.questionDotToken) {
       const receiver = lowerer.lowerExpr(expr.expression);
-      const method: IrExpr = {
-        kind: "libCall",
-        fn: "dyn.builtinMethod",
-        args: [
-          { kind: "strLit", value: "String", type: STRING, loc: locOf(expr) },
-          { kind: "strLit", value: name, type: STRING, loc: locOf(expr.name) },
-        ],
-        type: DYN,
-        loc: locOf(expr),
-      };
+      // `''.trim` is the same interned function as String.prototype.trim, so
+      // its call/apply run the method generically (scr_dyn_builtin_methods.c
+      // rather than the invoke unit's table, which has no trim entry).
+      const trim = stringTrimMethodName(name);
+      const method: IrExpr = trim
+        ? builtinMethodValue("String", trim, locOf(expr))
+        : {
+            kind: "libCall",
+            fn: "dyn.builtinMethod",
+            args: [
+              { kind: "strLit", value: "String", type: STRING, loc: locOf(expr) },
+              { kind: "strLit", value: name, type: STRING, loc: locOf(expr.name) },
+            ],
+            type: DYN,
+            loc: locOf(expr),
+          };
       return isSafeToDiscard(receiver)
         ? method
         : {

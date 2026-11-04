@@ -362,6 +362,7 @@ const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.arrayPrototype",
   "dyn.builtinFunction",
   "dyn.builtinMethod",
+  "dyn.builtinMethodValue",
   "dyn.stdlibPrototype",
   "dyn.dataViewPrototype",
   "dyn.defineProperty",
@@ -1185,6 +1186,9 @@ const RUNTIME_FEATURE_RULES = {
   /** Number.prototype and Boolean.prototype as values
    * (scr_dyn_builtin_prototype.c). */
   builtinPrototypeValue: rule({ fns: ["dyn.builtinPrototype"] }),
+  /** A builtin prototype method as a function value (String's trim family,
+   * RegExp's exec/test/toString; scr_dyn_builtin_methods.c). */
+  builtinMethodValue: rule({ fns: ["dyn.builtinMethodValue"] }),
   dynInvoke: rule({
     initial: (mod) => mod.workers === true,
     scan: computedBufferMemberScan,
@@ -1662,6 +1666,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynInvoke: false,
     arrayLikeDispatch: false,
     builtinPrototypeValue: false,
+    builtinMethodValue: false,
     dynTier: false,
     ecdh: false,
     x509: false,

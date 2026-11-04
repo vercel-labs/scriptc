@@ -1694,6 +1694,13 @@ ScrDyn *scr_dyn_array_like_call(ScrDyn *recv, ScrStr *method, ScrDyn *args);
  * (scr_dyn_builtin_prototype.c, linked only into programs that read them
  * from a JavaScript source); `kind` is "Number" or "Boolean". +1. */
 ScrDyn *scr_dyn_builtin_prototype(const ScrStr *kind);
+/* A builtin prototype method as a function value (scr_dyn_builtin_methods.c,
+ * linked only into programs that read one from a JavaScript source).
+ * `owner` is "String" or "RegExp" and `member` its canonical spelling — the
+ * String trims ("trim", "trimStart", "trimEnd", so trimLeft/trimRight
+ * answer the same object as their standard twin) and RegExp's "exec",
+ * "test" and "toString". +1, one function per (owner, member) and thread. */
+ScrDyn *scr_dyn_builtin_method_value(const ScrStr *owner, const ScrStr *member);
 ScrDyn *scr_dyn_array_prototype(void); /* +1, installs native method adapters */
 ScrDyn *scr_dyn_array_prototype_base(void); /* +1, shared native array identity */
 /* Names the prototype object of a compiled class `name` for util.inspect

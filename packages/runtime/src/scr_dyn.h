@@ -2636,6 +2636,9 @@ ScrStr *scr_dyn_format_j(const ScrDyn *d);
  * exception stays pending and the result is NULL. */
 ScrStr *scr_util_format_j(const ScrDyn *d);
 ScrStr *scr_util_format_j_text(ScrStr *text); /* borrows text */
+/* util.format's %j over the value a toJSON hook returned, +1: the write
+ * step alone, so the hook does not run over its own result. */
+ScrStr *scr_util_format_j_value(const ScrDyn *d);
 /* Node's ERR_INVALID_ARG_TYPE listener gate over a dyn value — shared by
  * the emitter unit's checked-dynamic registrations and the handle
  * dispatchers' .on(...) paths (both render errors.js's

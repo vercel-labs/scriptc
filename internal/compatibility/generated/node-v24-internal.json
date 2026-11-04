@@ -102252,6 +102252,7 @@
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/text-codec-values/main.ts",
+          "tests/corpus/util-format-json-error.ts",
           "tests/fixtures/node-types/deep-equality.ts",
           "tests/fixtures/node-types/env-files.ts",
           "tests/fixtures/node-types/promisify-callback-functions.ts",
@@ -103413,7 +103414,8 @@
           "tests/corpus/2440-console-inspect-args.ts",
           "tests/corpus/5835-util-format-integer-specifiers.ts",
           "tests/corpus/7520-util-format-runtime.ts",
-          "tests/corpus/7521-util-format-runtime.cjs"
+          "tests/corpus/7521-util-format-runtime.cjs",
+          "tests/corpus/util-format-json-error.ts"
         ]
       },
       "anchorSource": "exact"
@@ -103443,7 +103445,8 @@
           "tests/corpus/2440-console-inspect-args.ts",
           "tests/corpus/5835-util-format-integer-specifiers.ts",
           "tests/corpus/7520-util-format-runtime.ts",
-          "tests/corpus/7521-util-format-runtime.cjs"
+          "tests/corpus/7521-util-format-runtime.cjs",
+          "tests/corpus/util-format-json-error.ts"
         ]
       },
       "anchorSource": "exact"

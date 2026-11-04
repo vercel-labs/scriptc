@@ -64,6 +64,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "assert.expectsErrDyn": "scr_assert_expects_err_dyn",
   "assert.throwsValidate": "scr_assert_throws_validate",
   "insp.jsonDyn": "scr_util_format_j",
+  "insp.jsonDynValue": "scr_util_format_j_value",
   "http.reqH2StreamOrThrow": "scr_http_req_h2_stream_or_throw",
   "intl.segmenterNew": "scr_intl_segmenter_new",
   "intl.segmenterRefusing": "scr_intl_segmenter_refusing",

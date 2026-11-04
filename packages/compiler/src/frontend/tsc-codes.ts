@@ -178,6 +178,18 @@ const anyOrWrapperOperand = (_node: ts.Node, d: ts.Diagnostic): boolean => {
   return text.includes("'any'") || /'(Number|String|Boolean)'/.test(text);
 };
 
+/** TS2469 names the operator. `'' + sym` and `sym += ''` perform ToString,
+ * which the lowering sends through the runtime conversion that throws Node's
+ * TypeError; `~sym` and `-sym` keep the triage's refusal because their
+ * lowered form would raise a different message. */
+const symbolStringOperator = (_node: ts.Node, d: ts.Diagnostic): boolean => {
+  const text = ts.flattenDiagnosticMessageText(d, "\n");
+  return (
+    (text.includes("The '+' operator") || text.includes("The '+=' operator")) &&
+    text.includes("'symbol'")
+  );
+};
+
 /** An index write on a String wrapper (`new String("ab")[5] = "q"`): Node
  * adds the property past the end and ignores writes to the read-only index
  * properties (sloppy) or throws (strict), as the object does. A write
@@ -199,6 +211,29 @@ const deprecatedBufferCall = (_node: ts.Node, d: ts.Diagnostic): boolean => {
     text.includes("'typeof WriteStream'") ||
     text.includes("'IteratorConstructor'")
   );
+};
+
+/** TS17013 inside a method or accessor body (including an arrow nested in
+ * one): `new.target` is legal there and always undefined, because a method is
+ * not constructable. The path must enter the member through its body or a
+ * parameter, which run in the method's function scope; a computed member name
+ * is evaluated outside it. Global code and class field initializers keep the
+ * early SyntaxError the specification makes them. */
+const newTargetInMethod = (node: ts.Node, _d: ts.Diagnostic): boolean => {
+  let child: ts.Node = node;
+  for (let p: ts.Node | undefined = node.parent; p !== undefined; child = p, p = p.parent) {
+    if (ts.isArrowFunction(p)) continue;
+    if (
+      ts.isMethodDeclaration(p) ||
+      ts.isGetAccessorDeclaration(p) ||
+      ts.isSetAccessorDeclaration(p)
+    )
+      return (
+        p.body === child || p.parameters?.nodes.includes(child as ts.ParameterDeclaration) === true
+      );
+    if (ts.isFunctionLike(p) || ts.isSourceFile(p)) return false;
+  }
+  return false;
 };
 
 /* ---- family reasons ---- */
@@ -931,6 +966,20 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
       ["tests/corpus/js-iterator-subclass.js"],
     ),
   ],
+  // A symbol operand of `+` or `+=` (TS2469): the operator's ToString throws
+  // Node's TypeError, which the lowered conversion raises at the operator
+  // (binary.ts and updates.ts lower it to the runtime's string and number
+  // conversions). Every other operator keeps the triage's refusal.
+  [
+    2469,
+    at(
+      symbolStringOperator,
+      THROW(
+        "Node throws its TypeError from the ToString the operator performs, and the lowered conversion raises it at the operator",
+        ["tests/corpus/9005-symbol-string-concat.js"],
+      ),
+    ),
+  ],
   // A write through a String wrapper's index (TS2542; every other readonly
   // index signature keeps the triage's refusal).
   [
@@ -955,6 +1004,76 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
           "tests/corpus/7529-buffer-constructor.cjs",
           "tests/corpus/8272-fs-stream-call-without-new.cjs",
         ],
+      ),
+    ),
+  ],
+  // ---- The checker's OPINIONS that need no lowering (TS2629 and friends) ----
+  // Each row below is a `checker` row: at the admitted site the checker's
+  // type is still a truthful bound on every runtime value, so the ordinary
+  // lowering already gives Node's answer. A JavaScript source only takes them;
+  // a checked project asked tsc for its opinion, so every row here is a
+  // `checkedJs: "enforce"` row (D3).
+  //
+  // 2408, a `return` in a set accessor: the value is discarded by [[Set]],
+  // exactly as a `return` in any other call is.
+  [
+    2408,
+    inCheckedJs(
+      CHECKER(
+        "a setter's `return` value is discarded by [[Set]], as Node discards every setter call's result",
+        ["tests/corpus/8944-js-setter-return-values.js"],
+      ),
+    ),
+  ],
+  // 17013, `new.target` in a method or accessor body: legal JavaScript, and
+  // always undefined because a method is not constructable (the lowering's
+  // method-body path answers undefined; every other site keeps the early
+  // SyntaxError Node raises).
+  [
+    17013,
+    inCheckedJs(
+      at(
+        newTargetInMethod,
+        CHECKER(
+          "`new.target` in a method body is undefined: a method is not constructable, so the meta-property never denotes a constructor there",
+          ["tests/corpus/8945-js-new-target-methods.js"],
+        ),
+      ),
+    ),
+  ],
+  // 4104, assigning a readonly array type to a mutable one: `readonly` is an
+  // annotation, and whether the write succeeds depends on the array's frozen
+  // state at run time.
+  [
+    4104,
+    inCheckedJs(
+      CHECKER(
+        "`readonly` is an annotation Node never sees: the assignment and the later write behave as the array's runtime state decides",
+        ["tests/corpus/8949-js-readonly-write-targets.js"],
+      ),
+    ),
+  ],
+  // 2839, a condition comparing two object references the checker proves
+  // distinct (`{} === {}`): the comparison lowering performs Node's
+  // reference test, which is the one the checker described.
+  [
+    2839,
+    inCheckedJs(
+      CHECKER(
+        "two distinct object references never pass a strict-equality test, and the comparison lowering performs that same reference test",
+        ["tests/corpus/8951-js-reference-condition-comparisons.js"],
+      ),
+    ),
+  ],
+  // 2845, a condition comparing a bigint with a non-finite number or a
+  // nullish value (`0n === Infinity`): strict equality compares the types
+  // first, and the comparison lowering applies that same test.
+  [
+    2845,
+    inCheckedJs(
+      CHECKER(
+        "a bigint never equals a non-finite number or a nullish value: the comparison lowering applies Node's type test",
+        ["tests/corpus/8952-js-bigint-non-finite-comparisons.js"],
       ),
     ),
   ],
@@ -1201,7 +1320,6 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
       "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
     ),
   ],
-  [2408, KEEP(KEEP_GRAMMAR)],
   [
     2409,
     REWRITE(
@@ -1245,11 +1363,14 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
       "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
     ),
   ],
+  // The `+` and `+=` forms have left this decision: the JS_OPINIONS row above
+  // admits them where the lowering reproduces Node's TypeError. This row
+  // stays for the operators whose lowered form would throw another message.
   [
     2469,
     REWRITE(
-      "the '+' operator on a symbol operand",
-      "Node throws a TypeError ('Cannot convert a Symbol value to a string') at the operator",
+      "another operator on a symbol operand (`~sym`, `-sym`)",
+      "Node throws a TypeError ('Cannot convert a Symbol value to a number') at the operator, and the lowering would raise a differently worded one",
     ),
   ],
   [2481, KEEP(KEEP_GRAMMAR)],
@@ -1420,20 +1541,6 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
   ],
   [2815, KEEP(KEEP_GRAMMAR)],
   [
-    2839,
-    REFUSE(
-      "a comparison the checker proves constant (two object references)",
-      "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
-    ),
-  ],
-  [
-    2845,
-    REFUSE(
-      "a comparison the checker proves constant (a bigint against a non-finite number)",
-      "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
-    ),
-  ],
-  [
     2850,
     REWRITE(
       "a 'using' initializer that is not disposable",
@@ -1455,13 +1562,6 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
       "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
     ),
   ],
-  [
-    4104,
-    REFUSE(
-      "assigning to a readonly array type",
-      "readonly is an annotation: whether the write succeeds or throws depends on the array's frozen state at run time, which the lowering does not model",
-    ),
-  ],
   [5076, KEEP(KEEP_GRAMMAR)],
   [
     7036,
@@ -1473,7 +1573,9 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
   [17005, KEEP(KEEP_EARLY_ERROR)],
   [17009, KEEP(KEEP_EARLY_ERROR)],
   [17011, KEEP(KEEP_EARLY_ERROR)],
-  [17013, KEEP(KEEP_EARLY_ERROR)],
+  // 17013 has LEFT this table: `new.target` in a method or accessor body is a
+  // JS_OPINIONS row above, and every other site keeps the diagnostic
+  // unchanged, which is what KEEP did.
   [18013, KEEP(KEEP_EARLY_ERROR)],
   [18014, KEEP(KEEP_EARLY_ERROR)],
   [18016, KEEP(KEEP_GRAMMAR)],

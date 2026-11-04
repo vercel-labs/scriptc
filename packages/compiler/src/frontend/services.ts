@@ -24,6 +24,7 @@ import { builtinPackageAliasFor } from "./package-shims.js";
 import * as syntax from "./npm-static-declaration-syntax.js";
 import { normalizeCjsExportsVar } from "./npm-static-cjs-exports-var.js";
 import type { SourceFile } from "./ts7/ast-types.js";
+import type { Ladder } from "./npm-static-ladder.js";
 
 /** Whether the source can contain `word` as a keyword or identifier: it
  * holds the word itself or a Unicode escape that might spell it. */
@@ -76,6 +77,13 @@ export class FrontendServices {
   /** Parses Flow modules (flow/index.ts); hosts that can load a Flow parser
    * supply it. */
   parseFlow: FlowParser | undefined = undefined;
+  /** The npm-static ladder's rung answers for the loads this object serves.
+   * One build loads its frontend more than once (the island decision, each
+   * island round), and every reload re-walks rungs the previous one reached.
+   * The answers belong to the object that owns those loads, so a compiler
+   * cache needs no weak key to be released with the build (see
+   * `npm-static-ladder.ts`). */
+  readonly npmStaticLadder: Ladder = new Map();
 
   constructor(
     private readonly createApi: Ts7ApiFactory,

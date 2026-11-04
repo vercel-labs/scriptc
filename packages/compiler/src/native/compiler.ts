@@ -52,6 +52,7 @@ import { analyzeWithFrontend } from "../frontend/analysis.js";
 import { analyzeWithVerdictCache } from "../coverage/verdict-cache.js";
 import type { FrontendFactory } from "../frontend/pipeline.js";
 import { runNativeFrontend } from "../frontend/pipeline-native.js";
+import type { FrontendInputSnapshot } from "../frontend/input-tracker.js";
 import { loadLibraryProfile } from "../library/library-profile.js";
 import {
   libraryLocalizeSymbols,
@@ -75,7 +76,12 @@ import {
   type NativeProfileOptions,
 } from "../backend/native-profile.js";
 import { splitLlvmLibraryProgram } from "../backend/llvm/split.js";
-import { prepareNativeExecutable, prepareNativeLibrary } from "./prepare.js";
+import {
+  nativeFrontendExclusions,
+  prepareNativeExecutable,
+  prepareNativeLibrary,
+} from "./prepare.js";
+import { readUnchangedBuild, recordUnchangedBuild, unchangedBuildKey } from "./unchanged.js";
 import { buildSanitizedRuntime, sanitizerDriver, sanitizerFlags } from "./sanitizer.js";
 import { inputsWithoutLld, lldLinkerArgs } from "../backend/lld.js";
 import {
@@ -467,6 +473,8 @@ export class NativeCompiler {
     const outputKind = options.outputKind ?? "exe";
     const optimization = options.optimization ?? "release";
     entry = resolve(entry);
+    const stem = basename(entry).replace(/\.(ts|mts|cts|js|mjs|cjs)$/, "");
+    const llvmPath = join(options.outDir, `${stem}.ll`);
     let sourceTexts = new Map<string, string>();
     let stage: string | null = null;
     try {
@@ -500,11 +508,51 @@ export class NativeCompiler {
       if (staticRefusal !== null) throw new NativeCodegenError("SC3002", staticRefusal);
       const profile = nativeProfile(options);
       let ffi: FfiProfile | null = null;
+      let ffiBytes: string | null = null;
       if (options.ffiProfilePath !== undefined) {
         const loaded = loadFfiProfile(resolve(options.ffiProfilePath));
         if (!loaded.ok) return { ok: false, diagnostics: loaded.diagnostics, sourceTexts };
         ffi = loaded.profile;
+        ffiBytes = contentDigest(loaded.profileBytes);
       }
+      const exclusions = nativeFrontendExclusions(entry, options);
+      // An unchanged build keeps what the last build of the same inputs left
+      // in place (native/unchanged.ts), before the frontend reads a source.
+      const unchangedKey =
+        outputKind === "exe"
+          ? unchangedBuildKey({
+              entry,
+              options,
+              ffi,
+              ffiBytes,
+              toolchain,
+              output,
+              translationUnitPath: llvmPath,
+            })
+          : null;
+      const unchanged =
+        unchangedKey === null ? null : readUnchangedBuild(this.cache, unchangedKey, exclusions);
+      if (unchanged !== null) {
+        timing("unchanged-build-hit");
+        return {
+          ok: true,
+          artifact: {
+            kind: "exe",
+            path: output,
+            translationUnitPath: llvmPath,
+            backend: "llvm",
+            ...(unchanged.profileMatch === undefined
+              ? {}
+              : { profileMatch: unchanged.profileMatch }),
+          },
+          binaryPath: output,
+          llvmPath,
+          backend: "llvm",
+          ...(unchanged.ir === null ? {} : { irPath: join(options.outDir, `${stem}.ir.json`) }),
+        };
+      }
+      // The probes of the lowered frontend, for the record of this build.
+      let probes: FrontendInputSnapshot | null = null;
       const prepared = prepareNativeExecutable(
         entry,
         options,
@@ -513,6 +561,9 @@ export class NativeCompiler {
         this.frontend,
         this.cache,
         timing,
+        (inputs) => {
+          probes = inputs;
+        },
       );
       if (!prepared.ok) return prepared;
       sourceTexts = new Map(prepared.sources);
@@ -523,8 +574,6 @@ export class NativeCompiler {
       mkdirSync(dirname(output), { recursive: true });
       stage = mkdtempSync(join(dirname(output), ".scriptc-native-"));
       const stagedOutput = join(stage, basename(output));
-      const stem = basename(entry).replace(/\.(ts|mts|cts|js|mjs|cjs)$/, "");
-      const llvmPath = join(options.outDir, `${stem}.ll`);
       if (outputKind === "ir") {
         writeTextPartsSync(stagedOutput, prepared.ir!);
         renameSync(stagedOutput, output);
@@ -768,6 +817,38 @@ export class NativeCompiler {
       if (features.intl === true) installNativeRuntimeData(selectPack(), output);
       if (target.platform === "darwin" && (optimization !== "dev" || options.strip))
         rmSync(output + ".dSYM", { recursive: true, force: true });
+      // A build that found divergence warnings lowers again (their sources
+      // are not part of the record), so it records nothing.
+      if (unchangedKey !== null && probes !== null && sink.warnings.length === 0) {
+        // The pack's artifacts are this executable's link inputs and run-time
+        // data; a pack edited in place changes them, and only their
+        // identities tell.
+        const pack = selectPack();
+        const beside = [
+          ...(features.intl === true
+            ? (pack.selected.data ?? []).map((artifact) =>
+                join(dirname(output), basename(artifact.path)),
+              )
+            : []),
+          // Darwin keeps a dev build's debug information beside the executable.
+          ...(target.platform === "darwin" && optimization === "dev" && options.strip !== true
+            ? [output + ".dSYM"]
+            : []),
+        ];
+        recordUnchangedBuild(this.cache, unchangedKey, exclusions, {
+          probes,
+          output,
+          translationUnitPath: llvmPath,
+          irPath: irPath ?? null,
+          beside,
+          packInputs: [
+            ...pack.selected.runtime,
+            ...pack.selected.archives,
+            ...(features.intl === true ? (pack.selected.data ?? []) : []),
+          ].map((artifact) => join(pack.root, artifact.path)),
+          ...(profileMatch === undefined ? {} : { profileMatch }),
+        });
+      }
       return {
         ok: true,
         artifact: {

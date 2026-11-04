@@ -1158,16 +1158,12 @@ export function emitContainerExpr(
         const acc = host.int32Allocations.has(e) ? "i32" : elemAccess(elem);
         const values = constantElementData(e, acc);
         if (values !== null) {
-          const { data, header } = host.staticArrayData(
-            e,
-            values,
-            acc === "i32" ? "i32" : "double",
-          );
-          host.declare(`declare ptr @scr_arr_static(ptr, ptr, ${host.sizeType}, i32)`);
-          B.line(
-            `${arr} = call ptr @scr_arr_static(ptr ${header}, ptr ${data}, ${host.sizeType} ${values.length}, i32 ${acc === "i32" ? SCR_ELEM_I32 : 0})`,
-          );
-          return host.own({ name: arr, type: e.type });
+          // The header is written in the image with the rest of the table
+          // (emit-module.ts): initialization stores nothing, so threads that
+          // share the image never race on it. The array is immortal
+          // (`rc == SIZE_MAX`), so releasing the value is a no-op.
+          const { header } = host.staticArrayData(e, values, acc === "i32" ? "i32" : "double");
+          return host.own({ name: header, type: e.type });
         }
       }
       // With spreads, storage starts at the plain elements before the first

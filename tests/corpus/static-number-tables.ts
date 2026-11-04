@@ -1,7 +1,9 @@
 // Module-level numeric tables large enough to keep their elements in the
-// program image (ir/constant-tables.ts, scr_arr_static): the array neither
-// allocates nor copies, and reads must see the same values, holes and edge
-// cases as an ordinary literal array.
+// program image (ir/constant-tables.ts): the array neither allocates nor
+// copies, and reads must see the same values, holes and edge cases as an
+// ordinary literal array. The table and its header are written entirely at
+// emission time, including NaN, the infinities, negative zero and the
+// smallest double.
 
 const widths = [
   3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5, 8, 9, 7, 9, 3, 2, 3, 8, 4, 6, 2, 6, 4, 3, 3, 8, 3, 2, 7, 9, 5,

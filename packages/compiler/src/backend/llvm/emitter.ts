@@ -1581,12 +1581,13 @@ export class LlEmitter {
   readonly mapOpsConsts = new Map<string, string>();
   /** Element data of the numeric array literals that become static tables
    * (arrayLit, expr-primitives.ts): "<i32|double>:<literal location>" → the
-   * private constant's contents and symbol. The array works from that data
-   * in place, so each entry also places the header in static storage
-   * (`<sym>_h`). */
+   * private constant's symbol, element type and the elements as their
+   * rendered literals. The array works from that data in place, so each
+   * entry also places the header in static storage (`<sym>_h`), initialized
+   * with the same table. */
   readonly arrayConstData = new Map<
     string,
-    { sym: string; type: "i32" | "double"; values: readonly number[] }
+    { sym: string; type: "i32" | "double"; values: readonly string[] }
   >();
   /** Method-id slots of checked-dynamic method calls
    * (scr_dyn_invoke_prepared_id): method name → symbol of an i32 the
@@ -3778,7 +3779,12 @@ export class LlEmitter {
    * (ir/constant-tables.ts), which the array itself holds: the emitter also
    * places the header, `<sym>_h`, in static storage. Each table gets its own
    * pair, so two tables with equal elements stay distinct arrays —
-   * `@`-refs, first-use order. */
+   * `@`-refs, first-use order.
+   *
+   * The elements are rendered to their literals here, not in the module
+   * writer: a chunk's result crosses a JSON boundary (emit-module.ts), and
+   * JSON turns NaN and the infinities into null and negative zero into zero.
+   * `f64Lit` is the exact bit pattern, so every element survives it. */
   staticArrayData(
     at: IrExpr,
     values: readonly number[],
@@ -3787,7 +3793,11 @@ export class LlEmitter {
     const key = `${type}:${at.loc?.file}:${at.loc?.start}:${at.loc?.end}`;
     let c = this.arrayConstData.get(key);
     if (!c) {
-      c = { sym: this.contentSymbol("sc_arr_const_", key), type, values: [...values] };
+      c = {
+        sym: this.contentSymbol("sc_arr_const_", key),
+        type,
+        values: values.map((v) => (type === "i32" ? String(v) : f64Lit(v))),
+      };
       this.arrayConstData.set(key, c);
     }
     this.journal?.entry("arrayConst", key, c);
@@ -6410,7 +6420,7 @@ export class LlEmitter {
         this.addContentEntry(
           this.arrayConstData,
           key,
-          value as { sym: string; type: "i32" | "double"; values: readonly number[] },
+          value as { sym: string; type: "i32" | "double"; values: readonly string[] },
           "sc_arr_const_",
           names,
         );

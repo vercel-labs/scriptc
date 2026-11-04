@@ -1260,6 +1260,7 @@ static void scr_timer_warn_tick(ScrClosure *self) {
     snprintf(type, sizeof type, "%.*s", (int)name->len, name->data);
     scr_warning_emit_hook(type, NULL, message);
   } else {
+    scr_stdout_settle();
     fflush(stdout);
     fprintf(stderr, "(node:%ld) %.*s: %.*s\n", (long)scr_process_pid(), (int)name->len, name->data,
             (int)message->len, message->data);
@@ -5949,6 +5950,14 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
 #if defined(SCR_MUSL) && !defined(SCR_LIB)
     if (due > now) scr_musl_malloc_idle();
 #endif
+    /* The loop is about to wait, whichever arm below takes the wait: a
+     * build that buffers stdout (--stdout-buffering) publishes what the
+     * program has written so a reader waiting on it — an interactive
+     * consumer, a test harness — is not left looking at an empty pipe until
+     * the next wakeup. Every wait arm is covered, including the worker
+     * pool's, the child watch's, and the plain timer sleep of a loop with
+     * nothing else pending. */
+    scr_stdout_settle();
     bool evw = scr_events_watching_fn != NULL && scr_events_watching_fn();
 #ifdef SCR_WORKERS
     if (workers && scr_workers_wait_fn && !kids && !evw && !net_io && !dgram && !watch && !ffi && !renames && !crypto) {
@@ -6077,11 +6086,6 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       }
       double wait = due > now ? due - now : 0;
       if (wait > 1e9) wait = 1e9; /* poll takes int ms */
-      /* The loop is about to sleep: a build that buffers stdout
-       * (--stdout-buffering) publishes what the program has written so a
-       * reader waiting on it — an interactive consumer, a test harness —
-       * is not left looking at an empty pipe until the next wakeup. */
-      scr_stdout_settle();
       (void)poll(fds, (nfds_t)nfds, (int)(wait + 0.999));
       /* Consume queued child-exit events NOW (zero-timeout drain) — an
        * unconsumed event keeps the kqueue fd readable and would turn the
@@ -6348,6 +6352,7 @@ bool scr_report_unhandled_rejections(void) {
           continue;
         }
 #endif
+        scr_stdout_settle();
         fflush(stdout);
         fputs("Unhandled promise rejection: ", stderr);
         switch (p->payload_kind) {

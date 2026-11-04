@@ -9,8 +9,8 @@
 
 /* Build-time stdout policy (`--stdout-buffering`): the program object defines
  * scr_stdout_buffering = 1, overriding the runtime's weak 0. When it is set
- * and fd 1 is not a terminal, JavaScript-visible stdout bytes stay in the C
- * stdout buffer until the buffer fills or the runtime settles them at an
+ * and fd 1 is not a terminal, JavaScript-visible stdout bytes stay in the
+ * runtime's buffer until the buffer fills or the runtime settles them at an
  * observable boundary — a stderr write, the event loop's sleep, a blocking
  * stdin read, process.kill, process.exit, an uncaught exception, or exit. */
 extern const unsigned char scr_stdout_buffering;

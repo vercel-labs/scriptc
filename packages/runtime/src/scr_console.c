@@ -34,8 +34,8 @@
 
 /* Build-time stdout policy (`--stdout-buffering`). The program object defines
  * scr_stdout_buffering = 1, overriding this weak default; the runtime then
- * keeps JavaScript-visible stdout bytes in the C stdout buffer when fd 1 is
- * not a terminal, and settles them where the runtime settles output (see
+ * keeps JavaScript-visible stdout bytes in its own buffer when fd 1 is not a
+ * terminal, and settles them where the runtime settles output (see
  * scr_stdout_settle). Off, every chunk is submitted before the call
  * returns. */
 __attribute__((weak)) const unsigned char scr_stdout_buffering = 0;
@@ -84,6 +84,7 @@ static void scr_rc_audit_at_exit(void) {
   /* atexit runs this before scr_flush_at_exit, and every audit message goes
    * to stderr: settle stdout first so a --stdout-buffering build keeps the
    * program's lines ahead of the audit's on a shared fd. */
+  scr_stdout_settle();
   fflush(stdout);
   /* Fibers suspended forever at loop exhaustion (awaits nobody resolves —
    * Node exits 0 there too) still hold their stacks and owned values by
@@ -113,6 +114,7 @@ static void scr_rc_audit_at_exit(void) {
   long bytes = scr_bytes_live_count();
   if (strings != 0 || arrays != 0 || maps != 0 || boxes != 0 || closures != 0 ||
       objects != 0 || unions != 0 || dyns != 0 || bytes != 0) {
+    scr_stdout_settle();
     fflush(stdout);
     fprintf(stderr,
             "scriptc RC AUDIT FAILED: %ld heap string(s), %ld array(s), "
@@ -125,7 +127,12 @@ static void scr_rc_audit_at_exit(void) {
 }
 #endif
 
-static void scr_flush_at_exit(void) { fflush(stdout); }
+static void scr_flush_at_exit(void) {
+  /* --stdout-buffering bytes live in the runtime's buffer, not the C
+   * stream's: settle them before the stream's own exit flush. */
+  scr_stdout_settle();
+  fflush(stdout);
+}
 
 static void scr_collect_cycles_at_exit(void) {
   if (scr_exit_frees()) scr_collect_cycles();
@@ -296,6 +303,16 @@ void scr_stdin_fed_clear(void) {
 #define SCR_CONSOLE_STACK_LINE 2048
 
 #if SCR_STDIO_DIRECT
+/* --stdout-buffering keeps JavaScript-visible bytes here rather than in the C
+ * stream's buffer. fflush(3) treats everything it asked the descriptor to take
+ * as written, so a write interrupted by a handled signal — the runtime
+ * installs its handlers without SA_RESTART — or a short write to a pipe
+ * discards the remainder. The flush below submits through scr_fd_writev_all,
+ * which retries EINTR and continues a short write, so a settle point publishes
+ * the bytes it was given. */
+static char scr_stdout_buffer[1 << 16];
+static size_t scr_stdout_used = 0;
+
 /* True when the C stdout buffer holds bytes: runtime-internal output that
  * went through stdio without flushing. A direct write must submit them
  * first so stdout keeps source order and merged (2>&1) redirections keep
@@ -357,20 +374,57 @@ static inline void scr_fd_stream_unlock(FILE *stream) {
 #endif
 }
 
+/* Submit the runtime's buffered stdout bytes. The buffer is emptied before
+ * the submission, so a failure drops the remainder exactly as the direct
+ * path's submission of a chunk does. The caller holds the stdout stream
+ * lock. */
+static int scr_stdout_flush_locked(void) {
+  size_t len = scr_stdout_used;
+  if (len == 0) return 0;
+  scr_stdout_used = 0;
+  struct iovec iov = {scr_stdout_buffer, len};
+  return scr_fd_writev_all(1, &iov, 1);
+}
+
+/* Append to the runtime's stdout buffer, submitting it when it fills. The
+ * caller holds the stdout stream lock. */
+static int scr_stdout_append_locked(const void *data, size_t len) {
+  const char *bytes = data;
+  while (len > 0) {
+    if (scr_stdout_used == sizeof scr_stdout_buffer) {
+      int error = scr_stdout_flush_locked();
+      if (error) return error;
+    }
+    size_t room = sizeof scr_stdout_buffer - scr_stdout_used;
+    size_t take = len < room ? len : room;
+    memcpy(scr_stdout_buffer + scr_stdout_used, bytes, take);
+    scr_stdout_used += take;
+    bytes += take;
+    len -= take;
+  }
+  return 0;
+}
+
+/* Publish everything stdout still holds — the runtime's buffer, then any
+ * bytes the C stream kept — so the next chunk, on either stream, keeps
+ * source order. A caller holding the stderr stream lock takes the stdout
+ * lock inside, the order fflush(stdout) took before. */
+static void scr_stdout_pending_flush(void) {
+  if (scr_stdout_buffered) {
+    FILE *out = scr_fd_stream_lock(1);
+    (void)scr_stdout_flush_locked();
+    scr_fd_stream_unlock(out);
+  }
+  if (scr_stdout_pending()) fflush(stdout);
+}
+
 /* Settle buffered JavaScript-visible stdout before an observable boundary:
  * a terminal keeps the per-call policy, and builds without the option never
  * buffer. The async, process, fs and trap units call this unconditionally,
  * so a configuration that cannot buffer defines a no-op. */
 void scr_stdout_settle(void) {
   if (!scr_stdout_buffered) return;
-#ifdef SCR_WORKERS
-  /* Another runtime thread may be appending under the same stream lock. */
-  FILE *locked = scr_fd_stream_lock(1);
-  fflush(stdout);
-  scr_fd_stream_unlock(locked);
-#else
-  fflush(stdout);
-#endif
+  scr_stdout_pending_flush();
 }
 #else
 void scr_stdout_settle(void) {}
@@ -452,7 +506,7 @@ static void scr_console_write(int fd, size_t n, const ScrLogArg *args, bool glob
     char *owned;
     const char *bytes = scr_str_utf8(args[0].v.s, &owned);
     FILE *locked = scr_fd_stream_lock(fd);
-    if (scr_stdout_pending()) fflush(stdout);
+    scr_stdout_pending_flush();
     struct iovec iov[2] = {{(void *)bytes, args[0].v.s->len}, {(void *)"\n", 1}};
     (void)scr_fd_writev_all(fd, iov, 2);
     scr_fd_stream_unlock(locked);
@@ -523,17 +577,17 @@ int scr_stdio_write_raw(int fd, const void *data, size_t len) {
   if (__builtin_expect(scr_stdio_capture != NULL, 0) && scr_stdio_capture(fd == 2 ? 2 : 1, data, len)) return 0;
 #if SCR_STDIO_DIRECT
   if (scr_stdout_buffered && fd != 2) {
-    /* Append to the stream buffer; stdio submits it when it fills, and
-     * scr_stdout_settle submits the rest at an observable boundary. The
+    /* Append to the runtime's buffer; it submits the bytes when it fills,
+     * and scr_stdout_settle submits the rest at an observable boundary. The
      * stream lock keeps a worker's append from interleaving with another
      * thread's settle. */
     FILE *locked = scr_fd_stream_lock(1);
-    bool ok = len == 0 || fwrite(data, 1, len, stdout) == len;
+    int error = scr_stdout_append_locked(data, len);
     scr_fd_stream_unlock(locked);
-    return ok ? 0 : (errno ? errno : EIO);
+    return error;
   }
   FILE *locked = scr_fd_stream_lock(fd == 2 ? 2 : 1);
-  if (scr_stdout_pending()) fflush(stdout);
+  scr_stdout_pending_flush();
   struct iovec iov = {(void *)data, len};
   int result = len == 0 ? 0 : scr_fd_writev_all(fd == 2 ? 2 : 1, &iov, 1);
   scr_fd_stream_unlock(locked);

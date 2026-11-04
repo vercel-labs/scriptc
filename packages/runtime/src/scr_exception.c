@@ -704,7 +704,8 @@ void scr_exc_print_uncaught(void) {
   scr_exit_code_note(scr_uncaught_handler_failed ? 7 : 1);
   /* Settle stdout before the stderr line when both share an fd: the
    * runtime's own fragments, and — in a --stdout-buffering build — the
-   * JavaScript-visible bytes it keeps in the stream buffer. */
+   * JavaScript-visible bytes it buffers. */
+  scr_stdout_settle();
   fflush(stdout);
 #ifdef SCR_NODE_ISLANDS
   /* An error thrown by Node island code: Node's own report (the throw

@@ -7,9 +7,20 @@
  * pipe directly. The abrupt-death case additionally proves byte parity when
  * no exit hook can rescue retained output. SCRIPTC_SAN=1 builds the native
  * probes with the same ASan + refcount-audit instrumentation as the corpus. */
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  readSync,
+  rmdirSync,
+  unlinkSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { compile } from "@scriptc/compiler";
@@ -152,6 +163,127 @@ function killAfter(cmd: string, args: string[], ms: number): Promise<ClosedChild
       resolve({ stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr), code, signal });
     });
   });
+}
+
+/** Run to close, recording when each marker first became visible and whether
+ * the child was still running when the first one did. */
+function stagedVisibility(
+  cmd: string,
+  args: string[],
+  first: string,
+  second: string,
+): Promise<{ stdout: Buffer; firstMs: number; secondMs: number; aliveAtFirst: boolean }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const stdout: Buffer[] = [];
+    const started = Date.now();
+    let firstMs = -1;
+    let secondMs = -1;
+    let aliveAtFirst = false;
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error("staged stdout probe timed out"));
+    }, 10_000);
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout.push(chunk);
+      const text = Buffer.concat(stdout).toString("utf8");
+      if (firstMs < 0 && text.includes(first)) {
+        firstMs = Date.now() - started;
+        aliveAtFirst = child.exitCode === null && child.signalCode === null;
+      }
+      if (secondMs < 0 && text.includes(second)) secondMs = Date.now() - started;
+    });
+    child.stderr.on("data", () => {});
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on("close", () => {
+      clearTimeout(timer);
+      resolve({ stdout: Buffer.concat(stdout), firstMs, secondMs, aliveAtFirst });
+    });
+  });
+}
+
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Give the probe a FIFO as fd 1, so a write that starts after the FIFO is
+ * full is interrupted with nothing transferred. A pipe read by this process
+ * would have been drained into the stream's buffer before the probe's short
+ * line was flushed, and the write would find room and complete.
+ *
+ * The probe fills the FIFO, marks stderr, buffers one short line, then
+ * writes to stderr again: that publish of the line blocks on the full FIFO.
+ * The signal lands while it is blocked; afterwards every byte is drained.
+ * Returns everything that arrived. */
+async function interruptedFlush(
+  cmd: string,
+): Promise<{ stdout: Buffer; stderr: string; code: number | null }> {
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-console-io-"));
+  const fifo = join(dir, "stdout.fifo");
+  execFileSync("mkfifo", [fifo]);
+  const readFd = openSync(fifo, constants.O_RDONLY | constants.O_NONBLOCK);
+  const writeFd = openSync(fifo, constants.O_WRONLY);
+  try {
+    const child = spawn(cmd, [], { stdio: ["ignore", writeFd, "pipe"] });
+    closeSync(writeFd);
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    const closed = new Promise<number | null>((resolveClose, rejectClose) => {
+      const timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        rejectClose(new Error("interrupted-flush probe timed out"));
+      }, 20_000);
+      child.on("error", (err) => {
+        clearTimeout(timer);
+        rejectClose(err);
+      });
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        resolveClose(code);
+      });
+    });
+    const blocking = new Promise<void>((resolveBlocking, rejectBlocking) => {
+      const timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        rejectBlocking(new Error("interrupted-flush probe never reached its write"));
+      }, 10_000);
+      child.stderr.on("data", (chunk: Buffer) => {
+        stderr.push(chunk);
+        if (Buffer.concat(stderr).includes(Buffer.from("blocking\n"))) {
+          clearTimeout(timer);
+          resolveBlocking();
+        }
+      });
+    });
+    await blocking;
+    // The probe starts the flushing stderr write 100 ms after the marker; by
+    // now it is sitting in that write with the FIFO full.
+    await delay(250);
+    if (child.pid !== undefined) process.kill(child.pid, "SIGTERM");
+    await delay(200);
+    const chunk = Buffer.alloc(65536);
+    for (;;) {
+      let n: number;
+      try {
+        n = readSync(readFd, chunk, 0, chunk.length, null);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "EAGAIN") {
+          await delay(10);
+          continue;
+        }
+        throw err;
+      }
+      if (n === 0) break;
+      stdout.push(Buffer.from(chunk.subarray(0, n)));
+    }
+    const code = await closed;
+    return { stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr).toString("utf8"), code };
+  } finally {
+    closeSync(readFd);
+    unlinkSync(fifo);
+    rmdirSync(dir);
+  }
 }
 
 /** Answer the probe's prompt only after it is visible, then read its reply. */
@@ -418,4 +550,44 @@ describe(`buffered stdout (--stdout-buffering)${sanitize ? " (sanitized)" : ""}`
     expect(res.stdout.length).toBeGreaterThanOrEqual(65536);
     expect(res.stdout.length).toBeLessThan(200000);
   });
+
+  /* The loop's wait has several arms. A timer-only loop takes the plain
+   * timer sleep and a child-only loop takes the child watch; both must
+   * publish buffered stdout before they sleep, not when they wake. The
+   * markers are 400 ms apart, so an implementation that publishes only at
+   * exit delivers them in one chunk. */
+  test.skipIf(!posix)("a timer-only sleep publishes buffered stdout first", async () => {
+    const probe = await build("buffered-timer-sleep", buffered);
+    const res = await stagedVisibility(probe.binary, [], "before-sleep\n", "after-sleep\n");
+    expect(res.stdout.toString()).toBe("before-sleep\nafter-sleep\n");
+    expect(res.firstMs).toBeGreaterThanOrEqual(0);
+    expect(res.aliveAtFirst).toBe(true);
+    expect(res.secondMs - res.firstMs).toBeGreaterThan(200);
+  });
+
+  test.skipIf(!posix)("a child-only wait publishes buffered stdout first", async () => {
+    const probe = await build("buffered-child-wait", buffered);
+    const res = await stagedVisibility(probe.binary, [], "before-wait\n", "after-wait\n");
+    expect(res.stdout.toString()).toBe("before-wait\nafter-wait\n");
+    expect(res.firstMs).toBeGreaterThanOrEqual(0);
+    expect(res.aliveAtFirst).toBe(true);
+    expect(res.secondMs - res.firstMs).toBeGreaterThan(200);
+  });
+
+  /* A flush blocked in write(2) on a full pipe is interrupted by a handled
+   * signal. Every byte the program wrote must still arrive: the runtime
+   * resumes the interrupted write with the bytes it had not submitted. */
+  test.skipIf(!posix)(
+    "a handled signal interrupting a blocked flush keeps every byte",
+    async () => {
+      const probe = await build("buffered-signal-flush", buffered);
+      const res = await interruptedFlush(probe.binary);
+      expect(res.code).toBe(0);
+      expect(res.stderr).toContain("blocking\n");
+      const trailer = "interrupted=1\n";
+      expect(res.stdout.toString("utf8").endsWith(trailer)).toBe(true);
+      const body = res.stdout.subarray(0, res.stdout.length - trailer.length);
+      expect(body.toString("utf8")).toBe("a".repeat(65536) + "pending-line\n");
+    },
+  );
 });

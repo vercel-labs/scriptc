@@ -119,3 +119,15 @@ export namespace assert {
     if (!matches) throw new Test262Error(text(message, "Expected matching array contents"));
   }
 }
+
+// The island lane (decision S4) assembles `assert` in JavaScript: a native
+// function crosses the bridge as a callable, but the namespace members
+// attached to it do not (they are properties of the native function object).
+// Test262's `assert` must be callable and carry the helpers, so each helper
+// is exported on its own and the island wrapper builds the object. The
+// assertion form of compareArray takes its own name: `compareArray` is the
+// bare function above.
+export const sameValue = assert.sameValue;
+export const notSameValue = assert.notSameValue;
+export const assertThrows = assert.throws;
+export const assertCompareArray = assert.compareArray;

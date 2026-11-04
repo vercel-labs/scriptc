@@ -1157,6 +1157,40 @@ console.log("recovered");
     expect(r.stdout).toBe("TypeError true\nscalar: TypeError\nrecovered\n");
   });
 
+  test("a union spread merge's checked-dynamic object refuses a single-arm reinterpretation catchably", async () => {
+    // Where the per-arm distribution cannot pick one arm, a spread merge
+    // over union sources builds the object Node builds — the checked-
+    // dynamic copy — and the union's checked conversion validates it at
+    // every typed slot. Node keeps the merged keys through a narrower
+    // `as`; scriptc refuses to reinterpret them silently and throws the
+    // catchable TypeError instead. That makes this path scriptc-only:
+    // corpus union-spread-merge.ts pins the accepting paths differentially.
+    const r = await compileAndRun(
+      "union-spread-merge-dyn",
+      `interface OpenAiCompat { supportsStore?: boolean }
+interface AnthropicCompat { supportsLongCacheRetention?: boolean }
+type Compat = OpenAiCompat | AnthropicCompat;
+function mergeCompat(base: Compat, override: Compat): Compat {
+  return { ...base, ...override } as Compat;
+}
+const merged = mergeCompat({ supportsStore: true }, { supportsLongCacheRetention: true });
+console.log(JSON.stringify(merged));
+try {
+  const single = merged as OpenAiCompat;
+  console.log("unreachable", JSON.stringify(single));
+} catch (e) {
+  console.log((e as Error).name, (e as Error).message.includes("not representable in the target union"));
+}
+console.log("recovered");
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      '{"supportsStore":true,"supportsLongCacheRetention":true}\nTypeError true\nrecovered\n',
+    );
+    expect(r.stderr).toBe("");
+  });
+
   test("a unit smuggled into a PLAIN non-nullable slot throws the stranded trap catchably", async () => {
     // The stranded-UNIT trap without a union in sight: `null!` / `null as
     // any as T` into a plain typed slot (string, array, class, function).

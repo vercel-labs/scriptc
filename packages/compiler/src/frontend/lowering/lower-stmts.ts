@@ -1127,6 +1127,10 @@ export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): b
       lowerer.dynConvertible(type)
     )
       type = DYN;
+    // An island handle binding holds a checked-dynamic value whatever its
+    // declared type says: its own declaration lowers as one, and so must
+    // the slot a closure captured first.
+    if (islandHandleBinding(lowerer, decl.name)) type = DYN;
     if (!TDZ_KINDS.has(type.kind) || isUnitType(type)) return false;
     const name = decl.name.text;
     const count = entry.ctx.localCounters.get(name) ?? 0;
@@ -7924,13 +7928,52 @@ export function lowerTry(lowerer: Lowerer, stmt: ts.TryStatement): IrStmt {
   };
 }
 
+/** The refusal for `delete` of an optional `unknown`/`any` field, whose
+ * slot is the checked-dynamic one and so has no ABSENT state to write. */
+const OPTIONAL_CHECKED_DYN_DELETE =
+  "'delete' of optional 'unknown'/'any' fields (the checked-dynamic slot has no absent state yet — an omitted such field already reads as present)";
+
+/** TypeScript's declaration marks property `name` of `receiver` optional
+ * (`?:`), in every union constituent. A mapped IR type cannot tell an
+ * optional `unknown`/`any` field from a required one — both ride the
+ * checked-dynamic slot — so a refused `delete`'s real reason comes from
+ * the declaration. */
+function declaredOptionalProperty(
+  lowerer: Lowerer,
+  receiver: ts.Expression,
+  name: string,
+): boolean {
+  const receiverType = lowerer.typeOf(receiver);
+  const parts =
+    receiverType.flags & ts.TypeFlags.Union ? constituentTypes(receiverType) : [receiverType];
+  return parts.every((part) => {
+    const property = lowerer.checker.getPropertyOfType(part, name);
+    return property !== undefined && (property.flags & ts.SymbolFlags.Optional) !== 0;
+  });
+}
+
+/** `type` — a record or a union whose every arm is a non-tuple record —
+ * declares `name` in the checked-dynamic slot, which has no ABSENT state:
+ * an optional such field cannot be removed by a `delete`. */
+function declaresCheckedDynField(lowerer: Lowerer, type: IrType, name: string): boolean {
+  if (type.kind === "record") {
+    const shape = lowerer.shapes.get(type.shapeId);
+    if (!shape || shape.tuple) return false;
+    return shape.fields.find((f) => f.name === name)?.type.kind === "dyn";
+  }
+  if (type.kind !== "union") return false;
+  const arms = lowerer.unions.get(type.unionId)?.arms ?? [];
+  return arms.length > 0 && arms.every((arm) => declaresCheckedDynField(lowerer, arm, name));
+}
+
 /** Statement-position `delete`: process.env keys → process.envUnset
  * (unsetenv), pure `Record<string, T>` keys → recordKeyDelete (the
  * overflow Map delete), declared OPTIONAL fields → the field's ABSENT
  * state (the slot reads undefined and no longer counts as an own
  * property). Everything else
  * fences with the honest reason — a required field is a struct slot no
- * runtime can remove. */
+ * runtime can remove, and an optional `unknown`/`any` field maps to the
+ * checked-dynamic slot, which has no ABSENT state yet. */
 function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrStmt {
   const loc = locOf(expr);
   let target: ts.Expression = expr.expression;
@@ -8079,6 +8122,21 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
       loc,
     };
   }
+  // The constant property key of the target (dot access or a literal
+  // bracket), when there is one.
+  const constantKey = ts.isPropertyAccessExpression(target)
+    ? target.name.text
+    : ts.isStringLiteral(target.argumentExpression)
+      ? target.argumentExpression.text
+      : null;
+  // An OPTIONAL `unknown`/`any` field rides the checked-dynamic slot,
+  // which has no ABSENT state yet (an omitted such field already reads as
+  // present), so it cannot delete. Name that reason instead of calling
+  // the field required or blaming the receiver.
+  const optionalCheckedDynDelete =
+    constantKey !== null &&
+    declaresCheckedDynField(lowerer, obj.type, constantKey) &&
+    declaredOptionalProperty(lowerer, target.expression, constantKey);
   if (obj.type.kind === "record") {
     const shape = lowerer.shapes.get(obj.type.shapeId);
     if (shape?.indexValue && shape.fields.length === 0 && !shape.tuple) {
@@ -8095,14 +8153,9 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
     // while a later write makes it present again. Constant keys only
     // (dot access or a literal bracket); required fields keep the honest
     // fence below.
-    const fieldName = ts.isPropertyAccessExpression(target)
-      ? target.name.text
-      : ts.isStringLiteral(target.argumentExpression)
-        ? target.argumentExpression.text
-        : null;
     const field =
-      fieldName !== null && !shape?.tuple
-        ? shape?.fields.find((f) => f.name === fieldName)
+      constantKey !== null && !shape?.tuple
+        ? shape?.fields.find((f) => f.name === constantKey)
         : undefined;
     if (field) {
       const absent = lowerer.absentFieldValue(field.type, loc);
@@ -8129,11 +8182,17 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
         "'delete' of hybrid index-signature keys (declared struct slots and overflow entries answer differently — model deletable dynamic keys with a pure Record<string, T>)",
       );
     }
+    if (optionalCheckedDynDelete) {
+      lowerer.unsupported("SC1090", expr, OPTIONAL_CHECKED_DYN_DELETE);
+    }
     lowerer.unsupported(
       "SC1090",
       expr,
       "'delete' of required record fields (a monomorphic shape cannot remove its slot — only optional fields delete, becoming the undefined arm)",
     );
+  }
+  if (optionalCheckedDynDelete) {
+    lowerer.unsupported("SC1090", expr, OPTIONAL_CHECKED_DYN_DELETE);
   }
   lowerer.unsupported(
     "SC1090",

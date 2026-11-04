@@ -58,7 +58,7 @@ import {
   setActiveNodeIslands,
   type NodeIslandSet,
 } from "../../node-islands/boundary.js";
-import type { IslandModuleBinding } from "./lower-node-island.js";
+import type { IslandBinding, IslandModuleBinding } from "./lower-node-island.js";
 import { bindingSymbolOfRead, onlyForwarded, stripTypeWrappers } from "./typed-arguments.js";
 import {
   needsGeneralNodeStreams,
@@ -249,6 +249,7 @@ import {
 import { DeferredModuleInitializers } from "./deferred-module-initializers.js";
 import { finalizeClassMethodValues } from "./class-method-values.js";
 import { finalizePrivateBrands } from "./private-brands.js";
+import { finalizeFunctionNames } from "./function-names.js";
 import { type ClassSymbolKey, INSPECT_CUSTOM_MEMBER, tableKeyFieldType } from "./symbol-fields.js";
 import type { HttpClientFnBinding } from "./lower-server.js";
 export type { WidthLift } from "./width-lift.js";
@@ -2717,6 +2718,9 @@ export class Lowerer {
   requestInitPropMutatedSyms: Set<ts.Symbol> | null = null;
   emitterEventTable: Map<string, EventSig> | null = null;
   emitterComputedPatterns: ComputedEventPattern[] = [];
+  /** Some site registers a listener under an unrestricted computed name
+   * (lower-event-emitter.ts emitterEvents). */
+  emitterAnyNameListener = false;
   /** The EventTarget engine's handleEvent reader was lifted
    * (lower-event-target.ts noteEventListeners). */
   handleEventReader = false;
@@ -3572,6 +3576,9 @@ export class Lowerer {
   readonly neverValued = new Set<IrExpr>();
   readonly chainNarrowedType = new Map<ts.Node, ts.Type>();
   readonly chainHandled = new Set<ts.Node>();
+  /** One arm's narrowed value for a spread source while a distributed
+   * union spread lowers that arm (lowerDistributedUnionSpread). */
+  readonly spreadArmOverrides = new Map<ts.Node, IrExpr>();
   /** for-of-over-matchAll bindings whose `.index` reads the companion-index
    * array: binding SYMBOL → the hidden number[] of match start indices plus
    * the hidden cursor holding THIS iteration's position (registered while
@@ -3691,6 +3698,12 @@ export class Lowerer {
   readonly globalsList: IrGlobal[] = [];
 
   readonly npmInitActions = new Map<ts.SourceFile, Map<ts.Statement, IrStmt[]>>();
+  /** Per-file %init statements of static island imports and re-exports,
+   * by the import or export statement that loads the island module: the
+   * importer's %init header runs them in that statement's place among its
+   * dependencies' %init calls, so the island module evaluates in source
+   * order with the native dependencies around it. */
+  readonly islandImportActions = new Map<ts.SourceFile, Map<ts.Statement, IrStmt[]>>();
   /** Per-file %init PRELUDE statements for JSON imports: bakeable DATA
    * assignments with no observable evaluation order of their own —
    * prepended by lowerFileInit so the bindings are live before any
@@ -3787,6 +3800,9 @@ export class Lowerer {
   readonly nodeIslandLoads: { literal: IrExpr & { kind: "strLit" }; path: string }[] = [];
   /** Island handle bindings by symbol (lower-node-island.ts). */
   readonly islandHandleBindings = new Map<ts.Symbol, boolean>();
+  /** Names a native module re-exports from an island package, by the
+   * symbol an alias chain reaches (lower-node-island.ts). */
+  readonly islandReexports = new Map<ts.Symbol, IslandBinding>();
   /** `instanceof` expressions the island lowering already handles. */
   readonly islandInstanceofHandled = new Set<ts.Node>();
   /** NI-6: the modules shared with Node islands (lower-shared-modules.ts),
@@ -3811,6 +3827,9 @@ export class Lowerer {
   >();
   /** Classes used as ThreadSlots keys: their hierarchies carry a slot word. */
   readonly threadSlotKeys = new Set<string>();
+  /** The JavaScript names of object literals' methods, by lifted function
+   * (function-names.ts). */
+  readonly objectMethodNames = new Map<string, string>();
   readonly forkTargetIdByPath = new Map<string, number>();
   /** Namespace ModuleBlocks this program lowers, filled by splitFiles:
    * "flattened" — an instantiated namespace whose body joined the file's
@@ -4412,6 +4431,7 @@ export class Lowerer {
       checkedTable("globalsByDeclNode", () => this.globalsByDeclNode.size),
       checkedTable("globalsList", () => this.globalsList.length),
       checkedTable("npmInitActions", () => this.npmInitActions.size),
+      checkedTable("islandImportActions", () => this.islandImportActions.size),
       checkedTable("jsonInitActions", () => this.jsonInitActions.size),
       checkedTable("jsonRequireModules", () => this.jsonRequireModules.size),
       checkedTable("jsonRequireCalls", () => this.jsonRequireCalls.size),
@@ -4431,6 +4451,7 @@ export class Lowerer {
       checkedTable("threadSlotNames", () => this.threadSlotNames.size),
       checkedTable("threadSlotFamilies", () => this.threadSlotFamilies.size),
       checkedTable("threadSlotKeys", () => this.threadSlotKeys.size),
+      checkedTable("objectMethodNames", () => this.objectMethodNames.size),
       checkedTable("forkTargetIdByPath", () => this.forkTargetIdByPath.size),
       checkedTable("nsBlocks", () => this.nsBlocks.size),
       checkedTable("initNameOf", () => this.initNameOf.size),
@@ -4590,6 +4611,9 @@ export class Lowerer {
     // NI-5: whether a symbol names an island handle binding depends only on
     // its declaration, so the answer is a memo keyed by symbol.
     "islandHandleBindings",
+    // The island names native modules re-export: a pure function of the
+    // program's modules, collected before lowering begins.
+    "islandReexports",
     // The modules shared with the islands (NI-6): a pure function of the
     // program's modules, computed once, and the TDZ flags its plan gives a
     // statement.
@@ -4655,6 +4679,7 @@ export class Lowerer {
     "neverValued",
     "chainNarrowedType",
     "chainHandled",
+    "spreadArmOverrides",
     "splitIdentifierUses",
     "typeMemo",
     "fnStack",
@@ -4761,6 +4786,7 @@ export class Lowerer {
       fixed("errorPropertyDispatchRevision", () => this.errorPropertyDispatchRevision),
       fixed("childAdditions", () => this.childAdditions),
       fixed("emitterEventTable", () => this.emitterEventTable),
+      fixed("emitterAnyNameListener", () => this.emitterAnyNameListener),
       fixed("globalThisWrittenNames", () => this.globalThisWrittenNames),
       fixed("importRetryModules", () => this.importRetryModules),
       fixed("localSubclassIndex", () => this.localSubclassIndex),
@@ -9799,6 +9825,7 @@ export class Lowerer {
     // one is exact only if the declaration is held at a single signature.
     checkGenericIdentityPins(this);
     boxBuiltinValuesChecked(this, functions);
+    finalizeFunctionNames(this, functions);
     if (this.diags.length === 0) fuseArrayPipelines(this, functions);
     finalizeClassMethodValues(this, functions);
     finalizePrivateBrands(this, functions);

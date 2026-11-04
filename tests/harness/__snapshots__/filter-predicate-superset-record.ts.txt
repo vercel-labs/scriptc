@@ -1,0 +1,13 @@
+filter-predicate-superset-record.ts:24:29 - error SC1090: narrowing '.filter' to '{ content: string; role: string; timestamp: number }' through a callback VALUE (no checked conversion from '{ role: string }' (the receiver's element type has no slot for 'content', 'timestamp' — each element was narrowed when it was stored, so those fields do not exist at runtime and the predicate cannot make them real) — keep the receiver's element type instead — annotate the callback's return ': boolean' (the checker then skips the predicate) or annotate the result with the receiver's own element type — and narrow the elements after) is not supported yet
+
+  23 | // A guard function passed as a value.
+  24 | console.log(messages.filter(isSystemMessage).length);
+     |                             ^~~~~~~~~~~~~~~
+  25 | // The same narrowing written inline.
+
+filter-predicate-superset-record.ts:26:29 - error SC1090: narrowing '.filter' to '{ content: string; role: string; timestamp: number }' with a hand-written type predicate (no checked conversion from '{ role: string }' (the receiver's element type has no slot for 'content', 'timestamp' — each element was narrowed when it was stored, so those fields do not exist at runtime and the predicate cannot make them real) — keep the receiver's element type instead — annotate the callback's return ': boolean' (the checker then skips the predicate) or annotate the result with the receiver's own element type — and narrow the elements after) is not supported yet
+
+  25 | // The same narrowing written inline.
+  26 | console.log(messages.filter((m): m is SystemMessage => m.role === "system").length);
+     |                             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  27 | 

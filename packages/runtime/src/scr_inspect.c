@@ -533,6 +533,16 @@ ScrStr *scr_insp_ref_wrap(const void *v, ScrStr *s) {
 
 /* formatRaw's Date base: toISOString(), or toString()'s "Invalid Date"
  * when the time value is NaN (the only time value outside the ISO range). */
+/* util.inspect's placeholder past the depth limit for an instance whose
+ * inspector returns `this` there: `[cls]`, in the special style. */
+static ScrStr *insp_bracketed_class(const char *cls) {
+  InspBuf out = {0};
+  ib_char(&out, '[');
+  ib_cstr(&out, cls);
+  ib_char(&out, ']');
+  return insp_styled(ib_take(&out), INSP_SPECIAL);
+}
+
 ScrStr *scr_insp_date(double ms) {
   if (isnan(ms)) return scr_str_new("Invalid Date", 12);
   return scr_date_to_iso(ms);
@@ -2684,8 +2694,11 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
     case SCR_DYN_FUNC:
       return scr_insp_dyn_func(d, recurse, depth);
     case SCR_DYN_HANDLE: {
+      /* TextDecoder's text takes no colors and TextEncoder's view styles
+       * its string, as Node's inspectors do. */
       if (g_colors && d->v.handle.tag != SCR_DYNH_SET && d->v.handle.tag != SCR_DYNH_MAP &&
-          d->v.handle.tag != SCR_DYNH_DATE)
+          d->v.handle.tag != SCR_DYNH_DATE && d->v.handle.tag != SCR_DYNH_TEXT_DECODER &&
+          d->v.handle.tag != SCR_DYNH_TEXT_ENCODER)
         return insp_colors_fence_values(scr_dyn_handle_cls(d));
       if (d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER ||
           d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER) {
@@ -2709,6 +2722,17 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
       if (d->v.handle.tag == SCR_DYNH_NODE_ISLAND) return scr_ni_inspect(d, recurse, depth);
 #endif
       const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(d);
+      if (ops->inspect_custom_only && !g_custom_inspect) {
+        if (recurse > depth) return insp_bracketed_class(ops->cls);
+        InspBuf out = {0};
+        ib_cstr(&out, "util.inspect of a ");
+        ib_cstr(&out, ops->cls);
+        ib_cstr(&out, " with customInspect: false is not supported yet");
+        scr_throw_error(SCR_ERR_ERROR, ib_take(&out));
+        return scr_str_new("", 0);
+      }
+      if (ops->inspect_text)
+        return recurse > depth ? insp_bracketed_class(ops->cls) : ops->inspect_text(d->v.handle.ptr);
       if (ops->inspect_view) {
         /* Node's custom inspectors answer the bare class name beyond the
          * depth limit (`depth < 0`); the ones that return `this` there
@@ -2723,11 +2747,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
             return ib_take(&out);
           }
           if (!ops->inspect_bracketed_past_depth) return scr_str_new(ops->cls, strlen(ops->cls));
-          InspBuf out = {0};
-          ib_char(&out, '[');
-          ib_cstr(&out, ops->cls);
-          ib_char(&out, ']');
-          return ib_take(&out);
+          return insp_bracketed_class(ops->cls);
         }
         ScrDyn *view = ops->inspect_view(d->v.handle.ptr);
         if (ops->inspect_view_nested) {
@@ -2742,6 +2762,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         }
         ScrStr *body = scr_insp_dyn(view, recurse, depth);
         scr_dyn_release(view);
+        if (ops->inspect_view_bare) return body;
         InspBuf out = {0};
         if (insp_tag_names_class(ops->to_string_tag, ops->cls)) {
           ib_cstr(&out, ops->to_string_tag);

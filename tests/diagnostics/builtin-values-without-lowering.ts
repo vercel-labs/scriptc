@@ -5,7 +5,7 @@ function take(x: unknown): unknown {
 }
 
 const inferred = { json: JSON };
-const loose: any = { intl: Intl, proxy: Proxy };
+const loose: any = { atomics: Atomics };
 const timers: Record<string, unknown> = { setTimeout };
 const list: any[] = [Array, parseInt];
 console.log(inferred, loose, timers, list, take(process));

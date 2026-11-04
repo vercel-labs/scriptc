@@ -120,10 +120,12 @@ export function emitDynamicExpr(
         // A closure boxes as the checked-dynamic tree's function kind: retained closure +
         // the per-signature call thunk + the interned signature key. The
         // best-effort name rides along (null when the lowering had none).
-        const name = e.fnName !== undefined && e.fnName !== "" ? host.cstr(e.fnName) : "null";
-        const box = host.dyn.dynFuncBoxHelper(v.type);
         const t = B.tmp();
-        B.line(`${t} = call ptr @${box}(ptr ${v.name}, ptr ${name})`);
+        if (e.fnName !== undefined && e.fnName !== "") {
+          const name = host.cstr(e.fnName);
+          const box = host.dyn.dynFuncBoxHelper(v.type);
+          B.line(`${t} = call ptr @${box}(ptr ${v.name}, ptr ${name})`);
+        } else B.line(`${t} = ${host.dyn.unnamedFuncBoxCall(v.type, v.name)}`);
         if (e.fnLength !== undefined) {
           host.declare(`declare void @scr_dyn_function_set_length(ptr, i32)`);
           B.line(`call void @scr_dyn_function_set_length(ptr ${t}, i32 ${e.fnLength})`);

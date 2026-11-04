@@ -2518,6 +2518,7 @@ function assertThrowsHelper(
             varRef("ev.0", DYN, loc),
             m(),
             hm(),
+            boolLit(mode === "rejects", loc),
           ]),
           doReturn,
         ];

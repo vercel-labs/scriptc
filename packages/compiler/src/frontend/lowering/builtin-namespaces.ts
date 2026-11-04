@@ -1,4 +1,4 @@
-/** The standard namespace objects (`Math`, `JSON`, `Reflect`) read as
+/** The standard namespace objects (`Math`, `JSON`, `Reflect`, `Intl`) read as
  * JavaScript values. Each is one object per program, built on first use,
  * with Node's own properties in Node's order: the functions are writable,
  * configurable and non-enumerable, the Math constants are read-only and
@@ -105,6 +105,21 @@ function namespaceMembers(name: string): readonly NamespaceMember[] | null {
         { key: "preventExtensions", length: 1 },
         { key: "set", length: 3 },
         { key: "setPrototypeOf", length: 2 },
+      ];
+    case "Intl":
+      return [
+        { key: "getCanonicalLocales", length: 1 },
+        { key: "supportedValuesOf", length: 1 },
+        { key: "DateTimeFormat", length: 0 },
+        { key: "NumberFormat", length: 0 },
+        { key: "Collator", length: 0 },
+        { key: "PluralRules", length: 0 },
+        { key: "RelativeTimeFormat", length: 0 },
+        { key: "ListFormat", length: 0 },
+        { key: "Locale", length: 1 },
+        { key: "DisplayNames", length: 2 },
+        { key: "Segmenter", length: 0 },
+        { key: "DurationFormat", length: 0 },
       ];
     default:
       return null;
@@ -270,7 +285,9 @@ function functionValue(lowerer: Lowerer, canonical: string, key: string, loc: Sr
       ? mathMemberValue(lowerer, key, loc)
       : canonical === "JSON"
         ? jsonMemberValue(lowerer, key, loc)
-        : reflectMemberValue(lowerer, key, loc);
+        : canonical === "Reflect"
+          ? reflectMemberValue(lowerer, key, loc)
+          : null;
   if (value !== null)
     return value.type.kind === "dyn"
       ? value

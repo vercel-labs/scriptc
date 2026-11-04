@@ -1,6 +1,7 @@
 
 #include "scr_platform.h"
 #include "scr_runtime.h"
+#include "scr_system_errors.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -412,6 +413,95 @@ void scr_net_fire_err_this(ScrNetLs *l, ScrStr *msg, void *self, ScrDynHandleTag
 }
 
 void scr_net_fire_err(ScrNetLs *l, ScrStr *msg) { scr_net_fire_err_this(l, msg, NULL, 0); }
+
+/* The libuv errno of an error code name (Node's err.errno), 0 for a name
+ * outside libuv's map. */
+static double scr_net_uv_errno(const char *code, size_t len) {
+#define SCR_NET_UV_ERRNO(name, text)                                          \
+  if (len == sizeof #name - 1 && memcmp(code, #name, len) == 0) return SCR_NODE_UV__##name;
+  SCR_NODE_UV_ERRNO_MAP(SCR_NET_UV_ERRNO)
+#undef SCR_NET_UV_ERRNO
+  return 0;
+}
+
+/* The libuv message of an error code name, or NULL. */
+static const char *scr_net_uv_text(const char *code, size_t len) {
+#define SCR_NET_UV_TEXT(name, text)                                           \
+  if (len == sizeof #name - 1 && memcmp(code, #name, len) == 0) return text;
+  SCR_NODE_UV_ERRNO_MAP(SCR_NET_UV_TEXT)
+#undef SCR_NET_UV_TEXT
+  return NULL;
+}
+
+/* Node's system error for a net failure message this unit writes:
+ * "<syscall> <CODE>[ <detail>]" (errnoException, exceptionWithHostPort) or
+ * "<syscall> <CODE>: <libuv message>[ <detail>]" (uvExceptionWithHostPort).
+ * The error carries the code, the libuv errno and the syscall; for
+ * connect, listen and bind, the detail is the address, as "<address>:<port>"
+ * with a port, and a listen on a pipe path has port -1. NULL for any other
+ * message; +1 otherwise. */
+static ScrError *scr_net_system_error(ScrStr *msg) {
+  const char *data = msg->data;
+  const char *end = data + msg->len;
+  const char *space = memchr(data, ' ', msg->len);
+  if (space == NULL || space == data) return NULL;
+  size_t syscall_len = (size_t)(space - data);
+  const char *code = space + 1;
+  const char *code_end = code;
+  while (code_end < end && *code_end != ' ' && *code_end != ':') code_end++;
+  size_t code_len = (size_t)(code_end - code);
+  if (code_len < 2 || code[0] != 'E') return NULL;
+  for (size_t i = 0; i < code_len; i++) {
+    char c = code[i];
+    if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_')) return NULL;
+  }
+  double uv = scr_net_uv_errno(code, code_len);
+  if (uv == 0) return NULL;
+  const char *detail = code_end;
+  if (detail < end && *detail == ':') {
+    /* the libuv form: skip ": <message>" */
+    const char *text = scr_net_uv_text(code, code_len);
+    size_t text_len = text != NULL ? strlen(text) : 0;
+    if (text == NULL || (size_t)(end - detail) < 2 + text_len ||
+        memcmp(detail + 2, text, text_len) != 0)
+      return NULL;
+    detail += 2 + text_len;
+  }
+  if (detail < end && *detail == ' ') detail++;
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, msg);
+  char code_buf[32];
+  size_t n = code_len < sizeof code_buf - 1 ? code_len : sizeof code_buf - 1;
+  memcpy(code_buf, code, n);
+  code_buf[n] = '\0';
+  scr_error_set_code(e, code_buf);
+  e->system_errno = uv;
+  e->system_call = scr_str_new(data, syscall_len);
+  bool with_address = (syscall_len == 7 && memcmp(data, "connect", 7) == 0) ||
+                      (syscall_len == 6 && memcmp(data, "listen", 6) == 0) ||
+                      (syscall_len == 4 && memcmp(data, "bind", 4) == 0);
+  if (with_address && detail < end) {
+    const char *colon = NULL;
+    for (const char *q = detail; q < end; q++)
+      if (*q == ':') colon = q;
+    bool digits = colon != NULL && colon + 1 < end;
+    for (const char *q = colon != NULL ? colon + 1 : end; q < end; q++)
+      if (*q < '0' || *q > '9') digits = false;
+    const char *address_end = digits ? colon : end;
+    ScrStr *address = scr_str_new(detail, (size_t)(address_end - detail));
+    scr_error_set_prop(e, "address", 7, scr_dyn_new_str(address));
+    /* a pipe listen: Node's listenInCluster passes port -1 with the path */
+    bool pipe_listen = false;
+    if (!digits && syscall_len == 6) {
+      unsigned char ip[16];
+      pipe_listen = inet_pton(AF_INET, address->data, ip) != 1 &&
+                    inet_pton(AF_INET6, address->data, ip) != 1;
+    }
+    scr_str_release(address);
+    if (digits) scr_error_set_prop(e, "port", 4, scr_dyn_new_num(strtod(colon + 1, NULL)));
+    else if (pipe_listen) scr_error_set_prop(e, "port", 4, scr_dyn_new_num(-1));
+  }
+  return e;
+}
 
 /* ── the handles ─────────────────────────────────────────────────────── */
 
@@ -3075,7 +3165,7 @@ void scr_net_connect_opts_chk(const ScrDyn *opts, const ScrStr *fence) {
       char detail[64], msg[160];
       const char *d = scr_dyn_specific_type(port, detail, sizeof detail);
       int len = snprintf(msg, sizeof msg,
-                         "options.port should be >= 0 and < 65536. Received %s", d);
+                         "Port should be >= 0 and < 65536. Received %s.", d);
       scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_SOCKET_BAD_PORT");
       return;
     }
@@ -3096,6 +3186,60 @@ void scr_net_connect_opts_chk(const ScrDyn *opts, const ScrStr *fence) {
     return;
   }
   scr_throw_lowering_fence(fence);
+}
+
+/* The port of listen(arg[, ...]) for a checked-dynamic first argument, as
+ * Node's Server.prototype.listen normalizes it: a function (listen(cb)),
+ * undefined and null bind an ephemeral port (0); a number, or a string
+ * whose Number() is >= 0, passes validatePort and answers its integer.
+ * Other values take forms that have no lowering here (an options object, a
+ * pipe path, and the ERR_INVALID_ARG_VALUE kinds) and throw the
+ * compiler-rendered fence. */
+/* Node's validatePort over listen's port value: 1 with *out set for a
+ * function, undefined or null (0) or a valid port; 0 with ERR_SOCKET_BAD_PORT
+ * pending for a bad port; -1 for a value that is no port form here (an
+ * options object, a pipe path, and the ERR_INVALID_ARG_VALUE kinds). */
+static int scr_net_listen_port_check(const ScrDyn *v, double *out) {
+  *out = 0;
+  if (v == NULL || v->kind == SCR_DYN_UNDEF || v->kind == SCR_DYN_NULL ||
+      v->kind == SCR_DYN_FUNC)
+    return 1;
+  double n;
+  bool ok;
+  if (v->kind == SCR_DYN_NUM) {
+    n = v->v.num;
+    ok = n >= 0 && n <= 65535 && trunc(n) == n;
+  } else if (v->kind == SCR_DYN_STR) {
+    ScrStr *ps = scr_str_retain(v->v.str);
+    n = scr_string_to_number(ps);
+    if (!(n >= 0)) { /* Node's isPipeName: a path */
+      scr_str_release(ps);
+      return -1;
+    }
+    ScrStr *trimmed = scr_str_trim(ps);
+    ok = trimmed->len > 0 && n <= 65535 && trunc(n) == n;
+    scr_str_release(trimmed);
+    scr_str_release(ps);
+  } else {
+    return -1;
+  }
+  if (!ok) {
+    char detail[64], msg[160];
+    const char *d = scr_dyn_specific_type(v, detail, sizeof detail);
+    int len = snprintf(msg, sizeof msg,
+                       "options.port should be >= 0 and < 65536. Received %s.", d);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, len < 0 ? 0 : (size_t)len,
+                             "ERR_SOCKET_BAD_PORT");
+    return 0;
+  }
+  *out = n;
+  return 1;
+}
+
+double scr_net_listen_port_dyn(const ScrDyn *v, const ScrStr *fence) {
+  double port;
+  if (scr_net_listen_port_check(v, &port) < 0) scr_throw_lowering_fence(fence);
+  return port;
 }
 
 /* A dial the caller starts LATER (the http agent's maxSockets queue):
@@ -3290,6 +3434,8 @@ void scr_net_listen_path(ScrNetServer *s, ScrStr *path /*borrowed*/,
     err = errno;
   }
 #endif
+  /* libuv's uv_pipe_bind reports ENOENT as EACCES, as Windows does */
+  if (err == ENOENT) err = EACCES;
   ScrJsonBuf b;
   scr_jb_init(&b);
   scr_jb_puts(&b, "listen ");
@@ -6060,8 +6206,10 @@ static bool scr_net_sweep_sock(ScrNetSocket *sock) {
       if (sock->pending_code != NULL) {
         coded = scr_error_new(SCR_ERR_ERROR, msg);
         coded->code = scr_str_new(sock->pending_code, strlen(sock->pending_code));
-        scr_event_error_payload = coded;
+      } else {
+        coded = scr_net_system_error(msg);
       }
+      if (coded != NULL) scr_event_error_payload = coded;
       scr_net_fire_err_this(&sock->err_ls, msg, sock, SCR_DYNH_NET_SOCKET);
       scr_event_error_payload = saved;
       if (coded != NULL) scr_error_release(coded);
@@ -6126,7 +6274,12 @@ static void scr_net_sweep(void) {
       ScrStr *msg = srv->pending_err;
       srv->pending_err = NULL;
       ScrAlsCtx *prev = scr_als_dispatch_enter(srv->listen_ctx);
+      ScrError *system = scr_net_system_error(msg);
+      ScrError *saved = scr_event_error_payload;
+      if (system != NULL) scr_event_error_payload = system;
       scr_net_fire_err_this(&srv->err_ls, msg, srv, SCR_DYNH_NET_SERVER);
+      scr_event_error_payload = saved;
+      if (system != NULL) scr_error_release(system);
       scr_als_dispatch_leave(prev);
       scr_str_release(msg);
       /* A failed listen SETTLES the handle: listeners drop (an error
@@ -6875,29 +7028,27 @@ static ScrDyn *scr_net_dynh_srv_invoke(void *h, ScrDyn *self, const char *method
     return scr_dyn_retain(self);
   }
   if (strcmp(method, "listen") == 0) {
-    /* listen([port][, host][, cb]) — the static lowering's shapes over
-     * dyn arguments; the options-object form throws the 'not supported yet'
+    /* listen([port][, host][, backlog][, cb]) and listen(path[, cb]) over
+     * dyn arguments, as Node's normalizeArgs reads them: the last argument
+     * is the callback when it is a function, a first argument that is a
+     * function, undefined or null binds an unused port, a string whose
+     * Number() is not >= 0 is a pipe path, and a string second argument is
+     * the host. The options-object form throws the 'not supported yet'
      * Error. */
+    const ScrDyn *first = argc > 0 ? args[0] : NULL;
+    const ScrDyn *cb = argc > 0 && args[argc - 1]->kind == SCR_DYN_FUNC ? args[argc - 1] : NULL;
     double port = 0;
-    ScrStr *host = NULL;
-    const ScrDyn *cb = NULL;
-    size_t i = 0;
-    if (i < argc && args[i]->kind == SCR_DYN_NUM) { port = args[i]->v.num; i++; }
-    else if (i < argc && args[i]->kind == SCR_DYN_STR && args[i]->v.str->len > 0 &&
-             args[i]->v.str->data[0] >= '0' && args[i]->v.str->data[0] <= '9') {
-      /* Node coerces a numeric port string */
-      port = strtod(args[i]->v.str->data, NULL);
-      i++;
-    } else if (i < argc && args[i]->kind == SCR_DYN_OBJ) {
+    int form = scr_net_listen_port_check(first, &port);
+    if (form == 0) return NULL;
+    if (form < 0 && first->kind == SCR_DYN_STR) {
+      scr_net_listen_path(s, first->v.str, cb ? scr_dyn_listener_closure0(cb) : NULL);
+      return scr_dyn_retain(self);
+    }
+    if (form < 0) {
       scr_net_dynh_srv_unsupported("listen", "the options-object form on a dynamic value is not modeled (use listen(port[, host][, cb]))");
       return NULL;
     }
-    if (i < argc && args[i]->kind == SCR_DYN_STR) { host = args[i]->v.str; i++; }
-    if (i < argc && args[i]->kind == SCR_DYN_FUNC) { cb = args[i]; i++; }
-    if (i < argc && args[i]->kind != SCR_DYN_UNDEF && args[i]->kind != SCR_DYN_NULL) {
-      scr_net_dynh_srv_unsupported("listen", "unrecognized arguments (the modeled shape is listen(port[, host][, cb]))");
-      return NULL;
-    }
+    ScrStr *host = argc > 1 && args[1]->kind == SCR_DYN_STR ? args[1]->v.str : NULL;
     ScrClosure *clo = cb ? scr_dyn_listener_closure0(cb) : NULL;
     if (host) scr_net_listen_opts(s, port, host, false, clo);
     else scr_net_listen(s, port, clo);

@@ -1,11 +1,16 @@
+import { join } from "node:path";
+import ts from "typescript";
 import { expect, test } from "vitest";
 import { boundedRun } from "../test262/execute.js";
 import {
   compileFailureStatus,
+  directory,
   exclusion,
   matchesParseNegative,
   metadata,
   prepare,
+  prepareIsland,
+  scriptEnvironment,
   summarize,
   variants,
 } from "../test262/support.mjs";
@@ -76,6 +81,92 @@ test("unsupported execution requirements and assertion reflection remain exclusi
   expect(exclusion(commonJsGlobal, metadata(commonJsGlobal), "sloppy")).toBe("host:module");
   const asyncText = source("flags: [async]", "Promise.resolve().then(() => $DONE());");
   expect(exclusion(asyncText, metadata(asyncText), "strict")).toBeUndefined();
+});
+
+test("the island lane lifts only the five host exclusions, on sloppy variants", () => {
+  const globalRead = source(
+    "description: global",
+    "assert.sameValue(typeof globalThis, 'object');",
+  );
+  expect(exclusion(globalRead, metadata(globalRead), "sloppy")).toBe("host:globalThis");
+  expect(exclusion(globalRead, metadata(globalRead), "sloppy", true)).toBeUndefined();
+  // Strict variants stay in the native profile: the lane adds none.
+  expect(exclusion(globalRead, metadata(globalRead), "strict", true)).toBe("host:globalThis");
+  for (const [description, body] of [
+    ["eval", "assert.sameValue(eval('1 + 1'), 2);"],
+    ["Function", "assert.sameValue(Function('return 1')(), 1);"],
+    ["arguments", "function f() { return arguments; } assert.sameValue(f(1).length, 1);"],
+    ["script this", "assert.sameValue(this, undefined);"],
+  ]) {
+    const text = source(`description: ${description}`, body!);
+    expect(exclusion(text, metadata(text), "sloppy"), body).toBeTypeOf("string");
+    expect(exclusion(text, metadata(text), "sloppy", true), body).toBeUndefined();
+  }
+  // Harness limits and `$262` stay excluded even when the file also uses a
+  // lifted construct, and a CommonJS-specific name is not a host reason.
+  const helper = source("includes: [propertyHelper.js]", "verifyWritable({}, 'x'); eval('1');");
+  expect(exclusion(helper, metadata(helper), "sloppy", true)).toBe(
+    "harness:propertyHelper-surface",
+  );
+  const commonJsGlobal = source(
+    "description: CommonJS global",
+    "assert.sameValue(module.exports, {});",
+  );
+  expect(exclusion(commonJsGlobal, metadata(commonJsGlobal), "sloppy", true)).toBe("host:module");
+});
+
+test("a lifted script-environment variant keeps the script shape inside its island", () => {
+  const script = source("description: script this", "this.value = 1;\nassert.sameValue(value, 1);");
+  expect(scriptEnvironment(script)).toBe(true);
+  const text = prepareIsland(script, false, "MARK", [], true);
+  // The harness is installed on the global object, and the module only carries
+  // a dead copy of the body so the pre-scan still islands the module.
+  expect(text).toContain("globalThis.assert = assert;");
+  expect(text).toContain("globalThis.Test262Error = Test262Error;");
+  expect(text).toContain('const { readFileSync } = require("node:fs");');
+  expect(text).toContain('const vm = require("node:vm");');
+  expect(text).toContain("vm.runInThisContext(text.slice(from + begin.length, to)");
+  expect(text).toContain("if (false) { (function () {");
+  expect(text).toContain("this.value = 1;");
+  // The ordinary island adaptation still runs the body as module code.
+  expect(prepareIsland(script, false, "MARK", [])).not.toContain("vm.runInThisContext");
+  // `host:script-environment` also names ESM syntax, which cannot be replayed
+  // as a script.
+  expect(scriptEnvironment("export default 1;")).toBe(false);
+});
+
+test("the harness declares each name once and exports every name the island prelude reads", () => {
+  const file = join(directory, "harness.ts");
+  const program = ts.createProgram([file], {
+    noEmit: true,
+    strict: true,
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.NodeNext,
+    moduleResolution: ts.ModuleResolutionKind.NodeNext,
+    allowImportingTsExtensions: true,
+  });
+  const sf = program.getSourceFile(file)!;
+  // Duplicate identifier, redeclared block-scoped variable or export, and
+  // duplicate function implementation: each fails every executable variant.
+  const duplicates = program
+    .getSemanticDiagnostics(sf)
+    .filter((d) => [2300, 2323, 2393, 2451].includes(d.code))
+    .map((d) => ts.flattenDiagnosticMessageText(d.messageText, "\n"));
+  expect(duplicates).toEqual([]);
+  const checker = program.getTypeChecker();
+  const exported = new Set(
+    checker.getExportsOfModule(checker.getSymbolAtLocation(sf)!).map((symbol) => symbol.name),
+  );
+  const prelude = prepareIsland(source("description: names"), true, "MARK", [], true);
+  const read = [...prelude.matchAll(/(?<![./\w])harness\.([A-Za-z_$][\w$]*)/g)].map(
+    (match) => match[1]!,
+  );
+  expect(read.length).toBeGreaterThan(0);
+  expect(read.filter((name) => !exported.has(name))).toEqual([]);
+  // The bare compareArray and the assertion are different functions.
+  expect(prelude).toContain("assert.compareArray = harness.assertCompareArray;");
+  expect(prelude).toContain("const compareArray = harness.compareArray;");
+  expect(prelude).toContain("globalThis.compareArray = compareArray;");
 });
 
 test("the property helper only admits direct inline descriptor checks", () => {

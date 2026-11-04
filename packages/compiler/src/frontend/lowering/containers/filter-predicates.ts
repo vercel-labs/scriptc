@@ -71,6 +71,31 @@ export function checkedFilterNarrowing(
   return name;
 }
 
+/** The fields a written predicate's record target declares that the
+ * receiver's record element has no slot for, or null when there are none
+ * (or when the pair is not a plain record narrowing).
+ *
+ * An element narrowed when it was STORED (`const messages: { role: string }[]
+ * = [wider, ...]` copies each wider object into the element's layout) lost
+ * those fields before the filter ran: the predicate cannot make them real,
+ * so the narrowing stays refused with this reason instead of a generic
+ * missing-conversion report. */
+export function supersetGuardFields(
+  lowerer: Lowerer,
+  from: IrType,
+  to: IrType,
+): readonly string[] | null {
+  if (from.kind !== "record" || to.kind !== "record" || from.shapeId === to.shapeId) return null;
+  const source = lowerer.shapes.get(from.shapeId);
+  const target = lowerer.shapes.get(to.shapeId);
+  if (!source || !target) return null;
+  if (source.tuple || target.tuple || source.indexValue || target.indexValue) return null;
+  const absent = target.fields.filter(
+    (field) => !source.fields.some((own) => own.name === field.name),
+  );
+  return absent.length === 0 ? null : absent.map((field) => field.name);
+}
+
 /** The interned helper converting one `from` value to `to`, or null. */
 function elementHelper(
   lowerer: Lowerer,

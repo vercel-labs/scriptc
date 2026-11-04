@@ -1,0 +1,89 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8427-sloppy-with-island/lookup.js",
+  "<repo>/tests/corpus/8427-sloppy-with-island/main.js"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "'with' statements are not allowed in strict mode.",
+   "loc": {
+    "file": "<repo>/tests/corpus/8427-sloppy-with-island/lookup.js",
+    "start": 194,
+    "end": 198
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "The 'with' statement is not supported. All symbols in a 'with' block will have type 'any'.",
+   "loc": {
+    "file": "<repo>/tests/corpus/8427-sloppy-with-island/lookup.js",
+    "start": 194,
+    "end": 207
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "'with' statements are not allowed in strict mode.",
+   "loc": {
+    "file": "<repo>/tests/corpus/8427-sloppy-with-island/lookup.js",
+    "start": 295,
+    "end": 299
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "The 'with' statement is not supported. All symbols in a 'with' block will have type 'any'.",
+   "loc": {
+    "file": "<repo>/tests/corpus/8427-sloppy-with-island/lookup.js",
+    "start": 295,
+    "end": 308
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "'with' statements are not allowed in strict mode.",
+   "loc": {
+    "file": "<repo>/tests/corpus/8427-sloppy-with-island/lookup.js",
+    "start": 422,
+    "end": 426
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "The 'with' statement is not supported. All symbols in a 'with' block will have type 'any'.",
+   "loc": {
+    "file": "<repo>/tests/corpus/8427-sloppy-with-island/lookup.js",
+    "start": 422,
+    "end": 447
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "'with' statements are not allowed in strict mode.",
+   "loc": {
+    "file": "<repo>/tests/corpus/8427-sloppy-with-island/lookup.js",
+    "start": 528,
+    "end": 532
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "The 'with' statement is not supported. All symbols in a 'with' block will have type 'any'.",
+   "loc": {
+    "file": "<repo>/tests/corpus/8427-sloppy-with-island/lookup.js",
+    "start": 528,
+    "end": 541
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "'with' statements are not allowed in strict mode.",
+   "loc": {
+    "file": "<repo>/tests/corpus/8427-sloppy-with-island/lookup.js",
+    "start": 548,
+    "end": 552
+   }
+  }
+ ]
+}

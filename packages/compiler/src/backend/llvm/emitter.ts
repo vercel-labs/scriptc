@@ -924,6 +924,7 @@ const POLL_EVERY_ITERATION = "%worker.poll.every";
 
 /** Runtime library calls (readsLoopMetrics). */
 const LIB_CALL_KINDS: readonly IrNodeKind[] = ["libCall"];
+const CLOSURE_KINDS: readonly IrNodeKind[] = ["closure"];
 
 /** [A-Za-z0-9_] */
 function isIdentifierByte(code: number): boolean {
@@ -2465,6 +2466,7 @@ export class LlEmitter {
         );
       },
       pendingTestLines: (dest) => this.pendingTestLines(dest),
+      closureNames: () => this.closureNames(),
       virtualEntry: (implFn) => this.virtualEntry(implFn),
       programLifetime: this.programLifetime,
       regionAliasTag: (word) => this.memoryAliasAttachment(`region.${word}`),
@@ -2806,6 +2808,33 @@ export class LlEmitter {
     const bridged = this.unwindAbi.size > 0 ? bridgePlainUnwindCalls(parts) : parts;
     const out = this.cpuDispatch ? cloneForCpuDispatch(bridged) : bridged;
     return this.heapCensus === null ? out : [...out, this.heapCensus.definitions().join("\n")];
+  }
+
+  /** The entry point and JavaScript name of each named function the
+   * module makes closures of: a declared function's wrapper (its interned
+   * closure's entry) or a lifted function's call target, with its
+   * displayName, else its sourceName. Function boxes without a static name
+   * look the closure's entry up in this table. */
+  private closureNameEntries: readonly { entry: string; name: string }[] | undefined;
+  closureNames(): readonly { entry: string; name: string }[] {
+    if (this.closureNameEntries !== undefined) return this.closureNameEntries;
+    const entries = new Map<string, string>();
+    const scan = this.nodeIndex.scan(CLOSURE_KINDS);
+    for (const fn of this.mod.functions) {
+      eachNodeOfKinds(fn, scan, (node) => {
+        if (node.kind !== "closure") return true;
+        const target = this.fnByName.get(node.fnName);
+        const name =
+          target?.displayName ??
+          (target?.sourceName !== "<anonymous>" ? target?.sourceName : undefined);
+        if (target === undefined || name === undefined || name === "") return true;
+        const entry =
+          target.captures === undefined ? mangleWrapper(node.fnName) : this.callTarget(node.fnName);
+        if (!entries.has(entry)) entries.set(entry, name);
+        return true;
+      });
+    }
+    return (this.closureNameEntries = [...entries].map(([entry, name]) => ({ entry, name })));
   }
 
   /** The dispose-observer gates the emitted frees and record writers test
@@ -8598,6 +8627,7 @@ for (const op of [
   "dyn.dynFuncThunkHelper",
   "dyn.dynFuncBoxHelper",
   "dyn.jsEntryThunk",
+  "dyn.unnamedFuncBoxHelper",
   "dyn.dynFuncAdapterHelper",
   "dyn.dynToStrHelper",
   "dyn.dynIterNHelper",

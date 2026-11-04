@@ -146,6 +146,10 @@ export interface FrontendOptions {
   /** Packages that run in Node islands (scope-B NI-4): never compiled,
    * typed by their declarations. */
   islandPackages?: ReadonlySet<string>;
+  /** Program modules that run in Node islands (DESIGN.md note 1 §3.2):
+   * their bodies are never compiled; their imports lower to island loads.
+   * Absolute file paths. */
+  islandModules?: ReadonlySet<string>;
   /** The Node island report (coverage): the project's scriptc settings and
    * the detector's scan of the program and its npm packages. Builds do not
    * read either. */
@@ -565,6 +569,11 @@ export function runFrontend(
   }
 }
 
+/** A file path as the frontend and the island decision spell it. */
+function normalizeFile(file: string): string {
+  return file.replaceAll("\\", "/");
+}
+
 /** Rounds of dropping single refused overlay annotations before the
  * fallback drops whole files' overlays. */
 const OVERLAY_ANNOTATION_ROUNDS = 4;
@@ -586,6 +595,18 @@ function loadFrontend(
   beginShapeOverlayBuild();
   const statuses: NpmStaticStatus[] = [];
   const npmSites = new Map<string, SrcLoc>();
+  // Program modules that run in Node islands (DESIGN.md note 1 §3.2): their
+  // bodies are not lowered, so their sloppy semantics stay Node's, and a
+  // diagnostic anchored in one does not fail the program the build does not
+  // compile.
+  const islandModules =
+    options.islandModules === undefined || options.islandModules.size === 0
+      ? null
+      : new Set([...options.islandModules].map(normalizeFile));
+  const inIslandModule = (loc: SrcLoc | undefined): boolean =>
+    islandModules !== null && loc !== undefined && islandModules.has(normalizeFile(loc.file));
+  const withoutIslandModules = (diags: ScrDiagnostic[]): ScrDiagnostic[] =>
+    islandModules === null ? diags : diags.filter((d) => !inIslandModule(d.loc));
   // Node island detection (the report, or a build that may run islands):
   // how each package was refused, and the modules of packages removed from
   // the program.
@@ -848,8 +869,9 @@ function loadFrontend(
   const patchDiagnostics = typePatchDiagnostics()?.diagnostics ?? [];
   const buildWarnings = [...(report ? [] : configDiagnostics), ...patchDiagnostics];
   return {
-    preflight:
+    preflight: withoutIslandModules(
       report && configDiagnostics.length > 0 ? [...configDiagnostics, ...preflight] : preflight,
+    ),
     ...(buildWarnings.length > 0 ? { warnings: buildWarnings } : {}),
     entryText: () => finalLoad.entry.text,
     entryExports: () => entryFunctionExports(finalLoad.entry),
@@ -896,9 +918,23 @@ function loadFrontend(
       return texts;
     },
     lower: (opts, valid) => {
+      // The module order without the island modules, computed once per load:
+      // a reload keeps the array the lowering appends its dynamic import
+      // modules to. The map lives as long as this lowering, which owns the
+      // loads it keys.
+      const islandFiltered = new Map<readonly SourceFile[], SourceFile[]>();
+      const lowerOrder = (l: typeof finalLoad): SourceFile[] => {
+        if (islandModules === null) return l.moduleOrder;
+        let kept = islandFiltered.get(l.moduleOrder);
+        if (kept === undefined) {
+          kept = l.moduleOrder.filter((sf) => !islandModules.has(normalizeFile(sf.fileName)));
+          islandFiltered.set(l.moduleOrder, kept);
+        }
+        return kept;
+      };
       const lowerLoad = (l: typeof finalLoad): LowerResult => {
         if (l.shapeOverlayState !== undefined) restoreShapeOverlayState(l.shapeOverlayState);
-        return lowerToIr(l.program, l.entry, l.moduleOrder, {
+        return lowerToIr(l.program, l.entry, lowerOrder(l), {
           ...opts,
           frontendServices: l.services,
           startupCrash: l.startupCrash ?? null,
@@ -964,7 +1000,7 @@ function loadFrontend(
         const t1 = performance.now();
         // The preflight fills the module order; the tsc world reads the
         // files as written, so it answers as the first load did.
-        const reloadPreflight = checkPreflight(finalLoad);
+        const reloadPreflight = withoutIslandModules(checkPreflight(finalLoad));
         if (reloadPreflight.length > 0)
           return { ...lowered, module: null, diagnostics: reloadPreflight };
         const t2 = performance.now();
@@ -1066,7 +1102,7 @@ function loadFrontend(
         setShapeOverlayDropped(true);
         finalLoad.dispose();
         finalLoad = loadProgram(entryPath, { npmStatic: finalNpmStatic, externalTypes });
-        const reloadPreflight = checkPreflight(finalLoad);
+        const reloadPreflight = withoutIslandModules(checkPreflight(finalLoad));
         if (reloadPreflight.length > 0)
           return { ...lowered, module: null, diagnostics: reloadPreflight };
         lowered = lowerOnce();

@@ -540,10 +540,11 @@ export async function compile(
 }
 
 /** Divergence warnings collected while a compile lowers (none when a cache
- * hit skips lowering). */
+ * hit skips lowering), and the Node islands the build ran. */
 interface CompileWarningSink {
   warnings: ScrDiagnostic[];
   sourceTexts: Map<string, string> | null;
+  islands?: { packages: string[]; modules: string[] };
 }
 
 /** The package.json texts type patch warnings point into, re-read for a
@@ -559,6 +560,15 @@ function cachedWarningSources(warnings: readonly ScrDiagnostic[]): Map<string, s
     }
   }
   return texts;
+}
+
+/** The Node islands a build ran, stored with its cache entry so a cache hit
+ * reports them again (a runner reads them to tell an island pass from a
+ * native one). */
+function islandFields(sink: CompileWarningSink | undefined): {
+  islands?: { packages: string[]; modules: string[] };
+} {
+  return sink?.islands === undefined ? {} : { islands: sink.islands };
 }
 
 /** The build's performance warnings (SC61xx), stored with its cache entry
@@ -586,8 +596,15 @@ function withCompileWarnings<T extends CompileRequestResult>(
   result: T,
   sink: CompileWarningSink,
 ): T {
-  if (!result.ok || sink.warnings.length === 0) return result;
-  return { ...result, warnings: sink.warnings, sourceTexts: sink.sourceTexts ?? new Map() };
+  if (!result.ok) return result;
+  const islands = sink.islands === undefined ? {} : { islands: sink.islands };
+  if (sink.warnings.length === 0) return { ...result, ...islands };
+  return {
+    ...result,
+    warnings: sink.warnings,
+    sourceTexts: sink.sourceTexts ?? new Map(),
+    ...islands,
+  };
 }
 
 /** Build-time API compatibility fence: a caller's existing CompileOptions
@@ -1031,6 +1048,9 @@ interface PreparedExecutable {
   nativeFeatures: EarlyExecutableNativeFeatures;
   programSplit: ReturnType<typeof splitLlvmProgram>;
   sourceTexts: Map<string, string>;
+  /** The Node islands the build ran, reported with its result (a runner
+   * reads them to tell an island result from a native one). */
+  islands?: { packages: string[]; modules: string[] };
 }
 
 /** Finish frontend work in a separate scope so the AST, checker caches and
@@ -1108,6 +1128,8 @@ async function prepareExecutableInput(
     warningSink.warnings = prepared.warnings;
     warningSink.sourceTexts = sourceTexts;
   }
+  if (warningSink !== undefined && prepared.islands !== undefined)
+    warningSink.islands = prepared.islands;
 
   const stem = basename(entryPath).replace(/\.(ts|mts|cts|js|mjs|cjs)$/, "");
   const defaultSourcePaths = {
@@ -1267,6 +1289,7 @@ async function prepareExecutableInput(
     nativeFeatures,
     programSplit,
     sourceTexts,
+    ...(prepared.islands === undefined ? {} : { islands: prepared.islands }),
   };
 }
 
@@ -1452,6 +1475,7 @@ type FrontendProcessResult =
       nativeFeatures: EarlyExecutableNativeFeatures;
       sourceTexts: [string, string][];
       warnings: ScrDiagnostic[];
+      islands?: { packages: string[]; modules: string[] };
       frontend: FrontendInputSnapshot;
     }
   | {
@@ -1512,6 +1536,8 @@ async function prepareExecutableInputInChild(
     warningSink.warnings = result.warnings;
     warningSink.sourceTexts = sourceTexts;
   }
+  if (warningSink !== undefined && result.kind === "prepared" && result.islands !== undefined)
+    warningSink.islands = result.islands;
   if (result.kind === "diagnostics")
     return { ok: false, diagnostics: result.diagnostics, sourceTexts };
   return {
@@ -1523,6 +1549,7 @@ async function prepareExecutableInputInChild(
     nativeFeatures: result.nativeFeatures,
     programSplit: null,
     sourceTexts,
+    ...(result.islands === undefined ? {} : { islands: result.islands }),
   };
 }
 
@@ -1600,6 +1627,7 @@ export async function runFrontendProcess(requestPath: string, resultPath: string
         nativeFeatures: prepared.nativeFeatures,
         sourceTexts: [...prepared.sourceTexts],
         warnings: warnings.warnings,
+        ...(prepared.islands === undefined ? {} : { islands: prepared.islands }),
         frontend,
       };
     } else if (!prepared.ok) {
@@ -2015,6 +2043,8 @@ async function compileTracked(
       warningSink.warnings = earlyHit.performance;
       warningSink.sourceTexts = cachedWarningSources(earlyHit.performance);
     }
+    if (warningSink !== undefined && earlyHit.islands !== undefined)
+      warningSink.islands = earlyHit.islands;
     const executableCacheOptions = earlyCacheOptions;
     // Route/proof metadata is independently evictable. A full-compiler
     // fallback that still finds the validated payload repairs that lightweight
@@ -2261,6 +2291,7 @@ async function compileTracked(
               frontend: frontendInputs.snapshot(),
               ...(irSourcePath === undefined ? {} : { irPath: irSourcePath }),
               ...performanceWarnings(warningSink),
+              ...islandFields(warningSink),
               ...profileMatchField(nativeProgramObject),
             });
             publishedExecutable = true;
@@ -2283,6 +2314,7 @@ async function compileTracked(
         frontend: frontendInputs.snapshot(),
         ...(irSourcePath === undefined ? {} : { irPath: irSourcePath }),
         ...performanceWarnings(warningSink),
+        ...islandFields(warningSink),
         ...profileMatchField(nativeProgramObject),
       }).catch(() => undefined);
     }

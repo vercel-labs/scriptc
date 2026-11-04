@@ -12,6 +12,7 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   readdirSync,
   realpathSync,
@@ -19,9 +20,10 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { beforeAll, describe, expect, test } from "vitest";
+import { beforeAll, describe, expect, test, vi } from "vitest";
 import { compile, deserializeModule } from "@scriptc/compiler";
 import { definedFunctionNames, nodeIslandSymbols } from "../../scripts/zero-cost-compare.mjs";
 import { libnodePack } from "./libnode.js";
@@ -336,7 +338,314 @@ describe.skipIf(skip)("Node islands in-process", () => {
       );
     expect(conflicting).toEqual([]);
   });
+
+  // A module that patches a builtin module's CommonJS object runs in a Node
+  // island automatically (H3): the patch is meant for code that shares
+  // Node's builtin, and only Node has that object.
+  describe("a module that patches a builtin module", () => {
+    const corpus = join(repoRoot, "tests/corpus/6897-node-island-builtin-patch");
+
+    /** A scratch copy of the corpus, with main.ts optionally replaced. It
+     * lives outside node_modules: a package copied below one is a library
+     * with no declaration file, and its implicit `any` fails the build. */
+    function copyCorpus(name: string, main?: string, extra: Record<string, string> = {}): string {
+      const dir = mkdtempSync(join(tmpdir(), `scriptc-builtin-patch-${name}-`));
+      cpSync(corpus, dir, { recursive: true });
+      if (main !== undefined) writeFileSync(join(dir, "main.ts"), main);
+      for (const [file, text] of Object.entries(extra)) writeFileSync(join(dir, file), text);
+      return dir;
+    }
+
+    /** A build with a cache of its own: a hit reports the islands but not
+     * the SC8001 notes, and these tests read the notes. */
+    async function buildDir(dir: string, name: string) {
+      return withFreshBuildCache(() =>
+        compile(join(dir, "main.ts"), {
+          outPath: join(dir, name),
+          outDir: dir,
+          sanitize,
+          libnode: pack!,
+        }),
+      );
+    }
+
+    async function withFreshBuildCache<T>(build: () => Promise<T>): Promise<T> {
+      const cache = mkdtempSync(join(tmpdir(), "scriptc-builtin-patch-cache-"));
+      const previous = process.env["SCRIPTC_CACHE_DIR"];
+      process.env["SCRIPTC_CACHE_DIR"] = cache;
+      try {
+        return await build();
+      } finally {
+        if (previous === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+        else process.env["SCRIPTC_CACHE_DIR"] = previous;
+        rmSync(cache, { recursive: true, force: true });
+      }
+    }
+
+    function messages(result: { diagnostics?: { code: string; message: string }[] }): string[] {
+      return (result.diagnostics ?? []).map((d) => `${d.code}: ${d.message}`);
+    }
+
+    test("islands only the patching module, with the builtin-patch reason", async () => {
+      const dir = copyCorpus("auto");
+      const result = await buildDir(dir, "main");
+      expect(messages(result)).toEqual([]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.islands?.modules.map((file) => basename(file))).toEqual(["loader.ts"]);
+      const notes = (result.warnings ?? []).filter(
+        (d) => d.code === "SC8001" && d.message.includes("loader.ts"),
+      );
+      expect(notes).toHaveLength(1);
+      expect(notes[0]!.message).toContain("builtin-patch");
+      expect(notes[0]!.message).toContain("fs.readFileSync");
+      expect(notes[0]!.message).toContain("Node island");
+    }, 300_000);
+
+    test("a native read of the patched member is SC8020", async () => {
+      const dir = copyCorpus(
+        "read",
+        `import fs from "node:fs";
+import { loadPayload } from "./loader.ts";
+const result = await loadPayload();
+console.log(result.text, fs.readFileSync("payload.txt", "utf8"));
+`,
+      );
+      const result = await buildDir(dir, "main");
+      expect(result.ok).toBe(false);
+      const list = messages(result);
+      const read = list.find((m) => m.startsWith("SC8020:"));
+      expect(read).toBeDefined();
+      expect(read).toContain("fs.readFileSync");
+      expect(read).toContain("loader.ts");
+    }, 300_000);
+
+    test("--node-islands=off makes the patch a native refusal again", async () => {
+      const dir = copyCorpus(
+        "off",
+        'import { patch } from "./loader.ts";\npatch();\nconsole.log("ok");\n',
+      );
+      // The package the corpus loads has no declaration file, and without
+      // an island its implicit `any` would fail before the patch refusal.
+      writeFileSync(
+        join(dir, "loader.ts"),
+        `import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const fs = require("fs") as typeof import("fs");
+const original = fs.readFileSync.bind(fs);
+export function patch(): void {
+  fs.readFileSync = original as typeof fs.readFileSync;
+}
+`,
+      );
+      const result = await withFreshBuildCache(() =>
+        compile(join(dir, "main.ts"), {
+          outPath: join(dir, "main"),
+          outDir: dir,
+          sanitize,
+          libnode: pack!,
+          nodeIslands: { mode: "off" },
+        }),
+      );
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(
+        result.diagnostics.some(
+          (d) => /^SC(1090|2020)$/.test(d.code) && d.loc.file.endsWith("loader.ts"),
+        ),
+      ).toBe(true);
+    }, 300_000);
+
+    test("an entry module that patches is SC8006", async () => {
+      const dir = copyCorpus(
+        "entry",
+        `import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const fs = require("fs") as typeof import("fs");
+fs.readFileSync = (() => "") as typeof fs.readFileSync;
+console.log(fs.existsSync("x"));
+`,
+      );
+      const result = await buildDir(dir, "main");
+      expect(result.ok).toBe(false);
+      const entry = messages(result).find(
+        (m) => m.startsWith("SC8006:") && m.includes("move the patch into a module of its own"),
+      );
+      expect(entry).toBeDefined();
+      expect(entry).toContain("fs.readFileSync");
+    });
+
+    test("a TypeScript patcher Node cannot strip is SC8006", async () => {
+      const dir = copyCorpus(
+        "enum",
+        `import { patched } from "./enumpatch.ts";
+console.log(patched);
+`,
+        {
+          "enumpatch.ts": `import { createRequire } from "node:module";
+enum Kind {
+  A,
+}
+const require = createRequire(import.meta.url);
+const fs = require("fs") as typeof import("fs");
+fs.readFileSync = (() => "") as typeof fs.readFileSync;
+export const patched = Kind.A;
+`,
+        },
+      );
+      const result = await buildDir(dir, "main");
+      expect(result.ok).toBe(false);
+      const stripped = messages(result).find(
+        (m) => m.startsWith("SC8006:") && m.includes("Node cannot strip its types"),
+      );
+      expect(stripped).toBeDefined();
+      expect(stripped).toContain("enum");
+    });
+
+    test("a TypeScript patcher shares the program modules it imports with native code", async () => {
+      // state.ts is a stateful program module that both the native entry and
+      // the islanded patcher import: Node runs one copy of it, so the island
+      // must reach the program's copy, not one of its own.
+      const dir = copyCorpus(
+        "shared-state",
+        `import { bump, count } from "./state.ts";
+import { patchAndBump } from "./statepatch.ts";
+bump();
+const fromIsland = patchAndBump();
+console.log(fromIsland, count());
+`,
+        {
+          "state.ts": `let value = 0;
+export function bump(): number {
+  value++;
+  return value;
+}
+export function count(): number {
+  return value;
+}
+`,
+          "statepatch.ts": `import { createRequire } from "node:module";
+import { bump } from "./state.ts";
+const require = createRequire(import.meta.url);
+const fs = require("fs") as typeof import("fs");
+const original = fs.readFileSync;
+export function patchAndBump(): number {
+  fs.readFileSync = original;
+  return bump();
+}
+`,
+        },
+      );
+      const result = await buildDir(dir, "main");
+      expect(messages(result)).toEqual([]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.islands?.modules.map((file) => basename(file))).toEqual(["statepatch.ts"]);
+      // Node strips types only outside node_modules, and the shared island
+      // cache of these tests lives below the repository's node_modules.
+      const islandCache = mkdtempSync(join(tmpdir(), "scriptc-island-cache-"));
+      try {
+        const out = await run(join(dir, "main"), [], {
+          ...process.env,
+          XDG_CACHE_HOME: islandCache,
+        });
+        expect(out).toEqual({ stdout: "2 2\n", stderr: "", code: 0 });
+      } finally {
+        rmSync(islandCache, { recursive: true, force: true });
+      }
+    }, 300_000);
+  });
+
+  // The build-time probe evaluates modules to decide their deferral. A
+  // program module that runs in an island loads eagerly, so the build never
+  // evaluates the program's own source; the executable evaluates it when
+  // the entry requires it.
+  test("the build does not evaluate a program module that runs in an island", async () => {
+    const dir = sloppyModuleProject("probe");
+    const cache = mkdtempSync(join(tmpdir(), "scriptc-sloppy-probe-cache-"));
+    const islandCache = mkdtempSync(join(tmpdir(), "scriptc-island-cache-"));
+    const previous = process.env["SCRIPTC_CACHE_DIR"];
+    process.env["SCRIPTC_CACHE_DIR"] = cache;
+    try {
+      const result = await compile(join(dir, "main.js"), {
+        outPath: join(dir, "main"),
+        outDir: dir,
+        sanitize,
+        libnode: pack!,
+      });
+      if (!result.ok)
+        throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+      expect(result.islands?.modules.map((file) => basename(file))).toEqual(["sloppy.js"]);
+      expect(existsSync(join(dir, "evaluated.txt"))).toBe(false);
+      const out = await run(join(dir, "main"), [], { ...process.env, XDG_CACHE_HOME: islandCache });
+      expect(out).toEqual({ stdout: "2\n", stderr: "", code: 0 });
+      expect(existsSync(join(dir, "evaluated.txt"))).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+      else process.env["SCRIPTC_CACHE_DIR"] = previous;
+      rmSync(cache, { recursive: true, force: true });
+      rmSync(islandCache, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 300_000);
 });
+
+/** A CommonJS program whose entry requires a sloppy-mode module (a `with`
+ * statement islands it under the default `--node-islands=auto`). The
+ * module writes evaluated.txt beside itself when it evaluates. */
+function sloppyModuleProject(name: string): string {
+  const dir = mkdtempSync(join(tmpdir(), `scriptc-sloppy-${name}-`));
+  writeFileSync(join(dir, "package.json"), "{}\n");
+  writeFileSync(
+    join(dir, "main.js"),
+    'const { value } = require("./sloppy.js");\nconsole.log(value());\n',
+  );
+  writeFileSync(
+    join(dir, "sloppy.js"),
+    [
+      'require("fs").writeFileSync(require("path").join(__dirname, "evaluated.txt"), "evaluated\\n");',
+      "function value() {",
+      "  with ({ n: 1 }) {",
+      "    return n + 1;",
+      "  }",
+      "}",
+      "module.exports = { value };",
+      "",
+    ].join("\n"),
+  );
+  return dir;
+}
+
+// A program module that runs in an island never reaches the deferral
+// decision, whose probe evaluates the modules it decides: lowering loads it
+// eagerly. SCRIPTC_NODE_ISLANDS_TRACE=defer prints every decision; IR
+// output needs no libnode pack.
+test("a program module that runs in an island is never a deferral candidate", async () => {
+  const dir = sloppyModuleProject("defer");
+  const previous = process.env["SCRIPTC_NODE_ISLANDS_TRACE"];
+  process.env["SCRIPTC_NODE_ISLANDS_TRACE"] = "defer";
+  const written: string[] = [];
+  const spy = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+    written.push(String(chunk));
+    return true;
+  });
+  try {
+    const outPath = join(dir, "main.ir.json");
+    const result = await compile(join(dir, "main.js"), { outPath, outDir: dir, outputKind: "ir" });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    expect(written.filter((line) => line.includes("sloppy.js"))).toEqual([]);
+    const ir = JSON.stringify(deserializeModule(readFileSync(outPath, "utf8")));
+    expect(ir).toContain("nodeIsland.require");
+    expect(ir).not.toContain("nodeIsland.defer");
+    expect(existsSync(join(dir, "evaluated.txt"))).toBe(false);
+  } finally {
+    spy.mockRestore();
+    if (previous === undefined) delete process.env["SCRIPTC_NODE_ISLANDS_TRACE"];
+    else process.env["SCRIPTC_NODE_ISLANDS_TRACE"] = previous;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 300_000);
 
 // Lowering checks every argument and result type for JSON data; IR output
 // needs no libnode pack.
@@ -381,7 +690,7 @@ test("a failed build reports the island build's errors", async () => {
 }, 300_000);
 
 // Needs no libnode pack: the build fails before linking.
-test("re-exporting a path-mapped island package reports the island boundary", async () => {
+test("a star re-export of a path-mapped island package reports the island boundary", async () => {
   const dir = join(outDir, "path-mapped-reexport");
   rmSync(dir, { recursive: true, force: true });
   const corpus = join(repoRoot, "tests/corpus/6839-node-island-path-mapped");

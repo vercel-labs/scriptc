@@ -24,13 +24,16 @@
  * same vector handles varying or inference-unknown JavaScript emit tuples
  * when every known listener accepts checked-dynamic parameters or no
  * parameters. Typed listener constraints keep the fixed-tuple refusal.
- * The remaining cases are fenced:
- * unrestricted names, symbol names, conflicting literal tuples, the
- * meta-events' listener-function argument (meta listeners take at most
+ * Unrestricted names on plain emitters take the checked-dynamic receiver's
+ * bridge. The remaining cases are fenced:
+ * unrestricted names on streams, symbol names, conflicting literal tuples,
+ * the meta-events' listener-function argument (meta listeners take at most
  * the event name; dyn meta listeners fence — Node
  * passes the listener function second, which has no dyn conversion), and
  * listeners()/rawListeners() of an event with any dynamic
- * registration (the bucket has no one honest element type).
+ * registration, or, once the program registers a listener under an
+ * unrestricted name, of an event that literal names register with typed
+ * listeners (the bucket has no one honest element type).
  *
  * Two special names: 'error' is forced to the one-%Error tuple (emit
  * routes through emitter.emitError — no listener means the payload
@@ -234,6 +237,7 @@ function emitterEvents(lowerer: Lowerer): Map<string, EventSig> {
   if (lowerer.emitterEventTable) return lowerer.emitterEventTable;
   const table = new Map<string, EventSig>();
   const computedPatterns: ComputedEventPattern[] = [];
+  let anyNameListener = false;
   const sigOf = (name: string): EventSig => {
     let sig = table.get(name);
     if (!sig)
@@ -412,6 +416,9 @@ function emitterEvents(lowerer: Lowerer): Map<string, EventSig> {
         ) {
           computedPatterns.push({ ...pattern, listener: !isEmit });
         }
+        // A listener under an unrestricted name may receive any event
+        // (lowerFlexListenerCall's any-name path).
+        if (!pattern && !isEmit && streamSidesOf(lowerer, info) === null) anyNameListener = true;
         return;
       }
       const name = literal;
@@ -515,6 +522,7 @@ function emitterEvents(lowerer: Lowerer): Map<string, EventSig> {
   }
   lowerer.emitterEventTable = table;
   lowerer.emitterComputedPatterns = computedPatterns;
+  lowerer.emitterAnyNameListener = anyNameListener;
   return table;
 }
 
@@ -700,6 +708,21 @@ function patternMatchesName(pattern: ComputedEventPattern, key: string): boolean
   return name.startsWith(pattern.prefix) && name.endsWith(pattern.suffix);
 }
 
+/** Whether a listener registered under a computed name may sit in the
+ * bucket of the event keyed `key`: a pattern registration that matches it,
+ * or any registration under an unrestricted name (a string, so never the
+ * errorMonitor key). Such a listener crossed
+ * the checked-dynamic boundary, so the bucket has no one static signature. */
+function computedListenerMayHold(lowerer: Lowerer, key: string): boolean {
+  emitterEvents(lowerer);
+  return (
+    (lowerer.emitterAnyNameListener && key !== ERROR_MONITOR_EVENT) ||
+    computedPatterns(lowerer).some(
+      (pattern) => pattern.listener && patternMatchesName(pattern, key),
+    )
+  );
+}
+
 /** A computed event can use the variable-arity dyn path only when its
  * syntax proves a nonempty prefix or suffix excluding internal events. */
 function computedEventPattern(
@@ -741,6 +764,7 @@ function lowerFlexListenerCall(
   prepend: boolean,
   loc: SrcLoc,
   onFn: "emitter.onFlex" | "emitter.onAny" = "emitter.onFlex",
+  bridge = false,
 ): IrExpr {
   if (receiver.type.kind !== "object") {
     lowerer.noLowering(
@@ -770,6 +794,15 @@ function lowerFlexListenerCall(
     lowerer.noLowering(`${member} with a non-function computed-name listener`, cbNode);
   }
   const recvT = receiver.type;
+  // An UNRESTRICTED name (`bridge`) may be any event, including 'error',
+  // the meta events, and the literal events typed code fixes a tuple for:
+  // register through the checked-dynamic receiver's bridge (typed adapters
+  // for those events, the thunk alone otherwise), which keeps Node's
+  // contract for each.
+  if (bridge && registering) {
+    const bridged = lowerDynamicEmitterOn(lowerer, receiver, name, boxed, once, prepend, loc);
+    if (bridged) return bridged;
+  }
   const key = `${registering ? onFn : "emitter.offDyn"}:${typeKey(recvT)}`;
   let helper = lowerer.arrHofHelpers.get(key);
   if (!helper) {
@@ -1521,7 +1554,7 @@ export function lowerEmitterMethodCall(
     }
     return receiver;
   };
-  const lowerFlexEmit = (name: IrExpr, kind = "computed-name"): IrExpr => {
+  const lowerFlexEmit = (name: IrExpr, kind = "computed-name", anyName = false): IrExpr => {
     const below: ClassInfo[] = [];
     collectEmitOverridesBelow(info, below);
     if (emitOverrideAtOrAbove(info) || below.length > 0) {
@@ -1540,6 +1573,20 @@ export function lowerEmitterMethodCall(
       );
     }
     const payload = args.slice(1).map((arg) => lowerer.lowerExprExpecting(arg, DYN));
+    if (anyName) {
+      // Any event name: the checked-dynamic receiver's emit, which keeps
+      // 'error' and the meta events' contracts and converts the arguments
+      // for listeners registered with a typed tuple.
+      return (
+        lowerDynamicEmitterEmit(lowerer, receiver, name, payload, loc) ?? {
+          kind: "libCall",
+          fn: "emitter.emitAny",
+          args: [receiver, name, ...payload],
+          type: BOOL,
+          loc,
+        }
+      );
+    }
     return {
       kind: "libCall",
       fn: "emitter.emitFlex",
@@ -1642,7 +1689,11 @@ export function lowerEmitterMethodCall(
     }
     const registering = REGISTER_MEMBERS.has(member);
     if (literalEventName(lowerer, args[0]!) === null) {
-      computedEventPattern(lowerer, info, member, args[0]!);
+      // An unrestricted name on a plain emitter takes the any-name path;
+      // streams keep the fence (their runtime events carry fixed ABIs).
+      const anyName =
+        computedEventPatternOf(lowerer, args[0]!) === null && streamSidesOf(lowerer, info) === null;
+      if (!anyName) computedEventPattern(lowerer, info, member, args[0]!);
       const receiver = lowerReceiver();
       const name = lowerer.lowerExprExpecting(args[0]!, STRING);
       return lowerFlexListenerCall(
@@ -1655,6 +1706,8 @@ export function lowerEmitterMethodCall(
         member === "once" || member === "prependOnceListener",
         member === "prependListener" || member === "prependOnceListener",
         loc,
+        anyName ? "emitter.onAny" : "emitter.onFlex",
+        anyName,
       );
     }
     const name = eventNameOf(lowerer, member, args[0]!);
@@ -1830,6 +1883,7 @@ export function lowerEmitterMethodCall(
       const pattern = computedEventPatternOf(lowerer, args[0]!);
       const mayBeObserved =
         pattern === null ||
+        lowerer.emitterAnyNameListener ||
         computedPatternOverlapsReserved(pattern) ||
         [...table].some(
           ([candidate, sig]) =>
@@ -1853,6 +1907,10 @@ export function lowerEmitterMethodCall(
           type: BOOL,
           loc,
         };
+      }
+      if (pattern === null && streamSidesOf(lowerer, info) === null) {
+        const name = lowerer.lowerExprExpecting(args[0]!, STRING);
+        return lowerFlexEmit(name, "computed-name", true);
       }
       computedEventPattern(lowerer, info, member, args[0]!);
       const name = lowerer.lowerExprExpecting(args[0]!, STRING);
@@ -2052,7 +2110,7 @@ export function lowerEmitterMethodCall(
     if (listenerArrayIsDyn(lowerer, name, sig)) {
       return dynListenerArray(lowerer, table, lowerReceiver(), name, call, loc);
     }
-    if (sig?.dynListener) {
+    if (sig?.dynListener || computedListenerMayHold(lowerer, name)) {
       // A dyn-adapted registration means the runtime bucket can hold
       // originals of MIXED signatures — no one honest element type.
       lowerer.noLowering(
@@ -3034,7 +3092,7 @@ export function lowerEventsEmitterHelper(
     if (listenerArrayIsDyn(lowerer, name, sig)) {
       return dynListenerArray(lowerer, table, receiver, name, call, loc);
     }
-    if (sig?.dynListener) {
+    if (sig?.dynListener || computedListenerMayHold(lowerer, name)) {
       lowerer.noLowering(
         `events.getEventListeners of the event '${name}'`,
         call,

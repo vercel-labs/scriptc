@@ -1,5 +1,5 @@
-import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 
-const emitter = new EventEmitter();
+const stream = new PassThrough();
 const name = process.argv[2] ?? "topic";
-emitter.on(name, () => {});
+stream.on(name, () => {});

@@ -4,3 +4,17 @@ delete-fences.ts:7:1 - error SC1090: 'delete' of hybrid index-signature keys (de
   7 | delete h["extra"];
     | ^~~~~~~~~~~~~~~~~
   8 | console.log(h.base);
+
+delete-fences.ts:19:1 - error SC1090: 'delete' of optional 'unknown'/'any' fields (the checked-dynamic slot has no absent state yet — an omitted such field already reads as present) are not supported yet
+
+  18 | const d: Dyn = { content: [] };
+  19 | delete d.structured;
+     | ^~~~~~~~~~~~~~~~~~~
+  20 | 
+
+delete-fences.ts:33:3 - error SC1090: 'delete' of optional 'unknown'/'any' fields (the checked-dynamic slot has no absent state yet — an omitted such field already reads as present) are not supported yet
+
+  32 | function drop(u: DynA | DynB): void {
+  33 |   delete u.structured;
+     |   ^~~~~~~~~~~~~~~~~~~
+  34 | }

@@ -6,3 +6,30 @@ type Hybrid = { base: string; [k: string]: string };
 const h: Hybrid = { base: "b", extra: "e" };
 delete h["extra"];
 console.log(h.base);
+
+// An OPTIONAL checked-dynamic field (`unknown`/`any`) has no ABSENT state
+// for a delete to write — the slot cannot represent "no property", and an
+// omitted one already reads as present — so the refusal names that reason
+// instead of calling the optional field required.
+interface Dyn {
+  content: string[];
+  structured?: unknown;
+}
+const d: Dyn = { content: [] };
+delete d.structured;
+
+// The same fence on a union of records: every arm declares the field
+// optional and checked-dynamic.
+interface DynA {
+  content: string[];
+  structured?: unknown;
+  extra?: any;
+}
+interface DynB {
+  content: string[];
+  structured?: unknown;
+}
+function drop(u: DynA | DynB): void {
+  delete u.structured;
+}
+drop(d);

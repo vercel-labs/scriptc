@@ -16,7 +16,7 @@ import { varRef } from "../../ir/build.js";
 import { locOf } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
 import type { ClassInfo } from "./lower-classes.js";
-import { classValueRef, functionLocalClass } from "./lower-classes.js";
+import { classValueRef, perEvaluationClass } from "./lower-classes.js";
 
 export function isNewTarget(node: ts.Node): node is ts.MetaProperty {
   return (
@@ -66,7 +66,7 @@ function functionLocalSubclasses(lowerer: Lowerer): ts.ClassLikeDeclaration[] {
         if (
           (ts.isClassDeclaration(node) || ts.isClassExpression(node)) &&
           baseExpressionOf(node) !== undefined &&
-          functionLocalClass(node)
+          perEvaluationClass(node)
         )
           classes.push(node);
       });

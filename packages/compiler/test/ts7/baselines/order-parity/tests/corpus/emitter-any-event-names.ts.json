@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/emitter-any-event-names.ts"
+ ],
+ "diags": []
+}

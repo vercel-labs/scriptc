@@ -668,7 +668,7 @@ export class NativeCompiler {
           ...hugeTextLinkerArgs(hugeText, (withLld && lld.length !== 0) || zig),
           ...plan.driverFlags,
           ...mapArgs,
-          ...(withLld ? plan.inputs : inputsWithoutLld(target.platform, plan.inputs)),
+          ...(withLld ? plan.inputs : inputsWithoutLld(target, plan.inputs)),
           ...systemLibraryLinkerArgs(target, plan.systemLibraries),
           "-o",
           stagedOutput,

@@ -8,12 +8,18 @@
  * included. Defining them in the executable lets a program that uses no
  * other libm function link without libm.so (-lm is linked as needed),
  * which saves loading it at startup. Library builds keep the embedder's
- * libm. */
+ * libm.
+ *
+ * musl executables use them too: zig's libc, which the musl lane links,
+ * defines floor, ceil and trunc as weak bit-manipulation routines without
+ * SSE4.1, and these definitions replace them. A static musl executable has
+ * no ifunc, so on x86_64 floor, ceil and trunc call through a pointer that
+ * their first call sets. */
 
 #include <stdint.h>
 #include <string.h>
 
-#if defined(__GLIBC__) && !defined(SCR_LIB)
+#if (defined(__GLIBC__) || defined(SCR_MUSL)) && !defined(SCR_LIB)
 
 /* The sanitizer runtime calls some of these functions while it initializes,
  * and the dynamic loader calls the resolvers before that: none of the code
@@ -122,9 +128,29 @@ typedef double (*SgmUnary)(double);
 static SgmUnary sgm_resolve_floor(void) { return sgm_has_sse41() ? sgm_floor_sse41 : sgm_floor; }
 static SgmUnary sgm_resolve_ceil(void) { return sgm_has_sse41() ? sgm_ceil_sse41 : sgm_ceil; }
 static SgmUnary sgm_resolve_trunc(void) { return sgm_has_sse41() ? sgm_trunc_sse41 : sgm_trunc; }
+#if defined(SCR_MUSL)
+/* The first call resolves the implementation and stores it; threads that
+ * race on it store the same pointer. */
+#include <stdatomic.h>
+#define SGM_FIRST_CALL(name)                                                       \
+  static double sgm_##name##_first(double x);                                      \
+  static _Atomic(SgmUnary) sgm_##name##_impl = sgm_##name##_first;                 \
+  static double sgm_##name##_first(double x) {                                     \
+    SgmUnary impl = sgm_resolve_##name();                                          \
+    atomic_store_explicit(&sgm_##name##_impl, impl, memory_order_relaxed);         \
+    return impl(x);                                                                \
+  }                                                                                \
+  SGM_DEFINE double name(double x) {                                               \
+    return atomic_load_explicit(&sgm_##name##_impl, memory_order_relaxed)(x);      \
+  }
+SGM_FIRST_CALL(floor)
+SGM_FIRST_CALL(ceil)
+SGM_FIRST_CALL(trunc)
+#else
 SGM_DEFINE double floor(double x) __attribute__((ifunc("sgm_resolve_floor")));
 SGM_DEFINE double ceil(double x) __attribute__((ifunc("sgm_resolve_ceil")));
 SGM_DEFINE double trunc(double x) __attribute__((ifunc("sgm_resolve_trunc")));
+#endif
 #else
 SGM_DEFINE double floor(double x) { return sgm_floor(x); }
 SGM_DEFINE double ceil(double x) { return sgm_ceil(x); }

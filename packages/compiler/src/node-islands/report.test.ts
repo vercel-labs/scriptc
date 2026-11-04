@@ -20,6 +20,8 @@ function mod(pkg: string | null, file: string, markers: NodeIslandMarker[] = [])
     packageDir: pkg === null ? null : `${NM}/${pkg}`,
     packageName: pkg,
     markers,
+    cjsReads: [],
+    stripProblem: null,
     dropped: false,
   };
 }

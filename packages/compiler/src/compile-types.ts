@@ -165,6 +165,10 @@ export type CompileFailure = {
 export interface CompileWarnings {
   warnings?: ScrDiagnostic[];
   sourceTexts?: Map<string, string>;
+  /** The Node islands the build ran: the npm packages and the program
+   * modules (absolute file paths). Reported again on an executable cache
+   * hit, so a runner can tell an island result from a native one. */
+  islands?: { packages: string[]; modules: string[] };
 }
 
 export type CompileSourceResult =

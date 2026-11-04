@@ -28,6 +28,7 @@ import {
   arrayOf,
   canBoxFuncIntoDyn,
   funcOf,
+  isUnitType,
 } from "../../../ir/ir.js";
 import { lowerBuiltinLoaderValue } from "../lower-builtin-values.js";
 import { builtinFunctionValue } from "../lower-exprs.js";
@@ -869,7 +870,16 @@ export function lowerProcessProperty(
     return { kind: "libCall", fn: "process.execPath", args: [], type: STRING, loc };
   }
   if (member === "env") {
-    const mapped = lowerer.mapTypeOf(lowerer.typeOf(expr));
+    let mapped = lowerer.mapTypeOf(lowerer.typeOf(expr));
+    // `(globalThis as { process?: { env?: E } }).process?.env`: the cast
+    // types env as optional, but Node always defines it. Snapshot into the
+    // record arm; the caller's coercion wraps it into the optional type.
+    if (mapped?.kind === "union") {
+      const arms = lowerer.unions.get(mapped.unionId)?.arms ?? [];
+      const records = arms.filter((arm) => arm.kind === "record");
+      if (records.length === 1 && arms.every((arm) => arm.kind === "record" || isUnitType(arm)))
+        mapped = records[0]!;
+    }
     if (mapped?.kind === "record") {
       const helper = envSnapshotHelper(lowerer, mapped.shapeId, loc);
       if (helper !== null) {

@@ -1711,6 +1711,7 @@ function buildLibFnSignatures() {
      * compiler-rendered fence — ALWAYS THROWS (the error.nodeThrow
      * polymorphic-result carve-out). May-throw seed. */
     "net.connectOptsChk": { argTypes: [DYN, STRING], result: VOID },
+    "net.listenPortDyn": { argTypes: [DYN, STRING], result: F64 },
     "net.connectCb": {
       argTypes: [F64, STRING, { kind: "func", params: [], ret: VOID }],
       result: NETSOCKET_T,
@@ -4893,7 +4894,7 @@ function buildLibFnSignatures() {
      * message, code — the %error marker skipped) and deep-compare each
      * against the caught value's; a mismatch throws the deep-equal
      * AssertionError (scr_assert.c). MAY THROW by design. */
-    "assert.expectsErrDyn": { argTypes: [DYN, DYN, STRING, BOOL], result: VOID },
+    "assert.expectsErrDyn": { argTypes: [DYN, DYN, STRING, BOOL, BOOL], result: VOID },
     /** A validation function against the caught value (Node's expectedException). */
     "assert.throwsValidate": { argTypes: [DYN, DYN, STRING, STRING, BOOL], result: VOID },
     // assert.ifError's typed entries (always throw; unit args never
@@ -5430,6 +5431,10 @@ function buildLibFnSignatures() {
      * lone surrogate as U+FFFD). Borrowed arg; owned (+1) string; never throws. */
     "text.decode": { argTypes: [BYTES_U8], result: STRING },
     "bytes.bufferSource": { argTypes: [DYN], result: BYTES_U8 },
+    "text.decoderInput": { argTypes: [DYN, F64, DYN, BOOL], result: BYTES_U8 },
+    "text.decoderFlag": { argTypes: [DYN, STRING], result: BOOL },
+    "text.decodeStreamOption": { argTypes: [DYN], result: BOOL },
+    "text.decoderEncodingOptions": { argTypes: [DYN, DYN], result: F64 },
     /** Whether an error-first callback's Buffer result is absent: the zlib
      * and crypto callback adapters pass NULL after an error. Borrowed arg;
      * never throws. */

@@ -1015,6 +1015,14 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
   // read once at the call into a hidden local, so a side effect in the
   // expression runs once and the three modes cannot disagree.
   let stdioMode: { localId: string; init: IrExpr } | null = null;
+  // The runtime-valued option members in source order. Each is bound into a
+  // hidden local where its member sits, so the call reads them in the order
+  // Node evaluates the object literal: an earlier cwd, env, or detached
+  // expression has already run when the stdio expression runs, and a later
+  // one has not.
+  const optionOrder: ("stdio" | "detached" | "env" | "cwd")[] = [];
+  let outFdRuntime = false;
+  let errFdRuntime = false;
 
   if (optsNode && ts.isObjectLiteralExpression(optsNode)) {
     for (const p of optsNode.properties.nodes) {
@@ -1118,12 +1126,22 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
               if (which === 1) {
                 outMode = numLit(2, loc);
                 outFd = fd;
+                outFdRuntime = true;
               } else {
                 errMode = numLit(2, loc);
                 errFd = fd;
+                errFdRuntime = true;
               }
             };
             m.value.elements.nodes.forEach((el, i) => slot(el, i as 0 | 1 | 2));
+            if (
+              inMode.kind !== "numLit" ||
+              outMode.kind !== "numLit" ||
+              errMode.kind !== "numLit" ||
+              outFdRuntime ||
+              errFdRuntime
+            )
+              optionOrder.push("stdio");
             sawStdio = true;
             plain = false;
             break;
@@ -1134,6 +1152,7 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
             const local = lowerer.declareHiddenLocal("%spawnStdioMode", chain.type);
             stdioMode = { localId: local.id, init: chain };
             inMode = outMode = errMode = varRef(local.id, chain.type, loc);
+            optionOrder.push("stdio");
             sawStdio = true;
             plain = false;
             break;
@@ -1164,6 +1183,7 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
             // process.platform !== "win32"` — reaches the same
             // POSIX_SPAWN_SETSID flag through scr_spawn_opts's bool slot.
             detached = lowerer.lowerExprExpecting(m.value, BOOL);
+            optionOrder.push("detached");
             plain = false;
           }
           break;
@@ -1171,10 +1191,12 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
         case "env":
           hasEnv = boolLit(true, loc);
           envPairs = recordToEnvPairs(lowerer, m.value);
+          optionOrder.push("env");
           plain = false;
           break;
         case "cwd":
           cwd = lowerer.lowerExprExpecting(m.value, STRING);
+          if (cwd.kind !== "strLit") optionOrder.push("cwd");
           plain = false;
           break;
         case "windowsHide":
@@ -1244,23 +1266,71 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
     type: CHILD_T,
     loc,
   };
-  if (stdioMode === null) return call;
-  // Node evaluates the arguments before the options object: the command
-  // and the argument list are bound first, then the stdio member, and the
-  // call reads all three from those locals.
+  if (stdioMode === null && optionOrder.length === 0) return call;
+  // Node evaluates the arguments before the options object, and the options
+  // members in source order. The command and the argument list are bound
+  // first, then each runtime option where its member sits, and the call
+  // reads all of them from those locals: a stdio expression that feeds the
+  // modes runs after the cwd, env, or detached expressions before it and
+  // before the ones after it, as the object literal does.
   const prelude: IrStmt[] = [];
   const bind = (name: string, value: IrExpr): IrExpr => {
+    if (value.kind === "strLit" || value.kind === "numLit" || value.kind === "boolLit")
+      return value;
     const local = lowerer.declareHiddenLocal(name, value.type);
     prelude.push({ kind: "varDecl", localId: local.id, init: value, loc });
     return varRef(local.id, value.type, loc);
   };
   const cmdArg = bind("%spawnCmd", cmd);
   const argvArg = bind("%spawnArgs", argv);
-  prelude.push({ kind: "varDecl", localId: stdioMode.localId, init: stdioMode.init, loc });
+  let inModeArg = inMode;
+  let outModeArg = outMode;
+  let errModeArg = errMode;
+  let outFdArg = outFd;
+  let errFdArg = errFd;
+  let detachedArg = detached;
+  let envArg = envPairs;
+  let cwdArg = cwd;
+  for (const option of optionOrder) {
+    if (option === "stdio") {
+      if (stdioMode !== null) {
+        prelude.push({ kind: "varDecl", localId: stdioMode.localId, init: stdioMode.init, loc });
+        continue;
+      }
+      // Each slot runs once, left to right as the array literal does.
+      inModeArg = bind("%spawnStdinMode", inMode);
+      if (outFdRuntime) outFdArg = bind("%spawnStdoutFd", outFd);
+      else outModeArg = bind("%spawnStdoutMode", outMode);
+      if (errFdRuntime) errFdArg = bind("%spawnStderrFd", errFd);
+      else errModeArg = bind("%spawnStderrMode", errMode);
+    } else if (option === "detached") {
+      detachedArg = bind("%spawnDetached", detached);
+    } else if (option === "env") {
+      envArg = bind("%spawnEnv", envPairs);
+    } else {
+      cwdArg = bind("%spawnCwd", cwd);
+    }
+  }
   return {
     kind: "seqExpr",
     stmts: prelude,
-    result: { ...call, args: [cmdArg, argvArg, ...call.args.slice(2)] },
+    result: {
+      ...call,
+      args: [
+        cmdArg,
+        argvArg,
+        inModeArg,
+        outModeArg,
+        errModeArg,
+        outFdArg,
+        errFdArg,
+        detachedArg,
+        shell,
+        hasEnv,
+        envArg,
+        cwdArg,
+      ],
+    },
     type: CHILD_T,
     loc,
   };

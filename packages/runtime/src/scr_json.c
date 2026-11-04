@@ -1447,6 +1447,9 @@ static ScrDyn *scr_dyn_alloc(ScrDynKind kind) {
       d->v.arr.frozen = false;
       d->v.arr.presence = NULL;
       d->v.arr.region = NULL;
+#ifdef SCR_JS_OBJECT_MODEL
+      d->v.arr.length = 0;
+#endif
     } else if (kind == SCR_DYN_OBJ) {
       d->v.obj.len = 0; /* cap/slots preserved */
       d->v.obj.region = NULL;
@@ -1952,6 +1955,16 @@ bool scr_dyn_field_eq_bool(const ScrDyn *d, const ScrStr *key, bool value) {
 /* Public: the compiler-emitted static→dyn converters push through this
  * too. Ownership of the item moves in. */
 void scr_dyn_arr_push(ScrDyn *arr, ScrDyn *item) {
+#ifdef SCR_JS_OBJECT_MODEL
+  /* A length ahead of the dense prefix means the push appends after an
+   * implicit hole run the dense items cannot hold: the element is an own
+   * property, as a far index write would make it. */
+  if (arr->v.arr.length != arr->v.arr.len) {
+    scr_dyn_arr_sparse_put(arr, arr->v.arr.length, item);
+    scr_dyn_release(item); /* ownership moved in above */
+    return;
+  }
+#endif
   scr_dyn_region_store(arr, item);
   if (arr->v.arr.len == arr->v.arr.cap) {
     size_t cap = arr->v.arr.cap ? arr->v.arr.cap * 2 : 4;
@@ -1967,6 +1980,12 @@ void scr_dyn_arr_push(ScrDyn *arr, ScrDyn *item) {
   }
   if (arr->v.arr.presence) arr->v.arr.presence[arr->v.arr.len] = 1;
   arr->v.arr.items[arr->v.arr.len++] = item; /* ownership moves in */
+#ifdef SCR_JS_OBJECT_MODEL
+  /* A dense push extends the array only while the dense prefix IS the
+   * array; past it the appended item is scratch space inside an implicit
+   * hole run and the length stays. */
+  if (arr->v.arr.length == arr->v.arr.len - 1) arr->v.arr.length = arr->v.arr.len;
+#endif
 }
 
 /* Room for `cap` items in a fresh dyn array, so a walk that knows its
@@ -1984,6 +2003,19 @@ bool scr_dyn_arr_has_index(const ScrDyn *arr, size_t index) {
 }
 
 void scr_dyn_arr_push_hole(ScrDyn *arr) {
+#ifdef SCR_JS_OBJECT_MODEL
+  /* A hole always lands in the dense prefix, even when the array's length
+   * has already left it (a far length assignment): scratch space the
+   * prefix grows into, not an element past the array's end. The append
+   * runs with the length at the prefix, so push takes its dense path, and
+   * the sparse length then goes back. */
+  if (arr->v.arr.length != arr->v.arr.len) {
+    size_t length = arr->v.arr.length;
+    arr->v.arr.length = arr->v.arr.len;
+    scr_dyn_arr_push(arr, scr_dyn_retain(scr_dyn_undefined()));
+    arr->v.arr.length = length;
+  } else
+#endif
   scr_dyn_arr_push(arr, scr_dyn_retain(scr_dyn_undefined()));
   if (!arr->v.arr.presence) {
     arr->v.arr.presence = malloc(arr->v.arr.cap);
@@ -1992,6 +2024,175 @@ void scr_dyn_arr_push_hole(ScrDyn *arr) {
   }
   arr->v.arr.presence[arr->v.arr.len - 1] = 0;
 }
+
+#ifdef SCR_JS_OBJECT_MODEL
+/* The canonical array index a property name spells (0…2^32-2, no leading
+ * zero), the same rule the index write applies. */
+bool scr_dyn_arr_index_key(const char *data, size_t len, size_t *out) {
+  if (len == 0 || len > 10) return false;
+  size_t index = 0;
+  for (size_t i = 0; i < len; i++) {
+    char c = data[i];
+    if (c < '0' || c > '9') return false;
+    if (i > 0 && index == 0) return false;
+    if (index > (4294967294ULL - (size_t)(c - '0')) / 10) return false;
+    index = index * 10 + (size_t)(c - '0');
+  }
+  *out = index;
+  return true;
+}
+
+static void scr_dyn_note_assign_failure(void);
+
+/* Whether the array's own property table holds the canonical index `idx`,
+ * an element the array keeps past its dense prefix. */
+static bool dyn_arr_sparse_present(const ScrDyn *arr, size_t idx) {
+  if (!arr->v.arr.properties) return false;
+  char text[12];
+  int n = snprintf(text, sizeof text, "%zu", idx);
+  return scr_dyn_obj_get(arr->v.arr.properties, text, (size_t)n) != NULL;
+}
+
+/* Writes canonical index `idx` past the array's dense prefix as an own
+ * property under its index spelling, growing the array's length to idx + 1.
+ * Borrows `value`; false with the exception pending when the array's
+ * attributes refuse the write. */
+bool scr_dyn_arr_sparse_put(ScrDyn *arr, size_t idx, ScrDyn *value) {
+  if (scr_dyn_array_prototype_element_fence(arr)) return false;
+  bool present = dyn_arr_sparse_present(arr, idx);
+  if (arr->v.arr.frozen || (arr->v.arr.sealed && !present)) {
+    scr_array_frozen_error(0, arr->v.arr.len, (double)idx, 0, 0);
+    scr_dyn_note_assign_failure();
+    return false;
+  }
+  if (arr->non_extensible && !present) {
+    scr_array_frozen_error(0, 0, (double)idx, 0, 0);
+    scr_dyn_note_assign_failure();
+    return false;
+  }
+  scr_dyn_region_store(arr, value);
+  char text[12];
+  int n = snprintf(text, sizeof text, "%zu", idx);
+  ScrStr *key = scr_str_new(text, (size_t)n);
+  if (!arr->v.arr.properties) {
+    scr_dyn_region_store(arr, NULL); /* a table that later holds anything */
+    arr->v.arr.properties = scr_dyn_new_obj();
+  }
+  arr->v.arr.properties->non_extensible = arr->non_extensible;
+  scr_dyn_key_set(arr->v.arr.properties, key, value);
+  scr_str_release(key);
+  if (scr_exc_pending()) return false;
+  if (idx >= arr->v.arr.length) arr->v.arr.length = idx + 1;
+  return true;
+}
+
+/* Drops the sparse element at `idx` before a write puts an element inside
+ * the dense prefix at the same index, so the dense element is the only one
+ * the array holds there. */
+static void dyn_arr_sparse_clear(ScrDyn *arr, size_t idx) {
+  if (!dyn_arr_sparse_present(arr, idx)) return;
+  char text[12];
+  int n = snprintf(text, sizeof text, "%zu", idx);
+  ScrStr *key = scr_str_new(text, (size_t)n);
+  scr_dyn_key_delete(arr->v.arr.properties, key, false);
+  scr_str_release(key);
+}
+
+static int dyn_arr_index_order_desc(const void *a, const void *b) {
+  size_t x = *(const size_t *)a;
+  size_t y = *(const size_t *)b;
+  return x > y ? -1 : x < y ? 1 : 0;
+}
+
+/* A shorter length drops the elements at or past it. Nodes' ArraySetLength
+ * deletes them from the highest index down, so a non-configurable element
+ * refuses the delete only after every element above it is gone; that refusal
+ * leaves the length at the refused index + 1. The elements inside the dense
+ * prefix are released by the caller's shrink loop; the ones past it live in
+ * the array's own property table under their index spelling. True when every
+ * element the target length excludes is gone, false with the exception
+ * pending (the length already moved). */
+static bool scr_dyn_arr_truncate_sparse(ScrDyn *arr, size_t length) {
+  ScrDyn *props = arr->v.arr.properties;
+  size_t total = arr->v.arr.length;
+  if (!props || length >= total) return true;
+  size_t count = scr_dyn_obj_count(props);
+  if (count == 0) return true;
+  size_t *indexes = (size_t *)malloc(count * sizeof *indexes);
+  if (!indexes) {
+    scr_json_oom();
+    return false;
+  }
+  size_t kept = 0;
+  for (size_t i = 0; i < count; i++) {
+    size_t key_len = 0;
+    const char *key = scr_dyn_obj_key_at(props, i, &key_len);
+    size_t index = 0;
+    if (scr_dyn_arr_index_key(key, key_len, &index) && index >= length && index < total)
+      indexes[kept++] = index;
+  }
+  qsort(indexes, kept, sizeof *indexes, dyn_arr_index_order_desc);
+  bool done = true;
+  for (size_t i = 0; i < kept; i++) {
+    char text[12];
+    int n = snprintf(text, sizeof text, "%zu", indexes[i]);
+    ScrDynEntry *entry = scr_dyn_find_entry(props, text, (size_t)n);
+    if (!entry) continue;
+    if (!entry->configurable) {
+      arr->v.arr.length = indexes[i] + 1;
+      scr_array_undeletable_error((double)indexes[i]);
+      done = false;
+      break;
+    }
+    ScrStr *spelled = scr_str_new(text, (size_t)n);
+    scr_dyn_key_delete(props, spelled, false);
+    scr_str_release(spelled);
+    if (scr_exc_pending()) {
+      arr->v.arr.length = indexes[i] + 1;
+      done = false;
+      break;
+    }
+  }
+  free(indexes);
+  return done;
+}
+
+/* Array.prototype.pop's element when the length extends past the dense
+ * prefix. The element at last-1 is an own index property or a hole; a hole
+ * reads through the prototype and refuses no delete, while a
+ * non-configurable own element refuses it and leaves the length alone, as in
+ * Node. Returns the +1 element, or NULL with the exception pending. */
+ScrDyn *scr_dyn_arr_sparse_pop(ScrDyn *arr) {
+  size_t last = arr->v.arr.length;
+  size_t index = last - 1;
+  ScrDyn *result = scr_dyn_arr_at(arr, (double)index);
+  if (!result || scr_exc_pending()) {
+    scr_dyn_release(result);
+    return NULL;
+  }
+  char text[12];
+  int n = snprintf(text, sizeof text, "%zu", index);
+  ScrDynEntry *entry = arr->v.arr.properties
+      ? scr_dyn_find_entry(arr->v.arr.properties, text, (size_t)n)
+      : NULL;
+  if (entry && !entry->configurable) {
+    scr_array_undeletable_error((double)index);
+    scr_dyn_release(result);
+    return NULL;
+  }
+  if (entry) {
+    ScrStr *key = scr_str_new(text, (size_t)n);
+    scr_dyn_key_delete(arr->v.arr.properties, key, false);
+    scr_str_release(key);
+    if (scr_exc_pending()) {
+      scr_dyn_release(result);
+      return NULL;
+    }
+  }
+  arr->v.arr.length = index;
+  return result;
+}
+#endif
 
 #ifdef SCR_JS_OBJECT_MODEL
 /* One typed-array element as the dyn value a read answers: a number for the
@@ -2240,7 +2441,7 @@ double scr_dyn_arr_len(const ScrDyn *d) {
   return d->kind == SCR_DYN_ARR ? (double)d->v.arr.len : 0;
 }
 ScrDyn *scr_dyn_arr_at(const ScrDyn *d, double i) {
-  if (d->kind != SCR_DYN_ARR || i < 0 || i >= (double)d->v.arr.len) {
+  if (d->kind != SCR_DYN_ARR || i < 0 || i >= (double)scr_dyn_arr_length(d)) {
     return scr_dyn_retain(scr_dyn_undefined());
   }
   if (scr_dyn_arr_has_index(d, (size_t)i)) return scr_dyn_retain(d->v.arr.items[(size_t)i]);
@@ -3680,7 +3881,7 @@ ScrDyn *scr_dyn_own_descriptor(const ScrDyn *value, const ScrStr *key) {
   }
   if (value->kind == SCR_DYN_ARR && key->len == 6 && memcmp(key->data, "length", 6) == 0) {
     ScrDyn *out = scr_dyn_new_obj();
-    scr_dyn_obj_set(out, "value", 5, scr_dyn_new_num((double)value->v.arr.len));
+    scr_dyn_obj_set(out, "value", 5, scr_dyn_new_num((double)scr_dyn_arr_length(value)));
     scr_dyn_obj_set(out, "writable", 8, scr_dyn_new_bool(!value->v.arr.frozen));
     scr_dyn_obj_set(out, "enumerable", 10, scr_dyn_new_bool(false));
     scr_dyn_obj_set(out, "configurable", 12, scr_dyn_new_bool(false));
@@ -9027,7 +9228,7 @@ static ScrDyn *scr_native_iterator_value(ScrNativeIterator *iterator, bool *done
    * the general path below is not needed. */
   if (source && source->kind == SCR_DYN_ARR && iterator->kind == 0 && !iterator->array_like &&
       iterator->selection == 0) {
-    if (iterator->index >= (double)source->v.arr.len) {
+    if (iterator->index >= (double)scr_dyn_arr_length(source)) {
       iterator->source = NULL;
       scr_dyn_release(source);
       *done_out = true;
@@ -9081,7 +9282,7 @@ static ScrDyn *scr_native_iterator_value(ScrNativeIterator *iterator, bool *done
   ScrDyn *items = view ? view : source;
   ScrMap *map = source && (iterator->kind == 2 || iterator->kind == 3) ? source->v.handle.ptr : NULL;
   if (map) iterator->index = scr_map_iter_skip(map, iterator->index);
-  double length = !items ? 0 : iterator->array_like ? iterator->limit : map ? scr_map_iter_count(map) : items->kind == SCR_DYN_ARR ? (double)items->v.arr.len
+  double length = !items ? 0 : iterator->array_like ? iterator->limit : map ? scr_map_iter_count(map) : items->kind == SCR_DYN_ARR ? (double)scr_dyn_arr_length(items)
     : items->kind == SCR_DYN_BYTES ? (double)items->v.bytes->len : scr_str_utf16_len(items->v.str);
   bool done = !source || iterator->index >= length;
   ScrDyn *value;
@@ -11287,6 +11488,17 @@ static bool scr_dyn_json_write(ScrJsonBuf *b, const ScrDyn *d) {
   case SCR_DYN_NUM: scr_jb_put_f64(b, d->v.num); return true;
   case SCR_DYN_STR: scr_jb_put_json_str(b, d->v.str); return true;
   case SCR_DYN_ARR: {
+#ifdef SCR_JS_OBJECT_MODEL
+    /* An array whose length exceeds its dense prefix holds elements this
+     * walk cannot see; refusing keeps the output from being a shorter
+     * array than the program built. */
+    if (d->v.arr.length != d->v.arr.len) {
+      static const char message[] =
+        "JSON.stringify of an array with elements past its dense prefix is not supported yet";
+      scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+      return true;
+    }
+#endif
     scr_jb_putc(b, '[');
     for (size_t i = 0; i < d->v.arr.len; i++) {
       if (i > 0) scr_jb_putc(b, ',');
@@ -12395,6 +12607,15 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
      * past the current length reads undefined, and the element stays
      * retained while it converts. */
     size_t len = d->v.arr.len;
+#ifdef SCR_JS_OBJECT_MODEL
+    /* See the JSON writer: a sparse tail would be silently dropped. */
+    if (d->v.arr.length != len) {
+      static const char message[] =
+        "joining an array with elements past its dense prefix is not supported yet";
+      scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+      return NULL;
+    }
+#endif
     ScrStr *out = scr_str_new("", 0);
     for (size_t i = 0; i < len; i++) {
       if (i > 0) {
@@ -13613,19 +13834,44 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
       }
       size_t length = (size_t)number;
       if (length > recv->v.arr.len + 1000000) {
+#ifdef SCR_JS_OBJECT_MODEL
+        /* Growth that would need more than a million materialized holes
+         * leaves them implicit: the dense prefix stays, and the length is
+         * the only thing that moves. A shrink from a sparse length drops
+         * the elements past the new end here, since the dense loop below
+         * cannot see them. */
+        if (!scr_dyn_arr_truncate_sparse(recv, length)) return;
+        recv->v.arr.length = length;
+#else
         static const char message[] = "Checked array growth exceeds the native allocation limit";
         scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+#endif
         return;
       }
+#ifdef SCR_JS_OBJECT_MODEL
+      /* The elements past the dense prefix sit above every dense one, so
+       * ArraySetLength's descending deletes reach them first. A refusal
+       * there settles the length at the refused index + 1 and leaves the
+       * dense prefix alone. */
+      if (!scr_dyn_arr_truncate_sparse(recv, length)) return;
+#endif
       while (recv->v.arr.len < length) scr_dyn_arr_push_hole(recv);
       while (recv->v.arr.len > length) {
         if (recv->v.arr.sealed && scr_dyn_arr_has_index(recv, recv->v.arr.len - 1)) {
           scr_array_frozen_error(5, recv->v.arr.len, (double)(recv->v.arr.len - 1), 0, 0);
           scr_dyn_note_assign_failure();
+#ifdef SCR_JS_OBJECT_MODEL
+          /* The dense elements deleted before the refusal stay deleted, so
+           * the length follows the prefix they left. */
+          recv->v.arr.length = recv->v.arr.len;
+#endif
           return;
         }
-        scr_dyn_release(recv->v.arr.items[--recv->v.arr.len]);
+        scr_dyn_release(recv->v.arr.items[scr_dyn_arr_dec_len(recv)]);
       }
+#ifdef SCR_JS_OBJECT_MODEL
+      recv->v.arr.length = length;
+#endif
       return;
     }
     /* Canonical indexes extend the dense portion; other names live in the
@@ -13644,17 +13890,34 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
         scr_dyn_note_assign_failure();
         return;
       }
-      if (recv->non_extensible && !scr_dyn_arr_has_index(recv, idx)) {
+      if (recv->non_extensible && !scr_dyn_arr_has_index(recv, idx)
+#ifdef SCR_JS_OBJECT_MODEL
+          && !dyn_arr_sparse_present(recv, idx)
+#endif
+      ) {
         /* An absent index, a hole included, is a property to add. */
         scr_array_frozen_error(0, 0, (double)idx, 0, 0);
         scr_dyn_note_assign_failure();
         return;
       }
       if (idx > recv->v.arr.len + 1000000) {
+#ifdef SCR_JS_OBJECT_MODEL
+        /* A write far past the dense prefix keeps the prefix, not a hole
+         * run: the element is an own property of the array under its index
+         * spelling (the table reads and refcounting already handle), and
+         * the array's length grows to idx + 1. */
+        scr_dyn_arr_sparse_put(recv, idx, value);
+#else
         static const char message[] = "Sparse array writes are not supported yet";
         scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+#endif
         return;
       }
+#ifdef SCR_JS_OBJECT_MODEL
+      /* The element moves into the dense prefix; a sparse element under the
+       * same index would be shadowed by it, so it goes. */
+      if (idx >= recv->v.arr.len) dyn_arr_sparse_clear(recv, idx);
+#endif
       while (recv->v.arr.len <= idx) {
         scr_dyn_arr_push_hole(recv);
       }
@@ -13663,6 +13926,11 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
       recv->v.arr.items[idx] = scr_dyn_retain(value);
       if (recv->v.arr.presence) recv->v.arr.presence[idx] = 1;
       scr_dyn_release(old);
+#ifdef SCR_JS_OBJECT_MODEL
+      /* A write past a length that already reached further (a far length
+       * assignment) materialized holes; the element still ends at idx. */
+      if (idx >= recv->v.arr.length) recv->v.arr.length = idx + 1;
+#endif
       return;
     }
     if (!recv->v.arr.properties) {
@@ -17264,7 +17532,7 @@ static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_
       return result;
     }
     if (current->kind == SCR_DYN_ARR) {
-      if (key_len == 6 && memcmp(key, "length", 6) == 0) return scr_dyn_new_num((double)current->v.arr.len);
+      if (key_len == 6 && memcmp(key, "length", 6) == 0) return scr_dyn_new_num((double)scr_dyn_arr_length(current));
       double index;
       if (scr_dyn_key_is_index(key, key_len, &index) && scr_dyn_arr_has_index(current, (size_t)index))
         return scr_dyn_retain(current->v.arr.items[(size_t)index]);

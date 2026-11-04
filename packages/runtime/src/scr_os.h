@@ -96,7 +96,11 @@ void scr_fs_scandir_free(ScrScandir *s); /* NULL-tolerant */
  * scandir encoding), false at the end; a closed Dir throws ERR_DIR_CLOSED
  * from read and close. Releasing the last reference closes the stream.
  * scr_fs_opendir throws Node's opendir errno error (no path), or the
- * options.bufferSize RangeError, and answers NULL then. */
+ * options.bufferSize RangeError, and answers NULL then.
+ *
+ * The asynchronous reads, closes and disposals live in scr_async.c beside
+ * the promise and loop machinery, and the Dirent a callback read receives
+ * is built in scr_symbol.c with the Dirent prototype. */
 typedef struct ScrDir ScrDir;
 ScrDir *scr_fs_opendir(ScrStr *path, double buffer_size); /* +1, or throws (NULL) */
 bool scr_dir_buffer_size_ok(double size);

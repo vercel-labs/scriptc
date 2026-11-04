@@ -849,10 +849,13 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
     if (valid) valid = scr_dir_buffer_size_ok(buffer_size);
     if (!valid) {
       /* The Dir constructor closes the handle, then throws; the throw is
-       * the uncaught exception of the completion turn. */
+       * the uncaught exception of the completion turn. Library links carry
+       * no event loop and refuse the callback surfaces before emission. */
       scr_dir_close(dir);
       scr_dir_release(dir);
+#ifndef SCR_LIB
       scr_defer_pending_throw();
+#endif
       return scr_dyn_retain(scr_dyn_undefined());
     }
     scr_dir_buffer_size_set(dir, buffer_size);

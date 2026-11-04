@@ -749,9 +749,11 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
   if (e.fn === "dir.readSync" || e.fn === "dir.read") {
     // `Dirent | null`: scr_dir_read answers the next entry's +1 name and
     // kind, or false at the end; the row is the call site's Dirent record
-    // (parentPath is the Dir's path), built only for an entry. The sync
-    // form checks a closed-Dir error first; the promise form lets
-    // settled_ref turn it into a rejection of the (null) dummy.
+    // (parentPath is the Dir's path), built only for an entry. The promise
+    // form consumes without the concurrent-operations check (its result is
+    // delivered in the Dir's operation order) and hands the entry to
+    // scr_dir_read_promise, which settles at the entry's delivery point; a
+    // closed Dir leaves the pending error for the promise to reject with.
     const promiseForm = e.fn === "dir.read";
     const unionT = promiseForm && e.type.kind === "promise" ? e.type.inner : e.type;
     if (unionT.kind !== "union")
@@ -765,19 +767,27 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     if (!recT || recT.kind !== "record" || nullTag < 0)
       throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union lacks its arms`);
     const dir = host.emitExpr(e.args[0]!);
-    host.declare(`declare zeroext i1 @scr_dir_read(ptr, ptr, ptr)`);
+    host.declare(
+      promiseForm
+        ? `declare zeroext i1 @scr_dir_read_async(ptr, ptr, ptr, ptr)`
+        : `declare zeroext i1 @scr_dir_read(ptr, ptr, ptr)`,
+    );
     host.declare(`declare ptr @scr_dir_path(ptr)`);
     const nameSlot = B.slot();
     const kindSlot = B.slot();
     const rowSlot = B.slot();
+    const bufferedSlot = promiseForm ? B.slot() : "";
     B.entryAllocas.push(
       `${nameSlot} = alloca ptr`,
       `${kindSlot} = alloca double`,
       `${rowSlot} = alloca ptr`,
+      ...(promiseForm ? [`${bufferedSlot} = alloca i1`] : []),
     );
     const has = B.tmp();
     B.line(
-      `${has} = call zeroext i1 @scr_dir_read(ptr ${dir.name}, ptr ${nameSlot}, ptr ${kindSlot})`,
+      promiseForm
+        ? `${has} = call zeroext i1 @scr_dir_read_async(ptr ${dir.name}, ptr ${nameSlot}, ptr ${kindSlot}, ptr ${bufferedSlot})`
+        : `${has} = call zeroext i1 @scr_dir_read(ptr ${dir.name}, ptr ${nameSlot}, ptr ${kindSlot})`,
     );
     if (!promiseForm) host.emitPendingCheck();
     B.line(`store ptr null, ptr ${rowSlot}`);
@@ -804,11 +814,13 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     const value = host.wrapNullable(raw, raw, recT, recTag, unionT, nullTag);
     if (!promiseForm) return value;
     const rc = vAdapters(host.shapeHost, unionT);
-    host.declare(`declare ptr @scr_promise_settled_ref(ptr, ptr, ptr, ptr)`);
+    host.declare(`declare ptr @scr_dir_read_promise(ptr, ptr, i1, ptr, ptr, ptr)`);
     host.toHeap(value);
+    const buffered = B.tmp();
+    B.line(`${buffered} = load i1, ptr ${bufferedSlot}`);
     const promise = B.tmp();
     B.line(
-      `${promise} = call ptr @scr_promise_settled_ref(ptr ${value.name}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host.shapeHost, unionT)})`,
+      `${promise} = call ptr @scr_dir_read_promise(ptr ${dir.name}, ptr ${value.name}, i1 ${buffered}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host.shapeHost, unionT)})`,
     );
     return host.own({ name: promise, type: e.type });
   }

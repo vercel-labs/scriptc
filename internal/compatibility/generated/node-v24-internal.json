@@ -44427,6 +44427,7 @@
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/1403-buffer-fs.ts",
+          "tests/corpus/1541-fs-readdir-dirent.ts",
           "tests/corpus/1564-fs-watch.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2686-fs-file-handle.ts",
@@ -44464,7 +44465,10 @@
           "tests/corpus/6207-fs-constants-object.ts",
           "tests/corpus/6208-fs-constants-require.cjs",
           "tests/corpus/8427-fs-copyfile-writefile-flags.ts",
+          "tests/corpus/fs-dir-dispose.ts",
           "tests/corpus/fs-native-realpath.ts",
+          "tests/corpus/fs-opendir-buffer-size-uncaught.cjs",
+          "tests/corpus/fs-opendir-callbacks.ts",
           "tests/corpus/fs-watch-file-names.ts",
           "tests/corpus/fs-watch-file-polling.ts",
           "tests/corpus/node24-fs-links-callbacks.cjs",
@@ -47045,8 +47049,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fs.opendir",
+        "tests": [
+          "tests/corpus/fs-opendir-callbacks.ts",
+          "tests/corpus/fs-opendir-buffer-size-uncaught.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49370,8 +49378,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.dir.close",
+        "tests": [
+          "tests/corpus/fs-opendir-callbacks.ts",
+          "tests/corpus/fs-dir-dispose.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49445,8 +49457,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.dir.read",
+        "tests": [
+          "tests/corpus/fs-opendir-callbacks.ts",
+          "tests/corpus/fs-dir-dispose.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49520,8 +49536,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.dir",
+        "tests": [
+          "tests/corpus/fs-opendir-callbacks.ts",
+          "tests/corpus/fs-dir-dispose.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49543,8 +49563,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.dir",
+        "tests": [
+          "tests/corpus/fs-opendir-callbacks.ts",
+          "tests/corpus/fs-dir-dispose.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49615,8 +49639,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.dirent.isBlockDevice",
+        "tests": [
+          "tests/corpus/1541-fs-readdir-dirent.ts",
+          "tests/corpus/5544-fs-opendir.cjs",
+          "tests/corpus/fs-opendir-callbacks.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49638,8 +49667,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.dirent.isCharacterDevice",
+        "tests": [
+          "tests/corpus/1541-fs-readdir-dirent.ts",
+          "tests/corpus/5544-fs-opendir.cjs",
+          "tests/corpus/fs-opendir-callbacks.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49661,8 +49695,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.dirent.isDirectory",
+        "tests": [
+          "tests/corpus/1541-fs-readdir-dirent.ts",
+          "tests/corpus/5544-fs-opendir.cjs",
+          "tests/corpus/fs-opendir-callbacks.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49684,8 +49723,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.dirent.isFIFO",
+        "tests": [
+          "tests/corpus/1541-fs-readdir-dirent.ts",
+          "tests/corpus/5544-fs-opendir.cjs",
+          "tests/corpus/fs-opendir-callbacks.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49707,8 +49751,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.dirent.isFile",
+        "tests": [
+          "tests/corpus/1541-fs-readdir-dirent.ts",
+          "tests/corpus/5544-fs-opendir.cjs",
+          "tests/corpus/fs-opendir-callbacks.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49730,8 +49779,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.dirent.isSocket",
+        "tests": [
+          "tests/corpus/1541-fs-readdir-dirent.ts",
+          "tests/corpus/5544-fs-opendir.cjs",
+          "tests/corpus/fs-opendir-callbacks.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49753,8 +49807,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.dirent.isSymbolicLink",
+        "tests": [
+          "tests/corpus/1541-fs-readdir-dirent.ts",
+          "tests/corpus/5544-fs-opendir.cjs",
+          "tests/corpus/fs-opendir-callbacks.ts"
+        ]
       },
       "anchorSource": "exact"
     },

@@ -1159,6 +1159,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.fsStreamClose",
   "fs.fsStreamCloseCb",
   "dir.readSync",
+  "dir.readCb",
   "dir.closeSync",
   "fs.copyFileSync",
   "fs.copyFileFlagsSync",

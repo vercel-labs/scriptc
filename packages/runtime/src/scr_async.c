@@ -3631,12 +3631,6 @@ ScrPromise *scr_fsp_opendir(ScrStr *path, double buffer_size) {
   return scr_promise_settled_ref(d, &scr_dir_retain_v, &scr_dir_release_v, NULL);
 }
 
-/* dir.close(): a closed Dir rejects with ERR_DIR_CLOSED. */
-ScrPromise *scr_dir_close_promise(ScrDir *d) {
-  scr_dir_close(d);
-  return scr_promise_settled_void();
-}
-
 ScrPromise *scr_fsp_rename(ScrStr *oldpath, ScrStr *newpath) {
   scr_fs_rename(oldpath, newpath);
   return scr_promise_settled_void();

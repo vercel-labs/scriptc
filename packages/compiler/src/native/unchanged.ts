@@ -143,8 +143,10 @@ export interface UnchangedBuildInputs {
  * the sources a build product, when the build writes a block-count file (that
  * file comes from the helper, and a kept output would leave it unwritten),
  * when the manifest names a system library or a framework whose file the
- * linker resolves, or when it is sanitized (its runtime is compiled from
- * sources outside the pack, which the key does not observe). */
+ * linker resolves, when the toolchain supplies linker arguments (which the
+ * linker resolves against its own search paths), or when it is sanitized (its
+ * runtime is compiled from sources outside the pack, which the key does not
+ * observe). */
 export function unchangedBuildKey(inputs: UnchangedBuildInputs): string | null {
   const { entry, options, ffi, ffiBytes, toolchain, output, translationUnitPath } = inputs;
   if (recordProfileBlocksPath(process.env) !== undefined) return null;
@@ -156,6 +158,13 @@ export function unchangedBuildKey(inputs: UnchangedBuildInputs): string | null {
   // same reason.
   if (ffi !== null && (ffi.systemLibraries.length > 0 || (ffi.frameworks?.length ?? 0) > 0))
     return null;
+  // The toolchain's linker arguments are opaque here: a `-l` name, a `-L`
+  // directory or a driver name such as `cc` makes the linker resolve archives
+  // through search paths the key does not observe, so an archive replaced in
+  // place would leave a kept executable from the earlier link. The
+  // complete-artifact cache refuses a link that supplies them for the same
+  // reason.
+  if (toolchain.linkerArgs.length > 0) return null;
   const frontend = nativeFrontendCacheKey(entry, options, ffi, toolchain);
   if (frontend === null) return null;
   try {

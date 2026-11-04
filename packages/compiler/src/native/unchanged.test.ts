@@ -219,6 +219,23 @@ test.skipIf(process.platform === "win32")(
 );
 
 test.skipIf(process.platform === "win32")(
+  "a toolchain's linker arguments keep nothing: the linker resolves the archives they name",
+  () => {
+    const inputs = profileBuild();
+    expect(unchangedBuildKey(inputs)).not.toBeNull();
+    expect(
+      unchangedBuildKey({
+        ...inputs,
+        toolchain: {
+          ...inputs.toolchain,
+          linkerArgs: ["-L", "/opt/sdk/lib", "-lexample"],
+        },
+      }),
+    ).toBeNull();
+  },
+);
+
+test.skipIf(process.platform === "win32")(
   "a sanitized build keeps nothing: its runtime is compiled from sources the key does not name",
   () => {
     const inputs = profileBuild();

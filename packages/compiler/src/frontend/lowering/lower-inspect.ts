@@ -194,6 +194,231 @@ function ownErrorFields(info: ClassInfo): { name: string; type: IrType }[] {
   );
 }
 
+/** The own enumerable properties JSON.stringify sees on an instance of a
+ * program error class, in creation order. The declared fields come first
+ * (the base chain's slots are already in their creation position), plus
+ * `message` when a class of the chain declares it as a field: the field
+ * redefines the base constructor's non-enumerable slot as enumerable. A
+ * `name` field or a `this.name = ...` assignment during construction
+ * creates an own enumerable property where the base's name lives on the
+ * prototype, at the position errorNameAfter records. */
+function errorJsonFields(info: ClassInfo): { name: string; type: IrType }[] {
+  const declared = new Set<string>();
+  for (let c: ClassInfo | null = info; c && !c.builtinError && !c.def.runtime; c = c.base) {
+    for (const f of c.fieldOrder) if (isClassOwnEnumerableFieldName(f.name)) declared.add(f.name);
+  }
+  const builtin = new Set<string>();
+  for (let c = info.base; c; c = c.base) {
+    if (c.builtinError || c.def.runtime) for (const f of c.def.fields) builtin.add(f.name);
+  }
+  const fields = info.def.fields.filter(
+    (f) =>
+      isClassOwnEnumerableFieldName(f.name) &&
+      f.name !== "name" &&
+      (!builtin.has(f.name) || (f.name === "message" && declared.has("message"))),
+  );
+  const after = info.def.errorNameAfter;
+  if (after === undefined) return fields;
+  const nameField = { name: "name", type: STRING };
+  if (after === null) {
+    // The base constructor's message slot precedes everything the subclass
+    // creates; a declared message field makes that slot enumerable.
+    if (fields[0]?.name === "message") return [fields[0], nameField, ...fields.slice(1)];
+    return [nameField, ...fields];
+  }
+  const at = fields.findIndex((f) => f.name === after);
+  if (at === -1) return [...fields, nameField];
+  return [...fields.slice(0, at + 1), nameField, ...fields.slice(at + 1)];
+}
+
+/** Serialize a JSON.stringify result of `expr` the way %j writes it: a
+ * checked-dynamic result crosses into the runtime walker (toJSON hooks and
+ * all, "[Circular]" and a dropped root included), a JSON-safe static type
+ * uses its type-directed writer, and a value that can neither stay static
+ * nor cross the boundary returns null. */
+function jsonSerializeExpr(lowerer: Lowerer, expr: IrExpr, loc: SrcLoc): IrExpr | null {
+  const runtimeStringify = (value: IrExpr): IrExpr => ({
+    kind: "libCall",
+    fn: "insp.jsonDyn",
+    args: [value],
+    type: STRING,
+    loc,
+  });
+  if (expr.type.kind === "dyn") return runtimeStringify(expr);
+  if (lowerer.jsonStringifySafe(expr.type))
+    return { kind: "jsonStringify", value: expr, circular: true, type: STRING, loc };
+  if (lowerer.dynConvertible(expr.type))
+    return runtimeStringify({ kind: "dynFrom", value: expr, liveRef: true, type: DYN, loc });
+  return null;
+}
+
+/** A toJSON member JSON.stringify calls before walking the own properties:
+ * a method with a body and at most the key parameter. A getter or a data
+ * field named toJSON leaves the class to the checked-dynamic walk. */
+function errorToJsonMethod(
+  lowerer: Lowerer,
+  info: ClassInfo,
+): { ret: IrType; params: number } | null {
+  const found = findMethodOn(lowerer, info, "toJSON");
+  if (!found) return null;
+  if (found.sig.abstract === true || found.sig.async === true || found.sig.gen !== undefined)
+    return null;
+  if (found.sig.params.length > 1) return null;
+  return { ret: found.sig.ret, params: found.sig.params.length };
+}
+
+/** A class's own enumerable properties as a record of the same layout, or
+ * null when the static writer cannot serialize one of the field types.
+ *
+ * The key order is part of the shape's declaredOrder, which two classes
+ * with the same field set would share; a hidden field named after the class
+ * keeps each class's shape distinct, so its own order survives the
+ * whole-program key-order pass. Internal '%'-fields never serialize. */
+function jsonErrorFieldsRecord(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  receiver: () => IrExpr,
+  loc: SrcLoc,
+): IrExpr | null {
+  const className = info.def.name;
+  const fields = errorJsonFields(info);
+  if (fields.length === 0) return strLit("{}", loc);
+  const marker = `%jsonOrder:${className}`;
+  const shapeId = lowerer.shapes.intern(
+    [...fields.map((f) => ({ name: f.name, type: f.type })), { name: marker, type: F64 }].sort(
+      (a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0),
+    ),
+    false,
+    undefined,
+    fields.map((f) => f.name),
+  );
+  const recordType: IrType = { kind: "record", shapeId };
+  if (!lowerer.jsonStringifySafe(recordType)) return null;
+  return {
+    kind: "jsonStringify",
+    value: {
+      kind: "recordLit",
+      fields: [
+        ...fields.map((f) => ({
+          name: f.name,
+          value: {
+            kind: "fieldGet",
+            obj: receiver(),
+            className,
+            field: f.name,
+            type: f.type,
+            loc,
+          } as IrExpr,
+        })),
+        { name: marker, value: numLit(0, loc) },
+      ],
+      type: recordType,
+      loc,
+    },
+    circular: true,
+    type: STRING,
+    loc,
+  };
+}
+
+/** The lifted %j renderer for an error's static type. An instance reaching
+ * the base's static type can be any class in its subtree, and JSON.stringify
+ * prints the RUNTIME class's own enumerable properties (or its toJSON
+ * hook's result), so the helper tests the instance's class before rendering
+ * that class's shape. A class whose toJSON is a getter or a data field falls
+ * back to the checked-dynamic walk for that arm. Null when the static type
+ * is a builtin error with no program subclass: `{}` and no call is exactly
+ * Node's output. */
+function jsonErrorHelper(
+  lowerer: Lowerer,
+  t: IrType & { kind: "object" },
+  loc: SrcLoc,
+): string | null {
+  const key = `jsonError:${typeKey(t)}`;
+  const existing = lowerer.inspectHelpers.get(key);
+  if (existing !== undefined) return existing;
+  const info = lowerer.classes.get(t.className);
+  if (!info) return null;
+  const classes = userErrorClasses(info);
+  if (classes.length === 0) return null;
+  const v = (): IrExpr => varRef("v.0", t, loc);
+  const dynamicRender = (receiver: IrExpr): IrExpr => ({
+    kind: "libCall",
+    fn: "insp.jsonDyn",
+    args: [{ kind: "dynFrom", value: receiver, liveRef: true, type: DYN, loc }],
+    type: STRING,
+    loc,
+  });
+  const body: IrStmt[] = [];
+  const fieldArms: { info: ClassInfo; arm: IrStmt & { kind: "return" }; dyn: () => IrExpr }[] = [];
+  for (const c of classes) {
+    const receiverType: IrType = { kind: "object", className: c.def.name };
+    const recv = (): IrExpr =>
+      c.def.name === t.className ? v() : { kind: "downcast", value: v(), type: receiverType, loc };
+    const toJson = errorToJsonMethod(lowerer, c);
+    let rendered: IrExpr | null;
+    if (toJson) {
+      // JSON.stringify calls toJSON with the property key; the root's key is
+      // the empty string, and the result takes its own serialization.
+      const call = accessorCall(
+        lowerer,
+        c.def.name,
+        "toJSON",
+        recv(),
+        toJson.params > 0 ? [strLit("", loc)] : [],
+        toJson.ret,
+        loc,
+      );
+      rendered = jsonSerializeExpr(lowerer, call, loc);
+    } else if (errorDeclaresToJson(c)) {
+      // A getter or data-field toJSON: only the checked-dynamic view sees it.
+      rendered = null;
+    } else {
+      rendered = jsonErrorFieldsRecord(lowerer, c, recv, loc);
+    }
+    const arm: IrStmt & { kind: "return" } = {
+      kind: "return",
+      value: rendered ?? dynamicRender(recv()),
+      loc,
+    };
+    if (rendered !== null) fieldArms.push({ info: c, arm, dyn: () => dynamicRender(recv()) });
+    if (c.def.name === t.className) {
+      body.push({ kind: "block", body: [arm], loc });
+      break;
+    }
+    body.push({
+      kind: "if",
+      cond: { kind: "instanceOf", value: v(), className: c.def.name, type: BOOL, loc },
+      then: [arm],
+      else_: null,
+      loc,
+    });
+  }
+  // A builtin error instance of the subtree (an Error-typed `new TypeError()`
+  // reaches here through an Error static type): its extra state rides
+  // non-enumerable slots, so the walk sees no own property.
+  if (body.at(-1)?.kind !== "block") body.push({ kind: "return", value: strLit("{}", loc), loc });
+  const name = keyedHelperName(lowerer, "%util.format.jsonError", key);
+  lowerer.inspectHelpers.set(key, name);
+  lowerer.liftedFns.push({
+    name,
+    params: [{ localId: "v.0", name: "v", type: t }],
+    returnType: STRING,
+    locals: [{ id: "v.0", name: "v", type: t, mutable: false }],
+    body,
+    loc,
+  });
+  // A property created at run time (a write through an untyped reference)
+  // adds a property bag to a class after this helper was built. JSON
+  // enumerates those properties too, and only the checked-dynamic view
+  // reads the bag, so a bagged class's arm switches to that view.
+  lowerer.shapeOrderHelperFinalizers.push(() => {
+    for (const { info: c, arm, dyn } of fieldArms)
+      if (c.def.fields.some((f) => f.name === DYN_CLASS_PROPERTIES)) arm.value = dyn();
+  });
+  return name;
+}
+
 /** `info` and its descendants that declare fields, most-derived first (a
  * runtime instance tests against its own class before an ancestor's). */
 function fieldedErrorClasses(info: ClassInfo): ClassInfo[] {
@@ -4453,78 +4678,39 @@ export function lowerFormatCall(
           return { kind: "libCall", fn: "insp.jsonDyn", args: [value], type: STRING, loc };
         }
         // %j of an Error (the middleware logging idiom): JSON.stringify
-        // sees an error's own ENUMERABLE properties, and message, stack,
-        // name and cause are not enumerable — so a plain error prints
-        // "{}", as do the runtime error classes whose extra state rides
-        // non-enumerable slots (AggregateError's `errors`, DOMException's
-        // accessors, AssertionError's dynamic view). A subclass that
-        // declares fields prints those, base-class fields first, so
-        // serialize the declared layout through a record of the same
-        // fields; a toJSON member or a field the static walk cannot write
-        // falls back to the checked dynamic walk.
+        // sees an error's own ENUMERABLE properties, and message, stack and
+        // cause are not enumerable — so a plain error prints "{}", as do
+        // the runtime error classes whose extra state rides non-enumerable
+        // slots (AggregateError's `errors`, DOMException's accessors,
+        // AssertionError's dynamic view). A subclass that declares fields
+        // prints those, and one that declares a toJSON hook prints the
+        // hook's result, so the lifted walk renders the RUNTIME class's
+        // shape; a toJSON member it cannot call statically keeps the
+        // checked dynamic walk for that class.
         if (value.type.kind === "object" && isErrorClass(lowerer, value.type.className)) {
-          if (RUNTIME_ERROR_CLASSES.has(value.type.className)) {
-            if (value.type.className === "%AssertionError") {
-              lowerer.noLowering(
-                `util.format %j of '${lowerer.fmt(value.type)}' values`,
-                node,
-                "AssertionError keeps its own properties in the error's dynamic view",
-              );
-            }
-            return strLit("{}", loc);
-          }
           const className = value.type.className;
-          const info = lowerer.classes.get(className);
-          if (info && !errorDeclaresToJson(info)) {
-            const fields = ownErrorFields(info);
-            if (fields.length === 0) return strLit("{}", loc);
-            const shapeId = lowerer.shapes.intern(
-              [...fields]
-                .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
-                .map((f) => ({ name: f.name, type: f.type })),
-              false,
-              undefined,
-              fields.map((f) => f.name),
+          if (className === "%AssertionError") {
+            lowerer.noLowering(
+              `util.format %j of '${lowerer.fmt(value.type)}' values`,
+              node,
+              "AssertionError keeps its own properties in the error's dynamic view",
             );
-            const recordType: IrType = { kind: "record", shapeId };
-            if (lowerer.jsonStringifySafe(recordType)) {
-              // The receiver evaluates once; every field reads that slot.
-              const slot = lowerer.declareHiddenLocal("%jsonError", value.type);
-              const receiver = varRef(slot.id, value.type, loc);
-              return {
-                kind: "seqExpr",
-                stmts: [{ kind: "varDecl", localId: slot.id, init: value, loc }],
-                result: {
-                  kind: "jsonStringify",
-                  value: {
-                    kind: "recordLit",
-                    fields: fields.map((f) => ({
-                      name: f.name,
-                      value: {
-                        kind: "fieldGet",
-                        obj: receiver,
-                        className,
-                        field: f.name,
-                        type: f.type,
-                        loc,
-                      },
-                    })),
-                    type: recordType,
-                    loc,
-                  },
-                  circular: true,
-                  type: STRING,
-                  loc,
-                },
-                type: STRING,
-                loc,
-              };
-            }
           }
+          // The lifted walk reads the runtime class, so a subclass instance
+          // reaching the base's static type prints its own fields and honors
+          // its own toJSON hook. The receiver evaluates once as the call's
+          // argument, so its calls and throws stay observable.
+          const helper = jsonErrorHelper(lowerer, value.type, loc);
+          if (helper !== null)
+            return { kind: "call", callee: helper, args: [value], type: STRING, loc };
+          // A builtin error with no program subclass has no own enumerable
+          // property: Node prints "{}". The argument expression still runs;
+          // only a discard-safe read folds away.
+          if (isSafeToDiscard(value)) return strLit("{}", loc);
           return {
-            kind: "libCall",
-            fn: "insp.jsonDyn",
-            args: [{ kind: "dynFrom", value, liveRef: true, type: DYN, loc }],
+            kind: "seqExpr",
+            stmts: [{ kind: "exprStmt", expr: value, loc }],
+            result: strLit("{}", loc),
             type: STRING,
             loc,
           };

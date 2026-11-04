@@ -44,3 +44,63 @@ function make(): Fielded {
 }
 console.log(format("%j", make()));
 console.log(`calls ${calls}`);
+
+// The static type an argument reaches %j through can be a base class: the
+// runtime class's own fields print, and its toJSON hook supplies the value.
+class Leveled extends Error {
+  level: number;
+  constructor(message: string) {
+    super(message);
+    this.level = 3;
+  }
+}
+class Hooked extends Error {
+  a = 1;
+  toJSON(): unknown {
+    return { from: "toJSON" };
+  }
+}
+function throughBase(e: Error): string {
+  return format("%j", e);
+}
+console.log(throughBase(new Leveled("leveled")));
+console.log(throughBase(new Hooked("hooked")));
+console.log(throughBase(new Bare("bare")));
+
+// A `name` field, or `this.name = ...` during construction, is an own
+// enumerable property where it was created; a `message` field makes the
+// base's non-enumerable slot enumerable.
+class Named extends Error {
+  name = "Named";
+  extra = 5;
+}
+class CtorNamed extends Error {
+  extra = 6;
+  constructor(message: string) {
+    super(message);
+    this.name = "CtorNamed";
+  }
+}
+class MessageField extends Error {
+  message = "field message";
+  x = 1;
+}
+console.log(format("%j", new Named("named")));
+console.log(format("%j", new CtorNamed("ctor")));
+console.log(format("%j", new MessageField("ignored")));
+
+// A property created at run time is an own enumerable property, and a
+// cycle through one prints "[Circular]".
+const cyclic = new Bare("cyclic");
+(cyclic as unknown as { self?: unknown }).self = cyclic;
+console.log(format("%j", cyclic));
+
+// A throwing argument expression fails before the walk begins.
+function refuse(): Bare {
+  throw new Error("refused");
+}
+try {
+  format("%j", refuse());
+} catch (error) {
+  console.log(error instanceof Error ? error.message : "not an error");
+}

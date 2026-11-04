@@ -362,7 +362,9 @@ const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.arrayPrototype",
   "dyn.builtinFunction",
   "dyn.builtinMethod",
+  "dyn.builtinMethodValue",
   "dyn.stdlibPrototype",
+  "dyn.dataViewPrototype",
   "dyn.defineProperty",
   "dyn.definePropertyShapes",
   "child.propsDefine",
@@ -1168,6 +1170,10 @@ const RUNTIME_FEATURE_RULES = {
   /** A standard library prototype object read as a value in a JavaScript
    * source (scr_dyn_stdlib_prototype.c): `Date.prototype`. */
   stdlibPrototypeValue: rule({ fns: ["dyn.stdlibPrototype"] }),
+  /** DataView.prototype read as a value in a JavaScript source, and its
+   * members through it (scr_data_view_proto.c): the getter/setter family's
+   * prototype object. */
+  dataViewPrototypeValue: rule({ fns: ["dyn.dataViewPrototype"] }),
   /** The dynamic global object's answer for the Node globals the native
    * runtime does not implement (scr_global_host_absent.c, plus the
    * SCR_GLOBAL_HOST_ABSENT build of scr_node_builtin.c): a computed read of
@@ -1180,6 +1186,9 @@ const RUNTIME_FEATURE_RULES = {
   /** Number.prototype and Boolean.prototype as values
    * (scr_dyn_builtin_prototype.c). */
   builtinPrototypeValue: rule({ fns: ["dyn.builtinPrototype"] }),
+  /** A builtin prototype method as a function value (String's trim family,
+   * RegExp's exec/test/toString; scr_dyn_builtin_methods.c). */
+  builtinMethodValue: rule({ fns: ["dyn.builtinMethodValue"] }),
   dynInvoke: rule({
     initial: (mod) => mod.workers === true,
     scan: computedBufferMemberScan,
@@ -1652,10 +1661,12 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynBuiltinClass: false,
     dynBuiltinStream: false,
     stdlibPrototypeValue: false,
+    dataViewPrototypeValue: false,
     hostAbsentGlobals: false,
     dynInvoke: false,
     arrayLikeDispatch: false,
     builtinPrototypeValue: false,
+    builtinMethodValue: false,
     dynTier: false,
     ecdh: false,
     x509: false,

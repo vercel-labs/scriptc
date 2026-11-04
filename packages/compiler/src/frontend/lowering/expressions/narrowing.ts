@@ -440,6 +440,15 @@ function isPrimitivePrototypeValue(expr: IrExpr): boolean {
   return expr.kind === "dynKeyGet" && isPrimitivePrototypeValue(expr.value);
 }
 
+/** Whether `expr` is the DataView prototype value a JavaScript source read
+ * (dyn.dataViewPrototype), or one of its members: the value is the
+ * prototype OBJECT, and the interface's own bytes view is a different
+ * representation, so the checker's DataView type must not extract one. */
+export function isDataViewPrototypeValue(expr: IrExpr): boolean {
+  if (expr.kind === "libCall") return expr.fn === "dyn.dataViewPrototype";
+  return expr.kind === "dynKeyGet" && isDataViewPrototypeValue(expr.value);
+}
+
 /** Checker-driven union narrowing. tsc's control-flow analysis narrows a
  * union-typed reference at use sites (`if (r.kind === "ok") { ...r... }`
  * types `r` as the ok-arm inside the branch); the IR value is still the
@@ -485,6 +494,9 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     // prototype OBJECTS, though @types/node declares them with the wrapper
     // interface: extracting the wrapper's numeric value would throw.
     if (isPrimitivePrototypeValue(expr)) return expr;
+    // DataView.prototype (and its members) is the prototype OBJECT, though
+    // @types/node declares the interface: extracting the view would throw.
+    if (isDataViewPrototypeValue(expr)) return expr;
     // A process.versions entry declared as a string can be absent here.
     if (isOptionalProcessVersionsRead(lowerer, node))
       return lowerer.coerceToExpected(expr, lowerer.withUndefinedArm(STRING));

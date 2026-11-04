@@ -89,6 +89,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_dyn_array_like.c", all("arrayLikeDispatch", "dynInvoke")],
   // Number.prototype and Boolean.prototype read as values in JavaScript.
   ["scr_dyn_builtin_prototype.c", all("builtinPrototypeValue", "dynInvoke")],
+  // A builtin prototype method read as a value in JavaScript (String trim,
+  // RegExp exec/test/toString).
+  ["scr_dyn_builtin_methods.c", all("builtinMethodValue", "dynInvoke")],
   // Buffer.prototype methods called on checked-dynamic values.
   ["scr_bytes_dyn.c", all("dynBuffer", "dynInvoke")],
   // Builtin functions read as values in JavaScript dependencies.
@@ -96,6 +99,10 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // A standard library prototype object read as a value in JavaScript
   // (`Date.prototype`); it calls the invoke unit's interned method table.
   ["scr_dyn_stdlib_prototype.c", all("stdlibPrototypeValue", "dynInvoke")],
+  // DataView.prototype as a value in JavaScript (`DataView.prototype`,
+  // its getter/setter family, its see-through accessors and its
+  // [[@@toStringTag]]); it builds that object on the dynamic object model.
+  ["scr_data_view_proto.c", all("dataViewPrototypeValue", "dynInvoke")],
   // createRequire's computed require and require.resolve.
   ["scr_require.c", "computedRequire"],
   ["scr_dc.c", "dc"],

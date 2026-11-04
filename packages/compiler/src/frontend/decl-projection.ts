@@ -540,6 +540,97 @@ function unwrapTransparent(node: ts.Expression): ts.Expression {
   return e;
 }
 
+/** Whether the walk reads an expression's own type in the JavaScript world:
+ * considerExpr's gate, which needs no checker answer. The syntactic pass
+ * below selects the same nodes, so the batch it issues is exactly the walk's
+ * query list. */
+function readsExpressionType(node: ts.Node): boolean {
+  if (!ts.isExpression(node)) return false;
+  if (
+    !ts.isCallExpression(node) &&
+    !ts.isNewExpression(node) &&
+    !ts.isTaggedTemplateExpression(node) &&
+    !ts.isPropertyAccessExpression(node) &&
+    !ts.isElementAccessExpression(node) &&
+    !ts.isAwaitExpression(node) &&
+    !ts.isIdentifier(node)
+  )
+    return false;
+  if (inTypeContext(node) || isCallee(node) || isWriteTarget(node)) return false;
+  if (inOptionalChain(node)) return false;
+  const parent = node.parent;
+  if (parent !== undefined && ts.isExpressionStatement(parent)) return false;
+  if (
+    parent !== undefined &&
+    (ts.isImportSpecifier(parent) ||
+      ts.isImportClause(parent) ||
+      ts.isNamespaceImport(parent) ||
+      ts.isExportSpecifier(parent))
+  )
+    return false;
+  if (ts.isIdentifier(node))
+    if (parent !== undefined && ts.isPropertyAccessExpression(parent) && parent.name === node)
+      return false;
+  return true;
+}
+
+/** The nodes the projection walk reads a type at, per world. */
+interface ProjectionTypeQueries {
+  js: ts.Node[];
+  decl: ts.Node[];
+}
+
+/** Collects the walk's type queries for one file pair, in walk order. The
+ * selection is syntactic — the same gates considerExpr and considerType
+ * apply before their first query — so it needs no checker answers: the
+ * expressions `readsExpressionType` admits, plus the heritage
+ * `ExpressionWithTypeArguments` an interface reads a type at. Parameter
+ * names are identifiers an untyped parameter's considerParam reads. The
+ * walk pairs a node with its twin and stops descending where the twins'
+ * children differ in count, and this pass mirrors that pairing. Type
+ * references are left out: their type comes from getTypeFromTypeNode, which
+ * the server answers one node per request. Reads the gates cannot see
+ * (an optional-chain receiver's type at a chained read) stay direct
+ * queries. */
+export function collectProjectionTypeQueries(
+  jsSf: ts.SourceFile,
+  declSf: ts.SourceFile,
+): ProjectionTypeQueries {
+  const queries: ProjectionTypeQueries = { js: [], decl: [] };
+  const visit = (jsNode: ts.Node, declNode: ts.Node): void => {
+    if (jsNode.kind !== declNode.kind) return;
+    if (ts.isTypeNode(jsNode) || ts.isExpressionWithTypeArguments(jsNode)) {
+      if (ts.isExpressionWithTypeArguments(jsNode)) {
+        // considerType reads a type at a heritage clause's expression of an
+        // interface only; every other form reads getTypeFromTypeNode.
+        const clause = jsNode.parent;
+        if (
+          clause !== undefined &&
+          ts.isHeritageClause(clause) &&
+          clause.parent !== undefined &&
+          ts.isInterfaceDeclaration(clause.parent)
+        ) {
+          queries.js.push(jsNode);
+          queries.decl.push(declNode);
+        }
+      }
+    } else {
+      // considerExpr gates on the JavaScript node and reads the twin at the
+      // same index, so one verdict selects both worlds' query.
+      if (readsExpressionType(jsNode)) {
+        queries.js.push(jsNode);
+        queries.decl.push(declNode);
+      }
+    }
+    const a = childrenOf(jsNode);
+    const b = childrenOf(declNode);
+    if (a.length !== b.length) return;
+    for (let i = 0; i < a.length; i++) visit(a[i]!, b[i]!);
+  };
+  visit(jsSf, declSf);
+  return queries;
+}
+
 /** Plans the projection for one program pair. Answers null when nothing
  * in the user files projects (the program stays as it is). */
 export function planDeclProjection(input: DeclProjectionInput): DeclProjection | null {
@@ -673,31 +764,11 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
     };
 
     const considerExpr = (jsNode: ts.Node, declNode: ts.Node): void => {
-      if (!ts.isExpression(jsNode)) return;
+      if (!readsExpressionType(jsNode)) return;
       const isCall =
         ts.isCallExpression(jsNode) ||
         ts.isNewExpression(jsNode) ||
         ts.isTaggedTemplateExpression(jsNode);
-      const isAccess =
-        ts.isPropertyAccessExpression(jsNode) || ts.isElementAccessExpression(jsNode);
-      const isAwait = ts.isAwaitExpression(jsNode);
-      if (!isCall && !isAccess && !isAwait && !ts.isIdentifier(jsNode)) return;
-      if (inTypeContext(jsNode) || isCallee(jsNode) || isWriteTarget(jsNode)) return;
-      if (inOptionalChain(jsNode)) return;
-      const parent = jsNode.parent;
-      if (parent !== undefined && ts.isExpressionStatement(parent)) return;
-      if (
-        parent !== undefined &&
-        (ts.isImportSpecifier(parent) ||
-          ts.isImportClause(parent) ||
-          ts.isNamespaceImport(parent) ||
-          ts.isExportSpecifier(parent))
-      )
-        return;
-      if (ts.isIdentifier(jsNode)) {
-        if (parent !== undefined && ts.isPropertyAccessExpression(parent) && parent.name === jsNode)
-          return;
-      }
       const jsType = typeAt(jsChecker, jsNode);
       if (jsType === null) return;
       // A typed JavaScript value crosses only where its object type lacks a
@@ -865,6 +936,13 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
       if (a.length !== b.length) return;
       for (let i = 0; i < a.length; i++) walk(a[i]!, b[i]!);
     };
+    // The walk's own type reads, batched per world and only for the nodes the
+    // walk asks about: these files are managed (root discovery prefetched
+    // their symbols), so a miss would otherwise be one request per node, and
+    // a whole-file sweep would fetch positions the walk never reaches.
+    const queries = collectProjectionTypeQueries(jsSf, declSf);
+    jsChecker.prefetchTypeQueries(queries.js);
+    declChecker.prefetchTypeQueries(queries.decl);
     walk(jsSf, declSf);
 
     // Suppress candidates whose receiver chain another candidate types.

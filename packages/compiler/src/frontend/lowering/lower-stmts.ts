@@ -26,6 +26,7 @@ import {
 import {
   declaredMemberOf,
   fenceDatePrototypeWrite,
+  isDataViewPrototypeRead,
   isPromisePrototypeRead,
   lowerUnionKeyedRead,
 } from "./expressions/property-access.js";
@@ -1482,6 +1483,12 @@ function varBindingType(lowerer: Lowerer, nameNode: ts.Identifier): IrType | nul
     ts.isVariableDeclaration(nameNode.parent) &&
     !nameNode.parent.type &&
     isPromisePrototypeRead(lowerer, nameNode.parent.initializer)
+  )
+    return DYN;
+  if (
+    ts.isVariableDeclaration(nameNode.parent) &&
+    !nameNode.parent.type &&
+    isDataViewPrototypeRead(lowerer, nameNode.parent.initializer)
   )
     return DYN;
   let type = lowerer.mapTypeOf(lowerer.typeOf(nameNode));
@@ -6752,6 +6759,15 @@ export function lowerVarDecl(
     type = init.type;
   // Promise.prototype is an ordinary object the checker types Promise<any>.
   if (!decl.type && !hasJsTypeAnnotation(decl) && isPromisePrototypeRead(lowerer, decl.initializer))
+    type = DYN;
+  // DataView.prototype (and its members) is likewise the prototype OBJECT,
+  // though the checker types it DataView, whose lowering is a bytes view:
+  // the binding holds the object the read lowered to.
+  if (
+    !decl.type &&
+    !hasJsTypeAnnotation(decl) &&
+    isDataViewPrototypeRead(lowerer, decl.initializer)
+  )
     type = DYN;
   // A web stream value in JavaScript keeps its checked-dynamic identity.
   if (

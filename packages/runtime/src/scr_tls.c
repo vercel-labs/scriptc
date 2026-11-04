@@ -203,6 +203,7 @@ static int scr_tls_parse_key(mbedtls_pk_context *pk, const char *pem, size_t len
 static void scr_tls_bad_material(const char *what, int err) {
   char detail[128];
   mbedtls_strerror(err, detail, sizeof detail);
+  scr_stdout_settle();
   fflush(stdout);
   fprintf(stderr, "scriptc: tls: failed to parse %s (%s)\n", what, detail);
   _Exit(1);

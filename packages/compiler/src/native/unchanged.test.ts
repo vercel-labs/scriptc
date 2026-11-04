@@ -236,6 +236,62 @@ test.skipIf(process.platform === "win32")(
 );
 
 test.skipIf(process.platform === "win32")(
+  "a caller-selected linker or helper keeps nothing: a wrapper may bring inputs of its own",
+  () => {
+    const inputs = profileBuild();
+    expect(unchangedBuildKey(inputs)).not.toBeNull();
+    const names = ["SCRIPTC_LINKER", "SCRIPTC_LLVM_HELPER"] as const;
+    const recorded: Record<string, string | undefined> = {};
+    for (const name of names) recorded[name] = process.env[name];
+    try {
+      for (const name of names) {
+        process.env[name] = `/tmp/wrapper-${name}`;
+        expect(unchangedBuildKey(inputs)).toBeNull();
+        delete process.env[name];
+      }
+    } finally {
+      for (const name of names) {
+        const value = recorded[name];
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "a variable that names mutable link inputs keeps nothing, and a value-hashed one stays keyed",
+  () => {
+    const inputs = profileBuild();
+    const base = unchangedBuildKey(inputs);
+    expect(base).not.toBeNull();
+    const names = ["LIBRARY_PATH", "SDKROOT", "LDFLAGS"] as const;
+    const recorded: Record<string, string | undefined> = {};
+    for (const name of names) recorded[name] = process.env[name];
+    try {
+      process.env["LIBRARY_PATH"] = "/opt/sdk/lib";
+      expect(unchangedBuildKey(inputs)).toBeNull();
+      delete process.env["LIBRARY_PATH"];
+      process.env["SDKROOT"] = "/opt/sdk";
+      expect(unchangedBuildKey(inputs)).toBeNull();
+      delete process.env["SDKROOT"];
+      // The fingerprint hashes this one's value, so the key changes and the
+      // record stays available, as it does for the executable cache.
+      process.env["LDFLAGS"] = "-L/opt/sdk/lib";
+      const withLdflags = unchangedBuildKey(inputs);
+      expect(withLdflags).not.toBeNull();
+      expect(withLdflags).not.toBe(base);
+    } finally {
+      for (const name of names) {
+        const value = recorded[name];
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  },
+);
+
+test.skipIf(process.platform === "win32")(
   "a sanitized build keeps nothing: its runtime is compiled from sources the key does not name",
   () => {
     const inputs = profileBuild();

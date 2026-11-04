@@ -7,7 +7,10 @@ import {
   recordProfileBlocksPath,
   type NativeProfileMatch,
 } from "../backend/native-profile.js";
-import { toolchainEnvironmentFingerprint } from "../backend/toolchain-environment.js";
+import {
+  toolchainEnvironmentCachePolicy,
+  toolchainEnvironmentFingerprint,
+} from "../backend/toolchain-environment.js";
 import {
   frontendInputsStillMatch,
   validFrontendInputSnapshot,
@@ -144,9 +147,11 @@ export interface UnchangedBuildInputs {
  * file comes from the helper, and a kept output would leave it unwritten),
  * when the manifest names a system library or a framework whose file the
  * linker resolves, when the toolchain supplies linker arguments (which the
- * linker resolves against its own search paths), or when it is sanitized (its
- * runtime is compiled from sources outside the pack, which the key does not
- * observe). */
+ * linker resolves against its own search paths), when `SCRIPTC_LINKER` or
+ * `SCRIPTC_LLVM_HELPER` selects a wrapper that may bring inputs of its own,
+ * when a mutable toolchain variable names files the fingerprint hashes only
+ * by spelling, or when it is sanitized (its runtime is compiled from sources
+ * outside the pack, which the key does not observe). */
 export function unchangedBuildKey(inputs: UnchangedBuildInputs): string | null {
   const { entry, options, ffi, ffiBytes, toolchain, output, translationUnitPath } = inputs;
   if (recordProfileBlocksPath(process.env) !== undefined) return null;
@@ -165,6 +170,21 @@ export function unchangedBuildKey(inputs: UnchangedBuildInputs): string | null {
   // complete-artifact cache refuses a link that supplies them for the same
   // reason.
   if (toolchain.linkerArgs.length > 0) return null;
+  // A caller-selected linker or code-generation helper may be a wrapper that
+  // brings inputs of its own — the key names the wrapper's file, its arguments
+  // and the environment's spelling, not the archives, libraries or plugin
+  // files the wrapper reads. The complete-artifact cache and the linker job
+  // cache refuse a build that names either one, for the same reason.
+  if (
+    process.env["SCRIPTC_LINKER"] !== undefined ||
+    process.env["SCRIPTC_LLVM_HELPER"] !== undefined
+  )
+    return null;
+  // The mutable toolchain variables name files and directories that can change
+  // behind a stable spelling — search paths, SDKs, config files, include
+  // paths — while the fingerprint only hashes the spelling. The
+  // complete-artifact cache refuses those too, through this same policy.
+  if (!toolchainEnvironmentCachePolicy().completeArtifacts) return null;
   const frontend = nativeFrontendCacheKey(entry, options, ffi, toolchain);
   if (frontend === null) return null;
   try {

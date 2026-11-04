@@ -1150,6 +1150,18 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     out.push(`@${sym} = internal constant { ptr, ptr, ptr, ptr, ptr, ptr, ptr } { ${body} }`);
   }
   if (emitter.mapOpsConsts.size > 0) out.push(``);
+  for (const c of emitter.arrayConstData.values()) {
+    const values = c.values.map((v) => (c.type === "i32" ? `i32 ${v}` : `double ${f64Lit(v)}`));
+    // A static table's data is the array's own storage, and ScrArr's slot
+    // field is 64-bit: keep the block aligned even for i32 elements. Its
+    // header is ordinary static storage that scr_arr_static fills in at
+    // initialization, so it is writable and zero.
+    out.push(
+      `@${c.sym} = internal constant [${c.values.length} x ${c.type}] [ ${values.join(", ")} ], align 8`,
+    );
+    out.push(`@${c.sym}_h = internal global %ScrArr zeroinitializer`);
+  }
+  if (emitter.arrayConstData.size > 0) out.push(``);
   for (const sym of emitter.methodIdSlots.values()) out.push(`@${sym} = internal global i32 -1`);
   if (emitter.methodIdSlots.size > 0) out.push(``);
 

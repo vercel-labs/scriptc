@@ -504,6 +504,12 @@ ScrArr *scr_arr_new_ops_small_r(const ScrArrOps *ops);
  * the array's own block (one allocation). With `states`, the array starts
  * with states (for holes or present undefined). Returns +1. */
 ScrArr *scr_arr_new_inline(ScrElemKind elem, size_t cap, bool states);
+/* A module-level table of numbers (ir/constant-tables.ts): `header` is
+ * static storage for one ScrArr, `data` the `len` elements in the program
+ * image. The array is immortal (never released, freed or moved) and the
+ * compiler proves nothing writes it, so the elements are never copied.
+ * Returns `header`. */
+ScrArr *scr_arr_static(ScrArr *header, const void *data, size_t len, ScrElemKind elem);
 /* The heap header of the immortal array `image` (a header in the
  * executable's image, such as a tagged template's strings), made once and
  * kept in *slot: 32-bit references in class fields reach only the

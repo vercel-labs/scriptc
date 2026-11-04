@@ -1533,6 +1533,22 @@ ScrArr *scr_arr_new_inline(ScrElemKind elem, size_t cap, bool states) {
   return a;
 }
 
+ScrArr *scr_arr_static(ScrArr *header, const void *data, size_t len, ScrElemKind elem) {
+  if (len > SCR_ARR_MAX_LENGTH) scr_arr_oom();
+  /* `rc = SIZE_MAX` makes the array immortal (scr_arr_release, and every
+   * move, skip it): its header and elements are in the program image, out of
+   * reach of the allocator, and the program holds the table for its life. */
+  header->rc = SIZE_MAX;
+  header->len = (uint32_t)len;
+  header->cap = (uint32_t)len;
+  header->elem = (uint8_t)elem;
+  header->cyc = 0;
+  header->spare = 0;
+  header->filled = (uint32_t)len;
+  header->data = (uint64_t *)data;
+  return header;
+}
+
 ScrArr *scr_arr_window_header(const ScrArr *image, ScrArr **slot) {
   ScrArr *known = __atomic_load_n(slot, __ATOMIC_ACQUIRE);
   if (known) return known;

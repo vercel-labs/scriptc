@@ -283,6 +283,26 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
   for (const fn of mod.functions) fns.set(fn.name, fn);
   const vt = new VirtualTargets(mod.classes ?? []);
   const suspends = (fn: IrFunction): boolean => fn.async === true || fn.generator !== undefined;
+  /** Whether `node` awaits anywhere inside it, parking the frame it runs
+   * in. A closure's body is an IrFunction of its own, not part of `node`. */
+  const awaitSeen = new Map<Node, boolean>();
+  const awaits = (node: Node): boolean => {
+    const seen = awaitSeen.get(node);
+    if (seen !== undefined) return seen;
+    let found = node.kind === "awaitExpr" || node.kind === "awaitUnionExpr";
+    if (!found) {
+      const kids: Node[] = [];
+      children(node, kids);
+      for (const kid of kids) {
+        if (awaits(kid)) {
+          found = true;
+          break;
+        }
+      }
+    }
+    awaitSeen.set(node, found);
+    return found;
+  };
   // Who refers to each function: by calls (direct, virtual, constructions),
   // and by closures too. A function's summaries depend only on those of
   // the functions it refers to, so the fixpoints below revisit just the
@@ -1069,7 +1089,7 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
   const rootFunction = new Map<Node, IrFunction>();
   framePass = true;
   for (const fn of mod.functions) {
-    if (suspends(fn)) continue;
+    const suspending = suspends(fn);
     current = fn;
     const classes = new Map<string, string>();
     const esc = escapingLocals(fn, null, classes);
@@ -1093,6 +1113,17 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
       );
     };
     const parents: Node[] = [];
+    /** Whether no statement around `chain`'s node awaits. An arena opened
+     * for a value used in place is dropped at the end of its statement, and
+     * an await parks the frame with the arena still the thread's
+     * allocation target: a suspending function keeps a root or a call
+     * region only where no enclosing statement awaits, and keeps no root
+     * whose value outlives the statement. */
+    const statementSync = (chain: readonly Node[]): boolean => {
+      if (!suspending) return true;
+      for (const at of chain) if (!isExpr(at) && awaits(at)) return false;
+      return true;
+    };
     const walk = (node: Node): void => {
       const isRoot =
         isExpr(node) &&
@@ -1111,6 +1142,7 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
       if (
         node.kind === "call" &&
         clean &&
+        statementSync(parents) &&
         !refType(node.type) &&
         // A constructor (a `super(...)` call) stores into `this`, which its
         // caller holds: it is leak-free only as part of a `new`.
@@ -1126,11 +1158,16 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
         let use = useOf(node, parents, false, info);
         if (use === "internal") use = resultUse(info.at!, parents, info);
         rootFunction.set(node, fn);
-        if (use === "kept") {
+        if (use === "kept" && statementSync(parents)) {
           roots.add(node);
           drops.set(node, null);
           rootLocals.set(node, new Set());
-        } else if (use === "bound" && own.has(info.bound!) && !esc.has(info.bound!)) {
+        } else if (
+          use === "bound" &&
+          !suspending &&
+          own.has(info.bound!) &&
+          !esc.has(info.bound!)
+        ) {
           const local = dropLocal(info.bound!);
           // An assignment in a loop would add a group per iteration to a
           // list that is dropped only when the local's scope exits.

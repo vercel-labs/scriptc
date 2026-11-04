@@ -72,6 +72,50 @@ console.log(total);
   expect(analyzeClosedGroups(mod, groups, everyObject).has(root!)).toBe(true);
 });
 
+test("a root in an async function's statement is dropped at that statement", async () => {
+  const mod = await moduleFor(`${TREE}
+let total = 0;
+async function count(): Promise<void> {
+  await Promise.resolve();
+  total += tree(4).count();
+}
+await count();
+console.log(total);
+`);
+  const groups = analyzeRegionGroups(mod);
+  const [root] = callsOf(mod, "tree").filter((c) => groups.roots.has(c));
+  expect(root).toBeDefined();
+  expect(groups.drops.get(root!)).toBeNull();
+});
+
+test("a root whose statement awaits is no root", async () => {
+  const mod = await moduleFor(`${TREE}
+let total = 0;
+async function count(): Promise<void> {
+  total += tree(4).count() + (await Promise.resolve(0));
+}
+await count();
+console.log(total);
+`);
+  const groups = analyzeRegionGroups(mod);
+  expect(callsOf(mod, "tree").some((c) => groups.roots.has(c))).toBe(false);
+});
+
+test("a value bound across an await in an async function is no root", async () => {
+  const mod = await moduleFor(`${TREE}
+let total = 0;
+async function count(): Promise<void> {
+  const t = tree(4);
+  await Promise.resolve();
+  total += t.count();
+}
+await count();
+console.log(total);
+`);
+  const groups = analyzeRegionGroups(mod);
+  expect(callsOf(mod, "tree").some((c) => groups.roots.has(c))).toBe(false);
+});
+
 test("a result kept past its caller's frame is no root", async () => {
   const mod = await moduleFor(`${TREE}
 const kept: Node[] = [];

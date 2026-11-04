@@ -540,33 +540,60 @@ static bool hp_delete_key(ScrDyn *handle, const ScrStr *key, bool strict) {
 }
 
 static bool hp_own_descriptor(ScrDyn *handle, ScrDyn *key, ScrDyn **out) {
-  if (key->kind != SCR_DYN_STR) return false;
+  /* ToPropertyKey runs before the lookup, as it does in defineProperty: a
+   * number or an object converting to a property key names the same entry
+   * the definition stored. */
+  ScrStr *name = NULL;
+  if (key->kind == SCR_DYN_STR) {
+    name = scr_str_retain(key->v.str);
+  } else {
+    ScrDyn *converted = scr_dyn_property_key_value(key);
+    if (!converted) return false;
+    if (converted->kind != SCR_DYN_STR) {
+      scr_dyn_release(converted);
+      return false;
+    }
+    name = scr_str_retain(converted->v.str);
+    scr_dyn_release(converted);
+  }
   ScrDyn *props = hp_table_of(handle);
-  if (hp_has(props, key->v.str->data, key->v.str->len)) {
-    *out = scr_dyn_own_descriptor(props, key->v.str);
+  if (hp_has(props, name->data, name->len)) {
+    *out = scr_dyn_own_descriptor(props, name);
+    scr_str_release(name);
     return true;
   }
-  if (!hp_accepts(handle->v.handle.tag)) return false;
-  if (handle->v.handle.tag == SCR_DYNH_REGEXP && key->v.str->len == 9 &&
-      memcmp(key->v.str->data, "lastIndex", 9) == 0) {
+  if (!hp_accepts(handle->v.handle.tag)) {
+    scr_str_release(name);
+    return false;
+  }
+  if (handle->v.handle.tag == SCR_DYNH_REGEXP && name->len == 9 &&
+      memcmp(name->data, "lastIndex", 9) == 0) {
     /* The regex unit models lastIndex as a writable, non-enumerable,
      * non-configurable own data property. */
     ScrDynHandleTag tag = handle->v.handle.tag;
     const ScrDynHandleOps *orig = hp_wrapped[tag] ? hp_orig[tag] : hp_current_ops(tag);
     ScrDyn *value = orig->get ? orig->get(handle->v.handle.ptr, "lastIndex", 9) : NULL;
-    if (!value) return false;
+    if (!value) {
+      scr_str_release(name);
+      return false;
+    }
     ScrDyn *desc = scr_dyn_new_obj();
     scr_dyn_obj_set(desc, "value", 5, value);
     scr_dyn_obj_set(desc, "writable", 8, scr_dyn_new_bool(true));
     scr_dyn_obj_set(desc, "enumerable", 10, scr_dyn_new_bool(false));
     scr_dyn_obj_set(desc, "configurable", 12, scr_dyn_new_bool(false));
+    scr_str_release(name);
     *out = desc;
     return true;
   }
   /* A member lives on the class's prototype, not on the handle: H1 does
    * not implement member reflection, so the ordinary path refuses it
    * rather than answer undefined for a property that may exist. */
-  if (hp_is_member(handle, key->v.str)) return false;
+  if (hp_is_member(handle, name)) {
+    scr_str_release(name);
+    return false;
+  }
+  scr_str_release(name);
   *out = scr_dyn_retain(scr_dyn_undefined());
   return true;
 }

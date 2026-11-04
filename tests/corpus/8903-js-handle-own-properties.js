@@ -114,3 +114,25 @@ Object.defineProperty(reveal, "hidden", { value: 7, enumerable: false, configura
 console.log("reveal keys", JSON.stringify(Object.keys(reveal)));
 console.log("reveal values", JSON.stringify(Object.values(reveal)));
 console.log("reveal entries", JSON.stringify(Object.entries(reveal)));
+
+// A number reaches the same property defineProperty stored: ToPropertyKey
+// runs before the lookup, so the number and its string form find one
+// descriptor, and a key with no property answers undefined.
+const numeric = new Date(0);
+Object.defineProperty(numeric, 1, {
+  value: "one",
+  writable: true,
+  enumerable: true,
+  configurable: true,
+});
+numeric[2] = "two";
+console.log(
+  "numeric",
+  numeric[1],
+  numeric["1"],
+  Object.keys(numeric).join(","),
+  JSON.stringify(Object.getOwnPropertyDescriptor(numeric, 1)),
+  JSON.stringify(Object.getOwnPropertyDescriptor(numeric, "1")),
+  JSON.stringify(Object.getOwnPropertyDescriptor(numeric, 2)),
+);
+console.log("numeric missing", Object.getOwnPropertyDescriptor(numeric, 3));

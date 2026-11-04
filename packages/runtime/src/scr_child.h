@@ -284,6 +284,11 @@ double scr_child_exit_code(ScrChild *c);
 bool scr_child_has_signal_code(ScrChild *c);
 ScrStr *scr_child_signal_code(ScrChild *c); /* returns +1 */
 bool scr_child_killed(ScrChild *c);
+/* spawnfile / spawnargs: the file the child was started from and the file
+ * followed by the arguments Node reports (a shell spawn reports the shell
+ * and its invocation). Both answer +1 references. */
+ScrStr *scr_child_spawnfile(ScrChild *c);
+ScrArr *scr_child_spawnargs(ScrChild *c);
 bool scr_child_kill(ScrChild *c, const ScrStr *signal);
 bool scr_child_kill_num(ScrChild *c, double signum);
 void scr_child_unref(ScrChild *c);

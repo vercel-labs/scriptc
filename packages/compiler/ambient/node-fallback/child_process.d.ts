@@ -162,6 +162,11 @@ declare module "child_process" {
      * runs, after a normal exit, and after a spawn failure. */
     readonly signalCode: string | null;
     readonly killed: boolean;
+    /* spawnfile is the file the child was started from and spawnargs that
+     * file followed by its arguments, both as Node reports them: a shell
+     * spawn names the shell and its invocation. */
+    readonly spawnfile: string;
+    readonly spawnargs: string[];
     kill(signal?: string | number): boolean;
     unref(): void;
     readonly connected: boolean;

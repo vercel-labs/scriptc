@@ -890,6 +890,8 @@ interface Buffer<
     encoding?: BufferEncoding,
   ): number;
   subarray(start?: number, end?: number): Buffer<TArrayBuffer>;
+  /* The JSON snapshot JSON.stringify calls. */
+  toJSON(): { type: "Buffer"; data: number[] };
   /* @types/node's spelling — the ArrayBuffer instantiation keeps the
    * override compatible with the lib's Uint8Array.slice. */
   slice(start?: number, end?: number): Buffer<ArrayBuffer>;

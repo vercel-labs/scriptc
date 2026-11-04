@@ -87,8 +87,6 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // Array.prototype generic algorithms over array-like receivers
   // (scr_dyn_array_like.c); it calls the invoke unit's dispatch.
   ["scr_dyn_array_like.c", all("arrayLikeDispatch", "dynInvoke")],
-  // Number.prototype and Boolean.prototype read as values in JavaScript.
-  ["scr_dyn_builtin_prototype.c", all("builtinPrototypeValue", "dynInvoke")],
   // A builtin prototype method read as a value in JavaScript (String trim,
   // RegExp exec/test/toString).
   ["scr_dyn_builtin_methods.c", all("builtinMethodValue", "dynInvoke")],
@@ -128,7 +126,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_event_target.c", any("eventTarget", "nativeFetch", "abortSignal")],
   [
     "scr_async_dyn.c",
-    any("dynAsync", "dynInvoke", "dc", "fileHandle", "nativeFetch", "nodeIsland"),
+    any("dynAsync", "dynInvoke", "dc", "fileHandle", "nativeFetch", "nodeIsland", "nodeTest"),
   ],
   // AsyncDisposableStack (t262 W4): the `await using` stack, whose
   // disposeAsync awaits each resource. It awaits through the dyn-async unit
@@ -620,6 +618,30 @@ export function variantsFor(source) {
       when: { nodeIsland: true },
       defines: ["SCR_NODE_ISLANDS"],
     });
+    // A checked-dynamic promise whose executor takes a reject parameter
+    // builds its reject closure with scr_make_reject_dyn, the reason being
+    // the program's own value; every other program keeps the default
+    // object, byte for byte. The selector takes the variant with the most
+    // conditions, so each build above needs its counterpart.
+    for (const [id, when, defines] of [
+      ["promise-reject-dyn", { promiseRejectDyn: true }, ["SCR_PROMISE_REJECT_DYN"]],
+      [
+        "native-reactions-promise-reject-dyn",
+        { webStreams: true, promiseRejectDyn: true },
+        ["SCR_NATIVE_REACTIONS", "SCR_PROMISE_REJECT_DYN"],
+      ],
+      [
+        "node-island-promise-reject-dyn",
+        { nodeIsland: true, promiseRejectDyn: true },
+        ["SCR_NODE_ISLANDS", "SCR_PROMISE_REJECT_DYN"],
+      ],
+      [
+        "native-reactions-node-island-promise-reject-dyn",
+        { webStreams: true, nodeIsland: true, promiseRejectDyn: true },
+        ["SCR_NATIVE_REACTIONS", "SCR_NODE_ISLANDS", "SCR_PROMISE_REJECT_DYN"],
+      ],
+    ])
+      variants.push({ id, when, defines });
   }
   // Error-taking write completion callbacks: the stream unit publishes the
   // error each callback receives; every other program keeps the default
@@ -669,6 +691,18 @@ export function variantsFor(source) {
       id: "cp-options-err-fields",
       when: { childOptionExt: true, childErrorFields: true },
       defines: ["SCR_CHILD_CP_OPTIONS", "SCR_CHILD_ERR_FIELDS"],
+    });
+  }
+  // A static executable cannot load NSS modules, so the os unit's passwd
+  // fallback (os.homedir() with HOME unset, and os.userInfo()) reads
+  // /etc/passwd directly in that build; every dynamically linked build
+  // keeps the unchanged getpwuid_r object. staticLink is the link
+  // plan's fact (link-plan.ts), not a program fact.
+  if (source === "scr_lib.c") {
+    variants.push({
+      id: "static-passwd",
+      when: { staticLink: true },
+      defines: ["SCR_STATIC_PASSWD"],
     });
   }
   return variants;

@@ -928,15 +928,18 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
     );
   }
   if (e.type.kind === "symbol") {
-    // JS splits here: `${sym}` and concatenation THROW a TypeError,
-    // String(sym) answers "Symbol(desc)". One shared lowering cannot
-    // honor both — fence with the sanctioned spelling instead of
-    // guessing the context.
-    lowerer.unsupported(
-      "SC1090",
-      node,
-      "string conversions of symbol values (template literals throw in JS — call .toString() explicitly)",
-    );
+    // `${sym}`, `"" + sym`, `x += sym`: the ToString the operator performs
+    // throws Node's TypeError. String(sym) never reaches this helper (it
+    // lowers to dyn.stringConstructor), so the runtime operation is the
+    // whole answer here — a symbol throws, and the dynamic tier's own
+    // rendering stays reachable only through String(x).
+    return {
+      kind: "libCall",
+      fn: "dyn.toStringCoerce",
+      args: [{ kind: "dynFrom", value: e, type: DYN, loc: e.loc }],
+      type: STRING,
+      loc: e.loc,
+    };
   }
   if (isUnitType(e.type)) {
     if (e.kind === "unitLit") {

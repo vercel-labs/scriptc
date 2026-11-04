@@ -495,6 +495,22 @@ static ScrDyn *scr_js_wrapper_prototype(int kind, ScrDyn *constructor) {
   return prototype;
 }
 
+/* `Number.prototype` / `Boolean.prototype` read as a JavaScript value
+ * (dyn.builtinPrototype): the wrapper unit's prototype object, so the
+ * program that reads the value and the program's wrappers share ONE object
+ * per kind. `kind` spells the constructor the frontend marked ("String",
+ * "Number" or "Boolean"); `constructor` is that compiled constructor value
+ * (borrowed), which receives the prototype. +1. */
+ScrDyn *scr_dyn_builtin_prototype(const ScrStr *kind, ScrDyn *constructor) {
+  for (int k = 0; k < 3; k++) {
+    size_t len = strlen(scr_js_wrapper_names[k]);
+    if (kind->len == len && memcmp(kind->data, scr_js_wrapper_names[k], len) == 0)
+      return scr_dyn_retain(scr_js_wrapper_prototype(k, constructor));
+  }
+  scr_trap("scriptc: unknown builtin prototype kind\n");
+  return NULL;
+}
+
 /* Boolean.prototype as a value in a JavaScript source (+1): the wrapper
  * unit's own prototype object, the one `new Boolean(v)` instances inherit
  * from, so a method read from it is the interned member above and accepts

@@ -32,7 +32,6 @@ import {
   isPrimitiveConstructorOwner,
   programUsesIntrinsicObjects,
 } from "../intrinsics.js";
-import { wrapperConstructors } from "../primitive-wrappers.js";
 import * as ts from "../../ts7/adapter.js";
 import { lowerHistogramProperty } from "../builtins/performance.js";
 import { staticFunctionNameRead } from "../static-function-names.js";
@@ -155,6 +154,7 @@ import { COMMONJS_MODULE_BINDINGS, TEMPORAL_GLOBAL } from "../../builtin-modules
 import { tryLowerExpression } from "./try-lower-expression.js";
 import {
   applyDeferredAssertion,
+  assertedOptionalMemberRead,
   assertedReceiverNode,
   deferredMemberReadTarget,
   deferredProbeReadAccess,
@@ -2756,6 +2756,23 @@ export function lowerIntrinsicProperty(
       const receiver = lowerer.lowerExpr(expr.expression);
       return { kind: "libCall", fn: "child.killed", args: [receiver], type: BOOL, loc };
     }
+    // spawnfile / spawnargs: the file the child was started from, and that
+    // file followed by its arguments. A shell spawn reports the shell and
+    // its invocation (Node's own record of what it ran).
+    if (name === "spawnfile") {
+      const receiver = lowerer.lowerExpr(expr.expression);
+      return { kind: "libCall", fn: "child.spawnfile", args: [receiver], type: STRING, loc };
+    }
+    if (name === "spawnargs") {
+      const receiver = lowerer.lowerExpr(expr.expression);
+      return {
+        kind: "libCall",
+        fn: "child.spawnargs",
+        args: [receiver],
+        type: arrayOf(STRING),
+        loc,
+      };
+    }
     // signalCode: `NodeJS.Signals | null`, the signal that terminated the
     // child (null while running, after a normal exit, and after a spawn
     // failure) — the exit listener's second parameter, read as a property.
@@ -2775,7 +2792,7 @@ export function lowerIntrinsicProperty(
     lowerer.noLowering(
       `ChildProcess.${name}`,
       expr,
-      'on/once("exit" | "close" | "error", cb), pid, exitCode, killed, kill(signal?), and unref() are the supported ChildProcess members',
+      'on/once("exit" | "close" | "error", cb), pid, exitCode, killed, spawnfile, spawnargs, kill(signal?), ref(), and unref() are the supported ChildProcess members',
       lowerer.checker.getSymbolAtLocation(expr.name),
     );
   }
@@ -3903,6 +3920,15 @@ export function lowerFieldRead(lowerer: Lowerer, expr: ts.PropertyAccessExpressi
   // very arm the probe exists to detect. Leave the read to the per-arm
   // answer in lowerPropertyAccessExpr (asserted-receiver.ts).
   if (deferredProbeReadAccess(lowerer, expr)) return null;
+  // A member only an asserted intersection declares
+  // (`(item as Base & { icons?: unknown }).icons`): the assertion's width
+  // copy has the name but no value in it, while the record the value
+  // actually holds still carries the property in its kept source. Answer
+  // from there (assertedOnlyFieldRead), as the destructuring twin does.
+  {
+    const assertedOnly = assertedOptionalMemberRead(lowerer, expr);
+    if (assertedOnly) return assertedOnly;
+  }
   const target = lowerer.fieldTarget(expr);
   if (target) return lowerer.fieldGetExpr(target, locOf(expr), expr);
   if (expr.questionDotToken) return null;
@@ -5879,7 +5905,35 @@ const BUILTIN_VALUE_REFLECTION: ReadonlySet<string> = new Set([
  * redefinition (`Object.hasOwn(Object, "hasOwn")`,
  * `Object.defineProperty(Promise, ...)`, `hasOwnProperty.call(Map, ...)`),
  * which would observe or change members the interned value does not
- * model. */
+ * model — except an own-key query whose answer the value does model
+ * (faithfulOwnKeyQuery). */
+/** The interned values whose own properties the runtime models exactly as
+ * Node's constructor has them: Proxy is the one builtin constructor with no
+ * `prototype` own property, and the runtime's Proxy value carries Node's
+ * other own keys (length, name, revocable). The other interns would answer
+ * `hasOwnProperty(..., "prototype")` false where Node answers true. */
+const BUILTIN_VALUE_OWN_KEYS_FAITHFUL: ReadonlySet<string> = new Set(["Proxy"]);
+
+/** `Object.prototype.hasOwnProperty.call(<interned value>, key)` asks which
+ * own keys the value has; it neither reads nor redefines a member. The
+ * answer is Node's when the interned value's own keys are
+ * (BUILTIN_VALUE_OWN_KEYS_FAITHFUL). */
+function faithfulOwnKeyQuery(
+  lowerer: Lowerer,
+  callee: ts.PropertyAccessExpression,
+  canonical: string,
+): boolean {
+  if (!BUILTIN_VALUE_OWN_KEYS_FAITHFUL.has(canonical) || callee.name.text !== "call") return false;
+  const method = callee.expression;
+  return (
+    ts.isPropertyAccessExpression(method) &&
+    method.name.text === "hasOwnProperty" &&
+    ts.isPropertyAccessExpression(method.expression) &&
+    method.expression.name.text === "prototype" &&
+    stdlibGlobalNameOf(lowerer, method.expression.expression) === "Object"
+  );
+}
+
 export function builtinGlobalValueAt(
   lowerer: Lowerer,
   expr: ts.Expression,
@@ -5918,7 +5972,8 @@ export function builtinGlobalValueAt(
               ? callee.expression.name
               : callee.expression,
           ),
-        ));
+        ) &&
+        !faithfulOwnKeyQuery(lowerer, callee, canonical));
     if (reflects) {
       const name =
         owner !== null
@@ -6346,7 +6401,7 @@ function jsPrimitivePrototypeValue(
 ): IrExpr | null {
   if (!isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;
   const loc = locOf(expr);
-  const value = (kind: string): IrExpr =>
+  const value = (kind: "Number" | "Boolean"): IrExpr =>
     kind === "Boolean"
       ? // The wrapper unit's Boolean.prototype is the object Boolean
         // instances inherit from, so its valueOf/toString are the interned
@@ -6356,14 +6411,20 @@ function jsPrimitivePrototypeValue(
         {
           kind: "libCall",
           fn: "wrapper.booleanPrototype",
-          args: [wrapperConstructors(lowerer, loc)[2]!],
+          args: [lowerer.coerceToExpected(primitiveCtorClosure(lowerer, kind, loc, true), DYN)],
           type: DYN,
           loc,
         }
       : {
           kind: "libCall",
           fn: "dyn.builtinPrototype",
-          args: [{ kind: "strLit", value: kind, type: STRING, loc }],
+          args: [
+            { kind: "strLit", value: kind, type: STRING, loc },
+            // The compiled constructor value the prototype belongs to: the
+            // unit answers it as the constructor's `prototype` member, so
+            // `Object(1).constructor.prototype === Number.prototype`.
+            lowerer.coerceToExpected(primitiveCtorClosure(lowerer, kind, loc, true), DYN),
+          ],
           type: DYN,
           loc,
         };

@@ -73,15 +73,31 @@ test("web streams and Node islands select an async build that defines both", () 
   ).toEqual([]);
 });
 
-test("scr_lib.c builds once per flavor, whatever the program's features", () => {
+test("scr_lib.c builds once per flavor for a dynamic link, plus the static link's build", () => {
   // A file read brands its bytes and fs.watchFile's stat entry points are
-  // always defined, so neither a read nor a poll selects a second build.
+  // always defined, so neither a read nor a poll selects a second build. The
+  // one other build is the link's: a static executable cannot load NSS
+  // modules, so it reads /etc/passwd itself (SCR_STATIC_PASSWD), and every
+  // dynamically linked build keeps the getpwuid_r object.
   const unit = matrix.runtime_units.find((u: { source: string }) => u.source === "scr_lib.c");
-  expect(unit.variants.map((v: { id: string }) => v.id)).toEqual(["default", "default-workers"]);
+  expect(unit.variants.map((v: { id: string }) => v.id)).toEqual([
+    "default",
+    "default-workers",
+    "static-passwd",
+    "static-passwd-workers",
+  ]);
   const plain = { workers: false, watchFile: false };
   expect(selected("scr_lib.c", plain).defines).toEqual([]);
   expect(selected("scr_lib.c", { ...plain, watchFile: true }).defines).toEqual([]);
   expect(selected("scr_lib.c", { ...plain, workers: true, watchFile: true }).defines).toEqual([
+    "SCR_WORKERS",
+  ]);
+  // staticLink is the link plan's fact, and only it selects the second build.
+  expect(selected("scr_lib.c", { ...plain, staticLink: true }).defines).toEqual([
+    "SCR_STATIC_PASSWD",
+  ]);
+  expect(selected("scr_lib.c", { ...plain, workers: true, staticLink: true }).defines).toEqual([
+    "SCR_STATIC_PASSWD",
     "SCR_WORKERS",
   ]);
 });

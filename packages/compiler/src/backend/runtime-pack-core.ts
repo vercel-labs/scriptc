@@ -122,14 +122,12 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   /** Array.prototype's generic algorithms over array-likes
    * (scr_dyn_array_like.c). */
   arrayLikeDispatch?: boolean;
-  /** Number.prototype and Boolean.prototype as values
-   * (scr_dyn_builtin_prototype.c). */
-  builtinPrototypeValue?: boolean;
   /** A builtin prototype method as a function value (String's trim family,
    * RegExp's exec/test/toString; scr_dyn_builtin_methods.c). */
   builtinMethodValue?: boolean;
   computedRequire: boolean;
   warningReplace: boolean;
+  promiseRejectDyn: boolean;
   /** The JavaScript object model build (t262-da §J): the runtime code every
    * feature reached only from JavaScript sources shares, the
    * SCR_JS_OBJECT_MODEL build of the units those features touch. Implies
@@ -353,6 +351,7 @@ export function effectiveRuntimeFeatures(
   return {
     ...features,
     workers: features.workers === true,
+    staticLink: features.staticLink === true,
     youngNursery: features.youngNursery === true,
     eventTarget: features.eventTarget === true,
     wasm: features.wasm === true,
@@ -381,10 +380,10 @@ export function effectiveRuntimeFeatures(
     dataViewPrototypeValue: features.dataViewPrototypeValue === true,
     hostAbsentGlobals: features.hostAbsentGlobals === true,
     arrayLikeDispatch: features.arrayLikeDispatch === true,
-    builtinPrototypeValue: features.builtinPrototypeValue === true,
     builtinMethodValue: features.builtinMethodValue === true,
     computedRequire: features.computedRequire === true,
     warningReplace: features.warningReplace === true,
+    promiseRejectDyn: features.promiseRejectDyn === true,
     jsObjectModel,
     mutableBuffers: features.mutableBuffers === true,
     asyncDisposableStack: features.asyncDisposableStack === true,

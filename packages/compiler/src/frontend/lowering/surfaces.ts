@@ -2271,8 +2271,13 @@ export const BUILTIN_MODULE_CONSTS: Record<
   worker_threads: { isMainThread: true, threadId: 0 },
   cluster: { isPrimary: true, isMaster: true, isWorker: false },
   punycode: { version: "2.1.0" },
-  // The largest Buffer length, the bound the allocation checks use.
-  buffer: { kMaxLength: 9007199254740991 },
+  // The largest Buffer length, the bound the allocation checks use; V8's
+  // string length limit (code units), and the inspect preview width.
+  buffer: {
+    kMaxLength: 9007199254740991,
+    kStringMaxLength: 536870888,
+    INSPECT_MAX_BYTES: 50,
+  },
   // zlib's module-level copies of its constants (every member outside
   // BROTLI_*, Node's own loop over zlib.constants).
   zlib: Object.fromEntries(

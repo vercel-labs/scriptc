@@ -295,6 +295,27 @@ export function completeArgs(
     (s) => s.mode === "rest" || s.mode === "dynRest" || s.mode === "arguments",
   );
   const positional = restAt >= 0 ? shapes.slice(0, restAt) : [...shapes];
+  // tsc rejects a TypeScript call that supplies more arguments than the
+  // callee's parameter list, so reaching this with a surplus argument means
+  // the shapes are narrower than the signature the call was checked
+  // against: an override whose extra trailing optional/defaulted parameters
+  // live only on its own body, while the inherited slot (and any virtual
+  // dispatch through it) carries the base arity alone. Refuse rather than
+  // drop the surplus values and their side effects. JavaScript sources are
+  // arity-permissive and keep filling what fits.
+  if (
+    restAt < 0 &&
+    sources.length > shapes.length &&
+    !isJsSourceFile(ts.getSourceFileOfNode(blame))
+  )
+    lowerer.unsupported(
+      "SC1090",
+      blame,
+      "a call supplying more arguments than the native parameter list " +
+        "(an override that declares parameters past the inherited slot arity " +
+        "can only be called on its own type, where the call goes straight to " +
+        "its body — behind a virtual slot, only the inherited arity travels)",
+    );
   if (restAt >= 0 && shapes[restAt]!.mode === "arguments") {
     // JS `arguments` contains every supplied value, including fixed
     // parameters. Store each call expression once, in source order, so

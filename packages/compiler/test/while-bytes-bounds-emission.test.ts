@@ -22,15 +22,39 @@ async function emitLlvm(source: string): Promise<string> {
   }
 }
 
-/** The number of bounds-checked element reads and writes in a function's
- * statement body (the borrowed-argument body when there is one). */
-function checks(ll: string, name: string): number {
+/** The body of `name`'s definition: the borrowed-argument one when there is
+ * one, else the plain one. */
+function body(ll: string, name: string): string {
   const definition = (prefix: string): number =>
     ll.search(new RegExp(`define [^\\n]*@${prefix}_${name}\\(`));
   const start = definition("sc_bf") >= 0 ? definition("sc_bf") : definition("sc_f");
   expect(start).toBeGreaterThanOrEqual(0);
-  const fn = ll.slice(start, ll.indexOf("\n}\n", start));
-  return fn.split("label %bytes.index.valid").length - 1;
+  return ll.slice(start, ll.indexOf("\n}\n", start));
+}
+
+/** The number of bounds-checked element reads and writes in a function. */
+function checks(ll: string, name: string): number {
+  return body(ll, name).split("label %bytes.index.valid").length - 1;
+}
+
+/** Checked element reads classified by the consumer of the byte they load:
+ * `fadd` for the read whose byte is added to the running total, `fcmp` for
+ * the one the nested loop's condition compares. A versioned loop emits two
+ * copies of the body, and this counts the copies of a read by what consumes
+ * it, so a copy that lost its check is visible without counting labels. */
+function checkedReads(ll: string, name: string, use: "fadd" | "fcmp"): number {
+  const fn = body(ll, name);
+  const marker = "label %bytes.index.valid";
+  let count = 0;
+  for (let at = fn.indexOf(marker); at >= 0; at = fn.indexOf(marker, at + 1)) {
+    const rest = fn.slice(at);
+    const add = rest.indexOf("fadd double");
+    const compare = rest.indexOf("fcmp oeq");
+    if (add < 0 && compare < 0) continue;
+    const consumer = compare < 0 || (add >= 0 && add < compare) ? "fadd" : "fcmp";
+    if (consumer === use) count++;
+  }
+  return count;
 }
 
 test("reads from the end of a typed array in a while loop are proven in bounds", async () => {
@@ -146,5 +170,13 @@ console.log(
   expect(checks(ll, "ahead")).toBe(1);
   // The read before the nested loop is in bounds. The nested loop's
   // condition is not a bound, and the read after the loop can be at -1.
-  expect(checks(ll, "nested")).toBe(2);
+  // The outer loop is versioned for the nested condition's read, so its
+  // body is emitted twice: the checked copy keeps both reads' checks, and
+  // the proven copy keeps the read after the loop, which the guard cannot
+  // bound (i can reach len and put the index at -1).
+  expect(checks(ll, "nested")).toBe(3);
+  // Both copies of the read after the loop still add a checked byte to the
+  // total, and only the checked copy keeps the condition's read.
+  expect(checkedReads(ll, "nested", "fadd")).toBe(2);
+  expect(checkedReads(ll, "nested", "fcmp")).toBe(1);
 });

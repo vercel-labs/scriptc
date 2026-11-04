@@ -1229,11 +1229,20 @@ export function lowerStringMethodCall(
       return null;
     if (!lowerer.isStdlibMember(access)) return null;
   }
-  if (extraMethod && argumentNodes === call.arguments.nodes) {
+  // A `.call` form brings the method's own arguments already sliced off the
+  // receiver, so the extra-method lowering reads them from `argumentNodes`.
+  if (extraMethod && (argumentNodes === call.arguments.nodes || dynReceiver !== undefined)) {
     const receiver = dynReceiver
       ? dynReceiver()
       : lowerMethodReceiver(lowerer, access.expression, STRING, access.name.text);
-    return lowerExtraStringMethodCall(lowerer, call, access.name.text, receiver, access.expression);
+    return lowerExtraStringMethodCall(
+      lowerer,
+      call,
+      access.name.text,
+      receiver,
+      access.expression,
+      argumentNodes,
+    );
   }
   // The lib declares optional parameters beyond some lowered forms; fence
   // those arities instead of passing arguments the runtime doesn't take.
@@ -1705,9 +1714,10 @@ function buildStringMethod(
   args: IrExpr[],
   receiverNode: ts.Node,
   stmts: IrStmt[],
+  argNodes: readonly ts.Expression[] = call.arguments.nodes,
 ): IrExpr | null {
   const loc = locOf(call);
-  const node = (i: number): ts.Expression => call.arguments.nodes[i] ?? call;
+  const node = (i: number): ts.Expression => argNodes[i] ?? call;
   // concat(...values): each argument's ToString, in order, after all of
   // them evaluated.
   if (name === "concat") {
@@ -1857,8 +1867,9 @@ function evaluatedOperands(
   stmts: IrStmt[],
   expected: IrType | undefined,
   receiver?: { value: IrExpr; name: string },
+  argumentNodes: readonly ts.Expression[] = call.arguments.nodes,
 ): { receiver: IrExpr | undefined; args: IrExpr[] } {
-  const args = call.arguments.nodes.map((arg) =>
+  const args = argumentNodes.map((arg) =>
     expected ? lowerer.lowerExprExpecting(arg, expected) : lowerer.lowerExpr(arg),
   );
   const conversionsRunCode = args.some((arg) => !PLAIN_CONVERSION_KINDS.has(arg.type.kind));
@@ -1871,22 +1882,42 @@ function evaluatedOperands(
 }
 
 /** A typed STRING receiver calling one of EXTRA_STRING_METHODS: receiver,
- * then arguments, then the method's own conversions — the spec order. */
+ * then arguments, then the method's own conversions — the spec order. The
+ * `argumentNodes` slice carries the method's own arguments when the call is
+ * `String.prototype.<name>.call(receiver, …)`, whose node list starts at the
+ * receiver. */
 export function lowerExtraStringMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
   name: string,
   receiver: IrExpr,
   receiverNode: ts.Node,
+  argumentNodes: readonly ts.Expression[] = call.arguments.nodes,
 ): IrExpr | null {
-  if (call.arguments.nodes.some(ts.isSpreadElement)) return null;
+  if (argumentNodes.some(ts.isSpreadElement)) return null;
   const stmts: IrStmt[] = [];
-  const operands = evaluatedOperands(lowerer, call, stmts, undefined, {
-    value: receiver,
-    name: "%stringReceiver",
-  });
+  const operands = evaluatedOperands(
+    lowerer,
+    call,
+    stmts,
+    undefined,
+    {
+      value: receiver,
+      name: "%stringReceiver",
+    },
+    argumentNodes,
+  );
   const s = operands.receiver!;
-  const result = buildStringMethod(lowerer, call, name, s, operands.args, receiverNode, stmts);
+  const result = buildStringMethod(
+    lowerer,
+    call,
+    name,
+    s,
+    operands.args,
+    receiverNode,
+    stmts,
+    argumentNodes,
+  );
   return result ? seq(stmts, result) : null;
 }
 

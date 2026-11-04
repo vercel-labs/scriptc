@@ -105,6 +105,16 @@ static void scr_child_error_spawn_fields(ScrError *e, double uv_errno, const cha
   scr_error_set_prop(e, "spawnargs", 9, spawnargs);
 }
 
+#ifdef SCR_CHILD_ERR_FIELDS
+/* Node copies the spawn argument list before running the child, so
+ * `spawnargs` answers the values the call was given even when the program
+ * rewrites its array after the call; a snapshot of the same values keeps
+ * the two equal. +1; NULL for no arguments. */
+static ScrArr *scr_child_snapshot_args(ScrArr *args) {
+  return args != NULL ? scr_arr_slice(args, 0, (double)scr_arr_len(args)) : NULL;
+}
+#endif
+
 /* exec/execFile's command failure: code (the exit status, or null after a
  * signal), killed and signal, before cmd. */
 static void scr_child_error_exit_fields(ScrError *e, bool has_code, double code,
@@ -912,6 +922,7 @@ static void scr_win_run_sync(ScrStr *cmd, ScrArr *args, const ScrStr *input,
   if (in_mode == 2 || out_mode == 2 || err_mode == 2) {
     /* Inherited stdio: flush the parent's buffers first so earlier logs
      * precede the child's writes (Node's practical ordering). */
+    scr_stdout_settle();
     fflush(stdout);
     fflush(stderr);
   }
@@ -1036,6 +1047,16 @@ struct ScrSpawnRes {
   ScrStr *err;
   const char *spawn_errname;
   ScrStr *cmd;
+#ifdef SCR_CHILD_ERR_FIELDS
+  /* Node's errnoException `errno` for that failure (negative, as libuv
+   * reports it; 0 = no error) and the `spawnargs` Node carries after
+   * `path`: the arguments after the file (+1; NULL when there is no
+   * error). Both ride the result so `.error` answers Node's fields; the
+   * build without the define keeps this struct and release path as they
+   * were, so a program that never reads `.error` pays nothing. */
+  double spawn_errno;
+  ScrArr *args;
+#endif
   const char *signal_name;
 };
 
@@ -1050,6 +1071,9 @@ void scr_spawn_res_release(ScrSpawnRes *r) {
     scr_str_release(r->out);
     scr_str_release(r->err);
     scr_str_release(r->cmd); /* NULL-safe */
+#ifdef SCR_CHILD_ERR_FIELDS
+    if (r->args) scr_arr_release(r->args);
+#endif
     free(r);
   }
 }
@@ -1077,6 +1101,12 @@ ScrError *scr_spawn_res_error(ScrSpawnRes *r) {
   ScrError *e = scr_error_new(0 /* Error */, m);
   scr_str_release(m);
   scr_error_set_code(e, r->spawn_errname);
+#ifdef SCR_CHILD_ERR_FIELDS
+  /* Node's errnoException fields: errno (libuv's code), syscall
+   * "spawnSync <file>", path (the file) and spawnargs (the arguments
+   * after it). A timeout carries them too — code ETIMEDOUT. */
+  scr_child_error_spawn_fields(e, r->spawn_errno, "spawnSync", r->cmd, r->args);
+#endif
   return e;
 }
 
@@ -1090,6 +1120,10 @@ static ScrSpawnRes *scr_spawn_res_new(bool has_status, double status,
   r->out = out;
   r->err = err;
   r->spawn_errname = NULL;
+#ifdef SCR_CHILD_ERR_FIELDS
+  r->spawn_errno = 0;
+  r->args = NULL;
+#endif
   r->cmd = NULL;
   r->signal_name = NULL;
   return r;
@@ -1126,6 +1160,10 @@ static ScrSpawnRes *scr_spawn_sync_core(ScrStr *cmd, ScrArr *args, double timeou
     ScrSpawnRes *r = scr_spawn_res_new(false, 0, scr_str_new("", 0), scr_str_new("", 0));
     r->spawn_errname = w.spawn_errname;
     r->cmd = scr_str_retain(cmd);
+#ifdef SCR_CHILD_ERR_FIELDS
+    r->spawn_errno = (double)scr_win_uv_errno(w.spawn_errname);
+    r->args = scr_child_snapshot_args(args);
+#endif
     return r;
   }
   ScrStr *out_s = scr_str_new(w.out.data, w.out.len);
@@ -1143,6 +1181,12 @@ static ScrSpawnRes *scr_spawn_sync_core(ScrStr *cmd, ScrArr *args, double timeou
   if (r->signal_name == NULL) r->signal_name = "SIGTERM";
   r->spawn_errname = "ETIMEDOUT";
   r->cmd = scr_str_retain(cmd);
+#ifdef SCR_CHILD_ERR_FIELDS
+  /* libuv's UV_ETIMEDOUT (uv-errno.h); scr_win_uv_errno maps the spawn
+   * failure names and answers UV_UNKNOWN for the timeout's. */
+  r->spawn_errno = -4039.0;
+  r->args = scr_child_snapshot_args(args);
+#endif
   return r;
 }
 
@@ -1297,6 +1341,7 @@ static ScrStr *scr_exec_run(ScrStr *cmd, ScrArr *args, bool shell,
    * echoes to the parent's stderr AFTER completion, success, failure or
    * timeout. */
   if (stderr_mode == 0 && w.err.len > 0) {
+    scr_stdout_settle();
     fflush(stdout);
     fwrite(w.err.data, 1, w.err.len, stderr);
   }
@@ -2298,6 +2343,7 @@ static void scr_child_writer_fire_error(ScrChildWriter *w) {
 static void scr_child_writer_fire_error_in(ScrChildWriter *w) {
   w->error_pending = false;
   if (w->n_write_err == 0) {
+    scr_stdout_settle();
     fflush(stdout);
     fprintf(stderr, "Unhandled 'error' event: Error: %s\n", w->err_msg->data);
     _Exit(1);
@@ -2387,6 +2433,7 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
                          double err_fd, bool detached, bool shell, bool has_env,
                          ScrArr *env_pairs, ScrStr *cwd) {
   if ((int)out_mode == 1 || (int)err_mode == 1 || (int)out_mode == 2 || (int)err_mode == 2) {
+    scr_stdout_settle();
     fflush(stdout);
     fflush(stderr);
   }
@@ -2879,6 +2926,7 @@ static void scr_child_settle_in(ScrChild *c) {
   }
   if (c->state == SCR_CHILD_SPAWN_FAILED) {
     if (c->n_err == 0 && c->exec_cb == NULL) {
+      scr_stdout_settle();
       fflush(stdout);
       fprintf(stderr, "Unhandled 'error' event: Error: %s\n", c->err_msg->data);
       _Exit(1);
@@ -3027,6 +3075,10 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
     ScrSpawnRes *r = scr_spawn_res_new(false, 0, scr_str_new("", 0), scr_str_new("", 0));
     r->spawn_errname = w.spawn_errname;
     r->cmd = scr_str_retain(cmd);
+#ifdef SCR_CHILD_ERR_FIELDS
+    r->spawn_errno = (double)scr_win_uv_errno(w.spawn_errname);
+    r->args = scr_child_snapshot_args(args);
+#endif
     return r;
   }
   ScrStr *out_s = scr_str_new(w.out.data, w.out.len);
@@ -3041,6 +3093,10 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
   if (r->signal_name == NULL) r->signal_name = "SIGTERM";
   r->spawn_errname = "ETIMEDOUT";
   r->cmd = scr_str_retain(cmd);
+#ifdef SCR_CHILD_ERR_FIELDS
+  r->spawn_errno = -4039.0;
+  r->args = scr_child_snapshot_args(args);
+#endif
   return r;
 }
 
@@ -3154,6 +3210,13 @@ struct ScrSpawnRes {
    * reads undefined, exactly Node. */
   const char *spawn_errname;
   ScrStr *cmd; /* +1, for the error message; NULL when spawn_errname is */
+#ifdef SCR_CHILD_ERR_FIELDS
+  /* Node's errnoException `errno` for that failure (negative, as libuv
+   * reports it; 0 = no error), so `.error` answers the same fields the
+   * sync throw does, and Node's `spawnargs` (+1; NULL when no error). */
+  double spawn_errno;
+  ScrArr *args;
+#endif
   /* The termination signal's name (static storage; "SIGTERM", ...) when a
    * signal killed the child — a timeout's killSignal included — NULL for
    * a normal exit or spawn failure. Node's result.signal. */
@@ -3171,6 +3234,9 @@ void scr_spawn_res_release(ScrSpawnRes *r) {
     scr_str_release(r->out);
     scr_str_release(r->err);
     scr_str_release(r->cmd); /* NULL-safe */
+#ifdef SCR_CHILD_ERR_FIELDS
+    if (r->args) scr_arr_release(r->args);
+#endif
     free(r);
   }
 }
@@ -3204,6 +3270,12 @@ ScrError *scr_spawn_res_error(ScrSpawnRes *r) {
   ScrError *e = scr_error_new(0 /* Error */, m);
   scr_str_release(m);
   scr_error_set_code(e, r->spawn_errname);
+#ifdef SCR_CHILD_ERR_FIELDS
+  /* Node's errnoException fields: errno (libuv's code), syscall
+   * "spawnSync <file>", path (the file) and spawnargs (the arguments
+   * after it). A timeout carries them too — code ETIMEDOUT. */
+  scr_child_error_spawn_fields(e, r->spawn_errno, "spawnSync", r->cmd, r->args);
+#endif
   return e;
 }
 
@@ -3282,6 +3354,10 @@ static ScrSpawnRes *scr_spawn_res_new(bool has_status, double status,
   r->out = out;
   r->err = err;
   r->spawn_errname = NULL;
+#ifdef SCR_CHILD_ERR_FIELDS
+  r->spawn_errno = 0;
+  r->args = NULL;
+#endif
   r->cmd = NULL;
   r->signal_name = NULL;
   return r;
@@ -3382,6 +3458,7 @@ static ScrSpawnRes *scr_spawn_sync_core(ScrStr *cmd, ScrArr *args, double timeou
   if (out_mode == 2 || err_mode == 2) {
     /* Inherited output fds: flush the parent's buffers first so earlier
      * logs precede the child's writes (Node's practical ordering). */
+    scr_stdout_settle();
     fflush(stdout);
     fflush(stderr);
   }
@@ -3430,6 +3507,10 @@ static ScrSpawnRes *scr_spawn_sync_core(ScrStr *cmd, ScrArr *args, double timeou
     ScrSpawnRes *r = scr_spawn_res_new(false, 0, scr_str_new("", 0), scr_str_new("", 0));
     r->spawn_errname = scr_errname(spawn_err);
     r->cmd = scr_str_retain(cmd);
+#ifdef SCR_CHILD_ERR_FIELDS
+    r->spawn_errno = -(double)spawn_err;
+    r->args = scr_child_snapshot_args(args);
+#endif
     return r;
   }
 
@@ -3513,6 +3594,10 @@ static ScrSpawnRes *scr_spawn_sync_core(ScrStr *cmd, ScrArr *args, double timeou
       if (r->signal_name == NULL) r->signal_name = scr_signal_name(killsig);
       r->spawn_errname = "ETIMEDOUT";
       r->cmd = scr_str_retain(cmd);
+#ifdef SCR_CHILD_ERR_FIELDS
+      r->spawn_errno = -(double)ETIMEDOUT;
+      r->args = scr_child_snapshot_args(args);
+#endif
     }
   }
   return r;
@@ -3720,6 +3805,7 @@ ScrStr *scr_exec_sync_core(ScrStr *cmd, ScrArr *args, const ScrExecOpts *o) {
   if (o->stdout_mode == 2 || o->stderr_mode == 3) {
     /* Inherited output fds: flush the parent's buffers first so earlier
      * logs precede the child's writes (Node's practical ordering). */
+    scr_stdout_settle();
     fflush(stdout);
     fflush(stderr);
   }
@@ -3886,6 +3972,7 @@ ScrStr *scr_exec_sync_core(ScrStr *cmd, ScrArr *args, const ScrExecOpts *o) {
    * echoes to the parent's stderr AFTER completion, success, failure or
    * timeout. */
   if (o->stderr_mode == 0 && err.len > 0) {
+    scr_stdout_settle();
     fflush(stdout);
     fwrite(err.data, 1, err.len, stderr);
   }
@@ -5303,6 +5390,7 @@ static void scr_child_writer_fire_error(ScrChildWriter *w) {
 static void scr_child_writer_fire_error_in(ScrChildWriter *w) {
   w->error_pending = false;
   if (w->n_write_err == 0) {
+    scr_stdout_settle();
     fflush(stdout);
     fprintf(stderr, "Unhandled 'error' event: Error: %s\n", w->err_msg->data);
     _Exit(1);
@@ -5420,6 +5508,7 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
      * output first so everything logged BEFORE the spawn lands before
      * anything the child writes to the same destinations (Node's
      * practical ordering). */
+    scr_stdout_settle();
     fflush(stdout);
     fflush(stderr);
   }
@@ -6011,6 +6100,7 @@ static void scr_child_settle_in(ScrChild *c) {
        * _Exit skips atexit handlers (the RC audit above all) on purpose —
        * the loop dies mid-turn with frames and registries still live,
        * exactly like process.exit(). */
+      scr_stdout_settle();
       fflush(stdout);
       fprintf(stderr, "Unhandled 'error' event: Error: %s\n", c->err_msg->data);
       _Exit(1);
@@ -6136,6 +6226,7 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
   if (out_mode == 2 || err_mode == 2) {
     /* Inherited output fds: flush the parent's buffers first so earlier
      * logs precede the child's writes (Node's practical ordering). */
+    scr_stdout_settle();
     fflush(stdout);
     fflush(stderr);
   }
@@ -6212,6 +6303,10 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
     ScrSpawnRes *r = scr_spawn_res_new(false, 0, scr_str_new("", 0), scr_str_new("", 0));
     r->spawn_errname = scr_errname(spawn_err);
     r->cmd = scr_str_retain(cmd);
+#ifdef SCR_CHILD_ERR_FIELDS
+    r->spawn_errno = -(double)spawn_err;
+    r->args = scr_child_snapshot_args(args);
+#endif
     return r;
   }
 
@@ -6316,6 +6411,10 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
       if (r->signal_name == NULL) r->signal_name = scr_signal_name(killsig);
       r->spawn_errname = "ETIMEDOUT";
       r->cmd = scr_str_retain(cmd);
+#ifdef SCR_CHILD_ERR_FIELDS
+      r->spawn_errno = -(double)ETIMEDOUT;
+      r->args = scr_child_snapshot_args(args);
+#endif
     }
   }
   return r;

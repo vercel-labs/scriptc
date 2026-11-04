@@ -18725,6 +18725,7 @@
           "tests/corpus/5884-inspect-layout-options.ts",
           "tests/corpus/console-dir-show-hidden.ts",
           "tests/corpus/console-native-value.js",
+          "tests/corpus/inspect-getters.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -18879,6 +18880,7 @@
         "status": "partial",
         "evidence": "compiler-dedicated:console.assert",
         "tests": [
+          "tests/corpus/inspect-getters.ts",
           "tests/corpus/5096-console-assert-dir.ts",
           "tests/corpus/5099-console-methods-dynamic.cjs",
           "tests/corpus/5884-inspect-layout-options.ts",
@@ -19020,6 +19022,7 @@
         "status": "partial",
         "evidence": "compiler-dedicated:console.dir",
         "tests": [
+          "tests/corpus/inspect-getters.ts",
           "tests/corpus/5096-console-assert-dir.ts",
           "tests/corpus/5099-console-methods-dynamic.cjs",
           "tests/corpus/5884-inspect-layout-options.ts",
@@ -19049,6 +19052,7 @@
         "status": "partial",
         "evidence": "compiler-dedicated:console.dirxml",
         "tests": [
+          "tests/corpus/inspect-getters.ts",
           "tests/corpus/5096-console-assert-dir.ts",
           "tests/corpus/5099-console-methods-dynamic.cjs",
           "tests/corpus/5884-inspect-layout-options.ts",
@@ -26480,8 +26484,16 @@
       "anchor": "dep0080-path_makelong",
       "nodeStability": null,
       "static": {
-        "status": "not-applicable",
-        "evidence": "compiler-chapter-policy:deprecations"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.path._makeLong",
+        "tests": [
+          "tests/corpus/957-builtins-namespace.ts",
+          "tests/corpus/2915-path-function-values.ts",
+          "tests/corpus/2916-path-function-values-cjs.ts",
+          "tests/corpus/2917-builtin-callable-widths.ts",
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/9205-path-namespace-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -74696,11 +74708,15 @@
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/1480-os-network-interfaces.ts",
+          "tests/corpus/1540-os-userinfo.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/4598-os-available-parallelism.ts",
           "tests/corpus/5140-os-host-facts.ts",
           "tests/corpus/5141-os-constants.ts",
-          "tests/corpus/5883-os-set-priority.ts"
+          "tests/corpus/5883-os-set-priority.ts",
+          "tests/corpus/9204-os-user-info-buffer.ts",
+          "tests/corpus/os-user-info-encoding.ts",
+          "tests/corpus/os-userinfo-passwd-entry.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -75386,7 +75402,11 @@
         "evidence": "surface-manifest:node-builtin.os.userInfo",
         "tests": [
           "tests/corpus/1480-os-network-interfaces.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts"
+          "tests/corpus/2917-builtin-callable-widths.ts",
+          "tests/corpus/1540-os-userinfo.ts",
+          "tests/corpus/os-userinfo-passwd-entry.ts",
+          "tests/corpus/9204-os-user-info-buffer.ts",
+          "tests/corpus/os-user-info-encoding.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75528,6 +75548,7 @@
           "tests/corpus/5146-path-matches-glob-braces.ts",
           "tests/corpus/5147-path-matches-glob-extglob.ts",
           "tests/corpus/5148-path-matches-glob-classes.ts",
+          "tests/corpus/9205-path-namespace-members.ts",
           "tests/corpus/957-builtins-namespace.ts"
         ]
       },
@@ -75581,7 +75602,8 @@
           "tests/corpus/2915-path-function-values.ts",
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/9205-path-namespace-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75611,7 +75633,8 @@
           "tests/corpus/2915-path-function-values.ts",
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/9205-path-namespace-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75641,7 +75664,8 @@
           "tests/corpus/2915-path-function-values.ts",
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/9205-path-namespace-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75728,7 +75752,8 @@
           "tests/corpus/2915-path-function-values.ts",
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/9205-path-namespace-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75758,7 +75783,8 @@
           "tests/corpus/2915-path-function-values.ts",
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/9205-path-namespace-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75788,7 +75814,8 @@
           "tests/corpus/2915-path-function-values.ts",
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/9205-path-namespace-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75845,7 +75872,8 @@
           "tests/corpus/2915-path-function-values.ts",
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/9205-path-namespace-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75875,7 +75903,8 @@
           "tests/corpus/2915-path-function-values.ts",
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/9205-path-namespace-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75905,7 +75934,8 @@
           "tests/corpus/2915-path-function-values.ts",
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/9205-path-namespace-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75935,7 +75965,8 @@
           "tests/corpus/2915-path-function-values.ts",
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/9205-path-namespace-members.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -75965,7 +75996,8 @@
           "tests/corpus/2915-path-function-values.ts",
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/9205-path-namespace-members.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -75995,7 +76027,8 @@
           "tests/corpus/2915-path-function-values.ts",
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/9205-path-namespace-members.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -76025,7 +76058,8 @@
           "tests/corpus/2915-path-function-values.ts",
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/9205-path-namespace-members.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -100021,6 +100055,10 @@
           "tests/corpus/5833-url-search-params-iterators.ts",
           "tests/corpus/5834-url-search-params-iterators-dynamic.mjs",
           "tests/corpus/8423-urlsearchparams-implicit-string.ts",
+          "tests/corpus/9200-url-namespace-construct.ts",
+          "tests/corpus/9201-url-namespace-construct.cjs",
+          "tests/corpus/9202-url-search-params-foreach-thisarg.ts",
+          "tests/corpus/9206-url-revoke-object-url.ts",
           "tests/corpus/node24-file-url-buffer.ts",
           "tests/corpus/node24-file-url-errors.js",
           "tests/corpus/node24-file-url-options.ts",
@@ -100237,8 +100275,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:url"
+        "status": "partial",
+        "evidence": "compiler-feature:url.URL.revokeObjectURL",
+        "tests": [
+          "tests/corpus/9206-url-revoke-object-url.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -101271,7 +101312,11 @@
         "evidence": "surface-manifest:node-builtin.url.urlToHttpOptions",
         "tests": [
           "tests/corpus/1794-searchparams-url-live.ts",
-          "tests/corpus/8423-urlsearchparams-implicit-string.ts"
+          "tests/corpus/8423-urlsearchparams-implicit-string.ts",
+          "tests/corpus/9200-url-namespace-construct.ts",
+          "tests/corpus/9201-url-namespace-construct.cjs",
+          "tests/corpus/9202-url-search-params-foreach-thisarg.ts",
+          "tests/corpus/9206-url-revoke-object-url.ts"
         ]
       },
       "anchorSource": "exact"
@@ -101962,6 +102007,8 @@
           "tests/corpus/7711-util-throttle.cjs",
           "tests/corpus/7712-util-debounce-throttle.ts",
           "tests/corpus/7747-text-codec-untyped-slot.js",
+          "tests/corpus/inspect-getters-dyn.cjs",
+          "tests/corpus/inspect-getters.ts",
           "tests/corpus/inspect-hidden-properties.cjs",
           "tests/corpus/inspect-max-array-length.ts",
           "tests/corpus/inspect-max-string-length.ts",
@@ -103371,6 +103418,8 @@
         "tests": [
           "tests/corpus/1630-inspect-scalars.ts",
           "tests/corpus/1632-inspect-records.ts",
+          "tests/corpus/inspect-getters.ts",
+          "tests/corpus/inspect-getters-dyn.cjs",
           "tests/corpus/1637-inspect-dyn.ts",
           "tests/corpus/2485-inspect-circular-refs.ts",
           "tests/corpus/5884-inspect-layout-options.ts",

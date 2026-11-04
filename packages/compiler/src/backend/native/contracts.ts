@@ -191,6 +191,9 @@ export interface CcOptions {
   /** A standard library prototype object read as a value in a JavaScript
    * source (`Date.prototype`): compiles scr_dyn_stdlib_prototype.c. */
   stdlibPrototypeValue?: boolean;
+  /** DataView.prototype read as a value in a JavaScript source
+   * (`DataView.prototype`): compiles scr_data_view_proto.c. */
+  dataViewPrototypeValue?: boolean;
   /** A computed read of the global object, or `… in globalThis`: compiles
    * scr_global_host_absent.c and the SCR_GLOBAL_HOST_ABSENT build of
    * scr_node_builtin.c. */
@@ -202,6 +205,9 @@ export interface CcOptions {
   /** Number.prototype or Boolean.prototype read as a value in a JavaScript
    * source: compiles scr_dyn_builtin_prototype.c. */
   builtinPrototypeValue?: boolean;
+  /** A builtin prototype method read as a value in a JavaScript source:
+   * compiles scr_dyn_builtin_methods.c. */
+  builtinMethodValue?: boolean;
   /** The program constructs EventTarget/Event/CustomEvent values or
    * calls events.addAbortListener (the event.* libCalls), or uses the
    * native fetch AbortSignal built on the same engine: compiles
@@ -236,6 +242,9 @@ export interface CcOptions {
   /** SCR_STDIO_WRITE_SLOT: the events unit carries the typed write slot
    * (the write method as a value, its replacement, run-time-typed chunks). */
   stdioWriteSlot?: boolean;
+  /** SCR_CHILD_ERR_FIELDS: the spawnSync result's `.error` carries Node's
+   * errnoException fields (errno, syscall, path, spawnargs). */
+  childErrorFields?: boolean;
   /** Calls into Node.js (@scriptc/node): compiles scr_node_island.c and
    * the event loop with SCR_NODE_ISLANDS (its helper slot). */
   nodeIsland?: boolean;
@@ -247,6 +256,8 @@ export interface CcOptions {
   moduleNamespaceDyn?: boolean;
   /** Primitive wrapper objects: compiles scr_js_wrapper.c. */
   primitiveWrapper?: boolean;
+  /** %Iterator% and %Iterator.prototype%: compiles scr_js_iterator.c. */
+  iteratorProto?: boolean;
   /** The program uses the process-events surface (signal/exit listeners,
    * stdin events, for-await over stdin — moduleUsesProcessEvents on the
    * IR): compiles scr_events.c into the binary. Event-free binaries keep

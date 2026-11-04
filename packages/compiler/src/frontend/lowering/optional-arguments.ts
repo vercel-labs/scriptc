@@ -1,7 +1,7 @@
 import * as ts from "../ts7/adapter.js";
 import type { IrExpr, IrType, SrcLoc } from "../../ir/ir.js";
-import { BOOL, F64, isUnitType, typeEquals } from "../../ir/ir.js";
-import { numLit, strLit } from "../../ir/build.js";
+import { BOOL, F64, isUnitType, STRING, typeEquals } from "../../ir/ir.js";
+import { nodeThrowExpr, numLit, strLit } from "../../ir/build.js";
 import type { Lowerer } from "./lowerer.js";
 import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
 
@@ -77,7 +77,28 @@ export function coerceStringSearchValue(
       strLit(value.type.kind === "nullT" ? "null" : "undefined", loc),
     );
   }
+  // ToString(symbol) throws (only String() answers "Symbol(desc)"); string
+  // searches convert their needle with ToString, so the search throws.
+  if (value.type.kind === "symbol") return throwAfter(value, SYMBOL_TO_STRING, STRING, loc);
   return lowerer.ensureString(value, node);
+}
+
+const SYMBOL_TO_STRING = "Cannot convert a Symbol value to a string";
+const SYMBOL_TO_NUMBER = "Cannot convert a Symbol value to a number";
+
+/** `value`, then Node's TypeError: the value's effects happen and the
+ * conversion that follows it throws. `type` is the throwing expression's
+ * type, so the enclosing lowering keeps its expected shape. */
+export function throwAfter(value: IrExpr, message: string, type: IrType, loc: SrcLoc): IrExpr {
+  const thrown = nodeThrowExpr(1, "", message, type, loc);
+  if (isSafeToDiscard(value)) return thrown;
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "exprStmt", expr: value, loc }],
+    result: thrown,
+    type,
+    loc,
+  };
 }
 
 /** Lower an optional argument, applying its default only to the undefined arm. */
@@ -149,6 +170,9 @@ export function positionNumber(
       return numLit(0, loc);
     case "undefinedT":
       return defaultValue;
+    // ToNumber/ToIntegerOrInfinity(symbol) throws; it is not a number.
+    case "symbol":
+      return throwAfter(value, SYMBOL_TO_NUMBER, F64, loc);
     case "union": {
       const unionId = value.type.unionId;
       const arms = lowerer.unions.get(unionId)!.arms;

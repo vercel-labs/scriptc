@@ -295,6 +295,27 @@ export function completeArgs(
     (s) => s.mode === "rest" || s.mode === "dynRest" || s.mode === "arguments",
   );
   const positional = restAt >= 0 ? shapes.slice(0, restAt) : [...shapes];
+  // tsc rejects a TypeScript call that supplies more arguments than the
+  // callee's parameter list, so reaching this with a surplus argument means
+  // the shapes are narrower than the signature the call was checked
+  // against: an override whose extra trailing optional/defaulted parameters
+  // live only on its own body, while the inherited slot (and any virtual
+  // dispatch through it) carries the base arity alone. Refuse rather than
+  // drop the surplus values and their side effects. JavaScript sources are
+  // arity-permissive and keep filling what fits.
+  if (
+    restAt < 0 &&
+    sources.length > shapes.length &&
+    !isJsSourceFile(ts.getSourceFileOfNode(blame))
+  )
+    lowerer.unsupported(
+      "SC1090",
+      blame,
+      "a call supplying more arguments than the native parameter list " +
+        "(an override that declares parameters past the inherited slot arity " +
+        "can only be called on its own type, where the call goes straight to " +
+        "its body — behind a virtual slot, only the inherited arity travels)",
+    );
   if (restAt >= 0 && shapes[restAt]!.mode === "arguments") {
     // JS `arguments` contains every supplied value, including fixed
     // parameters. Store each call expression once, in source order, so
@@ -582,6 +603,44 @@ export function omittedArgFor(lowerer: Lowerer, type: IrType, loc: SrcLoc): IrEx
   if (type.kind === "dyn") return dynUndefinedExpr(loc);
 
   return lowerer.wrappedUndefined(type, loc);
+}
+
+/** Complete a call through a value whose type is a checked-dynamic
+ * variadic (`rest` with no ABI spelling): the declared parameters, then
+ * the single synthetic trailing dyn array the value's lifted signature
+ * hides — the same slot the boxed call thunk fills. Callers hold the
+ * slot's ABI open in `callValue` (the last argument carries no declared
+ * parameter). Null when an omitted parameter has no absent spelling: the
+ * boxed lane keeps JavaScript's arity for that shape. */
+export function checkedRestCallArgs(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  funcType: IrType & { kind: "func" },
+  loc: SrcLoc,
+): IrExpr[] | null {
+  const declared = funcType.params;
+  const nodes = call.arguments.nodes;
+  const args: IrExpr[] = [];
+  for (let i = 0; i < declared.length; i++) {
+    const node = nodes[i];
+    if (node) {
+      args.push(lowerer.lowerExprExpecting(node, declared[i]));
+      continue;
+    }
+    const absent = omittedArgFor(lowerer, declared[i]!, loc);
+    if (!absent) return null;
+    args.push(absent);
+  }
+  // `arguments` holds every actual argument; a rest parameter only the
+  // ones the declared parameters do not cover.
+  const tail = funcType.argumentsAll === true ? nodes : nodes.slice(declared.length);
+  args.push({
+    kind: "dynArrLit",
+    elems: tail.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+    type: DYN,
+    loc,
+  });
+  return args;
 }
 
 /** Complete an indirect static call against its func value ABI. Ordinary

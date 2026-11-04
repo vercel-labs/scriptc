@@ -77,10 +77,6 @@ import { PARTIAL_VIEW_ABSENT, recordViewTestLines, type RecordViews } from "./re
 import { recordMayKeepSource } from "./record-sources.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 
-/** SCR_CYC_MAX_TYPES (scr_rc.h): the registry's size, and the length of
- * the young-in nursery's per-id skip countdown. */
-const CYC_MAX_TYPES = 32768;
-
 /** What the tables need from the emitter: the extern-declaration ledger
  * and the module-wide cycle/shape indexes. */
 export interface ShapeHost {
@@ -174,6 +170,8 @@ export interface ShapeHost {
   readonly sizeType: "i32" | "i64";
   /** Worker executables: the inline allocator state is thread-local. */
   readonly threadLocalAlloc?: boolean;
+  /** The inline frees read the chunk map (alloc.ts AllocHost.windowMap). */
+  readonly windowMap?: boolean;
   readonly tracedShapes: Set<string>;
   readonly tracedUnions: Set<string>;
   /** The zeroed `%ScrUnion` an inline store reads for a NULL dummy. */
@@ -200,13 +198,16 @@ export function youngEntryLines(host: ShapeHost): string[] {
     return [`  call void @scr_yin_enter(ptr %o) ; the young-in nursery`];
   }
   host.declare(`@scr_yin = external global { ptr, i64, i64, i64 }`);
-  host.declare(`@scr_yin_skip = external global [${CYC_MAX_TYPES} x i32]`);
+  // The per-id skip countdown has SCR_CYC_MAX_TYPES entries (scr_rc.h),
+  // which a runtime build may set; the declaration leaves the size to the
+  // definition, as C does for `extern uint32_t scr_yin_skip[];`.
+  host.declare(`@scr_yin_skip = external global [0 x i32]`);
   host.declare(`declare void @scr_yin_enter_slow(ptr)`);
   return [
     `  %ye.idp = getelementptr inbounds i8, ptr %o, i64 -${CYC_HDR} ; the young-in nursery`,
     `  %ye.id16 = load i16, ptr %ye.idp ; ScrCycHdr.id`,
     `  %ye.id = zext i16 %ye.id16 to i64`,
-    `  %ye.sp = getelementptr inbounds [${CYC_MAX_TYPES} x i32], ptr @scr_yin_skip, i64 0, i64 %ye.id`,
+    `  %ye.sp = getelementptr inbounds i32, ptr @scr_yin_skip, i64 %ye.id`,
     `  %ye.s = load i32, ptr %ye.sp`,
     `  %ye.skip = icmp ne i32 %ye.s, 0`,
     `  br i1 %ye.skip, label %ye.skipped, label %ye.enter`,
@@ -1483,8 +1484,18 @@ export function mapKeyKindNum(key: IrType, unionArms?: IrType[]): number {
   // signature adapter is the key of the function it adapts. A union with a
   // function arm keys each arm by its own kind (SCR_MAP_KEY_UNION_VALUE).
   if (key.kind === "func") return 10;
+  // SCR_MAP_KEY_PROMISE (11): a reference key compared by the identity cell
+  // its adapter boxes share (collectionOps adds scr_promise_map_identity).
+  if (key.kind === "promise") return 11;
+  // A union with a function or promise arm keys each arm by its own kind
+  // (SCR_MAP_KEY_UNION_VALUE): both compare an identity their payload
+  // pointer does not carry.
   if (key.kind === "union")
-    return unionArms?.every((arm) => isIdentityCollectionKey(arm) && arm.kind !== "func") ? 3 : 7;
+    return unionArms?.every(
+      (arm) => isIdentityCollectionKey(arm) && arm.kind !== "func" && arm.kind !== "promise",
+    )
+      ? 3
+      : 7;
   const acc = mapKeyAccess(key);
   return acc === "f64" ? 0 : acc === "str" ? 1 : 2;
 }
@@ -1913,7 +1924,10 @@ function sizeLiteral(sizeType: RcCount, value: bigint): string {
  * them, as segmentTeardownLines arranges for the recursive form. The loop
  * needs no depth budget. `_d` (the direct-chain entry other teardowns call)
  * and the plain entry both run it. A class that keeps its id in the count
- * word counts in the low half (`count`); a dead node's whole word is free. */
+ * word counts in the low half (`count`); a dead node's whole word is free.
+ *
+ * A tree class (tree-classes.ts) has no count word to hold the link, so it
+ * tears down through treeTeardownDefinitions instead. */
 export function iterativeTeardownDefinitions(
   host: ShapeHost,
   destroy: string,
@@ -1939,7 +1953,13 @@ export function iterativeTeardownDefinitions(
       `  %it.v${i} = load ptr, ptr %it.f${i}`,
     ]),
     `  store ptr null, ptr %sg.own`,
-    ...emitObjectFree(host, false, observers, "%sg.own"),
+    ...emitObjectFree(
+      host,
+      false,
+      observers,
+      "%sg.own",
+      `ptrtoint (ptr getelementptr (%${struct}, ptr null, i32 1) to ${S})`,
+    ),
     `  br label %it.freed`,
     `it.freed:`,
     `  %it.k = load ptr, ptr %sg.own`,
@@ -1967,6 +1987,8 @@ export function iterativeTeardownDefinitions(
       `  %it.nn${i} = icmp ne ptr ${v}, null`,
       `  br i1 %it.nn${i}, label %it.chk${i}, label %it.j${i}`,
       `it.chk${i}:`,
+    );
+    lines.push(
       `  %it.rc${i} = load ${count}, ptr ${v}`,
       `  %it.last${i} = icmp eq ${count} %it.rc${i}, 1`,
       `  br i1 %it.last${i}, label %it.push${i}, label %it.sh${i}`,
@@ -2009,7 +2031,181 @@ export function iterativeTeardownDefinitions(
   return lines;
 }
 
-/** Common NULL/immortal/decrement skeleton for ordinary object releases.
+/** The teardown of a tree class: instances of it carry no count word
+ * (tree-classes.ts), so a pending subtree cannot ride in the object header
+ * the way iterativeTeardownDefinitions threads it. This loop keeps its
+ * pending list in the blocks it has just freed instead. A pending entry is a
+ * freed block holding the next entry in its first word and a node in its
+ * second, so the freed block of the node being torn down becomes the entry
+ * for one child while the loop descends into the other: the list stays one
+ * entry deep per level of the tree, and every node costs one free, at most
+ * one entry store pair and one list step.
+ *
+ * The freed blocks that are not entries join a segment linked through their
+ * first word (emitObjectFree, emitSegmentFree), as the counting loop's do.
+ * `fields` holds the two child indices; `_one` is the per-node fallback a
+ * subtree takes when the freed block is not the arena's to reuse (a node the
+ * allocator compiled out of, or one outside the reservation), which the
+ * runtime's depth-bounded worklist drives instead.
+ *
+ * A tree class with a single child field needs no list at all: the loop
+ * follows the child. */
+export function treeTeardownDefinitions(
+  host: ShapeHost,
+  destroy: string,
+  struct: string,
+  fields: readonly number[],
+  observers: FreeObservers,
+): string[] {
+  host.declare(`declare void @scr_rc_destroy(ptr, ptr)`);
+  const load = (i: number, index: number): string[] => [
+    `  %it.f${i} = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${index}`,
+    `  %it.v${i} = load ptr, ptr %it.f${i}`,
+  ];
+  const free = [
+    `  store ptr null, ptr %sg.own`,
+    ...emitObjectFree(host, false, observers, "%sg.own"),
+    `  br label %it.freed`,
+    `it.freed:`,
+    `  %it.k = load ptr, ptr %sg.own`,
+  ];
+  /** `block` joins the segment: the tail's first word points at it, and an
+   * empty segment takes it for both ends. The lines start in block `from`
+   * and end in block `${name}.out`, which defines `%<name>.h` and
+   * `%<name>.t`. */
+  const chain = (
+    name: string,
+    block: string,
+    from: string,
+    head = "%it.ha",
+    tail = "%it.ta",
+  ): string[] => [
+    `  %${name}.nul = icmp eq ptr ${block}, null`,
+    `  br i1 %${name}.nul, label %${name}.out, label %${name}.app`,
+    `${name}.app:`,
+    `  %${name}.emp = icmp eq ptr ${tail}, null`,
+    `  br i1 %${name}.emp, label %${name}.out, label %${name}.link`,
+    `${name}.link:`,
+    `  store ptr ${block}, ptr ${tail}`,
+    `  br label %${name}.out`,
+    `${name}.out:`,
+    `  %${name}.h = phi ptr [ ${head}, %${from} ], [ ${block}, %${name}.app ], [ ${head}, %${name}.link ]`,
+    `  %${name}.t = phi ptr [ ${tail}, %${from} ], [ ${block}, %${name}.app ], [ ${block}, %${name}.link ]`,
+  ];
+  const wrappers = [
+    `define internal void @${destroy}_d(ptr %o, i32 %d) ${FN_ATTRS} {`,
+    `entry:`,
+    `  call void @${destroy}_it(ptr %o)`,
+    `  ret void`,
+    `}`,
+    `define internal void @${destroy}(ptr %o) ${FN_ATTRS} {`,
+    `entry:`,
+    `  call void @${destroy}_it(ptr %o)`,
+    `  ret void`,
+    `}`,
+  ];
+  const done = (first: string, last: string): string[] => [
+    `it.done:`,
+    ...emitSegmentFree(host, "sgf", first, last),
+    `  ret void`,
+    `}`,
+  ];
+  if (fields.length === 1)
+    return [
+      `define internal void @${destroy}_it(ptr %root) ${FN_ATTRS} {`,
+      `entry:`,
+      `  %sg.own = alloca ptr`,
+      `  br label %it.node`,
+      `it.node:`,
+      `  %o = phi ptr [ %root, %entry ], [ %it.v0, %it.ch.out ]`,
+      `  %it.ha = phi ptr [ null, %entry ], [ %it.ch.h, %it.ch.out ]`,
+      `  %it.ta = phi ptr [ null, %entry ], [ %it.ch.t, %it.ch.out ]`,
+      ...load(0, fields[0]!),
+      ...free,
+      ...chain("it.ch", "%it.k", "it.freed"),
+      `  %it.nn = icmp ne ptr %it.v0, null`,
+      `  br i1 %it.nn, label %it.node, label %it.done`,
+      ...done("%it.ch.h", "%it.ch.t"),
+      ...wrappers,
+    ];
+  const [f0, f1] = fields as [number, number];
+  return [
+    `define internal void @${destroy}_it(ptr %root) ${FN_ATTRS} {`,
+    `entry:`,
+    `  %sg.own = alloca ptr`,
+    `  br label %it.node`,
+    `it.node:`,
+    `  %o = phi ptr [ %root, %entry ], [ %it.v0, %it.push ], [ %it.v0, %it.slow ], [ %it.v0, %it.one.out ], [ %it.v1, %it.only.out ], [ %it.en, %it.popk.out ]`,
+    `  %it.st = phi ptr [ null, %entry ], [ %it.k, %it.push ], [ %it.st, %it.slow ], [ %it.st, %it.one.out ], [ %it.st, %it.only.out ], [ %it.pn, %it.popk.out ]`,
+    `  %it.ha = phi ptr [ null, %entry ], [ %it.ha, %it.push ], [ %it.ha, %it.slow ], [ %it.one.h, %it.one.out ], [ %it.only.h, %it.only.out ], [ %it.popk.h, %it.popk.out ]`,
+    `  %it.ta = phi ptr [ null, %entry ], [ %it.ta, %it.push ], [ %it.ta, %it.slow ], [ %it.one.t, %it.one.out ], [ %it.only.t, %it.only.out ], [ %it.popk.t, %it.popk.out ]`,
+    ...load(0, f0),
+    ...load(1, f1),
+    ...free,
+    `  %it.v0n = icmp ne ptr %it.v0, null`,
+    `  br i1 %it.v0n, label %it.left, label %it.noleft`,
+    `it.left:`,
+    `  %it.v1n = icmp ne ptr %it.v1, null`,
+    `  br i1 %it.v1n, label %it.two, label %it.one`,
+    `it.two: ; the freed block becomes the entry for the second child`,
+    `  %it.kn = icmp ne ptr %it.k, null`,
+    `  br i1 %it.kn, label %it.push, label %it.slow`,
+    `it.push:`,
+    `  store ptr %it.st, ptr %it.k`,
+    `  %it.g1 = getelementptr i8, ptr %it.k, i64 8`,
+    `  store ptr %it.v1, ptr %it.g1`,
+    `  br label %it.node`,
+    `it.slow: ; the block is not the arena's: the runtime worklist takes the second child`,
+    `  call void @scr_rc_destroy(ptr %it.v1, ptr @${destroy}_one)`,
+    `  br label %it.node`,
+    `it.one: ; one child: the freed block joins the segment`,
+    ...chain("it.one", "%it.k", "it.one"),
+    `  br label %it.node`,
+    `it.noleft:`,
+    `  %it.v1n2 = icmp ne ptr %it.v1, null`,
+    `  br i1 %it.v1n2, label %it.only, label %it.leaf`,
+    `it.only: ; the first child is empty: follow the second`,
+    ...chain("it.only", "%it.k", "it.only"),
+    `  br label %it.node`,
+    `it.leaf: ; no children: the freed block joins the segment, then the list`,
+    ...chain("it.leaf", "%it.k", "it.leaf"),
+    `  br label %it.pop`,
+    `it.pop:`,
+    `  %it.none = icmp eq ptr %it.st, null`,
+    `  br i1 %it.none, label %it.done, label %it.popk`,
+    `it.popk: ; the entry's block joins the segment`,
+    `  %it.pn = load ptr, ptr %it.st`,
+    `  %it.pe = getelementptr i8, ptr %it.st, i64 8`,
+    `  %it.en = load ptr, ptr %it.pe`,
+    ...chain("it.popk", "%it.st", "it.popk", "%it.leaf.h", "%it.leaf.t"),
+    `  br label %it.node`,
+    ...done("%it.leaf.h", "%it.leaf.t"),
+    `define internal void @${destroy}_one(ptr %o) ${FN_ATTRS} {`,
+    `entry:`,
+    `  %one.f0 = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${f0}`,
+    `  %one.v0 = load ptr, ptr %one.f0`,
+    `  %one.f1 = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${f1}`,
+    `  %one.v1 = load ptr, ptr %one.f1`,
+    ...emitObjectFree(host, false, observers),
+    `  %one.v0n = icmp ne ptr %one.v0, null`,
+    `  br i1 %one.v0n, label %one.r0, label %one.j0`,
+    `one.r0:`,
+    `  call void @scr_rc_destroy(ptr %one.v0, ptr @${destroy}_one)`,
+    `  br label %one.j0`,
+    `one.j0:`,
+    `  %one.v1n = icmp ne ptr %one.v1, null`,
+    `  br i1 %one.v1n, label %one.r1, label %one.j1`,
+    `one.r1:`,
+    `  call void @scr_rc_destroy(ptr %one.v1, ptr @${destroy}_one)`,
+    `  br label %one.j1`,
+    `one.j1:`,
+    `  ret void`,
+    `}`,
+    ...wrappers,
+  ];
+}
+
+/** Common NULL/immortal skeleton for ordinary object releases.
  * `freeBody` owns the zero-ref teardown and must leave the current block at
  * its end; traced objects also get the possible-cycle-root branch.
  *
@@ -2328,12 +2524,12 @@ export function emitRecordShapes(
       freeBody.push(
         ...segmentPrologueLines(),
         ...loads,
-        ...emitObjectFree(host, traced, observers, "%sg.own"),
+        ...emitObjectFree(host, traced, observers, "%sg.own", sizeOf),
         ...segmentTeardownLines(ownType, (prefix) =>
           refMembers.flatMap((m, i) => release(prefix, m, i)),
         ),
       );
-    else freeBody.push(...emitObjectFree(host, traced, observers));
+    else freeBody.push(...emitObjectFree(host, traced, observers, null, sizeOf));
     // A segmented shape whose every reference field holds its own type, with
     // no collector header and no frozen bit in its count, tears down in one
     // loop (iterativeTeardownDefinitions).
@@ -2538,7 +2734,7 @@ export function emitRecordShapes(
           `  call void ${releaseSym(host, m.type)}(ptr %v${i}) ; ${llvmCommentText(m.name)} (acyclic)`,
         );
       });
-      gf.push(...emitObjectFree(host, true, observers), `  ret void`, `}`, ``);
+      gf.push(...emitObjectFree(host, true, observers, null, sizeOf), `  ret void`, `}`, ``);
       defs.push(...gf);
     }
   }

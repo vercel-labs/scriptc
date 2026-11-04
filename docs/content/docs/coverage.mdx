@@ -62,6 +62,8 @@ Code that operates on values whose types are known only at runtime, such as `any
 
 `--explain-dynamic` lists those functions and the operation that makes each one dynamic. It also lists the units an unsupported construct would move to the dynamic tier: the binding, field, class, function, or module that has no static representation for the construct, with the diagnostic behind each one. These are the constructs the dynamic tier is planned to compile; today they remain blockers in TypeScript and deferred runtime errors in JavaScript. Add a name, such as `--explain-dynamic=Point`, to show only the matching units. With `--print=diagnostics`, the document gains a `tiers` object with the same information.
 
+The report also explains runtime-optional storage. A binding or parameter whose value comes from a read that can miss, such as an array element or a record key, keeps storage that holds `undefined`, while the checker types every read with the declared type. TypeScript's narrowing at those reads therefore does not reach the storage, and lowering extracts the value through a checked narrowing. For each such slot the report names the expression that made it optional, whether the slot is a binding, a pattern binding or a parameter, and the reads where the checker's type is narrower than the storage. With `--print=diagnostics`, the `tiers` object carries the same slots.
+
 `--tier=static-only` keeps every unsupported construct a blocker instead of moving it to the dynamic tier; code that already operates on runtime-typed values compiles as before. Today `auto`, the default, behaves the same way.
 
 ### Untyped code that likely runs often

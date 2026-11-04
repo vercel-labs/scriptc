@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/partial-record-typed-argument.ts"
+ ],
+ "diags": []
+}

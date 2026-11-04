@@ -2,7 +2,7 @@
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { type IrType, typeEquals } from "../../ir/ir.js";
-import { hostsAll } from "./expressions/hosted-narrowing.js";
+import { assertedOptionalExtension, hostsAll } from "./expressions/hosted-narrowing.js";
 
 /** `route as Route & { order: number; internal: boolean }` followed by
  * `view.internal = true` adds a property to the very object `route`
@@ -139,6 +139,7 @@ export function extendAssertedRecordMembers(
     lowerer.shapes.extendShape(shapeId, extra);
   }
   if (additions.size > 0) keepStoredTypeOfAssertedGlobals(lowerer, files);
+  keepStoredTypeOfOptionalAssertionGlobals(lowerer, files);
 }
 
 /** A module-level `const view = value as T & { member: X }` binding keeps
@@ -146,7 +147,11 @@ export function extendAssertedRecordMembers(
  * local binding does (lowerVarDecl): the assertion keeps the object, and
  * writes through the binding must reach it. Globals took their checker
  * (or annotated) type during collection, before the members existed; an
- * annotation the stored type hosts gives way to it the same way. */
+ * annotation the stored type hosts gives way to it the same way. An
+ * assertion that only ADDS optional members erases without attaching
+ * anything (narrowing.ts), so an annotation that optionally extends the
+ * stored layout gives way to it too, exactly as it does for a local
+ * (lowerVarDecl's adoption rule). */
 function keepStoredTypeOfAssertedGlobals(lowerer: Lowerer, files: readonly ts.SourceFile[]): void {
   for (const sf of files) {
     if (sf.isDeclarationFile) continue;
@@ -162,6 +167,51 @@ function keepStoredTypeOfAssertedGlobals(lowerer: Lowerer, files: readonly ts.So
         const stored = lowerer.mapTypeOf(lowerer.typeOf(init.expression));
         if (!global || !stored || (stored.kind !== "union" && stored.kind !== "record")) continue;
         if (hostsAll(lowerer, stored, global.type)) global.type = stored;
+      }
+    }
+  }
+}
+
+/** A module-level `const view = value as T`, where `T` only adds optional
+ * members to the record layout `value` has: the assertion erases
+ * (narrowing.ts), and the global keeps the stored layout so a read of an
+ * added member answers from the layout's kept source
+ * (assertedOnlyMemberRead). A local binding takes the same type
+ * (lowerVarDecl's adoption rule); globals took their checker type during
+ * collection, before the initializer lowered. */
+function keepStoredTypeOfOptionalAssertionGlobals(
+  lowerer: Lowerer,
+  files: readonly ts.SourceFile[],
+): void {
+  for (const sf of files) {
+    if (sf.isDeclarationFile) continue;
+    for (const statement of sf.statements.nodes) {
+      if (!ts.isVariableStatement(statement)) continue;
+      if ((statement.declarationList.flags & ts.NodeFlags.Const) === 0) continue;
+      for (const decl of statement.declarationList.declarations.nodes) {
+        if (!ts.isIdentifier(decl.name) || !decl.initializer) continue;
+        let init: ts.Expression = decl.initializer;
+        while (ts.isParenthesizedExpression(init)) init = init.expression;
+        if (!ts.isAsExpression(init) && !ts.isTypeAssertion(init)) continue;
+        const global = lowerer.globalOf(decl.name);
+        if (!global) continue;
+        // Checker-level gate first: the asserted type must DECLARE a member
+        // the operand's type does not, or no optional extension is in play
+        // and mapping the operand's types would only intern them.
+        const declaredTs = lowerer.typeOf(decl.name);
+        const operandTs = lowerer.typeOf(init.expression);
+        if (
+          !lowerer.checker
+            .getPropertiesOfType(declaredTs)
+            .some(
+              (p) =>
+                lowerer.checker.getPropertyOfType(operandTs, String(p.escapedName)) === undefined,
+            )
+        )
+          continue;
+        const stored = lowerer.mapTypeOf(operandTs);
+        if (stored?.kind !== "record") continue;
+        if (assertedOptionalExtension(lowerer, stored, global.type)) global.type = stored;
       }
     }
   }

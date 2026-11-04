@@ -138,6 +138,8 @@ static void scr_sym_registry_cleanup(void) {
   }
 }
 
+void scr_sym_for_install(void) { scr_sym_for_fn = scr_sym_for; }
+
 ScrSym *scr_sym_for(ScrStr *key) {
   for (ScrSym *s = g_sym_registry; s; s = s->reg_next) {
     if (scr_str_eq(s->reg_key, key)) return scr_sym_retain(s);

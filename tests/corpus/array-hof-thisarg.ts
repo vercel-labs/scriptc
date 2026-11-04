@@ -37,3 +37,28 @@ const borrowed = Array.prototype.map.call(like, function (this: Box, v: string) 
   return this === box ? v + "!" : v;
 }, box);
 console.log(borrowed.join(","), borrowed.length);
+// A record, array, union or typed-array thisArg is the caller's object: the
+// callback's writes through `this` reach it.
+interface Counter {
+  hits: number;
+}
+const counter: Counter = { hits: 0 };
+[1, 2, 3].forEach(function (this: Counter, n) { this.hits += n; }, counter);
+console.log("counter", counter.hits);
+const doubled = [1, 2].map(function (this: Counter, n) { this.hits++; return n * 2; }, counter);
+console.log("map", doubled.join(","), counter.hits);
+const log: string[] = [];
+[4, 5].some(function (this: string[], n) { this.push(String(n)); return false; }, log);
+console.log("array", log.join(","));
+const owner: Counter | string[] = Math.random() < 2 ? { hits: 10 } : [];
+[1].forEach(function (this: Counter | string[]) {
+  if (!Array.isArray(this)) this.hits++;
+}, owner);
+console.log("union", JSON.stringify(owner));
+const tally = new Map<string, number>([["a", 1], ["b", 2]]);
+tally.forEach(function (this: Counter, v) { this.hits += v; }, counter);
+new Set([100]).forEach(function (this: Counter, v) { this.hits += v; }, counter);
+console.log("collections", counter.hits);
+const bytes = new Uint8Array(2);
+[1].forEach(function (this: Uint8Array) { this[0] = 7; }, bytes);
+console.log("bytes", bytes[0]);

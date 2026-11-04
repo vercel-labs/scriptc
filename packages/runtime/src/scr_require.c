@@ -814,6 +814,7 @@ static void req_refuse(ScrRequire *r, const char *call, const ScrStr *found, boo
   scr_jb_write(&text, site->data, site->len);
   scr_jb_puts(&text, "]\n");
   ScrStr *message = scr_jb_finish(&text);
+  scr_stdout_settle();
   fflush(stdout);
   fputs("scriptc: ", stderr);
   fwrite(message->data, 1, message->len, stderr);

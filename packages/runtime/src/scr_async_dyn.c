@@ -1230,6 +1230,34 @@ void scr_buffer_deprecation(void) {
   scr_buffer_ctor_warned = true;
 }
 
+/* SlowBuffer(size): Node 24's deprecate() wrapper reports DEP0030 on the
+ * first call, then allocUnsafeSlow validates the size (a number,
+ * ERR_INVALID_ARG_TYPE otherwise; ERR_OUT_OF_RANGE past [0, kMaxLength])
+ * and allocates a Buffer outside the pool. +1, or NULL with the exception
+ * pending. */
+static SCR_TL bool scr_slow_buffer_warned = false;
+
+ScrBytes *scr_buffer_slow(const ScrDyn *size) {
+  if (!scr_slow_buffer_warned) {
+    scr_slow_buffer_warned = true;
+    static const char text[] = "SlowBuffer() is deprecated. Please use Buffer.allocUnsafeSlow()";
+    ScrStr *message = scr_str_new(text, sizeof text - 1);
+    ScrStr *code = scr_str_new("DEP0030", 7);
+    ScrDyn *w = scr_warning_new(message, "DeprecationWarning", code);
+    scr_warning_emit_deferred(w);
+    scr_dyn_release(w);
+    scr_str_release(code);
+    scr_str_release(message);
+  }
+  if (size->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail("size", "of type number", size);
+    return NULL;
+  }
+  ScrBytes *bytes = scr_buffer_alloc_unsafe_slow(size->v.num);
+  if (bytes) bytes->is_buffer = true;
+  return bytes;
+}
+
 /* The console members' warnings. Node's emitWarning emits on
  * process.nextTick, so these queue in order and each rides one raw tick
  * on the shared tick queue; any left at exit are dropped with it. */
@@ -1610,7 +1638,7 @@ static void scr_dyn_thenable_schedule(ScrPromise *target, const ScrDyn *thenable
  * when the read threw (the exception stays pending). Program class
  * instances read through `reader`, the compiled property dispatch (no
  * reader: their own fields only). */
-static ScrDyn *scr_dyn_then_of(const ScrDyn *value, const ScrDyn *reader) {
+ScrDyn *scr_dyn_thenable_function(const ScrDyn *value, const ScrDyn *reader) {
   if (value->kind != SCR_DYN_OBJ && value->kind != SCR_DYN_FUNC && value->kind != SCR_DYN_PROXY &&
       value->kind != SCR_DYN_TYPED_REF)
     return NULL;
@@ -1645,7 +1673,7 @@ __attribute__((always_inline)) static inline void scr_dyn_resolve_value(ScrPromi
     scr_promise_resolve_dyn(target, scr_dyn_retain(value));
     return;
   }
-  ScrDyn *then = scr_dyn_then_of(value, reader);
+  ScrDyn *then = scr_dyn_thenable_function(value, reader);
   if (scr_exc_pending()) {
     scr_promise_reject_pending(target);
   } else if (then) {
@@ -1739,7 +1767,7 @@ static void scr_dyn_thenable_schedule(ScrPromise *target, const ScrDyn *thenable
 static ScrPromise *scr_dyn_promise_entry(ScrCombine *c, const ScrDyn *value, const ScrDyn *reader) {
   if (value->kind == SCR_DYN_PROMISE) return scr_promise_retain(value->v.promise);
   ScrPromise *source = scr_promise_new();
-  ScrDyn *then = scr_dyn_then_of(value, reader);
+  ScrDyn *then = scr_dyn_thenable_function(value, reader);
   if (scr_exc_pending()) {
     scr_promise_reject_pending(source);
   } else if (then) {

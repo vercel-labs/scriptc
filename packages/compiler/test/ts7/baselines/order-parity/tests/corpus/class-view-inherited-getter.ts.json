@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/class-view-inherited-getter.ts"
+ ],
+ "diags": []
+}

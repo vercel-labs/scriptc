@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/npm/cases/late-island-refusal/main.ts"
+ ],
+ "diags": []
+}

@@ -458,6 +458,10 @@ function bindingScope(decl: ts.Node, hoisted: boolean): ts.Node {
   }
   // A named function or class expression binds inside itself only.
   if (ts.isFunctionExpression(host) || ts.isClassExpression(host)) return host;
+  // A catch clause's parameter or declaration names a value that exists
+  // only inside the catch block; outside it the name keeps the meaning the
+  // enclosing scope gives it.
+  if (host.parent !== undefined && ts.isCatchClause(host.parent)) return host.parent.block;
   const blockScoped =
     !hoisted &&
     (ts.isFunctionDeclaration(host) ||
@@ -465,8 +469,7 @@ function bindingScope(decl: ts.Node, hoisted: boolean): ts.Node {
       ts.isEnumDeclaration(host) ||
       ts.isModuleDeclaration(host) ||
       (ts.isVariableDeclaration(host) &&
-        ((ts.getCombinedNodeFlags(host) & ts.NodeFlags.BlockScoped) !== 0 ||
-          (host.parent !== undefined && ts.isCatchClause(host.parent)))));
+        (ts.getCombinedNodeFlags(host) & ts.NodeFlags.BlockScoped) !== 0));
   for (let cur = host.parent; cur !== undefined; cur = cur.parent) {
     if (isScopeBoundary(cur)) return cur;
     if (blockScoped && isBlockBoundary(cur)) return cur;
@@ -599,6 +602,14 @@ class ModuleScanner {
     return best?.value;
   }
 
+  /** Whether `name` already has a declaration in the scope `decl` binds in. */
+  private hasBindingInScope(name: string, decl: ts.Node, hoisted: boolean): boolean {
+    const list = this.bindings.get(name);
+    if (list === undefined) return false;
+    const scope = bindingScope(decl, hoisted);
+    return list.some((entry) => entry.scope === scope);
+  }
+
   private bindName(
     name: ts.Node | undefined,
     init: ts.Node | undefined,
@@ -609,6 +620,10 @@ class ModuleScanner {
     if (ts.isIdentifier(name)) {
       this.declared.add(name.text);
       if (init === undefined) {
+        // `var fs;` declares the variable again without changing the value
+        // it already holds, so it keeps the identity of the declaration it
+        // shares a scope with instead of masking it as unbound.
+        if (identity === undefined && this.hasBindingInScope(name.text, name, hoisted)) return;
         this.recordBinding(name.text, name, identity ?? null, hoisted);
         return;
       }

@@ -352,6 +352,25 @@ describe("builtin aliases follow lexical bindings (#2919)", () => {
     ).toEqual(["builtin-patch fs.readFileSync"]);
   });
 
+  test("an uninitialized var redeclaration keeps the alias it shares a scope with", () => {
+    expect(
+      facts("var fs = require('fs'); var fs; fs.readFileSync = g; fs.readFileSync(p);"),
+    ).toEqual({ patches: ["builtin-patch fs.readFileSync"], reads: ["fs.readFileSync"] });
+  });
+
+  test("a catch parameter masks the alias inside its block only", () => {
+    expect(
+      facts(
+        "const fs = require('fs'); try { f(); } catch (fs) { fs.readFileSync(p); } fs.readFileSync = g;",
+      ),
+    ).toEqual({ patches: ["builtin-patch fs.readFileSync"], reads: [] });
+    expect(
+      facts(
+        "const fs = require('fs'); try { f(); } catch ({ fs }) { fs.readFileSync(p); } fs.readFileSync(p);",
+      ),
+    ).toEqual({ patches: [], reads: ["fs.readFileSync"] });
+  });
+
   test("patch forms and reads through a shadowed name stay local", () => {
     expect(
       facts(

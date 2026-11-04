@@ -8237,21 +8237,26 @@ function mapBrandedPrimitiveIntersection(widened: ts.Type, ctx: TypeMapperCtx): 
     if ((value.flags & ts.TypeFlags.Object) === 0) return false;
     if (seen.has(value)) return false;
     seen.add(value);
+    // `seen` holds the types on the current path only: two sibling fields
+    // that name the same marker type both erase, while a table that refers
+    // to itself stays outside the rule.
+    let marker = false;
     const sym = value.getSymbol();
-    if (sym !== undefined && (sym.flags & ts.SymbolFlags.Class) !== 0) return false;
-    if (
-      checker.getCallSignatures(value).length > 0 ||
-      checker.getConstructSignatures(value).length > 0 ||
-      checker.getIndexInfosOfType(value).length > 0
-    )
-      return false;
-    return checker
-      .getPropertiesOfType(value)
-      .every(
-        (prop) =>
-          (prop.flags & (ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor)) === 0 &&
-          markerValue(checker.getTypeOfSymbol(prop), seen),
-      );
+    if (sym === undefined || (sym.flags & ts.SymbolFlags.Class) === 0) {
+      marker =
+        checker.getCallSignatures(value).length === 0 &&
+        checker.getConstructSignatures(value).length === 0 &&
+        checker.getIndexInfosOfType(value).length === 0 &&
+        checker
+          .getPropertiesOfType(value)
+          .every(
+            (prop) =>
+              (prop.flags & (ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor)) === 0 &&
+              markerValue(checker.getTypeOfSymbol(prop), seen),
+          );
+    }
+    seen.delete(value);
+    return marker;
   };
   let primitive: IrType | null = null;
   let markerParts = 0;

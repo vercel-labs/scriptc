@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test, vi } from "vitest";
 import {
+  checkModuleOrder,
   checkPreflight,
   cycleEarlyBindings,
   isNodeEsmFile,
@@ -536,6 +537,47 @@ test.for([
     expect(found.map((binding) => binding.name.text).sort()).toEqual([...early]);
   } finally {
     load.dispose();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("asking for the module order first leaves the report and the order as they were", () => {
+  // `--npm-static`'s fixpoint reloads once per discovered package and reads
+  // the order alone; the last load's full preflight completes that walk. The
+  // reordered path must report exactly what the single pass reports, and must
+  // reuse the array the order pass installed rather than walk again.
+  const directory = mkdtempSync(
+    join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-module-order-"),
+  );
+  const entry = join(directory, "main.ts");
+  writeFileSync(join(directory, "package.json"), '{"type":"module"}');
+  writeFileSync(join(directory, "dep.ts"), "export const value: number = 1;\n");
+  writeFileSync(
+    entry,
+    'import { value } from "./dep.js";\nconst bad: number = "text";\nconsole.log(value, bad);\n',
+  );
+  const report = (load: ReturnType<typeof loadProgram>) => ({
+    diags: checkPreflight(load),
+    order: load.moduleOrder.map((sf) => sf.fileName),
+    rejections: [...(load.dynamicImportRejections?.keys() ?? [])].map((sf) => sf.fileName),
+    cycles: load.inlineRequireCycleCalls?.size ?? 0,
+    crash: load.startupCrash ?? null,
+  });
+  const single = loadProgram(entry);
+  const ordered = loadProgram(entry);
+  try {
+    const direct = report(single);
+    expect(direct.diags.length).toBeGreaterThan(0);
+    expect(direct.order.length).toBe(2);
+    checkModuleOrder(ordered);
+    const before = ordered.moduleOrder;
+    expect(before.map((sf) => sf.fileName)).toEqual(direct.order);
+    expect(report(ordered)).toEqual(direct);
+    // The full preflight completed the memoized walk instead of repeating it.
+    expect(ordered.moduleOrder).toBe(before);
+  } finally {
+    single.dispose();
+    ordered.dispose();
     rmSync(directory, { recursive: true, force: true });
   }
 });

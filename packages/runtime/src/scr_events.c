@@ -1835,6 +1835,7 @@ void scr_run_exit_listeners(double code) {
     if (scr_exc_pending()) {
       /* Node: a throw in an 'exit' listener is fatal (exit code 7). */
       scr_exc_print_uncaught();
+      scr_stdout_settle();
       fflush(stdout);
 #ifdef SCR_WORKERS
       if (!scr_context_is_main()) { scr_context_stop(7); break; }

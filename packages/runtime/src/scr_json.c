@@ -2555,6 +2555,35 @@ ScrDyn *scr_dyn_symbol_get(const ScrDyn *value, const ScrStr *key) {
  * later, and it neither grows nor owns heap references. */
 static ScrDyn scr_dyn_small_ints[384];
 
+/* Single-character ASCII strings are primitives with one value each, so
+ * their boxes are shared the way the small integers are. The character
+ * strings themselves are the runtime's immortal ASCII statics in
+ * scr_string.c, and a constructor that filled these boxes would make every
+ * program link them, so they are filled on first use instead. 0 empty, 1
+ * being filled by one thread, 2 complete. */
+static ScrDyn scr_dyn_ascii_chars[128];
+static int scr_dyn_ascii_state;
+
+/* Fills the table on first use, so the fast path in scr_dyn_new_str stays a
+ * load and a branch. Returns the shared box for `c`, or NULL when another
+ * thread is filling the table right now; the caller then makes a box of its
+ * own, which the language cannot tell apart from the shared one. */
+static ScrDyn *scr_dyn_ascii_fill(unsigned char c) {
+  int empty = 0;
+  if (!__atomic_compare_exchange_n(&scr_dyn_ascii_state, &empty, 1, false, __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE))
+    return NULL;
+  for (unsigned i = 0; i < 128; i++) {
+    ScrDyn *d = &scr_dyn_ascii_chars[i];
+    d->rc = SIZE_MAX;
+    d->kind = SCR_DYN_STR;
+    d->v.str = scr_str_ascii_char(i);
+  }
+  /* The fields publish before the complete state, so a thread that loads it
+   * sees filled boxes. */
+  __atomic_store_n(&scr_dyn_ascii_state, 2, __ATOMIC_RELEASE);
+  return &scr_dyn_ascii_chars[c];
+}
+
 const char *(*scr_gen_tag_reader)(const ScrGen *g) = NULL;
 
 __attribute__((constructor)) static void scr_dyn_small_ints_init(void) {
@@ -2577,6 +2606,15 @@ ScrDyn *scr_dyn_new_num(double n) {
 }
 
 ScrDyn *scr_dyn_new_str(ScrStr *s) {
+  /* A one-byte ASCII string is one of 128 shared values. The caller keeps
+   * its own reference to `s`, which the shared box does not need. */
+  if (s->ascii && s->len == 1) {
+    unsigned char c = (unsigned char)s->data[0];
+    ScrDyn *shared = __builtin_expect(__atomic_load_n(&scr_dyn_ascii_state, __ATOMIC_ACQUIRE) == 2, 1)
+                         ? &scr_dyn_ascii_chars[c]
+                         : scr_dyn_ascii_fill(c);
+    if (shared != NULL) return shared;
+  }
   ScrDyn *d = scr_dyn_leaf_alloc(SCR_DYN_STR);
   d->v.str = scr_str_retain(s);
   return d;
@@ -5451,6 +5489,66 @@ ScrDyn *scr_dyn_index_get(const ScrDyn *d, double index) {
   if (d->kind != SCR_DYN_TYPED_REF || scr_event_ref_hooks || !scr_dyn_typed_ref_array_ops(d))
     return NULL;
   return scr_dyn_typed_ref_element(d, i);
+}
+
+ScrDyn *scr_dyn_string_index_get(const ScrDyn *d, double index) {
+  if (!(index >= 0 && index < scr_str_utf16_len(d->v.str)) || trunc(index) != index) return NULL;
+  ScrStr *character = scr_str_char_at(d->v.str, index);
+  ScrDyn *out = scr_dyn_new_str(character);
+  scr_str_release(character);
+  return out;
+}
+
+ScrDyn *scr_dyn_bytes_index_get(const ScrDyn *d, double index) {
+  const ScrBytes *bytes = d->v.bytes;
+  if (bytes->is_data_view) return NULL;
+  /* A number key spells itself the way the string-key path spells it, so
+   * the index -0 is the element 0 (its spelling is "0"). */
+  if (!(index >= 0 && index < (double)bytes->len) || trunc(index) != index) return NULL;
+#ifdef SCR_JS_OBJECT_MODEL
+  if (scr_bytes_elem_is_bigint(bytes->elem)) return scr_bytes_get_bigint(bytes, index);
+#endif
+  return scr_dyn_new_num(scr_bytes_get(bytes, index));
+}
+
+int scr_dyn_index_set(ScrDyn *recv, double index, ScrDyn *value) {
+  if (recv->kind == SCR_DYN_BYTES) {
+    ScrBytes *bytes = recv->v.bytes;
+    /* A DataView has no elements: its numeric keys are named properties. */
+    if (bytes->is_data_view) return SCR_DYN_INDEX_NOT_HANDLED;
+#ifdef SCR_JS_OBJECT_MODEL
+    if (scr_bytes_elem_is_bigint(bytes->elem))
+      return scr_bytes_set_bigint(bytes, index, value) ? SCR_DYN_INDEX_STORED : SCR_DYN_INDEX_THREW;
+#endif
+    /* Every Number's ToString is a canonical numeric key, so the string-key
+     * path reaches the same element branch: coerce the value first, then
+     * ignore an index the array does not have. */
+    double number;
+    if (!scr_dyn_number_coerce_js(value, &number)) return SCR_DYN_INDEX_THREW;
+    if (index >= 0 && index < (double)bytes->len && trunc(index) == index)
+      scr_bytes_set(bytes, index, number);
+    return SCR_DYN_INDEX_STORED;
+  }
+  if (recv->kind != SCR_DYN_ARR) return SCR_DYN_INDEX_NOT_HANDLED;
+  /* -0 is the element 0 of an array (its spelling is "0"). */
+  if (!(index >= 0 && index < 4294967295.0) || trunc(index) != index)
+    return SCR_DYN_INDEX_NOT_HANDLED;
+  size_t idx = (size_t)index;
+  /* The prototype fence throws its own error; the cases the string-key path
+   * answers with an assignment failure keep it (the write's mode decides). */
+  if (scr_dyn_array_prototype_element_fence(recv)) return SCR_DYN_INDEX_THREW;
+  if (recv->v.arr.frozen && idx < recv->v.arr.len && scr_dyn_arr_has_index(recv, idx))
+    return SCR_DYN_INDEX_NOT_HANDLED;
+  if (recv->non_extensible && !scr_dyn_arr_has_index(recv, idx))
+    return SCR_DYN_INDEX_NOT_HANDLED;
+  if (idx > recv->v.arr.len + 1000000) return SCR_DYN_INDEX_NOT_HANDLED;
+  while (recv->v.arr.len <= idx) scr_dyn_arr_push_hole(recv);
+  scr_dyn_region_store(recv, value);
+  ScrDyn *old = recv->v.arr.items[idx];
+  recv->v.arr.items[idx] = scr_dyn_retain(value);
+  if (recv->v.arr.presence) recv->v.arr.presence[idx] = 1;
+  scr_dyn_release(old);
+  return SCR_DYN_INDEX_STORED;
 }
 
 static ScrStr *scr_dyn_typed_ref_conversion_tag(const ScrDyn *d);
@@ -20655,16 +20753,25 @@ ScrDyn *scr_dyn_from_entries(ScrDyn *seed) {
   return result;
 }
 
-ScrDyn *scr_array_buffer_new(ScrDyn *length) {
+/* ToIndex of the length a buffer constructor was given, with Node's
+ * "Invalid array buffer length" RangeError; false when it threw. */
+static bool scr_array_buffer_length(ScrDyn *length, size_t *bytes) {
   double number;
-  if (!scr_dyn_number_coerce_js(length, &number)) return NULL;
+  if (!scr_dyn_number_coerce_js(length, &number)) return false;
   double size = isnan(number) ? 0 : trunc(number);
   if (!(size >= 0) || size > 9007199254740991.0 || size > (double)(SIZE_MAX / 8)) {
     static const char msg[] = "Invalid array buffer length";
     scr_throw_error_msg(SCR_ERR_RANGE, msg, sizeof msg - 1);
-    return NULL;
+    return false;
   }
-  ScrBytes *storage = scr_bytes_new(SCR_BYTES_U8, size);
+  *bytes = (size_t)size;
+  return true;
+}
+
+ScrDyn *scr_array_buffer_new(ScrDyn *length) {
+  size_t bytes;
+  if (!scr_array_buffer_length(length, &bytes)) return NULL;
+  ScrBytes *storage = scr_bytes_new(SCR_BYTES_U8, (double)bytes);
   if (!storage) return NULL;
   ScrDyn *result = scr_array_buffer_from_bytes(storage);
   scr_bytes_release(storage);
@@ -20672,12 +20779,14 @@ ScrDyn *scr_array_buffer_new(ScrDyn *length) {
 }
 
 ScrDyn *scr_shared_array_buffer_new(ScrDyn *length) {
-  ScrDyn *buffer = scr_array_buffer_new(length);
-  if (!buffer) return NULL;
-  ScrBytes *storage = buffer->v.handle.ptr;
-  scr_bytes_make_shared(storage);
+  size_t bytes;
+  if (!scr_array_buffer_length(length, &bytes)) return NULL;
+  /* Shared storage from its first byte: a large one is a mapping of its own
+   * (scr_bytes_new_shared), which leaves the heap alone. */
+  ScrBytes *storage = scr_bytes_new_shared(bytes, bytes);
+  if (!storage) return NULL;
   ScrDyn *result = scr_array_buffer_from_bytes(storage);
-  scr_dyn_release(buffer);
+  scr_bytes_release(storage);
   return result;
 }
 

@@ -23,7 +23,7 @@ import {
 import { numLit, strLit } from "../../ir/build.js";
 import { locOf } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
-import { heldEnvValueType } from "./builtins/environment.js";
+import { denotesEnvironment } from "./builtins/environment.js";
 import {
   erasedDeletePlan,
   lowerDeleteKey,
@@ -230,9 +230,11 @@ export function throwAfterEach(values: readonly IrExpr[], thrown: IrExpr, loc: S
 
 /** Whether a member `delete` with this receiver deletes from the environment:
  * the ambient `process.env` object itself or a value HELD from it
- * (environment.ts), whose member accesses alias the live table. */
+ * (environment.ts), whose member accesses alias the live table. Parentheses
+ * and the erased wrappers name the same object, so `(process.env).X` and
+ * `process.env!.X` delete from the environment too (denotesEnvironment). */
 function isEnvironmentReceiver(lowerer: Lowerer, node: ts.Expression): boolean {
-  return lowerer.isProcessEnv(node) || heldEnvValueType(lowerer, node) !== null;
+  return denotesEnvironment(lowerer, node);
 }
 
 /** Expression-position `delete` of an environment member — `delete

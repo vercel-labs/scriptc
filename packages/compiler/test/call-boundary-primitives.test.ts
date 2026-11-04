@@ -58,8 +58,10 @@ test("defineProperty over a plain primitive still evaluates key and descriptor",
     Object.defineProperty(true, (order.push("key"), "foo"), (order.push("descriptor"), {}));
   `);
   // Both side effects stay ahead of the call, as a seqExpr chain; only the
-  // descriptor's evaluation may nest into the dyn call.
-  expect(nodes(mod).fns).toContain("dyn.defineProperty");
+  // descriptor's evaluation may nest into the dyn call. A descriptor built
+  // by an expression reads through the any-object entry point: it may be an
+  // array, a function or an object with inherited fields.
+  expect(nodes(mod).fns).toContain("dyn.definePropertyShapes");
   expect(nodes(mod).kinds).toContain("seqExpr");
 });
 

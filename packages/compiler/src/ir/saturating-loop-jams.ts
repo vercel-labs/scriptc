@@ -7,7 +7,10 @@ import {
   type IrModule,
   type IrStmt,
 } from "./ir.js";
+import { eachNodeOfKinds, type IrNodeIndex, type IrNodeKind, lacksKinds } from "./node-index.js";
 import { everyStmtList, transformStmtList } from "./traverse.js";
+
+const FOR_KINDS: readonly IrNodeKind[] = ["for"];
 
 /** The most iterations of an outer loop that run jammed. */
 const MAX_COPIES = 8;
@@ -336,19 +339,18 @@ function matchJam(
  * tests that every fourth iteration (`j & 3` is 3), and it keeps the inner
  * loop's own bound. The copies' statements alternate,
  * and each local's copies are added next to each other, so the vectorizer
- * packs one copy per lane. */
-export function jamSaturatingLoops(mod: IrModule): IrModule {
+ * packs one copy per lane. `nodes`, an index of `mod`, gives each
+ * function's `for` loops without walking its body. */
+export function jamSaturatingLoops(mod: IrModule, nodes?: IrNodeIndex): IrModule {
+  const loops = nodes?.scan(FOR_KINDS);
   let changed = false;
   const functions = mod.functions.map((fn): IrFunction => {
-    if (fn.async || fn.generator) return fn;
+    if (fn.async || fn.generator || lacksKinds(fn, loops)) return fn;
     const locals = new Map(fn.locals.map((local) => [local.id, local]));
     let found = false;
-    everyStmtList(fn.body, {
-      expr: () => !found,
-      stmt: (s) => {
-        if (s.kind === "for" && matchJam(s, locals) !== null) found = true;
-        return !found;
-      },
+    eachNodeOfKinds(fn, loops, (node) => {
+      if (node.kind === "for" && matchJam(node, locals) !== null) found = true;
+      return !found;
     });
     if (!found) return fn;
     const added: IrLocal[] = [];

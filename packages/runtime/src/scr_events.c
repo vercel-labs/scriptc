@@ -503,6 +503,10 @@ static SCR_TL ScrStdinEndL *scr_stdin_readable = NULL;
 static SCR_TL size_t scr_stdin_nreadable = 0, scr_stdin_readable_cap = 0;
 static SCR_TL bool scr_stdin_readable_need = false;
 static SCR_TL bool scr_stdin_readable_queued = false;
+/* A 'readable' listener outlived the input: Node keeps the stream in paused
+ * mode after 'end' (the listener stays registered and isPaused() keeps
+ * answering true), even though this runtime releases the listener tables. */
+static SCR_TL bool scr_stdin_readable_mode = false;
 
 /* Appends an arrived chunk (moves) to the held input. */
 static void scr_stdin_hold(ScrBytes *chunk) {
@@ -693,7 +697,7 @@ static void scr_stdin_queue_readable(void) {
 
 /* Adding a 'readable' listener starts reading ahead to the 64 KiB mark; a
  * buffer that already holds input fires the event at once (next tick). */
-static void scr_stdin_on_readable(ScrClosure *cb /*moves*/, bool once) {
+void scr_stdin_on_readable(ScrClosure *cb /*moves*/, bool once) {
   if (scr_stdin_eof || scr_stdin_destroyed) {
     scr_closure_release(cb);
     return;
@@ -839,8 +843,35 @@ static void scr_stdin_finish(bool fire_end) {
     free(snap);
   }
   scr_stdin_settle_done();
+  if (scr_stdin_nreadable) scr_stdin_readable_mode = true;
   scr_stdin_drop_listeners();
 }
+
+/* process.stdin.pause()/resume(): Node's flowing flag. While paused,
+ * arrived input buffers for read() and the 'readable' event instead of
+ * reaching 'data' listeners; resume() delivers buffered input to them
+ * again (`resumed` also feeds a flowing stream with no listener, as
+ * Node's resume() discards it). */
+void scr_stdin_pause(void) {
+  scr_stdin_paused = true;
+  scr_stdin_resumed = false;
+}
+
+void scr_stdin_resume(void) {
+  scr_stdin_paused = false;
+  scr_stdin_resumed = true;
+}
+
+/* process.stdin.isPaused(): Node's Readable#isPaused answers true in
+ * paused mode, which a 'readable' listener pins — resume() does not take
+ * the stream out of it, and 'end' does not either — and false before
+ * anything set flowing. */
+bool scr_stdin_is_paused(void) {
+  return scr_stdin_paused || scr_stdin_readable_mode || scr_stdin_nreadable > 0;
+}
+
+/* process.stdin.readableLength: the bytes waiting in the buffer. */
+double scr_stdin_readable_length(void) { return (double)scr_stdin_buffered; }
 
 /* process.stdin.destroy(): tear the stream down — nothing fires after,
  * the loop stops watching, and a parked for-await ends. */
@@ -1222,13 +1253,32 @@ static void scr_stdio_finish_read(void) {
     scr_stdin_finish(true);
 }
 
-static ScrDyn *scr_stdio_read(ScrDyn *size) {
-  bool all = size->kind == SCR_DYN_UNDEF;
-  if (!all && (size->kind != SCR_DYN_NUM || !isfinite(size->v.num) ||
-      size->v.num < 0 || size->v.num > 1073741824 || floor(size->v.num) != size->v.num))
-    return scr_stdio_refusal("read size");
+/* process.stdin.read([size]) over the held input — the shared body of the
+ * typed and the checked-dynamic calls. `all` is the no-argument form. A
+ * size argument follows Node's coercion: Readable#read parses it with
+ * parseInt, so it truncates toward zero, and a magnitude of 1e21 or more
+ * stringifies to exponent form, which parses as +-1; NaN (undefined,
+ * Infinity, -Infinity) reads everything held, and a non-positive result
+ * reads nothing. A parsed size above the 1 GiB high-water mark throws
+ * Node's ERR_OUT_OF_RANGE. Answers the chunk (+1), or NULL when nothing
+ * can be taken yet — the stream then reads ahead to what the read wanted
+ * (or Node's 64 KiB default) and fires 'readable' when it arrives. */
+ScrBytes *scr_stdin_read_bytes(bool all, double size) {
   size_t available = scr_stdin_buffered;
-  size_t wanted = all ? available : (size_t)size->v.num;
+  size_t wanted = available;
+  if (!all) {
+    if (!isnan(size) && !isinf(size)) {
+      double n = fabs(size) >= 1e21 ? copysign(1.0, size) : trunc(size);
+      if (n > 1073741824.0) {
+        char message[96];
+        int length = snprintf(message, sizeof message,
+                              "The value of \"size\" is out of range. It must be <= 1GiB. Received %.0f", n);
+        scr_throw_error_msg_code(SCR_ERR_RANGE, message, (size_t)length, "ERR_OUT_OF_RANGE");
+        return NULL;
+      }
+      wanted = n <= 0 ? 0 : (size_t)n;
+    }
+  }
   if (scr_stdin_read_eof && wanted > available) wanted = available;
   if (wanted == 0 || wanted > available) {
     if (!scr_stdin_eof && !scr_stdin_destroyed) {
@@ -1236,16 +1286,24 @@ static ScrDyn *scr_stdio_read(ScrDyn *size) {
       scr_stdin_read_demand = wanted > 65536 ? wanted : 65536;
       if (scr_stdin_read_eof) scr_next_tick_raw(scr_stdio_finish_read);
     }
-    return scr_dyn_new_null();
+    return NULL;
   }
   ScrBytes *chunk = scr_stdin_take(wanted);
   bool rest = scr_stdin_buffered > 0;
   scr_stdin_read_demand = 65536;
   if (!rest && !scr_stdin_read_eof) scr_stdin_readable_need = true;
   scr_stdin_deliver(chunk);
+  if (scr_stdin_read_eof && !rest) scr_next_tick_raw(scr_stdio_finish_read);
+  return chunk;
+}
+
+static ScrDyn *scr_stdio_read(ScrDyn *size) {
+  bool all = size->kind == SCR_DYN_UNDEF;
+  if (!all && size->kind != SCR_DYN_NUM) return scr_stdio_refusal("read size");
+  ScrBytes *chunk = scr_stdin_read_bytes(all, all ? 0.0 : size->v.num);
+  if (!chunk) return scr_exc_pending() ? NULL : scr_dyn_new_null();
   ScrDyn *result = scr_dyn_new_chunk(chunk);
   scr_bytes_release(chunk);
-  if (scr_stdin_read_eof && !rest) scr_next_tick_raw(scr_stdio_finish_read);
   return result;
 }
 
@@ -1387,6 +1445,49 @@ static ScrDyn *scr_stdio_write_call(ScrStdio *stream, ScrDyn *const *args, size_
   if (callback->kind == SCR_DYN_FUNC) scr_next_tick(scr_stdio_callback(callback, (void *)scr_stdio_write_done));
   return scr_dyn_new_bool(true);
 }
+
+/* process.stdout.write(text) / process.stderr.write(text) at an untyped
+ * call site: the one-string-argument form of the write method above,
+ * without the dynamic call's receiver value, method read and chunk boxing.
+ * A replaced write still receives the call, with the string as its only
+ * argument and the stream as `this`; an unreplaced one reaches the
+ * descriptor through scr_stdio_write_raw, whose chunk is the string's
+ * UTF-8 with each lone surrogate as U+FFFD, exactly what
+ * scr_bytes_from_str produced here. */
+ScrDyn *scr_stdio_write_str_dyn(double fd, const ScrStr *data) {
+  ScrStdio *stream = &scr_stdio_streams[fd == 2 ? 2 : 1];
+  if (stream->write && !scr_dyn_strict_eq(stream->write, scr_stdio_methods[STDIO_WRITE])) {
+    /* The replacement may assign process.stdout.write during its own call —
+     * restoring the built-in method, for one — which releases the slot's
+     * reference to the function that is running and to its captured
+     * bindings. The call keeps its own until it returns. */
+    ScrDyn *write = scr_dyn_retain(stream->write);
+    ScrDyn *chunk = scr_dyn_new_str((ScrStr *)data);
+    ScrDyn *self = scr_dyn_new_handle(stream, SCR_DYNH_STDIO);
+    scr_dyn_this_push_dyn(self);
+    ScrDyn *result = scr_dyn_call(write, &chunk, 1,
+                                  stream->fd == 2 ? "process.stderr.write" : "process.stdout.write");
+    scr_dyn_this_pop();
+    scr_dyn_release(self);
+    scr_dyn_release(chunk);
+    scr_dyn_release(write);
+    return result;
+  }
+  int error;
+  if (__builtin_expect(scr_wtf8_any(), 0) && !data->ascii) {
+    char *owned;
+    const char *bytes = scr_str_utf8(data, &owned);
+    error = scr_stdio_write_raw(stream->fd, bytes, data->len);
+    scr_str_utf8_end(owned);
+  } else {
+    error = scr_stdio_write_raw(stream->fd, data->data, data->len);
+  }
+  if (error) {
+    scr_stdio_queue_write_error(stream, scr_dyn_undefined(), error);
+    return scr_dyn_new_bool(false);
+  }
+  return scr_dyn_new_bool(true);
+}
 #endif
 
 static ScrDyn *scr_stdio_method(ScrClosure *cb, ScrDyn *const *args, size_t argc) {
@@ -1514,11 +1615,11 @@ static ScrDyn *scr_stdio_method(ScrClosure *cb, ScrDyn *const *args, size_t argc
     }
     result = scr_dyn_retain(self);
   } else if (stream->fd == 0 && (method == STDIO_PAUSE || method == STDIO_RESUME)) {
-    scr_stdin_paused = method == STDIO_PAUSE;
-    scr_stdin_resumed = method == STDIO_RESUME;
+    if (method == STDIO_PAUSE) scr_stdin_pause();
+    else scr_stdin_resume();
     result = scr_dyn_retain(self);
   } else if (stream->fd == 0 && method == STDIO_IS_PAUSED) {
-    result = scr_dyn_new_bool(scr_stdin_paused);
+    result = scr_dyn_new_bool(scr_stdin_is_paused());
   } else if (stream->fd == 0 && method == STDIO_READ) {
     result = scr_stdio_read(arg);
   } else if (stream->fd == 0 && method == STDIO_RAW) {
@@ -1552,7 +1653,7 @@ static ScrDyn *scr_stdio_get(void *ptr, const char *key, size_t length) {
     return dimension < 0 ? scr_dyn_retain(scr_dyn_undefined()) : scr_dyn_new_num(dimension);
   }
   if (stream->fd == 0 && length == 14 && memcmp(key, "readableLength", 14) == 0)
-    return scr_dyn_new_num((double)scr_stdin_buffered);
+    return scr_dyn_new_num(scr_stdin_readable_length());
   if (stream->fd == 0 && length == 5 && memcmp(key, "isRaw", 5) == 0)
     return scr_process_is_tty(0) ? scr_dyn_new_bool(scr_process_stdin_raw()) : scr_dyn_retain(scr_dyn_undefined());
   if (stream->fd == 0 && length == 9 && memcmp(key, "destroyed", 9) == 0) return scr_dyn_new_bool(scr_stdin_destroyed);
@@ -1777,6 +1878,7 @@ void scr_run_exit_listeners(double code) {
     if (scr_exc_pending()) {
       /* Node: a throw in an 'exit' listener is fatal (exit code 7). */
       scr_exc_print_uncaught();
+      scr_stdout_settle();
       fflush(stdout);
 #ifdef SCR_WORKERS
       if (!scr_context_is_main()) { scr_context_stop(7); break; }

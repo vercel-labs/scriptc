@@ -26,6 +26,8 @@ _Static_assert(offsetof(ScrDyn, v.arr.len) == 16 && offsetof(ScrDyn, v.arr.items
                offsetof(ScrDyn, v.arr.presence) == 56, "array element offsets");
 _Static_assert(offsetof(ScrDyn, prototype) == 96, "prototype offset");
 _Static_assert(sizeof(ScrJsIcEntry) == 40 && sizeof(ScrJsIc) == 168, "cache layout");
+_Static_assert(sizeof(ScrJsGroupEntry) == 16 && offsetof(ScrJsGroup, entry[1]) == 16 &&
+               sizeof(ScrJsGroup) == 72, "group layout");
 #endif
 
 /* The cache records that hold entries. Entries name layouts and prototype
@@ -36,6 +38,12 @@ static SCR_TL ScrJsIc **scr_js_filled_ics;
 static SCR_TL size_t scr_js_filled_count;
 static SCR_TL size_t scr_js_filled_capacity;
 static SCR_TL bool scr_js_ics_registered;
+
+/* The group records that hold entries (scr_js.h), cleared by the same
+ * reset: their slot bytes are only meaningful for the layout they name. */
+static SCR_TL ScrJsGroup **scr_js_filled_groups;
+static SCR_TL size_t scr_js_filled_group_count;
+static SCR_TL size_t scr_js_filled_group_capacity;
 
 /* The second-level cache of load sites whose own record is full: one entry
  * per (receiver layout, key bytes) slot, filled by the probe and checked
@@ -50,13 +58,27 @@ static SCR_TL ScrJsSharedLoad *scr_js_shared_loads;
 static void scr_js_ics_reset(void) {
   for (size_t i = 0; i < scr_js_filled_count; i++)
     memset(scr_js_filled_ics[i], 0, sizeof *scr_js_filled_ics[i]);
+  for (size_t i = 0; i < scr_js_filled_group_count; i++)
+    memset(scr_js_filled_groups[i], 0, sizeof *scr_js_filled_groups[i]);
   free(scr_js_shared_loads);
   scr_js_shared_loads = NULL;
   free(scr_js_filled_ics);
   scr_js_filled_ics = NULL;
   scr_js_filled_count = 0;
   scr_js_filled_capacity = 0;
+  free(scr_js_filled_groups);
+  scr_js_filled_groups = NULL;
+  scr_js_filled_group_count = 0;
+  scr_js_filled_group_capacity = 0;
   scr_js_ics_registered = false;
+}
+
+/* Registers the reset once per thread, for the first record that holds
+ * entries. */
+static void scr_js_registry_register(void) {
+  if (scr_js_ics_registered) return;
+  scr_js_ics_registered = true;
+  scr_atexit(scr_js_ics_reset);
 }
 
 /* An object's layout, or NULL for objects caches leave alone: other kinds,
@@ -79,10 +101,7 @@ static size_t scr_js_layout_find(const ScrLayout *layout, const char *key, size_
  * there is one, else a free or replaceable one. */
 static void scr_js_ic_add(ScrJsIc *ic, uint32_t stale, ScrJsIcEntry entry) {
   if (ic->count == 0) {
-    if (!scr_js_ics_registered) {
-      scr_js_ics_registered = true;
-      scr_atexit(scr_js_ics_reset);
-    }
+    scr_js_registry_register();
     if (scr_js_filled_count == scr_js_filled_capacity) {
       size_t capacity = scr_js_filled_capacity ? scr_js_filled_capacity * 2 : 64;
       ScrJsIc **grown = realloc(scr_js_filled_ics, capacity * sizeof *grown);
@@ -103,6 +122,56 @@ static void scr_js_ic_add(ScrJsIc *ic, uint32_t stale, ScrJsIcEntry entry) {
     index = 1 + ic->next++ % (SCR_JS_IC_WAYS - 1);
   }
   ic->entry[index] = entry;
+}
+
+/* ── guard groups ─────────────────────────────────────────────────────── */
+
+/* Fills `entry` with the slots of `keys` on `shape`, or answers false when
+ * any key is not an own property (every member then keeps its own site).
+ * A layout has at most 64 keys, so a slot fits the entry's byte. */
+static bool scr_js_group_slots(const ScrLayout *shape, const ScrStr *const *keys, uint32_t count,
+                               uint8_t *slot) {
+  for (uint32_t i = 0; i < count; i++) {
+    size_t at = scr_js_layout_find(shape, keys[i]->data, keys[i]->len);
+    if (at > UINT8_MAX) return false;
+    slot[i] = (uint8_t)at;
+  }
+  return true;
+}
+
+const ScrJsGroupEntry *scr_js_group_probe(const ScrDyn *object, const ScrStr *const *keys,
+                                          uint32_t count, ScrJsGroup *group) {
+  if (!object || count == 0 || count > SCR_JS_GROUP_KEYS) return NULL;
+  const ScrLayout *shape = scr_js_layout_of(object);
+  if (!shape) return NULL;
+  for (uint32_t i = 0; i < group->count; i++)
+    if (group->entry[i].layout == shape) return &group->entry[i];
+  uint8_t slot[SCR_JS_GROUP_KEYS];
+  if (!scr_js_group_slots(shape, keys, count, slot)) return NULL;
+  uint32_t index;
+  if (group->count < SCR_JS_GROUP_WAYS) {
+    index = group->count++;
+  } else {
+    /* A full group keeps entry 0, which the guard tests inline, and cycles
+     * through the others. */
+    index = 1 + group->next++ % (SCR_JS_GROUP_WAYS - 1);
+  }
+  if (group->count == 1) {
+    scr_js_registry_register();
+    if (scr_js_filled_group_count == scr_js_filled_group_capacity) {
+      size_t capacity = scr_js_filled_group_capacity ? scr_js_filled_group_capacity * 2 : 16;
+      ScrJsGroup **grown = realloc(scr_js_filled_groups, capacity * sizeof *grown);
+      if (!grown) scr_trap("scriptc: out of memory\n");
+      scr_js_filled_groups = grown;
+      scr_js_filled_group_capacity = capacity;
+    }
+    scr_js_filled_groups[scr_js_filled_group_count++] = group;
+  }
+  ScrJsGroupEntry *entry = &group->entry[index];
+  entry->layout = shape;
+  memset(entry->slot, 0, SCR_JS_GROUP_KEYS);
+  memcpy(entry->slot, slot, count);
+  return entry;
 }
 
 /* ── loads ────────────────────────────────────────────────────────────── */

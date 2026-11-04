@@ -7,6 +7,7 @@ import { type ChunkResult, EmitJournal } from "./emit-journal.js";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { JS_GROUP_WORDS } from "./js-groups.js";
 import { JS_IC_WORDS } from "./js-ic.js";
 import {
   mangleAsyncSpawn,
@@ -939,6 +940,9 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     `@scr_error_vts = external ${tl}global [${RUNTIME_ERROR_CLASSES.size} x %ScrVt]`,
     `declare void @scr_init()`,
     ...(emitter.compactRegion ? [`declare void @scr_plr_init()`] : []),
+    // A compact field holding an array, a map, a set or a heap instance
+    // (emitter.windowRefs) keeps address >> 3 in 32 bits.
+    ...(emitter.windowRefs ? [`declare void @scr_sa_require_window()`] : []),
     `declare void @scr_lib_init(i32, ptr)`,
     ...(emitter.mod.workers ? [`declare void @scr_runtime_workers_v8()`] : []),
     ...(emitter.stackChecks?.size ? [`declare void @scr_stack_guard_init()`] : []),
@@ -965,6 +969,14 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
       );
     for (let site = 0; site < emitter.jsIcSiteCount; site++)
       out.push(`@sc_js_ic_${site} = internal ${tl}global [${JS_IC_WORDS} x i64] zeroinitializer`);
+    for (let group = 0; group < emitter.jsGroupCount; group++)
+      out.push(
+        `@sc_js_group_${group} = internal ${tl}global [${JS_GROUP_WORDS} x i64] zeroinitializer`,
+      );
+    for (const [name, keys] of emitter.jsGroupKeysTable)
+      out.push(
+        `${name} = internal constant [${keys.length} x ptr] [${keys.map((key) => `ptr ${key}`).join(", ")}]`,
+      );
   }
   if (nodeIslandModulesCall !== null) out.push(...nodeIslandModulesCall.globals);
   for (const table of emitter.constantNumericTables.values()) {
@@ -1108,6 +1120,8 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     out.push(
       `@${inst.sym}_data = internal constant [${n} x ${slot}] [ ${inst.slots.map(slotValue).join(", ")} ], align 8`,
       `@${inst.sym} = internal global %ScrArr { ${emitter.sizeType} -1, i32 ${n}, i32 ${n}, i8 2, i8 0, i16 0, i32 ${n}, ptr @${inst.sym}_data }`,
+      // The site's heap copy of the header (expr-primitives.ts).
+      ...(emitter.compactRegion ? [`@${inst.sym}_win = internal global ptr null, align 8`] : []),
     );
   }
   if (emitter.templateStringsInstances.size > 0) out.push(``);
@@ -1246,6 +1260,9 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // Compressed fields hold addresses in the program-lifetime region, which
     // is reserved below 32 GiB before compiled code runs.
     ...(emitter.compactRegion ? [`  call void @scr_plr_init()`] : []),
+    // A reference block the window cannot serve ends the process here rather
+    // than reaching a compact field, which would truncate its address.
+    ...(emitter.windowRefs ? [`  call void @scr_sa_require_window()`] : []),
     // Each context (the main thread, every worker) installs its stack
     // guard before running compiled code that checks it.
     ...(emitter.stackChecks?.size ? [`  call void @scr_stack_guard_init()`] : []),
@@ -1505,24 +1522,25 @@ function numberMapEntryHelpers(sz: string, loop: boolean): string[] {
     `}`,
     ``,
     // Hashing (scr_map_find_f64): the SameValueZero key word and its
-    // scr_key_mix hash. sc_map_entry_f64_int's probe takes the key's double
-    // with its integer view: its bits are the key word, never NaN, and +0
-    // for the integer 0. The caller converts the integer: cvtsi2sd writes
-    // only the low half of its register, so in a function entry, where
-    // LLVM cannot clear the register first, it waits for the register's
-    // last value, in a loop of lookups often a value the previous
-    // iteration loaded.
+    // scr_key_word_hash mix. sc_map_entry_f64_int's probe takes the key's
+    // double with its integer view: its bits are the key word, never NaN,
+    // and +0 for the integer 0. The caller converts the integer: cvtsi2sd
+    // writes only the low half of its register, so in a function entry,
+    // where LLVM cannot clear the register first, it waits for the
+    // register's last value, in a loop of lookups often a value the
+    // previous iteration loaded.
     ...hashedNumberProbe(
       `sc_map_entry_f64_hashed${flavor}`,
       loop,
       "double %k",
       sz,
       [
-        `  %nan = fcmp uno double %k, %k`,
-        `  %zero = fcmp oeq double %k, 0.0`,
-        `  %kz = select i1 %zero, double 0.0, double %k`,
-        `  %kzb = bitcast double %kz to i64`,
-        `  %kb = select i1 %nan, i64 9221120237041090560, i64 %kzb`,
+        `  %kbits = bitcast double %k to i64`,
+        `  %kmag = and i64 %kbits, 9223372036854775807`,
+        `  %isnan = icmp ugt i64 %kmag, 9218868437227405312`,
+        `  %iszero = icmp eq i64 %kmag, 0`,
+        `  %ksn = select i1 %isnan, i64 9221120237041090560, i64 %kbits`,
+        `  %kb = select i1 %iszero, i64 0, i64 %ksn`,
       ],
       "%k",
     ),
@@ -1565,16 +1583,13 @@ function hashedNumberProbe(
     `define internal ptr @${name}(ptr %m, ${param}) ${loop ? INLINED_LOOKUP_ATTRS : "noinline"} ${FN_ATTRS} {`,
     `entry:`,
     ...keyLines,
-    `  %x1s = lshr i64 %kb, 30`,
+    `  %x1s = lshr i64 %kb, 32`,
     `  %x1 = xor i64 %kb, %x1s`,
-    `  %x2 = mul i64 %x1, -4658895280553007687`,
-    `  %x3s = lshr i64 %x2, 27`,
+    `  %x2 = mul i64 %x1, -7046029254386353131`,
+    `  %x3s = lshr i64 %x2, 29`,
     `  %x3 = xor i64 %x2, %x3s`,
-    `  %x4 = mul i64 %x3, -7723592293110705685`,
-    `  %x5s = lshr i64 %x4, 31`,
-    `  %x5 = xor i64 %x4, %x5s`,
-    `  %hz = icmp eq i64 %x5, 0`,
-    `  %h = select i1 %hz, i64 1, i64 %x5`,
+    `  %hz = icmp eq i64 %x3, 0`,
+    `  %h = select i1 %hz, i64 1, i64 %x3`,
     `  %nbp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 13`,
     ...(sz === "i64"
       ? [`  %nb32 = load i32, ptr %nbp`, `  %nb = zext i32 %nb32 to i64`]

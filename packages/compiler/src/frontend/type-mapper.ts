@@ -1309,17 +1309,46 @@ export interface SymbolProvenance {
 }
 
 /** The answers provenanceOf has given, keyed by symbol. The lowering owns
- * one map through TypeMapperCtx.symbolProvenance, so an answer lives only
- * as long as the lowering that produced it; a symbol belongs to one loaded
- * program. */
+ * one map through TypeMapperCtx.symbolProvenance; a symbol belongs to one
+ * loaded program, so one island round shares the map across its passes
+ * (lowering-facts.ts). */
 export function newSymbolProvenanceMemo(): Map<ts.Symbol, SymbolProvenance> {
   return new Map();
 }
 
-function provenanceOf(
+/** A symbol's provenance, computed from its declarations alone: the answer
+ * depends on which files declare it and nothing else, so it is the same for
+ * every lowering pass of one loaded program (lowering-facts.ts shares the
+ * memo). */
+export function computeSymbolProvenance(
   psym: ts.Symbol,
-  ctx: Pick<TypeMapperCtx, "isStdlibFile" | "symbolProvenance">,
+  isStdlibFile: (sf: ts.SourceFile) => boolean,
 ): SymbolProvenance {
+  let stdlibInterface = false;
+  let stdlibClass = false;
+  let libInterface = false;
+  for (const decl of psym.declarations) {
+    const file = ts.getSourceFileOfNode(decl);
+    if (!isStdlibFile(file)) continue;
+    if (ts.isInterfaceDeclaration(decl)) {
+      stdlibInterface = true;
+      stdlibClass = true;
+      if (!isNodeTypesPath(file.fileName)) libInterface = true;
+    } else if (ts.isClassDeclaration(decl)) {
+      stdlibClass = true;
+    }
+  }
+  return { stdlibInterface, stdlibClass, libInterface };
+}
+
+/** What provenanceOf needs: the shared memo, the stdlib classifier and the
+ * verify-mode hit check (absent when the mode is off). Contexts built from a
+ * Lowerer carry the hook too, so a hand-made ctx may omit it. */
+export type SymbolProvenanceCtx = Pick<TypeMapperCtx, "isStdlibFile" | "symbolProvenance"> & {
+  verifySymbolProvenance?: ((sym: ts.Symbol, answer: SymbolProvenance) => void) | undefined;
+};
+
+function provenanceOf(psym: ts.Symbol, ctx: SymbolProvenanceCtx): SymbolProvenance {
   let bySymbol = ctx.symbolProvenance;
   if (bySymbol === undefined) {
     bySymbol = new Map();
@@ -1327,23 +1356,9 @@ function provenanceOf(
   }
   let provenance = bySymbol.get(psym);
   if (provenance === undefined) {
-    let stdlibInterface = false;
-    let stdlibClass = false;
-    let libInterface = false;
-    for (const decl of psym.declarations) {
-      const file = ts.getSourceFileOfNode(decl);
-      if (!ctx.isStdlibFile(file)) continue;
-      if (ts.isInterfaceDeclaration(decl)) {
-        stdlibInterface = true;
-        stdlibClass = true;
-        if (!isNodeTypesPath(file.fileName)) libInterface = true;
-      } else if (ts.isClassDeclaration(decl)) {
-        stdlibClass = true;
-      }
-    }
-    provenance = { stdlibInterface, stdlibClass, libInterface };
+    provenance = computeSymbolProvenance(psym, ctx.isStdlibFile);
     bySymbol.set(psym, provenance);
-  }
+  } else ctx.verifySymbolProvenance?.(psym, provenance);
   return provenance;
 }
 
@@ -1373,21 +1388,29 @@ export function isGeneralNodeStreamInterface(
   });
 }
 
+/** Whether any declaration of the symbol sits in the shipped WebAssembly
+ * namespace (scriptc.d.ts). Like the declaration-kind walk, the answer is a
+ * function of the declarations alone, so provenanceOf's shared memo can keep
+ * it (SymbolProvenance.webAssembly). */
+export function declaresWebAssemblyNamespace(
+  declarations: readonly ts.Node[],
+  isStdlibFile: (sf: ts.SourceFile) => boolean,
+): boolean {
+  return declarations.some(
+    (d) =>
+      isStdlibFile(ts.getSourceFileOfNode(d)) &&
+      isDeclaredInAmbientNamespace(d as ts.Declaration, "WebAssembly"),
+  );
+}
+
 /** A type declared in the shipped WebAssembly namespace (scriptc.d.ts):
  * its modules, instances, memories, tables, globals, error classes and the
  * Exports/Imports records. */
-export function isWebAssemblyType(
-  type: ts.Type,
-  ctx: Pick<TypeMapperCtx, "checker" | "isStdlibFile" | "symbolProvenance">,
-): boolean {
+export function isWebAssemblyType(type: ts.Type, ctx: SymbolProvenanceCtx): boolean {
   const symbol = type.getAliasSymbol() ?? type.getSymbol();
   if (!symbol) return false;
   const provenance = provenanceOf(symbol, ctx);
-  provenance.webAssembly ??= symbol.declarations.some(
-    (d) =>
-      ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
-      isDeclaredInAmbientNamespace(d as ts.Declaration, "WebAssembly"),
-  );
+  provenance.webAssembly ??= declaresWebAssemblyNamespace(symbol.declarations, ctx.isStdlibFile);
   return provenance.webAssembly;
 }
 
@@ -1573,11 +1596,18 @@ export interface TypeMapperCtx {
    * Map/RegExp/Promise recognition needs declaration provenance: the name
    * alone proves nothing (a user's own `interface Map` maps as a record). */
   isStdlibFile: (sf: ts.SourceFile) => boolean;
-  /** provenanceOf's answers, keyed by symbol (see SymbolProvenance). The
-   * lowering owns the map it passes here, so an answer lives only as long
-   * as the lowering that produced it. Absent: provenanceOf creates one on
-   * the context object. */
+  /** provenanceOf's answers, keyed by symbol (see SymbolProvenance). One
+   * loaded program owns one map (lowering-facts.ts shares it across the
+   * round's passes). Absent: provenanceOf creates one on the context
+   * object. */
   symbolProvenance?: Map<ts.Symbol, SymbolProvenance>;
+  /** SCRIPTC_LOWERING_FACTS_VERIFY: called on every hit on the symbol
+   * provenance memo, so the caller can compare it with a fresh computation
+   * (lowering-facts.ts throws on a disagreement). The optional webAssembly
+   * and legacyUrl fields are filled lazily, on first use, by
+   * declaresWebAssemblyNamespace/declaresLegacyUrl; the caller compares them
+   * only when the stored answer has them. */
+  verifySymbolProvenance?: (sym: ts.Symbol, answer: SymbolProvenance) => void;
 
   isNpmFile: (sf: ts.SourceFile) => boolean;
   /** The declaration file of @scriptc/experimental, wherever it is installed
@@ -1615,6 +1645,13 @@ export interface TypeMapperCtx {
    * a hook rather than a field so that copies of the context made inside a
    * binding scope keep following the lowerer's current scope. */
   typeMemoFor?: () => Map<number, IrType>;
+  /** Mappings that read no generic-instantiation scope state
+   * (noteScopeSensitiveMapping): the answer is the one every binding scope
+   * gives, so every scope and the top level may answer from it. Consulted
+   * after the context's own memo, never instead of it — the top level's
+   * typeMemo also holds answers that DID read an unbound type parameter and
+   * are therefore only good outside bindings. */
+  typeMemoShared?: Map<number, IrType>;
   canMemoizeType?: () => boolean;
   /** True for files the Lowerer actually compiles (its module order). A
    * class type can reach the entry through the TYPE world alone — a jsdoc
@@ -1718,6 +1755,40 @@ let mapTypeDepth = 0;
  * stay fenced instead of interning a per-context-wrong shape). */
 let contextResolutions = 0;
 
+/** Bumped whenever a mapping reads state that only a generic-INSTANTIATION
+ * scope installs: a type-parameter binding (the Lowerer's resolver hooks,
+ * consulted whether or not bindings are installed right now — the same
+ * checker type parameter answers differently with and without them), the
+ * instance's result class, or the local-class instantiation stack. The
+ * answer of such a mapping can differ from one instance to the next, so it
+ * stays in that scope's memo (Lowerer.currentTypeMemo). A mapping that reads
+ * none of it is the answer every scope gives, and may serve all of them
+ * (TypeMapperCtx.typeMemoShared). */
+let scopeSensitivity = 0;
+
+/** Notes that the mapping in progress read generic-instantiation scope state. */
+export function noteScopeSensitiveMapping(): void {
+  scopeSensitivity++;
+}
+
+/** SCRIPTC_TYPE_MEMO_VERIFY=1: every hit on a shared (scope-independent)
+ * memo entry is recomputed from scratch in the scope that took it and
+ * compared. A mismatch is a miscompile the sharing would have introduced,
+ * so the mode throws instead of quietly recomputing: it exists to prove the
+ * sharing on a corpus, never to rescue it at run time. `=stats` also prints
+ * how many hits it checked when the process exits. */
+const verifyMemoMode = process.env["SCRIPTC_TYPE_MEMO_VERIFY"] ?? "";
+const verifySharedTypeMemo = verifyMemoMode === "1" || verifyMemoMode === "stats";
+let verifiedSharedHits = 0;
+if (verifyMemoMode === "stats") {
+  process.on("exit", () => {
+    process.stderr.write(`[type-memo] verified ${verifiedSharedHits} shared memo hits\n`);
+  });
+}
+/** Set while verifying, so the recomputation bypasses every memo and does
+ * not verify itself. */
+let bypassTypeMemo = false;
+
 /** node:url's legacy record interfaces: url.parse()'s Url instance (and
  * its two query-typed refinements), url.format()'s UrlObject input, the
  * URL form's URLFormatOptions, and urlToHttpOptions's result. The values
@@ -1745,7 +1816,7 @@ export function isLegacyUrlType(
  * a member of one. */
 export function isLegacyUrlSymbol(
   symbol: ts.Symbol | null | undefined,
-  ctx: Pick<TypeMapperCtx, "checker" | "isStdlibFile" | "symbolProvenance">,
+  ctx: SymbolProvenanceCtx,
 ): boolean {
   if (!symbol) return false;
   const provenance = provenanceOf(symbol, ctx);
@@ -1753,7 +1824,10 @@ export function isLegacyUrlSymbol(
   return provenance.legacyUrl;
 }
 
-function declaresLegacyUrl(
+/** Whether any declaration of the symbol is one of node:url's legacy record
+ * interfaces (or a member of one). A function of the declarations alone,
+ * stored as SymbolProvenance.legacyUrl in provenanceOf's shared memo. */
+export function declaresLegacyUrl(
   declarations: readonly ts.Node[],
   ctx: Pick<TypeMapperCtx, "isStdlibFile">,
 ): boolean {
@@ -2171,11 +2245,32 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // arm (emptyLiteralArm) and to the checked-dynamic value elsewhere: the two
   // answers keep separate memo entries. Type ids are non-negative integers.
   const memoKey = memoizable ? typeId * 2 + (ctx.emptyLiteralArm ? 1 : 0) : null;
-  if (memoKey !== null) {
-    const memo = (ctx.typeMemoFor?.() ?? ctx.typeMemo)?.get(memoKey);
-    if (memo !== undefined) return memo;
+  /** The memo of the binding context this frame started in: the scope's own
+   * inside generic bindings, the lowerer's top-level memo outside them. */
+  let contextMemo: Map<number, IrType> | undefined;
+  if (memoKey !== null && !bypassTypeMemo) {
+    contextMemo = ctx.typeMemoFor?.() ?? ctx.typeMemo;
+    const own = contextMemo?.get(memoKey);
+    if (own !== undefined) {
+      // The scope's own memo also holds answers this scope's bindings shaped
+      // (they were written here, not shared). Taking one re-reads that
+      // scope state just as mapping the type would, so the frame that took it
+      // is scope-specific too: without this the parent could enter the shared
+      // memo and serve this instance's representation to every later one.
+      if (ctx.typeMemoShared?.get(memoKey) !== own) noteScopeSensitiveMapping();
+      return own;
+    }
+    const shared = ctx.typeMemoShared;
+    if (shared !== undefined && shared !== contextMemo) {
+      const hit = shared.get(memoKey);
+      if (hit !== undefined) {
+        if (verifySharedTypeMemo && topLevel) verifySharedMapping(type, ctx, hit);
+        return hit;
+      }
+    }
   }
   const sensitivityAtEntry = contextResolutions;
+  const scopeReadsAtEntry = scopeSensitivity;
   mapTypeDepth++;
   try {
     let mapped: IrType | null;
@@ -2230,6 +2325,7 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       mapped !== null &&
       memoKey !== null &&
       topLevel &&
+      !bypassTypeMemo &&
       contextResolutions === sensitivityAtEntry &&
       ctx.erasingSignature === undefined &&
       (ctx.canMemoizeType?.() ?? true)
@@ -2237,12 +2333,50 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       // Read the hook again rather than reusing the entry's memo: the write
       // condition rechecks the binding context, and a hook is what keeps a
       // context copy made inside a binding scope pointed at that scope.
-      (ctx.typeMemoFor?.() ?? ctx.typeMemo)?.set(memoKey, mapped);
+      const liveMemo = ctx.typeMemoFor?.() ?? ctx.typeMemo;
+      // A scope that changed mid-frame cannot own this answer. (It cannot
+      // happen today; the identity check keeps it a proof rather than an
+      // assumption.)
+      if (liveMemo === contextMemo) {
+        liveMemo?.set(memoKey, mapped);
+        // An answer that read no scope state is every scope's answer, so it
+        // also serves the shared memo — including the scopes entered later.
+        const shared = ctx.typeMemoShared;
+        if (shared !== undefined && shared !== liveMemo && scopeSensitivity === scopeReadsAtEntry)
+          shared.set(memoKey, mapped);
+      }
     }
     return mapped;
   } finally {
     mapTypeDepth--;
   }
+}
+
+/** SCRIPTC_TYPE_MEMO_VERIFY: recomputes a shared memo entry in the scope
+ * that just took it and fails loudly when the two answers disagree. The
+ * recalculation runs with every memo bypassed and restores the mapping
+ * counters it moves, so the observation leaves the mapping it observes
+ * unchanged. */
+function verifySharedMapping(type: ts.Type, ctx: TypeMapperCtx, shared: IrType): void {
+  const resolutions = contextResolutions;
+  const scopeReads = scopeSensitivity;
+  bypassTypeMemo = true;
+  let recomputed: IrType | null;
+  try {
+    recomputed = mapTypeEntry(type, ctx);
+  } finally {
+    bypassTypeMemo = false;
+    contextResolutions = resolutions;
+    scopeSensitivity = scopeReads;
+  }
+  const wanted = recomputed === null ? "<unmapped>" : typeKey(recomputed);
+  verifiedSharedHits++;
+  if (typeKey(shared) === wanted) return;
+  throw new InternalCompilerError(
+    `shared type memo entry does not match a fresh mapping: type ` +
+      `${checkerTypeDescription(type, ctx)} answered ${typeKey(shared)} from the shared ` +
+      `memo and ${wanted} when remapped in its scope`,
+  );
 }
 
 /** Local class types need the enclosing specialization's registered layout.
@@ -4946,6 +5080,25 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
           { name: "shell", type: shell },
           { name: "uid", type: F64 },
           { name: "username", type: STRING },
+        ],
+        false,
+        undefined,
+        ["uid", "gid", "username", "homedir", "shell"],
+      ),
+    };
+  }
+  // os.BufferUserInfo: os.userInfo({ encoding: 'buffer' }) — the same
+  // record with the three passwd strings as Buffers (the u8 bytes kind).
+  if (isStdlibInterface("BufferUserInfo")) {
+    return {
+      kind: "record",
+      shapeId: ctx.shapes.intern(
+        [
+          { name: "gid", type: F64 },
+          { name: "homedir", type: bytesOf("u8") },
+          { name: "shell", type: bytesOf("u8") },
+          { name: "uid", type: F64 },
+          { name: "username", type: bytesOf("u8") },
         ],
         false,
         undefined,

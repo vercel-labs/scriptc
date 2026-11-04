@@ -2708,6 +2708,7 @@
           "tests/corpus/5530-buffer-pool.ts",
           "tests/corpus/5531-buffer-pool-first-slab.ts",
           "tests/corpus/5532-buffer-pool-first-slab-untyped.mjs",
+          "tests/corpus/buffer-to-json.ts",
           "tests/corpus/node24-buffer-encoding-errors.ts",
           "tests/corpus/node24-buffer-encoding.ts",
           "tests/fixtures/node-types/blob-file.ts",
@@ -2872,8 +2873,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:buffer"
+        "status": "supported",
+        "evidence": "compiler-feature:buffer.MAX_LENGTH",
+        "tests": [
+          "tests/corpus/buffer-to-json.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -2895,8 +2899,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:buffer"
+        "status": "supported",
+        "evidence": "compiler-feature:buffer.MAX_STRING_LENGTH",
+        "tests": [
+          "tests/corpus/buffer-to-json.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -3100,8 +3107,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:buffer"
+        "status": "supported",
+        "evidence": "compiler-feature:buffer.INSPECT_MAX_BYTES",
+        "tests": [
+          "tests/corpus/buffer-to-json.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -3152,8 +3162,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:buffer"
+        "status": "supported",
+        "evidence": "compiler-feature:buffer.kStringMaxLength",
+        "tests": [
+          "tests/corpus/buffer-to-json.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -4394,8 +4407,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:buffer"
+        "status": "supported",
+        "evidence": "compiler-feature:buffer.buf.toJSON",
+        "tests": [
+          "tests/corpus/buffer-to-json.ts"
+        ]
       },
       "anchorSource": "exact"
     },

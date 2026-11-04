@@ -275,28 +275,11 @@ ScrArr *scr_os_loadavg(void) {
 enum { SCR_OS_PRIORITY_LOW = 19, SCR_OS_PRIORITY_BELOW_NORMAL = 10, SCR_OS_PRIORITY_NORMAL = 0,
        SCR_OS_PRIORITY_ABOVE_NORMAL = -7, SCR_OS_PRIORITY_HIGH = -14, SCR_OS_PRIORITY_HIGHEST = -20 };
 
-typedef struct { int value; const char *name; const char *message; } ScrOsUvError;
-#define SCR_OS_UV_ERROR(name, message) { SCR_NODE_UV__##name, #name, message },
-static const ScrOsUvError scr_os_uv_errors[] = { SCR_NODE_UV_ERRNO_MAP(SCR_OS_UV_ERROR) };
-#undef SCR_OS_UV_ERROR
-
-static void scr_os_system_error(const char *syscall, int uv_code) {
-  const char *name = "UNKNOWN", *message = "unknown error";
-  for (size_t i = 0; i < sizeof scr_os_uv_errors / sizeof scr_os_uv_errors[0]; i++) {
-    if (scr_os_uv_errors[i].value == uv_code) {
-      name = scr_os_uv_errors[i].name;
-      message = scr_os_uv_errors[i].message;
-      break;
-    }
-  }
-  char text[256];
-  int n = snprintf(text, sizeof text, "A system error occurred: %s returned %s (%s)", syscall, name, message);
-  ScrStr *msg = scr_str_new(text, n < 0 ? 0 : (size_t)n);
-  ScrStr *error_name = scr_str_new("SystemError", 11);
-  scr_throw_error_named(error_name, msg);
-  ScrExcCell *cell = scr_exc_current_cell();
-  if (cell->kind == SCR_EXC_OBJ) scr_error_set_code((ScrError *)cell->payload, "ERR_SYSTEM_ERROR");
-}
+/* The SystemError the priority calls below throw (Node's uvException)
+ * is scr_os_throw_system_error, defined in scr_lib.c and declared in
+ * scr_os.h. Every link that carries this unit carries scr_lib.c: both are
+ * base runtime units, and the runtime's own C tests link scr_lib.c
+ * without this one. */
 
 static bool scr_os_validate_int32_in(const char *name, double value, int min, int max) {
   if (isfinite(value) && trunc(value) == value) {
@@ -326,15 +309,16 @@ double scr_os_get_priority(double pid) {
                            : OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, (DWORD)(int)pid);
   if (handle == NULL) {
     DWORD err = GetLastError();
-    scr_os_system_error("uv_os_getpriority", err == ERROR_ACCESS_DENIED ? SCR_NODE_UV__EPERM
-                                             : err == ERROR_INVALID_PARAMETER ? SCR_NODE_UV__EINVAL
-                                                                              : SCR_NODE_UV__UNKNOWN);
+    int uv_code = err == ERROR_ACCESS_DENIED          ? SCR_NODE_UV__EPERM
+                 : err == ERROR_INVALID_PARAMETER ? SCR_NODE_UV__EINVAL
+                                                  : SCR_NODE_UV__UNKNOWN;
+    scr_os_throw_system_error("uv_os_getpriority", uv_code);
     return 0;
   }
   DWORD klass = GetPriorityClass(handle);
   if (pid != 0) CloseHandle(handle);
   if (klass == 0) {
-    scr_os_system_error("uv_os_getpriority", SCR_NODE_UV__UNKNOWN);
+    scr_os_throw_system_error("uv_os_getpriority", SCR_NODE_UV__UNKNOWN);
     return 0;
   }
   if (klass == REALTIME_PRIORITY_CLASS) return SCR_OS_PRIORITY_HIGHEST;
@@ -344,13 +328,13 @@ double scr_os_get_priority(double pid) {
   if (klass == BELOW_NORMAL_PRIORITY_CLASS) return SCR_OS_PRIORITY_BELOW_NORMAL;
   return SCR_OS_PRIORITY_LOW;
 #elif defined(__wasi__)
-  scr_os_system_error("uv_os_getpriority", SCR_NODE_UV__ENOSYS);
+  scr_os_throw_system_error("uv_os_getpriority", SCR_NODE_UV__ENOSYS);
   return 0;
 #else
   errno = 0;
   int r = getpriority(PRIO_PROCESS, (id_t)(int)pid);
   if (r == -1 && errno != 0) {
-    scr_os_system_error("uv_os_getpriority", SCR_NODE_UV__ERR(errno));
+    scr_os_throw_system_error("uv_os_getpriority", SCR_NODE_UV__ERR(errno));
     return 0;
   }
   return r;
@@ -378,24 +362,26 @@ void scr_os_set_priority(double pid, double priority) {
                            : OpenProcess(PROCESS_SET_INFORMATION, FALSE, (DWORD)(int)pid);
   if (handle == NULL) {
     DWORD err = GetLastError();
-    scr_os_system_error("uv_os_setpriority", err == ERROR_ACCESS_DENIED ? SCR_NODE_UV__EPERM
-                                             : err == ERROR_INVALID_PARAMETER ? SCR_NODE_UV__EINVAL
-                                                                              : SCR_NODE_UV__UNKNOWN);
+    int uv_code = err == ERROR_ACCESS_DENIED          ? SCR_NODE_UV__EPERM
+                 : err == ERROR_INVALID_PARAMETER ? SCR_NODE_UV__EINVAL
+                                                  : SCR_NODE_UV__UNKNOWN;
+    scr_os_throw_system_error("uv_os_setpriority", uv_code);
     return;
   }
   BOOL ok = SetPriorityClass(handle, klass);
   DWORD err = ok ? 0 : GetLastError();
   if (pid != 0) CloseHandle(handle);
   if (!ok) {
-    scr_os_system_error("uv_os_setpriority", err == ERROR_ACCESS_DENIED ? SCR_NODE_UV__EPERM
-                                                                        : SCR_NODE_UV__UNKNOWN);
+    scr_os_throw_system_error(
+        "uv_os_setpriority",
+        err == ERROR_ACCESS_DENIED ? SCR_NODE_UV__EPERM : SCR_NODE_UV__UNKNOWN);
   }
 #elif defined(__wasi__)
   (void)value;
-  scr_os_system_error("uv_os_setpriority", SCR_NODE_UV__ENOSYS);
+  scr_os_throw_system_error("uv_os_setpriority", SCR_NODE_UV__ENOSYS);
 #else
   if (setpriority(PRIO_PROCESS, (id_t)(int)pid, value) != 0)
-    scr_os_system_error("uv_os_setpriority", SCR_NODE_UV__ERR(errno));
+    scr_os_throw_system_error("uv_os_setpriority", SCR_NODE_UV__ERR(errno));
 #endif
 }
 

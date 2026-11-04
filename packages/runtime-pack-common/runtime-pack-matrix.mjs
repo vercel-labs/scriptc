@@ -591,6 +591,18 @@ export function variantsFor(source) {
       defines: ["SCR_CHILD_CP_OPTIONS", "SCR_CHILD_ERR_FIELDS"],
     });
   }
+  // A static executable cannot load NSS modules, so the os unit's passwd
+  // fallback (os.homedir() with HOME unset, and os.userInfo()) reads
+  // /etc/passwd directly in that build; every dynamically linked build
+  // keeps the unchanged getpwuid_r object. staticLink is the link
+  // plan's fact (link-plan.ts), not a program fact.
+  if (source === "scr_lib.c") {
+    variants.push({
+      id: "static-passwd",
+      when: { staticLink: true },
+      defines: ["SCR_STATIC_PASSWD"],
+    });
+  }
   return variants;
 }
 

@@ -228,6 +228,12 @@ export interface NativeLinkFeatures {
   /** crypto.subtle importKey/sign/verify/digest and CryptoKey values:
    * scr_webcrypto.c. */
   webcrypto: boolean;
+  /** The link is a static executable (`--static`): selects the runtime
+   * pack's /etc/passwd build of the os unit, which needs no NSS and so
+   * passes targets.ts's staticLinkRefusal. A property of the link, set by
+   * the link plan, never a fact the program analysis answers; absent for
+   * every dynamically linked build, whose objects stay unchanged. */
+  staticLink?: boolean;
 }
 
 export interface NativeLinkInfo {

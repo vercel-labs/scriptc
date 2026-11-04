@@ -1457,14 +1457,20 @@ static ScrDyn *scr_stdio_write_call(ScrStdio *stream, ScrDyn *const *args, size_
 ScrDyn *scr_stdio_write_str_dyn(double fd, const ScrStr *data) {
   ScrStdio *stream = &scr_stdio_streams[fd == 2 ? 2 : 1];
   if (stream->write && !scr_dyn_strict_eq(stream->write, scr_stdio_methods[STDIO_WRITE])) {
+    /* The replacement may assign process.stdout.write during its own call —
+     * restoring the built-in method, for one — which releases the slot's
+     * reference to the function that is running and to its captured
+     * bindings. The call keeps its own until it returns. */
+    ScrDyn *write = scr_dyn_retain(stream->write);
     ScrDyn *chunk = scr_dyn_new_str((ScrStr *)data);
     ScrDyn *self = scr_dyn_new_handle(stream, SCR_DYNH_STDIO);
     scr_dyn_this_push_dyn(self);
-    ScrDyn *result = scr_dyn_call(stream->write, &chunk, 1,
+    ScrDyn *result = scr_dyn_call(write, &chunk, 1,
                                   stream->fd == 2 ? "process.stderr.write" : "process.stdout.write");
     scr_dyn_this_pop();
     scr_dyn_release(self);
     scr_dyn_release(chunk);
+    scr_dyn_release(write);
     return result;
   }
   int error;

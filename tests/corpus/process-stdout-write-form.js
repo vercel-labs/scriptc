@@ -1,10 +1,11 @@
 // process.stdout.write(text) in its own call form: the boolean answers
 // true for a synchronous write, a replaced write receives the string as
 // its only argument with the stream as `this` and its boolean result comes
-// back, a replacement that throws propagates from the call, both streams
-// answer for their own descriptor, a lone surrogate reaches the stream as
-// U+FFFD, and a closed descriptor answers false and reports the error
-// through the stream's 'error' event.
+// back, a replacement that restores the original during its own call keeps
+// the captured binding it goes on to use, a replacement that throws
+// propagates from the call, both streams answer for their own descriptor,
+// a lone surrogate reaches the stream as U+FFFD, and a closed descriptor
+// answers false and reports the error through the stream's 'error' event.
 import { closeSync } from "node:fs";
 
 const out = [];
@@ -19,6 +20,20 @@ process.stdout.write = function (chunk) {
 const replaced = process.stdout.write("second");
 process.stdout.write = original;
 out.push(`replaced ${typeof replaced} ${replaced} ${seen}`);
+let restored = 0;
+function installRestoringWrite() {
+  let received = "";
+  const saved = process.stdout.write;
+  process.stdout.write = function (chunk) {
+    process.stdout.write = saved;
+    received += String(chunk);
+    restored = received.length;
+    return true;
+  };
+}
+installRestoringWrite();
+process.stdout.write("restored\n");
+out.push(`restored ${restored}`);
 const fromStderr = process.stderr.write("on stderr\n");
 out.push(`stderr ${typeof fromStderr} ${fromStderr}`);
 out.push(`empty ${process.stdout.write("")}`);

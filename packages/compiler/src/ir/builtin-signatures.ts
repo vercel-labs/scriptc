@@ -2082,6 +2082,8 @@ function buildLibFnSignatures() {
     "test.ctxHook": { argTypes: [TESTCTX_T, F64, null, F64], result: VOID },
     // t.plan(count), and the count of one t.assert call.
     "test.ctxPlan": { argTypes: [TESTCTX_T, F64], result: VOID },
+    "test.ctxRunOnly": { argTypes: [TESTCTX_T, BOOL], result: VOID },
+    "test.ctxWaitFor": { argTypes: [TESTCTX_T, DYN, BOOL, F64, BOOL, F64], result: DYN },
     "test.ctxCount": { argTypes: [TESTCTX_T], result: VOID },
     // The mock trackers: the module's `mock` and t.mock keep each mock's
     // restore closure (moved) for restoreAll and reset.

@@ -29,7 +29,7 @@ import {
   VOID,
   isUnitType,
 } from "../../ir/ir.js";
-import { dynUndefinedExpr, numLit, strLit, varRef } from "../../ir/build.js";
+import { boolLit, dynUndefinedExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import {
   lowerMockContextCall,
   lowerMockContextProperty,
@@ -67,7 +67,7 @@ function lowerMockTrackerMember(
 
 const TEST_FN_HINT = "test bodies take () or (t: TestContext) and return void or Promise<void>";
 const TESTCTX_SURFACE_HINT =
-  "t.test, t.skip, t.todo, t.diagnostic, t.plan, t.before, t.after, t.beforeEach, t.afterEach, t.name, t.fullName, t.filePath, t.attempt, t.passed, t.workerId, t.tags, and t.assert.* are the supported TestContext members";
+  "t.test, t.skip, t.todo, t.diagnostic, t.runOnly, t.plan, t.waitFor, t.before, t.after, t.beforeEach, t.afterEach, t.name, t.fullName, t.filePath, t.attempt, t.passed, t.workerId, t.tags, and t.assert.* are the supported TestContext members";
 
 /** Registration calls return Node's Promise<void>, but the promise only
  * resolves through the runner — consuming it outside `await t.test(...)`
@@ -1119,6 +1119,96 @@ export function lowerTestMethodCall(
     const receiver = lowerer.lowerExpr(access.expression);
     const count = lowerer.lowerExprExpecting(args[0]!, F64);
     return { kind: "libCall", fn: "test.ctxPlan", args: [receiver, count], type: VOID, loc };
+  }
+  if (member === "runOnly") {
+    requireStatementPosition(lowerer, call, "t.runOnly(...)");
+    if (args.length > 1) {
+      lowerer.noLowering(
+        `t.runOnly with ${args.length} arguments`,
+        call,
+        "the supported form is t.runOnly(shouldRunOnlyTests)",
+      );
+    }
+    const receiver = lowerer.lowerExpr(access.expression);
+    // Node coerces with !!, so a missing argument reads as false.
+    const value = args[0] ? lowerer.lowerExprExpecting(args[0], BOOL) : boolLit(false, loc);
+    return {
+      kind: "libCall",
+      fn: "test.ctxRunOnly",
+      args: [receiver, value],
+      type: VOID,
+      loc,
+    };
+  }
+  if (member === "waitFor") {
+    if (args.length > 2) {
+      lowerer.noLowering(
+        `t.waitFor with ${args.length} arguments`,
+        call,
+        "the supported form is t.waitFor(condition[, { interval?, timeout? }])",
+      );
+    }
+    const receiver = lowerer.lowerExpr(access.expression);
+    const condition = lowerer.lowerExprExpecting(args[0]!, DYN);
+    let interval: IrExpr | null = null;
+    let timeout: IrExpr | null = null;
+    const optionsNode = args[1];
+    if (optionsNode !== undefined) {
+      if (!ts.isObjectLiteralExpression(optionsNode)) {
+        lowerer.noLowering(
+          "t.waitFor with a non-literal options argument",
+          optionsNode,
+          "pass the options as an object literal: { interval?, timeout? }",
+        );
+      }
+      for (const prop of optionsNode.properties.nodes) {
+        if (
+          !(ts.isPropertyAssignment(prop) && ts.isIdentifier(prop.name)) &&
+          !ts.isShorthandPropertyAssignment(prop)
+        ) {
+          lowerer.noLowering(
+            "t.waitFor options with computed keys or spreads",
+            prop,
+            "each option must be a `name: value` or shorthand entry with a literal key",
+          );
+        }
+        const key = prop.name as ts.Identifier;
+        const name = key.text;
+        // A shorthand entry's value is the binding of the same name.
+        const init: ts.Expression = ts.isPropertyAssignment(prop) ? prop.initializer : key;
+        if (name !== "interval" && name !== "timeout") {
+          lowerer.noLowering(
+            `t.waitFor option '${name}'`,
+            prop,
+            "interval and timeout are the supported options",
+          );
+        }
+        // An explicit undefined takes Node's default.
+        if (ts.isIdentifier(init) && init.text === "undefined") continue;
+        const value = lowerer.lowerExprExpecting(init, F64);
+        if (name === "interval") interval = value;
+        else timeout = value;
+      }
+    }
+    const declared = lowerer.mapTypeOf(lowerer.typeOf(call));
+    if (!declared) lowerer.noLowering("t.waitFor of this type", call, TESTCTX_SURFACE_HINT);
+    return lowerer.coerceToExpected(
+      {
+        kind: "libCall",
+        fn: "test.ctxWaitFor",
+        args: [
+          receiver,
+          condition,
+          boolLit(interval !== null, loc),
+          interval ?? numLit(0, loc),
+          boolLit(timeout !== null, loc),
+          timeout ?? numLit(0, loc),
+        ],
+        type: DYN,
+        loc,
+      },
+      declared,
+    );
   }
   if (member === "diagnostic") {
     requireStatementPosition(lowerer, call, "t.diagnostic(...)");

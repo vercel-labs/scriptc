@@ -8512,7 +8512,13 @@ export function packageTypeIsData(
     declared = true;
     if (!data) return false;
   }
-  return declared;
+  if (declared) return true;
+  // A union spelled through a package type alias whose members all come
+  // from elsewhere (`type RawData = Buffer | ArrayBuffer | Buffer[]`):
+  // no member carries the package's provenance, but the alias declaration
+  // is the package's data shape, so the type is still data the program
+  // builds and never a value the package's implementation produces.
+  return packageDataPart(type, ctx) === true;
 }
 
 /** The record path's provenance fence. Declared shapes (object literals,

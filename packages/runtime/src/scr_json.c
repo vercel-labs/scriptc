@@ -10729,13 +10729,21 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
   ScrDyn *e = fields[0], *c = fields[1], *value = fields[2];
   ScrDyn *w = fields[3], *get = fields[4], *set = fields[5];
   ScrDynEntry *prior = scr_dyn_entry(target, name);
+  /* A checked view's accessor for a class member stands for the prototype
+   * member, not an own property of the view (scr_dyn_class_view_accessors).
+   * A definition creates a real own property where Node creates one, so its
+   * attributes default as they do for an absent property. */
+  bool synthetic = prior && prior->class_view;
   bool accessor_descriptor = get || set;
   bool data_descriptor = value || w;
-  bool accessor = accessor_descriptor || (!data_descriptor && prior && prior->accessor);
-  bool writable = w ? scr_dyn_truthy(w) : prior && !prior->accessor && !accessor ? prior->writable : false;
-  bool enumerable = e ? scr_dyn_truthy(e) : prior ? prior->enumerable : false;
-  bool configurable = c ? scr_dyn_truthy(c) : prior ? prior->configurable : false;
-  if (!prior && target->non_extensible) {
+  bool accessor =
+      accessor_descriptor || (!data_descriptor && prior && prior->accessor && !synthetic);
+  bool writable = w                       ? scr_dyn_truthy(w)
+                  : prior && !prior->accessor && !synthetic && !accessor ? prior->writable
+                                                                         : false;
+  bool enumerable = e ? scr_dyn_truthy(e) : prior && !synthetic ? prior->enumerable : false;
+  bool configurable = c ? scr_dyn_truthy(c) : prior && !synthetic ? prior->configurable : false;
+  if ((!prior || synthetic) && target->non_extensible) {
     ScrJsonBuf buffer;
     scr_jb_init(&buffer);
     scr_jb_puts(&buffer, "Cannot define property ");
@@ -10746,7 +10754,7 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
     scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&buffer));
     return NULL;
   }
-  if (prior && !prior->configurable &&
+  if (!synthetic && prior && !prior->configurable &&
       (configurable || enumerable != prior->enumerable ||
        accessor != prior->accessor ||
        (accessor && ((get && !scr_dyn_property_same_value(get, prior->getter ? prior->getter : scr_dyn_undefined())) ||
@@ -10770,7 +10778,9 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
     return NULL;
   }
   if (prior) {
-    if (accessor != prior->accessor) {
+    /* The synthetic accessor of a class member gives way to whatever the
+     * descriptor defines, so the entry is cleared before it is written. */
+    if (synthetic || accessor != prior->accessor) {
       ScrDyn *old_value = prior->value, *old_getter = prior->getter, *old_setter = prior->setter;
       prior->value = scr_dyn_retain(scr_dyn_undefined());
       prior->getter = prior->setter = NULL;
@@ -10778,6 +10788,7 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
       scr_dyn_release(old_getter);
       scr_dyn_release(old_setter);
     }
+    prior->class_view = false;
     if (value && !accessor) {
       ScrDyn *replacement = scr_dyn_retain(value);
       ScrDyn *old = prior->value;

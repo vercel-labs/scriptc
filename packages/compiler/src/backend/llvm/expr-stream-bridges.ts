@@ -1800,7 +1800,7 @@ function liveClassOps(host: LlvmEmitterContext, snapshot: string, meta: LlClassM
       `@${snapshot}_agetters = internal constant [${accessors.length} x ptr] [${getters.join(", ")}]`,
       `define internal ptr ${accessorGet}(ptr %p, ${host.sizeType} %i) ${FN_ATTRS} { ; accessor-backed members of ${meta.def.name}`,
       `entry:`,
-      `  %slot = getelementptr inbounds [${accessors.length} x ptr], ptr @${snapshot}_agetters, i64 0, i64 %i`,
+      `  %slot = getelementptr inbounds [${accessors.length} x ptr], ptr @${snapshot}_agetters, ${host.sizeType} 0, ${host.sizeType} %i`,
       `  %getter = load ptr, ptr %slot`,
       `  %value = call ptr %getter(ptr %p)`,
       `  ret ptr %value`,

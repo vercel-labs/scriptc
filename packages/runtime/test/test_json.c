@@ -692,6 +692,50 @@ static void test_class_view_accessors(void) {
   check(kind && kind->v.num == 10, "the member still answers its getter");
   scr_dyn_release(kind);
 
+  /* The member's entry stands for a prototype accessor, so defining it
+   * creates an own property of the view in its place. */
+  scr_dyn_release(define_from(view, "kind", scr_dyn_new_num(42), true, true, true));
+  ScrDyn *defined = scr_dyn_obj_get(view, "kind", 4);
+  check(!scr_exc_pending() && defined && defined->kind == SCR_DYN_NUM && defined->v.num == 42 &&
+            !entry_of(view, "kind")->class_view,
+        "defining the member makes it an own data property");
+  scr_dyn_release(defined);
+  ScrStr *defined_name = S("kind");
+  ScrDyn *defined_descriptor = scr_dyn_own_descriptor(view, defined_name);
+  check(defined_descriptor && defined_descriptor->kind == SCR_DYN_OBJ,
+        "the view now has an own descriptor for the member");
+  scr_dyn_release(defined_descriptor);
+  scr_str_release(defined_name);
+  keys = scr_dyn_obj_own_keys(view);
+  check(keys->v.arr.len == 3 && str_is(keys->v.arr.items[2]->v.str, "kind"),
+        "own-key walks include the defined member");
+  scr_dyn_release(keys);
+  kind = scr_dyn_obj_read(view, "kind", 4);
+  check(kind && kind->v.num == 42, "a read answers the defined value");
+
+  /* Defining again overwrites the own property, whose attributes are now
+   * read from the previous definition rather than from the class member. */
+  scr_dyn_release(define_from(view, "kind", scr_dyn_new_num(43), true, true, true));
+  const ScrDynEntry *redefined = entry_of(view, "kind");
+  check(redefined && redefined->value->v.num == 43 && redefined->writable && redefined->enumerable &&
+            redefined->configurable,
+        "a second definition keeps the attributes of the first");
+  scr_dyn_release(kind);
+
+  /* Being no own property, a class member is a new property to a closed
+   * view, which refuses it and keeps answering its getter. */
+  ScrDyn *closed_view = scr_dyn_new_obj();
+  scr_dyn_class_view_accessors(closed_view, &ops, instance, class_view_retain, class_view_release, NULL);
+  scr_dyn_release(scr_dyn_prevent_extensions(closed_view));
+  scr_dyn_release(define_from(closed_view, "kind", scr_dyn_new_num(1), true, true, true));
+  check(scr_exc_pending(), "a non-extensible view refuses a definition of the member");
+  scr_exc_clear();
+  ScrDyn *kept = scr_dyn_obj_read(closed_view, "kind", 4);
+  check(kept && kept->v.num == 10 && !scr_dyn_obj_get(closed_view, "kind", 4),
+        "the refused definition leaves the member answering its getter");
+  scr_dyn_release(kept);
+  scr_dyn_release(closed_view);
+
   scr_dyn_release(view);
   scr_dyn_release(instance);
   scr_str_release(names[0]);

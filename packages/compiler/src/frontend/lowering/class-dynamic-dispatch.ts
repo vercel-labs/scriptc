@@ -7132,11 +7132,17 @@ export class ClassDynamicDispatch {
       params = methodInfo.sig.params;
       // An untyped async method's `dyn` result is its promise's payload; the
       // call answers the promise. An async generator method answers its
-      // generator object, which its signature already returns.
+      // generator object, which its signature already returns. A method
+      // whose declaration is a runtime fence (an async override of a sync
+      // method in an untyped module, say) has no async body behind it: the
+      // function stands for the refused construct and answers the slot's
+      // type, so the arm calls that and asks for no promise.
+      const fenced = owner.methodEntryFences?.has(method) === true;
       result =
         methodInfo.sig.async === true &&
         !methodInfo.sig.gen &&
-        methodInfo.sig.ret.kind !== "promise"
+        methodInfo.sig.ret.kind !== "promise" &&
+        !fenced
           ? { kind: "promise", inner: methodInfo.sig.ret }
           : methodInfo.sig.ret;
       callee = `%${owner.def.name}.${method}`;

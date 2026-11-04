@@ -1470,7 +1470,20 @@ static ScrDyn *scr_dyn_invoke_impl(
       }
       ScrDyn *first = recv->v.arr.items[0];
       memmove(recv->v.arr.items, recv->v.arr.items + 1, (len - 1) * sizeof(ScrDyn *));
-      if (recv->v.arr.presence) memmove(recv->v.arr.presence, recv->v.arr.presence + 1, len - 1);
+#ifdef SCR_JS_OBJECT_MODEL
+      /* Each element moves down with Set: an index that holds an element
+       * keeps its own attributes, one that was a hole receives the moved
+       * element with the default attributes, and a hole moving in deletes
+       * the index. */
+      if (recv->v.arr.presence) {
+        for (size_t i = 0; i + 1 < len; i++) {
+          if (!(recv->v.arr.presence[i + 1] & SCR_ARR_PRESENT)) recv->v.arr.presence[i] = 0;
+          else if (!(recv->v.arr.presence[i] & SCR_ARR_PRESENT))
+            recv->v.arr.presence[i] = SCR_ARR_PRESENT;
+        }
+        recv->v.arr.presence[len - 1] = 0;
+      }
+#endif
       recv->v.arr.len = len - 1;
       return first; /* ownership moves out */
     }

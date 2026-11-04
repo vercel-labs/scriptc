@@ -4947,6 +4947,27 @@ static void scr_dyn_typed_ref_preserve_child(
   scr_dyn_release(fresh_child);
 }
 
+#ifdef SCR_JS_OBJECT_MODEL
+/* Element attributes have no native slot: a live array keeps values and
+ * holes only. The cached view holds the attributes Object.defineProperty
+ * set on an index, and each refresh carries them onto the fresh snapshot,
+ * the way a record's view keeps properties its layout cannot store. An
+ * index the native array no longer holds drops its attributes. */
+static void scr_dyn_typed_ref_preserve_array_attrs(
+    const ScrDyn *cached, ScrDyn *fresh) {
+  if (cached->kind != SCR_DYN_ARR || fresh->kind != SCR_DYN_ARR ||
+      !cached->v.arr.presence) return;
+  size_t n = cached->v.arr.len < fresh->v.arr.len
+      ? cached->v.arr.len
+      : fresh->v.arr.len;
+  for (size_t i = 0; i < n; i++) {
+    unsigned char attr = cached->v.arr.presence[i];
+    if ((attr & SCR_ARR_PRESENT) && scr_dyn_arr_has_index(fresh, i))
+      scr_dyn_arr_attr_store(fresh, i, attr);
+  }
+}
+#endif
+
 /* A live record/array materializer creates typed capsules for mutable
  * children. Preserve an existing child capsule when the fresh view points
  * at the same static source, so retaining `value.child` across parent
@@ -5035,6 +5056,10 @@ ScrDyn *scr_dyn_typed_ref_materialize(const ScrDyn *d) {
      * detached contents without changing the cached node's address. */
     scr_dyn_typed_ref_preserve_children(
         capsule->v.typed_ref.materialized, fresh);
+#ifdef SCR_JS_OBJECT_MODEL
+    scr_dyn_typed_ref_preserve_array_attrs(
+        capsule->v.typed_ref.materialized, fresh);
+#endif
     /* Record layouts cannot store properties added through a checked
      * view. Keep those descriptors in the view across native refreshes. */
     ScrDyn *cached = capsule->v.typed_ref.materialized;

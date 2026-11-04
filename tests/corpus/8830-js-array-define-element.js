@@ -196,3 +196,35 @@ attempt("fill-non-extensible-holes", () => {
     return [e.name, e.message, JSON.stringify(a), a.length, 3 in a, 4 in a, Object.keys(a)];
   }
 });
+
+// shift moves each element down with Set: an index that already holds an
+// element keeps its own attributes, a hole moving in deletes the index, and
+// an index that was a hole receives the moved element with the defaults.
+attempt("shift-keeps-attributes", () => {
+  const a = dyn([1, 2, 3]);
+  Object.defineProperty(a, "0", { configurable: false, enumerable: false });
+  const first = a.shift();
+  const d = Object.getOwnPropertyDescriptor(a, "0");
+  return [first, a.length, JSON.stringify(a), Object.keys(a), d.value, d.writable, d.enumerable, d.configurable];
+});
+
+attempt("shift-hole-source", () => {
+  const a = dyn([1, , 3]);
+  const first = a.shift();
+  return [first, a.length, JSON.stringify(a), Object.keys(a), 0 in a, 1 in a];
+});
+
+attempt("shift-hole-destination", () => {
+  const a = dyn([, 2, 3]);
+  const first = a.shift();
+  const d = Object.getOwnPropertyDescriptor(a, "0");
+  return [first, a.length, JSON.stringify(a), Object.keys(a), 0 in a, 1 in a, d.enumerable];
+});
+
+attempt("shift-hole-destination-attributes", () => {
+  const a = dyn([, 2, 3]);
+  Object.defineProperty(a, "1", { enumerable: false });
+  const first = a.shift();
+  const d = Object.getOwnPropertyDescriptor(a, "0");
+  return [first, a.length, JSON.stringify(a), Object.keys(a), 0 in a, d.enumerable, d.configurable];
+});

@@ -350,6 +350,61 @@ function setKeysSeedSkipsGetter() {
   );
 }
 
+function mapDirectSeedSeesInsertedEntries() {
+  let captured;
+  Object.defineProperty(Map.prototype, "set", {
+    configurable: true,
+    get() {
+      captured = this;
+      return builtinSet;
+    },
+  });
+  const sizes = [];
+  // The seed is the array itself, not an iterator over it. The constructor
+  // inserts one entry per step, so the hole's inherited getter sees the entry
+  // inserted before it.
+  const seed = sparseSeed('[["a",1],["b",2],["c",3]]', () => {
+    sizes.push(captured.size);
+    return ["b", 2];
+  });
+  const map = new Map(seed);
+  restoreMapSet();
+  console.log(
+    "map direct seed sees sizes:",
+    sizes.join(","),
+    "size:",
+    map.size,
+    "get b:",
+    map.get("b"),
+  );
+}
+
+function setDirectSeedSeesInsertedValues() {
+  let captured;
+  Object.defineProperty(Set.prototype, "add", {
+    configurable: true,
+    get() {
+      captured = this;
+      return builtinAdd;
+    },
+  });
+  const sizes = [];
+  const seed = sparseSeed("[1,2,3]", () => {
+    sizes.push(captured.size);
+    return 2;
+  });
+  const set = new Set(seed);
+  restoreSetAdd();
+  console.log(
+    "set direct seed sees sizes:",
+    sizes.join(","),
+    "size:",
+    set.size,
+    "has 2:",
+    set.has(2),
+  );
+}
+
 mapGetterSeesInstance();
 mapAccessorAdder();
 mapGetterThrows();
@@ -362,3 +417,5 @@ setStepsSeeInsertedValues();
 mapIteratorSeedSeesInsertedEntries();
 setIteratorSeedSeesInsertedValues();
 setKeysSeedSkipsGetter();
+mapDirectSeedSeesInsertedEntries();
+setDirectSeedSeesInsertedValues();

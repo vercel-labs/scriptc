@@ -1563,9 +1563,11 @@ ScrDyn *scr_dyn_iter_take(const ScrDyn *src, size_t n, const char *spell);
  * synchronous generator) rather than through their materialized view. */
 bool scr_dyn_iterates_by_protocol(const ScrDyn *value);
 /* Whether a collection constructor's seed yields its values without running
- * program code: arrays, strings, bytes, typed views and collections pack, a
- * native iterator drains. Every other iterable steps through the iterator
- * protocol, so the constructor inserts one entry per step. */
+ * program code: dense arrays, strings, bytes, dense typed views and
+ * collections pack, a native iterator over internal slots drains. Every
+ * other iterable steps through the iterator protocol, so the constructor
+ * inserts one entry per step. An array seed with a hole reads it through the
+ * prototype chain, where an inherited indexed getter runs, so it steps. */
 bool scr_dyn_seed_packs_natively(const ScrDyn *seed);
 /* Map constructor seeds: retain array inputs for live iteration, accept
  * nullish inputs as empty, and validate each entry before reading 0/1. */

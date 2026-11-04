@@ -1881,7 +1881,8 @@ void scr_dyn_arr_push_hole(ScrDyn *arr) {
 
 /* Spread completion for a runtime-arity argument list (`f(...xs)` in the
  * checked-dynamic tier): JS's spread over the checked-dynamic tree's iterable kinds —
- * arrays element-by-element (retained), strings by code POINT (the string
+ * arrays element-by-element (retained; a hole reads through the prototype
+ * chain, as the array iterator does), strings by code POINT (the string
  * iterator; astral chars arrive unsplit), bytes by byte; every other kind
  * throws V8's exact SPREAD-CALL TypeError (catchable, pending — callers
  * check): nullish sources spell the spread expression (`what`) — "v is
@@ -1903,8 +1904,19 @@ void scr_dyn_arr_push_spread(ScrDyn *arr, const ScrDyn *src, const char *what) {
     return;
   }
   if (src->kind == SCR_DYN_ARR) {
+    if (!src->v.arr.presence) {
+      for (size_t i = 0; i < src->v.arr.len; i++) {
+        scr_dyn_arr_push(arr, scr_dyn_retain(src->v.arr.items[i]));
+      }
+      return;
+    }
+    /* A hole has no element of its own: JS reads it through the prototype
+     * chain, where an inherited indexed getter the program installed runs,
+     * exactly as the array iterator does (scr_dyn_arr_at). */
     for (size_t i = 0; i < src->v.arr.len; i++) {
-      scr_dyn_arr_push(arr, scr_dyn_retain(src->v.arr.items[i]));
+      ScrDyn *value = scr_dyn_arr_at(src, (double)i);
+      if (!value) return; /* an inherited getter threw: the exception is pending */
+      scr_dyn_arr_push(arr, value);
     }
     return;
   }
@@ -18931,11 +18943,19 @@ static ScrDyn *scr_weak_collection_new(ScrDyn *seed, bool is_set) {
   ScrDyn *entries = scr_dyn_map_seed_entries(seed);
   if (!entries) { scr_weak_map_release(map); return NULL; }
   for (size_t i = 0; i < entries->v.arr.len; i++) {
+    /* An array seed answers a hole through the prototype chain, where an
+     * inherited indexed getter runs (scr_dyn_arr_at). */
+    ScrDyn *raw = entries->v.arr.presence ? scr_dyn_arr_at(entries, (double)i)
+                                          : scr_dyn_retain(entries->v.arr.items[i]);
+    if (!raw) break;
     if (is_set) {
-      if (!scr_weak_set(map, entries->v.arr.items[i], scr_dyn_undefined())) break;
+      bool added = scr_weak_set(map, raw, scr_dyn_undefined());
+      scr_dyn_release(raw);
+      if (!added) break;
       continue;
     }
-    ScrDyn *entry = scr_dyn_map_seed_entry(entries->v.arr.items[i]);
+    ScrDyn *entry = scr_dyn_map_seed_entry(raw);
+    scr_dyn_release(raw);
     if (!entry) break;
     ScrDyn *key = scr_dyn_entry_read(entry, 0);
     ScrDyn *value = scr_exc_pending() ? NULL : scr_dyn_entry_read(entry, 1);
@@ -19378,7 +19398,12 @@ bool scr_dyn_native_collection_insert_seed(ScrDyn *collection, const ScrDyn *see
     ScrMap *map = scr_map_retain(collection->v.handle.ptr);
     bool ok = true;
     for (size_t i = 0; i < entries->v.arr.len; i++) {
-      ScrDyn *entry = scr_dyn_map_seed_entry(entries->v.arr.items[i]);
+      /* An array seed answers a hole through the prototype chain, where an
+       * inherited indexed getter runs (scr_dyn_arr_at). */
+      ScrDyn *raw = entries->v.arr.presence ? scr_dyn_arr_at(entries, (double)i)
+                                            : scr_dyn_retain(entries->v.arr.items[i]);
+      ScrDyn *entry = raw ? scr_dyn_map_seed_entry(raw) : NULL;
+      scr_dyn_release(raw);
       if (!entry) {
         ok = false;
         break;
@@ -20004,13 +20029,23 @@ static bool scr_native_iterator_packs(const ScrDyn *seed) {
 }
 
 /* Whether a collection constructor's seed gives its values without running
- * program code: arrays, strings, bytes and collections pack, a native
+ * program code: dense arrays, strings, bytes and collections pack, a native
  * iterator over internal slots drains (scr_native_iterator_packs). Any other
- * iterable walks the iterator protocol, whose steps run the program. */
+ * iterable walks the iterator protocol, whose steps run the program. An
+ * array seed answers its holes through the prototype chain, where an
+ * inherited indexed getter the program installed runs, so only a dense array
+ * packs — the same rule scr_native_iterator_packs applies to an array
+ * iterator's source. */
 bool scr_dyn_seed_packs_natively(const ScrDyn *seed) {
-  if (seed->kind == SCR_DYN_ARR || seed->kind == SCR_DYN_STR || seed->kind == SCR_DYN_BYTES)
+  if (seed->kind == SCR_DYN_STR || seed->kind == SCR_DYN_BYTES) return true;
+  if (seed->kind == SCR_DYN_ARR) return !seed->v.arr.presence;
+  if (seed->kind == SCR_DYN_TYPED_REF) {
+    if (scr_dyn_iterates_by_protocol(seed)) return false;
+    /* A live compiled array reads a hole through the materialized view's
+     * prototype chain, as an array iterator over it does. */
+    if (scr_dyn_typed_ref_array_ops(seed)) return !scr_arr_has_states(seed->v.typed_ref.ptr);
     return true;
-  if (seed->kind == SCR_DYN_TYPED_REF) return !scr_dyn_iterates_by_protocol(seed);
+  }
   if (seed->kind != SCR_DYN_HANDLE) return false;
   if (seed->v.handle.tag == SCR_DYNH_ITERATOR) return scr_native_iterator_packs(seed);
   if (seed->v.handle.tag == SCR_DYNH_MAP) return true;

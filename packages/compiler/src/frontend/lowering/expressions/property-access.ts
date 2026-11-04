@@ -1419,7 +1419,13 @@ export function lowerPropertyAccessExpr(
     isStatFsDynProperty(lowerer, expr) ||
     segmentDataProperty ||
     osConstants ||
-    isLegacyUrlSymbol(lowerer.checker.getSymbolAtLocation(expr.name), lowerer)
+    // A record, not the Lowerer itself: the compiler lowers its own source,
+    // and a class instance does not width-coerce to this shape.
+    isLegacyUrlSymbol(lowerer.checker.getSymbolAtLocation(expr.name), {
+      isStdlibFile: (sf: ts.SourceFile) => lowerer.isStdlibFile(sf),
+      symbolProvenance: lowerer.symbolProvenance,
+      verifySymbolProvenance: lowerer.verifySymbolProvenance,
+    })
   ) {
     const recv = lowerer.lowerExpr(expr.expression);
     if (recv.type.kind === "dyn") {

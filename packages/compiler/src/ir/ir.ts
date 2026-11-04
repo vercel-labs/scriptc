@@ -2104,6 +2104,12 @@ export interface IrParam {
   /** Callers pass an owned reference, which the body holds for its whole
    * run, even when the parameter is never rebound. */
   owned?: true;
+  /** Every call passes an array of exactly this many present elements, and
+   * neither the length nor the hole-free prefix changes during the run:
+   * element-count reads are this value, and an index proven in [0, length)
+   * names a present element. Specialized calls set it (constant-length
+   * clones); every other caller leaves it off. */
+  constLength?: number;
 }
 
 export interface IrGlobal {

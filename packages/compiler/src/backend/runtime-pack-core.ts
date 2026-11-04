@@ -343,6 +343,7 @@ export function effectiveRuntimeFeatures(
   return {
     ...features,
     workers: features.workers === true,
+    staticLink: features.staticLink === true,
     youngNursery: features.youngNursery === true,
     eventTarget: features.eventTarget === true,
     wasm: features.wasm === true,

@@ -12641,7 +12641,22 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
         d->v.handle.tag == SCR_DYNH_MIME_TYPE || d->v.handle.tag == SCR_DYNH_MIME_PARAMS) {
       ScrDyn *text = scr_dyn_handle_ops_of(d)->invoke(d->v.handle.ptr, (ScrDyn *)d, "toString", NULL, 0, "RegExp.toString");
       if (!text) return NULL;
-      ScrStr *out = scr_str_retain(text->v.str);
+      /* ToPrimitive takes the member's answer as the primitive and ToString
+       * renders it: a Date's replaced toString can return a number. A
+       * non-primitive answer tries valueOf, and exhausting both is the
+       * spec's TypeError. */
+      if (scr_dyn_to_primitive_result_is_object(text)) {
+        scr_dyn_release(text);
+        text = scr_dyn_handle_ops_of(d)->invoke(d->v.handle.ptr, (ScrDyn *)d, "valueOf", NULL, 0, "RegExp.toString");
+        if (!text) return NULL;
+        if (scr_dyn_to_primitive_result_is_object(text)) {
+          static const char msg[] = "Cannot convert object to primitive value";
+          scr_dyn_release(text);
+          scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+          return NULL;
+        }
+      }
+      ScrStr *out = scr_dyn_string_coerce(text);
       scr_dyn_release(text);
       return out;
     }

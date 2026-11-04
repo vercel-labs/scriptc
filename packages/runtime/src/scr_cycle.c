@@ -497,7 +497,7 @@ static SCR_TL void *scr_gray_holders[SCR_CYC_WALK_DEPTH];
 static SCR_TL unsigned scr_gen_limit = SCR_CYC_OLD;
 #endif
 
-static size_t scr_cyc_pass(unsigned gen_limit);
+static size_t scr_cyc_pass(unsigned gen_limit, bool routed);
 #ifdef SCR_YIN
 /* The young-in nursery's state (see "young-in nursery" below): the nursery
  * itself (scr_rc.h), every live young object at the index its header
@@ -938,13 +938,14 @@ static SCR_CYC_SCHEDULING bool scr_cyc_died(void) {
  *
  * Every level shares this one body, so a program that links the collector
  * carries a single copy of the scheduling logic. */
-static SCR_CYC_SCHEDULING void scr_cyc_scheduled_pass(unsigned gen, bool by_growth, bool by_death) {
+static SCR_CYC_SCHEDULING void scr_cyc_scheduled_pass(unsigned gen, bool by_growth, bool by_death,
+                                                      bool routed) {
   size_t base = scr_cyc_growth_base(scr_cyc_live_after[gen]);
   size_t growth = scr_cyc_live > base ? scr_cyc_live - base : 0;
   size_t fallen = scr_cyc_fallen;
   size_t old_freed_before = scr_cyc_old_freed;
   scr_cyc_keep_base = gen == SCR_CYC_OLD && !by_growth;
-  size_t freed = scr_cyc_pass(gen);
+  size_t freed = scr_cyc_pass(gen, routed);
   scr_cyc_keep_base = false;
   size_t old_reclaimed = scr_cyc_old_freed - old_freed_before + scr_cyc_mature_dead;
   if (gen == SCR_CYC_NURSERY) {
@@ -973,8 +974,10 @@ static SCR_CYC_SCHEDULING void scr_cyc_scheduled_pass(unsigned gen, bool by_grow
 /* Cold half of the release path: pick the level and collect. It runs once
  * per pass, so it is kept out of line and built for size, which leaves the
  * hot buffering path in scr_cyc_on_release small. */
-static SCR_CYC_SCHEDULING void scr_cyc_collect_due(void) {
-  scr_cyc_route_bypassed();
+/* `routed`: the caller has just moved bypassed candidates to the generation
+ * they belong in, so the buffers the decision reads are already settled. */
+static SCR_CYC_SCHEDULING void scr_cyc_collect_due(bool routed) {
+  if (!routed) scr_cyc_route_bypassed();
   scr_cyc_note_fall();
   unsigned gen = SCR_CYC_OLD;
   bool by_growth = scr_cyc_grown(SCR_CYC_OLD);
@@ -990,8 +993,22 @@ static SCR_CYC_SCHEDULING void scr_cyc_collect_due(void) {
         !scr_cyc_probe_due)
       gen = SCR_CYC_NURSERY;
   }
+  /* A nursery pass walks the nursery alone. When the nursery holds nothing,
+   * the candidates the arrival counter saw sit in an older buffer below its
+   * backlog threshold, and the growth, backlog and scheduled-age rules are
+   * what collect those; a pass here would walk an empty buffer, and at a
+   * scheduled point an idle program asks for one on every turn. Re-arm the
+   * counters a pass would have reset, so the release path does not ask
+   * again; a probe the pass would have consumed stays open for the next
+   * point that has young candidates to measure. */
+  if (gen == SCR_CYC_NURSERY && scr_roots[SCR_CYC_NURSERY].n == 0) {
+    scr_cyc_trigger = scr_cyc_buffered() + scr_cyc_nursery_threshold();
+    scr_cyc_alloc_trigger = scr_cyc_live + SCR_CYC_NURSERY_ALLOCATIONS;
+    scr_cyc_window_update();
+    return;
+  }
   scr_cyc_probe_due = false;
-  scr_cyc_scheduled_pass(gen, by_growth, by_death);
+  scr_cyc_scheduled_pass(gen, by_growth, by_death, true);
 }
 
 /* One scheduled pass, for callers that reach a natural collection point
@@ -1016,10 +1033,10 @@ void scr_cyc_collect_scheduled(void) {
     scr_cyc_scheduled_mature_age = 0;
   } else if (++scr_cyc_scheduled_mature_age
              >= scr_cyc_nursery_base()) {
-    scr_cyc_scheduled_pass(SCR_CYC_OLD, false, false);
+    scr_cyc_scheduled_pass(SCR_CYC_OLD, false, false, true);
     return;
   }
-  scr_cyc_collect_due();
+  scr_cyc_collect_due(true);
 }
 
 void scr_cyc_note_event_loop(void) { scr_cyc_idle_points = true; }
@@ -1031,7 +1048,7 @@ void scr_cyc_note_event_loop(void) { scr_cyc_idle_points = true; }
 bool scr_cyc_collect_idle(void) {
   if (!scr_cyc_death_due_live || scr_collecting) return false;
   scr_cyc_note_fall();
-  scr_cyc_scheduled_pass(SCR_CYC_OLD, false, true);
+  scr_cyc_scheduled_pass(SCR_CYC_OLD, false, true, false);
   return true;
 }
 
@@ -1436,7 +1453,7 @@ void scr_cyc_on_release(void *obj) {
   /* Never re-entered: a teardown's releases of untraced children can buffer
    * new candidates mid-collection, but they only wait for the next pass. */
   if (!scr_collecting && (scr_cyc_buffered() >= scr_cyc_trigger || scr_cyc_live >= scr_cyc_alloc_trigger))
-    scr_cyc_collect_due();
+    scr_cyc_collect_due(false);
 }
 
 /* ── trial deletion ───────────────────────────────────────────────────── */
@@ -2051,7 +2068,7 @@ static __attribute__((noinline)) size_t scr_yin_collect(void) {
    * which only a release checks; a program whose releases are all of
    * young objects would otherwise never reach it. */
   if (scr_cyc_buffered() >= scr_cyc_trigger || scr_cyc_live >= scr_cyc_alloc_trigger)
-    scr_cyc_collect_due();
+    scr_cyc_collect_due(false);
   return freed;
 }
 #endif
@@ -2259,10 +2276,10 @@ static SCR_CYC_COMPACT void scr_cyc_doom_components(void) {
 
 SCR_TL void (*scr_cyc_pass_hook)(void) = NULL;
 
-static size_t scr_cyc_pass(unsigned gen_limit) {
+static size_t scr_cyc_pass(unsigned gen_limit, bool routed) {
   if (scr_collecting) return 0;
   if (scr_cyc_pass_hook) scr_cyc_pass_hook();
-  scr_cyc_route_bypassed();
+  if (!routed) scr_cyc_route_bypassed();
   scr_collecting = true;
   scr_cyc_window_update();
   scr_gen_limit = gen_limit;
@@ -2452,7 +2469,7 @@ static size_t scr_cyc_pass(unsigned gen_limit) {
 
 #ifdef SCR_CYC_TESTING
 /* Tests only: one pass at exactly `gen`, outside the schedule. */
-size_t scr_cyc_pass_at(unsigned gen) { return scr_cyc_pass(gen); }
+size_t scr_cyc_pass_at(unsigned gen) { return scr_cyc_pass(gen, false); }
 /* Tests only: route appended candidates of bypassing types, as the next
  * scheduling decision or pass would. */
 void scr_cyc_route_bypassed_at(void) { scr_cyc_route_bypassed(); }
@@ -2493,7 +2510,7 @@ size_t scr_cyc_collect_set(const ScrCycSet *set, unsigned gen) {
 #endif
   scr_cyc_take = set;
   scr_cyc_take_gen = gen;
-  size_t freed = young + scr_cyc_pass(SCR_CYC_OLD);
+  size_t freed = young + scr_cyc_pass(SCR_CYC_OLD, false);
   scr_cyc_take = NULL;
   return freed;
 }
@@ -2512,7 +2529,7 @@ void scr_collect_cycles(void) {
    * never allocates one), so the passes see every object. */
   scr_yin_collect();
 #endif
-  while (scr_cyc_pass(SCR_CYC_OLD) && scr_cyc_buffered()) {
+  while (scr_cyc_pass(SCR_CYC_OLD, false) && scr_cyc_buffered()) {
   }
 }
 

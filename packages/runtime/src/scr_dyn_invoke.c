@@ -910,6 +910,10 @@ static ScrDyn *dyn_arr_search(ScrDyn *recv, int mid, ScrDyn *const *args, size_t
   }
   bool nan_match = mid == DYN_M_includes && needle->kind == SCR_DYN_NUM &&
                    needle->v.num != needle->v.num;
+  /* includes compares with SameValueZero, and a hole reads as undefined:
+   * the hole matches an undefined needle, while the strict indexOf never
+   * matches it. */
+  bool hole_match = mid == DYN_M_includes && needle->kind == SCR_DYN_UNDEF;
   if (mid == DYN_M_lastIndexOf) {
     double first = from < 0 ? (double)total + from : from;
     if (first >= (double)total) first = (double)total - 1;
@@ -941,23 +945,43 @@ static ScrDyn *dyn_arr_search(ScrDyn *recv, int mid, ScrDyn *const *args, size_t
   if (first < 0) first = 0;
   size_t start = first >= (double)dense ? dense : (size_t)first;
   for (size_t i = start; i < dense; i++) {
-    /* A hole in the dense prefix has no element: the search skips it. */
-    if (recv->v.arr.presence && !recv->v.arr.presence[i]) continue;
-    if (!dyn_elem_strict_eq(recv->v.arr.items[i], needle)) continue;
+    /* A hole in the dense prefix has no element: the strict searches skip
+     * it, includes reads it as undefined. */
+    if (recv->v.arr.presence && !recv->v.arr.presence[i]) {
+      if (hole_match) return scr_dyn_new_bool(true);
+      continue;
+    }
+    const ScrDyn *item = recv->v.arr.items[i];
+    bool hit = nan_match ? item->kind == SCR_DYN_NUM && item->v.num != item->v.num
+                         : dyn_elem_strict_eq(item, needle);
+    if (!hit) continue;
     return (mid == DYN_M_includes) ? scr_dyn_new_bool(true) : scr_dyn_new_num((double)i);
   }
   if (first < (double)total) {
     size_t *indexes = NULL;
     size_t count = dyn_arr_sparse_indexes(recv, dense, total, &indexes);
+    /* The holes between the properties the table holds are indexes too:
+     * the cursor walks the whole range so an undefined needle can match
+     * the gap before the next stored element. */
+    size_t cursor = first < (double)dense ? dense : (size_t)first;
     for (size_t i = 0; i < count; i++) {
       size_t idx = indexes[i];
       if ((double)idx < first) continue;
+      if (hole_match && idx > cursor) {
+        free(indexes);
+        return scr_dyn_new_bool(true);
+      }
       bool hit = dyn_arr_matches(recv, idx, needle, nan_match);
       if (scr_exc_pending()) { free(indexes); return NULL; }
       if (hit) {
         free(indexes);
         return (mid == DYN_M_includes) ? scr_dyn_new_bool(true) : scr_dyn_new_num((double)idx);
       }
+      cursor = idx + 1;
+    }
+    if (hole_match && cursor < total) {
+      free(indexes);
+      return scr_dyn_new_bool(true);
     }
     free(indexes);
   }
@@ -1424,13 +1448,9 @@ static ScrDyn *scr_dyn_invoke_impl(
           scr_dyn_arr_set_len(recv, last - 1);
           return recv->v.arr.items[last - 1]; /* ownership moves out */
         }
-        ScrDyn *result = scr_dyn_arr_at(recv, (double)(last - 1));
-        if (!result || scr_exc_pending()) return NULL;
-        ScrStr *key = dyn_borrow_key(last - 1);
-        scr_dyn_key_delete(recv, key, false);
-        scr_str_release(key);
-        recv->v.arr.length = last - 1;
-        return result;
+        /* The element past the dense prefix is an own index property or a
+         * hole; the runtime's pop handles both (scr_json.c). */
+        return scr_dyn_arr_sparse_pop(recv);
       }
       if ((mid == DYN_M_at)) {
         double iD = dyn_index_arg(args, argc, 0, 0, what);

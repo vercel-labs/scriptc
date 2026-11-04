@@ -1729,6 +1729,10 @@ bool scr_dyn_arr_sparse_put(ScrDyn *arr, size_t idx, ScrDyn *value);
 /* The canonical array index a property name spells (0…2^32-2, no leading
  * zero), the same rule the index write applies. */
 bool scr_dyn_arr_index_key(const char *data, size_t len, size_t *out);
+/* Array.prototype.pop's element when the length extends past the dense
+ * prefix: the +1 element at last-1 (a hole reads through the prototype), or
+ * NULL with the exception pending when the own element refuses the delete. */
+ScrDyn *scr_dyn_arr_sparse_pop(ScrDyn *arr);
 #endif
 /* Whether the builtin Array.prototype object exists and carries `key`
  * before the method table installs; the inherited-read fallback leaves a

@@ -2096,29 +2096,99 @@ static void dyn_arr_sparse_clear(ScrDyn *arr, size_t idx) {
   scr_str_release(key);
 }
 
-/* A shorter length drops the elements at or past it. Elements inside the
- * dense prefix are released by the caller's shrink loop; the ones past it
- * live in the array's own property table under their index spelling. */
-static void scr_dyn_arr_truncate_sparse(ScrDyn *arr, size_t length) {
+static int dyn_arr_index_order_desc(const void *a, const void *b) {
+  size_t x = *(const size_t *)a;
+  size_t y = *(const size_t *)b;
+  return x > y ? -1 : x < y ? 1 : 0;
+}
+
+/* A shorter length drops the elements at or past it. Nodes' ArraySetLength
+ * deletes them from the highest index down, so a non-configurable element
+ * refuses the delete only after every element above it is gone; that refusal
+ * leaves the length at the refused index + 1. The elements inside the dense
+ * prefix are released by the caller's shrink loop; the ones past it live in
+ * the array's own property table under their index spelling. True when every
+ * element the target length excludes is gone, false with the exception
+ * pending (the length already moved). */
+static bool scr_dyn_arr_truncate_sparse(ScrDyn *arr, size_t length) {
   ScrDyn *props = arr->v.arr.properties;
-  if (!props) return;
-  size_t i = 0;
-  while (i < scr_dyn_obj_count(props)) {
+  size_t total = arr->v.arr.length;
+  if (!props || length >= total) return true;
+  size_t count = scr_dyn_obj_count(props);
+  if (count == 0) return true;
+  size_t *indexes = (size_t *)malloc(count * sizeof *indexes);
+  if (!indexes) {
+    scr_json_oom();
+    return false;
+  }
+  size_t kept = 0;
+  for (size_t i = 0; i < count; i++) {
     size_t key_len = 0;
     const char *key = scr_dyn_obj_key_at(props, i, &key_len);
     size_t index = 0;
-    if (!scr_dyn_arr_index_key(key, key_len, &index) || index < length) {
-      i++;
-      continue;
+    if (scr_dyn_arr_index_key(key, key_len, &index) && index >= length && index < total)
+      indexes[kept++] = index;
+  }
+  qsort(indexes, kept, sizeof *indexes, dyn_arr_index_order_desc);
+  bool done = true;
+  for (size_t i = 0; i < kept; i++) {
+    char text[12];
+    int n = snprintf(text, sizeof text, "%zu", indexes[i]);
+    ScrDynEntry *entry = scr_dyn_find_entry(props, text, (size_t)n);
+    if (!entry) continue;
+    if (!entry->configurable) {
+      arr->v.arr.length = indexes[i] + 1;
+      scr_array_undeletable_error((double)indexes[i]);
+      done = false;
+      break;
     }
-    /* The delete shifts the remaining entries left, so this slot is the
-     * next key; the key bytes die with the entry, so copy first. */
-    char name[12];
-    memcpy(name, key, key_len);
-    ScrStr *spelled = scr_str_new(name, key_len);
+    ScrStr *spelled = scr_str_new(text, (size_t)n);
     scr_dyn_key_delete(props, spelled, false);
     scr_str_release(spelled);
+    if (scr_exc_pending()) {
+      arr->v.arr.length = indexes[i] + 1;
+      done = false;
+      break;
+    }
   }
+  free(indexes);
+  return done;
+}
+
+/* Array.prototype.pop's element when the length extends past the dense
+ * prefix. The element at last-1 is an own index property or a hole; a hole
+ * reads through the prototype and refuses no delete, while a
+ * non-configurable own element refuses it and leaves the length alone, as in
+ * Node. Returns the +1 element, or NULL with the exception pending. */
+ScrDyn *scr_dyn_arr_sparse_pop(ScrDyn *arr) {
+  size_t last = arr->v.arr.length;
+  size_t index = last - 1;
+  ScrDyn *result = scr_dyn_arr_at(arr, (double)index);
+  if (!result || scr_exc_pending()) {
+    scr_dyn_release(result);
+    return NULL;
+  }
+  char text[12];
+  int n = snprintf(text, sizeof text, "%zu", index);
+  ScrDynEntry *entry = arr->v.arr.properties
+      ? scr_dyn_find_entry(arr->v.arr.properties, text, (size_t)n)
+      : NULL;
+  if (entry && !entry->configurable) {
+    scr_array_undeletable_error((double)index);
+    scr_dyn_release(result);
+    return NULL;
+  }
+  if (entry) {
+    ScrStr *key = scr_str_new(text, (size_t)n);
+    scr_dyn_key_delete(arr->v.arr.properties, key, false);
+    scr_str_release(key);
+    if (scr_exc_pending()) {
+      scr_dyn_release(result);
+      return NULL;
+    }
+  }
+  arr->v.arr.length = index;
+  return result;
 }
 #endif
 
@@ -9098,7 +9168,7 @@ static ScrDyn *scr_native_iterator_value(ScrNativeIterator *iterator, bool *done
    * the general path below is not needed. */
   if (source && source->kind == SCR_DYN_ARR && iterator->kind == 0 && !iterator->array_like &&
       iterator->selection == 0) {
-    if (iterator->index >= (double)source->v.arr.len) {
+    if (iterator->index >= (double)scr_dyn_arr_length(source)) {
       iterator->source = NULL;
       scr_dyn_release(source);
       *done_out = true;
@@ -13691,7 +13761,7 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
          * the only thing that moves. A shrink from a sparse length drops
          * the elements past the new end here, since the dense loop below
          * cannot see them. */
-        if (length < recv->v.arr.length) scr_dyn_arr_truncate_sparse(recv, length);
+        if (!scr_dyn_arr_truncate_sparse(recv, length)) return;
         recv->v.arr.length = length;
 #else
         static const char message[] = "Checked array growth exceeds the native allocation limit";
@@ -13699,16 +13769,21 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
 #endif
         return;
       }
+#ifdef SCR_JS_OBJECT_MODEL
+      /* The elements past the dense prefix sit above every dense one, so
+       * ArraySetLength's descending deletes reach them first. A refusal
+       * there settles the length at the refused index + 1 and leaves the
+       * dense prefix alone. */
+      if (!scr_dyn_arr_truncate_sparse(recv, length)) return;
+#endif
       while (recv->v.arr.len < length) scr_dyn_arr_push_hole(recv);
       while (recv->v.arr.len > length) {
         if (recv->v.arr.sealed && scr_dyn_arr_has_index(recv, recv->v.arr.len - 1)) {
           scr_array_frozen_error(5, recv->v.arr.len, (double)(recv->v.arr.len - 1), 0, 0);
           scr_dyn_note_assign_failure();
 #ifdef SCR_JS_OBJECT_MODEL
-          /* The elements deleted before the refusal stay deleted, so the
-           * length follows the prefix they left, along with any element
-           * past it. */
-          scr_dyn_arr_truncate_sparse(recv, recv->v.arr.len);
+          /* The dense elements deleted before the refusal stay deleted, so
+           * the length follows the prefix they left. */
           recv->v.arr.length = recv->v.arr.len;
 #endif
           return;
@@ -13716,7 +13791,6 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
         scr_dyn_release(recv->v.arr.items[scr_dyn_arr_dec_len(recv)]);
       }
 #ifdef SCR_JS_OBJECT_MODEL
-      scr_dyn_arr_truncate_sparse(recv, length);
       recv->v.arr.length = length;
 #endif
       return;

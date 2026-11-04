@@ -2264,11 +2264,7 @@ export function lowerDynamicImportCall(lowerer: Lowerer, call: ts.CallExpression
 
 /** The single module a build-time specifier names, lowered the way the literal
  * site of the same text is: its recorded entry answers the arm. */
-function lowerResolvedImport(
-  lowerer: Lowerer,
-  call: ts.CallExpression,
-  specifier: string,
-): IrExpr {
+function lowerResolvedImport(lowerer: Lowerer, call: ts.CallExpression, specifier: string): IrExpr {
   const res = lowerer.dynImports.get(`${ts.getSourceFileOfNode(call).fileName}\u0000${specifier}`);
   if (res === undefined) lowerer.refuseUnsupportedApi("'import()'", call);
   if (res.kind === "rejected") return lowerRejectedImport(lowerer, call, res.crash);

@@ -1428,6 +1428,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "emitter.listeners": "scr_emitter_listeners",
   "emitter.listenersDyn": "scr_emitter_listeners_dyn",
   "emitter.hasTyped": "scr_emitter_has_typed",
+  "emitter.hasDyn": "scr_emitter_has_dyn",
   "emitter.setMax": "scr_emitter_set_max",
   "emitter.setMaxChk": "scr_emitter_set_max_chk",
   "emitter.setDefaultMaxChk": "scr_emitter_set_default_max_chk",

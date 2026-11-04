@@ -6353,6 +6353,7 @@ function validateFunction(
         e.fn === "emitter.emitErrorValue" ||
         e.fn === "emitter.emitMixed" ||
         e.fn === "emitter.hasTyped" ||
+        e.fn === "emitter.hasDyn" ||
         e.fn === "emitter.listenersDyn" ||
         e.fn === "emitter.count" ||
         e.fn === "emitter.getMax" ||

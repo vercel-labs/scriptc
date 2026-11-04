@@ -351,6 +351,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "emitter.emitAny",
   "emitter.emitErrorValue",
   "emitter.emitMixed",
+  "emitter.hasDyn",
   "emitter.listenersDyn",
   "emitter.emitError",
   "emitter.on",

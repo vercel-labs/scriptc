@@ -644,18 +644,19 @@ static ScrDyn *bcs_emit(ScrStream *s, ScrDyn *const *args, size_t argc) {
   bool had = false;
   switch (bcs_event_shape(name)) {
   case 0:
-    had = scr_emitter_emit(em, name);
+    had = scr_emitter_emit_mixed(em, name, NULL, 0);
     break;
   case 1:
-    /* 'data' carries the bytes, string and value slots (scr_stream_emit_data) */
+    /* 'data' carries the bytes, string and value slots (scr_stream_emit_data);
+     * the emitted value is also the checked-dynamic argument. */
     if (first->kind == SCR_DYN_BYTES) {
       ScrBytes *bytes = scr_bytes_raw_view(first->v.bytes);
-      had = scr_emitter_emit(em, name, bytes, (ScrStr *)NULL, first);
+      had = scr_emitter_emit_mixed(em, name, rest, restc, bytes, (ScrStr *)NULL, first);
       scr_bytes_release(bytes);
     } else if (first->kind == SCR_DYN_STR) {
-      had = scr_emitter_emit(em, name, (ScrBytes *)NULL, first->v.str, first);
+      had = scr_emitter_emit_mixed(em, name, rest, restc, (ScrBytes *)NULL, first->v.str, first);
     } else {
-      had = scr_emitter_emit(em, name, (ScrBytes *)NULL, (ScrStr *)NULL, first);
+      had = scr_emitter_emit_mixed(em, name, rest, restc, (ScrBytes *)NULL, (ScrStr *)NULL, first);
     }
     break;
   case 2:
@@ -683,14 +684,14 @@ static ScrDyn *bcs_emit(ScrStream *s, ScrDyn *const *args, size_t argc) {
         err = scr_error_new(SCR_ERR_ERROR, empty);
         scr_str_release(empty);
       }
-      had = scr_emitter_emit_error(em, name, err);
+      had = scr_emitter_emit_error_mixed(em, name, err, rest, restc);
       scr_error_release(err);
     }
     break;
   case 3: {
     ScrStream *stream = scr_dyn_builtin_stream_of(first);
     if (stream) {
-      had = scr_emitter_emit(em, name, stream);
+      had = scr_emitter_emit_mixed(em, name, rest, restc, stream);
       scr_stream_release(stream);
     } else {
       bcs_unsupported("emit('pipe') or emit('unpipe') with a value other than a stream on a constructor-function stream is not supported yet");
@@ -698,7 +699,7 @@ static ScrDyn *bcs_emit(ScrStream *s, ScrDyn *const *args, size_t argc) {
     break;
   }
   case 4:
-    if (first->kind == SCR_DYN_STR) had = scr_emitter_emit(em, name, first->v.str);
+    if (first->kind == SCR_DYN_STR) had = scr_emitter_emit_mixed(em, name, rest, restc, first->v.str);
     else bcs_unsupported("emit('newListener') or emit('removeListener') with a name other than a string on a constructor-function stream is not supported yet");
     break;
   default:

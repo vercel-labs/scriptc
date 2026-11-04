@@ -1227,6 +1227,20 @@ bool scr_emitter_has_typed(ScrEmitter *em, ScrStr *name) {
   return false;
 }
 
+/* Whether a typed emit of `name` reaches a listener that only has the
+ * checked-dynamic thunk (registered through an untyped value, never given
+ * a typed adapter), so its arguments must also convert to ScrDyn before
+ * the dispatch. The converse of has_typed. */
+bool scr_emitter_has_dyn(ScrEmitter *em, ScrStr *name) {
+  ScrEeBucket *b = em->reg ? scr_ee_bucket_of(em->reg, name) : NULL;
+  for (size_t i = 0; b && i < b->n; i++) {
+    if (b->ls[i]->flex_invoke && b->ls[i]->inv == NULL) return true;
+  }
+  if (!scr_ee_is_error_monitor(name) && scr_ee_is_name(name, "error"))
+    return scr_emitter_has_dyn(em, SCR_EE_ERROR_MONITOR);
+  return false;
+}
+
 /* Throws Node's ERR_UNHANDLED_ERROR for a non-Error payload: the message
  * quotes `shown` (util.inspect of the payload) and `context` is the
  * payload. */
@@ -1405,6 +1419,18 @@ bool scr_emitter_emit_error(ScrEmitter *em, ScrStr *name, ScrError *err) {
     return false;
   }
   return scr_ee_emit_va(em, name, err);
+}
+
+bool scr_emitter_emit_error_mixed(ScrEmitter *em, ScrStr *name, ScrError *err,
+                                  ScrDyn *const *args, size_t argc) {
+  if (!scr_ee_has(em->reg, "error")) {
+    scr_ee_emit_mixed_va(em, SCR_EE_ERROR_MONITOR, args, argc, 1, err);
+    if (scr_exc_pending()) return false;
+    scr_throw_obj(scr_error_retain(err), &scr_error_retain_v, &scr_error_release_v,
+                  scr_error_trace_arg());
+    return false;
+  }
+  return scr_ee_emit_mixed_va(em, name, args, argc, 1, err);
 }
 
 /* ── introspection ────────────────────────────────────────────────────── */

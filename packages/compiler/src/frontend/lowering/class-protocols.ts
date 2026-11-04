@@ -804,8 +804,7 @@ export class ClassProtocols {
     )
       return false;
     if (declaration.body === undefined) return false;
-    if (!ts.isFunctionDeclaration(declaration) && !this.fixedCallee(declaration, call))
-      return false;
+    if (!this.fixedCallee(declaration, call)) return false;
     if (declaration.asteriskToken !== undefined) return false;
     if (
       declaration.modifiers?.nodes.some(
@@ -813,31 +812,52 @@ export class ClassProtocols {
       ) === true
     )
       return false;
+    // Defaults run in the callee's frame, after the arguments, and may write
+    // the instance; a parameter pattern reads members the same way.
+    if (
+      declaration.parameters.nodes.some(
+        (parameter) => !ts.isIdentifier(parameter.name) || parameter.initializer !== undefined,
+      )
+    )
+      return false;
     const parameter = declaration.parameters.nodes[index];
     if (parameter === undefined || !ts.isIdentifier(parameter.name)) return false;
     if (parameter.dotDotDotToken !== undefined || parameter.questionToken !== undefined)
       return false;
-    if (parameter.initializer !== undefined) return false;
+    // Arguments evaluated after this one run while the copy stands: code in
+    // them may write the instance before the callee reads the copy.
+    for (let position = index + 1; position < args.length; position++) {
+      const argument = args[position];
+      if (argument !== undefined && containsProgramCode(argument, this.checker)) return false;
+    }
     return this.readsParameterOnlyFields(declaration, parameter.name.text);
   }
 
-  /** Whether a function expression or arrow function reached as a call's
-   * callee cannot be replaced by another function: it is the callee itself,
-   * or the value of a `const` binding. A `let` binding could run a body this
-   * analysis never saw. */
+  /** Whether the function whose body is inspected is the one this call runs:
+   * the callee is the function itself, the identifier of the function
+   * declaration, or the identifier of the `const` binding that holds it.
+   * A `let` binding, a property, or another binding of the same signature
+   * could run a body this analysis never saw. */
   private fixedCallee(
-    fn: ts.FunctionExpression | ts.ArrowFunction,
+    fn: ts.FunctionDeclaration | ts.FunctionExpression | ts.ArrowFunction,
     call: ts.CallExpression | ts.NewExpression,
   ): boolean {
-    if (unwrapExpression(call.expression) === fn) return true;
+    const callee = unwrapExpression(call.expression);
+    if (callee === fn) return true;
+    if (!ts.isIdentifier(callee)) return false;
+    const symbol = attempt(() => this.checker.getSymbolAtLocation(callee));
+    if (ts.isFunctionDeclaration(fn))
+      return symbol?.declarations?.some((declaration) => declaration === fn) === true;
     const parent = fn.parent;
     const list = parent?.parent;
-    return (
-      ts.isVariableDeclaration(parent) &&
-      parent.initializer === fn &&
-      list !== undefined &&
-      (list.flags & ts.NodeFlags.Const) !== 0
-    );
+    if (
+      !ts.isVariableDeclaration(parent) ||
+      parent.initializer !== fn ||
+      list === undefined ||
+      (list.flags & ts.NodeFlags.Const) === 0
+    )
+      return false;
+    return symbol?.declarations?.some((declaration) => declaration === parent) === true;
   }
 
   /** The body of `declaration` mentions `name` only as the receiver of a
@@ -867,14 +887,6 @@ export class ClassProtocols {
         if (mentionsBinding(node, name)) ok = false;
         return "skip";
       }
-      if (node.kind === ts.SyntaxKind.AwaitKeyword || ts.isYieldExpression(node)) {
-        ok = false;
-        return "stop";
-      }
-      if (ts.isNewExpression(node)) {
-        ok = false;
-        return "stop";
-      }
       if (
         ts.isBinaryExpression(node) &&
         node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
@@ -901,11 +913,10 @@ export class ClassProtocols {
         }
         return undefined;
       }
-      if (ts.isDeleteExpression(node)) {
-        ok = false;
-        return "stop";
-      }
-      if (ts.isCallExpression(node) && !pureCall(node, this.checker)) {
+      // Calls, await and yield, element access, accessors, dynamic member
+      // access, iteration and value coercion can all run program code while
+      // the copy is the callee's parameter.
+      if (expressionRunsCode(node, this.checker)) {
         ok = false;
         return "stop";
       }
@@ -1819,20 +1830,126 @@ function isWrittenAccess(access: ts.Expression): boolean {
 }
 
 /** Whether `call` is one of the calls a copying callee may make: a numeric
- * builtin, or a console printer over primitive values only. */
+ * builtin or console printer the program does not shadow, over values of
+ * primitive type only (a coercion runs no hook on them). */
 function pureCall(call: ts.CallExpression, checker: ts.TypeChecker): boolean {
   const callee = call.expression;
-  if (ts.isIdentifier(callee)) return PURE_CALLS.has(callee.text);
-  if (!ts.isPropertyAccessExpression(callee) || !ts.isIdentifier(callee.expression)) return false;
-  const owner = callee.expression.text;
-  if (owner === "Math" || owner === "Number") return true;
-  if (owner !== "console") return false;
+  const global = (node: ts.Node) => libSymbol(attempt(() => checker.getSymbolAtLocation(node)));
+  if (ts.isIdentifier(callee)) {
+    if (!PURE_CALLS.has(callee.text) || !global(callee)) return false;
+  } else if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression)) {
+    const owner = callee.expression.text;
+    if (owner !== "Math" && owner !== "Number" && owner !== "console") return false;
+    if (!global(callee.expression) || !global(callee.name)) return false;
+  } else return false;
   const args = call.arguments?.nodes ?? [];
   return args.every((argument) => {
     if (ts.isSpreadElement(argument)) return false;
     const type = attempt(() => checker.getTypeAtLocation(argument));
     return type !== undefined && primitiveValue(type);
   });
+}
+
+/** Whether every declaration of `symbol` is in a declaration file: the
+ * binding is the library's own, not one the program shadows it with. */
+function libSymbol(symbol: ts.Symbol | undefined): boolean {
+  const declarations = symbol?.declarations;
+  return (
+    declarations !== undefined &&
+    declarations.length > 0 &&
+    declarations.every((declaration) => declaration.getSourceFile().isDeclarationFile)
+  );
+}
+
+/** Whether evaluating `node` can run program code — a call, a constructor, a
+ * getter or a dynamic member read, an iterator, a coercion hook — and so
+ * write an instance a copy was made of. */
+function expressionRunsCode(node: ts.Node, checker: ts.TypeChecker): boolean {
+  if (ts.isCallExpression(node)) return !pureCall(node, checker);
+  if (ts.isNewExpression(node)) return true;
+  if (ts.isElementAccessExpression(node)) return true;
+  if (ts.isPropertyAccessExpression(node)) return accessRunsCode(node, checker);
+  if (ts.isTemplateExpression(node)) {
+    for (const span of node.templateSpans.nodes) {
+      const type = attempt(() => checker.getTypeAtLocation(span.expression));
+      if (type === undefined || !primitiveValue(type)) return true;
+    }
+    return false;
+  }
+  if (ts.isBinaryExpression(node)) {
+    const operator = node.operatorToken.kind;
+    if (operator === ts.SyntaxKind.InstanceOfKeyword) return true;
+    if (operator >= ts.SyntaxKind.FirstAssignment && operator <= ts.SyntaxKind.LastAssignment)
+      return true;
+    return !primitiveOperands(node.left, node.right, checker);
+  }
+  if (ts.isPrefixUnaryExpression(node)) {
+    const operator = node.operator;
+    if (operator === ts.SyntaxKind.PlusPlusToken || operator === ts.SyntaxKind.MinusMinusToken)
+      return true;
+    if (
+      operator !== ts.SyntaxKind.PlusToken &&
+      operator !== ts.SyntaxKind.MinusToken &&
+      operator !== ts.SyntaxKind.TildeToken
+    )
+      return false;
+    const type = attempt(() => checker.getTypeAtLocation(node.operand));
+    return type === undefined || !primitiveValue(type);
+  }
+  if (ts.isPostfixUnaryExpression(node)) return true;
+  if (ts.isDeleteExpression(node) || ts.isAwaitExpression(node) || ts.isYieldExpression(node))
+    return true;
+  if (ts.isTaggedTemplateExpression(node)) return true;
+  if (ts.isForOfStatement(node)) return true;
+  if (ts.isSpreadElement(node) || ts.isSpreadAssignment(node)) return true;
+  return false;
+}
+
+/** Whether reading `access` can run program code: a getter, or a member of
+ * a value the analysis knows nothing static about. */
+function accessRunsCode(access: ts.PropertyAccessExpression, checker: ts.TypeChecker): boolean {
+  const symbol = attempt(() => checker.getSymbolAtLocation(access.name));
+  if (symbol === undefined) return true;
+  if ((symbol.flags & (ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor)) !== 0) return true;
+  const receiver = attempt(() => checker.getTypeAtLocation(access.expression));
+  if (receiver === undefined) return true;
+  return (
+    (receiver.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.TypeParameter)) !== 0
+  );
+}
+
+/** Whether both operand types are primitive, so an operator between them
+ * runs no value coercion. */
+function primitiveOperands(
+  left: ts.Expression,
+  right: ts.Expression,
+  checker: ts.TypeChecker,
+): boolean {
+  const l = attempt(() => checker.getTypeAtLocation(left));
+  const r = attempt(() => checker.getTypeAtLocation(right));
+  return l !== undefined && r !== undefined && primitiveValue(l) && primitiveValue(r);
+}
+
+/** Whether `root` contains an expression that runs program code. */
+function containsProgramCode(root: ts.Node, checker: ts.TypeChecker): boolean {
+  let runs = false;
+  ts.walkPreorder(root, (node) => {
+    if (runs) return "stop";
+    if (ts.isTypeNode(node)) return "skip";
+    if (ts.isFunctionLike(node)) return "skip";
+    // A class body's computed keys and static fields run when the class is
+    // evaluated.
+    if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
+      runs = true;
+      return "stop";
+    }
+    if (expressionRunsCode(node, checker)) {
+      runs = true;
+      return "stop";
+    }
+    return undefined;
+  });
+  return runs;
 }
 
 /** Whether `node` mentions the binding `name`. */

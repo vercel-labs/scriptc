@@ -160,6 +160,102 @@ console.log(JSON.stringify(parsed));
   expect(kinds["origin"]).toBe("dyn");
 });
 
+test("a later argument that writes the instance keeps the interface a live view", async () => {
+  // The copy is made when the argument is evaluated, before the later
+  // argument runs: code there could change the fields the callee reads.
+  const kinds = await recordFields(
+    shapeOfPoint(`
+function tick(): number { cursor.x += 1; return 0; }
+function read(p: Point, n: number): number { return p.x + n; }
+console.log(read(cursor, tick()));
+`),
+    "origin",
+  );
+  expect(kinds["origin"]).toBe("dyn");
+});
+
+test("a callee whose other parameter has a default keeps the interface a live view", async () => {
+  // Defaults run after the arguments are evaluated, in the callee's own
+  // frame, so their code can write the instance after the copy exists.
+  const kinds = await recordFields(
+    shapeOfPoint(`
+function ticker(): number { cursor.x += 1; return 1; }
+function read(p: Point, n: number = ticker()): number { return p.x + n; }
+console.log(read(cursor));
+`),
+    "origin",
+  );
+  expect(kinds["origin"]).toBe("dyn");
+});
+
+test("a callee that reads a getter elsewhere keeps the interface a live view", async () => {
+  // The getter runs program code while the parameter is in hand, and that
+  // code writes the instance: other member reads are not inert.
+  const kinds = await recordFields(
+    shapeOfPoint(`
+const box = { get n(): number { cursor.x += 1; return 1; } };
+function read(p: Point): number { return p.x + box.n; }
+console.log(read(cursor));
+`),
+    "origin",
+  );
+  expect(kinds["origin"]).toBe("dyn");
+});
+
+test("a call through a mutable alias of a const function keeps the interface a live view", async () => {
+  // The alias can be replaced with a function this analysis never saw, so
+  // the arrow alone does not make the callee fixed.
+  const kinds = await recordFields(
+    shapeOfPoint(`
+const read = (p: Point): number => p.x;
+let call = read;
+call = (p: Point): number => p.x * 2;
+console.log(call(cursor));
+`),
+    "origin",
+  );
+  expect(kinds["origin"]).toBe("dyn");
+});
+
+test("a call through a mutable alias of a function declaration keeps the interface a live view", async () => {
+  // The alias resolves to the declaration's signature but runs a body this
+  // analysis never saw once it is replaced.
+  const kinds = await recordFields(
+    shapeOfPoint(`
+function read(p: Point): number { return p.x; }
+let call = read;
+call = (p: Point): number => p.x * 2;
+console.log(call(cursor));
+`),
+    "origin",
+  );
+  expect(kinds["origin"]).toBe("dyn");
+});
+
+test("a call to a shadowed parseInt keeps the interface a live view", async () => {
+  const kinds = await recordFields(
+    shapeOfPoint(`
+function parseInt(text: string): number { cursor.x += 1; return text.length; }
+function read(p: Point): number { return parseInt("1") + p.x; }
+console.log(read(cursor));
+`),
+    "origin",
+  );
+  expect(kinds["origin"]).toBe("dyn");
+});
+
+test("a call to a shadowed Math keeps the interface a live view", async () => {
+  const kinds = await recordFields(
+    shapeOfPoint(`
+const Math = { max(a: number, b: number): number { cursor.x += 1; return a + b; } };
+function read(p: Point): number { return Math.max(p.x, 1); }
+console.log(read(cursor));
+`),
+    "origin",
+  );
+  expect(kinds["origin"]).toBe("dyn");
+});
+
 test("an optional method in an anonymous union received from a class stays live", async () => {
   const kinds = await globalKinds(`
 class SelectList {

@@ -1467,6 +1467,43 @@ bool scr_proc_stream_write(double fd, const ScrStr *data) {
  * homedir/tmpdir follow libuv's POSIX rules, which Node delegates to.
  */
 
+/* Node's uvException: the SystemError every failed libuv call in node:os
+ * becomes — "A system error occurred: <syscall> returned <NAME> (<message>)",
+ * named SystemError, with code ERR_SYSTEM_ERROR and the uv error's errno,
+ * syscall and info ({ message, syscall, errno, code }) own properties.
+ * The os calls in this unit and scr_os.c's priority calls both throw it.
+ * It sits in this unit, outside the platform arms, because every link
+ * that carries scr_lib.c carries it — including the runtime's own C
+ * tests, which link scr_lib.c without scr_os.c. */
+typedef struct { int value; const char *name; const char *message; } ScrOsUvError;
+#define SCR_OS_UV_ERROR(name, message) { SCR_NODE_UV__##name, #name, message },
+static const ScrOsUvError scr_os_uv_errors[] = { SCR_NODE_UV_ERRNO_MAP(SCR_OS_UV_ERROR) };
+#undef SCR_OS_UV_ERROR
+
+void scr_os_throw_system_error(const char *syscall, int uv_code) {
+  const char *name = "UNKNOWN", *message = "unknown error";
+  for (size_t i = 0; i < sizeof scr_os_uv_errors / sizeof scr_os_uv_errors[0]; i++) {
+    if (scr_os_uv_errors[i].value == uv_code) {
+      name = scr_os_uv_errors[i].name;
+      message = scr_os_uv_errors[i].message;
+      break;
+    }
+  }
+  char text[256];
+  int n = snprintf(text, sizeof text, "A system error occurred: %s returned %s (%s)", syscall, name, message);
+  ScrStr *msg = scr_str_new(text, n < 0 ? 0 : (size_t)n);
+  ScrStr *error_name = scr_str_new("SystemError", 11);
+  scr_throw_error_named(error_name, msg);
+  ScrExcCell *cell = scr_exc_current_cell();
+  if (cell->kind != SCR_EXC_OBJ) return;
+  ScrError *error = (ScrError *)cell->payload;
+  scr_error_set_code(error, "ERR_SYSTEM_ERROR");
+  error->system_errno = uv_code;
+  error->system_call = scr_str_new(syscall, strlen(syscall));
+  error->system_message = scr_str_new(message, strlen(message));
+  error->system_code = scr_str_new(name, strlen(name));
+}
+
 #ifdef _WIN32
 /* uv_os_homedir on Windows: %USERPROFILE% first, then the profile
  * directory API. The env var covers every real session; abort matches
@@ -1581,36 +1618,113 @@ double scr_os_available_parallelism(void) { return 1; }
  * capability without leaking a host-specific TMPDIR into the module. */
 ScrStr *scr_os_tmpdir(void) { return scr_str_new("/tmp", 4); }
 #else
+/* The passwd entry of the effective uid, which os.homedir()'s fallback and
+ * os.userInfo()'s record both read. uv_os_get_passwd reaches it through
+ * getpwuid_r(3), and that resolves through NSS. A static executable cannot:
+ * NSS loads the run host's modules, which is what the compiler's SC3002
+ * guard refuses. The runtime pack builds this unit a second time for
+ * --static links (SCR_STATIC_PASSWD, runtime-pack-matrix.mjs), and that
+ * build reads /etc/passwd directly; every dynamically linked build keeps
+ * getpwuid_r, so a directory-service user sees no change. */
+#ifdef SCR_STATIC_PASSWD
+/* One /etc/passwd entry whose uid field is `uid`, parsed in place in `buf`
+ * (name:passwd:uid:gid:gecos:dir:shell — libc's struct passwd fields). The
+ * rows nss_files skips stay skipped: a `+`/`-` compat line names NSS's own
+ * sources rather than a user, and a line longer than the buffer cannot be
+ * an entry. The first match wins, as it does in nss_files. */
+static bool scr_os_passwd_file_entry(struct passwd *out, char *buf, size_t size, uid_t uid) {
+  FILE *file = fopen("/etc/passwd", "r");
+  if (file == NULL) return false;
+  bool found = false;
+  while (fgets(buf, (int)size, file) != NULL) {
+    size_t length = strcspn(buf, "\n");
+    if (length == 0) continue;
+    if (buf[length] != '\n' && length == size - 1) {
+      int ch;
+      while ((ch = fgetc(file)) != EOF && ch != '\n') {
+      }
+      continue;
+    }
+    buf[length] = '\0';
+    if (buf[0] == '#' || buf[0] == '+' || buf[0] == '-') continue;
+    char *fields[7];
+    int count = 0;
+    char *cursor = buf;
+    fields[count++] = cursor;
+    while (count < 7) {
+      char *colon = strchr(cursor, ':');
+      if (colon == NULL) break;
+      *colon = '\0';
+      cursor = colon + 1;
+      fields[count++] = cursor;
+    }
+    if (count != 7) continue;
+    char *end = NULL;
+    unsigned long entry_uid = strtoul(fields[2], &end, 10);
+    if (end == fields[2] || *end != '\0' || entry_uid != (unsigned long)uid) continue;
+    end = NULL;
+    unsigned long entry_gid = strtoul(fields[3], &end, 10);
+    if (end == fields[3] || *end != '\0') continue;
+    out->pw_name = fields[0];
+    out->pw_passwd = fields[1];
+    out->pw_uid = (uid_t)entry_uid;
+    out->pw_gid = (gid_t)entry_gid;
+    out->pw_gecos = fields[4];
+    out->pw_dir = fields[5];
+    out->pw_shell = fields[6];
+    found = true;
+    break;
+  }
+  fclose(file);
+  return found;
+}
+#endif
+
+/* The passwd entry of `uid`, or false when there is none. `buf` holds the
+ * strings the lookup stores its fields in (on the file build, the line). */
+static bool scr_os_passwd_lookup(struct passwd *out, char *buf, size_t size, uid_t uid) {
+#ifdef SCR_STATIC_PASSWD
+  return scr_os_passwd_file_entry(out, buf, size, uid);
+#else
+  struct passwd *result = NULL;
+  return getpwuid_r(uid, out, buf, size, &result) == 0 && result != NULL;
+#endif
+}
+
 ScrStr *scr_os_homedir(void) {
   /* uv_os_homedir: $HOME whenever it is set, an empty value included,
-   * else the passwd entry of the effective uid. */
+   * else the passwd entry of the effective uid. A lookup that answers
+   * nothing is Node's catchable SystemError (ERR_SYSTEM_ERROR). */
   const char *home = scr_getenv("HOME");
   if (home) return scr_str_new(home, strlen(home));
   struct passwd pw;
-  struct passwd *result = NULL;
+  memset(&pw, 0, sizeof pw);
   char buf[8192];
-  if (getpwuid_r(geteuid(), &pw, buf, sizeof buf, &result) != 0 || !result || !result->pw_dir) {
-    scr_trap("scriptc: os.homedir() failed\n");
+  if (!scr_os_passwd_lookup(&pw, buf, sizeof buf, geteuid()) || pw.pw_dir == NULL) {
+    scr_os_throw_system_error("uv_os_homedir", SCR_NODE_UV__ENOENT);
+    return NULL;
   }
-  return scr_str_new(result->pw_dir, strlen(result->pw_dir));
+  return scr_str_new(pw.pw_dir, strlen(pw.pw_dir));
 }
 
 /* The os.userInfo() fields — uv_os_get_passwd's slices of the passwd
  * entry for the effective uid. One lookup per record, taken by
  * scr_os_user_info_begin (the record's own ordering does not matter: the
- * fields only read what it stored). Failure aborts: Node throws a system
- * error there, but no compiled program path reaches it for the running
- * uid. The state is per thread; a compiled program may run several. */
+ * fields only read what it stored). A failed lookup throws Node's
+ * ERR_SYSTEM_ERROR; the empty snapshot it leaves behind is never read (the
+ * throw is pending), it only keeps a field call safe to walk. The state is
+ * per thread; a compiled program may run several. */
 static _Thread_local struct passwd scr_os_user_pw;
 static _Thread_local char scr_os_user_buf[8192];
 static _Thread_local const struct passwd *scr_os_user_snapshot;
+static const struct passwd scr_os_user_empty;
 
 void scr_os_user_info_begin(void) {
-  struct passwd *result = NULL;
-  if (getpwuid_r(geteuid(), &scr_os_user_pw, scr_os_user_buf, sizeof scr_os_user_buf, &result) !=
-          0 ||
-      !result) {
-    scr_trap("scriptc: os.userInfo() failed\n");
+  if (!scr_os_passwd_lookup(&scr_os_user_pw, scr_os_user_buf, sizeof scr_os_user_buf,
+                            geteuid())) {
+    scr_os_user_snapshot = &scr_os_user_empty;
+    scr_os_throw_system_error("uv_os_get_passwd", SCR_NODE_UV__ENOENT);
+    return;
   }
   scr_os_user_snapshot = &scr_os_user_pw;
 }
@@ -1623,6 +1737,7 @@ static const struct passwd *scr_os_user_entry(void) {
 
 ScrStr *scr_os_user_name(void) {
   const char *name = scr_os_user_entry()->pw_name;
+  if (!name) name = "";
   return scr_str_new(name, strlen(name));
 }
 
@@ -1636,6 +1751,7 @@ ScrStr *scr_os_user_homedir(void) {
   /* The PASSWD home (pw_dir) — Node's userInfo().homedir, distinct from
    * os.homedir()'s $HOME-first cascade. */
   const char *dir = scr_os_user_entry()->pw_dir;
+  if (!dir) dir = "";
   return scr_str_new(dir, strlen(dir));
 }
 

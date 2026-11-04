@@ -173,6 +173,43 @@ describe("the collected module tree", () => {
     expect(scan.computed).toEqual([]);
   });
 
+  // Without a `;` the clause ends where the next statement begins, and the
+  // runtime loads after it still load: an exported type alias or a type-only
+  // import-equals must not swallow them, nor a type-only import written
+  // across lines lose the specifier it names.
+  test("a semicolonless type-only clause ends at the next statement", () => {
+    const scan = scanModuleSpecifiers(`
+      export type Alpha = string
+      import { a } from "./runtime.ts";
+      import type Beta = require("./types.ts")
+      const b = require("./more.ts");
+      export type Gamma = { g: string }
+      const c = require(name);
+      export type Delta =
+        | { d: string }
+        | string;
+      const e = require("./last.ts");
+      import type {
+        F,
+        G,
+      } from "./only-types.ts"
+      const h = require("./after-braces.ts");
+      export type Epsilon = Map<
+        string,
+        number
+      >
+      const i = require("./after-generics.ts");
+    `);
+    expect(scan.specifiers).toEqual([
+      "./runtime.ts",
+      "./more.ts",
+      "./last.ts",
+      "./after-braces.ts",
+      "./after-generics.ts",
+    ]);
+    expect(scan.computed.map((c) => c.form)).toEqual(["require() with a computed specifier"]);
+  });
+
   test("a type-only import of a module with a computed load is not refused", () => {
     const root = project({
       "src/main.ts": "",

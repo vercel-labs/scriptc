@@ -9,6 +9,7 @@ import {
   resolveImport,
 } from "../../program.js";
 import { stripTypeCasts } from "./arguments.js";
+import { staticString } from "./module-resolution.js";
 
 /** Resolves an identifier to a supported builtin-module IMPORT BINDING:
  * a named import (through its alias, so `import { join as j }` matches)
@@ -228,7 +229,14 @@ export function builtinMemberBindingTarget(
  * and renames only: a rest element needs the namespace VALUE and a
  * default needs a missing-member probe — those keep the existing
  * namespace-as-value fence. The direct-require initializer answers null
- * here (its own arm already resolves it). */
+ * here (its own arm already resolves it).
+ *
+ * `await import("node:crypto")` is a namespace source too: its value is
+ * the same immortal builtin namespace token the static import yields, so
+ * the bindings are the same alias plumbing (Node's per-module caching
+ * makes the token identical on every import). The await itself is an
+ * observable step — the statement lowering still evaluates it — so only
+ * the bindings skip storage. */
 export function builtinNamespaceDestructureModuleOf(
   lowerer: Lowerer,
   decl: ts.VariableDeclaration,
@@ -250,6 +258,13 @@ export function builtinNamespaceDestructureModuleOf(
     // `const { open } = fs.promises` / `= require("fs").promises`: a member
     // that is itself a supported module.
     module = lowerer.builtinNamespaceModuleOf(init);
+  } else if (ts.isAwaitExpression(init)) {
+    // `const { createHash } = await import("node:crypto")`: the awaited
+    // literal import of a builtin yields its namespace, whose members key
+    // the same tables — including the mutable-declaration case the static
+    // namespace form already admits, where a write to a binding has the
+    // alias form's usual refusal rather than a slot.
+    module = awaitedBuiltinDynamicImportOf(lowerer, init)?.module ?? null;
   }
   if (module === null) return null;
   for (const el of decl.name.elements.nodes) {
@@ -263,6 +278,28 @@ export function builtinNamespaceDestructureModuleOf(
     if (el.propertyName !== undefined && !ts.isIdentifier(el.propertyName)) return null;
   }
   return module;
+}
+
+/** `await import("<builtin literal>")`: the awaited literal dynamic
+ * import of a builtin module (a folded constant specifier counts — the
+ * same spellings the dynamic-import lowering resolves). The value is the
+ * builtin's namespace token; null for every other dynamic import, whose
+ * namespace has no alias-plumbing representation, and for a literal that
+ * names no builtin. */
+export function awaitedBuiltinDynamicImportOf(
+  lowerer: Lowerer,
+  expr: ts.Expression,
+): { module: string; awaited: ts.AwaitExpression } | null {
+  const awaited = stripTypeCasts(expr);
+  if (!ts.isAwaitExpression(awaited)) return null;
+  const call = stripTypeCasts(awaited.expression);
+  if (!ts.isCallExpression(call) || call.expression.kind !== ts.SyntaxKind.ImportKeyword)
+    return null;
+  if (call.arguments.nodes.length !== 1) return null;
+  const spec = staticString(lowerer, call.arguments.nodes[0]);
+  if (spec === null) return null;
+  const module = canonicalBuiltinModule(spec);
+  return module === null ? null : { module, awaited };
 }
 
 /** The `createRequire(<base>)` call over the node:module import binding

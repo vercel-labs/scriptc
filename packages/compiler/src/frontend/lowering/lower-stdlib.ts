@@ -2256,10 +2256,15 @@ export function lowerDynamicImportCall(lowerer: Lowerer, call: ts.CallExpression
   if (res.kind === "program-module") {
     return lowerOwnStaticModuleImport(lowerer, call, specifier);
   }
-  return lowerStaticNamespaceImport(lowerer, call, {
-    kind: "moduleNs",
-    moduleId: `builtin:${res.module}`,
-  });
+  return lowerStaticNamespaceImport(
+    lowerer,
+    call,
+    { kind: "moduleNs", moduleId: `builtin:${res.module}` },
+    null,
+    // Node's punycode module reports DEP0040 when its body first runs,
+    // which a dynamic import does here rather than at link time.
+    res.module === "punycode" ? [lowerer.punycodeRequireWarning(call)] : undefined,
+  );
 }
 
 /** An import() Node rejects before any module of its graph evaluates
@@ -2392,6 +2397,8 @@ function lowerStaticNamespaceImport(
   call: ts.CallExpression,
   ns: IrType & { kind: "moduleNs" },
   dep: ts.SourceFile | null = null,
+  /** Statements the module's own load runs, after the import's hop. */
+  loaded?: readonly IrStmt[],
 ): IrExpr {
   const loc = locOf(call);
   const resultT: IrType & { kind: "promise" } = { kind: "promise", inner: ns };
@@ -2415,6 +2422,7 @@ function lowerStaticNamespaceImport(
     };
     const body: IrStmt[] = [{ kind: "exprStmt", expr: hop, loc }];
     if (dep !== null) appendStaticModuleInit(lowerer, dep, body, loc);
+    if (loaded !== undefined) body.push(...loaded);
     body.push({
       kind: "return",
       value: { kind: "moduleNsRef", moduleId: ns.moduleId, type: ns, loc },

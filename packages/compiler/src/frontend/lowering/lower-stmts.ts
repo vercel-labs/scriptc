@@ -271,6 +271,7 @@ import { isFspGlobCall, lowerFspGlobForAwait } from "./builtins/fs-glob.js";
 import { isTimersPromisesIntervalCall } from "./builtins/timers.js";
 import {
   isNativeFfiRequire,
+  awaitedBuiltinDynamicImportOf,
   builtinMemberRequireDecl,
   builtinNamespaceDestructureModuleOf,
   createRequireBindingDecl,
@@ -2396,7 +2397,16 @@ function lowerVarDeclarator(
   if (ts.isArrayBindingPattern(decl.name) || ts.isObjectBindingPattern(decl.name)) {
     // `const { createSign } = crypto` over a builtin NAMESPACE binding:
     // alias plumbing (builtinImportOf routes the reads) — no statement.
-    if (builtinNamespaceDestructureModuleOf(lowerer, decl) !== null) return [];
+    // `await import("node:crypto")` sources the same namespace, but the
+    // await is an observable step: the import evaluates where the
+    // declaration sits and its namespace is dropped, leaving the bindings
+    // pure aliases.
+    if (builtinNamespaceDestructureModuleOf(lowerer, decl) !== null) {
+      const awaited = awaitedBuiltinDynamicImportOf(lowerer, decl.initializer!);
+      return awaited === null
+        ? []
+        : [{ kind: "exprStmt", expr: lowerer.lowerExpr(awaited.awaited), loc: locOf(decl) }];
+    }
     // `const { A, B } = ns` over a CommonJS module binding: each name
     // snapshots the named export's value here (cjs-inline-require.ts).
     {

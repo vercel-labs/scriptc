@@ -585,6 +585,7 @@ import {
   type EventSig,
 } from "./lower-event-emitter.js";
 import {
+  awaitedBuiltinDynamicImportOf,
   builtinImportOf,
   createRequireProgramModuleOf,
   createRequireSpecOf,
@@ -17838,6 +17839,14 @@ export class Lowerer {
     const mapped = stored ?? this.mapTypeOf(this.typeOf(expr));
     if (mapped?.kind === "moduleNs" && mapped.moduleId.startsWith("builtin:")) {
       return mapped.moduleId.slice("builtin:".length);
+    }
+    // `(await import("node:crypto")).createHash(...)`: the awaited literal
+    // import's value IS the builtin namespace token, though the checker's
+    // type for the expression is the module's object type — the spelling
+    // names its module directly (parenthesized, through a cast, or not).
+    if (ts.isAwaitExpression(stripTypeCasts(expr))) {
+      const awaited = awaitedBuiltinDynamicImportOf(this, expr);
+      if (awaited !== null) return awaited.module;
     }
     // A nullable namespace binding (`const os: typeof NodeOs | null`, a
     // probed process.getBuiltinModule result) read where the checker

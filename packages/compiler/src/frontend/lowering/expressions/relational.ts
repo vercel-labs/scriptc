@@ -1790,13 +1790,36 @@ function classAnswersAtRuntime(lowerer: Lowerer, info: ClassInfo, declared: bool
   return lowerer.familyAnswersFromInstance(info);
 }
 
+/** An arrow called where it is written: the expression around it is that
+ * call, so its body runs as part of the enclosing expression rather than
+ * later through a value that escaped. */
+function immediatelyInvokedArrow(fn: ts.ArrowFunction): boolean {
+  let node: ts.Node = fn;
+  for (let parent = node.parent; parent; node = parent, parent = parent.parent) {
+    if (
+      ts.isParenthesizedExpression(parent) ||
+      ts.isAsExpression(parent) ||
+      ts.isTypeAssertion(parent) ||
+      ts.isSatisfiesExpression(parent) ||
+      ts.isNonNullExpression(parent)
+    )
+      continue;
+    return ts.isCallExpression(parent) && parent.expression === node;
+  }
+  return false;
+}
+
 /** Whether `node` is part of `initializer`'s own evaluation: a nested
  * function body runs later (after construction), so it does not see the
- * initializer's position in the field order. */
+ * initializer's position in the field order. An arrow the expression calls
+ * on the spot is the exception: its body runs while the initializer does,
+ * with the same `this`, so the field order still holds there. */
 function directlyInsideInitializer(initializer: ts.Node, node: ts.Node): boolean {
   for (let current: ts.Node | undefined = node; current; current = current.parent) {
     if (current === initializer) return !ts.isFunctionLike(current);
-    if (ts.isFunctionLike(current)) return false;
+    if (ts.isFunctionLike(current)) {
+      if (!ts.isArrowFunction(current) || !immediatelyInvokedArrow(current)) return false;
+    }
   }
   return false;
 }
@@ -2431,9 +2454,16 @@ export function lowerInExpression(
         }
         // A JavaScript arm's fields are created by assignment, so its
         // static answer is not a property of the tag: the arm reads its
-        // own instance instead (see perValueUnionIn).
+        // own instance instead (see perValueUnionIn). The same holds for a
+        // name no class in the arm's family declares: a value can gain it
+        // at runtime through an untyped view, which the tag cannot rule
+        // out. Both are the single-class receiver's answer above.
         const armInfo = lowerer.classes.get(arm.className);
-        if (armInfo !== undefined && lowerer.familyAnswersFromInstance(armInfo)) {
+        if (
+          armInfo !== undefined &&
+          classAnswersAtRuntime(lowerer, armInfo, verdict === true) &&
+          lowerer.dynConvertible(arm)
+        ) {
           answers.push({ tag, has: "probe", arm });
           continue;
         }

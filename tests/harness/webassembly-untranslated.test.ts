@@ -21,10 +21,10 @@ const repoRoot = join(import.meta.dirname, "../..");
 const cacheDir = join(repoRoot, "node_modules/.cache/scriptc-tests");
 const sanitize = process.env["SCRIPTC_SAN"] === "1";
 
-// (module (func i32.const 0 i8x16.splat drop))
-const simdModule = "AGFzbQEAAAABBAFgAAADAgEACgkBBwBBAP0PGgs=";
+// Shared memory still requires the unsupported threads proposal.
+const threadsModule = "AGFzbQEAAAAFBAEDAQE=";
 
-const source = `const simd = Buffer.from("${simdModule}", "base64");
+const source = `const threads = Buffer.from("${threadsModule}", "base64");
 // A type section whose entry is not a function type, so the module is
 // malformed.
 const invalid = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 2, 1, 64]);
@@ -39,10 +39,10 @@ function load(label, bytes) {
     console.log(label, e instanceof WebAssembly.CompileError, e.message);
   }
 }
-load("simd", simd);
+load("threads", threads);
 load("invalid", invalid);
 load("unseen", unseen);
-WebAssembly.compile(simd).catch((e) => console.log("compile", e instanceof WebAssembly.CompileError, e.message));
+WebAssembly.compile(threads).catch((e) => console.log("compile", e instanceof WebAssembly.CompileError, e.message));
 `;
 
 async function run(): Promise<string> {
@@ -79,9 +79,9 @@ describe(`WebAssembly modules without a translation${sanitize ? " (sanitized)" :
     const unseen =
       "WebAssembly.Module(): this module was not translated when the program was built (scriptc compiles " +
       "WebAssembly ahead of time and cannot compile modules whose bytes it did not see; see https://scriptc.dev/limitations)";
-    expect(lines[0]).toBe("simd false");
+    expect(lines[0]).toBe("threads false");
     expect(lines[1]).toBe(
-      `simd true ${found("WebAssembly.Module()", "it uses simd, outside the translated WebAssembly feature set")}`,
+      `threads true ${found("WebAssembly.Module()", "it uses threads, outside the translated WebAssembly feature set")}`,
     );
     expect(lines[2]).toBe("invalid false");
     expect(lines[3]).toBe(
@@ -90,7 +90,7 @@ describe(`WebAssembly modules without a translation${sanitize ? " (sanitized)" :
     expect(lines[4]).toBe("unseen false");
     expect(lines[5]).toBe(`unseen true ${unseen}`);
     expect(lines[6]).toBe(
-      `compile true ${found("WebAssembly.compile()", "it uses simd, outside the translated WebAssembly feature set")}`,
+      `compile true ${found("WebAssembly.compile()", "it uses threads, outside the translated WebAssembly feature set")}`,
     );
     expect(lines).toHaveLength(7);
   }, 180_000);

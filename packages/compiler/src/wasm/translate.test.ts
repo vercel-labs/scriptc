@@ -1,15 +1,20 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
-import { analyzeWasm } from "./binary.js";
+import { analyzeWasm, isTranslatableFeature } from "./binary.js";
 import { decodeBase64, encodeBase64 } from "./base64.js";
-import { WasmCursor, parseWasmModule } from "./module.js";
+import { WasmCursor, parseWasmModule, skipImmediates } from "./module.js";
 import {
   signatureHash,
   stackCheckedFunctions,
   translateWasmModule,
   wasmSymbolPrefix,
 } from "./translate.js";
+
+const v8Validate = (bytes: Uint8Array): boolean =>
+  (
+    globalThis as unknown as { WebAssembly: { validate(bytes: Uint8Array): boolean } }
+  ).WebAssembly.validate(bytes);
 
 const SHA = new Uint8Array(32).fill(0xab);
 
@@ -278,5 +283,415 @@ describe("helpers", () => {
     expect(decodeBase64(encodeBase64(ADD))).toEqual(ADD);
     expect(encodeBase64(new Uint8Array([1]))).toBe("AQ==");
     expect(encodeBase64(new Uint8Array([1, 2]))).toBe("AQI=");
+  });
+});
+
+const simdFixtures: { name: string; base64: string; width: number }[] = JSON.parse(
+  readFileSync(
+    new URL("../../../../tests/wasm-spec/corpus/simd-data.json", import.meta.url),
+    "utf8",
+  ),
+);
+
+describe("SIMD128 instruction translation", () => {
+  test.each(simdFixtures)(
+    "validates and translates $name with either bounds policy",
+    ({ base64 }) => {
+      const bytes = new Uint8Array(Buffer.from(base64, "base64"));
+      expect(v8Validate(bytes)).toBe(true);
+      expect(analyzeWasm(bytes).status).toBe("valid");
+      for (const boundsChecks of [false, true]) {
+        const out = translateWasmModule(bytes, SHA, { boundsChecks });
+        expect(out.text.join("\n")).toContain("define internal");
+        for (const line of topLevelLines(out.text)) {
+          expect(
+            line === "" || /^(define internal |@[\w.$-]+ = (private|internal) )/.test(line),
+            line,
+          ).toBe(true);
+        }
+      }
+    },
+  );
+
+  test("exports vector functions with a rejecting JavaScript thunk", () => {
+    const vector = [253, 12, ...new Array<number>(16).fill(0)];
+    const vectorBody = [0, ...vector, 11];
+    const abi = wasmModule(
+      [1, 1, 96, 0, 1, 123],
+      [3, 1, 0],
+      [7, 1, 6, 118, 101, 99, 116, 111, 114, 0, 0],
+      [10, 1, vectorBody.length, ...vectorBody],
+    );
+    expect(v8Validate(abi)).toBe(true);
+    expect(analyzeWasm(abi).status).toBe("valid");
+    expect(translateWasmModule(abi, SHA, { boundsChecks: true }).text.join("\n")).toContain(
+      "call void @scr_wasm_vector_js_error()",
+    );
+  });
+
+  test.each([
+    ["extract-21", [253, 21, 2], 2, 16],
+    ["replace-34", [253, 34, 1], 2, 2],
+    ["shuffle", [253, 13, 31], 2, 32],
+    ["memory-0", [253, 0, 0, 0], 2, 5],
+    ["lane-memory-87", [253, 87, 0, 0, 1], 4, 2],
+  ])("rejects invalid SIMD immediates in %s", (name, needle, delta, replacement) => {
+    const bytes = Buffer.from(simdFixtures.find((f) => f.name === name)!.base64, "base64");
+    const offset = bytes.indexOf(Buffer.from(needle));
+    expect(offset).toBeGreaterThan(0);
+    bytes[offset + delta] = replacement;
+    expect(v8Validate(bytes)).toBe(false);
+    expect(analyzeWasm(bytes).status).toBe("invalid");
+  });
+
+  test("the opcode inventory matches the implemented and exercised subset", () => {
+    const inventory: { opcode: string; translated: boolean }[] = JSON.parse(
+      readFileSync(
+        new URL("../../../../internal/compatibility/wasm-simd-opcodes.json", import.meta.url),
+        "utf8",
+      ),
+    );
+    expect(inventory).toHaveLength(256);
+    expect(new Set(inventory.map((entry) => entry.opcode)).size).toBe(256);
+    const exercised = new Set<number>();
+    const relaxed: { base64: string }[] = JSON.parse(
+      readFileSync(
+        new URL("../../../../tests/wasm-spec/corpus/simd-contract.json", import.meta.url),
+        "utf8",
+      ),
+    ).relaxed;
+    for (const fixture of [...simdFixtures, ...relaxed]) {
+      const m = parseWasmModule(Buffer.from(fixture.base64, "base64"));
+      for (const code of m.codes) {
+        const c = new WasmCursor(m.bytes, code.body.start);
+        while (c.pos < code.body.end) {
+          const op = c.u8();
+          const pos = c.pos;
+          if (op === 0xfd) {
+            exercised.add(c.u32());
+            c.pos = pos;
+          }
+          skipImmediates(c, op);
+        }
+      }
+    }
+    expect(
+      inventory.filter((entry) => entry.translated).map((entry) => Number(entry.opcode)),
+    ).toEqual([...exercised].sort((a, b) => a - b));
+    expect(exercised.size).toBe(256);
+  });
+
+  test.each([0x23, 0xd6, 0x63, 0x64, 0xc3, 0xc4])(
+    "rejects scalar operands for integer SIMD opcode %i",
+    (sub) => {
+      const compare = sub === 0x23 || sub === 0xd6;
+      const vector = [253, 12, ...new Array<number>(16).fill(0)];
+      const op = sub < 128 ? [253, sub] : [253, sub, 1];
+      const instructions = [
+        0,
+        ...(compare ? vector : []),
+        65,
+        0,
+        ...op,
+        ...(compare ? [253, 83] : []),
+        11,
+      ];
+      const bytes = wasmModule(
+        [1, 1, 96, 0, 1, 127],
+        [3, 1, 0],
+        [10, 1, instructions.length, ...instructions],
+      );
+      expect(v8Validate(bytes)).toBe(false);
+      expect(analyzeWasm(bytes).status).toBe("invalid");
+    },
+  );
+
+  test.each([0x6b, 0x8c, 0xad, 0xcb])("rejects a non-i32 shift count for opcode %i", (sub) => {
+    const vector = [253, 12, ...new Array<number>(16).fill(0)];
+    const op = sub < 128 ? [253, sub] : [253, sub, 1];
+    const instructions = [0, ...vector, 66, 0, ...op, 253, 83, 11];
+    const bytes = wasmModule(
+      [1, 1, 96, 0, 1, 127],
+      [3, 1, 0],
+      [10, 1, instructions.length, ...instructions],
+    );
+    expect(v8Validate(bytes)).toBe(false);
+    expect(analyzeWasm(bytes).status).toBe("invalid");
+  });
+
+  test.each([0x87, 0x9c, 0x7c, 0xba])("rejects scalar operands for widening opcode %i", (sub) => {
+    const binary = sub === 0x9c || sub === 0xba;
+    const vector = [253, 12, ...new Array<number>(16).fill(0)];
+    const op = sub < 128 ? [253, sub] : [253, sub, 1];
+    const instructions = [0, ...(binary ? vector : []), 65, 0, ...op, 253, 83, 11];
+    const bytes = wasmModule(
+      [1, 1, 96, 0, 1, 127],
+      [3, 1, 0],
+      [10, 1, instructions.length, ...instructions],
+    );
+    expect(v8Validate(bytes)).toBe(false);
+    expect(analyzeWasm(bytes).status).toBe("invalid");
+  });
+
+  test("vector function references retain native signatures with rejecting JS thunks", () => {
+    const original = Buffer.from(
+      simdFixtures.find((f) => f.name === "internal-vector-call")!.base64,
+      "base64",
+    );
+    const c = new WasmCursor(original, 8);
+    let pos = c.pos;
+    while (c.pos < original.length) {
+      pos = c.pos;
+      const id = c.u8(),
+        size = c.u32();
+      if (id === 10) break;
+      c.pos += size;
+    }
+    const bytes = Buffer.concat([
+      original.subarray(0, pos),
+      Buffer.from([9, 5, 1, 3, 0, 1, 1]),
+      original.subarray(pos),
+    ]);
+    expect(v8Validate(bytes)).toBe(true);
+    expect(analyzeWasm(bytes).status).toBe("valid");
+    expect(translateWasmModule(bytes, SHA, { boundsChecks: true }).text.join("\n")).toContain(
+      "call void @scr_wasm_vector_js_error()",
+    );
+  });
+
+  test("internal vector function bodies stay type checked", () => {
+    const bytes = Buffer.from(
+      simdFixtures.find((f) => f.name === "internal-vector-call")!.base64,
+      "base64",
+    );
+    const offset = bytes.lastIndexOf(Buffer.from([32, 0, 253, 97, 11]));
+    expect(offset).toBeGreaterThan(0);
+    bytes[offset] = 65;
+    expect(v8Validate(bytes)).toBe(false);
+    expect(analyzeWasm(bytes).status).toBe("invalid");
+  });
+
+  test.each([0x65, 0x6f, 0x82, 0x9b])(
+    "rejects scalar operands for saturating/narrowing opcode %i",
+    (sub) => {
+      const vector = [253, 12, ...new Array<number>(16).fill(0)];
+      const op = sub < 128 ? [253, sub] : [253, sub, 1];
+      const instructions = [0, ...vector, 65, 0, ...op, 253, 83, 11];
+      const bytes = wasmModule(
+        [1, 1, 96, 0, 1, 127],
+        [3, 1, 0],
+        [10, 1, instructions.length, ...instructions],
+      );
+      expect(v8Validate(bytes)).toBe(false);
+      expect(analyzeWasm(bytes).status).toBe("invalid");
+    },
+  );
+
+  test("large function emission does not use the JavaScript argument stack", () => {
+    const count = 70_000;
+    const body = Buffer.alloc(1 + 7 * count + 3);
+    for (let i = 0; i < count; i++) body.set([32, 0, 65, 1, 106, 33, 0], 1 + 7 * i);
+    body.set([32, 0, 11], 1 + 7 * count);
+    const leb = (value: number): Buffer => {
+      const bytes: number[] = [];
+      do {
+        const low = value & 127;
+        value >>>= 7;
+        bytes.push(low | (value ? 128 : 0));
+      } while (value);
+      return Buffer.from(bytes);
+    };
+    const code = Buffer.concat([Buffer.from([1]), leb(body.length), body]);
+    const bytes = Buffer.concat([
+      Buffer.from([0, 97, 115, 109, 1, 0, 0, 0, 1, 6, 1, 96, 1, 127, 1, 127, 3, 2, 1, 0, 10]),
+      leb(code.length),
+      code,
+    ]);
+    expect(v8Validate(bytes)).toBe(true);
+    expect(analyzeWasm(bytes).status).toBe("valid");
+    const text = translateWasmModule(bytes, SHA, { boundsChecks: true }).text.join("\n");
+    expect(text.split("add i32").length - 1).toBe(count);
+  });
+
+  test.each([0x9a, 0xa2, 0xaf, 0xbb, 0xe2, 0xee, 0x114])(
+    "rejects reserved SIMD opcode %i as malformed",
+    (sub) => {
+      const op = sub < 128 ? [253, sub] : [253, (sub & 127) | 128, sub >>> 7];
+      const instructions = [0, ...op, 65, 0, 11];
+      const bytes = wasmModule(
+        [1, 1, 96, 0, 1, 127],
+        [3, 1, 0],
+        [10, 1, instructions.length, ...instructions],
+      );
+      expect(v8Validate(bytes)).toBe(false);
+      expect(analyzeWasm(bytes).status).toBe("malformed");
+    },
+  );
+
+  test.each([0x41, 0xe4, 0xe3, 0x67, 0x5e, 0xfc])(
+    "rejects scalar operands for float SIMD opcode %i",
+    (sub) => {
+      const vector = [253, 12, ...new Array<number>(16).fill(0)];
+      const binary = sub === 0x41 || sub === 0xe4;
+      const op = sub < 128 ? [253, sub] : [253, sub, 1];
+      const instructions = [0, ...(binary ? vector : []), 65, 0, ...op, 253, 83, 11];
+      const bytes = wasmModule(
+        [1, 1, 96, 0, 1, 127],
+        [3, 1, 0],
+        [10, 1, instructions.length, ...instructions],
+      );
+      expect(v8Validate(bytes)).toBe(false);
+      expect(analyzeWasm(bytes).status).toBe("invalid");
+    },
+  );
+
+  test("SIMD stores check the full range even with guard pages", () => {
+    const bytes = Buffer.from(simdFixtures.find((f) => f.name === "store-param")!.base64, "base64");
+    const text = translateWasmModule(bytes, SHA, { boundsChecks: false }).text.join("\n");
+    expect(text).toContain("icmp ugt i64");
+    expect(text).toContain("store volatile <16 x i8>");
+    expect(text.indexOf("icmp ugt i64")).toBeLessThan(text.indexOf("store volatile <16 x i8>"));
+  });
+
+  test("relaxed SIMD lowers through its portable strict projection", () => {
+    const instructions = [
+      0,
+      253,
+      12,
+      ...new Array<number>(16).fill(0),
+      253,
+      12,
+      ...new Array<number>(16).fill(0),
+      253,
+      128,
+      2,
+      253,
+      83,
+      11,
+    ];
+    const bytes = wasmModule(
+      [1, 1, 96, 0, 1, 127],
+      [3, 1, 0],
+      [10, 1, instructions.length, ...instructions],
+    );
+    expect(v8Validate(bytes)).toBe(true);
+    expect(analyzeWasm(bytes).features).toEqual(["simd", "relaxed-simd"]);
+    expect(isTranslatableFeature("relaxed-simd")).toBe(true);
+    expect(analyzeWasm(bytes).status).toBe("valid");
+    expect(translateWasmModule(bytes, SHA, { boundsChecks: true }).text.join("\n")).toContain(
+      "extractelement",
+    );
+  });
+
+  test("seeded mutations never admit a SIMD module V8 rejects", () => {
+    let state = 0x1679;
+    const random = (n: number): number => {
+      state ^= state << 13;
+      state ^= state >>> 17;
+      state ^= state << 5;
+      return (state >>> 0) % n;
+    };
+    for (let i = 0; i < 4000; i++) {
+      const bytes = Buffer.from(simdFixtures[random(simdFixtures.length)]!.base64, "base64");
+      const offset = random(bytes.length);
+      bytes[offset] = random(256);
+      const summary = analyzeWasm(bytes);
+      if (summary.status === "unsupported") continue;
+      expect(summary.status === "valid", `mutation ${i}: ${summary.error}`).toBe(v8Validate(bytes));
+    }
+  });
+
+  test("a SIMD instruction does not hide a subsequent scalar type error", () => {
+    const bytes = Buffer.from(simdFixtures.find((f) => f.name === "const")!.base64, "base64");
+    const store = bytes.indexOf(Buffer.from([253, 11, 0, 0]));
+    bytes[store + 4] = 66; // i64.const replaces the i32 function result.
+    expect(v8Validate(bytes)).toBe(false);
+    expect(analyzeWasm(bytes).status).toBe("invalid");
+  });
+});
+
+describe("SIMD native contract", () => {
+  const contract = JSON.parse(
+    readFileSync(
+      join(import.meta.dirname, "../../../../tests/wasm-spec/corpus/simd-contract.json"),
+      "utf8",
+    ),
+  ) as {
+    fixtures: Record<string, string>;
+    relaxed: { op: number; base64: string; expected: number[] }[];
+  };
+  for (const [name, base64] of Object.entries(contract.fixtures)) {
+    test(`validates and lowers ${name} in both bounds modes`, () => {
+      const bytes = Buffer.from(base64, "base64");
+      expect(v8Validate(bytes)).toBe(true);
+      expect(analyzeWasm(bytes).status).toBe("valid");
+      for (const boundsChecks of [false, true])
+        expect(() => translateWasmModule(bytes, SHA, { boundsChecks })).not.toThrow();
+    });
+  }
+  for (const f of contract.relaxed) {
+    test(`relaxed opcode ${f.op} validates and lowers with typed operands`, () => {
+      const bytes = Buffer.from(f.base64, "base64");
+      expect(v8Validate(bytes)).toBe(true);
+      expect(analyzeWasm(bytes).status).toBe("valid");
+      for (const boundsChecks of [false, true])
+        expect(() => translateWasmModule(bytes, SHA, { boundsChecks })).not.toThrow();
+      // Replace a v128.const with i32.const plus nops, preserving section sizes.
+      const bad = Buffer.from(bytes);
+      const at = bad.indexOf(Buffer.from([253, 12]));
+      bad[at] = 65;
+      bad[at + 1] = 0;
+      bad.fill(1, at + 2, at + 18);
+      expect(v8Validate(bad)).toBe(false);
+      expect(analyzeWasm(bad).status).toBe("invalid");
+    });
+  }
+});
+
+describe("recovered adversarial vector ABI cases", () => {
+  const abi = JSON.parse(
+    readFileSync(
+      new URL("../../../../tests/wasm-spec/corpus/simd-abi.json", import.meta.url),
+      "utf8",
+    ),
+  ) as Record<string, string>;
+  test.each(Object.entries(abi))(
+    "validates and lowers %s with the vector runtime ABI",
+    (_name, base64) => {
+      const bytes = Buffer.from(base64, "base64");
+      expect(v8Validate(bytes)).toBe(true);
+      expect(analyzeWasm(bytes).status).toBe("valid");
+      for (const boundsChecks of [false, true]) {
+        const out = translateWasmModule(bytes, SHA, { boundsChecks });
+        const text = out.text.join("\n");
+        expect(text.slice(text.indexOf(out.descriptor + " ="))).toContain(
+          `i64 ${bytes.length}, i64 3,`,
+        );
+      }
+    },
+  );
+  test("keeps scalar descriptor ABI compatibility", () => {
+    const out = translateWasmModule(ADD, SHA, { boundsChecks: false });
+    const text = out.text.join("\n");
+    expect(text.slice(text.indexOf(out.descriptor + " ="))).toContain(`i64 ${ADD.length}, i64 2,`);
+  });
+  test("boundary mutations agree with V8 validation", () => {
+    const originals = Object.values(abi).map((base64) => Buffer.from(base64, "base64"));
+    let seed = 0x1679ab1;
+    const random = (limit: number): number => {
+      seed ^= seed << 13;
+      seed ^= seed >>> 17;
+      seed ^= seed << 5;
+      return (seed >>> 0) % limit;
+    };
+    for (let i = 0; i < 2000; i++) {
+      const bytes = Uint8Array.from(originals[random(originals.length)]!);
+      bytes[random(bytes.length)] = random(256);
+      const summary = analyzeWasm(bytes),
+        valid = v8Validate(bytes);
+      if (summary.status === "valid") expect(valid, `boundary mutation ${i}`).toBe(true);
+      if (summary.status === "invalid" || summary.status === "malformed")
+        expect(valid, `boundary mutation ${i}`).toBe(false);
+    }
   });
 });

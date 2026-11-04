@@ -494,6 +494,7 @@ const RUNTIME_DEFINES: readonly {
   when: (opts: CcOptions) => boolean | undefined;
 }[] = [
   { define: "SCR_TEXT_DECODER_LEGACY", when: (opts) => opts.textDecoderLegacy },
+  { define: "SCR_WASM_SCALAR_RUNTIME", when: (opts) => opts.wasm && !opts.wasmVectors },
   { define: "SCR_WARNING_REPLACE", when: (opts) => opts.warningReplace },
   // scr_node_builtin.c's dynamic global read throws for the plain Node
   // globals the native runtime does not implement; a program with a computed

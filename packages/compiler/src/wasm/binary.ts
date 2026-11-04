@@ -9,7 +9,11 @@
  * global initializer may read any earlier immutable global), the decoder
  * follows them, because Node is the behavior oracle.
  *
- * Modules that use a proposal outside that set (SIMD, threads, exception
+ * Standard and relaxed SIMD instructions, vector globals and vector function
+ * signatures are typed and translated. Vectors stay within native Wasm
+ * calls; the JavaScript API enforces its normative conversion restrictions.
+ *
+ * Modules that use a proposal outside that set (threads, exception
  * handling, tail calls, function references and GC, memory64, multiple
  * memories) still decode: the instructions that need the proposal are read
  * for their immediates but not type-checked, and the summary names the
@@ -21,6 +25,7 @@
  * the counts and the feature set it reports. It is plain TypeScript that
  * the native compiler also compiles. */
 import { readMemargFlags } from "./module.js";
+import { simdIntegerOp, simdFloatOp, relaxedSimdArity } from "./simd.js";
 
 /** Proposals the summary can name, in report order. The first group is the
  * translatable set; the rest are reported as unsupported. */
@@ -33,6 +38,7 @@ export const WASM_FEATURES = [
   "reference-types",
   "extended-const",
   "simd",
+  "relaxed-simd",
   "threads",
   "exceptions",
   "tail-call",
@@ -44,6 +50,8 @@ export const WASM_FEATURES = [
 export type WasmFeature = (typeof WASM_FEATURES)[number];
 
 const TRANSLATABLE: ReadonlySet<string> = new Set([
+  "simd",
+  "relaxed-simd",
   "mutable-globals",
   "sign-extension",
   "nontrapping-fptoint",
@@ -1102,11 +1110,9 @@ class FunctionValidator {
       total += n;
       if (total > MAX_LOCALS) r.malformed("too many locals");
       const t = this.m.valType(r);
-      if (t === V128) this.typed = false;
       if (isRef(t)) this.m.feature("reference-types");
       for (let k = 0; k < n; k++) this.locals.push(t);
     }
-    if (this.type.params.includes(V128) || this.type.results.includes(V128)) this.typed = false;
     if (this.m.memory64 || this.m.gcTypes) this.typed = false;
     this.pushCtrl(-1, [], this.type.results);
     while (this.ctrls.length > 0) {
@@ -1500,8 +1506,7 @@ class FunctionValidator {
         this.prefixFC();
         return;
       case 0xfd:
-        this.untyped("simd");
-        this.scanSimd();
+        this.prefixSimd();
         return;
       case 0xfe:
         this.untyped("threads");
@@ -1860,9 +1865,102 @@ class FunctionValidator {
     }
   }
 
+  /** Validate standard and relaxed SIMD on the normal operand/control stack. */
+  prefixSimd(): void {
+    const r = this.r;
+    this.m.feature("simd");
+    const sub = r.u32();
+    const relaxedArity = relaxedSimdArity(sub);
+    if (relaxedArity !== 0) {
+      this.m.feature("relaxed-simd");
+      for (let i = 0; i < relaxedArity; i++) this.popExpect(V128);
+      this.push(V128);
+      return;
+    }
+    const floating = simdFloatOp(sub);
+    if (floating !== null) {
+      this.popExpect(V128);
+      if (floating.kind === "compare" || floating.kind === "binary") this.popExpect(V128);
+      this.push(V128);
+      return;
+    }
+    const integer = simdIntegerOp(sub);
+    if (integer !== null) {
+      if (integer.kind === "shift") this.popExpect(I32);
+      this.popExpect(V128);
+      if (
+        integer.kind === "compare" ||
+        integer.kind === "binary" ||
+        integer.kind === "extmul" ||
+        integer.kind === "dot" ||
+        integer.kind === "saturating" ||
+        integer.kind === "average" ||
+        integer.kind === "narrow"
+      )
+        this.popExpect(V128);
+      this.push(integer.kind === "all-true" || integer.kind === "bitmask" ? I32 : V128);
+      return;
+    }
+    if (sub > 34 && (sub < 77 || sub > 93)) r.malformed(`illegal opcode 0xfd ${sub}`);
+    if (sub <= 11 || (sub >= 84 && sub <= 93)) {
+      const align =
+        sub === 0 || sub === 11
+          ? 4
+          : sub <= 6
+            ? 3
+            : sub <= 10
+              ? sub - 7
+              : sub <= 91
+                ? (sub - 84) % 4
+                : sub - 90;
+      this.memarg(align);
+      const lane = sub >= 84 && sub <= 91 ? r.u8() : 0;
+      if (!this.typed) return;
+      if (sub === 11 || (sub >= 84 && sub <= 91)) this.popExpect(V128);
+      this.popExpect(I32);
+      if (sub >= 84 && sub <= 91) {
+        const lanes = 16 >> ((sub - 84) % 4);
+        if (lane >= lanes) this.invalid("invalid lane index");
+      }
+      if (sub !== 11 && !(sub >= 88 && sub <= 91)) this.push(V128);
+      return;
+    }
+    if (sub === 12) {
+      r.skip(16);
+      this.push(V128);
+      return;
+    }
+    if (sub === 13) {
+      for (let i = 0; i < 16; i++) if (r.u8() >= 32) this.invalid("invalid shuffle lane index");
+    }
+    if (sub >= 15 && sub <= 20) {
+      this.popExpect(sub <= 17 ? I32 : sub === 18 ? I64 : sub === 19 ? F32 : F64);
+      this.push(V128);
+      return;
+    }
+    if (sub >= 21 && sub <= 34) {
+      const group =
+        sub <= 23 ? 0 : sub <= 26 ? 1 : sub <= 28 ? 2 : sub <= 30 ? 3 : sub <= 32 ? 4 : 5;
+      const laneCount = group === 0 ? 16 : group === 1 ? 8 : group === 2 || group === 4 ? 4 : 2;
+      if (r.u8() >= laneCount) this.invalid("invalid lane index");
+      const type = group <= 2 ? I32 : group === 3 ? I64 : group === 4 ? F32 : F64;
+      const replace =
+        sub === 23 || sub === 26 || sub === 28 || sub === 30 || sub === 32 || sub === 34;
+      if (replace) this.popExpect(type);
+      this.popExpect(V128);
+      this.push(replace ? V128 : type);
+      return;
+    }
+    this.popExpect(V128);
+    if (sub !== 77 && sub !== 83) this.popExpect(V128);
+    if (sub === 82) this.popExpect(V128);
+    this.push(sub === 83 ? I32 : V128);
+  }
+
   scanSimd(): void {
     const r = this.r;
     const sub = r.u32();
+    if (sub >= 0x100 && sub <= 0x113) this.m.feature("relaxed-simd");
     if (sub <= 11 || sub === 92 || sub === 93) {
       this.scanMemarg();
       return;

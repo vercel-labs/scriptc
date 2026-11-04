@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/webassembly-simd-spec-21/main.mjs"
+ ],
+ "diags": []
+}

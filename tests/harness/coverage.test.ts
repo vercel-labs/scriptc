@@ -71,7 +71,7 @@ test("WebAssembly modules the build can see report with their sources", async ()
       [],
       ["package"],
     ],
-    ["tests/coverage-fixtures/wasm/build/generated.wasm", "unsupported", ["simd"], ["config"]],
+    ["tests/coverage-fixtures/wasm/build/generated.wasm", "valid", [], ["config"]],
   ]);
   const envelope = coverageEnvelope(coverage, { compilerVersion: "test" });
   expect(envelope.wasmModules?.map((m) => m.sha256.length)).toEqual([64, 64, 64, 64, 64]);

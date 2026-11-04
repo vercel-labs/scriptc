@@ -10188,7 +10188,9 @@ function lowerObjectStaticCall(
             value = retagged;
             vt = valueT!;
           } else if (
-            !(valueT?.kind === "union" && lowerer.unionRetagMappable(f.type.unionId, valueT.unionId))
+            !(
+              valueT?.kind === "union" && lowerer.unionRetagMappable(f.type.unionId, valueT.unionId)
+            )
           ) {
             return `field '${f.name}' is a union that cannot re-tag into the result element type`;
           }

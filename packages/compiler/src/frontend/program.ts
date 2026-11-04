@@ -6322,10 +6322,12 @@ function preflightStructure7(load: LoadResult): PreflightStructure {
           // module-namespace paths); the ns OBJECT as a first-class value
           // fences per site. What keeps a fence here: JSON modules (their
           // namespace object has no static story — default imports bake
-          // the data), CommonJS JS modules (Node builds their namespace
-          // from its lexer's static analysis, a different surface),
-          // and unresolved specifiers. Supported builtins pass through as
-          // before (their namespace members are the declared surface).
+          // the data) and unresolved specifiers. A CommonJS module's
+          // namespace, from JavaScript or TypeScript, reads the members
+          // Node's lexer detects, and other reads refuse at their site
+          // (lower-namespaces.ts, cjsNamespaceImportDep). Supported
+          // builtins pass through as before (their namespace members are
+          // the declared surface).
           if (isJson) {
             diags.push(
               unsupportedDiag(
@@ -6334,30 +6336,6 @@ function preflightStructure7(load: LoadResult): PreflightStructure {
                 "namespace imports of JSON modules",
               ),
             );
-          } else if (dep !== null && isCjsJsFile7(dep, program)) {
-            // A CJS namespace binding whose every use is a bare expression
-            // statement (`cjs;` — the corpus's "the import linked"
-            // assertion) carries no surface question: the statement lowers
-            // to Node's no-op, the module still evaluates through its
-            // ordinary init edge, and no member is ever read through the
-            // lexer facade (self-imports of a CJS module included — the
-            // partially-built exports are never observed). In JavaScript
-            // sources every use passes here: member reads lower through the
-            // names Node's lexer detects, and the other reads refuse at
-            // their site (lower-namespaces.ts, cjsNamespaceImportDep). Any
-            // OTHER use in TypeScript keeps the fence.
-            if (
-              !isJsSourceFileName(sf.fileName) &&
-              !nsBindingUsesAreBareStatements7(program, sf, clause.namedBindings.name)
-            ) {
-              diags.push(
-                unsupportedDiag(
-                  "SC1013",
-                  locOf7(clause.namedBindings),
-                  "namespace imports of CommonJS modules",
-                ),
-              );
-            }
           } else if (
             dep === null &&
             !(!isRelative && ambientModules.has(spec)) &&

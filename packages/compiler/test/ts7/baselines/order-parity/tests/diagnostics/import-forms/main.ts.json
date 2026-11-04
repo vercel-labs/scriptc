@@ -1,7 +1,6 @@
 {
  "order": [
   "<repo>/tests/diagnostics/import-forms/helpers.ts",
-  "<repo>/tests/diagnostics/import-forms/legacy.cjs",
   "<repo>/tests/diagnostics/import-forms/main.ts"
  ],
  "diags": [
@@ -10,8 +9,8 @@
    "message": "default exports/imports are not supported yet",
    "loc": {
     "file": "<repo>/tests/diagnostics/import-forms/main.ts",
-    "start": 517,
-    "end": 519
+    "start": 504,
+    "end": 506
    },
    "milestone": "later",
    "hint": "use named exports: export function f() {} / import { f } from \"./m\""
@@ -21,18 +20,8 @@
    "message": "namespace imports of JSON modules are not supported yet",
    "loc": {
     "file": "<repo>/tests/diagnostics/import-forms/main.ts",
-    "start": 543,
-    "end": 551
-   },
-   "milestone": "later"
-  },
-  {
-   "code": "SC1013",
-   "message": "namespace imports of CommonJS modules are not supported yet",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/import-forms/main.ts",
-    "start": 578,
-    "end": 589
+    "start": 530,
+    "end": 538
    },
    "milestone": "later"
   },
@@ -41,8 +30,8 @@
    "message": "re-exports from packages or builtin modules are not supported yet",
    "loc": {
     "file": "<repo>/tests/diagnostics/import-forms/main.ts",
-    "start": 759,
-    "end": 794
+    "start": 706,
+    "end": 741
    },
    "milestone": "later",
    "hint": "export declarations directly: export function f() {}"

@@ -12,7 +12,7 @@
  * the refusal. */
 import * as ts from "../ts7/adapter.js";
 import { BOOL, STRING, type IrExpr, type IrType, type SrcLoc } from "../../ir/ir.js";
-import { varRef } from "../../ir/build.js";
+import { dynUndefinedExpr, varRef } from "../../ir/build.js";
 import { locOf } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
 import type { ClassInfo } from "./lower-classes.js";
@@ -243,7 +243,15 @@ function refuseFunction(lowerer: Lowerer, expr: ts.MetaProperty): never {
 /** `new.target` as a value. */
 export function lowerNewTarget(lowerer: Lowerer, expr: ts.MetaProperty): IrExpr {
   const loc = locOf(expr);
-  if (bindingOf(expr).kind === "function") refuseFunction(lowerer, expr);
+  if (bindingOf(expr).kind === "function") {
+    // A method body's `new.target` (TS17013, JS_OPINIONS): legal JavaScript
+    // and always undefined, because a method is not constructable. Reached
+    // only through the admitted site, so a function body that refused before
+    // keeps its refusal. The checker types the meta-property `any` there, and
+    // the value is the dynamic undefined Node reads.
+    if (lowerer.opinionAt(expr, 17013)) return dynUndefinedExpr(loc);
+    refuseFunction(lowerer, expr);
+  }
   const dispatch = dispatchOf(lowerer, expr)!;
   const type: IrType = { kind: "classval", className: dispatch.info.def.name };
   for (const c of dispatch.classes) {

@@ -27,11 +27,13 @@
  * unit, present in every link including the runtime's own unit-test
  * subsets) rather than in the console unit. */
 _Noreturn void scr_trap(const char *msg) {
+  scr_stdout_settle(); /* buffered stdout (--stdout-buffering) stays source-ordered */
   fputs(msg, stderr);
   abort();
 }
 
 _Noreturn void scr_trap_fmt(const char *fmt, ...) {
+  scr_stdout_settle();
   va_list ap;
   va_start(ap, fmt);
   vfprintf(stderr, fmt, ap);
@@ -700,8 +702,10 @@ void scr_exc_print_uncaught(void) {
   }
 #endif
   scr_exit_code_note(scr_uncaught_handler_failed ? 7 : 1);
-  /* Settle any runtime-internal stdout fragment before the stderr line when
-   * both share an fd. JavaScript-visible writes already flush themselves. */
+  /* Settle stdout before the stderr line when both share an fd: the
+   * runtime's own fragments, and — in a --stdout-buffering build — the
+   * JavaScript-visible bytes it buffers. */
+  scr_stdout_settle();
   fflush(stdout);
 #ifdef SCR_NODE_ISLANDS
   /* An error thrown by Node island code: Node's own report (the throw

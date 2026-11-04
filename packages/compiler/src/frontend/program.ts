@@ -140,6 +140,7 @@ import {
 } from "./tsc-codes.js";
 import { trackedFileExists, trackedReadFile, trackedRealpath } from "./input-tracker.js";
 import { earlyErrorDiagnostics7 } from "./early-errors.js";
+import { isBundledLibraryFile } from "./default-library.js";
 import { forkTargetPaths } from "./fork-target.js";
 import { workerTargetPaths } from "./worker-target.js";
 import {
@@ -675,8 +676,7 @@ function fallbackModuleRoots7(program: ts.Program, host: ts.Ts7Host): string[] {
   for (const name of names) {
     const path = tsgoPath(name);
     if (held.has(path) || path === ambient || path === overrides) continue;
-    if (/\/lib\.[^/]*\.d\.ts$/.test(path) && program.getSourceFileMetadata(name)?.isDefaultLibrary)
-      continue;
+    if (isBundledLibraryFile(program, name)) continue;
     for (const file of fallbackModulesNamedIn(host.sourceText(name) ?? ""))
       if (!held.has(file)) roots.add(file);
   }

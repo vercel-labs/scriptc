@@ -8,6 +8,7 @@ import {
   BOOL,
   DYN,
   F64,
+  REF_TRUTHY_KINDS,
   STRING,
   UNDEFINED_T,
   VOID,
@@ -3431,9 +3432,32 @@ export function andSpreadOf(
   }
   if (spreadType?.kind !== "union") return null;
   const arms = lowerer.unions.get(spreadType.unionId)?.arms ?? [];
+  // The falsy primitive the condition itself contributes (`c && { k: v }`
+  // with `c: string | undefined` types as `"" | { k } | undefined`).
+  const primitiveFalsyArm = arms.some(
+    (arm) => arm.kind === "bool" || arm.kind === "f64" || arm.kind === "string",
+  );
+  // The checker DROPS a falsy arm the `&&` can never yield (`ttl: "1h" |
+  // undefined` types `ttl && { ttl }` as that record | undefined), leaving
+  // record | unit with no primitive arm. Accept that shape only where the
+  // ordinary path had no answer at all: a condition arm that is neither a
+  // reference the falsy path can trap nor an arm the result can absorb made
+  // that `&&` the union-conversion refusal, so no program that lowered
+  // before reaches this branch. A condition that kept a reference arm
+  // (`obj && { k: v }` with `obj: SomeRecord | undefined`) lowered before
+  // and keeps the ordinary source-copy path.
+  const strandedConditionArm = (() => {
+    const condition = lowerer.mapTypeOf(lowerer.typeOf(e.left));
+    if (condition?.kind !== "union") return false;
+    return (lowerer.unions.get(condition.unionId)?.arms ?? []).some(
+      (arm) =>
+        !isUnitType(arm) &&
+        !REF_TRUTHY_KINDS.has(arm.kind) &&
+        lowerer.armTag(spreadType.unionId, arm) < 0,
+    );
+  })();
   if (
     arms.filter((arm) => arm.kind === "record").length !== 1 ||
-    !arms.some((arm) => arm.kind === "bool" || arm.kind === "f64" || arm.kind === "string") ||
     !arms.every(
       (arm) =>
         arm.kind === "record" ||
@@ -3441,7 +3465,8 @@ export function andSpreadOf(
         arm.kind === "f64" ||
         arm.kind === "string" ||
         isUnitType(arm),
-    )
+    ) ||
+    (!primitiveFalsyArm && !strandedConditionArm)
   )
     return null;
   if (right.properties.nodes.length === 0) return "unsupported";
@@ -3655,6 +3680,15 @@ function indexSignatureDestination(
     : null;
 }
 
+/** Whether the literal's checker CONTEXT is a checked-dynamic value (an
+ * `unknown`/`any` slot, or a record whose values are): that context is the
+ * value's home, so no record layout stands between the literal and its
+ * destination, and each runtime key stays where the source writes it. */
+function checkedDynamicDestination(lowerer: Lowerer, expr: ts.ObjectLiteralExpression): boolean {
+  const contextual = lowerer.checker.getContextualType(expr);
+  return contextual !== undefined && lowerer.mapTypeOf(contextual)?.kind === "dyn";
+}
+
 /** `expr` — a literal whose property name is decided at runtime — as the
  * checked-dynamic object the literal's own keys describe. No record shape can
  * hold a runtime-decided name: a record stores declared fields sorted and
@@ -3676,7 +3710,7 @@ function runtimeKeyedDynLiteral(
 ): IrExpr {
   const destination =
     indexSignatureDestination(lowerer, expected) ?? indexSignatureDestination(lowerer, type);
-  if (destination === null) {
+  if (destination === null && !checkedDynamicDestination(lowerer, expr)) {
     // A layout that keeps DECLARED fields beside an index signature
     // (`{ fixed: 1, [key]: 2 }`, inferred as `{ fixed: number; [x: string]:
     // number }`) stores the declared fields ahead of the overflow a runtime

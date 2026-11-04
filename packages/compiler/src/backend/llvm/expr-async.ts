@@ -1200,11 +1200,25 @@ export function emitAsyncExpr(
       }
       if (e.executor.type.kind === "func" && e.executor.type.params.length === 2) {
         // Two-param executor: reject is a runtime-provided closure
-        // rejecting the promise with its Error reason. First settle
-        // wins in the runtime; both closures' +1 move into the call.
-        host.declare(`declare ptr @scr_make_reject(ptr)`);
+        // rejecting the promise with its Error reason — or, for an executor
+        // whose reject parameter is checked-dynamic, with the dyn value the
+        // program rejected with. The maker follows the closure's signature,
+        // not the promise's payload: a promise lowered with an Error-taking
+        // reject (the typed `util.promisify` family, whose reason is the
+        // callback's Error) keeps scr_make_reject even when its settled
+        // value is unknown. First settle wins in the runtime; both closures'
+        // +1 move into the call.
+        const rejectType = e.executor.type.params[1];
+        const dynReject =
+          inner.kind === "dyn" &&
+          rejectType !== undefined &&
+          rejectType.kind === "func" &&
+          rejectType.params[0] !== undefined &&
+          rejectType.params[0].kind === "dyn";
+        const maker = dynReject ? "scr_make_reject_dyn" : "scr_make_reject";
+        host.declare(`declare ptr @${maker}(ptr)`);
         const reject = B.tmp();
-        B.line(`${reject} = call ptr @scr_make_reject(ptr ${p})`);
+        B.line(`${reject} = call ptr @${maker}(ptr ${p})`);
         const exec2 = host.emitExpr(e.executor);
         host.declare(`declare void @scr_promise_run_executor2(ptr, ptr, ptr, ptr)`);
         B.line(
@@ -1230,8 +1244,18 @@ export function emitAsyncExpr(
         throw new InternalCompilerError("llvm emitter bug: promiseWithResolvers record shape");
       }
       const inner = promT.inner;
+      // Same stance as `new Promise`: the reject maker follows the record's
+      // reject field, which a checked-dynamic promise types with the dyn
+      // reason the program settles on and every other promise with `Error`.
+      const rejectField = shape.fields.find((f) => f.name === "reject")?.type;
+      const maker =
+        inner.kind === "dyn" &&
+        rejectField?.kind === "func" &&
+        rejectField.params[0]?.kind === "dyn"
+          ? "scr_make_reject_dyn"
+          : "scr_make_reject";
       host.declare(`declare ptr @scr_promise_new()`);
-      host.declare(`declare ptr @scr_make_reject(ptr)`);
+      host.declare(`declare ptr @${maker}(ptr)`);
       const p = B.tmp();
       B.line(`${p} = call ptr @scr_promise_new()`);
       const kindNums: Partial<Record<IrType["kind"], number>> = {
@@ -1252,7 +1276,7 @@ export function emitAsyncExpr(
         );
       }
       const reject = B.tmp();
-      B.line(`${reject} = call ptr @scr_make_reject(ptr ${p})`);
+      B.line(`${reject} = call ptr @${maker}(ptr ${p})`);
       const rec = B.tmp();
       B.line(`${rec} = call ptr @${mangleRecordNew(e.type.shapeId)}()`);
       const out = host.own({ name: rec, type: e.type });

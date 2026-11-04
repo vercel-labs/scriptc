@@ -212,6 +212,9 @@ export interface CcOptions {
   wasm?: boolean;
   /** SCR_WARNING_REPLACE: process.emitWarning replacement support. */
   warningReplace?: boolean;
+  /** SCR_PROMISE_REJECT_DYN: the scr_async.c build with the reject closure
+   * a checked-dynamic promise reasons with. */
+  promiseRejectDyn?: boolean;
   /** SCR_JS_OBJECT_MODEL: the build of a unit that carries every JavaScript
    * object model feature the program reaches (t262-da §J). */
   jsObjectModel?: boolean;

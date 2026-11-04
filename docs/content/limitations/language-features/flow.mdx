@@ -1,0 +1,6 @@
+- **Flow:** Flow enums, component and hook syntax, `import typeof`, mapped types, the `_` type placeholder, `$Call`, `$Rest` and the other type-level utilities with no TypeScript counterpart, internal slot properties, CommonJS Flow modules (`module.exports`, `exports.x = ...`), and the declarations `declare class`, `declare module`, `declare module.exports`, and `declare export` of anything but a type or an interface are not supported.
+  A module that uses them stops the build with a diagnostic at its Flow source.
+  scriptc doesn't report Flow type errors, so a program still needs `flow check`.
+  A value annotated with an object type is a record of the type's fields, as for any value converted to a record.
+  Reading or calling a member the type doesn't list, through an `any` cast included, fails at run time, so methods a prototype adds aren't available.
+  Runtime error messages name a Flow module's source file and line, but build diagnostics and warnings about code inside a Flow module name its translated `.ts` path and a line of the translation, which can differ from the Flow line.

@@ -5,6 +5,7 @@ export const PAGE_TITLES: Record<string, string> = {
   cli: "CLI Reference",
   coverage: "Coverage Reports",
   dependencies: "npm Dependencies",
+  flow: "Flow",
   ffi: "Native FFI",
   "native-objects": "Native Program Objects",
   threads: "Sharing Data Between Workers",

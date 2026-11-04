@@ -1,0 +1,1 @@
+{ "name": "island-declared-arrays", "private": true, "type": "module", "scriptc": { "packages": { "array-pkg": "node" } } }

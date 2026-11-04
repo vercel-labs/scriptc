@@ -1,18 +1,18 @@
 {
   "schemaVersion": 5,
-  "nodeVersion": "24.22.0",
-  "nodeTag": "v24.22.0",
-  "nodeCommit": "f14cd3aa7bf9ca8df2cc5b8bb14beb0f335b1d93",
+  "nodeVersion": "24.22.1",
+  "nodeTag": "v24.22.1",
+  "nodeCommit": "d01285110044365f0ad4fec24482a585646640e2",
   "sources": {
     "allJson": {
-      "url": "https://nodejs.org/download/release/v24.22.0/docs/api/all.json",
-      "sha256": "2445f57511c86b2b8129b3fd8423811fd8b32d1eccc1e54d8c747e823f65be27"
+      "url": "https://nodejs.org/download/release/v24.22.1/docs/api/all.json",
+      "sha256": "3edf28696d913c7ef5f96b47f3f69ef70d641b28d560f9c76ffe7783a2234e9a"
     },
     "indexMarkdown": {
-      "url": "https://nodejs.org/docs/v24.22.0/api/index.md",
+      "url": "https://nodejs.org/docs/v24.22.1/api/index.md",
       "sha256": "c63ecaedc4a35de0823706cc72ce76cd10e712ce50eaca829bb2eefe1fc2ded2"
     },
-    "sourceBaseUrl": "https://github.com/nodejs/node/tree/f14cd3aa7bf9ca8df2cc5b8bb14beb0f335b1d93"
+    "sourceBaseUrl": "https://github.com/nodejs/node/tree/d01285110044365f0ad4fec24482a585646640e2"
   },
   "supportManifests": {
     "compilerSurface": "packages/compiler/surface-manifest.json",
@@ -2696,6 +2696,8 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
+          "tests/corpus/1402-buffer-encodings.ts",
+          "tests/corpus/1660-buffer-read-write-num.ts",
           "tests/corpus/2902-bigint-bytes.ts",
           "tests/corpus/2904-bigint-errors.ts",
           "tests/corpus/5285-blob-construct.ts",
@@ -2916,8 +2918,14 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:buffer"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.buffer.SlowBuffer",
+        "tests": [
+          "tests/corpus/1402-buffer-encodings.ts",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/2902-bigint-bytes.ts",
+          "tests/corpus/2904-bigint-errors.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -3115,8 +3123,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:buffer"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.buffer.kMaxLength",
+        "tests": [
+          "tests/corpus/1402-buffer-encodings.ts",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/2902-bigint-bytes.ts",
+          "tests/corpus/2904-bigint-errors.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -18709,7 +18723,9 @@
           "tests/corpus/5098-console-time-warnings.ts",
           "tests/corpus/5099-console-methods-dynamic.cjs",
           "tests/corpus/5884-inspect-layout-options.ts",
+          "tests/corpus/console-dir-show-hidden.ts",
           "tests/corpus/console-native-value.js",
+          "tests/corpus/inspect-getters.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -18864,9 +18880,11 @@
         "status": "partial",
         "evidence": "compiler-dedicated:console.assert",
         "tests": [
+          "tests/corpus/inspect-getters.ts",
           "tests/corpus/5096-console-assert-dir.ts",
           "tests/corpus/5099-console-methods-dynamic.cjs",
-          "tests/corpus/5884-inspect-layout-options.ts"
+          "tests/corpus/5884-inspect-layout-options.ts",
+          "tests/corpus/console-dir-show-hidden.ts"
         ]
       },
       "anchorSource": "exact"
@@ -19004,9 +19022,11 @@
         "status": "partial",
         "evidence": "compiler-dedicated:console.dir",
         "tests": [
+          "tests/corpus/inspect-getters.ts",
           "tests/corpus/5096-console-assert-dir.ts",
           "tests/corpus/5099-console-methods-dynamic.cjs",
-          "tests/corpus/5884-inspect-layout-options.ts"
+          "tests/corpus/5884-inspect-layout-options.ts",
+          "tests/corpus/console-dir-show-hidden.ts"
         ]
       },
       "anchorSource": "exact"
@@ -19032,9 +19052,11 @@
         "status": "partial",
         "evidence": "compiler-dedicated:console.dirxml",
         "tests": [
+          "tests/corpus/inspect-getters.ts",
           "tests/corpus/5096-console-assert-dir.ts",
           "tests/corpus/5099-console-methods-dynamic.cjs",
-          "tests/corpus/5884-inspect-layout-options.ts"
+          "tests/corpus/5884-inspect-layout-options.ts",
+          "tests/corpus/console-dir-show-hidden.ts"
         ]
       },
       "anchorSource": "exact"
@@ -26462,8 +26484,16 @@
       "anchor": "dep0080-path_makelong",
       "nodeStability": null,
       "static": {
-        "status": "not-applicable",
-        "evidence": "compiler-chapter-policy:deprecations"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.path._makeLong",
+        "tests": [
+          "tests/corpus/957-builtins-namespace.ts",
+          "tests/corpus/2915-path-function-values.ts",
+          "tests/corpus/2916-path-function-values-cjs.ts",
+          "tests/corpus/2917-builtin-callable-widths.ts",
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/9205-path-namespace-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -28820,6 +28850,9 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
+          "tests/corpus/2094-diagnostics-channel.ts",
+          "tests/corpus/2160-dc-tracing-channel.cjs",
+          "tests/corpus/2211-dc-trace-promise.cjs",
           "tests/corpus/2214-dc-bind-store.cjs"
         ]
       },
@@ -29042,8 +29075,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "status": "partial",
+        "evidence": "compiler-feature:diagnostics_channel.start",
+        "tests": [
+          "tests/corpus/2160-dc-tracing-channel.cjs",
+          "tests/corpus/2211-dc-trace-promise.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -29065,8 +29102,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "status": "partial",
+        "evidence": "compiler-feature:diagnostics_channel.end",
+        "tests": [
+          "tests/corpus/2160-dc-tracing-channel.cjs",
+          "tests/corpus/2211-dc-trace-promise.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -29088,8 +29129,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "status": "partial",
+        "evidence": "compiler-feature:diagnostics_channel.asyncStart",
+        "tests": [
+          "tests/corpus/2160-dc-tracing-channel.cjs",
+          "tests/corpus/2211-dc-trace-promise.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -29111,8 +29156,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "status": "partial",
+        "evidence": "compiler-feature:diagnostics_channel.asyncEnd",
+        "tests": [
+          "tests/corpus/2160-dc-tracing-channel.cjs",
+          "tests/corpus/2211-dc-trace-promise.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -29134,8 +29183,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "status": "partial",
+        "evidence": "compiler-feature:diagnostics_channel.error",
+        "tests": [
+          "tests/corpus/2160-dc-tracing-channel.cjs",
+          "tests/corpus/2211-dc-trace-promise.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -30468,8 +30521,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "status": "partial",
+        "evidence": "compiler-feature:diagnostics_channel.Channel",
+        "tests": [
+          "tests/corpus/2094-diagnostics-channel.ts",
+          "tests/corpus/2160-dc-tracing-channel.cjs",
+          "tests/corpus/2211-dc-trace-promise.cjs",
+          "tests/corpus/2214-dc-bind-store.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -30491,8 +30550,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "status": "partial",
+        "evidence": "compiler-feature:diagnostics_channel.channel.publish",
+        "tests": [
+          "tests/corpus/2094-diagnostics-channel.ts",
+          "tests/corpus/2160-dc-tracing-channel.cjs",
+          "tests/corpus/2211-dc-trace-promise.cjs",
+          "tests/corpus/2214-dc-bind-store.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -30514,8 +30579,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "status": "partial",
+        "evidence": "compiler-feature:diagnostics_channel.channel.subscribe",
+        "tests": [
+          "tests/corpus/2094-diagnostics-channel.ts",
+          "tests/corpus/2160-dc-tracing-channel.cjs",
+          "tests/corpus/2211-dc-trace-promise.cjs",
+          "tests/corpus/2214-dc-bind-store.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -30537,8 +30608,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "status": "partial",
+        "evidence": "compiler-feature:diagnostics_channel.channel.unsubscribe",
+        "tests": [
+          "tests/corpus/2094-diagnostics-channel.ts",
+          "tests/corpus/2160-dc-tracing-channel.cjs",
+          "tests/corpus/2211-dc-trace-promise.cjs",
+          "tests/corpus/2214-dc-bind-store.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -30560,8 +30637,14 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "status": "partial",
+        "evidence": "compiler-feature:diagnostics_channel.channel.bindStore",
+        "tests": [
+          "tests/corpus/2094-diagnostics-channel.ts",
+          "tests/corpus/2160-dc-tracing-channel.cjs",
+          "tests/corpus/2211-dc-trace-promise.cjs",
+          "tests/corpus/2214-dc-bind-store.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -30583,8 +30666,14 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "status": "partial",
+        "evidence": "compiler-feature:diagnostics_channel.channel.unbindStore",
+        "tests": [
+          "tests/corpus/2094-diagnostics-channel.ts",
+          "tests/corpus/2160-dc-tracing-channel.cjs",
+          "tests/corpus/2211-dc-trace-promise.cjs",
+          "tests/corpus/2214-dc-bind-store.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -30606,8 +30695,14 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "status": "partial",
+        "evidence": "compiler-feature:diagnostics_channel.channel.runStores",
+        "tests": [
+          "tests/corpus/2094-diagnostics-channel.ts",
+          "tests/corpus/2160-dc-tracing-channel.cjs",
+          "tests/corpus/2211-dc-trace-promise.cjs",
+          "tests/corpus/2214-dc-bind-store.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -30655,8 +30750,14 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "status": "partial",
+        "evidence": "compiler-feature:diagnostics_channel.TracingChannel",
+        "tests": [
+          "tests/corpus/2094-diagnostics-channel.ts",
+          "tests/corpus/2160-dc-tracing-channel.cjs",
+          "tests/corpus/2211-dc-trace-promise.cjs",
+          "tests/corpus/2214-dc-bind-store.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -30678,8 +30779,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "status": "partial",
+        "evidence": "compiler-feature:diagnostics_channel.tracingChannel.subscribe",
+        "tests": [
+          "tests/corpus/2094-diagnostics-channel.ts",
+          "tests/corpus/2160-dc-tracing-channel.cjs",
+          "tests/corpus/2211-dc-trace-promise.cjs",
+          "tests/corpus/2214-dc-bind-store.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -30701,8 +30808,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "status": "partial",
+        "evidence": "compiler-feature:diagnostics_channel.tracingChannel.unsubscribe",
+        "tests": [
+          "tests/corpus/2094-diagnostics-channel.ts",
+          "tests/corpus/2160-dc-tracing-channel.cjs",
+          "tests/corpus/2211-dc-trace-promise.cjs",
+          "tests/corpus/2214-dc-bind-store.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -30724,8 +30837,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "status": "partial",
+        "evidence": "compiler-feature:diagnostics_channel.tracingChannel.traceSync",
+        "tests": [
+          "tests/corpus/2094-diagnostics-channel.ts",
+          "tests/corpus/2160-dc-tracing-channel.cjs",
+          "tests/corpus/2211-dc-trace-promise.cjs",
+          "tests/corpus/2214-dc-bind-store.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -30747,8 +30866,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "status": "partial",
+        "evidence": "compiler-feature:diagnostics_channel.tracingChannel.tracePromise",
+        "tests": [
+          "tests/corpus/2094-diagnostics-channel.ts",
+          "tests/corpus/2160-dc-tracing-channel.cjs",
+          "tests/corpus/2211-dc-trace-promise.cjs",
+          "tests/corpus/2214-dc-bind-store.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -30770,8 +30895,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "status": "partial",
+        "evidence": "compiler-feature:diagnostics_channel.tracingChannel.traceCallback",
+        "tests": [
+          "tests/corpus/2094-diagnostics-channel.ts",
+          "tests/corpus/2160-dc-tracing-channel.cjs",
+          "tests/corpus/2211-dc-trace-promise.cjs",
+          "tests/corpus/2214-dc-bind-store.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32777,6 +32908,7 @@
           "tests/corpus/caught-system-error-fields.ts",
           "tests/corpus/error-stack-frames.ts",
           "tests/corpus/error-stack-limit.ts",
+          "tests/corpus/zstd-compress.cjs",
           "tests/fixtures/node-types/terminal-error-fields.ts",
           "tests/harness/project-config.test.ts"
         ]
@@ -40071,8 +40203,11 @@
       "anchor": "err_zstd_invalid_param",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_ZSTD_INVALID_PARAM",
+        "tests": [
+          "tests/corpus/zstd-compress.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -74674,11 +74809,15 @@
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/1480-os-network-interfaces.ts",
+          "tests/corpus/1540-os-userinfo.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/4598-os-available-parallelism.ts",
           "tests/corpus/5140-os-host-facts.ts",
           "tests/corpus/5141-os-constants.ts",
-          "tests/corpus/5883-os-set-priority.ts"
+          "tests/corpus/5883-os-set-priority.ts",
+          "tests/corpus/9204-os-user-info-buffer.ts",
+          "tests/corpus/os-user-info-encoding.ts",
+          "tests/corpus/os-userinfo-passwd-entry.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -75364,7 +75503,11 @@
         "evidence": "surface-manifest:node-builtin.os.userInfo",
         "tests": [
           "tests/corpus/1480-os-network-interfaces.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts"
+          "tests/corpus/2917-builtin-callable-widths.ts",
+          "tests/corpus/1540-os-userinfo.ts",
+          "tests/corpus/os-userinfo-passwd-entry.ts",
+          "tests/corpus/9204-os-user-info-buffer.ts",
+          "tests/corpus/os-user-info-encoding.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75506,6 +75649,7 @@
           "tests/corpus/5146-path-matches-glob-braces.ts",
           "tests/corpus/5147-path-matches-glob-extglob.ts",
           "tests/corpus/5148-path-matches-glob-classes.ts",
+          "tests/corpus/9205-path-namespace-members.ts",
           "tests/corpus/957-builtins-namespace.ts"
         ]
       },
@@ -75559,7 +75703,8 @@
           "tests/corpus/2915-path-function-values.ts",
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/9205-path-namespace-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75589,7 +75734,8 @@
           "tests/corpus/2915-path-function-values.ts",
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/9205-path-namespace-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75619,7 +75765,8 @@
           "tests/corpus/2915-path-function-values.ts",
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/9205-path-namespace-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75706,7 +75853,8 @@
           "tests/corpus/2915-path-function-values.ts",
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/9205-path-namespace-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75736,7 +75884,8 @@
           "tests/corpus/2915-path-function-values.ts",
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/9205-path-namespace-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75766,7 +75915,8 @@
           "tests/corpus/2915-path-function-values.ts",
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/9205-path-namespace-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75823,7 +75973,8 @@
           "tests/corpus/2915-path-function-values.ts",
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/9205-path-namespace-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75853,7 +76004,8 @@
           "tests/corpus/2915-path-function-values.ts",
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/9205-path-namespace-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75883,7 +76035,8 @@
           "tests/corpus/2915-path-function-values.ts",
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/9205-path-namespace-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75913,7 +76066,8 @@
           "tests/corpus/2915-path-function-values.ts",
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/9205-path-namespace-members.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -75943,7 +76097,8 @@
           "tests/corpus/2915-path-function-values.ts",
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/9205-path-namespace-members.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -75973,7 +76128,8 @@
           "tests/corpus/2915-path-function-values.ts",
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/9205-path-namespace-members.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -76003,7 +76159,8 @@
           "tests/corpus/2915-path-function-values.ts",
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/9205-path-namespace-members.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -99999,6 +100156,10 @@
           "tests/corpus/5833-url-search-params-iterators.ts",
           "tests/corpus/5834-url-search-params-iterators-dynamic.mjs",
           "tests/corpus/8423-urlsearchparams-implicit-string.ts",
+          "tests/corpus/9200-url-namespace-construct.ts",
+          "tests/corpus/9201-url-namespace-construct.cjs",
+          "tests/corpus/9202-url-search-params-foreach-thisarg.ts",
+          "tests/corpus/9206-url-revoke-object-url.ts",
           "tests/corpus/node24-file-url-buffer.ts",
           "tests/corpus/node24-file-url-errors.js",
           "tests/corpus/node24-file-url-options.ts",
@@ -100215,8 +100376,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:url"
+        "status": "partial",
+        "evidence": "compiler-feature:url.URL.revokeObjectURL",
+        "tests": [
+          "tests/corpus/9206-url-revoke-object-url.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -101249,7 +101413,11 @@
         "evidence": "surface-manifest:node-builtin.url.urlToHttpOptions",
         "tests": [
           "tests/corpus/1794-searchparams-url-live.ts",
-          "tests/corpus/8423-urlsearchparams-implicit-string.ts"
+          "tests/corpus/8423-urlsearchparams-implicit-string.ts",
+          "tests/corpus/9200-url-namespace-construct.ts",
+          "tests/corpus/9201-url-namespace-construct.cjs",
+          "tests/corpus/9202-url-search-params-foreach-thisarg.ts",
+          "tests/corpus/9206-url-revoke-object-url.ts"
         ]
       },
       "anchorSource": "exact"
@@ -101940,6 +102108,13 @@
           "tests/corpus/7711-util-throttle.cjs",
           "tests/corpus/7712-util-debounce-throttle.ts",
           "tests/corpus/7747-text-codec-untyped-slot.js",
+          "tests/corpus/inspect-getters-dyn.cjs",
+          "tests/corpus/inspect-getters.ts",
+          "tests/corpus/inspect-hidden-properties.cjs",
+          "tests/corpus/inspect-max-array-length.ts",
+          "tests/corpus/inspect-max-string-length.ts",
+          "tests/corpus/inspect-show-hidden-prototypes.ts",
+          "tests/corpus/inspect-show-hidden.ts",
           "tests/corpus/node24-deep-equality-properties.js",
           "tests/corpus/node24-deep-equality.cjs",
           "tests/corpus/node24-deep-equality.ts",
@@ -103344,10 +103519,17 @@
         "tests": [
           "tests/corpus/1630-inspect-scalars.ts",
           "tests/corpus/1632-inspect-records.ts",
+          "tests/corpus/inspect-getters.ts",
+          "tests/corpus/inspect-getters-dyn.cjs",
           "tests/corpus/1637-inspect-dyn.ts",
           "tests/corpus/2485-inspect-circular-refs.ts",
           "tests/corpus/5884-inspect-layout-options.ts",
-          "tests/corpus/7526-inspect-options-runtime.ts"
+          "tests/corpus/7526-inspect-options-runtime.ts",
+          "tests/corpus/inspect-max-array-length.ts",
+          "tests/corpus/inspect-show-hidden.ts",
+          "tests/corpus/inspect-show-hidden-prototypes.ts",
+          "tests/corpus/inspect-max-string-length.ts",
+          "tests/corpus/inspect-hidden-properties.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -103373,7 +103555,10 @@
         "status": "partial",
         "evidence": "compiler-feature:util.util.inspect",
         "tests": [
-          "tests/corpus/7526-inspect-options-runtime.ts"
+          "tests/corpus/7526-inspect-options-runtime.ts",
+          "tests/corpus/inspect-show-hidden.ts",
+          "tests/corpus/inspect-show-hidden-prototypes.ts",
+          "tests/corpus/inspect-max-string-length.ts"
         ]
       },
       "anchorSource": "exact"
@@ -116387,7 +116572,10 @@
           "tests/corpus/5415-zlib-dynamic-inputs.cjs",
           "tests/corpus/7714-zlib-brotli-compress.cjs",
           "tests/corpus/7715-zlib-brotli-decompress.cjs",
-          "tests/corpus/7716-zlib-brotli.ts"
+          "tests/corpus/7716-zlib-brotli.ts",
+          "tests/corpus/zstd-compress.cjs",
+          "tests/corpus/zstd-decompress.cjs",
+          "tests/corpus/zstd-streams.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -117339,8 +117527,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.zlib.ZstdCompress",
+        "tests": [
+          "tests/corpus/zstd-streams.ts",
+          "tests/corpus/zstd-compress.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -117362,8 +117554,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.zlib.ZstdDecompress",
+        "tests": [
+          "tests/corpus/zstd-streams.ts",
+          "tests/corpus/zstd-decompress.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -117710,8 +117906,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.zlib.createZstdCompress",
+        "tests": [
+          "tests/corpus/zstd-streams.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -117733,8 +117932,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.zlib.createZstdDecompress",
+        "tests": [
+          "tests/corpus/zstd-streams.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -118338,8 +118540,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.zlib.zstdCompress",
+        "tests": [
+          "tests/corpus/zstd-compress.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -118361,8 +118566,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.zlib.zstdCompressSync",
+        "tests": [
+          "tests/corpus/zstd-compress.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -118384,8 +118592,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.zlib.zstdDecompress",
+        "tests": [
+          "tests/corpus/zstd-decompress.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -118407,8 +118618,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.zlib.zstdDecompressSync",
+        "tests": [
+          "tests/corpus/zstd-decompress.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -118883,8 +119097,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "compiler-feature:zlib.ZstdOptions",
+        "tests": [
+          "tests/corpus/zstd-streams.ts",
+          "tests/corpus/zstd-compress.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -119511,8 +119729,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.zlib.zstdCompress",
+        "tests": [
+          "tests/corpus/zstd-compress.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -119534,8 +119755,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.zlib.zstdCompressSync",
+        "tests": [
+          "tests/corpus/zstd-compress.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -119557,8 +119781,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.zlib.zstdDecompress",
+        "tests": [
+          "tests/corpus/zstd-decompress.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -119580,8 +119807,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.zlib.zstdDecompressSync",
+        "tests": [
+          "tests/corpus/zstd-decompress.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     }

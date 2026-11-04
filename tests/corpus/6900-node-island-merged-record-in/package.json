@@ -1,0 +1,1 @@
+{ "name": "node-island-merged-record-in", "private": true, "type": "module", "scriptc": { "packages": { "recordkit": "node" } } }

@@ -9,6 +9,7 @@ import {
   lowerFsTimestampCall,
   lowerFsVectorOrTruncateCall,
   lowerFsNumericOpenCall,
+  lowerFsOpenCall,
   lowerFsPromisesOpenCall,
   lowerFsRenameCallbackCall,
   lowerFsReadSyncCall,
@@ -65,7 +66,12 @@ import {
   lowerPathFormatCall,
   lowerPathParseCall,
 } from "./operating-system.js";
-import { lowerQuerystringParseCall, lowerQuerystringStringifyCall } from "./querystring.js";
+import {
+  lowerQuerystringEscapeValueCall,
+  lowerQuerystringParseCall,
+  lowerQuerystringStringifyCall,
+  lowerQuerystringUnescapeBufferCall,
+} from "./querystring.js";
 import { lowerFsGlobCallbackCall, lowerFsGlobSyncCall, lowerFspGlobCall } from "./fs-glob.js";
 import { lowerV8HeapStatisticsCall } from "./v8.js";
 
@@ -135,6 +141,7 @@ export function lowerBuiltinModuleCall(
   ) {
     return lowerFsNumericOpenCall(lowerer, expr, loc);
   }
+  if (bi.module === "fs" && bi.member === "openSync") return lowerFsOpenCall(lowerer, expr, loc);
   if (bi.module === "zlib") return lowerZlibModuleCall(lowerer, expr, bi, loc);
   if (bi.module === "child_process" && bi.member === "spawnSync") {
     return lowerer.lowerSpawnSyncCall(expr, loc);
@@ -229,6 +236,12 @@ export function lowerBuiltinModuleCall(
     }
     if (bi.member === "stringify" || bi.member === "encode") {
       return lowerQuerystringStringifyCall(lowerer, expr, loc);
+    }
+    if (bi.member === "unescapeBuffer")
+      return lowerQuerystringUnescapeBufferCall(lowerer, expr, loc);
+    if (bi.member === "escape") {
+      const escaped = lowerQuerystringEscapeValueCall(lowerer, expr, loc);
+      if (escaped) return escaped;
     }
   }
   if (

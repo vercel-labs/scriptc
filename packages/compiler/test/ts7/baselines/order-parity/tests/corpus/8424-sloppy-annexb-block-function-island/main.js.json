@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8424-sloppy-annexb-block-function-island/annexb.js",
+  "<repo>/tests/corpus/8424-sloppy-annexb-block-function-island/main.js"
+ ],
+ "diags": []
+}

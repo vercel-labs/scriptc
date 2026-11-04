@@ -35,7 +35,7 @@ typedef struct ScrZlibStream {
   ScrStream *s;       /* borrowed: the stream owns this state through its hooks */
   int mode;
   uint32_t chunk_size;
-  int default_flush, finish_flush, full_flush;
+  int default_flush, finish_flush, full_flush, flush_max;
   double level, strategy; /* Node's _level/_strategy (params() compares them) */
   bool reject_garbage;
   double bytes_written;
@@ -435,6 +435,8 @@ static const char *scr_zs_class_name(int mode) {
   case SCR_ZM_INFLATERAW: return "InflateRaw";
   case 8: return "BrotliDecompress";
   case 9: return "BrotliCompress";
+  case 10: return "ZstdCompress";
+  case 11: return "ZstdDecompress";
   default: return "Unzip";
   }
 }
@@ -480,8 +482,19 @@ ScrStream *scr_zlib_stream_new(double mode_d, ScrDyn *opts) {
   if (!zs->out_buf) scr_zlib_stream_oom();
   zs->default_flush = (int)zo.flush;
   zs->finish_flush = (int)zo.finish_flush;
-  /* Brotli's full flush is BROTLI_OPERATION_FLUSH (brotliDefaultOpts). */
-  zs->full_flush = mode == 8 || mode == 9 ? 1 : SCR_ZF_FULL;
+  /* ZlibBase's flush bound and full flush per codec: zlib takes 0..5 with
+   * Z_FULL_FLUSH, Brotli 0..3 with BROTLI_OPERATION_FLUSH, zstd 0..2 with
+   * ZSTD_e_flush (each codec's own defaults). */
+  if (mode == 8 || mode == 9) {
+    zs->full_flush = 1;
+    zs->flush_max = 3;
+  } else if (mode == 10 || mode == 11) {
+    zs->full_flush = 1;
+    zs->flush_max = 2;
+  } else {
+    zs->full_flush = SCR_ZF_FULL;
+    zs->flush_max = SCR_ZF_BLOCK;
+  }
   zs->level = zo.level;
   zs->strategy = zo.strategy;
   zs->reject_garbage = zo.reject_garbage;
@@ -542,7 +555,7 @@ void scr_zlib_stream_flush(ScrStream *s, ScrDyn *kind, ScrClosure *cb) {
     return;
   }
   double k;
-  if (!scr_zlib_check_range(kind, "kind", false, 0, 5, zs->full_flush, &k)) {
+  if (!scr_zlib_check_range(kind, "kind", false, 0, zs->flush_max, zs->full_flush, &k)) {
     if (cb) scr_closure_release(cb);
     return;
   }

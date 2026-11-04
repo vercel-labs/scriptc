@@ -1331,7 +1331,7 @@ function collectionOps(host: LlvmEmitterContext, key: IrType, value: IrType): st
     if (!arms) throw new InternalCompilerError("llvm emitter bug: collection key union missing");
     unionKeys = host.cstr(arms.map((arm) => String.fromCharCode(mapKeyKindNum(arm))).join(""));
   }
-  return host.shapeHost.mapOps([
+  const operands = [
     keyRc.retain,
     keyRc.release,
     keyRc.trace,
@@ -1339,7 +1339,18 @@ function collectionOps(host: LlvmEmitterContext, key: IrType, value: IrType): st
     rc.release,
     traceArg(host.shapeHost, value),
     unionKeys,
-  ]);
+  ];
+  // A promise key's ops are a ScrMapIdentityOps: one more field, the
+  // identity its hash and equality use. A union key with a promise arm reads
+  // the same field for that arm (SCR_MAP_KEY_PROMISE in the key-kind table).
+  if (
+    key.kind === "promise" ||
+    (unionKeys !== "null" && arms?.some((arm) => arm.kind === "promise"))
+  ) {
+    host.declare("declare ptr @scr_promise_map_identity(ptr)");
+    operands.push("@scr_promise_map_identity");
+  }
+  return host.shapeHost.mapOps(operands);
 }
 
 /** Construct matching key/value storage once for Maps and Sets. */
@@ -1518,8 +1529,9 @@ export function emitMapLikeIntrinsic(
       // runtime knows no tags. Ref values come back +1 (ownership MOVES
       // into the fresh union box on a hit); scalars ride an out-param
       // behind a found flag; a miss is the interned undefined-arm
-      // instance. When V is itself a union, the stored box IS the
-      // result (`undefined` sorts last in canonical arm order).
+      // instance. When V is itself a union and both are tagged boxes, the
+      // stored box IS the result (`undefined` sorts last in canonical arm
+      // order); a pointer union on either side widens instead (below).
       const k = emitMapLookupKey(host, e.args[0]!, borrowInputs);
       const kAcc = k.access;
       const kTy = k.types;
@@ -1545,11 +1557,15 @@ export function emitMapLikeIntrinsic(
       const absent = host.unitInstanceRef(e.type.unionId, undefTag);
       if (
         value.kind === "union" &&
-        host.nullableUnions.has(value.unionId) &&
+        (host.nullableUnions.has(value.unionId) || host.nullableUnions.has(e.type.unionId)) &&
         !typeEquals(value, e.type)
       ) {
         // A nullable `C | null` value widens into `C | null | undefined`:
         // NULL is the stored null, so presence decides the undefined arm.
+        // A boxed value whose result is a pointer union widens the same
+        // way: the stored box is not the result's encoding (a `string |
+        // null` boxed because some map or set keys by it, read as the plain
+        // pointer of `string | null | undefined`).
         host.declare(`declare zeroext i1 @scr_map_has_${kAcc}(ptr, ${kTy})`);
         host.declare(`declare ptr @scr_map_get_${kAcc}_ref(ptr, ${kTy})`);
         const has = B.tmp();

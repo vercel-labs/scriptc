@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8426-sloppy-this-island/receivers.js",
+  "<repo>/tests/corpus/8426-sloppy-this-island/main.js"
+ ],
+ "diags": []
+}

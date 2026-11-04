@@ -54,11 +54,21 @@ export class Ts7SourceCache {
     return file;
   }
 
-  retain(snapshot: number, previous: number, changes?: Ts7SnapshotChanges): void {
+  /** Carry the paths a project kept across a snapshot into the new one.
+   * `changes` is the server's change record (absent when nothing changed);
+   * `reparsed` names the projects whose parse options changed, whose trees
+   * the record does not enumerate and therefore cannot be retained. */
+  retain(
+    snapshot: number,
+    previous: number,
+    changes?: Ts7SnapshotChanges,
+    reparsed?: ReadonlySet<string>,
+  ): void {
     const projects = this.paths.get(previous);
     if (projects === undefined) return;
     for (const [project, retained] of projects.projects) {
       if (changes?.removedProjects?.includes(project)) continue;
+      if (reparsed?.has(project)) continue;
       const changed = changes?.changedProjects?.[project];
       const previousRef = reference(previous, project);
       const nextRef = reference(snapshot, project);

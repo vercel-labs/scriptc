@@ -1,7 +1,15 @@
 import { lowerStaticPrivateAssignment } from "./private-statics.js";
 import type { DiagnosticCode } from "../../diagnostics/codes.js";
-import { keepsInitializerLayout, notePreservedLayout } from "./structural-instances.js";
+import {
+  keepsCheckedDynamicValue,
+  keepsInitializerLayout,
+  notePreservedLayout,
+} from "./structural-instances.js";
 import { partialFieldRead } from "./partial-assertions.js";
+import { answerLinkedCopies, registerLinkedHelper } from "./record-links.js";
+import { recordSourceTest } from "./record-sources.js";
+import { keyedHelperName } from "./stable-names.js";
+import { OBJECT_PROTOTYPE_KEYS } from "./expressions/relational.js";
 import { jsGlobalValueByName } from "./global-values.js";
 import { lowerTupleAliasDecl, stripTypeWrappers } from "./typed-arguments.js";
 import {
@@ -21,10 +29,19 @@ import {
 } from "./indexed-unions.js";
 import {
   declaredMemberOf,
+  fenceDatePrototypeWrite,
+  isDataViewPrototypeRead,
   isPromisePrototypeRead,
   lowerUnionKeyedRead,
 } from "./expressions/property-access.js";
-import { hostedStorageView, hostsAll } from "./expressions/hosted-narrowing.js";
+import {
+  assertedOptionalExtension,
+  hostedStorageView,
+  hostsAll,
+  recordViewHosted,
+} from "./expressions/hosted-narrowing.js";
+import { assertedOnlyMemberWrite } from "./expressions/asserted-receiver.js";
+import { assertionViewCopy, bindingIdentityUse, bindingWrite } from "./divergences.js";
 import { requestGeneralStreamSurface } from "./general-streams.js";
 import { lowerForAwaitDynStream, nodeStreamInterfaceSide } from "./dyn-streams.js";
 import { lowerForAwaitValueStream } from "./builtins/hash-stream.js";
@@ -35,6 +52,16 @@ import {
 } from "./containers/match-row-uses.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { runtimeKeyPatternRead } from "./expressions/keyed-field-targets.js";
+import {
+  OPTIONAL_CHECKED_DYN_DELETE,
+  constantDeleteKey,
+  declaredOptionalProperty,
+  declaresCheckedDynField,
+  erasedDeletePlan,
+  lowerDeleteComputedKey,
+  lowerDeleteKey,
+  lowerRecordMemberDelete,
+} from "./expressions/erased-delete.js";
 import { declaresHoistedBinding, staticCondition } from "./static-typeof.js";
 import { lowerCollectionSpread } from "./containers/collection-methods.js";
 import { lowerEventObjectPropertyWrite } from "./lower-event-target.js";
@@ -54,11 +81,12 @@ import { isWebStreamValueInJavaScript, typeInvolvesWebStream } from "./builtins/
 import * as ts from "../ts7/adapter.js";
 import { lowerOptionalIndex } from "./undefined-index.js";
 import { processDataMemberValue, programReadsExitCode } from "./builtins/process.js";
+import { heldEnvValueType, refuseHeldEnvCopyHold } from "./builtins/environment.js";
 import { requireInitFlagStmt } from "./require-initialization.js";
 import { isJsonRequireDecl } from "./json-require.js";
 import { isTimeValueDateDeclaration } from "./date-values.js";
 import { bindingSource } from "../binding-source.js";
-import { lowerConstructorReturn } from "./constructor-returns.js";
+import { clearPendingPrimitiveReturn, lowerConstructorReturn } from "./constructor-returns.js";
 import type { DynamicSlot, Lowerer } from "./lowerer.js";
 import type { ScrDiagnostic, TypeFailureSlot } from "../../diagnostics/diagnostic.js";
 import { statementGroupKey } from "./type-failure.js";
@@ -94,7 +122,12 @@ import {
   lowerYieldStarStatement,
   type GenType,
 } from "./lower-generators.js";
-import { classAsyncGeneratorIterator, lowerForAwaitBuiltin } from "./lower-async-iteration.js";
+import {
+  classAsyncGeneratorIterator,
+  isNodeReadableIteratorSource,
+  isWebReadableIteratorSource,
+  lowerForAwaitBuiltin,
+} from "./lower-async-iteration.js";
 import {
   BOOL,
   BYTES_U8,
@@ -104,6 +137,7 @@ import {
   DYN,
   F64,
   type IrExpr,
+  type IrFunction,
   type IrGlobal,
   type IrLibFn,
   type IrLocal,
@@ -119,6 +153,7 @@ import {
   isUnitType,
   shapeHasAccessorSlots,
   typeEquals,
+  typeKey,
 } from "../../ir/ir.js";
 import {
   PoisonError,
@@ -128,6 +163,11 @@ import {
   staticImportNamespaceType,
 } from "./lowerer.js";
 import { enforceLibBoundary, lowerSurplusCalls } from "./lib-boundary.js";
+import {
+  isBuiltinIdentityToken,
+  isPrimitiveValueType,
+  lowerPrimitiveBaseDelete,
+} from "./primitive-throws.js";
 import {
   cjsExportAssignmentOf,
   cjsExportChainOf,
@@ -142,7 +182,6 @@ import {
   requireSpecOf,
 } from "../program.js";
 import { isStrictCode } from "./strict-mode.js";
-import { markSloppyRecordWrites } from "./frozen-records.js";
 import {
   COMPOUND_ASSIGN_OPS,
   type CompoundOp,
@@ -174,13 +213,17 @@ import {
   lowerForOfSet,
 } from "./containers/for-of.js";
 import { lowerForOfHelperChain } from "./containers/iterator-helpers.js";
-import { objectIterOverIndexShape } from "./containers/indexed-objects.js";
+import {
+  lowerRecordRestCaptureHelper,
+  objectIterOverIndexShape,
+} from "./containers/indexed-objects.js";
 import { strCharsCall } from "./containers/array-construction.js";
 import {
   bindingContextualGenericFnNodeOf,
   bindingGenericFnAliasInfoOf,
   bindingGenericFnInfoOf,
   bindingGenericFnNodeOf,
+  genericAliasPresenceStore,
   genericBindingPresenceStore,
   genericBindingStoredValue,
   implicitLocalFnInfoOf,
@@ -1127,6 +1170,10 @@ export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): b
       lowerer.dynConvertible(type)
     )
       type = DYN;
+    // An island handle binding holds a checked-dynamic value whatever its
+    // declared type says: its own declaration lowers as one, and so must
+    // the slot a closure captured first.
+    if (islandHandleBinding(lowerer, decl.name)) type = DYN;
     if (!TDZ_KINDS.has(type.kind) || isUnitType(type)) return false;
     const name = decl.name.text;
     const count = entry.ctx.localCounters.get(name) ?? 0;
@@ -1264,7 +1311,9 @@ function hostVariableDeclarationOf(name: ts.Identifier): ts.VariableDeclaration 
   while (ts.isBindingElement(n) || ts.isArrayBindingPattern(n) || ts.isObjectBindingPattern(n)) {
     n = n.parent;
   }
-  return ts.isVariableDeclaration(n) ? n : null;
+  // A catch parameter is a VariableDeclaration of the CatchClause: its
+  // bindings are scoped to the clause, and each execution makes new ones.
+  return ts.isVariableDeclaration(n) && !ts.isCatchClause(n.parent) ? n : null;
 }
 
 /** `for (var x of ...)` loop variables: the ONE function-scoped binding
@@ -1459,6 +1508,12 @@ function varBindingType(lowerer: Lowerer, nameNode: ts.Identifier): IrType | nul
     ts.isVariableDeclaration(nameNode.parent) &&
     !nameNode.parent.type &&
     isPromisePrototypeRead(lowerer, nameNode.parent.initializer)
+  )
+    return DYN;
+  if (
+    ts.isVariableDeclaration(nameNode.parent) &&
+    !nameNode.parent.type &&
+    isDataViewPrototypeRead(lowerer, nameNode.parent.initializer)
   )
     return DYN;
   let type = lowerer.mapTypeOf(lowerer.typeOf(nameNode));
@@ -2015,13 +2070,43 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     // observed empty returns even when JSDoc omits undefined. Any remaining
     // incompatible boundary keeps the ordinary per-statement refusal.
     let value: IrExpr | null = null;
+    // A derived constructor that can record a pending TypeError on a
+    // primitive return drops it when a return of its own completes: a
+    // `finally` block's `return;`, `return undefined` or `return this`
+    // replaces the earlier completion instead of leaving it pending. The
+    // drop follows the operand, which may throw — an operand that throws
+    // never completes the return, so a `finally` that catches it and then
+    // finishes resumes the earlier primitive return (and its TypeError).
+    const withClearedPending = (ret: IrStmt): IrStmt => {
+      const clear = clearPendingPrimitiveReturn(lowerer, stmt);
+      if (clear.length === 0) return ret;
+      const loc = locOf(stmt);
+      const body = ret.kind === "block" ? ret.body : [ret];
+      const last = body.at(-1);
+      if (last?.kind !== "return") return { kind: "block", body: [...clear, ret], loc };
+      const before = body.slice(0, -1);
+      if (last.value === null) return { kind: "block", body: [...before, ...clear, last], loc };
+      // A constructor returns void, so a valued operand only evaluates for
+      // effect — ahead of the drop, since a `return this.fail()` inside a
+      // `finally` that catches the throw never completes.
+      return {
+        kind: "block",
+        body: [
+          ...before,
+          { kind: "exprStmt", expr: last.value, loc },
+          ...clear,
+          { kind: "return", value: null, loc },
+        ],
+        loc,
+      };
+    };
     if (stmt.expression) {
       // A constructor's returned object replaces the constructed `this`.
       if (lowerer.currentClass?.ctor) {
         const constructorReturn = lowerConstructorReturn(lowerer, stmt);
         if (constructorReturn !== null) return constructorReturn;
       }
-      return lowerer.lowerReturnStmt(stmt.expression, locOf(stmt));
+      return withClearedPending(lowerer.lowerReturnStmt(stmt.expression, locOf(stmt)));
     } else if (lowerer.ctx.returnType.kind === "union") {
       value = lowerer.wrappedUndefined(lowerer.ctx.returnType, locOf(stmt));
       if (value === null) {
@@ -2042,8 +2127,8 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     }
     // An async generator's bare return has no operand to await.
     if (lowerer.ctx.isAsync === true && lowerer.ctx.generator)
-      return { kind: "return", value, awaited: true, loc: locOf(stmt) };
-    return { kind: "return", value, loc: locOf(stmt) };
+      return withClearedPending({ kind: "return", value, awaited: true, loc: locOf(stmt) });
+    return withClearedPending({ kind: "return", value, loc: locOf(stmt) });
   }
   if (ts.isBreakStatement(stmt) || ts.isContinueStatement(stmt)) {
     const kw = ts.isBreakStatement(stmt) ? ("break" as const) : ("continue" as const);
@@ -3897,6 +3982,28 @@ export function lowerBindingPattern(
       continue;
     }
     if (!fieldType) {
+      // A property only an ASSERTED intersection declares
+      // (`{ icons } = item as T & { icons?: unknown }`): the assertion is
+      // erased to the bound layout, which does not carry it, but the value
+      // Node destructures may. The read binds what the record can answer
+      // for the property, the type's undefined otherwise.
+      const missing = assertedOnlyFieldRead(
+        lowerer,
+        propName,
+        srcType,
+        srcRef,
+        patternBindingType(lowerer, el.name),
+        locOf(el),
+      );
+      if (missing !== null) {
+        lowerer.bindPatternTarget(
+          el.name,
+          el.initializer ? applyBindingDefault(lowerer, el, missing) : missing,
+          isLet,
+          out,
+        );
+        continue;
+      }
       // The pattern names a field the source SHAPE does not carry —
       // `for (let {x = 1} of [{}])` (signature 08): tsc types the binding
       // from the DEFAULT, and under JS the read is always undefined, so
@@ -4023,6 +4130,116 @@ function patternBindingType(lowerer: Lowerer, name: ts.BindingName): IrType | nu
   return (
     lowerer.mapTypeOf(type) ??
     (isJsSourceFile(ts.getSourceFileOfNode(name)) ? dynFallbackType(lowerer, name, type) : null)
+  );
+}
+
+/** The value one element reads from a record shape for a property the
+ * shape does NOT declare: an asserted intersection (`item as T & {icons?:
+ * unknown}`) declares properties the assertion erases back to the bound
+ * layout, so the static shape is narrower than the value Node reads from.
+ *
+ * The value can still answer for the property: a checked conversion keeps
+ * the source's undeclared own properties beside the record
+ * (record-sources.ts), and a narrowed copy links to the record it came from
+ * (record-links.ts). Both are settled only at finalization, so the read is
+ * one interned `%rec.qfield.<n>(r)` per (source shape, key, binding type):
+ * its body starts as the type's static undefined and gains one `return` per
+ * answering surface then. A site the two mechanisms cannot answer keeps the
+ * static undefined, which is what Node binds for a value without the
+ * property.
+ *
+ * Null where the site keeps its existing lowering: a hybrid source already
+ * reads its overflow (`indexValue`), a name on `Object.prototype` is never
+ * an own property (Node reads the inherited value, which the static form's
+ * undefined does not reproduce), and a binding type that cannot hold
+ * undefined is the required-asserted-field representation gap (a slot that
+ * cannot hold the value Node would bind). */
+export function assertedOnlyFieldRead(
+  lowerer: Lowerer,
+  propName: string,
+  srcType: IrType & { kind: "record" },
+  srcRef: () => IrExpr,
+  bodyT: IrType | null,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (OBJECT_PROTOTYPE_KEYS.has(propName)) return null;
+  if (bodyT === null || bodyT.kind === "void") return null;
+  const undefinedArmed = bodyT.kind === "union" && lowerer.armTag(bodyT.unionId, UNDEFINED_T) >= 0;
+  if (bodyT.kind !== "dyn" && !undefinedArmed) return null;
+  const key = `qfield:${srcType.shapeId}:${propName}:${typeKey(bodyT)}`;
+  let name = lowerer.valueHelpers.get(key);
+  if (name === undefined) {
+    name = keyedHelperName(lowerer, "%rec.qfield", key);
+    lowerer.valueHelpers.set(key, name);
+    const recT: IrType = srcType;
+    const statics: IrExpr =
+      bodyT.kind === "dyn"
+        ? dynUndefinedExpr(loc)
+        : (lowerer.wrappedUndefined(bodyT, loc) ?? dynUndefinedExpr(loc));
+    const fn: IrFunction = {
+      name,
+      params: [{ localId: "r.0", name: "r", type: recT }],
+      returnType: bodyT,
+      locals: [{ id: "r.0", name: "r", type: recT, mutable: false }],
+      body: [{ kind: "return", value: statics, loc }],
+      loc,
+    };
+    // `r.<key>` through the record's live view: the capsule of a record
+    // that kept a source starts from that view (scr_dyn.h's
+    // scr_record_source_view), and a composed linked copy declares the key.
+    const viewRead = (value: IrExpr): IrExpr => {
+      const got: IrExpr = {
+        kind: "dynKeyGet",
+        value: { kind: "dynFrom", value, liveRef: true, type: DYN, loc },
+        key: { kind: "strLit", value: propName, type: STRING, loc },
+        type: DYN,
+        loc,
+      };
+      return bodyT.kind === "dyn" ? got : { kind: "dynCheck", value: got, type: bodyT, loc };
+    };
+    const receiver = varRef("r.0", recT, loc);
+    lowerer.linkedHelperFinalizers.push((sourced) => {
+      // Links first: answerLinkedCopies prepends, and a kept source is
+      // tested on the record itself, before any composed copy.
+      answerLinkedCopies(lowerer, fn, srcType.shapeId, (composed) => [
+        { kind: "return", value: viewRead(composed), loc },
+      ]);
+      if (sourced.has(srcType.shapeId))
+        fn.body = [
+          {
+            kind: "if",
+            cond: recordSourceTest(receiver, loc),
+            then: [{ kind: "return", value: viewRead(receiver), loc }],
+            else_: null,
+            loc,
+          },
+          ...fn.body,
+        ];
+    });
+    registerLinkedHelper(lowerer, fn, srcType.shapeId, "custom");
+    lowerer.liftedFns.push(fn);
+  }
+  return { kind: "call", callee: name, args: [srcRef()], type: bodyT, loc };
+}
+
+const INTEGER_LIKE_KEY = /^(0|[1-9][0-9]{0,9})$/;
+
+/** A declared integer-like field name in a rest copy's own frame: JS orders
+ * integer-like own keys first, ACROSS the declared and overflow stores, so a
+ * reshape that walks the declared fields before the source's overflow cannot
+ * reproduce Node's key order (the rule Object.keys' index-shape lowering
+ * already fences on). Callers use it only where the site fenced before the
+ * rest capture existed. */
+function fenceIntegerKeyRest(
+  lowerer: Lowerer,
+  blame: ts.Node,
+  fields: readonly { name: string }[],
+): void {
+  if (!fields.some((f) => INTEGER_LIKE_KEY.test(f.name) && Number(f.name) <= 4294967294)) return;
+  lowerer.unsupported(
+    "SC1031",
+    blame,
+    "rest bindings over index-signature sources that declare an integer-like field name (JS orders integer keys first, across the declared and overflow keys)",
   );
 }
 
@@ -4205,7 +4422,7 @@ function unionObjectRestValue(
       fence(`rest bindings over union sources (${NARROW_FIRST})`);
     }
     const shape = lowerer.shapes.get(arm.shapeId);
-    if (!shape || shape.indexValue) {
+    if (!shape) {
       fence(
         "rest bindings over index-signature shapes (the undeclared entries would need overflow packing)",
       );
@@ -4222,34 +4439,69 @@ function unionObjectRestValue(
       type: arm,
       loc,
     };
-    const packed: IrExpr = lowerer.keyOrder.copy(
-      {
-        kind: "recordLit",
-        fields: rem.map((f) => ({
-          name: f.name,
-          value: lowerer.presenceKeepingCopy(
-            armRef,
-            arm.shapeId,
-            f.name,
-            {
-              kind: "recordGet",
-              obj: armRef,
-              shapeId: arm.shapeId,
-              field: f.name,
-              type: f.type,
-              loc,
-            },
-            loc,
-          ),
-        })),
-        type: {
-          kind: "record",
-          shapeId: lowerer.shapes.intern(rem.map((f) => ({ name: f.name, type: f.type }))),
-        },
+    // An INDEX-SIGNATURE arm packs through the same `%rec.rest` capture
+    // reshape the single-shape path uses, into the arm's source-derived
+    // hybrid (its remaining declared fields plus its own overflow slot).
+    let packed: IrExpr;
+    if (shape.indexValue !== undefined) {
+      fenceIntegerKeyRest(lowerer, el, rem);
+      const derivedId = lowerer.shapes.intern(
+        rem.map((f) => ({ name: f.name, type: f.type })),
+        false,
+        shape.indexValue,
+        (shape.declaredOrder ?? shape.fields.map((f) => f.name)).filter((n) =>
+          rem.some((f) => f.name === n),
+        ),
+      );
+      const helper = lowerRecordRestCaptureHelper(
+        lowerer,
+        arm.shapeId,
+        derivedId,
+        [...consumed],
         loc,
-      },
-      arm.shapeId,
-    );
+      );
+      if (helper === null) {
+        fence(
+          "rest bindings over index-signature shapes (the undeclared entries would need overflow packing)",
+        );
+      }
+      packed = {
+        kind: "call",
+        callee: helper,
+        args: [armRef],
+        type: { kind: "record", shapeId: derivedId },
+        loc,
+      };
+    } else {
+      packed = lowerer.keyOrder.copy(
+        {
+          kind: "recordLit",
+          fields: rem.map((f) => ({
+            name: f.name,
+            value: lowerer.presenceKeepingCopy(
+              armRef,
+              arm.shapeId,
+              f.name,
+              {
+                kind: "recordGet",
+                obj: armRef,
+                shapeId: arm.shapeId,
+                field: f.name,
+                type: f.type,
+                loc,
+              },
+              loc,
+            ),
+          })),
+          type: {
+            kind: "record",
+            shapeId: lowerer.shapes.intern(rem.map((f) => ({ name: f.name, type: f.type }))),
+          },
+          loc,
+        },
+        arm.shapeId,
+      );
+    }
     const coerced = lowerer.coerceInto(el, packed, restT);
     if (!typeEquals(coerced.type, restT)) {
       fence(
@@ -5355,17 +5607,38 @@ function tupleTailValue(
  * copies out of the source at destructure time (JS's CopyDataProperties
  * is a fresh object of copied values too, so mutations through the rest
  * binding never reach the source — and records have no getters to make
- * the copy observable). Index-signature rest types keep a named fence:
- * their entries would need overflow packing, not field reads. */
+ * the copy observable). An INDEX-SIGNATURE source or rest type takes the
+ * interned `%rec.rest` capture reshape with the pattern's literal keys as
+ * its exclusion set (lowerRecordRestCaptureHelper), which enumerates the
+ * source's remaining declared fields and overflow entries exactly as the
+ * source's own Object.keys does. A rest type that is CLOSED over such a
+ * source keeps a named fence: the undeclared entries have no slot. */
 function objectRestValue(
   lowerer: Lowerer,
   el: ts.BindingElement,
   srcRef: () => IrExpr,
   srcType: IrType & { kind: "record" },
-  shape: { fields: readonly { name: string; type: IrType }[]; indexValue?: IrType },
+  shape: {
+    fields: readonly { name: string; type: IrType }[];
+    indexValue?: IrType;
+    declaredOrder?: readonly string[];
+  },
 ): IrExpr {
   const loc = locOf(el);
   const restT = patternBindingType(lowerer, el.name!); // callers skip nameless elisions
+  // The consumed set is the pattern's literal sibling keys: a computed
+  // sibling would make it a runtime fact and fences.
+  const consumed = new Set<string>();
+  let computedSibling = false;
+  if (ts.isObjectBindingPattern(el.parent)) {
+    for (const sib of el.parent.elements.nodes) {
+      if (sib === el || sib.dotDotDotToken) continue;
+      const key = sib.propertyName ?? sib.name;
+      if (key && ts.isComputedPropertyName(key)) computedSibling = true;
+      else if (key && (ts.isIdentifier(key) || ts.isStringLiteral(key) || ts.isNumericLiteral(key)))
+        consumed.add(key.text);
+    }
+  }
   // A DYN rest type is the top-type spelling (`const { ...rest } = src`
   // where the checker's rest type is `{}` — every field consumed, or the
   // empty-source `const { ...empty } = {}`): CopyDataProperties still
@@ -5374,29 +5647,53 @@ function objectRestValue(
   // binding. Computed sibling keys would make the consumed set a runtime
   // fact, and reserved accessor slots are closures, not data — both fence.
   if (restT?.kind === "dyn") {
-    const pattern = el.parent;
-    const consumed = new Set<string>();
-    let computedSibling = false;
-    if (ts.isObjectBindingPattern(pattern)) {
-      for (const sib of pattern.elements.nodes) {
-        if (sib === el || sib.dotDotDotToken) continue;
-        const key = sib.propertyName ?? sib.name;
-        if (key && ts.isComputedPropertyName(key)) computedSibling = true;
-        else if (
-          key &&
-          (ts.isIdentifier(key) || ts.isStringLiteral(key) || ts.isNumericLiteral(key))
-        )
-          consumed.add(key.text);
-      }
-    }
     const rem = shape.fields.filter((f) => !consumed.has(f.name));
-    if (computedSibling || shape.indexValue || rem.some((f) => f.name.startsWith("%"))) {
+    if (computedSibling || rem.some((f) => f.name.startsWith("%"))) {
       lowerer.unsupported(
         "SC1031",
         el,
         computedSibling
           ? "rest bindings beside computed keys (the consumed set is a runtime fact)"
           : "rest bindings over index-signature or accessor shapes (the entries would need overflow packing)",
+      );
+    }
+    // An INDEX-SIGNATURE source packs into the source-derived hybrid (the
+    // remaining declared fields plus the source's own overflow slot), so
+    // the undeclared entries survive the copy.
+    if (shape.indexValue !== undefined) {
+      fenceIntegerKeyRest(lowerer, el, rem);
+      const derivedId = lowerer.shapes.intern(
+        rem.map((f) => ({ name: f.name, type: f.type })),
+        false,
+        shape.indexValue,
+        (shape.declaredOrder ?? shape.fields.map((f) => f.name)).filter((n) =>
+          rem.some((f) => f.name === n),
+        ),
+      );
+      const helper = lowerRecordRestCaptureHelper(
+        lowerer,
+        srcType.shapeId,
+        derivedId,
+        [...consumed],
+        loc,
+      );
+      if (helper !== null) {
+        return lowerer.coerceInto(
+          el,
+          {
+            kind: "call",
+            callee: helper,
+            args: [srcRef()],
+            type: { kind: "record", shapeId: derivedId },
+            loc,
+          },
+          DYN,
+        );
+      }
+      lowerer.unsupported(
+        "SC1031",
+        el,
+        "rest bindings over index-signature or accessor shapes (the entries would need overflow packing)",
       );
     }
     const packed: IrExpr = {
@@ -5440,12 +5737,49 @@ function objectRestValue(
     throw new InternalCompilerError(
       `lowerer bug: rest binding over unknown shape ${restT.shapeId}`,
     );
-  if (restShape.indexValue || shape.indexValue) {
-    lowerer.unsupported(
-      "SC1031",
-      el,
-      "rest bindings over index-signature shapes (the undeclared entries would need overflow packing)",
+  if (restShape.indexValue !== undefined || shape.indexValue !== undefined) {
+    // An INDEX-SIGNATURE source or rest type: the capture reshape with the
+    // pattern's literal keys excluded. A CLOSED rest type over a source
+    // with an overflow slot has nowhere to put the undeclared entries.
+    if (computedSibling) {
+      lowerer.unsupported(
+        "SC1031",
+        el,
+        "rest bindings beside computed keys (the consumed set is a runtime fact)",
+      );
+    }
+    fenceIntegerKeyRest(lowerer, el, restShape.fields);
+    // Reserved accessor slots are closures, not data: the reshape copies
+    // declared values, and JS's copy would call the getters.
+    if (shape.fields.some((f) => f.name.startsWith("%"))) {
+      lowerer.unsupported(
+        "SC1031",
+        el,
+        "rest bindings over accessor shapes (the entries are closures, not data)",
+      );
+    }
+    if (restShape.indexValue === undefined) {
+      lowerer.unsupported(
+        "SC1031",
+        el,
+        `rest bindings packing an index-signature source into the closed rest type '${lowerer.fmt(restT)}' (its undeclared keys have no slot)`,
+      );
+    }
+    const helper = lowerRecordRestCaptureHelper(
+      lowerer,
+      srcType.shapeId,
+      restT.shapeId,
+      [...consumed],
+      loc,
     );
+    if (helper === null) {
+      lowerer.unsupported(
+        "SC1031",
+        el,
+        "rest bindings over index-signature shapes (the undeclared entries would need overflow packing)",
+      );
+    }
+    return { kind: "call", callee: helper, args: [srcRef()], type: restT, loc };
   }
   const fields = restShape.fields.map((f) => {
     const srcField = shape.fields.find((s) => s.name === f.name);
@@ -5775,13 +6109,13 @@ export function lowerVarDeclList(
   const out: IrStmt[] = [];
   for (const decl of list.declarations.nodes) {
     if (ts.isArrayBindingPattern(decl.name) || ts.isObjectBindingPattern(decl.name)) {
-      // Destructuring produces nested initialization blocks; copying
-      // their captured bindings still needs a distinct head-scope plan.
-      lowerer.unsupported(
-        "SC1031",
-        decl.name,
-        "let/const destructuring in for-loop initializers (declare the pattern before the loop, or use var)",
-      );
+      // The pattern desugars to a flat statement list whose bindings are
+      // ordinary head declarations (`for (let [a, b] = xs; ...)`: `%destr`
+      // plus `a`, `b`), so the loop emitter finds them as head lets and
+      // freshens the captured ones per iteration like any other
+      // declarator (emit-statements: capturedLets).
+      out.push(...lowerer.lowerDestructuringDecl(decl, isLet));
+      continue;
     }
     const lowered = lowerer.lowerVarDecl(decl, isLet);
     if (!lowered)
@@ -5991,17 +6325,20 @@ function evolvingArrayHolderType(lowerer: Lowerer, decl: ts.VariableDeclaration)
   return evolvingArrayHold(lowerer, decl.initializer) === null ? null : DYN;
 }
 
-/** A single static type for an initializer-less JavaScript `let` whose
- * later plain writes all agree. An evolving JS local reads as `undefined`
- * until control flow proves a write, so a scalar slot is sound only when
- * every ordinary use already has that concrete flow type. A write's call
- * counts when its signature is declared in the standard library, whose
- * return types are declared rather than inferred from JavaScript. A
- * closure capture can observe the local before an outer assignment, and
- * the checker leaves captured evolving lets broad: a captured runtime
- * handle (`let child; if (...) child = spawn(...)`) takes the handle or
- * `undefined`, which nested functions read as a checked-dynamic value
- * (closureDynLets), and other captured bindings stay checked-dynamic. */
+/** A single static type for an initializer-less `let` without an
+ * annotation whose later plain writes all agree. An evolving local reads as
+ * `undefined` until control flow proves a write, so a scalar slot is sound
+ * only when every ordinary use already has that concrete flow type (or an
+ * arm of it). A write of `null` or `undefined` joins the written type as an
+ * optional arm (`let stat; try { stat = lstatSync(".") } catch { stat = null }`
+ * holds `Stats | null`). A write's call counts when its signature is
+ * declared in the standard library, whose return types are declared rather
+ * than inferred from JavaScript. A closure capture can observe the local
+ * before an outer assignment, and the checker leaves captured evolving lets
+ * broad: a captured runtime handle (`let child; if (...) child = spawn(...)`)
+ * takes the handle or `undefined`, which nested functions read as a
+ * checked-dynamic value (closureDynLets), and other captured bindings stay
+ * checked-dynamic. */
 export function inferredEvolvingLetType(
   lowerer: Lowerer,
   decl: ts.VariableDeclaration,
@@ -6061,7 +6398,10 @@ export function inferredEvolvingLetType(
       }
       return "skip";
     }
-    if (ts.isBinaryExpression(node)) {
+    // A compound assignment (`x += 1`) reads and rewrites the binding
+    // through an operator this scan does not model; a comparison
+    // (`x === null`) only reads it, and the read check below covers that.
+    if (ts.isBinaryExpression(node) && ts.isAssignmentOperator(node.operatorToken.kind)) {
       let left = node.left;
       while (ts.isParenthesizedExpression(left)) left = left.expression;
       if (ts.isIdentifier(left) && lowerer.checker.getSymbolAtLocation(left) === symbol) {
@@ -6082,7 +6422,7 @@ export function inferredEvolvingLetType(
           return "stop";
         }
         const mapped = lowerer.mapTypeOf(lowerer.typeOf(node.right));
-        if (!mapped || mapped.kind === "dyn" || mapped.kind === "void" || isUnitType(mapped)) {
+        if (!mapped || mapped.kind === "dyn" || mapped.kind === "void") {
           invalid = true;
           return "stop";
         }
@@ -6109,20 +6449,50 @@ export function inferredEvolvingLetType(
     return undefined;
   };
   ts.walkPreorder(scope, visit);
-  const first = writes[0];
-  if (invalid || first === undefined || !writes.every((write) => typeEquals(write, first)))
-    return null;
+  // A write of an already-unioned value contributes its arms, so a call
+  // declared `Stats | null` reads the same as separate value and unit
+  // writes.
+  const armsOf = (t: IrType): readonly IrType[] =>
+    t.kind === "union" ? (lowerer.unions.get(t.unionId)?.arms ?? [t]) : [t];
+  const valueArms: IrType[] = [];
+  const unitArms: IrType[] = [];
+  for (const write of writes) {
+    for (const arm of armsOf(write)) {
+      const seen = isUnitType(arm) ? unitArms : valueArms;
+      if (!seen.some((other) => typeEquals(other, arm))) seen.push(arm);
+    }
+  }
+  const value = valueArms[0];
+  if (invalid || value === undefined || valueArms.length > 1) return null;
+  const arms = [value];
+  if (unitArms.length > 0) {
+    // An evolving local reads as `undefined` before control flow proves a
+    // write, so the optional storage carries that arm as well.
+    arms.push(UNDEFINED_T);
+    for (const unit of unitArms) {
+      if (unit.kind !== "undefinedT") arms.push(unit);
+    }
+  }
+  const storage: IrType =
+    arms.length === 1 ? value : { kind: "union", unionId: lowerer.unions.intern(arms) };
+  // A narrowed read sees an arm, or a sub-union of arms, of the storage.
   if (
     !reads.every((read) => {
       const mapped = lowerer.mapTypeOf(lowerer.typeOf(read));
-      return mapped !== null && typeEquals(mapped, first);
+      return (
+        mapped !== null && armsOf(mapped).every((arm) => arms.some((own) => typeEquals(own, arm)))
+      );
     })
   )
     return null;
-  if (!captured) return first;
-  if (!DYN_HANDLE_KINDS.has(first.kind)) return null;
+  if (!captured) return storage;
+  if (!DYN_HANDLE_KINDS.has(value.kind)) return null;
   lowerer.closureDynLets.add(symbol);
-  return { kind: "union", unionId: lowerer.unions.intern([first, UNDEFINED_T]) };
+  // A nested function can read the binding before the outer assignment:
+  // the optional arm is what the checked-dynamic read of the closure sees.
+  return storage.kind === "union"
+    ? storage
+    : { kind: "union", unionId: lowerer.unions.intern([value, UNDEFINED_T]) };
 }
 
 /** Whether a call's resolved signature is declared in the standard library
@@ -6172,6 +6542,10 @@ export function lowerVarDecl(
     }
   }
   if (!ts.isIdentifier(decl.name)) lowerer.unsupported("SC1031", decl.name);
+  // A binding that holds `process.env` under any type but the env record
+  // is a snapshot copy whose reads would drift from Node's live table
+  // (refuseHeldEnvCopyHold); refuse it here, at the hold itself.
+  refuseHeldEnvCopyHold(lowerer, decl.name, decl);
   {
     const alias = lowerTupleAliasDecl(lowerer, decl);
     if (alias) return alias;
@@ -6332,10 +6706,10 @@ export function lowerVarDecl(
 
   // `const h = id` — an ALIAS of a generic function: the alias's symbol
   // registers the target's info (calls and pinned values resolve like
-  // the target's own name), the binding has no runtime value, and the
-  // statement emits nothing (collectGlobals skipped module-scope
-  // globals by the same test; block-scoped aliases register here).
-  if (bindingGenericFnAliasInfoOf(lowerer, decl)) return null;
+  // the target's own name) and the binding has no runtime value, so the
+  // statement emits nothing but the flag of a module-scope alias whose
+  // reads can run before it (genericAliasPresenceStore).
+  if (bindingGenericFnAliasInfoOf(lowerer, decl)) return genericAliasPresenceStore(lowerer, decl);
 
   // `const stored = overloadedDeclaration`: no runtime slot is needed;
   // calls project onto the declaration's implementation ABI and value
@@ -6465,6 +6839,12 @@ export function lowerVarDecl(
       raw.type.kind === "dyn" &&
       (g.type.kind === "record" ||
         g.type.kind === "object" ||
+        // `const p = Promise.all.call(C, xs)` in JavaScript: the call runs
+        // the specification's algorithm with `C`'s capability and returns
+        // whatever `C` constructed, a foreign instance the checker still
+        // calls `Promise<T>`. The binding holds that value as dyn; a
+        // native-promise check would reject it (t262-db B3).
+        (g.type.kind === "promise" && isJsPromiseStaticCall(raw)) ||
         (ts.isIdentifier(decl.name) &&
           jsBindingKeepsCheckedObject(lowerer, decl.name, g.type) &&
           (existingValueForm(decl.initializer) || jsHoldsDynObject(lowerer, decl.initializer))))
@@ -6481,6 +6861,22 @@ export function lowerVarDecl(
       g.type = raw.type;
       notePreservedLayout(lowerer, decl);
     }
+    // The same for a module const initialized by an assertion: the value's
+    // storage already answers the asserted view (narrowing.ts), so the
+    // module holds that layout and writes through it reach the object.
+    if (
+      !isVarDeclared(decl) &&
+      (ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) !== 0 &&
+      assertionKeepsStorageLayout(lowerer, decl, raw.type, g.type)
+    ) {
+      g.type = raw.type;
+      notePreservedLayout(lowerer, decl);
+    }
+    if (
+      !isVarDeclared(decl) &&
+      keepsCheckedDynamicValue(lowerer, decl.initializer, raw.type, g.type)
+    )
+      g.type = raw.type;
     const arithmetic =
       raw.type.kind === "union" ? lowerer.unions.get(raw.type.unionId)?.arms : undefined;
     if (
@@ -6496,6 +6892,7 @@ export function lowerVarDecl(
       lowerer.runtimeOptionalArithmeticGlobals.add(g);
     }
     const init = lowerer.coerceInto(decl.initializer, raw, g.type);
+    refuseAssertionViewWrite(lowerer, decl);
     return {
       kind: "assign",
       localId: g.id,
@@ -6538,12 +6935,13 @@ export function lowerVarDecl(
     // `let x: number;` — declared, uninitialized. tsc guarantees no read
     // before assignment (TS2454) and rejects uninitialized const (TS1155).
     // Unannotated `let x;` is an evolving `any` — the checked-dynamic
-    // binding fallback (irTypeOf → dynFallbackType).
+    // binding fallback (irTypeOf → dynFallbackType) unless its writes agree
+    // on a type.
     // Undefined-armed unions (`let x: string | undefined;`) are readable
     // immediately (the type covers the unassigned state), so they
     // initialize to the interned undefined arm like an omitted optional.
     let type = lowerer.irTypeOf(decl.name);
-    if (type.kind === "dyn" && isLet && isJsSourceFile(ts.getSourceFileOfNode(decl))) {
+    if (type.kind === "dyn" && isLet && decl.type === undefined) {
       type = inferredEvolvingLetType(lowerer, decl) ?? type;
     }
     // `var v: void;` / `let x: undefined;` — a unit-only binding rides
@@ -6636,6 +7034,15 @@ export function lowerVarDecl(
   // Promise.prototype is an ordinary object the checker types Promise<any>.
   if (!decl.type && !hasJsTypeAnnotation(decl) && isPromisePrototypeRead(lowerer, decl.initializer))
     type = DYN;
+  // DataView.prototype (and its members) is likewise the prototype OBJECT,
+  // though the checker types it DataView, whose lowering is a bytes view:
+  // the binding holds the object the read lowered to.
+  if (
+    !decl.type &&
+    !hasJsTypeAnnotation(decl) &&
+    isDataViewPrototypeRead(lowerer, decl.initializer)
+  )
+    type = DYN;
   // A web stream value in JavaScript keeps its checked-dynamic identity.
   if (
     init.type.kind === "dyn" &&
@@ -6671,6 +7078,11 @@ export function lowerVarDecl(
     type = init.type;
     notePreservedLayout(lowerer, decl);
   }
+  // An index-signature binding whose assertion of an existing value lowered
+  // to that value (narrowing.ts keeps it instead of answering a copy whose
+  // keys live in a map of its own) keeps the value too: converting it here
+  // would take every write through the binding with it.
+  if (keepsCheckedDynamicValue(lowerer, decl.initializer, init.type, type)) type = init.type;
   // A JavaScript binding assigned values outside its declared type
   // (analyzeJsWidenedBindings in lowerer.ts) holds them as checked-dynamic.
   {
@@ -6735,10 +7147,20 @@ export function lowerVarDecl(
     init.type.kind === "dyn" &&
     !decl.type &&
     keptIdentityAssertion(lowerer, decl.initializer) !== undefined;
+  // `const p = Promise.all.call(C, xs)` in JavaScript: the checked-dynamic
+  // promise-static call returns whatever `C` constructed — a foreign
+  // instance, not the `Promise<T>` the checker infers from the signature —
+  // so the binding holds it as dyn (t262-db B3).
+  const keepsPromiseStaticValue =
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+    !decl.type &&
+    !hasJsTypeAnnotation(decl) &&
+    isJsPromiseStaticCall(init);
   if (
     expandsObject ||
     preservesObjectIdentity ||
     keepsAssertedObject ||
+    keepsPromiseStaticValue ||
     (isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
       !decl.type &&
       isNativeBuiltinValueInitializer(lowerer, decl.initializer))
@@ -7066,15 +7488,9 @@ export function lowerVarDecl(
   // the stored type hosts (`const view: Route & { order: number } = ...`)
   // keeps it too: coercing into the annotated layout would copy the
   // value and read members the writes have not created yet.
-  if (
-    !isLet &&
-    decl.initializer &&
-    isAssertionInitializer(decl.initializer) &&
-    (settledType.kind === "union" || settledType.kind === "record") &&
-    (init.type.kind === "union" || init.type.kind === "record") &&
-    hostsAll(lowerer, init.type, settledType)
-  ) {
+  if (!isLet && assertionKeepsStorageLayout(lowerer, decl, init.type, settledType)) {
     settledType = init.type;
+    notePreservedLayout(lowerer, decl);
   }
   // An exact class behind a generic interface keeps its native
   // representation so generic calls can specialize against its body.
@@ -7105,6 +7521,7 @@ export function lowerVarDecl(
   // Slot coercion: `const r: A | B = bValue;` wraps implicitly; width
   // subtyping (`const p: {a: number} = wider;`) is rejected, not coerced.
   init = lowerer.coerceInto(decl.initializer, init, settledType);
+  refuseAssertionViewWrite(lowerer, decl);
   const local = lowerer.declareLocal(decl.name, decl.name.text, settledType, isLet);
   if (runtimeStringArithmetic && init.type.kind === "union") {
     lowerer.runtimeOptionalArithmeticLocals.add(lowerer.runtimeOptionalRootOf(local));
@@ -7157,6 +7574,17 @@ function inferredOptionalRecordType(
   )
     return declared;
   return actual;
+}
+
+/** Whether a lowered initializer is the checked-dynamic `Promise.<static>.call(C, …)`
+ * call (lower-calls.ts, JavaScript sources only). Its result is whatever `C`
+ * constructed, so a binding the checker typed `Promise<T>` holds it as dyn. */
+function isJsPromiseStaticCall(value: IrExpr): boolean {
+  // Surplus arguments evaluate as statements before the call, so the
+  // initializer is a sequence expression whose result is the call.
+  let result = value;
+  while (result.kind === "seqExpr") result = result.result;
+  return result.kind === "libCall" && result.fn === "promise.genericStatic";
 }
 
 function lowerVariableInitializer(
@@ -7877,10 +8305,15 @@ function lowerBranchSwitch(
  *   === "string"/"number"/"boolean"`), reads under a proven narrow
  *   (caughtRead bridges them with caughtNarrow, verified at run time like
  *   unionNarrow), and rethrow (`throw e`). Unsupported raw uses and
- *   assignments are fenced (SC1063 and friends); destructuring patterns
- *   are SC1062. Captures retain the snapshot beyond the catch scope.
- *   The `: any` / `: unknown` annotations tsc admits both
- *   lower the same way (tsc narrows either through the tests).
+ *   assignments are fenced (SC1063 and friends). The `: any` /
+ *   `: unknown` annotations tsc admits both lower the same way (tsc
+ *   narrows either through the tests). Captures retain the snapshot
+ *   beyond the catch scope.
+ * - `catch ([a])` / `catch ({ p })` binds the thrown value through a
+ *   destructuring pattern: the exception cell keeps its hidden CAUGHT
+ *   local, and the pattern reads its checked-dynamic view
+ *   (caughtToDyn), so a JS catch parameter that destructures lowers the
+ *   way the same pattern does over an `any` source.
  * - `finally` runs on normal completion, exception paths, and every
  *   abrupt completion that crosses it. Return values are snapshotted
  *   before cleanup; an abrupt completion inside the finally replaces the
@@ -7893,9 +8326,6 @@ export function lowerTry(lowerer: Lowerer, stmt: ts.TryStatement): IrStmt {
   let catchLocalId: string | null = null;
   if (stmt.catchClause) {
     const vd = stmt.catchClause.variableDeclaration;
-    if (vd && !ts.isIdentifier(vd.name)) {
-      lowerer.unsupported("SC1062", vd);
-    }
     if (vd && ts.isIdentifier(vd.name)) {
       lowerer.scopes.push(new Map());
       try {
@@ -7906,7 +8336,62 @@ export function lowerTry(lowerer: Lowerer, stmt: ts.TryStatement): IrStmt {
         lowerer.scopes.pop();
       }
     } else {
-      catchBody = lowerer.lowerScopedBlock(stmt.catchClause.block);
+      lowerer.scopes.push(new Map());
+      try {
+        if (vd) {
+          // `catch ([a])` / `catch ({ a })`: the thrown value crosses into
+          // the checked-dynamic tree and the pattern binds through the same
+          // per-read fences a dyn source takes — GetIterator for an array
+          // pattern (positions past the end bind undefined, an iterator
+          // with values left closes) and RequireObjectCoercible plus keyed
+          // reads for an object pattern. The hidden CAUGHT local is the
+          // exception cell every other catch path binds; the dyn conversion
+          // is its identity-preserving view (caughtToDyn).
+          const loc = locOf(vd);
+          const local = lowerer.declareHiddenLocal("%caught", CAUGHT);
+          catchLocalId = local.id;
+          const tmp = lowerer.declareHiddenLocal("%destr", DYN);
+          const out: IrStmt[] = [
+            {
+              kind: "varDecl",
+              localId: tmp.id,
+              init: { kind: "caughtToDyn", value: varRef(local.id, CAUGHT, loc), type: DYN, loc },
+              loc,
+            },
+          ];
+          // V8 spells the catch parameter's source '.catch' in the
+          // RequireObjectCoercible TypeError ("Cannot destructure property
+          // 'a' of '.catch' as it is null."), except when the first element
+          // has a default: V8 reads that key first, so a nullish source
+          // throws the read's TypeError, which the pattern's own first read
+          // throws.
+          if (ts.isObjectBindingPattern(vd.name) && !firstReadsWithDefault(vd.name))
+            out.push({
+              kind: "exprStmt",
+              expr: {
+                kind: "dynDestrCheck",
+                value: varRef(tmp.id, DYN, loc),
+                spelling: ".catch",
+                ...firstPatternProp(lowerer, vd.name),
+                type: DYN,
+                loc,
+              },
+              loc,
+            });
+          lowerer.lowerBindingPattern(
+            vd.name as ts.ArrayBindingPattern | ts.ObjectBindingPattern,
+            () => varRef(tmp.id, DYN, loc),
+            DYN,
+            true, // catch bindings are mutable
+            out,
+          );
+          catchBody = [...out, ...lowerer.lowerScopedBlock(stmt.catchClause.block)];
+        } else {
+          catchBody = lowerer.lowerScopedBlock(stmt.catchClause.block);
+        }
+      } finally {
+        lowerer.scopes.pop();
+      }
     }
   }
   const finallyBody = stmt.finallyBlock ? lowerer.lowerScopedBlock(stmt.finallyBlock) : null;
@@ -7925,8 +8410,10 @@ export function lowerTry(lowerer: Lowerer, stmt: ts.TryStatement): IrStmt {
  * overflow Map delete), declared OPTIONAL fields → the field's ABSENT
  * state (the slot reads undefined and no longer counts as an own
  * property). Everything else
- * fences with the honest reason — a required field is a struct slot no
- * runtime can remove. */
+ * fences with the honest reason — a required record field is a struct slot
+ * with no ABSENT state, a class field is part of the instance's fixed
+ * layout, and an optional `unknown`/`any` field maps to the
+ * checked-dynamic slot, which has no ABSENT state yet. */
 function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrStmt {
   const loc = locOf(expr);
   let target: ts.Expression = expr.expression;
@@ -7934,6 +8421,9 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
   if (!ts.isElementAccessExpression(target) && !ts.isPropertyAccessExpression(target)) {
     lowerer.unsupported("SC1090", expr, "'delete' of non-property expressions");
   }
+  // Deleting a member of `Date.prototype` is a write through the read-only
+  // prototype value (property-access.ts's fence).
+  fenceDatePrototypeWrite(lowerer, target);
   fenceNodeModuleMutation(lowerer, target, "delete");
   if (ts.isPropertyAccessExpression(target) && target.name.text === "cause") {
     const field = lowerer.fieldTarget(target);
@@ -7955,29 +8445,17 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
       loc,
     };
   const lowerKey = (): IrExpr => {
-    if (ts.isPropertyAccessExpression(target)) {
-      return { kind: "strLit", value: target.name.text, type: STRING, loc: locOf(target.name) };
-    }
+    if (ts.isPropertyAccessExpression(target)) return lowerDeleteKey(lowerer, target);
     const keyNode = (target as ts.ElementAccessExpression).argumentExpression;
-    let key = lowerer.isProcessEnv(target.expression)
+    return lowerer.isProcessEnv(target.expression) ||
+      heldEnvValueType(lowerer, target.expression) !== null
       ? lowerEnvironmentKey(lowerer, keyNode)
-      : lowerer.lowerExpr(keyNode);
-    if (key.type.kind === "dyn") {
-      key = { kind: "libCall", fn: "dyn.toStringCoerce", args: [key], type: STRING, loc: key.loc };
-    }
-    if (lowerer.runtimeOptionalWidening(key.type, STRING) !== null) {
-      key = lowerer.ensureString(key, keyNode);
-    }
-    if (key.type.kind !== "string") {
-      lowerer.unsupported(
-        "SC1090",
-        keyNode,
-        `'delete' with '${lowerer.fmt(key.type)}' keys (index-signature and env keys are strings)`,
-      );
-    }
-    return key;
+      : lowerDeleteComputedKey(lowerer, keyNode);
   };
-  if (lowerer.isProcessEnv(target.expression)) {
+  if (
+    lowerer.isProcessEnv(target.expression) ||
+    heldEnvValueType(lowerer, target.expression) !== null
+  ) {
     return {
       kind: "exprStmt",
       expr: { kind: "libCall", fn: "process.envUnset", args: [lowerKey()], type: VOID, loc },
@@ -7992,7 +8470,31 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
     const unionDelete = lowerUnionFieldDelete(lowerer, target);
     if (unionDelete) return unionDelete;
   }
-  let obj = lowerer.lowerExpr(target.expression);
+  // A delete through a chain of type assertions addresses the operand the
+  // assertions erase to (`(o as View).k` names `o`): the asserted view's
+  // conversion may build a copying width record, and the delete would land
+  // on that temporary. Delete in place from the operand when its own stored
+  // layout holds the member as a deletable slot; a view that names a member
+  // the layout does not hold has nothing to delete, so refuse by name.
+  const erased = erasedDeletePlan(lowerer, target);
+  if (erased !== null && "refuse" in erased) {
+    lowerer.unsupported("SC1090", target, erased.refuse);
+  }
+  let obj = lowerer.lowerExpr(
+    erased !== null && "operand" in erased ? erased.operand : target.expression,
+  );
+  // A PRIMITIVE receiver: `delete` runs ToObject on the base AFTER the key,
+  // and the base's type decides the answer — null and undefined throw
+  // Node's TypeError, `?.` on a nullish base short-circuits to `true`
+  // without evaluating the key, and every other primitive deletes from its
+  // ToObject wrapper (a String's indexes and `length` refuse the delete).
+  if (isPrimitiveValueType(obj.type) && !isBuiltinIdentityToken(lowerer, target.expression, obj)) {
+    return {
+      kind: "exprStmt",
+      expr: lowerPrimitiveBaseDelete(lowerer, expr, target, obj, VOID),
+      loc,
+    };
+  }
   // `delete this.stack` in an Error subclass that declares a `stack`
   // accessor (quickjs-wasi's JSException): V8 gives each error an own
   // `stack` that shadows the accessor, and the delete removes it so reads
@@ -8070,66 +8572,45 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
       loc,
     };
   }
+  // The constant property key of the target: dot access, a literal
+  // bracket, or an element access whose key is a literal-typed binding
+  // (`const key = "a"; delete r[key]`) — the same stance a keyed record
+  // read/write takes (literalFieldKeys): identifier evaluation is pure, so
+  // skipping it matches JavaScript.
+  const constantKey = constantDeleteKey(lowerer, target);
+  // An OPTIONAL `unknown`/`any` field rides the checked-dynamic slot,
+  // which has no ABSENT state yet (an omitted such field already reads as
+  // present), so it cannot delete. Name that reason instead of calling
+  // the field required or blaming the receiver.
+  const optionalCheckedDynDelete =
+    constantKey !== null &&
+    declaresCheckedDynField(lowerer, obj.type, constantKey) &&
+    declaredOptionalProperty(lowerer, target.expression, constantKey);
   if (obj.type.kind === "record") {
-    const shape = lowerer.shapes.get(obj.type.shapeId);
-    if (shape?.indexValue && shape.fields.length === 0 && !shape.tuple) {
-      return markSloppyRecordWrites(
-        lowerer,
-        { kind: "recordKeyDelete", obj, shapeId: obj.type.shapeId, key: lowerKey(), loc },
-        expr,
-      );
-    }
-    // `delete r.f` of a declared OPTIONAL field (undefined-armed slot)
-    // writes the field's ABSENT state: a monomorphic shape cannot remove
-    // its slot, but the slot remembers that no property exists, so `in`
-    // answers false, Object.keys skips it, and JSON.stringify drops it,
-    // while a later write makes it present again. Constant keys only
-    // (dot access or a literal bracket); required fields keep the honest
-    // fence below.
-    const fieldName = ts.isPropertyAccessExpression(target)
-      ? target.name.text
-      : ts.isStringLiteral(target.argumentExpression)
-        ? target.argumentExpression.text
-        : null;
-    const field =
-      fieldName !== null && !shape?.tuple
-        ? shape?.fields.find((f) => f.name === fieldName)
-        : undefined;
-    if (field) {
-      const absent = lowerer.absentFieldValue(field.type, loc);
-      if (absent) {
-        return markSloppyRecordWrites(
-          lowerer,
-          {
-            kind: "recordSet",
-            obj,
-            shapeId: obj.type.shapeId,
-            field: field.name,
-            value: absent,
-            loc,
-          },
-          expr,
-          true,
-        );
-      }
-    }
-    if (shape?.indexValue) {
-      lowerer.unsupported(
-        "SC1090",
-        expr,
-        "'delete' of hybrid index-signature keys (declared struct slots and overflow entries answer differently — model deletable dynamic keys with a pure Record<string, T>)",
-      );
-    }
+    return lowerRecordMemberDelete(lowerer, expr, target, obj, lowerKey);
+  }
+  if (optionalCheckedDynDelete) {
+    lowerer.unsupported("SC1090", expr, OPTIONAL_CHECKED_DYN_DELETE);
+  }
+  // A class field lives in the instance's fixed layout: there is no
+  // per-field presence state for a delete to write, so Object.keys,
+  // `in`, and JSON.stringify would keep reporting the field where Node
+  // drops it. Name that reason instead of the generic receiver fence.
+  if (
+    obj.type.kind === "object" &&
+    constantKey !== null &&
+    lowerer.classes.get(obj.type.className)?.fields.has(constantKey)
+  ) {
     lowerer.unsupported(
       "SC1090",
       expr,
-      "'delete' of required record fields (a monomorphic shape cannot remove its slot — only optional fields delete, becoming the undefined arm)",
+      "'delete' of class fields (an instance's fields are its fixed layout — there is no per-field presence state, so Object.keys, 'in', and JSON.stringify would still report a deleted field; only optional record fields (`f?: T`) and Record<string, T> keys delete)",
     );
   }
   lowerer.unsupported(
     "SC1090",
     expr,
-    `'delete' on '${lowerer.fmt(obj.type)}' receivers (process.env keys and pure Record<string, T> keys delete)`,
+    `'delete' on '${lowerer.fmt(obj.type)}' receivers (process.env keys, pure Record<string, T> keys, and optional record fields delete)`,
   );
 }
 
@@ -8904,6 +9385,10 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
       if (urlWrite) return { kind: "exprStmt", expr: urlWrite, loc: locOf(expr) };
     }
     if (opKind === ts.SyntaxKind.EqualsToken) {
+      // A write through `Date.prototype` or one of its members keeps its
+      // fence: the prototype value is a read surface (property-access.ts).
+      if (ts.isPropertyAccessExpression(expr.left) || ts.isElementAccessExpression(expr.left))
+        fenceDatePrototypeWrite(lowerer, expr.left);
       const staticPrivateWrite = lowerStaticPrivateAssignment(lowerer, expr);
       if (staticPrivateWrite)
         return { kind: "exprStmt", expr: staticPrivateWrite, loc: locOf(expr) };
@@ -8953,7 +9438,14 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
         // (Node stringifies everything; a non-string RHS fences instead
         // of diverging from Node). The computed-key form lands in
         // lowerElementWrite.
-        if (lowerer.isProcessEnv(expr.left.expression) && !expr.left.questionDotToken) {
+        // The same setenv for a value HELD from process.env (`const env =
+        // process.env; env.X = v`): the hold aliases the live table, as
+        // Node's does.
+        if (
+          !expr.left.questionDotToken &&
+          (lowerer.isProcessEnv(expr.left.expression) ||
+            heldEnvValueType(lowerer, expr.left.expression) !== null)
+        ) {
           const loc = locOf(expr);
           const key: IrExpr = {
             kind: "strLit",
@@ -9316,6 +9808,12 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
         }
         const unionWrite = lowerUnionFieldWrite(lowerer, expr.left, expr.right);
         if (unionWrite) return { kind: "exprStmt", expr: unionWrite, loc: locOf(expr) };
+        // A member only the asserted type declares is refused before any
+        // field target: the checker's type names a slot the stored record
+        // does not have, so a target built from it addresses a field the
+        // receiver's shape lacks. `(view).member` and `view!.member` reach
+        // the same refusal as `view.member`.
+        assertedOnlyMemberWrite(lowerer, expr.left.expression, expr.left.name.text, expr.left);
         const target = lowerer.fieldTarget(expr.left);
         if (target) {
           const value = lowerer.lowerExprExpecting(expr.right, target.fieldType);
@@ -9580,6 +10078,8 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
     const compound = COMPOUND_ASSIGN_OPS[opKind];
     if (compound !== undefined) {
       // Desugar `x op= e` to `x = x op e` — reads x before e, like JS.
+      if (ts.isPropertyAccessExpression(expr.left) || ts.isElementAccessExpression(expr.left))
+        fenceDatePrototypeWrite(lowerer, expr.left);
       if (ts.isElementAccessExpression(expr.left)) {
         // `this[kLimit] += v` — a declared symbol-keyed class field is
         // the dotted compound in element spelling. Array and byte-view
@@ -9626,6 +10126,7 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
       expr.operator === ts.SyntaxKind.MinusMinusToken)
   ) {
     if (ts.isPropertyAccessExpression(expr.operand) || ts.isElementAccessExpression(expr.operand)) {
+      fenceDatePrototypeWrite(lowerer, expr.operand);
       // Statement and value positions share ToNumeric and reference order.
       // Namespace/expando globals retain their direct binding path below.
       const binding = ts.isPropertyAccessExpression(expr.operand)
@@ -10097,8 +10598,8 @@ function destructuringAssignInto(
       ts.isBinaryExpression(rhsInner) &&
       rhsInner.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
       (ts.isObjectLiteralExpression(rhsInner.left) || ts.isArrayLiteralExpression(rhsInner.left));
-    if (!checkedByInner) {
-      const spelling = rhs === null ? null : destrSpellingOf(rhs);
+    if (!checkedByInner && rhs !== null) {
+      const spelling = destrSpellingOf(rhs);
       if (spelling === null) {
         lowerer.unsupported(
           "SC1031",
@@ -10131,19 +10632,56 @@ function destructuringAssignInto(
     }
     for (const prop of target.properties.nodes) {
       const piece = destructAssignPiece(lowerer, prop);
-      const read: IrExpr = {
+      const propLoc = locOf(prop);
+      let read: IrExpr = {
         kind: "dynKeyGet",
-        key: { kind: "strLit", value: piece.field, type: STRING, loc: locOf(prop) },
+        key: { kind: "strLit", value: piece.field, type: STRING, loc: propLoc },
         value: tmpRef(),
         type: DYN,
-        loc: locOf(prop),
+        loc: propLoc,
       };
+      if (piece.dflt !== undefined) {
+        // `{ x = 1 }` / `{ x: y = 1 }`: the default fires on the undefined
+        // read and is evaluated lazily, exactly the declaration path's
+        // checked-dynamic default.
+        const readTmp = lowerer.declareHiddenLocal("%destr", DYN);
+        out.push({ kind: "varDecl", localId: readTmp.id, init: read, loc: propLoc });
+        const readRef: IrExpr = { kind: "varRef", localId: readTmp.id, type: DYN, loc: propLoc };
+        read = {
+          kind: "ternary",
+          cond: { kind: "dynTest", test: "undefined", value: readRef, type: BOOL, loc: propLoc },
+          then: lowerer.coerceInto(piece.dflt, lowerer.lowerExpr(piece.dflt), DYN),
+          else_: readRef,
+          type: DYN,
+          loc: propLoc,
+        };
+      }
       out.push({
         kind: "assign",
         localId: piece.target.id,
         value: lowerer.coerceInto(prop, read, piece.target.type),
-        loc: locOf(prop),
+        loc: propLoc,
       });
+    }
+    if (rhs === null && target.properties.nodes.length === 0) {
+      // A pattern with no reads still owes the source's own coercion, and a
+      // PRE-LOWERED source (`for ({} of …)`) has no source text: V8 reads
+      // the value instead of spelling it ("Cannot read properties of null").
+      for (const unit of ["null", "undefined"] as const) {
+        out.push({
+          kind: "if",
+          cond: { kind: "dynTest", test: unit, value: tmpRef(), type: BOOL, loc },
+          then: [
+            {
+              kind: "exprStmt",
+              expr: nodeThrowExpr(1, "", `Cannot read properties of ${unit}`, VOID, loc),
+              loc,
+            },
+          ],
+          else_: null,
+          loc,
+        });
+      }
     }
     return { stmts: out, value };
   }
@@ -10407,59 +10945,136 @@ function destructuringAssignInto(
       // copied values too), then assign like any record value.
       let restTo: ts.Expression = prop.expression;
       while (ts.isParenthesizedExpression(restTo)) restTo = restTo.expression;
-      if (shape.indexValue) {
-        lowerer.unsupported(
-          "SC1031",
-          prop,
-          "rest bindings over index-signature shapes (the undeclared entries would need overflow packing)",
-        );
-      }
       const consumed = new Set<string>();
+      let computedSibling = false;
       for (const p of target.properties.nodes) {
+        if (p === prop) continue;
         if (ts.isShorthandPropertyAssignment(p)) consumed.add((p.name as ts.Identifier).text);
         else if (ts.isPropertyAssignment(p)) {
           const n = patternKeyNameOf(lowerer, p.name);
           if (n !== null) consumed.add(n);
+          else if (ts.isComputedPropertyName(p.name)) computedSibling = true;
         }
       }
       const remaining = shape.fields.filter((f) => !consumed.has(f.name));
       const restOrder = shape.declaredOrder?.filter((n) => !consumed.has(n));
-      const restShapeId = lowerer.shapes.intern(
-        remaining.map((f) => ({ name: f.name, type: f.type })),
-        false,
-        undefined,
-        restOrder,
-      );
-      if (restOrder !== undefined) {
-        lowerer.shapeOrderMetadataFinalizers.push(
-          lowerer.shapes.declaredOrderFinalizer(restShapeId, restOrder, () =>
-            lowerer.shapes.get(srcType.shapeId)?.declaredOrder?.filter((n) => !consumed.has(n)),
-          ),
+      let packed: IrExpr;
+      if (shape.indexValue !== undefined) {
+        // An INDEX-SIGNATURE source: the `%rec.rest` capture reshape into
+        // the source-derived hybrid (its remaining declared fields plus its
+        // own overflow slot), exactly the destructuring form's copy.
+        if (computedSibling) {
+          lowerer.unsupported(
+            "SC1031",
+            prop,
+            "rest bindings beside computed keys (the consumed set is a runtime fact)",
+          );
+        }
+        if (remaining.some((f) => f.name.startsWith("%"))) {
+          lowerer.unsupported(
+            "SC1031",
+            prop,
+            "rest bindings over accessor shapes (the entries are closures, not data)",
+          );
+        }
+        fenceIntegerKeyRest(lowerer, prop, remaining);
+        const derivedId = lowerer.shapes.intern(
+          remaining.map((f) => ({ name: f.name, type: f.type })),
+          false,
+          shape.indexValue,
+          restOrder,
+        );
+        if (restOrder !== undefined) {
+          lowerer.shapeOrderMetadataFinalizers.push(
+            lowerer.shapes.declaredOrderFinalizer(derivedId, restOrder, () =>
+              lowerer.shapes
+                .get(srcType.shapeId)
+                ?.declaredOrder?.filter(
+                  (n) => !consumed.has(n) && remaining.some((f) => f.name === n),
+                ),
+            ),
+          );
+        }
+        const helper = lowerRecordRestCaptureHelper(
+          lowerer,
+          srcType.shapeId,
+          derivedId,
+          [...consumed],
+          locOf(prop),
+        );
+        if (helper === null) {
+          lowerer.unsupported(
+            "SC1031",
+            prop,
+            "rest bindings over index-signature shapes (the undeclared entries would need overflow packing)",
+          );
+        }
+        packed = {
+          kind: "call",
+          callee: helper,
+          args: [{ kind: "varRef", localId: tmp.id, type: srcType, loc: locOf(prop) }],
+          type: { kind: "record", shapeId: derivedId },
+          loc: locOf(prop),
+        };
+      } else {
+        const restShapeId = lowerer.shapes.intern(
+          remaining.map((f) => ({ name: f.name, type: f.type })),
+          false,
+          undefined,
+          restOrder,
+        );
+        if (restOrder !== undefined) {
+          lowerer.shapeOrderMetadataFinalizers.push(
+            lowerer.shapes.declaredOrderFinalizer(restShapeId, restOrder, () =>
+              lowerer.shapes.get(srcType.shapeId)?.declaredOrder?.filter((n) => !consumed.has(n)),
+            ),
+          );
+        }
+        packed = lowerer.keyOrder.copy(
+          {
+            kind: "recordLit",
+            fields: remaining.map(
+              (f): Extract<IrExpr, { kind: "recordLit" }>["fields"][number] => ({
+                name: f.name,
+                value: {
+                  kind: "recordGet",
+                  obj: { kind: "varRef", localId: tmp.id, type: srcType, loc: locOf(prop) },
+                  shapeId: srcType.shapeId,
+                  field: f.name,
+                  type: f.type,
+                  loc: locOf(prop),
+                },
+              }),
+            ),
+            type: { kind: "record", shapeId: restShapeId },
+            loc: locOf(prop),
+          },
+          srcType.shapeId,
         );
       }
-      const packed: IrExpr = lowerer.keyOrder.copy(
-        {
-          kind: "recordLit",
-          fields: remaining.map((f): Extract<IrExpr, { kind: "recordLit" }>["fields"][number] => ({
-            name: f.name,
-            value: {
-              kind: "recordGet",
-              obj: { kind: "varRef", localId: tmp.id, type: srcType, loc: locOf(prop) },
-              shapeId: srcType.shapeId,
-              field: f.name,
-              type: f.type,
-              loc: locOf(prop),
-            },
-          })),
-          type: { kind: "record", shapeId: restShapeId },
-          loc: locOf(prop),
-        },
-        srcType.shapeId,
-      );
+      /** A CLOSED rest target has nowhere to put the source's undeclared
+       * entries; refuse rather than let the coercion drop them. */
+      const checkRestTarget = (targetT: IrType | null): void => {
+        if (shape.indexValue === undefined || targetT === null) return;
+        if (targetT.kind === "dyn") return;
+        if (
+          targetT.kind === "record" &&
+          lowerer.shapes.get(targetT.shapeId)?.indexValue !== undefined
+        )
+          return;
+        lowerer.unsupported(
+          "SC1031",
+          prop,
+          `rest assignments packing an index-signature source into '${lowerer.fmt(targetT)}' (its undeclared keys have no slot)`,
+        );
+      };
       if (!ts.isIdentifier(restTo)) {
         // `({ a, ...box.rest } = src)` — the rest packs identically and
         // lands through the property/element write machinery.
-        lowerAssignTargetInto(lowerer, out, restTo, prop, null, () => packed);
+        lowerAssignTargetInto(lowerer, out, restTo, prop, null, (targetT) => {
+          checkRestTarget(targetT);
+          return packed;
+        });
         continue;
       }
       const targetBinding = lowerer.resolveWritable(restTo);
@@ -10469,6 +11084,7 @@ function destructuringAssignInto(
           `assignment to '${restTo.text}' (not a writable local or module global)`,
         );
       }
+      checkRestTarget(targetBinding.type);
       out.push({
         kind: "assign",
         localId: targetBinding.id,
@@ -10716,17 +11332,14 @@ function lowerAssignTargetInto(
 function destructAssignPiece(
   lowerer: Lowerer,
   prop: ts.ObjectLiteralElementLike,
-): { field: string; target: { id: string; type: IrType } } {
+): { field: string; target: { id: string; type: IrType }; dflt?: ts.Expression } {
   let fieldName: string;
   let bindTo: ts.Expression;
+  let dflt: ts.Expression | undefined;
   if (ts.isShorthandPropertyAssignment(prop)) {
-    if (prop.objectAssignmentInitializer) {
-      lowerer.unsupported(
-        "SC1031",
-        prop,
-        "destructuring assignment with defaults (assign, then apply the default)",
-      );
-    }
+    // `{ x = 1 }`: the shorthand's default (the checker's name resolution
+    // still answers the outer binding through the shorthand).
+    dflt = prop.objectAssignmentInitializer;
     fieldName = (prop.name as ts.Identifier).text;
     bindTo = prop.name as ts.Identifier;
   } else if (ts.isPropertyAssignment(prop)) {
@@ -10740,7 +11353,12 @@ function destructAssignPiece(
       );
     }
     fieldName = folded ?? "";
+    // `{ x: y = 1 }`: a defaulted target, the AssignmentPattern spelling.
     bindTo = prop.initializer;
+    if (ts.isBinaryExpression(bindTo) && bindTo.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+      dflt = bindTo.right;
+      bindTo = bindTo.left;
+    }
   } else {
     lowerer.unsupported("SC1031", prop, "destructuring assignment with rest or spread properties");
   }
@@ -10766,7 +11384,7 @@ function destructAssignPiece(
       `assignment to '${bindTo.text}' (not a writable local or module global)`,
     );
   }
-  return { field: fieldName, target };
+  return { field: fieldName, target, ...(dflt !== undefined ? { dflt } : {}) };
 }
 
 /** The ARRAY half of destructuring assignment: element assigns from a
@@ -11156,7 +11774,14 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
   const awaitArray =
     !!stmt.awaitModifier && lowerer.mapTypeOf(lowerer.typeOf(stmt.expression))?.kind === "array";
   if (stmt.awaitModifier && !awaitArray) {
-    {
+    // A web ReadableStream's and a Node readable's iterator views both type
+    // as AsyncIterableIterator, which lowers like the async protocols — but
+    // the loop consumes each view through its own lowering
+    // (lowerForAwaitBuiltin below).
+    if (
+      !isWebReadableIteratorSource(lowerer, stmt.expression) &&
+      !isNodeReadableIteratorSource(lowerer, stmt.expression)
+    ) {
       const genT =
         lowerer.stageSourceType(stmt.expression) ??
         lowerer.mapTypeOf(lowerer.typeOf(stmt.expression));
@@ -14121,4 +14746,66 @@ function isAssertionInitializer(node: ts.Expression): boolean {
   let e = node;
   while (ts.isParenthesizedExpression(e)) e = e.expression;
   return ts.isAsExpression(e) || ts.isTypeAssertion(e);
+}
+
+/** `const view = route as Route & { order: number }`: the asserted type
+ * refines the record arms the value is stored in (hosted-narrowing.ts), and
+ * a projection (`{ text: string }` over `TextBlock`) only names members the
+ * stored record already holds. Either way Node erases the assertion and
+ * keeps the object, so the binding keeps the value's layout and its writes
+ * reach that object instead of a copy. */
+function assertionKeepsStorageLayout(
+  lowerer: Lowerer,
+  decl: ts.VariableDeclaration,
+  init: IrType,
+  settled: IrType,
+): boolean {
+  if (decl.initializer === undefined || !isAssertionInitializer(decl.initializer)) return false;
+  if (settled.kind !== "union" && settled.kind !== "record") return false;
+  if (init.kind !== "union" && init.kind !== "record") return false;
+  if (hostsAll(lowerer, init, settled)) return true;
+  // An assertion that only ADDS optional members (`item as Base & { icons?:
+  // unknown }`) keeps the value too: Node erases it, and the added members
+  // have no slot in the stored layout, so reads answer them through the
+  // layout's kept source (assertedOnlyFieldRead) instead of a width copy's
+  // absent slot.
+  if (assertedOptionalExtension(lowerer, init, settled)) return true;
+  // A projection (`{ text: string }` over `TextBlock`) keeps the stored
+  // record only when the binding's identity is observable through it
+  // (a write, an identity comparison). A read-only view is equal either
+  // way, keeps the copy narrowing.ts made, and stays reported.
+  if (!bindingIdentityUse(decl, lowerer.checker)) return false;
+  return (
+    init.kind === "record" &&
+    settled.kind === "record" &&
+    recordViewHosted(lowerer, init.shapeId, settled.shapeId)
+  );
+}
+
+/** `const v = x as { a: number; extra?: string }; v.extra = "x"`: the
+ * assertion's view names a member the value's own layout does not, so the
+ * binding receives a COPY of `x` and the write lands on that copy — Node
+ * erases the assertion and adds the property to `x` itself, so the write
+ * must reach a caller-visible object. Reads of a copy are equal either
+ * way, and so is a nested write through a member the copy shares (the same
+ * child object in both), so only a write to the copy's own field is
+ * refused, by name. Where the layouts agree the binding keeps the value's
+ * storage instead (assertionKeepsStorageLayout), narrowing.ts and
+ * lowerVarDecl record that in layoutKeptNodes, and nothing here fires: an
+ * assertion that only adds optional members keeps the layout its reads
+ * answer from, and a write to an added member is refused where it happens
+ * (assertedOnlyMemberWrite). Runs for file-scope and local bindings alike,
+ * after the declaration has been lowered (so the keep is known). */
+function refuseAssertionViewWrite(lowerer: Lowerer, decl: ts.VariableDeclaration): void {
+  if (decl.initializer === undefined || !isAssertionInitializer(decl.initializer)) return;
+  if (lowerer.layoutKeptNodes.has(decl.initializer)) return;
+  const copy = assertionViewCopy(lowerer, decl.initializer);
+  if (copy === null) return;
+  const write = bindingWrite(lowerer, decl);
+  if (write === null) return;
+  lowerer.unsupported(
+    "SC1090",
+    decl,
+    `writing '${write.text}' through '${decl.name.getText()}', a copy of the '${copy.source}' value the assertion views as '${copy.target}' (the write would land on the copy; write through the original binding, or declare the member on the value's type)`,
+  );
 }

@@ -543,6 +543,21 @@ export function lowerArrayMethodCall(
         : dispatched;
     }
   }
+  // A checker ARRAY type with no mapping whose VALUE lowers to a static
+  // array: `Object.entries(value).filter(([, item]) => ...)` inside a
+  // generic body, where the checker spells the entry element as a deferred
+  // conditional over the lib overload's own type parameter
+  // (`[string, keyof T extends never ? unknown : T[keyof T]]`) that no
+  // bound-type-parameter resolver can decide, while the Object.entries
+  // lowering answers the concrete tuple array the value actually has. Ride
+  // the ordinary tables on the lowered element type, as the checker-untyped
+  // probe above does (re-lowering is pure IR construction); the stdlib
+  // member gate below still applies, because the checker does type this
+  // receiver.
+  if (receiverIr === null && lowerer.checker.isArrayType(checkerReceiver)) {
+    const probe = lowerer.lowerExpr(access.expression);
+    if (probe.type.kind === "array") receiverIr = probe.type;
+  }
   if (receiverIr?.kind === "union") {
     const unionHof = lowerArrayUnionHofCall(lowerer, call, access, receiverIr);
     if (unionHof) return unionHof;
@@ -874,16 +889,16 @@ export function lowerArrayMethodCall(
     shift: [0, 0],
     splice: [0, Number.MAX_SAFE_INTEGER],
     at: [0, 1],
-    map: [1, 1],
-    filter: [1, 1],
-    forEach: [1, 1],
-    find: [1, 1],
-    findIndex: [1, 1],
-    some: [1, 1],
-    findLast: [1, 1],
-    findLastIndex: [1, 1],
-    every: [1, 1],
-    flatMap: [1, 1],
+    map: [1, 2],
+    filter: [1, 2],
+    forEach: [1, 2],
+    find: [1, 2],
+    findIndex: [1, 2],
+    some: [1, 2],
+    findLast: [1, 2],
+    findLastIndex: [1, 2],
+    every: [1, 2],
+    flatMap: [1, 2],
     reduce: [1, 2],
     reduceRight: [1, 2],
   }[
@@ -914,6 +929,9 @@ export function lowerArrayMethodCall(
       | "reduceRight"
   ];
   if (call.arguments.nodes.length < arity[0]! || call.arguments.nodes.length > arity[1]!) {
+    // The predicate/mapping HOFs lower the callback plus an optional
+    // thisArg; the lib declares no third parameter, so a longer call is a
+    // per-site refusal rather than a truncated lowering.
     const hint =
       name === "map" ||
       name === "filter" ||
@@ -922,7 +940,7 @@ export function lowerArrayMethodCall(
       name === "some" ||
       name === "every" ||
       name === "flatMap"
-        ? "the thisArg parameter has no lowering — use an arrow function"
+        ? "the supported form takes the callback and an optional thisArg"
         : undefined;
     lowerer.noLowering(
       `.${name} with ${call.arguments.nodes.length} argument${call.arguments.nodes.length === 1 ? "" : "s"}`,

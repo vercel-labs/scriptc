@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { describe, expect, test } from "vitest";
 import {
   NodeIslandModuleCollector,
+  namedDataPaths,
   nodeIslandManifest,
   readNodeIslandModules,
   requireModuleSpecifiers,
@@ -18,6 +19,26 @@ function project(files: Record<string, string>): string {
   }
   return root;
 }
+
+describe("data paths a module names", () => {
+  test("string literals, and consecutive literal arguments joined", () => {
+    const names = namedDataPaths(`
+      const a = readFileSync(join(here, "fallback", "payload.txt"));
+      const b = "assets/config.json";
+      const c = resolve(__dirname, "x", base, "y");
+      // "comment.txt"
+      const d = \`\${dir}/template.txt\`;
+    `);
+    expect([...names.keys()].sort()).toEqual([
+      "assets/config.json",
+      "fallback",
+      "fallback/payload.txt",
+      "payload.txt",
+      "x",
+      "y",
+    ]);
+  });
+});
 
 describe("module specifiers in JavaScript", () => {
   test("string-literal loads in every form", () => {
@@ -68,6 +89,33 @@ describe("module specifiers in JavaScript", () => {
     `);
     expect(scan.specifiers).toEqual(["./real"]);
     expect(scan.computed).toEqual([]);
+  });
+
+  test("type-only import and export declarations name no runtime module", () => {
+    const text = `
+      import type { A } from "./a.ts";
+      import type B from "./b.ts";
+      import type * as c from "./c.ts";
+      import type d = require("./d.ts");
+      export type { E } from "./e.ts";
+      export type * from "./f.ts";
+      import type from "./value.ts";
+      import type, { K } from "./value2.ts";
+      import { type G, h } from "./g.ts";
+      import { type I } from "./i.ts";
+      export { type J } from "./j.ts";
+    `;
+    // Node's type stripper erases `import type` / `export type` whole. The
+    // `type` modifier inside a value import's or export's name list keeps
+    // its statement, which loads the module.
+    expect(scanModuleSpecifiers(text).specifiers).toEqual([
+      "./value.ts",
+      "./value2.ts",
+      "./g.ts",
+      "./i.ts",
+      "./j.ts",
+    ]);
+    expect(scanModuleSpecifiers(text).computed).toEqual([]);
   });
 
   test("computed loads are reported", () => {
@@ -185,6 +233,21 @@ describe("the collected module tree", () => {
     ]);
   });
 
+  test("type-only imports ship nothing and are not traced", () => {
+    const root = project({
+      "main.ts":
+        'import type { T } from "./types.ts";\nimport "./shared.ts";\nexport const t: T = 0;\n',
+      "types.ts": 'import type { U } from "./other.ts";\nexport type T = U;\n',
+      // Node never loads this file, so its computed load is not a problem.
+      "other.ts":
+        "const load = (specifier: string) => import(specifier);\nexport type U = number;\n",
+      "shared.ts": "export const y = 1;\n",
+    });
+    const collector = new NodeIslandModuleCollector();
+    expect(collector.addLoaded(join(root, "main.ts"))).toBeNull();
+    expect(collector.tree()!.files.map((f) => f.path)).toEqual(["main.ts", "shared.ts"]);
+  });
+
   test("pnpm's links between package directories stay links inside the tree", () => {
     const root = project({
       "app/main.ts": "",
@@ -247,6 +310,101 @@ describe("the collected module tree", () => {
     expect(collector.add(join(root, "main.ts"), "os")).toBeNull();
     expect(collector.tree()).toBeNull();
     expect(NodeIslandModuleCollector.callerPath(null, join(root, "main.ts"))).toBe("main.ts");
+  });
+
+  test("a data file the module names beside itself ships with it", () => {
+    const root = project({
+      "src/main.ts": "",
+      "src/loader.ts": [
+        'import { join } from "node:path";',
+        'const here = "/x";',
+        'const fallback = join(here, "fallback", "payload.txt");',
+      ].join("\n"),
+      "src/fallback/payload.txt": "from the fallback path\n",
+      "src/unrelated.txt": "not named by the module\n",
+      "src/helper.ts": "export const h = 1;",
+    });
+    const collector = new NodeIslandModuleCollector();
+    expect(collector.add(join(root, "src/main.ts"), "./loader.ts")).toBeNull();
+    const paths = collector.tree()!.files.map((file) => file.path);
+    expect(paths).toContain("fallback/payload.txt");
+    expect(paths).not.toContain("unrelated.txt");
+    expect(paths).not.toContain("helper.ts");
+  });
+
+  test("named data stays inside the module's directory: links out of it are not followed", () => {
+    const outside = project({ "secrets/config.json": "{}", "token.txt": "secret\n" });
+    const root = project({
+      "src/main.ts": "",
+      "src/loader.ts":
+        'const names = ["linked/config.json", "data/token.txt", "data/payload.txt", "data/loop/data/payload.txt"];',
+      "src/data/payload.txt": "shipped\n",
+    });
+    symlinkSync(join(outside, "secrets"), join(root, "src/linked"), "dir");
+    symlinkSync(join(outside, "token.txt"), join(root, "src/data/token.txt"));
+    // A link back up the tree must not loop the walk.
+    symlinkSync(join(root, "src"), join(root, "src/data/loop"), "dir");
+    const collector = new NodeIslandModuleCollector();
+    expect(collector.add(join(root, "src/main.ts"), "./loader.ts")).toBeNull();
+    const paths = collector.tree()!.files.map((file) => file.path);
+    expect(paths).toContain("data/payload.txt");
+    expect(paths.filter((path) => path.endsWith("config.json"))).toEqual([]);
+    expect(paths.filter((path) => path.endsWith("token.txt"))).toEqual([]);
+    expect(paths.filter((path) => path.includes("loop"))).toEqual([]);
+  });
+
+  test("only the exact path a module names ships, never a file of the same name elsewhere", () => {
+    const outside = project({ "outside.txt": "private\n" });
+    const root = project({
+      "src/main.ts": "",
+      "src/loader.cjs": [
+        'const fs = require("node:fs");',
+        'const config = fs.readFileSync(__dirname + "/" + "assets/config.json");',
+        'const up = "../notes.txt";',
+        `const away = "${join(outside, "outside.txt")}";`,
+        'const deps = "node_modules/dep/config.json";',
+      ].join("\n"),
+      "src/assets/config.json": "{}",
+      "src/private/config.json": '{ "token": "secret" }',
+      "src/config.json": '{ "token": "secret" }',
+      "src/node_modules/dep/config.json": "{}",
+      "notes.txt": "beside the source directory\n",
+    });
+    const collector = new NodeIslandModuleCollector();
+    expect(collector.add(join(root, "src/main.ts"), "./loader.cjs")).toBeNull();
+    const paths = collector.tree()!.files.map((file) => file.path);
+    expect(paths.filter((path) => !path.endsWith(".cjs"))).toEqual(["assets/config.json"]);
+  });
+
+  test("a joined data path ships even when another directory has a file of that name", () => {
+    const root = project({
+      "src/main.ts": "",
+      "src/loader.cjs":
+        'const { join } = require("node:path");\nrequire("node:fs").readFileSync(join(__dirname, "fallback", "payload.txt"));\n',
+      "src/a-other/payload.txt": "not named by the module\n",
+      "src/fallback/payload.txt": "shipped\n",
+    });
+    const collector = new NodeIslandModuleCollector();
+    expect(collector.add(join(root, "src/main.ts"), "./loader.cjs")).toBeNull();
+    const paths = collector.tree()!.files.map((file) => file.path);
+    expect(paths).toContain("fallback/payload.txt");
+    expect(paths).not.toContain("a-other/payload.txt");
+  });
+
+  test("a named file that is only elsewhere in the module's directory is a build error", () => {
+    const root = project({
+      "src/main.ts": "",
+      "src/loader.cjs":
+        'const fs = require("node:fs");\nfs.readFileSync(__dirname + "/config.json");\n',
+      "src/private/config.json": '{ "token": "secret" }',
+    });
+    const collector = new NodeIslandModuleCollector();
+    const problem = collector.add(join(root, "src/main.ts"), "./loader.cjs");
+    expect(problem).toBe(
+      `${join(root, "src/loader.cjs")}:2 names the file 'config.json', which is not at that path beside the module; the build ships a module's data files by their exact path, so 'private/config.json' does not ship with the Node island. Name the file by its path relative to the module ('private/config.json')`,
+    );
+    expect(collector.isDataFileProblem(problem!)).toBe(true);
+    expect(collector.tree()!.files.map((file) => file.path)).not.toContain("private/config.json");
   });
 
   test("the manifest names relative paths only, and the data is checked against it", () => {

@@ -47,6 +47,13 @@ export interface CompileBaseOptions {
    * executable mapped and the memory charged for up to ~100 ms after exit.
    * Executables only; no effect on other platforms. */
   detachedExit?: boolean;
+  /** Keep JavaScript-visible stdout in the runtime's 64 KiB buffer when fd 1
+   * is not a terminal, settling it when the buffer fills and at every point
+   * the runtime has to publish output (a stderr write, the event loop's
+   * sleep, a blocking stdin read, process.kill, process.exit, an uncaught
+   * exception, exit). A terminal keeps one submission per call. Executables
+   * only; the observable contract on a pipe or file is the opting build's. */
+  stdoutBuffering?: boolean;
   /** Where a program that calls into Node.js (@scriptc/node) loads Node
    * from: a libnode pack directory recorded into the executable, or
    * "beside" to copy the pack next to the executable. Default: the pack in
@@ -165,6 +172,10 @@ export type CompileFailure = {
 export interface CompileWarnings {
   warnings?: ScrDiagnostic[];
   sourceTexts?: Map<string, string>;
+  /** The Node islands the build ran: the npm packages and the program
+   * modules (absolute file paths). Reported again on an executable cache
+   * hit, so a runner can tell an island result from a native one. */
+  islands?: { packages: string[]; modules: string[] };
 }
 
 export type CompileSourceResult =

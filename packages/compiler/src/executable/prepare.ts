@@ -1,11 +1,19 @@
+import { readFileSync, realpathSync } from "node:fs";
 import type { CompileFailure, CompileRequestOptions } from "../compile-types.js";
 import type { FfiProfile } from "../ffi/ffi-manifest.js";
 import { frontendDisposed } from "../frontend/dispose-hook.js";
 import {
   checkerPanicDiag,
+  nodeIslandEntryPatchDiag,
+  nodeIslandEntryReadDiag,
+  nodeIslandImplicitGlobalReadDiag,
+  nodeIslandModuleNoteDiag,
   nodeIslandNoteDiag,
+  nodeIslandReaderStripDiag,
+  nodeIslandStripDiag,
   nodeIslandRetryFailedDiag,
   npmStaticRefusalDiag,
+  nativePackageDiag,
   iceDiag,
   isCheckerPanic,
   stdioPatchAcrossIslandsDiag,
@@ -21,18 +29,30 @@ import {
 } from "../backend/target-diagnostics.js";
 import type { LowerResult, LowerStats } from "../frontend/lowering/lowerer.js";
 import type { FrontendFactory } from "../frontend/pipeline.js";
+import type { NpmStaticStatus } from "../coverage/report.js";
 import type { UnitStore } from "../frontend/lowering/unit-reuse.js";
 import type { CompilationTiming } from "../timing.js";
 import { readProjectConfig } from "../project-config.js";
-import { nodeIslandPolicy } from "../node-islands/policy.js";
+import {
+  isMarkedUserModule,
+  nodeIslandPolicy,
+  type NodeIslandPolicy,
+} from "../node-islands/policy.js";
 import { buildNodeIslandReport } from "../node-islands/report.js";
-import type { IslandPackage, NodeIslandSet } from "../node-islands/boundary.js";
-import { classifyDiagnostic, isIslandReasonCode } from "../node-islands/classify.js";
+import { nodeIslandSet } from "../node-islands/boundary.js";
+import type { IslandModule, IslandPackage, NodeIslandSet } from "../node-islands/boundary.js";
+import {
+  classifyDiagnostic,
+  classifyMarker,
+  isIslandReasonCode,
+} from "../node-islands/classify.js";
 import { packageDirOf, packageVersionOf } from "../node-islands/origin.js";
 import { describe } from "../node-islands/summary.js";
 import { resolveBareModule } from "../frontend/resolve.js";
-import { isEsmFile } from "../frontend/lowering/lower-node-island.js";
-import type { PackageEdge } from "../node-islands/scan.js";
+import type { NodeIslandScan } from "../node-islands/scan.js";
+import { growIslandSet, type IslandGrowthContext } from "../node-islands/growth.js";
+import type { NodeIslandMarker } from "../node-islands/detect.js";
+import { isJsSourceFileName } from "../frontend/tsc-codes.js";
 
 export interface PreparedExecutableModule {
   ok: true;
@@ -42,6 +62,10 @@ export interface PreparedExecutableModule {
   /** Divergence warnings (SC6xxx): the build succeeds; these sites can
    * behave differently from Node. */
   warnings: ScrDiagnostic[];
+  /** The Node islands the build ran (the SC8001 notes name them with their
+   * reasons): packages by name, modules by file. A cached build repeats
+   * them. */
+  islands?: { packages: string[]; modules: string[] };
 }
 
 /** Release the parser/checker before native object generation begins.
@@ -57,6 +81,7 @@ export function prepareExecutableModule(
   lowerIslands: ReadonlyMap<string, IslandPackage> = new Map(),
   retryFences = true,
   unitStore: UnitStore | null = null,
+  lowerModules: ReadonlyMap<string, IslandModule> = new Map(),
 ): PreparedExecutableModule | CompileFailure {
   // The island decision reads the detector's scan unless islands are off.
   const islandScan =
@@ -66,20 +91,44 @@ export function prepareExecutableModule(
   // Node islands (scope-B NI-4): packages refused natively run in Node,
   // unless the policy says otherwise. The frontend reloads without them,
   // so their declarations type the program.
-  const islandDecision = decideNodeIslands(entryPath, opts, fe, lowerIslands);
+  const islandDecision = decideNodeIslands(entryPath, opts, fe, lowerIslands, lowerModules);
+  // A patched builtin the native build cannot represent (an entry module
+  // patch, or a native read of a patched member) fails here.
+  if (islandDecision !== null && islandDecision.errors.length > 0) {
+    const diagnostics = islandDecision.errors;
+    const sourceTexts = fe.sourceTexts();
+    fe.dispose();
+    return { ok: false, diagnostics, sourceTexts };
+  }
   if (islandDecision !== null) {
     fe.dispose();
     fe = createFrontend(entryPath, opts.npmStatic, undefined, undefined, {
       islandPackages: new Set(islandDecision.packages.keys()),
+      ...(islandDecision.modules.size > 0
+        ? { islandModules: new Set(islandDecision.modules.keys()) }
+        : {}),
       islandScan,
     });
     timing("frontend-island-reload");
   }
   let lowered: LowerResult;
   let sourceTexts: Map<string, string>;
+  let contractWarnings: ScrDiagnostic[] = [];
   let disposed = false;
   let fenceGrown: Map<string, IslandPackage> | null = null;
   const fenceSure = new Set<string>();
+  // The growth inputs this build's frontend offers (node-islands/growth.ts).
+  // Built once: the frontend does not change inside a build, and its scan is
+  // a whole-program walk.
+  let growthInputs: IslandGrowthContext | null = null;
+  let growthBuilt = false;
+  const growthOf = (): IslandGrowthContext | null => {
+    if (!growthBuilt) {
+      growthInputs = islandGrowth(entryPath, opts, fe);
+      growthBuilt = true;
+    }
+    return growthInputs;
+  };
   // The frontend (and its tsgo server) is released as soon as lowering
   // ends — clang and the link never hold it open.
   try {
@@ -89,8 +138,39 @@ export function prepareExecutableModule(
       sourceTexts: fe.sourceTexts(),
     });
 
-    const refused = fe.npmStatic.filter((entry) => entry.status === "refused");
+    // A package already bound to a Node island is never compiled statically,
+    // so a refusal status it still carries is the bookkeeping of the analysis
+    // that islanded it (the entry-join check runs before islanding is
+    // applied). The island boundary owns it: a package that cannot actually
+    // run in Node fails there, with the island's own diagnostic.
+    const islanded = islandedPackages(lowerIslands, islandDecision);
+    const refused = fe.npmStatic.filter(
+      (entry) => entry.status === "refused" && !islanded.has(entry.package),
+    );
     if (refused.length > 0) {
+      // A refusal the island decision could not place — one discovered
+      // before the package joined the type-checked program is missing from
+      // the detector's report and can fall outside its fallback resolution
+      // too (the `retry`/`proper-lockfile` shape) — is islanded here under
+      // the automatic policy, and the program is analysed once more.
+      const late = refusalIslands(entryPath, opts, fe, refused, islanded);
+      if (late !== null) {
+        fe.dispose();
+        frontendDisposed();
+        disposed = true;
+        return prepareExecutableModule(
+          entryPath,
+          opts,
+          ffi,
+          buildPlatform,
+          createFrontend,
+          timing,
+          late,
+          retryFences,
+          unitStore,
+          lowerModules,
+        );
+      }
       return fail(
         refused.map((entry) =>
           npmStaticRefusalDiag(
@@ -106,7 +186,9 @@ export function prepareExecutableModule(
       // An import of a natively compiled package that preflight refuses
       // in the importer (a CommonJS namespace import) is that package's
       // refusal: it runs in a Node island instead.
-      const grown = preflightIslands(entryPath, opts, fe, lowerIslands);
+      const growth = growthOf();
+      const grown =
+        growth === null ? null : growIslandSet(growth, lowerIslands, { preflight: fe.preflight });
       if (grown !== null) {
         fe.dispose();
         frontendDisposed();
@@ -121,6 +203,7 @@ export function prepareExecutableModule(
           grown,
           retryFences,
           unitStore,
+          lowerModules,
         );
       }
       return fail(fe.preflight);
@@ -151,15 +234,16 @@ export function prepareExecutableModule(
       // Packages whose own modules refused to lower run in Node islands
       // too (the authoritative lowering, DESIGN.md §1.4): build again with
       // them as islands.
-      const grown = loweringIslands(
-        entryPath,
-        opts,
-        fe,
-        lowered.diagnostics,
-        lowerIslands,
-        fe.nodeIslandScan?.({ userJs: false }).edges,
-      );
-      if (grown !== null) {
+      const growth = growthOf();
+      const grown =
+        growth === null
+          ? null
+          : growIslandSet(growth, lowerIslands, { diagnostics: lowered.diagnostics });
+      // Sloppy user modules the lowering refused join the same retry
+      // (DESIGN.md note 1 §3.2): one reload with every island at once,
+      // never one round per module.
+      const grownModules = loweringModules(entryPath, opts, lowered.diagnostics, lowerModules);
+      if (grown !== null || grownModules !== null) {
         fe.dispose();
         frontendDisposed();
         disposed = true;
@@ -170,9 +254,10 @@ export function prepareExecutableModule(
           buildPlatform,
           createFrontend,
           timing,
-          grown,
+          grown ?? lowerIslands,
           retryFences,
           unitStore,
+          grownModules ?? lowerModules,
         );
       }
       // A failed program whose compiled packages need the runtime or a
@@ -182,9 +267,14 @@ export function prepareExecutableModule(
       // declare (interfaces, aliases such as `Static<T>`) are `any`, so its
       // diagnostics describe a program the island build does not compile:
       // there the packages' declarations type the user code.
-      const marked = retryFences
-        ? fenceIslands(entryPath, opts, fe, lowered, lowerIslands, false)
-        : null;
+      const marked =
+        retryFences && growth !== null
+          ? growIslandSet(growth, lowerIslands, {
+              diagnostics: lowered.diagnostics,
+              fences: lowered.runtimeFences,
+              fenceMode: "report",
+            })
+          : null;
       if (marked !== null) {
         fe.dispose();
         frontendDisposed();
@@ -198,6 +288,8 @@ export function prepareExecutableModule(
           timing,
           marked,
           false,
+          undefined,
+          lowerModules,
         );
       }
       return fail(lowered.diagnostics);
@@ -236,9 +328,20 @@ export function prepareExecutableModule(
       timing("contracts");
       if (checked.diagnostics.length > 0) return fail(checked.diagnostics);
       if (checked.contracts) lowered.module.contracts = checked.contracts;
+      contractWarnings = checked.warnings;
     }
-    if (retryFences)
-      fenceGrown = fenceIslands(entryPath, opts, fe, lowered, lowerIslands, true, fenceSure);
+    if (retryFences) {
+      const growth = growthOf();
+      fenceGrown =
+        growth === null
+          ? null
+          : growIslandSet(growth, lowerIslands, {
+              diagnostics: lowered.diagnostics,
+              fences: lowered.runtimeFences,
+              fenceMode: "sure",
+              sure: fenceSure,
+            });
+    }
   } finally {
     if (!disposed) {
       fe.dispose();
@@ -257,7 +360,16 @@ export function prepareExecutableModule(
       ...(fe.warnings ?? []),
       ...(lowered.divergences ?? []),
       ...(lowered.performance ?? []),
+      ...contractWarnings,
     ],
+    ...(islandDecision === null
+      ? {}
+      : {
+          islands: {
+            packages: [...islandDecision.packages.keys()].sort(),
+            modules: [...islandDecision.modules.keys()].sort(),
+          },
+        }),
   };
   // Packages compiled with runtime fences that need the JavaScript
   // runtime or a mutable object model (fenceIslands): build again with
@@ -284,6 +396,7 @@ export function prepareExecutableModule(
         islands,
         false,
         unitStore,
+        lowerModules,
       );
       if (islanded.ok) return islanded;
       firstError ??= islanded.diagnostics[0] ?? null;
@@ -298,9 +411,105 @@ export function prepareExecutableModule(
   return prepared;
 }
 
-/** The packages a build runs in Node islands, or null for none: under
- * `--node-islands=auto` (the default) every npm package the native
- * pipeline refused, plus packages marked `node`; under `explicit` only the
+/** Whether two spellings name the same file (the checker resolves through
+ * symlinks; a CLI argument may not). */
+function sameFile(a: string, b: string): boolean {
+  if (samePath(a, b)) return true;
+  try {
+    const real = realpathSync(a);
+    const other = realpathSync(b);
+    return samePath(real, other);
+  } catch {
+    return false;
+  }
+}
+
+function samePath(a: string, b: string): boolean {
+  return a.replaceAll("\\", "/") === b.replaceAll("\\", "/");
+}
+
+/** The pre-scan reasons that make a user module a sloppy-semantics island
+ * by themselves (DESIGN.md note 1 §3.1): the constructs whose behavior
+ * needs the JavaScript engine and that a syntax scan decides exactly, plus
+ * the conservative `this` marker (decision S2). */
+const SLOPPY_REASONS: ReadonlySet<string> = new Set([
+  "with",
+  "direct-eval",
+  "annexb-block-function",
+  "sloppy-this",
+]);
+
+/** A module that patches a builtin module's CommonJS object (the user's
+ * decision, 2026-10-29): its patch is meant for code that shares Node's
+ * builtin, so it runs in Node, where an island consumer sees it. */
+const PATCH_REASONS: ReadonlySet<string> = new Set(["builtin-patch"]);
+
+/** The program modules that run in Node islands, by file: modules marked
+ * with `--node-island=<path>` or `scriptc.nodeIslands.modules`, and (under
+ * `--node-islands=auto`) user JavaScript the pre-scan found a sloppy-only
+ * construct in (decision S3). The entry stays native: a program whose entry
+ * is an island runs the whole file in Node, which is a different feature. */
+interface ModuleIslandDecision {
+  modules: Map<string, IslandModule>;
+  /** The entry module's own `builtin-patch` marker: the entry stays native
+   * (a whole-file island is a different feature), so the build refuses it
+   * with SC8006. */
+  entryPatch: { file: string; marker: NodeIslandMarker } | null;
+  /** User TypeScript modules with a `builtin-patch` marker that Node
+   * cannot run with type stripping only (H3.5): SC8006, kept native. */
+  stripProblems: { file: string; construct: string; loc: SrcLoc }[];
+}
+
+function moduleIslands(
+  entryPath: string,
+  policy: NodeIslandPolicy,
+  scan: NodeIslandScan,
+): ModuleIslandDecision {
+  const modules = new Map<string, IslandModule>();
+  let entryPatch: ModuleIslandDecision["entryPatch"] = null;
+  const stripProblems: ModuleIslandDecision["stripProblems"] = [];
+  for (const m of scan.modules) {
+    if (m.origin !== "user") continue;
+    const patches = m.markers.filter((marker) => PATCH_REASONS.has(marker.reason));
+    // A TypeScript module islands only for a builtin patch (H3.2).
+    if (!isJsSourceFileName(m.file) && patches.length === 0) continue;
+    if (sameFile(m.file, entryPath)) {
+      if (patches.length > 0 && entryPatch === null)
+        entryPatch = { file: m.file, marker: patches[0]! };
+      continue;
+    }
+    if (m.stripProblem !== null) {
+      stripProblems.push({ file: m.file, ...m.stripProblem });
+      continue;
+    }
+    const marked = isMarkedUserModule(policy, m.file);
+    const sloppy = m.markers.filter((marker) => SLOPPY_REASONS.has(marker.reason));
+    if (
+      marked === null &&
+      (policy.mode !== "auto" || (sloppy.length === 0 && patches.length === 0))
+    )
+      continue;
+    const first = sloppy[0] ?? patches[0];
+    const reason = first === undefined ? null : classifyMarker(first);
+    modules.set(m.file, {
+      file: m.file,
+      class: reason === null ? "marked" : reason.class,
+      reason:
+        reason === null
+          ? marked === "cli"
+            ? "marked with --node-island"
+            : 'marked "node" in scriptc.nodeIslands.modules'
+          : describe(reason),
+      decision: marked === null ? "auto" : "marked",
+    });
+  }
+  return { modules, entryPatch, stripProblems };
+}
+
+/** The packages and modules a build runs in Node islands, or null for none:
+ * under `--node-islands=auto` (the default) every npm package the native
+ * pipeline refused plus the user modules the pre-scan found a sloppy
+ * construct in, and packages marked `node`; under `explicit` only the
  * marked ones; under `off`, none (refusals stay SC2013). Each island is
  * reported once as an SC8001 note. */
 function decideNodeIslands(
@@ -308,7 +517,8 @@ function decideNodeIslands(
   opts: CompileRequestOptions,
   fe: ReturnType<FrontendFactory>,
   lowerIslands: ReadonlyMap<string, IslandPackage>,
-): (NodeIslandSet & { notes: ScrDiagnostic[] }) | null {
+  lowerModules: ReadonlyMap<string, IslandModule>,
+): (NodeIslandSet & { notes: ScrDiagnostic[]; errors: ScrDiagnostic[] }) | null {
   const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands);
   if (policy.mode === "off" || fe.nodeIslandScan === undefined) return null;
   // A package marked native stays refused: the build reports it rather
@@ -321,10 +531,197 @@ function decideNodeIslands(
       : [],
   );
   for (const name of lowerIslands.keys()) refused.add(name);
-  if (refused.size === 0 && policy.forcedNode.size === 0) return null;
+  // The pre-scan's user-JavaScript markers exist only where a build may act
+  // on them.
+  const scan = fe.nodeIslandScan({ userJs: policy.mode === "auto" });
+  const moduleDecision = moduleIslands(entryPath, policy, scan);
+  const modules = moduleDecision.modules;
+  // A sloppy write to an undeclared name creates a global — a sloppy-only
+  // semantic the native tier does not implement, so the module runs in
+  // Node (the user's policy, 2026-10-31). The checker decides this one, not
+  // the syntax pre-scan: a write target needs bindings, and its sloppiness
+  // depends on the enclosing function and file strictness. Preflight
+  // reports it as SC1091 carrying the R2.4 reason. The entry stays native
+  // (a whole-file island is a different feature), and a strict-mode write
+  // is an ordinary lowering gap, so neither joins here.
+  if (policy.mode === "auto") {
+    for (const d of fe.preflight) {
+      if (d.code !== "SC1091" || d.reason !== "implicit-global-write") continue;
+      const file = d.loc.file;
+      if (modules.has(file) || sameFile(file, entryPath)) continue;
+      if (!isJsSourceFileName(file) || file.includes("/node_modules/")) continue;
+      const reason = classifyDiagnostic(d, "refusal");
+      modules.set(file, {
+        file,
+        class: reason.class,
+        reason: describe(reason),
+        decision: "auto",
+      });
+    }
+  }
+  // Modules the lowering refused keep their first reason (the reload no
+  // longer compiles them).
+  for (const [file, island] of lowerModules) if (!modules.has(file)) modules.set(file, island);
+  const errors: ScrDiagnostic[] = [];
+  if (moduleDecision.entryPatch !== null) {
+    const { file, marker } = moduleDecision.entryPatch;
+    errors.push(
+      nodeIslandEntryPatchDiag(
+        file,
+        marker.member ?? marker.construct,
+        builtinModuleOf(marker.member),
+        marker.loc,
+      ),
+    );
+  }
+  for (const problem of moduleDecision.stripProblems)
+    errors.push(nodeIslandStripDiag(problem.file, problem.construct, problem.loc));
+  // Who else must see the patch (H3.4): every module that reads a patched
+  // member through the builtin's CommonJS object joins the island set, npm
+  // package or user module alike — the patch lives in the islands' Node, and
+  // only sharing the builtin shows the read the patch, as in Node. The entry
+  // stays native, and a user TypeScript module Node cannot strip cannot run
+  // in Node at all: both are SC8006.
+  const patchedMembers = new Map<string, string>();
+  for (const m of scan.modules) {
+    if (!modules.has(m.file)) continue;
+    for (const marker of m.markers) {
+      if (!PATCH_REASONS.has(marker.reason) || marker.member === undefined) continue;
+      if (!patchedMembers.has(marker.member)) patchedMembers.set(marker.member, m.file);
+    }
+  }
+  const readerPackages = new Map<
+    string,
+    { packageDir: string; member: string; patchFile: string }
+  >();
+  // A package the build marks native stays native: a read that only an
+  // island could satisfy is SC8003, once per package and construct.
+  const forcedNativeReads = new Set<string>();
+  const readerModules = new Map<string, { member: string; patchFile: string }>();
+  if (policy.mode === "auto" && patchedMembers.size > 0) {
+    for (const m of scan.modules) {
+      if (modules.has(m.file)) continue;
+      for (const read of m.cjsReads) {
+        const patchFile = patchFileOf(patchedMembers, read.member);
+        if (patchFile === undefined) continue;
+        if (m.origin === "npm" && m.packageName !== null && m.packageDir !== null) {
+          if (policy.forcedNative.has(m.packageName)) {
+            const key = `${m.packageName}:${read.member}`;
+            if (!forcedNativeReads.has(key)) {
+              forcedNativeReads.add(key);
+              errors.push(
+                nativePackageDiag(
+                  m.packageName,
+                  `it reads '${read.member}' through the CommonJS ${builtinModuleOf(read.member)} object, which island module ${patchFile} patches; a native read cannot see the patch`,
+                  fe.npmImportSites.get(m.packageName) ?? read.loc,
+                ),
+              );
+            }
+            continue;
+          }
+          if (!readerPackages.has(m.packageName) && !refused.has(m.packageName))
+            readerPackages.set(m.packageName, {
+              packageDir: m.packageDir,
+              member: read.member,
+              patchFile,
+            });
+        } else if (m.origin === "user") {
+          if (sameFile(m.file, entryPath)) {
+            errors.push(
+              nodeIslandEntryReadDiag(
+                m.file,
+                read.member,
+                builtinModuleOf(read.member),
+                patchFile,
+                read.loc,
+              ),
+            );
+            continue;
+          }
+          if (m.stripProblem !== null) {
+            errors.push(
+              nodeIslandReaderStripDiag(
+                m.file,
+                read.member,
+                patchFile,
+                m.stripProblem.construct,
+                m.stripProblem.loc,
+              ),
+            );
+            continue;
+          }
+          if (!readerModules.has(m.file))
+            readerModules.set(m.file, { member: read.member, patchFile });
+        }
+      }
+    }
+  }
+  // Who else must see an implicit global (H3.4): a sloppy write creates the
+  // name on Node's global object when its island module runs, and native
+  // code has no global object to read it from. An npm package that reads
+  // the name joins the island set (its Node sees the global); a user module
+  // or the entry is SC8020.
+  const readerGlobals = new Map<
+    string,
+    { packageDir: string; global: string; writerFile: string }
+  >();
+  const createdGlobals =
+    policy.mode === "auto" ? implicitGlobalWrites(fe, modules) : new Map<string, string>();
+  if (createdGlobals.size > 0) {
+    for (const m of scan.modules) {
+      if (modules.has(m.file)) continue;
+      for (const read of m.globalReads) {
+        const writerFile = createdGlobals.get(read.name);
+        if (writerFile === undefined) continue;
+        if (m.origin === "npm" && m.packageName !== null && m.packageDir !== null) {
+          if (policy.forcedNative.has(m.packageName)) {
+            const key = `${m.packageName}:${read.name}`;
+            if (!forcedNativeReads.has(key)) {
+              forcedNativeReads.add(key);
+              errors.push(
+                nativePackageDiag(
+                  m.packageName,
+                  `it reads '${read.name}', which island module ${writerFile} creates as an implicit global; the native build has no global object, so the read cannot see it`,
+                  fe.npmImportSites.get(m.packageName) ?? read.loc,
+                ),
+              );
+            }
+            continue;
+          }
+          if (!readerGlobals.has(m.packageName) && !refused.has(m.packageName))
+            readerGlobals.set(m.packageName, {
+              packageDir: m.packageDir,
+              global: read.name,
+              writerFile,
+            });
+        } else if (m.origin === "user") {
+          errors.push(nodeIslandImplicitGlobalReadDiag(read.name, writerFile, read.loc));
+        }
+      }
+    }
+  }
+  if (errors.length > 0) return { ...nodeIslandSet(new Map(), new Map()), notes: [], errors };
+  // A user module that reads a patched member runs in a Node island, so its
+  // read goes through the patched object exactly as in Node (H3.4).
+  for (const [file, reader] of readerModules) {
+    modules.set(file, {
+      file,
+      class: "object-model",
+      reason: `it reads '${reader.member}' through the CommonJS ${builtinModuleOf(reader.member)} object, which island module ${reader.patchFile} patches`,
+      decision: "auto",
+    });
+  }
+  if (
+    refused.size === 0 &&
+    policy.forcedNode.size === 0 &&
+    modules.size === 0 &&
+    readerPackages.size === 0 &&
+    readerGlobals.size === 0
+  )
+    return null;
   const report = buildNodeIslandReport({
     entry: entryPath,
-    scan: fe.nodeIslandScan({ userJs: false }),
+    scan,
     npm: fe.npmStatic,
     diagnostics: [],
     fences: [],
@@ -361,21 +758,18 @@ function decideNodeIslands(
   for (const name of refused) {
     if (packages.has(name) || lowerIslands.has(name)) continue;
     const site = fe.npmImportSites.get(name) ?? { file: entryPath, start: 0, end: 0 };
-    const js =
-      resolveBareModule(site.file, name, "js-only") ??
-      resolveBareModule(site.file, name, "js-only", "require");
-    const at = js === null ? null : packageDirOf(js.typesFile);
-    if (at === null) continue;
+    const dir = installedDirOf(site.file, name);
+    if (dir === null) continue;
     const status = fe.npmStatic.find((e) => e.package === name);
     packages.set(name, {
       name,
-      version: packageVersionOf(at.dir),
-      dir: at.dir,
+      version: packageVersionOf(dir),
+      dir,
       class: "packaging",
       reason: status?.detail ?? "its static compilation was refused",
     });
     notes.push(
-      nodeIslandNoteDiag(name, packageVersionOf(at.dir), "packaging", status?.detail ?? "", site),
+      nodeIslandNoteDiag(name, packageVersionOf(dir), "packaging", status?.detail ?? "", site),
     );
   }
   // Packages islanded by their lowering refusals keep their first reason
@@ -397,232 +791,233 @@ function decideNodeIslands(
       ),
     );
   }
-  return packages.size === 0 ? null : { packages, notes };
-}
-
-/** The island set grown by the npm packages whose own modules refused to
- * lower (`--node-islands=auto` only), or null when there are none. */
-function loweringIslands(
-  entryPath: string,
-  opts: CompileRequestOptions,
-  fe: ReturnType<FrontendFactory>,
-  diagnostics: readonly ScrDiagnostic[],
-  known: ReadonlyMap<string, IslandPackage>,
-  edges: readonly PackageEdge[] | undefined,
-): Map<string, IslandPackage> | null {
-  const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands);
-  if (policy.mode !== "auto" || known.size > 16) return null;
-  const compiled = new Set(fe.npmStatic.filter((e) => e.status === "static").map((e) => e.package));
-  const grown = new Map(known);
-  for (const d of diagnostics) {
-    // A use of a package outside the compiled module graph (an import()
-    // the frontend did not compile): that package runs in an island.
-    const named = d.code === "SC2013" ? /npm package '([^']+)'/.exec(d.message) : null;
-    if (named !== null) {
-      const name = named[1]!;
-      if (grown.has(name) || policy.forcedNative.has(name) || policy.unloaded.has(name)) continue;
-      const js =
-        resolveBareModule(d.loc.file, name, "js-only") ??
-        resolveBareModule(d.loc.file, name, "js-only", "require");
-      const at = js === null ? null : packageDirOf(js.typesFile);
-      if (at === null || at.name !== name) continue;
-      grown.set(name, {
-        name,
-        version: packageVersionOf(at.dir),
-        dir: at.dir,
-        class: "packaging",
-        reason: `${d.code}: ${d.message}`,
-      });
-      continue;
-    }
-    if (!isIslandReasonCode(d.code)) continue;
-    const at = packageDirOf(d.loc.file);
-    if (at === null || !compiled.has(at.name) || grown.has(at.name)) continue;
-    if (policy.forcedNative.has(at.name) || policy.unloaded.has(at.name)) continue;
-    const reason = classifyDiagnostic(d, "refusal");
-    grown.set(at.name, {
-      name: at.name,
-      version: packageVersionOf(at.dir),
-      dir: at.dir,
-      class: reason.class,
-      reason: describe(reason),
-    });
-  }
-  // A native ES module that imports an island CommonJS module would read
-  // its bindings from the module's exports object, where Node gives it the
-  // namespace its CommonJS facade builds (the lexed names, module.exports
-  // as the default): the importing package runs in the island too.
-  for (let added = edges !== undefined; added;) {
-    added = false;
-    for (const edge of edges!) {
-      const name = edge.to;
-      if (!grown.has(name) || edge.fromDir === null || edge.shim) continue;
-      const at = packageDirOf(edge.fromFile);
-      if (at === null || grown.has(at.name) || !compiled.has(at.name)) continue;
-      if (policy.forcedNative.has(at.name) || policy.unloaded.has(at.name)) continue;
-      if (!isEsmFile(edge.fromFile)) continue;
-      const target =
-        resolveBareModule(edge.fromFile, name, "js-only") ??
-        resolveBareModule(edge.fromFile, name, "js-only", "require");
-      if (target === null || isEsmFile(target.typesFile)) continue;
-      grown.set(at.name, {
-        name: at.name,
-        version: packageVersionOf(at.dir),
-        dir: at.dir,
-        class: "packaging",
-        reason: `an ES module of the package imports the CommonJS island package '${name}'`,
-      });
-      added = true;
-    }
-  }
-  return grown.size === known.size ? null : grown;
-}
-
-/** Preflight refusals at import statements of natively compiled npm
- * packages (`--node-islands=auto` only): those packages become islands. */
-function preflightIslands(
-  entryPath: string,
-  opts: CompileRequestOptions,
-  fe: ReturnType<FrontendFactory>,
-  known: ReadonlyMap<string, IslandPackage>,
-): Map<string, IslandPackage> | null {
-  const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands);
-  if (policy.mode !== "auto" || known.size > 16) return null;
-  const compiled = new Set(fe.npmStatic.filter((e) => e.status === "static").map((e) => e.package));
-  if (compiled.size === 0) return null;
-  const texts = fe.sourceTexts();
-  const grown = new Map(known);
-  for (const d of fe.preflight) {
-    if (d.code !== "SC1013") continue;
-    const text = texts.get(d.loc.file);
-    if (text === undefined) continue;
-    // The import statement around the diagnostic: its module specifier.
-    const start = text.lastIndexOf("import", d.loc.start);
-    const end = text.indexOf(";", d.loc.end);
-    const stmt = text.slice(start < 0 ? d.loc.start : start, end < 0 ? text.length : end);
-    const m = /\bfrom\s*["']([^"']+)["']/.exec(stmt);
-    if (m === null) continue;
-    const spec = m[1]!;
-    const name = spec.startsWith("@") ? spec.split("/").slice(0, 2).join("/") : spec.split("/")[0]!;
-    if (!compiled.has(name) || grown.has(name)) continue;
-    if (policy.forcedNative.has(name) || policy.unloaded.has(name)) continue;
-    const site = fe.npmImportSites.get(name);
-    const jsEntry = site === undefined ? null : resolveBareModule(site.file, spec, "js-only");
-    const at = jsEntry === null ? null : packageDirOf(jsEntry.typesFile);
-    if (at === null) continue;
-    grown.set(name, {
+  // npm packages that read a patched member join the island set: their
+  // patch lives in the island's Node, and only a shared builtin shows it.
+  for (const [name, reader] of readerPackages) {
+    if (packages.has(name)) continue;
+    const version = packageVersionOf(reader.packageDir);
+    const reason = `it reads '${reader.member}' through the CommonJS ${builtinModuleOf(reader.member)} object, which island module ${reader.patchFile} patches`;
+    packages.set(name, {
       name,
-      version: packageVersionOf(at.dir),
-      dir: at.dir,
-      class: "gap",
-      reason: `${d.code}: ${d.message}`,
+      version,
+      dir: reader.packageDir,
+      class: "object-model",
+      reason,
+    });
+    notes.push(
+      nodeIslandNoteDiag(
+        name,
+        version,
+        "object-model",
+        reason,
+        fe.npmImportSites.get(name) ?? { file: entryPath, start: 0, end: 0 },
+      ),
+    );
+  }
+  // npm packages that read an implicit global an island module creates join
+  // the island set: the global lives on their Node's global object.
+  for (const [name, reader] of readerGlobals) {
+    if (packages.has(name)) continue;
+    const version = packageVersionOf(reader.packageDir);
+    const reason = `it reads '${reader.global}', the implicit global island module ${reader.writerFile} creates`;
+    packages.set(name, {
+      name,
+      version,
+      dir: reader.packageDir,
+      class: "object-model",
+      reason,
+    });
+    notes.push(
+      nodeIslandNoteDiag(
+        name,
+        version,
+        "object-model",
+        reason,
+        fe.npmImportSites.get(name) ?? { file: entryPath, start: 0, end: 0 },
+      ),
+    );
+  }
+  for (const island of [...modules.values()].sort((a, b) =>
+    a.file < b.file ? -1 : a.file > b.file ? 1 : 0,
+  ))
+    notes.push(
+      nodeIslandModuleNoteDiag(island.file, island.class, island.reason, {
+        file: island.file,
+        start: 0,
+        end: 0,
+      }),
+    );
+  return packages.size === 0 && modules.size === 0
+    ? null
+    : { ...nodeIslandSet(packages, modules), notes, errors };
+}
+
+/** The installed package directory of `name` as Node resolves it from
+ * `fromFile`, or null when there is none. `packageDirOf` reads the directory
+ * off a file path, which answers only while that path names a node_modules
+ * segment: a workspace-linked package's realpath elides the link, so its
+ * directory is the resolution's own `workspaceDir` (the same answer the
+ * checker's program registered the package under). */
+function installedDirOf(fromFile: string, name: string): string | null {
+  const js =
+    resolveBareModule(fromFile, name, "js-only") ??
+    resolveBareModule(fromFile, name, "js-only", "require");
+  if (js === null) return null;
+  return packageDirOf(js.typesFile)?.dir ?? js.workspaceDir ?? null;
+}
+
+/** Every package this pass binds to a Node island: the ones earlier rounds
+ * decided (`lowerIslands`) plus this pass's decision. */
+function islandedPackages(
+  lowerIslands: ReadonlyMap<string, IslandPackage>,
+  decision: NodeIslandSet | null,
+): Map<string, IslandPackage> {
+  const all = new Map(lowerIslands);
+  if (decision !== null) for (const [name, island] of decision.packages) all.set(name, island);
+  return all;
+}
+
+/** The island set grown by refused packages no island binds yet, or null
+ * when there are none. `decideNodeIslands` places the refusals it can see in
+ * the detector's report and resolve from their import sites; a package
+ * refused before it joined the type-checked program can be missing from
+ * both. Under `--node-islands=auto` such a refusal is not fatal while the
+ * package can run in Node: grow the island set and analyse the program once
+ * more. Growth is monotone — an islanded package is never compiled
+ * statically again — and a project has finitely many packages, so the retry
+ * reaches a fixed point instead of looping. An explicit `--node-islands`
+ * list or `off` keeps refusals fatal. */
+function refusalIslands(
+  entryPath: string,
+  opts: CompileRequestOptions,
+  fe: ReturnType<FrontendFactory>,
+  refused: readonly NpmStaticStatus[],
+  known: ReadonlyMap<string, IslandPackage>,
+): Map<string, IslandPackage> | null {
+  const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands);
+  if (policy.mode !== "auto") return null;
+  const grown = new Map(known);
+  for (const entry of refused) {
+    if (grown.has(entry.package)) continue;
+    if (policy.forcedNative.has(entry.package) || policy.unloaded.has(entry.package)) continue;
+    const site = fe.npmImportSites.get(entry.package) ?? { file: entryPath, start: 0, end: 0 };
+    const dir = installedDirOf(site.file, entry.package);
+    // A refusal whose directory cannot be resolved has nothing to island;
+    // the fatal diagnostic keeps it visible.
+    if (dir === null) continue;
+    grown.set(entry.package, {
+      name: entry.package,
+      version: packageVersionOf(dir),
+      dir,
+      class: "packaging",
+      reason: entry.detail ?? "its static compilation was refused",
     });
   }
   return grown.size === known.size ? null : grown;
 }
 
-/** Packages compiled natively with runtime fences (refusals deferred to the
- * operation that reaches them) that should run in islands instead: those
- * with a fence that surely fires (one in top-level module code, which runs
- * when the module evaluates) or that itself needs the runtime (R1). Other
- * fences stay deferred refusals until decision 8 (D6) retires them, so
- * typed packages like jose stay native. With `requireFence` false (after a
- * failed build) the package's island class by NI-2's report decides
- * instead: runtime (R1) or object-model (R2). `--node-islands=auto` only;
- * null for none. */
-function fenceIslands(
+/** The names the island modules' sloppy implicit-global writes create, each
+ * with the file that creates it. Preflight reports each write as an SC1091
+ * whose range is the write target. */
+function implicitGlobalWrites(
+  fe: ReturnType<FrontendFactory>,
+  modules: ReadonlyMap<string, IslandModule>,
+): Map<string, string> {
+  const globals = new Map<string, string>();
+  const sources = new Map<string, string>();
+  for (const d of fe.preflight) {
+    if (d.code !== "SC1091" || d.reason !== "implicit-global-write") continue;
+    const file = d.loc.file;
+    if (!modules.has(file)) continue;
+    let source = sources.get(file);
+    if (source === undefined) {
+      source = readFileSync(file, "utf8");
+      sources.set(file, source);
+    }
+    const name = source.slice(d.loc.start, d.loc.end);
+    if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name) && !globals.has(name)) globals.set(name, file);
+  }
+  return globals;
+}
+
+/** The builtin module a patched member belongs to ("fs" of
+ * "fs.readFileSync"). */
+function builtinModuleOf(member: string | undefined): string {
+  if (member === undefined) return "";
+  const end = /[.[]/.exec(member);
+  return end === null ? member : member.slice(0, end.index);
+}
+
+/** The island module that patches `member`, matching an exact member or a
+ * whole-module patch ("fs.*"). A read the scan cannot name ("fs.*", a
+ * computed key or a rest element) matches every patch of its module, and so
+ * does a patch through a computed key ("fs[…]"). */
+function patchFileOf(patched: ReadonlyMap<string, string>, member: string): string | undefined {
+  const module = builtinModuleOf(member);
+  const exact = patched.get(member) ?? patched.get(`${module}.*`);
+  if (exact !== undefined) return exact;
+  const unnamedRead = member === `${module}.*`;
+  for (const [patch, file] of patched) {
+    if (builtinModuleOf(patch) !== module) continue;
+    if (unnamedRead || patch.includes("[")) return file;
+  }
+  return undefined;
+}
+
+/** The growth inputs this build's frontend offers the shared island-growth
+ * rules (node-islands/growth.ts), or null when the frontend holds no island
+ * scan: the rules then grow nothing. `npmStatic` keeps a `"auto"` request
+ * out: only an explicit list names the packages to keep native. */
+function islandGrowth(
   entryPath: string,
   opts: CompileRequestOptions,
   fe: ReturnType<FrontendFactory>,
-  lowered: LowerResult,
-  known: ReadonlyMap<string, IslandPackage>,
-  requireFence = true,
-  sure?: Set<string>,
-): Map<string, IslandPackage> | null {
-  if (fe.nodeIslandScan === undefined) return null;
-  if (requireFence && lowered.runtimeFences.length === 0) return null;
-  const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands);
-  if (policy.mode !== "auto" || known.size > 32) return null;
-  // An explicit --npm-static request keeps its package native.
-  const explicit = new Set(
-    Array.isArray(opts.npmStatic) ? opts.npmStatic.map((n) => n.replace(/\.\.\.$/, "")) : [],
-  );
-  const compiled = new Set(
-    fe.npmStatic
-      .filter((e) => e.status === "static" && !explicit.has(e.package))
-      .map((e) => e.package),
-  );
-  const fenced = new Map<string, boolean>();
-  for (const d of lowered.runtimeFences) {
-    const at = packageDirOf(d.loc.file);
-    if (at === null || !compiled.has(at.name) || known.has(at.name)) continue;
-    if (policy.forcedNative.has(at.name) || policy.unloaded.has(at.name)) continue;
-    // A fence in top-level module code throws when the module evaluates:
-    // it counts like one that needs the runtime.
-    const runtime = d.moduleInit === true || classifyDiagnostic(d, "fence").class === "runtime";
-    fenced.set(at.name, (fenced.get(at.name) ?? false) || runtime);
-    if (runtime) sure?.add(at.name);
-  }
-  if (requireFence && fenced.size === 0) return null;
-  const scan = fe.nodeIslandScan({ userJs: false });
-  const report = buildNodeIslandReport({
+): IslandGrowthContext | null {
+  const scan = fe.nodeIslandScan?.({ userJs: false });
+  if (scan === undefined) return null;
+  return {
     entry: entryPath,
+    policy: nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands),
     scan,
     npm: fe.npmStatic,
-    diagnostics: lowered.diagnostics,
-    fences: lowered.runtimeFences,
-    policy,
-  });
+    npmImportSites: fe.npmImportSites,
+    ...(Array.isArray(opts.npmStatic) ? { explicitNpmStatic: opts.npmStatic } : {}),
+    sourceTexts: () => fe.sourceTexts(),
+  };
+}
+
+/** The island modules grown by the lowering's refusals in user JavaScript
+ * (`--node-islands=auto` only), or null when there are none: a sloppy
+ * module whose semantics the native pipeline refuses (an implicit global,
+ * a mapped `arguments`, a `with` the pre-scan could not decide) runs in
+ * Node. One retry adds every one of them at once. */
+function loweringModules(
+  entryPath: string,
+  opts: CompileRequestOptions,
+  diagnostics: readonly ScrDiagnostic[],
+  known: ReadonlyMap<string, IslandModule>,
+): Map<string, IslandModule> | null {
+  const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands);
+  if (policy.mode !== "auto" || known.size > 16) return null;
   const grown = new Map(known);
-  for (const island of report.islands) {
-    const runtimeFence = requireFence
-      ? fenced.get(island.package)
-      : (fenced.get(island.package) ?? false);
-    if (runtimeFence === undefined || island.path === null) continue;
-    if (!compiled.has(island.package) || known.has(island.package)) continue;
-    if (policy.forcedNative.has(island.package) || policy.unloaded.has(island.package)) continue;
-    // With fences (requireFence), only fences that surely fire count: a
-    // gap fence inside a function body may never run (jose's typed paths
-    // stay native, DECISIONS.md 2026-10-21). After a failed build
-    // (!requireFence), the package's report class decides.
-    if (requireFence && !runtimeFence) continue;
-    if (!runtimeFence && island.class !== "runtime" && island.class !== "object-model") continue;
-    grown.set(island.package, {
-      name: island.package,
-      version: island.version,
-      dir: island.path,
-      class: island.class,
-      reason: island.reason,
+  for (const d of diagnostics) {
+    if (!isIslandReasonCode(d.code)) continue;
+    const file = d.loc.file;
+    // Packages run in Node through their own decision
+    // (node-islands/growth.ts).
+    if (file.includes("/node_modules/") || packageDirOf(file) !== null) continue;
+    if (!isJsSourceFileName(file) || sameFile(file, entryPath)) continue;
+    if (grown.has(file)) continue;
+    const reason = classifyDiagnostic(d, "refusal");
+    // A gap is a construct scriptc does not implement, not a sloppy
+    // semantic: running it in Node would hide a compiler limitation.
+    if (reason.class === "gap") continue;
+    grown.set(file, {
+      file,
+      class: reason.class,
+      reason: describe(reason),
+      decision: "auto",
     });
-  }
-  // A native ES module that imports an island CommonJS module would read
-  // its bindings from the module's exports object, where Node gives it the
-  // namespace its CommonJS facade builds (the lexed names, module.exports
-  // as the default): the importing package runs in the island too.
-  for (let added = true; added;) {
-    added = false;
-    for (const edge of scan.edges) {
-      const name = edge.to;
-      if (!grown.has(name) || edge.fromDir === null || edge.shim) continue;
-      const at = packageDirOf(edge.fromFile);
-      if (at === null || grown.has(at.name) || !compiled.has(at.name)) continue;
-      if (policy.forcedNative.has(at.name) || policy.unloaded.has(at.name)) continue;
-      if (!isEsmFile(edge.fromFile)) continue;
-      const target =
-        resolveBareModule(edge.fromFile, name, "js-only") ??
-        resolveBareModule(edge.fromFile, name, "js-only", "require");
-      if (target === null || isEsmFile(target.typesFile)) continue;
-      grown.set(at.name, {
-        name: at.name,
-        version: packageVersionOf(at.dir),
-        dir: at.dir,
-        class: "packaging",
-        reason: `an ES module of the package imports the CommonJS island package '${name}'`,
-      });
-      // It goes wherever that island goes, the sure-fence retry included.
-      if (known.has(name) || sure?.has(name) === true) sure?.add(at.name);
-      added = true;
-    }
   }
   return grown.size === known.size ? null : grown;
 }

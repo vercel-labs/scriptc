@@ -135,6 +135,7 @@ const FUNCTION_FIELDS: Record<StringFields<Omit<IrFunction, "body">>, Role> = {
   name: "other",
   sourceName: "other",
   jsEntry: "reference",
+  displayName: "other",
   asyncCacheGlobal: "other",
   asyncCycleCacheGlobal: "other",
   "params[].name": "other",
@@ -162,6 +163,8 @@ const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
   "classes[].arrayFields": "reference",
   "classes[].arraySpecies": "reference",
   "classes[].stringTagHelper": "reference",
+  "classes[].viewAccessors[].member": "other",
+  "classes[].viewAccessors[].helper": "reference",
   "classes[].localCaptures[].name": "other",
   "classes[].localCaptures[].localId": "other",
   "classes[].symbolFields[].field": "other",
@@ -240,6 +243,9 @@ const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
   "inferredFactFiles[].file": "other",
   "inferredFactFiles[].pkg": "other",
   "declOrigins[]": "other",
+  "recordLinks[].from": "other",
+  "recordLinks[].to": "other",
+  "recordLinks[].compose": "reference",
 };
 
 const loc = { file: "references.ts", start: 0, end: 0 };
@@ -317,6 +323,21 @@ const REFERENCE_FIXTURES: Record<string, () => IrModule> = {
   "classes[].stringTagHelper": () => ({
     ...module(),
     classes: [{ name: "%m0.Cell", fields: [], stringTagHelper: TARGET, loc }],
+  }),
+  "classes[].viewAccessors[].helper": () => ({
+    ...module(),
+    classes: [
+      {
+        name: "%m0.Cell",
+        fields: [],
+        viewAccessors: [{ member: "get:value", helper: TARGET }],
+        loc,
+      },
+    ],
+  }),
+  "recordLinks[].compose": () => ({
+    ...module(),
+    recordLinks: [{ pair: 1, from: "r0", to: "r1", compose: TARGET }],
   }),
   "lib.exports[].fnName": () => ({
     ...module(),

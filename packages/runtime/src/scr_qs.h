@@ -29,20 +29,34 @@ ScrStr *scr_qs_unescape(const ScrStr *s);
  * in `out` — the PURE-index-signature Dict record's overflow map (the
  * emitters pass rec->sc_ovf) — grouped like Node's addKeyVal: a first
  * value stores the `str_tag` union arm, a repeat REPLACES it with a
- * two-element string[] wrapped in `arr_tag`, later repeats push. sep/eq
- * fall back to "&"/"=" when empty (Node's falsy rule; the frontend
- * completes omitted/null arguments to the defaults). max_keys is Node's
+ * two-element string[] wrapped in `arr_tag`, later repeats push. A NULL
+ * sep/eq is "&"/"="; the frontend resolves Node's falsy rule to the
+ * defaults, so an empty sep/eq is an explicitly empty one (String([]) is
+ * '') and never matches. max_keys is Node's
  * rule exactly: > 0 caps the PAIR count (empty skipped segments count,
  * like Node's --pairs), anything else (0, negatives, NaN) is unlimited;
- * the frontend completes the omitted option to 1000. Only the DEFAULT
- * decoder runs (custom decodeURIComponent options fence at compile time),
- * so '+' means ' ' and segments decode with scr_qs_unescape's semantics
- * only when they carry a full valid %XX triple (Node's encodeCheck).
+ * the frontend completes the omitted option to 1000. The DEFAULT decoder
+ * runs (scr_qs_parse_into_custom takes a custom one), so '+' means ' ' and
+ * segments decode with scr_qs_unescape's semantics only when they carry a
+ * full valid %XX triple (Node's encodeCheck).
  * Borrows everything; never throws. */
 typedef struct ScrMap ScrMap; /* full definition below (C11 repeat) */
 void scr_qs_parse_into(ScrMap *out, const ScrStr *qs, const ScrStr *sep,
                        const ScrStr *eq, double max_keys, uint32_t str_tag,
                        uint32_t arr_tag);
+/* querystring.parse with a custom decodeURIComponent option: when decoder
+ * is a function it decodes every non-empty key and value (with '+' read as
+ * "%20"), and qsUnescape(s, true) decodes one when the decoder throws; any
+ * other decoder value means the default. A decoder that answers a value
+ * that is not a string leaves SC2020 pending. */
+void scr_qs_parse_into_custom(ScrMap *out, const ScrStr *qs, const ScrStr *sep,
+                              const ScrStr *eq, double max_keys, const struct ScrDyn *decoder,
+                              uint32_t str_tag, uint32_t arr_tag);
+/* querystring.unescapeBuffer(s, decodeSpaces): the bytes of Node's scan
+ * ('+' is a space when decodeSpaces) as a new Buffer (+1). */
+struct ScrBytes *scr_qs_unescape_buffer(const ScrStr *s, bool decode_spaces);
+/* querystring's sep/eq arguments that may not be strings (scr_qs.c). */
+ScrStr *scr_qs_separator(const struct ScrDyn *value, const ScrStr *fallback, bool parse);
 /* querystring.parse(qs) with the default separators and maxKeys, as a
  * fresh checked-dynamic null-prototype object (url.parse's parsed query).
  * Borrows qs; +1; never throws. */
@@ -114,10 +128,17 @@ void scr_process_load_env_file(const struct ScrDyn *path);
  * true/false, arrays expand to repeated keys (empty arrays emit NOTHING,
  * key included), and everything else (null, undefined, nested objects/
  * arrays, functions) is the empty value — key and eq still emitted.
- * sep/eq fall back to "&"/"=" when empty (Node's `sep ||= '&'`). Result
+ * A NULL sep/eq is "&"/"="; the frontend resolves Node's `sep ||= '&'`,
+ * so an empty one appends nothing. Result
  * +1; a lone surrogate throws URIError [ERR_INVALID_URI] (NULL). */
 ScrStr *scr_qs_stringify(const struct ScrDyn *obj, const ScrStr *sep,
                          const ScrStr *eq);
+/* querystring.stringify with a custom encodeURIComponent: Node's
+ * encodeStringifiedCustom over each key and value, the answers appended
+ * with `+`. An encoder that is not a function means the default. +1, or
+ * NULL with the encoder's exception pending. */
+ScrStr *scr_qs_stringify_custom(const struct ScrDyn *obj, const ScrStr *sep, const ScrStr *eq,
+                                const struct ScrDyn *encoder);
 
 /* encodeURI — the same ECMA-262 Encode() with the reserved set and '#'
  * kept unescaped (scr_encode_uri_impl's keep_reserved arm). Throws the same

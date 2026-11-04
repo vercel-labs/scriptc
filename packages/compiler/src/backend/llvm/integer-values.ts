@@ -238,6 +238,18 @@ export function int32Number(
   return { name: number, type, uint32: name, integer: { name, type: "i32", signed: true, range } };
 }
 
+/** `integerNumber` for an i32 whose range is within uint32. */
+export function uint32Number(
+  host: LlvmEmitterContext,
+  name: string,
+  range: IntegerRange,
+  type: IrType,
+): LlValue {
+  const number = host.B.tmp();
+  host.B.line(`${number} = uitofp i32 ${name} to double`);
+  return { name: number, type, uint32: name, integer: { name, type: "i32", signed: false, range } };
+}
+
 export function integerNumber(
   host: LlvmEmitterContext,
   name: string,

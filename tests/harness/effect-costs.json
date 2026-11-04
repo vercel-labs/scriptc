@@ -25,6 +25,7 @@
   "core-all-record.ts": 169,
   "core-all-tuple.ts": 187,
   "core-do.ts": 159,
+  "core-fn-return.ts": 165,
   "core-fn.ts": 165,
   "core-for-each.ts": 180,
   "core-gen.ts": 177,

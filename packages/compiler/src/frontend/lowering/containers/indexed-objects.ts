@@ -1081,7 +1081,11 @@ export function lowerRecordRestCaptureHelper(
 ): string | null {
   const names = [...new Set(excluded)].sort();
   return buildRecordCaptureHelper(lowerer, fromId, toId, loc, {
-    key: `rest:${fromId}:${toId}:${names.join(",")}`,
+    // The set is part of the key, spelled so that two DIFFERENT sets can
+    // never produce one spelling: a property name may hold a comma
+    // (`{ "a,b": x, ...rest }` beside `{ a, b, ...rest }`) or be empty,
+    // and either would join into the other set's text.
+    key: `rest:${fromId}:${toId}:${JSON.stringify(names)}`,
     namePrefix: "%rec.rest",
     excluded: new Set(names),
     propagateNullProto: false,
@@ -1440,14 +1444,46 @@ export function lowerObjectAssignIndexShape(
     return lowerer.widthLiftPlan(t, tIv);
   };
   // Validate EVERY source before interning anything.
-  interface SourcePlan {
+  interface RecordSourcePlan {
+    kind: "record";
     fromId: string;
     fields: { name: string; type: IrType; lift: WidthLift | "dyn" }[];
     ovfLift: (WidthLift | "dyn") | null;
   }
+  /** A source the frontend could only map to the checked-dynamic tree (an
+   * `unknown`/`any` argument, a value whose type it cannot model): nothing
+   * static is known about its keys or values, so the copy walks the
+   * source's own keys at runtime — the shape of the copy Node performs. */
+  interface DynSourcePlan {
+    kind: "dyn";
+  }
+  type SourcePlan = RecordSourcePlan | DynSourcePlan;
+  // A dyn source's values arrive untyped, so each one enters the target's
+  // index-value slot through a CHECKED conversion: a value outside the
+  // slot throws the catchable TypeError where JS stores it (SEMANTICS.md's
+  // cast divergence, the same stance every dyn→typed conversion takes). A
+  // runtime key can collide with a DECLARED target field, and the keyed
+  // write stores a non-dyn value through such a slot unchecked — so those
+  // fields must be the slot type (or, for a dyn slot, dyn-convertible).
+  const dynSourceOpen =
+    tIv.kind === "dyn"
+      ? to.fields.every((f) => lowerer.dynConvertible(f.type))
+      : canDynCheckTo(
+          tIv,
+          (id) => lowerer.shapes.get(id),
+          (id) => lowerer.unions.get(id),
+        ) && to.fields.every((f) => typeEquals(f.type, tIv));
   const plans: SourcePlan[] = [];
   for (const argNode of call.arguments.nodes.slice(1)) {
     const srcIr = lowerer.mapTypeOf(lowerer.typeOf(argNode));
+    if (srcIr?.kind === "dyn") {
+      // The target keeps its typed representation while the checker's
+      // `T & U` answer for a dyn `U` is some other type, so only the
+      // mutate-in-place spelling (result discarded) can be lowered.
+      if (!discarded || !dynSourceOpen) return null;
+      plans.push({ kind: "dyn" });
+      continue;
+    }
     if (srcIr?.kind !== "record") return null;
     const from = lowerer.shapes.get(srcIr.shapeId);
     if (!from || from.tuple) return null;
@@ -1459,7 +1495,7 @@ export function lowerObjectAssignIndexShape(
           return f ? [f] : [];
         })
       : from.fields;
-    const fields: SourcePlan["fields"] = [];
+    const fields: RecordSourcePlan["fields"] = [];
     for (const ff of orderedFields) {
       const lift = slotLift(ff.type);
       if (lift === null) return null;
@@ -1470,9 +1506,9 @@ export function lowerObjectAssignIndexShape(
       ovfLift = slotLift(from.indexValue);
       if (ovfLift === null) return null;
     }
-    plans.push({ fromId: srcIr.shapeId, fields, ovfLift });
+    plans.push({ kind: "record", fromId: srcIr.shapeId, fields, ovfLift });
   }
-  const helperFor = (plan: SourcePlan): string => {
+  const helperFor = (plan: RecordSourcePlan): string => {
     const key = `assign:${targetIr.shapeId}:${plan.fromId}`;
     const existing = lowerer.valueHelpers.get(key);
     if (existing) return existing;
@@ -1615,13 +1651,111 @@ export function lowerObjectAssignIndexShape(
     lowerer.liftedFns.push(fn);
     return name;
   };
+  /** Interned `%obj.assignDyn.<n>(t, s)` — the same keyed-write walk for a
+   * source with no static shape: `Object.keys(s)` own-key order (what
+   * `Object.assign` copies), each value read back through the key and
+   * checked into the target's index-value slot by the keyed write. A
+   * null/undefined source copies nothing, exactly JS's rule that
+   * `Object.assign` SKIPS such sources (where `Object.keys` would throw). */
+  const dynHelperFor = (): string => {
+    const key = `assign:${targetIr.shapeId}:dyn`;
+    const existing = lowerer.valueHelpers.get(key);
+    if (existing) return existing;
+    const name = keyedHelperName(lowerer, "%obj.assignDyn", key);
+    lowerer.valueHelpers.set(key, name);
+    const toT: IrType = { kind: "record", shapeId: targetIr.shapeId };
+    const tRef = varRef("t.0", toT, loc);
+    const sRef = varRef("s.0", DYN, loc);
+    const ksT = arrayOf(STRING);
+    const kRef = varRef("k.0", STRING, loc);
+    const read: IrExpr = { kind: "dynKeyGet", key: kRef, value: sRef, type: DYN, loc };
+    const value: IrExpr =
+      tIv.kind === "dyn" ? read : { kind: "dynCheck", value: read, type: tIv, loc };
+    const fn: IrFunction = {
+      name,
+      params: [
+        { localId: "t.0", name: "t", type: toT },
+        { localId: "s.0", name: "s", type: DYN },
+      ],
+      returnType: toT,
+      locals: [
+        { id: "t.0", name: "t", type: toT, mutable: true },
+        { id: "s.0", name: "s", type: DYN, mutable: false },
+        { id: "ks.0", name: "ks", type: ksT, mutable: false },
+        { id: "i.0", name: "i", type: F64, mutable: true },
+        { id: "k.0", name: "k", type: STRING, mutable: false },
+      ],
+      body: [
+        {
+          kind: "if",
+          cond: { kind: "dynTest", test: "nullish", value: sRef, type: BOOL, loc },
+          then: [{ kind: "return", value: tRef, loc }],
+          else_: [
+            {
+              kind: "varDecl",
+              localId: "ks.0",
+              init: {
+                kind: "libCall",
+                fn: "dyn.objKeyStrings",
+                args: [sRef],
+                type: ksT,
+                loc,
+              },
+              loc,
+            },
+            countedFor(
+              loc,
+              {
+                kind: "arrIntrinsic",
+                method: "length",
+                receiver: varRef("ks.0", ksT, loc),
+                args: [],
+                type: F64,
+                loc,
+              },
+              () => [
+                {
+                  kind: "varDecl",
+                  localId: "k.0",
+                  init: {
+                    kind: "arrayGet",
+                    arr: varRef("ks.0", ksT, loc),
+                    index: varRef("i.0", F64, loc),
+                    type: STRING,
+                    loc,
+                  },
+                  loc,
+                },
+                {
+                  kind: "recordKeySet",
+                  obj: tRef,
+                  shapeId: targetIr.shapeId,
+                  key: kRef,
+                  value,
+                  loc,
+                },
+              ],
+            ),
+          ],
+          loc,
+        },
+        { kind: "return", value: tRef, loc },
+      ],
+      loc,
+    };
+    lowerer.liftedFns.push(fn);
+    return name;
+  };
   let acc = lowerer.lowerExprExpecting(call.arguments.nodes[0]!, targetIr);
   for (let i = 0; i < plans.length; i++) {
-    const src = lowerer.lowerExprExpecting(call.arguments.nodes[i + 1]!, {
-      kind: "record",
-      shapeId: plans[i]!.fromId,
-    });
-    acc = { kind: "call", callee: helperFor(plans[i]!), args: [acc, src], type: targetIr, loc };
+    const plan = plans[i]!;
+    const argNode = call.arguments.nodes[i + 1]!;
+    const src: IrExpr =
+      plan.kind === "dyn"
+        ? lowerer.coerceToExpected(lowerer.lowerExpr(argNode), DYN)
+        : lowerer.lowerExprExpecting(argNode, { kind: "record", shapeId: plan.fromId });
+    const callee = plan.kind === "dyn" ? dynHelperFor() : helperFor(plan);
+    acc = { kind: "call", callee, args: [acc, src], type: targetIr, loc };
   }
   return acc;
 }

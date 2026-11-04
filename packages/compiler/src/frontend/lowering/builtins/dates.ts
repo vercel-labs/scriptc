@@ -1,9 +1,10 @@
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, own } from "../lowerer.js";
-import { locOf } from "../../program.js";
+import { isJsSourceFile, locOf } from "../../program.js";
 import { tryLowerExpression } from "../expressions/try-lower-expression.js";
 import { lowerToNumberArguments } from "../lower-exprs.js";
 import { programDeclaresDateClass } from "./date-classes.js";
+import { programAddsHandleProperties, refuseShadowedImplicitReader } from "../handle-properties.js";
 import {
   BOOL,
   DATE_T,
@@ -107,6 +108,15 @@ export function lowerDateCall(
   if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "date") return null;
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
+  // Object.prototype's inherited probes are not Date methods: in a
+  // JavaScript program that adds properties to handles they answer from
+  // the handle's property table, so lowerObjectOwnMethodCall claims them.
+  if (
+    (name === "hasOwnProperty" || name === "propertyIsEnumerable") &&
+    isJsSourceFile(ts.getSourceFileOfNode(access)) &&
+    programAddsHandleProperties(lowerer)
+  )
+    return null;
   // A Date a JavaScript file constructs is a checked-dynamic value; a
   // setter on it takes the dynamic method call, which changes the Date the
   // handle holds. So does every Date method on a
@@ -246,6 +256,13 @@ function lowerDateToJson(
   const loc = locOf(call);
   if (call.arguments.nodes.length > 1 || call.arguments.nodes.some((a) => ts.isSpreadElement(a)))
     lowerer.noLowering(`Date.prototype.toJSON with ${call.arguments.nodes.length} arguments`, call);
+  // Node's Date.prototype.toJSON is ToPrimitive(this, number) followed by
+  // this.toISOString(): it reads the own valueOf (and toString when valueOf
+  // answers an object), which the native lowering would skip. An own
+  // toISOString is a denied grant (handle-properties.ts), so this is the
+  // remaining silent reader.
+  refuseShadowedImplicitReader(lowerer, call, DATE_T, "valueOf", "toJSON conversion");
+  refuseShadowedImplicitReader(lowerer, call, DATE_T, "toString", "toJSON conversion");
   const raw = lowerer.lowerExpr(access.expression);
   const receiver: IrExpr =
     raw.type.kind === "dyn"
@@ -452,7 +469,12 @@ export function lowerDateToPrimitiveCall(
     raw.type.kind === "dyn"
       ? { kind: "libCall", fn: "date.checkedValue", args: [raw], type: DATE_T, loc }
       : raw;
-  return text === "number"
-    ? { kind: "libCall", fn: "date.valueOf", args: [date], type: F64, loc }
-    : { kind: "libCall", fn: "date.toString", args: [date], type: STRING, loc };
+  if (text === "number") {
+    refuseShadowedImplicitReader(lowerer, call, DATE_T, "valueOf", "ToPrimitive");
+    return { kind: "libCall", fn: "date.valueOf", args: [date], type: F64, loc };
+  }
+  // The string and default hints read toString, which the program may have
+  // replaced with an own property this typed path cannot see.
+  refuseShadowedImplicitReader(lowerer, call, DATE_T, "toString", "ToPrimitive");
+  return { kind: "libCall", fn: "date.toString", args: [date], type: STRING, loc };
 }

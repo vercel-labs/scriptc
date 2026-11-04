@@ -1,0 +1,16 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/early-error-catch-parameter-collision.js"
+ ],
+ "diags": [
+  {
+   "code": "SC0015",
+   "message": "the catch parameter 'error' is already declared in this catch block",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/early-error-catch-parameter-collision.js",
+    "start": 318,
+    "end": 323
+   }
+  }
+ ]
+}

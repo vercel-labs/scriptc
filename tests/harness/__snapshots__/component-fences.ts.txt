@@ -94,3 +94,57 @@ component-fences.ts:46:13 - error SC2004: uses of 'kept' inherit the blocker on 
   47 | 
 
   hint: the declaration of 'kept' did not compile — fix the diagnostic reported there and these sites clear with it
+
+component-fences.ts:56:7 - error SC2009: values of type 'Handler' cannot be compiled: the function shape is supported, but its parameter 'session' has type 'Session', which does not compile: the record shape is supported, but its member 'cache' has type 'WeakRef<object>', which does not compile
+
+  55 | type Handler = (session: Session) => void;
+  56 | const handled = (0 as unknown) as Handler;
+     |       ^~~~~~~
+  57 | console.log(typeof handled);
+
+  hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
+
+component-fences.ts:57:20 - error SC2004: uses of 'handled' inherit the blocker on its declaration
+
+  56 | const handled = (0 as unknown) as Handler;
+  57 | console.log(typeof handled);
+     |                    ^~~~~~~
+  58 | 
+
+  hint: the declaration of 'handled' did not compile — fix the diagnostic reported there and these sites clear with it
+
+component-fences.ts:66:7 - error SC2009: values of type 'Chain' cannot be compiled: the record shape is supported, but its member 'attach' is an overload set, and its overload 'attach(next: Chain): Chain' has parameter 'next' of type 'Chain', which does not compile
+
+  65 | }
+  66 | const chain = (0 as unknown) as Chain;
+     |       ^~~~~
+  67 | console.log(chain);
+
+  hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
+
+component-fences.ts:67:13 - error SC2004: uses of 'chain' inherit the blocker on its declaration
+
+  66 | const chain = (0 as unknown) as Chain;
+  67 | console.log(chain);
+     |             ^~~~~
+  68 | 
+
+  hint: the declaration of 'chain' did not compile — fix the diagnostic reported there and these sites clear with it
+
+component-fences.ts:75:7 - error SC2009: values of type 'Factory' cannot be compiled: the record shape is supported, but its member 'make' is an overload set, and its overload 'make(width: number): Factory' returns 'Factory', which does not compile
+
+  74 | }
+  75 | const factory = (0 as unknown) as Factory;
+     |       ^~~~~~~
+  76 | console.log(factory);
+
+  hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
+
+component-fences.ts:76:13 - error SC2004: uses of 'factory' inherit the blocker on its declaration
+
+  75 | const factory = (0 as unknown) as Factory;
+  76 | console.log(factory);
+     |             ^~~~~~~
+  77 | 
+
+  hint: the declaration of 'factory' did not compile — fix the diagnostic reported there and these sites clear with it

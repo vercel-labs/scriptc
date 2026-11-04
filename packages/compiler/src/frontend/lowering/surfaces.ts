@@ -1018,6 +1018,14 @@ const PATH_MODULE_FNS: Record<string, BuiltinModuleFn | undefined> = {
     valueParams: [{ mode: "required", type: STRING, name: "path" }],
     checked: { fn: "path.toNamespacedValue", args: [false], result: DYN },
   },
+  // Node's deprecated alias of toNamespacedPath (the same function object).
+  _makeLong: {
+    fn: "path.toNamespacedPath",
+    params: [STRING],
+    result: STRING,
+    valueParams: [{ mode: "required", type: STRING, name: "path" }],
+    checked: { fn: "path.toNamespacedValue", args: [false], result: DYN },
+  },
   matchesGlob: {
     fn: "path.matchesGlob",
     params: [STRING, STRING],
@@ -1110,6 +1118,14 @@ const PATH_WIN32_MODULE_FNS: Record<string, BuiltinModuleFn | undefined> = {
     ],
   },
   toNamespacedPath: {
+    fn: "path.win32ToNamespacedPath",
+    params: [STRING],
+    result: STRING,
+    valueParams: [{ mode: "required", type: STRING, name: "path" }],
+    checked: { fn: "path.toNamespacedValue", args: [true], result: DYN },
+  },
+  // Node's deprecated alias of toNamespacedPath (the same function object).
+  _makeLong: {
     fn: "path.win32ToNamespacedPath",
     params: [STRING],
     result: STRING,
@@ -2255,8 +2271,13 @@ export const BUILTIN_MODULE_CONSTS: Record<
   worker_threads: { isMainThread: true, threadId: 0 },
   cluster: { isPrimary: true, isMaster: true, isWorker: false },
   punycode: { version: "2.1.0" },
-  // The largest Buffer length, the bound the allocation checks use.
-  buffer: { kMaxLength: 9007199254740991 },
+  // The largest Buffer length, the bound the allocation checks use; V8's
+  // string length limit (code units), and the inspect preview width.
+  buffer: {
+    kMaxLength: 9007199254740991,
+    kStringMaxLength: 536870888,
+    INSPECT_MAX_BYTES: 50,
+  },
   // zlib's module-level copies of its constants (every member outside
   // BROTLI_*, Node's own loop over zlib.constants).
   zlib: Object.fromEntries(
@@ -2406,8 +2427,18 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     isatty: ["process.isTTYValue"],
   },
   os: {
-    // lowerOsUserInfoCall assembles the record from scalar libCalls.
-    userInfo: ["os.userHomedir", "os.userShell", "os.userUid", "os.userGid"],
+    // lowerOsUserInfoCall assembles the record from scalar libCalls: one
+    // snapshot call and the passwd fields, as text and as Buffers.
+    userInfo: [
+      "os.userInfoBegin",
+      "os.userHomedir",
+      "os.userHomedirBuf",
+      "os.userShell",
+      "os.userShellBuf",
+      "os.userNameBuf",
+      "os.userUid",
+      "os.userGid",
+    ],
     // lowerOsCpusCall reads the cpusTake snapshot through its accessors.
     cpus: ["os.cpusModel", "os.cpusField"],
   },

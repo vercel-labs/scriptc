@@ -96,6 +96,23 @@ function buildLibFnSignatures() {
     "event.handleEventReader": { argTypes: [DYN], result: VOID },
     "event.targetDispatch": { argTypes: [null, DYN, DYN], result: BOOL },
     "event.targetCall": { argTypes: [null, DYN, STRING, DYN], result: DYN },
+    /** events.getEventListeners over an EventTarget: the type's listeners
+     * in registration order, as a checked-dynamic array. The receiver is
+     * the target as a checked-dynamic value (a plain target, an
+     * AbortSignal, or a compiled subclass's capsule); `type` is the string
+     * name, or the checked-dynamic form, where a value that is not a string
+     * matches no type and the answer is empty. */
+    "event.targetListeners": { argTypes: [DYN, STRING], result: DYN },
+    "event.targetListenersDyn": { argTypes: [DYN, DYN], result: DYN },
+    /** events.listenerCount over an EventTarget: the type's listeners, 0
+     * for a type it has none of (the `_dyn` form answers 0 for a value that
+     * is not a string). */
+    "event.targetListenerCount": { argTypes: [DYN, STRING], result: F64 },
+    "event.targetListenerCountDyn": { argTypes: [DYN, DYN], result: F64 },
+    /** events.getMaxListeners and events.setMaxListeners over an
+     * EventTarget: the target's limit, and its assignment. */
+    "event.targetGetMax": { argTypes: [DYN], result: F64 },
+    "event.targetSetMax": { argTypes: [DYN, F64], result: VOID },
     "event.call": { argTypes: [null, STRING, DYN], result: DYN },
     "event.get": { argTypes: [null, STRING], result: DYN },
     "event.set": { argTypes: [null, STRING, DYN], result: VOID },
@@ -426,8 +443,9 @@ function buildLibFnSignatures() {
      * native array, and the invoke unit's dispatch for everything else. */
     "dyn.arrayLikeProtoCall": { argTypes: [DYN, STRING, DYN], result: DYN },
     /** Number.prototype / Boolean.prototype as JavaScript values: the
-     * prototype object (dyn.builtinPrototype unit). */
-    "dyn.builtinPrototype": { argTypes: [STRING], result: DYN },
+     * wrapper unit's prototype object, which is also the compiled
+     * constructor's `prototype` member (one object per kind). */
+    "dyn.builtinPrototype": { argTypes: [STRING, DYN], result: DYN },
     /** Promise.all / Promise.allSettled / Promise.any over a spread
      * checked-dynamic array: the values, the settled-record array, or the
      * first fulfillment (AggregateError once every entry rejects).
@@ -899,8 +917,15 @@ function buildLibFnSignatures() {
     "os.userName": { argTypes: [], result: STRING },
     "os.userShell": { argTypes: [], result: STRING },
     "os.userHomedir": { argTypes: [], result: STRING },
+    /** The same three fields as Buffers (os.userInfo({ encoding: 'buffer' })). */
+    "os.userNameBuf": { argTypes: [], result: BYTES_U8 },
+    "os.userShellBuf": { argTypes: [], result: BYTES_U8 },
+    "os.userHomedirBuf": { argTypes: [], result: BYTES_U8 },
     "os.userUid": { argTypes: [], result: F64 },
     "os.userGid": { argTypes: [], result: F64 },
+    /** The single passwd lookup the field libCalls above read: one per
+     * userInfo() record instead of one per field. */
+    "os.userInfoBegin": { argTypes: [], result: VOID },
     "os.tmpdir": { argTypes: [], result: STRING },
     // Result is the call site's Dict<NetworkInterfaceInfo[]> record (VOID is
     // the dgram.address sentinel — the libCall case checks the structure).
@@ -1173,6 +1198,10 @@ function buildLibFnSignatures() {
     "url.canParseBase": { argTypes: [STRING, STRING], result: BOOL },
     "url.parse": { argTypes: [STRING], result: DYN },
     "url.parseBase": { argTypes: [STRING, STRING], result: DYN },
+    /** URL.revokeObjectURL(id): the id arrives already converted. A
+     * compiled program registers no blob URLs, so Node's registry lookup
+     * always misses and the call answers undefined. Never throws. */
+    "url.revokeObjectURL": { argTypes: [STRING], result: VOID },
     "url.protocol": { argTypes: [URL_T], result: STRING },
     "url.origin": { argTypes: [URL_T], result: STRING },
     "url.username": { argTypes: [URL_T], result: STRING },
@@ -2053,6 +2082,8 @@ function buildLibFnSignatures() {
     "test.ctxHook": { argTypes: [TESTCTX_T, F64, null, F64], result: VOID },
     // t.plan(count), and the count of one t.assert call.
     "test.ctxPlan": { argTypes: [TESTCTX_T, F64], result: VOID },
+    "test.ctxRunOnly": { argTypes: [TESTCTX_T, BOOL], result: VOID },
+    "test.ctxWaitFor": { argTypes: [TESTCTX_T, DYN, BOOL, F64, BOOL, F64], result: DYN },
     "test.ctxCount": { argTypes: [TESTCTX_T], result: VOID },
     // The mock trackers: the module's `mock` and t.mock keep each mock's
     // restore closure (moved) for restoreAll and reset.
@@ -2393,6 +2424,11 @@ function buildLibFnSignatures() {
     "http.clientSignal": { argTypes: [HTTPCLIENTREQ_T, DYN], result: VOID },
     /** options.signal checked before the request is built (ERR_INVALID_ARG_TYPE). */
     "http.clientSignalCheck": { argTypes: [DYN], result: VOID },
+    /** options.protocol checked before the request is built: the declared
+     * scheme against the agent's (the calling module's when the options
+     * carry no Agent value). MAY THROW ERR_INVALID_PROTOCOL. */
+    "http.clientProtocolCheck": { argTypes: [DYN, BOOL], result: VOID },
+    "http.clientProtocolCheckAgent": { argTypes: [DYN, BOOL, DYN], result: VOID },
     /** https.request's servername option, stored for the construction call
      * that follows: the TLS name sent and verified, and part of the pooled
      * socket key. The "https." prefix keeps the TLS unit linked. */
@@ -2437,6 +2473,13 @@ function buildLibFnSignatures() {
     "http.requestDynCb": { argTypes: [DYN, BOOL, null], result: HTTPCLIENTREQ_T },
     "https.requestDyn": { argTypes: [DYN, BOOL], result: HTTPCLIENTREQ_T },
     "https.requestDynCb": { argTypes: [DYN, BOOL, null], result: HTTPCLIENTREQ_T },
+    /** request/get with a URL and an options record: Node's
+     * `{...urlToHttpOptions(new URL(url)), ...options}` merge at run time,
+     * then the walk above. Args (url, options, autoEnd[, cb]). MAY THROW. */
+    "http.requestUrlDyn": { argTypes: [STRING, DYN, BOOL], result: HTTPCLIENTREQ_T },
+    "http.requestUrlDynCb": { argTypes: [STRING, DYN, BOOL, null], result: HTTPCLIENTREQ_T },
+    "https.requestUrlDyn": { argTypes: [STRING, DYN, BOOL], result: HTTPCLIENTREQ_T },
+    "https.requestUrlDynCb": { argTypes: [STRING, DYN, BOOL, null], result: HTTPCLIENTREQ_T },
     /** The paused-mode demux surface (portless's first-byte TLS peek:
      * once('readable') + read(1) + unshift + emit('connection')).
      * sockOnReadable registers a zero-param listener (a consumer: arrived
@@ -3007,8 +3050,16 @@ function buildLibFnSignatures() {
     "child.onSpawn": { argTypes: [CHILD_T, null], result: VOID },
     /** Rest listeners use the checked function bridge to pack event arguments. */
     "child.onDyn": { argTypes: [CHILD_T, STRING, DYN], result: VOID },
-    // Own properties JavaScript adds to children (handle-properties.ts).
-    "child.propsInstall": { argTypes: [], result: VOID },
+    // Own properties JavaScript adds to runtime handles: the child's, and
+    // Date/RegExp/Map/Set/weak collections/buffers (handle-properties.ts).
+    // The install call's argument is 1 when the program adds properties to
+    // children (the child unit's wrapped ops), 0 otherwise.
+    "handle.propsInstall": { argTypes: [F64], result: VOID },
+    "handle.propsGrant": { argTypes: [STRING], result: VOID },
+    "handle.propsDefineProps": { argTypes: [DYN, DYN], result: DYN },
+    "handle.propsGuard": { argTypes: [DYN, STRING], result: DYN },
+    "handle.propsGuardList": { argTypes: [arrayOf(DYN), STRING], result: arrayOf(DYN) },
+    "handle.propsCheck": { argTypes: [DYN, STRING], result: VOID },
     "child.propsDefine": { argTypes: [DYN, DYN, DYN], result: DYN },
     "child.propsDescriptor": { argTypes: [DYN, DYN], result: DYN },
     "child.propsResolve": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
@@ -3247,6 +3298,11 @@ function buildLibFnSignatures() {
       result: { kind: "object", className: "%Writable" },
     },
     "child.killed": { argTypes: [CHILD_T], result: BOOL },
+    /** spawnfile and spawnargs: the file the child was started from, and
+     * that file followed by its arguments (Node's own reporting: a shell
+     * spawn reports the shell and its invocation). Both are +1. */
+    "child.spawnfile": { argTypes: [CHILD_T], result: STRING },
+    "child.spawnargs": { argTypes: [CHILD_T], result: arrayOf(STRING) },
     "child.kill": { argTypes: [CHILD_T, STRING], result: BOOL },
     "child.killNum": { argTypes: [CHILD_T, F64], result: BOOL },
     "child.unref": { argTypes: [CHILD_T], result: VOID },
@@ -3914,6 +3970,14 @@ function buildLibFnSignatures() {
      * (0 String, 1 Number, 2 Boolean), the value it converts, and the three
      * constructor values for the prototypes' `constructor`. */
     "wrapper.new": { argTypes: [F64, DYN, DYN, DYN, DYN], result: DYN },
+    /** %Iterator.prototype% and %Iterator% (scr_js_iterator.c), `new
+     * Iterator()` (always the abstract-class TypeError), Iterator.from over
+     * a checked value, and OrdinaryHasInstance(%Iterator%, value). */
+    "iterator.prototype": { argTypes: [], result: DYN },
+    "iterator.constructor": { argTypes: [], result: DYN },
+    "iterator.construct": { argTypes: [], result: DYN },
+    "iterator.from": { argTypes: [DYN], result: DYN },
+    "iterator.instanceOf": { argTypes: [DYN], result: BOOL },
     /** ToObject (scr_js_wrapper_to_object): a wrapper for a primitive, the
      * value for an object, a fresh object for null/undefined; then the
      * three constructor values. */
@@ -3976,6 +4040,10 @@ function buildLibFnSignatures() {
     /** process.stdout/stderr.write(chunk) with a run-time chunk: Node's
      * Writable validation, then a synchronous write. */
     "process.stdioWriteDyn": { argTypes: [F64, DYN], result: BOOL },
+    /** process.stdout/stderr.write(text) at an untyped call site: the same
+     * write with the string as the only argument, calling a replaced
+     * method. */
+    "process.stdioWriteStr": { argTypes: [F64, STRING], result: DYN },
     "process.stderrWrite": { argTypes: [STRING], result: BOOL },
     // error.new's result and the receiver slots are builtin-error classes —
     // program-dependent object types, checked in the libCall case.
@@ -4129,6 +4197,12 @@ function buildLibFnSignatures() {
     "console.dirHidden": { argTypes: [DYN, F64], result: STRING },
     /** A native reference to the global object; known names retain value fences. */
     "global.native": { argTypes: [arrayOf(STRING)], result: DYN },
+    /** Arms the runtime check for the Node globals the native runtime does not
+     * implement (host-globals.ts): the compiler's derived name table. */
+    "global.hostAbsent": { argTypes: [arrayOf(STRING)], result: VOID },
+    /** `key in globalThis`: the host-global check, then the global object's
+     * own presence answer (scr_global_host_absent.c). */
+    "dyn.globalHas": { argTypes: [STRING], result: BOOL },
     /** Installs the program's builtin-global lookup (global-values.ts). */
     "global.installValues": { argTypes: [DYN], result: VOID },
     /** Installs the program's static-member lookup for builtin constructor
@@ -4352,10 +4426,19 @@ function buildLibFnSignatures() {
     "dyn.errorCaptureStackTraceFunction": { argTypes: [], result: DYN },
     "dyn.functionApply": { argTypes: [], result: DYN },
     "dyn.builtinMethod": { argTypes: [STRING, STRING], result: DYN },
+    /** A builtin prototype method as a function value, by its prototype
+     * (`String`, `RegExp`) and canonical member name (`trim`, `trimStart`,
+     * `trimEnd`; `exec`, `test`, `toString`): the unit in
+     * scr_dyn_builtin_methods.c. */
+    "dyn.builtinMethodValue": { argTypes: [STRING, STRING], result: DYN },
     /** A standard library prototype object as a value (`Date.prototype` read
      * in a JavaScript source), named by its constructor: the unit in
      * scr_dyn_stdlib_prototype.c. */
     "dyn.stdlibPrototype": { argTypes: [STRING], result: DYN },
+    /** DataView.prototype as a value (`DataView.prototype` read in a
+     * JavaScript source): the getter/setter family's prototype object, the
+     * unit in scr_data_view_proto.c. */
+    "dyn.dataViewPrototype": { argTypes: [DYN], result: DYN },
     "dyn.classPrototype": { argTypes: [DYN, DYN], result: DYN },
     "dyn.classBasePrototype": { argTypes: [DYN], result: DYN },
     "dyn.classInherit": { argTypes: [DYN, DYN], result: DYN },
@@ -4574,6 +4657,10 @@ function buildLibFnSignatures() {
      * listener of the name needs the converted tuple. */
     "emitter.emitMixed": { argTypes: [null, STRING, F64], result: BOOL },
     "emitter.hasTyped": { argTypes: [null, STRING], result: BOOL },
+    /** The converse: whether a listener of the name was registered through
+     * an untyped value with no typed form, so a typed emit's arguments must
+     * also convert to checked-dynamic values. */
+    "emitter.hasDyn": { argTypes: [null, STRING], result: BOOL },
     "emitter.emitError": { argTypes: [null, STRING, null], result: BOOL },
     "emitter.count": { argTypes: [null, STRING], result: F64 },
     "emitter.countFn": { argTypes: [null, STRING, null], result: F64 },
@@ -5098,6 +5185,10 @@ function buildLibFnSignatures() {
      * "undefined"; a handle in the tree throws the "not supported yet"
      * Error). */
     "insp.jsonDyn": { argTypes: [DYN], result: STRING },
+    /** util.format %j over the value a toJSON hook returned: the same walk
+     * starting at the write step, so the hook never runs over its own
+     * result. */
+    "insp.jsonDynValue": { argTypes: [DYN], result: STRING },
     "insp.str": { argTypes: [STRING], result: STRING },
     "insp.regex": { argTypes: [REGEX], result: STRING },
     /** A Date's inspect text: toISOString(), or "Invalid Date". */
@@ -5171,6 +5262,17 @@ function buildLibFnSignatures() {
     /** ctx.maxStringLength for the renders that follow; answers the previous
      * value so the call site can restore it. */
     "insp.maxStringLength": { argTypes: [F64], result: F64 },
+    /** ctx.getters for the renders that follow: whether an accessor
+     * property's getter runs (0 the labels only, 1 every getter, 2 the
+     * getters without a setter, 3 the getters with one); answers the previous
+     * value so the call site can restore it. */
+    "insp.getters": { argTypes: [F64], result: F64 },
+    /** The current ctx.getters, which the interned per-type helpers read: the
+     * option is run-time state shared by every call site. */
+    "insp.gettersMode": { argTypes: [], result: F64 },
+    /** An invoked accessor property's value, by the result's kind:
+     * `[Label: <primitive>]` or `[Label] <object>`. */
+    "insp.accessorValue": { argTypes: [DYN, STRING, F64, F64], result: STRING },
     "insp.entry": { argTypes: [STRING, BOOL], result: VOID },
     // Circular references: the receiver slot is program-dependent (any
     // cycle-capable record/array/map/class type — the insp.error precedent).
@@ -5223,6 +5325,8 @@ function buildLibFnSignatures() {
      * `prefix inner` re-indented at the caller's level (+1). */
     "insp.nestedBegin": { argTypes: [], result: VOID },
     "insp.nestedEnd": { argTypes: [STRING, STRING], result: STRING },
+    /** nestedEnd's restore alone: the caller's context returns. */
+    "insp.nestedRestore": { argTypes: [], result: VOID },
     /** Around a top-level render that an inspection refusal can end: mark
      * records the inspector's frame and nesting depth, unwind (in the
      * render's finally) closes what the render left open above it. */

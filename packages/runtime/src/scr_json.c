@@ -12720,6 +12720,33 @@ double scr_dyn_number_coerce(const ScrDyn *d) {
 }
 
 static ScrDyn *scr_dyn_add_primitive(const ScrDyn *d);
+static ScrDyn *scr_dyn_obj_ordinary_primitive(const ScrDyn *d);
+
+/* OrdinaryToPrimitive with the number hint, after the object's
+ * Symbol.toPrimitive member was read and did not answer: the protocol runs
+ * with the same hint, and the member is not read a second time. */
+static ScrDyn *scr_dyn_number_primitive_ordinary(const ScrDyn *d) {
+  if (d->kind == SCR_DYN_PROXY) {
+    scr_dyn_proxy_unsupported("Symbol.toPrimitive lookup");
+    return NULL;
+  }
+  if (d->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *view = scr_dyn_typed_ref_materialize(d);
+    ScrDyn *out = scr_exc_pending() ? NULL : scr_dyn_number_primitive_ordinary(view);
+    scr_dyn_release(view);
+    return out;
+  }
+  if (d->kind == SCR_DYN_OBJ) return scr_dyn_obj_ordinary_primitive(d);
+  if (!scr_dyn_to_primitive_result_is_object(d)) return scr_dyn_retain((ScrDyn *)d);
+  bool hooked;
+  ScrDyn *primitive = scr_dyn_handle_primitive(d, SCR_DYN_HINT_NUMBER, &hooked);
+  if (hooked) return primitive;
+  ScrStr *str = scr_dyn_string_coerce(d);
+  if (!str) return NULL;
+  ScrDyn *out = scr_dyn_new_str(str);
+  scr_str_release(str);
+  return out;
+}
 
 /* ToPrimitive with the number hint, which differs from the default hint
  * only for a Date: its time value, or the valueOf of an instance of a class
@@ -12744,7 +12771,7 @@ static ScrDyn *scr_dyn_number_primitive(const ScrDyn *d) {
     ScrDyn *exotic = scr_to_primitive_number_fn(d, "number", &hooked);
     if (hooked) return exotic;
   }
-  return scr_dyn_add_primitive(d);
+  return scr_dyn_number_primitive_ordinary(d);
 }
 
 double scr_dyn_number_constructor(const ScrDyn *d) {
@@ -12796,6 +12823,45 @@ ScrBigInt *scr_dyn_bigint_coerce(const ScrDyn *d) {
   return scr_dyn_bigint_convert(d, false);
 }
 
+/* OrdinaryToPrimitive over an ordinary object's valueOf/toString members,
+ * as both the number and the default hint order them: the object's
+ * Symbol.toPrimitive member has already been read and did not answer. +1 /
+ * NULL pending. */
+static ScrDyn *scr_dyn_obj_ordinary_primitive(const ScrDyn *d) {
+  static const char *const methods[] = { "valueOf", "toString" };
+  for (size_t i = 0; i < 2; i++) {
+    const ScrDyn *owner = scr_dyn_property_owner(d, methods[i], strlen(methods[i]));
+    ScrDyn *method = owner ? scr_dyn_obj_read(d, methods[i], strlen(methods[i])) : NULL;
+    if (!method) {
+      if (i == 1 && scr_dyn_error_encoding(d)) {
+        ScrStr *str = scr_dyn_error_string(d);
+        if (!str) return NULL;
+        ScrDyn *out = scr_dyn_new_str(str);
+        scr_str_release(str);
+        return out;
+      }
+      if (i == 1 && scr_dyn_has_object_prototype(d)) {
+        ScrStr *str = scr_str_new("[object Object]", 15);
+        ScrDyn *out = scr_dyn_new_str(str);
+        scr_str_release(str);
+        return out;
+      }
+      continue;
+    }
+    if (method->kind != SCR_DYN_FUNC) { scr_dyn_release(method); continue; }
+    scr_dyn_this_push_dyn(d);
+    ScrDyn *out = scr_dyn_call(method, NULL, 0, methods[i]);
+    scr_dyn_this_pop();
+    scr_dyn_release(method);
+    if (!out) return NULL;
+    if (!scr_dyn_to_primitive_result_is_object(out)) return out;
+    scr_dyn_release(out);
+  }
+  static const char msg[] = "Cannot convert object to primitive value";
+  scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+  return NULL;
+}
+
 /* ToPrimitive with the default hint, as `+` and the abstract equality
  * comparison apply it: an object's Symbol.toPrimitive member first, then
  * OrdinaryToPrimitive's valueOf/toString order. Retain the primitive
@@ -12830,38 +12896,7 @@ static ScrDyn *scr_dyn_add_primitive(const ScrDyn *d) {
       ScrDyn *exotic = scr_to_primitive_number_fn(d, "default", &handled);
       if (handled) return exotic;
     }
-    static const char *const methods[] = { "valueOf", "toString" };
-    for (size_t i = 0; i < 2; i++) {
-      const ScrDyn *owner = scr_dyn_property_owner(d, methods[i], strlen(methods[i]));
-      ScrDyn *method = owner ? scr_dyn_obj_read(d, methods[i], strlen(methods[i])) : NULL;
-      if (!method) {
-        if (i == 1 && scr_dyn_error_encoding(d)) {
-          ScrStr *str = scr_dyn_error_string(d);
-          if (!str) return NULL;
-          ScrDyn *out = scr_dyn_new_str(str);
-          scr_str_release(str);
-          return out;
-        }
-        if (i == 1 && scr_dyn_has_object_prototype(d)) {
-          ScrStr *str = scr_str_new("[object Object]", 15);
-          ScrDyn *out = scr_dyn_new_str(str);
-          scr_str_release(str);
-          return out;
-        }
-        continue;
-      }
-      if (method->kind != SCR_DYN_FUNC) { scr_dyn_release(method); continue; }
-      scr_dyn_this_push_dyn(d);
-      ScrDyn *out = scr_dyn_call(method, NULL, 0, methods[i]);
-      scr_dyn_this_pop();
-      scr_dyn_release(method);
-      if (!out) return NULL;
-      if (!scr_dyn_to_primitive_result_is_object(out)) return out;
-      scr_dyn_release(out);
-    }
-    static const char msg[] = "Cannot convert object to primitive value";
-    scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
-    return NULL;
+    return scr_dyn_obj_ordinary_primitive(d);
   }
   if (!scr_dyn_to_primitive_result_is_object(d)) return scr_dyn_retain((ScrDyn *)d);
   bool hooked;

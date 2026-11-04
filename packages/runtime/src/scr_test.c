@@ -1759,8 +1759,11 @@ void scr_test_register(ScrStr *name /*borrowed*/, double mode, ScrStr *msg /*bor
    * marked { only } survive (Node drops the rest silently). */
   if (parent->run_only && !((int)flags & SCR_TEST_F_ONLY)) t->only_filtered = true;
   scr_test_child_add(parent, t);
-  /* A test() call inside a running concurrent test starts the subtest now. */
-  if (!parent->is_suite && parent->concurrency > 1) scr_test_start(t);
+  /* A test() call inside a running concurrent test starts the subtest now.
+   * A filtered one stays unstarted: the runner drops it, exactly as it
+   * drops a filtered subtest of a sequential parent (Node's applyFilters
+   * runs at start() for either kind of parent). */
+  if (!parent->is_suite && parent->concurrency > 1 && !t->only_filtered) scr_test_start(t);
 }
 
 void scr_test_suite(ScrStr *name /*borrowed*/, double mode, ScrStr *msg /*borrowed*/,
@@ -1864,6 +1867,9 @@ ScrPromise *scr_test_sub(ScrTestCtx *t, ScrStr *name /*borrowed*/, double mode,
   }
   ScrTestCtx *sub = scr_test_node_new(name, (int)mode, msg, cb, (int)flags, at, false);
   scr_test_options_apply(sub, flags, plan, timeout, concurrency);
+  /* Node's t.test() counts the subtest against the parent plan before it
+   * creates it, so one dropped by t.runOnly(true) counts too. */
+  t->plan_count++;
   if (t->run_only && !((int)flags & SCR_TEST_F_ONLY)) {
     /* Dropped by t.runOnly(true): registered for the tree, never run and
      * never reported, like the { only } filter's leftovers. */
@@ -1872,7 +1878,6 @@ ScrPromise *scr_test_sub(ScrTestCtx *t, ScrStr *name /*borrowed*/, double mode,
     return scr_promise_settled_void();
   }
   scr_test_child_add(t, sub);
-  t->plan_count++;
   if (t->concurrency > 1 && !t->before_err) {
     /* Under concurrency the subtest starts now, or when a slot frees up,
      * and the returned promise settles when it finishes. */
@@ -2513,6 +2518,8 @@ typedef struct ScrTestWaitFor {
   double interval;
   double timeout;
   double timeout_handle; /* 0 once fired or cancelled */
+  double poll_handle;    /* the poller's sleep timer, 0 when not armed */
+  ScrPromise *poll_wake; /* borrowed; the promise that sleep awaits */
   bool settled;
   int refs; /* the poller fiber and the timeout closure each hold one */
 } ScrTestWaitFor;
@@ -2539,6 +2546,19 @@ static void scr_test_wf_cancel_timeout(ScrTestWaitFor *w) {
   if (w->timeout_handle >= 1) {
     scr_clear_interval(w->timeout_handle);
     w->timeout_handle = 0;
+  }
+  /* The poller's sleep ends now too. Its timer is cleared — otherwise it
+   * keeps the loop alive until the interval elapsed after the result
+   * settled — and the promise it awaits is woken so the poller resumes,
+   * sees the settled flag, and lets go. Node's done() clears both ids. */
+  if (w->poll_handle >= 1) {
+    scr_clear_interval(w->poll_handle);
+    w->poll_handle = 0;
+  }
+  if (w->poll_wake) {
+    ScrPromise *wake = w->poll_wake;
+    w->poll_wake = NULL;
+    scr_promise_fulfill_void(wake);
   }
 }
 
@@ -2596,8 +2616,14 @@ static void scr_test_wf_entry(ScrFiber *self, void *ap) {
       scr_test_wf_remember_cause(w);
     }
     if (w->settled) break;
-    ScrPromise *tick = scr_tp_set_timeout(w->interval);
+    /* A cancellable sleep: the timer's handle lets the timeout path clear
+     * it, and the promise it fulfills wakes this loop so it can notice. */
+    ScrPromise *tick = scr_promise_new();
+    w->poll_wake = tick;
+    w->poll_handle = scr_set_timeout_handle(scr_make_resolve(tick, 3 /* void */), w->interval);
     scr_await_void(tick);
+    w->poll_handle = 0;
+    w->poll_wake = NULL;
     scr_promise_release(tick);
   }
   scr_test_wf_unref(w); /* the fiber's reference */

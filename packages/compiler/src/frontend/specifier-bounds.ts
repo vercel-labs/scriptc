@@ -217,13 +217,19 @@ function boundStringCall(
       if (part.kind === "top") return part;
       parts.push(part.values);
     }
+    // Every argument contributes one of its values, so the result is the
+    // cartesian product of the receiver and those choices — not the single
+    // string of every value joined (a runtime value would miss it).
+    let total = receiver.values.length;
+    for (const part of parts) total *= part.length;
+    if (total > MAX_VALUES) return top(call, `more than ${MAX_VALUES} possible values`);
     return foldValues(
       receiver.values,
       (value) => {
-        // Every piece is a string, so `concat` of them is the concatenation.
-        let joined = "";
-        for (const part of parts) for (const piece of part) joined += piece;
-        return [value.concat(joined)];
+        let results = [value];
+        for (const part of parts)
+          results = results.flatMap((prefix) => part.map((piece) => prefix + piece));
+        return results;
       },
       call,
     );
@@ -408,6 +414,10 @@ function boundParameter(
   if (fn === undefined || !ts.isFunctionLike(fn))
     return top(expr, `'${expr.text}', a parameter of a non-function scope`);
   if (decl.dotDotDotToken !== undefined) return top(expr, `'${expr.text}', a rest parameter`);
+  // A parameter the body writes holds a value no caller passed at the load
+  // site, so the call arguments no longer bound it.
+  if (!bindingNeverReassigned(ctx, sym, decl))
+    return top(expr, `'${expr.text}', a parameter written after it is bound`);
   const binding = functionBindingName(fn);
   if (binding === null)
     return top(expr, `'${expr.text}', a parameter of a function with no local name`);

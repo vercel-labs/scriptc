@@ -56,7 +56,9 @@ export function assertedConversion(
   if (expected.kind === "record" && lowerer.shapes.get(expected.shapeId)?.indexValue !== undefined)
     return null;
   if (
-    !lowerer.dynConvertible(expr.type) ||
+    // A module namespace has no static conversion into a record, but its
+    // dynamic value does: the box reads the namespace's members live.
+    (!lowerer.dynConvertible(expr.type) && expr.type.kind !== "moduleNs") ||
     !canDynCheckTo(
       expected,
       (id) => lowerer.shapes.get(id),

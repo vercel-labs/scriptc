@@ -5926,8 +5926,20 @@ export class Lowerer {
           type: inner,
           loc,
         };
+        // A builtin's box needs nothing from the promise, but the mapper
+        // still settles when the import does, as the awaited value would:
+        // the await orders the settlement and carries a rejection.
+        const boxed = builtin ? moduleNamespaceBuiltinDynValue(this, inner.moduleId, loc) : null;
         namespace = builtin
-          ? moduleNamespaceBuiltinDynValue(this, inner.moduleId, loc)
+          ? boxed === null
+            ? null
+            : {
+                kind: "seqExpr",
+                stmts: [{ kind: "exprStmt", expr: awaited, loc }],
+                result: boxed,
+                type: boxed.type,
+                loc,
+              }
           : moduleNamespaceDynValue(this, awaited);
         if (namespace) {
           const fn: IrFunction = {

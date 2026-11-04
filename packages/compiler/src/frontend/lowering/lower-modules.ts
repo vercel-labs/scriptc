@@ -852,12 +852,21 @@ function dynamicImportRejectionOf(
   );
 }
 
+/** The `dynImports` key of one specifier text at a site. A literal site's
+ * entry answers the checker's build-time module ("./a.js" is a.ts); a
+ * bounded value of the same text names the file Node loads at run time
+ * ("./a.js" is a.js or nothing), so the two are recorded apart and one text
+ * can carry both answers in one file. */
+export function dynImportKey(fileName: string, spec: string, bounded: boolean): string {
+  return bounded ? `${fileName}\u0000bounded\u0000${spec}` : `${fileName}\u0000${spec}`;
+}
+
 function collectDynamicImports(lowerer: Lowerer, sf: ts.SourceFile): void {
   // Literal sites first: their entries are the ones a literal site reads
-  // back, so a computed site that spells the same specifier in the same
-  // file must never claim their key. A literal "./a.js" the checker mapped
-  // to a.ts keeps that answer, whatever a bounded value of the same text
-  // resolves to at run time.
+  // back, and a computed site that spells the same specifier in the same
+  // file records under the bounded key instead. A literal "./a.js" the
+  // checker mapped to a.ts keeps that answer, whatever a bounded value of
+  // the same text resolves to at run time.
   const computed: { node: ts.CallExpression; arg: ts.Expression; spec: string | null }[] = [];
   ts.walkPreorder(sf, (node) => {
     if (
@@ -915,7 +924,7 @@ function collectOneDynamicImport(
   bounded = false,
 ): void {
   if (lowerer.externalTypes.has(spec)) return;
-  const mapKey = `${sf.fileName}\u0000${spec}`;
+  const mapKey = dynImportKey(sf.fileName, spec, bounded);
   if (lowerer.dynImports.has(mapKey)) return;
   if (bounded && isPathSpecifier(spec)) {
     const dep = boundedProgramTargetOf(lowerer.program, sf, spec);

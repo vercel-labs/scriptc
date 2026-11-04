@@ -51,6 +51,7 @@ import { node24FetchCompatProfile, staticFetchMembers } from "../../compat/fetch
 import { classGeneratorIterable } from "./class-iterables.js";
 import { generatorDrain } from "./iterator-adapters.js";
 import { boundSpecifier } from "../specifier-bounds.js";
+import { dynImportKey } from "./lower-modules.js";
 import { tsgoPath } from "../dts-paths.js";
 import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
 
@@ -2256,19 +2257,34 @@ export function lowerDynamicImportCall(lowerer: Lowerer, call: ts.CallExpression
   // that same single module, so it lowers exactly as the literal site does and
   // keeps the site's static namespace; only a specifier with more than one value
   // needs the bounded selector (SPEC §5.1).
-  if (ts.isStringLiteralLike(arg)) return lowerResolvedImport(lowerer, call, arg.text);
+  if (ts.isStringLiteralLike(arg)) return lowerResolvedImport(lowerer, call, arg.text, false);
   const folded = staticString(lowerer, arg);
-  if (folded !== null) return lowerResolvedImport(lowerer, call, folded);
+  if (folded !== null) return lowerResolvedImport(lowerer, call, folded, true);
   return lowerBoundedDynamicImport(lowerer, call, arg);
 }
 
-/** The single module a build-time specifier names, lowered the way the literal
- * site of the same text is: its recorded entry answers the arm. */
-function lowerResolvedImport(lowerer: Lowerer, call: ts.CallExpression, specifier: string): IrExpr {
-  const res = lowerer.dynImports.get(`${ts.getSourceFileOfNode(call).fileName}\u0000${specifier}`);
+/** The single module a build-time specifier names, lowered the way the site
+ * that spelled it is: its recorded entry answers the arm. A written literal
+ * asks the checker; a folded constant, like every bounded value, names the
+ * file Node loads at run time and carries that module. */
+function lowerResolvedImport(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  specifier: string,
+  bounded: boolean,
+): IrExpr {
+  const res = lowerer.dynImports.get(
+    dynImportKey(ts.getSourceFileOfNode(call).fileName, specifier, bounded),
+  );
   if (res === undefined) lowerer.refuseUnsupportedApi("'import()'", call);
   if (res.kind === "rejected") return lowerRejectedImport(lowerer, call, res.crash);
-  if (res.kind === "program-module") return lowerOwnStaticModuleImport(lowerer, call, specifier);
+  if (res.kind === "program-module") {
+    // A bounded value's entry carries the module its text named under
+    // Node's exact-file rules; the literal site re-reads its own module.
+    return res.dep !== undefined
+      ? lowerOwnStaticModuleImportResolved(lowerer, call, specifier, res.dep)
+      : lowerOwnStaticModuleImport(lowerer, call, specifier);
+  }
   return lowerStaticNamespaceImport(lowerer, call, {
     kind: "moduleNs",
     moduleId: `builtin:${res.module}`,
@@ -2309,7 +2325,7 @@ function lowerBoundedDynamicImport(
   if (expected === undefined || expected === null) lowerer.refuseUnsupportedApi("'import()'", call);
   const arms: { value: string; expr: IrExpr }[] = [];
   for (const value of bound.values) {
-    const res = lowerer.dynImports.get(`${sf.fileName}\u0000${value}`);
+    const res = lowerer.dynImports.get(dynImportKey(sf.fileName, value, true));
     if (res === undefined) lowerer.refuseUnsupportedApi("'import()'", call);
     let arm: IrExpr;
     if (res.kind === "rejected") {
@@ -2317,16 +2333,12 @@ function lowerBoundedDynamicImport(
     } else if (res.kind === "program-module") {
       // A bounded value that named a program module lowers exactly as the
       // literal site of the same specifier would (SPEC §5.1, §4.1 step 2).
-      if (res.dep === undefined) {
-        lowerer.unsupported(
-          "SC1090",
-          call,
-          COMPUTED_SPECIFIER_REFUSAL,
-          undefined,
-          "dynamic-import",
-        );
-      }
-      arm = lowerOwnStaticModuleImportResolved(lowerer, call, value, res.dep);
+      // A path value carries the exact file it named; any other value
+      // resolves the way a literal of its text does.
+      arm =
+        res.dep !== undefined
+          ? lowerOwnStaticModuleImportResolved(lowerer, call, value, res.dep)
+          : lowerOwnStaticModuleImport(lowerer, call, value);
     } else {
       arm = lowerStaticNamespaceImport(lowerer, call, {
         kind: "moduleNs",

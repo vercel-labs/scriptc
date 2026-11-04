@@ -116,7 +116,11 @@ function aliasedModuleMember(
       }
     }
   }
-  if (key !== undefined) answers.set(key, member);
+  // An alias whose target has no declaration yet is unresolved: a later
+  // program of the load may root the declaration that answers it (a
+  // fallback declaration added for another import, for one), so its null
+  // answer is not kept.
+  if (key !== undefined && targetDecl !== undefined) answers.set(key, member);
   return member;
 }
 

@@ -127,6 +127,48 @@ test("fork discovery answers an alias once per load and asks again in the next",
   }
 });
 
+test("fork discovery answers an unresolved alias again once a later program roots it", () => {
+  // A program built before the module's fallback declaration is rooted
+  // cannot resolve the re-exported alias. That answer is not kept: the next
+  // program of the same load includes the declaration and must find the
+  // fork target.
+  const directory = mkdtempSync(join(tmpdir(), "scriptc-fork-unresolved-"));
+  const entry = join(directory, "main.ts");
+  const options = {
+    noLib: true,
+    types: [],
+    module: ModuleKind.ESNext,
+    moduleResolution: ModuleResolutionKind.Bundler,
+  };
+  writeFileSync(
+    join(directory, "facade.ts"),
+    'export { fork as launch } from "node:child_process";',
+  );
+  writeFileSync(
+    entry,
+    'import { launch } from "./facade.js";\nlaunch(new URL("./third.ts", import.meta.url));\n',
+  );
+  const host = new Ts7Host((apiOptions) => new Ts7Api(apiOptions), { cwd: directory });
+  const target = join(directory, "third.ts");
+  const discover = (program: ReturnType<typeof host.createProgram>) =>
+    forkTargetPaths(program, [program.getSourceFile(entry)!]);
+  try {
+    const unresolved = host.createProgram([entry, fallbackDtsPath()], options);
+    expect(discover(unresolved)).toEqual([]);
+    unresolved.dispose();
+
+    const rooted = host.createProgram(
+      [entry, fallbackDtsPath(), fallbackModulePath("node:child_process")!],
+      options,
+    );
+    expect(discover(rooted)).toEqual([target]);
+    rooted.dispose();
+  } finally {
+    host.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 /** forkTargetPaths over the entry of a program made of `files`, and
  * whether it asked the checker for any binding. */
 function discover(files: Record<string, string>): { targets: string[]; queried: boolean } {

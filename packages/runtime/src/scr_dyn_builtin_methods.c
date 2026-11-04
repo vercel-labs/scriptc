@@ -28,8 +28,11 @@
  * `RegExp.prototype.exec.call({})` is the TypeError Node answers rather
  * than a wrong match; a native RegExp runs the method it is named for on
  * that receiver, lastIndex state included. `test` follows 22.2.6.3 through
- * RegExpExec, so a receiver whose own `exec` is callable runs that (Node's
- * custom-executor case) and everything else is the brand TypeError.
+ * RegExpExec: the subject is ToString'ed once and exec is called with that
+ * one string, so a receiver whose own `exec` is callable runs that (Node's
+ * custom-executor case) and everything else is the brand TypeError. An exec
+ * result that is neither null nor an object — undefined included — is the
+ * TypeError Node reports.
  * `toString` is generic as 22.2.6.4 defines it — Get(R, "source") and
  * Get(R, "flags") — so it answers "/x/g" for a plain
  * `{ source: "x", flags: "g" }` receiver.
@@ -134,10 +137,10 @@ static bool bm_native_regex_is(const ScrDyn *value) {
 
 /** RegExp.prototype.test's RegExpExec step (22.2.5.2): a native RegExp
  * runs its own exec; any other object runs a callable own `exec`, whose
- * result must be null or an object. Answers the match row (+1), which may
- * be null, or NULL with the exception pending — and NULL without an
- * exception when the receiver has no callable `exec`, the caller's signal
- * to report the brand TypeError. */
+ * result must be null or an object (undefined is neither). Answers the
+ * match row (+1), which may be null, or NULL with the exception pending —
+ * and NULL without an exception when the receiver has no callable `exec`,
+ * the caller's signal to report the brand TypeError. */
 static ScrDyn *bm_regexp_exec_step(ScrDyn *receiver, ScrDyn *const *args, size_t argc) {
   if (bm_native_regex_is(receiver))
     return scr_dyn_invoke(receiver, "exec", args, argc, "exec");
@@ -150,8 +153,9 @@ static ScrDyn *bm_regexp_exec_step(ScrDyn *receiver, ScrDyn *const *args, size_t
   ScrDyn *row = scr_dyn_invoke_prepared(receiver, exec, "exec", args, argc, "exec");
   scr_dyn_release(exec);
   if (!row) return NULL;
-  if (row->kind != SCR_DYN_NULL && row->kind != SCR_DYN_UNDEF && !bm_is_object(row)) {
-    static const char message[] = "exec result is neither an object nor null";
+  if (row->kind != SCR_DYN_NULL && !bm_is_object(row)) {
+    static const char message[] =
+        "RegExp exec method returned something other than an Object or null";
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
     scr_dyn_release(row);
     return NULL;
@@ -210,12 +214,22 @@ static ScrDyn *bm_regexp_call(ScrStr *member, ScrDyn *receiver, ScrDyn *const *a
       bm_incompatible("RegExp", member);
       return NULL;
     }
-    ScrDyn *match = bm_regexp_exec_step(receiver, args, argc);
+    /* 22.2.6.3 step 3: ToString(S) once, before RegExpExec, whether or not
+     * the receiver's exec is the native one, and exec is called with that
+     * one subject rather than the arguments test received. */
+    ScrStr *subject_text = scr_dyn_string_coerce_js(argc > 0 ? args[0] : scr_dyn_undefined());
+    if (!subject_text) return NULL;
+    ScrDyn *subject = scr_dyn_new_str(subject_text);
+    scr_str_release(subject_text);
+    if (!subject) return NULL;
+    ScrDyn *call_args[1] = {subject};
+    ScrDyn *match = bm_regexp_exec_step(receiver, call_args, 1);
+    scr_dyn_release(subject);
     if (!match) {
       if (!scr_exc_pending()) bm_incompatible("RegExp", member);
       return NULL;
     }
-    bool matched = match->kind != SCR_DYN_NULL && match->kind != SCR_DYN_UNDEF;
+    bool matched = match->kind != SCR_DYN_NULL;
     scr_dyn_release(match);
     return scr_dyn_new_bool(matched);
   }

@@ -32,3 +32,20 @@ console.log("toString-plain", toString.call(/a/));
 console.log("toString-flags", toString.call(/a/gi));
 const directExec = /ab+/.exec("xabb");
 console.log("direct", /ab+/.test("abb"), directExec !== null);
+
+// A receiver that is a call is evaluated before the member is read, and a
+// receiver that throws stops the read.
+let reads = 0;
+function makeRegExp(): RegExp {
+  reads++;
+  return /a/;
+}
+const fromCall: unknown = makeRegExp().test;
+console.log("receiver-evaluated", reads, fromCall === test);
+function makeOrFail(): RegExp {
+  reads++;
+  if (reads === 2) throw new RangeError("receiver failed");
+  return /a/;
+}
+report("receiver-throws", () => (makeOrFail() as RegExp).test === test);
+console.log("receiver-reads", reads);

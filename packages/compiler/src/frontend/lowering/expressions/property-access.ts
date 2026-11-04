@@ -2899,7 +2899,13 @@ export function lowerIntrinsicProperty(
     // as Node does. A direct call keeps its intrinsic lowering: it is
     // statically typed, and the value form would make it a dynamic call.
     if ((name === "exec" || name === "test" || name === "toString") && !isCalleeOf(expr)) {
-      return builtinMethodValue("RegExp", name, locOf(expr));
+      // The read still evaluates the receiver first: a call that answers the
+      // regex may have side effects or throw before the member is read.
+      return afterReceiver(
+        lowerer.lowerExpr(expr.expression),
+        builtinMethodValue("RegExp", name, locOf(expr)),
+        locOf(expr),
+      );
     }
     return null;
   }

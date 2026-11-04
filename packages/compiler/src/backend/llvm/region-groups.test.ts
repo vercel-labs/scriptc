@@ -116,6 +116,47 @@ console.log(total);
   expect(callsOf(mod, "tree").some((c) => groups.roots.has(c))).toBe(false);
 });
 
+test("a root in a generator's statement is dropped at that statement", async () => {
+  const mod = await moduleFor(`${TREE}
+let total = 0;
+function* walk(): Generator<number> {
+  total += tree(4).count();
+  yield total;
+}
+console.log([...walk()][0]);
+`);
+  const groups = analyzeRegionGroups(mod);
+  const root = callsOf(mod, "tree").find((c) => groups.roots.has(c));
+  expect(root).toBeDefined();
+  expect(groups.drops.get(root!)).toBeNull();
+});
+
+test("a root whose statement yields is no root", async () => {
+  const mod = await moduleFor(`${TREE}
+let total = 0;
+function* walk(): Generator<number> {
+  total += tree(4).count() + (yield 0);
+  yield total;
+}
+const it = walk();
+console.log(it.next(0).value, it.next(0).value);
+`);
+  const groups = analyzeRegionGroups(mod);
+  expect(callsOf(mod, "tree").some((c) => groups.roots.has(c))).toBe(false);
+});
+
+test("a grouped construction whose operand yields is no root", async () => {
+  const mod = await moduleFor(`${TREE}
+function* walk(): Generator<number> {
+  yield new Node(null, yield 0).count();
+}
+const it = walk();
+console.log(it.next(0).value, it.next(null).value);
+`);
+  const groups = analyzeRegionGroups(mod);
+  expect(groups.roots.size).toBe(0);
+});
+
 test("a result kept past its caller's frame is no root", async () => {
   const mod = await moduleFor(`${TREE}
 const kept: Node[] = [];

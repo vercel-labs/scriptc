@@ -283,24 +283,26 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
   for (const fn of mod.functions) fns.set(fn.name, fn);
   const vt = new VirtualTargets(mod.classes ?? []);
   const suspends = (fn: IrFunction): boolean => fn.async === true || fn.generator !== undefined;
-  /** Whether `node` awaits anywhere inside it, parking the frame it runs
-   * in. A closure's body is an IrFunction of its own, not part of `node`. */
-  const awaitSeen = new Map<Node, boolean>();
-  const awaits = (node: Node): boolean => {
-    const seen = awaitSeen.get(node);
+  /** Whether `node` suspends the frame it runs in anywhere inside it: an
+   * await, or a yield from a generator. A closure's body is an IrFunction
+   * of its own, not part of `node`. */
+  const suspensionSeen = new Map<Node, boolean>();
+  const suspendsWithin = (node: Node): boolean => {
+    const seen = suspensionSeen.get(node);
     if (seen !== undefined) return seen;
-    let found = node.kind === "awaitExpr" || node.kind === "awaitUnionExpr";
+    let found =
+      node.kind === "awaitExpr" || node.kind === "awaitUnionExpr" || node.kind === "yieldExpr";
     if (!found) {
       const kids: Node[] = [];
       children(node, kids);
       for (const kid of kids) {
-        if (awaits(kid)) {
+        if (suspendsWithin(kid)) {
           found = true;
           break;
         }
       }
     }
-    awaitSeen.set(node, found);
+    suspensionSeen.set(node, found);
     return found;
   };
   // Who refers to each function: by calls (direct, virtual, constructions),
@@ -1113,15 +1115,15 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
       );
     };
     const parents: Node[] = [];
-    /** Whether no statement around `chain`'s node awaits. An arena opened
+    /** Whether no statement around `chain`'s node suspends. An arena opened
      * for a value used in place is dropped at the end of its statement, and
-     * an await parks the frame with the arena still the thread's
+     * an await or a yield parks the frame with the arena still the thread's
      * allocation target: a suspending function keeps a root or a call
-     * region only where no enclosing statement awaits, and keeps no root
+     * region only where no enclosing statement suspends, and keeps no root
      * whose value outlives the statement. */
     const statementSync = (chain: readonly Node[]): boolean => {
       if (!suspending) return true;
-      for (const at of chain) if (!isExpr(at) && awaits(at)) return false;
+      for (const at of chain) if (!isExpr(at) && suspendsWithin(at)) return false;
       return true;
     };
     const walk = (node: Node): void => {

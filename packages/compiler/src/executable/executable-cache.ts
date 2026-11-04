@@ -214,6 +214,8 @@ export interface EarlyExecutableCacheOptions {
   windowsSubsystem?: "gui";
   /** Omitted unless --detached-exit is set. */
   detachedExit?: true;
+  /** Omitted unless --stdout-buffering is set. */
+  stdoutBuffering?: true;
   /** The identity of the libnode pack a program that calls into Node.js
    * records (node-islands/libnode.ts libnodeCacheKey), or undefined when the
    * build names none. Not part of the key: an entry of a program that calls
@@ -423,6 +425,7 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
     ...(options.staticLink ? ["static-link"] : []),
     ...(options.windowsSubsystem === "gui" ? ["windows-subsystem-gui"] : []),
     ...(options.detachedExit ? ["detached-exit"] : []),
+    ...(options.stdoutBuffering ? ["stdout-buffering"] : []),
     ...(options.largePages ? ["large-pages"] : []),
     ...(options.noHugeText ? ["no-huge-text"] : []),
     ...(options.exceptions === "rare" ? ["exceptions-rare"] : []),
@@ -479,6 +482,7 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
   if (options.staticLink) hash.update("static-link\0");
   if (options.windowsSubsystem === "gui") hash.update("windows-subsystem-gui\0");
   if (options.detachedExit) hash.update("detached-exit\0");
+  if (options.stdoutBuffering) hash.update("stdout-buffering\0");
   if (options.largePages) hash.update("large-pages\0");
   if (options.noHugeText) hash.update("no-huge-text\0");
   if (options.exceptions === "rare") hash.update("exceptions-rare\0");

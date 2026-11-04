@@ -969,6 +969,10 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ...(emitter.detachedExit && emitter.mod.lib === undefined
       ? [`@scr_detached_exit = constant i8 1`]
       : []),
+    // Overrides the runtime's weak default (scr_console.c).
+    ...(emitter.stdoutBuffering && emitter.mod.lib === undefined
+      ? [`@scr_stdout_buffering = constant i8 1`]
+      : []),
   );
   for (const d of emitter.decls) out.push(d);
   out.push(``);

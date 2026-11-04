@@ -13,7 +13,9 @@
 import type { ChildProcess } from "node:child_process";
 import { spawnSync } from "node:child_process";
 
-export const STEP_TIMEOUT_MS = Number(process.env["SCRIPTC_STEP_TIMEOUT_MS"] ?? 240_000);
+const stepTimeoutEnv = Number(process.env["SCRIPTC_STEP_TIMEOUT_MS"]);
+export const STEP_TIMEOUT_MS =
+  Number.isFinite(stepTimeoutEnv) && stepTimeoutEnv > 0 ? stepTimeoutEnv : 240_000;
 
 /** Registers a child process the step started, so the deadline can name it. */
 export type Track = (child: ChildProcess) => void;

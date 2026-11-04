@@ -131,3 +131,43 @@ attempt("repeat", () => {
   Object.freeze(o);
   return [Object.isFrozen(o), Object.isSealed(o), Object.isExtensible(o), o.a];
 });
+
+// Element descriptors can make an array sealed or frozen after a
+// preventExtensions, without the whole-array flags Object.seal and
+// Object.freeze set. A hole is not an own property, so it does not count.
+attempt("seal-array-by-elements", () => {
+  const a = dyn([1, 2]);
+  Object.preventExtensions(a);
+  Object.defineProperty(a, "0", { configurable: false });
+  Object.defineProperty(a, "1", { configurable: false });
+  const sealed = [Object.isSealed(a), Object.isFrozen(a)];
+  Object.defineProperty(a, "0", { writable: false, configurable: false });
+  Object.defineProperty(a, "1", { writable: false, configurable: false });
+  return sealed.concat([Object.isSealed(a), Object.isFrozen(a)]);
+});
+
+attempt("frozen-array-with-hole", () => {
+  const a = dyn([1, 3]);
+  a.length = 4;
+  Object.preventExtensions(a);
+  Object.defineProperty(a, "0", { writable: false, configurable: false });
+  Object.defineProperty(a, "1", { writable: false, configurable: false });
+  return [Object.isSealed(a), Object.isFrozen(a), 2 in a, Object.keys(a)];
+});
+
+// A non-writable element that is still configurable does not seal the array.
+attempt("sealed-array-writable-element", () => {
+  const a = dyn([1]);
+  Object.preventExtensions(a);
+  Object.defineProperty(a, "0", { writable: false });
+  Object.defineProperty(a, "length", { writable: false });
+  return [Object.isSealed(a), Object.isFrozen(a)];
+});
+
+// An empty array is sealed, and frozen too, once it cannot extend: it has
+// no element to keep writable.
+attempt("empty-array-prevent-extensions", () => {
+  const a = dyn([]);
+  Object.preventExtensions(a);
+  return [Object.isSealed(a), Object.isFrozen(a), Object.isExtensible(a)];
+});

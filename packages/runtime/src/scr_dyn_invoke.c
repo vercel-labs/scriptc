@@ -1718,17 +1718,22 @@ static ScrDyn *scr_dyn_invoke_impl(
       size_t start = dyn_rel_index(startD, len);
       size_t end = dyn_rel_index(endD, len);
       if (recv->v.arr.frozen && scr_array_frozen_error(8, len, (double)start, (double)end, 0)) return NULL;
-#ifdef SCR_JS_OBJECT_MODEL
-      if (scr_dyn_arr_attrs_refuse(recv, 8, len, (double)start, (double)end, 0)) return NULL;
-#endif
       ScrDyn *fill = argc ? args[0] : scr_dyn_undefined();
       if (start < end) scr_dyn_region_store(recv, fill);
       for (size_t i = start; i < end; i++) {
         if (recv->non_extensible && !scr_dyn_arr_has_index(recv, i)) {
-          static const char message[] = "Cannot add property, object is not extensible";
-          scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+          scr_array_not_extensible_error((double)i);
           return NULL;
         }
+#ifdef SCR_JS_OBJECT_MODEL
+        /* fill writes in index order, so the elements before the first one
+         * Object.defineProperty made non-writable keep the value the throw
+         * interrupts it at. */
+        if (scr_dyn_arr_has_index(recv, i) && !scr_dyn_arr_index_writable(recv, i)) {
+          scr_array_frozen_error(0, len, (double)i, 0, 0);
+          return NULL;
+        }
+#endif
         ScrDyn *old = recv->v.arr.items[i];
         recv->v.arr.items[i] = scr_dyn_retain(fill);
 #ifdef SCR_JS_OBJECT_MODEL

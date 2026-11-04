@@ -2035,11 +2035,12 @@ bool scr_dyn_arr_index_enumerable(const ScrDyn *arr, size_t index) {
 /* A mutating array method's first refused write, thrown as the TypeError
  * Node's frozen path would throw: the op codes and their argument shapes
  * are scr_array_frozen_error's (2 pop, 4 unshift, 6 shift, 7
- * sort/reverse, 8 fill, 10 splice), with x/y already relative indices.
+ * sort/reverse, 10 splice), with x/y already relative indices.
  * Each operation is scanned in the order it makes its writes, so a method
  * whose writes Node interleaves with reads throws at the same index.
  * Push writes only new elements, and a new element is always a writable
- * default. */
+ * default; fill keeps the writes it made before a refused element, so it
+ * checks each element as it writes it instead of asking here first. */
 bool scr_dyn_arr_attrs_refuse(const ScrDyn *arr, int op, size_t len, double x, double y, double z) {
   size_t items = (size_t)z;
   switch (op) {
@@ -2103,15 +2104,6 @@ bool scr_dyn_arr_attrs_refuse(const ScrDyn *arr, int op, size_t len, double x, d
         return true;
       }
     return false;
-  case 8: {
-    size_t start = (size_t)x, end = (size_t)y;
-    for (size_t i = start; i < end && i < len; i++)
-      if (scr_dyn_arr_has_index(arr, i) && !scr_dyn_arr_index_writable(arr, i)) {
-        scr_array_frozen_error(0, len, (double)i, 0, 0);
-        return true;
-      }
-    return false;
-  }
   case 9: {
     /* copyWithin writes the destination range in the direction that keeps
      * an overlapping source intact, so that is the order Node refuses in. */
@@ -3387,6 +3379,28 @@ ScrDyn *scr_dyn_seal(ScrDyn *object) {
   return scr_dyn_retain(object);
 }
 
+/* Whether every present element of an array is non-configurable (and, with
+ * `frozen`, non-writable too). Object.defineProperty sets those attributes
+ * element by element, so Object.preventExtensions followed by defines reaches
+ * a sealed or frozen array without either whole-array flag. A hole is not an
+ * own property and does not count; a dense array's elements are plain
+ * writable, configurable data properties, so only an empty one qualifies. */
+static bool scr_dyn_arr_elements_locked(const ScrDyn *arr, bool frozen) {
+#ifdef SCR_JS_OBJECT_MODEL
+  if (!arr->v.arr.presence) return arr->v.arr.len == 0;
+  for (size_t i = 0; i < arr->v.arr.len; i++) {
+    unsigned char attr = arr->v.arr.presence[i];
+    if (!(attr & SCR_ARR_PRESENT)) continue;
+    if (!(attr & SCR_ARR_NONCONF)) return false;
+    if (frozen && !(attr & SCR_ARR_NONWRITABLE)) return false;
+  }
+  return true;
+#else
+  (void)frozen;
+  return arr->v.arr.len == 0;
+#endif
+}
+
 bool scr_dyn_is_sealed(const ScrDyn *object) {
   if (scr_dyn_class_reflection_fence(object)) return false;
   if (object->kind == SCR_DYN_PROXY) { scr_dyn_proxy_unsupported("Object.isSealed"); return false; }
@@ -3403,7 +3417,8 @@ bool scr_dyn_is_sealed(const ScrDyn *object) {
     return answer;
   }
   if (object->kind == SCR_DYN_ARR)
-    return object->non_extensible && (object->v.arr.len == 0 || object->v.arr.sealed) &&
+    return object->non_extensible &&
+      (object->v.arr.sealed || scr_dyn_arr_elements_locked(object, false)) &&
       (!object->v.arr.properties || scr_dyn_is_sealed(object->v.arr.properties));
   /* V8 answers from a typed array's named properties alone. */
   if (object->kind == SCR_DYN_BYTES) return object->v.bytes->properties && scr_dyn_is_sealed(object->v.bytes->properties);
@@ -20803,7 +20818,7 @@ static bool scr_dyn_frozen_answer(const ScrDyn *value, bool (*self)(const ScrDyn
     return answer;
   }
   if (value->kind == SCR_DYN_ARR)
-    return scr_dyn_is_sealed(value) && (value->v.arr.len == 0 || value->v.arr.frozen) &&
+    return scr_dyn_is_sealed(value) && (value->v.arr.frozen || scr_dyn_arr_elements_locked(value, true)) &&
       (!value->v.arr.properties || self(value->v.arr.properties));
   if (value->kind == SCR_DYN_BYTES)
     return (value->v.bytes->is_data_view || value->v.bytes->len == 0) && value->v.bytes->properties &&

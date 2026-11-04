@@ -159,3 +159,40 @@ attempt("empty-descriptor", () => {
   const d = Object.getOwnPropertyDescriptor(a, "0");
   return [a[0], d.writable, d.enumerable, d.configurable];
 });
+
+// fill writes its elements in index order, so a non-writable element
+// interrupts it after the elements before it took the value.
+attempt("fill-non-writable", () => {
+  const a = dyn([1, 2, 3, 4]);
+  Object.defineProperty(a, "2", { writable: false });
+  try {
+    a.fill(0);
+    return "OK";
+  } catch (e) {
+    return [e.name, e.message, JSON.stringify(a), a[0], a[1], a[2], a[3]];
+  }
+});
+
+attempt("fill-non-writable-range", () => {
+  const a = dyn([1, 2, 3]);
+  Object.defineProperty(a, "2", { writable: false });
+  try {
+    a.fill(9, 1, 3);
+    return "OK";
+  } catch (e) {
+    return [e.name, e.message, JSON.stringify(a)];
+  }
+});
+
+// A non-extensible array fills up to the first hole it would add.
+attempt("fill-non-extensible-holes", () => {
+  const a = dyn([1, 2, 3]);
+  Object.defineProperty(a, "length", { value: 5 });
+  Object.preventExtensions(a);
+  try {
+    a.fill(9);
+    return "OK";
+  } catch (e) {
+    return [e.name, e.message, JSON.stringify(a), a.length, 3 in a, 4 in a, Object.keys(a)];
+  }
+});

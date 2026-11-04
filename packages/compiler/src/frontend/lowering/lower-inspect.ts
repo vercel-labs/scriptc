@@ -778,6 +778,16 @@ function isErrorClass(lowerer: Lowerer, className: string): boolean {
   return lowerer.isSubclassOf(className, "%Error");
 }
 
+/** The class or a base declares a `toJSON` member (method, getter or
+ * field): JSON.stringify calls it before walking the own properties. */
+function errorDeclaresToJson(info: ClassInfo): boolean {
+  for (let c: ClassInfo | null = info; c; c = c.base) {
+    if (c.methods.has("toJSON") || c.methods.has("get:toJSON") || c.fields.has("toJSON"))
+      return true;
+  }
+  return false;
+}
+
 /** inspUnsupportedReason: the deepUnsupportedReason twin. Fences name the
  * FIRST unsupported constituent. `visiting` terminates recursive shapes
  * and records their existence (the depth-null gate). */
@@ -4441,6 +4451,83 @@ export function lowerFormatCall(
         // structure. A typed argument prints "[Circular]" the same way.
         if (value.type.kind === "dyn") {
           return { kind: "libCall", fn: "insp.jsonDyn", args: [value], type: STRING, loc };
+        }
+        // %j of an Error (the middleware logging idiom): JSON.stringify
+        // sees an error's own ENUMERABLE properties, and message, stack,
+        // name and cause are not enumerable — so a plain error prints
+        // "{}", as do the runtime error classes whose extra state rides
+        // non-enumerable slots (AggregateError's `errors`, DOMException's
+        // accessors, AssertionError's dynamic view). A subclass that
+        // declares fields prints those, base-class fields first, so
+        // serialize the declared layout through a record of the same
+        // fields; a toJSON member or a field the static walk cannot write
+        // falls back to the checked dynamic walk.
+        if (value.type.kind === "object" && isErrorClass(lowerer, value.type.className)) {
+          if (RUNTIME_ERROR_CLASSES.has(value.type.className)) {
+            if (value.type.className === "%AssertionError") {
+              lowerer.noLowering(
+                `util.format %j of '${lowerer.fmt(value.type)}' values`,
+                node,
+                "AssertionError keeps its own properties in the error's dynamic view",
+              );
+            }
+            return strLit("{}", loc);
+          }
+          const className = value.type.className;
+          const info = lowerer.classes.get(className);
+          if (info && !errorDeclaresToJson(info)) {
+            const fields = ownErrorFields(info);
+            if (fields.length === 0) return strLit("{}", loc);
+            const shapeId = lowerer.shapes.intern(
+              [...fields]
+                .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+                .map((f) => ({ name: f.name, type: f.type })),
+              false,
+              undefined,
+              fields.map((f) => f.name),
+            );
+            const recordType: IrType = { kind: "record", shapeId };
+            if (lowerer.jsonStringifySafe(recordType)) {
+              // The receiver evaluates once; every field reads that slot.
+              const slot = lowerer.declareHiddenLocal("%jsonError", value.type);
+              const receiver = varRef(slot.id, value.type, loc);
+              return {
+                kind: "seqExpr",
+                stmts: [{ kind: "varDecl", localId: slot.id, init: value, loc }],
+                result: {
+                  kind: "jsonStringify",
+                  value: {
+                    kind: "recordLit",
+                    fields: fields.map((f) => ({
+                      name: f.name,
+                      value: {
+                        kind: "fieldGet",
+                        obj: receiver,
+                        className,
+                        field: f.name,
+                        type: f.type,
+                        loc,
+                      },
+                    })),
+                    type: recordType,
+                    loc,
+                  },
+                  circular: true,
+                  type: STRING,
+                  loc,
+                },
+                type: STRING,
+                loc,
+              };
+            }
+          }
+          return {
+            kind: "libCall",
+            fn: "insp.jsonDyn",
+            args: [{ kind: "dynFrom", value, liveRef: true, type: DYN, loc }],
+            type: STRING,
+            loc,
+          };
         }
         if (!lowerer.jsonStringifySafe(value.type)) {
           lowerer.noLowering(

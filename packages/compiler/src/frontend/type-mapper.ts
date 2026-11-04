@@ -9855,7 +9855,9 @@ export function describeComponentBlocker(widened: ts.Type, ctx: TypeMapperCtx): 
     }
     for (const { p: part, mapped } of mappedArms) {
       if (!mapped) {
-        return `the union shape is supported, but its arm '${text(part)}' does not compile`;
+        // The arm's own blocker, so the story reaches the member at fault.
+        const inner = describeComponentBlocker(part, ctx);
+        return `the union shape is supported, but its arm '${text(part)}' does not compile${inner ? ` (${inner})` : ""}`;
       }
       if (!armHasUnionHome(mapped)) {
         return `the union shape is supported, but '${text(part)}' arms have no home in a compiled union yet (no runtime narrowing test exists against sibling arms)`;

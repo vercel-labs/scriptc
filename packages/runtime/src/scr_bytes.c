@@ -216,6 +216,9 @@ size_t scr_bytes_elem_size(ScrBytesElem elem) {
     case SCR_BYTES_U16: case SCR_BYTES_I16: case SCR_BYTES_F16: return 2;
     case SCR_BYTES_U32: case SCR_BYTES_I32: case SCR_BYTES_F32: return 4;
     case SCR_BYTES_F64: return 8;
+#ifdef SCR_JS_OBJECT_MODEL
+    case SCR_BYTES_I64: case SCR_BYTES_U64: return 8;
+#endif
   }
   scr_trap("scriptc: invalid typed array element kind\n");
 }
@@ -232,9 +235,19 @@ const char *scr_bytes_elem_name(ScrBytesElem elem) {
     case SCR_BYTES_F16: return "Float16Array";
     case SCR_BYTES_F32: return "Float32Array";
     case SCR_BYTES_F64: return "Float64Array";
+#ifdef SCR_JS_OBJECT_MODEL
+    case SCR_BYTES_I64: return "BigInt64Array";
+    case SCR_BYTES_U64: return "BigUint64Array";
+#endif
   }
   scr_trap("scriptc: invalid typed array element kind\n");
 }
+
+#ifdef SCR_JS_OBJECT_MODEL
+bool scr_bytes_elem_is_bigint(ScrBytesElem elem) {
+  return elem == SCR_BYTES_I64 || elem == SCR_BYTES_U64;
+}
+#endif
 
 double scr_bytes_to_u8_clamp(double value) {
   if (!(value > 0)) return 0;
@@ -446,6 +459,36 @@ double scr_bytes_byte_len(const ScrBytes *b) {
   return (double)(b->len * scr_bytes_elem_size(b->elem));
 }
 
+#ifdef SCR_JS_OBJECT_MODEL
+/* The mutable-buffers registry's table (scr_js_buffers.c, the optional
+ * unit a `mutableBuffers` program links). NULL until scr_js_buffers_arm
+ * installs it, so a program without the fact pays one pointer test in front
+ * of the view hooks below and links no registry at all. */
+SCR_TL const ScrJsBufferOps *scr_js_buffer_ops;
+
+#endif
+
+#ifdef SCR_JS_OBJECT_MODEL
+/* Records a view in the registry when the program may move buffers. */
+static void scr_js_buffer_register(ScrBytes *view, bool tracking) {
+  const ScrJsBufferOps *ops = scr_js_buffer_ops;
+  if (ops && view->backing) ops->view_register(view, tracking);
+}
+
+/* Whether an owner reserves a maxByteLength, so a length-tracking view may
+ * end on a partial element (Node allows it and floors the element count). */
+static bool scr_js_owner_resizable(const ScrBytes *owner) {
+  const ScrJsBufferOps *ops = scr_js_buffer_ops;
+  return ops && ops->owner_resizable(owner);
+}
+#endif
+
+#ifdef SCR_JS_OBJECT_MODEL
+/* The element accessors below guard %TypedArray%.prototype methods with
+ * this check (defined beside the DataView helpers); the guards precede it. */
+static bool scr_js_typed_method_ok(const ScrBytes *b, const char *method);
+#endif
+
 /* ── element access ────────────────────────────────────────────────────
  * Invalid writes are ignored. Typed numeric reads cannot represent
  * undefined, so invalid reads trap; checked reads return undefined. */
@@ -511,6 +554,12 @@ static double scr_bytes_decode(ScrBytesElem elem, const uint8_t *p) {
       memcpy(&v, p, 4);
       return (double)v;
     }
+#ifdef SCR_JS_OBJECT_MODEL
+    case SCR_BYTES_I64: case SCR_BYTES_U64:
+      /* No double holds a BigInt element: the dynamic tier reads these
+       * through scr_bytes_get_bigint, and compiled code cannot name them. */
+      scr_trap("scriptc: numeric read of a BigInt typed array\n");
+#endif
   }
   return 0; /* unreachable */
 }
@@ -548,6 +597,12 @@ static void scr_bytes_encode(ScrBytesElem elem, uint8_t *p, double v) {
     case SCR_BYTES_F64:
       memcpy(p, &v, 8);
       break;
+#ifdef SCR_JS_OBJECT_MODEL
+    case SCR_BYTES_I64: case SCR_BYTES_U64:
+      /* Element stores of a BigInt view are ToBigInt in scr_bytes_set_bigint;
+       * no double ever reaches one. */
+      scr_trap("scriptc: numeric write to a BigInt typed array\n");
+#endif
   }
 }
 
@@ -643,6 +698,69 @@ void scr_bytes_set(ScrBytes *b, double i, double v) {
   scr_bytes_store(b, (size_t)i, v);
 }
 
+#ifdef SCR_JS_OBJECT_MODEL
+/* The BigInt element at a valid index (+1). The index rule is
+ * scr_bytes_get's: this is the same element read, just not through a
+ * double. */
+ScrDyn *scr_bytes_get_bigint(const ScrBytes *b, double i) {
+  size_t idx = scr_bytes_check_index(b, i);
+  uint8_t bits[8];
+  if (b->shared) scr_bytes_shared_read(b, idx, bits);
+  else memcpy(bits, b->data + idx * 8, 8);
+  uint64_t raw;
+  memcpy(&raw, bits, 8);
+  /* BigInt64Array's element is the signed two's-complement value of the
+   * same bits the unsigned view reads zero-extended. scr_dyn_new_bigint
+   * retains, so the constructed value itself is released here. */
+  ScrBigInt *value = b->elem == SCR_BYTES_I64 ? scr_bigint_from_i64((int64_t)raw)
+                                              : scr_bigint_from_u64(raw);
+  ScrDyn *out = scr_dyn_new_bigint(value);
+  scr_bigint_release(value);
+  return out;
+}
+
+/* ToBigInt(value) as an element store of a BigInt view; the low 64 bits are
+ * stored (ToBigInt64/ToBigUint64 wrap modulo 2^64). An out-of-range index is
+ * ignored, as in every typed array write, but the coercion still happens. */
+bool scr_bytes_set_bigint(ScrBytes *b, double i, const ScrDyn *value) {
+  ScrBigInt *big = scr_dyn_bigint_coerce(value);
+  if (!big) return false;
+  if ((i >= 0) && i == trunc(i) && i < (double)b->len) {
+    size_t idx = (size_t)i;
+    uint64_t raw = scr_bigint_to_u64(big);
+    if (b->shared) {
+      uint8_t bits[8];
+      memcpy(bits, &raw, 8);
+      scr_bytes_shared_write(b, idx, bits);
+    } else {
+      memcpy(b->data + idx * 8, &raw, 8);
+    }
+  }
+  scr_bigint_release(big);
+  return true;
+}
+
+static size_t scr_bytes_rel_index(double i, size_t len);
+
+/* fill(value, start, end) over a BigInt view: the caller has already run
+ * ToBigInt, which the spec orders before start and end are read. The element
+ * kind is fixed by the view, so one coercion serves every element. */
+ScrBytes *scr_bytes_fill_bigint(ScrBytes *b, ScrBigInt *value, double start, double end) {
+  uint64_t raw = scr_bigint_to_u64(value);
+  size_t from = scr_bytes_rel_index(start, b->len);
+  size_t to = scr_bytes_rel_index(end, b->len);
+  for (size_t i = from; i < to; i++) {
+    if (b->shared) {
+      uint8_t bits[8];
+      memcpy(bits, &raw, 8);
+      scr_bytes_shared_write(b, i, bits);
+    } else memcpy(b->data + i * 8, &raw, 8);
+  }
+  return scr_bytes_retain(b);
+}
+
+#endif
+
 /* Compiled code validates the index against the view's length, which never
  * changes, before it takes these shared-view paths. */
 int32_t scr_bytes_shared_get_int(const ScrBytes *b, size_t i) {
@@ -690,6 +808,12 @@ static void scr_bytes_read_numbers(double *out, const uint8_t *src, ScrBytesElem
         out[i] = scr_f16_to_f64(value);
       }
       return;
+#ifdef SCR_JS_OBJECT_MODEL
+    case SCR_BYTES_I64: case SCR_BYTES_U64:
+      /* No double holds a BigInt element; the dynamic tier reads these one
+       * at a time through scr_bytes_get_bigint. */
+      scr_trap("scriptc: numeric read of a BigInt typed array\n");
+#endif
   }
 #undef SCR_READ_NUMBERS
 }
@@ -724,6 +848,12 @@ static void scr_bytes_write_numbers(uint8_t *dst, ScrBytesElem elem, const doubl
       memcpy(dst, src, count * sizeof(double));
       return;
     }
+#ifdef SCR_JS_OBJECT_MODEL
+    case SCR_BYTES_I64: case SCR_BYTES_U64:
+      /* Element stores of a BigInt view are ToBigInt in scr_bytes_set_bigint;
+       * no double ever reaches one. */
+      scr_trap("scriptc: numeric write to a BigInt typed array\n");
+#endif
   }
 #undef SCR_WRITE_NUMBERS
 }
@@ -744,9 +874,32 @@ static void scr_bytes_convert_span(uint8_t *dst, ScrBytesElem dest_elem,
   }
 }
 
+#ifdef SCR_JS_OBJECT_MODEL
+/* set()/construction between a BigInt view and a numeric one. */
+static void scr_bytes_content_type_error(void) {
+  static const char msg[] = "Cannot mix BigInt and other types, use explicit conversions";
+  scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+}
+#endif
+
 ScrBytes *scr_bytes_convert(ScrBytesElem elem, const ScrBytes *src) {
   SCR_BYTES_SNAPSHOT(src);
   if (elem == src->elem) return scr_bytes_copy(src);
+#ifdef SCR_JS_OBJECT_MODEL
+  /* A typed array's content type is part of its kind: a BigInt view and a
+   * numeric view cannot convert into one another (Node's "Cannot mix BigInt
+   * and other types"), while the two BigInt kinds copy the same 64 bits —
+   * BigInt64Array reads them signed, BigUint64Array unsigned. */
+  if (scr_bytes_elem_is_bigint(elem) || scr_bytes_elem_is_bigint(src->elem)) {
+    if (!scr_bytes_elem_is_bigint(elem) || !scr_bytes_elem_is_bigint(src->elem)) {
+      scr_bytes_content_type_error();
+      return NULL;
+    }
+    ScrBytes *out = scr_bytes_alloc_private(elem, src->len);
+    if (src->len) memcpy(out->data, src->data, src->len * 8);
+    return out;
+  }
+#endif
   ScrBytes *out = scr_bytes_alloc_private(elem, src->len);
   scr_bytes_convert_span(out->data, elem, src->data, src->elem, src->len);
   return out;
@@ -765,6 +918,9 @@ static size_t scr_bytes_rel_index(double i, size_t len) {
 }
 
 ScrBytes *scr_bytes_slice(const ScrBytes *b, double start, double end) {
+#ifdef SCR_JS_OBJECT_MODEL
+  if (!scr_js_typed_method_ok(b, "slice")) return scr_bytes_alloc_private(b->elem, 0);
+#endif
   size_t s = scr_bytes_rel_index(start, b->len);
   size_t e = scr_bytes_rel_index(end, b->len);
   size_t count = e > s ? e - s : 0;
@@ -775,6 +931,9 @@ ScrBytes *scr_bytes_slice(const ScrBytes *b, double start, double end) {
 }
 
 ScrBytes *scr_bytes_copy_within(ScrBytes *b, double target, double start, double end) {
+#ifdef SCR_JS_OBJECT_MODEL
+  if (!scr_js_typed_method_ok(b, "copyWithin")) return scr_bytes_retain(b);
+#endif
   size_t t = scr_bytes_rel_index(target, b->len);
   size_t s = scr_bytes_rel_index(start, b->len);
   size_t e = scr_bytes_rel_index(end, b->len);
@@ -795,6 +954,13 @@ ScrBytes *scr_bytes_copy_within(ScrBytes *b, double target, double start, double
  * rounding), slice-clamped relative indices; answers the receiver +1
  * (chaining). Never throws — Buffer's throwing fill family is separate. */
 ScrBytes *scr_bytes_fill_elem(ScrBytes *b, double v, double start, double end) {
+#ifdef SCR_JS_OBJECT_MODEL
+  if (!scr_js_typed_method_ok(b, "fill")) return scr_bytes_retain(b);
+#endif
+#ifdef SCR_JS_OBJECT_MODEL
+  /* A BigInt view's fill value is ToBigInt (scr_bytes_fill_bigint). */
+  if (scr_bytes_elem_is_bigint(b->elem)) scr_trap("scriptc: numeric write to a BigInt typed array\n");
+#endif
   size_t s = scr_bytes_rel_index(start, b->len);
   size_t e = scr_bytes_rel_index(end, b->len);
   if (e > s) {
@@ -828,6 +994,15 @@ ScrBytes *scr_bytes_fill_elem(ScrBytes *b, double v, double start, double end) {
  * view retains the OWNER, offsets composed here (the DataView rule).
  * Relative indices clamp like slice; never throws. */
 ScrBytes *scr_bytes_subarray(ScrBytes *b, double start, double end) {
+#ifdef SCR_JS_OBJECT_MODEL
+  /* An invalid view answers a length-0 subarray with the TypeError pending
+   * (its length is already 0, so the view below is empty and safe). An
+   * omitted end arrives as +Infinity: a subarray of a length-tracking view
+   * that runs to the buffer's end is itself length-tracking. */
+  bool tracking = false;
+  if (!scr_js_bytes_live(b)) scr_js_bytes_throw_detached("%TypedArray%.prototype.subarray");
+  else tracking = isinf(end) && end > 0 && scr_js_bytes_tracking(b);
+#endif
   size_t s = scr_bytes_rel_index(start, b->len);
   size_t e = scr_bytes_rel_index(end, b->len);
   size_t count = e > s ? e - s : 0;
@@ -850,16 +1025,48 @@ ScrBytes *scr_bytes_subarray(ScrBytes *b, double start, double end) {
 #ifdef SCR_RC_AUDIT
   scr_live_bytes++;
 #endif
+#ifdef SCR_JS_OBJECT_MODEL
+  scr_js_buffer_register(v, tracking);
+#endif
   return v;
 }
 
 void scr_bytes_set_from(ScrBytes *dst, const ScrBytes *src, double offset) {
+#ifdef SCR_JS_OBJECT_MODEL
+  if (!scr_js_typed_method_ok(dst, "set")) return;
+  /* Node validates the source view before the offset: a detached source, or
+   * a fixed-length one whose buffer shrank out from under it, throws. */
+  if (!scr_js_bytes_live(src)) {
+    scr_js_bytes_throw_detached("%TypedArray%.prototype.set");
+    return;
+  }
+#endif
   double t = (offset != offset) ? 0 : trunc(offset);
   if (!(t >= 0) || (double)src->len + t > (double)dst->len) {
     static const char msg[] = "offset is out of bounds";
     scr_throw_error_msg(SCR_ERR_RANGE, msg, sizeof msg - 1);
     return;
   }
+#ifdef SCR_JS_OBJECT_MODEL
+  /* A BigInt view takes only a BigInt source and the two BigInt kinds share
+   * their element bits, so set() between them is the same-kind byte copy. */
+  if (scr_bytes_elem_is_bigint(dst->elem) || scr_bytes_elem_is_bigint(src->elem)) {
+    if (!scr_bytes_elem_is_bigint(dst->elem) || !scr_bytes_elem_is_bigint(src->elem)) {
+      scr_bytes_content_type_error();
+      return;
+    }
+    size_t bytes = src->len * 8;
+    uint8_t *target = dst->data + (size_t)t * 8;
+    if (!bytes) return;
+    if (dst->shared || src->shared) {
+      uint8_t *copy = scr_bytes_scratch(bytes);
+      scr_bytes_raw_in(src, copy, src->data, bytes);
+      scr_bytes_raw_out(dst, target, copy, bytes);
+      free(copy);
+    } else memmove(target, src->data, bytes);
+    return;
+  }
+#endif
   size_t width = scr_bytes_elem_size(dst->elem);
   if (dst->shared || src->shared) {
     SCR_BYTES_SNAPSHOT(src);
@@ -961,6 +1168,15 @@ static bool scr_bytes_copy_array_like(ScrBytes *dst, const ScrDyn *src, size_t o
   for (size_t i = 0; i < count; i++) {
     ScrDyn *value = scr_bytes_source_at(src, i);
     if (!value) return false;
+#ifdef SCR_JS_OBJECT_MODEL
+    /* A BigInt view's element store is ToBigInt, not ToNumber. */
+    if (scr_bytes_elem_is_bigint(dst->elem)) {
+      bool ok = scr_bytes_set_bigint(dst, (double)(offset + i), value);
+      scr_dyn_release(value);
+      if (!ok) return false;
+      continue;
+    }
+#endif
     double number;
     bool ok = scr_dyn_number_coerce_js(value, &number);
     scr_dyn_release(value);
@@ -1075,10 +1291,68 @@ double scr_bytes_byte_offset(const ScrBytes *b) {
   return b->backing ? (double)(size_t)(b->data - b->backing->data) : 0;
 }
 
+#ifdef SCR_JS_OBJECT_MODEL
+/* Whether code that Node refuses on a detached or out-of-bounds view may
+ * proceed (the registry answers; a program without it never detaches). */
+bool scr_js_bytes_live(const ScrBytes *b) {
+  const ScrJsBufferOps *ops = scr_js_buffer_ops;
+  return !ops || !ops->view_invalid(b);
+}
+
+void scr_js_bytes_throw_detached(const char *label) {
+  char message[160];
+  int length = snprintf(message, sizeof message,
+                        "Cannot perform %s on a detached ArrayBuffer", label);
+  scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)length);
+}
+
+/* Whether `b`'s length follows its owner (a view built without a length
+ * over a resizable buffer); a subarray that runs to the end of one stays
+ * tracking. */
+bool scr_js_bytes_tracking(const ScrBytes *b) {
+  const ScrJsBufferOps *ops = scr_js_buffer_ops;
+  return ops && ops->view_tracks(b);
+}
+
+/* The typed-array method guard: Node's message names the method. */
+static bool scr_js_typed_method_ok(const ScrBytes *b, const char *method) {
+  if (scr_js_bytes_live(b)) return true;
+  char label[96];
+  int length = snprintf(label, sizeof label, "%%TypedArray%%.prototype.%s", method);
+  scr_js_bytes_throw_detached(label);
+  (void)length;
+  return false;
+}
+
+/* `.byteLength` / `.byteOffset` of a view whose owner may move: a DataView
+ * throws when it is detached or out of bounds, a typed array answers 0. */
+double scr_js_bytes_byte_length(const ScrBytes *b) {
+  if (b->is_data_view && !scr_js_bytes_live(b)) {
+    scr_js_bytes_throw_detached("get DataView.prototype.byteLength");
+    return 0;
+  }
+  return scr_bytes_byte_len(b);
+}
+
+double scr_js_bytes_byte_offset(const ScrBytes *b) {
+  if (b->is_data_view && !scr_js_bytes_live(b)) {
+    scr_js_bytes_throw_detached("get DataView.prototype.byteOffset");
+    return 0;
+  }
+  return scr_bytes_byte_offset(b);
+}
+#endif
+
 ScrBytes *scr_dataview_new(ScrBytes *src, double byte_off, bool has_len, double byte_len) {
   /* `x.buffer` names the ONE buffer behind x — for a view src that is its
    * owner's storage, so indices stay buffer-relative exactly like JS. */
   ScrBytes *owner = src->backing ? src->backing : src;
+#ifdef SCR_JS_OBJECT_MODEL
+  if (!scr_js_bytes_live(owner)) {
+    scr_js_bytes_throw_detached("DataView constructor");
+    return NULL;
+  }
+#endif
   double buf_bytes = (double)(owner->len * scr_bytes_elem_size(owner->elem));
   /* ToIndex on the offset; every bad value takes Node's ONE message
    * (negative, > 2^53-1, Infinity, and past-the-end alike). */
@@ -1124,12 +1398,21 @@ ScrBytes *scr_dataview_new(ScrBytes *src, double byte_off, bool has_len, double 
 #ifdef SCR_RC_AUDIT
   scr_live_bytes++;
 #endif
+#ifdef SCR_JS_OBJECT_MODEL
+  scr_js_buffer_register(v, !has_len);
+#endif
   return v;
 }
 
 ScrBytes *scr_bytes_buffer_view(ScrBytes *src, ScrBytesElem elem,
                                double offset, bool has_len, double length) {
   ScrBytes *owner = src->backing ? src->backing : src;
+#ifdef SCR_JS_OBJECT_MODEL
+  if (!scr_js_bytes_live(owner)) {
+    scr_js_bytes_throw_detached("Construct");
+    return NULL;
+  }
+#endif
   size_t width = scr_bytes_elem_size(elem);
   double available = scr_bytes_byte_len(owner);
   double off = isnan(offset) ? 0 : trunc(offset);
@@ -1137,7 +1420,11 @@ ScrBytes *scr_bytes_buffer_view(ScrBytes *src, ScrBytesElem elem,
   if (off < 0 || off > 9007199254740991.0 || off > available ||
       fmod(off, (double)width) != 0 ||
       (has_len && (count < 0 || count > 9007199254740991.0 || count > (available - off) / (double)width)) ||
-      (!has_len && fmod(available - off, (double)width) != 0)) {
+      (!has_len &&
+#ifdef SCR_JS_OBJECT_MODEL
+       !scr_js_owner_resizable(owner) &&
+#endif
+       fmod(available - off, (double)width) != 0)) {
     static const char msg[] = "Invalid typed array buffer range";
     scr_throw_error_msg(SCR_ERR_RANGE, msg, sizeof msg - 1);
     return NULL;
@@ -1148,8 +1435,44 @@ ScrBytes *scr_bytes_buffer_view(ScrBytes *src, ScrBytesElem elem,
   view->elem = elem;
   view->len /= width;
   view->is_data_view = false;
+  /* The initial registration (inside scr_dataview_new) recorded a byte
+   * view; this one states the element kind and the tracking flag. */
+#ifdef SCR_JS_OBJECT_MODEL
+  scr_js_buffer_register(view, !has_len);
+#endif
   return view;
 }
+
+#ifdef SCR_JS_OBJECT_MODEL
+/* The getter/setter suffix Node's detached-view message names. */
+static const char *scr_dataview_kind_name(ScrDataViewGet kind) {
+  switch (kind) {
+    case SCR_DV_U8: return "Uint8";
+    case SCR_DV_I8: return "Int8";
+    case SCR_DV_U16: return "Uint16";
+    case SCR_DV_I16: return "Int16";
+    case SCR_DV_U32: return "Uint32";
+    case SCR_DV_I32: return "Int32";
+    case SCR_DV_F32: return "Float32";
+    case SCR_DV_F64: return "Float64";
+    case SCR_DV_F16: return "Float16";
+    case SCR_DV_BIGU64: return "BigUint64";
+    case SCR_DV_BIGI64: return "BigInt64";
+  }
+  return "Uint8";
+}
+
+/* Node refuses a DataView getter or setter on a detached or out-of-bounds
+ * view before it coerces the offset. */
+static bool scr_dataview_live(const ScrBytes *b, ScrDataViewGet kind, bool set) {
+  if (scr_js_bytes_live(b)) return true;
+  char label[64];
+  snprintf(label, sizeof label, "DataView.prototype.%s%s", set ? "set" : "get",
+           scr_dataview_kind_name(kind));
+  scr_js_bytes_throw_detached(label);
+  return false;
+}
+#endif
 
 static size_t scr_dataview_get_size(ScrDataViewGet kind) {
   switch (kind) {
@@ -1170,6 +1493,9 @@ static size_t scr_dataview_get_size(ScrDataViewGet kind) {
 }
 
 double scr_dataview_get(const ScrBytes *b, double byte_off, ScrDataViewGet kind, bool le) {
+#ifdef SCR_JS_OBJECT_MODEL
+  if (!scr_dataview_live(b, kind, false)) return 0;
+#endif
   size_t width = scr_dataview_get_size(kind);
   /* ToIndex, then the view-relative bounds check — Node's ONE constant
    * message for every failure mode (negative, NaN is fine, too large). */
@@ -1221,6 +1547,9 @@ double scr_dataview_get(const ScrBytes *b, double byte_off, ScrDataViewGet kind,
 }
 
 void scr_dataview_set(ScrBytes *b, double byte_off, double value, ScrDataViewGet kind, bool le) {
+#ifdef SCR_JS_OBJECT_MODEL
+  if (!scr_dataview_live(b, kind, true)) return;
+#endif
   size_t width = scr_dataview_get_size(kind);
   /* ToIndex + the view-relative bounds check — the getters' ONE message. */
   double off = (byte_off != byte_off) ? 0 : trunc(byte_off);
@@ -2843,7 +3172,9 @@ static bool scr_enc_eq_ci(const ScrStr *raw, const char *name) {
   return true;
 }
 
-ScrStr *scr_bytes_normalize_encoding(const ScrStr *raw) {
+/* The canonical spelling of a Buffer encoding name in any ASCII case, or
+ * NULL for a name Node's tables do not hold. */
+static const char *scr_enc_alias(const ScrStr *raw) {
   static const struct { const char *from; const char *to; } map[] = {
     {"utf8", "utf8"}, {"utf-8", "utf8"}, {"hex", "hex"},
     {"base64", "base64"}, {"base64url", "base64url"},
@@ -2852,10 +3183,14 @@ ScrStr *scr_bytes_normalize_encoding(const ScrStr *raw) {
     {"ucs2", "utf16le"}, {"ucs-2", "utf16le"},
   };
   for (size_t i = 0; i < sizeof map / sizeof map[0]; i++) {
-    if (scr_enc_eq_ci(raw, map[i].from)) {
-      return scr_str_new(map[i].to, strlen(map[i].to));
-    }
+    if (scr_enc_eq_ci(raw, map[i].from)) return map[i].to;
   }
+  return NULL;
+}
+
+ScrStr *scr_bytes_normalize_encoding(const ScrStr *raw) {
+  const char *to = scr_enc_alias(raw);
+  if (to) return scr_str_new(to, strlen(to));
   static const char prefix[] = "Unknown encoding: ";
   const size_t prefix_len = sizeof prefix - 1;
   if (raw->len > SIZE_MAX - prefix_len) scr_bytes_oom();
@@ -2868,6 +3203,22 @@ ScrStr *scr_bytes_normalize_encoding(const ScrStr *raw) {
                            "ERR_UNKNOWN_ENCODING");
   free(msg);
   return NULL;
+}
+
+/* Node's normalizeEncoding: an empty name reads as utf8; any other name
+ * normalizes as getEncodingOps does, unknown names throwing
+ * ERR_UNKNOWN_ENCODING. */
+ScrStr *scr_bytes_normalize_encoding_empty_utf8(const ScrStr *raw) {
+  if (raw->len == 0) return scr_str_new("utf8", 4);
+  return scr_bytes_normalize_encoding(raw);
+}
+
+/* Buffer.byteLength's encoding read: an unknown name counts as utf8
+ * instead of throwing. */
+ScrStr *scr_bytes_normalize_encoding_or_utf8(const ScrStr *raw) {
+  const char *to = scr_enc_alias(raw);
+  if (to) return scr_str_new(to, strlen(to));
+  return scr_str_new("utf8", 4);
 }
 
 /* new StringDecoder(encoding) with an encoding known only at run time:
@@ -3378,6 +3729,14 @@ ScrBytes *scr_buffer_alloc_unsafe(double size) {
 ScrBytes *scr_buffer_from_bytes(const ScrBytes *src) {
   size_t n = src->len;
   if (n == 0) return scr_buffer_empty();
+#ifdef SCR_JS_OBJECT_MODEL
+  /* A BigInt view has no numeric elements to read: Buffer.from answers Node's
+   * content-type error rather than zero elements. */
+  if (scr_bytes_elem_is_bigint(src->elem)) {
+    scr_bytes_content_type_error();
+    return NULL;
+  }
+#endif
   if (n < scr_pool_threshold()) {
     if (!scr_pool_reserve(n)) return NULL;
     ScrBytes *v = scr_pool_take(n);
@@ -3777,6 +4136,9 @@ static bool scr_bytes_search_start(size_t len, double from, size_t *start) {
 }
 
 double scr_bytes_index_of_elem(const ScrBytes *b, double x, double from, bool last) {
+#ifdef SCR_JS_OBJECT_MODEL
+  if (!scr_js_typed_method_ok(b, last ? "lastIndexOf" : "indexOf")) return -1;
+#endif
   /* A Buffer viewed as a Uint8Array keeps Buffer's own search: the needle
    * is taken as a byte, and a NaN byteOffset searches the whole buffer. */
   if (scr_bytes_is_buffer(b)) return scr_bytes_index_of_num(b, x, from, !last);
@@ -3800,6 +4162,9 @@ double scr_bytes_index_of_elem(const ScrBytes *b, double x, double from, bool la
 }
 
 bool scr_bytes_includes_elem(const ScrBytes *b, double x, double from) {
+#ifdef SCR_JS_OBJECT_MODEL
+  if (!scr_js_typed_method_ok(b, "includes")) return false;
+#endif
   if (scr_bytes_is_buffer(b)) return scr_bytes_index_of_num(b, x, from, true) >= 0;
   SCR_BYTES_SNAPSHOT(b);
   size_t len = b->len;
@@ -3820,6 +4185,9 @@ bool scr_bytes_includes_elem(const ScrBytes *b, double x, double from) {
  * Uint8Array value). Returns the receiver (+1) — fill chains. */
 static ScrBytes *scr_bytes_fill_core(ScrBytes *b, const uint8_t *pat, size_t patn,
                                      bool zero_ok, double nargs, double offset, double end) {
+#ifdef SCR_JS_OBJECT_MODEL
+  if (!scr_js_typed_method_ok(b, "fill")) return scr_bytes_retain(b);
+#endif
   if (patn == 0 && !zero_ok) {
     static const char msg[] = "The argument 'value' is invalid. Received <Buffer >";
     scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_INVALID_ARG_VALUE");
@@ -4099,6 +4467,33 @@ double scr_bytes_write_str(ScrBytes *b, const ScrStr *s, const ScrStr *enc,
   memcpy(b->data + o, encd->data, k);
   scr_bytes_release(encd);
   return (double)k;
+}
+
+/* buf.write(string, offset?, length?, enc) with an encoding name only
+ * known at run time. Node validates the offset and length before it reads
+ * the name, so a bad range reports ERR_OUT_OF_RANGE even when the name is
+ * unknown too; an empty name reads as utf8. */
+static double scr_bytes_write_str_dyn_impl(ScrBytes *b, const ScrStr *s,
+                                           const ScrStr *enc, double offset,
+                                           double len, bool has_len) {
+  if (!scr_bytes_validate_off("offset", offset, (double)b->len)) return 0;
+  if (has_len && !scr_bytes_validate_off("length", len, (double)b->len)) return 0;
+  ScrStr *normalized = scr_bytes_normalize_encoding_empty_utf8(enc);
+  if (!normalized) return 0;
+  double written = scr_bytes_write_str(b, s, normalized, offset, len, has_len);
+  scr_str_release(normalized);
+  return written;
+}
+
+double scr_bytes_write_str_dyn(ScrBytes *b, const ScrStr *s, const ScrStr *enc,
+                               double offset) {
+  return scr_bytes_write_str_dyn_impl(b, s, enc, offset, 0, false);
+}
+
+double scr_bytes_write_str_dyn_len(ScrBytes *b, const ScrStr *s,
+                                   const ScrStr *enc, double offset,
+                                   double len) {
+  return scr_bytes_write_str_dyn_impl(b, s, enc, offset, len, true);
 }
 
 /* Buffer.concat(list, totalLength): the same concatenation truncated or
@@ -4492,6 +4887,11 @@ bool scr_dataview_write_u64_raw(ScrBytes *b, double offset, bool le, uint64_t va
 }
 
 ScrArr *scr_bytes_to_arr(const ScrBytes *b) {
+#ifdef SCR_JS_OBJECT_MODEL
+  /* An ScrArr holds doubles: a BigInt view's elements have no numeric form,
+   * so the dynamic tier reads and joins them through the element accessors. */
+  if (scr_bytes_elem_is_bigint(b->elem)) scr_trap("scriptc: numeric read of a BigInt typed array\n");
+#endif
   ScrArr *out = scr_arr_new(SCR_ELEM_F64, b->len ? b->len : 1);
   for (size_t i = 0; i < b->len; i++) {
     scr_arr_push_f64(out, scr_bytes_get(b, (double)i));
@@ -4500,6 +4900,9 @@ ScrArr *scr_bytes_to_arr(const ScrBytes *b) {
 }
 
 ScrStr *scr_bytes_join(const ScrBytes *b, const ScrStr *separator) {
+#ifdef SCR_JS_OBJECT_MODEL
+  if (!scr_js_typed_method_ok(b, "join")) return scr_str_new("", 0);
+#endif
   ScrArr *values = scr_bytes_to_arr(b);
   ScrStr *out = scr_arr_join(values, (ScrStr *)separator);
   scr_arr_release(values);

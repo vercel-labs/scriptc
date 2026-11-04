@@ -21,19 +21,24 @@
  * indentation. Empty composites and depth placeholders never touch the
  * stack (the frontend emits their literals directly). */
 ScrStr *scr_insp_f64(double x);   /* JS ToString, except -0 → "-0" */
+/* ctx.maxStringLength for the renders that follow; answers the previous
+ * value so a wrapper can restore it. */
+double scr_insp_max_string_length(double value);
 ScrStr *scr_insp_str(ScrStr *s);  /* the quoting ladder + line splitting */
 ScrStr *scr_insp_regex(ScrRegex *re);  /* /source/flags */
 /* A Date (its time value): toISOString(), or "Invalid Date" for NaN (+1). */
 ScrStr *scr_insp_date(double ms);
 ScrStr *scr_insp_buffer(ScrBytes *b);  /* <Buffer aa bb ...>, 50-byte cap */
-/* The stackless error form: [Name: message] / [Name], then a runtime
- * error's own properties through its checked-dynamic node, or another
- * error's stamped code slot as its one extra property ({ code: 'X' });
- * [Name] beyond depth when a code makes it composite. */
+/* An error in Node's formatError form: its stack (the "Name: message"
+ * heading and the frames under it), bracketed as [Name: message] / [Name]
+ * when the stack carries no frame line or is empty, then its own
+ * properties through its checked-dynamic node — a stamped code slot is the
+ * one extra property ({ code: 'X' }) — and [Name] beyond depth when a
+ * code makes it composite. */
 ScrStr *scr_insp_error(ScrError *e, double recurse, double depth);
 /* A runtime error rendered through its checked-dynamic node (the cached
  * one, or one built from its fields), so Node's own properties follow the
- * bracket form. */
+ * stack. */
 ScrStr *scr_insp_error_node(ScrError *e, double recurse, double depth);
 bool scr_insp_error_bag_has_properties(ScrDyn *bag);
 bool scr_insp_error_has_cause(ScrError *e);
@@ -64,10 +69,20 @@ typedef struct ScrInspFormatOptions {
   int depth_kind;
   double depth_number;
   bool colors;
+  bool show_hidden;
+  /* Whether the render is util.format's %o, which the refusal of the
+   * kinds whose hidden entries the walk does not render names. */
+  bool hidden_spec;
   bool custom_inspect;
   double break_length;
   double compact; /* -1 for false */
   bool sorted;
+  double max_array_length; /* Infinity for null */
+  double max_string_length; /* Infinity for null */
+  /* Whether an accessor property's getter runs: 0 the labels only,
+   * 1 every getter, 2 the getters without a setter, 3 the getters with
+   * one. */
+  int getters;
   /* The options object, when it holds keys inspect does not read: custom
    * inspect functions receive them (borrowed; NULL otherwise). */
   const ScrDyn *user_options;
@@ -104,11 +119,17 @@ bool scr_insp_format_specifies_dyn(ScrDyn *first);
  * class defines its own toString print String(value). */
 ScrStr *scr_insp_dyn_format_s(ScrDyn *d, double depth);
 ScrStr *scr_insp_dyn_hidden(ScrDyn *d, double depth); /* %o: showHidden */
+/* A showHidden render for `surface`; custom < 0 keeps the caller's custom
+ * inspection setting, 0 disables it (console.dir). */
+ScrStr *scr_insp_dyn_hidden_as(ScrDyn *d, double depth, const char *surface, bool spec, int custom);
 void scr_insp_begin(double recurse);
-/* util.inspect's breakLength, compact (-1 for false) and sorted for the
- * renders that follow; the call site restores the defaults (80, 3, false)
- * afterwards. */
-void scr_insp_layout(double break_length, double compact, bool sorted);
+/* util.inspect's breakLength, compact (-1 for false), sorted and
+ * maxArrayLength (Infinity for null) for the renders that follow; the
+ * call site restores the defaults (80, 3, false, 100) afterwards. */
+void scr_insp_layout(double break_length, double compact, bool sorted, double max_array_length);
+/* The maxArrayLength the render in progress uses, read by the compiler's
+ * array, Map and Set renderings. */
+double scr_insp_max_array_length(void);
 void scr_insp_entry(ScrStr *s, bool is_num);
 /* Circular references, Node-exact (<ref *N> / [Circular *N]): the
  * compiler-emitted helpers over CYCLE-CAPABLE composites call circ_check
@@ -137,6 +158,15 @@ void scr_insp_nested_restore(void);
 /* ctx.customInspect for the renders that follow; answers the previous
  * value for the caller to restore. */
 bool scr_insp_custom_inspect(bool enabled);
+/* ctx.getters for the renders that follow (0 the labels only, 1 every
+ * getter, 2 the getters without a setter, 3 the getters with one), the
+ * value the interned per-type helpers read, and an invoked accessor's
+ * result rendered by kind: `[Label: <primitive>]`, `[Label] <object>`.
+ * +1 values; the setter answers the previous value for the caller to
+ * restore, the result NULL with an exception pending. */
+double scr_insp_getters(double value);
+double scr_insp_getters_mode(void);
+ScrStr *scr_insp_accessor_result(ScrDyn *value, ScrStr *label, double recurse, double depth);
 /* Around a custom inspect function's call: begin gives the calls it makes
  * a fresh inspect context with the default options and answers a token;
  * end(token) restores the caller's, also after calls that threw. */

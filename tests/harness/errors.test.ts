@@ -254,8 +254,8 @@ direct(new Base());
         "true TypeError: Value is not an instance of 'Sub'",
         "true TypeError: Value is not an instance of 'Sub'",
         "ok 0",
-        "true TypeError: undefined is not representable in the target union (a value narrowed or asserted past it still held it)",
-        "true TypeError: undefined is not representable in the target union (a value narrowed or asserted past it still held it)",
+        "true TypeError: Cannot read properties of undefined (reading 'kind')",
+        "true TypeError: Cannot read properties of undefined (reading 'kind')",
         "",
       ].join("\n"),
     );
@@ -1938,6 +1938,59 @@ console.log(count(require("./lib.cjs")));
 });
 
 describe("builtin constructor values (JS lane)", () => {
+  test("constructing one without a lowering keeps its fence, not a token-spelled TypeError", async () => {
+    // `AsyncResource` has no lowering, so a JavaScript source reads the
+    // import as the identifier chokepoint's identity token: an IR string
+    // whose text Node never produces. A String's construction does throw
+    // "… is not a constructor", but from the token that reports a class
+    // Node constructs as if the program could see the carrier — the wrong
+    // error class AND a fabricated message. The construction keeps the
+    // named refusal instead.
+    const r = await compileAndRun(
+      "builtin-token-construction",
+      `import { AsyncResource } from "node:async_hooks";
+function run() {
+  return new AsyncResource("demo");
+}
+console.log("before");
+run();
+`,
+      "mjs",
+    );
+    expect(r.stdout).toBe("before\n");
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: constructing values other than classes declared in the program is not supported yet \[SC1090 at .*builtin-token-construction\.mjs:3\]\n$/,
+    );
+  });
+
+  test("a program's own string casts keep Node's answers at the same sites", async () => {
+    // The token is recognized by the text it interns, so a real string the
+    // program widens to `any` is no token: every object-coercion site runs
+    // and answers exactly as Node does.
+    const r = await compileAndRun(
+      "string-cast-object-coercion",
+      `"use strict";
+const s: string = "hello";
+try { new (s as any)(); } catch (e) { console.log("new", "threw", (e as any).constructor.name + ": " + (e as any).message); }
+try { console.log("in", "value", "x" in (s as any)); } catch (e) { console.log("in", "threw", (e as any).constructor.name + ": " + (e as any).message); }
+try { delete (s as any).x; console.log("delete", "value", "ok"); } catch (e) { console.log("delete", "threw", (e as any).constructor.name + ": " + (e as any).message); }
+try { console.log("delete index", "value", String(delete (s as any)[0])); } catch (e) { console.log("delete index", "threw", (e as any).constructor.name + ": " + (e as any).message); }
+`,
+    );
+    expect(r.stderr).toBe("");
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "new threw TypeError: s as any is not a constructor",
+        "in threw TypeError: Cannot use 'in' operator to search for 'x' in hello",
+        "delete value ok",
+        "delete index threw TypeError: Cannot delete property '0' of [object String]",
+        "",
+      ].join("\n"),
+    );
+  });
+
   test("members without a lowering stay refused instead of reading undefined", async () => {
     // Builtin constructors read as interned function values that model only
     // name, length and constructor. Every other static member or prototype
@@ -2330,9 +2383,9 @@ console.log("unreachable");
 
 // The runtime formatter (format strings known only at run time, spread
 // arguments, options objects) throws a coded SC2020 error for renderings
-// it has no lowering for.
+// it has no lowering for, and %o of an object renders its hidden entries.
 describe("runtime format refusals", () => {
-  test("%s of a class instance with toString, %o of objects, colored errors and options", async () => {
+  test("%s of a class instance with toString, colored errors and options", async () => {
     const r = await compileAndRun(
       "format-runtime-refusals",
       `import * as util from "node:util";
@@ -2349,6 +2402,7 @@ const attempts: Array<() => string> = [
   () => util.format(o, { a: 1 }),
   () => util.formatWithOptions({ colors: true }, s, "x", new Error("e")),
   () => util.formatWithOptions({ maxArrayLength: 1 }, [1, 2]),
+  () => util.formatWithOptions({ maxArrayLength: 1.5 }, [1, 2]),
   () => util.formatWithOptions({ compact: true }, [1, 2]),
 ];
 for (const attempt of attempts) {
@@ -2365,9 +2419,10 @@ console.log(util.format(s, { a: 1 }), util.formatWithOptions({ maxArrayLength: 1
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe(
       "Error SC2020 util.format %s of a class instance whose class defines toString has no lowering\n" +
-        "Error SC2020 util.format %o of objects renders hidden properties, which have no lowering; use %O\n" +
+        "{ a: 1 }\n" +
         "Error SC2020 colored inspect output of Error values has no lowering\n" +
-        "Error SC2020 util.formatWithOptions with the maxArrayLength option has no lowering\n" +
+        "[ 1, ... 1 more item ]\n" +
+        "Error SC2020 util.formatWithOptions with this maxArrayLength option has no lowering (maxArrayLength must be a non-negative integer or null)\n" +
         "Error SC2020 util.formatWithOptions with this compact option has no lowering (compact must be false or a number)\n" +
         "{ a: 1 } [ 1, 2 ]\n",
     );
@@ -2462,7 +2517,8 @@ console.log(words.length);
 // cannot answer as Node does throw SC2020: calling or constructing it
 // through the value (Node reports DEP0005 by the caller's location), its
 // prototype as a whole, copyBytesFrom and of, and Buffer.prototype members
-// that are inherited, symbol-keyed or called on other receivers.
+// that are inherited, symbol-keyed or called on a receiver that is neither
+// a Buffer nor a Uint8Array.
 describe("Buffer value refusals", () => {
   test("unmodeled Buffer value forms throw SC2020", async () => {
     const r = await compileAndRun(
@@ -2478,6 +2534,7 @@ const runs = [
   () => Buffer.prototype.map,
   () => Buffer.prototype[Symbol.iterator],
   () => Buffer.prototype.readUInt8.call(new Uint8Array(2), 0),
+  () => Buffer.prototype.readUInt8.call({}, 0),
 ];
 for (const run of runs) {
   try {
@@ -2487,6 +2544,7 @@ for (const run of runs) {
     console.log(e.name, e.code, e.message);
   }
 }
+console.log("u8", Buffer.prototype.readUInt8.call(new Uint8Array([7, 8]), 1));
 `,
       "cjs",
     );
@@ -2500,7 +2558,9 @@ for (const run of runs) {
         "Error SC2020 Buffer.of through a stored Buffer value is not supported yet",
         "Error SC2020 Buffer.prototype.map is not supported yet",
         "Error SC2020 Buffer.prototype members keyed by symbols are not supported yet",
+        "ran",
         "Error SC2020 Buffer.prototype.readUInt8 on a receiver that is not a Buffer is not supported yet",
+        "u8 8",
         "",
       ].join("\n"),
     );
@@ -2589,5 +2649,144 @@ console.log(JSON.stringify(rows));
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe('[{"path":"src","isDirectory":true,"index":0}]\n');
     expect(r.stderr).toBe("");
+  });
+});
+
+// A Node 24 global native code does not provide answers the constructor Node
+// has (host-global-values.ts): a READ never throws, while constructing or
+// calling the value refuses with the same SC2020 fence the direct use
+// reports. A JavaScript source defers that refusal to the operation that
+// reaches it, which is what lets a module load — effect's Schema reads
+// `globalThis.FormData` at module init — and only throws if the class is
+// ever actually constructed.
+describe("host-global constructor values", () => {
+  test("an eager JavaScript read answers the constructor without throwing", async () => {
+    const r = await compileAndRun(
+      "host-global-eager-read",
+      `const Eager = globalThis.FormData;
+console.log(typeof Eager, Eager.name, Eager.length);
+console.log({} instanceof globalThis.FormData);
+console.log(Eager.prototype.constructor === Eager);
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("function FormData 0\nfalse\ntrue\n");
+    expect(r.stderr).toBe("");
+  });
+
+  test("the value refuses construction wherever it is constructed", async () => {
+    const r = await compileAndRun(
+      "host-global-construction",
+      `const Ctor = globalThis.FormData;
+try {
+  new Ctor();
+  console.log("constructed");
+} catch (error) {
+  console.log(String(error));
+}
+console.log("still running");
+`,
+      "cjs",
+    );
+    // The binding holds the value the read answered, so constructing it
+    // through the binding throws the same fence, blamed at the construction.
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toMatch(
+      /^Error: 'FormData' is a Node global that native code does not provide \[SC2020 at .*host-global-construction\.cjs:3\]\nstill running\n$/,
+    );
+    expect(r.stderr).toBe("");
+  });
+
+  test("a member the value does not carry refuses the read", async () => {
+    const r = await compileAndRun(
+      "host-global-member-read",
+      `console.log(typeof globalThis.WebSocket.name);
+console.log("before");
+console.log(globalThis.WebSocket.OPEN);
+console.log("after");
+`,
+      "cjs",
+    );
+    // `name` is a function intrinsic the value carries; `OPEN` is the
+    // class's own static member, which native code does not have.
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("string\nbefore\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: 'WebSocket' is a Node global that native code does not provide \[SC2020 at .*host-global-member-read\.cjs:3\]\n$/,
+    );
+  });
+
+  test("a method on the value's prototype refuses the read", async () => {
+    const r = await compileAndRun(
+      "host-global-prototype-member",
+      `console.log(typeof globalThis.FormData.prototype.constructor);
+console.log("before");
+console.log(globalThis.FormData.prototype.append);
+console.log("after");
+`,
+      "cjs",
+    );
+    // The prototype carries `constructor`; `append` is one of the class's
+    // instance methods, which native code does not have.
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("function\nbefore\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: 'FormData' is a Node global that native code does not provide \[SC2020 at .*host-global-prototype-member\.cjs:3\]\n$/,
+    );
+  });
+
+  test("a member read through a constant holding the value refuses at its own site", async () => {
+    const r = await compileAndRun(
+      "host-global-alias-member-read",
+      `const Ctor = globalThis.WebSocket;
+console.log(Ctor.name);
+console.log("before");
+console.log(Ctor.OPEN);
+console.log("after");
+`,
+      "cjs",
+    );
+    // The constant holds the value the read answered, so its static member
+    // is as unavailable as the direct read's.
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("WebSocket\nbefore\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: 'WebSocket' is a Node global that native code does not provide \[SC2020 at .*host-global-alias-member-read\.cjs:4\]\n$/,
+    );
+  });
+
+  test("a method read through a constant holding the prototype refuses", async () => {
+    const r = await compileAndRun(
+      "host-global-prototype-alias",
+      `const body = globalThis.FormData.prototype;
+console.log(typeof body.constructor);
+console.log("before");
+console.log(body.append);
+console.log("after");
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("function\nbefore\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: 'FormData' is a Node global that native code does not provide \[SC2020 at .*host-global-prototype-alias\.cjs:4\]\n$/,
+    );
+  });
+
+  test("a deferred construction fence names the SC2020 site", async () => {
+    const r = await compileAndRun(
+      "host-global-construction-fence",
+      `console.log("before");
+new globalThis.WebSocket("ws://localhost:8080");
+console.log("after");
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("before\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: 'WebSocket' is a Node global that native code does not provide \[SC2020 at .*host-global-construction-fence\.cjs:2\]\n$/,
+    );
   });
 });

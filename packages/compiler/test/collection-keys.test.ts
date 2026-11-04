@@ -82,6 +82,16 @@ test("boxed reference keys select payload identity, not wrapper identity", () =>
   expect(mapKeyKindNum(union, references)).toBe(3);
 });
 
+test("function keys compare identity roots, beside the other arms of a union", () => {
+  const fn: IrType = { kind: "func", params: [F64], ret: F64 };
+  expect(isIdentityCollectionKey(fn)).toBe(true);
+  expect([mapKeyKindNum(fn), mapKeyAccess(fn)]).toEqual([10, "ref"]);
+  // SCR_MAP_KEY_UNION_VALUE: the function arm keys as a closure (10).
+  expect(mapKeyKindNum(union, [fn, UNDEFINED_T])).toBe(7);
+  expect(mapKeyKindNum(union, [reference, fn])).toBe(7);
+  expect(mapKeyKindNum(union, references)).toBe(3);
+});
+
 test("mixed-value unions select value equality while unsupported arms remain fenced", () => {
   expect(isSupportedMapKey(union)).toBe(false);
   expect(isSupportedMapKey(union, [])).toBe(false);

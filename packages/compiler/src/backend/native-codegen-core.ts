@@ -1,4 +1,6 @@
 /** Native codegen helper protocol shared by compiler hosts. */
+import { availableParallelism } from "node:os";
+
 import type { NativeHelperSpec, NativeTargetSpec } from "./targets.js";
 
 export const NATIVE_CODEGEN_PROTOCOL_VERSION = "1";
@@ -6,14 +8,17 @@ export const NATIVE_CODEGEN_LLVM_VERSION = "22.1.8";
 
 export type NativeCodegenOutputKind = "asm" | "obj";
 
-/** LLVM text that stays one module, LLVM text per partition, the fewest
- * partitions (MIN_PROGRAM_PARTITIONS, of at least MIN_PARTITION_BYTES each)
- * a divided module gets, and the most one executable uses. */
+/** LLVM text that stays one module, LLVM text per partition when the module
+ * is divided by size, the fewest partitions (MIN_PROGRAM_PARTITIONS, of at
+ * least MIN_PARTITION_BYTES each) a divided module gets, the most one
+ * executable uses, and the partitions a divided module is sized for per
+ * hardware thread. */
 const SINGLE_PARTITION_BYTES = 128 * 1024;
 const PROGRAM_PARTITION_BYTES = 4 * 1024 * 1024;
 const MIN_PARTITION_BYTES = 32 * 1024;
 const MIN_PROGRAM_PARTITIONS = 8;
 const MAX_PROGRAM_PARTITIONS = 64;
+const PARTITIONS_PER_THREAD = 2;
 /** SINGLE_PARTITION_BYTES of unoptimized (dev) executables. */
 const UNOPTIMIZED_SINGLE_PARTITION_BYTES = 64 * 1024;
 
@@ -21,25 +26,38 @@ const UNOPTIMIZED_SINGLE_PARTITION_BYTES = 64 * 1024;
  * partitions that the helper simplifies, optimizes and compiles concurrently,
  * importing small functions across partitions for inlining, and reuses
  * individually across builds, so an edit optimizes again only the partitions
- * it affects. A divided module gets at least MIN_PROGRAM_PARTITIONS so that
- * small and mid-size programs use several cores. The count is a power of two
- * that depends only on the module's size and whether it is optimized, on
- * every target, so artifacts never vary with the host and ordinary edits keep
- * every function in its partition. An optimized module whose largest
- * partition would hold more than two thirds of its function text is
- * optimized whole by the helper instead (as for one partition), and its code
- * is generated in parts.
+ * it affects. The helper compiles partitions on one thread per hardware thread
+ * of the host, so a divided module gets at least PARTITIONS_PER_THREAD
+ * partitions for each of them, up to MAX_PROGRAM_PARTITIONS, and fewer when
+ * its text cannot fill each with MIN_PARTITION_BYTES: a module of a few
+ * hundred kilobytes gets MIN_PROGRAM_PARTITIONS partitions whatever the host.
+ * A module larger than PARTITIONS_PER_THREAD of the host's threads can fill at
+ * MIN_PARTITION_BYTES each keeps one partition per PROGRAM_PARTITION_BYTES on
+ * every host, so a host with few threads divides it as finely as before. The
+ * count is a power of two, so ordinary edits keep every function in its
+ * partition. An optimized module whose largest partition would hold more than
+ * two thirds of its function text is optimized whole by the helper instead (as
+ * for one partition), and its code is generated in parts.
  *
  * Unoptimized (dev) partitions are compiled on their own with nothing
  * imported, so they cost no run time and an edit compiles only the partitions
  * whose functions it changes: dev executables are divided from
  * UNOPTIMIZED_SINGLE_PARTITION_BYTES. */
-export function nativeProgramPartitions(llvmBytes: number, unoptimized = false): number {
+export function nativeProgramPartitions(
+  llvmBytes: number,
+  unoptimized = false,
+  parallelism = availableParallelism(),
+): number {
   if (llvmBytes <= (unoptimized ? UNOPTIMIZED_SINGLE_PARTITION_BYTES : SINGLE_PARTITION_BYTES))
     return 1;
+  // The largest power of two of MIN_PARTITION_BYTES partitions the module can
+  // fill, and the smallest divided module's count: enough partitions for the
+  // host's threads, but never more than the module has text for.
+  const fillable = 2 ** Math.floor(Math.log2(Math.max(1, llvmBytes / MIN_PARTITION_BYTES)));
   const required = Math.max(
     Math.ceil(llvmBytes / PROGRAM_PARTITION_BYTES),
     Math.min(MIN_PROGRAM_PARTITIONS, Math.ceil(llvmBytes / MIN_PARTITION_BYTES)),
+    Math.min(Math.max(1, parallelism) * PARTITIONS_PER_THREAD, fillable),
   );
   return Math.min(MAX_PROGRAM_PARTITIONS, 2 ** Math.ceil(Math.log2(required)));
 }

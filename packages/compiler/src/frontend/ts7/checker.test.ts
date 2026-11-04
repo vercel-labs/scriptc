@@ -195,6 +195,7 @@ for (const server of servers)
         prefetchSymbolNodesExact: () => facade.prefetchSymbolNodesExact([]),
         prefetchCollectionTypes: () => facade.prefetchCollectionTypes([]),
         prefetchClassCollection: () => facade.prefetchClassCollection([], []),
+        prefetchTypeQueries: () => facade.prefetchTypeQueries([]),
         getTypeAtLocation: () => facade.getTypeAtLocation(name),
         getSymbolAtLocation: () => facade.getSymbolAtLocation(name),
         getTypeOfSymbol: () => facade.getTypeOfSymbol(symbol),

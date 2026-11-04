@@ -1483,6 +1483,14 @@ static ScrDyn *scr_dyn_invoke_impl(
         }
         recv->v.arr.presence[len - 1] = 0;
       }
+#else
+      /* This build's presence bytes carry the hole bit alone, so they move
+       * down with the elements they describe and the index the shift
+       * removes becomes a hole. */
+      if (recv->v.arr.presence) {
+        memmove(recv->v.arr.presence, recv->v.arr.presence + 1, len - 1);
+        recv->v.arr.presence[len - 1] = 0;
+      }
 #endif
       recv->v.arr.len = len - 1;
       return first; /* ownership moves out */

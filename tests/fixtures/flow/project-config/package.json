@@ -1,0 +1,14 @@
+{
+  "name": "flow-project-config",
+  "private": true,
+  "type": "module",
+  "scriptc": {
+    "flow": {
+      "all": true,
+      "dynamicTypes": ["Payload"],
+      "types": { "Missing": "unique symbol" }
+    },
+    "constants": { "__DEV__": false },
+    "moduleSubstitutions": { "config.js": "forks/config.node.js" }
+  }
+}

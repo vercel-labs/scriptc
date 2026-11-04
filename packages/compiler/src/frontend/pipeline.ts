@@ -65,6 +65,7 @@ import { NODE_API_MODULE } from "./node-api-import.js";
 import { erasedTypeOnlyImport } from "./type-only-imports.js";
 import { EXPERIMENTAL_MODULE } from "./experimental-import.js";
 import { readProjectConfig } from "../project-config.js";
+import { flowTranslationFailures } from "./flow/index.js";
 import { setFrontendIslands } from "../node-islands/boundary.js";
 import { typePatchDiagnostics } from "./type-patches/layer.js";
 import { packageDirOf } from "../node-islands/origin.js";
@@ -943,10 +944,15 @@ function loadFrontend(
   // build goes on with the packages' own declarations there.
   const patchDiagnostics = typePatchDiagnostics()?.diagnostics ?? [];
   const buildWarnings = [...(report ? [] : configDiagnostics), ...patchDiagnostics];
+  // Flow modules that did not translate stop the build at their source.
+  const flowFailures = flowTranslationFailures();
   return {
-    preflight: withoutIslandModules(
-      report && configDiagnostics.length > 0 ? [...configDiagnostics, ...preflight] : preflight,
-    ),
+    preflight: withoutIslandModules([
+      ...flowFailures.diagnostics,
+      ...(report && configDiagnostics.length > 0
+        ? [...configDiagnostics, ...preflight]
+        : preflight),
+    ]),
     ...(buildWarnings.length > 0 ? { warnings: buildWarnings } : {}),
     entryText: () => finalLoad.entry.text,
     entryExports: (names) => entryExportFacts(finalLoad.program, finalLoad.entry, names),
@@ -990,6 +996,7 @@ function loadFrontend(
         projectConfig.manifestText !== null
       )
         texts.set(projectConfig.manifest, projectConfig.manifestText);
+      for (const [file, text] of flowFailures.texts) texts.set(file, text);
       return texts;
     },
     lower: (opts, valid) => {

@@ -1,3 +1,4 @@
+import { fenceLocation } from "../../flow/index.js";
 import { dynUndefinedExpr, nodeThrowExpr, boolLit, strLit, varRef } from "../../../ir/build.js";
 import { dirname, isAbsolute, resolve } from "node:path";
 import * as ts from "../../ts7/adapter.js";
@@ -206,7 +207,7 @@ function createRequireFence(
   return {
     kind: "runtimeFence",
     code: d.code,
-    message: `${d.message} [${d.code} at ${loc.file}:${line}]`,
+    message: `${d.message} [${d.code} at ${fenceLocation(loc.file, loc.start, line)}]`,
     loc,
   };
 }

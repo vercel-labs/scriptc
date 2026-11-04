@@ -43,7 +43,7 @@ import {
   VOID,
   arrayOf,
 } from "../../ir/ir.js";
-import { isJsSourceFile, isNodeTypesPath, requireSpecOf } from "../program.js";
+import { isJsLikeSourceFile, isJsSourceFile, isNodeTypesPath, requireSpecOf } from "../program.js";
 import { ZLIB_CONSTANTS } from "./zlib-constants.js";
 import { V8_MEMBER_REASON } from "../builtin-modules.js";
 
@@ -3442,6 +3442,18 @@ export function stdlibMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExp
   // JavaScript reads web stream values (read results, sources, strategies)
   // as checked-dynamic objects (web-streams-dyn.ts).
   if (isWebStreamMemberInJavaScript(lowerer, access)) return;
+  // `arguments` bound to JavaScript's hidden arguments slot (a checked-
+  // dynamic array) of the function that owns it (arrows inherit it),
+  // whatever the checker calls it.
+  if (
+    ts.isIdentifier(recv) &&
+    recv.text === "arguments" &&
+    isJsLikeSourceFile(ts.getSourceFileOfNode(recv))
+  ) {
+    let owner = lowerer.fnStack.length - 1;
+    while (owner > 0 && lowerer.fnStack[owner]!.inheritsArguments) owner--;
+    if (lowerer.fnStack[owner]?.argumentsLocal) return;
+  }
   // Name the container the way the source reads: the global's name when
   // the receiver IS a stdlib global (Math, process), the dotted path for
   // a member of one (process.stdout — its TYPE text would be the useless

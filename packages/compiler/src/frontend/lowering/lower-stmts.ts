@@ -153,6 +153,7 @@ import {
   cjsExportTargetLiteral,
   isCjsJsFile,
   isEsModuleStamp,
+  isJsLikeSourceFile,
   isJsSourceFile,
   locOf,
   requireEarlyReference,
@@ -765,9 +766,10 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
   // statement whose construct has no static lowering compiles to a
   // runtimeFence — a catchable, SC-coded throw at the statement's
   // position — instead of failing the whole build). TypeScript keeps
-  // compile fences. ICEs (SC9001) always stay compile errors.
+  // compile fences, except Flow modules, which Flow checked instead
+  // (flow/index.ts). ICEs (SC9001) always stay compile errors.
   const sf = stmts.length === 0 ? undefined : ts.getSourceFileOfNode(stmts[0]!);
-  const deferFences = sf !== undefined && isJsSourceFile(sf);
+  const deferFences = sf !== undefined && isJsLikeSourceFile(sf);
   // Register this list as open for the forward-capture machinery: a
   // nested function lowering mid-list may pre-declare a LATER const of
   // this list as a TDZ box (predeclareForwardCapture), pushing the

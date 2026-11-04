@@ -161,6 +161,7 @@ import {
   cjsExportDiscardReason,
   isCjsExportTableLiteral,
   isCjsJsFile,
+  isJsLikeSourceFile,
   isJsSourceFile,
   isModuleExportsAccess,
   isNodeEsmFile,
@@ -405,6 +406,19 @@ export function lowerPropertyAccessExpr(
     const staticPrivate = lowerStaticPrivateRead(lowerer, expr, loc);
     if (staticPrivate) return staticPrivate;
   }
+  // `Function.prototype.bind` as a value in a JavaScript-like source: the
+  // interned builtin, which binds the receiver it is called on
+  // (`bind.apply(fn, [thisArg, ...args])`).
+  if (
+    expr.name.text === "bind" &&
+    ts.isPropertyAccessExpression(expr.expression) &&
+    expr.expression.name.text === "prototype" &&
+    ts.isIdentifier(expr.expression.expression) &&
+    expr.expression.expression.text === "Function" &&
+    lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(expr.expression.expression) ?? undefined) &&
+    isJsLikeSourceFile(ts.getSourceFileOfNode(expr))
+  )
+    return builtinFunctionValue("Function.prototype.bind", loc);
   // `value.#x` on a checked-dynamic value, or on a checked extraction of
   // one: the field of the brand-checked receiver (checkedPrivateValue).
   if (ts.isPrivateIdentifier(expr.name)) {
@@ -1261,7 +1275,7 @@ export function lowerPropertyAccessExpr(
   // storage can expose its own name and length in both source languages.
   if (
     !["apply", "bind", "call", "toString", "caller", "arguments"].includes(expr.name.text) &&
-    (isJsSourceFile(ts.getSourceFileOfNode(expr)) ||
+    (isJsLikeSourceFile(ts.getSourceFileOfNode(expr)) ||
       expr.name.text === "name" ||
       expr.name.text === "length" ||
       expr.name.text === "constructor")
@@ -1298,7 +1312,7 @@ export function lowerPropertyAccessExpr(
       );
     }
     if (
-      (isJsSourceFile(ts.getSourceFileOfNode(expr)) || expr.name.text === "constructor") &&
+      (isJsLikeSourceFile(ts.getSourceFileOfNode(expr)) || expr.name.text === "constructor") &&
       probed?.type.kind === "func" &&
       canBoxFuncIntoDyn(
         probed.type,

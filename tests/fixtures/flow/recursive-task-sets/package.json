@@ -1,0 +1,8 @@
+{
+  "name": "flow-recursive-task-sets",
+  "private": true,
+  "type": "module",
+  "scriptc": {
+    "flow": true
+  }
+}

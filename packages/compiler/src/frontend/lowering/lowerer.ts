@@ -4,6 +4,7 @@ import { markInferredFactChecks, shapeOverlayFileNames } from "../shape-inferenc
 import { npmStaticPackageOfPath } from "../npm-static.js";
 import { globalMemberValue } from "./global-values.js";
 import { unionNarrowFailureMessage } from "./union-narrow.js";
+import { fenceLocation } from "../flow/index.js";
 import {
   arrayClassFieldsFn,
   arrayClassSpeciesFn,
@@ -361,6 +362,7 @@ import {
   isCheckedJsSourceFile,
   isCjsExportTableLiteral,
   isCjsJsFile,
+  isJsLikeSourceFile,
   isJsSourceFile,
   isNodeEsmFile,
   locOf,
@@ -1875,7 +1877,7 @@ export function ladderFenceExpr(
   const pos = ts.getLineAndCharacterOfPosition(sf, loc.start);
   return {
     kind: "strLit",
-    value: `${d.message} [${d.code} at ${loc.file}:${pos.line + 1}]`,
+    value: `${d.message} [${d.code} at ${fenceLocation(loc.file, loc.start, pos.line + 1)}]`,
     type: STRING,
     loc,
   };
@@ -1883,7 +1885,9 @@ export function ladderFenceExpr(
 
 export function dynFallbackType(lowerer: Lowerer, node: ts.Node, t: ts.Type): IrType | null {
   if (t.flags & ts.TypeFlags.Void) return null;
-  if (!isJsSourceFile(ts.getSourceFileOfNode(node))) {
+  // Flow modules fall back like JavaScript: a type with no static
+  // representation is checked-dynamic (flow/index.ts).
+  if (!isJsLikeSourceFile(ts.getSourceFileOfNode(node))) {
     if (t.flags & ts.TypeFlags.Any) return DYN;
     const symbol = t.getSymbol();
     const args =
@@ -11698,12 +11702,12 @@ export class Lowerer {
       ? (this.program.getSourceFile(messageLoc.file) ?? ts.getSourceFileOfNode(node))
       : ts.getSourceFileOfNode(node);
     const pos = ts.getLineAndCharacterOfPosition(source, messageLoc.start);
+    // A Flow module's fence names its Flow source and line.
+    const at = fenceLocation(messageLoc.file, messageLoc.start, pos.line + 1);
     return {
       kind: "runtimeFence",
       code,
-      message: bareMessage
-        ? baseMessage
-        : `${baseMessage} [${code} at ${messageLoc.file}:${pos.line + 1}]`,
+      message: bareMessage ? baseMessage : `${baseMessage} [${code} at ${at}]`,
       loc,
     };
   }

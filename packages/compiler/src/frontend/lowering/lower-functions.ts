@@ -25,7 +25,7 @@ import {
   canBoxFuncIntoDyn,
   typeEquals,
 } from "../../ir/ir.js";
-import { isJsSourceFile, locOf } from "../program.js";
+import { isJsLikeSourceFile, isJsSourceFile, locOf } from "../program.js";
 import { PoisonError, jsFuncNameOf, newFnCtx } from "./lowerer.js";
 import { enforceLibBoundary, lowerSurplusCalls } from "./lib-boundary.js";
 import { returnsOnlyThis } from "./lower-classes.js";
@@ -417,7 +417,7 @@ export function lowerLambda(
   try {
     const receiver =
       (checkedReceiver ||
-        isJsSourceFile(ts.getSourceFileOfNode(node)) ||
+        isJsLikeSourceFile(ts.getSourceFileOfNode(node)) ||
         node.parameters.nodes.some(isThisParameter)) &&
       !ts.isArrowFunction(node)
         ? declareCallReceiver(lowerer, node, isGenerator)
@@ -636,7 +636,8 @@ export function lowerFunction(lowerer: Lowerer, decl: ts.FunctionDeclaration): I
     const argumentCount: IrStmt[] = [];
     declareArgumentCount(lowerer, decl, argumentCount);
     const receiver =
-      decl.parameters.nodes.some(isThisParameter) || isJsSourceFile(ts.getSourceFileOfNode(decl))
+      decl.parameters.nodes.some(isThisParameter) ||
+      isJsLikeSourceFile(ts.getSourceFileOfNode(decl))
         ? declareCallReceiver(lowerer, decl, sig.generator !== undefined)
         : null;
     const { params, prologue } = lowerer.declareParams(decl.parameters.nodes, sig.params);
@@ -649,7 +650,8 @@ export function lowerFunction(lowerer: Lowerer, decl: ts.FunctionDeclaration): I
       params,
       prologue,
       locOf(decl),
-      sig.params.length > decl.parameters.nodes.length &&
+      // A declared `this` (TypeScript, Flow) is no slot of the signature.
+      sig.params.length > decl.parameters.nodes.filter((p) => !isThisParameter(p)).length &&
         (sig.params[sig.params.length - 1]!.mode === "dynRest" ||
           sig.params[sig.params.length - 1]!.mode === "arguments"),
     );

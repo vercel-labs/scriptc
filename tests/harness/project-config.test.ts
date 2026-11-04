@@ -1561,3 +1561,36 @@ test("tsconfig paths onto the project's sources compile them, not the npm packag
   const { stdout } = await execFileAsync(result.binaryPath);
   expect(stdout).toBe("42\n");
 });
+
+test("moduleSubstitutions answer a module with another in a project without Flow", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-config-substitutions-"));
+  writeFileSync(
+    join(dir, "package.json"),
+    JSON.stringify({
+      type: "module",
+      scriptc: { moduleSubstitutions: { "config.ts": "config.node.ts" } },
+    }),
+  );
+  writeFileSync(
+    join(dir, "config.ts"),
+    'export default "generic";\nexport const mode = "generic";\n',
+  );
+  // The fork's default export follows a URL, whose `//` is no comment.
+  writeFileSync(
+    join(dir, "config.node.ts"),
+    'const url = "http://localhost:8080"; export default url;\nexport const mode = "node";\n',
+  );
+  writeFileSync(
+    join(dir, "main.ts"),
+    'import origin, { mode } from "./config.ts";\nconsole.log(mode, origin);\n',
+  );
+  const result = await compile(join(dir, "main.ts"), {
+    outPath: join(dir, "program"),
+    outDir: dir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const { stdout } = await execFileAsync(result.binaryPath);
+  expect(stdout).toBe("node http://localhost:8080\n");
+});

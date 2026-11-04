@@ -26,6 +26,7 @@
  * throws a TypeError (spec 10.2.2), where a base constructor ignores the
  * primitive. That TypeError covers every primitive, `null` included, and
  * is decided statically whenever the returned expression's type is one. */
+import { fenceLocation } from "../flow/index.js";
 import * as ts from "../ts7/adapter.js";
 import { nodeThrowExpr, varRef } from "../../ir/build.js";
 import {
@@ -436,7 +437,7 @@ export function lowerConstructorReturn(lowerer: Lowerer, stmt: ts.ReturnStatemen
           {
             kind: "runtimeFence",
             code: diag.code,
-            message: `${diag.message} [${diag.code} at ${loc.file}:${line}]`,
+            message: `${diag.message} [${diag.code} at ${fenceLocation(loc.file, loc.start, line)}]`,
             loc,
           },
         ],
@@ -733,7 +734,7 @@ export function superIntoResultSlot(
             {
               kind: "runtimeFence",
               code: diag.code,
-              message: `${diag.message} [${diag.code} at ${loc.file}:${line}]`,
+              message: `${diag.message} [${diag.code} at ${fenceLocation(loc.file, loc.start, line)}]`,
               loc,
             },
           ],

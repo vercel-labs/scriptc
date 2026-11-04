@@ -1,4 +1,5 @@
 /* instanceof and in, including private-name and runtime-key in. */
+import { fenceLocation } from "../../flow/index.js";
 import { lowerIteratorInstanceOf } from "../iterator-prototype.js";
 import { programCreatesWrappers, WRAPPER_KIND_NUMBER } from "../primitive-wrappers.js";
 import { lowerArrayClassInstanceOf } from "../builtins/array-classes.js";
@@ -2647,7 +2648,7 @@ function dynInstanceOfRefusal(lowerer: Lowerer, expr: ts.BinaryExpression): stri
   const diag = unsupportedDiag("SC1090", locOf(expr), "instanceof against this native constructor");
   const sf = ts.getSourceFileOfNode(expr);
   const line = ts.getLineAndCharacterOfPosition(sf, diag.loc.start).line + 1;
-  return `${diag.message} [${diag.code} at ${diag.loc.file}:${line}]`;
+  return `${diag.message} [${diag.code} at ${fenceLocation(diag.loc.file, diag.loc.start, line)}]`;
 }
 
 /** IR kinds of native Node handles whose members come from Node's own

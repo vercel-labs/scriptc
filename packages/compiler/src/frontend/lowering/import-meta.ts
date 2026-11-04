@@ -4,6 +4,7 @@ import * as posix from "node:path/posix";
 import { pathToFileURL } from "node:url";
 import { BOOL, STRING, type IrExpr } from "../../ir/ir.js";
 import { wasiGuestPath } from "../../wasi-paths.js";
+import { flowSourcePath } from "../flow/index.js";
 import { locOf } from "../program.js";
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
@@ -18,11 +19,13 @@ export function isImportMeta(expr: ts.Expression): boolean {
 }
 
 /** The module's file name as the compiled program reports it
- * (import.meta.filename): the WASI guest path on wasi targets. */
+ * (import.meta.filename): the Flow source of a presented Flow module, and
+ * the WASI guest path on wasi targets. */
 export function moduleFileName(lowerer: Lowerer, sf: ts.SourceFile): string {
+  const fileName = flowSourcePath(sf.fileName) ?? sf.fileName;
   return lowerer.targetPlatform === "wasi"
-    ? (wasiGuestPath(sf.fileName) ?? sf.fileName.replace(/\\/g, "/"))
-    : sf.fileName;
+    ? (wasiGuestPath(fileName) ?? fileName.replace(/\\/g, "/"))
+    : fileName;
 }
 
 /** File-backed metadata is fixed by the compiled module graph. Reads share

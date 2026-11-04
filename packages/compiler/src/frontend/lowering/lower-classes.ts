@@ -1,3 +1,4 @@
+import { fenceLocation } from "../flow/index.js";
 import {
   isJsIteratorGlobal,
   iteratorPrototypeExpr,
@@ -10182,7 +10183,7 @@ export function inheritedBuiltinCtorFence(
     info.decl !== null
       ? ts.getLineAndCharacterOfPosition(ts.getSourceFileOfNode(info.decl), at.start).line + 1
       : null;
-  const where = line !== null ? ` [${diag.code} at ${at.file}:${line}]` : "";
+  const where = line !== null ? ` [${diag.code} at ${fenceLocation(at.file, at.start, line)}]` : "";
   return { kind: "runtimeFence", code: diag.code, message: `${diag.message}${where}`, loc };
 }
 
@@ -10837,7 +10838,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         ),
       );
       const line = ts.getLineAndCharacterOfPosition(ts.getSourceFileOfNode(expr), loc.start).line;
-      const refusal = `${surface} is not supported yet [SC2020 at ${loc.file}:${line + 1}]`;
+      const refusal = `${surface} is not supported yet [SC2020 at ${fenceLocation(loc.file, loc.start, line + 1)}]`;
       result = {
         kind: "libCall",
         fn: "intl.segmenterRefusing",

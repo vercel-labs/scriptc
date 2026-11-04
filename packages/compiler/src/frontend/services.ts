@@ -1,3 +1,4 @@
+import type { FlowParser } from "./flow/index.js";
 import { Ts7SourceParser, type Ts7SourceKind } from "./ts7/source-parser.js";
 import { Ts7Host, type Ts7ApiFactory, type Ts7HostOptions } from "./ts7/program-host.js";
 import { lowerEsmInitsWithParser, rewriteBundlerCjsWithParser } from "./npm-static-rewrite-host.js";
@@ -72,6 +73,9 @@ export class FrontendServices {
   private hostLoads = 1;
   /** Reusable program hosts that no load holds. */
   private readonly idleHosts: Ts7Host[] = [];
+  /** Parses Flow modules (flow/index.ts); hosts that can load a Flow parser
+   * supply it. */
+  parseFlow: FlowParser | undefined = undefined;
 
   constructor(
     private readonly createApi: Ts7ApiFactory,

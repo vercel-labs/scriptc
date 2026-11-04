@@ -20,7 +20,7 @@ import {
   isUnitType,
   typeEquals,
 } from "../../ir/ir.js";
-import { isJsSourceFile, isNodeEsmFile, locOf } from "../program.js";
+import { isJsLikeSourceFile, isJsSourceFile, isNodeEsmFile, locOf } from "../program.js";
 import {
   genResultRecord,
   restTupleParamTypes,
@@ -1110,7 +1110,7 @@ function appendArgumentsParameter(
       ts.isFunctionDeclaration(node) ||
       ts.isMethodDeclaration(node)
     ) ||
-    !isJsSourceFile(ts.getSourceFileOfNode(node)) ||
+    !isJsLikeSourceFile(ts.getSourceFileOfNode(node)) ||
     !bodyReadsArguments(node)
   )
     return;

@@ -1,3 +1,4 @@
+import { fenceLocation } from "../flow/index.js";
 import { lowerIteratorFromDyn } from "./iterator-prototype.js";
 import { programCreatesWrappers } from "./primitive-wrappers.js";
 import {
@@ -4676,7 +4677,7 @@ function lowerDynReceiverMethodCall(
       then: nodeThrowExpr(
         0,
         "SC1090",
-        `method calls like '${ts.getTextOfNode(access)}' on a string are not supported yet [SC1090 at ${sf.fileName}:${line}]`,
+        `method calls like '${ts.getTextOfNode(access)}' on a string are not supported yet [SC1090 at ${fenceLocation(sf.fileName, ts.tokenStartOfNode(call), line)}]`,
         DYN,
         loc,
       ),
@@ -4883,7 +4884,7 @@ function lowerStringOrMemberCall(
         : nodeThrowExpr(
             0,
             "SC1090",
-            `method calls like '${ts.getTextOfNode(access)}' on a string are not supported yet [SC1090 at ${ts.getSourceFileOfNode(call).fileName}:${ts.getLineAndCharacterOfPosition(ts.getSourceFileOfNode(call), ts.tokenStartOfNode(call)).line + 1}]`,
+            `method calls like '${ts.getTextOfNode(access)}' on a string are not supported yet [SC1090 at ${fenceLocation(ts.getSourceFileOfNode(call).fileName, ts.tokenStartOfNode(call), ts.getLineAndCharacterOfPosition(ts.getSourceFileOfNode(call), ts.tokenStartOfNode(call)).line + 1)}]`,
             DYN,
             loc,
           ),

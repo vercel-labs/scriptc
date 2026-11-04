@@ -20,6 +20,7 @@
  * shape a program's function declaration has, so `FormData.prototype`,
  * `FormData.prototype.constructor === FormData` and `x instanceof FormData`
  * all answer what Node answers without any property definition here. */
+import { fenceLocation } from "../flow/index.js";
 import * as ts from "../ts7/adapter.js";
 import { BOOL, DYN, type IrExpr, type IrLocal, type IrStmt } from "../../ir/ir.js";
 import { boolLit, varRef } from "../../ir/build.js";
@@ -131,5 +132,5 @@ function fenceMessage(
 ): string {
   const source = ts.getSourceFileOfNode(node);
   const pos = ts.getLineAndCharacterOfPosition(source, diag.loc.start);
-  return `${diag.message} [${diag.code} at ${diag.loc.file}:${pos.line + 1}]`;
+  return `${diag.message} [${diag.code} at ${fenceLocation(diag.loc.file, diag.loc.start, pos.line + 1)}]`;
 }

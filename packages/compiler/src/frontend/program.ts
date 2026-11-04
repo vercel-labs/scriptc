@@ -40,6 +40,15 @@
  *    that path (no snapshot pins it). */
 
 import { isFrontendIsland } from "../node-islands/boundary.js";
+import {
+  flowHidesFile,
+  flowPresentedPath,
+  flowPresentedSource,
+  isFlowModule,
+  setFlowSources,
+} from "./flow/index.js";
+import { setModuleSubstitutions, substitutedSource } from "./module-substitutions.js";
+import { readProjectConfig } from "../project-config.js";
 import { builtinModules } from "node:module";
 import { dirname, isAbsolute, resolve } from "node:path";
 import * as ts from "./ts7/adapter.js";
@@ -1362,19 +1371,46 @@ export function loadProgram(
   // resolve.ts answers the same sibling for scriptc's own edges).
   const npmShadow = npmStaticFsShadow(services);
   clearProgramBuiltinAliasCache();
+  // The project's module substitutions and Flow sources (flow/index.ts);
+  // both answer nothing for a project without the settings.
+  const project = readProjectConfig(entryPath);
+  setModuleSubstitutions(project.moduleSubstitutions);
+  setFlowSources(
+    project.flow === null ? null : { ...project.flow, constants: project.constants },
+    services.parseFlow,
+    trackedReadFile,
+    trackedFileExists,
+  );
   const fsShadow = {
     readFile: (path: string) =>
-      npmShadow?.readFile(path) ?? programBuiltinAliasSource(services, path),
+      substitutedSource(path) ??
+      flowPresentedSource(path) ??
+      npmShadow?.readFile(path) ??
+      programBuiltinAliasSource(services, path),
     hideFile: (path: string) =>
-      (npmShadow?.hideFile(path) ?? false) || projectDtsRuntimeSibling(path) !== null,
+      (npmShadow?.hideFile(path) ?? false) ||
+      projectDtsRuntimeSibling(path) !== null ||
+      flowHidesFile(path),
+    fileExists: (path: string) => isFlowModule(path),
   };
   const host = services.createProgramHost({ cwd: dirname(entryPath), fsShadow });
+  // A Flow entry loads at the TypeScript path it is presented at.
+  const programEntry = flowPresentedPath(entryPath) ?? entryPath;
   let authoredHost: ts.Ts7Host | null = null;
   let authoredLoad: ReturnType<typeof loadProgram7> | null = null;
   const authored = (): ReturnType<typeof loadProgram7> => {
     if (!authoredLoad) {
-      authoredHost = services.createProgramHost({ cwd: dirname(entryPath) });
-      authoredLoad = loadProgram7(authoredHost, entryPath, externalTypes);
+      // The program as authored: no npm shadow, but the project's own
+      // substitutions and Flow modules.
+      authoredHost = services.createProgramHost({
+        cwd: dirname(entryPath),
+        fsShadow: {
+          readFile: (path: string) => substitutedSource(path) ?? flowPresentedSource(path),
+          hideFile: (path: string) => flowHidesFile(path),
+          fileExists: (path: string) => isFlowModule(path),
+        },
+      });
+      authoredLoad = loadProgram7(authoredHost, programEntry, externalTypes);
     }
     return authoredLoad;
   };
@@ -1417,7 +1453,7 @@ export function loadProgram(
     resetShapeOverlay();
     const load = loadProgram7(
       host,
-      entryPath,
+      programEntry,
       externalTypes,
       npmStaticPackages.length > 0,
       projector,
@@ -7894,6 +7930,13 @@ export {
  * declare fields by constructor assignment. */
 export function isJsSourceFile(sf: ts.SourceFile): boolean {
   return isJsSourceFileName(sf.fileName);
+}
+
+/** JavaScript, or a Flow module: sources whose values follow JavaScript's
+ * dynamic model where their annotations stop (ES5 constructor functions,
+ * expando members, dynamic receivers). */
+export function isJsLikeSourceFile(sf: ts.SourceFile): boolean {
+  return isJsSourceFileName(sf.fileName) || isFlowModule(sf.fileName);
 }
 
 /** True for a JavaScript file of the program that TypeScript type-checks:

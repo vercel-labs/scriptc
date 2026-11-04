@@ -1603,6 +1603,12 @@ export interface IrClassDef {
   /** Native instance to the string its inherited Symbol.toStringTag getter
    * answers, read by the runtime for an instance seen as `unknown`. */
   stringTagHelper?: string;
+  /** The class's accessor-backed members, nearest declaration first: one
+   * helper per name a `get` accessor at or above the class answers, which
+   * an instance's checked view installs so a field behind an accessor
+   * reads the value the getter answers. `member` is the accessor's IR
+   * name (`get:<name>`). */
+  viewAccessors?: { member: string; helper: string }[];
   /** Public JavaScript fields record their creation in the shared property
    * bag. Its descriptors preserve presence and insertion order independently
    * of native layout order; field values remain in their native slots. */

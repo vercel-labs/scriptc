@@ -401,6 +401,13 @@ typedef struct {
   /* A namespace object's function member (scr_dyn_namespace_define), which
    * static member calls bypass: a change to its value fences instead. */
   bool fenced : 1;
+  /* An accessor a class instance's checked view installs for one of the
+   * class's accessor-backed members (scr_dyn_class_view_accessors). The
+   * view answers the member with the getter, but the member belongs to the
+   * class: own-property queries (Object.getOwnPropertyNames, a descriptor,
+   * hasOwnProperty) answer as they do on the instance, where the accessor
+   * is a prototype member. */
+  bool class_view : 1;
   /* Ordinary object insertion sets all three attributes true. */
   bool writable;
   bool enumerable;
@@ -492,6 +499,16 @@ typedef struct ScrDynTypedClassOps {
    * instance (+1), or NULL with a pending exception from the getter;
    * NULL when the class has no such getter. */
   ScrStr *(*string_tag)(void *instance);
+  /* The class's accessor-backed members, nearest declaration first: one
+   * entry per name that a `get` accessor at or above the class answers.
+   * The view installs each as a non-enumerable accessor of its own, so a
+   * field copied behind a getter reads the value the getter answers
+   * instead of undefined.
+   *   accessor_get: +1 value member `index` answers for `instance`, or
+   *                 NULL with a pending exception from the getter. */
+  size_t accessor_count;
+  ScrStr *const *accessor_names; /* immortal member-name strings */
+  ScrDyn *(*accessor_get)(void *instance, size_t index);
 } ScrDynTypedClassOps;
 
 /* A compiled JavaScript class whose instances record their own properties
@@ -1935,6 +1952,15 @@ void scr_error_dyn_follow_bag(ScrDyn *view, const ScrDyn *bag, const ScrError *e
 void scr_dyn_obj_set_accessor(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *getter, ScrDyn *setter);
 /* The getter or setter of an own accessor property, +1 (undefined when none). */
 ScrDyn *scr_dyn_obj_accessor_fn(const ScrDyn *obj, const char *key, size_t key_len, bool setter);
+/* A class instance's checked view answers the class's accessor-backed
+ * members through their getters: every member `ops` lists that the view
+ * does not already hold as an own property gets a non-enumerable accessor
+ * entry whose getter runs the member's getter on `instance` (the view keeps
+ * the instance alive, ±1 through `retain`/`release`). Own data fields are
+ * set before this runs, so a field that shadows a getter keeps its value.
+ * `view` borrowed; `instance` borrowed, NULL leaves the view unchanged. */
+void scr_dyn_class_view_accessors(ScrDyn *view, const ScrDynTypedClassOps *ops, void *instance,
+                                  void *(*retain)(void *), void (*release)(void *), ScrTraceFn trace);
 void scr_error_commit_dyn(ScrError *e, const ScrDyn *view);
 /* The reverse extraction, riding the same identity cache: a dyn error
  * that came from a runtime ScrError answers THAT instance (+1;

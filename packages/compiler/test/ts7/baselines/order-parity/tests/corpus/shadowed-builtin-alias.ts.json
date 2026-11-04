@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/shadowed-builtin-alias.ts"
+ ],
+ "diags": []
+}

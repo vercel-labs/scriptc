@@ -963,6 +963,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "spawnRes.stdout": "scr_spawn_res_stdout",
   "spawnRes.stderr": "scr_spawn_res_stderr",
   "child.killed": "scr_child_killed",
+  "child.spawnfile": "scr_child_spawnfile",
+  "child.spawnargs": "scr_child_spawnargs",
   "child.offSpawn": "scr_child_off_spawn",
   "child.offExit": "scr_child_off_exit",
   "child.offClose": "scr_child_off_close",

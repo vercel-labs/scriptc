@@ -11238,6 +11238,7 @@
           "tests/corpus/3131-child-rest-listeners.js",
           "tests/corpus/3132-child-generic-stream-completion.ts",
           "tests/corpus/5627-exec-callback.ts",
+          "tests/corpus/child-spawnfile-spawnargs.ts",
           "tests/fixtures/node-types/child-exec.ts",
           "tests/harness/project-config.test.ts"
         ]
@@ -12042,8 +12043,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:child_process"
+        "status": "partial",
+        "evidence": "compiler-feature:child_process.spawnargs",
+        "tests": [
+          "tests/corpus/child-spawnfile-spawnargs.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -12065,8 +12069,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:child_process"
+        "status": "partial",
+        "evidence": "compiler-feature:child_process.spawnfile",
+        "tests": [
+          "tests/corpus/child-spawnfile-spawnargs.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },

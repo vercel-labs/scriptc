@@ -831,6 +831,10 @@ static inline size_t scr_dyn_obj_index_of(const ScrDyn *o, const char *key, size
  * members this way right after adding them. */
 static inline void scr_dyn_obj_set_attrs_at(ScrDyn *o, size_t i, bool writable, bool enumerable,
                                             bool configurable) {
+  /* A refused insertion removes the property the caller meant to describe,
+   * so the index can name no entry; the layout branch would form a pointer
+   * past the slots array and the dictionary branch past the entries. */
+  if (i >= scr_dyn_obj_count(o)) return;
   if (o->v.obj.layout && writable && enumerable && configurable) return;
   ScrDynEntry *e = &scr_dyn_obj_dict_entries(o)[i];
   if (!e->accessor) e->writable = writable;

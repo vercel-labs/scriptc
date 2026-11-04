@@ -309,11 +309,24 @@ static ScrDyn *scr_js_wrapper_boolean_method_value(const char *name) {
 }
 
 /* Defines `key` on `object` as a non-enumerable, writable, configurable
- * data property, the attributes of a builtin prototype member. */
-static void scr_js_wrapper_define_hidden(ScrDyn *object, const char *key, ScrDyn *value) {
+ * data property, the attributes of a builtin prototype member, and answers
+ * whether the definition landed. A program can reach a wrapper prototype
+ * through an alias, delete a member and prevent extensions before the first
+ * ordinary read, so the insertion may be refused; a refused insertion has
+ * no property to take attributes (scr_dyn_obj_index_of answers SIZE_MAX),
+ * and the prototype stays as the program left it. */
+static bool scr_js_wrapper_define_hidden(ScrDyn *object, const char *key, ScrDyn *value) {
   size_t len = strlen(key);
+  bool present = scr_dyn_obj_index_of(object, key, len) != SIZE_MAX;
+  if (!present && !scr_dyn_is_extensible(object)) {
+    scr_dyn_release(value);
+    return false;
+  }
   scr_dyn_obj_set(object, key, len, value);
-  scr_dyn_obj_set_attrs_at(object, scr_dyn_obj_index_of(object, key, len), true, false, true);
+  size_t index = scr_dyn_obj_index_of(object, key, len);
+  if (index == SIZE_MAX) return false;
+  scr_dyn_obj_set_attrs_at(object, index, true, false, true);
+  return true;
 }
 
 static ScrDyn *scr_js_wrapper_method_value(const char *name, int kind, uint32_t length) {
@@ -536,8 +549,8 @@ ScrDyn *scr_js_wrapper_install_constructor(ScrDyn *prototype, ScrDyn *constructo
    * `constructor` instead of asking whether the install already ran. */
   if (!scr_js_wrapper_install_seen(prototype)) {
     scr_js_wrapper_register_cleanup();
-    scr_js_wrapper_define_hidden(prototype, "constructor", scr_dyn_retain(constructor));
-    scr_js_wrapper_install_mark(prototype);
+    if (scr_js_wrapper_define_hidden(prototype, "constructor", scr_dyn_retain(constructor)))
+      scr_js_wrapper_install_mark(prototype);
   }
   scr_js_wrapper_seed_prototype(constructor, prototype);
   return scr_dyn_retain(prototype);

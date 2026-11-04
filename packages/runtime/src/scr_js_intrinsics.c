@@ -272,6 +272,14 @@ static bool scr_js_own(const ScrDyn *object, const ScrDyn *key) {
 /* Defines `key` on `target` as a data property with the table's attributes.
  * Takes `value`. */
 static void scr_js_define(ScrDyn *target, ScrDyn *key, ScrDyn *value, const char *attributes) {
+  /* A program can reach a builtin prototype before the fill does and prevent
+   * extensions on it. A member the object does not have cannot be added
+   * then, and its absence is the state the program's object answers; a
+   * refused insertion is not a build failure. */
+  if (!scr_js_own(target, key) && !scr_dyn_is_extensible(target)) {
+    scr_dyn_release(value);
+    return;
+  }
   ScrDyn *descriptor = scr_dyn_new_obj();
   scr_dyn_obj_set(descriptor, "value", 5, scr_dyn_retain(value));
   scr_dyn_obj_set(descriptor, "writable", 8, scr_dyn_new_bool(scr_js_attr(attributes, 'W')));
@@ -289,6 +297,13 @@ static void scr_js_define(ScrDyn *target, ScrDyn *key, ScrDyn *value, const char
  * attributes. Takes both accessors (either may be NULL). */
 static void scr_js_define_accessor(ScrDyn *target, ScrDyn *key, ScrDyn *getter, ScrDyn *setter,
                                    const char *attributes) {
+  /* The same non-extensible object the data member check answers: an
+   * accessor it cannot gain stays absent. */
+  if (!scr_js_own(target, key) && !scr_dyn_is_extensible(target)) {
+    scr_dyn_release(getter);
+    scr_dyn_release(setter);
+    return;
+  }
   ScrDyn *descriptor = scr_dyn_new_obj();
   if (getter) scr_dyn_obj_set(descriptor, "get", 3, getter);
   if (setter) scr_dyn_obj_set(descriptor, "set", 3, setter);
@@ -406,7 +421,12 @@ static ScrDyn *scr_js_accessor_slot_read(ScrDyn *self, const ScrJsIntrinsicRow *
   default: break;
   }
   scr_str_release(key);
-  if (result && result->kind == SCR_DYN_UNDEF) {
+  /* A symbol's `description` is undefined for a symbol created without
+   * one, which is a value the accessor answers, not a missing slot: the brand
+   * check already established the receiver is a symbol. Every other kind
+   * answers undefined only when the slot the row reads is absent, which is
+   * the incompatible receiver. */
+  if (result && result->kind == SCR_DYN_UNDEF && self->kind != SCR_DYN_SYMBOL) {
     scr_dyn_release(result);
     return NULL;
   }
@@ -844,7 +864,20 @@ static ScrDyn *scr_js_build(size_t index) {
     size_t prototype_index = scr_js_object_index(prototype_id);
     if (prototype_index != SIZE_MAX) {
       ScrDyn *prototype = scr_js_build(prototype_index);
-      ScrDyn *linked = scr_dyn_set_prototype(object, prototype);
+      /* The wrapper unit can build a prototype before the table reaches it,
+       * and that object already answers the builtin link its kind defines: a
+       * plain object with no explicit link answers the builtin
+       * `Object.prototype` the build would link. A program can prevent
+       * extensions before the fill arrives, and a set that names the link the
+       * object already has is not a write the non-extensible refusal should
+       * answer, so an object that refuses the link keeps the one it answers. */
+      ScrDyn *linked = NULL;
+      if (object->non_extensible) {
+        ScrDyn *current = scr_dyn_get_prototype(object);
+        if (current == prototype) linked = scr_dyn_retain(object);
+        scr_dyn_release(current);
+      }
+      if (!linked) linked = scr_dyn_set_prototype(object, prototype);
       scr_dyn_release(prototype);
       if (!linked) {
         char message[192];

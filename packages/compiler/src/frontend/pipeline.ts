@@ -37,7 +37,12 @@ import {
   npmStaticOffenders,
   npmStaticPackageOfPath,
 } from "./npm-static.js";
-import { clearResolveCaches, resolveBareModule, resolveWorkspaceSourceModule } from "./resolve.js";
+import {
+  clearResolveCaches,
+  resolveBareModule,
+  resolveViaProjectPaths,
+  resolveWorkspaceSourceModule,
+} from "./resolve.js";
 import { isShimmedImport } from "./package-shims.js";
 import { provenanceEntryFor } from "./provenance-registry.js";
 import { isJsSourceFileName } from "./tsc-codes.js";
@@ -361,6 +366,10 @@ function detectAutoPackages(
       // Explicit attempts name the runtime package. Types-first resolution
       // may instead identify its @types twin, which has no runtime to admit.
       if (judged?.has(packageNameOfSpecifier(spec))) continue;
+      // A bare specifier the project resolves to its own sources (tsconfig
+      // paths onto a package's source tree) is program code, not npm.
+      const own = resolveViaProjectPaths(spec)?.replaceAll("\\", "/") ?? null;
+      if (own !== null && !own.includes("/node_modules/") && !/\.d\.[cm]?ts$/.test(own)) continue;
       const npm = resolveNpmImport(sf.fileName, spec);
       if (npm !== null && isNodeTypesPath(npm.typesFile)) continue;
       // The runtime package Node loads. Types-first resolution answers an

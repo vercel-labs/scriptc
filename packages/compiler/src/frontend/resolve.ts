@@ -308,7 +308,9 @@ export function setProjectPathMappings(
   projectPathMappings = paths;
 }
 
-function resolveViaProjectPaths(specifier: string): string | null {
+/** The module a bare specifier resolves to through the project's tsconfig
+ * `paths`, or null. */
+export function resolveViaProjectPaths(specifier: string): string | null {
   if (projectPathMappings === null) return null;
   let match: { key: string; targets: readonly string[]; prefix: string; suffix: string } | null =
     null;

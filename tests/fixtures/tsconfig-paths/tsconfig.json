@@ -1,0 +1,1 @@
+{"compilerOptions":{"module":"esnext","moduleResolution":"bundler","strict":true,"paths":{"mathlib/*":["./src/lib/*"]}}}

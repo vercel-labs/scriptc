@@ -1548,3 +1548,16 @@ test("node-types: a void slot takes a `() => process.off(...)` cleanup closure (
   expect(native.stdout).toBe(node.stdout);
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
+
+test("tsconfig paths onto the project's sources compile them, not the npm package of the same name", async () => {
+  // tests/fixtures/tsconfig-paths: `mathlib/*` maps onto src/lib, and
+  // node_modules/mathlib is a published package of the same name, whose
+  // double() multiplies by 100. Node itself ignores tsconfig paths.
+  const outDir = outDirFor("tsconfig-paths");
+  const entry = join(repoRoot, "tests/fixtures/tsconfig-paths/main.ts");
+  const result = await compile(entry, { outPath: join(outDir, "program"), outDir, sanitize });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const { stdout } = await execFileAsync(result.binaryPath);
+  expect(stdout).toBe("42\n");
+});

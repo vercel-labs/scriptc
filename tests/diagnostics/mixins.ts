@@ -34,9 +34,9 @@ const a = new A1();
 const b = new A2();
 console.log(a.m + b.m);
 
-// The mixin function itself has no value form: the alias binding
-// registers (calls through it could instantiate per site), but a use
-// with no pinning context fences at the reference.
+// The mixin function read as a value erases to its dynamic closure (the
+// alias binding registers, so calls through it still instantiate per site;
+// the uninstantiated reference is the one function JavaScript has).
 const held = M;
 console.log(typeof held);
 

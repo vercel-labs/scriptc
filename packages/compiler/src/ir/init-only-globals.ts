@@ -1,5 +1,14 @@
 import type { IrExpr, IrFunction, IrGlobal, IrModule, IrStmt } from "./ir.js";
+import {
+  eachNodeOfKinds,
+  type IrNodeIndex,
+  type IrNodeKind,
+  LOCAL_BINDING_KINDS,
+} from "./node-index.js";
 import { everyStmtList } from "./traverse.js";
+
+/** The nodes that write a binding or capture one. */
+const WRITE_KINDS: readonly IrNodeKind[] = [...LOCAL_BINDING_KINDS, "tryCatch", "closure"];
 
 /** Module `let`/`var` bindings that only their declaration writes read as
  * module constants.
@@ -14,8 +23,9 @@ import { everyStmtList } from "./traverse.js";
  * changing its storage, lifetime or initialization order. Compiler-internal
  * globals (init guards, initialization flags, caches) have no source binding
  * and are never touched. Library builds keep their globals: an embedder can
- * reset or observe library state between entries. */
-export function freezeInitOnlyGlobals(mod: IrModule): IrModule {
+ * reset or observe library state between entries. `nodes`, an index of
+ * `mod`, gives the writes without walking the bodies. */
+export function freezeInitOnlyGlobals(mod: IrModule, nodes?: IrNodeIndex): IrModule {
   if (mod.lib || !mod.globals?.length) return mod;
   const candidates = new Map<string, IrGlobal>();
   for (const g of mod.globals)
@@ -32,21 +42,16 @@ export function freezeInitOnlyGlobals(mod: IrModule): IrModule {
   };
   for (const cls of mod.classes ?? [])
     for (const capture of cls.localCaptures ?? []) candidates.delete(capture.localId);
+  const scan = nodes?.scan(WRITE_KINDS);
   for (const fn of mod.functions) {
     for (const capture of [...(fn.captures ?? []), ...(fn.classCaptures ?? [])])
       candidates.delete(capture.localId);
-    everyStmtList(fn.body, {
-      stmt: (s) => {
-        if ("localId" in s && typeof s.localId === "string") write(s.localId);
-        if (s.kind === "tryCatch" && s.catchLocalId) write(s.catchLocalId);
-        return true;
-      },
-      expr: (e) => {
-        if (e.kind === "closure") for (const id of e.captures) candidates.delete(id);
-        else if (e.kind !== "varRef" && "localId" in e && typeof e.localId === "string")
-          write(e.localId);
-        return true;
-      },
+    eachNodeOfKinds(fn, scan, (node) => {
+      if (node.kind === "closure") for (const id of node.captures) candidates.delete(id);
+      else if (node.kind === "tryCatch") {
+        if (node.catchLocalId) write(node.catchLocalId);
+      } else if (node.kind !== "varRef" && "localId" in node && typeof node.localId === "string")
+        write(node.localId);
     });
   }
 

@@ -239,13 +239,42 @@ export function lowerFsNumericOpenCall(
     );
   }
   const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
+  const defaultMode: IrExpr = { kind: "numLit", value: 0o666, type: F64, loc };
+  // Node treats an undefined creation mode as an omitted one.
   const mode = expr.arguments.nodes[2]
-    ? lowerer.lowerExprExpecting(expr.arguments.nodes[2]!, F64)
-    : ({ kind: "numLit", value: 0o666, type: F64, loc } satisfies IrExpr);
+    ? lowerBuiltinOptionalDefault(lowerer, expr.arguments.nodes[2]!, F64, defaultMode)
+    : defaultMode;
   return {
     kind: "libCall",
     fn: "fs.openNumericSync",
     args: [path, { kind: "numLit", value: mask, type: F64, loc }, mode],
+    type: F64,
+    loc,
+  };
+}
+
+// fs.openSync(path, flags[, mode]) with Node's string flags: the runtime
+// selects the O_* bits from the flag text, and mode is the creation mode
+// open(2) applies when the file is created. An omitted mode passes Node's
+// 0o666 default, so every call reaches the runtime with three arguments.
+export function lowerFsOpenCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
+  if (
+    expr.arguments.nodes.length < 2 ||
+    expr.arguments.nodes.length > 3 ||
+    expr.arguments.nodes.some(ts.isSpreadElement)
+  )
+    lowerer.noLowering("openSync with this argument shape", expr);
+  const mode = expr.arguments.nodes[2];
+  const defaultMode = numLit(0o666, loc);
+  return {
+    kind: "libCall",
+    fn: "fs.openSync",
+    args: [
+      lowerFsPath(lowerer, expr.arguments.nodes[0]!),
+      lowerer.lowerExprExpecting(expr.arguments.nodes[1]!, STRING),
+      // Node treats an undefined creation mode as an omitted one.
+      mode ? lowerBuiltinOptionalDefault(lowerer, mode, F64, defaultMode) : defaultMode,
+    ],
     type: F64,
     loc,
   };

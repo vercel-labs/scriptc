@@ -30,7 +30,7 @@ test("a relative --node path links the checkout's fixtures and common helpers in
   mkdirSync(join(checkout, "test", "fixtures"), { recursive: true });
   mkdirSync(join(checkout, "test", "common"), { recursive: true });
   writeFileSync(join(checkout, "test", "fixtures", "marker.txt"), "fixture\n");
-  for (const helper of ["fixtures.js", "dns.js", "internet.js"])
+  for (const helper of ["fixtures.js", "countdown.js", "dns.js", "internet.js"])
     writeFileSync(
       join(checkout, "test", "common", helper),
       `module.exports = ${JSON.stringify(helper)};\n`,
@@ -53,7 +53,7 @@ test("a relative --node path links the checkout's fixtures and common helpers in
   const linked = join(out, "tree", "test", "fixtures", "marker.txt");
   expect(existsSync(linked)).toBe(true);
   expect(readFileSync(linked, "utf8")).toBe("fixture\n");
-  for (const helper of ["dns.js", "internet.js"])
+  for (const helper of ["countdown.js", "dns.js", "internet.js"])
     expect(readFileSync(join(out, "tree", "test", "common", helper), "utf8")).toBe(
       `module.exports = ${JSON.stringify(helper)};\n`,
     );
@@ -65,7 +65,7 @@ test("concurrent files get their own test/common tmpdir", () => {
   mkdirSync(join(checkout, "test", "parallel"), { recursive: true });
   mkdirSync(join(checkout, "test", "fixtures"), { recursive: true });
   mkdirSync(join(checkout, "test", "common"), { recursive: true });
-  for (const helper of ["fixtures.js", "dns.js", "internet.js"])
+  for (const helper of ["fixtures.js", "countdown.js", "dns.js", "internet.js"])
     writeFileSync(join(checkout, "test", "common", helper), "module.exports = {};\n");
   // Each file refreshes the tmpdir, writes a marker and reads it back after
   // the other file has refreshed its own: with a shared directory the

@@ -6,9 +6,9 @@
  * stringify serializes string/number/boolean values and arrays of those
  * (Node's rules: arrays expand to repeated keys, null/undefined and
  * anything else serialize as the empty value). The maxKeys option lowers
- * (0 removes the cap, Node's rule); the custom encoder/decoder options
- * typecheck under the options-record stance and fence by name at the
- * call. decode/encode are Node's own aliases of parse/stringify. */
+ * (0 removes the cap, Node's rule), and so do the custom encoder and
+ * decoder options. decode/encode are Node's own aliases of
+ * parse/stringify. */
 declare module "querystring" {
   export interface ParseOptions {
     maxKeys?: number;

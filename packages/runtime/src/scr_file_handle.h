@@ -6,12 +6,15 @@
 
 #include "scr_lib.h"
 
-/* fs.openSync(path, flags) → the raw fd as f64 (Node's string flag
+/* fs.openSync(path, flags, mode) → the raw fd as f64 (Node's string flag
  * grammar; unknown flags throw Node's ERR_INVALID_ARG_VALUE TypeError
- * text, open(2) failures the Node fs error shape), and fs.closeSync(fd)
- * (failure throws the path-less "EBADF: bad file descriptor, close").
- * The pair behind spawn's fd-stdio form. */
+ * text, an out-of-range mode throws ERR_OUT_OF_RANGE, open(2) failures
+ * the Node fs error shape), and fs.closeSync(fd) (failure throws the
+ * path-less "EBADF: bad file descriptor, close"). The pair behind spawn's
+ * fd-stdio form. The two-argument form is what program objects built
+ * before the mode argument call; it passes Node's 0o666 default. */
 double scr_fs_open(ScrStr *path, ScrStr *flags);
+double scr_fs_open_mode(ScrStr *path, ScrStr *flags, double mode);
 double scr_fs_open_numeric(ScrStr *path, double flags, double mode);
 /* Engine callers supply the target OS's flags, rather than the frontend's
  * portable constant mask. Argument validation happens before this seam. */

@@ -4958,7 +4958,10 @@ static void scr_typed_ref_view_keep_own(
     ScrStr *name = scr_str_new(entry->key, entry->key_len);
     ScrDyn *key = scr_dyn_new_str(name);
     ScrDyn *descriptor = scr_dyn_own_descriptor(from, name);
-    if (descriptor) {
+    /* Carry only a property the query describes: an entry it answers
+     * undefined for -- a synthesized accessor answering a class member
+     * through the view, for one -- has no descriptor to define. */
+    if (descriptor && descriptor->kind != SCR_DYN_UNDEF) {
       ScrDyn *defined = scr_dyn_define_property(fresh, key, descriptor);
       scr_dyn_release(defined);
       scr_dyn_release(descriptor);

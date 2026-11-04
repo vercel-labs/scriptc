@@ -37,8 +37,10 @@ import {
   everyStmtChild,
   everyStmtList,
   everyTypeChild,
+  transformExpr,
   transformStmtList,
 } from "./traverse.js";
+import { NORMALIZE, inlineArrayViewIssue } from "./inline-array-views.js";
 
 /** A class whose instances may hold an inline array field. */
 export interface InlineArrayClass {
@@ -62,15 +64,26 @@ export interface InlineArrayRejection {
   readonly reason: string;
   /** The use that rules the layout out, when it is one site. */
   readonly loc?: SrcLoc;
+  /** The use is a dynamic view of an instance: the field keeps the
+   * contract's other rules and only the layout is ruled out. */
+  readonly ordinary?: true;
 }
 
 export interface InlineArrayPlan {
   /** By class name, for the declaring classes and their subclasses. */
   readonly classes: ReadonlyMap<string, InlineArrayClass>;
   readonly rejected: readonly InlineArrayRejection[];
+  /** The boxings of instances of planned hierarchies (or of values that can
+   * hold one) whose dynamic values inline-array-views.ts follows: generic
+   * code reads no member of theirs by an unknown name. */
+  readonly viewed: ReadonlySet<IrExpr>;
 }
 
-export const NO_INLINE_ARRAYS: InlineArrayPlan = { classes: new Map(), rejected: [] };
+export const NO_INLINE_ARRAYS: InlineArrayPlan = {
+  classes: new Map(),
+  rejected: [],
+  viewed: new Set(),
+};
 
 /** The entries of `IrContracts.inlineArrays` (`${class}\0${field}`) whose
  * hierarchies the IR admits, given which element classes the backend can
@@ -95,12 +108,19 @@ export function planInlineArrays(
   for (const fn of mod.functions) functions.set(fn.name, fn);
   const planned = new Map<string, InlineArrayClass>();
   const rejected: InlineArrayRejection[] = [];
+  const viewed = new Set<IrExpr>();
   for (const entry of entries) {
     const at = entry.indexOf("\0");
     const declaringClass = entry.slice(0, at);
     const field = entry.slice(at + 1);
-    const reject = (reason: string, loc?: SrcLoc): void => {
-      rejected.push({ declaringClass, field, reason, ...(loc !== undefined ? { loc } : {}) });
+    const reject = (reason: string, loc?: SrcLoc, ordinary?: true): void => {
+      rejected.push({
+        declaringClass,
+        field,
+        reason,
+        ...(loc !== undefined ? { loc } : {}),
+        ...(ordinary ? { ordinary } : {}),
+      });
     };
     const decl = classes.get(declaringClass);
     if (decl === undefined) {
@@ -149,9 +169,9 @@ export function planInlineArrays(
       }
       lengthParams.set(name, param);
     }
-    const other = reason === null ? otherUses(mod, members, field, declaringClass) : null;
+    const other = reason === null ? otherUses(mod, members, field, declaringClass, viewed) : null;
     if (reason !== null || other !== null) {
-      reject(reason ?? other!.reason, other?.loc);
+      reject(reason ?? other!.reason, other?.loc, other?.ordinary);
       continue;
     }
     for (const name of subtree)
@@ -163,7 +183,7 @@ export function planInlineArrays(
         lengthArg: lengthParams.get(name)! - 1,
       });
   }
-  return { classes: planned, rejected };
+  return { classes: planned, rejected, viewed };
 }
 
 /** The index in `ctor.params` (0 is `this`) of the parameter the declaring
@@ -260,10 +280,16 @@ function otherUses(
   members: ReadonlySet<string>,
   field: string,
   declaringClass: string,
-): { reason: string; loc?: SrcLoc } | null {
+  viewed: Set<IrExpr>,
+): { reason: string; loc?: SrcLoc; ordinary?: true } | null {
   const reaches = holdersOf(mod, members, declaringClass);
+  // A boxed function exposes only its results: its arguments come back
+  // through checked casts.
+  const boxesHolder = (type: IrType): boolean =>
+    type.kind === "func" ? reaches(type.ret) : reaches(type);
+  // The dynamic values that may hold an instance (inline-array-views.ts).
+  const boxings = new Set<IrExpr>();
   let reason: string | null = null;
-  let loc: SrcLoc | undefined;
   // Dynamic values that printing, JSON.stringify without a replacer and
   // publishing only read, and the options a worker copies its data from.
   const readOnly = new Set<IrExpr>();
@@ -283,11 +309,10 @@ function otherUses(
         else if (
           (e.kind === "dynFrom" || e.kind === "caughtToDyn") &&
           !readOnly.has(e) &&
-          reaches(e.value.type)
+          boxesHolder(e.value.type)
         ) {
-          reason =
-            "an instance, or a value that can hold one, becomes a dynamic value (a dynamic view reads the field as a new array each time)";
-          loc = e.loc;
+          // Normalization reboxes the instance its argument holds.
+          if (fn.name !== NORMALIZE) boxings.add(e);
         } else if (e.kind === "fieldIncDec" && e.field === field && members.has(e.className))
           reason = "the field is written outside the constructor";
         else if (
@@ -311,9 +336,11 @@ function otherUses(
         return reason === null;
       },
     });
-    if (reason !== null) return loc === undefined ? { reason } : { reason, loc };
+    if (reason !== null) return { reason };
   }
-  return null;
+  const issue = inlineArrayViewIssue(mod, boxings, field);
+  if (issue === null) for (const e of boxings) viewed.add(e);
+  return issue === null ? null : { ...issue, ordinary: true };
 }
 
 /** Whether values of a type may be, or hold, an instance of `members`
@@ -397,13 +424,76 @@ function readsField(e: IrExpr, members: ReadonlySet<string>, field: string): boo
  * comment). Returns the module itself when nothing changes. */
 export function inlineArrayReads(mod: IrModule, plan: InlineArrayPlan): IrModule {
   if (plan.classes.size === 0) return mod;
+  const readers = new Map<string, IrFunction>();
+  for (const fn of mod.functions) if (fn.name.startsWith(INDEX_READER)) readers.set(fn.name, fn);
   let changed = false;
   const functions = mod.functions.map((fn) => {
-    const next = rewriteFunction(fn, plan);
+    const next = rewriteFunction(fn, plan, readers);
     if (next !== fn) changed = true;
     return next;
   });
   return changed ? { ...mod, functions } : mod;
+}
+
+/** The lowering's checked element reads, `a[i]` as `T | undefined`
+ * (array-values.ts): `(a, i) => a's element at i, or undefined`. */
+const INDEX_READER = "%arr.idxOr.";
+
+/** `call` of an element reader as the reader's own expression over the
+ * call's array and index, so that a read of an inline field there reads the
+ * instance: the index evaluates once, into a local unless it is a local or
+ * a constant, and then after the instance the field is read off, which goes
+ * into a local first. Null when the reader is not one returned expression. */
+function inlineIndexRead(
+  call: IrExpr & { kind: "call" },
+  reader: IrFunction,
+  fresh: (name: string, type: IrType) => string,
+): IrExpr | null {
+  const [arr, index] = call.args;
+  const ret = reader.body.length === 1 ? reader.body[0] : undefined;
+  const [arrParam, indexParam] = reader.params;
+  if (
+    arr === undefined ||
+    index === undefined ||
+    ret?.kind !== "return" ||
+    ret.value === null ||
+    arrParam === undefined ||
+    indexParam === undefined
+  )
+    return null;
+  const stmts: IrStmt[] = [];
+  let array = arr;
+  let at = index;
+  if (index.kind !== "varRef" && !isConstant(index)) {
+    // The call reads the array before the index, which may assign the
+    // local the field is read off: the instance goes into a local first.
+    if (arr.kind === "fieldGet" && arr.obj.kind === "varRef") {
+      const owner = fresh("owner", arr.obj.type);
+      stmts.push({ kind: "varDecl", localId: owner, init: arr.obj, loc: arr.loc });
+      array = { ...arr, obj: { ...arr.obj, localId: owner } };
+    }
+    const id = fresh("index", index.type);
+    stmts.push({ kind: "varDecl", localId: id, init: index, loc: index.loc });
+    at = { kind: "varRef", localId: id, type: index.type, loc: index.loc };
+  }
+  // Each use gets its own copy: the array is a local or a field read off
+  // one, the index a local or a constant.
+  const copy = (e: IrExpr): IrExpr =>
+    e.kind === "fieldGet" ? { ...e, obj: { ...e.obj } } : { ...e };
+  const value = transformExpr(ret.value, {
+    expr: (e) =>
+      e.kind !== "varRef"
+        ? e
+        : e.localId === arrParam.localId
+          ? copy(array)
+          : e.localId === indexParam.localId
+            ? copy(at)
+            : e,
+    stmt: (s) => s,
+  });
+  return stmts.length === 0
+    ? value
+    : { kind: "seqExpr", stmts, result: value, type: call.type, loc: call.loc };
 }
 
 function isInlineFieldRead(e: IrExpr, plan: InlineArrayPlan): e is IrExpr & { kind: "fieldGet" } {
@@ -422,64 +512,118 @@ function isDirectUse(parent: IrExpr | IrStmt, child: IrExpr): boolean {
   if (parent.kind === "arrIntrinsic")
     return parent.method === "length" && parent.receiver === child;
   if (parent.kind === "forOf") return parent.iterable === child;
+  if (parent.kind === "call")
+    return parent.callee.startsWith(INDEX_READER) && parent.args[0] === child;
   return false;
 }
 
-function rewriteFunction(fn: IrFunction, plan: InlineArrayPlan): IrFunction {
+function rewriteFunction(
+  fn: IrFunction,
+  plan: InlineArrayPlan,
+  readers: ReadonlyMap<string, IrFunction>,
+): IrFunction {
   const locals = new Map<string, IrLocal>();
   for (const l of fn.locals) locals.set(l.id, l);
-  // Aliases: immutable locals declared once from an inline field read.
+  // Aliases: immutable locals declared once from an inline field read, and
+  // copies, immutable locals declared once from an alias (a `for...of` over
+  // an alias iterates a copy of it).
   const declared = new Map<string, number>();
   const aliasDecl = new Map<string, IrStmt & { kind: "varDecl" }>();
+  const copyOf = new Map<string, string>();
+  const immutable = (id: string): boolean => {
+    const local = locals.get(id);
+    return local !== undefined && !local.mutable && local.boxed !== true;
+  };
   everyStmtList(fn.body, {
     expr: () => true,
     stmt: (s) => {
       if (s.kind === "varDecl") {
         declared.set(s.localId, (declared.get(s.localId) ?? 0) + 1);
-        const local = locals.get(s.localId);
-        if (
-          s.init !== null &&
-          isInlineFieldRead(s.init, plan) &&
-          local !== undefined &&
-          !local.mutable &&
-          local.boxed !== true
-        )
-          aliasDecl.set(s.localId, s);
+        if (s.init !== null && immutable(s.localId)) {
+          if (isInlineFieldRead(s.init, plan)) aliasDecl.set(s.localId, s);
+          else if (s.init.kind === "varRef") copyOf.set(s.localId, s.init.localId);
+        }
       }
       return true;
     },
   });
   for (const id of [...aliasDecl.keys()]) if (declared.get(id) !== 1) aliasDecl.delete(id);
-  // Every read of an alias must be a direct use.
-  if (aliasDecl.size > 0) {
-    const direct = new Map<string, boolean>();
-    const visitChildren = (parent: IrExpr | IrStmt, children: IrExpr[]): void => {
-      for (const c of children)
-        if (c.kind === "varRef" && aliasDecl.has(c.localId) && !isDirectUse(parent, c))
-          direct.set(c.localId, false);
-    };
-    everyStmtList(fn.body, {
-      expr: (e) => {
-        if (e.kind === "varRef") {
-          if (aliasDecl.has(e.localId) && !direct.has(e.localId)) direct.set(e.localId, true);
-          return true;
-        }
-        visitChildren(e, directChildren(e));
-        return true;
-      },
-      stmt: (s) => {
-        visitChildren(s, directStmtChildren(s));
-        return true;
-      },
-    });
-    for (const [id, ok] of direct) if (!ok) aliasDecl.delete(id);
-    for (const id of [...aliasDecl.keys()]) if (!direct.has(id)) aliasDecl.delete(id);
+  const isAlias = (id: string): boolean => aliasDecl.has(id) || copyOf.has(id);
+  // A copy's source is an alias; each copy is declared once.
+  for (let removed = true; removed;) {
+    removed = false;
+    for (const [id, source] of copyOf)
+      if (declared.get(id) !== 1 || !isAlias(source)) {
+        copyOf.delete(id);
+        removed = true;
+      }
   }
+  // Every read of an alias must be a direct use, or a copy's declaration.
+  if (aliasDecl.size > 0) {
+    for (let removed = true; removed;) {
+      removed = false;
+      const direct = new Map<string, boolean>();
+      const visitChildren = (parent: IrExpr | IrStmt, children: IrExpr[]): void => {
+        for (const c of children)
+          if (
+            c.kind === "varRef" &&
+            isAlias(c.localId) &&
+            !isDirectUse(parent, c) &&
+            !(parent.kind === "varDecl" && copyOf.get(parent.localId) === c.localId)
+          )
+            direct.set(c.localId, false);
+      };
+      everyStmtList(fn.body, {
+        expr: (e) => {
+          if (e.kind === "varRef") {
+            if (isAlias(e.localId) && !direct.has(e.localId)) direct.set(e.localId, true);
+            return true;
+          }
+          visitChildren(e, directChildren(e));
+          return true;
+        },
+        stmt: (s) => {
+          visitChildren(s, directStmtChildren(s));
+          return true;
+        },
+      });
+      const drop = (id: string): void => {
+        if (aliasDecl.delete(id) || copyOf.delete(id)) removed = true;
+      };
+      for (const [id, ok] of direct) if (!ok) drop(id);
+      for (const id of [...aliasDecl.keys(), ...copyOf.keys()]) if (!direct.has(id)) drop(id);
+      // A copy of a dropped alias is none; a dropped copy's declaration
+      // reads its source as an array, which the next pass finds.
+      for (let more = true; more;) {
+        more = false;
+        for (const [id, source] of copyOf)
+          if (!isAlias(source)) {
+            copyOf.delete(id);
+            more = removed = true;
+          }
+      }
+    }
+  } else copyOf.clear();
+  /** The alias a copy copies. */
+  const rootOf = (id: string): string => {
+    let at = id;
+    for (let source = copyOf.get(at); source !== undefined; source = copyOf.get(at)) at = source;
+    return at;
+  };
   const needsNew = !everyStmtList(fn.body, {
     expr: (e) => !(e.kind === "new" && newNeedsLocals(e, plan)),
     stmt: () => true,
   });
-  if (aliasDecl.size === 0 && !needsNew) return fn;
+  // An element reader applied to an alias, or to a read of the field off a
+  // local, reads the instance.
+  const readsInline = (e: IrExpr): e is IrExpr & { kind: "call" } =>
+    e.kind === "call" &&
+    readers.has(e.callee) &&
+    e.args.length === 2 &&
+    ((e.args[0]!.kind === "varRef" && isAlias(e.args[0]!.localId)) ||
+      (isInlineFieldRead(e.args[0]!, plan) && e.args[0]!.obj.kind === "varRef"));
+  const needsReads = !everyStmtList(fn.body, { expr: (e) => !readsInline(e), stmt: () => true });
+  if (aliasDecl.size === 0 && !needsNew && !needsReads) return fn;
   const newLocals: IrLocal[] = [];
   let counter = 0;
   const fresh = (name: string, type: IrType): string => {
@@ -515,11 +659,15 @@ function rewriteFunction(fn: IrFunction, plan: InlineArrayPlan): IrFunction {
   };
   const body = transformStmtList(fn.body, {
     expr: (e) => {
-      if (e.kind === "varRef" && owners.has(e.localId)) return fieldRead(e.localId, e.loc);
+      if (e.kind === "varRef" && isAlias(e.localId)) return fieldRead(rootOf(e.localId), e.loc);
       if (e.kind === "new" && newNeedsLocals(e, plan)) return newThroughLocals(e, fresh);
+      if (readsInline(e)) return inlineIndexRead(e, readers.get(e.callee)!, fresh) ?? e;
       return e;
     },
     stmt: (s) => {
+      // A copy's declaration goes: its reads read the field.
+      if (s.kind === "varDecl" && copyOf.has(s.localId))
+        return { kind: "block", body: [], loc: s.loc };
       if (s.kind === "varDecl" && owners.has(s.localId)) {
         const owner = owners.get(s.localId)!;
         const obj = owner.read.obj;

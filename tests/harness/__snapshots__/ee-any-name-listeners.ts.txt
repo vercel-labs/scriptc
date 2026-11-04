@@ -1,0 +1,17 @@
+ee-any-name-listeners.ts:12:24 - error SC2020: 'listeners of the event 'count'' is part of the standard library types but has no scriptc lowering yet
+
+  11 | type CountListener = (n: number) => void;
+  12 | for (const listener of emitter.listeners("count")) (listener as CountListener)(41);
+     |                        ^~~~~~~~~~~~~~~~~~~~~~~~~~
+  13 | for (const listener of getEventListeners(emitter, "count")) (listener as CountListener)(41);
+
+  hint: a listener of this event uses checked-dynamic dispatch, so the listener array has no one static element type — listenerCount(name) counts
+
+ee-any-name-listeners.ts:13:24 - error SC2020: 'events.getEventListeners of the event 'count'' is part of the standard library types but has no scriptc lowering yet
+
+  12 | for (const listener of emitter.listeners("count")) (listener as CountListener)(41);
+  13 | for (const listener of getEventListeners(emitter, "count")) (listener as CountListener)(41);
+     |                        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  14 | 
+
+  hint: a listener of this event uses checked-dynamic dispatch, so the listener array has no one static element type — listenerCount(emitter, name) counts

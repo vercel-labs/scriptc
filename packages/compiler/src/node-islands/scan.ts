@@ -8,11 +8,13 @@ import * as ts from "../frontend/ts7/adapter.js";
 import { canonicalBuiltinModule, npmBuiltinAliasOf } from "../frontend/builtin-modules.js";
 import { erasedTypeOnlyImport } from "../frontend/type-only-imports.js";
 import { isShimmedImport } from "../frontend/package-shims.js";
+import { requireCallBindingKind } from "../frontend/program.js";
 import { resolveBareModule } from "../frontend/resolve.js";
 import { isJsSourceFileName } from "../frontend/tsc-codes.js";
 import { isRelativeSpecifier, packageNameOfSpecifier } from "../frontend/workspace-registry.js";
 import { moduleSourceCandidates } from "../frontend/module-source-candidates.js";
-import { scanModule, type NodeIslandMarker } from "./detect.js";
+import { scanModuleFacts, type CjsRead, type GlobalRead, type NodeIslandMarker } from "./detect.js";
+import { stripProblem, type StripProblem } from "./type-strip.js";
 import { originOf, packageDirOf, type Origin } from "./origin.js";
 
 export interface ScannedModule {
@@ -22,6 +24,15 @@ export interface ScannedModule {
   packageDir: string | null;
   packageName: string | null;
   markers: NodeIslandMarker[];
+  /** Members the module reads through a builtin's CommonJS object (H3.4). */
+  cjsReads: CjsRead[];
+  /** Names the module reads that it declares nowhere and no builtin
+   * provides: each resolves on the global object at run time. */
+  globalReads: GlobalRead[];
+  /** A user TypeScript module the build may need to run in a Node island (a
+   * `builtin-patch` marker, or a read of a patched builtin member) that Node
+   * cannot run with type stripping only (H3.5): it stays native. */
+  stripProblem: StripProblem | null;
   /** True for a module of a package the drop-and-reload loop removed. */
   dropped: boolean;
 }
@@ -37,6 +48,11 @@ export interface PackageEdge {
   toDir: string | null;
   /** Served by a registry shim, a builtin alias, or marked unloaded. */
   shim: boolean;
+  /** Whether loading the importing module loads this package: a static
+   * import or re-export, or a top-level require() call outside any condition.
+   * A require() inside a function, a loop, a try block or a condition, and a
+   * dynamic import(), load it only when that code runs. */
+  loads: boolean;
   loc: SrcLoc;
 }
 
@@ -65,11 +81,49 @@ function locOfNode(node: ts.Node): SrcLoc {
   return { file: sf.fileName, start: ts.tokenStartOfNode(node), end: node.end };
 }
 
+/** True when a call runs whenever its module evaluates: every node between it
+ * and the module's top level is an expression that always evaluates its
+ * operands, or a top-level statement. A function body, a condition, a short
+ * circuit, a loop or a try block runs the call only when that code runs, so a
+ * package it names is not loaded on evaluation. */
+function loadsWithModule(call: ts.CallExpression): boolean {
+  let node: ts.Node = call;
+  while (node.parent !== undefined) {
+    const parent: ts.Node = node.parent;
+    if (ts.isSourceFile(parent)) return true;
+    if (ts.isConditionalExpression(parent)) return false;
+    if (
+      ts.isBinaryExpression(parent) &&
+      (parent.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+        parent.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+        parent.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken)
+    )
+      return false;
+    if (
+      !ts.isExpression(parent) &&
+      !ts.isExpressionStatement(parent) &&
+      // `const up = require("upper")` at a module's top level runs where the
+      // module evaluates, so the declaration between the call and its
+      // statement is part of the chain, not a deferral.
+      !ts.isVariableDeclaration(parent) &&
+      !ts.isVariableStatement(parent) &&
+      !ts.isVariableDeclarationList(parent) &&
+      !ts.isExportAssignment(parent)
+    )
+      return false;
+    node = parent;
+  }
+  return false;
+}
+
 /** The literal module specifiers of a file with their sites: top-level
  * import and export declarations, and the require() and import() calls the
  * program's shared module-source scan already collected (no second walk). */
-function specifiersOf(program: ts.Program, sf: ts.SourceFile): { spec: string; node: ts.Node }[] {
-  const out: { spec: string; node: ts.Node }[] = [];
+function specifiersOf(
+  program: ts.Program,
+  sf: ts.SourceFile,
+): { spec: string; node: ts.Node; loads: boolean }[] {
+  const out: { spec: string; node: ts.Node; loads: boolean }[] = [];
   for (const node of sf.statements.nodes) {
     if (
       (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
@@ -78,20 +132,65 @@ function specifiersOf(program: ts.Program, sf: ts.SourceFile): { spec: string; n
     ) {
       // Type-only imports load nothing.
       const typeOnly = ts.isImportDeclaration(node) ? erasedTypeOnlyImport(node) : node.isTypeOnly;
-      if (!typeOnly) out.push({ spec: node.moduleSpecifier.text, node });
+      if (!typeOnly) out.push({ spec: node.moduleSpecifier.text, node, loads: true });
     }
   }
   for (const call of moduleSourceCandidates(program, sf).calls) {
     const arg = call.arguments.nodes[0];
-    if (
-      arg !== undefined &&
-      ts.isStringLiteralLike(arg) &&
-      (call.expression.kind === ts.SyntaxKind.ImportKeyword ||
-        (ts.isIdentifier(call.expression) && call.expression.text === "require"))
-    )
-      out.push({ spec: arg.text, node: call });
+    if (arg === undefined || !ts.isStringLiteralLike(arg)) continue;
+    if (call.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      out.push({ spec: arg.text, node: call, loads: false });
+      continue;
+    }
+    if (!ts.isIdentifier(call.expression) || call.expression.text !== "require") continue;
+    // A require() call through a binding the file itself declares runs that
+    // value, not a loader, so the package it names never loads — wherever the
+    // call sits. The analysis lowers every site, so one below the top level
+    // counts too: its deferred graph decision islands what a deferred
+    // require() loads, and a shadowed call loads nothing. Node's ambient
+    // require and a createRequire() binding are loaders.
+    if (requireCallBindingKind(program, call) === "source") continue;
+    out.push({ spec: arg.text, node: call, loads: loadsWithModule(call) });
   }
   return out;
+}
+
+/** The diagnostics of a construct that sloppy-mode Node accepts: the
+ * frontend compiles every file under the project's `strict` options (with
+ * `alwaysStrict`), so a `with`, an octal literal, or a strict-only reserved
+ * word reports here even though the file itself is a CommonJS script that
+ * Node runs sloppy. JavaScript grammar errors arrive in the bind pass
+ * (TS1101 among them), so both passes filter by this set. They cannot hide
+ * a real syntax error: they exist only for code the engine parses in sloppy
+ * mode. */
+const SLOPPY_LEGAL_CODES: ReadonlySet<number> = new Set([
+  1100, // invalid use of a strict-mode reserved word
+  1101, // 'with' statements are not allowed in strict mode
+  1102, // 'delete' of an identifier in strict mode
+  1121, // an octal literal
+  1487, // an octal escape sequence
+  1210, // a class body's strict-mode restriction
+  1212, // a strict-mode reserved word
+  1213, // a strict-mode reserved word in a class
+  1214, // a strict-mode reserved word in a module
+  1215, // invalid use of a strict-mode-only construct in a module
+]);
+
+/** Whether the file parses as the sloppy JavaScript the island would run:
+ * a file with a genuine syntax or early error cannot run in an island as
+ * written (Node refuses it too, at load), so its pre-scan markers must not
+ * put it there — a parse-negative test stays the compile refusal it is
+ * (decision S5: the markers narrow, never move, the native passes). */
+function sloppyParsable(program: ts.Program, sf: ts.SourceFile): boolean {
+  try {
+    const sloppyLegal = (d: ts.Diagnostic): boolean => SLOPPY_LEGAL_CODES.has(d.code);
+    return (
+      program.getSyntacticDiagnostics(sf).every(sloppyLegal) &&
+      program.getBindDiagnostics(sf).every(sloppyLegal)
+    );
+  } catch {
+    return true;
+  }
 }
 
 /** Scans `files`: markers for npm JavaScript (and for user JavaScript when
@@ -112,17 +211,35 @@ export function scanFiles(
     if (origin === "builtin" || origin === "shim") continue;
     const at = origin === "npm" ? packageDirOf(sf.fileName) : null;
     const js = isJsSourceFileName(sf.fileName);
-    const markers = js && (origin === "npm" || opts.userJs) ? scanModule(sf) : [];
+    // A user TypeScript module is scanned only for the builtin-patch marker
+    // (H3.2): its other markers are JavaScript semantics, and sloppy
+    // parsing is never required of TypeScript.
+    const userTs = !js && origin === "user" && !sf.isDeclarationFile && opts.userJs;
+    let facts: ReturnType<typeof scanModuleFacts> = { markers: [], cjsReads: [], globalReads: [] };
+    if ((js && (origin === "npm" || opts.userJs)) || userTs) facts = scanModuleFacts(sf);
+    let markers = userTs
+      ? facts.markers.filter((marker) => marker.reason === "builtin-patch")
+      : facts.markers;
+    if (js && markers.length > 0 && !sloppyParsable(program, sf)) markers = [];
     modules.push({
       file: sf.fileName,
       origin,
       packageDir: at === null ? null : at.dir,
       packageName: at === null ? null : at.name,
       markers,
+      cjsReads: facts.cjsReads,
+      globalReads: facts.globalReads,
+      // A TypeScript module can island for a builtin patch (H3.2) and for a
+      // read of a member another island's patch changes (H3.4): both need
+      // Node to run the file with type stripping only.
+      stripProblem:
+        userTs && (markers.length > 0 || facts.cjsReads.length > 0)
+          ? stripProblem(program, sf)
+          : null,
       dropped: opts.dropped,
     });
     if (!opts.edges) continue;
-    for (const { spec, node } of specifiersOf(program, sf)) {
+    for (const { spec, node, loads } of specifiersOf(program, sf)) {
       if (isRelativeSpecifier(spec) || spec.startsWith("/") || spec.startsWith("#")) continue;
       // scriptc's own packages lower at their use sites.
       if (spec.startsWith("@scriptc/")) continue;
@@ -147,6 +264,7 @@ export function scanFiles(
         to: name,
         toDir,
         shim,
+        loads,
         loc: locOfNode(node),
       });
     }

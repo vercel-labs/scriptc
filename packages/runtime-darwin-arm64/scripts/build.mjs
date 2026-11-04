@@ -9,7 +9,6 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { RUNTIME_PACK_MATRIX } from "../runtime-pack-matrix.mjs";
 import {
-  buildImportBitcode,
   buildRuntimeUnit,
   resolveRuntimeUnitHelper,
 } from "../../runtime-pack-common/scripts/runtime-unit.mjs";
@@ -17,6 +16,7 @@ import { createDeterministicArchive } from "./archive.mjs";
 import { installRuntimePack, withBuildLock } from "./build-state.mjs";
 import { shareIdenticalArtifacts } from "../../runtime-pack-common/scripts/share-artifacts.mjs";
 import { zlibInputs } from "../../runtime-pack-common/scripts/zlib-inputs.mjs";
+import { zstdInputs } from "../../runtime-pack-common/scripts/zstd-inputs.mjs";
 
 const run = promisify(execFile);
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -75,13 +75,15 @@ async function build() {
   const zlib = join(vendorRoot, "zlib");
   const mbedtls = join(vendorRoot, "mbedtls");
   const brotli = join(vendorRoot, "brotli", "c");
+  const zstd = join(vendorRoot, "zstd", "lib");
   const QJS_SOURCES = ["dtoa.c", "libregexp.c", "libunicode.c", "quickjs.c"];
   const LRE_SOURCES = ["libregexp.c", "libunicode.c"];
   const ZLIB_BUILD = zlibInputs(RUNTIME_PACK_MATRIX.target.llvm_triple);
+  const ZSTD_BUILD = zstdInputs(RUNTIME_PACK_MATRIX.target.llvm_triple);
 
   // Speed-flavor executable units are emitted through the host LLVM helper
-  // so their object and import bitcode come from one promoted module. The
-  // helper also reduces release units' bitcode to what programs can import.
+  // (runtime-unit.mjs), which promotes their local symbols and applies the
+  // runtime profile.
   const unitHelper = await resolveRuntimeUnitHelper(
     repoRoot,
     RUNTIME_PACK_MATRIX.target.llvm_triple,
@@ -137,7 +139,7 @@ async function build() {
     const flavors = {};
     // The executable `speed` flavor (--optimization=speed) exists only when
     // it differs from release: its static units are emitted through the host
-    // LLVM helper with import bitcode.
+    // LLVM helper.
     const flavorPlan = [
       ...Object.entries(RUNTIME_PACK_MATRIX.flavors),
       ...("release" in RUNTIME_PACK_MATRIX.flavors && unitHelper !== null
@@ -176,6 +178,7 @@ async function build() {
                 ? ["-I", zlib]
                 : []),
               ...(unit.source === "scr_brotli.c" ? ["-I", join(brotli, "include")] : []),
+              ...(unit.source === "scr_zstd.c" ? ["-I", zstd] : []),
             ];
             const unitFlags = [
               ...commonFlags,
@@ -183,8 +186,6 @@ async function build() {
               ...variant.defines.map((define) => `-D${define}`),
               ...includeFlags,
             ];
-            let bitcode;
-            const bitcodeOutput = output.replace(/\.o$/, ".bc");
             if (flavor === "speed") await mkdir(dirname(output), { recursive: true });
             if (
               flavor === "speed" &&
@@ -201,7 +202,6 @@ async function build() {
                     optimized,
                   ]),
                 object: output,
-                bitcode: bitcodeOutput,
                 triple: RUNTIME_PACK_MATRIX.target.llvm_triple,
                 tag: unit.source.replace(/\.c$/, ""),
                 sections:
@@ -210,38 +210,8 @@ async function build() {
                   ),
               }))
             ) {
-              bitcode = {
-                path: artifactPath(bitcodeOutput),
-                sha256: await sha256(bitcodeOutput),
-                size: (await stat(bitcodeOutput)).size,
-              };
             } else {
               await compile(join(runtimeSrc, unit.source), output, unitFlags);
-              if (
-                flavor === "release" &&
-                unitHelper !== null &&
-                (await buildImportBitcode({
-                  helper: unitHelper,
-                  compileBitcode: (optimized) =>
-                    run(compiler, [
-                      ...sourcePathFlags,
-                      ...unitFlags,
-                      "-emit-llvm",
-                      "-c",
-                      join(runtimeSrc, unit.source),
-                      "-o",
-                      optimized,
-                    ]),
-                  bitcode: bitcodeOutput,
-                  tag: unit.source.replace(/\.c$/, ""),
-                }))
-              ) {
-                bitcode = {
-                  path: artifactPath(bitcodeOutput),
-                  sha256: await sha256(bitcodeOutput),
-                  size: (await stat(bitcodeOutput)).size,
-                };
-              }
             }
             const built = {
               id: variant.id,
@@ -250,7 +220,6 @@ async function build() {
               path: artifactPath(output),
               sha256: await sha256(output),
               size: (await stat(output)).size,
-              ...(bitcode === undefined ? {} : { bitcode }),
             };
             variants.push(built);
           }
@@ -317,6 +286,17 @@ async function build() {
         "-I",
         join(brotli, "include"),
       ]),
+      await archive("zstd", ZSTD_BUILD.sources, zstd, [
+        "-target",
+        RUNTIME_PACK_MATRIX.target.llvm_triple,
+        "-std=c11",
+        "-O3",
+        ...ZSTD_BUILD.defines.map((define) => `-D${define}`),
+        ...ZSTD_BUILD.compileFlags,
+        ...codeAlignment,
+        "-I",
+        zstd,
+      ]),
       await archive("mbedtls", mbedtlsSources, join(mbedtls, "library"), [
         "-target",
         RUNTIME_PACK_MATRIX.target.llvm_triple,
@@ -348,6 +328,7 @@ async function build() {
       [join(zlib, "LICENSE"), "artifacts/licenses/zlib.txt", "Zlib"],
       [join(zlib, "LICENSE.chromium"), "artifacts/licenses/zlib-chromium.txt", "BSD-3-Clause"],
       [join(vendorRoot, "brotli", "LICENSE"), "artifacts/licenses/brotli.txt", "MIT"],
+      [join(vendorRoot, "zstd", "LICENSE"), "artifacts/licenses/zstd.txt", "BSD-3-Clause"],
       [join(mbedtls, "LICENSE"), "artifacts/licenses/mbedtls.txt", "Apache-2.0"],
     ];
     await Promise.all(
@@ -381,6 +362,7 @@ async function build() {
           "SCR_NATIVE_REACTIONS",
           "SCR_HANDLE_CLASSES",
           "SCR_YIN",
+          "SCR_CHILD_ERR_FIELDS",
         ],
         excluded: ["SCR_RC_AUDIT", "SCR_ASAN_FIBERS"],
         sanitizer: "external-toolchain-required",

@@ -11,8 +11,17 @@
  *            as source-anchored diagnostics (SC0004), and the ECMAScript
  *            early errors the checker does not model: a duplicated or
  *            `var`-colliding lexical declaration in a block or switch
- *            statement list (SC0005/SC0006) and a declaration where the
- *            grammar admits only a Statement (SC0007)
+ *            statement list (SC0005/SC0006), a declaration where the
+ *            grammar admits only a Statement (SC0007), an ImportCall
+ *            argument list the grammar does not allow (SC0008), a private
+ *            name with no declaring enclosing class (SC0009), an
+ *            assignment target that is not a variable or a property access
+ *            (SC0010), `await` used as an identifier where the grammar
+ *            makes it an operator (SC0011), `arguments` in a class field
+ *            initializer or static block (SC0012), a script-top-level
+ *            `using` declaration (SC0013), assignment to `eval` or
+ *            `arguments` in strict code (SC0014), and a catch parameter
+ *            the catch block redeclares (SC0015)
  *   SC1xxx  supported-TypeScript-not-yet: valid TS outside the current subset
  *   SC2xxx  scriptc type rules (types we cannot compile yet)
  *   SC3xxx  backend/target coverage: the program is valid, but the selected
@@ -72,7 +81,8 @@
  *            diagnostics/dynamic-tier.ts), package files whose projected
  *            declaration types were dropped (SC6102), and shape inference's
  *            overlay report: what it typed and how many inferred facts the
- *            build checks (SC6103, frontend/shape-inference)
+ *            build checks (SC6103, frontend/shape-inference), and InlineArray
+ *            fields that keep ordinary arrays (SC6105, contracts/check.ts)
  *   SC7xxx  contract types (@scriptc/types): a NoThrow, Int32, Immutable,
  *            Acyclic or ProgramLifetime contract that does not hold or
  *            cannot be checked (SC7001–SC7009, contracts/check.ts)
@@ -234,6 +244,18 @@ export function nodeIslandModuleDiag(message: string, loc: SrcLoc): ScrDiagnosti
   };
 }
 
+/** SC8006 — a program module that runs in a Node island names a data file
+ * by a path where there is none while a file of that name is in its
+ * directory: the build ships data files by their exact path only. */
+export function nodeIslandDataFileDiag(message: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC8006",
+    message,
+    loc,
+    hint: "name the data file by its path relative to the module that reads it; the build ships a Node island module's data files by their exact path",
+  };
+}
+
 /* ── SC6xxx: divergences from Node (warnings) ─────────────────────────── */
 
 /** SC6001 — a value passed to (or declared as) a narrower record type is
@@ -354,6 +376,91 @@ export function nativeSubclassOfIslandDiag(loc: SrcLoc, detail?: string): ScrDia
   };
 }
 
+/** SC8006 — the entry module patches a builtin module's CommonJS object.
+ * The entry always stays native (a whole-file island is a different
+ * feature), so the patch cannot run: it belongs in a module of its own,
+ * which then runs in a Node island. */
+export function nodeIslandEntryPatchDiag(
+  file: string,
+  member: string,
+  module: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC8006",
+    message: `the entry module patches '${member}' on the CommonJS ${module} object; move the patch into a module of its own, which then runs in a Node island`,
+    loc,
+    hint: `the entry module ${file} stays native; only a separate module runs in Node`,
+  };
+}
+
+/** SC8006 — a user TypeScript module patches a builtin module's CommonJS
+ * object but uses syntax Node cannot run with type stripping only. */
+export function nodeIslandStripDiag(file: string, construct: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC8006",
+    message: `'${file}' patches a builtin module's CommonJS object, but Node cannot strip its types: ${construct}`,
+    loc,
+    hint: "Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports of types; a separate .js module can hold this patch",
+  };
+}
+
+/** SC8006 — the entry module reads a builtin module member that an island
+ * module patches. The entry always stays native, so it cannot join the
+ * island set: Node would show this read the patch, the native build cannot.
+ * ES module bindings of builtins never see the patch (in Node either), so
+ * the named import is the exact spelling. */
+export function nodeIslandEntryReadDiag(
+  file: string,
+  member: string,
+  module: string,
+  patchFile: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  const dot = member.indexOf(".");
+  const property = dot < 0 ? member : member.slice(dot + 1);
+  return {
+    code: "SC8006",
+    message: `the entry module reads '${member}' through the CommonJS ${module} object, which island module ${patchFile} patches; the entry stays native, so it cannot join the island set and would not see the patch`,
+    loc,
+    hint: `use \`import { ${property} } from "node:${module}"\` (ES module bindings never see the patch, in Node either), or move this read into a module of its own, which then runs in a Node island (the entry module ${file} stays native)`,
+  };
+}
+
+/** SC8006 — a user TypeScript module reads a member that an island module
+ * patches, but uses syntax Node cannot run with type stripping only, so the
+ * module cannot join the island set. */
+export function nodeIslandReaderStripDiag(
+  file: string,
+  member: string,
+  patchFile: string,
+  construct: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC8006",
+    message: `'${file}' reads '${member}', which island module ${patchFile} patches, but Node cannot strip its types: ${construct}`,
+    loc,
+    hint: "Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports of types; a separate .js module can hold this read",
+  };
+}
+
+/** SC8020 — native code reads a name that only an island module's sloppy
+ * implicit-global write creates: the global lives on Node's global object,
+ * which the native build does not have. */
+export function nodeIslandImplicitGlobalReadDiag(
+  name: string,
+  writerFile: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC8020",
+    message: `'${name}' is created as an implicit global by ${writerFile}, which runs in a Node island; the native build has no global object, so this read cannot see it. Declare '${name}' in this module, or move the code that reads it into ${writerFile}.`,
+    loc,
+    hint: "a declared binding holds the same value in both tiers",
+  };
+}
+
 /** SC8020 — a stateful module the program compiles is duplicated across
  * the Node island boundary (an explicit "duplicate", or a form NI-6 cannot
  * share yet): each side has its own state. */
@@ -370,10 +477,12 @@ export function sharedModuleDuplicatedDiag(
   };
 }
 
-/** SC8020 — the program replaces a process output stream's write method
- * while a Node island exists: the island's `process.stdout` is its own
- * object, so the replacement and the island's writes cannot see each other.
- * H2 shares the native stream object with the islands and removes this. */
+/** SC8006 — the build refuses the program: it replaces a process output
+ * stream's write method while a Node island exists, and the island's
+ * `process.stdout` is its own object, so the replacement and the island's
+ * writes cannot see each other. The planner stops on this, so it is an
+ * error, not the SC8020 warning. H2 shares the native stream object with
+ * the islands and removes this refusal. */
 export function stdioPatchAcrossIslandsDiag(
   stream: "stdout" | "stderr" | null,
   loc: SrcLoc,
@@ -381,10 +490,10 @@ export function stdioPatchAcrossIslandsDiag(
   const what =
     stream === null ? "process.stdout.write or process.stderr.write" : `process.${stream}.write`;
   return {
-    code: "SC8020",
-    message: `${what} is replaced while a Node island exists: the island's process output stream would not see this patch, and island writes would bypass it`,
+    code: "SC8006",
+    message: `${what} is replaced while a Node island exists: the island's process output stream is its own object, so it would not see this patch and its writes would bypass it`,
     loc,
-    hint: "the island's process.stdout would not see this patch",
+    hint: "remove the replacement, or keep this write in a module that stays native (--node-islands=off for the package)",
   };
 }
 
@@ -450,6 +559,22 @@ export function nodeIslandNoteDiag(
     message: `package '${version === null ? pkg : `${pkg}@${version}`}' runs in a Node island: ${klass}: ${reason}`,
     loc,
     hint: "it runs in Node.js loaded into the program on first use; --node-islands=off makes this an error",
+  };
+}
+
+/** SC8001 — a program module runs in a Node island (a note, once per island
+ * module in the build output; DESIGN.md note 1 §3.2). */
+export function nodeIslandModuleNoteDiag(
+  file: string,
+  klass: string,
+  reason: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC8001",
+    message: `module '${file}' runs in a Node island: ${klass}: ${reason}`,
+    loc,
+    hint: "sloppy-mode code Node runs; --node-islands=off compiles this module natively instead",
   };
 }
 
@@ -690,9 +815,11 @@ export const UNSUPPORTED: Record<string, UnsupportedEntry> = {
   SC1052: { feature: "for-in loops", milestone: "M4" }, // for-of over arrays shipped in M1
   // SC1060 (switch statements) shipped — code retired, do not reuse.
   // SC1061 (exceptions: throw/try/catch/finally) shipped — code retired, do
-  // not reuse. (Identifier catch bindings shipped too; what remains rejected
-  // is destructuring patterns — SC1062 — un-narrowed binding uses —
-  // SC1063 — and jumps crossing a finally — SC1090.)
+  // not reuse. (Identifier catch bindings shipped too, and a catch clause
+  // that destructures ships through the checked-dynamic tree; what remains
+  // rejected is a destructuring pattern in a promise handler's parameter —
+  // SC1062 — un-narrowed binding uses — SC1063 — and jumps crossing a
+  // finally — SC1090.)
   SC1062: {
     feature: "destructuring catch clause bindings",
     milestone: "later",
@@ -712,7 +839,7 @@ export const UNSUPPORTED: Record<string, UnsupportedEntry> = {
   SC1091: {
     feature: "writing an undeclared name in a JavaScript source",
     milestone: "later",
-    hint: "a write to an undeclared name has no native lowering: sloppy mode makes it a property on Node's global object, which a native binary has none of, and strict mode makes it throw; declare the name, or keep the module in a Node island (sloppy-mode programs route there)",
+    hint: "declare the name to keep the module native: a sloppy-mode write creates a property on Node's global object, which a native binary has none of (with --node-islands=auto, the default, a required module with this write runs in a Node island instead), and a strict-mode write throws",
   },
   SC1100: {
     feature: "operations on 'unknown' values",
@@ -1073,6 +1200,23 @@ export function noLoweringDiag(
   };
 }
 
+/** A use of a Node 24 global the native runtime does not implement
+ * (host-globals.ts): constructing or calling its constructor value, or
+ * reading one of its members. A bare read compiles and answers the
+ * constructor (host-global-values.ts). Node has the class and its surface,
+ * so answering undefined or refusing to build the module would both
+ * diverge; the reason id lets a Node island run the module instead. */
+export function hostGlobalDiag(name: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC2020",
+    message: `'${name}' is a Node global that native code does not provide`,
+    loc,
+    milestone: "later",
+    hint: "the class exists at run time in Node 24, and native code cannot construct it or provide its members; run the module in a Node island (--node-islands=auto) or avoid the use",
+    reason: "host-global",
+  };
+}
+
 /** A stdlib-global snapshot reached a site that needs its VALUE (an
  * argument, a return, a stored field). The declaration emitted no storage
  * — alias plumbing only serves member and call reads — and the global's
@@ -1413,9 +1557,10 @@ export function libExportUnresolvedDiag(
     message: `library export '${exportName}' cannot be resolved: ${detail}`,
     loc,
     hint:
-      "the export map may only name function declarations exported by the profile's ONE entry module; " +
-      "a program with exports scattered across files writes a one-line facade module that re-exports them " +
-      "and points the profile's entry at the facade",
+      "the export map may only name exports of the profile's ONE entry module, and the entry module decides " +
+      'where the function lives: re-export it from another module (export { handle } from "./sdk/handler", ' +
+      'or export * from "./sdk/handler"), declare it there and export it through a list (export { handle }), ' +
+      "or declare a forwarding wrapper function",
   };
 }
 

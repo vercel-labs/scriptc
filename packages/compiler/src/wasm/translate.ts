@@ -278,6 +278,12 @@ class Lines {
   }
 }
 
+/** Appends `lines` one at a time. A function body, its locals' entries and a
+ * module's text hold more lines than one call can take as arguments. */
+function appendLines(out: string[], lines: readonly string[]): void {
+  for (const line of lines) out.push(line);
+}
+
 /** One module's translation. */
 class ModuleTranslator {
   m: WasmModule;
@@ -330,7 +336,7 @@ class ModuleTranslator {
     for (let i = 0; i < m.codes.length; i++) {
       const index = m.importedFuncs + i;
       const f = new FunctionTranslator(this, index);
-      this.text.push(...f.translate());
+      appendLines(this.text, f.translate());
     }
   }
 
@@ -483,8 +489,8 @@ class ModuleTranslator {
     }
     body.add(`  ret void`);
     const out = [`define internal void ${name}(ptr %inst) nounwind {`, `entry:`];
-    out.push(...f.entry.lines);
-    out.push(...body.lines);
+    appendLines(out, f.entry.lines);
+    appendLines(out, body.lines);
     out.push(`}`);
     this.text.push(out.join("\n"));
     return name;
@@ -1238,7 +1244,7 @@ class FunctionTranslator {
     const out: string[] = [];
     out.push(`define internal ${this.mt.signature(ft, this.mt.fn(this.index))} ${FUNC_ATTRS} {`);
     out.push(`entry:`);
-    out.push(...this.entry.lines);
+    appendLines(out, this.entry.lines);
     if (!this.checked && this.baseValue !== null) {
       out.push(`  %membase.p = getelementptr inbounds i8, ptr %inst, i64 ${OFF_MEMBASE}`);
       out.push(`  %membase = load ptr, ptr %membase.p, align 8`);
@@ -1263,7 +1269,7 @@ class FunctionTranslator {
       out.push(`  br label %body`);
     }
     out.push(`body:`);
-    out.push(...this.lines.lines);
+    appendLines(out, this.lines.lines);
     for (const [code2, label] of this.trapLabels) {
       out.push(`${label}:`);
       out.push(`  call void @scr_wasm_trap(i32 ${code2})`);

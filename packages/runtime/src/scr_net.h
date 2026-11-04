@@ -229,6 +229,11 @@ ScrNetSocket *scr_net_connect_attempt(double port, ScrStr *host /*borrowed*/, co
  * autoSelectFamily, attempt budget), then the compiler-rendered fence —
  * always leaves an exception pending. Borrowed. */
 void scr_net_connect_opts_chk(const ScrDyn *opts, const ScrStr *fence);
+/* The port of listen(arg[, ...]) for a checked-dynamic first argument
+ * (Node's normalizeArgs and validatePort): 0 for a function, undefined or
+ * null; ERR_SOCKET_BAD_PORT pending for a bad port; the fence pending for
+ * an options object or a pipe path. Borrowed. */
+double scr_net_listen_port_dyn(const ScrDyn *v, const ScrStr *fence);
 /* connect with a caller lookup (net.connect({ ..., lookup })): invokes
  * lookup(hostname, options, answer-closure) synchronously; answer_fn is
  * the emitted per-shape thunk that decodes the answer down to

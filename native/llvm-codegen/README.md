@@ -33,11 +33,13 @@ lowering, verifies before and after optimization, and publishes through a
 private sibling file so a failed or interrupted request cannot truncate the
 requested output.
 
+The helper links its own copy of LLVM 22.1.8's memory dependence analysis (`src/llvm/MemoryDependenceAnalysis.cpp`) with one change from a later LLVM (llvm/llvm-project#223456): an `!invariant.group` load whose pointer is a constant gets no dependency from other loads of that pointer. A constant's uses span every function in the module, and in LLVM 22.1.8 GVN could replace such a load with a load from another function, which crashed the optimizer.
+
 Repeating `--output` divides the program into that many partitions, which are compiled concurrently and linked together. The helper splits the emitter's LLVM assembly text directly, so partitions also parse concurrently; input outside the emitter's narrow grammar is parsed whole and split with LLVM instead. Internal definitions that no other definition reaches are left out of every partition, and the others become hidden so partitions can reference each other. At opt-level 0 each partition is compiled independently. Optimized partitions follow the ThinLTO model: each is simplified and summarized on its own thread, a thin link decides which small functions every partition imports for inlining and which hidden definitions become internal again, and each partition is then optimized and compiled on its own thread. Partition placement depends only on the module and the partition count, so output never depends on the host.
 
 With `--split codegen`, several outputs divide only code generation. The helper optimizes the module whole, as it does for a single output, then divides its functions in module order into runs of about the same instruction count, one per output, and generates code for every output on its own thread. Linking the outputs in order lays the functions out as one output would. A local definition that another output uses becomes hidden so the objects can reference each other; the others stay local. Every output after the first is generated from a copy of the optimized module read back from bitcode with its use-list order, so each function's machine code matches a single output except for jumps to definitions that another output also uses. When one run would hold more than three quarters of the module's instructions, the first output holds the whole module and the other outputs are empty objects. Placement depends only on the optimized module and the output count. `--split codegen` requires an optimized build and no `--cache-dir`; scriptc passes it for optimized executables with more than 128 KiB of LLVM text that stay one partition.
 
-In a `--cpu-dispatch` module, each function has a baseline copy and an x86-64-v3 copy marked `scriptc-cpu-copy`. Partitioning places each x86-64-v3 copy with its baseline copy. After optimization, an x86-64-v3 copy whose code has vectors of at most 128 bits, none wider, and no rounding or bit-count intrinsic in a loop takes its baseline copy's optimized code, and its calls to baseline copies call their x86-64-v3 copies (`src/cpu-copies.h`).
+In a `--cpu-dispatch` or `--target-cpu=x86-64-v3` module, each function has a baseline copy and an x86-64-v3 copy marked `scriptc-cpu-copy`. Partitioning places each x86-64-v3 copy with its baseline copy. After optimization, an x86-64-v3 copy whose code has vectors of at most 128 bits, none wider, and no rounding or bit-count intrinsic in a loop takes its baseline copy's optimized code, unless the baseline copy calls a function the module defines for another level, and its calls to baseline copies call their x86-64-v3 copies (`src/cpu-copies.h`).
 
 WebAssembly code generation differs from LLVM's default pipeline in two ways that do not change its output. The pass that gives multiple-entry loops a single entry runs only on functions whose control flow is irreducible; its reachability analysis grows with the square of a function's block count even when it has nothing to change. Object emission also leaves out the module pass that collects external symbols for assembly declarations, so each function's machine code is freed once it is printed instead of when the whole module is compiled.
 
@@ -49,19 +51,19 @@ Runtime-pack builds emit each unit of the executable `speed` flavor through the 
 
 ```console
 scriptc-llvm-codegen runtime-unit --input unit.opt.bc --object unit.o \
-  --bitcode unit.bc --target x86_64-unknown-linux-gnu --tag scr_array \
+  --target x86_64-unknown-linux-gnu --tag scr_array \
   [--function-sections --data-sections]
 ```
 
-The input is the runtime compiler's optimized bitcode. The command promotes unit-local symbols to hidden `<name>.scrunit.<tag>` globals and writes the object and the import bitcode from that one module, so imported bodies can reference the unit's private state and helpers.
+The input is the runtime compiler's bitcode for the unit. The command promotes unit-local symbols to hidden `<name>.scrunit.<tag>` globals and writes the object. With `--bitcode unit.bc` it also writes import bitcode from the same module, so imported bodies can reference the unit's private state and helpers. Runtime packs ship no bitcode, since program builds don't import it.
 
-Release units keep the runtime compiler's own objects. Their import bitcode is the same compilation with `-emit-llvm`, reduced by the helper:
+`prune-import` reduces a unit's `-emit-llvm` bitcode to import bitcode without promotion:
 
 ```console
 scriptc-llvm-codegen prune-import --input unit.opt.bc --output unit.bc
 ```
 
-Both commands keep only what a program build can import: the importable bodies within the size limit at their call distance from any public function, and the constants they copy. Every other definition becomes a declaration, so a program imports exactly what it would from the whole unit while reading a fraction of it. Unpromoted unit-local symbols stay local, so release bitcode offers only bodies that need none of them.
+Import bitcode keeps only what a program build can import: the importable bodies within the size limit at their call distance from any public function, and the constants they copy. Every other definition becomes a declaration, so a program imports exactly what it would from the whole unit while reading a fraction of it. Unpromoted unit-local symbols stay local, so `prune-import` bitcode offers only bodies that need none of them.
 
 ## Linux release builds
 

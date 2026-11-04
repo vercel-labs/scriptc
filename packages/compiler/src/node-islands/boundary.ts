@@ -14,6 +14,7 @@
  * calls. A union is foreign when every arm that is not null or undefined
  * is foreign (the dyn representation holds null and undefined). */
 import * as ts from "../frontend/ts7/adapter.js";
+import { trackedRealpath } from "../frontend/input-tracker.js";
 import { packageDirOf } from "./origin.js";
 
 /** One package the build runs in a Node island. */
@@ -28,22 +29,100 @@ export interface IslandPackage {
   reason: string;
 }
 
-/** The program's island packages, by package name. */
+/** One program module the build runs in a Node island (DESIGN.md
+ * note 1 §3.2): a user JavaScript file whose semantics need the JavaScript
+ * engine, keyed by its absolute path. */
+export interface IslandModule {
+  /** The module file (absolute, as the checker spells it). */
+  file: string;
+  /** The island class (runtime, object-model, gap, packaging) and the first
+   * reason, for the SC8001 note. */
+  class: string;
+  reason: string;
+  /** Marked by the user (`--node-island`, `nodeIslands.modules`) or
+   * detected by the pre-scan under `--node-islands=auto`. */
+  decision: "marked" | "auto";
+}
+
+/** The program's island packages, by package name, and island modules, by
+ * absolute file path. */
 export interface NodeIslandSet {
   packages: ReadonlyMap<string, IslandPackage>;
+  modules: ReadonlyMap<string, IslandModule>;
+  /** islandPackageOfFile's answers by file spelling. A set is assembled
+   * before its lowering starts and is not changed afterwards, so every
+   * answer is fixed for the set's lifetime; the two memos live in the set
+   * so they cannot outlive it, and a new set starts empty. */
+  packagesOfFile?: Map<string, IslandPackage | null>;
+  /** islandModuleOfFile's answers by file spelling (same lifetime as
+   * packagesOfFile). */
+  modulesOfFile?: Map<string, IslandModule | null>;
+}
+
+function normalizePath(file: string): string {
+  return file.replaceAll("\\", "/");
+}
+
+/* What an island set answers about one file, keyed by the file. A set is
+ * assembled before its lowering starts and is never modified afterwards
+ * (executable/prepare.ts builds a fresh one for every island round), so an
+ * answer is fixed for the set's lifetime. The memo is stored on the set
+ * object, so it cannot outlive the set and a reload can never read another
+ * program's answer. */
+
+/** The island module at `file`, or null. */
+export function islandModuleOfFile(islands: NodeIslandSet, file: string): IslandModule | null {
+  if (islands.modules.size === 0) return null;
+  let answers = islands.modulesOfFile;
+  if (answers === undefined) {
+    answers = new Map();
+    islands.modulesOfFile = answers;
+  }
+  const known = answers.get(file);
+  if (known !== undefined) return known;
+  const module = islands.modules.get(file) ?? islands.modules.get(normalizePath(file)) ?? null;
+  answers.set(file, module);
+  return module;
+}
+
+/** Whether `file` (a path as the checker spells it, or its real path) is a
+ * program module of the island set. */
+export function isIslandProgramModule(islands: NodeIslandSet, file: string): boolean {
+  if (islandModuleOfFile(islands, file) !== null) return true;
+  for (const module of islands.modules.values())
+    if ((trackedRealpath(module.file) ?? module.file) === file) return true;
+  return false;
+}
+
+/** The island (package or module) that owns a declaration or JavaScript
+ * file, or null. Modules first: a user module is never inside a package. */
+export function islandOwnerOfFile(
+  islands: NodeIslandSet,
+  file: string,
+): IslandPackage | IslandModule | null {
+  return islandModuleOfFile(islands, file) ?? islandPackageOfFile(islands, file);
 }
 
 /** The island package that owns a declaration or JavaScript file, or null.
  * `@types/<name>` declarations type the package `<name>`. */
 export function islandPackageOfFile(islands: NodeIslandSet, file: string): IslandPackage | null {
+  if (islands.packages.size === 0) return null;
+  let answers = islands.packagesOfFile;
+  if (answers === undefined) {
+    answers = new Map();
+    islands.packagesOfFile = answers;
+  }
+  const known = answers.get(file);
+  if (known !== undefined) return known;
   const at = packageDirOf(file);
-  if (at === null) return null;
-  let name = at.name;
-  if (name.startsWith("@types/")) {
+  let name = at === null ? null : at.name;
+  if (name !== null && name.startsWith("@types/")) {
     const bare = name.slice("@types/".length);
     name = bare.includes("__") ? `@${bare.replace("__", "/")}` : bare;
   }
-  return islands.packages.get(name) ?? null;
+  const island = name === null ? null : (islands.packages.get(name) ?? null);
+  answers.set(file, island);
+  return island;
 }
 
 /* Native classes extending island classes (scope-B NI-5b): their class
@@ -53,6 +132,13 @@ const islandSubclassDecls = new Set<ts.Node>();
 
 export function markIslandSubclass(decl: ts.ClassDeclaration): void {
   islandSubclassDecls.add(decl);
+}
+
+/** How many island subclasses are registered: a registry that only grows, so
+ * a memo of isForeignType's answers holds while this is unchanged (see
+ * Lowerer.foreignType). */
+export function islandSubclassCount(): number {
+  return islandSubclassDecls.size;
 }
 
 export function isIslandSubclassDecl(decl: ts.Node | undefined): boolean {
@@ -65,7 +151,7 @@ function declaredInIsland(islands: NodeIslandSet, symbol: ts.Symbol | null | und
   if (decls.length === 0) return false;
   if (islandSubclassDecls.size > 0 && decls.some((d) => islandSubclassDecls.has(d))) return true;
   return decls.every(
-    (d) => islandPackageOfFile(islands, ts.getSourceFileOfNode(d).fileName) !== null,
+    (d) => islandOwnerOfFile(islands, ts.getSourceFileOfNode(d).fileName) !== null,
   );
 }
 
@@ -150,7 +236,8 @@ export function crossingOf(
 let active: NodeIslandSet | null = null;
 
 export function setActiveNodeIslands(islands: NodeIslandSet | null): void {
-  active = islands !== null && islands.packages.size > 0 ? islands : null;
+  active =
+    islands !== null && (islands.packages.size > 0 || islands.modules.size > 0) ? islands : null;
 }
 
 export function activeNodeIslands(): NodeIslandSet | null {
@@ -166,6 +253,16 @@ export function setFrontendIslands(names: ReadonlySet<string>): void {
   frontendIslands = names;
 }
 
+/* Packages a caller wants to know this set was asked about. The npm-static
+ * ladder records them around one rung, so a recorded rung can tell which
+ * island sets answer it identically (see pipeline.ts's LadderRung). */
+let islandReads: Set<string> | null = null;
+
+export function recordFrontendIslandReads(into: Set<string> | null): void {
+  islandReads = into;
+}
+
 export function isFrontendIsland(pkg: string): boolean {
+  islandReads?.add(pkg);
   return frontendIslands.size > 0 && frontendIslands.has(pkg);
 }

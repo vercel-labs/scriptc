@@ -421,10 +421,28 @@ export function emitSerializationExpr(
         if (site !== null) B.line(`call void @scr_dyn_inferred_site(ptr null)`);
         return checked;
       }
+      // An array literal's element check names its position: the path
+      // spine starts at the root and appends the index, so a failure
+      // reports `$[0]` instead of the bare `$` a standalone check names.
+      let path = "null";
+      if (e.pathIndex !== undefined) {
+        const slot = B.slot();
+        B.entryAllocas.push(`${slot} = alloca %ScrDynPath`);
+        const parent = B.tmp();
+        const key = B.tmp();
+        const index = B.tmp();
+        B.line(`${parent} = getelementptr inbounds %ScrDynPath, ptr ${slot}, i64 0, i32 0`);
+        B.line(`store ptr null, ptr ${parent}`);
+        B.line(`${key} = getelementptr inbounds %ScrDynPath, ptr ${slot}, i64 0, i32 1`);
+        B.line(`store ptr null, ptr ${key}`);
+        B.line(`${index} = getelementptr inbounds %ScrDynPath, ptr ${slot}, i64 0, i32 2`);
+        B.line(`store ${host.sizeType} ${e.pathIndex}, ptr ${index}`);
+        path = slot;
+      }
       const ty = host.llType(e.type);
       const t = B.tmp();
       B.line(
-        `${t} = call ${ty === "i1" ? "zeroext i1" : ty} @${helper}(ptr ${dynV.name}, ptr null)`,
+        `${t} = call ${ty === "i1" ? "zeroext i1" : ty} @${helper}(ptr ${dynV.name}, ptr ${path})`,
       );
       if (site !== null) B.line(`call void @scr_dyn_inferred_site(ptr null)`);
       const out = host.own({ name: t, type: e.type });

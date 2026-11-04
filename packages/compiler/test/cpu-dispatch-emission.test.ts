@@ -136,16 +136,35 @@ test("a dispatching x86-64 build gives each program function a baseline and an x
   );
 });
 
-test("builds without dispatch, for other targets or for a target level emit no copies", () => {
+test("builds without dispatch, for other targets or for other target levels emit no copies", () => {
   const plain = emit(x86);
   expect(plain).not.toContain("@sc_cpu_level");
   expect(plain).not.toMatch(/\.v3\(/);
   expect(emit({ ...x86, cpuDispatch: false })).toBe(plain);
-  const v3 = emit({ ...x86, targetCpu: "x86-64-v3" });
-  expect(emit({ ...x86, targetCpu: "x86-64-v3", cpuDispatch: true })).toBe(v3);
+  for (const targetCpu of ["x86-64-v2", "x86-64-v4"] as const) {
+    const level = emit({ ...x86, targetCpu });
+    expect(level, targetCpu).not.toMatch(/\.(?:v3|base)\(/);
+    expect(emit({ ...x86, targetCpu, cpuDispatch: true }), targetCpu).toBe(level);
+  }
   for (const options of [
     { targetTriple: "aarch64-unknown-linux-gnu" },
     { targetTriple: "wasm32-wasi", wasi: true, pointerBits: 32 as const },
   ])
     expect(emit({ ...options, cpuDispatch: true })).toBe(emit(options));
+});
+
+test("an x86-64-v3 target gives the program's functions baseline copies, and always calls the x86-64-v3 ones", () => {
+  const ll = emit({ ...x86, targetCpu: "x86-64-v3" });
+  expect(emit({ ...x86, targetCpu: "x86-64-v3", cpuDispatch: true })).toBe(ll);
+  expect(ll).toMatch(/^define internal double @sc_bf_dot\.base\([^\n]* #5 /m);
+  expect(ll).toMatch(/^define internal double @sc_bf_dot\.v3\([^\n]* #3 /m);
+  expect(ll).toMatch(/^attributes #0 = \{ sanitize_address uwtable "target-cpu"="x86-64-v3" \}$/m);
+  expect(ll).toMatch(
+    /^attributes #3 = \{ sanitize_address uwtable "target-cpu"="x86-64-v3" "scriptc-cpu-copy" \}$/m,
+  );
+  expect(ll).toMatch(/^attributes #5 = \{ sanitize_address uwtable \}$/m);
+  // The level is 3 from the start; nothing detects or stores it.
+  expect(ll).toMatch(/^@sc_cpu_level = hidden global i32 3$/m);
+  expect(ll).not.toContain("@sc_cpu_level_init");
+  expect(ll).not.toMatch(/store i32 [^\n]*, ptr @sc_cpu_level\b/);
 });

@@ -1,7 +1,7 @@
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
-import { F64, type IrExpr, STRING } from "../../../ir/ir.js";
+import { BOOL, DYN, F64, type IrExpr, STRING, type SrcLoc } from "../../../ir/ir.js";
 import { lowerOptionalArgument } from "../optional-arguments.js";
 
 const OPERATIONS = [
@@ -104,6 +104,93 @@ export function lowerAtomicsCall(
     fn: dynamic ? "atomics.opDyn" : "atomics.op",
     args: [array, index, arg(2, 0), arg(3, 0), number(operation)],
     type: F64,
+    loc,
+  };
+}
+
+/** The Atomics members with untyped forms, as function values: each
+ * argument converts with ToNumber, and a missing notify count or wait
+ * timeout is Infinity, as in the call form. Null for isLockFree, waitAsync
+ * and pause, which have no lowering. */
+export function atomicsMemberValue(lowerer: Lowerer, member: string, loc: SrcLoc): IrExpr | null {
+  const operation = OPERATIONS.indexOf(member);
+  if (operation < 0 && member !== "wait" && member !== "notify") return null;
+  // Node's length: the parameters each member declares.
+  const count = member === "load" ? 2 : member === "wait" || member === "compareExchange" ? 4 : 3;
+  const name = `%builtin.Atomics.${member}`;
+  const params = Array.from({ length: count }, (_, index) => ({
+    localId: `p.${index}`,
+    name: `p${index}`,
+    type: DYN,
+  }));
+  const ret = member === "wait" ? STRING : F64;
+  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+    const number = (index: number): IrExpr => ({
+      kind: "libCall",
+      fn: "dyn.toNumberCoerce",
+      args: [{ kind: "varRef", localId: `p.${index}`, type: DYN, loc }],
+      type: F64,
+      loc,
+    });
+    const orInfinity = (index: number): IrExpr => ({
+      kind: "ternary",
+      cond: {
+        kind: "dynTest",
+        test: "undefined",
+        value: { kind: "varRef", localId: `p.${index}`, type: DYN, loc },
+        type: BOOL,
+        loc,
+      },
+      then: { kind: "numLit", value: Infinity, type: F64, loc },
+      else_: number(index),
+      type: F64,
+      loc,
+    });
+    const array: IrExpr = { kind: "varRef", localId: "p.0", type: DYN, loc };
+    const value: IrExpr =
+      member === "wait"
+        ? {
+            kind: "libCall",
+            fn: "atomics.waitDyn",
+            args: [array, number(1), number(2), orInfinity(3)],
+            type: STRING,
+            loc,
+          }
+        : member === "notify"
+          ? {
+              kind: "libCall",
+              fn: "atomics.notifyDyn",
+              args: [array, number(1), orInfinity(2)],
+              type: F64,
+              loc,
+            }
+          : {
+              kind: "libCall",
+              fn: "atomics.opDyn",
+              args: [
+                array,
+                number(1),
+                count > 2 ? number(2) : { kind: "numLit", value: 0, type: F64, loc },
+                count > 3 ? number(3) : { kind: "numLit", value: 0, type: F64, loc },
+                { kind: "numLit", value: operation, type: F64, loc },
+              ],
+              type: F64,
+              loc,
+            };
+    lowerer.liftedFns.push({
+      name,
+      params,
+      returnType: ret,
+      locals: params.map((p) => ({ id: p.localId, name: p.name, type: p.type, mutable: false })),
+      body: [{ kind: "return", value, loc }],
+      loc,
+    });
+  }
+  return {
+    kind: "closure",
+    fnName: name,
+    captures: [],
+    type: { kind: "func", params: params.map((p) => p.type), ret },
     loc,
   };
 }

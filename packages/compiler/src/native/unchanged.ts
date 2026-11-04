@@ -141,13 +141,21 @@ export interface UnchangedBuildInputs {
  * path, with the block-count file beside it, and the objects an FFI manifest
  * links. Null when an input cannot be read, when provenance rewriting makes
  * the sources a build product, when the build writes a block-count file (that
- * file comes from the helper, and a kept output would leave it unwritten), or
- * when it is sanitized (its runtime is compiled from sources outside the
- * pack, which the key does not observe). */
+ * file comes from the helper, and a kept output would leave it unwritten),
+ * when the manifest names a system library or a framework whose file the
+ * linker resolves, or when it is sanitized (its runtime is compiled from
+ * sources outside the pack, which the key does not observe). */
 export function unchangedBuildKey(inputs: UnchangedBuildInputs): string | null {
   const { entry, options, ffi, ffiBytes, toolchain, output, translationUnitPath } = inputs;
   if (recordProfileBlocksPath(process.env) !== undefined) return null;
   if (options.sanitize === true) return null;
+  // `-l<name>` and `-framework <name>` resolve through the linker's search
+  // paths, and the key names the manifest's names, not the files they resolve
+  // to: the file can be replaced in place and a kept executable would still be
+  // the earlier link. The complete-artifact cache refuses that link for the
+  // same reason.
+  if (ffi !== null && (ffi.systemLibraries.length > 0 || (ffi.frameworks?.length ?? 0) > 0))
+    return null;
   const frontend = nativeFrontendCacheKey(entry, options, ffi, toolchain);
   if (frontend === null) return null;
   try {

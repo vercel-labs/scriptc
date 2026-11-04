@@ -187,6 +187,38 @@ test.skipIf(process.platform === "win32")(
 );
 
 test.skipIf(process.platform === "win32")(
+  "a manifest's system library or framework keeps nothing: the linker resolves the file, and the key names only the name",
+  () => {
+    const inputs = profileBuild();
+    expect(unchangedBuildKey(inputs)).not.toBeNull();
+    const base = { ffiFormat: 1 as const, functions: [], libraries: [] };
+    expect(
+      unchangedBuildKey({
+        ...inputs,
+        ffi: { ...base, systemLibraries: ["example"] },
+        ffiBytes: "digest",
+      }),
+    ).toBeNull();
+    expect(
+      unchangedBuildKey({
+        ...inputs,
+        ffi: { ...base, systemLibraries: [], frameworks: ["Example"] },
+        ffiBytes: "digest",
+      }),
+    ).toBeNull();
+    // A manifest that names library files only keeps its record: the key
+    // digests each file.
+    expect(
+      unchangedBuildKey({
+        ...inputs,
+        ffi: { ...base, systemLibraries: [] },
+        ffiBytes: "digest",
+      }),
+    ).not.toBeNull();
+  },
+);
+
+test.skipIf(process.platform === "win32")(
   "a sanitized build keeps nothing: its runtime is compiled from sources the key does not name",
   () => {
     const inputs = profileBuild();

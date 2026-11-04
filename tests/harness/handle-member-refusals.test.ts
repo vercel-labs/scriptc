@@ -143,6 +143,43 @@ console.log("plain", d.toJSON());
   expect(stderr).toBe("");
 });
 
+test("an untyped Date toJSON converts through the own conversion members", async () => {
+  // Date.prototype.toJSON is ToPrimitive(this, number), null for a
+  // non-finite number, then toISOString. A call through an untyped helper
+  // still reads the own valueOf/toString the table carries.
+  const { stdout, stderr } = await run(`"use strict";
+const d = new Date(0);
+d.valueOf = () => NaN;
+function toJson(x) {
+  return x.toJSON();
+}
+console.log("valueOf", toJson(d));
+d.valueOf = () => 5;
+console.log("finite", toJson(d));
+d.valueOf = () => ({});
+d.toString = () => "text";
+console.log("toString", toJson(d));
+delete d.valueOf;
+delete d.toString;
+console.log("restored", toJson(d));
+const bad = new Date(NaN);
+bad.valueOf = () => 1;
+try {
+  console.log("invalid", toJson(bad));
+} catch (error) {
+  console.log("invalid", error.message);
+}
+`);
+  expect(stdout).toBe(
+    "valueOf null\n" +
+      "finite 1970-01-01T00:00:00.000Z\n" +
+      "toString 1970-01-01T00:00:00.000Z\n" +
+      "restored 1970-01-01T00:00:00.000Z\n" +
+      "invalid Invalid time value\n",
+  );
+  expect(stderr).toBe("");
+});
+
 test("implicit conversions of a shadowed Date method read the own property", async () => {
   const { stdout, stderr } = await run(`"use strict";
 const d = new Date(0);

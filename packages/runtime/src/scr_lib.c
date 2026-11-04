@@ -13821,9 +13821,54 @@ static const struct {
   {"setUTCFullYear", SCR_DATE_SET_UTC | SCR_DATE_SET_FULL_YEAR, 3},
 };
 
+/* Whether a checked-dynamic value is a primitive, the result ToPrimitive
+ * stops at. */
+static bool scr_date_primitive_value(const ScrDyn *d) {
+  switch (d->kind) {
+  case SCR_DYN_UNDEF: case SCR_DYN_NULL: case SCR_DYN_BOOL:
+  case SCR_DYN_NUM: case SCR_DYN_STR: case SCR_DYN_BIGINT: case SCR_DYN_SYMBOL:
+    return true;
+  default:
+    return false;
+  }
+}
+
+/* Date.prototype.toJSON converts its receiver with ToPrimitive(this,
+ * number) before reading toISOString: valueOf first, then toString when
+ * valueOf answers an object. A Date handle's own properties reach both
+ * through its ops, so a shadowed conversion decides the result here as it
+ * does in Node. +1, or NULL with the exception pending. */
+static ScrDyn *scr_date_to_json_primitive(ScrDyn *self) {
+  static const char message[] = "Cannot convert object to primitive value";
+  const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(self);
+  ScrDyn *primitive = ops->invoke(self->v.handle.ptr, self, "valueOf", NULL, 0, "toJSON");
+  if (!primitive) return NULL;
+  if (scr_date_primitive_value(primitive)) return primitive;
+  scr_dyn_release(primitive);
+  ScrDyn *text = ops->get ? ops->get(self->v.handle.ptr, "toString", 8) : NULL;
+  if (scr_exc_pending()) {
+    scr_dyn_release(text);
+    return NULL;
+  }
+  if (!text || !scr_dyn_is_callable(text)) {
+    scr_dyn_release(text);
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  scr_dyn_this_push_dyn(self);
+  primitive = scr_dyn_call(text, NULL, 0, "toJSON");
+  scr_dyn_this_pop();
+  scr_dyn_release(text);
+  if (!primitive) return NULL;
+  if (scr_date_primitive_value(primitive)) return primitive;
+  scr_dyn_release(primitive);
+  scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+  return NULL;
+}
+
 static ScrDyn *scr_native_date_invoke(void *ptr, ScrDyn *self, const char *method,
     ScrDyn *const *args, size_t argc, const char *what) {
-  (void)self; (void)what;
+  (void)what;
   double ms = ((ScrDate *)ptr)->ms;
   if (!strcmp(method, "getTime") || !strcmp(method, "valueOf")) return scr_dyn_new_num(ms);
   if (!strcmp(method, "toString") || !strcmp(method, scr_date_to_date_string_name) ||
@@ -13832,6 +13877,21 @@ static ScrDyn *scr_native_date_invoke(void *ptr, ScrDyn *self, const char *metho
                    : !strcmp(method, scr_date_to_date_string_name) ? scr_date_to_date_string(ms)
                    : !strcmp(method, "toUTCString")                ? scr_date_to_utc_string(ms)
                                                                    : scr_date_to_time_string(ms);
+    ScrDyn *result = scr_dyn_new_str(text);
+    scr_str_release(text);
+    return result;
+  }
+  if (!strcmp(method, "toJSON") && self && self->kind == SCR_DYN_HANDLE) {
+    ScrDyn *primitive = scr_date_to_json_primitive(self);
+    if (!primitive) return NULL;
+    bool is_number = primitive->kind == SCR_DYN_NUM;
+    double number = is_number ? primitive->v.num : 0;
+    scr_dyn_release(primitive);
+    /* A non-finite number converts to null; every other primitive falls
+     * through to toISOString, which reads the receiver's current time. */
+    if (is_number && !isfinite(number)) return scr_dyn_new_null();
+    ScrStr *text = scr_date_to_iso(((ScrDate *)ptr)->ms);
+    if (!text) return NULL;
     ScrDyn *result = scr_dyn_new_str(text);
     scr_str_release(text);
     return result;

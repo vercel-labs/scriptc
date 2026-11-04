@@ -4655,12 +4655,22 @@ export function collectClassShapeInner(
         "mixin constructors whose rest parameter does anything but forward (`super(...args)` as the first statement is the compiled shape)",
       );
     }
+    // A body-less constructor is an overload signature only while an
+    // implementation follows it. An AMBIENT class (`declare class`) has no
+    // implementation at all, so its constructor declarations ARE the
+    // published signature — the one tsc checked every call site against —
+    // and the last of them supplies the ABI.
+    const ambientCtor =
+      ctor === null && (ts.getCombinedModifierFlags(decl) & ts.ModifierFlags.Ambient) !== 0
+        ? (decl.members.nodes.filter(ts.isConstructorDeclaration).at(-1) ?? null)
+        : null;
+    const abiCtor = ctor ?? ambientCtor;
     // Constructor omitted on a derived class: it inherits the base's
     // (tsc types `new Derived(...)` against the inherited signature; the
     // synthesized constructor forwards the same params to super).
     const ctorParams: ParamShape[] =
-      ctor && !mixinForwarding
-        ? lowerer.paramShapes(ctor.parameters.nodes)
+      abiCtor && !mixinForwarding
+        ? lowerer.paramShapes(abiCtor.parameters.nodes)
         : (base?.ctorParams ??
           (callableBase || extendsDate || extendsArray ? [{ type: DYN, mode: "dynRest" }] : []));
     if (
@@ -4703,13 +4713,13 @@ export function collectClassShapeInner(
           ? { ownStaticFields: true as const }
           : {}),
         jsLength:
-          ctor?.parameters?.nodes.findIndex(
+          abiCtor?.parameters?.nodes.findIndex(
             (parameter) => parameter.initializer || parameter.dotDotDotToken,
           ) === -1
-            ? ctor.parameters.nodes.length
+            ? abiCtor.parameters.nodes.length
             : Math.max(
                 0,
-                ctor?.parameters?.nodes.findIndex(
+                abiCtor?.parameters?.nodes.findIndex(
                   (parameter) => parameter.initializer || parameter.dotDotDotToken,
                 ) ?? 0,
               ),
@@ -8510,6 +8520,21 @@ function lowerClassCtorInner(lowerer: Lowerer, info: ClassInfo): IrFunction {
           // pushed; the half-initialized ctor stays out of the body.
           if (!(e instanceof PoisonError)) throw e;
         }
+      } else if (info.ctorParams.length > 0) {
+        // An AMBIENT class declares its constructor's ABI without an
+        // implementation (the `declare class` shape). The parameters exist
+        // so a call site passes and evaluates exactly what the declaration
+        // publishes; the construction body is the field initialization.
+        info.ctorParams.forEach((shape, i) => {
+          const local: IrLocal = {
+            id: `arg${i}.0`,
+            name: `arg${i}`,
+            type: shape.type,
+            mutable: false,
+          };
+          lowerer.ctx.locals.push(local);
+          params.push({ localId: local.id, name: local.name, type: shape.type });
+        });
       }
       body.push(...lowerer.fieldInitStmts(info, thisLocal));
     }

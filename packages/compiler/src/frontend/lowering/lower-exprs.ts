@@ -268,10 +268,34 @@ export function lowerExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     }
     if (lowered.type.kind === "void" && (lowerer.typeOf(expr).flags & ts.TypeFlags.Never) !== 0)
       lowerer.neverValued.add(lowered);
+    if (ts.isAwaitExpression(expr)) lowered = markSuspension(lowerer, lowered, locOf(expr));
     return lowered;
   } finally {
     lowerExprDepth--;
   }
+}
+
+/** Record that the enclosing arrow resumed: the assignment runs right after
+ * the await's value lands, so anything the body does later reads it. The
+ * await expression itself is the sequence's result, which keeps void awaits
+ * representable. */
+function markSuspension(lowerer: Lowerer, awaited: IrExpr, loc: SrcLoc): IrExpr {
+  const flag = lowerer.ctx.suspendedFlag;
+  if (!flag) return awaited;
+  return {
+    kind: "seqExpr",
+    stmts: [
+      {
+        kind: "assign",
+        localId: flag.id,
+        value: { kind: "boolLit", value: true, type: BOOL, loc },
+        loc,
+      },
+    ],
+    result: awaited,
+    type: awaited.type,
+    loc,
+  };
 }
 
 /** `number | undefined` from a NaN-coded double whose slot never holds a

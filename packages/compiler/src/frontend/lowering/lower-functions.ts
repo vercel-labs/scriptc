@@ -217,6 +217,24 @@ function contextualTypeParameterSymbols(
   return symbols;
 }
 
+/** True when the arrow is the callee of a call: it runs where the call
+ * appears, not later, when whoever received it invokes it. */
+function invokedOnTheSpot(node: ts.ArrowFunction): boolean {
+  let callee: ts.Node = node;
+  for (let parent = callee.parent; parent; callee = parent, parent = parent.parent) {
+    if (
+      ts.isParenthesizedExpression(parent) ||
+      ts.isAsExpression(parent) ||
+      ts.isTypeAssertion(parent) ||
+      ts.isSatisfiesExpression(parent) ||
+      ts.isNonNullExpression(parent)
+    )
+      continue;
+    return ts.isCallExpression(parent) && parent.expression === callee;
+  }
+  return false;
+}
+
 /** Lifts an arrow function / function expression / nested declaration /
  * object-literal shorthand method to a module-level function and yields
  * the `closure` expression creating it. */
@@ -437,6 +455,28 @@ export function lowerLambda(
         funcType.restAbi === undefined &&
         !shapes.some((s) => s.mode === "dynRest"),
     );
+    // An async arrow a field initializer calls on the spot is where a
+    // membership test inside it can land on either side of a suspension:
+    // the fields defined after the initializer exist only once the
+    // constructor has returned, and an await that runs defers past that
+    // point. Record every suspension the arrow reaches so such a test can
+    // ask whether it has resumed yet.
+    if (
+      isAsync &&
+      ts.isArrowFunction(node) &&
+      lowerer.fieldInitializer !== null &&
+      invokedOnTheSpot(node)
+    ) {
+      const suspended = lowerer.declareHiddenLocal("%suspended", BOOL);
+      suspended.mutable = true;
+      prologue.push({
+        kind: "varDecl",
+        localId: suspended.id,
+        init: { kind: "boolLit", value: false, type: BOOL, loc },
+        loc,
+      });
+      fnCtx.suspendedFlag = suspended;
+    }
 
     const lowerBody = (): IrStmt[] => {
       let body: IrStmt[];

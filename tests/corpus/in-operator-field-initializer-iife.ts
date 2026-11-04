@@ -36,7 +36,9 @@ console.log(escape.getLater());
  * An immediately invoked async arrow that suspends resumes in a later job,
  * once the constructor has returned, so a membership test after the await
  * sees the fields defined after the initializer. A test before the await, or
- * past an await that does not run, still answers from the field order.
+ * past an await that does not run, still answers from the field order. When
+ * only some path through the test reaches an await, its position is decided
+ * while the program runs, not from the field order alone.
  */
 class Suspends {
   first = 1;
@@ -53,7 +55,24 @@ class Suspends {
     if (false) await null;
     return "later" in this;
   })();
+  conditionalAwait = (async () => {
+    if (this.first === 1) await null;
+    return "later" in this;
+  })();
+  skippedConditionalAwait = (async () => {
+    if (this.first === 0) await null;
+    return "later" in this;
+  })();
   expressionBody = (async () => (await null, "later" in this))();
+  operandAwait = (async () => await ("later" in this))();
+  branchAwait = (async () => {
+    if (this.first === 0) {
+      await null;
+      return "later" in this;
+    } else {
+      return "later" in this;
+    }
+  })();
   later = 2;
 }
 
@@ -62,6 +81,10 @@ console.log(
   await suspends.beforeAwait,
   await suspends.afterAwait,
   await suspends.skippedAwait,
+  await suspends.conditionalAwait,
+  await suspends.skippedConditionalAwait,
   await suspends.expressionBody,
+  await suspends.operandAwait,
+  await suspends.branchAwait,
   "later" in suspends,
 );

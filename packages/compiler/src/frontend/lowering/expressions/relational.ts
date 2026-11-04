@@ -1814,49 +1814,76 @@ function immediatelyInvokedArrow(fn: ts.ArrowFunction): boolean {
  * initializer's position in the field order. An arrow the expression calls
  * on the spot is the exception: its body runs while the initializer does,
  * with the same `this`, so the field order still holds there — up to its
- * first `await`. An immediately invoked async arrow that suspends resumes
- * the rest of its body in a later job, once the constructor has returned,
- * where `this` holds every field (suspendsBefore). */
-function directlyInsideInitializer(initializer: ts.Node, node: ts.Node): boolean {
+ * `await`. An immediately invoked async arrow that suspends resumes the rest
+ * of its body in a later job, once the constructor has returned, where `this`
+ * holds every field. A suspension the test may not pass through leaves both
+ * positions reachable, so the answer comes from the instance at runtime. */
+function initializerPosition(initializer: ts.Node, node: ts.Node): "inside" | "after" | "either" {
+  let position: "inside" | "either" = "inside";
   for (let current: ts.Node | undefined = node; current; current = current.parent) {
-    if (current === initializer) return !ts.isFunctionLike(current);
+    if (current === initializer) return ts.isFunctionLike(current) ? "after" : position;
     if (ts.isFunctionLike(current)) {
-      if (!ts.isArrowFunction(current) || !immediatelyInvokedArrow(current)) return false;
-      if (suspendsBefore(current, node)) return false;
+      if (!ts.isArrowFunction(current) || !immediatelyInvokedArrow(current)) return "after";
+      const reach = awaitReachBefore(current, node);
+      if (reach === "always") return "after";
+      if (reach === "maybe") position = "either";
     }
+    // A loop turns the source order around: a later iteration runs the test
+    // after an await the first iteration reached, wherever the two sit in
+    // the body.
+    if (
+      (ts.isForStatement(current) ||
+        ts.isForInStatement(current) ||
+        ts.isForOfStatement(current) ||
+        ts.isWhileStatement(current) ||
+        ts.isDoStatement(current)) &&
+      containsAwait(current)
+    )
+      position = "either";
   }
-  return false;
+  return "after";
 }
 
-/** Whether an `await` in `fn`'s own body has run before `node` does, so the
- * test reaches it in a later job. Only an `await` that runs every path
- * counts: one inside a branch that may not run leaves the test at the
- * initializer's position, where the field order still holds. */
-function suspendsBefore(fn: ts.ArrowFunction, node: ts.Node): boolean {
-  if (!ts.isBlock(fn.body)) return awaitBefore(fn.body, node.getStart());
-  let child: ts.Node = node;
-  for (
-    let current: ts.Node | undefined = node.parent;
-    current !== undefined && current !== fn;
-    child = current, current = current.parent
-  ) {
-    if (!ts.isBlock(current)) continue;
-    for (const statement of current.statements.nodes) {
-      if (statement === child) break;
-      if (reachesAwait(statement)) return true;
-    }
-  }
-  return false;
+/** How far an `await` in `fn`'s own body stands before `node` does. */
+type AwaitReach = "always" | "maybe" | "never";
+
+function mergeAwaitReach(a: AwaitReach, b: AwaitReach): AwaitReach {
+  if (a === "always" || b === "always") return "always";
+  if (a === "maybe" || b === "maybe") return "maybe";
+  return "never";
 }
 
-/** Whether executing `node` always reaches an `await` in the same function:
- * a short-circuit operand, conditional arm, loop body or branch that may
- * not run does not count. */
-function reachesAwait(node: ts.Node): boolean {
+/** Whether executing `node` reaches an `await` in the same function: on every
+ * path, on some path, or never. A short-circuit operand, conditional arm,
+ * loop body or branch that may not run only makes the reach possible. A
+ * constant condition settles which arm runs. */
+function awaitReach(node: ts.Node): AwaitReach {
+  if (ts.isFunctionLike(node) || ts.isClassExpression(node) || ts.isClassDeclaration(node))
+    return "never";
+  if (ts.isAwaitExpression(node)) return "always";
+  if (ts.isConditionalExpression(node)) {
+    const condition = awaitReach(node.condition);
+    if (condition === "always") return "always";
+    if (node.condition.kind === ts.SyntaxKind.TrueKeyword) return awaitReach(node.whenTrue);
+    if (node.condition.kind === ts.SyntaxKind.FalseKeyword) return awaitReach(node.whenFalse);
+    const arms = mergeAwaitReach(awaitReach(node.whenTrue), awaitReach(node.whenFalse));
+    if (arms === "never") return "never";
+    return condition === "never" && arms === "always" ? "always" : "maybe";
+  }
+  if (ts.isIfStatement(node)) {
+    const condition = awaitReach(node.expression);
+    if (condition === "always") return "always";
+    if (node.expression.kind === ts.SyntaxKind.TrueKeyword) return awaitReach(node.thenStatement);
+    if (node.expression.kind === ts.SyntaxKind.FalseKeyword)
+      return node.elseStatement ? awaitReach(node.elseStatement) : "never";
+    const arms = mergeAwaitReach(
+      awaitReach(node.thenStatement),
+      node.elseStatement ? awaitReach(node.elseStatement) : "never",
+    );
+    if (arms === "never") return "never";
+    return condition === "never" && arms === "always" && node.elseStatement ? "always" : "maybe";
+  }
   if (
-    ts.isFunctionLike(node) ||
-    ts.isClassExpression(node) ||
-    ts.isClassDeclaration(node) ||
     ts.isForStatement(node) ||
     ts.isForInStatement(node) ||
     ts.isForOfStatement(node) ||
@@ -1865,60 +1892,131 @@ function reachesAwait(node: ts.Node): boolean {
     ts.isTryStatement(node) ||
     ts.isSwitchStatement(node)
   )
-    return false;
-  if (ts.isAwaitExpression(node)) return true;
-  if (ts.isConditionalExpression(node)) return reachesAwait(node.condition);
+    return containsAwait(node) ? "maybe" : "never";
   if (ts.isBinaryExpression(node)) {
     const kind = node.operatorToken.kind;
     if (
       kind === ts.SyntaxKind.AmpersandAmpersandToken ||
       kind === ts.SyntaxKind.BarBarToken ||
       kind === ts.SyntaxKind.QuestionQuestionToken
-    )
-      return reachesAwait(node.left);
+    ) {
+      const left = awaitReach(node.left);
+      if (left !== "never") return left;
+      const right = awaitReach(node.right);
+      return right === "always" ? "maybe" : right;
+    }
   }
-  if (ts.isIfStatement(node))
-    return (
-      node.elseStatement !== undefined &&
-      reachesAwait(node.thenStatement) &&
-      reachesAwait(node.elseStatement)
-    );
-  return ts.forEachChild(node, reachesAwait) === true;
+  let state: AwaitReach = "never";
+  ts.forEachChild(node, (child) => {
+    state = mergeAwaitReach(state, awaitReach(child));
+  });
+  return state;
 }
 
-/** Whether an `await` outside a nested function appears before `bound` in
- * `root`. An arrow with an expression body has no statements to walk, so
- * the test's position decides. */
-function awaitBefore(root: ts.Node, bound: number): boolean {
-  const visit = (node: ts.Node): boolean | undefined => {
-    if (node.getStart() >= bound) return undefined;
-    if (ts.isFunctionLike(node) || ts.isClassExpression(node) || ts.isClassDeclaration(node))
-      return undefined;
-    if (ts.isAwaitExpression(node)) return true;
-    return ts.forEachChild(node, visit);
-  };
-  return ts.forEachChild(root, visit) === true;
+/** Whether an `await` outside a nested function appears anywhere in `node`. */
+function containsAwait(node: ts.Node): boolean {
+  if (ts.isFunctionLike(node) || ts.isClassExpression(node) || ts.isClassDeclaration(node))
+    return false;
+  if (ts.isAwaitExpression(node)) return true;
+  return ts.forEachChild(node, containsAwait) === true;
 }
 
-/** `'key' in this` inside one of the class's own field initializers. Node
- * defines a field only as that field's own initializer finishes, so the
- * answer is the fields defined BEFORE this one, plus every inherited field
- * (a base class's initializers ran first) and the prototype's members;
- * a name this class defines later, or never, is absent. Null when the test
- * is not a direct part of such an initializer. */
-function fieldInitializerAnswer(
+/** How an `await` in `fn`'s own body stands before `node` does, so the test
+ * either reaches it at the initializer's position or in a later job. */
+function awaitReachBefore(fn: ts.ArrowFunction, node: ts.Node): AwaitReach {
+  if (!ts.isBlock(fn.body)) return reachBefore(fn.body, node);
+  let state: AwaitReach = "never";
+  let child: ts.Node = node;
+  for (let current: ts.Node | undefined = node.parent; current && current !== fn;) {
+    if (ts.isBlock(current)) {
+      for (const statement of current.statements.nodes) {
+        if (statement === child) break;
+        state = mergeAwaitReach(state, awaitReach(statement));
+      }
+    }
+    child = current;
+    current = current.parent;
+  }
+  // An `await` earlier in the test's own statement also suspends it, and a
+  // statement may reach one on only some path.
+  return mergeAwaitReach(state, reachBefore(child, node));
+}
+
+/** Whether `node` is `ancestor` itself or sits inside it. */
+function within(ancestor: ts.Node, node: ts.Node): boolean {
+  for (let current: ts.Node | undefined = node; current; current = current.parent)
+    if (current === ancestor) return true;
+  return false;
+}
+
+function childNodes(node: ts.Node): ts.Node[] {
+  const children: ts.Node[] = [];
+  ts.forEachChild(node, (child) => {
+    children.push(child);
+  });
+  return children;
+}
+
+/** How an `await` in `root` stands before `target` evaluates: on every path
+ * that reaches it, on some path, or never. Evaluation order decides — a
+ * conditional's condition runs before the arm the target sits in, a call's
+ * earlier arguments before a later one, and an await's own operand before
+ * its suspension starts. */
+function reachBefore(root: ts.Node, target: ts.Node): AwaitReach {
+  if (root === target) return "never";
+  if (ts.isFunctionLike(root) || ts.isClassExpression(root) || ts.isClassDeclaration(root))
+    return "never";
+  let state: AwaitReach = "never";
+  if (ts.isAwaitExpression(root)) {
+    // The target is inside the operand: the suspension starts only after the
+    // operand finishes, so just the awaits nested in it come first.
+    for (const child of childNodes(root))
+      if (within(child, target)) state = mergeAwaitReach(state, reachBefore(child, target));
+    return state;
+  }
+  // The arms of a conditional and of an if statement are exclusive, and a
+  // loop's or a switch's remaining parts may run in another iteration: only
+  // the condition, or nothing at all, precedes the arm that holds the target.
+  if (ts.isConditionalExpression(root)) {
+    if (within(root.condition, target)) return reachBefore(root.condition, target);
+    const condition = awaitReach(root.condition);
+    for (const arm of [root.whenTrue, root.whenFalse])
+      if (within(arm, target)) return mergeAwaitReach(condition, reachBefore(arm, target));
+  }
+  if (ts.isIfStatement(root)) {
+    if (within(root.expression, target)) return reachBefore(root.expression, target);
+    const condition = awaitReach(root.expression);
+    for (const statement of [root.thenStatement, root.elseStatement])
+      if (statement && within(statement, target))
+        return mergeAwaitReach(condition, reachBefore(statement, target));
+  }
+  if (
+    ts.isForStatement(root) ||
+    ts.isForInStatement(root) ||
+    ts.isForOfStatement(root) ||
+    ts.isWhileStatement(root) ||
+    ts.isDoStatement(root) ||
+    ts.isSwitchStatement(root) ||
+    ts.isTryStatement(root)
+  )
+    return containsAwait(root) ? "maybe" : "never";
+  for (const child of childNodes(root)) {
+    if (within(child, target)) return mergeAwaitReach(state, reachBefore(child, target));
+    state = mergeAwaitReach(state, awaitReach(child));
+  }
+  return state;
+}
+
+/** What the declaration says about `key` while the field at `defined` is
+ * initializing: the members defined before that point, every inherited
+ * member, and the prototype's members are on `this`; a field defined later,
+ * or never, is not. */
+function declaredMembership(
   lowerer: Lowerer,
-  expr: ts.BinaryExpression,
+  info: ClassInfo,
   key: string,
-  receiverClass: string,
-): boolean | null {
-  const context = lowerer.fieldInitializer;
-  if (!context || context.info.def.name !== receiverClass) return null;
-  let receiver = expr.right;
-  while (ts.isParenthesizedExpression(receiver)) receiver = receiver.expression;
-  if (receiver.kind !== ts.SyntaxKind.ThisKeyword) return null;
-  if (!directlyInsideInitializer(context.initializer, expr)) return null;
-  const info = context.info;
+  defined: number,
+): boolean {
   if (OBJECT_PROTOTYPE_KEYS.has(key)) return true;
   if (
     lowerer.findMethodOn(info, key) !== null ||
@@ -1933,7 +2031,34 @@ function fieldInitializerAnswer(
   if (info.paramProps?.some((pp) => pp.name === key)) return false;
   const own = info.fieldOrder.findIndex((f) => f.name === key);
   if (own < 0) return false;
-  return own < context.index;
+  return own < defined;
+}
+
+/** `'key' in this` inside one of the class's own field initializers. Node
+ * defines a field only as that field's own initializer finishes, so the
+ * answer is the fields defined BEFORE this one, plus every inherited field
+ * (a base class's initializers ran first) and the prototype's members;
+ * a name this class defines later, or never, is absent. Null when the test
+ * is not part of such an initializer. "suspended" when a suspension the test
+ * may pass through leaves it either inside the initializer, with the field
+ * order, or in a later job, where every field is defined: the flag the
+ * enclosing arrow keeps decides which. */
+function fieldInitializerAnswer(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  key: string,
+  receiverClass: string,
+): { kind: "fixed"; value: boolean } | { kind: "suspended"; inside: boolean } | null {
+  const context = lowerer.fieldInitializer;
+  if (!context || context.info.def.name !== receiverClass) return null;
+  let receiver = expr.right;
+  while (ts.isParenthesizedExpression(receiver)) receiver = receiver.expression;
+  if (receiver.kind !== ts.SyntaxKind.ThisKeyword) return null;
+  const inside = declaredMembership(lowerer, context.info, key, context.index);
+  const position = initializerPosition(context.initializer, expr);
+  if (position === "after") return null;
+  if (position === "either") return { kind: "suspended", inside };
+  return { kind: "fixed", value: inside };
 }
 
 /** `"key" in v` — the key-presence test. Three lowered receivers:
@@ -2427,8 +2552,44 @@ export function lowerInExpression(
       classVerdict === "unknown"
         ? null
         : fieldInitializerAnswer(lowerer, expr, key, recv.type.className);
+    if (initializerAnswer?.kind === "suspended") {
+      // The test may run before the enclosing arrow's suspension (the field
+      // order answers) or after it, once the constructor has returned (the
+      // built instance answers). The arrow's own flag says which.
+      const inside: IrExpr = { kind: "boolLit", value: initializerAnswer.inside, type: BOOL, loc };
+      const insideExpr: IrExpr = isSafeToDiscard(recv)
+        ? inside
+        : {
+            kind: "seqExpr",
+            stmts: [{ kind: "exprStmt", expr: recv, loc }],
+            result: inside,
+            type: BOOL,
+            loc,
+          };
+      const flag = lowerer.ctx.suspendedFlag;
+      if (!flag) return insideExpr;
+      const previousInitializer = lowerer.fieldInitializer;
+      lowerer.fieldInitializer = null;
+      try {
+        return {
+          kind: "ternary",
+          cond: varRef(flag.id, BOOL, loc),
+          then: lowerInExpression(lowerer, expr, loc),
+          else_: insideExpr,
+          type: BOOL,
+          loc,
+        };
+      } finally {
+        lowerer.fieldInitializer = previousInitializer;
+      }
+    }
     if (initializerAnswer !== null) {
-      const answer: IrExpr = { kind: "boolLit", value: initializerAnswer, type: BOOL, loc };
+      const answer: IrExpr = {
+        kind: "boolLit",
+        value: initializerAnswer.value,
+        type: BOOL,
+        loc,
+      };
       return isSafeToDiscard(recv)
         ? answer
         : {

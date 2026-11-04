@@ -275,6 +275,52 @@ static void age_to_old(Node *node) {
   check(scr_cyc_gen(scr_cyc_hdr(node)) == SCR_CYC_OLD, "survivor did not reach the old generation");
 }
 
+/* A turn whose nursery buffer is empty still runs the growth rule. The
+ * counters it re-arms count candidates, and a program that reaches a turn
+ * between every message keeps them below the trigger however much the heap
+ * grows in between, so a dead ring waiting in an older buffer must be
+ * collected when the heap grows past its level's fraction, not at the
+ * scheduled age. */
+static void check_empty_turn_keeps_growth_rule(void) {
+  size_t age_boundary = configured_nursery_threshold();
+  /* The run has to reach the growth fraction before the age rule's
+   * boundary, so a boundary of a few turns cannot tell the two apart. */
+  if (age_boundary < 64) return;
+  Node *ring = make_ring(8);
+  age_to_old(ring);
+  scr_collect_cycles(); /* the growth base is the heap this leaves */
+  release_live(ring);   /* a dead ring waiting in the old buffer */
+
+  size_t before = freed;
+  size_t turns = 0;
+  size_t cap = 1024;
+  size_t n = 0;
+  Node **keep = malloc(cap * sizeof *keep);
+  if (!keep) scr_trap("cycle test: out of memory");
+  for (; turns < age_boundary / 4 && freed == before && n < (size_t)1 << 18; turns++) {
+    scr_cyc_collect_scheduled(); /* a turn with nothing young to collect */
+    if (freed != before) break;
+    /* The allocations a turn makes between collection points, retained so
+     * only the growth rule can see them: released objects would buffer
+     * candidates and trip the arrival counters instead. */
+    size_t grow = scr_cyc_live / 2 + 64;
+    for (size_t i = 0; i < grow; i++) {
+      if (n == cap) {
+        cap *= 2;
+        keep = realloc(keep, cap * sizeof *keep);
+        if (!keep) scr_trap("cycle test: out of memory");
+      }
+      keep[n++] = make_leaf();
+    }
+  }
+  check(freed >= before + 8,
+        "a turn with an empty nursery put the grown heap's dead ring off to the scheduled age");
+  for (size_t i = 0; i < n; i++) release_live(keep[i]);
+  free(keep);
+  scr_collect_cycles(); /* settle what the releases left, so the next check
+                         * starts from a drained heap */
+}
+
 /* Fresh live leaves, each released once so the release path keeps running
  * its passes, until `target` objects have been freed or `limit` leaves have
  * been made. Returns how many it made. */
@@ -1876,6 +1922,7 @@ int main(void) {
   check_sparse_mature_backlog(2);
   check_age_reset_when_last_mature_root_dies();
   check_dead_backlog_rearms_release_trigger();
+  check_empty_turn_keeps_growth_rule();
   check_deep_ring();
   check_shared_edges_and_outside_owner();
   check_repeated_buffered_release();

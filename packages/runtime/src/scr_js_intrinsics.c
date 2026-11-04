@@ -385,6 +385,12 @@ static bool scr_js_accessor_brand_ok(const ScrDyn *self, const char *owner) {
   if (strcmp(owner, "RegExp.prototype") == 0)
     return self->kind == SCR_DYN_HANDLE && self->v.handle.tag == SCR_DYNH_REGEXP;
   if (strcmp(owner, "Symbol.prototype") == 0) return self->kind == SCR_DYN_SYMBOL;
+  /* A stack's `disposed` getter reads the slot of its own kind: the two
+   * stacks are separate handles, and neither answers the other's state. */
+  if (strcmp(owner, "DisposableStack.prototype") == 0)
+    return self->kind == SCR_DYN_HANDLE && self->v.handle.tag == SCR_DYNH_DISPOSABLE_STACK;
+  if (strcmp(owner, "AsyncDisposableStack.prototype") == 0)
+    return self->kind == SCR_DYN_HANDLE && self->v.handle.tag == SCR_DYNH_ASYNC_DISPOSABLE_STACK;
   if (strcmp(owner, "DataView.prototype") == 0) return scr_dyn_data_view_is(self);
   if (strcmp(owner, "ArrayBuffer.prototype") == 0) return scr_array_buffer_is(self);
   if (strcmp(owner, "SharedArrayBuffer.prototype") == 0) return scr_shared_array_buffer_is(self);
@@ -431,6 +437,68 @@ static ScrDyn *scr_js_accessor_slot_read(ScrDyn *self, const ScrJsIntrinsicRow *
     return NULL;
   }
   return result;
+}
+
+/* V8's rendering of a receiver in the accessor TypeErrors: a typed array as
+ * [object Int8Array] and so on, an array as [object Array], an object as
+ * #<Constructor> — #<Object> for an ordinary object — a prototype-less object
+ * as [object Object], and a primitive as String() gives it (undefined and
+ * null by name). The receiver is described, not coerced: a program's own
+ * `toString` never runs. */
+static void scr_js_put_receiver(ScrJsonBuf *b, const ScrDyn *value) {
+  char text[64];
+  int n;
+  switch (value->kind) {
+  case SCR_DYN_UNDEF: scr_jb_puts(b, "undefined"); return;
+  case SCR_DYN_NULL: scr_jb_puts(b, "null"); return;
+  case SCR_DYN_ARR: scr_jb_puts(b, "[object Array]"); return;
+  case SCR_DYN_HANDLE:
+    n = snprintf(text, sizeof text, "#<%s>", scr_dyn_handle_cls(value));
+    break;
+  case SCR_DYN_OBJ: {
+    /* V8 names an object after the constructor its prototype chain reaches:
+     * an ordinary object is #<Object>, an instance #<ItsClass>, and only an
+     * object with no prototype at all falls back to [object Object]. */
+    const char *name = scr_dyn_class_name(value);
+    if (name == NULL && !value->null_proto) name = "Object";
+    if (name == NULL) {
+      scr_jb_puts(b, "[object Object]");
+      return;
+    }
+    n = snprintf(text, sizeof text, "#<%s>", name);
+    break;
+  }
+  case SCR_DYN_TYPED_REF: {
+    /* A compiled class instance renders under its class name; any other
+     * deferred value is an ordinary object. */
+    const ScrStr *name = scr_dyn_typed_ref_class_name(value);
+    if (name == NULL) {
+      scr_jb_puts(b, "#<Object>");
+      return;
+    }
+    scr_jb_puts(b, "#<");
+    scr_jb_put_str(b, name);
+    scr_jb_putc(b, '>');
+    return;
+  }
+  case SCR_DYN_BYTES:
+    if (value->v.bytes->is_data_view) n = snprintf(text, sizeof text, "#<DataView>");
+    else n = snprintf(text, sizeof text, "[object %s]", scr_bytes_elem_name(value->v.bytes->elem));
+    break;
+  case SCR_DYN_SYMBOL: {
+    ScrStr *shown = value->v.symbol.render(value->v.symbol.value);
+    if (shown) scr_jb_put_str(b, shown);
+    scr_str_release(shown);
+    return;
+  }
+  default: {
+    ScrStr *shown = scr_dyn_to_string(value, NULL);
+    if (shown) scr_jb_put_str(b, shown);
+    scr_str_release(shown);
+    return;
+  }
+  }
+  scr_jb_write(b, text, n < (int)sizeof text ? (size_t)n : sizeof text - 1);
 }
 
 /* An accessor the table declares. A receiver that carries the internal slot
@@ -486,23 +554,17 @@ static ScrDyn *scr_js_accessor_call(ScrClosure *closure, ScrDyn *const *args, si
       return slot;
     }
   }
-  char message[256];
-  int length = snprintf(message, sizeof message, "Method %s %s.%s called on incompatible receiver ",
-                        getter ? "get" : "set", row->owner, row->key);
-  if (length < 0) length = 0;
-  if ((size_t)length < sizeof message) {
-    ScrStr *shown = scr_dyn_string_coerce_js(self);
-    if (shown) {
-      size_t room = sizeof message - (size_t)length;
-      size_t copy = shown->len < room - 1 ? shown->len : room - 1;
-      memcpy(message + length, shown->data, copy);
-      length += (int)copy;
-      scr_str_release(shown);
-    }
-    message[length] = '\0';
-  }
+  ScrJsonBuf message;
+  scr_jb_init(&message);
+  scr_jb_puts(&message, "Method ");
+  scr_jb_puts(&message, getter ? "get " : "set ");
+  scr_jb_puts(&message, row->owner);
+  scr_jb_putc(&message, '.');
+  scr_jb_puts(&message, row->key);
+  scr_jb_puts(&message, " called on incompatible receiver ");
+  scr_js_put_receiver(&message, self);
   scr_dyn_release(self);
-  scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)length);
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
   return NULL;
 }
 

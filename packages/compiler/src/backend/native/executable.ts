@@ -526,6 +526,10 @@ const RUNTIME_DEFINES: readonly {
   { define: "SCR_NATIVE_REACTIONS", when: (opts) => opts.webStreams },
   { define: "SCR_HANDLE_CLASSES", when: (opts) => opts.webStreams },
   { define: "SCR_YIN", when: (opts) => opts.youngNursery },
+  // scr_child.c's spawnSync result keeps the spawn errno and argv so
+  // `.error` answers Node's errnoException fields (errno, syscall, path,
+  // spawnargs); a program that never reads `.error` keeps the default build.
+  { define: "SCR_CHILD_ERR_FIELDS", when: (opts) => opts.childErrorFields },
   { define: "SCR_NODE_ISLANDS", when: (opts) => opts.nodeIsland },
 ];
 

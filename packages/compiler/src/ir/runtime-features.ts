@@ -1080,6 +1080,12 @@ const RUNTIME_FEATURE_RULES = {
   childOptionExt: rule({
     fns: ["cp.spawnSyncExt", "cp.spawnSyncExtEnv", "cp.execFileCwd"],
   }),
+  /** The spawnSync result's `.error` property answers Node's
+   * errnoException fields (errno, syscall, path, spawnargs). The fields
+   * ride a build of scr_child.c of their own (SCR_CHILD_ERR_FIELDS), so a
+   * program that never reads `.error` keeps the default object and the
+   * result container exactly as they were. */
+  childErrorFields: rule({ fns: ["spawnRes.error"] }),
   /** scr_cipher.c over the mbedTLS archive; DEP0182 reports through the
    * process-warning unit, and unknown output encodings render through the
    * inspect unit. WebCrypto's encrypt, decrypt, wrapKey and unwrapKey
@@ -1723,6 +1729,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     handleProps: false,
     childLifecycle: false,
     childOptionExt: false,
+    childErrorFields: false,
     declAdopt: false,
     typeOrigins: false,
     dynForAwait: false,

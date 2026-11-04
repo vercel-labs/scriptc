@@ -573,6 +573,26 @@ export function variantsFor(source) {
       defines: ["SCR_GLOBAL_HOST_ABSENT"],
     });
   }
+  // The spawnSync result's `.error` property: the build that keeps the spawn
+  // errno and argv on the result and stamps Node's errnoException fields
+  // (errno, syscall, path, spawnargs). A program that never reads `.error`
+  // keeps the default object and the result container exactly as they were.
+  if (source === "scr_child.c") {
+    variants.push({
+      id: "err-fields",
+      when: { childErrorFields: true },
+      defines: ["SCR_CHILD_ERR_FIELDS"],
+    });
+    // A program that passes the extended options AND reads `.error` needs
+    // both builds in one object: the extended core answers the result the
+    // error fields are stamped from, so a build with the options alone
+    // would drop them.
+    variants.push({
+      id: "cp-options-err-fields",
+      when: { childOptionExt: true, childErrorFields: true },
+      defines: ["SCR_CHILD_CP_OPTIONS", "SCR_CHILD_ERR_FIELDS"],
+    });
+  }
   return variants;
 }
 

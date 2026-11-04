@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { expect, test, vi } from "vitest";
-import { compile } from "../src/index.js";
+import { compile, deserializeModule } from "../src/index.js";
+import { emitLlvmModuleSource } from "../src/backend/llvm/emitter.js";
 import {
   firstReachRanks,
   functionLayoutKey,
@@ -235,13 +236,64 @@ console.log(first(Number(process.argv.length) + 3));
     ["third", "second", "first"].map((name) => `0 ${plain.get(name)}`).join("\n"),
     chain,
   );
-  const reached = startupSymbolsOf(laid);
-  expect(reached).toEqual(["first", "second", "third"].map((name) => plain.get(name)));
+  // The walk orders the tier on every platform. The section attribute and the
+  // marker line that carries the symbols to the link plan are how an ELF link
+  // is told, so those are asserted where the emitter writes them.
+  const startup = ["first", "second", "third"].map((name) => plain.get(name)!);
   const laidOut = definitions(laid);
-  for (const name of reached) {
+  expect(laidOut.map((d) => d.name).filter((name) => startup.includes(name))).toEqual(startup);
+  for (const name of startup) {
     expect(laidOut.find((d) => d.name === name)!.group, name).toBe("layout-0");
-    const header = new RegExp(`^define [^\\n]*@${name}\\([^\\n]*$`, "m").exec(laid)?.[0];
-    expect(header, name).toContain('section ".text.startup"');
+  }
+  if (process.platform === "linux") {
+    expect(startupSymbolsOf(laid)).toEqual(startup);
+    for (const name of startup) {
+      const header = new RegExp(`^define [^\\n]*@${name}\\([^\\n]*$`, "m").exec(laid)?.[0];
+      expect(header, name).toContain('section ".text.startup"');
+    }
+  }
+});
+
+// The Darwin and Windows builds emit the same order without the section, since
+// that flag is the emitter's, not the target triple's. This runs that path on
+// every host rather than only where the platform skips the section.
+test("a start-up tier without the ELF section keeps the order and writes no marker", async () => {
+  const chain = `
+function third(n: number): number { return n <= 1 ? 1 : n * third(n - 1); }
+function second(n: number): number { return third(n) + 1; }
+function first(n: number): number { return second(n) * 2; }
+console.log(first(Number(process.argv.length) + 3));
+`;
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-function-layout-startup-plain-"));
+  try {
+    const entry = join(dir, "main.ts");
+    await writeFile(entry, chain);
+    const irPath = join(dir, "main.ir.json");
+    const lowered = await compile(entry, { outDir: dir, outPath: irPath, outputKind: "ir" });
+    expect(lowered.ok, JSON.stringify(lowered.diagnostics)).toBe(true);
+    const names = definitions(await emitLlvm(undefined, chain)).map((d) => d.name);
+    const startup = ["first", "second", "third"].map((short) =>
+      names.find((name) => new RegExp(`_${short}$`).test(name))!,
+    );
+    const emitted = emitLlvmModuleSource(deserializeModule(await readFile(irPath, "utf8")), {
+      pointerBits: 64,
+      functionLayout: parseFunctionLayout(startup.map((name) => `0 ${name}`).join("\n")),
+      startupSection: false,
+    });
+    const laid = typeof emitted === "string" ? emitted : emitted.join("");
+    expect(
+      definitions(laid)
+        .map((d) => d.name)
+        .filter((name) => startup.includes(name)),
+    ).toEqual(startup);
+    expect(startupSymbolsOf(laid)).toEqual([]);
+    for (const name of startup) {
+      const header = new RegExp(`^define [^\\n]*@${name}\\([^\\n]*$`, "m").exec(laid)?.[0];
+      expect(header, name).toBeDefined();
+      expect(header, name).not.toContain('section ".text.startup"');
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });
 

@@ -4,6 +4,7 @@ import { markInferredFactChecks, shapeOverlayFileNames } from "../shape-inferenc
 import { npmStaticPackageOfPath } from "../npm-static.js";
 import { globalMemberValue } from "./global-values.js";
 import { unionNarrowFailureMessage } from "./union-narrow.js";
+import { lowerConstructorFunctionNew } from "./constructor-functions.js";
 import { fenceLocation } from "../flow/index.js";
 import {
   arrayClassFieldsFn,
@@ -14543,6 +14544,10 @@ export class Lowerer {
     if (staged) return expected ? this.coerceInto(node, staged, expected) : staged;
     if (expected) {
       if (ts.isConditionalExpression(node)) return lowerTernary(this, node, expected);
+      if (ts.isNewExpression(node)) {
+        const factory = lowerConstructorFunctionNew(this, node, expected);
+        if (factory) return factory;
+      }
       const escaped = this.neverAssertionInto(node, expected);
       if (escaped) return escaped;
       const fresh = this.emptyCollectionFor(node, expected);

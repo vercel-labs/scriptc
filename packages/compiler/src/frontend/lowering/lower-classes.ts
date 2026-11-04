@@ -5,6 +5,7 @@ import {
   lowerIteratorNew,
 } from "./iterator-prototype.js";
 import { lowerWrapperNew } from "./primitive-wrappers.js";
+import { constructorFunctionOf, lowerConstructorFunctionNew } from "./constructor-functions.js";
 import { lowerAsyncLocalStorageOptions } from "./builtins/async-context.js";
 import { shapeOverlayAnnotated } from "../shape-inference/index.js";
 import {
@@ -10616,6 +10617,14 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   {
     const hostGlobal = hostGlobalNameOfRead(lowerer, expr.expression);
     if (hostGlobal !== null) lowerer.hostGlobalFence(hostGlobal, expr.expression);
+  }
+  // A constructor function building the record its context names
+  // (constructor-functions.ts).
+  if (constructorFunctionOf(lowerer, expr) !== null) {
+    const contextual = lowerer.checker.getContextualType(expr);
+    const expected = contextual ? lowerer.mapTypeOf(contextual) : null;
+    const factory = expected ? lowerConstructorFunctionNew(lowerer, expr, expected) : null;
+    if (factory) return factory;
   }
   // The deprecated `new Buffer(...)` (containers/bytes.ts).
   {

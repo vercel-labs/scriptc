@@ -14,6 +14,7 @@ import { basename, join, relative } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, expect, test } from "vitest";
 import { compile } from "@scriptc/compiler";
+import type { IrModule } from "../../packages/compiler/src/ir/ir.js";
 import { hasFlowPragma } from "../../packages/compiler/src/frontend/flow/index.js";
 import { stripFlowTypes } from "./flow-strip.js";
 
@@ -264,4 +265,46 @@ export const pick = <T>(value: T): T => value;
   });
   const { stdout } = await run(await build(join(dir, "main.mjs")), []);
   expect(stdout).toBe("<p>hi</p> 3\n");
+});
+
+async function lowered(entry: string): Promise<IrModule> {
+  const outDir = tempDir("scriptc-flow-ir-");
+  const outPath = join(outDir, "program.ir.json");
+  const result = await compile(entry, { outPath, outDir, outputKind: "ir" });
+  expect(result.ok).toBe(true);
+  return JSON.parse(readFileSync(outPath, "utf8")) as IrModule;
+}
+
+test("only a constructor function the program calls with `new` alone, with a body of field writes, builds a record", async () => {
+  const ir = await lowered(join(flowRoot, "constructor-functions", "main.mjs"));
+  const factories = ir.functions
+    .map((f) => /^%new\.(\w+)/.exec(f.name)?.[1])
+    .filter((name) => name !== undefined);
+  // Not ReadingPoint (reads `this`), ExtraPoint (a field the record lacks),
+  // AliasedPoint (used under another name), MethodPoint (its prototype),
+  // EarlyPoint (returns), CountingTag (reads `arguments`) nor LaterPoint
+  // (reads a local declared after the read).
+  expect(factories.sort()).toEqual(["OptionalPoint", "PlainPoint", "SwappedPoint"]);
+});
+
+test("a constructor function that a class extends keeps the object it constructs", async () => {
+  // The class definition throws at run time (extending a function is not
+  // supported), so only the lowering is compared.
+  const dir = project({
+    "points.js": `// @flow
+type Point = {x: number, y: number};
+function ParentPoint(this: $FlowFixMe, x: number, y: number) {
+  this.x = x;
+  this.y = y;
+}
+export class ChildPoint extends ParentPoint {}
+export function make(): Point {
+  const p: Point = new (ParentPoint: any)(1, 2);
+  return p;
+}
+`,
+    "main.mjs": 'import { make } from "./points.js";\nconsole.log(make());\n',
+  });
+  const ir = await lowered(join(dir, "main.mjs"));
+  expect(ir.functions.filter((f) => f.name.startsWith("%new.")).map((f) => f.name)).toEqual([]);
 });

@@ -48,7 +48,7 @@ child-process.ts:46:23 - error SC2020: 'spawnSync with a non-literal options arg
      |                       ^~~~~~~~~~~~
   47 | // A typed options value MAY enable the shell at run time, so its call takes
 
-  hint: pass the options inline so each member can be checked, or give them the SpawnSyncOptionsWithStringEncoding type (env and killSignal stay literal)
+  hint: pass the options inline so each member can be checked, or give them the SpawnSyncOptionsWithStringEncoding type (killSignal stays literal)
 
 child-process.ts:50:24 - error SC2020: 'spawnSync with a typed options value and separate arguments' is part of the standard library types but has no scriptc lowering yet
 

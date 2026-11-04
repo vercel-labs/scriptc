@@ -160,6 +160,9 @@ export class NativeCompiler {
   constructor(
     readonly toolchain: NativeToolchain,
     private readonly cache: NativeCache | null = null,
+    /** The compiler-level store: derivations of installed files that every
+     * build on this machine shares, even one whose build cache starts empty. */
+    private readonly state: NativeCache | null = null,
   ) {
     const evaluator = toolchain.comptimeExecutable;
     this.frontend = (entry, npmStatic, externalTypes, libraryNpmStatic, options) =>
@@ -215,14 +218,16 @@ export class NativeCompiler {
     return result;
   }
 
-  /** Runtime pack selections and verified artifact identities, kept in the
-   * cache. */
+  /** Runtime pack selections and verified artifact identities: what selecting
+   * from a pack's files returned depends only on those files, so the
+   * compiler-level store holds it for every build on this machine. Without
+   * that store the build cache holds it, as before. */
   private runtimePackStore(): RuntimePackStore | undefined {
-    const cache = this.cache;
-    if (cache === null) return undefined;
+    const store = this.state ?? this.cache;
+    if (store === null) return undefined;
     return {
-      read: (key) => cache.read("runtime-pack", key)?.toString("utf8") ?? null,
-      write: (key, text) => cache.write("runtime-pack", key, text),
+      read: (key) => store.read("runtime-pack", key)?.toString("utf8") ?? null,
+      write: (key, text) => store.write("runtime-pack", key, text),
     };
   }
 
@@ -695,8 +700,15 @@ export class NativeCompiler {
           stagedOutput,
         ];
         const linkArgs = linkArgsWith(lld.length !== 0);
-        // Host Linux links with lld run the linker job the driver would.
-        const jobs = LinkerJobs.open(this.cache, toolchain, lld, options.sanitize ?? false);
+        // Host Linux links with lld run the linker job the driver would. The
+        // job depends only on the driver and its environment, so the
+        // compiler-level store keeps it across builds.
+        const jobs = LinkerJobs.open(
+          this.state ?? this.cache,
+          toolchain,
+          lld,
+          options.sanitize ?? false,
+        );
         const job = jobs?.link(
           [...plan.inputs, stagedOutput, ...(mapArgs.length === 0 ? [] : [linkMap])],
           stage,

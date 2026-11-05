@@ -29,6 +29,7 @@ import type { Lowerer } from "../lowerer.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
 import { locOf } from "../../program.js";
 import { assertedOptionalExtension, hostedStorageView } from "./hosted-narrowing.js";
+import { nsMemberIdentOf } from "../lower-namespaces.js";
 
 /** The assertion node at the root of `node`, through parentheses; null
  * when `node` is not an (`as` / `<T>`) assertion. */
@@ -226,11 +227,15 @@ export function applyDeferredAssertion(
 
 /** The binding `node` names, through parentheses and the non-null
  * assertion: `(x).member` and `x!.member` read the same binding `x` does.
- * Null for any other receiver expression. */
-function bindingIdentifier(node: ts.Expression): ts.Identifier | null {
+ * A namespace-import member (`ns.x`) names the exporter's binding: the
+ * checker types the access at the exported assertion, while the lowering
+ * reads the exporter's global, so its member name resolves like a bare
+ * reference. Null for any other receiver expression. */
+function bindingIdentifier(lowerer: Lowerer, node: ts.Expression): ts.Identifier | null {
   let e = node;
   while (ts.isParenthesizedExpression(e) || ts.isNonNullExpression(e)) e = e.expression;
-  return ts.isIdentifier(e) ? e : null;
+  if (ts.isIdentifier(e)) return e;
+  return ts.isPropertyAccessExpression(e) ? nsMemberIdentOf(lowerer, e) : null;
 }
 
 /** Whether the binding `ident` names DECLARES `member`: its annotation or
@@ -279,7 +284,7 @@ function assertedOptionalMember(
   if (assertion) {
     storage = lowerer.mapTypeOf(lowerer.typeOf(assertion.expression));
   } else {
-    binding = bindingIdentifier(receiver);
+    binding = bindingIdentifier(lowerer, receiver);
     if (binding === null) return null;
     storage = lowerer.peekLocal(binding)?.type ?? lowerer.globalOf(binding)?.type;
   }

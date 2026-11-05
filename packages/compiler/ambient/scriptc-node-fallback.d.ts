@@ -1682,6 +1682,66 @@ declare module "readline" {
     ): this;
     addListener(event: "error", listener: (err: Error) => void): this;
     addListener(event: "history", listener: (history: string[]) => void): this;
+    /* prependListener and prependOnceListener register the listener at
+     * the FRONT of the event's list, so it runs before the ones already
+     * there ('once' entries still leave after their one call). */
+    prependListener(event: "line", listener: (input: string) => void): this;
+    prependListener(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
+    prependListener(event: "error", listener: (err: Error) => void): this;
+    prependListener(event: "history", listener: (history: string[]) => void): this;
+    prependOnceListener(event: "line", listener: (input: string) => void): this;
+    prependOnceListener(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
+    prependOnceListener(event: "error", listener: (err: Error) => void): this;
+    prependOnceListener(event: "history", listener: (history: string[]) => void): this;
+    /* removeListener/off remove the LAST registration of that same
+     * function (a once registration leaves as the listener itself); an
+     * event with nothing left drops out of eventNames(). */
+    removeListener(event: "line", listener: (input: string) => void): this;
+    removeListener(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
+    removeListener(event: "error", listener: (err: Error) => void): this;
+    removeListener(event: "history", listener: (history: string[]) => void): this;
+    off(event: "line", listener: (input: string) => void): this;
+    off(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
+    off(event: "error", listener: (err: Error) => void): this;
+    off(event: "history", listener: (history: string[]) => void): this;
+    removeAllListeners(
+      event?:
+        | "line"
+        | "close"
+        | "pause"
+        | "resume"
+        | "error"
+        | "history"
+        | "SIGINT"
+        | "SIGTSTP"
+        | "SIGCONT",
+    ): this;
+    /* listenerCount counts the listeners of the event (the async
+     * iterator's own count too); with a function only that function's
+     * registrations. eventNames answers the events that have a listener,
+     * in first-registration order: every readline event name is a string,
+     * so the array is string[] rather than EventEmitter's
+     * (string | symbol)[]. */
+    listenerCount(event: "line", listener?: (input: string) => void): number;
+    listenerCount(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener?: () => void,
+    ): number;
+    listenerCount(event: "error", listener?: (err: Error) => void): number;
+    listenerCount(event: "history", listener?: (history: string[]) => void): number;
+    eventNames(): string[];
     [Symbol.asyncIterator](): AsyncIterableIterator<string>;
     [Symbol.dispose](): void;
   }
@@ -1800,6 +1860,66 @@ declare module "readline/promises" {
     ): this;
     addListener(event: "error", listener: (err: Error) => void): this;
     addListener(event: "history", listener: (history: string[]) => void): this;
+    /* prependListener and prependOnceListener register the listener at
+     * the FRONT of the event's list, so it runs before the ones already
+     * there ('once' entries still leave after their one call). */
+    prependListener(event: "line", listener: (input: string) => void): this;
+    prependListener(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
+    prependListener(event: "error", listener: (err: Error) => void): this;
+    prependListener(event: "history", listener: (history: string[]) => void): this;
+    prependOnceListener(event: "line", listener: (input: string) => void): this;
+    prependOnceListener(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
+    prependOnceListener(event: "error", listener: (err: Error) => void): this;
+    prependOnceListener(event: "history", listener: (history: string[]) => void): this;
+    /* removeListener/off remove the LAST registration of that same
+     * function (a once registration leaves as the listener itself); an
+     * event with nothing left drops out of eventNames(). */
+    removeListener(event: "line", listener: (input: string) => void): this;
+    removeListener(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
+    removeListener(event: "error", listener: (err: Error) => void): this;
+    removeListener(event: "history", listener: (history: string[]) => void): this;
+    off(event: "line", listener: (input: string) => void): this;
+    off(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
+    off(event: "error", listener: (err: Error) => void): this;
+    off(event: "history", listener: (history: string[]) => void): this;
+    removeAllListeners(
+      event?:
+        | "line"
+        | "close"
+        | "pause"
+        | "resume"
+        | "error"
+        | "history"
+        | "SIGINT"
+        | "SIGTSTP"
+        | "SIGCONT",
+    ): this;
+    /* listenerCount counts the listeners of the event (the async
+     * iterator's own count too); with a function only that function's
+     * registrations. eventNames answers the events that have a listener,
+     * in first-registration order: every readline event name is a string,
+     * so the array is string[] rather than EventEmitter's
+     * (string | symbol)[]. */
+    listenerCount(event: "line", listener?: (input: string) => void): number;
+    listenerCount(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener?: () => void,
+    ): number;
+    listenerCount(event: "error", listener?: (err: Error) => void): number;
+    listenerCount(event: "history", listener?: (history: string[]) => void): number;
+    eventNames(): string[];
     [Symbol.asyncIterator](): AsyncIterableIterator<string>;
     [Symbol.dispose](): void;
   }

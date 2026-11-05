@@ -217,8 +217,6 @@ static void scr_inspect_custom_symbol_cleanup(void) {
 
 ScrSym *(*scr_sym_for_fn)(ScrStr *key) = NULL;
 
-ScrStr *(*scr_sym_registered_key_fn)(ScrSym *s) = NULL;
-
 void scr_dyn_install_inspect_custom_symbol(ScrDyn *key) {
   if (scr_inspect_custom_symbol) return;
   scr_inspect_custom_symbol = scr_dyn_retain(key);
@@ -11594,8 +11592,7 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
   case SCR_DYN_ARR: tag = "[object Array]"; break;
   case SCR_DYN_OBJ: tag = "[object Object]"; break;
   case SCR_DYN_HANDLE:
-    if (d->v.handle.tag == SCR_DYNH_WEAK_REF ||
-        (d->v.handle.tag >= SCR_DYNH_ABORT_SIGNAL &&
+    if ((d->v.handle.tag >= SCR_DYNH_ABORT_SIGNAL &&
          d->v.handle.tag <= SCR_DYNH_ABORT_CONTROLLER) || d->v.handle.tag == SCR_DYNH_EVENT_TARGET ||
         d->v.handle.tag == SCR_DYNH_CUSTOM_EVENT || d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER ||
         d->v.handle.tag == SCR_DYNH_WEAK_MAP || d->v.handle.tag == SCR_DYNH_WEAK_SET ||
@@ -12779,8 +12776,7 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
       scr_dyn_release(text);
       return out;
     }
-    if (d->v.handle.tag == SCR_DYNH_WEAK_REF ||
-        (d->v.handle.tag >= SCR_DYNH_ABORT_SIGNAL &&
+    if ((d->v.handle.tag >= SCR_DYNH_ABORT_SIGNAL &&
          d->v.handle.tag <= SCR_DYNH_ABORT_CONTROLLER) || d->v.handle.tag == SCR_DYNH_EVENT_TARGET ||
         d->v.handle.tag == SCR_DYNH_CUSTOM_EVENT || d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SET || d->v.handle.tag == SCR_DYNH_MAP ||
         d->v.handle.tag == SCR_DYNH_BLOB || d->v.handle.tag == SCR_DYNH_FILE ||

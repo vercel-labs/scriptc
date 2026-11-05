@@ -1,14 +1,12 @@
 // Builtin global functions read as values hold Node's functions: parseInt and
 // parseFloat are the Number statics' values, isNaN and isFinite convert with
 // ToNumber, Symbol makes symbols and has its statics, and Atomics is a
-// namespace object whose operations run. WeakRef is not here: `new WeakRef`
-// lowers (9213-weakref-same-job.ts), and a WeakRef taken as a value is an
-// identity token, whose typeof diverges from Node's function.
+// namespace object whose operations run.
 function named(name) {
   return globalThis[name];
 }
 
-const values = { parseInt, parseFloat, isNaN, isFinite, Symbol, eval, escape, unescape };
+const values = { parseInt, parseFloat, isNaN, isFinite, Symbol, eval, escape, unescape, WeakRef };
 for (const key of Object.keys(values)) {
   const value = values[key];
   console.log(key, typeof value, value.name, value.length, value === named(key));

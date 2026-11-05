@@ -7,7 +7,7 @@
  * - Symbol makes a symbol whose description is its argument's ToString, or
  *   one without a description when the argument is undefined.
  * - eval throws the EvalError a direct call throws (code-generation.ts).
- * - escape, unescape and AsyncDisposableStack have no lowering:
+ * - escape, unescape, WeakRef and AsyncDisposableStack have no lowering:
  *   their values have Node's name and length and throw SC2020 when called
  *   or constructed, as their direct uses refuse. */
 import {
@@ -31,6 +31,7 @@ import { CODE_GENERATION_DISALLOWED } from "./code-generation.js";
 const UNLOWERED: ReadonlyMap<string, number> = new Map([
   ["escape", 1],
   ["unescape", 1],
+  ["WeakRef", 1],
   ["AsyncDisposableStack", 0],
 ]);
 

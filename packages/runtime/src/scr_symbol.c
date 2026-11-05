@@ -46,10 +46,6 @@ void *scr_sym_retain_v(void *p) { return scr_sym_retain(p); }
 void scr_sym_release_v(void *p) { scr_sym_release(p); }
 
 ScrSym *scr_sym_new(ScrStr *desc) {
-  /* Every symbol this unit creates comes through here, so the registry check
-   * units outside it use (scr_sym_registered_key_fn) is live from the first
-   * symbol on — including the first one Symbol.for registers. */
-  scr_sym_registered_key_fn = scr_sym_key_for;
   ScrSym *s = malloc(sizeof(ScrSym));
   if (!s) {
     scr_trap("scriptc: out of memory\n");
@@ -143,6 +139,13 @@ static void scr_sym_registry_cleanup(void) {
 }
 
 void scr_sym_for_install(void) { scr_sym_for_fn = scr_sym_for; }
+/* The registry check units outside this one ask for a WeakRef target
+ * (scr_dyn.h's scr_sym_registered_key_fn). Installed by the program that
+ * both uses symbols and constructs a WeakRef, never from this unit's own
+ * paths, so a symbol-free program keeps this unit unlinked. */
+void scr_sym_registered_key_install(void) {
+  scr_sym_registered_key_fn = scr_sym_key_for;
+}
 
 ScrSym *scr_sym_for(ScrStr *key) {
   for (ScrSym *s = g_sym_registry; s; s = s->reg_next) {

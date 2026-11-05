@@ -536,6 +536,10 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // Buffer.prototype as a value registers Symbol(nodejs.util.inspect.custom)
   // through the symbol unit's Symbol.for, which only these programs install.
   const usesBufferPrototypeObject = runtimeFeatures.bufferPrototypeObject;
+  // A WeakRef target may be a symbol, and only a registered one is invalid:
+  // the WeakRef unit asks the symbol unit's registry check, installed only in
+  // a program that both uses symbols and constructs a WeakRef.
+  const usesWeakRefSymbols = runtimeFeatures.weakRef && runtimeFeatures.symbol;
   // Programs that read Symbol.toPrimitive install ToNumber's
   // Symbol.toPrimitive step; the others do not link it.
   const usesToPrimitiveNumber = runtimeFeatures.toPrimitiveNumber;
@@ -608,6 +612,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   if (usesUrlIdna) emitter.declare(`declare void @scr_url_idna_install()`);
   if (usesDynBufferMembers) emitter.declare(`declare void @scr_bytes_buffer_members_install()`);
   if (usesBufferPrototypeObject) emitter.declare(`declare void @scr_sym_for_install()`);
+  if (usesWeakRefSymbols) emitter.declare(`declare void @scr_sym_registered_key_install()`);
   if (usesToPrimitiveNumber) emitter.declare(`declare void @scr_dyn_to_primitive_number_install()`);
 
   if (usesNodeTest) {
@@ -1334,6 +1339,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ...(usesUrlIdna ? [`  call void @scr_url_idna_install()`] : []),
     ...(usesDynBufferMembers ? [`  call void @scr_bytes_buffer_members_install()`] : []),
     ...(usesBufferPrototypeObject ? [`  call void @scr_sym_for_install()`] : []),
+    ...(usesWeakRefSymbols ? [`  call void @scr_sym_registered_key_install()`] : []),
     ...(usesToPrimitiveNumber ? [`  call void @scr_dyn_to_primitive_number_install()`] : []),
     ...(usesNet ? [`  call void @scr_net_install()`, `  call void @scr_net_dyn_install()`] : []),
     ...(usesNetLookup ? [`  call void @scr_net_lookup_install()`] : []),

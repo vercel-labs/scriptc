@@ -33,6 +33,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* The symbol unit's registry check (scr_symbol.c installs its
+ * scr_sym_registered_key_install from the emitted program when it both uses
+ * symbols and constructs a WeakRef). NULL means no symbol exists yet, so any
+ * symbol target is unregistered. */
+ScrStr *(*scr_sym_registered_key_fn)(ScrSym *s) = NULL;
+
 typedef struct ScrWeakRef {
   size_t rc;
   /* The referent's identity, or NULL once the referent was freed. */
@@ -360,6 +366,10 @@ ScrDyn *scr_weakref_new(ScrDyn *target) {
   };
   static const ScrDynHandleOps ops = {
     .cls = "WeakRef",
+    /* String(ref) and inspect render through the ops tag: WeakRef is not one
+     * of scr_json.c's pinned handle tags, and adding it there would change
+     * that unit's code for every program. */
+    .to_string_tag = "WeakRef",
     .retain = &scr_weakref_retain,
     .release = &scr_weakref_release,
     .invoke = &scr_weakref_invoke,

@@ -226,14 +226,12 @@ export function declaredReturnType(
   // `() => void`), and throw-only callbacks are ordinary code
   // (`.action(() => { throw ... })`). `never` VALUES stay unmapped.
   if (retTsType.flags & ts.TypeFlags.Never) return VOID;
-  // A JS generator whose result the checker cannot infer (mutually
-  // recursive methods returning `yield*` of each other, as in yaml's
-  // Parser) has the return type `any`: a generator over untyped values.
-  if (
-    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
-    decl.asteriskToken &&
-    retTsType.flags & ts.TypeFlags.Any
-  )
+  // A generator whose result the checker cannot spell — a JS method
+  // returning `yield*` of itself (yaml's Parser), or a TypeScript
+  // annotation over a package generic alias the checker reduces to `any`
+  // (`Effect.fn.Return<number, never>`) — is a generator over untyped
+  // values: the channels are checked-dynamic, as `any` is everywhere.
+  if (decl.asteriskToken && retTsType.flags & ts.TypeFlags.Any)
     return {
       kind: "generator",
       ...(decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)

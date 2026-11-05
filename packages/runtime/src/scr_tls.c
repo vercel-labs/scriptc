@@ -203,6 +203,7 @@ static int scr_tls_parse_key(mbedtls_pk_context *pk, const char *pem, size_t len
 static void scr_tls_bad_material(const char *what, int err) {
   char detail[128];
   mbedtls_strerror(err, detail, sizeof detail);
+  scr_stdout_settle();
   fflush(stdout);
   fprintf(stderr, "scriptc: tls: failed to parse %s (%s)\n", what, detail);
   _Exit(1);
@@ -2443,6 +2444,19 @@ ScrHttpClientReq *scr_https_request_dyn(const ScrDyn *opts /*borrowed*/, bool au
   if (ca) scr_bytes_release(ca);
   scr_http_req_opts_free(&o);
   return req;
+}
+
+/* The options form of a client chosen at runtime (`const fn = c ?
+ * https.request : http.request`): the same walk, with the dial and the
+ * TLS options following `secure` — false is exactly http.request, whose
+ * options walk ignores TLS members like Node does. */
+ScrHttpClientReq *scr_http_request_dyn_secure(const ScrDyn *opts /*borrowed*/, bool auto_end,
+                                              bool secure, ScrClosure *cb /*moves, nullable*/,
+                                              ScrHttpRespFn fn,
+                                              ScrDyn *(*add_abort)(ScrDyn *signal,
+                                                                  ScrDyn *listener)) {
+  if (secure) return scr_https_request_dyn(opts, auto_end, cb, fn, add_abort);
+  return scr_http_request_dyn(opts, auto_end, cb, fn, add_abort);
 }
 
 /* https.request/get(url[, options][, cb]) — the URL's fields merged under

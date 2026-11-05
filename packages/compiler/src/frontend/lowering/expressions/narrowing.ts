@@ -44,6 +44,7 @@ import { literalValues } from "../../literal-values.js";
 import { literalUnionArm } from "../../union-discriminants.js";
 import { checkedArmExtraction } from "../coercions/unions.js";
 import {
+  assertedOptionalExtension,
   hostedStorageView,
   hostsAll,
   recordViewHosted,
@@ -440,6 +441,15 @@ function isPrimitivePrototypeValue(expr: IrExpr): boolean {
   return expr.kind === "dynKeyGet" && isPrimitivePrototypeValue(expr.value);
 }
 
+/** Whether `expr` is the DataView prototype value a JavaScript source read
+ * (dyn.dataViewPrototype), or one of its members: the value is the
+ * prototype OBJECT, and the interface's own bytes view is a different
+ * representation, so the checker's DataView type must not extract one. */
+export function isDataViewPrototypeValue(expr: IrExpr): boolean {
+  if (expr.kind === "libCall") return expr.fn === "dyn.dataViewPrototype";
+  return expr.kind === "dynKeyGet" && isDataViewPrototypeValue(expr.value);
+}
+
 /** Checker-driven union narrowing. tsc's control-flow analysis narrows a
  * union-typed reference at use sites (`if (r.kind === "ok") { ...r... }`
  * types `r` as the ok-arm inside the branch); the IR value is still the
@@ -485,6 +495,9 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     // prototype OBJECTS, though @types/node declares them with the wrapper
     // interface: extracting the wrapper's numeric value would throw.
     if (isPrimitivePrototypeValue(expr)) return expr;
+    // DataView.prototype (and its members) is the prototype OBJECT, though
+    // @types/node declares the interface: extracting the view would throw.
+    if (isDataViewPrototypeValue(expr)) return expr;
     // A process.versions entry declared as a string can be absent here.
     if (isOptionalProcessVersionsRead(lowerer, node))
       return lowerer.coerceToExpected(expr, lowerer.withUndefinedArm(STRING));
@@ -1513,15 +1526,28 @@ export function lowerAsExpression(
     // retains primitive values and native class identity before validating
     // the requested shape; an assertion does not bypass runtime checks.
     const narrowed = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
+    const narrowedFlags = lowerer.typeOf(expr.expression).flags;
     const bridged =
       (narrowed &&
         (narrowed.kind === "f64" ||
           narrowed.kind === "bool" ||
           narrowed.kind === "string" ||
           narrowed.kind === "object" ||
-          narrowed.kind === "dyn")) ||
+          narrowed.kind === "dyn" ||
+          // A control-flow test (`typeof e === "object" && "code" in e`)
+          // or a structural predicate narrowed the binding to the shape
+          // the assertion names. caughtRead crosses those as a
+          // checked-dynamic value — the same read an unnarrowed binding
+          // takes — so the assertion's own checked bridge validates it.
+          narrowed.kind === "record" ||
+          narrowed.kind === "union")) ||
       // `catch (e: any)`: the binding reads as its checked-dynamic value.
-      (narrowed === null && (lowerer.typeOf(expr.expression).flags & ts.TypeFlags.Any) !== 0);
+      // An intersection (`object & Record<"code", unknown>`) or an
+      // unmapped object shape has no IR type either; caughtRead crosses
+      // it the same way.
+      (narrowed === null &&
+        (narrowedFlags & (ts.TypeFlags.Any | ts.TypeFlags.Object | ts.TypeFlags.Intersection)) !==
+          0);
     if (!bridged) lowerer.unsupported("SC1063", expr);
   }
   // `{ ...message, content } as T`: the program claimed the literal's shape,
@@ -1660,6 +1686,24 @@ export function lowerAsExpression(
       inner.type.kind === "record" &&
       target?.kind === "record" &&
       recordViewHosted(lowerer, inner.type.shapeId, target.shapeId)
+    ) {
+      lowerer.layoutKeptNodes.add(expr);
+      return inner;
+    }
+    // `const { icons } = item as Base & { icons?: unknown }`: the
+    // assertion only ADDS optional members to the record the value has,
+    // and Node erases it, so the pattern reads the properties off the
+    // value itself. The added members have no slot in the stored layout:
+    // the read answers them through the layout's kept source
+    // (assertedOnlyFieldRead), where a width copy would answer its own
+    // absent slot with undefined. The kept source is also why the binding
+    // is not reported as a copy (layoutKeptNodes): a write to an added
+    // member is refused where it happens (assertedOnlyMemberWrite).
+    if (
+      inner.type.kind === "record" &&
+      target &&
+      constSourceUse(expr) &&
+      assertedOptionalExtension(lowerer, inner.type, target)
     ) {
       lowerer.layoutKeptNodes.add(expr);
       return inner;
@@ -2143,4 +2187,28 @@ function adoptingCast(
     type: target,
     loc,
   };
+}
+
+/** Whether this assertion only FEEDS a `const` binding: it is a binding
+ * pattern's source (`const { a } = value as T`) or such a declaration's
+ * initializer, through parentheses. Node erases the assertion, so both
+ * read the members off the value itself; a `let` binding keeps its
+ * declared type (later assignments coerce into it). */
+function constSourceUse(assertion: ts.Expression): boolean {
+  let use: ts.Node = assertion;
+  for (;;) {
+    const parent = use.parent as ts.Node | undefined;
+    if (!parent || !ts.isParenthesizedExpression(parent) || parent.expression !== use) break;
+    use = parent;
+  }
+  const parent = use.parent as ts.Node | undefined;
+  if (parent === undefined || !ts.isVariableDeclaration(parent) || parent.initializer !== use) {
+    return false;
+  }
+  const list = parent.parent;
+  return (
+    list !== undefined &&
+    ts.isVariableDeclarationList(list) &&
+    (list.flags & ts.NodeFlags.Const) !== 0
+  );
 }

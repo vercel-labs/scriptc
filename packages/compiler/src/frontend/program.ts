@@ -140,6 +140,7 @@ import {
 } from "./tsc-codes.js";
 import { trackedFileExists, trackedReadFile, trackedRealpath } from "./input-tracker.js";
 import { earlyErrorDiagnostics7 } from "./early-errors.js";
+import { isBundledLibraryFile } from "./default-library.js";
 import { forkTargetPaths } from "./fork-target.js";
 import { workerTargetPaths } from "./worker-target.js";
 import {
@@ -675,8 +676,7 @@ function fallbackModuleRoots7(program: ts.Program, host: ts.Ts7Host): string[] {
   for (const name of names) {
     const path = tsgoPath(name);
     if (held.has(path) || path === ambient || path === overrides) continue;
-    if (/\/lib\.[^/]*\.d\.ts$/.test(path) && program.getSourceFileMetadata(name)?.isDefaultLibrary)
-      continue;
+    if (isBundledLibraryFile(program, name)) continue;
     for (const file of fallbackModulesNamedIn(host.sourceText(name) ?? ""))
       if (!held.has(file)) roots.add(file);
   }
@@ -982,7 +982,17 @@ function loadProgram7(
       : [nodeTypes]),
   ];
   const programRoots = [...coreRoots];
-  let program = host.createProgram([...programRoots, overridesDtsPath()], options);
+  // One project lineage for the whole load: the root-discovery passes and
+  // every rewrite update the same synthesized project, so the session
+  // carries every unchanged file's syntax tree into the next program.
+  const lineage: ts.Ts7ProjectLineage = {};
+  let program: ts.Program;
+  try {
+    program = host.createProgram([...programRoots, overridesDtsPath()], options, false, lineage);
+  } catch (error) {
+    host.releaseLineage(lineage);
+    throw error;
+  }
   try {
     for (let pass = 0; pass < 32; pass++) {
       const candidates = [
@@ -996,9 +1006,13 @@ function loadProgram7(
         (root, index) => !programRoots.includes(root) && candidates.indexOf(root) === index,
       );
       if (extraRoots.length === 0) break;
-      program.dispose();
       for (const root of extraRoots) programRoots.push(root);
-      program = host.createProgram([...programRoots, overridesDtsPath()], options);
+      // Create before disposing: the session retains the unchanged files
+      // from the snapshot the new program replaces, and the server's
+      // change-tracking baseline for the shared project stays alive.
+      const previous = program;
+      program = host.createProgram([...programRoots, overridesDtsPath()], options, false, lineage);
+      previous.dispose();
       if (pass === 31) throw new Error("static program-root discovery did not converge");
     }
     // Node 24 ships no temporal global, but TS 7 types it in an ESNext
@@ -1008,12 +1022,13 @@ function loadProgram7(
     // program keeps the identical lib set: the slice would add globals to
     // the checker's world for everyone.
     if (programNamesTemporal7(program)) {
-      program.dispose();
       options = {
         ...options,
         lib: [...((options.lib as string[] | undefined) ?? []), TEMPORAL_LIB],
       };
-      program = host.createProgram([...programRoots, overridesDtsPath()], options);
+      const previous = program;
+      program = host.createProgram([...programRoots, overridesDtsPath()], options, false, lineage);
+      previous.dispose();
     }
     // JSX: the program above checks the files as written; the program the
     // lowering compiles holds them with their JSX lowered.
@@ -1031,10 +1046,10 @@ function loadProgram7(
       tscWorld = {
         program: original,
         diagnostics,
-        projectWorld: errors ? host.createProgram(programRoots, options) : null,
+        projectWorld: errors ? host.createProgram(programRoots, options, false, lineage) : null,
       };
       for (const [file, lowered] of jsx.sources) host.addVirtualFile(file, lowered.text);
-      program = host.createProgram([...programRoots, overridesDtsPath()], options);
+      program = host.createProgram([...programRoots, overridesDtsPath()], options, false, lineage);
     } else if (projector !== undefined) {
       // The declaration-typed boundary: user files typed from package
       // declarations (decl-projection.ts). The tsc gate reads the original
@@ -1050,7 +1065,12 @@ function loadProgram7(
         for (const [file, text] of projection.files) host.addVirtualFile(file, text);
         host.addVirtualFile(projection.declFile, projection.declText);
         programRoots.push(projection.declFile);
-        program = host.createProgram([...programRoots, overridesDtsPath()], options);
+        program = host.createProgram(
+          [...programRoots, overridesDtsPath()],
+          options,
+          false,
+          lineage,
+        );
         // A rewrite the lowering world disagrees with (new errors) is
         // dropped for that file: the file lowers as it would without it.
         const dropped: string[] = [];
@@ -1063,8 +1083,15 @@ function loadProgram7(
           }
         }
         if (dropped.length > 0) {
-          program.dispose();
-          program = host.createProgram([...programRoots, overridesDtsPath()], options);
+          // Create before disposing (see the root-discovery loop).
+          const replacement = program;
+          program = host.createProgram(
+            [...programRoots, overridesDtsPath()],
+            options,
+            false,
+            lineage,
+          );
+          replacement.dispose();
           for (const file of dropped) declBoundaryNotes.push(declBoundaryDroppedDiag(file));
         }
         if (dropped.length === projection.files.size) {
@@ -1114,7 +1141,12 @@ function loadProgram7(
           if (!overlayOriginals.has(file))
             overlayOriginals.set(file, before.getSourceFile(file)?.text ?? null);
         for (const [file, text] of overlay) host.addVirtualFile(file, text);
-        program = host.createProgram([...programRoots, overridesDtsPath()], options);
+        program = host.createProgram(
+          [...programRoots, overridesDtsPath()],
+          options,
+          false,
+          lineage,
+        );
         if (tscWorld.program !== before) before.dispose();
         if (timeShapes)
           process.stderr.write(
@@ -1146,7 +1178,7 @@ function loadProgram7(
       ...(tscWorld === undefined ? {} : { tscWorld }),
       projectWorld: () =>
         (projectWorld ??= withFilesAsWritten(host, overlayOriginals, () =>
-          host.createProgram(programRoots, options),
+          host.createProgram(programRoots, options, false, lineage),
         )),
       disposeAll: () => {
         try {
@@ -1154,12 +1186,17 @@ function loadProgram7(
           tscWorld?.projectWorld?.dispose();
           tscWorld?.program.dispose();
         } finally {
-          program.dispose();
+          try {
+            program.dispose();
+          } finally {
+            host.releaseLineage(lineage);
+          }
         }
       },
     };
   } catch (error) {
     program.dispose();
+    host.releaseLineage(lineage);
     throw error;
   }
 }
@@ -1608,7 +1645,7 @@ function jsOpinionOf7(
   if (syntacticOf(sf).some((s) => s.code === d.code && s.pos === pos && s.end === end)) return null;
   if (nodeFree) return opinion;
   const node = diagnosticNode7(sf, pos, end);
-  if (opinion.site !== undefined && !opinion.site(node, d)) return null;
+  if (opinion.site !== undefined && !opinion.site(node, d, p)) return null;
   if (opinion.view === "island" && isStrictCode(node)) return null;
   return opinion;
 }

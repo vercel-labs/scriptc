@@ -203,6 +203,15 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         `a promisified builtin as a value (call '${expr.text}' directly)`,
       );
     }
+    if (projection?.kind === "client-function") {
+      // The client-function lowering works per call site (the module's
+      // protocol and secure defaults); there is no function object to read.
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        `an http client function alias as an escaping value (call '${expr.text}' directly)`,
+      );
+    }
     if (projection?.kind === "builtin-function") {
       if (!isJsSourceFile(ts.getSourceFileOfNode(expr))) {
         const callable = lowerer.lowerBuiltinCallableValue(

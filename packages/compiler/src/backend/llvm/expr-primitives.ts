@@ -1090,6 +1090,36 @@ function reservedCapacity(host: LlvmEmitterContext, length: IrExpr): string {
   return capacity;
 }
 
+/** The value of a numeric literal expression, negated forms included, or
+ * null for any other expression. */
+function numericLiteral(expr: IrExpr): number | null {
+  if (expr.kind === "numLit") return expr.value;
+  if (expr.kind === "unary" && expr.op === "-") {
+    const value = numericLiteral(expr.operand);
+    return value === null ? null : -value;
+  }
+  return null;
+}
+
+/** The elements of `e` when they are all numeric literals whose storage is
+ * the literal's data: for an int32 array each an exact int32 that is not -0
+ * (the values its slots hold). */
+function constantElementData(e: ExprOf<"arrayLit">, acc: ArrayAccess): number[] | null {
+  if (acc !== "i32" && acc !== "f64") return null;
+  const values: number[] = [];
+  for (const elem of e.elems) {
+    const value = numericLiteral(elem);
+    if (value === null) return null;
+    if (acc === "i32") {
+      if (!Number.isInteger(value)) return null;
+      if (value < INT32_RANGE.min || value > INT32_RANGE.max) return null;
+      if (Object.is(value, -0)) return null;
+    }
+    values.push(value);
+  }
+  return values;
+}
+
 export function emitContainerExpr(
   host: LlvmEmitterContext,
   e: ExprOf<
@@ -1119,6 +1149,23 @@ export function emitContainerExpr(
       const arr = B.tmp();
       const small = host.appendedArrayLiterals.has(e);
       const spreadSet = new Set(e.spreads ?? []);
+      // A module-level table of numeric literals that the IR proves is only
+      // read (ir/constant-tables.ts): its header and element data both go in
+      // the program image, so the program neither allocates nor copies the
+      // array. A literal whose length is set right after construction keeps
+      // the ordinary path.
+      if (host.staticArrayTables.has(e) && !host.reservedArrayLengths.has(e)) {
+        const acc = host.int32Allocations.has(e) ? "i32" : elemAccess(elem);
+        const values = constantElementData(e, acc);
+        if (values !== null) {
+          // The header is written in the image with the rest of the table
+          // (emit-module.ts): initialization stores nothing, so threads that
+          // share the image never race on it. The array is immortal
+          // (`rc == SIZE_MAX`), so releasing the value is a no-op.
+          const { header } = host.staticArrayData(e, values, acc === "i32" ? "i32" : "double");
+          return host.own({ name: header, type: e.type });
+        }
+      }
       // With spreads, storage starts at the plain elements before the first
       // spread, and each spread reserves exactly its source's length plus
       // the plain elements up to the next one (scr_arr_reserve_spread).

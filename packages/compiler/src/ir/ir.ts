@@ -726,6 +726,10 @@ export function isIdentityCollectionKey(t: IrType): boolean {
     // per evaluation), so pointer identity is JS function identity.
     // Closures are cycle-headered and traced like records.
     t.kind === "func" ||
+    // A promise is one object for its whole life, so pointer identity is
+    // JS promise identity; the runtime's scr_promise_{retain,release,trace}_v
+    // adapters already serve Map values and boxed captures.
+    t.kind === "promise" ||
     t.kind === "date"
   );
 }
@@ -1603,6 +1607,12 @@ export interface IrClassDef {
   /** Native instance to the string its inherited Symbol.toStringTag getter
    * answers, read by the runtime for an instance seen as `unknown`. */
   stringTagHelper?: string;
+  /** The class's accessor-backed members, nearest declaration first: one
+   * helper per name a `get` accessor at or above the class answers, which
+   * an instance's checked view installs so a field behind an accessor
+   * reads the value the getter answers. `member` is the accessor's IR
+   * name (`get:<name>`). */
+  viewAccessors?: { member: string; helper: string }[];
   /** Public JavaScript fields record their creation in the shared property
    * bag. Its descriptors preserve presence and insertion order independently
    * of native layout order; field values remain in their native slots. */
@@ -2104,6 +2114,12 @@ export interface IrParam {
   /** Callers pass an owned reference, which the body holds for its whole
    * run, even when the parameter is never rebound. */
   owned?: true;
+  /** Every call passes an array of exactly this many present elements, and
+   * neither the length nor the hole-free prefix changes during the run:
+   * element-count reads are this value, and an index proven in [0, length)
+   * names a present element. Specialized calls set it (constant-length
+   * clones); every other caller leaves it off. */
+  constLength?: number;
 }
 
 export interface IrGlobal {

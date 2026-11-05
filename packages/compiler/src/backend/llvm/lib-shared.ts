@@ -64,6 +64,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "assert.expectsErrDyn": "scr_assert_expects_err_dyn",
   "assert.throwsValidate": "scr_assert_throws_validate",
   "insp.jsonDyn": "scr_util_format_j",
+  "insp.jsonDynValue": "scr_util_format_j_value",
   "http.reqH2StreamOrThrow": "scr_http_req_h2_stream_or_throw",
   "intl.segmenterNew": "scr_intl_segmenter_new",
   "intl.segmenterRefusing": "scr_intl_segmenter_refusing",
@@ -279,6 +280,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "os.tmpdir": "scr_os_tmpdir",
   "process.argv": "scr_process_argv",
   "process.execArgv": "scr_process_exec_argv",
+  "process.allowedEnvFlags": "scr_process_allowed_env_flags",
   "process.platform": "scr_process_platform",
   "process.cwd": "scr_process_cwd",
   "process.pid": "scr_process_pid",
@@ -416,6 +418,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "process.stdio": "scr_process_stdio",
   "process.stdioSlot": "scr_process_stdio",
   "process.stdioWriteDyn": "scr_process_stdio_write_dyn",
+  "process.stdioWriteStr": "scr_stdio_write_str_dyn",
   "process.stderrWrite": "scr_process_stderr_write",
   "process.isTTY": "scr_process_is_tty",
   "process.isTTYValue": "scr_process_is_tty_value",
@@ -962,6 +965,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "spawnRes.stdout": "scr_spawn_res_stdout",
   "spawnRes.stderr": "scr_spawn_res_stderr",
   "child.killed": "scr_child_killed",
+  "child.spawnfile": "scr_child_spawnfile",
+  "child.spawnargs": "scr_child_spawnargs",
   "child.offSpawn": "scr_child_off_spawn",
   "child.offExit": "scr_child_off_exit",
   "child.offClose": "scr_child_off_close",
@@ -1250,6 +1255,12 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.promiseAllSettled": "scr_dyn_promise_all_settled",
   "dyn.promiseAny": "scr_dyn_promise_any",
   "dyn.promiseResolve": "scr_dyn_promise_resolve",
+  "handle.propsInstall": "scr_dyn_handle_props_install",
+  "handle.propsGrant": "scr_dyn_handle_props_grant",
+  "handle.propsDefineProps": "scr_dyn_define_props_hp",
+  "handle.propsGuard": "scr_dyn_handle_props_guard",
+  "handle.propsGuardList": "scr_dyn_handle_props_guard_list",
+  "handle.propsCheck": "scr_dyn_handle_props_check",
   // Promise statics with a foreign `this` (scr_js_promise_generic.c).
   "promise.genericStatic": "scr_js_promise_generic_call",
   "child.propsInstall": "scr_dyn_handle_props_install",
@@ -1425,6 +1436,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "emitter.listeners": "scr_emitter_listeners",
   "emitter.listenersDyn": "scr_emitter_listeners_dyn",
   "emitter.hasTyped": "scr_emitter_has_typed",
+  "emitter.hasDyn": "scr_emitter_has_dyn",
   "emitter.setMax": "scr_emitter_set_max",
   "emitter.setMaxChk": "scr_emitter_set_max_chk",
   "emitter.setDefaultMaxChk": "scr_emitter_set_default_max_chk",
@@ -1872,7 +1884,9 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.errorCaptureStackTraceFunction": "scr_dyn_error_capture_stack_trace_function",
   "dyn.functionApply": "scr_dyn_function_apply",
   "dyn.builtinMethod": "scr_dyn_builtin_method",
+  "dyn.builtinMethodValue": "scr_dyn_builtin_method_value",
   "dyn.stdlibPrototype": "scr_dyn_stdlib_prototype",
+  "dyn.dataViewPrototype": "scr_data_view_prototype",
   "dyn.classPrototype": "scr_dyn_class_prototype",
   "dyn.classBasePrototype": "scr_dyn_class_base_prototype",
   "dyn.classInherit": "scr_dyn_class_inherit",
@@ -2021,6 +2035,9 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   // object as process.stdio and call back from a nextTick.
   "process.stdioSlot",
   "process.stdioWriteDyn",
+  // The untyped one-string write reaches the same stream objects and calls
+  // a replacement, so it links the events unit too.
+  "process.stdioWriteStr",
   // stdin.resume() and stdin.read() start the runtime's stdin watch (a
   // resumed stream, a read demand above the held input, or a parked
   // for-await), which the loop services until end-of-input: without the
@@ -2191,6 +2208,8 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "http.requestDynCb",
   "https.requestDyn",
   "https.requestDynCb",
+  "https.requestFnDyn",
+  "https.requestFnDynCb",
   "http.requestUrlDyn",
   "http.requestUrlDynCb",
   "https.requestUrlDyn",

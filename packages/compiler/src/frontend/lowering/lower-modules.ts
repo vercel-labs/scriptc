@@ -149,7 +149,7 @@ import { streamClassAliasDecl } from "./lower-stream.js";
 import { isAssertClassNew } from "./assert-instances.js";
 import { stdlibGlobalAliasDecl, stdlibGlobalAliasNameOf, stdlibGlobalNameOf } from "./surfaces.js";
 import { isNativeBuiltinValueInitializer } from "./lower-builtin-values.js";
-import { isPromisePrototypeRead } from "./expressions/property-access.js";
+import { isDataViewPrototypeRead, isPromisePrototypeRead } from "./expressions/property-access.js";
 import {
   collectNamespaceStmt,
   nsMemberIdentOf,
@@ -2273,7 +2273,8 @@ export function collectGlobals(
           if (
             (nameNode === decl.name &&
               !decl.type &&
-              isPromisePrototypeRead(lowerer, decl.initializer)) ||
+              (isPromisePrototypeRead(lowerer, decl.initializer) ||
+                isDataViewPrototypeRead(lowerer, decl.initializer))) ||
             (isJsSourceFile(sf) &&
               nameNode === decl.name &&
               initializer &&

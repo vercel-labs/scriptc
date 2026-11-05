@@ -97,6 +97,7 @@ import {
 } from "./string-construction.js";
 import { emitStringInputs } from "./string-lifetimes.js";
 import { LOOPS } from "./loop-state.js";
+import { emitLaneLoop, laneLoopPlan } from "./lanes.js";
 import { loopUnrollAttachment, periodicGuardPeriod } from "./periodic-guards.js";
 import { containsLoop, loopAccessesTypedArrays } from "../loop-polls.js";
 import { emitConstantChoice, matchConstantChoice } from "./constant-choices.js";
@@ -1559,6 +1560,23 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           B.br(lc, backEdge);
         }
       };
+      // A planned loop runs whole vectors first and leaves the rest to its
+      // own copies, which start at the counter the lane loop leaves behind
+      // (lanes.ts). The plan is consulted here, before any copy is chosen:
+      // the speculative, int32 and strip-mined copies keep their values in
+      // layouts the lane body does not write.
+      const lane =
+        integerLoop !== null && integerSlot !== null && !stripMined && capturedLets.length === 0
+          ? laneLoopPlan(emitter, s)
+          : null;
+      if (lane !== null)
+        emitLaneLoop(
+          emitter,
+          lane,
+          integerLoop!.limitReceiver,
+          integerSlot!,
+          B.newLabel("lane.after"),
+        );
       emitter.emitLoopCopies(s, capturedLets.length === 0, le, (exit) => {
         // Speculative copies resume iterations inside the copy they enter,
         // which must keep its polls.

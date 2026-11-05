@@ -1228,6 +1228,16 @@ test("island packages: package data types and callable handles cross the boundar
   }
 });
 
+test("island packages: a server the island made is a handle", () => {
+  // The island owns the listening socket, so the http.Server and net.Server
+  // its package returns have no native counterpart: the analysis must lower
+  // them (and the address record read from them) with no diagnostics and
+  // name the package as an island.
+  const { coverage } = analyze(join(repoRoot, "tests/corpus", "island-server-handle", "main.ts"));
+  expect(coverage.diagnostics).toEqual([]);
+  expect(coverage.nodeIslands?.islands.map((i) => i.package)).toContain("server-pkg");
+});
+
 test(`every corpus program is 100% static (corpus and coverage agree${shardSuffix()})`, async () => {
   // The differential corpus compiles by definition; coverage must agree.
 

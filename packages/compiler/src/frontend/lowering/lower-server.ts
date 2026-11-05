@@ -56,6 +56,7 @@ import {
   TLS_SERVER_DOCUMENTED_OPTIONS,
 } from "./surfaces.js";
 import { conditionalSpreadOf, lowerDynObjectLiteral } from "./expressions/object-literals.js";
+import { islandOwnedBinding } from "./lower-node-island.js";
 import { resultIsDiscarded } from "./call-position.js";
 import { lowerCallbackArg as lowerCallbackArgShared } from "./callback-arg.js";
 import { pairsSnapshotHelper } from "./pairs-snapshot.js";
@@ -374,6 +375,35 @@ function coerceToHandle(lowerer: Lowerer, node: ts.Expression, want: IrType): Ir
     return { kind: "dynCheck", value: recv, type: want, loc: locOf(node) };
   }
   return recv;
+}
+
+/** Whether the receiver is the checked-dynamic value a binding took from
+ * an island (`const server = app.listen(...)`). The declared type can
+ * still name a Node handle, but the value is generally the ISLAND's
+ * object — the island's http.Server, whose listening socket no native
+ * handle stands for — so its member surface dispatches at run time into
+ * the handle (lowerDynReceiverMethodCall) instead of the static one.
+ *
+ * A native handle held in a checked slot keeps the static surface: its
+ * argument conversions honour Node's shapes (writeHead's header object,
+ * setHeader's name and value), which the generic dispatch cannot. Only a
+ * value the island produced needs the run-time route, and
+ * islandOwnedBinding names exactly those bindings. */
+function dynStoredReceiver(lowerer: Lowerer, node: ts.Expression): boolean {
+  let e: ts.Expression = node;
+  while (
+    ts.isParenthesizedExpression(e) ||
+    ts.isAsExpression(e) ||
+    ts.isNonNullExpression(e) ||
+    ts.isSatisfiesExpression(e)
+  )
+    e = e.expression;
+  if (!ts.isIdentifier(e)) return false;
+  const stored = lowerer.peekLocal(e)?.type ?? lowerer.globalOf(e)?.type;
+  if (stored === undefined || stored.kind !== "dyn") return false;
+  const symbol = lowerer.resolveValueSymbol(e) ?? lowerer.checker.getSymbolAtLocation(e);
+  const decl = symbol?.valueDeclaration;
+  return decl !== undefined && ts.isVariableDeclaration(decl) && islandOwnedBinding(lowerer, decl);
 }
 
 /** Statements that build a header record `out` (a pre-declared local of
@@ -3342,6 +3372,7 @@ export function lowerServerMethodCall(
 ): IrExpr | null {
   if (call.questionDotToken || (access.questionDotToken && !lowerer.chainHandled.has(access)))
     return null;
+  if (dynStoredReceiver(lowerer, access.expression)) return null;
   return (
     lowerServerCloseBind(lowerer, call, access) ??
     lowerNetServerMethodCall(lowerer, call, access) ??
@@ -3963,6 +3994,7 @@ export function lowerServerProperty(
   expr: ts.PropertyAccessExpression,
 ): IrExpr | null {
   if (expr.questionDotToken && !lowerer.chainHandled.has(expr)) return null;
+  if (dynStoredReceiver(lowerer, expr.expression)) return null;
   const loc = locOf(expr);
   // req.url / req.method — always-present strings on server requests;
   // req.headers.NAME — the `string | undefined` union (envGet's type).

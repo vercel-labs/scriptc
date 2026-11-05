@@ -14,6 +14,7 @@ import { jsGlobalValueByName } from "./global-values.js";
 import { lowerTupleAliasDecl, stripTypeWrappers } from "./typed-arguments.js";
 import {
   islandHandleBinding,
+  islandOwnedBinding,
   lowerIslandExpr,
   isIslandRequireSpec,
   lowerIslandRequireAtStatement,
@@ -6970,6 +6971,14 @@ export function lowerVarDecl(
   }
 
   if (ts.isIdentifier(decl.name) && islandHandleBinding(lowerer, decl.name)) {
+    const init = lowerer.coerceToExpected(lowerer.lowerExpr(decl.initializer), DYN);
+    const local = lowerer.declareLocal(decl.name, decl.name.text, DYN, isLet);
+    return { kind: "varDecl", localId: local.id, init, loc: locOf(decl) };
+  }
+
+  // `const server = app.listen(...)`: a value the island owns (see
+  // islandOwnedBinding) — the handle, not a native server or record.
+  if (ts.isIdentifier(decl.name) && islandOwnedBinding(lowerer, decl)) {
     const init = lowerer.coerceToExpected(lowerer.lowerExpr(decl.initializer), DYN);
     const local = lowerer.declareLocal(decl.name, decl.name.text, DYN, isLet);
     return { kind: "varDecl", localId: local.id, init, loc: locOf(decl) };

@@ -1,6 +1,6 @@
 // @flow
-// Where Flow annotations stop, a Flow module follows JavaScript, as React's
-// own base classes rely on: ES5 constructors and prototype methods with
+// Where Flow annotations stop, a Flow module follows JavaScript, as
+// pre-class code relies on: ES5 constructors and prototype methods with
 // unannotated parameters, functions that read `this`, expando members,
 // `Array(n)`, and Function.prototype.bind as a value.
 

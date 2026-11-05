@@ -27,7 +27,7 @@ interface FlowOptions {
    * checked-dynamic. */
   dynamicTypes?: readonly string[];
   /** Type names whose Flow type the project corrects, as the TypeScript
-   * type they compile as (`{ "OptimisticKey": "symbol" }` for a symbol
+   * type they compile as (`{ "Key": "symbol" }` for a symbol
    * Flow is told is `true`). */
   types?: Readonly<Record<string, string>>;
   /** Every project `.js` module is a Flow module, pragma or not (Flow's

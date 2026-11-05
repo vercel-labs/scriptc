@@ -1248,6 +1248,7 @@ class FlowTranslator {
     // A unique symbol is its declaring module's alias, which references import.
     if (override === "unique symbol") return name;
     if (override !== undefined) return `(${override})`;
+    // `React$Node` and the other `React$` types are Flow library globals.
     if (UNKNOWN_BUILTINS.has(name) || name.startsWith("React$")) return "unknown";
     switch (name) {
       case "$ReadOnly":

@@ -1,4 +1,5 @@
-// The patterns React's server renderer builds its request with.
+// A request built with a constructor function, and functions with a typed
+// `this` that receive it through `.call` and `forEach`.
 import {AsyncLocalStorage} from 'async_hooks';
 
 export type Task = {id: number, done: boolean};

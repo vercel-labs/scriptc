@@ -342,11 +342,11 @@ test("flow: true, or an object of all, dynamicTypes and types", () => {
   expect(config({ flow: false }).flow).toBeNull();
   expect(config({ flow: true }).flow).toEqual({ dynamicTypes: [], types: {}, all: false });
   const c = config({
-    flow: { all: true, dynamicTypes: ["ReactNode"], types: { Key: "unique symbol" } },
+    flow: { all: true, dynamicTypes: ["Node"], types: { Key: "unique symbol" } },
   });
   expect(c.diagnostics).toEqual([]);
   expect(c.flow).toEqual({
-    dynamicTypes: ["ReactNode"],
+    dynamicTypes: ["Node"],
     types: { Key: "unique symbol" },
     all: true,
   });

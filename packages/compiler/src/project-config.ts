@@ -430,7 +430,7 @@ export function parseProjectConfig(manifest: string, text: string): ProjectConfi
           problem(
             ["flow", key],
             `must map type names to TypeScript types, not ${shown(v)}`,
-            `write "types": { "OptimisticKey": "symbol" }`,
+            `write "types": { "Key": "symbol" }`,
           );
       } else if (key !== "dynamicTypes") {
         problem(
@@ -442,7 +442,7 @@ export function parseProjectConfig(manifest: string, text: string): ProjectConfi
         problem(
           ["flow", key],
           `must be an array of type names, not ${shown(v)}`,
-          `write "dynamicTypes": ["ReactNodeList"]`,
+          `write "dynamicTypes": ["Node"]`,
         );
       } else config.flow.dynamicTypes = v as string[];
     }

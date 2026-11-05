@@ -174,7 +174,7 @@ test("a runtime fence in a Flow module names its Flow source and line", async ()
 });
 
 test("a recursive generic union whose mapping fails compiles, and its generic code defers to a runtime fence", async () => {
-  // React's cache nodes: inside a generic function the union has no static
+  // A generic cache node: inside a generic function the union has no static
   // layout. The build succeeds (it once failed with an internal error), the
   // code that does not need the layout runs, and the generic code that does
   // throws the fence where it runs.

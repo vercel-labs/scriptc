@@ -1,6 +1,6 @@
 // @flow
-// The shapes of React's server renderer: two task kinds in one union, and
-// boundaries and a request that hold Sets of tasks.
+// A scheduler's shapes: two task kinds in one union, and boundaries and a
+// request that hold Sets of tasks.
 
 type Root = null;
 

@@ -1,6 +1,6 @@
 /* `new F(args)` of a plain constructor function whose instance a record
- * type describes (`const request: Request = new RequestInstance(...)`, the
- * pre-class idiom React builds its request with): when F's body only
+ * type describes (`const point: Point = new PointInstance(x, y)`, the
+ * pre-class idiom for building an object): when F's body only
  * declares locals and assigns `this.field = value`, the call is a factory
  * of the record. Each assigned value evaluates in source order into a
  * temporary, and the record is built from them once the body completes,

@@ -14,14 +14,7 @@ import {
 import { canonShadowHook, mapCanonical, type CanonMapNotes } from "../canon-map.js";
 import { Normalizer } from "../canon.js";
 import { resolveEntryExportSymbol } from "../lib-exports.js";
-import {
-  compactDeclOrigins,
-  inPackageFile,
-  recordOrigin,
-  slotOrigin,
-  type RecordOrigin,
-} from "./decl-origin.js";
-import { isDeclBoundaryFile } from "../decl-projection.js";
+import { compactDeclOrigins, recordOrigin, slotOrigin, type RecordOrigin } from "./decl-origin.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
 import {
   checkedTable,
@@ -55,7 +48,6 @@ import { keyedHelperName, moduleTagNumber, portableRelativePath } from "./stable
 import { positionTag, StructuralPositions } from "./structural-positions.js";
 import {
   activeNodeIslands,
-  isForeignType,
   setActiveNodeIslands,
   type NodeIslandSet,
 } from "../../node-islands/boundary.js";
@@ -67,8 +59,8 @@ import {
   stdioIntoGeneralStream,
 } from "./general-streams.js";
 import { extendAssertedRecordMembers } from "./assertion-members.js";
-import { jsDynamicDeclarations } from "./js-dynamic-objects.js";
-import { isJsSourceFileName } from "../tsc-codes.js";
+import { LoweringFacts } from "./lowering-facts.js";
+import { type AdmittedOpinion, isJsSourceFileName } from "../tsc-codes.js";
 import {
   builtinClassKind,
   builtinClassValue,
@@ -215,6 +207,7 @@ import { collectContractAnnotations, type ContractAnnotations } from "../contrac
 import { sanitizeUnregisteredClassTypes } from "./sanitize-class-types.js";
 import { UnregisteredClassTypes } from "./unregistered-class-types.js";
 import type { WidthLift } from "./width-lift.js";
+import type { UnionClassRoute } from "./union-retag.js";
 import {
   bindingInContext,
   captureContextBinding,
@@ -237,7 +230,7 @@ import { addUntypedIntegrityWords, guardClassAttributeWrites } from "./class-att
 import { inferredCollectionType } from "./js-collection-types.js";
 import { sloppyDynamicWrites } from "./frozen-records.js";
 import { guardFrozenWrites, markSloppyRecordWrites } from "./frozen-records.js";
-import { applyHandleProperties } from "./handle-properties.js";
+import { applyHandleProperties, handlePropertyScanRoots } from "./handle-properties.js";
 import { installBufferValue } from "./containers/bytes.js";
 import { installMutableBuffersArm } from "./buffers.js";
 import { ClassProtocols } from "./class-protocols.js";
@@ -358,7 +351,6 @@ import {
 } from "../../ir/ir.js";
 import { provenanceActive } from "../provenance-registry.js";
 import {
-  ambientDtsPath,
   canonicalBuiltinModule,
   type StartupCrash,
   cjsExportAssignmentOf,
@@ -371,11 +363,8 @@ import {
   isCjsJsFile,
   isJsSourceFile,
   isNodeEsmFile,
-  isFallbackDtsPath,
-  isNodeTypesPath,
   locOf,
   orderedImportsOf,
-  overridesDtsPath,
   npmStaticDepSf7,
   requireSpecOf,
   isJsWriteTarget7,
@@ -399,9 +388,14 @@ import {
   isFetchHandleType,
   jsOpenObjectType,
   mapType,
+  computeSymbolProvenance,
+  declaresLegacyUrl,
+  declaresWebAssemblyNamespace,
   ShapeRegistry,
+  noteScopeSensitiveMapping,
   type DeclaredOrderPriorityRef,
   typeKey,
+  type SymbolProvenance,
   type TypeMapperCtx,
   UnionRegistry,
   withUndefinedArm as withUndefinedArmCanonical,
@@ -608,7 +602,7 @@ import {
 import { lowerSpawnSyncCall, lowerSpawnCall, lowerExecFileCall } from "./builtins/child-process.js";
 import { lowerExecSyncCall } from "./builtins/child-process-sync.js";
 import {
-  isProcessEnv,
+  isAmbientProcessEnv,
   envValueType,
   lowerProcessEnvGet,
   refuseHeldEnvWrite,
@@ -735,6 +729,7 @@ import {
   lowerDestructuringDecl,
   lowerDestructuringAssignParts,
   lowerBindingPattern,
+  assertedOnlyFieldRead,
   checkBindingElement,
   bindPatternTarget,
   isParseArgsDynCheckerType,
@@ -835,6 +830,9 @@ export interface DynamicSlot {
    * slot, never reported as dynamic. */
   canonical?: true;
 }
+
+/** Stands for a null binding map in Lowerer.scopedTypeMemos. */
+const NO_BINDINGS: object = {};
 
 /** Localized failure: rounds of the declaration flush retry. */
 const MAX_DECLARATION_RETRIES = 16;
@@ -1028,6 +1026,10 @@ export interface LowerOptions {
    * resolution walk and named-import link checks): the program
    * compiles to that startup crash. */
   startupCrash?: StartupCrash | null;
+  /** LoadResult.admittedOpinions: every JavaScript checker diagnostic
+   * preflight admitted under an opinion row (tsc-codes.ts, JS_OPINIONS). A
+   * view's lowering path is gated on one of these records. */
+  admittedOpinions?: readonly AdmittedOpinion[] | undefined;
   /** LoadResult.inlineRequireCycleCalls. */
   inlineRequireCycleCalls?: ReadonlySet<ts.Node> | undefined;
   /** LoadResult.moduleEdges. */
@@ -1155,6 +1157,9 @@ export interface LowererMode {
    * pass saw an untyped value flow into a stream slot
    * (requiresDynNodeStreams). */
   dynNodeStreams?: boolean;
+  /** LoadResult.admittedOpinions: the JS opinion sites preflight admitted
+   * (opinionAt). */
+  admittedOpinions?: readonly AdmittedOpinion[] | undefined;
   /** LoadResult.inlineRequireCycleCalls. */
   inlineRequireCycleCalls?: ReadonlySet<ts.Node> | undefined;
   /** LoadResult.dynamicImportRejections. */
@@ -1184,6 +1189,11 @@ export interface LowererMode {
   /** LowerOptions.tierMode, shared by every pass. */
   tierMode?: TierMode;
   workerTargets?: readonly ts.SourceFile[];
+  /** The program facts every pass of ONE island round shares
+   * (lowering-facts.ts): the same program and moduleOrder, so a pass that
+   * omits it simply gets a private copy. lowerToIrWithIslands builds one and
+   * hands it to every Lowerer of the round. */
+  facts?: LoweringFacts;
 }
 
 function directExternalTypeSpecifiersByFile(
@@ -1371,11 +1381,20 @@ function lowerToIrWithIslands(
     options.externalTypeSpecifiersByFile ?? directExternalTypeSpecifiersByFile(externalTypes);
   const tierMode = options.tierMode ?? "auto";
   const runtimeOptionalReport = options.tierReport !== undefined;
+  // One island round lowers the same program through several passes:
+  // validation, reachable emit, the whole-slot comparison, the stream
+  // relowers, historical order and the coverage remainder. They differ only
+  // in their mode flags, so every fact they derive from the program alone is
+  // computed once here and shared (lowering-facts.ts); per-pass state stays
+  // private to the pass.
+  const facts = new LoweringFacts(program, moduleOrder, externalTypeSpecifiersByFile);
   const validation = new Lowerer(program, entry, moduleOrder, {
+    facts,
     frontendServices: options.frontendServices,
     projectCheckJs: options.projectCheckJs ?? false,
     targetPlatform,
     startupCrash,
+    admittedOpinions: options.admittedOpinions,
     inlineRequireCycleCalls,
     dynamicImportRejections: options.dynamicImportRejections,
     ffiImports,
@@ -1398,10 +1417,12 @@ function lowerToIrWithIslands(
     ffiImports.length === 0
       ? validation
       : new Lowerer(program, entry, moduleOrder, {
+          facts,
           frontendServices: options.frontendServices,
           projectCheckJs: options.projectCheckJs ?? false,
           targetPlatform,
           startupCrash,
+          admittedOpinions: options.admittedOpinions,
           inlineRequireCycleCalls,
           dynamicImportRejections: options.dynamicImportRejections,
           ffiImports,
@@ -1429,10 +1450,12 @@ function lowerToIrWithIslands(
   // keep push-down). A program that compiles never takes this path.
   if (result.diagnostics.length > 0 && reachableEmit.hasPartialDegradedTypes()) {
     const whole = new Lowerer(program, entry, moduleOrder, {
+      facts,
       frontendServices: options.frontendServices,
       projectCheckJs: options.projectCheckJs ?? false,
       targetPlatform,
       startupCrash,
+      admittedOpinions: options.admittedOpinions,
       inlineRequireCycleCalls,
       ffiImports,
       libraryCallbacks,
@@ -1466,10 +1489,12 @@ function lowerToIrWithIslands(
   let dynNodeStreams = reachableEmit.requiresDynNodeStreams;
   const streamPass = (dyn: boolean): Lowerer => {
     const general = new Lowerer(program, entry, moduleOrder, {
+      facts,
       frontendServices: options.frontendServices,
       projectCheckJs: options.projectCheckJs ?? false,
       targetPlatform,
       startupCrash,
+      admittedOpinions: options.admittedOpinions,
       inlineRequireCycleCalls,
       dynamicImportRejections: options.dynamicImportRejections,
       ffiImports,
@@ -1510,6 +1535,7 @@ function lowerToIrWithIslands(
   // without such a settled fence retain checker-backed IR exactly once.
   if (resultLowerer.requiresHistoricalOrderRelower) {
     const emit = new Lowerer(program, entry, moduleOrder, {
+      facts,
       frontendServices: options.frontendServices,
       projectCheckJs: options.projectCheckJs ?? false,
       ...(generalNodeStreams ? { generalNodeStreams: true } : {}),
@@ -1517,6 +1543,7 @@ function lowerToIrWithIslands(
       reachable,
       targetPlatform,
       startupCrash,
+      admittedOpinions: options.admittedOpinions,
       inlineRequireCycleCalls,
       dynamicImportRejections: options.dynamicImportRejections,
       ffiImports,
@@ -1667,6 +1694,7 @@ function lowerToIrWithIslands(
   if (options.coverage !== true) return result;
   const remainderPass = (general: boolean, dyn = dynNodeStreams): Lowerer =>
     new Lowerer(program, entry, moduleOrder, {
+      facts,
       frontendServices: options.frontendServices,
       projectCheckJs: options.projectCheckJs ?? false,
       ...(general ? { generalNodeStreams: true } : {}),
@@ -1676,6 +1704,7 @@ function lowerToIrWithIslands(
       alreadyFlushed: resultLowerer.flushedSymbols,
       degradedTypes: resultLowerer.degradedTypes,
       retriedSymbols: resultLowerer.retriedSymbols,
+      admittedOpinions: options.admittedOpinions,
       inlineRequireCycleCalls,
       dynamicImportRejections: options.dynamicImportRejections,
       targetPlatform,
@@ -1781,7 +1810,7 @@ export function staticImportNamespaceType(
       !isCjsJsFile(source, lowerer.program) &&
       lowerer.moduleOrder.includes(source)
     ) {
-      moduleId = `file:${tsgoPath(resolve(source.fileName))}`;
+      moduleId = `file:${lowerer.pathOf(source)}`;
     }
   }
   if (moduleId === null) return null;
@@ -2254,6 +2283,10 @@ function isAnonymousCallableDefinition(node: ts.Node): boolean {
  * property reads (`process.cwd`), or the binding an anonymous definition
  * initializes. Null when the source does not determine it. */
 export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
+  // Typed source cannot read a function's `name` (SC2020), so the names below
+  // are unobservable there; keeping them JavaScript-only leaves every typed
+  // program's output byte-identical.
+  const js = isJsSourceFile(ts.getSourceFileOfNode(node));
   let n: ts.Node = node;
   while (ts.isParenthesizedExpression(n)) n = n.expression;
   const seen = new Set<ts.Symbol>();
@@ -2265,6 +2298,22 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
     if (declaration && ts.isFunctionDeclaration(declaration)) {
       n = declaration;
       break;
+    }
+    // A binding element or a parameter holds the default's value only when the
+    // destructured value or the argument was undefined; otherwise it holds the
+    // source's value. Which one ran is a runtime fact, so a default never
+    // answers for the binding: when it runs, the definition it created was
+    // already named after the binding, and a named definition it references
+    // keeps the name it spells. A default the source overrides must not lend
+    // its name to the supplied value (`const [x = function unused() {}] =
+    // [function supplied() {}]` is "supplied"), so this answers null and the
+    // name read takes the runtime value's own name.
+    // Without a default the spelling is wrong for every value the binding can
+    // hold, but that shape has no pattern-default signature and is a separate
+    // change; it keeps the previous answer here.
+    if (js && declaration && (ts.isBindingElement(declaration) || ts.isParameter(declaration))) {
+      if (!declaration.initializer) break;
+      return null;
     }
     if (!declaration || !ts.isVariableDeclaration(declaration) || !declaration.initializer) break;
     let value: ts.Node = declaration.initializer;
@@ -2304,6 +2353,36 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
     }
     if (p && ts.isPropertyAssignment(p) && p.initializer === outer && ts.isIdentifier(p.name)) {
       return p.name.text;
+    }
+    // A default parameter names it (`function f(a = function () {})`), as
+    // does an object-assignment shorthand (`({ a = function () {} } = o)`)
+    // and a plain identifier assignment (`a = function () {}`). A member
+    // target never names one: only an identifier reference does.
+    if (js && p && ts.isParameter(p) && p.initializer === outer && ts.isIdentifier(p.name)) {
+      return p.name.text;
+    }
+    if (
+      js &&
+      p &&
+      ts.isShorthandPropertyAssignment(p) &&
+      p.objectAssignmentInitializer === outer &&
+      ts.isIdentifier(p.name)
+    ) {
+      return p.name.text;
+    }
+    if (
+      js &&
+      p &&
+      ts.isBinaryExpression(p) &&
+      p.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      p.right === outer &&
+      ts.isIdentifier(p.left) &&
+      // The native parser folds a parenthesized target into the target itself
+      // (`(a) = f`), leaving the source's `(` as a gap in front of it. A
+      // parenthesized target is not an IdentifierReference and names nothing.
+      p.getStart() === p.left.getStart()
+    ) {
+      return p.left.text;
     }
   }
   return null;
@@ -2386,6 +2465,9 @@ export class Lowerer {
     ts.SourceFile,
     { exports: boolean; moduleExports: boolean }
   >();
+  /** JavaScript checker diagnostics preflight admitted under an opinion row
+   * (LoadResult.admittedOpinions): the sites opinionAt answers for. */
+  readonly admittedOpinions: readonly AdmittedOpinion[];
   /** Inline require() calls whose module edge closes a require cycle
    * (LoadResult.inlineRequireCycleCalls). */
   readonly inlineRequireCycleCalls: ReadonlySet<ts.Node>;
@@ -2855,6 +2937,16 @@ export class Lowerer {
    * program's JavaScript adds to them (handle-properties.ts). */
   writesOntoChildren = false;
   childAdditions: { written: ReadonlySet<string>; everyName: boolean; any: boolean } | null = null;
+  /** Whether the program's JavaScript adds own properties to handles, asks
+   * their integrity, and which class members it shadows
+   * (handle-properties.ts). */
+  handleAdditions:
+    | { readonly grants: ReadonlyMap<string, ReadonlySet<string>>; readonly any: boolean }
+    | undefined = undefined;
+  /** Whether the program has a JavaScript implementation file, the only kind
+   * that can add own properties to a handle, so a typed handle operation of
+   * a program without one keeps its own lowering (handle-properties.ts). */
+  handleJsSources: boolean | undefined = undefined;
   /** Bindings whose unchecked string arithmetic can produce either a number
    * (NaN for an absent read) or a string. Preserve that result union at bare
    * reads instead of applying the checker-bare string narrowing adapter. */
@@ -3221,7 +3313,17 @@ export class Lowerer {
       );
     }
     if (ts.isIdentifier(origin)) {
-      const local = this.resolveLocal(origin);
+      // The whole-program analyses ask this question before any body lowers
+      // (speculativeTypeQueries around analyzeRuntimeOptionalArrayReads), so
+      // there is no function context and no local binding to consult yet: a
+      // binding's storage class settles when its declaration (or its
+      // parameter ABI) lowers, and a query must never mint a capture. Until
+      // then the module global's storage is the only one readable. Every
+      // other caller lowers a body, where an empty stack stays a lowerer bug.
+      const local =
+        this.speculativeTypeQueryDepth > 0 && this.fnStack.length === 0
+          ? null
+          : this.resolveLocal(origin);
       const root = local ? this.runtimeOptionalRootOf(local) : null;
       const global = this.globalOf(origin);
       return (
@@ -3946,8 +4048,9 @@ export class Lowerer {
    * record types (finalizeRecordLinks checks them against link sources). */
   readonly recordMethodCalls: { shapeId: string; method: string; loc: SrcLoc }[] = [];
   /** Completions of "custom" linked helpers (record-links.ts), which
-   * finalizeRecordLinks runs once the links are known. */
-  readonly linkedHelperFinalizers: (() => void)[] = [];
+   * finalizeRecordLinks runs once the links are known, with the record
+   * shapes a checked conversion can leave holding a kept source. */
+  readonly linkedHelperFinalizers: ((sourced: ReadonlySet<string>) => void)[] = [];
   /** Helpers over record types that finalizeRecordLinks completes. */
   readonly linkedHelpers: LinkedHelper[] = [];
   /** The JavaScript names of object literals' methods, by lifted function
@@ -4016,12 +4119,63 @@ export class Lowerer {
   readonly unions = new UnionRegistry();
   /** Context-free successful type mappings. See TypeMapperCtx.typeMemo. */
   readonly typeMemo = new Map<number, IrType>();
-  readonly ambient = ambientDtsPath();
-  readonly overridesAmbient = overridesDtsPath();
+  /** Successful mappings that read no generic-instantiation scope state
+   * (TypeMapperCtx.typeMemoShared): the same answer in every binding scope
+   * and at the top level. A generic instance's unscoped types land here, so
+   * the next instance — and the top level — answers them without mapping
+   * again. */
+  readonly sharedTypeMemo = new Map<number, IrType>();
+  /** Successful mappings per generic binding context (TypeMapperCtx.typeMemoFor):
+   * by the installed typeParamBindings map, then the typeParamTsBindings map
+   * (NO_BINDINGS stands for null). Binding maps are filled before they are
+   * installed and never change while installed, so their identity is the
+   * context. The lowerer owns the memos: they live as long as it does. */
+  private readonly scopedTypeMemos = new Map<object, Map<object, Map<number, IrType>>>();
+  /** The program facts this Lowerer shares with the other passes of its
+   * island round (lowering-facts.ts). Every field that is a fact lives
+   * there, so a pass that re-derives it cannot disagree with its siblings.
+   * A Lowerer built without LowererMode.facts gets a private copy (tests,
+   * one-off lowerings). */
+  readonly facts: LoweringFacts;
+  /** SCRIPTC_LOWERING_FACTS_VERIFY: the shared provenance memo's hit check,
+   * public so contexts built from this Lowerer (webassembly.ts's hand-made
+   * ctx, property-access.ts passing the Lowerer itself) verify too. */
+  readonly verifySymbolProvenance: ((sym: ts.Symbol, answer: SymbolProvenance) => void) | undefined;
   /** The one mapType context: registries + hooks, assembled in the
    * constructor (typeParamResolver reads the CURRENT instantiation bindings
    * through `this`, so the same ctx serves generic bodies too). */
   readonly typeCtx: TypeMapperCtx;
+
+  /** The context lastContextMemo answered for. Every mapType call asks for the
+   * current binding context, and a lowering pass stays in one context for
+   * thousands of calls, so the pair of identity checks below is the whole
+   * cost on that path: the two-level lookup only runs when the context
+   * actually changes. */
+  private lastMemoOuter: object | null = null;
+  private lastMemoInner: object | null = null;
+  private lastMemo: Map<number, IrType> | null = null;
+
+  /** The memo for the current binding context (scopedTypeMemos). */
+  currentTypeMemo(): Map<number, IrType> {
+    if (this.typeParamBindings === null && this.typeParamTsBindings === null) return this.typeMemo;
+    const outer: object = this.typeParamBindings ?? NO_BINDINGS;
+    const inner: object = this.typeParamTsBindings ?? NO_BINDINGS;
+    if (outer === this.lastMemoOuter && inner === this.lastMemoInner) return this.lastMemo!;
+    let byTs = this.scopedTypeMemos.get(outer);
+    if (byTs === undefined) {
+      byTs = new Map();
+      this.scopedTypeMemos.set(outer, byTs);
+    }
+    let memo = byTs.get(inner);
+    if (memo === undefined) {
+      memo = new Map();
+      byTs.set(inner, memo);
+    }
+    this.lastMemoOuter = outer;
+    this.lastMemoInner = inner;
+    this.lastMemo = memo;
+    return memo;
+  }
 
   readonly stats: LowerStats = {
     statementsTotal: 0,
@@ -4695,8 +4849,6 @@ export class Lowerer {
     // settings
     "frontendServices",
     "nodeIslands",
-    "ambient",
-    "overridesAmbient",
     "remainder",
     "tierMode",
     "runtimeOptionalReport",
@@ -4726,13 +4878,29 @@ export class Lowerer {
     "patchesStdio",
     "stdioPatchSites",
     "requestInitPropMutatedSyms",
-    "classProtocols",
-    // A file's name and library status do not change while the program
-    // lowers, so the answer stays with the file that was asked about.
-    "stdlibFiles",
+    // Program facts the round's passes share (lowering-facts.ts): file
+    // paths, stdlib/external/package classification, a symbol's declared
+    // provenance, the island-handle answers, the admitted-opinion index,
+    // the JavaScript dynamic-declaration set and the class protocol index.
+    // They are pure functions of (program, island set, external surface),
+    // so no pass's mode can change them, and each is verified against a
+    // fresh computation under SCRIPTC_LOWERING_FACTS_VERIFY.
+    "facts",
+    // SCRIPTC_LOWERING_FACTS_VERIFY only: this pass's own class protocol
+    // index and provenance hit check, the comparisons the shared answers
+    // are checked against.
+    "ownClassProtocols",
+    "verifySymbolProvenance",
+    // Whether the program has a JavaScript implementation file depends only on
+    // its modules, so the answer is a memo computed on first use and the
+    // census in handle-properties.ts reads it again when a unit replays.
+    "handleJsSources",
     // The whole-program prepass analyzeJsWidenedBindings computes this set
     // before lowering begins: a pure function of the program's modules.
     "jsWidenedBindings",
+    // Preflight's admitted opinions are a program fact computed before any
+    // unit lowers.
+    "admittedOpinions",
     // Coverage's --explain-dynamic report: the indexed-read analysis's
     // storage decisions and the narrowed reads they explain.
     "runtimeOptionalProvenance",
@@ -4753,7 +4921,6 @@ export class Lowerer {
     "dynamicOverloadAnswers",
     "argumentCountSlots",
     "coercions.widenedReturnTypes",
-    "packageFileMemo",
     // LIBRARY mode: the unit each root export name seeds is a pure function
     // of the entry's export table and the signatures collected before any
     // body lowers, so a pass that asks again computes the same answer.
@@ -4775,7 +4942,6 @@ export class Lowerer {
     "slotOriginMemo",
     "recordOriginMemo",
     "boundaryCastOrder",
-    "declBoundaryMemo",
     "structuredCloneReadCounts",
     // state of the unit being lowered
     "assertedValues",
@@ -4832,6 +4998,11 @@ export class Lowerer {
     "spreadArmOverrides",
     "splitIdentifierUses",
     "typeMemo",
+    "sharedTypeMemo",
+    "scopedTypeMemos",
+    "lastMemoOuter",
+    "lastMemoInner",
+    "lastMemo",
     "fnStack",
     "positions.nodesByKey",
     "positions.paths",
@@ -4940,6 +5111,7 @@ export class Lowerer {
       fixed("errorMethodDispatchRevision", () => this.errorMethodDispatchRevision),
       fixed("errorPropertyDispatchRevision", () => this.errorPropertyDispatchRevision),
       fixed("childAdditions", () => this.childAdditions),
+      fixed("handleAdditions", () => this.handleAdditions),
       fixed("emitterEventTable", () => this.emitterEventTable),
       fixed("emitterAnyNameListener", () => this.emitterAnyNameListener),
       fixed("globalThisWrittenNames", () => this.globalThisWrittenNames),
@@ -5177,7 +5349,6 @@ export class Lowerer {
    * (decl-origin.ts), by IrModule.declOrigins index. */
   readonly declOrigins: string[] = [];
   private readonly declOriginIds = new Map<string, number>();
-  private readonly packageFileMemo = new Map<ts.SourceFile, boolean>();
   private readonly slotOriginMemo = new Map<ts.Node, string | null>();
   /** The value whose slot coercion is being lowered, while that value is
    * in a package file: union extractions built for it carry the slot's
@@ -5234,19 +5405,11 @@ export class Lowerer {
   }
 
   private inPackageFileOf(node: ts.Node): boolean {
-    const sf = ts.getSourceFileOfNode(node);
-    let inside = this.packageFileMemo.get(sf);
-    if (inside === undefined) {
-      inside = inPackageFile(node);
-      this.packageFileMemo.set(sf, inside);
-    }
-    return inside;
+    return this.facts.inPackageFile(node);
   }
 
-  private declBoundaryMemo: boolean | null = null;
   get declBoundary(): boolean {
-    this.declBoundaryMemo ??= this.program.getSourceFileNames().some(isDeclBoundaryFile);
-    return this.declBoundaryMemo;
+    return this.facts.declBoundary;
   }
   /** Tracked classes' bag initializers over a typed `this`
    * (class-dynamic-dispatch.ts recordBagInitializers). */
@@ -5275,6 +5438,7 @@ export class Lowerer {
     this.ffiImports = mode.ffiImports ?? [];
     this.forkTargets = mode.forkTargets ?? [];
     this.frontendServices = mode.frontendServices;
+    this.admittedOpinions = mode.admittedOpinions ?? [];
     this.inlineRequireCycleCalls = mode.inlineRequireCycleCalls ?? new Set();
     this.dynamicImportRejections = mode.dynamicImportRejections ?? new Map();
     this.libraryCallbacks = mode.libraryCallbacks ?? false;
@@ -5300,13 +5464,22 @@ export class Lowerer {
     this.ffiImportsByName = new Map(this.ffiImports.map((entry) => [entry.name, entry]));
     this.externalTypeSpecifiersByFile =
       mode.externalTypeSpecifiersByFile ?? directExternalTypeSpecifiersByFile(this.externalTypes);
+    this.facts =
+      mode.facts ?? new LoweringFacts(program, moduleOrder, this.externalTypeSpecifiersByFile);
+    // A shared fact would be a silent miscompile if it described another
+    // program: the round hands every pass its own program and moduleOrder.
+    if (this.facts.program !== program || this.facts.moduleOrder !== moduleOrder)
+      throw new InternalCompilerError(
+        "lowerer bug: LowererMode.facts belongs to a different program or moduleOrder",
+      );
+    this.verifySymbolProvenance = this.facts.verify
+      ? (sym, answer) => this.verifySymbolProvenanceAnswer(sym, answer)
+      : undefined;
     this.checker = program.getTypeChecker();
     const islands = this.nodeIslands;
     const shadow = canonShadowHook(this.checker);
     this.typeCtx = {
-      ...(islands !== null
-        ? { foreignType: (t: ts.Type) => isForeignType(islands, t, this.checker) }
-        : {}),
+      ...(islands !== null ? { foreignType: (t: ts.Type) => this.foreignType(t) } : {}),
       checker: this.checker,
       positionOf: (node) => this.positions.of(node),
       shapes: this.shapes,
@@ -5342,7 +5515,7 @@ export class Lowerer {
       runtimeClassValue: (type) => runtimeClassValueOfType(this, type),
       localClassValue: (type) =>
         this.instanceResultClass !== null && this.instanceResultClass.declared === type.id
-          ? this.instanceResultClass.value
+          ? (noteScopeSensitiveMapping(), this.instanceResultClass.value)
           : (this.localClassValueTypes.get(type.id) ?? null),
       mixinClassInstance: (decl) =>
         this.mixinTypeContext && this.mixinTypeContext.classNode === decl
@@ -5353,6 +5526,10 @@ export class Lowerer {
         // the factory produced (localClassResultInstance).
         const instanceClass = instanceType && this.localClassInstanceTypes.get(instanceType.id);
         if (instanceClass) return { kind: "object", className: instanceClass };
+        // The instantiation-stack check below (and classNamer) answers
+        // differently inside a generic instance, so this mapping stays in
+        // its scope.
+        if (this.classInsideFunction(decl)) noteScopeSensitiveMapping();
         // Computed heritage can close over parameters of its factory.
         // A speculative checker query outside that factory must not lower
         // the extends expression in the caller's lexical scope.
@@ -5420,16 +5597,23 @@ export class Lowerer {
       isExperimentalFile: (sf) => isExperimentalDeclarationFile(sf, this.experimentalFiles),
       // The declaration-typed boundary's generated types (decl-projection.ts)
       // describe data, like an explicitly mapped external type surface.
-      isExternalTypeFile: (sf) =>
-        this.externalTypeSpecifiersByFile.has(tsgoPath(resolve(sf.fileName))) ||
-        isDeclBoundaryFile(sf.fileName),
+      isExternalTypeFile: this.isExternalTypeFile,
+      symbolProvenance: this.symbolProvenance,
+      ...(this.verifySymbolProvenance
+        ? { verifySymbolProvenance: this.verifySymbolProvenance }
+        : {}),
       typeMemo: this.typeMemo,
+      // A hook: the ctx is spread in several places, and a copy made inside a
+      // binding scope must follow the lowerer's CURRENT scope, not the one
+      // that was installed at spread time.
+      typeMemoFor: () => this.currentTypeMemo(),
+      typeMemoShared: this.sharedTypeMemo,
       ...(this.generalNodeStreams ? { generalNodeStreams: true } : {}),
       ...(this.dynNodeStreams ? { dynNodeStreams: true } : {}),
-      canMemoizeType: () =>
-        this.typeParamBindings === null &&
-        this.typeParamTsBindings === null &&
-        this.mixinTypeContext === null,
+      // Memoization is scoped by the binding maps (typeMemoFor); only a mixin
+      // context opts out, because mixinClassInstance answers by class node and
+      // the bindings do not identify it.
+      canMemoizeType: () => this.mixinTypeContext === null,
       // fileTag is filled just below; the hook is only ever CALLED during
       // lowering, long after the constructor completes.
       isProgramFile: (sf) => this.fileTag.has(sf),
@@ -5466,12 +5650,33 @@ export class Lowerer {
       this.fileTag.set(sf, `%m${n}.`);
     }
     if (this.moduleOrder.length === 0) this.fileTag.set(entry, "");
-    const jsDynamic = jsDynamicDeclarations(this.moduleOrder, this.checker);
+    const jsDynamic = this.facts.jsDynamicDeclarations();
     if (jsDynamic.size > 0) this.typeCtx.jsDynamicDeclaration = (decl) => jsDynamic.has(decl);
     this.registerBuiltinErrorClasses();
     registerBuiltinEmitterClass(this);
     registerBuiltinStreamClasses(this);
     registerBuiltinEventTargetClasses(this);
+  }
+
+  /** Whether preflight admitted the checker diagnostic `code` at `node`: a
+   * site in `admittedOpinions` (tsc-codes.ts, JS_OPINIONS) whose span the
+   * node contains. A `widen`/`throw`/`island` row's lowering path is reached
+   * only through this query, so a program that admitted no such site keeps
+   * the IR it has today. */
+  opinionAt(node: ts.Node, code: number): boolean {
+    if (this.admittedOpinions.length === 0) return false;
+    const file = ts.getSourceFileOfNode(node).fileName;
+    const start = ts.tokenStartOfNode(node);
+    const hit = this.admittedOpinionSites();
+    const list = hit.get(`${file}\0${code}`);
+    if (list === undefined) return false;
+    return list.some((site) => start <= site.pos && site.end <= node.end);
+  }
+
+  /** opinionAt's index: admitted sites by file and code (one index per
+   * admitted-opinions list, shared by the round). */
+  private admittedOpinionSites(): ReadonlyMap<string, readonly AdmittedOpinion[]> {
+    return this.facts.opinionIndex(this.admittedOpinions);
   }
 
   /** A JavaScript file TypeScript type-checks (`// @ts-check`, or the
@@ -5490,19 +5695,42 @@ export class Lowerer {
     return registerBuiltinErrorClasses(this);
   }
 
-  private classProtocols: ClassProtocols | null = null;
-
   classImplementedProtocol(type: ts.Type): boolean {
-    this.classProtocols ??= new ClassProtocols(this.checker, this.moduleOrder);
-    return this.classProtocols.usesCheckedIdentity(type);
+    return this.verifyProtocol("usesCheckedIdentity", type, (protocols) =>
+      protocols.usesCheckedIdentity(type),
+    );
   }
 
   /** A record view a Map or Set answers: it keeps protocol identity but
    * calls the collection's own methods, never a stored member. */
   classCollectionView(type: ts.Type): boolean {
-    this.classProtocols ??= new ClassProtocols(this.checker, this.moduleOrder);
-    return this.classProtocols.collectionView(type);
+    return this.verifyProtocol("collectionView", type, (protocols) =>
+      protocols.collectionView(type),
+    );
   }
+
+  /** The round's shared class protocol index (lowering-facts.ts): a pure
+   * analysis of (checker, moduleOrder). With SCRIPTC_LOWERING_FACTS_VERIFY
+   * this Lowerer builds its own index and every answer is compared. */
+  private verifyProtocol(
+    query: "usesCheckedIdentity" | "collectionView",
+    type: ts.Type,
+    ask: (protocols: ClassProtocols) => boolean,
+  ): boolean {
+    const answer = ask(this.facts.classProtocols());
+    if (!this.facts.verify) return answer;
+    if (this.ownClassProtocols === null) {
+      this.ownClassProtocols = new ClassProtocols(this.checker, this.moduleOrder);
+    }
+    const fresh = ask(this.ownClassProtocols);
+    this.facts.noteVerified("classProtocols");
+    if (answer === fresh) return answer;
+    throw new InternalCompilerError(
+      `shared class protocol index answered ${String(answer)} for ${query} where a fresh ` +
+        `index over the same program answered ${String(fresh)}`,
+    );
+  }
+  private ownClassProtocols: ClassProtocols | null = null;
 
   /** Declared class fields may store a DYN value only when its static type
    * is `unknown` or `object` (also with `null` or `undefined`, or an array
@@ -5611,7 +5839,7 @@ export class Lowerer {
         !isCjsJsFile(decl, this.program) &&
         this.moduleOrder.includes(decl)
       ) {
-        return `file:${tsgoPath(resolve(decl.fileName))}`;
+        return `file:${this.pathOf(decl)}`;
       }
       if (ts.isModuleDeclaration(decl) && ts.isStringLiteral(decl.name)) {
         const builtin = canonicalBuiltinModule(decl.name.text);
@@ -5770,6 +5998,10 @@ export class Lowerer {
    * program-unique through the file qualifier, and collision-free with
    * user identifiers ('%'). */
   readonly classNamer = (decl: ts.ClassLikeDeclaration): string => {
+    // A class declared inside a function takes the instantiated owner's name
+    // (`%<instance>`, below), so its type's answer is per instance — and a
+    // mapping that reads it may not be shared between scopes.
+    if (this.classInsideFunction(decl)) noteScopeSensitiveMapping();
     const name =
       ts.isClassExpression(decl) ||
       (() => {
@@ -5802,6 +6034,20 @@ export class Lowerer {
     }
     return name;
   };
+
+  /** True for a class declaration lexically inside a function: only such a
+   * class can take an instantiated owner's name (classNamer), and only there
+   * can localClassInstance's instantiation-stack check answer. */
+  private classInsideFunction(decl: ts.ClassLikeDeclaration): boolean {
+    for (
+      let parent: ts.Node | undefined = decl.parent;
+      parent !== undefined && !ts.isSourceFile(parent);
+      parent = parent.parent
+    ) {
+      if (ts.isFunctionLike(parent)) return true;
+    }
+    return false;
+  }
 
   /** Follows import aliases to the original declaration's symbol. Every
    * value reference resolves through here, so it doubles as the flush
@@ -6542,7 +6788,19 @@ export class Lowerer {
    * calls of these names. Runs in every pass so the ids are
    * deterministic. */
   prepareModuleInits(parts: FileParts[]): void {
-    parts.forEach((fp, i) => this.initNameOf.set(fp.sf, `%init.${i}`));
+    // The entry module's %init is %init.0; every other module's number comes
+    // from its stable file name, so adding or reordering modules leaves every
+    // other module's init name unchanged.
+    const initNumbers = new Set<number>([0]);
+    for (const fp of parts) {
+      if (fp.sf === this.entry) {
+        this.initNameOf.set(fp.sf, "%init.0");
+        continue;
+      }
+      const n = moduleTagNumber(this.stableFileName(fp.sf), initNumbers);
+      initNumbers.add(n);
+      this.initNameOf.set(fp.sf, `%init.${n}`);
+    }
     for (const fp of parts) {
       const rawTag = this.fileTag.get(fp.sf) ?? "";
       const tag = rawTag === "" ? "e." : rawTag.replace(/^%/, "");
@@ -10414,6 +10672,11 @@ export class Lowerer {
     // Establish the same managed header/top-level batch here before
     // collection, while the production path simply finds warm memos.
     this.checker.prefetchSourceFileStructures(parts.map((fp) => fp.sf));
+    // The own-property census decides whether a program's JavaScript may
+    // add properties to a handle. It visits every body, reached or not, so
+    // batch the receiver types it reads before collection; the census then
+    // makes no per-node checker request inside a deferred body.
+    this.checker.prefetchCollectionTypes(handlePropertyScanRoots(parts.map((fp) => fp.sf)));
     // Signature collection may read the initializer type of a default whose
     // body type still admits undefined (for example `value =
     // process.env.VALUE`). The expression executes only when reached, but
@@ -12565,7 +12828,11 @@ export class Lowerer {
    * (`T`, `T[]`, `{ v: T }`, `(x: T) => T` all resolve). Inert outside
    * generic instantiation. */
   readonly typeParamResolver = (t: ts.Type): IrType | null => {
-    if (!this.typeParamBindings || !(t.flags & ts.TypeFlags.TypeParameter)) return null;
+    if (!(t.flags & ts.TypeFlags.TypeParameter)) return null;
+    // The answer is the current bindings' (an unbound parameter maps by the
+    // symbolic rules), so the mapping may not leave its scope.
+    noteScopeSensitiveMapping();
+    if (!this.typeParamBindings) return null;
     const sym: ts.Symbol | undefined = t.getSymbol();
     return (sym && this.typeParamBindings.get(sym)) ?? null;
   };
@@ -12577,7 +12844,9 @@ export class Lowerer {
    * over literal arguments). Inert outside generic function and class
    * instantiation. */
   readonly typeParamTsResolver = (t: ts.Type): ts.Type | null => {
-    if (!this.typeParamTsBindings || !(t.flags & ts.TypeFlags.TypeParameter)) return null;
+    if (!(t.flags & ts.TypeFlags.TypeParameter)) return null;
+    noteScopeSensitiveMapping();
+    if (!this.typeParamTsBindings) return null;
     const sym: ts.Symbol | undefined = t.getSymbol();
     return (sym && this.typeParamTsBindings.get(sym)) ?? null;
   };
@@ -12587,7 +12856,12 @@ export class Lowerer {
    * (boundAliasInstances), or null when its signature never instantiated
    * that reference. Inert outside generic function instantiation. */
   readonly boundAliasTsResolver = (t: ts.Type): ts.Type | null => {
-    if (!this.typeParamTsBindings || t.getAliasTypeArguments().length === 0) return null;
+    const aliasArguments = t.getAliasTypeArguments().length;
+    if (aliasArguments === 0) return null;
+    // boundAliasInstances is keyed by the installed ts bindings, so this
+    // answer belongs to the instantiation that asks.
+    noteScopeSensitiveMapping();
+    if (!this.typeParamTsBindings) return null;
     const tsBindings = this.typeParamTsBindings;
     return (
       this.boundAliasInstances.get(t)?.find((entry) => entry.tsBindings === tsBindings)?.instance ??
@@ -13827,8 +14101,9 @@ export class Lowerer {
     toId: string,
     loc: SrcLoc,
     trappable?: ReadonlySet<number>,
+    classRoutes?: ReadonlyMap<number, readonly UnionClassRoute[]>,
   ): string | null {
-    return unionRetagHelper(this, fromId, toId, loc, trappable);
+    return unionRetagHelper(this, fromId, toId, loc, trappable, classRoutes);
   }
 
   narrowedArmHelper(fromId: string, target: IrType, loc: SrcLoc, message?: string): string | null {
@@ -16612,6 +16887,19 @@ export class Lowerer {
     return lowerDestructuringAssignParts(this, target, rhs, loc);
   }
 
+  /** The asserted-only member answer (lower-stmts.ts): the value one
+   * element reads from a record shape for a property only an asserted
+   * intersection declares, answered from the shape's kept source. */
+  assertedOnlyFieldRead(
+    propName: string,
+    srcType: IrType & { kind: "record" },
+    srcRef: () => IrExpr,
+    bodyT: IrType | null,
+    loc: SrcLoc,
+  ): IrExpr | null {
+    return assertedOnlyFieldRead(this, propName, srcType, srcRef, bodyT, loc);
+  }
+
   lowerBindingPattern(
     pattern: ts.ArrayBindingPattern | ts.ObjectBindingPattern,
     srcRef: () => IrExpr,
@@ -16766,22 +17054,65 @@ export class Lowerer {
    * members by name + this provenance, and everything else those files
    * declare hits the SC2020-family fence). The file half of every
    * supported-surface provenance check. */
-  readonly isStdlibFile = (sf: ts.SourceFile): boolean => {
-    let stdlib = this.stdlibFiles.get(sf);
-    if (stdlib === undefined) {
-      stdlib =
-        sf.fileName === this.ambient ||
-        sf.fileName === this.overridesAmbient ||
-        isFallbackDtsPath(sf.fileName) ||
-        this.program.isSourceFileDefaultLibrary(sf) ||
-        (sf.isDeclarationFile && isNodeTypesPath(sf.fileName));
-      this.stdlibFiles.set(sf, stdlib);
-    }
-    return stdlib;
-  };
-  /** isStdlibFile's answer for each source file it was asked about: a file's
-   * name and library status do not change while the program lowers. */
-  private readonly stdlibFiles = new Map<ts.SourceFile, boolean>();
+  readonly isStdlibFile = (sf: ts.SourceFile): boolean => this.facts.isStdlibFile(sf);
+
+  /** provenanceOf's answers (type-mapper.ts's SymbolProvenance), keyed by
+   * symbol. A symbol's declarations are fixed for one loaded program, and
+   * the mapper asks on every object type it maps, so the round shares one
+   * map (lowering-facts.ts). */
+  get symbolProvenance(): Map<ts.Symbol, SymbolProvenance> {
+    return this.facts.symbolProvenance;
+  }
+  /** SCRIPTC_LOWERING_FACTS_VERIFY: the shared provenance memo answered, so
+   * recompute it and fail on a disagreement (lowering-facts.ts). */
+  private verifySymbolProvenanceAnswer(sym: ts.Symbol, answer: SymbolProvenance): void {
+    const fresh = computeSymbolProvenance(sym, this.isStdlibFile);
+    // The two lazily filled answers (`??=` on a hit) are declaration-only
+    // too, so recompute the ones an answer carries. The pass that filled one
+    // stored the value it computed, and this comparison catches a later pass
+    // that would have filled a different one.
+    const freshWebAssembly =
+      answer.webAssembly === undefined
+        ? undefined
+        : declaresWebAssemblyNamespace(sym.declarations, this.isStdlibFile);
+    const freshLegacyUrl =
+      answer.legacyUrl === undefined
+        ? undefined
+        : declaresLegacyUrl(sym.declarations, { isStdlibFile: this.isStdlibFile });
+    const same =
+      fresh.stdlibInterface === answer.stdlibInterface &&
+      fresh.stdlibClass === answer.stdlibClass &&
+      fresh.libInterface === answer.libInterface &&
+      freshWebAssembly === answer.webAssembly &&
+      freshLegacyUrl === answer.legacyUrl;
+    this.facts.noteVerified("symbolProvenance");
+    if (same) return;
+    if (freshWebAssembly !== undefined) fresh.webAssembly = freshWebAssembly;
+    if (freshLegacyUrl !== undefined) fresh.legacyUrl = freshLegacyUrl;
+    throw new InternalCompilerError(
+      `shared symbol provenance for ${ts.symbolName(sym)} does not match a fresh ` +
+        `computation: shared ${JSON.stringify(answer)}, recomputed ${JSON.stringify(fresh)}`,
+    );
+  }
+
+  /** Whether the file holds declarations of an explicitly mapped external
+   * type surface (coverage's --external-types) or of the declaration-typed
+   * boundary's generated types. Both are fixed for the program, and the
+   * mapper asks per type (lowering-facts.ts keeps the answer). */
+  readonly isExternalTypeFile = (sf: ts.SourceFile): boolean =>
+    this.facts.isExternalTypeFile(sf, this.externalTypeSpecifiersByFile);
+
+  /** tsgoPath(resolve(sf.fileName)): the path spelling the module tables
+   * key by. A source file's path cannot change while the program lowers. */
+  readonly pathOf = (sf: ts.SourceFile): string => this.facts.pathOf(sf);
+
+  /** Whether values of `type` are island handles (boundary.ts's
+   * isForeignType; the answers and their invalidation live in
+   * lowering-facts.ts). The type mapper asks this on every mapType call,
+   * memo hits included. */
+  private foreignType(type: ts.Type): boolean {
+    return this.facts.foreignType(type, this.nodeIslands, this.checker);
+  }
 
   nodeTypesOnlySymbol(sym: ts.Symbol | null | undefined): boolean {
     return nodeTypesOnlySymbol(this, sym);
@@ -18008,6 +18339,12 @@ export class Lowerer {
       });
     }
     if (valueParams.some((param) => param.name !== undefined)) {
+      // Every materialization writes this entry at ITS location, so a second
+      // one overwrites the first in place. A table only grows by addition, so
+      // that change is no part of this unit's function: name it (unit-journal.ts
+      // UnitEvents.touch), and the change is counted here instead of being
+      // found by HeldTables.check as an unnamed write.
+      if (this.builtinCheckedValues.has(fnName)) this.unitEvents?.touch(fnName);
       this.builtinCheckedValues.set(fnName, { fn, display, loc });
     }
     return { kind: "closure", fnName, captures: [], type: funcType, loc };
@@ -18317,8 +18654,11 @@ export class Lowerer {
     return lowerProcessStreamProperty(this, expr);
   }
 
+  /** Whether `node` is the ambient `process.env` object a receiver names:
+   * parentheses and the erased wrappers (`as`, `!`, `satisfies`) are looked
+   * through (environment.ts). */
   isProcessEnv(node: ts.Expression): boolean {
-    return isProcessEnv(this, node);
+    return isAmbientProcessEnv(this, node);
   }
 
   envValueType(): IrType {

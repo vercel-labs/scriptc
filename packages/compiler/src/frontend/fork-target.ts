@@ -11,6 +11,7 @@ import {
 import { nearestPackageImports } from "./resolve.js";
 import { canonicalBuiltinModule } from "./builtin-modules.js";
 import { moduleSourceCandidates } from "./module-source-candidates.js";
+import { isBundledLibraryFile } from "./default-library.js";
 
 export function isNodeGlobal(program: ts.Program, expression: ts.Identifier): boolean {
   const checker = program.getTypeChecker();
@@ -66,24 +67,68 @@ export function isBuiltinMemberImport(
     }
   }
   if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0) {
-    const target = checker.getAliasedSymbol(symbol);
-    const targetDecl = target.declarations[0];
-    if (targetDecl !== undefined && ts.getSourceFileOfNode(targetDecl).isDeclarationFile) {
-      for (
-        let parent: ts.Node | undefined = targetDecl.parent;
-        parent !== undefined && !ts.isSourceFile(parent);
-        parent = parent.parent
-      ) {
-        if (ts.isModuleDeclaration(parent) && ts.isStringLiteral(parent.name)) {
-          return (
-            canonicalBuiltinModule(parent.name.text) === moduleName &&
-            ts.symbolName(target) === memberName
-          );
-        }
+    const target = aliasedModuleMember(program, symbol, decl);
+    return (
+      target !== null &&
+      canonicalBuiltinModule(target[0]) === moduleName &&
+      target[1] === memberName
+    );
+  }
+  return false;
+}
+
+/** The declaration-file `declare module` member `symbol`'s alias resolves
+ * to, as the module's name and the target symbol's name, or null when the
+ * target is no such member.
+ *
+ * Root discovery rebuilds the program once per pass and asks this of the
+ * same imported bindings every time, several builtins per binding, so the
+ * answers are memoized for the lifetime of the host load
+ * (`Ts7Program#aliasMembers`). The key is the alias declaration's AST
+ * identity: its file's content hash and parser options plus the node's
+ * handle, which names the file, the node index and its kind. That is the
+ * identity the client shares a file's tree by (`Ts7SourceCache`), so one key
+ * is one declaration in every program of the load. The host drops the map
+ * when another load begins, because that load's options and file shadow can
+ * resolve the same declaration differently. */
+function aliasedModuleMember(
+  program: ts.Program,
+  symbol: ts.Symbol,
+  declaration: ts.Node | undefined,
+): readonly [string, string] | null {
+  const answers = program.aliasMembers;
+  const key = declaration === undefined ? undefined : declarationKey(declaration);
+  if (key !== undefined) {
+    const known = answers.get(key);
+    if (known !== undefined) return known;
+  }
+  const target = program.getTypeChecker().getAliasedSymbol(symbol);
+  const targetDecl = target.declarations[0];
+  let member: readonly [string, string] | null = null;
+  if (targetDecl !== undefined && ts.getSourceFileOfNode(targetDecl).isDeclarationFile) {
+    for (
+      let parent: ts.Node | undefined = targetDecl.parent;
+      parent !== undefined && !ts.isSourceFile(parent);
+      parent = parent.parent
+    ) {
+      if (ts.isModuleDeclaration(parent) && ts.isStringLiteral(parent.name)) {
+        member = [parent.name.text, ts.symbolName(target)];
+        break;
       }
     }
   }
-  return false;
+  // An alias whose target has no declaration yet is unresolved: a later
+  // program of the load may root the declaration that answers it (a
+  // fallback declaration added for another import, for one), so its null
+  // answer is not kept.
+  if (key !== undefined && targetDecl !== undefined) answers.set(key, member);
+  return member;
+}
+
+/** The AST identity of `node`: its file's content and parser options, and
+ * the node's own handle (index, kind and file path). */
+function declarationKey(node: ts.Node): string {
+  return `${node.file.wire.contentHash}\u0000${node.file.wire.parseOptionsKey}\u0000${node.id}`;
 }
 
 /** True when an identifier is the namespace/default binding for one Node
@@ -344,6 +389,9 @@ function namesChildProcess(program: ts.Program): boolean {
   for (const fileName of program.getSourceFileNames()) {
     const path = tsgoPath(fileName);
     if (isNodeTypesPath(fileName) || isFallbackDtsPath(fileName) || own.has(path)) continue;
+    // TypeScript's bundled libraries name no Node builtin, and asking for
+    // the text of each of them reads the whole library set on every build.
+    if (isBundledLibraryFile(program, fileName)) continue;
     const text = texts.get(path) ?? program.getSourceText(fileName) ?? "";
     if (
       text.includes("child_process") ||

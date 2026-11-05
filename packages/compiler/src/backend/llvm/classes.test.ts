@@ -405,6 +405,9 @@ test("references between ProgramLifetime instances are 32-bit indexes into their
   expect(nw).toContain("store ptr %plr.end, ptr %plr.c");
   expect(nw).toMatch(/%plr.o = call ptr @scr_plr_alloc\(i64 /);
   expect(llvm).toMatch(/call void @scr_init\(\)\n {2}call void @scr_plr_init\(\)/);
+  // Every reference here names an instance of the program-lifetime region or
+  // a string, which keeps its pointer: no block the window must serve.
+  expect(llvm).not.toContain("scr_sa_require_window");
   // A reference is the instance's address over 8 (0 is NULL): a read
   // shifts the loaded word, a write shifts the pointer.
   const main = llvm.split(/^define /m).find((fn) => fn.includes("; main\n")) ?? "";
@@ -440,6 +443,48 @@ test("references between ProgramLifetime instances are 32-bit indexes into their
   expect(() => classFieldIndex(leafMeta, "next")).toThrow(/holds a 32-bit reference/);
   expect(classFieldIndex(leafMeta, "next", "compressed").compressed).toBe(true);
   expect(classFieldIndex(leafMeta, "label").compressed).toBe(false);
+});
+
+test("a compact field holding an array requires the allocator's window", () => {
+  const node = { kind: "object" as const, className: "Node" };
+  const items = { kind: "array" as const, elem: STRING };
+  const mod: IrModule = {
+    irVersion: 17,
+    sourceFile: loc.file,
+    entry: "main",
+    functions: [{ name: "main", params: [], returnType: VOID, locals: [], body: [], loc }],
+    classes: [
+      {
+        name: "Node",
+        fields: [
+          { name: "next", type: node },
+          { name: "items", type: items },
+        ],
+        methods: [],
+        loc,
+      },
+    ],
+    contracts: { programLifetime: ["Node"] },
+  };
+  const llvm = emitLlvmModule(mod, { pointerBits: 64, objectAudit: false, lowRegion: true });
+  // The array lies in the allocator's window, below 32 GiB, as a small block:
+  // the field keeps address >> 3 in 32 bits. The program then requires the
+  // window for every reference block, since one the window cannot serve
+  // would reach the field as a truncated system address.
+  expect(llvm).toContain(`%${mangleClassStruct("Node")} = type { i32, i32, i32 }`);
+  expect(llvm).toMatch(/^declare void @scr_sa_require_window\(\)$/m);
+  expect(llvm).toMatch(
+    /call void @scr_init\(\)\n {2}call void @scr_plr_init\(\)\n {2}call void @scr_sa_require_window\(\)/,
+  );
+  // Targets outside the low region keep pointers: no window to require.
+  for (const options of [
+    { pointerBits: 64 as const },
+    { pointerBits: 32 as const, lowRegion: true },
+  ]) {
+    const elsewhere = emitLlvmModule(mod, options);
+    expect(elsewhere).toContain(`%${mangleClassStruct("Node")} = type { i32, ptr, ptr }`);
+    expect(elsewhere).not.toContain("scr_sa_require_window");
+  }
 });
 
 test("arrays of ProgramLifetime instances keep 32-bit references in 4-byte slots", () => {

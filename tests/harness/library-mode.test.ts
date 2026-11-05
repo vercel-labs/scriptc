@@ -1046,6 +1046,30 @@ describe.each(EMISSIONS)("K14: determinism fences, %s emission", (emission) => {
     expect(diags[0]!.file.endsWith("lib.ts")).toBe(true);
   });
 
+  test("os.userInfo refuses in its text, Buffer and named-encoding forms", async () => {
+    // The record is assembled from one snapshot libCall and one scalar
+    // libCall per passwd field, and the Buffer and named-encoding forms read
+    // those fields as bytes. Every form reaches the same manifest member, so
+    // every form answers the same refusal.
+    for (const expr of [
+      "String(os.userInfo().username).length",
+      'os.userInfo({ encoding: "buffer" }).username.length',
+      'String(os.userInfo({ encoding: "hex" }).username).length',
+    ]) {
+      const diags = await refusal(
+        `import * as os from "node:os";\nexport function whoami(): number { return ${expr}; }\n`,
+        {
+          exports: [{ export: "whoami", symbol: "kx_whoami", params: [], returns: "f64" }],
+          determinism: { fences: WORKED_FENCES },
+        },
+        emission,
+      );
+      expect(diags.map((d) => d.code)).toEqual(["SC4008"]);
+      expect(diags[0]!.message).toContain("'node-builtin.os.userInfo'");
+      expect(diags[0]!.note).toContain("machine identity is an effect");
+    }
+  });
+
   test("Date.parse fence denies the call but permits date construction and getTime", async () => {
     const profile = {
       exports: [{ export: "stamp", symbol: "kx_stamp", params: [], returns: "f64" }],

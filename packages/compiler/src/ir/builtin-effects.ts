@@ -855,6 +855,13 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "child.propsDefine",
   "child.propsDescriptor",
   "child.propsOnDyn",
+  // Handle own-property tables: the graph-walker refusals, a handle used as
+  // a descriptor, and Object.defineProperties throw.
+  "handle.propsDefineProps",
+  "handle.propsGuard",
+  "handle.propsGuardList",
+  "handle.propsCheck",
+  "handle.propsGrant",
   "dyn.arrayProtoCall",
   "dyn.arrayLikeProtoCall",
   "process.chdir",

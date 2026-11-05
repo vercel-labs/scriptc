@@ -1,0 +1,13 @@
+js-bigint-compound-target.js:8:1 - error SC0001: Operator '+=' cannot be applied to types 'bigint' and '{}'.
+
+  7 | let total = 1n;
+  8 | total += {};
+    | ^~~~~~~~~~~
+  9 | total -= 1;
+
+js-bigint-compound-target.js:9:1 - error SC0001: Operator '-=' cannot be applied to types 'bigint' and 'number'.
+
+   8 | total += {};
+   9 | total -= 1;
+     | ^~~~~~~~~~
+  10 | console.log(total);

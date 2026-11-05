@@ -44,6 +44,9 @@ const ZLIB_CALLBACK_FNS: Readonly<Record<string, IrLibFn | undefined>> = {
 /* Node's BROTLI_DECODE and BROTLI_ENCODE modes. */
 const BROTLI_DECODE = 8;
 const BROTLI_ENCODE = 9;
+/* Node's ZSTD_COMPRESS and ZSTD_DECOMPRESS modes. */
+const ZSTD_COMPRESS = 10;
+const ZSTD_DECOMPRESS = 11;
 
 /** The Brotli one-shots: every form takes the options entries. */
 const BROTLI_SYNC_MEMBERS: ReadonlySet<string> = new Set([
@@ -55,18 +58,26 @@ const BROTLI_CALLBACK_MEMBERS: ReadonlySet<string> = new Set([
   "brotliDecompress",
 ]);
 
-/** A Brotli mode connects the codec (scr_brotli.c) to the zlib engine
- * before any module initializer runs. */
-function noteBrotliMode(lowerer: Lowerer, mode: number, loc: SrcLoc): void {
-  if (mode !== BROTLI_DECODE && mode !== BROTLI_ENCODE) return;
+/** The zstd one-shots: every form takes the options entries. */
+const ZSTD_SYNC_MEMBERS: ReadonlySet<string> = new Set(["zstdCompressSync", "zstdDecompressSync"]);
+const ZSTD_CALLBACK_MEMBERS: ReadonlySet<string> = new Set(["zstdCompress", "zstdDecompress"]);
+
+/** A Brotli or zstd mode connects the codec (scr_brotli.c, scr_zstd.c) to
+ * the zlib engine before any module initializer runs. */
+function noteCodecMode(lowerer: Lowerer, mode: number, loc: SrcLoc): void {
+  const fn: IrLibFn | undefined =
+    mode === BROTLI_DECODE || mode === BROTLI_ENCODE
+      ? "zlib.brotliInstall"
+      : mode === ZSTD_COMPRESS || mode === ZSTD_DECOMPRESS
+        ? "zlib.zstdInstall"
+        : undefined;
+  if (fn === undefined) return;
   const installs = (stmt: IrStmt): boolean =>
-    stmt.kind === "exprStmt" &&
-    stmt.expr.kind === "libCall" &&
-    stmt.expr.fn === "zlib.brotliInstall";
+    stmt.kind === "exprStmt" && stmt.expr.kind === "libCall" && stmt.expr.fn === fn;
   if (lowerer.mainPrelude.some(installs)) return;
   lowerer.mainPrelude.push({
     kind: "exprStmt",
-    expr: { kind: "libCall", fn: "zlib.brotliInstall", args: [], type: VOID, loc },
+    expr: { kind: "libCall", fn, args: [], type: VOID, loc },
     loc,
   });
 }
@@ -146,7 +157,7 @@ export function lowerZlibStreamNew(
   }
   const options =
     args[0] !== undefined ? zlibOptionsValue(lowerer, args[0], what, loc) : dynUndefinedExpr(loc);
-  noteBrotliMode(lowerer, mode, loc);
+  noteCodecMode(lowerer, mode, loc);
   return {
     kind: "libCall",
     fn: "zlib.streamNew",
@@ -317,13 +328,21 @@ const ZLIB_ONE_SHOT_MODES: Readonly<Record<string, number | undefined>> = {
   brotliCompressSync: BROTLI_ENCODE,
   brotliDecompress: BROTLI_DECODE,
   brotliCompress: BROTLI_ENCODE,
+  zstdDecompressSync: ZSTD_DECOMPRESS,
+  zstdCompressSync: ZSTD_COMPRESS,
+  zstdDecompress: ZSTD_DECOMPRESS,
+  zstdCompress: ZSTD_COMPRESS,
 };
 
 /** True for a zlib callback one-shot util.promisify converts (deflate,
- * inflate, deflateRaw, inflateRaw, gzip, gunzip, unzip, brotliCompress and
- * brotliDecompress). */
+ * inflate, deflateRaw, inflateRaw, gzip, gunzip, unzip, brotliCompress,
+ * brotliDecompress, zstdCompress and zstdDecompress). */
 export function isPromisifiedZlibMember(member: string): boolean {
-  return ZLIB_CALLBACK_FNS[member] !== undefined || BROTLI_CALLBACK_MEMBERS.has(member);
+  return (
+    ZLIB_CALLBACK_FNS[member] !== undefined ||
+    BROTLI_CALLBACK_MEMBERS.has(member) ||
+    ZSTD_CALLBACK_MEMBERS.has(member)
+  );
 }
 
 /** A call through `promisify(zlib.gzip)` and the other callback one-shots:
@@ -348,7 +367,7 @@ export function lowerPromisifiedZlibCall(
     );
   }
   const input = zlibInput(lowerer, expr.arguments.nodes[0]!, loc);
-  noteBrotliMode(lowerer, ZLIB_ONE_SHOT_MODES[member]!, loc);
+  noteCodecMode(lowerer, ZLIB_ONE_SHOT_MODES[member]!, loc);
   return {
     kind: "libCall",
     fn: input.dyn ? "zlib.promiseDyn" : "zlib.promise",
@@ -374,6 +393,8 @@ const ZLIB_STREAM_FACTORIES: Readonly<Record<string, number | undefined>> = {
   createUnzip: 7,
   createBrotliDecompress: BROTLI_DECODE,
   createBrotliCompress: BROTLI_ENCODE,
+  createZstdDecompress: ZSTD_DECOMPRESS,
+  createZstdCompress: ZSTD_COMPRESS,
 };
 
 export function lowerZlibModuleCall(
@@ -396,8 +417,13 @@ export function lowerZlibModuleCall(
       loc,
     );
   }
-  if (BROTLI_SYNC_MEMBERS.has(bi.member) || BROTLI_CALLBACK_MEMBERS.has(bi.member)) {
-    return lowerBrotliOneShot(lowerer, expr, bi.member, loc);
+  if (
+    BROTLI_SYNC_MEMBERS.has(bi.member) ||
+    BROTLI_CALLBACK_MEMBERS.has(bi.member) ||
+    ZSTD_SYNC_MEMBERS.has(bi.member) ||
+    ZSTD_CALLBACK_MEMBERS.has(bi.member)
+  ) {
+    return lowerCodecOneShot(lowerer, expr, bi.member, loc);
   }
   const syncFn = ZLIB_SYNC_FNS[bi.member];
   if (syncFn !== undefined) {
@@ -546,10 +572,10 @@ export function lowerZlibModuleCall(
 }
 
 /** brotliCompressSync(data[, options]), brotliCompress(data[, options],
- * callback) and the decompress pair: the options entries with Node's
- * BROTLI_ENCODE or BROTLI_DECODE mode, an absent options value passing
- * undefined. */
-function lowerBrotliOneShot(
+ * callback), the decompress pair, and the zstd four: the options entries
+ * with Node's BROTLI_ENCODE/BROTLI_DECODE or ZSTD_COMPRESS/ZSTD_DECOMPRESS
+ * mode, an absent options value passing undefined. */
+function lowerCodecOneShot(
   lowerer: Lowerer,
   expr: ts.CallExpression,
   member: string,
@@ -557,7 +583,7 @@ function lowerBrotliOneShot(
 ): IrExpr {
   const args = expr.arguments.nodes;
   const mode = ZLIB_ONE_SHOT_MODES[member]!;
-  const sync = BROTLI_SYNC_MEMBERS.has(member);
+  const sync = BROTLI_SYNC_MEMBERS.has(member) || ZSTD_SYNC_MEMBERS.has(member);
   if (sync ? args.length === 0 || args.length > 2 : args.length !== 2 && args.length !== 3) {
     lowerer.noLowering(
       `zlib.${member} with ${args.length} arguments`,
@@ -572,7 +598,7 @@ function lowerBrotliOneShot(
   const options = withOptions
     ? zlibOptionsValue(lowerer, args[1]!, `zlib.${member}`, loc)
     : dynUndefinedExpr(loc);
-  noteBrotliMode(lowerer, mode, loc);
+  noteCodecMode(lowerer, mode, loc);
   if (sync) {
     return {
       kind: "libCall",

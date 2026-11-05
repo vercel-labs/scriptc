@@ -130,6 +130,7 @@ static ScrStr *scr_fs_win_utf8(const WCHAR *text, size_t length) {
 #if defined(__linux__)
 #include <sched.h> /* sched_getaffinity, CPU_COUNT (os.availableParallelism) */
 #include <sys/prctl.h> /* PR_SET_NAME (process.title) */
+#include <sys/sendfile.h> /* sendfile (copyFileSync) */
 #include <sys/syscall.h> /* SYS_statx (fs stats) */
 #ifndef SYS_statx
 #if defined(__x86_64__)
@@ -682,7 +683,7 @@ ScrStr *scr_process_arch(void) {
  * is no Node under a compiled binary; this is the version whose semantics
  * SEMANTICS.md verifies the runtime against (divergence 60, the execPath
  * stance: answer for the world that actually exists). */
-#define SCR_NODE_COMPAT_VERSION "24.22.0"
+#define SCR_NODE_COMPAT_VERSION "24.22.1"
 ScrStr *scr_process_versions_node(void) {
   if (!scr_versions_node_str) {
     scr_versions_node_str =
@@ -701,7 +702,7 @@ ScrStr *scr_process_versions_node(void) {
  * sites). Reading undefined here made every hasCrypto test self-skip —
  * measuring nothing (SEMANTICS.md; the divergence entry documents that
  * the string names the compat target's OpenSSL, not a linked library). */
-#define SCR_OPENSSL_COMPAT_VERSION "3.5.8"
+#define SCR_OPENSSL_COMPAT_VERSION "3.5.9"
 ScrStr *scr_process_versions_openssl(void) {
   if (!scr_versions_openssl_str) {
     scr_versions_openssl_str =
@@ -1380,6 +1381,10 @@ static ScrError *scr_fs_error_details(int e, const char *name, const char *messa
 /* Node's errnoException(err, "kill"): message "kill <code>", with own
  * errno (the negative uv code), code and syscall properties. */
 static bool scr_kill_send(int pid, int sig) {
+  /* A signal can end this process before any exit hook runs (a self-kill,
+   * or a pipe reader watching the target's output): publish buffered stdout
+   * first. */
+  scr_stdout_settle();
   if (scr_sys_kill(pid, sig) == 0) return true;
   int e = errno;
   char namebuf[16];
@@ -1462,6 +1467,43 @@ bool scr_proc_stream_write(double fd, const ScrStr *data) {
  * homedir/tmpdir follow libuv's POSIX rules, which Node delegates to.
  */
 
+/* Node's uvException: the SystemError every failed libuv call in node:os
+ * becomes — "A system error occurred: <syscall> returned <NAME> (<message>)",
+ * named SystemError, with code ERR_SYSTEM_ERROR and the uv error's errno,
+ * syscall and info ({ message, syscall, errno, code }) own properties.
+ * The os calls in this unit and scr_os.c's priority calls both throw it.
+ * It sits in this unit, outside the platform arms, because every link
+ * that carries scr_lib.c carries it — including the runtime's own C
+ * tests, which link scr_lib.c without scr_os.c. */
+typedef struct { int value; const char *name; const char *message; } ScrOsUvError;
+#define SCR_OS_UV_ERROR(name, message) { SCR_NODE_UV__##name, #name, message },
+static const ScrOsUvError scr_os_uv_errors[] = { SCR_NODE_UV_ERRNO_MAP(SCR_OS_UV_ERROR) };
+#undef SCR_OS_UV_ERROR
+
+void scr_os_throw_system_error(const char *syscall, int uv_code) {
+  const char *name = "UNKNOWN", *message = "unknown error";
+  for (size_t i = 0; i < sizeof scr_os_uv_errors / sizeof scr_os_uv_errors[0]; i++) {
+    if (scr_os_uv_errors[i].value == uv_code) {
+      name = scr_os_uv_errors[i].name;
+      message = scr_os_uv_errors[i].message;
+      break;
+    }
+  }
+  char text[256];
+  int n = snprintf(text, sizeof text, "A system error occurred: %s returned %s (%s)", syscall, name, message);
+  ScrStr *msg = scr_str_new(text, n < 0 ? 0 : (size_t)n);
+  ScrStr *error_name = scr_str_new("SystemError", 11);
+  scr_throw_error_named(error_name, msg);
+  ScrExcCell *cell = scr_exc_current_cell();
+  if (cell->kind != SCR_EXC_OBJ) return;
+  ScrError *error = (ScrError *)cell->payload;
+  scr_error_set_code(error, "ERR_SYSTEM_ERROR");
+  error->system_errno = uv_code;
+  error->system_call = scr_str_new(syscall, strlen(syscall));
+  error->system_message = scr_str_new(message, strlen(message));
+  error->system_code = scr_str_new(name, strlen(name));
+}
+
 #ifdef _WIN32
 /* uv_os_homedir on Windows: %USERPROFILE% first, then the profile
  * directory API. The env var covers every real session; abort matches
@@ -1495,6 +1537,9 @@ ScrStr *scr_os_user_homedir(void) {
 /* uv_os_get_passwd on Windows has no uid or gid: both are -1. */
 double scr_os_user_uid(void) { return -1; }
 double scr_os_user_gid(void) { return -1; }
+
+/* Each Windows field is its own API call, so there is no entry to hold. */
+void scr_os_user_info_begin(void) {}
 
 ScrStr *scr_os_release(void) {
   /* uv_os_uname on Windows: RtlGetVersion (the un-lied-to GetVersionEx),
@@ -1573,70 +1618,148 @@ double scr_os_available_parallelism(void) { return 1; }
  * capability without leaking a host-specific TMPDIR into the module. */
 ScrStr *scr_os_tmpdir(void) { return scr_str_new("/tmp", 4); }
 #else
+/* The passwd entry of the effective uid, which os.homedir()'s fallback and
+ * os.userInfo()'s record both read. uv_os_get_passwd reaches it through
+ * getpwuid_r(3), and that resolves through NSS. A static executable cannot:
+ * NSS loads the run host's modules, which is what the compiler's SC3002
+ * guard refuses. The runtime pack builds this unit a second time for
+ * --static links (SCR_STATIC_PASSWD, runtime-pack-matrix.mjs), and that
+ * build reads /etc/passwd directly; every dynamically linked build keeps
+ * getpwuid_r, so a directory-service user sees no change. */
+#ifdef SCR_STATIC_PASSWD
+/* One /etc/passwd entry whose uid field is `uid`, parsed in place in `buf`
+ * (name:passwd:uid:gid:gecos:dir:shell — libc's struct passwd fields). The
+ * rows nss_files skips stay skipped: a `+`/`-` compat line names NSS's own
+ * sources rather than a user, and a line longer than the buffer cannot be
+ * an entry. The first match wins, as it does in nss_files. */
+static bool scr_os_passwd_file_entry(struct passwd *out, char *buf, size_t size, uid_t uid) {
+  FILE *file = fopen("/etc/passwd", "r");
+  if (file == NULL) return false;
+  bool found = false;
+  while (fgets(buf, (int)size, file) != NULL) {
+    size_t length = strcspn(buf, "\n");
+    if (length == 0) continue;
+    if (buf[length] != '\n' && length == size - 1) {
+      int ch;
+      while ((ch = fgetc(file)) != EOF && ch != '\n') {
+      }
+      continue;
+    }
+    buf[length] = '\0';
+    if (buf[0] == '#' || buf[0] == '+' || buf[0] == '-') continue;
+    char *fields[7];
+    int count = 0;
+    char *cursor = buf;
+    fields[count++] = cursor;
+    while (count < 7) {
+      char *colon = strchr(cursor, ':');
+      if (colon == NULL) break;
+      *colon = '\0';
+      cursor = colon + 1;
+      fields[count++] = cursor;
+    }
+    if (count != 7) continue;
+    char *end = NULL;
+    unsigned long entry_uid = strtoul(fields[2], &end, 10);
+    if (end == fields[2] || *end != '\0' || entry_uid != (unsigned long)uid) continue;
+    end = NULL;
+    unsigned long entry_gid = strtoul(fields[3], &end, 10);
+    if (end == fields[3] || *end != '\0') continue;
+    out->pw_name = fields[0];
+    out->pw_passwd = fields[1];
+    out->pw_uid = (uid_t)entry_uid;
+    out->pw_gid = (gid_t)entry_gid;
+    out->pw_gecos = fields[4];
+    out->pw_dir = fields[5];
+    out->pw_shell = fields[6];
+    found = true;
+    break;
+  }
+  fclose(file);
+  return found;
+}
+#endif
+
+/* The passwd entry of `uid`, or false when there is none. `buf` holds the
+ * strings the lookup stores its fields in (on the file build, the line). */
+static bool scr_os_passwd_lookup(struct passwd *out, char *buf, size_t size, uid_t uid) {
+#ifdef SCR_STATIC_PASSWD
+  return scr_os_passwd_file_entry(out, buf, size, uid);
+#else
+  struct passwd *result = NULL;
+  return getpwuid_r(uid, out, buf, size, &result) == 0 && result != NULL;
+#endif
+}
+
 ScrStr *scr_os_homedir(void) {
   /* uv_os_homedir: $HOME whenever it is set, an empty value included,
-   * else the passwd entry of the effective uid. */
+   * else the passwd entry of the effective uid. A lookup that answers
+   * nothing is Node's catchable SystemError (ERR_SYSTEM_ERROR). */
   const char *home = scr_getenv("HOME");
   if (home) return scr_str_new(home, strlen(home));
   struct passwd pw;
-  struct passwd *result = NULL;
+  memset(&pw, 0, sizeof pw);
   char buf[8192];
-  if (getpwuid_r(geteuid(), &pw, buf, sizeof buf, &result) != 0 || !result || !result->pw_dir) {
-    scr_trap("scriptc: os.homedir() failed\n");
+  if (!scr_os_passwd_lookup(&pw, buf, sizeof buf, geteuid()) || pw.pw_dir == NULL) {
+    scr_os_throw_system_error("uv_os_homedir", SCR_NODE_UV__ENOENT);
+    return NULL;
   }
-  return scr_str_new(result->pw_dir, strlen(result->pw_dir));
+  return scr_str_new(pw.pw_dir, strlen(pw.pw_dir));
 }
 
 /* The os.userInfo() fields — uv_os_get_passwd's slices of the passwd
- * entry for the effective uid. One passwd lookup per call (one call per
- * userInfo field — cheap, no caching to invalidate). Failure aborts: Node
- * throws a system error there, but no compiled program path reaches it
- * for the running uid. */
-static const struct passwd *scr_os_passwd(char *buf, size_t cap, struct passwd *pw) {
-  struct passwd *result = NULL;
-  if (getpwuid_r(geteuid(), pw, buf, cap, &result) != 0 || !result) {
-    scr_trap("scriptc: os.userInfo() failed\n");
+ * entry for the effective uid. One lookup per record, taken by
+ * scr_os_user_info_begin (the record's own ordering does not matter: the
+ * fields only read what it stored). A failed lookup throws Node's
+ * ERR_SYSTEM_ERROR; the empty snapshot it leaves behind is never read (the
+ * throw is pending), it only keeps a field call safe to walk. The state is
+ * per thread; a compiled program may run several. */
+static _Thread_local struct passwd scr_os_user_pw;
+static _Thread_local char scr_os_user_buf[8192];
+static _Thread_local const struct passwd *scr_os_user_snapshot;
+static const struct passwd scr_os_user_empty;
+
+void scr_os_user_info_begin(void) {
+  if (!scr_os_passwd_lookup(&scr_os_user_pw, scr_os_user_buf, sizeof scr_os_user_buf,
+                            geteuid())) {
+    scr_os_user_snapshot = &scr_os_user_empty;
+    scr_os_throw_system_error("uv_os_get_passwd", SCR_NODE_UV__ENOENT);
+    return;
   }
-  return result;
+  scr_os_user_snapshot = &scr_os_user_pw;
+}
+
+/* A field read outside a userInfo() record takes its own lookup. */
+static const struct passwd *scr_os_user_entry(void) {
+  if (!scr_os_user_snapshot) scr_os_user_info_begin();
+  return scr_os_user_snapshot;
 }
 
 ScrStr *scr_os_user_name(void) {
-  struct passwd pw;
-  char buf[8192];
-  const struct passwd *r = scr_os_passwd(buf, sizeof buf, &pw);
-  return scr_str_new(r->pw_name, strlen(r->pw_name));
+  const char *name = scr_os_user_entry()->pw_name;
+  if (!name) name = "";
+  return scr_str_new(name, strlen(name));
 }
 
 ScrStr *scr_os_user_shell(void) {
-  struct passwd pw;
-  char buf[8192];
-  const struct passwd *r = scr_os_passwd(buf, sizeof buf, &pw);
-  const char *sh = r->pw_shell ? r->pw_shell : "";
+  const char *sh = scr_os_user_entry()->pw_shell;
+  if (!sh) sh = "";
   return scr_str_new(sh, strlen(sh));
 }
 
 ScrStr *scr_os_user_homedir(void) {
   /* The PASSWD home (pw_dir) — Node's userInfo().homedir, distinct from
    * os.homedir()'s $HOME-first cascade. */
-  struct passwd pw;
-  char buf[8192];
-  const struct passwd *r = scr_os_passwd(buf, sizeof buf, &pw);
-  return scr_str_new(r->pw_dir, strlen(r->pw_dir));
+  const char *dir = scr_os_user_entry()->pw_dir;
+  if (!dir) dir = "";
+  return scr_str_new(dir, strlen(dir));
 }
 
 /* The entry's pw_uid and pw_gid: the user's primary group, which can
  * differ from the process gid. */
-double scr_os_user_uid(void) {
-  struct passwd pw;
-  char buf[8192];
-  return (double)scr_os_passwd(buf, sizeof buf, &pw)->pw_uid;
-}
+double scr_os_user_uid(void) { return (double)scr_os_user_entry()->pw_uid; }
 
-double scr_os_user_gid(void) {
-  struct passwd pw;
-  char buf[8192];
-  return (double)scr_os_passwd(buf, sizeof buf, &pw)->pw_gid;
-}
+double scr_os_user_gid(void) { return (double)scr_os_user_entry()->pw_gid; }
 
 ScrStr *scr_os_release(void) {
   /* uname(2)'s release field — Node's uv_os_uname()-backed answer. */
@@ -1656,6 +1779,21 @@ ScrStr *scr_os_type(void) {
   return scr_str_new(u.sysname, strlen(u.sysname));
 }
 
+/* os.userInfo({ encoding: 'buffer' }): the three string fields as Buffers
+ * with the same bytes (the passwd slices above). +1 each. */
+static ScrBytes *scr_os_user_field_bytes(ScrStr *text) {
+  ScrBytes *bytes = scr_bytes_from_data((const uint8_t *)text->data, text->len);
+  scr_str_release(text);
+  /* Node answers Buffers: the brand is observable (Buffer.isBuffer,
+   * .constructor, instanceof, inspect), so the copies carry it. */
+  if (bytes) bytes->is_buffer = true;
+  return bytes;
+}
+
+ScrBytes *scr_os_user_name_bytes(void) { return scr_os_user_field_bytes(scr_os_user_name()); }
+ScrBytes *scr_os_user_shell_bytes(void) { return scr_os_user_field_bytes(scr_os_user_shell()); }
+ScrBytes *scr_os_user_homedir_bytes(void) { return scr_os_user_field_bytes(scr_os_user_homedir()); }
+
 #ifdef __linux__
 /* libuv's uv__slurp: one read of at most cap - 1 bytes of path into buf
  * (NUL-terminated); false when the file cannot be opened or read. A single
@@ -1673,10 +1811,11 @@ static bool scr_os_slurp(const char *path, char *buf, size_t cap) {
   return true;
 }
 
-/* libuv's uv__get_constrained_cpu (1.51): the CPU quota of the process's
+/* libuv's uv__get_constrained_cpu (1.52): the CPU quota of the process's
  * cgroup in whole CPUs. For cgroup v2 it walks cpu.max from the process's
  * cgroup up to the root; like libuv, the last level with a numeric limit
- * (the outermost) decides. Returns false when there is no answer. */
+ * (the outermost) decides, and a limit below one CPU counts as one. For
+ * cgroup v1 there is no such floor. Returns false when there is no answer. */
 static bool scr_os_cgroup_cpu_quota(long long *quota) {
   char cgroup[1024];
   if (!scr_os_slurp("/proc/self/cgroup", cgroup, sizeof cgroup)) return false;
@@ -1684,7 +1823,7 @@ static bool scr_os_cgroup_cpu_quota(long long *quota) {
     static const char mount[] = "/sys/fs/cgroup";
     const char *trimmed = cgroup + 4;
     int size = (int)strcspn(trimmed, "\n");
-    char path[256], file[256], buf[1024], value[16];
+    char path[256], file[sizeof path + sizeof "/cpu.max"], buf[1024], value[16];
     snprintf(path, sizeof path, "%s/%.*s/cgroup.controllers", mount, size, trimmed);
     if (!scr_os_slurp(path, buf, sizeof buf)) return false;
     snprintf(path, sizeof path, "%s/%.*s", mount, size, trimmed);
@@ -1692,8 +1831,12 @@ static bool scr_os_cgroup_cpu_quota(long long *quota) {
       long long limit, period;
       snprintf(file, sizeof file, "%s/cpu.max", path);
       if (scr_os_slurp(file, value, sizeof value) && strncmp(value, "max", 3) != 0 &&
-          sscanf(value, "%lld %lld", &limit, &period) == 2 && period != 0)
+          sscanf(value, "%lld %lld", &limit, &period) == 2 && period != 0) {
         *quota = limit / period;
+        /* A limit below one whole CPU is one CPU, not none: a container
+         * holding a fraction of a CPU still runs on one processor. */
+        if (*quota == 0) *quota = 1;
+      }
       char *slash = strrchr(path, '/');
       if (slash == NULL || strcmp(path, mount) == 0) break;
       *slash = '\0';
@@ -1704,7 +1847,7 @@ static bool scr_os_cgroup_cpu_quota(long long *quota) {
   if (cpu == NULL) return false;
   cpu += sizeof ":cpu," - 1;
   int size = (int)strcspn(cpu, "\n");
-  char path[256], buf[64];
+  char path[256], buf[1024];
   long long per_period, period;
   snprintf(path, sizeof path, "/sys/fs/cgroup/%.*s/cpu.cfs_quota_us", size, cpu);
   if (!scr_os_slurp(path, buf, sizeof buf) || sscanf(buf, "%lld", &per_period) != 1) return false;
@@ -1717,7 +1860,7 @@ static bool scr_os_cgroup_cpu_quota(long long *quota) {
 #endif
 
 double scr_os_available_parallelism(void) {
-  /* uv_available_parallelism (libuv 1.51, Node's os.availableParallelism):
+  /* uv_available_parallelism (libuv 1.52, Node's os.availableParallelism):
    * the CPUs this process may run on (Linux: its affinity mask, then any
    * smaller cgroup CPU quota; Darwin: hw.activecpu, hw.logicalcpu, hw.ncpu),
    * else the online processors; at least 1. */
@@ -1739,9 +1882,10 @@ double scr_os_available_parallelism(void) {
 #endif
   if (rc < 0) rc = sysconf(_SC_NPROCESSORS_ONLN);
 #if defined(__linux__)
-  /* A quota below one CPU truncates to 0 and is ignored, not clamped to 1:
-   * libuv (1.51 through 1.52) applies only `quota > 0 && quota < rc`, so
-   * Node then answers the affinity count. */
+  /* The quota replaces the affinity count only when it is smaller and
+   * positive, as in libuv; the cgroup v2 walk has already raised a sub-CPU
+   * limit to 1, while a cgroup v1 limit below one CPU truncates to 0 and is
+   * ignored here. */
   long long quota = 0;
   if (scr_os_cgroup_cpu_quota(&quota) && quota > 0 && quota < rc) rc = (long)quota;
 #endif
@@ -2211,6 +2355,7 @@ void scr_process_exit(double code) {
   /* _Exit skips atexit handlers on purpose: no further code runs (matching
    * Node), and the RC audit is meaningless mid-program (live values are
    * expected). scr_init's flush-at-exit is also skipped — flush here. */
+  scr_stdout_settle();
   fflush(stdout);
 #if defined(__linux__)
   if (__llvm_profile_write_file != NULL) (void)__llvm_profile_write_file();
@@ -3369,6 +3514,9 @@ static void scr_file_read_grow(ScrFileRead *out) {
  * growing so an exact-size regular file never doubles its retained space. */
 static int scr_file_read_all(FILE *stream, int fd, bool text, ScrFileRead *out) {
   *out = (ScrFileRead){0};
+  /* A blocking read of stdin may wait indefinitely: publish buffered stdout
+   * (a prompt from a --stdout-buffering build) before the wait starts. */
+  if (!stream && fd == 0) scr_stdout_settle();
   out->cap = scr_file_read_hint(stream, fd);
   if (text) {
     out->text = scr_str_alloc_raw(0, out->cap);
@@ -3466,15 +3614,11 @@ ScrBytes *scr_fs_read_file_bytes(ScrStr *path) {
   int error = scr_file_read_all(f, -1, false, &out);
   fclose(f);
   if (error) { scr_fs_throw(error, "read", path); return NULL; }
-#ifdef SCR_FS_BUFFER_BRAND
   /* Node answers a Buffer: the brand is observable (Buffer.isBuffer,
    * .constructor, instanceof, inspect), so the read's bytes carry it. */
   ScrBytes *bytes = scr_bytes_take_data(out.bytes, out.len);
   if (bytes) bytes->is_buffer = true;
   return bytes;
-#else
-  return scr_bytes_take_data(out.bytes, out.len);
-#endif
 }
 
 /* readFileSync(path, "utf8") and fs.promises.readFile(path, "utf8"): the
@@ -3595,12 +3739,10 @@ void scr_fs_write_file(ScrStr *path, ScrStr *data) {
   scr_fs_write_common(path, data, "wb");
 }
 
-/* writeFileSync(p, data, { mode }): the mode is open(2)'s O_CREAT
- * argument — it applies at CREATION only (umask applying), and an
- * existing file keeps its permissions, exactly Node (which never chmods
- * here). Same error shapes as the plain form. */
-void scr_fs_write_file_mode(ScrStr *path, ScrStr *data, double mode) {
-  if (!scr_fs_path_ok(path, "path")) return;
+/* Node's parseFileMode for a numeric mode: a number that is an integer in
+ * 0..0xFFFFFFFF. Anything else throws Node's ERR_OUT_OF_RANGE and answers
+ * false. */
+static bool scr_fs_file_mode_valid(double mode) {
   char recv[48], msg[176];
   scr_num_received(mode, recv);
   if (!(isfinite(mode) && trunc(mode) == mode)) {
@@ -3608,15 +3750,25 @@ void scr_fs_write_file_mode(ScrStr *path, ScrStr *data, double mode) {
                        "The value of \"mode\" is out of range. It must be an integer. Received %s",
                        recv);
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
-    return;
+    return false;
   }
   if (mode < 0 || mode > 4294967295.0) {
     int len = snprintf(msg, sizeof msg,
                        "The value of \"mode\" is out of range. It must be >= 0 && <= 4294967295. Received %s",
                        recv);
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
-    return;
+    return false;
   }
+  return true;
+}
+
+/* writeFileSync(p, data, { mode }): the mode is open(2)'s O_CREAT
+ * argument — it applies at CREATION only (umask applying), and an
+ * existing file keeps its permissions, exactly Node (which never chmods
+ * here). Same error shapes as the plain form. */
+void scr_fs_write_file_mode(ScrStr *path, ScrStr *data, double mode) {
+  if (!scr_fs_path_ok(path, "path")) return;
+  if (!scr_fs_file_mode_valid(mode)) return;
   /* O_BINARY: zero on POSIX; on Windows it keeps the CRT from translating
    * \n in these byte-exact writes (fopen's "wb" path already does). */
   int fd = open(path->data, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, (mode_t)mode);
@@ -3757,13 +3909,22 @@ void scr_fs_chown(ScrStr *path, double uid, double gid) { scr_fs_chown_op(path, 
 void scr_fs_lchown(ScrStr *path, double uid, double gid) { scr_fs_chown_op(path, -1, true, uid, gid); }
 void scr_fs_fchown(double fd, double uid, double gid) { scr_fs_chown_op(NULL, fd, false, uid, gid); }
 
-/* fs.openSync(path, flags) → the raw fd (as f64) — the pair behind
+/* fs.openSync(path, flags) → the raw fd, for program objects built before
+ * the call carried a mode. Node's 0o666 default is what open(2) saw then,
+ * so the pair keeps answering that. */
+double scr_fs_open(ScrStr *path, ScrStr *flags) {
+  return scr_fs_open_mode(path, flags, 0666);
+}
+
+/* fs.openSync(path, flags, mode) → the raw fd (as f64) — the pair behind
  * spawn's fd-stdio form (openSync → stdio: ["ignore", fd, fd] →
  * closeSync). flags is Node's string grammar; an unknown flag throws
  * Node's ERR_INVALID_ARG_VALUE TypeError text, an open(2) failure the
- * usual Node-shaped fs error. Mode is Node's 0666 default (the numeric
- * third argument is a compile fence). */
-double scr_fs_open(ScrStr *path, ScrStr *flags) {
+ * usual Node-shaped fs error. mode is open(2)'s creation mode, passed by
+ * the compiler with Node's 0o666 default; it is checked like
+ * parseFileMode before the open, and open(2) ignores it unless the flags
+ * create the file. */
+double scr_fs_open_mode(ScrStr *path, ScrStr *flags, double mode) {
   if (!scr_fs_path_ok(path, "path")) return 0;
   const char *f = flags->data;
   int of;
@@ -3787,7 +3948,8 @@ double scr_fs_open(ScrStr *path, ScrStr *flags) {
     scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)len);
     return 0;
   }
-  int fd = open(path->data, of | O_BINARY, 0666);
+  if (!scr_fs_file_mode_valid(mode)) return 0;
+  int fd = open(path->data, of | O_BINARY, (mode_t)mode);
   if (fd < 0) {
     scr_fs_throw(errno, "open", path);
     return 0;
@@ -4261,6 +4423,10 @@ static ssize_t scr_fs_write_once(int fd, const void *data, size_t length,
 static double scr_fs_write_bytes(double fd, const void *data, size_t length,
                                  double position) {
   if (!scr_fs_write_fd_valid(fd)) return 0;
+  /* fs.writeSync(1|2, ...) and writes to a duplicated stdout descriptor go
+   * between the program's other output: publish buffered stdout first so
+   * source order holds (--stdout-buffering). */
+  if (fd == 1 || fd == 2) scr_stdout_settle();
   /* Node/libuv treats every position other than a safe nonnegative integer
    * as the current-offset sentinel for writes (unlike readSync, it does not
    * throw for negative/fractional positions). */
@@ -4471,6 +4637,9 @@ double scr_fs_read_sync_at(double fd, ScrBytes *buf, double offset, double lengt
   uint8_t *bounce = buf->shared ? malloc(want ? want : 1) : NULL;
   if (buf->shared && !bounce) scr_trap("scriptc: out of memory\n");
   uint8_t *destination = bounce ? bounce : buf->data + off;
+  /* A blocking read of stdin may wait indefinitely: publish buffered stdout
+   * (a prompt from a --stdout-buffering build) before the wait starts. */
+  if (position == -1 && (int)fd == 0) scr_stdout_settle();
   ssize_t n = position == -1
     ? read((int)fd, destination, want)
     : scr_fs_pread((int)fd, destination, want, position);
@@ -4643,11 +4812,93 @@ void scr_fs_link(ScrStr *source, ScrStr *dest) {
 #endif
 }
 
+/* Whether a kernel copy call declined this pair of descriptors rather than
+ * failing. copy_file_range refuses a pair on different filesystems
+ * (EXDEV), sendfile refuses a source or destination that is not a regular
+ * file (EINVAL), and either may be missing from the kernel or the
+ * filesystem (ENOSYS, EOPNOTSUPP). */
+static bool scr_fs_copy_declined(int error) {
+  return error == EXDEV || error == EINVAL || error == ENOSYS || error == EOPNOTSUPP;
+}
+
+/* Copies `in` to `out` from the offsets the two descriptors hold, returning
+ * 0 or the errno of the failing call. Both descriptors' offsets advance, so
+ * a kernel call that stops partway leaves the next one copying the rest.
+ * Linux prefers copy_file_range, which leaves the bytes on the same
+ * filesystem without a trip through the page cache; sendfile covers what it
+ * declines, and a buffer loop covers the rest. */
+static int scr_fs_copy_bytes(int in, int out) {
+#if defined(__linux__) && defined(SYS_copy_file_range)
+  for (;;) {
+    ssize_t n = syscall(SYS_copy_file_range, in, NULL, out, NULL, (size_t)1 << 30, 0u);
+    if (n > 0) continue;
+    if (n == 0) return 0;
+    if (errno == EINTR) continue;
+    if (!scr_fs_copy_declined(errno)) return errno;
+    break;
+  }
+#endif
+#if defined(__linux__)
+  for (bool first = true;; first = false) {
+    ssize_t n = sendfile(out, in, NULL, (size_t)1 << 30);
+    if (n > 0) continue;
+    if (n == 0) return 0;
+    if (errno == EINTR) continue;
+    if (!first || !scr_fs_copy_declined(errno)) return errno;
+    break;
+  }
+#endif
+  char buf[65536];
+  for (;;) {
+    ssize_t got = read(in, buf, sizeof buf);
+    if (got < 0) {
+      if (errno == EINTR) continue;
+      return errno;
+    }
+    if (got == 0) return 0;
+    ssize_t at = 0;
+    while (at < got) {
+      ssize_t wrote = write(out, buf + at, (size_t)(got - at));
+      if (wrote < 0) {
+        if (errno == EINTR) continue;
+        return errno;
+      }
+      at += wrote;
+    }
+  }
+}
+
+/* Whether two descriptors name the same file. POSIX compares the device
+ * and inode numbers. On Windows the CRT's struct stat carries a drive
+ * number and no file index, so distinct files on one drive compare
+ * equal; the handles' volume serial and file index identify the file
+ * there. */
+static bool scr_fs_same_file(int a, int b, const struct stat *sa, const struct stat *sb) {
+#if defined(_WIN32)
+  (void)sa;
+  (void)sb;
+  HANDLE ha = (HANDLE)_get_osfhandle(a);
+  HANDLE hb = (HANDLE)_get_osfhandle(b);
+  if (ha == INVALID_HANDLE_VALUE || hb == INVALID_HANDLE_VALUE) return false;
+  BY_HANDLE_FILE_INFORMATION fa;
+  BY_HANDLE_FILE_INFORMATION fb;
+  if (!GetFileInformationByHandle(ha, &fa) || !GetFileInformationByHandle(hb, &fb)) return false;
+  return fa.dwVolumeSerialNumber == fb.dwVolumeSerialNumber &&
+         fa.nFileIndexHigh == fb.nFileIndexHigh && fa.nFileIndexLow == fb.nFileIndexLow;
+#else
+  return sa->st_dev == sb->st_dev && sa->st_ino == sb->st_ino;
+#endif
+}
+
 /* copyFileSync(src, dest): contents copied into a created-or-truncated
  * destination carrying the SOURCE's permission bits — libuv's
- * uv_fs_copyfile behavior behind Node's copyFileSync (umask applies at
- * creation, like any open(2)). Every failure throws catchably with the
- * two-path message and the syscall name Node reports ("copyfile"). */
+ * uv_fs_copyfile behavior behind Node's copyFileSync. The destination is
+ * opened with the source's mode as open(2)'s creation mode (umask
+ * applying, like any open(2)) and then fchmod'ed to the source's bits, so
+ * an existing destination takes the source's permissions too. Copying a
+ * file onto itself succeeds without touching it. Every failure throws
+ * catchably with the two-path message and the syscall name Node reports
+ * ("copyfile"). */
 void scr_fs_copyfile(ScrStr *src, ScrStr *dest) {
   if (!scr_fs_path_ok(src, "src")) return;
   if (!scr_fs_path_ok(dest, "dest")) return;
@@ -4663,40 +4914,40 @@ void scr_fs_copyfile(ScrStr *src, ScrStr *dest) {
     scr_fs_throw2(e, "copyfile", src, dest);
     return;
   }
-  int out = open(dest->data, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, st.st_mode & 07777);
+  int out = open(dest->data, O_WRONLY | O_CREAT | O_BINARY, st.st_mode & 07777);
   if (out < 0) {
     int e = errno;
     close(in);
     scr_fs_throw2(e, "copyfile", src, dest);
     return;
   }
-  char buf[65536];
-  for (;;) {
-    ssize_t got = read(in, buf, sizeof buf);
-    if (got < 0) {
-      if (errno == EINTR) continue;
-      int e = errno;
-      close(in);
-      close(out);
-      scr_fs_throw2(e, "copyfile", src, dest);
-      return;
-    }
-    if (got == 0) break;
-    ssize_t at = 0;
-    while (at < got) {
-      ssize_t wrote = write(out, buf + at, (size_t)(got - at));
-      if (wrote < 0) {
-        if (errno == EINTR) continue;
-        int e = errno;
-        close(in);
-        close(out);
-        scr_fs_throw2(e, "copyfile", src, dest);
-        return;
-      }
-      at += wrote;
-    }
+  struct stat dst;
+  int err = 0;
+  if (fstat(out, &dst) != 0) err = errno;
+  else if (scr_fs_same_file(in, out, &st, &dst)) {
+    close(in);
+    close(out);
+    return;
   }
+  if (!err && ftruncate(out, 0) != 0) err = errno;
+#if !defined(_WIN32) && !defined(__wasi__)
+  /* libuv sets the destination's permissions to the source's after the
+   * open; the CRT has no descriptor form of this on Windows. */
+  if (!err && fchmod(out, st.st_mode & 07777) != 0) err = errno;
+#endif
+  if (err) {
+    close(in);
+    close(out);
+    scr_fs_throw2(err, "copyfile", src, dest);
+    return;
+  }
+  err = scr_fs_copy_bytes(in, out);
   close(in);
+  if (err) {
+    close(out);
+    scr_fs_throw2(err, "copyfile", src, dest);
+    return;
+  }
   if (close(out) != 0) scr_fs_throw2(errno, "copyfile", src, dest);
 }
 
@@ -5307,15 +5558,11 @@ ScrBytes *scr_fs_read_fd_bytes(double fd) {
   ScrFileRead out;
   int error = scr_file_read_all(NULL, (int)fd, false, &out);
   if (error) { scr_fs_throw_nopath(error, "read"); return NULL; }
-#ifdef SCR_FS_BUFFER_BRAND
   /* Node answers a Buffer here too (the fd form of readFileSync and
    * FileHandle#readFile). */
   ScrBytes *bytes = scr_bytes_take_data(out.bytes, out.len);
   if (bytes) bytes->is_buffer = true;
   return bytes;
-#else
-  return scr_bytes_take_data(out.bytes, out.len);
-#endif
 }
 
 /* ── the tty probes ──────────────────────────────────────────────────── */
@@ -6297,7 +6544,6 @@ ScrStats *scr_fs_fstat(double fd) {
   return s;
 }
 
-#ifdef SCR_FS_WATCH_FILE
 /* fs.watchFile's poll (scr_watch_file.c calls this): stat(2) following
  * symlinks, libuv's uv_fs_stat — NULL with *error = errno on failure,
  * never throwing, because a failed poll IS a reportable event. +1. */
@@ -6324,7 +6570,6 @@ ScrStats *scr_stats_poll_path(ScrStr *path, int *error) {
  * field 0, so isFile()/isDirectory() and the size/date reads all answer
  * zero/false. +1. */
 ScrStats *scr_stats_zero(void) { return scr_stats_new(); }
-#endif /* SCR_FS_WATCH_FILE */
 
 /* ── Stats objects ───────────────────────────────────────────────────
  * Node's Stats and BigIntStats over a snapshot. The integers and the *Ms

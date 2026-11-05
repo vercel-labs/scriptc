@@ -114,6 +114,24 @@ export interface TiersEnvelope {
     message: string;
   })[];
   units: (TierUnitPosition & { requests: number; sites: number })[];
+  /** Runtime-optional storage (report-only): the widened bindings and
+   * parameters whose storage holds an absence the checker's type does not
+   * admit, with the reads that narrow them back and the decisions that
+   * widened them. */
+  runtimeOptional: {
+    name: string;
+    storage: string;
+    narrowed: string;
+    /** The slot's declaration, when the recorded decision names it. */
+    slot?: SourcePosition;
+    reads: SourcePosition[];
+    decisions: {
+      kind: string;
+      target: SourcePosition;
+      cause?: SourcePosition;
+      detail: string;
+    }[];
+  }[];
   /** Localized failure (report-only): committed type failures that would
    * become checked dynamic slots, and what they would clear. */
   localizedFailure: {

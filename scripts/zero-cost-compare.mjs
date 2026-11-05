@@ -357,8 +357,11 @@ export const DYNAMIC_TIER_PREFIXES = [
   "scr_dyn_call",
   "scr_dyn_apply",
   "scr_dyn_invoke",
+  "scr_dyn_stdlib_prototype",
+  "scr_data_view_prototype",
   "scr_dyn_array_like",
   "scr_dyn_builtin_prototype",
+  "scr_dyn_builtin_method_value",
   "scr_dyn_construct",
   "scr_dyn_function_apply",
   "scr_dyn_fn_get",
@@ -473,6 +476,7 @@ export const DYNAMIC_WORKLOADS = new Set([
   "bench/channel-messages",
   "bench/dynamic-methods",
   "bench/dynamic-properties",
+  "bench/dynamic-properties-json",
   "bench/worker-messages",
   "bench/typed-array-scan-workers",
   "bench/log-summary",
@@ -484,6 +488,7 @@ export const DYNAMIC_WORKLOADS = new Set([
   "bench/record-untyped-writes",
   "bench/layered-errors",
   "bench/stream-buffered-drain",
+  "bench/untyped-validate",
 ]);
 
 /** Names of the functions (text and weak symbols) in `nm` output. Mach-O
@@ -810,6 +815,7 @@ export function timingGroups(rows) {
   return {
     bench: rows.filter((r) => r.id.startsWith("bench/")),
     self: rows.filter((r) => r.id === "self/cli"),
+    fixtures: rows.filter((r) => r.id.startsWith("fixture/")),
   };
 }
 

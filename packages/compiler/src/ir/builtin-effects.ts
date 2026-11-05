@@ -73,6 +73,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "console.countReset",
   "console.table",
   "console.dirDyn",
+  "console.dirHidden",
   "worker.new",
   "worker.data",
   "worker.parentPort",
@@ -87,6 +88,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "buffer.isAscii",
   "buffer.isUtf8",
   "buffer.transcode",
+  "buffer.slowBuffer",
   "cp.spawnDynamic",
   "child.onDyn",
   "text.decoderEncoding",
@@ -133,6 +135,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "bytes.instanceOf",
   "buffer.byteLenDyn",
   "buffer.byteLenValue",
+  "buffer.normalizeEncoding",
+  "buffer.normalizeEncodingEmptyUtf8",
+  "buffer.writeStrDyn",
+  "buffer.writeStrDynLen",
   "buffer.allocValue",
   "fs.realpathValue",
   "dyn.validateString",
@@ -143,6 +149,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "bytes.construct",
   "arrayBuffer.new",
   "sharedArrayBuffer.new",
+  "arrayBuffer.newResizable",
+  "sharedArrayBuffer.newGrowable",
   "atomics.op",
   "atomics.wait",
   "atomics.notify",
@@ -193,6 +201,14 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "event.init",
   "event.targetCall",
   "event.targetDispatch",
+  // events.getEventListeners and events.listenerCount over an EventTarget:
+  // Node's receiver errors.
+  "event.targetListeners",
+  "event.targetListenersDyn",
+  "event.targetListenerCount",
+  "event.targetListenerCountDyn",
+  "event.targetGetMax",
+  "event.targetSetMax",
   "event.call",
   "blob.new",
   "blob.fileNew",
@@ -226,12 +242,16 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "num.toStringRadix",
   "num.toStringRadixF64",
   "insp.jsonDyn",
+  "insp.jsonDynValue",
   // The runtime formatter calls toString, valueOf and toJSON, and refuses
   // renderings it has no lowering for.
   "insp.format",
   "insp.formatList",
   "insp.formatWithOptions",
   "insp.inspect",
+  // A getter the walk invokes renders its result, and that rendering can
+  // refuse (SC2020) exactly like the walk's own.
+  "insp.accessorValue",
   // The options object reads the caller's options (getters included), and
   // the checked-dynamic walk calls custom inspect functions.
   "insp.customOptions",
@@ -273,9 +293,13 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dc.chanBindStore",
   "dc.chanRunStores",
   "http.resWriteHeadDyn",
+  "http.resSetHeader",
   "http.resSetHeaderDyn",
+  "http.resRemoveHeader",
   "http.clientSignal",
   "http.clientSignalCheck",
+  "http.clientProtocolCheck",
+  "http.clientProtocolCheckAgent",
   "http.serverMaxHeaderSize",
   "http.clientMaxHeaderSize",
   "http.resAppendHeader",
@@ -328,6 +352,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "emitter.emitAny",
   "emitter.emitErrorValue",
   "emitter.emitMixed",
+  "emitter.hasDyn",
   "emitter.listenersDyn",
   "emitter.emitError",
   "emitter.on",
@@ -385,6 +410,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.requestDynCb",
   "https.requestDyn",
   "https.requestDynCb",
+  // The URL+options form adds the URL parse's throws to that walk's.
+  "http.requestUrlDyn",
+  "http.requestUrlDynCb",
+  "https.requestUrlDyn",
+  "https.requestUrlDynCb",
   // address() of a Unix-socket server read as the AddressInfo record.
   "net.serverAddressCheck",
   // The h2 client's throwing entries: connect on a bad/non-http
@@ -484,6 +514,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.requestConnCb",
   "process.kill",
   "process.killNum",
+  // A replaced process.stdout/stderr.write runs JavaScript: what it throws
+  // propagates from the call.
+  "process.stdioWriteStr",
   "process.setExitCode",
   "process.setExitCodeTracked",
   // Node's argument grammar throws ERR_INVALID_ARG_TYPE at the call.
@@ -511,6 +544,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // Non-TTY stdin: Node's stdin has no setRawMode member, so the call is
   // the exact catchable TypeError.
   "process.stdinSetRawMode",
+  // read(size) above the 1 GiB high-water mark: Node's ERR_OUT_OF_RANGE.
+  "stdin.read",
   // The unguarded h2-only stream call: always throws Node's TypeError.
   "http2.streamUndefCall",
   "http.reqH2StreamOrThrow",
@@ -563,6 +598,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.classBasePrototype",
   "dyn.classInherit",
   "dyn.classSuper",
+  // Promise.<s>.call(C, …) validates its `this` and runs C's constructor and
+  // resolve — every throw (a non-object this, a non-constructor, a throwing
+  // executor or resolve) rejects the capability or propagates.
+  "promise.genericStatic",
   "dyn.hasKey",
   "dyn.in",
   "child.kill",
@@ -735,6 +774,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.isExtensible",
   "dyn.seal",
   "dyn.isSealed",
+  // an unmodeled integrity kind (a native handle, a promise) refuses
+  "dyn.isExtensibleQuery",
+  "dyn.isSealedQuery",
   "dyn.objValues",
   "dyn.objValueList",
   "dyn.objEntries",
@@ -757,9 +799,12 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.callbackCall",
   "dyn.keyDelete",
   "dyn.keyDeleteComputed",
+  "dyn.primitiveDelete",
   "dyn.reflectDeleteProperty",
   "dyn.reflectHasTarget",
   "dyn.hasKeyComputed",
+  // `… in globalThis` over a name the runtime does not provide throws
+  "dyn.globalHas",
   "dyn.hasOwnComputed",
   "dyn.propertyIsEnumerableComputed",
   // the destructuring pack throws V8's TypeError on non-iterable dyn kinds
@@ -785,6 +830,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // Primitive wrapper objects (scr_js_wrapper.c): the conversions run
   // user hooks and the guard refuses.
   "wrapper.new",
+  // %Iterator% (scr_js_iterator.c): construction always throws, and
+  // Iterator.from runs the value's iterator method and next getter.
+  "iterator.construct",
+  "iterator.from",
+  "iterator.instanceOf",
   "wrapper.toObject",
   "wrapper.objectTag",
   "wrapper.thisString",
@@ -796,6 +846,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.bagGet",
   "dyn.bagSet",
   "dyn.defineProperty",
+  // The same operations for a descriptor built by an expression; they throw
+  // the same TypeErrors, and a getter on the descriptor can throw.
+  "dyn.definePropsShapes",
+  "dyn.definePropertyShapes",
+  "dyn.objCreateWithPropertiesShapes",
   "dyn.getOwnPropertyDescriptor",
   "child.propsDefine",
   "child.propsDescriptor",
@@ -805,6 +860,19 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.chdir",
   "os.getPriority",
   "os.setPriority",
+  // Node's SystemError when the passwd entry of the effective uid answers
+  // nothing: os.homedir() with HOME unset, and os.userInfo()'s fields, which
+  // take their own lookup when the record's begin call did not run.
+  "os.homedir",
+  "os.userInfoBegin",
+  "os.userName",
+  "os.userShell",
+  "os.userHomedir",
+  "os.userNameBuf",
+  "os.userShellBuf",
+  "os.userHomedirBuf",
+  "os.userUid",
+  "os.userGid",
   // Pattern length TypeError, brace-sequence RangeError, and the
   // SyntaxError of a segment regex invalid under the u flag.
   "path.matchesGlob",

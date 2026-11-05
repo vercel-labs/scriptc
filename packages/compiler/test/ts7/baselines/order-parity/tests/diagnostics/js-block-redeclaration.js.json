@@ -23,15 +23,6 @@
   },
   {
    "code": "SC0001",
-   "message": "Type '2' is not comparable to type '1'.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/js-block-redeclaration.js",
-    "start": 491,
-    "end": 492
-   }
-  },
-  {
-   "code": "SC0001",
    "message": "Cannot initialize outer scoped variable 'scoped' in the same scope as block scoped declaration 'scoped'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/js-block-redeclaration.js",

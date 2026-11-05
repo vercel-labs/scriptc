@@ -9,12 +9,15 @@ import {
 } from "./ir.js";
 import { mapExprChildren, mapStmtChildren } from "./traverse.js";
 import { type IrFieldWalker, walkStmtFields } from "./fields.generated.js";
+import { type IrNodeIndex, type IrNodeKind, lacksNode } from "./node-index.js";
 
 type CharAt = IrExpr & { kind: "strIntrinsic" };
 type UnitUse = IrExpr & { kind: "strEq" | "strCmp" };
 type CompareOp = "<" | "<=" | ">" | ">=";
 
 const FLIPPED = { "<": ">", "<=": ">=", ">": "<", ">=": "<=" } as const;
+
+const STRING_INTRINSIC_KINDS: readonly IrNodeKind[] = ["strIntrinsic"];
 
 /** Character reads and locals held as their code unit.
  *
@@ -42,10 +45,17 @@ const FLIPPED = { "<": ">", "<=": ">=", ">": "<", ">=": "<=" } as const;
  * comparison, and charCodeAt answers NaN out of range. That holds both for
  * the read in place and for an immutable local initialized from it and
  * used only in such tests and in tests for undefined, which become NaN
- * tests. */
-export function holdCharLocalsAsUnits(mod: IrModule): IrModule {
+ * tests.
+ *
+ * Every rewrite starts from a charAt read. With `nodes`, an index of `mod`,
+ * the functions it records without one are kept as they are. */
+export function holdCharLocalsAsUnits(mod: IrModule, nodes?: IrNodeIndex): IrModule {
+  const reads = nodes?.scan(STRING_INTRINSIC_KINDS);
+  const readsChar = (node: IrExpr | IrStmt): boolean =>
+    node.kind === "strIntrinsic" && node.method === "charAt";
   let changed = false;
   const functions = mod.functions.map((fn) => {
+    if (lacksNode(fn, reads, readsChar)) return fn;
     const next = rewriteFunction(fn);
     if (next !== fn) changed = true;
     return next;

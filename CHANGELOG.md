@@ -6,6 +6,84 @@ All notable changes to scriptc will be documented in this file.
 
 <!-- release:start -->
 
+## 0.4.8
+
+### Highlights
+
+- **Faster programs:**
+  - Counted loops run two iterations at a time where the iterations are independent: a single-file mandelbrot port is 39% faster.
+  - A class whose instances form a tree, each node owned by one parent, keeps its nodes in the group arena that holds the rest of the tree, at 16 bytes per node instead of 24: a class-based binary-trees program is 20% faster and uses 33% less peak memory.
+  - A dictionary update fuses its second hash probe into the write that follows (4.5% faster on dictionary walks), and number and identity-word map keys hash with one multiply instead of two (6.9% faster on number-key maps).
+  - A run of dynamic property reads on one object shares one guard, untyped code calls typed records' dynamic parameters through specialized calls, and dynamic class tables dispatch on an indexed class key.
+  - Compact class fields store 32-bit references to arrays, maps, sets and instances, so programs that keep many objects use less memory.
+  - musl executables use an allocator built for the program they link into: across the runtime benchmarks they are 2.9% faster, line-by-line reading is 39% faster, and an HTTP server's peak memory falls from 34.6 MiB to 2.4 MiB. musl executables also use musl's string comparison and a faster `getenv`.
+  - x86-64-v3 builds keep baseline copies of the program's functions.
+- **Faster builds:**
+  - The thin-LTO pre-link runs at the build's optimization level: a cold build of a large program is 2.4% faster, with the LLVM stage 10% faster and the same runtime speed.
+  - The partition cache also covers builds that name their LLVM helper with `SCRIPTC_LLVM_HELPER`: a warm one-function edit of a large program rebuilds 13% faster in that setup.
+  - A build shares one frontend services scope across its loads, memoizes type mappings per generic binding context, shares type-memo entries that read no type-parameter binding, and computes its preflight diagnostics once. Island rounds share their program facts across lowering passes.
+  - LLVM partitions are sized from the host's threads as well as the module, the emission passes read their node scans from one recorded walk, and IR functions decode without a whole-document number reviver.
+  - The LLVM helper's identity is checked once per install, the installed compiler package digest is reused, and edit builds keep less per-build bookkeeping. The native compiler's optimization profile is refreshed.
+- **Node.js parity:**
+  - node:path, node:url and node:os match Node 24. node:buffer matches Node 24's Buffer members, encodings and module surface. node:zlib adds the zstd API.
+  - `util.inspect` supports `showHidden`, `numericSeparator`, `maxStringLength`, `maxArrayLength` and the `getters` option, `console.dir` supports `showHidden`, and errors print from their stack in `util.format`, `util.inspect` and `console.log`.
+  - child_process lowers the shell forms, typed `spawnSync` options including `cwd` and `input`, the `cwd` option of the exec and execFile callback forms, and child stdio pipes typed as node:stream streams.
+  - node:http applies Node's HTTP/1 parser checks, answers ClientRequest listeners, reports late Transfer-Encoding errors, and lowers the server `'clientError'` event and the URL-plus-options request form with `protocol` and shorthand `headers`.
+  - `process.stdin` has its readable surface, readline accepts `process.stderr` output and runtime question options, and `getEventListeners` answers for EventTarget receivers.
+  - ArrayBuffer transfer, detach and resizable or growable buffers compile. A cgroup CPU quota below one CPU is floored at one.
+  - Node.js is pinned to 24.22.1.
+- **JavaScript semantics (Test262):**
+  - More early errors are reported, `RegExp` coerces its constructor arguments, and the async-generator `yield*` delegation protocol is implemented.
+  - Class values honor `Symbol.hasInstance`. Promise statics accept a foreign constructor. Iterator helpers run on a live `Iterator.prototype`.
+  - BigInt typed arrays work in the checked-dynamic tier, and builtin global functions and classes have values in JavaScript sources.
+  - Generator parameters bind at the call, higher-order functions honor `thisArg`, pattern defaults take their binding's name, and object literals accept `__proto__` with any prototype value.
+- **Node islands:** coverage lowers once with the islands the build proves, packages that are not opted in keep their JavaScript out of the inferred surface, and npm-static packages are classified only from real loads.
+- **Correctness:** a record reached through an alias keeps writes made through either name when its shape widens under the shape overlay.
+- **TypeScript:** more record, union and generic patterns compile, among them overload sets held as values, class overload declarations, unions of a class and its subclasses, `Object.assign` over a narrowed record arm, and partial record views that gain keys through dynamic writes.
+
+<!-- release:end -->
+
+## 0.4.7
+
+### Highlights
+
+- **Node.js parity:**
+  - `Intl.Segmenter` splits text into graphemes and words, and `toLocaleString` uses the default locale, on Linux x64 (ICU 78.3). Malformed UTF-8 in directory entries and command-line arguments decodes to U+FFFD, as in Node.
+  - node:http emits Node's abort events, matches Node's outgoing header behavior, and checks `http.request` options before a socket opens. Sockets after `setEncoding` pipe decoded strings, untyped listen ports are validated, and net errors carry Node's system properties.
+  - node:querystring and node:string_decoder match Node 24 for values known only at run time, and node:path matches Node 24's path tests. `TextDecoder` matches Node's errors, options and printing.
+  - `structuredClone` copies Maps and Sets. `SharedArrayBuffer`, `DataView`, `BigInt64Array`, `BigUint64Array`, `Proxy` and `Intl` can be read as values. `process.memoryUsage()` counts ArrayBuffer storage.
+  - `import()` of a specifier that cannot be resolved rejects with `ERR_MODULE_NOT_FOUND`. fs reads return Buffers in programs that can observe the difference. Values held from `process.env` read the live environment.
+  - EventEmitter and stream listeners are called with the emitter as `this`, listeners that read `arguments` receive every argument, and the leak warning is delivered at exit. `'error'` events accept non-Error payloads.
+  - readline accepts listener values and ends lines at U+2028 and U+2029. `fs.watch` names the changed entry. `assert.throws` reports validation-object failures as Node does.
+  - Executables ignore SIGPIPE and SIGXFSZ, as Node does. Timer deadlines hold on macOS, and intervals re-arm as in Node. Timeout delay warnings are emitted, and untyped timer delays convert with ToNumber.
+  - `process.emitWarning`, `process.kill`, `process.chdir` and `os.userInfo` behave as in Node. Replacing `process.stdout.write` or `process.stderr.write` receives the arguments, Buffers and whole writes that Node passes.
+  - JavaScript semantics from Test262: each evaluation of a class expression creates its own class, private static members check their brand, wrapper objects for strings, numbers and booleans work in JavaScript sources, and Set, Map and weak-collection methods can be read as values.
+  - `for...in` runs over a value that may be null or undefined. A null or undefined destructuring source throws Node's TypeError. Functions held in records and arrays keep their names.
+- **Node islands:**
+  - Sloppy-mode modules and modules that patch builtins run in Node islands automatically.
+  - Islands can `require` CommonJS modules and hold builtin classes, and garbage cycles are collected across the program's heap and Node's.
+  - Island modules whose load is deterministic are deferred until first use, and shared modules resolve by real path, so caches reached through symbolic links work.
+- **Faster programs:**
+  - Untyped code calls methods of compiled class instances inline.
+  - Integer arithmetic: sums built on unsigned shifts stay in 32 bits, and loops are versioned on the range of locals they write as remainders. Saturating loops that run together test their exit every fourth iteration.
+  - Number-key map lookups test the direct index once and inline the probe in loops.
+  - Streams: taking from a Readable's buffered queue is constant time, object-mode stream callbacks do less work per chunk and keep typed records unboxed, and a line goes to a single line listener directly.
+  - fs streams read and write cached regular files on the loop thread, worker threads that allocate large blocks no longer reread the process's memory map, and constructors store their own fields without releasing a previous value.
+  - `--cpu-dispatch` keeps x86-64-v3 code from running slower than the baseline.
+  - Profile-guided builds compile the functions a profile never ran as cold code, and weigh profile matches by the profile's counts. The runtime profile is refreshed.
+  - x86_64 musl executables use SSE2 memory routines and the runtime's rounding and libm definitions.
+- **Faster builds:**
+  - The native compiler's optimization profile is refreshed: its code is 63.0 MB instead of 73.9 MB, so builds use less memory and run faster.
+  - Optimized partitions of builds without a profile run a lighter simplification before they are linked, and builds that use a profile keep the full one. Partition placement stays stable when an edit adds a small helper, so more partitions stay cached.
+  - A compile reads and stats each file once and reuses its type checker across module loads, and finished checker processes no longer stay as zombies.
+  - The type checker executable is written once, and builds with an empty cache no longer hash the runtime pack's artifacts again.
+  - Large modules decide in one pass whether fs reads must return Buffers.
+- **Memory and size:**
+  - Programs return freed memory sooner: large strings are freed when they are released, writes of large shared views go out in chunks, and the main thread returns free pages when its event loop waits.
+  - An HTTP response whose socket closes releases its completion callbacks, and the web view of an abandoned fetch body is released while its transfer runs.
+  - Intl executables ship ICU data without the categories no Intl form reads (21.5 MB smaller), and the runtime pack is 24 MB smaller on Linux x64.
+- **TypeScript:** an `import source` clause from TypeScript 7.1 is reported as unsupported instead of failing the build, and more record, union and generic patterns compile: spreads of unions with an absent arm, literal-union keys of one field type, partial record assertions, records cast from `unknown[]` elements, and `entries().filter` in generic bodies.
+
 ## 0.4.6
 
 ### Highlights
@@ -43,8 +121,6 @@ All notable changes to scriptc will be documented in this file.
   - Classes that extend Array compile; strings spread into their code points; frozen checked records stay frozen; sloppy-mode `this` is the global object.
   - `util.format` runtime format strings, `inspect.custom` and colors, and untyped `promisify`.
 - **TypeScript:** scriptc reads TypeScript 7.1's binary AST format and API server beside 7.0's, and tsc-ts is updated to 0.0.10.
-
-<!-- release:end -->
 
 ## 0.4.5
 

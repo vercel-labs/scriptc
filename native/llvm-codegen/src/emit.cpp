@@ -58,6 +58,7 @@
 #include "llvm/Transforms/Utils/SplitModule.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <atomic>
 #include <mutex>
 #include <optional>
@@ -875,14 +876,17 @@ std::optional<EmitFailure> splitParsedModule(const EmitOptions &Options,
 
 // The level of an optimized partition's simplification before the thin
 // link. The backend optimizes every partition again at Level after
-// importing, so the pre-link runs the O1 simplification: it annotates the
-// profile, inlines and simplifies enough for the summaries the import
-// decisions read, and leaves the full simplification to the backend. The
-// O2 simplification before the link repeated most of the backend's work: on
-// a partition dominated by one large function it took about half as long as
-// the backend's optimization and code generation of that partition.
-OptimizationLevel preLinkLevel(OptimizationLevel Level) {
-  if (Level == OptimizationLevel::O2 || Level == OptimizationLevel::O3)
+// importing, so without a profile to use the pre-link runs the O1
+// simplification: it inlines and simplifies enough for the summaries the
+// import decisions read, and leaves the full simplification to the backend.
+// The O2 simplification before the link repeated most of the backend's
+// work: on a partition dominated by one large function it took about half
+// as long as the backend's optimization and code generation of that
+// partition. A build that uses a profile keeps the pre-link at Level: with
+// the O1 pre-link, profile-guided programs ran up to 3% slower.
+OptimizationLevel preLinkLevel(OptimizationLevel Level, bool UsingProfile) {
+  if (!UsingProfile &&
+      (Level == OptimizationLevel::O2 || Level == OptimizationLevel::O3))
     return OptimizationLevel::O1;
   return Level;
 }
@@ -986,11 +990,13 @@ compileUnoptimizedPartitions(const EmitOptions &Options,
       return;
     }
     std::string LookupError;
+    // The context must outlive the target machine: the subtarget caches the
+    // GlobalISel selector, whose builder holds metadata handles into it.
+    LLVMContext Context;
     std::unique_ptr<TargetMachine> Machine =
         createTargetMachine(Options.Target, Options.OptLevel, LookupError);
     if (!Machine)
       return Failures.set({"target_machine_failed", LookupError});
-    LLVMContext Context;
     Expected<std::unique_ptr<Module>> Mod =
         loadPartition(Options, Plan.Modules[I], I, Context, *Machine);
     if (!Mod)
@@ -1041,11 +1047,13 @@ compileOptimizedPartitions(const EmitOptions &Options,
       return;
     }
     std::string LookupError;
+    // The context must outlive the target machine: the subtarget caches the
+    // GlobalISel selector, whose builder holds metadata handles into it.
+    LLVMContext Context;
     std::unique_ptr<TargetMachine> Machine =
         createTargetMachine(Options.Target, Options.OptLevel, LookupError);
     if (!Machine)
       return Failures.set({"target_machine_failed", LookupError});
-    LLVMContext Context;
     ProfileMatch PartitionMatch;
     std::vector<std::string> MismatchedNames;
     if (Annotating)
@@ -1081,10 +1089,17 @@ compileOptimizedPartitions(const EmitOptions &Options,
         P.collectAnnotated(Weigher.Annotated);
         P.afterProfileAnnotation(PartitionMatch);
       }
-      if (preLinkLevel(Level) != Level)
+      // Experiment only: one binary runs either pre-link level, chosen per
+      // build by SCRIPTC_PRELINK_LEVEL=o1, so a timing comparison between the
+      // two levels holds the helper binary fixed.
+      const char *PreLinkMode = std::getenv("SCRIPTC_PRELINK_LEVEL");
+      bool OldPreLink = PreLinkMode && std::string(PreLinkMode) == "o1";
+      OptimizationLevel PreLink =
+          OldPreLink ? preLinkLevel(Level, Annotating) : Level;
+      if (PreLink != Level)
         addPreLinkValuePropagation(P.PB);
       ModulePassManager MPM =
-          P.PB.buildThinLTOPreLinkDefaultPipeline(preLinkLevel(Level));
+          P.PB.buildThinLTOPreLinkDefaultPipeline(PreLink);
       MPM.addPass(UnnameStructTypes());
       // The module hash is set at the thin link instead (see Names).
       MPM.addPass(BitcodeWriterPass(Stream, /*ShouldPreserveUseListOrder=*/false,
@@ -1638,11 +1653,13 @@ emitSplitCodegen(const EmitOptions &Options, Module &M, TargetMachine &Machine,
       return;
     }
     std::string LookupError;
+    // The context must outlive the target machine: the subtarget caches the
+    // GlobalISel selector, whose builder holds metadata handles into it.
+    LLVMContext Context;
     std::unique_ptr<TargetMachine> PartMachine =
         createTargetMachine(Options.Target, Options.OptLevel, LookupError);
     if (!PartMachine)
       return Failures.set({"target_machine_failed", LookupError});
-    LLVMContext Context;
     std::unique_ptr<Module> Part;
     if (Split) {
       Expected<std::unique_ptr<Module>> Parsed = parseBitcodeFile(

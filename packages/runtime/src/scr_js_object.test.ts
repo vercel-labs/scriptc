@@ -18,7 +18,6 @@ test("layouts stay within the layout and key-byte budgets, and dynamic-tier abse
       "-Wall",
       "-Wextra",
       "-fsanitize=address,undefined",
-      "-DSCR_JS_TIER",
       "-I",
       src,
       "-o",

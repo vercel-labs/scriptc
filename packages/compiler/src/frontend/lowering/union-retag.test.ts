@@ -787,3 +787,74 @@ describe("promise payload widening", () => {
     ).toEqual([0, 1]);
   });
 });
+
+describe("class routes from a stored base arm", () => {
+  const animal: IrType & { kind: "object" } = { kind: "object", className: "Animal" };
+  const dog: IrType & { kind: "object" } = { kind: "object", className: "Dog" };
+  const cat: IrType & { kind: "object" } = { kind: "object", className: "Cat" };
+  const source: IrUnionDef = { id: "cu0", arms: [animal, F64] };
+  const target: IrUnionDef = { id: "cu1", arms: [dog, F64] };
+  const routes = new Map([[0, [{ tag: 0, arm: dog }]]]);
+  const plan = (to: IrUnionDef = target) =>
+    planUnionRetag(
+      source,
+      to,
+      () => undefined,
+      () => null,
+      undefined,
+      routes,
+    );
+
+  test("plans a class test in place of the base arm's identity", () => {
+    expect(plan()).toEqual([
+      { kind: "classRoute", routes: [{ tag: 0, arm: dog }] },
+      { kind: "direct", route: { tag: 1, lift: { how: "copy" }, values: [] } },
+    ]);
+  });
+
+  test("declines when the destination arm is not the routed class", () => {
+    const other: IrUnionDef = { id: "cu2", arms: [cat, F64] };
+    expect(plan(other)).toBeNull();
+  });
+
+  test("declines when the routed class has no destination arm", () => {
+    const absent: IrUnionDef = { id: "cu3", arms: [F64] };
+    expect(plan(absent)).toBeNull();
+  });
+
+  test("builds the class test, the checked downcast and the trap after it", () => {
+    const fn = buildUnionRetag(
+      "retag",
+      source,
+      target,
+      plan()!,
+      loc,
+      (_, value) => value,
+      () => "source",
+    );
+    const branch = fn.body[1]!;
+    if (branch.kind !== "if") throw new Error("missing class route branch");
+    expect(branch.cond).toMatchObject({ kind: "unionIsTag", tag: 0 });
+    expect(branch.then[0]).toMatchObject({
+      kind: "if",
+      cond: { kind: "instanceOf", className: "Dog" },
+      then: [
+        {
+          kind: "return",
+          value: {
+            kind: "unionWrap",
+            unionId: "cu1",
+            tag: 0,
+            value: { kind: "downcast", type: { kind: "object", className: "Dog" } },
+          },
+        },
+      ],
+    });
+    const thrown = branch.then[1]!;
+    if (thrown.kind !== "throw" || thrown.value.kind !== "libCall")
+      throw new Error("missing TypeError after the class tests");
+    expect(thrown.value.args[0]).toMatchObject({
+      value: expect.stringContaining("is not representable in the target union"),
+    });
+  });
+});

@@ -19,7 +19,7 @@ import { typedRefRecipe } from "./expr-calls.js";
 
 export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
-  if (e.fn === "cp.execFile") {
+  if (e.fn === "cp.execFile" || e.fn === "cp.execFileCwd") {
     const callbackArg = e.args[2];
     if (!callbackArg)
       throw new InternalCompilerError("llvm emitter bug: execFile callback missing");
@@ -33,8 +33,17 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
     const shell = host.emitExpr(e.args[3]!);
     const adapter = host.execFileThunkFor(cbT);
     host.usesTimers = true;
-    host.declare(`declare ptr @scr_exec_file(ptr, ptr, ptr, ptr, i1)`);
     const out = B.tmp();
+    if (e.fn === "cp.execFileCwd") {
+      // The cwd slice (SCR_CHILD_CP_OPTIONS): the child starts in cwd.
+      const cwd = host.emitExpr(e.args[4]!);
+      host.declare(`declare ptr @scr_exec_file_cwd(ptr, ptr, ptr, ptr, i1, ptr)`);
+      B.line(
+        `${out} = call ptr @scr_exec_file_cwd(ptr ${cmd.name}, ptr ${argv.name}, ptr ${cb.name}, ptr @${adapter}, i1 ${shell.name}, ptr ${cwd.name})`,
+      );
+      return host.own({ name: out, type: e.type });
+    }
+    host.declare(`declare ptr @scr_exec_file(ptr, ptr, ptr, ptr, i1)`);
     B.line(
       `${out} = call ptr @scr_exec_file(ptr ${cmd.name}, ptr ${argv.name}, ptr ${cb.name}, ptr @${adapter}, i1 ${shell.name})`,
     );
@@ -46,7 +55,7 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
     e.fn === "cp.spawnDynamic" ||
     e.fn === "cp.fork"
   ) {
-    // child_process.spawn: the child starts NOW (posix_spawnp); the
+    // child_process.spawn: the child starts NOW (posix_spawn); the
     // loop reaps it and fires its listeners. Never throws — spawn
     // failure defers to "error".
     host.usesTimers = true;
@@ -667,6 +676,40 @@ export function emitProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     host.declare(`declare void @${sym}(ptr, ptr, i1 zeroext)`);
     B.line(`call void @${sym}(ptr ${cb.name}, ptr @${adapter}, i1 ${once.name})`);
     return { name: "", type: e.type };
+  }
+  if (e.fn === "stdin.onReadable") {
+    // A 'readable' listener is a consumer too: the loop watches fd 0 and
+    // stays alive until EOF. Its closure's own entry takes the callback
+    // pointer (no adapter — the listener has no parameters).
+    host.usesTimers = true;
+    if (e.args[0]!.type.kind !== "func")
+      throw new InternalCompilerError("llvm emitter bug: stdin.onReadable callback not a func");
+    const cb = host.emitExpr(e.args[0]!);
+    const once = host.emitExpr(e.args[1]!);
+    host.toHeap(cb);
+    host.declare(`declare void @scr_stdin_on_readable(ptr, i1 zeroext)`);
+    B.line(`call void @scr_stdin_on_readable(ptr ${cb.name}, i1 ${once.name})`);
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "stdin.read") {
+    // +1 chunk or NULL → the `Uint8Array | null` union, constructed
+    // type-directedly like readable.read; the pending check runs between
+    // the call and the wrap (a size above 1 GiB threw ERR_OUT_OF_RANGE).
+    if (e.type.kind !== "union")
+      throw new InternalCompilerError("llvm emitter bug: stdin.read result is not a union");
+    const def = host.unionsById.get(e.type.unionId);
+    const bytesTag = def ? def.arms.findIndex((a) => a.kind === "bytes") : -1;
+    const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
+    if (bytesTag < 0 || nullTag < 0)
+      throw new InternalCompilerError("llvm emitter bug: stdin.read union lacks its arms");
+    const args = e.args.map((a) => host.emitExpr(a));
+    host.declare(`declare ptr @scr_stdin_read_bytes(i1 zeroext, double)`);
+    const raw = B.tmp();
+    B.line(`${raw} = call ptr @scr_stdin_read_bytes(i1 ${args[0]!.name}, double ${args[1]!.name})`);
+    const b = host.own({ name: raw, type: def!.arms[bytesTag]! });
+    host.emitPendingCheck();
+    host.toHeap(b);
+    return host.wrapNullable(raw, raw, def!.arms[bytesTag]!, bytesTag, e.type, nullTag);
   }
   if (e.fn === "stdin.onKeypress") {
     // The listener, a checked-dynamic function, joins process.stdin's

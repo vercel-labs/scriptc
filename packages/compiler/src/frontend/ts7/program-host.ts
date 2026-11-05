@@ -1,4 +1,5 @@
 import { ProgramAnalysis } from "../program-analysis.js";
+import { isBundledLibraryFile } from "../default-library.js";
 import { InternalCompilerError } from "../../errors.js";
 /* Shared program lifecycle over the native TypeScript server API.
  *
@@ -154,6 +155,20 @@ export type Ts7HostOptions = {
   } | null;
 };
 
+/** The synthesized config one load's programs share. A load builds its
+ * program, then rebuilds it for each root-discovery pass, each rewrite
+ * (JSX, declaration projection, the shape overlay) and its project world.
+ * With a lineage every rebuild updates the SAME project instead of opening
+ * a new one, so the server reports that project's changed files and the
+ * session's AST cache carries every unchanged file forward; without one,
+ * each program is a fresh project whose files are all new to the cache.
+ * The owning load releases the lineage once its last program is disposed
+ * (releaseLineage). */
+export interface Ts7ProjectLineage {
+  /** The synthesized config path this load's programs share. */
+  configPath?: string | undefined;
+}
+
 /** One spawned tsgo server plus the virtual-FS overlay serving synthesized
  * tsconfigs. Share a host across programs to pay the spawn once; the overlay
  * is a live map, so each createProgram call adds its config before taking
@@ -270,16 +285,30 @@ export class Ts7Host {
     options: Ts7CompilerOptions,
     /** Internal: true when the program owns this host and dispose() closes it. */
     programOwnsHost = false,
+    /** The load's shared config: its rebuilds update one project instead of
+     * opening a new one. The load releases it (releaseLineage). */
+    lineage?: Ts7ProjectLineage,
   ): Ts7Program {
     this.ensureOpen();
     const roots = rootNames.map((r) => resolve(r));
     const first = roots[0];
     if (first === undefined) throw new InternalCompilerError("ts7 createProgram: no root files");
-    const configPath = join(dirname(first), `__scriptc-ts7-${nextConfigId++}.tsconfig.json`);
-    this.virtualFiles.set(
-      tsgoPath(configPath),
-      JSON.stringify({ compilerOptions: serializeOptions(options), files: roots, include: [] }),
-    );
+    const configPath =
+      lineage?.configPath ?? join(dirname(first), `__scriptc-ts7-${nextConfigId++}.tsconfig.json`);
+    if (lineage !== undefined) lineage.configPath = configPath;
+    const configKey = tsgoPath(configPath);
+    const previousConfig = this.virtualFiles.get(configKey);
+    const configText = JSON.stringify({
+      compilerOptions: serializeOptions(options),
+      files: roots,
+      include: [],
+    });
+    this.virtualFiles.set(configKey, configText);
+    // A lineage reuses its config path, so a rebuilt config is a changed
+    // file the server must see. The lineage's first program registers it as
+    // new through openProjects instead.
+    if (lineage !== undefined && previousConfig !== undefined && previousConfig !== configText)
+      this.virtualChanges.set(configKey, "changed");
     const created: string[] = [];
     const changed: string[] = [];
     const closeProjects: string[] = [...this.closingProjects];
@@ -301,9 +330,10 @@ export class Ts7Host {
         snapshot.dispose();
         throw new InternalCompilerError(`ts7 createProgram: project failed to open for ${first}`);
       }
-      return new Ts7Program(project, snapshot, this, !programOwnsHost, configPath);
+      return new Ts7Program(project, snapshot, this, !programOwnsHost, configPath, lineage);
     } catch (error) {
-      this.releaseProgram(configPath);
+      // A lineage's config outlives one program: its load retires it.
+      if (lineage === undefined) this.releaseProgram(configPath);
       throw error;
     }
   }
@@ -314,6 +344,15 @@ export class Ts7Host {
   releaseProgram(configPath: string): void {
     this.virtualFiles.delete(tsgoPath(configPath));
     if (!this.closed) this.closingProjects.add(configPath);
+  }
+
+  /** Retire a load's shared config once every program of the lineage is
+   * disposed: the next update closes the project and stops serving the
+   * config. */
+  releaseLineage(lineage: Ts7ProjectLineage): void {
+    const configPath = lineage.configPath;
+    lineage.configPath = undefined;
+    if (configPath !== undefined) this.releaseProgram(configPath);
   }
 
   getTimingInfo(): Ts7TimingInfo {
@@ -384,6 +423,9 @@ export class Ts7Program {
     private readonly host: Ts7Host,
     private readonly sharedHost: boolean,
     private readonly configPath: string,
+    /** The load's shared config: a newer program of the lineage may still
+     * answer from this project, so disposing one program does not retire it. */
+    private readonly lineage?: Ts7ProjectLineage,
   ) {}
 
   getCompilerOptions(): Ts7CompilerOptions {
@@ -509,7 +551,7 @@ export class Ts7Program {
     const supplied = (name: string): boolean =>
       declarations.has(tsgoPath(name)) ||
       isFallbackDtsPath(name) ||
-      program.getSourceFileMetadataByPath(name)?.isDefaultLibrary === true;
+      isBundledLibraryFile(this, name);
     const sourceFile = (name: string): SourceFile | undefined => this.getSourceFile(name);
     // By path: a supplied file that is not one of scriptc's is a default library.
     const kind = (name: string): SuppliedKind =>
@@ -543,7 +585,10 @@ export class Ts7Program {
     try {
       this.snapshot.dispose();
     } finally {
-      this.host.releaseProgram(this.configPath);
+      // A program of a lineage leaves the shared project open: the next
+      // rebuild updates it, and an older snapshot of the same load may still
+      // answer from it. The load's disposeAll retires it.
+      if (this.lineage === undefined) this.host.releaseProgram(this.configPath);
       if (!this.sharedHost) this.host.close();
     }
   }

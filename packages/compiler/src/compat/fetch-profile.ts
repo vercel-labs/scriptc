@@ -165,8 +165,8 @@ function buildFetchCompatProfile() {
   return {
     schemaVersion: 1,
     target: {
-      node: "24.22.0",
-      undici: "7.29.1",
+      node: "24.22.1",
+      undici: "7.30.1",
     },
     requestInit: [
       {

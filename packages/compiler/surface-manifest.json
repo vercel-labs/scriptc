@@ -384,6 +384,13 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.buffer.INSPECT_MAX_BYTES",
+      "kind": "node-builtin",
+      "name": "buffer.INSPECT_MAX_BYTES",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
       "id": "node-builtin.buffer.SlowBuffer",
       "kind": "node-builtin",
       "name": "buffer.SlowBuffer",
@@ -405,6 +412,13 @@
       "id": "node-builtin.buffer.kMaxLength",
       "kind": "node-builtin",
       "name": "buffer.kMaxLength",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.buffer.kStringMaxLength",
+      "kind": "node-builtin",
+      "name": "buffer.kStringMaxLength",
       "status": "static",
       "note": "constant value read"
     },
@@ -1975,6 +1989,13 @@
       "name": "process",
       "status": "static",
       "note": "recognized module (bare and node:-prefixed specifiers)"
+    },
+    {
+      "id": "node-builtin.process.allowedNodeEnvironmentFlags",
+      "kind": "node-builtin",
+      "name": "process.allowedNodeEnvironmentFlags",
+      "status": "static",
+      "note": "one stable set of the option names the compatibility target accepts in NODE_OPTIONS"
     },
     {
       "id": "node-builtin.process.argv",

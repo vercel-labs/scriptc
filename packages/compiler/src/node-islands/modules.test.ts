@@ -91,6 +91,33 @@ describe("module specifiers in JavaScript", () => {
     expect(scan.computed).toEqual([]);
   });
 
+  test("type-only import and export declarations name no runtime module", () => {
+    const text = `
+      import type { A } from "./a.ts";
+      import type B from "./b.ts";
+      import type * as c from "./c.ts";
+      import type d = require("./d.ts");
+      export type { E } from "./e.ts";
+      export type * from "./f.ts";
+      import type from "./value.ts";
+      import type, { K } from "./value2.ts";
+      import { type G, h } from "./g.ts";
+      import { type I } from "./i.ts";
+      export { type J } from "./j.ts";
+    `;
+    // Node's type stripper erases `import type` / `export type` whole. The
+    // `type` modifier inside a value import's or export's name list keeps
+    // its statement, which loads the module.
+    expect(scanModuleSpecifiers(text).specifiers).toEqual([
+      "./value.ts",
+      "./value2.ts",
+      "./g.ts",
+      "./i.ts",
+      "./j.ts",
+    ]);
+    expect(scanModuleSpecifiers(text).computed).toEqual([]);
+  });
+
   test("computed loads are reported", () => {
     const forms = (text: string) => scanModuleSpecifiers(text).computed.map((c) => c.form);
     expect(forms("require(name)")).toEqual(["require() with a computed specifier"]);
@@ -204,6 +231,21 @@ describe("the collected module tree", () => {
       "node_modules/zoo/index.js",
       "node_modules/zoo/package.json",
     ]);
+  });
+
+  test("type-only imports ship nothing and are not traced", () => {
+    const root = project({
+      "main.ts":
+        'import type { T } from "./types.ts";\nimport "./shared.ts";\nexport const t: T = 0;\n',
+      "types.ts": 'import type { U } from "./other.ts";\nexport type T = U;\n',
+      // Node never loads this file, so its computed load is not a problem.
+      "other.ts":
+        "const load = (specifier: string) => import(specifier);\nexport type U = number;\n",
+      "shared.ts": "export const y = 1;\n",
+    });
+    const collector = new NodeIslandModuleCollector();
+    expect(collector.addLoaded(join(root, "main.ts"))).toBeNull();
+    expect(collector.tree()!.files.map((f) => f.path)).toEqual(["main.ts", "shared.ts"]);
   });
 
   test("pnpm's links between package directories stay links inside the tree", () => {

@@ -8,6 +8,8 @@ export class ClassProtocols {
   private readonly answers = new Map<ts.Type, boolean>();
   /** The program classes each Pick or Omit view accepts (classesAcceptedBy). */
   private readonly accepted = new Map<ts.Type, ts.Symbol[]>();
+  /** copiedArgument's answers, per call and argument position. */
+  private readonly copiedArguments = new Map<ts.CallExpression | ts.NewExpression, boolean[]>();
   /** What markIdentityFlows learned about the program, while it runs. */
   private facts: FlowFacts | null = null;
   /** The value types of the string-keyed dictionaries that keep checked
@@ -200,6 +202,8 @@ export class ClassProtocols {
       /** The node whose contextual type `target` answers. */
       contextual?: ts.Expression;
       assertion?: true;
+      /** The call the expression is an argument of, and its position. */
+      call: { node: ts.CallExpression | ts.NewExpression; index: number } | undefined;
     }[] = [];
     /** Expressions whose values are observed as whole objects. */
     const observed: ts.Expression[] = [];
@@ -219,9 +223,12 @@ export class ClassProtocols {
      * signature's parameter) flows into the declared parameter type. */
     const callbackParams: { fn: ts.SignatureDeclaration; index: number; name: ts.Node }[] = [];
     const contextual = (expr: ts.Expression) => () => this.checker.getContextualType(expr);
-    const flow = (expr: ts.Expression | undefined): void => {
+    const flow = (
+      expr: ts.Expression | undefined,
+      call?: { node: ts.CallExpression | ts.NewExpression; index: number },
+    ): void => {
       if (expr !== undefined)
-        sites.push({ source: expr, target: contextual(expr), contextual: expr });
+        sites.push({ source: expr, target: contextual(expr), contextual: expr, call });
     };
     const write = (target: ts.Expression): void => {
       while (ts.isParenthesizedExpression(target) || ts.isNonNullExpression(target))
@@ -309,7 +316,7 @@ export class ClassProtocols {
     const visit = (node: ts.Node): void => {
       observe(node);
       if (ts.isCallExpression(node) || ts.isNewExpression(node))
-        node.arguments?.nodes.forEach(flow);
+        node.arguments?.nodes.forEach((argument, index) => flow(argument, { node, index }));
       else if (ts.isVariableDeclaration(node) && node.type !== undefined) flow(node.initializer);
       else if (ts.isPropertyDeclaration(node) && node.type !== undefined) flow(node.initializer);
       else if (ts.isParameter(node) && node.type !== undefined) flow(node.initializer);
@@ -330,13 +337,18 @@ export class ClassProtocols {
         !ts.isArrayLiteralExpression(node.left)
       ) {
         const left = node.left;
-        sites.push({ source: node.right, target: () => this.checker.getTypeAtLocation(left) });
+        sites.push({
+          source: node.right,
+          target: () => this.checker.getTypeAtLocation(left),
+          call: undefined,
+        });
       } else if ((ts.isAsExpression(node) || ts.isTypeAssertion(node)) && !accessedInPlace(node)) {
         const typeNode = node.type;
         sites.push({
           source: node.expression,
           target: () => this.checker.getTypeFromTypeNode(typeNode),
           assertion: true,
+          call: undefined,
         });
       }
       if (ts.isArrowFunction(node) || ts.isFunctionExpression(node))
@@ -379,6 +391,8 @@ export class ClassProtocols {
       origins: new Map(),
       targets: new Map(),
       flows: new Map(),
+      callSites: new Map(),
+      otherSites: new Set(),
       genericObservers: new Set(),
     };
     const typeOf = (node: ts.Node): ts.Type | undefined =>
@@ -433,6 +447,8 @@ export class ClassProtocols {
       sourceType: ts.Type;
       target: () => ts.Type | undefined;
       contextual?: ts.Expression;
+      /** The call the source is an argument of, and its position. */
+      call: { node: ts.CallExpression | ts.NewExpression; index: number } | undefined;
     }[] = [];
     /** Views a value of unknown origin is asserted to and that expose a
      * method of a class the view accepts (see methodViewSources). */
@@ -450,7 +466,7 @@ export class ClassProtocols {
         const target = attempt(site.target);
         if (target !== undefined)
           for (const { classType, view } of attempt(() => this.methodViewSources(target)) ?? []) {
-            pending.push({ sourceType: classType, target: () => view });
+            pending.push({ sourceType: classType, target: () => view, call: undefined });
             const symbol = view.getSymbol();
             if (symbol !== undefined) methodViews.add(symbol);
           }
@@ -458,8 +474,8 @@ export class ClassProtocols {
       }
       pending.push(
         site.contextual === undefined
-          ? { sourceType, target: site.target }
-          : { sourceType, target: site.target, contextual: site.contextual },
+          ? { sourceType, target: site.target, call: site.call }
+          : { sourceType, target: site.target, contextual: site.contextual, call: site.call },
       );
     }
     for (const { fn, index, name } of callbackParams) {
@@ -477,6 +493,7 @@ export class ClassProtocols {
           pending.push({
             sourceType: this.checker.getTypeOfSymbol(parameter),
             target: () => declared,
+            call: undefined,
           });
         }
       });
@@ -508,7 +525,9 @@ export class ClassProtocols {
         const target = targets.get(i);
         if (
           target !== undefined &&
-          attempt(() => this.markTarget(entry.sourceType, target, marked)) === true
+          attempt(() =>
+            this.markTarget(entry.sourceType, target, marked, entry.call ?? null, true),
+          ) === true
         )
           changed = true;
       }
@@ -704,7 +723,12 @@ export class ClassProtocols {
       written === "all" || [...written].some((name) => names.has(name));
     for (const origin of origins) {
       const written = facts.written.get(origin);
-      if (written !== undefined && writesNames(written)) return true;
+      // A field written after construction would be stale in a copy — unless
+      // every value of the view arrives as a call argument the callee reads
+      // and nothing else, where the copy answers the same reads the instance
+      // would (copiedAtEverySite).
+      if (written !== undefined && writesNames(written) && !this.copiedAtEverySite(symbol, facts))
+        return true;
       // An accessor runs on every read of the instance: a copy would keep
       // the value of one call.
       if (this.hasAccessorFor(origin, names)) return true;
@@ -733,6 +757,207 @@ export class ClassProtocols {
           );
         }) === true,
     );
+  }
+
+  /** Whether every value of the view arrives as a call argument whose
+   * callee only reads it: then the record copy the boundary builds answers
+   * the same reads the instance itself would, and later writes to the
+   * instance cannot be observed through the view. */
+  private copiedAtEverySite(symbol: ts.Symbol, facts: FlowFacts): boolean {
+    if (facts.otherSites.has(symbol)) return false;
+    const sites = facts.callSites.get(symbol);
+    if (sites === undefined || sites.length === 0) return false;
+    return sites.every(
+      (site) =>
+        this.isProgramClassInstance(site.source) && this.copiedArgument(site.node, site.index),
+    );
+  }
+
+  /** Whether argument `index` of `call` can be copied into the parameter's
+   * record: the callee is a program function whose body reads the instance
+   * only through declared fields of primitive type, keeps no reference to
+   * it, and runs no code that could write to it (assignments only to its
+   * own locals, no await or yield, and every call a numeric builtin). */
+  private copiedArgument(call: ts.CallExpression | ts.NewExpression, index: number): boolean {
+    let byIndex = this.copiedArguments.get(call);
+    if (byIndex === undefined) {
+      byIndex = [];
+      this.copiedArguments.set(call, byIndex);
+    }
+    const cached = byIndex[index];
+    if (cached !== undefined) return cached;
+    const answer = attempt(() => this.copiedArgumentNow(call, index)) === true;
+    byIndex[index] = answer;
+    return answer;
+  }
+
+  private copiedArgumentNow(call: ts.CallExpression | ts.NewExpression, index: number): boolean {
+    const args = call.arguments?.nodes ?? [];
+    if (index >= args.length || args.some((argument) => ts.isSpreadElement(argument))) return false;
+    const signature = this.checker.getResolvedSignature(call);
+    const declaration = signature?.declaration;
+    if (declaration === undefined) return false;
+    if (
+      !ts.isFunctionDeclaration(declaration) &&
+      !ts.isFunctionExpression(declaration) &&
+      !ts.isArrowFunction(declaration)
+    )
+      return false;
+    if (declaration.body === undefined) return false;
+    if (!this.fixedCallee(declaration, call)) return false;
+    if (declaration.asteriskToken !== undefined) return false;
+    if (
+      declaration.modifiers?.nodes.some(
+        (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
+      ) === true
+    )
+      return false;
+    // Defaults run in the callee's frame, after the arguments, and may write
+    // the instance; a parameter pattern reads members the same way.
+    if (
+      declaration.parameters.nodes.some(
+        (parameter) => !ts.isIdentifier(parameter.name) || parameter.initializer !== undefined,
+      )
+    )
+      return false;
+    const parameter = declaration.parameters.nodes[index];
+    if (parameter === undefined || !ts.isIdentifier(parameter.name)) return false;
+    if (parameter.dotDotDotToken !== undefined || parameter.questionToken !== undefined)
+      return false;
+    // Arguments evaluated after this one run while the copy stands: code in
+    // them may write the instance before the callee reads the copy.
+    for (let position = index + 1; position < args.length; position++) {
+      const argument = args[position];
+      if (argument !== undefined && containsProgramCode(argument, this.checker)) return false;
+    }
+    return this.readsParameterOnlyFields(declaration, parameter.name.text);
+  }
+
+  /** Whether the function whose body is inspected is the one this call runs:
+   * the callee is the function itself, the identifier of the function
+   * declaration, or the identifier of the `const` binding that holds it.
+   * A `let` binding, a property, or another binding of the same signature
+   * could run a body this analysis never saw. */
+  private fixedCallee(
+    fn: ts.FunctionDeclaration | ts.FunctionExpression | ts.ArrowFunction,
+    call: ts.CallExpression | ts.NewExpression,
+  ): boolean {
+    const callee = unwrapExpression(call.expression);
+    if (callee === fn) return true;
+    if (!ts.isIdentifier(callee)) return false;
+    const symbol = attempt(() => this.checker.getSymbolAtLocation(callee));
+    if (ts.isFunctionDeclaration(fn))
+      return symbol?.declarations?.some((declaration) => declaration === fn) === true;
+    const parent = fn.parent;
+    const list = parent?.parent;
+    if (
+      !ts.isVariableDeclaration(parent) ||
+      parent.initializer !== fn ||
+      list === undefined ||
+      (list.flags & ts.NodeFlags.Const) === 0
+    )
+      return false;
+    return symbol?.declarations?.some((declaration) => declaration === parent) === true;
+  }
+
+  /** The body of `declaration` mentions `name` only as the receiver of a
+   * property read whose value is a primitive, and never stores, returns,
+   * passes on or compares the value itself. */
+  private readsParameterOnlyFields(
+    declaration: ts.FunctionDeclaration | ts.FunctionExpression | ts.ArrowFunction,
+    name: string,
+  ): boolean {
+    const body = declaration.body;
+    if (body === undefined) return false;
+    const locals = new Set<string>();
+    for (const parameter of declaration.parameters.nodes)
+      if (ts.isIdentifier(parameter.name)) locals.add(parameter.name.text);
+    ts.walkPreorder(body, (node) => {
+      if (ts.isFunctionLike(node)) return "skip";
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) locals.add(node.name.text);
+      return undefined;
+    });
+    let ok = true;
+    ts.walkPreorder(body, (node) => {
+      if (!ok) return "stop";
+      if (ts.isTypeNode(node)) return "skip";
+      if (ts.isFunctionLike(node)) {
+        // A nested function that mentions the parameter captures the value,
+        // so the copy would be told apart from the instance.
+        if (mentionsBinding(node, name)) ok = false;
+        return "skip";
+      }
+      if (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+      ) {
+        // Only the body's own locals may be written: a write through any
+        // other value could reach the instance. A compound assignment also
+        // coerces both sides, and a non-primitive operand runs its value
+        // hook.
+        const left = unwrapExpression(node.left);
+        if (!ts.isIdentifier(left) || !locals.has(left.text)) {
+          ok = false;
+          return "stop";
+        }
+        if (
+          node.operatorToken.kind !== ts.SyntaxKind.EqualsToken &&
+          !primitiveOperands(left, node.right, this.checker)
+        ) {
+          ok = false;
+          return "stop";
+        }
+        return undefined;
+      }
+      if (
+        (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
+        (node.operator === ts.SyntaxKind.PlusPlusToken ||
+          node.operator === ts.SyntaxKind.MinusMinusToken)
+      ) {
+        const operand = unwrapExpression(node.operand);
+        if (
+          !ts.isIdentifier(operand) ||
+          !locals.has(operand.text) ||
+          !primitiveNode(operand, this.checker)
+        ) {
+          ok = false;
+          return "stop";
+        }
+        return undefined;
+      }
+      // Calls, await and yield, element access, accessors, dynamic member
+      // access, iteration and value coercion can all run program code while
+      // the copy is the callee's parameter.
+      if (expressionRunsCode(node, this.checker)) {
+        ok = false;
+        return "stop";
+      }
+      if (ts.isIdentifier(node) && node.text === name) {
+        if (isMemberName(node)) return "skip";
+        const receiver = unwrapExpression(node);
+        const access = receiver.parent;
+        if (
+          access === undefined ||
+          !ts.isPropertyAccessExpression(access) ||
+          access.expression !== receiver
+        ) {
+          ok = false;
+          return "stop";
+        }
+        if (!primitiveValue(this.checker.getTypeAtLocation(access))) {
+          ok = false;
+          return "stop";
+        }
+        if (isWrittenAccess(access)) {
+          ok = false;
+          return "stop";
+        }
+        return "skip";
+      }
+      return undefined;
+    });
+    return ok;
   }
 
   /** Whether one of `names` is a member the collection type itself
@@ -1178,11 +1403,20 @@ export class ClassProtocols {
 
   /** Marks the structural parts of `target` that the identity-carrying
    * parts of `source` flow into. Answers whether anything new was marked. */
-  private markTarget(source: ts.Type, target: ts.Type, marked: Set<ts.Symbol>): boolean {
+  private markTarget(
+    source: ts.Type,
+    target: ts.Type,
+    marked: Set<ts.Symbol>,
+    site: { node: ts.CallExpression | ts.NewExpression; index: number } | null,
+    record: boolean,
+  ): boolean {
     if (source.isUnionType()) {
       let changed = false;
       for (const part of ts.constituentTypes(source))
-        if (this.carriesIdentity(part, marked) && this.markTarget(part, target, marked))
+        if (
+          this.carriesIdentity(part, marked) &&
+          this.markTarget(part, target, marked, site, false)
+        )
           changed = true;
       return changed;
     }
@@ -1199,13 +1433,16 @@ export class ClassProtocols {
         accepting.push(part);
       }
       let changed = false;
-      for (const part of accepting) if (this.markTarget(source, part, marked)) changed = true;
+      for (const part of accepting)
+        if (this.markTarget(source, part, marked, site, false)) changed = true;
       return changed;
     }
     if (this.checker.isArrayType(source) && this.checker.isArrayType(target)) {
       const [from] = this.checker.getTypeArguments(source as ts.TypeReference);
       const [to] = this.checker.getTypeArguments(target as ts.TypeReference);
-      return from !== undefined && to !== undefined && this.markTarget(from, to, marked);
+      return (
+        from !== undefined && to !== undefined && this.markTarget(from, to, marked, site, false)
+      );
     }
     if (!this.isStructuralTarget(target)) return false;
     const symbol = target.getSymbol();
@@ -1243,6 +1480,18 @@ export class ClassProtocols {
         const flows = facts.flows.get(from) ?? new Set<ts.Symbol>();
         flows.add(symbol);
         facts.flows.set(from, flows);
+      }
+    }
+    if (facts !== null) {
+      // Every top-level site that reaches this view is remembered: a view
+      // whose values only ever arrive as a call argument the callee reads can
+      // keep the record shape its type declares (copiedAtEverySite).
+      if (site === null || !record) facts.otherSites.add(symbol);
+      else {
+        const recorded = facts.callSites.get(symbol) ?? [];
+        if (!recorded.some((entry) => entry.node === site.node && entry.index === site.index))
+          recorded.push({ node: site.node, index: site.index, source });
+        facts.callSites.set(symbol, recorded);
       }
     }
     // A view marked earlier that becomes a collection view still changes
@@ -1348,6 +1597,15 @@ interface FlowFacts {
   targets: Map<ts.Symbol, ts.Type>;
   /** The marked types each marked type's values flow into. */
   flows: Map<ts.Symbol, Set<ts.Symbol>>;
+  /** The call arguments that mark each symbol: the call, the position, and
+   * the argument's type (copiedAtEverySite). */
+  callSites: Map<
+    ts.Symbol,
+    { node: ts.CallExpression | ts.NewExpression; index: number; source: ts.Type }[]
+  >;
+  /** Symbols some mark reaches through something other than a call
+   * argument: a variable, a field, a return, an array element. */
+  otherSites: Set<ts.Symbol>;
 }
 
 /** The empty answer of the symbol maps above. */
@@ -1508,6 +1766,232 @@ function attempt<T>(query: () => T): T | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** Ground numeric calls: they cannot run program code, so a callee that
+ * only uses them cannot observe a write to an instance it was handed. */
+const PURE_CALLS = new Set(["parseInt", "parseFloat", "isNaN", "isFinite"]);
+
+/** The identifier names a member (`o.value`), not the binding `o`. */
+function isMemberName(node: ts.Identifier): boolean {
+  const parent = node.parent;
+  if (parent === undefined || ts.isShorthandPropertyAssignment(parent)) return false;
+  if ((parent as ts.Node & { name?: ts.Node }).name === node) return true;
+  return ts.isBindingElement(parent) && parent.propertyName === node;
+}
+
+/** The node with parentheses, non-null assertions and type assertions
+ * peeled off. */
+function unwrapExpression(node: ts.Node): ts.Node {
+  let outer = node;
+  for (;;) {
+    const parent = outer.parent;
+    if (parent === undefined) return outer;
+    if (
+      !ts.isParenthesizedExpression(parent) &&
+      !ts.isNonNullExpression(parent) &&
+      !ts.isAssertionExpression(parent)
+    )
+      return outer;
+    outer = parent;
+  }
+}
+
+/** A number, string, boolean, bigint, null or undefined (or a union of
+ * them): a value a record copy carries by value. */
+function primitiveValue(type: ts.Type): boolean {
+  if (type.isUnionType()) return ts.constituentTypes(type).every(primitiveValue);
+  return (
+    (type.flags &
+      (ts.TypeFlags.Number |
+        ts.TypeFlags.NumberLiteral |
+        ts.TypeFlags.String |
+        ts.TypeFlags.StringLiteral |
+        ts.TypeFlags.Boolean |
+        ts.TypeFlags.BooleanLiteral |
+        ts.TypeFlags.BigInt |
+        ts.TypeFlags.BigIntLiteral |
+        ts.TypeFlags.Null |
+        ts.TypeFlags.Undefined)) !==
+    0
+  );
+}
+
+/** Whether the property read `access` is assigned, updated or deleted. */
+function isWrittenAccess(access: ts.Expression): boolean {
+  let outer: ts.Node = access;
+  for (;;) {
+    const parent = outer.parent;
+    if (
+      parent !== undefined &&
+      (ts.isParenthesizedExpression(parent) || ts.isNonNullExpression(parent))
+    ) {
+      outer = parent;
+      continue;
+    }
+    if (parent === undefined) return false;
+    if (ts.isBinaryExpression(parent))
+      return (
+        parent.left === outer &&
+        parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+      );
+    if (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent))
+      return parent.operand === outer;
+    return ts.isDeleteExpression(parent);
+  }
+}
+
+/** Whether `call` is one of the calls a copying callee may make: a numeric
+ * builtin or console printer the program does not shadow, over values of
+ * primitive type only (a coercion runs no hook on them). */
+function pureCall(call: ts.CallExpression, checker: ts.TypeChecker): boolean {
+  const callee = call.expression;
+  const global = (node: ts.Node) => libSymbol(attempt(() => checker.getSymbolAtLocation(node)));
+  if (ts.isIdentifier(callee)) {
+    if (!PURE_CALLS.has(callee.text) || !global(callee)) return false;
+  } else if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression)) {
+    const owner = callee.expression.text;
+    if (owner !== "Math" && owner !== "Number" && owner !== "console") return false;
+    if (!global(callee.expression) || !global(callee.name)) return false;
+  } else return false;
+  const args = call.arguments?.nodes ?? [];
+  return args.every((argument) => {
+    if (ts.isSpreadElement(argument)) return false;
+    const type = attempt(() => checker.getTypeAtLocation(argument));
+    return type !== undefined && primitiveValue(type);
+  });
+}
+
+/** Whether every declaration of `symbol` is in a declaration file: the
+ * binding is the library's own, not one the program shadows it with. */
+function libSymbol(symbol: ts.Symbol | undefined): boolean {
+  const declarations = symbol?.declarations;
+  return (
+    declarations !== undefined &&
+    declarations.length > 0 &&
+    declarations.every((declaration) => declaration.getSourceFile().isDeclarationFile)
+  );
+}
+
+/** Whether evaluating `node` can run program code — a call, a constructor, a
+ * getter or a dynamic member read, an iterator, a coercion hook — and so
+ * write an instance a copy was made of. */
+function expressionRunsCode(node: ts.Node, checker: ts.TypeChecker): boolean {
+  if (ts.isCallExpression(node)) return !pureCall(node, checker);
+  if (ts.isNewExpression(node)) return true;
+  if (ts.isElementAccessExpression(node)) return true;
+  if (ts.isPropertyAccessExpression(node)) return accessRunsCode(node, checker);
+  if (ts.isTemplateExpression(node)) {
+    for (const span of node.templateSpans.nodes)
+      if (!primitiveNode(span.expression, checker)) return true;
+    return false;
+  }
+  if (ts.isBinaryExpression(node)) {
+    const operator = node.operatorToken.kind;
+    if (operator === ts.SyntaxKind.InstanceOfKeyword) return true;
+    if (operator >= ts.SyntaxKind.FirstAssignment && operator <= ts.SyntaxKind.LastAssignment)
+      return true;
+    return !primitiveOperands(node.left, node.right, checker);
+  }
+  if (ts.isPrefixUnaryExpression(node)) {
+    const operator = node.operator;
+    if (operator === ts.SyntaxKind.PlusPlusToken || operator === ts.SyntaxKind.MinusMinusToken)
+      return true;
+    if (
+      operator !== ts.SyntaxKind.PlusToken &&
+      operator !== ts.SyntaxKind.MinusToken &&
+      operator !== ts.SyntaxKind.TildeToken
+    )
+      return false;
+    return !primitiveNode(node.operand, checker);
+  }
+  if (ts.isPostfixUnaryExpression(node)) return true;
+  if (ts.isDeleteExpression(node) || ts.isAwaitExpression(node) || ts.isYieldExpression(node))
+    return true;
+  if (ts.isTaggedTemplateExpression(node)) return true;
+  if (ts.isForOfStatement(node)) return true;
+  if (ts.isSpreadElement(node) || ts.isSpreadAssignment(node)) return true;
+  return false;
+}
+
+/** Whether reading `access` can run program code: a getter, or a member of
+ * a value the analysis knows nothing static about. */
+function accessRunsCode(access: ts.PropertyAccessExpression, checker: ts.TypeChecker): boolean {
+  const symbol = attempt(() => checker.getSymbolAtLocation(access.name));
+  if (symbol === undefined) return true;
+  if ((symbol.flags & (ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor)) !== 0) return true;
+  const receiver = valueType(access.expression, checker);
+  if (receiver === undefined) return true;
+  return (
+    (receiver.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.TypeParameter)) !== 0
+  );
+}
+
+/** Whether both operand types are primitive, so an operator between them
+ * runs no value coercion. */
+function primitiveOperands(
+  left: ts.Expression,
+  right: ts.Expression,
+  checker: ts.TypeChecker,
+): boolean {
+  return primitiveNode(left, checker) && primitiveNode(right, checker);
+}
+
+/** The type of `node`'s value, ignoring parentheses, non-null assertions and
+ * type assertions: a cast does not change what the value is at run time. */
+function valueType(node: ts.Expression, checker: ts.TypeChecker): ts.Type | undefined {
+  let current = node;
+  while (
+    ts.isParenthesizedExpression(current) ||
+    ts.isNonNullExpression(current) ||
+    ts.isAssertionExpression(current)
+  )
+    current = current.expression;
+  return attempt(() => checker.getTypeAtLocation(current));
+}
+
+/** Whether the value of `node` has a primitive type, so coercing it runs no
+ * value hook. */
+function primitiveNode(node: ts.Expression, checker: ts.TypeChecker): boolean {
+  const type = valueType(node, checker);
+  return type !== undefined && primitiveValue(type);
+}
+
+/** Whether `root` contains an expression that runs program code. */
+function containsProgramCode(root: ts.Node, checker: ts.TypeChecker): boolean {
+  let runs = false;
+  ts.walkPreorder(root, (node) => {
+    if (runs) return "stop";
+    if (ts.isTypeNode(node)) return "skip";
+    if (ts.isFunctionLike(node)) return "skip";
+    // A class body's computed keys and static fields run when the class is
+    // evaluated.
+    if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
+      runs = true;
+      return "stop";
+    }
+    if (expressionRunsCode(node, checker)) {
+      runs = true;
+      return "stop";
+    }
+    return undefined;
+  });
+  return runs;
+}
+
+/** Whether `node` mentions the binding `name`. */
+function mentionsBinding(node: ts.Node, name: string): boolean {
+  let found = false;
+  ts.walkPreorder(node, (child) => {
+    if (found) return "stop";
+    if (ts.isIdentifier(child) && child.text === name && !isMemberName(child)) {
+      found = true;
+      return "stop";
+    }
+    return undefined;
+  });
+  return found;
 }
 
 /** The static property name a member declares, or null for a computed key

@@ -1649,7 +1649,7 @@ function jsOpinionOf7(
   if (syntacticOf(sf).some((s) => s.code === d.code && s.pos === pos && s.end === end)) return null;
   if (nodeFree) return opinion;
   const node = diagnosticNode7(sf, pos, end);
-  if (opinion.site !== undefined && !opinion.site(node, d)) return null;
+  if (opinion.site !== undefined && !opinion.site(node, d, p)) return null;
   if (opinion.view === "island" && isStrictCode(node)) return null;
   return opinion;
 }

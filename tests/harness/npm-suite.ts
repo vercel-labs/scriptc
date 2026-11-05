@@ -117,6 +117,7 @@ const KNOWN: Record<string, Known> = {
   "node24-url-factories": { run: "SC2020" },
   "node24-url-mutation": { run: "SC1090" },
   "node24-util-adapters": { run: "Object.create with this value is not supported yet" },
+  "late-island-refusal": { island: true },
   "package-imports": { island: true },
   "promise-bridge": { build: "SC1090" },
   "self-name": { build: "SC2013" },
@@ -125,7 +126,9 @@ const KNOWN: Record<string, Known> = {
   "var-export-redeclared": { island: true },
   // `class Upper extends TransformStream`: extending a builtin class from JavaScript.
   "workspace-copied": { island: true },
-  "workspace-unclean": { build: "SC2013" },
+  // The SYMLINKED twin of workspace-copied: the automatic island policy
+  // places the refused package from its workspace realpath.
+  "workspace-unclean": { island: true },
 };
 
 /** Where the overlay changes how a case KNOWN refuses (none today). */

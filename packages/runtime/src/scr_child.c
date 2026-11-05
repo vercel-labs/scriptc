@@ -105,6 +105,16 @@ static void scr_child_error_spawn_fields(ScrError *e, double uv_errno, const cha
   scr_error_set_prop(e, "spawnargs", 9, spawnargs);
 }
 
+#ifdef SCR_CHILD_ERR_FIELDS
+/* Node copies the spawn argument list before running the child, so
+ * `spawnargs` answers the values the call was given even when the program
+ * rewrites its array after the call; a snapshot of the same values keeps
+ * the two equal. +1; NULL for no arguments. */
+static ScrArr *scr_child_snapshot_args(ScrArr *args) {
+  return args != NULL ? scr_arr_slice(args, 0, (double)scr_arr_len(args)) : NULL;
+}
+#endif
+
 /* exec/execFile's command failure: code (the exit status, or null after a
  * signal), killed and signal, before cmd. */
 static void scr_child_error_exit_fields(ScrError *e, bool has_code, double code,
@@ -1029,6 +1039,16 @@ struct ScrSpawnRes {
   ScrStr *err;
   const char *spawn_errname;
   ScrStr *cmd;
+#ifdef SCR_CHILD_ERR_FIELDS
+  /* Node's errnoException `errno` for that failure (negative, as libuv
+   * reports it; 0 = no error) and the `spawnargs` Node carries after
+   * `path`: the arguments after the file (+1; NULL when there is no
+   * error). Both ride the result so `.error` answers Node's fields; the
+   * build without the define keeps this struct and release path as they
+   * were, so a program that never reads `.error` pays nothing. */
+  double spawn_errno;
+  ScrArr *args;
+#endif
   const char *signal_name;
 };
 
@@ -1043,6 +1063,9 @@ void scr_spawn_res_release(ScrSpawnRes *r) {
     scr_str_release(r->out);
     scr_str_release(r->err);
     scr_str_release(r->cmd); /* NULL-safe */
+#ifdef SCR_CHILD_ERR_FIELDS
+    if (r->args) scr_arr_release(r->args);
+#endif
     free(r);
   }
 }
@@ -1070,6 +1093,12 @@ ScrError *scr_spawn_res_error(ScrSpawnRes *r) {
   ScrError *e = scr_error_new(0 /* Error */, m);
   scr_str_release(m);
   scr_error_set_code(e, r->spawn_errname);
+#ifdef SCR_CHILD_ERR_FIELDS
+  /* Node's errnoException fields: errno (libuv's code), syscall
+   * "spawnSync <file>", path (the file) and spawnargs (the arguments
+   * after it). A timeout carries them too — code ETIMEDOUT. */
+  scr_child_error_spawn_fields(e, r->spawn_errno, "spawnSync", r->cmd, r->args);
+#endif
   return e;
 }
 
@@ -1083,6 +1112,10 @@ static ScrSpawnRes *scr_spawn_res_new(bool has_status, double status,
   r->out = out;
   r->err = err;
   r->spawn_errname = NULL;
+#ifdef SCR_CHILD_ERR_FIELDS
+  r->spawn_errno = 0;
+  r->args = NULL;
+#endif
   r->cmd = NULL;
   r->signal_name = NULL;
   return r;
@@ -1119,6 +1152,10 @@ static ScrSpawnRes *scr_spawn_sync_core(ScrStr *cmd, ScrArr *args, double timeou
     ScrSpawnRes *r = scr_spawn_res_new(false, 0, scr_str_new("", 0), scr_str_new("", 0));
     r->spawn_errname = w.spawn_errname;
     r->cmd = scr_str_retain(cmd);
+#ifdef SCR_CHILD_ERR_FIELDS
+    r->spawn_errno = (double)scr_win_uv_errno(w.spawn_errname);
+    r->args = scr_child_snapshot_args(args);
+#endif
     return r;
   }
   ScrStr *out_s = scr_str_new(w.out.data, w.out.len);
@@ -1136,6 +1173,12 @@ static ScrSpawnRes *scr_spawn_sync_core(ScrStr *cmd, ScrArr *args, double timeou
   if (r->signal_name == NULL) r->signal_name = "SIGTERM";
   r->spawn_errname = "ETIMEDOUT";
   r->cmd = scr_str_retain(cmd);
+#ifdef SCR_CHILD_ERR_FIELDS
+  /* libuv's UV_ETIMEDOUT (uv-errno.h); scr_win_uv_errno maps the spawn
+   * failure names and answers UV_UNKNOWN for the timeout's. */
+  r->spawn_errno = -4039.0;
+  r->args = scr_child_snapshot_args(args);
+#endif
   return r;
 }
 
@@ -1493,6 +1536,8 @@ struct ScrChild {
   ScrStr *exec_display;
   ScrStr *exec_file; /* the spawned file and its arguments (+1 each), for */
   ScrArr *exec_args; /* a spawn failure's path and spawnargs */
+  ScrStr *spawnfile; /* ChildProcess.spawnfile: the file that was spawned */
+  ScrArr *spawnargs; /* ChildProcess.spawnargs: the file followed by its arguments */
   void (*exec_props)(struct ScrChild *c, ScrError *error); /* Node's error properties */
   ScrChildStream *out_stream;
   ScrChildStream *err_stream;
@@ -1553,6 +1598,8 @@ void scr_child_release(ScrChild *c) {
     scr_str_release(c->exec_display);
     scr_str_release(c->exec_file);
     if (c->exec_args) scr_arr_release(c->exec_args);
+    scr_str_release(c->spawnfile);
+    if (c->spawnargs) scr_arr_release(c->spawnargs);
     scr_dyn_release(c->out_dyn);
     scr_dyn_release(c->err_dyn);
     scr_dyn_release(c->in_dyn);
@@ -2377,6 +2424,91 @@ ScrChild *scr_spawn(ScrStr *cmd, ScrArr *args) {
 /* PER-SLOT stdio modes (the POSIX arm's numbering): in 0 = ignore (NUL),
  * 1 = inherit, 3 = pipe; out/err 0 = ignore, 1 = inherit, 2 = fd,
  * 3 = pipe. */
+/* Whether the shell path names cmd.exe (Node switches the switch form on
+ * that test alone). */
+static bool scr_child_shell_is_cmd(const ScrStr *s) {
+  static const char name[] = "cmd.exe";
+  size_t start = 0;
+  for (size_t i = 0; i < s->len; i++)
+    if (s->data[i] == '\\' || s->data[i] == '/') start = i + 1;
+  if (s->len - start != sizeof name - 1) return false;
+  for (size_t i = 0; i < sizeof name - 1; i++) {
+    char ch = s->data[start + i];
+    if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a');
+    if (ch != name[i]) return false;
+  }
+  return true;
+}
+
+/* %ComSpec%, or "cmd.exe" when it is unset: the shell Node runs a spawn
+ * with shell: true through. */
+static ScrStr *scr_child_comspec(void) {
+  DWORD need = GetEnvironmentVariableW(L"ComSpec", NULL, 0);
+  if (need == 0) return scr_str_new("cmd.exe", 7);
+  WCHAR *wide = malloc((size_t)need * sizeof(WCHAR));
+  if (!wide) scr_child_oom();
+  DWORD used = GetEnvironmentVariableW(L"ComSpec", wide, need);
+  ScrStr *out = NULL;
+  if (used > 0 && used < need) {
+    int bytes = WideCharToMultiByte(CP_UTF8, 0, wide, (int)used, NULL, 0, NULL, NULL);
+    if (bytes > 0) {
+      char *buf = malloc((size_t)bytes);
+      if (!buf) scr_child_oom();
+      WideCharToMultiByte(CP_UTF8, 0, wide, (int)used, buf, bytes, NULL, NULL);
+      out = scr_str_new(buf, (size_t)bytes);
+      free(buf);
+    }
+  }
+  free(wide);
+  return out != NULL ? out : scr_str_new("cmd.exe", 7);
+}
+
+/* Node's normalizeSpawnArguments result, kept for ChildProcess.spawnfile
+ * and spawnargs. A direct spawn reports the command and its arguments. The
+ * shell form joins the command and arguments into one command line and
+ * reports the shell it runs: cmd.exe with /d /s /c and the quoted line, or
+ * the named shell with -c and the line. */
+static void scr_child_record_spawn(ScrChild *c, ScrStr *cmd, ScrArr *args, bool shell) {
+  size_t n = (size_t)scr_arr_len(args);
+  ScrArr *spawnargs = scr_arr_new(SCR_ELEM_STR, n + 1);
+  if (shell) {
+    ScrStr **parts = malloc((1 + 2 * n) * sizeof *parts);
+    ScrStr *space = scr_str_new(" ", 1);
+    if (!parts) scr_child_oom();
+    parts[0] = cmd;
+    for (size_t i = 0; i < n; i++) {
+      parts[1 + 2 * i] = space;
+      parts[2 + 2 * i] = scr_arr_get_ref(args, (double)i);
+    }
+    ScrStr *command = scr_str_concat_parts(parts, 1 + 2 * n);
+    for (size_t i = 0; i < n; i++) scr_str_release(parts[2 + 2 * i]);
+    scr_str_release(space);
+    free(parts);
+    ScrStr *file = scr_child_comspec();
+    c->spawnfile = scr_str_retain(file);
+    scr_arr_push_ref(spawnargs, file);
+    if (scr_child_shell_is_cmd(file)) {
+      ScrStr *quote = scr_str_new("\"", 1);
+      ScrStr *quoted_parts[3] = {quote, command, quote};
+      ScrStr *quoted = scr_str_concat_parts(quoted_parts, 3);
+      scr_str_release(quote);
+      scr_str_release(command);
+      scr_arr_push_ref(spawnargs, scr_str_new("/d", 2));
+      scr_arr_push_ref(spawnargs, scr_str_new("/s", 2));
+      scr_arr_push_ref(spawnargs, scr_str_new("/c", 2));
+      scr_arr_push_ref(spawnargs, quoted);
+    } else {
+      scr_arr_push_ref(spawnargs, scr_str_new("-c", 2));
+      scr_arr_push_ref(spawnargs, command);
+    }
+  } else {
+    c->spawnfile = scr_str_retain(cmd);
+    scr_arr_push_ref(spawnargs, scr_str_retain(cmd));
+    for (size_t i = 0; i < n; i++) scr_arr_push_ref(spawnargs, scr_arr_get_ref(args, (double)i));
+  }
+  c->spawnargs = spawnargs;
+}
+
 ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
                          double out_mode, double err_mode, double out_fd,
                          double err_fd, bool detached, bool shell, bool has_env,
@@ -2390,6 +2522,7 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
   if (!c) scr_child_oom();
   c->rc = 1;
   c->als = scr_als_capture();
+  scr_child_record_spawn(c, cmd, args, shell);
 
   /* Piped slots: the pipe NOW; a pipe failure degrades the slot to NUL
    * and the stream husk answers eof (fd exhaustion — nothing real). */
@@ -2573,6 +2706,13 @@ double scr_child_exit_code(ScrChild *c) {
 }
 
 bool scr_child_killed(ScrChild *c) { return c->killed; }
+
+ScrStr *scr_child_spawnfile(ScrChild *c) {
+  return c->spawnfile ? scr_str_retain(c->spawnfile) : scr_str_new("", 0);
+}
+ScrArr *scr_child_spawnargs(ScrChild *c) {
+  return c->spawnargs ? scr_arr_retain(c->spawnargs) : scr_arr_new(SCR_ELEM_STR, 0);
+}
 
 /* child.kill core: libuv's uv_kill emulation. SIGTERM/SIGKILL/SIGINT/
  * SIGQUIT/SIGHUP → TerminateProcess(h, 1) with the signal name recorded
@@ -3024,6 +3164,10 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
     ScrSpawnRes *r = scr_spawn_res_new(false, 0, scr_str_new("", 0), scr_str_new("", 0));
     r->spawn_errname = w.spawn_errname;
     r->cmd = scr_str_retain(cmd);
+#ifdef SCR_CHILD_ERR_FIELDS
+    r->spawn_errno = (double)scr_win_uv_errno(w.spawn_errname);
+    r->args = scr_child_snapshot_args(args);
+#endif
     return r;
   }
   ScrStr *out_s = scr_str_new(w.out.data, w.out.len);
@@ -3038,6 +3182,10 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
   if (r->signal_name == NULL) r->signal_name = "SIGTERM";
   r->spawn_errname = "ETIMEDOUT";
   r->cmd = scr_str_retain(cmd);
+#ifdef SCR_CHILD_ERR_FIELDS
+  r->spawn_errno = -4039.0;
+  r->args = scr_child_snapshot_args(args);
+#endif
   return r;
 }
 
@@ -3151,6 +3299,13 @@ struct ScrSpawnRes {
    * reads undefined, exactly Node. */
   const char *spawn_errname;
   ScrStr *cmd; /* +1, for the error message; NULL when spawn_errname is */
+#ifdef SCR_CHILD_ERR_FIELDS
+  /* Node's errnoException `errno` for that failure (negative, as libuv
+   * reports it; 0 = no error), so `.error` answers the same fields the
+   * sync throw does, and Node's `spawnargs` (+1; NULL when no error). */
+  double spawn_errno;
+  ScrArr *args;
+#endif
   /* The termination signal's name (static storage; "SIGTERM", ...) when a
    * signal killed the child — a timeout's killSignal included — NULL for
    * a normal exit or spawn failure. Node's result.signal. */
@@ -3168,6 +3323,9 @@ void scr_spawn_res_release(ScrSpawnRes *r) {
     scr_str_release(r->out);
     scr_str_release(r->err);
     scr_str_release(r->cmd); /* NULL-safe */
+#ifdef SCR_CHILD_ERR_FIELDS
+    if (r->args) scr_arr_release(r->args);
+#endif
     free(r);
   }
 }
@@ -3201,6 +3359,12 @@ ScrError *scr_spawn_res_error(ScrSpawnRes *r) {
   ScrError *e = scr_error_new(0 /* Error */, m);
   scr_str_release(m);
   scr_error_set_code(e, r->spawn_errname);
+#ifdef SCR_CHILD_ERR_FIELDS
+  /* Node's errnoException fields: errno (libuv's code), syscall
+   * "spawnSync <file>", path (the file) and spawnargs (the arguments
+   * after it). A timeout carries them too — code ETIMEDOUT. */
+  scr_child_error_spawn_fields(e, r->spawn_errno, "spawnSync", r->cmd, r->args);
+#endif
   return e;
 }
 
@@ -3279,6 +3443,10 @@ static ScrSpawnRes *scr_spawn_res_new(bool has_status, double status,
   r->out = out;
   r->err = err;
   r->spawn_errname = NULL;
+#ifdef SCR_CHILD_ERR_FIELDS
+  r->spawn_errno = 0;
+  r->args = NULL;
+#endif
   r->cmd = NULL;
   r->signal_name = NULL;
   return r;
@@ -3428,6 +3596,10 @@ static ScrSpawnRes *scr_spawn_sync_core(ScrStr *cmd, ScrArr *args, double timeou
     ScrSpawnRes *r = scr_spawn_res_new(false, 0, scr_str_new("", 0), scr_str_new("", 0));
     r->spawn_errname = scr_errname(spawn_err);
     r->cmd = scr_str_retain(cmd);
+#ifdef SCR_CHILD_ERR_FIELDS
+    r->spawn_errno = -(double)spawn_err;
+    r->args = scr_child_snapshot_args(args);
+#endif
     return r;
   }
 
@@ -3511,6 +3683,10 @@ static ScrSpawnRes *scr_spawn_sync_core(ScrStr *cmd, ScrArr *args, double timeou
       if (r->signal_name == NULL) r->signal_name = scr_signal_name(killsig);
       r->spawn_errname = "ETIMEDOUT";
       r->cmd = scr_str_retain(cmd);
+#ifdef SCR_CHILD_ERR_FIELDS
+      r->spawn_errno = -(double)ETIMEDOUT;
+      r->args = scr_child_snapshot_args(args);
+#endif
     }
   }
   return r;
@@ -4179,6 +4355,8 @@ struct ScrChild {
   ScrStr *exec_display;
   ScrStr *exec_file; /* the spawned file and its arguments (+1 each), for */
   ScrArr *exec_args; /* a spawn failure's path and spawnargs */
+  ScrStr *spawnfile; /* ChildProcess.spawnfile: the file that was spawned */
+  ScrArr *spawnargs; /* ChildProcess.spawnargs: the file followed by its arguments */
   void (*exec_props)(struct ScrChild *c, ScrError *error); /* Node's error properties */
   /* Piped stdio (stdio mode 3): the stream handles child.stdout /
    * child.stderr answer — owned (+1 each), NULL when not piped. */
@@ -4381,6 +4559,8 @@ void scr_child_release(ScrChild *c) {
     scr_str_release(c->exec_display);
     scr_str_release(c->exec_file);
     if (c->exec_args) scr_arr_release(c->exec_args);
+    scr_str_release(c->spawnfile);
+    if (c->spawnargs) scr_arr_release(c->spawnargs);
     scr_dyn_release(c->out_dyn);
     scr_dyn_release(c->err_dyn);
     scr_dyn_release(c->in_dyn);
@@ -5401,6 +5581,38 @@ ScrChild *scr_spawn(ScrStr *cmd, ScrArr *args) {
   return scr_spawn_opts(cmd, args, 0, 0, 0, 0, 0, false, false, false, NULL, NULL);
 }
 
+/* Node's normalizeSpawnArguments result, kept for ChildProcess.spawnfile
+ * and spawnargs. A direct spawn reports the command and its arguments. The
+ * shell form joins the command and arguments into one command line and
+ * reports "/bin/sh" with -c and the line. */
+static void scr_child_record_spawn(ScrChild *c, ScrStr *cmd, ScrArr *args, bool shell) {
+  size_t n = (size_t)scr_arr_len(args);
+  ScrArr *spawnargs = scr_arr_new(SCR_ELEM_STR, n + 1);
+  if (shell) {
+    ScrStr **parts = malloc((1 + 2 * n) * sizeof *parts);
+    ScrStr *space = scr_str_new(" ", 1);
+    if (!parts) scr_child_oom();
+    parts[0] = cmd;
+    for (size_t i = 0; i < n; i++) {
+      parts[1 + 2 * i] = space;
+      parts[2 + 2 * i] = scr_arr_get_ref(args, (double)i);
+    }
+    ScrStr *command = scr_str_concat_parts(parts, 1 + 2 * n);
+    for (size_t i = 0; i < n; i++) scr_str_release(parts[2 + 2 * i]);
+    scr_str_release(space);
+    free(parts);
+    c->spawnfile = scr_str_new("/bin/sh", 7);
+    scr_arr_push_ref(spawnargs, scr_str_retain(c->spawnfile));
+    scr_arr_push_ref(spawnargs, scr_str_new("-c", 2));
+    scr_arr_push_ref(spawnargs, command);
+  } else {
+    c->spawnfile = scr_str_retain(cmd);
+    scr_arr_push_ref(spawnargs, scr_str_retain(cmd));
+    for (size_t i = 0; i < n; i++) scr_arr_push_ref(spawnargs, scr_arr_get_ref(args, (double)i));
+  }
+  c->spawnargs = spawnargs;
+}
+
 /* The options core behind cp.spawn/cp.spawnOpts. PER-SLOT stdio modes:
  * 0 = ignore (/dev/null), 1 = inherit (the parent's fd), 2 = fd (out/err
  * only — out_fd/err_fd dup2 into the child's slot, Node's stdio fd form:
@@ -5429,6 +5641,7 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
   if (!c) scr_child_oom();
   c->rc = 1;
   c->als = scr_als_capture();
+  scr_child_record_spawn(c, cmd, args, shell);
 
   /* Piped slots: pipe(2) NOW, both ends cloexec (the file action's dup2
    * clears the flag on the child's copy — every other descriptor closes
@@ -5671,6 +5884,13 @@ double scr_child_exit_code(ScrChild *c) {
 }
 
 bool scr_child_killed(ScrChild *c) { return c->killed; }
+
+ScrStr *scr_child_spawnfile(ScrChild *c) {
+  return c->spawnfile ? scr_str_retain(c->spawnfile) : scr_str_new("", 0);
+}
+ScrArr *scr_child_spawnargs(ScrChild *c) {
+  return c->spawnargs ? scr_arr_retain(c->spawnargs) : scr_arr_new(SCR_ELEM_STR, 0);
+}
 
 /* child.kill core, numeric signal already resolved: kill(2) while the
  * handle is live (spawned, not yet reaped — a zombie counts, exactly
@@ -6216,6 +6436,10 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
     ScrSpawnRes *r = scr_spawn_res_new(false, 0, scr_str_new("", 0), scr_str_new("", 0));
     r->spawn_errname = scr_errname(spawn_err);
     r->cmd = scr_str_retain(cmd);
+#ifdef SCR_CHILD_ERR_FIELDS
+    r->spawn_errno = -(double)spawn_err;
+    r->args = scr_child_snapshot_args(args);
+#endif
     return r;
   }
 
@@ -6320,6 +6544,10 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
       if (r->signal_name == NULL) r->signal_name = scr_signal_name(killsig);
       r->spawn_errname = "ETIMEDOUT";
       r->cmd = scr_str_retain(cmd);
+#ifdef SCR_CHILD_ERR_FIELDS
+      r->spawn_errno = -(double)ETIMEDOUT;
+      r->args = scr_child_snapshot_args(args);
+#endif
     }
   }
   return r;

@@ -64,7 +64,11 @@ import {
   classJsName,
   classValueAbiEquals,
 } from "../../ir/ir.js";
-import { moduleRuntimeFeatures, type RuntimeFeatures } from "../../ir/runtime-features.js";
+import {
+  jsObjectModelFact,
+  moduleRuntimeFeatures,
+  type RuntimeFeatures,
+} from "../../ir/runtime-features.js";
 import { captureFreeFunctions, observesStacks } from "../stack-observations.js";
 import { findInitializedByteLoopBindings } from "./byte-windows.js";
 import { matchBytesLoopVersion } from "./bytes-loop-versions.js";
@@ -178,7 +182,12 @@ import {
   bridgePlainUnwindCalls,
   unwindAbiFunctions,
 } from "./unwind-abi.js";
-import { cloneForCpuDispatch, type CpuCopies } from "./cpu-dispatch.js";
+import {
+  cloneForCpuDispatch,
+  keepCopiedBodiesOutOfLine,
+  type CpuCopies,
+  type CpuCopySelection,
+} from "./cpu-dispatch.js";
 import {
   mangleAsyncInlineAwaitCall,
   mangleAsyncSpawn,
@@ -646,10 +655,21 @@ export interface LlvmTargetOptions {
    * runs on any x86-64 CPU. */
   targetCpu?: TargetCpu;
   /** Give an x86-64 executable without a `targetCpu` an x86-64-v3 copy of
-   * each program function, which it runs on CPUs at that level
-   * (cpu-dispatch.ts). Ignored for other targets, libraries and builds
-   * with debug information. */
+   * the program functions whose loop x86-64-v3 widens (cpu-dispatch.ts),
+   * which it runs on CPUs at that level. Ignored for other targets,
+   * libraries, builds with debug information and profile-recording builds. */
   cpuDispatch?: boolean;
+  /** The build records a profile: a dispatching build emits one body per
+   * function and keeps the functions a copy takes out of line, so the
+   * profile names the functions a `--profile-use` build copies. */
+  profileGenerate?: boolean;
+  /** The functions the build's profile names, when it uses one: the copies
+   * are limited to the functions among them that have a loop. */
+  cpuCopyFunctions?: ReadonlySet<string>;
+  /** The most program text the copies may take (cpu-dispatch.ts
+   * cpuCopyBudget by default): lowers the set for a build or a test that
+   * wants fewer copies. */
+  cpuCopyCapBytes?: number;
 }
 
 /** LlvmTargetOptions.lowRegion for an executable: Linux targets without
@@ -1532,6 +1552,13 @@ export class LlEmitter {
   readonly sanitizeAttributes: boolean;
   /** LlvmTargetOptions.cpuDispatch, where it applies. */
   readonly cpuDispatch: boolean;
+  /** LlvmTargetOptions.cpuCopyFunctions. */
+  private readonly cpuCopyFunctions: ReadonlySet<string> | undefined;
+  /** LlvmTargetOptions.cpuCopyCapBytes. */
+  private readonly cpuCopyCapBytes: number | undefined;
+  /** Whether emission keeps the functions a dispatching build would copy out
+   * of line, so a recorded profile names them. */
+  private readonly keepCopyBodiesOutOfLine: boolean;
   /** How the program's functions are copied (cpu-dispatch.ts): for runtime
    * dispatch, for an x86-64-v3 `targetCpu` ("target"), or not at all. */
   readonly cpuCopies: CpuCopies | null;
@@ -2342,7 +2369,15 @@ export class LlEmitter {
       mod.lib === undefined &&
       this.debug === null &&
       /^(x86_64|amd64|x64)\b/.test(options.targetTriple || process.arch);
-    this.cpuDispatch = options.cpuDispatch === true && options.targetCpu === undefined && copyable;
+    this.cpuDispatch =
+      options.cpuDispatch === true &&
+      options.targetCpu === undefined &&
+      copyable &&
+      options.profileGenerate !== true;
+    this.cpuCopyFunctions = options.cpuCopyFunctions;
+    this.cpuCopyCapBytes = options.cpuCopyCapBytes;
+    this.keepCopyBodiesOutOfLine =
+      options.cpuDispatch === true && options.profileGenerate === true && copyable;
     this.cpuCopies = this.cpuDispatch
       ? "dispatch"
       : options.targetCpu === "x86-64-v3" && copyable
@@ -2629,6 +2664,7 @@ export class LlEmitter {
       absentInstanceRef: (unionId) => this.absentInstanceRef(unionId),
       liveDynRefAdapter: (type) => this.liveDynRefAdapter(type),
       usesDynBuiltinStream: () => this.usesDynBuiltinStream,
+      jsObjectModel: () => jsObjectModelFact(this.runtimeFeatures),
       liveDynUnionRefAdapter: (type) => this.liveDynUnionRefAdapter(type),
       declBoundary: () => this.mod.declBoundary === true,
       dynPromiseAdapter: (type) => this.dynPromiseAdapter(type),
@@ -3011,13 +3047,30 @@ export class LlEmitter {
     return emitFfiCallbackDefs(this);
   }
 
+  /** What a dispatching build copies: the profile's functions, when it uses
+   * one, within the text budget. */
+  private copySelection(): CpuCopySelection {
+    const selection: CpuCopySelection = {};
+    if (this.cpuCopyFunctions !== undefined) selection.hot = this.cpuCopyFunctions;
+    if (this.cpuCopyCapBytes !== undefined) selection.capBytes = this.cpuCopyCapBytes;
+    return selection;
+  }
+
   emit(): string {
     return this.emitParts().join("\n");
   }
   emitParts(): string[] {
     const parts = emitParts(this);
     const bridged = this.unwindAbi.size > 0 ? bridgePlainUnwindCalls(parts) : parts;
-    const out = this.cpuCopies === null ? bridged : cloneForCpuDispatch(bridged, this.cpuCopies);
+    const profiled = this.keepCopyBodiesOutOfLine ? keepCopiedBodiesOutOfLine(bridged) : bridged;
+    const out =
+      this.cpuCopies === null
+        ? profiled
+        : cloneForCpuDispatch(
+            profiled,
+            this.cpuCopies,
+            this.cpuCopies === "dispatch" ? this.copySelection() : undefined,
+          );
     return this.heapCensus === null ? out : [...out, this.heapCensus.definitions().join("\n")];
   }
 

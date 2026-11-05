@@ -31,6 +31,17 @@ export class ClassProtocols {
     const protocols = new Set<ts.Symbol>();
     this.implemented = protocols;
     const add = (type: ts.Type): void => {
+      // A homomorphic mapped view's own symbol is the shared mapped
+      // `__type` that every mapped type in the program uses: marking it
+      // would make every Pick, Omit, Partial and Readonly a view. Mark the
+      // type the view maps instead, and only when that is a structural type
+      // (a class instance keeps its own representation; `protocol` answers
+      // a view of a class through pickOfProgramClass).
+      const mapped = this.mappedViewSource(type);
+      if (mapped !== null) {
+        if (!this.isStructuralTarget(mapped)) return;
+        type = mapped;
+      }
       const symbol = type.getSymbol();
       if (!symbol || protocols.has(symbol)) return;
       protocols.add(symbol);
@@ -115,10 +126,11 @@ export class ClassProtocols {
    * checked-dynamic view, where the accessor stays live, `Object.keys`
    * lists it, and `JSON.stringify` calls it — Node's own model.
    *
-   * Only the TARGET is marked: the literal then takes the checked-dynamic
-   * literal path (`lowerDynObjectLiteral`), which defines an accessor member
-   * as a live get/set property and a data member as a plain property, so
-   * both directions construct live objects. */
+   * Only the TARGET is marked (for an intersection or union, its object
+   * constituents): the literal then takes the checked-dynamic literal path
+   * (`lowerDynObjectLiteral`), which defines an accessor member as a live
+   * get/set property and a data member as a plain property, so both
+   * directions construct live objects. */
   private markMemberKindViews(
     literal: ts.ObjectLiteralExpression,
     accessorNames: ReadonlySet<string>,
@@ -145,25 +157,124 @@ export class ClassProtocols {
     if (members.length === 0) return;
     const contextual = attempt(() => this.checker.getContextualType(literal));
     if (contextual === undefined) return;
-    // Only one object type can be the one the literal converts into: a union
-    // with several arms picks its arm from the value itself, and an
-    // intersection merges members, so neither has the single layout the
-    // literal would have to disagree with. Nullish arms are ignored, so
-    // `Counter | undefined` still names Counter.
+    // The literal converts into an object PART of its contextual type, so
+    // both composites are resolved part by part. An intersection needs the
+    // views of every constituent that declares a disagreeing member. A
+    // union keeps checked identity only as a whole (usesCheckedIdentity
+    // answers it when every present arm does), so it becomes a view only
+    // when NO present arm can hold the literal natively: every present arm
+    // declares a disagreeing member. An arm that agrees is the arm the
+    // literal is, and marking the union anyway would make a program whose
+    // literals already match their arms dynamic for nothing. Nullish arms
+    // are ignored, so `Counter | undefined` still names Counter.
     const present = contextual.isUnionType()
       ? ts
           .constituentTypes(contextual)
           .filter((part) => (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null)) === 0)
       : [contextual];
-    const target = present.length === 1 ? present[0]! : undefined;
-    if (target === undefined || target.isIntersectionType()) return;
-    if ((target.flags & ts.TypeFlags.TypeParameter) !== 0) return;
-    if (!this.isStructuralTarget(target)) return;
-    const disagrees = members.some((member) => {
+    if (present.length === 0) return;
+    const union = present.length > 1;
+    if (union && !present.every((part) => this.memberKindDisagrees(part, members))) return;
+    const targets: ts.Type[] = [];
+    for (const arm of present) {
+      const found = this.viewTargets(arm, members, union);
+      // An arm that cannot become a view leaves the union native; marking
+      // the other arms alone would not give it checked identity.
+      if (found === null) return;
+      targets.push(...found);
+    }
+    for (const target of targets) add(target);
+  }
+
+  /** The view targets `target` needs for a literal with these member kinds,
+   * or null when `target` cannot become a view. An intersection needs the
+   * targets of every constituent. A homomorphic mapped view (Partial, Pick,
+   * Omit, Readonly) has no symbol of its own — its symbol is the shared
+   * mapped `__type`, which every mapped type in the program uses — so the
+   * type it maps is the target instead, and `protocol` answers the view
+   * through that marking. `force` targets a union arm that must keep
+   * checked identity even when it agrees with the literal by itself. */
+  private viewTargets(
+    target: ts.Type,
+    members: readonly { name: string; accessor: boolean }[],
+    force: boolean,
+  ): ts.Type[] | null {
+    if (target.isIntersectionType()) {
+      const targets: ts.Type[] = [];
+      for (const part of ts.constituentTypes(target)) {
+        const found = this.viewTargets(part, members, force);
+        if (found === null) return null;
+        targets.push(...found);
+      }
+      return targets;
+    }
+    if ((target.flags & ts.TypeFlags.TypeParameter) !== 0) return null;
+    const source = this.mappedViewSource(target) ?? target;
+    if (!this.isStructuralTarget(source)) return null;
+    if (!force && !this.memberKindDisagrees(target, members)) return [];
+    return [source];
+  }
+
+  /** Whether any of the literal's member kinds disagrees with the member
+   * `target` declares under that name (a missing member never disagrees). */
+  private memberKindDisagrees(
+    target: ts.Type,
+    members: readonly { name: string; accessor: boolean }[],
+  ): boolean {
+    return members.some((member) => {
       const kind = attempt(() => this.memberKind(target, member.name));
       return kind == null ? false : (kind === "accessor") !== member.accessor;
     });
-    if (disagrees) add(target);
+  }
+
+  /** The structural type a homomorphic mapped VIEW maps — Partial, Pick,
+   * Omit or Readonly over a program type. Mapped types share one `__type`
+   * symbol, so a view is identified through the alias it is spelled with;
+   * program aliases of views (`type A = B`, `type B = Partial<X>`) are
+   * followed through their declarations, and nested views
+   * (`Partial<Omit<X, K>>`) resolve to the type carrying the members.
+   * Null for everything else. */
+  private mappedViewSource(type: ts.Type, depth = 0): ts.Type | null {
+    if (depth > 8) return null;
+    const alias = type.getAliasSymbol();
+    if (alias === undefined) return null;
+    if (this.isHomomorphicMappedAlias(alias)) {
+      const [source] = type.getAliasTypeArguments();
+      if (source === undefined) return null;
+      return this.mappedViewSource(source, depth + 1) ?? source;
+    }
+    const declaration = this.programTypeAlias(alias);
+    return declaration === null ? null : this.mappedViewSourceNode(declaration.type, depth + 1);
+  }
+
+  /** mappedViewSource for a view spelled as a type node (a program alias's
+   * declaration, whose resolved type is the alias itself). */
+  private mappedViewSourceNode(node: ts.TypeNode, depth: number): ts.Type | null {
+    if (depth > 8) return null;
+    while (ts.isParenthesizedTypeNode(node)) node = node.type;
+    if (!ts.isTypeReferenceNode(node)) return null;
+    const symbol = attempt(() => this.checker.getSymbolAtLocation(node.typeName));
+    if (symbol === undefined) return null;
+    if (this.isHomomorphicMappedAlias(symbol)) {
+      const sourceNode = node.typeArguments?.nodes[0];
+      if (sourceNode === undefined) return null;
+      const source = attempt(() => this.checker.getTypeFromTypeNode(sourceNode));
+      if (source === undefined) return null;
+      return this.mappedViewSource(source, depth + 1) ?? source;
+    }
+    const declaration = this.programTypeAlias(symbol);
+    return declaration === null ? null : this.mappedViewSourceNode(declaration.type, depth + 1);
+  }
+
+  /** The lib's homomorphic mapped utility types. */
+  private isHomomorphicMappedAlias(symbol: ts.Symbol): boolean {
+    const name = ts.symbolName(symbol);
+    if (name !== "Pick" && name !== "Omit" && name !== "Partial" && name !== "Readonly")
+      return false;
+    return (
+      symbol.declarations.length > 0 &&
+      symbol.declarations.every((declaration) => declaration.getSourceFile().isDeclarationFile)
+    );
   }
 
   /** The member kind `type` declares at `name` — an accessor (get/set pair)
@@ -1369,6 +1480,8 @@ export class ClassProtocols {
     if (this.isBuiltinError(type)) return true;
     // A live Pick or Omit view of a program class holds the instance itself.
     if (this.pickOfProgramClass(type) && this.usesCheckedIdentity(type)) return true;
+    // A homomorphic mapped view of a marked type is the live view itself.
+    if (this.mappedViewSource(type) !== null && this.protocol(type)) return true;
     const symbol = type.getSymbol();
     if (symbol === undefined) return false;
     if (marked.has(symbol)) return true;
@@ -1547,6 +1660,11 @@ export class ClassProtocols {
     const symbol = type.getSymbol();
     const properties = this.checker.getPropertiesOfType(type);
     if (symbol && protocols.has(symbol)) return true;
+    // A homomorphic mapped view (Partial, Pick, Omit, Readonly) has no
+    // symbol of its own to mark, so it is a view exactly when the type it
+    // maps is one.
+    const mapped = this.mappedViewSource(type);
+    if (mapped !== null && this.protocol(mapped)) return true;
     if (
       !this.pickOfProgramClass(type) &&
       (!symbol ||

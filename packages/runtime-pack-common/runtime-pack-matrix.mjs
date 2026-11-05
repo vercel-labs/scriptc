@@ -40,6 +40,9 @@ export const BASE_RUNTIME_SOURCES = [
   "scr_url.c",
   "scr_url_params.c",
   "scr_json.c",
+  // The kept-source read a record width copy emits; a unit of its own so a
+  // program that only casts records keeps scr_json.o byte-identical.
+  "scr_record_source_get.c",
   "scr_node_builtin.c",
   "scr_async.c",
   "scr_crypto_async.c",

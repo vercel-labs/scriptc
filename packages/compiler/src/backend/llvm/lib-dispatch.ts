@@ -298,6 +298,22 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     B.line(`${t} = phi i1 [ false, %${from} ], [ ${has}, %${probed} ]`);
     return { name: t, type: e.type };
   }
+  if (e.fn === "record.sourceGet") {
+    const record = host.emitReadReceiver(e.args[0]!);
+    const key = e.args[1]!;
+    if (key.kind !== "strLit")
+      throw new InternalCompilerError("llvm emitter bug: record.sourceGet key is not a literal");
+    // The kept source's own-key read (+1): a record→record conversion answers
+    // a field the source type does not declare from here, without building
+    // the record's capsule (which would reach the dynamic tier).
+    host.declare(`declare ptr @scr_record_source_get(ptr, ptr, ${host.sizeType})`);
+    const value = B.tmp();
+    const length = Buffer.byteLength(key.value, "utf8");
+    B.line(
+      `${value} = call ptr @scr_record_source_get(ptr ${record.name}, ptr ${host.cstr(key.value)}, ${host.sizeType} ${length}) ; +1`,
+    );
+    return host.own({ name: value, type: e.type });
+  }
   if (e.fn === "record.sourceSpread") {
     const built = host.emitReadReceiver(e.args[0]!);
     const value = host.emitReadReceiver(e.args[1]!);

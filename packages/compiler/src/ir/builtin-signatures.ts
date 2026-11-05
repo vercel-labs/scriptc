@@ -5308,6 +5308,12 @@ function buildLibFnSignatures() {
      * (inspect, Object.keys/values/entries) then answer through its live
      * checked view. The receiver is any such record type. Never throws. */
     "record.sourceHas": { argTypes: [null], result: BOOL },
+    /** `record.sourceGet(record, name)`: the value the record's kept source
+     * holds under `name`, or the undefined value when it keeps none or its
+     * source lacks the key (+1). The name is a strLit. A kept accessor runs
+     * with the view as its receiver, so a getter that throws leaves the
+     * exception pending. */
+    "record.sourceGet": { argTypes: [null, STRING], result: DYN },
     /** `record.sourceSpread(built, value)`: the record a literal starting
      * with `...value` just built keeps the order of value's kept source
      * (key-order-witness.ts ordered spreads). Both are record types. Never

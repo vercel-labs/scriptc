@@ -158,19 +158,19 @@ function projectionRecordLit(projection: IrFunction): (IrExpr & { kind: "recordL
   return found;
 }
 
-/** `record.sourceHas(r) ? <name read from r's live view, typed `field.type`>
- * : absent`. A key the view lacks answers the undefined singleton. */
+/** `record.sourceHas(r) ? <name read from r's kept source, typed
+ * `field.type`> : absent`. A key the source lacks answers the undefined
+ * singleton. */
 function absentFieldFromSource(
   field: AbsentSourceField,
   receiver: IrExpr,
   absent: IrExpr,
   loc: SrcLoc,
 ): IrExpr {
-  const view: IrExpr = { kind: "dynFrom", value: receiver, liveRef: true, type: DYN, loc };
   const member: IrExpr = {
-    kind: "dynKeyGet",
-    value: view,
-    key: { kind: "strLit", value: field.name, type: STRING, loc },
+    kind: "libCall",
+    fn: "record.sourceGet",
+    args: [receiver, { kind: "strLit", value: field.name, type: STRING, loc }],
     type: DYN,
     loc,
   };
@@ -188,10 +188,11 @@ function absentFieldFromSource(
 }
 
 /** Carries an undeclared kept key through a record→record conversion: a
- * target field the source type does not declare reads from the source
- * record's live checked view when the record carries one (Node keeps the
- * whole object through the assertion), and answers its absent state
- * otherwise.
+ * target field the source type does not declare reads the source record's
+ * kept source when the record has one (Node keeps the whole object through
+ * the assertion), and answers its absent state otherwise. The read is the
+ * record-source runtime's own-key read (record.sourceGet), so the copy
+ * answers the key without building the record's capsule.
  *
  * Only a program that converts a value with a kept source into the source
  * type can take the read, so the rewrite waits for finalizeRecordLinks'

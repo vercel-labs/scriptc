@@ -590,7 +590,7 @@ import {
   createRequireProgramModuleOf,
   createRequireSpecOf,
   fencedBuiltinImportOf,
-  esmImportBindingKind,
+  isBuiltinEsmNamespaceOf,
 } from "./builtins/module-bindings.js";
 import { stripTypeCasts } from "./builtins/arguments.js";
 import { lowerBuiltinModuleCall } from "./builtins/module-calls.js";
@@ -18133,11 +18133,10 @@ export class Lowerer {
     }
     // events.defaultMaxListeners READS the process-wide default (its
     // write twin routes through emitter.setDefaultMaxChk). Through an ES
-    // module namespace it reads the namespace's copy instead.
+    // module namespace it reads the namespace's copy instead — the
+    // awaited literal import names one too, as does a `const` bound to it.
     if (bi.module === "events" && bi.member === "defaultMaxListeners") {
-      const esm =
-        ts.isIdentifier(expr.expression) &&
-        esmImportBindingKind(this, expr.expression) === "namespace";
+      const esm = isBuiltinEsmNamespaceOf(this, expr.expression);
       return {
         kind: "libCall",
         fn: esm ? "emitter.esmDefaultMax" : "emitter.getDefaultMax",

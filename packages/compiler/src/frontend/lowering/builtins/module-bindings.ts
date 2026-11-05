@@ -178,6 +178,29 @@ export function esmImportBindingKind(
   return ts.isImportSpecifier(decl) ? "named" : null;
 }
 
+/** True when `expr` evaluates to a builtin's ES module namespace OBJECT,
+ * the value whose members are copies of the module's exports: a namespace
+ * import, the literal `import()` awaited where it is read (or through the
+ * casts a program writes around it), and a `const` bound to one. The
+ * CommonJS module object — `require()`, a default import, a
+ * getBuiltinModule result — is not: its members read the module's own
+ * mutable properties, as `events.defaultMaxListeners` does. */
+export function isBuiltinEsmNamespaceOf(lowerer: Lowerer, expr: ts.Expression): boolean {
+  if (awaitedBuiltinDynamicImportOf(lowerer, expr) !== null) return true;
+  const e = stripTypeCasts(expr);
+  if (!ts.isIdentifier(e)) return false;
+  if (esmImportBindingKind(lowerer, e) === "namespace") return true;
+  const decl = lowerer.checker.getSymbolAtLocation(e)?.declarations[0];
+  return (
+    decl !== undefined &&
+    ts.isVariableDeclaration(decl) &&
+    ts.isIdentifier(decl.name) &&
+    decl.initializer !== undefined &&
+    (ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) !== 0 &&
+    awaitedBuiltinDynamicImportOf(lowerer, decl.initializer) !== null
+  );
+}
+
 /** True for `const <name> = require("<builtin>").<member>` — the
  * member-binding require import builtinImportOf resolves. Both
  * declaration walks (lowerVarDecl, collectGlobals) skip these: like a

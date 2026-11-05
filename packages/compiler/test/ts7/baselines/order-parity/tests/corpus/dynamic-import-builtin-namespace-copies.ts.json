@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/dynamic-import-builtin-namespace-copies.ts"
+ ],
+ "diags": []
+}

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/http2-head-cancel-response-record.ts"
+ ],
+ "diags": []
+}

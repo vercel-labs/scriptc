@@ -150,6 +150,17 @@ test("closures and promises seed tracing even with scalar signatures", () => {
   check(mod, ["record:closure", "record:promise"]);
 });
 
+test("HTTP responses seed tracing through records and collections", () => {
+  const mod = module();
+  mod.records = [
+    shape("response", [{ kind: "httpRes" }, STRING]),
+    shape("responses", [arrayOf({ kind: "httpRes" })]),
+    shape("holder", [ref("response")]),
+    shape("request", [{ kind: "httpReq" }]),
+  ];
+  check(mod, ["record:response", "record:responses", "record:holder"]);
+});
+
 test("a derived field requires a uniform header for the entire hierarchy", () => {
   const mod = module();
   mod.classes = [

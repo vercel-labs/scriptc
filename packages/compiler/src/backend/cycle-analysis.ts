@@ -16,9 +16,10 @@ import { type CycleMutability, computeCycleMutability, fieldKey } from "./cycle-
 /** Cycle capability for native code generation.
  * Nodes are shape units and unions; edges are the references their fields
  * and arms can hold (collections flattened into their element, key and
- * value types). Closures, checked values, class values, caught values and
- * promises are INTRINSIC: they can reach anything, so a unit holding one is
- * on a potential cycle. Strings never are.
+ * value types). Closures, checked values, class values, caught values,
+ * promises and HTTP responses (which own their listener closures) are
+ * INTRINSIC: they can reach anything, so a unit holding one is on a
+ * potential cycle. Strings never are.
  *
  * An edge is IMMUTABLE when it can only be stored while its owner is still
  * under construction (cycle-mutability.ts derives this from the IR): such an
@@ -46,7 +47,14 @@ export function computeTraced(
 }
 
 /** Values that can reference any object. */
-export type IntrinsicKind = "func" | "dyn" | "jsval" | "classval" | "promise" | "caught";
+export type IntrinsicKind =
+  | "func"
+  | "dyn"
+  | "jsval"
+  | "classval"
+  | "promise"
+  | "caught"
+  | "httpRes";
 
 /** Why an edge of the cycle graph exists (explanations only). */
 export type CycleEdgeLabel =
@@ -73,7 +81,8 @@ export type CycleExplanation =
   | { kind: "cycle"; steps: CycleStep[] }
   /** The unit reaches a field that holds a value able to reference any
    * object (a function, a dynamic or caught value, a class value, a
-   * promise), so it can lie on a cycle through that value. */
+   * promise, an HTTP response), so it can lie on a cycle through that
+   * value. */
   | {
       kind: "intrinsic";
       steps: CycleStep[];
@@ -242,6 +251,7 @@ function analyzeCycles(
       case "classval":
       case "promise":
       case "caught":
+      case "httpRes":
         from.intrinsic = true;
         from.edges.clear();
         if (from.labels !== null) {

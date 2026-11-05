@@ -1,8 +1,9 @@
 /* Cancelled HTTP/2 HEAD responses under LeakSanitizer. A response keeps the
  * 'finish' and 'close' listeners registered before its stream closed, and a
- * listener that captures its response closes a cycle with it; the response
- * and its listeners must be reclaimed without a later end(). The sanitized
- * lanes otherwise run with detect_leaks=0, so this runs the program with
+ * listener that captures its response, directly or through a record that
+ * holds it, closes a cycle with it; the response and its listeners must be
+ * reclaimed without a later end(). The sanitized lanes otherwise run with
+ * detect_leaks=0, so this runs the program with
  * LeakSanitizer explicitly on; the sanitized build's RC audit is the second
  * check (it names every object still live at exit). Linux only (Apple's ASan
  * has no LeakSanitizer); runs in the SCRIPTC_SAN=1 lane. */
@@ -22,6 +23,7 @@ const sanitize = process.env["SCRIPTC_SAN"] === "1";
 const programs = [
   "tests/corpus/http2-head-cancel-response-listeners.cjs",
   "tests/corpus/http-head-cancel-response-listeners.cjs",
+  "tests/corpus/http2-head-cancel-response-record.ts",
 ];
 
 describe.skipIf(!sanitize || process.platform !== "linux")(

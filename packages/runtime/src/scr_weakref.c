@@ -53,8 +53,10 @@ typedef struct ScrWeakRef {
 } ScrWeakRef;
 
 /* Live cells in this thread's table (the WeakRefs whose target is still
- * alive). scr_json.c's observers test it before calling in. */
-SCR_TL size_t scr_weakref_live;
+ * alive). scr_json.c's observers test it before calling in. The initializer
+ * keeps this an ordinary definition rather than a tentative one, which
+ * toolchains that default to -fcommon would emit as a COMMON symbol. */
+SCR_TL size_t scr_weakref_live = 0;
 static SCR_TL ScrWeakRef **scr_weakref_buckets;
 static SCR_TL size_t scr_weakref_mask; /* capacity - 1 */
 

@@ -145,7 +145,11 @@ typedef enum {
  * the second, and so on) only when the LLVM backend needs its number: DYN_HANDLE_TAG_NUM and
  * TEXT_CODEC_TAG_NUM in packages/compiler/src/backend/llvm/dyn.ts may only
  * name pinned tags. Pin the new tags in name order, oldest first, in a change
- * of its own, so their values do not move.
+ * of its own, so their values do not move. A tag may instead pin at the value
+ * SCR_DYNH_UNASSIGNED records for it: inserting a name in SCR_DYNH_NEW_TAGS
+ * ahead of another one renumbers it, and a unit that carries the old number
+ * then compiles to different bytes, which the zero-cost gate reports as a
+ * changed executable for every program that links the unit.
  *
  * Checks: a pinned value at or above SCR_DYNH_CAPACITY fails its
  * _Static_assert, two tags with one value are a duplicate case label in
@@ -183,6 +187,9 @@ typedef enum {
   X(FILE, 42) /* ScrBlob with a name — new File() */ \
   X(FILE_HANDLE, 17) /* fs/promises.FileHandle */ \
   X(FINALIZATION_REGISTRY, 72) /* FinalizationRegistry (bookkeeping only) */ \
+  X(FORM_DATA, 63) /* WHATWG FormData entry list (scr_formdata.c): pinned at the
+                    * recorded unassigned value so the unpinned tags after the
+                    * pinned span keep their numbers */ \
   X(GLOBAL, 22) /* native global object identity */ \
   X(H2_SESSION, 4) /* ScrH2Session — Http2Session (client & server) */ \
   X(H2_STREAM, 5) /* ScrH2Stream — Http2Stream (client & server) */ \
@@ -259,9 +266,9 @@ typedef enum {
 #define SCR_DYNH_NEW_TAGS(Y)
 
 /* Values below the largest pinned one that no tag holds, each with the
- * reason. Never reuse one without removing it here. */
-#define SCR_DYNH_UNASSIGNED(Z) \
-  Z(63) /* skipped: claimed by a branch that took another number */
+ * reason. Never reuse one without removing it here. No value is unassigned:
+ * 63, recorded as skipped, now pins FORM_DATA. */
+#define SCR_DYNH_UNASSIGNED(Z)
 
 /* One member per pinned tag, sized value + 1, so its size is the largest
  * pinned value + 1: the new tags are numbered from there. Never instantiated. */

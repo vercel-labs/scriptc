@@ -645,21 +645,22 @@ test("node-types: RequestInit-derived options carry BodyInit and HeadersInit int
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
-test("node-types: a FormData fetch body fences by name instead of stringifying", async () => {
-  const outDir = outDirFor("fetch-formdata-body-fences");
-  const result = await compile(join(nodeTypesDir, "fetch-formdata-body-fences.ts"), {
-    outPath: join(outDir, "fetch-formdata-body-fences"),
+test("node-types: a FormData fetch body compiles and runs", async () => {
+  const outDir = outDirFor("fetch-formdata-body");
+  const entry = join(nodeTypesDir, "fetch-formdata-body.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "fetch-formdata-body"),
     outDir,
     sanitize,
   });
-  expect(result.ok).toBe(false);
-  if (result.ok) return;
-  const rendered = renderDiagnostics(result.diagnostics, result.sourceTexts, {
-    color: false,
-  }).replaceAll(nodeTypesDir + "/", "");
-  await expect(rendered).toMatchFileSnapshot(
-    "__snapshots__/node-types-fetch-formdata-body-fences.txt",
-  );
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
 test("node-types: stream subclasses extend the @types/node stream classes", async () => {

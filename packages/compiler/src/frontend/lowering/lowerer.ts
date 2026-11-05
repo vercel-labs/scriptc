@@ -108,6 +108,7 @@ import { isRebindableFunctionSymbol } from "./rebindable-functions.js";
 import { concreteCollectionNarrow } from "./collection-narrowing.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
 import { fenceStaticBlobMember, lowerBlobNew, lowerStaticBlobCall } from "./builtins/blob.js";
+import { lowerFormDataNew } from "./builtins/formdata.js";
 import {
   lowerWebAssemblyCall,
   lowerWebAssemblyNew,
@@ -17773,6 +17774,7 @@ export class Lowerer {
       lowerFetchWebNew(this, expr) ??
       lowerResponseNew(this, expr) ??
       lowerBlobNew(this, expr) ??
+      lowerFormDataNew(this, expr) ??
       lowerNetAddressNew(this, expr) ??
       lowerMimeNew(this, expr) ??
       lowerWebStreamNew(this, expr) ??

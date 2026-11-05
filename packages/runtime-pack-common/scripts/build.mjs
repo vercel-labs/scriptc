@@ -772,6 +772,7 @@ async function build() {
           "SCR_NATIVE_REACTIONS",
           "SCR_HANDLE_CLASSES",
           "SCR_WEB_BODIES",
+          "SCR_FORMDATA_BODY",
           "SCR_YIN",
           "SCR_CHILD_ERR_FIELDS",
           "SCR_NODE_ISLANDS",

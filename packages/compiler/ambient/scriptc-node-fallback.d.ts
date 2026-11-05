@@ -1347,7 +1347,7 @@ interface ResponseInit {
 }
 declare var Response: {
   new (
-    body?: string | Uint8Array | ReadableStream<Uint8Array> | Blob | null,
+    body?: string | Uint8Array | Blob | FormData | ReadableStream<Uint8Array> | null,
     init?: ResponseInit,
   ): Response;
   readonly prototype: Response;
@@ -1393,6 +1393,29 @@ declare var File: {
   ): File;
   readonly prototype: File;
 };
+/* WHATWG FormData: an ordered entry list of string and File values, the
+ * value a request body's multipart/form-data encoding is built from. */
+type FormDataEntryValue = string | File;
+interface FormData {
+  append(name: string, value: string | Blob, fileName?: string): void;
+  delete(name: string): void;
+  get(name: string): FormDataEntryValue | null;
+  getAll(name: string): FormDataEntryValue[];
+  has(name: string): boolean;
+  set(name: string, value: string | Blob, fileName?: string): void;
+  forEach(
+    callbackfn: (value: FormDataEntryValue, key: string, parent: FormData) => void,
+    thisArg?: unknown,
+  ): void;
+  entries(): IterableIterator<[string, FormDataEntryValue]>;
+  keys(): IterableIterator<string>;
+  values(): IterableIterator<FormDataEntryValue>;
+  [Symbol.iterator](): IterableIterator<[string, FormDataEntryValue]>;
+}
+declare var FormData: {
+  new (): FormData;
+  readonly prototype: FormData;
+};
 interface Request {
   readonly method: string;
   readonly url: string;
@@ -1421,7 +1444,7 @@ interface Request {
 interface RequestInit {
   method?: string;
   headers?: Headers | Record<string, string> | readonly (readonly [string, string])[];
-  body?: string | Uint8Array | ReadableStream<Uint8Array> | Blob | null;
+  body?: string | Uint8Array | Blob | FormData | ReadableStream<Uint8Array> | null;
   duplex?: "half";
   redirect?: "follow" | "error" | "manual";
   signal?: AbortSignal;
@@ -1430,7 +1453,7 @@ declare var Request: {
   new (input: RequestInfo, init?: RequestInit): Request;
   readonly prototype: Request;
 };
-declare function fetch(input: string | URL, init?: RequestInit): Promise<Response>;
+declare function fetch(input: RequestInfo, init?: RequestInit): Promise<Response>;
 
 /* The repeating timer pair (setTimeout lives in scriptc.d.ts — always
  * shipped). The handle is the Timeout interface, like Node's — it maps to

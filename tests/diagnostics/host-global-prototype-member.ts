@@ -1,9 +1,9 @@
 // A method read off the value's prototype object: Node's class provides its
-// instance methods there (FormData.prototype.append), which native code does
+// instance methods there (WebSocket.prototype.send), which native code does
 // not; the prototype carries the constructor link only (SC2020,
 // host-global).
-interface HostBody {
-  append(value: string): void;
+interface HostSocket {
+  send(data: string): void;
 }
-declare var FormData: { new (): HostBody; readonly prototype: HostBody };
-FormData.prototype.append("value");
+declare var WebSocket: { new (url: string): HostSocket; readonly prototype: HostSocket };
+WebSocket.prototype.send("value");

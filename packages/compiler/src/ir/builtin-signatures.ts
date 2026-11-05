@@ -129,6 +129,11 @@ function buildLibFnSignatures() {
     "blob.bytes": { argTypes: [DYN], result: { kind: "promise", inner: BYTES_U8 } },
     "blob.arrayBuffer": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
     "blob.is": { argTypes: [DYN, F64], result: BOOL },
+    /** FormData (scr_formdata.c): the constructor takes its argument
+     * vector as one dyn array and throws undici's conversion TypeError for
+     * any argument but undefined; formdata.is is `v instanceof FormData`. */
+    "formdata.new": { argTypes: [DYN], result: DYN },
+    "formdata.is": { argTypes: [DYN], result: BOOL },
     /** WebAssembly (scr_wasm.c): modules translated at build time
      * (wasm/translate.ts), found at run time by the SHA-256 of their bytes.
      * compile and instantiate over bytes settle on a later loop turn;

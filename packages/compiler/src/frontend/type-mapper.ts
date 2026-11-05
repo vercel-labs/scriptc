@@ -227,6 +227,7 @@ export const FETCH_AMBIENT_TYPES = [
   "WritableStreamDefaultController",
   "Blob",
   "File",
+  "FormData",
   "BlobPropertyBag",
   "FilePropertyBag",
   "BlobOptions",

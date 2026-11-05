@@ -119,7 +119,7 @@ test("an imported value with a listed global's name is the program's binding", a
 
 test("every listed global's length is Node's, and the value answers it", () => {
   // A read answers a constructor carrying Node's Function length, so a
-  // `FormData.length` read must see what Node shows. The table is pinned
+  // `WebSocket.length` read must see what Node shows. The table is pinned
   // against the running Node (the release the differential corpus runs).
   const globals = globalThis as unknown as Record<string, unknown>;
   for (const name of NODE_GLOBALS_WITHOUT_NATIVE) {
@@ -146,13 +146,12 @@ test("a read compiles and answers the constructor; construction refuses", async 
     const read = await compileSource(
       "read",
       [
-        "declare var FormData: { new (): unknown; readonly prototype: object };",
         "declare var WebSocket: { new (url: string): unknown; readonly prototype: object };",
-        "const eager = FormData;",
-        "console.log(typeof FormData, FormData.name, FormData.length);",
-        "const scope = globalThis as unknown as { FormData: unknown };",
-        "console.log(typeof WebSocket, eager === FormData, scope.FormData === FormData);",
-        "console.log({} instanceof FormData, FormData.prototype.constructor === FormData);",
+        "const eager = WebSocket;",
+        "console.log(typeof WebSocket, WebSocket.name, WebSocket.length);",
+        "const scope = globalThis as unknown as { WebSocket: unknown };",
+        "console.log(eager === WebSocket, scope.WebSocket === WebSocket);",
+        "console.log({} instanceof WebSocket, WebSocket.prototype.constructor === WebSocket);",
         'if (typeof WebSocket === "function") console.log("websocket");',
         "",
       ].join("\n"),
@@ -162,15 +161,18 @@ test("a read compiles and answers the constructor; construction refuses", async 
     // Constructing or calling the value, or reading a member it does not
     // carry, is the use that refuses.
     for (const [name, expression] of [
-      ["construct", "new FormData()"],
-      ["call", "FormData()"],
-      ["globalThis", "new (globalThis as unknown as { WebSocket: new () => unknown }).WebSocket()"],
-      ["static", "(FormData as unknown as { OPEN: number }).OPEN"],
-      ["prototype", "(FormData as any).prototype.append()"],
+      ["construct", "new WebSocket('wss://example.test')"],
+      ["call", "WebSocket('wss://example.test')"],
+      [
+        "globalThis",
+        "new (globalThis as unknown as { WebSocket: new (url: string) => unknown }).WebSocket('wss://example.test')",
+      ],
+      ["static", "(WebSocket as unknown as { OPEN: number }).OPEN"],
+      ["prototype", "(WebSocket as any).prototype.send()"],
     ] as const) {
       const result = await compileSource(
         name,
-        `declare var FormData: { new (): unknown; (): unknown; readonly prototype: object };\n${expression};\n`,
+        `declare var WebSocket: { new (url: string): unknown; (url: string): unknown; readonly prototype: object };\n${expression};\n`,
       );
       expect(result.ok, name).toBe(false);
       expect(
@@ -193,10 +195,8 @@ test("instanceof answers for the value, and a constant holding it refuses", asyn
       outputKind: "ir",
     });
   };
-  const declarations = [
-    "declare var FormData: { new (): unknown; (): unknown; readonly prototype: object };",
-    "declare var WebSocket: { new (url: string): unknown; readonly prototype: object; readonly OPEN: number };",
-  ].join("\n");
+  const declarations =
+    "declare var WebSocket: { new (url: string): unknown; (url: string): unknown; readonly prototype: object; readonly OPEN: number };";
   try {
     // `instanceof` against the value is decided statically: an ordinary
     // function's operand would otherwise ask the runtime for its
@@ -207,9 +207,9 @@ test("instanceof answers for the value, and a constant holding it refuses", asyn
       [
         declarations,
         "function plain() {}",
-        "const Alias = FormData;",
-        "console.log(plain instanceof FormData, (() => 1) instanceof Alias);",
-        "console.log(FormData instanceof Function, FormData.prototype.constructor instanceof Function);",
+        "const Alias = WebSocket;",
+        "console.log(plain instanceof WebSocket, (() => 1) instanceof Alias);",
+        "console.log(WebSocket instanceof Function, WebSocket.prototype.constructor instanceof Function);",
         "console.log(Alias instanceof Function, plain instanceof Alias);",
         "",
       ].join("\n"),
@@ -223,12 +223,12 @@ test("instanceof answers for the value, and a constant holding it refuses", asyn
       ["alias-static", "const Ctor = WebSocket;\nCtor.OPEN;"],
       ["alias-static-element", 'const Ctor = WebSocket;\nCtor["OPEN"];'],
       ["alias-chain-static", "const Ctor = WebSocket;\nconst Chain = Ctor;\nChain.OPEN;"],
-      ["alias-construct", "const Ctor = FormData;\nnew Ctor();"],
-      ["alias-call", "const Ctor = FormData;\nCtor();"],
-      ["prototype-alias", "const body = FormData.prototype;\n(body as any).append();"],
+      ["alias-construct", "const Ctor = WebSocket;\nnew Ctor('wss://example.test');"],
+      ["alias-call", "const Ctor = WebSocket;\nCtor('wss://example.test');"],
+      ["prototype-alias", "const body = WebSocket.prototype;\n(body as any).send();"],
       [
         "prototype-alias-chain",
-        "const body = FormData.prototype;\nconst same = body;\n(same as any).append();",
+        "const body = WebSocket.prototype;\nconst same = body;\n(same as any).send();",
       ],
     ] as const) {
       const result = await compileSource(name, `${declarations}\n${expression}\n`);
@@ -244,9 +244,9 @@ test("instanceof answers for the value, and a constant holding it refuses", asyn
       [
         declarations,
         "const Ctor = WebSocket;",
-        "const body = FormData.prototype;",
+        "const body = WebSocket.prototype;",
         "console.log(Ctor.name, Ctor.length, typeof Ctor);",
-        "console.log(body.constructor === FormData, typeof body);",
+        "console.log(body.constructor === WebSocket, typeof body);",
         "",
       ].join("\n"),
     );

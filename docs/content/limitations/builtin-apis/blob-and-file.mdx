@@ -1,4 +1,5 @@
 - **Blob and File:** `new Blob()` and `new File()` accept arrays, typed arrays, `Set`, and `Map` as sources.
   Other iterables throw `SC2020`.
   `blob.stream()`, `blob.textStream()`, `URL.createObjectURL()`, and `stream/consumers` `blob()` are unsupported.
+  A Blob, File or FormData value sends as a fetch request body: a Blob or File as its bytes with the blob's type as the content type, a FormData as multipart/form-data.
   Blobs cannot be sent to workers.

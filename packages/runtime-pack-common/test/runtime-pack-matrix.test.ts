@@ -262,3 +262,30 @@ test("extended spawn options beside an error read keep both child builds", () =>
       .defines,
   ).toEqual(["SCR_CHILD_CP_OPTIONS"]);
 });
+
+test("Blob, File and FormData bodies select the fetch build that extracts them", () => {
+  // extractBody's byte and multipart arms live in their own fetch builds; a
+  // program that sends neither body keeps the default object byte for byte.
+  const plain = { workers: false, webStreams: false, webBodies: false, formData: false };
+  expect(selected("scr_fetch.c", plain).defines).toEqual([]);
+  expect(selected("scr_fetch.c", { ...plain, webBodies: true }).defines).toEqual([
+    "SCR_WEB_BODIES",
+  ]);
+  expect(selected("scr_fetch.c", { ...plain, webBodies: true, formData: true }).defines).toEqual([
+    "SCR_WEB_BODIES",
+    "SCR_FORMDATA_BODY",
+  ]);
+  // A web-stream program keeps its handle-classes build, and the most
+  // specific variant carries every condition.
+  expect(selected("scr_fetch.c", { ...plain, webStreams: true }).defines).toEqual([
+    "SCR_HANDLE_CLASSES",
+  ]);
+  expect(selected("scr_fetch.c", { ...plain, webStreams: true, webBodies: true }).defines).toEqual([
+    "SCR_HANDLE_CLASSES",
+    "SCR_WEB_BODIES",
+  ]);
+  expect(
+    selected("scr_fetch.c", { ...plain, webStreams: true, webBodies: true, formData: true })
+      .defines,
+  ).toEqual(["SCR_HANDLE_CLASSES", "SCR_WEB_BODIES", "SCR_FORMDATA_BODY"]);
+});

@@ -117,7 +117,18 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_event_target.c", any("eventTarget", "nativeFetch", "abortSignal")],
   [
     "scr_async_dyn.c",
-    any("dynAsync", "dynInvoke", "dc", "fileHandle", "nativeFetch", "nodeIsland", "nodeTest"),
+    any(
+      "dynAsync",
+      "dynInvoke",
+      "dc",
+      "fileHandle",
+      "nativeFetch",
+      "nodeIsland",
+      "nodeTest",
+      // Blob and File box their reads as dyn promises, and a FormData
+      // program links them for its entry values.
+      "formData",
+    ),
   ],
   // Promise statics with a foreign constructor (Promise.all.call(C, ...)):
   // the specification's algorithms over the checked-dynamic tier. Its
@@ -138,7 +149,11 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // %Iterator% and %Iterator.prototype% as values.
   ["scr_js_iterator.c", "iteratorProto"],
   // Blob and File box their reads as dyn promises through scr_async_dyn.c.
-  ["scr_blob.c", "dynAsync"],
+  // A FormData program links them for its entry values (every Blob append
+  // makes a File) and its multipart body.
+  ["scr_blob.c", any("dynAsync", "formData")],
+  // WHATWG FormData: the entry list and undici's multipart/form-data body.
+  ["scr_formdata.c", "formData"],
   ["scr_zlib.c", "zlib"],
   ["scr_brotli.c", all("zlib", "brotli")],
   ["scr_zstd.c", all("zlib", "zstd")],
@@ -445,9 +460,11 @@ export function variantsFor(source) {
       defines: ["SCR_HANDLE_CLASSES"],
     });
   }
-  // A Blob or File request body sends the blob's bytes and type, as Node
-  // does; programs that build no Blob or File keep the default fetch unit
-  // byte for byte, and the combination with web streams has its own build.
+  // Blob/File and FormData request bodies: extractBody's byte and multipart
+  // arms replace the USVString fallback for those bodies. A program that
+  // builds no Blob or File keeps the default fetch unit byte for byte, and
+  // the combinations name every set of conditions, since selecting a variant
+  // keeps only the most specific match.
   if (source === "scr_fetch.c") {
     variants.push({
       id: "web-bodies",
@@ -455,9 +472,19 @@ export function variantsFor(source) {
       defines: ["SCR_WEB_BODIES"],
     });
     variants.push({
+      id: "web-bodies-formdata",
+      when: { webBodies: true, formData: true },
+      defines: ["SCR_WEB_BODIES", "SCR_FORMDATA_BODY"],
+    });
+    variants.push({
       id: "handle-classes-web-bodies",
       when: { webStreams: true, webBodies: true },
       defines: ["SCR_HANDLE_CLASSES", "SCR_WEB_BODIES"],
+    });
+    variants.push({
+      id: "handle-classes-web-bodies-formdata",
+      when: { webStreams: true, webBodies: true, formData: true },
+      defines: ["SCR_HANDLE_CLASSES", "SCR_WEB_BODIES", "SCR_FORMDATA_BODY"],
     });
   }
   // instanceof over both web stream and Node island handles.

@@ -1,5 +1,5 @@
 /* The dynamic global object's answer for the Node globals the native runtime
- * does not implement (WebSocket, FormData, the Performance family, …). Node
+ * does not implement (WebSocket, URLPattern, the Performance family, …). Node
  * HAS these values, so the native answer must not be a silent undefined: the
  * compiler derives the set from the Node ledger (host-globals.ts), hands it to
  * scr_global_host_absent.c, and a computed read of the global object or
@@ -68,12 +68,12 @@ console.log(scope[key]);
 test("a computed read of globalThis throws for a host global", async () => {
   const result = await runProgram(
     "computed-global",
-    `const key: string = "FormData";
+    `const key: string = "URLPattern";
 console.log(typeof (globalThis as any)[key]);
 `,
   );
   expect(result.exitCode).toBe(1);
-  expect(result.stderr).toContain(`TypeError: ${missing("FormData")}`);
+  expect(result.stderr).toContain(`TypeError: ${missing("URLPattern")}`);
 });
 
 test("'X' in globalThis throws for a host global", async () => {
@@ -120,11 +120,11 @@ test("a static host-global spelling through the cast alias is the global read", 
     "static-alias",
     `const s = globalThis as Record<string, unknown>;
 console.log(typeof s.WebSocket, (s.WebSocket as any).name);
-console.log(typeof s["FormData"], (s["FormData"] as any).name);
+console.log(typeof s["URLPattern"], (s["URLPattern"] as any).name);
 `,
   );
   expect(result.exitCode).toBe(0);
-  expect(result.stdout).toBe(["function WebSocket", "function FormData", ""].join("\n"));
+  expect(result.stdout).toBe(["function WebSocket", "function URLPattern", ""].join("\n"));
 });
 
 test("a computed read through a cast alias reaches the global name table", async () => {

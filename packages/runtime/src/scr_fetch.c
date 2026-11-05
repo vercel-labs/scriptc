@@ -236,6 +236,12 @@ struct SfResponse {
   /* The body's byte length (string or Uint8Array), -1 for a null body,
    * -2 for a stream. */
   double light_length;
+#ifdef SCR_FORMDATA_BODY
+  /* The body's byte length when the constructor buffered it (a string,
+   * bytes, Blob, File or FormData body), -1 for a null or stream body.
+   * Fetch dispatches a buffered Request body with this content-length. */
+  double body_length;
+#endif
   ScrArr *light_record;
 };
 
@@ -310,6 +316,19 @@ static bool sf_blob_body(const ScrDyn *body, ScrBytes **bytes, ScrStr **type) {
     return false;
   return scr_blob_body_info(body, bytes, type);
 }
+
+#ifdef SCR_FORMDATA_BODY
+/* extractBody's FormData arm: undici's multipart/form-data encoding of the
+ * entry list, whose boundary is the body's content type. Both outputs are
+ * +1; the caller releases them. */
+static bool sf_formdata_body(const ScrDyn *body, ScrBytes **bytes, ScrStr **type) {
+  if (!body || body->kind != SCR_DYN_HANDLE ||
+      body->v.handle.tag != SCR_DYNH_FORM_DATA)
+    return false;
+  return scr_formdata_multipart(body, bytes, type);
+}
+#endif
+
 #endif
 
 static void sf_not_function(const char *what) {
@@ -6580,6 +6599,10 @@ static ScrDyn *sf_response_construct(ScrDyn *body, ScrDyn *init,
   bool null_body = !json_body &&
       (!body || body->kind == SCR_DYN_UNDEF || body->kind == SCR_DYN_NULL);
   bool text_body = false;
+#ifdef SCR_FORMDATA_BODY
+  /* The body became bytes the stream was filled from (not a stream body). */
+  bool buffered_body = false;
+#endif
 #ifdef SCR_WEB_BODIES
   ScrStr *web_type = NULL;
 #endif
@@ -6609,6 +6632,12 @@ static ScrDyn *sf_response_construct(ScrDyn *body, ScrDyn *init,
    * disturbed state belongs to the later body-extraction phase. */
   if (!null_body && !json_body && !sf_is_stream_body(body)) {
 #ifdef SCR_WEB_BODIES
+#ifdef SCR_FORMDATA_BODY
+    if (sf_formdata_body(body, &body_bytes, &web_type)) {
+      /* extractBody's FormData arm: the multipart bytes are the body and
+       * their boundary is the content type. */
+    } else
+#endif
     if (sf_blob_body(body, &body_bytes, &web_type)) {
       /* extractBody: the blob's bytes are the body, its type applies below. */
     } else
@@ -6700,6 +6729,9 @@ static ScrDyn *sf_response_construct(ScrDyn *body, ScrDyn *init,
     scr_dyn_release(serialized);
     stream = sf_stream_new_native();
     light_length_bytes = body_bytes->len;
+#ifdef SCR_FORMDATA_BODY
+    buffered_body = true;
+#endif
     sf_stream_enqueue_bytes(stream, body_bytes);
     sf_stream_close(stream);
     scr_bytes_release(body_bytes);
@@ -6731,6 +6763,9 @@ static ScrDyn *sf_response_construct(ScrDyn *body, ScrDyn *init,
   } else {
     stream = sf_stream_new_native();
     light_length_bytes = body_bytes->len;
+#ifdef SCR_FORMDATA_BODY
+    buffered_body = true;
+#endif
     sf_stream_enqueue_bytes(stream, body_bytes);
     sf_stream_close(stream);
     scr_bytes_release(body_bytes);
@@ -6807,6 +6842,10 @@ static ScrDyn *sf_response_construct(ScrDyn *body, ScrDyn *init,
       null_body ? -1.0
       : (!json_body && body->kind == SCR_DYN_HANDLE) ? -2.0
       : (double)light_length_bytes;
+#ifdef SCR_FORMDATA_BODY
+  response->body_length =
+      buffered_body ? (double)light_length_bytes : -1.0;
+#endif
   ScrDyn *out =
       scr_dyn_new_handle(response, SCR_DYNH_FETCH_RESPONSE);
   sf_response_release(response);
@@ -7002,6 +7041,14 @@ ScrDyn *scr_fetch_request_new(ScrDyn *input, ScrDyn *init) {
   ScrDyn *payload = scr_fetch_response_new(body, payload_init);
   scr_dyn_release(payload_init); scr_dyn_release(body);
   if (!payload) { scr_str_release(method_text); scr_url_release(url); return NULL; }
+  /* A body copied from `source` arrives here as a stream over the source's
+   * bytes, so the copy keeps the source's known byte length: fetch
+   * dispatches it with undici's content-length, not chunked. */
+#ifdef SCR_FORMDATA_BODY
+  if (!supplied && source)
+    ((SfResponse *)payload->v.handle.ptr)->body_length =
+        source->payload->body_length;
+#endif
   ScrDyn *signal = sf_response_init_get(init, "signal", 6);
   if ((!signal || signal->kind == SCR_DYN_UNDEF) && source) { scr_dyn_release(signal); signal = scr_dyn_new_handle(source->signal, SCR_DYNH_ABORT_SIGNAL); }
   SfSignal *following = NULL;
@@ -7024,6 +7071,40 @@ ScrDyn *scr_fetch_request_new(ScrDyn *input, ScrDyn *init) {
   ScrDyn *result = scr_dyn_new_handle(r, SCR_DYNH_FETCH_REQUEST); sf_request_release_v(r); return result;
 }
 
+#ifdef SCR_FORMDATA_BODY
+/* undici dispatches a Request whose body is buffered with the content-length
+ * it computes from those bytes; a stream body stays chunked. The Request's
+ * own headers never gain the entry, so the copy the transfer sees carries
+ * it. */
+static ScrDyn *sf_request_dispatch_headers(const SfResponse *payload) {
+  ScrDyn *out = scr_dyn_new_arr();
+  ScrArr *pairs = payload->headers->pairs;
+  size_t n = (size_t)scr_arr_len(pairs);
+  bool have_length = false;
+  for (size_t i = 0; i + 1 < n; i += 2) {
+    ScrStr *name = sf_pair_at(pairs, i);
+    if (sf_eq_ci(name, "content-length")) have_length = true;
+    ScrDyn *pair = scr_dyn_new_arr();
+    scr_dyn_arr_push(pair, scr_dyn_new_str(name));
+    scr_dyn_arr_push(pair, scr_dyn_new_str(sf_pair_at(pairs, i + 1)));
+    scr_dyn_arr_push(out, pair);
+  }
+  if (payload->body_length >= 0 && !have_length) {
+    char text[32];
+    snprintf(text, sizeof text, "%.0f", payload->body_length);
+    ScrStr *name = scr_str_new("content-length", 14);
+    ScrStr *value = scr_str_new(text, strlen(text));
+    ScrDyn *pair = scr_dyn_new_arr();
+    scr_dyn_arr_push(pair, scr_dyn_new_str(name));
+    scr_dyn_arr_push(pair, scr_dyn_new_str(value));
+    scr_str_release(name);
+    scr_str_release(value);
+    scr_dyn_arr_push(out, pair);
+  }
+  return out;
+}
+#endif
+
 ScrPromise *scr_fetch_input(ScrDyn *input, ScrDyn *init) {
   if (init && init->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(init);
@@ -7038,7 +7119,15 @@ ScrPromise *scr_fetch_input(ScrDyn *input, ScrDyn *init) {
     SfRequest *r = converted->v.handle.ptr;
     ScrDyn *dictionary = scr_dyn_new_obj();
     scr_dyn_obj_set(dictionary, "method", 6, scr_dyn_new_str(r->method));
+#ifdef SCR_FORMDATA_BODY
+    scr_dyn_obj_set(dictionary, "headers", 7,
+                    r->payload->body_length >= 0
+                        ? sf_request_dispatch_headers(r->payload)
+                        : scr_dyn_new_handle(r->payload->headers,
+                                             SCR_DYNH_FETCH_HEADERS));
+#else
     scr_dyn_obj_set(dictionary, "headers", 7, scr_dyn_new_handle(r->payload->headers, SCR_DYNH_FETCH_HEADERS));
+#endif
     scr_dyn_obj_set(dictionary, "signal", 6, scr_dyn_new_handle(r->signal, SCR_DYNH_ABORT_SIGNAL));
     scr_dyn_obj_set(dictionary, "redirect", 8, scr_dyn_new_str(r->redirect));
     if (!r->payload->null_body) {
@@ -7203,6 +7292,13 @@ ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init) {
       scr_bytes_release(web_bytes);
       body = coerced_body;
     }
+#ifdef SCR_FORMDATA_BODY
+    else if (sf_formdata_body(body, &web_bytes, &web_type)) {
+      coerced_body = scr_dyn_new_bytes(web_bytes);
+      scr_bytes_release(web_bytes);
+      body = coerced_body;
+    }
+#endif
   }
 #endif
 #ifdef SCR_HANDLE_CLASSES

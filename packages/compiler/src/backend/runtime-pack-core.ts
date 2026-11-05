@@ -106,7 +106,11 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   mime: boolean;
   largePages: boolean;
   webStreams: boolean;
+  /** A Blob, File or FormData request body (scr_fetch.c's web-bodies
+   * build). */
   webBodies: boolean;
+  /** WHATWG FormData (scr_formdata.c). */
+  formData?: boolean;
   abortSignal: boolean;
   utilTiming: boolean;
   dynBuffer: boolean;

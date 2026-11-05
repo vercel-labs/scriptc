@@ -54,6 +54,7 @@
 #include "scr_json.h"
 #include "scr_event_target.h"
 #include "scr_blob.h"
+#include "scr_formdata.h"
 #include "scr_object.h"
 #include "scr_region.h"
 #include "scr_arena.h"

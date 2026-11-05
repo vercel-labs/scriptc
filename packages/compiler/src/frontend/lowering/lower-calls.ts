@@ -5188,6 +5188,7 @@ const DYN_DISPATCH_METHODS = new Set([
   "append",
   "delete",
   "get",
+  "getAll",
   "getSetCookie",
   "has",
   "set",

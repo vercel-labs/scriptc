@@ -871,8 +871,17 @@ static bool scr_sa_window_reserve(void) {
       while (size >= SCR_SA_WINDOW_MIN && !(p = scr_sa_map_at((void *)start, size))) size /= 2;
     }
 #elif defined(SCR_COMPACT_REFS)
+    /* The window starts one chunk past the base, which stays inaccessible:
+     * an object at offset 0 would encode as 0, the NULL reference (Linux's
+     * window starts at 4 GiB, so its references are never 0). */
     size = SCR_SA_WINDOW_WANT;
-    while (size >= SCR_SA_WINDOW_MIN && !(p = scr_sa_map_at((void *)(uintptr_t)SCR_WINDOW_BASE, size))) size /= 2;
+    while (size >= SCR_SA_WINDOW_MIN &&
+           !(p = scr_sa_map_at((void *)(uintptr_t)SCR_WINDOW_BASE, size + SCR_SA_CHUNK)))
+      size /= 2;
+    if (p) {
+      (void)mprotect(p, SCR_SA_CHUNK, PROT_NONE);
+      p += SCR_SA_CHUNK;
+    }
 #endif
     if (!p)
       for (size = SCR_SA_WINDOW_WANT; size >= SCR_SA_WINDOW_MIN && !(p = scr_sa_map(size));) size /= 2;

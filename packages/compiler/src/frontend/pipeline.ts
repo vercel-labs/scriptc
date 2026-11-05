@@ -14,7 +14,7 @@ import {
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import type { IrModule } from "../ir/ir.js";
 import type { SrcLoc } from "../ir/ir.js";
-import type { NpmStaticStatus } from "../coverage/report.js";
+import type { NpmStaticStatus } from "./npm-static-status.js";
 import { entryExportFacts, type EntryExport } from "./lib-exports.js";
 import { entryContractFacts, type ContractFacts } from "./lib-contract.js";
 import {

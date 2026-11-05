@@ -56,7 +56,7 @@ import {
   TLS_SERVER_DOCUMENTED_OPTIONS,
 } from "./surfaces.js";
 import { conditionalSpreadOf, lowerDynObjectLiteral } from "./expressions/object-literals.js";
-import { islandOwnedBinding } from "./lower-node-island.js";
+import { islandOwnedBinding, islandOwnedValue } from "./lower-node-island.js";
 import { resultIsDiscarded } from "./call-position.js";
 import { lowerCallbackArg as lowerCallbackArgShared } from "./callback-arg.js";
 import { pairsSnapshotHelper } from "./pairs-snapshot.js";
@@ -388,7 +388,11 @@ function coerceToHandle(lowerer: Lowerer, node: ts.Expression, want: IrType): Ir
  * argument conversions honour Node's shapes (writeHead's header object,
  * setHeader's name and value), which the generic dispatch cannot. Only a
  * value the island produced needs the run-time route, and
- * islandOwnedBinding names exactly those bindings. */
+ * islandOwnedBinding names exactly those bindings.
+ *
+ * A receiver no binding names — `httpServer(() => {}).address()`, the
+ * factory's result used in place — is the island's server just the same,
+ * so the expression form of the same rule decides. */
 function dynStoredReceiver(lowerer: Lowerer, node: ts.Expression): boolean {
   let e: ts.Expression = node;
   while (
@@ -398,7 +402,7 @@ function dynStoredReceiver(lowerer: Lowerer, node: ts.Expression): boolean {
     ts.isSatisfiesExpression(e)
   )
     e = e.expression;
-  if (!ts.isIdentifier(e)) return false;
+  if (!ts.isIdentifier(e)) return islandOwnedValue(lowerer, e);
   const stored = lowerer.peekLocal(e)?.type ?? lowerer.globalOf(e)?.type;
   if (stored === undefined || stored.kind !== "dyn") return false;
   const symbol = lowerer.resolveValueSymbol(e) ?? lowerer.checker.getSymbolAtLocation(e);

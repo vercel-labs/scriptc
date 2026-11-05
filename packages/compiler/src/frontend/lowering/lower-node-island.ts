@@ -1091,6 +1091,35 @@ function dynDispatchedValue(lowerer: Lowerer, node: ts.Expression): boolean {
   return dispatches(callee);
 }
 
+/** Whether a value of TypeScript type `tsType` reached through dynamic
+ * dispatch crosses as a handle: the decision fromIsland makes at the
+ * boundary, so the holder keeps what the crossing produces. A copied value
+ * or a record the program declares becomes the native value it converts
+ * to, a promise keeps its own lowering (which adopts the island's
+ * thenable), and every other value is the handle. `containerBinding` names
+ * the binding whose island array, tuple, Map or Set already crossed as a
+ * handle, when a binding names the value at all. */
+function crossesAsHandle(
+  lowerer: Lowerer,
+  tsType: ts.Type,
+  containerBinding: ts.Identifier | null,
+): boolean {
+  const mapped = lowerer.mapTypeOf(tsType);
+  if (mapped === null || mapped.kind === "dyn" || mapped.kind === "void") return false;
+  if (mapped.kind === "promise") return false;
+  if (callableType(lowerer, tsType)) return true;
+  if (copiedType(lowerer, mapped)) return false;
+  if (DYN_HANDLE_KINDS.has(mapped.kind)) return true;
+  if (copyableArrayType(lowerer, mapped)) return false;
+  if (
+    containerType(lowerer, tsType) &&
+    containerBinding !== null &&
+    islandHandleBinding(lowerer, containerBinding)
+  )
+    return true;
+  return !programRecordType(tsType);
+}
+
 /** Whether a binding holds a value the island owns. The boundary copies
  * primitives, strings and bytes; every other island value crosses as a
  * handle, and a handle is what native code can use — no native server,
@@ -1109,19 +1138,26 @@ export function islandOwnedBinding(lowerer: Lowerer, decl: ts.VariableDeclaratio
   if (lowerer.nodeIslands === null) return false;
   if (!ts.isIdentifier(decl.name) || decl.initializer === undefined) return false;
   if (!dynDispatchedValue(lowerer, decl.initializer)) return false;
-  // The same decision fromIsland makes at the crossing, so the binding holds
-  // what the crossing produces: a copied value or a program record becomes
-  // the native value, and every other non-promise value is the handle.
-  const tsType = lowerer.typeOf(decl.name);
+  return crossesAsHandle(lowerer, lowerer.typeOf(decl.name), decl.name);
+}
+
+/** Whether an expression evaluates to a value the island owns, for a
+ * receiver no binding names — `httpServer(() => {}).address()` calls the
+ * member straight on the factory's result, which is the island's server
+ * all the same, so the member surface must dispatch through it instead of
+ * taking the native server path. Only the handle kinds are claimed: an
+ * expression has no binding whose crossing was decided earlier, and the
+ * remaining shapes reach the same run-time dispatch by their own routes. */
+export function islandOwnedValue(lowerer: Lowerer, node: ts.Expression): boolean {
+  if (lowerer.nodeIslands === null) return false;
+  if (!dynDispatchedValue(lowerer, node)) return false;
+  const tsType = lowerer.typeOf(stripTypeWrappers(node));
   const mapped = lowerer.mapTypeOf(tsType);
   if (mapped === null || mapped.kind === "dyn" || mapped.kind === "void") return false;
   if (mapped.kind === "promise") return false;
   if (callableType(lowerer, tsType)) return true;
   if (copiedType(lowerer, mapped)) return false;
-  if (DYN_HANDLE_KINDS.has(mapped.kind)) return true;
-  if (copyableArrayType(lowerer, mapped)) return false;
-  if (containerType(lowerer, tsType) && islandHandleBinding(lowerer, decl.name)) return true;
-  return !programRecordType(tsType);
+  return DYN_HANDLE_KINDS.has(mapped.kind);
 }
 
 /** `a === b` / `a !== b` where both sides are island values and one is

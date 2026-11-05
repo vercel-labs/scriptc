@@ -78,6 +78,9 @@ export interface NativeLinkFeatures {
   /** A module namespace boxed for typed code links
    * scr_module_namespace_dyn.c; absent (false) otherwise. */
   moduleNamespaceDyn?: boolean;
+  /** A CommonJS module's exports object as a value links
+   * scr_cjs_exports.c; absent (false) otherwise. */
+  cjsExports?: boolean;
   /** Primitive wrapper objects link scr_js_wrapper.c; absent (false)
    * otherwise. */
   primitiveWrapper?: boolean;

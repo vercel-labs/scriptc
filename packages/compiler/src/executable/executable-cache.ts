@@ -84,6 +84,8 @@ export interface EarlyExecutableNativeFeatures {
   nodeIsland?: boolean;
   moduleNamespace?: boolean;
   moduleNamespaceDyn?: boolean;
+  /** A CommonJS module's exports object as a value: scr_cjs_exports.c. */
+  cjsExports?: boolean;
   primitiveWrapper?: boolean;
   iteratorProto?: boolean;
   zlib: boolean;

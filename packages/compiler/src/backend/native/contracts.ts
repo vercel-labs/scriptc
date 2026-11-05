@@ -255,6 +255,9 @@ export interface CcOptions {
   /** A module namespace boxed for typed code: compiles
    * scr_module_namespace_dyn.c. */
   moduleNamespaceDyn?: boolean;
+  /** A CommonJS module's exports object as a value: compiles
+   * scr_cjs_exports.c. */
+  cjsExports?: boolean;
   /** Primitive wrapper objects: compiles scr_js_wrapper.c. */
   primitiveWrapper?: boolean;
   /** %Iterator% and %Iterator.prototype%: compiles scr_js_iterator.c. */

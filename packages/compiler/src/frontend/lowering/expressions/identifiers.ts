@@ -34,6 +34,7 @@ import {
 } from "../../../ir/ir.js";
 import { lowerNodeModuleIdentifier } from "../lower-node-module.js";
 import { lowerCjsExportsObjectValue } from "../cjs-exports-object.js";
+import { lowerCjsExportsValue } from "../cjs-exports-value.js";
 import {
   splitRequireBindingOfIdent,
   wholeExportSymbolOfModule,
@@ -779,6 +780,13 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     return { kind: "moduleNsRef", moduleId: type.moduleId, type, loc };
   }
   if (lowerer.cjsLocalModuleBindingOf(expr)) {
+    // The module's exports object as a value: the runtime's plain object
+    // over the export table (`exports.CST = require("./cst.cjs")`).
+    const dep = ts.isIdentifier(expr)
+      ? lowerer.cjsModuleBindingDepOf(expr)
+      : lowerer.cjsModuleRefDepOf(expr);
+    const exportsObject = dep === null ? null : lowerCjsExportsValue(lowerer, dep, loc);
+    if (exportsObject) return exportsObject;
     lowerer.unsupported(
       "SC1090",
       expr,

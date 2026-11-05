@@ -3990,6 +3990,11 @@ function buildLibFnSignatures() {
      * names, the compiled getter, and the Symbol.toStringTag key. Draws
      * Node's frozen null-prototype object, one per module. Never throws. */
     "module.namespaceDyn": { argTypes: [STRING, arrayOf(STRING), DYN, DYN], result: DYN },
+    /** A CommonJS module's exports object as a checked-dynamic value
+     * (scr_cjs_exports_value): the module id, its export names in assignment
+     * order, and the compiled getter. One plain object per module. Never
+     * throws; assignment through the object refuses at run time. */
+    "module.cjsExports": { argTypes: [STRING, arrayOf(STRING), DYN], result: DYN },
     /** A primitive wrapper object (scr_js_wrapper_new): the kind
      * (0 String, 1 Number, 2 Boolean), the value it converts, and the three
      * constructor values for the prototypes' `constructor`. */

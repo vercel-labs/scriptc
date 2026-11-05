@@ -329,6 +329,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "process.builtinUnsupported": "scr_process_builtin_unsupported",
   "module.namespaceValue": "scr_module_namespace_value",
   "module.namespaceDyn": "scr_module_namespace_dyn_value",
+  "module.cjsExports": "scr_cjs_exports_value",
   "wrapper.new": "scr_js_wrapper_new",
   "iterator.prototype": "scr_js_iterator_prototype",
   "iterator.constructor": "scr_js_iterator_constructor",

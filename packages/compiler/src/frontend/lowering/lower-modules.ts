@@ -1657,6 +1657,14 @@ export function collectGlobals(
             const shape = lowerer.shapes.get(t.shapeId);
             if (shape && shape.fields.length === 0 && !shape.indexValue && !shape.tuple) t = DYN;
           }
+          // `exports.ns = require("./m.cjs")`: the value is the re-exported
+          // module's exports OBJECT — one object per module, read live —
+          // not a record copy of the members its type names.
+          {
+            let rhs: ts.Node = typeNode;
+            while (ts.isParenthesizedExpression(rhs)) rhs = rhs.expression;
+            if (lowerer.cjsLocalModuleBindingOf(rhs as ts.Expression)) t = DYN;
+          }
           // An immutable export source shares its live storage and native
           // callable ABI. Mutable sources need a separate snapshot slot:
           // later writes to the binding do not change the exported value.

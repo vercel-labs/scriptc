@@ -46,6 +46,11 @@ ScrDyn *scr_module_namespace_value(ScrStr *id, ScrArr *keys, ScrDyn *getter);
  * (the well-known symbol is `tag_key`), and Node's strict-mode write
  * TypeErrors. Borrows all four; +1 object. */
 ScrDyn *scr_module_namespace_dyn_value(ScrStr *id, ScrArr *keys, ScrDyn *getter, ScrDyn *tag_key);
+/* A CommonJS module's exports object as a value (scr_cjs_exports.c): one
+ * plain extensible object per module `id`, `keys` as own enumerable
+ * accessors in that order whose getters call `getter` with the name, and a
+ * named refusal on assignment. Borrows all three; +1 object. */
+ScrDyn *scr_cjs_exports_value(ScrStr *id, ScrArr *keys, ScrDyn *getter);
 ScrDyn *scr_global_native(ScrArr *known);
 ScrDyn *scr_global_native_init(ScrArr *known, ScrDyn *(*console_get)(void));
 ScrDyn *scr_console_native(void);

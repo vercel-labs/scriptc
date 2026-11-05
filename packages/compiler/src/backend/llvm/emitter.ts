@@ -1877,6 +1877,12 @@ export class LlEmitter {
   get usesDynBuiltinStream(): boolean {
     return this.runtimeFeatures.dynBuiltinStream;
   }
+  /** The program links Node islands (IrModule.nodeIsland): a value an
+   * island made is a handle whose members live in Node, which the checked
+   * conversions read through. */
+  get nodeIslands(): boolean {
+    return this.mod.nodeIsland !== undefined;
+  }
   /** A checked-dynamic for-await may hold a native stream: the program
    * links the stream unit (and the dyn-async one the loop needs). */
   get dynForAwaitStreams(): boolean {
@@ -2676,6 +2682,7 @@ export class LlEmitter {
       absentInstanceRef: (unionId) => this.absentInstanceRef(unionId),
       liveDynRefAdapter: (type) => this.liveDynRefAdapter(type),
       usesDynBuiltinStream: () => this.usesDynBuiltinStream,
+      nodeIslands: () => this.nodeIslands,
       jsObjectModel: () => jsObjectModelFact(this.runtimeFeatures),
       liveDynUnionRefAdapter: (type) => this.liveDynUnionRefAdapter(type),
       declBoundary: () => this.mod.declBoundary === true,

@@ -155,6 +155,14 @@ Options:
                      construct without a static lowering a compile error, so
                      the program has no dynamic-tier demotions. Both modes
                      currently compile identically
+      --coverage <full|reached>
+                     coverage only: what the report covers (default: full).
+                     reached skips the pass over code the entry path does
+                     not reach: the report has no "in unreached code"
+                     group, and its statement totals count reached
+                     statements only, so it is not comparable with a full
+                     report. Analyze large programs per entrypoint with it
+                     when the whole-program report runs out of memory
       --explain-dynamic[=<name>]
                      coverage only: list the functions that operate on dynamic
                      values and the bindings, fields, functions, classes and
@@ -225,6 +233,7 @@ export const CLI_OPTIONS = {
   "provenance-sources": { type: "boolean", default: false },
   "external-types": { type: "string", multiple: true },
   tier: { type: "string" },
+  coverage: { type: "string" },
   "explain-dynamic": { type: "string" },
   "dynamic-tier-warning": { type: "boolean", default: true },
   wasm: { type: "string", multiple: true },

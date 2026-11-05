@@ -58,6 +58,10 @@ export interface CoverageInput {
    * lowered in a throwaway analysis pass. Its blockers cannot fail a
    * build — the report shows them as a secondary, dimmed group. */
   unreached?: { stats: LowerStats; diagnostics: ScrDiagnostic[]; runtimeFences?: ScrDiagnostic[] };
+  /** `--coverage=reached`: the unreached remainder was not analyzed at
+   * all. The report says so, because its totals describe the entry path
+   * only and are not comparable with a whole-program report. */
+  reachedOnly?: boolean;
   /** Compile-time-detectable behavior differences from Node (SC6xxx):
    * the program compiles, but these sites can behave differently natively.
    * Never blockers; `--fail-on=divergences` opts into failing on them. */
@@ -229,6 +233,12 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
   const pct = total === 0 ? 100 : Math.floor((ok / total) * 100);
   const pctColor = pct === 100 ? GREEN : pct >= 75 ? YELLOW : RED;
 
+  if (input.reachedOnly === true) {
+    out.push(
+      `  ${c(DIM, "(--coverage=reached: unreached code was not analyzed; these totals cover the entry path only)")}`,
+    );
+    out.push("");
+  }
   out.push(`  statements analyzed   ${total}`);
   out.push(`  compile statically    ${ok}  ${c(pctColor, c(BOLD, `(${pct}%)`))}`);
   const dynamic = dynamicStatements(input);
@@ -552,6 +562,10 @@ export const COVERAGE_FAIL_ON: readonly CoverageFailOn[] = [
   "eager-node-islands",
   "island-gaps",
 ];
+
+/** `--coverage=<mode>`: full covers the unreached remainder too; reached
+ * analyzes the entry path only. */
+export const COVERAGE_MODES = ["full", "reached"] as const;
 
 /** Whether the analysis passes the selected gate. Preflight failures
  * always fail; `failOn` undefined means only preflight fails (the report's

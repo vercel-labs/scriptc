@@ -6,6 +6,7 @@ import { isExactExternalTypeSpecifier } from "../frontend/program.js";
 import { renderDiagnostics } from "../diagnostics/render.js";
 import {
   COVERAGE_FAIL_ON,
+  COVERAGE_MODES,
   coverageEnvelope,
   coveragePasses,
   renderCoverage,
@@ -401,9 +402,22 @@ async function main(args: string[], host: CliHost): Promise<number> {
     fail(`unknown --tier value "${tierRaw}" (supported: ${TIER_MODES.join(", ")})\n\n${USAGE}`);
   }
   const tier = tierRaw as TierMode | undefined;
+  const coverageRaw = values.coverage;
+  if (coverageRaw !== undefined && !(COVERAGE_MODES as readonly string[]).includes(coverageRaw)) {
+    fail(
+      `unknown --coverage value "${coverageRaw}" (supported: ${COVERAGE_MODES.join(", ")})\n\n${USAGE}`,
+    );
+  }
+  const coverageReached = coverageRaw === "reached";
+  if (coverageRaw !== undefined && command !== "coverage") {
+    fail(`--coverage is a coverage option\n\n${USAGE}`);
+  }
   const explainDynamic = values["explain-dynamic"];
   if (explainDynamic !== undefined && command !== "coverage") {
     fail(`--explain-dynamic is a coverage option\n\n${USAGE}`);
+  }
+  if (coverageReached && explainDynamic !== undefined) {
+    fail(`--coverage=reached and --explain-dynamic contradict each other\n\n${USAGE}`);
   }
   const explainIsland = values["explain-island"];
   if (explainIsland !== undefined && command !== "coverage") {
@@ -594,6 +608,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
       ...(explainDynamic !== undefined ? { explainDynamic: true } : {}),
       ...(wasmFiles.length > 0 ? { wasm: wasmFiles } : {}),
       ...(nodeIslands !== undefined ? { nodeIslands } : {}),
+      ...(coverageReached ? { coverageReached: true } : {}),
     });
     if (!dynamicTierWarning) delete coverage.performance;
     if (printDiagnostics) {

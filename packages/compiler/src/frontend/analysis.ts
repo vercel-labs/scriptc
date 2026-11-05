@@ -173,7 +173,11 @@ export function analyzeWithFrontend(
     const lowerWith = (islands: NodeIslandSet | null): LowerResult => {
       const islandsActive = islands !== null && islands.packages.size > 0;
       return lowerFrontend(islands).lower({
+        // --coverage=reached skips the unreached remainder: the report covers
+        // the entry path only, and a large program never pays the
+        // whole-program analysis the default mode lowers on top.
         coverage: true,
+        coverageReached: opts.coverageReached === true,
         targetPlatform: buildPlatform,
         ...(islandsActive ? { nodeIslands: islands } : {}),
         ...(ffi !== null ? { ffiImports: ffi.functions } : {}),
@@ -291,6 +295,7 @@ export function analyzeWithFrontend(
         ...(lowered.performance !== undefined ? { performance: lowered.performance } : {}),
         ...(lowered.dynamicSlots !== undefined ? { dynamicSlots: lowered.dynamicSlots } : {}),
         ...(lowered.unreached ? { unreached: lowered.unreached } : {}),
+        ...(opts.coverageReached === true ? { reachedOnly: true } : {}),
         ...(fe.npmStatic.length > 0 ? { npmStatic: fe.npmStatic } : {}),
         // --provenance-sources: the per-package attribution inputs (the
         // report aggregates statsByFile under each package's source dir).

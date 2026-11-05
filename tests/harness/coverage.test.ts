@@ -45,6 +45,27 @@ test("unreached blockers report in their own group", async () => {
   );
 });
 
+test("reached-only coverage skips the unreached remainder", () => {
+  // The same program, analyzed without the pass over the code the entry
+  // path never reaches: the reached diagnostics are the full mode's, the
+  // unreached group is gone, and the totals count reached statements only.
+  const full = analyze(fixture("unreached.ts")).coverage;
+  const reached = analyze(fixture("unreached.ts"), { coverageReached: true }).coverage;
+  expect(full.unreached?.diagnostics.length).toBeGreaterThan(0);
+  expect(reached.unreached).toBeUndefined();
+  expect(reached.reachedOnly).toBe(true);
+  expect(reached.diagnostics).toEqual(full.diagnostics);
+  expect(reached.stats.statementsTotal).toBe(full.stats.statementsTotal);
+  expect(reached.stats.statementsTotal).toBeLessThan(
+    full.stats.statementsTotal + (full.unreached?.stats.statementsTotal ?? 0),
+  );
+  // The report says what it did not analyze, so a reached verdict is not
+  // read as a whole-program one.
+  const text = renderCoverage(reached, { root: repoRoot });
+  expect(text).toContain("unreached code was not analyzed");
+  expect(text).not.toContain("in unreached code");
+});
+
 test("WebAssembly modules the build can see report with their sources", async () => {
   // A resolved path, a resolved .so shared library and an inline literal
   // (glue.js), a packaged .wasm (wasm-fixture-pkg), and package.json's
@@ -334,6 +355,45 @@ test("CLI: --print=diagnostics and --fail-on set the output and exit status", ()
   const bad = run(fixture("mixed.ts"), "--fail-on=everything");
   expect(bad.status).toBe(1);
   expect(bad.stderr).toContain('unknown --fail-on value "everything"');
+  // --coverage=reached: no unreached group, and the reached part matches the
+  // default mode's totals.
+  const reachedFull = run(fixture("unreached.ts"));
+  expect(reachedFull.stdout).toContain("in unreached code");
+  const reached = run(fixture("unreached.ts"), "--coverage=reached");
+  expect(reached.status).toBe(0);
+  expect(reached.stdout).toContain("unreached code was not analyzed");
+  expect(reached.stdout).not.toContain("in unreached code");
+  const defaultTotal = Number(reachedFull.stdout.match(/statements analyzed\s+(\d+)/)?.[1]);
+  const reachedTotal = Number(reached.stdout.match(/statements analyzed\s+(\d+)/)?.[1]);
+  expect(reachedTotal).toBeGreaterThan(0);
+  expect(reachedTotal).toBeLessThan(defaultTotal);
+  const reachedJson = run(fixture("unreached.ts"), "--coverage=reached", "--print=diagnostics");
+  const reachedEnvelope = JSON.parse(reachedJson.stdout) as { groups: { scope: string }[] };
+  expect(reachedEnvelope.groups.some((g) => g.scope === "unreached")).toBe(false);
+  // Invalid combinations fail the way the other flag checks do.
+  const withExplain = run(fixture("unreached.ts"), "--coverage=reached", "--explain-dynamic");
+  expect(withExplain.status).toBe(1);
+  expect(withExplain.stderr).toContain(
+    "--coverage=reached and --explain-dynamic contradict each other",
+  );
+  const unknownMode = run(fixture("unreached.ts"), "--coverage=sometimes");
+  expect(unknownMode.status).toBe(1);
+  expect(unknownMode.stderr).toContain('unknown --coverage value "sometimes"');
+  const onBuild = spawnSync(
+    process.execPath,
+    [
+      "--import",
+      "tsx",
+      scriptcCli,
+      "build",
+      fixture("mixed.ts"),
+      "--emit=ir",
+      "--coverage=reached",
+    ],
+    { cwd: repoRoot, encoding: "utf8", env: { ...process.env, SCRIPTC_NO_CACHE: "1" } },
+  );
+  expect(onBuild.status).toBe(1);
+  expect(onBuild.stderr).toContain("--coverage is a coverage option");
 });
 
 test("CLI: build --print=diagnostics reports failures and divergence warnings as JSON", () => {

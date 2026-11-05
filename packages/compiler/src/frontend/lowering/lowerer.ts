@@ -1027,6 +1027,12 @@ export interface LowerOptions {
    * diagnostics and stats under `unreached` — the whole-program analysis
    * builds deliberately gave up. */
   coverage?: boolean;
+  /** Coverage, reached-only mode: skip the remainder pass entirely. The
+   * result carries no `unreached` group and its stats describe the entry
+   * path only. Large programs that cannot hold the whole-program analysis
+   * in memory set it. Mutually exclusive with `tierReport` — the tier
+   * report classifies unreached demotion requests. */
+  coverageReached?: boolean;
   /** Coverage only: module files named by --wasm (absolute). */
   wasmFiles?: readonly string[];
   /** The platform the build TARGETS ("win32" under a windows cross triple,
@@ -1188,6 +1194,10 @@ export interface LowererMode {
    * always-reachable init bodies and module building, and report deferred
    * collection diagnostics nothing flushed. */
   remainder?: boolean;
+  /** Coverage, reached-only mode: a blocked body the entry path reaches
+   * lowers for its diagnostics in this pass (blockedBodyDiagnostics),
+   * instead of in the remainder pass the mode skips. */
+  coverageReached?: boolean;
   /** Coverage (--explain-dynamic): keep the runtime-optional storage
    * decisions and the reads the checker narrows below the widened
    * storage, for the report (runtime-optional-report.ts). Report-only:
@@ -1396,6 +1406,7 @@ function lowerToIrWithIslands(
     options.externalTypeSpecifiersByFile ?? directExternalTypeSpecifiersByFile(externalTypes);
   const tierMode = options.tierMode ?? "auto";
   const runtimeOptionalReport = options.tierReport !== undefined;
+  const coverageReached = options.coverageReached === true && options.coverage === true;
   // One island round lowers the same program through several passes:
   // validation, reachable emit, the whole-slot comparison, the stream
   // relowers, historical order and the coverage remainder. They differ only
@@ -1407,6 +1418,7 @@ function lowerToIrWithIslands(
     facts,
     frontendServices: options.frontendServices,
     projectCheckJs: options.projectCheckJs ?? false,
+    ...(coverageReached ? { coverageReached: true } : {}),
     targetPlatform,
     startupCrash,
     admittedOpinions: options.admittedOpinions,
@@ -1435,6 +1447,7 @@ function lowerToIrWithIslands(
           facts,
           frontendServices: options.frontendServices,
           projectCheckJs: options.projectCheckJs ?? false,
+          ...(coverageReached ? { coverageReached: true } : {}),
           targetPlatform,
           startupCrash,
           admittedOpinions: options.admittedOpinions,
@@ -1468,6 +1481,7 @@ function lowerToIrWithIslands(
       facts,
       frontendServices: options.frontendServices,
       projectCheckJs: options.projectCheckJs ?? false,
+      ...(coverageReached ? { coverageReached: true } : {}),
       targetPlatform,
       startupCrash,
       admittedOpinions: options.admittedOpinions,
@@ -1507,6 +1521,7 @@ function lowerToIrWithIslands(
       facts,
       frontendServices: options.frontendServices,
       projectCheckJs: options.projectCheckJs ?? false,
+      ...(coverageReached ? { coverageReached: true } : {}),
       targetPlatform,
       startupCrash,
       admittedOpinions: options.admittedOpinions,
@@ -1553,6 +1568,7 @@ function lowerToIrWithIslands(
       facts,
       frontendServices: options.frontendServices,
       projectCheckJs: options.projectCheckJs ?? false,
+      ...(coverageReached ? { coverageReached: true } : {}),
       ...(generalNodeStreams ? { generalNodeStreams: true } : {}),
       ...(dynNodeStreams ? { dynNodeStreams: true } : {}),
       reachable,
@@ -1706,7 +1722,23 @@ function lowerToIrWithIslands(
     if (resultLowerer.usesWasmCustomSections) result.module.wasmCustomSections = true;
     timing("wasm-discovery", { modules: wasmModules.length });
   }
-  if (options.coverage !== true) return result;
+  if (options.coverage !== true || coverageReached) {
+    if (coverageReached) {
+      // Reached-only coverage still reports which reached statements sit in
+      // dynamic-tier functions, without the remainder's contribution. The
+      // emit pass collected the blocked bodies' diagnostics (see
+      // emitReachable), so nothing merges here. The tier report is not
+      // available: it classifies the unreached demotion requests the
+      // remainder pass computes.
+      const statementsDynamic = Math.min(
+        dynamicStatementCount(program, resultLowerer.dynamicBodies),
+        result.stats.statementsTotal - result.stats.statementsFailed,
+      );
+      timing("tier-analysis", { dynamic: resultLowerer.dynamicBodies.length });
+      return { ...result, stats: { ...result.stats, statementsDynamic } };
+    }
+    return result;
+  }
   const remainderPass = (general: boolean, dyn = dynNodeStreams): Lowerer =>
     new Lowerer(program, entry, moduleOrder, {
       facts,
@@ -4865,6 +4897,7 @@ export class Lowerer {
     "frontendServices",
     "nodeIslands",
     "remainder",
+    "coverageReached",
     "tierMode",
     "runtimeOptionalReport",
     "generalNodeStreams",
@@ -5438,6 +5471,7 @@ export class Lowerer {
   ) {
     // The mode's options, sorted by name; the values derived from them follow.
     this.alreadyFlushed = mode.alreadyFlushed ?? new Set();
+    this.coverageReached = mode.coverageReached ?? false;
     // Lenient forms are IR types of the other pass's shape tables: only the
     // whole-slot dynamic carries over as is.
     if (mode.degradedTypes)
@@ -10169,7 +10203,7 @@ export class Lowerer {
           this.skippedBodies.add(decl);
           if (this.countsSkips()) {
             this.countSkippedBody(decl);
-            if (this.remainder) this.reportBlockedBody(decl);
+            if (this.remainder || this.coverageReached) this.reportBlockedBody(decl);
           }
         }
       }
@@ -10609,6 +10643,9 @@ export class Lowerer {
    * reached (its signature's diagnostics flushed there) reports them with
    * the reached diagnostics; any other reports them as unreached. */
   readonly reachedBlockedBodyDiagnostics: ScrDiagnostic[] = [];
+  /** Coverage, reached-only mode: the body diagnostics collected here join
+   * the result's reached diagnostics (there is no remainder pass). */
+  readonly coverageReached: boolean;
   private reportBlockedBody(decl: ts.FunctionDeclaration): void {
     const diags = blockedBodyDiagnostics(this, decl);
     const symbol = declSymbolOf(this, decl);
@@ -11419,7 +11456,19 @@ export class Lowerer {
       files: parts.map((fp) => fp.sf),
     });
     this.reachableForArtifacts = reachable;
-    return { reachable, result: this.finishModule(functions, extraRoots !== undefined) };
+    const result = this.finishModule(functions, extraRoots !== undefined);
+    // Coverage, reached-only mode: report the body diagnostics of blocked
+    // functions the entry path reaches here — the remainder pass that
+    // reports them does not run.
+    if (this.coverageReached) {
+      for (const decl of this.skippedBodies) {
+        if (ts.isFunctionDeclaration(decl) && decl.body) this.reportBlockedBody(decl);
+      }
+      if (this.reachedBlockedBodyDiagnostics.length > 0) {
+        result.diagnostics = [...result.diagnostics, ...this.reachedBlockedBodyDiagnostics];
+      }
+    }
+    return { reachable, result };
   }
 
   /** What the steps before the worklist settled for a top-level

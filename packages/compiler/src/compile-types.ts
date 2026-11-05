@@ -263,6 +263,11 @@ export interface AnalyzeOptions {
   /** The Node island policy's command-line half (report-only: coverage
    * reports which packages and modules would run in a Node island). */
   nodeIslands?: NodeIslandOptions;
+  /** `--coverage=reached`: skip the unreached remainder — the report covers
+   * only what the entry path reaches, and its statement totals count reached
+   * statements only. Large programs whose whole-program analysis runs out of
+   * memory analyze per entrypoint with it. */
+  coverageReached?: boolean;
 }
 
 export interface AnalyzeResult {

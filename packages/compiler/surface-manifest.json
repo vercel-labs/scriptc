@@ -4453,7 +4453,7 @@
       "kind": "stdlib",
       "name": "RequestInit.body",
       "status": "static",
-      "note": "Node 24.22.1 / Undici 7.30.1; conversion: string, Uint8Array, ReadableStream, or null; differential evidence: fixture:static, fixture:static-stream, fixture:static-coercion"
+      "note": "Node 24.22.1 / Undici 7.30.1; conversion: string, Uint8Array, ReadableStream, Blob, File, or null; a FormData body is refused by name; differential evidence: fixture:static, fixture:static-stream, fixture:static-coercion, fixture:web-body"
     },
     {
       "id": "stdlib.fetch.request-init.cache",

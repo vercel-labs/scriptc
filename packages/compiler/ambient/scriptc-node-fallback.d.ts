@@ -1329,7 +1329,7 @@ interface ResponseInit {
 }
 declare var Response: {
   new (
-    body?: string | Uint8Array | ReadableStream<Uint8Array> | null,
+    body?: string | Uint8Array | ReadableStream<Uint8Array> | Blob | null,
     init?: ResponseInit,
   ): Response;
   readonly prototype: Response;
@@ -1403,7 +1403,7 @@ interface Request {
 interface RequestInit {
   method?: string;
   headers?: Headers | Record<string, string> | readonly (readonly [string, string])[];
-  body?: string | Uint8Array | ReadableStream<Uint8Array> | null;
+  body?: string | Uint8Array | ReadableStream<Uint8Array> | Blob | null;
   duplex?: "half";
   redirect?: "follow" | "error" | "manual";
   signal?: AbortSignal;

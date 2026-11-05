@@ -68,6 +68,16 @@ describe("runtime feature snapshots", () => {
     expect(moduleRuntimeFeatures(storage)).toMatchObject({ bigint: true, bigstats: false });
   });
 
+  test("selects the fetch unit's Blob/File body build only for programs that build one", () => {
+    const plain = module();
+    plain.functions[0]!.body.push(call("fetch.input"));
+    expect(moduleRuntimeFeatures(plain)).toMatchObject({ fetch: true, webBodies: false });
+
+    const blob = module();
+    blob.functions[0]!.body.push(call("blob.new"), call("fetch.input"));
+    expect(moduleRuntimeFeatures(blob)).toMatchObject({ fetch: true, webBodies: true });
+  });
+
   test("gates the call-time parameter bind unit on a barriered generator", () => {
     const mod = module();
     const generator = (bindAtCall: boolean): IrModule["functions"][number] => ({

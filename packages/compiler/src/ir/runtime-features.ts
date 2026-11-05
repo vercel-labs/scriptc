@@ -1502,6 +1502,11 @@ const RUNTIME_FEATURE_RULES = {
   mime: rule({ prefixes: ["mime."] }),
   /** Web streams in checked-dynamic code (scr_webstreams.c). */
   webStreams: rule({ prefixes: ["webstream."] }),
+  /** A program that builds a Blob or File can hand one to fetch: selects
+   * scr_fetch.c's SCR_WEB_BODIES build, which sends the blob's bytes and
+   * type as Node does. Every other program keeps the default fetch unit,
+   * byte for byte. */
+  webBodies: rule({ prefixes: ["blob."] }),
   /** AbortController and AbortSignal (scr_abort.c, or the fetch unit).
    * A WritableStream controller's signal is one (scr_webstreams.c). */
   abortSignal: rule({ prefixes: ["abort.", "webstream."] }),
@@ -1905,6 +1910,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     mutableBuffers: false,
     legacyTextDecoder: false,
     mime: false,
+    webBodies: false,
     webStreams: false,
     abortSignal: false,
     utilTiming: false,

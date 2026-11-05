@@ -1,3 +1,4 @@
+import { callableMemberFieldTarget } from "../callable-properties.js";
 import { lowerIteratorMemberValue } from "../iterator-prototype.js";
 import { widensReducedRecords } from "../function-returns.js";
 import { nullishReadTypeError, throwAfterEach } from "../primitive-throws.js";
@@ -5428,6 +5429,14 @@ export function fieldTarget(
       }
     }
     return null;
+  }
+  // A member of a typed CALLABLE: the closure's own-property table
+  // (callable-properties.ts). The receiver lowered as a closure, so its
+  // members are the function object's own data properties, read through the
+  // identity-preserving box with the declared member type checked back.
+  if (receiverIr?.kind === "func") {
+    const callable = callableMemberFieldTarget(lowerer, access, receiverIr);
+    if (callable) return callable;
   }
   return null;
 }

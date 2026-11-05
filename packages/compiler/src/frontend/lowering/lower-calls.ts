@@ -57,6 +57,7 @@ import {
   lowerPromisifiedZlibCall,
   lowerZlibStreamMethodCall,
 } from "./builtins/compression.js";
+import { lowerCallableAssign } from "./callable-properties.js";
 import type { Lowerer } from "./lowerer.js";
 import {
   inlineNamespaceRequireOf,
@@ -9068,7 +9069,11 @@ function lowerObjectStaticCall(
     }
     const onError = lowerObjectAssignOntoError(lowerer, call);
     if (onError) return onError;
-    refuseObjectAssignHybrid(lowerer, call);
+    // `Object.assign(fn, ...)` on a TYPED callable: the source keys land on
+    // the closure's own-property table and the expression is that function
+    // (one representation — no record stands for it).
+    const callableAssign = lowerCallableAssign(lowerer, call);
+    if (callableAssign) return callableAssign;
     // `Object.assign({}, lit)` — an EMPTY fresh-literal target and one
     // object-literal source: the result is a fresh object carrying
     // exactly the source literal's properties, which IS the source
@@ -10681,32 +10686,6 @@ function runtimeOptionalEntriesType(
  * ordinary indirect call through the field's closure value. Deliberately
  * record-only — calling a func-typed CLASS field stays rejected (the
  * generic method-call rejection in lowerCall). */
-/** `Object.assign(fn, { bold, ... })` — a FUNCTION-WITH-PROPERTIES
- * result — is REFUSED by name (SEMANTICS.md). JavaScript mutates the
- * function object and answers it: `assigned === fn`, a later write through
- * either name lands on that one object, and `Object.keys(fn)` lists the
- * copied keys. scriptc keeps a function-with-properties value as a
- * separate record that holds the function in a reserved %call field, so a
- * fresh record is NOT the function — the identity, the writes and the
- * enumeration would each answer differently from Node. Making them agree
- * needs one representation for a function object (a place on it for its
- * own properties), not a branch here, so the form stays refused rather
- * than lowering to a record that claims to be the function. Every other
- * Object.assign form falls through to the branches below. */
-function refuseObjectAssignHybrid(lowerer: Lowerer, call: ts.CallExpression): void {
-  const mapped = lowerer.mapTypeOf(lowerer.typeOf(call));
-  if (mapped?.kind !== "record") return;
-  const shape = lowerer.shapes.get(mapped.shapeId);
-  const callField = shape?.fields.find((f) => f.name === "%call");
-  if (!callField || callField.type.kind !== "func") return;
-  lowerer.unsupported(
-    "SC1090",
-    call,
-    `Object.assign that adds properties to a function value ('${lowerer.fmt(mapped)}')`,
-    "JavaScript mutates and answers the function object itself — the result IS that function, a write through either name lands on the one object, and Object.keys on it lists the copied keys — while a function-with-properties value is a separate record here; build that value where its type is declared, or keep the properties in a separate object",
-  );
-}
-
 /** The accessed member is an overload set (isOverloadedCallableMemberType),
  * also under an optional chain whose access still spells `| undefined`. */
 function isOverloadedMemberAccess(lowerer: Lowerer, access: ts.PropertyAccessExpression): boolean {

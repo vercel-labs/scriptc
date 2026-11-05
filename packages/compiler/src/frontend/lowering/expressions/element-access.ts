@@ -8,6 +8,7 @@ import {
   splitUndefinedIndex,
   undefinedTypedArrayKeyFence,
 } from "../undefined-index.js";
+import { callableBox, isCallableTableValue } from "../callable-properties.js";
 import { type Lowerer, jsFuncNameOf, neverTaintedJsType } from "../lowerer.js";
 import {
   BOOL,
@@ -2172,14 +2173,27 @@ export function lowerElementCompoundParts(
   if (isKeyedFieldAccess(lowerer, target))
     return { expr: lowerFieldCompoundValue(lowerer, target, op, expr.right, loc), stmts: null };
   const checked = lowerer.lowerExpr(target.expression);
-  if (checked?.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+  // A typed callable's element is its own-property table entry: the same
+  // read-modify-write the checked-dynamic receiver takes, through the
+  // identity-preserving box (`fn[k] += 1`, `fn[k] -= 1`).
+  const callableElement =
+    checked !== null &&
+    checked !== undefined &&
+    checked.type.kind === "func" &&
+    isCallableTableValue(lowerer, target.expression, checked);
+  const dynReceiver = callableElement ? callableBox(lowerer, checked) : checked;
+  if (
+    dynReceiver &&
+    (callableElement ||
+      (checked?.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(expr))))
+  ) {
     const stmts: IrStmt[] = [];
     const save = (value: IrExpr, name: string): IrExpr => {
       const local = lowerer.declareHiddenLocal(name, value.type);
       stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
       return varRef(local.id, value.type, loc);
     };
-    const receiver = save(checked, "%compoundReceiver");
+    const receiver = save(dynReceiver, "%compoundReceiver");
     const key = save(lowerer.lowerExprExpecting(target.argumentExpression, DYN), "%compoundKey");
     const old = save({ kind: "dynKeyGet", value: receiver, key, type: DYN, loc }, "%compoundOld");
     const rhs = lowerer.lowerExprExpecting(expr.right, DYN);
@@ -2584,6 +2598,16 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
       expr: lowerDynMemberAssignment(lowerer, expr, checkedReceiver),
       loc: locOf(expr),
     };
+  }
+  // `fn[k] = v` on a typed callable: the closure's own-property table.
+  if (checkedReceiver && isCallableTableValue(lowerer, target.expression, checkedReceiver)) {
+    const boxed = callableBox(lowerer, checkedReceiver);
+    if (boxed)
+      return {
+        kind: "exprStmt",
+        expr: lowerDynMemberAssignment(lowerer, expr, boxed),
+        loc: locOf(expr),
+      };
   }
   if (checkedReceiver?.type.kind === "object" && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
     const info = lowerer.classes.get(checkedReceiver.type.className);

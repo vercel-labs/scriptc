@@ -44,6 +44,7 @@ import {
   VOID,
 } from "../../../ir/ir.js";
 import { isJsSourceFile, locOf } from "../../program.js";
+import { callableBox, isCallableTableValue } from "../callable-properties.js";
 import { refuseShadowedImplicitReader } from "../handle-properties.js";
 import { classToNumberConversion } from "../class-to-primitive.js";
 import { lowerPrimitiveUnionNumber } from "../lower-calls.js";
@@ -476,15 +477,23 @@ export function lowerIncDec(
       !isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
       raw.type.kind === "dyn" &&
       lowerer.mapTypeOf(lowerer.typeOf(access))?.kind === "f64";
+    // A typed callable's ELEMENT is its own-property table entry
+    // (`fn[k]++`): the same keyed read-modify-write, over the box.
+    const callableBoxed =
+      ts.isElementAccessExpression(access) &&
+      raw.type.kind === "func" &&
+      isCallableTableValue(lowerer, access.expression, raw)
+        ? callableBox(lowerer, raw)
+        : null;
     // A private name is the field of its class (fieldTarget).
     const privateName =
       ts.isPropertyAccessExpression(access) && ts.isPrivateIdentifier(access.name);
     if (
-      (isJsSourceFile(ts.getSourceFileOfNode(expr)) || checkedNumber) &&
-      raw.type.kind === "dyn" &&
+      (isJsSourceFile(ts.getSourceFileOfNode(expr)) || checkedNumber || callableBoxed !== null) &&
+      (raw.type.kind === "dyn" || callableBoxed !== null) &&
       !privateName
     ) {
-      const receiver = save(raw, "%incrementReceiver");
+      const receiver = save(callableBoxed ?? raw, "%incrementReceiver");
       const key = save(
         ts.isElementAccessExpression(access)
           ? lowerer.lowerExprExpecting(access.argumentExpression, DYN)

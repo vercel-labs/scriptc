@@ -187,6 +187,7 @@ import {
   requireEarlyReference,
   requireSpecOf,
 } from "../program.js";
+import { callableDeleteKey } from "./callable-properties.js";
 import { isStrictCode } from "./strict-mode.js";
 import {
   COMPOUND_ASSIGN_OPS,
@@ -8550,9 +8551,9 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
     }
   }
   if (
-    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
     obj.type.kind === "func" &&
-    lowerer.dynConvertible(obj.type)
+    lowerer.dynConvertible(obj.type) &&
+    (isJsSourceFile(ts.getSourceFileOfNode(expr)) || callableDeleteKey(lowerer, target))
   ) {
     obj = lowerer.coerceToExpected(obj, DYN);
   }

@@ -5511,8 +5511,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // the plain-func mapping below (historic behavior: the properties drop
   // from the type).
   if (widened.isIntersectionType() && checker.getConstructSignatures(widened).length === 0) {
-    const hybrid = mapHybridCallableIntersection(widened, ctx);
-    if (hybrid) return hybrid;
+    const callable = mapCallableIntersection(widened, ctx);
+    if (callable) return callable;
     // Recursive and Symbol-keyed callable objects need their complete live
     // property table; dropping those members into a plain closure loses data.
     if (
@@ -8027,7 +8027,47 @@ function mapClassExpandoIntersection(widened: ts.Type, ctx: TypeMapperCtx): IrTy
   return DYN;
 }
 
-function mapHybridCallableIntersection(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
+/** `F & { data }` maps to the CALLABLE part's func type: the members live in
+ * the closure's own-property table (lowering/callable-properties.ts), so the
+ * value IS the function — identity, aliasing, `typeof`, enumeration and
+ * inspect all answer as Node's function object does. The parts that cannot
+ * share that one representation (a recursive or `this`-typed member, a
+ * symbol-keyed member, an accessor, a class or index-signature part) return
+ * null, and the caller keeps the DYN mapping. */
+function mapCallableIntersection(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
+  const { checker } = ctx;
+  if (!widened.isIntersectionType()) return null;
+  if (checker.getCallSignatures(widened).length !== 1) return null;
+  let funcPart: ts.Type | null = null;
+  for (const part of ts.constituentTypes(widened)) {
+    if (checker.getCallSignatures(part).length > 0) {
+      if (funcPart) return null; // exactly one callable part
+      funcPart = part;
+      continue;
+    }
+    const partSym = part.getSymbol();
+    if (
+      (part.flags & ts.TypeFlags.Object) === 0 ||
+      checker.getConstructSignatures(part).length > 0 ||
+      (partSym !== undefined && (partSym.flags & ts.SymbolFlags.Class) !== 0) ||
+      checker.getIndexInfosOfType(part).length > 0
+    ) {
+      return null;
+    }
+  }
+  if (!funcPart) return null;
+  const properties = checker.getPropertiesOfType(widened);
+  if (properties.length === 0) return null; // no properties — it is just F
+  for (const p of properties) {
+    if (p.flags & (ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor)) return null;
+    // A symbol-keyed member has no string key in the table.
+    if (ts.symbolName(p).startsWith("__@")) return null;
+  }
+  const fn = mapType(funcPart, ctx);
+  return fn?.kind === "func" ? fn : null;
+}
+
+function mapHybridCallableRecord(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const { checker, shapes } = ctx;
   if (!widened.isIntersectionType()) return null;
   if (checker.getCallSignatures(widened).length !== 1) return null;
@@ -8074,7 +8114,7 @@ function mapUniformHybridUnion(widened: ts.Type, ctx: TypeMapperCtx): IrType | n
   let first: IrType | null = null;
   for (const part of parts) {
     if (ctx.checker.getConstructSignatures(part).length > 0) return null;
-    const mapped = mapHybridCallableIntersection(part, ctx);
+    const mapped = mapHybridCallableRecord(part, ctx);
     if (!mapped || (first && typeKey(mapped) !== typeKey(first))) return null;
     first ??= mapped;
   }

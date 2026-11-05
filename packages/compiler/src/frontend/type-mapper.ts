@@ -8135,15 +8135,21 @@ function mapHybridCallableRecord(widened: ts.Type, ctx: TypeMapperCtx): IrType |
   return { kind: "record", shapeId: shapes.intern(fields, false, undefined, declaredOrder) };
 }
 
-/** The record every part of a union of function-with-properties
- * intersections maps to, or null when a part does not map to the same one. */
+/** The representation every part of a union of function-with-properties
+ * intersections maps to, or null when a part does not map to the same one.
+ * Each part maps exactly as it does alone — an ordinary callable
+ * intersection to the callable's func type (its members ARE the closure's
+ * own properties), node:test's `Mock<F>` to its hybrid `%call` record — so a
+ * union never reintroduces the record a value no longer has. */
 function mapUniformHybridUnion(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const parts = ts.constituentTypes(widened);
   if (!parts.every((p) => p.isIntersectionType())) return null;
   let first: IrType | null = null;
   for (const part of parts) {
     if (ctx.checker.getConstructSignatures(part).length > 0) return null;
-    const mapped = mapHybridCallableRecord(part, ctx);
+    const mapped = isMockHybridIntersection(part, ctx)
+      ? mapHybridCallableRecord(part, ctx)
+      : mapCallableIntersection(part, ctx);
     if (!mapped || (first && typeKey(mapped) !== typeKey(first))) return null;
     first ??= mapped;
   }

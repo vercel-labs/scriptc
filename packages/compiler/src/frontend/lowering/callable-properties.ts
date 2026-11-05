@@ -19,13 +19,17 @@
  * The helpers here decide WHEN a receiver is such a callable ("call
  * signatures, no construct signature, not a class, lowered as a func") and
  * which member names address its table (`length`, `name`, `caller`,
- * `arguments`, `prototype` and the Function.prototype members belong to the
- * function protocol, not to the table's user data). They never change a
- * call: a call reads the member through the table and calls the closure it
- * finds.
+ * `arguments`, `prototype`, the runtime's fenced prototype members and
+ * `__proto__` belong to the function protocol, not to the table's user
+ * data; `toString` is table data when the value's type declares it). They
+ * never change a call to a plain function: a call whose callee is a table
+ * member reads it through the table and calls the closure it finds.
  *
+ * Two families stay off the table. A member the runtime's function-table
+ * property fence refuses (call/apply/bind and the Object.prototype
+ * members) keeps its existing refusal rather than becoming a table entry.
  * The members a function carries because a NAMESPACE of the same name is
- * merged into it are the one family still stored elsewhere: the namespace
+ * merged into it are still stored elsewhere: the namespace
  * lowering's flattened module globals own those names, so their reads,
  * writes and calls resolve by member symbol as before and only
  * `Object.keys`/inspect of such a function do not list them. */
@@ -36,28 +40,54 @@ import type { FieldTarget } from "./lower-exprs.js";
 import { locOf } from "../program.js";
 import { stdlibGlobalNameOf } from "./surfaces.js";
 
-/** The function protocol's own members: never table data, in reads, writes,
- * `in`, `delete` or enumeration. A callable's data members cannot shadow
- * them (JavaScript gives the function object's built-in slot precedence for
- * the non-configurable ones). */
-const FUNCTION_PROTOCOL_MEMBERS = new Set([
+/** The function object's non-configurable own slots plus the poisoned
+ * `caller`/`arguments` pair: no data property of those names can exist on a
+ * function, so they are never table data in reads, writes, `in`, `delete` or
+ * enumeration. */
+const FUNCTION_FIXED_SLOTS = new Set(["length", "name", "prototype", "caller", "arguments"]);
+
+/** The members a function inherits from the native call/apply/bind and
+ * Object.prototype lowerings. The runtime's function-table property fence
+ * (`scr_dyn_fn_property_fence`, scr_json.c) refuses every write to them,
+ * because a typed call site that does not declare the name answers through
+ * that builtin rather than the table; a callable interface that declares one
+ * therefore keeps its existing refusal instead of becoming a table entry.
+ * `__proto__` is the prototype accessor, never table data either. */
+const FUNCTION_RESERVED_MEMBERS = new Set([
   "apply",
   "bind",
   "call",
-  "toString",
+  "valueOf",
+  "toLocaleString",
+  "hasOwnProperty",
+  "propertyIsEnumerable",
+  "isPrototypeOf",
   "constructor",
-  "__proto__",
-  "length",
-  "name",
-  "caller",
-  "arguments",
-  "prototype",
 ]);
+
+/** The one inherited member a function may shadow with an own data property
+ * the table accepts: `Function.prototype.toString` is not in the fence, so
+ * `fn.toString = () => "x"` is an ordinary own property in Node and here.
+ * It is table data only when the value's TYPE declares it in user code;
+ * otherwise the name answers through the protocol. */
+const FUNCTION_SHADOWABLE_MEMBERS = new Set(["toString"]);
 
 /** Whether `name` is a member a typed callable keeps in its own-property
  * table rather than answering through the function protocol. */
 export function isCallableOwnMemberName(name: string): boolean {
-  return !FUNCTION_PROTOCOL_MEMBERS.has(name) && !name.startsWith("__");
+  return (
+    !FUNCTION_FIXED_SLOTS.has(name) &&
+    !FUNCTION_RESERVED_MEMBERS.has(name) &&
+    !FUNCTION_SHADOWABLE_MEMBERS.has(name) &&
+    name !== "__proto__"
+  );
+}
+
+/** Whether the value's type declares `property` itself (a user interface or
+ * intersection part) rather than inheriting it from a standard library
+ * interface — the test that makes an inherited member name a table key. */
+function isUserDeclaredMember(lowerer: Lowerer, property: ts.Symbol): boolean {
+  return property.declarations.some((d) => !lowerer.isStdlibFile(ts.getSourceFileOfNode(d)));
 }
 
 /** The checker's view of `receiver`: a callable value with no construct
@@ -100,7 +130,8 @@ export function callableMemberFieldTarget(
 ): FieldTarget | null {
   if (access.questionDotToken || !ts.isIdentifier(access.name)) return null;
   const name = access.name.text;
-  if (!isCallableOwnMemberName(name)) return null;
+  if (FUNCTION_FIXED_SLOTS.has(name) || FUNCTION_RESERVED_MEMBERS.has(name) || name === "__proto__")
+    return null;
   if (receiverIr.kind !== "func") return null;
   // The value must be a typed callable by the same test every other table
   // form uses. A stdlib function object (`Number.MAX_SAFE_INTEGER`,
@@ -111,6 +142,14 @@ export function callableMemberFieldTarget(
   if (!isCallableValue(lowerer, access.expression)) return null;
   const type = lowerer.checker.getNonNullableType(lowerer.typeOf(access.expression));
   const property = lowerer.checker.getPropertyOfType(type, name);
+  // An inherited name is a table key only when the value's own type declares
+  // it: `fn.toString = () => "x"` shadows the prototype member with an own
+  // data property, while a plain read of `fn.toString` is still the protocol.
+  if (
+    FUNCTION_SHADOWABLE_MEMBERS.has(name) &&
+    (property === undefined || !isUserDeclaredMember(lowerer, property))
+  )
+    return null;
   if (property !== undefined) {
     // An accessor member is not table data; it stays on its own path (and
     // its refusals) rather than reading the accessor's value from the table.

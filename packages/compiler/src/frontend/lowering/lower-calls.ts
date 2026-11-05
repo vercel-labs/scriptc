@@ -57,7 +57,7 @@ import {
   lowerPromisifiedZlibCall,
   lowerZlibStreamMethodCall,
 } from "./builtins/compression.js";
-import { lowerCallableAssign } from "./callable-properties.js";
+import { callableMemberFieldTarget, lowerCallableAssign } from "./callable-properties.js";
 import type { Lowerer } from "./lowerer.js";
 import {
   inlineNamespaceRequireOf,
@@ -417,6 +417,25 @@ function receiverlessCalleeOf(callee: ts.Expression): ts.Expression | null {
   let right = e.right;
   while (ts.isParenthesizedExpression(right)) right = right.expression;
   return right;
+}
+
+/** `fn.member(args)` where `member` is a key of the callable's own-property
+ * table: the member read through the table (checked back into the declared
+ * member type, like every other table read) yields the function value, and
+ * the call goes through that value. A function's own data property shadows
+ * an inherited `Function.prototype` member (`fn.toString` above all), so
+ * this is the call form of that shadowing. */
+function lowerCallableMemberCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
+  const access = call.expression;
+  if (!ts.isPropertyAccessExpression(access)) return null;
+  if (access.questionDotToken || call.questionDotToken) return null;
+  const receiverIr = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
+  if (receiverIr?.kind !== "func") return null;
+  const target = callableMemberFieldTarget(lowerer, access, receiverIr);
+  if (!target || target.fieldType.kind !== "func") return null;
+  const callee = lowerer.fieldGetExpr(target, locOf(access), access);
+  if (callee.type.kind !== "func") return null;
+  return lowerCallThroughValue(lowerer, call, callee, locOf(call));
 }
 
 export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
@@ -1988,6 +2007,10 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     {
       const childCall = lowerChildPropertyCall(lowerer, expr, expr.expression, true);
       if (childCall) return childCall;
+    }
+    {
+      const tableCall = lowerCallableMemberCall(lowerer, expr);
+      if (tableCall) return tableCall;
     }
     // The lib fence's METHOD-CALL chokepoint: a stdlib-declared member
     // that every lowering above declined — an unlowered member

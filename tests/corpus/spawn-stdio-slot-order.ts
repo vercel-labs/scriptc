@@ -13,7 +13,9 @@ function stderrMode(): "ignore" | "inherit" {
   return "ignore";
 }
 
-const child = spawn("/bin/true", { stdio: ["pipe", stdoutFd(), stderrMode()] });
+// Named bare so PATH finds it on every platform: macOS ships true in
+// /usr/bin, not /bin.
+const child = spawn("true", { stdio: ["pipe", stdoutFd(), stderrMode()] });
 child.on("exit", (code) => {
   console.log("order", trace.join(","), code);
 });

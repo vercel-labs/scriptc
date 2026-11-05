@@ -45,6 +45,7 @@ import {
   moduleNamespaceValue,
 } from "./module-namespace-elements.js";
 import { keyedHelperName, moduleTagNumber, portableRelativePath } from "./stable-names.js";
+import { noteCodecMode, ZLIB_STREAM_FACTORIES, ZLIB_STREAM_T } from "./builtins/compression.js";
 import { positionTag, StructuralPositions } from "./structural-positions.js";
 import {
   activeNodeIslands,
@@ -160,6 +161,7 @@ import {
   coercibleValue,
   cleanFuncAdaptable,
   funcCoerceAdapter,
+  sortComparatorResultAdapter,
   spawnResFnAdapterPlan,
   spawnResFnAdapter,
 } from "./coercions/function-adapters.js";
@@ -211,6 +213,7 @@ import type { UnionClassRoute } from "./union-retag.js";
 import {
   bindingInContext,
   captureContextBinding,
+  captureContextLocal,
   declareContextLocal,
   declareContextThis,
   newFnCtx,
@@ -230,12 +233,16 @@ import { addUntypedIntegrityWords, guardClassAttributeWrites } from "./class-att
 import { inferredCollectionType } from "./js-collection-types.js";
 import { sloppyDynamicWrites } from "./frozen-records.js";
 import { guardFrozenWrites, markSloppyRecordWrites } from "./frozen-records.js";
-import { applyHandleProperties } from "./handle-properties.js";
+import {
+  alignHandlePropertyChildFact,
+  applyHandleProperties,
+  handlePropertyScanRoots,
+} from "./handle-properties.js";
 import { installBufferValue } from "./containers/bytes.js";
 import { installMutableBuffersArm } from "./buffers.js";
 import { ClassProtocols } from "./class-protocols.js";
 import { earlyReadVarSymbols } from "./var-hoisting.js";
-import { recordTextCodecClass } from "../../ir/ir.js";
+import { recordTextCodecClass, sortArms } from "../../ir/ir.js";
 import { assignLegacyTiers, type DynamicFunction } from "../../ir/tiers.js";
 import { dynamicSlotOperationCounts, dynamicTierWarning } from "./dynamic-tier.js";
 import { promoteJsvals } from "../../ir/jsval.js";
@@ -332,7 +339,6 @@ import {
   canDynCheckTo,
   canConvertToDyn,
   DYN,
-  DYN_HANDLE_KINDS,
   F64,
   isDynTypedRefType,
   isJsonSafeType,
@@ -409,6 +415,7 @@ import {
   builtinModulesArrayLit,
   builtinFenceHintOf,
   builtinModuleFnOf,
+  FS_CALLBACK_VALUE_LENGTHS,
   stdlibMemberFence,
   isStdlibMember,
   isStdlibSymbol,
@@ -609,7 +616,11 @@ import {
 } from "./builtins/environment.js";
 import { lowerJsonMethodCall, lowerJsonProperty } from "./builtins/json.js";
 import { lowerCryptoComposedCall, lowerCryptoModuleCall } from "./builtins/crypto.js";
-import { lowerUrlMethodCall, lowerSearchParamsMethodCall } from "./builtins/url.js";
+import {
+  legacyUrlClassValue,
+  lowerUrlMethodCall,
+  lowerSearchParamsMethodCall,
+} from "./builtins/url.js";
 import { lowerChildMethodCall } from "./builtins/child-process-methods.js";
 import { lowerAtomicsCall } from "./builtins/atomics.js";
 import { lowerBuiltinExtraProperty } from "./builtins/properties.js";
@@ -868,6 +879,10 @@ export class PoisonError extends Error {
 export type StaticCallableProjection =
   | { kind: "declared-function"; signature: FnSig }
   | { kind: "builtin-function"; module: string; member: string }
+  /** An alias of an http/https client function (`const request =
+   * https.request`). Calls through it keep the module's client lowering;
+   * the value has no function object and fences where it escapes. */
+  | { kind: "client-function"; module: "http" | "https"; member: "request" | "get" }
   | { kind: "promisified-exec-file" }
   | { kind: "promisified-exec" }
   | { kind: "promisified-builtin"; module: string; member: string }
@@ -2937,6 +2952,16 @@ export class Lowerer {
    * program's JavaScript adds to them (handle-properties.ts). */
   writesOntoChildren = false;
   childAdditions: { written: ReadonlySet<string>; everyName: boolean; any: boolean } | null = null;
+  /** Whether the program's JavaScript adds own properties to handles, asks
+   * their integrity, and which class members it shadows
+   * (handle-properties.ts). */
+  handleAdditions:
+    | { readonly grants: ReadonlyMap<string, ReadonlySet<string>>; readonly any: boolean }
+    | undefined = undefined;
+  /** Whether the program has a JavaScript implementation file, the only kind
+   * that can add own properties to a handle, so a typed handle operation of
+   * a program without one keeps its own lowering (handle-properties.ts). */
+  handleJsSources: boolean | undefined = undefined;
   /** Bindings whose unchecked string arithmetic can produce either a number
    * (NaN for an absent read) or a string. Preserve that result union at bare
    * reads instead of applying the checker-bare string narrowing adapter. */
@@ -4881,6 +4906,10 @@ export class Lowerer {
     // are checked against.
     "ownClassProtocols",
     "verifySymbolProvenance",
+    // Whether the program has a JavaScript implementation file depends only on
+    // its modules, so the answer is a memo computed on first use and the
+    // census in handle-properties.ts reads it again when a unit replays.
+    "handleJsSources",
     // The whole-program prepass analyzeJsWidenedBindings computes this set
     // before lowering begins: a pure function of the program's modules.
     "jsWidenedBindings",
@@ -5097,6 +5126,7 @@ export class Lowerer {
       fixed("errorMethodDispatchRevision", () => this.errorMethodDispatchRevision),
       fixed("errorPropertyDispatchRevision", () => this.errorPropertyDispatchRevision),
       fixed("childAdditions", () => this.childAdditions),
+      fixed("handleAdditions", () => this.handleAdditions),
       fixed("emitterEventTable", () => this.emitterEventTable),
       fixed("emitterAnyNameListener", () => this.emitterAnyNameListener),
       fixed("globalThisWrittenNames", () => this.globalThisWrittenNames),
@@ -7827,7 +7857,7 @@ export class Lowerer {
         const primitive = (t: IrType | null): t is IrType =>
           t?.kind === "f64" || t?.kind === "string" || t?.kind === "bool";
         if (primitive(left) && primitive(right) && !typeEquals(left, right)) {
-          const arms = [left, right].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+          const arms = sortArms([left, right]);
           return { kind: "union", unionId: this.unions.intern(arms) };
         }
         return null;
@@ -10464,6 +10494,11 @@ export class Lowerer {
     // rewrite keeps every dynamic operation dynamic (each dyn operator
     // becomes its js twin), so coverage's dynamic statements are unchanged.
     if (module && this.dynamicFunctions.length > 0) promoteJsvals(module);
+    // The child wrapper a handle-property table asks for must match the
+    // module fact that links scr_child.c (the emitter's childProcess
+    // feature): the census that requests it scans files the program may not
+    // reach. Aligned on the final module, so both sides read one fact.
+    if (module) alignHandlePropertyChildFact(module);
     // A program that replaces a process output stream's write method beside
     // Node islands is refused by the executable planner (SC8006): an
     // island's process.stdout is its own object. Only island builds pay for
@@ -10657,6 +10692,11 @@ export class Lowerer {
     // Establish the same managed header/top-level batch here before
     // collection, while the production path simply finds warm memos.
     this.checker.prefetchSourceFileStructures(parts.map((fp) => fp.sf));
+    // The own-property census decides whether a program's JavaScript may
+    // add properties to a handle. It visits every body, reached or not, so
+    // batch the receiver types it reads before collection; the census then
+    // makes no per-node checker request inside a deferred body.
+    this.checker.prefetchCollectionTypes(handlePropertyScanRoots(parts.map((fp) => fp.sf)));
     // Signature collection may read the initializer type of a default whose
     // body type still admits undefined (for example `value =
     // process.env.VALUE`). The expression executes only when reached, but
@@ -12964,7 +13004,8 @@ export class Lowerer {
       this.unsupported(
         "SC1100",
         node,
-        `passing 'unknown' values where '${this.fmt(expected)}' is expected`,
+        `passing 'unknown' values where '${this.fmt(expected)}' is expected ` +
+          `(${this.dynCheckBlocker(expected) ?? "this target"} is outside the checked conversion's domain)`,
       );
     }
     if (expected.kind === "dyn") {
@@ -13431,42 +13472,10 @@ export class Lowerer {
     // forgiven chains): the VALIDATED extraction — dynCheck, the
     // checked-cast machinery, applied automatically. A value outside the
     // slot's type throws a catchable TypeError instead of misreading the
-    // payload. Only dynCheck's own domain (JSON-representable types,
-    // undefined-armed unions of those, bytes<u8>, the %Error root)
-    // converts; everything else keeps requireExactShape's SC1100 fence.
+    // payload. The domain is EXACTLY the explicit cast's (canDynCheckTo),
+    // so the two crossings can never disagree about what converts;
+    // everything else keeps requireExactShape's SC1100 fence.
     if (expr.type.kind === "dyn" && expected.kind !== "dyn") {
-      const undefArmedOk =
-        expected.kind === "union" &&
-        (this.unions
-          .get(expected.unionId)
-          ?.arms.every(
-            (a) =>
-              a.kind === "undefinedT" ||
-              this.jsonSafe(a) ||
-              isDynTypedRefType(a) ||
-              DYN_HANDLE_KINDS.has(a.kind),
-          ) ??
-          false);
-      const bytesOk = expected.kind === "bytes" && expected.elem === "u8";
-      const errorOk = expected.kind === "object" && expected.className === "%Error";
-      // Program and runtime class instances can return only from a
-      // compiler-owned typed-reference capsule. A parsed/plain dyn object
-      // fails the runtime check; an exact capsule unwraps the original
-      // instance and preserves identity.
-      const classOk = isDynTypedRefType(expected);
-      // ADAPTABLE function targets (the checked-dynamic function
-      // boundary's OUT direction — `const wrapped: F = mustCall(fn)`):
-      // check callable-kind, then unwrap an identical boxed signature
-      // directly or adapt through a per-target shim that dynChecks
-      // arguments/results per F.
-      const funcOk =
-        expected.kind === "func" &&
-        canAdaptDynFuncTo(
-          expected,
-          (id) => this.shapes.get(id),
-          (id) => this.unions.get(id),
-        );
-      const handleOk = DYN_HANDLE_KINDS.has(expected.kind);
       noteUntypedStreamFlow(this, expected);
       // `[EventEmitter]` in JavaScript builds an untyped array of the
       // untyped constructor, which a typed array of the class cannot
@@ -13491,13 +13500,7 @@ export class Lowerer {
           expected,
           (id) => this.shapes.get(id),
           (id) => this.unions.get(id),
-        ) ||
-        undefArmedOk ||
-        bytesOk ||
-        errorOk ||
-        classOk ||
-        funcOk ||
-        handleOk
+        )
       ) {
         return { kind: "dynCheck", value: expr, type: expected, loc: expr.loc };
       }
@@ -14023,6 +14026,10 @@ export class Lowerer {
     loc: SrcLoc,
   ): string | null {
     return funcCoerceAdapter(this, fromT, toT, loc);
+  }
+
+  sortComparatorResultAdapter(fromT: IrType & { kind: "func" }, loc: SrcLoc): string | null {
+    return sortComparatorResultAdapter(this, fromT, loc);
   }
 
   spawnResFnAdapterPlan(
@@ -14836,6 +14843,66 @@ export class Lowerer {
     );
   }
 
+  /** The first reason `t` lies outside the checked conversion's domain
+   * (canDynCheckTo), phrased for a diagnostic; null when it converts. Names
+   * the blocking member rather than restating the whole domain, so an
+   * SC1090/SC1100 fence points at the part that has to change. */
+  dynCheckBlocker(t: IrType, seen: Set<string> = new Set()): string | null {
+    const shapes = (id: string) => this.shapes.get(id);
+    const unions = (id: string) => this.unions.get(id);
+    if (canDynCheckTo(t, shapes, unions)) return null;
+    if (seen.has(typeKey(t))) return `a recursive '${this.fmt(t)}' value`;
+    seen.add(typeKey(t));
+    switch (t.kind) {
+      case "array": {
+        const inner = this.dynCheckBlocker(t.elem, seen);
+        return inner ? `an array whose element is ${inner}` : null;
+      }
+      case "record": {
+        const shape = this.shapes.get(t.shapeId);
+        const field = shape?.fields.find((f) => !canDynCheckTo(f.type, shapes, unions));
+        if (field) {
+          const inner = this.dynCheckBlocker(field.type, seen);
+          return inner
+            ? `a record whose member '${field.name}' is ${inner}`
+            : `a record whose member '${field.name}' is '${this.fmt(field.type)}'`;
+        }
+        if (shape?.indexValue && !canDynCheckTo(shape.indexValue, shapes, unions)) {
+          return `a record whose indexed value is '${this.fmt(shape.indexValue)}'`;
+        }
+        return `a '${this.fmt(t)}' record (a layout a dyn value cannot be checked into)`;
+      }
+      case "func": {
+        const param = t.params.find((p) => p.kind !== "dyn" && !canConvertToDyn(p, shapes, unions));
+        if (param) {
+          return (
+            `a function whose parameter is '${this.fmt(param)}' ` +
+            `(an argument cannot be converted from the dynamic tier)`
+          );
+        }
+        if (t.rest === true && t.restAbi !== undefined && t.params.at(-1)?.kind !== "array") {
+          return `a function whose rest parameter is not an array`;
+        }
+        return `a function returning '${this.fmt(t.ret)}' (a result no checked conversion produces)`;
+      }
+      case "promise": {
+        const inner = this.dynCheckBlocker(t.inner, seen);
+        return inner ? `a promise of ${inner}` : null;
+      }
+      case "union": {
+        const arms = this.unions.get(t.unionId)?.arms ?? [];
+        const arm = arms.find((a) => !isUnitType(a) && !canDynCheckTo(a, shapes, unions));
+        if (arm) {
+          const inner = this.dynCheckBlocker(arm, seen);
+          return inner ? `a union with an arm that is ${inner}` : null;
+        }
+        return `a '${this.fmt(t)}' union`;
+      }
+      default:
+        return `a '${this.fmt(t)}' value`;
+    }
+  }
+
   /** True when a static type converts to a dyn value (the dynFrom
    * walker's domain): JSON-safe, bytes<u8> (Uint8Array/Buffer — the checked-dynamic tree's
    * bytes kind, payload copied; stdin chunks into unknown-typed helpers),
@@ -15194,7 +15261,7 @@ export class Lowerer {
    * miss (process.env reads). "undefined" sorts last among all arm typeKeys,
    * so the sorted pair is always [t, undefined]. */
   withUndefinedArm(t: IrType): IrType {
-    const arms = [t, UNDEFINED_T].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+    const arms = sortArms([t, UNDEFINED_T]);
     return { kind: "union", unionId: this.unions.intern(arms) };
   }
 
@@ -16124,6 +16191,13 @@ export class Lowerer {
    * declared body local; nothing in the source can name this one). */
   declareHiddenLocal(name: string, type: IrType): IrLocal {
     return declareContextLocal(this.ctx, name, type, false, undefined, undefined);
+  }
+
+  /** Read a hidden slot from the current function: the slot itself when it
+   * was declared here, a threaded capture when the read sits in a function
+   * the declaring one encloses. Null when the owner context is gone. */
+  captureHiddenLocal(local: IrLocal, owner: FnCtx): IrLocal | null {
+    return captureContextLocal(this.fnStack, local, owner);
   }
 
   /** The body binding of a fixed-tuple rest parameter: one native slot per
@@ -18063,6 +18137,10 @@ export class Lowerer {
     ) {
       return pathModuleValue(this, `path/${bi.member}`, loc);
     }
+    // url.Url as a value: the legacy Url constructor (JavaScript sources;
+    // @types/node declares Url as a type only). Its prototype is the one
+    // url.parse() results carry.
+    if (bi.module === "url" && bi.member === "Url") return legacyUrlClassValue(loc);
     // events.defaultMaxListeners READS the process-wide default (its
     // write twin routes through emitter.setDefaultMaxChk). Through an ES
     // module namespace it reads the namespace's copy instead.
@@ -18184,21 +18262,81 @@ export class Lowerer {
       bi.module === "fs" &&
       builtinModuleFnOf(this, bi.module, bi.member)?.fn === "fs.callbackCall"
     ) {
-      return {
-        kind: "libCall",
-        fn: "fs.callbackValue",
-        args: [{ kind: "strLit", value: bi.member, type: STRING, loc }],
-        type: DYN,
-        loc,
-      };
+      return this.lowerFsCallbackValue(bi.member, loc);
     }
     // The buffer module's Buffer is the global constructor's value.
     if (bi.module === "buffer" && bi.member === "Buffer")
       return { kind: "libCall", fn: "buffer.constructor", args: [], type: DYN, loc };
     if (bi.module === "fs" && (bi.member === "realpathSync" || bi.member === "realpathSync.native"))
       return fsRealpathValue(this, bi.member === "realpathSync.native", loc);
+    if (bi.module === "zlib") {
+      const mode = ZLIB_STREAM_FACTORIES[bi.member];
+      if (mode !== undefined) return this.lowerZlibStreamFactoryValue(bi.member, mode, loc);
+    }
     const fn = builtinModuleFnOf(this, bi.module, bi.member);
     return fn ? this.lowerNativeCallableValue(fn, `${bi.module}.${bi.member}`, loc) : null;
+  }
+
+  /** An error-first filesystem function as a value: the checked-dynamic
+   * function the runtime dispatches every argument through, carrying Node's
+   * own name and length for the member. */
+  lowerFsCallbackValue(member: string, loc: SrcLoc): IrExpr {
+    return {
+      kind: "libCall",
+      fn: "fs.callbackValue",
+      args: [
+        { kind: "strLit", value: member, type: STRING, loc },
+        numLit(FS_CALLBACK_VALUE_LENGTHS[member] ?? 0, loc),
+      ],
+      type: DYN,
+      loc,
+    };
+  }
+
+  /** A zlib stream factory as a value: the options argument reaches the
+   * same runtime constructor the direct call uses, and the value keeps
+   * Node's name and length. */
+  lowerZlibStreamFactoryValue(member: string, mode: number, loc: SrcLoc): IrExpr {
+    // The value is called later, often with no other Brotli or zstd call in
+    // the program: connect the codec at the point the factory is read, the
+    // same way a direct call does.
+    noteCodecMode(this, mode, loc);
+    const key = `zlib.streamNew:${member}`;
+    let fnName = this.builtinCallableValueFns.get(key);
+    if (!fnName) {
+      fnName = keyedHelperName(this, "%builtin.value.zlib.streamNew", key);
+      this.builtinCallableValueFns.set(key, fnName);
+      this.builtinCallableValueNames.set(fnName, member);
+      this.builtinCallableValueLengths.set(fnName, 1);
+      const options = { localId: "options.0", name: "options", type: DYN };
+      this.liftedFns.push({
+        name: fnName,
+        params: [options],
+        returnType: ZLIB_STREAM_T,
+        locals: [{ id: options.localId, name: options.name, type: options.type, mutable: false }],
+        body: [
+          {
+            kind: "return",
+            value: {
+              kind: "libCall",
+              fn: "zlib.streamNew",
+              args: [numLit(mode, loc), varRef(options.localId, DYN, loc)],
+              type: ZLIB_STREAM_T,
+              loc,
+            },
+            loc,
+          },
+        ],
+        loc,
+      });
+    }
+    return {
+      kind: "closure",
+      fnName,
+      captures: [],
+      type: { kind: "func", params: [DYN], ret: ZLIB_STREAM_T },
+      loc,
+    };
   }
 
   lowerNativeCallableValue(fn: BuiltinModuleFn, display: string, loc: SrcLoc): IrExpr | null {

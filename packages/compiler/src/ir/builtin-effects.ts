@@ -12,6 +12,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "nodeIsland.callSync",
   // Island module evaluation and member operations run JavaScript.
   "nodeIsland.require",
+  // process.report loads the process builtin and reads the report object.
+  "nodeIsland.processReport",
   "nodeIsland.defer",
   "nodeIsland.get",
   "nodeIsland.getKey",
@@ -410,6 +412,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.requestDynCb",
   "https.requestDyn",
   "https.requestDynCb",
+  "https.requestFnDyn",
+  "https.requestFnDynCb",
   // The URL+options form adds the URL parse's throws to that walk's.
   "http.requestUrlDyn",
   "http.requestUrlDynCb",
@@ -855,6 +859,13 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "child.propsDefine",
   "child.propsDescriptor",
   "child.propsOnDyn",
+  // Handle own-property tables: the graph-walker refusals, a handle used as
+  // a descriptor, and Object.defineProperties throw.
+  "handle.propsDefineProps",
+  "handle.propsGuard",
+  "handle.propsGuardList",
+  "handle.propsCheck",
+  "handle.propsGrant",
   "dyn.arrayProtoCall",
   "dyn.arrayLikeProtoCall",
   "process.chdir",

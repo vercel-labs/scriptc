@@ -38,6 +38,7 @@ import {
   URL_T,
   VOID,
   funcOf,
+  setOf,
 } from "./ir.js";
 
 /** Runtime call slots. A null argument accepts a program-dependent type;
@@ -210,6 +211,9 @@ function buildLibFnSignatures() {
      * writes and calls on island values, argument lists as one dyn array.
      * requireModule(specifier) of @scriptc/node lowers to require too. */
     "nodeIsland.require": { argTypes: [STRING], result: DYN },
+    /** process.report, answered by the island (the same process): the
+     * diagnostic report object of the running binary. */
+    "nodeIsland.processReport": { argTypes: [], result: DYN },
     /** NI-7: a deferred island module (path, boot guards + interface snapshot). */
     "nodeIsland.defer": { argTypes: [STRING, STRING], result: DYN },
     "nodeIsland.import": { argTypes: [STRING], result: { kind: "promise", inner: DYN } },
@@ -1233,6 +1237,9 @@ function buildLibFnSignatures() {
      * whether the call site emits DEP0169. domainToASCII/domainToUnicode
      * take the domain and whether it was omitted. Node's validation errors
      * throw catchably. */
+    /** url.Url as a value: Node's legacy Url constructor, the class of
+     * url.parse() results. One identity per thread. */
+    "url.legacyClass": { argTypes: [], result: DYN },
     "url.legacyParse": { argTypes: [DYN, DYN, DYN, BOOL], result: DYN },
     "url.legacyFormat": { argTypes: [DYN, DYN, BOOL], result: STRING },
     "url.legacyResolve": { argTypes: [DYN, DYN, BOOL], result: STRING },
@@ -2896,6 +2903,19 @@ function buildLibFnSignatures() {
       argTypes: [BOOL, STRING, F64, STRING, STRING, F64, arrayOf(STRING), BOOL, BOOL, null, null],
       result: HTTPCLIENTREQ_T,
     },
+    /** The same binding's RUNTIME-OPTIONS rows: the options value is walked
+     * at run time (a RequestOptions variable or a spreading literal), and
+     * the leading secure bool chooses the dial — false is exactly
+     * http.request, TLS options included on that arm like Node ignores them
+     * there. */
+    "https.requestFnDyn": {
+      argTypes: [BOOL, DYN, BOOL],
+      result: HTTPCLIENTREQ_T,
+    },
+    "https.requestFnDynCb": {
+      argTypes: [BOOL, DYN, BOOL, null],
+      result: HTTPCLIENTREQ_T,
+    },
     "http.clientWrite": { argTypes: [HTTPCLIENTREQ_T, STRING], result: VOID },
     "http.clientSetHeader": { argTypes: [HTTPCLIENTREQ_T, STRING, STRING], result: VOID },
     "http.clientGetHeader": { argTypes: [HTTPCLIENTREQ_T, STRING], result: VOID },
@@ -3050,8 +3070,16 @@ function buildLibFnSignatures() {
     "child.onSpawn": { argTypes: [CHILD_T, null], result: VOID },
     /** Rest listeners use the checked function bridge to pack event arguments. */
     "child.onDyn": { argTypes: [CHILD_T, STRING, DYN], result: VOID },
-    // Own properties JavaScript adds to children (handle-properties.ts).
-    "child.propsInstall": { argTypes: [], result: VOID },
+    // Own properties JavaScript adds to runtime handles: the child's, and
+    // Date/RegExp/Map/Set/weak collections/buffers (handle-properties.ts).
+    // The install call's argument is 1 when the program adds properties to
+    // children (the child unit's wrapped ops), 0 otherwise.
+    "handle.propsInstall": { argTypes: [F64], result: VOID },
+    "handle.propsGrant": { argTypes: [STRING], result: VOID },
+    "handle.propsDefineProps": { argTypes: [DYN, DYN], result: DYN },
+    "handle.propsGuard": { argTypes: [DYN, STRING], result: DYN },
+    "handle.propsGuardList": { argTypes: [arrayOf(DYN), STRING], result: arrayOf(DYN) },
+    "handle.propsCheck": { argTypes: [DYN, STRING], result: VOID },
     "child.propsDefine": { argTypes: [DYN, DYN, DYN], result: DYN },
     "child.propsDescriptor": { argTypes: [DYN, DYN], result: DYN },
     "child.propsResolve": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
@@ -3870,6 +3898,10 @@ function buildLibFnSignatures() {
     // The Node runtime flag a node:test binary took out of process.argv
     // (--test-update-snapshots), or [] — a fresh array per read.
     "process.execArgv": { argTypes: [], result: arrayOf(STRING) },
+    /** process.allowedNodeEnvironmentFlags: the interned set of option
+     * names the compatibility target accepts in NODE_OPTIONS (+1 read of
+     * one stable set). */
+    "process.allowedEnvFlags": { argTypes: [], result: setOf(STRING) },
     "process.platform": { argTypes: [], result: STRING },
     // The one libCall whose result type is program-dependent (union ids are
     // per-module): the `result` here is a placeholder — the libCall case
@@ -3999,7 +4031,7 @@ function buildLibFnSignatures() {
      * a Boolean wrapper receiver and throw Node's brand-check TypeError for
      * a foreign one. `constructor` is the compiled Boolean constructor. */
     "wrapper.booleanPrototype": { argTypes: [DYN], result: DYN },
-    "fs.callbackValue": { argTypes: [STRING], result: DYN },
+    "fs.callbackValue": { argTypes: [STRING, F64], result: DYN },
     "fs.callbackCall": { argTypes: [STRING, DYN], result: DYN },
     "process.hrtimeValue": { argTypes: [], result: DYN },
     /** process.versions.node: the runtime's Node COMPATIBILITY TARGET —

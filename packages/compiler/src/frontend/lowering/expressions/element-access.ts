@@ -29,10 +29,12 @@ import {
   recordTextCodecClass,
   shapeHasAccessorSlots,
   typeEquals,
+  sortArms,
   typeKey,
   unionContainerArmsOk,
 } from "../../../ir/ir.js";
 import { importMetaField, isImportMeta } from "../import-meta.js";
+import { boxedHandleReceiver, lowerHandlePropertyWrite } from "../handle-properties.js";
 import { heldEnvValueType } from "../builtins/environment.js";
 import { hasOptionalChainGuard, isOptionalChainTail } from "./optional-chains.js";
 import { lowerEnumAccess } from "../lower-enums.js";
@@ -1954,7 +1956,7 @@ function joinedFieldType(lowerer: Lowerer, fields: readonly { type: IrType }[]):
   };
   for (const field of fields) if (!push(field.type)) return null;
   if (arms.length === 0) return null;
-  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  sortArms(arms);
   return arms.length === 1 ? arms[0]! : { kind: "union", unionId: lowerer.unions.intern(arms) };
 }
 
@@ -2096,7 +2098,7 @@ function lowerTupleIndexRead(
       `dynamic tuple indexing of '${lowerer.fmt({ kind: "record", shapeId })}' (an element type has no value representation)`,
     );
   }
-  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  sortArms(arms);
   if (arms.length > 1 && !unionContainerArmsOk(arms)) {
     lowerer.unsupported(
       "SC1090",
@@ -2563,6 +2565,19 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
     );
   }
   const checkedReceiver = tryLowerExpression(lowerer, target.expression);
+  // `m[k] = v` over a typed handle in JavaScript: a property table entry
+  // of the handle (scr_dyn_handle_props.c).
+  {
+    const boxed = boxedHandleReceiver(lowerer, checkedReceiver);
+    if (boxed)
+      return lowerHandlePropertyWrite(
+        lowerer,
+        boxed,
+        lowerer.lowerExprExpecting(target.argumentExpression, DYN),
+        expr.right,
+        locOf(expr),
+      );
+  }
   if (checkedReceiver?.type.kind === "dyn") {
     return {
       kind: "exprStmt",

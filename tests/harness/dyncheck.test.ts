@@ -1087,6 +1087,39 @@ console.log("unreachable", asNum());
     expect(r.stderr).toContain("Uncaught TypeError: expected number at $, got string");
   });
 
+  test("a TYPED-REST target adapts the boxed function and checks each argument", async () => {
+    // The cast's domain includes rest-parameter signatures: the adapter packs
+    // the call's trailing arguments and the source thunk checks every one
+    // against its own parameter type. Node calls the source function with
+    // whatever arrived (here numbers into string params) and prints "1,2".
+    const r = await compileAndRun(
+      "dynfn-rest-arg-mismatch",
+      `function asDyn(value: unknown): unknown { return value; }
+const src = asDyn((...values: string[]) => values.join(","));
+const f = src as (...values: number[]) => string;
+console.log(f(1, 2));
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain("Uncaught TypeError: expected string at $[0], got number");
+  });
+
+  test("a look-alike object cannot acquire the boxed native result's kind", async () => {
+    // A native result type with a boxed form unwraps the BOX only: the object
+    // is a different kind. Node erases the cast and reads status 0.
+    const r = await compileAndRun(
+      "dyn-spawnres-lookalike",
+      `import type { SpawnSyncReturns } from "node:child_process";
+function asDyn(value: unknown): unknown { return value; }
+const lookalike = asDyn({ status: 0, signal: null, stdout: "x", stderr: "", pid: 1, output: [] });
+const result = lookalike as SpawnSyncReturns;
+console.log(result.status);
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain("Uncaught TypeError: expected SpawnSyncReturns at $, got object");
+  });
+
   test("boundary TypeErrors are catchable and calls keep working after", async () => {
     const r = await compileAndRun(
       "dynfn-recover",

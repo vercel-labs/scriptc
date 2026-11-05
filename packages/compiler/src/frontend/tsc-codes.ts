@@ -108,8 +108,9 @@ export type OpinionView = "checker" | "widen" | "throw" | "island";
 export interface Opinion {
   readonly view: OpinionView;
   /** The row admits only the constructs this guard accepts at the
-   * diagnostic's node. */
-  readonly site?: (node: ts.Node, diagnostic: ts.Diagnostic) => boolean;
+   * diagnostic's node. The program is the one the diagnostic came from, for
+   * a guard that asks the checker about the node's types. */
+  readonly site?: (node: ts.Node, diagnostic: ts.Diagnostic, program: ts.Program) => boolean;
   /** Keep the diagnostic in checked JavaScript: the project asked tsc for
    * this opinion. */
   readonly checkedJs?: "enforce";
@@ -155,7 +156,7 @@ const THROW = (why: string, corpus?: readonly string[]): Opinion => ({
 /** The row applies only where its guard holds; the code's TRIAGE_ROWS row
  * stays for every other site. */
 const at = (
-  site: (node: ts.Node, diagnostic: ts.Diagnostic) => boolean,
+  site: (node: ts.Node, diagnostic: ts.Diagnostic, program: ts.Program) => boolean,
   row: Opinion,
 ): Opinion => ({ ...row, site });
 
@@ -171,11 +172,51 @@ const notPrivateName = (node: ts.Node, d: ts.Diagnostic): boolean =>
   !ts.isPrivateIdentifier(node) && !ts.getSourceFileOfNode(node).text.startsWith("#", d.pos ?? -1);
 
 /** TS2362/2363/2365 fire on an operator whose other operand is bigint-ish;
- * plain JavaScript admits the `any` operand, and a primitive wrapper operand
- * (`new Number(1) * 2`) converts with ToPrimitive like any object. */
-const anyOrWrapperOperand = (_node: ts.Node, d: ts.Diagnostic): boolean => {
+ * plain JavaScript admits the `any` operand, a primitive wrapper operand
+ * (`new Number(1) * 2`) converts with ToPrimitive like any object, and a
+ * BigInt operand (`5n % 2n`, `0n | 1`, `{} >> 1n`, `1n < 1`) names the
+ * operator's own BigInt form — or the TypeError a mixed, Symbol or `>>>`
+ * operand throws. Both operands undergo ToNumeric (or ToPrimitive for a
+ * comparison) first, which is the order the checked-dynamic arithmetic,
+ * bitwise and comparison lowering applies, so each shape is answerable —
+ * including an operand that answers through Symbol.toPrimitive, which the
+ * runtime applies ahead of valueOf/toString whichever way the key is
+ * spelled (`{[Symbol.toPrimitive]: () => 9n} % 5n` answers `4n`, as Node
+ * does).
+ *
+ * A compound assignment on a BigInt target is the exception. Node reads the
+ * target, applies the operator and stores whatever came back, so a partner
+ * that answers a string turns the binding into a string (`1n + {}` is
+ * "1[object Object]", so `x += {}` leaves a string in `x`), and any other
+ * partner reaches the mixed-type TypeError. The lowering's BigInt arms take
+ * two BigInts, so the assignment would either check a string result against
+ * BigInt storage or raise the compiler's own refusal at run time; tsc's
+ * refusal stays for every compound assignment on a BigInt target. */
+const coercibleOperatorOperand = (
+  node: ts.Node,
+  d: ts.Diagnostic,
+  program: ts.Program,
+): boolean => {
   const text = ts.flattenDiagnosticMessageText(d, "\n");
-  return text.includes("'any'") || /'(Number|String|Boolean)'/.test(text);
+  const coercible =
+    text.includes("'any'") ||
+    /'(Number|String|Boolean)'/.test(text) ||
+    /\bbigint\b/.test(text) ||
+    /\d+n\b/.test(text);
+  return coercible && !bigintCompoundTarget(node, program);
+};
+
+/** Whether `node` sits in a compound assignment (`+=`, `-=`, ...) whose
+ * target is a BigInt binding. */
+const bigintCompoundTarget = (node: ts.Node, program: ts.Program): boolean => {
+  let current: ts.Node | undefined = node;
+  while (current !== undefined && !ts.isBinaryExpression(current)) current = current.parent;
+  if (current === undefined) return false;
+  const operator = current.operatorToken.kind;
+  if (operator <= ts.SyntaxKind.FirstAssignment || operator > ts.SyntaxKind.LastAssignment)
+    return false;
+  const checker = program.getTypeChecker();
+  return (checker.getTypeAtLocation(current.left).flags & ts.TypeFlags.BigIntLike) !== 0;
 };
 
 /** TS2469 names the operator. `'' + sym` and `sym += ''` perform ToString,
@@ -920,9 +961,9 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
   [
     2362,
     at(
-      anyOrWrapperOperand,
+      coercibleOperatorOperand,
       CHECKER(
-        "arithmetic on an 'any' or wrapper operand is plain JavaScript: the operator converts it with ToPrimitive",
+        "an 'any', wrapper or BigInt operand is plain JavaScript: the operator converts both with ToPrimitive/ToNumeric first",
         ["tests/corpus/js-primitive-wrappers.js", "tests/corpus/js-primitive-wrappers-zero-arg.js"],
       ),
     ),
@@ -930,18 +971,18 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
   [
     2363,
     at(
-      anyOrWrapperOperand,
+      coercibleOperatorOperand,
       CHECKER(
-        "arithmetic on an 'any' or wrapper operand is plain JavaScript: the operator converts it with ToPrimitive",
+        "an 'any', wrapper or BigInt operand is plain JavaScript: the operator converts both with ToPrimitive/ToNumeric first",
       ),
     ),
   ],
   [
     2365,
     at(
-      anyOrWrapperOperand,
+      coercibleOperatorOperand,
       CHECKER(
-        "arithmetic on an 'any' or wrapper operand is plain JavaScript: the operator converts it with ToPrimitive",
+        "an 'any', wrapper or BigInt operand is plain JavaScript: the operator converts both with ToPrimitive/ToNumeric first",
         ["tests/corpus/js-primitive-wrappers.js", "tests/corpus/1614-js-fence-dodges.cjs"],
       ),
     ),
@@ -1093,9 +1134,12 @@ export function jsOpinion(code: number): Opinion | null {
  * the construct needs a lowering that does not exist yet, so admitting the
  * code would compile a program the lowerer cannot build correctly.
  *
- *  - TS2365 (an operator on operands the lowerer cannot convert, `true + 1`)
- *    needs ToPrimitive on a static operand; the arithmetic lowering answers
- *    SC1043. Its TS2362/2363 siblings (an arithmetic operand of the wrong
+ *  - TS2365 with no BigInt operand (an operator on operands the lowerer
+ *    cannot convert, `true + 1`) needs ToPrimitive on a static operand; the
+ *    arithmetic lowering answers SC1043. Its BigInt forms are admitted by the
+ *    row above, because the checked-dynamic arithmetic, bitwise and
+ *    comparison lowering already applies ToNumeric/ToPrimitive in Node's
+ *    order. Its TS2362/2363 siblings (an arithmetic operand of the wrong
  *    type) never fire on a JS source — TypeScript only demands an operand
  *    type it knows, and an unannotated JavaScript value is `any` — so the pair
  *    has nothing to relax here. The invalid-assignment-target forms the

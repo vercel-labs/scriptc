@@ -45,6 +45,7 @@ import {
   neverTaintedJsType,
   own,
 } from "../lowerer.js";
+import { httpClientFnBindingOf, httpClientSecureRef } from "../lower-server.js";
 import {
   ARRAY_METHODS,
   MAP_METHODS,
@@ -85,6 +86,8 @@ import {
   isDynTypedRefType,
   isUnitType,
   typeEquals,
+  sortArms,
+  sortArmsTotal,
   typeKey,
   unionContainerArmsOk,
   BYTES_ELEMENT_SIZE,
@@ -224,7 +227,7 @@ import { isFsStreamMember, lowerFsStreamProperty } from "../builtins/fs-streams.
 import { keyedFieldRead } from "./keyed-field-targets.js";
 import { heldEnvValueType } from "../builtins/environment.js";
 import { promisePrototypeValue } from "../thenables.js";
-import { lowerChildPropertyRead } from "../handle-properties.js";
+import { lowerChildPropertyRead, lowerHandlePropertyRead } from "../handle-properties.js";
 
 /** True when a property access names an ABSTRACT property declaration
  * (`abstract p: number` — a PropertyDeclaration, not an accessor).
@@ -1255,6 +1258,36 @@ export function lowerPropertyAccessExpr(
       };
     }
   }
+  // A client function chosen at run time (`const requestFn = c ?
+  // https.request : http.request`): both arms are Node's `request` (the
+  // .get pair both are `get`), and the length follows the arm the program
+  // picked — https.request.length is 0, http.request.length 3.
+  if (expr.name.text === "name" || expr.name.text === "length") {
+    const ident = ts.isIdentifier(expr.expression) ? expr.expression : null;
+    const sym = ident ? lowerer.resolveValueSymbol(ident) : undefined;
+    const binding = sym ? httpClientFnBindingOf(lowerer, sym) : undefined;
+    if (binding) {
+      if (expr.name.text === "name")
+        return { kind: "strLit", value: binding.member, type: STRING, loc };
+      const httpLength = 3;
+      const httpsLength = binding.member === "get" ? 3 : 0;
+      if (httpsLength === httpLength) return { kind: "numLit", value: httpLength, type: F64, loc };
+      const secure: IrExpr =
+        binding.secureStorage !== undefined
+          ? httpClientSecureRef(lowerer, binding, expr, loc)
+          : lowerer.lowerCondition(binding.cond);
+      return {
+        kind: "ternary",
+        cond: binding.trueSecure
+          ? secure
+          : { kind: "unary", op: "!", operand: secure, type: BOOL, loc },
+        then: { kind: "numLit", value: httpsLength, type: F64, loc },
+        else_: { kind: "numLit", value: httpLength, type: F64, loc },
+        type: F64,
+        loc,
+      };
+    }
+  }
   // `f.name` / `f.length` / own properties on a FUNCTION-typed JS
   // value (the mustCall wrapper's function-instance members): read
   // through the dyn box — the closure's own-property table answers
@@ -1272,6 +1305,25 @@ export function lowerPropertyAccessExpr(
       expr.name.text === "constructor")
   ) {
     const probed = tryLowerExpression(lowerer, expr.expression);
+    // A builtin function value's own name and length are fixed when the
+    // adapter is built: answer them without boxing the closure. Node's
+    // wrapper names (`process.cwd` is `wrappedCwd`) and lengths that
+    // differ from the adapter's parameters (`fs.readFile.length` is 3)
+    // come from the same table the boxed value reports.
+    if (
+      probed?.type.kind === "func" &&
+      (expr.name.text === "name" || expr.name.text === "length")
+    ) {
+      const identity = lowerer.builtinFunctionIdentity(probed);
+      if (
+        expr.name.text === "name" &&
+        identity.fnName !== undefined &&
+        !identity.fnNameMainThreadOnly
+      )
+        return { kind: "strLit", value: identity.fnName, type: STRING, loc };
+      if (expr.name.text === "length" && identity.fnLength !== undefined)
+        return { kind: "numLit", value: identity.fnLength, type: F64, loc };
+    }
     // Inferred callable returns can use checked storage even when the
     // checker still describes a function. Read its actual dyn value;
     // the ambient Function member must not hide its own properties.
@@ -1303,7 +1355,10 @@ export function lowerPropertyAccessExpr(
       );
     }
     if (
-      (isJsSourceFile(ts.getSourceFileOfNode(expr)) || expr.name.text === "constructor") &&
+      (isJsSourceFile(ts.getSourceFileOfNode(expr)) ||
+        expr.name.text === "name" ||
+        expr.name.text === "length" ||
+        expr.name.text === "constructor") &&
       probed?.type.kind === "func" &&
       canBoxFuncIntoDyn(
         probed.type,
@@ -1764,6 +1819,13 @@ export function lowerPropertyAccessExpr(
   }
   const childProperty = lowerChildPropertyRead(lowerer, expr);
   if (childProperty) return childProperty;
+  // A member a typed handle's class does not declare (a JavaScript read
+  // such as `m.label`): a property table entry of the handle
+  // (scr_dyn_handle_props.c).
+  {
+    const handleProperty = lowerHandlePropertyRead(lowerer, expr, recvLowered);
+    if (handleProperty) return handleProperty;
+  }
   // A member a typed array's type does not declare (a JavaScript read, or
   // one under @ts-ignore), such as the feature probe `typeof bytes.toHex`:
   // when Node's prototype chain for the value lacks the name too, the read
@@ -2024,9 +2086,7 @@ function mergeReadTypes(lowerer: Lowerer, types: IrType[]): IrType | null {
   }
   if (arms.length === 0) return null;
   if (arms.length === 1) return arms[0]!;
-  const canonical = arms.sort((a, b) =>
-    typeKey(a) < typeKey(b) ? -1 : typeKey(a) > typeKey(b) ? 1 : 0,
-  );
+  const canonical = sortArmsTotal(arms);
   return { kind: "union", unionId: lowerer.unions.intern(canonical) };
 }
 
@@ -4717,7 +4777,7 @@ export function lowerUnionKeyedRead(
   ) {
     return null;
   }
-  joinArms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  sortArms(joinArms);
   const type: IrType =
     joinArms.length === 1
       ? joinArms[0]!

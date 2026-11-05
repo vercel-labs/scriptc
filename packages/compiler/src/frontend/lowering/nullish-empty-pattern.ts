@@ -1,4 +1,4 @@
-import { BOOL, type IrExpr, type IrType, isUnitType, typeKey } from "../../ir/ir.js";
+import { BOOL, type IrExpr, type IrType, isUnitType, sortArms } from "../../ir/ir.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
@@ -85,7 +85,7 @@ export function nullishEmptyPatternSource(
   }
   const record = records[0] as IrType & { kind: "record" };
   const empty: IrType = { kind: "record", shapeId: lowerer.shapes.intern([]) };
-  const resultArms = [record, empty].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  const resultArms = sortArms([record, empty]);
   const resultType: IrType = { kind: "union", unionId: lowerer.unions.intern(resultArms) };
   const sourceTag = arms.indexOf(record);
   const tmp = lowerer.declareHiddenLocal("%nullishEmpty", left.type);

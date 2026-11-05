@@ -111,6 +111,9 @@ export function prepareExecutableModule(
         ? { islandModules: new Set(islandDecision.modules.keys()) }
         : {}),
       islandScan,
+      // The reload re-reads the program: the define values still decide its
+      // branches and set its variables at startup.
+      ...(opts.define !== undefined ? { define: opts.define } : {}),
     });
     timing("frontend-island-reload");
   }

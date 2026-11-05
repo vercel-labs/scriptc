@@ -4855,6 +4855,7 @@ export class Lowerer {
     "generalNodeStreams",
     "dynNodeStreams",
     "targetPlatform",
+    "define",
     "startupCrash",
     "projectCheckJs",
     "libraryCallbacks",

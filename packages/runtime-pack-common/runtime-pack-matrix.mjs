@@ -344,6 +344,11 @@ export function variantsFor(source) {
   // and its default object compiles empty. A program with the fact links
   // the unit at all (OPTIONAL_RUNTIME_SOURCES).
   if (source === "scr_js_buffers.c") withJsObjectModel(variants);
+  // A dynamic store to the `__proto__` member is Object.prototype's setter,
+  // never a field the receiver's shape grows (scr_json.c answers it), so the
+  // shape store probe declines it. Only the object model build models that
+  // accessor: every other program keeps the default object, byte for byte.
+  if (source === "scr_js_object.c") withJsObjectModel(variants);
   // util.inspect prints a BigInt typed array by reading its elements as
   // BigInts, whichever build of the unit the program selects. Its Node island
   // build is not the one these variants name: island output keeps its own
@@ -438,6 +443,21 @@ export function variantsFor(source) {
       id: "handle-classes",
       when: { webStreams: true },
       defines: ["SCR_HANDLE_CLASSES"],
+    });
+  }
+  // A Blob or File request body sends the blob's bytes and type, as Node
+  // does; programs that build no Blob or File keep the default fetch unit
+  // byte for byte, and the combination with web streams has its own build.
+  if (source === "scr_fetch.c") {
+    variants.push({
+      id: "web-bodies",
+      when: { webBodies: true },
+      defines: ["SCR_WEB_BODIES"],
+    });
+    variants.push({
+      id: "handle-classes-web-bodies",
+      when: { webStreams: true, webBodies: true },
+      defines: ["SCR_HANDLE_CLASSES", "SCR_WEB_BODIES"],
     });
   }
   // instanceof over both web stream and Node island handles.

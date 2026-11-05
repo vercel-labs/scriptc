@@ -56,6 +56,22 @@ declare namespace NodeJS {
     libUrl?: string | undefined;
     lts?: string | undefined;
   }
+  /* process.report: the diagnostic report of this process. A build with a
+   * Node island answers it from the island — the same process, so the
+   * report's sharedObjects lists the binary's real libraries; a build
+   * without islands fences the member rather than fabricating a report.
+   * The report object itself is checked-dynamic. */
+  interface ProcessReport {
+    directory: string;
+    filename: string;
+    compact: boolean;
+    excludeNetwork: boolean;
+    signal: string;
+    reportOnFatalError: boolean;
+    reportOnSignal: boolean;
+    reportOnUncaughtException: boolean;
+    getReport(error?: Error): object;
+  }
   interface ResourceUsage {
     userCPUTime: number;
     systemCPUTime: number;
@@ -270,6 +286,9 @@ declare var process: {
   /* The extra CLI arguments Node itself consumed (--expose-internals,
    * ...): a compiled binary consumed none, so this is always []. */
   readonly execArgv: string[];
+  /* The option names the compatibility target accepts in NODE_OPTIONS —
+   * one stable set, like Node's. */
+  readonly allowedNodeEnvironmentFlags: ReadonlySet<string>;
   /* Node's internal "exit sequence started" flag (real, undocumented
    * surface — the test harness reads it): true while 'exit' listeners
    * run, false otherwise. */
@@ -293,6 +312,8 @@ declare var process: {
   title: string;
   argv0: string;
   readonly release: NodeJS.ProcessRelease;
+  /* The diagnostic report (Node islands only; see NodeJS.ProcessReport). */
+  readonly report: NodeJS.ProcessReport;
   /* signal admits null (Node treats it as the SIGTERM default) — real
    * callers forward a `string | null` result field. */
   kill(pid: number, signal?: string | number | null): true;
@@ -1326,7 +1347,7 @@ interface ResponseInit {
 }
 declare var Response: {
   new (
-    body?: string | Uint8Array | ReadableStream<Uint8Array> | null,
+    body?: string | Uint8Array | ReadableStream<Uint8Array> | Blob | null,
     init?: ResponseInit,
   ): Response;
   readonly prototype: Response;
@@ -1400,7 +1421,7 @@ interface Request {
 interface RequestInit {
   method?: string;
   headers?: Headers | Record<string, string> | readonly (readonly [string, string])[];
-  body?: string | Uint8Array | ReadableStream<Uint8Array> | null;
+  body?: string | Uint8Array | ReadableStream<Uint8Array> | Blob | null;
   duplex?: "half";
   redirect?: "follow" | "error" | "manual";
   signal?: AbortSignal;

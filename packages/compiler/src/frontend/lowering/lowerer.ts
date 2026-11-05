@@ -232,11 +232,7 @@ import { addUntypedIntegrityWords, guardClassAttributeWrites } from "./class-att
 import { inferredCollectionType } from "./js-collection-types.js";
 import { sloppyDynamicWrites } from "./frozen-records.js";
 import { guardFrozenWrites, markSloppyRecordWrites } from "./frozen-records.js";
-import {
-  alignHandlePropertyChildFact,
-  applyHandleProperties,
-  handlePropertyScanRoots,
-} from "./handle-properties.js";
+import { applyHandleProperties, handlePropertyScanRoots } from "./handle-properties.js";
 import { installBufferValue } from "./containers/bytes.js";
 import { installMutableBuffersArm } from "./buffers.js";
 import { ClassProtocols } from "./class-protocols.js";
@@ -10490,11 +10486,6 @@ export class Lowerer {
     // rewrite keeps every dynamic operation dynamic (each dyn operator
     // becomes its js twin), so coverage's dynamic statements are unchanged.
     if (module && this.dynamicFunctions.length > 0) promoteJsvals(module);
-    // The child wrapper a handle-property table asks for must match the
-    // module fact that links scr_child.c (the emitter's childProcess
-    // feature): the census that requests it scans files the program may not
-    // reach. Aligned on the final module, so both sides read one fact.
-    if (module) alignHandlePropertyChildFact(module);
     // A program that replaces a process output stream's write method beside
     // Node islands is refused by the executable planner (SC8006): an
     // island's process.stdout is its own object. Only island builds pay for

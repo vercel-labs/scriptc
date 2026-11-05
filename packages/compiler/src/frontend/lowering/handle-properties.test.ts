@@ -17,14 +17,22 @@ const fn = (name: string, body: IrStmt[]): IrFunction => ({
   loc,
 });
 
+/** A child local makes moduleUsesChildProcess true over these functions,
+ * the fact that links scr_child.c. */
+const withChild = (f: IrFunction): IrFunction => ({
+  ...f,
+  locals: [{ id: "%child", name: "child", type: { kind: "child" }, mutable: false }],
+});
+
 test("renames a libCall the IR reaches from several statements once", () => {
   const call: IrExpr = { kind: "libCall", fn: "dyn.defineProperty", args: [], type: VOID, loc };
   const use: IrStmt = { kind: "exprStmt", expr: call, loc };
-  const functions = [fn(ENTRY_NAME, [use, use]), fn("helper", [use])];
+  const functions = [withChild(fn(ENTRY_NAME, [use, use])), fn("helper", [use])];
   applyHandleProperties(
     {
       writesOntoChildren: true,
       handleAdditions: { grants: new Map(), any: false },
+      childAdditions: { written: new Set(), everyName: false, any: true },
     } as unknown as Lowerer,
     functions,
   );
@@ -33,6 +41,20 @@ test("renames a libCall the IR reaches from several statements once", () => {
     kind: "exprStmt",
     expr: { kind: "libCall", fn: "handle.propsInstall", args: [{ kind: "numLit", value: 1 }] },
   });
+});
+
+test("a child write in a module without the child fact installs no wrapper", () => {
+  const functions = [fn(ENTRY_NAME, [])];
+  applyHandleProperties(
+    {
+      writesOntoChildren: true,
+      handleAdditions: { grants: new Map(), any: false },
+      childAdditions: { written: new Set(), everyName: false, any: true },
+    } as unknown as Lowerer,
+    functions,
+  );
+  // The write is dead: the module cannot box a child, so nothing installs.
+  expect(functions[0]!.body).toEqual([]);
 });
 
 /** The IR module of a one-file program. */
@@ -111,10 +133,10 @@ console.log(new Map().size);
 });
 
 test("a JavaScript file that only mentions child_process in text requests no child wrapper", async () => {
-  // The census reads the file as text, so a comment mentioning child_process
-  // and defineProperty asks for the child table; the module cannot hold a
-  // child handle, so the install must not ask scr_child.c's ops of a binary
-  // that never links them.
+  // A comment mentioning child_process makes the census walk the file, but
+  // nothing writes onto a child, so the program asks for no child wrapper:
+  // the install must not ask scr_child.c's ops of a binary that never links
+  // them.
   const mod = await compileIr(
     `"use strict";
 // child_process and defineProperty are words here, not calls.

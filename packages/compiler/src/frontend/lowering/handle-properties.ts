@@ -6,13 +6,11 @@
  *
  * The runtime keeps such properties in a side table per handle
  * (scr_dyn_handle_props.c). Only programs that can add one link it: a
- * JavaScript write of a property onto a typed handle, a type-visible
- * definition or integrity call on one, or JavaScript that calls
- * defineProperty in a program whose JavaScript loads child_process. Those
- * programs install the table at start, and their defineProperty,
- * getOwnPropertyDescriptor, thenable await and typed `child.on(event,
- * listener)` calls take the entries that consult it. Every other program
- * lowers exactly as before.
+ * JavaScript write of a property onto a typed handle, or a type-visible
+ * definition or integrity call on one. Those programs install the table at
+ * start, and their defineProperty, getOwnPropertyDescriptor, thenable await
+ * and typed `child.on(event, listener)` calls take the entries that consult
+ * it. Every other program lowers exactly as before.
  *
  * A write or definition of a name the handle's class DECLARES is a grant:
  * the compiler censuses the shadowed names per class (`d.getTime = f` on a
@@ -26,10 +24,10 @@
 import * as ts from "../ts7/adapter.js";
 import { constituentTypes } from "../ts7/checker.js";
 import { isJsSourceFile, locOf } from "../program.js";
-import type { IrExpr, IrFunction, IrLibFn, IrModule, IrStmt, IrType, SrcLoc } from "../../ir/ir.js";
+import type { IrExpr, IrFunction, IrLibFn, IrStmt, IrType, SrcLoc } from "../../ir/ir.js";
 import { DYN, F64, STRING, VOID } from "../../ir/ir.js";
 import { moduleUsesChildProcess } from "../../ir/runtime-features.js";
-import { everyModuleNode, everyStmt, transformStmtList } from "../../ir/traverse.js";
+import { everyStmt, transformStmtList } from "../../ir/traverse.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { ENTRY_NAME, type Lowerer } from "./lowerer.js";
 import { GUARDED_CONSUMERS, consumerName } from "./primitive-wrappers.js";
@@ -132,8 +130,8 @@ interface ChildAdditions {
 }
 
 /** What the program's JavaScript adds to children: `child.name = value`
- * writes onto typed children in any JavaScript file of a program that
- * loads child_process, and defineProperty calls in such a program. */
+ * writes and defineProperty calls onto values the checker types as a
+ * child, in any JavaScript file. */
 function childAdditions(lowerer: Lowerer): ChildAdditions {
   let known = lowerer.childAdditions;
   if (known) return known;
@@ -141,13 +139,15 @@ function childAdditions(lowerer: Lowerer): ChildAdditions {
   const files = lowerer.program
     .getImplementationSourceFiles()
     .filter((sf) => !sf.isDeclarationFile && isJsSourceFile(sf));
-  const spawns = files.some((sf) => sf.text.includes("child_process"));
-  const defines = files.some((sf) => sf.text.includes("defineProperty"));
-  // A child can reach any module (`module.exports = (child) => { child.x =
-  // ... }`), so once some file loads child_process every JavaScript file's
-  // writes onto children count.
+  // Walking every file maps the types of every write target, which is work
+  // (and type-mapping memo state) a program without a child must not pay.
+  // The probe is a precondition for the walk alone: it decides nothing. A
+  // child can reach any module (`module.exports = (child) => { child.x =
+  // ... }`), so once any JavaScript file names child_process every
+  // JavaScript file's writes onto children count.
   // A key that is not a literal may name any member, so every member then
   // goes through the child's box.
+  const spawns = files.some((sf) => sf.text.includes("child_process"));
   let everyName = false;
   const isChild = (e: ts.Expression): boolean =>
     lowerer.mapTypeOf(lowerer.typeOf(e))?.kind === "child";
@@ -202,7 +202,7 @@ function childAdditions(lowerer: Lowerer): ChildAdditions {
       return true;
     });
   }
-  known = { written, everyName, any: written.size > 0 || everyName || (spawns && defines) };
+  known = { written, everyName, any: written.size > 0 || everyName };
   lowerer.childAdditions = known;
   return known;
 }
@@ -864,12 +864,33 @@ function grantString(lowerer: Lowerer): string | null {
   return parts.length > 0 ? parts.join(";") : null;
 }
 
+/** The childProcess fact over the final functions, before the module's type
+ * tables are assembled. This is the same fact the emitter reads to link and
+ * install scr_child.c (moduleUsesChildProcess over the same function
+ * bodies): a child value can only be boxed from a body, so a type table
+ * that no body boxes a value in adds no child wrapper either. */
+function functionsUseChildProcess(functions: IrFunction[]): boolean {
+  return moduleUsesChildProcess({
+    irVersion: 17,
+    sourceFile: "",
+    functions,
+    entry: ENTRY_NAME,
+  });
+}
+
 /** Switches a program that can add properties to handles onto the
  * property-table entries (in place), installs the table in %main, hands the
  * runtime the member names the program shadows, and guards the graph
  * walkers of a program that adds properties to handles. */
 export function applyHandleProperties(lowerer: Lowerer, functions: IrFunction[]): void {
-  const child = lowerer.writesOntoChildren || childAdditions(lowerer).any;
+  // The install asks the runtime for the child wrapper, whose ops scr_child.c
+  // installs. That unit links from the module's childProcess fact — the same
+  // fact the emitter reads — so a request for the wrapper is gated on it.
+  // The census answers the other half: whether the program adds properties
+  // to children at all (a spawn program that never does installs nothing).
+  const child =
+    (lowerer.writesOntoChildren || childAdditions(lowerer).any) &&
+    functionsUseChildProcess(functions);
   const handle = programAddsHandleProperties(lowerer);
   if (!child && !handle) return;
   const renames = new Map<IrLibFn, IrLibFn>(child ? RENAMES : []);
@@ -919,31 +940,6 @@ export function applyHandleProperties(lowerer: Lowerer, functions: IrFunction[])
     main.body.unshift(...prologue);
   }
   if (handle) guardHandleConsumers(lowerer, functions);
-}
-
-/** The child wrapper `handle.propsInstall(1)` asks the runtime for needs
- * scr_child.c's ops. They are installed by scr_child_dyn_install, which the
- * emitter emits from the childProcess runtime feature — the module fact
- * that links scr_child.c. `childAdditions` counts every JavaScript file the
- * type checker loaded, not just the ones the program reaches, so a
- * program whose npm-static packages merely mention child_process (a
- * comment or a string is enough) asks for a wrapper for handles it can
- * never box: the install probes a tag nothing installed and traps at start.
- * Align the request with the unit once the module is final; a program that
- * cannot carry a child handle needs no wrapper, and one that can still asks
- * for it. */
-export function alignHandlePropertyChildFact(module: IrModule): void {
-  if (moduleUsesChildProcess(module)) return;
-  everyModuleNode(module, {
-    expr: (e) => {
-      if (e.kind !== "libCall" || e.fn !== "handle.propsInstall") return true;
-      const arg = e.args[0];
-      if (arg?.kind === "numLit" && arg.value === 1) arg.value = 0;
-      return true;
-    },
-    stmt: () => true,
-    type: () => true,
-  });
 }
 
 /** Whether a type holds a typed handle anywhere the dyn copy of the value

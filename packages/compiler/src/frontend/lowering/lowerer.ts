@@ -2466,6 +2466,14 @@ export interface UntypedLoopSite {
   sync: string | null;
 }
 
+/** A record field slot as absence cares about it: the slot type and, for a
+ * checked-dynamic slot declared `?:`, the flag that gives it the ABSENT
+ * marker state. A bare IrType stands for a required slot. */
+export interface AbsentSlot {
+  type: IrType;
+  optional?: true;
+}
+
 /** The program module a createRequire binding requires. */
 type CreateRequireTarget = NonNullable<ReturnType<typeof createRequireProgramModuleOf>>;
 
@@ -15323,13 +15331,22 @@ export class Lowerer {
   }
 
   /** The value an OMITTED or deleted property leaves in a record field
-   * slot of `type`: the ABSENT state for undefined-armed unions (the slot
-   * reads as undefined but the property does not exist), the dyn
-   * undefined for 'unknown' slots, and null when the slot cannot be
-   * missing. Only legal as a direct field-slot write (IR fieldAbsent). */
-  absentFieldValue(type: IrType, loc: SrcLoc): IrExpr | null {
+   * slot: the ABSENT state for undefined-armed unions (the slot reads as
+   * undefined but the property does not exist), the absent dyn marker for
+   * an OPTIONAL checked-dynamic slot (`optional: true` on the shape field —
+   * an omitted `?: unknown` property is absent, not present-and-undefined),
+   * the dyn undefined for a required 'unknown' slot, and null when the
+   * slot cannot be missing. Pass the shape FIELD when the caller has one:
+   * the bare dyn type cannot tell optional from required. Only legal as a
+   * direct field-slot write (IR fieldAbsent). */
+  absentFieldValue(field: AbsentSlot | IrType, loc: SrcLoc): IrExpr | null {
+    const type = "kind" in field ? field : field.type;
+    const optional = "kind" in field ? false : field.optional === true;
     if (type.kind === "union" && this.armTag(type.unionId, UNDEFINED_T) >= 0) {
       return { kind: "fieldAbsent", unionId: type.unionId, type, loc };
+    }
+    if (type.kind === "dyn" && optional) {
+      return { kind: "fieldAbsent", type, loc };
     }
     return this.wrappedUndefined(type, loc);
   }
@@ -15345,25 +15362,33 @@ export class Lowerer {
     field: string,
     value: IrExpr,
     loc: SrcLoc,
+    /** The destination field, when the copy changes shape: its optional dyn
+     * flag decides whether an absent source keeps the marker or writes an
+     * ordinary dyn undefined. Defaults to the source field. */
+    target?: AbsentSlot,
   ): IrExpr {
     const present = this.recordFieldPresent(obj, shapeId, field, loc);
     if (present.kind !== "recordHas") return value;
-    const absent = this.absentFieldValue(value.type, loc);
+    const absent = this.absentFieldValue(target ?? value.type, loc);
     if (absent?.kind !== "fieldAbsent") return value;
     return { kind: "ternary", cond: present, then: value, else_: absent, type: value.type, loc };
   }
 
   /** Own-property presence of declared field `field` on record `obj`
    * (borrowed — callers pass a repeatable receiver): a runtime test for
-   * undefined-armed union fields, which can be absent, and `true` for
-   * every other declared field. */
+   * undefined-armed union fields and for optional checked-dynamic fields,
+   * which can be absent, and `true` for every other declared field. */
   recordFieldPresent(obj: IrExpr, shapeId: string, field: string, loc: SrcLoc): IrExpr {
     // A partial record view (partial-assertions.ts) can lack a field its
     // asserted literal never wrote, whatever the field's required type.
     if (partialAssertionFields(this, shapeId).has(field))
       return { kind: "recordHas", obj, shapeId, field, type: BOOL, loc };
     const f = this.shapes.get(shapeId)?.fields.find((x) => x.name === field);
-    if (f && f.type.kind === "union" && this.armTag(f.type.unionId, UNDEFINED_T) >= 0) {
+    if (
+      f &&
+      ((f.type.kind === "union" && this.armTag(f.type.unionId, UNDEFINED_T) >= 0) ||
+        (f.optional === true && f.type.kind === "dyn"))
+    ) {
       return { kind: "recordHas", obj, shapeId, field, type: BOOL, loc };
     }
     return { kind: "boolLit", value: true, type: BOOL, loc };

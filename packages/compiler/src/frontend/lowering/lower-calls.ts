@@ -10505,6 +10505,16 @@ function lowerObjectStaticCall(
           else_: null,
           loc,
         };
+      } else if (f.optional === true && f.type.kind === "dyn") {
+        // An optional checked-dynamic field with the ABSENT marker
+        // contributes no key either.
+        stmt = {
+          kind: "if",
+          cond: lowerer.recordFieldPresent(obj, shapeId, f.name, loc),
+          then: [stmt],
+          else_: null,
+          loc,
+        };
       }
       return stmt;
     };

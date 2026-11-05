@@ -381,22 +381,6 @@ export function functionUsesThis(fn: ts.FunctionLikeDeclaration): boolean {
   return found;
 }
 
-/** A function declaration, or a variable initialized with a function or
- * arrow expression, that never reads `this`. */
-function symbolIsThisFreeFunction(lowerer: Lowerer, sym: ts.Symbol | undefined): boolean {
-  const decls = sym ? sym.declarations : [];
-  const fn = decls.find(ts.isFunctionDeclaration);
-  if (fn !== undefined) return !functionUsesThis(fn);
-  const v = decls.find(ts.isVariableDeclaration);
-  let init = v?.initializer;
-  while (init !== undefined && ts.isParenthesizedExpression(init)) init = init.expression;
-  return (
-    init !== undefined &&
-    (ts.isFunctionExpression(init) || ts.isArrowFunction(init)) &&
-    !functionUsesThis(init)
-  );
-}
-
 /** The ES-module half (a TypeScript module required from JavaScript, such
  * as a package shim): require() answers its namespace, so a call through
  * it binds `this` to the namespace. True when the export is a function

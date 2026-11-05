@@ -4760,6 +4760,9 @@ export class Lowerer {
       checkedTable("initNameOf", () => this.initNameOf.size),
       checkedTable("cjsModuleIdOf", () => this.cjsModuleIdOf.size),
       checkedTable("cjsModuleFiles", () => this.cjsModuleFiles.length),
+      // Which module's link first copied a changing data export: a unit that
+      // records an entry changes what a later link lowering emits.
+      checkedTable("cjsLinkedDataModules", () => this.cjsLinkedDataModules.size),
       checkedTable("moduleGuardOf", () => this.moduleGuardOf.size),
       checkedTable("asyncInitFiles", () => this.asyncInitFiles.size),
       checkedTable("modulePromiseOf", () => this.modulePromiseOf.size),
@@ -4911,6 +4914,11 @@ export class Lowerer {
     "cjsSplitRequireBindings",
     "cjsWholeExportSymbols",
     "cjsLiveMemberExports",
+    "cjsNamespaceTargets",
+    "cjsReceiverProofs",
+    "cjsLateWrittenExports",
+    "cjsMemberWritesByName",
+    "cjsEsmBoundNames",
     "cjsNamespaces",
     "createRequireBindingTargets",
     "createRequireElementTargets",

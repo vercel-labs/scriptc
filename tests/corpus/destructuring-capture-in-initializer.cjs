@@ -1,9 +1,8 @@
 "use strict";
 // A closure inside a destructuring declaration's initializer can read the
-// names the declaration binds, as React's
-// `const { pipe } = renderToPipeableStream(app, { onShellReady() { pipe(out); } })`
-// does. Before the destructuring completes, the read throws Node's
-// ReferenceError.
+// names the declaration binds, as a callback API's
+// `const { pipe } = render(app, { onReady() { pipe(out); } })` does. Before
+// the destructuring completes, the read throws Node's ReferenceError.
 function start(options) {
   if (options.early) options.early();
   setTimeout(() => options.ready(), 1);

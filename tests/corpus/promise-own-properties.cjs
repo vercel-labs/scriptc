@@ -1,7 +1,8 @@
 "use strict";
-// A promise holds own properties as any object does: React's use() tracks
-// a thenable's state in `status`, `value` and `reason` on the promise. The
-// promises reach this code as untyped values, as thenables reach use().
+// A promise holds own properties as any object does: code that tracks a
+// thenable's state stores `status`, `value` and `reason` on the promise. The
+// promises reach this code as untyped values, as thenables passed to a
+// library do.
 function untyped(value) {
   return value;
 }

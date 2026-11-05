@@ -434,11 +434,14 @@ export function lowerArrayLiteral(
         const fieldType = byName.get(String(i));
         if (!fieldType) lowerer.badType(el, lowerer.typeOf(el));
         // A HOLE (`[x = 23] = [,]`, `f([,])` through a tuple parameter):
-        // the positional field holds the undefined every read of a hole
-        // answers. An optional position admits it; a position typed
-        // without undefined keeps the element's own refusal, since a hole
-        // is not a value the field can hold.
-        if (ts.isOmittedExpression(el))
+        // the positional field reads as the undefined every read of a hole
+        // answers, and the property does not exist, so `in`, Object.keys
+        // and the own-key probes skip it — the field's absent state. A
+        // position typed without undefined keeps the element's own
+        // refusal, since a hole is not a value the field can hold.
+        if (ts.isOmittedExpression(el)) {
+          const absent = lowerer.absentFieldValue(fieldType, locOf(el));
+          if (absent !== null) return { name: String(i), value: absent };
           return {
             name: String(i),
             value: lowerer.coerceInto(
@@ -447,6 +450,7 @@ export function lowerArrayLiteral(
               fieldType,
             ),
           };
+        }
         return { name: String(i), value: lowerer.lowerExprExpecting(el, fieldType) };
       });
       return { kind: "recordLit", fields, type: mapped, loc };

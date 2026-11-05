@@ -3677,17 +3677,33 @@ export class LlDyn {
           B.line(`call void @scr_dyn_from_enter(ptr %v)`);
         }
         if (shape.tuple) {
-          // A tuple converts as the JSON ARRAY it is everywhere else.
+          // A tuple converts as the JSON ARRAY it is everywhere else. An
+          // ABSENT optional element converts as a HOLE: length counts it,
+          // while `in`, Object.keys and the own-key probes skip it.
           host.declare(`declare ptr @scr_dyn_new_arr()`);
           host.declare(`declare void @scr_dyn_arr_push(ptr, ptr)`);
+          host.declare(`declare void @scr_dyn_arr_push_hole(ptr)`);
           const byIndex = [...shape.fields].sort((a, b) => Number(a.name) - Number(b.name));
           const d = B.tmp();
           B.line(`${d} = call ptr @scr_dyn_new_arr()`);
           for (const f of byIndex) {
             const fv = loadFieldOf(f.name, f.type);
+            if (f.type.kind !== "union") {
+              const conv = B.tmp();
+              B.line(
+                `${conv} = call ptr @${this.toDynHelper(f.type)}(${this.valTy(f.type)} ${fv})`,
+              );
+              B.line(`call void @scr_dyn_arr_push(ptr ${d}, ptr ${conv})`);
+              continue;
+            }
+            const lHole = this.skipIfAbsent(B, fv, f.type);
             const conv = B.tmp();
             B.line(`${conv} = call ptr @${this.toDynHelper(f.type)}(${this.valTy(f.type)} ${fv})`);
             B.line(`call void @scr_dyn_arr_push(ptr ${d}, ptr ${conv})`);
+            if (lHole === null) continue;
+            B.br(lHole);
+            B.startBlock(lHole);
+            B.line(`call void @scr_dyn_arr_push_hole(ptr ${d})`);
           }
           if (cyclicRec) B.line(`call void @scr_dyn_from_leave()`);
           host.declare(`declare ptr @scr_dyn_mark_snapshot(ptr)`);

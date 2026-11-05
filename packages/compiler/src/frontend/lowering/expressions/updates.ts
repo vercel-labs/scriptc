@@ -1,6 +1,6 @@
 /* Increment, decrement and prefix unary operators, and compound field updates. */
 import { staticPrivateUpdateTarget } from "../private-statics.js";
-import { lowerCompoundValueToTarget } from "./binary.js";
+import { lowerCompoundValueToTarget, numericTypeStaysNumber } from "./binary.js";
 import {
   indexedUnionArms,
   lowerIndexedUnionNumberRead,
@@ -163,6 +163,19 @@ function jsUnaryNumber(
   };
 }
 
+/** Unary minus of a JavaScript operand that can convert to a BigInt
+ * (`-new Box()` with a coercion hook returning one): ToNumeric, then the
+ * negation of that number or BigInt. */
+function jsUnaryNegate(lowerer: Lowerer, expr: ts.PrefixUnaryExpression, raw: IrExpr): IrExpr {
+  return {
+    kind: "libCall",
+    fn: "dyn.negate",
+    args: [lowerer.coerceToExpected(raw, DYN)],
+    type: DYN,
+    loc: locOf(expr),
+  };
+}
+
 export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpression): IrExpr {
   const loc = locOf(expr);
   // Unary plus and minus convert with ToNumber, whose number hint reads the
@@ -178,6 +191,16 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
       if (raw.type.kind === "bigint") {
         return { kind: "libCall", fn: "bigint.neg", args: [raw], type: BIGINT_T, loc };
       }
+      // Unary minus is ToNumeric: a JavaScript operand whose coercion hook
+      // can answer a BigInt keeps the BigInt negation. A Date keeps its
+      // valueOf lowering below.
+      if (
+        isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+        raw.type.kind !== "bool" &&
+        raw.type.kind !== "date" &&
+        !numericTypeStaysNumber(lowerer, raw.type)
+      )
+        return jsUnaryNegate(lowerer, expr, raw);
       // Match the checked numeric boundary used by JS binary arithmetic.
       const operand =
         raw.type.kind === "bool"
@@ -192,15 +215,7 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
                   type: F64,
                   loc,
                 } satisfies IrExpr)
-              : raw.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(expr))
-                ? ({
-                    kind: "libCall",
-                    fn: "dyn.toNumberCoerce",
-                    args: [raw],
-                    type: F64,
-                    loc,
-                  } satisfies IrExpr)
-                : lowerOperatorNumber(lowerer, raw, loc, expr.operand);
+              : lowerOperatorNumber(lowerer, raw, loc, expr.operand);
       if (operand.type.kind !== "f64") {
         const js = jsUnaryNumber(lowerer, expr, raw);
         if (js) return { kind: "unary", op: "-", operand: js, type: F64, loc };
@@ -290,7 +305,8 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
       if (operand.type.kind !== "f64") {
         // ToInt32 of a JavaScript operand that is not statically a number,
         // through the same checked-dynamic conversion the `~`-over-`dyn`
-        // arm above runs.
+        // arm above runs. An operand whose conversion can answer a BigInt
+        // keeps the checked-dynamic result.
         if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
           const bits: IrExpr = {
             kind: "libCall",
@@ -303,7 +319,9 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
             type: DYN,
             loc,
           };
-          return { kind: "dynCheck", value: bits, type: F64, loc };
+          return numericTypeStaysNumber(lowerer, raw.type)
+            ? { kind: "dynCheck", value: bits, type: F64, loc }
+            : bits;
         }
         operatorUnsupported(lowerer, expr, "~", [raw.type]);
       }

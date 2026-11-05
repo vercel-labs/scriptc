@@ -13547,6 +13547,21 @@ ScrDyn *scr_dyn_increment(const ScrDyn *value, bool increment) {
   return scr_dyn_new_num(value->v.num + (increment ? 1 : -1));
 }
 
+ScrDyn *scr_dyn_negate(const ScrDyn *value) {
+  ScrDyn *numeric = scr_dyn_to_numeric(value);
+  if (!numeric) return NULL;
+  ScrDyn *out;
+  if (numeric->kind == SCR_DYN_BIGINT) {
+    ScrBigInt *negated = scr_bigint_neg(numeric->v.bigint);
+    out = scr_dyn_new_bigint(negated);
+    scr_bigint_release(negated);
+  } else {
+    out = scr_dyn_new_num(-numeric->v.num);
+  }
+  scr_dyn_release(numeric);
+  return out;
+}
+
 bool scr_dyn_compare(const ScrDyn *left, const ScrDyn *right, const ScrStr *operation) {
   // ToPrimitive is observable and always visits the original left operand
   // first, including the > and <= spellings of relational comparison.

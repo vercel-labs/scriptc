@@ -1172,6 +1172,7 @@ export function streamTypedRefMaterializeAdapter(
     } else if (shape.tuple) {
       host.declare(`declare ptr @scr_dyn_new_arr()`);
       host.declare(`declare void @scr_dyn_arr_push(ptr, ptr)`);
+      host.declare(`declare void @scr_dyn_arr_push_hole(ptr)`);
       const out = B.tmp();
       B.line(`${out} = call ptr @scr_dyn_new_arr()`);
       const fields = [...shape.fields].sort((a, b) => Number(a.name) - Number(b.name));
@@ -1188,8 +1189,23 @@ export function streamTypedRefMaterializeAdapter(
           field.type,
           host.inlineUnions.record(field.type),
         );
+        // An ABSENT optional element is a HOLE: length counts it, while
+        // `in`, Object.keys and the own-key probes skip it.
+        let hole: string | null = null;
+        if (field.type.kind === "union" && undefinedArmTag(field.type, host.unionsById) >= 0) {
+          const absent = host.fieldAbsentTestIn(B, fieldValue, field.type.unionId);
+          hole = B.newLabel("live.tuple.absent");
+          const set = B.newLabel("live.tuple.set");
+          B.condBr(absent, hole, set);
+          B.startBlock(set);
+        }
         const boxed = host.streamTypedRefBoxValue(B, field.type, fieldValue);
         B.line(`call void @scr_dyn_arr_push(ptr ${out}, ptr ${boxed})`);
+        if (hole !== null) {
+          B.br(hole);
+          B.startBlock(hole);
+          B.line(`call void @scr_dyn_arr_push_hole(ptr ${out})`);
+        }
       }
       B.terminate(`ret ptr ${out}`);
     } else {

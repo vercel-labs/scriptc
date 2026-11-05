@@ -5875,16 +5875,38 @@ const BUILTIN_VALUE_OWN_KEY_PROBES: ReadonlySet<string> = new Set([
   "toString",
 ]);
 
+/** The globals Node implements as ECMAScript intrinsic functions. Each value
+ * owns exactly `length` and `name`, the two properties the interned function
+ * value models, and no `prototype`. */
+const INTRINSIC_FUNCTION_GLOBALS: ReadonlySet<string> = new Set([
+  "eval",
+  "parseInt",
+  "parseFloat",
+  "isNaN",
+  "isFinite",
+  "decodeURI",
+  "decodeURIComponent",
+  "encodeURI",
+  "encodeURIComponent",
+  "escape",
+  "unescape",
+]);
+
 /** Whether `callee` is `Object.prototype.<probe>.call` (`probe` one of
  * BUILTIN_VALUE_OWN_KEY_PROBES) handing the builtin global `expr` to a probe
- * the value answers exactly. Such a probe asks whether a key is an OWN
- * property (or which tag the value has), and a lib-declared builtin FUNCTION
- * — `parseInt`, `parseFloat`, the URI codecs — owns exactly `length` and
- * `name`, which the interned value models, so `dyn.hasOwn` and the tag walk
- * answer Node's question directly. Every other builtin global read as a
- * value is a `var` of a constructor or namespace interface that also owns
- * `prototype` and its statics, which the interned value does not describe
- * yet, so those keep the fence. */
+ * the value answers exactly. The interned function value models a function's
+ * own `length` and `name` and nothing else, so:
+ *
+ * - the tag `toString` answers for every function value;
+ * - an intrinsic function global owns exactly those two keys, so any key
+ *   answers Node's question;
+ * - an ordinary lib-declared function (`setTimeout`, `atob`) also owns
+ *   `prototype`, which the interned value does not describe, so a probe that
+ *   could name it keeps the fence — a computed key could always be
+ *   `"prototype"`;
+ * - every other builtin global read as a value (a constructor or namespace
+ *   interface) owns `prototype` and its statics, which the interned value
+ *   does not describe either, so those keep the fence too. */
 function answersOwnKeyProbe(
   lowerer: Lowerer,
   callee: ts.PropertyAccessExpression,
@@ -5904,12 +5926,19 @@ function answersOwnKeyProbe(
     !lowerer.isStdlibMember(method)
   )
     return false;
+  const name = stdlibGlobalNameOf(lowerer, expr);
+  if (name === null) return false;
   const symbol = lowerer.typeOf(expr).getSymbol();
-  return (
-    symbol !== undefined &&
-    lowerer.isStdlibSymbol(symbol) &&
-    symbol.declarations.some((d) => ts.isFunctionDeclaration(d))
-  );
+  if (
+    symbol === undefined ||
+    !lowerer.isStdlibSymbol(symbol) ||
+    !symbol.declarations.some((d) => ts.isFunctionDeclaration(d))
+  )
+    return false;
+  if (method.name.text === "toString") return true;
+  if (INTRINSIC_FUNCTION_GLOBALS.has(name)) return true;
+  const key = call.arguments.nodes[1];
+  return key !== undefined && ts.isStringLiteral(key) && key.text !== "prototype";
 }
 
 /** Whether the stdlib global `expr` is read for its members (`Map.prototype`,

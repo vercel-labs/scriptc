@@ -585,6 +585,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.propertyKey": "scr_dyn_property_key_value",
   "dyn.toNumeric": "scr_dyn_to_numeric",
   "dyn.increment": "scr_dyn_increment",
+  "dyn.negate": "scr_dyn_negate",
   "dyn.numberConstructor": "scr_dyn_number_constructor",
   "dyn.bigintConstructor": "scr_dyn_bigint_constructor",
   "dyn.toNumberCoerce": "scr_dyn_number_coerce",

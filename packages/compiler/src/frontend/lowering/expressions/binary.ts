@@ -1225,6 +1225,20 @@ function lowerNanCodedEquality(lowerer: Lowerer, expr: ts.BinaryExpression): IrE
   return stmts.length === 0 ? result : { kind: "seqExpr", stmts, result, type: BOOL, loc };
 }
 
+/** Whether ToNumeric of a value of this type can only answer a number: a
+ * number, string, boolean or unit converts through ToNumber, while an object,
+ * array or checked-dynamic value runs its coercion hooks and can answer a
+ * BigInt (`Symbol.toPrimitive` returning one). */
+export function numericTypeStaysNumber(lowerer: Lowerer, type: IrType): boolean {
+  if (type.kind === "f64" || type.kind === "string" || type.kind === "bool" || isUnitType(type))
+    return true;
+  if (type.kind === "union") {
+    const arms = lowerer.unions.get(type.unionId)?.arms ?? [];
+    return arms.every((arm) => numericTypeStaysNumber(lowerer, arm));
+  }
+  return false;
+}
+
 /** A JavaScript operation whose operands are not statically the numbers the
  * operator needs (`"6" / 2`, `true - null`, `s << "1"`, `a ^ b` over
  * strings): the checked-dynamic runtime applies ToPrimitive/ToNumeric (or
@@ -1232,7 +1246,9 @@ function lowerNanCodedEquality(lowerer: Lowerer, expr: ts.BinaryExpression): IrE
  * result is what Node computes and a Symbol or a mixed BigInt throws Node's
  * TypeError. The static type is the operator's own result type: the numeric
  * operators answer a Number unless a BigInt takes part, `+` answers a string
- * when either operand is one, and the bitwise six answer Int32/Uint32. */
+ * when either operand is one, and the bitwise six answer Int32/Uint32. An
+ * operand that can coerce to a BigInt keeps the result checked-dynamic, since
+ * the operator then answers a BigInt. */
 function lowerJsDynArithmetic(
   lowerer: Lowerer,
   expr: ts.BinaryExpression,
@@ -1260,9 +1276,9 @@ function lowerJsDynArithmetic(
   };
   const result: IrType | null = bigint
     ? BIGINT_T
-    : left.type.kind === "dyn" || right.type.kind === "dyn"
-      ? null
-      : F64;
+    : numericTypeStaysNumber(lowerer, left.type) && numericTypeStaysNumber(lowerer, right.type)
+      ? F64
+      : null;
   return result === null ? value : { kind: "dynCheck", value, type: result, loc };
 }
 

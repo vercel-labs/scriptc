@@ -340,7 +340,8 @@ class FlowTranslator {
   /** A constant's value as source text: numbers in parentheses, so a
    * member read or a unary operator applies to the whole value. */
   private constantText(name: string): string {
-    const value = this.constants.get(name);
+    // Asked only for a configured constant's name.
+    const value = this.constants.get(name)!;
     return typeof value === "number" ? `(${JSON.stringify(value)})` : JSON.stringify(value);
   }
 

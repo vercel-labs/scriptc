@@ -1124,6 +1124,11 @@ export function lowerSetSeedNew(
       loc,
     };
   }
+  // A declared collection view whose element layout differs from the
+  // destination cannot keep element identity, so refuse it rather than let
+  // the dynamic seed convert (or fail) at run time. The Map seed refuses the
+  // same shape (collection-ingestion's destination check).
+  if (input && !collectionDestinationMatches(lowerer, input, setT)) return null;
   if (declared?.kind === "array" && typeEquals(declared.elem, setT.elem)) {
     // Preserve the existing checked scalar-iterable bridge. Reference
     // elements must retain identity and cannot enter via a copying exit.

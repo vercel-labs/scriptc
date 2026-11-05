@@ -1,5 +1,7 @@
-// A call into Node from a worker thread (tests/harness/node-island.test.ts):
-// Node islands run on the main thread only, so the worker's call throws.
+// A call into Node from a worker thread (tests/harness/node-island.test.ts).
+// Node.js initializes once per process, so an island on a second thread
+// aborts it; the build refuses this shape (SC8012) instead of compiling a
+// crash. The worker entry is this module itself.
 import { Worker, isMainThread, parentPort } from "node:worker_threads";
 import { callSync } from "@scriptc/node";
 

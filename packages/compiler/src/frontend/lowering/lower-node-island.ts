@@ -123,6 +123,7 @@ export function lowerNodeApiCall(
 ): IrExpr {
   const loc = locOf(call);
   const surface = `${member} (@scriptc/node)`;
+  lowerer.islandWorkerFence(`the ${surface} call`, call);
   const argNodes = call.arguments.nodes;
   if (member === "requireModule") return lowerRequireModule(lowerer, call, surface);
   if (call.questionDotToken || argNodes.length < 2 || argNodes.some(ts.isSpreadElement)) {
@@ -471,6 +472,7 @@ export function collectIslandImport(
   if (islands === null) return false;
   const path = islandModuleFile(islands, sf.fileName, spec, "import");
   if (path === null) return false;
+  lowerer.islandWorkerFence(`the Node island module '${spec}'`, stmt);
   if (ts.isExportDeclaration(stmt)) {
     // `export { Type } from "typebox"`: the re-exporting module loads the
     // island module and every name it re-exports binds the island's own
@@ -2057,6 +2059,7 @@ function lowerIslandLoadCall(
   const file = ts.getSourceFileOfNode(expr).fileName;
   const path = islandModuleFile(islands, file, arg.text, isImport ? "import" : "require");
   if (path === null) return undefined;
+  lowerer.islandWorkerFence(`the Node island module '${arg.text}'`, expr);
   lowerer.usesNodeIsland = true;
   if (isImport) {
     return {
@@ -2500,6 +2503,7 @@ export function collectIslandRequires(lowerer: Lowerer, sf: ts.SourceFile): void
         const spec = requireInitSpecOf(lowerer, decl);
         const path = spec === null ? null : islandModuleFile(islands, sf.fileName, spec, "require");
         if (path !== null) {
+          lowerer.islandWorkerFence(`the Node island module '${spec}'`, decl);
           lowerer.usesNodeIsland = true;
           islandModuleGlobal(lowerer, path);
         }
@@ -2509,6 +2513,7 @@ export function collectIslandRequires(lowerer: Lowerer, sf: ts.SourceFile): void
       if (spec === null) continue;
       const path = islandModuleFile(islands, sf.fileName, spec, "require");
       if (path === null) continue;
+      lowerer.islandWorkerFence(`the Node island module '${spec}'`, decl);
       lowerer.usesNodeIsland = true;
       const loc = locOf(decl);
       const binding = islandModuleGlobal(lowerer, path);

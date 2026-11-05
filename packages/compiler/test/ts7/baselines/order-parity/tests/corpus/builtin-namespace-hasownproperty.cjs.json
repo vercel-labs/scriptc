@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/builtin-namespace-hasownproperty.cjs"
+ ],
+ "diags": []
+}

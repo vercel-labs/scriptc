@@ -17851,6 +17851,25 @@ export class Lowerer {
     // Default and CommonJS process bindings alias the global object, whose
     // methods and properties keep their existing process lowerings.
     if (stdlibGlobalNameOf(this, expr) === "process") return null;
+    // A namespace import binding (`import * as events from "node:events"`)
+    // of a supported builtin: the binding IS that module's ES namespace
+    // object. Answered from the import declaration because a CALLABLE
+    // module's type (node:events, node:assert, node:module, node:test)
+    // maps to the exported function rather than to a module namespace, so
+    // the type-based arms below would miss it.
+    if (ts.isIdentifier(expr)) {
+      const decl = this.checker.getSymbolAtLocation(expr)?.declarations.find(ts.isNamespaceImport);
+      const importDecl: ts.Node | undefined = decl?.parent?.parent;
+      if (importDecl !== undefined && ts.isImportDeclaration(importDecl)) {
+        const spec = importDecl.moduleSpecifier;
+        if (ts.isStringLiteral(spec)) {
+          const module = canonicalBuiltinModule(spec.text);
+          // The platform namespaces stay on their checked-dynamic module
+          // value (the type-based arm below owns them).
+          if (module !== null && module !== "path/posix" && module !== "path/win32") return module;
+        }
+      }
+    }
     const imported = ts.isIdentifier(expr) ? this.builtinImportOf(expr) : null;
     if (imported?.module === "util" && imported.member === "types") return "util/types";
     // path.win32 / path.posix as NAMED import bindings (`import { win32 }
@@ -17981,6 +18000,44 @@ export class Lowerer {
       return canonicalBuiltinModule(`${outer}/${expr.name.text}`);
     }
     return null;
+  }
+
+  /** The runtime SHAPE a builtin module namespace expression evaluates to.
+   * An `import * as ns` binding (directly, or through a binding initialized
+   * from one) is an ECMAScript module namespace object; every other
+   * spelling — a require() value, a default import, a sub-namespace such as
+   * `fs.promises`, a named import of one — is the CommonJS exports object.
+   * Reflection over the two answers differently (builtin-module-members),
+   * so the distinction travels with the module name. Null when the
+   * expression is not a builtin module namespace. */
+  builtinNamespaceShapeOf(expr: ts.Expression): {
+    module: string;
+    flavor: "esm" | "cjs";
+  } | null {
+    const module = this.builtinNamespaceModuleOf(expr);
+    if (module === null) return null;
+    return { module, flavor: this.builtinNamespaceEsmBinding(expr) ? "esm" : "cjs" };
+  }
+
+  private builtinNamespaceEsmBinding(expr: ts.Expression, seen = new Set<ts.Node>()): boolean {
+    const e = stripTypeCasts(expr);
+    if (!ts.isIdentifier(e)) return false;
+    const symbol = this.checker.getSymbolAtLocation(e);
+    const decl = symbol?.declarations[0];
+    // A binding chain that leads back to itself has no module namespace to
+    // report; treat it as the CommonJS shape.
+    if (decl === undefined || seen.has(decl)) return false;
+    seen.add(decl);
+    if (ts.isNamespaceImport(decl)) return true;
+    // A plain binding carries the namespace object of its initializer
+    // (`const z = zlib`); anything else — a parameter, a destructured
+    // member — holds whatever CommonJS object was handed in.
+    return (
+      ts.isVariableDeclaration(decl) &&
+      ts.isIdentifier(decl.name) &&
+      decl.initializer !== undefined &&
+      this.builtinNamespaceEsmBinding(decl.initializer, seen)
+    );
   }
 
   /** A member access on a supported builtin namespace import —

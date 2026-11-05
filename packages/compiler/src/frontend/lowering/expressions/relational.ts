@@ -37,6 +37,8 @@ import { lowerWebAssemblyInstanceof, refuseWebAssemblyUse } from "../builtins/we
 import { lowerSocketInstanceOf } from "../lower-server.js";
 import { builtinClassRefOf } from "../builtins/class-values.js";
 import { lowerZlibInstanceOf } from "../builtins/compression.js";
+import { builtinModuleHasMember } from "../builtin-module-members.js";
+import { builtinNamespaceMemberTest } from "../builtin-namespace-probe.js";
 import { nodeThrowExpr, numLit, strLit, varRef } from "../../../ir/build.js";
 import { lowerDisposableStackInstanceOf } from "../builtins/disposable-stack.js";
 import { lowerBlobInstanceof } from "../builtins/blob.js";
@@ -1849,6 +1851,23 @@ export function lowerInExpression(
     // runtime key table to ask.
     const rIn = lowerRuntimeKeyIn(lowerer, expr, loc);
     if (rIn) return rIn;
+    // A RUNTIME string key over a supported builtin module namespace: the
+    // interned census-name comparison helper, so a feature probe in a loop
+    // (`names.filter((k) => k in zlib)`) answers Node's member surface.
+    if (lowerer.mapTypeOf(lowerer.typeOf(expr.left))?.kind === "string") {
+      const shape = lowerer.builtinNamespaceShapeOf(expr.right);
+      const member =
+        shape === null
+          ? null
+          : builtinNamespaceMemberTest(
+              lowerer,
+              shape,
+              false,
+              lowerer.lowerExprExpecting(expr.left, STRING),
+              loc,
+            );
+      if (member !== null) return member;
+    }
     // A runtime key over a CHECKED-DYNAMIC receiver (`name in
     // agent.sockets` — both sides computed; the checker may type the
     // receiver as a Dict while the VALUE lives in the checked-dynamic tree, so the
@@ -1886,6 +1905,20 @@ export function lowerInExpression(
       expr.left,
       "'in' with computed (non-literal) keys (a const whose type is one string literal folds; a string-typed key answers over index-signature record receivers)",
     );
+  }
+  // A supported builtin module namespace (`"BROTLI_PARAM_QUALITY" in
+  // zlib` — a feature probe): Node's member census answers, so the member
+  // surface is the module's real one, not the lowerings' subset. A
+  // CommonJS exports object also answers its prototype chain
+  // (`"toString" in zlib`); an ESM namespace answers its export names
+  // only. The receiver is a static token (or a builtin require, which runs
+  // no user code), so there is nothing to evaluate for its own sake.
+  {
+    const shape = lowerer.builtinNamespaceShapeOf(expr.right);
+    if (shape !== null) {
+      const has = builtinModuleHasMember(shape.module, shape.flavor, key);
+      if (has !== null) return { kind: "boolLit", value: has, type: BOOL, loc };
+    }
   }
   // A feature probe on a builtin constructor global (`"captureStackTrace"
   // in Error`): the global is a fixed object, so the answer is static.

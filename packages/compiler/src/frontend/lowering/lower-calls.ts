@@ -127,6 +127,7 @@ import {
   stdlibGlobalNameOf,
 } from "./surfaces.js";
 import { dynStringReceiver } from "./containers/dynamic-receivers.js";
+import { builtinModuleKeys } from "./builtin-module-members.js";
 import {
   lowerArrayConstructor,
   lowerArrayFromCall,
@@ -9976,12 +9977,44 @@ function lowerObjectStaticCall(
       loc,
     };
   }
+  // A builtin module namespace (`Object.keys(zlib)` — also a callable
+  // module such as node:events, whose type maps to its exported function
+  // rather than to a module namespace): Node's member census answers, in
+  // the flavor's order — the CommonJS exports object's insertion order, or
+  // an ESM namespace's export names sorted with "default". The namespace
+  // token is a static name, so there is no receiver to evaluate.
+  {
+    const shape = lowerer.builtinNamespaceShapeOf(argNode);
+    if (shape !== null) {
+      if (member !== "keys") {
+        lowerer.noLowering(
+          `Object.${member} over a builtin module namespace`,
+          call,
+          "access the builtin's named exports directly",
+        );
+      }
+      const names = builtinModuleKeys(shape.module, shape.flavor);
+      if (names === null) {
+        lowerer.noLowering(
+          "Object.keys over a builtin module namespace",
+          call,
+          "access the builtin's named exports directly",
+        );
+      }
+      const loc = locOf(call);
+      return {
+        kind: "arrayLit",
+        elems: names.map((name) => ({ kind: "strLit", value: name, type: STRING, loc })),
+        type: arrayOf(STRING),
+        loc,
+      };
+    }
+  }
   // A compiled PROGRAM module namespace is a nominal token whose members
   // remain live bindings, but its enumerable key set is static and Node
   // sorts it in code-unit order. Materialize exactly those value-export
   // names for Object.keys; values/entries would need a heterogeneous live
-  // view and stay explicitly fenced. Builtin namespaces also stay fenced:
-  // their exact runtime export set is Node-owned, not the ambient subset.
+  // view and stay explicitly fenced.
   {
     const probed = tryLowerExpression(lowerer, argNode);
     if (probed?.type.kind === "moduleNs") {
@@ -9997,7 +10030,7 @@ function lowerObjectStaticCall(
         lowerer.noLowering(
           "Object.keys over a builtin module namespace",
           call,
-          "access the builtin's named exports directly (the exact runtime key census is Node-owned)",
+          "access the builtin's named exports directly",
         );
       }
       const moduleSymbol = source ? lowerer.checker.getSymbolAtLocation(source) : undefined;

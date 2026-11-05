@@ -52612,18 +52612,35 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
+          "tests/corpus/1355-url-parse.ts",
+          "tests/corpus/1402-buffer-encodings.ts",
+          "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/1423-text-codec.ts",
+          "tests/corpus/1791-searchparams-core.ts",
+          "tests/corpus/1792-searchparams-encoding.ts",
+          "tests/corpus/1793-searchparams-iteration.ts",
+          "tests/corpus/1794-searchparams-url-live.ts",
           "tests/corpus/1804-timers-module.ts",
           "tests/corpus/1805-timer-callback-args.ts",
           "tests/corpus/2093-timers-promises.ts",
+          "tests/corpus/2281-domexception-atob-btoa.cjs",
+          "tests/corpus/2283-structured-clone.cjs",
           "tests/corpus/2852-timers-promises-interval.ts",
           "tests/corpus/3133-text-decoder-streaming.ts",
+          "tests/corpus/5130-event-target-dispatch.js",
+          "tests/corpus/5132-event-target-typed.ts",
+          "tests/corpus/5133-abort-signal-event-target.ts",
+          "tests/corpus/5241-event-subclass.ts",
+          "tests/corpus/5244-event-target-subclass.js",
+          "tests/corpus/5245-event-target-subclass-signals.ts",
           "tests/corpus/5285-blob-construct.ts",
           "tests/corpus/5286-blob-readers.ts",
           "tests/corpus/5287-blob-inspect.ts",
           "tests/corpus/5288-blob-validation.js",
           "tests/corpus/5290-blob-dynamic.js",
+          "tests/corpus/5324-structured-clone-documents.ts",
           "tests/corpus/5830-timers-promises-signal.ts",
+          "tests/corpus/6210-typeof-global-static-members.js",
           "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
           "tests/corpus/6292-webcrypto-hmac-errors.ts",
           "tests/corpus/6293-webcrypto-digest.ts",
@@ -52634,9 +52651,13 @@
           "tests/corpus/7743-transform-stream-identity.ts",
           "tests/corpus/7747-text-codec-untyped-slot.js",
           "tests/corpus/8162-navigator-global.cjs",
+          "tests/corpus/buffer-atob-btoa.js",
           "tests/corpus/fetch-headers-copy-cache.ts",
           "tests/corpus/fetch-headers-set-cookie-iteration.ts",
           "tests/corpus/headers-static-accessors.ts",
+          "tests/corpus/js-abort-portable.js",
+          "tests/corpus/node24-url-factories.ts",
+          "tests/corpus/node24-url-mutation.ts",
           "tests/corpus/text-codec-values/main.ts",
           "tests/corpus/webassembly-api.mjs",
           "tests/corpus/webassembly-dylink/main.mjs",
@@ -52675,8 +52696,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "supported",
+        "evidence": "compiler-feature:globals.AbortController",
+        "tests": [
+          "tests/corpus/js-abort-portable.js",
+          "tests/corpus/5133-abort-signal-event-target.ts",
+          "tests/corpus/5245-event-target-subclass-signals.ts",
+          "tests/corpus/5830-timers-promises-signal.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -52698,8 +52725,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "supported",
+        "evidence": "compiler-feature:globals.abortController.abort",
+        "tests": [
+          "tests/corpus/js-abort-portable.js",
+          "tests/corpus/5133-abort-signal-event-target.ts",
+          "tests/corpus/5245-event-target-subclass-signals.ts",
+          "tests/corpus/5830-timers-promises-signal.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -52721,8 +52754,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "supported",
+        "evidence": "compiler-feature:globals.signal",
+        "tests": [
+          "tests/corpus/js-abort-portable.js",
+          "tests/corpus/5133-abort-signal-event-target.ts",
+          "tests/corpus/5245-event-target-subclass-signals.ts",
+          "tests/corpus/5830-timers-promises-signal.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -52744,8 +52783,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.AbortSignal",
+        "tests": [
+          "tests/corpus/js-abort-portable.js",
+          "tests/corpus/5133-abort-signal-event-target.ts",
+          "tests/corpus/6210-typeof-global-static-members.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -52767,8 +52811,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "supported",
+        "evidence": "compiler-feature:globals.abortSignal.throwIfAborted",
+        "tests": [
+          "tests/corpus/js-abort-portable.js",
+          "tests/corpus/5133-abort-signal-event-target.ts",
+          "tests/corpus/5245-event-target-subclass-signals.ts",
+          "tests/corpus/5830-timers-promises-signal.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -52790,8 +52840,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "supported",
+        "evidence": "compiler-feature:globals.aborted",
+        "tests": [
+          "tests/corpus/js-abort-portable.js",
+          "tests/corpus/5133-abort-signal-event-target.ts",
+          "tests/corpus/5245-event-target-subclass-signals.ts",
+          "tests/corpus/5830-timers-promises-signal.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -52813,8 +52869,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "supported",
+        "evidence": "compiler-feature:globals.onabort",
+        "tests": [
+          "tests/corpus/js-abort-portable.js",
+          "tests/corpus/5133-abort-signal-event-target.ts",
+          "tests/corpus/5245-event-target-subclass-signals.ts",
+          "tests/corpus/5830-timers-promises-signal.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -52836,8 +52898,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "supported",
+        "evidence": "compiler-feature:globals.reason",
+        "tests": [
+          "tests/corpus/js-abort-portable.js",
+          "tests/corpus/5133-abort-signal-event-target.ts",
+          "tests/corpus/5245-event-target-subclass-signals.ts",
+          "tests/corpus/5830-timers-promises-signal.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -52859,8 +52927,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "supported",
+        "evidence": "compiler-feature:globals.'abort'",
+        "tests": [
+          "tests/corpus/js-abort-portable.js",
+          "tests/corpus/5133-abort-signal-event-target.ts",
+          "tests/corpus/5245-event-target-subclass-signals.ts",
+          "tests/corpus/5830-timers-promises-signal.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -52935,8 +53009,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.Buffer",
+        "tests": [
+          "tests/corpus/1402-buffer-encodings.ts",
+          "tests/corpus/1403-buffer-fs.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -53103,8 +53181,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.CustomEvent",
+        "tests": [
+          "tests/corpus/5130-event-target-dispatch.js",
+          "tests/corpus/5132-event-target-typed.ts",
+          "tests/corpus/5133-abort-signal-event-target.ts",
+          "tests/corpus/5241-event-subclass.ts",
+          "tests/corpus/5244-event-target-subclass.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -53149,8 +53234,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.DOMException",
+        "tests": [
+          "tests/corpus/2281-domexception-atob-btoa.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -53172,8 +53260,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.Event",
+        "tests": [
+          "tests/corpus/5130-event-target-dispatch.js",
+          "tests/corpus/5132-event-target-typed.ts",
+          "tests/corpus/5133-abort-signal-event-target.ts",
+          "tests/corpus/5241-event-subclass.ts",
+          "tests/corpus/5244-event-target-subclass.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -53218,8 +53313,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.EventTarget",
+        "tests": [
+          "tests/corpus/5130-event-target-dispatch.js",
+          "tests/corpus/5132-event-target-typed.ts",
+          "tests/corpus/5133-abort-signal-event-target.ts",
+          "tests/corpus/5241-event-subclass.ts",
+          "tests/corpus/5244-event-target-subclass.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -53943,8 +54045,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.URL",
+        "tests": [
+          "tests/corpus/1355-url-parse.ts",
+          "tests/corpus/1791-searchparams-core.ts",
+          "tests/corpus/1792-searchparams-encoding.ts",
+          "tests/corpus/1793-searchparams-iteration.ts",
+          "tests/corpus/1794-searchparams-url-live.ts",
+          "tests/corpus/node24-url-mutation.ts",
+          "tests/corpus/node24-url-factories.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -53989,8 +54100,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.URLSearchParams",
+        "tests": [
+          "tests/corpus/1355-url-parse.ts",
+          "tests/corpus/1791-searchparams-core.ts",
+          "tests/corpus/1792-searchparams-encoding.ts",
+          "tests/corpus/1793-searchparams-iteration.ts",
+          "tests/corpus/1794-searchparams-url-live.ts",
+          "tests/corpus/node24-url-mutation.ts",
+          "tests/corpus/node24-url-factories.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -54141,8 +54261,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "supported",
+        "evidence": "compiler-feature:globals.atob",
+        "tests": [
+          "tests/corpus/buffer-atob-btoa.js",
+          "tests/corpus/2281-domexception-atob-btoa.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -54164,8 +54288,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "supported",
+        "evidence": "compiler-feature:globals.btoa",
+        "tests": [
+          "tests/corpus/buffer-atob-btoa.js",
+          "tests/corpus/2281-domexception-atob-btoa.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -54413,8 +54541,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.structuredClone",
+        "tests": [
+          "tests/corpus/2283-structured-clone.cjs",
+          "tests/corpus/5324-structured-clone-documents.ts"
+        ]
       },
       "anchorSource": "exact"
     },

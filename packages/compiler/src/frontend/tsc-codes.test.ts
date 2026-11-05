@@ -201,13 +201,12 @@ describe("the JavaScript checker decisions", () => {
 
   test("only a site guard's fallback puts a code in both tables", () => {
     // An opinion row admits the construct; the triage row of the same code
-    // stays for the sites the row's guard excludes, where the user must keep
-    // the named SC1090 refusal instead of an unnamed passthrough.
+    // stays for the sites the guard excludes: a named refusal for an
+    // unlowered construct, or the original grammar error for invalid syntax.
     for (const [code, opinion] of JS_OPINIONS) {
       const decision = jsTscCodeTriage(code);
       if (decision === null) continue;
       expect(typeof opinion.site, `TS${code}`).toBe("function");
-      expect(decision.action, `TS${code}`).not.toBe("keep");
     }
   });
 

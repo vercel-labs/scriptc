@@ -171,6 +171,15 @@ const inCheckedJs = (row: Opinion): Opinion => ({ ...row, checkedJs: "enforce" }
 const notPrivateName = (node: ts.Node, d: ts.Diagnostic): boolean =>
   !ts.isPrivateIdentifier(node) && !ts.getSourceFileOfNode(node).text.startsWith("#", d.pos ?? -1);
 
+/** A decimal escape without a matching capture is still a legacy octal
+ * or identity escape in a non-Unicode regex literal. Unicode modes keep
+ * the missing-backreference error. */
+const legacyRegexEscape = (node: ts.Node): boolean => {
+  if (!ts.isRegularExpressionLiteral(node)) return false;
+  const flags = node.text.slice(node.text.lastIndexOf("/") + 1);
+  return !flags.includes("u") && !flags.includes("v");
+};
+
 /** TS2362/2363/2365 fire on an operator whose other operand is bigint-ish;
  * plain JavaScript admits the `any` operand, a primitive wrapper operand
  * (`new Number(1) * 2`) converts with ToPrimitive like any object, and a
@@ -288,7 +297,16 @@ const DYNAMIC_SHAPE =
 const JSDOC_CLAIM =
   "a JSDoc type-space claim is documentation Node never reads: the values keep their runtime behavior and every use meets the per-site fences";
 
+const LEGACY_REGEX_NUMERIC_ESCAPE = at(
+  legacyRegexEscape,
+  CHECKER("a non-Unicode regex literal permits legacy octal and identity numeric escapes", [
+    "tests/corpus/legacy-regexp-numeric-escapes.mjs",
+  ]),
+);
+
 const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
+  [1533, LEGACY_REGEX_NUMERIC_ESCAPE],
+  [1534, LEGACY_REGEX_NUMERIC_ESCAPE],
   // implicit any (params, variables, elements, this, returns, rest,
   // construct signatures, index reads over shapes with no index signature —
   // typeof globalThis)

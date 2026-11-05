@@ -310,3 +310,31 @@ for (const { name, source, checkJs, ts } of CHECKER_OPINION_TWINS) {
     else expect(kept.some((message) => message.includes(checkJs))).toBe(true);
   });
 }
+
+test.for(["/\\1/", "/(a)\\2/", "/\\8/"])(
+  "JavaScript keeps a legacy non-Unicode regex numeric escape: %s",
+  (literal) => {
+    expect(diagnostics(`export const fragment = ${literal};`, 'import "./library.js";')).toEqual(
+      [],
+    );
+  },
+);
+
+test.for(["/\\1/u", "/\\1/v", "/(a)\\2/u", "/(a)\\2/v"])(
+  "Unicode regex literals retain invalid-backreference diagnostics: %s",
+  (literal) => {
+    expect(
+      diagnostics(`export const fragment = ${literal};`, 'import "./library.js";').some(
+        (diagnostic) => diagnostic.message.includes("backreference"),
+      ),
+    ).toBe(true);
+  },
+);
+
+test("TypeScript retains a missing regex backreference diagnostic", () => {
+  expect(
+    diagnostics("export const fragment = /\\1/;", 'import "./library.js";', "ts").some(
+      (diagnostic) => diagnostic.message.includes("backreference"),
+    ),
+  ).toBe(true);
+});

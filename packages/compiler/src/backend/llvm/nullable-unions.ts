@@ -517,7 +517,10 @@ function classUnion(def: IrUnionDef, classes: ClassForest): ClassUnion | null {
  * carries that identity, with NULL and the null sentinel as two more
  * distinct keys, so the map keys it by reference. A function arm keeps its
  * union boxed: a function keys by its identity root (SCR_MAP_KEY_CLOSURE).
- * Library builds keep such unions boxed, except unions of records alone. */
+ * A promise arm keeps it boxed too: a promise keys by the identity cell its
+ * adapter boxes share (SCR_MAP_KEY_PROMISE), which the payload pointer does
+ * not carry. Library builds keep such unions boxed, except unions of
+ * records alone. */
 function boxedUnionIds(mod: IrModule, nodes?: IrNodeIndex): Set<string> {
   const boxed = new Set<string>();
   // Only the module's union definitions consult the result.
@@ -560,7 +563,7 @@ function identityKeyUnion(def: IrUnionDef): boolean {
   for (const arm of def.arms) {
     if (arm.kind === "undefinedT") undefinedArms++;
     else if (arm.kind === "nullT") nullArms++;
-    else if (isIdentityCollectionKey(arm) && arm.kind !== "func") refs++;
+    else if (isIdentityCollectionKey(arm) && arm.kind !== "func" && arm.kind !== "promise") refs++;
     else return false;
   }
   return refs > 0 && undefinedArms <= 1 && nullArms <= 1;

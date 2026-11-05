@@ -928,15 +928,18 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
     );
   }
   if (e.type.kind === "symbol") {
-    // JS splits here: `${sym}` and concatenation THROW a TypeError,
-    // String(sym) answers "Symbol(desc)". One shared lowering cannot
-    // honor both — fence with the sanctioned spelling instead of
-    // guessing the context.
-    lowerer.unsupported(
-      "SC1090",
-      node,
-      "string conversions of symbol values (template literals throw in JS — call .toString() explicitly)",
-    );
+    // `${sym}`, `"" + sym`, `x += sym`: the ToString the operator performs
+    // throws Node's TypeError. String(sym) never reaches this helper (it
+    // lowers to dyn.stringConstructor), so the runtime operation is the
+    // whole answer here — a symbol throws, and the dynamic tier's own
+    // rendering stays reachable only through String(x).
+    return {
+      kind: "libCall",
+      fn: "dyn.toStringCoerce",
+      args: [{ kind: "dynFrom", value: e, type: DYN, loc: e.loc }],
+      type: STRING,
+      loc: e.loc,
+    };
   }
   if (isUnitType(e.type)) {
     if (e.kind === "unitLit") {
@@ -3094,10 +3097,26 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
             trappable.add(tag);
           }
         });
-        const retag =
+        // The reference-arm plan first, unchanged: every program that
+        // lowered before keeps byte-identical IR. Only where that plan has
+        // no route at all do the checker-proven truthy arms get trapped as
+        // well — a widened literal (`const ttl: "1h" | undefined`) maps to
+        // a plain `string` arm, and no value of that type survives `&&` as
+        // itself, so it is exactly as unreachable on the falsy path as a
+        // reference arm. That case used to be the union-conversion refusal
+        // this replaces.
+        let retag =
           trappable.size === 0
             ? null
             : lowerer.unionRetagHelper(left.type.unionId, target.unionId, loc, trappable);
+        if (retag === null && !canBeNonUnitFalsy(lowerer.typeOf(expr.left))) {
+          const widened = new Set(trappable);
+          def?.arms.forEach((arm, tag) => {
+            if (lowerer.armTag(target.unionId, arm) < 0 && !isUnitType(arm)) widened.add(tag);
+          });
+          if (widened.size > trappable.size)
+            retag = lowerer.unionRetagHelper(left.type.unionId, target.unionId, loc, widened);
+        }
         if (retag) {
           lowerer.requireTruthyUnion(left.type.unionId, expr);
           const stmts: IrStmt[] = [];
@@ -3315,6 +3334,26 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
     type: left.type,
     loc,
   };
+}
+
+/** Whether the checker leaves any non-unit value of `type` that can be
+ * falsy. `null`/`undefined`/`void` answer false (they are the falsy values
+ * the result union keeps as arms), objects and functions answer false (JS
+ * references are always truthy), and the empty string / 0 / 0n / false
+ * literal types answer true. Anything whose static answer is not obvious —
+ * a widened `string`, `number` or `boolean`, an enum, `any`, a type
+ * parameter — answers true, so the caller keeps its refusal. */
+function canBeNonUnitFalsy(type: ts.Type): boolean {
+  if (type.isUnionType()) return ts.constituentTypes(type).some(canBeNonUnitFalsy);
+  const flags = type.flags;
+  if (flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void | ts.TypeFlags.Never))
+    return false;
+  if (flags & ts.TypeFlags.BooleanLiteral) return (type as ts.BooleanLiteralType).value === false;
+  if (flags & ts.TypeFlags.StringLiteral) return (type as ts.StringLiteralType).value === "";
+  if (flags & ts.TypeFlags.NumberLiteral) return (type as ts.NumberLiteralType).value === 0;
+  if (flags & ts.TypeFlags.BigIntLiteral) return (type as ts.BigIntLiteralType).value === BigInt(0);
+  if (flags & ts.TypeFlags.Object) return false;
+  return true;
 }
 
 function lowerAbsenceAwareOrChain(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr | null {

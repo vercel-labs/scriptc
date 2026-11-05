@@ -187,7 +187,8 @@ typedef struct { size_t rc; } ScrPromiseIdentity;
 struct ScrPromise {
   size_t rc; /* The cycle collector reads the reference count at offset zero. */
   /* Shared identity cell for promises adopted across inner types (NULL
-   * until scr_promise_share_identity first links this promise). */
+   * until scr_promise_share_identity first links this promise or a Set or
+   * Map keys it, scr_promise_map_identity). */
   ScrPromiseIdentity *identity;
   int state;
   bool top_level_handled; /* uncaughtException handled entry evaluation */
@@ -394,10 +395,11 @@ void scr_promise_share_identity(ScrPromise *dst, ScrPromise *src) {
   dst->identity->rc++;
 }
 
-#ifdef SCR_NODE_ISLANDS
-/* Node islands (NI-5) key their export table by a promise's identity
- * (scr_node_island_export.c); other programs link none of this. */
-const void *scr_promise_identity_key(ScrPromise *p) {
+/* A Set's or Map's key identity of a promise (ScrMapIdentityOps): the
+ * identity cell its adapter boxes share, created on the first call so a
+ * stored key's hash does not change when a box of it appears later. */
+void *scr_promise_map_identity(void *promise) {
+  ScrPromise *p = promise;
   if (!p->identity) {
     p->identity = malloc(sizeof *p->identity);
     if (!p->identity) scr_oom();
@@ -405,6 +407,11 @@ const void *scr_promise_identity_key(ScrPromise *p) {
   }
   return p->identity;
 }
+
+#ifdef SCR_NODE_ISLANDS
+/* Node islands (NI-5) key their export table by a promise's identity
+ * (scr_node_island_export.c); other programs link none of this. */
+const void *scr_promise_identity_key(ScrPromise *p) { return scr_promise_map_identity(p); }
 
 void scr_promise_identity_hold(const void *key) { ((ScrPromiseIdentity *)key)->rc++; }
 
@@ -1260,6 +1267,7 @@ static void scr_timer_warn_tick(ScrClosure *self) {
     snprintf(type, sizeof type, "%.*s", (int)name->len, name->data);
     scr_warning_emit_hook(type, NULL, message);
   } else {
+    scr_stdout_settle();
     fflush(stdout);
     fprintf(stderr, "(node:%ld) %.*s: %.*s\n", (long)scr_process_pid(), (int)name->len, name->data,
             (int)message->len, message->data);
@@ -5949,6 +5957,14 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
 #if defined(SCR_MUSL) && !defined(SCR_LIB)
     if (due > now) scr_musl_malloc_idle();
 #endif
+    /* The loop is about to wait, whichever arm below takes the wait: a
+     * build that buffers stdout (--stdout-buffering) publishes what the
+     * program has written so a reader waiting on it — an interactive
+     * consumer, a test harness — is not left looking at an empty pipe until
+     * the next wakeup. Every wait arm is covered, including the worker
+     * pool's, the child watch's, and the plain timer sleep of a loop with
+     * nothing else pending. */
+    scr_stdout_settle();
     bool evw = scr_events_watching_fn != NULL && scr_events_watching_fn();
 #ifdef SCR_WORKERS
     if (workers && scr_workers_wait_fn && !kids && !evw && !net_io && !dgram && !watch && !ffi && !renames && !crypto) {
@@ -6343,6 +6359,7 @@ bool scr_report_unhandled_rejections(void) {
           continue;
         }
 #endif
+        scr_stdout_settle();
         fflush(stdout);
         fputs("Unhandled promise rejection: ", stderr);
         switch (p->payload_kind) {

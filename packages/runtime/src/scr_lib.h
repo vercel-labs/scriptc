@@ -71,6 +71,11 @@ ScrStr *scr_process_cwd(void);      /* +1 fresh (getcwd) */
 bool scr_stdio_write(int fd, const void *data, size_t len);
 bool scr_stdio_write_str(int fd, const ScrStr *s);
 int scr_stdio_write_raw(int fd, const void *data, size_t len);
+/* process.stdout/stderr.write(text) at an untyped call site: the write
+ * method's one-string form, calling a replaced write and otherwise writing
+ * the UTF-8 of `data` (borrowed). +1 true, or false after a failed write
+ * queued the stream's error event. */
+ScrDyn *scr_stdio_write_str_dyn(double fd, const ScrStr *data);
 /* `flags` describes the chunk a patched write receives: SCR_STDIO_HOOK_WIDE
  * marks string bytes that may hold lone surrogates (they become U+FFFD when
  * they reach the stream itself), SCR_STDIO_HOOK_CONSOLE a console line

@@ -1124,6 +1124,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     if (
       name === "String" &&
       (arg.type.kind === "dyn" ||
+        arg.type.kind === "symbol" ||
         (arg.type.kind === "union" &&
           lowerer.unions.get(arg.type.unionId)?.arms.some((arm) => arm.kind === "symbol") &&
           lowerer.dynConvertible(arg.type)))
@@ -3748,6 +3749,20 @@ function lowerStringPrototypeCall(
   }
   if (receiverType.kind === "dyn") {
     return lowerDynamicStringPrototypeCall(lowerer, call, methodAccess, receiverValue, method);
+  }
+  // A symbol receiver is no String wrapper, and every method admitted above
+  // begins with ToString(this): Node throws
+  // "TypeError: Cannot convert a Symbol value to a string" after evaluating
+  // the arguments. The dynamic string-method lowering performs exactly that
+  // conversion, in that order.
+  if (receiverType.kind === "symbol") {
+    return lowerDynamicStringPrototypeCall(
+      lowerer,
+      call,
+      methodAccess,
+      lowerer.coerceToExpected(receiverValue, DYN),
+      method,
+    );
   }
   const padding = entry?.method === "padStart" || entry?.method === "padEnd";
   const scalar =
@@ -7463,18 +7478,6 @@ export function lowerPromiseMethodCall(
   if (param && (!ts.isIdentifier(param.name) || param.dotDotDotToken || param.initializer)) {
     lowerer.unsupported("SC1062", param);
   }
-  if (
-    param?.type &&
-    param.type.kind !== ts.SyntaxKind.AnyKeyword &&
-    param.type.kind !== ts.SyntaxKind.UnknownKeyword
-  ) {
-    lowerer.unsupported(
-      "SC1090",
-      param,
-      "catch handlers with a typed parameter (the reject payload can be any thrown " +
-        "value — take `(e)` or `(e: unknown)` and narrow with instanceof)",
-    );
-  }
   const resultT = callResultType();
   if (resultT?.kind !== "promise") {
     lowerer.noLowering(
@@ -7507,13 +7510,69 @@ export function lowerPromiseMethodCall(
           ]
         : [{ kind: "return", value: lowerer.coerceInto(call, awaitE, R), loc }];
     // The handler body lowers as the catch clause, its parameter bound
-    // as the CAUGHT local — exactly `catch (e) { ... }`.
+    // as the CAUGHT local — exactly `catch (e) { ... }`. An ANNOTATED
+    // parameter (`.catch((error: Error) => ...)`) is a claim the checker
+    // cannot verify — the reject payload is whatever was thrown — so it
+    // is never trusted: the snapshot binds as a hidden CAUGHT local and
+    // the parameter as an ordinary local of the claimed class, converted
+    // by the checked extraction (`caughtCheck`: an instanceof match
+    // extracts the payload, anything else raises the catchable TypeError
+    // at handler entry). Reads inside the handler are then plain typed
+    // reads of a verified value.
     let catchLocalId: string | null = null;
+    let claimInit: IrStmt | null = null;
     let catchBody: IrStmt[];
     lowerer.scopes.push(new Map());
     try {
       if (param && ts.isIdentifier(param.name)) {
-        catchLocalId = lowerer.declareLocal(param.name, param.name.text, CAUGHT, false).id;
+        const claim = param.type;
+        const annotated =
+          claim !== undefined &&
+          claim.kind !== ts.SyntaxKind.AnyKeyword &&
+          claim.kind !== ts.SyntaxKind.UnknownKeyword;
+        if (annotated) {
+          const target = lowerer.mapTypeOf(lowerer.checker.getTypeFromTypeNode(claim));
+          const info =
+            target?.kind === "object" ? lowerer.classes.get(target.className) : undefined;
+          if (target === null || target.kind !== "object" || info === undefined) {
+            lowerer.unsupported(
+              "SC1090",
+              claim,
+              "catch parameters annotated with a type other than a class (the reject payload " +
+                "is whatever was thrown, so an annotation is a claim the checker cannot " +
+                "verify — it is accepted only as a checked conversion against a class) — take " +
+                "`(e)` and narrow with instanceof, or assert `e as C` inside the handler",
+            );
+          }
+          const snapshot = lowerer.declareHiddenLocal("%catch", CAUGHT);
+          catchLocalId = snapshot.id;
+          const local = lowerer.declareLocal(param.name, param.name.text, target, false);
+          const caught: IrExpr = { kind: "varRef", localId: snapshot.id, type: CAUGHT, loc };
+          // caughtCheck tests the class's preorder interval, which only
+          // classes in an inheritance relation have; a standalone class
+          // converts the payload as an untyped value, whose checked
+          // conversion recovers a thrown instance and raises a catchable
+          // TypeError for anything else.
+          claimInit = {
+            kind: "varDecl",
+            localId: local.id,
+            init: lowerer.inHierarchy(info)
+              ? {
+                  kind: "caughtCheck",
+                  value: caught,
+                  className: target.className,
+                  type: target,
+                  loc,
+                }
+              : lowerer.coerceToExpected(
+                  { kind: "caughtToDyn", value: caught, type: DYN, loc },
+                  target,
+                ),
+            loc,
+          };
+        } else {
+          catchLocalId = lowerer.declareLocal(param.name, param.name.text, CAUGHT, false).id;
+        }
       }
       const hb = handlerNode.body;
       if (ts.isBlock(hb)) {
@@ -7531,6 +7590,7 @@ export function lowerPromiseMethodCall(
     } finally {
       lowerer.scopes.pop();
     }
+    if (claimInit !== null) catchBody.unshift(claimInit);
     // A handler falling off its end resolves with undefined — the
     // checker already typed R with the undefined arm; the appended wrap
     // also satisfies the validator's always-returns analysis.
@@ -8955,8 +9015,7 @@ function lowerObjectStaticCall(
     }
     const onError = lowerObjectAssignOntoError(lowerer, call);
     if (onError) return onError;
-    const hybrid = lowerObjectAssignHybrid(lowerer, call);
-    if (hybrid) return hybrid;
+    refuseObjectAssignHybrid(lowerer, call);
     // `Object.assign({}, lit)` — an EMPTY fresh-literal target and one
     // object-literal source: the result is a fresh object carrying
     // exactly the source literal's properties, which IS the source
@@ -10116,8 +10175,30 @@ function lowerObjectStaticCall(
           if (tag >= 0) {
             return { kind: "unionWrap", unionId: valueT.unionId, tag, value, type: valueT, loc };
           }
+          // A field value the element union has no arm for, but which
+          // WIDTH-LIFTS into one: a concrete record field enumerated
+          // against a checker-typed element that is a shared record's
+          // union of layouts (a table of metric definitions whose value
+          // type is the declared `counter | histogram` shape, a settings
+          // map whose declared value type is the option record). The
+          // lift picks the arm and copies the value into it — the same
+          // conversion coerceToExpected applies at a union slot.
+          const lift = lowerer.widthLiftPlan(vt, valueT);
+          if (lift) return lowerer.applyWidthLift(lift, value, valueT, loc);
         }
         return null;
+      };
+      // A field whose own type is a union (`ColorValue` = `string | number`)
+      // flows into a result element union that may be wider: `Object.entries`
+      // over a record with optional fields yields `string | number |
+      // undefined` for every key. That is the same conversion an assignment
+      // of the value to such a slot performs, so it re-tags at runtime
+      // through the interned helper; an arm the destination cannot take
+      // still refuses with the flat story.
+      const retagInto = (from: IrType & { kind: "union" }): IrExpr | null => {
+        if (!valueT || valueT.kind !== "union") return null;
+        const helper = lowerer.unionRetagHelper(from.unionId, valueT.unionId, loc);
+        return helper ? { kind: "call", callee: helper, args: [raw], type: valueT, loc } : null;
       };
       // Undefined-armed fields: the push is guarded by the field's
       // presence; a narrowed push re-tags the non-undefined arm.
@@ -10155,14 +10236,24 @@ function lowerObjectStaticCall(
                   loc,
                 };
           } else {
-            return `field '${f.name}' is a multi-arm union that cannot re-tag into the result element type`;
+            const retagged = retagInto(f.type);
+            if (!retagged)
+              return `field '${f.name}' is a multi-arm union that cannot re-tag into the result element type`;
+            value = retagged;
+            vt = valueT!;
           }
-        } else if (
-          valueT?.kind !== "dyn" &&
-          !typeEquals(f.type, valueT ?? f.type) &&
-          !(valueT?.kind === "union" && lowerer.unionRetagMappable(f.type.unionId, valueT.unionId))
-        ) {
-          return `field '${f.name}' is a union that cannot re-tag into the result element type`;
+        } else if (valueT?.kind !== "dyn" && !typeEquals(f.type, valueT ?? f.type)) {
+          const retagged = retagInto(f.type);
+          if (retagged) {
+            value = retagged;
+            vt = valueT!;
+          } else if (
+            !(
+              valueT?.kind === "union" && lowerer.unionRetagMappable(f.type.unionId, valueT.unionId)
+            )
+          ) {
+            return `field '${f.name}' is a union that cannot re-tag into the result element type`;
+          }
         }
       }
       const coerced = elemOf(value, vt);
@@ -10483,88 +10574,30 @@ function runtimeOptionalEntriesType(
  * ordinary indirect call through the field's closure value. Deliberately
  * record-only — calling a func-typed CLASS field stays rejected (the
  * generic method-call rejection in lowerCall). */
-/** `Object.assign(fn, { bold, ... })` → a HYBRID record literal: the
- * reserved %call field takes the function, each source object literal's
- * properties fill their declared fields (later sources override, JS's
- * last-write-wins — one entry per name, source values still evaluate in
- * order through the literal lowering's shared rules). Bounded to the
- * chalk shape on purpose: the RESULT type must map to a %call-carrying
- * record, sources must be plain object literals (an `as` cast unwraps),
- * and every declared field must be filled. REPRESENTATION NOTE
- * (SEMANTICS.md): the result is a FRESH record, not the mutated `fn` —
- * `assigned === fn` is false here where JS answers true, and `typeof`
- * would answer object; portless's colors.ts never observes either.
- * Null (→ the stdlib fence) for every other Object.assign form. */
-function lowerObjectAssignHybrid(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
+/** `Object.assign(fn, { bold, ... })` — a FUNCTION-WITH-PROPERTIES
+ * result — is REFUSED by name (SEMANTICS.md). JavaScript mutates the
+ * function object and answers it: `assigned === fn`, a later write through
+ * either name lands on that one object, and `Object.keys(fn)` lists the
+ * copied keys. scriptc keeps a function-with-properties value as a
+ * separate record that holds the function in a reserved %call field, so a
+ * fresh record is NOT the function — the identity, the writes and the
+ * enumeration would each answer differently from Node. Making them agree
+ * needs one representation for a function object (a place on it for its
+ * own properties), not a branch here, so the form stays refused rather
+ * than lowering to a record that claims to be the function. Every other
+ * Object.assign form falls through to the branches below. */
+function refuseObjectAssignHybrid(lowerer: Lowerer, call: ts.CallExpression): void {
   const mapped = lowerer.mapTypeOf(lowerer.typeOf(call));
-  if (mapped?.kind !== "record") return null;
+  if (mapped?.kind !== "record") return;
   const shape = lowerer.shapes.get(mapped.shapeId);
   const callField = shape?.fields.find((f) => f.name === "%call");
-  if (!shape || !callField || callField.type.kind !== "func") return null;
-  if (call.arguments.nodes.length < 2 || call.arguments.nodes.some((a) => ts.isSpreadElement(a)))
-    return null;
-  const loc = locOf(call);
-  const values = new Map<string, IrExpr>();
-  values.set("%call", lowerer.lowerExprExpecting(call.arguments.nodes[0]!, callField.type));
-  for (const argNode of call.arguments.nodes.slice(1)) {
-    let src: ts.Expression = argNode;
-    while (ts.isParenthesizedExpression(src) || ts.isAsExpression(src) || ts.isTypeAssertion(src))
-      src = src.expression;
-    if (!ts.isObjectLiteralExpression(src)) {
-      lowerer.unsupported(
-        "SC1090",
-        argNode,
-        "Object.assign sources other than plain object literals when building a function-with-properties value",
-      );
-    }
-    for (const prop of src.properties.nodes) {
-      const nameOk =
-        (ts.isPropertyAssignment(prop) || ts.isShorthandPropertyAssignment(prop)) &&
-        (ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name));
-      if (!nameOk) {
-        lowerer.unsupported(
-          "SC1090",
-          prop,
-          "this property form in an Object.assign source building a function-with-properties value",
-        );
-      }
-      const name = (prop.name as ts.Identifier | ts.StringLiteral).text;
-      const fieldType = shape.fields.find((f) => f.name === name)?.type;
-      if (!fieldType) {
-        lowerer.unsupported(
-          "SC1090",
-          prop,
-          `the property '${name}' missing from the assigned result type '${lowerer.fmt(mapped)}'`,
-        );
-      }
-      const value = ts.isPropertyAssignment(prop)
-        ? lowerer.lowerExprExpecting(prop.initializer, fieldType)
-        : lowerer.coerceInto(
-            prop,
-            lowerer.lowerShorthandValue(prop as ts.ShorthandPropertyAssignment),
-            fieldType,
-          );
-      values.set(name, value);
-    }
-  }
-  const fields: { name: string; value: IrExpr }[] = [];
-  for (const f of shape.fields) {
-    const v = values.get(f.name);
-    if (!v) {
-      const absent = lowerer.absentFieldValue(f.type, loc);
-      if (!absent) {
-        lowerer.unsupported(
-          "SC1090",
-          call,
-          `Object.assign leaving the required field '${f.name}' of '${lowerer.fmt(mapped)}' unfilled`,
-        );
-      }
-      fields.push({ name: f.name, value: absent });
-      continue;
-    }
-    fields.push({ name: f.name, value: v });
-  }
-  return { kind: "recordLit", fields, type: mapped, loc };
+  if (!callField || callField.type.kind !== "func") return;
+  lowerer.unsupported(
+    "SC1090",
+    call,
+    `Object.assign that adds properties to a function value ('${lowerer.fmt(mapped)}')`,
+    "JavaScript mutates and answers the function object itself — the result IS that function, a write through either name lands on the one object, and Object.keys on it lists the copied keys — while a function-with-properties value is a separate record here; build that value where its type is declared, or keep the properties in a separate object",
+  );
 }
 
 /** The accessed member is an overload set (isOverloadedCallableMemberType),

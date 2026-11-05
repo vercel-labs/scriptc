@@ -3302,16 +3302,22 @@ static const int8_t scr_b64_values[256] = {
   -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
 };
 
-/* Conversion destinations are private until their initialized length is set.
- * General typed-array allocation must remain zero-filled. */
 /* Where scr_bytes_encode_str writes: room bytes at `at` in the current pool
- * slab, or (at == NULL, or more than room needed) fresh private storage. */
+ * slab, or (at == NULL, or more than room needed) fresh private storage.
+ * `cap` is how many bytes the caller takes. The latin1/ascii encoder writes
+ * one byte per code unit and can stop early, so with cap < room it writes
+ * into `at` and stops after cap bytes: a truncated write neither allocates
+ * nor writes past the caller's room. Every other encoder needs room for its
+ * whole output, and callers that take everything pass cap == SIZE_MAX. */
 typedef struct {
   uint8_t *at;
   size_t room;
+  size_t cap;
   ScrBytes header; /* the temporary view handed to the encoders */
 } ScrBytesSink;
 
+/* Conversion destinations are private until their initialized length is set.
+ * General typed-array allocation must remain zero-filled. */
 static ScrBytes *scr_bytes_conversion_storage_in(ScrBytesSink *sink, size_t capacity) {
   if (sink && sink->at && capacity <= sink->room) {
     sink->header = (ScrBytes){.rc = 1, .len = 0, .elem = SCR_BYTES_U8, .data = sink->at};
@@ -3413,6 +3419,104 @@ static ScrBytes *scr_bytes_decode_b64(ScrBytesSink *sink, const uint8_t *in, siz
   return b;
 }
 
+/* The latin1/ascii encoding of string storage, written to dst: the low byte
+ * of each UTF-16 unit, in order, and the byte count is returned. `limited`
+ * caps the write at `cap` bytes; it is a literal at each call site, so a
+ * full encode carries no budget check in its loop.
+ *
+ * Node writes charCodeAt(i) & 0xFF for BOTH spellings — an astral code point
+ * contributes its two surrogates' low bytes. The ASCII prefix copies.
+ * Elsewhere eight ASCII bytes copy as one word. In eight bytes holding two
+ * or more high bytes, all of them in two-byte sequences, every continuation
+ * byte's output byte (the code point's low byte, from the continuation and
+ * its lead) is computed in one word; each byte is then stored without
+ * branches, a continuation replacing the byte its lead wrote. A lead in a
+ * word's last byte stays pending: its continuation, if the next byte is one,
+ * replaces it the same way. Any other byte decodes with scr_bytes_next_cp.
+ *
+ * Every byte written is one code unit's low byte, so a limited write stops
+ * there (Node's truncation, which can split a surrogate pair). */
+__attribute__((always_inline)) static inline size_t scr_latin1_into(uint8_t *dst,
+                                                                    const uint8_t *in, size_t n,
+                                                                    bool limited, size_t cap,
+                                                                    bool ascii) {
+  const uint64_t top = UINT64_C(0x8080808080808080);
+  /* An ASCII prefix (all of an ASCII string) is its own encoding. A limited
+   * write scans no further than its budget: the bytes past it are not
+   * written, so the scan is bounded by the caller's room, not by n. */
+  size_t scan = limited && cap < n ? cap : n;
+  size_t o = ascii ? scan : scr_bytes_ascii_prefix(in, scan);
+  if (limited && o > cap) o = cap;
+  size_t i = o;
+  memcpy(dst, in, o);
+  /* in[i - 1] is a two-byte lead (0xC2..0xDF) the word path wrote as
+   * dst[o - 1], and in[i] is not yet known to continue it. */
+  bool pending = false;
+  while (i < n) {
+    if (n - i >= 8 && (!limited || cap - o >= 8)) {
+      uint64_t w;
+      memcpy(&w, in + i, 8);
+      uint64_t high = w & top;
+      if (!high) {
+        memcpy(dst + o, &w, 8);
+        i += 8;
+        o += 8;
+        pending = false;
+        continue;
+      }
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+      /* Byte k of the input is bits 8k..8k+7 of w; bit 8k+7 of w << j
+       * is bit 7 - j of byte k. */
+      uint64_t cont = w & ~(w << 1) & top;           /* 10xxxxxx */
+      uint64_t lead = w & (w << 1) & ~(w << 2) & top; /* 110xxxxx */
+      /* 0xC0 and 0xC1 (bits 4..1 clear) only begin overlong forms. */
+      uint64_t overlong = lead & ~((w << 3) | (w << 4) | (w << 5) | (w << 6));
+      if ((high & (high - 1)) && high == (cont | lead) && !overlong &&
+          cont == ((lead << 8) | (pending ? 0x80u : 0u))) {
+        uint64_t prev = (w << 8) | (pending ? in[i - 1] : 0u);
+        uint64_t low = ((prev & UINT64_C(0x0303030303030303)) << 6) |
+                       (w & UINT64_C(0x3f3f3f3f3f3f3f3f));
+        uint64_t mask = (cont >> 7) * 0xff;
+        uint64_t out = (w & ~mask) | (low & mask);
+        for (unsigned k = 0; k < 8; k++) {
+          o -= (size_t)(cont >> (8 * k + 7)) & 1;
+          dst[o++] = (uint8_t)(out >> (8 * k));
+        }
+        i += 8;
+        pending = (lead >> 63) != 0;
+        continue;
+      }
+#endif
+    }
+    unsigned c = in[i];
+    if (pending && c >> 6 == 2) {
+      /* The rest of the two-byte sequence whose lead ended a word. */
+      dst[o - 1] = (uint8_t)(((in[i - 1] & 3u) << 6) | (c & 0x3f));
+      i++;
+      pending = false;
+      continue;
+    }
+    pending = false;
+    if (limited && o >= cap) break;
+    if (c < 0x80) {
+      dst[o++] = (uint8_t)c;
+      i++;
+      continue;
+    }
+    uint32_t cp = scr_bytes_next_cp(in, n, &i);
+    if (cp > 0xffff) {
+      cp -= 0x10000;
+      dst[o++] = (uint8_t)(0xd800 + (cp >> 10));
+      if (limited && o >= cap) break; /* the pair's second unit is past the budget */
+      dst[o++] = (uint8_t)(0xdc00 + (cp & 0x3ff));
+    } else {
+      dst[o++] = (uint8_t)cp;
+    }
+  }
+  /* Never grows past n: multi-byte code points shrink. */
+  return o;
+}
+
 /* Encodes s into sink's pool room when its upper bound fits there, else into
  * fresh private storage. The result's len is the bytes written; a pool
  * result is &sink->header, never released. */
@@ -3420,86 +3524,16 @@ static ScrBytes *scr_bytes_encode_str(ScrBytesSink *sink, const ScrStr *s, const
   const uint8_t *in = (const uint8_t *)s->data;
   size_t n = s->len;
   if (scr_enc_is(enc, "latin1") || scr_enc_is(enc, "ascii")) {
-    /* Node writes charCodeAt(i) & 0xFF for BOTH spellings — an astral
-     * code point contributes its two surrogates' low bytes. The ASCII
-     * prefix copies. Elsewhere eight ASCII bytes copy as one word. In eight bytes
-     * holding two or more high bytes, all of them in two-byte sequences,
-     * every continuation byte's output byte (the code point's low byte,
-     * from the continuation and its lead) is computed in one word; each
-     * byte is then stored without branches, a continuation replacing the
-     * byte its lead wrote. A lead in a word's last byte stays pending: its
-     * continuation, if the next byte is one, replaces it the same way. Any
-     * other byte decodes with scr_bytes_next_cp. */
-    ScrBytes *b = scr_bytes_conversion_storage_in(sink, n);
-    /* A local copy: a byte store could otherwise change b->data. */
-    uint8_t *dst = b->data;
-    const uint64_t top = UINT64_C(0x8080808080808080);
-    /* An ASCII prefix (all of an ASCII string) is its own encoding. */
-    size_t o = s->ascii ? n : scr_bytes_ascii_prefix(in, n), i = o;
-    memcpy(dst, in, o);
-    /* in[i - 1] is a two-byte lead (0xC2..0xDF) the word path wrote as
-     * dst[o - 1], and in[i] is not yet known to continue it. */
-    bool pending = false;
-    while (i < n) {
-      if (n - i >= 8) {
-        uint64_t w;
-        memcpy(&w, in + i, 8);
-        uint64_t high = w & top;
-        if (!high) {
-          memcpy(dst + o, &w, 8);
-          i += 8;
-          o += 8;
-          pending = false;
-          continue;
-        }
-#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-        /* Byte k of the input is bits 8k..8k+7 of w; bit 8k+7 of w << j
-         * is bit 7 - j of byte k. */
-        uint64_t cont = w & ~(w << 1) & top;           /* 10xxxxxx */
-        uint64_t lead = w & (w << 1) & ~(w << 2) & top; /* 110xxxxx */
-        /* 0xC0 and 0xC1 (bits 4..1 clear) only begin overlong forms. */
-        uint64_t overlong = lead & ~((w << 3) | (w << 4) | (w << 5) | (w << 6));
-        if ((high & (high - 1)) && high == (cont | lead) && !overlong &&
-            cont == ((lead << 8) | (pending ? 0x80u : 0u))) {
-          uint64_t prev = (w << 8) | (pending ? in[i - 1] : 0u);
-          uint64_t low = ((prev & UINT64_C(0x0303030303030303)) << 6) |
-                         (w & UINT64_C(0x3f3f3f3f3f3f3f3f));
-          uint64_t mask = (cont >> 7) * 0xff;
-          uint64_t out = (w & ~mask) | (low & mask);
-          for (unsigned k = 0; k < 8; k++) {
-            o -= (size_t)(cont >> (8 * k + 7)) & 1;
-            dst[o++] = (uint8_t)(out >> (8 * k));
-          }
-          i += 8;
-          pending = (lead >> 63) != 0;
-          continue;
-        }
-#endif
-      }
-      unsigned c = in[i];
-      if (pending && c >> 6 == 2) {
-        /* The rest of the two-byte sequence whose lead ended a word. */
-        dst[o - 1] = (uint8_t)(((in[i - 1] & 3u) << 6) | (c & 0x3f));
-        i++;
-        pending = false;
-        continue;
-      }
-      pending = false;
-      if (c < 0x80) {
-        dst[o++] = (uint8_t)c;
-        i++;
-        continue;
-      }
-      uint32_t cp = scr_bytes_next_cp(in, n, &i);
-      if (cp > 0xffff) {
-        cp -= 0x10000;
-        dst[o++] = (uint8_t)(0xd800 + (cp >> 10));
-        dst[o++] = (uint8_t)(0xdc00 + (cp & 0x3ff));
-      } else {
-        dst[o++] = (uint8_t)cp;
-      }
+    if (sink && sink->at && sink->cap < n) {
+      /* The caller has room for `cap` bytes and takes exactly those: write
+       * them in place, and stop, instead of encoding the rest. */
+      sink->header = (ScrBytes){.rc = 1, .len = 0, .elem = SCR_BYTES_U8, .data = sink->at};
+      sink->header.len = scr_latin1_into(sink->at, in, n, true, sink->cap, s->ascii);
+      return &sink->header;
     }
-    b->len = o; /* never grows past n: multi-byte cps shrink */
+    /* A local copy: a byte store could otherwise change b->data. */
+    ScrBytes *b = scr_bytes_conversion_storage_in(sink, n);
+    b->len = scr_latin1_into(b->data, in, n, false, 0, s->ascii);
     return b;
   }
   if (scr_enc_is(enc, "utf16le")) {
@@ -3813,7 +3847,8 @@ ScrBytes *scr_buffer_from_str(const ScrStr *s, const ScrStr *enc) {
     if (length >= max) return scr_buffer_from_str_unpooled(s, enc, length);
   }
   if (!scr_pool_reserve(length)) return NULL;
-  ScrBytesSink sink = {scr_pool_slab->data + scr_pool_offset, scr_pool_room()};
+  ScrBytesSink sink = {
+      .at = scr_pool_slab->data + scr_pool_offset, .room = scr_pool_room(), .cap = SIZE_MAX};
   ScrBytes *b = scr_bytes_encode_str(&sink, s, enc);
   size_t actual = b->len;
   if (b != &sink.header) {
@@ -4362,18 +4397,27 @@ double scr_bytes_write_str(ScrBytes *b, const ScrStr *s, const ScrStr *enc,
     }
     return (double)k;
   }
-  bool utf16 = scr_enc_is(enc, "utf16le");
-  if (utf16 || scr_enc_is(enc, "latin1") || scr_enc_is(enc, "ascii")) {
-    size_t i = 0, written = 0, width = utf16 ? 2 : 1;
+  if (scr_enc_is(enc, "latin1") || scr_enc_is(enc, "ascii")) {
+    /* Node writes the low byte of each UTF-16 unit, in order, so an astral
+     * code point contributes both surrogates' low bytes and a budget that
+     * falls inside a pair splits it. That is the encoder Buffer.from uses,
+     * with the budget as its output limit: the bytes written are the first
+     * `budget` bytes of the whole receiver's encoding, computed in place and
+     * stopping there instead of encoding the rest. */
+    ScrBytesSink sink = {.at = b->data + o, .room = budget, .cap = budget};
+    return (double)scr_bytes_encode_str(&sink, s, enc)->len;
+  }
+  if (scr_enc_is(enc, "utf16le")) {
+    size_t i = 0, written = 0;
     const uint64_t high = UINT64_C(0x8080808080808080);
-    while (i < s->len && budget - written >= width) {
+    while (i < s->len && budget - written >= 2) {
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
       /* utf16le of an ASCII run: zero-extend each byte to a little-endian
        * unit, sixteen per step with vector unpacks where the target has them
        * and eight per step with two word stores otherwise (the generic loop
        * below stores byte by byte, because the source and destination may
        * alias as far as the compiler knows). */
-      if (utf16) {
+      {
         uint8_t *d = b->data + o + written;
         size_t n = 0, room = (budget - written) / 16, left = (s->len - i) / 8;
         size_t steps = room < left ? room : left;
@@ -4410,23 +4454,19 @@ double scr_bytes_write_str(ScrBytes *b, const ScrStr *s, const ScrStr *enc,
         if (n != 0) continue;
       }
 #endif
-      /* ASCII runs encode byte-for-unit: widen (or copy) eight bytes per
-       * step while the budget holds them all, else one code point below. */
-      if (s->len - i >= 8 && budget - written >= 8 * width) {
+      /* ASCII runs encode byte-for-unit: widen eight bytes per step while
+       * the budget holds them all, else one code point below. */
+      if (s->len - i >= 8 && budget - written >= 16) {
         uint64_t w;
         memcpy(&w, s->data + i, 8);
         if (!(w & high)) {
           uint8_t *d = b->data + o + written;
-          if (utf16) {
-            for (int k = 0; k < 8; k++) {
-              d[2 * k] = (uint8_t)s->data[i + k];
-              d[2 * k + 1] = 0;
-            }
-          } else {
-            memcpy(d, s->data + i, 8);
+          for (int k = 0; k < 8; k++) {
+            d[2 * k] = (uint8_t)s->data[i + k];
+            d[2 * k + 1] = 0;
           }
           i += 8;
-          written += 8 * width;
+          written += 16;
           continue;
         }
       }
@@ -4438,10 +4478,10 @@ double scr_bytes_write_str(ScrBytes *b, const ScrStr *s, const ScrStr *enc,
         second = 0xdc00 + (cp & 0x3ff);
       }
       b->data[o + written++] = (uint8_t)first;
-      if (utf16) b->data[o + written++] = (uint8_t)(first >> 8);
-      if (second && budget - written >= width) {
+      b->data[o + written++] = (uint8_t)(first >> 8);
+      if (second && budget - written >= 2) {
         b->data[o + written++] = (uint8_t)second;
-        if (utf16) b->data[o + written++] = (uint8_t)(second >> 8);
+        b->data[o + written++] = (uint8_t)(second >> 8);
       }
     }
     return (double)written;

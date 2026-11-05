@@ -1381,6 +1381,10 @@ static ScrError *scr_fs_error_details(int e, const char *name, const char *messa
 /* Node's errnoException(err, "kill"): message "kill <code>", with own
  * errno (the negative uv code), code and syscall properties. */
 static bool scr_kill_send(int pid, int sig) {
+  /* A signal can end this process before any exit hook runs (a self-kill,
+   * or a pipe reader watching the target's output): publish buffered stdout
+   * first. */
+  scr_stdout_settle();
   if (scr_sys_kill(pid, sig) == 0) return true;
   int e = errno;
   char namebuf[16];
@@ -2235,6 +2239,7 @@ void scr_process_exit(double code) {
   /* _Exit skips atexit handlers on purpose: no further code runs (matching
    * Node), and the RC audit is meaningless mid-program (live values are
    * expected). scr_init's flush-at-exit is also skipped — flush here. */
+  scr_stdout_settle();
   fflush(stdout);
 #if defined(__linux__)
   if (__llvm_profile_write_file != NULL) (void)__llvm_profile_write_file();
@@ -3393,6 +3398,9 @@ static void scr_file_read_grow(ScrFileRead *out) {
  * growing so an exact-size regular file never doubles its retained space. */
 static int scr_file_read_all(FILE *stream, int fd, bool text, ScrFileRead *out) {
   *out = (ScrFileRead){0};
+  /* A blocking read of stdin may wait indefinitely: publish buffered stdout
+   * (a prompt from a --stdout-buffering build) before the wait starts. */
+  if (!stream && fd == 0) scr_stdout_settle();
   out->cap = scr_file_read_hint(stream, fd);
   if (text) {
     out->text = scr_str_alloc_raw(0, out->cap);
@@ -4299,6 +4307,10 @@ static ssize_t scr_fs_write_once(int fd, const void *data, size_t length,
 static double scr_fs_write_bytes(double fd, const void *data, size_t length,
                                  double position) {
   if (!scr_fs_write_fd_valid(fd)) return 0;
+  /* fs.writeSync(1|2, ...) and writes to a duplicated stdout descriptor go
+   * between the program's other output: publish buffered stdout first so
+   * source order holds (--stdout-buffering). */
+  if (fd == 1 || fd == 2) scr_stdout_settle();
   /* Node/libuv treats every position other than a safe nonnegative integer
    * as the current-offset sentinel for writes (unlike readSync, it does not
    * throw for negative/fractional positions). */
@@ -4509,6 +4521,9 @@ double scr_fs_read_sync_at(double fd, ScrBytes *buf, double offset, double lengt
   uint8_t *bounce = buf->shared ? malloc(want ? want : 1) : NULL;
   if (buf->shared && !bounce) scr_trap("scriptc: out of memory\n");
   uint8_t *destination = bounce ? bounce : buf->data + off;
+  /* A blocking read of stdin may wait indefinitely: publish buffered stdout
+   * (a prompt from a --stdout-buffering build) before the wait starts. */
+  if (position == -1 && (int)fd == 0) scr_stdout_settle();
   ssize_t n = position == -1
     ? read((int)fd, destination, want)
     : scr_fs_pread((int)fd, destination, want, position);

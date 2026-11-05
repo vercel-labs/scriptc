@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/asserted-optional-member-receiver-spellings.ts"
+ ],
+ "diags": []
+}

@@ -788,6 +788,14 @@ export function scanModuleSpecifiers(text: string): ModuleSpecifierScan {
     const member = is(k - 1, "punct", ".") || is(k - 1, "punct", "?.");
     if ((t.value === "require" || aliases.has(t.value)) && !member && !is(k + 1, "punct", ":")) {
       if (is(k - 1, "name", "function") || is(k - 1, "name", "typeof")) continue;
+      // `import type d = require("x")` is erased whole (see the import arm).
+      if (
+        is(k - 1, "punct", "=") &&
+        is(k - 2, "name") &&
+        is(k - 3, "name", "type") &&
+        is(k - 4, "name", "import")
+      )
+        continue;
       let call = k + 1;
       let form = "require()";
       if (is(k + 1, "punct", ".") && is(k + 2, "name", "resolve")) {
@@ -810,6 +818,15 @@ export function scanModuleSpecifiers(text: string): ModuleSpecifierScan {
       continue;
     }
     if (t.value === "import" && !member) {
+      // `import type …` is erased whole by Node's type stripper (and by every
+      // TypeScript emitter), so it names no runtime module: tracing it would
+      // ship files Node never loads. A `type` modifier inside a value
+      // import's name list is different — `import { type T } from "x"` keeps
+      // its statement (`import {} from "x"`), which does load x — and a
+      // default binding named `type` (`import type from "x"` or
+      // `import type, { a } from "x"`) is a value import too.
+      if (is(k + 1, "name", "type") && !is(k + 2, "name", "from") && !is(k + 2, "punct", ","))
+        continue;
       if (is(k + 1, "punct", ".")) {
         // import.meta.resolve() names a module, as require.resolve() does.
         if (is(k + 2, "name", "meta") && is(k + 3, "punct", ".") && is(k + 4, "name", "resolve")) {
@@ -842,7 +859,10 @@ export function scanModuleSpecifiers(text: string): ModuleSpecifierScan {
     }
     if (t.value === "export" && !member) {
       let j = k + 1;
-      if (is(j, "name", "type")) j++;
+      // `export type … from "x"` is erased whole, like `import type`: no
+      // runtime module. `export { type T } from "x"` keeps its statement and
+      // loads x.
+      if (is(j, "name", "type")) continue;
       if (is(j, "punct", "*")) {
         for (; j < tokens.length && j < k + 400; j++) {
           if (is(j, "punct", ";")) break;

@@ -1447,6 +1447,9 @@ static ScrDyn *scr_dyn_alloc(ScrDynKind kind) {
       d->v.arr.frozen = false;
       d->v.arr.presence = NULL;
       d->v.arr.region = NULL;
+#ifdef SCR_JS_OBJECT_MODEL
+      d->v.arr.length = 0;
+#endif
     } else if (kind == SCR_DYN_OBJ) {
       d->v.obj.len = 0; /* cap/slots preserved */
       d->v.obj.region = NULL;
@@ -1869,7 +1872,9 @@ ScrDyn *scr_dyn_obj_get(const ScrDyn *d, const char *key, size_t key_len) {
     return slot ? *slot : NULL;
   }
   ScrDynEntry *entry = scr_dyn_find_entry(d, key, key_len);
-  return entry ? entry->value : NULL;
+  /* A class member the view answers with its getter is not an own data
+   * property of the view. */
+  return entry && !entry->class_view ? entry->value : NULL;
 }
 
 bool scr_dyn_obj_enumerable(const ScrDyn *d, const char *key, size_t key_len) {
@@ -1950,6 +1955,16 @@ bool scr_dyn_field_eq_bool(const ScrDyn *d, const ScrStr *key, bool value) {
 /* Public: the compiler-emitted static→dyn converters push through this
  * too. Ownership of the item moves in. */
 void scr_dyn_arr_push(ScrDyn *arr, ScrDyn *item) {
+#ifdef SCR_JS_OBJECT_MODEL
+  /* A length ahead of the dense prefix means the push appends after an
+   * implicit hole run the dense items cannot hold: the element is an own
+   * property, as a far index write would make it. */
+  if (arr->v.arr.length != arr->v.arr.len) {
+    scr_dyn_arr_sparse_put(arr, arr->v.arr.length, item);
+    scr_dyn_release(item); /* ownership moved in above */
+    return;
+  }
+#endif
   scr_dyn_region_store(arr, item);
   if (arr->v.arr.len == arr->v.arr.cap) {
     size_t cap = arr->v.arr.cap ? arr->v.arr.cap * 2 : 4;
@@ -1965,6 +1980,12 @@ void scr_dyn_arr_push(ScrDyn *arr, ScrDyn *item) {
   }
   if (arr->v.arr.presence) arr->v.arr.presence[arr->v.arr.len] = 1;
   arr->v.arr.items[arr->v.arr.len++] = item; /* ownership moves in */
+#ifdef SCR_JS_OBJECT_MODEL
+  /* A dense push extends the array only while the dense prefix IS the
+   * array; past it the appended item is scratch space inside an implicit
+   * hole run and the length stays. */
+  if (arr->v.arr.length == arr->v.arr.len - 1) arr->v.arr.length = arr->v.arr.len;
+#endif
 }
 
 /* Room for `cap` items in a fresh dyn array, so a walk that knows its
@@ -1982,6 +2003,19 @@ bool scr_dyn_arr_has_index(const ScrDyn *arr, size_t index) {
 }
 
 void scr_dyn_arr_push_hole(ScrDyn *arr) {
+#ifdef SCR_JS_OBJECT_MODEL
+  /* A hole always lands in the dense prefix, even when the array's length
+   * has already left it (a far length assignment): scratch space the
+   * prefix grows into, not an element past the array's end. The append
+   * runs with the length at the prefix, so push takes its dense path, and
+   * the sparse length then goes back. */
+  if (arr->v.arr.length != arr->v.arr.len) {
+    size_t length = arr->v.arr.length;
+    arr->v.arr.length = arr->v.arr.len;
+    scr_dyn_arr_push(arr, scr_dyn_retain(scr_dyn_undefined()));
+    arr->v.arr.length = length;
+  } else
+#endif
   scr_dyn_arr_push(arr, scr_dyn_retain(scr_dyn_undefined()));
   if (!arr->v.arr.presence) {
     arr->v.arr.presence = malloc(arr->v.arr.cap);
@@ -1990,6 +2024,175 @@ void scr_dyn_arr_push_hole(ScrDyn *arr) {
   }
   arr->v.arr.presence[arr->v.arr.len - 1] = 0;
 }
+
+#ifdef SCR_JS_OBJECT_MODEL
+/* The canonical array index a property name spells (0…2^32-2, no leading
+ * zero), the same rule the index write applies. */
+bool scr_dyn_arr_index_key(const char *data, size_t len, size_t *out) {
+  if (len == 0 || len > 10) return false;
+  size_t index = 0;
+  for (size_t i = 0; i < len; i++) {
+    char c = data[i];
+    if (c < '0' || c > '9') return false;
+    if (i > 0 && index == 0) return false;
+    if (index > (4294967294ULL - (size_t)(c - '0')) / 10) return false;
+    index = index * 10 + (size_t)(c - '0');
+  }
+  *out = index;
+  return true;
+}
+
+static void scr_dyn_note_assign_failure(void);
+
+/* Whether the array's own property table holds the canonical index `idx`,
+ * an element the array keeps past its dense prefix. */
+static bool dyn_arr_sparse_present(const ScrDyn *arr, size_t idx) {
+  if (!arr->v.arr.properties) return false;
+  char text[12];
+  int n = snprintf(text, sizeof text, "%zu", idx);
+  return scr_dyn_obj_get(arr->v.arr.properties, text, (size_t)n) != NULL;
+}
+
+/* Writes canonical index `idx` past the array's dense prefix as an own
+ * property under its index spelling, growing the array's length to idx + 1.
+ * Borrows `value`; false with the exception pending when the array's
+ * attributes refuse the write. */
+bool scr_dyn_arr_sparse_put(ScrDyn *arr, size_t idx, ScrDyn *value) {
+  if (scr_dyn_array_prototype_element_fence(arr)) return false;
+  bool present = dyn_arr_sparse_present(arr, idx);
+  if (arr->v.arr.frozen || (arr->v.arr.sealed && !present)) {
+    scr_array_frozen_error(0, arr->v.arr.len, (double)idx, 0, 0);
+    scr_dyn_note_assign_failure();
+    return false;
+  }
+  if (arr->non_extensible && !present) {
+    scr_array_frozen_error(0, 0, (double)idx, 0, 0);
+    scr_dyn_note_assign_failure();
+    return false;
+  }
+  scr_dyn_region_store(arr, value);
+  char text[12];
+  int n = snprintf(text, sizeof text, "%zu", idx);
+  ScrStr *key = scr_str_new(text, (size_t)n);
+  if (!arr->v.arr.properties) {
+    scr_dyn_region_store(arr, NULL); /* a table that later holds anything */
+    arr->v.arr.properties = scr_dyn_new_obj();
+  }
+  arr->v.arr.properties->non_extensible = arr->non_extensible;
+  scr_dyn_key_set(arr->v.arr.properties, key, value);
+  scr_str_release(key);
+  if (scr_exc_pending()) return false;
+  if (idx >= arr->v.arr.length) arr->v.arr.length = idx + 1;
+  return true;
+}
+
+/* Drops the sparse element at `idx` before a write puts an element inside
+ * the dense prefix at the same index, so the dense element is the only one
+ * the array holds there. */
+static void dyn_arr_sparse_clear(ScrDyn *arr, size_t idx) {
+  if (!dyn_arr_sparse_present(arr, idx)) return;
+  char text[12];
+  int n = snprintf(text, sizeof text, "%zu", idx);
+  ScrStr *key = scr_str_new(text, (size_t)n);
+  scr_dyn_key_delete(arr->v.arr.properties, key, false);
+  scr_str_release(key);
+}
+
+static int dyn_arr_index_order_desc(const void *a, const void *b) {
+  size_t x = *(const size_t *)a;
+  size_t y = *(const size_t *)b;
+  return x > y ? -1 : x < y ? 1 : 0;
+}
+
+/* A shorter length drops the elements at or past it. Nodes' ArraySetLength
+ * deletes them from the highest index down, so a non-configurable element
+ * refuses the delete only after every element above it is gone; that refusal
+ * leaves the length at the refused index + 1. The elements inside the dense
+ * prefix are released by the caller's shrink loop; the ones past it live in
+ * the array's own property table under their index spelling. True when every
+ * element the target length excludes is gone, false with the exception
+ * pending (the length already moved). */
+static bool scr_dyn_arr_truncate_sparse(ScrDyn *arr, size_t length) {
+  ScrDyn *props = arr->v.arr.properties;
+  size_t total = arr->v.arr.length;
+  if (!props || length >= total) return true;
+  size_t count = scr_dyn_obj_count(props);
+  if (count == 0) return true;
+  size_t *indexes = (size_t *)malloc(count * sizeof *indexes);
+  if (!indexes) {
+    scr_json_oom();
+    return false;
+  }
+  size_t kept = 0;
+  for (size_t i = 0; i < count; i++) {
+    size_t key_len = 0;
+    const char *key = scr_dyn_obj_key_at(props, i, &key_len);
+    size_t index = 0;
+    if (scr_dyn_arr_index_key(key, key_len, &index) && index >= length && index < total)
+      indexes[kept++] = index;
+  }
+  qsort(indexes, kept, sizeof *indexes, dyn_arr_index_order_desc);
+  bool done = true;
+  for (size_t i = 0; i < kept; i++) {
+    char text[12];
+    int n = snprintf(text, sizeof text, "%zu", indexes[i]);
+    ScrDynEntry *entry = scr_dyn_find_entry(props, text, (size_t)n);
+    if (!entry) continue;
+    if (!entry->configurable) {
+      arr->v.arr.length = indexes[i] + 1;
+      scr_array_undeletable_error((double)indexes[i]);
+      done = false;
+      break;
+    }
+    ScrStr *spelled = scr_str_new(text, (size_t)n);
+    scr_dyn_key_delete(props, spelled, false);
+    scr_str_release(spelled);
+    if (scr_exc_pending()) {
+      arr->v.arr.length = indexes[i] + 1;
+      done = false;
+      break;
+    }
+  }
+  free(indexes);
+  return done;
+}
+
+/* Array.prototype.pop's element when the length extends past the dense
+ * prefix. The element at last-1 is an own index property or a hole; a hole
+ * reads through the prototype and refuses no delete, while a
+ * non-configurable own element refuses it and leaves the length alone, as in
+ * Node. Returns the +1 element, or NULL with the exception pending. */
+ScrDyn *scr_dyn_arr_sparse_pop(ScrDyn *arr) {
+  size_t last = arr->v.arr.length;
+  size_t index = last - 1;
+  ScrDyn *result = scr_dyn_arr_at(arr, (double)index);
+  if (!result || scr_exc_pending()) {
+    scr_dyn_release(result);
+    return NULL;
+  }
+  char text[12];
+  int n = snprintf(text, sizeof text, "%zu", index);
+  ScrDynEntry *entry = arr->v.arr.properties
+      ? scr_dyn_find_entry(arr->v.arr.properties, text, (size_t)n)
+      : NULL;
+  if (entry && !entry->configurable) {
+    scr_array_undeletable_error((double)index);
+    scr_dyn_release(result);
+    return NULL;
+  }
+  if (entry) {
+    ScrStr *key = scr_str_new(text, (size_t)n);
+    scr_dyn_key_delete(arr->v.arr.properties, key, false);
+    scr_str_release(key);
+    if (scr_exc_pending()) {
+      scr_dyn_release(result);
+      return NULL;
+    }
+  }
+  arr->v.arr.length = index;
+  return result;
+}
+#endif
 
 #ifdef SCR_JS_OBJECT_MODEL
 /* One typed-array element as the dyn value a read answers: a number for the
@@ -2238,7 +2441,7 @@ double scr_dyn_arr_len(const ScrDyn *d) {
   return d->kind == SCR_DYN_ARR ? (double)d->v.arr.len : 0;
 }
 ScrDyn *scr_dyn_arr_at(const ScrDyn *d, double i) {
-  if (d->kind != SCR_DYN_ARR || i < 0 || i >= (double)d->v.arr.len) {
+  if (d->kind != SCR_DYN_ARR || i < 0 || i >= (double)scr_dyn_arr_length(d)) {
     return scr_dyn_retain(scr_dyn_undefined());
   }
   if (scr_dyn_arr_has_index(d, (size_t)i)) return scr_dyn_retain(d->v.arr.items[(size_t)i]);
@@ -2424,6 +2627,35 @@ ScrDyn *scr_dyn_symbol_get(const ScrDyn *value, const ScrStr *key) {
  * later, and it neither grows nor owns heap references. */
 static ScrDyn scr_dyn_small_ints[384];
 
+/* Single-character ASCII strings are primitives with one value each, so
+ * their boxes are shared the way the small integers are. The character
+ * strings themselves are the runtime's immortal ASCII statics in
+ * scr_string.c, and a constructor that filled these boxes would make every
+ * program link them, so they are filled on first use instead. 0 empty, 1
+ * being filled by one thread, 2 complete. */
+static ScrDyn scr_dyn_ascii_chars[128];
+static int scr_dyn_ascii_state;
+
+/* Fills the table on first use, so the fast path in scr_dyn_new_str stays a
+ * load and a branch. Returns the shared box for `c`, or NULL when another
+ * thread is filling the table right now; the caller then makes a box of its
+ * own, which the language cannot tell apart from the shared one. */
+static ScrDyn *scr_dyn_ascii_fill(unsigned char c) {
+  int empty = 0;
+  if (!__atomic_compare_exchange_n(&scr_dyn_ascii_state, &empty, 1, false, __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE))
+    return NULL;
+  for (unsigned i = 0; i < 128; i++) {
+    ScrDyn *d = &scr_dyn_ascii_chars[i];
+    d->rc = SIZE_MAX;
+    d->kind = SCR_DYN_STR;
+    d->v.str = scr_str_ascii_char(i);
+  }
+  /* The fields publish before the complete state, so a thread that loads it
+   * sees filled boxes. */
+  __atomic_store_n(&scr_dyn_ascii_state, 2, __ATOMIC_RELEASE);
+  return &scr_dyn_ascii_chars[c];
+}
+
 const char *(*scr_gen_tag_reader)(const ScrGen *g) = NULL;
 
 __attribute__((constructor)) static void scr_dyn_small_ints_init(void) {
@@ -2446,6 +2678,15 @@ ScrDyn *scr_dyn_new_num(double n) {
 }
 
 ScrDyn *scr_dyn_new_str(ScrStr *s) {
+  /* A one-byte ASCII string is one of 128 shared values. The caller keeps
+   * its own reference to `s`, which the shared box does not need. */
+  if (s->ascii && s->len == 1) {
+    unsigned char c = (unsigned char)s->data[0];
+    ScrDyn *shared = __builtin_expect(__atomic_load_n(&scr_dyn_ascii_state, __ATOMIC_ACQUIRE) == 2, 1)
+                         ? &scr_dyn_ascii_chars[c]
+                         : scr_dyn_ascii_fill(c);
+    if (shared != NULL) return shared;
+  }
   ScrDyn *d = scr_dyn_leaf_alloc(SCR_DYN_STR);
   d->v.str = scr_str_retain(s);
   return d;
@@ -3640,7 +3881,7 @@ ScrDyn *scr_dyn_own_descriptor(const ScrDyn *value, const ScrStr *key) {
   }
   if (value->kind == SCR_DYN_ARR && key->len == 6 && memcmp(key->data, "length", 6) == 0) {
     ScrDyn *out = scr_dyn_new_obj();
-    scr_dyn_obj_set(out, "value", 5, scr_dyn_new_num((double)value->v.arr.len));
+    scr_dyn_obj_set(out, "value", 5, scr_dyn_new_num((double)scr_dyn_arr_length(value)));
     scr_dyn_obj_set(out, "writable", 8, scr_dyn_new_bool(!value->v.arr.frozen));
     scr_dyn_obj_set(out, "enumerable", 10, scr_dyn_new_bool(false));
     scr_dyn_obj_set(out, "configurable", 12, scr_dyn_new_bool(false));
@@ -3718,7 +3959,7 @@ ScrDyn *scr_dyn_own_descriptor(const ScrDyn *value, const ScrStr *key) {
   }
   if (value->kind == SCR_DYN_OBJ) {
     ScrDynEntry *entry = scr_dyn_entry((ScrDyn *)value, key);
-    if (!entry) return scr_dyn_retain(scr_dyn_undefined());
+    if (!entry || entry->class_view) return scr_dyn_retain(scr_dyn_undefined());
     ScrDyn *out = scr_dyn_new_obj();
     if (entry->accessor) {
       scr_dyn_obj_set(out, "get", 3, scr_dyn_retain(entry->getter ? entry->getter : scr_dyn_undefined()));
@@ -4147,6 +4388,19 @@ static void scr_record_source_put(const ScrRecordSource *entry) {
   scr_weak_dispose_hook = &scr_dispose_observers;
 }
 
+/* The own property descriptor of `key` on `source`, or NULL when it has no
+ * own property there. A class member a checked view answers with its getter
+ * is not an own property of the view: reading it is a read, and copying it
+ * as a property has nothing to copy. */
+static ScrDyn *scr_dyn_own_descriptor_or_null(const ScrDyn *source, const ScrStr *key) {
+  ScrDyn *descriptor = scr_dyn_own_descriptor(source, key);
+  if (descriptor && descriptor->kind == SCR_DYN_UNDEF) {
+    scr_dyn_release(descriptor);
+    return NULL;
+  }
+  return descriptor;
+}
+
 /* Called by the checked record builder after it filled `rec` from `src`;
  * `names` lists the shape's fields in declaration order. Keeps nothing
  * unless the source has an own property the shape does not declare, or
@@ -4178,7 +4432,7 @@ void scr_record_source_note(void *rec, const ScrDyn *src, const char *const *nam
     } else {
       ScrStr *name = scr_str_new(entry->key, entry->key_len);
       ScrDyn *key = scr_dyn_new_str(name);
-      ScrDyn *descriptor = scr_dyn_own_descriptor(src, name);
+      ScrDyn *descriptor = scr_dyn_own_descriptor_or_null(src, name);
       ScrDyn *defined = descriptor ? scr_dyn_define_property(view, key, descriptor) : NULL;
       scr_dyn_release(defined);
       scr_dyn_release(descriptor);
@@ -4400,7 +4654,7 @@ static ScrDyn *scr_record_source_merge(const ScrRecordSource *source, const ScrD
     }
     ScrStr *name = scr_str_new(entry->key, entry->key_len);
     ScrDyn *key = scr_dyn_new_str(name);
-    ScrDyn *descriptor = scr_dyn_own_descriptor(cached, name);
+    ScrDyn *descriptor = scr_dyn_own_descriptor_or_null(cached, name);
     ScrDyn *defined = descriptor ? scr_dyn_define_property(out, key, descriptor) : NULL;
     scr_dyn_release(defined);
     scr_dyn_release(descriptor);
@@ -4890,7 +5144,7 @@ void scr_dyn_copy_entry(ScrDyn *target, const ScrDyn *source, const ScrDynEntry 
   } else {
     /* Properties defined through a view keep their attributes. */
     ScrDyn *name = scr_dyn_new_str(key);
-    ScrDyn *descriptor = scr_dyn_own_descriptor(source, key);
+    ScrDyn *descriptor = scr_dyn_own_descriptor_or_null(source, key);
     if (descriptor) scr_dyn_release(scr_dyn_define_property(target, name, descriptor));
     scr_dyn_release(descriptor);
     scr_dyn_release(name);
@@ -4958,8 +5212,8 @@ ScrDyn *scr_dyn_typed_ref_materialize(const ScrDyn *d) {
         if (scr_dyn_obj_get(fresh, entry->key, entry->key_len)) continue;
         ScrStr *name = scr_str_new(entry->key, entry->key_len);
         ScrDyn *key = scr_dyn_new_str(name);
-        ScrDyn *descriptor = scr_dyn_own_descriptor(cached, name);
-        ScrDyn *defined = scr_dyn_define_property(fresh, key, descriptor);
+        ScrDyn *descriptor = scr_dyn_own_descriptor_or_null(cached, name);
+        ScrDyn *defined = descriptor ? scr_dyn_define_property(fresh, key, descriptor) : NULL;
         scr_dyn_release(defined);
         scr_dyn_release(descriptor);
         scr_dyn_release(key);
@@ -5320,6 +5574,66 @@ ScrDyn *scr_dyn_index_get(const ScrDyn *d, double index) {
   if (d->kind != SCR_DYN_TYPED_REF || scr_event_ref_hooks || !scr_dyn_typed_ref_array_ops(d))
     return NULL;
   return scr_dyn_typed_ref_element(d, i);
+}
+
+ScrDyn *scr_dyn_string_index_get(const ScrDyn *d, double index) {
+  if (!(index >= 0 && index < scr_str_utf16_len(d->v.str)) || trunc(index) != index) return NULL;
+  ScrStr *character = scr_str_char_at(d->v.str, index);
+  ScrDyn *out = scr_dyn_new_str(character);
+  scr_str_release(character);
+  return out;
+}
+
+ScrDyn *scr_dyn_bytes_index_get(const ScrDyn *d, double index) {
+  const ScrBytes *bytes = d->v.bytes;
+  if (bytes->is_data_view) return NULL;
+  /* A number key spells itself the way the string-key path spells it, so
+   * the index -0 is the element 0 (its spelling is "0"). */
+  if (!(index >= 0 && index < (double)bytes->len) || trunc(index) != index) return NULL;
+#ifdef SCR_JS_OBJECT_MODEL
+  if (scr_bytes_elem_is_bigint(bytes->elem)) return scr_bytes_get_bigint(bytes, index);
+#endif
+  return scr_dyn_new_num(scr_bytes_get(bytes, index));
+}
+
+int scr_dyn_index_set(ScrDyn *recv, double index, ScrDyn *value) {
+  if (recv->kind == SCR_DYN_BYTES) {
+    ScrBytes *bytes = recv->v.bytes;
+    /* A DataView has no elements: its numeric keys are named properties. */
+    if (bytes->is_data_view) return SCR_DYN_INDEX_NOT_HANDLED;
+#ifdef SCR_JS_OBJECT_MODEL
+    if (scr_bytes_elem_is_bigint(bytes->elem))
+      return scr_bytes_set_bigint(bytes, index, value) ? SCR_DYN_INDEX_STORED : SCR_DYN_INDEX_THREW;
+#endif
+    /* Every Number's ToString is a canonical numeric key, so the string-key
+     * path reaches the same element branch: coerce the value first, then
+     * ignore an index the array does not have. */
+    double number;
+    if (!scr_dyn_number_coerce_js(value, &number)) return SCR_DYN_INDEX_THREW;
+    if (index >= 0 && index < (double)bytes->len && trunc(index) == index)
+      scr_bytes_set(bytes, index, number);
+    return SCR_DYN_INDEX_STORED;
+  }
+  if (recv->kind != SCR_DYN_ARR) return SCR_DYN_INDEX_NOT_HANDLED;
+  /* -0 is the element 0 of an array (its spelling is "0"). */
+  if (!(index >= 0 && index < 4294967295.0) || trunc(index) != index)
+    return SCR_DYN_INDEX_NOT_HANDLED;
+  size_t idx = (size_t)index;
+  /* The prototype fence throws its own error; the cases the string-key path
+   * answers with an assignment failure keep it (the write's mode decides). */
+  if (scr_dyn_array_prototype_element_fence(recv)) return SCR_DYN_INDEX_THREW;
+  if (recv->v.arr.frozen && idx < recv->v.arr.len && scr_dyn_arr_has_index(recv, idx))
+    return SCR_DYN_INDEX_NOT_HANDLED;
+  if (recv->non_extensible && !scr_dyn_arr_has_index(recv, idx))
+    return SCR_DYN_INDEX_NOT_HANDLED;
+  if (idx > recv->v.arr.len + 1000000) return SCR_DYN_INDEX_NOT_HANDLED;
+  while (recv->v.arr.len <= idx) scr_dyn_arr_push_hole(recv);
+  scr_dyn_region_store(recv, value);
+  ScrDyn *old = recv->v.arr.items[idx];
+  recv->v.arr.items[idx] = scr_dyn_retain(value);
+  if (recv->v.arr.presence) recv->v.arr.presence[idx] = 1;
+  scr_dyn_release(old);
+  return SCR_DYN_INDEX_STORED;
 }
 
 static ScrStr *scr_dyn_typed_ref_conversion_tag(const ScrDyn *d);
@@ -8214,6 +8528,51 @@ void scr_dyn_obj_set_accessor(ScrDyn *obj, const char *key, size_t key_len, ScrD
   entry->setter = setter;
 }
 
+/* A view's accessor-backed member: the closure holds the class table (fn),
+ * the member's index (caps[1]) and the instance (caps[0], ±1). The view
+ * pushes itself as `this`, which is not what the getter reads, so the thunk
+ * runs the member's getter on the captured instance instead. */
+static ScrDyn *scr_dyn_view_accessor_get(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  const ScrDynTypedClassOps *ops = closure->fn;
+  if (!ops || !ops->accessor_get) return scr_dyn_retain(scr_dyn_undefined());
+  ScrBox *instance_box = closure->caps[0];
+  void *instance = scr_box_get_ref(instance_box); /* +1 */
+  if (!instance) return scr_dyn_retain(scr_dyn_undefined());
+  ScrDyn *value = ops->accessor_get(instance, (size_t)scr_box_get_f64(closure->caps[1]));
+  instance_box->obj_release(instance);
+  return value;
+}
+
+void scr_dyn_class_view_accessors(ScrDyn *view, const ScrDynTypedClassOps *ops, void *instance,
+                                  void *(*retain)(void *), void (*release)(void *), ScrTraceFn trace) {
+  if (!view || view->kind != SCR_DYN_OBJ || !ops || !instance || !ops->accessor_get) return;
+  for (size_t i = 0; i < ops->accessor_count; i++) {
+    const ScrStr *name = ops->accessor_names[i];
+    if (!name || name->len == 0) continue;
+    /* An own property the view already holds wins: a field that shadows a
+     * getter keeps its value, and a member listed twice keeps the nearest
+     * declaration's getter. */
+    if (scr_dyn_find_entry(view, name->data, name->len)) continue;
+    ScrClosure *closure = scr_closure_new((void *)ops, 2);
+    closure->caps[0] = scr_box_new_obj(retain, release, trace);
+    scr_box_set_ref(closure->caps[0], retain(instance));
+    closure->caps[1] = scr_box_new(SCR_BOX_F64);
+    scr_box_set_f64(closure->caps[1], (double)i);
+    ScrDyn *getter = scr_dyn_new_func(closure, scr_dyn_view_accessor_get, 0, "", name->data);
+    scr_dyn_obj_set_accessor(view, name->data, name->len, getter, NULL);
+    /* A class member, not one of the instance's own fields: the view
+     * answers it on a read, while serializing, enumerating and own-property
+     * queries treat it as the prototype accessor it is on the instance. */
+    ScrDynEntry *entry = scr_dyn_find_entry(view, name->data, name->len);
+    if (entry) {
+      entry->enumerable = false;
+      entry->class_view = true;
+    }
+  }
+}
+
 /* A class instance's view takes its native field values whatever the
  * attributes copied into it (a frozen instance's view is built the same way
  * as any other). Consumes value. */
@@ -8869,7 +9228,7 @@ static ScrDyn *scr_native_iterator_value(ScrNativeIterator *iterator, bool *done
    * the general path below is not needed. */
   if (source && source->kind == SCR_DYN_ARR && iterator->kind == 0 && !iterator->array_like &&
       iterator->selection == 0) {
-    if (iterator->index >= (double)source->v.arr.len) {
+    if (iterator->index >= (double)scr_dyn_arr_length(source)) {
       iterator->source = NULL;
       scr_dyn_release(source);
       *done_out = true;
@@ -8923,7 +9282,7 @@ static ScrDyn *scr_native_iterator_value(ScrNativeIterator *iterator, bool *done
   ScrDyn *items = view ? view : source;
   ScrMap *map = source && (iterator->kind == 2 || iterator->kind == 3) ? source->v.handle.ptr : NULL;
   if (map) iterator->index = scr_map_iter_skip(map, iterator->index);
-  double length = !items ? 0 : iterator->array_like ? iterator->limit : map ? scr_map_iter_count(map) : items->kind == SCR_DYN_ARR ? (double)items->v.arr.len
+  double length = !items ? 0 : iterator->array_like ? iterator->limit : map ? scr_map_iter_count(map) : items->kind == SCR_DYN_ARR ? (double)scr_dyn_arr_length(items)
     : items->kind == SCR_DYN_BYTES ? (double)items->v.bytes->len : scr_str_utf16_len(items->v.str);
   bool done = !source || iterator->index >= length;
   ScrDyn *value;
@@ -10139,12 +10498,56 @@ ScrDyn *scr_dyn_array_from_iterator(const ScrDyn *source) {
   return checked;
 }
 
+static ScrDyn *scr_dyn_symbol_key_get_receiver(const ScrDyn *value, const ScrDyn *key,
+                                               bool optional, const ScrDyn *receiver);
+
+/* Get(O, key) on a Proxy for a symbol key: the handler's get trap answers
+ * when it has one, and the target answers when it has none. A trap's result
+ * must agree with an own non-configurable, non-writable symbol property of
+ * the target, the same invariant the string-key path checks. */
+static ScrDyn *scr_dyn_proxy_symbol_get(const ScrDyn *proxy, const ScrDyn *key, bool optional) {
+  ScrDyn *trap = scr_dyn_proxy_trap(proxy, "get");
+  if (scr_exc_pending()) return NULL;
+  if (!trap) {
+    ScrDyn *target = proxy->v.proxy.target;
+    ScrDyn *view = target->kind == SCR_DYN_TYPED_REF
+      ? scr_dyn_typed_ref_materialize(target) : scr_dyn_retain(target);
+    ScrDyn *result = scr_exc_pending() ? NULL
+      : scr_dyn_symbol_key_get_receiver(view, key, optional, proxy);
+    scr_dyn_release(view);
+    return result;
+  }
+  ScrDyn *args[] = { proxy->v.proxy.target, (ScrDyn *)key, (ScrDyn *)proxy };
+  ScrDyn *result = scr_dyn_proxy_call(proxy, trap, args, 3);
+  ScrDynEntry *entry = scr_dyn_symbol_entry(proxy->v.proxy.target, key, true);
+  if (result && entry && !entry->configurable &&
+      ((entry->accessor && !entry->getter && result->kind != SCR_DYN_UNDEF) ||
+       (!entry->accessor && !entry->writable &&
+        !scr_dyn_property_same_value(entry->value, result)))) {
+    scr_dyn_release(result);
+    scr_dyn_proxy_invariant();
+    return NULL;
+  }
+  return result;
+}
+
 ScrDyn *scr_dyn_symbol_key_get(const ScrDyn *value, const ScrDyn *key, bool optional) {
+  return scr_dyn_symbol_key_get_receiver(value, key, optional, value);
+}
+
+/* A symbol read on `value` where an accessor's getter runs with `receiver` as
+ * `this`. The two differ when the read arrives through a Proxy without a get
+ * trap: the property is found on the target, and the getter still receives the
+ * Proxy. */
+static ScrDyn *scr_dyn_symbol_key_get_receiver(const ScrDyn *value, const ScrDyn *key,
+                                               bool optional, const ScrDyn *receiver) {
   if (scr_dyn_generator(value)) return scr_dyn_generator_symbol(value, key)
     ? scr_iterator_function(4, &scr_iterator_self_call, "[Symbol.iterator]") : scr_dyn_retain(scr_dyn_undefined());
+  if (value->kind == SCR_DYN_PROXY) return scr_dyn_proxy_symbol_get(value, key, optional);
   if (value->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(value);
-    ScrDyn *result = scr_exc_pending() ? NULL : scr_dyn_symbol_key_get(view, key, optional);
+    ScrDyn *result = scr_exc_pending() ? NULL
+      : scr_dyn_symbol_key_get_receiver(view, key, optional, receiver);
     scr_dyn_release(view);
     return result;
   }
@@ -10167,9 +10570,9 @@ ScrDyn *scr_dyn_symbol_key_get(const ScrDyn *value, const ScrDyn *key, bool opti
     ScrDyn *member = ops->symbol_get ? ops->symbol_get(value->v.handle.ptr, key) : NULL;
     if (member || scr_exc_pending()) return member;
   }
-  ScrDyn *receiver = scr_dyn_symbol_receiver(value);
-  if (!receiver && scr_exc_pending()) return NULL;
-  ScrDynEntry *entry = receiver ? scr_dyn_symbol_entry(receiver, key, false) : NULL;
+  ScrDyn *table = scr_dyn_symbol_receiver(value);
+  if (!table && scr_exc_pending()) return NULL;
+  ScrDynEntry *entry = table ? scr_dyn_symbol_entry(table, key, false) : NULL;
   /* A Buffer inherits Buffer.prototype[Symbol(nodejs.util.inspect.custom)],
    * its inspect function, unless an own symbol property shadows it. */
   if (!entry && value->kind == SCR_DYN_BYTES && value->buffer && scr_bytes_buffer_member_fn &&
@@ -10177,22 +10580,22 @@ ScrDyn *scr_dyn_symbol_key_get(const ScrDyn *value, const ScrDyn *key, bool opti
     ScrStr *name = scr_str_new("inspect", 7);
     ScrDyn *inspect = scr_bytes_buffer_member_fn(value, name);
     scr_str_release(name);
-    scr_dyn_release(receiver);
+    scr_dyn_release(table);
     return inspect ? inspect : scr_dyn_retain(scr_dyn_undefined());
   }
-  if (!receiver) return scr_dyn_retain(scr_dyn_undefined());
+  if (!table) return scr_dyn_retain(scr_dyn_undefined());
   ScrDyn *out;
   if (!entry) out = scr_dyn_retain(scr_dyn_undefined());
   else if (!entry->accessor) out = scr_dyn_retain(entry->value);
   else if (!entry->getter) out = scr_dyn_retain(scr_dyn_undefined());
   else {
     ScrDyn *getter = scr_dyn_retain(entry->getter);
-    scr_dyn_this_push_dyn(value);
+    scr_dyn_this_push_dyn(receiver);
     out = scr_dyn_call(getter, NULL, 0, "symbol getter");
     scr_dyn_this_pop();
     scr_dyn_release(getter);
   }
-  scr_dyn_release(receiver);
+  scr_dyn_release(table);
   return out;
 }
 
@@ -10669,13 +11072,21 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
   ScrDyn *e = fields[0], *c = fields[1], *value = fields[2];
   ScrDyn *w = fields[3], *get = fields[4], *set = fields[5];
   ScrDynEntry *prior = scr_dyn_entry(target, name);
+  /* A checked view's accessor for a class member stands for the prototype
+   * member, not an own property of the view (scr_dyn_class_view_accessors).
+   * A definition creates a real own property where Node creates one, so its
+   * attributes default as they do for an absent property. */
+  bool synthetic = prior && prior->class_view;
   bool accessor_descriptor = get || set;
   bool data_descriptor = value || w;
-  bool accessor = accessor_descriptor || (!data_descriptor && prior && prior->accessor);
-  bool writable = w ? scr_dyn_truthy(w) : prior && !prior->accessor && !accessor ? prior->writable : false;
-  bool enumerable = e ? scr_dyn_truthy(e) : prior ? prior->enumerable : false;
-  bool configurable = c ? scr_dyn_truthy(c) : prior ? prior->configurable : false;
-  if (!prior && target->non_extensible) {
+  bool accessor =
+      accessor_descriptor || (!data_descriptor && prior && prior->accessor && !synthetic);
+  bool writable = w                       ? scr_dyn_truthy(w)
+                  : prior && !prior->accessor && !synthetic && !accessor ? prior->writable
+                                                                         : false;
+  bool enumerable = e ? scr_dyn_truthy(e) : prior && !synthetic ? prior->enumerable : false;
+  bool configurable = c ? scr_dyn_truthy(c) : prior && !synthetic ? prior->configurable : false;
+  if ((!prior || synthetic) && target->non_extensible) {
     ScrJsonBuf buffer;
     scr_jb_init(&buffer);
     scr_jb_puts(&buffer, "Cannot define property ");
@@ -10686,7 +11097,7 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
     scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&buffer));
     return NULL;
   }
-  if (prior && !prior->configurable &&
+  if (!synthetic && prior && !prior->configurable &&
       (configurable || enumerable != prior->enumerable ||
        accessor != prior->accessor ||
        (accessor && ((get && !scr_dyn_property_same_value(get, prior->getter ? prior->getter : scr_dyn_undefined())) ||
@@ -10710,7 +11121,9 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
     return NULL;
   }
   if (prior) {
-    if (accessor != prior->accessor) {
+    /* The synthetic accessor of a class member gives way to whatever the
+     * descriptor defines, so the entry is cleared before it is written. */
+    if (synthetic || accessor != prior->accessor) {
       ScrDyn *old_value = prior->value, *old_getter = prior->getter, *old_setter = prior->setter;
       prior->value = scr_dyn_retain(scr_dyn_undefined());
       prior->getter = prior->setter = NULL;
@@ -10718,6 +11131,7 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
       scr_dyn_release(old_getter);
       scr_dyn_release(old_setter);
     }
+    prior->class_view = false;
     if (value && !accessor) {
       ScrDyn *replacement = scr_dyn_retain(value);
       ScrDyn *old = prior->value;
@@ -11110,6 +11524,17 @@ static bool scr_dyn_json_write(ScrJsonBuf *b, const ScrDyn *d) {
   case SCR_DYN_NUM: scr_jb_put_f64(b, d->v.num); return true;
   case SCR_DYN_STR: scr_jb_put_json_str(b, d->v.str); return true;
   case SCR_DYN_ARR: {
+#ifdef SCR_JS_OBJECT_MODEL
+    /* An array whose length exceeds its dense prefix holds elements this
+     * walk cannot see; refusing keeps the output from being a shorter
+     * array than the program built. */
+    if (d->v.arr.length != d->v.arr.len) {
+      static const char message[] =
+        "JSON.stringify of an array with elements past its dense prefix is not supported yet";
+      scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+      return true;
+    }
+#endif
     scr_jb_putc(b, '[');
     for (size_t i = 0; i < d->v.arr.len; i++) {
       if (i > 0) scr_jb_putc(b, ',');
@@ -12218,6 +12643,15 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
      * past the current length reads undefined, and the element stays
      * retained while it converts. */
     size_t len = d->v.arr.len;
+#ifdef SCR_JS_OBJECT_MODEL
+    /* See the JSON writer: a sparse tail would be silently dropped. */
+    if (d->v.arr.length != len) {
+      static const char message[] =
+        "joining an array with elements past its dense prefix is not supported yet";
+      scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+      return NULL;
+    }
+#endif
     ScrStr *out = scr_str_new("", 0);
     for (size_t i = 0; i < len; i++) {
       if (i > 0) {
@@ -13436,19 +13870,44 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
       }
       size_t length = (size_t)number;
       if (length > recv->v.arr.len + 1000000) {
+#ifdef SCR_JS_OBJECT_MODEL
+        /* Growth that would need more than a million materialized holes
+         * leaves them implicit: the dense prefix stays, and the length is
+         * the only thing that moves. A shrink from a sparse length drops
+         * the elements past the new end here, since the dense loop below
+         * cannot see them. */
+        if (!scr_dyn_arr_truncate_sparse(recv, length)) return;
+        recv->v.arr.length = length;
+#else
         static const char message[] = "Checked array growth exceeds the native allocation limit";
         scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+#endif
         return;
       }
+#ifdef SCR_JS_OBJECT_MODEL
+      /* The elements past the dense prefix sit above every dense one, so
+       * ArraySetLength's descending deletes reach them first. A refusal
+       * there settles the length at the refused index + 1 and leaves the
+       * dense prefix alone. */
+      if (!scr_dyn_arr_truncate_sparse(recv, length)) return;
+#endif
       while (recv->v.arr.len < length) scr_dyn_arr_push_hole(recv);
       while (recv->v.arr.len > length) {
         if (recv->v.arr.sealed && scr_dyn_arr_has_index(recv, recv->v.arr.len - 1)) {
           scr_array_frozen_error(5, recv->v.arr.len, (double)(recv->v.arr.len - 1), 0, 0);
           scr_dyn_note_assign_failure();
+#ifdef SCR_JS_OBJECT_MODEL
+          /* The dense elements deleted before the refusal stay deleted, so
+           * the length follows the prefix they left. */
+          recv->v.arr.length = recv->v.arr.len;
+#endif
           return;
         }
-        scr_dyn_release(recv->v.arr.items[--recv->v.arr.len]);
+        scr_dyn_release(recv->v.arr.items[scr_dyn_arr_dec_len(recv)]);
       }
+#ifdef SCR_JS_OBJECT_MODEL
+      recv->v.arr.length = length;
+#endif
       return;
     }
     /* Canonical indexes extend the dense portion; other names live in the
@@ -13467,17 +13926,34 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
         scr_dyn_note_assign_failure();
         return;
       }
-      if (recv->non_extensible && !scr_dyn_arr_has_index(recv, idx)) {
+      if (recv->non_extensible && !scr_dyn_arr_has_index(recv, idx)
+#ifdef SCR_JS_OBJECT_MODEL
+          && !dyn_arr_sparse_present(recv, idx)
+#endif
+      ) {
         /* An absent index, a hole included, is a property to add. */
         scr_array_frozen_error(0, 0, (double)idx, 0, 0);
         scr_dyn_note_assign_failure();
         return;
       }
       if (idx > recv->v.arr.len + 1000000) {
+#ifdef SCR_JS_OBJECT_MODEL
+        /* A write far past the dense prefix keeps the prefix, not a hole
+         * run: the element is an own property of the array under its index
+         * spelling (the table reads and refcounting already handle), and
+         * the array's length grows to idx + 1. */
+        scr_dyn_arr_sparse_put(recv, idx, value);
+#else
         static const char message[] = "Sparse array writes are not supported yet";
         scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+#endif
         return;
       }
+#ifdef SCR_JS_OBJECT_MODEL
+      /* The element moves into the dense prefix; a sparse element under the
+       * same index would be shadowed by it, so it goes. */
+      if (idx >= recv->v.arr.len) dyn_arr_sparse_clear(recv, idx);
+#endif
       while (recv->v.arr.len <= idx) {
         scr_dyn_arr_push_hole(recv);
       }
@@ -13486,6 +13962,11 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
       recv->v.arr.items[idx] = scr_dyn_retain(value);
       if (recv->v.arr.presence) recv->v.arr.presence[idx] = 1;
       scr_dyn_release(old);
+#ifdef SCR_JS_OBJECT_MODEL
+      /* A write past a length that already reached further (a far length
+       * assignment) materialized holes; the element still ends at idx. */
+      if (idx >= recv->v.arr.length) recv->v.arr.length = idx + 1;
+#endif
       return;
     }
     if (!recv->v.arr.properties) {
@@ -17087,7 +17568,7 @@ static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_
       return result;
     }
     if (current->kind == SCR_DYN_ARR) {
-      if (key_len == 6 && memcmp(key, "length", 6) == 0) return scr_dyn_new_num((double)current->v.arr.len);
+      if (key_len == 6 && memcmp(key, "length", 6) == 0) return scr_dyn_new_num((double)scr_dyn_arr_length(current));
       double index;
       if (scr_dyn_key_is_index(key, key_len, &index) && scr_dyn_arr_has_index(current, (size_t)index))
         return scr_dyn_retain(current->v.arr.items[(size_t)index]);
@@ -17547,6 +18028,14 @@ ScrDyn *scr_dyn_obj_own_keys(const ScrDyn *v) {
   for (size_t i = 0; i < v->v.obj.len; i++) {
     const ScrDynProp entry_prop = scr_dyn_obj_prop_at(v, order ? order[i] : i);
     const ScrDynProp *entry = &entry_prop;
+    /* A class view's accessor for a class member answers a read but is
+     * not an own property (Object.getOwnPropertyNames and the walks that
+     * copy own keys). Only an accessor can be one, so other objects pay
+     * no lookup. */
+    if (entry->accessor) {
+      const ScrDynEntry *own = scr_dyn_find_entry(v, entry->key, entry->key_len);
+      if (own && own->class_view) continue;
+    }
     scr_dyn_arr_push(keys, scr_dyn_objwalk_key(entry->key, entry->key_len));
   }
   free(order);
@@ -18629,6 +19118,9 @@ ScrDyn *scr_dyn_object_rest(const ScrDyn *source, const ScrDyn *excluded) {
  * including nonenumerable data, without invoking accessors. */
 static void scr_dyn_copy_property_descriptor(ScrDyn *target, const ScrDyn *src,
                                              const ScrDynEntry *from) {
+  /* A class member a checked view answers with its getter is not one of the
+   * view's own properties, so there is no property to copy. */
+  if (from->class_view) return;
   /* Exactly scr_dyn_define_property(target, key, own descriptor of key)
    * when `target` has no such property and accepts new ones: the entry
    * takes the source's attributes, value or accessor pair. */
@@ -18636,7 +19128,7 @@ static void scr_dyn_copy_property_descriptor(ScrDyn *target, const ScrDyn *src,
   if (prior || target->non_extensible) {
     ScrStr *name = scr_str_new(from->key, from->key_len);
     ScrDyn *key = scr_dyn_new_str(name);
-    ScrDyn *descriptor = scr_dyn_own_descriptor(src, name);
+    ScrDyn *descriptor = scr_dyn_own_descriptor_or_null(src, name);
     ScrDyn *result = descriptor ? scr_dyn_define_property(target, key, descriptor) : NULL;
     scr_dyn_release(descriptor);
     scr_dyn_release(result);
@@ -18687,7 +19179,7 @@ ScrDyn *scr_dyn_copy_property_descriptors(ScrDyn *target, const ScrDyn *src) {
     if (!keys) return NULL;
     for (size_t i = 0; i < keys->v.arr.len; i++) {
       ScrDyn *key = keys->v.arr.items[i];
-      ScrDyn *descriptor = scr_dyn_own_descriptor(src, key->v.str);
+      ScrDyn *descriptor = scr_dyn_own_descriptor_or_null(src, key->v.str);
       ScrDyn *result = descriptor ? scr_dyn_define_property(target, key, descriptor) : NULL;
       scr_dyn_release(descriptor);
       scr_dyn_release(result);
@@ -20461,16 +20953,25 @@ ScrDyn *scr_dyn_from_entries(ScrDyn *seed) {
   return result;
 }
 
-ScrDyn *scr_array_buffer_new(ScrDyn *length) {
+/* ToIndex of the length a buffer constructor was given, with Node's
+ * "Invalid array buffer length" RangeError; false when it threw. */
+static bool scr_array_buffer_length(ScrDyn *length, size_t *bytes) {
   double number;
-  if (!scr_dyn_number_coerce_js(length, &number)) return NULL;
+  if (!scr_dyn_number_coerce_js(length, &number)) return false;
   double size = isnan(number) ? 0 : trunc(number);
   if (!(size >= 0) || size > 9007199254740991.0 || size > (double)(SIZE_MAX / 8)) {
     static const char msg[] = "Invalid array buffer length";
     scr_throw_error_msg(SCR_ERR_RANGE, msg, sizeof msg - 1);
-    return NULL;
+    return false;
   }
-  ScrBytes *storage = scr_bytes_new(SCR_BYTES_U8, size);
+  *bytes = (size_t)size;
+  return true;
+}
+
+ScrDyn *scr_array_buffer_new(ScrDyn *length) {
+  size_t bytes;
+  if (!scr_array_buffer_length(length, &bytes)) return NULL;
+  ScrBytes *storage = scr_bytes_new(SCR_BYTES_U8, (double)bytes);
   if (!storage) return NULL;
   ScrDyn *result = scr_array_buffer_from_bytes(storage);
   scr_bytes_release(storage);
@@ -20478,12 +20979,14 @@ ScrDyn *scr_array_buffer_new(ScrDyn *length) {
 }
 
 ScrDyn *scr_shared_array_buffer_new(ScrDyn *length) {
-  ScrDyn *buffer = scr_array_buffer_new(length);
-  if (!buffer) return NULL;
-  ScrBytes *storage = buffer->v.handle.ptr;
-  scr_bytes_make_shared(storage);
+  size_t bytes;
+  if (!scr_array_buffer_length(length, &bytes)) return NULL;
+  /* Shared storage from its first byte: a large one is a mapping of its own
+   * (scr_bytes_new_shared), which leaves the heap alone. */
+  ScrBytes *storage = scr_bytes_new_shared(bytes, bytes);
+  if (!storage) return NULL;
   ScrDyn *result = scr_array_buffer_from_bytes(storage);
-  scr_dyn_release(buffer);
+  scr_bytes_release(storage);
   return result;
 }
 

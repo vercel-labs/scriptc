@@ -2681,7 +2681,8 @@ export function lowerStdlibMethodCall(
       lowerer.unsupported(
         "SC1090",
         spread,
-        `spreading '${lowerer.fmt(src.type)}' into Math.${name} (only a number[] spreads)`,
+        `spreading '${lowerer.fmt(src.type)}' into Math.${name} ` +
+          "(only a number[] or a fixed-length numeric tuple spreads)",
       );
     }
     return {

@@ -416,6 +416,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "process.stdio": "scr_process_stdio",
   "process.stdioSlot": "scr_process_stdio",
   "process.stdioWriteDyn": "scr_process_stdio_write_dyn",
+  "process.stdioWriteStr": "scr_stdio_write_str_dyn",
   "process.stderrWrite": "scr_process_stderr_write",
   "process.isTTY": "scr_process_is_tty",
   "process.isTTYValue": "scr_process_is_tty_value",
@@ -1872,7 +1873,9 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.errorCaptureStackTraceFunction": "scr_dyn_error_capture_stack_trace_function",
   "dyn.functionApply": "scr_dyn_function_apply",
   "dyn.builtinMethod": "scr_dyn_builtin_method",
+  "dyn.builtinMethodValue": "scr_dyn_builtin_method_value",
   "dyn.stdlibPrototype": "scr_dyn_stdlib_prototype",
+  "dyn.dataViewPrototype": "scr_data_view_prototype",
   "dyn.classPrototype": "scr_dyn_class_prototype",
   "dyn.classBasePrototype": "scr_dyn_class_base_prototype",
   "dyn.classInherit": "scr_dyn_class_inherit",
@@ -2021,6 +2024,9 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   // object as process.stdio and call back from a nextTick.
   "process.stdioSlot",
   "process.stdioWriteDyn",
+  // The untyped one-string write reaches the same stream objects and calls
+  // a replacement, so it links the events unit too.
+  "process.stdioWriteStr",
   // stdin.resume() and stdin.read() start the runtime's stdin watch (a
   // resumed stream, a read demand above the held input, or a parked
   // for-await), which the loop services until end-of-input: without the

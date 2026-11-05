@@ -178,6 +178,18 @@ const anyOrWrapperOperand = (_node: ts.Node, d: ts.Diagnostic): boolean => {
   return text.includes("'any'") || /'(Number|String|Boolean)'/.test(text);
 };
 
+/** TS2469 names the operator. `'' + sym` and `sym += ''` perform ToString,
+ * which the lowering sends through the runtime conversion that throws Node's
+ * TypeError; `~sym` and `-sym` keep the triage's refusal because their
+ * lowered form would raise a different message. */
+const symbolStringOperator = (_node: ts.Node, d: ts.Diagnostic): boolean => {
+  const text = ts.flattenDiagnosticMessageText(d, "\n");
+  return (
+    (text.includes("The '+' operator") || text.includes("The '+=' operator")) &&
+    text.includes("'symbol'")
+  );
+};
+
 /** An index write on a String wrapper (`new String("ab")[5] = "q"`): Node
  * adds the property past the end and ignores writes to the read-only index
  * properties (sloppy) or throws (strict), as the object does. A write
@@ -931,6 +943,20 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
       ["tests/corpus/js-iterator-subclass.js"],
     ),
   ],
+  // A symbol operand of `+` or `+=` (TS2469): the operator's ToString throws
+  // Node's TypeError, which the lowered conversion raises at the operator
+  // (binary.ts and updates.ts lower it to the runtime's string and number
+  // conversions). Every other operator keeps the triage's refusal.
+  [
+    2469,
+    at(
+      symbolStringOperator,
+      THROW(
+        "Node throws its TypeError from the ToString the operator performs, and the lowered conversion raises it at the operator",
+        ["tests/corpus/9005-symbol-string-concat.js"],
+      ),
+    ),
+  ],
   // A write through a String wrapper's index (TS2542; every other readonly
   // index signature keeps the triage's refusal).
   [
@@ -1245,11 +1271,14 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
       "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
     ),
   ],
+  // The `+` and `+=` forms have left this decision: the JS_OPINIONS row above
+  // admits them where the lowering reproduces Node's TypeError. This row
+  // stays for the operators whose lowered form would throw another message.
   [
     2469,
     REWRITE(
-      "the '+' operator on a symbol operand",
-      "Node throws a TypeError ('Cannot convert a Symbol value to a string') at the operator",
+      "another operator on a symbol operand (`~sym`, `-sym`)",
+      "Node throws a TypeError ('Cannot convert a Symbol value to a number') at the operator, and the lowering would raise a differently worded one",
     ),
   ],
   [2481, KEEP(KEEP_GRAMMAR)],

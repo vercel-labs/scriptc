@@ -1,5 +1,13 @@
 import { describe, expect, test } from "vitest";
-import { applyEdits, isDeclBoundaryFile, isDeclBoundaryTypeName } from "./decl-projection.js";
+import {
+  applyEdits,
+  collectProjectionTypeQueries,
+  isDeclBoundaryFile,
+  isDeclBoundaryTypeName,
+} from "./decl-projection.js";
+import type { Node } from "./ts7/ast-types.js";
+import { getTextOfNode } from "./ts7/node-functions.js";
+import { closeSourceParser, parseSourceFile } from "./ts7/source-parser-node.js";
 
 describe("decl-projection", () => {
   test("applyEdits closes the wrap that opened last first", () => {
@@ -28,5 +36,49 @@ describe("decl-projection", () => {
     expect(isDeclBoundaryTypeName("Product")).toBe(false);
     expect(isDeclBoundaryFile("/app/src/__scriptc_decl_boundary__.d.ts")).toBe(true);
     expect(isDeclBoundaryFile("/app/src/types.d.ts")).toBe(false);
+  });
+
+  test("the type-query batch list is exactly what the walk reads", () => {
+    const source = [
+      'import { util } from "pkg";',
+      "export type Named = util.Thing;",
+      "export function make(size: number) { return size; }",
+      "const value = make(2);",
+      "value.count = util.read();",
+      "util?.read();",
+      "util.read(value);",
+      "for (const item of [value]) make(item);",
+    ].join("\n");
+    const file = parseSourceFile("input.ts", source, "ts");
+    try {
+      // The same tree in both worlds: the walk pairs the node at each index
+      // with its twin, so the two lists must select the same positions.
+      const queries = collectProjectionTypeQueries(file, file);
+      const texts = (nodes: readonly Node[]): string[] => nodes.map((node) => getTextOfNode(node));
+      expect(queries.decl.length).toBe(queries.js.length);
+      queries.decl.forEach((node, index) => expect(node).toBe(queries.js[index]));
+      // Read: an identifier, a call and a read expression the gates admit,
+      // including declaration and parameter names the walk asks about.
+      // Not read: type positions (`util.Thing`), a callee, a write target,
+      // a property name, an optional chain link, a bare statement call.
+      expect(texts(queries.js)).toEqual([
+        "Named",
+        "make",
+        "size",
+        "size",
+        "value",
+        "make(2)",
+        "value",
+        "util.read()",
+        "util",
+        "util",
+        "value",
+        "item",
+        "value",
+        "item",
+      ]);
+    } finally {
+      closeSourceParser();
+    }
   });
 });

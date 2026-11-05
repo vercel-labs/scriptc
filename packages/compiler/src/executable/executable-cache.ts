@@ -20,7 +20,8 @@ import { nativeArtifactDependenciesStillMatch } from "../backend/native/artifact
 import { type NativeArtifactDependency } from "../backend/native/contracts.js";
 import { optimizationKeyParts } from "../backend/optimization.js";
 import { type TargetCpu, cpuDispatchKeyParts, targetCpuKeyParts } from "../backend/target-cpu.js";
-import { nativeProgramPartitions } from "../backend/native-codegen-core.js";
+import { laneShapesFromEnvironment, laneShapesKeyParts } from "../ir/lane-plans.js";
+import { nativeBuildPartitions } from "../backend/native-codegen-core.js";
 import { privateSiblingPath } from "../backend/build-cache.js";
 import type { CompilerImplementationDependency } from "../library/compiler-self-identity.js";
 import {
@@ -77,6 +78,8 @@ export interface EarlyExecutableNativeFeatures {
   streamWriteErrors?: boolean;
   /** The process output write slot: SCR_STDIO_WRITE_SLOT. */
   stdioWriteSlot?: boolean;
+  /** The spawnSync result's `.error` errnoException fields: SCR_CHILD_ERR_FIELDS. */
+  childErrorFields?: boolean;
   nodeIsland?: boolean;
   moduleNamespace?: boolean;
   moduleNamespaceDyn?: boolean;
@@ -117,6 +120,9 @@ export interface EarlyExecutableNativeFeatures {
   /** A standard library prototype object read as a value in a JavaScript
    * source: scr_dyn_stdlib_prototype.c. */
   stdlibPrototypeValue?: boolean;
+  /** DataView.prototype read as a value in a JavaScript source:
+   * scr_data_view_proto.c. */
+  dataViewPrototypeValue?: boolean;
   /** Promise statics with a foreign constructor: scr_js_promise_generic.c. */
   promiseGeneric?: boolean;
   /** A computed read of the global object, or `… in globalThis`:
@@ -129,9 +135,10 @@ export interface EarlyExecutableNativeFeatures {
   dynBuiltinStream: boolean;
   /** Array.prototype methods over array-like receivers: scr_dyn_array_like.c. */
   arrayLikeDispatch?: boolean;
-  /** Number.prototype and Boolean.prototype as values:
-   * scr_dyn_builtin_prototype.c. */
-  builtinPrototypeValue?: boolean;
+  /** A builtin prototype method (String's trim family, RegExp's exec/test/
+   * toString) as a function value:
+   * scr_dyn_builtin_methods.c. */
+  builtinMethodValue?: boolean;
   parseArgs: boolean;
   stream: boolean;
   net: boolean;
@@ -181,7 +188,7 @@ interface EarlyExecutableCacheStamp {
   /** How a --profile-use build's profile matched, which a cache hit reports. */
   profileMatch?: NativeProfileMatch;
   /** The partitions the executable was linked from (native-codegen-core.ts
-   * nativeProgramPartitions; one for a module small enough to stay whole, and
+   * nativeBuildPartitions; one for a module small enough to stay whole, and
    * left out of a link of a single native object). Part of the entry rather
    * than of the key: the count follows from the cached translation unit, so a
    * hit can derive it again. */
@@ -206,6 +213,8 @@ export interface EarlyExecutableCacheOptions {
   windowsSubsystem?: "gui";
   /** Omitted unless --detached-exit is set. */
   detachedExit?: true;
+  /** Omitted unless --stdout-buffering is set. */
+  stdoutBuffering?: true;
   /** The identity of the libnode pack a program that calls into Node.js
    * records (node-islands/libnode.ts libnodeCacheKey), or undefined when the
    * build names none. Not part of the key: an entry of a program that calls
@@ -247,6 +256,10 @@ export interface EarlyExecutableCacheOptions {
    * which emits a different number of inline cache ways
    * (backend/llvm/js-ic.ts). */
   jsIcWays?: 0 | 1 | 2;
+  /** Omitted unless computed-access sites index integral numbers without
+   * forming the property key (on by default; SCRIPTC_DYN_INDEX_FASTPATH=0
+   * opts out) (backend/llvm/js-ic.ts). */
+  dynIndexFastpath?: true;
   /** Raw manifest identity: path and bytes. Native archives remain under the
    * stricter native cache's independent dependency validation. */
   ffiProfile: { path: string; bytes: Uint8Array } | null;
@@ -411,11 +424,13 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
     ...(options.staticLink ? ["static-link"] : []),
     ...(options.windowsSubsystem === "gui" ? ["windows-subsystem-gui"] : []),
     ...(options.detachedExit ? ["detached-exit"] : []),
+    ...(options.stdoutBuffering ? ["stdout-buffering"] : []),
     ...(options.largePages ? ["large-pages"] : []),
     ...(options.noHugeText ? ["no-huge-text"] : []),
     ...(options.exceptions === "rare" ? ["exceptions-rare"] : []),
     ...targetCpuKeyParts(options.targetCpu),
     ...cpuDispatchKeyParts(options.cpuDispatch),
+    ...laneShapesKeyParts(laneShapesFromEnvironment()),
     ...(options.profile !== undefined ? [options.profile] : []),
     ...(options.functionLayout !== undefined ? [`layout:${options.functionLayout}`] : []),
     ...(options.checker !== undefined ? [`checker:${options.checker}`] : []),
@@ -425,6 +440,7 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
     ...(options.shapeOverlay ? ["shape-overlay"] : []),
     ...(options.jsInference ? ["js-inference"] : []),
     ...(options.jsIcWays !== undefined ? [`js-ic-ways:${options.jsIcWays}`] : []),
+    ...(options.dynIndexFastpath ? ["dyn-index-fastpath"] : []),
     options.npmStatic === null
       ? "<npm-static-off>"
       : options.npmStatic === "auto"
@@ -465,11 +481,13 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
   if (options.staticLink) hash.update("static-link\0");
   if (options.windowsSubsystem === "gui") hash.update("windows-subsystem-gui\0");
   if (options.detachedExit) hash.update("detached-exit\0");
+  if (options.stdoutBuffering) hash.update("stdout-buffering\0");
   if (options.largePages) hash.update("large-pages\0");
   if (options.noHugeText) hash.update("no-huge-text\0");
   if (options.exceptions === "rare") hash.update("exceptions-rare\0");
   for (const part of targetCpuKeyParts(options.targetCpu)) hash.update(`${part}\0`);
   for (const part of cpuDispatchKeyParts(options.cpuDispatch)) hash.update(`${part}\0`);
+  for (const part of laneShapesKeyParts(laneShapesFromEnvironment())) hash.update(`${part}\0`);
   if (options.profile !== undefined) hash.update(`${options.profile}\0`);
   if (options.functionLayout !== undefined) hash.update(`layout:${options.functionLayout}\0`);
   if (options.checker !== undefined) hash.update(`checker:${options.checker}\0`);
@@ -479,6 +497,7 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
   if (options.shapeOverlay) hash.update("shape-overlay\0");
   if (options.jsInference) hash.update("js-inference\0");
   if (options.jsIcWays !== undefined) hash.update(`js-ic-ways:${options.jsIcWays}\0`);
+  if (options.dynIndexFastpath) hash.update("dyn-index-fastpath\0");
   hash
     .update(
       options.npmStatic === null
@@ -731,11 +750,15 @@ async function readExecutableCache(
     // and the executable is linked from those partitions: one built for
     // another count is not the executable this host builds, so it is a miss.
     // A module small enough to stay one partition gets that count on every
-    // host and keeps hitting.
+    // host and keeps hitting, and so does one a --cpu-dispatch build keeps
+    // whole (nativeBuildPartitions).
     if (
       stamp.partitions !== undefined &&
       stamp.partitions !==
-        nativeProgramPartitions(translationUnit.length, options.optimization === "dev")
+        nativeBuildPartitions(translationUnit.length, {
+          cpuDispatch: options.cpuDispatch === true,
+          unoptimized: options.optimization === "dev",
+        })
     )
       return null;
 

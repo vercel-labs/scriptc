@@ -152,7 +152,10 @@ function readFrontendCache(
   cache: NativeCache,
   key: string,
   exclusions: FrontendInputExclusions,
-): { input: NativeExecutableInput } | { stale: FrontendCacheEntry } | null {
+):
+  | { input: NativeExecutableInput; probes: FrontendInputSnapshot }
+  | { stale: FrontendCacheEntry }
+  | null {
   // The entry is decoded as one string; larger entries are misses.
   const bytes = cache.read("frontend", key, NATIVE_STRING_BYTES);
   if (bytes === null) return null;
@@ -161,7 +164,10 @@ function readFrontendCache(
   if (!frontendInputsStillMatch(cached.probes, exclusions)) return { stale: cached };
   const llvm = readFrontendLlvm(cache, cached.llvm);
   if (llvm === null) return null;
-  return { input: { ...cached.input, llvm: [llvm], llvmDigest: cached.llvm, ir: cached.ir } };
+  return {
+    input: { ...cached.input, llvm: [llvm], llvmDigest: cached.llvm, ir: cached.ir },
+    probes: cached.probes,
+  };
 }
 
 /** The stale entry's input when every changed source is token-equivalent to
@@ -364,6 +370,73 @@ function validCachedInput(value: unknown): value is FrontendCacheEntry {
  * stripped executables are accepted. */
 const BOOTSTRAP_IR_INPUT = "SCRIPTC_BOOTSTRAP_IR_INPUT";
 
+/** The inputs a native frontend cache entry depends on: the entry, the
+ * request's options and FFI manifest, the toolchain that lowers and emits,
+ * and the SCRIPTC_* variables that reach the frontend. The sources and the
+ * configuration are not part of it; the entry's probes prove those. Null when
+ * an entry cannot describe the build: provenance rewriting replaces the
+ * sources with build products, and a bootstrap build supplies the IR. */
+function nativeFrontendInputs(
+  entry: string,
+  options: CompileRequestOptions,
+  ffi: FfiProfile | null,
+  toolchain: NativeToolchain,
+): Record<string, unknown> | null {
+  const irInput = process.env[BOOTSTRAP_IR_INPUT] ?? "";
+  if (irInput !== "" || provenanceSources() !== null) return null;
+  return {
+    schema: 1,
+    entry,
+    options,
+    ffi,
+    implementation: implementationIdentity(toolchain),
+    target: toolchain.target.name,
+    declarations: toolchain.declarationsRoot ?? null,
+    environment: frontendEnvironment(),
+  };
+}
+
+/** The frontend cache key of a build: digest of nativeFrontendInputs. Null
+ * when the build cannot have an entry (see nativeFrontendInputs) or the
+ * inputs cannot be encoded. */
+export function nativeFrontendCacheKey(
+  entry: string,
+  options: CompileRequestOptions,
+  ffi: FfiProfile | null,
+  toolchain: NativeToolchain,
+): string | null {
+  try {
+    const inputs = nativeFrontendInputs(entry, options, ffi, toolchain);
+    return inputs === null ? null : contentDigest(JSON.stringify(inputs));
+  } catch {
+    return null;
+  }
+}
+
+/** The paths a native executable build writes — the executable, its dSYM
+ * directory, the kept LLVM text and IR — and the directories above them,
+ * which its frontend input probes do not observe. */
+export function nativeFrontendExclusions(
+  entry: string,
+  options: CompileRequestOptions,
+): FrontendInputExclusions {
+  const stem = basename(entry).replace(/\.(ts|mts|cts|js|mjs|cjs)$/, "");
+  const outputPaths = [
+    resolve(options.outPath),
+    resolve(options.outPath) + ".dSYM",
+    resolve(options.outDir, stem + ".ll"),
+    resolve(options.outDir, stem + ".ir.json"),
+  ];
+  const directories = new Set<string>();
+  for (const output of outputPaths) {
+    for (let directory = dirname(output); ; directory = dirname(directory)) {
+      directories.add(directory);
+      if (dirname(directory) === directory) break;
+    }
+  }
+  return { outputPaths, outputDirectories: [...directories] };
+}
+
 function preparedFromIr(
   path: string,
   entry: string,
@@ -386,6 +459,10 @@ export function prepareNativeExecutable(
   frontend: FrontendFactory,
   cache: NativeCache | null,
   timing: CompilationTiming = () => {},
+  /** The input observations this build's output depends on, when they are
+   * stable and match the inputs (the condition under which the frontend
+   * cache entry is published): the unchanged-build record stores them. */
+  onInputs?: (probes: FrontendInputSnapshot) => void,
 ): NativeExecutableInput | CompileFailure {
   const outputKind = options.outputKind ?? "exe";
   const targetCpuRefusal = targetCpuTargetRefusal(
@@ -399,21 +476,7 @@ export function prepareNativeExecutable(
       diagnostics: [nativeCodegenDiag("SC3002", targetCpuRefusal, entry)],
       sourceTexts: new Map(),
     };
-  const stem = basename(entry).replace(/\.(ts|mts|cts|js|mjs|cjs)$/, "");
-  const outputPaths = [
-    resolve(options.outPath),
-    resolve(options.outPath) + ".dSYM",
-    resolve(options.outDir, stem + ".ll"),
-    resolve(options.outDir, stem + ".ir.json"),
-  ];
-  const directories = new Set<string>();
-  for (const output of outputPaths) {
-    for (let directory = dirname(output); ; directory = dirname(directory)) {
-      directories.add(directory);
-      if (dirname(directory) === directory) break;
-    }
-  }
-  const exclusions = { outputPaths, outputDirectories: [...directories] };
+  const exclusions = nativeFrontendExclusions(entry, options);
   const irInput = process.env[BOOTSTRAP_IR_INPUT] ?? "";
   let key: string | null = null;
   // The unit store's key (unit-reuse.ts): the frontend's inputs without the
@@ -421,18 +484,15 @@ export function prepareNativeExecutable(
   let unitKey: string | null = null;
   // The entry this build replaces: its probes give the digests of unchanged files.
   let previous: FrontendInputSnapshot | undefined;
-  if (cache !== null && irInput === "" && provenanceSources() === null) {
+  // A toolchain input that cannot be read leaves the build to its cache misses.
+  let inputs: Record<string, unknown> | null = null;
+  try {
+    inputs = nativeFrontendInputs(entry, options, ffi, toolchain);
+  } catch {
+    inputs = null;
+  }
+  if (cache !== null && inputs !== null) {
     try {
-      const inputs = {
-        schema: 1,
-        entry,
-        options,
-        ffi,
-        implementation: implementationIdentity(toolchain),
-        target: toolchain.target.name,
-        declarations: toolchain.declarationsRoot ?? null,
-        environment: frontendEnvironment(),
-      };
       key = contentDigest(JSON.stringify(inputs));
       if (unitReuseEnabled()) {
         const { outPath: _outPath, outDir: _outDir, ...lowering } = options;
@@ -440,6 +500,7 @@ export function prepareNativeExecutable(
       }
       const cached = readFrontendCache(cache, key, exclusions);
       if (cached !== null && "input" in cached) {
+        onInputs?.(cached.probes);
         timing("frontend-cache-hit");
         return cached.input;
       }
@@ -450,6 +511,7 @@ export function prepareNativeExecutable(
           : equivalentFrontendInput(cache, cached.stale, options, exclusions);
       if (equivalent !== null) {
         publishFrontendCache(cache, key, equivalent.probes, equivalent.input);
+        onInputs?.(equivalent.probes);
         timing("frontend-cache-equivalent");
         return equivalent.input;
       }
@@ -503,6 +565,9 @@ export function prepareNativeExecutable(
           timing,
           ...inlineRcOption(options.optimization, options.sanitize === true),
           ...(options.detachedExit === true && outputKind === "exe" ? { detachedExit: true } : {}),
+          ...(options.stdoutBuffering === true && outputKind === "exe"
+            ? { stdoutBuffering: true }
+            : {}),
           ...(options.exceptions === "rare" ? { rareExceptions: true } : {}),
           ...targetCpuField(options.targetCpu),
           ...(options.cpuDispatch === true && outputKind === "exe" ? { cpuDispatch: true } : {}),
@@ -532,6 +597,7 @@ export function prepareNativeExecutable(
     frontendInputsStillMatch(probes, exclusions)
   ) {
     publishFrontendCache(cache, key, probes, input);
+    onInputs?.(probes);
   }
   timing("frontend-cache-publish");
   return input;

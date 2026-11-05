@@ -48,8 +48,16 @@ test("library pack modes preserve pure runtime features and exclude ambient even
         "scr_console_native.c",
         "scr_copying.c",
         "scr_js_buffers.c",
+        "scr_weakref.c",
       ])
         expect(sources).toContain(source);
+      // A library build whose program constructs a WeakRef links the unit
+      // and the scr_json build that carries its dispose-observer arm.
+      expect(
+        flavor.runtime_units
+          .find((unit) => unit.source === "scr_json.c")
+          .variants.map((variant) => variant.id),
+      ).toContain("weak-ref");
       // A library whose program moves a buffer names scr_js_buffers_arm, so
       // the unit keeps its object model build here too.
       expect(

@@ -1823,6 +1823,8 @@ const RUNTIME_FEATURE_RULES = {
   }),
   /** The WebAssembly API (scr_wasm.c). */
   wasm: rule({ prefixes: ["wasm."] }),
+  /** WeakRef over the native heap's dispose observers (scr_weakref.c). */
+  weakRef: rule({ prefixes: ["weakRef."] }),
   /** crypto.subtle importKey/sign/verify/digest and CryptoKey:
    * scr_webcrypto.c. */
   webcrypto: rule({ prefixes: ["webcrypto."] }),
@@ -1997,6 +1999,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     bigintBytes: false,
     sparseArrays: false,
     wasm: false,
+    weakRef: false,
     webcrypto: false,
     zlib: false,
     brotli: false,

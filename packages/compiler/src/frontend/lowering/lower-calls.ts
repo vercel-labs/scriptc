@@ -5267,6 +5267,8 @@ const DYN_DISPATCH_METHODS = new Set([
   // FinalizationRegistry's methods (scr_finalization_registry_new).
   "register",
   "unregister",
+  // WeakRef's one method (scr_weakref_deref).
+  "deref",
   // Worker and MessagePort methods use the owning context's handle adapter.
   "postMessage",
   "terminate",

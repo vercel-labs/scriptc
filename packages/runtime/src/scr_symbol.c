@@ -46,6 +46,10 @@ void *scr_sym_retain_v(void *p) { return scr_sym_retain(p); }
 void scr_sym_release_v(void *p) { scr_sym_release(p); }
 
 ScrSym *scr_sym_new(ScrStr *desc) {
+  /* Every symbol this unit creates comes through here, so the registry check
+   * units outside it use (scr_sym_registered_key_fn) is live from the first
+   * symbol on — including the first one Symbol.for registers. */
+  scr_sym_registered_key_fn = scr_sym_key_for;
   ScrSym *s = malloc(sizeof(ScrSym));
   if (!s) {
     scr_trap("scriptc: out of memory\n");

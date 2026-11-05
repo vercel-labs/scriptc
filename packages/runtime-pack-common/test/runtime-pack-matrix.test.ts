@@ -113,8 +113,12 @@ test("scr_json builds one object per flavor, plus its object model twin", () => 
   expect(variants.map((variant: { id: string }) => variant.id)).toEqual([
     "default",
     "node-island",
+    "weak-ref",
+    "weak-ref-node-island",
     "js-om",
     "js-om-node-island",
+    "js-om-weak-ref",
+    "js-om-weak-ref-node-island",
   ]);
   for (const variant of variants) {
     if (!variant.id.startsWith("js-om")) continue;
@@ -154,6 +158,26 @@ test("scr_json builds one object per flavor, plus its object model twin", () => 
       recordViewPartial: true,
     }).defines,
   ).toEqual(["SCR_NODE_ISLANDS", "SCR_JS_OBJECT_MODEL"]);
+  // A program that constructs a WeakRef selects the build with the
+  // dispose-observer arm, alone, beside the island build, and beside the
+  // object model build.
+  expect(selected("scr_json.c", { workers: false, weakRef: true }).defines).toEqual([
+    "SCR_WEAK_REF",
+  ]);
+  expect(
+    selected("scr_json.c", { workers: false, weakRef: true, nodeIsland: true }).defines,
+  ).toEqual(["SCR_WEAK_REF", "SCR_NODE_ISLANDS"]);
+  expect(
+    selected("scr_json.c", { workers: false, weakRef: true, jsObjectModel: true }).defines,
+  ).toEqual(["SCR_WEAK_REF", "SCR_JS_OBJECT_MODEL"]);
+  expect(
+    selected("scr_json.c", {
+      workers: false,
+      weakRef: true,
+      nodeIsland: true,
+      jsObjectModel: true,
+    }).defines,
+  ).toEqual(["SCR_WEAK_REF", "SCR_NODE_ISLANDS", "SCR_JS_OBJECT_MODEL"]);
   // A program that reaches none of the features keeps the default object.
   expect(selected("scr_json.c", { workers: false }).id).toBe("default");
   expect(selected("scr_json.c", { workers: false }).defines).toEqual([]);

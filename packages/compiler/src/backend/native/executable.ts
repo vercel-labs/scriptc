@@ -472,6 +472,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // The dynamic global object's answer for the Node globals the native
   // runtime does not implement (host-globals.ts).
   unit((u) => u.opts.hostAbsentGlobals === true, "scr_global_host_absent.c"),
+  // WeakRef over the native heap's dispose observers.
+  unit((u) => u.opts.weakRef === true, "scr_weakref.c"),
 ];
 
 /** The arguments of the optional runtime inputs, in link order. */
@@ -499,6 +501,9 @@ const RUNTIME_DEFINES: readonly {
   // globals the native runtime does not implement; a program with a computed
   // global read or `… in globalThis` selects that build (host-globals.ts).
   { define: "SCR_GLOBAL_HOST_ABSENT", when: (opts) => opts.hostAbsentGlobals },
+  // scr_json.c's dispose-observer arm that clears WeakRef cells when the
+  // target is freed (scr_weakref.h).
+  { define: "SCR_WEAK_REF", when: (opts) => opts.weakRef },
   // The JavaScript object model build (t262-da §J): the code the runtime
   // features only a JavaScript source reaches share. Its objects are separate
   // builds selected by runtime-pack-matrix.mjs, so the source build must name

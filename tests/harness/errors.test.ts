@@ -2837,3 +2837,54 @@ console.log("after");
     );
   });
 });
+
+// A WeakRef target the native heap cannot observe frees of is refused by
+// name instead of cleaning up late or never: a symbol the runtime has no
+// dispose observer for, and native reference kinds whose box is not the
+// target's own identity. Node accepts both, so these pins are
+// scriptc-only.
+describe("WeakRef targets with no weak lifetime lowering", () => {
+  test("an unregistered symbol target throws a coded SC2020", async () => {
+    const r = await compileAndRun(
+      "weakref-symbol-target",
+      `const symbol = Symbol("plain");
+try {
+  new WeakRef(symbol as unknown as object);
+  console.log("no throw");
+} catch (error) {
+  const e = error as Error & { code?: string };
+  console.log(e.name, e.code, e.message);
+}
+console.log("after");
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      "Error SC2020 WeakRef with symbol targets has no weak lifetime lowering\nafter\n",
+    );
+    expect(r.stderr).toBe("");
+  });
+
+  test("a function target throws a coded SC2020", async () => {
+    const r = await compileAndRun(
+      "weakref-function-target",
+      `function named() {
+  return 1;
+}
+try {
+  new WeakRef(named as object);
+  console.log("no throw");
+} catch (error) {
+  const e = error as Error & { code?: string };
+  console.log(e.name, e.code, e.message);
+}
+console.log("after");
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      "Error SC2020 WeakRef targets of this native reference type have no weak lifetime lowering\nafter\n",
+    );
+    expect(r.stderr).toBe("");
+  });
+});

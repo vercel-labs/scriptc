@@ -199,6 +199,10 @@ export interface CcOptions {
    * scr_global_host_absent.c and the SCR_GLOBAL_HOST_ABSENT build of
    * scr_node_builtin.c. */
   hostAbsentGlobals?: boolean;
+  /** The program constructs a WeakRef over the native heap's dispose
+   * observers: compiles scr_weakref.c and the SCR_WEAK_REF build of
+   * scr_json.c. */
+  weakRef?: boolean;
   /** An Array.prototype method runs over an array-like receiver:
    * compiles scr_dyn_array_like.c, which the dyn-invoke unit's array
    * dispatch calls for receivers that are not arrays. */
@@ -492,6 +496,9 @@ export interface LibArchiveOptions {
   /** See CcOptions.mutableBuffers: the archive carries the buffer views
    * registry, scr_js_buffers.c. */
   mutableBuffers?: boolean;
+  /** See CcOptions.weakRef: the archive carries scr_weakref.c and the
+   * SCR_WEAK_REF build of its json unit. */
+  weakRef?: boolean;
 }
 
 export interface NativeArtifactDependency {

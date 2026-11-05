@@ -3862,6 +3862,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (isStdlibInterface("WeakMap") || isStdlibInterface("WeakSet")) return DYN;
   // FinalizationRegistry is a native handle with register and unregister.
   if (isStdlibInterface("FinalizationRegistry")) return DYN;
+  // WeakRef is a native handle whose deref answers the target while the
+  // native collector keeps it (scr_weakref.c).
+  if (isStdlibInterface("WeakRef")) return DYN;
   // Set<T>: Map's sibling — same provenance rule and key domain.
   // Anything else stays unmapped;
   // the `new Set` lowering names the offending element type specifically.

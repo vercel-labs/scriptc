@@ -1407,6 +1407,14 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
       // statements: nothing runs.
       if (e.fn === "console.noop") return { name: "", type: e.type };
       return host.emitGenericLibCall(e);
+    case "weakRef":
+      // The WeakRef unit clears its kept list from a microtask queued on the
+      // first keep, so the program's job has to end through the loop's
+      // checkpoint even when no timer or promise would run it — Node ends a
+      // synchronous program's job the same way. The loop is the program's
+      // own cost: the unit links only when it builds a WeakRef.
+      if (e.fn === "weakRef.new") host.usesTimers = true;
+      return host.emitGenericLibCall(e);
     case "weakMap":
     case "weakSet":
     case "finalizationRegistry":

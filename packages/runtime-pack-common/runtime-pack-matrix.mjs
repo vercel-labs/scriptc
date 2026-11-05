@@ -261,6 +261,10 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // name table, and scr_node_builtin.c's SCR_GLOBAL_HOST_ABSENT build throws
   // instead of answering undefined.
   ["scr_global_host_absent.c", "hostAbsentGlobals"],
+  // WeakRef over the native heap's dispose observers (scr_weakref.c): a
+  // cell holds the referent's identity and rebuild recipe, and the unit
+  // installs the one dispose hook on its first construction.
+  ["scr_weakref.c", "weakRef"],
 ];
 
 /** One SCR_JS_OBJECT_MODEL twin of each variant of a unit the JavaScript
@@ -299,6 +303,21 @@ export function variantsFor(source) {
       id: "node-island",
       when: { nodeIsland: true },
       defines: ["SCR_NODE_ISLANDS"],
+    });
+    // A program that constructs a WeakRef carries the dispose-observer arm
+    // that clears its cells (SCR_WEAK_REF, scr_weakref.h). Pushed before
+    // the object model twins, so a program with both selects one build
+    // that carries both defines; every other program keeps the default
+    // object, byte for byte.
+    variants.push({
+      id: "weak-ref",
+      when: { weakRef: true },
+      defines: ["SCR_WEAK_REF"],
+    });
+    variants.push({
+      id: "weak-ref-node-island",
+      when: { weakRef: true, nodeIsland: true },
+      defines: ["SCR_WEAK_REF", "SCR_NODE_ISLANDS"],
     });
     // The JavaScript object model build (t262-da §J): every runtime feature
     // reached only from JavaScript-source facts — builtin intrinsics, array

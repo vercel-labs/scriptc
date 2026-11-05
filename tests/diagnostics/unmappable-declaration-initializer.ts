@@ -5,6 +5,6 @@ function touch(): number {
   return 1;
 }
 function run(): void {
-  const ref: WeakRef<object> = touch() as unknown as WeakRef<object>;
+  const ref: Intl.NumberFormat = touch() as unknown as Intl.NumberFormat;
 }
 run();

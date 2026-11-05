@@ -291,6 +291,10 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
     return { kind: "libCall", fn: "finalizationRegistry.is", args: [value], type: BOOL, loc };
   }
+  if (lowerer.isStdlibGlobal(expr.right, "WeakRef")) {
+    const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
+    return { kind: "libCall", fn: "weakRef.is", args: [value], type: BOOL, loc };
+  }
   const rhsBuiltin = ts.isIdentifier(expr.right)
     ? lowerer.builtinImportOf(expr.right)
     : ts.isPropertyAccessExpression(expr.right)

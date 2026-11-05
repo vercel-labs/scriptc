@@ -374,6 +374,7 @@ export function effectiveRuntimeFeatures(
     stdlibPrototypeValue: features.stdlibPrototypeValue === true,
     dataViewPrototypeValue: features.dataViewPrototypeValue === true,
     hostAbsentGlobals: features.hostAbsentGlobals === true,
+    weakRef: features.weakRef === true,
     arrayLikeDispatch: features.arrayLikeDispatch === true,
     builtinMethodValue: features.builtinMethodValue === true,
     computedRequire: features.computedRequire === true,

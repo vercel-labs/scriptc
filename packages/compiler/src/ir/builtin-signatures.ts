@@ -4330,6 +4330,8 @@ function buildLibFnSignatures() {
     "weakSet.new": { argTypes: [DYN], result: DYN },
     "finalizationRegistry.new": { argTypes: [DYN], result: DYN },
     "finalizationRegistry.is": { argTypes: [DYN], result: BOOL },
+    "weakRef.new": { argTypes: [DYN], result: DYN },
+    "weakRef.is": { argTypes: [DYN], result: BOOL },
     "dyn.fromEntries": { argTypes: [DYN], result: DYN },
     "bytes.constructor": { argTypes: [STRING], result: DYN },
     "bytes.instanceOf": { argTypes: [DYN, DYN, STRING], result: BOOL },

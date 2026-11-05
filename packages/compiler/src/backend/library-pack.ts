@@ -37,6 +37,9 @@ export function libraryArchiveFeatures(options: LibArchiveOptions): NativeLinkFe
     // registry's arming entry point, so the archive must carry the unit and
     // the JavaScript object model build it belongs to.
     ...(options.mutableBuffers === true ? { mutableBuffers: true } : {}),
+    // A program that constructs a WeakRef names the unit and the json
+    // build that carries its dispose-observer arm (scr_weakref.h).
+    ...(options.weakRef === true ? { weakRef: true } : {}),
     dc: false,
     dynAsync: false,
     events: false,

@@ -116,6 +116,9 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     // The buffer views registry: only a program that resizes, grows or
     // detaches a buffer installs its ops table.
     ...(opts.mutableBuffers === true ? ["scr_js_buffers.c"] : []),
+    // WeakRef over the native heap's dispose observers: the unit and the
+    // json build that remembers a freed target (scr_weakref.h).
+    ...(opts.weakRef === true ? ["scr_weakref.c"] : []),
     ...(opts.zlib ? ["scr_zlib.c"] : []),
     ...(opts.x509 ? ["scr_x509.c"] : []),
     ...(opts.copying ? ["scr_copying.c"] : []),
@@ -139,6 +142,9 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     ...(opts.jsObjectModel || opts.bigintBytes || opts.mutableBuffers
       ? ["-DSCR_JS_OBJECT_MODEL"]
       : []),
+    // The json unit's dispose-observer arm (scr_weakref.h) belongs to the
+    // WeakRef build alone.
+    ...(opts.weakRef === true ? ["-DSCR_WEAK_REF"] : []),
     "-I",
     rtDir,
     ...(regex ? ["-I", vendorEngineDir()] : []),

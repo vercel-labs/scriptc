@@ -132,6 +132,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "weakSet.new",
   // Node's "cleanup must be callable" TypeError.
   "finalizationRegistry.new",
+  // Node's "WeakRef: invalid target" TypeError, and the SC2020 refusal for a
+  // reference kind with no weak lifetime contract.
+  "weakRef.new",
   "dyn.fromEntries",
   "bytes.constructor",
   "bytes.instanceOf",

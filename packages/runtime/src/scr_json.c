@@ -217,6 +217,8 @@ static void scr_inspect_custom_symbol_cleanup(void) {
 
 ScrSym *(*scr_sym_for_fn)(ScrStr *key) = NULL;
 
+ScrStr *(*scr_sym_registered_key_fn)(ScrSym *s) = NULL;
+
 void scr_dyn_install_inspect_custom_symbol(ScrDyn *key) {
   if (scr_inspect_custom_symbol) return;
   scr_inspect_custom_symbol = scr_dyn_retain(key);
@@ -1544,6 +1546,11 @@ static inline bool scr_weak_maybe_key(const void *key) {
   return scr_weak_observing && (scr_weak_key_filter[bit >> 6] & (UINT64_C(1) << (bit & 63)));
 }
 static inline void scr_dyn_weak_dispose(ScrDyn *d) {
+#ifdef SCR_WEAK_REF
+  /* The WeakRef build's arm (scr_weakref.h): a pooled node recycles
+   * without reaching scr_dispose_observers, so its cells clear here. */
+  if (scr_weakref_live) scr_weakref_disposed(d);
+#endif
   if (scr_weak_maybe_key(d)) scr_weak_disposed(d);
 }
 
@@ -4276,10 +4283,21 @@ static void scr_dispose_observers(void *object) {
    * a program without the fact has no table to consult. */
   if (scr_js_buffer_ops) scr_js_buffer_ops->disposed(object);
 #endif
+#ifdef SCR_WEAK_REF
+  /* A WeakRef over this referent answers undefined from now on
+   * (scr_weakref.h; the arm exists only in the WeakRef build). */
+  if (scr_weakref_live) scr_weakref_disposed(object);
+#endif
   if (scr_weak_maybe_key(object)) scr_weak_disposed(object);
   if (scr_record_source_count) scr_record_source_disposed(object);
   if (scr_record_link_count) scr_record_link_disposed(object);
 }
+
+#ifdef SCR_WEAK_REF
+/* scr_weakref_new: a program that constructs a WeakRef must see frees even
+ * when it creates no weak collection, so the unit installs the one hook. */
+void scr_weakref_observers_install(void) { scr_weak_dispose_hook = &scr_dispose_observers; }
+#endif
 
 #ifdef SCR_JS_OBJECT_MODEL
 /* scr_js_buffers_arm: the registry must see frees even in a program that
@@ -11576,7 +11594,8 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
   case SCR_DYN_ARR: tag = "[object Array]"; break;
   case SCR_DYN_OBJ: tag = "[object Object]"; break;
   case SCR_DYN_HANDLE:
-    if ((d->v.handle.tag >= SCR_DYNH_ABORT_SIGNAL &&
+    if (d->v.handle.tag == SCR_DYNH_WEAK_REF ||
+        (d->v.handle.tag >= SCR_DYNH_ABORT_SIGNAL &&
          d->v.handle.tag <= SCR_DYNH_ABORT_CONTROLLER) || d->v.handle.tag == SCR_DYNH_EVENT_TARGET ||
         d->v.handle.tag == SCR_DYNH_CUSTOM_EVENT || d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER ||
         d->v.handle.tag == SCR_DYNH_WEAK_MAP || d->v.handle.tag == SCR_DYNH_WEAK_SET ||
@@ -12760,7 +12779,8 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
       scr_dyn_release(text);
       return out;
     }
-    if ((d->v.handle.tag >= SCR_DYNH_ABORT_SIGNAL &&
+    if (d->v.handle.tag == SCR_DYNH_WEAK_REF ||
+        (d->v.handle.tag >= SCR_DYNH_ABORT_SIGNAL &&
          d->v.handle.tag <= SCR_DYNH_ABORT_CONTROLLER) || d->v.handle.tag == SCR_DYNH_EVENT_TARGET ||
         d->v.handle.tag == SCR_DYNH_CUSTOM_EVENT || d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SET || d->v.handle.tag == SCR_DYNH_MAP ||
         d->v.handle.tag == SCR_DYNH_BLOB || d->v.handle.tag == SCR_DYNH_FILE ||

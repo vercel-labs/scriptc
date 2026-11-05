@@ -1424,6 +1424,8 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
         params: [STRING, STRING],
         result: { kind: "promise", inner: STRING },
       },
+      // String data; Uint8Array/Buffer data and the options record route to
+      // the write family's entries in lowerBuiltinModuleCall.
       writeFile: {
         fn: "fsp.writeFile",
         params: [STRING, STRING],
@@ -1482,8 +1484,8 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
         params: [STRING, F64],
         result: { kind: "promise", inner: VOID },
       },
-      // String data; Uint8Array/Buffer data routes to fsp.appendFileBytes in
-      // lowerBuiltinModuleCall.
+      // String data; Uint8Array/Buffer data and the options record route to
+      // the write family's entries in lowerBuiltinModuleCall.
       appendFile: {
         fn: "fsp.appendFile",
         params: [STRING, STRING],
@@ -2325,16 +2327,22 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     copyFile: ["fs.checkPath", "fsp.copyFileFlags"],
     rename: ["fs.checkPath"],
     readlinkSync: ["fs.readlinkSyncStr", "fs.readlinkSyncBuffer"],
-    // The bytes-data form and the { mode } options form.
-    // The bytes-data form, the { mode } options form, and the
-    // file-descriptor data form.
+    // The bytes-data form, the options record, and the file-descriptor
+    // forms (one byte-data entry serves both descriptor families).
     writeFileSync: [
       "fs.writeFileSyncBytes",
-      "fs.writeFileModeSync",
-      "fs.writeFileFlagsSync",
-      "fs.writeFileSyncFd",
+      "fs.writeFileOpts",
+      "fs.writeFileBytesOpts",
+      "fs.writeFileFd",
+      "fs.writeFileFdBytes",
     ],
-    appendFileSync: ["fs.appendFileSyncBytes"],
+    appendFileSync: [
+      "fs.appendFileSyncBytes",
+      "fs.appendFileOpts",
+      "fs.appendFileBytesOpts",
+      "fs.appendFileFd",
+      "fs.writeFileFdBytes",
+    ],
     // The fs stream members (bytesRead/bytesWritten, pending, path, close).
     createReadStream: [
       "fs.fsStreamBytes",
@@ -2384,13 +2392,13 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     // The Buffer form (no encoding) and the runtime-encoding forms.
     readFile: ["fsp.readFileBytes", "fsp.readFileEncoded"],
     readlink: ["fsp.readlinkStr", "fsp.readlinkBuffer"],
-    // The string-data { mode, flag } options forms.
-    writeFile: ["fsp.writeFileMode", "fsp.writeFileFlags"],
+    // The Uint8Array/Buffer-data form and the options record.
+    writeFile: ["fsp.writeFileBytes", "fsp.writeFileOpts", "fsp.writeFileBytesOpts"],
     // The { withFileTypes: true } Dirent form.
     readdir: ["fsp.readdirTypes"],
     glob: ["fsp.globTypes"],
-    // The Uint8Array/Buffer-data form.
-    appendFile: ["fsp.appendFileBytes"],
+    // The Uint8Array/Buffer-data form and the options record.
+    appendFile: ["fsp.appendFileBytes", "fsp.appendFileOpts", "fsp.appendFileBytesOpts"],
     // The options forms.
     rm: ["fsp.rmOpts", "fsp.rmRetry"],
   },

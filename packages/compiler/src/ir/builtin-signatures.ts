@@ -1597,9 +1597,7 @@ function buildLibFnSignatures() {
      * stats.dev / ino / blocks / nlink / atimeMs / mtimeMs / ctimeMs are pure reads on the widened
      * snapshot (blocks is allocated 512-byte units; the times are milliseconds
      * with their sub-second fractions, Node's arithmetic).
-     * writeFileModeSync is writeFileSync(path, data, { mode }): the mode
-     * applies at CREATION only (open(2) with O_CREAT, umask applying),
-     * exactly Node — an existing file keeps its permissions. mkdirModeSync
+     * mkdirModeSync
      * / mkdirRecursiveModeSync are the mkdirSync option forms with an
      * explicit mode (the recursive walk passes it to every directory it
      * creates, like Node's). */
@@ -1624,11 +1622,34 @@ function buildLibFnSignatures() {
     "fs.renameSync": { argTypes: [STRING, STRING], result: VOID },
     // Callback type is program-dependent (zero params or Error | null).
     "fs.renameCb": { argTypes: [STRING, STRING, null], result: VOID },
-    "fs.writeFileModeSync": { argTypes: [STRING, STRING, F64], result: VOID },
-    /** writeFileSync(path, data, { mode, flag }): the same open(2) write
-     * with the disposition flag — flag 1 is "wx" (O_EXCL: EEXIST when the
-     * path exists), 0 is "w" (the default truncate-or-create). */
-    "fs.writeFileFlagsSync": { argTypes: [STRING, STRING, F64, F64], result: VOID },
+    /** The synchronous write options form —
+     * writeFileSync/appendFileSync(path, data, { encoding, mode, flag, flush }):
+     * the data is encoded first, the path and flag and then the mode are
+     * validated in Node's order, the file is opened with the flag (plus
+     * O_CREAT, the mode applying at creation only, umask applying), the
+     * data written with a write(2) loop, fsync'd when flush is set unless
+     * the string-utf8 arm applies, and closed. Every entry takes the fully
+     * defaulted option tuple, so the lowering never has to know which keys
+     * were spelled; `fast` selects the string-utf8 arm. */
+    "fs.writeFileOpts": {
+      argTypes: [STRING, STRING, STRING, BOOL, F64, STRING, BOOL],
+      result: VOID,
+    },
+    /** The same options form over Uint8Array/Buffer data. */
+    "fs.writeFileBytesOpts": {
+      argTypes: [STRING, BYTES_U8, STRING, F64, STRING, BOOL],
+      result: VOID,
+    },
+    /** appendFileSync's options form: the same write with "a" as the flag
+     * default, so an empty `flag` appends where writeFile's truncates. */
+    "fs.appendFileOpts": {
+      argTypes: [STRING, STRING, STRING, BOOL, F64, STRING, BOOL],
+      result: VOID,
+    },
+    "fs.appendFileBytesOpts": {
+      argTypes: [STRING, BYTES_U8, STRING, F64, STRING, BOOL],
+      result: VOID,
+    },
     "fs.mkdirModeSync": { argTypes: [STRING, F64], result: VOID },
     "fs.mkdirRecursiveModeSync": { argTypes: [STRING, F64], result: VOID },
     "atomics.wait": { argTypes: [bytesOf("i32"), F64, F64, F64], result: STRING },
@@ -3760,19 +3781,32 @@ function buildLibFnSignatures() {
     "promise.allTuple": { argTypes: [null, null], result: VOID },
     "fsp.readFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: STRING } },
     "fsp.writeFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },
-    /** fs.promises.writeFile(path, data, { mode }): the settled-promise
-     * twin of fs.writeFileModeSync. */
-    "fsp.writeFileMode": {
-      argTypes: [STRING, STRING, F64],
+    /** fs/promises writeFile/appendFile(path, data, { encoding, mode, flag,
+     * flush }): the same work as fs.writeFileOpts / fs.writeFileBytesOpts,
+     * run on the loop and settled as a promise (rejecting with Node's
+     * error). */
+    "fsp.writeFileOpts": {
+      argTypes: [STRING, STRING, STRING, F64, STRING, BOOL],
       result: { kind: "promise", inner: VOID },
     },
-    /** fs.promises.writeFile(path, data, { mode, flag }) and
-     * fs.promises.copyFile(src, dest, mode): the settled-promise twins of
-     * fs.writeFileFlagsSync and fs.copyFileFlagsSync. */
-    "fsp.writeFileFlags": {
-      argTypes: [STRING, STRING, F64, F64],
+    "fsp.writeFileBytesOpts": {
+      argTypes: [STRING, BYTES_U8, STRING, F64, STRING, BOOL],
       result: { kind: "promise", inner: VOID },
     },
+    "fsp.writeFileBytes": {
+      argTypes: [STRING, BYTES_U8],
+      result: { kind: "promise", inner: VOID },
+    },
+    "fsp.appendFileOpts": {
+      argTypes: [STRING, STRING, STRING, F64, STRING, BOOL],
+      result: { kind: "promise", inner: VOID },
+    },
+    "fsp.appendFileBytesOpts": {
+      argTypes: [STRING, BYTES_U8, STRING, F64, STRING, BOOL],
+      result: { kind: "promise", inner: VOID },
+    },
+    /** fs.promises.copyFile(src, dest, mode): the settled-promise twin of
+     * fs.copyFileFlagsSync. */
     "fsp.copyFileFlags": {
       argTypes: [STRING, STRING, F64],
       result: { kind: "promise", inner: VOID },
@@ -3890,6 +3924,16 @@ function buildLibFnSignatures() {
       result: { kind: "promise", inner: VOID },
     },
     "fileHandle.writeFileBytes": {
+      argTypes: [FILEHANDLE_T, BYTES_U8, STRING],
+      result: { kind: "promise", inner: VOID },
+    },
+    // fs/promises writeFile/appendFile with a FileHandle as the path: the
+    // string conversion runs before the handle is consulted.
+    "fileHandle.writeFilePath": {
+      argTypes: [FILEHANDLE_T, STRING, STRING],
+      result: { kind: "promise", inner: VOID },
+    },
+    "fileHandle.writeFilePathBytes": {
       argTypes: [FILEHANDLE_T, BYTES_U8, STRING],
       result: { kind: "promise", inner: VOID },
     },
@@ -5851,7 +5895,19 @@ function buildLibFnSignatures() {
      * string at the descriptor's current offset, leaving the descriptor
      * open (closeSync owns it). Errors carry the fd operation's errno
      * shape ("EBADF: bad file descriptor, write"). */
-    "fs.writeFileSyncFd": { argTypes: [F64, STRING], result: VOID },
+    /** writeFileSync/appendFileSync over an open descriptor: the same
+     * options tuple as the path forms, minus the path. The byte entry takes
+     * the encoding and the flush alone — the general arm reads neither the
+     * flag nor the mode, so one entry serves both families. */
+    "fs.writeFileFd": {
+      argTypes: [F64, STRING, STRING, BOOL, F64, STRING, BOOL],
+      result: VOID,
+    },
+    "fs.appendFileFd": {
+      argTypes: [F64, STRING, STRING, BOOL, F64, STRING, BOOL],
+      result: VOID,
+    },
+    "fs.writeFileFdBytes": { argTypes: [F64, BYTES_U8, STRING, BOOL], result: VOID },
     "fs.readFdSyncBytes": { argTypes: [F64], result: BYTES_U8 },
     /** Validated isatty(3) probe. Stream property lowering maps false to
      * undefined; tty.isatty exposes the boolean result directly. */

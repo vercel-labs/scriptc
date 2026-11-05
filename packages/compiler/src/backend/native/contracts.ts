@@ -228,8 +228,8 @@ export interface CcOptions {
   mutableBuffers?: boolean;
   /** SCR_STDIO_EXTENDED: stdin encoding, string data listeners, resize. */
   stdioExtended?: boolean;
-  /** SCR_FS_FLAGS: writeFile's `flag` option and copyFile's mode argument
-   * (scr_fs_flags.c and that build of scr_fs_cp.c). */
+  /** SCR_FS_FLAGS: copyFile's mode argument (scr_fs_flags.c and that build
+   * of scr_fs_cp.c). */
   fsFlags?: boolean;
   /** string_decoder's checked-dynamic chunk forms: compiles
    * scr_bytes_strdec_dyn.c. */

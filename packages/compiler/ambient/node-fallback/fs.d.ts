@@ -24,32 +24,78 @@ declare module "node:fs" {
     options: unknown,
     callback: (error: Error | null, data: string | Buffer) => void,
   ): void;
-  /* The options form carries the mode (applied at CREATION only, like
-   * Node — an existing file keeps its permissions) and/or the utf8
-   * encoding spelling. */
+  /* The options form carries the encoding (any Buffer encoding name at
+   * run time), the mode (applied at CREATION only, like Node — an
+   * existing file keeps its permissions), the open(2) flag, and the flush
+   * that fsyncs before the close. */
   export function writeFileSync(
     path: string | URL,
-    data: string,
+    data: string | ArrayBufferView,
     /* The options-record stance (see http.RequestOptions): an unsupported
-     * flag fences by name at the call site; undocumented keys drop like
-     * Node. The lowered flags are "w" (truncate-or-create) and "wx"
-     * (exclusive create). */
+     * key fences by name at the call site; undocumented keys drop like
+     * Node. */
     options?: {
-      mode?: number;
-      encoding?: "utf8" | "utf-8";
+      encoding?: BufferEncoding | null;
+      mode?: number | string;
       flag?: string;
+      flush?: boolean;
       [option: string]: unknown;
-    },
+    } | null,
   ): void;
   /* The bare-encoding spelling — the options record's encoding key alone. */
-  export function writeFileSync(path: string | URL, data: string, encoding: "utf8" | "utf-8"): void;
-  export function writeFileSync(path: string | URL, data: string | Uint8Array): void;
+  export function writeFileSync(
+    path: string | URL,
+    data: string | ArrayBufferView,
+    encoding: BufferEncoding,
+  ): void;
   /* The file-descriptor form: Node writes the whole data to an already
    * open descriptor and leaves it open (closeSync owns its lifetime, and
-   * the write lands at the descriptor's current offset). */
-  export function writeFileSync(fd: number, data: string): void;
-  export function writeFileSync(fd: number, data: string, encoding: "utf8" | "utf-8"): void;
-  export function appendFileSync(path: string | URL, data: string | Uint8Array): void;
+   * the write lands at the descriptor's current offset). The options mean
+   * the same as on the path form. */
+  export function writeFileSync(
+    fd: number,
+    data: string | ArrayBufferView,
+    options?:
+      | {
+          encoding?: BufferEncoding | null;
+          mode?: number | string;
+          flag?: string;
+          flush?: boolean;
+          [option: string]: unknown;
+        }
+      | BufferEncoding
+      | null,
+  ): void;
+  export function appendFileSync(
+    path: string | URL,
+    data: string | ArrayBufferView,
+    options?:
+      | {
+          encoding?: BufferEncoding | null;
+          mode?: number | string;
+          flag?: string;
+          flush?: boolean;
+          [option: string]: unknown;
+        }
+      | BufferEncoding
+      | null,
+  ): void;
+  /* appendFileSync takes a descriptor too; the flag it passes is always
+   * "a" then, whatever the options record says. */
+  export function appendFileSync(
+    fd: number,
+    data: string | ArrayBufferView,
+    options?:
+      | {
+          encoding?: BufferEncoding | null;
+          mode?: number | string;
+          flag?: string;
+          flush?: boolean;
+          [option: string]: unknown;
+        }
+      | BufferEncoding
+      | null,
+  ): void;
   export function existsSync(path: string | URL): boolean;
   export function mkdirSync(path: string | URL): void;
   export function mkdirSync(

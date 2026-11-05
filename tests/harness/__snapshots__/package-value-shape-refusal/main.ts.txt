@@ -1,0 +1,8 @@
+package-value-shape-refusal/main.ts:5:1 - error SC2013: cannot compile npm package 'value-pkg' statically: no runtime JS entry resolves
+
+  4 | // (interfaces and type aliases the program itself builds) erase instead.
+  5 | import { ValueThing } from "value-pkg";
+    | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  6 | 
+
+  hint: use a dependency with supported source, or replace the unsupported operation; scriptc has no interpreter fallback

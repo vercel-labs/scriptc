@@ -1,0 +1,21 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8970-node-island-error-construct/lib.ts",
+  "<repo>/tests/corpus/8970-node-island-error-construct/island.cjs",
+  "<repo>/tests/corpus/8970-node-island-error-construct/main.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC1091",
+   "message": "writing the undeclared name 'undeclaredGlobal' in a JavaScript source is not supported yet",
+   "loc": {
+    "file": "<repo>/tests/corpus/8970-node-island-error-construct/island.cjs",
+    "start": 683,
+    "end": 699
+   },
+   "milestone": "later",
+   "hint": "declare the name to keep the module native: a sloppy-mode write creates a property on Node's global object, which a native binary has none of (with --node-islands=auto, the default, a required module with this write runs in a Node island instead), and a strict-mode write throws",
+   "reason": "implicit-global-write"
+  }
+ ]
+}

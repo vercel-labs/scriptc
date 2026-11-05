@@ -42,6 +42,7 @@
  * --trace-warnings hint line. The pid in "(node:pid)" is this process's
  * (it can never equal the oracle's). */
 #include "scr_runtime.h"
+#include "scr_key.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -457,6 +458,7 @@ static void scr_ee_warn_tick(ScrClosure *self) {
   if (scr_warning_emit_hook) {
     scr_warning_emit_hook("MaxListenersExceededWarning", NULL, message);
   } else {
+    scr_stdout_settle();
     fflush(stdout);
     fprintf(stderr, "(node:%ld) MaxListenersExceededWarning: %.*s\n", SCR_EE_PID(),
             (int)message->len, message->data);
@@ -501,11 +503,17 @@ static void scr_ee_warn_maybe(ScrEmitter *em, ScrEeBucket *b) {
  * +1 (the `return this` chaining value). 'newListener' fires BEFORE the
  * add, like Node. A listener throw inside the meta emit leaves the
  * exception pending; the add still happens (Node's addListener has no
- * try). */
+ * try). `dyn` is the listener the meta events announce; `flex` is the
+ * callable an untyped emit invokes — the listener itself, or a function
+ * value over an adapter that binds the receiver, for a stream. Both are
+ * borrowed; non-function values carry no checked-dynamic half. */
 static ScrEmitter *scr_ee_add(ScrEmitter *em, ScrStr *name, ScrClosure *cb /*moves*/,
                               ScrClosure *orig /*moves; may be NULL*/,
                               ScrEeInvoke inv, const ScrDyn *dyn /*borrowed; may be NULL*/,
+                              const ScrDyn *flex /*borrowed; may be NULL*/,
                               bool once, bool prepend, const ScrDynTypedRefRecipe *recv) {
+  if (dyn && dyn->kind != SCR_DYN_FUNC) dyn = NULL;
+  if (flex && flex->kind != SCR_DYN_FUNC) flex = NULL;
   scr_ee_reg_ensure(em);
   scr_ee_emit_meta(em, "newListener", name, dyn);
   ScrEeBucket *b = scr_ee_bucket_ensure(em->reg, name);
@@ -514,13 +522,13 @@ static ScrEmitter *scr_ee_add(ScrEmitter *em, ScrStr *name, ScrClosure *cb /*mov
   e->cb = cb;
   e->orig = orig;
   e->inv = inv;
-  if (dyn) {
-    e->flex_cb = scr_closure_retain(dyn->v.fn.clo);
-    e->flex_invoke = dyn->v.fn.thunk;
-    e->flex_message = dyn->v.fn.message;
-    e->flex_sig = dyn->v.fn.sig;
-    e->flex_name = dyn->v.fn.name;
-    e->flex_arity = dyn->v.fn.arity;
+  if (flex) {
+    e->flex_cb = scr_closure_retain(flex->v.fn.clo);
+    e->flex_invoke = flex->v.fn.thunk;
+    e->flex_message = flex->v.fn.message;
+    e->flex_sig = flex->v.fn.sig;
+    e->flex_name = flex->v.fn.name;
+    e->flex_arity = flex->v.fn.arity;
   }
   e->recv = recv;
   e->once = once;
@@ -545,7 +553,7 @@ static ScrEmitter *scr_ee_add(ScrEmitter *em, ScrStr *name, ScrClosure *cb /*mov
 
 ScrEmitter *scr_emitter_on(ScrEmitter *em, ScrStr *name, ScrClosure *cb /*moves*/,
                             ScrEeInvoke inv, bool once, bool prepend) {
-  return scr_ee_add(em, name, cb, NULL, inv, NULL, once, prepend, NULL);
+  return scr_ee_add(em, name, cb, NULL, inv, NULL, NULL, once, prepend, NULL);
 }
 
 /* events.once(emitter, name): a pending promise of the event's arguments
@@ -628,7 +636,7 @@ ScrPromise *scr_events_once(ScrEmitter *em, ScrStr *name, ScrClosure *boxer, voi
    * listener it announced is never added (the event's listener stays when
    * only the 'error' announcement throws). */
   ScrCaught *thrown = NULL;
-  scr_emitter_release(scr_ee_add(em, name, st->event_cb, NULL, inv, NULL, true, false, NULL));
+  scr_emitter_release(scr_ee_add(em, name, st->event_cb, NULL, inv, NULL, NULL, true, false, NULL));
   if (scr_exc_pending()) {
     thrown = scr_exc_take();
     scr_ee_unadd(em, name, st->event_cb);
@@ -636,7 +644,7 @@ ScrPromise *scr_events_once(ScrEmitter *em, ScrStr *name, ScrClosure *boxer, voi
     st->event_cb = st->error_cb = NULL;
   } else if (st->error_cb != NULL) {
     ScrStr *error = scr_str_new("error", 5);
-    scr_emitter_release(scr_ee_add(em, error, st->error_cb, NULL, err_inv, NULL, true, false, NULL));
+    scr_emitter_release(scr_ee_add(em, error, st->error_cb, NULL, err_inv, NULL, NULL, true, false, NULL));
     if (scr_exc_pending()) {
       thrown = scr_exc_take();
       scr_ee_unadd(em, error, st->error_cb);
@@ -697,14 +705,25 @@ void scr_events_once_fire(ScrClosure *cb, ScrArr *args) {
 ScrEmitter *scr_emitter_on_dyn_this(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
                                     ScrClosure *adapter /*moves*/, ScrEeInvoke inv, bool once,
                                     bool prepend, const ScrDynTypedRefRecipe *recv) {
-  return scr_ee_add(em, name, adapter, scr_closure_retain(cb->v.fn.clo), inv,
-                    cb->kind == SCR_DYN_FUNC ? cb : NULL, once, prepend, recv);
+  return scr_ee_add(em, name, adapter, scr_closure_retain(cb->v.fn.clo), inv, cb, cb, once,
+                    prepend, recv);
 }
 
 ScrEmitter *scr_emitter_on_dyn(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
                                 ScrClosure *adapter /*moves*/,
                                 ScrEeInvoke inv, bool once, bool prepend) {
   return scr_emitter_on_dyn_this(em, name, cb, adapter, inv, once, prepend, NULL);
+}
+
+/* The dyn-adapted registration whose checked-dynamic calls go through a
+ * function value of their own: `flex` (a function value over the adapter
+ * that also binds the receiver) serves untyped emits, while `cb` stays the
+ * entry's identity and the value the meta events announce. */
+ScrEmitter *scr_emitter_on_dyn_bound(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
+                                     const ScrDyn *flex, ScrClosure *adapter /*moves*/,
+                                     ScrEeInvoke inv, bool once, bool prepend) {
+  return scr_ee_add(em, name, adapter, scr_closure_retain(cb->v.fn.clo), inv, cb,
+                    flex ? flex : cb, once, prepend, NULL);
 }
 
 /* The typed adapters of a checked-dynamic listener on the events whose
@@ -750,7 +769,7 @@ ScrEmitter *scr_emitter_on_flex_this(ScrEmitter *em, ScrStr *name, const ScrDyn 
     scr_dyn_check_listener(cb, "listener");
     return scr_emitter_retain(em);
   }
-  return scr_ee_add(em, name, NULL, NULL, NULL, cb, once, prepend, recv);
+  return scr_ee_add(em, name, NULL, NULL, NULL, cb, cb, once, prepend, recv);
 }
 
 ScrEmitter *scr_emitter_on_flex(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
@@ -777,10 +796,10 @@ ScrEmitter *scr_emitter_on_any_this(ScrEmitter *em, ScrStr *name, const ScrDyn *
   }
   if (fire) {
     return scr_ee_add(em, name, scr_ee_dyn_adapter(cb, fire),
-                      scr_closure_retain(cb->v.fn.clo), &scr_ee_inv_fixed1, cb, once, prepend,
+                      scr_closure_retain(cb->v.fn.clo), &scr_ee_inv_fixed1, cb, cb, once, prepend,
                       recv);
   }
-  return scr_ee_add(em, name, NULL, NULL, NULL, cb, once, prepend, recv);
+  return scr_ee_add(em, name, NULL, NULL, NULL, cb, cb, once, prepend, recv);
 }
 
 ScrEmitter *scr_emitter_on_any(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
@@ -794,14 +813,14 @@ ScrEmitter *scr_emitter_on_any(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
 ScrEmitter *scr_emitter_on_via(ScrEmitter *em, ScrStr *name, ScrClosure *orig /*moves*/,
                                 ScrClosure *adapter /*moves*/,
                                 ScrEeInvoke inv, bool once, bool prepend) {
-  return scr_ee_add(em, name, adapter, orig, inv, NULL, once, prepend, NULL);
+  return scr_ee_add(em, name, adapter, orig, inv, NULL, NULL, once, prepend, NULL);
 }
 
 /* scr_emitter_on_via for a listener that can read `this` (scr_events_emitter.h). */
 ScrEmitter *scr_emitter_on_via_this(ScrEmitter *em, ScrStr *name, ScrClosure *orig /*moves*/,
                                     ScrClosure *adapter /*moves*/, ScrEeInvoke inv, bool once,
                                     bool prepend, const ScrDynTypedRefRecipe *recv) {
-  return scr_ee_add(em, name, adapter, orig, inv, NULL, once, prepend, recv);
+  return scr_ee_add(em, name, adapter, orig, inv, NULL, NULL, once, prepend, recv);
 }
 
 /* ── fixed-arity invoke shims (scr_runtime.h's contract) ──────────────
@@ -1225,6 +1244,20 @@ bool scr_emitter_has_typed(ScrEmitter *em, ScrStr *name) {
   return false;
 }
 
+/* Whether a typed emit of `name` reaches a listener that only has the
+ * checked-dynamic thunk (registered through an untyped value, never given
+ * a typed adapter), so its arguments must also convert to ScrDyn before
+ * the dispatch. The converse of has_typed. */
+bool scr_emitter_has_dyn(ScrEmitter *em, ScrStr *name) {
+  ScrEeBucket *b = em->reg ? scr_ee_bucket_of(em->reg, name) : NULL;
+  for (size_t i = 0; b && i < b->n; i++) {
+    if (b->ls[i]->flex_invoke && b->ls[i]->inv == NULL) return true;
+  }
+  if (!scr_ee_is_error_monitor(name) && scr_ee_is_name(name, "error"))
+    return scr_emitter_has_dyn(em, SCR_EE_ERROR_MONITOR);
+  return false;
+}
+
 /* Throws Node's ERR_UNHANDLED_ERROR for a non-Error payload: the message
  * quotes `shown` (util.inspect of the payload) and `context` is the
  * payload. */
@@ -1405,6 +1438,18 @@ bool scr_emitter_emit_error(ScrEmitter *em, ScrStr *name, ScrError *err) {
   return scr_ee_emit_va(em, name, err);
 }
 
+bool scr_emitter_emit_error_mixed(ScrEmitter *em, ScrStr *name, ScrError *err,
+                                  ScrDyn *const *args, size_t argc) {
+  if (!scr_ee_has(em->reg, "error")) {
+    scr_ee_emit_mixed_va(em, SCR_EE_ERROR_MONITOR, args, argc, 1, err);
+    if (scr_exc_pending()) return false;
+    scr_throw_obj(scr_error_retain(err), &scr_error_retain_v, &scr_error_release_v,
+                  scr_error_trace_arg());
+    return false;
+  }
+  return scr_ee_emit_mixed_va(em, name, args, argc, 1, err);
+}
+
 /* ── introspection ────────────────────────────────────────────────────── */
 
 /* The stream unit's registration probe (any unit's, really). */
@@ -1439,23 +1484,48 @@ double scr_emitter_listener_count_dyn(ScrEmitter *em, ScrStr *name, const ScrDyn
     : 0;
 }
 
-/* eventNames(): +1 string[] of the bucket names in first-registration
- * order (exactly Node's _events key order). Reserved-but-empty buckets
- * (the stream pre-created keys) are invisible until a listener lands. */
+/* eventNames(): +1 string[] of the bucket names in Node's _events key
+ * order. _events is an object, so array-index names ('0', '1', ...) come
+ * first in ascending order, then the other names in first-registration
+ * order. Reserved-but-empty buckets (the stream pre-created keys) are
+ * invisible until a listener lands. */
 ScrArr *scr_emitter_event_names(ScrEmitter *em) {
   ScrArr *out = scr_arr_new(SCR_ELEM_STR, 0);
-  if (em->reg) {
-    for (ScrEeBucket *b = em->reg->head; b; b = b->next) {
-      if (b->n == 0) continue;
-      /* Node lists the errorMonitor symbol, which a string[] cannot hold. */
-      if (scr_ee_is_error_monitor(b->name)) {
-        scr_arr_release(out);
-        scr_ee_symbol_name_fence("eventNames()");
-        return scr_arr_new(SCR_ELEM_STR, 0);
-      }
-      scr_arr_push_ref(out, scr_str_retain(b->name));
+  if (!em->reg) return out;
+  size_t count = 0;
+  for (ScrEeBucket *b = em->reg->head; b; b = b->next) {
+    if (b->n == 0) continue;
+    /* Node lists the errorMonitor symbol, which a string[] cannot hold. */
+    if (scr_ee_is_error_monitor(b->name)) {
+      scr_arr_release(out);
+      scr_ee_symbol_name_fence("eventNames()");
+      return scr_arr_new(SCR_ELEM_STR, 0);
     }
+    count++;
   }
+  ScrEeBucket **live = count ? malloc(count * sizeof *live) : NULL;
+  ScrKeyIndex *indexed = count ? malloc(count * sizeof *indexed) : NULL;
+  if (count && (!live || !indexed)) scr_ee_oom();
+  size_t n = 0, k = 0;
+  for (ScrEeBucket *b = em->reg->head; b; b = b->next) {
+    if (b->n == 0) continue;
+    uint32_t index;
+    if (scr_key_array_index(b->name->data, b->name->len, &index)) {
+      indexed[k].index = index;
+      indexed[k].entry = n;
+      k++;
+    }
+    live[n++] = b;
+  }
+  if (k > 1) qsort(indexed, k, sizeof *indexed, scr_key_index_compare);
+  for (size_t i = 0; i < k; i++) scr_arr_push_ref(out, scr_str_retain(live[indexed[i].entry]->name));
+  for (size_t i = 0; i < n; i++) {
+    uint32_t index;
+    if (!scr_key_array_index(live[i]->name->data, live[i]->name->len, &index))
+      scr_arr_push_ref(out, scr_str_retain(live[i]->name));
+  }
+  free(indexed);
+  free(live);
   return out;
 }
 

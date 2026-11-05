@@ -104,6 +104,8 @@ export {};
 });
 
 test("a for-in over another shape stays static when a width spread is kept elsewhere", async () => {
+  // `r` is a literal: an Other built by a checked conversion answers for-in
+  // through its own kept source (record-links.ts).
   const { ir } = await sourceNotes(
     `type Narrow = { a: number; b?: string };
 type Other = { x: number; y?: string };
@@ -111,7 +113,7 @@ type Wide = { a: number; b?: string; extra: string };
 function narrow(w: Wide): Narrow {
   return { ...w };
 }
-const r: Other = JSON.parse('{"x":1}') as Other;
+const r: Other = { x: 1 };
 const keys: string[] = [];
 for (const k in r) keys.push(k);
 console.log(keys.join(","), JSON.stringify(narrow({ a: 1, extra: "x" })));

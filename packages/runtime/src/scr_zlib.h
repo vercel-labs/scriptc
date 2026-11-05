@@ -78,16 +78,18 @@ void scr_zlib_options_drop(ScrZlibOptions *o);
  * rejectGarbageAfterEnd and info. False with Node's error pending, *out
  * dropped. */
 bool scr_zlib_base_options(const ScrDyn *opts, double flush_max, ScrZlibOptions *out);
-/* Brotli's option ladder and engine (scr_brotli.c), installed when the
- * program uses Brotli: scr_zlib_options_parse and
- * scr_zlib_engine_from_options call them for Node's BROTLI_DECODE (8) and
- * BROTLI_ENCODE (9) modes. */
+/* A codec's option ladder and engine (scr_brotli.c, scr_zstd.c), installed
+ * when the program uses that codec: scr_zlib_options_parse and
+ * scr_zlib_engine_from_options call them for Node's BROTLI_DECODE (8),
+ * BROTLI_ENCODE (9), ZSTD_COMPRESS (10) and ZSTD_DECOMPRESS (11) modes. */
 typedef struct {
   bool (*options)(int mode, const ScrDyn *opts, ScrZlibOptions *out);
   ScrZlibEngine *(*engine)(int mode, ScrZlibOptions *o);
-} ScrZlibBrotliHooks;
-extern const ScrZlibBrotliHooks *scr_zlib_brotli_hooks;
+} ScrZlibCodecHooks;
+extern const ScrZlibCodecHooks *scr_zlib_brotli_hooks;
+extern const ScrZlibCodecHooks *scr_zlib_zstd_hooks;
 void scr_brotli_install(void);
+void scr_zstd_install(void);
 bool scr_zlib_check_range(const ScrDyn *v, const char *name, bool prop, double lower, double upper,
                           double def, double *out);
 ScrZlibEngine *scr_zlib_engine_from_options(int mode, ScrZlibOptions *o);

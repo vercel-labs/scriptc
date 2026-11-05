@@ -46,6 +46,16 @@ void scr_test_ctx_todo(ScrTestCtx *t, ScrStr *msg);
 void scr_test_ctx_diagnostic(ScrTestCtx *t, ScrStr *msg);
 void scr_test_ctx_hook(ScrTestCtx *t, double which, ScrClosure *cb, double flags);
 void scr_test_ctx_plan(ScrTestCtx *t, double count);
+/* t.runOnly(shouldRunOnlyTests): subtests registered under `t` from now on
+ * are dropped unless marked { only }. */
+void scr_test_ctx_run_only(ScrTestCtx *t, bool value);
+/* t.waitFor(condition[, { interval, timeout }]): polls the condition until it
+ * stops throwing or rejecting, or the timeout elapses; the result promise
+ * (+1) fulfills with the first non-throwing result. `has_interval`/
+ * `has_timeout` say whether the options object carried the property (Node's
+ * defaults are 50 and 1000). Both arguments are borrowed. */
+ScrDyn *scr_test_ctx_wait_for(ScrTestCtx *t, const ScrDyn *condition, bool has_interval,
+                              double interval, bool has_timeout, double timeout);
 void scr_test_ctx_count(ScrTestCtx *t);
 ScrStr *scr_test_ctx_full_name(ScrTestCtx *t);
 /* t.passed, and t.workerId as a number with 0 for undefined. */

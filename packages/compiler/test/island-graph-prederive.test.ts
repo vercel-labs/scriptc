@@ -256,7 +256,7 @@ test("the graph decision compiles the discovery round's island one lowering earl
 // An installed package whose only use is a require() that never runs — a
 // shadowed binding, or a call inside a function nothing calls — is not a
 // package the program loads. Islanding it would refuse a program that
-// replaces process.stdout.write (SC8020) over a package it never touches.
+// replaces process.stdout.write (SC8006) over a package it never touches.
 function writePackage(dir: string, name: string, js: string, dts: string): void {
   const root = join(dir, "node_modules", name);
   mkdirSync(root, { recursive: true });
@@ -338,7 +338,7 @@ test("a require() that never runs decides no island", () => {
 test("an arrow called where it is written still decides its island", () => {
   // The callback rule stops the walk at an arrow the module hands over; one
   // the module invokes right there loads its package with the module, so the
-  // graph proves the island and the stream patch is SC8020 as before.
+  // graph proves the island and the stream patch is SC8006.
   const called = buildStdoutPatchProgram(
     "",
     [
@@ -347,5 +347,5 @@ test("an arrow called where it is written still decides its island", () => {
       "",
     ].join("\n"),
   );
-  expect(called.ok ? [] : called.diagnostics.map((d) => d.code)).toEqual(["SC8020"]);
+  expect(called.ok ? [] : called.diagnostics.map((d) => d.code)).toEqual(["SC8006"]);
 }, 600_000);

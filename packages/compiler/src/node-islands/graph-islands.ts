@@ -31,13 +31,22 @@ function outsideGraphReason(name: string): string {
  *
  * `known` holds the islands earlier rounds grew, so a later round derives
  * nothing new; `modules` holds the island modules of this decision (their
- * imports load in Node, nothing to decide). */
+ * imports load in Node, nothing to decide).
+ *
+ * `deferred` admits a package a require() loads only when that code runs (a
+ * function body, a condition, a dynamic import()). A build keeps those for
+ * the lowering, which decides them where it compiles them: islanding one
+ * that never runs would refuse a program for a package it never touches. A
+ * coverage analysis lowers every site, so such an edge is a refusal it is
+ * about to report, and passing `deferred` makes its discovery lowering the
+ * retry lowering. */
 export function outsideGraphIslands(
   policy: NodeIslandPolicy,
   npmStatic: readonly NpmStaticStatus[],
   scan: NodeIslandScan,
   modules: ReadonlyMap<string, IslandModule>,
   known: ReadonlyMap<string, IslandPackage>,
+  deferred = false,
 ): Map<string, IslandPackage> | null {
   if (policy.mode !== "auto" || known.size > 16) return null;
   // The package directories whose sources the frontend has in the program:
@@ -57,7 +66,7 @@ export function outsideGraphIslands(
     // one that never runs would refuse a program that patches a process output
     // stream (SC8020) for a package it never touches. Those stay with the
     // lowering, which decides them where it compiles them.
-    if (!edge.loads) continue;
+    if (!edge.loads && !deferred) continue;
     const name = edge.to;
     if (grown.has(name) || known.has(name)) continue;
     if (policy.forcedNative.has(name) || policy.unloaded.has(name)) continue;
@@ -83,6 +92,16 @@ export function outsideGraphIslands(
   return grown;
 }
 
+/** An importer that grows along a sure island is sure too. */
+export interface ESMGrowthOptions {
+  /** The set the growth round started from: a package already islanded
+   * before this round goes wherever the round goes. */
+  known: ReadonlyMap<string, IslandPackage>;
+  /** The packages whose island surely joins the build (their fence surely
+   * fires): an importer of one joins it the same way. */
+  sure?: Set<string>;
+}
+
 /** Adds every package whose ES module imports an island CommonJS package to
  * `grown` (`--node-islands=auto` only): its native ES module would read the
  * island's bindings from the module's exports object, where Node gives it
@@ -94,6 +113,7 @@ export function growEsmImporters(
   compiled: ReadonlySet<string>,
   edges: readonly PackageEdge[] | undefined,
   grown: Map<string, IslandPackage>,
+  sureOf?: ESMGrowthOptions,
 ): void {
   if (edges === undefined) return;
   for (let added = true; added;) {
@@ -116,6 +136,10 @@ export function growEsmImporters(
         class: "packaging",
         reason: `an ES module of the package imports the CommonJS island package '${name}'`,
       });
+      // It goes wherever that island goes, the sure-fence retry included.
+      if (sureOf !== undefined && sureOf.sure !== undefined) {
+        if (sureOf.known.has(name) || sureOf.sure.has(name)) sureOf.sure.add(at.name);
+      }
       added = true;
     }
   }

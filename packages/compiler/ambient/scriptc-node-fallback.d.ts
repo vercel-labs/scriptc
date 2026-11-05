@@ -333,12 +333,14 @@ declare var process: {
   stdout: import("tty").WriteStream;
   stderr: import("tty").WriteStream;
   /* The stdin stream, the piped-input slice: the TTY probe, the
-   * data/end/error events and readline's 'keypress' (on and once — a 'data' listener keeps the
-   * event loop alive until EOF, like Node's flowing stdin), destroy()
-   * (full teardown: nothing fires after, the loop stops waiting), and
-   * async iteration (`for await (const chunk of process.stdin)` — chunks
-   * are Uint8Array values, ending at EOF). setEncoding has no lowering
-   * (chunks stay bytes; decode with TextDecoder). */
+   * data/end/error/readable events and readline's 'keypress' (on and once
+   * — a 'data' or 'readable' listener keeps the event loop alive until
+   * EOF, like Node's flowing stdin), the paused-mode reads (pause,
+   * resume, isPaused, read, readableLength), destroy() (full teardown:
+   * nothing fires after, the loop stops waiting), and async iteration
+   * (`for await (const chunk of process.stdin)` — chunks are Uint8Array
+   * values, ending at EOF). setEncoding has no lowering (chunks stay
+   * bytes; decode with TextDecoder). */
   stdin: {
     readonly isTTY: boolean;
     /* The descriptor the stream is built over (Node reports 0 here and
@@ -350,6 +352,10 @@ declare var process: {
     on(event: "data", listener: (chunk: Uint8Array) => void): void;
     on(event: "end", listener: () => void): void;
     on(event: "error", listener: (err: Error) => void): void;
+    /* Paused mode, as in Node: input stays buffered for read(), and the
+     * listener runs when input arrives while a read wanted more, and once
+     * at EOF. A 'readable' listener keeps the loop alive until EOF. */
+    on(event: "readable", listener: () => void): void;
     /* readline.emitKeypressEvents(process.stdin)'s keys */
     on(
       event: "keypress",
@@ -358,10 +364,28 @@ declare var process: {
     once(event: "data", listener: (chunk: Uint8Array) => void): void;
     once(event: "end", listener: () => void): void;
     once(event: "error", listener: (err: Error) => void): void;
+    once(event: "readable", listener: () => void): void;
     once(
       event: "keypress",
       listener: (str: string | undefined, key: import("readline").Key) => void,
     ): void;
+    /* The readable half of the stream. pause()/resume() set Node's flowing
+     * flag (input buffers instead of reaching 'data' listeners while
+     * paused, and flows again on resume); Node answers `this` and this
+     * call is statement-position only. read([size]) takes held input with
+     * Node's size coercion: a fractional size truncates, NaN (or no size)
+     * reads everything held, a size of zero or less reads nothing, and a
+     * size above 1 GiB throws Node's ERR_OUT_OF_RANGE. Null answers
+     * "nothing yet", and the answer is a Buffer, both exactly Node's.
+     * readableLength is what waits.
+     * isPaused() answers Node's paused mode: true after pause() or once a
+     * 'readable' listener is attached, and resume() with such a listener
+     * (or 'end') does not clear it. */
+    pause(): void;
+    resume(): void;
+    isPaused(): boolean;
+    read(size?: number): Buffer | null;
+    readonly readableLength: number;
     destroy(): void;
     setEncoding(encoding: "utf8"): void;
     /* Termios raw mode on a TTY stdin (libuv's UV_TTY_MODE_RAW, the mode
@@ -866,6 +890,8 @@ interface Buffer<
     encoding?: BufferEncoding,
   ): number;
   subarray(start?: number, end?: number): Buffer<TArrayBuffer>;
+  /* The JSON snapshot JSON.stringify calls. */
+  toJSON(): { type: "Buffer"; data: number[] };
   /* @types/node's spelling — the ArrayBuffer instantiation keeps the
    * override compatible with the lib's Uint8Array.slice. */
   slice(start?: number, end?: number): Buffer<ArrayBuffer>;
@@ -1538,6 +1564,9 @@ declare var URL: {
   new (input: string | { toString: () => string }, base?: string | URL): URL;
   canParse(input: string | URL, base?: string | URL): boolean;
   parse(input: string | URL, base?: string | URL): URL | null;
+  /* The id is coerced to a string before the registry lookup; a
+   * compiled program registers no blob URLs, so every id misses. */
+  revokeObjectURL(url: string | URL): void;
 };
 
 /* URLSearchParams — the WHATWG application/x-www-form-urlencoded list.
@@ -1555,7 +1584,10 @@ interface URLSearchParams {
   set(name: string, value: string): void;
   sort(): void;
   toString(): string;
-  forEach(callback: (value: string, name: string, searchParams: URLSearchParams) => void): void;
+  forEach(
+    callback: (value: string, name: string, searchParams: URLSearchParams) => void,
+    thisArg?: unknown,
+  ): void;
   keys(): IterableIterator<string>;
   values(): IterableIterator<string>;
   entries(): IterableIterator<[string, string]>;

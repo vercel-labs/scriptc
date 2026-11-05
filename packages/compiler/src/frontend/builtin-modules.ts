@@ -175,3 +175,14 @@ export function unsupportedModuleFeatureOf(spec: string): string {
  * compiler's own sources never trip program.ts's scan when scriptc
  * compiles itself. */
 export const TEMPORAL_GLOBAL = "Tempo" + "ral";
+
+/** The CommonJS module-scope bindings @types/node declares as globals. Node
+ * passes them to each CommonJS module's wrapper function, so the global
+ * object has none of them (`globalThis.require` is undefined). */
+export const COMMONJS_MODULE_BINDINGS: ReadonlySet<string> = new Set([
+  "require",
+  "module",
+  "exports",
+  "__dirname",
+  "__filename",
+]);

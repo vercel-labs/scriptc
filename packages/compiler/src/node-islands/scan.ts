@@ -8,11 +8,12 @@ import * as ts from "../frontend/ts7/adapter.js";
 import { canonicalBuiltinModule, npmBuiltinAliasOf } from "../frontend/builtin-modules.js";
 import { erasedTypeOnlyImport } from "../frontend/type-only-imports.js";
 import { isShimmedImport } from "../frontend/package-shims.js";
+import { requireCallBindingKind } from "../frontend/program.js";
 import { resolveBareModule } from "../frontend/resolve.js";
 import { isJsSourceFileName } from "../frontend/tsc-codes.js";
 import { isRelativeSpecifier, packageNameOfSpecifier } from "../frontend/workspace-registry.js";
 import { moduleSourceCandidates } from "../frontend/module-source-candidates.js";
-import { scanModuleFacts, type CjsRead, type NodeIslandMarker } from "./detect.js";
+import { scanModuleFacts, type CjsRead, type GlobalRead, type NodeIslandMarker } from "./detect.js";
 import { stripProblem, type StripProblem } from "./type-strip.js";
 import { originOf, packageDirOf, type Origin } from "./origin.js";
 
@@ -25,7 +26,11 @@ export interface ScannedModule {
   markers: NodeIslandMarker[];
   /** Members the module reads through a builtin's CommonJS object (H3.4). */
   cjsReads: CjsRead[];
-  /** A user TypeScript module with a `builtin-patch` marker that Node
+  /** Names the module reads that it declares nowhere and no builtin
+   * provides: each resolves on the global object at run time. */
+  globalReads: GlobalRead[];
+  /** A user TypeScript module the build may need to run in a Node island (a
+   * `builtin-patch` marker, or a read of a patched builtin member) that Node
    * cannot run with type stripping only (H3.5): it stays native. */
   stripProblem: StripProblem | null;
   /** True for a module of a package the drop-and-reload loop removed. */
@@ -76,14 +81,6 @@ function locOfNode(node: ts.Node): SrcLoc {
   return { file: sf.fileName, start: ts.tokenStartOfNode(node), end: node.end };
 }
 
-/** True when `require` names the CommonJS loader Node provides. A binding the
- * file declares itself (a parameter, a variable, an import) shadows it and
- * loads nothing. */
-function isNodeRequire(program: ts.Program, identifier: ts.Identifier): boolean {
-  const symbol = program.getTypeChecker().getSymbolAtLocation(identifier);
-  return (symbol?.declarations ?? []).every((d) => ts.getSourceFileOfNode(d).isDeclarationFile);
-}
-
 /** True when a function expression runs where it is written: it is the callee
  * of a call, parentheses aside. An arrow handed to a call as a callback, or
  * stored in a variable, runs only when something calls it. */
@@ -123,6 +120,10 @@ function loadsWithModule(call: ts.CallExpression): boolean {
     if (
       !ts.isExpression(parent) &&
       !ts.isExpressionStatement(parent) &&
+      // `const up = require("upper")` at a module's top level runs where the
+      // module evaluates, so the declaration between the call and its
+      // statement is part of the chain, not a deferral.
+      !ts.isVariableDeclaration(parent) &&
       !ts.isVariableStatement(parent) &&
       !ts.isVariableDeclarationList(parent) &&
       !ts.isExportAssignment(parent)
@@ -160,11 +161,14 @@ function specifiersOf(
       continue;
     }
     if (!ts.isIdentifier(call.expression) || call.expression.text !== "require") continue;
-    const loads = loadsWithModule(call);
-    // A top-level require() that a local binding shadows is not a load of the
-    // package; one below the top level never proved one anyway.
-    if (loads && !isNodeRequire(program, call.expression)) continue;
-    out.push({ spec: arg.text, node: call, loads });
+    // A require() call through a binding the file itself declares runs that
+    // value, not a loader, so the package it names never loads — wherever the
+    // call sits. The analysis lowers every site, so one below the top level
+    // counts too: its deferred graph decision islands what a deferred
+    // require() loads, and a shadowed call loads nothing. Node's ambient
+    // require and a createRequire() binding are loaders.
+    if (requireCallBindingKind(program, call) === "source") continue;
+    out.push({ spec: arg.text, node: call, loads: loadsWithModule(call) });
   }
   return out;
 }
@@ -229,7 +233,7 @@ export function scanFiles(
     // (H3.2): its other markers are JavaScript semantics, and sloppy
     // parsing is never required of TypeScript.
     const userTs = !js && origin === "user" && !sf.isDeclarationFile && opts.userJs;
-    let facts: ReturnType<typeof scanModuleFacts> = { markers: [], cjsReads: [] };
+    let facts: ReturnType<typeof scanModuleFacts> = { markers: [], cjsReads: [], globalReads: [] };
     if ((js && (origin === "npm" || opts.userJs)) || userTs) facts = scanModuleFacts(sf);
     let markers = userTs
       ? facts.markers.filter((marker) => marker.reason === "builtin-patch")
@@ -242,7 +246,14 @@ export function scanFiles(
       packageName: at === null ? null : at.name,
       markers,
       cjsReads: facts.cjsReads,
-      stripProblem: userTs && markers.length > 0 ? stripProblem(program, sf) : null,
+      globalReads: facts.globalReads,
+      // A TypeScript module can island for a builtin patch (H3.2) and for a
+      // read of a member another island's patch changes (H3.4): both need
+      // Node to run the file with type stripping only.
+      stripProblem:
+        userTs && (markers.length > 0 || facts.cjsReads.length > 0)
+          ? stripProblem(program, sf)
+          : null,
       dropped: opts.dropped,
     });
     if (!opts.edges) continue;

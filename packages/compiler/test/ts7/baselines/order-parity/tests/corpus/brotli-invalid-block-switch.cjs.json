@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/brotli-invalid-block-switch.cjs"
+ ],
+ "diags": []
+}

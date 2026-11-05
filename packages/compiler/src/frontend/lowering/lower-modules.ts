@@ -200,6 +200,29 @@ export interface AppendGraph {
   rejected?: ReadonlyMap<ts.SourceFile, StartupCrash> | undefined;
 }
 
+/** Every module a static worker entry can run on its thread: the entry and
+ * the modules it reaches through static imports, requires and literal
+ * import() calls. A Node island is process-bound to the thread that starts
+ * it, so island use in this set is refused at build time (SC8012). */
+export function workerThreadModules(
+  program: ts.Program,
+  roots: readonly ts.SourceFile[],
+  graph?: AppendGraph,
+): ReadonlySet<ts.SourceFile> {
+  const out = new Set<ts.SourceFile>();
+  if (roots.length === 0) return out;
+  const edgesOf = appendedEdgesOf(program, graph);
+  const stack = [...roots];
+  while (stack.length > 0) {
+    const sf = stack.pop()!;
+    if (out.has(sf)) continue;
+    out.add(sf);
+    for (const edge of edgesOf(sf)) stack.push(edge.dep);
+    for (const dep of dynamicProgramImportsOf(program, sf)) stack.push(dep);
+  }
+  return out;
+}
+
 /** An appended module's edges: its import and export declarations, then
  * the require() edges preflight resolved — a CommonJS file's only edges
  * (the compiled CommonJS package a workspace module loaded on demand

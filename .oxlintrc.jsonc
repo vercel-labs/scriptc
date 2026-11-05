@@ -308,6 +308,11 @@
                 "group": ["**/ir/validate", "**/ir/validate.*"],
                 "message": "frontend must not import IR validation; use the shared builtin and intrinsic signatures.",
               },
+              {
+                "group": ["**/lowering/*", "**/lowering/**"],
+                "allowTypeImports": true,
+                "message": "a frontend module outside lowering may import lowering only with `import type`; a value import pulls the lowering module graph into every program that loads program.ts.",
+              },
             ],
           },
         ],

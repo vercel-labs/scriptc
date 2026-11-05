@@ -1991,6 +1991,13 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.process.allowedNodeEnvironmentFlags",
+      "kind": "node-builtin",
+      "name": "process.allowedNodeEnvironmentFlags",
+      "status": "static",
+      "note": "one stable set of the option names the compatibility target accepts in NODE_OPTIONS"
+    },
+    {
       "id": "node-builtin.process.argv",
       "kind": "node-builtin",
       "name": "process.argv",

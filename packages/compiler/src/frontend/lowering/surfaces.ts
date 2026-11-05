@@ -2962,6 +2962,13 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       fns: ["process.execPath"],
     },
     {
+      id: "node-builtin.process.allowedNodeEnvironmentFlags",
+      kind: "node-builtin",
+      name: "process.allowedNodeEnvironmentFlags",
+      fns: ["process.allowedEnvFlags"],
+      note: "one stable set of the option names the compatibility target accepts in NODE_OPTIONS",
+    },
+    {
       id: "node-builtin.process.uptime",
       kind: "node-builtin",
       name: "process.uptime",

@@ -114857,7 +114857,9 @@
           "tests/corpus/native-worker-shared-views.ts",
           "tests/corpus/native-worker-terminate-loop.ts",
           "tests/corpus/native-worker-terminate-suspended.ts",
-          "tests/corpus/native-worker-terminate-wait.ts"
+          "tests/corpus/native-worker-terminate-wait.ts",
+          "tests/corpus/worker-env-option.ts",
+          "tests/corpus/worker-share-env.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -115485,7 +115487,9 @@
           "tests/corpus/native-worker-messages.ts",
           "tests/corpus/native-worker-commonjs.cjs",
           "tests/corpus/native-worker-environment.ts",
-          "tests/corpus/native-worker-roots/main.ts"
+          "tests/corpus/native-worker-roots/main.ts",
+          "tests/corpus/worker-env-option.ts",
+          "tests/corpus/worker-share-env.ts"
         ]
       },
       "anchorSource": "exact"
@@ -116430,8 +116434,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.worker_threads.SHARE_ENV",
+        "tests": [
+          "tests/corpus/worker-share-env.ts",
+          "tests/corpus/worker-env-option.ts"
+        ]
       },
       "anchorSource": "chapter"
     },

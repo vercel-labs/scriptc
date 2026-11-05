@@ -378,7 +378,8 @@ ScrWorkerThread *scr_worker_thread_start(ScrWorkerEntry entry, uint32_t root,
                                         ScrMessage *data, bool environment_data,
                                         ScrMailbox *parent, ScrArr *arguments,
                                         size_t stack_size, const ScrStr *name,
-                                        unsigned capture) {
+                                        unsigned capture, ScrContextEnv *environment,
+                                        bool share_environment) {
   ScrWorkerThread *worker = calloc(1, sizeof(*worker));
   if (!worker) scr_trap("scriptc: out of memory\n");
   atomic_init(&worker->references, 2); /* owner and native thread */
@@ -396,7 +397,10 @@ ScrWorkerThread *scr_worker_thread_start(ScrWorkerEntry entry, uint32_t root,
   worker->data = data;
   worker->environment_data = environment_data;
   worker->capture = capture;
-  worker->environment = scr_context_env_capture();
+  /* A shared environment enters as NULL, which reads through to getenv and
+   * writes through to setenv (scr_context_env_enter). */
+  worker->environment =
+      share_environment ? NULL : environment != NULL ? environment : scr_context_env_capture();
   worker->name = malloc(sizeof(ScrStr) + name->len + 1);
   if (!worker->name) scr_trap("scriptc: out of memory\n");
   memcpy(worker->name, name, sizeof(ScrStr) + name->len + 1);

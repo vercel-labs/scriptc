@@ -79,9 +79,15 @@ const char *scr_context_getenv(const char *name) {
   return NULL;
 }
 
-bool scr_context_env_set(const char *name, const char *value) {
-  ScrContextEnv *environment = scr_context_environment;
-  if (!environment) return false;
+ScrContextEnv *scr_context_env_new(void) {
+  ScrContextEnv *environment = calloc(1, sizeof(*environment));
+  if (!environment) scr_trap("scriptc: out of memory\n");
+  environment->entries = calloc(1, sizeof(*environment->entries));
+  if (!environment->entries) scr_trap("scriptc: out of memory\n");
+  return environment;
+}
+
+static void scr_context_env_put(ScrContextEnv *environment, const char *name, const char *value) {
   for (size_t i = 0; i < environment->count; i++) {
     ScrContextEnvEntry *entry = &environment->entries[i];
     if (strcmp(entry->name, name)) continue;
@@ -92,7 +98,7 @@ bool scr_context_env_set(const char *name, const char *value) {
       free(entry->name);
       memmove(entry, entry + 1, (--environment->count - i) * sizeof(*entry));
     }
-    return true;
+    return;
   }
   if (value) {
     ScrContextEnvEntry *entries = realloc(environment->entries, (environment->count + 1) * sizeof(*entries));
@@ -100,6 +106,17 @@ bool scr_context_env_set(const char *name, const char *value) {
     environment->entries = entries;
     entries[environment->count++] = (ScrContextEnvEntry){scr_context_text_copy(name), scr_context_text_copy(value)};
   }
+}
+
+/* Sets one entry of an environment the caller owns: the Worker env option
+ * fills a fresh environment before the thread starts. */
+void scr_context_env_assign(ScrContextEnv *environment, const char *name, const char *value) {
+  scr_context_env_put(environment, name, value);
+}
+
+bool scr_context_env_set(const char *name, const char *value) {
+  if (!scr_context_environment) return false;
+  scr_context_env_put(scr_context_environment, name, value);
   return true;
 }
 

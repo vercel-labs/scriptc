@@ -78,7 +78,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_path_win32_relative.c", "regex"],
   ["scr_glob.c", "regex"],
   ["scr_idna.c", "regex"],
-  ["scr_assert.c", any("assert", "regex", "symbol")],
+  // The worker unit's SHARE_ENV symbol reaches the symbol unit
+  // (scr_worker_events.c), which assembles symbol equality messages here.
+  ["scr_assert.c", any("assert", "regex", "symbol", "workers")],
   ["scr_inspect.c", "inspect"],
   ["scr_console_native.c", "inspect"],
   // Island libCalls on native values typed by island declarations invoke
@@ -160,7 +162,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_dyn_handle_class.c", "webStreams"],
   ["scr_util_timing.c", "utilTiming"],
   ["scr_dyn_handle.c", any("emitter", "netEffective")],
-  ["scr_symbol.c", "symbol"],
+  // Worker programs link the symbol unit even without symbols of their own:
+  // the Worker env option compares against worker_threads.SHARE_ENV.
+  ["scr_symbol.c", any("symbol", "workers")],
   ["scr_bigint_assert.c", all("assert", "bigint")],
   ["scr_qs.c", "qs"],
   // The legacy url unit lowercases and normalizes through the regex unit

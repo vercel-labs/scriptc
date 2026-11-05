@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/console-instance-ignore-errors-stdout-patch.cjs"
+ ],
+ "diags": []
+}

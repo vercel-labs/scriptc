@@ -70,3 +70,63 @@ for (const v of inputs) console.log(width(v));
     expect(result.stderr.toString()).toBe(UNION_TRAP);
   },
 );
+
+test.skipIf(process.platform === "win32")(
+  "a lying filter predicate throws the checked-extraction TypeError",
+  async () => {
+    const result = await run(`
+interface Cat {
+  kind: "cat";
+  meows: number;
+}
+interface Dog {
+  kind: "dog";
+}
+type Pet = Cat | Dog;
+const pets: Pet[] = [{ kind: "cat", meows: 2 }, { kind: "dog" }];
+const alwaysCat = (p: Pet): p is Cat => p !== undefined;
+try {
+  console.log("kept", pets.filter(alwaysCat).length);
+} catch (e) {
+  console.log("caught", (e as Error).name);
+}
+`);
+    expect(result.error).toBeUndefined();
+    // Node keeps the Dog and reports 2; the checked projection throws on it.
+    expect(result.stdout.toString()).toBe("caught TypeError\n");
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "a cast read of a lying predicate's arm throws a catchable TypeError",
+  async () => {
+    // A cast wrapper carries a type of its own (`{ x?: unknown }`), no arm
+    // of the slot. The identifier still proves one arm, so the read
+    // extracts that arm: the matching value reads, every other arm — and
+    // an absent element — throws a TypeError the program can catch.
+    const result = await run(`
+interface A { kind: "a"; x: number }
+interface B { kind: "b"; y: number }
+interface C { kind: "c"; z: number }
+function isA(entry: A | B | C): entry is A {
+  return true;
+}
+function readX(all: (A | B | C)[], index: number): string {
+  const entry = all[index];
+  if (!isA(entry)) return "no";
+  return String((entry as { x?: unknown }).x);
+}
+const values: (A | B | C)[] = [{ kind: "a", x: 1 }, { kind: "b", y: 2 }];
+for (let index = 0; index < 2; index++) {
+  try {
+    console.log(index, readX(values, index));
+  } catch (error) {
+    console.log(index, error instanceof TypeError);
+  }
+}
+`);
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
+    expect(result.stdout.toString()).toBe("0 1\n1 true\n");
+  },
+);

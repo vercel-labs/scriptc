@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/array-from-typed-array-mapper.ts"
+ ],
+ "diags": []
+}

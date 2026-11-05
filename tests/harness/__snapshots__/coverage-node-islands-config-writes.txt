@@ -1,0 +1,18 @@
+scriptc coverage tests/coverage-fixtures/node-islands-config-writes/main.ts
+
+  statements analyzed   6
+  compile statically    6  (100%)
+    in dynamic tier     3  (operate on values typed only at runtime; --explain-dynamic lists them)
+
+  npm package compilation:
+    ni-config  refused (its shipped JS carries build-transform markers (bundled/transpiled dist))
+
+  Node islands   (would-be, report-only: the build is unchanged; --node-islands=auto)
+    packaging  ni-config@1.0.0
+          SC2013: its shipped JS carries build-transform markers (bundled/transpiled dist)
+    hint: scriptc coverage --explain-island=<package> lists every reason
+
+  blockers:
+      ×1  SC2013  cannot compile npm package 'ni-config' statically: its shipped JS carries build-transform markers (bundled/transpiled dist)
+          at tests/coverage-fixtures/node-islands-config-writes/main.ts:5:1
+          hint: to compile it anyway, name it with --npm-static=ni-config (or --npm-static=ni-config... to include its dependencies)

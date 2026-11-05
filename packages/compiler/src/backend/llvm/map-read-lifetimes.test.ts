@@ -93,7 +93,10 @@ function body(mod: IrModule, bits: 32 | 64 = 64): string {
   expect(validateModule(mod)).toEqual([]);
   // Record values are nullable pointers; the other fixtures pin stack boxes.
   const nullable = mod.unions?.[0]?.arms[0]?.kind === "record";
-  const llvm = emitLlvmModule(nullable ? mod : keepUnionsBoxed(mod), { pointerBits: bits });
+  const llvm = emitLlvmModule(mod, {
+    pointerBits: bits,
+    ...(nullable ? {} : keepUnionsBoxed(mod)),
+  });
   return /^define internal [^\n]*@sc_(?:b)?f_work(?:\.i32)?\([^]*?^}/m.exec(llvm)![0];
 }
 
@@ -255,11 +258,11 @@ test("reference-preserving keys borrow receivers across unrelated later assignme
 });
 
 test("string-key lookups test the absent-key filter inline on 64-bit targets only", () => {
-  const mod = keepUnionsBoxed(fixture(F64, STRING));
+  const mod = fixture(F64, STRING);
   expect(validateModule(mod)).toEqual([]);
   const helper = (bits: 32 | 64) =>
     /^define internal ptr @sc_map_entry_str(?:\.i32)?\([^]*?^}/m.exec(
-      emitLlvmModule(mod, { pointerBits: bits }),
+      emitLlvmModule(mod, { pointerBits: bits, ...keepUnionsBoxed(mod) }),
     )![0];
   const wide = helper(64);
   // The cached hash is the capacity word's high half; the filter bits are its

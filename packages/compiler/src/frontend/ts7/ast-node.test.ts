@@ -473,6 +473,29 @@ test("named child access shares node and list identities without materializing s
   expect(() => file.namedChild(another, "name")).toThrow("another source file");
 });
 
+test("named child getters and text keep answering the first read", () => {
+  let materialized = 0;
+  const file = new AstFile(decoded.get("main.ts")!.bytes, () => {
+    materialized++;
+  });
+  let index = 1;
+  while (file.wire.kind(index) !== AstKind.FunctionDeclaration) index++;
+  const node = file.node(index);
+  const name = node.name;
+  expect(name?.index).toBe(file.wire.namedChild(index, "name"));
+  const after = materialized;
+  expect(node.name).toBe(name);
+  expect(node.childNode("name")).toBe(name);
+  expect(file.node(name!.index)).toBe(name);
+  expect(node.typeParameters).toBeUndefined();
+  expect(materialized).toBe(after);
+  const text = name!.text;
+  expect(text).toBe(file.wire.text(name!.index));
+  expect(name!.text).toBe(text);
+  expect(node.text).toBeUndefined();
+  expect(node.text).toBeUndefined();
+});
+
 test("warming a named child preserves lazy failures in later malformed sibling links", () => {
   const bytes = decoded.get("main.ts")!.bytes;
   const wire = new AstFile(bytes).wire;

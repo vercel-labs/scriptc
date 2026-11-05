@@ -195,6 +195,15 @@ export function declareTypedArguments(
   });
 }
 
+/** The binding an identifier reads: its symbol, or for the name of a
+ * shorthand property (`{ xs }`) the variable whose value the property takes. */
+export function bindingSymbolOfRead(lowerer: Lowerer, id: ts.Identifier): ts.Symbol | undefined {
+  const parent = id.parent;
+  if (parent && ts.isShorthandPropertyAssignment(parent) && parent.name === id)
+    return lowerer.checker.getShorthandAssignmentValueSymbol(parent);
+  return lowerer.checker.getSymbolAtLocation(id);
+}
+
 /** Whether every read of a tuple binding in `fn` (identified by `isRoot`)
  * only forwards it: `f.apply(t, x)`, `g(...x)` into a program function,
  * `x.length`, or a const alias whose own reads only forward. Reads inside
@@ -262,7 +271,7 @@ export function onlyForwarded(
         const alias = lowerer.checker.getSymbolAtLocation(p.name);
         const aliasName = p.name;
         if (alias) {
-          roots.push((id) => id !== aliasName && lowerer.checker.getSymbolAtLocation(id) === alias);
+          roots.push((id) => id !== aliasName && bindingSymbolOfRead(lowerer, id) === alias);
           return undefined;
         }
       }

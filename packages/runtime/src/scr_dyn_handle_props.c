@@ -60,17 +60,17 @@ static ScrDyn *hp_props_of(void *child) {
   return props;
 }
 
-static ScrDynEntry *hp_entry(const ScrDyn *props, const char *key, size_t key_len) {
-  if (!props) return NULL;
-  for (size_t i = 0; i < props->v.obj.len; i++) {
-    ScrDynEntry *e = &props->v.obj.entries[i];
-    if (e->key_len == key_len && !memcmp(e->key, key, key_len)) return e;
-  }
-  return NULL;
+/* Own property `key` of the table object, in *out; false when absent. */
+static bool hp_entry(const ScrDyn *props, const char *key, size_t key_len, ScrDynProp *out) {
+  if (!props) return false;
+  size_t i = scr_dyn_obj_index_of(props, key, key_len);
+  if (i == SIZE_MAX) return false;
+  *out = scr_dyn_obj_prop_at(props, i);
+  return true;
 }
 
 static bool hp_has(const ScrDyn *props, const char *key, size_t key_len) {
-  return hp_entry(props, key, key_len) != NULL;
+  return props && scr_dyn_obj_index_of(props, key, key_len) != SIZE_MAX;
 }
 
 /* A property the program added, read with the child as `this`: an
@@ -78,10 +78,10 @@ static bool hp_has(const ScrDyn *props, const char *key, size_t key_len) {
  * it (`Object.defineProperty(child, "x", { get() { return this.pid; } })`).
  * +1, or NULL with the exception pending. */
 static ScrDyn *hp_read(ScrDyn *props, ScrDyn *self, const char *key, size_t key_len) {
-  ScrDynEntry *e = hp_entry(props, key, key_len);
-  if (!e || !e->accessor) return scr_dyn_obj_read(props, key, key_len);
-  if (!e->getter) return scr_dyn_retain(scr_dyn_undefined());
-  ScrDyn *getter = scr_dyn_retain(e->getter);
+  ScrDynProp e;
+  if (!hp_entry(props, key, key_len, &e) || !e.accessor) return scr_dyn_obj_read(props, key, key_len);
+  if (!e.getter) return scr_dyn_retain(scr_dyn_undefined());
+  ScrDyn *getter = scr_dyn_retain(e.getter);
   scr_dyn_this_push_dyn(self);
   ScrDyn *result = scr_dyn_call(getter, NULL, 0, "getter");
   scr_dyn_this_pop();
@@ -132,7 +132,8 @@ static ScrDyn *hp_get(void *h, const char *key, size_t key_len) {
 
 static bool hp_set(void *h, const char *key, size_t key_len, const ScrDyn *value) {
   ScrDyn *props = hp_find(h);
-  ScrDynEntry *entry = hp_entry(props, key, key_len);
+  ScrDynProp found;
+  const ScrDynProp *entry = hp_entry(props, key, key_len, &found) ? &found : NULL;
   if (entry && entry->accessor) {
     /* An accessor's setter runs on the child. Without one the write throws
      * the strict-mode TypeError, as the other handle getters do. */

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/builtin-global-function-values.cjs"
+ ],
+ "diags": []
+}

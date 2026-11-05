@@ -23,6 +23,18 @@ export function maybePromiseUnionOf(lowerer: Lowerer, t: IrType): MaybePromiseUn
   return armed;
 }
 
+/** The promise arm of a promise-or-unit union (`Promise<void> | void`,
+ * `Promise<T> | undefined`): exactly one promise arm and only nullish
+ * arms beside it, so no other arm carries a value the promise path would
+ * have to reconcile. A guard that proves the value present (`?.`, an
+ * explicit narrow) leaves this arm alone. */
+export function promiseOrUnitUnionOf(lowerer: Lowerer, t: IrType): MaybePromiseUnion | null {
+  const armed = promiseArmedUnionOf(lowerer, t);
+  if (!armed) return null;
+  if (!armed.def.arms.every((a, i) => i === armed.promiseTag || isUnitType(a))) return null;
+  return armed;
+}
+
 /** Any union with exactly one promise arm: a maybe-promise union or a
  * promise-or-unit union (`Promise<void> | void`). An async `return`
  * resolves both the same way: adopt the promise arm, fulfill otherwise. */

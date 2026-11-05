@@ -59,7 +59,9 @@ test("the production layout and metadata stage lowers statically", async () => {
 });
 
 for (const backend of ["llvm"] as const) {
-  test(`native LLVM layout and metadata emission (${backend})`, async () => {
+  // The sanitized dev build of the stage takes 170 to 300 s of CI time beside
+  // its shard's other tests.
+  test(`native LLVM layout and metadata emission (${backend})`, { timeout: 600_000 }, async () => {
     const dir = mkdtempSync(
       join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-native-emission-"),
     );

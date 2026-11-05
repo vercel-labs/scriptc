@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/net-socket-encoding-pipe.cjs"
+ ],
+ "diags": []
+}

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/never-returning-presence-guard.ts"
+ ],
+ "diags": []
+}

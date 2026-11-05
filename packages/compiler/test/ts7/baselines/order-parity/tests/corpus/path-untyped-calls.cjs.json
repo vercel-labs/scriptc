@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/path-untyped-calls.cjs"
+ ],
+ "diags": []
+}

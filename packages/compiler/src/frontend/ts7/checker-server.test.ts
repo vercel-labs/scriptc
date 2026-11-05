@@ -12,13 +12,18 @@ const posix = process.platform === "linux" || process.platform === "darwin";
 
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-test("builds use the shared checker server only when they opt in, on Linux and macOS, with tsc-ts", () => {
-  expect(checkerServerName(executable, dir, false, {})).toBeNull();
+test("builds use the shared checker server by default outside CI, on Linux and macOS, with tsc-ts", () => {
   expect(checkerServerName(executable, dir, false, { SCRIPTC_CHECKER_SERVER: "0" })).toBeNull();
+  expect(checkerServerName(executable, dir, false, { SCRIPTC_CHECKER: "tsgo" })).toBeNull();
   expect(
     checkerServerName(executable, dir, false, { ...enabled, SCRIPTC_CHECKER: "tsgo" }),
   ).toBeNull();
-  const name = checkerServerName(executable, dir, false, enabled);
+  // CI turns the default off; SCRIPTC_CHECKER_SERVER=1 turns it back on.
+  expect(checkerServerName(executable, dir, false, { CI: "true" })).toBeNull();
+  expect(checkerServerName(executable, dir, false, { CI: "1" })).toBeNull();
+  const name = checkerServerName(executable, dir, false, {});
+  for (const env of [enabled, { CI: "false" }, { CI: "0" }, { CI: "" }, { ...enabled, CI: "true" }])
+    expect(checkerServerName(executable, dir, false, env)).toBe(name);
   if (!posix) expect(name).toBeNull();
   else expect(name).toMatch(/^[0-9a-f]{32}$/);
 });

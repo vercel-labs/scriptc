@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/promise-union-widening.ts"
+ ],
+ "diags": []
+}

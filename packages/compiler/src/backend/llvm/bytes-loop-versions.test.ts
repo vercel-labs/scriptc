@@ -222,6 +222,55 @@ test("negative factors, rebinding, captures and outer loops are not versioned", 
   expect(match(fn([outer]), inner)).not.toBeNull();
 });
 
+test("loops with nested loops version only for accesses inside them", () => {
+  // for (let i = 0; i < 64; i++) {
+  //   let t = 0;
+  //   for (let j = 0; j < n; j++) t = t + src[j];
+  //   out[i] = t;
+  // }
+  const sum = (): IrStmt[] => [
+    { kind: "varDecl", localId: "t", init: num(0), loc },
+    counted(
+      [
+        {
+          kind: "assign",
+          localId: "t",
+          value: bin("+", ref("t"), get(ref("src", f64s), ref("j"))),
+          loc,
+        },
+      ],
+      ref("n"),
+      "j",
+    ),
+  ];
+  const extra = [local("t", F64, true)];
+  // The guard would prove only `out[i]`, which runs once per row.
+  const rows = counted([...sum(), set(ref("out", f64s), ref("i"), ref("t"))], num(64));
+  expect(match(fn([rows], extra), rows)).toBeNull();
+  expect(match(fn([rows], extra), rows.body[1] as IrStmt & { kind: "for" })).not.toBeNull();
+  // The guard proves `out[i]` inside a nested loop too.
+  const inside = counted(
+    [...sum(), counted([set(ref("out", f64s), ref("i"), ref("t"))], num(2), "j")],
+    num(64),
+  );
+  expect(match(fn([inside], extra), inside)?.bounds.size).toBe(1);
+  // A loop whose nested loops access no typed array versions for its own
+  // accesses.
+  const scalar = counted(
+    [
+      { kind: "varDecl", localId: "t", init: num(0), loc },
+      counted(
+        [{ kind: "assign", localId: "t", value: bin("+", ref("t"), ref("j")), loc }],
+        ref("n"),
+        "j",
+      ),
+      set(ref("out", f64s), ref("i"), ref("t")),
+    ],
+    num(64),
+  );
+  expect(match(fn([scalar], extra), scalar)?.bounds.size).toBe(1);
+});
+
 test("emitted loops version the body and tag typed-array memory", () => {
   const loop = counted([
     set(ref("out", f64s), ref("i"), bin("*", get(ref("src", f64s), ref("i")), num(2))),
@@ -254,6 +303,32 @@ test("emitted loops version the body and tag typed-array memory", () => {
   expect(body).toMatch(/load ptr, ptr [^\n]*, !tbaa !\d+, !invariant\.load !\{\}$/m);
   expect(body).toMatch(/load i64, ptr [^\n]*, !tbaa !\d+, !invariant\.load !\{\}$/m);
   expect(body).not.toMatch(/(load double|store double)[^\n]*invariant\.load/);
+});
+
+test("a mutable-buffers program keeps one checked loop and reloads headers", () => {
+  // for (let i = 0; i < n; i++) out[i] = src[i] * 2 (t262-dc): a call in the
+  // body may resize or detach either buffer, so no length the loop read
+  // before its body bounds the body, and no header stays invariant.
+  const loop = counted([
+    set(ref("out", f64s), ref("i"), bin("*", get(ref("src", f64s), ref("i")), num(2))),
+  ]);
+  const kernel = fn([loop]);
+  const mod: IrModule = {
+    irVersion: 17,
+    sourceFile: loc.file,
+    entry: "__main",
+    bytesHeadersMutable: true,
+    functions: [
+      { name: "__main", params: [], returnType: VOID, locals: [], body: [], loc },
+      kernel,
+    ],
+  };
+  const body = /^define internal [^\n]*@sc_bf_kernel[^]*?^}/m.exec(emitLlvmModule(mod))![0];
+  expect(body).not.toContain("bytes.version");
+  expect(body).not.toContain("!invariant.load");
+  expect(body).toContain("bytes.index.invalid");
+  // Each element access reloads its own header inside the body.
+  expect(body).toMatch(/load ptr, ptr [^\n]*!tbaa !\d+$/m);
 });
 
 test("loops to a typed array's length version the other typed arrays they index", () => {
@@ -320,16 +395,17 @@ test("worker programs test each receiver's shared storage once in the guard", ()
   const fast = /^bytes\.version\.fast\d+:$[^]*?^bytes\.version\.fast\.shared\d+:$/m.exec(body)![0];
   expect(fast).not.toContain("bytes.shared");
   expect(fast).not.toMatch(/(load|store) atomic double/);
-  // The checked copy keeps the shared-memory path for each access, and so
-  // does the copy for shared views whose bounds hold.
+  // The checked copy keeps the shared-memory path for each access. The copy
+  // for shared views whose bounds hold is a counted loop that polls between
+  // blocks, so its accesses at the counter are plain.
   const slow = body.slice(body.search(/^bytes\.version\.slow\d+:$/m), body.indexOf(fast));
   expect(slow).toContain("load atomic double");
   expect(slow).toContain("store atomic double");
   const shared = /^bytes\.version\.fast\.shared\d+:$[^]*?^bytes\.version\.done\d+:$/m.exec(
     body,
   )![0];
-  expect(shared).toContain("load atomic double");
-  expect(shared).toContain("store atomic double");
+  expect(shared).toMatch(/^loop\.poll\d+:$/m);
+  expect(shared).not.toMatch(/(load|store) atomic double/);
 });
 
 test("index temps of a version's counter are integers in the fast copy", () => {
@@ -440,6 +516,111 @@ test("while loop counters below a bound version their accesses", () => {
   const fast = /^bytes\.version\.fast\d+:$[^]*?^bytes\.version\.done\d+:$/m.exec(body)![0];
   expect(fast).not.toContain("bytes.index");
   expect(body.slice(0, body.indexOf(fast))).toContain("bytes.index.invalid");
+});
+
+test("while loop counters below a bound version descending accesses", () => {
+  // while (i < n) { out[i] = src[len - i]; i = i + 1 }
+  const step: IrStmt = { kind: "assign", localId: "i", value: bin("+", ref("i"), num(1)), loc };
+  const whileLoop = (body: IrStmt[], cond?: IrExpr): IrStmt & { kind: "while" } => ({
+    kind: "while",
+    cond: cond ?? { kind: "bin", op: "<", left: ref("i"), right: ref("n"), type: BOOL, loc },
+    body,
+    loc,
+  });
+  const descending = (base: IrExpr): IrExpr => bin("-", bin("-", base, num(1)), ref("i"));
+  const loop = whileLoop([
+    set(ref("out", f64s), ref("i"), get(ref("src", f64s), bin("-", ref("len"), ref("i")))),
+    step,
+  ]);
+  const declared = (l: IrStmt & { kind: "while" }): IrFunction =>
+    fn(
+      [
+        { kind: "varDecl", localId: "i", init: num(0), loc },
+        { kind: "varDecl", localId: "len", init: ref("n"), loc },
+        l,
+      ],
+      [local("len", F64)],
+    );
+  const versionOf = (l: IrStmt & { kind: "while" }): BytesLoopVersion | null => {
+    const f = declared(l);
+    const ranges = analyzeIntegerRanges(f);
+    return matchBytesLoopVersion(l, null, {
+      locals: new Map(f.locals.map((x) => [x.id, x])),
+      invariantGlobals: new Set(),
+      captured: new Set(),
+      ranges,
+      initialized: findInitializedByteLoopBindings(f).get(l) ?? new Set(),
+      proven: new Set(),
+      scalarStrings: new Set(),
+      workers: false,
+      owned: new Set(),
+    });
+  };
+  const version = versionOf(loop)!;
+  expect(version.bounds.size).toBe(2);
+  // The largest index is `len` (at counter 0) and the smallest `len - n`
+  // (at the last counter), so the guard relates the base and the bound to
+  // the length.
+  expect(version.bounded).toHaveLength(2);
+  const descendingCheck = version.bounded[1]!;
+  expect(descendingCheck.slack).toBe(1);
+  expect(descendingCheck.descending).toEqual({ base: ref("len"), key: "v3:len", lower: 1 });
+  expect(version.counters.map((c) => [c.ref.kind === "varRef" && c.ref.localId, c.min])).toEqual([
+    ["i", 0],
+  ]);
+  const mod: IrModule = {
+    irVersion: 17,
+    sourceFile: loc.file,
+    entry: "__main",
+    functions: [
+      { name: "__main", params: [], returnType: VOID, locals: [], body: [], loc },
+      declared(loop),
+    ],
+  };
+  const body = /^define internal [^\n]*@sc_bf_kernel[^]*?^}/m.exec(emitLlvmModule(mod))![0];
+  const fast = /^bytes\.version\.fast\d+:$[^]*?^bytes\.version\.done\d+:$/m.exec(body)![0];
+  expect(fast).not.toContain("bytes.index");
+  expect(body.slice(0, body.indexOf(fast))).toContain("bytes.index.invalid");
+  // A base the loop writes stays checked; the copy at `out[i]` versions.
+  const writtenStep: IrStmt = {
+    kind: "assign",
+    localId: "k",
+    value: bin("-", ref("k"), num(1)),
+    loc,
+  };
+  const written = whileLoop([
+    set(ref("out", f64s), ref("i"), get(ref("src", f64s), descending(ref("k")))),
+    writtenStep,
+    step,
+  ]);
+  expect(versionOf(written)!.bounds.size).toBe(1);
+  const offset = whileLoop([
+    set(
+      ref("out", f64s),
+      ref("i"),
+      get(ref("src", f64s), bin("-", bin("-", ref("len"), ref("i")), num(2))),
+    ),
+    step,
+  ]);
+  const offsetVersion = versionOf(offset)!;
+  expect(offsetVersion.bounded[1]!.slack).toBe(-1);
+  expect(offsetVersion.bounded[1]!.descending).toEqual({
+    base: ref("len"),
+    key: "v3:len",
+    lower: -1,
+  });
+  // A minuend with a literal of its own is one invariant term.
+  const nested = whileLoop([
+    set(ref("out", f64s), ref("i"), get(ref("src", f64s), descending(ref("len")))),
+    step,
+  ]);
+  const nestedCheck = versionOf(nested)!.bounded[1]!;
+  expect(nestedCheck.slack).toBe(1);
+  expect(nestedCheck.descending).toEqual({
+    base: bin("-", ref("len"), num(1)),
+    key: "(- v3:len n1)",
+    lower: 1,
+  });
 });
 
 test("Float16Array accesses version in elements and share the element tag", () => {

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6895-node-island-gc-weakmap/main.mjs"
+ ],
+ "diags": []
+}

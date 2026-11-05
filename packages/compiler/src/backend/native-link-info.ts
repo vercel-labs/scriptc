@@ -34,6 +34,7 @@ export async function createNativeLinkInfo(options: {
       features: pack.features,
       runtime: pack.selectedRuntimeArtifacts,
       archives: pack.selectedArchiveArtifacts,
+      data: pack.selectedDataArtifacts,
       systemLibraries: pack.systemLibraries,
     },
   });

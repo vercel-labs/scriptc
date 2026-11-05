@@ -1,0 +1,6 @@
+{
+  "name": "@scriptc/libnode-common",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module"
+}

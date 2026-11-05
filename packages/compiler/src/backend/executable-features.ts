@@ -1,48 +1,78 @@
 /** Runtime requirements derived from the lowered program, shared by compiler hosts. */
 import { type IrModule } from "../ir/ir.js";
-import { moduleRuntimeFeatures } from "../ir/runtime-features.js";
+import { jsObjectModelFact, moduleRuntimeFeatures } from "../ir/runtime-features.js";
 import { hasForeignFfiCallback } from "./ffi-callbacks.js";
 import type { NativeLinkFeatures } from "./native-link-info.js";
 import { youngNurseryRequested } from "./young-nursery.js";
 
-export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
+export function executableLinkFeatures(mod: IrModule, largePages = false): NativeLinkFeatures {
   const features = moduleRuntimeFeatures(mod);
   return {
     ...(mod.workers ? { workers: true } : {}),
+    ...(largePages ? { largePages: true } : {}),
     ...(youngNurseryRequested() && mod.lib === undefined ? { youngNursery: true } : {}),
     regex: features.regex,
     copying: features.copying,
     textDecoderLegacy: features.legacyTextDecoder,
+    bigintBytes: features.bigintBytes,
     fileHandle: features.fileHandle,
     fetch: features.fetch,
     ...(features.eventTarget ? { eventTarget: true } : {}),
     ...(features.wasm ? { wasm: true } : {}),
     ...(features.warningReplace ? { warningReplace: true } : {}),
+    ...(jsObjectModelFact(features) ? { jsObjectModel: true } : {}),
+    mutableBuffers: features.mutableBuffers,
     ...(features.stdioExtended ? { stdioExtended: true } : {}),
+    ...(features.fsFlags ? { fsFlags: true } : {}),
+    ...(features.strdecDyn ? { strdecDyn: true } : {}),
+    ...(features.processExtras ? { processExtras: true } : {}),
+    ...(features.streamWriteErrors ? { streamWriteErrors: true } : {}),
+    ...(features.stdioWriteSlot ? { stdioWriteSlot: true } : {}),
+    ...(features.nodeIsland ? { nodeIsland: true } : {}),
     ...(features.moduleNamespace ? { moduleNamespace: true } : {}),
+    ...(features.moduleNamespaceDyn ? { moduleNamespaceDyn: true } : {}),
+    ...(features.primitiveWrapper ? { primitiveWrapper: true } : {}),
+    ...(features.iteratorProto ? { iteratorProto: true } : {}),
     zlib: features.zlib,
     ...(features.brotli ? { brotli: true } : {}),
+    ...(features.zstd ? { zstd: true } : {}),
     assert: features.assert,
     inspect: features.inspect,
     dynInvoke: features.dynInvoke,
     dc: features.dc,
     dynAsync: features.dynAsync,
+    ...(features.promiseGeneric ? { promiseGeneric: true } : {}),
     ...(features.dynTier ? { dynTier: true } : {}),
     ...(features.streamDyn ? { streamDyn: true } : {}),
     ...(features.handleProps ? { handleProps: true } : {}),
+    ...(features.childLifecycle ? { childLifecycle: true } : {}),
+    ...(features.childOptionExt ? { childOptionExt: true } : {}),
+    ...(features.childErrorFields ? { childErrorFields: true } : {}),
     ...(features.declAdopt ? { declAdopt: true } : {}),
     ...(features.typeOrigins ? { typeOrigins: true } : {}),
     ...(features.dynForAwait ? { dynForAwait: true } : {}),
+    ...(features.dynIntegrityQueries ? { dynIntegrityQueries: true } : {}),
+    ...(features.genBind ? { genBind: true } : {}),
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
     ...(features.mime ? { mime: true } : {}),
+    ...(features.webStreams ? { webStreams: true } : {}),
+    ...(features.abortSignal ? { abortSignal: true } : {}),
     ...(features.utilTiming ? { utilTiming: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
     ...(features.builtinValues ? { builtinValues: true } : {}),
+    ...(features.stdlibPrototypeValue ? { stdlibPrototypeValue: true } : {}),
+    ...(features.dataViewPrototypeValue ? { dataViewPrototypeValue: true } : {}),
+    ...(features.hostAbsentGlobals ? { hostAbsentGlobals: true } : {}),
+    ...(features.arrayLikeDispatch ? { arrayLikeDispatch: true } : {}),
+    ...(features.builtinMethodValue ? { builtinMethodValue: true } : {}),
     ...(features.computedRequire ? { computedRequire: true } : {}),
-    events: features.processEvents,
+    // Island code's signal and exit listeners join the events unit's
+    // registries (scope-B NI-3).
+    events: features.processEvents || features.nodeIsland === true,
     emitter: features.emitter,
     symbol: features.symbol,
     bigint: features.bigint,
+    ...(features.bigstats ? { bigstats: true } : {}),
     searchParams: features.searchParams,
     qs: features.qs,
     utilPromisify: features.utilPromisify,
@@ -58,6 +88,7 @@ export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
     dgramDyn: features.dgramDyn,
     textCodecDyn: features.textCodecDyn,
     watch: features.fsWatch,
+    watchFile: features.fsWatchFile,
     foreignFfi: hasForeignFfiCallback(mod.ffiImports ?? []),
     nodeTest: features.nodeTest,
     tls: features.tls,
@@ -70,5 +101,6 @@ export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
     x509: features.x509,
     webcrypto: features.webcrypto,
     perfLoop: features.perfLoop,
+    ...(features.icu ? { intl: true } : {}),
   };
 }

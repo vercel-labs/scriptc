@@ -1,9 +1,10 @@
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 import { emitBorrowedInput } from "./borrowed-inputs.js";
+import type { BytesHeader } from "./bytes-headers.js";
 import { BYTES_ELEMENT_SIZE, F64, type IrBytesElem, type IrExpr } from "../../ir/ir.js";
-import type { LlvmEmitterContext, LlValue } from "./expr-context.js";
-import { F64_INF, exactIndexLines, f64Lit, sizeToDouble } from "./common.js";
+import type { LlvmEmitterContext, LlValue, OffsetIndex } from "./expr-context.js";
+import { F64_INF, exactIndexLines, exactOffsetIndexLines, f64Lit, sizeToDouble } from "./common.js";
 import { alwaysExactInteger, exactInteger } from "./integer-values.js";
 import { byteNumberAccess } from "../../ir/byte-numbers.js";
 import { emitByteNumber } from "./byte-numbers.js";
@@ -76,6 +77,27 @@ export function emitIntegerLoopIndex(host: LlvmEmitterContext, expr: IrExpr): st
   return index;
 }
 
+/** The base and offset of a sum `base + c`, `c + base` or `base - c`,
+ * where `base` is a number local and `c` an integer literal of magnitude
+ * below 2^31, given the operand values the sum was computed from. Null for
+ * other sums. */
+export function offsetIndex(expr: IrExpr, left: LlValue, right: LlValue): OffsetIndex | null {
+  if (expr.kind !== "bin" || expr.type.kind !== "f64" || (expr.op !== "+" && expr.op !== "-"))
+    return null;
+  const literal = (e: IrExpr): number | null =>
+    e.kind === "numLit" && Number.isInteger(e.value) && Math.abs(e.value) < 2 ** 31
+      ? e.value
+      : null;
+  const local = (e: IrExpr): boolean => e.kind === "varRef" && e.type.kind === "f64";
+  const constant = literal(expr.right);
+  if (constant !== null && local(expr.left))
+    return { base: left.name, offset: expr.op === "+" ? constant : -constant };
+  const leading = literal(expr.left);
+  if (expr.op === "+" && leading !== null && local(expr.right))
+    return { base: right.name, offset: leading };
+  return null;
+}
+
 export function emitBytesIndex(
   host: LlvmEmitterContext,
   receiver: string,
@@ -133,10 +155,33 @@ export function emitBytesIndex(
     B.line(`${ok} = and i1 ${nanIndex.ordered}, ${below}`);
     wide = nanIndex.wide;
   } else {
-    const exact = exactIndexLines(index, len, host.sizeType, () => B.tmp());
-    for (const line of exact.lines) B.line(line);
-    ok = exact.ok;
-    wide = exact.wide;
+    const offset = value.offsetIndex;
+    if (offset) {
+      const exact = exactOffsetIndexLines(offset.base, offset.offset, len, host.sizeType, () =>
+        B.tmp(),
+      );
+      for (const line of exact.lines) B.line(line);
+      // A fractional base: the sum itself decides, as it would without the
+      // base's conversion.
+      const from = B.currentLabel();
+      const sum = B.newLabel("bytes.index.sum");
+      const join = B.newLabel("bytes.index.join");
+      B.condBr(exact.integral, join, sum);
+      B.startBlock(sum);
+      const whole = exactIndexLines(index, len, host.sizeType, () => B.tmp());
+      for (const line of whole.lines) B.line(line);
+      B.br(join);
+      B.startBlock(join);
+      ok = B.tmp();
+      wide = B.tmp();
+      B.line(`${ok} = phi i1 [ ${exact.ok}, %${from} ], [ ${whole.ok}, %${sum} ]`);
+      B.line(`${wide} = phi i64 [ ${exact.wide}, %${from} ], [ ${whole.wide}, %${sum} ]`);
+    } else {
+      const exact = exactIndexLines(index, len, host.sizeType, () => B.tmp());
+      for (const line of exact.lines) B.line(line);
+      ok = exact.ok;
+      wide = exact.wide;
+    }
   }
   const invalid = B.newLabel("bytes.index.invalid");
   const valid = B.newLabel("bytes.index.valid");
@@ -160,6 +205,22 @@ export function emitBytesIndex(
   return idx;
 }
 
+/** Records that `value` is the view `receiver` reads, so the header reads of
+ * an access through it use the values a loop entry read (bytes-headers.ts). */
+export function noteBytesReceiver(host: LlvmEmitterContext, receiver: IrExpr, value: string): void {
+  const scope = host.bytesHeaders;
+  if (scope === null || receiver.kind !== "varRef" || scope.fn !== host.currentFunctionName) return;
+  const header = scope.locals.get(receiver.localId);
+  if (header !== undefined) scope.values.set(value, header);
+}
+
+/** The header fields a loop entry read for the view `receiver`, if any. */
+function cachedHeader(host: LlvmEmitterContext, receiver: string): BytesHeader | undefined {
+  const scope = host.bytesHeaders;
+  if (scope === null || scope.fn !== host.currentFunctionName) return undefined;
+  return scope.values.get(receiver);
+}
+
 /** The element count of a typed array, in the target's size type. `value`:
  * the program reads the count itself (bytesHeaderValueAlias), rather than
  * only bounding an access. */
@@ -168,6 +229,8 @@ export function emitBytesHeaderLength(
   receiver: string,
   value = false,
 ): string {
+  const cached = cachedHeader(host, receiver);
+  if (cached !== undefined) return cached.length;
   const p = host.B.tmp();
   const len = host.B.tmp();
   const alias = value ? bytesHeaderValueAlias(host) : bytesHeaderAlias(host);
@@ -177,6 +240,8 @@ export function emitBytesHeaderLength(
 }
 
 export function emitBytesData(host: LlvmEmitterContext, receiver: string): string {
+  const cached = cachedHeader(host, receiver);
+  if (cached !== undefined) return cached.data;
   const p = host.B.tmp();
   const data = host.B.tmp();
   host.B.line(`${p} = getelementptr inbounds %ScrBytes, ptr ${receiver}, i64 0, i32 3`);
@@ -203,6 +268,8 @@ export function emitBytesLength(
 /** A view's shared backing (null for a buffer this thread owns). It is
  * set at construction, before script code can see the view. */
 export function emitBytesSharedStorage(host: LlvmEmitterContext, receiver: string): string {
+  const cached = cachedHeader(host, receiver)?.shared;
+  if (cached !== undefined && cached !== null) return cached;
   const B = host.B;
   const slot = B.tmp(),
     storage = B.tmp();
@@ -303,7 +370,9 @@ function emitScopedBytesGet(
   const signed = elem === "i8" || elem === "i16" || elem === "i32";
   B.line(`${number} = ${signed ? "sitofp" : "uitofp"} i32 ${u32} to double`);
   B.line(`${out} = select i1 ${valid}, double ${number}, double ${f64Lit(NaN)}`);
-  return { name: out, type: F64, uint32: u32, ordered: valid };
+  const integer = B.tmp();
+  B.line(`${integer} = ${signed ? "sext" : "zext"} i32 ${u32} to i64`);
+  return { name: out, type: F64, uint32: u32, ordered: valid, nanInteger: integer };
 }
 
 function emitBytesLoad(
@@ -317,7 +386,7 @@ function emitBytesLoad(
   owned: boolean,
 ): LlValue {
   // `owned`: an enclosing version guard proved the view thread-owned.
-  if (host.mod.workers && !owned) {
+  if (host.mod.workers && !owned && !plainSharedElement(host, elem, expr)) {
     const idx = emitBytesIndex(host, receiver, index, expr, invalid, inBounds);
     return emitSharedOrLocalLoad(host, elem, receiver, idx);
   }
@@ -326,6 +395,31 @@ function emitBytesLoad(
   const data = host.emitBytesData(receiver);
   const idx = emitBytesIndex(host, receiver, index, expr, invalid, inBounds);
   return emitBytesLoadAt(host, elem, data, idx);
+}
+
+/** Worker programs: whether an element access at `index` of a view that
+ * may be shared is a plain load or store, like a thread-owned view's. It is
+ * when the index is the counter of the strip-mined counted loop whose body
+ * holds the access, outside any loop nested in that body (its condition and
+ * update included: a nested loop that waits on the element reads it on
+ * every iteration, so the read stays atomic): every iteration then reaches
+ * a different element, so LLVM cannot merge an element's reads across
+ * iterations or move them out of the loop, and the loop can be vectorized. A racing write from another thread can still be seen or
+ * missed within one iteration, the documented gap of non-atomic shared
+ * accesses. Float16 elements keep their runtime path. */
+function plainSharedElement(
+  host: LlvmEmitterContext,
+  elem: IrBytesElem,
+  index: IrExpr | undefined,
+): boolean {
+  const loop = host.plainSharedLoop;
+  if (loop === null || elem === "f16" || index?.kind !== "varRef") return false;
+  // A nested loop raises loopDepth before its condition is emitted.
+  if (index.localId !== loop.counter || host.loopDepth !== loop.depth) return false;
+  let innermost: (typeof host.jumpTargets)[number] | undefined;
+  for (let i = host.jumpTargets.length - 1; i >= 0 && innermost === undefined; i--)
+    if (host.jumpTargets[i]!.kind === "loop") innermost = host.jumpTargets[i];
+  return innermost === loop.target;
 }
 
 /** Worker programs: the element at a checked index of a view that may be
@@ -666,7 +760,7 @@ function emitScopedBytesSet(
     ty = "i32";
     operand = stored!;
   }
-  if (host.mod.workers && !owned) {
+  if (host.mod.workers && !owned && !plainSharedElement(host, elem, indexExpr)) {
     // A shared view's element takes a relaxed atomic store of its width.
     const local = emitSharedBytesSplit(host, receiver);
     const p = B.tmp();
@@ -692,12 +786,17 @@ export function emitBytesIntrinsic(
     sig: string,
     argText: string,
     owned: boolean,
-    fallible: boolean,
+    mayThrow: boolean,
   ): LlValue => {
     const m = /^(.+?) \((.*)\)$/.exec(sig);
     if (!m) throw new InternalCompilerError(`llvm emitter bug: bad bytesIntrinsic sig ${sig}`);
     host.declare(`declare ${m[1]} @${sym}(${m[2]})`);
     const retTy = m[1] === "zeroext i1" ? "i1" : m[1]!;
+    // A mutable-buffers program (IrModule.bytesHeadersMutable) routes every
+    // view operation through the registry's detached/out-of-bounds guard,
+    // which reports Node's TypeError, so even an otherwise infallible
+    // entry may leave an exception pending.
+    const fallible = mayThrow || host.mod.bytesHeadersMutable === true;
     if (retTy === "void") {
       B.line(`call void @${sym}(${argText})`);
       if (fallible) host.emitPendingCheck();
@@ -788,6 +887,7 @@ export function emitBytesIntrinsic(
   const r = directElementAccess
     ? host.emitStableReceiver(e.receiver, e.args)
     : emitBorrowedInput(host, e.receiver);
+  if (directElementAccess) noteBytesReceiver(host, e.receiver, r.name);
   // Byte operations borrow every input; views and identity results return
   // independent owners, while writes retain no operand beyond the call.
   const args = e.args.map((a) => emitBorrowedInput(host, a));
@@ -802,6 +902,13 @@ export function emitBytesIntrinsic(
       if (e.receiver.type.kind !== "bytes") {
         throw new InternalCompilerError("llvm emitter bug: bytesIntrinsic byteLength on non-bytes");
       }
+      // A mutable-buffers program (IrModule.bytesHeadersMutable) can detach
+      // or shrink the view's buffer behind this getter, and Node's DataView
+      // getter throws on a detached or out-of-bounds view while a typed
+      // array answers 0; the registry answers both. Every other program
+      // keeps the inline header load.
+      if (host.mod.bytesHeadersMutable === true)
+        return call("scr_js_bytes_byte_length", "double (ptr)", `ptr ${r.name}`, false, true);
       return host.emitBytesLength(e.receiver.type.elem, r.name, true);
     case "get":
       // Any invalid index traps (the array runtime's discipline).
@@ -1069,6 +1176,9 @@ export function emitBytesIntrinsic(
     case "buffer":
       return call("scr_array_buffer_from_bytes", "ptr (ptr)", `ptr ${r.name}`, true, false);
     case "byteOffset":
+      // As byteLength: a DataView's getter throws on a detached buffer.
+      if (host.mod.bytesHeadersMutable === true)
+        return call("scr_js_bytes_byte_offset", "double (ptr)", `ptr ${r.name}`, false, true);
       return call("scr_bytes_byte_offset", "double (ptr)", `ptr ${r.name}`, false, false);
     case "dataViewNew":
       // new DataView(x.buffer, byteOffset?, byteLength?) — the has_len

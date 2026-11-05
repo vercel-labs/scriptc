@@ -11,6 +11,10 @@ import { emitRecordKeyGetOr } from "./expr-records.js";
 import { NULLABLE_NULL, SHAPE_WORD_INDEX, shapeWordHeader } from "./nullable-unions.js";
 import { emitUnionTag } from "./union-repr.js";
 
+/** Each kind emits in a function of its own: emitting a nested chain of
+ * these expressions holds one emitControlExpr frame per level, and in an
+ * unoptimized build of the compiler a frame holds every local of the
+ * function. */
 export function emitControlExpr(
   host: LlvmEmitterContext,
   e: ExprOf<
@@ -25,452 +29,475 @@ export function emitControlExpr(
     | "nullish"
   >,
 ): LlValue {
-  const B = host.B;
   switch (e.kind) {
-    case "dynDestrCheck": {
-      // RequireObjectCoercible with V8's destructuring TypeError. dyn
-      // values check in the runtime helper and pass through unchanged.
-      const v = host.emitExpr(e.value);
-      const first = e.firstProp !== undefined ? host.cstr(e.firstProp) : "null";
-
-      const helper = host.dyn.dynDestrCheckHelper();
-      B.line(`call void @${helper}(ptr ${v.name}, ptr ${host.cstr(e.spelling)}, ptr ${first})`);
-      host.emitPendingCheck();
-      return v;
-    }
-    case "dynIterN": {
-      // GetIterator + first-N steps as a fresh array (V8's exact
-      // not-iterable TypeError on non-iterables) through the native dyn helper.
-      const v = emitBorrowedInput(host, e.value);
-
-      const helper = host.dyn.dynIterNHelper();
-      const t = B.tmp();
-      B.line(
-        `${t} = call ptr @${helper}(ptr ${v.name}, ${host.sizeType} ${e.count}, ptr ${e.notIterableMessage ? host.cstr(e.notIterableMessage) : "null"})`,
-      );
-      const out = host.own({ name: t, type: e.type });
-      host.emitPendingCheck();
-      return out;
-    }
+    case "dynDestrCheck":
+      return emitDynDestrCheck(host, e);
+    case "dynIterN":
+      return emitDynIterN(host, e);
     case "toBool":
       return { name: host.truthy(host.emitUnionProjection(e.operand)), type: e.type };
-    case "logical": {
-      const tagSet = e.op === "||" ? unionTagSet(e) : null;
-      if (tagSet) return { name: emitUnionTagSet(host, tagSet), type: e.type };
-      // JS value semantics: the result is the deciding operand itself.
-      // Left evaluates once, ownership moves into the result slot; when
-      // the branch takes the right operand the stale left releases first
-      // and the right runs in its own frame.
-      const ty = host.llType(e.type);
-      const l = host.emitExpr(e.left);
-      host.toFrame(l);
-      const slot = B.slot();
-      B.entryAllocas.push(`${slot} = alloca ${ty}`);
-      B.line(`store ${ty} ${l.name}, ptr ${slot}`);
-      const integerSlot = e.type.kind === "f64" && l.uint32 !== undefined ? B.slot() : undefined;
-      if (integerSlot !== undefined) {
-        B.entryAllocas.push(`${integerSlot} = alloca i32`);
-        B.line(`store i32 ${l.uint32!}, ptr ${integerSlot}`);
-      }
-      const truthy = host.truthy(l);
-      const rightLabel = B.newLabel("log.r");
-      const joinLabel = B.newLabel("log.j");
-      if (e.op === "&&") B.condBr(truthy, rightLabel, joinLabel);
-      else B.condBr(truthy, joinLabel, rightLabel);
-      B.startBlock(rightLabel);
-      if (isRefCounted(e.type)) host.releaseFrame(l.name, e.type);
-      const rightInteger = host.emitBranchInto(slot, e.right, integerSlot);
-      B.br(joinLabel);
-      B.startBlock(joinLabel);
-      const t = B.tmp();
-      B.line(`${t} = load ${ty}, ptr ${slot}`);
-      if (integerSlot !== undefined && rightInteger) {
-        const uint32 = B.tmp();
-        B.line(`${uint32} = load i32, ptr ${integerSlot}`);
-        return { name: t, type: e.type, uint32 };
-      }
-      return host.own({ name: t, type: e.type });
-    }
-    case "ternary": {
-      // Exactly one arm evaluates; each arm runs in its own frame and
-      // moves the chosen value into the result slot.
-      const ty = host.llType(e.type);
-      const c = host.emitExpr(e.cond);
-      const slot = B.slot();
-      B.entryAllocas.push(`${slot} = alloca ${ty}`);
-      const integerSlot = e.type.kind === "f64" ? B.slot() : undefined;
-      if (integerSlot !== undefined) B.entryAllocas.push(`${integerSlot} = alloca i32`);
-      const lt = B.newLabel("tern.t");
-      const lf = B.newLabel("tern.f");
-      const lj = B.newLabel("tern.j");
-      B.condBr(c.name, lt, lf);
-      B.startBlock(lt);
-      const thenInteger = host.emitBranchInto(slot, e.then, integerSlot);
-      B.br(lj);
-      B.startBlock(lf);
-      const elseInteger = host.emitBranchInto(slot, e.else_, integerSlot);
-      B.br(lj);
-      B.startBlock(lj);
-      const t = B.tmp();
-      B.line(`${t} = load ${ty}, ptr ${slot}`);
-      // A view is available only when every incoming branch wrote it.
-      // Incomplete views are unused and disappear during promotion.
-      if (integerSlot !== undefined && thenInteger && elseInteger) {
-        const uint32 = B.tmp();
-        B.line(`${uint32} = load i32, ptr ${integerSlot}`);
-        return { name: t, type: e.type, uint32 };
-      }
-      // A choice between interned literals is an interned literal: like a
-      // strLit operand, nothing owns it (retain and release are no-ops).
-      if (literalChoice(e)) return host.markImmortal({ name: t, type: e.type });
-      return host.own({ name: t, type: e.type });
-    }
-    case "optChain": {
-      // `a?.b` / `f?.()`: the nullish test inverted. The receiver
-      // evaluates once into an ordinary frame temp (borrowed); on a unit
-      // tag the result is the interned undefined arm and the body never
-      // runs; otherwise the narrowed payload fills the bind slot (+1,
-      // frame-owned through a SLOT entry — NULL on the unit path, where
-      // the frame's release is a no-op) and the body reads it through
-      // chainRecv.
-      if (e.receiver.type.kind === "dyn") {
-        // A dyn (dyn) receiver — the `rawName?.match(re)` step: the
-        // nullish test reads the node's kind tag; the unit path is the
-        // undefined dyn singleton (dyn results) or nothing (void
-        // bodies), the body runs over the bound receiver otherwise.
-        const r = host.emitExpr(e.receiver);
-        const kd = host.dynKind(r.name);
-        const isU = B.tmp();
-        const isN = B.tmp();
-        const isUnit = B.tmp();
-        B.line(`${isU} = icmp eq i32 ${kd}, ${DYN_KIND.UNDEF}`);
-        B.line(`${isN} = icmp eq i32 ${kd}, ${DYN_KIND.NULL}`);
-        B.line(`${isUnit} = or i1 ${isU}, ${isN}`);
-        const bind = B.slot();
-        B.entryAllocas.push(`${bind} = alloca ptr`);
-        B.line(`store ptr null, ptr ${bind}`);
-        host.ownSlot(bind, e.receiver.type);
-        host.declare(`declare ptr @scr_dyn_retain_v(ptr)`);
-        if (e.type.kind === "void") {
-          const lb = B.newLabel("ocd.b");
-          const lj = B.newLabel("ocd.j");
-          B.condBr(isUnit, lj, lb);
-          B.startBlock(lb);
-          const rr = B.tmp();
-          B.line(`${rr} = call ptr @scr_dyn_retain_v(ptr ${r.name})`);
-          B.line(`store ptr ${rr}, ptr ${bind}`);
-          host.chainSlots.set(e.id, { name: bind, type: e.receiver.type, slot: true });
-          host.frames.push([]);
-          host.emitExpr(e.body);
-          host.releaseTemps(host.frames.pop()!);
-          host.chainSlots.delete(e.id);
-          B.br(lj);
-          B.startBlock(lj);
-          return { name: "", type: e.type };
-        }
-        if (e.type.kind !== "dyn")
-          throw new InternalCompilerError("llvm emitter bug: dyn optChain result kind");
-        const slot = B.slot();
-        B.entryAllocas.push(`${slot} = alloca ptr`);
-        const lu = B.newLabel("ocd.u");
-        const lb = B.newLabel("ocd.b");
-        const lj = B.newLabel("ocd.j");
-        B.condBr(isUnit, lu, lb);
-        B.startBlock(lu);
-        host.declare(`declare ptr @scr_dyn_undefined()`);
-        const un = B.tmp();
-        const ur = B.tmp();
-        B.line(`${un} = call ptr @scr_dyn_undefined()`);
-        B.line(`${ur} = call ptr @scr_dyn_retain_v(ptr ${un})`);
-        B.line(`store ptr ${ur}, ptr ${slot}`);
-        B.br(lj);
-        B.startBlock(lb);
-        const rr = B.tmp();
-        B.line(`${rr} = call ptr @scr_dyn_retain_v(ptr ${r.name})`);
-        B.line(`store ptr ${rr}, ptr ${bind}`);
-        host.chainSlots.set(e.id, { name: bind, type: e.receiver.type, slot: true });
-        host.emitBranchInto(slot, e.body);
-        host.chainSlots.delete(e.id);
-        B.br(lj);
-        B.startBlock(lj);
-        const t = B.tmp();
-        B.line(`${t} = load ptr, ptr ${slot}`);
-        return host.own({ name: t, type: e.type });
-      }
-
-      const { isUnit, bindPresent } = emitOptionalChainReceiver(host, e);
-      if (e.type.kind === "void") {
-        // Statement form (cb?.()): no result value at all.
-        const lb = B.newLabel("oc.b");
-        const lj = B.newLabel("oc.j");
-        B.condBr(isUnit, lj, lb);
-        B.startBlock(lb);
-        bindPresent();
-        host.frames.push([]);
-        host.emitExpr(e.body);
-        host.releaseTemps(host.frames.pop()!);
-        host.chainSlots.delete(e.id);
-        B.br(lj);
-        B.startBlock(lj);
-        return { name: "", type: e.type };
-      }
-      if (e.type.kind === "dyn") {
-        // A dyn-typed chain (`pricing?.[key]` over an unknown-valued
-        // index signature): the unit path is the undefined dyn value —
-        // dyn represents undefined directly, no union wrapper exists.
-        const slotD = B.slot();
-        B.entryAllocas.push(`${slotD} = alloca ptr`);
-        const lu = B.newLabel("ocu.u");
-        const lb = B.newLabel("ocu.b");
-        const lj = B.newLabel("ocu.j");
-        B.condBr(isUnit, lu, lb);
-        B.startBlock(lu);
-        host.declare(`declare ptr @scr_dyn_undefined()`);
-        host.declare(`declare ptr @scr_dyn_retain_v(ptr)`);
-        const un = B.tmp();
-        const ur = B.tmp();
-        B.line(`${un} = call ptr @scr_dyn_undefined()`);
-        B.line(`${ur} = call ptr @scr_dyn_retain_v(ptr ${un})`);
-        B.line(`store ptr ${ur}, ptr ${slotD}`);
-        B.br(lj);
-        B.startBlock(lb);
-        bindPresent();
-        host.emitBranchInto(slotD, e.body);
-        host.chainSlots.delete(e.id);
-        B.br(lj);
-        B.startBlock(lj);
-        const t = B.tmp();
-        B.line(`${t} = load ptr, ptr ${slotD}`);
-        return host.own({ name: t, type: e.type });
-      }
-      if (e.type.kind !== "union")
-        throw new LlvmUnsupportedError(`optChainResult:${e.type.kind}`, e.loc);
-      const undefTag = undefinedArmTag(e.type, host.unionsById);
-      if (undefTag < 0)
-        throw new InternalCompilerError(
-          "llvm emitter bug: optChain result lacks its undefined arm",
-        );
-      const ty = host.llType(e.type);
-      const slot = B.slot();
-      B.entryAllocas.push(`${slot} = alloca ${ty}`);
-      const lu = B.newLabel("oc.u");
-      const lb = B.newLabel("oc.b");
-      const lj = B.newLabel("oc.j");
-      B.condBr(isUnit, lu, lb);
-      B.startBlock(lu);
-      B.line(`store ptr ${host.unitInstanceRef(e.type.unionId, undefTag)}, ptr ${slot}`);
-      B.br(lj);
-      B.startBlock(lb);
-      bindPresent();
-      host.emitBranchInto(slot, e.body);
-      host.chainSlots.delete(e.id);
-      B.br(lj);
-      B.startBlock(lj);
-      const t = B.tmp();
-      B.line(`${t} = load ${ty}, ptr ${slot}`);
-      return host.own({ name: t, type: e.type });
-    }
-    case "chainRecv": {
-      const bound = host.chainSlots.get(e.id);
-      if (!bound)
-        throw new InternalCompilerError(`llvm emitter bug: chainRecv "${e.id}" outside its chain`);
-      const v = B.tmp();
-      B.line(`${v} = load ${host.llType(bound.type)}, ptr ${bound.name}`);
-      if (!isRefCounted(e.type)) return { name: v, type: e.type };
-      return host.own({ name: host.retainFrame(v, e.type), type: e.type });
-    }
-    case "orDefault": {
-      // `u || d` narrowed to the single non-unit arm: nullish's dance
-      // with the union TRUTHY switch as the test — truthy extracts the
-      // arm (+1 for ref kinds), falsy releases and runs the default.
-      if (e.left.type.kind !== "union")
-        throw new InternalCompilerError("llvm emitter bug: orDefault left is not a union");
-      if (
-        e.retag === undefined &&
-        !host.nullableUnions.has(e.left.type.unionId) &&
-        host.isStackUnionSource(e.left)
-      ) {
-        // A stack box (`arr[i] || d`): test truthiness and extract the
-        // payload (+1). The box is never retained or released.
-        const l = host.emitUnionProjection(e.left);
-        const ty = host.llType(e.type);
-        const slot = B.slot();
-        B.entryAllocas.push(`${slot} = alloca ${ty}`);
-        const lt = B.newLabel("ord.t"),
-          lf = B.newLabel("ord.f"),
-          lj = B.newLabel("ord.j");
-        B.condBr(host.truthy(l), lt, lf);
-        B.startBlock(lt);
-        B.line(
-          `store ${ty} ${host.unionExtract(l.name, e.left.type.unionId, e.type)}, ptr ${slot}`,
-        );
-        B.br(lj);
-        B.startBlock(lf);
-        host.emitBranchInto(slot, e.right);
-        B.br(lj);
-        B.startBlock(lj);
-        const t = B.tmp();
-        B.line(`${t} = load ${ty}, ptr ${slot}`);
-        return host.own({ name: t, type: e.type });
-      }
-      const l = host.emitExpr(e.left);
-      host.toFrame(l);
-      const ty = host.llType(e.type);
-      const slot = B.slot();
-      B.entryAllocas.push(`${slot} = alloca ${ty}`);
-      const truthy = host.truthy(l);
-      const lt = B.newLabel("ord.t");
-      const lf = B.newLabel("ord.f");
-      const lj = B.newLabel("ord.j");
-      B.condBr(truthy, lt, lf);
-      B.startBlock(lt);
-      if (e.retag !== undefined) {
-        // Retagged shape: the whole box goes to the union→union helper,
-        // which CONSUMES it (callees own their params) — no release on
-        // this side. The store precedes the pending check so an unwind
-        // leaves only the NULL dummy behind, in a slot nothing reads.
-        const t = B.tmp();
-        B.line(
-          `${t} = call ${ty} @${host.callTarget(e.retag)}(${host.llType(e.left.type)} ${l.name})`,
-        );
-        B.line(`store ${ty} ${t}, ptr ${slot}`);
-        if (host.mayThrow.has(e.retag)) host.emitPendingCheck();
-      } else if (host.nullableUnions.single(e.left.type.unionId)) {
-        // The owned nullable pointer IS the owned arm value.
-        B.line(`store ${ty} ${l.name}, ptr ${slot}`);
-      } else {
-        B.line(
-          `store ${ty} ${host.unionExtract(l.name, e.left.type.unionId, e.type)}, ptr ${slot}`,
-        );
-        host.releaseFrame(l.name, e.left.type);
-      }
-      B.br(lj);
-      B.startBlock(lf);
-      host.releaseFrame(l.name, e.left.type);
-      host.emitBranchInto(slot, e.right);
-      B.br(lj);
-      B.startBlock(lj);
-      const t = B.tmp();
-      B.line(`${t} = load ${ty}, ptr ${slot}`);
-      return host.own({ name: t, type: e.type });
-    }
-    case "nullish": {
-      // `a ?? b`: logical's move/release dance with the left's runtime
-      // TAG against its unit arms as the test. Pass-through shape: the
-      // result IS the left box. Narrowed shape: the single non-unit
-      // arm's payload extracts (+1 for ref kinds) and the box releases.
-
-      if (e.left.type.kind === "dyn") {
-        // The native checked-value kind decides whether the left is
-        // nullish; the right runs lazily in its branch.
-        const l = host.emitExpr(e.left);
-        host.toFrame(l);
-        host.declare(`declare zeroext i1 @scr_dyn_is_nullish(ptr)`);
-        const slot = B.slot();
-        B.entryAllocas.push(`${slot} = alloca ptr`);
-        const isN = B.tmp();
-        B.line(`${isN} = call zeroext i1 @scr_dyn_is_nullish(ptr ${l.name})`);
-        const lu = B.newLabel("nuld.u");
-        const lv = B.newLabel("nuld.v");
-        const lj = B.newLabel("nuld.j");
-        B.condBr(isN, lu, lv);
-        B.startBlock(lu);
-        host.releaseFrame(l.name, e.left.type);
-        host.emitBranchInto(slot, e.right);
-        B.br(lj);
-        B.startBlock(lv);
-        B.line(`store ptr ${l.name}, ptr ${slot}`);
-        B.br(lj);
-        B.startBlock(lj);
-        const t = B.tmp();
-        B.line(`${t} = load ptr, ptr ${slot}`);
-        return host.own({ name: t, type: e.type });
-      }
-      if (e.left.type.kind !== "union")
-        throw new InternalCompilerError("llvm emitter bug: nullish left is not a union");
-      const def = host.unionsById.get(e.left.type.unionId);
-      if (!def)
-        throw new InternalCompilerError(
-          `llvm emitter bug: nullish of unknown union ${e.left.type.unionId}`,
-        );
-      const unitTags = def.arms.flatMap((a, i) => (isUnitType(a) ? [i] : []));
-      if (unitTags.length === 0)
-        throw new InternalCompilerError("llvm emitter bug: nullish union lacks unit arms");
-      const fused = emitNullishOptionalChain(host, e);
-      if (fused) return fused;
-      if (
-        e.left.kind === "recordKeyGet" &&
-        e.left.missNaN !== true &&
-        typeEquals(e.type, e.left.type) &&
-        storesNoUnit(host, e.left)
-      )
-        return emitRecordKeyGetOr(host, e.left, e.right);
-      if (
-        !typeEquals(e.type, e.left.type) &&
-        (e.left.kind === "varRef" ||
-          host.isStackUnionSource(e.left) ||
-          host.nullableFieldGet(e.left) !== null)
-      ) {
-        // Narrowed shape over a binding or a stack box (`arr[i] ?? d`,
-        // `map.get(k) ?? d`): test the tag and extract the payload (+1).
-        // The box is never retained or released. A binding is borrowed:
-        // no code runs between its read and the extraction, and the
-        // default never touches it. Bindings proven projection-only may
-        // hold stack boxes, which must never reach RC entry points.
-        const l = host.emitUnionProjection(e.left);
-        const ty = host.llType(e.type);
-        const slot = B.slot();
-        B.entryAllocas.push(`${slot} = alloca ${ty}`);
-        const isUnit = host.tagInSet(l.name, def.id, unitTags);
-        const lu = B.newLabel("nul.u");
-        const lv = B.newLabel("nul.v");
-        const lj = B.newLabel("nul.j");
-        B.condBr(isUnit, lu, lv);
-        B.startBlock(lu);
-        host.emitBranchInto(slot, e.right);
-        B.br(lj);
-        B.startBlock(lv);
-        B.line(`store ${ty} ${host.unionExtract(l.name, def.id, e.type)}, ptr ${slot}`);
-        B.br(lj);
-        B.startBlock(lj);
-        const t = B.tmp();
-        B.line(`${t} = load ${ty}, ptr ${slot}`);
-        return host.own({ name: t, type: e.type });
-      }
-      const l = host.emitExpr(e.left);
-      host.toFrame(l);
-      const ty = host.llType(e.type);
-      const slot = B.slot();
-      B.entryAllocas.push(`${slot} = alloca ${ty}`);
-      const isUnit = host.tagInSet(l.name, def.id, unitTags);
-      const lu = B.newLabel("nul.u");
-      const lv = B.newLabel("nul.v");
-      const lj = B.newLabel("nul.j");
-      B.condBr(isUnit, lu, lv);
-      B.startBlock(lu);
-      host.releaseFrame(l.name, e.left.type);
-      host.emitBranchInto(slot, e.right);
-      B.br(lj);
-      B.startBlock(lv);
-      if (typeEquals(e.type, e.left.type) || host.nullableUnions.single(def.id)) {
-        // Pass-through, or a nullable pointer that IS its owned arm value.
-        B.line(`store ${ty} ${l.name}, ptr ${slot}`);
-      } else {
-        B.line(`store ${ty} ${host.unionExtract(l.name, def.id, e.type)}, ptr ${slot}`);
-        host.releaseFrame(l.name, e.left.type);
-      }
-      B.br(lj);
-      B.startBlock(lj);
-      const t = B.tmp();
-      B.line(`${t} = load ${ty}, ptr ${slot}`);
-      return host.own({ name: t, type: e.type });
-    }
+    case "logical":
+      return emitLogical(host, e);
+    case "ternary":
+      return emitTernary(host, e);
+    case "optChain":
+      return emitOptChain(host, e);
+    case "chainRecv":
+      return emitChainRecv(host, e);
+    case "orDefault":
+      return emitOrDefault(host, e);
+    case "nullish":
+      return emitNullish(host, e);
     default: {
       const _exhaustive: never = e;
       void _exhaustive;
       throw new InternalCompilerError("unreachable");
     }
   }
+}
+
+function emitDynDestrCheck(host: LlvmEmitterContext, e: ExprOf<"dynDestrCheck">): LlValue {
+  const B = host.B;
+  // RequireObjectCoercible with V8's destructuring TypeError. dyn
+  // values check in the runtime helper and pass through unchanged.
+  const v = host.emitExpr(e.value);
+  const first = e.firstProp !== undefined ? host.cstr(e.firstProp) : "null";
+
+  const helper = host.dyn.dynDestrCheckHelper();
+  B.line(`call void @${helper}(ptr ${v.name}, ptr ${host.cstr(e.spelling)}, ptr ${first})`);
+  host.emitPendingCheck();
+  return v;
+}
+
+function emitDynIterN(host: LlvmEmitterContext, e: ExprOf<"dynIterN">): LlValue {
+  const B = host.B;
+  // GetIterator + first-N steps as a fresh array (V8's exact
+  // not-iterable TypeError on non-iterables) through the native dyn helper.
+  const v = emitBorrowedInput(host, e.value);
+
+  const helper = host.dyn.dynIterNHelper();
+  const t = B.tmp();
+  B.line(
+    `${t} = call ptr @${helper}(ptr ${v.name}, ${host.sizeType} ${e.count}, ptr ${e.notIterableMessage ? host.cstr(e.notIterableMessage) : "null"})`,
+  );
+  const out = host.own({ name: t, type: e.type });
+  host.emitPendingCheck();
+  return out;
+}
+
+function emitLogical(host: LlvmEmitterContext, e: ExprOf<"logical">): LlValue {
+  const B = host.B;
+  const tagSet = e.op === "||" ? unionTagSet(e) : null;
+  if (tagSet) return { name: emitUnionTagSet(host, tagSet), type: e.type };
+  // JS value semantics: the result is the deciding operand itself.
+  // Left evaluates once, ownership moves into the result slot; when
+  // the branch takes the right operand the stale left releases first
+  // and the right runs in its own frame.
+  const ty = host.llType(e.type);
+  const l = host.emitExpr(e.left);
+  host.toFrame(l);
+  const slot = B.slot();
+  B.entryAllocas.push(`${slot} = alloca ${ty}`);
+  B.line(`store ${ty} ${l.name}, ptr ${slot}`);
+  const integerSlot = e.type.kind === "f64" && l.uint32 !== undefined ? B.slot() : undefined;
+  if (integerSlot !== undefined) {
+    B.entryAllocas.push(`${integerSlot} = alloca i32`);
+    B.line(`store i32 ${l.uint32!}, ptr ${integerSlot}`);
+  }
+  const truthy = host.truthy(l);
+  const rightLabel = B.newLabel("log.r");
+  const joinLabel = B.newLabel("log.j");
+  if (e.op === "&&") B.condBr(truthy, rightLabel, joinLabel);
+  else B.condBr(truthy, joinLabel, rightLabel);
+  B.startBlock(rightLabel);
+  if (isRefCounted(e.type)) host.releaseFrame(l.name, e.type);
+  const rightInteger = host.emitBranchInto(slot, e.right, integerSlot);
+  B.br(joinLabel);
+  B.startBlock(joinLabel);
+  const t = B.tmp();
+  B.line(`${t} = load ${ty}, ptr ${slot}`);
+  if (integerSlot !== undefined && rightInteger) {
+    const uint32 = B.tmp();
+    B.line(`${uint32} = load i32, ptr ${integerSlot}`);
+    return { name: t, type: e.type, uint32 };
+  }
+  return host.own({ name: t, type: e.type });
+}
+
+function emitTernary(host: LlvmEmitterContext, e: ExprOf<"ternary">): LlValue {
+  const B = host.B;
+  // Exactly one arm evaluates; each arm runs in its own frame and
+  // moves the chosen value into the result slot.
+  const ty = host.llType(e.type);
+  const c = host.emitExpr(e.cond);
+  const slot = B.slot();
+  B.entryAllocas.push(`${slot} = alloca ${ty}`);
+  const integerSlot = e.type.kind === "f64" ? B.slot() : undefined;
+  if (integerSlot !== undefined) B.entryAllocas.push(`${integerSlot} = alloca i32`);
+  const lt = B.newLabel("tern.t");
+  const lf = B.newLabel("tern.f");
+  const lj = B.newLabel("tern.j");
+  B.condBr(c.name, lt, lf);
+  B.startBlock(lt);
+  const thenInteger = host.emitBranchInto(slot, e.then, integerSlot);
+  B.br(lj);
+  B.startBlock(lf);
+  const elseInteger = host.emitBranchInto(slot, e.else_, integerSlot);
+  B.br(lj);
+  B.startBlock(lj);
+  const t = B.tmp();
+  B.line(`${t} = load ${ty}, ptr ${slot}`);
+  // A view is available only when every incoming branch wrote it.
+  // Incomplete views are unused and disappear during promotion.
+  if (integerSlot !== undefined && thenInteger && elseInteger) {
+    const uint32 = B.tmp();
+    B.line(`${uint32} = load i32, ptr ${integerSlot}`);
+    return { name: t, type: e.type, uint32 };
+  }
+  // A choice between interned literals is an interned literal: like a
+  // strLit operand, nothing owns it (retain and release are no-ops).
+  if (literalChoice(e)) return host.markImmortal({ name: t, type: e.type });
+  return host.own({ name: t, type: e.type });
+}
+
+function emitOptChain(host: LlvmEmitterContext, e: ExprOf<"optChain">): LlValue {
+  const B = host.B;
+  // `a?.b` / `f?.()`: the nullish test inverted. The receiver
+  // evaluates once into an ordinary frame temp (borrowed); on a unit
+  // tag the result is the interned undefined arm and the body never
+  // runs; otherwise the narrowed payload fills the bind slot (+1,
+  // frame-owned through a SLOT entry — NULL on the unit path, where
+  // the frame's release is a no-op) and the body reads it through
+  // chainRecv.
+  if (e.receiver.type.kind === "dyn") {
+    // A dyn (dyn) receiver — the `rawName?.match(re)` step: the
+    // nullish test reads the node's kind tag; the unit path is the
+    // undefined dyn singleton (dyn results) or nothing (void
+    // bodies), the body runs over the bound receiver otherwise.
+    const r = host.emitExpr(e.receiver);
+    const kd = host.dynKind(r.name);
+    const isU = B.tmp();
+    const isN = B.tmp();
+    const isUnit = B.tmp();
+    B.line(`${isU} = icmp eq i32 ${kd}, ${DYN_KIND.UNDEF}`);
+    B.line(`${isN} = icmp eq i32 ${kd}, ${DYN_KIND.NULL}`);
+    B.line(`${isUnit} = or i1 ${isU}, ${isN}`);
+    const bind = B.slot();
+    B.entryAllocas.push(`${bind} = alloca ptr`);
+    B.line(`store ptr null, ptr ${bind}`);
+    host.ownSlot(bind, e.receiver.type);
+    host.declare(`declare ptr @scr_dyn_retain_v(ptr)`);
+    if (e.type.kind === "void") {
+      const lb = B.newLabel("ocd.b");
+      const lj = B.newLabel("ocd.j");
+      B.condBr(isUnit, lj, lb);
+      B.startBlock(lb);
+      const rr = B.tmp();
+      B.line(`${rr} = call ptr @scr_dyn_retain_v(ptr ${r.name})`);
+      B.line(`store ptr ${rr}, ptr ${bind}`);
+      host.chainSlots.set(e.id, { name: bind, type: e.receiver.type, slot: true });
+      host.frames.push([]);
+      host.emitExpr(e.body);
+      host.releaseTemps(host.frames.pop()!);
+      host.chainSlots.delete(e.id);
+      B.br(lj);
+      B.startBlock(lj);
+      return { name: "", type: e.type };
+    }
+    if (e.type.kind !== "dyn")
+      throw new InternalCompilerError("llvm emitter bug: dyn optChain result kind");
+    const slot = B.slot();
+    B.entryAllocas.push(`${slot} = alloca ptr`);
+    const lu = B.newLabel("ocd.u");
+    const lb = B.newLabel("ocd.b");
+    const lj = B.newLabel("ocd.j");
+    B.condBr(isUnit, lu, lb);
+    B.startBlock(lu);
+    host.declare(`declare ptr @scr_dyn_undefined()`);
+    const un = B.tmp();
+    const ur = B.tmp();
+    B.line(`${un} = call ptr @scr_dyn_undefined()`);
+    B.line(`${ur} = call ptr @scr_dyn_retain_v(ptr ${un})`);
+    B.line(`store ptr ${ur}, ptr ${slot}`);
+    B.br(lj);
+    B.startBlock(lb);
+    const rr = B.tmp();
+    B.line(`${rr} = call ptr @scr_dyn_retain_v(ptr ${r.name})`);
+    B.line(`store ptr ${rr}, ptr ${bind}`);
+    host.chainSlots.set(e.id, { name: bind, type: e.receiver.type, slot: true });
+    host.emitBranchInto(slot, e.body);
+    host.chainSlots.delete(e.id);
+    B.br(lj);
+    B.startBlock(lj);
+    const t = B.tmp();
+    B.line(`${t} = load ptr, ptr ${slot}`);
+    return host.own({ name: t, type: e.type });
+  }
+
+  const { isUnit, bindPresent } = emitOptionalChainReceiver(host, e);
+  if (e.type.kind === "void") {
+    // Statement form (cb?.()): no result value at all.
+    const lb = B.newLabel("oc.b");
+    const lj = B.newLabel("oc.j");
+    B.condBr(isUnit, lj, lb);
+    B.startBlock(lb);
+    bindPresent();
+    host.frames.push([]);
+    host.emitExpr(e.body);
+    host.releaseTemps(host.frames.pop()!);
+    host.chainSlots.delete(e.id);
+    B.br(lj);
+    B.startBlock(lj);
+    return { name: "", type: e.type };
+  }
+  if (e.type.kind === "dyn") {
+    // A dyn-typed chain (`pricing?.[key]` over an unknown-valued
+    // index signature): the unit path is the undefined dyn value —
+    // dyn represents undefined directly, no union wrapper exists.
+    const slotD = B.slot();
+    B.entryAllocas.push(`${slotD} = alloca ptr`);
+    const lu = B.newLabel("ocu.u");
+    const lb = B.newLabel("ocu.b");
+    const lj = B.newLabel("ocu.j");
+    B.condBr(isUnit, lu, lb);
+    B.startBlock(lu);
+    host.declare(`declare ptr @scr_dyn_undefined()`);
+    host.declare(`declare ptr @scr_dyn_retain_v(ptr)`);
+    const un = B.tmp();
+    const ur = B.tmp();
+    B.line(`${un} = call ptr @scr_dyn_undefined()`);
+    B.line(`${ur} = call ptr @scr_dyn_retain_v(ptr ${un})`);
+    B.line(`store ptr ${ur}, ptr ${slotD}`);
+    B.br(lj);
+    B.startBlock(lb);
+    bindPresent();
+    host.emitBranchInto(slotD, e.body);
+    host.chainSlots.delete(e.id);
+    B.br(lj);
+    B.startBlock(lj);
+    const t = B.tmp();
+    B.line(`${t} = load ptr, ptr ${slotD}`);
+    return host.own({ name: t, type: e.type });
+  }
+  if (e.type.kind !== "union")
+    throw new LlvmUnsupportedError(`optChainResult:${e.type.kind}`, e.loc);
+  const undefTag = undefinedArmTag(e.type, host.unionsById);
+  if (undefTag < 0)
+    throw new InternalCompilerError("llvm emitter bug: optChain result lacks its undefined arm");
+  const ty = host.llType(e.type);
+  const slot = B.slot();
+  B.entryAllocas.push(`${slot} = alloca ${ty}`);
+  const lu = B.newLabel("oc.u");
+  const lb = B.newLabel("oc.b");
+  const lj = B.newLabel("oc.j");
+  B.condBr(isUnit, lu, lb);
+  B.startBlock(lu);
+  B.line(`store ptr ${host.unitInstanceRef(e.type.unionId, undefTag)}, ptr ${slot}`);
+  B.br(lj);
+  B.startBlock(lb);
+  bindPresent();
+  host.emitBranchInto(slot, e.body);
+  host.chainSlots.delete(e.id);
+  B.br(lj);
+  B.startBlock(lj);
+  const t = B.tmp();
+  B.line(`${t} = load ${ty}, ptr ${slot}`);
+  return host.own({ name: t, type: e.type });
+}
+
+function emitChainRecv(host: LlvmEmitterContext, e: ExprOf<"chainRecv">): LlValue {
+  const B = host.B;
+  const bound = host.chainSlots.get(e.id);
+  if (!bound)
+    throw new InternalCompilerError(`llvm emitter bug: chainRecv "${e.id}" outside its chain`);
+  const v = B.tmp();
+  B.line(`${v} = load ${host.llType(bound.type)}, ptr ${bound.name}`);
+  if (!isRefCounted(e.type)) return { name: v, type: e.type };
+  return host.own({ name: host.retainFrame(v, e.type), type: e.type });
+}
+
+function emitOrDefault(host: LlvmEmitterContext, e: ExprOf<"orDefault">): LlValue {
+  const B = host.B;
+  // `u || d` narrowed to the single non-unit arm: nullish's dance
+  // with the union TRUTHY switch as the test — truthy extracts the
+  // arm (+1 for ref kinds), falsy releases and runs the default.
+  if (e.left.type.kind !== "union")
+    throw new InternalCompilerError("llvm emitter bug: orDefault left is not a union");
+  if (
+    e.retag === undefined &&
+    !host.nullableUnions.has(e.left.type.unionId) &&
+    host.isStackUnionSource(e.left)
+  ) {
+    // A stack box (`arr[i] || d`): test truthiness and extract the
+    // payload (+1). The box is never retained or released.
+    const l = host.emitUnionProjection(e.left);
+    const ty = host.llType(e.type);
+    const slot = B.slot();
+    B.entryAllocas.push(`${slot} = alloca ${ty}`);
+    const lt = B.newLabel("ord.t"),
+      lf = B.newLabel("ord.f"),
+      lj = B.newLabel("ord.j");
+    B.condBr(host.truthy(l), lt, lf);
+    B.startBlock(lt);
+    B.line(`store ${ty} ${host.unionExtract(l.name, e.left.type.unionId, e.type)}, ptr ${slot}`);
+    B.br(lj);
+    B.startBlock(lf);
+    host.emitBranchInto(slot, e.right);
+    B.br(lj);
+    B.startBlock(lj);
+    const t = B.tmp();
+    B.line(`${t} = load ${ty}, ptr ${slot}`);
+    return host.own({ name: t, type: e.type });
+  }
+  const l = host.emitExpr(e.left);
+  host.toFrame(l);
+  const ty = host.llType(e.type);
+  const slot = B.slot();
+  B.entryAllocas.push(`${slot} = alloca ${ty}`);
+  const truthy = host.truthy(l);
+  const lt = B.newLabel("ord.t");
+  const lf = B.newLabel("ord.f");
+  const lj = B.newLabel("ord.j");
+  B.condBr(truthy, lt, lf);
+  B.startBlock(lt);
+  if (e.retag !== undefined) {
+    // Retagged shape: the whole box goes to the union→union helper,
+    // which CONSUMES it (callees own their params) — no release on
+    // this side. The store precedes the pending check so an unwind
+    // leaves only the NULL dummy behind, in a slot nothing reads.
+    const t = B.tmp();
+    B.line(`${t} = call ${ty} @${host.callTarget(e.retag)}(${host.llType(e.left.type)} ${l.name})`);
+    B.line(`store ${ty} ${t}, ptr ${slot}`);
+    if (host.mayThrow.has(e.retag)) host.emitPendingCheck();
+  } else if (host.nullableUnions.single(e.left.type.unionId)) {
+    // The owned nullable pointer IS the owned arm value.
+    B.line(`store ${ty} ${l.name}, ptr ${slot}`);
+  } else {
+    B.line(`store ${ty} ${host.unionExtract(l.name, e.left.type.unionId, e.type)}, ptr ${slot}`);
+    host.releaseFrame(l.name, e.left.type);
+  }
+  B.br(lj);
+  B.startBlock(lf);
+  host.releaseFrame(l.name, e.left.type);
+  host.emitBranchInto(slot, e.right);
+  B.br(lj);
+  B.startBlock(lj);
+  const t = B.tmp();
+  B.line(`${t} = load ${ty}, ptr ${slot}`);
+  return host.own({ name: t, type: e.type });
+}
+
+function emitNullish(host: LlvmEmitterContext, e: ExprOf<"nullish">): LlValue {
+  const B = host.B;
+  // `a ?? b`: logical's move/release dance with the left's runtime
+  // TAG against its unit arms as the test. Pass-through shape: the
+  // result IS the left box. Narrowed shape: the single non-unit
+  // arm's payload extracts (+1 for ref kinds) and the box releases.
+
+  if (e.left.type.kind === "dyn") {
+    // The native checked-value kind decides whether the left is
+    // nullish; the right runs lazily in its branch.
+    const l = host.emitExpr(e.left);
+    host.toFrame(l);
+    host.declare(`declare zeroext i1 @scr_dyn_is_nullish(ptr)`);
+    const slot = B.slot();
+    B.entryAllocas.push(`${slot} = alloca ptr`);
+    const isN = B.tmp();
+    B.line(`${isN} = call zeroext i1 @scr_dyn_is_nullish(ptr ${l.name})`);
+    const lu = B.newLabel("nuld.u");
+    const lv = B.newLabel("nuld.v");
+    const lj = B.newLabel("nuld.j");
+    B.condBr(isN, lu, lv);
+    B.startBlock(lu);
+    host.releaseFrame(l.name, e.left.type);
+    host.emitBranchInto(slot, e.right);
+    B.br(lj);
+    B.startBlock(lv);
+    B.line(`store ptr ${l.name}, ptr ${slot}`);
+    B.br(lj);
+    B.startBlock(lj);
+    const t = B.tmp();
+    B.line(`${t} = load ptr, ptr ${slot}`);
+    return host.own({ name: t, type: e.type });
+  }
+  if (e.left.type.kind !== "union")
+    throw new InternalCompilerError("llvm emitter bug: nullish left is not a union");
+  const def = host.unionsById.get(e.left.type.unionId);
+  if (!def)
+    throw new InternalCompilerError(
+      `llvm emitter bug: nullish of unknown union ${e.left.type.unionId}`,
+    );
+  const unitTags = def.arms.flatMap((a, i) => (isUnitType(a) ? [i] : []));
+  if (unitTags.length === 0)
+    throw new InternalCompilerError("llvm emitter bug: nullish union lacks unit arms");
+  const fused = emitNullishOptionalChain(host, e);
+  if (fused) return fused;
+  if (
+    e.left.kind === "recordKeyGet" &&
+    e.left.missNaN !== true &&
+    typeEquals(e.type, e.left.type) &&
+    storesNoUnit(host, e.left)
+  )
+    return emitRecordKeyGetOr(host, e.left, e.right);
+  if (
+    !typeEquals(e.type, e.left.type) &&
+    (e.left.kind === "varRef" ||
+      host.isStackUnionSource(e.left) ||
+      host.nullableFieldGet(e.left) !== null)
+  ) {
+    // Narrowed shape over a binding or a stack box (`arr[i] ?? d`,
+    // `map.get(k) ?? d`): test the tag and extract the payload (+1).
+    // The box is never retained or released. A binding is borrowed:
+    // no code runs between its read and the extraction, and the
+    // default never touches it. Bindings proven projection-only may
+    // hold stack boxes, which must never reach RC entry points.
+    const l = host.emitUnionProjection(e.left);
+    const ty = host.llType(e.type);
+    const slot = B.slot();
+    B.entryAllocas.push(`${slot} = alloca ${ty}`);
+    const isUnit = host.tagInSet(l.name, def.id, unitTags);
+    const lu = B.newLabel("nul.u");
+    const lv = B.newLabel("nul.v");
+    const lj = B.newLabel("nul.j");
+    B.condBr(isUnit, lu, lv);
+    B.startBlock(lu);
+    host.emitBranchInto(slot, e.right);
+    B.br(lj);
+    B.startBlock(lv);
+    B.line(`store ${ty} ${host.unionExtract(l.name, def.id, e.type)}, ptr ${slot}`);
+    B.br(lj);
+    B.startBlock(lj);
+    const t = B.tmp();
+    B.line(`${t} = load ${ty}, ptr ${slot}`);
+    return host.own({ name: t, type: e.type });
+  }
+  const l = host.emitExpr(e.left);
+  host.toFrame(l);
+  const ty = host.llType(e.type);
+  const slot = B.slot();
+  B.entryAllocas.push(`${slot} = alloca ${ty}`);
+  const isUnit = host.tagInSet(l.name, def.id, unitTags);
+  const lu = B.newLabel("nul.u");
+  const lv = B.newLabel("nul.v");
+  const lj = B.newLabel("nul.j");
+  B.condBr(isUnit, lu, lv);
+  B.startBlock(lu);
+  host.releaseFrame(l.name, e.left.type);
+  host.emitBranchInto(slot, e.right);
+  B.br(lj);
+  B.startBlock(lv);
+  if (typeEquals(e.type, e.left.type) || host.nullableUnions.single(def.id)) {
+    // Pass-through, or a nullable pointer that IS its owned arm value.
+    B.line(`store ${ty} ${l.name}, ptr ${slot}`);
+  } else {
+    B.line(`store ${ty} ${host.unionExtract(l.name, def.id, e.type)}, ptr ${slot}`);
+    host.releaseFrame(l.name, e.left.type);
+  }
+  B.br(lj);
+  B.startBlock(lj);
+  const t = B.tmp();
+  B.line(`${t} = load ${ty}, ptr ${slot}`);
+  return host.own({ name: t, type: e.type });
 }
 
 /** The receiver half of a union-receiver `a?.b`. The receiver evaluates

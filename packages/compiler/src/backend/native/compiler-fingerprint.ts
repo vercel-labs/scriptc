@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { type CcDriver } from "./driver.js";
 import { resolvedToolIdentity, resolvedTool } from "./tool-identity.js";
 import { execFileAsync } from "./process.js";
@@ -168,7 +168,7 @@ export function effectiveCompilerInvocationFingerprint(
 export async function implicitDependencyProbeIncludes(rtDir: string): Promise<string[]> {
   const vendor = join(rtDir, "..", "vendor");
   const quickjsSources = new Set<string>(LRE_SOURCES);
-  const zlibSources = new Set<string>(ZLIB_SOURCES);
+  const zlibSources = new Set<string>(ZLIB_SOURCES.map((source) => basename(source)));
   const fileGroups = await Promise.all([
     nativeSourceFiles(rtDir, false),
     nativeSourceFiles(join(vendor, "ryu"), false),
@@ -181,7 +181,7 @@ export async function implicitDependencyProbeIncludes(rtDir: string): Promise<st
     nativeSourceFiles(join(vendor, "mbedtls", "library"), true),
     nativeSourceFiles(
       join(vendor, "zlib"),
-      false,
+      true,
       (name) => name.endsWith(".h") || zlibSources.has(name),
     ),
   ]);
@@ -195,14 +195,29 @@ export async function implicitDependencyProbeIncludes(rtDir: string): Promise<st
   return [...includes].sort();
 }
 
-function implicitDependencyIncludeDirective(include: string): string {
-  const targetCondition =
-    include === "<cpuid.h>" || include === "<immintrin.h>"
-      ? " && (defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_X64))"
-      : include === "<intrin.h>"
-        ? " && defined(_WIN32)"
-        : include === "<arm64_neon.h>" || include === "<arm_acle.h>" || include === "<arm_neon.h>"
-          ? " && (defined(__arm__) || defined(__aarch64__) || defined(_M_ARM) || defined(_M_ARM64))"
+/** Compiler-provided x86 headers: clang ships them for every target, so
+ * __has_include finds them on arm64 too, where including them is an
+ * #error. Covers the SSE/AVX intrinsic families (<emmintrin.h>,
+ * <immintrin.h>, ...), <x86intrin.h>, <x86gprintrin.h> and <cpuid.h>. */
+/** clang's x86 intrinsic headers: every <...intrin.h> but the Windows
+ * <intrin.h> (<xsaveintrin.h>, <immintrin.h>, ...), and <cpuid.h>. */
+function x86OnlyHeader(include: string): boolean {
+  return include === "<cpuid.h>" || /^<[a-z0-9_]+intrin\.h>$/.test(include);
+}
+
+/** One guarded line of the implicit-toolchain probe source: the header is
+ * included only when the compiler can find it and it belongs to the target
+ * being probed. clang ships <riscv_vector.h> for every target, and through
+ * clang 18 including it without the RISC-V vector extension is an #error. */
+export function implicitDependencyIncludeDirective(include: string): string {
+  const targetCondition = x86OnlyHeader(include)
+    ? " && (defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_X64))"
+    : include === "<intrin.h>"
+      ? " && defined(_WIN32)"
+      : include === "<arm64_neon.h>" || include === "<arm_acle.h>" || include === "<arm_neon.h>"
+        ? " && (defined(__arm__) || defined(__aarch64__) || defined(_M_ARM) || defined(_M_ARM64))"
+        : include === "<riscv_vector.h>"
+          ? " && defined(__riscv_vector)"
           : "";
   return `#if __has_include(${include})${targetCondition}\n#include ${include}\n#endif\n`;
 }
@@ -384,11 +399,8 @@ async function implicitToolchainFingerprintsFresh(
       ];
       const [dependencyResults, linker, assembler, compilerInvocation] = await Promise.all([
         Promise.all(
-          sources.map((source) =>
-            execFileAsync(compiler, [...probeArgs, source], {
-              cwd: probeDir,
-              maxBuffer: 16 * 1024 * 1024,
-            }),
+          sources.map((source, index) =>
+            probeIncludeDependencies(compiler, probeArgs, probeDir, source, sourceGroups[index]!),
           ),
         ),
         execFileAsync(compiler, [...prefix, "-print-prog-name=ld"], { cwd: probeDir }),
@@ -408,14 +420,7 @@ async function implicitToolchainFingerprintsFresh(
       const toolSpellings = [linker.stdout.trim(), assemblerSpelling].filter(
         (value, index, all) => value !== "" && all.indexOf(value) === index,
       );
-      const sourceSet = new Set(sources);
-      const dependencyPaths = [
-        ...new Set(
-          dependencyResults
-            .flatMap((dependencies) => parseMakeDependencies(dependencies.stdout))
-            .filter((path) => !sourceSet.has(path)),
-        ),
-      ].sort();
+      const dependencyPaths = [...new Set(dependencyResults.flat())].sort();
       probe = {
         compilerIdentity: compilerIdentity ?? `<unresolved>\0${compiler}`,
         compilerInvocation: normalizedProbeInvocation(compilerInvocation, probeDir),
@@ -496,6 +501,51 @@ async function implicitToolchainFingerprintsFresh(
       tools.filter((tool) => compileSpellingSet.has(tool.spelling)),
     ),
   };
+}
+
+/** Headers the dependency probe preprocesses at a time when it probes them
+ * one by one. */
+const SINGLE_HEADER_PROBES = 8;
+
+/** The files the compiler reads to preprocess `source`, a probe source that
+ * includes `includes`, apart from the probe's own sources. When the compiler
+ * rejects `source`, for example for a header it finds that is an #error
+ * outside its target (<riscv_vector.h> through clang 18 without the RISC-V
+ * vector extension), each header is preprocessed on its own, and a header
+ * that the compiler rejects on its own is left out, as an absent one is.
+ * Throws the compiler's error when it rejects every header. */
+async function probeIncludeDependencies(
+  compiler: string,
+  probeArgs: readonly string[],
+  probeDir: string,
+  source: string,
+  includes: readonly string[],
+): Promise<string[]> {
+  const dependencies = async (path: string): Promise<string[]> => {
+    const result = await execFileAsync(compiler, [...probeArgs, path], {
+      cwd: probeDir,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    return parseMakeDependencies(result.stdout).filter((dependency) => dependency !== path);
+  };
+  try {
+    return await dependencies(source);
+  } catch (error) {
+    const found: string[][] = [];
+    for (let start = 0; start < includes.length; start += SINGLE_HEADER_PROBES) {
+      const batch = includes.slice(start, start + SINGLE_HEADER_PROBES);
+      const results = await Promise.all(
+        batch.map(async (include, offset) => {
+          const single = `${source.slice(0, -2)}-${start + offset}.c`;
+          await writeFile(single, implicitDependencyIncludeDirective(include));
+          return dependencies(single).catch(() => null);
+        }),
+      );
+      for (const result of results) if (result !== null) found.push(result);
+    }
+    if (found.length === 0) throw error;
+    return found.flat();
+  }
 }
 
 const stableImplicitToolchainMemos = new Map<string, Promise<ImplicitToolchainFingerprints>>();

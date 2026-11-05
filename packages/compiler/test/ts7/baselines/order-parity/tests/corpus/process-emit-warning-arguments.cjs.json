@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/process-emit-warning-arguments.cjs"
+ ],
+ "diags": []
+}

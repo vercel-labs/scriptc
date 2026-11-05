@@ -3,10 +3,11 @@
  * nullable union (nullable-unions.ts) is the arm pointer itself: NULL for
  * its NULL-encoded unit arm and, in `C | null | undefined`, the immortal
  * NULLABLE_NULL sentinel for `null`. A shape union's value is likewise the
- * record pointer; its tag comes from the record's shape word. Every structural read of a union value
- * goes through here. */
+ * record pointer; its tag comes from the record's shape word. A class
+ * union's value is the instance pointer; its tag comes from the class id.
+ * Every structural read of a union value goes through here. */
 import type { BlockBuilder } from "./blocks.js";
-import { NULLABLE_NULL, shapeTagFn, type PointerUnion } from "./nullable-unions.js";
+import { NULLABLE_NULL, pointerTagFn, type PointerUnion } from "./nullable-unions.js";
 
 /** The i32 tag of a union value. `alias` is the tag word's alias
  * attachment (", !tbaa !N"), when the caller has one. */
@@ -17,8 +18,8 @@ export function emitUnionTag(
   alias = "",
 ): string {
   const t = B.tmp();
-  if (nullable?.repr === "shapes") {
-    B.line(`${t} = call i32 ${shapeTagFn(nullable.unionId)}(ptr ${u})`);
+  if (nullable !== null && nullable.repr !== "single") {
+    B.line(`${t} = call i32 ${pointerTagFn(nullable)}(ptr ${u})`);
     return t;
   }
   if (nullable) {
@@ -45,8 +46,9 @@ export function emitUnionTag(
  * the `null` sentinel). */
 export function emitNullablePresent(B: BlockBuilder, nullable: PointerUnion, u: string): string {
   const present = B.tmp();
-  if (nullable.repr === "shapes" && nullable.unitTag < 0) {
-    // No unit arm: every value is a record (NULL only as a pending dummy).
+  if (nullable.repr !== "single" && nullable.unitTag < 0) {
+    // No unit arm: every value is a record or an instance (NULL only as a
+    // pending dummy).
     B.line(`${present} = icmp ne ptr ${u}, null`);
     return present;
   }
@@ -67,7 +69,7 @@ export function emitNullableIsTag(
   tag: number,
   negated: boolean,
 ): string {
-  if (nullable.repr === "shapes" && tag !== nullable.unitTag && tag !== nullable.nullTag) {
+  if (nullable.repr !== "single" && tag !== nullable.unitTag && tag !== nullable.nullTag) {
     const actual = emitUnionTag(B, nullable, u),
       t = B.tmp();
     B.line(`${t} = icmp ${negated ? "ne" : "eq"} i32 ${actual}, ${tag}`);
@@ -104,8 +106,8 @@ export function emitUnionPeek(
 /** Text-template forms for helpers written as raw LLVM lines: `%out`
  * receives the tag / payload of `u`. */
 export function unionTagLines(nullable: PointerUnion | null, u: string, out: string): string[] {
-  if (nullable?.repr === "shapes")
-    return [`  ${out} = call i32 ${shapeTagFn(nullable.unionId)}(ptr ${u})`];
+  if (nullable !== null && nullable.repr !== "single")
+    return [`  ${out} = call i32 ${pointerTagFn(nullable)}(ptr ${u})`];
   if (nullable && nullable.nullTag < 0)
     return [
       `  ${out}.isnull = icmp eq ptr ${u}, null`,

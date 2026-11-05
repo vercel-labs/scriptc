@@ -1,29 +1,26 @@
-import { F64, type IrModule, type IrType, type IrUnionDef } from "../../ir/ir.js";
+import type { IrModule } from "../../ir/ir.js";
+import { everyModuleNode } from "../../ir/traverse.js";
+import type { LlvmTargetOptions } from "./emitter.js";
 
-/** Test helper: a Set of each union keeps it a tagged `%ScrUnion` box (Set
- * elements are runtime-inspected boxes), so stack-box tests exercise the
- * paths that nullable-pointer unions (nullable-unions.ts) bypass. A union of
- * records alone is a Set element by record identity, so for those the Set
- * holds a companion union with a number arm, which keeps the records out of
- * every shape union. */
-export function keepUnionsBoxed(mod: IrModule): IrModule {
-  const companions: IrUnionDef[] = [];
-  const keep = (mod.unions ?? []).map((union) => {
-    let elem = union.id;
-    if (union.arms.every((arm) => arm.kind === "record")) {
-      elem = `%keep.${union.id}`;
-      companions.push({ id: elem, arms: [...union.arms, F64] });
-    }
-    return {
-      id: `%g.keep.${union.id}`,
-      name: `keep_${union.id}`,
-      type: { kind: "set", elem: { kind: "union", unionId: elem } } as IrType,
-      mutable: false,
-    };
+/** Test helper: emission options that keep every union of `mod` a tagged
+ * `%ScrUnion` box, so stack-box tests exercise the paths that
+ * nullable-pointer unions (nullable-unions.ts) bypass. */
+export function keepUnionsBoxed(mod: IrModule): LlvmTargetOptions {
+  return { boxedUnions: new Set((mod.unions ?? []).map((union) => union.id)) };
+}
+
+/** Test helper: emission options that keep each union the Sets of `mod`
+ * hold a tagged box. Source tests of the stack-box paths declare a
+ * `Set<T | undefined>` of the union they exercise. */
+export function keepSetElementsBoxed(mod: IrModule): LlvmTargetOptions {
+  const boxedUnions = new Set<string>();
+  everyModuleNode(mod, {
+    expr: () => true,
+    stmt: () => true,
+    type: (type) => {
+      if (type.kind === "set" && type.elem.kind === "union") boxedUnions.add(type.elem.unionId);
+      return true;
+    },
   });
-  return {
-    ...mod,
-    unions: [...(mod.unions ?? []), ...companions],
-    globals: [...(mod.globals ?? []), ...keep],
-  };
+  return { boxedUnions };
 }

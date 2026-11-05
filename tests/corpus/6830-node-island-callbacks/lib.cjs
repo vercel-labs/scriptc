@@ -1,0 +1,40 @@
+"use strict";
+const { EventEmitter } = require("node:events");
+
+class Bus extends EventEmitter {
+  fire(n) {
+    const delivered = this.emit("data", n, `item-${n}`);
+    return delivered;
+  }
+}
+
+function each(items, fn) {
+  const out = [];
+  for (let i = 0; i < items.length; i++) out.push(fn(items[i], i));
+  return out;
+}
+
+function compute(n, callback) {
+  setTimeout(() => {
+    if (n < 0) callback(new RangeError(`negative: ${n}`));
+    else callback(null, n * n);
+  }, 5);
+}
+
+function guarded(fn, value) {
+  try {
+    return `ok ${fn(value)}`;
+  } catch (e) {
+    return `caught ${e.name}: ${e.message}`;
+  }
+}
+
+function twice(fn) {
+  return [fn(1), fn(2)];
+}
+
+function same(a, b) {
+  return a === b;
+}
+
+module.exports = { Bus, each, compute, guarded, twice, same };

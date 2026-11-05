@@ -40,6 +40,7 @@ async function compileAndRun(
   source: string,
   ext = "ts",
   extraFiles: Record<string, string> = {},
+  compileOptions: { nodeIslands?: { mode: "off" } } = {},
 ): Promise<RunResult> {
   const key = createHash("sha256")
     .update(source)
@@ -66,6 +67,7 @@ async function compileAndRun(
     outDir,
     sanitize,
     backend: "llvm",
+    ...compileOptions,
   });
   if (!result.ok) {
     throw new Error(
@@ -254,8 +256,8 @@ direct(new Base());
         "true TypeError: Value is not an instance of 'Sub'",
         "true TypeError: Value is not an instance of 'Sub'",
         "ok 0",
-        "true TypeError: undefined is not representable in the target union (a value narrowed or asserted past it still held it)",
-        "true TypeError: undefined is not representable in the target union (a value narrowed or asserted past it still held it)",
+        "true TypeError: Cannot read properties of undefined (reading 'kind')",
+        "true TypeError: Cannot read properties of undefined (reading 'kind')",
         "",
       ].join("\n"),
     );
@@ -479,6 +481,11 @@ console.log(require("./wrap.cjs").read(function () { return this.n; }));
 `,
         "cjs",
         { "lib.cjs": `${publish}\nexports.n = 7;\n`, "wrap.cjs": wrapper },
+        // These fixtures pin the receiver proof the native lowering reports.
+        // The fixture library reads `this`, which makes it a sloppy-mode Node
+        // island under the default policy; islands are not the behavior under
+        // test here.
+        { nodeIslands: { mode: "off" } },
       );
       expect(r.exitCode).toBe(1);
       expect(r.stdout).toBe("before\n");
@@ -2162,13 +2169,68 @@ console.log(count(require("./lib.cjs")));
 });
 
 describe("builtin constructor values (JS lane)", () => {
+  test("constructing one without a lowering keeps its fence, not a token-spelled TypeError", async () => {
+    // `AsyncResource` has no lowering, so a JavaScript source reads the
+    // import as the identifier chokepoint's identity token: an IR string
+    // whose text Node never produces. A String's construction does throw
+    // "… is not a constructor", but from the token that reports a class
+    // Node constructs as if the program could see the carrier — the wrong
+    // error class AND a fabricated message. The construction keeps the
+    // named refusal instead.
+    const r = await compileAndRun(
+      "builtin-token-construction",
+      `import { AsyncResource } from "node:async_hooks";
+function run() {
+  return new AsyncResource("demo");
+}
+console.log("before");
+run();
+`,
+      "mjs",
+    );
+    expect(r.stdout).toBe("before\n");
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: constructing values other than classes declared in the program is not supported yet \[SC1090 at .*builtin-token-construction\.mjs:3\]\n$/,
+    );
+  });
+
+  test("a program's own string casts keep Node's answers at the same sites", async () => {
+    // The token is recognized by the text it interns, so a real string the
+    // program widens to `any` is no token: every object-coercion site runs
+    // and answers exactly as Node does.
+    const r = await compileAndRun(
+      "string-cast-object-coercion",
+      `"use strict";
+const s: string = "hello";
+try { new (s as any)(); } catch (e) { console.log("new", "threw", (e as any).constructor.name + ": " + (e as any).message); }
+try { console.log("in", "value", "x" in (s as any)); } catch (e) { console.log("in", "threw", (e as any).constructor.name + ": " + (e as any).message); }
+try { delete (s as any).x; console.log("delete", "value", "ok"); } catch (e) { console.log("delete", "threw", (e as any).constructor.name + ": " + (e as any).message); }
+try { console.log("delete index", "value", String(delete (s as any)[0])); } catch (e) { console.log("delete index", "threw", (e as any).constructor.name + ": " + (e as any).message); }
+`,
+    );
+    expect(r.stderr).toBe("");
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "new threw TypeError: s as any is not a constructor",
+        "in threw TypeError: Cannot use 'in' operator to search for 'x' in hello",
+        "delete value ok",
+        "delete index threw TypeError: Cannot delete property '0' of [object String]",
+        "",
+      ].join("\n"),
+    );
+  });
+
   test("members without a lowering stay refused instead of reading undefined", async () => {
     // Builtin constructors read as interned function values that model only
     // name, length and constructor. Every other static member or prototype
     // read (direct, bracketed, through an alias or globalThis), and
     // reflection on or redefinition of their members, must stay a located
     // SC2020/SC1090 refusal, never an undefined or otherwise wrong value.
-    // `key in Ctor` answers from the constructor's fixed keys.
+    // Date.prototype is the one value: it reads as the prototype object, so
+    // a direct read, a member read through it and reflection on it answer as
+    // Node does. `key in Ctor` answers from the constructor's fixed keys.
     // Test262 lost 769 refusals to undefined reads before this was pinned.
     const reads = [
       ["Map.prototype", "Map.prototype"],
@@ -2195,6 +2257,12 @@ describe("builtin constructor values (JS lane)", () => {
       ["defineProperty(Promise)", 'Object.defineProperty(Promise, "resolve", { value: 1 })'],
       ["hasOwnProperty.call(Map)", 'Object.prototype.hasOwnProperty.call(Map, "groupBy")'],
     ] as const;
+    // The reads that answer from Date.prototype's object rather than refusing.
+    const readsAsValue = new Map<string, string>([
+      ["Date.prototype", "read object"],
+      ["Date.prototype.getYear", "read function"],
+      ["isExtensible(Date.prototype)", "read boolean"],
+    ]);
     const source = `"use strict";
 const MapAlias = Map;
 const DateAlias = Date;
@@ -2215,13 +2283,16 @@ console.log("prototype" in Map, "groupBy" in Map, "captureStackTrace" in Error, 
     expect(r.exitCode).toBe(0);
     const lines = r.stdout.trimEnd().split("\n");
     expect(lines.slice(0, reads.length)).toEqual(
-      reads.map(([label], i) =>
-        expect.stringMatching(
-          new RegExp(
-            `^${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} refused SC(2020|1090) line ${i + 9}$`,
-          ),
-        ),
-      ),
+      reads.map(([label], i) => {
+        const read = readsAsValue.get(label);
+        return read === undefined
+          ? expect.stringMatching(
+              new RegExp(
+                `^${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} refused SC(2020|1090) line ${i + 9}$`,
+              ),
+            )
+          : `${label} ${read}`;
+      }),
     );
     // Promise.prototype reads as an object holding the runtime's methods,
     // and `in` on a builtin constructor answers from its fixed keys.
@@ -2231,6 +2302,40 @@ console.log("prototype" in Map, "groupBy" in Map, "captureStackTrace" in Error, 
       "object function true",
       "true true true false",
     ]);
+  });
+});
+
+// `Date.prototype` reads as the prototype object; a WRITE into it cannot be
+// observed by a typed Date, so every writer keeps the SC1090 fence it had
+// before the prototype had a value — including the plural defineProperties,
+// which the dynamic path would otherwise apply to the prototype object while
+// `new Date(0).getTime()` kept answering the builtin method.
+describe("standard library prototype writes (JS lane)", () => {
+  test("defineProperties keeps the fence, like defineProperty", async () => {
+    const r = await compileAndRun(
+      "date-prototype-write",
+      `"use strict";
+function refuse(label, run) {
+  try {
+    run();
+    console.log(label, "wrote");
+  } catch (e) {
+    console.log(label, /\\[(SC\\d{4}) at/.exec(e.message)[1]);
+  }
+}
+refuse("defineProperties", () =>
+  Object.defineProperties(Date.prototype, { getTime: { value: () => 42 } }),
+);
+refuse("defineProperty", () => Object.defineProperty(Date.prototype, "getTime", { value: () => 42 }));
+refuse("assign", () => Object.assign(Date.prototype, { getTime: () => 42 }));
+console.log("getTime", new Date(0).getTime());
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      "defineProperties SC1090\ndefineProperty SC1090\nassign SC1090\ngetTime 0\n",
+    );
   });
 });
 
@@ -2509,9 +2614,9 @@ console.log("unreachable");
 
 // The runtime formatter (format strings known only at run time, spread
 // arguments, options objects) throws a coded SC2020 error for renderings
-// it has no lowering for.
+// it has no lowering for, and %o of an object renders its hidden entries.
 describe("runtime format refusals", () => {
-  test("%s of a class instance with toString, %o of objects, colored errors and options", async () => {
+  test("%s of a class instance with toString, colored errors and options", async () => {
     const r = await compileAndRun(
       "format-runtime-refusals",
       `import * as util from "node:util";
@@ -2528,6 +2633,7 @@ const attempts: Array<() => string> = [
   () => util.format(o, { a: 1 }),
   () => util.formatWithOptions({ colors: true }, s, "x", new Error("e")),
   () => util.formatWithOptions({ maxArrayLength: 1 }, [1, 2]),
+  () => util.formatWithOptions({ maxArrayLength: 1.5 }, [1, 2]),
   () => util.formatWithOptions({ compact: true }, [1, 2]),
 ];
 for (const attempt of attempts) {
@@ -2544,11 +2650,53 @@ console.log(util.format(s, { a: 1 }), util.formatWithOptions({ maxArrayLength: 1
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe(
       "Error SC2020 util.format %s of a class instance whose class defines toString has no lowering\n" +
-        "Error SC2020 util.format %o of objects renders hidden properties, which have no lowering; use %O\n" +
+        "{ a: 1 }\n" +
         "Error SC2020 colored inspect output of Error values has no lowering\n" +
-        "Error SC2020 util.formatWithOptions with the maxArrayLength option has no lowering\n" +
+        "[ 1, ... 1 more item ]\n" +
+        "Error SC2020 util.formatWithOptions with this maxArrayLength option has no lowering (maxArrayLength must be a non-negative integer or null)\n" +
         "Error SC2020 util.formatWithOptions with this compact option has no lowering (compact must be false or a number)\n" +
         "{ a: 1 } [ 1, 2 ]\n",
+    );
+    expect(r.stderr).toBe("");
+  });
+});
+
+// With customInspect: false (console.dir's default) Node prints a codec's
+// internal slots, which have no lowering; past the depth limit it prints
+// the class placeholder.
+describe("TextDecoder and TextEncoder with customInspect: false", () => {
+  test("refuse within the depth limit and print [cls] past it", async () => {
+    const r = await compileAndRun(
+      "codec-custom-inspect-false",
+      `import * as util from "node:util";
+const decoder = new TextDecoder();
+const encoder = new TextEncoder();
+const attempts: Array<() => string> = [
+  () => util.inspect(decoder, { customInspect: false }),
+  () => util.inspect([encoder], { customInspect: false }),
+  () => {
+    console.dir(decoder);
+    return "printed";
+  },
+];
+for (const attempt of attempts) {
+  try {
+    console.log(attempt());
+  } catch (error) {
+    console.log((error as Error).message);
+  }
+}
+console.log(util.inspect({ a: { b: { c: decoder, d: encoder } } }, { customInspect: false }));
+console.log(util.inspect(decoder, { customInspect: true }));
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      "util.inspect of a TextDecoder with customInspect: false is not supported yet\n" +
+        "util.inspect of a TextEncoder with customInspect: false is not supported yet\n" +
+        "util.inspect of a TextDecoder with customInspect: false is not supported yet\n" +
+        "{ a: { b: { c: [TextDecoder], d: [TextEncoder] } } }\n" +
+        "TextDecoder { encoding: 'utf-8', fatal: false, ignoreBOM: false }\n",
     );
     expect(r.stderr).toBe("");
   });
@@ -2600,7 +2748,8 @@ console.log(words.length);
 // cannot answer as Node does throw SC2020: calling or constructing it
 // through the value (Node reports DEP0005 by the caller's location), its
 // prototype as a whole, copyBytesFrom and of, and Buffer.prototype members
-// that are inherited, symbol-keyed or called on other receivers.
+// that are inherited, symbol-keyed or called on a receiver that is neither
+// a Buffer nor a Uint8Array.
 describe("Buffer value refusals", () => {
   test("unmodeled Buffer value forms throw SC2020", async () => {
     const r = await compileAndRun(
@@ -2616,6 +2765,7 @@ const runs = [
   () => Buffer.prototype.map,
   () => Buffer.prototype[Symbol.iterator],
   () => Buffer.prototype.readUInt8.call(new Uint8Array(2), 0),
+  () => Buffer.prototype.readUInt8.call({}, 0),
 ];
 for (const run of runs) {
   try {
@@ -2625,6 +2775,7 @@ for (const run of runs) {
     console.log(e.name, e.code, e.message);
   }
 }
+console.log("u8", Buffer.prototype.readUInt8.call(new Uint8Array([7, 8]), 1));
 `,
       "cjs",
     );
@@ -2638,7 +2789,9 @@ for (const run of runs) {
         "Error SC2020 Buffer.of through a stored Buffer value is not supported yet",
         "Error SC2020 Buffer.prototype.map is not supported yet",
         "Error SC2020 Buffer.prototype members keyed by symbols are not supported yet",
+        "ran",
         "Error SC2020 Buffer.prototype.readUInt8 on a receiver that is not a Buffer is not supported yet",
+        "u8 8",
         "",
       ].join("\n"),
     );
@@ -2671,6 +2824,200 @@ console.log(new B().a());
     expect(r.stdout).toBe("same prototype A.a\n");
     expect(r.stderr).toBe(
       "Uncaught Error: Object.setPrototypeOf with this value is not supported yet\n",
+    );
+  });
+});
+
+// `{ ...maybe }` over a `T | undefined` source the checker PROVED present
+// (an indexed read under indexed-access strictness, a callback parameter
+// typed by the runtime-optional record ABI): the spread copies the record as
+// Node does. When the source is actually absent, Node copies nothing and
+// leaves the field off the object; a required destination field has no
+// absent representation, so the extraction throws the catchable TypeError
+// instead of returning a record with an unset field — the lying-assertion
+// stance this pin owns.
+describe("object spread of a proven-present runtime-optional source", () => {
+  test("a present source copies like Node; an absent one throws the TypeError", async () => {
+    const r = await compileAndRun(
+      "runtime-optional-spread",
+      `interface Rgb { r: number; g: number; b: number }
+const BASIC: Rgb[] = [
+  { r: 1, g: 2, b: 3 },
+  { r: 4, g: 5, b: 6 },
+];
+function basicColor(index: number): Rgb {
+  if (index < 16) return { ...BASIC[index] };
+  return { r: 0, g: 0, b: 0 };
+}
+console.log(JSON.stringify(basicColor(1)));
+try {
+  console.log(JSON.stringify(basicColor(5)));
+} catch (e) {
+  console.log("caught:", (e as Error).name, "-", (e as Error).message);
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      '{"r":4,"g":5,"b":6}\n' +
+        "caught: TypeError - undefined is not representable in the target union (a value narrowed or asserted past it still held it)\n",
+    );
+    expect(r.stderr).toBe("");
+  });
+
+  test("an optional destination keeps the no-copy arm", async () => {
+    // The absent arm HAS a representation here (an optional field), so the
+    // copy stays a no-op and Node's own output stands.
+    const r = await compileAndRun(
+      "runtime-optional-spread-optional",
+      `interface Entry { path: string; isDirectory: boolean }
+interface Row { path?: string; isDirectory?: boolean; index: number }
+const entries: Entry[] = [{ path: "src", isDirectory: true }];
+const rows = entries.map((entry, index): Row => ({ ...entry, index }));
+console.log(JSON.stringify(rows));
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe('[{"path":"src","isDirectory":true,"index":0}]\n');
+    expect(r.stderr).toBe("");
+  });
+});
+
+// A Node 24 global native code does not provide answers the constructor Node
+// has (host-global-values.ts): a READ never throws, while constructing or
+// calling the value refuses with the same SC2020 fence the direct use
+// reports. A JavaScript source defers that refusal to the operation that
+// reaches it, which is what lets a module load — effect's Schema reads
+// `globalThis.FormData` at module init — and only throws if the class is
+// ever actually constructed.
+describe("host-global constructor values", () => {
+  test("an eager JavaScript read answers the constructor without throwing", async () => {
+    const r = await compileAndRun(
+      "host-global-eager-read",
+      `const Eager = globalThis.FormData;
+console.log(typeof Eager, Eager.name, Eager.length);
+console.log({} instanceof globalThis.FormData);
+console.log(Eager.prototype.constructor === Eager);
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("function FormData 0\nfalse\ntrue\n");
+    expect(r.stderr).toBe("");
+  });
+
+  test("the value refuses construction wherever it is constructed", async () => {
+    const r = await compileAndRun(
+      "host-global-construction",
+      `const Ctor = globalThis.FormData;
+try {
+  new Ctor();
+  console.log("constructed");
+} catch (error) {
+  console.log(String(error));
+}
+console.log("still running");
+`,
+      "cjs",
+    );
+    // The binding holds the value the read answered, so constructing it
+    // through the binding throws the same fence, blamed at the construction.
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toMatch(
+      /^Error: 'FormData' is a Node global that native code does not provide \[SC2020 at .*host-global-construction\.cjs:3\]\nstill running\n$/,
+    );
+    expect(r.stderr).toBe("");
+  });
+
+  test("a member the value does not carry refuses the read", async () => {
+    const r = await compileAndRun(
+      "host-global-member-read",
+      `console.log(typeof globalThis.WebSocket.name);
+console.log("before");
+console.log(globalThis.WebSocket.OPEN);
+console.log("after");
+`,
+      "cjs",
+    );
+    // `name` is a function intrinsic the value carries; `OPEN` is the
+    // class's own static member, which native code does not have.
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("string\nbefore\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: 'WebSocket' is a Node global that native code does not provide \[SC2020 at .*host-global-member-read\.cjs:3\]\n$/,
+    );
+  });
+
+  test("a method on the value's prototype refuses the read", async () => {
+    const r = await compileAndRun(
+      "host-global-prototype-member",
+      `console.log(typeof globalThis.FormData.prototype.constructor);
+console.log("before");
+console.log(globalThis.FormData.prototype.append);
+console.log("after");
+`,
+      "cjs",
+    );
+    // The prototype carries `constructor`; `append` is one of the class's
+    // instance methods, which native code does not have.
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("function\nbefore\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: 'FormData' is a Node global that native code does not provide \[SC2020 at .*host-global-prototype-member\.cjs:3\]\n$/,
+    );
+  });
+
+  test("a member read through a constant holding the value refuses at its own site", async () => {
+    const r = await compileAndRun(
+      "host-global-alias-member-read",
+      `const Ctor = globalThis.WebSocket;
+console.log(Ctor.name);
+console.log("before");
+console.log(Ctor.OPEN);
+console.log("after");
+`,
+      "cjs",
+    );
+    // The constant holds the value the read answered, so its static member
+    // is as unavailable as the direct read's.
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("WebSocket\nbefore\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: 'WebSocket' is a Node global that native code does not provide \[SC2020 at .*host-global-alias-member-read\.cjs:4\]\n$/,
+    );
+  });
+
+  test("a method read through a constant holding the prototype refuses", async () => {
+    const r = await compileAndRun(
+      "host-global-prototype-alias",
+      `const body = globalThis.FormData.prototype;
+console.log(typeof body.constructor);
+console.log("before");
+console.log(body.append);
+console.log("after");
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("function\nbefore\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: 'FormData' is a Node global that native code does not provide \[SC2020 at .*host-global-prototype-alias\.cjs:4\]\n$/,
+    );
+  });
+
+  test("a deferred construction fence names the SC2020 site", async () => {
+    const r = await compileAndRun(
+      "host-global-construction-fence",
+      `console.log("before");
+new globalThis.WebSocket("ws://localhost:8080");
+console.log("after");
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("before\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: 'WebSocket' is a Node global that native code does not provide \[SC2020 at .*host-global-construction-fence\.cjs:2\]\n$/,
     );
   });
 });

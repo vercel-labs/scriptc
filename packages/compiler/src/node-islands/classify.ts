@@ -25,7 +25,7 @@ const MESSAGE_REASONS: { code: string; pattern: RegExp; reason: string }[] = [
     pattern: /createRequire's require with this argument shape/,
     reason: "dynamic-require",
   },
-  { code: "SC2020", pattern: /native addon/, reason: "native-addon" },
+  { code: "SC2020", pattern: /^native addon /, reason: "native-addon" },
   {
     code: "SC2020",
     pattern: /through require\.cache|require\.extensions|Module\._|module\.register/,

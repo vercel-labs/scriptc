@@ -1,4 +1,5 @@
 import * as ts from "../ts7/adapter.js";
+import { heritageElementTarget } from "../heritage-elements.js";
 import { InternalCompilerError } from "../../errors.js";
 import { typeEquals } from "../../ir/ir.js";
 import type { IrType } from "../../ir/ir.js";
@@ -674,8 +675,9 @@ export class NarrowingStability {
       if (node.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.Decorator)) return true;
       for (const clause of node.heritageClauses?.nodes ?? []) {
         for (const heritage of clause.types.nodes) {
-          const e = heritage.expression;
-          if (!ts.isIdentifier(e) && !ts.isPropertyAccessExpression(e)) return true;
+          const e = heritageElementTarget(heritage);
+          if (!ts.isIdentifier(e) && !ts.isPropertyAccessExpression(e) && !ts.isQualifiedName(e))
+            return true;
         }
       }
       return node.members.nodes.some(

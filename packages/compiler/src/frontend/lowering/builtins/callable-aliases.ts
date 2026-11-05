@@ -1,3 +1,4 @@
+import { isIslandPromisifyCall } from "../lower-node-island.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
@@ -24,6 +25,8 @@ export function isPromisifyCall(lowerer: Lowerer, init: ts.Expression): ts.CallE
       ? lowerer.builtinMemberOf(e.expression)
       : null;
   if (!bi || bi.module !== "util" || bi.member !== "promisify") return null;
+  // util.promisify of an island function is an island call (NI-5b).
+  if (isIslandPromisifyCall(lowerer, e)) return null;
   return e;
 }
 

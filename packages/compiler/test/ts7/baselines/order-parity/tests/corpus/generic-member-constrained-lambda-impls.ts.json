@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/generic-member-constrained-lambda-impls.ts"
+ ],
+ "diags": []
+}

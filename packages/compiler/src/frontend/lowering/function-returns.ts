@@ -1,6 +1,7 @@
 import { iterableGeneratorArm } from "./iterable-values.js";
 import { mapAsyncGeneratorAnnotation } from "../type-mapper.js";
 import { dynUndefinedExpr } from "../../ir/build.js";
+import { mapStmtChildren } from "../../ir/traverse.js";
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import {
@@ -154,6 +155,22 @@ function returnsOpenJsBinding(lowerer: Lowerer, decl: ts.SignatureDeclaration): 
   return open;
 }
 
+/** `type` when it is the ambient Promise, or its one Promise arm when it is
+ * a union with exactly one; undefined for anything else (`void`, `unknown`,
+ * a PromiseLike). */
+function promiseArm(lowerer: Lowerer, type: ts.Type): ts.Type | undefined {
+  const isPromise = (t: ts.Type): boolean => {
+    const symbol = t.getSymbol();
+    return (
+      symbol !== undefined && ts.symbolName(symbol) === "Promise" && lowerer.isStdlibSymbol(symbol)
+    );
+  };
+  if (isPromise(type)) return type;
+  if (!type.isUnionType()) return undefined;
+  const arms = ts.constituentTypes(type).filter(isPromise);
+  return arms.length === 1 ? arms[0] : undefined;
+}
+
 /** Map a declaration's return contract while retaining JavaScript
  * inference fallbacks. Diagnostics preserve the caller's blame node. */
 export function declaredReturnType(
@@ -164,7 +181,39 @@ export function declaredReturnType(
   if (isJsSourceFile(ts.getSourceFileOfNode(decl)) && ts.isGetAccessorDeclaration(decl)) return DYN;
   const sig = lowerer.checker.getSignatureFromDeclaration(decl);
   if (!sig) lowerer.unsupported("SC1090", decl, "this function form");
-  const retTsType = lowerer.checker.getReturnTypeOfSignature(sig);
+  let retTsType = lowerer.checker.getReturnTypeOfSignature(sig);
+  // An ASYNC object-literal method with no return annotation and a
+  // contextual signature takes its return from that signature, as an async
+  // arrow does: the body's `return` builds at the contextually typed
+  // literal, so the checker's own inferred literal (narrower than the
+  // contextual record) could never hold it.
+  if (
+    ts.isMethodDeclaration(decl) &&
+    ts.isObjectLiteralExpression(decl.parent) &&
+    decl.type === undefined &&
+    decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true
+  ) {
+    const contextual = lowerer.checker.getContextualType(decl.parent);
+    const slot =
+      contextual === undefined || (!ts.isIdentifier(decl.name) && !ts.isStringLiteral(decl.name))
+        ? undefined
+        : lowerer.checker.getPropertyOfType(
+            lowerer.checker.getNonNullableType(contextual),
+            decl.name.text,
+          );
+    const signatures =
+      slot === undefined
+        ? []
+        : lowerer.checker.getCallSignatures(lowerer.checker.getTypeOfSymbol(slot));
+    // A slot whose return is not a promise (`() => void`, or a union such
+    // as `Promise<T> | void`) contributes only its promise: an async
+    // method returns one whatever the slot says.
+    const promise =
+      signatures.length === 1
+        ? promiseArm(lowerer, lowerer.checker.getReturnTypeOfSignature(signatures[0]!))
+        : undefined;
+    if (promise !== undefined) retTsType = promise;
+  }
   // An inferred null/undefined return in JS can read a mutable checked-value
   // field. Keep the actual value instead of restricting it to the initializer.
   if (
@@ -502,6 +551,7 @@ export function resolveInferredReturn(
   // The wrap pass: settle every recorded return onto `final`, in place.
   // Write through the stored union arm: optional-field widening on a
   // local alias can otherwise introduce a record copy in native builds.
+  const fenced = new Map<IrStmt, IrStmt>();
   for (const e of infer.entries) {
     if (e.stmt.kind !== "return") continue;
     const diagsBefore = lowerer.diags.length;
@@ -530,22 +580,48 @@ export function resolveInferredReturn(
       // per-statement deferral, applied to one return of an instance).
       const captured = lowerer.diags.splice(diagsBefore);
       const ice = captured.filter((d) => d.code === "SC9001");
-      if (ice.length > 0) lowerer.diags.push(...ice);
-      lowerer.runtimeFences.push(...captured.filter((d) => d.code !== "SC9001"));
+      for (const d of ice) lowerer.diags.push(d);
+      for (const d of captured) if (d.code !== "SC9001") lowerer.runtimeFences.push(d);
       const first = captured.find((d) => d.code !== "SC9001");
-      // Property writes, not literal element writes: the class method
-      // census reads `x["kind"] = …` as a possible write to every method
-      // named `kind`, which would make those methods dynamic in native builds.
-      const mutable = e.stmt as unknown as Record<string, unknown>;
-      delete mutable.value;
-      mutable.kind = "runtimeFence";
-      mutable.code = first?.code ?? "SC1090";
-      mutable.message = first
-        ? `${first.message} [${first.code}]`
-        : "this return value has no lowering onto the instance's settled return type [SC1090]";
+      // The fence is a NEW statement. A node's kind is a union arm, and in a
+      // native build the tag cannot be reassigned through a dynamic view of
+      // the node (the `return` node keeps its fields: `delete` of a required
+      // field throws there). Record the replacement and swap it into the body
+      // once every entry is settled, below.
+      fenced.set(e.stmt, {
+        kind: "runtimeFence",
+        code: first?.code ?? "SC1090",
+        message: first
+          ? `${first.message} [${first.code}]`
+          : "this return value has no lowering onto the instance's settled return type [SC1090]",
+        loc: e.stmt.loc,
+      });
     }
   }
+  if (fenced.size > 0) replaceFencedReturns(body, fenced);
   return final;
+}
+
+/** Puts each fence in place of its return. Only the nodes on a path to a
+ * fenced return are copied: every other node keeps its identity, because
+ * later passes rewrite the body in place. */
+function replaceFencedReturns(body: IrStmt[], fenced: ReadonlyMap<IrStmt, IrStmt>): void {
+  const stmt = (s: IrStmt): IrStmt => {
+    const fence = fenced.get(s);
+    if (fence !== undefined) return fence;
+    let changed = false;
+    const copy = mapStmtChildren(
+      s,
+      (e) => e,
+      (next) => {
+        const mapped = stmt(next);
+        if (mapped !== next) changed = true;
+        return mapped;
+      },
+    );
+    return changed ? copy : s;
+  };
+  for (let i = 0; i < body.length; i += 1) body[i] = stmt(body[i]!);
 }
 
 /** The declaration's real Block body. tsgo's remote child indexing can hand

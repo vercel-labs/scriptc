@@ -41,6 +41,8 @@ import * as ts from "../ts7/adapter.js";
 import { isPackageShimFile, isShimIntrinsicName, packageShimFor } from "../package-shims.js";
 import type { Lowerer } from "./lowerer.js";
 import { boundIdentifiersOf } from "./lowerer.js";
+import { NODE_GLOBALS_WITHOUT_NATIVE } from "./host-globals.js";
+import { isIslandImportBinding } from "./lower-node-island.js";
 import type { FileParts } from "./lower-modules.js";
 import { isCjsJsFile, isJsSourceFile, locOf, resolveImport } from "../program.js";
 import { F64, type IrExpr, type IrStmt, type IrType, STRING } from "../../ir/ir.js";
@@ -477,6 +479,11 @@ export function ambientUndefVarRootOf(lowerer: Lowerer, e: ts.Expression): ts.Id
     break;
   }
   if (!ts.isIdentifier(root)) return null;
+  // A Node 24 global the compiler supplies a value for (host-global-values.ts):
+  // Node defines it, so the root is not an ambient-undefined name and the
+  // chain's ordinary lowering reads that value. A call or `new` over it is the
+  // one use that refuses, reported by the identifier/member read hook.
+  if (NODE_GLOBALS_WITHOUT_NATIVE.has(root.text)) return null;
   // PROBE resolution: every caller asks "is this chain ambient-rooted?"
   // and proceeds to its ordinary lowering on a null answer — so the
   // question must not carry resolution's side effects. Bare
@@ -676,6 +683,36 @@ export function ambientUndefReadType(lowerer: Lowerer, node: ts.Node): IrType | 
   return null;
 }
 
+/** The symbol of a variable a program file declares ambiently without
+ * an initializer (`declare const Bun: ...`), which nothing defines: Node
+ * erases the declaration, so a read throws the catchable ReferenceError
+ * "<name> is not defined" and typeof answers "undefined". Null for other
+ * identifiers, including the standard library's declarations, which
+ * describe real runtime values. */
+export function ambientUndefinedVarSymbolOf(
+  lowerer: Lowerer,
+  ident: ts.Identifier,
+): ts.Symbol | null {
+  // An island package's `declare const` is defined by its JavaScript, which
+  // runs in the island.
+  if (isIslandImportBinding(lowerer, ident)) return null;
+  // A Node 24 global (host-globals.ts): Node defines it and the compiler
+  // answers its reads with the constructor value (host-global-values.ts).
+  if (NODE_GLOBALS_WITHOUT_NATIVE.has(ident.text)) return null;
+  const sym = lowerer.resolveValueSymbol(ident);
+  const decl = sym ? sym.declarations[0] : undefined;
+  if (
+    sym === null ||
+    decl === undefined ||
+    lowerer.isStdlibSymbol(sym) ||
+    !ts.isVariableDeclaration(decl) ||
+    decl.initializer !== undefined ||
+    !(ts.getCombinedModifierFlags(decl) & ts.ModifierFlags.Ambient)
+  )
+    return null;
+  return sym;
+}
+
 /** The symbol behind `ident` when it names an ambient `declare function`
  * NOTHING defines: every function declaration on the symbol is body-less
  * and ambient in a USER program file (merge partners — the fundule's
@@ -723,6 +760,12 @@ export function nsUndefRead(
   node: ts.Node,
   type: IrType,
 ): IrExpr {
+  // A root that is really a Node 24 global the native runtime does not
+  // provide (host-globals.ts): Node's read succeeds, so the ReferenceError
+  // this would emit is the wrong answer. Reads answer the constructor value
+  // before reaching here (host-global-values.ts); a use that still lands on
+  // this path refuses (SC2020, reason "host-global").
+  if (NODE_GLOBALS_WITHOUT_NATIVE.has(rootName)) lowerer.hostGlobalFence(rootName, node);
   const loc = locOf(node);
   return {
     kind: "libCall",

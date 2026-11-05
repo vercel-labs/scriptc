@@ -1,0 +1,1 @@
+{ "name": "deferral-getter", "private": true, "type": "module", "scriptc": { "packages": { "counter-pkg": "node" } } }

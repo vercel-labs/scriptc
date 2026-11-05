@@ -1,0 +1,1 @@
+{ "name": "island-deferred-env", "private": true, "type": "module", "scriptc": { "packages": { "env-pkg": "node" } } }

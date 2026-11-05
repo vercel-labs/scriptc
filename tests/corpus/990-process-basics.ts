@@ -31,3 +31,10 @@ console.log(nonEmpty === process.argv.length);
 const cwd = process.cwd();
 console.log(cwd);
 console.log(cwd === process.cwd(), cwd.startsWith("/"));
+
+// A stdlib-global snapshot (`const proc = globalThis.process`) lowers to
+// alias plumbing — no storage, no code — and reads through it resolve to
+// the global itself.
+const proc = globalThis.process;
+console.log(proc.pid === process.pid, proc.platform === process.platform);
+console.log(proc.argv === process.argv);

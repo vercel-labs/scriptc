@@ -1,0 +1,1 @@
+{ "name": "island-deferred-require", "private": true, "type": "module", "scriptc": { "packages": { "timer-pkg": "node" } } }

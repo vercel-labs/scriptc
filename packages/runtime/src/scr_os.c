@@ -745,9 +745,8 @@ double scr_os_cpus_field(double i, double field) {
 
 static void scr_os_constant(ScrDyn *o, const char *name, double value) {
   scr_dyn_obj_set(o, name, strlen(name), scr_dyn_new_num(value));
-  ScrDynEntry *entry = &o->v.obj.entries[o->v.obj.len - 1];
-  entry->writable = false;
-  entry->configurable = false;
+  size_t last = scr_dyn_obj_count(o) - 1;
+  scr_dyn_obj_set_attrs_at(o, last, false, scr_dyn_obj_prop_at(o, last).enumerable, false);
 }
 #define SCR_OS_CONSTANT(o, name) scr_os_constant((o), #name, (double)(name))
 
@@ -1514,10 +1513,10 @@ ScrDyn *scr_node_constants(const ScrDyn *crypto_table) {
   scr_os_signal_constants(o);
   scr_fs_constants(o);
   if (crypto && crypto->kind == SCR_DYN_OBJ) {
-    for (size_t i = 0; i < crypto->v.obj.len; i++) {
-      const ScrDynEntry *entry = &crypto->v.obj.entries[i];
-      if (entry->accessor || !entry->value) continue;
-      scr_dyn_obj_set(o, entry->key, entry->key_len, scr_dyn_retain(entry->value));
+    for (size_t i = 0; i < scr_dyn_obj_count(crypto); i++) {
+      ScrDynProp entry = scr_dyn_obj_prop_at(crypto, i);
+      if (entry.accessor || !entry.value) continue;
+      scr_dyn_obj_set(o, entry.key, entry.key_len, scr_dyn_retain(entry.value));
     }
   }
   scr_dyn_release(crypto);
@@ -1718,10 +1717,12 @@ double scr_util_signal_exit_code(const ScrDyn *code) {
     ScrJsonBuf reason;
     scr_jb_init(&reason);
     scr_jb_puts(&reason, "must be one of: ");
-    for (size_t i = 0; i < signals->v.obj.len; i++) {
+    for (size_t i = 0; i < scr_dyn_obj_count(signals); i++) {
       if (i > 0) scr_jb_puts(&reason, ", ");
       scr_jb_putc(&reason, '\'');
-      scr_jb_write(&reason, signals->v.obj.entries[i].key, signals->v.obj.entries[i].key_len);
+      size_t key_len;
+      const char *key = scr_dyn_obj_key_at(signals, i, &key_len);
+      scr_jb_write(&reason, key, key_len);
       scr_jb_putc(&reason, '\'');
     }
     ScrStr *text = scr_jb_finish(&reason);

@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/stream-dynamic-write-callback/report.js",
+  "<repo>/tests/corpus/stream-dynamic-write-callback/main.ts"
+ ],
+ "diags": []
+}

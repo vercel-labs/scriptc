@@ -7,6 +7,11 @@
 // untyped code reads the same properties, and a write whose send fails
 // after the peer reset the connection answers false. An echo client that
 // waits for 'drain' when write answers false moves every byte.
+//
+// The server picks each connection's handling from `mode` when it accepts
+// it. The lookup client's bytes fit in the kernel's buffers, so its 'drain'
+// can come before the server accepts that connection; the program waits for
+// the accept before it changes `mode`.
 import { connect, createServer, Socket } from "node:net";
 import type { LookupAddress, LookupAllOptions, LookupOneOptions } from "node:dns";
 
@@ -113,6 +118,15 @@ function afterReset(port: number): Promise<void> {
 
 let paused: Socket | null = null;
 let mode = "echo";
+let accepted: (() => void) | null = null;
+
+/** Resolves when the server accepts its next connection. */
+function nextConnection(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    accepted = resolve;
+  });
+}
+
 const server = createServer((socket: Socket) => {
   if (mode === "echo") socket.pipe(socket);
   else if (mode === "drain") socket.resume();
@@ -120,6 +134,11 @@ const server = createServer((socket: Socket) => {
     socket.pause();
     paused = socket;
   } else socket.destroy();
+  if (accepted !== null) {
+    const resolve = accepted;
+    accepted = null;
+    resolve();
+  }
 });
 
 server.listen(0, "127.0.0.1", async () => {
@@ -127,7 +146,9 @@ server.listen(0, "127.0.0.1", async () => {
   const port = typeof addr === "object" && addr !== null ? addr.port : 0;
   await echo(port);
   mode = "drain";
+  const lookupAccepted = nextConnection();
   await lookupPending(port);
+  await lookupAccepted;
   mode = "pause";
   await largeWrite(port);
   mode = "end";

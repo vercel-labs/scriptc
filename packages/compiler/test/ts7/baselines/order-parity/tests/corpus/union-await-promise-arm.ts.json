@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/union-await-promise-arm.ts"
+ ],
+ "diags": []
+}

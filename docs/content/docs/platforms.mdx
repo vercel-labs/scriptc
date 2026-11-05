@@ -49,9 +49,11 @@ $ file fib-linux
 fib-linux: ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), dynamically linked, interpreter /lib/ld-linux-aarch64.so.1, for GNU/Linux 2.0.0, with debug_info, not stripped
 ```
 
-`x86_64-linux-gnu.2.36` works the same way. For Alpine and other musl-based systems, use `aarch64-linux-musl` or `x86_64-linux-musl`; these produce statically linked executables.
+`x86_64-linux-gnu.2.36` works the same way. For Alpine and other musl-based systems, use `aarch64-linux-musl` or `x86_64-linux-musl`; these produce statically linked executables. On a glibc-based Linux machine, [`--static`](/docs/cli#options) links a static executable for the machine's own target.
 
 Linux executables use the native Linux implementations of the event loop (epoll), servers, TLS (with the system's CA bundle), and `fs.watch`, and they are tested against Node.js on Linux, including Alpine.
+
+An executable with at least 4 MiB of program code is linked with 2 MiB segment alignment when lld or zig links it, so the kernel can map its code with 2 MiB pages instead of 4 KiB pages. This takes effect when transparent huge pages are set to `madvise` or `always` and the file system keeps files in the page cache as 2 MiB folios (XFS, for example). scriptc writes such an executable with one write so that the page cache holds it that way; a copy written in small chunks maps with 4 KiB pages until it is read from disk again. The alignment also aligns the executable's load address to 2 MiB, which leaves 19 bits of address randomization for it instead of 28. Smaller executables, and links by GNU ld, keep 4 KiB alignment.
 
 ### Windows (x86_64)
 

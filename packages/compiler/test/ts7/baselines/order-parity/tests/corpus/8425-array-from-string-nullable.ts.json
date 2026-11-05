@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8425-array-from-string-nullable.ts"
+ ],
+ "diags": []
+}

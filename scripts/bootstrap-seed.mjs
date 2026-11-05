@@ -25,6 +25,19 @@ export function verifyBootstrapSeed(directory, revision, sanitize) {
   }
 }
 
+/** The environment a bootstrap seed builds with, over the inherited one. The
+ * bootstrap compares the seed's LLVM with the native compiler's own emission,
+ * which has no function layout. The layout only orders the functions, so the
+ * seed is built without it. */
+export function seedBuildEnvironment(sanitize) {
+  return {
+    SCRIPTC_SAN: sanitize ? "1" : "",
+    SCRIPTC_NATIVE_EMIT_IR: "1",
+    SCRIPTC_NATIVE_OPTIMIZATION: sanitize ? "dev" : "release",
+    SCRIPTC_NATIVE_LAYOUT: "",
+  };
+}
+
 async function main() {
   const directory = process.env.SCRIPTC_BOOTSTRAP_SEED_DIRECTORY;
   const revision = process.env.GITHUB_SHA;
@@ -47,11 +60,7 @@ async function main() {
     {
       cwd: root,
       stdio: "inherit",
-      env: {
-        ...process.env,
-        SCRIPTC_NATIVE_EMIT_IR: "1",
-        SCRIPTC_NATIVE_OPTIMIZATION: sanitize ? "dev" : "release",
-      },
+      env: { ...process.env, ...seedBuildEnvironment(sanitize) },
     },
   );
   writeFileSync(

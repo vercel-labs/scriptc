@@ -1,0 +1,1 @@
+{ "name": "island-promises", "private": true, "type": "module", "scriptc": { "packages": { "async-pkg": "node" } } }

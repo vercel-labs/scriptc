@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7393-non-null-element-operands.ts"
+ ],
+ "diags": []
+}

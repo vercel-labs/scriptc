@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/localized-failure-forward-capture.ts"
+ ],
+ "diags": []
+}

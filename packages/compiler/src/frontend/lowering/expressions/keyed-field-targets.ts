@@ -5,9 +5,12 @@ import {
   DYN,
   F64,
   STRING,
+  shapeHasAccessorSlots,
   typeEquals,
   type IrExpr,
+  type IrRecordShape,
   type IrStmt,
+  type IrType,
   type SrcLoc,
 } from "../../../ir/ir.js";
 import { isJsSourceFile } from "../../program.js";
@@ -139,6 +142,32 @@ export function keyedFieldTarget(
     fieldType: shape.indexValue,
     ...(numeric && shape.indexValue.kind === "f64" ? { missNaN: true as const } : {}),
   };
+}
+
+/** The declared fields a computed key names when the key's literal type
+ * allows only names of declared fields stored with one type
+ * (`stats[counter]` with `counter: "hits" | "misses"` on a record whose
+ * other fields have other types). Null for any other key or shape:
+ * accessor-carrying shapes, index-signature shapes and JavaScript sources
+ * keep their own keyed access. */
+export function sameTypedFieldKeys(
+  lowerer: Lowerer,
+  shape: IrRecordShape,
+  keyNode: ts.Expression,
+): { keys: string[]; fieldType: IrType } | null {
+  if (
+    shape.tuple ||
+    shape.indexValue !== undefined ||
+    shapeHasAccessorSlots(shape) ||
+    isJsSourceFile(ts.getSourceFileOfNode(keyNode))
+  )
+    return null;
+  const keys = literalFieldKeys(lowerer, keyNode);
+  if (!keys) return null;
+  const fields = keys.map((k) => shape.fields.find((f) => f.name === k));
+  const first = fields[0];
+  if (!first || fields.some((f) => !f || !typeEquals(f.type, first.type))) return null;
+  return { keys, fieldType: first.type };
 }
 
 /** Does `key` name `field`? */

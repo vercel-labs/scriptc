@@ -122,6 +122,19 @@ function coerceSlot(lowerer: Lowerer, arg: IrExpr, want: IrType, what: string): 
     );
   }
   if (arg.type.kind === "union" && want.kind !== "union" && !containsDynOrUnit(want)) {
+    // A stored union at a slot whose signature names one concrete type: the
+    // checker approved the call, so the SITE's type is that slot type and the
+    // stored union is the declaration's wider one — an absence arm the
+    // compiler itself carries (a checked-dynamic JSON stringify's
+    // `string | undefined`), a stale capture, a widened inferred return.
+    // That is coerceToExpected's checked ARM rule, not a refusal to lay the
+    // union out: the proven arm's payload comes out, every other arm throws
+    // the existing catchable TypeError (divergence 38 — sound narrowing
+    // never reaches them). A union with no such arm keeps the refusal.
+    if (lowerer.armTag(arg.type.unionId, want) >= 0) {
+      const narrowed = lowerer.coerceToExpected(arg, want);
+      if (typeEquals(narrowed.type, want)) return narrowed;
+    }
     lowerer.pushDiag(unionMismatchDiag(lowerer.fmt(want), lowerer.fmt(arg.type), arg.loc));
     throw new PoisonError();
   }
@@ -216,12 +229,15 @@ function enforceExprBoundary(lowerer: Lowerer, node: IrExpr): void {
     }
     if (e.callee.type.kind !== "func") return; // validator's ICE otherwise
     const params = e.callee.type.params;
-    if (e.args.length !== params.length) {
+    // A checked-dynamic variadic value hides one trailing dyn array after
+    // its declared parameters (the slot its lifted signature carries).
+    const hidden = e.callee.type.rest === true && e.callee.type.restAbi === undefined ? 1 : 0;
+    if (e.args.length !== params.length + hidden) {
       fence(
         lowerer,
         "SC1090",
         e.loc,
-        `calling a function value with ${e.args.length} argument${e.args.length === 1 ? "" : "s"} where its lowered signature takes ${params.length}`,
+        `calling a function value with ${e.args.length} argument${e.args.length === 1 ? "" : "s"} where its lowered signature takes ${params.length + hidden}`,
       );
     }
     e.args.forEach((a, i) => {
@@ -271,9 +287,12 @@ export function lowerSurplusCalls(lowerer: Lowerer, body: IrStmt[]): IrStmt[] {
     let needed = false;
     const inspectStmt = (node: IrStmt): boolean => everyStmtChild(node, inspectExpr, inspectStmt);
     const inspectExpr = (node: IrExpr): boolean => {
+      // A checked-dynamic variadic's trailing argument IS part of its
+      // lowered signature (the hidden rest array), not a surplus one.
       if (
         node.kind === "callValue" &&
         node.callee.type.kind === "func" &&
+        !(node.callee.type.rest === true && node.callee.type.restAbi === undefined) &&
         node.args.length > node.callee.type.params.length &&
         /\.(?:[cm]?js)$/.test(node.loc.file)
       )
@@ -293,7 +312,11 @@ export function lowerSurplusCalls(lowerer: Lowerer, body: IrStmt[]): IrStmt[] {
     const e = mapExprChildren(value, expr, stmt);
     if (e.kind !== "callValue" || e.callee.type.kind !== "func") return e;
     const params = e.callee.type.params;
-    if (e.args.length > params.length && /\.(?:[cm]?js)$/.test(e.loc.file)) {
+    if (
+      e.args.length > params.length &&
+      !(e.callee.type.rest === true && e.callee.type.restAbi === undefined) &&
+      /\.(?:[cm]?js)$/.test(e.loc.file)
+    ) {
       const callee = lowerer.declareHiddenLocal("%surplusCallee", e.callee.type);
       const stmts: IrStmt[] = [{ kind: "varDecl", localId: callee.id, init: e.callee, loc: e.loc }];
       let receiver = e.receiver;

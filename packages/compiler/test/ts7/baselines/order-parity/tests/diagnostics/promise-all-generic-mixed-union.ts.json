@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/promise-all-generic-mixed-union.ts"
+ ],
+ "diags": []
+}

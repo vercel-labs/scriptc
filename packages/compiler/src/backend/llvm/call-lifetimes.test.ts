@@ -594,6 +594,35 @@ test("closure bodies get local facts but never parameter facts", () => {
   expect(analyze(fn).locals.get("closure")).toEqual(new Set(["item"]));
 });
 
+test("union locals copied to other locals are reported with their copies", () => {
+  const fn = helper("copies");
+  fn.locals.push(local("source"), { ...local("first"), mutable: true }, local("second"));
+  fn.body = [
+    { kind: "varDecl", localId: "source", init: ref("value"), loc },
+    { kind: "varDecl", localId: "first", init: ref("source"), loc },
+    { kind: "assign", localId: "first", value: ref("source"), loc },
+    { kind: "varDecl", localId: "second", init: ref("first"), loc },
+    { kind: "exprStmt", expr: tag("second"), loc },
+  ];
+  const result = analyze(fn);
+  expect(result.projectedLocals.get("copies")).toEqual(new Set(["second"]));
+  expect(result.copiedLocals.get("copies")).toEqual(
+    new Map([
+      ["source", ["first", "first"]],
+      ["first", ["second"]],
+    ]),
+  );
+  // A copied parameter stays rejected: callers may lend it a stack box.
+  expect(result.parameters.has("copies")).toBe(false);
+  // A copy inside an expression is an ordinary whole-value use.
+  fn.body.push({
+    kind: "exprStmt",
+    expr: { kind: "assignExpr", localId: "first", value: ref("source"), type: optional, loc },
+    loc,
+  });
+  expect(analyze(fn).copiedLocals.get("copies")?.has("source") ?? false).toBe(false);
+});
+
 test("stores into nullable-pointer class fields project the stored union", () => {
   const self: IrType = { kind: "object", className: "Node" };
   const store = (className: string, field: string, value: IrExpr): IrStmt => ({

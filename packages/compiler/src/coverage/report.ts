@@ -22,9 +22,19 @@ import {
   type TiersEnvelope,
 } from "../diagnostics/envelope.js";
 import { renderDiagnostics } from "../diagnostics/render.js";
+import {
+  dynamicSlotLabel,
+  isDynamicSlotCode,
+  type DynamicSlotEntry,
+} from "../diagnostics/dynamic-slots.js";
 import type { LowerStats } from "../frontend/lowering/lowerer.js";
 import type { ProvenanceSources } from "../frontend/provenance-registry.js";
-import type { DemotionUnit, TierReport } from "../frontend/tier-analysis.js";
+import type {
+  DemotionUnit,
+  LocalizedFailureReport,
+  TierReport,
+} from "../frontend/tier-analysis.js";
+import type { RuntimeOptionalNarrowing } from "../frontend/lowering/runtime-optional-report.js";
 import type { WasmModuleReport } from "../wasm/discover.js";
 import {
   describe as describeReason,
@@ -55,6 +65,9 @@ export interface CoverageInput {
    * leaves untyped. Never blockers; `--fail-on=dynamic` opts into failing
    * on it. */
   performance?: ScrDiagnostic[];
+  /** Localized failure: the checked dynamic slots (SC6104, also in
+   * `performance`). `--fail-on=dynamic-slots` fails on them. */
+  dynamicSlots?: DynamicSlotEntry[];
   /** Each dependency's native compilation outcome, with the first refusal
    * reason for a refused package. */
   npmStatic?: NpmStaticStatus[];
@@ -234,6 +247,10 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
       `  ${c(DIM, `(${skipped} function${skipped === 1 ? "" : "s"} not analyzed — signature blocked; their statements count as not static)`)}`,
     );
   }
+  renderDynamicSlots(input.dynamicSlots ?? [], out, c, (loc) => {
+    const p = locator.position(loc.file, loc.start);
+    return `${displayPath(loc.file, opts.root)}:${p.line}:${p.column}`;
+  });
   out.push("");
 
   // Report native package compilation and the first reason for each refusal.
@@ -391,7 +408,7 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
     renderRows(groupBlockers(divergences), YELLOW);
   };
   // The performance warning: its message names the functions.
-  const performance = input.performance ?? [];
+  const performance = (input.performance ?? []).filter((d) => !isDynamicSlotCode(d.code));
   const renderPerformance = () => {
     for (const d of performance) {
       out.push("");
@@ -525,6 +542,7 @@ export type CoverageFailOn =
   | "blockers"
   | "divergences"
   | "dynamic"
+  | "dynamic-slots"
   | "node-islands"
   | "eager-node-islands"
   | "island-gaps";
@@ -533,6 +551,7 @@ export const COVERAGE_FAIL_ON: readonly CoverageFailOn[] = [
   "blockers",
   "divergences",
   "dynamic",
+  "dynamic-slots",
   "node-islands",
   "eager-node-islands",
   "island-gaps",
@@ -548,7 +567,9 @@ export function coveragePasses(input: CoverageInput, failOn?: CoverageFailOn): b
   // runtime fences build (the statement throws only if it executes).
   if (input.diagnostics.length > 0) return false;
   if (failOn === "divergences" && (input.divergences?.length ?? 0) > 0) return false;
-  if (failOn === "dynamic" && (input.performance?.length ?? 0) > 0) return false;
+  if (failOn === "dynamic" && (input.performance ?? []).some((d) => !isDynamicSlotCode(d.code)))
+    return false;
+  if (failOn === "dynamic-slots" && (input.dynamicSlots?.length ?? 0) > 0) return false;
   // The Node island gates (report-only islands count: they are what a
   // build would choose). Every island evaluates eagerly until deferred
   // evaluation lands, so eager-node-islands equals node-islands for now.
@@ -620,6 +641,21 @@ export function coverageEnvelope(
             percentStatic: total === 0 ? 100 : Math.floor((ok / total) * 100),
           },
         }),
+    ...(input.dynamicSlots !== undefined
+      ? {
+          dynamicSlots: input.dynamicSlots.map((slot) => ({
+            file: slot.loc.file,
+            ...locator.position(slot.loc.file, slot.loc.start),
+            name: slot.name,
+            kind: slot.slot,
+            declaredType: slot.declaredType,
+            code: slot.code,
+            reason: slot.reason,
+            ...(slot.partial === true ? { partial: true } : {}),
+            dynamicOps: slot.operations ?? 0,
+          })),
+        }
+      : {}),
     ...(input.tiers !== undefined ? { tiers: tiersEnvelope(input.tiers, locator) } : {}),
     ...(input.wasmModules !== undefined ? { wasmModules: input.wasmModules } : {}),
     ...(input.nodeIslands !== undefined
@@ -668,6 +704,39 @@ function tiersEnvelope(tiers: TierReport, locator: SourceLocator): TiersEnvelope
       ...at(r.loc),
     })),
     units: tiers.units.map((u) => ({ ...unit(u), requests: u.requests, sites: u.sites })),
+    runtimeOptional: tiers.runtimeOptional.map((slot) => ({
+      name: slot.name,
+      storage: slot.storage,
+      narrowed: slot.narrowed,
+      ...(slot.decisions.length > 0 ? { slot: at(slot.decisions[0]!.target) } : {}),
+      reads: slot.reads.map(at),
+      decisions: slot.decisions.map((d) => ({
+        kind: d.kind,
+        target: at(d.target),
+        ...(d.cause !== null ? { cause: at(d.cause) } : {}),
+        detail: d.detail,
+      })),
+    })),
+    localizedFailure: {
+      errors: tiers.localizedFailure.errors,
+      typeFailures: tiers.localizedFailure.typeFailures,
+      cascades: tiers.localizedFailure.cascades,
+      clearedThroughL2: tiers.localizedFailure.clearedThroughL2,
+      clearedThroughL4: tiers.localizedFailure.clearedThroughL4,
+      remainingByCode: tiers.localizedFailure.remainingByCode,
+      slots: tiers.localizedFailure.slots.map((slot) => ({
+        ...at(slot.loc),
+        slot: slot.slot,
+        name: slot.name,
+        declaredType: slot.declaredType,
+        family: slot.family,
+        code: slot.code,
+        message: slot.message,
+        stage: slot.stage,
+        ...(slot.rejects !== null ? { rejects: slot.rejects } : {}),
+        cascade: slot.cascade,
+      })),
+    },
   };
 }
 
@@ -693,6 +762,112 @@ function unitMatches(u: DemotionUnit, query: string): boolean {
     u.name.split(" ")[0] === query ||
     `${u.owner ?? ""}:${u.name}` === query
   );
+}
+
+const DYNAMIC_SLOTS_SHOWN = 20;
+
+/** The dynamic slots under the statement counts: each slot's declared
+ * type, and why it has no static lowering. */
+function renderDynamicSlots(
+  slots: readonly DynamicSlotEntry[],
+  out: string[],
+  c: (code: string, s: string) => string,
+  where: (loc: SrcLoc) => string,
+): void {
+  if (slots.length === 0) return;
+  out.push(
+    `    dynamic slots       ${slots.length}  ${c(DIM, "(declared types with no static lowering, held as checked-dynamic values; SC6104)")}`,
+  );
+  // The costly slots first: most dynamic operations, then source order.
+  const ranked = slots
+    .map((slot, index) => ({ slot, index }))
+    .sort((a, b) => (b.slot.operations ?? 0) - (a.slot.operations ?? 0) || a.index - b.index)
+    .map(({ slot }) => slot);
+  for (const slot of ranked.slice(0, DYNAMIC_SLOTS_SHOWN))
+    out.push(
+      `      ${dynamicSlotLabel(slot)}${slot.partial === true ? " (dynamic pieces)" : ""}  ${c(DIM, `${where(slot.loc)}${(slot.operations ?? 0) > 0 ? `, ${slot.operations} dynamic operation${slot.operations === 1 ? "" : "s"}` : ""}`)}`,
+    );
+  if (slots.length > DYNAMIC_SLOTS_SHOWN)
+    out.push(`      ${c(DIM, `and ${slots.length - DYNAMIC_SLOTS_SHOWN} more`)}`);
+}
+
+const SLOTS_SHOWN = 40;
+
+/** The localized-failure section of --explain-dynamic (report-only): the
+ * committed type failures that would become checked dynamic slots, and
+ * the cascade each one causes today. */
+function renderLocalizedFailure(
+  report: LocalizedFailureReport,
+  out: string[],
+  c: (code: string, s: string) => string,
+  where: (loc: { file: string; start: number }) => string,
+): void {
+  if (report.typeFailures.degradable === 0 && report.typeFailures.refused === 0) return;
+  out.push("");
+  out.push(
+    `    ${report.slots.length} would-be dynamic slot${report.slots.length === 1 ? "" : "s"} ${c(DIM, "(localized failure, report-only: type failures a checked dynamic slot would hold)")}`,
+  );
+  out.push(
+    `      ${c(DIM, `${report.errors} errors: ${report.clearedThroughL2} clear with declaration slots (L1-L2), ${report.clearedThroughL4} with member and expression slots too (L3-L4); ${report.cascades} cascade${report.cascades === 1 ? "" : "s"} attributed; ${report.typeFailures.refused} type failure${report.typeFailures.refused === 1 ? " stays" : "s stay"} refused`)}`,
+  );
+  for (const slot of report.slots.slice(0, SLOTS_SHOWN)) {
+    const cascade = slot.cascade > 0 ? `, clears ${slot.cascade}` : "";
+    out.push(
+      `      ${slot.stage} ${slot.slot} ${slot.name}: ${capMessage(slot.declaredType)}  ${c(DIM, `${where(slot.loc)} (${slot.code} ${slot.family}${cascade})`)}`,
+    );
+    if (slot.rejects !== null)
+      out.push(`        ${c(DIM, `rejects ${slot.rejects.split(" @")[0]}`)}`);
+  }
+  if (report.slots.length > SLOTS_SHOWN)
+    out.push(
+      `      ${c(DIM, `${report.slots.length - SLOTS_SHOWN} more (--print=diagnostics lists all)`)}`,
+    );
+}
+
+const RUNTIME_OPTIONAL_SLOTS_SHOWN = 20;
+const RUNTIME_OPTIONAL_READS_SHOWN = 3;
+const RUNTIME_OPTIONAL_DECISIONS_SHOWN = 2;
+
+/** The runtime-optional storage section of --explain-dynamic (report-only):
+ * the bindings and parameters the indexed-read analysis widened past the
+ * checker's type, with the decisions that widened them and the reads at
+ * which the checker still types them at the declared type. Those reads are
+ * where the checker's narrowing does not reach the storage, so lowering
+ * extracts the payload with a checked narrowing. */
+function renderRuntimeOptionalStorage(
+  slots: readonly RuntimeOptionalNarrowing[],
+  out: string[],
+  c: (code: string, s: string) => string,
+  where: (loc: { file: string; start: number }) => string,
+): void {
+  if (slots.length === 0) return;
+  out.push("");
+  out.push(
+    `    ${slots.length} runtime-optional slot${slots.length === 1 ? "" : "s"} ${c(DIM, "(report-only: widened storage the checker still reads at its declared type)")}`,
+  );
+  for (const slot of slots.slice(0, RUNTIME_OPTIONAL_SLOTS_SHOWN)) {
+    const slotAt = slot.decisions[0] !== undefined ? `  ${where(slot.decisions[0].target)}` : "";
+    out.push(
+      `    ${slot.name}${slotAt}  ${c(DIM, `(${slot.storage}, read as ${slot.narrowed} at ${slot.reads.length} site${slot.reads.length === 1 ? "" : "s"})`)}`,
+    );
+    for (const decision of slot.decisions.slice(0, RUNTIME_OPTIONAL_DECISIONS_SHOWN)) {
+      const cause = decision.cause === null ? "" : ` from ${where(decision.cause)}`;
+      const detail = decision.detail === "" ? "" : ` ${decision.detail}`;
+      out.push(`      ${c(DIM, "<-")} ${decision.kind}${cause}${detail}`);
+    }
+    const moreDecisions = slot.decisions.length - RUNTIME_OPTIONAL_DECISIONS_SHOWN;
+    if (moreDecisions > 0)
+      out.push(
+        `      ${c(DIM, `<- ${moreDecisions} more decision${moreDecisions === 1 ? "" : "s"}`)}`,
+      );
+    const shown = slot.reads.slice(0, RUNTIME_OPTIONAL_READS_SHOWN).map(where).join(", ");
+    const more = slot.reads.length - RUNTIME_OPTIONAL_READS_SHOWN;
+    out.push(`      ${c(DIM, `-> read at ${shown}${more > 0 ? ` (+${more} more)` : ""}`)}`);
+  }
+  if (slots.length > RUNTIME_OPTIONAL_SLOTS_SHOWN)
+    out.push(
+      `    ${c(DIM, `${slots.length - RUNTIME_OPTIONAL_SLOTS_SHOWN} more (--print=diagnostics lists all)`)}`,
+    );
 }
 
 /** `scriptc coverage --explain-dynamic[=<unit>]`: the dynamic tier today
@@ -735,6 +910,8 @@ export function renderExplainDynamic(
         (excluded > 0 ? c(DIM, `, ${excluded} excluded by policy`) : ""),
     );
   }
+  if (query === undefined) renderLocalizedFailure(tiers.localizedFailure, out, c, where);
+  if (query === undefined) renderRuntimeOptionalStorage(tiers.runtimeOptional, out, c, where);
   const units = tiers.units.filter((u) => query === undefined || unitMatches(u, query));
   if (query !== undefined && units.length === 0) {
     out.push(`    no demoted unit matches '${query}'`);

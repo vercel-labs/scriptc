@@ -3,6 +3,7 @@ export function withLibraryRuntimeFlavors(matrix) {
   const omitted = new Set(["scr_async.c", "scr_crypto_async.c", "scr_child.c", "scr_ffi.c"]);
   const optional = new Set([
     "scr_regex.c",
+    "scr_path_win32_relative.c",
     "scr_glob.c",
     "scr_assert.c",
     "scr_inspect.c",
@@ -19,6 +20,10 @@ export function withLibraryRuntimeFlavors(matrix) {
     "scr_bytes_dyn.c",
     "scr_js_value.c",
     "scr_js_object.c",
+    // The buffer views registry: a library whose program resizes, grows or
+    // detaches a buffer names scr_js_buffers_arm from its own object, so the
+    // library flavors must carry the unit the executable flavors compile.
+    "scr_js_buffers.c",
   ]);
   const libraryUnits = [
     ...matrix.runtime_units.filter(

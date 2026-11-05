@@ -24,9 +24,11 @@ import {
   compileLibArchive,
   executableSectionEliminationFlags,
   executableNativeEnvironmentFingerprint,
+  implicitDependencyIncludeDirective,
   implicitDependencyProbeIncludes,
   parseLinkTraceFiles,
   resolveBuildCacheRoot,
+  resolveCompilerStateRoot,
   runtimeFingerprint,
   runtimeSrcDir,
   stageRuntimeObjects,
@@ -38,6 +40,8 @@ import {
   warmNativeCaches,
 } from "./native-toolchain.js";
 import { splitLlvmProgram } from "./llvm/split.js";
+import { implicitToolchainFingerprints } from "./native/compiler-fingerprint.js";
+import { fingerprintDependencyPaths } from "./native/dependency-files.js";
 
 const scratch: string[] = [];
 const TEST_CACHE_IDENTITY = "cc-cache-tests-v1";
@@ -153,6 +157,36 @@ test("the production cache root follows overrides, platform defaults, and the ha
       "/Users/tester",
     ),
   ).toBe("/Users/tester/AppData/Local/scriptc/cache/build");
+});
+
+test("the compiler-level store follows the hard disable but not the build cache's location", () => {
+  // A build with an empty build cache still reads what an earlier build
+  // derived, so the store's root does not move with the build cache's.
+  expect(resolveCompilerStateRoot({}, "linux", "/home/tester")).toBe(
+    "/home/tester/.cache/scriptc/compiler",
+  );
+  expect(
+    resolveCompilerStateRoot({ SCRIPTC_CACHE_DIR: "/var/tmp/cold" }, "linux", "/home/tester"),
+  ).toBe("/home/tester/.cache/scriptc/compiler");
+  expect(
+    resolveCompilerStateRoot({ SCRIPTC_STATE_DIR: "/var/tmp/state" }, "linux", "/home/tester"),
+  ).toBe("/var/tmp/state");
+  expect(
+    resolveCompilerStateRoot({ XDG_CACHE_HOME: "/var/tmp/xdg" }, "linux", "/home/tester"),
+  ).toBe("/var/tmp/xdg/scriptc/compiler");
+  expect(resolveCompilerStateRoot({}, "darwin", "/Users/tester")).toBe(
+    "/Users/tester/Library/Caches/scriptc/compiler",
+  );
+  expect(
+    resolveCompilerStateRoot(
+      { LOCALAPPDATA: "/Users/tester/AppData/Local" },
+      "win32",
+      "/Users/tester",
+    ),
+  ).toBe("/Users/tester/AppData/Local/scriptc/cache/compiler");
+  expect(resolveCompilerStateRoot({ SCRIPTC_NO_CACHE: "1" }, "linux", "/home/tester")).toBeNull();
+  expect(resolveCompilerStateRoot({ SCRIPTC_CACHE_DIR: "" }, "linux", "/home/tester")).toBeNull();
+  expect(resolveCompilerStateRoot({ SCRIPTC_STATE_DIR: "" }, "linux", "/home/tester")).toBeNull();
 });
 
 test("executable section elimination flags are target-aware", () => {
@@ -325,9 +359,9 @@ test.skipIf(
 
       let vendorEntries = await readdir(vendorRoot);
       expect(vendorEntries.filter((name) => name.startsWith("mbedtls-")).length).toBe(2);
-      // Host clang uses system zlib, so only the Zig build materializes a zlib
-      // object family in the shared vendor root.
-      expect(vendorEntries.filter((name) => name.startsWith("zlib-")).length).toBe(1);
+      // Host clang and Zig each materialize their own vendored zlib object
+      // family in the shared vendor root.
+      expect(vendorEntries.filter((name) => name.startsWith("zlib-")).length).toBe(2);
       // Invalidate the host archive. A targetless Zig rebuild must continue to
       // use the separately keyed Zig archive instead of repairing or consuming
       // the host-clang entry.
@@ -623,6 +657,76 @@ test("implicit dependency seeds include separately compiled vendor system header
   // to the native object/cache identity.
   expect(includes).toContain("<stdatomic.h>");
 });
+
+test.skipIf(clangExecutable === undefined)(
+  "the implicit toolchain probe guards target-specific compiler headers",
+  async () => {
+    // clang ships its x86 intrinsic headers (<emmintrin.h>, ...) for every
+    // target, so __has_include finds them on arm64, where including them is
+    // an #error, and the same holds for the ARM headers on x86 and for
+    // <riscv_vector.h> (zlib's RVV code) outside RISC-V with the vector
+    // extension. The probe must guard them by target. Only the compiler's own
+    // freestanding headers are visible here, so the result does not depend on
+    // the host's C library.
+    const includes = (await implicitDependencyProbeIncludes(runtimeSrcDir())).filter(
+      (include) =>
+        include !== "<intrin.h>" &&
+        /intrin\.h>$|^<cpuid\.h>$|^<arm_(neon|acle)\.h>$|^<riscv_vector\.h>$/.test(include),
+    );
+    expect(includes).toContain("<emmintrin.h>");
+    expect(includes).toContain("<riscv_vector.h>");
+    const resourceDir = execFileSync(clangExecutable!, ["-print-resource-dir"], {
+      encoding: "utf8",
+    }).trim();
+    const source = includes.map(implicitDependencyIncludeDirective).join("");
+    for (const target of [
+      "aarch64-unknown-linux-gnu",
+      "riscv64-unknown-linux-gnu",
+      "x86_64-unknown-linux-gnu",
+    ]) {
+      const result = spawnSync(
+        clangExecutable!,
+        [
+          `--target=${target}`,
+          "-ffreestanding",
+          "-nostdinc",
+          "-isystem",
+          join(resourceDir, "include"),
+          "-fsyntax-only",
+          "-x",
+          "c",
+          "-",
+        ],
+        { input: source, encoding: "utf8" },
+      );
+      expect(result.stderr, target).toBe("");
+      expect(result.status, target).toBe(0);
+    }
+  },
+);
+
+test.skipIf(clangExecutable === undefined)(
+  "the implicit toolchain probe leaves out a header the compiler rejects",
+  async () => {
+    // A system header that the runtime spells, shadowed by one that is an
+    // #error, as clang 18's <riscv_vector.h> is outside RISC-V. The probe
+    // still covers the other headers.
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-probe-header-"));
+    scratch.push(dir);
+    await mkdir(join(dir, "sys"));
+    const rejected = join(dir, "sys", "auxv.h");
+    await writeFile(rejected, '#error "not for this target"\n');
+    const includes = await implicitDependencyProbeIncludes(runtimeSrcDir());
+    expect(includes).toContain("<sys/auxv.h>");
+    const fingerprints = await implicitToolchainFingerprints(
+      { argv: [clangExecutable!, "-isystem", dir], targetArgs: [], target: null },
+      "probe-rejected-header",
+    );
+    const dependencies = fingerprintDependencyPaths(fingerprints.complete);
+    expect(dependencies).not.toContain(rejected);
+    expect(dependencies.some((path) => path.endsWith("/stdatomic.h"))).toBe(true);
+  },
+);
 
 test.skipIf(
   process.platform === "win32" ||

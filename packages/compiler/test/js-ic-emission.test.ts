@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { compile, deserializeModule, validateModule } from "../src/index.js";
 import { emitLlvmModule } from "../src/backend/llvm/emitter.js";
 import { moduleUsesDynTier } from "../src/ir/runtime-features.js";
@@ -50,6 +50,10 @@ console.log(read(o), at(dyn([5, 6]), 1), call(o), o.n);
     );
     expect(body(llvm, "read")).toContain("@scr_js_get_probe(");
     expect(body(llvm, "write")).toContain("@scr_js_store_probe(");
+    // Reads and writes test the first two entries inline: the second
+    // starts 40 bytes into the record.
+    for (const site of ["read", "write"])
+      expect(body(llvm, site)).toMatch(/getelementptr inbounds i8, ptr @sc_js_ic_\d+, i64 40$/m);
     expect(body(llvm, "at")).toContain("@scr_js_keyed_probe(");
     expect(body(llvm, "call")).toContain("@scr_js_load_probe(");
     // A compound assignment stores its number result from the jsval: an
@@ -91,6 +95,49 @@ console.log(JSON.stringify(make(1, "c")), top.t);
     expect(make.match(/@scr_dyn_key_set\(/g)).toHaveLength(2);
     expect(make).toContain("@scr_dyn_key_set_computed(");
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("SCRIPTC_DEBUG_JS_IC_WAYS=0 sends every access through the probe", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-js-ic-ways-"));
+  process.env["SCRIPTC_DEBUG_JS_IC_WAYS"] = "0";
+  try {
+    // The way count is a load-time constant, so the test compiles against a
+    // fresh module graph in which the variable is set.
+    vi.resetModules();
+    const fresh = await import("../src/index.js");
+    const { emitLlvmModule: emit } = await import("../src/backend/llvm/emitter.js");
+    const entry = join(dir, "main.js");
+    const outPath = join(dir, "main.ir.json");
+    await writeFile(
+      entry,
+      `
+function make(v, k) { return { a: v, b: 2, [k]: 3 }; }
+function read(o) { return o.a; }
+var top = { t: 1 };
+read(top);
+console.log(JSON.stringify(make(1, "c")), top.t);
+`,
+    );
+    const result = await fresh.compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const mod = fresh.deserializeModule(await readFile(outPath, "utf8"));
+    const llvm = emit(mod);
+    const make = body(llvm, "make");
+    // Literal members keep their own entry point, so an attribution profile
+    // can tell them from other stores.
+    expect(make.match(/@scr_js_literal_probe\(/g)).toHaveLength(2);
+    expect(make).not.toContain("@scr_js_store_probe(");
+    // Zero ways: no cache entry is tested inline, so the site branches to
+    // the probe without loading an entry.
+    expect(body(llvm, "read")).not.toMatch(
+      /getelementptr inbounds i8, ptr @sc_js_ic_\d+, i64 \d+$/m,
+    );
+  } finally {
+    delete process.env["SCRIPTC_DEBUG_JS_IC_WAYS"];
+    vi.resetModules();
     await rm(dir, { recursive: true, force: true });
   }
 });
@@ -139,6 +186,114 @@ console.log(read(o), read(p), read(t), at(dyn([5, 6]), 1), at(p, "x"), at(t, "ta
   }
 });
 
+test("property reads answer class instances' declared fields inline", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-js-ic-capsule-"));
+  try {
+    const entry = join(dir, "main.js");
+    const outPath = join(dir, "main.ir.json");
+    await writeFile(
+      entry,
+      `
+class Point {
+  constructor(x) { this.x = x; }
+}
+class Tagged extends Point {
+  constructor(x, tag) { super(x); this.tag = tag; }
+}
+class Gauge {
+  get x() { return 9; }
+}
+function dyn(v) { return v; }
+function read(o) { return o.x; }
+function tag(o) { return o.tag; }
+var p = dyn(new Point(4));
+var t = dyn(new Tagged(6, "t"));
+console.log(read(p), read(t), read(dyn(new Gauge())), read({ x: 1 }), tag(t));
+`,
+    );
+    const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const mod = deserializeModule(await readFile(outPath, "utf8"));
+    expect(validateModule(mod)).toEqual([]);
+    const llvm = emitLlvmModule(mod);
+    const read = body(llvm, "read");
+    // Point and Tagged instances load the field after one key compare
+    // each; Gauge's getter, and every other receiver, keeps the probe and
+    // the helper.
+    expect(read.match(/^icc\.m\d+:/gm)).toHaveLength(2);
+    expect(read).toContain("@scr_js_get_probe(");
+    expect(read).toMatch(/@sc_b?f__x25_dyn_class_property_\d+\(ptr %t\d+\) noinline cold/);
+    expect(body(llvm, "tag").match(/^icc\.m\d+:/gm)).toHaveLength(1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("method calls on class instances call the method inline", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-js-ic-capsule-call-"));
+  try {
+    const entry = join(dir, "main.js");
+    const outPath = join(dir, "main.ir.json");
+    await writeFile(
+      entry,
+      `
+class Cursor {
+  constructor(x) { this.x = x; }
+  step(d) { this.x += d; return this; }
+  sum(k) { return this.x * k; }
+}
+class Marker extends Cursor {
+  constructor(x, name) { super(x); this.name = name; }
+}
+class Fast extends Cursor {
+  step(d) { this.x += d * 2; return this; }
+}
+class Shadowed {
+  scale(k) { return k; }
+}
+function move(c) { return c.step(1); }
+function total(c) { return c.sum(3); }
+function scaled(c) { return c.scale(2); }
+var list = [0, 1, 2].map((i) => (i === 0 ? new Cursor(1) : i === 1 ? new Marker(2, "m") : new Fast(3)));
+var own = new Shadowed();
+own.scale = function (k) { return -k; };
+for (const c of list) console.log(move(c).x, total(c));
+console.log(total({ sum: (k) => k + 1 }), scaled(own), scaled(new Shadowed()));
+top: for (let i = 0; i < 2; i++) console.log(list[i].sum(i));
+console.log(list[2].sum(5));
+`,
+    );
+    const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const mod = deserializeModule(await readFile(outPath, "utf8"));
+    expect(validateModule(mod)).toEqual([]);
+    const llvm = emitLlvmModule(mod);
+    const inline = (fn: string): number => fn.match(/^iccall\.m\d+:/gm)?.length ?? 0;
+    // Fast overrides step, so the helper calls Cursor's step on Cursor and
+    // Marker capsules through a virtual call, and only Fast capsules call
+    // step inline. Every class answers sum with Cursor's, so all three
+    // call it inline; every other receiver keeps the callback and the
+    // helper.
+    const move = body(llvm, "move");
+    expect(inline(move)).toBe(1);
+    expect(move).toContain("@sc_bf__x25_dyn_class_receiver_x3a_Fast_step(");
+    expect(move).toMatch(/@sc_b?f__x25_dyn_class_callback_\d+\([^)]*\) noinline cold/);
+    expect(move).toMatch(/@sc_b?f__x25_dyn_class_call_\d+\([^)]*\) noinline cold/);
+    const total = body(llvm, "total");
+    expect(inline(total)).toBe(3);
+    expect(total).toMatch(/switch i32 %t\d+, label %iccall\.slow\d+ \[/);
+    // Shadowed's instances may have an own scale, so its capsules keep the
+    // callback, which reads it.
+    expect(inline(body(llvm, "scaled"))).toBe(0);
+    // A module initializer calls inline only inside its loops.
+    expect(inline(body(llvm, "_x25_init_0"))).toBe(3);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("typed programs have no cache sites and keep the ordinary runtime", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-js-ic-typed-"));
   try {
@@ -162,6 +317,72 @@ console.log(len2({ x: 3, y: 4 }), typeof parsed);
     expect(llvm).not.toContain("@sc_js_ic_");
     expect(llvm).not.toContain("@scr_js_");
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("computed sites get element arms by default and the key path on opt-out", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-js-ic-index-"));
+  const source = `
+function dyn(v) { return v; }
+function at(xs, i) { return xs[i]; }
+function put(xs, i, v) { xs[i] = v; }
+var bytes = dyn(new Uint8Array(4));
+var text = dyn("abcd");
+var list = dyn([1, 2, 3]);
+put(bytes, 0, 7);
+put(list, 0, 8);
+put({ k: 1 }, "k", 2);
+console.log(at(bytes, 1), at(text, 2), at(list, 1), at({ k: 9 }, "k"));
+console.log(bytes[0], list[0], text[0]);
+`;
+  const compileWith = async (value: string | undefined): Promise<string> => {
+    // The flag is a load-time constant, so each build compiles against a
+    // fresh module graph in which it is set.
+    if (value === undefined) delete process.env["SCRIPTC_DYN_INDEX_FASTPATH"];
+    else process.env["SCRIPTC_DYN_INDEX_FASTPATH"] = value;
+    vi.resetModules();
+    const fresh = await import("../src/index.js");
+    const { emitLlvmModule: emit } = await import("../src/backend/llvm/emitter.js");
+    const name = value === undefined ? "default" : value;
+    const entry = join(dir, `${name}.js`);
+    const outPath = join(dir, `${name}.ir.json`);
+    await writeFile(entry, source);
+    const result = await fresh.compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    return emit(fresh.deserializeModule(await readFile(outPath, "utf8")));
+  };
+  try {
+    const off = await compileWith("0");
+    // With the opt-out the computed sites form the key string as before.
+    expect(body(off, "at")).not.toContain("@scr_dyn_bytes_index_get(");
+    expect(body(off, "at")).not.toContain("@scr_dyn_string_index_get(");
+    expect(body(off, "put")).not.toContain("@scr_dyn_index_set(");
+
+    for (const arms of [await compileWith(undefined), await compileWith("1")]) {
+      const at = body(arms, "at");
+      // A typed array and a string answer an integral index from the
+      // runtime's own element getters, in front of the keyed probe and the
+      // helper.
+      expect(at).toContain("@scr_dyn_bytes_index_get(");
+      expect(at).toContain("@scr_dyn_string_index_get(");
+      expect(at).toContain("@scr_js_keyed_probe(");
+      expect(at).toMatch(
+        /@sc_b?f__x25_dyn_class_computed_\d+\(ptr %t\d+, ptr %t\d+\) noinline cold/,
+      );
+      // A computed write stores a number key's element through the runtime
+      // and keeps its helper for every other receiver, key and rejected
+      // store.
+      const put = body(arms, "put");
+      expect(put).toContain("@scr_dyn_index_set(");
+      expect(put).toMatch(
+        /@sc_b?f__x25_dyn_class_computed_\d+\(ptr %t\d+, ptr %t\d+, ptr %t\d+\) noinline cold/,
+      );
+    }
+  } finally {
+    delete process.env["SCRIPTC_DYN_INDEX_FASTPATH"];
+    vi.resetModules();
     await rm(dir, { recursive: true, force: true });
   }
 });
@@ -202,6 +423,77 @@ console.log(lib.total([1, 2, 3]));
     // The length read answers from the native array's length.
     expect(fn).toContain("icg.rest");
     expect(fn).toContain("@scr_js_get_probe_native(");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a run of constant-key reads on one subject shares one guard", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-js-groups-"));
+  try {
+    const entry = join(dir, "main.js");
+    const outPath = join(dir, "main.ir.json");
+    await writeFile(
+      entry,
+      `
+function dyn(v) { return v; }
+function sum(o) { return o.a + o.b + o.c; }
+console.log(sum(dyn(JSON.parse('{"a":1,"b":2,"c":3}'))), sum(dyn(JSON.parse('{"c":3,"b":2,"a":1}'))));
+`,
+    );
+    const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const mod = deserializeModule(await readFile(outPath, "utf8"));
+    expect(validateModule(mod)).toEqual([]);
+    const llvm = emitLlvmModule(mod);
+    // The group's record and its key list are private to the module: four
+    // entries of a layout and a slot per key, and one pointer per key.
+    expect(llvm).toMatch(
+      /@sc_js_group_0 = internal (thread_local )?global \[9 x i64\] zeroinitializer/,
+    );
+    expect(llvm).toMatch(/@sc_gkeys_0 = internal constant \[3 x ptr\]/);
+    const sum = body(llvm, "sum");
+    // One layout probe answers all three members, so none of them keeps
+    // its own read site.
+    expect(sum.match(/@scr_js_group_probe\(/g)).toHaveLength(1);
+    expect(sum).not.toContain("@scr_js_get_probe(");
+    // The guard compares the subject's layout against the record's ways.
+    expect(sum).toContain("load ptr, ptr @sc_js_group_0");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a store of an inert value replaces a parse-region object's slot inline", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-js-store-region-"));
+  try {
+    const entry = join(dir, "main.js");
+    const outPath = join(dir, "main.ir.json");
+    await writeFile(
+      entry,
+      `
+function dyn(v) { return v; }
+function bump(doc) { doc.meta.n = (doc.meta.n + 1) % 7; return doc.meta.n; }
+function put(doc, v) { doc.meta.n = v; return doc.meta.n; }
+var doc = dyn(JSON.parse('{"meta":{"n":1}}'));
+console.log(bump(doc), put(doc, 5), JSON.stringify(doc));
+`,
+    );
+    const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const mod = deserializeModule(await readFile(outPath, "utf8"));
+    expect(validateModule(mod)).toEqual([]);
+    const llvm = emitLlvmModule(mod);
+    // A remainder is a number whatever its operands were, so the store's
+    // value is an f64 the pass boxes on the spot: inert, and a store of an
+    // inert value cannot clear the region's flag, so the site replaces the
+    // slot inline. A value of unknown kind (the parameter of `put`) keeps
+    // the region test that sends it to the probe.
+    const regionTest = /getelementptr inbounds i8, ptr %\w+, i64 72$/m;
+    expect(body(llvm, "bump")).not.toMatch(regionTest);
+    expect(body(llvm, "put")).toMatch(regionTest);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

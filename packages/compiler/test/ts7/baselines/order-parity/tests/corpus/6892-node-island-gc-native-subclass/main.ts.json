@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6892-node-island-gc-native-subclass/main.ts"
+ ],
+ "diags": []
+}

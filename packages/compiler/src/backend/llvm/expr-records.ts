@@ -1,7 +1,14 @@
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 import { undefinedArmTag, unionWideningTags } from "../../ir/analysis.js";
-import { type IrExpr, type IrType, isRefCounted, type SrcLoc, typeEquals } from "../../ir/ir.js";
+import {
+  type IrExpr,
+  type IrType,
+  isRefCounted,
+  isUnitType,
+  type SrcLoc,
+  typeEquals,
+} from "../../ir/ir.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext, LlValue } from "./expr-context.js";
 import { f64Lit, llvmCommentText } from "./common.js";
@@ -11,6 +18,8 @@ import { canReplaceWith, regexLiteralCompiles } from "./regex-matchers.js";
 import { isScalarUnionDef, loadInlineUnion, presentBits } from "./inline-unions.js";
 import { preservesRegexInputs } from "./reference-effects.js";
 import { emitNumberMapSlot, emitStringMapEntry } from "./map-number-lookup.js";
+import { fusedRecordValue, rememberRecordEntry } from "./record-entry-fusion.js";
+import { everyStmtList } from "../../ir/traverse.js";
 
 /** Widen one tagged read. The source is borrowed unless the overflow map
  * supplied an owned value. Each selected reference payload is retained
@@ -53,9 +62,11 @@ export function emitUnionWiden(
 /** The identity union conversion (IR unionRetype). Two tagged unions
  * share the operand's box: its +1 becomes the result, so no box is built
  * and no payload is retained. The operand is a whole-value use in every
- * lifetime analysis, so it is never a stack box. A nullable-pointer union
- * on either side, or a source union whose boxes a checked-dynamic cast has
- * cached (and refreshes in place), rebuilds each listed arm instead. */
+ * lifetime analysis, so it is never a stack box. Two pointer unions of one
+ * encoding share the pointer the same way. A pointer union on only one
+ * side, pointer unions whose encodings differ for an arm the value may
+ * hold, or a source union whose boxes a checked-dynamic cast has cached (and
+ * refreshes in place), rebuild each listed arm instead. */
 export function emitUnionRetype(
   host: LlvmEmitterContext,
   e: IrExpr & { kind: "unionRetype" },
@@ -66,15 +77,16 @@ export function emitUnionRetype(
   const to = host.nullableUnions.get(e.unionId);
   if (from && to) {
     // Equal encodings make the pointer itself the target value. A shape
-    // union derives its record arms from the record, so only the unit
-    // encodings must agree.
+    // union derives its record arms from the record and a class union its
+    // class arms from the class id, so only the unit encodings must agree,
+    // and only when the value may hold one of the source's unit arms: a
+    // narrowing that drops `undefined` or `null` keeps the very pointer.
+    const holdsUnit = e.tags.some((tag) => tag === from.unitTag || tag === from.nullTag);
+    const units = !holdsUnit || (from.unitTag === to.unitTag && from.nullTag === to.nullTag);
     const same =
       from.repr === "single" && to.repr === "single"
-        ? from.refTag === to.refTag && from.unitTag === to.unitTag && from.nullTag === to.nullTag
-        : from.repr === "shapes" &&
-          to.repr === "shapes" &&
-          from.unitTag === to.unitTag &&
-          from.nullTag === to.nullTag;
+        ? from.refTag === to.refTag && units
+        : from.repr !== "single" && from.repr === to.repr && units;
     if (same) return host.own({ name: value.name, type: e.type });
     return host.own({ name: rebuildRetype(host, value.name, e), type: e.type });
   }
@@ -195,7 +207,29 @@ function emitReplaceWith(
   return host.own({ name: t, type: e.type });
 }
 
+/** Substitutions whose result owns its text: once the runtime call returns,
+ * no operand is read again. */
+function releasesInputsOnReturn(method: string): boolean {
+  return method === "replace" || method === "replaceAll";
+}
+
 export function emitRegexIntrinsic(
+  host: LlvmEmitterContext,
+  e: IrExpr & { kind: "regexIntrinsic" },
+): LlValue {
+  if (!releasesInputsOnReturn(e.method)) return emitRegexOperation(host, e);
+  // The operands' temps (the subject of a chained substitution, a computed
+  // replacement) are released when the call returns rather than at the
+  // end of the statement, so a chain of substitutions holds at most its
+  // current subject and result.
+  host.frames.push([]);
+  const out = emitRegexOperation(host, e);
+  host.toFrame(out);
+  host.releaseTemps(host.frames.pop()!);
+  return host.own(out);
+}
+
+function emitRegexOperation(
   host: LlvmEmitterContext,
   e: IrExpr & { kind: "regexIntrinsic" },
 ): LlValue {
@@ -406,6 +440,7 @@ export function emitRecordKeyGetOr(
     e.loc,
     false,
     () => host.emitBranchInto(slot, fallback),
+    e,
   );
   B.startBlock(join);
   const t = B.tmp();
@@ -434,6 +469,8 @@ export function emitRecordKeyGet(
     e.overflowOnly === true,
     e.loc,
     e.missNaN === true,
+    null,
+    e,
   );
   B.startBlock(join);
   const t = B.tmp();
@@ -456,7 +493,13 @@ export function pointerRecordKeyGet(host: LlvmEmitterContext, e: IrExpr): boolea
   const shape = host.recordShape(e.shapeId);
   if (e.overflowOnly !== true) {
     for (const f of shape.fields)
-      if (host.recordFieldInline(e.shapeId, f.name) || !exact(f.type)) return false;
+      if (
+        host.recordFieldInline(e.shapeId, f.name) ||
+        !exact(f.type) ||
+        // A field a partial view may lack has no slot to lend.
+        host.partialFieldMissing(e.shapeId, f.name)
+      )
+        return false;
   }
   return shape.indexValue === undefined || typeEquals(shape.indexValue, nullable.arm);
 }
@@ -468,6 +511,7 @@ export function pointerRecordKeyGet(host: LlvmEmitterContext, e: IrExpr): boolea
 export function emitBorrowedRecordKeyGet(
   host: LlvmEmitterContext,
   e: IrExpr & { kind: "recordKeyGet" },
+  fallback: IrExpr | null = null,
 ): LlValue {
   const B = host.B;
   if (e.type.kind !== "union")
@@ -477,6 +521,15 @@ export function emitBorrowedRecordKeyGet(
   const key = host.canBorrowReceiver(e.key) ? host.emitReadReceiver(e.key) : host.emitExpr(e.key);
   const slot = B.slot();
   B.entryAllocas.push(`${slot} = alloca ptr`);
+  // A default that needs an owner gets a frame slot, empty on every path
+  // until a miss fills it.
+  let owner: string | null = null;
+  if (fallback !== null && !immortalDefault(host, fallback)) {
+    owner = B.slot();
+    B.entryAllocas.push(`${owner} = alloca ptr`);
+    B.line(`store ptr null, ptr ${owner}`);
+    host.ownSlot(owner, resultType, true);
+  }
   const join = B.newLabel("rkb.j");
   const shape = host.recordShape(e.shapeId);
   for (const f of e.overflowOnly === true ? [] : shape.fields) {
@@ -506,13 +559,76 @@ export function emitBorrowedRecordKeyGet(
     B.br(join);
     B.startBlock(ln);
   }
-  const undefTag = undefinedArmTag(resultType, host.unionsById);
-  B.line(`store ptr ${host.unitInstanceRef(resultType.unionId, undefTag)}, ptr ${slot}`);
+  if (fallback !== null && immortalDefault(host, fallback)) {
+    // An immortal default (an interned function value or undefined) needs
+    // no owner at all.
+    const value = host.emitExpr(fallback);
+    host.toHeap(value);
+    B.line(`store ptr ${value.name}, ptr ${slot}`);
+  } else if (fallback !== null && owner !== null) {
+    // `r[k] ?? d` (borrowedRecordKeyGetOr): the default is owned by a
+    // statement-frame slot, which the consumer may borrow like a hit.
+    const value = host.emitExpr(fallback);
+    host.toHeap(value);
+    B.line(`store ptr ${value.name}, ptr ${owner}`);
+    B.line(`store ptr ${value.name}, ptr ${slot}`);
+  } else {
+    const undefTag = undefinedArmTag(resultType, host.unionsById);
+    B.line(`store ptr ${host.unitInstanceRef(resultType.unionId, undefTag)}, ptr ${slot}`);
+  }
   B.br(join);
   B.startBlock(join);
   const t = B.tmp();
   B.line(`${t} = load ptr, ptr ${slot}`);
   return { name: t, type: e.type };
+}
+
+/** `r[k] ?? d` in its pass-through shape over a pointerRecordKeyGet whose
+ * stored values are never unit (so only a miss evaluates `d`): the hit
+ * lends the stored pointer and the default is frame-owned, so the result
+ * borrows for the rest of the statement. */
+export function borrowedRecordKeyGetOr(
+  host: LlvmEmitterContext,
+  e: IrExpr,
+): (IrExpr & { kind: "recordKeyGet" }) | null {
+  if (e.kind !== "nullish" || e.left.kind !== "recordKeyGet") return null;
+  if (!typeEquals(e.type, e.left.type) || !pointerRecordKeyGet(host, e.left)) return null;
+  const shape = host.recordShape(e.left.shapeId);
+  const holdsUnit = (t: IrType): boolean =>
+    isUnitType(t) ||
+    t.kind === "dyn" ||
+    (t.kind === "union" && (host.unionsById.get(t.unionId)?.arms ?? []).some(isUnitType));
+  if (shape.indexValue !== undefined && holdsUnit(shape.indexValue)) return null;
+  if (e.left.overflowOnly !== true && shape.fields.some((f) => holdsUnit(f.type))) return null;
+  return e.left;
+}
+
+/** The default is a call to a helper whose every result is immortal: the
+ * unit arm or a closure over no captures (an interned function value), as
+ * the unbound inherited-method reads return. */
+export function immortalDefault(host: LlvmEmitterContext, fallback: IrExpr): boolean {
+  if (fallback.kind !== "call") return false;
+  const fn = host.fnByName.get(fallback.callee);
+  if (!fn || fn.async || fn.generator) return false;
+  const immortal = (v: IrExpr | null): boolean => {
+    if (v === null) return false;
+    if (v.kind === "unitLit") return true;
+    if (v.kind === "unionWrap") return immortal(v.value);
+    if (v.kind === "closure") {
+      const target = host.fnByName.get(v.fnName);
+      return v.captures.length === 0 && target !== undefined && target.captures === undefined;
+    }
+    return false;
+  };
+  let ok = true;
+  everyStmtList(fn.body, {
+    stmt: (st) => {
+      if (st.kind === "return" && !immortal(st.value)) ok = false;
+      return ok;
+    },
+    expr: () => ok,
+  });
+  return ok;
 }
 
 /** A keyed read whose result is a scalar union (`r[k]` on a
@@ -531,6 +647,8 @@ export function scalarRecordKeyGet(host: LlvmEmitterContext, e: IrExpr): boolean
   if (e.overflowOnly !== true) {
     for (const f of shape.fields) {
       const inline = host.recordFieldInline(e.shapeId, f.name);
+      // A field a partial view may lack has no slot to read.
+      if (host.partialFieldMissing(e.shapeId, f.name)) return false;
       if (!isArm(f.type) && !(inline && typeEquals(f.type, resultType))) return false;
     }
   }
@@ -592,26 +710,42 @@ export function emitStackRecordKeyGet(
   const iv = shape.indexValue;
   if (iv) {
     const ovf = host.recordOvfPtr(obj.name, e.shapeId);
-    const outTy = iv.kind === "f64" ? "double" : "i8";
-    const outSlot = B.slot();
-    B.entryAllocas.push(`${outSlot} = alloca ${outTy}`);
-    B.line(`store ${outTy} ${iv.kind === "f64" ? f64Lit(0) : "0"}, ptr ${outSlot}`);
-    const getter = `scr_map_get_str_${iv.kind === "f64" ? "f64" : "bool"}`;
-    host.declare(`declare zeroext i1 @${getter}(ptr, ptr, ptr)`);
-    const found = B.tmp();
-    B.line(`${found} = call zeroext i1 @${getter}(ptr ${ovf}, ptr ${key.name}, ptr ${outSlot})`);
     const lh = B.newLabel("rks.h");
     const ln = B.newLabel("rks.n");
+    // A fused read resolves the overflow entry and parks it for its paired
+    // write (record-entry-fusion.ts): one probe for the get-then-set.
+    const paired = host.recordEntryFusion?.reads.get(e);
+    let found: string;
+    let hitValue: () => string;
+    if (paired && (iv.kind === "f64" || iv.kind === "bool")) {
+      const entry = emitStringMapEntry(host, ovf, key.name);
+      rememberRecordEntry(host, e, ovf, key.name, entry);
+      found = B.tmp();
+      B.line(`${found} = icmp ne ptr ${entry}, null`);
+      hitValue = () => fusedRecordValue(host, entry, iv.kind as "f64" | "bool");
+    } else {
+      const outTy = iv.kind === "f64" ? "double" : "i8";
+      const outSlot = B.slot();
+      B.entryAllocas.push(`${outSlot} = alloca ${outTy}`);
+      B.line(`store ${outTy} ${iv.kind === "f64" ? f64Lit(0) : "0"}, ptr ${outSlot}`);
+      const getter = `scr_map_get_str_${iv.kind === "f64" ? "f64" : "bool"}`;
+      host.declare(`declare zeroext i1 @${getter}(ptr, ptr, ptr)`);
+      found = B.tmp();
+      B.line(`${found} = call zeroext i1 @${getter}(ptr ${ovf}, ptr ${key.name}, ptr ${outSlot})`);
+      hitValue = () => {
+        const raw = B.tmp();
+        B.line(`${raw} = load ${outTy}, ptr ${outSlot}`);
+        if (iv.kind === "bool") {
+          const truncVal = B.tmp();
+          B.line(`${truncVal} = trunc i8 ${raw} to i1`);
+          return truncVal;
+        }
+        return raw;
+      };
+    }
     B.condBr(found, lh, ln);
     B.startBlock(lh);
-    const raw = B.tmp();
-    B.line(`${raw} = load ${outTy}, ptr ${outSlot}`);
-    let value = raw;
-    if (iv.kind === "bool") {
-      value = B.tmp();
-      B.line(`${value} = trunc i8 ${raw} to i1`);
-    }
-    storeScalar(iv, value);
+    storeScalar(iv, hitValue());
     B.br(join);
     B.startBlock(ln);
   }
@@ -635,14 +769,18 @@ export function keyedRecordReadInto(
   loc?: SrcLoc,
   missNaN = false,
   missInto: (() => void) | null = null,
+  read: IrExpr | null = null,
 ): void {
   const B = host.B;
   const shape = host.recordShape(shapeId);
   if (resultType.kind === "dyn") {
-    // A dyn JOIN (the C helper's `surface` dyn arm): declared hits
-    // convert through the per-type toDyn walker (borrowed read → fresh
-    // +1 tree), a dyn-valued overflow hit passes through (+1 from the
-    // map get), and a miss is JS's undefined — the dyn singleton.
+    // A dyn JOIN (the C helper's `surface` dyn arm): a declared hit of a
+    // record, an array or a union holding one boxes as a LIVE capsule of
+    // the field (+1), as `dynFrom` with `liveRef` boxes the same value, so
+    // a write through the result reaches the field it came from; every
+    // other hit converts through the per-type toDyn walker, a dyn-valued
+    // overflow hit passes through (+1 from the map get), and a miss is
+    // JS's undefined — the dyn singleton.
     for (const f of overflowOnly ? [] : shape.fields) {
       const hit = B.tmp();
       B.line(
@@ -652,19 +790,32 @@ export function keyedRecordReadInto(
       const ln = B.newLabel("rkg.n");
       B.condBr(hit, lh, ln);
       B.startBlock(lh);
-      const { ptr, type, inline } = host.recordFieldPtr(objName, shapeId, f.name);
-      const v = host.loadRecordField(ptr, type, inline);
-      if (type.kind === "dyn") {
-        host.declare(`declare ptr @scr_dyn_retain_v(ptr)`);
-        const r = B.tmp();
-        B.line(`${r} = call ptr @scr_dyn_retain_v(ptr ${v})`);
-        B.line(`store ptr ${r}, ptr ${slot}`);
+      let v: string;
+      let type: IrType;
+      if (host.partialFieldMissing(shapeId, f.name)) {
+        // A field a partial record view may lack reads through the view's
+        // extra-property store; the read answers an owned value.
+        type = shape.fields.find((field) => field.name === f.name)!.type;
+        v = host.readPartialField(objName, shapeId, f.name, type).name;
+        if (type.kind === "dyn") B.line(`store ptr ${v}, ptr ${slot}`);
+        else {
+          const r = host.dyn.liveReadToDyn(B, type, v);
+          host.releaseFrame(v, type);
+          B.line(`store ptr ${r}, ptr ${slot}`);
+        }
       } else {
-        const conv = host.dyn.toDynHelper(type);
-        const vTy = host.llType(type);
-        const r = B.tmp();
-        B.line(`${r} = call ptr @${conv}(${vTy} ${v})`);
-        B.line(`store ptr ${r}, ptr ${slot}`);
+        const { ptr, type: fieldType, inline } = host.recordFieldPtr(objName, shapeId, f.name);
+        type = fieldType;
+        v = host.loadRecordField(ptr, type, inline);
+        if (type.kind === "dyn") {
+          host.declare(`declare ptr @scr_dyn_retain_v(ptr)`);
+          const r = B.tmp();
+          B.line(`${r} = call ptr @scr_dyn_retain_v(ptr ${v})`);
+          B.line(`store ptr ${r}, ptr ${slot}`);
+        } else {
+          const r = host.dyn.liveReadToDyn(B, type, v);
+          B.line(`store ptr ${r}, ptr ${slot}`);
+        }
       }
       B.br(join);
       B.startBlock(ln);
@@ -771,11 +922,19 @@ export function keyedRecordReadInto(
     const ln = B.newLabel("rkg.n");
     B.condBr(hit, lh, ln);
     B.startBlock(lh);
-    const { ptr, type, inline } = host.recordFieldPtr(objName, shapeId, f.name);
-    // An inline union field surfaces through a fresh heap box.
-    const value = inline
-      ? surface(type, host.inlineFieldUnion(ptr, type), true)
-      : surface(type, host.loadRecordField(ptr, type, false), false);
+    let value: string;
+    if (host.partialFieldMissing(shapeId, f.name)) {
+      // A field a partial record view may lack: the read covers the view's
+      // extra-property store, or stops the program when nothing wrote it.
+      const type = shape.fields.find((field) => field.name === f.name)!.type;
+      value = surface(type, host.readPartialField(objName, shapeId, f.name, type).name, true);
+    } else {
+      const { ptr, type, inline } = host.recordFieldPtr(objName, shapeId, f.name);
+      // An inline union field surfaces through a fresh heap box.
+      value = inline
+        ? surface(type, host.inlineFieldUnion(ptr, type), true)
+        : surface(type, host.loadRecordField(ptr, type, false), false);
+    }
     B.line(`store ${ty} ${value}, ptr ${slot}`);
     B.br(join);
     B.startBlock(ln);
@@ -784,29 +943,45 @@ export function keyedRecordReadInto(
   if (iv) {
     const ovf = host.recordOvfPtr(objName, shapeId);
     if (iv.kind === "f64" || iv.kind === "bool") {
-      const outTy = iv.kind === "f64" ? "double" : "i8";
-      const outSlot = B.slot();
-      B.entryAllocas.push(`${outSlot} = alloca ${outTy}`);
-      B.line(`store ${outTy} ${iv.kind === "f64" ? f64Lit(0) : "0"}, ptr ${outSlot}`);
-      host.declare(
-        `declare zeroext i1 @scr_map_get_str_${iv.kind === "f64" ? "f64" : "bool"}(ptr, ptr, ptr)`,
-      );
-      const found = B.tmp();
-      B.line(
-        `${found} = call zeroext i1 @scr_map_get_str_${iv.kind === "f64" ? "f64" : "bool"}(ptr ${ovf}, ptr ${keyName}, ptr ${outSlot})`,
-      );
       const lh = B.newLabel("rkg.h");
       const ln = B.newLabel("rkg.n");
+      // A fused read resolves the overflow entry and parks it for its paired
+      // write (record-entry-fusion.ts): one probe for the get-then-set.
+      const paired = read !== null ? host.recordEntryFusion?.reads.get(read) : undefined;
+      let found: string;
+      let hitValue: () => string;
+      if (paired) {
+        const entry = emitStringMapEntry(host, ovf, keyName);
+        rememberRecordEntry(host, read!, ovf, keyName, entry);
+        found = B.tmp();
+        B.line(`${found} = icmp ne ptr ${entry}, null`);
+        hitValue = () => fusedRecordValue(host, entry, iv.kind as "f64" | "bool");
+      } else {
+        const outTy = iv.kind === "f64" ? "double" : "i8";
+        const outSlot = B.slot();
+        B.entryAllocas.push(`${outSlot} = alloca ${outTy}`);
+        B.line(`store ${outTy} ${iv.kind === "f64" ? f64Lit(0) : "0"}, ptr ${outSlot}`);
+        host.declare(
+          `declare zeroext i1 @scr_map_get_str_${iv.kind === "f64" ? "f64" : "bool"}(ptr, ptr, ptr)`,
+        );
+        found = B.tmp();
+        B.line(
+          `${found} = call zeroext i1 @scr_map_get_str_${iv.kind === "f64" ? "f64" : "bool"}(ptr ${ovf}, ptr ${keyName}, ptr ${outSlot})`,
+        );
+        hitValue = () => {
+          const rawOut = B.tmp();
+          B.line(`${rawOut} = load ${outTy}, ptr ${outSlot}`);
+          if (iv.kind === "bool") {
+            const truncHit = B.tmp();
+            B.line(`${truncHit} = trunc i8 ${rawOut} to i1`);
+            return truncHit;
+          }
+          return rawOut;
+        };
+      }
       B.condBr(found, lh, ln);
       B.startBlock(lh);
-      const rawOut = B.tmp();
-      B.line(`${rawOut} = load ${outTy}, ptr ${outSlot}`);
-      let hitVal = rawOut;
-      if (iv.kind === "bool") {
-        hitVal = B.tmp();
-        B.line(`${hitVal} = trunc i8 ${rawOut} to i1`);
-      }
-      B.line(`store ${ty} ${surface(iv, hitVal, true)}, ptr ${slot}`);
+      B.line(`store ${ty} ${surface(iv, hitValue(), true)}, ptr ${slot}`);
       B.br(join);
       B.startBlock(ln);
     } else {

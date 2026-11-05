@@ -366,6 +366,10 @@ Static code has no `WeakRef`, a `FinalizationRegistry` never runs its cleanup ca
 
 A long-running program, such as a compiler in watch mode, can free program-lifetime instances one generation at a time with `LifetimeRegion` from [`@scriptc/experimental`](/docs/experimental). Instances created while `region.run(fn)` runs belong to the region. After `region.release()`, scriptc frees them together once nothing outside the region refers to any of them, and removes the `WeakMap` and `WeakSet` entries they are keys of. Instances created outside every region are never freed, as described above.
 
+### Inline array fields
+
+An array field of a program-lifetime class whose elements are program-lifetime instances can keep its elements in the instance itself, after the other fields, with `InlineArray` from [`@scriptc/experimental`](/docs/experimental). The constructor writes the field once from one of its parameters; reads that index the field, read its `length` or iterate it load the elements from the instance, and other reads get an array of them. The array passed to the constructor is one that nothing else keeps, and the arrays fields hold are never written. scriptc reports a field that does not keep these rules (SC7009).
+
 ## Diagnostics
 
 Each failed contract names the declaration and the reason:
@@ -467,6 +471,10 @@ $ scriptc build reject.ts
     <tr>
       <td>SC7008</td>
       <td>A <code>ProgramLifetime</code> class is not the root of its hierarchy, or is part of a library build.</td>
+    </tr>
+    <tr>
+      <td>SC7009</td>
+      <td>An <code>InlineArray</code> field is not on a <code>ProgramLifetime</code> class, is written other than once from a constructor parameter, or is read in a way that could tell its reads apart.</td>
     </tr>
   </tbody>
 </table>

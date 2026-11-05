@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8332-worker-shared-counted-loops.ts"
+ ],
+ "diags": []
+}

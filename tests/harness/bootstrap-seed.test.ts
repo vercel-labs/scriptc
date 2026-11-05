@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { load } from "js-yaml";
 import { expect, test } from "vitest";
-import { verifyBootstrapSeed } from "../../scripts/bootstrap-seed.mjs";
+import { seedBuildEnvironment, verifyBootstrapSeed } from "../../scripts/bootstrap-seed.mjs";
 
 test("bootstrap artifacts require a complete seed from the same revision, lane, and path", () => {
   const directory = mkdtempSync(join(tmpdir(), "scriptc-seed-contract-"));
@@ -34,6 +34,22 @@ test("bootstrap artifacts require a complete seed from the same revision, lane, 
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("seeds build without the function layout in both lanes, shared or not", () => {
+  for (const sanitize of [false, true])
+    expect(seedBuildEnvironment(sanitize)).toEqual({
+      SCRIPTC_SAN: sanitize ? "1" : "",
+      SCRIPTC_NATIVE_EMIT_IR: "1",
+      SCRIPTC_NATIVE_OPTIMIZATION: sanitize ? "dev" : "release",
+      SCRIPTC_NATIVE_LAYOUT: "",
+    });
+  // The bootstrap test builds its own seed when CI shares none.
+  const driver = readFileSync(
+    new URL("./self-hosting-native-driver.test.ts", import.meta.url),
+    "utf8",
+  );
+  expect(driver).toContain("...seedBuildEnvironment(sanitize)");
 });
 
 test("CI restores each seed only into its matching instrumented bootstrap lane", () => {

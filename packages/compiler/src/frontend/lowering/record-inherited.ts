@@ -34,6 +34,8 @@ import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
 import { nullProtoRecordShape, recordNullProtoTest } from "./null-prototype.js";
 import { recordHasOwnHelper } from "./lower-calls.js";
 import { OTHER_ARM_FAILURE_MESSAGE } from "./coercions/unions.js";
+import { recordMayKeepSource } from "./record-sources.js";
+import { recordStringCall } from "./record-links.js";
 
 /** Object.prototype's methods a record answers from its prototype. */
 export const RECORD_INHERITED_METHODS: ReadonlySet<string> = new Set([
@@ -466,6 +468,10 @@ function builtinAnswer(
 ): IrExpr {
   switch (method) {
     case "toString":
+      // A linked copy or a record with a kept source answers as its source
+      // does (record-links.ts).
+      if (recordMayKeepSource(lowerer, { kind: "record", shapeId }))
+        return recordStringCall(lowerer, o, "string", loc, "constant");
       return { kind: "strLit", value: "[object Object]", type: STRING, loc };
     case "toLocaleString":
       // Object.prototype.toLocaleString calls this.toString().
@@ -499,7 +505,8 @@ function builtinAnswer(
         type: BOOL,
         loc,
       });
-      if (arg === undefined || !mayBeSymbol(arg.type)) return has(propertyKeyOf(lowerer, arg, loc));
+      if (arg === undefined || !mayBeSymbol(lowerer, arg.type))
+        return has(propertyKeyOf(lowerer, arg, loc));
       const id = declare("%protoKey", DYN);
       const held = varRef(id, DYN, loc);
       return {
@@ -520,13 +527,16 @@ function builtinAnswer(
   }
 }
 
-/** Whether a value of `type` may be a symbol at run time. */
-function mayBeSymbol(type: IrType): boolean {
-  return !(
-    isUnitType(type) ||
-    type.kind === "string" ||
-    type.kind === "f64" ||
-    type.kind === "bool"
+/** Whether a value of `type` may be a symbol at run time: a checked value
+ * or a union with a symbol or checked arm. Records, class instances,
+ * arrays and functions never are, so their keys skip the symbol test (a
+ * key that converts without running code leaves the method's impl no heap
+ * writer to ReferenceWrites). */
+function mayBeSymbol(lowerer: Lowerer, type: IrType): boolean {
+  if (type.kind === "dyn" || type.kind === "symbol") return true;
+  if (type.kind !== "union") return false;
+  return (lowerer.unions.get(type.unionId)?.arms ?? []).some(
+    (arm) => arm.kind === "dyn" || arm.kind === "symbol",
   );
 }
 
@@ -540,9 +550,37 @@ function propertyKeyOf(lowerer: Lowerer, arg: IrExpr | undefined, loc: SrcLoc): 
       type: STRING,
       loc,
     };
-  if (arg.type.kind === "string") return arg;
-  if (arg.type.kind === "f64" || arg.type.kind === "bool")
+  const type = arg.type;
+  if (type.kind === "string") return arg;
+  if (type.kind === "f64" || type.kind === "bool")
     return { kind: "toString", operand: arg, type: STRING, loc };
+  // Unions of scalars convert through the union's own ToString.
+  if (
+    type.kind === "union" &&
+    (lowerer.unions.get(type.unionId)?.arms ?? []).every(
+      (arm) =>
+        isUnitType(arm) || arm.kind === "string" || arm.kind === "f64" || arm.kind === "bool",
+    )
+  )
+    return { kind: "toString", operand: arg, type: STRING, loc };
+  // A record or class instance that answers Object.prototype.toString
+  // spells "[object Object]" without running any code.
+  // A linked copy or a record with a kept source converts as its source
+  // does (record-links.ts).
+  if (
+    type.kind === "record" &&
+    defaultRecordToString(lowerer, type.shapeId) &&
+    recordMayKeepSource(lowerer, type)
+  )
+    return recordStringCall(lowerer, arg, "string", loc, "constant");
+  if (
+    (type.kind === "record" && defaultRecordToString(lowerer, type.shapeId)) ||
+    (type.kind === "object" && defaultToString(lowerer, type.className))
+  )
+    return { kind: "strLit", value: "[object Object]", type: STRING, loc };
+  // Any other key (an array, a function, a record or class instance with
+  // its own toString, a checked value) converts as ToPropertyKey does,
+  // through the dynamic tier: the conversion may run the key's code.
   return {
     kind: "libCall",
     fn: "dyn.toStringCoerce",
@@ -550,6 +588,29 @@ function propertyKeyOf(lowerer: Lowerer, arg: IrExpr | undefined, loc: SrcLoc): 
     type: STRING,
     loc,
   };
+}
+
+/** A record shape whose values answer Object.prototype.toString: no
+ * `toString` field, and no index signature that may hold one at run time
+ * (or give the record a null prototype). */
+function defaultRecordToString(lowerer: Lowerer, shapeId: string): boolean {
+  const shape = lowerer.shapes.get(shapeId);
+  return (
+    shape !== undefined &&
+    shape.indexValue === undefined &&
+    !shape.fields.some((field) => field.name === "toString")
+  );
+}
+
+/** A source class whose instances answer Object.prototype.toString. */
+function defaultToString(lowerer: Lowerer, className: string): boolean {
+  const info = lowerer.classes.get(className);
+  return (
+    info !== undefined &&
+    info.decl !== undefined &&
+    lowerer.findMethodOn(info, "toString") === null &&
+    !lowerer.overrideBelow(info, "toString")
+  );
 }
 
 /** `value` returned as `ret`: as is, wrapped into a union arm or a checked
@@ -580,7 +641,7 @@ function convertTo(lowerer: Lowerer, value: IrExpr, want: IrType): IrExpr | null
 /** `o.method(...args)` on a record: an own callable entry when the record
  * holds one, else the built-in. `calleeText` names the callee for Node's
  * "is not a function". */
-function callOwnOrBuiltin(
+export function callOwnOrBuiltin(
   lowerer: Lowerer,
   declare: DeclareLocal,
   o: IrExpr,
@@ -665,7 +726,7 @@ function ownEntryRead(
  * non-function throws Node's "is not a function"; a function whose
  * parameters or result cannot carry the call throws the checked-conversion
  * TypeError (the program's types claimed otherwise). */
-function callOwn(
+export function callOwn(
   lowerer: Lowerer,
   declare: DeclareLocal,
   own: IrExpr,
@@ -770,6 +831,8 @@ export function lowerRecordInheritedCall(
   if (recvT?.kind !== "record") return null;
   const shape = lowerer.shapes.get(recvT.shapeId);
   if (!shape || shape.tuple) return null;
+  if (method !== "toString")
+    lowerer.recordMethodCalls.push({ shapeId: recvT.shapeId, method, loc: locOf(call) });
   const want =
     method === "valueOf"
       ? (lowerer.mapTypeOf(lowerer.typeOf(call)) ?? recvT)

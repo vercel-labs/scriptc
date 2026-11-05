@@ -20,6 +20,7 @@ import {
   widthCopyDivergenceDiag,
   type ScrDiagnostic,
 } from "../../diagnostics/diagnostic.js";
+import { typeEquals, type IrType } from "../../ir/ir.js";
 import { isCollationCovered } from "./collation-repertoire.js";
 import type { Lowerer } from "./lowerer.js";
 import { keptIdentityAssertion } from "./assertion-identity.js";
@@ -29,6 +30,11 @@ interface IdentityUse {
   kind: "write" | "compare";
   /** Source text of the use, e.g. `r.path` or `p === other`. */
   text: string;
+  /** The written or compared expression. */
+  node?: ts.Expression;
+  /** A write: false when it lands on a member the copy shares with the
+   * value instead of on the copy's own field (see bindingWrite). */
+  copy?: boolean;
 }
 
 export function scanDivergences(
@@ -177,6 +183,8 @@ export function scanDivergences(
       if (use === null || use === undefined || param === undefined || param.type === undefined)
         return;
       if (!isExistingObjectExpression(arg)) return;
+      // The call kept the argument's layout: the callee has the value itself.
+      if (lowerer.layoutKeptNodes.has(arg)) return;
       const copy = safely(() => widthCopyBetween(lowerer, arg, param.type!));
       if (copy === undefined || copy === null) return;
       out.push(
@@ -185,6 +193,7 @@ export function scanDivergences(
     });
   }
   for (const decl of typedDecls) {
+    if (lowerer.layoutKeptNodes.has(decl.initializer!)) continue;
     const name = (decl.name as ts.Identifier).text;
     const scope = enclosingScope(decl);
     if (scope === undefined) continue;
@@ -207,11 +216,20 @@ export function scanDivergences(
   for (const { decl, source, type } of castDecls) {
     // An assertion of the global object keeps that object: no copy.
     if (keptIdentityAssertion(lowerer, decl.initializer!) !== undefined) continue;
+    // The assertion kept the value's storage (`tagged as Labeled`, a union
+    // arm extracted for a projection): the binding holds the object itself,
+    // so there is no copy to report (lowerVarDecl marks the kept node).
+    if (lowerer.layoutKeptNodes.has(decl.initializer!)) continue;
     const name = (decl.name as ts.Identifier).text;
     const scope = enclosingScope(decl);
     if (scope === undefined) continue;
-    const use = identityUse(scope, name, decl.end);
-    if (use === null) continue;
+    const use = identityUse(scope, name, decl.end, symbolMatcher(decl, checker), (target) =>
+      writeLandsOnCopy(lowerer, name, decl.initializer!, target),
+    );
+    // A write through a member the copy shares reaches the value, and a
+    // shadowing declaration's write is not a use of this binding; either
+    // leaves the copy unobservable.
+    if (use === null || (use.kind === "write" && use.copy === false)) continue;
     const copy = safely(() => widthCopyBetween(lowerer, source, type));
     if (copy === undefined || copy === null) continue;
     out.push(
@@ -391,6 +409,161 @@ export function scanDivergences(
   return out;
 }
 
+/** Whether the binding `decl` declares is used in a way a field copy would
+ * change: something writes through it, or compares it with `===`/`!==`. Only
+ * such a binding needs the value's own storage; a read-only view is equal
+ * either way and keeps the copy the width-copy report names. A `let` or `var`
+ * binding is left alone: it can be reassigned, so its declared layout stands. */
+export function bindingIdentityUse(
+  decl: ts.VariableDeclaration,
+  checker?: ts.TypeChecker,
+): boolean {
+  if (!ts.isIdentifier(decl.name)) return false;
+  const flags = ts.getCombinedNodeFlags(decl);
+  if ((flags & ts.NodeFlags.BlockScoped) === 0 || (flags & ts.NodeFlags.Let) !== 0) return false;
+  const scope = enclosingScope(decl);
+  if (scope === undefined) return false;
+  return identityUse(scope, decl.name.text, decl.end, symbolMatcher(decl, checker)) !== null;
+}
+
+/** Matches references that resolve to the binding `decl` declares, so a
+ * shadowing declaration of the same name elsewhere is not mistaken for a
+ * use of the binding. Undefined when the checker is unavailable or cannot
+ * resolve the declaration; the scan is name-based then. */
+function symbolMatcher(
+  decl: ts.VariableDeclaration,
+  checker: ts.TypeChecker | undefined,
+): ((id: ts.Identifier) => boolean) | undefined {
+  if (checker === undefined) return undefined;
+  const target = safely(() => checker.getSymbolAtLocation(decl.name));
+  if (target === undefined) return undefined;
+  return (id: ts.Identifier): boolean => {
+    const symbol = safely(() => checker.getSymbolAtLocation(id));
+    return symbol !== undefined && symbol === target;
+  };
+}
+
+/** The first write through the binding `decl` declares that lands on the
+ * assertion's COPY (its own field), after its own declaration, or null.
+ * Writes THROUGH a member the copy shares (the same object in the value
+ * and in the view) reach the original object, so they do not diverge and
+ * do not count. The evidence a copied binding is observable through (the
+ * same scan the width-copy warning reports from). */
+export function bindingWrite(lowerer: Lowerer, decl: ts.VariableDeclaration): IdentityUse | null {
+  if (!ts.isIdentifier(decl.name) || decl.initializer === undefined) return null;
+  const scope = enclosingScope(decl);
+  if (scope === undefined) return null;
+  const name = decl.name.text;
+  const use = identityUse(scope, name, decl.end, symbolMatcher(decl, lowerer.checker), (target) =>
+    writeLandsOnCopy(lowerer, name, decl.initializer!, target),
+  );
+  return use?.kind === "write" && use.copy === true ? use : null;
+}
+
+/** The accesses that lead from the binding `name` to `target`, outermost
+ * last (`v.a.b` is `[v.a, v.a.b]`), or null when `target` is not rooted
+ * in the binding. */
+function accessChain(target: ts.Expression, name: string): ts.Expression[] | null {
+  const chain: ts.Expression[] = [];
+  let cur: ts.Expression = target;
+  for (;;) {
+    if (ts.isParenthesizedExpression(cur) || ts.isNonNullExpression(cur)) {
+      cur = cur.expression;
+      continue;
+    }
+    if (!ts.isPropertyAccessExpression(cur) && !ts.isElementAccessExpression(cur)) break;
+    chain.push(cur);
+    cur = cur.expression;
+  }
+  if (!ts.isIdentifier(cur) || cur.text !== name) return null;
+  return chain.reverse();
+}
+
+/** The member an access names, for a property access or a string-literal
+ * element access. */
+function memberNameOf(node: ts.Expression): string | null {
+  if (ts.isPropertyAccessExpression(node)) return node.name.text;
+  if (ts.isElementAccessExpression(node)) {
+    const arg = node.argumentExpression;
+    if (arg !== undefined && (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg)))
+      return arg.text;
+  }
+  return null;
+}
+
+/** Whether the write at `target` (the left side of an assignment, a
+ * `delete`, or an update's operand) lands on the copy. A write to one of
+ * the copy's own fields does; a nested write (`view.child.n = 5`) lands on
+ * the child object, which the copy shares with the value, so it does not —
+ * unless the view rebuilds that member at another type. */
+function writeLandsOnCopy(
+  lowerer: Lowerer,
+  name: string,
+  initializer: ts.Expression,
+  target: ts.Expression,
+): boolean {
+  const chain = accessChain(target, name);
+  if (chain === null || chain.length < 2) return true;
+  const member = memberNameOf(chain[0]!);
+  if (member === null) return true;
+  return !assertionViewSharesMember(lowerer, initializer, member);
+}
+
+/** Whether the copy `const v = x as View` shares the member `member` with
+ * the value: the member has the same lowered type in the value and in the
+ * view, so the copied field holds the child object itself. A member the
+ * view adds, drops, or reshapes is rebuilt in the copy and is not shared. */
+export function assertionViewSharesMember(
+  lowerer: Lowerer,
+  initializer: ts.Expression,
+  member: string,
+): boolean {
+  const cast = castView(initializer);
+  if (cast === null) return false;
+  if (keptIdentityAssertion(lowerer, initializer) !== undefined) return false;
+  return safely(() => sharesMember(lowerer, cast, member)) ?? false;
+}
+
+function sharesMember(
+  lowerer: Lowerer,
+  cast: { source: ts.Expression; type: ts.TypeNode },
+  member: string,
+): boolean {
+  const checker = lowerer.checker;
+  const source = checker.getTypeAtLocation(cast.source);
+  const target = checker.getTypeFromTypeNode(cast.type);
+  const from = checker.getPropertyOfType(source, member);
+  const to = checker.getPropertyOfType(target, member);
+  if (from === undefined || to === undefined) return false;
+  // An optional member has no slot the copy keeps as it stands.
+  const optional = ts.SymbolFlags.Optional;
+  if ((from.flags & optional) !== 0 || (to.flags & optional) !== 0) return false;
+  const fromType = checker.getTypeOfSymbolAtLocation(from, cast.source);
+  const toType = checker.getTypeOfSymbolAtLocation(to, cast.type);
+  const loweredFrom = lowerer.mapTypeOf(fromType);
+  const loweredTo = lowerer.mapTypeOf(toType);
+  if (loweredFrom === null || loweredTo === null) return false;
+  return typeEquals(loweredFrom, loweredTo);
+}
+
+/** The copy an assertion of an EXISTING object into a record view builds
+ * (`const v = x as View`), or null when the assertion keeps the value it
+ * views (the view is a projection the value already presents, an unknown
+ * view, a class protocol, ...). The same predicate the width-copy warning
+ * reports from, so a refused program is one that warning would have
+ * reported. */
+export function assertionViewCopy(
+  lowerer: Lowerer,
+  initializer: ts.Expression,
+): { source: string; target: string } | null {
+  const cast = castView(initializer);
+  if (cast === null) return null;
+  // An assertion of the global object keeps that object (assertion-identity.ts),
+  // so its binding holds the global object rather than a copy.
+  if (keptIdentityAssertion(lowerer, initializer) !== undefined) return null;
+  return safely(() => widthCopyBetween(lowerer, cast.source, cast.type)) ?? null;
+}
+
 /** A checker query that fails here only loses a warning. */
 function safely<T>(f: () => T): T | undefined {
   try {
@@ -449,14 +622,26 @@ function calleeName(call: ts.CallExpression): string | null {
 }
 
 /** The first write through, or identity comparison of, the binding `name`
- * inside `root` (after `from`, when given). Name-based: a nested function
- * that rebinds the name is skipped. */
-function identityUse(root: ts.Node, name: string, from = -1): IdentityUse | null {
+ * inside `root` (after `from`, when given). Name-based unless `resolve`
+ * is given, in which case only references that resolve to the binding
+ * count: a nested function that rebinds the name is skipped, and so is a
+ * shadowing declaration of the same name. A write `copyWrite` rejects (one
+ * that lands on a member the copy shares) does not stop the scan: a later
+ * write to the copy's own field is still found, and returned when no other
+ * use turns up first. */
+function identityUse(
+  root: ts.Node,
+  name: string,
+  from = -1,
+  resolve?: (id: ts.Identifier) => boolean,
+  copyWrite?: (target: ts.Expression) => boolean,
+): IdentityUse | null {
   let found: IdentityUse | null = null;
+  let shared: IdentityUse | null = null;
   const isRef = (node: ts.Expression): boolean => {
     while (ts.isParenthesizedExpression(node) || ts.isNonNullExpression(node))
       node = node.expression;
-    return ts.isIdentifier(node) && node.text === name;
+    return ts.isIdentifier(node) && node.text === name && (resolve === undefined || resolve(node));
   };
   const rootOf = (node: ts.Expression): ts.Expression => {
     let cur = node;
@@ -470,6 +655,16 @@ function identityUse(root: ts.Node, name: string, from = -1): IdentityUse | null
   const textOf = (node: ts.Node): string => {
     const text = ts.getSourceFileOfNode(node).text.slice(ts.tokenStartOfNode(node), node.end);
     return text.length > 60 ? `${text.slice(0, 57)}...` : text;
+  };
+  /** Records a write at `target`, or remembers it and keeps scanning when
+   * it lands on a member the copy shares. */
+  const write = (target: ts.Expression): "stop" | undefined => {
+    if (copyWrite === undefined || copyWrite(target)) {
+      found = { kind: "write", text: textOf(target), node: target, copy: true };
+      return "stop";
+    }
+    shared ??= { kind: "write", text: textOf(target), node: target, copy: false };
+    return undefined;
   };
   const visit = (node: ts.Node): "skip" | "stop" | undefined => {
     if (found !== null) return "stop";
@@ -499,10 +694,8 @@ function identityUse(root: ts.Node, name: string, from = -1): IdentityUse | null
         op <= ts.SyntaxKind.LastAssignment &&
         (ts.isPropertyAccessExpression(node.left) || ts.isElementAccessExpression(node.left)) &&
         isRef(rootOf(node.left))
-      ) {
-        found = { kind: "write", text: textOf(node.left) };
-        return "stop";
-      }
+      )
+        return write(node.left);
     }
     if (
       (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
@@ -510,23 +703,23 @@ function identityUse(root: ts.Node, name: string, from = -1): IdentityUse | null
         node.operator === ts.SyntaxKind.MinusMinusToken) &&
       (ts.isPropertyAccessExpression(node.operand) || ts.isElementAccessExpression(node.operand)) &&
       isRef(rootOf(node.operand))
-    ) {
-      found = { kind: "write", text: textOf(node.operand) };
-      return "stop";
-    }
+    )
+      return write(node.operand);
     if (
       ts.isDeleteExpression(node) &&
       (ts.isPropertyAccessExpression(node.expression) ||
         ts.isElementAccessExpression(node.expression)) &&
       isRef(rootOf(node.expression))
-    ) {
-      found = { kind: "write", text: textOf(node.expression) };
-      return "stop";
-    }
+    )
+      return write(node.expression);
     return undefined;
   };
   ts.walkPreorder(root, visit);
-  return found;
+  // Both bindings are only assigned from the walk's callbacks, and the
+  // self-hosting frontend types `found ?? shared` here as `null | undefined`
+  // and refuses to lower it; two explicit returns say the same thing.
+  if (found !== null) return found;
+  return shared;
 }
 
 /** `expr as T`, possibly through `as unknown`: the viewed value and `T`. */
@@ -666,7 +859,11 @@ function widthCopyBetween(
   const t = checker.getTypeFromTypeNode(targetNode);
   if (!isPlainRecordType(checker, t)) return null;
   const classSource = isProgramClassType(checker, s);
-  if (!classSource && !isPlainRecordType(checker, s)) return null;
+  // A union of plain records, such as `TextBlock | ThinkingBlock` narrowed by
+  // an assertion, copies the arm it selects just like a single record.
+  const plainSource = isPlainRecordType(checker, s);
+  const arms = !classSource && !plainSource ? recordArms(checker, s) : null;
+  if (!classSource && !plainSource && arms === null) return null;
   // A class-backed protocol view keeps the original value.
   if (lowerer.classImplementedProtocol(t)) return null;
   const sourceProps = checker.getPropertiesOfType(s);
@@ -674,6 +871,25 @@ function widthCopyBetween(
     // Accessor members write through to captured state, so a copy of them
     // still observes the same writes: no divergence to report.
     const accessor = ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor;
+    const hasAccessor = (type: ts.Type): boolean =>
+      checker.getPropertiesOfType(type).some((p) => (p.flags & accessor) !== 0);
+    if (arms !== null) {
+      if (arms.some(hasAccessor)) return null;
+      // A view with no field of its own (`{ text: unknown }`, or the record
+      // the empty and unknown-only views lower to) keeps the arm it selects:
+      // there is nothing to copy into, and narrowing.ts erases the assertion
+      // (or boxes the live reference), so the value keeps its identity.
+      const targetIr = lowerer.mapTypeOf(t);
+      if (targetIr !== null && keepsIdentityView(lowerer, targetIr)) return null;
+      // Only an arm that already has the target's layout may keep it.
+      if (targetIr !== null) {
+        for (const arm of arms) {
+          const armIr = lowerer.mapTypeOf(arm);
+          if (armIr !== null && typeEquals(armIr, targetIr)) return null;
+        }
+      }
+      return { source: checker.typeToString(s), target: checker.typeToString(t) };
+    }
     if (sourceProps.some((p) => (p.flags & accessor) !== 0)) return null;
     const sourceNames = new Set(sourceProps.map((p) => ts.symbolName(p)));
     const targetNames = checker.getPropertiesOfType(t).map((p) => ts.symbolName(p));
@@ -681,6 +897,33 @@ function widthCopyBetween(
       return null;
   }
   return { source: checker.typeToString(s), target: checker.typeToString(t) };
+}
+
+/** Whether asserting to `target` keeps the value it selects: the
+ * checked-dynamic representation, or a record whose every field is unknown.
+ * Such a view has nothing to copy into, and narrowing.ts erases the assertion
+ * (or boxes the live reference), so the assertion is pure typing. */
+function keepsIdentityView(lowerer: Lowerer, target: IrType): boolean {
+  if (target.kind === "dyn") return true;
+  if (target.kind !== "record") return false;
+  const shape = lowerer.shapes.get(target.shapeId);
+  return (
+    shape !== undefined &&
+    !shape.tuple &&
+    // The empty record has no field to copy and erases as well.
+    shape.fields.every((f) => f.type.kind === "dyn") &&
+    (shape.indexValue === undefined || shape.indexValue.kind === "dyn")
+  );
+}
+
+/** The members of a union whose every member is a plain record; a union with
+ * any other member (class, function, primitive, ...) is not a bag of records. */
+function recordArms(checker: ts.TypeChecker, type: ts.Type): ts.Type[] | null {
+  if (!type.isUnionType()) return null;
+  const arms = [...ts.constituentTypes(type)];
+  if (arms.length === 0) return null;
+  for (const arm of arms) if (!isPlainRecordType(checker, arm)) return null;
+  return arms;
 }
 
 function isProgramClassType(checker: ts.TypeChecker, type: ts.Type): boolean {

@@ -1,8 +1,8 @@
-exceptions.ts:3:10 - error SC1062: destructuring catch clause bindings are not supported yet
+exceptions.ts:3:42 - error SC1062: destructuring catch clause bindings are not supported yet
 
-  2 |   throw "boom";
-  3 | } catch ({ message }: any) {
-    |          ^~~~~~~~~~~~~~~~
-  4 |   console.log("destructuring catch bindings are fenced");
+  2 | // handler's destructuring parameter is the remaining SC1062 fence.
+  3 | Promise.reject(new Error("boom")).catch(({ message }: any) => {
+    |                                          ^~~~~~~~~~~~~~~~
+  4 |   console.log(message);
 
   hint: bind an identifier (catch (e)) and narrow it — 'e instanceof Error' exposes .name/.message, typeof tests expose primitives

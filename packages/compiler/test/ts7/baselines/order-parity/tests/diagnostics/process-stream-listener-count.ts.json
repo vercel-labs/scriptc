@@ -1,0 +1,18 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/process-stream-listener-count.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "Property 'listenerCount' does not exist on type 'WriteStream'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/process-stream-listener-count.ts",
+    "start": 269,
+    "end": 282
+   },
+   "typeWorld": true,
+   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'listenerCount' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
+  }
+ ]
+}

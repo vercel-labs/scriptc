@@ -59,13 +59,15 @@ export function dynUndefinedExpr(loc: SrcLoc): IrExpr {
 
 /** An always-throwing Node error with the replaced expression's type.
  * Kinds: 0 Error, 1 TypeError, 2 RangeError, 5 ReferenceError, 6 EvalError. An empty
- * code omits the error code property. */
+ * code omits the error code property; a `url` becomes the error's own `url`
+ * property (Node's ERR_MODULE_NOT_FOUND for a missing file). */
 export function nodeThrowExpr(
   kind: 0 | 1 | 2 | 5 | 6,
   code: string,
   message: string,
   type: IrType,
   loc: SrcLoc,
+  url?: string,
 ): IrExpr {
   return {
     kind: "libCall",
@@ -74,6 +76,7 @@ export function nodeThrowExpr(
       { kind: "numLit", value: kind, type: F64, loc },
       { kind: "strLit", value: code, type: STRING, loc },
       { kind: "strLit", value: message, type: STRING, loc },
+      ...(url === undefined ? [] : [{ kind: "strLit", value: url, type: STRING, loc } as const]),
     ],
     type,
     loc,

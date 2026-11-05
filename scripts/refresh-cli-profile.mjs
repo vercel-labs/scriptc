@@ -6,7 +6,7 @@
  *
  * Builds an instrumented native compiler for this Linux host, runs it on the
  * training builds below, and merges the raw profiles it writes into one
- * sparse indexed profile. The training builds are tsc-ts (a cold `speed`
+ * indexed profile. The training builds are tsc-ts (a cold `speed`
  * build, then a rebuild after an edit), every seventh top-level corpus
  * program (by number, or by a hash of the name of a program without one) at
  * the default optimization and a further slice in `dev`, and the runtime
@@ -14,7 +14,24 @@
  * move much compiler code; a stale profile only loses part of its gain. A
  * refresh takes about 11 minutes on 16 cores.
  *
- *   node scripts/refresh-cli-profile.mjs --tsc-ts <tsc-ts checkout> [--jobs 8]
+ * The instrumented compiler is built with the committed function layout, or
+ * the one SCRIPTC_NATIVE_LAYOUT names, and the profile matches builds that
+ * use the same layout. When refreshing both, refresh the layout first
+ * (scripts/refresh-cli-layout.mjs).
+ *
+ * With --context-sensitive, a second phase follows: a compiler optimized by
+ * the first profile and instrumented after inlining runs the same training,
+ * and its raw profiles are merged into the first profile. The result adds
+ * the counts of inlined code, by which builds also order each function's
+ * blocks and move cold blocks apart. --base-profile runs only that second
+ * phase on a given first profile. The second phase's compiler build also
+ * writes the block counts of the functions the first profile annotates
+ * (SCRIPTC_RECORD_PROFILE_BLOCKS), which both phases share, beside the
+ * output (cli.blocks.gz beside cli.profdata.gz). Builds that use the profile
+ * annotate the functions whose control flow changed since it was collected
+ * from them.
+ *
+ *   node scripts/refresh-cli-profile.mjs --tsc-ts <tsc-ts checkout> [--jobs 8] [--context-sensitive]
  */
 import { spawn, spawnSync } from "node:child_process";
 import {
@@ -32,7 +49,7 @@ import { cpus, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { constants, gzipSync } from "node:zlib";
+import { constants, gunzipSync, gzipSync } from "node:zlib";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const { values } = parseArgs({
@@ -42,12 +59,14 @@ const { values } = parseArgs({
     output: { type: "string", default: join(root, "packages/compiler/native/cli.profdata.gz") },
     work: { type: "string" },
     instrumented: { type: "string" },
+    "context-sensitive": { type: "boolean", default: false },
+    "base-profile": { type: "string" },
     help: { type: "boolean", default: false },
   },
 });
 if (values.help || values["tsc-ts"] === undefined) {
   console.log(
-    "Usage: node scripts/refresh-cli-profile.mjs --tsc-ts <tsc-ts checkout> [--jobs N] [--output <profdata.gz>] [--work <dir>] [--instrumented <compiler dir>]",
+    "Usage: node scripts/refresh-cli-profile.mjs --tsc-ts <tsc-ts checkout> [--jobs N] [--output <profdata.gz>] [--work <dir>] [--instrumented <compiler dir>] [--context-sensitive | --base-profile <profdata[.gz]>]",
   );
   process.exit(values.help ? 0 : 2);
 }
@@ -58,11 +77,51 @@ const tscTsPackage = join(tscTs, "packages/tsc-ts");
 if (!existsSync(join(tscTsPackage, "src/main.ts")))
   throw new Error(`${tscTs} is not a tsc-ts checkout with installed dependencies`);
 const jobs = Number(values.jobs);
+if (values["context-sensitive"]) {
+  if (values["base-profile"] !== undefined || values.instrumented !== undefined)
+    throw new Error(
+      "--context-sensitive runs both phases: it takes no --base-profile or --instrumented",
+    );
+  // The first phase, then the second on its profile, each by a run of this script.
+  const phases = resolve(values.work ?? mkdtempSync(join(tmpdir(), "scriptc-cli-profile-phases-")));
+  const first = join(phases, "first.profdata.gz");
+  const common = ["--tsc-ts", tscTs, "--jobs", String(jobs)];
+  for (const args of [
+    [...common, "--output", first, "--work", join(phases, "first")],
+    [
+      ...common,
+      "--output",
+      resolve(values.output),
+      "--work",
+      join(phases, "second"),
+      "--base-profile",
+      first,
+    ],
+  ]) {
+    const phase = spawnSync(process.execPath, [fileURLToPath(import.meta.url), ...args], {
+      stdio: "inherit",
+    });
+    if (phase.status !== 0) throw new Error("a profile phase failed");
+  }
+  if (values.work === undefined) rmSync(phases, { recursive: true, force: true });
+  process.exit(0);
+}
+// The first profile, for a run of the second phase.
+const baseProfile =
+  values["base-profile"] === undefined ? undefined : resolve(values["base-profile"]);
 // The output's directory is created up front, before the instrumented build.
 const profileOutput = resolve(values.output);
 mkdirSync(dirname(profileOutput), { recursive: true });
+// The block counts beside the output, which only the second phase writes;
+// those of an earlier collection would describe another profile's code.
+const blocksOutput = profileOutput.endsWith(".profdata.gz")
+  ? `${profileOutput.slice(0, -".profdata.gz".length)}.blocks.gz`
+  : `${profileOutput}.blocks.gz`;
+rmSync(blocksOutput, { force: true });
 const work = resolve(values.work ?? mkdtempSync(join(tmpdir(), "scriptc-cli-profile-")));
 const raw = join(work, "raw");
+const blocks = join(work, "cli.blocks");
+rmSync(blocks, { force: true });
 const builds = join(work, "builds");
 rmSync(raw, { recursive: true, force: true });
 for (const dir of [raw, builds]) mkdirSync(dir, { recursive: true });
@@ -86,7 +145,13 @@ if (values.instrumented === undefined) {
     {
       cwd: root,
       stdio: "inherit",
-      env: { ...process.env, SCRIPTC_NATIVE_PROFILE_GENERATE: profileFile },
+      env: {
+        ...process.env,
+        SCRIPTC_NATIVE_PROFILE_GENERATE: profileFile,
+        ...(baseProfile === undefined
+          ? {}
+          : { SCRIPTC_NATIVE_PROFILE_USE: baseProfile, SCRIPTC_RECORD_PROFILE_BLOCKS: blocks }),
+      },
     },
   );
   if (built.status !== 0) throw new Error("the instrumented compiler did not build");
@@ -210,12 +275,23 @@ const profiles = readdirSync(raw)
   .map((name) => join(raw, name));
 rmSync(builds, { recursive: true, force: true });
 const indexed = join(work, "cli.profdata");
-const merged = spawnSync(scriptc, ["merge-profiles", "--sparse", "-o", indexed, ...profiles], {
+// The profile keeps the functions that never ran in training, with zero
+// counts. Builds optimize those as cold and place them after the trained code,
+// which keeps the compiler's .text smaller than a sparse profile does.
+// A second phase merges its counts into the first profile, uncompressed.
+const inputs = [...profiles];
+if (baseProfile !== undefined) {
+  const base = join(work, "base.profdata");
+  const bytes = readFileSync(baseProfile);
+  writeFileSync(base, baseProfile.endsWith(".gz") ? gunzipSync(bytes) : bytes);
+  inputs.unshift(base);
+}
+const merged = spawnSync(scriptc, ["merge-profiles", "-o", indexed, ...inputs], {
   stdio: "inherit",
   env: { ...trainingEnv, LLVM_PROFILE_FILE: join(work, "merge.profraw") },
 });
 if (merged.status !== 0) throw new Error("merge-profiles failed");
-// The indexed profile compresses to about an eighth of its size.
+// The indexed profile compresses to about a sixth of its size.
 writeFileSync(
   profileOutput,
   gzipSync(readFileSync(indexed), { level: constants.Z_BEST_COMPRESSION }),
@@ -223,5 +299,12 @@ writeFileSync(
 console.log(
   `wrote ${profileOutput} (${statSync(profileOutput).size} bytes; ${statSync(indexed).size} uncompressed)`,
 );
+if (existsSync(blocks)) {
+  writeFileSync(
+    blocksOutput,
+    gzipSync(readFileSync(blocks), { level: constants.Z_BEST_COMPRESSION }),
+  );
+  console.log(`wrote ${blocksOutput} (${statSync(blocksOutput).size} bytes)`);
+}
 // A work directory the caller named stays for inspection.
 if (values.work === undefined) rmSync(work, { recursive: true, force: true });

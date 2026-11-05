@@ -9,6 +9,7 @@ type Job = {
   needs?: string | string[];
   if?: string;
   permissions?: Record<string, string>;
+  outputs?: Record<string, string>;
   steps?: { run?: string; uses?: string }[];
 };
 const workflow = load(
@@ -16,8 +17,11 @@ const workflow = load(
 ) as { jobs: Record<string, Job> };
 const scopeJob = workflow.jobs.validation_scope!;
 const scopeScript = scopeJob.steps!.find((step) => step.run)!.run!;
+// Validation jobs that run only nightly and on manual runs, outside the
+// required check (the shape overlay over the real-package suites).
+const nightlyJobs = ["shape_overlay_native", "shape_overlay"];
 const heavyJobs = Object.keys(workflow.jobs).filter(
-  (name) => !["validation_scope", "code_quality", "test"].includes(name),
+  (name) => !["validation_scope", "code_quality", "test", ...nightlyJobs].includes(name),
 );
 
 const repository = "vercel-labs/scriptc";
@@ -62,6 +66,22 @@ test.each([
   ["bottom layer", "pull_request", stacked("main", 1), true],
   ["new bottom after a merge", "pull_request", stacked("main", 2), true],
   ["upper layer", "pull_request", upper, false],
+  [
+    "a PR into the default branch whose stack names another base",
+    "pull_request",
+    {
+      ...stacked("main"),
+      repository: { full_name: repository, default_branch: "main" },
+      pull_request: { ...stacked("main").pull_request, stack: { base: { ref: "ni/base" } } },
+    },
+    true,
+  ],
+  [
+    "upper layer with the default branch known",
+    "pull_request",
+    { ...upper, repository: { full_name: repository, default_branch: "main" } },
+    false,
+  ],
   ["main push", "push", {}, true],
   ["push with stack metadata", "push", upper, true],
   ["merge queue group", "merge_group", upper, true],
@@ -160,6 +180,16 @@ const full = "needs.validation_scope.outputs.full == 'true'";
 const laneOf = (name: string) =>
   /needs\.lanes\.outputs\.(\w+) == 'true'/.exec(workflow.jobs[name]!.if ?? "")?.[1];
 
+test("nightly validation jobs run only on schedule or manual runs, outside the required check", () => {
+  for (const name of nightlyJobs) {
+    expect(workflow.jobs[name], name).toBeDefined();
+    expect(workflow.jobs[name]!.if, name).toBe(
+      "${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}",
+    );
+    expect(workflow.jobs.test!.needs, name).not.toContain(name);
+  }
+});
+
 test("every expensive CI job is gated and included in the required test check", () => {
   for (const name of heavyJobs) {
     const job = workflow.jobs[name]!;
@@ -170,7 +200,7 @@ test("every expensive CI job is gated and included in the required test check", 
     else {
       expect(job.if, name).toBe(`\${{ ${full} && needs.lanes.outputs.${lane} == 'true' }}`);
       expect(job.needs, name).toContain("lanes");
-      expect(["linux", "macos", "effects", "bootstrap"], name).toContain(lane);
+      expect(["linux", "macos", "effects", "bootstrap", "profile"], name).toContain(lane);
     }
     expect(workflow.jobs.test!.needs, name).toContain(name);
   }
@@ -180,6 +210,22 @@ test("every expensive CI job is gated and included in the required test check", 
   expect(workflow.jobs.test!.needs).toContain("code_quality");
   // A skipped required job reports success, so aggregate even on cancellation.
   expect(workflow.jobs.test!.if).toBe("${{ always() }}");
+});
+
+test("a lane the base revision's selector does not name leaves its job off", () => {
+  // A pull request runs the base revision's selector, and one older than a
+  // lane emits no output for it. Off keeps the required check passing on that
+  // skip; an empty lane would fail it.
+  const outputs = workflow.jobs.lanes!.outputs!;
+  expect(Object.keys(outputs).sort()).toEqual([
+    "bootstrap",
+    "effects",
+    "linux",
+    "macos",
+    "profile",
+  ]);
+  for (const [lane, output] of Object.entries(outputs))
+    expect(output, lane).toBe(`\${{ steps.lanes.outputs.${lane} || 'false' }}`);
 });
 
 function runGate(

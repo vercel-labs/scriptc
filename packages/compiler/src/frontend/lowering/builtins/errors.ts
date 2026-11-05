@@ -1,8 +1,8 @@
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
-import { locOf } from "../../program.js";
-import { tryLowerExpression } from "../expressions/try-lower-expression.js";
+import { isJsSourceFile, locOf } from "../../program.js";
 import { dynUndefinedExpr } from "../../../ir/build.js";
+import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
 import {
   BOOL,
   CAUGHT,
@@ -13,6 +13,7 @@ import {
   type IrStmt,
   type IrType,
   STRING,
+  VOID,
 } from "../../../ir/ir.js";
 
 const ASSERTION_ERROR_PROPERTIES: ReadonlySet<string> = new Set([
@@ -324,60 +325,6 @@ export function lowerErrorFunctionCall(lowerer: Lowerer, call: ts.CallExpression
     : error;
 }
 
-/** `Error.captureStackTrace(target[, constructorOpt])` (also called as
- * `Error.captureStackTrace?.(...)`, which always calls it). On a
- * checked-dynamic target (`this` in a JavaScript constructor function) the
- * runtime defines target's `stack`. An instance of a class that extends
- * Error derives its stack from its name and message when the stack is
- * read, so the call only evaluates its arguments. Both arguments are
- * evaluated; the second only selects frames in Node. Null for other
- * targets and callees. */
-export function lowerErrorCaptureStackTraceCall(
-  lowerer: Lowerer,
-  call: ts.CallExpression,
-  access: ts.PropertyAccessExpression,
-): IrExpr | null {
-  if (access.questionDotToken) return null;
-  if (lowerer.stdlibGlobalMember(access, "Error") !== "captureStackTrace") return null;
-  const args = call.arguments.nodes;
-  if (args.length < 1 || args.length > 2 || args.some(ts.isSpreadElement)) return null;
-  const probed = tryLowerExpression(lowerer, args[0]!);
-  const loc = locOf(call);
-  if (
-    probed?.type.kind === "object" &&
-    (probed.type.className === "%Error" || lowerer.isSubclassOf(probed.type.className, "%Error"))
-  ) {
-    const stmts: IrStmt[] = [];
-    for (const arg of args) {
-      const value = lowerer.lowerExpr(arg);
-      if (value.kind !== "varRef") stmts.push({ kind: "exprStmt", expr: value, loc: value.loc });
-    }
-    const result = dynUndefinedExpr(loc);
-    return stmts.length > 0 ? { kind: "seqExpr", stmts, result, type: DYN, loc } : result;
-  }
-  if (probed?.type.kind !== "dyn") return null;
-  const target = lowerer.lowerExpr(args[0]!);
-  const result: IrExpr = {
-    kind: "libCall",
-    fn: "dyn.errorCaptureStackTrace",
-    args: [target],
-    type: DYN,
-    loc,
-  };
-  if (args.length === 1) return result;
-  const local = lowerer.declareHiddenLocal("%captureTarget", DYN);
-  return {
-    kind: "seqExpr",
-    stmts: [
-      { kind: "varDecl", localId: local.id, init: target, loc },
-      { kind: "exprStmt", expr: lowerer.lowerExprExpecting(args[1]!, DYN), loc },
-    ],
-    result: { ...result, args: [{ kind: "varRef", localId: local.id, type: DYN, loc }] },
-    type: DYN,
-    loc,
-  };
-}
-
 /** `Error.isError(value)`. A catch binding tests its payload against the
  * Error class, an `unknown` value tests the checked-dynamic tree's error
  * encoding, and a union tests its runtime tag against the arms whose class
@@ -467,6 +414,158 @@ export function lowerErrorIsErrorCall(
     stmts: [{ kind: "exprStmt", expr: arg, loc }],
     result,
     type: BOOL,
+    loc,
+  };
+}
+
+/** The class whose constructor body `node` is directly in (not inside a
+ * nested function): while it runs, `new` of that class is on the stack. */
+function enclosingConstructorClass(node: ts.Node): ts.ClassLikeDeclaration | undefined {
+  for (let n = node.parent; n !== undefined; n = n.parent) {
+    if (ts.isConstructorDeclaration(n))
+      return ts.isClassDeclaration(n.parent) || ts.isClassExpression(n.parent)
+        ? n.parent
+        : undefined;
+    if (ts.isFunctionLike(n) && !ts.isArrowFunction(n)) return undefined;
+  }
+  return undefined;
+}
+
+/** Whether `access` (`this.constructor`) reads a `constructor` accessor
+ * declared on the class or a base class. */
+function readsConstructorAccessor(lowerer: Lowerer, access: ts.PropertyAccessExpression): boolean {
+  const property = lowerer.checker.getPropertyOfType(
+    lowerer.typeOf(access.expression),
+    "constructor",
+  );
+  return property !== undefined && (property.flags & ts.SymbolFlags.GetAccessor) !== 0;
+}
+
+/** `Error.captureStackTrace(target, constructorOpt?)`, also through `?.`:
+ * target.stack becomes the target's heading and the current stack frames,
+ * as V8 does it (scr_error_capture_stack_trace). The target is an error, a
+ * checked-dynamic object, or a primitive (a TypeError at run time).
+ * constructorOpt leaves out the frames up to and including its topmost call:
+ * a function declaration skips through its own frame; `this.constructor`,
+ * `new.target` or the class's own name inside a class constructor leave the
+ * frames from the code that ran `new`, which are the current frames
+ * (constructors have no frames of their own). Other targets are refused,
+ * and so are other constructorOpt values in TypeScript; JavaScript evaluates
+ * them and keeps all frames. Null when the callee is not the standard
+ * library's Error.captureStackTrace. */
+export function lowerErrorCaptureStackTraceCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (lowerer.stdlibGlobalMember(access, "Error") !== "captureStackTrace") return null;
+  const args = call.arguments.nodes;
+  const loc = locOf(call);
+  if (args.length < 1 || args.length > 2 || args.some(ts.isSpreadElement)) {
+    lowerer.noLowering(
+      "Error.captureStackTrace arguments",
+      call,
+      "pass a target and an optional constructor",
+    );
+  }
+  const target = lowerer.lowerExpr(args[0]!);
+  // Primitives (and unions of them) reach the runtime, which throws V8's
+  // TypeError for them; objects without a checked-dynamic view are refused,
+  // since a boxed copy would not show the stack.
+  const primitive =
+    ["f64", "string", "bool", "nullT", "undefinedT", "bigint"].includes(target.type.kind) ||
+    (target.type.kind === "union" &&
+      lowerer.dynConvertible(target.type) &&
+      (lowerer.unions.get(target.type.unionId)?.arms ?? []).every((arm) =>
+        ["f64", "string", "bool", "nullT", "undefinedT", "bigint"].includes(arm.kind),
+      ));
+  if (target.type.kind !== "dyn" && !primitive && !isErrorClassType(lowerer, target.type)) {
+    lowerer.noLowering(
+      `Error.captureStackTrace on '${lowerer.fmt(target.type)}' values`,
+      args[0]!,
+      "pass an Error instance, or an untyped object in JavaScript",
+    );
+  }
+  let through = "";
+  let skip = false;
+  // A JavaScript constructorOpt that is not a recognized form still
+  // evaluates, after the target and before the capture, as V8 evaluates
+  // the call's arguments: its getters and calls run and its exceptions
+  // propagate.
+  let evaluated: IrExpr | null = null;
+  const ctor = args[1];
+  if (ctor !== undefined) {
+    let node: ts.Expression = ctor;
+    while (ts.isParenthesizedExpression(node)) node = node.expression;
+    const symbol = ts.isIdentifier(node) ? lowerer.checker.getSymbolAtLocation(node) : undefined;
+    const resolved =
+      symbol !== undefined && symbol.flags & ts.SymbolFlags.Alias
+        ? lowerer.checker.getAliasedSymbol(symbol)
+        : symbol;
+    const cls = enclosingConstructorClass(call);
+    const constructing =
+      (ts.isPropertyAccessExpression(node) &&
+        node.expression.kind === ts.SyntaxKind.ThisKeyword &&
+        node.name.text === "constructor") ||
+      (ts.isMetaProperty(node) && node.name.text === "target") ||
+      (resolved !== undefined &&
+        cls?.name !== undefined &&
+        lowerer.checker.getSymbolAtLocation(cls.name) === resolved);
+    const sig = resolved !== undefined ? lowerer.fnSigsBySymbol.get(resolved) : undefined;
+    if (constructing && cls !== undefined) {
+      skip = false;
+      // `this.constructor` runs a `constructor` getter of the class, whose
+      // calls and exceptions are observable.
+      if (ts.isPropertyAccessExpression(node) && readsConstructorAccessor(lowerer, node)) {
+        const value = lowerer.lowerExpr(ctor);
+        if (!isSafeToDiscard(value)) evaluated = value;
+      }
+    } else if (sig !== undefined) {
+      lowerer.noteEdge(sig.name);
+      through = sig.name;
+      skip = true;
+    } else if (isJsSourceFile(ts.getSourceFileOfNode(call))) {
+      // JavaScript (undici's `captureStackTrace(err, module.exports.fetch)`)
+      // keeps every frame: the same frames V8 keeps, and the ones above them.
+      skip = false;
+      const value = lowerer.lowerExpr(ctor);
+      if (!isSafeToDiscard(value)) evaluated = value;
+    } else {
+      lowerer.noLowering(
+        "Error.captureStackTrace with this constructor argument",
+        ctor,
+        "pass a function declaration, or this.constructor or the class inside its constructor",
+      );
+    }
+  }
+  const stmts: IrStmt[] = [];
+  let receiver = lowerer.coerceToExpected(target, DYN);
+  if (evaluated !== null) {
+    // V8 captures onto the target value it evaluated first. The constructor
+    // argument may assign the variable or field the target was read from, so
+    // even a plain read is kept in a local before the argument runs.
+    const local = lowerer.declareHiddenLocal("%captureTarget", DYN);
+    stmts.push({ kind: "varDecl", localId: local.id, init: receiver, loc });
+    receiver = { kind: "varRef", localId: local.id, type: DYN, loc };
+    stmts.push({ kind: "exprStmt", expr: evaluated, loc });
+  }
+  const capture: IrExpr = {
+    kind: "libCall",
+    fn: "error.captureStackTrace",
+    args: [
+      receiver,
+      { kind: "strLit", value: through, type: STRING, loc },
+      { kind: "boolLit", value: skip, type: BOOL, loc },
+    ],
+    type: VOID,
+    loc,
+  };
+  stmts.push({ kind: "exprStmt", expr: capture, loc });
+  return {
+    kind: "seqExpr",
+    stmts,
+    result: dynUndefinedExpr(loc),
+    type: DYN,
     loc,
   };
 }

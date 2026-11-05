@@ -78,9 +78,8 @@ import { CacheInputsChangedError } from "./session.js";
  * External-symbol contract: undefined references only to the target's C/math
  * runtime and system APIs. Windows embedders additionally link advapi32,
  * iphlpapi, and ws2_32; the platform driver supplies its ordinary CRT and
- * kernel imports. Zlib rides the VENDORED per-flavor objects here even on
- * hosts because the executable lane's system `-lz` cannot ride inside an
- * archive. */
+ * kernel imports. Zlib rides the vendored per-flavor objects, as in the
+ * executable lane. */
 
 export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> {
   clearCcCaches();
@@ -105,7 +104,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     // Zig's musl sysroot does not provide arc4random_buf. Keep the fallback
     // inside the archive so library embedders need no extra system library.
     ...(isMuslTarget(driver) ? ["scr_musl.c"] : []),
-    ...(regex ? ["scr_regex.c", "scr_glob.c"] : []),
+    ...(regex ? ["scr_regex.c", "scr_glob.c", "scr_path_win32_relative.c"] : []),
     ...(opts.assert || regex || opts.symbol ? ["scr_assert.c"] : []),
     ...(opts.inspect ? ["scr_inspect.c", "scr_console_native.c"] : []),
     ...(opts.symbol ? ["scr_symbol.c"] : []),
@@ -114,6 +113,9 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     ...(opts.dynInvoke ? ["scr_dyn_invoke.c"] : []),
     ...(opts.dynInvoke && opts.dynBuffer ? ["scr_bytes_dyn.c"] : []),
     ...(opts.dynTier === true ? ["scr_js_value.c", "scr_js_object.c"] : []),
+    // The buffer views registry: only a program that resizes, grows or
+    // detaches a buffer installs its ops table.
+    ...(opts.mutableBuffers === true ? ["scr_js_buffers.c"] : []),
     ...(opts.zlib ? ["scr_zlib.c"] : []),
     ...(opts.x509 ? ["scr_x509.c"] : []),
     ...(opts.copying ? ["scr_copying.c"] : []),
@@ -131,7 +133,12 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     "-DSCR_LIB",
     ...(opts.threadInstances ? ["-DSCR_THREAD_INSTANCES"] : []),
     ...(opts.textDecoderLegacy ? ["-DSCR_TEXT_DECODER_LEGACY"] : []),
-    ...(opts.dynTier === true ? ["-DSCR_JS_TIER"] : []),
+    // The program's unit reads the JavaScript object model build
+    // (t262-da §J): the archive's bytes and json units must carry it too, so
+    // the program names the same build the pack matrix selects.
+    ...(opts.jsObjectModel || opts.bigintBytes || opts.mutableBuffers
+      ? ["-DSCR_JS_OBJECT_MODEL"]
+      : []),
     "-I",
     rtDir,
     ...(regex ? ["-I", vendorEngineDir()] : []),
@@ -517,6 +524,8 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
             [],
             programPublicSymbols!,
             `${stem}.program`,
+            undefined,
+            { inProcessElf: true },
           );
           // Keep the canonical archive member spelling. The fact that native
           // compilation used shards is an implementation detail; consumers and

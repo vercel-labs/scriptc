@@ -491,9 +491,10 @@ ScrStr *scr_path_relative(ScrStr *from, ScrStr *to) {
  *
  * Two knowingly-ASCII spots (documented divergences): the
  * case-insensitive comparisons Node does with String.prototype.
- * toLowerCase/toUpperCase (win32.relative, resolve's device compare, the
- * reserved-name check) fold ASCII only here — non-ASCII device/server
- * names whose Unicode case-folding differs compare case-SENSITIVELY. */
+ * toLowerCase/toUpperCase in resolve's device compare and the reserved-name
+ * check fold ASCII only here — non-ASCII device/server names whose Unicode
+ * case-folding differs compare case-SENSITIVELY. win32.relative lowercases
+ * with String.prototype.toLowerCase and counts UTF-16 units, as Node does. */
 
 static bool scr_path_w32_is_device_root(char c) {
   return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
@@ -973,114 +974,6 @@ bool scr_path_win32_is_absolute(ScrStr *path) {
   return scr_path_w32_is_sep(p[0]) ||
          (len > 2 && scr_path_w32_is_device_root(p[0]) && p[1] == ':' &&
           scr_path_w32_is_sep(p[2]));
-}
-
-ScrStr *scr_path_win32_relative(ScrStr *from, ScrStr *to) {
-  if (from->len == to->len && memcmp(from->data, to->data, from->len) == 0) {
-    return scr_str_new("", 0);
-  }
-  /* fromOrig = win32.resolve(from), toOrig = win32.resolve(to). */
-  ScrArr *pack = scr_arr_new(SCR_ELEM_STR, 1);
-  scr_arr_push_ref(pack, scr_str_retain(from));
-  ScrStr *rfrom = scr_path_win32_resolve(pack);
-  scr_arr_release(pack);
-  pack = scr_arr_new(SCR_ELEM_STR, 1);
-  scr_arr_push_ref(pack, scr_str_retain(to));
-  ScrStr *rto = scr_path_win32_resolve(pack);
-  scr_arr_release(pack);
-
-  if (rfrom->len == rto->len && memcmp(rfrom->data, rto->data, rfrom->len) == 0) {
-    scr_str_release(rfrom);
-    scr_str_release(rto);
-    return scr_str_new("", 0);
-  }
-  /* Node lowercases both sides (case-insensitive comparison, ASCII fold
-   * here — see the header comment). Byte-lowercasing never changes
-   * lengths, so Node's changed-length Unicode branch cannot trigger. */
-  char *flow = malloc(rfrom->len ? rfrom->len : 1);
-  char *tlow = malloc(rto->len ? rto->len : 1);
-  if (!flow || !tlow) {
-    scr_trap("scriptc: out of memory\n");
-  }
-  for (size_t k = 0; k < rfrom->len; k++) flow[k] = scr_path_w32_lower(rfrom->data[k]);
-  for (size_t k = 0; k < rto->len; k++) tlow[k] = scr_path_w32_lower(rto->data[k]);
-  if (rfrom->len == rto->len && memcmp(flow, tlow, rfrom->len) == 0) {
-    free(flow);
-    free(tlow);
-    scr_str_release(rfrom);
-    scr_str_release(rto);
-    return scr_str_new("", 0);
-  }
-
-  /* Trim leading backslashes, and trailing ones (UNC paths only). */
-  long from_start = 0;
-  while (from_start < (long)rfrom->len && flow[from_start] == '\\') from_start++;
-  long from_end = (long)rfrom->len;
-  while (from_end - 1 > from_start && flow[from_end - 1] == '\\') from_end--;
-  const long from_len = from_end - from_start;
-
-  long to_start = 0;
-  while (to_start < (long)rto->len && tlow[to_start] == '\\') to_start++;
-  long to_end = (long)rto->len;
-  while (to_end - 1 > to_start && tlow[to_end - 1] == '\\') to_end--;
-  const long to_len = to_end - to_start;
-
-  const long length = from_len < to_len ? from_len : to_len;
-  long last_common_sep = -1;
-  long i = 0;
-  for (; i < length; i++) {
-    char from_code = flow[from_start + i];
-    if (from_code != tlow[to_start + i]) break;
-    if (from_code == '\\') last_common_sep = i;
-  }
-  ScrStr *result = NULL;
-  if (i != length) {
-    /* Mismatch before any common separator: return toOrig. */
-    if (last_common_sep == -1) result = scr_str_new(rto->data, rto->len);
-  } else {
-    if (to_len > length) {
-      if (tlow[to_start + i] == '\\') {
-        /* `from` is the exact base path of `to`. */
-        result = scr_str_new(rto->data + to_start + i + 1, (size_t)(to_end - (to_start + i + 1)));
-      } else if (i == 2) {
-        /* `from` is the device root. */
-        result = scr_str_new(rto->data + to_start + i, (size_t)(to_end - (to_start + i)));
-      }
-    }
-    if (result == NULL && from_len > length) {
-      if (flow[from_start + i] == '\\') last_common_sep = i;
-      else if (i == 2) last_common_sep = 3;
-    }
-    if (result == NULL && last_common_sep == -1) last_common_sep = 0;
-  }
-  if (result != NULL) {
-    free(flow);
-    free(tlow);
-    scr_str_release(rfrom);
-    scr_str_release(rto);
-    return result;
-  }
-
-  PathBuf out;
-  pb_init(&out);
-  for (i = from_start + last_common_sep + 1; i <= from_end; ++i) {
-    if (i == from_end || flow[i] == '\\') {
-      if (out.len == 0) pb_append(&out, "..", 2);
-      else pb_append(&out, "\\..", 3);
-    }
-  }
-  to_start += last_common_sep;
-  if (out.len == 0) {
-    /* Node reads toOrig.charCodeAt(toStart) — NaN out of range. */
-    if (to_start < (long)rto->len && rto->data[to_start] == '\\') ++to_start;
-  }
-  /* toOrig.slice(toStart, toEnd) — "" when the range is empty/inverted. */
-  if (to_end > to_start) pb_append(&out, rto->data + to_start, (size_t)(to_end - to_start));
-  free(flow);
-  free(tlow);
-  scr_str_release(rfrom);
-  scr_str_release(rto);
-  return pb_take(&out);
 }
 
 ScrStr *scr_path_win32_to_namespaced_path(ScrStr *path) {

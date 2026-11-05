@@ -42,8 +42,9 @@ const WALK_KINDS: readonly IrNodeKind[] = [
 
 export interface WalkFacts {
   locals: ReadonlySet<string>;
-  /** Every return yields a walk (or a throw), so the body can return its
-   * pointer without a reference: no try statement, at least one return. */
+  /** Every return yields a walk, a throw or a string literal (an interned
+   * constant that nothing frees), so the body can return its pointer
+   * without a reference: no try statement, at least one return. */
   returnsWalk: boolean;
 }
 
@@ -176,6 +177,7 @@ export function analyzeWalks(fn: IrFunction, host: WalkBorrowHost): WalkFacts {
   };
   const isThrow = (e: IrExpr): boolean => e.kind === "libCall" && e.fn === "error.nodeThrow";
   const walkOrThrow = (e: IrExpr): boolean => isThrow(e) || walk(e);
+  const constant = (e: IrExpr): boolean => isThrow(e) || e.kind === "strLit";
   for (let changed = true; changed;) {
     changed = false;
     for (const id of candidates) {
@@ -199,8 +201,7 @@ export function analyzeWalks(fn: IrFunction, host: WalkBorrowHost): WalkFacts {
     returns.every(
       (value) =>
         value !== null &&
-        walkOrThrow(value) &&
-        (isThrow(value) || host.unwritten?.(value, candidates) !== false),
+        (constant(value) || (walk(value) && host.unwritten?.(value, candidates) !== false)),
     );
   return { locals: result, returnsWalk };
 }

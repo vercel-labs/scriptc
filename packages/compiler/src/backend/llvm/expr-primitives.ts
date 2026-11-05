@@ -1,10 +1,24 @@
 /* Focused LLVM expression emission extracted from emitter.ts. */
+import {
+  emitInlineArrayGet,
+  emitInlineArrayState,
+  emitInlineArrayView,
+  inlineFieldTail,
+} from "./inline-arrays.js";
 import { InternalCompilerError } from "../../errors.js";
 import { matchStringSelfConcat, undefinedArmTag } from "../../ir/analysis.js";
-import { isRefCounted, type IrExpr, type IrStrCmpOp, type IrType } from "../../ir/ir.js";
+import {
+  isRefCounted,
+  recordTextCodecClass,
+  type IrExpr,
+  type IrStrCmpOp,
+  type IrType,
+} from "../../ir/ir.js";
 import { mangleRecordClone, mangleRecordNew } from "../mangle.js";
 import { arrNewCall, elemAccess } from "./shapes.js";
+import { recordViewTestLines } from "./record-views.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
+import { offsetIndex } from "./expr-bytes.js";
 import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
 
 import { BYTES_ELEM_NUM, closureIdentityEqual, f64Lit } from "./common.js";
@@ -18,6 +32,7 @@ import {
   int32Number,
   integerNumber,
   narrowInteger,
+  uint32Number,
   wideArithmetic,
   widenInteger,
   type LlInteger,
@@ -46,7 +61,12 @@ import {
   slotWidth,
   type ArrayAccess,
 } from "./dense-array-access.js";
-import { emitWrappingSum, integerOrNaNRange, markWrappingOperands } from "./wrapping-sums.js";
+import {
+  emitNanArithmetic,
+  emitWrappingSum,
+  integerOrNaNRange,
+  markWrappingOperands,
+} from "./wrapping-sums.js";
 import { emitPowF64, emitPowerOfTwoQuotient, isPowerOfTwoCall } from "./lib-filesystem.js";
 
 /** The signed integer predicates of the number compares. */
@@ -114,6 +134,16 @@ function emitIntegerOrNaNCompare(
     result = combined;
   }
   return result;
+}
+
+/** A `>>>` result, or a sum, difference or product with one as an operand. */
+function unsignedShiftArithmetic(e: IrExpr): boolean {
+  if (e.kind !== "bin") return false;
+  if (e.op === ">>>") return true;
+  return (
+    (e.op === "+" || e.op === "-" || e.op === "*") &&
+    (unsignedShiftArithmetic(e.left) || unsignedShiftArithmetic(e.right))
+  );
 }
 
 export function emitLiteralExpr(
@@ -205,7 +235,19 @@ export function emitLiteralExpr(
         // the binding. Consumers must not reload its current view.
         const uint32 = B.tmp();
         B.line(`${uint32} = load i32, ptr ${integerView}`);
-        return { name: t, type: e.type, uint32 };
+        const orderedView = host.orderedViews.get(e.localId);
+        const range = orderedView && host.integerOrNaNLocals.get(e.localId);
+        if (!orderedView || !range) return { name: t, type: e.type, uint32 };
+        const ordered = B.tmp();
+        B.line(`${ordered} = load i1, ptr ${orderedView}`);
+        // The view holds the integer's low 32 bits (0 for NaN): its integer
+        // when the range is within int32 or uint32.
+        const signed = range.min >= -2147483648 && range.max <= 2147483647;
+        if (!signed && !(range.min >= 0 && range.max <= 4294967295))
+          return { name: t, type: e.type, uint32, ordered };
+        const nanInteger = B.tmp();
+        B.line(`${nanInteger} = ${signed ? "sext" : "zext"} i32 ${uint32} to i64`);
+        return { name: t, type: e.type, uint32, ordered, nanInteger };
       }
       if (isRefCounted(e.type)) {
         // An immortal Immutable constant: nothing to count.
@@ -358,6 +400,28 @@ export function emitOperatorExpr(
             );
             return int32Number(host, result, range, e.type);
           }
+          if (
+            range &&
+            withinUint32(range) &&
+            withinUint32(li.range) &&
+            withinUint32(ri.range) &&
+            (unsignedShiftArithmetic(e.left) || unsignedShiftArithmetic(e.right))
+          ) {
+            // A uint32 result built on a `>>>` result, such as
+            // `(x >>> 1) + i`: 32-bit arithmetic that cannot wrap. Its double
+            // converts from the 32 bits, which vectorizes to three
+            // instructions on x86-64 without AVX-512, where the unsigned
+            // 64-bit conversion takes six. Sums of counters and literals,
+            // such as `i + 1`, keep the 64-bit form, whose conversion LLVM
+            // folds with their uses as indexes.
+            const result = B.tmp();
+            B.line(
+              `${result} = ${e.op === "+" ? "add" : e.op === "-" ? "sub" : "mul"} nuw i32 ${narrowInteger(host, li)}, ${narrowInteger(host, ri)}`,
+            );
+            const number = uint32Number(host, result, range, e.type);
+            const wrapped = emitWrappingSum(host, e, l, r, li, ri);
+            return wrapped === undefined ? number : { ...number, ...wrapped };
+          }
           const left = widenInteger(host, li),
             right = widenInteger(host, ri);
           if (range) {
@@ -413,10 +477,15 @@ export function emitOperatorExpr(
           const wrapped = emitWrappingSum(host, e, l, r, li, ri);
           // The exact integer beside the double, for index consumers.
           const wideInteger = wideArithmetic(host, e.op, l, li, r, ri);
-          if (wrapped !== undefined || wideInteger) {
+          // The integer of an exact integer or NaN, for index and loop guards.
+          const nan = emitNanArithmetic(host, e, l, r, li, ri);
+          const offset = offsetIndex(e, l, r);
+          if (wrapped !== undefined || wideInteger || nan || offset) {
             const value: LlValue = { name: t, type: e.type };
+            if (nan) Object.assign(value, nan);
             if (wrapped !== undefined) Object.assign(value, wrapped);
             if (wideInteger) value.wideInteger = wideInteger;
+            if (offset) value.offsetIndex = offset;
             return value;
           }
         } else {
@@ -494,6 +563,29 @@ export function emitOperatorExpr(
       // Expression-position ++/-- over an f64 binding (locals, module
       // globals, capture boxes): read, write ±1, yield old (postfix) or
       // new (prefix).
+      const shadow = host.integerLoopBindings.get(e.localId);
+      if (shadow !== undefined && host.speculation?.increments?.has(e)) {
+        // A proven integer loop's shadow: the loop range holds every value
+        // the binding takes, so the step cannot overflow.
+        const old = B.tmp();
+        const next = B.tmp();
+        const number = B.tmp();
+        B.line(`${old} = load i64, ptr ${shadow.slot}`);
+        B.line(`${next} = ${e.op === "+" ? "add" : "sub"} nsw i64 ${old}, 1`);
+        B.line(`store i64 ${next}, ptr ${shadow.slot}`);
+        const value = e.prefix ? next : old;
+        B.line(`${number} = sitofp i64 ${value} to double`);
+        return {
+          name: number,
+          type: e.type,
+          integer: {
+            name: value,
+            type: "i64",
+            signed: true,
+            range: shadow.range ?? { min: -Number.MAX_SAFE_INTEGER, max: Number.MAX_SAFE_INTEGER },
+          },
+        };
+      }
       const b = host.binding(e.localId);
       if (host.int32Locals.has(e.localId)) {
         if (!host.int32LocalWrites.has(e))
@@ -872,8 +964,10 @@ export function emitStringExpr(
       }
       if (v.type.kind === "record") {
         // String(record) / `${record}`: Object.prototype.toString's
-        // constant — the interned literal, retained like a strLit.
-        const sym = host.internLiteral("[object Object]");
+        // constant — the interned literal, retained like a strLit. A
+        // TextEncoder or TextDecoder answers its Symbol.toStringTag.
+        const codec = recordTextCodecClass(host.recordShape(v.type.shapeId));
+        const sym = host.internLiteral(`[object ${codec ?? "Object"}]`);
         return host.own({ name: host.retainFrame(sym, e.type), type: e.type });
       }
       if (v.type.kind === "caught") {
@@ -932,7 +1026,31 @@ export function emitStringExpr(
         host.templateStringsInstances.set(e.key, inst);
       }
       host.journal?.entry("templateStrings", e.key, inst);
-      return host.own({ name: host.retainFrame(`@${inst.sym}`, e.type), type: e.type });
+      if (!host.compactRegion)
+        return host.own({ name: host.retainFrame(`@${inst.sym}`, e.type), type: e.type });
+      // Class fields may hold the array as a 32-bit reference, which reaches
+      // only the allocator's window: the site uses a heap copy of the
+      // header, made on first use (scr_arr_window_header).
+      host.declare("declare ptr @scr_arr_window_header(ptr, ptr)");
+      host.declare("declare i1 @llvm.expect.i1(i1, i1)");
+      const known = B.tmp(),
+        missing = B.tmp(),
+        likely = B.tmp(),
+        made = B.tmp(),
+        header = B.tmp();
+      const from = B.currentLabel(),
+        makeL = B.newLabel("tsa.make"),
+        doneL = B.newLabel("tsa.done");
+      B.line(`${known} = load atomic ptr, ptr @${inst.sym}_win acquire, align 8`);
+      B.line(`${missing} = icmp eq ptr ${known}, null`);
+      B.line(`${likely} = call i1 @llvm.expect.i1(i1 ${missing}, i1 false)`);
+      B.line(`br i1 ${likely}, label %${makeL}, label %${doneL}`);
+      B.startBlock(makeL);
+      B.line(`${made} = call ptr @scr_arr_window_header(ptr @${inst.sym}, ptr @${inst.sym}_win)`);
+      B.line(`br label %${doneL}`);
+      B.startBlock(doneL);
+      B.line(`${header} = phi ptr [ ${known}, %${from} ], [ ${made}, %${makeL} ]`);
+      return host.own({ name: host.retainFrame(header, e.type), type: e.type });
     }
     case "regexIntrinsic":
       return host.emitRegexIntrinsic(e);
@@ -972,6 +1090,36 @@ function reservedCapacity(host: LlvmEmitterContext, length: IrExpr): string {
   return capacity;
 }
 
+/** The value of a numeric literal expression, negated forms included, or
+ * null for any other expression. */
+function numericLiteral(expr: IrExpr): number | null {
+  if (expr.kind === "numLit") return expr.value;
+  if (expr.kind === "unary" && expr.op === "-") {
+    const value = numericLiteral(expr.operand);
+    return value === null ? null : -value;
+  }
+  return null;
+}
+
+/** The elements of `e` when they are all numeric literals whose storage is
+ * the literal's data: for an int32 array each an exact int32 that is not -0
+ * (the values its slots hold). */
+function constantElementData(e: ExprOf<"arrayLit">, acc: ArrayAccess): number[] | null {
+  if (acc !== "i32" && acc !== "f64") return null;
+  const values: number[] = [];
+  for (const elem of e.elems) {
+    const value = numericLiteral(elem);
+    if (value === null) return null;
+    if (acc === "i32") {
+      if (!Number.isInteger(value)) return null;
+      if (value < INT32_RANGE.min || value > INT32_RANGE.max) return null;
+      if (Object.is(value, -0)) return null;
+    }
+    values.push(value);
+  }
+  return values;
+}
+
 export function emitContainerExpr(
   host: LlvmEmitterContext,
   e: ExprOf<
@@ -1001,6 +1149,23 @@ export function emitContainerExpr(
       const arr = B.tmp();
       const small = host.appendedArrayLiterals.has(e);
       const spreadSet = new Set(e.spreads ?? []);
+      // A module-level table of numeric literals that the IR proves is only
+      // read (ir/constant-tables.ts): its header and element data both go in
+      // the program image, so the program neither allocates nor copies the
+      // array. A literal whose length is set right after construction keeps
+      // the ordinary path.
+      if (host.staticArrayTables.has(e) && !host.reservedArrayLengths.has(e)) {
+        const acc = host.int32Allocations.has(e) ? "i32" : elemAccess(elem);
+        const values = constantElementData(e, acc);
+        if (values !== null) {
+          // The header is written in the image with the rest of the table
+          // (emit-module.ts): initialization stores nothing, so threads that
+          // share the image never race on it. The array is immortal
+          // (`rc == SIZE_MAX`), so releasing the value is a no-op.
+          const { header } = host.staticArrayData(e, values, acc === "i32" ? "i32" : "double");
+          return host.own({ name: header, type: e.type });
+        }
+      }
       // With spreads, storage starts at the plain elements before the first
       // spread, and each spread reserves exactly its source's length plus
       // the plain elements up to the next one (scr_arr_reserve_spread).
@@ -1060,16 +1225,21 @@ export function emitContainerExpr(
           B.line(`${fits} = icmp ule ${host.sizeType} ${capacity}, ${SMALL_ARRAY_SLOTS}`);
           B.condBr(fits, smallLabel, sizedLabel);
           B.startBlock(smallLabel);
-          B.line(`${smallArr} = ${arrNewCall(host.shapeHost, elem, "0", true)}`);
+          B.line(`${smallArr} = ${arrNewCall(host.shapeHost, elem, "0", true, host.arenaSite(e))}`);
           B.br(joined);
           B.startBlock(sizedLabel);
-          B.line(`${sizedArr} = ${arrNewCall(host.shapeHost, elem, capacity)}`);
+          B.line(
+            `${sizedArr} = ${arrNewCall(host.shapeHost, elem, capacity, false, host.arenaSite(e))}`,
+          );
           B.br(joined);
           B.startBlock(joined);
           B.line(
             `${arr} = phi ptr [ ${smallArr}, %${smallLabel} ], [ ${sizedArr}, %${sizedLabel} ]`,
           );
-        } else B.line(`${arr} = ${arrNewCall(host.shapeHost, elem, String(capacity), small)}`);
+        } else
+          B.line(
+            `${arr} = ${arrNewCall(host.shapeHost, elem, String(capacity), small, host.arenaSite(e))}`,
+          );
       }
       const out = host.own({ name: arr, type: e.type });
       const acc: ArrayAccess = int32 ? "i32" : elemAccess(elem);
@@ -1130,6 +1300,26 @@ export function emitContainerExpr(
       return out;
     }
     case "arrayGet": {
+      // An element of an inline array field, read from the instance.
+      if (e.arr.kind === "fieldGet" && e.arr.type.kind === "array") {
+        const tail = inlineFieldTail(host, e.arr.className, e.arr.field);
+        if (tail !== undefined) {
+          const obj = host.emitStableReceiver(e.arr.obj, [e.index]);
+          const idx = host.emitExpr(e.index);
+          const value = emitInlineArrayGet(
+            host,
+            obj.name,
+            e.arr.className,
+            tail,
+            idx,
+            e.arr.type.elem,
+            true,
+          );
+          return isRefCounted(e.arr.type.elem)
+            ? host.own({ name: value, type: e.type })
+            : { name: value, type: e.type };
+        }
+      }
       // Element reads run no user code: a projection receiver (an array in
       // a parameter's field) stays rooted while the index preserves edges.
       const arr = host.emitStableReceiver(e.arr, [e.index]);
@@ -1182,6 +1372,16 @@ export function emitContainerExpr(
       return host.own({ name: read.value, type: e.type });
     }
     case "arrayHas": {
+      // An inline array field has no holes: presence is the bounds check.
+      if (e.arr.kind === "fieldGet") {
+        const tail = inlineFieldTail(host, e.arr.className, e.arr.field);
+        if (tail !== undefined) {
+          const obj = host.emitStableReceiver(e.arr.obj, [e.index]);
+          const idx = host.emitExpr(e.index);
+          const name = emitInlineArrayState(host, obj.name, e.arr.className, tail, idx, "has");
+          return { name, type: e.type };
+        }
+      }
       const arr = host.emitStableReceiver(e.arr, [e.index]);
       const idx = host.emitExpr(e.index);
       if (e.arr.type.kind !== "array")
@@ -1201,6 +1401,16 @@ export function emitContainerExpr(
       return { name: t, type: e.type };
     }
     case "arrayState": {
+      // An inline array field has no holes: presence is the bounds check.
+      if (e.arr.kind === "fieldGet") {
+        const tail = inlineFieldTail(host, e.arr.className, e.arr.field);
+        if (tail !== undefined) {
+          const obj = host.emitStableReceiver(e.arr.obj, [e.index]);
+          const idx = host.emitExpr(e.index);
+          const name = emitInlineArrayState(host, obj.name, e.arr.className, tail, idx, "state");
+          return { name, type: e.type };
+        }
+      }
       const arr = host.emitStableReceiver(e.arr, [e.index]);
       const idx = host.emitExpr(e.index);
       if (e.arr.type.kind !== "array")
@@ -1305,6 +1515,14 @@ export function emitRecordExpr(
   switch (e.kind) {
     case "fieldGet": {
       const obj = host.emitReadReceiver(e.obj);
+      // An inline array field read as a value: a frozen array over the
+      // elements (backend/llvm/inline-arrays.ts).
+      const tail = inlineFieldTail(host, e.className, e.field);
+      if (tail !== undefined)
+        return host.own({
+          name: emitInlineArrayView(host, obj.name, e.className, tail),
+          type: e.type,
+        });
       const { ptr, type, inline } = host.classFieldPtr(
         obj.name,
         e.className,
@@ -1325,6 +1543,8 @@ export function emitRecordExpr(
     }
     case "recordGet": {
       const obj = host.emitReadReceiver(e.obj);
+      if (host.partialFieldMissing(e.shapeId, e.field))
+        return host.own(host.readPartialField(obj.name, e.shapeId, e.field, e.type));
       const { ptr, type, inline } = host.recordFieldPtr(obj.name, e.shapeId, e.field);
       if (inline) return host.own({ name: host.inlineFieldUnion(ptr, type), type: e.type });
       const v = host.loadRecordField(ptr, type, false);
@@ -1342,7 +1562,7 @@ export function emitRecordExpr(
         throw new InternalCompilerError("llvm emitter bug: recordLit of non-record type");
       const shapeId = e.type.shapeId;
       const rec = B.tmp();
-      B.line(`${rec} = call ptr @${mangleRecordNew(shapeId)}()`);
+      B.line(`${rec} = call ptr @${host.allocSym(mangleRecordNew(shapeId), e)}()`);
       const out = host.own({ name: rec, type: e.type });
       // A null-prototype record: SCR_MAP_NULL_PROTO on the fresh map.
       if (e.nullProto) B.line(`store i8 1, ptr ${host.recordMapFlagsPtr(rec, shapeId)}`);
@@ -1368,16 +1588,80 @@ export function emitRecordExpr(
       return host.emitRecordKeyGet(e);
     case "recordHas": {
       // Own-property presence: only an undefined-armed union slot can
-      // lack its property, by holding the ABSENT state.
+      // lack its property, by holding the ABSENT state, and a PARTIAL
+      // record view (record-views.ts) can lack a field its viewed record
+      // does not declare.
+      const fieldType = host.recordsById
+        .get(e.shapeId)
+        ?.fields.find((f) => f.name === e.field)?.type;
       const obj = host.emitReadReceiver(e.obj);
+      if (host.shapeHost.recordViews?.partialMissing(e.shapeId, e.field) !== true) {
+        const { ptr, type, inline } = host.recordFieldPtr(obj.name, e.shapeId, e.field);
+        if (type.kind !== "union" || undefinedArmTag(type, host.unionsById) < 0)
+          return { name: "true", type: e.type };
+        const v = host.loadField(ptr, type, inline);
+        const absent = host.fieldAbsentTest(v, type.unionId);
+        const t = B.tmp();
+        B.line(`${t} = xor i1 ${absent}, true`);
+        return { name: t, type: e.type };
+      }
+      // A field some partial view of this shape lacks: ask the view first.
+      // Only a present field's slot may be looked up — a partial view's
+      // absent field answers no slot at all (scr_record_view_slot), and has
+      // the property only once a write left it in the view's extra store.
+      const position = host.recordsById.get(e.shapeId)!.fields.findIndex((f) => f.name === e.field);
+      host.declare(`declare ptr @scr_record_view_slot(ptr, ${host.sizeType})`);
+      host.declare(`declare ptr @scr_record_view_extra(ptr, ptr, ${host.sizeType})`);
+      const isView = B.tmp();
+      const rhFrom = B.currentLabel();
+      const view = B.newLabel("rh.view");
+      const done = B.newLabel("rh.done");
+      for (const line of recordViewTestLines(host.sizeType, obj.name, isView))
+        B.line(line.trimStart());
+      // Not a view: every field of the target has its slot.
+      B.condBr(isView, view, done, `, !prof !{!"branch_weights", i32 1, i32 1000}`);
+      B.startBlock(view);
+      const slot = B.tmp();
+      B.line(
+        `${slot} = call ptr @scr_record_view_slot(ptr ${obj.name}, ${host.sizeType} ${position})`,
+      );
+      const hasSlot = B.tmp();
+      B.line(`${hasSlot} = icmp ne ptr ${slot}, null`);
+      const extra = B.tmp();
+      const hasExtra = B.tmp();
+      B.line(
+        `${extra} = call ptr @scr_record_view_extra(ptr ${obj.name}, ptr ${host.cstr(e.field)}, ${host.sizeType} ${Buffer.byteLength(e.field, "utf8")})`,
+      );
+      B.line(`${hasExtra} = icmp ne ptr ${extra}, null`);
+      const fromView = B.tmp();
+      B.line(`${fromView} = select i1 ${hasSlot}, i1 true, i1 ${hasExtra}`);
+      B.br(done);
+      B.startBlock(done);
+      const hasView = B.tmp();
+      B.line(`${hasView} = phi i1 [ true, %${rhFrom} ], [ ${fromView}, %${view} ]`);
+      if (fieldType === undefined || fieldType.kind !== "union")
+        return { name: hasView, type: e.type };
+      const unionId = fieldType.unionId;
+      if (undefinedArmTag(fieldType, host.unionsById) < 0) return { name: hasView, type: e.type };
+      // The field is also undefined-armed: a present slot still answers by
+      // its ABSENT state, a field the view lacks by the view.
+      const check = B.newLabel("rh.present");
+      const join = B.newLabel("rh.join");
+      const from = B.currentLabel();
+      B.condBr(hasView, check, join);
+      B.startBlock(check);
       const { ptr, type, inline } = host.recordFieldPtr(obj.name, e.shapeId, e.field);
-      if (type.kind !== "union" || undefinedArmTag(type, host.unionsById) < 0)
-        return { name: "true", type: e.type };
       const v = host.loadField(ptr, type, inline);
-      const absent = host.fieldAbsentTest(v, type.unionId);
-      const t = B.tmp();
-      B.line(`${t} = xor i1 ${absent}, true`);
-      return { name: t, type: e.type };
+      const absent = host.fieldAbsentTest(v, unionId);
+      const present = B.tmp();
+      B.line(`${present} = xor i1 ${absent}, true`);
+      // The field load can end in a later block (a view's slot read).
+      const checked = B.currentLabel();
+      B.br(join);
+      B.startBlock(join);
+      const answer = B.tmp();
+      B.line(`${answer} = phi i1 [ false, %${from} ], [ ${present}, %${checked} ]`);
+      return { name: answer, type: e.type };
     }
     case "fieldAbsent":
       return { name: host.absentInstanceRef(e.unionId), type: e.type };

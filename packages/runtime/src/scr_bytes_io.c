@@ -166,6 +166,9 @@ static ScrDyn *scr_fs_cb_arg(ScrDyn *const *args, size_t argc, size_t index) {
   return index < argc ? args[index] : scr_dyn_undefined();
 }
 
+static bool scr_fs_bigint_position_chk(ScrBigInt *position, double length);
+static double scr_fs_int32(double n);
+
 static ScrDyn *scr_fs_cb_option(const ScrDyn *options, const char *name) {
   if (scr_fs_dyn_absent(options)) return scr_dyn_retain(scr_dyn_undefined());
   ScrDyn *object = options->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(options) : scr_dyn_retain((ScrDyn *)options);
@@ -1129,8 +1132,28 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
       if (ownedBuffer) length = scr_fs_cb_option_number(options, "length", length);
       else if (readOp && count >= 4) length = readLength;
       else length = scr_fs_cb_number(ARG(3), "length", length);
-      double position = ownedBuffer ? scr_fs_cb_option_number(options, "position", -1) : scr_fs_cb_number(ARG(4), "position", -1);
-      if (!scr_exc_pending()) result = scr_dyn_new_num(readOp ? scr_fs_read_sync(fd, bytes, offset, length, position) : scr_fs_write_sync(fd, bytes, offset, length, position));
+      /* The position option is read once, so a getter runs once. A bigint
+       * read position takes readSync's range check against `length |= 0`
+       * and reads at its exact value: a double would round it past 2^53. */
+      ScrDyn *positionValue = ownedBuffer ? scr_fs_cb_option(options, "position")
+                                          : scr_dyn_retain(ARG(4));
+      bool bigPosition = readOp && positionValue && positionValue->kind == SCR_DYN_BIGINT;
+      double position = bigPosition || !positionValue
+                            ? -1
+                            : scr_fs_cb_number(positionValue, "position", -1);
+      if (!scr_exc_pending()) {
+        if (bigPosition) {
+          double count32 = scr_fs_int32(length);
+          if (scr_fs_read_offset_chk(offset) &&
+              scr_fs_bigint_position_chk(positionValue->v.bigint, count32))
+            result = scr_dyn_new_num(scr_fs_read_sync_at(fd, bytes, offset, count32,
+                                                         scr_bigint_to_i64(positionValue->v.bigint)));
+        } else {
+          result = scr_dyn_new_num(readOp ? scr_fs_read_sync(fd, bytes, offset, length, position)
+                                          : scr_fs_write_sync(fd, bytes, offset, length, position));
+        }
+      }
+      scr_dyn_release(positionValue);
     }
     scr_bytes_release(bytes);
     /* The completion retains the original buffer, including options.buffer. */
@@ -1226,16 +1249,46 @@ ScrBytes *scr_crypto_random_bytes(double n) {
 
 /* ── process.stdout/stderr.write(buf) ──────────────────────────────────── */
 
+/* Where another thread can write shared bytes (where SCR_BYTES_SNAPSHOT
+ * copies them), they are read with scr_shared_load, so no shared raw memory
+ * reaches the system call. Written to the stream itself, they go through a
+ * bounded local buffer, so a large shared view is not copied whole first.
+ * With a write hook (the program reads process.stdout or process.stderr as
+ * a value, and may have replaced its write), the view is copied whole: a
+ * replaced write receives it in one call, as in Node, whatever it returns. */
+static bool scr_stdio_write_bytes(int fd, const ScrBytes *b) {
+  size_t n = b->len * scr_bytes_elem_size(b->elem);
+#if defined(SCR_WORKERS) || (defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES))
+  if (!b->shared) return scr_stdio_write(fd, b->data, n);
+  if (scr_stdio_write_hook) {
+    unsigned char *copy = scr_mem_alloc(n ? n : 1);
+    scr_shared_load(copy, b->data, n);
+    bool ok = scr_stdio_write(fd, copy, n);
+    scr_mem_free(copy);
+    return ok;
+  }
+  enum { CHUNK = 64 * 1024 };
+  unsigned char *chunk = scr_mem_alloc(n < CHUNK ? (n ? n : 1) : CHUNK);
+  for (size_t off = 0; off < n; off += CHUNK) {
+    size_t k = n - off < CHUNK ? n - off : CHUNK;
+    scr_shared_load(chunk, b->data + off, k);
+    (void)scr_stdio_write_raw(fd, chunk, k);
+  }
+  scr_mem_free(chunk);
+  return true;
+#else
+  return scr_stdio_write(fd, b->data, n);
+#endif
+}
+
 bool scr_process_stdout_write_bytes(const ScrBytes *b, const ScrStr *encoding) {
-  SCR_BYTES_SNAPSHOT(b);
   (void)encoding;
-  return scr_stdio_write(1, b->data, b->len * scr_bytes_elem_size(b->elem));
+  return scr_stdio_write_bytes(1, b);
 }
 
 bool scr_process_stderr_write_bytes(const ScrBytes *b, const ScrStr *encoding) {
-  SCR_BYTES_SNAPSHOT(b);
   (void)encoding;
-  return scr_stdio_write(2, b->data, b->len * scr_bytes_elem_size(b->elem));
+  return scr_stdio_write_bytes(2, b);
 }
 
 /* Buffer.from over checked-native input. Strings use the existing codec;
@@ -1757,11 +1810,11 @@ ScrStr *scr_fs_mkdtemp_sync_chk(const ScrDyn *prefix, const ScrDyn *opts, const 
   if (!scr_fs_encoding_chk(opts)) return NULL;
   bool utf8 = true;
   if (opts->kind == SCR_DYN_OBJ) {
-    for (size_t i = 0; i < opts->v.obj.len; i++) {
-      const ScrDynEntry *e = &opts->v.obj.entries[i];
-      if (scr_fs_dyn_absent(e->value)) continue;
-      if (strcmp(e->key, "encoding") == 0) {
-        if (!scr_fs_utf8_encoding(e->value)) utf8 = false;
+    for (size_t i = 0; i < scr_dyn_obj_count(opts); i++) {
+      ScrDynProp e = scr_dyn_obj_prop_at(opts, i);
+      if (scr_fs_dyn_absent(e.value)) continue;
+      if (strcmp(e.key, "encoding") == 0) {
+        if (!scr_fs_utf8_encoding(e.value)) utf8 = false;
         continue;
       }
       utf8 = false; /* an unmodeled effectful option */
@@ -1914,14 +1967,16 @@ static bool scr_fs_length_int32(const ScrDyn *length, double *out) {
   } else if (!scr_dyn_number_coerce_js(length, &n)) {
     return false;
   }
-  if (!isfinite(n)) {
-    *out = 0;
-    return true;
-  }
+  *out = scr_fs_int32(n);
+  return true;
+}
+
+/* ToInt32 of a number: 0 for NaN and the infinities. */
+static double scr_fs_int32(double n) {
+  if (!isfinite(n)) return 0;
   double m = fmod(trunc(n), 4294967296.0);
   if (m < 0) m += 4294967296.0;
-  *out = m >= 2147483648.0 ? m - 4294967296.0 : m;
-  return true;
+  return m >= 2147483648.0 ? m - 4294967296.0 : m;
 }
 
 /* A bigint read position in [-1n, 2n ** 63n - 1n - BigInt(length)]
@@ -2101,12 +2156,15 @@ double scr_fs_read_sync_dyn(const ScrDyn *fd, const ScrDyn *buffer, const ScrDyn
   double count = 0;
   if (!scr_fs_read_validate(fd, buffer, offset, length, position, &count)) return 0;
   if (count == 0) return 0;
-  double at = scr_fs_dyn_absent(position)                ? -1
-              : position->kind == SCR_DYN_BIGINT ? scr_bigint_to_f64(position->v.bigint)
-                                                   : position->v.num;
+  double off = scr_fs_dyn_absent(offset) ? 0 : offset->v.num;
   ScrBytes *bytes = scr_dyn_bytes_unbox(buffer);
-  double read = scr_fs_read_sync(fd->v.num, bytes, scr_fs_dyn_absent(offset) ? 0 : offset->v.num,
-                                 count, at);
+  /* A bigint position passed its range check above and reads at its exact
+   * value: a double would round it past 2^53. */
+  double read =
+      !scr_fs_dyn_absent(position) && position->kind == SCR_DYN_BIGINT
+          ? scr_fs_read_sync_at(fd->v.num, bytes, off, count, scr_bigint_to_i64(position->v.bigint))
+          : scr_fs_read_sync(fd->v.num, bytes, off, count,
+                             scr_fs_dyn_absent(position) ? -1 : position->v.num);
   scr_bytes_release(bytes);
   return read;
 }

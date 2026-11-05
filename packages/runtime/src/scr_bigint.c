@@ -547,12 +547,41 @@ typedef struct {
   unsigned shift;
 } bi_divisor;
 
+#if BI_LIMB_BITS == 64
+/* The reciprocal of d (top bit set), (~d:B-1) / d. The quotient fits a
+ * limb, so it divides in 32-bit halves with one-limb operations (Hacker's
+ * Delight, divlu). A two-limb division calls the toolchain's __udivti3.
+ * zig provides it from compiler-rt, a single object that also defines
+ * memset, memcpy, memcmp and bcmp, and linking that object makes them
+ * replace glibc's in the whole executable. */
+static bi_limb bi_reciprocal(bi_limb d) {
+  const bi_limb half = (bi_limb)1 << 32;
+  bi_limb d1 = d >> 32, d0 = d & (half - 1);
+  bi_limb u1 = ~d, n1 = half - 1, n0 = half - 1;
+  bi_limb q1 = u1 / d1, rhat = u1 - q1 * d1;
+  while (q1 >= half || q1 * d0 > ((rhat << 32) | n1)) {
+    q1--;
+    rhat += d1;
+    if (rhat >= half) break;
+  }
+  bi_limb u21 = (u1 << 32) + n1 - q1 * d;
+  bi_limb q0 = u21 / d1;
+  rhat = u21 - q0 * d1;
+  while (q0 >= half || q0 * d0 > ((rhat << 32) | n0)) {
+    q0--;
+    rhat += d1;
+    if (rhat >= half) break;
+  }
+  return (q1 << 32) | q0;
+}
+#endif
+
 static bi_divisor bi_divisor_of(bi_limb d) {
   bi_divisor dv;
   dv.shift = bi_clz(d);
   dv.d = d << dv.shift;
 #if BI_LIMB_BITS == 64
-  dv.v = (bi_limb)((((bi_wide)~dv.d) << 64 | BI_LIMB_MAX) / dv.d);
+  dv.v = bi_reciprocal(dv.d);
 #else
   dv.v = 0;
 #endif
@@ -1802,15 +1831,18 @@ static ScrBigInt *bi_from_u64_signed(uint64_t value, bool sign) {
   return bi_u64_signed(~value + 1, -1);
 }
 
+/* ERR_OUT_OF_RANGE's "Received" for a bigint: the decimal with Node's
+ * addNumericalSeparator underscores when |value| > 2^32, then 'n'. */
 static void bi_grouped_decimal(const ScrBigInt *value, char **out, size_t *out_len) {
   ScrStr *plain = scr_bigint_to_string((ScrBigInt *)value, 10);
   size_t start = plain->len && plain->data[0] == '-' ? 1 : 0;
   size_t digits = plain->len - start;
-  size_t groups = digits > 3 ? (digits - 1) / 3 : 0;
+  bool grouped = !bi_mag_fits_u64(value) || bi_mag_u64(value) > UINT64_C(4294967296);
+  size_t groups = grouped && digits > 3 ? (digits - 1) / 3 : 0;
   char *buf = bi_malloc(plain->len + groups + 2);
   size_t src = 0, dst = 0;
   if (start) buf[dst++] = plain->data[src++];
-  size_t first = digits % 3;
+  size_t first = groups ? digits % 3 : digits;
   if (!first) first = 3;
   memcpy(buf + dst, plain->data + src, first);
   src += first;
@@ -1850,6 +1882,11 @@ static bool bi_buffer_value(const ScrBigInt *value, bool sign, uint64_t *out) {
   free(received);
   free(msg);
   return false;
+}
+
+bool scr_bigint_buffer_check(const ScrBigInt *value, bool sign) {
+  uint64_t raw;
+  return bi_buffer_value(value, sign, &raw);
 }
 
 ScrBigInt *scr_bigint_buffer_read(ScrBytes *bytes, double offset, bool sign, bool le) {

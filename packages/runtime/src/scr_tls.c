@@ -203,6 +203,7 @@ static int scr_tls_parse_key(mbedtls_pk_context *pk, const char *pem, size_t len
 static void scr_tls_bad_material(const char *what, int err) {
   char detail[128];
   mbedtls_strerror(err, detail, sizeof detail);
+  scr_stdout_settle();
   fflush(stdout);
   fprintf(stderr, "scriptc: tls: failed to parse %s (%s)\n", what, detail);
   _Exit(1);
@@ -2182,9 +2183,9 @@ ScrHttpClientReq *scr_https_request_url(ScrStr *url /*borrowed*/, ScrStr *method
   ScrStr *host;
   ScrStr *path;
   double port;
-  if (!scr_http_url_parts(url, true, &host, &port, &path)) {
+  if (!scr_http_url_parts(url, true, "https.request", &host, &port, &path)) {
     if (cb) scr_closure_release(cb);
-    return NULL; /* Invalid URL / ERR_INVALID_PROTOCOL pending */
+    return NULL; /* Invalid URL / ERR_INVALID_PROTOCOL / credentials pending */
   }
   ScrArr *pairs = scr_arr_new(SCR_ELEM_STR, 0);
   ScrHttpClientReq *c = scr_https_request(host, port, path, method, 0, pairs, auto_end,
@@ -2445,6 +2446,23 @@ ScrHttpClientReq *scr_https_request_dyn(const ScrDyn *opts /*borrowed*/, bool au
   return req;
 }
 
+/* https.request/get(url[, options][, cb]) — the URL's fields merged under
+ * the options value (scr_http.c's merge), then the same runtime walk,
+ * TLS options included, as the options form. */
+ScrHttpClientReq *scr_https_request_url_dyn(ScrStr *url /*borrowed*/,
+                                            const ScrDyn *opts /*borrowed*/, bool auto_end,
+                                            ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn,
+                                            ScrDyn *(*add_abort)(ScrDyn *signal, ScrDyn *listener)) {
+  ScrDyn *merged = scr_http_url_req_options(url, opts, "https.request");
+  if (merged == NULL) {
+    if (cb) scr_closure_release(cb);
+    return NULL;
+  }
+  ScrHttpClientReq *req = scr_https_request_dyn(merged, auto_end, cb, fn, add_abort);
+  scr_dyn_release(merged);
+  return req;
+}
+
 /* The literal path's runtime-valued cert/key extraction (the compiler's
  * tls.pemDyn libCall): `what` arrives precomposed. undefined throws — the
  * literal walk required the member's presence — and so does an empty
@@ -2597,21 +2615,21 @@ static bool scr_tls_srv_opts_walk_ex(const ScrDyn *opts, const char *api, ScrByt
   }
   if (!scr_tls_opts_validate(opts)) return false; /* Node's typed errors first */
   bool ok = true;
-  for (size_t i = 0; ok && i < opts->v.obj.len; i++) {
-    const ScrDynEntry *e = &opts->v.obj.entries[i];
-    const ScrDyn *v = e->value;
+  for (size_t i = 0; ok && i < scr_dyn_obj_count(opts); i++) {
+    ScrDynProp e = scr_dyn_obj_prop_at(opts, i);
+    const ScrDyn *v = e.value;
     if (v->kind == SCR_DYN_UNDEF) continue; /* an undefined member reads as absent, like Node */
-    if (strcmp(e->key, "cert") == 0 || strcmp(e->key, "key") == 0) {
+    if (strcmp(e.key, "cert") == 0 || strcmp(e.key, "key") == 0) {
       char what[96];
-      snprintf(what, sizeof what, "a %s '%s' option", api, e->key);
+      snprintf(what, sizeof what, "a %s '%s' option", api, e.key);
       ScrBytes *b = scr_tls_pem_dyn(v, what, false);
       if (b == NULL) { ok = false; break; }
-      ScrBytes **slot = e->key[0] == 'c' ? cert_out : key_out;
+      ScrBytes **slot = e.key[0] == 'c' ? cert_out : key_out;
       scr_bytes_release(*slot);
       *slot = b;
       continue;
     }
-    if (strcmp(e->key, "ca") == 0) {
+    if (strcmp(e.key, "ca") == 0) {
       /* the server's `ca` verifies client certificates and completes the
        * server's own chain (scr_tls_srv_client_auth); a walk without
        * client certificates drops it */
@@ -2623,7 +2641,7 @@ static bool scr_tls_srv_opts_walk_ex(const ScrDyn *opts, const char *api, ScrByt
       }
       continue;
     }
-    if (strcmp(e->key, "requestCert") == 0) {
+    if (strcmp(e.key, "requestCert") == 0) {
       if (auth != NULL) {
         auth->request = scr_tls_dyn_truthy(v);
         continue;
@@ -2635,22 +2653,22 @@ static bool scr_tls_srv_opts_walk_ex(const ScrDyn *opts, const char *api, ScrByt
       }
       continue;
     }
-    if (strcmp(e->key, "rejectUnauthorized") == 0) {
+    if (strcmp(e.key, "rejectUnauthorized") == 0) {
       if (auth != NULL) auth->reject = scr_tls_dyn_not_false(v);
       continue; /* without client certificates it has no effect */
     }
-    if (server_ok && (strcmp(e->key, "ALPNProtocols") == 0 || strcmp(e->key, "minVersion") == 0 ||
-                      strcmp(e->key, "maxVersion") == 0))
+    if (server_ok && (strcmp(e.key, "ALPNProtocols") == 0 || strcmp(e.key, "minVersion") == 0 ||
+                      strcmp(e.key, "maxVersion") == 0))
       continue;
-    if (strcmp(e->key, "SNICallback") == 0) {
+    if (strcmp(e.key, "SNICallback") == 0) {
       scr_tls_opt_fence(api, "SNICallback",
                         "SNICallback lowers only on http2.createSecureServer({ allowHTTP1: true, ... }) with a literal options object");
       ok = false;
       continue;
     }
     for (size_t k = 0; SCR_TLS_SRV_FENCED_OPTIONS[k] != NULL; k++) {
-      if (strcmp(e->key, SCR_TLS_SRV_FENCED_OPTIONS[k]) == 0) {
-        scr_tls_opt_fence(api, e->key,
+      if (strcmp(e.key, SCR_TLS_SRV_FENCED_OPTIONS[k]) == 0) {
+        scr_tls_opt_fence(api, e.key,
                           "cert and key (PEM strings or Buffers) are the honestly-implemented members of a runtime options record");
         ok = false;
         break;
@@ -2957,17 +2975,17 @@ static const char *const SCR_TLS_WRAP_FENCED_OPTIONS[] = {
  * certificates are not modeled), SNICallback and ALPNCallback fence.
  * False with the exception pending. */
 static bool scr_tls_wrap_socket_opts_check(const ScrDyn *record, const char *api) {
-  for (size_t i = 0; record != NULL && i < record->v.obj.len; i++) {
-    const ScrDynEntry *e = &record->v.obj.entries[i];
-    if (e->value->kind == SCR_DYN_UNDEF) continue;
-    if (strcmp(e->key, "requestCert") == 0) {
-      if (!scr_tls_dyn_truthy(e->value)) continue;
+  for (size_t i = 0; record != NULL && i < scr_dyn_obj_count(record); i++) {
+    ScrDynProp e = scr_dyn_obj_prop_at(record, i);
+    if (e.value->kind == SCR_DYN_UNDEF) continue;
+    if (strcmp(e.key, "requestCert") == 0) {
+      if (!scr_tls_dyn_truthy(e.value)) continue;
       scr_tls_opt_fence(api, "requestCert",
                         "requestCert lowers with cert and key options, not beside a secureContext");
       return false;
     }
-    if (strcmp(e->key, "SNICallback") == 0 || strcmp(e->key, "ALPNCallback") == 0) {
-      scr_tls_opt_fence(api, e->key,
+    if (strcmp(e.key, "SNICallback") == 0 || strcmp(e.key, "ALPNCallback") == 0) {
+      scr_tls_opt_fence(api, e.key,
                         "isServer, cert, key, secureContext, ALPNProtocols, minVersion and maxVersion are the implemented members");
       return false;
     }
@@ -2980,21 +2998,21 @@ ScrNetSocket *scr_tls_wrap_socket(ScrNetSocket *raw, const ScrDyn *opts /*borrow
   static const char api[] = "new tls.TLSSocket";
   bool is_server = false;
   const ScrDyn *record = opts != NULL && opts->kind == SCR_DYN_OBJ ? opts : NULL;
-  for (size_t i = 0; record != NULL && i < record->v.obj.len; i++) {
-    const ScrDynEntry *e = &record->v.obj.entries[i];
-    if (e->value->kind == SCR_DYN_UNDEF) continue;
-    if (strcmp(e->key, "isServer") == 0) {
-      is_server = scr_tls_dyn_truthy(e->value);
+  for (size_t i = 0; record != NULL && i < scr_dyn_obj_count(record); i++) {
+    ScrDynProp e = scr_dyn_obj_prop_at(record, i);
+    if (e.value->kind == SCR_DYN_UNDEF) continue;
+    if (strcmp(e.key, "isServer") == 0) {
+      is_server = scr_tls_dyn_truthy(e.value);
       continue;
     }
-    if (strcmp(e->key, "secureContext") == 0) {
+    if (strcmp(e.key, "secureContext") == 0) {
       scr_tls_opt_fence(api, "secureContext",
                         "secureContext lowers as a member of an options object literal");
       return NULL;
     }
     for (size_t k = 0; SCR_TLS_WRAP_FENCED_OPTIONS[k] != NULL; k++) {
-      if (strcmp(e->key, SCR_TLS_WRAP_FENCED_OPTIONS[k]) == 0) {
-        scr_tls_opt_fence(api, e->key,
+      if (strcmp(e.key, SCR_TLS_WRAP_FENCED_OPTIONS[k]) == 0) {
+        scr_tls_opt_fence(api, e.key,
                           "isServer, cert, key, secureContext, ALPNProtocols, minVersion and maxVersion are the implemented members");
         return NULL;
       }
@@ -3267,10 +3285,10 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
     /* createSecureContext's version checks come before its other options
      * (Node's SecureContext constructor). */
     if (ok && !scr_tls_versions_dyn(opts, &min_version, &max_version)) ok = false;
-    for (size_t i = 0; ok && i < opts->v.obj.len; i++) {
-      const ScrDynEntry *e = &opts->v.obj.entries[i];
-      const ScrDyn *v = e->value;
-      if (strcmp(e->key, "checkServerIdentity") == 0) {
+    for (size_t i = 0; ok && i < scr_dyn_obj_count(opts); i++) {
+      ScrDynProp e = scr_dyn_obj_prop_at(opts, i);
+      const ScrDyn *v = e.value;
+      if (strcmp(e.key, "checkServerIdentity") == 0) {
         /* Node spreads user options over the defaults, so a PRESENT key
          * replaces the builtin verifier even when its value is undefined
          * — validateFunction then throws for anything non-callable. A
@@ -3287,7 +3305,7 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
         continue;
       }
       if (v->kind == SCR_DYN_UNDEF) continue;
-      if (strcmp(e->key, "port") == 0) {
+      if (strcmp(e.key, "port") == 0) {
         if (port >= 0) continue; /* the argument form wins, like Node */
         if (v->kind == SCR_DYN_NUM) port = v->v.num;
         else if (v->kind == SCR_DYN_STR) port = strtod(v->v.str->data, NULL); /* Node coerces numeric strings */
@@ -3297,7 +3315,7 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
         }
         continue;
       }
-      if (strcmp(e->key, "host") == 0) {
+      if (strcmp(e.key, "host") == 0) {
         if (v->kind == SCR_DYN_STR) opt_host = v->v.str;
         else {
           scr_dyn_arg_type_fail("options.host", "of type string", v);
@@ -3305,34 +3323,34 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
         }
         continue;
       }
-      if (strcmp(e->key, "rejectUnauthorized") == 0) {
+      if (strcmp(e.key, "rejectUnauthorized") == 0) {
         reject = scr_tls_dyn_not_false(v);
         continue;
       }
-      if (strcmp(e->key, "ca") == 0) {
+      if (strcmp(e.key, "ca") == 0) {
         scr_bytes_release(ca);
         if (!scr_tls_ca_dyn(v, "a tls.connect 'ca' option", &ca)) ok = false;
         continue;
       }
-      if (strcmp(e->key, "cert") == 0 || strcmp(e->key, "key") == 0) {
-        ScrBytes **slot = e->key[0] == 'c' ? &own_cert : &own_key;
+      if (strcmp(e.key, "cert") == 0 || strcmp(e.key, "key") == 0) {
+        ScrBytes **slot = e.key[0] == 'c' ? &own_cert : &own_key;
         scr_bytes_release(*slot);
-        *slot = scr_tls_pem_dyn(v, e->key[0] == 'c' ? "a tls.connect 'cert' option" : "a tls.connect 'key' option",
+        *slot = scr_tls_pem_dyn(v, e.key[0] == 'c' ? "a tls.connect 'cert' option" : "a tls.connect 'key' option",
                                 false);
         if (*slot == NULL) ok = false;
         continue;
       }
-      if (strcmp(e->key, "ALPNProtocols") == 0) {
+      if (strcmp(e.key, "ALPNProtocols") == 0) {
         alpn_value = v; /* converted after the context options, as TLSSocket does */
         continue;
       }
-      if (strcmp(e->key, "minVersion") == 0 || strcmp(e->key, "maxVersion") == 0) continue;
-      if (strcmp(e->key, "timeout") == 0) {
+      if (strcmp(e.key, "minVersion") == 0 || strcmp(e.key, "maxVersion") == 0) continue;
+      if (strcmp(e.key, "timeout") == 0) {
         /* `if (options.timeout) tlssock.setTimeout(options.timeout)` */
         timeout_value = scr_tls_dyn_truthy(v) ? v : NULL;
         continue;
       }
-      if (strcmp(e->key, "socket") == 0) {
+      if (strcmp(e.key, "socket") == 0) {
         if (v->kind == SCR_DYN_HANDLE && v->v.handle.tag == SCR_DYNH_NET_SOCKET) {
           wrap = (ScrNetSocket *)v->v.handle.ptr;
         } else {
@@ -3341,7 +3359,7 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
         }
         continue;
       }
-      if (strcmp(e->key, "servername") == 0) {
+      if (strcmp(e.key, "servername") == 0) {
         if (v->kind == SCR_DYN_STR) servername = v->v.str;
         else {
           scr_dyn_arg_type_fail("options.servername", "of type string", v);
@@ -3350,8 +3368,8 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
         continue;
       }
       for (size_t k = 0; SCR_TLS_CONNECT_FENCED_OPTIONS[k] != NULL; k++) {
-        if (strcmp(e->key, SCR_TLS_CONNECT_FENCED_OPTIONS[k]) == 0) {
-          scr_tls_opt_fence("tls.connect", e->key,
+        if (strcmp(e.key, SCR_TLS_CONNECT_FENCED_OPTIONS[k]) == 0) {
+          scr_tls_opt_fence("tls.connect", e.key,
                             "port/host/socket/rejectUnauthorized/ca/servername/ALPNProtocols/minVersion/maxVersion/timeout are the implemented members of a runtime options record");
           ok = false;
           break;

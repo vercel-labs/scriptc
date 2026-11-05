@@ -1,8 +1,12 @@
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
+  existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   renameSync,
+  rmSync,
   statSync,
   symlinkSync,
   unlinkSync,
@@ -148,10 +152,12 @@ async function packFixture() {
       store,
     );
   let stages = 0;
-  const stage = (selection: NativeRuntimeSelection) => {
-    const directory = join(root, `stage-${stages++}`);
+  const stage = (selection: NativeRuntimeSelection, with_: RuntimePackStore = store) => {
+    const directory = join(tmpdir(), `scriptc-runtime-pack-stage-${process.pid}-${stages++}`);
+    rmSync(directory, { recursive: true, force: true });
     mkdirSync(directory);
-    return stageNativeRuntimeSelection(selection, directory, store);
+    dirs.push(directory);
+    return stageNativeRuntimeSelection(selection, directory, with_);
   };
   return { root, object, manifestText, entries, select, stage };
 }
@@ -241,3 +247,180 @@ test.skipIf(process.platform === "win32")(
     expect(readFileSync(staged.runtimeObjects[0]!, "utf8")).toBe("base object");
   },
 );
+
+/** A store that keeps nothing: a build with an empty cache. */
+function emptyStore(): RuntimePackStore {
+  const entries = new Map<string, string>();
+  return {
+    read: (key) => entries.get(key) ?? null,
+    write: (key, text) => void entries.set(key, text),
+  };
+}
+
+const packRecord = (root: string) => join(root, "runtime-pack.verified.json");
+const hashes = () => vi.mocked(createHash).mock.calls.length;
+
+test("a build with an empty cache trusts the record beside the pack", async () => {
+  const f = await packFixture();
+  const selection = f.select();
+  let start = hashes();
+  f.stage(selection);
+  const firstStage = hashes() - start;
+  const record = JSON.parse(readFileSync(packRecord(f.root), "utf8"));
+  expect(record.schema).toBe(1);
+  expect(record.artifacts.map((artifact: { path: string }) => artifact.path)).toEqual([
+    "artifacts/base.o",
+  ]);
+  start = hashes();
+  const staged = f.stage(selection, emptyStore());
+  // Only the store key is hashed.
+  expect(hashes() - start).toBe(firstStage - 1);
+  expect(readFileSync(staged.runtimeObjects[0]!, "utf8")).toBe("base object");
+});
+
+test.each(["replaced", "rewritten in place", "resized"])(
+  "the record beside the pack does not trust an artifact that was %s",
+  async (change) => {
+    const f = await packFixture();
+    const selection = f.select();
+    f.stage(selection);
+    const before = statSync(f.object);
+    const changed = change === "replaced" ? f.object + ".new" : f.object;
+    writeFileSync(changed, "x".repeat(before.size + (change === "resized" ? 1 : 0)));
+    utimesSync(changed, before.atime, before.mtime);
+    if (changed !== f.object) renameSync(changed, f.object);
+    expect(() => f.stage(selection, emptyStore())).toThrow(
+      "runtime pack artifact hash mismatch: artifacts/base.o",
+    );
+  },
+);
+
+test("an artifact whose mtime changed is hashed again and recorded again", async () => {
+  const f = await packFixture();
+  const selection = f.select();
+  f.stage(selection);
+  const before = statSync(f.object);
+  utimesSync(f.object, before.atime, new Date(before.mtimeMs + 5000));
+  const start = hashes();
+  f.stage(selection, emptyStore());
+  // The store key and the artifact.
+  expect(hashes() - start).toBe(2);
+  const [entry] = JSON.parse(readFileSync(packRecord(f.root), "utf8")).artifacts;
+  expect(entry.mtime).toBe(statSync(f.object).mtimeMs);
+  const again = hashes();
+  f.stage(selection, emptyStore());
+  expect(hashes() - again).toBe(1);
+});
+
+test.each([
+  ["truncated", () => "{"],
+  ["null", () => "null"],
+  ["another schema", (text: string) => text.replace('"schema":1', '"schema":2')],
+  [
+    "an entry with a string ctime",
+    (text: string) => text.replace(/"ctime":([\d.]+)/, '"ctime":"$1"'),
+  ],
+  ["an entry without an inode", (text: string) => text.replace(/"ino":[\d.]+,/, "")],
+  [
+    "another digest",
+    (text: string) => text.replace(/"sha256":"[0-9a-f]+"/, `"sha256":"${"0".repeat(64)}"`),
+  ],
+])("a record beside the pack that is %s is not trusted", async (_name, rewrite) => {
+  const f = await packFixture();
+  const selection = f.select();
+  f.stage(selection);
+  const text = readFileSync(packRecord(f.root), "utf8");
+  const rewritten = rewrite(text);
+  expect(rewritten).not.toBe(text);
+  writeFileSync(packRecord(f.root), rewritten);
+  const start = hashes();
+  const staged = f.stage(selection, emptyStore());
+  expect(hashes() - start).toBe(2);
+  expect(readFileSync(staged.runtimeObjects[0]!, "utf8")).toBe("base object");
+  // The record is written again, whole.
+  const [entry] = JSON.parse(readFileSync(packRecord(f.root), "utf8")).artifacts;
+  expect(entry.ino).toBe(statSync(f.object).ino);
+});
+
+test("an unreadable record beside the pack is not trusted, and staging still succeeds", async () => {
+  const f = await packFixture();
+  const selection = f.select();
+  // A directory where the record would be: it can be neither read nor replaced.
+  mkdirSync(packRecord(f.root));
+  const start = hashes();
+  f.stage(selection, emptyStore());
+  f.stage(selection, emptyStore());
+  expect(hashes() - start).toBe(4);
+  expect(readdirSync(f.root).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+});
+
+test.skipIf(process.platform === "win32")(
+  "a pack directory that cannot be written keeps the record in the cache only",
+  async (context) => {
+    const f = await packFixture();
+    const selection = f.select();
+    chmodSync(f.root, 0o555);
+    try {
+      // A process that may write any directory cannot run this case.
+      try {
+        writeFileSync(join(f.root, "probe"), "");
+        rmSync(join(f.root, "probe"));
+        context.skip();
+      } catch {
+        /* The directory is read-only for this process. */
+      }
+      const store = emptyStore();
+      let start = hashes();
+      f.stage(selection, store);
+      expect(hashes() - start).toBe(2);
+      expect(existsSync(packRecord(f.root))).toBe(false);
+      expect(readdirSync(f.root).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+      // The cache's record still answers the next build with that cache.
+      start = hashes();
+      f.stage(selection, store);
+      expect(hashes() - start).toBe(1);
+    } finally {
+      chmodSync(f.root, 0o755);
+    }
+  },
+);
+
+test("writing the record beside the pack keeps the entries another build wrote", async () => {
+  const f = await packFixture();
+  const selection = f.select();
+  const other = {
+    path: "artifacts/other.o",
+    sha256: "1".repeat(64),
+    dev: 1,
+    ino: 2,
+    size: 3,
+    mtime: 4,
+    ctime: 5,
+  };
+  writeFileSync(packRecord(f.root), JSON.stringify({ schema: 1, artifacts: [other] }));
+  f.stage(selection, emptyStore());
+  const record = JSON.parse(readFileSync(packRecord(f.root), "utf8"));
+  expect(record.artifacts.map((artifact: { path: string }) => artifact.path).sort()).toEqual([
+    "artifacts/base.o",
+    "artifacts/other.o",
+  ]);
+  expect(
+    record.artifacts.find((artifact: { path: string }) => artifact.path === other.path),
+  ).toEqual(other);
+  expect(readdirSync(f.root).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+});
+
+test("a cache that already trusts the artifacts writes the record beside the pack", async () => {
+  const f = await packFixture();
+  const selection = f.select();
+  f.stage(selection);
+  rmSync(packRecord(f.root));
+  const start = hashes();
+  f.stage(selection);
+  // The cache's record answers; only the store key is hashed.
+  expect(hashes() - start).toBe(1);
+  expect(existsSync(packRecord(f.root))).toBe(true);
+  const empty = hashes();
+  f.stage(selection, emptyStore());
+  expect(hashes() - empty).toBe(1);
+});

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/symbol-keyed-recursive-record.ts"
+ ],
+ "diags": []
+}

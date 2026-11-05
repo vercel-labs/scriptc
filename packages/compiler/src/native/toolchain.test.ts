@@ -276,3 +276,66 @@ test("a manifest without tsc_ts takes the host's tsc-ts executable from the inst
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test.each(["nested", "hoisted", "pnpm"])(
+  "an npm platform package resolves its LLVM helper and runtime pack dependencies (%s)",
+  (layout) => {
+    const root = realpathSync(
+      mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-dependencies-")),
+    );
+    const modules =
+      layout === "pnpm"
+        ? join(root, "node_modules/.pnpm/@scriptc+cli-linux-x64-gnu@1.2.3/node_modules")
+        : join(root, "node_modules");
+    const platform = join(modules, "@scriptc/cli-linux-x64-gnu");
+    const dependencies = layout === "nested" ? join(platform, "node_modules") : modules;
+    const bin = join(platform, "dist/bin");
+    const path = join(bin, "scriptc.json");
+    const manifest: NativeToolchainManifest = {
+      schema: "scriptc.native-toolchain.v1",
+      compiler_version: "1.2.3",
+      target: "linux-x64-gnu",
+      ts7: "../lib/typescript/tsc",
+      tsc_ts: "../lib/tsc-ts/lib/tsc-ts",
+      linker: "clang",
+      linker_args: [],
+      dsymutil: "dsymutil",
+    };
+    const install = (name: string, version = "1.2.3") => {
+      mkdirSync(join(dependencies, name), { recursive: true });
+      writeFileSync(join(dependencies, name, "package.json"), JSON.stringify({ name, version }));
+    };
+    try {
+      mkdirSync(bin, { recursive: true });
+      writeFileSync(path, JSON.stringify(manifest));
+      expect(() => loadNativeToolchain(path)).toThrow(
+        "scriptc requires @scriptc/llvm-linux-x64-gnu@1.2.3, which is not installed beside the native compiler",
+      );
+      install("@scriptc/llvm-linux-x64-gnu");
+      install("@scriptc/runtime-linux-x64-gnu", "1.2.2");
+      expect(() => loadNativeToolchain(path)).toThrow(
+        "scriptc requires @scriptc/runtime-linux-x64-gnu@1.2.3, found 1.2.2",
+      );
+      install("@scriptc/runtime-linux-x64-gnu");
+      const toolchain = loadNativeToolchain(path);
+      expect(toolchain.helperPackageRoot).toBe(join(dependencies, "@scriptc/llvm-linux-x64-gnu"));
+      expect(toolchain.helperExecutable).toBe(
+        join(dependencies, "@scriptc/llvm-linux-x64-gnu/bin/scriptc-llvm-codegen"),
+      );
+      expect(toolchain.runtimePackRoot).toBe(join(dependencies, "@scriptc/runtime-linux-x64-gnu"));
+      // Other targets' packs still come from the project.
+      const project = join(root, "project");
+      const wasi = join(project, "node_modules/@scriptc/runtime-wasm32-wasi");
+      mkdirSync(wasi, { recursive: true });
+      writeFileSync(join(wasi, "package.json"), "{}");
+      expect(
+        loadNativeToolchain(path, { SCRIPTC_TARGET: "wasm32-wasi" }, project).runtimePackRoot,
+      ).toBe(wasi);
+      expect(
+        loadNativeToolchain(path, { SCRIPTC_RUNTIME_PACK: "../explicit" }).runtimePackRoot,
+      ).toBe(join(platform, "dist/explicit"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);

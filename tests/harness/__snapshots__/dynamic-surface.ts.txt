@@ -1,8 +1,8 @@
-dynamic-surface.ts:13:15 - error SC2020: 'Number.prototype.toLocaleString without a locale' is part of the standard library types but has no scriptc lowering yet
+dynamic-surface.ts:13:38 - error SC2020: 'Number.prototype.toLocaleString at locale "de-DE"' is part of the standard library types but has no scriptc lowering yet
 
   12 | const tau = Math.PI * 2;
-  13 | const price = (19.99).toLocaleString();
-     |               ^~~~~~~~~~~~~~~~~~~~~~~~
+  13 | const price = (19.99).toLocaleString("de-DE");
+     |                                      ^~~~~~~
   14 | const n = Number.parseFloat("3.14");
 
-  hint: the default locale is the host environment's, which a compiled binary cannot carry — pass it explicitly: x.toLocaleString("en-US")
+  hint: what lowers is the default locale (no argument) and the composed en-US form — other locales are ICU data the binary does not negotiate yet

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/sloppy-this-global.cjs"
+ ],
+ "diags": []
+}

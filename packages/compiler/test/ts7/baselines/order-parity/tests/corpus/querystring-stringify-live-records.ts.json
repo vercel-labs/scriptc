@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/querystring-stringify-live-records.ts"
+ ],
+ "diags": []
+}

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6874-error-capture-stack-trace-objects.cjs"
+ ],
+ "diags": []
+}

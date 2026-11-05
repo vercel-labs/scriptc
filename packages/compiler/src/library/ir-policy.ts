@@ -32,6 +32,7 @@ const LIB_MODE_REFUSED_PREFIXES: readonly [string, string][] = [
   ["zlib.promise", "the async node:zlib callback surface (util.promisify)"],
   ["zlib.stream", "the node:zlib stream classes"],
   ["zlib.brotliInstall", "node:zlib's Brotli forms"],
+  ["zlib.zstdInstall", "node:zlib's zstd forms"],
   ["process.stdoutWriteBytesCb", "process.stdout.write completion callbacks"],
   ["process.stderrWriteBytesCb", "process.stderr.write completion callbacks"],
   ["timers.", "the timers surface (setTimeout family)"],
@@ -91,6 +92,9 @@ const LIB_MODE_REFUSED_PREFIXES: readonly [string, string][] = [
   ["worker.receiveMessageOnPort", "native worker threads"],
   ["worker.setEnvironmentData", "native worker threads"],
   ["worker.getEnvironmentData", "native worker threads"],
+  // Intl over ICU reads ambient locale state and a data file that ships
+  // beside an executable; a library archive carries neither.
+  ["icu.", "the Intl surface at the default locale (ICU data and locale state are ambient)"],
   ["worker.markUntransferable", "native worker threads"],
   ["worker.isMarkedUntransferable", "native worker threads"],
   ["worker.broadcastChannel", "native worker threads"],
@@ -182,6 +186,7 @@ export function moduleLibAsyncSurface(mod: IrModule): { surface: string; loc: Sr
     [features.dynAsync, "the checked-dynamic async surface"],
     [features.dc, "the diagnostics_channel surface"],
     [features.perfLoop, "the perf_hooks event-loop metrics"],
+    [features.nodeIsland, "calls into Node.js (@scriptc/node)"],
   ];
   for (const [on, surface] of coarse) {
     if (on) return { surface, loc: entryLoc };

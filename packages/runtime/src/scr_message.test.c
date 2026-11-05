@@ -225,8 +225,11 @@ static void check_large(void) {
   ScrDyn *decoded = scr_message_decode(message);
   assert(decoded && !scr_exc_pending());
   assert(decoded->v.obj.len == 42);
-  assert(decoded->v.obj.entries[0].key_len == 5 && !memcmp(decoded->v.obj.entries[0].key, "item0", 5));
-  assert(decoded->v.obj.entries[41].key_len == 6 && !memcmp(decoded->v.obj.entries[41].key, "nested", 6));
+  size_t member_len;
+  const char *member = scr_dyn_obj_key_at(decoded, 0, &member_len);
+  assert(member_len == 5 && !memcmp(member, "item0", 5));
+  member = scr_dyn_obj_key_at(decoded, 41, &member_len);
+  assert(member_len == 6 && !memcmp(member, "nested", 6));
   assert(scr_dyn_obj_get(decoded, "nested", 6)->v.num == 42);
   ScrDyn *first = scr_dyn_obj_get(decoded, "item0", 5);
   for (int i = 0; i < 40; i++) {

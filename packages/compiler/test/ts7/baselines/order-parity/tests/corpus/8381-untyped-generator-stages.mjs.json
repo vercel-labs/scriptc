@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8381-untyped-generator-stages.mjs"
+ ],
+ "diags": []
+}

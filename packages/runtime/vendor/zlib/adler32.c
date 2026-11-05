@@ -57,10 +57,27 @@
 #  define MOD63(a) a %= BASE
 #endif
 
+#include "cpu_features.h"
+#if defined(ADLER32_SIMD_SSSE3) || defined(ADLER32_SIMD_NEON) || defined(ADLER32_SIMD_RVV)
+#include "adler32_simd.h"
+#endif
+
 /* ========================================================================= */
 uLong ZEXPORT adler32_z(uLong adler, const Bytef *buf, z_size_t len) {
     unsigned long sum2;
     unsigned n;
+    /* TODO(cavalcantii): verify if this lengths are optimal for current CPUs. */
+#if defined(ADLER32_SIMD_SSSE3) || defined(ADLER32_SIMD_NEON) \
+    || defined(ADLER32_SIMD_RVV)
+#if defined(ADLER32_SIMD_SSSE3)
+    if (buf != Z_NULL && len >= 64 && x86_cpu_enable_ssse3)
+#elif defined(ADLER32_SIMD_NEON)
+    if (buf != Z_NULL && len >= 64)
+#elif defined(ADLER32_SIMD_RVV)
+    if (buf != Z_NULL && len >= 32 && riscv_cpu_enable_rvv)
+#endif
+        return adler32_simd_(adler, buf, len);
+#endif
 
     /* split Adler-32 into component sums */
     sum2 = (adler >> 16) & 0xffff;
@@ -77,9 +94,25 @@ uLong ZEXPORT adler32_z(uLong adler, const Bytef *buf, z_size_t len) {
         return adler | (sum2 << 16);
     }
 
+#if defined(ADLER32_SIMD_SSSE3) || defined(ADLER32_SIMD_NEON) \
+    || defined(RISCV_RVV)
+    /*
+     * Use SIMD to compute the adler32. Since this function can be
+     * freely used, check CPU features here. zlib convention is to
+     * call adler32(0, NULL, 0), before making calls to adler32().
+     * So this is a good early (and infrequent) place to cache CPU
+     * features for those later, more interesting adler32() calls.
+     */
+    if (buf == Z_NULL) {
+        if (!len) /* Assume user is calling adler32(0, NULL, 0); */
+            cpu_check_features();
+        return 1L;
+    }
+#else
     /* initial Adler-32 value (deferred check for len == 1 speed) */
     if (buf == Z_NULL)
         return 1L;
+#endif
 
     /* in case short lengths are provided, keep it somewhat fast */
     if (len < 16) {

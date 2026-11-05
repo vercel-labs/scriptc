@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/localized-failure-function-slots.ts"
+ ],
+ "diags": []
+}

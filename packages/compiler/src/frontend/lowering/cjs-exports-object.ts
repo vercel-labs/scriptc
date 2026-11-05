@@ -365,6 +365,38 @@ export function cjsExportMemberWriteGlobalOf(
   return cjsInFileExportGlobalOf(lowerer, target);
 }
 
+/** Whether a function body reads `this` (arrow functions inherit it; other
+ * nested functions bind their own). */
+export function functionUsesThis(fn: ts.FunctionLikeDeclaration): boolean {
+  if (fn.body === undefined) return false;
+  let found = false;
+  ts.walkPreorder(fn.body, (node) => {
+    if (node !== fn.body && ts.isFunctionLike(node) && !ts.isArrowFunction(node)) return "skip";
+    if (node.kind === ts.SyntaxKind.ThisKeyword) {
+      found = true;
+      return "stop";
+    }
+    return undefined;
+  });
+  return found;
+}
+
+/** A function declaration, or a variable initialized with a function or
+ * arrow expression, that never reads `this`. */
+function symbolIsThisFreeFunction(lowerer: Lowerer, sym: ts.Symbol | undefined): boolean {
+  const decls = sym ? sym.declarations : [];
+  const fn = decls.find(ts.isFunctionDeclaration);
+  if (fn !== undefined) return !functionUsesThis(fn);
+  const v = decls.find(ts.isVariableDeclaration);
+  let init = v?.initializer;
+  while (init !== undefined && ts.isParenthesizedExpression(init)) init = init.expression;
+  return (
+    init !== undefined &&
+    (ts.isFunctionExpression(init) || ts.isArrowFunction(init)) &&
+    !functionUsesThis(init)
+  );
+}
+
 /** The ES-module half (a TypeScript module required from JavaScript, such
  * as a package shim): require() answers its namespace, so a call through
  * it binds `this` to the namespace. True when the export is a function

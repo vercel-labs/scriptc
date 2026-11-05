@@ -132,7 +132,9 @@ test("explicit installed JavaScript entry keeps diagnostics in its own modules",
     mkdirSync(dirname(entry), { recursive: true });
     writeFileSync(join(dirname(entry), "package.json"), '{"type":"module"}\n');
     writeFileSync(entry, 'import { value } from "./value.js"; console.log(value);\n');
-    writeFileSync(join(dirname(entry), "value.js"), "export const value = missingName;\n");
+    // A syntax error: a read of an undeclared name is Node's run-time
+    // ReferenceError in JavaScript, not a diagnostic.
+    writeFileSync(join(dirname(entry), "value.js"), "export const value = ;\n");
     const { coverage } = analyze(entry);
     expect(coverage.preflightFailed).toBe(true);
     expect(coverage.diagnostics.map((d) => d.code)).toEqual(["SC0001"]);

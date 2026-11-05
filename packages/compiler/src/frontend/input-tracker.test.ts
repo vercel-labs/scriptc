@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -7,6 +8,10 @@ import {
   FrontendInputTracker,
   frontendInputsSemanticallyMatch,
   frontendInputsStillMatch,
+  invalidateTrackedFilesystem,
+  invalidateTrackedPath,
+  setVirtualSource,
+  clearVirtualSources,
   trackedAccessibleEntries,
   trackedDirectoryExists,
   trackedFileExists,
@@ -301,6 +306,36 @@ test("a settled file is checked by its identity, and any write invalidates it", 
   expect(frontendInputsStillMatch(snapshot)).toBe(false);
 });
 
+test("a settled file an earlier run read keeps that run's digest until it is written", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
+  scratch.push(dir);
+  const source = join(dir, "entry.ts");
+  await writeFile(source, "export const answer = 1;\n");
+  const settledRead = (tracker: FrontendInputTracker, later: number) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + later);
+    try {
+      tracker.runSynchronous(() => trackedReadFile(source));
+    } finally {
+      vi.useRealTimers();
+    }
+    const probe = tracker.snapshot().probes.find((entry) => entry.op === "file");
+    return probe?.op === "file" ? probe : undefined;
+  };
+  const first = settledRead(new FrontendInputTracker(), 5000)!;
+  expect(first.identity).toBeDefined();
+  // A digest only the previous snapshot holds shows it was not computed again.
+  const marker = "f".repeat(64);
+  const previous = { version: 1 as const, stable: true, probes: [{ ...first, digest: marker }] };
+  expect(settledRead(new FrontendInputTracker(previous), 5000)?.digest).toBe(marker);
+  await writeFile(source, "export const answer = 2;\n");
+  const rewritten = settledRead(new FrontendInputTracker(previous), 10000);
+  expect(rewritten?.identity).not.toBe(first.identity);
+  expect(rewritten?.digest).toBe(
+    createHash("sha256").update("export const answer = 2;\n").digest("hex"),
+  );
+});
+
 test("a file changed shortly before the read is hashed on every check", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
   scratch.push(dir);
@@ -315,4 +350,132 @@ test("a file changed shortly before the read is hashed on every check", async ()
   reads.mockClear();
   expect(frontendInputsStillMatch(snapshot)).toBe(true);
   expect(reads.mock.calls.filter(([path]) => path === source)).toHaveLength(1);
+});
+
+test("a read before and a read after a file settles record one probe", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
+  scratch.push(dir);
+  const source = join(dir, "entry.ts");
+  await writeFile(source, "export const answer = 1;\n");
+  const tracker = new FrontendInputTracker();
+  // The first read comes right after the write, the second once the file
+  // has been unchanged long enough for its identity to stand for it.
+  tracker.run(() => trackedReadFile(source));
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(Date.now() + 5000);
+  try {
+    tracker.run(() => trackedReadFile(source));
+  } finally {
+    vi.useRealTimers();
+  }
+  const snapshot = tracker.snapshot();
+  expect(snapshot.stable).toBe(true);
+  const probe = snapshot.probes.find((entry) => entry.op === "file");
+  expect(probe?.op === "file" && probe.identity !== undefined).toBe(true);
+  expect(frontendInputsStillMatch(snapshot)).toBe(true);
+  // The identity still invalidates the snapshot on any write.
+  await writeFile(source, "export const answer = 2;\n");
+  expect(frontendInputsStillMatch(snapshot)).toBe(false);
+});
+
+test("two reads of a file that saw different content prevent cache publication", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
+  scratch.push(dir);
+  const source = join(dir, "entry.ts");
+  await writeFile(source, "export const answer = 1;\n");
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => trackedReadFile(source));
+  await writeFile(source, "export const answer = 2;\n");
+  // A write the compile did not declare is not observed: the second read is
+  // the answer this compile already used. Declaring it re-reads the file.
+  tracker.run(() => {
+    invalidateTrackedFilesystem();
+    trackedReadFile(source);
+  });
+  expect(tracker.snapshot().stable).toBe(false);
+});
+
+test("a repeated probe is served from this compile's first answer", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
+  scratch.push(dir);
+  const source = join(dir, "entry.ts");
+  await writeFile(source, "export const answer = 1;\n");
+  const tracker = new FrontendInputTracker();
+  // Reads settle: the first one recorded an identity that stands for its
+  // content, which is what lets the answers below be reused.
+  let later = 5000;
+  const read = (): string | null => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + later);
+    later += 5000;
+    try {
+      return tracker.run(() => trackedReadFile(source));
+    } finally {
+      vi.useRealTimers();
+    }
+  };
+  expect(read()).toBe("export const answer = 1;\n");
+
+  await writeFile(source, "export const answer = 2;\n");
+  expect(read()).toBe("export const answer = 1;\n");
+
+  tracker.run(() => invalidateTrackedPath(source));
+  expect(read()).toBe("export const answer = 2;\n");
+
+  // One probe per operation: the re-read replaced the answer this compile
+  // had served, and the difference keeps the result out of the cache.
+  expect(tracker.snapshot().probes.filter((probe) => probe.op === "file")).toHaveLength(1);
+  expect(tracker.snapshot().stable).toBe(false);
+});
+
+test("a cached directory listing still carries the shadow's sources", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
+  scratch.push(dir);
+  const packages = join(dir, "node_modules");
+  await mkdir(packages);
+  await writeFile(join(packages, "real.js"), "module.exports = 1;\n");
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => setVirtualSource(join(packages, "shadow.js"), "module.exports = 2;\n"));
+
+  // The shadow's source is not part of the disk listing, which is the
+  // answer this compile keeps, so it is added to every answer.
+  expect(tracker.run(() => trackedAccessibleEntries(packages))?.files).toEqual([
+    "real.js",
+    "shadow.js",
+  ]);
+  expect(tracker.run(() => trackedAccessibleEntries(packages))?.files).toEqual([
+    "real.js",
+    "shadow.js",
+  ]);
+  tracker.run(() => clearVirtualSources());
+});
+
+test("virtual sources drop the answers they replace", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
+  scratch.push(dir);
+  const source = join(dir, "entry.ts");
+  await writeFile(source, "export const onDisk = 1;\n");
+  const tracker = new FrontendInputTracker();
+  const read = (): string | null => tracker.run(() => trackedReadFile(source));
+  let later = 5000;
+  const settledRead = (): string | null => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + later);
+    later += 5000;
+    try {
+      return read();
+    } finally {
+      vi.useRealTimers();
+    }
+  };
+  expect(settledRead()).toBe("export const onDisk = 1;\n");
+
+  // The shadow answers while it is registered; registering it dropped the
+  // settled real answer it replaced, so clearing it asks the disk again
+  // rather than answering from what this compile read before the shadow.
+  await writeFile(source, "export const onDisk = 3;\n");
+  tracker.run(() => setVirtualSource(source, "export const fromShadow = 2;\n"));
+  expect(read()).toBe("export const fromShadow = 2;\n");
+  tracker.run(() => clearVirtualSources());
+  expect(settledRead()).toBe("export const onDisk = 3;\n");
 });

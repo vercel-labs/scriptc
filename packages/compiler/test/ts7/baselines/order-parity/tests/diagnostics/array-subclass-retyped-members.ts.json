@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/array-subclass-retyped-members.ts"
+ ],
+ "diags": []
+}

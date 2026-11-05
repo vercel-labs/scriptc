@@ -123,6 +123,61 @@ test("bootstrap exact builds use the routed cache and source edits fall through"
   }
 }, 120_000);
 
+test.skipIf(!persistentExecutable)(
+  "bootstrap leaves --libnode=beside builds to the full compiler",
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-bootstrap-beside-"));
+    const entry = join(dir, "main.ts");
+    const outPath = join(dir, "program");
+    const preload = join(dir, "reject-full-compiler.mjs");
+    const env = { ...process.env, SCRIPTC_CACHE_DIR: join(dir, "cache") };
+    delete env.SCRIPTC_NO_CACHE;
+    const build = (args: string[], rejectFullCompiler = false) =>
+      execFileAsync(
+        process.execPath,
+        [
+          ...(rejectFullCompiler ? ["--import", preload] : []),
+          bootstrap,
+          "build",
+          entry,
+          "-o",
+          outPath,
+          ...args,
+        ],
+        { env, maxBuffer: 4 * 1024 * 1024 },
+      );
+    try {
+      await Promise.all([
+        writeFile(entry, 'console.log("beside");\n'),
+        writeFile(
+          preload,
+          [
+            "import { registerHooks } from 'node:module';",
+            "registerHooks({ load(url, context, nextLoad) {",
+            "  if (url.includes('/packages/compiler/dist/index.js')) throw new Error('compiler graph loaded');",
+            "  return nextLoad(url, context);",
+            "}});",
+            "",
+          ].join("\n"),
+        ),
+      ]);
+      for (const args of [[], ["--libnode=beside"]]) {
+        await build(args);
+        await build(args);
+      }
+      await expect(build([], true)).resolves.toBeDefined();
+      // A routed hit would skip placing the pack and the island modules.
+      await expect(build(["--libnode=beside"], true)).rejects.toMatchObject({
+        stderr: expect.stringContaining("compiler graph loaded"),
+      });
+      expect((await execFileAsync(outPath)).stdout).toBe("beside\n");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+  120_000,
+);
+
 test.skipIf(!runtimePackHost)(
   "bootstrap cache hits reuse LLVM executables",
   async () => {

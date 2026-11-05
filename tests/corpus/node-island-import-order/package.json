@@ -1,0 +1,1 @@
+{ "name": "node-island-import-order", "private": true, "type": "module", "scriptc": { "packages": { "sidekit": "node", "laterkit": "node" } } }

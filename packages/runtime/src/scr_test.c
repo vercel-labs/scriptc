@@ -1582,6 +1582,7 @@ static void scr_snap_write_all(void) {
     }
     ScrStr *text = scr_jb_finish(&b);
     if (!scr_snap_mkdir_parent(f->path) || !scr_snap_write_text(f->path, text->data, text->len)) {
+      scr_stdout_settle();
       fflush(stdout);
       fprintf(stderr, "Error [ERR_INVALID_STATE]: Invalid state: Cannot write snapshot file '%.*s.'\n",
               (int)f->path->len, f->path->data);
@@ -2218,6 +2219,7 @@ static void scr_mt_hooks(void) {
   scr_date_mock_now = date ? &date->now : NULL;
   scr_mt_abort_timeout_arm = scr_mt_owner[SCR_MT_ABORT] ? &scr_mt_abort_arm : NULL;
   scr_mt_wait_state = scr_mt_owner[SCR_MT_WAIT] ? 1 : scr_mt_wait_unbound ? 2 : 0;
+  scr_timer_mocked_apis = (scr_mt_owner[SCR_MT_TIMEOUT] ? 1 : 0) | (scr_mt_owner[SCR_MT_INTERVAL] ? 2 : 0);
 }
 
 /* Node's #toggleEnableTimers. Mocking Date while another MockTimers mocks
@@ -2543,6 +2545,7 @@ int scr_test_exit_code(void) {
    * summary it prints there is not reproduced; SEMANTICS.md). The run
    * exits 1 instead of passing. */
   if (scr_test_runner_spawned && !scr_test_run_done) {
+    scr_stdout_settle();
     fflush(stdout);
     fputs("scriptc: node:test runner never finished (a test awaited a promise nobody settles)\n", stderr);
     return 1;

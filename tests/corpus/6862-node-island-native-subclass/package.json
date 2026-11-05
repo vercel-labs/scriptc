@@ -1,0 +1,1 @@
+{ "name": "island-native-subclass", "private": true, "type": "module", "scriptc": { "packages": { "kit-pkg": "node" } } }

@@ -52,13 +52,13 @@ export async function resolveProgramShardMergeIdentity(driver: CcDriver): Promis
   }
   if (platform === "linux") {
     if (driver.target === null) {
-      const [ld, objcopy] = await Promise.all([resolvedTool("ld"), resolvedTool("objcopy")]);
-      return ld === null || objcopy === null
+      // ld -r merges; localizeElfObject demotes in process.
+      const ld = await resolvedTool("ld");
+      return ld === null
         ? null
-        : rememberFingerprintDependencies(
-            `program-shard-merge-linux-v1\0${ld.cacheIdentity}\0${objcopy.cacheIdentity}`,
-            [ld.canonicalPath, objcopy.canonicalPath],
-          );
+        : rememberFingerprintDependencies(`program-shard-merge-linux-v2\0${ld.cacheIdentity}`, [
+            ld.canonicalPath,
+          ]);
     }
     const arch = driver.target.split("-", 1)[0];
     if (arch !== "x86_64" && arch !== "aarch64") return null;

@@ -1,0 +1,16 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/early-error-script-top-level-using.js"
+ ],
+ "diags": [
+  {
+   "code": "SC0013",
+   "message": "a 'using' declaration is not allowed at the top level of a script: put it in a block, a function body, or a class static block",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/early-error-script-top-level-using.js",
+    "start": 243,
+    "end": 274
+   }
+  }
+ ]
+}

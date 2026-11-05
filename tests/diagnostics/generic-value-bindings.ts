@@ -8,24 +8,35 @@ flip = <T>(x: T): T => x;
 console.log(flip(1));
 
 // An ALIAS binding registers its target (calls through it monomorphize),
-// but a USE with no pinning context still keeps the generic signature —
-// the value fences at the reference, not the binding.
+// and a USE with no pinning context erases to the target's dynamic
+// closure — no diagnostic, the value is the function JavaScript has.
 const id = <T>(x: T): T => x;
 const stored = id;
 console.log(typeof stored);
 
 // An alias of a REASSIGNED binding never registers: the target's own
-// fence reports, and the alias falls back to the ordinary binding story.
+// fence reports, and the alias's uses inherit that blocker.
 const flipAlias = flip;
 console.log(flipAlias(5));
 
-// Declared inside a function and reading its parameter: instances are
-// module functions and cannot capture the enclosing frame.
+// Declared inside a function and reading a binding declared AFTER it: a
+// call could run before the binding's initializer (a temporal dead zone).
+// (Bindings declared before it are supported — copied as trailing
+// parameters, or shared through a closure environment when reassigned.)
 function outer(base: number): number {
-  const inner = <T>(x: T): [T, number] => [x, base];
+  const inner = <T>(x: T): [T, number] => [x, scale];
+  const scale = base + 1;
   return inner(3)[1];
 }
 console.log(outer(4));
+
+// Declared inside a GENERIC function: the enclosing frame re-lowers per
+// instantiation, so the shared instance cannot carry its type argument.
+function outerGeneric<U>(seed: U): string {
+  const inner = <T>(x: T): string => `${String(x)}${String(seed)}`;
+  return inner(3);
+}
+console.log(outerGeneric<number>(1));
 
 // Used as a value inside a function: each call of the enclosing function
 // makes a new function object (`make() !== make()`), and the compiled
@@ -43,7 +54,7 @@ declare const ambient: undefined | (<T>(f: (a: T) => T) => T);
 console.log(ambient?.((n: number) => n) === undefined);
 
 // A call whose RESULT is itself a generic function: the returned signature
-// keeps its type parameters and would need the producing call's frame.
+// keeps its type parameters and erases to the closure the call produced.
 const curried = <T>(x: T) => <U>(y: U): string => `${x}|${y}`;
 console.log(curried(1)("a"));
 

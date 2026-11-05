@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8532-stream-saved-callback-receiver/label.js",
+  "<repo>/tests/corpus/8532-stream-saved-callback-receiver/main.ts"
+ ],
+ "diags": []
+}

@@ -2,6 +2,7 @@
  * full lowering/emitter graph; exact builds need only these cache/native
  * identity primitives before deciding whether that graph is necessary. */
 export { readRoutedExecutableCache } from "./executable/executable-cache.js";
+export { libnodeCacheKey } from "./node-islands/libnode.js";
 export type { EarlyExecutableRouteOptions } from "./executable/executable-cache.js";
 export {
   executableNativeEnvironmentFingerprint,

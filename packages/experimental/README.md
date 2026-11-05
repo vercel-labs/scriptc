@@ -116,3 +116,36 @@ scriptc requires the name to be a string literal, every construction of one name
 In scriptc builds every instance of a key class's hierarchy carries a 4-byte slot index, assigned by the first `set` for it and never reused. `get` reads the index, a page of the thread's family and the entry, with no lock, hash or atomic update. A family holds a reference to each of the thread's values and releases it when it is replaced or deleted, when its key is freed, and when the thread exits. Keys freed with a `LifetimeRegion` keep their values until the thread exits, a value that belongs to a region keeps the region allocated while the family holds it, and a value that refers to its own key keeps the key alive.
 
 Under Node.js each family is a `WeakMap` per thread.
+
+## InlineArray
+
+`InlineArray<T>` marks an array field of a `ProgramLifetime` class (`@scriptc/types`) whose elements scriptc keeps in the instance itself, after its other fields, instead of in an array object of their own. It suits a program with millions of short arrays that never change once built, such as the children of each node of a syntax tree.
+
+```ts
+import type { ProgramLifetime } from "@scriptc/types";
+import type { InlineArray } from "@scriptc/experimental";
+
+class NodeList implements ProgramLifetime {
+  readonly pos: number;
+  readonly nodes: InlineArray<Node>;
+  constructor(pos: number, nodes: readonly Node[]) {
+    this.pos = pos;
+    this.nodes = nodes;
+  }
+}
+
+function visit(list: NodeList): void {
+  const nodes = list.nodes;
+  for (let i = 0; i < nodes.length; i++) visitNode(nodes[i]!);
+}
+```
+
+- `T` is a `ProgramLifetime` class, and the field is an instance field of a `ProgramLifetime` class.
+- The constructor of the class that declares the field writes it once, from one of its parameters. A subclass constructor passes one of its own parameters there through `super(...)`. Nothing else writes the field.
+- Indexing the field, reading its `length` and iterating it with `for...of` read the elements from the instance, directly or through a `const` local used only in those ways. Any other use, such as passing the field to a function or calling one of its methods, gets an array of the elements, which is frozen in scriptc builds.
+- The array passed to the constructor is one that nothing else keeps: a new array (a literal, a copy, or the result of a function that returns only such arrays or its own argument), a local array at its last use, a parameter whose callers each pass such an array, an array that an InlineArray field already holds, or a `const` array that is never written.
+- The arrays fields hold are never written, through a read of the field (a cast) or through any other reference. scriptc follows them through locals, parameters, return values, fields, the elements of arrays, Maps and Sets, and closures, and reports one that reaches a write, a dynamic value (also inside the fields of an object that becomes one), a call through a function value (also inside an array, Map or Set passed there), or a library call other than printing and `JSON.stringify` without a replacer.
+- Two reads of the field need not give the same array, so the arrays fields hold are never compared by identity: with `===` or `!==`, as an `indexOf` or `includes` argument, or as a Map key or Set element. Compare the elements instead, or keep a copy made with `slice()` where identity matters.
+- Instances of the class are not constructed through a class value. They may become dynamic values, for example through a conversion to `unknown` or an interface several classes implement, when the dynamic code that sees them uses the class's own members and does not read the field: scriptc follows such values through locals, parameters, return values, fields, the elements of arrays, Maps and Sets, the members of dynamic objects and arrays, calls through function values, and the callbacks of array methods such as `map` and `forEach`, and finds the first that reaches a read or write of the field's name or of a computed key, a checked cast to a record, array or collection type that has a record member of the field's name or holds a dynamic value, a call through a value no compiled function reaches (also as an array method's callback), or a library call other than printing, `JSON.stringify` without a replacer, `publish`, a worker's `workerData`, and class tests and casts. A dynamic view of an inline field would read it as a new array each time, so when such an operation exists the field keeps its elements in an ordinary array, which behaves as under Node.js, and scriptc reports a warning (SC6105).
+
+scriptc reports a field that does not keep these rules (SC7009). Under Node.js the field holds the array the constructor stored. In builds with sanitizers, in programs that use `LifetimeRegion`, and on platforms other than 64-bit Linux, the elements stay in an ordinary array object.

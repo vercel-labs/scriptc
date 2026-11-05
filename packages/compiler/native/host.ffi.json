@@ -6,6 +6,7 @@
     { "name": "compilerNativeFork", "symbol": "scriptc_native_fork", "params": [], "returns": "i32" },
     { "name": "compilerNativeExit", "symbol": "scriptc_native_exit", "params": ["i32"], "returns": "void" },
     { "name": "compilerNativeWait", "symbol": "scriptc_native_wait", "params": ["i32"], "returns": "i32" },
+    { "name": "compilerNativeExited", "symbol": "scriptc_native_exited", "params": [], "returns": "i32" },
     { "name": "compilerNativeLockOpen", "symbol": "scriptc_native_lock_open", "params": ["string"], "returns": "bool" },
     { "name": "compilerNativeLock", "symbol": "scriptc_native_lock", "params": [], "returns": "void" },
     { "name": "compilerNativeUnlock", "symbol": "scriptc_native_unlock", "params": [], "returns": "void" },

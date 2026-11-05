@@ -9,6 +9,7 @@ import {
 import {
   checkerBackend,
   tscTsExecutable,
+  writeCheckerOnce,
   tscTsPlatformPackage,
 } from "../frontend/ts7/checker-backend.js";
 
@@ -44,8 +45,12 @@ export interface NativeToolchainManifest {
   ts7: string;
   /** The tsc-ts executable, the default checker; without it, an installed `tsc-ts` package's. */
   tsc_ts?: string;
-  llvm_package: string;
-  runtime_pack: string;
+  /** The LLVM helper package; without it, the host's helper package
+   * installed beside the compiler (an npm platform package's dependency). */
+  llvm_package?: string;
+  /** The host runtime pack; without it, the host's runtime pack package
+   * installed beside the compiler. */
+  runtime_pack?: string;
   runtime_sources?: string;
   linker: string;
   linker_args: string[];
@@ -69,9 +74,31 @@ function commandFrom(root: string, value: string): string {
   return value.includes("/") || value.includes("\\") ? pathFrom(root, value) : value;
 }
 
+/** A package the npm platform package depends on, as Node resolves it from
+ * the compiler's directory: nested in the platform package, beside it
+ * (hoisted, or pnpm's virtual store), or higher up. The version must be the
+ * compiler's. */
+function compilerDependency(root: string, packageName: string, version: string): string {
+  const directory = installedPackage(root, packageName);
+  if (directory === undefined)
+    throw new Error(
+      `scriptc requires ${packageName}@${version}, which is not installed beside the native compiler; reinstall scriptc`,
+    );
+  const found = (
+    JSON.parse(readFileSync(join(directory, "package.json"), "utf8")) as {
+      version?: unknown;
+    }
+  ).version;
+  if (found !== version)
+    throw new Error(
+      `scriptc requires ${packageName}@${version}, found ${String(found)}; reinstall scriptc`,
+    );
+  return directory;
+}
+
 /** Additional targets are ordinary project dependencies. Resolve them when
  * requested so adding a pack never requires reinstalling the compiler. */
-function installedRuntimePack(start: string, packageName: string): string | undefined {
+function installedPackage(start: string, packageName: string): string | undefined {
   let directory = resolve(start);
   for (;;) {
     const candidate = join(directory, "node_modules", packageName);
@@ -96,15 +123,7 @@ export function loadNativeToolchain(
   const value = raw as Record<string, unknown>;
   if (value.schema !== "scriptc.native-toolchain.v1")
     throw new Error("unsupported native toolchain manifest schema");
-  for (const name of [
-    "compiler_version",
-    "target",
-    "ts7",
-    "llvm_package",
-    "runtime_pack",
-    "linker",
-    "dsymutil",
-  ]) {
+  for (const name of ["compiler_version", "target", "ts7", "linker", "dsymutil"]) {
     if (typeof value[name] !== "string" || value[name] === "")
       throw new Error(`native toolchain requires ${name}`);
   }
@@ -119,6 +138,8 @@ export function loadNativeToolchain(
   const manifest = raw as NativeToolchainManifest;
   for (const name of [
     "tsc_ts",
+    "llvm_package",
+    "runtime_pack",
     "runtime_sources",
     "declarations",
     "archiver",
@@ -157,21 +178,35 @@ export function loadNativeToolchain(
   if (target === null)
     throw new Error(`unsupported native compiler target: ${env["SCRIPTC_TARGET"]}`);
   const root = dirname(manifestPath);
-  const helperPackageRoot = pathFrom(root, env["SCRIPTC_LLVM_PACKAGE"] ?? manifest.llvm_package);
+  const llvmPackage =
+    env["SCRIPTC_LLVM_PACKAGE"] ??
+    manifest.llvm_package ??
+    compilerDependency(root, host.helper.packageName, manifest.compiler_version);
+  const helperPackageRoot = pathFrom(root, llvmPackage);
+  // The host pack of an npm platform package is its dependency; a
+  // distribution archive bundles it beside the compiler.
+  const hostRuntimePack =
+    manifest.runtime_pack ??
+    (target.name === host.name && env["SCRIPTC_RUNTIME_PACK"] === undefined
+      ? compilerDependency(root, host.runtimePackPackage, manifest.compiler_version)
+      : undefined);
   let runtimePath =
     manifest.runtime_packs?.find((pack) => pack.target === target.name)?.path ??
     (target.name === host.name
-      ? manifest.runtime_pack
-      : join(dirname(manifest.runtime_pack), target.runtimePackPackage.replace("@scriptc/", "")));
+      ? hostRuntimePack
+      : hostRuntimePack === undefined
+        ? undefined
+        : join(dirname(hostRuntimePack), target.runtimePackPackage.replace("@scriptc/", "")));
   if (
     target.name !== host.name &&
     env["SCRIPTC_RUNTIME_PACK"] === undefined &&
-    !existsSync(pathFrom(root, runtimePath))
+    (runtimePath === undefined || !existsSync(pathFrom(root, runtimePath)))
   ) {
     runtimePath =
-      installedRuntimePack(cwd, target.runtimePackPackage) ??
-      installedRuntimePack(root, target.runtimePackPackage) ??
-      runtimePath;
+      installedPackage(cwd, target.runtimePackPackage) ??
+      installedPackage(root, target.runtimePackPackage) ??
+      runtimePath ??
+      join(root, "node_modules", target.runtimePackPackage);
   }
   const hostLinker = target.name === host.name && target.defaultLinker === host.defaultLinker;
   const linker = env["SCRIPTC_LINKER"] ?? (hostLinker ? manifest.linker : target.defaultLinker);
@@ -190,7 +225,7 @@ export function loadNativeToolchain(
       checkerBackend(env) === "tsgo"
         ? pathFrom(root, manifest.ts7)
         : manifest.tsc_ts !== undefined
-          ? pathFrom(root, manifest.tsc_ts)
+          ? distributionTscTs(pathFrom(root, manifest.tsc_ts), host.platform)
           : tscTsExecutable(
               [root, cwd],
               tscTsPlatformPackage(host.platform, host.architecture, host.name.endsWith("-musl")),
@@ -206,7 +241,7 @@ export function loadNativeToolchain(
         "bin",
         host.platform === "win32" ? "scriptc-llvm-codegen.exe" : "scriptc-llvm-codegen",
       ),
-    runtimePackRoot: pathFrom(root, env["SCRIPTC_RUNTIME_PACK"] ?? runtimePath),
+    runtimePackRoot: pathFrom(root, env["SCRIPTC_RUNTIME_PACK"] ?? runtimePath!),
     ...(manifest.runtime_sources === undefined
       ? {}
       : { runtimeSourceRoot: pathFrom(root, manifest.runtime_sources) }),
@@ -234,4 +269,11 @@ export function loadNativeToolchain(
       ? {}
       : { prebuiltLibDiagnostics: pathFrom(root, manifest.lib_diagnostics) }),
   };
+}
+
+/** The distribution's tsc-ts executable at `path`, written once with one
+ * write on Linux (writeCheckerOnce). */
+function distributionTscTs(path: string, platform: string): string {
+  if (platform === "linux") writeCheckerOnce(path);
+  return path;
 }

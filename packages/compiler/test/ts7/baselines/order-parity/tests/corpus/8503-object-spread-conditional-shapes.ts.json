@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8503-object-spread-conditional-shapes.ts"
+ ],
+ "diags": []
+}

@@ -11,6 +11,9 @@ import type { NodeIslandOptions } from "./node-islands/policy.js";
 export type CompileOutputKind = "ir" | "llvm" | "asm" | "obj" | "exe";
 
 export interface CompileBaseOptions {
+  /** The Node island policy's command-line half (`--node-islands`,
+   * `--node-island`, `--native`): which npm packages run in Node islands. */
+  nodeIslands?: NodeIslandOptions;
   /** Primary artifact path. The CLI supplies the output-kind default. */
   outPath: string;
   /** Where generated intermediates and compatibility side artifacts land. */
@@ -31,6 +34,11 @@ export interface CompileBaseOptions {
   optimization?: NativeOptimization;
   /** Remove symbol/debug payload from an executable at link time. */
   strip?: boolean;
+  /** Link the C library and the other system libraries into the executable
+   * (`--static`). glibc executables link as static PIE and need the C
+   * library's static archives on the build host; musl executables are always
+   * static. Linux executables only. */
+  staticLink?: boolean;
   /** Windows PE executable subsystem. Console is the default; GUI suppresses
    * automatic console-window creation. Only valid for Windows executables. */
   windowsSubsystem?: WindowsSubsystem;
@@ -39,6 +47,35 @@ export interface CompileBaseOptions {
    * executable mapped and the memory charged for up to ~100 ms after exit.
    * Executables only; no effect on other platforms. */
   detachedExit?: boolean;
+  /** Keep JavaScript-visible stdout in the runtime's 64 KiB buffer when fd 1
+   * is not a terminal, settling it when the buffer fills and at every point
+   * the runtime has to publish output (a stderr write, the event loop's
+   * sleep, a blocking stdin read, process.kill, process.exit, an uncaught
+   * exception, exit). A terminal keeps one submission per call. Executables
+   * only; the observable contract on a pipe or file is the opting build's. */
+  stdoutBuffering?: boolean;
+  /** Where a program that calls into Node.js (@scriptc/node) loads Node
+   * from: a libnode pack directory recorded into the executable, or
+   * "beside" to copy the pack next to the executable. Default: the pack in
+   * SCRIPTC_LIBNODE at build time. SCRIPTC_LIBNODE overrides the recorded
+   * directory at run time (node-islands/libnode.ts). */
+  libnode?: string;
+  /** On Linux, move the executable's code onto 2 MiB transparent huge pages
+   * at startup when the system allows them. The moved code stays resident.
+   * Executables only; no effect on other platforms. */
+  largePages?: boolean;
+  /** Internal: `false` links a Linux executable with 4 KiB segment alignment
+   * even when its program code is large enough for text on huge pages
+   * (backend/huge-text.ts). The scriptc CLI is linked this way
+   * (scripts/build-native-cli.mts): most of its runs are short, and a short
+   * run maps every 2 MiB text window it touches whole. */
+  hugeText?: false;
+  /** How often the program throws (`--exceptions`). `rare` puts recursive
+   * functions and those near a `throw` on the unwinding exception ABI too:
+   * calls to them need no pending-flag test, and an exception that crosses
+   * them costs a native unwind. Linux executables only; `common` (the
+   * default) and other targets keep the default rules. */
+  exceptions?: "common" | "rare";
   /** The x86-64 microarchitecture level the executable's code may require
    * (`x86-64-v2` to `x86-64-v4`). The program's functions are compiled for
    * that level, and the executable then runs only on CPUs that support it.
@@ -59,9 +96,19 @@ export interface CompileBaseOptions {
    * merge-profiles`). Code the profile does not describe, or describes
    * from an older version of the program, is optimized as without one. */
   profileUse?: string;
+  /** A function layout (scripts/refresh-cli-layout.mjs; gzip-compressed when
+   * the name ends in .gz): the listed functions are written first, by tier,
+   * so the code that runs together sits together in the executable. The
+   * native compiler's build uses it. Executables and LLVM output. */
+  functionLayout?: string;
 
   /** Eligible packages compile automatically. Explicit names override automatic selection heuristics. */
   npmStatic?: readonly string[] | "auto";
+  /** Shape inference's typed overlay for opted-in packages' JavaScript.
+   * True enables it, false disables it (`--no-shape-overlay`); unset
+   * follows SCRIPTC_SHAPE_OVERLAY. A package opts out with
+   * `"scriptc": { "packages": { "<name>": { "shapes": false } } }`. */
+  shapeOverlay?: boolean;
   /** Outbound native FFI manifest. Its signature-only TypeScript bindings
    * lower to direct C ABI calls. Source outputs retain those declarations;
    * archive/system-library inputs join only an executable link. */
@@ -125,6 +172,10 @@ export type CompileFailure = {
 export interface CompileWarnings {
   warnings?: ScrDiagnostic[];
   sourceTexts?: Map<string, string>;
+  /** The Node islands the build ran: the npm packages and the program
+   * modules (absolute file paths). Reported again on an executable cache
+   * hit, so a runner can tell an island result from a native one. */
+  islands?: { packages: string[]; modules: string[] };
 }
 
 export type CompileSourceResult =

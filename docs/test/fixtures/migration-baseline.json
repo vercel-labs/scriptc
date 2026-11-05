@@ -316,6 +316,22 @@
       {
         "text": "Slot cost",
         "id": "slot-cost"
+      },
+      {
+        "text": "InlineArray",
+        "id": "inlinearray"
+      },
+      {
+        "text": "Field rules",
+        "id": "field-rules"
+      },
+      {
+        "text": "Reads",
+        "id": "reads"
+      },
+      {
+        "text": "Inline array cost",
+        "id": "inline-array-cost"
       }
     ]
   },

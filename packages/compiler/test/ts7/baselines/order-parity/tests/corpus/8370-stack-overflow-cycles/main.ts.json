@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8370-stack-overflow-cycles/shapes.ts",
+  "<repo>/tests/corpus/8370-stack-overflow-cycles/main.ts"
+ ],
+ "diags": []
+}

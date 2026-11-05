@@ -1,0 +1,70 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/js-single-statement-declaration.js"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "A label is not allowed here.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/js-single-statement-declaration.js",
+    "start": 405,
+    "end": 406
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "A label is not allowed here.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/js-single-statement-declaration.js",
+    "start": 471,
+    "end": 473
+   }
+  },
+  {
+   "code": "SC0007",
+   "message": "an async function or generator declaration can only appear at the top level or inside a block",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/js-single-statement-declaration.js",
+    "start": 505,
+    "end": 529
+   }
+  },
+  {
+   "code": "SC0007",
+   "message": "a labelled function declaration cannot be the body of a loop, a 'with' statement, or an 'if' clause",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/js-single-statement-declaration.js",
+    "start": 475,
+    "end": 501
+   }
+  },
+  {
+   "code": "SC0007",
+   "message": "an async function or generator declaration can only appear at the top level or inside a block",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/js-single-statement-declaration.js",
+    "start": 435,
+    "end": 459
+   }
+  },
+  {
+   "code": "SC0007",
+   "message": "a class declaration cannot appear in a single-statement position",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/js-single-statement-declaration.js",
+    "start": 408,
+    "end": 424
+   }
+  },
+  {
+   "code": "SC0007",
+   "message": "a function declaration can only appear at the top level, inside a block, or as the body of an if statement",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/js-single-statement-declaration.js",
+    "start": 384,
+    "end": 404
+   }
+  }
+ ]
+}

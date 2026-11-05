@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
-import { mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -63,8 +63,16 @@ test.skipIf(process.platform !== "linux")(
       expect(merge.stdout).toBe(`${merged}\n`);
 
       const optimized = join(dir, "optimized");
-      await scriptc(["build", entry, "--profile-use", merged, "-o", optimized], env);
+      const fresh = await scriptc(["build", entry, "--profile-use", merged, "-o", optimized], env);
       expect((await execFileAsync(optimized, ["1000"])).stdout).toBe("total 167499\n");
+      // The build reports how the profile matched the program's functions.
+      expect(fresh.stderr).toMatch(
+        /^scriptc: profile .*: [1-9]\d* functions annotated, 0 mismatched, \d+ without a record\n$/,
+      );
+      expect(fresh.stderr).toContain(`scriptc: profile ${merged}: `);
+      // A build from the cache reports the same match.
+      const again = await scriptc(["build", entry, "--profile-use", merged, "-o", optimized], env);
+      expect(again.stderr).toBe(fresh.stderr);
 
       // A sparse profile leaves out the runtime functions the runs never
       // reached.
@@ -77,10 +85,36 @@ test.skipIf(process.platform !== "linux")(
       await scriptc(["build", entry, "--profile-use", sparse, "-o", optimized], env);
       expect((await execFileAsync(optimized, ["1000"])).stdout).toBe("total 167499\n");
 
-      // A profile from an older version of the program still builds it.
+      // SCRIPTC_RECORD_PROFILE_BLOCKS writes the block counts of the
+      // functions the profile annotates.
+      const recorded = join(dir, "recorded.blocks");
+      await scriptc(["build", entry, "--profile-use", merged, "-o", optimized], {
+        ...env,
+        SCRIPTC_RECORD_PROFILE_BLOCKS: recorded,
+      });
+      expect((await readFile(recorded, "utf8")).split("\n")[0]).toBe("scriptc-profile-blocks 1");
+
+      // A profile from an older version of the program still builds it. The
+      // edited function no longer matches its counts, and the build warns.
       await writeFile(entry, PROGRAM + 'console.log("edited");\n');
-      await scriptc(["build", entry, "--profile-use", merged, "-o", optimized], env);
+      const stale = await scriptc(["build", entry, "--profile-use", merged, "-o", optimized], env);
       expect((await execFileAsync(optimized, ["1000"])).stdout).toBe("total 167499\nedited\n");
+      expect(stale.stderr).toMatch(/ [1-9]\d* mismatched, /);
+      expect(stale.stderr).toMatch(
+        /\nscriptc: warning: [1-9]\d* of the \d+ functions .* describes \([\d.]+%\) changed since it was collected and are optimized without their counts; collect the profile again\n$/,
+      );
+      // The block counts beside the profile annotate the edited function.
+      await copyFile(recorded, join(dir, "app.blocks"));
+      const recovered = await scriptc(
+        ["build", entry, "--profile-use", merged, "-o", optimized],
+        env,
+      );
+      expect((await execFileAsync(optimized, ["1000"])).stdout).toBe("total 167499\nedited\n");
+      expect(recovered.stderr).toMatch(/ [1-9]\d* mismatched, /);
+      expect(recovered.stderr).toMatch(
+        / [1-9]\d* functions? without profile counts annotated from \S+app\.blocks\n/,
+      );
+      expect(recovered.stderr).not.toContain("warning");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -96,10 +130,6 @@ test("profile options are refused where they cannot apply", async () => {
     await writeFile(entry, PROGRAM);
     for (const [args, message] of [
       [["build", entry, "--emit=llvm", "--profile-use", "a.profdata"], "--emit=exe"],
-      [
-        ["build", entry, "--profile-generate", "%p.profraw", "--profile-use", "a.profdata"],
-        "cannot be combined",
-      ],
       [["coverage", entry, "--profile-use", "a.profdata"], "build/run option"],
       [["merge-profiles", "a.profraw"], "merge-profiles takes -o"],
       [["merge-profiles", "-o", "out.profdata"], "merge-profiles takes -o"],

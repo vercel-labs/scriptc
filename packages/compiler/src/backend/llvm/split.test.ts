@@ -324,6 +324,33 @@ test("debug metadata stays on definitions when splitting LLVM modules", async ()
   }
 });
 
+test("personality routines stay on definitions when splitting LLVM modules", async () => {
+  // Functions with landing pads (Linux unwinding) carry a personality; every
+  // other shard declares them, and a declaration must not repeat it.
+  const source =
+    SAMPLE.replaceAll(") #0 {", ") #0 personality ptr @__gcc_personality_v0 {") +
+    "declare i32 @__gcc_personality_v0(...)\n";
+  const split = splitLlvmProgram(source, { minimumBytes: 0 });
+  expect(split).not.toBeNull();
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-personality-split-"));
+  scratch.push(dir);
+  for (const shard of split!.shards) {
+    expect(shard.source()).not.toMatch(/^declare.* personality ptr/m);
+    const path = join(dir, shard.name);
+    await writeFile(path, shard.source());
+    const result = spawnSync("clang", ["-Wno-override-module", "-c", path, "-o", `${path}.o`], {
+      encoding: "utf8",
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toBe("");
+  }
+  expect(
+    split!.shards.flatMap((shard) => [
+      ...shard.source().matchAll(/^define .* personality ptr @__gcc_personality_v0 \{/gm),
+    ]).length,
+  ).toBe(3);
+});
+
 test("dev libraries split at the measured 2MB crossover while executables retain 4MB", () => {
   const body = Array.from(
     { length: 700 },

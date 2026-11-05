@@ -4,15 +4,6 @@
  ],
  "diags": [
   {
-   "code": "SC0001",
-   "message": "Could not find a declaration file for module 'readable-stream'. '<repo>/tests/corpus/readable-stream-3/node_modules/readable-stream/readable.js' implicitly has an 'any' type.\n  Try `npm i --save-dev @types/readable-stream` if it exists or add a new declaration (.d.ts) file containing `declare module 'readable-stream';`",
-   "loc": {
-    "file": "<repo>/tests/corpus/readable-stream-3/main.cjs",
-    "start": 554,
-    "end": 571
-   }
-  },
-  {
    "code": "SC1010",
    "message": "the 'readable-stream' module is not supported yet",
    "loc": {

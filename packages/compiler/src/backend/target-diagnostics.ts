@@ -1,4 +1,4 @@
-import { everyModuleNode, everyStmtList, transformStmtList } from "../ir/traverse.js";
+import { everyModuleNode, everyStmtList } from "../ir/traverse.js";
 import type { LlvmUnsupportedError } from "./llvm/emitter.js";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import { type IrModule, type SrcLoc } from "../ir/ir.js";
@@ -14,24 +14,6 @@ import {
  * calls, escaped callables, constructors, and exported roots still retain
  * the ordinary target diagnostic. ABI types remain checked by the gate. */
 export function fenceSpeculativeWasiFunctions(mod: IrModule): void {
-  for (const fn of mod.functions)
-    fn.body = transformStmtList(fn.body, {
-      stmt: (statement) => statement,
-      expr: (expr) => {
-        if (expr.kind !== "libCall") return expr;
-        const portable =
-          expr.fn === "fetch.abortControllerNew"
-            ? "abort.controllerNew"
-            : expr.fn === "fetch.abortTimeout"
-              ? "abort.timeout"
-              : expr.fn === "fetch.abortNow"
-                ? "abort.now"
-                : expr.fn === "fetch.abortAny"
-                  ? "abort.any"
-                  : null;
-        return portable ? { ...expr, fn: portable } : expr;
-      },
-    });
   if (!mod.functions.some((fn) => fn.speculativeDispatch)) return;
   const functions = new Map(mod.functions.map((fn) => [fn.name, fn]));
   const classes = new Map((mod.classes ?? []).map((info) => [info.name, info]));

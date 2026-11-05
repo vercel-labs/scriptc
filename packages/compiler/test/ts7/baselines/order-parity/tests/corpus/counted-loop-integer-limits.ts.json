@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/counted-loop-integer-limits.ts"
+ ],
+ "diags": []
+}

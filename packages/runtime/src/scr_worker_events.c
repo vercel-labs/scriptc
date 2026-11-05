@@ -929,6 +929,16 @@ static void scr_worker_events_cleanup(void) {
 static void scr_port_ops_install(void);
 static bool scr_worker_events_install(void);
 
+/* The node:events helpers read a BroadcastChannel's listeners through its
+ * EventTarget core (scr_et_core_of). */
+static ScrEventTargetCore *scr_broadcast_core_of(const ScrDyn *value) {
+  if (!value || value->kind != SCR_DYN_HANDLE ||
+      value->v.handle.tag != SCR_DYNH_BROADCAST_CHANNEL)
+    return NULL;
+  ScrWorkerView *view = value->v.handle.ptr;
+  return view->broadcast ? view->et : NULL;
+}
+
 static void scr_worker_stdin_attach(void) { (void)scr_worker_events_install(); }
 
 static bool scr_worker_events_install(void) {
@@ -936,6 +946,7 @@ static bool scr_worker_events_install(void) {
   ScrMailbox *inbox = scr_worker_inbox();
   scr_worker_events = inbox ? scr_mailbox_retain(inbox) : scr_mailbox_new();
   if (!scr_worker_events) return false;
+  scr_et_broadcast_core_fn = scr_broadcast_core_of;
   if (inbox && !scr_worker_port) scr_worker_port = scr_worker_view_new(true);
   static const ScrDynHandleOps worker_ops = {
     .cls = "Worker", .retain = scr_worker_view_retain, .release = scr_worker_view_release,
@@ -1385,17 +1396,17 @@ static ScrDyn *scr_worker_new_options(double root, ScrStr *filename, ScrDyn *opt
       scr_dyn_arg_type_fail("options", "object", options);
       return NULL;
     }
-    for (size_t i = 0; i < options->v.obj.len; i++) {
-      const ScrDynEntry *entry = &options->v.obj.entries[i];
-      if (entry->accessor) return scr_worker_refusal("Worker option accessors are not supported yet");
-      if (entry->key_len == 10 && !memcmp(entry->key, "workerData", 10)) data = entry->value;
-      else if (entry->key_len == 4 && !memcmp(entry->key, "argv", 4)) argv = entry->value;
-      else if (entry->key_len == 12 && !memcmp(entry->key, "transferList", 12)) transfer_list = entry->value;
-      else if (entry->key_len == 14 && !memcmp(entry->key, "resourceLimits", 14)) limits = entry->value;
-      else if (entry->key_len == 4 && !memcmp(entry->key, "name", 4)) name = entry->value;
-      else if (entry->key_len == 6 && !memcmp(entry->key, "stdout", 6)) capture |= scr_dyn_truthy(entry->value) ? 1 : 0;
-      else if (entry->key_len == 6 && !memcmp(entry->key, "stderr", 6)) capture |= scr_dyn_truthy(entry->value) ? 2 : 0;
-      else if (entry->key_len == 5 && !memcmp(entry->key, "stdin", 5)) capture |= scr_dyn_truthy(entry->value) ? 4 : 0;
+    for (size_t i = 0; i < scr_dyn_obj_count(options); i++) {
+      ScrDynProp entry = scr_dyn_obj_prop_at(options, i);
+      if (entry.accessor) return scr_worker_refusal("Worker option accessors are not supported yet");
+      if (entry.key_len == 10 && !memcmp(entry.key, "workerData", 10)) data = entry.value;
+      else if (entry.key_len == 4 && !memcmp(entry.key, "argv", 4)) argv = entry.value;
+      else if (entry.key_len == 12 && !memcmp(entry.key, "transferList", 12)) transfer_list = entry.value;
+      else if (entry.key_len == 14 && !memcmp(entry.key, "resourceLimits", 14)) limits = entry.value;
+      else if (entry.key_len == 4 && !memcmp(entry.key, "name", 4)) name = entry.value;
+      else if (entry.key_len == 6 && !memcmp(entry.key, "stdout", 6)) capture |= scr_dyn_truthy(entry.value) ? 1 : 0;
+      else if (entry.key_len == 6 && !memcmp(entry.key, "stderr", 6)) capture |= scr_dyn_truthy(entry.value) ? 2 : 0;
+      else if (entry.key_len == 5 && !memcmp(entry.key, "stdin", 5)) capture |= scr_dyn_truthy(entry.value) ? 4 : 0;
       else return scr_worker_refusal("This Worker constructor option is not supported yet");
     }
   }

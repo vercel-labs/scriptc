@@ -271,21 +271,24 @@ describe("imports", () => {
   it("named and namespace imports keep the loop's timers", async (t) => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
     const log: string[] = [];
+    // The three timers are real and scheduled one after another, so their
+    // delays are 100 ms apart: a slow run (a sanitized build on a busy
+    // machine) still sees them fire in delay order.
     await Promise.all([
-      sleep(5).then(() => {
+      sleep(300).then(() => {
         log.push("named promise");
       }),
       new Promise<void>((resolve) =>
         namedSetTimeout(() => {
           log.push("named");
           resolve();
-        }, 2),
+        }, 100),
       ),
       new Promise<void>((resolve) =>
         timersNamespace.setTimeout(() => {
           log.push("namespace");
           resolve();
-        }, 3),
+        }, 200),
       ),
     ]);
     t.mock.timers.tick(10);

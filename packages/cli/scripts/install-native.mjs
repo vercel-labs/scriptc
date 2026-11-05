@@ -93,6 +93,34 @@ export function installNativeCli(
   const bin = join(directory, "bin");
   mkdirSync(bin, { recursive: true });
   const manifest = relocateToolchain(original, sourceDirectory, bin);
+  // A platform package depends on its LLVM helper and runtime pack packages
+  // instead of bundling them. Record where the package manager put them.
+  if (manifest.llvm_package === undefined || manifest.runtime_pack === undefined) {
+    const dependencies = Object.keys(identity.dependencies ?? {});
+    const installed = (prefix) => {
+      const name = dependencies.find((dependency) => dependency.startsWith(prefix));
+      if (name === undefined)
+        throw new Error(`${packageName} does not depend on a ${prefix}* package`);
+      let path, found;
+      try {
+        path = createRequire(platformManifest).resolve(`${name}/package.json`);
+        found = JSON.parse(readFileSync(path, "utf8")).version;
+      } catch {
+        throw new Error(`scriptc requires ${name}@${version}; reinstall scriptc`);
+      }
+      if (found !== version)
+        throw new Error(`scriptc requires ${name}@${version}, found ${found}; reinstall scriptc`);
+      return relative(bin, dirname(path));
+    };
+    manifest.llvm_package ??= installed("@scriptc/llvm-");
+    if (manifest.runtime_pack === undefined) {
+      manifest.runtime_pack = installed("@scriptc/runtime-");
+      manifest.runtime_packs = [
+        { target: manifest.target, path: manifest.runtime_pack },
+        ...(manifest.runtime_packs ?? []),
+      ];
+    }
+  }
   // npm normalizes modes for payloads outside package bin entries. These
   // tools are launched directly by the compiler after installation.
   if (process.platform !== "win32") {

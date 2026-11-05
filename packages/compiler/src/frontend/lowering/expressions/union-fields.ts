@@ -8,6 +8,7 @@ import {
   type IrExpr,
   type IrStmt,
   type IrType,
+  type SrcLoc,
   isUnitType,
   typeEquals,
 } from "../../../ir/ir.js";
@@ -33,23 +34,13 @@ function unionFieldArm(lowerer: Lowerer, arm: IrType, name: string): UnionFieldA
   return null;
 }
 
-/** The arm's slot read from `union`, assuming the runtime tag is `tag`. */
-function unionFieldRead(
-  unionId: string,
-  tag: number,
-  union: IrExpr,
+/** The arm's slot read on a value ALREADY narrowed to `field.receiver`. */
+function armMemberRead(
+  obj: IrExpr,
   field: UnionFieldArm,
   name: string,
   loc: IrExpr["loc"],
 ): IrExpr {
-  const obj: IrExpr = {
-    kind: "unionNarrow",
-    unionId,
-    tag,
-    value: union,
-    type: field.receiver,
-    loc,
-  };
   return field.receiver.kind === "record"
     ? {
         kind: "recordGet",
@@ -69,13 +60,83 @@ function unionFieldRead(
       };
 }
 
-/** Whether `converted` is `value` itself or `value` wrapped into a union
- * or upcast to a base class: conversions that cannot fail. Checked
- * narrowings (a union into one of its arms) don't count. */
+/** The arm's slot read from `union`, assuming the runtime tag is `tag`. */
+function unionFieldRead(
+  unionId: string,
+  tag: number,
+  union: IrExpr,
+  field: UnionFieldArm,
+  name: string,
+  loc: IrExpr["loc"],
+): IrExpr {
+  return armMemberRead(
+    { kind: "unionNarrow", unionId, tag, value: union, type: field.receiver, loc },
+    field,
+    name,
+    loc,
+  );
+}
+
+/** `receiver` restricted to the arms the checker still allows at `site`.
+ * Lowering erases flow narrowing, so a value the checker narrowed — by an
+ * early return, a discriminant test, an optional-chain guard — still
+ * carries the wider union it was stored as, and a member only the ruled-out
+ * arms refuse stays unreadable and unwritable. The site's checker type names
+ * exactly the arms still possible: retag into that sub-union (the stranded
+ * arms become traps, as at every `narrowedRetagHelper` use) or, when the
+ * site names a single arm, narrow through that arm's checked helper. Null
+ * when the site is not a genuine narrowing of the stored union. */
+export function narrowedUnionView(
+  lowerer: Lowerer,
+  site: ts.Node,
+  receiver: IrExpr,
+  loc: SrcLoc,
+): { value: IrExpr; arm: (IrType & { kind: "record" | "object" }) | null } | null {
+  if (receiver.type.kind !== "union") return null;
+  const fromId = receiver.type.unionId;
+  const siteT = lowerer.mapTypeOf(lowerer.typeOf(site));
+  if (!siteT || siteT.kind === "void") return null;
+  if (siteT.kind !== "union") {
+    if (lowerer.armTag(fromId, siteT) < 0) return null;
+    const helper = lowerer.narrowedArmHelper(fromId, siteT, loc);
+    if (!helper) return null;
+    const value = lowerer.checkedNarrowCall(helper, receiver, siteT, loc);
+    return {
+      value,
+      arm: siteT.kind === "record" || siteT.kind === "object" ? siteT : null,
+    };
+  }
+  if (siteT.unionId === fromId) return null;
+  const helper = lowerer.narrowedRetagHelper(site, fromId, siteT.unionId, loc);
+  if (!helper) return null;
+  return {
+    value: { kind: "call", callee: helper, args: [receiver], type: siteT, loc },
+    arm: null,
+  };
+}
+
+/** The member `field` of the single arm a narrowed receiver proved. */
+export function narrowedArmRead(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+  value: IrExpr,
+  arm: IrType & { kind: "record" | "object" },
+): IrExpr | null {
+  const field = unionFieldArm(lowerer, arm, access.name.text);
+  if (!field) return null;
+  return armMemberRead(value, field, access.name.text, locOf(access));
+}
+
+/** Whether `converted` is `value` itself or `value` wrapped into a union,
+ * upcast to a base class, or boxed into the checked-dynamic representation:
+ * conversions that cannot fail. Checked narrowings (a union into one of its
+ * arms) don't count. */
 function isWidening(converted: IrExpr, value: IrExpr): boolean {
   if (converted === value) return true;
   return (
-    (converted.kind === "unionWrap" || converted.kind === "upcast") &&
+    (converted.kind === "unionWrap" ||
+      converted.kind === "upcast" ||
+      converted.kind === "dynFrom") &&
     isWidening(converted.value, value)
   );
 }
@@ -109,10 +170,11 @@ function sharedFieldType(
 
 /** Read a data field from a union of classes and records whose arms declare
  * it with DIFFERENT but compatible types (`T | undefined` beside `T`, a base
- * class beside a subclass). Each tag reads its own slot and converts it to
- * the widest arm type, so the result has one representation; the caller
- * narrows it to the checker's flow type. Unit arms, accessors, and fields
- * without a common type keep their existing fences. */
+ * class beside a subclass, `T` beside `unknown`). Each tag reads its own slot
+ * and converts it to the widest arm type, so the result has one
+ * representation; the caller narrows it to the checker's flow type. Unit
+ * arms, accessors, and fields without a common type keep their existing
+ * fences. */
 export function lowerUnionFieldRead(
   lowerer: Lowerer,
   access: ts.PropertyAccessExpression,
@@ -155,26 +217,87 @@ export function lowerUnionFieldRead(
   return { kind: "seqExpr", stmts: [init], result: dispatch, type, loc };
 }
 
+/** The expression a receiver write actually targets, through parentheses
+ * and erased type assertions (`(value as R)`, `<R>value`, and chains of
+ * them). Node erases an assertion, so `(u as R).f = v` mutates the value in
+ * `u`; only the checker's view of it changes. */
+function unassertedReceiver(expr: ts.Expression): ts.Expression {
+  let node = expr;
+  for (;;) {
+    if (ts.isParenthesizedExpression(node)) {
+      node = node.expression;
+      continue;
+    }
+    if (ts.isAsExpression(node) || ts.isTypeAssertion(node)) {
+      node = node.expression;
+      continue;
+    }
+    return node;
+  }
+}
+
 /** Assign a common data field without projecting the union's objects into
  * a new structural shape. Each tag writes the original payload, so
  * aliases and identity-keyed collections observe the mutation. Arms may
  * declare the field with different types when one of them converts into
  * every other without a check (`T` beside `T | undefined`, a subclass
- * beside its base): the value is evaluated as that type and widened per
- * arm. Accessors, missing fields, and unrelated storage types retain their
- * own fences. */
+ * beside its base), or when one arm declares the field `unknown`/`any`
+ * beside specific arms (`T | undefined` beside `unknown`) and the value is
+ * converted per arm. A union of unrelated static storage types (a
+ * `string` arm beside a `number` arm) keeps its refusal: there is no
+ * dynamic arm to make the write meaningful, and the read path refuses the
+ * same shape. Accessors, missing fields, and unrelated storage types retain
+ * their own fences. */
 export function lowerUnionFieldWrite(
   lowerer: Lowerer,
   access: ts.PropertyAccessExpression,
   rhs: ts.Expression,
 ): IrExpr | null {
-  const mapped = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
-  if (access.questionDotToken || mapped?.kind !== "union") return null;
-  let receiver = lowerer.maybeNarrow(lowerer.lowerExpr(access.expression), access.expression);
+  const receiver = unionWriteReceiver(lowerer, access);
+  if (!receiver) return null;
+  const direct = unionFieldWriteInto(lowerer, access, rhs, receiver);
+  if (direct) return direct;
+  // An arm the checker ruled out at this site vetoed the dispatch (a
+  // `string | null` field written on a discriminated entry whose header arm
+  // returned early): dispatch over the arms the site still allows. Only a
+  // refusal gains this lowering — the stored-union dispatch above runs
+  // first, unchanged.
+  const narrowed = narrowedUnionView(
+    lowerer,
+    unassertedReceiver(access.expression),
+    receiver,
+    locOf(access),
+  );
+  if (!narrowed?.value || narrowed.arm) return null;
+  return unionFieldWriteInto(lowerer, access, rhs, narrowed.value);
+}
+
+/** The value a union write mutates: the receiver with erased type
+ * assertions stripped, lowered once. A write through an assertion
+ * (`(entry.message as { role: string }).role = "custom"`) decides checking,
+ * not the object it mutates, so the dispatch runs over the UNDERLYING
+ * expression's arms and each tag writes its own payload slot; a lying
+ * assertion narrows nothing here. */
+function unionWriteReceiver(lowerer: Lowerer, access: ts.PropertyAccessExpression): IrExpr | null {
+  if (access.questionDotToken) return null;
+  const target = unassertedReceiver(access.expression);
+  const mapped = lowerer.mapTypeOf(lowerer.typeOf(target));
+  if (mapped?.kind !== "union") return null;
+  let receiver = lowerer.maybeNarrow(lowerer.lowerExpr(target), target);
   // Optional base-class storage narrowed to several subclasses (see
   // lowerUnionProperty): extract the instance and test its class.
   if (receiver.type.kind === "union" && !typeEquals(receiver.type, mapped))
     receiver = narrowStoredClassValue(lowerer, receiver, mapped) ?? receiver;
+  return receiver.type.kind === "union" ? receiver : null;
+}
+
+function unionFieldWriteInto(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+  rhs: ts.Expression,
+  receiver: IrExpr,
+): IrExpr | null {
+  if (access.questionDotToken) return null;
   if (receiver.type.kind !== "union") return null;
   const unionId = receiver.type.unionId;
   const arms = lowerer.unions.get(unionId)?.arms;
@@ -194,8 +317,9 @@ export function lowerUnionFieldWrite(
     present.push(field);
   }
   if (present.length === 0) return null;
+  const mixed = present.some((field) => !typeEquals(field.type, present[0]!.type));
   let fieldType: IrType | null = present[0]!.type;
-  if (present.some((field) => !typeEquals(field.type, present[0]!.type))) {
+  if (mixed) {
     // Mixed storage types are probed only on unions without unit arms, where
     // the present arms' tags are the union's own.
     fieldType =
@@ -203,10 +327,25 @@ export function lowerUnionFieldWrite(
         ? sharedFieldType(lowerer, unionId, receiver, present, name, loc, false)
         : null;
   }
-  if (fieldType === null) return null;
+  if (
+    fieldType === null &&
+    (!mixed ||
+      !present.some((field) => field.type.kind === "dyn") ||
+      !present.every((field) => lowerer.dynConvertible(field.type)))
+  )
+    return null;
   const object = lowerer.declareHiddenLocal("%unionWriteObject", receiver.type);
   const objectRef = varRef(object.id, object.type, loc);
-  const value = lowerer.lowerExprExpecting(rhs, fieldType);
+  // No static supertype of the arm types, with one arm's slot dynamic
+  // (`T | undefined` beside `unknown`): TypeScript's writable property type
+  // is the UNION of the arms' property types, so the value is lowered once
+  // at its own type and each arm converts it. Those conversions are checked
+  // where the arm's slot is narrower, so a value that does not fit the
+  // selected arm throws the catchable TypeError of the dyn→static edge
+  // where JS would store it (the divergence a dyn value written into a
+  // typed slot already documents).
+  const value =
+    fieldType === null ? lowerer.lowerExpr(rhs) : lowerer.lowerExprExpecting(rhs, fieldType);
   const stored = lowerer.declareHiddenLocal("%unionWriteValue", value.type);
   // Snapshot the reference before evaluating the RHS, which can change the
   // original binding. Evaluate and retain the value once before dispatch.
@@ -280,4 +419,136 @@ export function lowerUnionFieldWrite(
           };
   }
   return { kind: "seqExpr", stmts: body, result: dispatch, type: result.type, loc };
+}
+
+/** `delete u.f` on a union receiver: each record arm declares `f` as an
+ * OPTIONAL field (an undefined-armed slot), so each tag writes its own
+ * slot's ABSENT state — the monomorphic optional-field delete, dispatched
+ * over the arms the way union field writes are. The union value is
+ * retained once, so every arm deletes the object the program passed, not a
+ * projection. Null when an arm is not a record that declares `f` optional
+ * (unit arms, class arms, required fields, accessors and index signatures
+ * keep their own fences): a required slot has no absence to represent. */
+export function lowerUnionFieldDelete(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+): IrStmt | null {
+  const mapped = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
+  if (access.questionDotToken || mapped?.kind !== "union") return null;
+  let receiver = lowerer.maybeNarrow(lowerer.lowerExpr(access.expression), access.expression);
+  if (receiver.type.kind === "union" && !typeEquals(receiver.type, mapped))
+    receiver = narrowStoredClassValue(lowerer, receiver, mapped) ?? receiver;
+  if (receiver.type.kind !== "union") return null;
+  const unionId = receiver.type.unionId;
+  const arms = lowerer.unions.get(unionId)?.arms;
+  if (!arms || arms.length < 2) return null;
+  const name = access.name.text;
+  const loc = locOf(access);
+  const fields: { arm: IrType & { kind: "record" }; type: IrType }[] = [];
+  for (const arm of arms) {
+    if (arm.kind !== "record" || lowerer.shapes.get(arm.shapeId)?.tuple) return null;
+    const field = unionFieldArm(lowerer, arm, name);
+    if (!field || lowerer.absentFieldValue(field.type, loc) === null) return null;
+    fields.push({ arm, type: field.type });
+  }
+  const object = lowerer.declareHiddenLocal("%unionDeleteObject", receiver.type);
+  const objectRef = varRef(object.id, object.type, loc);
+  const branch = (tag: number): IrStmt[] => {
+    const field = fields[tag]!;
+    const absent = lowerer.absentFieldValue(field.type, loc);
+    if (absent === null) return [];
+    const write: IrStmt = {
+      kind: "recordSet",
+      obj: { kind: "unionNarrow", unionId, tag, value: objectRef, type: field.arm, loc },
+      shapeId: field.arm.shapeId,
+      field: name,
+      value: absent,
+      loc,
+    };
+    // A sloppy-mode delete on a frozen record leaves it unchanged.
+    markSloppyRecordWrites(lowerer, write, access);
+    return [write];
+  };
+  // One tag test per arm, the last arm as the fall-through else: a delete
+  // runs at most one arm's write.
+  const dispatch = (tag: number): IrStmt[] =>
+    tag === fields.length - 1
+      ? branch(tag)
+      : [
+          {
+            kind: "if",
+            cond: {
+              kind: "unionIsTag",
+              unionId,
+              tag,
+              value: objectRef,
+              negated: false,
+              type: BOOL,
+              loc,
+            },
+            then: branch(tag),
+            else_: dispatch(tag + 1),
+            loc,
+          },
+        ];
+  return {
+    kind: "block",
+    body: [{ kind: "varDecl", localId: object.id, init: receiver, loc }, ...dispatch(0)],
+    loc,
+  };
+}
+
+/** Read the element at a literal index from a union of tuples whose element
+ * types differ (`readonly [true, number] | readonly [false, string]`, index
+ * 1): each tag reads its own tuple's slot and widens it into the union of
+ * the arms' element types; the caller narrows the result to the checker's
+ * flow type. Null when an arm is not a tuple with that position. */
+export function lowerUnionTupleRead(
+  lowerer: Lowerer,
+  receiver: IrExpr,
+  index: number,
+  loc: IrExpr["loc"],
+): IrExpr | null {
+  if (receiver.type.kind !== "union" || !Number.isInteger(index) || index < 0) return null;
+  const unionId = receiver.type.unionId;
+  const arms = lowerer.unions.get(unionId)?.arms;
+  if (!arms || arms.length < 2) return null;
+  const name = String(index);
+  const fields: UnionFieldArm[] = [];
+  const parts: IrType[] = [];
+  for (const arm of arms) {
+    if (arm.kind !== "record" || lowerer.shapes.get(arm.shapeId)?.tuple !== true) return null;
+    const field = unionFieldArm(lowerer, arm, name);
+    if (!field || field.type.kind === "void") return null;
+    fields.push(field);
+    const own =
+      field.type.kind === "union" ? lowerer.unions.get(field.type.unionId)?.arms : [field.type];
+    if (!own) return null;
+    for (const part of own) if (!parts.some((p) => typeEquals(p, part))) parts.push(part);
+  }
+  const type: IrType =
+    parts.length === 1 ? parts[0]! : { kind: "union", unionId: lowerer.unions.intern(parts) };
+  const object = lowerer.declareHiddenLocal("%unionReadObject", receiver.type);
+  const objectRef = varRef(object.id, object.type, loc);
+  const read = (tag: number): IrExpr | null => {
+    const probe = unionFieldRead(unionId, tag, objectRef, fields[tag]!, name, loc);
+    const converted = lowerer.coerceToExpected(probe, type);
+    return typeEquals(converted.type, type) && isWidening(converted, probe) ? converted : null;
+  };
+  let dispatch = read(fields.length - 1);
+  if (!dispatch) return null;
+  for (let tag = fields.length - 2; tag >= 0; tag--) {
+    const then = read(tag);
+    if (!then) return null;
+    dispatch = {
+      kind: "ternary",
+      cond: { kind: "unionIsTag", unionId, tag, value: objectRef, negated: false, type: BOOL, loc },
+      then,
+      else_: dispatch,
+      type,
+      loc,
+    };
+  }
+  const init: IrStmt = { kind: "varDecl", localId: object.id, init: receiver, loc };
+  return { kind: "seqExpr", stmts: [init], result: dispatch, type, loc };
 }

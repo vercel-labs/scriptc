@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8411-dynamic-base-keyed-instances/reader.cjs",
+  "<repo>/tests/corpus/8411-dynamic-base-keyed-instances/main.ts"
+ ],
+ "diags": []
+}

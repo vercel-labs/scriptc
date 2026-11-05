@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8424-child-optional-chain.ts"
+ ],
+ "diags": []
+}

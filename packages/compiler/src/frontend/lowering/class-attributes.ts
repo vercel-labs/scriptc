@@ -53,13 +53,14 @@ function attributeClassNamed(lowerer: Lowerer, className: string): ClassInfo | n
 
 /** Adds a zero-initialized f64 to every class of the hierarchy, at the same
  * offset, like the property bag. */
-function addHiddenField(info: ClassInfo, name: string): void {
+function addHiddenField(lowerer: Lowerer, info: ClassInfo, name: string): void {
   let root = info;
   while (root.base && !root.base.def.runtime) root = root.base;
   if (root.fields.has(name)) return;
   const index = root.def.fields.length;
   const add = (current: ClassInfo): void => {
     if (!current.fields.has(name)) {
+      lowerer.classLayoutChanges++;
       current.fields.set(name, F64);
       current.def.fields.splice(index, 0, { name, type: F64 });
     }
@@ -78,7 +79,7 @@ export function addUntypedIntegrityWords(lowerer: Lowerer): void {
   if (!lowerer.untypedIntegrity) return;
   for (const [className, info] of lowerer.classes) {
     if (isDynTypedRefType({ kind: "object", className }) && attributeClassNamed(lowerer, className))
-      addHiddenField(info, CLASS_ATTRIBUTES);
+      addHiddenField(lowerer, info, CLASS_ATTRIBUTES);
   }
 }
 
@@ -97,7 +98,7 @@ export function lowerClassIntegrity(
 ): IrExpr | null {
   const info = attributeClass(lowerer, target);
   if (!info) return null;
-  addHiddenField(info, CLASS_ATTRIBUTES);
+  addHiddenField(lowerer, info, CLASS_ATTRIBUTES);
   const loc = locOf(call);
   const type = target.type as ClassObjectType;
   const bits =
@@ -204,8 +205,8 @@ export function lowerClassFieldDefine(
   )
     return null;
   const attributesField = classFieldAttributesName(field);
-  addHiddenField(info, CLASS_ATTRIBUTES);
-  addHiddenField(info, attributesField);
+  addHiddenField(lowerer, info, CLASS_ATTRIBUTES);
+  addHiddenField(lowerer, info, attributesField);
   const loc = locOf(call);
   const type = target.type as ClassObjectType;
   const receiverSlot = lowerer.declareHiddenLocal("%defineReceiver", type);

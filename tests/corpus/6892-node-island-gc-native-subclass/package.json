@@ -1,0 +1,1 @@
+{ "name": "island-gc-native-subclass", "private": true, "type": "module", "scriptc": { "packages": { "channel-pkg": "node" } } }

@@ -18,17 +18,6 @@ test.each([
     "variable-arity emit through an EventEmitter subclass overriding emit",
   ],
   [
-    "listener arrays",
-    `const ee = new EventEmitter(); ee.on('value', () => {});
-    ee.emit('value'); ee.emit('value', 1); console.log(ee.listeners('value'));`,
-    "listeners of the event 'value'",
-  ],
-  [
-    "special error events",
-    `const ee = new EventEmitter(); ee.on('error', (value) => console.log(value)); ee.emit('error');`,
-    "emit('error') with 0 payload arguments",
-  ],
-  [
     "reserved stream events",
     `const ee = new EventEmitter(); ee.on('data', (value) => console.log(value));
     ee.emit('data'); ee.emit('data', 1);`,

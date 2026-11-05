@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/net-unix-socket-connect-default-import.mjs"
+ ],
+ "diags": []
+}

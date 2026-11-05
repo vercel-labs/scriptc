@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8425-sloppy-direct-eval-island/scopes.js",
+  "<repo>/tests/corpus/8425-sloppy-direct-eval-island/main.js"
+ ],
+ "diags": []
+}

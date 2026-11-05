@@ -117,3 +117,44 @@ test("names do not depend on the directory the program sits in", async () => {
   const [second] = await lower(recursive);
   expect(names(second!)).toEqual(names(first!));
 });
+
+/** Lowers a program of several files; `main.ts` is the entry. */
+async function lowerFiles(files: Record<string, string>): Promise<IrModule> {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-stable-names-"));
+  try {
+    for (const [name, source] of Object.entries(files)) await writeFile(join(dir, name), source);
+    const outPath = join(dir, "main.ir.json");
+    const result = await compile(join(dir, "main.ts"), { outDir: dir, outPath, outputKind: "ir" });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    return deserializeModule(await readFile(outPath, "utf8"));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+test("a module's names do not depend on the modules loaded before it", async () => {
+  const shapes = `
+export class Box {
+  constructor(private value: number) {}
+  scaled(by: number): number { return this.value * by; }
+}
+export function boxes(count: number): number[] {
+  return Array.from({ length: count }, (_, i) => new Box(i).scaled(2));
+}
+`;
+  const before = await lowerFiles({
+    "shapes.ts": shapes,
+    "main.ts": `import { boxes } from "./shapes";\nconsole.log(boxes(3).join(","));\n`,
+  });
+  const after = await lowerFiles({
+    "offsets.ts": `export function offset(x: number): number { return x + 1; }\n`,
+    "shapes.ts": shapes,
+    "main.ts": `import { offset } from "./offsets";\nimport { boxes } from "./shapes";\nconsole.log(offset(1), boxes(3).join(","));\n`,
+  });
+  // The class, its methods, the function and the closure it lifts.
+  const ofShapes = (mod: IrModule) =>
+    names(mod).filter((name) => /Box|boxes/.test(name) || name.startsWith("%fn."));
+  expect(ofShapes(before).length).toBeGreaterThanOrEqual(4);
+  expect(ofShapes(after)).toEqual(ofShapes(before));
+});

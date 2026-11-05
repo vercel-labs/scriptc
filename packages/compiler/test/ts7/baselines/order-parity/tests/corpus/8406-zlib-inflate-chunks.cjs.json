@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8406-zlib-inflate-chunks.cjs"
+ ],
+ "diags": []
+}

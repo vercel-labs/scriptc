@@ -89,9 +89,12 @@ test("constant graphs: namespaces, revealing modules and prototypes, with near m
   const text = lines.join("\n");
   // The namespace graph: guarded declarations, the revealing module's
   // table, and the constructor function.
+  // `lib.math` is stored after `lib` was created, so a read of it may see
+  // undefined first; its object is a graph of its own.
   expect(text).toMatch(
-    /graph ns-fixture\/index\.js:\d+ \{lib: \{math: \{TAU: number, half: fn\}, text: \{upper: fn\}/,
+    /graph ns-fixture\/index\.js:\d+ \{lib: \{math: undefined\|\{\}@ns-fixture\/index\.js:\d+, text: \{upper: fn\}/,
   );
+  expect(text).toMatch(/graph ns-fixture\/index\.js:\d+ \{TAU: number, half: fn\}/);
   // The constructor's prototype object, built by member stores at init.
   expect(text).toMatch(/graph ns-fixture\/index\.js:\d+ \{constructor: \{\}, norm: fn\}/);
   // A field written by a function called from a loop.
@@ -101,8 +104,11 @@ test("constant graphs: namespaces, revealing modules and prototypes, with near m
   // A deleted key, and an object stored into the global object.
   expect(text).toMatch(/near miss ns-fixture\/index\.js:16: reflective-write \(delete/);
   expect(text).toMatch(/near miss ns-fixture\/index\.js:18: escapes/);
-  // A factory called from two init sites: one object per call site.
-  expect(text).toMatch(/near miss ns-fixture\/index\.js:20: init-factory \(.*2 call sites\)/);
+  // A factory called from two init sites is analyzed per call site: each
+  // call allocates its own constant object.
+  expect(text).not.toMatch(/init-factory/);
+  // (7 objects without per-site clones: the two options were one.)
+  expect(text).toMatch(/ns-fixture: 9 constant objects/);
 });
 
 // Functions that one call site runs repeatedly: an ES5 constructor and an

@@ -21,6 +21,7 @@ test("a package.json without a scriptc key has the default configuration", () =>
     nodeVersion: null,
     packaging: "embedded",
     speculativeStart: false,
+    publicEnv: [],
   });
   expect(parseProjectConfig(manifest, "{ not json").diagnostics).toEqual([]);
 });
@@ -70,12 +71,31 @@ test("package settings: strings and objects", () => {
   expect(c.packages.get("semver")?.run).toBe("auto");
   expect(c.packages.get("proper-lockfile")).toEqual({
     unloaded: false,
+    shapes: true,
     run: "node",
     evaluate: "lazy",
     share: "duplicate",
     marshal: "copy",
     schedule: "lockstep",
   });
+});
+
+test("shapes: false turns off the shape overlay for one package", () => {
+  const c = config({
+    packages: {
+      zod: { shapes: false },
+      effect: { shapes: true, run: "native" },
+      ms: { shapes: "no" },
+    },
+  });
+  expect(c.packages.get("zod")?.shapes).toBe(false);
+  expect(c.packages.get("zod")?.run).toBe("auto");
+  expect(c.packages.get("effect")?.shapes).toBe(true);
+  expect(c.packages.get("effect")?.run).toBe("native");
+  expect(c.packages.has("ms")).toBe(false);
+  expect(c.diagnostics.map((d) => d.message)).toEqual([
+    `package.json 'scriptc.packages.ms.shapes' must be true or false, not "no"`,
+  ]);
 });
 
 test("nodeIslands settings", () => {
@@ -87,6 +107,7 @@ test("nodeIslands settings", () => {
       nodeVersion: ">=24.13.1",
       packaging: "beside",
       speculativeStart: true,
+      publicEnv: ["NODE_ENV", "DEBUG"],
     },
     wasm: ["build/a.wasm", 3],
   });
@@ -98,9 +119,18 @@ test("nodeIslands settings", () => {
     nodeVersion: ">=24.13.1",
     packaging: "beside",
     speculativeStart: true,
+    publicEnv: ["NODE_ENV", "DEBUG"],
   });
   // scriptc.wasm keeps its lenient reading.
   expect(c.wasm).toEqual(["/project/build/a.wasm"]);
+});
+
+test("publicEnv must be an array of variable names", () => {
+  const c = config({ nodeIslands: { publicEnv: "NODE_ENV" } });
+  expect(c.diagnostics.map((d) => d.message)).toEqual([
+    `package.json 'scriptc.nodeIslands.publicEnv' must be an array of environment variable names, not "NODE_ENV"`,
+  ]);
+  expect(c.nodeIslands.publicEnv).toEqual([]);
 });
 
 test("unknown keys and values are SC8004, located at the key", () => {

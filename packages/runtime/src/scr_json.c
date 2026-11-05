@@ -3034,6 +3034,9 @@ ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
   }
   if (object->kind == SCR_DYN_ARR && object != scr_builtin_array_prototype) {
     if (object->prototype) return scr_dyn_retain(object->prototype);
+    /* An array reaches Array.prototype until something replaces its
+     * [[Prototype]]; a null one reports null, as the object arm does. */
+    if (object->null_proto) return scr_dyn_new_null();
     return scr_dyn_array_prototype_base();
   }
   if (object->kind == SCR_DYN_OBJ) {
@@ -14084,6 +14087,23 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
       } else if (scr_dyn_proto_accessor(recv, key->data, key->len)) {
         scr_dyn_proto_accessor_set(recv, value);
         return;
+      } else {
+        /* The array's chain answers no `__proto__` at all (a null
+         * prototype): the assignment adds the own data property. The write
+         * below cannot: the properties table keeps Object.prototype as its
+         * own prototype, whose accessor would swallow the member. */
+        if (recv->non_extensible) {
+          ScrJsonBuf buffer;
+          scr_jb_init(&buffer);
+          scr_jb_puts(&buffer, "Cannot add property ");
+          scr_jb_write(&buffer, key->data, key->len);
+          scr_jb_puts(&buffer, ", object is not extensible");
+          scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&buffer));
+          scr_dyn_note_assign_failure();
+          return;
+        }
+        scr_dyn_obj_set(recv->v.arr.properties, key->data, key->len, scr_dyn_retain(value));
+        return;
       }
     }
 #endif
@@ -14172,14 +14192,30 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
  * updates the own data property: unlike an assignment it never runs an
  * inherited accessor, so a literal `__proto__` member is an ordinary own
  * member and not Object.prototype's prototype setter. The compiler emits
- * this entry only for a literal `__proto__` key, which is also what selects
- * the object model build (runtime-features.ts). */
+ * this entry for a literal `__proto__` key, which is also what selects the
+ * object model build (runtime-features.ts), and for the computed members'
+ * coerced keys (scr_dyn_key_define_computed, same build). */
 void scr_dyn_key_define(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
   if (recv->kind == SCR_DYN_OBJ && key->len == 9 && memcmp(key->data, "__proto__", 9) == 0) {
     scr_dyn_obj_set(recv, key->data, key->len, scr_dyn_retain(value));
     return;
   }
   scr_dyn_key_set(recv, key, value);
+}
+
+/* The same definition for a member whose key is known only at run time
+ * (`{ [k]: v }`, dynObjLit's computed member): ToPropertyKey, then the
+ * definition above, so a key that evaluates to `__proto__` creates an own
+ * data property instead of replacing the literal's [[Prototype]]. */
+void scr_dyn_key_define_computed(ScrDyn *recv, ScrDyn *key, ScrDyn *value) {
+  if (key->kind == SCR_DYN_SYMBOL) {
+    scr_dyn_symbol_key_set(recv, key, value);
+    return;
+  }
+  ScrStr *name = scr_dyn_string_coerce_js(key);
+  if (!name) return;
+  scr_dyn_key_define(recv, name, value);
+  scr_str_release(name);
 }
 #endif
 

@@ -1843,6 +1843,10 @@ export class LlEmitter {
   get schedulesInContext(): boolean {
     return this.runtimeFeatures.asyncContext;
   }
+  /** The JavaScript object model build is on (jsObjectModelFact). */
+  get jsObjectModel(): boolean {
+    return jsObjectModelFact(this.runtimeFeatures);
+  }
   /** Emitted ref-kind resolve thunks for new Promise, interned per inner
    * typeKey → thunk symbol. */
   readonly resolveThunks = new Map<string, string>();

@@ -570,6 +570,12 @@ function buildLibFnSignatures() {
      * the function with zero arguments at drain. */
     "timers.queueMicrotask": { argTypes: [{ kind: "func", params: [], ret: VOID }], result: VOID },
     "timers.queueMicrotaskDyn": { argTypes: [DYN], result: VOID },
+    /** Node's synchronous timer callback gate (scr_timers_check_callback):
+     * a non-function throws ERR_INVALID_ARG_TYPE before anything schedules.
+     * Lowered only for a callback that is not statically a function — a
+     * checked-dynamic value — and sequenced after every argument
+     * expression evaluates, where Node validates the callback. */
+    "timers.checkCallback": { argTypes: [DYN], result: VOID },
     "timers.clearImmediate": { argTypes: [F64], result: VOID },
     /** process.nextTick(cb, ...args) — the user tick queue. args: [cb
      * (() => void; trailing call arguments ride the timer surface's

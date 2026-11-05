@@ -4702,6 +4702,18 @@ static void scr_micro_dyn_fire(ScrClosure *c) {
   scr_dyn_release(fn);
 }
 
+/* Node's ERR_INVALID_ARG_TYPE gate over a checked-dynamic timer callback
+ * (its "Received ..." rendering): raised after every argument expression
+ * evaluates, before the delay converts and before anything schedules.
+ * scr_dyn_check_listener carries the identical gate, but scr_dyn_handle.c
+ * compiles only for the emitter/net families — a timer-only program must
+ * not link that unit, so the gate is inlined here beside the other
+ * checked-dynamic entry points the loop owns. */
+void scr_timers_check_callback(const ScrDyn *cb) {
+  if (cb->kind == SCR_DYN_FUNC) return;
+  scr_dyn_arg_type_fail("callback", "of type function", cb);
+}
+
 /* The closure that calls a dyn function value, or NULL with Node's
  * ERR_INVALID_ARG_TYPE pending for a non-function. */
 static ScrClosure *scr_micro_dyn_closure(const ScrDyn *cb) {

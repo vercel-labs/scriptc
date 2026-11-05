@@ -264,14 +264,20 @@ bool scr_net_ls_has_live(const ScrNetLs *l) {
   return false;
 }
 
+/* Detach the entries before releasing them: a release can collect, and the
+ * trace of an object that reaches this list visits every entry it holds. An
+ * entry whose callback is already gone must not be reachable that way, so
+ * the list is emptied first and the detached array released after. */
 void scr_net_ls_drop(ScrNetLs *l) {
-  for (size_t i = 0; i < l->n; i++) {
-    scr_closure_release(l->ls[i].cb);
-    scr_net_once_release(l->ls[i].shared_once);
-  }
-  free(l->ls);
+  ScrNetL *entries = l->ls;
+  size_t n = l->n;
   l->ls = NULL;
   l->n = l->cap = 0;
+  for (size_t i = 0; i < n; i++) {
+    scr_closure_release(entries[i].cb);
+    scr_net_once_release(entries[i].shared_once);
+  }
+  free(entries);
 }
 
 /* Snapshot for a firing pass: entries retained; `once` entries leave the
@@ -286,8 +292,10 @@ size_t scr_net_ls_snapshot(ScrNetLs *l, ScrNetL **out) {
   }
   ScrNetL *snap = malloc(n * sizeof *snap);
   if (!snap) scr_net_oom();
+  ScrNetL *gone = NULL;
   size_t nsnap = 0;
   size_t w = 0;
+  size_t ngone = 0;
   for (size_t i = 0; i < l->n; i++) {
     ScrNetL entry = l->ls[i];
     bool emit = entry.shared_once == NULL || !entry.shared_once->fired;
@@ -298,14 +306,25 @@ size_t scr_net_ls_snapshot(ScrNetLs *l, ScrNetL **out) {
       scr_closure_retain(snap[nsnap].cb);
       nsnap++;
     }
-    if (l->ls[i].once) {
-      scr_closure_release(l->ls[i].cb);
-      scr_net_once_release(l->ls[i].shared_once);
+    if (entry.once) {
+      if (gone == NULL) {
+        gone = malloc(n * sizeof *gone);
+        if (!gone) scr_net_oom();
+      }
+      gone[ngone++] = entry;
     } else {
-      l->ls[w++] = l->ls[i];
+      l->ls[w++] = entry;
     }
   }
   l->n = w;
+  /* The removed entries leave the live list before their closures are
+   * released: a release can collect, and the trace of an object that
+   * reaches this list must not visit an entry whose callback is gone. */
+  for (size_t i = 0; i < ngone; i++) {
+    scr_closure_release(gone[i].cb);
+    scr_net_once_release(gone[i].shared_once);
+  }
+  free(gone);
   if (nsnap == 0) {
     free(snap);
     snap = NULL;
@@ -379,12 +398,14 @@ static ScrClosure *scr_net_listener_root(const ScrNetL *e) {
 static void scr_net_ls_remove_fn(ScrNetLs *l, ScrClosure *root) {
   root = root->identity ? root->identity : root;
   for (size_t i = 0; i < l->n; i++) {
-    ScrClosure *c = l->ls[i].cb;
     if (scr_net_listener_root(&l->ls[i]) != root) continue;
-    scr_closure_release(c);
-    scr_net_once_release(l->ls[i].shared_once);
+    ScrNetL gone = l->ls[i];
     memmove(&l->ls[i], &l->ls[i + 1], (l->n - i - 1) * sizeof *l->ls);
     l->n--;
+    /* Unlink before releasing: a release can collect, and a trace of this
+     * list must not visit the callback that is on its way out. */
+    scr_closure_release(gone.cb);
+    scr_net_once_release(gone.shared_once);
     return;
   }
 }
@@ -2644,10 +2665,12 @@ void scr_net_server_off(ScrNetServer *s, ScrClosure *cb /*borrowed*/, double kin
   for (size_t left = l->n; left > 0; left--) {
     size_t i = left - 1;
     if (scr_net_listener_root(&l->ls[i]) != root) continue;
-    scr_closure_release(l->ls[i].cb);
-    scr_net_once_release(l->ls[i].shared_once);
+    ScrNetL gone = l->ls[i];
     memmove(&l->ls[i], &l->ls[i + 1], (l->n - i - 1) * sizeof *l->ls);
     l->n--;
+    /* Unlink before releasing, as scr_net_ls_remove_fn does. */
+    scr_closure_release(gone.cb);
+    scr_net_once_release(gone.shared_once);
     return;
   }
 }

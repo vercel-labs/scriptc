@@ -19,7 +19,10 @@ const repoRoot = join(import.meta.dirname, "../..");
 const cacheDir = join(repoRoot, "node_modules/.cache/scriptc-tests");
 const sanitize = process.env["SCRIPTC_SAN"] === "1";
 
-const programs = ["tests/corpus/http2-head-cancel-response-listeners.cjs"];
+const programs = [
+  "tests/corpus/http2-head-cancel-response-listeners.cjs",
+  "tests/corpus/http-head-cancel-response-listeners.cjs",
+];
 
 describe.skipIf(!sanitize || process.platform !== "linux")(
   "HTTP responses under LeakSanitizer",

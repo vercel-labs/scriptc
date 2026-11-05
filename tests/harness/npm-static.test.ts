@@ -1308,6 +1308,25 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
   }, 180_000);
 
+  // A member read on a value typed by a declarations-only package is a read of
+  // data the program holds, not a crossing into a package implementation:
+  // typedbag's interface extends a stdlib type, so the value parses at the
+  // checked-dynamic tier and the read has a representation.
+  test("member reads on a declared data shape need no package", async () => {
+    const entry = join(pilotRoot, "typedbag-cli.ts");
+    const { coverage } = analyze(entry);
+    expect(coverage.npmStatic ?? []).toEqual([]);
+    expect(coverage.preflightFailed).toBe(false);
+    expect(coverage.diagnostics).toEqual([]);
+    const binary = await buildStatic(entry, []);
+    const [nodeRes, nativeRes] = await Promise.all([
+      runBinary("node", [entry]),
+      runBinary(binary, []),
+    ]);
+    expect(nativeRes.stdout.toString("utf8")).toBe(nodeRes.stdout.toString("utf8"));
+    expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
+  }, 180_000);
+
   test("ms supports invalid duration strings without runtime fences", () => {
     const { coverage } = analyze(join(pilotRoot, "ms-invalid-cli.ts"), { npmStatic: ["ms"] });
     expect(coverage.npmStatic).toEqual([{ package: "ms", status: "static" }]);

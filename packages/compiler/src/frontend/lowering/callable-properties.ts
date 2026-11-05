@@ -22,12 +22,19 @@
  * `arguments`, `prototype` and the Function.prototype members belong to the
  * function protocol, not to the table's user data). They never change a
  * call: a call reads the member through the table and calls the closure it
- * finds. */
+ * finds.
+ *
+ * The members a function carries because a NAMESPACE of the same name is
+ * merged into it are the one family still stored elsewhere: the namespace
+ * lowering's flattened module globals own those names, so their reads,
+ * writes and calls resolve by member symbol as before and only
+ * `Object.keys`/inspect of such a function do not list them. */
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { DYN, type IrExpr, type IrType } from "../../ir/ir.js";
 import type { FieldTarget } from "./lower-exprs.js";
 import { locOf } from "../program.js";
+import { stdlibGlobalNameOf } from "./surfaces.js";
 
 /** The function protocol's own members: never table data, in reads, writes,
  * `in`, `delete` or enumeration. A callable's data members cannot shadow
@@ -53,25 +60,6 @@ export function isCallableOwnMemberName(name: string): boolean {
   return !FUNCTION_PROTOCOL_MEMBERS.has(name) && !name.startsWith("__");
 }
 
-/** Transitional fence, removed when expando members move onto the table
- * themselves: an expando member (`function f() {}; f.k = 1`) still lives in
- * a module global, written through the function's NAME and read back through
- * it. A structurally-typed alias of the same function reaching the table
- * would read nothing, so every table-shaped form declines while that other
- * representation exists. Property forms fence by the member's name; whole
- * forms whose keys are run-time values (`f[k]`, `Object.assign(f, ...)`)
- * fence on the registry being non-empty at all. */
-function expandoOwnsMemberName(lowerer: Lowerer, name: string): boolean {
-  for (const members of lowerer.expandoMembers.values()) {
-    if (members.names.has(name)) return true;
-  }
-  return false;
-}
-
-function expandoMembersExist(lowerer: Lowerer): boolean {
-  return lowerer.expandoMembers.size > 0;
-}
-
 /** The checker's view of `receiver`: a callable value with no construct
  * signature, not a class, that lowers to a closure (`func` IR type). DYN
  * receivers (recursive, `this`-typed and symbol-keyed callable objects) have
@@ -82,7 +70,12 @@ export function isCallableValue(lowerer: Lowerer, receiver: ts.Expression): bool
   if (lowerer.checker.getConstructSignatures(type).length > 0) return false;
   const symbol = type.getSymbol();
   if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Class) !== 0) return false;
-  return lowerer.mapTypeOf(type)?.kind === "func";
+  if (lowerer.mapTypeOf(type)?.kind !== "func") return false;
+  // A stdlib function object (`Number`, `String`, `Object`) is a native
+  // value with its own lowering paths: boxing it to read a member would
+  // pull a dynamic builtin unit into typed-only code, and its members
+  // (`MAX_SAFE_INTEGER`, `fromCodePoint`) are answered statically.
+  return stdlibGlobalNameOf(lowerer, receiver) === null;
 }
 
 /** The identity-preserving box of a callable value: `dynFrom` shares the
@@ -108,7 +101,6 @@ export function callableMemberFieldTarget(
   if (access.questionDotToken || !ts.isIdentifier(access.name)) return null;
   const name = access.name.text;
   if (!isCallableOwnMemberName(name)) return null;
-  if (expandoOwnsMemberName(lowerer, name)) return null;
   if (receiverIr.kind !== "func") return null;
   // The value must be a typed callable by the same test every other table
   // form uses. A stdlib function object (`Number.MAX_SAFE_INTEGER`,
@@ -143,11 +135,7 @@ export function isCallableTableValue(
   receiver: ts.Expression,
   value: IrExpr,
 ): boolean {
-  return (
-    value.type.kind === "func" &&
-    !expandoMembersExist(lowerer) &&
-    isCallableValue(lowerer, receiver)
-  );
+  return value.type.kind === "func" && isCallableValue(lowerer, receiver);
 }
 
 /** `Object.assign(fn, ...sources)` on a typed callable: each source's own
@@ -157,7 +145,6 @@ export function isCallableTableValue(
 export function lowerCallableAssign(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
   if (call.arguments.nodes.length === 0) return null;
   if (call.arguments.nodes.some(ts.isSpreadElement)) return null;
-  if (expandoMembersExist(lowerer)) return null;
   const target = call.arguments.nodes[0]!;
   if (!isCallableValue(lowerer, target)) return null;
   const value = lowerer.lowerExpr(target);
@@ -187,11 +174,7 @@ export function callableDeleteKey(
   access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
 ): boolean {
   if (ts.isPropertyAccessExpression(access)) {
-    return (
-      isCallableOwnMemberName(access.name.text) &&
-      !expandoOwnsMemberName(lowerer, access.name.text) &&
-      isCallableValue(lowerer, access.expression)
-    );
+    return isCallableOwnMemberName(access.name.text) && isCallableValue(lowerer, access.expression);
   }
-  return !expandoMembersExist(lowerer) && isCallableValue(lowerer, access.expression);
+  return isCallableValue(lowerer, access.expression);
 }

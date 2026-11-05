@@ -58,7 +58,7 @@ import { hostGlobalValue } from "../host-global-values.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { MUTABLE_BUFFER_MEMBERS } from "../buffers.js";
 import { lowerGlobalObjectValue } from "../lower-global-value.js";
-import { expandoMemberRead } from "../lower-expando.js";
+import { fenceExpandoRead } from "../lower-expando.js";
 import {
   assertedElementKeepsUndefined,
   compoundUnsupported,
@@ -362,12 +362,10 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
   }
   // Expando function members in element clothing (`foo[strMem]`,
   // `foo[_private]` where foo is a module-level function/callable const
-  // and the key folds or is a unique-symbol const): the member's module
-  // global — the dotted read's twin (lower-expando.ts).
-  {
-    const ex = expandoMemberRead(lowerer, expr);
-    if (ex) return lowerer.maybeNarrow(ex, expr);
-  }
+  // and the key folds or is a unique-symbol const): only the source-order
+  // fence lives here (lower-expando.ts); the read itself is the ordinary
+  // element read of the closure's own-property table.
+  fenceExpandoRead(lowerer, expr);
   // Symbol-keyed property READS (`this[kLimit]`): when the key is a
   // statically-resolvable symbol declared as a field of the receiver's
   // class (classSymbolKeyOf — the countdown.js/OpenTUI idioms), the
@@ -2561,6 +2559,17 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
         expr: lowerDynMemberAssignment(lowerer, expr, receiver),
         loc: locOf(expr),
       };
+    // `fn[SYMBOL] = v` on a typed callable: a symbol-keyed own property of
+    // the closure's table, the computed keyed store the `any` view emits.
+    if (isCallableTableValue(lowerer, target.expression, receiver)) {
+      const boxed = callableBox(lowerer, receiver);
+      if (boxed)
+        return {
+          kind: "exprStmt",
+          expr: lowerDynMemberAssignment(lowerer, expr, boxed),
+          loc: locOf(expr),
+        };
+    }
     if (
       isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
       receiver.type.kind === "object" &&

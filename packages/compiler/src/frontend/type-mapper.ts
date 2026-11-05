@@ -5511,6 +5511,14 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // the plain-func mapping below (historic behavior: the properties drop
   // from the type).
   if (widened.isIntersectionType() && checker.getConstructSignatures(widened).length === 0) {
+    // node:test's `Mock<F>` (`F & { mock: MockFunctionContext<F> }`) keeps
+    // its hybrid `%call` record: the `mock` member is the runner's live
+    // call log, which the mock lowering builds and mutates, not data the
+    // closure's own-property table could carry yet.
+    if (isMockHybridIntersection(widened, ctx)) {
+      const hybrid = mapHybridCallableRecord(widened, ctx);
+      if (hybrid) return hybrid;
+    }
     const callable = mapCallableIntersection(widened, ctx);
     if (callable) return callable;
     // Recursive and Symbol-keyed callable objects need their complete live
@@ -8065,6 +8073,27 @@ function mapCallableIntersection(widened: ts.Type, ctx: TypeMapperCtx): IrType |
   }
   const fn = mapType(funcPart, ctx);
   return fn?.kind === "func" ? fn : null;
+}
+
+/** Whether `widened` is node:test's `Mock<F>` — an intersection carrying a
+ * `mock: MockFunctionContext<F>` member declared in the ambient `test`
+ * module (the same provenance check MockFunctionContext's own mapping
+ * uses). */
+function isMockHybridIntersection(widened: ts.Type, ctx: TypeMapperCtx): boolean {
+  if (!widened.isIntersectionType()) return false;
+  const mock = ctx.checker.getPropertyOfType(widened, "mock");
+  if (mock === undefined) return false;
+  const sym = ctx.checker.getTypeOfSymbol(mock).getSymbol();
+  return (
+    sym !== undefined &&
+    ts.symbolName(sym) === "MockFunctionContext" &&
+    sym.declarations.some(
+      (d) =>
+        ts.isInterfaceDeclaration(d) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "test"),
+    )
+  );
 }
 
 function mapHybridCallableRecord(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {

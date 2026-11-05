@@ -51,7 +51,7 @@ import { lowerPrimitiveUnionNumber } from "../lower-calls.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../../ir/build.js";
 import { fenceNodeModuleMutation } from "../lower-node-module.js";
 import { findStaticOn, staticFieldWriteTarget } from "../lower-classes.js";
-import { expandoWritableTarget } from "../lower-expando.js";
+import { fenceReadonlyExpandoWrite } from "../lower-expando.js";
 import { nsWritableTarget } from "../lower-namespaces.js";
 import { arrayNumberRead, arrayValueRead, arrayValueStore } from "../array-values.js";
 import { isSafeToRepeat } from "./evaluation-safety.js";
@@ -302,10 +302,8 @@ export function lowerIncDec(
           loc,
         };
       }
-      const target =
-        staticFieldWriteTarget(lowerer, access) ??
-        expandoWritableTarget(lowerer, access) ??
-        nsWritableTarget(lowerer, access);
+      fenceReadonlyExpandoWrite(lowerer, access);
+      const target = staticFieldWriteTarget(lowerer, access) ?? nsWritableTarget(lowerer, access);
       if (target) {
         return lowerIncDecTarget(lowerer, expr, target, prefix);
       }

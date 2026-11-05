@@ -179,7 +179,7 @@ import {
   nsMemberIdentOf,
   nsUndefRead,
 } from "../lower-namespaces.js";
-import { expandoMemberRead } from "../lower-expando.js";
+import { fenceExpandoRead } from "../lower-expando.js";
 import { lowerProtocolPropertyRead } from "../class-protocol-dispatch.js";
 import { lowerReadlineProperty } from "../builtins/readline.js";
 import { lowerAsyncLocalStorageProperty } from "../builtins/async-context.js";
@@ -969,15 +969,10 @@ export function lowerPropertyAccessExpr(
       if (memberSym) fenceEarlyNsMemberRef(lowerer, expr, memberSym);
       return lowerExpr(lowerer, nsMember);
     }
-    // Expando function members (`foo.bar` after `foo.bar = 12`): the
-    // member's module global (lower-expando.ts), before the ambient-
-    // namespace fence — a declare-namespace merge over a real function
-    // (`declare namespace Foo { var baz: number }` + `function Foo`)
-    // reads its assigned members, not the ambient ReferenceError.
-    {
-      const ex = expandoMemberRead(lowerer, expr);
-      if (ex) return lowerer.maybeNarrow(ex, expr);
-    }
+    // Expando function members (`foo.bar` after `foo.bar = 12`) read
+    // through the closure's own-property table (the callable-member path
+    // below); this only keeps the source-order fence (lower-expando.ts).
+    fenceExpandoRead(lowerer, expr);
     // An AMBIENT namespace receiver (`M.x` where only `declare
     // namespace M` exists): the namespace object never exists at
     // runtime — Node's exact catchable ReferenceError at the access,

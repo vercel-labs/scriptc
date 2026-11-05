@@ -294,7 +294,7 @@ import {
   nsUndefRead,
 } from "./lower-namespaces.js";
 import { hostGlobalNameOfRead, hostGlobalPrototypeMemberOf } from "./host-globals.js";
-import { expandoMemberRead } from "./lower-expando.js";
+import { fenceExpandoRead } from "./lower-expando.js";
 import {
   fenceNodeModuleMutationCall,
   isCjsRequireGlobal,
@@ -1578,20 +1578,15 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     }
   }
   // Expando member calls (`example.isFoo('test')` after `example.isFoo
-  // = fn`): read the member's global and call through the value —
-  // lower-expando.ts owns the member storage.
+  // = fn`): the member read goes through the closure's own-property table
+  // like any other member (lowering/callable-properties.ts); only the
+  // source-order fence lives here (lower-expando.ts).
   if (
     (ts.isPropertyAccessExpression(expr.expression) ||
       ts.isElementAccessExpression(expr.expression)) &&
     !expr.expression.questionDotToken
   ) {
-    const callee = expandoMemberRead(lowerer, expr.expression);
-    if (callee) {
-      if (callee.type.kind !== "func")
-        lowerer.badType(expr.expression, lowerer.typeOf(expr.expression));
-      const args = completeFuncValueArgs(lowerer, expr, callee.type, loc);
-      return { kind: "callValue", callee, args, type: callee.type.ret, loc };
-    }
+    fenceExpandoRead(lowerer, expr.expression);
   }
   // Namespace-qualified calls (`N.f(1)`, `A.B.g()`, calls through
   // import= alias chains): the member resolves like a bare identifier —

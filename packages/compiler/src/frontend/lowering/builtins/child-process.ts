@@ -261,7 +261,7 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
   let inputRead: { id: string; init: IrExpr } | null = null;
   // The options whose values reach the call, in source order: the
   // extended entry point's prelude evaluates them in this order.
-  const optionOrder: ("timeout" | "cwd" | "env" | "input")[] = [];
+  const optionOrder: ("timeout" | "cwd" | "env" | "input" | "stdio")[] = [];
 
   if (optsNode) {
     if (!ts.isObjectLiteralExpression(optsNode)) {
@@ -332,6 +332,7 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
           else if (fd === 1) outMode = m;
           else errMode = m;
         };
+        let runtimeEntry = false;
         node.elements.nodes.forEach((el, i) => {
           const et = lowerer.typeOf(el);
           if (et.isStringLiteralType()) {
@@ -344,12 +345,18 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
           if (m === null) {
             lowerer.noLowering("spawnSync stdio tuple entries beyond string literals", el);
           }
+          runtimeEntry = true;
           if (i === 0) {
             stdinPiped = false;
             stdioRuntimeStdin = true;
           }
           setMode(i as 0 | 1 | 2, m);
         });
+        // A runtime entry resolves at the member's own position: a later
+        // option whose expression changes what the entry reads must not run
+        // first, and an entry's own expression must not run after them. A
+        // tuple of literals keeps the direct call's arguments.
+        if (runtimeEntry) optionOrder.push("stdio");
         return;
       }
       // A runtime string whose TYPE pins every possible value to the
@@ -557,18 +564,22 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
       loc,
     };
   }
-  if (extOptions) {
+  // A runtime stdio tuple entry is a read, and the direct call's argument
+  // list would place it after the other options; an extended call reads its
+  // options from a prelude instead. Either way the prelude evaluates the
+  // command, the arguments and the options in source order, each into a
+  // hidden local the call reads, so an earlier option that changes a later
+  // one's value (a getter, a call) is seen as in Node. A union `input` lands
+  // in the hidden local its tag test and its value share. Literals need no
+  // local. Without a runtime stdio entry a plain call keeps its arguments
+  // as written.
+  if (extOptions || optionOrder.includes("stdio")) {
     // Node ignores `input` when stdio[0] takes the child's fd 0 away
     // ("ignore" is /dev/null, "inherit" the parent's): the option is dead
     // there, not a pipe. Its expression still runs — Node evaluates the
     // member before the call — so it stays an argument, and `has_input`
     // false keeps it out of the child's stdin.
     const ignoreInput = !stdinPiped;
-    // The call's prelude evaluates the command, the arguments and the
-    // options in source order, each into a hidden local the call reads, so
-    // an earlier option that changes a later one's value (a getter, a call)
-    // is seen as in Node. A union `input` lands in the hidden local its tag
-    // test and its value share. Literals need no local.
     const prelude: IrStmt[] = [];
     const bind = (name: string, value: IrExpr): IrExpr => {
       if (value.kind === "strLit" || value.kind === "numLit" || value.kind === "boolLit")
@@ -591,28 +602,49 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
         if (inputRead !== null)
           prelude.push({ kind: "varDecl", localId: inputRead.id, init: inputRead.init, loc });
         else inputArg = bind("%spawnSyncInput", input);
+      } else if (option === "stdio") {
+        inMode = bind("%spawnSyncStdioIn", inMode);
+        outMode = bind("%spawnSyncStdioOut", outMode);
+        errMode = bind("%spawnSyncStdioErr", errMode);
       }
     }
-    const call: IrExpr = {
-      kind: "libCall",
-      fn: envPairs !== null ? "cp.spawnSyncExtEnv" : "cp.spawnSyncExt",
-      args: [
-        cmdArg,
-        argvArg,
-        timeoutArg,
-        killSignal,
-        inMode,
-        outMode,
-        errMode,
-        cwdArg,
-        inputArg,
-        ignoreInput ? boolLit(false, loc) : hasInput,
-        shell,
-        ...(envArg !== null ? [envArg] : []),
-      ],
-      type: SPAWNRES_T,
-      loc,
-    };
+    const call: IrExpr = extOptions
+      ? {
+          kind: "libCall",
+          fn: envPairs !== null ? "cp.spawnSyncExtEnv" : "cp.spawnSyncExt",
+          args: [
+            cmdArg,
+            argvArg,
+            timeoutArg,
+            killSignal,
+            inMode,
+            outMode,
+            errMode,
+            cwdArg,
+            inputArg,
+            ignoreInput ? boolLit(false, loc) : hasInput,
+            shell,
+            ...(envArg !== null ? [envArg] : []),
+          ],
+          type: SPAWNRES_T,
+          loc,
+        }
+      : {
+          kind: "libCall",
+          fn: envPairs !== null ? "cp.spawnSyncEnv" : "cp.spawnSyncOpts",
+          args: [
+            cmdArg,
+            argvArg,
+            timeoutArg,
+            killSignal,
+            inMode,
+            outMode,
+            errMode,
+            ...(envArg !== null ? [envArg] : []),
+          ],
+          type: SPAWNRES_T,
+          loc,
+        };
     return prelude.length === 0
       ? call
       : { kind: "seqExpr", stmts: prelude, result: call, type: SPAWNRES_T, loc };

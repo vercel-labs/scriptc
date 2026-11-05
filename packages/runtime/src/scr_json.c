@@ -11246,11 +11246,16 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
   if (target->kind == SCR_DYN_PROMISE) {
     ScrStr *name = scr_dyn_property_key(key);
     if (!name) return NULL;
-    bool fenced = scr_promise_protocol_name(name);
-    if (fenced) scr_promise_protocol_fence(name);
+    if (scr_promise_protocol_name(name)) {
+      scr_promise_protocol_fence(name);
+      scr_str_release(name);
+      return NULL;
+    }
+    /* The key converts once: the converted name is the one defined. */
+    ScrDyn *property = scr_dyn_new_str(name);
     scr_str_release(name);
-    if (fenced) return NULL;
-    ScrDyn *defined = scr_dyn_define_property(scr_promise_properties(target, true), key, descriptor);
+    ScrDyn *defined = scr_dyn_define_property(scr_promise_properties(target, true), property, descriptor);
+    scr_dyn_release(property);
     if (!defined) return NULL;
     scr_dyn_release(defined);
     return scr_dyn_retain(target);

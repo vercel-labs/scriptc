@@ -87,3 +87,18 @@ setTimeout(() => {
   }
   later.then((value) => console.log("still a promise", value));
 }, 20);
+
+// A definition's key converts once, to the name it defines.
+setTimeout(() => {
+  const defined = untyped(Promise.resolve(4));
+  let conversions = 0;
+  const key = {
+    toString() {
+      conversions++;
+      return conversions === 1 ? "safe" : "then";
+    },
+  };
+  Object.defineProperty(defined, key, { value: 42, enumerable: true });
+  console.log(conversions, defined.safe, typeof defined.then, Object.keys(defined));
+  defined.then((value) => console.log("still resolves", value));
+}, 30);

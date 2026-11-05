@@ -1,4 +1,5 @@
 import { isNavigatorGlobal } from "../builtins/navigator.js";
+import { shadowedHandleMember } from "../handle-properties.js";
 import { SNAPSHOT_GLOBALS, stdlibGlobalNameOf } from "../surfaces.js";
 import { completeFuncValueArgs } from "../call-arguments.js";
 import { overloadValueResult } from "../lower-calls.js";
@@ -261,6 +262,25 @@ export function lowerOptionalChain(
   // `navigator?.userAgent`: Node's navigator global is never nullish and
   // has no value form, so the guarded step is the plain member read.
   if (isNavigatorGlobal(lowerer, recvNode) || alwaysDefinedGlobal(lowerer, recvNode)) {
+    lowerer.chainHandled.add(dotNode);
+    try {
+      return lowerer.lowerExpr(expr);
+    } finally {
+      lowerer.chainHandled.delete(dotNode);
+    }
+  }
+  // `d?.getTime()` on a handle whose JavaScript shadows `getTime`: the
+  // guard cannot short-circuit a receiver the checker types never nullish,
+  // so the step is the plain call, which reads the own property
+  // (handle-properties.ts) instead of the native member.
+  if (
+    dotNode === expr.expression &&
+    ts.isCallExpression(expr) &&
+    neverNullishCallee(lowerer, recvNode) &&
+    (ts.isPropertyAccessExpression(expr.expression) ||
+      ts.isElementAccessExpression(expr.expression)) &&
+    shadowedHandleMember(lowerer, expr.expression)
+  ) {
     lowerer.chainHandled.add(dotNode);
     try {
       return lowerer.lowerExpr(expr);

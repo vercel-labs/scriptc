@@ -42215,7 +42215,8 @@
           "tests/corpus/5248-event-target-subclass-warnings.ts",
           "tests/corpus/5846-events-esm-default-max.ts",
           "tests/corpus/5847-events-cjs-default-max.cjs",
-          "tests/corpus/5885-events-max-listener-helpers.ts"
+          "tests/corpus/5885-events-max-listener-helpers.ts",
+          "tests/corpus/events-erased-emit-args.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -43520,7 +43521,8 @@
         "evidence": "compiler-dedicated:EventEmitter",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts"
+          "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/events-erased-emit-args.ts"
         ]
       },
       "anchorSource": "exact"
@@ -43570,7 +43572,8 @@
         "evidence": "compiler-dedicated:emitter.addListener",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts"
+          "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/events-erased-emit-args.ts"
         ]
       },
       "anchorSource": "exact"
@@ -43597,7 +43600,8 @@
         "evidence": "compiler-dedicated:emitter.emit",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts"
+          "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/events-erased-emit-args.ts"
         ]
       },
       "anchorSource": "exact"
@@ -43624,7 +43628,8 @@
         "evidence": "compiler-dedicated:emitter.eventNames",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts"
+          "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/events-erased-emit-args.ts"
         ]
       },
       "anchorSource": "exact"
@@ -43651,7 +43656,8 @@
         "evidence": "compiler-dedicated:emitter.getMaxListeners",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts"
+          "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/events-erased-emit-args.ts"
         ]
       },
       "anchorSource": "exact"
@@ -43678,7 +43684,8 @@
         "evidence": "compiler-dedicated:emitter.listenerCount",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts"
+          "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/events-erased-emit-args.ts"
         ]
       },
       "anchorSource": "exact"
@@ -43705,7 +43712,8 @@
         "evidence": "compiler-dedicated:emitter.listeners",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts"
+          "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/events-erased-emit-args.ts"
         ]
       },
       "anchorSource": "exact"
@@ -43732,7 +43740,8 @@
         "evidence": "compiler-dedicated:emitter.off",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts"
+          "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/events-erased-emit-args.ts"
         ]
       },
       "anchorSource": "exact"
@@ -43759,7 +43768,8 @@
         "evidence": "compiler-dedicated:emitter.on",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts"
+          "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/events-erased-emit-args.ts"
         ]
       },
       "anchorSource": "exact"
@@ -43786,7 +43796,8 @@
         "evidence": "compiler-dedicated:emitter.once",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts"
+          "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/events-erased-emit-args.ts"
         ]
       },
       "anchorSource": "exact"
@@ -43813,7 +43824,8 @@
         "evidence": "compiler-dedicated:emitter.prependListener",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts"
+          "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/events-erased-emit-args.ts"
         ]
       },
       "anchorSource": "exact"
@@ -43840,7 +43852,8 @@
         "evidence": "compiler-dedicated:emitter.prependOnceListener",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts"
+          "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/events-erased-emit-args.ts"
         ]
       },
       "anchorSource": "exact"
@@ -43867,7 +43880,8 @@
         "evidence": "compiler-dedicated:emitter.removeAllListeners",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts"
+          "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/events-erased-emit-args.ts"
         ]
       },
       "anchorSource": "exact"
@@ -43894,7 +43908,8 @@
         "evidence": "compiler-dedicated:emitter.removeListener",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts"
+          "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/events-erased-emit-args.ts"
         ]
       },
       "anchorSource": "exact"
@@ -43921,7 +43936,8 @@
         "evidence": "compiler-dedicated:emitter.setMaxListeners",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts"
+          "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/events-erased-emit-args.ts"
         ]
       },
       "anchorSource": "exact"
@@ -43948,7 +43964,8 @@
         "evidence": "compiler-dedicated:emitter.rawListeners",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts"
+          "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/events-erased-emit-args.ts"
         ]
       },
       "anchorSource": "exact"
@@ -44192,7 +44209,8 @@
         "evidence": "compiler-dedicated:events.once",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts"
+          "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/events-erased-emit-args.ts"
         ]
       },
       "anchorSource": "exact"
@@ -87371,6 +87389,8 @@
           "tests/corpus/5612-readable-from-iterables.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
           "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/fs-stream-erased-open-listener.ts",
+          "tests/corpus/stream-erased-data-listener.ts",
           "tests/corpus/writable-error-callbacks.ts"
         ]
       },
@@ -87498,7 +87518,9 @@
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
           "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts"
+          "tests/corpus/writable-error-callbacks.ts",
+          "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/fs-stream-erased-open-listener.ts"
         ]
       },
       "anchorSource": "exact"
@@ -87533,7 +87555,9 @@
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
           "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts"
+          "tests/corpus/writable-error-callbacks.ts",
+          "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/fs-stream-erased-open-listener.ts"
         ]
       },
       "anchorSource": "exact"
@@ -87568,7 +87592,9 @@
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
           "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts"
+          "tests/corpus/writable-error-callbacks.ts",
+          "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/fs-stream-erased-open-listener.ts"
         ]
       },
       "anchorSource": "exact"
@@ -87626,7 +87652,9 @@
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
           "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts"
+          "tests/corpus/writable-error-callbacks.ts",
+          "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/fs-stream-erased-open-listener.ts"
         ]
       },
       "anchorSource": "exact"
@@ -87661,7 +87689,9 @@
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
           "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts"
+          "tests/corpus/writable-error-callbacks.ts",
+          "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/fs-stream-erased-open-listener.ts"
         ]
       },
       "anchorSource": "exact"
@@ -87696,7 +87726,9 @@
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
           "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts"
+          "tests/corpus/writable-error-callbacks.ts",
+          "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/fs-stream-erased-open-listener.ts"
         ]
       },
       "anchorSource": "exact"
@@ -88093,7 +88125,9 @@
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
           "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts"
+          "tests/corpus/writable-error-callbacks.ts",
+          "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/fs-stream-erased-open-listener.ts"
         ]
       },
       "anchorSource": "exact"
@@ -88151,7 +88185,9 @@
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
           "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts"
+          "tests/corpus/writable-error-callbacks.ts",
+          "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/fs-stream-erased-open-listener.ts"
         ]
       },
       "anchorSource": "exact"
@@ -88186,7 +88222,9 @@
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
           "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts"
+          "tests/corpus/writable-error-callbacks.ts",
+          "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/fs-stream-erased-open-listener.ts"
         ]
       },
       "anchorSource": "exact"
@@ -88244,7 +88282,9 @@
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
           "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts"
+          "tests/corpus/writable-error-callbacks.ts",
+          "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/fs-stream-erased-open-listener.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -88279,7 +88319,9 @@
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
           "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts"
+          "tests/corpus/writable-error-callbacks.ts",
+          "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/fs-stream-erased-open-listener.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -88314,7 +88356,9 @@
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
           "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts"
+          "tests/corpus/writable-error-callbacks.ts",
+          "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/fs-stream-erased-open-listener.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -88711,7 +88755,9 @@
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
           "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts"
+          "tests/corpus/writable-error-callbacks.ts",
+          "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/fs-stream-erased-open-listener.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -88815,7 +88861,9 @@
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
           "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts"
+          "tests/corpus/writable-error-callbacks.ts",
+          "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/fs-stream-erased-open-listener.ts"
         ]
       },
       "anchorSource": "exact"
@@ -88876,7 +88924,9 @@
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
           "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts"
+          "tests/corpus/writable-error-callbacks.ts",
+          "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/fs-stream-erased-open-listener.ts"
         ]
       },
       "anchorSource": "exact"
@@ -88911,7 +88961,9 @@
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
           "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts"
+          "tests/corpus/writable-error-callbacks.ts",
+          "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/fs-stream-erased-open-listener.ts"
         ]
       },
       "anchorSource": "exact"
@@ -88946,7 +88998,9 @@
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
           "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts"
+          "tests/corpus/writable-error-callbacks.ts",
+          "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/fs-stream-erased-open-listener.ts"
         ]
       },
       "anchorSource": "exact"
@@ -89004,7 +89058,9 @@
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
           "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts"
+          "tests/corpus/writable-error-callbacks.ts",
+          "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/fs-stream-erased-open-listener.ts"
         ]
       },
       "anchorSource": "exact"
@@ -89598,7 +89654,9 @@
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
           "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts"
+          "tests/corpus/writable-error-callbacks.ts",
+          "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/fs-stream-erased-open-listener.ts"
         ]
       },
       "anchorSource": "exact"
@@ -89633,7 +89691,9 @@
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
           "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts"
+          "tests/corpus/writable-error-callbacks.ts",
+          "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/fs-stream-erased-open-listener.ts"
         ]
       },
       "anchorSource": "exact"
@@ -89668,7 +89728,9 @@
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
           "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts"
+          "tests/corpus/writable-error-callbacks.ts",
+          "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/fs-stream-erased-open-listener.ts"
         ]
       },
       "anchorSource": "exact"
@@ -89703,7 +89765,9 @@
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
           "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts"
+          "tests/corpus/writable-error-callbacks.ts",
+          "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/fs-stream-erased-open-listener.ts"
         ]
       },
       "anchorSource": "exact"
@@ -89738,7 +89802,9 @@
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
           "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts"
+          "tests/corpus/writable-error-callbacks.ts",
+          "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/fs-stream-erased-open-listener.ts"
         ]
       },
       "anchorSource": "exact"
@@ -89773,7 +89839,9 @@
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
           "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts"
+          "tests/corpus/writable-error-callbacks.ts",
+          "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/fs-stream-erased-open-listener.ts"
         ]
       },
       "anchorSource": "exact"
@@ -89808,7 +89876,9 @@
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
           "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts"
+          "tests/corpus/writable-error-callbacks.ts",
+          "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/fs-stream-erased-open-listener.ts"
         ]
       },
       "anchorSource": "exact"
@@ -89843,7 +89913,9 @@
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
           "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts"
+          "tests/corpus/writable-error-callbacks.ts",
+          "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/fs-stream-erased-open-listener.ts"
         ]
       },
       "anchorSource": "exact"
@@ -89878,7 +89950,9 @@
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
           "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts"
+          "tests/corpus/writable-error-callbacks.ts",
+          "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/fs-stream-erased-open-listener.ts"
         ]
       },
       "anchorSource": "exact"
@@ -91298,7 +91372,9 @@
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
           "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts"
+          "tests/corpus/writable-error-callbacks.ts",
+          "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/fs-stream-erased-open-listener.ts"
         ]
       },
       "anchorSource": "exact"
@@ -91563,7 +91639,9 @@
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
           "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts"
+          "tests/corpus/writable-error-callbacks.ts",
+          "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/fs-stream-erased-open-listener.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -91598,7 +91676,9 @@
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
           "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts"
+          "tests/corpus/writable-error-callbacks.ts",
+          "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/fs-stream-erased-open-listener.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -102172,6 +102252,7 @@
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/text-codec-values/main.ts",
+          "tests/corpus/util-format-json-error.ts",
           "tests/fixtures/node-types/deep-equality.ts",
           "tests/fixtures/node-types/env-files.ts",
           "tests/fixtures/node-types/promisify-callback-functions.ts",
@@ -103333,7 +103414,8 @@
           "tests/corpus/2440-console-inspect-args.ts",
           "tests/corpus/5835-util-format-integer-specifiers.ts",
           "tests/corpus/7520-util-format-runtime.ts",
-          "tests/corpus/7521-util-format-runtime.cjs"
+          "tests/corpus/7521-util-format-runtime.cjs",
+          "tests/corpus/util-format-json-error.ts"
         ]
       },
       "anchorSource": "exact"
@@ -103363,7 +103445,8 @@
           "tests/corpus/2440-console-inspect-args.ts",
           "tests/corpus/5835-util-format-integer-specifiers.ts",
           "tests/corpus/7520-util-format-runtime.ts",
-          "tests/corpus/7521-util-format-runtime.cjs"
+          "tests/corpus/7521-util-format-runtime.cjs",
+          "tests/corpus/util-format-json-error.ts"
         ]
       },
       "anchorSource": "exact"

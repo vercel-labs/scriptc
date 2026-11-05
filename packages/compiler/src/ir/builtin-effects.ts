@@ -242,6 +242,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "num.toStringRadix",
   "num.toStringRadixF64",
   "insp.jsonDyn",
+  "insp.jsonDynValue",
   // The runtime formatter calls toString, valueOf and toJSON, and refuses
   // renderings it has no lowering for.
   "insp.format",
@@ -351,6 +352,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "emitter.emitAny",
   "emitter.emitErrorValue",
   "emitter.emitMixed",
+  "emitter.hasDyn",
   "emitter.listenersDyn",
   "emitter.emitError",
   "emitter.on",
@@ -853,6 +855,13 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "child.propsDefine",
   "child.propsDescriptor",
   "child.propsOnDyn",
+  // Handle own-property tables: the graph-walker refusals, a handle used as
+  // a descriptor, and Object.defineProperties throw.
+  "handle.propsDefineProps",
+  "handle.propsGuard",
+  "handle.propsGuardList",
+  "handle.propsCheck",
+  "handle.propsGrant",
   "dyn.arrayProtoCall",
   "dyn.arrayLikeProtoCall",
   "process.chdir",

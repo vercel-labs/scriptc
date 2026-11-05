@@ -128,6 +128,11 @@ struct ScrStreamState {
      * from the registry's empty/nonempty transitions, so the per-chunk
      * paths read it instead of looking the name up */
     bool data_listeners;
+    /* one of those listeners was registered through an untyped value with
+     * no typed adapter (scr_emitter_has_dyn): the per-chunk emit then also
+     * carries the chunk as a checked-dynamic value. Set on registration
+     * (a stale true costs one box per chunk, never a missed delivery). */
+    bool data_dyn;
     bool resume_scheduled, maybe_more_scheduled;
     /* The buffer's representation: encoded means every entry is a ScrStr,
      * otherwise every entry is a ScrBytes (scr_stream_rbuf_push checks
@@ -734,16 +739,28 @@ static ScrStr *scr_stream_event_name(const char *name) {
   return scr_str_new(name, strlen(name));
 }
 
+/* A typed emit carries no checked-dynamic arguments; a listener registered
+ * through an untyped value still receives the event (with none). The zero-
+ * argument slots go as an empty flex vector, which every listener form
+ * accepts. */
 static bool scr_stream_emit0(ScrStream *s, const char *name) {
   ScrStr *n = scr_stream_event_name(name);
-  bool had = scr_emitter_emit((ScrEmitter *)s, n);
+  bool had = scr_emitter_emit_mixed((ScrEmitter *)s, n, NULL, 0);
   scr_str_release(n);
   return had;
 }
 
 static void scr_stream_emit_stream(ScrStream *s, const char *name, ScrStream *payload) {
   ScrStr *n = scr_stream_event_name(name);
-  scr_emitter_emit((ScrEmitter *)s, n, payload);
+  ScrEmitter *em = (ScrEmitter *)s;
+  if (scr_emitter_has_dyn(em, n)) {
+    ScrDyn *arg = scr_stream_dyn_view(payload);
+    bool had = scr_emitter_emit_mixed(em, n, &arg, 1, payload);
+    scr_dyn_release(arg);
+    (void)had;
+  } else {
+    scr_emitter_emit(em, n, payload);
+  }
   scr_str_release(n);
 }
 
@@ -751,7 +768,11 @@ static void scr_stream_emit_stream(ScrStream *s, const char *name, ScrStream *pa
  * error contract. Borrows err. */
 static void scr_stream_emit_error(ScrStream *s, ScrError *err) {
   ScrStr *n = (ScrStr *)&scr_stream_lit_error;
-  scr_emitter_emit_error((ScrEmitter *)s, n, err);
+  /* The error is also the checked-dynamic argument a listener registered
+   * through an untyped value reads. */
+  ScrDyn *boxed = scr_dyn_from_error(err);
+  scr_emitter_emit_error_mixed((ScrEmitter *)s, n, err, &boxed, 1);
+  scr_dyn_release(boxed);
   scr_str_release(n);
 }
 
@@ -947,7 +968,16 @@ static void scr_stream_emit_data_entry(ScrStream *s, void *chunk, ScrEntryKind k
    * through st->pipes below */
   if (st->r.data_listeners) {
     ScrStr *n = (ScrStr *)&scr_stream_lit_data;
-    scr_emitter_emit((ScrEmitter *)s, n, b, str, value);
+    /* A listener registered through an untyped value reads the chunk as
+     * one checked-dynamic argument (the same value a dyn entry carries). */
+    if (st->r.data_dyn) {
+      ScrDyn *boxed = value;
+      if (boxed == NULL) boxed = b != NULL ? scr_dyn_new_buffer(b) : scr_dyn_new_str(str);
+      scr_emitter_emit_mixed((ScrEmitter *)s, n, &boxed, 1, b, str, value);
+      if (boxed != value) scr_dyn_release(boxed);
+    } else {
+      scr_emitter_emit((ScrEmitter *)s, n, b, str, value);
+    }
     scr_str_release(n);
     if (scr_exc_pending()) return;
   }
@@ -2167,6 +2197,7 @@ static void scr_stream_on_listener(ScrEmitter *em, ScrStr *name) {
   ScrStreamState *st = s->st;
   if (!st || !st->has_r) return;
   if (name->len == 4 && memcmp(name->data, "data", 4) == 0) {
+    st->r.data_dyn = scr_emitter_has_dyn(em, (ScrStr *)&scr_stream_lit_data);
     st->r.readable_listening = scr_emitter_has(em, "readable");
     if (st->r.flowing != 0) {
       st->r.flowing = 1;
@@ -2690,6 +2721,7 @@ static void scr_stream_listener_observe(void *context, const ScrStr *name, bool 
 /* Starts tracking the stream's 'data' listeners, once its state exists. */
 static void scr_stream_watch_listeners(ScrStream *s) {
   s->st->r.data_listeners = scr_emitter_has((ScrEmitter *)s, "data");
+  s->st->r.data_dyn = scr_emitter_has_dyn((ScrEmitter *)s, (ScrStr *)&scr_stream_lit_data);
   scr_emitter_observe((ScrEmitter *)s, &scr_stream_listener_observe, s);
 }
 
@@ -6061,7 +6093,9 @@ static double scr_stream_rl_listener_count(void *s, const char *name) {
 
 static void scr_stream_rl_emit2(void *s, const char *name, void *a, void *b) {
   ScrStr *n = scr_str_new(name, strlen(name));
-  scr_emitter_emit((ScrEmitter *)s, n, a, b);
+  /* a and b are the checked-dynamic arguments of the event (borrowed). */
+  ScrDyn *args[2] = {(ScrDyn *)a, (ScrDyn *)b};
+  scr_emitter_emit_mixed((ScrEmitter *)s, n, args, 2, a, b);
   scr_str_release(n);
 }
 
@@ -6831,7 +6865,9 @@ bool scr_stream_writes_values(ScrStream *s) {
 bool scr_stream_emit_value(ScrStream *s, ScrStr *name, ScrDyn *v) {
   ScrBytes *b = v->kind == SCR_DYN_BYTES ? v->v.bytes : NULL;
   ScrStr *str = v->kind == SCR_DYN_STR ? v->v.str : NULL;
-  return scr_emitter_emit((ScrEmitter *)s, name, b, str, v);
+  /* The value is the checked-dynamic argument a listener registered through
+   * an untyped value reads. */
+  return scr_emitter_emit_mixed((ScrEmitter *)s, name, &v, 1, b, str, v);
 }
 
 /* The chunk a compiled write or transform callback receives, by its

@@ -3050,8 +3050,16 @@ function buildLibFnSignatures() {
     "child.onSpawn": { argTypes: [CHILD_T, null], result: VOID },
     /** Rest listeners use the checked function bridge to pack event arguments. */
     "child.onDyn": { argTypes: [CHILD_T, STRING, DYN], result: VOID },
-    // Own properties JavaScript adds to children (handle-properties.ts).
-    "child.propsInstall": { argTypes: [], result: VOID },
+    // Own properties JavaScript adds to runtime handles: the child's, and
+    // Date/RegExp/Map/Set/weak collections/buffers (handle-properties.ts).
+    // The install call's argument is 1 when the program adds properties to
+    // children (the child unit's wrapped ops), 0 otherwise.
+    "handle.propsInstall": { argTypes: [F64], result: VOID },
+    "handle.propsGrant": { argTypes: [STRING], result: VOID },
+    "handle.propsDefineProps": { argTypes: [DYN, DYN], result: DYN },
+    "handle.propsGuard": { argTypes: [DYN, STRING], result: DYN },
+    "handle.propsGuardList": { argTypes: [arrayOf(DYN), STRING], result: arrayOf(DYN) },
+    "handle.propsCheck": { argTypes: [DYN, STRING], result: VOID },
     "child.propsDefine": { argTypes: [DYN, DYN, DYN], result: DYN },
     "child.propsDescriptor": { argTypes: [DYN, DYN], result: DYN },
     "child.propsResolve": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
@@ -4649,6 +4657,10 @@ function buildLibFnSignatures() {
      * listener of the name needs the converted tuple. */
     "emitter.emitMixed": { argTypes: [null, STRING, F64], result: BOOL },
     "emitter.hasTyped": { argTypes: [null, STRING], result: BOOL },
+    /** The converse: whether a listener of the name was registered through
+     * an untyped value with no typed form, so a typed emit's arguments must
+     * also convert to checked-dynamic values. */
+    "emitter.hasDyn": { argTypes: [null, STRING], result: BOOL },
     "emitter.emitError": { argTypes: [null, STRING, null], result: BOOL },
     "emitter.count": { argTypes: [null, STRING], result: F64 },
     "emitter.countFn": { argTypes: [null, STRING, null], result: F64 },
@@ -5173,6 +5185,10 @@ function buildLibFnSignatures() {
      * "undefined"; a handle in the tree throws the "not supported yet"
      * Error). */
     "insp.jsonDyn": { argTypes: [DYN], result: STRING },
+    /** util.format %j over the value a toJSON hook returned: the same walk
+     * starting at the write step, so the hook never runs over its own
+     * result. */
+    "insp.jsonDynValue": { argTypes: [DYN], result: STRING },
     "insp.str": { argTypes: [STRING], result: STRING },
     "insp.regex": { argTypes: [REGEX], result: STRING },
     /** A Date's inspect text: toISOString(), or "Invalid Date". */

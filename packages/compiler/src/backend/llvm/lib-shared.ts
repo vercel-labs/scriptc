@@ -889,6 +889,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "url.fileURLToPathBuffer": "scr_url_checked_to_path_buffer",
   "url.pathToFileURLChecked": "scr_url_checked_from_path",
   "url.fileURLToPathStr": "scr_url_str_to_path",
+  "url.legacyClass": "scr_url_legacy_class",
   "url.legacyParse": "scr_url_legacy_parse",
   "url.legacyFormat": "scr_url_legacy_format",
   "url.legacyResolve": "scr_url_legacy_resolve",

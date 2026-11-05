@@ -517,7 +517,7 @@ export class ShapeRegistry {
    * authoritative for its own checker type either way). */
   finalizeRecursive(
     t: ts.Type,
-    fields: { name: string; type: IrType }[],
+    fields: IrRecordField[],
     indexValue?: IrType,
     declaredOrder?: string[],
   ): string {
@@ -8903,7 +8903,7 @@ function describeOverloadSetBlocker(
  * placeholder for the type mid-construction, to finalize INTO that
  * placeholder (the named-recursive-shape knot). */
 interface RecordShapeParts {
-  fields: { name: string; type: IrType }[];
+  fields: IrRecordField[];
   indexValue?: IrType;
   declaredOrder?: string[];
   accessorOrder?: string[];

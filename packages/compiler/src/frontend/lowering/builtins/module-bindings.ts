@@ -5,6 +5,7 @@ import {
   canonicalBuiltinModule,
   isCreateRequireBinding7,
   isJsSourceFile,
+  locOf,
   npmStaticDepSf7,
   requireSpecOf,
   resolveImport,
@@ -330,6 +331,34 @@ function createRequireBindingDeclOf(
   return decl !== undefined && ts.isVariableDeclaration(decl) ? decl : null;
 }
 
+/** The declaration a name reaches through any import alias, or null. */
+function declaredNodeOf(lowerer: Lowerer, ident: ts.Identifier): ts.Node | null {
+  let symbol = lowerer.checker.getSymbolAtLocation(ident);
+  if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0)
+    symbol = lowerer.checker.getAliasedSymbol(symbol);
+  const decl = symbol ? symbol.declarations[0] : undefined;
+  return decl ?? null;
+}
+
+/** The stable identity anchor of a createRequire-made loader, and of its
+ * `resolve` member: the DECLARATION the read reaches through any import
+ * alias, not the read's own position. Node's loader is one function object,
+ * so every read of one binding must lower to one value (`r === r`,
+ * `r.resolve === r.resolve`, a copy stored twice compares equal). An inline
+ * `createRequire(base)` receiver has no binding: each such expression is a
+ * fresh require function in Node, so it anchors at its own position and
+ * distinct positions stay distinct. */
+export function createRequireLoaderAnchorOf(lowerer: Lowerer, receiver: ts.Expression): string {
+  let e = stripTypeCasts(receiver);
+  // `r.resolve.paths` names a member of the loader's `resolve`: anchor on
+  // the loader, so both members share it (each surface keeps its own key).
+  if (ts.isPropertyAccessExpression(e) && e.name.text === "resolve")
+    e = stripTypeCasts(e.expression);
+  const decl = ts.isIdentifier(e) ? declaredNodeOf(lowerer, e) : null;
+  const at = locOf(decl ?? e);
+  return `${at.file}:${at.start}`;
+}
+
 /** True for a binding destructured from the node:module namespace —
  * `const { createRequire: cr } = require("node:module")` — the CommonJS
  * twin of the named import: a factory that makes a require over a
@@ -454,6 +483,23 @@ export function createRequireBindingDecl(
   }
   if (isConst) return true;
   return isCreateRequireBinding7(lowerer.program, nameNode);
+}
+
+/** The base expression a RUN-TIME createRequire binding's declaration must
+ * still evaluate, or null. Node calls `createRequire(base)` when the
+ * declaration runs, so the argument's side effects happen there and
+ * anything it throws unwinds the module then; the binding is erased as
+ * compile-time plumbing, but the declaration keeps the base. A build-time
+ * base (`import.meta.url`, `__filename`) has no effect to keep. */
+export function createRequireEvaluatedBaseOf(
+  lowerer: Lowerer,
+  init: ts.Expression | undefined,
+): ts.Expression | null {
+  if (init === undefined) return null;
+  const e = stripTypeCasts(init);
+  if (!ts.isCallExpression(e) || e.questionDotToken) return null;
+  if (e.arguments.nodes.length !== 1) return null;
+  return createRequireRuntimeBaseOf(lowerer, e) ? e.arguments.nodes[0]! : null;
 }
 
 /** The declaring source file when `callee` denotes a createRequire-made

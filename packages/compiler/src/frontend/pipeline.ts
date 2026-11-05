@@ -239,10 +239,17 @@ function addDynamicImportGraph(load: LoadResult, scanned: Set<SourceFile>): void
  * and library mode compiles the package whole. Package sources hide their
  * dependency edges exactly there (fastify's logger-factory.js requires
  * ./logger-pino.js inside createLogger, and only logger-pino.js requires
- * pino). Every literal require()/import() in the package's JavaScript counts,
- * wherever it sits; the walk follows the files it reaches, including the
- * files the package loader brought into the program for exactly this. */
+ * pino). Every literal require()/import() call in the package's JavaScript
+ * counts, wherever it sits; the walk follows the files it reaches, including
+ * the files the package loader brought into the program for exactly this.
+ * A file the graph already holds keeps the graph's own static edges: the
+ * program pruned the ones a pure package's unused exports back (a
+ * re-exported module the program never reads, whose own `export *` would
+ * otherwise name a package), and rescanning its declarations here would add
+ * them back. Only the files this walk discovers owe their static
+ * declarations to it. */
 function addLazyRequireGraph(load: LoadResult, scanned: Set<SourceFile>): void {
+  const inGraph = new Set(scanned);
   const queue = [...scanned];
   while (queue.length > 0) {
     const sf = queue.pop()!;
@@ -253,13 +260,15 @@ function addLazyRequireGraph(load: LoadResult, scanned: Set<SourceFile>): void {
     // its own ("@hapi/hoek" answers lib/index.js, not lib/index.mjs there),
     // so the static declarations are read separately and the calls below.
     const specs: { spec: string; kind: "import" | "require" }[] = [];
-    for (const stmt of sf.statements.nodes) {
-      if (
-        (isImportDeclaration(stmt) || isExportDeclaration(stmt)) &&
-        stmt.moduleSpecifier !== undefined &&
-        isStringLiteral(stmt.moduleSpecifier)
-      )
-        specs.push({ spec: stmt.moduleSpecifier.text, kind: "import" });
+    if (!inGraph.has(sf)) {
+      for (const stmt of sf.statements.nodes) {
+        if (
+          (isImportDeclaration(stmt) || isExportDeclaration(stmt)) &&
+          stmt.moduleSpecifier !== undefined &&
+          isStringLiteral(stmt.moduleSpecifier)
+        )
+          specs.push({ spec: stmt.moduleSpecifier.text, kind: "import" });
+      }
     }
     for (const call of candidates.calls) {
       const arg = call.arguments.nodes[0];

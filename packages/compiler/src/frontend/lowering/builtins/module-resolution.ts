@@ -42,6 +42,7 @@ import {
   createRequireProgramModuleOf,
   createRequireCalleeFileOf,
   createRequireFactoryBinding,
+  createRequireLoaderAnchorOf,
   createRequireRuntimeBaseOf,
 } from "./module-bindings.js";
 import { stripTypeCasts } from "./arguments.js";
@@ -238,7 +239,11 @@ export function createRequireResolveValue(
       'call it with a string literal (require.resolve("<specifier>")), which resolves at build time',
     );
   }
-  const name = keyedHelperName(lowerer, "%createRequire.resolve", `${loc.file}:${loc.start}`);
+  const name = keyedHelperName(
+    lowerer,
+    "%createRequire.resolve",
+    createRequireLoaderAnchorOf(lowerer, access.expression),
+  );
   if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
     const call = computedResolveCall(
       lowerer,
@@ -287,7 +292,13 @@ export function createRequireResolveFenceValue(
     ? "createRequire needs this file (import.meta.url or __filename), which anchors build-time resolution"
     : `call it with a string literal (require.resolve${paths ? ".paths" : ""}("<specifier>")), which resolves at build time`;
   if (!isJsSourceFile(ts.getSourceFileOfNode(access))) lowerer.noLowering(surface, access, hint);
-  const name = keyedHelperName(lowerer, "%createRequire.fence", `${loc.file}:${loc.start}`);
+  // The surface joins the anchor: one loader's `resolve` and `resolve.paths`
+  // are different functions, so they must not share a helper.
+  const name = keyedHelperName(
+    lowerer,
+    "%createRequire.fence",
+    `${createRequireLoaderAnchorOf(lowerer, access.expression)}:${paths ? "paths" : "resolve"}`,
+  );
   if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
     lowerer.liftedFns.push({
       name,
@@ -336,7 +347,11 @@ export function createRequireLoaderValue(
     return createRequireFenceFunctionValue(lowerer, ident, ident.text, loc);
   }
   if (!isJsSourceFile(ts.getSourceFileOfNode(ident))) return null;
-  const name = keyedHelperName(lowerer, "%createRequire.loader", `${loc.file}:${loc.start}`);
+  const name = keyedHelperName(
+    lowerer,
+    "%createRequire.loader",
+    createRequireLoaderAnchorOf(lowerer, ident),
+  );
   if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
     const call: IrExpr = {
       kind: "libCall",
@@ -372,14 +387,18 @@ export function createRequireLoaderValue(
  * reads "function", stores round-trip it). */
 function createRequireFenceFunctionValue(
   lowerer: Lowerer,
-  node: ts.Node,
+  node: ts.Expression,
   nameText: string,
   loc: SrcLoc,
 ): IrExpr {
   const surface = "createRequire's require over a run-time base";
   const hint =
     "createRequire needs this file (import.meta.url or __filename), which anchors build-time resolution";
-  const name = keyedHelperName(lowerer, "%createRequire.fenceLoader", `${loc.file}:${loc.start}`);
+  const name = keyedHelperName(
+    lowerer,
+    "%createRequire.fenceLoader",
+    createRequireLoaderAnchorOf(lowerer, node),
+  );
   if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
     lowerer.liftedFns.push({
       name,
@@ -400,9 +419,10 @@ function createRequireFenceFunctionValue(
 }
 
 /** A createRequire use deferred to run time in JavaScript source: as in
- * Node, the call's arguments are evaluated in order, then the call throws
- * (here, the fence). Code before the call in the same statement runs, and
- * the expression diverges, so nothing after it does. */
+ * Node, the expressions that made the callee (`madeBy`) and the call's own
+ * arguments are evaluated in order, then the call throws (here, the fence).
+ * Code before the call in the same statement runs, and the expression
+ * diverges, so nothing after it does. */
 function deferredCreateRequireThrow(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -410,8 +430,9 @@ function deferredCreateRequireThrow(
   hint: string,
   loc: SrcLoc,
   reason?: string,
+  madeBy: readonly ts.Expression[] = [],
 ): IrExpr {
-  const stmts: IrStmt[] = call.arguments.nodes.map((arg) => ({
+  const stmts: IrStmt[] = [...madeBy, ...call.arguments.nodes].map((arg) => ({
     kind: "exprStmt",
     expr: lowerer.lowerExpr(arg),
     loc: locOf(arg),
@@ -449,6 +470,14 @@ export function lowerCreateRequireCall(
       return createRequireFenceFunctionValue(lowerer, call, callee.text, loc);
     }
     if (createRequireRuntimeBaseOf(lowerer, callee)) {
+      // `createRequire(base)("./x")`: Node evaluates the base — its side
+      // effects and throws — when it makes the loader, before the require
+      // call's own arguments. The base is plumbing to the compiled graph's
+      // RESOLUTION only, never to evaluation.
+      const madeBy =
+        ts.isCallExpression(callee) && !callee.arguments.nodes.some((a) => ts.isSpreadElement(a))
+          ? callee.arguments.nodes
+          : [];
       return deferredCreateRequireThrow(
         lowerer,
         call,
@@ -456,6 +485,7 @@ export function lowerCreateRequireCall(
         "createRequire needs this file (import.meta.url or __filename), which anchors build-time resolution",
         loc,
         "dynamic-require",
+        madeBy,
       );
     }
     return null;

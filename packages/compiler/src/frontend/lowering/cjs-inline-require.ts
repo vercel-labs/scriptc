@@ -605,6 +605,21 @@ export function cjsTableExportNamesInOrder(
   dep: ts.SourceFile,
   depth = 0,
 ): string[] | null {
+  return cjsTableExportNamesOf(
+    dep,
+    depth,
+    (expr) => inlineProgramRequireOf(lowerer, expr)?.dep ?? null,
+  );
+}
+
+/** The lowerer-free core of cjsTableExportNamesInOrder: `reExportDepOf`
+ * names the program module a `module.exports = require("<spec>")` value
+ * re-exports, or null when that value is not such a re-export. */
+export function cjsTableExportNamesOf(
+  dep: ts.SourceFile,
+  depth: number,
+  reExportDepOf: (expr: ts.Expression) => ts.SourceFile | null,
+): string[] | null {
   if (depth > 32) return null;
   const stmts = dep.statements.nodes;
   let lastTable = -1;
@@ -624,18 +639,29 @@ export function cjsTableExportNamesInOrder(
     if (table?.kind !== "table") return null;
     let rhs = table.expr.right;
     while (ts.isParenthesizedExpression(rhs)) rhs = rhs.expression;
-    const inner = inlineProgramRequireOf(lowerer, rhs);
-    if (inner !== null) return cjsTableExportNamesInOrder(lowerer, inner.dep, depth + 1);
-    const lit = table.obj ?? cjsExportTargetLiteral(rhs, dep);
-    if (lit === null) return null;
-    for (const prop of lit.properties.nodes) {
-      if (ts.isSpreadAssignment(prop)) return null;
-      const nameNode = prop.name;
-      if (nameNode === undefined || ts.isComputedPropertyName(nameNode)) return null;
-      if (!(ts.isIdentifier(nameNode) || ts.isStringLiteralLike(nameNode))) return null;
-      // `__proto__: value` sets the prototype; it is not an own key.
-      if (nameNode.text === "__proto__" && !ts.isShorthandPropertyAssignment(prop)) continue;
-      add(nameNode.text);
+    const inner = reExportDepOf(rhs);
+    if (inner !== null) {
+      // A re-export: the export object IS the inner module's, so its own
+      // keys come first, and this module's member writes after the
+      // assignment append to that same object. A `module.exports.f =`
+      // write lands on the assigned object; an `exports.f =` write only
+      // when the assignment rebinds `exports`, which the discard test
+      // below enforces (Node drops the others).
+      const innerNames = cjsTableExportNamesOf(inner, depth + 1, reExportDepOf);
+      if (innerNames === null) return null;
+      for (const name of innerNames) add(name);
+    } else {
+      const lit = table.obj ?? cjsExportTargetLiteral(rhs, dep);
+      if (lit === null) return null;
+      for (const prop of lit.properties.nodes) {
+        if (ts.isSpreadAssignment(prop)) return null;
+        const nameNode = prop.name;
+        if (nameNode === undefined || ts.isComputedPropertyName(nameNode)) return null;
+        if (!(ts.isIdentifier(nameNode) || ts.isStringLiteralLike(nameNode))) return null;
+        // `__proto__: value` sets the prototype; it is not an own key.
+        if (nameNode.text === "__proto__" && !ts.isShorthandPropertyAssignment(prop)) continue;
+        add(nameNode.text);
+      }
     }
     for (let i = lastTable + 1; i < stmts.length; i++) {
       const member = cjsExportAssignmentOf(stmts[i]!);

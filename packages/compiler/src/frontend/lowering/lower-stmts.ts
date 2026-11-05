@@ -283,6 +283,7 @@ import {
   builtinNamespaceDestructureModuleOf,
   createRequireBindingDecl,
   createRequireCalleeFileOf,
+  createRequireEvaluatedBaseOf,
   createRequireFactoryDecl,
   createRequireNamespaceDecl,
   createRequireProgramModuleDecl,
@@ -6698,8 +6699,16 @@ export function lowerVarDecl(
   // `const require = createRequire(import.meta.url)` — compile-time
   // plumbing: each call through the binding resolves per site
   // (lowerCreateRequireCall); no storage, no code (collectGlobals
-  // skipped its global by the same test).
-  if (createRequireBindingDecl(lowerer, decl.name, decl.initializer)) return null;
+  // skipped its global by the same test). A RUN-TIME base is still
+  // evaluated here, as Node evaluates it at the declaration: its side
+  // effects happen and its throws unwind the module, even though the
+  // loader value stays the deferred fence.
+  if (createRequireBindingDecl(lowerer, decl.name, decl.initializer)) {
+    const base = createRequireEvaluatedBaseOf(lowerer, decl.initializer);
+    return base === null
+      ? null
+      : { kind: "exprStmt", expr: lowerer.lowerExpr(base), loc: locOf(base) };
+  }
 
   // `const { createRequire: cr } = require("node:module")` — the factory
   // binding is the same compile-time plumbing (its calls take the

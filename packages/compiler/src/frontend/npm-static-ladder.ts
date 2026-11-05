@@ -10,7 +10,7 @@
  * compile's services, so it lives exactly as long as the build. It is never
  * module-level: a watch or server process compiles again with other files,
  * and pipeline-native's services die with their frontend. */
-import type { NpmStaticStatus } from "../coverage/report.js";
+import type { NpmStaticStatus } from "./npm-static-status.js";
 import type { SrcLoc } from "../ir/ir.js";
 
 export interface LadderRung {

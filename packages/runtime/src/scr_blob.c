@@ -462,6 +462,16 @@ static ScrBytes *scr_blob_copy_bytes(const ScrBlob *b) {
   return bytes;
 }
 
+/* extractBody's Blob/File arm: the body is the blob's bytes, not the
+ * "[object Blob]" string the USVString fallback would send. */
+bool scr_blob_body_info(const ScrDyn *value, ScrBytes **bytes, ScrStr **type) {
+  ScrBlob *b = scr_blob_of(value);
+  if (!b) return false;
+  *bytes = scr_blob_copy_bytes(b);
+  *type = b->type ? scr_str_retain(b->type) : NULL;
+  return true;
+}
+
 /* Settled `p` seen `turns` microtask turns later (consumes p). */
 static ScrPromise *scr_blob_after_turns(ScrPromise *p, size_t turns) {
   for (size_t i = 0; i < turns; i++) {

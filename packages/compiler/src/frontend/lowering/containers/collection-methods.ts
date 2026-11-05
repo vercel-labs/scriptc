@@ -51,6 +51,21 @@ import { isSearchParamsIterable } from "../builtins/url.js";
 import { classGeneratorIterable } from "../class-iterables.js";
 import { generatorDrain, lowerCollectionIteratorValue } from "../iterator-adapters.js";
 
+/** The collection arm of a unit-armed union — `Map | undefined`, the
+ * layout of a JS class field first assigned below the constructor's top
+ * level. Null unless the non-unit arm is exactly one Map (or Set) and every
+ * other arm is a unit: the runtime presence check below then narrows it. */
+function unitArmedCollectionArm(
+  lowerer: Lowerer,
+  type: IrType | null | undefined,
+  kind: "map" | "set",
+): IrType | null {
+  if (type?.kind !== "union") return null;
+  const arms = lowerer.unions.get(type.unionId)?.arms ?? [];
+  const arm = arms.find((a) => a.kind === kind);
+  return arm && arms.every((a) => a === arm || isUnitType(a)) ? arm : null;
+}
+
 /** Ambient Map method calls. `get`/`set`/`has`/`delete`/`clear` lower to
  * mapIntrinsic; `forEach` desugars to a direct call of a synthetic loop
  * function over the iteration primitives (lowerMapForEachCall). Null when
@@ -73,6 +88,7 @@ export function lowerMapMethodCall(
       probedUntyped = true;
     }
   }
+  if (receiverIr?.kind !== "map") receiverIr = unitArmedCollectionArm(lowerer, receiverIr, "map");
   if (receiverIr?.kind !== "map") return null;
   // Collection views can refine has() while retaining its native ABI.
   if (!probedUntyped && !lowerer.isStdlibMember(access) && name !== "has") return null;
@@ -630,6 +646,7 @@ export function lowerSetMethodCall(
       probedUntyped = true;
     }
   }
+  if (receiverIr?.kind !== "set") receiverIr = unitArmedCollectionArm(lowerer, receiverIr, "set");
   if (receiverIr?.kind !== "set") return null;
   // A collection interface may refine has() into a type predicate.
   // Type mapping checked that view's native ABI; the value check below

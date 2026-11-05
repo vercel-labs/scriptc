@@ -8,6 +8,8 @@
 #include "scr_async.h"
 #include "scr_dyn.h"
 
+#include <stdatomic.h>
+
 /* Records the build-time configuration: the libnode pack directory
  * (absolute, or `$ORIGIN/`-relative to the executable) and the Node version
  * its bridge must link. Both strings are static. The emitted main calls it
@@ -41,6 +43,10 @@ ScrPromise *scr_node_island_call(ScrStr *file, ScrStr *specifier, ScrStr *name, 
 bool scr_ni_remote_pending(void);
 int scr_ni_remote_pollfd(void);
 void scr_ni_remote_dispatch(void);
+
+/* Whether a thread other than the island's has used the island: until
+ * then the island tables take no locks (scr_node_island_handle.c). */
+extern atomic_bool scr_ni_threads_shared;
 
 /* The hosted loop (SCR_NODE_ISLANDS build of scr_async.c, scope-B NI-3).
  * scr_loop_host moves the runtime's pending ticks, promise jobs, timers

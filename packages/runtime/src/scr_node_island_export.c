@@ -55,6 +55,19 @@ static uint32_t ni_exports_len = 1, ni_exports_cap = 0;
 /* Worker threads read the table (a result that is a native value), while
  * the island's thread mints entries and the table grows. */
 static pthread_mutex_t ni_exports_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* The lock is taken once another thread uses the island (the handle
+ * unit's shared mode, which is set only between operations). */
+static inline bool ni_exports_take(void) {
+  if (!atomic_load_explicit(&scr_ni_threads_shared, memory_order_relaxed)) return false;
+  pthread_mutex_lock(&ni_exports_lock);
+  return true;
+}
+
+static inline void ni_exports_give(bool held) {
+  if (held) pthread_mutex_unlock(&ni_exports_lock);
+}
+
 static uint32_t *ni_free = NULL;
 static uint32_t ni_nfree = 0, ni_free_cap = 0;
 
@@ -261,23 +274,23 @@ static uint32_t ni_export_id_locked(ScrDyn *v) {
 }
 
 uint32_t scr_ni_export_id(ScrDyn *v) {
-  pthread_mutex_lock(&ni_exports_lock);
+  bool held = ni_exports_take();
   uint32_t id = ni_export_id_locked(v);
-  pthread_mutex_unlock(&ni_exports_lock);
+  ni_exports_give(held);
   return id;
 }
 
 /* The value of export `id` (borrowed), or NULL. */
 ScrDyn *scr_ni_export_value(uint32_t id) {
-  pthread_mutex_lock(&ni_exports_lock);
+  bool held = ni_exports_take();
   ScrDyn *v = id != 0 && id < ni_exports_len ? ni_exports[id].value : NULL;
-  pthread_mutex_unlock(&ni_exports_lock);
+  ni_exports_give(held);
   return v;
 }
 
 /* Fills `out` with the export of `v` (borrowed). */
 void scr_ni_export_out(ScrDyn *v, ScrNodeValue *out) {
-  pthread_mutex_lock(&ni_exports_lock);
+  bool held = ni_exports_take();
   uint32_t id = ni_export_id_locked(v);
   memset(out, 0, sizeof *out);
   out->tag = SCR_NV_EXPORT;
@@ -290,23 +303,23 @@ void scr_ni_export_out(ScrDyn *v, ScrNodeValue *out) {
       out->u.exp.name_len = strlen(v->v.fn.name);
     }
   }
-  pthread_mutex_unlock(&ni_exports_lock);
+  ni_exports_give(held);
 }
 
 /* NI-8: the identity of export `id` (the referent its representative
  * stands for), or NULL for a free id. */
 const void *scr_ni_export_identity(uint32_t id) {
-  pthread_mutex_lock(&ni_exports_lock);
+  bool held = ni_exports_take();
   const void *identity = id != 0 && id < ni_exports_len ? ni_exports[id].identity : NULL;
-  pthread_mutex_unlock(&ni_exports_lock);
+  ni_exports_give(held);
   return identity;
 }
 
 uint32_t scr_ni_live_exports(void) {
   uint32_t n = 0;
-  pthread_mutex_lock(&ni_exports_lock);
+  bool held = ni_exports_take();
   for (uint32_t i = 1; i < ni_exports_len; i++) n += ni_exports[i].value != NULL;
-  pthread_mutex_unlock(&ni_exports_lock);
+  ni_exports_give(held);
   return n;
 }
 
@@ -742,9 +755,9 @@ int scr_ni_host_export_op(uint32_t id, uint32_t op, const ScrNodeValue *args, si
 }
 
 void scr_ni_host_export_release(uint32_t id) {
-  pthread_mutex_lock(&ni_exports_lock);
+  bool held = ni_exports_take();
   if (id == 0 || id >= ni_exports_len || ni_exports[id].value == NULL) {
-    pthread_mutex_unlock(&ni_exports_lock);
+    ni_exports_give(held);
     return;
   }
   ScrDyn *v = ni_exports[id].value;
@@ -760,7 +773,7 @@ void scr_ni_host_export_release(uint32_t id) {
     ni_free_cap = cap;
   }
   ni_free[ni_nfree++] = id;
-  pthread_mutex_unlock(&ni_exports_lock);
+  ni_exports_give(held);
   /* Outside the lock: a destructor may mint another export. */
   scr_dyn_release(v);
 }
@@ -1056,8 +1069,8 @@ void scr_ni_shared_refresh(void) {
   /* The shared binding tables belong to the island's thread, like every
    * other island-side structure; a worker thread's entry sees the values
    * the last entry on that thread pushed. */
-  if (!scr_context_is_main()) return;
   if (ni_shared_bound == 0 || ni_refreshing || scr_ni_bridge_loaded() == NULL) return;
+  if (!scr_context_is_main()) return;
   ni_refreshing = true;
   bool pending = scr_exc_pending();
   ScrCaught *saved = pending ? scr_exc_take() : NULL;
@@ -1104,13 +1117,13 @@ void scr_ni_exports_release_all(void) {
    * it is dropped: a destructor may mint another export. */
   for (uint32_t i = 1; i < ni_exports_len; i++) {
     ScrDyn *v;
-    pthread_mutex_lock(&ni_exports_lock);
+    bool held = ni_exports_take();
     v = ni_exports[i].value;
     if (v != NULL) {
       if (v->kind == SCR_DYN_PROMISE) scr_promise_identity_drop(ni_exports[i].identity);
       ni_exports[i].value = NULL;
     }
-    pthread_mutex_unlock(&ni_exports_lock);
+    ni_exports_give(held);
     scr_dyn_release(v);
   }
   ni_exports_len = 1;

@@ -307,6 +307,31 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     host.dyn.emitRecordSourceSpread(B, built.name, value.name, type.shapeId);
     return { name: "", type: e.type };
   }
+  if (e.fn === "record.sourceAdd") {
+    // The record grows the property in its kept source; the value is boxed
+    // for the view and the callee retains it (the frame releases this
+    // temporary). Borrows the record.
+    const record = host.emitReadReceiver(e.args[0]!);
+    const type = e.args[0]!.type;
+    if (type.kind !== "record")
+      throw new InternalCompilerError("llvm emitter bug: record.sourceAdd of a non-record");
+    const key = e.args[1]!;
+    if (key.kind !== "strLit")
+      throw new InternalCompilerError("llvm emitter bug: record.sourceAdd key is not a literal");
+    const value = host.emitExpr(e.args[2]!);
+    host.dyn.emitRecordSourceAdd(
+      B,
+      record.name,
+      key.value,
+      Buffer.byteLength(key.value, "utf8"),
+      value.name,
+      type.shapeId,
+    );
+    // A frozen record refuses the addition (scr_record_throw_frozen), so the
+    // write is one of the throwing library calls (MAY_THROW_LIB_FNS).
+    host.emitPendingCheck();
+    return { name: "", type: e.type };
+  }
   if (e.fn === "record.sourceShare") {
     const built = host.emitReadReceiver(e.args[0]!);
     const value = host.emitReadReceiver(e.args[1]!);

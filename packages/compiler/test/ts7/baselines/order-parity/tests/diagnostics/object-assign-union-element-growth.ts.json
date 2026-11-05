@@ -1,6 +1,0 @@
-{
- "order": [
-  "<repo>/tests/diagnostics/object-assign-union-element-growth.ts"
- ],
- "diags": []
-}

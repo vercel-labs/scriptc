@@ -827,6 +827,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "class.throwReadOnly",
   "class.throwNotExtensible",
   "record.throwFrozen",
+  // Object.assign's growth refuses an addition to a frozen record.
+  "record.sourceAdd",
   "dyn.toString",
   "dyn.valueOf",
   // Primitive wrapper objects (scr_js_wrapper.c): the conversions run

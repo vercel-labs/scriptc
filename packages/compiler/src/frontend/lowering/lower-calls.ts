@@ -8418,6 +8418,247 @@ function recordAssignHelper(
   return helper;
 }
 
+/** Whether `Object.assign(target, source)` over these two shapes is the
+ * per-field copy: a plain record target and source (no tuple, index
+ * signature or accessor slots) where every source field lands on a
+ * same-named target field of the same type or one the value widens into. */
+function recordAssignCovers(lowerer: Lowerer, targetShapeId: string, srcShapeId: string): boolean {
+  const tShape = lowerer.shapes.get(targetShapeId);
+  const sShape = lowerer.shapes.get(srcShapeId);
+  return (
+    tShape !== undefined &&
+    sShape !== undefined &&
+    !tShape.tuple &&
+    !sShape.tuple &&
+    tShape.indexValue === undefined &&
+    sShape.indexValue === undefined &&
+    !shapeHasAccessorSlots(tShape) &&
+    !shapeHasAccessorSlots(sShape) &&
+    sShape.fields.every((sf) => {
+      const tf = tShape.fields.find((x) => x.name === sf.name);
+      // A source value converts into a wider target field (`{ bail:
+      // true }` into `bail?: boolean`).
+      return (
+        tf !== undefined &&
+        (typeEquals(tf.type, sf.type) || lowerer.coercibleValue(sf.type, tf.type))
+      );
+    })
+  );
+}
+
+/** The source fields `Object.assign(target, source)` would ADD to a record
+ * target whose shape does not declare them (pi's bash.ts:437), or null
+ * when the copy has no such field or the target cannot keep it. The target
+ * must be a record every reflective surface already reads a kept source
+ * from (recordMayKeepSource), each declared source field must land on its
+ * target field, and each added value must be one the checked-dynamic tree
+ * can hold by reference. */
+function recordGrowPlan(
+  lowerer: Lowerer,
+  targetShapeId: string,
+  srcShapeId: string,
+): { added: string[] } | null {
+  const tT: IrType = { kind: "record", shapeId: targetShapeId };
+  const tShape = lowerer.shapes.get(targetShapeId);
+  const sShape = lowerer.shapes.get(srcShapeId);
+  if (!tShape || !sShape) return null;
+  if (
+    tShape.tuple ||
+    sShape.tuple ||
+    tShape.indexValue !== undefined ||
+    sShape.indexValue !== undefined ||
+    shapeHasAccessorSlots(tShape) ||
+    shapeHasAccessorSlots(sShape) ||
+    !recordMayKeepSource(lowerer, tT)
+  )
+    return null;
+  const added: string[] = [];
+  for (const sf of sShape.fields) {
+    const tf = tShape.fields.find((x) => x.name === sf.name);
+    if (tf !== undefined) {
+      if (!typeEquals(tf.type, sf.type) && !lowerer.coercibleValue(sf.type, tf.type)) return null;
+      continue;
+    }
+    // An internal field names no Node property to add, and a value the
+    // checked-dynamic tree cannot hold cannot join the view.
+    if (sf.name.startsWith("%") || !lowerer.dynConvertible(sf.type)) return null;
+    added.push(sf.name);
+  }
+  return added.length > 0 ? { added } : null;
+}
+
+/** Whether boxing this type for the kept view keeps the value's identity: a
+ * record or an array the view stores by reference (`dynFrom`'s `liveRef`,
+ * as lowerer.ts's boxing of an untyped value decides it), including through
+ * a union. */
+function keepsIdentityInDyn(lowerer: Lowerer, t: IrType): boolean {
+  if (t.kind === "array") return true;
+  if (t.kind === "record") {
+    const shape = lowerer.shapes.get(t.shapeId);
+    return shape !== undefined && (shape.fields.length > 0 || shape.indexValue !== undefined);
+  }
+  if (t.kind === "union")
+    return (lowerer.unions.get(t.unionId)?.arms ?? []).some((arm) =>
+      keepsIdentityInDyn(lowerer, arm),
+    );
+  return false;
+}
+
+/** Interned `%obj.assignGrow.<n>(t, s)` — Object.assign's per-field write
+ * for a source that carries own keys the target's shape does not declare
+ * (recordGrowPlan's gate): declared keys write in place exactly as
+ * `%obj.assign` writes them, the others join the target's kept source in
+ * the source's key order with their values boxed on the identity-preserving
+ * path, and the TARGET returns. Every reference holds the same record, so
+ * every alias, Object.keys, JSON, `in`, spread and inspect see them. */
+function recordAssignGrowHelper(
+  lowerer: Lowerer,
+  targetShapeId: string,
+  srcShapeId: string,
+  loc: SrcLoc,
+): string | null {
+  if (recordGrowPlan(lowerer, targetShapeId, srcShapeId) === null) return null;
+  const key = `obj.assignGrow:${targetShapeId}:${srcShapeId}`;
+  const existing = lowerer.arrHofHelpers.get(key);
+  if (existing) return existing;
+  const helper = keyedHelperName(lowerer, "%obj.assignGrow", key);
+  lowerer.arrHofHelpers.set(key, helper);
+  const tT: IrType = { kind: "record", shapeId: targetShapeId };
+  const sT: IrType = { kind: "record", shapeId: srcShapeId };
+  const tRef: IrExpr = { kind: "varRef", localId: "t.0", type: tT, loc };
+  const sRef: IrExpr = { kind: "varRef", localId: "s.0", type: sT, loc };
+  const fn: IrFunction = {
+    name: helper,
+    params: [
+      { localId: "t.0", name: "t", type: tT },
+      { localId: "s.0", name: "s", type: sT },
+    ],
+    returnType: tT,
+    locals: [
+      { id: "t.0", name: "t", type: tT, mutable: true },
+      { id: "s.0", name: "s", type: sT, mutable: true },
+    ],
+    body: [],
+    loc,
+  };
+  // The source's fields live in the shape's canonical (name-sorted) slots,
+  // so the added keys' own-key order comes from the shape's key-order
+  // witnesses, never from `fields` — the same order Object.keys answers
+  // for that shape. Built after applyKeyOrderWitnesses (perKeyOrder).
+  const finalize = (): void => {
+    const sShape = lowerer.shapes.get(srcShapeId)!;
+    const tShape = lowerer.shapes.get(targetShapeId)!;
+    const declared = new Set(tShape.fields.map((f) => f.name));
+    const body: IrStmt[] = [];
+    const added: { name: string; type: IrType }[] = [];
+    const wrap = (write: IrStmt, name: string): IrStmt => {
+      const present = lowerer.recordFieldPresent(sRef, srcShapeId, name, loc);
+      return present.kind === "recordHas"
+        ? { kind: "if", cond: present, then: [write], else_: null, loc }
+        : write;
+    };
+    for (const f of sShape.fields) {
+      if (f.name.startsWith("%")) continue;
+      const get: IrExpr = {
+        kind: "recordGet",
+        obj: sRef,
+        shapeId: srcShapeId,
+        field: f.name,
+        type: f.type,
+        loc,
+      };
+      const targetType = declared.has(f.name)
+        ? tShape.fields.find((x) => x.name === f.name)!.type
+        : undefined;
+      if (targetType !== undefined) {
+        body.push(
+          wrap(
+            {
+              kind: "recordSet",
+              obj: tRef,
+              shapeId: targetShapeId,
+              field: f.name,
+              value: typeEquals(targetType, f.type)
+                ? get
+                : lowerer.coerceToExpected(get, targetType),
+              loc,
+            },
+            f.name,
+          ),
+        );
+        continue;
+      }
+      added.push(f);
+    }
+    // One walk per key order (see perKeyOrder), each adding the undeclared
+    // fields in the order the source itself lists them.
+    const walks = shapeKeyOrders(sShape).map((order) =>
+      order
+        .map((name) => added.find((f) => f.name === name))
+        .filter((f) => f !== undefined)
+        .map((f) =>
+          wrap(
+            {
+              kind: "exprStmt",
+              expr: {
+                kind: "libCall",
+                fn: "record.sourceAdd",
+                args: [
+                  tRef,
+                  { kind: "strLit", value: f.name, type: STRING, loc },
+                  {
+                    kind: "dynFrom",
+                    value: {
+                      kind: "recordGet",
+                      obj: sRef,
+                      shapeId: srcShapeId,
+                      field: f.name,
+                      type: f.type,
+                      loc,
+                    },
+                    ...(keepsIdentityInDyn(lowerer, f.type) ? { liveRef: true as const } : {}),
+                    type: DYN,
+                    loc,
+                  },
+                ],
+                type: VOID,
+                loc,
+              },
+              loc,
+            },
+            f.name,
+          ),
+        ),
+    );
+    body.push(...perKeyOrder(sShape, sRef, walks, loc));
+    body.push({ kind: "return", value: tRef, loc });
+    fn.body = body;
+  };
+  finalize();
+  lowerer.shapeOrderHelperFinalizers.push(finalize);
+  // The target shape can now hold undeclared keys, so the program's
+  // reflective surfaces must consult the kept view (the `in`/hasOwn and
+  // for-in helpers read keptSourceShapes, the key-order pass reads the
+  // bit), exactly as a checked conversion or a kept width spread does.
+  lowerer.recordSourcesPossible = true;
+  lowerer.keyOrder.keptSourceShapes.add(targetShapeId);
+  lowerer.liftedFns.push(fn);
+  return helper;
+}
+
+/** How `Object.assign`'s value is used: thrown away (its statement is an
+ * expression statement, parentheses aside) — the only use the growth
+ * lowering supports, because the checker's result type adds the source's
+ * keys to the target's type — thrown at once (its own branch below), or
+ * read. */
+function objectAssignResultUse(call: ts.CallExpression): "discarded" | "thrown" | "used" {
+  let parent: ts.Node | undefined = call.parent;
+  while (parent && ts.isParenthesizedExpression(parent)) parent = parent.parent;
+  if (parent !== undefined && ts.isExpressionStatement(parent)) return "discarded";
+  if (parent !== undefined && ts.isThrowStatement(parent)) return "thrown";
+  return "used";
+}
+
 /** The `Iterator` global's statics (ES2025): `Iterator.from` over a typed
  * built-in iterable lowers (lowerIteratorFromCall); every other member,
  * and other arguments, fence with the working spelling named instead of
@@ -9178,33 +9419,22 @@ function lowerObjectStaticCall(
       };
       const tOperand = assignOperand(call.arguments.nodes[0]!, tProbe);
       const sOperand = assignOperand(call.arguments.nodes[1]!, sProbe);
+      const assignLoc = locOf(call);
+      const operand = (node: ts.Expression, arm: IrType): IrExpr => {
+        const value = lowerer.lowerExpr(node);
+        return value.type.kind === "record" ? value : lowerer.coerceToExpected(value, arm);
+      };
+      const resultUse = objectAssignResultUse(call);
+      // A FRESH object-literal target has no alias to keep in step: the
+      // checked-dynamic lowering below builds it as the dyn object the
+      // program's own literal describes, which answers the grown result
+      // too. Growing and refusing there would take a working site away.
+      let freshTargetNode: ts.Expression = call.arguments.nodes[0]!;
+      while (ts.isParenthesizedExpression(freshTargetNode))
+        freshTargetNode = freshTargetNode.expression;
+      const freshTarget = ts.isObjectLiteralExpression(freshTargetNode);
       if (tOperand?.kind === "record" && sOperand?.kind === "record") {
-        const tShape = lowerer.shapes.get(tOperand.shapeId);
-        const sShape = lowerer.shapes.get(sOperand.shapeId);
-        const ok =
-          tShape &&
-          sShape &&
-          !tShape.tuple &&
-          !sShape.tuple &&
-          !tShape.indexValue &&
-          !sShape.indexValue &&
-          !shapeHasAccessorSlots(tShape) &&
-          !shapeHasAccessorSlots(sShape) &&
-          sShape.fields.every((sf) => {
-            const tf = tShape.fields.find((x) => x.name === sf.name);
-            // A source value converts into a wider target field (`{ bail:
-            // true }` into `bail?: boolean`).
-            return (
-              tf !== undefined &&
-              (typeEquals(tf.type, sf.type) || lowerer.coercibleValue(sf.type, tf.type))
-            );
-          });
-        if (ok) {
-          const loc = locOf(call);
-          const operand = (node: ts.Expression, arm: IrType): IrExpr => {
-            const value = lowerer.lowerExpr(node);
-            return value.type.kind === "record" ? value : lowerer.coerceToExpected(value, arm);
-          };
+        if (recordAssignCovers(lowerer, tOperand.shapeId, sOperand.shapeId)) {
           const target = operand(call.arguments.nodes[0]!, tOperand);
           const source = operand(call.arguments.nodes[1]!, sOperand);
           if (target.type.kind === "record" && source.type.kind === "record") {
@@ -9212,10 +9442,169 @@ function lowerObjectStaticCall(
               lowerer,
               target.type.shapeId,
               source.type.shapeId,
-              loc,
+              assignLoc,
             );
-            return { kind: "call", callee: helper, args: [target, source], type: target.type, loc };
+            return {
+              kind: "call",
+              callee: helper,
+              args: [target, source],
+              type: target.type,
+              loc: assignLoc,
+            };
           }
+        } else {
+          // The source carries own keys the target's shape does not declare
+          // (pi's bash.ts:437): the declared keys write in place and the
+          // others join the target's kept source, so every reference to the
+          // one record sees them (recordGrowPlan). The checker's result type
+          // adds those keys to the target's type, which a native record has
+          // no layout for: a read result refuses by name, while a `throw`
+          // keeps its own branch below.
+          const grow = recordGrowPlan(lowerer, tOperand.shapeId, sOperand.shapeId);
+          if (grow && !freshTarget && resultUse !== "thrown") {
+            if (resultUse === "used")
+              lowerer.unsupported(
+                "SC1090",
+                call,
+                `Object.assign whose result is read after adding ${grow.added.map((name) => `'${name}'`).join(", ")} to '${lowerer.fmt(tOperand)}'`,
+                `the added keys live on the target, which every reference sees, but the checker adds them to the call's own type, which has no native layout here: use the call as a statement and keep reading the target, or declare ${grow.added.map((name) => `'${name}'`).join(", ")} on the target's type`,
+              );
+            const target = operand(call.arguments.nodes[0]!, tOperand);
+            const source = operand(call.arguments.nodes[1]!, sOperand);
+            if (target.type.kind === "record" && source.type.kind === "record") {
+              const helper = recordAssignGrowHelper(
+                lowerer,
+                target.type.shapeId,
+                source.type.shapeId,
+                assignLoc,
+              );
+              if (helper)
+                return {
+                  kind: "call",
+                  callee: helper,
+                  args: [target, source],
+                  type: target.type,
+                  loc: assignLoc,
+                };
+            }
+          }
+        }
+      }
+      // `Object.assign(element, source)` on an element of a UNION-typed
+      // array whose arm the program did not narrow (pi's pi-messages.ts:
+      // 237/249/271): the arm is known only at run time, so evaluate the
+      // element and the source once, switch on the element's tag and run
+      // the per-arm write on the arm's own record — in place, so a held
+      // element reference sees the write. An arm that does not declare the
+      // source's keys grows through the kept source (recordGrowPlan), the
+      // same mechanism as the record target above.
+      if (
+        tOperand === null &&
+        tProbe?.type.kind === "union" &&
+        sOperand?.kind === "record" &&
+        !freshTarget &&
+        resultUse !== "thrown"
+      ) {
+        const unionT = tProbe.type;
+        const arms = lowerer.unions.get(unionT.unionId)?.arms ?? [];
+        const plans: ({ kind: "copy" } | { kind: "grow"; added: string[] })[] = [];
+        for (const arm of arms) {
+          if (arm.kind !== "record") break;
+          if (recordAssignCovers(lowerer, arm.shapeId, sOperand.shapeId)) {
+            plans.push({ kind: "copy" });
+            continue;
+          }
+          const grow = recordGrowPlan(lowerer, arm.shapeId, sOperand.shapeId);
+          if (!grow) break;
+          plans.push({ kind: "grow", added: grow.added });
+        }
+        if (arms.length > 0 && plans.length === arms.length) {
+          const added = [
+            ...new Set(plans.flatMap((plan) => (plan.kind === "grow" ? plan.added : []))),
+          ];
+          const list = added.map((name) => `'${name}'`).join(", ");
+          if (resultUse === "used")
+            lowerer.unsupported(
+              "SC1090",
+              call,
+              `Object.assign whose result is read after adding ${list} to a value of '${lowerer.fmt(unionT)}'`,
+              `the added keys live on the element, which every reference sees, but the checker adds them to the call's own type, which has no native layout here: use the call as a statement and keep reading the element, or declare ${list} on every arm of '${lowerer.fmt(unionT)}'`,
+            );
+          const targetLocal = lowerer.declareHiddenLocal("%assignUnionTarget", unionT);
+          const sourceLocal = lowerer.declareHiddenLocal("%assignUnionSource", sOperand);
+          const targetRef = (): IrExpr => varRef(targetLocal.id, unionT, assignLoc);
+          const sourceRef = (): IrExpr => varRef(sourceLocal.id, sOperand, assignLoc);
+          const armWrite = (tag: number): IrStmt => {
+            const arm = arms[tag]! as IrType & { kind: "record" };
+            const plan = plans[tag]!;
+            const helper =
+              plan.kind === "copy"
+                ? recordAssignHelper(lowerer, arm.shapeId, sOperand.shapeId, assignLoc)
+                : recordAssignGrowHelper(lowerer, arm.shapeId, sOperand.shapeId, assignLoc);
+            if (!helper)
+              throw new InternalCompilerError(
+                "llvm emitter bug: Object.assign arm lost its helper",
+              );
+            const narrow: IrExpr = {
+              kind: "unionNarrow",
+              unionId: unionT.unionId,
+              tag,
+              value: targetRef(),
+              type: arm,
+              loc: assignLoc,
+            };
+            return {
+              kind: "exprStmt",
+              expr: {
+                kind: "call",
+                callee: helper,
+                args: [narrow, sourceRef()],
+                type: arm,
+                loc: assignLoc,
+              },
+              loc: assignLoc,
+            };
+          };
+          let chain: IrStmt[] = [armWrite(arms.length - 1)];
+          for (let tag = arms.length - 2; tag >= 0; tag--)
+            chain = [
+              {
+                kind: "if",
+                cond: {
+                  kind: "unionIsTag",
+                  unionId: unionT.unionId,
+                  tag,
+                  negated: false,
+                  value: targetRef(),
+                  type: BOOL,
+                  loc: assignLoc,
+                },
+                then: [armWrite(tag)],
+                else_: chain,
+                loc: assignLoc,
+              },
+            ];
+          return {
+            kind: "seqExpr",
+            stmts: [
+              {
+                kind: "varDecl",
+                localId: targetLocal.id,
+                init: lowerer.lowerExpr(call.arguments.nodes[0]!),
+                loc: assignLoc,
+              },
+              {
+                kind: "varDecl",
+                localId: sourceLocal.id,
+                init: operand(call.arguments.nodes[1]!, sOperand),
+                loc: assignLoc,
+              },
+              ...chain,
+            ],
+            result: targetRef(),
+            type: unionT,
+            loc: assignLoc,
+          };
         }
       }
     }

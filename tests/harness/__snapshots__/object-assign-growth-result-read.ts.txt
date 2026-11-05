@@ -1,0 +1,8 @@
+object-assign-growth-result-read.ts:18:15 - error SC1090: Object.assign whose result is read after adding 'snippet' to '{ label: string; name: string }' is not supported yet
+
+  17 | const tool = wrap("sh");
+  18 | const grown = Object.assign(tool, { snippet: "run shell" });
+     |               ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  19 | console.log(grown.snippet);
+
+  hint: the added keys live on the target, which every reference sees, but the checker adds them to the call's own type, which has no native layout here: use the call as a statement and keep reading the target, or declare 'snippet' on the target's type

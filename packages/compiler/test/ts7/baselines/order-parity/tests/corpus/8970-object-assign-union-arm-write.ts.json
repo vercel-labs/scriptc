@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8970-object-assign-union-arm-write.ts"
+ ],
+ "diags": []
+}

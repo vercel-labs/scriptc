@@ -5308,6 +5308,12 @@ function buildLibFnSignatures() {
      * (inspect, Object.keys/values/entries) then answer through its live
      * checked view. The receiver is any such record type. Never throws. */
     "record.sourceHas": { argTypes: [null], result: BOOL },
+    /** `record.sourceAdd(rec, key, value)`: Object.assign's growth of a
+     * record that may keep undeclared properties — `key` (a literal) joins
+     * the record's kept source with `value`, in own-key order after the
+     * declared names (recordGrowPlan, lower-calls.ts). Throws Node's
+     * TypeError for a frozen record. Borrows both. */
+    "record.sourceAdd": { argTypes: [null, STRING, null], result: VOID },
     /** `record.sourceSpread(built, value)`: the record a literal starting
      * with `...value` just built keeps the order of value's kept source
      * (key-order-witness.ts ordered spreads). Both are record types. Never

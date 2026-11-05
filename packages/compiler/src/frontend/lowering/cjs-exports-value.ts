@@ -24,9 +24,133 @@ import {
   type IrStmt,
   type SrcLoc,
 } from "../../ir/ir.js";
-import { locOf } from "../program.js";
+import {
+  cjsExportAssignmentOf,
+  cjsExportDiscardReason,
+  isModuleExportsAccess,
+  locOf,
+} from "../program.js";
 import { newFnCtx, PoisonError, type Lowerer } from "./lowerer.js";
-import { cjsExportValueByName } from "./cjs-inline-require.js";
+import {
+  cjsExportValueByName,
+  cjsHasLiveMemberExports,
+  cjsTableMethodEntry,
+  inlineProgramRequireOf,
+  nestedCjsExportAssignmentsOf,
+  splitRequireBindingOfIdent,
+} from "./cjs-inline-require.js";
+
+/** The export names an assignment chain attaches (`exports.a = exports.b =
+ * value`), in the order Node attaches them: the rightmost assignment runs
+ * first, so the innermost member becomes the object's first property. Null
+ * when a link's name is not a plain identifier. */
+function cjsExportChainNames(e: ts.BinaryExpression): string[] | null {
+  const names: string[] = [];
+  let cur: ts.Expression = e;
+  for (;;) {
+    while (ts.isParenthesizedExpression(cur)) cur = cur.expression;
+    if (!ts.isBinaryExpression(cur) || cur.operatorToken.kind !== ts.SyntaxKind.EqualsToken) break;
+    const left = cur.left;
+    if (!ts.isPropertyAccessExpression(left) || left.questionDotToken) break;
+    if (!ts.isIdentifier(left.name) || left.name.text === undefined) return null;
+    const recv = left.expression;
+    if (!((ts.isIdentifier(recv) && recv.text === "exports") || isModuleExportsAccess(recv))) break;
+    names.push(left.name.text);
+    cur = cur.right;
+  }
+  return names.reverse();
+}
+
+/** The names of a CommonJS module's `module.exports` object in assignment
+ * order: the properties Node's require() callers find on it. The names come
+ * from the module's own export table — its `exports.<name>` /
+ * `module.exports.<name>` members and the properties of its table literal —
+ * not from the named-import link check, whose namespace object also names
+ * `default` and `module.exports` and stops at the names an ES module could
+ * import. Statements a later `module.exports =` replaces are skipped
+ * exactly as Node discards them.
+ *
+ * Null when the table is not statically known: a computed name, a spread or
+ * accessor in the table, or a replaced value that is not another program
+ * module's exports — the caller keeps its refusal rather than publishing an
+ * object with the wrong properties. */
+function cjsExportsTableNames(
+  lowerer: Lowerer,
+  dep: ts.SourceFile,
+  depth = 0,
+): { owner: ts.SourceFile; names: string[] } | null {
+  if (depth > 32 || !lowerer.moduleOrder.includes(dep)) return null;
+  const stmts = dep.statements.nodes;
+  // The kept whole replacement, if the module has one: its names are the
+  // value's own properties.
+  let kept: Extract<ReturnType<typeof cjsExportAssignmentOf>, { kind: "table" }> | null = null;
+  for (const stmt of stmts) {
+    if (cjsExportDiscardReason(stmt) !== null) continue;
+    const cjs = cjsExportAssignmentOf(stmt);
+    if (cjs?.kind === "table" && cjs.obj === null) kept = cjs;
+  }
+  if (kept !== null) {
+    // Members attached to the replacement value (`module.exports.f = …`
+    // after the assignment) extend the object this module exposes.
+    if (cjsHasLiveMemberExports(lowerer, dep)) return null;
+    let rhs: ts.Expression = kept.expr.right;
+    while (ts.isParenthesizedExpression(rhs)) rhs = rhs.expression;
+    const require = inlineProgramRequireOf(lowerer, rhs);
+    const split =
+      require === null && ts.isIdentifier(rhs) ? splitRequireBindingOfIdent(lowerer, rhs) : null;
+    const target = require?.dep ?? split?.dep ?? null;
+    // `module.exports = require("./m.cjs")` exposes the dependency's own
+    // export table — the same object its direct requirers hold.
+    if (target === null) return null;
+    return cjsExportsTableNames(lowerer, target, depth + 1);
+  }
+  const names: string[] = [];
+  const seen = new Set<string>();
+  const add = (name: string): void => {
+    if (!seen.has(name)) {
+      seen.add(name);
+      names.push(name);
+    }
+  };
+  for (const stmt of stmts) {
+    if (cjsExportDiscardReason(stmt) !== null) continue;
+    const cjs = cjsExportAssignmentOf(stmt);
+    // `const src = exports.src = []` and other top-level attachments in
+    // value position export their name too. Inside a replaced table literal
+    // they attach to the discarded object instead.
+    if (cjs === null || cjs.kind === "member")
+      for (const nested of nestedCjsExportAssignmentsOf(stmt, cjs?.expr)) add(nested.name.text);
+    if (cjs === null) continue;
+    if (cjs.kind === "member") {
+      if (!ts.isIdentifier(cjs.name)) return null;
+      const chain = cjsExportChainNames(cjs.expr);
+      if (chain === null) return null;
+      for (const name of chain) add(name);
+      continue;
+    }
+    if (cjs.obj === null) return null;
+    for (const prop of cjs.obj.properties.nodes) {
+      if (ts.isShorthandPropertyAssignment(prop)) {
+        const name = prop.name?.text;
+        if (name === undefined) return null;
+        add(name);
+        continue;
+      }
+      if (ts.isPropertyAssignment(prop)) {
+        const name = prop.name;
+        // A numeric name canonicalizes ('1e3' is the property '1000'), so
+        // its written spelling is not the export name.
+        if (ts.isIdentifier(name) || ts.isStringLiteral(name)) add(name.text);
+        else return null;
+        continue;
+      }
+      const method = cjsTableMethodEntry(prop);
+      if (method === null) return null; // spread, accessor, or computed key
+      add(method.name.text);
+    }
+  }
+  return { owner: dep, names };
+}
 
 /** The compiled getter behind an exports object: one lifted function per
  * module that answers an export's current value by name. An export whose
@@ -106,8 +230,9 @@ function cjsExportsGetter(
 }
 
 /** The exports object of `dep` as a checked-dynamic value, or null when the
- * module's export names are not statically known (a computed name, a
- * replaced exports object) or the module is not in this program. */
+ * module's export names are not statically known (a computed name, or an
+ * exports object replaced by a value that is not another program module's
+ * exports) or the module is not in this program. */
 export function lowerCjsExportsValue(
   lowerer: Lowerer,
   dep: ts.SourceFile,
@@ -115,14 +240,16 @@ export function lowerCjsExportsValue(
 ): IrExpr | null {
   if (!lowerer.moduleOrder.includes(dep)) return null;
   const namespace = lowerer.cjsNamespaceOf(dep);
-  // A computed export name or a replaced `module.exports` leaves no name
-  // set to build the object from.
+  // An export name assigned inside a function, or a replacement there,
+  // leaves no static property set to build the object from.
   if (namespace.assignedLater === "all") return null;
-  const keys = [...namespace.names].filter(
-    (name) => name !== "default" && name !== "module.exports",
-  );
-  const moduleId = `cjs:${lowerer.pathOf(dep)}`;
-  const getter = cjsExportsGetter(lowerer, dep, moduleId, keys);
+  const table = cjsExportsTableNames(lowerer, dep);
+  if (table === null) return null;
+  // A module that re-exports another program module's exports as its whole
+  // value exposes that module's object: one object per export table, the
+  // same one a direct requirer of the dependency holds.
+  const moduleId = `cjs:${lowerer.pathOf(table.owner)}`;
+  const getter = cjsExportsGetter(lowerer, table.owner, moduleId, table.names);
   return {
     kind: "libCall",
     fn: "module.cjsExports",
@@ -130,7 +257,7 @@ export function lowerCjsExportsValue(
       strLit(moduleId, loc),
       {
         kind: "arrayLit",
-        elems: keys.map((key) => strLit(key, loc)),
+        elems: table.names.map((key) => strLit(key, loc)),
         type: arrayOf(STRING),
         loc,
       },

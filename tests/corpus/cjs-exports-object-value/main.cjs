@@ -24,3 +24,20 @@ console.log("after:", index.STATE.ready, state.ready);
 
 // The module's own other exports stay ordinary values.
 console.log("name:", index.name, typeof index.CST.parse);
+
+// The object's property names are the module's own export-table names, in
+// assignment order: a table literal's properties (shorthand included),
+// `exports.default`, and the innermost member of an assignment chain first.
+console.log("table keys:", Object.keys(index.TABLE).join(","));
+console.log(
+  "table values:",
+  index.TABLE.answer,
+  index.TABLE.first,
+  index.TABLE.second,
+  index.TABLE.sum,
+  index.TABLE.double(),
+);
+console.log("default keys:", Object.keys(index.DEFAULTS).join(","));
+console.log("default values:", index.DEFAULTS.default, index.DEFAULTS.named);
+console.log("chain keys:", Object.keys(index.CHAIN).join(","));
+console.log("chain values:", index.CHAIN.a, index.CHAIN.b);

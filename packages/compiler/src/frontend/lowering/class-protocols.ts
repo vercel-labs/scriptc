@@ -20,6 +20,9 @@ export class ClassProtocols {
    * without protocol dispatch: their members are invoked on the collection
    * itself, not read from a property bag. */
   private readonly collectionViews = new Set<ts.Symbol>();
+  /** The mapped views a receiver-dependent literal is used as, whose source
+   * cannot carry the marking (see index). */
+  private readonly literalViews = new Set<ts.Type>();
 
   constructor(
     private readonly checker: ts.TypeChecker,
@@ -34,12 +37,18 @@ export class ClassProtocols {
       // A homomorphic mapped view's own symbol is the shared mapped
       // `__type` that every mapped type in the program uses: marking it
       // would make every Pick, Omit, Partial and Readonly a view. Mark the
-      // type the view maps instead, and only when that is a structural type
-      // (a class instance keeps its own representation; `protocol` answers
-      // a view of a class through pickOfProgramClass).
+      // type the view maps instead when that is a structural type. A source
+      // that cannot carry the marking keeps its own representation: a class
+      // instance would make every instance a view, and an intersection has
+      // no symbol. The VIEW type itself is recorded for those, so a
+      // receiver-dependent literal typed as it still keeps checked identity
+      // and protocol answers it through that record.
       const mapped = this.mappedViewSource(type);
       if (mapped !== null) {
-        if (!this.isStructuralTarget(mapped)) return;
+        if (!this.isStructuralTarget(mapped)) {
+          this.literalViews.add(type);
+          return;
+        }
         type = mapped;
       }
       const symbol = type.getSymbol();
@@ -1660,6 +1669,10 @@ export class ClassProtocols {
     const symbol = type.getSymbol();
     const properties = this.checker.getPropertiesOfType(type);
     if (symbol && protocols.has(symbol)) return true;
+    // A mapped view whose source cannot carry the marking was recorded
+    // itself (index): the receiver-dependent literal typed as it needs the
+    // live object, and no other view of that source does.
+    if (this.literalViews.has(type)) return true;
     // A homomorphic mapped view (Partial, Pick, Omit, Readonly) has no
     // symbol of its own to mark, so it is a view exactly when the type it
     // maps is one.

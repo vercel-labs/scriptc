@@ -78,6 +78,9 @@ static constexpr const char *ProfileImportMultiplier = "2";
 // The thin link's size limit, in instructions, for a callee it imports into
 // a partition that calls it. See limitImports().
 static constexpr const char *ImportInstructionLimit = "40";
+// The SLP vectorizer's minimum estimated gain, in its cost units, over the
+// scalar code it replaces. See raiseSlpThreshold().
+static constexpr const char *SlpGainThreshold = "2";
 
 std::optional<EmitOptions> parseEmitOptions(int Argc, char **Argv) {
   EmitOptions Options;
@@ -232,6 +235,23 @@ void limitImports() {
     return true;
   }();
   (void)Limited;
+}
+
+// The SLP vectorizer's cost model can estimate a break-even gain for packing
+// independent scalar operations into one vector. When those operations carry
+// a loop's state, the insertion and extraction of the packed values land in
+// the loop-carried chain, and the packing runs slower than the scalar code it
+// replaces. LLVM vectorizes at any gain above zero, which includes those
+// break-even packs; requiring a small positive gain leaves them scalar and
+// keeps the packs whose gain is real. The threshold is a process-wide option;
+// the helper sets it once.
+void raiseSlpThreshold() {
+  static const bool Raised = [] {
+    if (cl::Option *Option = cl::getRegisteredOptions().lookup("slp-threshold"))
+      Option->addOccurrence(0, "slp-threshold", SlpGainThreshold);
+    return true;
+  }();
+  (void)Raised;
 }
 
 // Drops the names of a partition's struct types before its summary is
@@ -1831,6 +1851,7 @@ int emit(const EmitOptions &Options) {
                        "--profile-blocks and --record-profile-blocks require "
                        "--profile-use",
                        Options.DiagnosticFormat);
+  raiseSlpThreshold();
   if (!Options.ProfileUse.empty())
     reportMissingProfiles();
   if (std::optional<EmitFailure> Failure = inspectProfile(Options))

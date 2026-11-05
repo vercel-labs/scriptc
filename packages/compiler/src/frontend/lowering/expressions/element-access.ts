@@ -34,6 +34,7 @@ import {
   unionContainerArmsOk,
 } from "../../../ir/ir.js";
 import { importMetaField, isImportMeta } from "../import-meta.js";
+import { boxedHandleReceiver, lowerHandlePropertyWrite } from "../handle-properties.js";
 import { heldEnvValueType } from "../builtins/environment.js";
 import { hasOptionalChainGuard, isOptionalChainTail } from "./optional-chains.js";
 import { lowerEnumAccess } from "../lower-enums.js";
@@ -2570,6 +2571,19 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
     );
   }
   const checkedReceiver = tryLowerExpression(lowerer, target.expression);
+  // `m[k] = v` over a typed handle in JavaScript: a property table entry
+  // of the handle (scr_dyn_handle_props.c).
+  {
+    const boxed = boxedHandleReceiver(lowerer, checkedReceiver);
+    if (boxed)
+      return lowerHandlePropertyWrite(
+        lowerer,
+        boxed,
+        lowerer.lowerExprExpecting(target.argumentExpression, DYN),
+        expr.right,
+        locOf(expr),
+      );
+  }
   if (checkedReceiver?.type.kind === "dyn") {
     return {
       kind: "exprStmt",

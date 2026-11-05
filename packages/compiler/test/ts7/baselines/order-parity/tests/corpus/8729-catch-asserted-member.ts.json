@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8729-catch-asserted-member.ts"
+ ],
+ "diags": []
+}

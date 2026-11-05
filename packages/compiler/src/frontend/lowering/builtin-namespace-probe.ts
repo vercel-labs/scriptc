@@ -7,6 +7,9 @@
  * instead of one string comparison per name. */
 import { numLit, varRef } from "../../ir/build.js";
 import { BOOL, F64, type IrExpr, type IrStmt, STRING, type SrcLoc } from "../../ir/ir.js";
+import * as ts from "../ts7/adapter.js";
+import { tryLowerExpression } from "./expressions/try-lower-expression.js";
+import { sideEffectFreeOptionValue } from "./surfaces.js";
 import {
   builtinModuleInNames,
   builtinModuleOwnNames,
@@ -128,4 +131,29 @@ export function builtinNamespaceMemberTest(
     });
   }
   return { kind: "call", callee: helper, args: [key], type: BOOL, loc };
+}
+
+/** A census answer computed without lowering the expression it reflects on
+ * still evaluates that expression, as Node does: Object.keys' argument, the
+ * operand of typeof and the receiver of `in` / hasOwnProperty evaluate in
+ * source order, so a call there keeps its side effects and exceptions. A
+ * pure expression (a binding read, a literal) has nothing to keep, and a
+ * spelling whose value the lowerers refuse (an inline require of a builtin
+ * module object) keeps answering statically, as it did before. */
+export function reflectOverNamespaceExpr(
+  lowerer: Lowerer,
+  receiver: ts.Expression,
+  result: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  if (sideEffectFreeOptionValue(receiver)) return result;
+  const evaluated = tryLowerExpression(lowerer, receiver);
+  if (evaluated === null) return result;
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "exprStmt", expr: evaluated, loc }],
+    result,
+    type: result.type,
+    loc,
+  };
 }

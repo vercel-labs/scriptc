@@ -19,7 +19,12 @@ import {
   type BuiltinModuleMemberCensus,
 } from "./builtin-module-members.generated.js";
 
-export type BuiltinModuleNamespaceFlavor = "cjs" | "esm";
+/** How a namespace expression names its module at run time. "unknown" is an
+ * expression the type system describes as a builtin module namespace but
+ * whose origin does not fix the shape (a parameter, the result of a call
+ * the compiler does not trace), so no census answer applies: every table
+ * below returns null for it and the caller keeps its fence. */
+export type BuiltinModuleNamespaceFlavor = "cjs" | "esm" | "unknown";
 
 export function builtinModuleMemberCensus(module: string): BuiltinModuleMemberCensus | null {
   return Object.hasOwn(BUILTIN_MODULE_MEMBERS, module)
@@ -48,6 +53,7 @@ export function builtinModuleKeys(
   module: string,
   flavor: BuiltinModuleNamespaceFlavor,
 ): readonly string[] | null {
+  if (flavor === "unknown") return null;
   const census = builtinModuleMemberCensus(module);
   if (census === null) return null;
   return flavor === "esm" ? builtinModuleEsmNames(module, census) : census.keys;
@@ -59,6 +65,7 @@ export function builtinModuleOwnNames(
   module: string,
   flavor: BuiltinModuleNamespaceFlavor,
 ): readonly string[] | null {
+  if (flavor === "unknown") return null;
   const census = builtinModuleMemberCensus(module);
   if (census === null) return null;
   return flavor === "esm" ? builtinModuleEsmNames(module, census) : census.ownNames;
@@ -72,6 +79,7 @@ export function builtinModuleInNames(
   module: string,
   flavor: BuiltinModuleNamespaceFlavor,
 ): readonly string[] | null {
+  if (flavor === "unknown") return null;
   const census = builtinModuleMemberCensus(module);
   if (census === null) return null;
   if (flavor === "esm") return builtinModuleEsmNames(module, census);

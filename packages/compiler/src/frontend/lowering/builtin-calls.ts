@@ -19,7 +19,7 @@ import { lowerCallbackPromisify } from "./builtins/promisify-callback.js";
 import { lowerNodeModuleCall } from "./builtins/module-resolution.js";
 import { builtinModuleFnOf, builtinFenceHintOf } from "./surfaces.js";
 import { builtinModuleHasOwnMember } from "./builtin-module-members.js";
-import { builtinNamespaceMemberTest } from "./builtin-namespace-probe.js";
+import { builtinNamespaceMemberTest, reflectOverNamespaceExpr } from "./builtin-namespace-probe.js";
 import { foldedStringKeyOf } from "./expressions/object-literals.js";
 import { resultIsDiscarded } from "./call-position.js";
 import { locOf, requireSpecOf } from "../program.js";
@@ -115,24 +115,38 @@ function lowerBuiltinHasOwnPropertyCall(
       expr,
       "hasOwnProperty on an 'import * as' module namespace (Node's module namespace objects have no hasOwnProperty; the call throws TypeError)",
     );
+  if (shape.flavor === "unknown")
+    lowerer.unsupported(
+      "SC1090",
+      expr,
+      "hasOwnProperty on a builtin module namespace whose runtime shape is not known statically (bind the namespace where it is imported or required)",
+    );
   if (expr.arguments.nodes.length !== 1) return null;
   const arg = expr.arguments.nodes[0]!;
   if (ts.isSpreadElement(arg)) return null;
   const key = foldedStringKeyOf(lowerer, arg);
   if (key !== null) {
     const own = builtinModuleHasOwnMember(shape.module, shape.flavor, key);
-    return own === null ? null : { kind: "boolLit", value: own, type: BOOL, loc };
+    return own === null
+      ? null
+      : reflectOverNamespaceExpr(
+          lowerer,
+          callee.expression,
+          { kind: "boolLit", value: own, type: BOOL, loc },
+          loc,
+        );
   }
   // A runtime string key answers through the same interned census-name
   // helper the `in` operator uses, over the own names only.
   if (lowerer.mapTypeOf(lowerer.typeOf(arg))?.kind !== "string") return null;
-  return builtinNamespaceMemberTest(
+  const member = builtinNamespaceMemberTest(
     lowerer,
     shape,
     true,
     lowerer.lowerExprExpecting(arg, STRING),
     loc,
   );
+  return member === null ? null : reflectOverNamespaceExpr(lowerer, callee.expression, member, loc);
 }
 
 /** Named imports, namespace members and callable aliases share validation

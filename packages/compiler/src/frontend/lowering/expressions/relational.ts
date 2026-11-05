@@ -38,7 +38,10 @@ import { lowerSocketInstanceOf } from "../lower-server.js";
 import { builtinClassRefOf } from "../builtins/class-values.js";
 import { lowerZlibInstanceOf } from "../builtins/compression.js";
 import { builtinModuleHasMember } from "../builtin-module-members.js";
-import { builtinNamespaceMemberTest } from "../builtin-namespace-probe.js";
+import {
+  builtinNamespaceMemberTest,
+  reflectOverNamespaceExpr,
+} from "../builtin-namespace-probe.js";
 import { nodeThrowExpr, numLit, strLit, varRef } from "../../../ir/build.js";
 import { lowerDisposableStackInstanceOf } from "../builtins/disposable-stack.js";
 import { lowerBlobInstanceof } from "../builtins/blob.js";
@@ -1856,17 +1859,40 @@ export function lowerInExpression(
     // (`names.filter((k) => k in zlib)`) answers Node's member surface.
     if (lowerer.mapTypeOf(lowerer.typeOf(expr.left))?.kind === "string") {
       const shape = lowerer.builtinNamespaceShapeOf(expr.right);
-      const member =
-        shape === null
-          ? null
-          : builtinNamespaceMemberTest(
+      if (shape !== null) {
+        if (shape.flavor === "unknown") {
+          lowerer.unsupported(
+            "SC1090",
+            expr.right,
+            "'in' over a builtin module namespace whose runtime shape is not known statically (an ES module namespace and the CommonJS exports object answer different member sets; bind the namespace where it is imported or required)",
+          );
+        }
+        const keyExpr = lowerer.lowerExprExpecting(expr.left, STRING);
+        const member = builtinNamespaceMemberTest(lowerer, shape, false, keyExpr, loc);
+        if (member !== null) {
+          // Node evaluates the key, then the receiver. The census answers
+          // without reading the receiver, so a spelling the lowerers can
+          // evaluate still runs for its effects.
+          if (sideEffectFreeOptionValue(expr.right)) return member;
+          const evaluated = tryLowerExpression(lowerer, expr.right);
+          if (evaluated === null) return member;
+          const stmts: IrStmt[] = [];
+          let result = member;
+          if (!sideEffectFreeOptionValue(expr.left)) {
+            const keyLocal = lowerer.declareHiddenLocal("%inKey", STRING);
+            stmts.push({ kind: "varDecl", localId: keyLocal.id, init: keyExpr, loc });
+            result = builtinNamespaceMemberTest(
               lowerer,
               shape,
               false,
-              lowerer.lowerExprExpecting(expr.left, STRING),
+              varRef(keyLocal.id, STRING, loc),
               loc,
-            );
-      if (member !== null) return member;
+            )!;
+          }
+          stmts.push({ kind: "exprStmt", expr: evaluated, loc });
+          return { kind: "seqExpr", stmts, result, type: BOOL, loc };
+        }
+      }
     }
     // A runtime key over a CHECKED-DYNAMIC receiver (`name in
     // agent.sockets` — both sides computed; the checker may type the
@@ -1911,13 +1937,26 @@ export function lowerInExpression(
   // surface is the module's real one, not the lowerings' subset. A
   // CommonJS exports object also answers its prototype chain
   // (`"toString" in zlib`); an ESM namespace answers its export names
-  // only. The receiver is a static token (or a builtin require, which runs
-  // no user code), so there is nothing to evaluate for its own sake.
+  // only. A receiver the census cannot place by shape (a parameter, an
+  // untraced call result) has no answer.
   {
     const shape = lowerer.builtinNamespaceShapeOf(expr.right);
     if (shape !== null) {
+      if (shape.flavor === "unknown") {
+        lowerer.unsupported(
+          "SC1090",
+          expr.right,
+          "'in' over a builtin module namespace whose runtime shape is not known statically (an ES module namespace and the CommonJS exports object answer different member sets; bind the namespace where it is imported or required)",
+        );
+      }
       const has = builtinModuleHasMember(shape.module, shape.flavor, key);
-      if (has !== null) return { kind: "boolLit", value: has, type: BOOL, loc };
+      if (has !== null)
+        return reflectOverNamespaceExpr(
+          lowerer,
+          expr.right,
+          { kind: "boolLit", value: has, type: BOOL, loc },
+          loc,
+        );
     }
   }
   // A feature probe on a builtin constructor global (`"captureStackTrace"

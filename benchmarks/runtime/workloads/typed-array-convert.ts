@@ -23,7 +23,7 @@ let total = 0;
 for (let r = 0; r < rounds; r++) {
   // The Squoosh shape: a view over a subarray of the source, copied into a
   // new clamped view, then into a plain byte array.
-  const view = new Uint8ClampedArray(bytes.buffer, r & 3, size - (r & 3));
+  const view = bytes.subarray(r & 3);
   const copy = new Uint8ClampedArray(view);
   const raw = new Uint8Array(copy);
   const quantized = new Uint8ClampedArray(floats);

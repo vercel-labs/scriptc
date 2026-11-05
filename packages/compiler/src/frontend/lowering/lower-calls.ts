@@ -1191,7 +1191,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
           kind: "dynCall",
           callee,
           receiver,
-          calleeName: ts.getTextOfNode(access),
+          calleeName: v8CalleeText(access),
           args,
           ...(spreads.length > 0 ? { spreads } : {}),
           type: DYN,
@@ -2118,7 +2118,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
               kind: "dynCall",
               callee,
               receiver,
-              calleeName: ts.getTextOfNode(access),
+              calleeName: v8CalleeText(access),
               args: expr.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
               type: DYN,
               loc,
@@ -2459,13 +2459,9 @@ function lowerCallThroughValueRaw(
       lowerer.unsupported("SC1090", expr, "spread arguments in calls through 'unknown' values");
     }
     const args = expr.arguments.nodes.map((a) => lowerer.lowerExprExpecting(a, DYN));
-    const calleeName =
-      ts.isPropertyAccessExpression(expr.expression) ||
-      ts.isElementAccessExpression(expr.expression)
-        ? ts.getTextOfNode(expr.expression)
-        : ts.isIdentifier(expr.expression)
-          ? expr.expression.text
-          : "value";
+    // V8 names the callee it could not call with the source spelling minus
+    // the type-only syntax the running JavaScript never had.
+    const calleeName = v8CalleeText(expr.expression);
     return { kind: "dynCall", callee, calleeName, args, type: DYN, loc };
   }
   if (
@@ -2534,7 +2530,7 @@ function lowerCallThroughValueRaw(
     )
   ) {
     const args = expr.arguments.nodes.map((a) => lowerer.lowerExprExpecting(a, DYN));
-    const calleeName = ts.isIdentifier(expr.expression) ? expr.expression.text : "value";
+    const calleeName = v8CalleeText(expr.expression);
     const boxed: IrExpr = { kind: "dynFrom", value: callee, type: DYN, loc };
     return { kind: "dynCall", callee: boxed, calleeName, args, type: DYN, loc };
   }
@@ -4160,7 +4156,7 @@ function lowerUnionReceiverMethodCall(
       kind: "dynCall",
       callee: member,
       receiver,
-      calleeName: ts.getTextOfNode(access),
+      calleeName: v8CalleeText(access),
       args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
       type: DYN,
       loc,
@@ -4344,7 +4340,7 @@ function lowerDynReceiverMethodCall(
           kind: "dynCall",
           callee: member,
           receiver,
-          calleeName: ts.getTextOfNode(access),
+          calleeName: v8CalleeText(access),
           args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
           type: DYN,
           loc,
@@ -4516,7 +4512,7 @@ function lowerDynReceiverMethodCall(
               kind: "dynInvoke",
               recv: value,
               method: "normalize",
-              calleeName: ts.getTextOfNode(access),
+              calleeName: v8CalleeText(access),
               args: hasArgument ? [argument] : [],
               type: DYN,
               loc,
@@ -4809,7 +4805,7 @@ function lowerDynReceiverMethodCall(
       kind: "dynCall",
       callee,
       receiver,
-      calleeName: ts.getTextOfNode(access),
+      calleeName: v8CalleeText(access),
       args,
       type: DYN,
       loc,
@@ -4936,7 +4932,7 @@ function lowerStringOrMemberCall(
     kind: "dynCall",
     callee,
     receiver,
-    calleeName: ts.getTextOfNode(access),
+    calleeName: v8CalleeText(access),
     args: args.map((arg) => lowerer.coerceToExpected(arg.value, DYN)),
     type: DYN,
     loc,
@@ -5407,7 +5403,7 @@ export function lowerDynDispatchMethodCall(
             kind: "dynInvoke",
             recv: { kind: "varRef", localId: saved.id, type: DYN, loc: locOf(access.expression) },
             method,
-            calleeName: ts.getTextOfNode(access),
+            calleeName: v8CalleeText(access),
             args: [dynUndefinedExpr(locOf(call.arguments.nodes[0]!))],
             type: DYN,
             loc: locOf(call),
@@ -5447,7 +5443,7 @@ export function lowerDynDispatchMethodCall(
     kind: "dynInvoke",
     recv,
     method,
-    calleeName: ts.getTextOfNode(access),
+    calleeName: v8CalleeText(access),
     args,
     type: DYN,
     loc: locOf(call),
@@ -6045,7 +6041,7 @@ function lowerPrimitiveProtoCall(
         kind: "dynInvoke",
         recv: lowerer.coerceToExpected(operand, DYN),
         method: name,
-        calleeName: `${ts.getTextOfNode(recv)}.${name}`,
+        calleeName: `${v8CalleeText(recv)}.${name}`,
         args: call.arguments.nodes.map((argument) => lowerer.lowerExprExpecting(argument, DYN)),
         type: DYN,
         loc: locOf(call),
@@ -6522,12 +6518,7 @@ export function lowerTaggedTemplate(lowerer: Lowerer, expr: ts.TaggedTemplateExp
       ),
       ...values.map((a) => lowerer.lowerExprExpecting(a, DYN)),
     ];
-    const calleeName =
-      ts.isPropertyAccessExpression(expr.tag) || ts.isElementAccessExpression(expr.tag)
-        ? ts.getTextOfNode(expr.tag)
-        : ts.isIdentifier(expr.tag)
-          ? expr.tag.text
-          : "value";
+    const calleeName = v8CalleeText(expr.tag);
     return { kind: "dynCall", callee, calleeName, args, type: DYN, loc };
   }
   lowerer.unsupported(
@@ -6852,7 +6843,7 @@ export function lowerPromiseMethodCall(
           kind: "dynInvoke",
           recv: lowerer.coerceToExpected(receiver, DYN),
           method: "then",
-          calleeName: ts.getTextOfNode(access),
+          calleeName: v8CalleeText(access),
           args: [
             lowerer.lowerExprExpecting(fulfilledNode, DYN),
             lowerer.lowerExprExpecting(rejectedNode, DYN),
@@ -7353,7 +7344,7 @@ export function lowerPromiseMethodCall(
         kind: "dynInvoke",
         recv: lowerer.coerceToExpected(receiver, DYN),
         method: "finally",
-        calleeName: ts.getTextOfNode(access),
+        calleeName: v8CalleeText(access),
         args: [lowerer.coerceToExpected(cb, DYN)],
         type: DYN,
         loc,
@@ -10871,7 +10862,7 @@ export function lowerRecordFieldCall(
           kind: "dynCall",
           callee,
           ...(receiver ? { receiver } : {}),
-          calleeName: ts.getTextOfNode(access),
+          calleeName: v8CalleeText(access),
           args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
           type: DYN,
           loc,
@@ -11458,7 +11449,7 @@ function lowerObjLitGenericMethodCall(
           kind: "dynInvoke",
           recv: value.type.kind === "dyn" ? value : { kind: "dynFrom", value, type: DYN, loc },
           method: name,
-          calleeName: ts.getTextOfNode(access),
+          calleeName: v8CalleeText(access),
           args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
           type: DYN,
           loc,
@@ -11471,7 +11462,7 @@ function lowerObjLitGenericMethodCall(
           kind: "dynInvoke",
           recv: childMethod,
           method: name,
-          calleeName: ts.getTextOfNode(access),
+          calleeName: v8CalleeText(access),
           args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
           type: DYN,
           loc,
@@ -11508,7 +11499,7 @@ function lowerObjLitGenericMethodCall(
           kind: "dynInvoke",
           recv: receiver,
           method: name,
-          calleeName: ts.getTextOfNode(access),
+          calleeName: v8CalleeText(access),
           args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
           type: DYN,
           loc,
@@ -11792,7 +11783,7 @@ export function lowerObjectMethodCall(
             kind: "dynCall",
             callee: boxed,
             ...receiver,
-            calleeName: ts.getTextOfNode(access),
+            calleeName: v8CalleeText(access),
             args,
             type: DYN,
             loc,
@@ -11810,7 +11801,7 @@ export function lowerObjectMethodCall(
           kind: "dynCall",
           callee,
           ...receiver,
-          calleeName: ts.getTextOfNode(access),
+          calleeName: v8CalleeText(access),
           args,
           type: DYN,
           loc,
@@ -11849,7 +11840,7 @@ export function lowerObjectMethodCall(
               kind: "dynCall",
               callee,
               receiver,
-              calleeName: ts.getTextOfNode(access),
+              calleeName: v8CalleeText(access),
               args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
               type: DYN,
               loc,
@@ -12039,7 +12030,7 @@ function lowerUnionObjectMethodCall(
             kind: "dynCall",
             callee,
             receiver,
-            calleeName: ts.getTextOfNode(access),
+            calleeName: v8CalleeText(access),
             args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
             type: DYN,
             loc,
@@ -12201,7 +12192,7 @@ function lowerUnionObjectDynFieldCall(
       kind: "dynCall",
       callee,
       receiver: lowerer.coerceToExpected(receiverRef, DYN),
-      calleeName: ts.getTextOfNode(access),
+      calleeName: v8CalleeText(access),
       args,
       type: DYN,
       loc,
@@ -13054,7 +13045,7 @@ function lowerEmitterMethodValueCall(
       loc,
     },
     method: "call",
-    calleeName: ts.getTextOfNode(access),
+    calleeName: v8CalleeText(access),
     args: args.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
     type: DYN,
     loc,

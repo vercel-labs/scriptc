@@ -979,11 +979,17 @@ function checkedStaleArm(
 
 /** V8's spelling of a callee in "is not a function": a string-literal
  * element key reads as a property name (`o["a"]` is `o.a`), other keys
- * keep their brackets, parentheses and non-null assertions disappear, and
- * a call result reads `f(...)`. */
+ * keep their brackets, parentheses and type syntax disappear (`!`, `as`,
+ * `satisfies`, `<T>` assertions), and a call result reads `f(...)`. */
 export function v8CalleeText(node: ts.Node): string {
-  // `!` is type-only syntax: the running JavaScript has no trace of it.
-  if (ts.isNonNullExpression(node) || ts.isParenthesizedExpression(node))
+  // Type syntax is type-only: the running JavaScript has no trace of it.
+  if (
+    ts.isNonNullExpression(node) ||
+    ts.isParenthesizedExpression(node) ||
+    ts.isAsExpression(node) ||
+    ts.isSatisfiesExpression(node) ||
+    ts.isTypeAssertion(node)
+  )
     return v8CalleeText(node.expression);
   // A call result prints with its arguments elided.
   if (ts.isCallExpression(node) && !node.questionDotToken)

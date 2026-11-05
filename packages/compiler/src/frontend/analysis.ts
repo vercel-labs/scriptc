@@ -142,10 +142,12 @@ export function analyzeWithFrontend(
             (name) => refused.has(name) || policy.forcedNode.has(name),
             (name) => islandPackageDir(fe, entryPath, name),
           );
-    // Coverage is whole-program by design: builds stop at what the entry
+    // Coverage is whole-program by default: builds stop at what the entry
     // reaches, but the analysis additionally lowers the unreached remainder
     // (throwaway) so the report covers everything the source declares — with
-    // the unreached share in its own group.
+    // the unreached share in its own group. `--coverage=reached` skips that
+    // pass, which is what made the analysis of large programs run out of
+    // memory; its report covers the entry path and says so.
     // The frontend lowering runs on. A package the first load compiled but a
     // build islands is not part of the compiled program: the reload's
     // islandPackages keeps its implementation out of the graph and types its
@@ -174,6 +176,7 @@ export function analyzeWithFrontend(
       const islandsActive = islands !== null && islands.packages.size > 0;
       return lowerFrontend(islands).lower({
         coverage: true,
+        ...(opts.coverage === "reached" ? { coverageRemainder: false } : {}),
         targetPlatform: buildPlatform,
         ...(islandsActive ? { nodeIslands: islands } : {}),
         ...(ffi !== null ? { ffiImports: ffi.functions } : {}),
@@ -291,6 +294,7 @@ export function analyzeWithFrontend(
         ...(lowered.performance !== undefined ? { performance: lowered.performance } : {}),
         ...(lowered.dynamicSlots !== undefined ? { dynamicSlots: lowered.dynamicSlots } : {}),
         ...(lowered.unreached ? { unreached: lowered.unreached } : {}),
+        ...(opts.coverage === "reached" ? { reachedOnly: true } : {}),
         ...(fe.npmStatic.length > 0 ? { npmStatic: fe.npmStatic } : {}),
         // --provenance-sources: the per-package attribution inputs (the
         // report aggregates statsByFile under each package's source dir).

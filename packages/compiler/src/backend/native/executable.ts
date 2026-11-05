@@ -506,11 +506,13 @@ const RUNTIME_DEFINES: readonly {
   { define: "SCR_JS_OBJECT_MODEL", when: (opts) => opts.jsObjectModel },
   { define: "SCR_STDIO_EXTENDED", when: (opts) => opts.stdioExtended },
   // The wave's prepend registrations and stdin.isRaw (scr_events.c,
-  // scr_async_dyn.c), server.off (scr_net.c) and copyFile's mode form
-  // (scr_fs_cp.c). The source build compiles these units from source, so the
-  // defines must name the same builds runtime-pack-matrix.mjs selects.
+  // scr_async_dyn.c), the server event registry's extras (scr_net.c,
+  // scr_http.c) and copyFile's mode form (scr_fs_cp.c). The source build
+  // compiles these units from source, so the defines must name the same
+  // builds runtime-pack-matrix.mjs selects.
   { define: "SCR_PROCESS_EXTRAS", when: (opts) => opts.processExtras },
   { define: "SCR_NET_SERVER_OFF", when: (opts) => opts.processExtras },
+  { define: "SCR_HTTP_SERVER_META", when: (opts) => opts.processExtras },
   { define: "SCR_FS_FLAGS", when: (opts) => opts.fsFlags },
   // scr_child.c's spawnSync and exec/execFile-callback `cwd`/`input`/`shell`
   // entries.

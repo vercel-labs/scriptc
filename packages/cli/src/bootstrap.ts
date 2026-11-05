@@ -273,6 +273,13 @@ async function coverageFastPath(
     (values["npm-static"] ?? []).length > 0 ||
     values["shape-overlay"] === false ||
     (values["external-types"] ?? []).length > 0 ||
+    // An explaining analysis bypasses the verdict cache.
+    values["explain-dynamic"] !== undefined ||
+    // `--coverage=reached` keys its own verdicts; any other value is the
+    // full CLI's to validate.
+    (values.coverage !== undefined &&
+      values.coverage !== "full" &&
+      values.coverage !== "reached") ||
     // The replay covers the default Node island policy only.
     hasNodeIslandFlags(values)
   )
@@ -283,7 +290,12 @@ async function coverageFastPath(
   } catch {
     return null;
   }
-  const hit = await startup.readCoverageVerdict(resolve(inputArg), {}).catch(() => null);
+  const hit = await startup
+    .readCoverageVerdict(
+      resolve(inputArg),
+      values.coverage === "reached" ? { coverage: "reached" } : {},
+    )
+    .catch(() => null);
   if (hit === null) return null;
   const { coverage, sourceTexts } = hit;
   if (values["dynamic-tier-warning"] === false) delete coverage.performance;

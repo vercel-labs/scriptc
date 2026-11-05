@@ -58,6 +58,9 @@ export interface CoverageInput {
    * lowered in a throwaway analysis pass. Its blockers cannot fail a
    * build — the report shows them as a secondary, dimmed group. */
   unreached?: { stats: LowerStats; diagnostics: ScrDiagnostic[]; runtimeFences?: ScrDiagnostic[] };
+  /** `--coverage=reached`: the unreached remainder was not analyzed, so the
+   * report covers the entry path only and carries no unreached group. */
+  reachedOnly?: boolean;
   /** Compile-time-detectable behavior differences from Node (SC6xxx):
    * the program compiles, but these sites can behave differently natively.
    * Never blockers; `--fail-on=divergences` opts into failing on them. */
@@ -155,6 +158,15 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
       out.push(`          ${c(DIM, `hint: ${b.group.hint}`)}`);
     }
   };
+  // `--coverage=reached` did not lower the unreached remainder, so its
+  // totals count the entry path's statements only. The footer says so,
+  // where the totals are read.
+  const renderReachedOnly = () => {
+    if (input.reachedOnly !== true) return;
+    out.push(
+      `  ${c(DIM, "note")}  unreached code was not analyzed; the totals count reached statements only and are not comparable with a full report`,
+    );
+  };
   out.push(`${c(BOLD, "scriptc coverage")} ${DIMPath(input.file, opts.color ?? false)}`);
   out.push("");
 
@@ -220,7 +232,8 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
     return out.join("\n");
   }
 
-  // Whole-program totals include reached and unreached statements.
+  // Whole-program totals include reached and unreached statements. A
+  // reached-only report has no unreached stats to add.
   const un = input.unreached;
   const total = input.stats.statementsTotal + (un?.stats.statementsTotal ?? 0);
   const failed = input.stats.statementsFailed + (un?.stats.statementsFailed ?? 0);
@@ -423,6 +436,7 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
       renderDivergences();
     }
     renderPerformance();
+    renderReachedOnly();
     return out.join("\n");
   }
 
@@ -464,6 +478,7 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
     renderDivergences();
   }
   renderPerformance();
+  renderReachedOnly();
   return out.join("\n");
 }
 
@@ -619,6 +634,7 @@ export function coverageEnvelope(
     compilerVersion: opts.compilerVersion,
     command: "coverage",
     entry: input.file,
+    ...(input.reachedOnly === true ? { coverageMode: "reached" as const } : {}),
     success: coveragePasses(input, opts.failOn ?? "blockers"),
     phase: input.preflightFailed
       ? "preflight"

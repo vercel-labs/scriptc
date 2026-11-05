@@ -1455,6 +1455,76 @@ export function lowerNetServerMaxConnectionsAssignment(
   };
 }
 
+/** The scr_net.h SCR_NET_OFF_* value of each event whose list the net
+ * server keeps. */
+const NET_SERVER_EVENT_KIND: Readonly<Record<string, number>> = {
+  error: 1,
+  close: 2,
+  listening: 3,
+  connection: 4,
+  secureConnection: 4,
+  timeout: 5,
+  drop: 6,
+  newListener: 7,
+  tlsClientError: 8,
+};
+
+/** The scr_http.h SCR_HTTP_OFF_* value of each HTTP request-side event. */
+const HTTP_SERVER_EVENT_KIND: Readonly<Record<string, number>> = {
+  request: 1,
+  checkContinue: 2,
+  checkExpectation: 3,
+  upgrade: 4,
+  connect: 5,
+  clientError: 6,
+};
+
+function serverEventKind(
+  table: Readonly<Record<string, number>>,
+  event: string | null,
+): number | null {
+  return event !== null && Object.hasOwn(table, event) ? table[event]! : null;
+}
+
+/** The listener signature a server event's list holds, the element type
+ * listeners() answers. A shorter listener is assignable to it (the call
+ * passes the event's arguments and the content ignores extra ones). */
+function serverEventListenerType(event: string | null): IrType {
+  switch (event) {
+    case "close":
+    case "listening":
+      return funcOf([], VOID);
+    case "connection":
+    case "secureConnection":
+    case "timeout":
+      return funcOf([NETSOCKET_T], VOID);
+    case "drop":
+      return funcOf([DYN], VOID);
+    case "newListener":
+      return funcOf([STRING], VOID);
+    case "tlsClientError":
+    case "clientError":
+      return funcOf([ERROR_T, NETSOCKET_T], VOID);
+    case "request":
+    case "checkContinue":
+    case "checkExpectation":
+      return funcOf([HTTPREQ_T, HTTPRES_T], VOID);
+    case "upgrade":
+    case "connect":
+      return funcOf([HTTPREQ_T, NETSOCKET_T, BYTES_U8], VOID);
+    default:
+      return funcOf([ERROR_T], VOID);
+  }
+}
+
+function serverEventNetKind(event: string | null): number | null {
+  return serverEventKind(NET_SERVER_EVENT_KIND, event);
+}
+
+function serverEventHttpKind(event: string | null): number | null {
+  return serverEventKind(HTTP_SERVER_EVENT_KIND, event);
+}
+
 /** Method calls on net.Server receivers: listen(port[, cb]), close([cb]),
  * on/once("connection" | "error" | "close", cb). address() alone fences
  * toward the composed address().port read. Null for other receivers. */
@@ -2008,6 +2078,26 @@ function lowerNetServerMethodCall(
         loc,
       };
     }
+    if (event === "newListener") {
+      // Node's meta event, fired with the event name BEFORE a listener
+      // joins its list (a handler that throws abandons the add).
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        "newListener listeners",
+        1,
+        (p) => p.kind === "string",
+        "use (event) or ()",
+        [STRING],
+      );
+      return {
+        kind: "libCall",
+        fn: "net.serverOnNewListener",
+        args: [receiver, cb, once],
+        type: VOID,
+        loc,
+      };
+    }
     if (event === "connection" || event === "secureConnection") {
       // 'secureConnection' rides the same list: a TLS server's
       // 'connection' listeners are DEFERRED to handshake completion
@@ -2343,27 +2433,13 @@ function lowerNetServerMethodCall(
     requireStatementPosition(lowerer, call, `server.${name}(...)`);
     const evT = lowerer.typeOf(args[0]!);
     const event = evT.isStringLiteralType() ? evT.value : null;
-    const kind =
-      event === null
-        ? null
-        : event === "error"
-          ? 1
-          : event === "close"
-            ? 2
-            : event === "listening"
-              ? 3
-              : event === "connection" || event === "secureConnection"
-                ? 4
-                : event === "timeout"
-                  ? 5
-                  : event === "drop"
-                    ? 6
-                    : null;
-    if (kind === null) {
+    const netKind = serverEventNetKind(event);
+    const httpKind = serverEventHttpKind(event);
+    if (netKind === null && httpKind === null) {
       lowerer.noLowering(
         `server.${name}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
         args[0]!,
-        '"error", "close", "listening", "connection", "secureConnection", "timeout", and "drop" are the events off/removeListener removes (as literals)',
+        '"error", "close", "listening", "connection", "secureConnection", "timeout", "drop", "newListener", "tlsClientError", "request", "checkContinue", "checkExpectation", "upgrade", "connect", and "clientError" are the events off/removeListener removes (as literals)',
       );
     }
     const receiver = coerceToHandle(lowerer, access.expression, NETSERVER_T);
@@ -2377,9 +2453,35 @@ function lowerNetServerMethodCall(
     }
     return {
       kind: "libCall",
-      fn: "net.serverOff",
-      args: [receiver, listener, numLit(kind, loc)],
+      fn: httpKind !== null ? "http.serverOff" : "net.serverOff",
+      args: [receiver, listener, numLit(httpKind ?? netKind!, loc)],
       type: VOID,
+      loc,
+    };
+  }
+  if (name === "listeners" && args.length === 1) {
+    // server.listeners(event): the event's listeners in registration
+    // order, each the function value the program registered (Node's
+    // identity), typed as a function array. The event families the
+    // runtime keeps a list for; the rest refuse rather than answer an
+    // empty array.
+    const evT = lowerer.typeOf(args[0]!);
+    const event = evT.isStringLiteralType() ? evT.value : null;
+    const netKind = serverEventNetKind(event);
+    const httpKind = serverEventHttpKind(event);
+    if (netKind === null && httpKind === null) {
+      lowerer.noLowering(
+        `server.listeners(${event === null ? "non-literal event" : `"${event}"`})`,
+        args[0]!,
+        '"error", "close", "listening", "connection", "secureConnection", "timeout", "drop", "newListener", "tlsClientError", "request", "checkContinue", "checkExpectation", "upgrade", "connect", and "clientError" are the events listeners() reads (as literals)',
+      );
+    }
+    const receiver = coerceToHandle(lowerer, access.expression, NETSERVER_T);
+    return {
+      kind: "libCall",
+      fn: httpKind !== null ? "http.serverListeners" : "net.serverListeners",
+      args: [receiver, numLit(httpKind ?? netKind!, loc)],
+      type: arrayOf(serverEventListenerType(event)),
       loc,
     };
   }

@@ -50,6 +50,28 @@ Blockers in unreached code and deferred operations in JavaScript packages are li
 
 If a function's signature can't compile, the statements in its body count as not compiling, so the percentage reflects how much of the program compiles. The report still lists the diagnostics of those statements; a use of a parameter whose type can't compile reports `SC2004` back to the signature.
 
+<span id="large-programs" />
+
+## Large programs
+
+A full report lowers the entry path, then lowers the rest of the program to list its diagnostics. On a large program the second pass can need more memory than the analysis has.
+
+Analyze one entrypoint per run, and pass `--coverage=reached` to skip the second pass:
+
+```console
+$ scriptc coverage hello.ts --coverage=reached
+
+  statements analyzed   2
+  compile statically    2  (100%)
+
+  fully static — all analyzed statements compile to native code.
+  note  unreached code was not analyzed; the totals count reached statements only and are not comparable with a full report
+```
+
+The report then has no "in unreached code" group, and its totals count only the statements the entry path reaches. A function whose signature can't compile still lists its body's diagnostics when the entry path reaches it. The note marks the totals as not comparable with a full report.
+
+`--coverage=reached` can't be combined with `--explain-dynamic`, which needs the unreached code.
+
 <span id="programs-that-require-dynamic-execution" />
 <span id="analyze-with-dynamic" />
 <span id="embedded-nodejs-builtins" />

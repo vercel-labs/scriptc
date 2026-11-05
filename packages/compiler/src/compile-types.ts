@@ -240,7 +240,17 @@ export type CompileLibraryResult =
     }
   | { ok: false; diagnostics: ScrDiagnostic[]; sourceTexts: Map<string, string> };
 
+/** What a coverage analysis lowers. "full" lowers the unreached remainder
+ * in a throwaway pass; "reached" skips it, so the report covers the entry
+ * path only. */
+export type CoverageMode = "full" | "reached";
+
 export interface AnalyzeOptions {
+  /** `--coverage`: "full" (the default) also lowers the code the entry never
+   * reaches, in a throwaway pass. "reached" skips it: the report has no
+   * unreached group, its statement totals count reached statements only,
+   * and it says the unreached code was not analyzed. */
+  coverage?: CoverageMode;
   /** --npm-static (see CompileOptions.npmStatic): the analysis compiles
    * opted-in packages' JS as program modules and the coverage report
    * carries each package's native/refused status. */

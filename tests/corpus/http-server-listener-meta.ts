@@ -1,0 +1,92 @@
+// The server's EventEmitter surface: 'newListener' fires with the event
+// name BEFORE a listener joins a list and a handler that throws abandons
+// the add, listeners() answers the registered functions in registration
+// order (Node's identity), and off/removeListener removes the most
+// recently added match. The HTTP request-side events and the net server's
+// own lists answer the same way.
+import * as http from "node:http";
+import * as net from "node:net";
+import type { AddressInfo } from "node:net";
+
+const order: string[] = [];
+const base = (_req: http.IncomingMessage, res: http.ServerResponse) => res.end("create");
+const server = http.createServer(base);
+
+const seen = (event: string) => {
+  order.push(event);
+};
+const first = (_req: http.IncomingMessage, res: http.ServerResponse) => res.end("first");
+const second = (_req: http.IncomingMessage, res: http.ServerResponse) => res.end("second");
+
+server.on("newListener", seen);
+server.on("request", first);
+server.on("close", () => {});
+console.log("notified", order.join(","));
+
+const before = server.listeners("request");
+console.log("request listeners", before.length, before.includes(first), before.includes(second));
+console.log("close listeners", server.listeners("close").length);
+console.log("error listeners", server.listeners("error").length);
+
+server.off("request", first);
+const after = server.listeners("request");
+console.log("after off", after.length, after.includes(first));
+server.on("request", second);
+
+// A throwing 'newListener' handler abandons the add that fired it.
+const boom = () => {
+  throw new Error("boom");
+};
+server.on("newListener", boom);
+const third = (_req: http.IncomingMessage, res: http.ServerResponse) => res.end("third");
+try {
+  server.on("request", third);
+  console.log("unexpected add");
+} catch (e) {
+  console.log("aborted", (e as Error).message);
+}
+console.log("unchanged", server.listeners("request").length);
+server.off("newListener", boom);
+
+// once('newListener') fires for the next add only.
+const onceSeen: string[] = [];
+server.once("newListener", (event: string) => onceSeen.push(event));
+server.on("timeout", () => {});
+server.on("timeout", () => {});
+console.log("once", onceSeen.join(","));
+
+server.off("newListener", seen);
+console.log("newListener listeners", server.listeners("newListener").length);
+server.off("request", base);
+console.log("answering", server.listeners("request").length);
+
+server.listen(0, () => {
+  const port = (server.address() as AddressInfo).port;
+  http.get({ host: "127.0.0.1", port }, (res) => {
+    res.setEncoding("utf8");
+    res.on("data", (chunk: string) => console.log("body", chunk));
+    res.on("end", () => {
+      server.close(() => {
+        const netServer = net.createServer();
+        const netOrder: string[] = [];
+        const onConnection = (socket: net.Socket) => socket.end("connected");
+        netServer.on("newListener", (event: string) => netOrder.push(event));
+        netServer.on("connection", onConnection);
+        console.log("net notified", netOrder.join(","));
+        console.log("net connection listeners", netServer.listeners("connection").length);
+        netServer.off("connection", onConnection);
+        netServer.on("connection", (socket: net.Socket) => socket.end("again"));
+        console.log("net after off", netServer.listeners("connection").length);
+        netServer.listen(0, () => {
+          const netPort = (netServer.address() as AddressInfo).port;
+          const client = net.connect(netPort, "127.0.0.1");
+          client.setEncoding("utf8");
+          client.on("data", (chunk: string) => console.log("net body", chunk));
+          client.on("close", () => {
+            netServer.close(() => {});
+          });
+        });
+      });
+    });
+  });
+});

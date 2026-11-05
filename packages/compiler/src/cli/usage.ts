@@ -46,6 +46,14 @@ Options:
                      island (eager-node-islands is the same until deferred
                      evaluation lands), or a gap island (a package scriptc
                      should compile but cannot yet)
+      --coverage <full|reached>
+                     coverage only: how much of the program to analyze.
+                     full (the default) also lowers code the entry never
+                     reaches. reached skips that pass, for a large program
+                     whose analysis would otherwise run out of memory; its
+                     report has no unreached group, counts reached
+                     statements only, and is not comparable with a full
+                     report
       --backend <b>  code generator (llvm)
       --optimization <release|dev|speed>
                      native optimization posture (default: release/-O2). dev
@@ -199,6 +207,7 @@ export const CLI_OPTIONS = {
   emit: { type: "string" },
   print: { type: "string" },
   "fail-on": { type: "string" },
+  coverage: { type: "string" },
   backend: { type: "string" },
   optimization: { type: "string" },
   strip: { type: "boolean", default: false },

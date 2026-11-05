@@ -374,6 +374,44 @@ static ScrClosure *scr_net_listener_root(const ScrNetL *e) {
   return c->identity ? c->identity : c;
 }
 
+/* The closure array 'listeners' answers: every entry's function value in
+ * list order, each +1. */
+static ScrArrOps scr_net_closure_arr_ops = { &scr_closure_retain_v, &scr_closure_release_v,
+                                             &scr_closure_trace_v };
+
+ScrArr *scr_net_ls_closure_array(ScrNetLs *l) {
+  ScrArr *out = scr_arr_new_ops(&scr_net_closure_arr_ops, 0);
+  if (l == NULL) return out;
+  for (size_t i = 0; i < l->n; i++) {
+    scr_arr_push_ref(out, scr_closure_retain(scr_net_listener_root(&l->ls[i])));
+  }
+  return out;
+}
+
+/* The 'newListener' thunks: the listener takes the event name, which the
+ * runtime hands over borrowed and the thunk retains for it. */
+void scr_net_new_listener_thunk0(ScrClosure *cb, ScrStr *name) {
+  (void)name;
+  ((void (*)(ScrClosure *))cb->fn)(cb);
+}
+
+void scr_net_new_listener_thunk1(ScrClosure *cb, ScrStr *name) {
+  ((void (*)(ScrClosure *, ScrStr *))cb->fn)(cb, scr_str_retain(name));
+}
+
+void scr_net_ls_remove_last(ScrNetLs *l, ScrClosure *cb /*borrowed*/) {
+  ScrClosure *root = cb->identity ? cb->identity : cb;
+  for (size_t left = l->n; left > 0; left--) {
+    size_t i = left - 1;
+    if (scr_net_listener_root(&l->ls[i]) != root) continue;
+    scr_closure_release(l->ls[i].cb);
+    scr_net_once_release(l->ls[i].shared_once);
+    memmove(&l->ls[i], &l->ls[i + 1], (l->n - i - 1) * sizeof *l->ls);
+    l->n--;
+    return;
+  }
+}
+
 /* The listener standing for the same function as `root` (through any
  * adapter) leaves the list: removeListener's first match. */
 static void scr_net_ls_remove_fn(ScrNetLs *l, ScrClosure *root) {
@@ -542,6 +580,8 @@ struct ScrNetServer {
   ScrStr *unix_path;   /* listen(path): the bound socket file, removed at close */
   size_t nconns;
   ScrNetLs conn_ls, err_ls, close_ls, listening_cbs, timeout_ls;
+  /* 'newListener' (event): Node's meta event, fired before every add */
+  ScrNetLs new_listener_ls;
   /* tls/https servers: 'tlsClientError' (err, tlsSocket), fired by the
    * TLS unit for a handshake that fails */
   ScrNetLs client_error_ls;
@@ -833,6 +873,7 @@ void scr_net_server_release(ScrNetServer *s) {
     scr_net_ls_drop(&s->listening_cbs);
     scr_net_ls_drop(&s->timeout_ls);
     scr_net_ls_drop(&s->drop_ls);
+    scr_net_ls_drop(&s->new_listener_ls);
     scr_als_ctx_release(s->listen_ctx);
     scr_als_ctx_release(s->close_ctx);
     scr_closure_release(s->close_override);
@@ -2527,8 +2568,32 @@ void scr_net_server_drop_max_connection_set(ScrNetServer *s, const ScrDyn *value
   s->drop_max_connection = scr_dyn_retain((ScrDyn *)value);
 }
 
+void scr_net_server_notify_new_listener(ScrNetServer *s, const char *event) {
+  if (s->new_listener_ls.n == 0) return;
+  ScrNetL *snap;
+  size_t n = scr_net_ls_snapshot(&s->new_listener_ls, &snap);
+  ScrStr *name = scr_str_new(event, strlen(event));
+  scr_dyn_this_push(s, SCR_DYNH_NET_SERVER);
+  for (size_t i = 0; i < n; i++) {
+    if (!scr_exc_pending()) {
+      ((void (*)(ScrClosure *, ScrStr *))snap[i].fn)(snap[i].cb, name);
+    }
+    scr_closure_release(snap[i].cb);
+  }
+  scr_dyn_this_pop();
+  scr_str_release(name);
+  free(snap);
+}
+
+/* A registration the server keeps or drops: 'newListener' fires before the
+ * add, and a handler's throw abandons the add, as in Node's addListener. */
+static bool scr_net_server_add_blocked(ScrNetServer *s, const char *event) {
+  scr_net_server_notify_new_listener(s, event);
+  return scr_exc_pending();
+}
+
 void scr_net_server_on_drop(ScrNetServer *s, const ScrDyn *listener /*borrowed*/, bool once) {
-  if (s->close_emitted) return;
+  if (s->close_emitted || scr_net_server_add_blocked(s, "drop")) return;
   scr_net_ls_add(&s->drop_ls, scr_dyn_listener_closure_fn(listener, (void *)&scr_net_dyn_fire_arg),
                  (void *)&scr_net_dyn_fire_arg, once);
 }
@@ -2563,7 +2628,7 @@ void scr_net_server_set_close_override(ScrNetServer *s, ScrClosure *ov /*moves*/
 }
 
 void scr_net_server_on_client_error(ScrNetServer *s, ScrClosure *cb /*moves*/, void *fn, bool once) {
-  if (s->close_emitted) {
+  if (s->close_emitted || scr_net_server_add_blocked(s, "tlsClientError")) {
     scr_closure_release(cb);
     return;
   }
@@ -2609,9 +2674,18 @@ void scr_net_client_error_thunk2(ScrClosure *cb, ScrError *err, ScrNetSocket *so
                                                               scr_net_sock_retain(sock));
 }
 
+void scr_net_server_on_new_listener(ScrNetServer *s, ScrClosure *cb /*moves*/, void *fn,
+                                    bool once) {
+  if (s->close_emitted || scr_net_server_add_blocked(s, "newListener")) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_net_ls_add(&s->new_listener_ls, cb, fn, once);
+}
+
 void scr_net_server_on_error(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrChildErrFn fn,
                               bool once) {
-  if (s->close_emitted) {
+  if (s->close_emitted || scr_net_server_add_blocked(s, "error")) {
     scr_closure_release(cb);
     return;
   }
@@ -2619,7 +2693,7 @@ void scr_net_server_on_error(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrChild
 }
 
 void scr_net_server_on_close(ScrNetServer *s, ScrClosure *cb /*moves*/, bool once) {
-  if (s->close_emitted) {
+  if (s->close_emitted || scr_net_server_add_blocked(s, "close")) {
     scr_closure_release(cb);
     return;
   }
@@ -2632,25 +2706,29 @@ void scr_net_server_on_close(ScrNetServer *s, ScrClosure *cb /*moves*/, bool onc
  * the most recently added match, so the scan runs back to front. The
  * SCR_NET_SERVER_OFF build of the unit carries it, so a program that never
  * removes a listener keeps the default object byte for byte. */
-void scr_net_server_off(ScrNetServer *s, ScrClosure *cb /*borrowed*/, double kind) {
-  ScrNetLs *l = kind == SCR_NET_OFF_ERROR      ? &s->err_ls
-                : kind == SCR_NET_OFF_CLOSE    ? &s->close_ls
-                : kind == SCR_NET_OFF_LISTENING ? &s->listening_cbs
-                : kind == SCR_NET_OFF_CONNECTION ? &s->conn_ls
-                : kind == SCR_NET_OFF_TIMEOUT  ? &s->timeout_ls
-                : kind == SCR_NET_OFF_DROP     ? &s->drop_ls
-                                               : NULL;
-  if (l == NULL) return;
-  ScrClosure *root = cb->identity ? cb->identity : cb;
-  for (size_t left = l->n; left > 0; left--) {
-    size_t i = left - 1;
-    if (scr_net_listener_root(&l->ls[i]) != root) continue;
-    scr_closure_release(l->ls[i].cb);
-    scr_net_once_release(l->ls[i].shared_once);
-    memmove(&l->ls[i], &l->ls[i + 1], (l->n - i - 1) * sizeof *l->ls);
-    l->n--;
-    return;
+/* The list an SCR_NET_OFF_* kind names; NULL for a kind this server does
+ * not have. */
+static ScrNetLs *scr_net_server_event_list(ScrNetServer *s, double kind) {
+  switch ((int)kind) {
+  case SCR_NET_OFF_ERROR: return &s->err_ls;
+  case SCR_NET_OFF_CLOSE: return &s->close_ls;
+  case SCR_NET_OFF_LISTENING: return &s->listening_cbs;
+  case SCR_NET_OFF_CONNECTION: return &s->conn_ls;
+  case SCR_NET_OFF_TIMEOUT: return &s->timeout_ls;
+  case SCR_NET_OFF_DROP: return &s->drop_ls;
+  case SCR_NET_OFF_NEW_LISTENER: return &s->new_listener_ls;
+  case SCR_NET_OFF_CLIENT_ERROR: return &s->client_error_ls;
+  default: return NULL;
   }
+}
+
+void scr_net_server_off(ScrNetServer *s, ScrClosure *cb /*borrowed*/, double kind) {
+  ScrNetLs *l = scr_net_server_event_list(s, kind);
+  if (l != NULL) scr_net_ls_remove_last(l, cb);
+}
+
+ScrArr *scr_net_server_listeners(ScrNetServer *s, double kind) {
+  return scr_net_ls_closure_array(scr_net_server_event_list(s, kind));
 }
 #endif
 
@@ -2660,7 +2738,7 @@ void scr_net_server_off(ScrNetServer *s, ScrClosure *cb /*borrowed*/, double kin
  * emit sits inert forever, exactly Node's once-per-listen event; a
  * settled (closed) server releases the closure unregistered. */
 void scr_net_server_on_listening(ScrNetServer *s, ScrClosure *cb /*moves*/, bool once) {
-  if (s->close_emitted) {
+  if (s->close_emitted || scr_net_server_add_blocked(s, "listening")) {
     scr_closure_release(cb);
     return;
   }
@@ -2673,16 +2751,20 @@ void scr_net_server_on_listening(ScrNetServer *s, ScrClosure *cb /*moves*/, bool
  * released unread. */
 void scr_net_server_on_secure_connection(ScrNetServer *s, ScrClosure *cb /*moves*/,
                                           ScrNetConnFn fn, bool once) {
+  if (s->close_emitted || scr_net_server_add_blocked(s, "secureConnection")) {
+    scr_closure_release(cb);
+    return;
+  }
   if (!s->defer_conn) {
     scr_closure_release(cb);
     return;
   }
-  scr_net_server_on_connection(s, cb, fn, once);
+  scr_net_ls_add(&s->conn_ls, cb, (void *)fn, once);
 }
 
 void scr_net_server_on_connection(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrNetConnFn fn,
                                    bool once) {
-  if (s->close_emitted) {
+  if (s->close_emitted || scr_net_server_add_blocked(s, "connection")) {
     scr_closure_release(cb);
     return;
   }
@@ -2691,7 +2773,7 @@ void scr_net_server_on_connection(ScrNetServer *s, ScrClosure *cb /*moves*/, Scr
 
 void scr_net_server_on_timeout(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrNetConnFn fn,
                                 bool once) {
-  if (s->close_emitted) {
+  if (s->close_emitted || scr_net_server_add_blocked(s, "timeout")) {
     scr_closure_release(cb);
     return;
   }

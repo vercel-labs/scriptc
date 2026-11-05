@@ -168,6 +168,10 @@ export interface DiagnosticsEnvelope {
    * "compile" when blockers remain, "native" when native code generation
    * or linking failed, "complete" otherwise. */
   phase: "preflight" | "compile" | "native" | "complete";
+  /** coverage `--coverage=reached` only: the unreached remainder was not
+   * analyzed. `stats` then counts reached statements only, and no group or
+   * diagnostic carries the `unreached` scope. Absent otherwise. */
+  coverageMode?: "reached";
   stats?: {
     statementsTotal: number;
     statementsStatic: number;

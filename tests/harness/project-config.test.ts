@@ -1511,6 +1511,65 @@ process.stdin.on("end", () => {
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
+test("no-types-node: uncaught exception listeners type on the fallback declarations", async () => {
+  // The monitor and handler families are declared only in the shipped
+  // fallback; a project without @types/node types them from there. The
+  // listener receives the thrown value, so the parameter is unknown. The
+  // program registers through on, once, off, and prependListener, then
+  // throws from a timer so both families observe it before exit.
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-bare-uncaught-"));
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
+  writeFileSync(
+    join(dir, "main.ts"),
+    `const seen: string[] = [];
+process.on("exit", (code: number) => {
+  console.log("exit", code, seen.join(","));
+});
+const message = (err: unknown) => (err instanceof Error ? err.message : typeof err);
+const firstMonitor = (err: unknown, origin: string) => {
+  seen.push("prepend monitor " + message(err) + " " + origin);
+};
+process.prependListener("uncaughtExceptionMonitor", firstMonitor);
+process.on("uncaughtExceptionMonitor", (err: unknown, origin: string) => {
+  seen.push("monitor " + message(err) + " " + origin);
+});
+const handler = (err: unknown, origin: string) => {
+  seen.push("handler " + message(err) + " " + origin);
+};
+process.on("uncaughtException", handler);
+process.off("uncaughtException", handler);
+const firstHandler = (err: unknown, origin: string) => {
+  seen.push("prepend handler " + message(err) + " " + origin);
+};
+process.prependListener("uncaughtException", firstHandler);
+process.once("uncaughtException", (err: unknown) => {
+  seen.push("once " + message(err));
+});
+setTimeout(() => {
+  throw new Error("kaboom");
+}, 0);
+`,
+  );
+  const outDir = outDirFor("bare-uncaught");
+  const result = await compile(join(dir, "main.ts"), {
+    outPath: join(outDir, "main"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, [
+      "--disable-warning=MODULE_TYPELESS_PACKAGE_JSON",
+      join(dir, "main.ts"),
+    ]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(native.stdout).toContain("prepend monitor kaboom uncaughtException");
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
 test("dot-parent: bare '.' and '..' imports build and run (the TS project dialect)", async () => {
   // The vercel-CLI spelling (`from '..'` for a parent directory's index):
   // scriptc-only — Node refuses directory imports when running raw TS as

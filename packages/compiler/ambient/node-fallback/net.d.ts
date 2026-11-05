@@ -265,15 +265,32 @@ declare module "net" {
       event: "request" | "checkContinue" | "checkExpectation",
       listener: (req: import("http").IncomingMessage, res: import("http").ServerResponse) => void,
     ): void;
+    /* The EventEmitter meta event: fires with the event name before a
+     * listener joins any of the server's lists. */
+    on(event: "newListener", listener: (event: string) => void): void;
+    addListener(event: "newListener", listener: (event: string) => void): void;
+    once(event: "newListener", listener: (event: string) => void): void;
     /* off / removeListener: the LAST listener standing for the same
-     * function leaves that event's list (Node's EventEmitter order). The
-     * server registries that keep a removable list: error, close,
-     * listening, connection/secureConnection, timeout, and drop. */
+     * function leaves that event's list (Node's EventEmitter order). */
     off(event: "error", listener: (err: Error) => void): void;
     off(event: "close" | "listening", listener: () => void): void;
     off(event: "connection" | "secureConnection", listener: (socket: Socket) => void): void;
     off(event: "timeout", listener: (socket: Socket) => void): void;
     off(event: "drop", listener: (data?: DropArgument) => void): void;
+    off(event: "newListener", listener: (event: string) => void): void;
+    off(
+      event: "tlsClientError",
+      listener: (err: Error, tlsSocket: import("tls").TLSSocket) => void,
+    ): void;
+    off(event: "clientError", listener: (err: Error, socket: Socket) => void): void;
+    off(
+      event: "upgrade" | "connect",
+      listener: (req: import("http").IncomingMessage, socket: Socket, head: Buffer) => void,
+    ): void;
+    off(
+      event: "request" | "checkContinue" | "checkExpectation",
+      listener: (req: import("http").IncomingMessage, res: import("http").ServerResponse) => void,
+    ): void;
     removeListener(event: "error", listener: (err: Error) => void): void;
     removeListener(event: "close" | "listening", listener: () => void): void;
     removeListener(
@@ -282,6 +299,39 @@ declare module "net" {
     ): void;
     removeListener(event: "timeout", listener: (socket: Socket) => void): void;
     removeListener(event: "drop", listener: (data?: DropArgument) => void): void;
+    removeListener(event: "newListener", listener: (event: string) => void): void;
+    removeListener(
+      event: "tlsClientError",
+      listener: (err: Error, tlsSocket: import("tls").TLSSocket) => void,
+    ): void;
+    removeListener(event: "clientError", listener: (err: Error, socket: Socket) => void): void;
+    removeListener(
+      event: "upgrade" | "connect",
+      listener: (req: import("http").IncomingMessage, socket: Socket, head: Buffer) => void,
+    ): void;
+    removeListener(
+      event: "request" | "checkContinue" | "checkExpectation",
+      listener: (req: import("http").IncomingMessage, res: import("http").ServerResponse) => void,
+    ): void;
+    /* The event's listeners in registration order, each the function the
+     * program registered (Node's identity semantics), typed by the event's
+     * listener shape. */
+    listeners(event: "error"): ((err: Error) => void)[];
+    listeners(event: "close" | "listening"): (() => void)[];
+    listeners(event: "connection" | "secureConnection"): ((socket: Socket) => void)[];
+    listeners(event: "timeout"): ((socket: Socket) => void)[];
+    listeners(event: "drop"): ((data?: DropArgument) => void)[];
+    listeners(event: "newListener"): ((event: string) => void)[];
+    listeners(
+      event: "tlsClientError",
+    ): ((err: Error, tlsSocket: import("tls").TLSSocket) => void)[];
+    listeners(event: "clientError"): ((err: Error, socket: Socket) => void)[];
+    listeners(
+      event: "upgrade" | "connect",
+    ): ((req: import("http").IncomingMessage, socket: Socket, head: Buffer) => void)[];
+    listeners(
+      event: "request" | "checkContinue" | "checkExpectation",
+    ): ((req: import("http").IncomingMessage, res: import("http").ServerResponse) => void)[];
   }
   /* The 'drop' payload: the turned-away connection's addresses. */
   export interface DropArgument {

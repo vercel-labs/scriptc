@@ -440,6 +440,21 @@ export function variantsFor(source) {
       defines: ["SCR_HANDLE_CLASSES"],
     });
   }
+  // A Blob or File request body sends the blob's bytes and type, as Node
+  // does; programs that build no Blob or File keep the default fetch unit
+  // byte for byte, and the combination with web streams has its own build.
+  if (source === "scr_fetch.c") {
+    variants.push({
+      id: "web-bodies",
+      when: { webBodies: true },
+      defines: ["SCR_WEB_BODIES"],
+    });
+    variants.push({
+      id: "handle-classes-web-bodies",
+      when: { webStreams: true, webBodies: true },
+      defines: ["SCR_HANDLE_CLASSES", "SCR_WEB_BODIES"],
+    });
+  }
   // instanceof over both web stream and Node island handles.
   if (source === "scr_dyn_builtin_class.c") {
     variants.push({

@@ -435,6 +435,22 @@ test("indexed-strict: the project's EXTRA strictness is honored — preflight fa
   expect(result.diagnostics.some((d) => d.message.includes("possibly 'undefined'"))).toBe(true);
 });
 
+test("spi-off-union-field: a union-typed field with an initializer compiles under strictPropertyInitialization OFF", async () => {
+  const outDir = outDirFor("spi-off-union-field");
+  const entry = join(fixture("spi-off-union-field"), "main.ts");
+  const result = await compile(entry, { outPath: join(outDir, "main"), outDir, sanitize });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  // The same program without the field initializer is fenced (see
+  // tests/fixtures/strictness/spi-off-union-field/main.ts and the
+  // diagnostics/spi-off fixture); Node is the oracle for this direction.
+  expect(native.stdout).toBe(node.stdout);
+});
+
 test("project paths: TS 7 checking and native module lowering share the configured aliases", async () => {
   const outDir = outDirFor("project-paths");
   const result = await compile(join(fixture("project-paths"), "main.ts"), {

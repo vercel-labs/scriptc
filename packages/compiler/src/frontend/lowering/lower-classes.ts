@@ -1,9 +1,11 @@
+import { fenceLocation } from "../flow/index.js";
 import {
   isJsIteratorGlobal,
   iteratorPrototypeExpr,
   lowerIteratorNew,
 } from "./iterator-prototype.js";
 import { lowerWrapperNew } from "./primitive-wrappers.js";
+import { constructorFunctionOf, lowerConstructorFunctionNew } from "./constructor-functions.js";
 import { lowerAsyncLocalStorageOptions } from "./builtins/async-context.js";
 import { shapeOverlayAnnotated } from "../shape-inference/index.js";
 import {
@@ -97,6 +99,7 @@ import {
   isSupportedSetElem,
   isUnitType,
   typeEquals,
+  sortArms,
 } from "../../ir/ir.js";
 import {
   genericCallInstance,
@@ -1602,13 +1605,13 @@ function undefArmedFieldType(lowerer: Lowerer, p: ts.Symbol): IrType | null {
   const arms =
     mapped.kind === "union" ? (lowerer.unions.get(mapped.unionId)?.arms ?? []) : [mapped];
   for (const a of arms) {
-    if (a.kind === "map" || a.kind === "regex" || a.kind === "generator") {
+    if (a.kind === "regex" || a.kind === "generator") {
       return null;
     }
     byKey.set(typeKey(a), a);
   }
   byKey.set(typeKey(UNDEFINED_T), UNDEFINED_T);
-  const sorted = [...byKey.values()].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  const sorted = sortArms([...byKey.values()]);
   return { kind: "union", unionId: lowerer.unions.intern(sorted) };
 }
 
@@ -10245,7 +10248,7 @@ export function inheritedBuiltinCtorFence(
     info.decl !== null
       ? ts.getLineAndCharacterOfPosition(ts.getSourceFileOfNode(info.decl), at.start).line + 1
       : null;
-  const where = line !== null ? ` [${diag.code} at ${at.file}:${line}]` : "";
+  const where = line !== null ? ` [${diag.code} at ${fenceLocation(at.file, at.start, line)}]` : "";
   return { kind: "runtimeFence", code: diag.code, message: `${diag.message}${where}`, loc };
 }
 
@@ -10679,6 +10682,14 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     const hostGlobal = hostGlobalNameOfRead(lowerer, expr.expression);
     if (hostGlobal !== null) lowerer.hostGlobalFence(hostGlobal, expr.expression);
   }
+  // A constructor function building the record its context names
+  // (constructor-functions.ts).
+  if (constructorFunctionOf(lowerer, expr) !== null) {
+    const contextual = lowerer.checker.getContextualType(expr);
+    const expected = contextual ? lowerer.mapTypeOf(contextual) : null;
+    const factory = expected ? lowerConstructorFunctionNew(lowerer, expr, expected) : null;
+    if (factory) return factory;
+  }
   // The deprecated `new Buffer(...)` (containers/bytes.ts).
   {
     const buffer = lowerBufferConstruct(lowerer, expr);
@@ -10783,9 +10794,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
           ? yesType
           : {
               kind: "union",
-              unionId: lowerer.unions.intern(
-                [yesType, noType].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1)),
-              ),
+              unionId: lowerer.unions.intern(sortArms([yesType, noType])),
             };
       return {
         kind: "ternary",
@@ -10900,7 +10909,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         ),
       );
       const line = ts.getLineAndCharacterOfPosition(ts.getSourceFileOfNode(expr), loc.start).line;
-      const refusal = `${surface} is not supported yet [SC2020 at ${loc.file}:${line + 1}]`;
+      const refusal = `${surface} is not supported yet [SC2020 at ${fenceLocation(loc.file, loc.start, line + 1)}]`;
       result = {
         kind: "libCall",
         fn: "intl.segmenterRefusing",

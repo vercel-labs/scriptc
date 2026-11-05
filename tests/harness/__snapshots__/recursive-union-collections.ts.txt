@@ -1,0 +1,8 @@
+recursive-union-collections.ts:6:14 - error SC2009: values of type 'Tree' cannot be compiled: the union shape is supported, but its arm 'Set<Tree>' does not compile: the record shape is supported, but its member 'add(value).add' has type '(value: Tree) => Set<Tree>', which does not compile: the function shape is supported, but its parameter 'value' has type 'Tree', which does not compile
+
+  5 | 
+  6 | export const tree: Tree = "leaf";
+    |              ^~~~
+  7 | 
+
+  hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')

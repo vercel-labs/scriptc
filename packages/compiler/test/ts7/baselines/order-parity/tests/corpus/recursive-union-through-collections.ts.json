@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/recursive-union-through-collections.ts"
+ ],
+ "diags": []
+}

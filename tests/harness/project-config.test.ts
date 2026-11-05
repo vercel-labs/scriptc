@@ -435,6 +435,22 @@ test("indexed-strict: the project's EXTRA strictness is honored — preflight fa
   expect(result.diagnostics.some((d) => d.message.includes("possibly 'undefined'"))).toBe(true);
 });
 
+test("spi-off-union-field: a union-typed field with an initializer compiles under strictPropertyInitialization OFF", async () => {
+  const outDir = outDirFor("spi-off-union-field");
+  const entry = join(fixture("spi-off-union-field"), "main.ts");
+  const result = await compile(entry, { outPath: join(outDir, "main"), outDir, sanitize });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  // The same program without the field initializer is fenced (see
+  // tests/fixtures/strictness/spi-off-union-field/main.ts and the
+  // diagnostics/spi-off fixture); Node is the oracle for this direction.
+  expect(native.stdout).toBe(node.stdout);
+});
+
 test("project paths: TS 7 checking and native module lowering share the configured aliases", async () => {
   const outDir = outDirFor("project-paths");
   const result = await compile(join(fixture("project-paths"), "main.ts"), {
@@ -627,6 +643,23 @@ test("node-types: RequestInit-derived options carry BodyInit and HeadersInit int
   ]);
   expect(native.stdout).toBe(node.stdout);
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("node-types: a FormData fetch body fences by name instead of stringifying", async () => {
+  const outDir = outDirFor("fetch-formdata-body-fences");
+  const result = await compile(join(nodeTypesDir, "fetch-formdata-body-fences.ts"), {
+    outPath: join(outDir, "fetch-formdata-body-fences"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  const rendered = renderDiagnostics(result.diagnostics, result.sourceTexts, {
+    color: false,
+  }).replaceAll(nodeTypesDir + "/", "");
+  await expect(rendered).toMatchFileSnapshot(
+    "__snapshots__/node-types-fetch-formdata-body-fences.txt",
+  );
 });
 
 test("node-types: stream subclasses extend the @types/node stream classes", async () => {
@@ -1547,4 +1580,50 @@ test("node-types: a void slot takes a `() => process.off(...)` cleanup closure (
   ]);
   expect(native.stdout).toBe(node.stdout);
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("tsconfig paths onto the project's sources compile them, not the npm package of the same name", async () => {
+  // tests/fixtures/tsconfig-paths: `mathlib/*` maps onto src/lib, and
+  // node_modules/mathlib is a published package of the same name, whose
+  // double() multiplies by 100. Node itself ignores tsconfig paths.
+  const outDir = outDirFor("tsconfig-paths");
+  const entry = join(repoRoot, "tests/fixtures/tsconfig-paths/main.ts");
+  const result = await compile(entry, { outPath: join(outDir, "program"), outDir, sanitize });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const { stdout } = await execFileAsync(result.binaryPath);
+  expect(stdout).toBe("42\n");
+});
+
+test("moduleSubstitutions answer a module with another in a project without Flow", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-config-substitutions-"));
+  writeFileSync(
+    join(dir, "package.json"),
+    JSON.stringify({
+      type: "module",
+      scriptc: { moduleSubstitutions: { "config.ts": "config.node.ts" } },
+    }),
+  );
+  writeFileSync(
+    join(dir, "config.ts"),
+    'export default "generic";\nexport const mode = "generic";\n',
+  );
+  // The fork's default export follows a URL, whose `//` is no comment.
+  writeFileSync(
+    join(dir, "config.node.ts"),
+    'const url = "http://localhost:8080"; export default url;\nexport const mode = "node";\n',
+  );
+  writeFileSync(
+    join(dir, "main.ts"),
+    'import origin, { mode } from "./config.ts";\nconsole.log(mode, origin);\n',
+  );
+  const result = await compile(join(dir, "main.ts"), {
+    outPath: join(dir, "program"),
+    outDir: dir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const { stdout } = await execFileAsync(result.binaryPath);
+  expect(stdout).toBe("node http://localhost:8080\n");
 });

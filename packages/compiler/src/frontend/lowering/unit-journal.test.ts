@@ -45,7 +45,16 @@ const sized: Record<string, readonly string[]> = {
     "pendingRec",
     "extendedNames",
   ],
-  unions: ["keyedNameKeys", "byKey", "byId", "armTags", "unions", "recIds", "pendingRec"],
+  unions: [
+    "keyedNameKeys",
+    "byKey",
+    "byId",
+    "armTags",
+    "unions",
+    "recIds",
+    "pendingRec",
+    "unfinishedReach",
+  ],
   keyOrder: [
     "literals",
     "copies",

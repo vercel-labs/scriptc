@@ -1,3 +1,4 @@
+import { bindTypedReceiver, typedReceiverFunction } from "../receiver-binding.js";
 import { keyedHelperName } from "../stable-names.js";
 import { primitiveElement } from "../array-values.js";
 import { nodeThrowExpr, boolLit, countedFor, numLit, strLit, varRef } from "../../../ir/build.js";
@@ -50,6 +51,21 @@ import { isSearchParamsIterable } from "../builtins/url.js";
 import { classGeneratorIterable } from "../class-iterables.js";
 import { generatorDrain, lowerCollectionIteratorValue } from "../iterator-adapters.js";
 
+/** The collection arm of a unit-armed union — `Map | undefined`, the
+ * layout of a JS class field first assigned below the constructor's top
+ * level. Null unless the non-unit arm is exactly one Map (or Set) and every
+ * other arm is a unit: the runtime presence check below then narrows it. */
+function unitArmedCollectionArm(
+  lowerer: Lowerer,
+  type: IrType | null | undefined,
+  kind: "map" | "set",
+): IrType | null {
+  if (type?.kind !== "union") return null;
+  const arms = lowerer.unions.get(type.unionId)?.arms ?? [];
+  const arm = arms.find((a) => a.kind === kind);
+  return arm && arms.every((a) => a === arm || isUnitType(a)) ? arm : null;
+}
+
 /** Ambient Map method calls. `get`/`set`/`has`/`delete`/`clear` lower to
  * mapIntrinsic; `forEach` desugars to a direct call of a synthetic loop
  * function over the iteration primitives (lowerMapForEachCall). Null when
@@ -72,6 +88,7 @@ export function lowerMapMethodCall(
       probedUntyped = true;
     }
   }
+  if (receiverIr?.kind !== "map") receiverIr = unitArmedCollectionArm(lowerer, receiverIr, "map");
   if (receiverIr?.kind !== "map") return null;
   // Collection views can refine has() while retaining its native ABI.
   if (!probedUntyped && !lowerer.isStdlibMember(access) && name !== "has") return null;
@@ -509,9 +526,12 @@ export function lowerMapForEachCall(
     });
   }
   if (contextualTs !== null) lowerer.implicitParamTypes = contextualTs;
+  const typedReceiver = forEachTypedReceiver(lowerer, call);
   let fnArg: IrExpr;
   try {
-    fnArg = lowerer.lowerExpr(argNode);
+    fnArg = typedReceiver
+      ? bindTypedReceiver(lowerer, typedReceiver, call.arguments.nodes[1]!)
+      : lowerer.lowerExpr(argNode);
   } finally {
     lowerer.implicitParamTypes = previousImplicit;
     for (const { symbol, type } of previousRuntime) {
@@ -533,7 +553,7 @@ export function lowerMapForEachCall(
   // JS's forEach does.
   const arity = fnArg.type.params.length;
   const fnRet = fnArg.type.ret;
-  const thisArg = collectionForEachThisArg(lowerer, call);
+  const thisArg = typedReceiver ? null : collectionForEachThisArg(lowerer, call);
   const key = `${typeKey(mapT.key)}:${typeKey(mapT.value)}:${arity}:${typeKey(fnRet)}${thisArg ? ":this" : ""}`;
   let helper = lowerer.mapHofHelpers.get(key);
   if (!helper) {
@@ -626,6 +646,7 @@ export function lowerSetMethodCall(
       probedUntyped = true;
     }
   }
+  if (receiverIr?.kind !== "set") receiverIr = unitArmedCollectionArm(lowerer, receiverIr, "set");
   if (receiverIr?.kind !== "set") return null;
   // A collection interface may refine has() into a type predicate.
   // Type mapping checked that view's native ABI; the value check below
@@ -706,7 +727,10 @@ export function lowerSetForEachCall(
   const loc = locOf(call);
   const argNode = call.arguments.nodes[0];
   if (!argNode) lowerer.unsupported("SC1090", call, "this call form"); // tsc-guarded
-  const fnArg = lowerer.lowerExpr(argNode);
+  const typedReceiver = forEachTypedReceiver(lowerer, call);
+  const fnArg = typedReceiver
+    ? bindTypedReceiver(lowerer, typedReceiver, call.arguments.nodes[1]!)
+    : lowerer.lowerExpr(argNode);
   if (
     fnArg.type.kind !== "func" ||
     fnArg.type.params.length > 2 ||
@@ -716,7 +740,7 @@ export function lowerSetForEachCall(
   }
   const arity = fnArg.type.params.length;
   const fnRet = fnArg.type.ret;
-  const thisArg = collectionForEachThisArg(lowerer, call);
+  const thisArg = typedReceiver ? null : collectionForEachThisArg(lowerer, call);
   const key = `${typeKey(setT.elem)}:${arity}:${typeKey(fnRet)}${thisArg ? ":this" : ""}`;
   let helper = lowerer.setHofHelpers.get(key);
   if (!helper) {
@@ -1586,6 +1610,19 @@ function buildMapSeedFn(
     body,
     loc,
   };
+}
+
+/** The callback of `forEach(callback, thisArg)` when it names a function
+ * whose typed `this` is its first parameter: the receiver binds into a
+ * closure (receiver-binding.ts) instead of riding the helper's thisArg. */
+function forEachTypedReceiver(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+): ReturnType<typeof typedReceiverFunction> {
+  const [callback, thisArg] = call.arguments.nodes;
+  return callback !== undefined && thisArg !== undefined
+    ? typedReceiverFunction(lowerer, callback)
+    : null;
 }
 
 /** The optional thisArg of a `forEach(callback, thisArg)` call, lowered as

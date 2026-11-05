@@ -46,6 +46,10 @@ static const ScrAlsOptions *scr_als_options_of(double id) {
   return id >= 1 && i < scr_als_options_len ? &scr_als_options[i] : NULL;
 }
 
+/* The contexts a typed run() replaced, innermost last (scr_als_push). */
+static SCR_TL ScrAlsCtx **scr_als_saved;
+static SCR_TL size_t scr_als_saved_len, scr_als_saved_cap;
+
 /* Main-slot teardown (atexit, LIFO after scr_init's audit registration —
  * the dc-registry precedent): a top-level enterWith leaves a context in
  * the main slot at exit; release it before the RC audit counts. */
@@ -60,6 +64,10 @@ static void scr_als_teardown(void) {
   free(scr_als_options);
   scr_als_options = NULL;
   scr_als_options_len = 0;
+  /* The contexts typed run() saved (scr_als_push): empty between calls. */
+  free(scr_als_saved);
+  scr_als_saved = NULL;
+  scr_als_saved_len = scr_als_saved_cap = 0;
 }
 
 double scr_als_new(void) {
@@ -210,6 +218,21 @@ static ScrDyn *scr_als_call_in(ScrAlsCtx *prev, ScrDyn *fn, ScrDyn *args) {
 
 ScrDyn *scr_als_run(double id, ScrDyn *value, ScrDyn *fn, ScrDyn *args) {
   return scr_als_call_in(scr_als_enter(id, value), fn, args);
+}
+
+void scr_als_push(double id, ScrDyn *value) {
+  if (scr_als_saved_len == scr_als_saved_cap) {
+    size_t cap = scr_als_saved_cap ? scr_als_saved_cap * 2 : 16;
+    ScrAlsCtx **grown = realloc(scr_als_saved, cap * sizeof *grown);
+    if (!grown) scr_trap("scriptc: out of memory\n");
+    scr_als_saved = grown;
+    scr_als_saved_cap = cap;
+  }
+  scr_als_saved[scr_als_saved_len++] = scr_als_enter(id, value);
+}
+
+void scr_als_pop(void) {
+  if (scr_als_saved_len > 0) scr_als_restore(scr_als_saved[--scr_als_saved_len]);
 }
 
 /* exit() runs fn with the store undefined: a store with a default value

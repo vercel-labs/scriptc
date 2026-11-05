@@ -40,6 +40,15 @@
  *    that path (no snapshot pins it). */
 
 import { isFrontendIsland } from "../node-islands/boundary.js";
+import {
+  flowHidesFile,
+  flowPresentedPath,
+  flowPresentedSource,
+  isFlowModule,
+  setFlowSources,
+} from "./flow/index.js";
+import { setModuleSubstitutions, substitutedSource } from "./module-substitutions.js";
+import { readProjectConfig } from "../project-config.js";
 import { builtinModules } from "node:module";
 import { dirname, isAbsolute, resolve } from "node:path";
 import * as ts from "./ts7/adapter.js";
@@ -1399,19 +1408,46 @@ export function loadProgram(
   // resolve.ts answers the same sibling for scriptc's own edges).
   const npmShadow = npmStaticFsShadow(services);
   clearProgramBuiltinAliasCache();
+  // The project's module substitutions and Flow sources (flow/index.ts);
+  // both answer nothing for a project without the settings.
+  const project = readProjectConfig(entryPath);
+  setModuleSubstitutions(project.moduleSubstitutions);
+  setFlowSources(
+    project.flow === null ? null : { ...project.flow, constants: project.constants },
+    services.parseFlow,
+    trackedReadFile,
+    trackedFileExists,
+  );
   const fsShadow = {
     readFile: (path: string) =>
-      npmShadow?.readFile(path) ?? programBuiltinAliasSource(services, path),
+      substitutedSource(path) ??
+      flowPresentedSource(path) ??
+      npmShadow?.readFile(path) ??
+      programBuiltinAliasSource(services, path),
     hideFile: (path: string) =>
-      (npmShadow?.hideFile(path) ?? false) || projectDtsRuntimeSibling(path) !== null,
+      (npmShadow?.hideFile(path) ?? false) ||
+      projectDtsRuntimeSibling(path) !== null ||
+      flowHidesFile(path),
+    fileExists: (path: string) => isFlowModule(path),
   };
   const host = services.createProgramHost({ cwd: dirname(entryPath), fsShadow });
+  // A Flow entry loads at the TypeScript path it is presented at.
+  const programEntry = flowPresentedPath(entryPath) ?? entryPath;
   let authoredHost: ts.Ts7Host | null = null;
   let authoredLoad: ReturnType<typeof loadProgram7> | null = null;
   const authored = (): ReturnType<typeof loadProgram7> => {
     if (!authoredLoad) {
-      authoredHost = services.createProgramHost({ cwd: dirname(entryPath) });
-      authoredLoad = loadProgram7(authoredHost, entryPath, externalTypes);
+      // The program as authored: no npm shadow, but the project's own
+      // substitutions and Flow modules.
+      authoredHost = services.createProgramHost({
+        cwd: dirname(entryPath),
+        fsShadow: {
+          readFile: (path: string) => substitutedSource(path) ?? flowPresentedSource(path),
+          hideFile: (path: string) => flowHidesFile(path),
+          fileExists: (path: string) => isFlowModule(path),
+        },
+      });
+      authoredLoad = loadProgram7(authoredHost, programEntry, externalTypes);
     }
     return authoredLoad;
   };
@@ -1454,7 +1490,7 @@ export function loadProgram(
     resetShapeOverlay();
     const load = loadProgram7(
       host,
-      entryPath,
+      programEntry,
       externalTypes,
       npmStaticPackages.length > 0,
       projector,
@@ -2799,18 +2835,23 @@ export function isCreateRequireBinding7(program: ts.Program, callee: ts.Identifi
  *   fence, and the resolve.paths value is a function that throws one when
  *   called (module-resolution.ts), so the statement's catch clause handles
  *   them (packages that look for optional native addons).
- * - "computed": the "runtime" uses in TypeScript source, and the
- *   "deferred" shapes outside a try block.
- * - "escaping": the loader itself as a value, writes, optional calls, and
- *   other members. */
+ * - "value": in JavaScript source, the loader itself as a value (stored,
+ *   passed, returned). It lowers to a run-time require function over the
+ *   runtime resolver. A package compiled statically cannot prove those
+ *   call sites, so npm-static refuses it (the "escaping" class there).
+ * - "computed": the "runtime" and "value" uses in TypeScript source, and
+ *   the "deferred" shapes outside a try block.
+ * - "escaping": writes, optional calls, and other members. */
 const COMPUTED_CREATE_REQUIRE_REASON =
   "its createRequire result is used with a computed specifier in TypeScript, or with spread arguments or resolve.paths outside a try block (static requires need literal specifiers)";
 
-type CreateRequireUse7 = "static" | "runtime" | "deferred" | "computed" | "escaping";
+type CreateRequireUse7 = "static" | "runtime" | "deferred" | "computed" | "escaping" | "value";
 
 function createRequireUse7(expr: ts.Expression): CreateRequireUse7 {
   const use = createRequireUseShape7(expr);
-  return use === "runtime" && !isJsSourceFile(ts.getSourceFileOfNode(expr)) ? "computed" : use;
+  return (use === "runtime" || use === "value") && !isJsSourceFile(ts.getSourceFileOfNode(expr))
+    ? "computed"
+    : use;
 }
 
 function createRequireUseShape7(expr: ts.Expression): CreateRequireUse7 {
@@ -2847,12 +2888,38 @@ function createRequireUseShape7(expr: ts.Expression): CreateRequireUse7 {
       !(member && (args.length === 0 || args.length > 2))
     )
       return "runtime";
-  } else if (!member || isAssignmentTarget7(use)) {
+  } else if (isJsWriteTarget7(use) || isAssignmentTarget7(use)) {
+    // A write through any pattern container (destructuring assignment,
+    // for-in/of head, ++/--): the binding's value changes under the
+    // erased declaration, so the loader has no stable value to lower.
     return "escaping";
+  } else if (!member) {
+    // A member read other than resolve (including any optional chain and
+    // element access) is not the loader itself: the run-time value form
+    // is a function, not a lowered member surface.
+    if (
+      (ts.isPropertyAccessExpression(call) || ts.isElementAccessExpression(call)) &&
+      call.expression === use
+    )
+      return "escaping";
+    // The loader itself as a value (stored, passed, returned). JavaScript
+    // source lowers it to a run-time require function over the runtime
+    // resolver; TypeScript source keeps the refusal (createRequireUse7).
+    return "value";
   } else if (!paths) {
     return "runtime";
   }
   return insideTryBlock7(use) ? "deferred" : "computed";
+}
+
+/** True for the operand of a `typeof` expression (parentheses included).
+ * A type probe reads no value out of the loader: npm-static admits it even
+ * though the loader itself would otherwise be a value use. */
+function isTypeofOperand7(node: ts.Node): boolean {
+  let current = node;
+  while (ts.isParenthesizedExpression(current.parent)) current = current.parent;
+  const parent = current.parent;
+  return ts.isTypeOfExpression(parent) && parent.expression === current;
 }
 
 function isAssignmentTarget7(node: ts.Node): boolean {
@@ -3014,6 +3081,7 @@ function stableCreateRequireBindingReason7(
     const sf = ts.getSourceFileOfNode(decl);
     const refs = identifierOccurrences7(sf, decl.name.text);
     checker.prefetchSymbolNodesExact(refs);
+    let exported = false;
     for (const ref of refs) {
       if (ref === decl.name || inTypePosition7(ref)) continue;
       let target = ts.isShorthandPropertyAssignment(ref.parent)
@@ -3022,9 +3090,17 @@ function stableCreateRequireBindingReason7(
       if (target && (target.flags & ts.SymbolFlags.Alias) !== 0)
         target = checker.getAliasedSymbol(target);
       if (target !== symbol) continue;
+      if (isExportSpecifierReference7(ref)) {
+        exported = true;
+        continue;
+      }
       const use = createRequireUse7(ref);
       if (use === "computed") return COMPUTED_CREATE_REQUIRE_REASON;
       if (use === "escaping") return "its createRequire binding is reassigned or escapes";
+    }
+    if (exported) {
+      const reason = exportedCreateRequireUseReason7(program, symbol);
+      if (reason !== null) return reason;
     }
     const preceding = stmt.declarationList.declarations.nodes.slice(
       0,
@@ -3042,8 +3118,69 @@ function stableCreateRequireBindingReason7(
   return reason;
 }
 
+/** True for the identifier in an export list that names a local binding
+ * (`export { x }` or `export { x as y }`). The name is exported, not
+ * read: an importing module resolves the same symbol. */
+function isExportSpecifierReference7(ref: ts.Identifier): boolean {
+  const parent = ref.parent;
+  if (!ts.isExportSpecifier(parent)) return false;
+  return parent.propertyName === ref || (parent.propertyName === undefined && parent.name === ref);
+}
+
+/** An exported createRequire loader is alias plumbing when every module
+ * that imports the name uses it the way the loader itself may be used (a
+ * supported call or member read). The loader then still names no runtime
+ * value; the call sites resolve against its declaring file. A module that
+ * re-exports the name onward would need the same proof transitively, so
+ * that stays refused. */
+function exportedCreateRequireUseReason7(program: ts.Program, symbol: ts.Symbol): string | null {
+  const checker = program.getTypeChecker();
+  for (const sf of program.getSourceFiles()) {
+    if (sf.isDeclarationFile) continue;
+    const locals: ts.Symbol[] = [];
+    ts.walkPreorder(sf, (node) => {
+      if (!ts.isImportSpecifier(node)) return;
+      const local = checker.getSymbolAtLocation(node.name);
+      if (local === undefined || (local.flags & ts.SymbolFlags.Alias) === 0) return;
+      if (checker.getAliasedSymbol(local) === symbol) locals.push(local);
+    });
+    if (locals.length === 0) continue;
+    let reason: string | null = null;
+    ts.walkPreorder(sf, (node) => {
+      if (reason !== null || !ts.isIdentifier(node)) return;
+      if (ts.isImportSpecifier(node.parent) && node.parent.name === node) return;
+      if (inTypePosition7(node)) return;
+      const local = checker.getSymbolAtLocation(node);
+      if (local === undefined || !locals.includes(local)) return;
+      if (isExportSpecifierReference7(node)) {
+        reason = "its createRequire binding is re-exported through another module";
+        return;
+      }
+      const use = createRequireUse7(node);
+      if (use === "computed") reason = COMPUTED_CREATE_REQUIRE_REASON;
+      else if (use === "escaping") reason = "its createRequire binding is reassigned or escapes";
+    });
+    if (reason !== null) return reason;
+  }
+  return null;
+}
+
 function isCreateRequireBaseCall7(program: ts.Program, expr: ts.Expression): boolean {
   const init = stripRequireCasts7(expr);
+  // `createRequire ? createRequire(import.meta.url) : undefined`: the
+  // import binding is always a function, so the true arm is the value.
+  // Only that polarity folds: with the arms swapped the binding is
+  // undefined at run time.
+  if (ts.isConditionalExpression(init)) {
+    const cond = stripRequireCasts7(init.condition);
+    const other = stripRequireCasts7(init.whenFalse);
+    return (
+      ts.isIdentifier(cond) &&
+      isCreateRequireImport7(program, cond) &&
+      isUndefinedValue7(other) &&
+      isCreateRequireBaseCall7(program, init.whenTrue)
+    );
+  }
   if (
     !ts.isCallExpression(init) ||
     init.questionDotToken !== undefined ||
@@ -3062,6 +3199,12 @@ function isCreateRequireBaseCall7(program: ts.Program, expr: ts.Expression): boo
     base.expression.keywordToken === ts.SyntaxKind.ImportKeyword &&
     (base.name.text === "url" || base.name.text === "filename")
   );
+}
+
+/** `undefined` in either spelling: the identifier, or `void <expr>`. */
+function isUndefinedValue7(expr: ts.Expression): boolean {
+  if (ts.isIdentifier(expr)) return expr.text === "undefined";
+  return ts.isVoidExpression(expr);
 }
 
 /** Refuse require indirection the lowering cannot erase, while
@@ -3088,8 +3231,15 @@ function npmStaticModuleImportReason7(
     let reason: string | null = null;
     const checkUse = (expr: ts.Expression): void => {
       const use = createRequireUse7(expr);
+      // A `typeof` probe observes the loader's type, never its call
+      // sites: the erased binding stands in as a function value, which is
+      // what the probe reads under Node too.
       if (use === "computed") reason = COMPUTED_CREATE_REQUIRE_REASON;
       else if (use === "escaping")
+        reason = "its createRequire result escapes (static requires need literal specifiers)";
+      else if (use === "value" && !isTypeofOperand7(expr))
+        // The loader value form lowers to a run-time require: its call
+        // sites are not the static edges this package compilation needs.
         reason = "its createRequire result escapes (static requires need literal specifiers)";
     };
     ts.walkPreorder(sf, (node) => {
@@ -3102,19 +3252,49 @@ function npmStaticModuleImportReason7(
       )
         return;
       const call = node.parent;
-      if (
-        !ts.isCallExpression(call) ||
-        call.expression !== node ||
-        !isCreateRequireBaseCall7(program, call)
-      ) {
+      if (!ts.isCallExpression(call) || call.expression !== node) {
+        // A truthiness test of the import binding (`createRequire ? …
+        // : undefined`) reads a value whose only possible truth is "the
+        // import is a function", which the erased binding keeps: the
+        // conditional's true arm owns the value.
+        if (ts.isConditionalExpression(call) && call.condition === node) {
+          // As a declaration's initializer the conditional must be the
+          // supported fold; the erased binding has no value otherwise
+          // (the reversed polarity reads `undefined` at run time).
+          const parent = call.parent;
+          if (
+            ts.isVariableDeclaration(parent) &&
+            parent.initializer === call &&
+            !isCreateRequireBaseCall7(program, call)
+          ) {
+            reason =
+              "its createRequire conditional initializer is not a supported fold (the supported form is `createRequire ? createRequire(import.meta.url) : undefined`)";
+          }
+          return;
+        }
         reason =
           "its createRequire import is used outside a supported call based on the current file";
         return;
       }
-      const decl = call.parent;
+      if (!isCreateRequireBaseCall7(program, call)) {
+        // A runtime base (`createRequire(from)`) anchors no build-time
+        // resolution: the static package graph cannot resolve the
+        // loader's call sites.
+        reason =
+          "its createRequire import is used outside a supported call based on the current file";
+        return;
+      }
+      // The supported conditional fold (`createRequire ? createRequire(...)
+      // : undefined`) gives its value to the variable's declaration through
+      // the conditional, not through the call directly.
+      const handle =
+        ts.isConditionalExpression(call.parent) && call.parent.whenTrue === call
+          ? call.parent
+          : call;
+      const decl = handle.parent;
       if (
         ts.isVariableDeclaration(decl) &&
-        decl.initializer === call &&
+        decl.initializer === handle &&
         ts.isIdentifier(decl.name)
       ) {
         if ((ts.getCombinedModifierFlags(decl) & ts.ModifierFlags.Export) !== 0) {
@@ -3129,16 +3309,19 @@ function npmStaticModuleImportReason7(
         const name = decl.name.text;
         checker.prefetchSymbolNodesExact(identifierOccurrences7(sf, name));
         ts.walkPreorder(sf, (ref) => {
-          if (
-            ts.isIdentifier(ref) &&
-            ref.text === name &&
-            ref !== decl.name &&
-            checker.getSymbolAtLocation(ref) === sym
-          )
-            checkUse(ref);
+          if (!ts.isIdentifier(ref) || ref.text !== name || ref === decl.name) return;
+          if (isExportSpecifierReference7(ref)) return;
+          // A shorthand `{ load }` reads the variable through its property
+          // alias (the same resolution the stability proof uses).
+          let target = ts.isShorthandPropertyAssignment(ref.parent)
+            ? checker.getShorthandAssignmentValueSymbol(ref.parent)
+            : checker.getSymbolAtLocation(ref);
+          if (target !== undefined && (target.flags & ts.SymbolFlags.Alias) !== 0)
+            target = checker.getAliasedSymbol(target);
+          if (target === sym) checkUse(ref);
         });
       } else {
-        checkUse(call);
+        checkUse(handle);
       }
     });
     if (reason) return reason;
@@ -5541,6 +5724,15 @@ function resolveImport7(
 ): ts.SourceFile | null {
   const resolved = resolveProjectModule(from.fileName, specifier);
   if (resolved !== null) return program.getSourceFile(resolved) ?? null;
+  // A JSON document is data, not a package's module surface: Node reads it in
+  // any module system, and a compiled package requires its own data files
+  // (mime-db's db.json) whether or not the package ships declarations. The
+  // document itself is the dependency.
+  if (specifier.endsWith(".json")) {
+    const json = resolveBareModule(from.fileName, specifier, "js-only", resolutionKind);
+    if (json !== null && json.typesFile.endsWith(".json"))
+      return program.getSourceFile(json.typesFile) ?? null;
+  }
   const npm = resolveNpmImport7(from.fileName, specifier, resolutionKind);
   return npm && isNpmStaticPackage(npm.packageName)
     ? npmStaticProgramDep(program, npm.packageName, npm.typesFile, reportMiss)
@@ -6359,10 +6551,12 @@ function preflightStructure7(load: LoadResult): PreflightStructure {
           // module-namespace paths); the ns OBJECT as a first-class value
           // fences per site. What keeps a fence here: JSON modules (their
           // namespace object has no static story — default imports bake
-          // the data), CommonJS JS modules (Node builds their namespace
-          // from its lexer's static analysis, a different surface),
-          // and unresolved specifiers. Supported builtins pass through as
-          // before (their namespace members are the declared surface).
+          // the data) and unresolved specifiers. A CommonJS module's
+          // namespace, from JavaScript or TypeScript, reads the members
+          // Node's lexer detects, and other reads refuse at their site
+          // (lower-namespaces.ts, cjsNamespaceImportDep). Supported
+          // builtins pass through as before (their namespace members are
+          // the declared surface).
           if (isJson) {
             diags.push(
               unsupportedDiag(
@@ -6371,30 +6565,6 @@ function preflightStructure7(load: LoadResult): PreflightStructure {
                 "namespace imports of JSON modules",
               ),
             );
-          } else if (dep !== null && isCjsJsFile7(dep, program)) {
-            // A CJS namespace binding whose every use is a bare expression
-            // statement (`cjs;` — the corpus's "the import linked"
-            // assertion) carries no surface question: the statement lowers
-            // to Node's no-op, the module still evaluates through its
-            // ordinary init edge, and no member is ever read through the
-            // lexer facade (self-imports of a CJS module included — the
-            // partially-built exports are never observed). In JavaScript
-            // sources every use passes here: member reads lower through the
-            // names Node's lexer detects, and the other reads refuse at
-            // their site (lower-namespaces.ts, cjsNamespaceImportDep). Any
-            // OTHER use in TypeScript keeps the fence.
-            if (
-              !isJsSourceFileName(sf.fileName) &&
-              !nsBindingUsesAreBareStatements7(program, sf, clause.namedBindings.name)
-            ) {
-              diags.push(
-                unsupportedDiag(
-                  "SC1013",
-                  locOf7(clause.namedBindings),
-                  "namespace imports of CommonJS modules",
-                ),
-              );
-            }
           } else if (
             dep === null &&
             !(!isRelative && ambientModules.has(spec)) &&
@@ -6509,6 +6679,20 @@ function preflightStructure7(load: LoadResult): PreflightStructure {
               module: string | null,
             ): boolean =>
               pattern.elements.nodes.every((e) => {
+                // `const { a, ...rest } = require("./m")` of a program module:
+                // the named bindings alias the module's exports and `rest`
+                // reads the remaining export names through the same table, so
+                // the whole pattern is alias plumbing (lower-stmts.ts).
+                if (
+                  e.dotDotDotToken !== undefined &&
+                  e.initializer === undefined &&
+                  e.name !== undefined &&
+                  ts.isIdentifier(e.name) &&
+                  module === null &&
+                  builtin === null &&
+                  bindingKind !== "createRequire"
+                )
+                  return true;
                 if (e.initializer !== undefined || e.dotDotDotToken !== undefined) return false;
                 if (e.name !== undefined && ts.isIdentifier(e.name)) return true;
                 // A nested pattern under a named export of a program module
@@ -6719,6 +6903,12 @@ function preflightStructure7(load: LoadResult): PreflightStructure {
   const inlineRequireCycleCalls = new Set<ts.Node>();
   const state = new Map<ts.SourceFile, "visiting" | "done">();
   const stack: string[] = [];
+  // The stack depth at which each enclosing lazily-loaded subtree began.
+  // The lazy require that entered the subtree lowers to its target's %init
+  // at that call site, so the subtree initializes after its own requirer's
+  // top level, not eagerly: the walk visits it here only to give its
+  // modules a place in the emission order.
+  const lazyBases: number[] = [];
   const visit = (sf: ts.SourceFile): void => {
     state.set(sf, "visiting");
     stack.push(sf.fileName);
@@ -6732,6 +6922,16 @@ function preflightStructure7(load: LoadResult): PreflightStructure {
           inlineRequireCycleCalls.add(e.call);
           continue;
         }
+        // A back edge into a module that was already evaluating when the
+        // enclosing lazily-loaded subtree began is a Node cache hit at run
+        // time: the subtree runs its init at the lazy require's call site,
+        // after that module's requirer's top level completed. The walk's
+        // eager visit of the subtree is only about emission order, so the
+        // edge needs no admission analysis — the same trust the walk gives
+        // a lazy edge whose target is still evaluating (skipped below) and
+        // an inline require() call that closes a cycle.
+        const lazyBase = lazyBases[lazyBases.length - 1];
+        if (lazyBase !== undefined && stack.indexOf(e.dep.fileName) < lazyBase) continue;
         // A back-edge: Node answers it from the cache (the module is
         // already evaluating) — admitted by the cheap per-edge rule, the
         // declaration-only init window rule, or the exact initialization
@@ -6758,7 +6958,11 @@ function preflightStructure7(load: LoadResult): PreflightStructure {
     // Lazy inline requires run after this module's top level: their
     // modules join the order afterwards (cache hits when already loaded).
     for (const e of edges.get(sf) ?? []) {
-      if (e.lazy === true && state.get(e.dep) === undefined) visit(e.dep);
+      if (e.lazy === true && state.get(e.dep) === undefined) {
+        lazyBases.push(stack.length);
+        visit(e.dep);
+        lazyBases.pop();
+      }
     }
   };
   visit(entry);
@@ -7953,6 +8157,13 @@ export {
  * declare fields by constructor assignment. */
 export function isJsSourceFile(sf: ts.SourceFile): boolean {
   return isJsSourceFileName(sf.fileName);
+}
+
+/** JavaScript, or a Flow module: sources whose values follow JavaScript's
+ * dynamic model where their annotations stop (ES5 constructor functions,
+ * expando members, dynamic receivers). */
+export function isJsLikeSourceFile(sf: ts.SourceFile): boolean {
+  return isJsSourceFileName(sf.fileName) || isFlowModule(sf.fileName);
 }
 
 /** True for a JavaScript file of the program that TypeScript type-checks:

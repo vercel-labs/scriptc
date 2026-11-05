@@ -44,7 +44,7 @@ import { boundIdentifiersOf } from "./lowerer.js";
 import { NODE_GLOBALS_WITHOUT_NATIVE } from "./host-globals.js";
 import { isIslandImportBinding } from "./lower-node-island.js";
 import type { FileParts } from "./lower-modules.js";
-import { isCjsJsFile, isJsSourceFile, locOf, resolveImport } from "../program.js";
+import { isCjsJsFile, locOf, resolveImport } from "../program.js";
 import { F64, type IrExpr, type IrStmt, type IrType, STRING } from "../../ir/ir.js";
 import { TEMPORAL_GLOBAL } from "../builtin-modules.js";
 
@@ -313,8 +313,8 @@ function moduleNsSourceFileOf(lowerer: Lowerer, e: ts.Expression): ts.SourceFile
   return null;
 }
 
-/** The CommonJS module a JavaScript namespace import binding names
- * (`import * as ns from "./m.cjs"`, `ns`), or null. */
+/** The CommonJS module a namespace import binding names (`import * as ns
+ * from "./m.cjs"`, `ns`), from JavaScript or TypeScript, or null. */
 export function cjsNamespaceImportDep(lowerer: Lowerer, e: ts.Expression): ts.SourceFile | null {
   if (!ts.isIdentifier(e)) return null;
   const decl = lowerer.checker.getSymbolAtLocation(e)?.declarations.find(ts.isNamespaceImport);
@@ -327,7 +327,6 @@ export function cjsNamespaceImportDep(lowerer: Lowerer, e: ts.Expression): ts.So
   )
     return null;
   const from = ts.getSourceFileOfNode(decl);
-  if (!isJsSourceFile(from)) return null;
   const dep = resolveImport(lowerer.program, from, stmt.moduleSpecifier.text);
   return dep !== null &&
     !dep.isDeclarationFile &&

@@ -28,6 +28,7 @@ import {
   canBoxFuncIntoDyn,
   isUnitType,
   typeEquals,
+  sortArms,
   typeKey,
 } from "../../../ir/ir.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
@@ -53,7 +54,7 @@ import {
 import { COMPOUND_ASSIGN_OPS, type CompoundOp, NARROW_FIRST } from "../surfaces.js";
 import { lowerElementCompoundParts } from "./element-access.js";
 import { InternalCompilerError } from "../../../errors.js";
-import { isJsSourceFile, locOf } from "../../program.js";
+import { isJsLikeSourceFile, isJsSourceFile, locOf } from "../../program.js";
 import { findStaticOn, storedClassValueType } from "../lower-classes.js";
 import { builtinClassKind } from "../builtins/builtin-class-dyn.js";
 import { hasRuntimeStatics, runtimeStaticDefines } from "../class-runtime-statics.js";
@@ -75,7 +76,7 @@ import { lowerClassPrototypeComputedAssignment } from "../class-prototypes.js";
 import { lowerShortCircuitAssignment } from "./nullish-assignment.js";
 import { lowerEventObjectPropertyWrite } from "../lower-event-target.js";
 import { lowerFieldCompoundValue } from "./updates.js";
-import { expandoWritableTarget } from "../lower-expando.js";
+import { fenceReadonlyExpandoWrite } from "../lower-expando.js";
 import { nsWritableTarget } from "../lower-namespaces.js";
 import { arrayValueStore, tryLowerBytesReadNumberEquality } from "../array-values.js";
 import { cjsExportMemberWriteGlobalOf, cjsInFileExportGlobalOf } from "../cjs-exports-object.js";
@@ -504,7 +505,7 @@ export function lowerNullishPair(
   ) {
     const arms = [...rest];
     if (!arms.some((arm) => typeEquals(arm, rightType))) arms.push(rightType);
-    arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+    sortArms(arms);
     type = { kind: "union", unionId: lowerer.unions.intern(arms) };
     lowerer.runtimeOptionalArithmeticTypes.set(expr, type);
   }
@@ -725,7 +726,7 @@ export function lowerNativeFunctionAssignment(
 ): IrExpr | null {
   const target = expr.left;
   if (
-    !isJsSourceFile(ts.getSourceFileOfNode(expr)) ||
+    !isJsLikeSourceFile(ts.getSourceFileOfNode(expr)) ||
     (!ts.isPropertyAccessExpression(target) && !ts.isElementAccessExpression(target)) ||
     target.questionDotToken
   )
@@ -1375,9 +1376,10 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
       (ts.isPropertyAccessExpression(expr.left) || ts.isElementAccessExpression(expr.left)) &&
       !(ts.isPropertyAccessExpression(expr.left) && expr.left.questionDotToken)
     ) {
-      const target =
-        expandoWritableTarget(lowerer, expr.left) ??
-        (ts.isPropertyAccessExpression(expr.left) ? nsWritableTarget(lowerer, expr.left) : null);
+      fenceReadonlyExpandoWrite(lowerer, expr.left);
+      const target = ts.isPropertyAccessExpression(expr.left)
+        ? nsWritableTarget(lowerer, expr.left)
+        : null;
       if (target) {
         const value = lowerCompoundValueToTarget(lowerer, expr, indexedCompound, target);
         return { kind: "assignExpr", localId: target.id, value, type: target.type, loc };
@@ -1438,16 +1440,18 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
       }
     }
     // Member targets whose storage IS a module global — namespace
-    // members (`N.x`) and expando function members (`Foo.baz`): the
-    // same assignExpr, since the "member" is a variable.
+    // members (`N.x`): the same assignExpr, since the "member" is a
+    // variable. Expando function members (`Foo.baz`) are callable-member
+    // table data and lower with every other callable member.
     if (
       op === ts.SyntaxKind.EqualsToken &&
       (ts.isPropertyAccessExpression(expr.left) || ts.isElementAccessExpression(expr.left)) &&
       !(ts.isPropertyAccessExpression(expr.left) && expr.left.questionDotToken)
     ) {
-      const target =
-        expandoWritableTarget(lowerer, expr.left) ??
-        (ts.isPropertyAccessExpression(expr.left) ? nsWritableTarget(lowerer, expr.left) : null);
+      fenceReadonlyExpandoWrite(lowerer, expr.left);
+      const target = ts.isPropertyAccessExpression(expr.left)
+        ? nsWritableTarget(lowerer, expr.left)
+        : null;
       if (target) {
         const value = lowerer.lowerExprExpecting(expr.right, target.type);
         return { kind: "assignExpr", localId: target.id, value, type: target.type, loc };
@@ -1626,7 +1630,7 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     // must be a variable or `this`.
     if (
       op === ts.SyntaxKind.EqualsToken &&
-      isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+      isJsLikeSourceFile(ts.getSourceFileOfNode(expr)) &&
       (ts.isPropertyAccessExpression(expr.left) || ts.isElementAccessExpression(expr.left)) &&
       !expr.left.questionDotToken
     ) {
@@ -2791,7 +2795,7 @@ export function lowerStrictEquality(
           for (const arm of rightDef.arms) {
             if (!arms.some((candidate) => typeEquals(candidate, arm))) arms.push(arm);
           }
-          arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+          sortArms(arms);
           const common: IrType & { kind: "union" } = {
             kind: "union",
             unionId: lowerer.unions.intern(arms),
@@ -3122,7 +3126,7 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
         for (const arm of [...rightArms, ...leftArms.filter(isUnitType)]) {
           byKey.set(typeKey(arm), arm);
         }
-        const arms = [...byKey.values()].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+        const arms = sortArms([...byKey.values()]);
         if (arms.length > 1) {
           const source =
             right.type.kind === "union" ? lowerer.unions.get(right.type.unionId) : undefined;

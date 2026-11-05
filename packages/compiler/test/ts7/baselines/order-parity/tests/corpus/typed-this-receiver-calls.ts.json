@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/typed-this-receiver-calls.ts"
+ ],
+ "diags": []
+}

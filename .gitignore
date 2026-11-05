@@ -25,6 +25,8 @@ node_modules/
 !tests/fixtures/fetch/node_modules/
 !tests/fixtures/gateway-e2e/node_modules/
 !tests/fixtures/node-types/node_modules/
+!tests/fixtures/flow/*/node_modules/
+!tests/fixtures/tsconfig-paths/node_modules/
 dist/
 output/
 /packages/llvm-darwin-arm64/bin/

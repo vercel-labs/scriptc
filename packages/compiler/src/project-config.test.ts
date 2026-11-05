@@ -336,3 +336,93 @@ test("readProjectConfig checks local type patch files again for an unchanged pac
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("flow: true, or an object of all, dynamicTypes and types", () => {
+  expect(config({}).flow).toBeNull();
+  expect(config({ flow: false }).flow).toBeNull();
+  expect(config({ flow: true }).flow).toEqual({ dynamicTypes: [], types: {}, all: false });
+  const c = config({
+    flow: { all: true, dynamicTypes: ["Node"], types: { Key: "unique symbol" } },
+  });
+  expect(c.diagnostics).toEqual([]);
+  expect(c.flow).toEqual({
+    dynamicTypes: ["Node"],
+    types: { Key: "unique symbol" },
+    all: true,
+  });
+});
+
+test("malformed flow settings are SC8004 and keep their defaults", () => {
+  const c = config({ flow: { all: "yes", dynamicTypes: "Node", types: { Key: 1 }, strict: true } });
+  expect(c.diagnostics.map((d) => [d.code, d.message])).toEqual([
+    ["SC8004", `package.json 'scriptc.flow.all' must be true or false, not "yes"`],
+    [
+      "SC8004",
+      `package.json 'scriptc.flow.dynamicTypes' must be an array of type names, not "Node"`,
+    ],
+    [
+      "SC8004",
+      "package.json 'scriptc.flow.types' must map type names to TypeScript types, not an object",
+    ],
+    ["SC8004", "package.json 'scriptc.flow.strict' is not a known Flow setting"],
+  ]);
+  expect(c.flow).toEqual({ dynamicTypes: [], types: {}, all: false });
+  expect(config({ flow: "all" }).diagnostics.map((d) => d.message)).toEqual([
+    `package.json 'scriptc.flow' must be true, false or an object, not "all"`,
+  ]);
+});
+
+test("constants: identifiers with boolean, number, string or null values", () => {
+  const c = config({
+    flow: true,
+    constants: { __DEV__: false, LEVEL: 2, MODE: "prod", NONE: null },
+  });
+  expect(c.diagnostics).toEqual([]);
+  expect([...c.constants]).toEqual([
+    ["__DEV__", false],
+    ["LEVEL", 2],
+    ["MODE", "prod"],
+    ["NONE", null],
+  ]);
+  const bad = config({
+    flow: true,
+    constants: { "not-a-name": true, undefined: 1, LIST: [1] },
+  });
+  expect(bad.diagnostics.map((d) => d.message)).toEqual([
+    "package.json 'scriptc.constants.not-a-name' is not an identifier",
+    "package.json 'scriptc.constants.undefined' is a reserved global",
+    "package.json 'scriptc.constants.LIST' must be a boolean, number, string or null, not an array",
+  ]);
+  expect(bad.constants.size).toBe(0);
+  expect(config({ constants: true }).diagnostics.map((d) => d.message)).toEqual([
+    "package.json 'scriptc.constants' must be an object of constant values, not true",
+  ]);
+});
+
+test("moduleSubstitutions resolve both paths against the package.json directory", () => {
+  const c = config({
+    moduleSubstitutions: { "src/Config.js": "src/forks/Config.node.js", bad: "" },
+  });
+  expect([...c.moduleSubstitutions]).toEqual([
+    ["/project/src/Config.js", "/project/src/forks/Config.node.js"],
+  ]);
+  expect(c.diagnostics.map((d) => d.message)).toEqual([
+    `package.json 'scriptc.moduleSubstitutions.bad' must be a module path, not ""`,
+  ]);
+  expect(config({ moduleSubstitutions: ["a"] }).diagnostics.map((d) => d.message)).toEqual([
+    "package.json 'scriptc.moduleSubstitutions' must be an object mapping module paths to module paths, not an array",
+  ]);
+});
+
+test("constants without flow have no effect and say so", () => {
+  expect(config({ constants: { __DEV__: false } }).diagnostics.map((d) => d.message)).toEqual([
+    "package.json 'scriptc.constants' has no effect without scriptc.flow",
+  ]);
+});
+
+test("moduleSubstitutions keys and targets use forward slashes", () => {
+  const c = config({ moduleSubstitutions: { "src\\Config.js": "src\\forks\\Config.node.js" } });
+  expect([...c.moduleSubstitutions]).toEqual([
+    ["/project/src/Config.js", "/project/src/forks/Config.node.js"],
+  ]);
+});

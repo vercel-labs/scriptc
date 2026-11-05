@@ -1,0 +1,8 @@
+{
+  "name": "flow-receivers",
+  "private": true,
+  "type": "module",
+  "scriptc": {
+    "flow": { "all": true }
+  }
+}

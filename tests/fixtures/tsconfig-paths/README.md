@@ -1,0 +1,1 @@
+`tsconfig.json` maps `mathlib/*` onto `src/lib`, and `node_modules/mathlib` is a published package of the same name: scriptc compiles the project's own `src/lib/math.ts` (`tests/harness/project-config.test.ts`).

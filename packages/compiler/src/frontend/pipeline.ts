@@ -14,7 +14,7 @@ import {
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import type { IrModule } from "../ir/ir.js";
 import type { SrcLoc } from "../ir/ir.js";
-import type { NpmStaticStatus } from "../coverage/report.js";
+import type { NpmStaticStatus } from "./npm-static-status.js";
 import { entryExportFacts, type EntryExport } from "./lib-exports.js";
 import { entryContractFacts, type ContractFacts } from "./lib-contract.js";
 import {
@@ -38,7 +38,12 @@ import {
   npmStaticOffenders,
   npmStaticPackageOfPath,
 } from "./npm-static.js";
-import { clearResolveCaches, resolveBareModule, resolveWorkspaceSourceModule } from "./resolve.js";
+import {
+  clearResolveCaches,
+  resolveBareModule,
+  resolveViaProjectPaths,
+  resolveWorkspaceSourceModule,
+} from "./resolve.js";
 import { isShimmedImport } from "./package-shims.js";
 import { provenanceEntryFor } from "./provenance-registry.js";
 import { isJsSourceFileName } from "./tsc-codes.js";
@@ -62,6 +67,7 @@ import { NODE_API_MODULE } from "./node-api-import.js";
 import { erasedTypeOnlyImport } from "./type-only-imports.js";
 import { EXPERIMENTAL_MODULE } from "./experimental-import.js";
 import { readProjectConfig } from "../project-config.js";
+import { flowTranslationFailures } from "./flow/index.js";
 import { recordFrontendIslandReads, setFrontendIslands } from "../node-islands/boundary.js";
 import { typePatchDiagnostics } from "./type-patches/layer.js";
 import { packageDirOf } from "../node-islands/origin.js";
@@ -232,6 +238,65 @@ function addDynamicImportGraph(load: LoadResult, scanned: Set<SourceFile>): void
   }
 }
 
+/** Adds the package modules a compiled package loads LAZILY to `scanned`: a
+ * `require()` call inside a function or a nested declaration lowers at the
+ * call, so its target is not in the startup module order — but that file's
+ * own top-level requires still name packages the program loads on that path,
+ * and library mode compiles the package whole. Package sources hide their
+ * dependency edges exactly there (fastify's logger-factory.js requires
+ * ./logger-pino.js inside createLogger, and only logger-pino.js requires
+ * pino). Every literal require()/import() call in the package's JavaScript
+ * counts, wherever it sits; the walk follows the files it reaches, including
+ * the files the package loader brought into the program for exactly this.
+ * A file the graph already holds keeps the graph's own static edges: the
+ * program pruned the ones a pure package's unused exports back (a
+ * re-exported module the program never reads, whose own `export *` would
+ * otherwise name a package), and rescanning its declarations here would add
+ * them back. Only the files this walk discovers owe their static
+ * declarations to it. */
+function addLazyRequireGraph(load: LoadResult, scanned: Set<SourceFile>): void {
+  const inGraph = new Set(scanned);
+  const queue = [...scanned];
+  while (queue.length > 0) {
+    const sf = queue.pop()!;
+    if (npmStaticPackageOfPath(sf.fileName) === null || !isJsSourceFileName(sf.fileName)) continue;
+    const candidates = moduleSourceCandidates(load.program, sf);
+    // `candidates.specifiers` also names every literal require() call, which
+    // resolves with the IMPORT conditions. A package's require edge must use
+    // its own ("@hapi/hoek" answers lib/index.js, not lib/index.mjs there),
+    // so the static declarations are read separately and the calls below.
+    const specs: { spec: string; kind: "import" | "require" }[] = [];
+    if (!inGraph.has(sf)) {
+      for (const stmt of sf.statements.nodes) {
+        if (
+          (isImportDeclaration(stmt) || isExportDeclaration(stmt)) &&
+          stmt.moduleSpecifier !== undefined &&
+          isStringLiteral(stmt.moduleSpecifier)
+        )
+          specs.push({ spec: stmt.moduleSpecifier.text, kind: "import" });
+      }
+    }
+    for (const call of candidates.calls) {
+      const arg = call.arguments.nodes[0];
+      if (arg === undefined || !isStringLiteralLike(arg)) continue;
+      if (call.expression.kind === SyntaxKind.ImportKeyword)
+        specs.push({ spec: arg.text, kind: "import" });
+      else if (isIdentifier(call.expression) && call.expression.text === "require")
+        specs.push({ spec: arg.text, kind: "require" });
+    }
+    for (const { spec, kind } of specs) {
+      if (canonicalBuiltinModule(spec) !== null) continue;
+      const dep =
+        resolveImport(load.program, sf, spec, kind) ??
+        npmStaticDepSf7(load.program, sf, spec, kind);
+      if (dep === null || scanned.has(dep) || dep.isDeclarationFile) continue;
+      if (dep.fileName.includes("/node_modules/") && !isJsSourceFileName(dep.fileName)) continue;
+      scanned.add(dep);
+      queue.push(dep);
+    }
+  }
+}
+
 function detectAutoPackages(
   load: LoadResult,
   statuses: NpmStaticStatus[],
@@ -264,6 +329,9 @@ function detectAutoPackages(
   // dependencies.
   const scanned = new Set([...load.moduleOrder, load.entry]);
   addDynamicImportGraph(load, scanned);
+  // Library mode compiles a package whole: the modules a function-scoped
+  // require loads are part of its source graph, so their edges count.
+  if (mode === "lib") addLazyRequireGraph(load, scanned);
   const transitiveFiles =
     transitive.size === 0
       ? []
@@ -342,6 +410,9 @@ function detectAutoPackages(
     }
     for (const { spec, loc, nested } of edges) {
       if (load.externalTypes?.has(spec)) continue;
+      // A required JSON document is data the package reads, not a package
+      // dependency of its own: it never needs declarations or an opt-in.
+      if (spec.endsWith(".json")) continue;
       // scriptc's own packages are not npm dependencies: contract types are
       // declarations only, and @scriptc/threads and @scriptc/experimental
       // exports lower at their use sites (threads-import.ts,
@@ -372,6 +443,10 @@ function detectAutoPackages(
       // Explicit attempts name the runtime package. Types-first resolution
       // may instead identify its @types twin, which has no runtime to admit.
       if (judgedAlready(packageNameOfSpecifier(spec))) continue;
+      // A bare specifier the project resolves to its own sources (tsconfig
+      // paths onto a package's source tree) is program code, not npm.
+      const own = resolveViaProjectPaths(spec)?.replaceAll("\\", "/") ?? null;
+      if (own !== null && !own.includes("/node_modules/") && !/\.d\.[cm]?ts$/.test(own)) continue;
       const npm = resolveNpmImport(sf.fileName, spec);
       if (npm !== null && isNodeTypesPath(npm.typesFile)) continue;
       // The runtime package Node loads. Types-first resolution answers an
@@ -1069,10 +1144,15 @@ function loadFrontend(
   // build goes on with the packages' own declarations there.
   const patchDiagnostics = typePatchDiagnostics()?.diagnostics ?? [];
   const buildWarnings = [...(report ? [] : configDiagnostics), ...patchDiagnostics];
+  // Flow modules that did not translate stop the build at their source.
+  const flowFailures = flowTranslationFailures();
   return {
-    preflight: withoutIslandModules(
-      report && configDiagnostics.length > 0 ? [...configDiagnostics, ...preflight] : preflight,
-    ),
+    preflight: withoutIslandModules([
+      ...flowFailures.diagnostics,
+      ...(report && configDiagnostics.length > 0
+        ? [...configDiagnostics, ...preflight]
+        : preflight),
+    ]),
     ...(buildWarnings.length > 0 ? { warnings: buildWarnings } : {}),
     entryText: () => finalLoad.entry.text,
     entryExports: (names) => entryExportFacts(finalLoad.program, finalLoad.entry, names),
@@ -1116,6 +1196,7 @@ function loadFrontend(
         projectConfig.manifestText !== null
       )
         texts.set(projectConfig.manifest, projectConfig.manifestText);
+      for (const [file, text] of flowFailures.texts) texts.set(file, text);
       return texts;
     },
     lower: (opts, valid) => {

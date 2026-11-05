@@ -14,6 +14,7 @@ import {
   STRING,
   UNDEFINED_T,
   typeEquals,
+  sortArms,
   typeKey,
   unionContainerArmsOk,
 } from "../../ir/ir.js";
@@ -178,7 +179,7 @@ export function unionArrayValueRead(
     const parts = answer.kind === "union" ? lowerer.unions.get(answer.unionId)!.arms : [answer];
     for (const part of parts) answers.set(typeKey(part), part);
   }
-  const joined = [...answers.values()].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  const joined = sortArms([...answers.values()]);
   if (joined.length === 1 && joined[0]!.kind === "undefinedT") return null;
   if (
     joined.length > 1 &&

@@ -1,3 +1,4 @@
+import { fenceLocation } from "../flow/index.js";
 import * as ts from "../ts7/adapter.js";
 import { BOOL, DYN, F64, UNDEFINED_T, type IrExpr, type IrStmt, type SrcLoc } from "../../ir/ir.js";
 import { varRef } from "../../ir/build.js";
@@ -82,7 +83,7 @@ export function splitUndefinedIndex(
  * can sit among an expression's statements. */
 export function undefinedTypedArrayKeyFence(lowerer: Lowerer, node: ts.Node, loc: SrcLoc): IrStmt {
   const line = ts.getLineAndCharacterOfPosition(ts.getSourceFileOfNode(node), loc.start).line + 1;
-  const message = `typed array properties named 'undefined' (an element index that is undefined) are not supported yet [SC1090 at ${loc.file}:${line}]`;
+  const message = `typed array properties named 'undefined' (an element index that is undefined) are not supported yet [SC1090 at ${fenceLocation(loc.file, loc.start, line)}]`;
   const key = `index.undefinedFence:${message}`;
   let name = lowerer.arrHofHelpers.get(key);
   if (name === undefined) {

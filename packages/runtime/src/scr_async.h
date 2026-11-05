@@ -235,6 +235,11 @@ void scr_als_disable(double id);
 /* run/exit: enter (or clear), call the dyn function with the forwarded
  * argument vector, restore (the finally). Result +1 or NULL pending. */
 ScrDyn *scr_als_run(double id, ScrDyn *value, ScrDyn *fn, ScrDyn *args);
+/* run(store, fn) for a compiled callback: push enters `value` (borrowed)
+ * and remembers the previous context; pop restores the most recent one
+ * (the compiled call pops in a finally). */
+void scr_als_push(double id, ScrDyn *value);
+void scr_als_pop(void);
 ScrDyn *scr_als_exit_run(double id, ScrDyn *fn, ScrDyn *args);
 /* new AsyncLocalStorage(options) (options borrowed; NaN with the exception
  * pending for a non-object) and the name it carries (+1). */

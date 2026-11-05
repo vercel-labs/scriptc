@@ -1,3 +1,4 @@
+import { fenceLocation } from "../flow/index.js";
 import { keyedHelperName } from "./stable-names.js";
 import { perKeyOrder } from "./key-order-witness.js";
 import { elementMayBeForeign } from "./array-values.js";
@@ -5139,7 +5140,7 @@ function runtimeFenceValue(
       {
         kind: "runtimeFence",
         code: diag.code,
-        message: `${diag.message} [${diag.code} at ${diag.loc.file}:${line}]`,
+        message: `${diag.message} [${diag.code} at ${fenceLocation(diag.loc.file, diag.loc.start, line)}]`,
         loc,
       },
     ],

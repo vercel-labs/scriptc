@@ -39,10 +39,12 @@ import {
 } from "./input-tracker.js";
 import { isRelativeSpecifier, packageNameOfSpecifier } from "./workspace-registry.js";
 import { typePatchFileExists } from "./type-patches/layer.js";
+import { flowPresentedPath, isFlowModule } from "./flow/index.js";
 
 function isFile(path: string): boolean {
-  // A declaration entry a project type patch supplies (type-patches/layer.ts).
-  return trackedFileExists(path) || typePatchFileExists(path);
+  // A declaration entry a project type patch supplies (type-patches/layer.ts),
+  // or a Flow module's presented TypeScript path (flow/index.ts).
+  return trackedFileExists(path) || typePatchFileExists(path) || isFlowModule(path);
 }
 
 function isDirectory(path: string): boolean {
@@ -58,7 +60,9 @@ function realpathOr(path: string): string {
  * Keep native paths while probing, then normalize every resolver answer at
  * the boundary so TS5 and TS7 callers observe the same contract. */
 function normalizeResolvedPath(path: string): string {
-  return path.replaceAll("\\", "/");
+  const normalized = path.replaceAll("\\", "/");
+  // A Flow source resolves to the TypeScript module it is presented as.
+  return flowPresentedPath(normalized) ?? normalized;
 }
 
 function normalizeResolvedAnswer(path: string | null): string | null {
@@ -281,17 +285,36 @@ function loadAsDirectory(base: string): string | null {
 }
 
 let projectRealmPkgJson: string | null = null;
+/** `projectRealmPkgJson === null` is a realm of its own (an entry outside
+ * every package.json), so "no package.json" and "no compile yet" need
+ * separate states. */
+let projectRealmSet = false;
 
 export function setProjectRealm(entryPath: string): void {
   projectRealmPkgJson = nearestPkgJsonPath(entryPath);
+  projectRealmSet = true;
 }
+
+/** Declaration file extensions and the runtime file Node loads for each. */
+const DTS_RUNTIME_SIBLINGS: readonly (readonly [string, string])[] = [
+  [".d.ts", ".js"],
+  [".d.mts", ".mjs"],
+  [".d.cts", ".cjs"],
+];
 
 export function projectDtsRuntimeSibling(path: string): string | null {
   if (path.includes("/node_modules/") || path.includes("\\node_modules\\")) return null;
-  if (!path.endsWith(".d.ts")) return null;
-  if (projectRealmPkgJson === null || nearestPkgJsonPath(path) !== projectRealmPkgJson) return null;
-  const sibling = path.slice(0, -".d.ts".length) + ".js";
-  return isFile(sibling) ? sibling : null;
+  // A project without any package.json is one realm, exactly like a project
+  // inside one: its declarations and their runtime siblings walk up to
+  // nothing. Only a declaration whose nearest package.json is the entry's
+  // own realm answers — a nested realm keeps its declarations.
+  if (!projectRealmSet || nearestPkgJsonPath(path) !== projectRealmPkgJson) return null;
+  for (const [declaration, runtime] of DTS_RUNTIME_SIBLINGS) {
+    if (!path.endsWith(declaration)) continue;
+    const sibling = path.slice(0, -declaration.length) + runtime;
+    return isFile(sibling) ? sibling : null;
+  }
+  return null;
 }
 
 /** Active tsconfig `paths` mappings for the program being compiled. The
@@ -308,7 +331,9 @@ export function setProjectPathMappings(
   projectPathMappings = paths;
 }
 
-function resolveViaProjectPaths(specifier: string): string | null {
+/** The module a bare specifier resolves to through the project's tsconfig
+ * `paths`, or null. */
+export function resolveViaProjectPaths(specifier: string): string | null {
   if (projectPathMappings === null) return null;
   let match: { key: string; targets: readonly string[]; prefix: string; suffix: string } | null =
     null;
@@ -759,6 +784,10 @@ function loadTargetInPass(
   } else if (/\.(js|jsx|mjs|cjs)$/.test(path) && isFile(path)) {
     return path;
   }
+  // A required JSON document is data, not JavaScript: Node reads it in every
+  // module system, so the runtime pass answers it too (mime-db's db.json, a
+  // package's own package.json).
+  if (pass === "js" && path.endsWith(".json") && isFile(path)) return path;
   const sub = (ext: string, flavor: "plain" | "x" | "m" | "c"): string | null => {
     const stem = path.slice(0, -ext.length);
     for (const r of extensionsFor(pass, flavor)) {
@@ -1081,6 +1110,7 @@ export function clearResolveCaches(): void {
   pkgJsonCache.clear();
   workspaceMembersCache.clear();
   projectRealmPkgJson = null;
+  projectRealmSet = false;
   projectPathMappings = null;
 }
 

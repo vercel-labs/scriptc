@@ -2646,6 +2646,16 @@ static ScrDyn *dyn_builtin_fn_call(ScrClosure *clo, ScrDyn *const *args, size_t 
       scr_queue_microtask_dyn(args[0]);
       result = scr_dyn_retain(scr_dyn_undefined());
     }
+  } else if (strcmp(name->data, "Function.prototype.bind") == 0) {
+    /* Throwing leaves the exception pending: the call returns NULL. */
+    ScrDyn *target = scr_dyn_this_get();
+    if (target && target->kind == SCR_DYN_FUNC) {
+      result = scr_dyn_bind(target, args, argc);
+    } else {
+      static const char msg[] = "Bind must be called on a function";
+      scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+    }
+    if (target) scr_dyn_release(target);
   } else if (strncmp(name->data, dyn_s28, 5) == 0) {
     /* Node ignores anything that is not a live handle. */
     if (argc > 0 && args[0]->kind == SCR_DYN_NUM) {
@@ -2673,7 +2683,7 @@ ScrDyn *scr_dyn_builtin_function(const ScrStr *name) {
     ScrClosure *closure = scr_closure_new(NULL, 1);
     closure->caps[0] = scr_box_new(SCR_BOX_STR);
     scr_box_set_ref(closure->caps[0], scr_str_retain((ScrStr *)name));
-    const char *dot = memchr(name->data, '.', name->len);
+    const char *dot = strrchr(name->data, '.');
     bool two = strcmp(name->data, dyn_s16) == 0 || strcmp(name->data, dyn_s15) == 0 ||
                strcmp(name->data, dyn_s38) == 0;
     value = scr_dyn_new_func(closure, dyn_builtin_fn_call, two ? 2 : 1, dyn_s10, dot ? dot + 1 : name->data);

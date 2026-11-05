@@ -1,4 +1,5 @@
 /* instanceof and in, including private-name and runtime-key in. */
+import { fenceLocation } from "../../flow/index.js";
 import { lowerIteratorInstanceOf } from "../iterator-prototype.js";
 import { programCreatesWrappers, WRAPPER_KIND_NUMBER } from "../primitive-wrappers.js";
 import { boxedHandleReceiver } from "../handle-properties.js";
@@ -15,6 +16,7 @@ import {
   privateInMessage,
 } from "../private-brands.js";
 import type { Lowerer } from "../lowerer.js";
+import { isCallableValue } from "../callable-properties.js";
 import {
   BOOL,
   BYTES_ELEMENT_NAME,
@@ -1974,9 +1976,9 @@ export function lowerInExpression(
     recv.type.kind === "classval" ? lowerer.classes.get(recv.type.className) : undefined;
   if (
     (classInfo && (classInfo.callableBase || hasRuntimeStatics(classInfo))) ||
-    (isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
-      recv.type.kind === "func" &&
-      lowerer.dynConvertible(recv.type))
+    (recv.type.kind === "func" &&
+      lowerer.dynConvertible(recv.type) &&
+      (isJsSourceFile(ts.getSourceFileOfNode(expr)) || isCallableValue(lowerer, expr.right)))
   ) {
     recv = lowerer.coerceToExpected(recv, DYN);
   }
@@ -2655,7 +2657,7 @@ function dynInstanceOfRefusal(lowerer: Lowerer, expr: ts.BinaryExpression): stri
   const diag = unsupportedDiag("SC1090", locOf(expr), "instanceof against this native constructor");
   const sf = ts.getSourceFileOfNode(expr);
   const line = ts.getLineAndCharacterOfPosition(sf, diag.loc.start).line + 1;
-  return `${diag.message} [${diag.code} at ${diag.loc.file}:${line}]`;
+  return `${diag.message} [${diag.code} at ${fenceLocation(diag.loc.file, diag.loc.start, line)}]`;
 }
 
 /** IR kinds of native Node handles whose members come from Node's own

@@ -5,6 +5,7 @@ import { mockCallRecordType, mockContextType } from "./mock-shapes.js";
 import * as ts from "./ts7/adapter.js";
 import { bodyReadsArguments } from "./arguments-usage.js";
 import type { IrRecordShape, IrType, IrUnionDef, IrUnionDiscriminant } from "../ir/ir.js";
+import { walkTypeFields, type IrFieldWalker } from "../ir/fields.generated.js";
 import {
   BYTES_ELEMENT_NAME,
   arrayOf,
@@ -40,6 +41,7 @@ import {
   STRING,
   SYMBOL_T,
   typeEquals,
+  sortArms,
   typeKey,
   maybePromiseUnionArmsOk,
   unionContainerArmsOk,
@@ -786,6 +788,7 @@ export class UnionRegistry {
           this.byId.delete(def.id);
           this.keyedNameKeys.delete(def.id);
         }
+        this.unfinishedReach.clear();
       },
       contents: () => {
         // A recursive placeholder still pending fills in place when its
@@ -862,6 +865,7 @@ export class UnionRegistry {
       this.unions.push(def);
       this.recIds.set(t, id);
       this.pendingRec.add(id);
+      this.unfinishedReach.clear();
     }
     return id;
   }
@@ -886,6 +890,21 @@ export class UnionRegistry {
     return this.pendingRec.has(unionId);
   }
 
+  /** The placeholder id minted for `t`, finished or not. */
+  placeholderId(t: ts.Type): string | undefined {
+    return this.recIds.get(t);
+  }
+
+  /** Whether any recursive placeholder is still unfinished. Outside every
+   * mapping frame, each one belongs to a frame that failed. */
+  hasPendingPlaceholders(): boolean {
+    return this.pendingRec.size > 0;
+  }
+
+  /** reachesUnfinishedPlaceholder's answers by type key, valid while the
+   * set of unfinished placeholders stays the same. */
+  readonly unfinishedReach = new Map<string, boolean>();
+
   /** Completes a recursive placeholder with its canonical arm list and
    * registers the structural key (first writer wins, like shapes). */
   finalizeRecursive(t: ts.Type, arms: IrType[], discriminant?: IrUnionDiscriminant): string {
@@ -899,6 +918,7 @@ export class UnionRegistry {
       def.arms.push(...arms);
       if (discriminant) def.discriminant = discriminant;
       this.pendingRec.delete(id);
+      this.unfinishedReach.clear();
       this.armTags.delete(id);
       this.revision++;
       const key = JSON.stringify([arms.map(typeKey), discriminant]);
@@ -2330,6 +2350,17 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       contextResolutions++;
       ctx.onLenientPiece?.(type);
     }
+    // A recursive frame that failed leaves its placeholder unfinished, and
+    // types built inside it (an arm's `Map<K, Node>` field) keep pointing
+    // at it. Once the top-level mapping is done no frame can finish it, so
+    // a result that reaches it has no representation.
+    if (
+      mapped !== null &&
+      topLevel &&
+      ctx.unions.hasPendingPlaceholders() &&
+      reachesUnfinishedPlaceholder(mapped, ctx)
+    )
+      mapped = null;
     if (
       mapped !== null &&
       memoKey !== null &&
@@ -2359,6 +2390,76 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   } finally {
     mapTypeDepth--;
   }
+}
+
+/** Whether `t` holds the union `unionId` as a Set element, through
+ * arrays, Sets, Map values, promises and union arms alone, without passing
+ * through a record: the position a pending placeholder is accepted in
+ * (Set elements), with no record to break the cycle. */
+function reachesUnionThroughCollections(
+  t: IrType,
+  unionId: string,
+  unions: UnionRegistry,
+  asSetElement = false,
+  seen = new Set<string>(),
+): boolean {
+  switch (t.kind) {
+    case "union": {
+      if (t.unionId === unionId) return asSetElement;
+      if (seen.has(t.unionId)) return false;
+      seen.add(t.unionId);
+      return (unions.get(t.unionId)?.arms ?? []).some((arm) =>
+        reachesUnionThroughCollections(arm, unionId, unions, asSetElement, seen),
+      );
+    }
+    case "array":
+      return reachesUnionThroughCollections(t.elem, unionId, unions, asSetElement, seen);
+    case "set":
+      return reachesUnionThroughCollections(t.elem, unionId, unions, true, seen);
+    case "map":
+      return reachesUnionThroughCollections(t.value, unionId, unions, asSetElement, seen);
+    case "promise":
+      return reachesUnionThroughCollections(t.inner, unionId, unions, asSetElement, seen);
+    default:
+      return false;
+  }
+}
+
+/** Whether `t`, through its record fields and union arms, reaches a
+ * recursive union placeholder that no frame finished. */
+function reachesUnfinishedPlaceholder(t: IrType, ctx: TypeMapperCtx): boolean {
+  const key = typeKey(t);
+  const cached = ctx.unions.unfinishedReach.get(key);
+  if (cached !== undefined) return cached;
+  const found = walkToUnfinishedPlaceholder(t, ctx);
+  ctx.unions.unfinishedReach.set(key, found);
+  return found;
+}
+
+function walkToUnfinishedPlaceholder(t: IrType, ctx: TypeMapperCtx): boolean {
+  const seen = new Set<string>();
+  const pending: IrType[] = [t];
+  let found = false;
+  const walker: IrFieldWalker = {
+    node() {},
+    string(value) {
+      if (found || seen.has(value)) return;
+      seen.add(value);
+      if (ctx.unions.isPendingPlaceholder(value)) {
+        found = true;
+        return;
+      }
+      const union = ctx.unions.get(value);
+      if (union) pending.push(...union.arms);
+      const shape = ctx.shapes.get(value);
+      if (shape) {
+        for (const field of shape.fields) pending.push(field.type);
+        if (shape.indexValue) pending.push(shape.indexValue);
+      }
+    },
+  };
+  while (!found && pending.length > 0) walkTypeFields(pending.pop()!, walker, false);
+  return found;
 }
 
 /** SCRIPTC_TYPE_MEMO_VERIFY: recomputes a shared memo entry in the scope
@@ -2830,7 +2931,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       }
       if (hasNum && hasStr) {
         const arms = [F64, STRING];
-        arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+        sortArms(arms);
         return { kind: "union", unionId: unions.intern(arms) };
       }
       return hasStr ? STRING : F64;
@@ -3870,10 +3971,13 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     const elem = (args[0]!.flags & ts.TypeFlags.Any) !== 0 ? DYN : mapType(args[0]!, ctx);
     if (
       !elem ||
-      !isSupportedSetElem(
-        elem,
-        elem.kind === "union" ? ctx.unions.get(elem.unionId)?.arms : undefined,
-      )
+      // A recursive union still being mapped (`Set<Task>` inside a Task
+      // arm) has no arms yet; the validator checks the completed module.
+      (!(elem.kind === "union" && ctx.unions.isPendingPlaceholder(elem.unionId)) &&
+        !isSupportedSetElem(
+          elem,
+          elem.kind === "union" ? ctx.unions.get(elem.unionId)?.arms : undefined,
+        ))
     )
       return null;
     return setOf(elem);
@@ -3934,7 +4038,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     isStdlibInterface("SharedArrayBuffer") ||
     isStdlibInterface("PropertyDescriptor") ||
     isStdlibInterface("ProcessVersions") ||
-    isStdlibInterface("ProcessRelease")
+    isStdlibInterface("ProcessRelease") ||
+    isStdlibInterface("ProcessReport")
   )
     return DYN;
   if (Object.values(BYTES_ELEMENT_NAME).some((name) => isStdlibInterface(`${name}Constructor`)))
@@ -4770,9 +4875,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     const optStr = withUndefinedArm(STRING, ctx.unions);
     const optNum = withUndefinedArm(F64, ctx.unions);
     const optBool = withUndefinedArm(BOOL, ctx.unions);
-    const stdioArms = [arrayOf(STRING), STRING, UNDEFINED_T].sort((a, b) =>
-      typeKey(a) < typeKey(b) ? -1 : 1,
-    );
+    const stdioArms = sortArms([arrayOf(STRING), STRING, UNDEFINED_T]);
     const stdio: IrType = { kind: "union", unionId: ctx.unions.intern(stdioArms) };
     if (!optStr || !optNum || !optBool) return null;
     return {
@@ -5086,7 +5189,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       const t = args[0] && mapType(args[0], ctx);
       if (!t || t.kind !== "string") return null;
     }
-    const shellArms = [NULL_T, STRING].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+    const shellArms = sortArms([NULL_T, STRING]);
     const shell: IrType = { kind: "union", unionId: ctx.unions.intern(shellArms) };
     return {
       kind: "record",
@@ -5423,7 +5526,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     isStdlibInterface("NetworkInterfaceInfoIPv6")
   ) {
     const v6 = ts.symbolName(psym!) === "NetworkInterfaceInfoIPv6";
-    const cidrArms = [NULL_T, STRING].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+    const cidrArms = sortArms([NULL_T, STRING]);
     const cidr: IrType = { kind: "union", unionId: ctx.unions.intern(cidrArms) };
     const scopeid = v6 ? F64 : withUndefinedArm(F64, ctx.unions);
     if (!scopeid) return null;
@@ -5512,8 +5615,16 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // the plain-func mapping below (historic behavior: the properties drop
   // from the type).
   if (widened.isIntersectionType() && checker.getConstructSignatures(widened).length === 0) {
-    const hybrid = mapHybridCallableIntersection(widened, ctx);
-    if (hybrid) return hybrid;
+    // node:test's `Mock<F>` (`F & { mock: MockFunctionContext<F> }`) keeps
+    // its hybrid `%call` record: the `mock` member is the runner's live
+    // call log, which the mock lowering builds and mutates, not data the
+    // closure's own-property table could carry yet.
+    if (isMockHybridIntersection(widened, ctx)) {
+      const hybrid = mapHybridCallableRecord(widened, ctx);
+      if (hybrid) return hybrid;
+    }
+    const callable = mapCallableIntersection(widened, ctx);
+    if (callable) return callable;
     // Recursive and Symbol-keyed callable objects need their complete live
     // property table; dropping those members into a plain closure loses data.
     if (
@@ -6008,7 +6119,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       ) {
         return null;
       }
-      mergedArms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+      sortArms(mergedArms);
       const discriminant =
         unionDiscriminant(recordParts, mergedArms, ctx) ??
         (substitutedUnions.length === 1
@@ -6021,6 +6132,18 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         // same ts.Type answers differently per instantiation — so
         // recursive generic-open unions stay fenced.
         if (contextResolutions !== sensitivityAtEntry) return null;
+        // The union held as its own Set element through collections alone,
+        // with no record in between (`type T = string | Set<T>`,
+        // `string | Set<T>[]`): the checked conversions have no cycle guard
+        // for that knot, so it stays unmapped, as before placeholders were
+        // accepted as Set elements. Through a record (`Set<Task>` inside a
+        // Task arm) it maps.
+        const self = unions.placeholderId(widened);
+        if (
+          self !== undefined &&
+          mergedArms.some((arm) => reachesUnionThroughCollections(arm, self, unions))
+        )
+          return null;
         return {
           kind: "union",
           unionId: unions.finalizeRecursive(widened, mergedArms, discriminant),
@@ -6260,28 +6383,39 @@ function mapCallSignature(sig: ts.Signature, ctx: TypeMapperCtx): IrType | null 
     let pt = mapType(checker.getTypeOfSymbol(p), ctx);
     // A parameter a TypeScript program types `any` takes whatever the
     // caller passes: the checked-dynamic slot, as an `any`-typed binding
-    // already is (dynFallbackType). Declaration files keep their paths.
-    // Only function declarations, spelled function types, method and call
+    // already is (dynFallbackType). This holds in every declaration world
+    // the program or a package writes — program source and `.d.ts`
+    // declaration files alike, since a published declaration is the same
+    // contract as the implementation source. The standard library keeps
+    // its existing paths: its ambient signatures are the language's own
+    // surface, so admitting them would change the static shape of every
+    // typed program that calls one (`PropertyDescriptor.get`'s `this: any`,
+    // `map`'s `thisArg?: any`), which the zero-cost gate forbids. Only
+    // function declarations, spelled function types, method and call
     // signatures of interfaces and type literals (`execute(params: any):
-    // Promise<R>`), and lambda parameters whose default is the only source
-    // of their type (`(n = lookup() ?? 5) => ...` with an `any` lookup):
-    // other lambdas and methods in object literals keep their existing
-    // checked-dynamic story.
+    // Promise<R>`), ambient class methods, and lambda parameters whose
+    // default is the only source of their type (`(n = lookup() ?? 5) =>
+    // ...` with an `any` lookup): other lambdas and methods in object
+    // literals keep their existing checked-dynamic story.
     if (
       !pt &&
       !rest &&
       decl !== undefined &&
       ts.isParameter(decl) &&
       decl.parent !== undefined &&
+      !(
+        ts.getSourceFileOfNode(decl).isDeclarationFile &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(decl))
+      ) &&
       (ts.isFunctionDeclaration(decl.parent) ||
         ts.isFunctionTypeNode(decl.parent) ||
         ts.isMethodSignatureDeclaration(decl.parent) ||
         ts.isCallSignatureDeclaration(decl.parent) ||
+        (ts.isMethodDeclaration(decl.parent) && ts.getSourceFileOfNode(decl).isDeclarationFile) ||
         ((ts.isArrowFunction(decl.parent) || ts.isFunctionExpression(decl.parent)) &&
           decl.initializer !== undefined &&
           decl.type === undefined &&
           !isJsSourceFile(ts.getSourceFileOfNode(decl)))) &&
-      !ts.getSourceFileOfNode(decl).isDeclarationFile &&
       (checker.getTypeOfSymbol(p).flags & ts.TypeFlags.Any) !== 0
     )
       pt = DYN;
@@ -7190,7 +7324,7 @@ function mapGenericIndexedAccess(type: ts.Type, ctx: TypeMapperCtx): IrType | nu
     }
   }
   if (arms.length === 1) return arms[0]!;
-  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  sortArms(arms);
   return { kind: "union", unionId: ctx.unions.intern(arms) };
 }
 
@@ -7288,7 +7422,7 @@ function mapDistributedConditional(type: ts.Type, ctx: TypeMapperCtx): IrType | 
   if (arms.every(isUnitType)) return null;
   if (arms.length === 1) return arms[0]!;
   if (!unionContainerArmsOk(arms)) return null;
-  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  sortArms(arms);
   return { kind: "union", unionId: ctx.unions.intern(arms) };
 }
 
@@ -7745,7 +7879,7 @@ function mapGenericUtilityAlias(widened: ts.Type, ctx: TypeMapperCtx): IrType | 
  * that could inhabit the extra arm. */
 export function unitOnlyUnion(unions: UnionRegistry): IrType {
   const arms = [NULL_T, UNDEFINED_T];
-  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  sortArms(arms);
   return { kind: "union", unionId: unions.intern(arms) };
 }
 
@@ -7785,7 +7919,7 @@ export function iterableUnionType(
     )
       arms.push({ kind: "map", key: k.type, value: v.type });
   }
-  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  sortArms(arms);
   return { kind: "union", unionId: unions.intern(arms) };
 }
 
@@ -7838,7 +7972,7 @@ export function genResultRecord(
       // the slot still needs a readable undefined — the unit-only union.
       valueT = unitOnlyUnion(unions);
     } else {
-      arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+      sortArms(arms);
       valueT = { kind: "union", unionId: unions.intern(arms) };
     }
   }
@@ -7942,7 +8076,7 @@ export function withUnitArm(
     const arms = [...def.arms, unit];
     // Date and Promise arms beside other data arms have no union home.
     if (!unionContainerArmsOk(arms)) return null;
-    arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+    sortArms(arms);
     return { kind: "union", unionId: unions.transform(def, arms) };
   }
   if (
@@ -7955,7 +8089,7 @@ export function withUnitArm(
     return null;
   }
   const arms = [t, unit];
-  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  sortArms(arms);
   return { kind: "union", unionId: unions.intern(arms) };
 }
 
@@ -8028,7 +8162,68 @@ function mapClassExpandoIntersection(widened: ts.Type, ctx: TypeMapperCtx): IrTy
   return DYN;
 }
 
-function mapHybridCallableIntersection(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
+/** `F & { data }` maps to the CALLABLE part's func type: the members live in
+ * the closure's own-property table (lowering/callable-properties.ts), so the
+ * value IS the function — identity, aliasing, `typeof`, enumeration and
+ * inspect all answer as Node's function object does. The parts that cannot
+ * share that one representation (a recursive or `this`-typed member, a
+ * symbol-keyed member, an accessor, a class or index-signature part) return
+ * null, and the caller keeps the DYN mapping. */
+function mapCallableIntersection(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
+  const { checker } = ctx;
+  if (!widened.isIntersectionType()) return null;
+  if (checker.getCallSignatures(widened).length !== 1) return null;
+  let funcPart: ts.Type | null = null;
+  for (const part of ts.constituentTypes(widened)) {
+    if (checker.getCallSignatures(part).length > 0) {
+      if (funcPart) return null; // exactly one callable part
+      funcPart = part;
+      continue;
+    }
+    const partSym = part.getSymbol();
+    if (
+      (part.flags & ts.TypeFlags.Object) === 0 ||
+      checker.getConstructSignatures(part).length > 0 ||
+      (partSym !== undefined && (partSym.flags & ts.SymbolFlags.Class) !== 0) ||
+      checker.getIndexInfosOfType(part).length > 0
+    ) {
+      return null;
+    }
+  }
+  if (!funcPart) return null;
+  const properties = checker.getPropertiesOfType(widened);
+  if (properties.length === 0) return null; // no properties — it is just F
+  for (const p of properties) {
+    if (p.flags & (ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor)) return null;
+    // A symbol-keyed member has no string key in the table.
+    if (ts.symbolName(p).startsWith("__@")) return null;
+  }
+  const fn = mapType(funcPart, ctx);
+  return fn?.kind === "func" ? fn : null;
+}
+
+/** Whether `widened` is node:test's `Mock<F>` — an intersection carrying a
+ * `mock: MockFunctionContext<F>` member declared in the ambient `test`
+ * module (the same provenance check MockFunctionContext's own mapping
+ * uses). */
+function isMockHybridIntersection(widened: ts.Type, ctx: TypeMapperCtx): boolean {
+  if (!widened.isIntersectionType()) return false;
+  const mock = ctx.checker.getPropertyOfType(widened, "mock");
+  if (mock === undefined) return false;
+  const sym = ctx.checker.getTypeOfSymbol(mock).getSymbol();
+  return (
+    sym !== undefined &&
+    ts.symbolName(sym) === "MockFunctionContext" &&
+    sym.declarations.some(
+      (d) =>
+        ts.isInterfaceDeclaration(d) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "test"),
+    )
+  );
+}
+
+function mapHybridCallableRecord(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const { checker, shapes } = ctx;
   if (!widened.isIntersectionType()) return null;
   if (checker.getCallSignatures(widened).length !== 1) return null;
@@ -8067,15 +8262,21 @@ function mapHybridCallableIntersection(widened: ts.Type, ctx: TypeMapperCtx): Ir
   return { kind: "record", shapeId: shapes.intern(fields, false, undefined, declaredOrder) };
 }
 
-/** The record every part of a union of function-with-properties
- * intersections maps to, or null when a part does not map to the same one. */
+/** The representation every part of a union of function-with-properties
+ * intersections maps to, or null when a part does not map to the same one.
+ * Each part maps exactly as it does alone — an ordinary callable
+ * intersection to the callable's func type (its members ARE the closure's
+ * own properties), node:test's `Mock<F>` to its hybrid `%call` record — so a
+ * union never reintroduces the record a value no longer has. */
 function mapUniformHybridUnion(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const parts = ts.constituentTypes(widened);
   if (!parts.every((p) => p.isIntersectionType())) return null;
   let first: IrType | null = null;
   for (const part of parts) {
     if (ctx.checker.getConstructSignatures(part).length > 0) return null;
-    const mapped = mapHybridCallableIntersection(part, ctx);
+    const mapped = isMockHybridIntersection(part, ctx)
+      ? mapHybridCallableRecord(part, ctx)
+      : mapCallableIntersection(part, ctx);
     if (!mapped || (first && typeKey(mapped) !== typeKey(first))) return null;
     first ??= mapped;
   }
@@ -8754,7 +8955,7 @@ function joinOverloadTypes(types: readonly IrType[], ctx: TypeMapperCtx): IrType
     }
   }
   if (scalar && [...arms.values()].some((arm) => !isUnitType(arm))) {
-    const sorted = [...arms.values()].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+    const sorted = sortArms([...arms.values()]);
     return { kind: "union", unionId: ctx.unions.intern(sorted) };
   }
   if (
@@ -9146,7 +9347,7 @@ function dictSpreadLiteralShape(
   }
   for (const field of parts.fields) if (!addArms(field.type)) return null;
   if (![...arms.values()].some((arm) => !isUnitType(arm))) return null;
-  const sorted = [...arms.values()].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  const sorted = sortArms([...arms.values()]);
   const slot: IrType =
     sorted.length === 1 ? sorted[0]! : { kind: "union", unionId: unions.intern(sorted) };
   return shapes.intern([], false, slot, []);
@@ -9416,7 +9617,7 @@ function mapRecordTypeInner(
       slotDef.arms.every(armOk)
     ) {
       const armsRaw = [F64, STRING, arrayOf(STRING), UNDEFINED_T];
-      armsRaw.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+      sortArms(armsRaw);
       const canonical: IrType = { kind: "union", unionId: ctx.unions.intern(armsRaw) };
       const fits = (t: IrType | null): boolean => {
         if (!t) return false;
@@ -9877,9 +10078,7 @@ function mergePromiseArms(arms: IrType[], ctx: TypeMapperCtx): IrType[] | null {
         : payload.every((arm) => armHasUnionHome(arm))
           ? {
               kind: "union",
-              unionId: ctx.unions.intern(
-                [...payload].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1)),
-              ),
+              unionId: ctx.unions.intern(sortArms([...payload])),
             }
           : null;
   const merged: IrType | null = inner === null ? null : { kind: "promise", inner };

@@ -1,0 +1,9 @@
+{
+  "name": "flow-module-detection",
+  "private": true,
+  "type": "module",
+  "scriptc": {
+    "flow": true,
+    "packages": { "pragma-dep": "native" }
+  }
+}

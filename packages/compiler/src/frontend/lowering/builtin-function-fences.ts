@@ -5,6 +5,7 @@
  * membership) still hold, `typeof` answers "function" and inspection
  * prints `[Function: name]`, where a string token would answer "string"
  * and turn a call into an ordinary "is not a function" TypeError. */
+import { fenceLocation } from "../flow/index.js";
 import * as ts from "../ts7/adapter.js";
 import { DYN, type IrExpr, type SrcLoc, funcOf } from "../../ir/ir.js";
 import { unsupportedDiag } from "../../diagnostics/diagnostic.js";
@@ -35,7 +36,7 @@ export function builtinFunctionFenceValue(
         {
           kind: "runtimeFence",
           code: diag.code,
-          message: `${diag.message} [${diag.code} at ${loc.file}:${line}]`,
+          message: `${diag.message} [${diag.code} at ${fenceLocation(loc.file, loc.start, line)}]`,
           loc,
         },
       ],

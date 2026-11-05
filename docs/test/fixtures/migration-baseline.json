@@ -144,6 +144,32 @@
     ]
   },
   {
+    "href": "/docs/flow",
+    "title": "Flow",
+    "headings": [
+      {
+        "text": "Compile a Flow module",
+        "id": "compile-a-flow-module"
+      },
+      {
+        "text": "Which modules are Flow modules",
+        "id": "which-modules-are-flow-modules"
+      },
+      {
+        "text": "Settings",
+        "id": "settings"
+      },
+      {
+        "text": "How Flow types compile",
+        "id": "how-flow-types-compile"
+      },
+      {
+        "text": "Errors",
+        "id": "errors"
+      }
+    ]
+  },
+  {
     "legacy": "/ffi",
     "href": "/docs/ffi",
     "title": "Native FFI",

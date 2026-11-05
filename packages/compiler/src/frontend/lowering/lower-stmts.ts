@@ -99,9 +99,11 @@ import { statementGroupKey } from "./type-failure.js";
 import {
   cjsExportValueByName,
   cjsNamespaceDestructureOf,
+  cjsTableExportNamesInOrder,
   cjsTableMethodEntry,
   inlineProgramRequireOf,
   requireNestedPatternsOf,
+  requireRestElementsOf,
   splitRequireAssignmentOf,
   splitRequireBindingOf,
   splitRequireBindingOfIdent,
@@ -182,11 +184,13 @@ import {
   cjsExportTargetLiteral,
   isCjsJsFile,
   isEsModuleStamp,
+  isJsLikeSourceFile,
   isJsSourceFile,
   locOf,
   requireEarlyReference,
   requireSpecOf,
 } from "../program.js";
+import { callableDeleteKey } from "./callable-properties.js";
 import { isStrictCode } from "./strict-mode.js";
 import {
   COMPOUND_ASSIGN_OPS,
@@ -210,7 +214,7 @@ import {
   nsWritableTarget,
   trapDeclRootOf,
 } from "./lower-namespaces.js";
-import { expandoWritableTarget, lowerExpandoAssignStmt } from "./lower-expando.js";
+import { fenceReadonlyExpandoWrite } from "./lower-expando.js";
 import {
   type ForOfIterProjection,
   lowerForOfArrayIter,
@@ -267,6 +271,7 @@ import {
 } from "./lower-stream.js";
 import { staticAssertInstanceDecl } from "./assert-instances.js";
 import {
+  lowerHttpClientFnBindingDecl,
   lowerHttpResPropertyAssignment,
   lowerHttpServerTimeoutAssignment,
   lowerNetServerMaxConnectionsAssignment,
@@ -281,6 +286,8 @@ import {
   builtinNamespaceDestructureModuleOf,
   createRequireBindingDecl,
   createRequireCalleeFileOf,
+  createRequireEvaluatedBaseOf,
+  createRequireFactoryDecl,
   createRequireNamespaceDecl,
   createRequireProgramModuleDecl,
   createRequireProgramModuleOf,
@@ -796,9 +803,10 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
   // statement whose construct has no static lowering compiles to a
   // runtimeFence — a catchable, SC-coded throw at the statement's
   // position — instead of failing the whole build). TypeScript keeps
-  // compile fences. ICEs (SC9001) always stay compile errors.
+  // compile fences, except Flow modules, which Flow checked instead
+  // (flow/index.ts). ICEs (SC9001) always stay compile errors.
   const sf = stmts.length === 0 ? undefined : ts.getSourceFileOfNode(stmts[0]!);
-  const deferFences = sf !== undefined && isJsSourceFile(sf);
+  const deferFences = sf !== undefined && isJsLikeSourceFile(sf);
   // Register this list as open for the forward-capture machinery: a
   // nested function lowering mid-list may pre-declare a LATER const of
   // this list as a TDZ box (predeclareForwardCapture), pushing the
@@ -2386,6 +2394,60 @@ function lowerVarDeclarator(
           element.name as ts.ObjectBindingPattern,
           () => lowerer.lowerExpr(key),
           value.type,
+          isLet,
+          out,
+        );
+      }
+      // `const { a, ...rest } = require("./m")`: Node copies the module's
+      // remaining own enumerable exports into a fresh object at the
+      // require, in the exports object's own key order. The table's
+      // statically known members are exactly those properties, each read
+      // from its export global into a dynamic object (the binding's own
+      // checker type is `any`, so this is its represented form).
+      for (const element of requireRestElementsOf(decl)) {
+        const dep = lowerer.cjsRequireRestTableOf(decl);
+        const names = dep === null ? null : cjsTableExportNamesInOrder(lowerer, dep);
+        if (dep === null || names === null) {
+          lowerer.unsupported(
+            "SC1090",
+            element,
+            `the exports object of '${spec}' as a value (its exports do not form a static table)`,
+          );
+        }
+        const consumed = new Set<string>();
+        for (const sib of (element.parent as ts.ObjectBindingPattern).elements.nodes) {
+          if (sib === element || sib.dotDotDotToken !== undefined || sib.name === undefined)
+            continue;
+          const keyNode = sib.propertyName ?? sib.name;
+          if (!(ts.isIdentifier(keyNode) || ts.isStringLiteralLike(keyNode))) {
+            lowerer.unsupported(
+              "SC1090",
+              element,
+              "rest bindings beside computed keys (the copied set is a runtime fact)",
+            );
+          }
+          consumed.add(keyNode.text);
+        }
+        const loc = locOf(element);
+        const fields: { key: IrExpr; value: IrExpr }[] = [];
+        for (const name of names) {
+          if (consumed.has(name)) continue;
+          const value = cjsExportValueByName(lowerer, dep, name, element);
+          if (value === null) {
+            lowerer.unsupported(
+              "SC1090",
+              element,
+              `the exports object of '${spec}' as a value (its export '${name}' has no static value)`,
+            );
+          }
+          fields.push({
+            key: strLit(name, loc),
+            value: lowerer.coerceToExpected(value, DYN),
+          });
+        }
+        lowerer.bindPatternTarget(
+          element.name!,
+          { kind: "dynObjLit", fields, type: DYN, loc },
           isLet,
           out,
         );
@@ -6663,6 +6725,12 @@ export function lowerVarDecl(
     );
   }
 
+  // `const requestFn = cond ? https.request : http.request`: calls through
+  // the binding lower as the runtime-secure client. A condition that is not
+  // a stable identifier read is evaluated once, here, into a hidden bool.
+  const clientFnDecl = lowerHttpClientFnBindingDecl(lowerer, decl);
+  if (clientFnDecl !== false) return clientFnDecl;
+
   // `const asyncFn = promisify(supportedBuiltin)`: the binding registers
   // a static callable projection; calls route to the target's promise
   // lowering and the declaration emits no runtime slot.
@@ -6677,8 +6745,21 @@ export function lowerVarDecl(
   // `const require = createRequire(import.meta.url)` — compile-time
   // plumbing: each call through the binding resolves per site
   // (lowerCreateRequireCall); no storage, no code (collectGlobals
-  // skipped its global by the same test).
-  if (createRequireBindingDecl(lowerer, decl.name, decl.initializer)) return null;
+  // skipped its global by the same test). A RUN-TIME base is still
+  // evaluated here, as Node evaluates it at the declaration: its side
+  // effects happen and its throws unwind the module, even though the
+  // loader value stays the deferred fence.
+  if (createRequireBindingDecl(lowerer, decl.name, decl.initializer)) {
+    const base = createRequireEvaluatedBaseOf(lowerer, decl.initializer);
+    return base === null
+      ? null
+      : { kind: "exprStmt", expr: lowerer.lowerExpr(base), loc: locOf(base) };
+  }
+
+  // `const { createRequire: cr } = require("node:module")` — the factory
+  // binding is the same compile-time plumbing (its calls take the
+  // run-time-base fence; createRequireFactoryBinding).
+  if (createRequireFactoryDecl(lowerer, decl.name, decl.initializer)) return null;
 
   // `const fs = require("node:fs")` through that binding — a builtin
   // namespace import in const clothing: alias plumbing, no storage
@@ -8584,9 +8665,9 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
     }
   }
   if (
-    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
     obj.type.kind === "func" &&
-    lowerer.dynConvertible(obj.type)
+    lowerer.dynConvertible(obj.type) &&
+    (isJsSourceFile(ts.getSourceFileOfNode(expr)) || callableDeleteKey(lowerer, target))
   ) {
     obj = lowerer.coerceToExpected(obj, DYN);
   }
@@ -9428,13 +9509,11 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
       const callableWrite = lowerNativeFunctionAssignment(lowerer, expr);
       if (callableWrite) return { kind: "exprStmt", expr: callableWrite, loc: locOf(expr) };
       // Expando function members (`foo.bar = 12`, `foo[SYM] = v` on a
-      // module-level function/callable const): the member's module
-      // global (lower-expando.ts) — claimed by symbol identity before
-      // any receiver-shape path.
-      {
-        const ex = lowerExpandoAssignStmt(lowerer, expr);
-        if (ex) return ex;
-      }
+      // module-level function/callable const): the write is the closure's
+      // own-property table store, like any other callable member; the
+      // read-only function members keep their fault fence.
+      if (ts.isPropertyAccessExpression(expr.left) || ts.isElementAccessExpression(expr.left))
+        fenceReadonlyExpandoWrite(lowerer, expr.left);
       {
         const dereferenced = lowerDereferencedElementWrite(lowerer, expr);
         if (dereferenced) return dereferenced;
@@ -10144,11 +10223,10 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
       if (ts.isPropertyAccessExpression(expr.left)) {
         // `N.x += v` — the namespace-qualified spelling of a module-
         // global compound assign (nsWritableTarget resolves the member's
-        // global; everything else keeps the field path). Expando
-        // function members (`foo.count += 1`) are module globals too.
+        // global; everything else keeps the field path). Expando function
+        // members (`foo.count += 1`) are callable-member table data.
         if (!expr.left.questionDotToken) {
-          const exT = expandoWritableTarget(lowerer, expr.left);
-          if (exT) return lowerCompoundToTarget(lowerer, expr, compound, exT);
+          fenceReadonlyExpandoWrite(lowerer, expr.left);
           const nsT = nsWritableTarget(lowerer, expr.left);
           if (nsT) return lowerCompoundToTarget(lowerer, expr, compound, nsT);
         }
@@ -10180,9 +10258,11 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
     if (ts.isPropertyAccessExpression(expr.operand) || ts.isElementAccessExpression(expr.operand)) {
       fenceDatePrototypeWrite(lowerer, expr.operand);
       // Statement and value positions share ToNumeric and reference order.
-      // Namespace/expando globals retain their direct binding path below.
+      // Namespace globals retain their direct binding path below.
+      if (ts.isPropertyAccessExpression(expr.operand))
+        fenceReadonlyExpandoWrite(lowerer, expr.operand);
       const binding = ts.isPropertyAccessExpression(expr.operand)
-        ? (expandoWritableTarget(lowerer, expr.operand) ?? nsWritableTarget(lowerer, expr.operand))
+        ? nsWritableTarget(lowerer, expr.operand)
         : null;
       if (binding) return lowerIncDecToTarget(lowerer, expr, binding);
       return {

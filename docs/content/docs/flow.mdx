@@ -1,0 +1,109 @@
+---
+title: "Flow"
+---
+
+scriptc compiles JavaScript written with [Flow](https://flow.org) type annotations. Turn it on with the `scriptc.flow` setting in your `package.json`: each Flow module then compiles as the TypeScript its annotations translate to, so its typed code compiles to static native code, and the rest of the program imports it as it would any module.
+
+Flow stays your type checker. scriptc uses the annotations to choose native layouts, but it doesn't report Flow type errors, so run `flow check` as you do today.
+
+## Compile a Flow module
+
+Add the setting to the `package.json` that governs your program:
+
+```json:package.json
+{
+  "type": "module",
+  "scriptc": {
+    "flow": true
+  }
+}
+```
+
+Write a module with a `@flow` pragma:
+
+```js:prices.js
+// @flow
+export type Item = {| name: string, cents: number |};
+
+export function total(items: $ReadOnlyArray<Item>): number {
+  let sum = 0;
+  for (const item of items) sum += item.cents;
+  return sum;
+}
+
+export function format(cents: number): string {
+  return '$' + (cents / 100).toFixed(2);
+}
+```
+
+Import it from the entry:
+
+```js:main.mjs
+import { format, total } from "./prices.js";
+
+const items = [
+  { name: "tea", cents: 350 },
+  { name: "cake", cents: 425 },
+];
+console.log(format(total(items)));
+```
+
+Build and run the executable:
+
+```console
+$ scriptc build main.mjs -o prices >/dev/null
+$ ./prices
+$7.75
+```
+
+## Which modules are Flow modules
+
+With `"flow": true`, a `.js` module the program imports is a Flow module when its leading comments contain `@flow` or `@noflow`. With `"all": true`, every `.js` module the program imports is one, pragma or not, including modules outside the project's directory, such as sources that tsconfig `paths` map in. In both cases, a `.ts` or `.tsx` file beside the module takes its place, modules under `node_modules` stay JavaScript, and `.mjs`, `.cjs` and `.jsx` files are never Flow modules.
+
+Importers name a Flow module by its usual specifier, such as `./prices.js`, from JavaScript and TypeScript alike. A Flow module that contains JSX compiles as TSX, with the project's `jsx` setting.
+
+## Settings
+
+`scriptc.flow` is `true` or an object with these keys:
+
+<dl>
+  <dt>`all`</dt>
+  <dd>`true` to treat every `.js` module the program imports outside `node_modules` as a Flow module, pragma or not. The default is `false`.</dd>
+  <dt>`dynamicTypes`</dt>
+  <dd>Type names to compile as `unknown`: values that scriptc keeps checked-dynamic and takes as they are, such as the user-facing types of a library whose values don't always match their Flow types.</dd>
+  <dt>`types`</dt>
+  <dd>Type names mapped to the TypeScript type they really are. `"unique symbol"` makes the type the unique symbol of the `const` declared with it, so a comparison with that constant narrows it out of a union, as Flow does with the literal type it stands in for.</dd>
+</dl>
+
+Two more `scriptc` settings describe a build of the project:
+
+<dl>
+  <dt>`constants`</dt>
+  <dd>Build-time constants, such as `{ "__DEV__": false }`, for Flow modules: each reference to the global becomes its value, and the `if` branches and `?:` arms the value decides are left out of the program. Where a binding of the same name is in scope (a variable, parameter, function, class, import or catch binding), the name is that binding, as written. Values are booleans, numbers, strings, or `null`, and the setting has no effect without `flow`.</dd>
+  <dt>`moduleSubstitutions`</dt>
+  <dd>Modules answered by other modules, such as a platform fork: `{ "src/Config.js": "src/forks/Config.node.js" }`. Every importer of the first module, Flow or not, gets the second one's exports. Both paths are relative to the `package.json`.</dd>
+</dl>
+
+## How Flow types compile
+
+Flow's syntax becomes TypeScript's: exact and inexact object types, spreads (a later property overrides an earlier one, as in Flow), `?T`, `$ReadOnly` and the other utility types, opaque types (as their underlying type), and `void` in unions (as `undefined`).
+
+`mixed` and `any` compile as `unknown`, a checked-dynamic value. A cast to `any` that only silences Flow, such as `(value: any)`, keeps the operand's own type. An unannotated parameter takes any value. A named function declaration that reads `arguments` accepts any number of arguments from TypeScript callers too; other functions that read it accept them from JavaScript and Flow callers.
+
+## Errors
+
+A module that uses Flow syntax scriptc doesn't support, or that doesn't parse, stops the build with a diagnostic at its Flow source:
+
+```console
+$ scriptc build enum.mjs
+/private/tmp/app/status.js:2:1 - error SC1090: Flow enums are not supported yet
+
+  1 | // @flow
+  2 | enum Status {
+    | ^
+  3 |   Active,
+
+1 error.
+```
+
+A construct inside a Flow module that has no static lowering doesn't fail the build, as in JavaScript: it compiles to a runtime error at that statement, and the error's message names the Flow file and line. The [limitations](/docs/limitations#language-features) page lists the Flow forms that aren't supported.

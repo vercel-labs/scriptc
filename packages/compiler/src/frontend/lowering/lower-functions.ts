@@ -25,8 +25,13 @@ import {
   canBoxFuncIntoDyn,
   typeEquals,
 } from "../../ir/ir.js";
-import { isJsSourceFile, locOf } from "../program.js";
+import { isJsLikeSourceFile, isJsSourceFile, locOf } from "../program.js";
 import { PoisonError, jsFuncNameOf, newFnCtx } from "./lowerer.js";
+import {
+  escapesUnderAnotherName,
+  reachableWithoutItsName,
+  symbolReferences,
+} from "./symbol-references.js";
 import { enforceLibBoundary, lowerSurplusCalls } from "./lib-boundary.js";
 import { returnsOnlyThis } from "./lower-classes.js";
 import { declSymbolOf } from "./lower-modules.js";
@@ -93,6 +98,92 @@ function dropUnreadReceiver(ctx: FnCtx, prologue: IrStmt[], receiver: IrStmt | n
   const local = ctx.locals.findIndex((l) => l.id === receiver.localId);
   if (local >= 0) ctx.locals.splice(local, 1);
   ctx.thisLocal = null;
+}
+
+/** The static type of a TypeScript (or Flow) function's declared `this`
+ * parameter, or null (none, a JavaScript function, or a type with no
+ * static representation). */
+export function typedThisParameter(lowerer: Lowerer, decl: ts.FunctionDeclaration): IrType | null {
+  if (isJsSourceFile(ts.getSourceFileOfNode(decl))) return null;
+  const param = decl.parameters.nodes.find(isThisParameter);
+  if (param === undefined || param.type === undefined) return null;
+  const type = lowerer.mapTypeOf(lowerer.checker.getTypeFromTypeNode(param.type));
+  if (type === null || type.kind === "dyn" || type.kind === "void" || type.kind === "undefinedT")
+    return null;
+  return receiverBindingUsesOnly(lowerer, decl, type) ? type : null;
+}
+
+const COLLECTION_KINDS: ReadonlySet<string> = new Set(["map", "set"]);
+
+/** Whether every reference to the function binds its receiver the way the
+ * typed first parameter is called: `f.call(receiver, ...args)` with one
+ * argument per parameter and no spread, to a function without rest
+ * parameters (lower-calls.ts), or a Map or Set
+ * `forEach(f, thisArg)` (collection-methods.ts), where the receiver has the
+ * declared type, so the function writes to the caller's object and not to a
+ * converted copy. Any other use (a value, a constructor, a listener, a
+ * `.call` that omits or spreads arguments or passes another type) keeps the
+ * checked-dynamic receiver. */
+function receiverBindingUsesOnly(
+  lowerer: Lowerer,
+  decl: ts.FunctionDeclaration,
+  thisType: IrType,
+): boolean {
+  const cache = lowerer.receiverBindingUses;
+  const cached = cache.get(decl);
+  if (cached !== undefined) return cached;
+  const name = decl.name;
+  const symbol = name ? lowerer.resolveValueSymbol(name) : null;
+  const sig = symbol ? lowerer.fnSigsBySymbol.get(symbol) : undefined;
+  const references = symbol ? symbolReferences(lowerer, symbol, name!.text) : [];
+  // JavaScript lowers its values dynamically whatever their inferred type.
+  const declaredReceiver = (receiver: ts.Expression | undefined): boolean => {
+    if (!receiver || isJsSourceFile(ts.getSourceFileOfNode(receiver))) return false;
+    const type = lowerer.mapTypeOf(lowerer.typeOf(receiver));
+    return !!type && typeEquals(type, thisType);
+  };
+  const only =
+    !!symbol &&
+    sig !== undefined &&
+    sig.params.every((p) => (p.mode === "required" || p.mode === "omittable") && !p.restTuple) &&
+    !reachableWithoutItsName(lowerer, decl, references) &&
+    references.every((n) => {
+      const parent = n.parent;
+      if (escapesUnderAnotherName(n, decl)) return false;
+      if (!parent || ts.isFunctionDeclaration(parent)) return true;
+      if (ts.isExportSpecifier(parent) || ts.isImportSpecifier(parent)) return true;
+      if (
+        ts.isPropertyAccessExpression(parent) &&
+        parent.expression === n &&
+        !parent.questionDotToken &&
+        parent.name.text === "call" &&
+        parent.parent !== undefined &&
+        ts.isCallExpression(parent.parent) &&
+        parent.parent.expression === parent &&
+        !parent.parent.questionDotToken
+      ) {
+        const args = parent.parent.arguments.nodes;
+        return (
+          !args.some(ts.isSpreadElement) &&
+          args.length === sig.params.length + 1 &&
+          declaredReceiver(args[0])
+        );
+      }
+      return (
+        ts.isCallExpression(parent) &&
+        parent.arguments.nodes.length === 2 &&
+        parent.arguments.nodes[0] === n &&
+        declaredReceiver(parent.arguments.nodes[1]) &&
+        ts.isPropertyAccessExpression(parent.expression) &&
+        !parent.expression.questionDotToken &&
+        parent.expression.name.text === "forEach" &&
+        COLLECTION_KINDS.has(
+          lowerer.mapTypeOf(lowerer.typeOf(parent.expression.expression))?.kind ?? "",
+        )
+      );
+    });
+  cache.set(decl, only);
+  return only;
 }
 
 /** True when the identifier resolves (through import aliases) to a
@@ -215,6 +306,47 @@ function contextualTypeParameterSymbols(
     symbols.push(symbol);
   }
   return symbols;
+}
+
+/** True when a nested function in `node` reads the function expression's
+ * own name. The body's direct reads lower to `selfRef` (the running
+ * closure), which a nested closure cannot use: its running closure is its
+ * own. Those reads need a binding to capture, so the name is materialized
+ * as a local initialized from the enclosing `selfRef`.
+ *
+ * Only a function expression needs this: a declaration's name is an
+ * ordinary binding of the enclosing scope, and nested declarations
+ * predeclare theirs. Reads that alias the name (import aliases, shorthand
+ * properties) resolve through the checker like every other reference. */
+function nestedSelfNameRead(
+  lowerer: Lowerer,
+  node: ts.FunctionExpression,
+  symbol: ts.Symbol,
+): boolean {
+  const name = node.name;
+  if (name === undefined) return false;
+  let found = false;
+  ts.walkPreorder(node, (n) => {
+    if (found || !ts.isIdentifier(n) || n.text !== name.text || n === name) return;
+    // A read in the function's own body scope reaches the running
+    // closure; only one behind a nested function needs the binding.
+    let nested = false;
+    for (let cur = n.parent; cur !== undefined && cur !== node; cur = cur.parent) {
+      if (ts.isFunctionLike(cur)) {
+        nested = true;
+        break;
+      }
+    }
+    if (!nested) return;
+    let target =
+      ts.isShorthandPropertyAssignment(n.parent) && n.parent.name === n
+        ? lowerer.checker.getShorthandAssignmentValueSymbol(n.parent)
+        : lowerer.checker.getSymbolAtLocation(n);
+    if (target !== undefined && (target.flags & ts.SymbolFlags.Alias) !== 0)
+      target = lowerer.checker.getAliasedSymbol(target);
+    if (target === symbol) found = true;
+  });
+  return found;
 }
 
 /** Lifts an arrow function / function expression / nested declaration /
@@ -412,12 +544,42 @@ export function lowerLambda(
   if (isGenerator && funcType.ret.kind === "generator") {
     fnCtx.generator = generatorMeta(lowerer, funcType.ret);
   }
+  // A named function expression stays a pure `selfRef` while only its own
+  // body reads the name. A nested function cannot read the running closure
+  // through `selfRef`, so the name becomes one local of this body, filled
+  // from the same `selfRef` at entry; nested functions then capture it like
+  // any outer binding. The type settles here only when return inference is
+  // off — an inferred return is settled after the body lowers, too late for
+  // a local the body's nested functions already captured — so that rare
+  // shape keeps its refusal.
+  let selfDecl: IrStmt | null = null;
+  if (
+    selfSymbol !== null &&
+    ts.isFunctionExpression(node) &&
+    fnCtx.inferReturn === undefined &&
+    nestedSelfNameRead(lowerer, node, selfSymbol)
+  ) {
+    const local = declareContextLocal(
+      fnCtx,
+      node.name!.text,
+      funcType,
+      false,
+      selfSymbol,
+      undefined,
+    );
+    selfDecl = {
+      kind: "varDecl",
+      localId: local.id,
+      init: { kind: "selfRef", type: funcType, loc },
+      loc,
+    };
+  }
   const diagsBefore = lowerer.diags.length;
   lowerer.fnStack.push(fnCtx);
   try {
     const receiver =
       (checkedReceiver ||
-        isJsSourceFile(ts.getSourceFileOfNode(node)) ||
+        isJsLikeSourceFile(ts.getSourceFileOfNode(node)) ||
         node.parameters.nodes.some(isThisParameter)) &&
       !ts.isArrowFunction(node)
         ? declareCallReceiver(lowerer, node, isGenerator)
@@ -437,6 +599,10 @@ export function lowerLambda(
         funcType.restAbi === undefined &&
         !shapes.some((s) => s.mode === "dynRest"),
     );
+    // The name binding exists before the parameters evaluate, as Node
+    // creates it when the function object does: a default that reads the
+    // name (`(x = self) => …`) sees the function.
+    if (selfDecl !== null) prologue.unshift(selfDecl);
 
     const lowerBody = (): IrStmt[] => {
       let body: IrStmt[];
@@ -635,11 +801,22 @@ export function lowerFunction(lowerer: Lowerer, decl: ts.FunctionDeclaration): I
     // throws must not leave the slot set for the next direct call.
     const argumentCount: IrStmt[] = [];
     declareArgumentCount(lowerer, decl, argumentCount);
+    // A declared `this` of a static type (TypeScript and Flow) is the
+    // function's first parameter: callers that supply the receiver
+    // (`f.call(t, ...)`, `forEach(f, t)`) pass it typed. Any other
+    // declared `this` reads the call-time receiver.
+    const typedThis = typedThisParameter(lowerer, decl);
     const receiver =
-      decl.parameters.nodes.some(isThisParameter) || isJsSourceFile(ts.getSourceFileOfNode(decl))
+      typedThis === null &&
+      (decl.parameters.nodes.some(isThisParameter) ||
+        isJsLikeSourceFile(ts.getSourceFileOfNode(decl)))
         ? declareCallReceiver(lowerer, decl, sig.generator !== undefined)
         : null;
+    const thisLocal = typedThis === null ? null : lowerer.declareThis(typedThis);
     const { params, prologue } = lowerer.declareParams(decl.parameters.nodes, sig.params);
+    if (thisLocal !== null) {
+      params.unshift({ localId: thisLocal.id, name: "this", type: typedThis! });
+    }
     if (receiver) prologue.unshift(receiver);
     prologue.unshift(...argumentCount);
     declareFunctionArguments(
@@ -649,7 +826,8 @@ export function lowerFunction(lowerer: Lowerer, decl: ts.FunctionDeclaration): I
       params,
       prologue,
       locOf(decl),
-      sig.params.length > decl.parameters.nodes.length &&
+      // A declared `this` (TypeScript, Flow) is no slot of the signature.
+      sig.params.length > decl.parameters.nodes.filter((p) => !isThisParameter(p)).length &&
         (sig.params[sig.params.length - 1]!.mode === "dynRest" ||
           sig.params[sig.params.length - 1]!.mode === "arguments"),
     );

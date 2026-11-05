@@ -1,0 +1,8 @@
+{
+  "name": "flow-javascript-semantics",
+  "private": true,
+  "type": "module",
+  "scriptc": {
+    "flow": true
+  }
+}

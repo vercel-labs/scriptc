@@ -21,6 +21,7 @@
  * files only, and an empty answer leaves every mapping unchanged, so
  * TypeScript programs and JavaScript that never uses these patterns
  * compile exactly as before. */
+import { fenceLocation } from "../flow/index.js";
 import { keyedHelperName } from "./stable-names.js";
 import * as ts from "../ts7/adapter.js";
 import { isJsSourceFile, locOf } from "../program.js";
@@ -236,7 +237,7 @@ export function lowerValueReturningConstructorNew(
         {
           kind: "runtimeFence",
           code: "SC1090",
-          message: `constructors that return no object (the bare instance of '${decl.name?.text ?? "class"}' has no representation here) are not supported yet [SC1090 at ${ts.getSourceFileOfNode(decl).fileName}:${ts.getLineAndCharacterOfPosition(ts.getSourceFileOfNode(decl), ts.tokenStartOfNode(ctor)).line + 1}]`,
+          message: `constructors that return no object (the bare instance of '${decl.name?.text ?? "class"}' has no representation here) are not supported yet [SC1090 at ${fenceLocation(ts.getSourceFileOfNode(decl).fileName, ts.tokenStartOfNode(ctor), ts.getLineAndCharacterOfPosition(ts.getSourceFileOfNode(decl), ts.tokenStartOfNode(ctor)).line + 1)}]`,
           loc: locOf(ctor),
         },
       ];
@@ -304,7 +305,7 @@ export function lowerValueReturningConstructorNew(
       else_: nodeThrowExpr(
         0,
         "SC1090",
-        `constructors that return no object are not supported yet [SC1090 at ${sf.fileName}:${line}]`,
+        `constructors that return no object are not supported yet [SC1090 at ${fenceLocation(sf.fileName, ts.tokenStartOfNode(expr), line)}]`,
         DYN,
         loc,
       ),

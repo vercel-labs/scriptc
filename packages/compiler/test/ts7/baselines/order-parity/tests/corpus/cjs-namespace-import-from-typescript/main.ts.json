@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-namespace-import-from-typescript/lib.cjs",
+  "<repo>/tests/corpus/cjs-namespace-import-from-typescript/main.ts"
+ ],
+ "diags": []
+}

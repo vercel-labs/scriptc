@@ -18,6 +18,49 @@ function diagnostics(library: string, main: string, extension = "js") {
   }
 }
 
+test("an ordinary object-shape refusal does not claim a Set protocol mismatch", () => {
+  const result = diagnostics(
+    '// @ts-check\n/** @type {{ first: string, second: string, third: string }} */\nexport const value = { first: "one" };',
+    'import "./library.js";',
+  );
+  expect(result).toHaveLength(1);
+  expect(result[0]?.code).toBe("SC1090");
+  expect(result[0]?.message).toContain("properties required by the target type");
+  expect(result[0]?.message).not.toContain("set-like");
+});
+
+test("a function-declaration refusal explains that JavaScript declarations are mutable", () => {
+  const result = diagnostics(
+    "export function value() { return 1; } value = () => 2;",
+    'import "./library.js";',
+  );
+  expect(result).toHaveLength(1);
+  expect(result[0]?.code).toBe("SC1090");
+  expect(result[0]?.hint).toContain("mutable");
+  expect(result[0]?.hint).not.toContain("Node throws a TypeError at the assignment");
+});
+
+test("a class-name refusal distinguishes its mutable outer and immutable inner bindings", () => {
+  const result = diagnostics(
+    "export class Value {} Value = class Replacement {};",
+    'import "./library.js";',
+  );
+  expect(result).toHaveLength(1);
+  expect(result[0]?.code).toBe("SC1090");
+  expect(result[0]?.hint).toContain("mutable outer");
+  expect(result[0]?.hint).toContain("immutable inner");
+});
+
+test("a named-function-expression refusal preserves its distinct inner binding semantics", () => {
+  const result = diagnostics(
+    "export const value = function inner() { inner = () => {}; };",
+    'import "./library.js";',
+  );
+  expect(result).toHaveLength(1);
+  expect(result[0]?.code).toBe("SC1090");
+  expect(result[0]?.hint).toContain("inner");
+});
+
 test("TypeScript callers can pass arguments to inferred JavaScript functions that read arguments", () => {
   expect(
     diagnostics(

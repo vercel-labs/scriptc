@@ -1499,14 +1499,14 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
     2629,
     REWRITE(
       "assigning to a class name binding",
-      "Node throws a TypeError at the assignment; the class binding is read-only",
+      "JavaScript class declarations have a mutable outer binding and an immutable inner binding; native lowering must preserve the targeted binding's assignment behavior",
     ),
   ],
   [
     2630,
     REWRITE(
-      "assigning to a function declaration name",
-      "Node throws a TypeError at the assignment in strict mode and modules",
+      "assigning to a function name binding",
+      "Function declarations are mutable in JavaScript, including in strict mode and modules; a named function expression's inner binding is immutable and has mode-dependent assignment behavior",
     ),
   ],
   [2660, KEEP(KEEP_GRAMMAR)],
@@ -1557,7 +1557,7 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
   [
     2739,
     REFUSE(
-      "a set-like argument the checker cannot prove implements 'has' and 'size'",
+      "a value missing properties required by the target type",
       "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
     ),
   ],

@@ -4138,9 +4138,9 @@ static bool scr_tls_dynh_get(ScrNetSocket *s, const char *key, ScrDyn **out) {
   ScrTlsSock *t = scr_tls_sock_of(s);
   if (t == NULL) return false; /* a plain socket: the net dispatch answers */
   if (strcmp(key, "authorized") == 0) {
-    bool a = t->established && t->cli != NULL && t->cli->verify_recorded &&
-             mbedtls_ssl_get_verify_result(&t->ssl) == 0;
-    *out = scr_dyn_new_bool(a);
+    /* the static accessor, so a rejection the custom verifier returned on
+     * a lenient connection counts here too */
+    *out = scr_dyn_new_bool(scr_tls_sock_authorized(s));
     return true;
   }
   if (strcmp(key, "alpnProtocol") == 0) {
@@ -4148,15 +4148,13 @@ static bool scr_tls_dynh_get(ScrNetSocket *s, const char *key, ScrDyn **out) {
     return true;
   }
   if (strcmp(key, "authorizationError") == 0) {
-    if (!t->established || t->cli == NULL || !t->cli->verify_recorded ||
-        mbedtls_ssl_get_verify_result(&t->ssl) == 0) {
+    ScrStr *err = scr_tls_sock_auth_error(s);
+    if (err == NULL) {
       *out = scr_dyn_new_null();
-      return true;
+    } else {
+      *out = scr_dyn_new_str(err);
+      scr_str_release(err);
     }
-    const char *code = scr_tls_auth_code(t);
-    ScrStr *str = scr_str_new(code, strlen(code));
-    *out = scr_dyn_new_str(str);
-    scr_str_release(str);
     return true;
   }
   return false;

@@ -1,8 +1,10 @@
+// @deferred-fences: 1
 // A whole-program analysis that queries types before reachability is known
 // (the computed-key write census here, through `holder.p`) names a
-// function-local class whose collection is refused. The refusal is reported,
-// once, at the class; it used to crash the compiler with an uncaught
-// PoisonError.
+// function-local class whose Map field is first assigned inside a method.
+// The field lowers as the undefined-armed union of its inferred type, so the
+// class collects and the program runs; it used to crash the compiler with an
+// uncaught PoisonError.
 function main() {
   const Project = class _Project {
     constructor() {

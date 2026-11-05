@@ -796,7 +796,10 @@ const CLAUSE_CONTINUES_AFTER: ReadonlySet<string> = new Set([
 ]);
 
 /** Tokens that cannot begin a statement, so a line break before one leaves
- * the clause open. */
+ * the clause open. `typeof` is not one of them: a type query only continues
+ * a clause after a token that opens a type (`=`, `|`, `keyof` and the like,
+ * which CLAUSE_CONTINUES_AFTER already covers), while a statement of its own
+ * can begin with it (`typeof require === "function"`). */
 const CLAUSE_CONTINUES_BEFORE: ReadonlySet<string> = new Set([
   "|",
   "&",
@@ -815,7 +818,6 @@ const CLAUSE_CONTINUES_BEFORE: ReadonlySet<string> = new Set([
   "in",
   "is",
   "of",
-  "typeof",
 ]);
 
 /** Whether a line break between `prev` and `next` leaves a type-only clause

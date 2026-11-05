@@ -237,6 +237,27 @@ describe("the collected module tree", () => {
     expect(scan.computed.map((c) => c.form)).toEqual(["require() with a computed specifier"]);
   });
 
+  // A statement can begin with `typeof`, so the guard after a semicolonless
+  // type clause is runtime code: the loads it makes still load, and a
+  // computed one is still refused. A type query inside the clause keeps it
+  // open and names no load.
+  test("a typeof guard after a semicolonless type clause still loads", () => {
+    const scan = scanModuleSpecifiers(`
+      export type Alpha = string
+      typeof require === "function" && require("./guarded.ts");
+      export type Beta = { b: string }
+      typeof require !== "undefined" && require(name);
+      export type Gamma =
+        typeof require
+      const d = require("./after-typeof.ts");
+      export type Delta = keyof
+        typeof require
+      const e = require("./after-keyof.ts");
+    `);
+    expect(scan.specifiers).toEqual(["./guarded.ts", "./after-typeof.ts", "./after-keyof.ts"]);
+    expect(scan.computed.map((c) => c.form)).toEqual(["require() with a computed specifier"]);
+  });
+
   test("a type-only import of a module with a computed load is not refused", () => {
     const root = project({
       "src/main.ts": "",

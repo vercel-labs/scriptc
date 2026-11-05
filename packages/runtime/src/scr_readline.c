@@ -77,10 +77,29 @@ static void scr_rl_throw_closed(void) {
 
 /* ── listeners ─────────────────────────────────────────────────────── */
 
+/* The first listener an event gains fixes its place in eventNames();
+ * Node's _events object keeps the key until the list is empty again (the
+ * interface's own 'close' registration holds the key from the start). */
+static void scr_rl_mark_event(ScrRl *rl, int ev) {
+  if (rl->ev[ev].n == 0 && rl->ev_seq[ev] == 0) rl->ev_seq[ev] = ++rl->ev_seq_next;
+}
+
 static void scr_rl_add(ScrRl *rl, int ev, ScrClosure *cb /*moves*/, void *fn, bool once, bool iter) {
   RlList *l = &rl->ev[ev];
+  scr_rl_mark_event(rl, ev);
   l->v = scr_rl_grow(l->v, &l->cap, l->n + 1, sizeof *l->v);
   l->v[l->n++] = (RlEntry){cb, fn, once, iter};
+}
+
+/* prependListener's registration: the same entry at the FRONT of the
+ * event's list, so it runs before the listeners already there. */
+static void scr_rl_add_first(ScrRl *rl, int ev, ScrClosure *cb /*moves*/, void *fn, bool once) {
+  RlList *l = &rl->ev[ev];
+  scr_rl_mark_event(rl, ev);
+  l->v = scr_rl_grow(l->v, &l->cap, l->n + 1, sizeof *l->v);
+  memmove(&l->v[1], &l->v[0], l->n * sizeof *l->v);
+  l->v[0] = (RlEntry){cb, fn, once, false};
+  l->n++;
 }
 
 static void scr_rl_remove_iter(ScrRl *rl) {
@@ -259,6 +278,12 @@ void scr_rl_settle_close(ScrRl *rl) {
   if (rl->q_cb) {
     scr_closure_release(rl->q_cb); /* a pending question never answers */
     rl->q_cb = NULL;
+  }
+  /* The interface's own once('close') listener leaves before the event
+   * dispatches, as Node's once wrapper does. */
+  if (rl->self_close) {
+    rl->self_close = false;
+    rl->ev_seq[RL_EV_CLOSE] = 0;
   }
   scr_rl_emit(rl, RL_EV_CLOSE, NULL, NULL);
   free(rl->line_buf);
@@ -770,6 +795,10 @@ double scr_rl_open(const ScrRlIo *io, void *in, void *out, bool out_stdout, doub
   ScrRl *rl = calloc(1, sizeof *rl);
   if (!rl) scr_rl_oom();
   rl->id = scr_rl_next_id++;
+  /* Node's interface registers once('close', onSelfCloseWithoutTerminal)
+   * in its constructor, so eventNames() lists 'close' first. */
+  rl->self_close = true;
+  rl->ev_seq[RL_EV_CLOSE] = ++rl->ev_seq_next;
   rl->stdin_in = in == NULL;
   rl->io = io;
   rl->in = in;
@@ -1232,6 +1261,104 @@ void scr_rl_on(double id, double ev, ScrClosure *cb /*moves*/, void *fn, bool on
     return;
   }
   scr_rl_add(rl, (int)ev, cb, fn, once, false);
+}
+
+/* prependListener/prependOnceListener: the same registration, at the front
+ * of the event's list. */
+void scr_rl_on_first(double id, double ev, ScrClosure *cb /*moves*/, void *fn, bool once) {
+  ScrRl *rl = scr_rl_find(id);
+  if (!rl || ev < 0 || ev >= RL_EV_COUNT) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_rl_add_first(rl, (int)ev, cb, fn, once);
+}
+
+/* removeListener/off: the LAST registration of the same function leaves
+ * (Node searches from the end). A once registration is stored as the
+ * listener itself, so the wrapper matches too. cb is borrowed; the async
+ * iterator's own entries have no closure and never match. */
+void scr_rl_off(double id, double ev, ScrClosure *cb) {
+  ScrRl *rl = scr_rl_find(id);
+  if (!rl || ev < 0 || ev >= RL_EV_COUNT) return;
+  int e = (int)ev;
+  RlList *l = &rl->ev[e];
+  for (size_t i = l->n; i-- > 0;) {
+    if (l->v[i].iter || !scr_closure_identity_equal(l->v[i].cb, cb)) continue;
+    scr_closure_release(l->v[i].cb);
+    memmove(&l->v[i], &l->v[i + 1], (l->n - i - 1) * sizeof *l->v);
+    if (--l->n == 0 && !(e == RL_EV_CLOSE && rl->self_close)) rl->ev_seq[e] = 0;
+    return;
+  }
+}
+
+/* removeAllListeners(); ev -1 is the no-argument form. The async iterator
+ * registered its own listeners through the same list, so they leave too. */
+void scr_rl_off_all(double id, double ev) {
+  ScrRl *rl = scr_rl_find(id);
+  if (!rl) return;
+  int lo = 0, hi = RL_EV_COUNT;
+  if (ev >= 0 && ev < RL_EV_COUNT) {
+    lo = (int)ev;
+    hi = lo + 1;
+  } else if (ev != -1) {
+    return;
+  }
+  for (int e = lo; e < hi; e++) {
+    RlList *l = &rl->ev[e];
+    for (size_t i = 0; i < l->n; i++) {
+      if (!l->v[i].iter) scr_closure_release(l->v[i].cb);
+    }
+    l->n = 0;
+    rl->ev_seq[e] = 0;
+    if (e == RL_EV_CLOSE) rl->self_close = false;
+  }
+}
+
+double scr_rl_listener_count(double id, double ev) {
+  ScrRl *rl = scr_rl_find(id);
+  if (!rl || ev < 0 || ev >= RL_EV_COUNT) return 0;
+  double n = (double)rl->ev[(int)ev].n;
+  return n + (ev == RL_EV_CLOSE && rl->self_close ? 1 : 0);
+}
+
+/* listenerCount(event, fn): only the registrations of that function. */
+double scr_rl_listener_count_fn(double id, double ev, ScrClosure *cb) {
+  ScrRl *rl = scr_rl_find(id);
+  if (!rl || ev < 0 || ev >= RL_EV_COUNT) return 0;
+  RlList *l = &rl->ev[(int)ev];
+  double n = 0;
+  for (size_t i = 0; i < l->n; i++) {
+    if (!l->v[i].iter && scr_closure_identity_equal(l->v[i].cb, cb)) n++;
+  }
+  return n;
+}
+
+/* eventNames(): the events that have a listener, in first-registration
+ * order. Every readline event name is a string. */
+ScrArr *scr_rl_event_names(double id) {
+  static const char *const names[RL_EV_COUNT] = {
+      "line", "close", "pause", "resume", "error", "history", "SIGINT", "SIGTSTP", "SIGCONT",
+  };
+  ScrArr *out = scr_arr_new(SCR_ELEM_STR, 0);
+  ScrRl *rl = scr_rl_find(id);
+  if (!rl) return out;
+  int order[RL_EV_COUNT];
+  size_t n = 0;
+  for (int ev = 0; ev < RL_EV_COUNT; ev++) {
+    if (rl->ev[ev].n == 0 && !(ev == RL_EV_CLOSE && rl->self_close)) continue;
+    size_t k = n++;
+    while (k > 0 && rl->ev_seq[order[k - 1]] > rl->ev_seq[ev]) {
+      order[k] = order[k - 1];
+      k--;
+    }
+    order[k] = ev;
+  }
+  for (size_t i = 0; i < n; i++) {
+    const char *name = names[order[i]];
+    scr_arr_push_ref(out, scr_str_new(name, strlen(name)));
+  }
+  return out;
 }
 
 /* ── the history and editing options ───────────────────────────────── */

@@ -73,6 +73,15 @@ typedef struct ScrRl {
    * Ctrl+C and Ctrl+D reject with an AbortError (+1, or NULL) */
   void *q_ask;
   RlList ev[RL_EV_COUNT];
+  /* The order each event's first listener arrived in (0 while the event
+   * has none): eventNames() reports the events in it. */
+  double ev_seq[RL_EV_COUNT];
+  double ev_seq_next;
+  /* Node's own once('close', onSelfCloseWithoutTerminal), registered at
+   * construction: listenerCount('close') and eventNames() see it, a
+   * listener's removeListener never matches it, removeAllListeners drops
+   * it, and it leaves when 'close' is emitted. */
+  bool self_close;
   /* the line splitter */
   char *line_buf; /* the unfinished line (kLine_buffer), UTF-8 */
   size_t line_len, line_cap;

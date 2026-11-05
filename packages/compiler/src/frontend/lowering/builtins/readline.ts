@@ -478,16 +478,148 @@ function lowerPromptArg(lowerer: Lowerer, node: ts.Expression): { value: IrExpr;
   return { value: lowerer.coerceInto(node, value, DYN), dyn: true };
 }
 
+/** Node's readline event a literal names, with the runtime's number. A
+ * non-literal event has no lowering. */
+function literalEvent(
+  lowerer: Lowerer,
+  member: string,
+  node: ts.Expression,
+): { name: string; id: number } {
+  const t = lowerer.typeOf(node);
+  const name = t.isStringLiteralType() ? t.value : null;
+  const id = name === null ? undefined : RL_EVENTS[name];
+  if (name === null || id === undefined) {
+    lowerer.noLowering(
+      `readline.Interface.${member}(${name === null ? "non-literal event" : `"${name}"`}, ...)`,
+      node,
+      `${RL_EVENT_LIST} are the supported readline events`,
+    );
+  }
+  return { name, id };
+}
+
+/** A listener argument for one event: checked against the event's
+ * signature, its return value discarded (Node ignores it), and a
+ * checked-dynamic value (test/common's mustCall wrapper) called through
+ * the event's signature. */
+function lowerRlListener(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  event: string,
+  loc: SrcLoc,
+): IrExpr {
+  const want =
+    event === "line"
+      ? "string"
+      : event === "error"
+        ? "error"
+        : event === "history"
+          ? "history"
+          : null;
+  let cb = lowerer.lowerExpr(node);
+  const payload: IrType[] =
+    want === "string"
+      ? [STRING]
+      : want === "history"
+        ? [arrayOf(STRING)]
+        : want === "error"
+          ? [DYN]
+          : [];
+  if (cb.type.kind === "dyn")
+    cb = { kind: "dynCheck", value: cb, type: funcOf(payload, VOID), loc };
+  cb = voidizedCallback(lowerer, cb, loc);
+  const param = cb.type.kind === "func" ? cb.type.params[0] : undefined;
+  const paramOk =
+    param === undefined ||
+    (want !== null && param.kind === "dyn") ||
+    (want === "string" && param.kind === "string") ||
+    (want === "error" && param.kind === "object" && param.className === "Error") ||
+    (want === "history" && param.kind === "array" && param.elem.kind === "string");
+  if (
+    cb.type.kind !== "func" ||
+    cb.type.ret.kind !== "void" ||
+    cb.type.params.length > (want === null ? 0 : 1) ||
+    !paramOk
+  ) {
+    lowerer.unsupported(
+      "SC1090",
+      node,
+      want === "string"
+        ? "'line' listeners other than (input: string) => void"
+        : want === "error"
+          ? "'error' listeners other than (err: Error) => void"
+          : want === "history"
+            ? "'history' listeners other than (history: string[]) => void"
+            : `'${event}' listeners with parameters or a return value (use ())`,
+    );
+  }
+  return cb;
+}
+
+/** Evaluates the receiver first, then the arguments, in the order the
+ * call spells them (Node evaluates the callee's receiver before its
+ * arguments). */
+function lowerRlCall(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+  build: (recv: IrExpr) => IrExpr,
+): IrExpr {
+  return build(lowerer.lowerExprExpecting(access.expression, F64));
+}
+
+/** The listener-management members answer the interface, so a call used
+ * as an expression (`rl.on(...).on(...)`) registers or removes the
+ * listener, evaluates the receiver once, and yields it, as Node does. */
+function lowerRlChainable(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  loc: SrcLoc,
+  build: (recv: IrExpr) => IrExpr,
+): IrExpr {
+  const recvLocal = ts.isExpressionStatement(call.parent)
+    ? undefined
+    : lowerer.declareHiddenLocal("%readlineListener", F64);
+  const saved: IrStmt[] =
+    recvLocal === undefined
+      ? []
+      : [
+          {
+            kind: "varDecl",
+            localId: recvLocal.id,
+            init: lowerer.lowerExprExpecting(access.expression, F64),
+            loc,
+          },
+        ];
+  const recv: IrExpr =
+    recvLocal === undefined
+      ? lowerer.lowerExprExpecting(access.expression, F64)
+      : { kind: "varRef", localId: recvLocal.id, type: F64, loc };
+  const call0 = build(recv);
+  if (recvLocal === undefined) return call0;
+  return {
+    kind: "seqExpr",
+    stmts: [...saved, { kind: "exprStmt", expr: call0, loc }],
+    result: { kind: "varRef", localId: recvLocal.id, type: F64, loc },
+    type: F64,
+    loc,
+  };
+}
+
 /** Method calls on readline Interface receivers (both modules):
  * - question(query, cb) — the callback form; question(query, { signal }?)
  *   — the promise form (readline/promises);
  * - close(), pause(), resume(), prompt(preserveCursor?), setPrompt(p),
  *   getPrompt(), write(data, key?);
- * - on/once/addListener for 'line' ((input: string) or no parameters),
- *   'error' ((err: Error) or no parameters), 'history' ((history:
- *   string[]) or no parameters), and 'close'/'pause'/'resume'/'SIGINT'/
- *   'SIGTSTP'/'SIGCONT' (no parameters); as an expression the call yields
- *   the interface, so registrations chain.
+ * - on/once/addListener/prependListener/prependOnceListener for 'line'
+ *   ((input: string) or no parameters), 'error' ((err: Error) or no
+ *   parameters), 'history' ((history: string[]) or no parameters), and
+ *   'close'/'pause'/'resume'/'SIGINT'/'SIGTSTP'/'SIGCONT' (no
+ *   parameters); as an expression the call yields the interface, so
+ *   registrations chain;
+ * - removeListener/off (the last registration of the same function
+ *   leaves), removeAllListeners(event?), listenerCount(event, fn?) and
+ *   eventNames(), which answer the interface, a count or the names.
  * Everything else the lib declares fences member-qualified. Null for
  * non-Interface receivers. */
 export function lowerReadlineMethodCall(
@@ -633,98 +765,65 @@ export function lowerReadlineMethodCall(
   if (name === "write" && (args.length === 1 || args.length === 2)) {
     return lowerWriteKey(lowerer, receiver(), args[0]!, args[1], loc);
   }
-  if ((name === "on" || name === "once" || name === "addListener") && args.length === 2) {
-    const evT = lowerer.typeOf(args[0]!);
-    const event = evT.isStringLiteralType() ? evT.value : null;
-    const ev = event === null ? undefined : RL_EVENTS[event];
-    if (ev === undefined) {
-      lowerer.noLowering(
-        `readline.Interface.${name}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
-        args[0]!,
-        `${RL_EVENT_LIST} are the supported readline events`,
-      );
-    }
-    // As an expression (`rl.on("line", f).on("close", g)`), the call
-    // registers the listener and yields the interface, as Node's on() does.
-    const recvLocal = ts.isExpressionStatement(call.parent)
-      ? undefined
-      : lowerer.declareHiddenLocal("%readlineListener", F64);
-    const saved: IrStmt[] =
-      recvLocal === undefined
-        ? []
-        : [{ kind: "varDecl", localId: recvLocal.id, init: receiver(), loc }];
-    const recv: IrExpr =
-      recvLocal === undefined
-        ? receiver()
-        : { kind: "varRef", localId: recvLocal.id, type: F64, loc };
-    let cb = lowerer.lowerExpr(args[1]!);
-    const want =
-      event === "line"
-        ? "string"
-        : event === "error"
-          ? "error"
-          : event === "history"
-            ? "history"
-            : null;
-    // A checked-dynamic listener (test/common's mustCall wrapper) is called
-    // through a dynCheck to the event's signature, and a listener's return
-    // value is discarded, as Node does.
-    const payload: IrType[] =
-      want === "string"
-        ? [STRING]
-        : want === "history"
-          ? [arrayOf(STRING)]
-          : want === "error"
-            ? [DYN]
-            : [];
-    if (cb.type.kind === "dyn")
-      cb = { kind: "dynCheck", value: cb, type: funcOf(payload, VOID), loc };
-    cb = voidizedCallback(lowerer, cb, loc);
-    const param = cb.type.kind === "func" ? cb.type.params[0] : undefined;
-    const paramOk =
-      param === undefined ||
-      (want !== null && param.kind === "dyn") ||
-      (want === "string" && param.kind === "string") ||
-      (want === "error" && param.kind === "object" && param.className === "Error") ||
-      (want === "history" && param.kind === "array" && param.elem.kind === "string");
-    if (
-      cb.type.kind !== "func" ||
-      cb.type.ret.kind !== "void" ||
-      cb.type.params.length > (want === null ? 0 : 1) ||
-      !paramOk
-    ) {
-      lowerer.unsupported(
-        "SC1090",
-        args[1]!,
-        want === "string"
-          ? "'line' listeners other than (input: string) => void"
-          : want === "error"
-            ? "'error' listeners other than (err: Error) => void"
-            : want === "history"
-              ? "'history' listeners other than (history: string[]) => void"
-              : `'${event}' listeners with parameters or a return value (use ())`,
-      );
-    }
-    const register: IrExpr = {
+  const prepend = name === "prependListener" || name === "prependOnceListener";
+  const register = name === "on" || name === "once" || name === "addListener" || prepend;
+  const remove = name === "removeListener" || name === "off";
+  if ((register || remove) && args.length === 2) {
+    const event = literalEvent(lowerer, name, args[0]!);
+    return lowerRlChainable(lowerer, call, access, loc, (recv) => {
+      const cb = lowerRlListener(lowerer, args[1]!, event.name, loc);
+      if (remove)
+        return {
+          kind: "libCall",
+          fn: "rl.off",
+          args: [recv, numLit(event.id, loc), cb],
+          type: VOID,
+          loc,
+        };
+      const once = name === "once" || name === "prependOnceListener";
+      return {
+        kind: "libCall",
+        fn: prepend ? "rl.onFirst" : "rl.on",
+        args: [recv, numLit(event.id, loc), cb, boolLit(once, loc)],
+        type: VOID,
+        loc,
+      };
+    });
+  }
+  if (name === "removeAllListeners" && args.length <= 1) {
+    const arg = args[0];
+    const event = arg === undefined || isNullish(arg) ? null : literalEvent(lowerer, name, arg);
+    return lowerRlChainable(lowerer, call, access, loc, (recv) => ({
       kind: "libCall",
-      fn: "rl.on",
-      args: [recv, numLit(ev, loc), cb, boolLit(name === "once", loc)],
+      fn: "rl.offAll",
+      args: [recv, numLit(event === null ? -1 : event.id, loc)],
       type: VOID,
       loc,
-    };
-    if (recvLocal === undefined) return register;
-    return {
-      kind: "seqExpr",
-      stmts: [...saved, { kind: "exprStmt", expr: register, loc }],
-      result: { kind: "varRef", localId: recvLocal.id, type: F64, loc },
-      type: F64,
-      loc,
-    };
+    }));
+  }
+  if (name === "listenerCount" && args.length >= 1 && args.length <= 2) {
+    const event = literalEvent(lowerer, name, args[0]!);
+    const fnNode = args[1];
+    return lowerRlCall(lowerer, access, (recv) => {
+      const base = [recv, numLit(event.id, loc)];
+      if (fnNode === undefined || isNullish(fnNode))
+        return { kind: "libCall", fn: "rl.listenerCount", args: base, type: F64, loc };
+      return {
+        kind: "libCall",
+        fn: "rl.listenerCountFn",
+        args: [...base, lowerRlListener(lowerer, fnNode, event.name, loc)],
+        type: F64,
+        loc,
+      };
+    });
+  }
+  if (name === "eventNames" && args.length === 0) {
+    return { kind: "libCall", fn: "rl.eventNames", args: [receiver()], type: arrayOf(STRING), loc };
   }
   lowerer.noLowering(
     `readline.Interface.${name}`,
     call,
-    `question, close, pause, resume, prompt, setPrompt, getPrompt, write, for await, and on/once for ${RL_EVENT_LIST.replace(/"/g, "'")} are the supported Interface members`,
+    `question, close, pause, resume, prompt, setPrompt, getPrompt, write, for await, on/once and the listener-management members for ${RL_EVENT_LIST.replace(/"/g, "'")} are the supported Interface members`,
     lowerer.checker.getSymbolAtLocation(access.name),
   );
 }

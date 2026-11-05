@@ -9,6 +9,7 @@ import {
   resolveImport,
 } from "../../program.js";
 import { stripTypeCasts } from "./arguments.js";
+import { isCjsRequireGlobal } from "../lower-node-module.js";
 
 /** Resolves an identifier to a supported builtin-module IMPORT BINDING:
  * a named import (through its alias, so `import { join as j }` matches)
@@ -239,13 +240,20 @@ export function builtinNamespaceDestructureModuleOf(
     decl.initializer === undefined
   )
     return null;
-  // `const { join } = require("node:path")` through a createRequire
-  // binding: the call IS the namespace — same table keying.
+  // `const { join } = require("node:path")`, through the global require or a
+  // createRequire binding: the call IS the namespace — same table keying.
+  // The casts strip, so an assertion over the call (`require("fs") as {…}`,
+  // a statically known `any`) destructures the same namespace it names.
   let module: string | null = null;
   const init = stripTypeCasts(decl.initializer);
   if (ts.isCallExpression(init)) {
-    const cr = createRequireSpecOf(lowerer, init);
-    module = cr !== null && cr.spec !== null ? canonicalBuiltinModule(cr.spec) : null;
+    if (ts.isIdentifier(init.expression) && isCjsRequireGlobal(lowerer, init.expression)) {
+      const spec = requireSpecOf(init);
+      module = spec !== null ? canonicalBuiltinModule(spec) : null;
+    } else {
+      const cr = createRequireSpecOf(lowerer, init);
+      module = cr !== null && cr.spec !== null ? canonicalBuiltinModule(cr.spec) : null;
+    }
   } else if (ts.isIdentifier(init) || ts.isPropertyAccessExpression(init)) {
     // `const { open } = fs.promises` / `= require("fs").promises`: a member
     // that is itself a supported module.

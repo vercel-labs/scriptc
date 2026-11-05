@@ -5488,12 +5488,10 @@ void scr_loop_hosted_io_state(ScrNodeIoState *st) {
   bool crypto = scr_crypto_bytes_pending();
   bool deferred = scr_loop_deferred_pending();
   bool workers = scr_workers_pending();
+#ifdef SCR_NODE_ISLANDS
   /* Island operations another thread posted to this one (the island's
    * thread): ready work that an fd announces. */
-#ifdef SCR_NODE_ISLANDS
   bool islands = scr_ni_remote_pending();
-#else
-  bool islands = false;
 #endif
   /* Deferred native callbacks (the fs callbacks) become deliverable at the
    * end of the turn that queued them and run in the next one, as the loop
@@ -5501,12 +5499,22 @@ void scr_loop_hosted_io_state(ScrNodeIoState *st) {
   if (st->phase == SCR_NODE_IO_CHECK) scr_loop_deferred_ready = scr_loop_deferred_count;
   /* jobs this thread completed during the turn: delivered next turn */
   bool promoted = st->phase == SCR_NODE_IO_CHECK && scr_fs_renames_promote();
+#ifdef SCR_NODE_ISLANDS
   st->alive = kids_reffed || kids_failed || events || net || dgram || watch || ffi || stream ||
               renames || crypto || deferred || workers || islands;
+#else
+  st->alive = kids_reffed || kids_failed || events || net || dgram || watch || ffi || stream ||
+              renames || crypto || deferred || workers;
+#endif
   /* Queued deferred callbacks keep the poll from sleeping (their work is
    * done; only the delivery waits for the next turn). */
+#ifdef SCR_NODE_ISLANDS
   st->ready = stream || crypto || deferred || promoted || kids_failed || islands ||
               (scr_loop_children != NULL && scr_loop_children->ready());
+#else
+  st->ready = stream || crypto || deferred || promoted || kids_failed ||
+              (scr_loop_children != NULL && scr_loop_children->ready());
+#endif
 #ifdef SCR_WORKERS
   if (scr_workers_ready_fn && scr_workers_ready_fn()) st->ready = 1;
 #endif
@@ -5564,7 +5572,11 @@ void scr_loop_hosted_io_state(ScrNodeIoState *st) {
 #endif
 #else
   (void)evw;
+#ifdef SCR_NODE_ISLANDS
   if (evw || net_io || dgram || watch || ffi || kids || renames || workers || islands)
+#else
+  if (evw || net_io || dgram || watch || ffi || kids || renames || workers)
+#endif
     scr_hosted_io_cap(st, SCR_CHILD_POLL_MS);
 #endif
 }
@@ -5946,8 +5958,6 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     /* Island operations another thread posted to this one (the island's
      * thread). Their callers are blocked until they run. */
     bool islands = scr_ni_remote_pending();
-#else
-    bool islands = false;
 #endif
     /* Timer liveness counts only REF'd timers: an unref'd timer stays in
      * the heap (and fires if the loop runs on for other reasons) but does
@@ -5955,7 +5965,11 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
      * Children follow the same rule: an unref'd child is still REAPED
      * while the loop runs (kids drives the sweeps and sleeps above) but
      * only reffed ones keep the process alive. */
+#ifdef SCR_NODE_ISLANDS
     if (scr_reffed_timers == 0 && scr_reffed_immediates == 0 && !kids_reffed && !events && !net && !dgram && !watch && !ffi && !renames && !crypto && !workers && !islands) break;
+#else
+    if (scr_reffed_timers == 0 && scr_reffed_immediates == 0 && !kids_reffed && !events && !net && !dgram && !watch && !ffi && !renames && !crypto && !workers) break;
+#endif
     /* Sleep to the earliest deadline, then run every due timer (each may
      * enqueue microtasks, which the next iteration drains first). Who
      * sleeps depends on what is pending:
@@ -5995,8 +6009,10 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       due = now;
       scr_loop_deferred_ready = scr_loop_deferred_count;
     }
+#ifdef SCR_NODE_ISLANDS
     /* Posted island operations are ready work: no sleep. */
     if (islands) due = now;
+#endif
     /* Jobs this thread completed during the turn (scr_work_submit_done)
      * join the done queue: the next turn delivers them, no sleep. */
     if (scr_fs_renames_promote()) due = now;
@@ -6029,21 +6045,25 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     scr_stdout_settle();
     bool evw = scr_events_watching_fn != NULL && scr_events_watching_fn();
 #ifdef SCR_WORKERS
+#ifdef SCR_NODE_ISLANDS
     /* The worker mailbox wait watches only the mailbox: an island
      * operation another thread posts would have to wait for its timeout.
      * With island units linked the loop's own poll takes the sleep
      * instead, and it watches the island wake fd too. */
-#ifdef SCR_NODE_ISLANDS
     bool island_wake = scr_ni_remote_pollfd() >= 0;
-#else
-    bool island_wake = false;
-#endif
     if (workers && scr_workers_wait_fn && !islands && !island_wake && !kids && !evw && !net_io && !dgram && !watch && !ffi && !renames && !crypto) {
+#else
+    if (workers && scr_workers_wait_fn && !kids && !evw && !net_io && !dgram && !watch && !ffi && !renames && !crypto) {
+#endif
       scr_workers_wait_fn(due > now ? due - now : 0);
       now = scr_now_ms();
     } else
 #endif
+#ifdef SCR_NODE_ISLANDS
     if (evw || net_io || dgram || watch || ffi || workers || islands || renames_fd >= 0) {
+#else
+    if (evw || net_io || dgram || watch || ffi || workers || renames_fd >= 0) {
+#endif
 #if defined(_WIN32) || defined(__wasi__)
       /* The win32 arm, and WASI hosts whose poll_oneoff adapters do not
        * reliably wake for a closed inherited stdin pipe: the sleep is a capped nanosleep and
@@ -6082,7 +6102,11 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
        * events are pending); unrepresentable children keep the ~1ms reap cap
        * instead. Dispatch happens at the next turn's top — the poll only
        * decides how long to sleep. */
+#ifdef SCR_NODE_ISLANDS
       struct pollfd fds[11];
+#else
+      struct pollfd fds[10];
+#endif
       int nfds = 0;
       int evfds[2];
       int nev = evw && scr_events_pollfds_fn != NULL ? scr_events_pollfds_fn(evfds) : 0;

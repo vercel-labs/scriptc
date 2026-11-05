@@ -1977,7 +1977,12 @@ export function lowerObjectLiteral(
     const split = (v: IrExpr): { value: IrExpr; present: IrExpr } => {
       if (v.kind === "fieldAbsent") {
         return {
-          value: lowerer.wrappedUndefined(v.type, v.loc)!,
+          // An optional checked-dynamic slot's absent marker has no union
+          // wrapper: its ordinary value is the checked-dynamic undefined.
+          value:
+            v.type.kind === "dyn"
+              ? dynUndefinedExpr(v.loc)
+              : lowerer.wrappedUndefined(v.type, v.loc)!,
           present: { kind: "boolLit", value: false, type: BOOL, loc: v.loc },
         };
       }

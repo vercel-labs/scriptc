@@ -30,6 +30,13 @@ console.log(r);
 const afterDelete = { ...r };
 console.log("afterDelete", "structured" in afterDelete, Object.keys(afterDelete).join(","));
 
+// A spread source a later own property captures keeps the absent state: the
+// snapshot's ordinary arm holds the checked-dynamic undefined while the
+// presence test stays false.
+const captured = { ...omitted, n: 1 };
+const nested = { ...captured, config: { ...captured } };
+console.log("captured", "structured" in nested, Object.keys(nested).join(","), JSON.stringify(nested));
+
 // An explicit undefined is a present property again.
 r.structured = undefined;
 console.log(

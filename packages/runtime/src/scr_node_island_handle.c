@@ -79,7 +79,7 @@ static pthread_mutex_t nh_refs_lock = PTHREAD_MUTEX_INITIALIZER;
  * its own operations (from its loop), never inside a locked section, so
  * no section runs half in each mode. Read with relaxed loads: every reader
  * other than the island's thread is ordered after the store by its post. */
-atomic_bool scr_ni_threads_shared;
+atomic_bool scr_ni_threads_shared = false;
 
 static inline bool nh_shared(void) {
   return atomic_load_explicit(&scr_ni_threads_shared, memory_order_relaxed);

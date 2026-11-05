@@ -4507,6 +4507,7 @@ export const DYN_HANDLE_KINDS: ReadonlyMap<string, { tag: string; cls: string }>
   ["httpClientReq", { tag: "SCR_DYNH_HTTP_CLIENT", cls: "ClientRequest" }],
   ["dgramSocket", { tag: "SCR_DYNH_DGRAM_SOCKET", cls: "Socket" }],
   ["dir", { tag: "SCR_DYNH_DIR", cls: "Dir" }],
+  ["spawnRes", { tag: "SCR_DYNH_SPAWN_RES", cls: "SpawnSyncReturns" }],
   ["cryptoHash", { tag: "SCR_DYNH_HASH", cls: "Hash" }],
   ["cryptoHmac", { tag: "SCR_DYNH_HMAC", cls: "Hmac" }],
 ]);
@@ -4906,9 +4907,12 @@ export function canAdaptDynFuncTo(
 ): boolean {
   return (
     t.kind === "func" &&
-    // Checked rest and arguments packs retain all actual arguments. Typed
-
-    (t.rest !== true || t.restAbi === undefined) &&
+    // Checked rest and arguments packs retain all actual arguments; typed
+    // rest is one trailing native array in `params`, which the adapter
+    // spreads into the dyn call's argument vector element by element.
+    (t.rest !== true ||
+      t.restAbi === undefined ||
+      (t.restAbi === "typed" && t.params.at(-1)?.kind === "array")) &&
     t.params.every((p) => p.kind === "dyn" || canConvertToDyn(p, getRecord, getUnion, visiting)) &&
     (t.ret.kind === "void" ||
       t.ret.kind === "dyn" ||

@@ -161,6 +161,7 @@ import {
   coercibleValue,
   cleanFuncAdaptable,
   funcCoerceAdapter,
+  sortComparatorResultAdapter,
   spawnResFnAdapterPlan,
   spawnResFnAdapter,
 } from "./coercions/function-adapters.js";
@@ -334,7 +335,6 @@ import {
   canDynCheckTo,
   canConvertToDyn,
   DYN,
-  DYN_HANDLE_KINDS,
   F64,
   isDynTypedRefType,
   isJsonSafeType,
@@ -12991,7 +12991,8 @@ export class Lowerer {
       this.unsupported(
         "SC1100",
         node,
-        `passing 'unknown' values where '${this.fmt(expected)}' is expected`,
+        `passing 'unknown' values where '${this.fmt(expected)}' is expected ` +
+          `(${this.dynCheckBlocker(expected) ?? "this target"} is outside the checked conversion's domain)`,
       );
     }
     if (expected.kind === "dyn") {
@@ -13458,42 +13459,10 @@ export class Lowerer {
     // forgiven chains): the VALIDATED extraction — dynCheck, the
     // checked-cast machinery, applied automatically. A value outside the
     // slot's type throws a catchable TypeError instead of misreading the
-    // payload. Only dynCheck's own domain (JSON-representable types,
-    // undefined-armed unions of those, bytes<u8>, the %Error root)
-    // converts; everything else keeps requireExactShape's SC1100 fence.
+    // payload. The domain is EXACTLY the explicit cast's (canDynCheckTo),
+    // so the two crossings can never disagree about what converts;
+    // everything else keeps requireExactShape's SC1100 fence.
     if (expr.type.kind === "dyn" && expected.kind !== "dyn") {
-      const undefArmedOk =
-        expected.kind === "union" &&
-        (this.unions
-          .get(expected.unionId)
-          ?.arms.every(
-            (a) =>
-              a.kind === "undefinedT" ||
-              this.jsonSafe(a) ||
-              isDynTypedRefType(a) ||
-              DYN_HANDLE_KINDS.has(a.kind),
-          ) ??
-          false);
-      const bytesOk = expected.kind === "bytes" && expected.elem === "u8";
-      const errorOk = expected.kind === "object" && expected.className === "%Error";
-      // Program and runtime class instances can return only from a
-      // compiler-owned typed-reference capsule. A parsed/plain dyn object
-      // fails the runtime check; an exact capsule unwraps the original
-      // instance and preserves identity.
-      const classOk = isDynTypedRefType(expected);
-      // ADAPTABLE function targets (the checked-dynamic function
-      // boundary's OUT direction — `const wrapped: F = mustCall(fn)`):
-      // check callable-kind, then unwrap an identical boxed signature
-      // directly or adapt through a per-target shim that dynChecks
-      // arguments/results per F.
-      const funcOk =
-        expected.kind === "func" &&
-        canAdaptDynFuncTo(
-          expected,
-          (id) => this.shapes.get(id),
-          (id) => this.unions.get(id),
-        );
-      const handleOk = DYN_HANDLE_KINDS.has(expected.kind);
       noteUntypedStreamFlow(this, expected);
       // `[EventEmitter]` in JavaScript builds an untyped array of the
       // untyped constructor, which a typed array of the class cannot
@@ -13518,13 +13487,7 @@ export class Lowerer {
           expected,
           (id) => this.shapes.get(id),
           (id) => this.unions.get(id),
-        ) ||
-        undefArmedOk ||
-        bytesOk ||
-        errorOk ||
-        classOk ||
-        funcOk ||
-        handleOk
+        )
       ) {
         return { kind: "dynCheck", value: expr, type: expected, loc: expr.loc };
       }
@@ -14050,6 +14013,10 @@ export class Lowerer {
     loc: SrcLoc,
   ): string | null {
     return funcCoerceAdapter(this, fromT, toT, loc);
+  }
+
+  sortComparatorResultAdapter(fromT: IrType & { kind: "func" }, loc: SrcLoc): string | null {
+    return sortComparatorResultAdapter(this, fromT, loc);
   }
 
   spawnResFnAdapterPlan(
@@ -14861,6 +14828,66 @@ export class Lowerer {
         (id) => this.unions.get(id),
       )
     );
+  }
+
+  /** The first reason `t` lies outside the checked conversion's domain
+   * (canDynCheckTo), phrased for a diagnostic; null when it converts. Names
+   * the blocking member rather than restating the whole domain, so an
+   * SC1090/SC1100 fence points at the part that has to change. */
+  dynCheckBlocker(t: IrType, seen: Set<string> = new Set()): string | null {
+    const shapes = (id: string) => this.shapes.get(id);
+    const unions = (id: string) => this.unions.get(id);
+    if (canDynCheckTo(t, shapes, unions)) return null;
+    if (seen.has(typeKey(t))) return `a recursive '${this.fmt(t)}' value`;
+    seen.add(typeKey(t));
+    switch (t.kind) {
+      case "array": {
+        const inner = this.dynCheckBlocker(t.elem, seen);
+        return inner ? `an array whose element is ${inner}` : null;
+      }
+      case "record": {
+        const shape = this.shapes.get(t.shapeId);
+        const field = shape?.fields.find((f) => !canDynCheckTo(f.type, shapes, unions));
+        if (field) {
+          const inner = this.dynCheckBlocker(field.type, seen);
+          return inner
+            ? `a record whose member '${field.name}' is ${inner}`
+            : `a record whose member '${field.name}' is '${this.fmt(field.type)}'`;
+        }
+        if (shape?.indexValue && !canDynCheckTo(shape.indexValue, shapes, unions)) {
+          return `a record whose indexed value is '${this.fmt(shape.indexValue)}'`;
+        }
+        return `a '${this.fmt(t)}' record (a layout a dyn value cannot be checked into)`;
+      }
+      case "func": {
+        const param = t.params.find((p) => p.kind !== "dyn" && !canConvertToDyn(p, shapes, unions));
+        if (param) {
+          return (
+            `a function whose parameter is '${this.fmt(param)}' ` +
+            `(an argument cannot be converted from the dynamic tier)`
+          );
+        }
+        if (t.rest === true && t.restAbi !== undefined && t.params.at(-1)?.kind !== "array") {
+          return `a function whose rest parameter is not an array`;
+        }
+        return `a function returning '${this.fmt(t.ret)}' (a result no checked conversion produces)`;
+      }
+      case "promise": {
+        const inner = this.dynCheckBlocker(t.inner, seen);
+        return inner ? `a promise of ${inner}` : null;
+      }
+      case "union": {
+        const arms = this.unions.get(t.unionId)?.arms ?? [];
+        const arm = arms.find((a) => !isUnitType(a) && !canDynCheckTo(a, shapes, unions));
+        if (arm) {
+          const inner = this.dynCheckBlocker(arm, seen);
+          return inner ? `a union with an arm that is ${inner}` : null;
+        }
+        return `a '${this.fmt(t)}' union`;
+      }
+      default:
+        return `a '${this.fmt(t)}' value`;
+    }
   }
 
   /** True when a static type converts to a dyn value (the dynFrom

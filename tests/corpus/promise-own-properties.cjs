@@ -102,3 +102,28 @@ setTimeout(() => {
   console.log(conversions, defined.safe, typeof defined.then, Object.keys(defined));
   defined.then((value) => console.log("still resolves", value));
 }, 30);
+
+// An own function named like an array method shadows the dispatch on the
+// promise, getter included, and reads `this`; a non-function one is not
+// callable.
+setTimeout(() => {
+  const calls = untyped(Promise.resolve(3));
+  calls.tag = "calls";
+  calls.map = function (n) {
+    return this.tag === "calls" ? n * 2 : "lost this";
+  };
+  // The method is read before its arguments evaluate.
+  Object.defineProperty(calls, "filter", {
+    get: () => {
+      console.log("read filter");
+      return (label) => `from a getter, ${label}`;
+    },
+  });
+  calls.join = 5;
+  console.log(calls.map(21), calls.filter((console.log("argument"), "late")));
+  try {
+    calls.join(",");
+  } catch (e) {
+    console.log(e.constructor.name, e.message);
+  }
+}, 40);

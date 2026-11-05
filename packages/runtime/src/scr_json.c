@@ -8379,6 +8379,14 @@ static void scr_promise_protocol_fence(const ScrStr *key) {
   scr_str_release(text);
 }
 
+/* The promise's own property `key` (+1, a getter called on the promise), or
+ * NULL when it has none: a promise without own properties costs one load. */
+ScrDyn *scr_dyn_promise_named_get(const ScrDyn *d, const char *key, size_t key_len) {
+  const ScrDyn *properties = scr_promise_properties(d, false);
+  if (!properties || !scr_dyn_obj_get(properties, key, key_len)) return NULL;
+  return scr_dyn_obj_read_receiver(properties, key, key_len, d);
+}
+
 ScrDyn *scr_dyn_promise_key_get(const ScrDyn *d, const ScrStr *k) {
   const ScrDyn *properties = scr_promise_properties(d, false);
   if (properties && scr_dyn_obj_get(properties, k->data, k->len))

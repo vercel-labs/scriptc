@@ -2240,6 +2240,11 @@ const COMPUTED_SPECIFIER_REFUSAL =
 
 export function lowerDynamicImportCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
   if (call.expression.kind !== ts.SyntaxKind.ImportKeyword) return null;
+  // Import attributes are refused whatever the specifier is, so the check
+  // runs before the bounded-specifier lowering can claim the call.
+  if (call.arguments.nodes.length !== 1) {
+    lowerer.unsupported("SC1090", call, "dynamic import() with import attributes");
+  }
   const arg = call.arguments.nodes[0];
   // The specifier text must be known at build time; a constant expression
   // (`import("node:" + "fs")`, `import(FS)`) names its module just as a
@@ -2258,9 +2263,6 @@ export function lowerDynamicImportCall(lowerer: Lowerer, call: ts.CallExpression
       undefined,
       "dynamic-import",
     );
-  }
-  if (call.arguments.nodes.length !== 1) {
-    lowerer.unsupported("SC1090", call, "dynamic import() with import attributes");
   }
   const res = lowerer.dynImports.get(`${ts.getSourceFileOfNode(call).fileName}\u0000${specifier}`);
   if (res === undefined) lowerer.refuseUnsupportedApi("'import()'", call);

@@ -5924,9 +5924,21 @@ export class Lowerer {
           type: inner,
           loc,
         };
-        namespace = builtin
-          ? moduleNamespaceBuiltinDynValue(this, inner.moduleId, loc)
-          : moduleNamespaceDynValue(this, awaited);
+        // The mapper still awaits its input: a rejected import() must reject
+        // the mapped promise. A builtin's box comes from the lowering tables
+        // and reads nothing from the awaited value, so the await runs as a
+        // statement before it.
+        const boxed = builtin ? moduleNamespaceBuiltinDynValue(this, inner.moduleId, loc) : null;
+        namespace =
+          boxed === null
+            ? moduleNamespaceDynValue(this, awaited)
+            : {
+                kind: "seqExpr",
+                stmts: [{ kind: "exprStmt", expr: awaited, loc }],
+                result: boxed,
+                type: boxed.type,
+                loc,
+              };
         if (namespace) {
           const fn: IrFunction = {
             name,

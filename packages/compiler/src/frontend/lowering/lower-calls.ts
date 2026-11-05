@@ -8662,8 +8662,17 @@ function lowerObjectStaticCall(
     // descriptor and symbol forms have no static walk, so a record takes the
     // view there.
     const staticWalk = member === "getOwnPropertyNames" && object.type.kind === "record";
-    if (!staticWalk && object.type.kind !== "dyn" && lowerer.dynConvertible(object.type))
+    // The first reflection on a function creates its property table, whose
+    // `name` comes from the box: give the box the function's JS name, as a
+    // closure flowing into any checked-dynamic slot gets. A later
+    // name-descriptor read answers from the table this call creates.
+    const fnName =
+      object.type.kind === "func" ? jsFuncNameOf(call.arguments.nodes[0]!, lowerer) : null;
+    if (!staticWalk && object.type.kind !== "dyn" && lowerer.dynConvertible(object.type)) {
       object = lowerer.coerceToExpected(object, DYN);
+      if (fnName !== null && object.kind === "dynFrom" && object.fnName === undefined)
+        object = { ...object, fnName };
+    }
     if (object.type.kind === "dyn")
       return {
         kind: "libCall",

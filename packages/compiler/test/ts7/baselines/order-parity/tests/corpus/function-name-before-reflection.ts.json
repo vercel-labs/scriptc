@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/function-name-before-reflection.ts"
+ ],
+ "diags": []
+}

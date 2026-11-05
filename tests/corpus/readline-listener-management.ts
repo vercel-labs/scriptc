@@ -84,3 +84,69 @@ rl.on("close", () => {
 input.write("one\n");
 input.write("two\n");
 input.end();
+
+// An event whose last once-listener fires leaves the eventNames() order
+// (Node deletes the emptied key), so the next registration goes to the end,
+// behind the events registered in the meantime.
+const ordering = new PassThrough();
+const ordered = readline.createInterface({ input: ordering, terminal: false });
+ordered.once("line", (line: string) => console.log("ordered once", line));
+ordered.on("pause", () => console.log("ordered pause"));
+ordered.on("resume", () => console.log("ordered resume"));
+console.log("order before", JSON.stringify(ordered.eventNames()));
+ordered.write("first\n");
+console.log("order after once", JSON.stringify(ordered.eventNames()));
+ordered.on("line", (line: string) => console.log("ordered line", line));
+console.log("order after re-add", JSON.stringify(ordered.eventNames()));
+ordered.write("second\n");
+ordered.close();
+
+// removeAllListeners removes everything only for the NO-argument call; an
+// explicit undefined (or null, which Node keys as "null") names an event no
+// interface registers, so it leaves the listeners in place.
+const nothing: undefined = undefined;
+const kept = (): void => void 0;
+ordered.on("line", kept);
+ordered.on("pause", kept);
+console.log(
+  "offAll undefined",
+  ordered.removeAllListeners(nothing) === ordered,
+  ordered.listenerCount("line"),
+  ordered.listenerCount("pause"),
+);
+console.log(
+  "offAll null",
+  ordered.removeAllListeners(null as unknown as undefined) === ordered,
+  ordered.listenerCount("line"),
+  ordered.listenerCount("pause"),
+);
+ordered.removeAllListeners();
+console.log(
+  "offAll none",
+  ordered.listenerCount("line"),
+  ordered.listenerCount("pause"),
+  ordered.listenerCount("close"),
+);
+
+// The signal option adds Node's second close listener, the one that
+// disposes the abort listener; an already-aborted signal adds none and
+// closes the interface on the next tick instead.
+const live = new AbortController();
+const watched = readline.createInterface({
+  input: new PassThrough(),
+  terminal: false,
+  signal: live.signal,
+});
+console.log("signal count", watched.listenerCount("close"));
+watched.removeAllListeners("close");
+console.log("signal after offAll", watched.listenerCount("close"));
+watched.close();
+
+const aborted = new AbortController();
+aborted.abort();
+const abortedRl = readline.createInterface({
+  input: new PassThrough(),
+  terminal: false,
+  signal: aborted.signal,
+});
+console.log("aborted count", abortedRl.listenerCount("close"));

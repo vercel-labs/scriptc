@@ -792,7 +792,14 @@ export function lowerReadlineMethodCall(
   }
   if (name === "removeAllListeners" && args.length <= 1) {
     const arg = args[0];
-    const event = arg === undefined || isNullish(arg) ? null : literalEvent(lowerer, name, arg);
+    // Node removes every event only for the NO-argument call
+    // (`arguments.length === 0`); an explicit undefined (or null, keyed as
+    // "null") names an event no readline interface registers, so nothing
+    // leaves and the call answers the interface.
+    if (arg !== undefined && isNullishArg(lowerer, arg)) {
+      return lowerRlCall(lowerer, access, (recv) => recv);
+    }
+    const event = arg === undefined ? null : literalEvent(lowerer, name, arg);
     return lowerRlChainable(lowerer, call, access, loc, (recv) => ({
       kind: "libCall",
       fn: "rl.offAll",
@@ -832,6 +839,14 @@ function isNullish(node: ts.Expression): boolean {
   return (
     node.kind === ts.SyntaxKind.NullKeyword || (ts.isIdentifier(node) && node.text === "undefined")
   );
+}
+
+/** An argument the checker types undefined or null (the literal spellings
+ * and variables that hold them): Node keys it as an event name, and no
+ * readline interface registers "undefined" or "null". */
+function isNullishArg(lowerer: Lowerer, node: ts.Expression): boolean {
+  const t = lowerer.typeOf(node);
+  return (t.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null)) !== 0;
 }
 
 /** write(data, key): data a string, null or undefined; key an object

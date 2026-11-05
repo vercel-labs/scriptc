@@ -110,6 +110,7 @@ static void scr_rl_remove_iter(ScrRl *rl) {
       if (!l->v[i].iter) l->v[k++] = l->v[i];
     }
     l->n = k;
+    if (k == 0 && !(ev == RL_EV_CLOSE && rl->self_close > 0)) rl->ev_seq[ev] = 0;
   }
 }
 
@@ -152,6 +153,12 @@ void scr_rl_emit(ScrRl *rl, int ev, ScrStr *line, ScrError *err) {
     }
   }
   l->n = k;
+  /* The once wrappers that just left delete an emptied event's key in Node
+   * (its _events object), so a registration made from here on takes a NEW
+   * place in eventNames(), behind the events registered in the meantime.
+   * The interface's own 'close' registrations keep the key while they
+   * stand. */
+  if (k == 0 && !(ev == RL_EV_CLOSE && rl->self_close > 0)) rl->ev_seq[ev] = 0;
   for (size_t i = 0; i < n; i++) {
     RlEntry e = snap[i];
     if (!scr_exc_pending()) {
@@ -279,10 +286,10 @@ void scr_rl_settle_close(ScrRl *rl) {
     scr_closure_release(rl->q_cb); /* a pending question never answers */
     rl->q_cb = NULL;
   }
-  /* The interface's own once('close') listener leaves before the event
-   * dispatches, as Node's once wrapper does. */
+  /* The interface's own once('close') listeners leave before the event
+   * dispatches, as Node's once wrappers do. */
   if (rl->self_close) {
-    rl->self_close = false;
+    rl->self_close = 0;
     rl->ev_seq[RL_EV_CLOSE] = 0;
   }
   scr_rl_emit(rl, RL_EV_CLOSE, NULL, NULL);
@@ -777,6 +784,9 @@ static void scr_rl_watch_signal(ScrRl *rl, ScrDyn *signal, ScrAbortAddFn add) {
   ScrDyn *listener = scr_dyn_new_func(clo, &scr_rl_abort_thunk, 0, "()", "onAborted");
   rl->abort_dispose = add(signal, listener);
   scr_dyn_release(listener);
+  /* Node registers the disposable's once('close') beside the interface's
+   * own listener, so a live signal counts twice until the event dispatches. */
+  rl->self_close++;
 }
 
 /* createInterface: input is a stream (+1, moves; io non-NULL) or NULL for
@@ -797,7 +807,7 @@ double scr_rl_open(const ScrRlIo *io, void *in, void *out, bool out_stdout, doub
   rl->id = scr_rl_next_id++;
   /* Node's interface registers once('close', onSelfCloseWithoutTerminal)
    * in its constructor, so eventNames() lists 'close' first. */
-  rl->self_close = true;
+  rl->self_close = 1;
   rl->ev_seq[RL_EV_CLOSE] = ++rl->ev_seq_next;
   rl->stdin_in = in == NULL;
   rl->io = io;
@@ -1287,7 +1297,7 @@ void scr_rl_off(double id, double ev, ScrClosure *cb) {
     if (l->v[i].iter || !scr_closure_identity_equal(l->v[i].cb, cb)) continue;
     scr_closure_release(l->v[i].cb);
     memmove(&l->v[i], &l->v[i + 1], (l->n - i - 1) * sizeof *l->v);
-    if (--l->n == 0 && !(e == RL_EV_CLOSE && rl->self_close)) rl->ev_seq[e] = 0;
+    if (--l->n == 0 && !(e == RL_EV_CLOSE && rl->self_close > 0)) rl->ev_seq[e] = 0;
     return;
   }
 }
@@ -1311,7 +1321,7 @@ void scr_rl_off_all(double id, double ev) {
     }
     l->n = 0;
     rl->ev_seq[e] = 0;
-    if (e == RL_EV_CLOSE) rl->self_close = false;
+    if (e == RL_EV_CLOSE) rl->self_close = 0;
   }
 }
 
@@ -1319,7 +1329,7 @@ double scr_rl_listener_count(double id, double ev) {
   ScrRl *rl = scr_rl_find(id);
   if (!rl || ev < 0 || ev >= RL_EV_COUNT) return 0;
   double n = (double)rl->ev[(int)ev].n;
-  return n + (ev == RL_EV_CLOSE && rl->self_close ? 1 : 0);
+  return n + (ev == RL_EV_CLOSE ? rl->self_close : 0);
 }
 
 /* listenerCount(event, fn): only the registrations of that function. */
@@ -1346,7 +1356,7 @@ ScrArr *scr_rl_event_names(double id) {
   int order[RL_EV_COUNT];
   size_t n = 0;
   for (int ev = 0; ev < RL_EV_COUNT; ev++) {
-    if (rl->ev[ev].n == 0 && !(ev == RL_EV_CLOSE && rl->self_close)) continue;
+    if (rl->ev[ev].n == 0 && !(ev == RL_EV_CLOSE && rl->self_close > 0)) continue;
     size_t k = n++;
     while (k > 0 && rl->ev_seq[order[k - 1]] > rl->ev_seq[ev]) {
       order[k] = order[k - 1];

@@ -139,13 +139,6 @@ static void scr_sym_registry_cleanup(void) {
 }
 
 void scr_sym_for_install(void) { scr_sym_for_fn = scr_sym_for; }
-/* The registry check units outside this one ask for a WeakRef target
- * (scr_dyn.h's scr_sym_registered_key_fn). Installed by the program that
- * both uses symbols and constructs a WeakRef, never from this unit's own
- * paths, so a symbol-free program keeps this unit unlinked. */
-void scr_sym_registered_key_install(void) {
-  scr_sym_registered_key_fn = scr_sym_key_for;
-}
 
 ScrSym *scr_sym_for(ScrStr *key) {
   for (ScrSym *s = g_sym_registry; s; s = s->reg_next) {

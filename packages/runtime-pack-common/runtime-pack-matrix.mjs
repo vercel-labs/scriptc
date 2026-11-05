@@ -78,7 +78,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_path_win32_relative.c", "regex"],
   ["scr_glob.c", "regex"],
   ["scr_idna.c", "regex"],
-  ["scr_assert.c", any("assert", "regex", "symbol")],
+  // scr_symbol.c calls the equality message assemblers, and the WeakRef unit
+  // asks the symbol unit whether a symbol target is registered.
+  ["scr_assert.c", any("assert", "regex", "symbol", "weakRef")],
   ["scr_inspect.c", "inspect"],
   ["scr_console_native.c", "inspect"],
   // Island libCalls on native values typed by island declarations invoke
@@ -160,7 +162,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_dyn_handle_class.c", "webStreams"],
   ["scr_util_timing.c", "utilTiming"],
   ["scr_dyn_handle.c", any("emitter", "netEffective")],
-  ["scr_symbol.c", "symbol"],
+  // The WeakRef unit asks scr_sym_key_for whether a symbol target is
+  // registered, so a program that constructs a WeakRef links this unit.
+  ["scr_symbol.c", any("symbol", "weakRef")],
   ["scr_bigint_assert.c", all("assert", "bigint")],
   ["scr_qs.c", "qs"],
   // The legacy url unit lowercases and normalizes through the regex unit

@@ -209,7 +209,10 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
         ]
       : [],
   ),
-  unit((u) => u.opts.assert || u.regex || u.opts.symbol, "scr_assert.c"),
+  // scr_symbol.c calls this unit's equality message assemblers, so a
+  // program that links the symbol unit (a WeakRef program does) links this
+  // one too.
+  unit((u) => u.opts.assert || u.regex || u.opts.symbol || u.opts.weakRef === true, "scr_assert.c"),
   unit((u) => u.opts.inspect, "scr_inspect.c", "scr_console_native.c"),
   unit(
     (u) => u.opts.dynInvoke || u.opts.workers || u.nativeFetch || u.opts.nodeIsland === true,
@@ -343,7 +346,11 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // net families (http implies net), so handle-free binaries keep
   // their exact size class.
   unit((u) => u.opts.emitter || u.opts.workers || u.net, "scr_dyn_handle.c"),
-  unit((u) => u.opts.symbol, "scr_symbol.c"),
+  // The WeakRef unit asks scr_sym_key_for whether a symbol target is
+  // registered (a registered symbol is an invalid target), so a program that
+  // constructs a WeakRef links the symbol unit even when it creates no symbol
+  // of its own. Symbol- and WeakRef-free binaries keep their exact link line.
+  unit((u) => u.opts.symbol || u.opts.weakRef === true, "scr_symbol.c"),
   unit((u) => u.opts.assert && u.opts.bigint, "scr_bigint_assert.c"),
   unit((u) => u.opts.qs, "scr_qs.c"),
   // The legacy url unit references the regex, querystring and dyn-async

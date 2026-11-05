@@ -27,17 +27,13 @@
  *
  * Linked only into programs that construct a WeakRef (the weakRef runtime
  * feature); scr_json.c's observer arms are part of the SCR_WEAK_REF build
- * of that unit alone. */
+ * of that unit alone. A symbol target asks the symbol unit's registry check,
+ * so the program links scr_symbol.c as well (executable.ts's unit table);
+ * scr_symbol.c itself is unchanged by this feature. */
 #include "scr_runtime.h"
 
 #include <stdlib.h>
 #include <string.h>
-
-/* The symbol unit's registry check (scr_symbol.c installs its
- * scr_sym_registered_key_install from the emitted program when it both uses
- * symbols and constructs a WeakRef). NULL means no symbol exists yet, so any
- * symbol target is unregistered. */
-ScrStr *(*scr_sym_registered_key_fn)(ScrSym *s) = NULL;
 
 typedef struct ScrWeakRef {
   size_t rc;
@@ -309,9 +305,7 @@ static bool scr_weakref_target_of(ScrWeakRef *ref, const ScrDyn *target) {
    * unregistered one is, but the symbol table has no dispose observer, so
    * the target would never clear: refuse by name instead of diverging. */
   if (target->kind == SCR_DYN_SYMBOL) {
-    ScrStr *registered = scr_sym_registered_key_fn
-                             ? scr_sym_registered_key_fn(target->v.symbol.value)
-                             : NULL;
+    ScrStr *registered = scr_sym_key_for(target->v.symbol.value);
     bool is_registered = registered != NULL;
     scr_str_release(registered);
     if (is_registered) scr_weakref_type_error(invalid_target);

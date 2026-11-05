@@ -1311,12 +1311,6 @@ ScrDyn *scr_dyn_inspect_custom_symbol(void);
  * as a value (RuntimeFeatures bufferPrototypeObject). Borrows key; +1. */
 extern ScrSym *(*scr_sym_for_fn)(ScrStr *key);
 void scr_sym_for_install(void);
-/* Symbol.keyFor's registry check (scr_sym_key_for) once the symbol unit has
- * created its first symbol, NULL otherwise: units outside the symbol unit ask
- * whether a symbol is registered (a WeakRef cannot target a registered one).
- * A program whose symbol unit never ran created no symbol at all. Borrows s;
- * +1 registry key, or NULL for an unregistered symbol. */
-extern ScrStr *(*scr_sym_registered_key_fn)(ScrSym *s);
 /* Installs ToNumber's Symbol.toPrimitive step (scr_dyn_number_coerce_js).
  * The program calls it before its entry when it reads Symbol.toPrimitive
  * (RuntimeFeatures toPrimitiveNumber). */

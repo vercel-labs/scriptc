@@ -105,9 +105,11 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     // inside the archive so library embedders need no extra system library.
     ...(isMuslTarget(driver) ? ["scr_musl.c"] : []),
     ...(regex ? ["scr_regex.c", "scr_glob.c", "scr_path_win32_relative.c"] : []),
-    ...(opts.assert || regex || opts.symbol ? ["scr_assert.c"] : []),
+    // scr_symbol.c calls scr_assert.c's equality message assemblers.
+    ...(opts.assert || regex || opts.symbol || opts.weakRef === true ? ["scr_assert.c"] : []),
     ...(opts.inspect ? ["scr_inspect.c", "scr_console_native.c"] : []),
-    ...(opts.symbol ? ["scr_symbol.c"] : []),
+    // The WeakRef unit's registry check (scr_sym_key_for) lives here.
+    ...(opts.symbol || opts.weakRef === true ? ["scr_symbol.c"] : []),
     ...(opts.assert && opts.bigint ? ["scr_bigint_assert.c"] : []),
     ...(opts.emitter ? ["scr_events_emitter.c", "scr_dyn_handle.c"] : []),
     ...(opts.dynInvoke ? ["scr_dyn_invoke.c"] : []),

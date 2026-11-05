@@ -37,9 +37,15 @@ describe.skipIf(process.platform === "win32")("WeakRef", () => {
       "-Wno-deprecated-declarations",
       ...(process.platform === "linux" ? ["-D_GNU_SOURCE"] : []),
       ...flags,
-      ...["scr_weakref.test.c", "scr_weakref.c", ...EXECUTABLE_RUNTIME_SOURCES].map((source) =>
-        join(import.meta.dirname, source),
-      ),
+      ...[
+        "scr_weakref.test.c",
+        "scr_weakref.c",
+        // The registry check the WeakRef unit calls, and the unit that
+        // unit's equality message assemblers live in.
+        "scr_symbol.c",
+        "scr_assert.c",
+        ...EXECUTABLE_RUNTIME_SOURCES,
+      ].map((source) => join(import.meta.dirname, source)),
       ...(process.platform === "linux" ? ["-lm"] : []),
       "-o",
       bin,

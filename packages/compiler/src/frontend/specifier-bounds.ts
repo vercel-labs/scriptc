@@ -22,7 +22,7 @@
 
 import * as ts from "./ts7/adapter.js";
 import type { Lowerer } from "./lowering/lowerer.js";
-import { bindingNeverReassigned, stripValueWrappers } from "./lowering/binding-analysis.js";
+import { bindingNeverReassigned, stripValueWrappers } from "./binding-writes.js";
 
 /** At most this many values: beyond it the cartesian products are no longer
  * a catalogue a selector should spell out. */

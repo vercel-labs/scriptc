@@ -709,6 +709,9 @@ function publicDetail(tier) {
     ) {
       return "Native codec values support UTF-8 encoding and whole-buffer decoding with recognized literal labels and default options.";
     }
+    if (source === "compiler-feature:globals.Headers") {
+      return "Constructs from records, header pairs and copies, and supports append/delete/get/getSetCookie/has/set/forEach with Node's coercion and error shapes, including Response and Request headers; typed iteration and method extraction remain refused.";
+    }
     if (source === "compiler-feature:util.debuglog") {
       return "The enabled getter tests the section on first read; the callback receives the section's implementation with its own enabled getter.";
     }

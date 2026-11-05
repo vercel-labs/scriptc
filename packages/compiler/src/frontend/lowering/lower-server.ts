@@ -41,6 +41,7 @@ import {
   STRING,
   UNDEFINED_T,
   type SrcLoc,
+  sortArms,
   typeKey,
   VOID,
 } from "../../ir/ir.js";
@@ -522,7 +523,7 @@ function headerParamShapeId(cbT: IrType, idx: number): string | null {
  * with no static param type to read the shape from). */
 function canonicalHeaderRecord(lowerer: Lowerer): { type: IrType; shapeId: string } {
   const arms = [F64, STRING, arrayOf(STRING), UNDEFINED_T];
-  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  sortArms(arms);
   const slot: IrType = { kind: "union", unionId: lowerer.unions.intern(arms) };
   const shapeId = lowerer.shapes.intern([], false, slot, []);
   return { type: { kind: "record", shapeId }, shapeId };
@@ -5246,6 +5247,9 @@ function lowerHttpModuleCall(
  * Buffers (fs.readFileSync either way — portless reads Buffers) — a
  * runtime-valued (dyn) entry rides the tls.pemDyn extraction, throwing
  * the fence at runtime for non-PEM kinds (the divergence-66 stance).
+ * With an SNICallback the default pair may be absent (Node serves each
+ * handshake from the answered context), so a missing cert or key lowers
+ * to an empty value the runtime reads as "no default material".
  * Every other key fences by name; SNICallback gets the pointed hint. */
 function lowerTlsServerOptions(
   lowerer: Lowerer,
@@ -5318,7 +5322,7 @@ function lowerTlsServerOptions(
         "cert and key (PEM strings or Buffers) are the supported options",
         {
           SNICallback:
-            "SNICallback lowers on tls.createServer and http2.createSecureServer({ allowHTTP1: true, ... }) — serve one cert/key pair here",
+            "SNICallback lowers on tls.createServer (with or without a default cert/key pair) and on http2.createSecureServer({ allowHTTP1: true, ... })",
         },
       );
       continue; // an undocumented key, dropped like Node drops it
@@ -5361,11 +5365,26 @@ function lowerTlsServerOptions(
     else key = v;
   }
   if (cert === null || key === null) {
-    lowerer.noLowering(
-      `${what} without both cert and key`,
-      node,
-      "the supported options object is { cert, key } (PEM strings or Buffers)",
-    );
+    if (sni === undefined) {
+      lowerer.noLowering(
+        `${what} without both cert and key`,
+        node,
+        "the supported options object is { cert, key } (PEM strings or Buffers), or { SNICallback } to serve every handshake from the callback's context",
+      );
+    }
+    // Node accepts SNICallback without a default pair: the default context
+    // then serves no certificate and the answered context supplies the
+    // handshake's. An empty value carries "absent" to the runtime.
+    const absent = (): IrExpr => ({ kind: "strLit", value: "", type: STRING, loc });
+    if (cert === null) cert = absent();
+    if (key === null) key = absent();
+    // No cert/key entry followed the callback, so the saved read is
+    // attached to the callback argument: it then runs after the entries
+    // that did precede it, as the literal evaluated them.
+    if (pendingSni !== null) {
+      sni = { kind: "seqExpr", stmts: [pendingSni], result: sni, type: sni.type, loc };
+      pendingSni = null;
+    }
   }
   return sni === undefined ? { cert, key } : { cert, key, sni };
 }

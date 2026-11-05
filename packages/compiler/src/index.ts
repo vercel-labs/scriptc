@@ -17,6 +17,7 @@ import { optimizationField, type NativeOptimization } from "./backend/optimizati
 import { targetCpuField, targetCpuTargetRefusal } from "./backend/target-cpu.js";
 import { compilationTiming, type CompilationTiming, type TimingClock } from "./timing.js";
 import { prepareExecutableModule, type PreparedExecutableModule } from "./executable/prepare.js";
+import type { LowerStats } from "./frontend/lowering/lowerer.js";
 import { nodeIslandOptionsKey } from "./node-islands/policy.js";
 import { setIslandResolver } from "./node-islands/resolve.js";
 import {
@@ -597,6 +598,8 @@ interface CompileWarningSink {
   warnings: ScrDiagnostic[];
   sourceTexts: Map<string, string> | null;
   islands?: { packages: string[]; modules: string[] };
+  /** What the build's frontend pass lowered (CompileWarnings.stats). */
+  stats?: LowerStats;
 }
 
 /** The package.json texts type patch warnings point into, re-read for a
@@ -656,12 +659,14 @@ function withCompileWarnings<T extends CompileRequestResult>(
 ): T {
   if (!result.ok) return result;
   const islands = sink.islands === undefined ? {} : { islands: sink.islands };
-  if (sink.warnings.length === 0) return { ...result, ...islands };
+  const stats = sink.stats === undefined ? {} : { stats: sink.stats };
+  if (sink.warnings.length === 0) return { ...result, ...islands, ...stats };
   return {
     ...result,
     warnings: sink.warnings,
     sourceTexts: sink.sourceTexts ?? new Map(),
     ...islands,
+    ...stats,
   };
 }
 
@@ -883,6 +888,9 @@ async function compileExecutableNative(
     ...(features.mime ? { mime: true } : {}),
     ...(features.largePages ? { largePages: true } : {}),
     ...(features.webStreams ? { webStreams: true } : {}),
+    // The C-source link (a sanitized build) compiles the runtime itself, so it
+    // needs the same Blob/File body define the runtime pack selects.
+    ...(features.webBodies ? { webBodies: true } : {}),
     ...(features.abortSignal ? { abortSignal: true } : {}),
     ...(features.utilTiming ? { utilTiming: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
@@ -1158,6 +1166,8 @@ interface PreparedExecutable {
   nativeFeatures: EarlyExecutableNativeFeatures;
   programSplit: ReturnType<typeof splitLlvmProgram>;
   sourceTexts: Map<string, string>;
+  /** What this build's frontend pass lowered (see CompileWarnings.stats). */
+  stats: LowerStats;
   /** The Node islands the build ran, reported with its result (a runner
    * reads them to tell an island result from a native one). */
   islands?: { packages: string[]; modules: string[] };
@@ -1250,6 +1260,7 @@ async function prepareExecutableInput(
     warningSink.warnings = prepared.warnings;
     warningSink.sourceTexts = sourceTexts;
   }
+  if (warningSink !== undefined) warningSink.stats = prepared.stats;
   if (warningSink !== undefined && prepared.islands !== undefined)
     warningSink.islands = prepared.islands;
 
@@ -1415,6 +1426,7 @@ async function prepareExecutableInput(
     nativeFeatures,
     programSplit,
     sourceTexts,
+    stats: prepared.stats,
     ...(prepared.islands === undefined ? {} : { islands: prepared.islands }),
   };
 }
@@ -1602,6 +1614,8 @@ type FrontendProcessResult =
       sourceTexts: [string, string][];
       warnings: ScrDiagnostic[];
       islands?: { packages: string[]; modules: string[] };
+      /** The frontend pass's lowering coverage (CompileWarnings.stats). */
+      stats: LowerStats;
       frontend: FrontendInputSnapshot;
     }
   | {
@@ -1664,6 +1678,7 @@ async function prepareExecutableInputInChild(
   }
   if (warningSink !== undefined && result.kind === "prepared" && result.islands !== undefined)
     warningSink.islands = result.islands;
+  if (warningSink !== undefined && result.kind === "prepared") warningSink.stats = result.stats;
   if (result.kind === "diagnostics")
     return { ok: false, diagnostics: result.diagnostics, sourceTexts };
   return {
@@ -1678,6 +1693,7 @@ async function prepareExecutableInputInChild(
     nativeFeatures: result.nativeFeatures,
     programSplit: null,
     sourceTexts,
+    stats: result.stats,
     ...(result.islands === undefined ? {} : { islands: result.islands }),
   };
 }
@@ -1757,6 +1773,7 @@ export async function runFrontendProcess(requestPath: string, resultPath: string
         sourceTexts: [...prepared.sourceTexts],
         warnings: warnings.warnings,
         ...(prepared.islands === undefined ? {} : { islands: prepared.islands }),
+        stats: prepared.stats,
         frontend,
       };
     } else if (!prepared.ok) {

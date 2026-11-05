@@ -1820,6 +1820,14 @@ bool scr_dyn_is_error_prototype(const ScrDyn *d);
  * non-object kinds throw Node's catchable TypeErrors (strict-mode
  * wording). All three operands BORROWED (the value is retained in). */
 void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value);
+/* A property DEFINITION (a member of a JavaScript object literal, dynObjLit):
+ * it creates or updates the own data property and never runs an inherited
+ * accessor, so a `__proto__` member is an ordinary own member instead of
+ * Object.prototype's prototype setter. A computed member coerces its key
+ * first (scr_dyn_key_define_computed). Every other key behaves as
+ * scr_dyn_key_set. All three operands BORROWED (the value is retained in). */
+void scr_dyn_key_define(ScrDyn *recv, ScrStr *key, ScrDyn *value);
+void scr_dyn_key_define_computed(ScrDyn *recv, ScrDyn *key, ScrDyn *value);
 /* The same in sloppy-mode code: an assignment strict mode refuses with a
  * TypeError is ignored. */
 void scr_dyn_key_set_sloppy(ScrDyn *recv, ScrStr *key, ScrDyn *value);

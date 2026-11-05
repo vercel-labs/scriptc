@@ -46,3 +46,21 @@ const { Buffer } = await import("node:buffer");
 const { join } = await import("node:path");
 strictEqual(format("%s:%d", join("a", "b"), 3), "a/b:3");
 console.log(Buffer.from("hi").toString("hex"), format("%o", { a: 1 }));
+
+// A member call or read on the awaited namespace evaluates the await where
+// the member is used, not merely the member it names: the import's
+// microtask hop lands before the call's arguments and the next statement,
+// including through a module-valued member (`path.posix`).
+const seen: string[] = [];
+void Promise.resolve().then(() => seen.push("call-microtask"));
+const query = (await import("node:querystring")).stringify({ a: 1 });
+seen.push("call");
+console.log(query, seen.join(","));
+void Promise.resolve().then(() => seen.push("chain-microtask"));
+const nested = (await import("node:path")).posix.join("c", "d");
+seen.push("chain");
+console.log(nested, seen.join(","));
+void Promise.resolve().then(() => seen.push("read-microtask"));
+const sep: string = (await import("node:path")).sep;
+seen.push("read");
+console.log(sep, seen.join(","));

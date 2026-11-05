@@ -2262,8 +2262,10 @@ export function lowerDynamicImportCall(lowerer: Lowerer, call: ts.CallExpression
     { kind: "moduleNs", moduleId: `builtin:${res.module}` },
     null,
     // Node's punycode module reports DEP0040 when its body first runs,
-    // which a dynamic import does here rather than at link time.
-    res.module === "punycode" ? [lowerer.punycodeRequireWarning(call)] : undefined,
+    // which a dynamic import does here rather than at link time; the
+    // import's own load reports even from a dependency, whose require()
+    // would not.
+    res.module === "punycode" ? [lowerer.punycodeDynamicImportWarning(call)] : undefined,
   );
 }
 

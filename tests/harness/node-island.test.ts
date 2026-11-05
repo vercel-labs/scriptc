@@ -232,21 +232,17 @@ describe.skipIf(skip)("Node islands in-process", () => {
     });
   });
 
-  test("a call from a worker thread is refused at build time", async () => {
-    // Node.js initializes once per process, so an island on a second thread
-    // aborts the process; until island calls from worker threads are routed
-    // to the island's thread, the build refuses the shape (SC8012). The
-    // worker entry here is the program's own module.
-    const dir = join(outDir, "worker");
-    mkdirSync(dir, { recursive: true });
-    const result = await compile(join(repoRoot, "tests/fixtures/node-island/worker.ts"), {
-      outPath: join(dir, "worker"),
-      outDir: dir,
-      sanitize,
+  test("a call from a worker thread is routed to the island's thread", async () => {
+    const worker = await build(
+      "worker",
+      undefined,
+      join(repoRoot, "tests/fixtures/node-island/worker.ts"),
+    );
+    expect(await run(worker, [])).toEqual({
+      stdout: "main 42\nworker called 42\nworker async ERR_SCRIPTC_ISLAND_WORKER_ASYNC\nexit 0\n",
+      stderr: "",
+      code: 0,
     });
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.diagnostics.map((d) => d.code)).toContain("SC8012");
   }, 300_000);
 
   test("full garbage collections during calls, at depth on both sides", async () => {

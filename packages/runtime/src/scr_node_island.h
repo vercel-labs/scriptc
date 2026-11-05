@@ -34,6 +34,14 @@ ScrDyn *scr_node_island_call_sync(ScrStr *file, ScrStr *specifier, ScrStr *name,
  * error (also when the arguments cannot be copied). Never throws. */
 ScrPromise *scr_node_island_call(ScrStr *file, ScrStr *specifier, ScrStr *name, ScrDyn *args);
 
+/* Island operations from other threads. Node runs on the thread that
+ * started it (the main thread), so an operation another thread reaches
+ * through an island value posts itself to that thread and waits for the
+ * answer; the loop below drains the posted operations. */
+bool scr_ni_remote_pending(void);
+int scr_ni_remote_pollfd(void);
+void scr_ni_remote_dispatch(void);
+
 /* The hosted loop (SCR_NODE_ISLANDS build of scr_async.c, scope-B NI-3).
  * scr_loop_host moves the runtime's pending ticks, promise jobs, timers
  * and immediates onto Node's queues through `bridge` and schedules every

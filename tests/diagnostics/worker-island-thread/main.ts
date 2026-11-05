@@ -1,7 +1,9 @@
-// A Node island used from a native worker thread cannot run: Node.js
-// initializes once per process, so the island on the second thread aborts
-// it. The build refuses by name (SC8012) instead of compiling a crash.
+// A worker's entry module is itself a Node island module: the native
+// program has no compiled module for the worker thread to run, so the
+// build refuses by name (SC8012).
 import { Worker } from "node:worker_threads";
+import { answer } from "./w.cjs";
 
-const worker = new Worker(new URL("./w.ts", import.meta.url));
-worker.on("exit", (code) => console.log(code));
+console.log("main", answer());
+const worker = new Worker(new URL("./w.cjs", import.meta.url));
+worker.on("exit", (code: number) => console.log(code));

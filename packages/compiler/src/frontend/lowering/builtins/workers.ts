@@ -66,7 +66,7 @@ export function lowerWorkerNew(lowerer: Lowerer, expression: ts.NewExpression): 
     lowerer.nodeIslands !== null &&
     isIslandProgramModule(lowerer.nodeIslands, workerSourcePath(path!))
   ) {
-    lowerer.refuseIslandWorkerUse(`the Node island worker entry '${path}'`, expression);
+    lowerer.refuseIslandWorkerUse(expression);
   }
   if (lowerer.targetPlatform === "wasi") {
     lowerer.noLowering(

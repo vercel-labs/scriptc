@@ -1,8 +1,8 @@
-worker-island-thread/w.ts:9:13 - error SC8012: the requireModule (@scriptc/node) call would run on a native worker thread, where scriptc does not support Node islands
+worker-island-thread/main.ts:8:16 - error SC8012: the Worker's entry module runs in a Node island, so a native worker thread cannot run it
 
-   8 | }
-   9 | const lib = requireModule<Lib>("./lib.cjs");
-     |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  10 | parentPort?.postMessage(lib.answer());
+  7 | console.log("main", answer());
+  8 | const worker = new Worker(new URL("./w.cjs", import.meta.url));
+    |                ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  9 | worker.on("exit", (code: number) => console.log(code));
 
-  hint: use the island from the main thread only, or keep the worker's modules natively compiled; Node.js initializes once per process, so an island on a second thread aborts the process
+  hint: give the worker an entry the build compiles natively: island modules run only in Node, and a worker thread runs the compiled program

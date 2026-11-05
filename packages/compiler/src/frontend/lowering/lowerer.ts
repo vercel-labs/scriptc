@@ -446,7 +446,6 @@ import {
   appendDynamicImportModules,
   appendForkModules,
   appendWorkerModules,
-  workerThreadModules,
 } from "./lower-modules.js";
 import { prepareCjsModuleGraph, usesCjsTopLevelThis } from "./lower-node-module.js";
 import {
@@ -1206,9 +1205,6 @@ export interface LowererMode {
   /** LowerOptions.tierMode, shared by every pass. */
   tierMode?: TierMode;
   workerTargets?: readonly ts.SourceFile[];
-  /** LoadOptions.moduleEdges, threaded through every pass so each one can
-   * recognize the modules a worker thread runs. */
-  moduleEdges?: ReadonlyMap<ts.SourceFile, readonly CycleEdge[]> | undefined;
   /** The program facts every pass of ONE island round shares
    * (lowering-facts.ts): the same program and moduleOrder, so a pass that
    * omits it simply gets a private copy. lowerToIrWithIslands builds one and
@@ -1421,7 +1417,6 @@ function lowerToIrWithIslands(
     libraryCallbacks,
     forkTargets,
     workerTargets,
-    moduleEdges: options.moduleEdges,
     externalTypes,
     externalTypeSpecifiersByFile,
     tierMode,
@@ -1450,7 +1445,6 @@ function lowerToIrWithIslands(
           libraryCallbacks,
           forkTargets,
           workerTargets,
-          moduleEdges: options.moduleEdges,
           externalTypes,
           externalTypeSpecifiersByFile,
           tierMode,
@@ -1483,7 +1477,6 @@ function lowerToIrWithIslands(
       libraryCallbacks,
       forkTargets,
       workerTargets,
-      moduleEdges: options.moduleEdges,
       externalTypes,
       externalTypeSpecifiersByFile,
       tierMode,
@@ -1524,7 +1517,6 @@ function lowerToIrWithIslands(
       libraryCallbacks,
       forkTargets,
       workerTargets,
-      moduleEdges: options.moduleEdges,
       externalTypes,
       externalTypeSpecifiersByFile,
       tierMode,
@@ -1574,7 +1566,6 @@ function lowerToIrWithIslands(
       libraryCallbacks,
       forkTargets,
       workerTargets,
-      moduleEdges: options.moduleEdges,
       ffiBindingSymbols: ffiValidation.symbolsByName,
       externalTypes,
       externalTypeSpecifiersByFile,
@@ -1737,7 +1728,6 @@ function lowerToIrWithIslands(
       libraryCallbacks,
       forkTargets,
       workerTargets,
-      moduleEdges: options.moduleEdges,
       ffiBindingSymbols: ffiValidation.symbolsByName,
       externalTypes,
       externalTypeSpecifiersByFile,
@@ -4001,10 +3991,6 @@ export class Lowerer {
   readonly forkTargets: readonly ts.SourceFile[];
   readonly workerTargets: readonly ts.SourceFile[];
   readonly workerTargetIdByPath = new Map<string, number>();
-  /** Every module a static worker entry can run on its thread (worker
-   * roots plus their closure); empty when the program starts no native
-   * workers. Island use in this set is SC8012. */
-  readonly workerThreadFiles: ReadonlySet<ts.SourceFile>;
   usesWorkers = false;
   /** The program uses the WebAssembly API (builtins/webassembly.ts): the
    * build translates the modules it discovers. */
@@ -4928,10 +4914,6 @@ export class Lowerer {
     // The whole-program prepass analyzeJsWidenedBindings computes this set
     // before lowering begins: a pure function of the program's modules.
     "jsWidenedBindings",
-    // The modules a static worker entry can run on its thread (SC8012): a
-    // pure function of the program's modules and the worker roots, computed
-    // once before lowering begins and never written by a unit.
-    "workerThreadFiles",
     // Preflight's admitted opinions are a program fact computed before any
     // unit lowers.
     "admittedOpinions",
@@ -5492,11 +5474,6 @@ export class Lowerer {
     this.workerTargets.forEach((sf, id) => {
       this.workerTargetIdByPath.set(tsgoPath(resolve(sf.fileName)), id);
     });
-    this.workerThreadFiles = workerThreadModules(
-      program,
-      this.workerTargets,
-      mode.moduleEdges === undefined ? undefined : { edges: mode.moduleEdges },
-    );
     this.forkTargets.forEach((sf, id) => {
       this.forkTargetIdByPath.set(tsgoPath(resolve(sf.fileName)), id);
     });
@@ -11859,16 +11836,8 @@ export class Lowerer {
     return { libnode: "", nodeVersion: "", ...(modules === null ? {} : { modules }) };
   }
 
-  /** SC8012 — refuses `use` (a named island use) when its module can run on
-   * a native worker thread; a no-op for main-thread-only modules. */
-  islandWorkerFence(use: string, node: ts.Node): void {
-    if (!this.workerThreadFiles.has(ts.getSourceFileOfNode(node))) return;
-    this.refuseIslandWorkerUse(use, node);
-  }
-
-  /** SC8012, unconditionally: the node's own module is the worker entry. */
-  refuseIslandWorkerUse(use: string, node: ts.Node): never {
-    this.pushDiag(nodeIslandWorkerThreadDiag(use, locOf(node)));
+  refuseIslandWorkerUse(node: ts.Node): never {
+    this.pushDiag(nodeIslandWorkerThreadDiag(locOf(node)));
     throw new PoisonError();
   }
 

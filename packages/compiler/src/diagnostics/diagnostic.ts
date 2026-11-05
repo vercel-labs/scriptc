@@ -94,7 +94,7 @@
  *            object-model constructs in user JavaScript (SC8101–SC8105,
  *            behind --strict-user-js); programs that call into Node.js
  *            where the build finds no usable libnode pack (SC8005), or
- *            island use from a native worker thread (SC8012), or
+ *            a Node island as a native worker's entry (SC8012), or
  *            cannot collect the modules a call loads (SC8006); and type
  *            patches from `scriptc.typePatches` that did not apply as
  *            written (SC8030–SC8033, warnings)
@@ -377,17 +377,19 @@ export function nativeSubclassOfIslandDiag(loc: SrcLoc, detail?: string): ScrDia
   };
 }
 
-/** SC8012 — a module a native worker thread can run reaches a Node island.
- * An island's Node.js state belongs to the thread that started it, and
- * libnode initializes once per process: a second thread that runs island
- * code aborts the process. Cross-thread island routing (decision 2b) is not
- * implemented, so the build refuses by name. */
-export function nodeIslandWorkerThreadDiag(use: string, loc: SrcLoc): ScrDiagnostic {
+/** SC8012 — a native worker's entry module is itself a Node island, so the
+ * native program has no compiled module for the worker thread to run. Island
+ * *operations* from a worker thread are routed to the island's thread, but a
+ * worker whose entry IS the island has nothing native to start, and the
+ * island module's own semantics (sloppy-only constructs, for example) are
+ * not implemented by compiled code — so the build refuses it by name. */
+export function nodeIslandWorkerThreadDiag(loc: SrcLoc): ScrDiagnostic {
   return {
     code: "SC8012",
-    message: `${use} would run on a native worker thread, where scriptc does not support Node islands`,
+    message:
+      "the Worker's entry module runs in a Node island, so a native worker thread cannot run it",
     loc,
-    hint: "use the island from the main thread only, or keep the worker's modules natively compiled; Node.js initializes once per process, so an island on a second thread aborts the process",
+    hint: "give the worker an entry the build compiles natively: island modules run only in Node, and a worker thread runs the compiled program",
   };
 }
 

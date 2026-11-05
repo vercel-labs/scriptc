@@ -1,1 +1,0 @@
-exports.answer = () => 42;

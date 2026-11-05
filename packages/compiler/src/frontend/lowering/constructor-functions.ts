@@ -25,20 +25,17 @@ import {
   symbolReferences,
 } from "./symbol-references.js";
 
-const assignmentsOf = new WeakMap<
-  ts.FunctionDeclaration,
-  Map<ts.ExpressionStatement, string> | null
->();
-
 /** The `this.k = value` assignments of a constructor body, or null when
  * the function does anything else with `this` (its parameter defaults
  * included). Computed once per declaration. */
 function fieldAssignments(
+  lowerer: Lowerer,
   decl: ts.FunctionDeclaration & { body: ts.Block },
 ): Map<ts.ExpressionStatement, string> | null {
-  if (assignmentsOf.has(decl)) return assignmentsOf.get(decl)!;
+  const cache = lowerer.constructorFieldAssignments;
+  if (cache.has(decl)) return cache.get(decl)!;
   const result = computeFieldAssignments(decl);
-  assignmentsOf.set(decl, result);
+  cache.set(decl, result);
   return result;
 }
 
@@ -110,8 +107,6 @@ function computeFieldAssignments(
   return other ? null : assignments;
 }
 
-const newOnly = new WeakMap<Lowerer, Map<ts.Symbol, boolean>>();
-
 /** The function `new F(...)` constructs when it can build a record: a
  * non-generic, non-generator TypeScript or Flow function declaration that
  * the program only ever calls with `new` (through parentheses). Null
@@ -128,8 +123,7 @@ export function constructorFunctionOf(
   if (!symbol || decl === null || !decl.body || !decl.name) return null;
   if (isJsSourceFile(ts.getSourceFileOfNode(decl)) || decl.typeParameters || decl.asteriskToken)
     return null;
-  let cache = newOnly.get(lowerer);
-  if (cache === undefined) newOnly.set(lowerer, (cache = new Map()));
+  const cache = lowerer.constructorFunctionUses;
   let only = cache.get(symbol);
   if (only === undefined) {
     const references = symbolReferences(lowerer, symbol, decl.name.text);
@@ -161,7 +155,7 @@ export function lowerConstructorFunctionNew(
   const sig = lowerer.fnSigsBySymbol.get(symbol);
   const shape = lowerer.shapes.get(expected.shapeId);
   if (!sig || !shape || sig.isAsync) return null;
-  const assignments = fieldAssignments(decl);
+  const assignments = fieldAssignments(lowerer, decl);
   if (assignments === null) return null;
   const assigned = new Set(assignments.values());
   const fields = new Map(shape.fields.map((f) => [f.name, f.type]));

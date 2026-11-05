@@ -788,6 +788,7 @@ export class UnionRegistry {
           this.byId.delete(def.id);
           this.keyedNameKeys.delete(def.id);
         }
+        this.unfinishedReach.clear();
       },
       contents: () => {
         // A recursive placeholder still pending fills in place when its

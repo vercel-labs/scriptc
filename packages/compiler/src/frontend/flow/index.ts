@@ -46,6 +46,9 @@ interface FlowModule {
   /** The Flow source text. */
   source: string;
   translation: EditedSource;
+  /** Where each line of the source starts, made when first needed
+   * (flowSourceLine). */
+  lineStarts?: number[];
 }
 
 /** The leading comments hold `@flow` or `@noflow`: either way the module
@@ -298,12 +301,12 @@ export function flowSourceLine(path: string, pos: number): { file: string; line:
   const module = active === null ? null : active.module(path);
   if (module === null) return null;
   const original = module.translation.originalPosition(pos);
-  let starts = lineStarts.get(module);
+  let starts = module.lineStarts;
   if (starts === undefined) {
     starts = [0];
     for (let i = 0; i < module.source.length; i++)
       if (module.source.charCodeAt(i) === 10) starts.push(i + 1);
-    lineStarts.set(module, starts);
+    module.lineStarts = starts;
   }
   let low = 0;
   let high = starts.length - 1;
@@ -314,8 +317,6 @@ export function flowSourceLine(path: string, pos: number): { file: string; line:
   }
   return { file: module.flowPath, line: low + 1 };
 }
-
-const lineStarts = new WeakMap<FlowModule, number[]>();
 
 /** Where a runtime fence message says it is: the Flow source and line for
  * an offset in a presented Flow module, `file:line` (the given 1-based

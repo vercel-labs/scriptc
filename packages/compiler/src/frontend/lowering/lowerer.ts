@@ -5,6 +5,7 @@ import { npmStaticPackageOfPath } from "../npm-static.js";
 import { globalMemberValue } from "./global-values.js";
 import { unionNarrowFailureMessage } from "./union-narrow.js";
 import { lowerConstructorFunctionNew } from "./constructor-functions.js";
+import type { ReferenceIndex } from "./symbol-references.js";
 import { fenceLocation } from "../flow/index.js";
 import {
   arrayClassFieldsFn,
@@ -2873,6 +2874,19 @@ export class Lowerer {
   /** Whether some program source can define a thenable
    * (programMayDefineThenables). Null until first asked. */
   thenablesMayBeDefined: boolean | null = null;
+  /** The analyses that must see every use of a declaration, made when
+   * first needed: the program's identifier index (symbol-references.ts),
+   * the constructor functions only ever called with `new` and their field
+   * writes (constructor-functions.ts), and the functions whose every use
+   * binds their typed receiver (lower-functions.ts). Pure functions of the
+   * program. */
+  referenceIndex: ReferenceIndex | null = null;
+  readonly constructorFunctionUses = new Map<ts.Symbol, boolean>();
+  readonly constructorFieldAssignments = new Map<
+    ts.FunctionDeclaration,
+    Map<ts.ExpressionStatement, string> | null
+  >();
+  readonly receiverBindingUses = new Map<ts.FunctionDeclaration, boolean>();
   /** Lambdas lowered with checked-dynamic parameters (lambdaSignature):
    * callbacks whose arguments are wider than their contextual overload. */
   readonly dynParamLambdas = new Set<ts.Node>();
@@ -4905,6 +4919,10 @@ export class Lowerer {
     "functionLocalSubclasses",
     "socketEncodingReachable",
     "thenablesMayBeDefined",
+    "referenceIndex",
+    "constructorFunctionUses",
+    "constructorFieldAssignments",
+    "receiverBindingUses",
     "unixListenReachable",
     "streamPropMutatedSyms",
     "readsExitCode",

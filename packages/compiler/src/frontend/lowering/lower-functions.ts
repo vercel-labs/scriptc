@@ -113,7 +113,6 @@ export function typedThisParameter(lowerer: Lowerer, decl: ts.FunctionDeclaratio
   return receiverBindingUsesOnly(lowerer, decl, type) ? type : null;
 }
 
-const receiverBindingUses = new WeakMap<Lowerer, Map<ts.FunctionDeclaration, boolean>>();
 const COLLECTION_KINDS: ReadonlySet<string> = new Set(["map", "set"]);
 
 /** Whether every reference to the function binds its receiver the way the
@@ -130,8 +129,7 @@ function receiverBindingUsesOnly(
   decl: ts.FunctionDeclaration,
   thisType: IrType,
 ): boolean {
-  let cache = receiverBindingUses.get(lowerer);
-  if (cache === undefined) receiverBindingUses.set(lowerer, (cache = new Map()));
+  const cache = lowerer.receiverBindingUses;
   const cached = cache.get(decl);
   if (cached !== undefined) return cached;
   const name = decl.name;

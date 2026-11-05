@@ -8,7 +8,7 @@
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 
-interface ReferenceIndex {
+export interface ReferenceIndex {
   names: Map<string, ts.Identifier[]>;
   bySymbol: Map<string, Map<ts.Symbol, ts.Identifier[]>>;
   /** Module specifiers that reach a module's exports as a whole: `import *
@@ -20,11 +20,9 @@ interface ReferenceIndex {
   stringExportNames: Set<string>;
 }
 
-const indexes = new WeakMap<Lowerer, ReferenceIndex>();
-
 function indexOf(lowerer: Lowerer): ReferenceIndex {
-  let index = indexes.get(lowerer);
-  if (index !== undefined) return index;
+  let index = lowerer.referenceIndex;
+  if (index !== null) return index;
   const names = new Map<string, ts.Identifier[]>();
   const wholeModuleSpecifiers: ts.Expression[] = [];
   const stringExportNames = new Set<string>();
@@ -66,7 +64,7 @@ function indexOf(lowerer: Lowerer): ReferenceIndex {
     wholeModules: null,
     stringExportNames,
   };
-  indexes.set(lowerer, index);
+  lowerer.referenceIndex = index;
   return index;
 }
 

@@ -4121,9 +4121,15 @@ function isFreshCallResult(node: ts.Expression): boolean {
  * and calls it. Box the receiver into the checked-dynamic value and lower
  * the read and the call dynamically, so the member lookup and the call stay
  * checked (a missing member throws V8's own TypeError) and the result
- * crosses back through the expected type's checked conversion. Null when
- * the receiver is not a union of object/record arms with a dyn-safe layout,
- * leaving the method-call fence in place. */
+ * crosses back through the expected type's checked conversion.
+ *
+ * A non-object arm joins the union when it does not declare the member at
+ * all (commander's `string | Command` from `name()`, whose JSDoc returns
+ * both): calling the member there is the same "is not a function" TypeError
+ * the dynamic call throws, so the result is Node-exact. An arm that DOES
+ * declare it (a string's toUpperCase) stays fenced: the dynamic tier cannot
+ * run a primitive's own methods, and calling through would throw where Node
+ * succeeds. Null for anything else, leaving the method-call fence in place. */
 function lowerUnionReceiverMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -4134,9 +4140,7 @@ function lowerUnionReceiverMethodCall(
   const value = tryLowerExpression(lowerer, access.expression);
   if (value?.type.kind !== "union") return null;
   const union = lowerer.unions.get(value.type.unionId);
-  if (!union || !union.arms.every((arm) => arm.kind === "object" || arm.kind === "record")) {
-    return null;
-  }
+  if (!union || !unionArmsDispatchMember(lowerer, union.arms, access)) return null;
   if (!lowerer.dynConvertible(value.type)) return null;
   const loc = locOf(call);
   const boxed = lowerer.coerceToExpected(value, DYN);
@@ -4164,6 +4168,48 @@ function lowerUnionReceiverMethodCall(
     type: DYN,
     loc,
   };
+}
+
+/** Primitive arms a union receiver may carry next to its object/record
+ * arms (commander's `string | Command`): the dynamic value holds each one
+ * as its own kind, so a member the arm does not have reads as undefined. */
+const UNION_RECEIVER_PRIMITIVE_ARMS = new Set([
+  "string",
+  "f64",
+  "bool",
+  "bigint",
+  "undefinedT",
+  "nullT",
+]);
+
+/** True when every arm of the receiver union can ride the dynamic call:
+ * object and record arms always (the lookup and the call stay checked), and
+ * a primitive arm only when its static type does not declare the member at
+ * all — the call there is V8's "is not a function" TypeError, which the
+ * dynamic call reproduces. An arm with the member (a string's toUpperCase)
+ * keeps the fence: the dynamic tier cannot run a primitive's own methods. */
+function unionArmsDispatchMember(
+  lowerer: Lowerer,
+  arms: readonly IrType[],
+  access: ts.PropertyAccessExpression,
+): boolean {
+  if (arms.every((arm) => arm.kind === "object" || arm.kind === "record")) return true;
+  if (
+    !arms.every(
+      (arm) =>
+        arm.kind === "object" ||
+        arm.kind === "record" ||
+        UNION_RECEIVER_PRIMITIVE_ARMS.has(arm.kind),
+    )
+  )
+    return false;
+  const receiver = lowerer.typeOf(access.expression);
+  const parts = receiver.isUnionType() ? ts.constituentTypes(receiver) : [receiver];
+  for (const part of parts) {
+    if ((part.flags & ts.TypeFlags.Object) !== 0) continue;
+    if (lowerer.checker.getPropertyOfType(part, access.name.text) !== undefined) return false;
+  }
+  return true;
 }
 
 /** METHOD calls on dyn receivers (`pkg.name.replace(...)`, `rawName.split`,

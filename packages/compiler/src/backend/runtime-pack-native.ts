@@ -28,6 +28,7 @@ import type { NativeTargetSpec } from "./targets.js";
 import {
   RuntimePackError,
   parseRuntimePackManifest,
+  reportSpeedFlavorFallback,
   selectRuntimePackArtifacts,
   validateRuntimePackIdentity,
   type RuntimePackArtifact,
@@ -170,6 +171,7 @@ export function selectNativeRuntimePack(
   const identity = JSON.parse(packageText) as { name?: string; version?: string };
   const manifest = parseRuntimePackManifest(JSON.parse(manifestText));
   validateRuntimePackIdentity(manifest, identity.name, identity.version, target, compilerVersion);
+  reportSpeedFlavorFallback(root, manifest, flavor, mode);
   const selected = selectRuntimePackArtifacts(manifest, features, flavor, process.env, mode);
   if (store !== undefined && key !== null) {
     try {

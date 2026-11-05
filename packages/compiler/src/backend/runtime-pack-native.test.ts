@@ -410,6 +410,37 @@ test("writing the record beside the pack keeps the entries another build wrote",
   expect(readdirSync(f.root).filter((name) => name.endsWith(".tmp"))).toEqual([]);
 });
 
+test("a speed build of a pack without a speed flavor says so, once per pack", async () => {
+  const f = await packFixture();
+  const write = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  try {
+    const select = () =>
+      selectNativeRuntimePack(
+        f.root,
+        MACOS_ARM64_TARGET,
+        compilerReleaseVersion(),
+        {} as NativeLinkFeatures,
+        "speed",
+        "executable",
+        emptyStore(),
+      );
+    select();
+    select();
+    // The fixture pack ships release and dev units only, so both selections
+    // link the release objects; the warning is the build's only sign of it,
+    // and one build says it once.
+    const lines = write.mock.calls
+      .map((call) => String(call[0]))
+      .filter((line) => line.includes('has no "speed" flavor'));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("--optimization=speed");
+    expect(lines[0]).toContain("release runtime objects");
+    expect(lines[0]).toContain("SCRIPTC_LLVM_CODEGEN");
+  } finally {
+    write.mockRestore();
+  }
+});
+
 test("a cache that already trusts the artifacts writes the record beside the pack", async () => {
   const f = await packFixture();
   const selection = f.select();

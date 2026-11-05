@@ -46,6 +46,20 @@ ScrNetServer *scr_tls_create_server_dyn(const struct ScrDyn *opts /*borrowed*/, 
  * servername (the SNI + verify name). Every other documented member
  * throws the runtime fence when present; unknown keys drop. */
 ScrNetSocket *scr_tls_connect_dyn(double port, ScrStr *host /*borrowed, nullable*/, const struct ScrDyn *opts /*borrowed, nullable*/, ScrClosure *cb /*moves, nullable*/); /* +1 or NULL+pending */
+/* The same walk with options.checkServerIdentity accepted. The compiler
+ * picks it for an options literal that names the option, which links
+ * scr_tls_identity.c; the plain walk keeps its fence. */
+ScrNetSocket *scr_tls_connect_dyn_identity(double port, ScrStr *host /*borrowed, nullable*/, const struct ScrDyn *opts /*borrowed, nullable*/, ScrClosure *cb /*moves, nullable*/); /* +1 or NULL+pending */
+
+/* ── options.checkServerIdentity (scr_tls_identity.c) ─────────────────
+ * The hook that builds Node's PeerCertificate and calls the user's
+ * function with (servername, certificate); registered by the unit that
+ * knows how to build one, so scr_tls.c links without X.509 object code
+ * (and without the certificate, the option keeps its fence). */
+void scr_tls_install_identity_runner(ScrDyn *(*runner)(ScrNetSocket *, ScrDyn *, const char *));
+/* https.request's literal-path carrier (the servername pattern): the
+ * request that follows takes it. */
+void scr_tls_set_next_identity(const struct ScrDyn *fn /*borrowed*/);
 
 /* The TLSSocket member surface on the socket kind (all no-ops / honest
  * defaults on plain sockets): authorized answers Node's verify verdict

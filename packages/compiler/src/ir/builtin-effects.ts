@@ -410,6 +410,15 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.requestDynCb",
   "https.requestDyn",
   "https.requestDynCb",
+  // The checkServerIdentity forms validate the option (Node's
+  // ERR_INVALID_ARG_TYPE for a present non-function).
+  "https.nextIdentity",
+  "tls.connectId",
+  "tls.connectIdCb",
+  "https.requestDynId",
+  "https.requestDynIdCb",
+  "https.requestUrlDynId",
+  "https.requestUrlDynIdCb",
   // The URL+options form adds the URL parse's throws to that walk's.
   "http.requestUrlDyn",
   "http.requestUrlDynCb",

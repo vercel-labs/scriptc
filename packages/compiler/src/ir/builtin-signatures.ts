@@ -2480,6 +2480,14 @@ function buildLibFnSignatures() {
     "http.requestUrlDynCb": { argTypes: [STRING, DYN, BOOL, null], result: HTTPCLIENTREQ_T },
     "https.requestUrlDyn": { argTypes: [STRING, DYN, BOOL], result: HTTPCLIENTREQ_T },
     "https.requestUrlDynCb": { argTypes: [STRING, DYN, BOOL, null], result: HTTPCLIENTREQ_T },
+    /** The checkServerIdentity forms of the https walks and the literal
+     * path's carrier step: the compiler selects them when the source
+     * names the option, which links the PeerCertificate builder. */
+    "https.nextIdentity": { argTypes: [DYN], result: VOID },
+    "https.requestDynId": { argTypes: [DYN, BOOL], result: HTTPCLIENTREQ_T },
+    "https.requestDynIdCb": { argTypes: [DYN, BOOL, null], result: HTTPCLIENTREQ_T },
+    "https.requestUrlDynId": { argTypes: [STRING, DYN, BOOL], result: HTTPCLIENTREQ_T },
+    "https.requestUrlDynIdCb": { argTypes: [STRING, DYN, BOOL, null], result: HTTPCLIENTREQ_T },
     /** The paused-mode demux surface (portless's first-byte TLS peek:
      * once('readable') + read(1) + unshift + emit('connection')).
      * sockOnReadable registers a zero-param listener (a consumer: arrived
@@ -2633,6 +2641,11 @@ function buildLibFnSignatures() {
      * callback fires post-handshake — Node's secureConnect timing. */
     "tls.connect": { argTypes: [F64, STRING, DYN], result: NETSOCKET_T },
     "tls.connectCb": { argTypes: [F64, STRING, DYN, null], result: NETSOCKET_T },
+    /** The checkServerIdentity forms: the same walk with the option
+     * accepted, linking the unit that builds the PeerCertificate it
+     * receives. */
+    "tls.connectId": { argTypes: [F64, STRING, DYN], result: NETSOCKET_T },
+    "tls.connectIdCb": { argTypes: [F64, STRING, DYN, null], result: NETSOCKET_T },
     // The TLSSocket member surface (authError's `string | null` union is
     // shape-checked in the special cases in validate.ts — the reqHeader pattern).
     /** The TLSSocket member surface on the socket kind: authorized (bool —

@@ -642,6 +642,9 @@ struct ScrNetSocket {
   /* pending_err's code when its message does not name one (static
    * storage; NULL = the code the message maps to) */
   const char *pending_code;
+  /* An error OBJECT the next 'error' carries instead of one built from
+   * pending_err's text (checkServerIdentity's answer; +1) */
+  ScrError *pending_err_obj;
   /* the caller-lookup dial (net.connect with a lookup option): true while
    * the lookup decides; dial_ips holds its answered addresses (+1 each),
    * dialed in order — a connect failure closes the fd and tries
@@ -877,6 +880,7 @@ void scr_net_sock_release(ScrNetSocket *s) {
     scr_als_ctx_release(s->als);
     scr_als_ctx_release(s->end_ctx);
     scr_str_release(s->pending_err);
+    scr_error_release(s->pending_err_obj);
     scr_str_release(s->encoding);
     scr_str_release(s->remote_cache);
     for (size_t i = 0; i < s->dial_n; i++) scr_str_release(s->dial_ips[i]);
@@ -3660,6 +3664,8 @@ void scr_net_lookup_answer(ScrClosure *self, bool has_err, ScrStr *msg /*borrowe
      * EMPTY answer wears getaddrinfo's shape */
     if (msg != NULL && msg->len > 0) {
       scr_str_release(s->pending_err);
+      scr_error_release(s->pending_err_obj);
+      s->pending_err_obj = NULL;
       s->pending_err = scr_str_retain(msg);
     } else if (s->pending_err == NULL) {
       char fb[160];
@@ -5977,6 +5983,23 @@ void scr_net_sock_transport_error(ScrNetSocket *s, const char *msg) {
   scr_net_sock_close_fd(s); /* the sweep delivers 'error' (if any) then 'close' */
 }
 
+/* Fails the connection with a specific error OBJECT (a TLS
+ * checkServerIdentity answer), which the 'error' event carries — and the
+ * request's, through the protocol layer's payload. `err` moves in. */
+void scr_net_sock_transport_error_object(ScrNetSocket *s, ScrError *err) {
+  if (s->pending_err_obj != NULL) {
+    scr_error_release(err);
+    return;
+  }
+  s->pending_err_obj = err;
+  if (s->pending_err == NULL) {
+    const ScrStr *m = err->message;
+    s->pending_err = scr_str_new(m != NULL ? m->data : "", m != NULL ? m->len : 0);
+  }
+  s->had_error = true;
+  scr_net_sock_close_fd(s);
+}
+
 void scr_net_server_defer_connections(ScrNetServer *s) { s->defer_conn = true; }
 
 void scr_net_server_get_native_conn(ScrNetServer *s, ScrNetNativeConnFn *fn, void **ctx,
@@ -6194,30 +6217,38 @@ static bool scr_net_sweep_sock(ScrNetSocket *sock) {
   if (sock->pending_err) {
     ScrStr *msg = sock->pending_err;
     sock->pending_err = NULL;
+    /* an error object the transport named (checkServerIdentity's answer)
+     * IS the event's argument; otherwise one is built from the text */
+    ScrError *payload = sock->pending_err_obj;
+    sock->pending_err_obj = NULL;
     /* the protocol layer gets first claim (the http conn/client owns
      * the error story: 'error' on the req, or Node's server-side
      * teardown without an event); unconsumed errors fall through to the socket's own
      * listeners — and the unhandled-'error' exit */
     bool consumed = false;
+    ScrError *saved = scr_event_error_payload;
+    if (payload != NULL) scr_event_error_payload = payload;
     ScrAlsCtx *prev = scr_als_dispatch_enter(sock->als);
     if (sock->native_err) consumed = sock->native_err(sock->native_ctx, msg);
     if (!consumed && !scr_exc_pending()) {
       ScrError *coded = NULL;
-      ScrError *saved = scr_event_error_payload;
-      if (sock->pending_code != NULL) {
-        coded = scr_error_new(SCR_ERR_ERROR, msg);
-        coded->code = scr_str_new(sock->pending_code, strlen(sock->pending_code));
-      } else {
-        coded = scr_net_system_error(msg);
+      if (payload == NULL) {
+        if (sock->pending_code != NULL) {
+          coded = scr_error_new(SCR_ERR_ERROR, msg);
+          coded->code = scr_str_new(sock->pending_code, strlen(sock->pending_code));
+        } else {
+          coded = scr_net_system_error(msg);
+        }
+        if (coded != NULL) scr_event_error_payload = coded;
       }
-      if (coded != NULL) scr_event_error_payload = coded;
       scr_net_fire_err_this(&sock->err_ls, msg, sock, SCR_DYNH_NET_SOCKET);
-      scr_event_error_payload = saved;
       if (coded != NULL) scr_error_release(coded);
     }
+    scr_event_error_payload = saved;
     scr_als_dispatch_leave(prev);
     sock->pending_code = NULL;
     scr_str_release(msg);
+    scr_error_release(payload);
     if (scr_exc_pending()) return false;
   }
   if (sock->emit_close && !sock->close_emitted && sock->fd < 0) {

@@ -448,6 +448,9 @@ void scr_net_sock_replay(ScrNetSocket *s, const char *data, size_t len);
  * 'end' fires now, ahead of the failure the transport reports next. */
 void scr_net_sock_transport_ended(ScrNetSocket *s);
 void scr_net_sock_transport_error(ScrNetSocket *s, const char *msg);
+/* The same failure with a specific error OBJECT (moves in): the socket's
+ * — and the protocol layer's — 'error' carries it. */
+void scr_net_sock_transport_error_object(ScrNetSocket *s, ScrError *err);
 /* An error that leaves the socket open: 'error' fires from the sweep with
  * `code` (static storage), and the socket ends when the peer closes, as
  * Node's TLS socket reports a fatal alert after its handshake. */

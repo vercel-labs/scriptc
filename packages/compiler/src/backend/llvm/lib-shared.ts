@@ -1749,6 +1749,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "http.clientProtocolCheck": "scr_http_client_protocol_check",
   "http.clientProtocolCheckAgent": "scr_http_client_protocol_check_agent",
   "https.nextServername": "scr_https_set_next_servername",
+  "https.nextIdentity": "scr_tls_identity_next",
   "http.clientAbort": "scr_http_client_abort",
   "http.clientAborted": "scr_http_client_aborted",
   "http.clientDestroyed": "scr_http_client_destroyed",

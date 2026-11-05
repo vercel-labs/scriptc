@@ -104,10 +104,12 @@ import { lowerEnvironmentIdentity } from "../builtins/environment.js";
  * types the branches and reads bridge through maybeNarrow as usual. When
  * the checker already narrowed the non-literal side PAST the union
  * (`w = 5; if (w !== null)`), the comparison is statically decided and
- * folds to a bool literal — that drops only a side-effect-free read
- * (flow narrowing applies to references, never to calls), and soundness
- * rests on the same narrowing proof unionNarrow relies on. Null when
- * neither side is a unit literal (not a unit comparison). */
+ * folds to a bool literal. Soundness rests on the same narrowing proof
+ * unionNarrow relies on; the operand's own effects are separate — a call
+ * the checker types non-nullable (`f() !== null`), an awaited import or a
+ * getter read still has to run, so a non-droppable operand evaluates once
+ * before the literal answers. Null when neither side is a unit literal
+ * (not a unit comparison). */
 export function lowerUnitComparison(
   lowerer: Lowerer,
   left: IrExpr,
@@ -134,6 +136,17 @@ export function lowerUnitComparison(
     lowerer.armTag(other.value.type.unionId, unit.type) >= 0
   )
     return lowerUnitComparison(lowerer, other.value, unit, negated, loc);
+  if (isUnitType(other.type)) {
+    // A unit-typed operand (`(f(), undefined) === undefined`): the value is
+    // exactly that unit, so identical units are equal — only the operand's
+    // effects have to run (`decidableUnitAnswer`).
+    const same = (other.type.kind === "undefinedT" ? "undefined" : "null") === unit.unit;
+    return decidableUnitAnswer(
+      other,
+      { kind: "boolLit", value: same !== negated, type: BOOL, loc },
+      loc,
+    );
+  }
   if (other.type.kind === "union") {
     const tag = lowerer.armTag(other.type.unionId, unit.type);
     if (tag < 0) {
@@ -205,8 +218,28 @@ export function lowerUnitComparison(
   if (other.type.kind === "void") return null;
   // Non-union operand: it can never hold undefined/null at runtime (the
   // checker narrowed it to a concrete arm), so `=== unit` is false and
-  // `!== unit` is true.
-  return { kind: "boolLit", value: negated, type: BOOL, loc };
+  // `!== unit` is true — but the operand still evaluates for its own
+  // effects (`f() !== null`, `get x() !== undefined`, an awaited import).
+  return decidableUnitAnswer(other, { kind: "boolLit", value: negated, type: BOOL, loc }, loc);
+}
+
+/** The literal answer to a unit comparison the checker already decided,
+ * with the operand's effects preserved: a droppable read folds to the
+ * literal alone (the pure forms keep their IR), while a call, an await, a
+ * getter read or a sequence evaluates once, in place, and the literal is the
+ * value. A sequence's own result is a unit literal with no runtime
+ * representation — only its statements have to run — so the answer takes the
+ * result position and the statements are kept as they are. */
+function decidableUnitAnswer(other: IrExpr, answer: IrExpr, loc: SrcLoc): IrExpr {
+  if (isSafeToDiscard(other)) return answer;
+  if (other.kind === "seqExpr") return { ...other, result: answer, type: answer.type };
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "exprStmt", expr: other, loc }],
+    result: answer,
+    type: answer.type,
+    loc,
+  };
 }
 
 /** The union-typed process.envGet read inside a checker-narrowed operand,
@@ -235,7 +268,8 @@ function lowerLooseNullCompare(
   const other = lowerPresenceOperand(lowerer, otherNode);
   if (isUnitType(other.type)) {
     // `null == null`, `undefined == null`: units are mutually loose-equal.
-    return { kind: "boolLit", value: !negated, type: BOOL, loc };
+    // The operand still runs for its effects (`(f(), undefined) == null`).
+    return decidableUnitAnswer(other, { kind: "boolLit", value: !negated, type: BOOL, loc }, loc);
   }
   if (other.type.kind === "dyn") {
     // `v != null` on unknown: one dyn kind test covers both units.
@@ -254,8 +288,9 @@ function lowerLooseNullCompare(
     if (!def) lowerer.badType(otherNode, lowerer.typeOf(otherNode));
     const tags = def.arms.flatMap((a, i) => (isUnitType(a) ? [i] : []));
     if (tags.length === 0) {
-      // No unit arms: never null-ish (defensive — the fold below).
-      return { kind: "boolLit", value: negated, type: BOOL, loc };
+      // No unit arms: never null-ish (defensive — the fold below), with the
+      // operand's effects preserved like every other decided comparison.
+      return decidableUnitAnswer(other, { kind: "boolLit", value: negated, type: BOOL, loc }, loc);
     }
     const isTag = (tag: number, value: IrExpr): IrExpr => ({
       kind: "unionIsTag",
@@ -312,8 +347,9 @@ function lowerLooseNullCompare(
     }
   }
   // A non-nullable operand (tsc allows the comparison as a guard):
-  // `== null` is statically false, `!= null` statically true.
-  return { kind: "boolLit", value: negated, type: BOOL, loc };
+  // `== null` is statically false, `!= null` statically true — the
+  // operand still runs for its effects.
+  return decidableUnitAnswer(other, { kind: "boolLit", value: negated, type: BOOL, loc }, loc);
 }
 
 /** A plain value read whose storage can carry undefined while the checker

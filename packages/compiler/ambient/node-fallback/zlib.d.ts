@@ -5,8 +5,8 @@
  * binaries. Callback forms use the executable worker pool. Options stay
  * declared so reached uses receive a named SC2020 refusal. The Deflate,
  * Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, Unzip, BrotliCompress
- * and BrotliDecompress streams are runtime Transform streams; Zstd remains
- * outside the lowered surface. */
+ * BrotliDecompress, ZstdCompress and ZstdDecompress streams are runtime
+ * Transform streams. */
 declare module "zlib" {
   import { Transform } from "stream";
   export interface ZlibOptions {
@@ -82,6 +82,26 @@ declare module "zlib" {
     callback: ZlibCallback,
   ): void;
   export function brotliDecompressSync(data: string | Uint8Array, options?: BrotliOptions): Buffer;
+  /* Zstd over the vendored zstd 1.5.7 (scr_zstd.c): `params` keys are the
+   * numeric ZSTD_c_* and ZSTD_d_* constants, and `dictionary` and
+   * `pledgedSrcSize` take Node's values. */
+  export interface ZstdOptions {
+    [option: string]: unknown;
+  }
+  export function zstdCompress(data: string | Uint8Array, callback: ZlibCallback): void;
+  export function zstdCompress(
+    data: string | Uint8Array,
+    options: ZstdOptions,
+    callback: ZlibCallback,
+  ): void;
+  export function zstdCompressSync(data: string | Uint8Array, options?: ZstdOptions): Buffer;
+  export function zstdDecompress(data: string | Uint8Array, callback: ZlibCallback): void;
+  export function zstdDecompress(
+    data: string | Uint8Array,
+    options: ZstdOptions,
+    callback: ZlibCallback,
+  ): void;
+  export function zstdDecompressSync(data: string | Uint8Array, options?: ZstdOptions): Buffer;
   /* The stream classes: runtime Transform streams over the zlib engine
    * (scr_zlib_stream.c). createGzip(options) and new Gzip(options) build
    * the same stream; options are validated at runtime with Node's rules.
@@ -104,6 +124,14 @@ declare module "zlib" {
   }
   export function createBrotliCompress(options?: BrotliOptions): BrotliCompress;
   export function createBrotliDecompress(options?: BrotliOptions): BrotliDecompress;
+  export class ZstdCompress extends ZlibBase {
+    constructor(options?: ZstdOptions);
+  }
+  export class ZstdDecompress extends ZlibBase {
+    constructor(options?: ZstdOptions);
+  }
+  export function createZstdCompress(options?: ZstdOptions): ZstdCompress;
+  export function createZstdDecompress(options?: ZstdOptions): ZstdDecompress;
   export class Deflate extends Zlib {
     constructor(options?: ZlibOptions);
   }
@@ -236,6 +264,7 @@ declare module "zlib" {
     readonly BROTLI_DECODER_ERROR_FORMAT_PADDING_1: -14;
     readonly BROTLI_DECODER_ERROR_FORMAT_PADDING_2: -15;
     readonly BROTLI_DECODER_ERROR_FORMAT_DISTANCE: -16;
+    readonly BROTLI_DECODER_ERROR_FORMAT_BLOCK_SWITCH: -17;
     readonly BROTLI_DECODER_ERROR_DICTIONARY_NOT_SET: -19;
     readonly BROTLI_DECODER_ERROR_INVALID_ARGUMENTS: -20;
     readonly BROTLI_DECODER_ERROR_ALLOC_CONTEXT_MODES: -21;

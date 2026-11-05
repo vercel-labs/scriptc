@@ -21,6 +21,9 @@ const c = await fetch(url);
 void c.body.values;
 console.log("text", await c.text());
 const d = await fetch(url);
-for await (const chunk of d.body) { console.log("first", decoder.decode(chunk)); break; }
+// Where the transport splits the body is not observable in Node either:
+// a late reader takes "chunk-one;chunk-two" as one chunk. Print whether
+// the first chunk starts the body, which holds for either split.
+for await (const chunk of d.body) { console.log("first", decoder.decode(chunk).startsWith("chunk-one;")); break; }
 console.log("after break", d.bodyUsed);
 server.close();

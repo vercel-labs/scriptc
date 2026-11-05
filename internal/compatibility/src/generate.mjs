@@ -644,6 +644,9 @@ function publicDetail(tier) {
     if (source === "compiler-feature:errors.stack") {
       return "Native errors capture synchronous source frames; V8 stack customization and async stack stitching remain unsupported.";
     }
+    if (source === "compiler-feature:process.allowedNodeEnvironmentFlags") {
+      return "One stable set answers the compatibility target's NODE_OPTIONS flag names for exact spellings; Node's Set subclass also accepts undashed, underscored, and =value spellings in has(), and its add, delete, and clear do nothing.";
+    }
     if (/^compiler-feature:process\.std(?:in|out|err)$/.test(source)) {
       return "Stored JavaScript process streams support native input listeners, pause/resume and buffered reads, synchronous output writes, and output write replacement; other stream operations remain unsupported.";
     }
@@ -652,7 +655,7 @@ function publicDetail(tier) {
         source,
       )
     ) {
-      return "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation; Zstd streams remain unsupported.";
+      return "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation.";
     }
     if (
       /^compiler-feature:zlib\.(?:zlib\.(?:BrotliCompress|BrotliDecompress)|BrotliOptions)$/.test(
@@ -660,6 +663,11 @@ function publicDetail(tier) {
       )
     ) {
       return "BrotliCompress and BrotliDecompress are Transform streams over the brotli version Node bundles, with Node's parameters, dictionaries, flush, reset, error codes, and option validation; like Node's, they have no params().";
+    }
+    if (
+      /^compiler-feature:zlib\.(?:zlib\.(?:ZstdCompress|ZstdDecompress)|ZstdOptions)$/.test(source)
+    ) {
+      return "ZstdCompress and ZstdDecompress are Transform streams over the zstd version Node bundles, with Node's parameters, dictionaries, pledged source sizes, flush kinds 0 to 2, reset, error codes, and option validation; like Node's, they have no params().";
     }
     if (source === "compiler-feature:zlib.zlib.constants") {
       return "Each zlib.constants member and its module-level copy reads as Node's value; the constants object itself is not a runtime value.";

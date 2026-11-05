@@ -590,17 +590,16 @@ test(
           // compiler.
           const seedLlvm = join(directory, "cli.ll");
           const rebuiltLlvm = join(directory, "rebuilt.ll");
+          // Every range's emit worker exits failing (SCRIPTC_EMIT_WORKER_FAIL),
+          // so this generation runs the serial fallback for the whole module
+          // and must still write the LLVM the seed wrote.
           await bootstrapStep("rebuilt compiler emits itself", () =>
-            invoke(rebuilt, [
-              "build",
-              entry,
-              "--emit=llvm",
-              "-o",
-              rebuiltLlvm,
-              "--ffi",
-              ffi,
-              quiet,
-            ]),
+            invoke(
+              rebuilt,
+              ["build", entry, "--emit=llvm", "-o", rebuiltLlvm, "--ffi", ffi, quiet],
+              "",
+              { SCRIPTC_EMIT_WORKER_FAIL: "all" },
+            ),
           );
           // Executable output adds a runtime ABI check; textual LLVM emission
           // omits it. Compare all other output without changing either mode.

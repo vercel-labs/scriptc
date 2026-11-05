@@ -224,6 +224,16 @@ export function funcSlotAdaptable(
   }
   if (dst.ret.kind === "void") return true;
   if (lowerer.coercibleValue(src.ret, dst.ret)) return true;
+  // The result conversions funcCoerceAdapter performs without stranding: a
+  // Promise whose payload widens (`Promise<string>` into `Promise<string |
+  // undefined>`) and a record the slot's result is a structural width of.
+  if (
+    src.ret.kind === "promise" &&
+    dst.ret.kind === "promise" &&
+    lowerer.promisePayloadWidens(src.ret, dst.ret)
+  )
+    return true;
+  if (lowerer.widthLiftPlan(src.ret, dst.ret)) return true;
   return src.ret.kind === "void" && dst.ret.kind === "dyn";
 }
 

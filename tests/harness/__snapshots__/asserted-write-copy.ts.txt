@@ -1,0 +1,27 @@
+asserted-write-copy.ts:10:3 - error SC1090: writing 'max_tokens' through a type assertion to a member the value's own layout does not hold (the write would land on a converted copy; declare the member on the value's type) is not supported yet
+
+   9 | function addOptionalMembers(params: Params): void {
+  10 |   (params as { max_tokens?: number }).max_tokens = 10;
+     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  11 |   (params as Params & { tool_stream?: boolean }).tool_stream = true;
+
+asserted-write-copy.ts:11:3 - error SC1090: writing 'tool_stream' through a type assertion to a member the value's own layout does not hold (the write would land on a converted copy; declare the member on the value's type) is not supported yet
+
+  10 |   (params as { max_tokens?: number }).max_tokens = 10;
+  11 |   (params as Params & { tool_stream?: boolean }).tool_stream = true;
+     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  12 | }
+
+asserted-write-copy.ts:15:3 - error SC1090: writing 'misses' through a type assertion to a member the value's own layout does not hold (the write would land on a converted copy; declare the member on the value's type) is not supported yet
+
+  14 | function bumpThroughView(counts: { hits: number }): void {
+  15 |   (counts as { hits: number; misses: number }).misses += 1;
+     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  16 | }
+
+asserted-write-copy.ts:21:3 - error SC1090: writing 'extra' through a type assertion to a member the value's own layout does not hold (the write would land on a converted copy; declare the member on the value's type) is not supported yet
+
+  20 | function widen(bag: { a: number }): void {
+  21 |   (bag as unknown as { a: number; extra?: string }).extra = "x";
+     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  22 | }

@@ -7,6 +7,7 @@ import { analyzeFrameEscapes, type FrameEscapes } from "./frame-escapes.js";
 import { wasmBoundsChecks } from "./wasm-modules.js";
 import { jsImmediates, jsTruthy } from "./jsval.js";
 import { JsIcSites } from "../../ir/js-ic.js";
+import type { JsGroup, JsGroupPlan } from "../../ir/js-groups.js";
 import { type ArraySearchKind } from "./array-search.js";
 import { emitStringInputs } from "./string-lifetimes.js";
 import { emitThreadSlotsIntrinsic } from "./thread-slots.js";
@@ -63,7 +64,11 @@ import {
   classJsName,
   classValueAbiEquals,
 } from "../../ir/ir.js";
-import { moduleRuntimeFeatures, type RuntimeFeatures } from "../../ir/runtime-features.js";
+import {
+  jsObjectModelFact,
+  moduleRuntimeFeatures,
+  type RuntimeFeatures,
+} from "../../ir/runtime-features.js";
 import { captureFreeFunctions, observesStacks } from "../stack-observations.js";
 import { findInitializedByteLoopBindings } from "./byte-windows.js";
 import { matchBytesLoopVersion } from "./bytes-loop-versions.js";
@@ -87,6 +92,8 @@ import {
   replayJournal,
 } from "./emit-journal.js";
 import { specializeNumericCalls } from "../../ir/numeric-call-specialization.js";
+import { specializeTypedArguments } from "../../ir/typed-argument-clones.js";
+import { specializeConstantArrayLengths } from "../../ir/constant-length-clones.js";
 import { versionLoopBoundParameters } from "../../ir/parameter-versions.js";
 import { inlineExpressionFunctions } from "../../ir/expression-inlining.js";
 import {
@@ -98,6 +105,7 @@ import {
 import { inlineArraysApply, programLifetimeClassOf } from "./inline-arrays.js";
 import { pairRowSums } from "../../ir/row-pairs.js";
 import { jamSaturatingLoops } from "../../ir/saturating-loop-jams.js";
+import { jamRuntimeCountLoops } from "../../ir/runtime-jam-loops.js";
 import {
   allocatedLiteral,
   fillAllocationLength,
@@ -130,6 +138,7 @@ import { dropUnwrittenPropertyBags } from "../../ir/property-bags.js";
 import { freezeInitOnlyGlobals } from "../../ir/init-only-globals.js";
 import { hoistFinalFieldReads } from "../../ir/field-values.js";
 import { holdCharLocalsAsUnits } from "../../ir/char-unit-locals.js";
+import { versionUnionArmLoops } from "../../ir/union-arm-loops.js";
 import { unitSafeFunctions } from "./string-unit-versions.js";
 import { stringScanInline } from "./string-reads.js";
 import {
@@ -150,7 +159,11 @@ import { writeRepresentationReport } from "./repr-report.js";
 import { heapCensusOf, type HeapCensus } from "./heap-census.js";
 import { exactInteger, narrowInteger, widenInteger, type LlInteger } from "./integer-values.js";
 import { findInitializerBindings } from "../../ir/initializer-bindings.js";
-import { findConstantNumericTables, type ConstantNumericTable } from "../../ir/constant-tables.js";
+import {
+  findConstantNumericTables,
+  findStaticArrayTables,
+  type ConstantNumericTable,
+} from "../../ir/constant-tables.js";
 import {
   allocateFfiCallbackAdapters,
   hasForeignFfiCallback,
@@ -169,7 +182,12 @@ import {
   bridgePlainUnwindCalls,
   unwindAbiFunctions,
 } from "./unwind-abi.js";
-import { cloneForCpuDispatch } from "./cpu-dispatch.js";
+import {
+  cloneForCpuDispatch,
+  keepCopiedBodiesOutOfLine,
+  type CpuCopies,
+  type CpuCopySelection,
+} from "./cpu-dispatch.js";
 import {
   mangleAsyncInlineAwaitCall,
   mangleAsyncSpawn,
@@ -215,6 +233,7 @@ import {
 } from "./dense-array-access.js";
 import { matchMapRead, pointerMapGet, type MapReadLifetimes } from "./map-read-lifetimes.js";
 import { type MapEntryFusion } from "./map-entry-fusion.js";
+import { type RecordEntryFusion } from "./record-entry-fusion.js";
 import { emitBorrowedFieldSequence, guardedValue } from "./borrowed-receivers.js";
 import { emitBorrowedInputs } from "./borrowed-inputs.js";
 import { findWalkBorrows, type WalkBorrowHost } from "./walk-borrows.js";
@@ -373,6 +392,7 @@ import {
   type LlInlineTail,
 } from "./classes.js";
 import { LifetimeRegions, REGION_TYPES } from "./regions.js";
+import { planTreeClasses } from "../tree-classes.js";
 import {
   arenaAware,
   arenaCurrentAddress,
@@ -384,7 +404,12 @@ import {
 import { children, type Node } from "./region-ir.js";
 import { LlDyn, recordDynKeepsIdentity, type DynHost, type JsEntryClosure } from "./dyn.js";
 import { VirtualBorrows } from "./virtual-borrows.js";
-import { planRecordViews, recordViewFieldPtr } from "./record-views.js";
+import {
+  absentTrapLines,
+  planRecordViews,
+  recordViewFieldPtr,
+  recordViewTestLines,
+} from "./record-views.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { LlWalkers } from "./walkers.js";
 import {
@@ -604,6 +629,11 @@ export interface LlvmTargetOptions {
    * teardown after `process.exit` to a helper process (`--detached-exit`).
    * Executables only; the runtime's weak default keeps it off. */
   detachedExit?: boolean;
+  /** Define `scr_stdout_buffering` so the runtime keeps JavaScript-visible
+   * stdout in its 64 KiB buffer when fd 1 is not a terminal
+   * (`--stdout-buffering`). Executables only; the runtime's weak default
+   * keeps the per-call policy. */
+  stdoutBuffering?: boolean;
   /** The files of the program's Node island module tree, in manifest order
    * (node-islands/modules.ts), when the executable carries the tree. */
   nodeIslandModuleData?: Uint8Array;
@@ -613,20 +643,33 @@ export interface LlvmTargetOptions {
   /** Translated WebAssembly memories check bounds explicitly instead of
    * relying on guard pages (wasm-modules.ts wasmBoundsChecks). */
   wasmBoundsChecks?: boolean;
-  /** The executable can reserve its program-lifetime region below 32 GiB
-   * (lowRegionTarget): fields that refer to compact class instances then
-   * store the instance's address over 8 in 32 bits (classes.ts
-   * compactRefLoadLines). Elsewhere they keep 8-byte pointers. */
+  /** The executable can reserve the allocator's window, which holds its
+   * program-lifetime region, below 32 GiB (lowRegionTarget): compact class
+   * fields that refer to compact class instances, or to arrays, maps, sets
+   * and class instances in the window, then store the object's address over
+   * 8 in 32 bits (classes.ts compactRefLoadLines). Elsewhere they keep 8-byte
+   * pointers. */
   lowRegion?: boolean;
   /** The x86-64 level the program's code may require (`--target-cpu`):
    * every emitted function carries it as its `target-cpu`. Unset, code
    * runs on any x86-64 CPU. */
   targetCpu?: TargetCpu;
   /** Give an x86-64 executable without a `targetCpu` an x86-64-v3 copy of
-   * each program function, which it runs on CPUs at that level
-   * (cpu-dispatch.ts). Ignored for other targets, libraries and builds
-   * with debug information. */
+   * the program functions whose loop x86-64-v3 widens (cpu-dispatch.ts),
+   * which it runs on CPUs at that level. Ignored for other targets,
+   * libraries, builds with debug information and profile-recording builds. */
   cpuDispatch?: boolean;
+  /** The build records a profile: a dispatching build emits one body per
+   * function and keeps the functions a copy takes out of line, so the
+   * profile names the functions a `--profile-use` build copies. */
+  profileGenerate?: boolean;
+  /** The functions the build's profile names, when it uses one: the copies
+   * are limited to the functions among them that have a loop. */
+  cpuCopyFunctions?: ReadonlySet<string>;
+  /** The most program text the copies may take (cpu-dispatch.ts
+   * cpuCopyBudget by default): lowers the set for a build or a test that
+   * wants fewer copies. */
+  cpuCopyCapBytes?: number;
 }
 
 /** LlvmTargetOptions.lowRegion for an executable: Linux targets without
@@ -641,9 +684,9 @@ export function lowRegionTarget(platform: string, sanitize: boolean): boolean {
 /** Function versions on loop-bounding number parameters
  * (ir/parameter-versions.ts). Library builds have no int32 entries, and a
  * module that observes call stacks could see the version's frame. */
-function versionParameters(mod: IrModule): IrModule {
-  if (mod.lib !== undefined || observesStacks(mod)) return mod;
-  return versionLoopBoundParameters(mod, mangleFunction);
+function versionParameters(mod: IrModule, nodes: IrNodeIndex): IrModule {
+  if (mod.lib !== undefined || observesStacks(mod, nodes)) return mod;
+  return versionLoopBoundParameters(mod, mangleFunction, nodes);
 }
 
 /** The int32 slot analysis of one module and the inputs it read: the
@@ -659,12 +702,15 @@ export interface Int32SlotAnalysis {
 
 /** The int32 slot analysis of `mod`, with the inputs LlEmitter gives it.
  * With `revise`, the analysis revises the functions of candidates that drop
- * (Int32SlotInputs.revise), and `mod` is the module it started from. */
+ * (Int32SlotInputs.revise), and `mod` is the module it started from. The
+ * node index of `mod` takes the nodes `previous` recorded for the functions
+ * both hold. */
 function analyzeModuleInt32Slots(
   mod: IrModule,
+  previous: IrNodeIndex | undefined,
   revise?: (fnName: string, dropped: ReadonlySet<string>) => IrFunction,
 ): Int32SlotAnalysis {
-  const nodeIndex = new IrNodeIndex(mod);
+  const nodeIndex = new IrNodeIndex(mod, previous);
   const initializerBindings = findInitializerBindings(mod, nodeIndex);
   const dynamicStores = dynamicFieldStores(mod, undefined, undefined, nodeIndex);
   const slots = analyzeInt32Slots(mod, {
@@ -686,7 +732,7 @@ function keptInt32Arrays(analysis: Int32SlotAnalysis): ReadonlySet<string> {
  * node index of `mod`, and its initializer bindings and dynamic stores,
  * which must be the ones the analysis read. Null when they differ. */
 function revisedAnalysis(analysis: Int32SlotAnalysis, mod: IrModule): Int32SlotAnalysis | null {
-  const nodeIndex = new IrNodeIndex(mod);
+  const nodeIndex = new IrNodeIndex(mod, analysis.nodeIndex);
   const initializerBindings = findInitializerBindings(mod, nodeIndex);
   const dynamicStores = dynamicFieldStores(mod, undefined, undefined, nodeIndex);
   const read = analysis.initializerBindings;
@@ -735,20 +781,24 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
   // Each proof selectInt32Arrays asks for analyzes a marked module; the
   // emitter of the module it returns reuses the last one. A proof that
   // revised functions analyzed the module of the functions it ended with.
+  // Each round's node index takes the recorded nodes of the functions it
+  // shares with the latest index (`nodes`).
   const rounds: {
     last: Int32SlotAnalysis | null;
     functions: readonly IrFunction[] | null;
     revising: boolean;
-  } = { last: null, functions: null, revising: true };
+    nodes: IrNodeIndex | undefined;
+  } = { last: null, functions: null, revising: true, nodes: undefined };
   const proven = (marked: IrModule, revise: Int32ArrayRevision | null): Int32ArrayProof | null => {
     rounds.functions = null;
     if (revise === null || !rounds.revising) {
-      rounds.last = analyzeModuleInt32Slots(marked);
+      rounds.last = analyzeModuleInt32Slots(marked, rounds.nodes);
+      rounds.nodes = rounds.last.nodeIndex;
       return { kept: keptInt32Arrays(rounds.last), functions: null };
     }
     const latest = new Map<string, IrFunction>();
     try {
-      rounds.last = analyzeModuleInt32Slots(marked, (fnName, dropped) => {
+      rounds.last = analyzeModuleInt32Slots(marked, rounds.nodes, (fnName, dropped) => {
         const fn = revise(fnName, dropped);
         latest.set(fnName, fn);
         return fn;
@@ -758,6 +808,7 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
       rounds.last = null;
       return null;
     }
+    rounds.nodes = rounds.last.nodeIndex;
     if (latest.size === 0) return { kept: keptInt32Arrays(rounds.last), functions: null };
     rounds.functions = marked.functions.map((fn) => latest.get(fn.name) ?? fn);
     return { kept: keptInt32Arrays(rounds.last), functions: rounds.functions };
@@ -765,41 +816,78 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
   // Keep source storage intact for debugger inspection in dev builds.
   if (options.debugSources !== undefined) return new LlEmitter(mod, options, null, null);
   const timing = options.timing ?? (() => {});
-  const passed = versionParameters(
-    addRecordResultEntries(
-      scalarizeLiteralResults(
-        scalarizeNumericRecords(
-          specializeCallbackCalls(
-            specializeNumericCalls(
-              pairRowSums(
-                jamSaturatingLoops(
-                  inlineArraysPass(
-                    options,
-                    inlineExpressionFunctions(
-                      foldConstantGlobals(
-                        copyStableCaptures(
-                          resolveSelfCaptures(
-                            hoistFinalFieldReads(
-                              freezeInitOnlyGlobals(
-                                holdCharLocalsAsUnits(
-                                  dropUnwrittenPropertyBags(runPairedWhileLoopsAsFor(mod)),
+  // One index of the module the passes start from. Each pass skips the
+  // functions the index records without the node kinds it rewrites, and
+  // reads its scans of whole bodies from the index; it walks the functions
+  // an earlier pass rewrote, which the index does not record.
+  const nodes = new IrNodeIndex(mod);
+  rounds.nodes = nodes;
+  const passed = versionUnionArmLoops(
+    versionParameters(
+      addRecordResultEntries(
+        scalarizeLiteralResults(
+          scalarizeNumericRecords(
+            specializeCallbackCalls(
+              specializeNumericCalls(
+                specializeConstantArrayLengths(
+                  specializeTypedArguments(
+                    pairRowSums(
+                      jamRuntimeCountLoops(
+                        jamSaturatingLoops(
+                          inlineArraysPass(
+                            options,
+                            inlineExpressionFunctions(
+                              foldConstantGlobals(
+                                copyStableCaptures(
+                                  resolveSelfCaptures(
+                                    hoistFinalFieldReads(
+                                      freezeInitOnlyGlobals(
+                                        holdCharLocalsAsUnits(
+                                          dropUnwrittenPropertyBags(
+                                            runPairedWhileLoopsAsFor(mod, nodes),
+                                            nodes,
+                                          ),
+                                          nodes,
+                                        ),
+                                        nodes,
+                                      ),
+                                      nodes,
+                                    ),
+                                    nodes,
+                                  ),
+                                  nodes,
                                 ),
+                                nodes,
                               ),
+                              nodes,
                             ),
                           ),
+                          nodes,
                         ),
+                        nodes,
                       ),
+                      nodes,
                     ),
+                    mangleFunction,
+                    nodes,
                   ),
+                  mangleFunction,
+                  nodes,
                 ),
+                mangleFunction,
+                nodes,
               ),
               mangleFunction,
+              nodes,
             ),
-            mangleFunction,
           ),
+          nodes,
         ),
+        nodes,
       ),
+      nodes,
     ),
+    nodes,
   );
   timing("llvm-emit-rewrites");
   let emitted = selectInt32Arrays(passed, proven, resultEntryTargets);
@@ -829,6 +917,7 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
     options,
     null,
     prepared?.mod === emitted ? prepared : null,
+    rounds.nodes,
   );
   timing("llvm-emit-analyses");
   return emitter;
@@ -846,7 +935,7 @@ function verifyInt32Selection(
   const reference = selectInt32Arrays(
     passed,
     (marked) => {
-      last = analyzeModuleInt32Slots(marked);
+      last = analyzeModuleInt32Slots(marked, undefined);
       return { kept: keptInt32Arrays(last), functions: null };
     },
     resultEntryTargets,
@@ -855,7 +944,7 @@ function verifyInt32Selection(
   if (text(reference) !== text(emitted))
     throw new InternalCompilerError("int32 selection: the revised module differs from the rounds'");
   const facts = (mod: IrModule, prepared: Int32SlotAnalysis | null): string =>
-    (prepared?.mod === mod ? prepared : analyzeModuleInt32Slots(mod)).slots.summary(mod);
+    (prepared?.mod === mod ? prepared : analyzeModuleInt32Slots(mod, undefined)).slots.summary(mod);
   const expected = facts(reference, last);
   const actual = facts(emitted, analysis);
   if (expected !== actual) {
@@ -949,6 +1038,25 @@ function isIdentifierByte(code: number): boolean {
  * bookkeeping calls do not suspend it. */
 export const SUSPENDS =
   /@(?:scr_(?:await_|module_await\b|promise_await_settled\b|test_sub\b|gen_yield_|async_gen_(?!new\b|next_|return_|throw\b|hop_done\b)|fiber_)|sc_a[wd]_)/;
+/** The literal text each SUSPENDS alternative starts with. The `@scr_` prefix
+ * is joined to each suffix here so that a prefix is not read as an emitted
+ * symbol name by the runtime ABI scan. */
+const SUSPEND_PREFIXES = [
+  "await_",
+  "module_await",
+  "promise_await_settled",
+  "test_sub",
+  "gen_yield_",
+  "async_gen_",
+  "fiber_",
+]
+  .map((suffix) => `@scr_${suffix}`)
+  .concat("@sc_aw_", "@sc_ad_");
+/** Whether `text` mentions a SUSPENDS entry point. The regex runs only on
+ * text that holds one of its prefixes, which most function bodies do not. */
+export function mentionsSuspension(text: string): boolean {
+  return SUSPEND_PREFIXES.some((prefix) => text.includes(prefix)) && SUSPENDS.test(text);
+}
 /** The suspensions of a fiber body's own awaits, which its stackless
  * coroutine form suspends itself at instead. */
 const AWAIT_SUSPENSIONS =
@@ -1055,6 +1163,10 @@ function countLocalMentions(body: readonly IrStmt[], id: string): number {
 export class LlEmitter {
   /** Per-feature state (emitter-state.ts), indexed by each key's slot. */
   readonly moduleStates: unknown[] = [];
+  /** The names of the functions that `versionLoopBoundParameters` versions
+   * for int32 loop bounds: the ones that keep their name and call the copy
+   * and the fallback. Computed on first use. */
+  int32Versioned: Set<string> | null = null;
   localArrayReads = new Map<string, LocalArrayRead>();
   loopArrayBorrows: ReadonlySet<IrStmt> = new Set();
   scalarStringSlices = new Map<string, IrExpr & { kind: "strIntrinsic" }>();
@@ -1078,7 +1190,7 @@ export class LlEmitter {
   readonly fieldAliasTags = new Map<string, number>();
   readonly fieldPointerTags = new Map<string, number>();
   /** The field pointers (classFieldPtr) of this function whose fields hold
-   * 32-bit references to compact class instances (LlClassMeta.compressed):
+   * 32-bit references (LlClassMeta.compressed):
    * loadField/loadRef decode them and storeField/storeRef encode them. */
   readonly compressedFieldPtrs = new Set<string>();
   /** Compact class instances live in the program-lifetime region below
@@ -1086,6 +1198,13 @@ export class LlEmitter {
    * classes): main reserves it before compiled code runs (scr_plr_init), and
    * fields and arrays of compactRefType hold 32-bit references. */
   compactRegion = false;
+
+  /** A compact class has a field holding an array, a map, a set or a heap
+   * instance (windowRefType), so a reference to it is a 32-bit address of
+   * the allocator's window: main requires the window to serve every
+   * reference block (scr_sa_require_window), and ends the process when it
+   * cannot, rather than hand out an address a field would truncate. */
+  windowRefs = false;
 
   /** Native class fields with different property names cannot occupy the
    * same slot of one object. Inherited views of the same property share a
@@ -1344,8 +1463,25 @@ export class LlEmitter {
 
   /** Whether an element access at `index` of `arr` lies in the hole-free
    * prefix: a counter of a dense array loop's fast copy indexing one of the
-   * arrays its entry test covered. */
+   * arrays its entry test covered, or an index proven in range of a parameter
+   * whose every call passes an array of that many present elements
+   * (IrParam.constLength). */
   provenDenseIndex(arr: IrExpr, index: IrExpr): boolean {
+    if (arr.kind === "varRef") {
+      const length = this.constLengthParams.get(arr.localId);
+      if (length !== undefined) {
+        if (
+          index.kind === "numLit" &&
+          Number.isInteger(index.value) &&
+          index.value >= 0 &&
+          index.value < length
+        )
+          return true;
+        const range = this.integerRanges.get(index);
+        if (range !== null && range !== undefined && range.min >= 0 && range.max < length)
+          return true;
+      }
+    }
     const loop = LOOPS.of(this).denseLoop;
     return (
       loop !== null &&
@@ -1407,12 +1543,25 @@ export class LlEmitter {
   readonly emitLibraryIdentity: boolean;
   readonly runtimeAbiMarker: boolean;
   readonly detachedExit: boolean;
+  readonly stdoutBuffering: boolean;
   readonly nodeIslandModuleData: Uint8Array | null;
   readonly targetCpu: TargetCpu | undefined;
+  /** LlvmTargetOptions.targetTriple, or "" for the host's ABI. */
+  readonly targetTriple: string;
   /** Emitted functions carry `sanitize_address` (LlvmTargetOptions). */
   readonly sanitizeAttributes: boolean;
   /** LlvmTargetOptions.cpuDispatch, where it applies. */
   readonly cpuDispatch: boolean;
+  /** LlvmTargetOptions.cpuCopyFunctions. */
+  private readonly cpuCopyFunctions: ReadonlySet<string> | undefined;
+  /** LlvmTargetOptions.cpuCopyCapBytes. */
+  private readonly cpuCopyCapBytes: number | undefined;
+  /** Whether emission keeps the functions a dispatching build would copy out
+   * of line, so a recorded profile names them. */
+  private readonly keepCopyBodiesOutOfLine: boolean;
+  /** How the program's functions are copied (cpu-dispatch.ts): for runtime
+   * dispatch, for an x86-64-v3 `targetCpu` ("target"), or not at all. */
+  readonly cpuCopies: CpuCopies | null;
   readonly wasmBoundsChecks: boolean;
   /** Interned string literals: UTF-8 text → { symbol, byte length } —
    * first-use order, the runtime ABI’s determinism discipline. */
@@ -1463,6 +1612,16 @@ export class LlEmitter {
   readonly cstrs = new Map<string, { sym: string; len: number }>();
   /** Interned ScrMapOps descriptors (scr_map.h): initializer → symbol. */
   readonly mapOpsConsts = new Map<string, string>();
+  /** Element data of the numeric array literals that become static tables
+   * (arrayLit, expr-primitives.ts): "<i32|double>:<literal location>" → the
+   * private constant's symbol, element type and the elements as their
+   * rendered literals. The array works from that data in place, so each
+   * entry also places the header in static storage (`<sym>_h`), initialized
+   * with the same table. */
+  readonly arrayConstData = new Map<
+    string,
+    { sym: string; type: "i32" | "double"; values: readonly string[] }
+  >();
   /** Method-id slots of checked-dynamic method calls
    * (scr_dyn_invoke_prepared_id): method name → symbol of an i32 the
    * runtime fills with the name's id on the first call. */
@@ -1525,6 +1684,8 @@ export class LlEmitter {
   numberMapKeyIntegers = new Map<string, LlInteger>();
   /** The current function's fused string-key Map get-then-set pairs (map-entry-fusion.ts). */
   mapEntryFusion: MapEntryFusion | null = null;
+  /** The current function's fused record get-then-set pairs (record-entry-fusion.ts). */
+  recordEntryFusion: RecordEntryFusion | null = null;
   readonly callLifetimes: CallLifetimes;
   /** The locals whose value never leaves its frame (frame-escapes.ts), for
    * class instances with reference fields in frame storage. */
@@ -1587,6 +1748,9 @@ export class LlEmitter {
   readonly nodeIndex: IrNodeIndex;
   private readonly tdzGlobals = new Map<string, string>();
   readonly constantNumericTables: ReadonlyMap<string, ConstantNumericTable>;
+  /** Module-level numeric tables the emitter places in the program image,
+   * by their initializing array literal (ir/constant-tables.ts). */
+  readonly staticArrayTables: ReadonlySet<IrExpr>;
   /** Constant-key reads on checked-dynamic objects, each with its own
    * zero-initialized ScrDynReadIc (scr_runtime.h). */
   dynReadIcSites = 0;
@@ -1728,6 +1892,18 @@ export class LlEmitter {
    * zero-initialized ScrJsIc per site (scr_js.h). */
   jsIcSiteCount = 0;
   private jsIcSitesMemo: JsIcSites | undefined;
+  /** Guard-group records of dynamic-tier functions (js-groups.ts): one
+   * zero-initialized ScrJsGroup per group, and the key arrays the probes
+   * read (scr_js.h). */
+  jsGroupCount = 0;
+  private jsGroupKeysCount = 0;
+  private readonly jsGroupKeysByName = new Map<string, readonly string[]>();
+  private readonly jsGroupKeysByText = new Map<string, string>();
+  /** The guard of each group the function being emitted has entered: the
+   * entry value, and the position of the member that comes next. */
+  readonly groupRuns = new Map<JsGroup, { entry: string; next: number }>();
+  /** The guard groups of the function being emitted (ir/js-groups.ts). */
+  jsGroupPlan: JsGroupPlan | null = null;
   /** The tier of the function being emitted. */
   currentTier: IrFunction["tier"] = undefined;
   /** The class graph (buildClassGraph): preorder numbering, hierarchy
@@ -1953,6 +2129,9 @@ export class LlEmitter {
    * not a constructor (where they change), not async or a generator. */
   finalFieldBorrows = false;
   integerRanges: IntegerRanges = new Map();
+  /** The current function's parameters whose every call passes an array of a
+   * known number of present elements (IrParam.constLength). */
+  constLengthParams = new Map<string, number>();
   /** The current function's bounded for-loop cursors (integer-ranges.ts). */
   integerLoopRanges: ReadonlyMap<IrStmt, ReadonlyMap<string, IntegerRange>> = new Map();
   /** Number arrays of the current function whose every present element is
@@ -2094,6 +2273,7 @@ export class LlEmitter {
     options: LlvmTargetOptions,
     journal: EmitJournal | null = null,
     int32Analysis: Int32SlotAnalysis | null = null,
+    previousIndex?: IrNodeIndex,
   ) {
     this.targetOptions = options;
     this.journal = journal;
@@ -2101,8 +2281,9 @@ export class LlEmitter {
       journal !== null ||
       ((options.functionWorkers ?? 1) > 1 && options.forkPrimitives !== undefined);
     // One walk of every body, which the analyses below read instead of
-    // walking the bodies themselves.
-    this.nodeIndex = int32Analysis?.nodeIndex ?? new IrNodeIndex(mod);
+    // walking the bodies themselves. The functions `previousIndex` (an index
+    // of an earlier module) recorded are not walked again.
+    this.nodeIndex = int32Analysis?.nodeIndex ?? new IrNodeIndex(mod, previousIndex);
     this.initializerBindings =
       int32Analysis?.initializerBindings ?? findInitializerBindings(mod, this.nodeIndex);
     // One walk finds the dynamic field stores every analysis below consults.
@@ -2134,6 +2315,7 @@ export class LlEmitter {
             this.nullableUnions.armTypes(),
           );
     this.constantNumericTables = findConstantNumericTables(mod);
+    this.staticArrayTables = findStaticArrayTables(mod);
     this.untypedIntegrity = mod.untypedIntegrity === true;
     this.sloppyDynWrites = new Set(mod.sloppyDynWrites ?? []);
     this.liveViewsReadOnly =
@@ -2177,16 +2359,30 @@ export class LlEmitter {
     this.emitLibraryIdentity = options.emitLibraryIdentity !== false;
     this.runtimeAbiMarker = options.runtimeAbiMarker === true;
     this.detachedExit = options.detachedExit === true;
+    this.stdoutBuffering = options.stdoutBuffering === true;
     this.nodeIslandModuleData = options.nodeIslandModuleData ?? null;
     this.targetCpu = options.targetCpu;
+    this.targetTriple = options.targetTriple ?? "";
     this.sanitizeAttributes = options.sanitizeAttributes !== false;
-    this.cpuDispatch =
-      options.cpuDispatch === true &&
-      options.targetCpu === undefined &&
+    const copyable =
       !this.wasi &&
       mod.lib === undefined &&
       this.debug === null &&
       /^(x86_64|amd64|x64)\b/.test(options.targetTriple || process.arch);
+    this.cpuDispatch =
+      options.cpuDispatch === true &&
+      options.targetCpu === undefined &&
+      copyable &&
+      options.profileGenerate !== true;
+    this.cpuCopyFunctions = options.cpuCopyFunctions;
+    this.cpuCopyCapBytes = options.cpuCopyCapBytes;
+    this.keepCopyBodiesOutOfLine =
+      options.cpuDispatch === true && options.profileGenerate === true && copyable;
+    this.cpuCopies = this.cpuDispatch
+      ? "dispatch"
+      : options.targetCpu === "x86-64-v3" && copyable
+        ? "target"
+        : null;
     this.wasmBoundsChecks =
       options.wasmBoundsChecks === true ||
       wasmBoundsChecks({
@@ -2447,6 +2643,8 @@ export class LlEmitter {
       // Worker programs keep one allocator per script thread: the inline
       // paths address its thread-local state.
       threadLocalAlloc: mod.workers === true,
+      // Linux executables find a block's owner in the chunk map.
+      windowMap: options.lowRegion === true,
       rcHelpers: this.rcHelpers,
       ...(this.rcMode !== undefined ? { rcMode: this.rcMode } : {}),
       ...(this.rcHelpersNoinline ? { rcHelpersNoinline: true } : {}),
@@ -2466,6 +2664,7 @@ export class LlEmitter {
       absentInstanceRef: (unionId) => this.absentInstanceRef(unionId),
       liveDynRefAdapter: (type) => this.liveDynRefAdapter(type),
       usesDynBuiltinStream: () => this.usesDynBuiltinStream,
+      jsObjectModel: () => jsObjectModelFact(this.runtimeFeatures),
       liveDynUnionRefAdapter: (type) => this.liveDynUnionRefAdapter(type),
       declBoundary: () => this.mod.declBoundary === true,
       dynPromiseAdapter: (type) => this.dynPromiseAdapter(type),
@@ -2632,17 +2831,23 @@ export class LlEmitter {
         this.classMeta,
         (root) => programLifetimeClass(this.shapeHost, root) && !root.threadSlot,
         (cls) => classFieldTypes(this.shapeHost, cls, this.int32Slots),
-        // Executables whose region lies below 32 GiB hold compact class
-        // instances there (scr_plr_alloc), so fields referring to one store
-        // a 32-bit reference: the field's type, the class of a
-        // `C | undefined` or `C | null` pointer, or the reference arm of a
-        // nullable pointer field, is a compact class. `C | null | undefined`
-        // keeps the pointer: its null is a sentinel outside the region.
+        // Executables whose window lies below 32 GiB hold compact class
+        // instances there (scr_plr_alloc), and arrays, maps, sets and other
+        // class instances too, so fields referring to one store a 32-bit
+        // reference: the field's type, the class of a `C | undefined` or
+        // `C | null` pointer, or the reference arm of a nullable pointer
+        // field, is a compact class, or windowRefType holds. `C | null |
+        // undefined` keeps the pointer: its null is a sentinel outside the
+        // region.
         mod.lib === undefined && options.lowRegion === true
           ? (cls, i, isCompact) => {
               const f = cls.fields[i]!;
               if (this.inlineUnions.classField(cls.name, f.name)) return false;
               if (this.compactRefType(f.type, isCompact)) return true;
+              if (this.windowRefType(f.type, isCompact)) {
+                this.windowRefs = true;
+                return true;
+              }
               const nullable =
                 f.type.kind === "union" && this.nullableUnions.single(f.type.unionId) === null
                   ? this.nullableFields.get(cls.name, f.name)
@@ -2656,48 +2861,6 @@ export class LlEmitter {
       mod.lib === undefined &&
       options.lowRegion === true &&
       [...this.classMeta.values()].some((m) => m.compact);
-    // Group arenas: off with lifetime regions, which own their classes'
-    // allocation, and in libraries, whose exports any host code calls.
-    if (arenasRequested() && mod.lifetimeRegions !== true && mod.lib === undefined) {
-      this.arenas = planArenas(mod, {
-        shape: (id) => {
-          const shape = this.recordsById.get(id);
-          return (
-            shape !== undefined &&
-            shape.freezable !== true &&
-            shape.indexValue === undefined &&
-            this.publishedTypes?.recordGuarded(id) !== true
-          );
-        },
-        cls: (def) => {
-          const meta = this.classMeta.get(def.name);
-          return (
-            meta !== undefined &&
-            !meta.compact &&
-            !meta.threadSlot &&
-            // An Array subclass's instance is an array (the runtime's header).
-            def.arrayElem === undefined &&
-            meta.root.def.arrayElem === undefined &&
-            !this.programLifetime.has(def.name) &&
-            this.publishedTypes?.classGuarded(def.name) !== true
-          );
-        },
-        nullableArm: (unionId) => this.nullableUnions.single(unionId)?.arm ?? null,
-        traced: (t) => traceAdapter(this.shapeHost, t) !== null,
-      });
-      if (this.arenas !== null) {
-        this.shapeHost.arenaShapes = this.arenas.shapes;
-        this.shapeHost.arenaClasses = this.arenas.classes;
-        this.shapeHost.arenasClosed = this.arenas.allClosed;
-      }
-    }
-    // Arena shapes are known only now; the plan's target set is shared by
-    // every host that copied the shape host, so dropping them here reaches
-    // all of them.
-    const arenaShapes = this.shapeHost.arenaShapes;
-    const viewTargets = this.recordViewTargets;
-    if (arenaShapes !== undefined && viewTargets !== null)
-      for (const id of arenaShapes) viewTargets.delete(id);
     for (const [name, rec] of RUNTIME_ERROR_CLASSES) {
       const meta = this.classMeta.get(name);
       if (!meta) break; // hand-written IR without the builtin defs: no stamps
@@ -2723,6 +2886,70 @@ export class LlEmitter {
     );
     // After the vtable slots: borrowing slots exclude their implementations.
     if (this.debug === null) this.analyzeBorrowedReturns();
+    // Which classes drop their count word: a node of a graph the program
+    // proves acyclic, singly owned and unobserved (backend/tree-classes.ts,
+    // out/unique-ownership/DESIGN.md). The linear-use analysis agrees with
+    // the emitter's own ownership discipline, so it reads the facts above
+    // and nothing else. A debug build skips the borrowed-return analysis
+    // this needs; it keeps every class counted.
+    if (this.debug === null && mod.lib === undefined && mod.lifetimeRegions !== true) {
+      const plan = planTreeClasses(mod, {
+        borrowed: this.callLifetimes.borrowed,
+        borrowedReturns: this.borrowedReturns,
+        traced: { shapes: this.tracedShapes, unions: this.tracedUnions },
+        immutable: this.immutableFields,
+        published: this.publishedTypes,
+      });
+      for (const name of plan.classes) this.classMeta.get(name)!.tree = true;
+      this.treeMoves = plan.classes.size > 0 ? new Set(plan.moves) : null;
+    }
+    // Group arenas: off with lifetime regions, which own their classes'
+    // allocation, and in libraries, whose exports any host code calls.
+    // Planned after the tree classes, which keep the general allocator:
+    // their teardown is a plain free, and an arena block's disposal runs
+    // the counted path.
+    if (arenasRequested() && mod.lifetimeRegions !== true && mod.lib === undefined) {
+      this.arenas = planArenas(mod, {
+        shape: (id) => {
+          const shape = this.recordsById.get(id);
+          return (
+            shape !== undefined &&
+            shape.freezable !== true &&
+            shape.indexValue === undefined &&
+            this.publishedTypes?.recordGuarded(id) !== true
+          );
+        },
+        cls: (def) => {
+          const meta = this.classMeta.get(def.name);
+          return (
+            meta !== undefined &&
+            !meta.compact &&
+            !meta.tree &&
+            !meta.threadSlot &&
+            // An Array subclass's instance is an array (the runtime's header).
+            def.arrayElem === undefined &&
+            meta.root.def.arrayElem === undefined &&
+            !this.programLifetime.has(def.name) &&
+            this.publishedTypes?.classGuarded(def.name) !== true
+          );
+        },
+        nullableArm: (unionId) => this.nullableUnions.single(unionId)?.arm ?? null,
+        traced: (t) => traceAdapter(this.shapeHost, t) !== null,
+        tree: (def) => this.classMeta.get(def.name)?.tree === true,
+      });
+      if (this.arenas !== null) {
+        this.shapeHost.arenaShapes = this.arenas.shapes;
+        this.shapeHost.arenaClasses = this.arenas.classes;
+        this.shapeHost.arenasClosed = this.arenas.allClosed;
+      }
+    }
+    // Arena shapes are known only now; the plan's target set is shared by
+    // every host that copied the shape host, so dropping them here reaches
+    // all of them.
+    const arenaShapes = this.shapeHost.arenaShapes;
+    const viewTargets = this.recordViewTargets;
+    if (arenaShapes !== undefined && viewTargets !== null)
+      for (const id of arenaShapes) viewTargets.delete(id);
     this.int32SlotsValue ??= this.joinInt32Slots();
   }
 
@@ -2820,13 +3047,30 @@ export class LlEmitter {
     return emitFfiCallbackDefs(this);
   }
 
+  /** What a dispatching build copies: the profile's functions, when it uses
+   * one, within the text budget. */
+  private copySelection(): CpuCopySelection {
+    const selection: CpuCopySelection = {};
+    if (this.cpuCopyFunctions !== undefined) selection.hot = this.cpuCopyFunctions;
+    if (this.cpuCopyCapBytes !== undefined) selection.capBytes = this.cpuCopyCapBytes;
+    return selection;
+  }
+
   emit(): string {
     return this.emitParts().join("\n");
   }
   emitParts(): string[] {
     const parts = emitParts(this);
     const bridged = this.unwindAbi.size > 0 ? bridgePlainUnwindCalls(parts) : parts;
-    const out = this.cpuDispatch ? cloneForCpuDispatch(bridged) : bridged;
+    const profiled = this.keepCopyBodiesOutOfLine ? keepCopiedBodiesOutOfLine(bridged) : bridged;
+    const out =
+      this.cpuCopies === null
+        ? profiled
+        : cloneForCpuDispatch(
+            profiled,
+            this.cpuCopies,
+            this.cpuCopies === "dispatch" ? this.copySelection() : undefined,
+          );
     return this.heapCensus === null ? out : [...out, this.heapCensus.definitions().join("\n")];
   }
 
@@ -2836,6 +3080,7 @@ export class LlEmitter {
    * displayName, else its sourceName. Function boxes without a static name
    * look the closure's entry up in this table. */
   private closureNameEntries: readonly { entry: string; name: string }[] | undefined;
+  private closureNameByEntry: Map<string, string> | undefined;
   /** The declared functions `closureNames` lists by their wrapper. A scan
    * sees closures in statements the emitter never reaches (a statement
    * after a runtimeFence: the fence always jumps), so some of these names
@@ -2845,6 +3090,7 @@ export class LlEmitter {
   closureNames(): readonly { entry: string; name: string }[] {
     if (this.closureNameEntries !== undefined) return this.closureNameEntries;
     const entries = new Map<string, string>();
+    this.closureNameByEntry = entries;
     const scan = this.nodeIndex.scan(CLOSURE_KINDS);
     for (const fn of this.mod.functions) {
       eachNodeOfKinds(fn, scan, (node) => {
@@ -2854,14 +3100,29 @@ export class LlEmitter {
           target?.displayName ??
           (target?.sourceName !== "<anonymous>" ? target?.sourceName : undefined);
         if (target === undefined || name === undefined || name === "") return true;
-        const entry =
-          target.captures === undefined ? mangleWrapper(node.fnName) : this.callTarget(node.fnName);
+        const entry = this.closureEntry(node.fnName, target);
         if (target.captures === undefined) this.closureWrapperNames.add(node.fnName);
         if (!entries.has(entry)) entries.set(entry, name);
         return true;
       });
     }
     return (this.closureNameEntries = [...entries].map(([entry, name]) => ({ entry, name })));
+  }
+
+  /** The entry point of a closure of `fnName` (closureNames). */
+  private closureEntry(fnName: string, target: IrFunction): string {
+    return target.captures === undefined ? mangleWrapper(fnName) : this.callTarget(fnName);
+  }
+
+  /** The name the closure-name table gives a closure made of `fnName`
+   * (null when it has none), which lets a box of a closure made at the site
+   * skip the table lookup; undefined for a function the module does not
+   * define. */
+  closureNameOf(fnName: string): string | null | undefined {
+    const target = this.fnByName.get(fnName);
+    if (target === undefined) return undefined;
+    this.closureNames();
+    return this.closureNameByEntry!.get(this.closureEntry(fnName, target)) ?? null;
   }
 
   /** The dispose-observer gates the emitted frees and record writers test
@@ -3574,6 +3835,35 @@ export class LlEmitter {
     return name;
   }
 
+  /** The element data of the static array table at `at`
+   * (ir/constant-tables.ts), which the array itself holds: the emitter also
+   * places the header, `<sym>_h`, in static storage. Each table gets its own
+   * pair, so two tables with equal elements stay distinct arrays —
+   * `@`-refs, first-use order.
+   *
+   * The elements are rendered to their literals here, not in the module
+   * writer: a chunk's result crosses a JSON boundary (emit-module.ts), and
+   * JSON turns NaN and the infinities into null and negative zero into zero.
+   * `f64Lit` is the exact bit pattern, so every element survives it. */
+  staticArrayData(
+    at: IrExpr,
+    values: readonly number[],
+    type: "i32" | "double",
+  ): { data: string; header: string } {
+    const key = `${type}:${at.loc?.file}:${at.loc?.start}:${at.loc?.end}`;
+    let c = this.arrayConstData.get(key);
+    if (!c) {
+      c = {
+        sym: this.contentSymbol("sc_arr_const_", key),
+        type,
+        values: values.map((v) => (type === "i32" ? String(v) : f64Lit(v))),
+      };
+      this.arrayConstData.set(key, c);
+    }
+    this.journal?.entry("arrayConst", key, c);
+    return { data: `@${c.sym}`, header: `@${c.sym}_h` };
+  }
+
   /** Interned NUL-terminated C-string constant (the scr_jb_puts /
    * stringify-indent currency) — `@`-ref, first-use order. */
   cstr(text: string): string {
@@ -3824,10 +4114,30 @@ export class LlEmitter {
     this.disownTemp(v);
   }
 
+  /** Whether a value of `type` is an instance of a tree class, whose retain
+   * is a no-op and whose release destroys the subtree: it has exactly one
+   * owner, so it may only be moved. */
+  isTreeValue(type: IrType): boolean {
+    if (this.treeMoves === null) return false;
+    const nullable = this.shapeHost.nullableUnions.of(type);
+    const arm = nullable === null ? type : nullable.repr === "single" ? nullable.arm : null;
+    return (
+      arm !== null && arm.kind === "object" && this.classMeta.get(arm.className)?.tree === true
+    );
+  }
+
   /** The retained (+1) read of a refcounted value — type-directed through
    * the `_v` table (immortals skip, exactly the C retain calls). */
   private retainCall(name: string, type: IrType): string {
     if (this.isImmortal(name)) return name;
+    // A copy of a tree value would be a second owner, and the two would
+    // destroy the same nodes. Every accepted read of one is a move
+    // (takeLastUseMove), so a retain means the plan and the emitter
+    // disagree: fail here rather than corrupt the heap.
+    if (this.isTreeValue(type))
+      throw new InternalCompilerError(
+        `llvm emitter bug: tree value ${name} is copied instead of moved`,
+      );
     const t = this.B.tmp();
     this.B.line(`${t} = call ptr ${retainSym(this.shapeHost, type)}(ptr ${name})`);
     return t;
@@ -4954,6 +5264,26 @@ export class LlEmitter {
     );
   }
 
+  /** Whether values of `t` are NULL or a refcounted object that lies in the
+   * allocator's window below 32 GiB, so that a compact class field of type
+   * `t` can store it as a 32-bit reference: an array, map or set, or an
+   * instance of a class that is not compact and that the program allocates
+   * (not the runtime's Error hierarchy, whose instances the runtime
+   * allocates), or one of these or `undefined`/`null` (NULL). Strings keep
+   * 8-byte pointers: literals lie in the executable's image. */
+  windowRefType(t: IrType, isCompact: (className: string) => boolean): boolean {
+    const target = (u: IrType): boolean => {
+      if (u.kind === "array" || u.kind === "map" || u.kind === "set") return true;
+      if (u.kind !== "object" || isCompact(u.className)) return false;
+      const meta = this.classMeta.get(u.className);
+      return meta !== undefined && meta.root.def.runtime !== true;
+    };
+    if (target(t)) return true;
+    if (t.kind !== "union") return false;
+    const single = this.nullableUnions.single(t.unionId);
+    return single !== null && single.nullTag < 0 && target(single.arm);
+  }
+
   /** Whether arrays of `elem` hold 32-bit references (SCR_ELEM_CREF). */
   compactArrayElem(elem: IrType): boolean {
     return this.compactRegion && this.compactRefType(elem);
@@ -5148,6 +5478,183 @@ export class LlEmitter {
     }
     const type = shape.fields[idx]!.type;
     return { ptr: p, type, inline: this.inlineUnions.record(type) };
+  }
+
+  /** Whether a value of `shapeId` may lack field `field`: a PARTIAL record
+   * view (record-views.ts) whose viewed record does not declare it. A field
+   * with no value representation (a unit type) keeps its slot lookup. */
+  partialFieldMissing(shapeId: string, field: string): boolean {
+    if (this.shapeHost.recordViews?.partialMissing(shapeId, field) !== true) return false;
+    const type = this.recordShape(shapeId).fields.find((f) => f.name === field)?.type;
+    return type !== undefined && !isUnitType(type);
+  }
+
+  /** The viewed record's slot for `field` of a partial view, or NULL when
+   * that record does not declare the field. The caller has established that
+   * `obj` is a view. */
+  private partialViewSlot(objName: string, shapeId: string, field: string): string {
+    const position = this.recordShape(shapeId).fields.findIndex((f) => f.name === field);
+    this.declare(`declare ptr @scr_record_view_slot(ptr, ${this.sizeType})`);
+    const slot = this.B.tmp();
+    this.B.line(
+      `${slot} = call ptr @scr_record_view_slot(ptr ${objName}, ${this.sizeType} ${position})`,
+    );
+    return slot;
+  }
+
+  /** The boxed property a partial view keeps for a field its viewed record
+   * does not declare (NULL until something writes it). */
+  private partialViewExtra(objName: string, field: string): string {
+    this.declare(`declare ptr @scr_record_view_extra(ptr, ptr, ${this.sizeType})`);
+    const extra = this.B.tmp();
+    this.B.line(
+      `${extra} = call ptr @scr_record_view_extra(ptr ${objName}, ptr ${this.cstr(field)}, ${this.sizeType} ${Buffer.byteLength(field, "utf8")})`,
+    );
+    return extra;
+  }
+
+  /** Reads field `field` of `obj` (shape `shapeId`) where a PARTIAL view may
+   * lack it. A view's present field reads through the viewed record's slot;
+   * a field that record does not declare reads the property a write left in
+   * the view's extra store, converted back to the field type; a field
+   * nothing wrote stops the program (the frontend's checked read throws its
+   * TypeError first). The answer is owned, like a checked conversion's. */
+  readPartialField(objName: string, shapeId: string, field: string, type: IrType): LlValue {
+    const B = this.B;
+    const idx = this.recordShape(shapeId).fields.findIndex((f) => f.name === field);
+    const inline = this.inlineUnions.record(type);
+    const isView = B.tmp();
+    const view = B.newLabel("pf.view");
+    const notView = B.newLabel("pf.slot");
+    const slots = B.newLabel("pf.slots");
+    const extra = B.newLabel("pf.extra");
+    const answer = B.newLabel("pf.answer");
+    for (const line of recordViewTestLines(this.sizeType, objName, isView))
+      B.line(line.trimStart());
+    B.condBr(isView, view, notView);
+    // Not a view: the field's own slot.
+    B.startBlock(notView);
+    const own = B.tmp();
+    B.line(
+      `${own} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${objName}, i64 0, i32 ${idx + this.nullableUnions.fieldBase(shapeId)}`,
+    );
+    const ownFrom = B.currentLabel();
+    B.br(slots);
+    B.startBlock(view);
+    const slot = this.partialViewSlot(objName, shapeId, field);
+    const present = B.tmp();
+    B.line(`${present} = icmp ne ptr ${slot}, null`);
+    const slotFrom = B.currentLabel();
+    B.condBr(present, slots, extra);
+    B.startBlock(slots);
+    const addr = B.tmp();
+    B.line(`${addr} = phi ptr [ ${own}, %${ownFrom} ], [ ${slot}, %${slotFrom} ]`);
+    // An inline union field answers a private stack box, as a plain read does.
+    const loaded = inline
+      ? this.inlineFieldUnion(addr, type)
+      : this.loadRecordField(addr, type, false);
+    const hit = isRefCounted(type) ? this.retainFrame(loaded, type) : loaded;
+    const hitFrom = B.currentLabel();
+    B.br(answer);
+    B.startBlock(extra);
+    const stored = this.partialViewExtra(objName, field);
+    const absent = B.tmp();
+    B.line(`${absent} = icmp eq ptr ${stored}, null`);
+    const trap = B.newLabel("pf.absent");
+    const convert = B.newLabel("pf.convert");
+    B.condBr(absent, trap, convert);
+    B.startBlock(trap);
+    absentTrapLines(
+      B,
+      (text) => this.cstr(text),
+      (decl) => this.declare(decl),
+    );
+    B.startBlock(convert);
+    const path = B.slot();
+    B.entryAllocas.push(`${path} = alloca %ScrDynPath`);
+    const parentPtr = B.tmp();
+    const keyPtr = B.tmp();
+    const indexPtr = B.tmp();
+    B.line(`${parentPtr} = getelementptr inbounds %ScrDynPath, ptr ${path}, i64 0, i32 0`);
+    B.line(`store ptr null, ptr ${parentPtr}`);
+    B.line(`${keyPtr} = getelementptr inbounds %ScrDynPath, ptr ${path}, i64 0, i32 1`);
+    B.line(`store ptr ${this.cstr(field)}, ptr ${keyPtr}`);
+    B.line(`${indexPtr} = getelementptr inbounds %ScrDynPath, ptr ${path}, i64 0, i32 2`);
+    B.line(`store ${this.sizeType} 0, ptr ${indexPtr}`);
+    const helper = this.dyn.dynCheckHelper(type);
+    const ty = this.llType(type);
+    const checked = B.tmp();
+    B.line(
+      `${checked} = call ${ty === "i1" ? "zeroext i1" : ty} @${helper}(ptr ${stored}, ptr ${path})`,
+    );
+    const convertFrom = B.currentLabel();
+    B.br(answer);
+    B.startBlock(answer);
+    const value = B.tmp();
+    B.line(`${value} = phi ${ty} [ ${hit}, %${hitFrom} ], [ ${checked}, %${convertFrom} ]`);
+    return { name: value, type };
+  }
+
+  /** Stores `value` into field `field` of `obj` (shape `shapeId`) where a
+   * PARTIAL view may lack it, calling `storeAt` with the address to write.
+   * A field the viewed record does not declare is kept as a boxed property
+   * in the view's extra store, where reflection and a later read see it;
+   * `released` gives up a caller reference the frame does not own. */
+  storePartialField(
+    objName: string,
+    shapeId: string,
+    field: string,
+    type: IrType,
+    value: LlValue,
+    storeAt: (ptr: string) => void,
+    released?: () => void,
+  ): void {
+    const B = this.B;
+    const idx = this.recordShape(shapeId).fields.findIndex((f) => f.name === field);
+    const isView = B.tmp();
+    const notView = B.newLabel("ps.slot");
+    const view = B.newLabel("ps.view");
+    const present = B.newLabel("ps.present");
+    const store = B.newLabel("ps.store");
+    const extra = B.newLabel("ps.extra");
+    const done = B.newLabel("ps.done");
+    for (const line of recordViewTestLines(this.sizeType, objName, isView))
+      B.line(line.trimStart());
+    B.condBr(isView, view, notView);
+    B.startBlock(notView);
+    const own = B.tmp();
+    B.line(
+      `${own} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${objName}, i64 0, i32 ${idx + this.nullableUnions.fieldBase(shapeId)}`,
+    );
+    const ownFrom = B.currentLabel();
+    B.br(store);
+    B.startBlock(view);
+    const slot = this.partialViewSlot(objName, shapeId, field);
+    const hasSlot = B.tmp();
+    B.line(`${hasSlot} = icmp ne ptr ${slot}, null`);
+    B.condBr(hasSlot, present, extra);
+    B.startBlock(present);
+    const presentFrom = B.currentLabel();
+    B.br(store);
+    // One store site whichever slot answers: the value's frame ownership
+    // ends in one place, whether the write runs on this program's path or
+    // on the other branch of the test.
+    B.startBlock(store);
+    const addr = B.tmp();
+    B.line(`${addr} = phi ptr [ ${own}, %${ownFrom} ], [ ${slot}, %${presentFrom} ]`);
+    storeAt(addr);
+    B.br(done);
+    B.startBlock(extra);
+    const boxed = B.tmp();
+    const box = this.dyn.toDynHelper(type);
+    B.line(`${boxed} = call ptr @${box}(${this.llType(type)} ${value.name})`);
+    this.declare(`declare void @scr_record_view_extra_set(ptr, ptr, ${this.sizeType}, ptr)`);
+    B.line(
+      `call void @scr_record_view_extra_set(ptr ${objName}, ptr ${this.cstr(field)}, ${this.sizeType} ${Buffer.byteLength(field, "utf8")}, ptr ${boxed})`,
+    );
+    released?.();
+    B.br(done);
+    B.startBlock(done);
   }
 
   /** The overflow map's slot pointer on an index-signature shape. */
@@ -5969,6 +6476,15 @@ export class LlEmitter {
           names,
         );
         return;
+      case "arrayConst":
+        this.addContentEntry(
+          this.arrayConstData,
+          key,
+          value as { sym: string; type: "i32" | "double"; values: readonly string[] },
+          "sc_arr_const_",
+          names,
+        );
+        return;
       case "mapOps": {
         let own = this.mapOpsConsts.get(key);
         if (own === undefined) {
@@ -6041,6 +6557,8 @@ export class LlEmitter {
       this.mod,
       { ...this.targetOptions, functionChunks: 1 },
       new EmitJournal(),
+      null,
+      this.nodeIndex,
     );
     chunk.debug?.record();
     return chunk;
@@ -6233,7 +6751,9 @@ export class LlEmitter {
       B.startBlock(pad);
       const exception = B.tmp();
       B.line(`${exception} = landingpad { ptr, i32 } cleanup`);
-      for (const index of borrowed) this.releaseFrame(`%p${index}`, fn.params[index]!.type);
+      for (const index of borrowed)
+        if (!this.isTreeValue(fn.params[index]!.type))
+          this.releaseFrame(`%p${index}`, fn.params[index]!.type);
       this.declare(UNWIND_RESUME_DECLARATION);
       B.resumeUnwind(exception);
       B.startBlock(ok);
@@ -6258,8 +6778,11 @@ export class LlEmitter {
       result = B.tmp();
       B.line(`${result} = load ptr, ptr ${slot}`);
     }
+    // A tree value is passed by reference to its owner and never counted,
+    // so the wrapper has nothing to drop for it.
     for (const index of borrowed)
-      if (!kept.has(index)) this.releaseFrame(`%p${index}`, fn.params[index]!.type);
+      if (!kept.has(index) && !this.isTreeValue(fn.params[index]!.type))
+        this.releaseFrame(`%p${index}`, fn.params[index]!.type);
     B.terminate(ret === "void" ? "ret void" : `ret ${ret} ${result}`);
     const symbol =
       kept.size > 0 ? `${mangleBorrowedFunction(fn.name)}.virtual` : mangleFunction(fn.name);
@@ -6508,6 +7031,16 @@ export class LlEmitter {
   /** Emits the move of a noted last read: the slot is cleared, so scope
    * exits release nothing and the read's owned temp carries the reference. */
   takeLastUseMove(e: IrExpr, slot: string, type: IrType): boolean {
+    if (this.isTreeValue(e.type)) {
+      // A tree value has one owner and no count: every read of it that the
+      // plan accepted IS its transfer (backend/tree-classes.ts records the
+      // expression), so the read takes the reference exactly as a last-use
+      // move does. A read the plan did not record would copy the node,
+      // which retainCall refuses.
+      if (this.treeMoves?.delete(e) !== true) return false;
+      this.B.line(`store ptr null, ptr ${slot}`);
+      return true;
+    }
     if (this.lastUseMoves.get(e) !== slot || !typeEquals(type, e.type)) return false;
     this.lastUseMoves.delete(e);
     this.B.line(`store ptr null, ptr ${slot}`);
@@ -7996,6 +8529,11 @@ export class LlEmitter {
   /** Group arenas (arenas.ts): the plan, the list slot of each root and
    * call region, and which locals' scopes drop which roots' arenas. */
   arenas: ArenaPlan | null = null;
+  /** The varRef reads the tree-class plan proved move a node out of its
+   * local (backend/tree-classes.ts). Each one emits its own last-use move:
+   * the source slot is nulled and the value taken without a retain, since
+   * a tree instance has no count to raise. */
+  private treeMoves: Set<IrExpr> | null = null;
   private arenaSlots = new Map<Node, string>();
   /** The frames emitStmtBody opens for whole statements (arenas only). */
   readonly statementFrames = new Set<LlValue[]>();
@@ -8145,6 +8683,31 @@ export class LlEmitter {
     const name = `@sc_js_ic_${this.jsIcSiteCount++}`;
     this.journal?.site(name, "jsIcSite");
     return name;
+  }
+
+  /** A fresh guard-group record (js-groups.ts). */
+  jsGroup(): string {
+    const name = `@sc_js_group_${this.jsGroupCount++}`;
+    this.journal?.site(name, "jsGroup");
+    return name;
+  }
+
+  /** The constant key array `keys` (string literal symbols) that a group's
+   * probe reads, shared by every group with the same keys. */
+  jsGroupKeys(keys: readonly string[]): string {
+    const text = keys.join("\u0000");
+    let name = this.jsGroupKeysByText.get(text);
+    if (name !== undefined) return name;
+    name = `@sc_gkeys_${this.jsGroupKeysCount++}`;
+    this.jsGroupKeysByText.set(text, name);
+    this.jsGroupKeysByName.set(name, keys);
+    this.journal?.site(name, "jsGroupKeys", [keys]);
+    return name;
+  }
+
+  /** The key array of each of this module's guard groups, by name. */
+  get jsGroupKeysTable(): ReadonlyMap<string, readonly string[]> {
+    return this.jsGroupKeysByName;
   }
 
   /** A fresh read-site cache for one constant-key dyn read. */
@@ -8490,6 +9053,8 @@ export class LlEmitter {
     overflowOnly: boolean,
     loc?: SrcLoc,
     missNaN = false,
+    missInto: (() => void) | null = null,
+    read: IrExpr | null = null,
   ): void {
     return keyedRecordReadInto(
       this,
@@ -8502,6 +9067,8 @@ export class LlEmitter {
       overflowOnly,
       loc,
       missNaN,
+      missInto,
+      read,
     );
   }
 
@@ -8652,6 +9219,8 @@ function addNumberedSymbol<V extends { sym: string }>(
 }
 
 registerReplay("jsIcSite", (emitter) => emitter.jsIcSite());
+registerReplay("jsGroup", (emitter) => emitter.jsGroup());
+registerReplay("jsGroupKeys", (emitter, args) => emitter.jsGroupKeys(args[0] as string[]));
 registerReplay("dynReadIcSite", (emitter) => emitter.dynReadIcSite());
 registerReplay("speculativeLoopSite", (emitter) => emitter.speculativeLoopSite());
 for (const op of [

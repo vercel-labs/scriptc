@@ -9,6 +9,7 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `async-pipeline` | cpu | `async`/`await`, `Promise.all` fan-out |
 | `atomics-contended` | cpu | four worker threads updating `SharedArrayBuffer` counters with `Atomics`: one shared counter, one counter per worker, a `compareExchange` loop, and `Atomics.wait`/`notify` handoffs |
 | `channel-messages` | cpu | 200,000 MessageChannel messages in one thread, half numbers and half small objects, all posted before the port delivers any |
+| `class-unions` | cpu | class instances in unions with their base class (`Shape \| Circle \| Rect`, `Account \| Savings`): an array scanned through overridden methods and methods that return `this`, a `Map` of accounts, and `instanceof` tests for subclass members |
 | `csv-numbers` | cpu | `split`, `Number`, `parseInt`, `toFixed` |
 | `date-math` | cpu | schedules built with Date setters (local and UTC), weekday and month-end rules through the getters, Dates sorted by time value |
 | `cyclic-graphs` | cpu | object graphs with back references built and dropped: trees with parent and sibling links, rings of records sharing a long-lived registry, closures capturing their owner |
@@ -25,6 +26,7 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `line-reader` | cpu | `readline` over a file stream: 'line' events for a 67 MB access log (every 50th line not ASCII), with a status count, a path tally and byte totals |
 | `log-lines` | cpu | 200k immediate `console.log`/`process.stdout.write` lines into the runner's pipe |
 | `log-summary`, `inventory-report` | cpu | the multi-module applications from `benchmarks/builds`, on 300k-line inputs |
+| `n-body` | cpu | five planets in an array of records advanced a million fixed steps by the pair loop over the upper triangle, then the system's total energy before and after |
 | `number-maps` | cpu | number-keyed Map/Set: a dense-id table, sparse ids in many small maps, get/has/set mixes |
 | `numeric-kernels` | cpu | sieve, hashing, `number[][]` matmul, `Float64Array` |
 | `optional-child-sets` | cpu | syntax-tree walks through class nodes whose getters return `TreeNode \| undefined` children, in a program that also keeps a `Set<TreeNode \| undefined>` |

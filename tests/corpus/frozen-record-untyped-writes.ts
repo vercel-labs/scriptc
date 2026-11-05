@@ -33,3 +33,26 @@ console.log(list[0], list.length, Object.isFrozen(list));
 const open = { a: 1 };
 write(open, "a", 3);
 console.log(open.a);
+
+// A helper specialized for the record it is handed stores the value as a
+// native field write, and a frozen record refuses that write the same way.
+type Box = { hits: number; tag: string };
+
+function setHits(box: any): number {
+  box.hits = 42;
+  return 1;
+}
+
+const freshBox: Box = { hits: 0, tag: "fresh" };
+setHits(freshBox);
+console.log("fresh", freshBox.hits, freshBox.tag);
+
+const frozenBox: Box = { hits: 0, tag: "frozen" };
+Object.freeze(frozenBox);
+try {
+  setHits(frozenBox);
+  console.log("frozen wrote");
+} catch (e) {
+  console.log("frozen threw", (e as Error).message);
+}
+console.log("after", frozenBox.hits);

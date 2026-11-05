@@ -1,0 +1,6 @@
+early-error-strict-eval-target.js:7:6 - error SC0014: strict mode code may not assign to 'arguments'
+
+  6 |   for (const row of rows) {
+  7 |     ([arguments] = row);
+    |      ^~~~~~~~~~~~~~~~~
+  8 |   }

@@ -1,5 +1,5 @@
 /* Intl over ICU4C (packages/runtime/vendor/icu, version-pinned to the ICU
- * Node 24.22.0 bundles). Linked only into programs whose IR selects the
+ * Node 24.22.1 bundles). Linked only into programs whose IR selects the
  * `icu` runtime feature, so an Intl-free binary carries none of it.
  *
  * What lowers here (the first slice):

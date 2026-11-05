@@ -56,6 +56,25 @@ test("keeps narrowing evidence local to each conversion request", () => {
   expect(lowerer.unionRetagHelper(from, to, loc, new Set([1, 0]))).toBe(helper);
 });
 
+test("a class route checks the stored base arm before viewing the subclass", () => {
+  const lowerer = context();
+  const animal: IrType & { kind: "object" } = { kind: "object", className: "Animal" };
+  const dog: IrType & { kind: "object" } = { kind: "object", className: "Dog" };
+  const from = lowerer.unions.intern([animal, F64]);
+  const to = lowerer.unions.intern([dog, F64]);
+  const routes = new Map([
+    [lowerer.armTag(from, animal), [{ tag: lowerer.armTag(to, dog), arm: dog }]],
+  ]);
+  const helper = lowerer.unionRetagHelper(from, to, loc, undefined, routes);
+  expect(helper).not.toBeNull();
+  const body = JSON.stringify(lowerer.liftedFns.find((fn) => fn.name === helper)?.body);
+  expect(body).toContain('"kind":"instanceOf"');
+  expect(body).toContain('"kind":"downcast"');
+  expect(lowerer.unionRetagHelper(from, to, loc, undefined, routes)).toBe(helper);
+  // Without the route the base arm has no destination and the plan declines.
+  expect(lowerer.unionRetagHelper(from, to, loc)).toBeNull();
+});
+
 test("replans after a recursive union gains its final arms", () => {
   const lowerer = context();
   const recursive = {} as Type;

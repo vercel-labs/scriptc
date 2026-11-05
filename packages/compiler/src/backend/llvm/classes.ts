@@ -55,6 +55,7 @@ import {
   segmentPrologueLines,
   segmentTeardownLines,
   iterativeTeardownDefinitions,
+  treeTeardownDefinitions,
   segmentedTeardown,
   usedDirectTargets,
   type DirectDestroy,
@@ -115,14 +116,20 @@ export class LlClassMeta {
   /** Compact classes: each field's GEP index, by its index in def.fields. */
   compactSlots: number[] = [];
   /** Compact classes: whether each field (by its index in def.fields) holds
-   * a compact class instance as a 32-bit index (COMPACT_REF) rather than a
-   * pointer: compactRefLoadLines decodes it, compactRefStoreLines encodes it. */
+   * a 32-bit reference (COMPACT_REF) rather than a pointer: to a compact
+   * class instance, or to an array, map, set or class instance in the
+   * allocator's window (LlEmitter.windowRefType). compactRefLoadLines decodes
+   * it, compactRefStoreLines encodes it. */
   compressed: boolean[] = [];
   /** Compact classes with an inline array field (ir/inline-arrays.ts): the
    * field's slot holds the element count as an i32, and the elements follow
    * the fixed fields as 32-bit references from `tailOffset`, the same offset
    * in every class of the declaring class's subtree. Absent otherwise. */
   inlineTail?: LlInlineTail;
+  /** A tree class (backend/tree-classes.ts): its instances carry no
+   * reference-count word, retain is a no-op and the single owner's release
+   * destroys the subtree. Set by the emitter from the whole-program plan. */
+  tree = false;
 
   constructor(readonly def: IrClassDef) {
     this.root = this;
@@ -406,10 +413,20 @@ function runtimePrefixOf(meta: LlClassMeta): RuntimePrefix | null {
  * on classes rooted at a runtime base, then the stream-state slot on
  * stream-rooted ones. */
 function headerEnd(meta: LlClassMeta): number {
+  // A tree class has no header word at all: its fields start the struct.
+  if (meta.tree) return 0;
   if (meta.def.arrayElem !== undefined) return ARRAY_PREFIX.length + 1;
   if (!meta.hierarchy || meta.idInRc) return 1;
   if (streamRooted(meta)) return 5;
   return runtimePrefixOf(meta) ? 4 : 2;
+}
+
+/** Whether `type` refers to instances of the tree class `name` alone: the
+ * class itself, or the nullable union whose only other arm is null. */
+function treeChild(host: ShapeHost, type: IrType, name: string): boolean {
+  const nullable = host.nullableUnions.of(type);
+  const arm = nullable === null ? type : nullable.repr === "single" ? nullable.arm : null;
+  return arm !== null && arm.kind === "object" && arm.className === name;
 }
 
 /** The array header a class declared `extends Array` begins with, after
@@ -685,6 +702,9 @@ export const COMPACT_ID_MASK = 0x0fffffff;
  * (its fields start at offset 4), the 8-byte rc word, or the rc word and
  * the vtable word of a hierarchy member that keeps its class in a vtable. */
 export function storedHeaderBytes(meta: LlClassMeta): number {
+  // A tree instance has no header word to store: its first field is what
+  // the allocation function writes.
+  if (meta.tree) return 0;
   if (meta.compact) return 4;
   return meta.hierarchy && !meta.idInRc ? 16 : 8;
 }
@@ -695,10 +715,11 @@ export function compactHeaderWord(meta: LlClassMeta): number {
 }
 
 /** Lines that decode the 32-bit reference `idx` (an i32) of a compressed
- * field into the pointer `out`. The program-lifetime region lies below
- * 32 GiB (LlvmTargetOptions.lowRegion), so a reference is the instance's
- * address over 8 and 0 is NULL: one shift, which x86-64 folds into the
- * address of the next load. `t` names the temporaries. */
+ * field into the pointer `out`. The allocator's window, which holds the
+ * program-lifetime region, lies below 32 GiB (LlvmTargetOptions.lowRegion),
+ * so a reference is the object's address over 8 and 0 is NULL: one shift,
+ * which x86-64 folds into the address of the next load. `t` names the
+ * temporaries. */
 export function compactRefLoadLines(idx: string, out: string, t: string): string[] {
   return [
     `  ${t}.z = zext i32 ${idx} to i64`,
@@ -707,7 +728,7 @@ export function compactRefLoadLines(idx: string, out: string, t: string): string
   ];
 }
 
-/** Lines that encode the pointer `ptr` (NULL or a compact class instance)
+/** Lines that encode the pointer `ptr` (NULL or an object in the window)
  * as the 32-bit reference `out` (an i32) a compressed field stores. */
 export function compactRefStoreLines(ptr: string, out: string, t: string): string[] {
   return [
@@ -717,8 +738,8 @@ export function compactRefStoreLines(ptr: string, out: string, t: string): strin
   ];
 }
 
-/** The storage type of a compressed field (LlClassMeta.compressed): a
- * 32-bit index into the program-lifetime region. */
+/** The storage type of a compressed field (LlClassMeta.compressed): an
+ * object's address over 8, below 32 GiB. */
 export const COMPACT_REF = "i32";
 
 /** Lines that allocate `%o`, `size` zeroed bytes in the program-lifetime
@@ -832,9 +853,10 @@ export function assignCompactLayouts(
         `llvm emitter bug: compact class ${meta.def.name} does not extend its base's layout`,
       );
     const elems = inherited.map((e) => ({ ...e }));
-    // A reference to a compact class instance is a 32-bit index into the
-    // program-lifetime region (compactRefLoadLines); inherited fields keep the
-    // base's choice.
+    // A field whose values all lie below 32 GiB (compressedRef: compact
+    // class instances, and arrays, maps, sets and instances in the window)
+    // holds a 32-bit reference (compactRefLoadLines); inherited fields keep
+    // the base's choice.
     const compressed = meta.def.fields.map((_, i) =>
       i < baseCount
         ? base!.compressed[i]!
@@ -1067,9 +1089,15 @@ export function emitClassShapes(
               : ["ptr"]
           : [];
     const members = [...prefix, ...(meta.threadSlot ? ["i32"] : []), ...fieldTys];
+    // A tree class's struct begins with its first field: no count word.
+    const head = meta.tree
+      ? members.length
+        ? members.join(", ")
+        : ""
+      : `${host.sizeType}${members.length ? ", " + members.join(", ") : ""}`;
     typeDefs.push(
-      `%${mangleClassStruct(cls.name)} = type { ${host.sizeType}${members.length ? ", " + members.join(", ") : ""} } ` +
-        `; class ${cls.name}${meta.idInRc ? " (class id in rc)" : meta.hierarchy ? " (vt at 1)" : ""}${streamRooted(meta) ? " (ScrStream prefix at 2)" : runtimePrefix ? ` (${runtimePrefix.struct} prefix at 2)` : ""} { ${cls.fields.map((f) => llvmCommentText(f.name)).join("; ")} }`,
+      `%${mangleClassStruct(cls.name)} = type { ${head} } ` +
+        `; class ${cls.name}${meta.tree ? " (no count: a tree)" : ""}${meta.idInRc ? " (class id in rc)" : meta.hierarchy ? " (vt at 1)" : ""}${streamRooted(meta) ? " (ScrStream prefix at 2)" : runtimePrefix ? ` (${runtimePrefix.struct} prefix at 2)` : ""} { ${cls.fields.map((f) => llvmCommentText(f.name)).join("; ")} }`,
     );
   }
 
@@ -1181,13 +1209,28 @@ export function emitClassShapes(
     const lifetime = programLifetimeClass(host, meta);
     const traced = host.tracedShapes.has(`object:${cls.name}`);
     const runtimePrefix = runtimePrefixOf(meta);
+    // A tree class has no header word, so no other layout may claim it: the
+    // planner (backend/tree-classes.ts) rules these out, and a program that
+    // reached here anyway would read a field as a count.
+    if (
+      meta.tree &&
+      (traced ||
+        meta.hierarchy ||
+        meta.compact ||
+        meta.threadSlot ||
+        lifetime ||
+        cls.arrayElem !== undefined)
+    )
+      throw new InternalCompilerError(
+        `llvm emitter bug: tree class ${cls.name} also a ${traced ? "traced" : meta.hierarchy ? "hierarchy" : meta.compact ? "compact" : meta.threadSlot ? "thread-local" : lifetime ? "program-lifetime" : "array"} class`,
+      );
     const isStreamRooted = streamRooted(meta);
     const fieldIndex = (i: number): number => classFieldSlot(meta, i);
     // Teardown, trace and gcFree see each slot's storage type: a nullable
     // class field holds the instance pointer (NULL for the unit arm), and
-    // every class retain/release/visit entry point is NULL-tolerant. A
-    // compressed field refers to a compact instance, which nothing releases
-    // or traces, so they skip it.
+    // every class retain/release/visit entry point is NULL-tolerant.
+    // Compressed fields belong to compact classes, whose instances are never
+    // freed and are no collector candidates, so they skip them.
     const indexedFields = [
       ...ownedFields(cls)
         .filter(({ i }) => meta.compressed[i] !== true)
@@ -1245,16 +1288,20 @@ export function emitClassShapes(
     // An instance that keeps its class id in the rc word counts in the
     // low half (CLASS_ID_OFFSET).
     const count = meta.idInRc ? "i32" : host.sizeType;
-    defs.push(
-      ...retainBody(host, mangleClassRetain(cls.name), `retain ${cls.name}`, lifetime, count),
-      ``,
-    );
+    // A tree class's retain is the no-op the tree branch below emits: a
+    // tree value has one owner, so nothing ever raises its count.
+    if (!meta.tree)
+      defs.push(
+        ...retainBody(host, mangleClassRetain(cls.name), `retain ${cls.name}`, lifetime, count),
+        ``,
+      );
 
     // An out-of-line teardown tears typed children down directly
     // (directChildReleaseLines). It takes the chain length when it has such
     // children or is itself a direct target.
     const chained =
       bounded &&
+      !meta.tree &&
       (directTargets.has(`object:${cls.name}`) ||
         refFields.some((f) => directDestroyTarget(host, f.type, directTargets) !== null));
     // The teardown's own symbol, and whether it keeps a segment (shapes.ts
@@ -1280,8 +1327,12 @@ export function emitClassShapes(
       const release = (prefix: string, f: (typeof refFields)[number], t: number): string[] => {
         // An Array subclass instance's destroy releases its fields plainly
         // (it takes no chain length).
+        // A tree class's destroy releases each child through the child's
+        // public release, which destroys that child's subtree in turn under
+        // the runtime's depth budget (scr_rc_destroy): a direct call would
+        // need a chain length the tree destroy does not keep.
         const direct =
-          bounded && cls.arrayElem === undefined
+          bounded && !meta.tree && cls.arrayElem === undefined
             ? directDestroyTarget(host, f.type, directTargets)
             : null;
         if (direct === null)
@@ -1311,7 +1362,7 @@ export function emitClassShapes(
         lines.push(
           ...segmentPrologueLines(),
           ...loads.flat(),
-          ...emitObjectFree(host, traced, "weak", "%sg.own"),
+          ...emitObjectFree(host, traced, "weak", "%sg.own", sizeOf),
           ...segmentTeardownLines(ownType, (prefix) =>
             refFields.flatMap((f, t) => release(prefix, f, t)),
           ),
@@ -1322,10 +1373,83 @@ export function emitClassShapes(
       if (runtimePrefix) lines.push(...regCall("td", runtimePrefix.drop, ""));
       if (isStreamRooted) lines.push(...stCall("tds", "scr_stream_st_release", ""));
       if (meta.threadSlot) lines.push(...slotForgetLines(host, struct, meta, "tdw"));
-      lines.push(...emitObjectFree(host, traced));
+      lines.push(...emitObjectFree(host, traced, "weak", null, sizeOf));
     };
 
-    if (meta.hierarchy) {
+    if (meta.tree) {
+      // A tree instance carries no count: its owner is unique, so retain is
+      // a no-op and that owner's release destroys everything the instance
+      // reaches. The teardown is one loop over the subtree when the class's
+      // reference fields are all its own type (treeTeardownDefinitions);
+      // otherwise each child goes through its own public release, which
+      // recurses one level per node, and those releases enter the runtime's
+      // depth budget (scr_rc_destroy, scr_cycle.c) so a chain past the
+      // budget costs heap rather than stack.
+      defs.push(
+        `define internal ptr @${mangleClassRetain(cls.name)}(ptr %o) ${FN_ATTRS} { ; retain ${cls.name} (a tree: its owner is unique)`,
+        `entry:`,
+        `  ret ptr %o`,
+        `}`,
+        ``,
+      );
+      const destroyBody: string[] = [];
+      teardown(destroyBody);
+      // A tree whose every reference field is its own type — a chain, a
+      // binary tree — tears down in one loop, so its depth costs no stack
+      // and no call per node. A binary node's first two fields double as the
+      // loop's pending entry, so those two fields must lead the struct.
+      const loop =
+        host.inlineAlloc === true &&
+        refFields.length > 0 &&
+        refFields.length <= 2 &&
+        refFields.every((f) => treeChild(host, f.type, cls.name)) &&
+        (refFields.length === 1 || (refFields[0]!.index === 0 && refFields[1]!.index === 1));
+      // An adopted tree's nodes live in the arena of the tree's root
+      // (arenas.ts, arenaTreeClasses): the drop reclaims them together, so
+      // the teardown has nothing to walk or free.
+      const adopted = host.arenaClasses?.has(cls.name) === true;
+      // The recursive teardown reaches one destructor per node through the
+      // public release, so that release has to enter the runtime's depth
+      // budget: past SCR_DESTROY_DEPTH the runtime queues the subtree
+      // instead of consuming the native stack. The iterative teardown never
+      // recurses, and an adopted tree's destroy is empty.
+      const budgeted = !loop && !adopted;
+      if (budgeted) host.declare(`declare void @scr_rc_destroy(ptr, ptr)`);
+      defs.push(
+        ...(adopted
+          ? [
+              `define internal void @${destroy}(ptr %o) ${FN_ATTRS} { ; destroy ${cls.name} (its nodes are the arena's)`,
+              `entry:`,
+              `  ret void`,
+              `}`,
+            ]
+          : loop
+            ? treeTeardownDefinitions(
+                host,
+                destroy,
+                struct,
+                refFields.map((f) => f.index),
+                "weak",
+              )
+            : destroyDefinitions(destroy, destroyBody, false, null)),
+        ``,
+      );
+      defs.push(
+        `define internal void @${mangleClassRelease(cls.name)}(ptr %o) ${FN_ATTRS} { ; release ${cls.name} (a tree: destroy the subtree)`,
+        `entry:`,
+        `  %isnull = icmp eq ptr %o, null`,
+        `  br i1 %isnull, label %done, label %free`,
+        `free:`,
+        budgeted
+          ? `  call void @scr_rc_destroy(ptr %o, ptr @${destroy})`
+          : `  call void @${destroy}(ptr %o)`,
+        `  br label %done`,
+        `done:`,
+        `  ret void`,
+        `}`,
+        ``,
+      );
+    } else if (meta.hierarchy) {
       // Public release: NULL/immortal checks, then dispatch through the
       // object's vtable so a base-typed release tears down the DERIVED
       // object (scr_error_release's contract exactly). In a hierarchy the
@@ -1426,7 +1550,7 @@ export function emitClassShapes(
       ];
       const fieldsTeardown: string[] = [];
       teardown(fieldsTeardown);
-      const free = emitObjectFree(host, traced);
+      const free = emitObjectFree(host, traced, "weak", null, sizeOf);
       destroyBody.push(
         ...fieldsTeardown.slice(0, fieldsTeardown.length - free.length),
         `  call void @scr_arr_subclass_drop(ptr %o)`,
@@ -1571,10 +1695,12 @@ export function emitClassShapes(
         `  %o.vt = call ptr @llvm.launder.invariant.group.p0(ptr %o)`,
         `  store i64 ${classIdRcWord(meta, lifetime)}, ptr %o.vt ; class ${llvmCommentText(cls.name)} is ${meta.pre}`,
       );
-    } else
+    } else if (!meta.tree)
       nw.push(
         `  store ${host.sizeType} ${lifetime ? programLifetimeRc(host.sizeType) : 1}, ptr %o`,
       );
+    // A tree instance has no count word: nothing is stored, and the
+    // allocation's first byte is already the first field.
     if (cls.arrayElem !== undefined) {
       const init = arrElemInit(host, cls.arrayElem);
       host.declare(`declare void @scr_arr_subclass_init(ptr, i8, ptr, ptr, i1 zeroext)`);
@@ -1643,42 +1769,50 @@ export function emitClassShapes(
       !isStreamRooted &&
       !meta.threadSlot
     ) {
-      // The arena count in place of 1, in the rc word or its low half.
-      const counted = meta.idInRc
-        ? `  store i64 ${classIdRcWord(meta, false)}, ptr %o.vt`
-        : `  store ${host.sizeType} 1, ptr %o`;
-      const arenaCount = meta.idInRc
-        ? `  store i64 ${(BigInt(meta.pre + 1) * 2n ** 32n + BigInt(ARENA_RC)).toString()}, ptr %o.vt`
-        : `  store ${host.sizeType} ${ARENA_RC}, ptr %o`;
       const newSym = mangleClassNew(cls.name);
-      const dispose =
-        refFields.length > 0 && host.arenasClosed !== true ? arenaDisposeSym(newSym) : null;
-      defs.push(
-        ...arenaNewLines(
-          host,
-          newSym,
-          sizeOf,
-          traced ? cycType : null,
-          dispose,
-          init.map((line) => (line.startsWith(counted) ? arenaCount : line)),
-          meta.hierarchy ? "%o.vt" : "%o",
-        ),
-      );
-      if (dispose !== null)
+      if (meta.tree) {
+        // A tree node takes the arena's bytes as they are: there is no
+        // count word to raise, and nothing to dispose, because every node
+        // of a tree sits in the arena of its root (arenas.ts,
+        // arenaTreeClasses) and the drop reclaims them together.
+        defs.push(...arenaNewLines(host, newSym, sizeOf, null, null, init, "%o", "object", "trap"));
+      } else {
+        // The arena count in place of 1, in the rc word or its low half.
+        const counted = meta.idInRc
+          ? `  store i64 ${classIdRcWord(meta, false)}, ptr %o.vt`
+          : `  store ${host.sizeType} 1, ptr %o`;
+        const arenaCount = meta.idInRc
+          ? `  store i64 ${(BigInt(meta.pre + 1) * 2n ** 32n + BigInt(ARENA_RC)).toString()}, ptr %o.vt`
+          : `  store ${host.sizeType} ${ARENA_RC}, ptr %o`;
+        const dispose =
+          refFields.length > 0 && host.arenasClosed !== true ? arenaDisposeSym(newSym) : null;
         defs.push(
-          ...arenaDisposeLines(
+          ...arenaNewLines(
+            host,
             newSym,
-            refFields.flatMap((f, t) =>
-              disposeFieldLines(
-                t,
-                `getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${f.index}`,
-                plainRefType(f.type),
-                releaseSym(host, f.type),
-                llvmCommentText(f.name),
-              ),
-            ),
+            sizeOf,
+            traced ? cycType : null,
+            dispose,
+            init.map((line) => (line.startsWith(counted) ? arenaCount : line)),
+            meta.hierarchy ? "%o.vt" : "%o",
           ),
         );
+        if (dispose !== null)
+          defs.push(
+            ...arenaDisposeLines(
+              newSym,
+              refFields.flatMap((f, t) =>
+                disposeFieldLines(
+                  t,
+                  `getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${f.index}`,
+                  plainRefType(f.type),
+                  releaseSym(host, f.type),
+                  llvmCommentText(f.name),
+                ),
+              ),
+            ),
+          );
+      }
     }
 
     if (traced) {
@@ -1728,7 +1862,7 @@ export function emitClassShapes(
         host.declare(`declare void @scr_arr_subclass_gc_drop(ptr)`);
         gf.push(`  call void @scr_arr_subclass_gc_drop(ptr %o)`);
       }
-      gf.push(...emitObjectFree(host, true), `  ret void`, `}`, ``);
+      gf.push(...emitObjectFree(host, true, "weak", null, sizeOf), `  ret void`, `}`, ``);
       defs.push(...gf);
     }
   }

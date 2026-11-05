@@ -31,6 +31,7 @@ import { contentOf, source, storeOf, storeTarget, type RegionGroups } from "./re
 import {
   argsOf,
   children,
+  forEachNode,
   indexOfNode,
   isExpr,
   refType,
@@ -261,6 +262,78 @@ function classify(fn: IrFunction, topLocalsKept: boolean): FnSites {
     if (keptFate(f)) out.kept.set(e, loops.get(e)!);
     else if (callLike(e)) out.dropped.push(e);
   return out;
+}
+
+/** The functions that may run with no arena open.
+ *
+ * A root and a call region open their arena before the call, so their
+ * callees run in it, and a call the emitter does not suspend leaves it
+ * open, so its callees run in it too, transitively. Everything else may run
+ * with no arena open: a suspended call's callees (heapCalls), everything an
+ * unguarded function calls, every closure body (a callback can be stored
+ * and run after its caller's arena was closed), and every function outside
+ * the plan's `reachable` set, which has no arena at all.
+ *
+ * A call whose targets the call graph cannot name is still bounded by the
+ * module: an indirect call runs a closure value, and every function value
+ * in the module comes from a `closure` node, whose body this walk already
+ * marks unguarded (a reference to a top-level function lowers to a
+ * zero-capture closure); a dynamic construction may run any class's
+ * constructor; and an unresolved virtual call may run any class's method of
+ * that name. */
+export function guardedFunctions(
+  mod: IrModule,
+  groups: RegionGroups,
+  sites: RegionSites,
+): Set<string> {
+  const classes = mod.classes ?? [];
+  const fns = new Map(mod.functions.map((f) => [f.name, f]));
+  const vt = new VirtualTargets(classes);
+  const unguarded = new Set<string>();
+  const queue: string[] = [];
+  const add = (name: string): void => {
+    if (fns.has(name) && !unguarded.has(name)) {
+      unguarded.add(name);
+      queue.push(name);
+    }
+  };
+  const opens = (node: Node): boolean => groups.roots.has(node) || groups.calls.has(node);
+  /** The functions `node` runs, when it may run unguardedly. */
+  const target = (node: Node): void => {
+    if (node.kind === "closure") return add(node.fnName);
+    if (node.kind === "callValue") return; // its value came from a closure node
+    if (node.kind === "newValue") {
+      for (const cls of classes) add(`%${cls.name}.constructor`);
+      return;
+    }
+    const targets = targetsOf(vt, node);
+    if (targets !== null) {
+      for (const name of targets) add(name);
+      return;
+    }
+    // An unresolved virtual call can reach any class's method of that name.
+    if (node.kind === "virtualCall")
+      for (const cls of classes)
+        if (cls.methods?.includes(node.method)) add(`%${cls.name}.${node.method}`);
+  };
+  for (const fn of mod.functions) {
+    const planned = groups.reachable.has(fn.name);
+    if (!planned) add(fn.name);
+    forEachNode(fn.body, (node) => {
+      if (node.kind === "closure") add(node.fnName);
+      else if (callLike(node) && !opens(node))
+        if (!planned || sites.heapCalls.has(node)) target(node);
+    });
+  }
+  while (queue.length > 0) {
+    const fn = fns.get(queue.pop()!);
+    if (fn === undefined) continue;
+    forEachNode(fn.body, (node) => {
+      if (node.kind === "closure") add(node.fnName);
+      else if (callLike(node) && !opens(node)) target(node);
+    });
+  }
+  return unguarded;
 }
 
 /**

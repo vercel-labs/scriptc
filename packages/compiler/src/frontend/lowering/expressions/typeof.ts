@@ -40,8 +40,16 @@ import {
   isTemporalGlobalRoot,
 } from "../lower-namespaces.js";
 import { isF64HandleTyped } from "../f64-handles.js";
+import { hostGlobalNameOfTypeofOperand } from "../host-globals.js";
 
 export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc: SrcLoc): IrExpr {
+  // typeof is a READ, not a use: Node has these constructors, so the answer is
+  // "function" exactly as it is for a provided class (host-global-values.ts).
+  // Folded before every other guess — including the ambient `declare var` fold
+  // below, which is exactly where a `declare var WebSocket` probe used to
+  // answer "undefined".
+  if (hostGlobalNameOfTypeofOperand(lowerer, expr.expression) !== null)
+    return { kind: "strLit", value: "function", type: STRING, loc };
   const webAssembly = lowerWebAssemblyTypeof(lowerer, expr.expression);
   if (webAssembly) return webAssembly;
   if (lowerer.isStdlibGlobal(expr.expression, "process"))

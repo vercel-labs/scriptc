@@ -69,6 +69,15 @@ Options:
                      a helper process so the parent sees the exit sooner. The
                      helper keeps the executable mapped and its memory charged
                      for up to ~100 ms after exit (opt in; --emit=exe only)
+      --stdout-buffering
+                     keep console and process stdout bytes in a 64 KiB buffer
+                     when stdout is not a terminal, for programs that print
+                     many lines. A terminal keeps one write per call. The
+                     buffer settles when it fills, before stderr, when the
+                     event loop sleeps, before a blocking stdin read, on
+                     process.kill and process.exit, and at exit; a crash such
+                     as SIGKILL can lose up to 64 KiB (experimental; opt in;
+                     --emit=exe only)
       --libnode <dir|beside>
                      the libnode pack that calls into Node.js (@scriptc/node)
                      load at run time, or beside to copy it next to the
@@ -196,6 +205,7 @@ export const CLI_OPTIONS = {
   static: { type: "boolean", default: false },
   "windows-subsystem": { type: "string" },
   "detached-exit": { type: "boolean", default: false },
+  "stdout-buffering": { type: "boolean", default: false },
   libnode: { type: "string" },
   "large-pages": { type: "boolean", default: false },
   exceptions: { type: "string" },

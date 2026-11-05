@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/fs-stream-erased-open-listener.ts"
+ ],
+ "diags": []
+}

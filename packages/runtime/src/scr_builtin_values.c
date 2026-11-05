@@ -768,17 +768,19 @@ ScrDyn *scr_path_to_namespaced_value(ScrDyn *path, bool win32) {
 /* The constructors with static members, indexed by ScrBvStatic.owner. */
 static const char *const scr_bv_static_owners[] = {
   "Object", "Array", "Promise", "Number", "String", "BigInt", "Date", "RegExp", "Map", "Error",
-  "ArrayBuffer", "Proxy", "BigInt64Array", "BigUint64Array",
+  "ArrayBuffer", "Proxy", "BigInt64Array", "BigUint64Array", "Symbol",
 };
 
 typedef struct {
   const char *key;
   uint8_t owner;
-  /* The function's length, or SCR_BV_CONSTANT for a numeric constant
-   * (scr_bv_static_constant). */
+  /* The function's length, SCR_BV_CONSTANT for a numeric constant
+   * (scr_bv_static_constant), or SCR_BV_PROGRAM for a member only the
+   * program's lookup answers. */
   uint8_t length;
 } ScrBvStatic;
 #define SCR_BV_CONSTANT 0xff
+#define SCR_BV_PROGRAM 0xfe
 
 /* Node 24's own static members of each constructor, in Node's order.
  * Members with symbol keys, and RegExp's legacy accessors, are not
@@ -807,6 +809,14 @@ static const ScrBvStatic scr_bv_statics[] = {
   {"isView", 10, 1},
   {"revocable", 11, 2},
   {"BYTES_PER_ELEMENT", 12, SCR_BV_CONSTANT}, {"BYTES_PER_ELEMENT", 13, SCR_BV_CONSTANT},
+  /* The well-known symbols are the program's values: a program that reads
+   * Symbol as a value links the symbol unit. */
+  {"for", 14, 1}, {"keyFor", 14, 1}, {"asyncIterator", 14, SCR_BV_PROGRAM},
+  {"hasInstance", 14, SCR_BV_PROGRAM}, {"isConcatSpreadable", 14, SCR_BV_PROGRAM},
+  {"iterator", 14, SCR_BV_PROGRAM}, {"match", 14, SCR_BV_PROGRAM}, {"matchAll", 14, SCR_BV_PROGRAM},
+  {"replace", 14, SCR_BV_PROGRAM}, {"search", 14, SCR_BV_PROGRAM}, {"species", 14, SCR_BV_PROGRAM},
+  {"split", 14, SCR_BV_PROGRAM}, {"toPrimitive", 14, SCR_BV_PROGRAM}, {"toStringTag", 14, SCR_BV_PROGRAM},
+  {"unscopables", 14, SCR_BV_PROGRAM}, {"dispose", 14, SCR_BV_PROGRAM}, {"asyncDispose", 14, SCR_BV_PROGRAM},
 };
 #define SCR_BV_STATICS (sizeof scr_bv_statics / sizeof scr_bv_statics[0])
 
@@ -827,7 +837,7 @@ static SCR_TL ScrDyn *scr_bv_static_fences[SCR_BV_STATICS];
 static SCR_TL ScrDyn *scr_bv_statics_lookup;
 /* The constructors whose static members are own properties of their tables
  * (scr_bv_own_statics), one entry per identity. */
-static SCR_TL ScrClosure *scr_bv_owned[16];
+static SCR_TL ScrClosure *scr_bv_owned[32];
 static SCR_TL size_t scr_bv_owned_count;
 
 
@@ -841,6 +851,7 @@ static void scr_bv_statics_cleanup(void) {
   scr_bv_owned_count = 0;
   scr_dyn_builtin_static_fn = NULL;
   scr_dyn_builtin_statics_own_fn = NULL;
+  scr_dyn_builtin_owner_fn = NULL;
 }
 
 static ScrDyn *scr_bv_static_fence_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
@@ -869,8 +880,10 @@ static const ScrBvStatic *scr_bv_static_entry(const char *owner, size_t owner_le
 }
 
 /* The runtime's value for a listed member (+1): the constant, or the
- * member's fenced function, one per thread. */
+ * member's fenced function, one per thread. NULL for a member only the
+ * program answers. */
 static ScrDyn *scr_bv_static_value(const ScrBvStatic *entry) {
+  if (entry->length == SCR_BV_PROGRAM) return NULL;
   if (entry->length == SCR_BV_CONSTANT) return scr_dyn_new_num(scr_bv_static_constant(entry));
   size_t index = (size_t)(entry - scr_bv_statics);
   if (!scr_bv_static_fences[index])
@@ -991,17 +1004,27 @@ static void scr_bv_own_statics(const ScrDyn *fn, ScrDyn *table) {
     size_t key_len = strlen(entry->key);
     if (entry->owner != owner || scr_dyn_obj_get(table, entry->key, key_len)) continue;
     ScrDyn *value = scr_bv_member(fn, entry);
-    if (!value) return;
+    if (!value) {
+      if (scr_exc_pending()) return;
+      continue;
+    }
     bool function = value->kind == SCR_DYN_FUNC;
     scr_dyn_obj_set(table, entry->key, key_len, value);
     scr_dyn_obj_set_attrs_at(table, scr_dyn_obj_count(table) - 1, function, false, function);
   }
 }
 
+/* scr_dyn_builtin_owner_fn. */
+static const char *scr_bv_owner_name(const ScrDyn *fn) {
+  int owner = scr_bv_owner_of(fn);
+  return owner < 0 ? NULL : scr_bv_static_owners[owner];
+}
+
 static void scr_bv_statics_register(void) {
   if (scr_dyn_builtin_static_fn) return;
   scr_dyn_builtin_static_fn = scr_bv_builtin_static;
   scr_dyn_builtin_statics_own_fn = scr_bv_own_statics;
+  scr_dyn_builtin_owner_fn = scr_bv_owner_name;
   scr_atexit(scr_bv_statics_cleanup);
 }
 

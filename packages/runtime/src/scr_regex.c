@@ -216,6 +216,7 @@ static uint8_t *scr_regex_bc(ScrRegex *re) {
      * compiles lazily, so the failure lands here (documented divergence —
      * tsc's parser has already caught plain syntax errors, so this is
      * rare). */
+    scr_stdout_settle();
     fflush(stdout);
     scr_trap_fmt("scriptc: SyntaxError: Invalid regular expression: /%s/%s: %s\n",
                  re->source->data, re->flags->data, error_msg);
@@ -563,6 +564,7 @@ __attribute__((noinline)) static int scr_exec_engine(ScrRegexInput *input, const
     ? scr_re_native_exec(input->native, input->capture, input->data, index, input->len)
     : lre_exec(input->capture, bc, input->data, index, input->len, input->wide, lre_opaque());
   if (rc < 0) {
+    scr_stdout_settle();
     fflush(stdout);
     scr_trap("scriptc: regular expression execution failed\n");
   }
@@ -1838,7 +1840,7 @@ ScrStr *scr_regex_replace_fn(ScrStr *s, ScrRegex *re, ScrClosure *f, uint32_t ar
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
  * DEALINGS IN THE SOFTWARE.
- * Node v24.22.0's pattern (internal/util/inspect.js), applied with /g:
+ * Node v24.22.1's pattern (internal/util/inspect.js), applied with /g:
  *   (?:\u001B\][\s\S]*?(?:\u0007|\u001B\u005C|\u009C))
  *   |[\u001B\u009B][[\]()#;?]*(?:\d{1,4}(?:[;:]\d{0,4})*)?
  *    [\dA-PR-TZcf-nq-uy=><~]

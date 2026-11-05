@@ -353,8 +353,11 @@ export function emitDenseSlotUnlink(
 /** Strict element read with the runtime getter's result contract: a
  * double, an i1, or a pointer that is +1 (`retain`) or borrowed. The
  * runtime getter keeps the trap for holes, present undefined, and missing
- * properties; it also answers sparse indices. Null reference slots take
- * the runtime path, which returns them without a retain. */
+ * properties; it also answers sparse indices. A null reference slot that
+ * the guard or the state check admits is a value of the element type, and
+ * the runtime getter answers it with NULL and no retain: the inline path
+ * answers it the same way, so every absent element of an optional-element
+ * array stays off the runtime call. */
 export function emitDenseArrayGet(
   host: LlvmEmitterContext,
   array: string,
@@ -427,7 +430,7 @@ export function emitDenseArrayRead(
   const ptr = valuePointer(host, guard, kind);
   let fast: string;
   let fastInt: string | null = null;
-  let fastLabel = valueLabel;
+  const fastLabel = valueLabel;
   if (acc === "f64") {
     fast = B.tmp();
     B.line(`${fast} = load double, ptr ${ptr}${host.fieldAliasAttachment(ptr)}`);
@@ -442,8 +445,7 @@ export function emitDenseArrayRead(
     B.line(`${raw} = load i8, ptr ${ptr}${host.fieldAliasAttachment(ptr)}`);
     B.line(`${fast} = icmp ne i8 ${raw}, 0`);
   } else {
-    const raw = B.tmp(),
-      nonnull = B.tmp();
+    const raw = B.tmp();
     if (kind === "cref") {
       const ref = B.tmp();
       B.line(`${ref} = load i32, ptr ${ptr}${host.fieldAliasAttachment(ptr)}`);
@@ -451,10 +453,6 @@ export function emitDenseArrayRead(
     } else {
       B.line(`${raw} = load ptr, ptr ${ptr}${host.fieldAliasAttachment(ptr)}`);
     }
-    B.line(`${nonnull} = icmp ne ptr ${raw}, null`);
-    fastLabel = B.newLabel("arr.get.ref");
-    B.condBr(nonnull, fastLabel, slow);
-    B.startBlock(fastLabel);
     fast = retain ? host.retainFrame(raw, element) : raw;
   }
   B.br(join);

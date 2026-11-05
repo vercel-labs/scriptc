@@ -1366,6 +1366,118 @@ test("no-types-node: a bare project outside the repo compiles on the fallback de
   expect(stdout).toBe("hi bare\n");
 });
 
+test("no-types-node: a digest takes every Buffer encoding on the fallback declarations", async () => {
+  // Node decodes a digest with Buffer.toString(encoding), so every Buffer
+  // encoding spells a string digest, not just @types/node's narrower
+  // BinaryToTextEncoding. The fallback declarations type the whole set
+  // (a project with @types/node gets that package's union instead), and
+  // the program's output must be the one Node produces for each spelling.
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-bare-digest-"));
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
+  writeFileSync(
+    join(dir, "main.ts"),
+    `import { createHash, createHmac, hash, type Encoding } from "node:crypto";
+
+const data = "héllo \\u{1F600}";
+const encodings: Encoding[] = [
+  "hex", "base64", "base64url", "latin1", "binary", "utf8",
+  "utf-8", "ascii", "utf16le", "utf-16le", "ucs2", "ucs-2",
+];
+for (const encoding of encodings) {
+  const digests = [
+    createHash("sha256").update(data).digest(encoding),
+    createHmac("sha256", "key").update(data).digest(encoding),
+    hash("sha256", data, encoding),
+    hash("sha256", data, { outputEncoding: encoding }),
+  ];
+  for (const digest of digests) {
+    console.log(encoding, digest.length, Buffer.from(digest, "utf8").toString("hex"));
+  }
+}
+console.log(createHash("sha256").update(data).digest().length);
+console.log(hash("sha256", data, "buffer").length);
+`,
+  );
+  const outDir = outDirFor("bare-digest");
+  const result = await compile(join(dir, "main.ts"), {
+    outPath: join(outDir, "main"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, [
+      "--disable-warning=MODULE_TYPELESS_PACKAGE_JSON",
+      join(dir, "main.ts"),
+    ]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("no-types-node: the typed stdin stream surface resolves on the fallback declarations", async () => {
+  // The paused-mode stream members (readable events, read(size),
+  // readableLength, pause/resume/isPaused) are declared only in the
+  // shipped fallback; a project without @types/node types them from
+  // there. Compiled in a bare project, then run against the same empty
+  // closed stdin Node sees, the two must print the same lines.
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-bare-stdin-"));
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
+  writeFileSync(
+    join(dir, "main.ts"),
+    `console.log("initial", process.stdin.isPaused(), process.stdin.readableLength, process.stdin.read());
+
+process.stdin.on("readable", () => {
+  const chunk: Uint8Array | null = process.stdin.read(4);
+  console.log("readable", chunk === null, process.stdin.readableLength, process.stdin.isPaused());
+});
+
+process.stdin.on("end", () => {
+  process.stdin.pause();
+  console.log("end", process.stdin.isPaused(), process.stdin.read() === null);
+  process.stdin.resume();
+  console.log("resumed", process.stdin.isPaused());
+});
+`,
+  );
+  const outDir = outDirFor("bare-stdin");
+  const result = await compile(join(dir, "main.ts"), {
+    outPath: join(outDir, "main"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  // stdin must be CLOSED, not merely quiet: a 'readable' listener keeps
+  // Node and the native loop alive until EOF, so an open pipe would hang.
+  const runClosedStdin = (
+    cmd: string,
+    args: string[],
+  ): Promise<{ stdout: string; stderr: string }> =>
+    new Promise((resolve, reject) => {
+      const child = execFile(cmd, args, { encoding: "utf8" }, (err, stdout, stderr) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        resolve({ stdout, stderr });
+      });
+      child.stdin?.end();
+    });
+  const [native, node] = await Promise.all([
+    runClosedStdin(result.binaryPath, []),
+    runClosedStdin(process.execPath, [
+      "--disable-warning=MODULE_TYPELESS_PACKAGE_JSON",
+      join(dir, "main.ts"),
+    ]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(native.stdout).toContain("resumed true");
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
 test("dot-parent: bare '.' and '..' imports build and run (the TS project dialect)", async () => {
   // The vercel-CLI spelling (`from '..'` for a parent directory's index):
   // scriptc-only — Node refuses directory imports when running raw TS as

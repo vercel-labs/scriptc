@@ -58,6 +58,17 @@ export function emitTestLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVal
       return finishRuntimeCall(host, e, "scr_test_ctx_hook", a);
     case "test.ctxPlan":
       return finishRuntimeCall(host, e, "scr_test_ctx_plan", a);
+    case "test.ctxRunOnly":
+      return finishRuntimeCall(host, e, "scr_test_ctx_run_only", a);
+    case "test.ctxWaitFor": {
+      // The call validates its arguments synchronously; a bad condition or
+      // option throws before any promise exists, so the exception must be
+      // polled before the boxed result is consumed.
+      const promise = callRuntime(host, "scr_test_ctx_wait_for", "ptr", a);
+      const out = host.own({ name: promise, type: e.type });
+      host.emitPendingCheck(out);
+      return out;
+    }
     case "test.ctxCount":
       return finishRuntimeCall(host, e, "scr_test_ctx_count", a);
     case "test.mockTrack":

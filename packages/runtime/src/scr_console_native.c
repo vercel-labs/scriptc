@@ -530,6 +530,17 @@ ScrStr *scr_console_dir_dyn(ScrDyn *value, double depth) {
   return out;
 }
 
+/* console.dir with showHidden: the checked-dynamic walk's hidden entries,
+ * with custom inspection still off (dir's default). */
+ScrStr *scr_console_dir_hidden(ScrDyn *value, double depth) {
+  if (scr_console_holds_buffer(value)) {
+    static const char message[] = "console.dir of a Buffer has no lowering";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return scr_str_new("", 0);
+  }
+  return scr_insp_dyn_hidden_as(value, depth, "console.dir", false, 0);
+}
+
 /* ── console.table ───────────────────────────────────────────────────
  * Node's table(): the index column holds the data's own keys, one column
  * per property seen across the rows (or the properties argument), and a
@@ -667,7 +678,14 @@ static ScrDyn *scr_table_own_value(const ScrDyn *item, const ScrStr *key) {
     uint32_t index;
     if (!scr_table_index_key(key->data, key->len, &index) || index >= len) return NULL;
     if (item->kind == SCR_DYN_ARR) return scr_dyn_retain(item->v.arr.items[index]);
+#ifdef SCR_JS_OBJECT_MODEL
+    /* A row's typed array can be a BigInt view; this build of the unit reads
+     * the element through the typed-array accessor, the default one keeps the
+     * numeric read. */
+    return scr_dyn_bytes_item(item->v.bytes, index);
+#else
     return scr_dyn_new_num(scr_bytes_get(item->v.bytes, (double)index));
+#endif
   }
   return NULL;
 }

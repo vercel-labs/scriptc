@@ -504,6 +504,12 @@ ScrArr *scr_arr_new_ops_small_r(const ScrArrOps *ops);
  * the array's own block (one allocation). With `states`, the array starts
  * with states (for holes or present undefined). Returns +1. */
 ScrArr *scr_arr_new_inline(ScrElemKind elem, size_t cap, bool states);
+/* The heap header of the immortal array `image` (a header in the
+ * executable's image, such as a tagged template's strings), made once and
+ * kept in *slot: 32-bit references in class fields reach only the
+ * allocator's window, and the image lies outside it. The copy shares the
+ * image's slots, and every thread may read it. */
+ScrArr *scr_arr_window_header(const ScrArr *image, ScrArr **slot);
 
 static inline ScrArr *scr_arr_retain(ScrArr *a) {
   if (a->rc != SIZE_MAX) {

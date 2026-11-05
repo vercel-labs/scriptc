@@ -811,7 +811,17 @@ function generatorRetypeAdapter(
   expected: IrType & { kind: "generator" },
 ): IrExpr | null {
   const from = expr.type;
-  if (from.kind !== "generator" || from.async || expected.async) return null;
+  if (from.kind !== "generator") return null;
+  // The adapter is the same kind of generator as its source: an async source
+  // resumes through promises, whose record the adapter awaits, and a sync one
+  // through records. Converting between the two protocols (sync iterator to
+  // async) is not this adapter's job.
+  const isAsync = from.async === true;
+  if (isAsync !== (expected.async === true)) return null;
+  // The adapter opens the source with a valueless `.next()` (as a consumer's
+  // first step does), so a source whose yields require a value has no
+  // adapter: there is no value to send.
+  if (from.nextT.kind !== "undefinedT" && from.nextT.kind !== "dyn") return null;
   if (from.yieldT.kind === "void" || expected.yieldT.kind === "void") return null;
   const fromResult = genResultRecord(from.yieldT, from.retT, lowerer.shapes, lowerer.unions);
   const toResult = genResultRecord(expected.yieldT, expected.retT, lowerer.shapes, lowerer.unions);
@@ -860,14 +870,18 @@ function generatorRetypeAdapter(
     const sent = forwards ? intoChannel(lowerer, sentRef, from.nextT) : null;
     if (forwards && !sent) return null;
     if (!forwards && from.nextT.kind !== "undefinedT" && from.nextT.kind !== "dyn") return null;
-    const resume = (arg: IrExpr | null): IrExpr => ({
+    const resume = (mode: "next" | "return", arg: IrExpr | null): IrExpr => ({
       kind: "genResume",
-      mode: "next",
+      mode,
       gen: source,
       arg,
-      type: fromResult,
+      type: isAsync ? { kind: "promise", inner: fromResult } : fromResult,
       loc,
     });
+    // An async source answers a promise of the record; the adapter awaits it
+    // before it can read `done` and `value`. A sync one answers the record.
+    const settled = (e: IrExpr): IrExpr =>
+      isAsync ? { kind: "awaitExpr", value: e, type: fromResult, loc } : e;
     const resumed: IrExpr = {
       kind: "yieldExpr",
       value: yielded,
@@ -880,6 +894,7 @@ function generatorRetypeAdapter(
       name,
       params: [{ localId: "source.0", name: "source", type: from }],
       returnType: expected.retT,
+      ...(isAsync && { async: true as const }),
       locals: [
         { id: "source.0", name: "source", type: from, mutable: false },
         { id: "step.0", name: "step", type: fromResult, mutable: true },
@@ -887,7 +902,7 @@ function generatorRetypeAdapter(
         { id: "resumed.0", name: "resumed", type: BOOL, mutable: true },
       ],
       body: [
-        { kind: "varDecl", localId: "step.0", init: resume(null), loc },
+        { kind: "varDecl", localId: "step.0", init: settled(resume("next", null)), loc },
         ...(forwards ? [{ kind: "varDecl" as const, localId: "sent.0", init: null, loc }] : []),
         {
           kind: "varDecl",
@@ -917,7 +932,12 @@ function generatorRetypeAdapter(
               ],
               catchBody: null,
               catchLocalId: null,
-              // Closing the adapter early closes the source generator too.
+              // A close the adapter already runs on the way out of a throw
+              // must not replace that error, as in the for-await form.
+              ...(isAsync && { dropFinallyErrors: true as const }),
+              // Closing the adapter early closes the source generator too: a
+              // sync source through `close`, an async one by awaiting its
+              // `return()`.
               finallyBody: [
                 {
                   kind: "if",
@@ -929,18 +949,24 @@ function generatorRetypeAdapter(
                     loc,
                   },
                   then: [
-                    {
-                      kind: "exprStmt",
-                      expr: {
-                        kind: "genResume",
-                        mode: "close",
-                        gen: source,
-                        arg: null,
-                        type: VOID,
-                        loc,
-                      },
-                      loc,
-                    },
+                    isAsync
+                      ? {
+                          kind: "exprStmt" as const,
+                          expr: settled(resume("return", null)),
+                          loc,
+                        }
+                      : {
+                          kind: "exprStmt" as const,
+                          expr: {
+                            kind: "genResume" as const,
+                            mode: "close" as const,
+                            gen: source,
+                            arg: null,
+                            type: VOID,
+                            loc,
+                          },
+                          loc,
+                        },
                   ],
                   else_: null,
                   loc,
@@ -948,11 +974,13 @@ function generatorRetypeAdapter(
               ],
               loc,
             },
-            { kind: "assign", localId: "step.0", value: resume(sent), loc },
+            { kind: "assign", localId: "step.0", value: settled(resume("next", sent)), loc },
           ],
           loc,
         },
       ],
+      // `async` on the lifted fn above is what makes this an async
+      // generator; the descriptor stays the same record for both kinds.
       generator: {
         yieldT: expected.yieldT,
         nextT: expected.nextT,

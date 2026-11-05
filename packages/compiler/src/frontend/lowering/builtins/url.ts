@@ -13,6 +13,7 @@ import {
   type IrFunction,
   type IrLibFn,
   type IrLocal,
+  type IrParam,
   type IrStmt,
   type IrType,
   NULL_T,
@@ -668,7 +669,7 @@ export function lowerSearchParamsMethodCall(
     const receiver = lowerer.lowerExpr(access.expression);
     return { kind: "libCall", fn: "sp.toString", args: [receiver], type: STRING, loc };
   }
-  if (name === "forEach" && args.length === 1) {
+  if (name === "forEach" && (args.length === 1 || args.length === 2)) {
     return lowerSpForEachCall(lowerer, call, access);
   }
   if ((name === "keys" || name === "values" || name === "entries") && args.length === 0) {
@@ -718,18 +719,35 @@ function lowerSpForEachCall(
   const receiver = lowerer.lowerExpr(access.expression);
   const arity = fnArg.type.params.length;
   const fnRet = fnArg.type.ret;
-  const key = `${arity}:${typeKey(fnRet)}`;
+  // The optional second argument is the callback's `this` (the WHATWG
+  // signature's thisArg), passed through the same dynamic slot the
+  // collection forEach helpers use.
+  const thisArgNode = call.arguments.nodes[1];
+  const thisArg = thisArgNode === undefined ? null : lowerer.lowerExprExpecting(thisArgNode, DYN);
+  const key = `${arity}:${typeKey(fnRet)}${thisArg ? ":this" : ""}`;
   let helper = lowerer.spHofHelpers.get(key);
   if (!helper) {
     helper = keyedHelperName(lowerer, "%sp.forEach", key);
     lowerer.spHofHelpers.set(key, helper);
-    lowerer.liftedFns.push(buildSpForEachFn(helper, arity, fnRet, loc));
+    lowerer.liftedFns.push(buildSpForEachFn(helper, arity, fnRet, loc, thisArg !== null));
   }
-  return { kind: "call", callee: helper, args: [receiver, fnArg], type: VOID, loc };
+  return {
+    kind: "call",
+    callee: helper,
+    args: [receiver, fnArg, ...(thisArg ? [thisArg] : [])],
+    type: VOID,
+    loc,
+  };
 }
 
 /** The Sp.forEach helper's body (see lowerSpForEachCall). */
-function buildSpForEachFn(name: string, arity: number, fnRet: IrType, loc: SrcLoc): IrFunction {
+function buildSpForEachFn(
+  name: string,
+  arity: number,
+  fnRet: IrType,
+  loc: SrcLoc,
+  withThis = false,
+): IrFunction {
   const paramTypes: IrType[] =
     arity === 0
       ? []
@@ -747,8 +765,8 @@ function buildSpForEachFn(name: string, arity: number, fnRet: IrType, loc: SrcLo
     loc,
   });
   const locals: IrLocal[] = [
-    { id: "sp.0", name: "sp", type: SEARCH_PARAMS_T, mutable: true },
-    { id: "f.0", name: "f", type: fnT, mutable: true },
+    { id: "sp.0", name: "sp", type: SEARCH_PARAMS_T, mutable: false },
+    { id: "f.0", name: "f", type: fnT, mutable: false },
     { id: "i.0", name: "i", type: F64, mutable: true },
   ];
   const callArgs: IrExpr[] = [];
@@ -776,16 +794,28 @@ function buildSpForEachFn(name: string, arity: number, fnRet: IrType, loc: SrcLo
   if (arity === 3) callArgs.push(varRef("sp.0", SEARCH_PARAMS_T, loc));
   body.push({
     kind: "exprStmt",
-    expr: { kind: "callValue", callee: varRef("f.0", fnT, loc), args: callArgs, type: fnRet, loc },
+    expr: {
+      kind: "callValue",
+      callee: varRef("f.0", fnT, loc),
+      args: callArgs,
+      ...(withThis ? { receiver: varRef("t.0", DYN, loc) as IrExpr } : {}),
+      type: fnRet,
+      loc,
+    },
     loc,
   });
   const loop = countedFor(loc, sp("sp.size", [], F64), () => body);
+  const params: IrParam[] = [
+    { localId: "sp.0", name: "sp", type: SEARCH_PARAMS_T },
+    { localId: "f.0", name: "f", type: fnT },
+  ];
+  if (withThis) {
+    locals.push({ id: "t.0", name: "t", type: DYN, mutable: false });
+    params.push({ localId: "t.0", name: "t", type: DYN });
+  }
   return {
     name,
-    params: [
-      { localId: "sp.0", name: "sp", type: SEARCH_PARAMS_T },
-      { localId: "f.0", name: "f", type: fnT },
-    ],
+    params,
     returnType: VOID,
     locals,
     body: [loop],

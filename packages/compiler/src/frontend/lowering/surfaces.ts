@@ -2249,6 +2249,35 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
   };
 }
 
+/** node:dns's DNS error-code constants: the `code` a resolver failure
+ * carries, exported by node:dns and node:dns/promises alike. */
+const DNS_ERROR_CODES: Record<string, string> = {
+  NODATA: "ENODATA",
+  FORMERR: "EFORMERR",
+  SERVFAIL: "ESERVFAIL",
+  NOTFOUND: "ENOTFOUND",
+  NOTIMP: "ENOTIMP",
+  REFUSED: "EREFUSED",
+  BADQUERY: "EBADQUERY",
+  BADNAME: "EBADNAME",
+  BADFAMILY: "EBADFAMILY",
+  BADRESP: "EBADRESP",
+  CONNREFUSED: "ECONNREFUSED",
+  TIMEOUT: "ETIMEOUT",
+  EOF: "EOF",
+  FILE: "EFILE",
+  NOMEM: "ENOMEM",
+  DESTRUCTION: "EDESTRUCTION",
+  BADSTR: "EBADSTR",
+  BADFLAGS: "EBADFLAGS",
+  NONAME: "ENONAME",
+  BADHINTS: "EBADHINTS",
+  NOTINITIALIZED: "ENOTINITIALIZED",
+  LOADIPHLPAPI: "ELOADIPHLPAPI",
+  ADDRGETNETWORKPARAMS: "EADDRGETNETWORKPARAMS",
+  CANCELLED: "ECANCELLED",
+};
+
 /** Builtin-module CONSTANTS (value reads of named imports): each lowers to
  * a literal of its value's kind. The bare-module values are the TARGET
  * platform's (builtinModuleConstOf swaps the win32 values in under a win32
@@ -2283,6 +2312,11 @@ export const BUILTIN_MODULE_CONSTS: Record<
   zlib: Object.fromEntries(
     Object.entries(ZLIB_CONSTANTS).filter(([name]) => !name.startsWith("BROTLI")),
   ),
+  // node:dns's getaddrinfo hints are libuv's normalized flags (uv.h's
+  // UV_AI_*), the same numbers on every platform. The error codes are the
+  // module's exported strings; node:dns/promises exports the same ones.
+  dns: { ADDRCONFIG: 32, ALL: 16, V4MAPPED: 8, ...DNS_ERROR_CODES },
+  "dns/promises": { ...DNS_ERROR_CODES },
 };
 
 /** ALTERNATE libCall spellings of tabled builtin members: lowerings the

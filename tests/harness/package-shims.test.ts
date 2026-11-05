@@ -22,7 +22,9 @@
  *   connection open with its body paused).
  * - a CommonJS package's require() of a shimmed package (fs-extra, required
  *   by an installed package's JavaScript) compiles the shim, and matches
- *   Node running the real package.
+ *   Node running the real package;
+ * - the undici shim compiles under a project tsconfig with
+ *   strictPropertyInitialization off.
  */
 import { execFile, spawn } from "node:child_process";
 import {
@@ -383,4 +385,27 @@ describe("package shims", () => {
       ].join("\n"),
     );
   }, 180_000);
+
+  test("undici7: the shim compiles under a project with strictPropertyInitialization off", async () => {
+    const dir = copyCase("undici7", "undici7-loose");
+    // tsc accepts the shim's Request#body here because it is assigned in the
+    // constructor; the lowering only sees top-level assignments, so the
+    // field carries an initializer and the class lowers.
+    writeFileSync(
+      join(dir, "tsconfig.json"),
+      '{ "compilerOptions": { "strict": false, "strictNullChecks": true } }\n',
+    );
+    // Frontend only: the refusal was a lowering diagnostic, and stopping
+    // before codegen keeps this to the module graph's frontend cost.
+    const out = join(dir, ".scriptc");
+    const result = await compile(join(dir, "main.ts"), {
+      outPath: join(out, "program"),
+      outDir: out,
+      outputKind: "ir",
+    });
+    expect(
+      result.ok,
+      !result.ok ? result.diagnostics.map((d) => `${d.code} ${d.message}`).join("\n") : "",
+    ).toBe(true);
+  }, 120_000);
 });

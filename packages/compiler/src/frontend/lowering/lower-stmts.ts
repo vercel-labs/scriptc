@@ -267,6 +267,7 @@ import {
 } from "./lower-stream.js";
 import { staticAssertInstanceDecl } from "./assert-instances.js";
 import {
+  lowerHttpClientFnBindingDecl,
   lowerHttpResPropertyAssignment,
   lowerHttpServerTimeoutAssignment,
   lowerNetServerMaxConnectionsAssignment,
@@ -6626,6 +6627,12 @@ export function lowerVarDecl(
       `initializer-less top-level declarations named '${decl.name.text}' in an import/export-free file (Node hosts the file as CommonJS, where the wrapper's own binding keeps its value — the declaration reads as the module object there, which has no lowering; rename the variable or give it an initializer)`,
     );
   }
+
+  // `const requestFn = cond ? https.request : http.request`: calls through
+  // the binding lower as the runtime-secure client. A condition that is not
+  // a stable identifier read is evaluated once, here, into a hidden bool.
+  const clientFnDecl = lowerHttpClientFnBindingDecl(lowerer, decl);
+  if (clientFnDecl !== false) return clientFnDecl;
 
   // `const asyncFn = promisify(supportedBuiltin)`: the binding registers
   // a static callable projection; calls route to the target's promise

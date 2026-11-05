@@ -270,6 +270,9 @@ declare var process: {
   /* The extra CLI arguments Node itself consumed (--expose-internals,
    * ...): a compiled binary consumed none, so this is always []. */
   readonly execArgv: string[];
+  /* The option names the compatibility target accepts in NODE_OPTIONS —
+   * one stable set, like Node's. */
+  readonly allowedNodeEnvironmentFlags: ReadonlySet<string>;
   /* Node's internal "exit sequence started" flag (real, undocumented
    * surface — the test harness reads it): true while 'exit' listeners
    * run, false otherwise. */

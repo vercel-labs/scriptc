@@ -80119,6 +80119,8 @@
           "tests/corpus/node24-env-files-errors.ts",
           "tests/corpus/node24-env-files.ts",
           "tests/corpus/node24-env-imports.cjs",
+          "tests/corpus/process-allowed-node-env-flags-destructured.cjs",
+          "tests/corpus/process-allowed-node-env-flags.ts",
           "tests/corpus/process-builtin-values.js",
           "tests/corpus/process-hrtime.js",
           "tests/corpus/process-named-signals.cjs",
@@ -81565,8 +81567,12 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "compiler-feature:process.allowedNodeEnvironmentFlags",
+        "tests": [
+          "tests/corpus/process-allowed-node-env-flags.ts",
+          "tests/corpus/process-allowed-node-env-flags-destructured.cjs"
+        ]
       },
       "anchorSource": "chapter"
     },

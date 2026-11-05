@@ -29,6 +29,7 @@ import {
   canBoxFuncIntoDyn,
   funcOf,
   isUnitType,
+  setOf,
   typeKey,
 } from "../../../ir/ir.js";
 import { lowerBuiltinLoaderValue } from "../lower-builtin-values.js";
@@ -642,6 +643,8 @@ export function processDataMemberValue(
       return { kind: "libCall", fn: "process.pid", args: [], type: F64, loc };
     case "execPath":
       return { kind: "libCall", fn: "process.execPath", args: [], type: STRING, loc };
+    case "allowedNodeEnvironmentFlags":
+      return { kind: "libCall", fn: "process.allowedEnvFlags", args: [], type: setOf(STRING), loc };
     case "versions":
       return { kind: "libCall", fn: "process.versions", args: [], type: DYN, loc };
     default:
@@ -836,6 +839,12 @@ export function lowerProcessProperty(
   // a leading --test-update-snapshots in node:test programs, else [].
   if (member === "execArgv") {
     return { kind: "libCall", fn: "process.execArgv", args: [], type: arrayOf(STRING), loc };
+  }
+  // process.allowedNodeEnvironmentFlags: one stable set of the option
+  // names the compatibility target's NODE_OPTIONS accepts (the same
+  // identity on every read, like Node's).
+  if (member === "allowedNodeEnvironmentFlags") {
+    return { kind: "libCall", fn: "process.allowedEnvFlags", args: [], type: setOf(STRING), loc };
   }
   // process._exiting — the runtime's exit-sequence flag (true while
   // 'exit' listeners run), Node's own undocumented member.

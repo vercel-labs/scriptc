@@ -2962,6 +2962,13 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       fns: ["process.execPath"],
     },
     {
+      id: "node-builtin.process.allowedNodeEnvironmentFlags",
+      kind: "node-builtin",
+      name: "process.allowedNodeEnvironmentFlags",
+      fns: ["process.allowedEnvFlags"],
+      note: "one stable set of the option names the compatibility target accepts in NODE_OPTIONS",
+    },
+    {
       id: "node-builtin.process.uptime",
       kind: "node-builtin",
       name: "process.uptime",
@@ -3206,6 +3213,52 @@ export const FS_CALLBACK_MEMBERS = new Set([
   "appendFile",
   "readdir",
 ]);
+
+/** The `length` Node's filesystem callback functions carry
+ * (`fs.readFile.length` is 3). The value adapter reports it through
+ * Function.length; the direct call accepts the arguments it always did. */
+export const FS_CALLBACK_VALUE_LENGTHS: Readonly<Record<string, number | undefined>> = {
+  access: 3,
+  cp: 4,
+  copyFile: 4,
+  chmod: 3,
+  chown: 4,
+  lchown: 4,
+  fchown: 4,
+  glob: 3,
+  link: 3,
+  mkdir: 3,
+  mkdtemp: 3,
+  rm: 3,
+  rmdir: 3,
+  unlink: 2,
+  open: 4,
+  close: 1,
+  fstat: 1,
+  ftruncate: 1,
+  fsync: 2,
+  fdatasync: 2,
+  fchmod: 3,
+  read: 6,
+  write: 6,
+  readv: 4,
+  writev: 4,
+  readlink: 3,
+  realpath: 3,
+  rename: 3,
+  stat: 1,
+  lstat: 1,
+  symlink: 4,
+  statfs: 1,
+  truncate: 3,
+  utimes: 4,
+  futimes: 4,
+  lutimes: 4,
+  readFile: 3,
+  writeFile: 4,
+  appendFile: 4,
+  readdir: 3,
+};
 
 /** One member's fence hint, own-property-safe (a collision would print an
  * inherited function into the diagnostic text). */

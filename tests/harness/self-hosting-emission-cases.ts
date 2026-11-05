@@ -312,6 +312,16 @@ export function emissionCases(): EmissionCase[] {
   dynField.classes = [{ name: "Checked", fields: [{ name: "value", type: { kind: "dyn" } }], loc }];
   add("checked field initialization", dynField, ["@scr_dyn_undefined", "@scr_dyn_release"]);
 
+  // An optional checked-dynamic field carries the ABSENT marker: the JSON
+  // writer drops an absent field and still writes a present undefined.
+  const absentField = emissionModule();
+  absentField.records = [
+    { id: "marked", fields: [{ name: "content", type: { kind: "dyn" }, optional: true }] },
+  ];
+  const absentRequest = emissionRequest();
+  absentRequest.writers = [rec("marked"), arrayOf(rec("marked"))];
+  add("optional checked-dynamic JSON writers", absentField, ["@sc_dyn_absent"], absentRequest);
+
   const emitter = emissionModule();
   emitter.classes = [
     { name: "%EventEmitter", runtime: true, fields: [], loc },

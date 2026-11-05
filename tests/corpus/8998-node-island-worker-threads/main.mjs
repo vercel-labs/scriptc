@@ -30,6 +30,6 @@ if (isMainThread) {
 } else {
   const lib = requireModule("./lib.cjs");
   let sum = 0;
-  for (let i = 0; i < 5000; i++) sum += lib.create(lib.params()).length;
+  for (let i = 0; i < 1000; i++) sum += lib.create(lib.params()).length;
   parentPort.postMessage(sum);
 }

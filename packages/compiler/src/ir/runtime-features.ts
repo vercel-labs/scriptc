@@ -201,6 +201,7 @@ const ASYNC_CONTEXT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 const LEGACY_URL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "url.domainToASCII",
   "url.domainToUnicode",
+  "url.legacyClass",
   "url.legacyFormat",
   "url.legacyParse",
   "url.legacyResolve",

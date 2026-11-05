@@ -28143,7 +28143,9 @@
           "tests/corpus/5227-url-legacy-dependency/main.ts",
           "tests/corpus/5229-url-legacy-errors.cjs",
           "packages/runtime/test/url-legacy.test.ts",
-          "tests/fixtures/node-types/url-legacy.ts"
+          "tests/fixtures/node-types/url-legacy.ts",
+          "tests/corpus/url-Url-value.cjs",
+          "tests/corpus/url-Url-value.ts"
         ]
       },
       "anchorSource": "exact"
@@ -100288,6 +100290,8 @@
           "tests/corpus/node24-url-factory-errors.ts",
           "tests/corpus/node24-url-mutation-coercion.js",
           "tests/corpus/node24-url-mutation.ts",
+          "tests/corpus/url-Url-value.cjs",
+          "tests/corpus/url-Url-value.ts",
           "tests/corpus/url-runtime-base.ts",
           "tests/fixtures/node-types/file-url-conversion.ts",
           "tests/fixtures/node-types/url-factories.ts",
@@ -101476,7 +101480,9 @@
           "tests/corpus/5227-url-legacy-dependency/main.ts",
           "tests/corpus/5229-url-legacy-errors.cjs",
           "packages/runtime/test/url-legacy.test.ts",
-          "tests/fixtures/node-types/url-legacy.ts"
+          "tests/fixtures/node-types/url-legacy.ts",
+          "tests/corpus/url-Url-value.cjs",
+          "tests/corpus/url-Url-value.ts"
         ]
       },
       "anchorSource": "exact"
@@ -101980,7 +101986,9 @@
           "tests/corpus/5227-url-legacy-dependency/main.ts",
           "tests/corpus/5229-url-legacy-errors.cjs",
           "packages/runtime/test/url-legacy.test.ts",
-          "tests/fixtures/node-types/url-legacy.ts"
+          "tests/fixtures/node-types/url-legacy.ts",
+          "tests/corpus/url-Url-value.cjs",
+          "tests/corpus/url-Url-value.ts"
         ]
       },
       "anchorSource": "exact"
@@ -102011,7 +102019,9 @@
           "tests/corpus/5227-url-legacy-dependency/main.ts",
           "tests/corpus/5229-url-legacy-errors.cjs",
           "packages/runtime/test/url-legacy.test.ts",
-          "tests/fixtures/node-types/url-legacy.ts"
+          "tests/fixtures/node-types/url-legacy.ts",
+          "tests/corpus/url-Url-value.cjs",
+          "tests/corpus/url-Url-value.ts"
         ]
       },
       "anchorSource": "exact"
@@ -102044,7 +102054,9 @@
           "tests/corpus/5227-url-legacy-dependency/main.ts",
           "tests/corpus/5229-url-legacy-errors.cjs",
           "packages/runtime/test/url-legacy.test.ts",
-          "tests/fixtures/node-types/url-legacy.ts"
+          "tests/fixtures/node-types/url-legacy.ts",
+          "tests/corpus/url-Url-value.cjs",
+          "tests/corpus/url-Url-value.ts"
         ]
       },
       "anchorSource": "exact"

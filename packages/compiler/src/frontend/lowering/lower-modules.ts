@@ -1061,8 +1061,10 @@ export function moduleArtifacts(
         case "unionKeyGet":
         case "unionIsTag":
         case "unionEq":
-        case "fieldAbsent":
           visitUnion(node.unionId);
+          break;
+        case "fieldAbsent":
+          if (node.unionId !== undefined) visitUnion(node.unionId);
           break;
         case "unionRetype":
           visitUnion(node.fromId);
@@ -1471,7 +1473,7 @@ function withoutRejectedClassMembers(
   if (!shape.fields.some((f) => rejected(f.type))) return type;
   const kept = shape.fields.filter((f) => !rejected(f.type));
   const shapeId = lowerer.shapes.intern(
-    kept.map((f) => ({ name: f.name, type: f.type })),
+    kept.map((f) => ({ ...f })),
     false,
     shape.indexValue,
   );

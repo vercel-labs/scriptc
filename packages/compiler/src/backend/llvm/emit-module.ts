@@ -2,7 +2,7 @@
 import { loopUnrollMetadata } from "./periodic-guards.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
 import { emitWasmModules } from "./wasm-modules.js";
-import { type LlEmitter, ffiCallbackDummyLl, llStrBytes } from "./emitter.js";
+import { DYN_ABSENT, type LlEmitter, ffiCallbackDummyLl, llStrBytes } from "./emitter.js";
 import { type ChunkResult, EmitJournal } from "./emit-journal.js";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -941,6 +941,20 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   ];
   for (const line of shapes.typeDefs) out.push(line);
   for (const line of classShapes.typeDefs) out.push(line);
+  if (emitter.needsDynAbsent) {
+    // The ABSENT marker of an optional checked-dynamic record field slot:
+    // an immortal ScrDyn (rc == SIZE_MAX, so RC and the collector skip it)
+    // of kind SCR_DYN_UNDEF (= 6), address-distinct from the module-wide
+    // scr_dyn_undefined() singleton. Layout follows scr_dyn.h: rc, i32
+    // kind, four bools, then the payload union. Compiled code only
+    // compares its address (reads select it to scr_dyn_undefined, boxing
+    // omits it, presence tests compare it), so the payload is zero.
+    const S = emitter.sizeType;
+    out.push(
+      `${DYN_ABSENT} = internal global { ${S}, i32, i8, i8, i8, i8, [8 x i8] } { ${S} -1, i32 6, i8 0, i8 0, i8 0, i8 0, [8 x i8] zeroinitializer } ; optional dyn absent field`,
+      ``,
+    );
+  }
   // Thread-instanced library state (abi.instance_per_thread): the
   // program TU's mutable globals — module globals, run-once guards, the
   // lazily-compiled regex literal caches — and the runtime globals its

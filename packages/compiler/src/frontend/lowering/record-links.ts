@@ -433,7 +433,10 @@ function addComposer(lowerer: Lowerer, link: IrRecordLink, sourced: ReadonlySet<
     const [obj, shapeId] =
       own !== undefined && typeEquals(own.type, field.type) ? [copy, link.to] : [source, link.from];
     const read: IrExpr = { kind: "recordGet", obj, shapeId, field: name, type: field.type, loc };
-    return { name, value: lowerer.presenceKeepingCopy(obj, shapeId, name, read, loc) };
+    return {
+      name,
+      value: lowerer.presenceKeepingCopy(obj, shapeId, name, read, loc, own ?? field),
+    };
   });
   // A source type written in several key orders records each value's order
   // in a hidden field: the composed record enumerates in the source's.

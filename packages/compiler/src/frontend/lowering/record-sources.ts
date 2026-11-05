@@ -12,7 +12,14 @@
  * converts anything into one at all (a program without such a conversion
  * answers the test false everywhere, so its captures keep static copies). */
 import type { IrExpr, IrFunction, IrType, SrcLoc } from "../../ir/ir.js";
-import { BOOL, DYN, recordTextCodecClass, shapeHasAccessorSlots } from "../../ir/ir.js";
+import {
+  BOOL,
+  DYN,
+  STRING,
+  canDynCheckTo,
+  recordTextCodecClass,
+  shapeHasAccessorSlots,
+} from "../../ir/ir.js";
 import { everyStmtList } from "../../ir/traverse.js";
 import { varRef } from "../../ir/build.js";
 import type { Lowerer } from "./lowerer.js";
@@ -115,6 +122,112 @@ export function functionKeepsRecordSources(
     expr: (expr) =>
       expr.kind !== "dynCheck" || !conversionKeepsSource(lowerer, expr.type, scan).keeps,
     stmt: () => true,
+  });
+}
+
+/** A target field of a width copy that the record source does not declare:
+ * Node keeps the source object through the conversion, so the field may
+ * hold a kept key. */
+export interface AbsentSourceField {
+  name: string;
+  type: IrType;
+}
+
+/** The record literal a width projection builds: the first literal of the
+ * projection's return type, after the key-order and link passes have
+ * settled its fields. */
+function projectionRecordLit(projection: IrFunction): (IrExpr & { kind: "recordLit" }) | null {
+  const target = projection.returnType;
+  if (target.kind !== "record") return null;
+  let found: (IrExpr & { kind: "recordLit" }) | null = null;
+  everyStmtList(projection.body, {
+    stmt: () => found === null,
+    expr: (expr) => {
+      if (found !== null) return false;
+      if (
+        expr.kind === "recordLit" &&
+        expr.type.kind === "record" &&
+        expr.type.shapeId === target.shapeId
+      ) {
+        found = expr;
+        return false;
+      }
+      return true;
+    },
+  });
+  return found;
+}
+
+/** `record.sourceHas(r) ? <name read from r's live view, typed `field.type`>
+ * : absent`. A key the view lacks answers the undefined singleton. */
+function absentFieldFromSource(
+  field: AbsentSourceField,
+  receiver: IrExpr,
+  absent: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const view: IrExpr = { kind: "dynFrom", value: receiver, liveRef: true, type: DYN, loc };
+  const member: IrExpr = {
+    kind: "dynKeyGet",
+    value: view,
+    key: { kind: "strLit", value: field.name, type: STRING, loc },
+    type: DYN,
+    loc,
+  };
+  return {
+    kind: "ternary",
+    cond: recordSourceTest(receiver, loc),
+    then:
+      field.type.kind === "dyn"
+        ? member
+        : { kind: "dynCheck", value: member, type: field.type, loc },
+    else_: absent,
+    type: field.type,
+    loc,
+  };
+}
+
+/** Carries an undeclared kept key through a record→record conversion: a
+ * target field the source type does not declare reads from the source
+ * record's live checked view when the record carries one (Node keeps the
+ * whole object through the assertion), and answers its absent state
+ * otherwise.
+ *
+ * Only a program that converts a value with a kept source into the source
+ * type can take the read, so the rewrite waits for finalizeRecordLinks'
+ * scan: `sourced` names those types, and a program without one keeps the
+ * projection — and its IR — exactly as it was. Fields outside the dynCheck
+ * domain keep their absent value rather than emit an invalid check. */
+export function carryAbsentFieldsFromSource(
+  lowerer: Lowerer,
+  projection: IrFunction,
+  source: IrType & { kind: "record" },
+  fields: readonly AbsentSourceField[],
+  loc: SrcLoc,
+): void {
+  if (fields.length === 0 || !recordMayKeepSource(lowerer, source)) return;
+  lowerer.linkedHelperFinalizers.push((sourced) => {
+    if (!sourced.has(source.shapeId)) return;
+    const checkable = fields.filter(
+      (field) =>
+        field.type.kind === "dyn" ||
+        canDynCheckTo(
+          field.type,
+          (id) => lowerer.shapes.get(id),
+          (id) => lowerer.unions.get(id),
+        ),
+    );
+    if (checkable.length === 0) return;
+    const literal = projectionRecordLit(projection);
+    if (literal === null) return;
+    const param = projection.params[0];
+    if (param === undefined) return;
+    const receiver = varRef(param.localId, source, loc);
+    for (const field of checkable) {
+      const slot = literal.fields.find((entry) => entry.name === field.name);
+      if (slot === undefined) continue;
+      slot.value = absentFieldFromSource(field, receiver, slot.value, loc);
+    }
   });
 }
 

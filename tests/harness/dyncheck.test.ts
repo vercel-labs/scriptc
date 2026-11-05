@@ -37,20 +37,25 @@ interface RunResult {
 
 /** Compiles an inline program and runs the binary, tolerating nonzero exit.
  * `ext` selects the source lane: "cjs" for the JS lane's per-site checked
- * lowerings (dyn member dispatch exists only there). */
+ * lowerings (dyn member dispatch exists only there). `files` adds sibling
+ * modules (a JavaScript module and its declaration sidecar) next to the
+ * entry, so a lying declaration can be exercised without a lying cast. */
 async function compileAndRun(
   name: string,
   source: string,
   ext: "ts" | "cjs" = "ts",
   compareNode = false,
+  files: Record<string, string> = {},
 ): Promise<RunResult> {
   const key = createHash("sha256")
     .update(source)
+    .update(JSON.stringify(files))
     .update(sanitize ? "san" : "plain")
     .digest("hex")
     .slice(0, 16);
   const outDir = join(cacheDir, `dyncheck-${key}`);
   mkdirSync(outDir, { recursive: true });
+  for (const [name, text] of Object.entries(files)) writeFileSync(join(outDir, name), text);
   const file = join(outDir, `${name}.${ext}`);
   writeFileSync(file, source);
   // Pinned: the exact TypeError text and path rendering of failed checked
@@ -2026,6 +2031,62 @@ console.log(inspect(sab));
         "view SC2020 util.inspect with showHidden of SharedArrayBuffer values is not supported yet",
         "dataView SC2020 util.inspect with showHidden of SharedArrayBuffer values is not supported yet",
         "SharedArrayBuffer { [Uint8Contents]: <00 00 00 00>, [byteLength]: 4 }",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("collection seeds from a dynamic iterable convert every element through the checked boundary", async () => {
+    // `new Set(x)` / `new Map(x)` over a checked-dynamic source seed the
+    // declared collection by iterating with the dynamic iterator protocol and
+    // converting each element (and each Map key and value) through the existing
+    // checked conversion. A lying view — a marked accessor whose data members
+    // are typed Set<string> / Map<string, number> but hold JSON arrays — makes
+    // the conversion fail where Node, which never checks, copies silently: the
+    // documented checked-dynamic divergence. The seed stops at the first bad
+    // element and the TypeError is catchable.
+    const r = await compileAndRun(
+      "collection-dyn-seed-checked",
+      `interface State {
+  readonly label: string;
+  readonly pending: Set<string>;
+  readonly table: Map<string, number>;
+}
+function create(): State {
+  return {
+    get label(): string {
+      return "agent";
+    },
+    pending: JSON.parse("[1,2]"),
+    table: JSON.parse("[[1,2]]"),
+  };
+}
+class Owner {
+  private m: State = create();
+  get state(): State {
+    return this.m;
+  }
+}
+const owner = new Owner();
+try {
+  const copy = new Set(owner.state.pending);
+  console.log("set-ok", copy.size);
+} catch (error) {
+  console.log("set-threw", (error as Error).name, (error as Error).message);
+}
+try {
+  const table = new Map(owner.state.table);
+  console.log("map-ok", table.size);
+} catch (error) {
+  console.log("map-threw", (error as Error).name, (error as Error).message);
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "set-threw TypeError expected string at $, got number",
+        "map-threw TypeError expected string at $, got number",
         "",
       ].join("\n"),
     );

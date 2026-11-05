@@ -1,6 +1,7 @@
 /* instanceof and in, including private-name and runtime-key in. */
 import { lowerIteratorInstanceOf } from "../iterator-prototype.js";
 import { programCreatesWrappers, WRAPPER_KIND_NUMBER } from "../primitive-wrappers.js";
+import { boxedHandleReceiver } from "../handle-properties.js";
 import { lowerArrayClassInstanceOf } from "../builtins/array-classes.js";
 import { dateRootOf } from "../builtins/date-classes.js";
 import { keyedHelperName } from "../stable-names.js";
@@ -14,6 +15,7 @@ import {
   privateInMessage,
 } from "../private-brands.js";
 import type { Lowerer } from "../lowerer.js";
+import { isCallableValue } from "../callable-properties.js";
 import {
   BOOL,
   BYTES_ELEMENT_NAME,
@@ -1651,7 +1653,7 @@ const BUILTIN_ERROR_SLOT_KEYS: ReadonlySet<string> = new Set([
   "generatedMessage",
 ]);
 
-const OBJECT_PROTOTYPE_KEYS: ReadonlySet<string> = new Set([
+export const OBJECT_PROTOTYPE_KEYS: ReadonlySet<string> = new Set([
   "constructor",
   "__defineGetter__",
   "__defineSetter__",
@@ -1973,9 +1975,9 @@ export function lowerInExpression(
     recv.type.kind === "classval" ? lowerer.classes.get(recv.type.className) : undefined;
   if (
     (classInfo && (classInfo.callableBase || hasRuntimeStatics(classInfo))) ||
-    (isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
-      recv.type.kind === "func" &&
-      lowerer.dynConvertible(recv.type))
+    (recv.type.kind === "func" &&
+      lowerer.dynConvertible(recv.type) &&
+      (isJsSourceFile(ts.getSourceFileOfNode(expr)) || isCallableValue(lowerer, expr.right)))
   ) {
     recv = lowerer.coerceToExpected(recv, DYN);
   }
@@ -2297,6 +2299,13 @@ export function lowerInExpression(
         };
   }
   if (recv.type.kind !== "record") {
+    // A typed handle in a program that adds properties to handles: own
+    // keys and the class's members answer from its property table
+    // (scr_dyn_handle_props.c).
+    {
+      const boxed = boxedHandleReceiver(lowerer, recv);
+      if (boxed) return { kind: "dynHasKey", key, value: boxed, type: BOOL, loc };
+    }
     lowerer.unsupported(
       "SC1090",
       expr,

@@ -1331,7 +1331,7 @@ function collectionOps(host: LlvmEmitterContext, key: IrType, value: IrType): st
     if (!arms) throw new InternalCompilerError("llvm emitter bug: collection key union missing");
     unionKeys = host.cstr(arms.map((arm) => String.fromCharCode(mapKeyKindNum(arm))).join(""));
   }
-  return host.shapeHost.mapOps([
+  const operands = [
     keyRc.retain,
     keyRc.release,
     keyRc.trace,
@@ -1339,7 +1339,18 @@ function collectionOps(host: LlvmEmitterContext, key: IrType, value: IrType): st
     rc.release,
     traceArg(host.shapeHost, value),
     unionKeys,
-  ]);
+  ];
+  // A promise key's ops are a ScrMapIdentityOps: one more field, the
+  // identity its hash and equality use. A union key with a promise arm reads
+  // the same field for that arm (SCR_MAP_KEY_PROMISE in the key-kind table).
+  if (
+    key.kind === "promise" ||
+    (unionKeys !== "null" && arms?.some((arm) => arm.kind === "promise"))
+  ) {
+    host.declare("declare ptr @scr_promise_map_identity(ptr)");
+    operands.push("@scr_promise_map_identity");
+  }
+  return host.shapeHost.mapOps(operands);
 }
 
 /** Construct matching key/value storage once for Maps and Sets. */

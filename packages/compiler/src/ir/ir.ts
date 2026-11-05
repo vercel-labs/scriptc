@@ -726,6 +726,10 @@ export function isIdentityCollectionKey(t: IrType): boolean {
     // per evaluation), so pointer identity is JS function identity.
     // Closures are cycle-headered and traced like records.
     t.kind === "func" ||
+    // A promise is one object for its whole life, so pointer identity is
+    // JS promise identity; the runtime's scr_promise_{retain,release,trace}_v
+    // adapters already serve Map values and boxed captures.
+    t.kind === "promise" ||
     t.kind === "date"
   );
 }
@@ -961,6 +965,35 @@ export function typeKey(t: IrType): string {
       throw new InternalCompilerError("unreachable");
     }
   }
+}
+
+/** Sorts arms into `typeKey` order, building each key once.
+ *
+ * The inline form this replaces, `arms.sort((a, b) => (typeKey(a) <
+ * typeKey(b) ? -1 : 1))`, builds two keys for every comparison — 2·n·log n
+ * key strings per sort, and a key walks its whole type. This form builds n
+ * keys and compares them from a map. The comparator answers the same way for
+ * every pair (a pure function of the two arms), so the sort visits the same
+ * comparisons and leaves the arms in the same order; a sort compacts the
+ * array in place, and so does this. */
+export function sortArms(arms: IrType[]): IrType[] {
+  if (arms.length < 2) return arms;
+  const keys = new Map<IrType, string>();
+  for (const arm of arms) if (!keys.has(arm)) keys.set(arm, typeKey(arm));
+  return arms.sort((a, b) => (keys.get(a)! < keys.get(b)! ? -1 : 1));
+}
+
+/** `sortArms` for the total-order form `< -1 : > 1 : 0`, which leaves arms
+ * with equal keys in their input order instead of reversing them. */
+export function sortArmsTotal(arms: IrType[]): IrType[] {
+  if (arms.length < 2) return arms;
+  const keys = new Map<IrType, string>();
+  for (const arm of arms) if (!keys.has(arm)) keys.set(arm, typeKey(arm));
+  return arms.sort((a, b) => {
+    const left = keys.get(a)!;
+    const right = keys.get(b)!;
+    return left < right ? -1 : left > right ? 1 : 0;
+  });
 }
 
 /** The type a CALL SITE (or function value) receives from a module
@@ -1603,6 +1636,12 @@ export interface IrClassDef {
   /** Native instance to the string its inherited Symbol.toStringTag getter
    * answers, read by the runtime for an instance seen as `unknown`. */
   stringTagHelper?: string;
+  /** The class's accessor-backed members, nearest declaration first: one
+   * helper per name a `get` accessor at or above the class answers, which
+   * an instance's checked view installs so a field behind an accessor
+   * reads the value the getter answers. `member` is the accessor's IR
+   * name (`get:<name>`). */
+  viewAccessors?: { member: string; helper: string }[];
   /** Public JavaScript fields record their creation in the shared property
    * bag. Its descriptors preserve presence and insertion order independently
    * of native layout order; field values remain in their native slots. */
@@ -4497,6 +4536,7 @@ export const DYN_HANDLE_KINDS: ReadonlyMap<string, { tag: string; cls: string }>
   ["httpClientReq", { tag: "SCR_DYNH_HTTP_CLIENT", cls: "ClientRequest" }],
   ["dgramSocket", { tag: "SCR_DYNH_DGRAM_SOCKET", cls: "Socket" }],
   ["dir", { tag: "SCR_DYNH_DIR", cls: "Dir" }],
+  ["spawnRes", { tag: "SCR_DYNH_SPAWN_RES", cls: "SpawnSyncReturns" }],
   ["cryptoHash", { tag: "SCR_DYNH_HASH", cls: "Hash" }],
   ["cryptoHmac", { tag: "SCR_DYNH_HMAC", cls: "Hmac" }],
 ]);
@@ -4896,9 +4936,12 @@ export function canAdaptDynFuncTo(
 ): boolean {
   return (
     t.kind === "func" &&
-    // Checked rest and arguments packs retain all actual arguments. Typed
-
-    (t.rest !== true || t.restAbi === undefined) &&
+    // Checked rest and arguments packs retain all actual arguments; typed
+    // rest is one trailing native array in `params`, which the adapter
+    // spreads into the dyn call's argument vector element by element.
+    (t.rest !== true ||
+      t.restAbi === undefined ||
+      (t.restAbi === "typed" && t.params.at(-1)?.kind === "array")) &&
     t.params.every((p) => p.kind === "dyn" || canConvertToDyn(p, getRecord, getUnion, visiting)) &&
     (t.ret.kind === "void" ||
       t.ret.kind === "dyn" ||

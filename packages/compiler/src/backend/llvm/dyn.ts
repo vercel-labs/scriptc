@@ -136,6 +136,7 @@ export const DYN_HANDLE_TAG_NUM: Record<string, number> = {
   child: 16,
   fileHandle: 17,
   dir: 44,
+  spawnRes: 99,
   dgramSocket: 62,
   cryptoHash: 52,
   cryptoHmac: 53,
@@ -161,6 +162,7 @@ const DYN_HANDLE_BOX_FN: Record<string, string> = {
   cryptoHash: "scr_crypto_hash_to_dyn",
   cryptoHmac: "scr_crypto_hash_to_dyn",
   dgramSocket: "scr_dgram_to_dyn",
+  spawnRes: "scr_spawn_res_to_dyn",
 };
 
 /** Handle kinds whose box holds a unit-owned wrapper rather than the
@@ -227,6 +229,10 @@ export interface DynHost extends WalkerHost {
   liveDynRefAdapter(t: IrType): LlStreamTypedRefAdapter;
   /** See moduleUsesDynBuiltinStream. */
   usesDynBuiltinStream?(): boolean;
+  /** The JavaScript object model build is on: an array it holds may keep
+   * elements past its dense prefix, so the keyed read answers `length`
+   * from the array's own length rather than the prefix field. */
+  jsObjectModel?(): boolean;
   liveDynUnionRefAdapter(t: IrType & { kind: "union" }): string;
   /** The module has declaration-typed boundary casts (IrModule.declBoundary). */
   declBoundary?(): boolean;
@@ -869,6 +875,21 @@ export class LlDyn {
     const p = B.tmp();
     const n = B.tmp();
     B.line(`${p} = getelementptr inbounds i8, ptr ${d}, i64 16 ; ->v.arr.len`);
+    B.line(`${n} = load ${this.S}, ptr ${p}`);
+    return n;
+  }
+
+  /** The object model build's v.arr.length, one field past region (see the
+   * arr payload's comment): the dense prefix unless a far write or a length
+   * assignment moved it. Its offset follows the payload's: 64-bit pointers
+   * put region at +64 and the length at +72, wasm32's 4-byte ones at +48 and
+   * +56 of the payload, +44 absolute. */
+  private arrLengthOf(B: BlockBuilder, d: string): string {
+    const p = B.tmp();
+    const n = B.tmp();
+    B.line(
+      `${p} = getelementptr inbounds i8, ptr ${d}, i64 ${this.abiOffset(72, 44)} ; ->v.arr.length`,
+    );
     B.line(`${n} = load ${this.S}, ptr ${p}`);
     return n;
   }
@@ -5017,7 +5038,12 @@ export class LlDyn {
         const lStr = B.newLabel("kg.asr");
         B.condBr(isA, lArr, lStr);
         B.startBlock(lArr);
-        const n = this.lenOf(B, "%d");
+        // The object model build keeps elements past the dense prefix in the
+        // array's own property table, so the prefix field is no longer the
+        // length. Every other program loads that field, byte for byte as
+        // before: the load comes first so the temps it takes keep their
+        // numbering.
+        const n = host.jsObjectModel?.() ? this.arrLengthOf(B, "%d") : this.lenOf(B, "%d");
         const nd = B.tmp();
         const r = B.tmp();
         B.line(`${nd} = ${sizeToDouble(host.sizeType)} ${host.sizeType} ${n} to double`);
@@ -5218,7 +5244,14 @@ export class LlDyn {
     const okB = B.tmp();
     const ok01 = B.tmp();
     const ok = B.tmp();
-    B.line(`${okA} = icmp eq i32 ${kd}, ${DYN_KIND.ARR}`);
+    if (host.jsObjectModel?.()) {
+      // An array may keep elements past its dense prefix; the runtime's
+      // array iterator reads those through the property table, so arrays
+      // take it instead of this helper's item walk.
+      B.line(`${okA} = icmp eq i32 0, 1 ; arrays iterate through the runtime`);
+    } else {
+      B.line(`${okA} = icmp eq i32 ${kd}, ${DYN_KIND.ARR}`);
+    }
     B.line(`${okS} = icmp eq i32 ${kd}, ${DYN_KIND.STR}`);
     B.line(`${okB} = icmp eq i32 ${kd}, ${DYN_KIND.BYTES}`);
     B.line(`${ok01} = or i1 ${okA}, ${okS}`);
@@ -6203,6 +6236,11 @@ export class LlDyn {
     let argsPtr = "null";
     const argVals: string[] = [];
     const checkedRest = t.rest === true && t.restAbi === undefined;
+    // Typed rest: one trailing native array in the closure ABI. The adapter
+    // packs the fixed arguments, then spreads the array's elements into the
+    // same dyn argument vector (each element converted), so the callee sees
+    // the ordinary variadic call.
+    const typedRest = t.rest === true && t.restAbi === "typed";
     let packed: string | null = null;
     if (checkedRest) {
       host.declare(`declare ptr @scr_dyn_apply(ptr, ptr, ptr)`);
@@ -6224,6 +6262,26 @@ export class LlDyn {
         );
         B.line(`call void @scr_dyn_release(ptr %rest)`);
       }
+    } else if (typedRest) {
+      host.declare(`declare ptr @scr_dyn_apply(ptr, ptr, ptr)`);
+      host.declare(`declare ptr @scr_dyn_new_arr()`);
+      host.declare(`declare void @scr_dyn_arr_push(ptr, ptr)`);
+      host.declare(`declare void @scr_dyn_arr_push_spread(ptr, ptr, ptr)`);
+      packed = B.tmp();
+      B.line(`${packed} = call ptr @scr_dyn_new_arr()`);
+      const restT = t.params.at(-1)!;
+      t.params.slice(0, -1).forEach((p, i) => {
+        const v = this.toDynExpr(B, p, `%a${i}`);
+        B.line(`call void @scr_dyn_arr_push(ptr ${packed}, ptr ${v})`);
+        if (isRefCounted(p)) B.line(`call void ${releaseSym(host, p)}(ptr %a${i})`);
+      });
+      const restIdx = t.params.length - 1;
+      const spread = this.toDynExpr(B, restT, `%a${restIdx}`);
+      B.line(
+        `call void @scr_dyn_arr_push_spread(ptr ${packed}, ptr ${spread}, ptr ${host.cstr("")})`,
+      );
+      B.line(`call void @scr_dyn_release(ptr ${spread})`);
+      if (isRefCounted(restT)) B.line(`call void ${releaseSym(host, restT)}(ptr %a${restIdx})`);
     } else if (t.params.length > 0) {
       const arr = B.slot();
       B.entryAllocas.push(`${arr} = alloca [${t.params.length} x ptr]`);

@@ -14,6 +14,8 @@ import {
   typeEquals,
 } from "../../ir/ir.js";
 import { boolLit, numLit, varRef } from "../../ir/build.js";
+import * as ts from "../ts7/adapter.js";
+import { refuseShadowedImplicitReader } from "./handle-properties.js";
 import type { Lowerer } from "./lowerer.js";
 
 /**
@@ -271,6 +273,7 @@ export function lowerAbstractEquality(
   right: IrExpr,
   negated: boolean,
   loc: SrcLoc,
+  node?: ts.Node,
 ): IrExpr | null {
   if (
     (left.type.kind === "dyn" || right.type.kind === "dyn") &&
@@ -294,6 +297,16 @@ export function lowerAbstractEquality(
   if (left.type.kind === "date" || right.type.kind === "date") {
     const otherType = left.type.kind === "date" ? right.type : left.type;
     if (otherType.kind === "string" || otherType.kind === "f64") {
+      // The conversion reads the Date's toString, which the program may
+      // have replaced with an own property this typed path cannot see.
+      if (node)
+        refuseShadowedImplicitReader(
+          lowerer,
+          node,
+          left.type.kind === "date" ? left.type : right.type,
+          "toString",
+          "loose equality",
+        );
       // Both operands evaluate before the Date converts.
       const l = lowerer.declareHiddenLocal("%looseA", left.type);
       const r = lowerer.declareHiddenLocal("%looseB", right.type);

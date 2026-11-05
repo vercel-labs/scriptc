@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, expect, test, vi } from "vitest";
 import { NativeCompiler } from "./compiler.js";
+import { selectNativeRuntimePack } from "../backend/runtime-pack-native.js";
 import type { NativeToolchain } from "./toolchain.js";
 import { runNativeFrontend } from "../frontend/pipeline-native.js";
 import { trackedReadFile } from "../frontend/input-tracker.js";
@@ -54,7 +55,7 @@ const runtimePack = vi.hoisted(() => ({
   },
 }));
 vi.mock("../backend/runtime-pack-native.js", () => ({
-  selectNativeRuntimePack: () => runtimePack.selection,
+  selectNativeRuntimePack: vi.fn(() => runtimePack.selection),
   stageNativeRuntimeSelection: () => ({ runtimeObjects: [], archives: [], systemLibraries: [] }),
 }));
 
@@ -627,5 +628,97 @@ test.skipIf(process.platform === "win32")(
     writeFileSync(entry, "export const value = 2;\n");
     expect(compiler.compile(entry, options)).toMatchObject({ ok: true, binaryPath: output });
     expect(vi.mocked(runNativeFrontend)).toHaveBeenCalledTimes(3);
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "a static native link selects the runtime pack's /etc/passwd build",
+  () => {
+    const directory = mkdtempSync(join("/tmp", "scriptc-native-static-pack-"));
+    directories.push(directory);
+    const entry = join(directory, "entry.ts");
+    writeFileSync(entry, "export const value = 1;\n");
+    const output = join(directory, "program");
+    const clang = join(directory, "clang");
+    writeFileSync(clang, "#!/bin/sh\n");
+    chmodSync(clang, 0o755);
+    const module: IrModule = {
+      irVersion: 17,
+      sourceFile: entry,
+      entry: "%main",
+      functions: [
+        {
+          name: "%main",
+          params: [],
+          locals: [],
+          body: [],
+          returnType: VOID,
+          loc: { file: entry, start: 0, end: 0 },
+        },
+      ],
+    };
+    vi.mocked(runNativeFrontend).mockReturnValue({
+      preflight: [],
+      entryText: () => "",
+      entryExports: () => new Map(),
+      entryContract: () => {
+        throw new Error("unexpected contract request");
+      },
+      sourceTexts: () => new Map(),
+      npmStatic: [],
+      npmImportSites: new Map(),
+      dispose: () => {},
+      lower: () => ({
+        module,
+        diagnostics: [],
+        runtimeFences: [],
+        stats: { statementsTotal: 0, statementsFailed: 0, functionsSkipped: 0 },
+      }),
+    });
+    vi.mocked(emitNativeObject).mockImplementation((options) => {
+      writeFileSync(options.outputPath, "object");
+      return { outputs: [options.outputPath], profileMatch: null };
+    });
+    vi.mocked(openNativeExecutableCache).mockReturnValue(null);
+    vi.mocked(execFileSync).mockImplementation((_command, args) => {
+      const list = args as string[];
+      // The static link asks for a map (`-Xlinker -Map -Xlinker <path>`);
+      // an empty one keeps no NSS member.
+      const map = list.indexOf("-Map");
+      if (map >= 0) writeFileSync(list[map + 2]!, "");
+      writeFileSync(list[list.indexOf("-o") + 1]!, "executable");
+      return "";
+    });
+    const target = LINUX_X64_GNU_TARGET;
+    const compiler = new NativeCompiler({
+      compilerVersion: "0.0.0",
+      target,
+      helper: target.helper,
+      ts7Executable: "unused",
+      helperExecutable: "unused",
+      helperPackageRoot: "unused",
+      runtimePackRoot: "unused",
+      linker: clang,
+      linkerArgs: [],
+      dsymutil: "unused",
+    });
+    const select = vi.mocked(selectNativeRuntimePack);
+    select.mockClear();
+    vi.mocked(openNativeExecutableCache).mockClear();
+    const options = { outDir: directory, outPath: output, backend: "llvm" as const };
+    // The dynamic link leaves the selection to the program's features.
+    expect(compiler.compile(entry, options)).toMatchObject({ ok: true, binaryPath: output });
+    expect(select.mock.calls[0]![3]).not.toHaveProperty("staticLink");
+    // A static link names the fact the variant selection reads (SCR_STATIC_PASSWD),
+    // and the executable cache keys the same selection: a static build never
+    // keeps a dynamic executable, nor the other way round.
+    expect(compiler.compile(entry, { ...options, staticLink: true })).toMatchObject({
+      ok: true,
+      binaryPath: output,
+    });
+    expect(select.mock.calls[1]![3]).toMatchObject({ staticLink: true });
+    const cachePack = (index: number) => vi.mocked(openNativeExecutableCache).mock.calls[index]![6];
+    expect(cachePack(0).features).not.toHaveProperty("staticLink");
+    expect(cachePack(1).features).toMatchObject({ staticLink: true });
   },
 );

@@ -198,6 +198,71 @@ function stringTagHelper(lowerer: Lowerer, info: ClassInfo, loc: SrcLoc): IrFunc
   };
 }
 
+/** The accessor members a checked view of `info` answers, nearest
+ * declaration first: the names some `get` accessor at or above the class
+ * declares, with the type its getter answers. A name whose nearest
+ * declaration is a setter alone has no getter to run (a read of it answers
+ * undefined, exactly as on the instance), and symbol-keyed and #private
+ * members never cross a conversion, so both are left out. */
+function viewAccessorsOf(lowerer: Lowerer, info: ClassInfo): { member: string; ret: IrType }[] {
+  const out: { member: string; ret: IrType }[] = [];
+  const declared = new Set<string>();
+  for (let current: ClassInfo | null = info; current; current = current.base) {
+    // A `get`/`set` pair is one accessor: within a class the getter decides.
+    const getters = new Set<string>();
+    const setters = new Set<string>();
+    for (const member of current.methods.keys()) {
+      if (member.startsWith("get:")) getters.add(member.slice("get:".length));
+      else if (member.startsWith("set:")) setters.add(member.slice("set:".length));
+    }
+    for (const name of [...getters, ...setters]) {
+      if (declared.has(name)) continue;
+      declared.add(name);
+      if (name.startsWith("sym:") || name.startsWith("#") || !getters.has(name)) continue;
+      const member = `get:${name}`;
+      // The abstract direct-call fence, as accessorCall applies it: a getter
+      // with no implementation at or below the receiver has no value.
+      const found = findMethodOn(lowerer, info, member);
+      if (!found) continue;
+      if (found.sig.abstract === true && !lowerer.overrideBelow(info, member)) continue;
+      out.push({ member, ret: found.sig.ret });
+    }
+  }
+  return out;
+}
+
+/** `(instance) => dyn`, the value one of an instance's accessor-backed
+ * members answers. A checked view holds an instance's own data fields, so a
+ * field that exists only behind a getter reads as undefined there; the
+ * materializer installs this helper as the member's getter and a read of the
+ * copied field runs it on the native instance. */
+function viewAccessorHelper(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  member: string,
+  ret: IrType,
+  loc: SrcLoc,
+): IrFunction {
+  const type: IrType = { kind: "object", className: info.def.name };
+  return {
+    name: `%class.view:${info.def.name}:${member}`,
+    params: [{ localId: "this", name: "this", type }],
+    locals: [{ id: "this", name: "this", type, mutable: false }],
+    returnType: DYN,
+    body: [
+      {
+        kind: "return",
+        value: lowerer.coerceToExpected(
+          accessorCall(lowerer, info.def.name, member, varRef("this", type, loc), [], ret, loc),
+          DYN,
+        ),
+        loc,
+      },
+    ],
+    loc,
+  };
+}
+
 function symbolMemberKey(
   lowerer: Lowerer,
   info: ClassInfo,
@@ -1658,6 +1723,18 @@ export class ClassDynamicDispatch {
         this.generated.add(fn);
         lowerer.liftedFns.push(fn);
         changed = true;
+      }
+      for (const current of tagged(info)) {
+        if (current.def.viewAccessors !== undefined) continue;
+        const entries: NonNullable<IrClassDef["viewAccessors"]> = [];
+        for (const { member, ret } of viewAccessorsOf(lowerer, current)) {
+          const fn = viewAccessorHelper(lowerer, current, member, ret, functions[0]!.loc);
+          entries.push({ member, helper: fn.name });
+          this.generated.add(fn);
+          lowerer.liftedFns.push(fn);
+          changed = true;
+        }
+        if (entries.length > 0) current.def.viewAccessors = entries;
       }
       if (this.prototypeHelper && !this.prototypeClasses.has(className)) {
         this.prototypeClasses.add(className);
@@ -7055,11 +7132,17 @@ export class ClassDynamicDispatch {
       params = methodInfo.sig.params;
       // An untyped async method's `dyn` result is its promise's payload; the
       // call answers the promise. An async generator method answers its
-      // generator object, which its signature already returns.
+      // generator object, which its signature already returns. A method
+      // whose declaration is a runtime fence (an async override of a sync
+      // method in an untyped module, say) has no async body behind it: the
+      // function stands for the refused construct and answers the slot's
+      // type, so the arm calls that and asks for no promise.
+      const fenced = owner.methodEntryFences?.has(method) === true;
       result =
         methodInfo.sig.async === true &&
         !methodInfo.sig.gen &&
-        methodInfo.sig.ret.kind !== "promise"
+        methodInfo.sig.ret.kind !== "promise" &&
+        !fenced
           ? { kind: "promise", inner: methodInfo.sig.ret }
           : methodInfo.sig.ret;
       callee = `%${owner.def.name}.${method}`;

@@ -783,8 +783,8 @@ static void scr_sa_large_note(void *p, size_t n) {
  * handed out in chunks of SCR_SA_CHUNK bytes: each arena carves a size
  * class from a chunk of its own until the chunk is full, then takes another.
  * On Linux the window lies in [4 GiB, 32 GiB), clear of executables loaded
- * low and their heaps, and also holds the program-lifetime region (below);
- * elsewhere it lies anywhere. Chunks come from the window's top with one
+ * low and their heaps, and on macOS at SCR_WINDOW_BASE; there it also holds
+ * the program-lifetime region (below). Elsewhere it lies anywhere. Chunks come from the window's top with one
  * atomic add, or from the chunks that discarded workers returned whole
  * (scr_sa_spare). A host that refuses the whole window (valgrind limits the
  * address space) gets a smaller one, down to SCR_SA_WINDOW_MIN; an exhausted
@@ -831,7 +831,7 @@ static void scr_sa_window_lock_take(void) { scr_sa_spin_take(&scr_sa_window_lock
 
 static void scr_sa_window_lock_drop(void) { __atomic_clear(&scr_sa_window_lock, __ATOMIC_RELEASE); }
 
-#ifdef __linux__
+#if defined(__linux__) || defined(SCR_COMPACT_REFS)
 /* Maps `size` bytes at `at` exactly, as scr_sa_map does anywhere; NULL if
  * refused. */
 static char *scr_sa_map_at(void *at, size_t size) {
@@ -869,6 +869,18 @@ static bool scr_sa_window_reserve(void) {
       size = ((size_t)32 << 30) - start;
       if (size > SCR_SA_WINDOW_WANT) size = SCR_SA_WINDOW_WANT;
       while (size >= SCR_SA_WINDOW_MIN && !(p = scr_sa_map_at((void *)start, size))) size /= 2;
+    }
+#elif defined(SCR_COMPACT_REFS)
+    /* The window starts one chunk past the base, which stays inaccessible:
+     * an object at offset 0 would encode as 0, the NULL reference (Linux's
+     * window starts at 4 GiB, so its references are never 0). */
+    size = SCR_SA_WINDOW_WANT;
+    while (size >= SCR_SA_WINDOW_MIN &&
+           !(p = scr_sa_map_at((void *)(uintptr_t)SCR_WINDOW_BASE, size + SCR_SA_CHUNK)))
+      size /= 2;
+    if (p) {
+      (void)mprotect(p, SCR_SA_CHUNK, PROT_NONE);
+      p += SCR_SA_CHUNK;
     }
 #endif
     if (!p)
@@ -3135,7 +3147,7 @@ void scr_mem_order_for_free(void **ptrs, size_t n, size_t offset) {
  * reports them (glibc's mallinfo2, the Darwin malloc zones, the Windows CRT
  * heap, or the sanitizer's allocator in sanitized builds). Walks the free
  * lists, so the cost grows with the number of free blocks. */
-#if defined(__linux__) && SCR_SMALL_ALLOC
+#ifdef SCR_COMPACT_REFS
 static void scr_plr_heap_stats(size_t *held, size_t *used);
 #endif
 
@@ -3189,7 +3201,7 @@ void scr_heap_stats(double *total, double *used) {
     sys_used = s.allocated;
   }
 #endif
-#if defined(__linux__) && SCR_SMALL_ALLOC
+#ifdef SCR_COMPACT_REFS
   /* Compact class instances (the program-lifetime region below). */
   size_t region_held, region_used;
   scr_plr_heap_stats(&region_held, &region_used);
@@ -3267,18 +3279,19 @@ void scr_heap_trim(void) {
  * Pages are committed by first touch and start zeroed. Its strings are
  * arrays rather than literals: programs without compact classes then link
  * none of this, where literals would stay in the unit's merged strings. */
-#if defined(__linux__) && SCR_SMALL_ALLOC
+#ifdef SCR_COMPACT_REFS
 #include <sys/mman.h>
 
 #define SCR_PLR_CHUNK ((size_t)1 << 20)
-/* References are 32-bit addresses of 8-byte units, so the region's chunks
- * must end by SCR_PLR_END: they come from the window (scr_sa_window_reserve,
- * which on Linux places it in [4 GiB, 32 GiB)), together with the small
+/* References are 32-bit offsets from SCR_WINDOW_BASE in 8-byte units, so
+ * the region's chunks must lie in [SCR_WINDOW_BASE, SCR_PLR_END): they come
+ * from the window (scr_sa_window_reserve, which places it in [4 GiB, 32 GiB)
+ * on Linux and at SCR_WINDOW_BASE on macOS), together with the small
  * blocks. Past the region's first SCR_SA_HUGE_AFTER bytes its window chunks
  * use transparent huge pages, as size classes do: a large heap of instances
  * takes 512 times fewer page faults and TLB entries, and a small program
  * stays on small pages. */
-#define SCR_PLR_END ((uintptr_t)32 << 30)
+#define SCR_PLR_END ((uintptr_t)SCR_WINDOW_BASE + ((uintptr_t)32 << 30))
 
 static size_t scr_plr_window_chunks; /* window chunks taken; under scr_plr_lock */
 static char *scr_plr_cur, *scr_plr_end; /* the rest of the last of them */
@@ -3298,10 +3311,10 @@ static _Noreturn void scr_plr_out_of_memory(void) { scr_sa_window_limit(); }
 static __attribute__((noinline)) void scr_plr_reserve(void) {
   /* scr_trap is the runtime's failure path (scr_exception.c); the
    * allocator's standalone test defines its own (scr_alloc.test.c). */
-  if (!scr_sa_window_reserve() ||
+  if (!scr_sa_window_reserve() || (uintptr_t)scr_sa_window < (uintptr_t)SCR_WINDOW_BASE ||
       (uintptr_t)scr_sa_window + ((uintptr_t)scr_sa_window_chunks << SCR_SA_CHUNK_SHIFT) > SCR_PLR_END) {
     static const char message[] =
-        "scriptc: cannot reserve address space below 32 GiB for program-lifetime objects\n";
+        "scriptc: cannot reserve the address space for program-lifetime objects\n";
     scr_trap(message);
   }
 }
@@ -3320,7 +3333,9 @@ static char *scr_plr_take(size_t size) {
       __atomic_clear(&scr_plr_lock, __ATOMIC_RELEASE);
       return NULL;
     }
+#ifdef SCR_SA_THP
     huge = scr_plr_window_chunks >= SCR_SA_HUGE_AFTER / SCR_SA_CHUNK;
+#endif
     scr_plr_window_chunks += n;
     scr_plr_cur = fresh;
     scr_plr_end = fresh + (n << SCR_SA_CHUNK_SHIFT);

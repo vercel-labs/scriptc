@@ -6,7 +6,7 @@ import { type LlEmitter, ffiCallbackDummyLl, llStrBytes } from "./emitter.js";
 import { type ChunkResult, EmitJournal } from "./emit-journal.js";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, sep } from "node:path";
+import { join } from "node:path";
 import { JS_GROUP_WORDS } from "./js-groups.js";
 import { JS_IC_WORDS } from "./js-ic.js";
 import {
@@ -39,6 +39,7 @@ import {
 import { emitLlvmLayouts } from "./layouts.js";
 import { emitArraySearchHelpers } from "./array-search.js";
 import { emitClassMembershipHelper } from "./classes.js";
+import { SCR_ELEM_F64, SCR_ELEM_I32 } from "./dense-array-access.js";
 import { type RegexMatcherCode, compileRegexMatcher } from "./regex-matchers.js";
 import {
   MAP_ITER_DECL,
@@ -294,32 +295,22 @@ function functionAttributes(emitter: LlEmitter, hasNoInlineRecordClone: boolean)
 /** The group line written before each function's text. Functions from one
  * source file share a group, which the LLVM helper keeps in the same
  * partitions so that their calls to each other stay inside a partition
- * (native/llvm-codegen/src/partition.h). A group is numbered by a hash of its
- * file's name, so a group keeps its number when other functions or files are
- * added or reordered. Functions without a source file get no group. */
-function partitionGroupLines(functions: readonly IrFunction[], entry: string): string[] {
-  const from = dirname(entry);
+ * (native/llvm-codegen/src/partition.h). A group is numbered by the first
+ * function of its file in the module's function order: the helper picks a
+ * group's partitions by hashing its key, so the numbers are not a label but
+ * the placement itself, and hashing the file name instead moved whole files
+ * to other partitions and cost tsc-ts about 1.5% on trpc c1 (#2950, reverted
+ * here). Stable names live on the %init functions, which do not choose a
+ * partition. Functions without a source file get no group. */
+function partitionGroupLines(functions: readonly IrFunction[]): string[] {
+  const groups = new Map<string, number>();
   return functions.map((fn) => {
     const file = fn.loc.file;
     if (file === "") return PARTITION_GROUP_END;
-    return `${PARTITION_GROUP_END} ${groupNumber(portableName(from, file))}`;
+    let group = groups.get(file);
+    if (group === undefined) groups.set(file, (group = groups.size));
+    return `${PARTITION_GROUP_END} ${group}`;
   });
-}
-
-/** The path of `file` relative to the directory `from`, with `/` separators
- * on every platform, so a group's number does not depend on where the program
- * sits. It matches the frontend's portableRelativePath; the backend cannot
- * import it (it reads the IR only). */
-function portableName(from: string, file: string): string {
-  const name = relative(from, file);
-  return sep === "/" ? name : name.split(sep).join("/");
-}
-
-/** A 32-bit FNV-1a hash of `name`. */
-function groupNumber(name: string): number {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < name.length; i++) h = Math.imul(h ^ name.charCodeAt(i), 0x01000193);
-  return h >>> 0;
 }
 
 /** Ends the group of the definitions that follow. */
@@ -1151,9 +1142,31 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   }
   if (emitter.cstrs.size > 0) out.push(``);
   for (const [body, sym] of emitter.mapOpsConsts) {
-    out.push(`@${sym} = internal constant { ptr, ptr, ptr, ptr, ptr, ptr, ptr } { ${body} }`);
+    // A ScrMapOps, or a ScrMapIdentityOps (promise keys) with one more field.
+    const fields = body
+      .split(", ")
+      .map(() => "ptr")
+      .join(", ");
+    out.push(`@${sym} = internal constant { ${fields} } { ${body} }`);
   }
   if (emitter.mapOpsConsts.size > 0) out.push(``);
+  for (const c of emitter.arrayConstData.values()) {
+    // A static table's data is the array's own storage, and ScrArr's slot
+    // field is 64-bit: keep the block aligned even for i32 elements. The
+    // header is initialized here too, like a tagged template's: it is a
+    // module's shared image, and a worker build or a thread-instanced
+    // library initializes that image in more than one thread, so writing the
+    // fields after the program starts would be an unsynchronized write to
+    // the same array metadata. `values` holds the rendered literals (emitter
+    // staticArrayData): they cross a chunk's JSON boundary unrounded.
+    const values = c.values.map((v) => `${c.type} ${v}`);
+    const n = c.values.length;
+    out.push(`@${c.sym} = internal constant [${n} x ${c.type}] [ ${values.join(", ")} ], align 8`);
+    out.push(
+      `@${c.sym}_h = internal global %ScrArr { ${emitter.sizeType} -1, i32 ${n}, i32 ${n}, i8 ${c.type === "i32" ? SCR_ELEM_I32 : SCR_ELEM_F64}, i8 0, i16 0, i32 ${n}, ptr @${c.sym} }`,
+    );
+  }
+  if (emitter.arrayConstData.size > 0) out.push(``);
   for (const sym of emitter.methodIdSlots.values()) out.push(`@${sym} = internal global i32 -1`);
   if (emitter.methodIdSlots.size > 0) out.push(``);
 
@@ -1184,7 +1197,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
       emitter.resolveThunkDefs,
     ],
     fnDefs,
-    partitionGroupLines(emitter.mod.functions, emitter.mod.sourceFile),
+    partitionGroupLines(emitter.mod.functions),
     partitionEntries(emitter.mod.functions, emitter.mod.sourceFile),
   );
   if (fnDefs.length === 0) out.push("");

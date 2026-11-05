@@ -3680,6 +3680,15 @@ function indexSignatureDestination(
     : null;
 }
 
+/** Whether the literal's checker CONTEXT is a checked-dynamic value (an
+ * `unknown`/`any` slot, or a record whose values are): that context is the
+ * value's home, so no record layout stands between the literal and its
+ * destination, and each runtime key stays where the source writes it. */
+function checkedDynamicDestination(lowerer: Lowerer, expr: ts.ObjectLiteralExpression): boolean {
+  const contextual = lowerer.checker.getContextualType(expr);
+  return contextual !== undefined && lowerer.mapTypeOf(contextual)?.kind === "dyn";
+}
+
 /** `expr` — a literal whose property name is decided at runtime — as the
  * checked-dynamic object the literal's own keys describe. No record shape can
  * hold a runtime-decided name: a record stores declared fields sorted and
@@ -3701,7 +3710,7 @@ function runtimeKeyedDynLiteral(
 ): IrExpr {
   const destination =
     indexSignatureDestination(lowerer, expected) ?? indexSignatureDestination(lowerer, type);
-  if (destination === null) {
+  if (destination === null && !checkedDynamicDestination(lowerer, expr)) {
     // A layout that keeps DECLARED fields beside an index signature
     // (`{ fixed: 1, [key]: 2 }`, inferred as `{ fixed: number; [x: string]:
     // number }`) stores the declared fields ahead of the overflow a runtime
@@ -4386,14 +4395,7 @@ export function lowerShorthandValue(
       return { kind: "closure", fnName: sig.name, captures: [], type: funcType, loc };
     }
     const generic = lowerer.genericFnsBySymbol.get(resolved);
-    if (generic?.implicitParams) return lowerer.lowerGenericFnValue(propName, generic);
-    if (generic) {
-      lowerer.unsupported(
-        "SC1090",
-        prop,
-        `generic functions as values (call '${propName.text}' directly)`,
-      );
-    }
+    if (generic) return lowerer.lowerGenericFnValue(propName, generic);
     // A program class name (`{ parse, TomlError }`, an imported class
     // included): the class object, exactly the long form `{ C: C }`.
     // Generic classes keep the identifier path's contextual pinning.

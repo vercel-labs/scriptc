@@ -214,10 +214,13 @@ typedef enum {
   X(SEARCH_PARAMS, 33) /* live WHATWG URLSearchParams */ \
   X(SEGMENTER, 19) /* default Unicode grapheme segmentation */ \
   X(SEGMENTER_REFUSING, 80) /* word or sentence Segmenter whose segment() throws (scr_grapheme.c) */ \
+  X(SEGMENTER_WORD, 97) /* ICU word-granularity Segmenter (scr_intl.c) */ \
   X(SEGMENTS, 20) /* iterable immutable segmentation result */ \
+  X(SEGMENTS_WORD, 98) /* its word segmentation result (scr_intl.c) */ \
   X(SET, 25) /* native Set<unknown>, shared backing map */ \
   X(SHARED_ARRAY_BUFFER, 37) \
   X(SIGN, 67) /* node:crypto Sign (scr_pki.c) */ \
+  X(SPAWN_RES, 99) /* child_process spawnSync result (scr_child.c) */ \
   X(STDIO, 27) /* stable process stdin/stdout/stderr values */ \
   X(STRING_DECODER, 78) /* compiled StringDecoder record (scr_text_codec_dyn.c) */ \
   X(TEXT_DECODER, 76) /* compiled TextDecoder record (scr_text_codec_dyn.c) */ \
@@ -251,10 +254,9 @@ typedef enum {
   X(WS_WRITABLE, 95) /* WritableStream for checked-dynamic code (scr_webstreams.c) */ \
   X(WS_WRITER, 96) /* WritableStreamDefaultWriter (scr_webstreams.c) */
 
-/* Tags added since the last pin, by name only (see above). */
-#define SCR_DYNH_NEW_TAGS(Y) \
-  Y(SEGMENTER_WORD) /* ICU word-granularity Segmenter (scr_intl.c) */ \
-  Y(SEGMENTS_WORD) /* its word segmentation result (scr_intl.c) */
+/* Tags added since the last pin, by name only (see above). Every tag is
+ * pinned for now: the LLVM backend names each of them. */
+#define SCR_DYNH_NEW_TAGS(Y)
 
 /* Values below the largest pinned one that no tag holds, each with the
  * reason. Never reuse one without removing it here. */
@@ -401,6 +403,13 @@ typedef struct {
   /* A namespace object's function member (scr_dyn_namespace_define), which
    * static member calls bypass: a change to its value fences instead. */
   bool fenced : 1;
+  /* An accessor a class instance's checked view installs for one of the
+   * class's accessor-backed members (scr_dyn_class_view_accessors). The
+   * view answers the member with the getter, but the member belongs to the
+   * class: own-property queries (Object.getOwnPropertyNames, a descriptor,
+   * hasOwnProperty) answer as they do on the instance, where the accessor
+   * is a prototype member. */
+  bool class_view : 1;
   /* Ordinary object insertion sets all three attributes true. */
   bool writable;
   bool enumerable;
@@ -492,6 +501,16 @@ typedef struct ScrDynTypedClassOps {
    * instance (+1), or NULL with a pending exception from the getter;
    * NULL when the class has no such getter. */
   ScrStr *(*string_tag)(void *instance);
+  /* The class's accessor-backed members, nearest declaration first: one
+   * entry per name that a `get` accessor at or above the class answers.
+   * The view installs each as a non-enumerable accessor of its own, so a
+   * field copied behind a getter reads the value the getter answers
+   * instead of undefined.
+   *   accessor_get: +1 value member `index` answers for `instance`, or
+   *                 NULL with a pending exception from the getter. */
+  size_t accessor_count;
+  ScrStr *const *accessor_names; /* immortal member-name strings */
+  ScrDyn *(*accessor_get)(void *instance, size_t index);
 } ScrDynTypedClassOps;
 
 /* A compiled JavaScript class whose instances record their own properties
@@ -543,7 +562,17 @@ struct ScrDyn {
     ScrBigInt *bigint; /* owned (SCR_DYN_BIGINT) */
     /* Callbacks keep the optional symbol unit out of symbol-free binaries. */
     struct { ScrSym *value; void (*release)(ScrSym *); ScrStr *(*render)(ScrSym *); ScrStr *(*description)(ScrSym *); } symbol;
-    struct { size_t len; size_t cap; ScrDyn **items; struct ScrDyn *properties; bool sealed; bool frozen; unsigned char *presence; struct ScrDynRegion *region; } arr; /* owned; NULL presence means dense; region: see ScrDynRegion */
+    /* `len` is the DENSE prefix: items[0…len-1] are the values a direct
+     * items[i] read may touch, and every consumer of this payload is
+     * written against it. `length` is the array's own length, which
+     * exceeds len only when a write (or a length assignment) named an
+     * index far past the end: those elements live in `properties` under
+     * their index spelling, and reads reach them through the hole
+     * fallback (scr_dyn_arr_at → scr_dyn_arr_named_get). The field is last
+     * so no other payload offset moves, and only the SCR_JS_OBJECT_MODEL
+     * build reads or writes it (scr_dyn_arr_length inlines to len
+     * otherwise). */
+    struct { size_t len; size_t cap; ScrDyn **items; struct ScrDyn *properties; bool sealed; bool frozen; unsigned char *presence; struct ScrDynRegion *region; size_t length; } arr; /* owned; NULL presence means dense; region: see ScrDynRegion */
     struct {
       size_t len; /* own string-keyed properties, in both modes */
       size_t cap; /* capacity of entries (dictionary mode) or slots (layout mode) */
@@ -660,6 +689,38 @@ _Static_assert(sizeof(((ScrDyn *)0)->v.arr) <= sizeof(((ScrDyn *)0)->v.typed_ref
 _Static_assert(sizeof(void *) != 8 || offsetof(ScrDyn, v.obj.layout) == 80, "v.obj.layout offset");
 _Static_assert(sizeof(void *) != 8 || offsetof(ScrDyn, v.obj.slots) == 32, "v.obj.slots offset");
 _Static_assert(sizeof(void *) != 8 || offsetof(ScrDyn, v.obj.region) == 72, "v.obj.region offset");
+/* The emitter loads the object model build's length at these offsets
+ * (dyn.ts arrLengthOf), so both pointer widths are pinned. */
+_Static_assert(sizeof(void *) != 8 || offsetof(ScrDyn, v.arr.length) == 72, "v.arr.length offset");
+_Static_assert(sizeof(void *) != 4 || offsetof(ScrDyn, v.arr.length) == 44, "v.arr.length offset (wasm32)");
+
+/* An array's own length. Equal to the dense prefix length `len` unless the
+ * JavaScript object model build stored an element past it (see the arr
+ * payload's comment). Without that build the field is never touched, and
+ * the macro is the same read the call sites made before it existed. The
+ * emitted keyed read's `length` answer loads the field directly at its
+ * offset in that build, which the assert above pins. */
+#ifdef SCR_JS_OBJECT_MODEL
+#define scr_dyn_arr_length(d) ((d)->v.arr.length)
+#else
+#define scr_dyn_arr_length(d) ((d)->v.arr.len)
+#endif
+
+/* Moves the dense prefix, and with it the array's length. A dense mutation
+ * only runs while the two agree (a length past the prefix sends the call to
+ * the property table), so every dense path keeps them equal: a pop, shift or
+ * splice that shrank only `len` would leave a length no element back.
+ * Macros rather than functions: without that build they expand to the same
+ * assignments the call sites made before the length existed, so the default
+ * build's code is unchanged. */
+#ifdef SCR_JS_OBJECT_MODEL
+#define scr_dyn_arr_set_len(d, n) ((d)->v.arr.length = (n), (d)->v.arr.len = (n))
+/* One shorter, as an expression: the value the prefix and length move to. */
+#define scr_dyn_arr_dec_len(d) ((d)->v.arr.length = --(d)->v.arr.len)
+#else
+#define scr_dyn_arr_set_len(d, n) ((d)->v.arr.len = (n))
+#define scr_dyn_arr_dec_len(d) (--(d)->v.arr.len)
+#endif
 
 /* ── layouts ───────────────────────────────────────────────────────────
  * An ordinary object (SCR_DYN_OBJ) is in one of two modes.
@@ -1678,6 +1739,20 @@ void scr_weak_dispose(void *object);
 double scr_dyn_arr_len(const ScrDyn *d);
 ScrDyn *scr_dyn_arr_at(const ScrDyn *d, double i);
 ScrDyn *scr_dyn_arr_named_get(const ScrDyn *d, const ScrStr *key);
+#ifdef SCR_JS_OBJECT_MODEL
+/* Writes canonical index `idx` past the array's dense prefix as an own
+ * property under its index spelling, growing the array's length to idx + 1.
+ * Borrows value. False with the exception pending when the array's
+ * attributes refuse the write. */
+bool scr_dyn_arr_sparse_put(ScrDyn *arr, size_t idx, ScrDyn *value);
+/* The canonical array index a property name spells (0…2^32-2, no leading
+ * zero), the same rule the index write applies. */
+bool scr_dyn_arr_index_key(const char *data, size_t len, size_t *out);
+/* Array.prototype.pop's element when the length extends past the dense
+ * prefix: the +1 element at last-1 (a hole reads through the prototype), or
+ * NULL with the exception pending when the own element refuses the delete. */
+ScrDyn *scr_dyn_arr_sparse_pop(ScrDyn *arr);
+#endif
 /* Whether the builtin Array.prototype object exists and carries `key`
  * before the method table installs; the inherited-read fallback leaves a
  * name it owns alone, since the read that reached it already answered. */
@@ -1715,10 +1790,13 @@ ScrDyn *scr_dyn_array_proto_call(ScrDyn *target, ScrStr *method, ScrDyn *args);
  * (scr_dyn_array_like.c, linked only into programs that call them from a
  * JavaScript source): +1, or NULL with the exception pending. */
 ScrDyn *scr_dyn_array_like_call(ScrDyn *recv, ScrStr *method, ScrDyn *args);
-/* Number.prototype or Boolean.prototype as a value, one object per thread
- * (scr_dyn_builtin_prototype.c, linked only into programs that read them
- * from a JavaScript source); `kind` is "Number" or "Boolean". +1. */
-ScrDyn *scr_dyn_builtin_prototype(const ScrStr *kind);
+/* Number.prototype or Boolean.prototype as a value, from the primitive
+ * wrapper unit that owns it (scr_js_wrapper.c): ONE object per kind, also
+ * the compiled constructor's `prototype` member (linked only into programs
+ * that read the values from a JavaScript source or create wrappers).
+ * `kind` is "Number" or "Boolean"; `constructor` is the compiled
+ * constructor value (borrowed). +1. */
+ScrDyn *scr_dyn_builtin_prototype(const ScrStr *kind, ScrDyn *constructor);
 /* A builtin prototype method as a function value (scr_dyn_builtin_methods.c,
  * linked only into programs that read one from a JavaScript source).
  * `owner` is "String" or "RegExp" and `member` its canonical spelling — the
@@ -1744,6 +1822,14 @@ bool scr_dyn_is_error_prototype(const ScrDyn *d);
  * non-object kinds throw Node's catchable TypeErrors (strict-mode
  * wording). All three operands BORROWED (the value is retained in). */
 void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value);
+/* A property DEFINITION (a member of a JavaScript object literal, dynObjLit):
+ * it creates or updates the own data property and never runs an inherited
+ * accessor, so a `__proto__` member is an ordinary own member instead of
+ * Object.prototype's prototype setter. A computed member coerces its key
+ * first (scr_dyn_key_define_computed). Every other key behaves as
+ * scr_dyn_key_set. All three operands BORROWED (the value is retained in). */
+void scr_dyn_key_define(ScrDyn *recv, ScrStr *key, ScrDyn *value);
+void scr_dyn_key_define_computed(ScrDyn *recv, ScrDyn *key, ScrDyn *value);
 /* The same in sloppy-mode code: an assignment strict mode refuses with a
  * TypeError is ignored. */
 void scr_dyn_key_set_sloppy(ScrDyn *recv, ScrStr *key, ScrDyn *value);
@@ -1935,6 +2021,15 @@ void scr_error_dyn_follow_bag(ScrDyn *view, const ScrDyn *bag, const ScrError *e
 void scr_dyn_obj_set_accessor(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *getter, ScrDyn *setter);
 /* The getter or setter of an own accessor property, +1 (undefined when none). */
 ScrDyn *scr_dyn_obj_accessor_fn(const ScrDyn *obj, const char *key, size_t key_len, bool setter);
+/* A class instance's checked view answers the class's accessor-backed
+ * members through their getters: every member `ops` lists that the view
+ * does not already hold as an own property gets a non-enumerable accessor
+ * entry whose getter runs the member's getter on `instance` (the view keeps
+ * the instance alive, ±1 through `retain`/`release`). Own data fields are
+ * set before this runs, so a field that shadows a getter keeps its value.
+ * `view` borrowed; `instance` borrowed, NULL leaves the view unchanged. */
+void scr_dyn_class_view_accessors(ScrDyn *view, const ScrDynTypedClassOps *ops, void *instance,
+                                  void *(*retain)(void *), void (*release)(void *), ScrTraceFn trace);
 void scr_error_commit_dyn(ScrError *e, const ScrDyn *view);
 /* The reverse extraction, riding the same identity cache: a dyn error
  * that came from a runtime ScrError answers THAT instance (+1;
@@ -2021,6 +2116,13 @@ ScrDyn *scr_dyn_function_properties_existing(const ScrDyn *function);
 ScrDyn *scr_dyn_define_props(ScrDyn *target, ScrDyn *descs);
 /* The same, where each descriptor may be any object (scr_dyn_descriptor_snapshot). */
 ScrDyn *scr_dyn_define_props_shapes(ScrDyn *target, ScrDyn *descs);
+/* Object.defineProperties' read-and-convert half, for the entry points that
+ * define the properties themselves (the handle property table): an array of
+ * [key, descriptor] pairs (+1), every descriptor read and converted before
+ * any definition, or NULL with the exception pending. `read_any` admits
+ * descriptor objects of any shape (scr_dyn_descriptor_snapshot); NULL keeps
+ * the plain-object rule. */
+ScrDyn *scr_dyn_define_props_pending(ScrDyn *descs, ScrDyn *(*read_any)(const ScrDyn *descriptor));
 ScrDyn *scr_dyn_define_prototype_props(ScrDyn *target, ScrDyn *descs, ScrDyn *protected_keys);
 /* Boxes a closure as a callable dyn value. Ownership of `clo` MOVES in
  * (callers retain first when they keep their own reference); `sig`/`name`
@@ -2305,6 +2407,37 @@ typedef struct ScrDynHandleOps {
   ScrStr *(*iter_at)(void *h, size_t index, unsigned selection);
 } ScrDynHandleOps;
 
+/* The own-property tables of runtime handles (scr_dyn_handle_props.c),
+ * consulted by scr_json.c's JavaScript object model build (SCR_JS_OBJECT_MODEL).
+ * Each answers true when it handled the operation (its result in the out
+ * parameter; NULL results mean an exception is pending) and false to leave
+ * the handle to the ordinary path. NULL until the program's first
+ * handle.propsInstall. */
+typedef struct ScrDynHandlePropsHooks {
+  /* The handle's table (borrowed), or NULL when it has none. */
+  ScrDyn *(*table)(const ScrDyn *handle);
+  /* scr_dyn_handle_install: the ops to install for `tag` in place of
+   * `ops` (the wrapped ops when the tag has tables). */
+  const ScrDynHandleOps *(*install)(ScrDynHandleTag tag, const ScrDynHandleOps *ops);
+  /* The table a write of `key` lands in (borrowed, made on first use), or
+   * NULL when the write is not a table write (a modeled property, or a
+   * member key the slice refuses). */
+  ScrDyn *(*write_table)(ScrDyn *handle, const ScrStr *key);
+  bool (*in)(const ScrDyn *handle, const ScrStr *key, bool *out);
+  bool (*has_own)(const ScrDyn *handle, const ScrStr *key, bool enumerable_only, bool *out);
+  bool (*delete_key)(ScrDyn *handle, const ScrStr *key, bool strict);
+  bool (*own_descriptor)(ScrDyn *handle, ScrDyn *key, ScrDyn **out);
+  bool (*define)(ScrDyn *handle, ScrDyn *key, ScrDyn *descriptor, ScrDyn **out);
+  bool (*own_names)(const ScrDyn *handle, ScrDyn **out);
+  /* The ScrObjWalk modes private to scr_json.c: keys 0, values 1, entries 2. */
+  bool (*objwalk)(const ScrDyn *handle, int mode, ScrDyn **out);
+  bool (*for_in_keys)(const ScrDyn *handle, ScrDyn **out);
+  /* op: 0 preventExtensions, 1 seal, 2 freeze (out_value = the handle +1);
+   * 3 isExtensible, 4 isSealed, 5 isFrozen (out_bool). */
+  bool (*integrity)(ScrDyn *handle, int op, ScrDyn **out_value, bool *out_bool);
+} ScrDynHandlePropsHooks;
+extern SCR_TL const ScrDynHandlePropsHooks *scr_dyn_handle_props_hooks;
+
 /* ToPrimitive hints (scr_ni_to_primitive, Node island objects). */
 enum { SCR_DYN_HINT_DEFAULT = 0, SCR_DYN_HINT_NUMBER = 1, SCR_DYN_HINT_STRING = 2 };
 
@@ -2560,6 +2693,9 @@ ScrStr *scr_dyn_format_j(const ScrDyn *d);
  * exception stays pending and the result is NULL. */
 ScrStr *scr_util_format_j(const ScrDyn *d);
 ScrStr *scr_util_format_j_text(ScrStr *text); /* borrows text */
+/* util.format's %j over the value a toJSON hook returned, +1: the write
+ * step alone, so the hook does not run over its own result. */
+ScrStr *scr_util_format_j_value(const ScrDyn *d);
 /* Node's ERR_INVALID_ARG_TYPE listener gate over a dyn value — shared by
  * the emitter unit's checked-dynamic registrations and the handle
  * dispatchers' .on(...) paths (both render errors.js's

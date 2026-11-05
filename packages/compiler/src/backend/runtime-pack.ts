@@ -15,6 +15,7 @@ import {
   parseRuntimePackManifest,
   reportSpeedFlavorFallback,
   selectRuntimePackArtifacts,
+  speedFlavorFallbackWarning,
   validateRuntimePackIdentity,
   type RuntimePackArtifact,
   type RuntimePackManifest,
@@ -207,7 +208,7 @@ export async function loadRuntimePack(options: {
     compilerReleaseVersion(),
   );
   const flavor = options.optimization;
-  reportSpeedFlavorFallback(root, manifest, flavor, options.mode);
+  reportSpeedFlavorFallback(root, speedFlavorFallbackWarning(manifest, flavor, options.mode));
   const selected = selectRuntimePackArtifacts(
     manifest,
     options.features,

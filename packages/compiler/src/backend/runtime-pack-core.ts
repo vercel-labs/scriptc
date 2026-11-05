@@ -520,14 +520,9 @@ export function speedFlavorFallbackWarning(
 const reportedSpeedFallbacks = new Set<string>();
 
 /** Print the speed-flavor fallback warning for one selection, once per pack
- * directory. */
-export function reportSpeedFlavorFallback(
-  root: string,
-  manifest: RuntimePackManifest,
-  optimization: NativeOptimization,
-  mode: RuntimePackMode = "executable",
-): void {
-  const warning = speedFlavorFallbackWarning(manifest, optimization, mode);
+ * directory. The caller passes the warning it computed (or read from a stored
+ * selection), so a build that skips the manifest still reports it. */
+export function reportSpeedFlavorFallback(root: string, warning: string | null): void {
   if (warning === null || reportedSpeedFallbacks.has(root)) return;
   reportedSpeedFallbacks.add(root);
   process.stderr.write(warning);

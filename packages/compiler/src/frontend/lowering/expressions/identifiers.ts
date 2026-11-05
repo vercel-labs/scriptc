@@ -6,6 +6,7 @@ import { hostGlobalValue } from "../host-global-values.js";
 import { predeclareForwardClass } from "../lower-stmts.js";
 import { cjsMemberAliasValueOf } from "../cjs-exports-object.js";
 import { builtinClassValue, builtinMemberClassKind } from "../builtins/builtin-class-dyn.js";
+import { legacyUrlClassValue } from "../builtins/url.js";
 import { lowerWebStreamClassRead } from "../builtins/web-streams-dyn.js";
 import * as ts from "../../ts7/adapter.js";
 import { globalFunctionValue } from "../global-function-values.js";
@@ -201,6 +202,15 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         "SC1090",
         expr,
         `a promisified builtin as a value (call '${expr.text}' directly)`,
+      );
+    }
+    if (projection?.kind === "client-function") {
+      // The client-function lowering works per call site (the module's
+      // protocol and secure defaults); there is no function object to read.
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        `an http client function alias as an escaping value (call '${expr.text}' directly)`,
       );
     }
     if (projection?.kind === "builtin-function") {
@@ -718,6 +728,10 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       // node:crypto's webcrypto is the WebCrypto global's object.
       if (bi.module === "crypto" && bi.member === "webcrypto")
         return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
+      // url.Url is Node's legacy Url constructor (JavaScript sources;
+      // @types/node declares Url as a type only), the class of url.parse()
+      // results.
+      if (bi.module === "url" && bi.member === "Url") return legacyUrlClassValue(loc);
       // JavaScript sources: an otherwise unsupported builtin VALUE is
       // the same identity-token story as stdlib globals above (the
       // harness adds worker_threads.Worker to its identity Set).

@@ -496,6 +496,9 @@ interface Token {
   kind: "name" | "string" | "punct" | "other";
   value: string;
   at: number;
+  /** A line break separates this token from the one before it, where a
+   * declaration ends without a `;` (automatic semicolon insertion). */
+  nl?: boolean;
 }
 
 /** Keywords after which a `/` starts a regular expression. */
@@ -534,6 +537,13 @@ export function moduleTokens(text: string): Token[] {
   let depth = 0;
   let i = 0;
   const n = text.length;
+  /** A line break was skipped since the last token. */
+  let newline = false;
+  /** Records a token with the line break that precedes it, if any. */
+  const push = (token: Token): void => {
+    tokens.push(newline ? { ...token, nl: true } : token);
+    newline = false;
+  };
   const regexAllowed = (): boolean => {
     const last = tokens[tokens.length - 1];
     if (last === undefined) return true;
@@ -553,22 +563,24 @@ export function moduleTokens(text: string): Token[] {
       }
       if (c === "`") {
         i++;
-        tokens.push({ kind: "other", value: "`", at: start });
+        push({ kind: "other", value: "`", at: start });
         return;
       }
       if (c === "$" && text[i + 1] === "{") {
         i += 2;
         templates.push(depth);
         depth++;
-        tokens.push({ kind: "punct", value: "${", at: start });
+        push({ kind: "punct", value: "${", at: start });
         return;
       }
+      if (c === "\n") newline = true;
       i++;
     }
   };
   while (i < n) {
     const c = text[i]!;
     if (c === " " || c === "\t" || c === "\n" || c === "\r" || c === "\f" || c === "\v") {
+      if (c === "\n" || c === "\r") newline = true;
       i++;
       continue;
     }
@@ -578,6 +590,7 @@ export function moduleTokens(text: string): Token[] {
     }
     if (c === "/" && text[i + 1] === "*") {
       const end = text.indexOf("*/", i + 2);
+      if (text.slice(i, end < 0 ? n : end).includes("\n")) newline = true;
       i = end < 0 ? n : end + 2;
       continue;
     }
@@ -600,7 +613,7 @@ export function moduleTokens(text: string): Token[] {
         i++;
       }
       i++;
-      tokens.push({ kind: "string", value, at: start });
+      push({ kind: "string", value, at: start });
       continue;
     }
     if (c === "`") {
@@ -626,19 +639,19 @@ export function moduleTokens(text: string): Token[] {
       }
       i++;
       while (i < n && isNamePart(text[i]!)) i++;
-      tokens.push({ kind: "other", value: "/re/", at: start });
+      push({ kind: "other", value: "/re/", at: start });
       continue;
     }
     if (isNameStart(c)) {
       const start = i;
       while (i < n && isNamePart(text[i]!)) i++;
-      tokens.push({ kind: "name", value: text.slice(start, i), at: start });
+      push({ kind: "name", value: text.slice(start, i), at: start });
       continue;
     }
     if (/[0-9]/.test(c) || (c === "." && /[0-9]/.test(text[i + 1] ?? ""))) {
       const start = i;
       while (i < n && /[0-9A-Za-z_.]/.test(text[i]!)) i++;
-      tokens.push({ kind: "other", value: text.slice(start, i), at: start });
+      push({ kind: "other", value: text.slice(start, i), at: start });
       continue;
     }
     if (c === "{") depth++;
@@ -648,23 +661,23 @@ export function moduleTokens(text: string): Token[] {
         depth--;
         const start = i;
         i++;
-        tokens.push({ kind: "punct", value: "}", at: start });
+        push({ kind: "punct", value: "}", at: start });
         template(start);
         continue;
       }
       depth--;
     }
     if (c === "." && text[i + 1] === "." && text[i + 2] === ".") {
-      tokens.push({ kind: "punct", value: "...", at: i });
+      push({ kind: "punct", value: "...", at: i });
       i += 3;
       continue;
     }
     if (c === "?" && text[i + 1] === ".") {
-      tokens.push({ kind: "punct", value: "?.", at: i });
+      push({ kind: "punct", value: "?.", at: i });
       i += 2;
       continue;
     }
-    tokens.push({ kind: "punct", value: c, at: i });
+    push({ kind: "punct", value: c, at: i });
     i++;
   }
   return tokens;
@@ -933,6 +946,72 @@ export function requireModuleSpecifiers(text: string): string[] {
   return out;
 }
 
+/** Tokens a type-only clause continues after across a line break: they open
+ * a type or carry it on (`=` before the type, `|`/`&` between arms, `(`
+ * and `[` before their contents, the `from` of an import), plus the names
+ * that are type operators. */
+const CLAUSE_CONTINUES_AFTER: ReadonlySet<string> = new Set([
+  "=",
+  ",",
+  ":",
+  "?",
+  "|",
+  "&",
+  ".",
+  "=>",
+  "<",
+  "(",
+  "[",
+  "{",
+  "...",
+  "as",
+  "extends",
+  "from",
+  "import",
+  "in",
+  "infer",
+  "is",
+  "keyof",
+  "new",
+  "of",
+  "readonly",
+  "typeof",
+]);
+
+/** Tokens that cannot begin a statement, so a line break before one leaves
+ * the clause open. `typeof` is not one of them: a type query only continues
+ * a clause after a token that opens a type (`=`, `|`, `keyof` and the like,
+ * which CLAUSE_CONTINUES_AFTER already covers), while a statement of its own
+ * can begin with it (`typeof require === "function"`). */
+const CLAUSE_CONTINUES_BEFORE: ReadonlySet<string> = new Set([
+  "|",
+  "&",
+  "?",
+  ":",
+  "=>",
+  ".",
+  ")",
+  "]",
+  "}",
+  ",",
+  ">",
+  "<",
+  "as",
+  "extends",
+  "in",
+  "is",
+  "of",
+]);
+
+/** Whether a line break between `prev` and `next` leaves a type-only clause
+ * open. */
+function clauseContinues(prev: Token | undefined, next: Token): boolean {
+  return (
+    (prev !== undefined && CLAUSE_CONTINUES_AFTER.has(prev.value)) ||
+    CLAUSE_CONTINUES_BEFORE.has(next.value)
+  );
+}
+
 export function scanModuleSpecifiers(
   text: string,
   options: ModuleSpecifierScanOptions = {},
@@ -955,6 +1034,33 @@ export function scanModuleSpecifiers(
         ? at(k + 1)!.value
         : null;
     return literal === null ? null : [literal];
+  };
+  /** The last token of a type-only clause that starts at `k` (an `import`
+   * or `export` followed by `type`): the `from "..."` specifier it names,
+   * or the `;` that ends an import-equals. Type stripping erases such a
+   * clause, so the module loads nothing when it runs. A clause written
+   * without a `;` ends where automatic semicolon insertion does: at a line
+   * break outside its own nesting, unless the tokens around the break are
+   * one type (a union arm on the next line, a type that goes on after `=`).
+   * Skipping further would cross into the runtime code after the clause. */
+  const typeOnlyEnd = (k: number): number => {
+    let nesting = 0;
+    for (let j = k + 1; j < tokens.length && j < k + 400; j++) {
+      const t = at(j)!;
+      if (nesting === 0) {
+        if (t.kind === "punct" && t.value === ";") return j;
+        if (is(j, "name", "from") && is(j + 1, "string")) return j + 1;
+        // The first token after `type` may sit on its own line
+        // (`import type` followed by the bindings).
+        if (j > k + 1 && t.nl === true && !clauseContinues(at(j - 1), t)) return j - 1;
+      }
+      if (t.kind === "punct") {
+        if (t.value === "(" || t.value === "[" || t.value === "{") nesting++;
+        else if (t.value === ")" || t.value === "]" || t.value === "}")
+          nesting = Math.max(0, nesting - 1);
+      }
+    }
+    return k + 1;
   };
   // `const r = createRequire(...)` declares a require function of the
   // module: calls of `r` load modules as require() calls do.
@@ -1038,6 +1144,14 @@ export function scanModuleSpecifiers(
         specifiers.push(at(k + 1)!.value);
         continue;
       }
+      // `import type ... from "..."` is a type-only clause: Node's type
+      // stripping erases it, so the module loads nothing when it runs. A
+      // default binding that is itself named `type` (`import type from
+      // "./mod"`, `import type, { a } from "./mod"`) is an ordinary import.
+      if (is(k + 1, "name", "type") && !is(k + 2, "name", "from") && !is(k + 2, "punct", ",")) {
+        k = typeOnlyEnd(k);
+        continue;
+      }
       for (let j = k + 1; j < tokens.length && j < k + 400; j++) {
         if (is(j, "punct", ";")) break;
         if (is(j, "name", "from") && is(j + 1, "string")) {
@@ -1048,11 +1162,12 @@ export function scanModuleSpecifiers(
       continue;
     }
     if (t.value === "export" && !member) {
+      // `export type ...` is erased by type stripping too.
+      if (is(k + 1, "name", "type")) {
+        k = typeOnlyEnd(k);
+        continue;
+      }
       let j = k + 1;
-      // `export type … from "x"` is erased whole, like `import type`: no
-      // runtime module. `export { type T } from "x"` keeps its statement and
-      // loads x.
-      if (is(j, "name", "type")) continue;
       if (is(j, "punct", "*")) {
         for (; j < tokens.length && j < k + 400; j++) {
           if (is(j, "punct", ";")) break;

@@ -644,6 +644,9 @@ function publicDetail(tier) {
     if (source === "compiler-feature:errors.stack") {
       return "Native errors capture synchronous source frames; V8 stack customization and async stack stitching remain unsupported.";
     }
+    if (source === "compiler-feature:process.allowedNodeEnvironmentFlags") {
+      return "One stable set answers the compatibility target's NODE_OPTIONS flag names for exact spellings; Node's Set subclass also accepts undashed, underscored, and =value spellings in has(), and its add, delete, and clear do nothing.";
+    }
     if (/^compiler-feature:process\.std(?:in|out|err)$/.test(source)) {
       return "Stored JavaScript process streams support native input listeners, pause/resume and buffered reads, synchronous output writes, and output write replacement; other stream operations remain unsupported.";
     }
@@ -705,6 +708,9 @@ function publicDetail(tier) {
       )
     ) {
       return "Native codec values support UTF-8 encoding and whole-buffer decoding with recognized literal labels and default options.";
+    }
+    if (source === "compiler-feature:globals.Headers") {
+      return "Constructs from records, header pairs and copies, and supports append/delete/get/getSetCookie/has/set/forEach with Node's coercion and error shapes, including Response and Request headers; typed iteration and method extraction remain refused.";
     }
     if (source === "compiler-feature:util.debuglog") {
       return "The enabled getter tests the section on first read; the callback receives the section's implementation with its own enabled getter.";

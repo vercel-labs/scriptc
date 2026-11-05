@@ -241,6 +241,98 @@ describe("the collected module tree", () => {
     );
   });
 
+  // Node's type stripping erases a `import type`/`export type` clause whole, so
+  // the module it names never loads, while `import { type I } from "./i.ts"`
+  // keeps its statement and does load the module for its side effects.
+  test("a type-only clause loads nothing, and a default binding named type does", () => {
+    const scan = scanModuleSpecifiers(`
+      import type { A } from "./a.ts";
+      import type B from "./b.ts";
+      import type * as C from "./c.ts";
+      export type { D } from "./d.ts";
+      export type * from "./e.ts";
+      import type F = require("./f.ts");
+      import type from "./g.ts";
+      import type, { H } from "./h.ts";
+      import { type I } from "./i.ts";
+    `);
+    expect(scan.specifiers).toEqual(["./g.ts", "./h.ts", "./i.ts"]);
+    expect(scan.computed).toEqual([]);
+  });
+
+  // Without a `;` the clause ends where the next statement begins, and the
+  // runtime loads after it still load: an exported type alias or a type-only
+  // import-equals must not swallow them, nor a type-only import written
+  // across lines lose the specifier it names.
+  test("a semicolonless type-only clause ends at the next statement", () => {
+    const scan = scanModuleSpecifiers(`
+      export type Alpha = string
+      import { a } from "./runtime.ts";
+      import type Beta = require("./types.ts")
+      const b = require("./more.ts");
+      export type Gamma = { g: string }
+      const c = require(name);
+      export type Delta =
+        | { d: string }
+        | string;
+      const e = require("./last.ts");
+      import type {
+        F,
+        G,
+      } from "./only-types.ts"
+      const h = require("./after-braces.ts");
+      export type Epsilon = Map<
+        string,
+        number
+      >
+      const i = require("./after-generics.ts");
+    `);
+    expect(scan.specifiers).toEqual([
+      "./runtime.ts",
+      "./more.ts",
+      "./last.ts",
+      "./after-braces.ts",
+      "./after-generics.ts",
+    ]);
+    expect(scan.computed.map((c) => c.form)).toEqual(["require() with a computed specifier"]);
+  });
+
+  // A statement can begin with `typeof`, so the guard after a semicolonless
+  // type clause is runtime code: the loads it makes still load, and a
+  // computed one is still refused. A type query inside the clause keeps it
+  // open and names no load.
+  test("a typeof guard after a semicolonless type clause still loads", () => {
+    const scan = scanModuleSpecifiers(`
+      export type Alpha = string
+      typeof require === "function" && require("./guarded.ts");
+      export type Beta = { b: string }
+      typeof require !== "undefined" && require(name);
+      export type Gamma =
+        typeof require
+      const d = require("./after-typeof.ts");
+      export type Delta = keyof
+        typeof require
+      const e = require("./after-keyof.ts");
+    `);
+    expect(scan.specifiers).toEqual(["./guarded.ts", "./after-typeof.ts", "./after-keyof.ts"]);
+    expect(scan.computed.map((c) => c.form)).toEqual(["require() with a computed specifier"]);
+  });
+
+  test("a type-only import of a module with a computed load is not refused", () => {
+    const root = project({
+      "src/main.ts": "",
+      "src/loader.ts": 'import type { Env } from "./env.ts";\nconst x: Env = {};\nexport { x };',
+      "src/env.ts":
+        "type DynamicImport = (specifier: string) => Promise<unknown>;\nconst load: DynamicImport = (specifier) => import(specifier);\nexport type Env = typeof load;\n",
+      "src/reexport.ts": 'export type { Env } from "./env.ts";',
+    });
+    const collector = new NodeIslandModuleCollector();
+    expect(collector.add(join(root, "src/main.ts"), "./loader.ts")).toBeNull();
+    expect(collector.add(join(root, "src/main.ts"), "./reexport.ts")).toBeNull();
+    // The program's module ships; the module its type-only clause names does not.
+    expect(collector.tree()!.files.map((f) => f.path)).toEqual(["loader.ts", "reexport.ts"]);
+  });
+
   test("a package ships whole, with its dependencies, but not its nested node_modules", () => {
     const root = project({
       "main.ts": "",

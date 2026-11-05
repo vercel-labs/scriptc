@@ -45,7 +45,13 @@ import { assertionViewCopy, bindingIdentityUse, bindingWrite } from "./divergenc
 import { requestGeneralStreamSurface } from "./general-streams.js";
 import { lowerForAwaitDynStream, nodeStreamInterfaceSide } from "./dyn-streams.js";
 import { lowerForAwaitValueStream } from "./builtins/hash-stream.js";
-import { lowerChildPropertyWrite } from "./handle-properties.js";
+import {
+  TYPED_HANDLE_KINDS,
+  boxedHandleReceiver,
+  handleMemberGranted,
+  lowerChildPropertyWrite,
+  lowerHandlePropertyWrite,
+} from "./handle-properties.js";
 import {
   matchAllRowsReadByElements,
   storedMatchAllRowsReadByElements,
@@ -261,6 +267,7 @@ import {
 } from "./lower-stream.js";
 import { staticAssertInstanceDecl } from "./assert-instances.js";
 import {
+  lowerHttpClientFnBindingDecl,
   lowerHttpResPropertyAssignment,
   lowerHttpServerTimeoutAssignment,
   lowerNetServerMaxConnectionsAssignment,
@@ -6621,6 +6628,12 @@ export function lowerVarDecl(
     );
   }
 
+  // `const requestFn = cond ? https.request : http.request`: calls through
+  // the binding lower as the runtime-secure client. A condition that is not
+  // a stable identifier read is evaluated once, here, into a hidden bool.
+  const clientFnDecl = lowerHttpClientFnBindingDecl(lowerer, decl);
+  if (clientFnDecl !== false) return clientFnDecl;
+
   // `const asyncFn = promisify(supportedBuiltin)`: the binding registers
   // a static callable projection; calls route to the target's promise
   // lowering and the declaration emits no runtime slot.
@@ -8543,6 +8556,38 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
   ) {
     obj = lowerer.coerceToExpected(obj, DYN);
   }
+  // A typed handle in a program that adds properties to handles: the
+  // delete removes an entry of its property table (scr_dyn_handle_props.c).
+  {
+    const boxed = boxedHandleReceiver(lowerer, obj);
+    if (boxed) {
+      const strict = { kind: "boolLit", value: isStrictCode(expr), type: BOOL, loc } as const;
+      if (ts.isElementAccessExpression(target)) {
+        return {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "dyn.keyDeleteComputed",
+            args: [boxed, lowerer.lowerExprExpecting(target.argumentExpression, DYN), strict],
+            type: VOID,
+            loc,
+          },
+          loc,
+        };
+      }
+      return {
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "dyn.keyDelete",
+          args: [boxed, lowerKey(), strict],
+          type: VOID,
+          loc,
+        },
+        loc,
+      };
+    }
+  }
   if (obj.type.kind === "dyn") {
     const strict = { kind: "boolLit", value: isStrictCode(expr), type: BOOL, loc } as const;
     if (ts.isElementAccessExpression(target)) {
@@ -9813,6 +9858,29 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
           }
           if (recv?.type.kind === "child" && isJsSourceFile(ts.getSourceFileOfNode(expr)))
             return lowerChildPropertyWrite(lowerer, recv, expr.left, expr.right, locOf(expr));
+          // `m.label = 1` over a typed handle in JavaScript: an undeclared
+          // member name is a property table entry, and so is a member name
+          // the program shadows (scr_dyn_handle_props.c). The grant query
+          // (a whole-program census) waits for a handle-typed receiver.
+          if (
+            !lowerer.checker.getPropertyOfType(
+              lowerer.typeOf(expr.left.expression),
+              expr.left.name.text,
+            ) ||
+            (recv !== null &&
+              TYPED_HANDLE_KINDS.has(recv.type.kind) &&
+              handleMemberGranted(lowerer, expr.left.expression, expr.left.name.text))
+          ) {
+            const boxed = boxedHandleReceiver(lowerer, recv);
+            if (boxed)
+              return lowerHandlePropertyWrite(
+                lowerer,
+                boxed,
+                { kind: "strLit", value: expr.left.name.text, type: STRING, loc: locOf(expr) },
+                expr.right,
+                locOf(expr),
+              );
+          }
           // `err.code = v` on an Error value (`err as Error & { code?:
           // string }`): typed reads come from the runtime error's code
           // slot, so the write lands there. A value that is not statically

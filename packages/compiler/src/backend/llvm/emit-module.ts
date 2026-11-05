@@ -6,7 +6,7 @@ import { type LlEmitter, ffiCallbackDummyLl, llStrBytes } from "./emitter.js";
 import { type ChunkResult, EmitJournal } from "./emit-journal.js";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, sep } from "node:path";
+import { join } from "node:path";
 import { JS_GROUP_WORDS } from "./js-groups.js";
 import { JS_IC_WORDS } from "./js-ic.js";
 import {
@@ -295,32 +295,22 @@ function functionAttributes(emitter: LlEmitter, hasNoInlineRecordClone: boolean)
 /** The group line written before each function's text. Functions from one
  * source file share a group, which the LLVM helper keeps in the same
  * partitions so that their calls to each other stay inside a partition
- * (native/llvm-codegen/src/partition.h). A group is numbered by a hash of its
- * file's name, so a group keeps its number when other functions or files are
- * added or reordered. Functions without a source file get no group. */
-function partitionGroupLines(functions: readonly IrFunction[], entry: string): string[] {
-  const from = dirname(entry);
+ * (native/llvm-codegen/src/partition.h). A group is numbered by the first
+ * function of its file in the module's function order: the helper picks a
+ * group's partitions by hashing its key, so the numbers are not a label but
+ * the placement itself, and hashing the file name instead moved whole files
+ * to other partitions and cost tsc-ts about 1.5% on trpc c1 (#2950, reverted
+ * here). Stable names live on the %init functions, which do not choose a
+ * partition. Functions without a source file get no group. */
+function partitionGroupLines(functions: readonly IrFunction[]): string[] {
+  const groups = new Map<string, number>();
   return functions.map((fn) => {
     const file = fn.loc.file;
     if (file === "") return PARTITION_GROUP_END;
-    return `${PARTITION_GROUP_END} ${groupNumber(portableName(from, file))}`;
+    let group = groups.get(file);
+    if (group === undefined) groups.set(file, (group = groups.size));
+    return `${PARTITION_GROUP_END} ${group}`;
   });
-}
-
-/** The path of `file` relative to the directory `from`, with `/` separators
- * on every platform, so a group's number does not depend on where the program
- * sits. It matches the frontend's portableRelativePath; the backend cannot
- * import it (it reads the IR only). */
-function portableName(from: string, file: string): string {
-  const name = relative(from, file);
-  return sep === "/" ? name : name.split(sep).join("/");
-}
-
-/** A 32-bit FNV-1a hash of `name`. */
-function groupNumber(name: string): number {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < name.length; i++) h = Math.imul(h ^ name.charCodeAt(i), 0x01000193);
-  return h >>> 0;
 }
 
 /** Ends the group of the definitions that follow. */
@@ -1207,7 +1197,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
       emitter.resolveThunkDefs,
     ],
     fnDefs,
-    partitionGroupLines(emitter.mod.functions, emitter.mod.sourceFile),
+    partitionGroupLines(emitter.mod.functions),
     partitionEntries(emitter.mod.functions, emitter.mod.sourceFile),
   );
   if (fnDefs.length === 0) out.push("");

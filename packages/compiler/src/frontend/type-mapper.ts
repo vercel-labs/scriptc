@@ -40,6 +40,7 @@ import {
   STRING,
   SYMBOL_T,
   typeEquals,
+  sortArms,
   typeKey,
   maybePromiseUnionArmsOk,
   unionContainerArmsOk,
@@ -2830,7 +2831,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       }
       if (hasNum && hasStr) {
         const arms = [F64, STRING];
-        arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+        sortArms(arms);
         return { kind: "union", unionId: unions.intern(arms) };
       }
       return hasStr ? STRING : F64;
@@ -3934,7 +3935,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     isStdlibInterface("SharedArrayBuffer") ||
     isStdlibInterface("PropertyDescriptor") ||
     isStdlibInterface("ProcessVersions") ||
-    isStdlibInterface("ProcessRelease")
+    isStdlibInterface("ProcessRelease") ||
+    isStdlibInterface("ProcessReport")
   )
     return DYN;
   if (Object.values(BYTES_ELEMENT_NAME).some((name) => isStdlibInterface(`${name}Constructor`)))
@@ -4770,9 +4772,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     const optStr = withUndefinedArm(STRING, ctx.unions);
     const optNum = withUndefinedArm(F64, ctx.unions);
     const optBool = withUndefinedArm(BOOL, ctx.unions);
-    const stdioArms = [arrayOf(STRING), STRING, UNDEFINED_T].sort((a, b) =>
-      typeKey(a) < typeKey(b) ? -1 : 1,
-    );
+    const stdioArms = sortArms([arrayOf(STRING), STRING, UNDEFINED_T]);
     const stdio: IrType = { kind: "union", unionId: ctx.unions.intern(stdioArms) };
     if (!optStr || !optNum || !optBool) return null;
     return {
@@ -4811,13 +4811,19 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       typeKey(a) < typeKey(b) ? -1 : 1,
     );
     const stdio: IrType = { kind: "union", unionId: ctx.unions.intern(stdioArms) };
-    if (!optStr || !optNum || !optBool) return null;
+    // `env?: NodeJS.ProcessEnv` — the same record the inline literal builds
+    // its [k,v,...] pairs from. A runtime record can carry a replacement
+    // environment, so the member maps rather than staying literal-only.
+    const envProp = ctx.checker.getPropertyOfType(type, "env");
+    const env = envProp ? mapType(ctx.checker.getTypeOfSymbol(envProp), ctx) : null;
+    if (!optStr || !optNum || !optBool || !env || env.kind !== "union") return null;
     return {
       kind: "record",
       shapeId: ctx.shapes.intern(
         [
           { name: "cwd", type: optStr },
           { name: "encoding", type: STRING },
+          { name: "env", type: env },
           { name: "input", type: optStr },
           { name: "shell", type: optBool },
           { name: "stdio", type: stdio },
@@ -4826,7 +4832,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         ],
         false,
         undefined,
-        ["encoding", "cwd", "input", "timeout", "shell", "stdio", "windowsHide"],
+        ["encoding", "cwd", "env", "input", "timeout", "shell", "stdio", "windowsHide"],
       ),
     };
   }
@@ -5080,7 +5086,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       const t = args[0] && mapType(args[0], ctx);
       if (!t || t.kind !== "string") return null;
     }
-    const shellArms = [NULL_T, STRING].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+    const shellArms = sortArms([NULL_T, STRING]);
     const shell: IrType = { kind: "union", unionId: ctx.unions.intern(shellArms) };
     return {
       kind: "record",
@@ -5417,7 +5423,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     isStdlibInterface("NetworkInterfaceInfoIPv6")
   ) {
     const v6 = ts.symbolName(psym!) === "NetworkInterfaceInfoIPv6";
-    const cidrArms = [NULL_T, STRING].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+    const cidrArms = sortArms([NULL_T, STRING]);
     const cidr: IrType = { kind: "union", unionId: ctx.unions.intern(cidrArms) };
     const scopeid = v6 ? F64 : withUndefinedArm(F64, ctx.unions);
     if (!scopeid) return null;
@@ -6002,7 +6008,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       ) {
         return null;
       }
-      mergedArms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+      sortArms(mergedArms);
       const discriminant =
         unionDiscriminant(recordParts, mergedArms, ctx) ??
         (substitutedUnions.length === 1
@@ -7184,7 +7190,7 @@ function mapGenericIndexedAccess(type: ts.Type, ctx: TypeMapperCtx): IrType | nu
     }
   }
   if (arms.length === 1) return arms[0]!;
-  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  sortArms(arms);
   return { kind: "union", unionId: ctx.unions.intern(arms) };
 }
 
@@ -7282,7 +7288,7 @@ function mapDistributedConditional(type: ts.Type, ctx: TypeMapperCtx): IrType | 
   if (arms.every(isUnitType)) return null;
   if (arms.length === 1) return arms[0]!;
   if (!unionContainerArmsOk(arms)) return null;
-  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  sortArms(arms);
   return { kind: "union", unionId: ctx.unions.intern(arms) };
 }
 
@@ -7739,7 +7745,7 @@ function mapGenericUtilityAlias(widened: ts.Type, ctx: TypeMapperCtx): IrType | 
  * that could inhabit the extra arm. */
 export function unitOnlyUnion(unions: UnionRegistry): IrType {
   const arms = [NULL_T, UNDEFINED_T];
-  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  sortArms(arms);
   return { kind: "union", unionId: unions.intern(arms) };
 }
 
@@ -7779,7 +7785,7 @@ export function iterableUnionType(
     )
       arms.push({ kind: "map", key: k.type, value: v.type });
   }
-  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  sortArms(arms);
   return { kind: "union", unionId: unions.intern(arms) };
 }
 
@@ -7832,7 +7838,7 @@ export function genResultRecord(
       // the slot still needs a readable undefined — the unit-only union.
       valueT = unitOnlyUnion(unions);
     } else {
-      arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+      sortArms(arms);
       valueT = { kind: "union", unionId: unions.intern(arms) };
     }
   }
@@ -7936,7 +7942,7 @@ export function withUnitArm(
     const arms = [...def.arms, unit];
     // Date and Promise arms beside other data arms have no union home.
     if (!unionContainerArmsOk(arms)) return null;
-    arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+    sortArms(arms);
     return { kind: "union", unionId: unions.transform(def, arms) };
   }
   if (
@@ -7949,7 +7955,7 @@ export function withUnitArm(
     return null;
   }
   const arms = [t, unit];
-  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  sortArms(arms);
   return { kind: "union", unionId: unions.intern(arms) };
 }
 
@@ -8168,9 +8174,10 @@ function mapErrorMetadataIntersection(type: ts.Type, ctx: TypeMapperCtx): IrType
 /** A conventional primitive brand has one runtime-carrying primitive part
  * and one or more phantom object parts whose fields are literal marker
  * values. The marker can use a string or unique-symbol key, can be imported
- * from a declaration file, and can be expressed through a generic alias;
- * none of those facts changes the runtime value. Empty `{}` refinements are
- * the marker-free form of the same primitive narrowing.
+ * from a declaration file, can be expressed through a generic alias, and can
+ * nest tables of further markers; none of those facts changes the runtime
+ * value. Empty `{}` refinements are the marker-free form of the same
+ * primitive narrowing.
  *
  * Arbitrary primitive/object intersections do not erase here. A companion
  * with a class identity, call/construct/index signature, accessor, or a
@@ -8202,7 +8209,7 @@ function mapBrandedPrimitiveIntersection(widened: ts.Type, ctx: TypeMapperCtx): 
     }
     return null;
   };
-  const markerValue = (value: ts.Type): boolean => {
+  const markerValue = (value: ts.Type, seen = new Set<ts.Type>()): boolean => {
     if (
       value.flags &
       (ts.TypeFlags.StringLiteral |
@@ -8218,15 +8225,44 @@ function mapBrandedPrimitiveIntersection(widened: ts.Type, ctx: TypeMapperCtx): 
     ) {
       return true;
     }
-    if (value.isUnionType()) return ts.constituentTypes(value).every(markerValue);
+    if (value.isUnionType())
+      return ts.constituentTypes(value).every((part) => markerValue(part, seen));
     if (value.flags & ts.TypeFlags.TypeParameter) {
       const bound = resolveTypeParamTs?.(value) ?? null;
       if (bound) {
         contextResolutions++;
-        return markerValue(bound);
+        return markerValue(bound, seen);
       }
     }
-    return false;
+    // A NESTED marker table (`{ readonly ["~effect/Brand"]: { readonly
+    // ProviderDriverKind: "ProviderDriverKind" } }`): an object whose own
+    // members are all markers describes no runtime data, so the nesting
+    // does not make the marker observable. Class identity, call, construct
+    // or index signatures, accessors, and non-literal value fields stay
+    // outside the rule, because those can describe runtime behavior.
+    if ((value.flags & ts.TypeFlags.Object) === 0) return false;
+    if (seen.has(value)) return false;
+    seen.add(value);
+    // `seen` holds the types on the current path only: two sibling fields
+    // that name the same marker type both erase, while a table that refers
+    // to itself stays outside the rule.
+    let marker = false;
+    const sym = value.getSymbol();
+    if (sym === undefined || (sym.flags & ts.SymbolFlags.Class) === 0) {
+      marker =
+        checker.getCallSignatures(value).length === 0 &&
+        checker.getConstructSignatures(value).length === 0 &&
+        checker.getIndexInfosOfType(value).length === 0 &&
+        checker
+          .getPropertiesOfType(value)
+          .every(
+            (prop) =>
+              (prop.flags & (ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor)) === 0 &&
+              markerValue(checker.getTypeOfSymbol(prop), seen),
+          );
+    }
+    seen.delete(value);
+    return marker;
   };
   let primitive: IrType | null = null;
   let markerParts = 0;
@@ -8482,7 +8518,13 @@ export function packageTypeIsData(
     declared = true;
     if (!data) return false;
   }
-  return declared;
+  if (declared) return true;
+  // A union spelled through a package type alias whose members all come
+  // from elsewhere (`type RawData = Buffer | ArrayBuffer | Buffer[]`):
+  // no member carries the package's provenance, but the alias declaration
+  // is the package's data shape, so the type is still data the program
+  // builds and never a value the package's implementation produces.
+  return packageDataPart(type, ctx) === true;
 }
 
 /** The record path's provenance fence. Declared shapes (object literals,
@@ -8712,7 +8754,7 @@ function joinOverloadTypes(types: readonly IrType[], ctx: TypeMapperCtx): IrType
     }
   }
   if (scalar && [...arms.values()].some((arm) => !isUnitType(arm))) {
-    const sorted = [...arms.values()].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+    const sorted = sortArms([...arms.values()]);
     return { kind: "union", unionId: ctx.unions.intern(sorted) };
   }
   if (
@@ -9104,7 +9146,7 @@ function dictSpreadLiteralShape(
   }
   for (const field of parts.fields) if (!addArms(field.type)) return null;
   if (![...arms.values()].some((arm) => !isUnitType(arm))) return null;
-  const sorted = [...arms.values()].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  const sorted = sortArms([...arms.values()]);
   const slot: IrType =
     sorted.length === 1 ? sorted[0]! : { kind: "union", unionId: unions.intern(sorted) };
   return shapes.intern([], false, slot, []);
@@ -9374,7 +9416,7 @@ function mapRecordTypeInner(
       slotDef.arms.every(armOk)
     ) {
       const armsRaw = [F64, STRING, arrayOf(STRING), UNDEFINED_T];
-      armsRaw.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+      sortArms(armsRaw);
       const canonical: IrType = { kind: "union", unionId: ctx.unions.intern(armsRaw) };
       const fits = (t: IrType | null): boolean => {
         if (!t) return false;
@@ -9835,9 +9877,7 @@ function mergePromiseArms(arms: IrType[], ctx: TypeMapperCtx): IrType[] | null {
         : payload.every((arm) => armHasUnionHome(arm))
           ? {
               kind: "union",
-              unionId: ctx.unions.intern(
-                [...payload].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1)),
-              ),
+              unionId: ctx.unions.intern(sortArms([...payload])),
             }
           : null;
   const merged: IrType | null = inner === null ? null : { kind: "promise", inner };

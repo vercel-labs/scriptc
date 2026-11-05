@@ -383,6 +383,7 @@ import {
   classFieldTypes,
   classMembershipIntervals,
   classFieldIndex,
+  compactRefBaseOf,
   compactRefLoadLines,
   compactRefStoreLines,
   classPreLines,
@@ -674,11 +675,12 @@ export interface LlvmTargetOptions {
 
 /** LlvmTargetOptions.lowRegion for an executable: Linux targets without
  * sanitizers, whose address space below 32 GiB is free (ASan keeps its
- * shadow memory there; other systems map their own images and libraries
- * there). `platform` is a target platform (`linux`, `darwin`, `win32`,
- * `wasi`). */
+ * shadow memory there), and macOS targets without sanitizers, which keep the
+ * window at a fixed base instead (classes.ts compactRefBaseOf). Other systems
+ * map their own images and libraries below 32 GiB. `platform` is a target
+ * platform (`linux`, `darwin`, `win32`, `wasi`). */
 export function lowRegionTarget(platform: string, sanitize: boolean): boolean {
-  return platform === "linux" && !sanitize;
+  return (platform === "linux" || platform === "darwin") && !sanitize;
 }
 
 /** Function versions on loop-bounding number parameters
@@ -1193,6 +1195,10 @@ export class LlEmitter {
    * 32-bit references (LlClassMeta.compressed):
    * loadField/loadRef decode them and storeField/storeRef encode them. */
   readonly compressedFieldPtrs = new Set<string>();
+  /** The window base that 32-bit references are offsets from (classes.ts
+   * compactRefBaseOf): 0 unless the low region applies on a target that
+   * places the window at a base. */
+  readonly compactRefBase: bigint;
   /** Compact class instances live in the program-lifetime region below
    * 32 GiB (LlvmTargetOptions.lowRegion, and the program has compact
    * classes): main reserves it before compiled code runs (scr_plr_init), and
@@ -2346,6 +2352,7 @@ export class LlEmitter {
       (options.targetTriple
         ? /^(x86_64|amd64)\b/i.test(options.targetTriple)
         : process.arch === "x64");
+    this.compactRefBase = options.lowRegion === true ? compactRefBaseOf(options.targetTriple) : 0n;
     this.executableTls =
       mod.workers === true &&
       mod.lib === undefined &&
@@ -2647,8 +2654,9 @@ export class LlEmitter {
       // Worker programs keep one allocator per script thread: the inline
       // paths address its thread-local state.
       threadLocalAlloc: mod.workers === true,
-      // Linux executables find a block's owner in the chunk map.
-      windowMap: options.lowRegion === true,
+      // Linux executables find a block's owner in the chunk map, which
+      // indexes the low 32 GiB by address; a window with a base has none.
+      windowMap: options.lowRegion === true && compactRefBaseOf(options.targetTriple) === 0n,
       rcHelpers: this.rcHelpers,
       ...(this.rcMode !== undefined ? { rcMode: this.rcMode } : {}),
       ...(this.rcHelpersNoinline ? { rcHelpersNoinline: true } : {}),
@@ -5306,7 +5314,8 @@ export class LlEmitter {
     }
     const idx = B.tmp();
     B.line(`${idx} = load i32, ptr ${ptr}${tags}`);
-    for (const line of compactRefLoadLines(idx, v, `${v}.r`)) B.line(line.trimStart());
+    for (const line of compactRefLoadLines(this.compactRefBase, idx, v, `${v}.r`))
+      B.line(line.trimStart());
     return v;
   }
 
@@ -7920,6 +7929,7 @@ export class LlEmitter {
       declare: (decl) => this.declare(decl),
       cstr: (text) => this.cstr(text),
       sizeType: this.sizeType,
+      compactRefBase: this.compactRefBase,
       rcAudit: this.shapeHost.objectAudit !== false,
       tracedShapes: this.tracedShapes,
       unionsById: this.unionsById,

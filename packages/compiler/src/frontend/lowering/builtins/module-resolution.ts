@@ -47,6 +47,7 @@ import {
 } from "./module-bindings.js";
 import { stripTypeCasts } from "./arguments.js";
 import { keyedHelperName } from "../stable-names.js";
+import { checkedIterableSpread } from "../checked-iterable-spread.js";
 
 /** node:module's two compiler-only calls. isBuiltin compares one evaluated
  * string against the pinned Node 24 list (bare builtins also accept their
@@ -287,7 +288,16 @@ export function createRequireResolveFenceValue(
 ): IrExpr {
   const paths = access.name.text === "paths";
   const surface = `createRequire's require.resolve${paths ? ".paths" : ""} as a value`;
-  const runtimeBase = createRequireRuntimeBaseOf(lowerer, access.expression);
+  // `r.resolve.paths` names a member of the loader's `resolve`: the loader
+  // is one property access in.
+  const loader =
+    paths &&
+    ts.isPropertyAccessExpression(access.expression) &&
+    access.expression.name.text === "resolve" &&
+    access.expression.questionDotToken === undefined
+      ? access.expression.expression
+      : access.expression;
+  const runtimeBase = createRequireRuntimeBaseOf(lowerer, loader);
   const hint = runtimeBase
     ? "createRequire needs this file (import.meta.url or __filename), which anchors build-time resolution"
     : `call it with a string literal (require.resolve${paths ? ".paths" : ""}("<specifier>")), which resolves at build time`;
@@ -317,13 +327,20 @@ export function createRequireResolveFenceValue(
       loc,
     });
   }
-  return {
+  const value: IrExpr = {
     kind: "dynFrom",
     value: { kind: "closure", fnName: name, captures: [], type: funcOf([], DYN), loc },
     fnName: access.name.text,
     type: DYN,
     loc,
   };
+  if (!runtimeBase) return value;
+  // An inline factory call in the receiver made the loader over a run-time
+  // base: Node evaluates the base arguments at the property read.
+  const stmts = createRequireBaseEffectStmts(lowerer, loader);
+  return stmts.length === 0
+    ? value
+    : { kind: "seqExpr", stmts, result: value, type: value.type, loc };
 }
 
 /** A createRequire loader read as a value in JavaScript source (stored in
@@ -418,6 +435,34 @@ function createRequireFenceFunctionValue(
   };
 }
 
+/** The argument expressions of an inline factory call — `createRequire(base)`
+ * or a destructured `cr(base)` — as statements in source order. Node
+ * evaluates them when it makes the loader, before the loader value exists,
+ * so side effects and throws happen there. A spread argument consumes its
+ * iterator, which throws for an operand that is not iterable. */
+function createRequireBaseEffectStmts(lowerer: Lowerer, creator: ts.Expression): IrStmt[] {
+  const e = stripTypeCasts(creator);
+  if (!ts.isCallExpression(e) || e.questionDotToken) return [];
+  // An optional chain that hoisted this call into a local already ran the
+  // base: the guarded read re-lowers the receiver, and must not repeat it.
+  if (lowerer.chainRecvByNode.has(e)) return [];
+  return e.arguments.nodes.map((arg): IrStmt => {
+    const argLoc = locOf(arg);
+    return {
+      kind: "exprStmt",
+      expr: ts.isSpreadElement(arg)
+        ? checkedIterableSpread(
+            lowerer,
+            lowerer.lowerExpr(arg.expression),
+            ts.getTextOfNode(arg.expression),
+            argLoc,
+          )
+        : lowerer.lowerExpr(arg),
+      loc: argLoc,
+    };
+  });
+}
+
 /** A createRequire use deferred to run time in JavaScript source: as in
  * Node, the expressions that made the callee (`madeBy`) and the call's own
  * arguments are evaluated in order, then the call throws (here, the fence).
@@ -430,13 +475,16 @@ function deferredCreateRequireThrow(
   hint: string,
   loc: SrcLoc,
   reason?: string,
-  madeBy: readonly ts.Expression[] = [],
+  madeBy: readonly IrStmt[] = [],
 ): IrExpr {
-  const stmts: IrStmt[] = [...madeBy, ...call.arguments.nodes].map((arg) => ({
-    kind: "exprStmt",
-    expr: lowerer.lowerExpr(arg),
-    loc: locOf(arg),
-  }));
+  const stmts: IrStmt[] = [
+    ...madeBy,
+    ...call.arguments.nodes.map((arg): IrStmt => ({
+      kind: "exprStmt",
+      expr: lowerer.lowerExpr(arg),
+      loc: locOf(arg),
+    })),
+  ];
   const type = lowerer.irTypeOf(call);
   const slot = lowerer.declareHiddenLocal("%never", type);
   slot.mutable = true;
@@ -465,19 +513,28 @@ export function lowerCreateRequireCall(
     // run-time require over a base the compiled graph cannot anchor.
     if (!isJsSourceFile(ts.getSourceFileOfNode(call))) return null;
     const callee = stripTypeCasts(call.expression);
-    if (ts.isIdentifier(callee) && createRequireFactoryBinding(lowerer, callee)) {
-      // `cr(base)` — the factory call yields the loader itself.
-      return createRequireFenceFunctionValue(lowerer, call, callee.text, loc);
+    // The factory call itself over a run-time base — `createRequire(base)`
+    // or a destructured `cr(base)`: Node evaluates the base arguments,
+    // then the factory returns the loader. The compiled loader is the
+    // fence, and the base runs where the factory call stands. A call with
+    // no argument has no base to evaluate and no loader Node would make.
+    if (call.arguments.nodes.length > 0 && createRequireRuntimeBaseOf(lowerer, call)) {
+      const stmts = createRequireBaseEffectStmts(lowerer, call);
+      const value = createRequireFenceFunctionValue(
+        lowerer,
+        call,
+        ts.isIdentifier(callee) ? callee.text : "createRequire",
+        loc,
+      );
+      return stmts.length === 0
+        ? value
+        : { kind: "seqExpr", stmts, result: value, type: value.type, loc };
     }
     if (createRequireRuntimeBaseOf(lowerer, callee)) {
       // `createRequire(base)("./x")`: Node evaluates the base — its side
       // effects and throws — when it makes the loader, before the require
       // call's own arguments. The base is plumbing to the compiled graph's
       // RESOLUTION only, never to evaluation.
-      const madeBy =
-        ts.isCallExpression(callee) && !callee.arguments.nodes.some((a) => ts.isSpreadElement(a))
-          ? callee.arguments.nodes
-          : [];
       return deferredCreateRequireThrow(
         lowerer,
         call,
@@ -485,7 +542,7 @@ export function lowerCreateRequireCall(
         "createRequire needs this file (import.meta.url or __filename), which anchors build-time resolution",
         loc,
         "dynamic-require",
-        madeBy,
+        createRequireBaseEffectStmts(lowerer, callee),
       );
     }
     return null;
@@ -772,7 +829,8 @@ export function lowerRequireResolveCall(lowerer: Lowerer, call: ts.CallExpressio
     return null;
   }
   // A run-time-base loader's query: the anchor lives at run time, so the
-  // compiled graph cannot answer it. Its arguments run, then it throws.
+  // compiled graph cannot answer it. The base that made the loader runs
+  // first, then the query's own arguments, then it throws.
   if (
     call.questionDotToken === undefined &&
     createRequireRuntimeBaseOf(lowerer, receiver) &&
@@ -785,6 +843,8 @@ export function lowerRequireResolveCall(lowerer: Lowerer, call: ts.CallExpressio
       `createRequire's ${surface} over a run-time base`,
       "createRequire needs this file (import.meta.url or __filename), which anchors build-time resolution",
       locOf(call),
+      undefined,
+      createRequireBaseEffectStmts(lowerer, receiver),
     );
   }
   const baseFile = requireResolverBaseFile(lowerer, receiver);

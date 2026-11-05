@@ -39,4 +39,40 @@ try {
 } catch (error) {
   console.log("inline threw:", error.constructor.name, inlineCalls);
 }
+
+// A factory call read as a value makes its loader from the base at the read,
+// before anything uses the loader.
+let valueCalls = 0;
+const valueBase = () => {
+  valueCalls += 1;
+  return "/opt/value";
+};
+console.log("factory value:", typeof createRequire(valueBase()), valueCalls);
+
+// The loader's `resolve` answers against the base at run time, so the base
+// is made before the query throws.
+let resolveCalls = 0;
+const resolveBase = () => {
+  resolveCalls += 1;
+  return "/opt/resolve";
+};
+try {
+  createRequire(resolveBase()).resolve("./missing.cjs");
+} catch (error) {
+  console.log("resolve threw:", error.constructor.name, resolveCalls);
+}
+
+// Reading `resolve` (and `resolve.paths`) off an inline loader is the same:
+// the base runs at each read, and the member is a function.
+let readCalls = 0;
+const readBase = () => {
+  readCalls += 1;
+  return "/opt/read";
+};
+console.log(
+  "resolve value:",
+  typeof createRequire(readBase()).resolve,
+  typeof createRequire(readBase()).resolve.paths,
+  readCalls,
+);
 console.log("done:", calls);

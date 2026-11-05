@@ -66,6 +66,35 @@ console.log(value.x, Object.keys(value));
   }
 });
 
+test("documented setters keep reflective argument counts behind a located refusal", () => {
+  const { dir, entry } = fixture(`
+const value = {
+  /** @param {string} [next] */
+  set data(next) { console.log(arguments.length, next); },
+};
+const descriptor = Object.getOwnPropertyDescriptor(value, "data");
+descriptor.set.call(value, "value", "extra");
+`);
+  try {
+    const oracle = spawnSync(process.execPath, [entry], { encoding: "utf8", timeout: 30_000 });
+    expect(oracle.error).toBeUndefined();
+    expect(oracle.status).toBe(0);
+    expect(oracle.stdout).toBe("2 value\n");
+    const { coverage } = analyze(entry);
+    expect(coverage.preflightFailed).toBe(false);
+    expect(coverage.diagnostics).toEqual([]);
+    expect(coverage.runtimeFences).toEqual([
+      expect.objectContaining({
+        code: "SC1090",
+        message: expect.stringContaining("arguments.length"),
+        loc: expect.objectContaining({ file: entry }),
+      }),
+    ]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("JS overrides with different return types match Node", async () => {
   const { dir, entry } = fixture(`
 class Base { copy(value = 1) { return value; } }

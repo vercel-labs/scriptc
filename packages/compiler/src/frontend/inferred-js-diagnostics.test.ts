@@ -178,6 +178,60 @@ export const bag = {
 });
 
 test.for([
+  ["unchecked", ""],
+  ["checked", "// @ts-check\n"],
+] as const)(
+  "%s JavaScript setter JSDoc does not make its executable parameter optional",
+  ([, directive]) => {
+    const library = `${directive}export class Sink {
+  /** @param {string | null} [next] */
+  set value(next) { console.log(next); }
+}
+export const sink = {
+  /** @param {string | null} [next] */
+  set value(next) { console.log(next); },
+};
+`;
+    expect(
+      diagnostics(
+        library,
+        'import { Sink, sink } from "./library.js"; new Sink().value = "class"; sink.value = null;',
+      ),
+    ).toEqual([]);
+  },
+);
+
+test("an optional setter JSDoc type still constrains TypeScript callers", () => {
+  expect(
+    diagnostics(
+      `export class Sink {
+  /** @param {string} [next] */
+  set value(next) { console.log(next); }
+}`,
+      'import { Sink } from "./library.js"; new Sink().value = 42;',
+    ).some((diagnostic) => diagnostic.message.includes("not assignable")),
+  ).toBe(true);
+});
+
+test.for([
+  ["js", 'set value(next = "") {}', "initializer"],
+  ["js", "set value(...next) {}", "rest parameter"],
+  ["js", "set value(next?) {}", "optional parameter"],
+  ["ts", "set value(next?: string) {}", "optional parameter"],
+] as const)(
+  "executable setter parameter restrictions remain in %s: %s",
+  ([extension, setter, message]) => {
+    expect(
+      diagnostics(
+        `const marker = "/*"; export class Sink { ${setter} }`,
+        'import { Sink } from "./library.js"; new Sink();',
+        extension,
+      ).some((diagnostic) => diagnostic.message.includes(message)),
+    ).toBe(true);
+  },
+);
+
+test.for([
   [
     "2704",
     'export const box = {};\nObject.defineProperty(box, "flag", { value: 1, configurable: true });\nexport function drop() { delete box.flag; }',

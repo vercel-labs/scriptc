@@ -7023,10 +7023,38 @@ function preflightGate7(load: LoadResult): PreflightGate {
     commentDup: Set<string>,
   ): boolean => {
     if (d.fileName === undefined || !isJsSourceFileName(d.fileName)) return false;
-    if (d.code !== 2304 && d.code !== 2552 && d.code !== 2300 && d.code !== 1003) return false;
+    if (d.code !== 2304 && d.code !== 2552 && d.code !== 2300 && d.code !== 1003 && d.code !== 1051)
+      return false;
     if (d.pos === undefined) return false;
     const sf = p.getSourceFile(d.fileName);
     if (!sf) return false;
+    if (d.code === 1051) {
+      const pos = d.pos;
+      const end = d.end;
+      if (end === undefined) return false;
+      let documented = false;
+      ts.walkPreorder(sf, (node) => {
+        if (!ts.isSetAccessor(node) || node.parameters.nodes.length !== 1) return undefined;
+        const parameter = node.parameters.nodes[0]!;
+        // TS7 also synthesizes a question token spanning an optional
+        // JSDoc tag. Only a token inside the parameter is actual syntax.
+        const optional = parameter.questionToken;
+        if (
+          (optional && parameter.pos <= optional.pos && optional.end <= parameter.end) ||
+          parameter.initializer ||
+          parameter.dotDotDotToken
+        )
+          return undefined;
+        // Optional JSDoc describes an undefined value; the executable
+        // setter still has exactly one required parameter.
+        if (node.jsDoc?.some((doc) => doc.pos <= pos && end <= doc.end)) {
+          documented = true;
+          return "stop";
+        }
+        return undefined;
+      });
+      return documented;
+    }
     if (insideBlockComment(sf.text, d.pos)) return true;
     return d.code === 2300 && commentDup.has(`${d.fileName}:${sf.text.slice(d.pos, d.end)}`);
   };

@@ -1718,14 +1718,34 @@ export function lowerAsExpression(
       target?.kind === "record" &&
       inner.type.shapeId !== target.shapeId
     ) {
-      // A pair outside the width family (an index-signature record asserted
-      // to a record of its own keys: a `Record<string, V>` filled key by
-      // key and cast to `{ k: V }`) converts checked (assertedConversion):
-      // every claimed field validated, the value's own keys kept. The claim
-      // follows the value the assertion PRODUCED, not the operand it read —
-      // a generic body's operand keeps the caller's layout while its
-      // asserted result carries the target's — so later slots check the
-      // shape the assertion actually made.
+      // An index-signature record asserted to a record of its own keys (a
+      // `Record<string, V>` filled key by key and cast to `{ k: V }`): the
+      // value's own keys stay observable — Node erases the assertion, so
+      // JSON and Object.keys see every property the object holds, including
+      // the ones the target does not declare. A field copy would drop them.
+      // The value keeps its storage, and a read of a target field answers
+      // through the source's index signature (the keyed read the bracket
+      // spelling takes). The claim still follows the assertion's result, so
+      // a slot that needs the target layout converts it there.
+      const source = lowerer.shapes.get(inner.type.shapeId);
+      const dest = lowerer.shapes.get(target.shapeId);
+      if (
+        source?.indexValue !== undefined &&
+        !source.tuple &&
+        dest !== undefined &&
+        !dest.tuple &&
+        dest.indexValue === undefined
+      ) {
+        lowerer.layoutKeptNodes.add(expr);
+        lowerer.assertedValues.set(inner, target);
+        return inner;
+      }
+      // A pair outside the width family converts checked
+      // (assertedConversion): every claimed field validated, the value's
+      // own keys kept. The claim follows the value the assertion PRODUCED,
+      // not the operand it read — a generic body's operand keeps the
+      // caller's layout while its asserted result carries the target's — so
+      // later slots check the shape the assertion actually made.
       const converted = lowerer.coerceInto(expr, inner, target);
       if (converted !== inner) lowerer.assertedValues.set(converted, target);
       return converted;

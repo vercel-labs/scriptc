@@ -12758,6 +12758,47 @@ export class Lowerer {
     return def ? def.arms.flatMap((arm, tag) => (this.isArrayValueType(arm) ? [tag] : [])) : [];
   }
 
+  /** Whether a checked-dynamic value can flow into a slot of type `t`: the
+   * dynCheck domain — JSON-representable types, undefined-armed unions of
+   * those, bytes<u8>, the %Error root, program classes through their
+   * typed-reference capsule, adaptable function targets, and the handle
+   * kinds. Everything else keeps the checked boundary's refusal. */
+  dynExtractableTo(t: IrType): boolean {
+    if (t.kind === "bytes" && t.elem === "u8") return true;
+    if (t.kind === "object" && t.className === "%Error") return true;
+    if (isDynTypedRefType(t) || DYN_HANDLE_KINDS.has(t.kind)) return true;
+    if (
+      t.kind === "func" &&
+      canAdaptDynFuncTo(
+        t,
+        (id) => this.shapes.get(id),
+        (id) => this.unions.get(id),
+      )
+    )
+      return true;
+    if (
+      canDynCheckTo(
+        t,
+        (id) => this.shapes.get(id),
+        (id) => this.unions.get(id),
+      )
+    )
+      return true;
+    return (
+      t.kind === "union" &&
+      (this.unions
+        .get(t.unionId)
+        ?.arms.every(
+          (a) =>
+            a.kind === "undefinedT" ||
+            this.jsonSafe(a) ||
+            isDynTypedRefType(a) ||
+            DYN_HANDLE_KINDS.has(a.kind),
+        ) ??
+        false)
+    );
+  }
+
   /** Checked JSON conversion excludes undefined array slots because JSON
    * text cannot preserve that distinction. */
   jsonSafe(t: IrType): boolean {

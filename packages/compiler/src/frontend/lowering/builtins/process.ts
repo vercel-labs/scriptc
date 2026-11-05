@@ -258,8 +258,16 @@ export function lowerProcStreamMethodCall(
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
   if (lowerer.chainBlocked(call, access)) return null;
-  if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "procStream") return null;
-  if (!lowerer.isStdlibMember(access)) return null;
+  const declared = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
+  const stored =
+    declared?.kind === "procStream" || !ts.isIdentifier(access.expression)
+      ? undefined
+      : (lowerer.peekLocal(access.expression)?.type ?? lowerer.globalOf(access.expression)?.type);
+  // A binding that kept the descriptor of a stream under a record
+  // annotation (`const sink: Sink = process.stdout`) still names that
+  // stream: its `write` member is the stream's own method.
+  if (declared?.kind !== "procStream" && stored?.kind !== "procStream") return null;
+  if (!lowerer.isStdlibMember(access) && access.name.text !== "write") return null;
   const name = access.name.text;
   const loc = locOf(call);
   if (isJsSourceFile(ts.getSourceFileOfNode(call))) {

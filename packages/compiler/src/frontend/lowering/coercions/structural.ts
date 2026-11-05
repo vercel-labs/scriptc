@@ -994,6 +994,25 @@ function buildRecordProjection(
           kind: "recordLit",
           fields: target.fields.map((field) => {
             const conversion = plan.get(field.name)!;
+            if ("overflow" in conversion) {
+              // The source keeps this member in its index signature: read
+              // the key from the overflow (a missing key answers undefined)
+              // instead of completing undefined over a value it holds.
+              const read: IrExpr = {
+                kind: "recordKeyGet",
+                obj: receiver,
+                shapeId: (source as IrType & { kind: "record" }).shapeId,
+                key: { kind: "strLit", value: field.name, type: STRING, loc },
+                type: conversion.overflow,
+                loc,
+              };
+              return {
+                name: field.name,
+                value: conversion.lift
+                  ? lowerer.applyWidthLift(conversion.lift, read, field.type, loc)
+                  : lowerer.coerceToExpected(read, field.type),
+              };
+            }
             if ("absentDyn" in conversion)
               return { name: field.name, value: dynUndefinedExpr(loc) };
             if ("absent" in conversion) {

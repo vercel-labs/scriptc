@@ -451,6 +451,7 @@ import {
   type SplitRequireBinding,
   cjsNamespaceModule,
   cjsWholeExportValueOf,
+  hasWholeExportValue,
   inlineNamespaceRequireOf,
   inlineProgramRequireOf,
   splitRequireBindingOf,
@@ -6717,7 +6718,14 @@ export class Lowerer {
     const splitDecl = sym?.declarations.find(ts.isVariableDeclaration);
     const split = splitDecl === undefined ? null : splitRequireBindingOf(this, splitDecl);
     if (split !== null) return cjsNamespaceModule(this, split.dep);
-    if (this.localModuleBindingDepOf(expr) === null) return false;
+    const dep = this.localModuleBindingDepOf(expr);
+    if (dep === null) return false;
+    // A binding of a SINGLE-VALUE module IS module.exports (Node's require
+    // answers it): the read lowers to the exporter's represented value
+    // (cjs-inline-require.ts), whatever the binding's own symbol shape —
+    // a JS `const m = require(...)` binding has no alias symbol and no
+    // storage, so the alias tests below never see it.
+    if (!cjsNamespaceModule(this, dep) && hasWholeExportValue(this, dep)) return false;
     if (this.createRequireWholeExportSymbolOf(expr) !== null) return false;
     // SINGLE-VALUE exporters (`module.exports = Countdown` / `= double` /
     // `= 42`): the requirer's binding IS the exported value, not a

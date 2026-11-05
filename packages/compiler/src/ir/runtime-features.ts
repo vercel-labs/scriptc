@@ -251,6 +251,8 @@ const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.requestDynCb",
   "https.requestDyn",
   "https.requestDynCb",
+  "https.requestFnDyn",
+  "https.requestFnDynCb",
   "http.requestUrlDyn",
   "http.requestUrlDynCb",
   "https.requestUrlDyn",

@@ -42,13 +42,46 @@ export function registerBuiltinCallableAlias(
   if (!ts.isIdentifier(nameNode) || !init) return false;
   let targetExpr = init;
   while (ts.isParenthesizedExpression(targetExpr)) targetExpr = targetExpr.expression;
-  if (!ts.isIdentifier(targetExpr)) return false;
-  const sourceSymbol = lowerer.resolveValueSymbol(targetExpr);
-  const existing = sourceSymbol ? lowerer.staticCallables.get(sourceSymbol) : undefined;
-  const target =
-    existing?.kind === "builtin-function"
-      ? { module: existing.module, member: existing.member }
-      : lowerer.builtinImportOf(targetExpr);
+  let target: { module: string; member: string } | null = null;
+  let client: { module: "http" | "https"; member: "request" | "get" } | null = null;
+  if (ts.isIdentifier(targetExpr)) {
+    const sourceSymbol = lowerer.resolveValueSymbol(targetExpr);
+    const existing = sourceSymbol ? lowerer.staticCallables.get(sourceSymbol) : undefined;
+    if (existing?.kind === "client-function") {
+      client = { module: existing.module, member: existing.member };
+    }
+    target =
+      existing?.kind === "builtin-function"
+        ? { module: existing.module, member: existing.member }
+        : lowerer.builtinImportOf(targetExpr);
+  } else if (ts.isPropertyAccessExpression(targetExpr)) {
+    // `const request = https.request` — the client functions have their
+    // own lowering (the runtime-secure dial), so an alias of one keeps
+    // calls on that path instead of the table.
+    const member = lowerer.builtinMemberOf(targetExpr);
+    if (
+      member &&
+      (member.module === "http" || member.module === "https") &&
+      (member.member === "request" || member.member === "get")
+    ) {
+      client = { module: member.module, member: member.member };
+    } else {
+      return false;
+    }
+  } else {
+    return false;
+  }
+  if (client) {
+    if (lowerer.checker.getCallSignatures(lowerer.typeOf(nameNode)).length === 0) return false;
+    const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
+    if (!symbol) return false;
+    lowerer.staticCallables.set(symbol, {
+      kind: "client-function",
+      module: client.module,
+      member: client.member,
+    });
+    return true;
+  }
   if (!target || !builtinModuleFnOf(lowerer, target.module, target.member)) return false;
   // These checked native functions retain a runtime slot in JavaScript so
   // aliases can escape without narrowing their arguments to string.

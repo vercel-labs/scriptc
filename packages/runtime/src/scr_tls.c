@@ -2446,6 +2446,19 @@ ScrHttpClientReq *scr_https_request_dyn(const ScrDyn *opts /*borrowed*/, bool au
   return req;
 }
 
+/* The options form of a client chosen at runtime (`const fn = c ?
+ * https.request : http.request`): the same walk, with the dial and the
+ * TLS options following `secure` — false is exactly http.request, whose
+ * options walk ignores TLS members like Node does. */
+ScrHttpClientReq *scr_http_request_dyn_secure(const ScrDyn *opts /*borrowed*/, bool auto_end,
+                                              bool secure, ScrClosure *cb /*moves, nullable*/,
+                                              ScrHttpRespFn fn,
+                                              ScrDyn *(*add_abort)(ScrDyn *signal,
+                                                                  ScrDyn *listener)) {
+  if (secure) return scr_https_request_dyn(opts, auto_end, cb, fn, add_abort);
+  return scr_http_request_dyn(opts, auto_end, cb, fn, add_abort);
+}
+
 /* https.request/get(url[, options][, cb]) — the URL's fields merged under
  * the options value (scr_http.c's merge), then the same runtime walk,
  * TLS options included, as the options form. */

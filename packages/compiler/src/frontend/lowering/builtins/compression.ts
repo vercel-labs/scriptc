@@ -64,7 +64,7 @@ const ZSTD_CALLBACK_MEMBERS: ReadonlySet<string> = new Set(["zstdCompress", "zst
 
 /** A Brotli or zstd mode connects the codec (scr_brotli.c, scr_zstd.c) to
  * the zlib engine before any module initializer runs. */
-function noteCodecMode(lowerer: Lowerer, mode: number, loc: SrcLoc): void {
+export function noteCodecMode(lowerer: Lowerer, mode: number, loc: SrcLoc): void {
   const fn: IrLibFn | undefined =
     mode === BROTLI_DECODE || mode === BROTLI_ENCODE
       ? "zlib.brotliInstall"
@@ -83,7 +83,7 @@ function noteCodecMode(lowerer: Lowerer, mode: number, loc: SrcLoc): void {
 }
 
 const ZLIB_STREAM_CLASS = "%Transform";
-const ZLIB_STREAM_T: IrType = { kind: "object", className: ZLIB_STREAM_CLASS };
+export const ZLIB_STREAM_T: IrType = { kind: "object", className: ZLIB_STREAM_CLASS };
 
 /** A zlib data argument, lowered once: Buffer/Uint8Array bytes, a string
  * (UTF-8 encoded here), or a checked-dynamic value (the JS lane's untyped
@@ -383,7 +383,7 @@ export function lowerPromisifiedZlibCall(
   };
 }
 
-const ZLIB_STREAM_FACTORIES: Readonly<Record<string, number | undefined>> = {
+export const ZLIB_STREAM_FACTORIES: Readonly<Record<string, number | undefined>> = {
   createDeflate: 1,
   createInflate: 2,
   createGzip: 3,

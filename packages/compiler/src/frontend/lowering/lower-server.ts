@@ -5825,17 +5825,31 @@ export interface HttpClientFnBinding {
   secureStorage?: HiddenBool;
 }
 
-/** Where a saved condition lives. A module-scope declaration stores it in a
- * module global, because function bodies lower outside the module's
- * statement context and cannot capture a local declared there. A declaration
- * inside a function stores it in a hidden local, threaded into nested
- * functions as a capture. */
+/** Where a saved condition lives. A declaration executed once at module
+ * scope stores it in a module global, because function bodies lower outside
+ * the module's statement context and cannot capture a local declared there.
+ * A declaration inside a function stores it in a hidden local, threaded
+ * into nested functions as a capture. */
 type HiddenBool = { kind: "global"; id: string } | { kind: "local"; local: IrLocal; owner: FnCtx };
 
+/** True when a declaration runs at most once, as a statement of the module
+ * body itself. A declaration inside a loop runs once per iteration and each
+ * iteration has its own binding in JS, so it takes the hidden-local storage
+ * instead: its declaration statement allocates the box every pass, and the
+ * closures made in a pass keep that pass's box. */
 function moduleScopeDecl(decl: ts.Node): boolean {
   for (let node: ts.Node | undefined = decl.parent; node !== undefined; node = node.parent) {
     if (ts.isSourceFile(node)) return true;
     if (ts.isFunctionLike(node)) return false;
+    if (
+      ts.isForStatement(node) ||
+      ts.isForOfStatement(node) ||
+      ts.isForInStatement(node) ||
+      ts.isWhileStatement(node) ||
+      ts.isDoStatement(node)
+    ) {
+      return false;
+    }
   }
   return false;
 }

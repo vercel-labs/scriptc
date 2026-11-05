@@ -410,6 +410,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.requestDynCb",
   "https.requestDyn",
   "https.requestDynCb",
+  "https.requestFnDyn",
+  "https.requestFnDynCb",
   // The checkServerIdentity forms validate the option (Node's
   // ERR_INVALID_ARG_TYPE for a present non-function).
   "tls.connectId",

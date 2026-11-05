@@ -68,6 +68,32 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
       ...handler,
     ]);
   }
+  if (e.fn === "https.requestFnDyn" || e.fn === "https.requestFnDynCb") {
+    // [secure, options, autoEnd(, cb)] — the options walk and the dial both
+    // follow the binding's runtime choice.
+    const args = e.args.map((arg) => host.emitExpr(arg));
+    host.usesTimers = true;
+    const cb = args[3];
+    const handler =
+      cb === undefined
+        ? [ptr(), ptr()]
+        : callbackAdapter(
+            host,
+            cb,
+            callbackType(cb).params.length === 0
+              ? "scr_http_resp_thunk0"
+              : "scr_http_resp_thunk_res",
+            ["ptr", "ptr"],
+          );
+    host.declare(`declare ptr @scr_events_add_abort_listener(ptr, ptr)`);
+    return finishRuntimeCall(host, e, "scr_http_request_dyn_secure", [
+      abiValue(host, args[1]!),
+      abiValue(host, args[2]!),
+      abiValue(host, args[0]!),
+      ...handler,
+      ptr("@scr_events_add_abort_listener"),
+    ]);
+  }
   if (
     e.fn === "http.requestDyn" ||
     e.fn === "http.requestDynCb" ||

@@ -38,6 +38,7 @@ import {
   URL_T,
   VOID,
   funcOf,
+  setOf,
 } from "./ir.js";
 
 /** Runtime call slots. A null argument accepts a program-dependent type;
@@ -3012,6 +3013,19 @@ function buildLibFnSignatures() {
       argTypes: [BOOL, STRING, F64, STRING, STRING, F64, arrayOf(STRING), BOOL, BOOL, null, null],
       result: HTTPCLIENTREQ_T,
     },
+    /** The same binding's RUNTIME-OPTIONS rows: the options value is walked
+     * at run time (a RequestOptions variable or a spreading literal), and
+     * the leading secure bool chooses the dial — false is exactly
+     * http.request, TLS options included on that arm like Node ignores them
+     * there. */
+    "https.requestFnDyn": {
+      argTypes: [BOOL, DYN, BOOL],
+      result: HTTPCLIENTREQ_T,
+    },
+    "https.requestFnDynCb": {
+      argTypes: [BOOL, DYN, BOOL, null],
+      result: HTTPCLIENTREQ_T,
+    },
     "http.clientWrite": { argTypes: [HTTPCLIENTREQ_T, STRING], result: VOID },
     "http.clientSetHeader": { argTypes: [HTTPCLIENTREQ_T, STRING, STRING], result: VOID },
     "http.clientGetHeader": { argTypes: [HTTPCLIENTREQ_T, STRING], result: VOID },
@@ -3994,6 +4008,10 @@ function buildLibFnSignatures() {
     // The Node runtime flag a node:test binary took out of process.argv
     // (--test-update-snapshots), or [] — a fresh array per read.
     "process.execArgv": { argTypes: [], result: arrayOf(STRING) },
+    /** process.allowedNodeEnvironmentFlags: the interned set of option
+     * names the compatibility target accepts in NODE_OPTIONS (+1 read of
+     * one stable set). */
+    "process.allowedEnvFlags": { argTypes: [], result: setOf(STRING) },
     "process.platform": { argTypes: [], result: STRING },
     // The one libCall whose result type is program-dependent (union ids are
     // per-module): the `result` here is a placeholder — the libCall case
@@ -4123,7 +4141,7 @@ function buildLibFnSignatures() {
      * a Boolean wrapper receiver and throw Node's brand-check TypeError for
      * a foreign one. `constructor` is the compiled Boolean constructor. */
     "wrapper.booleanPrototype": { argTypes: [DYN], result: DYN },
-    "fs.callbackValue": { argTypes: [STRING], result: DYN },
+    "fs.callbackValue": { argTypes: [STRING, F64], result: DYN },
     "fs.callbackCall": { argTypes: [STRING, DYN], result: DYN },
     "process.hrtimeValue": { argTypes: [], result: DYN },
     /** process.versions.node: the runtime's Node COMPATIBILITY TARGET —

@@ -52630,9 +52630,13 @@
           "tests/corpus/6294-webcrypto-js-values.mjs",
           "tests/corpus/6295-jose-hs256/main.mjs",
           "tests/corpus/6331-jose-root-entry/main.ts",
+          "tests/corpus/7735-untyped-headers-iterators.js",
           "tests/corpus/7743-transform-stream-identity.ts",
           "tests/corpus/7747-text-codec-untyped-slot.js",
           "tests/corpus/8162-navigator-global.cjs",
+          "tests/corpus/fetch-headers-copy-cache.ts",
+          "tests/corpus/fetch-headers-set-cookie-iteration.ts",
+          "tests/corpus/headers-static-accessors.ts",
           "tests/corpus/text-codec-values/main.ts",
           "tests/corpus/webassembly-api.mjs",
           "tests/corpus/webassembly-dylink/main.mjs",
@@ -53290,8 +53294,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.Headers",
+        "tests": [
+          "tests/corpus/fetch-headers-copy-cache.ts",
+          "tests/corpus/fetch-headers-set-cookie-iteration.ts",
+          "tests/corpus/headers-static-accessors.ts",
+          "tests/corpus/7735-untyped-headers-iterators.js"
+        ]
       },
       "anchorSource": "exact"
     },

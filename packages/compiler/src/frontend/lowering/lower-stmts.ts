@@ -99,9 +99,11 @@ import { statementGroupKey } from "./type-failure.js";
 import {
   cjsExportValueByName,
   cjsNamespaceDestructureOf,
+  cjsTableExportNamesInOrder,
   cjsTableMethodEntry,
   inlineProgramRequireOf,
   requireNestedPatternsOf,
+  requireRestElementsOf,
   splitRequireAssignmentOf,
   splitRequireBindingOf,
   splitRequireBindingOfIdent,
@@ -282,6 +284,8 @@ import {
   builtinNamespaceDestructureModuleOf,
   createRequireBindingDecl,
   createRequireCalleeFileOf,
+  createRequireEvaluatedBaseOf,
+  createRequireFactoryDecl,
   createRequireNamespaceDecl,
   createRequireProgramModuleDecl,
   createRequireProgramModuleOf,
@@ -2365,6 +2369,60 @@ function lowerVarDeclarator(
           element.name as ts.ObjectBindingPattern,
           () => lowerer.lowerExpr(key),
           value.type,
+          isLet,
+          out,
+        );
+      }
+      // `const { a, ...rest } = require("./m")`: Node copies the module's
+      // remaining own enumerable exports into a fresh object at the
+      // require, in the exports object's own key order. The table's
+      // statically known members are exactly those properties, each read
+      // from its export global into a dynamic object (the binding's own
+      // checker type is `any`, so this is its represented form).
+      for (const element of requireRestElementsOf(decl)) {
+        const dep = lowerer.cjsRequireRestTableOf(decl);
+        const names = dep === null ? null : cjsTableExportNamesInOrder(lowerer, dep);
+        if (dep === null || names === null) {
+          lowerer.unsupported(
+            "SC1090",
+            element,
+            `the exports object of '${spec}' as a value (its exports do not form a static table)`,
+          );
+        }
+        const consumed = new Set<string>();
+        for (const sib of (element.parent as ts.ObjectBindingPattern).elements.nodes) {
+          if (sib === element || sib.dotDotDotToken !== undefined || sib.name === undefined)
+            continue;
+          const keyNode = sib.propertyName ?? sib.name;
+          if (!(ts.isIdentifier(keyNode) || ts.isStringLiteralLike(keyNode))) {
+            lowerer.unsupported(
+              "SC1090",
+              element,
+              "rest bindings beside computed keys (the copied set is a runtime fact)",
+            );
+          }
+          consumed.add(keyNode.text);
+        }
+        const loc = locOf(element);
+        const fields: { key: IrExpr; value: IrExpr }[] = [];
+        for (const name of names) {
+          if (consumed.has(name)) continue;
+          const value = cjsExportValueByName(lowerer, dep, name, element);
+          if (value === null) {
+            lowerer.unsupported(
+              "SC1090",
+              element,
+              `the exports object of '${spec}' as a value (its export '${name}' has no static value)`,
+            );
+          }
+          fields.push({
+            key: strLit(name, loc),
+            value: lowerer.coerceToExpected(value, DYN),
+          });
+        }
+        lowerer.bindPatternTarget(
+          element.name!,
+          { kind: "dynObjLit", fields, type: DYN, loc },
           isLet,
           out,
         );
@@ -6648,8 +6706,21 @@ export function lowerVarDecl(
   // `const require = createRequire(import.meta.url)` — compile-time
   // plumbing: each call through the binding resolves per site
   // (lowerCreateRequireCall); no storage, no code (collectGlobals
-  // skipped its global by the same test).
-  if (createRequireBindingDecl(lowerer, decl.name, decl.initializer)) return null;
+  // skipped its global by the same test). A RUN-TIME base is still
+  // evaluated here, as Node evaluates it at the declaration: its side
+  // effects happen and its throws unwind the module, even though the
+  // loader value stays the deferred fence.
+  if (createRequireBindingDecl(lowerer, decl.name, decl.initializer)) {
+    const base = createRequireEvaluatedBaseOf(lowerer, decl.initializer);
+    return base === null
+      ? null
+      : { kind: "exprStmt", expr: lowerer.lowerExpr(base), loc: locOf(base) };
+  }
+
+  // `const { createRequire: cr } = require("node:module")` — the factory
+  // binding is the same compile-time plumbing (its calls take the
+  // run-time-base fence; createRequireFactoryBinding).
+  if (createRequireFactoryDecl(lowerer, decl.name, decl.initializer)) return null;
 
   // `const fs = require("node:fs")` through that binding — a builtin
   // namespace import in const clothing: alias plumbing, no storage

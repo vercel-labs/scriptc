@@ -6565,6 +6565,28 @@ export class Lowerer {
     return createRequireProgramModuleOf(this, decl.initializer)?.dep ?? null;
   }
 
+  /** The table module a top-level CommonJS `const { a, ...rest } =
+   * require("./m")` pattern's rest elements copy from: Node builds `rest`
+   * from the module's own enumerable export properties at the require, and
+   * the table's statically known members are exactly those properties.
+   * Null when the pattern has no rest element or the target is not a
+   * table module. */
+  cjsRequireRestTableOf(decl: ts.VariableDeclaration): ts.SourceFile | null {
+    if (!ts.isObjectBindingPattern(decl.name)) return null;
+    if (!decl.name.elements.nodes.some((e) => e.dotDotDotToken !== undefined)) return null;
+    const stmt = decl.parent?.parent;
+    if (stmt === undefined || !ts.isVariableStatement(stmt) || !ts.isSourceFile(stmt.parent))
+      return null;
+    if (!isJsSourceFile(stmt.parent) || decl.initializer === undefined) return null;
+    const spec = requireSpecOf(decl.initializer);
+    if (spec === null) return null;
+    const sf = stmt.parent;
+    const dep =
+      resolveImport(this.program, sf, spec, "require") ??
+      npmStaticDepSf7(this.program, sf, spec, "require");
+    return dep !== null && cjsNamespaceModule(this, dep) ? dep : null;
+  }
+
   private readonly createRequireBindingTargets = new Map<ts.Symbol, CreateRequireTarget | null>();
   private readonly createRequireElementTargets = new Map<
     ts.Symbol,

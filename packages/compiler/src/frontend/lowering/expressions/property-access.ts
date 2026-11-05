@@ -192,7 +192,10 @@ import { nullishGenericBindingUnitOf } from "../binding-analysis.js";
 import { blockedBindingUseDiag } from "../../../diagnostics/diagnostic.js";
 import { npmStaticPackageOfPath } from "../../npm-static.js";
 import { importMetaField, isImportMeta } from "../import-meta.js";
-import { createRequireCalleeFileOf } from "../builtins/module-bindings.js";
+import {
+  createRequireCalleeFileOf,
+  createRequireRuntimeBaseOf,
+} from "../builtins/module-bindings.js";
 import {
   createRequireResolveFenceValue,
   createRequireResolveValue,
@@ -391,7 +394,8 @@ function isCreateRequireResolveValue(lowerer: Lowerer, expr: ts.PropertyAccessEx
     !expr.questionDotToken &&
     ts.isPropertyAccessExpression(resolve) &&
     resolve.name.text === "resolve" &&
-    createRequireCalleeFileOf(lowerer, resolve.expression) !== null
+    (createRequireCalleeFileOf(lowerer, resolve.expression) !== null ||
+      createRequireRuntimeBaseOf(lowerer, resolve.expression))
   );
 }
 
@@ -407,6 +411,16 @@ export function lowerPropertyAccessExpr(
     lowerer.buffersMutable = true;
   const arrayClassConstructor = lowerArrayClassConstructorRead(lowerer, expr, loc);
   if (arrayClassConstructor !== null) return arrayClassConstructor;
+  // A createRequire loader's resolve read as a value (passed on, or
+  // picked by `??`): a function that resolves its request at run time.
+  // resolve.paths read as a value has no run-time lowering: a function
+  // that throws the fence when called. Claimed before the generic
+  // function-member reads below, which would otherwise read `.resolve`
+  // off the loader's run-time value form.
+  if (isCreateRequireResolveValue(lowerer, expr))
+    return expr.name.text === "paths"
+      ? createRequireResolveFenceValue(lowerer, expr, loc)
+      : createRequireResolveValue(lowerer, expr, loc);
   // `R.#x` for a static private on a checked-dynamic receiver: the brand
   // check, then the native storage (private-statics.ts).
   {
@@ -1547,14 +1561,6 @@ export function lowerPropertyAccessExpr(
       return declared && declared.kind !== "void" ? lowerer.coerceToExpected(read, declared) : read;
     }
   }
-  // A createRequire loader's resolve read as a value (passed on, or
-  // picked by `??`): a function that resolves its request at run time.
-  // resolve.paths read as a value has no run-time lowering: a function
-  // that throws the fence when called.
-  if (isCreateRequireResolveValue(lowerer, expr))
-    return expr.name.text === "paths"
-      ? createRequireResolveFenceValue(lowerer, expr, loc)
-      : createRequireResolveValue(lowerer, expr, loc);
   // The lib fence's PROPERTY chokepoint: a stdlib-declared member that
   // no lowering above claimed ([1,2].entries, Math.SQRT2, Promise.all,
   // re.exec as a value, ...) reports SC2020 here.

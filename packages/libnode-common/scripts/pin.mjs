@@ -81,6 +81,30 @@ export function packFileNames(platform, moduleVersion) {
     : { libnode: `libnode.so.${moduleVersion}`, bridge: "libscr_node_bridge.so" };
 }
 
+/** Whether a pack manifest records the release identity the published
+ * package carries: the pack build fills in `package`, `version` and
+ * `target`, and the prepack verification (verify.mjs) checks them. The
+ * development pack CI assembles from dev-pack.json passes no such fields
+ * (it is never published, and it predates the pin it stands beside), so
+ * neither the identity nor the release-only verification applies to it. */
+export function isReleasePackManifest(manifest) {
+  return (
+    typeof manifest?.package === "string" &&
+    typeof manifest?.version === "string" &&
+    typeof manifest?.target === "string"
+  );
+}
+
+/** The package.json a development pack is packed with. Packing runs the
+ * prepack verification, which checks the release identity above; the
+ * development fallback has none, so its packing copy drops that one script.
+ * Everything the release package declares (name, version, files) stays. */
+export function withoutReleasePrepack(packageJson) {
+  const copy = { ...packageJson, scripts: { ...packageJson.scripts } };
+  delete copy.scripts.prepack;
+  return copy;
+}
+
 function sha256(text) {
   return createHash("sha256").update(text).digest("hex");
 }

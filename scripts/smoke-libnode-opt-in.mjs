@@ -4,13 +4,22 @@
  * in a project without the pack fails with SC8005, whose hint names the
  * module, the @scriptc/node API that reached into Node, and this host's
  * install line. The CLI does not depend on the pack, so the two projects
- * differ only by that install. */
+ * differ only by that install.
+ *
+ * The pack directory is packed as a release packs it, except when it holds
+ * CI's development fallback: that pack is never published and records no
+ * release identity, so its packing copy omits the release-only prepack
+ * verification instead of failing it. */
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  isReleasePackManifest,
+  withoutReleasePrepack,
+} from "../packages/libnode-common/scripts/pin.mjs";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const [cliArgument, packArgument] = process.argv.slice(2);
@@ -63,6 +72,25 @@ function pack(directory) {
   return join(root, basename(printed));
 }
 
+/** The directory to pack: the pack directory itself when it holds a release
+ * pack, or a copy whose package.json drops the release-only prepack
+ * verification when it holds CI's development fallback. That fallback is
+ * never published and records no release identity for the verification to
+ * check (packages/libnode-common/scripts/pin.mjs). */
+function packableDirectory(directory) {
+  const manifestPath = join(directory, "manifest.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  if (isReleasePackManifest(manifest)) return { directory, development: false };
+  const copy = join(root, "development-pack");
+  cpSync(directory, copy, { recursive: true });
+  const packageJson = JSON.parse(readFileSync(join(copy, "package.json"), "utf8"));
+  writeFileSync(
+    join(copy, "package.json"),
+    `${JSON.stringify(withoutReleasePrepack(packageJson), null, 2)}\n`,
+  );
+  return { directory: copy, development: true };
+}
+
 /** A project with the release-shaped CLI installed from local tarballs. */
 function project(name, tarballs) {
   const directory = join(root, name);
@@ -108,7 +136,8 @@ try {
     cliDirectory,
     join(repository, "packages/cli"),
   ].map(pack);
-  const packTarball = pack(packDirectory);
+  const packSource = packableDirectory(packDirectory);
+  const packTarball = pack(packSource.directory);
 
   const installed = project("with-pack", [...tarballs, packTarball]);
   writeProgram(installed);
@@ -135,6 +164,9 @@ try {
   console.log(
     JSON.stringify({
       pack: `${packIdentity.name}@${packIdentity.version}`,
+      pack_verification: packSource.development
+        ? "skipped (development fallback)"
+        : "release prepack",
       with_pack: ran.stdout.trimEnd(),
       without_pack: output.match(/error SC8005[^\n]*/)?.[0] ?? "SC8005",
     }),

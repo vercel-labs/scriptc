@@ -205,6 +205,27 @@ export function libnodeRecord(
   return { libnode: `${ORIGIN}${name}`, nodeVersion: manifest.nodeVersion };
 }
 
+/** SC8005's hint: what in the program reached into Node (when lowering
+ * recorded it) and how to get a pack for this host. A target with a published
+ * pack names the package and the install line; musl, Windows and WASI keep
+ * the self-build route. */
+export function nodeIslandPackHint(
+  use?: { file: string; api: string },
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const target = libnodeTarget(env);
+  const pack = libnodePackPackage(target);
+  const install =
+    pack === null
+      ? `point SCRIPTC_LIBNODE or --libnode at a libnode pack for ${target} (packages/libnode-common/build-pack.mjs assembles one)`
+      : `npm i ${pack}@${compilerReleaseVersion()}, or point SCRIPTC_LIBNODE or --libnode at a pack directory (packages/libnode-common/build-pack.mjs assembles one)`;
+  const reached =
+    use === undefined
+      ? "this program runs code in Node.js (@scriptc/node)"
+      : `${use.file} uses ${use.api}, which runs in Node.js`;
+  return `${reached}: Node islands need Node.js >=${NODE_ISLAND_MIN_NODE} and ${pack === null ? "a libnode pack" : `the ${pack} pack`}; ${install}`;
+}
+
 /** The identity of the libnode pack a build that calls into Node.js
  * records, which the program's executable cache entry keeps
  * (EarlyExecutableCacheOptions.libnodeIdentity): the option, the pack

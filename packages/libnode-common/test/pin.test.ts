@@ -5,6 +5,7 @@ import {
   LIBNODE_PLATFORMS,
   bridgeAbi,
   bridgeHash,
+  configureFlagsFor,
   libnodeCacheKey,
   packFileNames,
   readPin,
@@ -27,6 +28,24 @@ describe("the libnode pin", () => {
     expect(pin.configureFlags).toContain("--shared");
     expect(pin.configureFlags.some((flag: string) => flag.startsWith("--with-intl"))).toBe(false);
     expect(pin.icu).toBe("full");
+  });
+
+  test("links the C++ runtime into Linux packs", () => {
+    const pin = readPin();
+    // --partly-static adds -static-libstdc++ and -static-libgcc to every
+    // link in the tree, so libnode.so carries its own C++ runtime instead
+    // of needing a libstdc++ newer than a supported host's.
+    expect(pin.linuxConfigureFlags).toContain("--partly-static");
+    expect(configureFlagsFor("linux-x64-gnu", pin)).toEqual([
+      ...pin.configureFlags,
+      "--partly-static",
+    ]);
+    expect(configureFlagsFor("linux-arm64-gnu", pin)).toEqual([
+      ...pin.configureFlags,
+      "--partly-static",
+    ]);
+    // macOS has no libstdc++ to carry.
+    expect(configureFlagsFor("darwin-arm64", pin)).toEqual(pin.configureFlags);
   });
 });
 

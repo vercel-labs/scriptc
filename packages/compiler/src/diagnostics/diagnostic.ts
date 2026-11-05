@@ -222,13 +222,17 @@ export function nativeCodegenDiag(
 }
 
 /** SC8005 — the program calls into Node.js (@scriptc/node), and the build
- * found no usable libnode pack to record into the binary. */
-export function nodeIslandNodeDiag(message: string, file: string): ScrDiagnostic {
+ * found no usable libnode pack to record into the binary. `hint` names what
+ * reached into Node and how to install this host's pack
+ * (node-islands/libnode.ts); the default is the pack-less self-build route. */
+export function nodeIslandNodeDiag(message: string, file: string, hint?: string): ScrDiagnostic {
   return {
     code: "SC8005",
     message,
     loc: { file, start: 0, end: 0 },
-    hint: "point SCRIPTC_LIBNODE or --libnode at a libnode pack (packages/libnode-common/build-pack.mjs assembles one) for Node.js >=24.13.1",
+    hint:
+      hint ??
+      "point SCRIPTC_LIBNODE or --libnode at a libnode pack (packages/libnode-common/build-pack.mjs assembles one) for Node.js >=24.13.1",
   };
 }
 

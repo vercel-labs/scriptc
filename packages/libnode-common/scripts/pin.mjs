@@ -28,6 +28,7 @@ const BUILD_RECIPE = 1;
  *   tarballSha256: string,
  *   moduleVersion: number,
  *   configureFlags: string[],
+ *   linuxConfigureFlags?: string[],
  *   icu: "full" | "small",
  * }} LibnodePin
  */
@@ -35,6 +36,25 @@ const BUILD_RECIPE = 1;
 /** @returns {LibnodePin} */
 export function readPin() {
   return JSON.parse(readFileSync(join(commonRoot, "libnode.json"), "utf8"));
+}
+
+/**
+ * The configure flags one platform's libnode builds with.
+ *
+ * Linux packs add `--partly-static`, which appends `-static-libstdc++` and
+ * `-static-libgcc` to the link, so libnode.so carries its own C++ runtime.
+ * The build toolchain's libstdc++ is newer than the oldest host scriptc
+ * supports (the manylinux gcc-toolset's symbols are newer than the floor
+ * distro's), and a pack that kept that dependency would fail to load on a
+ * supported host. A statically linked library references no GLIBCXX/CXXABI
+ * version at all.
+ *
+ * @param {string} platform
+ * @param {LibnodePin} [pin]
+ */
+export function configureFlagsFor(platform, pin = readPin()) {
+  const extra = platformInfo(platform).os === "linux" ? (pin.linuxConfigureFlags ?? []) : [];
+  return [...pin.configureFlags, ...extra];
 }
 
 /** Pack platforms: the npm package suffix, the Node `os`/`arch`, and the
@@ -66,8 +86,9 @@ function sha256(text) {
 }
 
 /** The cache key of the libnode build itself: the Node release, how it is
- * configured, the platform and toolchain. The bridge is not part of it; a
- * bridge change rebuilds only the bridge against the cached headers. */
+ * configured (including the platform's extra flags), the platform and
+ * toolchain. The bridge is not part of it; a bridge change rebuilds only the
+ * bridge against the cached headers. */
 export function libnodeCacheKey(platform, toolchain = process.env.SCRIPTC_LIBNODE_TOOLCHAIN) {
   const pin = readPin();
   platformInfo(platform);
@@ -76,7 +97,7 @@ export function libnodeCacheKey(platform, toolchain = process.env.SCRIPTC_LIBNOD
       recipe: BUILD_RECIPE,
       nodeVersion: pin.nodeVersion,
       tarballSha256: pin.tarballSha256,
-      configureFlags: pin.configureFlags,
+      configureFlags: configureFlagsFor(platform, pin),
       icu: pin.icu,
       platform,
       toolchain: toolchain ?? "default",

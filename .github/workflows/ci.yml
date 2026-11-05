@@ -965,8 +965,9 @@ jobs:
     name: test (macOS arm64 LLVM artifacts, no clang, contracts)
     runs-on: macos-15
     # The no-clang object, helper parity, packaged helper and packed npm
-    # installation contracts: about 12 minutes, which used to run in front
-    # of shard 1's differential slice and took that job to 45-50 minutes.
+    # installation contracts (which also install the host libnode pack): about
+    # 12 minutes, which used to run in front of shard 1's differential slice
+    # and took that job to 45-50 minutes.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -984,6 +985,11 @@ jobs:
           path: ${{ runner.temp }}
       - run: tar -xzf "$RUNNER_TEMP/native-darwin-arm64.tar.gz"
       - run: pnpm build
+      # The packed installation smoke below also installs the host's libnode
+      # pack, so the opt-in Node island story is exercised from an npm
+      # installation: the same build succeeds with the pack and fails with
+      # SC8005 without it.
+      - uses: ./.github/actions/libnode
       - name: No-clang assembly/object contract
         run: pnpm test packages/cli/test/native-output.test.ts
       - name: Helper diagnostics and object/link parity
@@ -1027,6 +1033,15 @@ jobs:
           node examples/native-object/link.mjs cc \
             "$RUNNER_TEMP/installed-link.json" "$RUNNER_TEMP/installed-program"
           test "$("$RUNNER_TEMP/installed-program")" = 'hello world'
+          # The libnode pack is opt-in: it publishes from its package
+          # directory, which the action fills in the workspace only when it
+          # restores the cached libnode build, and names in $SCRIPTC_LIBNODE
+          # otherwise.
+          if [ "$SCRIPTC_LIBNODE" != "$PWD/packages/libnode-darwin-arm64" ]; then
+            cp -R "$SCRIPTC_LIBNODE/." packages/libnode-darwin-arm64/
+          fi
+          node scripts/smoke-libnode-opt-in.mjs \
+            packages/cli-darwin-arm64 packages/libnode-darwin-arm64
 
   llvm_artifacts_macos_x64:
     needs: [validation_scope, lanes]

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8834-node-island-async-iteration/main.ts"
+ ],
+ "diags": []
+}

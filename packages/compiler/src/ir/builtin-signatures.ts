@@ -251,6 +251,16 @@ function buildLibFnSignatures() {
     "nodeIsland.instanceofGlobal": { argTypes: [DYN, STRING], result: BOOL },
     /** Whether a dyn value is an island handle (never loads Node). */
     "nodeIsland.isHandle": { argTypes: [DYN], result: BOOL },
+    /** An island value's own iterator, opened in V8 (sync: [Symbol.iterator];
+     * async: [Symbol.asyncIterator], or the async-from-sync wrapper for a
+     * sync source). The compiled adapter generators (iterator-adapters.ts)
+     * step the answer through next()/return(), so iteration stays lazy and
+     * IteratorClose reaches the island. */
+    "nodeIsland.openIterator": { argTypes: [DYN], result: DYN },
+    "nodeIsland.openAsyncIterator": { argTypes: [DYN], result: DYN },
+    /** Whether the iterator the last island async open returned is a
+     * synchronous one (a native value that came back through the island). */
+    "nodeIsland.asyncIteratorWasSync": { argTypes: [], result: BOOL },
     /** Island arrays of copied values as copies (a result, or an awaited
      * promise's value). */
     "nodeIsland.copyArrays": { argTypes: [DYN], result: DYN },

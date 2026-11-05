@@ -57,6 +57,8 @@ import {
   type NodeIslandSet,
 } from "../../node-islands/boundary.js";
 import { stripTypeWrappers } from "./typed-arguments.js";
+import { dynAsyncIteratorAdapter, dynIteratorAdapter } from "./iterator-adapters.js";
+import { iterableUnionOf } from "./iterable-values.js";
 import { thenReader } from "./checked-promise-all.js";
 import { dynCompoundValue } from "./lower-exprs.js";
 import { COMPOUND_ASSIGN_OPS } from "./surfaces.js";
@@ -768,6 +770,36 @@ function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr 
   }
   if (mapped.kind === "dyn") return raw;
   if (mapped.kind === "void") return raw;
+  // A generator-typed island value is a handle to the island's own iterator,
+  // and the declared type promises a compiled generator: the boundary wraps
+  // it in the adapter generator (iterator-adapters.ts), which opens the
+  // value's own iterator in V8, steps it lazily one value per next() and
+  // calls its return() when a consumer leaves the loop early. The async
+  // sibling awaits each island promise, and the island host normalizes a
+  // synchronous source to the async-from-sync protocol.
+  if (mapped.kind === "generator") {
+    const adapted =
+      mapped.async === true
+        ? dynAsyncIteratorAdapter(lowerer, raw, mapped, "island")
+        : dynIteratorAdapter(lowerer, raw, mapped, "island");
+    if (adapted !== null) return adapted;
+  }
+  // An Iterable<T> crossing takes the iterable union's generator arm the
+  // same way (iterableSlotValue would adapt a checked-dynamic iterator with
+  // the general adapter, whose iterator wrapper cannot close an island).
+  const iterable = iterableUnionOf(lowerer, mapped);
+  if (iterable !== null) {
+    const adapted = dynIteratorAdapter(lowerer, raw, iterable.gen, "island");
+    if (adapted !== null)
+      return {
+        kind: "unionWrap",
+        unionId: iterable.unionId,
+        tag: lowerer.armTag(iterable.unionId, adapted.type),
+        value: adapted,
+        type: iterable.type,
+        loc: raw.loc,
+      };
+  }
   // An island promise is the same promise on both sides (the runtime keeps
   // one ScrPromise per V8 promise): PromiseResolve of the dyn value, whose
   // settlement value meets the declared type when it is awaited.

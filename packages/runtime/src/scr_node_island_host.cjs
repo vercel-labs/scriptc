@@ -439,9 +439,57 @@ const islandHelpers = {
 // exports (NI-6, scr_node_island_hooks.cjs, appended to this file).
 let sharedModules = null;
 
+// One map of token -> iterator per island value, so an unfinished `for…of`
+// keeps its iterator only while the value itself is alive.
+const iterationsByValue = new WeakMap();
+
 function load(path, esm) {
   if (path === "scriptc:toPrimitive") return toPrimitive;
   if (path === "scriptc:spread") return (value) => [...value];
+  // The island value's own iterator (`for…of`, `for await` over a value the
+  // runtime holds as a handle): V8 opens it, and the runtime steps it one
+  // value at a time. Mode 2 is the async protocol: [Symbol.asyncIterator](),
+  // or a sync iterator behind V8's async-from-sync wrapper (an async
+  // generator's `yield*`), so every step answers a promise and each value is
+  // awaited. Undefined when the value has neither method.
+  if (path === "scriptc:iter")
+    return (value, mode) => {
+      if (value === null || value === undefined) return undefined;
+      if (mode === 2) {
+        const asyncMethod = value[Symbol.asyncIterator];
+        if (typeof asyncMethod === "function") return asyncMethod.call(value);
+      }
+      const method = value[Symbol.iterator];
+      if (typeof method !== "function") return undefined;
+      const iterator = method.call(value);
+      if (mode !== 2) return iterator;
+      return (async function* () {
+        yield* iterator;
+      })();
+    };
+  // One step of a `for…of` over an island value: the token names one loop's
+  // iteration, so each loop opens its own iterator and a finished one is
+  // dropped. A sync island iterator answers {value, done}; the value's own
+  // next() errors surface as they are.
+  if (path === "scriptc:iterStep")
+    return (value, token) => {
+      let iterations = iterationsByValue.get(value);
+      if (iterations === undefined) {
+        iterations = new Map();
+        iterationsByValue.set(value, iterations);
+      }
+      let iterator = iterations.get(token);
+      if (iterator === undefined) {
+        if (value === null || value === undefined) throw new TypeError("value is not iterable");
+        const method = value[Symbol.iterator];
+        if (typeof method !== "function") throw new TypeError("value is not iterable");
+        iterator = method.call(value);
+        iterations.set(token, iterator);
+      }
+      const step = iterator.next();
+      if (step !== null && typeof step === "object" && step.done) iterations.delete(token);
+      return step;
+    };
   if (path === "scriptc:island-helpers") return islandHelpers;
   // A built-in module's name, with or without the node: prefix.
   if (isBuiltin(path)) return require(path);

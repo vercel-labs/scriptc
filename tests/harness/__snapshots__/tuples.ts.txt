@@ -1,10 +1,3 @@
-tuples.ts:11:18 - error SC1090: tuple indexing with a non-literal index (tuples are fixed-shape — use t[0], t[1], ...) is not supported yet
-
-  10 | let i = 0;
-  11 | console.log(pair[i]);
-     |                  ^
-  12 | pair[i] = "b";
-
 tuples.ts:12:6 - error SC1090: tuple indexing with a non-literal index (tuples are fixed-shape — use t[0], t[1], ...) is not supported yet
 
   11 | console.log(pair[i]);
@@ -33,23 +26,16 @@ tuples.ts:25:15 - error SC1090: spreading a variable-length value into a fixed t
      |               ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   26 | 
 
-tuples.ts:31:13 - error SC1090: '.length' of a computed tuple expression (the arity is a constant — bind the tuple to a const first) is not supported yet
+tuples.ts:29:13 - error SC1090: '.join()' on arrays of this element type (number, string, boolean and Date arrays join — unions of those with undefined/null arms too, the units printing empty like JS) is not supported yet
 
-  30 | }
-  31 | console.log(mk().length);
-     |             ^~~~~~~~~~~
-  32 | 
-
-tuples.ts:35:13 - error SC1090: '.join()' on arrays of this element type (number, string, boolean and Date arrays join — unions of those with undefined/null arms too, the units printing empty like JS) is not supported yet
-
-  34 | const recs: { id: number }[] = [{ id: 1 }];
-  35 | console.log(recs.join(","));
+  28 | const recs: { id: number }[] = [{ id: 1 }];
+  29 | console.log(recs.join(","));
      |             ^~~~~~~~~~~~~~
-  36 | const tuples: [string, string][] = [["k", "v"]];
+  30 | const tuples: [string, string][] = [["k", "v"]];
 
-tuples.ts:37:13 - error SC1090: '.join()' on arrays of this element type (number, string, boolean and Date arrays join — unions of those with undefined/null arms too, the units printing empty like JS) is not supported yet
+tuples.ts:31:13 - error SC1090: '.join()' on arrays of this element type (number, string, boolean and Date arrays join — unions of those with undefined/null arms too, the units printing empty like JS) is not supported yet
 
-  36 | const tuples: [string, string][] = [["k", "v"]];
-  37 | console.log(tuples.join(";"));
+  30 | const tuples: [string, string][] = [["k", "v"]];
+  31 | console.log(tuples.join(";"));
      |             ^~~~~~~~~~~~~~~~
-  38 | // Map elements compile through the same REF storage as function elements.
+  32 | // Map elements compile through the same REF storage as function elements.

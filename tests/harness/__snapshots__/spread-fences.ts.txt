@@ -1,6 +1,0 @@
-spread-fences.ts:14:21 - error SC1090: conditional spreads beyond `...(c ? { field: v } : {})` and `...(c ? record : {})` (one arm must be empty — spell other shapes as optional fields) is not supported yet
-
-  13 | const cond = true;
-  14 | const s1: Shape = { ...(cond ? { x: 1, y: 2 } : { x: 3, y: 4 }) };
-     |                     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  15 | interface YOnly {

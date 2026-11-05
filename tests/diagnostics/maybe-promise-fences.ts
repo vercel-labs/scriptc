@@ -10,11 +10,13 @@ function thenable(): Thenish | Promise<number> {
 }
 console.log(typeof thenable);
 
-// Two promise arms: the union tag cannot tell them apart by instanceof.
-function twoPromises(): Promise<number> | Promise<string> | boolean {
+// Promise arms merge into one promise of their payload union (`await` settles
+// to either payload). They do not merge when a payload has no union arm home:
+// a RegExp payload is the promise slot's own, not an arm.
+function splitPromises(): Promise<RegExp> | Promise<string> | boolean {
   return true;
 }
-console.log(typeof twoPromises);
+console.log(typeof splitPromises);
 
 // Promises have no inspect lowering, so neither does a union holding one.
 function maybe(b: boolean): string | Promise<string> {
@@ -26,7 +28,3 @@ console.log(maybe(true));
 // must be that arm's own promise type.
 const widened = Promise.resolve<string | number>(maybe(false));
 console.log(typeof widened);
-
-// `instanceof Promise` on a value that is never a promise.
-const record = { v: 1 };
-console.log(record instanceof Promise);

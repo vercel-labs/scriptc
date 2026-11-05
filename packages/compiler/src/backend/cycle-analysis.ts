@@ -146,6 +146,10 @@ function analyzeCycles(
         ...(c.localCaptures !== undefined
           ? [{ name: "<class>", type: { kind: "classval" as const, className: c.name } }]
           : []),
+        // An instance of a class that extends Array holds its elements.
+        ...(c.arrayElem !== undefined
+          ? [{ name: "<elements>", type: { kind: "array" as const, elem: c.arrayElem } }]
+          : []),
       ],
     })),
     ...(mod.records ?? []).map((r) => ({

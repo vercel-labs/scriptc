@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/untyped-nullish-scalar-defaults.mjs"
+ ],
+ "diags": []
+}

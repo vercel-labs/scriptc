@@ -32,7 +32,7 @@ intl.ts:13:7 - error SC2020: 'NumberFormat' is part of the standard library type
      |       ^~~~~~~
   14 | const viaValue = hoisted.format(1234.5);
 
-  hint: Intl formatter values have no representation — the COMPOSED en-US forms lower: new Intl.NumberFormat("en-US").format(x) and x.toLocaleString("en-US") with default options; the rest is ICU locale data the binary does not carry
+  hint: Intl formatter values have no representation — the COMPOSED forms lower: new Intl.NumberFormat("en-US").format(x), x.toLocaleString("en-US") and x.toLocaleString() with default options, d.toLocaleString(), d.toLocaleTimeString(), and Intl.Segmenter with grapheme or word granularity; the formatter objects themselves (locale negotiation, resolvedOptions, options bags) remain unsupported
 
 intl.ts:13:17 - error SC2020: 'new Intl.NumberFormat' is part of the standard library types but has no scriptc lowering yet
 
@@ -50,67 +50,58 @@ intl.ts:14:18 - error SC2020: 'NumberFormat.format' is part of the standard libr
      |                  ^~~~~~~~~~~~~~
   15 | 
 
-  hint: locale- and ICU-backed behavior lives outside the static runtime (the localeCompare stance: code-unit order, no collation/locale data) — what lowers: the composed new Intl.NumberFormat("en-US").format(x) and x.toLocaleString("en-US") with default options, plus default Unicode grapheme segmentation with Intl.Segmenter; locale negotiation, word/sentence segmentation, and resolvedOptions remain unsupported
+  hint: collation and locale negotiation stay outside the static runtime (the localeCompare stance: code-unit order, no collation) — what lowers: the composed new Intl.NumberFormat("en-US").format(x) and x.toLocaleString("en-US") with default options, their default-locale forms (x.toLocaleString(), d.toLocaleString(), d.toLocaleTimeString()), and Intl.Segmenter with grapheme or word granularity; sentence segmentation, resolvedOptions, and the remaining Intl constructors remain unsupported
 
-intl.ts:17:20 - error SC2020: 'Number.prototype.toLocaleString without a locale' is part of the standard library types but has no scriptc lowering yet
+intl.ts:17:40 - error SC2020: 'Number.prototype.toLocaleString at locale "de-DE"' is part of the standard library types but has no scriptc lowering yet
 
   16 | // toLocaleString's unlowered variants.
-  17 | const envDefault = (1234.5).toLocaleString();
-     |                    ^~~~~~~~~~~~~~~~~~~~~~~~~
-  18 | const german = (1234.5).toLocaleString("de-DE");
-
-  hint: the default locale is the host environment's, which a compiled binary cannot carry — pass it explicitly: x.toLocaleString("en-US")
-
-intl.ts:18:40 - error SC2020: 'Number.prototype.toLocaleString at locale "de-DE"' is part of the standard library types but has no scriptc lowering yet
-
-  17 | const envDefault = (1234.5).toLocaleString();
-  18 | const german = (1234.5).toLocaleString("de-DE");
+  17 | const german = (1234.5).toLocaleString("de-DE");
      |                                        ^~~~~~~
-  19 | const grouped = (1234.5).toLocaleString("en-US", { useGrouping: false });
+  18 | const grouped = (1234.5).toLocaleString("en-US", { useGrouping: false });
 
-  hint: "en-US" (Node's default-build locale) is the one locale whose data the runtime embeds — everything else is ICU data the binary does not carry
+  hint: what lowers is the default locale (no argument) and the composed en-US form — other locales are ICU data the binary does not negotiate yet
 
-intl.ts:19:17 - error SC2020: 'Number.prototype.toLocaleString with an options bag' is part of the standard library types but has no scriptc lowering yet
+intl.ts:18:17 - error SC2020: 'Number.prototype.toLocaleString with an options bag' is part of the standard library types but has no scriptc lowering yet
 
-  18 | const german = (1234.5).toLocaleString("de-DE");
-  19 | const grouped = (1234.5).toLocaleString("en-US", { useGrouping: false });
+  17 | const german = (1234.5).toLocaleString("de-DE");
+  18 | const grouped = (1234.5).toLocaleString("en-US", { useGrouping: false });
      |                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  20 | 
+  19 | 
 
-  hint: the embedded data covers DEFAULT options only (decimal notation, up to 3 fraction digits, grouping) — x.toLocaleString("en-US")
+  hint: what lowers is the DEFAULT options shape (decimal notation, up to 3 fraction digits, grouping) at the default locale or at en-US — omit the options bag
 
-intl.ts:22:14 - error SC2020: 'new Intl.DateTimeFormat' is part of the standard library types but has no scriptc lowering yet
+intl.ts:21:14 - error SC2020: 'new Intl.DateTimeFormat' is part of the standard library types but has no scriptc lowering yet
 
-  21 | // The rest of Intl keeps the ICU story.
-  22 | const when = new Intl.DateTimeFormat("en-US").format();
+  20 | // The rest of Intl keeps the ICU story.
+  21 | const when = new Intl.DateTimeFormat("en-US").format();
      |              ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  23 | const dur = new Intl.DurationFormat("en-US").format({ hours: 1, minutes: 23 });
+  22 | const dur = new Intl.DurationFormat("en-US").format({ hours: 1, minutes: 23 });
 
   hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
 
-intl.ts:23:13 - error SC2020: 'new Intl.DurationFormat' is part of the standard library types but has no scriptc lowering yet
+intl.ts:22:13 - error SC2020: 'new Intl.DurationFormat' is part of the standard library types but has no scriptc lowering yet
 
-  22 | const when = new Intl.DateTimeFormat("en-US").format();
-  23 | const dur = new Intl.DurationFormat("en-US").format({ hours: 1, minutes: 23 });
+  21 | const when = new Intl.DateTimeFormat("en-US").format();
+  22 | const dur = new Intl.DurationFormat("en-US").format({ hours: 1, minutes: 23 });
      |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  24 | const rule = new Intl.PluralRules("en-US").select(1);
+  23 | const rule = new Intl.PluralRules("en-US").select(1);
 
   hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
 
-intl.ts:24:14 - error SC2020: 'new Intl.PluralRules' is part of the standard library types but has no scriptc lowering yet
+intl.ts:23:14 - error SC2020: 'new Intl.PluralRules' is part of the standard library types but has no scriptc lowering yet
 
-  23 | const dur = new Intl.DurationFormat("en-US").format({ hours: 1, minutes: 23 });
-  24 | const rule = new Intl.PluralRules("en-US").select(1);
+  22 | const dur = new Intl.DurationFormat("en-US").format({ hours: 1, minutes: 23 });
+  23 | const rule = new Intl.PluralRules("en-US").select(1);
      |              ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  25 | const canon = Intl.getCanonicalLocales("en-us");
+  24 | const canon = Intl.getCanonicalLocales("en-us");
 
   hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
 
-intl.ts:25:15 - error SC2020: 'Intl.getCanonicalLocales' is part of the standard library types but has no scriptc lowering yet
+intl.ts:24:15 - error SC2020: 'Intl.getCanonicalLocales' is part of the standard library types but has no scriptc lowering yet
 
-  24 | const rule = new Intl.PluralRules("en-US").select(1);
-  25 | const canon = Intl.getCanonicalLocales("en-us");
+  23 | const rule = new Intl.PluralRules("en-US").select(1);
+  24 | const canon = Intl.getCanonicalLocales("en-us");
      |               ^~~~~~~~~~~~~~~~~~~~~~~~
-  26 | 
+  25 | 
 
-  hint: locale- and ICU-backed behavior lives outside the static runtime (the localeCompare stance: code-unit order, no collation/locale data) — what lowers: the composed new Intl.NumberFormat("en-US").format(x) and x.toLocaleString("en-US") with default options, plus default Unicode grapheme segmentation with Intl.Segmenter; locale negotiation, word/sentence segmentation, and resolvedOptions remain unsupported
+  hint: collation and locale negotiation stay outside the static runtime (the localeCompare stance: code-unit order, no collation) — what lowers: the composed new Intl.NumberFormat("en-US").format(x) and x.toLocaleString("en-US") with default options, their default-locale forms (x.toLocaleString(), d.toLocaleString(), d.toLocaleTimeString()), and Intl.Segmenter with grapheme or word granularity; sentence segmentation, resolvedOptions, and the remaining Intl constructors remain unsupported

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/js-primitive-wrappers-zero-arg.js"
+ ],
+ "diags": []
+}

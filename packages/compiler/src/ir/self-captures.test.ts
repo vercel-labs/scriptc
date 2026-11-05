@@ -204,3 +204,26 @@ test("mutually recursive closures only drop their own capture", () => {
     ret(call("a.0")),
   ]);
 });
+
+test("a closure's jsval body drops the same capture as the closure", () => {
+  const n = local("n.0", { type: F64 });
+  const walk = lifted("walk", [use(ref("n.0", F64)), ret(call("f.0"))], [n, local("f.0")]);
+  walk.jsEntry = "%js.walk";
+  const fns = run(
+    outer(
+      [
+        decl("n.0", { kind: "numLit", value: 1, type: F64, loc }),
+        decl("f.0", closure("walk", ["n.0", "f.0"])),
+        ret(call("f.0")),
+      ],
+      [n, local("f.0")],
+    ),
+    walk,
+    lifted("%js.walk", [use(ref("n.0", F64)), ret(call("f.0"))], [n, local("f.0")]),
+  );
+  for (const name of ["walk", "%js.walk"]) {
+    const fn = fns.get(name)!;
+    expect(fn.captures!.map((c) => c.localId)).toEqual(["n.0"]);
+    expect(fn.body[1]).toEqual(ret({ kind: "callValue", callee: self, args: [], type: F64, loc }));
+  }
+});

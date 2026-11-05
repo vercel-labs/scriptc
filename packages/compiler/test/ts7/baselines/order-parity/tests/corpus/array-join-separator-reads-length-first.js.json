@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/array-join-separator-reads-length-first.js"
+ ],
+ "diags": []
+}

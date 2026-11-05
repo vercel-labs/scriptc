@@ -1,5 +1,6 @@
 import { dynDesc } from "../../ir/analysis.js";
 /* Focused LLVM expression emission extracted from emitter.ts. */
+import { emitInlineArrayLength, inlineFieldTail } from "./inline-arrays.js";
 import { arraySearchHelperName, arraySearchKind } from "./array-search.js";
 import { InternalCompilerError } from "../../errors.js";
 import { isStableReceiverOperand, undefinedArmTag } from "../../ir/analysis.js";
@@ -62,12 +63,14 @@ import {
 import { exactInteger, widenInteger } from "./integer-values.js";
 import {
   emitDenseArrayNumber,
+  emitDenseArrayNumberInt32,
   emitDenseArrayPop,
   emitDenseArrayPush,
   runtimeAccess,
   type ArrayAccess,
 } from "./dense-array-access.js";
 import { INT32_ARRAY_METHODS } from "../../ir/int32-arrays.js";
+import { INT32_RANGE } from "../../ir/integer-ranges.js";
 import { emitUnionWiden } from "./expr-records.js";
 import { registerReplay } from "./emit-journal.js";
 
@@ -648,6 +651,14 @@ export function emitArrIntrinsic(
   into?: { box: string; tag: string; payload: string },
 ): LlValue {
   const B = host.B;
+  // The length of an inline array field, read from the instance.
+  if (e.method === "length" && e.receiver.kind === "fieldGet") {
+    const tail = inlineFieldTail(host, e.receiver.className, e.receiver.field);
+    if (tail !== undefined) {
+      const obj = host.emitStableReceiver(e.receiver.obj, e.args);
+      return emitInlineArrayLength(host, obj.name, e.receiver.className, tail, e.type);
+    }
+  }
   // Every array intrinsic borrows its receiver, including mutation and
   // retained-identity results. Scalar reads also admit the narrower proof
   // that a mutable binding survives the remaining operand evaluations.
@@ -693,6 +704,25 @@ export function emitArrIntrinsic(
           emitDenseArrayNumber(host, r.name, index, e.args[0], proven, kind),
         )!;
         return { name: value, type: e.type };
+      }
+      // In a store statement of an int32 kind loop's fast copy, a read that
+      // is not an int32 (a missing element's NaN) leaves for the
+      // statement's resume point, so the element is at hand as an i32.
+      if (!table && elem.kind === "f64" && access === "i32" && host.int32KindResume !== null) {
+        const read = emitDenseArrayNumberInt32(
+          host,
+          r.name,
+          index,
+          e.args[0],
+          host.provenDenseIndex(e.receiver, e.args[0]!),
+          host.int32KindResume,
+        );
+        return {
+          name: read.value,
+          type: e.type,
+          uint32: read.int32,
+          integer: { name: read.int32, type: "i32", signed: true, range: INT32_RANGE },
+        };
       }
       if (!table && elem.kind === "f64")
         return {
@@ -1297,11 +1327,11 @@ function collectionOps(host: LlvmEmitterContext, key: IrType, value: IrType): st
       : { retain: "null", release: "null", trace: "null" };
   const arms = key.kind === "union" ? host.unionsById.get(key.unionId)?.arms : undefined;
   let unionKeys = "null";
-  if (mapKeyKindNum(key, arms) === 7) {
+  if (mapKeyKindNum(key, arms) === 7 && host.nullableUnions.of(key) === null) {
     if (!arms) throw new InternalCompilerError("llvm emitter bug: collection key union missing");
     unionKeys = host.cstr(arms.map((arm) => String.fromCharCode(mapKeyKindNum(arm))).join(""));
   }
-  return host.shapeHost.mapOps([
+  const operands = [
     keyRc.retain,
     keyRc.release,
     keyRc.trace,
@@ -1309,16 +1339,27 @@ function collectionOps(host: LlvmEmitterContext, key: IrType, value: IrType): st
     rc.release,
     traceArg(host.shapeHost, value),
     unionKeys,
-  ]);
+  ];
+  // A promise key's ops are a ScrMapIdentityOps: one more field, the
+  // identity its hash and equality use. A union key with a promise arm reads
+  // the same field for that arm (SCR_MAP_KEY_PROMISE in the key-kind table).
+  if (
+    key.kind === "promise" ||
+    (unionKeys !== "null" && arms?.some((arm) => arm.kind === "promise"))
+  ) {
+    host.declare("declare ptr @scr_promise_map_identity(ptr)");
+    operands.push("@scr_promise_map_identity");
+  }
+  return host.shapeHost.mapOps(operands);
 }
 
 /** Construct matching key/value storage once for Maps and Sets. */
 function newCollection(host: LlvmEmitterContext, key: IrType, value: IrType): string {
   const B = host.B;
   const arms = key.kind === "union" ? host.unionsById.get(key.unionId)?.arms : undefined;
-  // SCR_MAP_KEY_REF (2): shape-union keys are record pointers.
-  const kind =
-    key.kind === "union" && host.nullableUnions.shapes(key.unionId) ? 2 : mapKeyKindNum(key, arms);
+  // SCR_MAP_KEY_REF (2): a union key with a pointer representation is that
+  // pointer (boxedUnionIds).
+  const kind = host.nullableUnions.of(key) !== null ? 2 : mapKeyKindNum(key, arms);
   const m = B.tmp();
   host.declare(`declare ptr @scr_map_new(i32, i32, ptr)`);
   // SCR_MAP_VAL_CREF (3): string keys and compact values (compactMapValues).
@@ -1488,8 +1529,9 @@ export function emitMapLikeIntrinsic(
       // runtime knows no tags. Ref values come back +1 (ownership MOVES
       // into the fresh union box on a hit); scalars ride an out-param
       // behind a found flag; a miss is the interned undefined-arm
-      // instance. When V is itself a union, the stored box IS the
-      // result (`undefined` sorts last in canonical arm order).
+      // instance. When V is itself a union and both are tagged boxes, the
+      // stored box IS the result (`undefined` sorts last in canonical arm
+      // order); a pointer union on either side widens instead (below).
       const k = emitMapLookupKey(host, e.args[0]!, borrowInputs);
       const kAcc = k.access;
       const kTy = k.types;
@@ -1515,11 +1557,15 @@ export function emitMapLikeIntrinsic(
       const absent = host.unitInstanceRef(e.type.unionId, undefTag);
       if (
         value.kind === "union" &&
-        host.nullableUnions.has(value.unionId) &&
+        (host.nullableUnions.has(value.unionId) || host.nullableUnions.has(e.type.unionId)) &&
         !typeEquals(value, e.type)
       ) {
         // A nullable `C | null` value widens into `C | null | undefined`:
         // NULL is the stored null, so presence decides the undefined arm.
+        // A boxed value whose result is a pointer union widens the same
+        // way: the stored box is not the result's encoding (a `string |
+        // null` boxed because some map or set keys by it, read as the plain
+        // pointer of `string | null | undefined`).
         host.declare(`declare zeroext i1 @scr_map_has_${kAcc}(ptr, ${kTy})`);
         host.declare(`declare ptr @scr_map_get_${kAcc}_ref(ptr, ${kTy})`);
         const has = B.tmp();

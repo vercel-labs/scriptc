@@ -1,4 +1,7 @@
 /* LlEmitter's statement emission: the statement switch, try/catch, switch, loop copies, speculative writes and string self-concatenation. */
+import { emitInlineArrayInit, inlineFieldTail } from "./inline-arrays.js";
+import { emitLoopBytesHeaders } from "./bytes-headers.js";
+import { noteBytesReceiver } from "./expr-bytes.js";
 import {
   type LlEmitter,
   type LlScopeEntry,
@@ -44,6 +47,7 @@ import { emitBorrowedInput } from "./borrowed-inputs.js";
 import { f64Lit, llvmCommentText, loadArrCount, SCR_ARR_FIELD, sizeToDouble } from "./common.js";
 import { planInt32KindLoop, type Int32KindLoopPlan } from "./int32-kind-loops.js";
 import { withinInt32 } from "../../ir/integer-ranges.js";
+import { emitLoopEntryVersion, loopEntryVersion } from "./loop-entry-versions.js";
 import { resultSlotStore } from "../result-slots.js";
 import {
   matchIntegerArrayForLoop,
@@ -70,7 +74,7 @@ import { bytesHeaderAlias } from "./bytes-alias.js";
 import { mangleLocal } from "../mangle.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlValue } from "./expr-context.js";
-import { everyExprChild, everyStmtChild } from "../../ir/traverse.js";
+import { everyExprChild, everyStmtChild, everyStmtList } from "../../ir/traverse.js";
 import { widenInteger } from "./integer-values.js";
 import { SCALAR_UNION_RESULT } from "./int32-abi.js";
 import { emitLiteralSwitch } from "./switch-dispatch.js";
@@ -81,6 +85,7 @@ import {
   planProvenIntegerLoop,
   planSpeculativeLoop,
   type ProvenLoopPlan,
+  type SpeculativeLoopPlan,
   speculativeReads,
   speculativeWriteTarget,
 } from "./speculative-integers.js";
@@ -92,7 +97,11 @@ import {
 } from "./string-construction.js";
 import { emitStringInputs } from "./string-lifetimes.js";
 import { LOOPS } from "./loop-state.js";
-import { loopAccessesTypedArrays } from "../loop-polls.js";
+import { emitLaneLoop, laneLoopPlan } from "./lanes.js";
+import { loopUnrollAttachment, periodicGuardPeriod } from "./periodic-guards.js";
+import { containsLoop, loopAccessesTypedArrays } from "../loop-polls.js";
+import { emitConstantChoice, matchConstantChoice } from "./constant-choices.js";
+import { emitFusedRecordSet } from "./record-entry-fusion.js";
 
 /** A callback loop version copies the loop; keep the copies small. */
 const MAX_CALLBACK_VERSION_COST = 400;
@@ -100,8 +109,11 @@ const MAX_CALLBACK_VERSION_COST = 400;
 export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
   const B = emitter.B;
   emitter.frames.push([]);
+  if (emitter.arenas !== null)
+    emitter.statementFrames.add(emitter.frames[emitter.frames.length - 1]!);
   switch (s.kind) {
     case "varDecl": {
+      emitter.ownArenasOf(s.localId);
       if (s.init && emitter.int32Locals.has(s.localId)) {
         emitter.storeInt32Local(s.localId, emitter.emitExpr(s.init), s.init);
         break;
@@ -144,7 +156,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         break;
       }
       const stackObject = emitter.localStackObjects.get(s.localId);
-      if (stackObject) {
+      if (stackObject && b.kind !== "boxed") {
         const value = emitStackObject(emitter, stackObject, (fields) =>
           emitter.ownScopeFields(fields),
         );
@@ -213,7 +225,11 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           B.line(`store ptr ${stack.box}, ptr ${b.slot}`);
           if (stack.owner) emitter.scopes[emitter.scopes.length - 1]!.push(stack.owner);
           if (s.init) {
-            const value = emitter.emitExpr(s.init);
+            const value = stackObject
+              ? emitter.markImmortal(
+                  emitStackObject(emitter, stackObject, (fields) => emitter.ownScopeFields(fields)),
+                )
+              : emitter.emitExpr(s.init);
             if (isRefCounted(value.type)) emitter.toFrame(value);
             emitter.boxSet(stack.box, b.type, value.name);
           }
@@ -244,7 +260,13 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           if (sentinel !== null) B.line(`store ptr ${sentinel}, ptr ${emitter.boxSlot(box)}`);
           break;
         }
-        const v = emitter.emitExpr(s.init);
+        // A frame object's binding box holds its frame storage, which the
+        // closures that capture the box never keep (frame-escapes.ts).
+        const v = stackObject
+          ? emitter.markImmortal(
+              emitStackObject(emitter, stackObject, (fields) => emitter.ownScopeFields(fields)),
+            )
+          : emitter.emitExpr(s.init);
         if (isRefCounted(v.type)) emitter.toHeap(v); // the box takes ownership
         if (b.local!.tdz === true && boxAccess(b.type) !== "ref") {
           emitter.tdzScalarInit(box, b.type, v.name);
@@ -291,10 +313,13 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       // Whole-value uses still retain their own copies, so returning or
       // storing the alias preserves the ordinary heap representation.
       // Boxed captures, reassigned sources and projections need ownership.
+      // A tree value has one owner and no copy to lend: the alias would be
+      // a second pointer the source's scope exit still destroys.
       if (
         b.kind === "local" &&
         b.local &&
         isRefCounted(b.type) &&
+        !emitter.isTreeValue(b.type) &&
         emitter.stableCallBindings.has(s.localId) &&
         (emitter.canBorrowCallArgument(s.init) || emitter.unwrittenAlias(s))
       ) {
@@ -576,6 +601,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       // IrBytesElem is static, so never rediscover it through the
       // generic runtime switch in a hot loop.
       const arr = emitter.emitStableReceiver(s.arr, [s.index, s.value]);
+      noteBytesReceiver(emitter, s.arr, arr.name);
       const idx = emitter.emitExpr(s.index);
       const v = emitter.emitExpr(s.value);
       if (s.arr.type.kind !== "bytes")
@@ -600,6 +626,25 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       // release — a release can trigger a cycle collection, which must
       // never see a heap edge whose count was already given up).
       // Classes and records share the struct layout, so one emission.
+      // The constructor's write of an inline array field copies the array's
+      // elements into the instance (backend/llvm/inline-arrays.ts).
+      const tail =
+        s.kind === "fieldSet" ? inlineFieldTail(emitter, s.className, s.field) : undefined;
+      if (tail !== undefined && s.kind === "fieldSet") {
+        const obj = emitter.emitStableReceiver(s.obj, [s.value]);
+        const v = emitter.emitExpr(s.value);
+        emitter.emitStoreGuard(obj.name, s);
+        emitter.heapCensus?.countStore(
+          (line) => B.line(line),
+          () => B.tmp(),
+          s.className,
+          s.field,
+          s.value,
+          v.name,
+        );
+        emitInlineArrayInit(emitter, obj.name, s.className, tail, v.name);
+        break;
+      }
       const nullable =
         s.kind === "fieldSet" ? emitter.nullableFields.get(s.className, s.field) : null;
       if (nullable && s.kind === "fieldSet") {
@@ -607,7 +652,22 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         // (The guard precedes the value here: the nullable store
         // evaluates it itself.)
         emitter.emitStoreGuard(obj.name, s);
-        emitter.emitNullableFieldStore(obj.name, s.className, s.field, nullable, s.value);
+        emitter.heapCensus?.countStore(
+          (line) => B.line(line),
+          () => B.tmp(),
+          s.className,
+          s.field,
+          s.value,
+          null,
+        );
+        emitter.emitNullableFieldStore(
+          obj.name,
+          s.className,
+          s.field,
+          nullable,
+          s.value,
+          emitter.freshFieldStores.has(s),
+        );
         break;
       }
       if (s.kind === "fieldSet" && emitter.int32Slots.isField(s.className, s.field)) {
@@ -626,15 +686,55 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           ? emitter.recordFieldInline(s.shapeId, s.field)
           : emitter.inlineUnions.classField(s.className, s.field),
       );
-      if (s.kind === "fieldSet") emitter.emitStoreGuard(obj.name, s);
-      else if (emitter.publishedTypes?.recordGuarded(s.shapeId) === true)
+      if (s.kind === "fieldSet") {
+        emitter.emitStoreGuard(obj.name, s);
+        emitter.heapCensus?.countStore(
+          (line) => B.line(line),
+          () => B.tmp(),
+          s.className,
+          s.field,
+          s.value,
+          v.name,
+        );
+      } else if (emitter.publishedTypes?.recordGuarded(s.shapeId) === true)
         emitter.emitPublishedFieldGuard(obj.name, null, s.field);
+      if (s.kind === "recordSet" && emitter.partialFieldMissing(s.shapeId, s.field)) {
+        // A field a partial record view may lack: the view keeps it as a
+        // boxed property when the viewed record does not declare it.
+        const fieldType = emitter
+          .recordShape(s.shapeId)
+          .fields.find((f) => f.name === s.field)!.type;
+        const fieldInline = emitter.recordFieldInline(s.shapeId, s.field);
+        emitter.storePartialField(
+          obj.name,
+          s.shapeId,
+          s.field,
+          fieldType,
+          v,
+          (slot) => {
+            // A result-slot entry fills zeroed caller storage, each field
+            // once; a constructor's first store to its own field fills the
+            // slot `new` left.
+            if (resultSlotStore(emitter.currentFunctionName, s) || emitter.freshFieldStores.has(s))
+              emitter.initField(slot, fieldType, fieldInline, v);
+            else emitter.replaceField(slot, fieldType, fieldInline, v);
+          },
+          // The store owns the value on the slot path; the extra-property
+          // path boxes it (retaining) and gives up the store's reference.
+          () => {
+            if (!fieldInline && isRefCounted(fieldType)) emitter.releaseHeap(v.name, fieldType);
+          },
+        );
+        break;
+      }
       const { ptr, type, inline } =
         s.kind === "fieldSet"
           ? emitter.classFieldPtr(obj.name, s.className, s.field, "compressed")
           : emitter.recordFieldPtr(obj.name, s.shapeId, s.field);
-      // A result-slot entry fills zeroed caller storage, each field once.
-      if (resultSlotStore(emitter.currentFunctionName, s)) emitter.initField(ptr, type, inline, v);
+      // A result-slot entry fills zeroed caller storage, each field once; a
+      // constructor's first store to its own field fills the slot `new` left.
+      if (resultSlotStore(emitter.currentFunctionName, s) || emitter.freshFieldStores.has(s))
+        emitter.initField(ptr, type, inline, v);
       else emitter.replaceField(ptr, type, inline, v);
       if (
         s.kind === "fieldSet" &&
@@ -678,6 +778,36 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       // whose writes validate and can throw, stay refused), undeclared
       // keys insert/replace in the overflow map. Evaluation order: obj,
       // key, value; the write OWNS the value (+1 moves in).
+      const paired = emitter.recordEntryFusion?.writes.get(s);
+      const pairedIv = paired === undefined ? undefined : emitter.recordShape(s.shapeId).indexValue;
+      if (paired !== undefined && (pairedIv?.kind === "f64" || pairedIv?.kind === "bool")) {
+        // Paired with a fused read of the same object and key binding
+        // (record-entry-fusion.ts): the read already evaluated both and
+        // parked the overflow entry, so the write evaluates only the value
+        // and overwrites the entry's value slot in place. A miss takes the
+        // ordinary insert with the parked map and key.
+        const v = emitter.emitExpr(s.value);
+        const vAcc = pairedIv.kind === "f64" ? "f64" : "bool";
+        if (
+          emitFusedRecordSet(emitter, s, { name: v.name, access: vAcc }, (map, key) =>
+            emitter.mapSet(map, "str", vAcc, key, v.name),
+          )
+        )
+          break;
+        // The paired read took a non-fused lowering: finish with the
+        // ordinary set. Both bindings are plain variables, so reading them
+        // after the value is unobservable.
+        const objFallback = emitter.emitExpr(s.obj);
+        const keyFallback = emitter.emitExpr(s.key);
+        emitter.mapSet(
+          emitter.recordOvfPtr(objFallback.name, s.shapeId),
+          "str",
+          vAcc,
+          keyFallback.name,
+          v.name,
+        );
+        break;
+      }
       const obj = emitter.emitExpr(s.obj);
       const key = emitter.emitExpr(s.key);
       const v = emitter.emitExpr(s.value);
@@ -780,19 +910,32 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         const ln = B.newLabel("rks.n");
         B.condBr(hit, lh, ln);
         B.startBlock(lh);
-        const { ptr, type, inline } = emitter.recordFieldPtr(obj.name, s.shapeId, f.name);
-        if (inline) {
-          // The write owns the moved-in value; the slot copies its bits.
-          emitter.storeField(ptr, type, v.name, true);
-          emitter.releaseHeap(v.name, type);
-        } else if (isRefCounted(type)) {
-          const old = B.tmp();
-          B.line(`${old} = load ptr, ptr ${ptr}`);
-          emitter.storeField(ptr, type, v.name, false);
-          emitter.releaseHeap(old, type);
-        } else {
-          emitter.storeField(ptr, type, v.name, false);
-        }
+        const partial = emitter.partialFieldMissing(s.shapeId, f.name);
+        // A field a partial record view may lack has no slot to address:
+        // its write goes through the view's extra-property store.
+        const field = partial
+          ? { type: f.type, inline: emitter.recordFieldInline(s.shapeId, f.name), ptr: "" }
+          : emitter.recordFieldPtr(obj.name, s.shapeId, f.name);
+        const { ptr, type, inline } = field;
+        const storeAt = (slot: string): void => {
+          if (inline) {
+            // The write owns the moved-in value; the slot copies its bits.
+            emitter.storeField(slot, type, v.name, true);
+            emitter.releaseHeap(v.name, type);
+          } else if (isRefCounted(type)) {
+            const old = B.tmp();
+            B.line(`${old} = load ptr, ptr ${slot}`);
+            emitter.storeField(slot, type, v.name, false);
+            emitter.releaseHeap(old, type);
+          } else {
+            emitter.storeField(slot, type, v.name, false);
+          }
+        };
+        if (partial)
+          emitter.storePartialField(obj.name, s.shapeId, f.name, type, v, storeAt, () => {
+            if (inline || isRefCounted(type)) emitter.releaseHeap(v.name, type);
+          });
+        else storeAt(ptr);
         B.br(join);
         B.startBlock(ln);
       }
@@ -837,6 +980,13 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       break;
     }
     case "if": {
+      // A chain storing one of several literals to one element stores a
+      // table entry instead (debug builds keep the arms to step through).
+      const choice = emitter.debug === null ? matchConstantChoice(s) : null;
+      if (choice !== null) {
+        emitConstantChoice(emitter, choice);
+        break;
+      }
       const cond = emitter.emitCondition(s.cond);
       const trueLabel = B.newLabel("if.t");
       const joinLabel = B.newLabel("if.j");
@@ -1083,6 +1233,14 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         (countedLoop?.guarded || pairedLoop?.guarded) &&
         !LOOPS.of(emitter).provenCountedGuards.has(s)
       ) {
+        // A function that emits each loop once takes only the copy without
+        // the integer form, which needs no safety test.
+        if (LOOPS.of(emitter).plainLoops) {
+          LOOPS.of(emitter).countedLoopsEnabled = false;
+          emitSlowCopy(emitter, s);
+          LOOPS.of(emitter).countedLoopsEnabled = true;
+          break;
+        }
         const safe = countedLoop
           ? emitCountedLoopSafety(emitter, countedLoop)
           : emitPairedLoopSafety(emitter, pairedLoop!);
@@ -1214,26 +1372,26 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         }
       };
       // A counted loop over typed arrays, or a loop to a typed array's
-      // length, polls between blocks of WORKER_POLL_BLOCK iterations instead
-      // of counting a budget in its body: the inner loop over a block then
-      // has no exit besides its own bound, which LLVM can vectorize. A typed
+      // length, polls between blocks of workerPollBlock iterations instead
+      // of in its body: the inner loop over a block then has no exit
+      // besides its own bound, which LLVM can vectorize. A typed
       // array's length is fixed, so each block can take it as its limit when
       // the loop does not assign the array's binding.
       //
       // Inside another loop of this function, which polls at least once
-      // every WORKER_POLL_BLOCK of its own iterations, a loop needs less:
+      // every workerPollBlock of its own iterations, a loop needs less:
       // - a loop whose counters' ranges bound its runs, and those of the
-      //   loops in its body, to WORKER_POLL_BLOCK^2 needs no poll;
+      //   loops in its body, to workerPollBlock^2 needs no poll;
       // - an innermost counted loop is strip-mined, typed arrays or not,
       //   and does not poll after its last block. A run of at most
-      //   WORKER_POLL_BLOCK iterations then never polls, and the countdown
+      //   workerPollBlock iterations then never polls, and the countdown
       //   leaves its body. A run of at most WORKER_UNPOLLED_RUN iterations
       //   is one block, polled once as it leaves.
+      const pollBlock = workerPollBlock(emitter);
       const enclosed =
         emitter.mod.workers === true &&
         emitter.jumpTargets.some((target) => target.kind === "loop");
-      const bounded =
-        enclosed && boundedLoopRuns(emitter, s) <= WORKER_POLL_BLOCK * WORKER_POLL_BLOCK;
+      const bounded = enclosed && boundedLoopRuns(emitter, s) <= pollBlock * pollBlock;
       const innermost = enclosed && !containsLoop(s.body);
       const stripMined =
         !bounded &&
@@ -1241,11 +1399,43 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         integerSlot !== null &&
         ((countedLoop !== null &&
           countedLimit !== null &&
-          Math.abs(countedLoop.step) * WORKER_POLL_BLOCK <= 2 ** 52) ||
+          Math.abs(countedLoop.step) * pollBlock <= 2 ** 52) ||
           (integerLoop !== null && integerArrayLoop === null && integerLoop.stableReceiver)) &&
         emitter.workerLoopPolls(s) &&
         (loopAccessesTypedArrays(s) || (countedLoop !== null && innermost));
       const workerBudget = stripMined || bounded ? null : emitter.workerLoopBudget(s);
+      // An innermost counted loop, or a two-counter loop closing in by one
+      // step on each side, has a run whose length its counters fix on entry.
+      // With a small body, a run of at most WORKER_UNPOLLED_RUN steps takes a
+      // plain copy of the loop without a poll, which polls once as it leaves
+      // when it ran more than workerPollBlock steps, like a strip-mined run;
+      // longer runs take the loop as it is emitted otherwise.
+      const shortRuns: { stride: number; left: () => string } | null =
+        !innermost ||
+        LOOPS.of(emitter).plainLoops ||
+        bounded ||
+        capturedLets.length > 0 ||
+        !emitter.workerLoopPolls(s) ||
+        !withinNodes(s.body, MAX_SHORT_RUN_NODES)
+          ? null
+          : countedLoop !== null && countedLimit !== null && integerSlot !== null
+            ? {
+                stride: Math.abs(countedLoop.step),
+                left: () => {
+                  const start = B.tmp(),
+                    left = B.tmp();
+                  B.line(`${start} = load i64, ptr ${integerSlot}`);
+                  B.line(
+                    countedLoop.step > 0
+                      ? `${left} = sub nsw i64 ${countedLimit}, ${start}`
+                      : `${left} = sub nsw i64 ${start}, ${countedLimit}`,
+                  );
+                  return left;
+                },
+              }
+            : pairedLoop !== null && pairedLoop.low.step === 1 && pairedLoop.high.step === -1
+              ? { stride: 2, left: () => emitPairedLoopGap(emitter, pairedSlots) }
+              : null;
       // One slot for every copy of the loop: a speculative copy resumes an
       // iteration in another copy's body, which then reads this bound.
       let blockBound: string | null = null;
@@ -1261,46 +1451,19 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         }
       }
       freshenBindings();
-      emitter.emitLoopCopies(s, capturedLets.length === 0, le, (exit) => {
-        if (stripMined) {
-          const counter: StripMinedCounter = countedLoop
-            ? {
-                slot: integerSlot!,
-                type: "i64",
-                signed: true,
-                step: countedLoop.step,
-                followers: countedLoop.followers.map((f, i) => ({
-                  slot: followerSlots[i]!,
-                  step: f.step,
-                })),
-                limit: () => countedLimit!,
-              }
-            : {
-                slot: integerSlot!,
-                type: emitter.sizeType,
-                signed: false,
-                step: 1,
-                followers: [],
-                limit: () => {
-                  const receiver = emitter.emitStableReceiver(integerLoop!.limitReceiver, []);
-                  const lenPtr = B.tmp();
-                  const len = B.tmp();
-                  B.line(
-                    `${lenPtr} = getelementptr inbounds %ScrBytes, ptr ${receiver.name}, i64 0, i32 1`,
-                  );
-                  B.line(
-                    `${len} = load ${emitter.sizeType}, ptr ${lenPtr}${bytesHeaderAlias(emitter)}`,
-                  );
-                  return len;
-                },
-              };
-          emitStripMinedCountedLoop(emitter, s, counter, blockBound!, exit, runSlot);
-          return;
-        }
+      // The loop as a plain header, body and update, polling by `budget`.
+      const emitPlainLoop = (exit: string, budget: string | null): void => {
         const lc = B.newLabel("loop.c");
         const lb = B.newLabel("loop.b");
         const lu =
-          s.update || capturedLets.length > 0 || workerBudget !== null ? B.newLabel("loop.u") : lc;
+          s.update || capturedLets.length > 0 || budget !== null ? B.newLabel("loop.u") : lc;
+        // A periodic guard on the counter (periodic-guards.ts): the back
+        // edge asks LLVM to unroll the loop by the guard's period.
+        const period =
+          countedLoop && integerSlot
+            ? periodicGuardPeriod(s, countedLoop.localId, countedLoop.start, countedLoop.step)
+            : null;
+        const backEdge = period === null ? "" : loopUnrollAttachment(period);
         B.br(lc);
         B.startBlock(lc);
         enterLoopHeader(emitter, lc);
@@ -1361,10 +1524,10 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         });
         emitter.emitBlock(s.body);
         emitter.jumpTargets.pop();
-        B.br(lu);
+        B.br(lu, lu === lc ? backEdge : "");
         if (lu !== lc) {
           B.startBlock(lu);
-          emitter.emitWorkerLoopCheck(workerBudget);
+          emitter.emitWorkerLoopCheck(budget);
           freshenBindings();
           if (integerLoop && integerSlot) {
             const old = B.tmp();
@@ -1394,8 +1557,97 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
               B.line(`store i64 ${next}, ptr ${pairedSlots[i]}`);
             });
           } else if (s.update) emitter.emitStmt(s.update);
-          B.br(lc);
+          B.br(lc, backEdge);
         }
+      };
+      // A planned loop runs whole vectors first and leaves the rest to its
+      // own copies, which start at the counter the lane loop leaves behind
+      // (lanes.ts). The plan is consulted here, before any copy is chosen:
+      // the speculative, int32 and strip-mined copies keep their values in
+      // layouts the lane body does not write.
+      const lane =
+        integerLoop !== null && integerSlot !== null && !stripMined && capturedLets.length === 0
+          ? laneLoopPlan(emitter, s)
+          : null;
+      if (lane !== null)
+        emitLaneLoop(
+          emitter,
+          lane,
+          integerLoop!.limitReceiver,
+          integerSlot!,
+          B.newLabel("lane.after"),
+        );
+      emitter.emitLoopCopies(s, capturedLets.length === 0, le, (exit) => {
+        // Speculative copies resume iterations inside the copy they enter,
+        // which must keep its polls.
+        if (
+          shortRuns &&
+          emitter.speculation === null &&
+          emitter.speculationResume === null &&
+          emitter.speculationHeader === null &&
+          emitter.int32Kinds === null
+        ) {
+          // The run's length in counter steps (two counter steps an
+          // iteration for a two-counter loop), signed: a run that does not
+          // enter the body is short too.
+          const left = shortRuns.left();
+          const inRun = B.tmp(),
+            pollsAfter = B.tmp();
+          const shortLabel = B.newLabel("loop.short"),
+            longLabel = B.newLabel("loop.long"),
+            shortEnd = B.newLabel("loop.short.end"),
+            shortPoll = B.newLabel("loop.short.poll");
+          B.line(`${inRun} = icmp sle i64 ${left}, ${shortRuns.stride * WORKER_UNPOLLED_RUN}`);
+          B.condBr(inRun, shortLabel, longLabel);
+          B.startBlock(shortLabel);
+          emitPlainLoop(shortEnd, null);
+          // A run longer than one block polls once as it leaves.
+          B.startBlock(shortEnd);
+          B.line(`${pollsAfter} = icmp sgt i64 ${left}, ${shortRuns.stride * pollBlock}`);
+          B.condBr(pollsAfter, shortPoll, exit);
+          B.startBlock(shortPoll);
+          emitter.emitWorkerPoll();
+          B.br(exit);
+          B.startBlock(longLabel);
+        }
+        if (stripMined) {
+          const counter: StripMinedCounter = countedLoop
+            ? {
+                localId: countedLoop.localId,
+                slot: integerSlot!,
+                type: "i64",
+                signed: true,
+                step: countedLoop.step,
+                followers: countedLoop.followers.map((f, i) => ({
+                  slot: followerSlots[i]!,
+                  step: f.step,
+                })),
+                limit: () => countedLimit!,
+              }
+            : {
+                localId: integerLoop!.localId,
+                slot: integerSlot!,
+                type: emitter.sizeType,
+                signed: false,
+                step: 1,
+                followers: [],
+                limit: () => {
+                  const receiver = emitter.emitStableReceiver(integerLoop!.limitReceiver, []);
+                  const lenPtr = B.tmp();
+                  const len = B.tmp();
+                  B.line(
+                    `${lenPtr} = getelementptr inbounds %ScrBytes, ptr ${receiver.name}, i64 0, i32 1`,
+                  );
+                  B.line(
+                    `${len} = load ${emitter.sizeType}, ptr ${lenPtr}${bytesHeaderAlias(emitter)}`,
+                  );
+                  return len;
+                },
+              };
+          emitStripMinedCountedLoop(emitter, s, counter, blockBound!, exit, runSlot);
+          return;
+        }
+        emitPlainLoop(exit, workerBudget);
       });
       B.startBlock(le);
       emitter.releaseScope(emitter.scopes.pop()!);
@@ -1648,7 +1900,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         B.line(`call void @scr_async_gen_return_awaits()`);
       }
       if (emitter.currentAsyncGenerator && s.awaited !== true && emitter.finallyStack.length > 0) {
-        if (emitter.wasi) emitter.emitWasiSuspend(null);
+        if (emitter.coroAwait) emitter.emitCoroAwait(null);
         else {
           emitter.declare(`declare void @scr_await_hop()`);
           B.line(`call void @scr_await_hop()`);
@@ -1726,6 +1978,28 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         `call void @scr_throw_error_msg_code(i32 0, ptr ${emitter.cstr(s.message)}, ${emitter.sizeType} ${bytes}, ptr ${emitter.cstr(s.code)})`,
       );
       emitter.emitUnwind();
+      break;
+    }
+    case "genBindBarrier": {
+      // The end of a generator's parameter prologue (fn.generator.bindAtCall):
+      // suspend invisibly so the spawn wrapper can run the prologue at the
+      // call. No OUT value is produced and no IN value is taken — the first
+      // `.next(v)` argument stays unread, exactly as a suspendedStart
+      // generator discards it — but the resumption may carry an injected
+      // throw or the `.return()` sentinel, so it checks like a yield.
+      if (emitter.currentGenerator === null)
+        throw new InternalCompilerError(
+          "llvm emitter bug: genBindBarrier outside a generator body",
+        );
+      if (emitter.currentCoro !== null) {
+        emitter.emitCoroSuspendPrepared();
+      } else {
+        // A fiber body parks no OUT value and switches back to the resumer:
+        // the valueless yield form the runtime already offers.
+        emitter.declare(`declare void @scr_gen_yield_ref(ptr, ptr)`);
+        B.line(`call void @scr_gen_yield_ref(ptr null, ptr null)`);
+      }
+      emitter.emitPendingCheck();
       break;
     }
     case "tryCatch":
@@ -2324,6 +2598,13 @@ export function emitLoopCopies(
   exit: string,
   emitCopy: (exit: string) => void,
 ): void {
+  const entry = allowed ? loopEntryVersion(emitter, loop) : null;
+  if (entry) {
+    emitLoopEntryVersion(emitter, loop, entry, () =>
+      emitLoopCopies(emitter, loop, allowed, exit, emitCopy),
+    );
+    return;
+  }
   const plan =
     allowed &&
     emitter.speculativeLoopsEnabled &&
@@ -2371,6 +2652,22 @@ export function emitLoopCopies(
     else ordinary(exit);
     return;
   }
+  const outer = emitter.bytesHeaders;
+  emitter.bytesHeaders = emitLoopBytesHeaders(emitter, loop, emitter.currentParameters) ?? outer;
+  try {
+    emitSpeculativeLoop(emitter, plan, exit, emitCopy);
+  } finally {
+    emitter.bytesHeaders = outer;
+  }
+}
+
+/** The copies of a speculative loop (emitLoopCopies). */
+function emitSpeculativeLoop(
+  emitter: LlEmitter,
+  plan: SpeculativeLoopPlan,
+  exit: string,
+  emitCopy: (exit: string) => void,
+): void {
   const B = emitter.B;
   const entries = new Map<string, string>();
   let ok = "true";
@@ -2648,8 +2945,15 @@ function emitInt32KindLoop(
 
 /** At the top of a loop copy's header: lets a speculative loop find its
  * ordinary copy's header, and keeps its third copy out of the loop. */
-/** Iterations between cancellation polls of a strip-mined counted loop. */
-const WORKER_POLL_BLOCK = 64;
+/** Iterations between cancellation polls of a strip-mined counted loop. A
+ * block holds at least one step of the vectorized loop over bytes, so that
+ * a full block runs vector code: 64 iterations at the baseline (16-byte
+ * vectors, interleaved 4 times), and 128 when the program's code is compiled
+ * for x86-64-v3 or above, whose vectors take 32 bytes. */
+function workerPollBlock(emitter: LlEmitter): number {
+  const cpu = emitter.targetCpu;
+  return emitter.cpuDispatch || cpu === "x86-64-v3" || cpu === "x86-64-v4" ? 128 : 64;
+}
 
 /** The longest run of a strip-mined loop inside another loop that polls
  * only as it leaves. */
@@ -2692,7 +2996,8 @@ function boundedLoopRuns(emitter: LlEmitter, loop: IrStmt): number {
     if (stepped && range && exactSteps(range, stepped.step))
       trips = Math.floor((range.max - range.min) / Math.abs(stepped.step)) + 1;
   }
-  if (!(trips <= WORKER_POLL_BLOCK * WORKER_POLL_BLOCK)) return Infinity;
+  const pollBlock = workerPollBlock(emitter);
+  if (!(trips <= pollBlock * pollBlock)) return Infinity;
   let nested = 0;
   const visit = (s: IrStmt): boolean => {
     if (s.kind === "while" || s.kind === "doWhile" || s.kind === "for" || s.kind === "forOf") {
@@ -2705,10 +3010,39 @@ function boundedLoopRuns(emitter: LlEmitter, loop: IrStmt): number {
   return trips * (1 + nested);
 }
 
-/** The counter of a strip-mined loop: its slot, the LLVM integer type and
- * signedness of its values, its step, the counters stepped beside it, and
- * the limit, emitted in the outer header before each block. */
+/** The most IR nodes the body of a loop with an unpolled copy for short
+ * runs may have: the copy duplicates the loop. */
+const MAX_SHORT_RUN_NODES = 256;
+
+/** Whether `body` has at most `limit` statement and expression nodes. */
+function withinNodes(body: IrStmt[], limit: number): boolean {
+  let nodes = 0;
+  return everyStmtList(body, {
+    expr: () => ++nodes <= limit,
+    stmt: () => ++nodes <= limit,
+  });
+}
+
+/** The gap between the counters of a two-counter loop stepping them by 1
+ * and -1 (`for (let i = a, j = b; i < j; i++, j--)`), from the values in
+ * `slots`: each iteration closes it by two, so a run takes about half the
+ * gap in iterations, and none when the gap is closed. */
+function emitPairedLoopGap(emitter: LlEmitter, slots: readonly string[]): string {
+  const B = emitter.B;
+  const low = B.tmp(),
+    high = B.tmp(),
+    gap = B.tmp();
+  B.line(`${low} = load i64, ptr ${slots[0]}`);
+  B.line(`${high} = load i64, ptr ${slots[1]}`);
+  B.line(`${gap} = sub nsw i64 ${high}, ${low}`);
+  return gap;
+}
+
+/** The counter of a strip-mined loop: its binding, its slot, the LLVM
+ * integer type and signedness of its values, its step, the counters stepped
+ * beside it, and the limit, emitted in the outer header before each block. */
 interface StripMinedCounter {
+  localId: string;
   slot: string;
   type: string;
   signed: boolean;
@@ -2717,17 +3051,17 @@ interface StripMinedCounter {
   limit: () => string;
 }
 
-/** A counted `for` loop of a worker program as blocks of WORKER_POLL_BLOCK
+/** A counted `for` loop of a worker program as blocks of workerPollBlock
  * iterations, with the cancellation poll between blocks: the outer header
  * tests the counter against the loop's limit, each block runs the body up
- * to the nearer of the limit and WORKER_POLL_BLOCK steps on, and the poll
- * follows the block. It polls as often as the budget it replaces, and the
- * inner loop's only exit besides `break` and `return` is its bound.
+ * to the nearer of the limit and workerPollBlock steps on, and the poll
+ * follows the block. It polls once per block, and the inner loop's only
+ * exit besides `break` and `return` is its bound.
  *
  * With `runSlot` (for a loop that another loop of the function encloses), a
  * block that ends at the limit leaves the loop without polling, and a run
  * of at most WORKER_UNPOLLED_RUN iterations is one block, polled once as
- * it leaves when it took more than WORKER_POLL_BLOCK iterations. `runSlot`
+ * it leaves when it took more than workerPollBlock iterations. `runSlot`
  * holds whether the current block is such a run. */
 function emitStripMinedCountedLoop(
   emitter: LlEmitter,
@@ -2740,6 +3074,7 @@ function emitStripMinedCountedLoop(
   const B = emitter.B;
   const { slot, type, signed, step } = counter;
   const ascending = step > 0;
+  const pollBlock = workerPollBlock(emitter);
   const compare = !signed ? "ult" : ascending ? "slt" : "sgt";
   const saturating = `llvm.${signed ? "sadd" : "uadd"}.sat.${type}`;
   const nearer = `llvm.${!signed ? "umin" : ascending ? "smin" : "smax"}.${type}`;
@@ -2764,9 +3099,7 @@ function emitStripMinedCountedLoop(
   B.startBlock(block);
   const stepped = B.tmp();
   const bound = B.tmp();
-  B.line(
-    `${stepped} = call ${type} @${saturating}(${type} ${start}, ${type} ${step * WORKER_POLL_BLOCK})`,
-  );
+  B.line(`${stepped} = call ${type} @${saturating}(${type} ${start}, ${type} ${step * pollBlock})`);
   B.line(`${bound} = call ${type} @${nearer}(${type} ${stepped}, ${type} ${limit})`);
   if (runSlot === null) B.line(`store ${type} ${bound}, ptr ${boundSlot}`);
   else {
@@ -2783,7 +3116,7 @@ function emitStripMinedCountedLoop(
         : `${left} = sub ${wrap} ${type} ${start}, ${limit}`,
     );
     B.line(`${whole} = icmp ule ${type} ${left}, ${stride * WORKER_UNPOLLED_RUN}`);
-    B.line(`${long} = icmp ugt ${type} ${left}, ${stride * WORKER_POLL_BLOCK}`);
+    B.line(`${long} = icmp ugt ${type} ${left}, ${stride * pollBlock}`);
     B.line(`${polled} = and i1 ${whole}, ${long}`);
     B.line(`${end} = select i1 ${whole}, ${type} ${limit}, ${type} ${bound}`);
     B.line(`store ${type} ${end}, ptr ${boundSlot}`);
@@ -2800,7 +3133,7 @@ function emitStripMinedCountedLoop(
   const after = runSlot === null ? poll : B.newLabel("loop.end");
   B.condBr(inBlock, lb, after);
   B.startBlock(lb);
-  emitter.jumpTargets.push({
+  const target: LlEmitter["jumpTargets"][number] = {
     kind: "loop",
     brkLabel: exit,
     contLabel: lu,
@@ -2808,8 +3141,19 @@ function emitStripMinedCountedLoop(
     frameDepth: emitter.frames.length,
     scopeDepth: emitter.scopes.length,
     finallyDepth: emitter.finallyStack.length,
-  });
-  emitter.emitBlock(s.body);
+  };
+  emitter.jumpTargets.push(target);
+  // The counter steps by a nonzero constant and the body does not assign
+  // it, so an element at the counter is a different element on every
+  // iteration: its plain load or store is not merged with another
+  // iteration's or moved out of the loop.
+  const outer = emitter.plainSharedLoop;
+  emitter.plainSharedLoop = { counter: counter.localId, target, depth: emitter.loopDepth };
+  try {
+    emitter.emitBlock(s.body);
+  } finally {
+    emitter.plainSharedLoop = outer;
+  }
   emitter.jumpTargets.pop();
   B.br(lu);
   B.startBlock(lu);
@@ -2843,21 +3187,6 @@ function emitStripMinedCountedLoop(
   B.startBlock(poll);
   emitter.emitWorkerPoll();
   B.br(lc);
-}
-
-/** Whether `body` holds a loop outside its closures. */
-function containsLoop(body: IrStmt[]): boolean {
-  const inStmt = (s: IrStmt): boolean =>
-    s.kind === "while" ||
-    s.kind === "doWhile" ||
-    s.kind === "for" ||
-    s.kind === "forOf" ||
-    !everyStmtChild(
-      s,
-      () => true,
-      (child) => !inStmt(child),
-    );
-  return body.some(inStmt);
 }
 
 function enterLoopHeader(emitter: LlEmitter, header: string): void {
@@ -2929,7 +3258,12 @@ function emitProvenLoop(
   }
   const deferred = new Set<string>();
   for (const id of plan.locals.keys()) deferred.add(id);
-  emitter.speculation = { writes: plan.writes, resume: new Map(), deferred };
+  emitter.speculation = {
+    writes: plan.writes,
+    resume: new Map(),
+    deferred,
+    increments: plan.increments,
+  };
   try {
     const leave = B.newLabel("integer.leave");
     emitCopy(leave);

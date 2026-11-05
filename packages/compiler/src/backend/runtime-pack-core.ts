@@ -2,6 +2,7 @@
  * discovery, artifact verification and staging belong to the calling host. */
 import { optimizationClass, type NativeOptimization } from "./optimization.js";
 import type { NativeLinkFeatures } from "./native-link-info.js";
+import { jsObjectModelFact } from "../ir/runtime-features.js";
 import { RUNTIME_ABI_MARKER, RUNTIME_ABI_VERSION } from "./runtime-abi.js";
 import type { NativeTargetSpec } from "./targets.js";
 
@@ -23,8 +24,6 @@ export interface RuntimePackVariant extends RuntimePackArtifact {
   id: string;
   when: Record<string, boolean>;
   defines: string[];
-  /** LLVM bitcode of the same unit, imported by the helper for inlining. */
-  bitcode?: RuntimePackArtifact;
 }
 
 interface RuntimePackUnit {
@@ -34,7 +33,7 @@ interface RuntimePackUnit {
 }
 
 interface RuntimePackArchive extends RuntimePackArtifact {
-  id: "quickjs" | "libregexp" | "zlib" | "brotli" | "mbedtls";
+  id: "quickjs" | "libregexp" | "zlib" | "brotli" | "zstd" | "mbedtls" | "icu";
   predicate: RuntimePredicate;
 }
 
@@ -74,6 +73,15 @@ export interface RuntimePackManifest {
   };
   flavors: Partial<Record<RuntimePackFlavor, RuntimePackFlavorManifest>>;
   archives: RuntimePackArchive[];
+  /** Files the linked executable needs at RUN time rather than at link time,
+   * installed beside it on every build. ICU's data file (icudt78l.dat, 11.1
+   * MiB) is the only one; Intl programs copy it, every other program links
+   * neither ICU nor its data. */
+  data?: RuntimePackArtifact[];
+  /** C headers under one include root (`<root>/unicode/*.h`): the ICU C API
+   * headers scr_intl.c includes, which a sanitized build compiles that unit
+   * against (native/sanitizer.ts). Only a pack that ships ICU lists them. */
+  headers?: RuntimePackArtifact[];
   system_libraries: { name: string; predicate: RuntimePredicate }[];
   licenses: { path: string; license: string }[];
 }
@@ -86,20 +94,63 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   dynTier: boolean;
   streamDyn: boolean;
   handleProps: boolean;
+  childLifecycle: boolean;
+  childOptionExt: boolean;
+  childErrorFields: boolean;
   declAdopt: boolean;
   typeOrigins: boolean;
   dynForAwait: boolean;
+  dynIntegrityQueries: boolean;
+  genBind: boolean;
   eventsOnceSignal: boolean;
   mime: boolean;
+  largePages: boolean;
+  webStreams: boolean;
+  abortSignal: boolean;
   utilTiming: boolean;
   dynBuffer: boolean;
   builtinValues: boolean;
+  /** A standard library prototype object read as a value in a JavaScript
+   * source (scr_dyn_stdlib_prototype.c). */
+  stdlibPrototypeValue?: boolean;
+  /** DataView.prototype read as a value in a JavaScript source
+   * (scr_data_view_proto.c). */
+  dataViewPrototypeValue?: boolean;
+  /** A computed read of the global object, or `… in globalThis`
+   * (scr_global_host_absent.c). */
+  hostAbsentGlobals?: boolean;
+  /** Array.prototype's generic algorithms over array-likes
+   * (scr_dyn_array_like.c). */
+  arrayLikeDispatch?: boolean;
+  /** A builtin prototype method as a function value (String's trim family,
+   * RegExp's exec/test/toString; scr_dyn_builtin_methods.c). */
+  builtinMethodValue?: boolean;
   computedRequire: boolean;
   warningReplace: boolean;
+  /** The JavaScript object model build (t262-da §J): the runtime code every
+   * feature reached only from JavaScript sources shares, the
+   * SCR_JS_OBJECT_MODEL build of the units those features touch. Implies
+   * dynTier. */
+  jsObjectModel: boolean;
+  /** The ArrayBuffer views registry (scr_js_buffers.c): selected when a
+   * JavaScript source resizes, grows or detaches an ArrayBuffer. */
+  mutableBuffers?: boolean;
   stdioExtended: boolean;
+  /** The program's write completion callbacks take the error argument:
+   * the SCR_STREAM_WRITE_ERRORS build of the stream unit. */
+  streamWriteErrors: boolean;
+  /** The program reaches the process output streams' write slot: the
+   * SCR_STDIO_WRITE_SLOT build of the events unit. */
+  stdioWriteSlot: boolean;
+  nodeIsland: boolean;
   brotli: boolean;
+  zstd: boolean;
   moduleNamespace: boolean;
+  moduleNamespaceDyn: boolean;
+  primitiveWrapper: boolean;
+  iteratorProto: boolean;
   nativeFetch: boolean;
+  abortSignalOnly: boolean;
   netEffective: boolean;
   httpEffective: boolean;
   tlsEffective: boolean;
@@ -182,7 +233,6 @@ export function parseRuntimePackManifest(value: unknown): RuntimePackManifest {
             const when = object(variant?.when);
             return (
               validArtifact(variantRaw) &&
-              (variant?.bitcode === undefined || validArtifact(variant.bitcode)) &&
               typeof variant?.id === "string" &&
               when !== null &&
               Object.values(when).every((entry) => typeof entry === "boolean") &&
@@ -238,6 +288,10 @@ export function parseRuntimePackManifest(value: unknown): RuntimePackManifest {
         validArtifact(raw) && typeof archive?.id === "string" && validPredicate(archive.predicate)
       );
     }) ||
+    (manifest.data !== undefined &&
+      (!Array.isArray(manifest.data) || !manifest.data.every(validArtifact))) ||
+    (manifest.headers !== undefined &&
+      (!Array.isArray(manifest.headers) || !manifest.headers.every(validArtifact))) ||
     !Array.isArray(manifest.system_libraries) ||
     !manifest.system_libraries.every((raw) => {
       const library = object(raw);
@@ -281,29 +335,62 @@ export function effectiveRuntimeFeatures(
   const httpEffective = features.http || nativeFetch;
   const tlsEffective = features.tls || nativeFetch;
   const tlsCaEffective = features.tlsCa || tlsEffective;
+  // The JavaScript object model build (t262-da §J): the features reached only
+  // from JavaScript sources OR into one define and one runtime feature, so
+  // their migrations share one build of each unit they touch instead of one
+  // build column per feature.
+  const jsObjectModel = jsObjectModelFact(features);
   return {
     ...features,
     workers: features.workers === true,
     youngNursery: features.youngNursery === true,
     eventTarget: features.eventTarget === true,
     wasm: features.wasm === true,
-    dynTier: features.dynTier === true,
+    // The JavaScript object model build's code is the dynamic tier's, so a
+    // program with it links the dynamic-tier units too.
+    dynTier: features.dynTier === true || jsObjectModel,
     streamDyn: features.streamDyn === true,
     handleProps: features.handleProps === true,
+    childLifecycle: features.childLifecycle === true,
+    childOptionExt: features.childOptionExt === true,
+    childErrorFields: features.childErrorFields === true,
     declAdopt: features.declAdopt === true,
     typeOrigins: features.typeOrigins === true,
     dynForAwait: features.dynForAwait === true,
+    dynIntegrityQueries: features.dynIntegrityQueries === true,
+    genBind: features.genBind === true,
     eventsOnceSignal: features.eventsOnceSignal === true,
     mime: features.mime === true,
+    largePages: features.largePages === true,
+    webStreams: features.webStreams === true,
+    abortSignal: features.abortSignal === true,
     utilTiming: features.utilTiming === true,
     dynBuffer: features.dynBuffer === true,
     builtinValues: features.builtinValues === true,
+    stdlibPrototypeValue: features.stdlibPrototypeValue === true,
+    dataViewPrototypeValue: features.dataViewPrototypeValue === true,
+    hostAbsentGlobals: features.hostAbsentGlobals === true,
+    arrayLikeDispatch: features.arrayLikeDispatch === true,
+    builtinMethodValue: features.builtinMethodValue === true,
     computedRequire: features.computedRequire === true,
     warningReplace: features.warningReplace === true,
+    jsObjectModel,
+    mutableBuffers: features.mutableBuffers === true,
+    bigintBytes: features.bigintBytes === true,
     stdioExtended: features.stdioExtended === true,
+    streamWriteErrors: features.streamWriteErrors === true,
+    stdioWriteSlot: features.stdioWriteSlot === true,
+    nodeIsland: features.nodeIsland === true,
     brotli: features.brotli === true,
+    zstd: features.zstd === true,
     moduleNamespace: features.moduleNamespace === true,
+    moduleNamespaceDyn: features.moduleNamespaceDyn === true,
+    primitiveWrapper: features.primitiveWrapper === true,
+    iteratorProto: features.iteratorProto === true,
     nativeFetch,
+    // The fetch unit has AbortController and AbortSignal; scr_abort.c is
+    // the same implementation without the fetch transport.
+    abortSignalOnly: features.abortSignal === true && !nativeFetch,
     netEffective,
     httpEffective,
     tlsEffective,
@@ -376,9 +463,11 @@ export function validateRuntimePackIdentity(
 
 export interface RuntimePackArtifacts {
   features: RuntimeFeatureSet;
-  /** Selected unit variants; each may carry its bitcode artifact. */
-  runtime: (RuntimePackArtifact & { bitcode?: RuntimePackArtifact })[];
+  /** Selected unit variants. */
+  runtime: RuntimePackArtifact[];
   archives: RuntimePackArtifact[];
+  /** Files to install beside the executable (ICU's data file for Intl). */
+  data: RuntimePackArtifact[];
   systemLibraries: string[];
 }
 
@@ -397,6 +486,19 @@ export function runtimePackFlavorKey(
     return optimized === "release" ? "library-thread-release" : "library-thread-dev";
   if (optimization === "speed" && manifest.flavors.speed !== undefined) return "speed";
   return optimized;
+}
+
+/** The units a flavor links for `features`, each with its selected
+ * variant. Variants of one unit can share an artifact file (the pack stores
+ * identical objects once), so a variant is identified by its unit and id,
+ * not by its path. */
+export function selectedRuntimeUnits(
+  flavor: RuntimePackFlavorManifest,
+  features: RuntimeFeatureSet,
+): { source: string; variant: RuntimePackVariant }[] {
+  return flavor.runtime_units
+    .filter((unit) => evaluateRuntimePredicate(unit.predicate, features))
+    .map((unit) => ({ source: unit.source, variant: selectVariant(unit, features) }));
 }
 
 /** Selection is deterministic and independent of installation paths. Both
@@ -418,14 +520,26 @@ export function selectRuntimePackArtifacts(
       `runtime pack has no ${key} flavor; reinstall the matching runtime package`,
       "invalid",
     );
+  // Intl needs the ICU objects only the host-flavored packs carry (ICU is
+  // C++, so a pack builds it with Zig's C++ driver for its own glibc target);
+  // say so instead of linking a program whose scr_intl.c references would go
+  // undefined.
+  if (
+    features.intl === true &&
+    !selectedFlavor.runtime_units.some((unit) => unit.source === "scr_intl.c")
+  )
+    throw new RuntimePackError(
+      `the ${manifest.target.name} runtime pack has no ICU objects, which Intl needs; reinstall a runtime package that supports Intl`,
+      "unsupported",
+    );
   return {
     features,
-    runtime: selectedFlavor.runtime_units
-      .filter((unit) => evaluateRuntimePredicate(unit.predicate, features))
-      .map((unit) => selectVariant(unit, features)),
+    runtime: selectedRuntimeUnits(selectedFlavor, features).map(({ variant }) => variant),
     archives: manifest.archives.filter((archive) =>
       evaluateRuntimePredicate(archive.predicate, features),
     ),
+    // ICU's data file is 11.1 MiB: only a program that links ICU installs it.
+    data: features.intl === true ? (manifest.data ?? []) : [],
     systemLibraries: manifest.system_libraries
       .filter((entry) => evaluateRuntimePredicate(entry.predicate, features))
       .map((entry) => entry.name),

@@ -137,3 +137,18 @@ export function loopAccessesTypedArrays(loop: Loop): boolean {
   };
   return loop.body.some(inStmt);
 }
+
+/** Whether `body` holds a loop outside its closures. */
+export function containsLoop(body: readonly IrStmt[]): boolean {
+  const inStmt = (s: IrStmt): boolean =>
+    s.kind === "while" ||
+    s.kind === "doWhile" ||
+    s.kind === "for" ||
+    s.kind === "forOf" ||
+    !everyStmtChild(
+      s,
+      () => true,
+      (child) => !inStmt(child),
+    );
+  return body.some(inStmt);
+}

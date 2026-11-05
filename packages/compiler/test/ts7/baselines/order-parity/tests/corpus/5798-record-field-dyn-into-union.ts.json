@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5798-record-field-dyn-into-union.ts"
+ ],
+ "diags": []
+}

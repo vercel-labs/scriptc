@@ -589,6 +589,31 @@ static void cp_copyfile(const ScrStr *src, const ScrStr *dest, int mode, const c
   if (e) scr_fs_throw2(e, syscall, src, dest);
 }
 
+#if defined(SCR_FS_FLAGS) && !defined(_WIN32)
+/* copyFileSync(src, dest, mode) and copyFile(src, dest, mode): libuv's
+ * uv_fs_copyfile with Node's flag bits (the C++ binding's range check and
+ * message: any value in [0, 7], truncated to an integer — 1.5 is EXCL).
+ * COPYFILE_EXCL (1) fails EEXIST on an existing destination,
+ * COPYFILE_FICLONE (2) requests a reflink and falls back to a copy, and
+ * COPYFILE_FICLONE_FORCE (4) fails where no reflink is possible.
+ *
+ * This is the SCR_FS_FLAGS build of the unit: cp_copyfile is the reflink
+ * walk, and keeping the entry behind a define leaves every program that
+ * never passes a mode with the default object, byte for byte. The Windows
+ * arm (CopyFileW and its ENOSYS for FICLONE_FORCE) sits beside the Win32 fs
+ * helpers in scr_lib.c. */
+void scr_fs_copyfile_flags(ScrStr *src, ScrStr *dest, double mode) {
+  if (!(mode >= 0 && mode <= 7)) {
+    static const char text[] = "mode is out of range: >= 0 && <= 7";
+    scr_throw_error_msg_code(SCR_ERR_RANGE, text, sizeof text - 1, "ERR_OUT_OF_RANGE");
+    return;
+  }
+  if (!scr_fs_path_ok(src, "src")) return;
+  if (!scr_fs_path_ok(dest, "dest")) return;
+  cp_copyfile(src, dest, (int)mode, "copyfile");
+}
+#endif
+
 /* utimes(dest, atime, mtime) in seconds, through the utimesSync path. */
 static bool cp_utime(const ScrStr *dest, double atime, double mtime) {
   scr_fs_utimes((ScrStr *)dest, atime, mtime, false);

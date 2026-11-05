@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/fs-write-file-sync-fd.ts"
+ ],
+ "diags": []
+}

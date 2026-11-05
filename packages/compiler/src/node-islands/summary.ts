@@ -78,9 +78,18 @@ export interface NodeIslandReport {
   unknownPackages: string[];
 }
 
+/** A reason whose report sentence says what it means for the build, in
+ * addition to the pre-scan construct. */
+const REASON_SENTENCES: Readonly<Record<string, string>> = {
+  "builtin-patch": "it patches a builtin module's CommonJS export, which only code in Node can see",
+};
+
 /** "R2.1 constructor functions: 'new Foo()' of a function" or
  * "SC2012: <message>". */
 export function describe(r: NodeIslandReason): string {
+  const sentence = REASON_SENTENCES[r.reason];
+  if (sentence !== undefined)
+    return `${r.rule === null ? "" : `${r.rule} `}${r.reason}: ${sentence} (${r.message})`;
   if (r.source === "pre-scan" && r.rule !== null) return `${r.rule} ${r.message}`;
   const rule = r.rule === null ? "" : `${r.rule} `;
   return r.code === null ? `${rule}${r.message}` : `${rule}${r.code}: ${r.message}`;

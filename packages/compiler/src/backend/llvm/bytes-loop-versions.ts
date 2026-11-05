@@ -15,9 +15,10 @@ import { exactInteger, widenInteger } from "./integer-values.js";
 import {
   emitCountedLoopLimit,
   emitCountedLoopSafety,
-  emitExactIntegerTest,
   emitStartIntegerTest,
+  emitValueIntegerTest,
 } from "./counted-loops.js";
+import { integerOrNaNRange } from "./wrapping-sums.js";
 import { emitBytesData, emitBytesHeaderLength, emitBytesSharedStorage } from "./expr-bytes.js";
 import { f64Lit } from "./common.js";
 import { InternalCompilerError } from "../../errors.js";
@@ -45,11 +46,18 @@ interface KeyedTerm extends Term {
 
 /** Every access of `receiver` at a while loop counter `c + d` happens while
  * `c < bound` (`c <= bound` when `inclusive`) holds and before the counter
- * advances, so it is in bounds when `bound + slack <= length`. */
+ * advances, so it is in bounds when `bound + slack <= length`.
+ *
+ * A descending index `base - c + d` is largest at `c = 0` and smallest at
+ * the counter's last value below the bound, so it is in bounds when
+ * `base + slack <= length` and `bound <= base + 1 - adj + d`. */
 interface BoundedCheck {
   receiver: number;
   bound: IrExpr;
   slack: number;
+  /** The invariant `base` of a descending index and its term key, and the
+   * offset the bound's test adds to it. */
+  descending?: { base: IrExpr; key: string; lower: number };
 }
 
 /** A while loop counter whose entry value the guard tests: an exact
@@ -195,9 +203,10 @@ const INVARIANT_OPS = new Set(["+", "-", "*", "&", "|", "^", "<<", ">>", ">>>"])
  * and writes thread-owned views directly.
  *
  * Only small synchronous loops are versioned (nested loops included), and
- * the emitter bounds how deeply versions nest. The checked loop runs
- * whenever the guard fails, and keeps every out-of-bounds read, ignored
- * write and NaN-index behavior. */
+ * the emitter bounds how deeply versions nest. A loop whose nested loops
+ * access typed arrays versions only for an access inside them. The checked
+ * loop runs whenever the guard fails, and keeps every out-of-bounds read,
+ * ignored write and NaN-index behavior. */
 export function matchBytesLoopVersion(
   loop: IrStmt & { kind: "for" | "while" },
   counted: IntegerCountedForLoop | null,
@@ -491,7 +500,15 @@ export function matchBytesLoopVersion(
   const pairedCounters =
     paired !== null && counted === null ? new Set([paired.low.localId, paired.high.localId]) : null;
   const pairedNodes = new Map<number, Node[]>();
+  // Accesses inside the loop's nested loops, and inside its nested while
+  // loops.
+  const nested = new Set<Node>();
+  const nestedWhile = new Set<Node>();
+  let loops = 0,
+    whiles = 0;
   const access = (node: Node, array: IrExpr, index: IrExpr, width: number): void => {
+    if (loops > 0) nested.add(node);
+    if (whiles > 0) nestedWhile.add(node);
     const ref = root(array);
     if (!ref) return;
     if (facts.workers && ref.type.kind === "bytes" && !facts.owned.has(node)) {
@@ -542,19 +559,42 @@ export function matchBytesLoopVersion(
     const bounded = whileAccesses?.accesses.get(node);
     const loopCounter = bounded && whileAccesses!.counters.get(bounded.counter);
     if (bounded && loopCounter && (!loopCounter.wraps || loopCounter.bounds !== null)) {
-      const receiver = receiverOf(ref);
-      const key = `${receiver}|${bounded.key}|${bounded.adj}`;
-      const slack = bounded.offset + width - 1 + bounded.adj;
-      const group = boundedChecks.get(key);
-      if (group) {
-        group.check.slack = Math.max(group.check.slack, slack);
-        group.nodes.push({ node, access: bounded });
-      } else
-        boundedChecks.set(key, {
-          check: { receiver, bound: bounded.bound, slack },
-          nodes: [{ node, access: bounded }],
-        });
-      return;
+      // A descending index needs an invariant minuend; one that involves a
+      // counter stays checked.
+      const baseKey = bounded.base === undefined ? null : pureKey(bounded.base);
+      if (bounded.base === undefined || baseKey !== null) {
+        const receiver = receiverOf(ref);
+        const descending = bounded.base !== undefined;
+        const key = descending
+          ? `${receiver}|d${baseKey}|${bounded.key}|${bounded.adj}|${bounded.offset}`
+          : `${receiver}|${bounded.key}|${bounded.adj}`;
+        const slack = descending
+          ? bounded.offset + width
+          : bounded.offset + width - 1 + bounded.adj;
+        const group = boundedChecks.get(key);
+        if (group) {
+          group.check.slack = Math.max(group.check.slack, slack);
+          group.nodes.push({ node, access: bounded });
+        } else
+          boundedChecks.set(key, {
+            check: {
+              receiver,
+              bound: bounded.bound,
+              slack,
+              ...(descending
+                ? {
+                    descending: {
+                      base: bounded.base!,
+                      key: baseKey!,
+                      lower: bounded.offset + 1 - bounded.adj,
+                    },
+                  }
+                : {}),
+            },
+            nodes: [{ node, access: bounded }],
+          });
+        return;
+      }
     }
     const range = facts.ranges.get(index);
     if (!range) return;
@@ -602,7 +642,15 @@ export function matchBytesLoopVersion(
       access(s, s.arr, s.index, 1);
       scope(s, s.arr, true);
     }
-    return everyStmtChild(s, visitExpr, visitStmt);
+    const isLoop =
+      s.kind === "for" || s.kind === "forOf" || s.kind === "while" || s.kind === "doWhile";
+    const isWhile = s.kind === "while" || s.kind === "doWhile";
+    if (isLoop) loops++;
+    if (isWhile) whiles++;
+    const result = everyStmtChild(s, visitExpr, visitStmt);
+    if (isLoop) loops--;
+    if (isWhile) whiles--;
+    return result;
   };
   loop.body.every(visitStmt);
   if (loop.kind === "while") visitExpr(loop.cond);
@@ -703,9 +751,11 @@ export function matchBytesLoopVersion(
     used.add(group.check.receiver);
     for (const { node, access } of group.nodes) {
       bounds.add(node);
-      const min = 0 - access.offset;
+      // A descending index is at its largest at counter 0.
+      const descending = access.base !== undefined;
+      const min = descending ? 0 : 0 - access.offset;
       counterMins.set(access.counter, Math.max(counterMins.get(access.counter) ?? -SAFE, min));
-      narrow(access.ref, { min: -MAX_OFFSET, max: SAFE });
+      narrow(access.ref, { min: descending ? 0 : -MAX_OFFSET, max: SAFE });
       if (access.index !== access.ref) narrow(access.index, { min: 0, max: SAFE });
     }
   }
@@ -713,6 +763,18 @@ export function matchBytesLoopVersion(
     used.add(receiver);
     for (const node of nodes) bounds.add(node);
   }
+  // A loop whose nested loops access typed arrays versions only when the
+  // guard proves the bounds of one of those accesses (or, in a worker
+  // program, the ownership of one inside a nested while loop, which never
+  // versions for ownership alone). Otherwise the guard covers accesses that
+  // run once per pass, while each copy of the body repeats every nested
+  // loop and each nested loop's own version.
+  if (
+    nested.size > 0 &&
+    ![...bounds].some((node) => nested.has(node)) &&
+    ![...ownedNodes].some((node) => nestedWhile.has(node))
+  )
+    return null;
   const counterChecks: CounterCheck[] = [];
   for (const [id, min] of counterMins) {
     const info = whileAccesses!.counters.get(id)!;
@@ -779,6 +841,7 @@ export function matchBytesLoopVersion(
       receiver: renumber.get(g.check.receiver)!,
       bound: g.check.bound,
       slack: g.check.slack,
+      ...(g.check.descending !== undefined ? { descending: g.check.descending } : {}),
     })),
     counters: counterChecks,
     guarded,
@@ -799,7 +862,8 @@ export function matchBytesLoopVersion(
 }
 
 /** A typed-array access at a while loop counter: `counter + offset`, read
- * or written while `counter < bound` (`<=` when `adj` is 1) holds. */
+ * or written while `counter < bound` (`<=` when `adj` is 1) holds, or a
+ * descending `base - counter` with a loop-invariant `base`. */
 interface WhileAccess {
   counter: string;
   /** The index, and the counter's read in it. */
@@ -809,6 +873,8 @@ interface WhileAccess {
   key: string;
   adj: number;
   offset: number;
+  /** The invariant minuend of a descending index (`base - counter`). */
+  base?: IrExpr;
 }
 
 interface WhileCounter {
@@ -948,20 +1014,51 @@ function findWhileCounterAccesses(
   };
   const accesses = new Map<Node, WhileAccess>();
   const record = (node: Node, index: IrExpr, clean: Clean): void => {
-    let ref: IrExpr = index,
-      offset = 0;
-    if (index.kind === "bin" && (index.op === "+" || index.op === "-")) {
-      const literal =
-        index.right.kind === "numLit" ? index.right : index.op === "+" ? index.left : null;
-      const other = literal === index.right ? index.left : index.right;
-      if (literal?.kind !== "numLit" || !Number.isSafeInteger(literal.value)) return;
-      if (Math.abs(literal.value) > MAX_OFFSET || Object.is(literal.value, -0)) return;
-      offset = index.op === "-" ? -literal.value : literal.value;
-      ref = other;
+    let rest = index,
+      offset = 0,
+      base: IrExpr | undefined,
+      ref: IrExpr;
+    // Peel a literal offset: `… + k` or `… - k`.
+    if (
+      rest.kind === "bin" &&
+      (rest.op === "+" || rest.op === "-") &&
+      rest.right.kind === "numLit"
+    ) {
+      const literal = rest.right;
+      if (!Number.isSafeInteger(literal.value) || Object.is(literal.value, -0)) return;
+      if (Math.abs(literal.value) > MAX_OFFSET) return;
+      offset = rest.op === "-" ? -literal.value : literal.value;
+      rest = rest.left;
     }
+    // A literal first term: `k + counter`.
+    if (rest.kind === "bin" && rest.op === "+" && rest.left.kind === "numLit") {
+      const literal = rest.left;
+      if (!Number.isSafeInteger(literal.value) || Object.is(literal.value, -0)) return;
+      if (Math.abs(literal.value) + Math.abs(offset) > MAX_OFFSET) return;
+      offset += literal.value;
+      rest = rest.right;
+    }
+    if (
+      rest.kind === "bin" &&
+      rest.op === "-" &&
+      rest.right.kind === "varRef" &&
+      clean.has(rest.right.localId)
+    ) {
+      // A descending index `base - counter`: the minuend is any
+      // loop-invariant expression and the loop's bound limits the counter,
+      // not the index.
+      base = rest.left;
+      ref = rest.right;
+    } else ref = rest;
     if (ref.kind !== "varRef") return;
     const fact = clean.get(ref.localId);
-    if (fact) accesses.set(node, { counter: ref.localId, index, ref, ...fact, offset });
+    if (!fact) return;
+    accesses.set(
+      node,
+      base === undefined
+        ? { counter: ref.localId, index, ref, ...fact, offset }
+        : { counter: ref.localId, index, ref, ...fact, offset, base },
+    );
   };
   const expr = (e: IrExpr, clean: Clean): void => {
     if (e.kind === "bytesIntrinsic") {
@@ -1160,7 +1257,8 @@ export function emitBytesLoopVersionGuard(
   };
   const lengths = receivers.map((receiver, index) => {
     if (index === unitsIndex) {
-      const read = emitUnitsLength(host, receiver, () => emitUnitsSpan(host, version, index));
+      const step = version.counted ? Math.abs(version.counted.step) : NaN;
+      const read = emitUnitsLength(host, receiver, () => emitUnitsSpan(host, version, index), step);
       units.read = read;
       return read.length;
     }
@@ -1228,7 +1326,7 @@ export function emitBytesLoopVersionGuard(
         B.line(`${ok} = icmp sge i64 ${widenInteger(host, integer)}, ${counter.min}`);
         conditions.push(ok);
       }
-    } else conditions.push(emitExactIntegerTest(host, value.name, counter.min, SAFE).ok);
+    } else conditions.push(emitValueIntegerTest(host, value, counter.ref, counter.min, SAFE).ok);
     for (const wrap of counter.wrapBounds) {
       const bound = host.emitExpr(wrap.bound);
       const boundInteger = exactInteger(host, bound, wrap.bound);
@@ -1239,9 +1337,38 @@ export function emitBytesLoopVersionGuard(
     }
   }
   for (const check of version.bounded) {
+    const bound = host.emitExpr(check.bound).name;
+    if (check.descending !== undefined) {
+      // `base - counter + offset`: the index is largest at counter 0 and
+      // smallest at the counter's last value below the bound. The base is a
+      // loop-entry value, so the guard tests it as an exact integer within
+      // GUARDED_TERM: `base + lower` (`lower` at most 2^31 + 1) and the
+      // integer comparison with the length are then exact.
+      const { base, lower } = check.descending;
+      const tested = emitValueIntegerTest(
+        host,
+        host.emitExpr(base),
+        base,
+        GUARDED_TERM.min,
+        GUARDED_TERM.max,
+      );
+      if (tested.ok !== "true") conditions.push(tested.ok);
+      const asDouble = B.tmp(),
+        last = B.tmp(),
+        above = B.tmp();
+      B.line(`${asDouble} = sitofp i64 ${tested.integer} to double`);
+      B.line(`${last} = fadd double ${asDouble}, ${f64Lit(lower)}`);
+      B.line(`${above} = fcmp ole double ${bound}, ${last}`);
+      conditions.push(above);
+      const room = B.tmp(),
+        below = B.tmp();
+      B.line(`${room} = sub i64 ${lengths[check.receiver]}, ${check.slack}`);
+      B.line(`${below} = icmp sle i64 ${tested.integer}, ${room}`);
+      conditions.push(below);
+      continue;
+    }
     // `bound <= length - slack` in doubles: both sides are exact (a length
     // is below 2^53 and a slack below 2^32), and NaN fails.
-    const bound = host.emitExpr(check.bound).name;
     const length = B.tmp(),
       room = B.tmp(),
       ok = B.tmp();
@@ -1258,6 +1385,9 @@ export function emitBytesLoopVersionGuard(
     const startInteger = exactInteger(host, startValue, counted.start);
     let start: string;
     if (startInteger) start = widenInteger(host, startInteger);
+    else if (startValue.nanInteger !== undefined && integerOrNaNRange(host, counted.start))
+      // The counted-loop safety test required the ordered bit.
+      start = startValue.nanInteger;
     else {
       // The counted-loop safety test above proved an exact integer.
       start = B.tmp();
@@ -1296,7 +1426,13 @@ export function emitBytesLoopVersionGuard(
       for (const term of check.terms) {
         const value = host.emitExpr(term.expr);
         if (version.guarded.has(term.key)) {
-          const tested = emitExactIntegerTest(host, value.name, GUARDED_TERM.min, GUARDED_TERM.max);
+          const tested = emitValueIntegerTest(
+            host,
+            value,
+            term.expr,
+            GUARDED_TERM.min,
+            GUARDED_TERM.max,
+          );
           conditions.push(tested.ok);
           const sum = B.tmp();
           B.line(`${sum} = ${term.sign > 0 ? "add" : "sub"} i64 ${base}, ${tested.integer}`);
@@ -1429,11 +1565,14 @@ function emitUnitsSpan(
  * `s` is not already the scan receiver, the runtime converts it to units
  * and publishes it if the loop's `span` makes that pay
  * (scr_str_scan_units_for). Also the units pointer, whether the loop is to
- * read it, and whether the published receiver is `s`. */
+ * read it, and whether the published receiver is `s`. `step` is the counted
+ * loop's counter stride, or NaN for a loop whose trip count the version does
+ * not know; the runtime weighs the loop's read rate with it. */
 function emitUnitsLength(
   host: LlvmEmitterContext,
   s: string,
   span: () => { from: string; to: string },
+  step: number,
 ): { length: string; pointer: string; taken: string; published: string } {
   const B = host.B;
   const sz = host.sizeType;
@@ -1466,7 +1605,9 @@ function emitUnitsLength(
     count = B.tmp(),
     published = B.tmp();
   const { from: first, to: bound } = span();
-  B.line(`call void @scr_str_scan_units_for(ptr ${s}, double ${first}, double ${bound})`);
+  B.line(
+    `call void @scr_str_scan_units_for(ptr ${s}, double ${first}, double ${bound}, double ${f64Lit(step)})`,
+  );
   B.br(load);
   B.startBlock(load);
   B.line(`${receiver} = load ptr, ptr @scr_str_scan`);

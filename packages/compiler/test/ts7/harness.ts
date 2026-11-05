@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import ts5 from "typescript5";
 import { ambientDtsPath, fallbackDtsPath } from "../../src/frontend/program.js";
+import { fallbackModulesNamedIn } from "../../src/frontend/dts-paths.js";
 import * as ad from "../../src/frontend/ts7/adapter.js";
 
 export { ad, ts5 };
@@ -78,7 +79,8 @@ export function buildTwoWorlds(sources: Record<string, string>, host?: ad.Ts7Hos
     writeFileSync(path, text);
     files.push(path);
   }
-  const roots = [...files, ambientDtsPath(), fallbackDtsPath()];
+  const modules = Object.values(sources).flatMap((text) => fallbackModulesNamedIn(text));
+  const roots = [...files, ambientDtsPath(), fallbackDtsPath(), ...new Set(modules)];
   const p5 = ts5.createProgram(roots, options5());
   const p7 = createProgram(roots, options7(), host);
   return {

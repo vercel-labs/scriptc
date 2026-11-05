@@ -1,0 +1,55 @@
+array-subclass-fences.ts:5:22 - error SC1090: a generic class that extends Array is not supported yet
+
+  4 | // are its own instances.
+  5 | class Bag<T> extends Array<T> {
+    |                      ^~~~~~~~
+  6 |   firstOr(fallback: T): T {
+
+array-subclass-fences.ts:12:23 - error SC1090: extending 'Base', a class that extends Array (one level of Array subclass compiles) is not supported yet
+
+  11 | class Base extends Array<number> {}
+  12 | class Derived extends Base {}
+     |                       ^~~~
+  13 | 
+
+array-subclass-fences.ts:15:3 - error SC1090: Symbol.species on a class that extends Array (its methods' results construct the class itself) is not supported yet
+
+  14 | class Speciated extends Array<number> {
+  15 |   static get [Symbol.species](): ArrayConstructor {
+     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  16 |     return Array;
+
+array-subclass-fences.ts:20:22 - error SC1090: classes that extend an Array of their own instances are not supported yet
+
+  19 | 
+  20 | class Nested extends Array<Nested | null> {}
+     |                      ^~~~~~~~~~~~~~~~~~~~
+  21 | 
+
+array-subclass-fences.ts:22:13 - error SC1090: constructing values other than classes declared in the program is not supported yet
+
+  21 | 
+  22 | console.log(new Bag<number>().firstOr(1));
+     |             ^~~~~~~~~~~~~~~~~
+  23 | console.log(new Derived().length);
+
+array-subclass-fences.ts:23:13 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+
+  22 | console.log(new Bag<number>().firstOr(1));
+  23 | console.log(new Derived().length);
+     |             ^~~~~~~~~~~~~
+  24 | console.log(new Speciated().length);
+
+array-subclass-fences.ts:24:13 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+
+  23 | console.log(new Derived().length);
+  24 | console.log(new Speciated().length);
+     |             ^~~~~~~~~~~~~~~
+  25 | console.log(new Nested().length);
+
+array-subclass-fences.ts:25:13 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+
+  24 | console.log(new Speciated().length);
+  25 | console.log(new Nested().length);
+     |             ^~~~~~~~~~~~
+  26 | 

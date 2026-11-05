@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8408-fetch-connection-reuse.ts"
+ ],
+ "diags": []
+}

@@ -26,6 +26,13 @@ export class DeferredModuleInitializers {
   /** The last scan of each function (scanOf). */
   private readonly scans = new Map<IrFunction, FunctionScan>();
 
+  /** The sizes of the deferral tables (unit-journal.ts). */
+  journalSizes(): number[] {
+    let initializers = 0;
+    for (const list of this.pending.values()) initializers += list.length;
+    return [this.pending.size, initializers, this.registryGlobals.size, this.deferredKeys.size];
+  }
+
   defer(lowerer: Lowerer, statement: ts.Statement): IrStmt | null {
     let key: string;
     if (

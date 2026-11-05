@@ -33,7 +33,7 @@ test("the Node pins agree", () => {
 });
 
 test("the crypto.constants declaration matches the baked table", () => {
-  const dts = read("packages/compiler/ambient/scriptc-node-fallback.d.ts");
+  const dts = read("packages/compiler/ambient/node-fallback/crypto.d.ts");
   const start = dts.indexOf("export interface CryptoConstants {");
   const body = dts.slice(start, dts.indexOf("\n  }\n", start));
   const declared = Object.fromEntries(
@@ -46,7 +46,7 @@ test("the crypto.constants declaration matches the baked table", () => {
 });
 
 test("the zlib.constants declaration matches the baked table", () => {
-  const dts = read("packages/compiler/ambient/scriptc-node-fallback.d.ts");
+  const dts = read("packages/compiler/ambient/node-fallback/zlib.d.ts");
   const start = dts.indexOf("export interface ZlibConstants {");
   const body = dts.slice(start, dts.indexOf("\n  }\n", start));
   const declared = Object.fromEntries(

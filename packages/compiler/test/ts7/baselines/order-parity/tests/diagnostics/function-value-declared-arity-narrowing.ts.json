@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/function-value-declared-arity-narrowing.ts"
+ ],
+ "diags": []
+}

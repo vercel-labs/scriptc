@@ -1,5 +1,6 @@
 import { expect, test, vi } from "vitest";
 import {
+  DYN,
   F64,
   NULL_T,
   STRING,
@@ -16,7 +17,11 @@ import { classMethodValue } from "./class-method-values.js";
 const loc = { file: "island.ts", start: 0, end: 1 };
 const record = (shapeId: string): IrType => ({ kind: "record", shapeId });
 const context = () =>
-  new Lowerer({ getTypeChecker: () => ({}) } as Program, { fileName: loc.file } as SourceFile, []);
+  new Lowerer(
+    { getTypeChecker: () => ({}), getImplementationSourceFiles: () => [] } as unknown as Program,
+    { fileName: loc.file } as SourceFile,
+    [],
+  );
 
 test("reuses complete copy routes without repeating discriminator planning", () => {
   const lowerer = context();
@@ -49,6 +54,25 @@ test("keeps narrowing evidence local to each conversion request", () => {
   expect(lowerer.unionRetagHelper(from, to, loc, new Set([0]))).toBeNull();
   expect(lowerer.unionRetagHelper(from, to, loc, new Set([1]))).toBe(helper);
   expect(lowerer.unionRetagHelper(from, to, loc, new Set([1, 0]))).toBe(helper);
+});
+
+test("a class route checks the stored base arm before viewing the subclass", () => {
+  const lowerer = context();
+  const animal: IrType & { kind: "object" } = { kind: "object", className: "Animal" };
+  const dog: IrType & { kind: "object" } = { kind: "object", className: "Dog" };
+  const from = lowerer.unions.intern([animal, F64]);
+  const to = lowerer.unions.intern([dog, F64]);
+  const routes = new Map([
+    [lowerer.armTag(from, animal), [{ tag: lowerer.armTag(to, dog), arm: dog }]],
+  ]);
+  const helper = lowerer.unionRetagHelper(from, to, loc, undefined, routes);
+  expect(helper).not.toBeNull();
+  const body = JSON.stringify(lowerer.liftedFns.find((fn) => fn.name === helper)?.body);
+  expect(body).toContain('"kind":"instanceOf"');
+  expect(body).toContain('"kind":"downcast"');
+  expect(lowerer.unionRetagHelper(from, to, loc, undefined, routes)).toBe(helper);
+  // Without the route the base arm has no destination and the plan declines.
+  expect(lowerer.unionRetagHelper(from, to, loc)).toBeNull();
 });
 
 test("replans after a recursive union gains its final arms", () => {
@@ -275,4 +299,72 @@ test("stdlib provenance is cached by symbol identity, including merged and shado
     expect(lowerer.isStdlibSymbol(undefined)).toBe(false);
   }
   expect(declarationReads).toBe(2);
+});
+
+/** A credentials-shaped record pair: the source declares every target
+ * field plus `type`, both carry an `unknown` index signature. */
+function credentialPair(lowerer: Lowerer): {
+  source: IrType;
+  target: IrType;
+  sourceId: string;
+  targetId: string;
+} {
+  const sourceId = lowerer.shapes.intern(
+    [
+      { name: "access", type: STRING },
+      { name: "expires", type: F64 },
+      { name: "refresh", type: STRING },
+      { name: "type", type: STRING },
+    ],
+    false,
+    DYN,
+    ["refresh", "access", "expires", "type"],
+  );
+  const targetId = lowerer.shapes.intern(
+    [
+      { name: "access", type: STRING },
+      { name: "expires", type: F64 },
+      { name: "refresh", type: STRING },
+    ],
+    false,
+    DYN,
+  );
+  return { source: record(sourceId), target: record(targetId), sourceId, targetId };
+}
+
+test("an index-signature record destination takes the overflow capture reshape", () => {
+  const lowerer = context();
+  const { source, target } = credentialPair(lowerer);
+  expect(lowerer.widthLiftPlan(source, target)).toEqual({ how: "ovf" });
+  // A required destination field the source does not declare has no
+  // fresh-record default: the reshape declines.
+  const required = record(
+    lowerer.shapes.intern(
+      [
+        { name: "access", type: STRING },
+        { name: "scope", type: STRING },
+      ],
+      false,
+      DYN,
+    ),
+  );
+  expect(lowerer.widthLiftPlan(source, required)).toBeNull();
+});
+
+test("a union record arm routes into an index-signature arm by overflow capture", () => {
+  const lowerer = context();
+  const { source, target, sourceId, targetId } = credentialPair(lowerer);
+  const from = lowerer.unions.intern([source, UNDEFINED_T]);
+  const to = lowerer.unions.intern([target, UNDEFINED_T]);
+  const helper = lowerer.unionRetagHelper(from, to, loc);
+  expect(helper).not.toBeNull();
+  const capture = lowerer.valueHelpers.get(`ovf:${sourceId}:${targetId}`);
+  expect(capture).toBeDefined();
+  // The retag helper applies the capture to the record arm and keeps the
+  // unit arm's tag.
+  expect(JSON.stringify(lowerer.liftedFns.find((fn) => fn.name === helper)?.body)).toContain(
+    capture!,
+  );
+  expect(lowerer.unionRetagHelper(from, to, loc)).toBe(helper);
+  expect(lowerer.liftedFns.filter((fn) => fn.name === capture)).toHaveLength(1);
 });

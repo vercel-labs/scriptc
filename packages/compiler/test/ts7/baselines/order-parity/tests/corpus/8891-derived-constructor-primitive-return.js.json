@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8891-derived-constructor-primitive-return.js"
+ ],
+ "diags": []
+}

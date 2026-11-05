@@ -1290,27 +1290,68 @@ function lowerAssertEqual(
           ?.arms.every((arm) => instanceType(arm) || isUnitType(arm)) ??
           false))) &&
     lowerer.dynConvertible(e.type);
-  if (a.type.kind === "dyn" || b.type.kind === "dyn" || (instance(a) && instance(b))) {
+  // A union under the strict pair, against a side that holds only
+  // primitives, null or undefined: both sides cross into the checked-dynamic
+  // tree. A composite arm crosses as a copy, which is honest here because
+  // no primitive is SameValue to an object; its failure message renders the
+  // copy as Node renders the value.
+  const primitive = (t: IrType): boolean =>
+    t.kind === "f64" ||
+    t.kind === "string" ||
+    t.kind === "bool" ||
+    t.kind === "bigint" ||
+    isUnitType(t) ||
+    (t.kind === "union" && (lowerer.unions.get(t.unionId)?.arms.every(primitive) ?? false));
+  const convertibleArms = (t: IrType): boolean =>
+    t.kind === "union" &&
+    lowerer.dynConvertible(t) &&
+    !typeReachesCycle(lowerer, t) &&
+    !typeReachesFunction(lowerer, t) &&
+    (lowerer.unions.get(t.unionId)?.arms.every((arm) => arm.kind !== "bytes") ?? false);
+  // Unions whose arms cannot cross (a nullable stream handle) keep the
+  // paths below.
+  const unionAgainstPrimitive =
+    !deep &&
+    ((convertibleArms(a.type) && primitive(b.type)) ||
+      (convertibleArms(b.type) && primitive(a.type)));
+  // A nullable number, string or boolean (`number | null`) against a
+  // scalar or null/undefined: under the strict pair each arm crosses by
+  // value, so the checked-dynamic SameValue compare answers, and renders
+  // its failure message, as Node does.
+  const strictArm = (t: IrType): boolean =>
+    t.kind === "f64" || t.kind === "string" || t.kind === "bool" || isUnitType(t);
+  const strictOperand = (e: IrExpr): boolean =>
+    !deep &&
+    (e.kind === "unitLit" ||
+      strictArm(e.type) ||
+      (e.type.kind === "union" &&
+        (lowerer.unions.get(e.type.unionId)?.arms.every(strictArm) ?? false))) &&
+    lowerer.dynConvertible(e.type);
+  const nullable = (e: IrExpr): boolean => e.type.kind === "union" || isUnitType(e.type);
+  const strictNullable = (nullable(a) || nullable(b)) && strictOperand(a) && strictOperand(b);
+  if (
+    a.type.kind === "dyn" ||
+    b.type.kind === "dyn" ||
+    a.type.kind === "moduleNs" ||
+    b.type.kind === "moduleNs" ||
+    (instance(a) && instance(b)) ||
+    unionAgainstPrimitive ||
+    strictNullable
+  ) {
     const box = (e: IrExpr, node: ts.Expression): IrExpr => {
       if (e.type.kind === "dyn") return e;
+      // A builtin module namespace crosses as its module object, whose
+      // identity is the module's (`assert.strictEqual(path, path.posix)`).
+      if (e.type.kind === "moduleNs") {
+        const value = lowerer.coerceToExpected(e, DYN);
+        if (value.type.kind === "dyn") return value;
+      }
       const k = e.type.kind;
       const ok =
         e.kind === "unitLit" ||
-        k === "f64" ||
-        k === "string" ||
-        k === "bool" ||
-        // A union of scalars and units crosses by value, like its arms.
-        (e.type.kind === "union" &&
-          (lowerer.unions
-            .get(e.type.unionId)
-            ?.arms.every(
-              (arm) =>
-                arm.kind === "f64" ||
-                arm.kind === "string" ||
-                arm.kind === "bool" ||
-                isUnitType(arm),
-            ) ??
-            false)) ||
+        (unionAgainstPrimitive && convertibleArms(e.type)) ||
+        // Scalars, and unions of scalars and units, cross by value.
+        primitive(e.type) ||
         (k === "func" && lowerer.dynConvertible(e.type)) ||
         // Runtime handles cross by REFERENCE (identity preserved), so the
         // strict compare is honest: assert.strictEqual(this, server) —
@@ -1327,9 +1368,14 @@ function lowerAssertEqual(
         // re-encoding and losing identity (SEMANTICS.md).
         (k === "object" && e.type.kind === "object" && e.type.className === "%Error") ||
         instance(e) ||
+        strictOperand(e) ||
         // A symbol crosses as itself, so strict compares are identity.
         (!deep && k === "symbol") ||
         (deep && k !== "bytes" && k !== "object" && lowerer.dynConvertible(e.type)) ||
+        // A typed array whose constructor the static type names crosses
+        // with its Buffer-or-Uint8Array brand, which the runtime's deep
+        // walk compares as Node compares prototypes.
+        (deep && k === "bytes" && bytesBrandOf(lowerer, node) !== null) ||
         // Under skipPrototype the prototype a class instance or Buffer
         // brand would carry is not compared.
         (skipPrototype && lowerer.dynConvertible(e.type));
@@ -1338,7 +1384,7 @@ function lowerAssertEqual(
           !deep && (k === "record" || k === "array" || k === "map" || k === "set" || k === "union")
             ? "strictEqual on objects is reference equality, which does not survive the unknown boundary (values copy when they cross) — deepStrictEqual compares structure, or narrow the unknown side first"
             : k === "bytes"
-              ? "the unknown boundary cannot carry the Buffer-vs-Uint8Array brand Node compares — narrow the unknown side to a typed array and compare those"
+              ? "Node compares prototypes (a Buffer is never deep-equal to a plain Uint8Array), and the static type here does not name the typed array's constructor — annotate it (Buffer, Uint8Array, ...)"
               : "the static side must convert into the checked-dynamic tree (numbers, strings, booleans, null/undefined, boxable functions, or JSON-safe structures under the deep forms) — narrow the unknown side instead";
         lowerer.noLowering(
           `${surface} of 'unknown' and '${lowerer.fmt(e.type)}' values`,
@@ -1456,6 +1502,85 @@ function lowerAssertEqual(
       kind: "libCall",
       fn: "assert.refEqFn",
       args: [a, b, boolLit(negated, loc), msg, hasMsg],
+      type: VOID,
+      loc,
+    };
+  }
+  // notStrictEqual of a nullable value whose other arms do not convert
+  // (`child.stdin`, a stream or null) against null or undefined fails only
+  // when the value is that unit, and the failure message renders only the
+  // unit. The value's tag test stands in for it: the unit when it matches,
+  // `false` otherwise, which the unit never equals. A union without that
+  // unit arm never equals it.
+  if (!deep && negated) {
+    const unitSide = isUnitType(a.type) ? a : isUnitType(b.type) ? b : null;
+    const other = unitSide === a ? b : a;
+    if (unitSide !== null && other.type.kind === "union") {
+      const tag = lowerer.armTag(other.type.unionId, unitSide.type);
+      const unit = unitSide.type.kind === "nullT" ? "null" : "undefined";
+      const unequal: IrExpr = { kind: "dynFrom", value: boolLit(false, loc), type: DYN, loc };
+      const tested: IrExpr =
+        tag < 0
+          ? {
+              kind: "seqExpr",
+              stmts: [{ kind: "exprStmt", expr: other, loc }],
+              result: unequal,
+              type: DYN,
+              loc,
+            }
+          : {
+              kind: "ternary",
+              cond: {
+                kind: "unionIsTag",
+                unionId: other.type.unionId,
+                tag,
+                negated: false,
+                value: other,
+                type: BOOL,
+                loc,
+              },
+              then: {
+                kind: "dynFrom",
+                value: { kind: "unitLit", unit, type: unitSide.type, loc },
+                type: DYN,
+                loc,
+              },
+              else_: unequal,
+              type: DYN,
+              loc,
+            };
+      const unitDyn: IrExpr = { kind: "dynFrom", value: unitSide, type: DYN, loc: unitSide.loc };
+      return {
+        kind: "libCall",
+        fn: "assert.eqDyn",
+        args: [
+          unitSide === a ? unitDyn : tested,
+          unitSide === a ? tested : unitDyn,
+          boolLit(true, loc),
+          boolLit(false, loc),
+          msg,
+          hasMsg,
+        ],
+        type: VOID,
+        loc,
+      };
+    }
+  }
+  // Scalars and unions of scalars and units of different static types (a
+  // `string | undefined` result against a string): both cross by value, so
+  // SameValue over the two checked-dynamic values is the strict compare.
+  if (!deep && primitive(a.type) && primitive(b.type)) {
+    return {
+      kind: "libCall",
+      fn: "assert.eqDyn",
+      args: [
+        { kind: "dynFrom", value: a, type: DYN, loc: a.loc },
+        { kind: "dynFrom", value: b, type: DYN, loc: b.loc },
+        boolLit(negated, loc),
+        boolLit(false, loc),
+        msg,
+        hasMsg,
+      ],
       type: VOID,
       loc,
     };
@@ -1804,14 +1929,18 @@ function classifyThrowsExpected(
   // An error INSTANCE (`assert.rejects(p, expectedError)` — the
   // tracingChannel suite's shape): the value crosses as a dyn error and
   // the runtime compares per Node's expectsError key walk. A
-  // checked-dynamic expected rides directly; a static %Error boxes.
+  // checked-dynamic expected rides directly; a static Error or subclass
+  // instance boxes.
   // An untyped JavaScript value (a parameter) too: a function there is
   // checked at run time (assertThrowsHelper).
   if (expectedT?.kind === "dyn" || expectedT === null) {
     const value = lowerer.lowerExpr(node);
     if (value.type.kind === "dyn") return { form: "errValue", value };
   }
-  if (expectedT?.kind === "object" && expectedT.className === "%Error") {
+  if (
+    expectedT?.kind === "object" &&
+    (expectedT.className === "%Error" || lowerer.isSubclassOf(expectedT.className, "%Error"))
+  ) {
     const value = lowerer.lowerExpr(node);
     if (value.type.kind === "object") {
       return { form: "errValue", value: { kind: "dynFrom", value, type: DYN, loc } };
@@ -2429,6 +2558,7 @@ function assertThrowsHelper(
             varRef("ev.0", DYN, loc),
             m(),
             hm(),
+            boolLit(mode === "rejects", loc),
           ]),
           doReturn,
         ];

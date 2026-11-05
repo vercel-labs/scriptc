@@ -24,7 +24,10 @@ const cacheDir = join(repoRoot, "node_modules/.cache/scriptc-tests");
 const sanitize = process.env["SCRIPTC_SAN"] === "1";
 /* Sanitized builds of the published Effect pilots alone take 290 to 330 s on a 16-vCPU host, most of it in
  * the sanitized native link: near or past the suite's 300 s default. */
-const effectBuildTimeout = sanitize ? 900_000 : undefined;
+// The shape overlay (SCRIPTC_SHAPE_OVERLAY=1, validation runs) analyzes the
+// program and may lower it a second time without the overlay.
+const effectBuildTimeout =
+  sanitize || process.env["SCRIPTC_SHAPE_OVERLAY"] === "1" ? 900_000 : undefined;
 // Measured milliseconds per test on a CI runner (scripts/ci-test-costs.mjs).
 const testCosts = (
   JSON.parse(readFileSync(new URL("./npm-static-costs.json", import.meta.url), "utf8")) as {
@@ -182,6 +185,84 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
         expect(comparableStderr(native.stderr)).toEqual(reference.stderr);
         expect(native.exitCode).toEqual(reference.exitCode);
       }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // A bare string that merely names a package is not a load. The type-only
+  // reachability pass and the reexport planner over-approximate calls (any
+  // call with a leading string literal is an edge), so a package named only
+  // by an ordinary function argument reached npm-static classification
+  // through them: the package was reported as "its entry … did not join the
+  // type-checked program" and islanded or refused, and whether that pass ran
+  // depends on the program the island rounds hand it, so the same build
+  // classified the package differently run to run.
+  test("a package named only by a call argument is not classified", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scriptc-named-only-"));
+    try {
+      for (const [name, value] of [
+        ["loaded-pkg", "loaded"],
+        ["named-only-pkg", "named-only"],
+      ] as const) {
+        const pkg = join(dir, "node_modules", name);
+        mkdirSync(pkg, { recursive: true });
+        writeFileSync(
+          join(pkg, "package.json"),
+          JSON.stringify({ name, version: "1.0.0", type: "module", main: "./index.js" }),
+        );
+        writeFileSync(join(pkg, "index.js"), `export const value = ${JSON.stringify(value)};`);
+        writeFileSync(join(pkg, "index.d.ts"), "export declare const value: string;");
+      }
+      writeFileSync(join(dir, "types.ts"), "export interface Label { text: string }");
+      const entry = join(dir, "main.ts");
+      writeFileSync(
+        entry,
+        [
+          'import { value } from "loaded-pkg";',
+          'import type { Label } from "./types.js";',
+          "function describeArgument(name: string): string {",
+          "\treturn `got ${name}`;",
+          "}",
+          'const label: Label = { text: describeArgument("named-only-pkg") };',
+          "console.log(value, label.text);",
+        ].join("\n"),
+      );
+      const npmStatic = ["loaded-pkg", "named-only-pkg"];
+      // Both packages are plain static modules: the second is never loaded,
+      // so its classification may not depend on how the call above is read.
+      expect(
+        analyze(entry, { npmStatic }).coverage.npmStatic.toSorted((a, b) =>
+          a.package.localeCompare(b.package),
+        ),
+      ).toEqual([
+        { package: "loaded-pkg", status: "static" },
+        { package: "named-only-pkg", status: "static" },
+      ]);
+      const outDir = join(dir, "out");
+      const result = await compile(entry, {
+        backend: "llvm",
+        npmStatic,
+        sanitize,
+        outDir,
+        outPath: join(outDir, "program"),
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok)
+        throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+      expect(
+        (result.warnings ?? []).filter(
+          (d) => d.code === "SC8001" || /named-only-pkg/.test(d.message),
+        ),
+      ).toEqual([]);
+      expect(result.islands?.packages ?? []).toEqual([]);
+      const [reference, native] = await Promise.all([
+        runBinary(process.execPath, [entry]),
+        runBinary(result.binaryPath, []),
+      ]);
+      expect(comparableStderr(native.stderr)).toEqual(reference.stderr);
+      expect(native.stdout).toEqual(reference.stdout);
+      expect(native.exitCode).toEqual(reference.exitCode);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -632,11 +713,18 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     }
   });
 
-  test("a word segmenter in a package constructs, and its segment() throws SC2020", async () => {
+  // The package builds its word segmenter at module load. Word segmentation
+  // lowers to ICU now, so nothing fences: the package compiles into the
+  // program itself (no Node island) and splits words as Node does. The ICU
+  // supporting units live in the linux-x64 runtime pack only in this slice,
+  // so other machines check the analysis and stop before the link.
+  test("a word segmenter a package builds at load compiles statically", async () => {
     const entry = join(pilotRoot, "word-segments-cli.ts");
     const { coverage } = analyze(entry, { npmStatic: "auto" });
     expect(coverage.npmStatic).toEqual([{ package: "word-segments", status: "static" }]);
     expect(coverage.diagnostics).toHaveLength(0);
+    expect(coverage.runtimeFences ?? []).toHaveLength(0);
+    if (process.platform !== "linux" || process.arch !== "x64") return;
     const outDir = join(cacheDir, "word-segments", sanitize ? "san" : "plain");
     const result = await compile(entry, {
       backend: "llvm",
@@ -648,9 +736,7 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     if (!result.ok)
       throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
     const nativeRes = await runBinary(result.binaryPath, []);
-    expect(nativeRes.stdout.toString()).toMatch(
-      /^SC2020: Intl\.Segmenter segmentation with granularity 'word' is not supported yet \[SC2020 at .*index\.js:1\]\n$/,
-    );
+    expect(nativeRes.stdout.toString()).toBe("two| |words\n");
     expect(nativeRes.exitCode).toBe(0);
   });
 

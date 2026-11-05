@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/spread-union-declared-merge.ts"
+ ],
+ "diags": []
+}

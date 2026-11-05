@@ -205,14 +205,26 @@ export function packageShimEntries(): string[] {
 let unloadedPackages: ReadonlySet<string> = new Set();
 
 /** Reads the project's package-shim configuration: the `scriptc.packages`
- * entries marked "unloaded" in the entry's nearest package.json
- * (project-config.ts validates the rest). Called once per program load. */
+ * entries marked "unloaded", and those with `"shapes": false`, in the
+ * entry's nearest package.json (project-config.ts validates the rest).
+ * Called once per program load. */
 export function configurePackageShims(entryPath: string): void {
   const packages = new Set<string>();
+  const noShapes = new Set<string>();
   for (const [name, setting] of readProjectConfig(entryPath).packages) {
     if (setting.unloaded) packages.add(name);
+    if (!setting.shapes) noShapes.add(name);
   }
   unloadedPackages = packages;
+  shapelessPackages = noShapes;
+}
+
+let shapelessPackages: ReadonlySet<string> = new Set();
+
+/** Packages the project compiles without shape inference's overlay
+ * (`"scriptc": { "packages": { "<name>": { "shapes": false } } }`). */
+export function isShapelessPackage(name: string): boolean {
+  return shapelessPackages.has(name);
 }
 
 /** True when `--npm-static` leaves the package `name` out of its package

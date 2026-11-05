@@ -12,6 +12,7 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
+import type { NativeProfileMatch } from "../backend/native-profile.js";
 import type { FrontendInputSnapshot } from "../frontend/input-tracker.js";
 import { frontendInputsStillMatch, validFrontendInputSnapshot } from "../frontend/input-tracker.js";
 import { compilerReleaseVersion } from "../library/sidecar.js";
@@ -19,6 +20,8 @@ import { nativeArtifactDependenciesStillMatch } from "../backend/native/artifact
 import { type NativeArtifactDependency } from "../backend/native/contracts.js";
 import { optimizationKeyParts } from "../backend/optimization.js";
 import { type TargetCpu, cpuDispatchKeyParts, targetCpuKeyParts } from "../backend/target-cpu.js";
+import { laneShapesFromEnvironment, laneShapesKeyParts } from "../ir/lane-plans.js";
+import { nativeBuildPartitions } from "../backend/native-codegen-core.js";
 import { privateSiblingPath } from "../backend/build-cache.js";
 import type { CompilerImplementationDependency } from "../library/compiler-self-identity.js";
 import {
@@ -53,18 +56,38 @@ export interface EarlyExecutableNativeFeatures {
   optimization?: "dev" | "speed";
   workers?: boolean;
   youngNursery?: boolean;
+  /** `--large-pages` links scr_text_pages.c. */
+  largePages?: boolean;
   regex: boolean;
   copying: boolean;
   textDecoderLegacy: boolean;
+  bigintBytes: boolean;
   fileHandle: boolean;
   fetch: boolean;
   eventTarget?: boolean;
   wasm?: boolean;
   warningReplace?: boolean;
+  jsObjectModel?: boolean;
+  /** The buffer views registry: scr_js_buffers.c and mutable bytes headers. */
+  mutableBuffers: boolean;
   stdioExtended?: boolean;
+  fsFlags?: boolean;
+  strdecDyn?: boolean;
+  processExtras?: boolean;
+  /** Error-taking write completion callbacks: SCR_STREAM_WRITE_ERRORS. */
+  streamWriteErrors?: boolean;
+  /** The process output write slot: SCR_STDIO_WRITE_SLOT. */
+  stdioWriteSlot?: boolean;
+  /** The spawnSync result's `.error` errnoException fields: SCR_CHILD_ERR_FIELDS. */
+  childErrorFields?: boolean;
+  nodeIsland?: boolean;
   moduleNamespace?: boolean;
+  moduleNamespaceDyn?: boolean;
+  primitiveWrapper?: boolean;
+  iteratorProto?: boolean;
   zlib: boolean;
   brotli?: boolean;
+  zstd?: boolean;
   assert: boolean;
   inspect: boolean;
   dynInvoke: boolean;
@@ -73,11 +96,17 @@ export interface EarlyExecutableNativeFeatures {
   dynTier?: boolean;
   streamDyn?: boolean;
   handleProps?: boolean;
+  childLifecycle?: boolean;
+  childOptionExt?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
   dynForAwait?: boolean;
+  dynIntegrityQueries?: boolean;
+  genBind?: boolean;
   eventsOnceSignal?: boolean;
   mime?: boolean;
+  webStreams?: boolean;
+  abortSignal?: boolean;
   utilTiming?: boolean;
   dynBuffer?: boolean;
   builtinValues?: boolean;
@@ -86,11 +115,30 @@ export interface EarlyExecutableNativeFeatures {
   emitter: boolean;
   symbol: boolean;
   bigint: boolean;
+  /** BigIntStats member reads: scr_stats_bigint.c. Absent (false) otherwise. */
+  bigstats?: boolean;
+  /** A standard library prototype object read as a value in a JavaScript
+   * source: scr_dyn_stdlib_prototype.c. */
+  stdlibPrototypeValue?: boolean;
+  /** DataView.prototype read as a value in a JavaScript source:
+   * scr_data_view_proto.c. */
+  dataViewPrototypeValue?: boolean;
+  /** Promise statics with a foreign constructor: scr_js_promise_generic.c. */
+  promiseGeneric?: boolean;
+  /** A computed read of the global object, or `… in globalThis`:
+   * scr_global_host_absent.c. */
+  hostAbsentGlobals?: boolean;
   searchParams: boolean;
   qs: boolean;
   utilPromisify: boolean;
   dynBuiltinClass: boolean;
   dynBuiltinStream: boolean;
+  /** Array.prototype methods over array-like receivers: scr_dyn_array_like.c. */
+  arrayLikeDispatch?: boolean;
+  /** A builtin prototype method (String's trim family, RegExp's exec/test/
+   * toString) as a function value:
+   * scr_dyn_builtin_methods.c. */
+  builtinMethodValue?: boolean;
   parseArgs: boolean;
   stream: boolean;
   net: boolean;
@@ -101,6 +149,7 @@ export interface EarlyExecutableNativeFeatures {
   dgramDyn: boolean;
   textCodecDyn: boolean;
   watch: boolean;
+  watchFile: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;
   tls: boolean;
@@ -113,6 +162,8 @@ export interface EarlyExecutableNativeFeatures {
   perfLoop: boolean;
   tlsCa: boolean;
   webcrypto: boolean;
+  /** Intl over ICU (scr_intl.c, the ICU archive and its data file). */
+  intl?: boolean;
 }
 
 interface EarlyExecutableCacheStamp {
@@ -129,6 +180,19 @@ interface EarlyExecutableCacheStamp {
   native: EarlyExecutableNativeFeatures;
   /** The build's performance warnings (SC61xx), which a cache hit repeats. */
   performance?: ScrDiagnostic[];
+  /** The Node islands the build ran, which a cache hit reports again. */
+  islands?: { packages: string[]; modules: string[] };
+  /** Programs that call into Node.js: the libnode pack identity the build
+   * recorded (EarlyExecutableCacheOptions.libnodeIdentity). */
+  libnode?: string;
+  /** How a --profile-use build's profile matched, which a cache hit reports. */
+  profileMatch?: NativeProfileMatch;
+  /** The partitions the executable was linked from (native-codegen-core.ts
+   * nativeBuildPartitions; one for a module small enough to stay whole, and
+   * left out of a link of a single native object). Part of the entry rather
+   * than of the key: the count follows from the cached translation unit, so a
+   * hit can derive it again. */
+  partitions?: number;
   integrity: string;
 }
 
@@ -143,10 +207,26 @@ export interface EarlyExecutableCacheOptions {
   optimization?: "dev" | "speed";
   /** Omitted retains the unstripped executable's historical cache key. */
   strip?: true;
+  /** Omitted unless --static is set. */
+  staticLink?: true;
   /** Omitted for the default Windows console subsystem. */
   windowsSubsystem?: "gui";
   /** Omitted unless --detached-exit is set. */
   detachedExit?: true;
+  /** Omitted unless --stdout-buffering is set. */
+  stdoutBuffering?: true;
+  /** The identity of the libnode pack a program that calls into Node.js
+   * records (node-islands/libnode.ts libnodeCacheKey), or undefined when the
+   * build names none. Not part of the key: an entry of a program that calls
+   * into Node records it, and a hit requires the same identity, so the pack
+   * settings never change the key of a program that does not. */
+  libnodeIdentity?: () => string | undefined;
+  /** Omitted unless --large-pages is set. */
+  largePages?: true;
+  /** Omitted unless the build links without huge text (CompileOptions.hugeText). */
+  noHugeText?: true;
+  /** Omitted unless --exceptions=rare is set. */
+  exceptions?: "rare";
   /** Omitted for the x86-64 baseline (`--target-cpu`). */
   targetCpu?: TargetCpu;
   /** Omitted for builds without runtime CPU dispatch. */
@@ -154,14 +234,34 @@ export interface EarlyExecutableCacheOptions {
   /** Omitted without --profile-generate/--profile-use; otherwise the
    * pattern, or the digest of the profile's bytes. */
   profile?: string;
+  /** Omitted without a function layout; otherwise the digest of its bytes. */
+  functionLayout?: string;
   /** Omitted for the default tsgo checker; with SCRIPTC_CHECKER=tsc-ts, the
    * tsc-ts executable's file identity. */
   checker?: string;
   /** Omitted unless SCRIPTC_YOUNG_NURSERY=1 (backend/young-nursery.ts). */
   youngNursery?: true;
+  /** Omitted unless SCRIPTC_HEAP_CENSUS is set (backend/llvm/heap-census.ts). */
+  heapCensus?: true;
   npmStatic: readonly string[] | "auto" | null;
   /** Omitted without --define; otherwise its values as JSON. */
   define?: string;
+  /** Omitted for the default Node island policy; else nodeIslandOptionsKey. */
+  nodeIslands?: string;
+  /** Omitted unless shape inference's overlay compiles the packages
+   * (frontend/shape-inference). */
+  shapeOverlay?: true;
+  /** Omitted unless shape inference types the program's own JavaScript
+   * (SCRIPTC_INFER_JS=1, frontend/js-inference.ts). */
+  jsInference?: true;
+  /** Omitted unless SCRIPTC_DEBUG_JS_IC_WAYS asks for an attribution build,
+   * which emits a different number of inline cache ways
+   * (backend/llvm/js-ic.ts). */
+  jsIcWays?: 0 | 1 | 2;
+  /** Omitted unless computed-access sites index integral numbers without
+   * forming the property key (on by default; SCRIPTC_DYN_INDEX_FASTPATH=0
+   * opts out) (backend/llvm/js-ic.ts). */
+  dynIndexFastpath?: true;
   /** Raw manifest identity: path and bytes. Native archives remain under the
    * stricter native cache's independent dependency validation. */
   ffiProfile: { path: string; bytes: Uint8Array } | null;
@@ -215,16 +315,44 @@ export interface EarlyExecutableCacheHit {
   frontend: FrontendInputSnapshot;
   /** The performance warnings the build reported (SC61xx), repeated on a hit. */
   performance?: ScrDiagnostic[];
+  /** The Node islands the build ran, repeated on a hit. */
+  islands?: { packages: string[]; modules: string[] };
+  /** How a --profile-use build's profile matched, reported again on a hit. */
+  profileMatch?: NativeProfileMatch;
 }
 
 export interface EarlyExecutableCachePublish extends EarlyExecutableCacheHit {
   nativeDependencies?: NativeArtifactDependency[];
+  /** The partitions the native helper compiled, when the build divided the
+   * module; omitted when it linked one object. */
+  partitions?: number;
+}
+
+function isIslands(value: unknown): value is { packages: string[]; modules: string[] } {
+  if (typeof value !== "object" || value === null) return false;
+  const islands = value as Record<string, unknown>;
+  return (
+    Array.isArray(islands.packages) &&
+    Array.isArray(islands.modules) &&
+    [...islands.packages, ...islands.modules].every((item) => typeof item === "string")
+  );
+}
+
+function isProfileMatch(value: unknown): value is NativeProfileMatch {
+  if (typeof value !== "object" || value === null) return false;
+  const match = value as Record<string, unknown>;
+  return ["annotated", "mismatched", "missing", "recovered", "unknownPartitions"].every((key) => {
+    const count = match[key];
+    return typeof count === "number" && Number.isInteger(count) && count >= 0;
+  });
 }
 
 const BOOLEAN_NATIVE_KEYS = [
   "regex",
   "copying",
   "textDecoderLegacy",
+  "bigintBytes",
+  "mutableBuffers",
   "fileHandle",
   "fetch",
   "zlib",
@@ -252,6 +380,7 @@ const BOOLEAN_NATIVE_KEYS = [
   "dgramDyn",
   "textCodecDyn",
   "watch",
+  "watchFile",
   "foreignFfi",
   "nodeTest",
   "tls",
@@ -294,13 +423,26 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
     options.backend,
     ...optimizationKeyParts(options.optimization),
     ...(options.strip ? ["strip"] : []),
+    ...(options.staticLink ? ["static-link"] : []),
     ...(options.windowsSubsystem === "gui" ? ["windows-subsystem-gui"] : []),
     ...(options.detachedExit ? ["detached-exit"] : []),
+    ...(options.stdoutBuffering ? ["stdout-buffering"] : []),
+    ...(options.largePages ? ["large-pages"] : []),
+    ...(options.noHugeText ? ["no-huge-text"] : []),
+    ...(options.exceptions === "rare" ? ["exceptions-rare"] : []),
     ...targetCpuKeyParts(options.targetCpu),
     ...cpuDispatchKeyParts(options.cpuDispatch),
+    ...laneShapesKeyParts(laneShapesFromEnvironment()),
     ...(options.profile !== undefined ? [options.profile] : []),
+    ...(options.functionLayout !== undefined ? [`layout:${options.functionLayout}`] : []),
     ...(options.checker !== undefined ? [`checker:${options.checker}`] : []),
     ...(options.youngNursery ? ["young-nursery"] : []),
+    ...(options.nodeIslands !== undefined ? [`node-islands:${options.nodeIslands}`] : []),
+    ...(options.heapCensus ? ["heap-census"] : []),
+    ...(options.shapeOverlay ? ["shape-overlay"] : []),
+    ...(options.jsInference ? ["js-inference"] : []),
+    ...(options.jsIcWays !== undefined ? [`js-ic-ways:${options.jsIcWays}`] : []),
+    ...(options.dynIndexFastpath ? ["dyn-index-fastpath"] : []),
     options.npmStatic === null
       ? "<npm-static-off>"
       : options.npmStatic === "auto"
@@ -339,13 +481,26 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
     .update("\0");
   for (const part of optimizationKeyParts(options.optimization)) hash.update(`${part}\0`);
   if (options.strip) hash.update("strip\0");
+  if (options.staticLink) hash.update("static-link\0");
   if (options.windowsSubsystem === "gui") hash.update("windows-subsystem-gui\0");
   if (options.detachedExit) hash.update("detached-exit\0");
+  if (options.stdoutBuffering) hash.update("stdout-buffering\0");
+  if (options.largePages) hash.update("large-pages\0");
+  if (options.noHugeText) hash.update("no-huge-text\0");
+  if (options.exceptions === "rare") hash.update("exceptions-rare\0");
   for (const part of targetCpuKeyParts(options.targetCpu)) hash.update(`${part}\0`);
   for (const part of cpuDispatchKeyParts(options.cpuDispatch)) hash.update(`${part}\0`);
+  for (const part of laneShapesKeyParts(laneShapesFromEnvironment())) hash.update(`${part}\0`);
   if (options.profile !== undefined) hash.update(`${options.profile}\0`);
+  if (options.functionLayout !== undefined) hash.update(`layout:${options.functionLayout}\0`);
   if (options.checker !== undefined) hash.update(`checker:${options.checker}\0`);
   if (options.youngNursery) hash.update("young-nursery\0");
+  if (options.nodeIslands !== undefined) hash.update(`node-islands:${options.nodeIslands}\0`);
+  if (options.heapCensus) hash.update("heap-census\0");
+  if (options.shapeOverlay) hash.update("shape-overlay\0");
+  if (options.jsInference) hash.update("js-inference\0");
+  if (options.jsIcWays !== undefined) hash.update(`js-ic-ways:${options.jsIcWays}\0`);
+  if (options.dynIndexFastpath) hash.update("dyn-index-fastpath\0");
   hash
     .update(
       options.npmStatic === null
@@ -549,8 +704,12 @@ async function readExecutableCache(
           (stamp.files.debugSymbols !== undefined)) ||
       (stamp.files.executable === null) !== (stamp.nativeDependencies === null) ||
       (stamp.nativeDependencies !== null && !Array.isArray(stamp.nativeDependencies)) ||
+      (stamp.partitions !== undefined &&
+        (!Number.isInteger(stamp.partitions) || stamp.partitions < 1)) ||
       (stamp.files.ir !== null) !== options.emitIr ||
       stampIntegrity(unsigned) !== integrity ||
+      (stamp.native.nodeIsland === true &&
+        (stamp.libnode ?? "") !== (options.libnodeIdentity?.() ?? "")) ||
       !frontendInputsStillMatch(
         validateRoute === undefined ? stamp.frontend : routedFrontendCandidate(stamp.frontend),
         executableFrontendOutputExclusions(options, stamp.native.backend),
@@ -589,6 +748,22 @@ async function readExecutableCache(
       (stamp.files.ir !== null && ir === null) ||
       (stamp.files.executable !== null && executable === null) ||
       (stamp.files.debugSymbols !== undefined && debugSymbols === null)
+    )
+      return null;
+    // A module's partition count follows from its text and, above the size
+    // that keeps it whole, the host's thread count (nativeProgramPartitions),
+    // and the executable is linked from those partitions: one built for
+    // another count is not the executable this host builds, so it is a miss.
+    // A module small enough to stay one partition gets that count on every
+    // host and keeps hitting, and so does one a --cpu-dispatch build keeps
+    // whole (nativeBuildPartitions).
+    if (
+      stamp.partitions !== undefined &&
+      stamp.partitions !==
+        nativeBuildPartitions(translationUnit.length, {
+          cpuDispatch: options.cpuDispatch === true,
+          unoptimized: options.optimization === "dev",
+        })
     )
       return null;
 
@@ -676,6 +851,8 @@ async function readExecutableCache(
       ...(Array.isArray(stamp.performance) && stamp.performance.length > 0
         ? { performance: stamp.performance }
         : {}),
+      ...(isIslands(stamp.islands) ? { islands: stamp.islands } : {}),
+      ...(isProfileMatch(stamp.profileMatch) ? { profileMatch: stamp.profileMatch } : {}),
       ...(ir === null ? {} : { irPath: paths.irPath }),
       ...(llvmSourcePath === undefined ? {} : { llvmSourcePath }),
       ...(irSourcePath === undefined ? {} : { irSourcePath }),
@@ -863,9 +1040,15 @@ export async function publishEarlyExecutableCache(
       },
       nativeDependencies: executable === null ? null : result.nativeDependencies!,
       native: result.native,
+      ...(executable !== null && result.partitions !== undefined
+        ? { partitions: result.partitions }
+        : {}),
       ...(result.performance === undefined || result.performance.length === 0
         ? {}
         : { performance: result.performance }),
+      ...(result.islands === undefined ? {} : { islands: result.islands }),
+      ...(result.native.nodeIsland === true ? { libnode: options.libnodeIdentity?.() ?? "" } : {}),
+      ...(result.profileMatch === undefined ? {} : { profileMatch: result.profileMatch }),
     };
     const stamp: EarlyExecutableCacheStamp = { ...unsigned, integrity: stampIntegrity(unsigned) };
     await writeFile(join(stage, "stamp.json"), `${JSON.stringify(stamp)}\n`, { mode: 0o600 });

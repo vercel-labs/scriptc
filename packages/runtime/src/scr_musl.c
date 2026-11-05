@@ -55,6 +55,58 @@ void arc4random_buf(void *buf, size_t n) {
  * CSPRNG shim above and must not acquire context-switching definitions. */
 #ifndef SCR_LIB
 
+#ifdef __x86_64__
+/* The libc memory and string routines of an x86_64 executable
+ * (scr_musl_mem.h). zig's libc defines these as weak symbols, which these
+ * definitions replace. A library artifact keeps the ones of the program it
+ * links into. */
+#include "scr_musl_mem.h"
+#define SCR_MUSL_LIBC __attribute__((no_builtin))
+SCR_MUSL_LIBC void *memset(void *dst, int c, size_t n) { return scr_musl_memset(dst, c, n); }
+SCR_MUSL_LIBC void *memcpy(void *__restrict dst, const void *__restrict src, size_t n) {
+  return scr_musl_memcpy(dst, src, n);
+}
+SCR_MUSL_LIBC void *memmove(void *dst, const void *src, size_t n) { return scr_musl_memmove(dst, src, n); }
+SCR_MUSL_LIBC int memcmp(const void *a, const void *b, size_t n) { return scr_musl_memcmp(a, b, n); }
+SCR_MUSL_LIBC int bcmp(const void *a, const void *b, size_t n) { return scr_musl_memcmp(a, b, n); }
+SCR_MUSL_LIBC size_t strlen(const char *s) { return scr_musl_strlen(s); }
+#endif
+
+/* String comparison and getenv of an executable (scr_musl_env.h): zig's
+ * strcmp and strncmp are weak symbols, which these definitions replace, and
+ * this getenv takes the place of musl's, which localtime_r calls for TZ on
+ * every conversion. A library artifact keeps the ones of the program it
+ * links into. */
+#include "scr_musl_env.h"
+#define SCR_MUSL_STR __attribute__((no_builtin))
+SCR_MUSL_STR int strcmp(const char *a, const char *b) { return scr_musl_strcmp(a, b); }
+SCR_MUSL_STR int strncmp(const char *a, const char *b, size_t n) { return scr_musl_strncmp(a, b, n); }
+extern char **__environ;
+SCR_MUSL_STR char *getenv(const char *name) { return scr_musl_getenv(__environ, name); }
+
+/* The malloc family of an executable (scr_musl_malloc.h). zig's libc
+ * defines these as weak symbols, which these definitions replace; its
+ * reallocarray, valloc and memalign would call its own allocator, so they
+ * are replaced too. They stay out of the bitcode programs import (noinline),
+ * so a program calls them as it calls any libc allocator. A library
+ * artifact keeps the allocator of the program it links into. */
+#include "scr_musl_malloc.h"
+#define SCR_MUSL_ALLOC __attribute__((no_builtin, noinline))
+SCR_MUSL_ALLOC void *malloc(size_t n) { return scr_musl_malloc(n); }
+SCR_MUSL_ALLOC void *calloc(size_t m, size_t n) { return scr_musl_calloc(m, n); }
+SCR_MUSL_ALLOC void *realloc(void *p, size_t n) { return scr_musl_realloc(p, n); }
+SCR_MUSL_ALLOC void *reallocarray(void *p, size_t m, size_t n) { return scr_musl_reallocarray(p, m, n); }
+SCR_MUSL_ALLOC void free(void *p) { scr_musl_free(p); }
+SCR_MUSL_ALLOC size_t malloc_usable_size(void *p) { return scr_musl_malloc_usable_size(p); }
+SCR_MUSL_ALLOC void *aligned_alloc(size_t align, size_t n) { return scr_musl_aligned_alloc(align, n); }
+SCR_MUSL_ALLOC void *memalign(size_t align, size_t n) { return scr_musl_aligned_alloc(align, n); }
+SCR_MUSL_ALLOC void *valloc(size_t n) { return scr_musl_aligned_alloc(SCR_MM_PAGE, n); }
+SCR_MUSL_ALLOC int posix_memalign(void **out, size_t align, size_t n) {
+  return scr_musl_posix_memalign(out, align, n);
+}
+/* The event loop of the calling thread is about to wait (scr_async.c). */
+void scr_musl_malloc_idle(void) { scr_mm_idle(); }
+
 /* musl exposes the POSIX ucontext types but intentionally omits these legacy
  * functions. scriptc's async/generator fibers need only user-space register
  * swaps; they never use a context to mutate the process signal mask. These are

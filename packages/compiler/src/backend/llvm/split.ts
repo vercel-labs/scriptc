@@ -104,7 +104,12 @@ function functionHeader(
   // attributes, zeroext, and varargs stay byte-exact.
   // A definition's DISubprogram cannot be attached to a declaration in a
   // different shard. Its owning definition retains the original metadata.
-  const attrs = match[5]!.replace(/\s+!dbg !\d+/g, "");
+  // A personality routine belongs to a definition too: LLVM rejects it on a
+  // declaration, which would fail every shard that calls a function with
+  // landing pads (Linux unwinding) and fall back to the single-TU compile.
+  const attrs = match[5]!
+    .replace(/\s+!dbg !\d+/g, "")
+    .replace(/\s+personality\s+ptr\s+@[-$._A-Za-z][-$.\w]*/g, "");
   const declaration = `declare ${linkage}${match[2]} ${match[3]}(${match[4]})${attrs}`.trimEnd();
   return { line, declaration, symbol, promoted };
 }

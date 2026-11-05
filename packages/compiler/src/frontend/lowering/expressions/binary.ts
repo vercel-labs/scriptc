@@ -1,4 +1,5 @@
 /* Binary operators: arithmetic, comparisons and equality, logical and nullish pairs, and string conversion for concatenation. */
+import { lowerStaticPrivateAssignment } from "../private-statics.js";
 import { keyedHelperName } from "../stable-names.js";
 import * as ts from "../../ts7/adapter.js";
 import {
@@ -8,6 +9,8 @@ import {
 } from "../undefined-index.js";
 import { cleanFuncAdaptable } from "../coercions/function-adapters.js";
 import { type Lowerer, jsFuncNameOf } from "../lowerer.js";
+import { recordMayKeepSource } from "../record-sources.js";
+import { recordStringCall } from "../record-links.js";
 import {
   BIGINT_T,
   BOOL,
@@ -37,7 +40,8 @@ import {
   dynCompoundValue,
   lowerAbsenceProbe,
   lowerDynMemberAssignment,
-  lowerOptionalNumber,
+  lowerDereferencedElementAssignment,
+  lowerOperatorNumber,
   lowerPresenceOperand,
   nullishBranches,
   operandPairs,
@@ -50,17 +54,22 @@ import { COMPOUND_ASSIGN_OPS, type CompoundOp, NARROW_FIRST } from "../surfaces.
 import { lowerElementCompoundParts } from "./element-access.js";
 import { InternalCompilerError } from "../../../errors.js";
 import { isJsSourceFile, locOf } from "../../program.js";
-import { storedClassValueType } from "../lower-classes.js";
+import { findStaticOn, storedClassValueType } from "../lower-classes.js";
 import { builtinClassKind } from "../builtins/builtin-class-dyn.js";
-import { hasRuntimeStatics } from "../class-runtime-statics.js";
+import { hasRuntimeStatics, runtimeStaticDefines } from "../class-runtime-statics.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
 import { fenceNodeModuleMutation, lowerRequireCacheHas } from "../lower-node-module.js";
 import { errorToStringCall } from "../error-methods.js";
 import { classToStringConversion, classUnionToString } from "../class-to-primitive.js";
+import {
+  genericDeclarationBehindValue,
+  noteDynamicIdentityComparison,
+  notePinnedIdentityComparison,
+} from "../generic-functions.js";
 import { isPerfEntryType, perfEntryTag } from "../builtins/performance.js";
 import { isX509Type, x509ToString } from "../builtins/x509.js";
 import { guardNullProto, nullProtoRecordShape } from "../null-prototype.js";
-import { numLit, varRef } from "../../../ir/build.js";
+import { boolLit, numLit, varRef } from "../../../ir/build.js";
 import { lowerUrlAssignment } from "../builtins/url.js";
 import { lowerClassPrototypeComputedAssignment } from "../class-prototypes.js";
 import { lowerShortCircuitAssignment } from "./nullish-assignment.js";
@@ -71,6 +80,7 @@ import { nsWritableTarget } from "../lower-namespaces.js";
 import { arrayValueStore, tryLowerBytesReadNumberEquality } from "../array-values.js";
 import { cjsExportMemberWriteGlobalOf, cjsInFileExportGlobalOf } from "../cjs-exports-object.js";
 import { lowerUnionFieldWrite } from "./union-fields.js";
+import { emptyArrayLiteralArm } from "./array-literals.js";
 import { lowerAbstractEquality } from "../abstract-equality.js";
 import { lowerInExpression } from "./relational.js";
 import { lowerDynTypeofTest, lowerErrorCodeTypeofTest } from "./typeof.js";
@@ -80,10 +90,11 @@ import {
   runtimeConstructorReceiver,
 } from "../builtins/runtime-constructor.js";
 import { tryLowerIndexedComparison } from "../indexed-comparison.js";
-import { lowerUnionEquality, tagEqualityMayMissAlias } from "../strict-equality.js";
+import { lowerUnionEquality, sameNamespace, tagEqualityMayMissAlias } from "../strict-equality.js";
 import { withUnitArm } from "../../type-mapper.js";
 import { npmStaticPackageOfPath } from "../../npm-static.js";
 import { lowerWebAssemblyTypeof } from "../builtins/webassembly.js";
+import { lowerEnvironmentIdentity } from "../builtins/environment.js";
 
 /** `v === undefined` / `v !== null` — the narrowing tests for unit-armed
  * unions. A union operand compared with a unit literal lowers to a
@@ -303,6 +314,35 @@ function lowerLooseNullCompare(
   return { kind: "boolLit", value: negated, type: BOOL, loc };
 }
 
+/** A plain value read whose storage can carry undefined while the checker
+ * types the read at its declared type: an element access on an array or a
+ * keyed record, a property name only the receiver's index signature answers,
+ * a binding or a call the runtime-optional analysis widened. Checker and
+ * analysis state only: the read is lowered once, where it is used. */
+function mayLowerAbsent(lowerer: Lowerer, node: ts.Expression): boolean {
+  let expr = node;
+  while (ts.isParenthesizedExpression(expr) || ts.isAsExpression(expr) || ts.isTypeAssertion(expr))
+    expr = expr.expression;
+  if (ts.isIdentifier(expr)) return runtimeOptionalStorageOperand(lowerer, expr) !== null;
+  if (ts.isCallExpression(expr)) return lowerer.isRuntimeOptionalOrigin(expr);
+  if (ts.isElementAccessExpression(expr)) {
+    let receiver: ts.Expression = expr.expression;
+    while (ts.isParenthesizedExpression(receiver)) receiver = receiver.expression;
+    const type = lowerer.checker.getTypeAtLocation(receiver);
+    return (
+      lowerer.checker.isArrayType(type) ||
+      lowerer.checker.isTupleType(type) ||
+      lowerer.checker.getIndexInfosOfType(type).length > 0
+    );
+  }
+  if (ts.isPropertyAccessExpression(expr)) {
+    const type = lowerer.checker.getTypeAtLocation(expr.expression);
+    if (lowerer.checker.getPropertyOfType(type, expr.name.text)) return false;
+    return lowerer.checker.getIndexInfosOfType(type).length > 0;
+  }
+  return false;
+}
+
 /** A plain value read that may be runtime-optional: an unchecked element
  * read, or a binding, member or call that carries one. Lowering these
  * without a destination type is the same as lowering them into one. */
@@ -334,6 +374,50 @@ function isMemberReceiver(node: ts.Expression): boolean {
   );
 }
 
+/** A literal default (`0`, `-1`, `""`, `true`): it always has its own type.
+ * Other defaults, such as an element read that can be undefined, keep the
+ * dynamic path. */
+function literalDefault(node: ts.Expression): boolean {
+  while (ts.isParenthesizedExpression(node)) node = node.expression;
+  if (
+    ts.isPrefixUnaryExpression(node) &&
+    (node.operator === ts.SyntaxKind.MinusToken || node.operator === ts.SyntaxKind.PlusToken)
+  )
+    node = node.operand;
+  return (
+    ts.isNumericLiteral(node) ||
+    ts.isStringLiteral(node) ||
+    ts.isNoSubstitutionTemplateLiteral(node) ||
+    node.kind === ts.SyntaxKind.TrueKeyword ||
+    node.kind === ts.SyntaxKind.FalseKeyword
+  );
+}
+
+/** A fresh object literal (parentheses allowed) one of whose property
+ * values, at any literal depth, is `new Map()` or `new Set()` of the
+ * standard library with neither arguments nor type arguments. */
+function untypedCollectionFallback(lowerer: Lowerer, node: ts.Expression): boolean {
+  let value = node;
+  while (ts.isParenthesizedExpression(value)) value = value.expression;
+  if (!ts.isObjectLiteralExpression(value)) return false;
+  return value.properties.nodes.some((property) => {
+    if (!ts.isPropertyAssignment(property)) return false;
+    let inner = property.initializer;
+    while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+    if (ts.isObjectLiteralExpression(inner)) return untypedCollectionFallback(lowerer, inner);
+    if (
+      !ts.isNewExpression(inner) ||
+      !ts.isIdentifier(inner.expression) ||
+      (inner.arguments?.nodes.length ?? 0) !== 0 ||
+      (inner.typeArguments?.nodes.length ?? 0) !== 0
+    )
+      return false;
+    const symbol = lowerer.resolveValueSymbol(inner.expression);
+    const name = symbol ? ts.symbolName(symbol) : "";
+    return symbol !== null && lowerer.isStdlibSymbol(symbol) && (name === "Map" || name === "Set");
+  });
+}
+
 export function lowerNullishPair(
   lowerer: Lowerer,
   expr: ts.BinaryExpression,
@@ -358,6 +442,7 @@ export function lowerNullishPair(
   }
 
   if (left.type.kind !== "union") return left;
+  const leftUnion = left.type;
   const def = lowerer.unions.get(left.type.unionId);
   if (!def) lowerer.badType(expr.left, lowerer.typeOf(expr.left));
   if (!def.arms.some(isUnitType)) return left;
@@ -367,6 +452,41 @@ export function lowerNullishPair(
   // arm that has no first-class union representation.
   const fresh = rest.length === 1 ? lowerer.emptyCollectionFor(expr.right, rest[0]!) : null;
   if (fresh) return { kind: "nullish", left, right: fresh, type: fresh.type, loc };
+  // `optionalRecord ?? { a: 1, items: new Map() }`: a fresh fallback literal
+  // whose untyped empty collections (`new Map()`, `new Set()` without type
+  // arguments, which the checker types `Map<any, any>`) leave the checker's
+  // join as a second record arm. When the literal is assignable to the
+  // left's record, it builds as that record, so the collections take its
+  // element types and the result keeps one layout.
+  if (
+    rest.length === 1 &&
+    rest[0]!.kind === "record" &&
+    untypedCollectionFallback(lowerer, expr.right) &&
+    lowerer.checker.isTypeAssignableTo(
+      lowerer.typeOf(expr.right),
+      lowerer.checker.getNonNullableType(lowerer.typeOf(expr.left)),
+    )
+  ) {
+    const right = lowerer.lowerExprExpecting(expr.right, rest[0]!);
+    return { kind: "nullish", left, right, type: rest[0]!, loc };
+  }
+  // An EMPTY array-literal default (`''.match(re) ?? []`) has no element of
+  // its own, so it builds as the left's array arm (the emptyArrayLiteralArm
+  // rule the union slot and the contextual union share) and the whole
+  // expression answers the left's array type instead of the checker's
+  // `never[]`-flavored second arm. A JavaScript `[]` is `any[]` and keeps
+  // the dynamic path.
+  if (
+    rest.length === 1 &&
+    rest[0]!.kind === "array" &&
+    !isJsSourceFile(ts.getSourceFileOfNode(expr.right))
+  ) {
+    const arm = emptyArrayLiteralArm(expr.right, rest);
+    if (arm) {
+      const right = lowerer.lowerExprExpecting(expr.right, arm);
+      if (typeEquals(right.type, arm)) return { kind: "nullish", left, right, type: arm, loc };
+    }
+  }
   let type = lowerer.irTypeOf(expr);
   // A runtime-optional read can reach the default even when declarations
   // call the left side present. Preserve a differently typed primitive
@@ -388,6 +508,26 @@ export function lowerNullishPair(
     lowerer.runtimeOptionalArithmeticTypes.set(expr, type);
   }
   if (type.kind === "dyn" && lowerer.dynConvertible(left.type)) {
+    // `counts.get(k) ?? 0` in JavaScript: a scalar optional left and a
+    // default of its value's type give a scalar, so the test and the default
+    // run on the typed path and only the result converts. Converting the
+    // optional left itself would allocate a union for every read.
+    if (
+      rest.length === 1 &&
+      primitive(rest[0]!) &&
+      rightType &&
+      typeEquals(rightType, rest[0]!) &&
+      literalDefault(expr.right)
+    ) {
+      const typed: IrExpr = {
+        kind: "nullish",
+        left,
+        right: lowerer.lowerExprExpecting(expr.right, rest[0]!),
+        type: rest[0]!,
+        loc,
+      };
+      return lowerer.coerceToExpected(typed, DYN);
+    }
     return {
       kind: "nullish",
       left: lowerer.coerceToExpected(left, DYN),
@@ -395,6 +535,50 @@ export function lowerNullishPair(
       type: DYN,
       loc,
     };
+  }
+  const admitsUndefined = (t: IrType): boolean =>
+    t.kind === "union" && lowerer.armTag(t.unionId, UNDEFINED_T) >= 0;
+  // A runtime-optional read can be the DEFAULT too (`empty.a ?? empty.b`,
+  // `names[0] ?? names[1]`): the checker types a keyed read at the record's
+  // value type, but a missing key or index is undefined at run time. The
+  // default's own lowering already carries that absent arm, so the result
+  // keeps it — the left's storage when both sides share it, the checker's
+  // type plus an undefined arm otherwise — instead of coercing the absence
+  // back into the checker's narrower union.
+  if (
+    isPlainValueRead(expr.right) &&
+    !isMemberReceiver(expr) &&
+    !admitsUndefined(type) &&
+    mayLowerAbsent(lowerer, expr.right)
+  ) {
+    const raw = lowerer.lowerExpr(expr.right);
+    if (admitsUndefined(raw.type)) {
+      if (typeEquals(raw.type, leftUnion))
+        return { kind: "nullish", left, right: raw, type: leftUnion, loc };
+      const widened = lowerer.runtimeOptionalType(type);
+      if (widened.kind === "union" && admitsUndefined(widened)) {
+        if (typeEquals(widened, leftUnion)) {
+          const right = lowerer.coerceInto(expr.right, raw, widened);
+          return { kind: "nullish", left, right, type: widened, loc };
+        }
+        const retag =
+          lowerer.unionRetagHelper(leftUnion.unionId, widened.unionId, loc) ??
+          lowerer.narrowedRetagHelper(expr.left, leftUnion.unionId, widened.unionId, loc);
+        if (retag !== null) {
+          const right = lowerer.coerceInto(expr.right, raw, widened);
+          return nullishBranches(
+            lowerer,
+            left,
+            leftUnion,
+            def.arms,
+            widened,
+            loc,
+            () => right,
+            (stable) => ({ kind: "call", callee: retag, args: [stable], type: widened, loc }),
+          );
+        }
+      }
+    }
   }
   // A runtime-optional default (`name ?? names[0]`): the checker types an
   // unchecked element read as the bare element type, but an out-of-range
@@ -549,7 +733,26 @@ export function lowerNativeFunctionAssignment(
   const classType = storedClassValueType(lowerer, target.expression);
   const staticClass =
     classType?.kind === "classval" ? lowerer.classes.get(classType.className) : undefined;
-  if (staticClass && hasRuntimeStatics(staticClass)) {
+  // The member named by a statically known key: a class whose property
+  // table does not carry it (a class whose only runtime static is its
+  // `Symbol.hasInstance` hook) writes its own storage instead, exactly as
+  // it reads it. A member the class does not declare at all is a property
+  // of the class object, wherever the key comes from.
+  const staticName = ts.isPropertyAccessExpression(target)
+    ? ts.isPrivateIdentifier(target.name)
+      ? null
+      : target.name.text
+    : ts.isStringLiteral(target.argumentExpression)
+      ? target.argumentExpression.text
+      : undefined;
+  const writesThroughTable =
+    staticClass !== undefined &&
+    hasRuntimeStatics(staticClass) &&
+    staticName !== null &&
+    (staticName === undefined ||
+      findStaticOn(lowerer, staticClass, staticName) === null ||
+      runtimeStaticDefines(lowerer, staticClass, staticName));
+  if (writesThroughTable) {
     return lowerDynMemberAssignment(
       lowerer,
       expr,
@@ -608,6 +811,10 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
   if (e.type.kind === "string") return e;
   if (e.type.kind === "url")
     return { kind: "libCall", fn: "url.href", args: [e], type: STRING, loc: e.loc };
+  // String(sp) / `${new URLSearchParams(...)}`: URLSearchParams.toString,
+  // the serialized list (`?` stripped, pairs encoded).
+  if (e.type.kind === "searchParams")
+    return { kind: "libCall", fn: "sp.toString", args: [e], type: STRING, loc: e.loc };
   // String(date) / `${date}` / "" + date: Date's ToPrimitive prefers
   // toString().
   if (e.type.kind === "date")
@@ -721,15 +928,18 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
     );
   }
   if (e.type.kind === "symbol") {
-    // JS splits here: `${sym}` and concatenation THROW a TypeError,
-    // String(sym) answers "Symbol(desc)". One shared lowering cannot
-    // honor both — fence with the sanctioned spelling instead of
-    // guessing the context.
-    lowerer.unsupported(
-      "SC1090",
-      node,
-      "string conversions of symbol values (template literals throw in JS — call .toString() explicitly)",
-    );
+    // `${sym}`, `"" + sym`, `x += sym`: the ToString the operator performs
+    // throws Node's TypeError. String(sym) never reaches this helper (it
+    // lowers to dyn.stringConstructor), so the runtime operation is the
+    // whole answer here — a symbol throws, and the dynamic tier's own
+    // rendering stays reachable only through String(x).
+    return {
+      kind: "libCall",
+      fn: "dyn.toStringCoerce",
+      args: [{ kind: "dynFrom", value: e, type: DYN, loc: e.loc }],
+      type: STRING,
+      loc: e.loc,
+    };
   }
   if (isUnitType(e.type)) {
     if (e.kind === "unitLit") {
@@ -774,6 +984,12 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
             isUnitType(a),
         ) ??
         false);
+    // Checked-dynamic elements: the runtime's String() over the array's
+    // dyn form (its join, element by element).
+    if (elem.kind === "dyn") {
+      const boxed: IrExpr = { kind: "dynFrom", value: e, type: DYN, loc: e.loc };
+      return { kind: "toString", operand: boxed, type: STRING, loc: e.loc };
+    }
     if (
       elem.kind === "f64" ||
       elem.kind === "string" ||
@@ -806,6 +1022,10 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
       // valueOf: ToPrimitive throws Node's TypeError.
       const nullProtoT = nullProtoRecordShape(lowerer, e.type);
       if (nullProtoT) return nullProtoToString(lowerer, e, nullProtoT);
+      // A linked copy or a record with a kept source converts as its
+      // source does (record-links.ts).
+      if (recordMayKeepSource(lowerer, e.type))
+        return recordStringCall(lowerer, e, "string", e.loc, "toString");
       return { kind: "toString", operand: e, type: STRING, loc: e.loc };
     }
   }
@@ -889,8 +1109,8 @@ export function lowerCompoundValueToTarget(
     loc: locOf(expr.left),
   };
   const rhs = lowerer.lowerExpr(expr.right);
-  const numericRead = lowerOptionalNumber(lowerer, read, loc);
-  const numericRhs = lowerOptionalNumber(lowerer, rhs, loc);
+  const numericRead = lowerOperatorNumber(lowerer, read, loc);
+  const numericRhs = lowerOperatorNumber(lowerer, rhs, loc);
 
   if (
     compound === "+" &&
@@ -1021,8 +1241,12 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     if (op === ts.SyntaxKind.EqualsToken) {
       const prototypeWrite = lowerClassPrototypeComputedAssignment(lowerer, expr);
       if (prototypeWrite) return prototypeWrite;
+      const staticPrivateWrite = lowerStaticPrivateAssignment(lowerer, expr);
+      if (staticPrivateWrite) return staticPrivateWrite;
       const callableWrite = lowerNativeFunctionAssignment(lowerer, expr);
       if (callableWrite) return callableWrite;
+      const dereferenced = lowerDereferencedElementAssignment(lowerer, expr);
+      if (dereferenced) return dereferenced;
     }
     if (
       op === ts.SyntaxKind.QuestionQuestionEqualsToken ||
@@ -1375,6 +1599,12 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
         : "compound assignment as an expression (write `x op= e` as a statement, or spell out `x = x op e`)",
     );
   }
+  // An identity comparison with process.env or a value held from it
+  // compares the one environment object, which no snapshot can stand for.
+  {
+    const identity = lowerEnvironmentIdentity(lowerer, expr, loc);
+    if (identity) return identity;
+  }
   if (op === ts.SyntaxKind.EqualsEqualsToken || op === ts.SyntaxKind.ExclamationEqualsToken) {
     const nullTest = lowerLooseNullCompare(lowerer, expr, loc);
     if (nullTest) return nullTest;
@@ -1551,9 +1781,9 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
           reference.kind === "map" ||
           reference.kind === "set" ||
           reference.kind === "union" ||
-          // A promise of dyn boxes its own promise, so identity holds;
-          // other promise types box a fresh adapter.
-          (reference.kind === "promise" && reference.inner.kind === "dyn") ||
+          // A promise of dyn boxes its own promise; other promise types
+          // box an adapter that shares the promise's identity.
+          reference.kind === "promise" ||
           DYN_HANDLE_KINDS.has(reference.kind)) &&
         lowerer.dynConvertible(reference)
       ) {
@@ -1565,9 +1795,11 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
           const shape = type.kind === "record" ? lowerer.shapes.get(type.shapeId) : undefined;
           return !!shape && (shape.fields.length > 0 || shape.indexValue !== undefined);
         };
+        // A builtin function boxes as its checked twin, the value its
+        // module handle answers, so the two compare equal.
         const boxed: IrExpr = {
           kind: "dynFrom",
-          value: scalarSide,
+          value: lowerer.checkedBuiltinValue(scalarSide),
           type: DYN,
           loc: scalarSide.loc,
           ...(reference.kind === "record" ||
@@ -1577,6 +1809,8 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
             ? { liveRef: true as const }
             : {}),
         };
+        if (reference.kind === "func")
+          noteDynamicIdentityComparison(lowerer, expr, expr.left, expr.right);
         return {
           kind: "dynScalarEq",
           left: scalarSide === left ? boxed : left,
@@ -1586,13 +1820,16 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
           loc,
         };
       }
-      // EventEmitter or a stream class against an untyped value in
-      // JavaScript: the untyped value can hold the class's untyped
-      // constructor (coerceToExpected), which compares by identity.
+      // EventEmitter, a stream class or a node:path family against an
+      // untyped value in JavaScript: the untyped value can hold the class's
+      // untyped constructor or the module object (coerceToExpected), which
+      // compare by identity.
       if (
         dynSide.type.kind === "dyn" &&
         isJsSourceFile(expr.getSourceFile()) &&
-        ((scalarSide.type.kind === "moduleNs" && scalarSide.type.moduleId === "builtin:events") ||
+        ((scalarSide.type.kind === "moduleNs" &&
+          (scalarSide.type.moduleId === "builtin:events" ||
+            scalarSide.type.moduleId.startsWith("builtin:path"))) ||
           (scalarSide.kind === "classRef" && builtinClassKind(scalarSide.className) !== null))
       ) {
         const boxed = lowerer.coerceToExpected(scalarSide, DYN);
@@ -1629,6 +1866,12 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
           // reference kinds by identity (scr_dyn_strict_eq).
           scalarSide.type.kind === "dyn")
       ) {
+        // A generic declaration read through `unknown` compares as the
+        // function object it names, which is one object in JavaScript but
+        // one closed instance per signature here: the whole-program check
+        // refuses it when the program holds the declaration at more than
+        // one signature.
+        noteDynamicIdentityComparison(lowerer, expr, expr.left, expr.right);
         return {
           kind: "dynScalarEq",
           left,
@@ -1913,7 +2156,7 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     );
   };
   const arithmeticNumber = (operand: IrExpr, node: ts.Expression): IrExpr =>
-    lowerOptionalNumber(lowerer, operand, loc, node);
+    lowerOperatorNumber(lowerer, operand, loc, node);
   const arithmeticLeft = strictEquality ? left : arithmeticNumber(left, expr.left);
   const arithmeticRight = strictEquality ? right : arithmeticNumber(right, expr.right);
   const bothNum = arithmeticLeft.type.kind === "f64" && arithmeticRight.type.kind === "f64";
@@ -2320,6 +2563,33 @@ export function lowerStrictEquality(
   negated: boolean,
   loc: SrcLoc,
 ): IrExpr {
+  // JavaScript: a checked-dynamic name the checker's flow analysis narrowed
+  // (`let c; ... (c = s[i]) === " "`) is compared unchecked. Strict
+  // equality never throws, and the flow type is the checker's inference
+  // (an indexed read past the end is undefined whatever it says).
+  const flowNarrowed = (n: ts.Node, e: IrExpr): IrExpr | null =>
+    ts.isIdentifier(n) &&
+    e.kind === "dynCheck" &&
+    e.value.type.kind === "dyn" &&
+    isJsSourceFile(ts.getSourceFileOfNode(n))
+      ? e.value
+      : null;
+  const scalar = (e: IrExpr): boolean =>
+    e.type.kind === "string" || e.type.kind === "f64" || e.type.kind === "bool";
+  {
+    const l = flowNarrowed(leftNode, left);
+    const r = flowNarrowed(rightNode, right);
+    if ((l !== null && (scalar(right) || r !== null)) || (r !== null && scalar(left))) {
+      const cmp: IrExpr = {
+        kind: "dynScalarEq",
+        left: l ?? lowerer.coerceInto(leftNode, left, DYN),
+        right: r ?? lowerer.coerceInto(rightNode, right, DYN),
+        type: BOOL,
+        loc,
+      };
+      return negated ? { kind: "unary", op: "!", operand: cmp, type: BOOL, loc } : cmp;
+    }
+  }
   const plainBothNum = left.type.kind === "f64" && right.type.kind === "f64";
   const bothStr = left.type.kind === "string" && right.type.kind === "string";
   const indexed = tryLowerIndexedComparison(lowerer, left, right, negated, loc);
@@ -2485,6 +2755,39 @@ export function lowerStrictEquality(
   // assignable to the other — a tuple-typed listeners() element
   // against a prefix-declared handler): the pointer answers it.
   if (idLeft.type.kind === "func" && idRight.type.kind === "func") {
+    // Two VALUE INSTANCES of one generic declaration are the SAME function
+    // object in JavaScript — the erased closure every unpinned value reads
+    // and each pinned signature's compiled closure are separate functions
+    // here, so the pointer would answer false against Node's true. The
+    // operands' declarations decide it, not their compiled instances.
+    const leftDecl = genericDeclarationBehindValue(lowerer, leftNode, true);
+    if (leftDecl !== null && leftDecl === genericDeclarationBehindValue(lowerer, rightNode, true)) {
+      // JavaScript evaluates both operands, left first, before it compares
+      // them — and a read of a binding still in its temporal dead zone
+      // throws there. The declaration decides the answer, but the reads
+      // keep their place, in that order.
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "exprStmt", expr: idLeft, loc },
+          { kind: "exprStmt", expr: idRight, loc },
+        ],
+        result: boolLit(!negated, loc),
+        type: BOOL,
+        loc,
+      };
+    }
+    // Two pins of ONE generic declaration at different signatures are
+    // different compiled closures; the whole-program check refuses the
+    // compare (checkGenericIdentityPins).
+    notePinnedIdentityComparison(
+      lowerer,
+      node,
+      leftNode,
+      rightNode,
+      idLeft.kind === "closure" ? idLeft.fnName : undefined,
+      idRight.kind === "closure" ? idRight.fnName : undefined,
+    );
     return {
       kind: "bin",
       op: negated ? "!==" : "===",
@@ -2509,6 +2812,8 @@ export function lowerStrictEquality(
     };
   }
   if (idLeft.type.kind === "moduleNs" && idRight.type.kind === "moduleNs") {
+    if (idLeft.kind === "moduleNsRef" && idRight.kind === "moduleNsRef")
+      return boolLit(sameNamespace(lowerer, idLeft.moduleId, idRight.moduleId) !== negated, loc);
     return {
       kind: "bin",
       op: negated ? "!==" : "===",
@@ -2561,6 +2866,11 @@ export function lowerStrictEquality(
     };
   }
   if (lowerer.dynConvertible(idLeft.type) && lowerer.dynConvertible(idRight.type)) {
+    // A generic declaration read through `unknown` compares as the function
+    // object it names, which is one object in JavaScript but one closed
+    // instance per signature here: the whole-program check refuses it when
+    // the program holds the declaration at more than one signature.
+    noteDynamicIdentityComparison(lowerer, node, leftNode, rightNode);
     return {
       kind: "dynScalarEq",
       left: lowerer.coerceToExpected(idLeft, DYN),
@@ -2787,10 +3097,26 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
             trappable.add(tag);
           }
         });
-        const retag =
+        // The reference-arm plan first, unchanged: every program that
+        // lowered before keeps byte-identical IR. Only where that plan has
+        // no route at all do the checker-proven truthy arms get trapped as
+        // well — a widened literal (`const ttl: "1h" | undefined`) maps to
+        // a plain `string` arm, and no value of that type survives `&&` as
+        // itself, so it is exactly as unreachable on the falsy path as a
+        // reference arm. That case used to be the union-conversion refusal
+        // this replaces.
+        let retag =
           trappable.size === 0
             ? null
             : lowerer.unionRetagHelper(left.type.unionId, target.unionId, loc, trappable);
+        if (retag === null && !canBeNonUnitFalsy(lowerer.typeOf(expr.left))) {
+          const widened = new Set(trappable);
+          def?.arms.forEach((arm, tag) => {
+            if (lowerer.armTag(target.unionId, arm) < 0 && !isUnitType(arm)) widened.add(tag);
+          });
+          if (widened.size > trappable.size)
+            retag = lowerer.unionRetagHelper(left.type.unionId, target.unionId, loc, widened);
+        }
         if (retag) {
           lowerer.requireTruthyUnion(left.type.unionId, expr);
           const stmts: IrStmt[] = [];
@@ -2889,6 +3215,44 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
         loc,
       };
     }
+    // `u || d` whose checker result is one of u's own arms while u keeps
+    // arms flow narrowing ruled out (`typeof o === "string" ? ... : o ||
+    // {}` leaves the string arm in the stored union). Test u in its own
+    // union and extract the result arm through the checked narrowing: a
+    // value of a ruled-out arm traps rather than masquerading as the
+    // result type.
+    if (op === ts.SyntaxKind.BarBarToken && left.type.kind === "union") {
+      const def = lowerer.unions.get(left.type.unionId);
+      if (
+        target !== null &&
+        def !== undefined &&
+        def.arms.some(isUnitType) &&
+        lowerer.armTag(left.type.unionId, target) >= 0
+      ) {
+        const helper = lowerer.narrowedArmHelper(left.type.unionId, target, loc);
+        if (helper) {
+          lowerer.requireTruthyUnion(left.type.unionId, expr);
+          const stmts: IrStmt[] = [];
+          let stable: IrExpr = left;
+          if (!isSafeToRepeat(left)) {
+            const local = lowerer.declareHiddenLocal("%or", left.type);
+            stmts.push({ kind: "varDecl", localId: local.id, init: left, loc });
+            stable = varRef(local.id, left.type, loc);
+          }
+          const result: IrExpr = {
+            kind: "ternary",
+            cond: lowerer.ensureBool(stable, expr.left),
+            then: { kind: "call", callee: helper, args: [stable], type: target, loc },
+            else_: lowerer.lowerExprExpecting(expr.right, target),
+            type: target,
+            loc,
+          };
+          return stmts.length === 0
+            ? result
+            : { kind: "seqExpr", stmts, result, type: target, loc };
+        }
+      }
+    }
     lowerer.unsupported(
       "SC1090",
       expr,
@@ -2970,6 +3334,26 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
     type: left.type,
     loc,
   };
+}
+
+/** Whether the checker leaves any non-unit value of `type` that can be
+ * falsy. `null`/`undefined`/`void` answer false (they are the falsy values
+ * the result union keeps as arms), objects and functions answer false (JS
+ * references are always truthy), and the empty string / 0 / 0n / false
+ * literal types answer true. Anything whose static answer is not obvious —
+ * a widened `string`, `number` or `boolean`, an enum, `any`, a type
+ * parameter — answers true, so the caller keeps its refusal. */
+function canBeNonUnitFalsy(type: ts.Type): boolean {
+  if (type.isUnionType()) return ts.constituentTypes(type).some(canBeNonUnitFalsy);
+  const flags = type.flags;
+  if (flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void | ts.TypeFlags.Never))
+    return false;
+  if (flags & ts.TypeFlags.BooleanLiteral) return (type as ts.BooleanLiteralType).value === false;
+  if (flags & ts.TypeFlags.StringLiteral) return (type as ts.StringLiteralType).value === "";
+  if (flags & ts.TypeFlags.NumberLiteral) return (type as ts.NumberLiteralType).value === 0;
+  if (flags & ts.TypeFlags.BigIntLiteral) return (type as ts.BigIntLiteralType).value === BigInt(0);
+  if (flags & ts.TypeFlags.Object) return false;
+  return true;
 }
 
 function lowerAbsenceAwareOrChain(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr | null {

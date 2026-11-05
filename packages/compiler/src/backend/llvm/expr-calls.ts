@@ -1,4 +1,5 @@
 /* Focused LLVM expression emission extracted from emitter.ts. */
+import { arrayClassDescriptor } from "./classes.js";
 import { InternalCompilerError } from "../../errors.js";
 import { newValueMayThrow } from "../../ir/analysis.js";
 import {
@@ -17,7 +18,12 @@ import { liveRefView } from "./expr-stream-bridges.js";
 import { typedRefConstructor, vAdapters } from "./shapes.js";
 import { INT32_ABI_SUFFIX, SCALAR_UNION_RESULT } from "./int32-abi.js";
 import { dispatchesCall, INTEGER_DISPATCH_SUFFIX } from "./integer-clones.js";
-import { canStackObject, emitStackObject } from "./stack-objects.js";
+import {
+  canStackObject,
+  emitStackObject,
+  frameClass,
+  type StackObjectSource,
+} from "./stack-objects.js";
 import { collectFfiRetainedOps, parseFfiCallbackKey } from "../ffi-callbacks.js";
 import {
   mangleAsyncAdoptCall,
@@ -43,11 +49,12 @@ import {
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
 import {
-  CLOSURE_RECEIVER_FREE,
+  CLOSURE_KIND,
   f64Lit,
   ffiNativeTypeLl,
   ffiNativeParamLl,
   ffiNativeReturnLl,
+  SCR_ARR_FIELD,
 } from "./common.js";
 import { canStackUnion, emitStackUnion } from "./stack-unions.js";
 import { emitStackRecordKeyGet, scalarRecordKeyGet } from "./expr-records.js";
@@ -61,7 +68,7 @@ import {
   inputSuffixWrites,
 } from "./borrowed-inputs.js";
 import type { Writes } from "./reference-writes.js";
-import { emitJsIcCall, jsIcSiteOf } from "./js-ic.js";
+import { capsuleCallSite, emitCapsuleCall, emitJsIcCall, jsIcSiteOf } from "./js-ic.js";
 import { emitClassMembership, emitDowncastGuard } from "./narrow-guards.js";
 import { registerReplay } from "./emit-journal.js";
 
@@ -103,6 +110,10 @@ export function emitCallExpr(
         // cache site (two-tier design S4).
         const site = jsIcSiteOf(host, e);
         if (site) return emitJsIcCall(host, e, callee, site);
+        // So is a method dispatch helper whose class branches a capsule
+        // receiver can call directly.
+        const capsuleCalls = capsuleCallSite(host, e, callee);
+        if (capsuleCalls) return emitCapsuleCall(host, e, callee, capsuleCalls);
       }
       if (callee.fastRead === "index" && !plainCall && !awaitEntry && !resultSlot) {
         const indexed = emitNumericIndexRead(host, e, callee);
@@ -128,6 +139,19 @@ export function emitCallExpr(
       if (borrowed) host.frames.push([]);
       let suffixes: Writes[] | undefined;
       const args = e.args.map((a, index) => {
+        // A fresh instance of a frame class that the parameter keeps in the
+        // callee's frame (frame-escapes.ts) is built in the caller's frame;
+        // the call's statement frame releases its reference fields.
+        if (
+          a.kind === "new" &&
+          host.frameEscapes?.parameterStays(e.callee, index) === true &&
+          frameClass(host, a.className)
+        ) {
+          const value = emitStackObject(host, a as StackObjectSource, (fields) => {
+            for (const field of fields) host.ownSlot(field.ptr, field.type);
+          });
+          return host.markImmortal(value);
+        }
         if (borrowed?.has(index)) {
           // A heap-borrowing helper may retain or return its argument.
           // Only projection-only parameters may see an unowned stack box,
@@ -818,7 +842,7 @@ export function emitCallExpr(
               `${fromPtr} = getelementptr inbounds %ScrClosure, ptr ${original}, i64 0, i32 4`,
             );
             B.line(`${from} = load i32, ptr ${fromPtr}`);
-            B.line(`${bit} = and i32 ${from}, ${CLOSURE_RECEIVER_FREE}`);
+            B.line(`${bit} = and i32 ${from}, ${CLOSURE_KIND.RECEIVER_FREE}`);
             B.line(`${toPtr} = getelementptr inbounds %ScrClosure, ptr ${c}, i64 0, i32 4`);
             B.line(`${to} = load i32, ptr ${toPtr}`);
             B.line(`${kind} = or i32 ${to}, ${bit}`);
@@ -835,7 +859,10 @@ export function emitCallExpr(
       if (e.callee.type.kind !== "func")
         throw new InternalCompilerError("llvm emitter bug: callValue on non-func");
       const ft = e.callee.type;
-      if (e.args.length !== ft.params.length)
+      // A checked-dynamic variadic value's lifted signature carries one
+      // trailing dyn array after its declared parameters.
+      const hiddenRest = ft.rest === true && ft.restAbi === undefined;
+      if (e.args.length !== ft.params.length + (hiddenRest ? 1 : 0))
         throw new LlvmUnsupportedError("callValue:arity", e.loc);
       // A receiver that reads the ambient `this` binds what the callee
       // would see without a binding: the call forwards it unchanged and
@@ -902,12 +929,16 @@ export function emitCallExpr(
       let lend = lent
         ? borrowableInputs(host, e.args, false, host.referenceWrites?.summary(known!.name))
         : [];
+      // A checked-dynamic variadic's hidden rest array is a reference too:
+      // the owned entry consumes it, the borrowing entry only lends it.
+      const hiddenRestIndex = hiddenRest ? ft.params.length : -1;
       let dynamic = false;
       if (!direct && (e.receiver === undefined || forwardsReceiver)) {
         const references = new Set<number>();
         ft.params.forEach((param, index) => {
           if (isRefCounted(param)) references.add(index);
         });
+        if (hiddenRestIndex >= 0) references.add(hiddenRestIndex);
         if (references.size > 0) {
           const inputs = borrowableInputs(host, e.args, false, host.referenceWrites?.ownWrites(e));
           if ([...references].every((index) => inputs[index] === true)) {
@@ -916,6 +947,13 @@ export function emitCallExpr(
             dynamic = true;
           }
         }
+      }
+      // A known callee's borrowed set names the parameters its body lends;
+      // the hidden rest array is not among them when the body never reads
+      // it, and handing it over unretained would leak it.
+      if (lent && hiddenRestIndex >= 0 && !lent.has(hiddenRestIndex)) {
+        lent = new Set([...lent, hiddenRestIndex]);
+        lend = e.args.map((_, index) => (index === hiddenRestIndex ? false : lend[index]!));
       }
       if (lent) host.frames.push([]);
       const args = e.args.map((a, i) =>
@@ -927,7 +965,8 @@ export function emitCallExpr(
       const argListOf = (values: readonly LlValue[]): string =>
         [
           `ptr ${callee.name}`,
-          ...values.map((a, i) => `${host.llType(ft.params[i]!)} ${a.name}`),
+          // The hidden rest array has no declared parameter to name it.
+          ...values.map((a, i) => `${host.llType(ft.params[i] ?? a.type)} ${a.name}`),
         ].join(", ");
       // The owned entry consumes a reference of each lent argument.
       const ownedArgs = (): LlValue[] =>
@@ -937,7 +976,7 @@ export function emitCallExpr(
             )
           : args;
       // An entry through the closure's own pointer brackets the call only
-      // when the closure may observe the receiver (SCR_FN_RECEIVER_FREE).
+      // when the closure may observe the receiver (SCR_CLOSURE_KIND_RECEIVER_FREE).
       const invoke = (
         target: string,
         bracket: boolean,
@@ -957,7 +996,7 @@ export function emitCallExpr(
               `${kindPtr} = getelementptr inbounds %ScrClosure, ptr ${callee.name}, i64 0, i32 4`,
             );
             B.line(`${kind} = load i32, ptr ${kindPtr}`);
-            B.line(`${free} = and i32 ${kind}, ${CLOSURE_RECEIVER_FREE}`);
+            B.line(`${free} = and i32 ${kind}, ${CLOSURE_KIND.RECEIVER_FREE}`);
             B.line(`${observes} = icmp eq i32 ${free}, 0`);
             const push = B.newLabel("receiver.push"),
               pushed = B.newLabel("receiver.call");
@@ -983,6 +1022,16 @@ export function emitCallExpr(
         } else if (needsReceiver) B.line("call void @scr_dyn_this_pop()");
         return result;
       };
+      // The direct entry of a known target brackets the call when the target
+      // may observe the receiver. A signature adapter that only forwards the
+      // receiver to its original carries the original's RECEIVER_FREE bit
+      // (set where the adapter closure is built), so its entry tests the bit,
+      // like the entry through the closure's own pointer.
+      const invokeKnown = (target: string): string => {
+        const readers = host.receiverReaders;
+        if (readers.ignores(known!)) return invoke(target, false);
+        return invoke(target, true, args, readers.forwardsOnly(known!));
+      };
       const lending =
         lent && !dynamic
           ? known!.captures !== undefined
@@ -1005,7 +1054,7 @@ export function emitCallExpr(
         (e.callee.kind === "closure" ||
           (e.callee.kind === "varRef" && host.knownCallbacks.has(e.callee.localId)))
       ) {
-        t = invoke(lending ?? direct, !host.receiverReaders.ignores(known!));
+        t = invokeKnown(lending ?? direct);
         if (quiet) pending = false;
       } else {
         const fnp = B.tmp(),
@@ -1052,7 +1101,7 @@ export function emitCallExpr(
           B.line(`${matches} = icmp eq ptr ${fn}, ${direct}`);
           B.condBr(matches, fast, fallback);
           B.startBlock(fast);
-          const specialized = invoke(lending ?? direct, !host.receiverReaders.ignores(known!));
+          const specialized = invokeKnown(lending ?? direct);
           // `fast` may have split for exception checks; join from the end.
           const fastEnd = B.currentLabel();
           B.br(done);
@@ -1102,8 +1151,29 @@ export function emitCallExpr(
         throw new InternalCompilerError(
           `llvm emitter bug: new ${e.className} without a constructor`,
         );
+      // An instance with an inline array field is allocated with room for
+      // the elements of the array its constructor writes the field from
+      // (ir/inline-arrays.ts made that argument a local).
+      const tail = host.inlineTailOf(e.className);
+      let count = "";
+      if (tail !== undefined) {
+        const source = e.args[tail.lengthArg];
+        if (source?.kind !== "varRef")
+          throw new InternalCompilerError(
+            `llvm emitter bug: new ${e.className} reads its inline array from an expression`,
+          );
+        const arr = host.emitReadReceiver(source);
+        const lenp = B.tmp();
+        const len = B.tmp();
+        B.line(
+          `${lenp} = getelementptr inbounds %ScrArr, ptr ${arr.name}, i32 0, i32 ${SCR_ARR_FIELD.len}`,
+        );
+        B.line(`${len} = load i32, ptr ${lenp}`);
+        count = `i32 ${len}`;
+      }
       const o = B.tmp();
-      B.line(`${o} = call ptr @${mangleClassNew(e.className)}()`);
+      B.line(`${o} = call ptr @${host.allocSym(mangleClassNew(e.className), e)}(${count})`);
+      host.heapCensus?.countNew((line) => B.line(line), e.className);
       const out = host.own({ name: o, type: e.type });
       emitConstruction(host, e, o, ctor);
       return out;
@@ -1235,6 +1305,17 @@ export function emitCallExpr(
       return host.own({ name: v.name, type: e.type });
     }
     case "instanceOf": {
+      // An array is an instance of a class declared `extends Array` when
+      // its ext names that class (scr_arr_class_of).
+      if (e.value.type.kind === "array") {
+        const v = emitBorrowedInputs(host, [e.value])[0]!;
+        host.declare(`declare ptr @scr_arr_class_of(ptr)`);
+        const cls = host.B.tmp();
+        const result = host.B.tmp();
+        host.B.line(`${cls} = call ptr @scr_arr_class_of(ptr ${v.name})`);
+        host.B.line(`${result} = icmp eq ptr ${cls}, ${arrayClassDescriptor(e.className)}`);
+        return { name: result, type: e.type };
+      }
       // O(1) preorder-interval test against the vtable the object
       // carries; the target's interval is a compile-time constant.
       if (e.value.type.kind !== "object")
@@ -1585,7 +1666,7 @@ function emitNumericIndexRead(
 
 /** The recipe a lazily boxed receiver of type `t` is built from: its RC
  * adapters, type key and live view, one per type. */
-function typedRefRecipe(host: LlvmEmitterContext, t: IrType): string {
+export function typedRefRecipe(host: LlvmEmitterContext, t: IrType): string {
   const key = typeKey(t);
   let recipe = host.typedRefRecipes.get(key);
   if (recipe !== undefined) return recipe;

@@ -56,11 +56,13 @@ if (isMainThread) {
   // The guard tests the bounds first, then whether the view is shared.
   expect(fn).toMatch(/^bytes\.version\.owned\d*:/m);
   expect(fn).toMatch(/^bytes\.version\.fast\.shared\d*:/m);
-  // The shared copy reads with no bounds test, and shared-safe: a view
-  // with shared storage loads atomically.
+  // The shared copy reads with no bounds test. Each copy is a counted loop
+  // that polls between blocks, so its read at the counter is a plain load
+  // (plainSharedElement in expr-bytes.ts).
   const shared = blocks(fn, "bytes.version.fast.shared");
   expect(shared).not.toMatch(/icmp (ult|uge|ugt) i64 %\w+, %\w+/);
-  expect(fn).toMatch(/load atomic double, ptr %\w+ monotonic/);
+  expect(fn).toMatch(/load double, ptr %\w+/);
+  expect(fn).not.toMatch(/load atomic double/);
 });
 
 test("a program without workers keeps two copies of the loop", async () => {

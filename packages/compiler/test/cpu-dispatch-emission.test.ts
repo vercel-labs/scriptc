@@ -66,18 +66,26 @@ function definitions(ll: string): Map<string, string> {
   return out;
 }
 
-test("a dispatching x86-64 build gives each program function a baseline and an x86-64-v3 copy", () => {
+test("a dispatching x86-64 build copies the program's functions with a loop", () => {
   const ll = emit({ ...x86, cpuDispatch: true });
   const defs = definitions(ll);
   const cloned = [...defs.keys()]
     .filter((name) => name.endsWith(".v3"))
-    .map((name) => name.slice(0, -3));
-  expect(cloned.length).toBeGreaterThan(4);
-  for (const name of ["sc_bf_dot", "sc_bf_scale", "sc_f_positive", "sc_f_check"])
-    expect(
-      cloned.some((c) => c.startsWith(name)),
-      name,
-    ).toBe(true);
+    .map((name) => name.slice(0, -3))
+    .sort();
+  // dot and scale, and the compiler's loop helpers for the array filter, the
+  // fused loop and Float64Array.map, run loops the level widens. positive,
+  // check and main have nothing the level compiles better, so they keep the
+  // body they had.
+  expect(cloned.filter((name) => !name.startsWith("sc_bf__x25_"))).toEqual([
+    "sc_bf_dot",
+    "sc_bf_scale",
+  ]);
+  for (const name of ["sc_f_positive", "sc_f_check", "sc_f__x25_main"]) {
+    expect(defs.has(name), name).toBe(true);
+    expect(defs.has(`${name}.v3`), name).toBe(false);
+    expect(defs.has(`${name}.base`), name).toBe(false);
+  }
   const dispatched = cloned.filter((name) => defs.has(name));
   for (const name of cloned) {
     const v3 = defs.get(`${name}.v3`)!;
@@ -103,26 +111,22 @@ test("a dispatching x86-64 build gives each program function a baseline and an x
     for (const call of defs.get(`${name}.base`)!.matchAll(/@([\w.$-]+)\(/g))
       expect(call[1]!.endsWith(".v3"), `${name}.base calls ${call[1]}`).toBe(false);
   }
-  // The program's entry (called from main) and dot (called from the
-  // coroutine body) keep their dispatcher. Functions only the copies call
-  // have none, so their copies have the callers the original had.
-  expect(dispatched).toContain("sc_f__x25_main");
+  // main and the coroutine body, which the build does not copy, call the
+  // copies, so they keep a dispatcher.
   expect(dispatched).toContain("sc_bf_dot");
-  for (const name of ["sc_bf_scale", "sc_f_positive", "sc_f_check"])
-    expect(
-      dispatched.filter((d) => d.startsWith(name)),
-      name,
-    ).toEqual([]);
+  expect(dispatched).toContain("sc_bf_scale");
   // Coroutine bodies keep one body.
   const coroutines = [...defs].filter(([, text]) => / #1 /.test(text.split("\n", 1)[0]!));
   expect(coroutines.length).toBeGreaterThan(0);
   for (const [name] of coroutines) expect(defs.has(`${name}.v3`), name).toBe(false);
   // Functions used as values are referenced by their dispatching name.
   expect(ll).not.toMatch(/ptr @[\w.$-]+\.(v3|base)(?!\()/);
-  expect(ll).toMatch(/^attributes #3 = \{ sanitize_address "target-cpu"="x86-64-v3" \}$/m);
+  expect(ll).toMatch(
+    /^attributes #3 = \{ sanitize_address uwtable "target-cpu"="x86-64-v3" "scriptc-cpu-copy" \}$/m,
+  );
   // Unsanitized builds leave sanitize_address out of the copies' groups too.
   expect(emit({ ...x86, cpuDispatch: true, sanitizeAttributes: false })).toMatch(
-    /^attributes #3 = \{ "target-cpu"="x86-64-v3" \}$/m,
+    /^attributes #3 = \{ uwtable "target-cpu"="x86-64-v3" "scriptc-cpu-copy" \}$/m,
   );
   // main sets the level before anything else runs.
   expect(defs.get("main")).toMatch(
@@ -134,16 +138,87 @@ test("a dispatching x86-64 build gives each program function a baseline and an x
   );
 });
 
-test("builds without dispatch, for other targets or for a target level emit no copies", () => {
+/** The program functions the build copied, by their original names. */
+function clonedNames(ll: string): string[] {
+  return [...definitions(ll).keys()]
+    .filter((name) => name.endsWith(".v3"))
+    .map((name) => name.slice(0, -3))
+    .sort();
+}
+
+test("a build that uses a profile copies only the functions it names", () => {
+  const ll = emit({
+    ...x86,
+    cpuDispatch: true,
+    cpuCopyFunctions: new Set(["sc_bf_dot", "sc_f_positive"]),
+  });
+  // positive is named by the profile but has no loop, so the build keeps its
+  // one body.
+  expect(clonedNames(ll)).toEqual(["sc_bf_dot"]);
+  expect(definitions(ll).has("sc_f_positive")).toBe(true);
+  expect(ll).not.toMatch(/@sc_f_positive\.(?:base|v3)/);
+});
+
+test("a build whose profile names no function copies none", () => {
+  expect(clonedNames(emit({ ...x86, cpuDispatch: true, cpuCopyFunctions: new Set() }))).toEqual([]);
+});
+
+test("the copies stop at the text budget", () => {
+  expect(clonedNames(emit({ ...x86, cpuDispatch: true, cpuCopyCapBytes: 1 }))).toEqual([]);
+  expect(
+    clonedNames(emit({ ...x86, cpuDispatch: true, cpuCopyCapBytes: 8 * 1024 * 1024 })),
+  ).toEqual(clonedNames(emit({ ...x86, cpuDispatch: true })));
+  // The budget takes the largest bodies first: 30 KB holds the byte map
+  // (16874 bytes) and the fused loop (7864), drops the filter (7623), still
+  // holds dot (5066), and has no room for scale (1748).
+  const capped = clonedNames(emit({ ...x86, cpuDispatch: true, cpuCopyCapBytes: 30_000 }));
+  expect(capped).toContain("sc_bf_dot");
+  expect(capped).not.toContain("sc_bf_scale");
+  expect(capped).toHaveLength(3);
+});
+
+test("a build that records a profile keeps the functions a copy needs out of line", () => {
+  const ll = emit({ ...x86, cpuDispatch: true, profileGenerate: true });
+  // The profile names the functions the build that uses it copies, so the
+  // recording build does not copy them itself.
+  expect(ll).not.toMatch(/\.(?:base|v3)\(/);
+  const defs = definitions(ll);
+  for (const name of ["sc_bf_dot", "sc_bf_scale"])
+    expect(defs.get(name)?.split("\n", 1)[0], name).toMatch(/\bnoinline\b/);
+  // A function without a loop keeps the emission it had.
+  for (const name of ["sc_f_positive", "sc_f__x25_main"])
+    expect(defs.get(name)?.split("\n", 1)[0], name).not.toMatch(/\bnoinline\b/);
+});
+
+test("builds without dispatch, for other targets or for other target levels emit no copies", () => {
   const plain = emit(x86);
   expect(plain).not.toContain("@sc_cpu_level");
   expect(plain).not.toMatch(/\.v3\(/);
   expect(emit({ ...x86, cpuDispatch: false })).toBe(plain);
-  const v3 = emit({ ...x86, targetCpu: "x86-64-v3" });
-  expect(emit({ ...x86, targetCpu: "x86-64-v3", cpuDispatch: true })).toBe(v3);
+  for (const targetCpu of ["x86-64-v2", "x86-64-v4"] as const) {
+    const level = emit({ ...x86, targetCpu });
+    expect(level, targetCpu).not.toMatch(/\.(?:v3|base)\(/);
+    expect(emit({ ...x86, targetCpu, cpuDispatch: true }), targetCpu).toBe(level);
+  }
   for (const options of [
     { targetTriple: "aarch64-unknown-linux-gnu" },
     { targetTriple: "wasm32-wasi", wasi: true, pointerBits: 32 as const },
   ])
     expect(emit({ ...options, cpuDispatch: true })).toBe(emit(options));
+});
+
+test("an x86-64-v3 target gives the program's functions baseline copies, and always calls the x86-64-v3 ones", () => {
+  const ll = emit({ ...x86, targetCpu: "x86-64-v3" });
+  expect(emit({ ...x86, targetCpu: "x86-64-v3", cpuDispatch: true })).toBe(ll);
+  expect(ll).toMatch(/^define internal double @sc_bf_dot\.base\([^\n]* #5 /m);
+  expect(ll).toMatch(/^define internal double @sc_bf_dot\.v3\([^\n]* #3 /m);
+  expect(ll).toMatch(/^attributes #0 = \{ sanitize_address uwtable "target-cpu"="x86-64-v3" \}$/m);
+  expect(ll).toMatch(
+    /^attributes #3 = \{ sanitize_address uwtable "target-cpu"="x86-64-v3" "scriptc-cpu-copy" \}$/m,
+  );
+  expect(ll).toMatch(/^attributes #5 = \{ sanitize_address uwtable \}$/m);
+  // The level is 3 from the start; nothing detects or stores it.
+  expect(ll).toMatch(/^@sc_cpu_level = hidden global i32 3$/m);
+  expect(ll).not.toContain("@sc_cpu_level_init");
+  expect(ll).not.toMatch(/store i32 [^\n]*, ptr @sc_cpu_level\b/);
 });

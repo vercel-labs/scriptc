@@ -1,0 +1,16 @@
+  dynamic tier   (tier assignment, report-only; --tier=auto)
+    2 functions already operate on dynamic values (2 statements)
+      Base.constructor  tests/coverage-fixtures/localized-failure.ts:57:1: dynObjLit at tests/coverage-fixtures/localized-failure.ts:58:16
+      Holder.constructor  tests/coverage-fixtures/localized-failure.ts:28:1: dynObjLit at tests/coverage-fixtures/localized-failure.ts:29:16
+
+    2 demotion requests (refusals and fences the dynamic tier would replace)
+
+    0 would-be dynamic slots (localized failure, report-only: type failures a checked dynamic slot would hold)
+      2 errors: 0 clear with declaration slots (L1-L2), 0 with member and expression slots too (L3-L4); 1 cascade attributed; 1 type failure stays refused
+    class Cache  tests/coverage-fixtures/localized-failure.ts:42:1 (1 request)
+      <- SC1090 reflection at tests/coverage-fixtures/localized-failure.ts:53:22: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+      -> function <top level> turns dynamic
+    field Cache.tokens  tests/coverage-fixtures/localized-failure.ts:43:3 (1 request)
+      <- SC2020 operation at tests/coverage-fixtures/localized-failure.ts:43:3: 'WeakRef<object>' is part of the standard library types but has no scriptc lowering yet
+      -> function <top level> turns dynamic
+    function <top level>  tests/coverage-fixtures/localized-failure.ts:1:1 (2 sites inside)

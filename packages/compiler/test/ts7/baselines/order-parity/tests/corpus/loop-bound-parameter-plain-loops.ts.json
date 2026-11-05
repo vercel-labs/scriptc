@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/loop-bound-parameter-plain-loops.ts"
+ ],
+ "diags": []
+}

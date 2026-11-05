@@ -14,7 +14,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { resolveBuildCacheRoot } from "../backend/cache-root.js";
+import { resolveBuildCacheRoot, resolveCompilerStateRoot } from "../backend/cache-root.js";
 import { joinedParts, writeTextGeneratedSync } from "./text-file.js";
 
 /** UTF-8 bytes one native compiler string can hold (the runtime's
@@ -71,6 +71,19 @@ export class NativeCache {
       const bytes = readFileSync(path);
       if (contentDigest(bytes) !== readFileSync(path + ".sha256", "utf8").trim()) return null;
       return bytes;
+    } catch {
+      return null;
+    }
+  }
+
+  /** An entry writeContent or writeContentParts wrote under `digest`, when
+   * its bytes still have that digest. */
+  readContent(family: string, digest: string, maxBytes = Infinity): Buffer | null {
+    try {
+      const path = join(this.root, family, digest);
+      if (maxBytes < Infinity && statSync(path).size > maxBytes) return null;
+      const bytes = readFileSync(path);
+      return contentDigest(bytes) === digest ? bytes : null;
     } catch {
       return null;
     }
@@ -155,6 +168,35 @@ export class NativeCache {
     }
   }
 
+  /** Writes text parts under the digest of the text they concatenate to
+   * (partsDigest), in one pass, and returns the digest; null when the write
+   * failed. */
+  writeContentParts(family: string, parts: Generator<string>): string | null {
+    let stage: string | null = null;
+    try {
+      const directory = join(this.root, family);
+      mkdirSync(directory, { recursive: true, mode: 0o700 });
+      stage = mkdtempSync(join(directory, ".write-"));
+      const hash = createHash("sha256");
+      writeTextGeneratedSync(join(stage, "payload"), parts, (slice) => hash.update(slice));
+      const digest = hash.digest("hex");
+      writeFileSync(join(stage, "digest"), digest + "\n");
+      const path = join(directory, digest);
+      renameSync(join(stage, "payload"), path);
+      renameSync(join(stage, "digest"), path + ".sha256");
+      return digest;
+    } catch {
+      /* Cache failures never change a build's result. */
+      return null;
+    } finally {
+      try {
+        if (stage !== null) rmSync(stage, { recursive: true, force: true });
+      } catch {
+        /* Cleanup is best effort too. */
+      }
+    }
+  }
+
   prune(): void {
     try {
       const configured = Number(process.env["SCRIPTC_CACHE_MAX_MB"] ?? "4096");
@@ -164,15 +206,20 @@ export class NativeCache {
       let total = 0;
       for (const family of [
         "frontend",
+        "frontend-llvm",
         "object",
         "sanitizer",
         "executable",
         "kept",
+        "unchanged",
         "linker-job",
         "runtime-pack",
+        "helper",
         "binary",
         "dsym",
         "coverage",
+        "units",
+        "unit-files",
       ]) {
         const directory = join(this.root, family);
         let names: string[];
@@ -235,6 +282,26 @@ export function openNativeCache(
   try {
     mkdirSync(root, { recursive: true, mode: 0o700 });
     if (!isPrivate(root, process.env["SCRIPTC_CACHE_DIR"] === undefined)) return null;
+    const cache = new NativeCache(root);
+    if (!isPrivate(cache.root, false)) return null;
+    return cache;
+  } catch {
+    return null;
+  }
+}
+
+/** The compiler-level store, opened the same way as the build cache but at
+ * its own root, so it survives a build whose cache starts empty. Null when
+ * caching is disabled or the directory is not private to this user; a build
+ * then derives what it cannot read. */
+export function openCompilerStateCache(
+  isPrivate: (path: string, harden: boolean) => boolean,
+): NativeCache | null {
+  const root = resolveCompilerStateRoot();
+  if (root === null) return null;
+  try {
+    mkdirSync(root, { recursive: true, mode: 0o700 });
+    if (!isPrivate(root, process.env["SCRIPTC_STATE_DIR"] === undefined)) return null;
     const cache = new NativeCache(root);
     if (!isPrivate(cache.root, false)) return null;
     return cache;

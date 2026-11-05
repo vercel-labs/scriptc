@@ -331,6 +331,9 @@ static void scr_worker_thread_run(ScrWorkerThread *worker) {
   scr_mailbox_close(worker->inbox);
   scr_stdin_fed_clear(); /* chunks the worker never read */
   scr_context_cleanup();
+  /* Frees the group arenas and chunks the thread kept for reuse before the
+   * parent sees the exit. */
+  scr_arena_thread_exit();
   if (stats) {
     uint64_t now = scr_hrtime_ns();
     fprintf(stderr, "scriptc worker %llu: started %.2f ms after spawn, script %.2f ms, exit %.2f ms\n",

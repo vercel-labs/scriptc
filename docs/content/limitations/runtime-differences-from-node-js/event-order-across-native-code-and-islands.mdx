@@ -1,0 +1,3 @@
+- **Event order across native code and islands:** Timers, worker output, and other macrotasks from the program and from JavaScript it runs in a Node island share one event loop under Node.js, so their order is fixed.
+  A compiled program runs both on the event loop it hosts for Node.js, but it does not merge them into one order, so callbacks from the two sides can run in a different order than under Node.js, and the order can vary between runs.
+  Only programs that depend on the ordering between native and island callbacks are affected.

@@ -11,7 +11,7 @@
 import { BOOL, type IrExpr, type IrModule, type IrStmt } from "../../ir/ir.js";
 import type { IrLibFn } from "../../ir/builtin-signatures.js";
 import { mapExprChildren, mapStmtChildren } from "../../ir/traverse.js";
-import { moduleRuntimeFeatures } from "../../ir/runtime-features.js";
+import { moduleUsesAsyncContext } from "../../ir/runtime-features.js";
 
 /** The argument that is the completion callback: its index; "last" for
  * calls whose callback is the final argument when one is passed; or
@@ -45,6 +45,7 @@ const COMPLETION_CALLBACKS: ReadonlyMap<IrLibFn, CallbackPosition> = new Map<
   ["http.requestDynCb", "last"],
   ["http.requestUrlCb", "last"],
   ["net.connectCb", 2],
+  ["net.connectPathCb", 2],
   ["net.listenCb", 2],
   ["net.listenOptsCb", 4],
   ["net.listenOptsReusePortCb", 5],
@@ -148,7 +149,7 @@ function bindCall(e: IrExpr): IrExpr {
 /** Binds the completion callbacks of `mod` when its scheduling carries
  * AsyncLocalStorage contexts. */
 export function bindCompletionCallbacks(mod: IrModule): void {
-  if (!moduleRuntimeFeatures(mod).asyncContext) return;
+  if (!moduleUsesAsyncContext(mod)) return;
   const rewriteExpr = (e: IrExpr): IrExpr => bindCall(mapExprChildren(e, rewriteExpr, rewriteStmt));
   const rewriteStmt = (s: IrStmt): IrStmt => mapStmtChildren(s, rewriteExpr, rewriteStmt);
   for (const fn of mod.functions) fn.body = fn.body.map(rewriteStmt);

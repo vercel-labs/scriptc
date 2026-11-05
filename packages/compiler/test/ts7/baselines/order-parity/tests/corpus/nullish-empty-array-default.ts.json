@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/nullish-empty-array-default.ts"
+ ],
+ "diags": []
+}

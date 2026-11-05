@@ -1,6 +1,10 @@
 #ifndef _WIN32
 #define _POSIX_C_SOURCE 200809L
 #endif
+/* macOS declares mkdtemp only with the Darwin extensions visible. */
+#if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)
+#define _DARWIN_C_SOURCE 1
+#endif
 #include "ts7-process.h"
 #include <assert.h>
 #include <errno.h>
@@ -145,6 +149,20 @@ static void exchange_cases(void) {
   scriptc_ts7_close(newer);
 }
 
+/* A reply that arrives after the read's poll window: the read waits for it. */
+static void slow_reply_cases(void) {
+  uint32_t id = start("slow-echo", 0);
+  assert(id != 0);
+  const uint8_t bytes[3] = {1, 2, 3};
+  uint8_t result[3] = {0};
+  for (unsigned round = 0; round < 3; round++) {
+    write_exact(id, bytes, sizeof(bytes), 0, sizeof(bytes));
+    read_exact(id, result, sizeof(result));
+    assert(memcmp(bytes, result, sizeof(bytes)) == 0);
+  }
+  scriptc_ts7_close(id);
+}
+
 static void failure_cases(void) {
   uint8_t bytes[1] = {42};
   const char *saved = executable;
@@ -204,9 +222,9 @@ static void attach_cases(void) {
   uint8_t bytes[4];
   snprintf(directory, sizeof(directory), "%s/scriptc", runtime);
   snprintf(socket_path, sizeof(socket_path), "%s/server.sock", directory);
-  // The first build starts the server with its idle time and memory limit.
-  // The server holds none of the build's descriptors, such as an output
-  // pipe its caller reads to the end.
+  // The first build starts the server with its idle time and memory limit,
+  // in the root directory. The server holds none of the build's descriptors,
+  // such as an output pipe its caller reads to the end.
   int output[2];
   assert(pipe(output) == 0);
   uint32_t first = attach("server", "listen", 123);
@@ -220,6 +238,7 @@ static void attach_cases(void) {
   snprintf(expected, sizeof(expected), "%s 1\n", socket_path);
   expect_line(first, expected);
   expect_line(first, "123\n");
+  expect_line(first, "/\n");
   write_exact(first, (const uint8_t *)"ping", 4, 0, 4);
   read_exact(first, bytes, 4);
   assert(memcmp(bytes, "ping", 4) == 0);
@@ -284,6 +303,7 @@ static int process_main(int argc, char **argv) {
   unsigned before = resource_count();
   argument_cases();
   exchange_cases();
+  slow_reply_cases();
   failure_cases();
 #ifndef _WIN32
   attach_cases();

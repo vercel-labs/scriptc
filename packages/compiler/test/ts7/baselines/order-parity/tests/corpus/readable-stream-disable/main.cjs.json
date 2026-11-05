@@ -4,42 +4,6 @@
  ],
  "diags": [
   {
-   "code": "SC0001",
-   "message": "Could not find a declaration file for module 'readable-stream'. '<repo>/tests/corpus/readable-stream-disable/node_modules/readable-stream/readable.js' implicitly has an 'any' type.\n  Try `npm i --save-dev @types/readable-stream` if it exists or add a new declaration (.d.ts) file containing `declare module 'readable-stream';`",
-   "loc": {
-    "file": "<repo>/tests/corpus/readable-stream-disable/main.cjs",
-    "start": 581,
-    "end": 598
-   }
-  },
-  {
-   "code": "SC0001",
-   "message": "Could not find a declaration file for module 'readable-stream/transform'. '<repo>/tests/corpus/readable-stream-disable/node_modules/readable-stream/transform.js' implicitly has an 'any' type.\n  Try `npm i --save-dev @types/readable-stream` if it exists or add a new declaration (.d.ts) file containing `declare module 'readable-stream/transform';`",
-   "loc": {
-    "file": "<repo>/tests/corpus/readable-stream-disable/main.cjs",
-    "start": 625,
-    "end": 652
-   }
-  },
-  {
-   "code": "SC0001",
-   "message": "Could not find a declaration file for module 'readable-stream/passthrough'. '<repo>/tests/corpus/readable-stream-disable/node_modules/readable-stream/passthrough.js' implicitly has an 'any' type.\n  Try `npm i --save-dev @types/readable-stream` if it exists or add a new declaration (.d.ts) file containing `declare module 'readable-stream/passthrough';`",
-   "loc": {
-    "file": "<repo>/tests/corpus/readable-stream-disable/main.cjs",
-    "start": 681,
-    "end": 710
-   }
-  },
-  {
-   "code": "SC0001",
-   "message": "Could not find a declaration file for module 'readable-stream/writable'. '<repo>/tests/corpus/readable-stream-disable/node_modules/readable-stream/writable.js' implicitly has an 'any' type.\n  Try `npm i --save-dev @types/readable-stream` if it exists or add a new declaration (.d.ts) file containing `declare module 'readable-stream/writable';`",
-   "loc": {
-    "file": "<repo>/tests/corpus/readable-stream-disable/main.cjs",
-    "start": 736,
-    "end": 762
-   }
-  },
-  {
    "code": "SC1010",
    "message": "the 'readable-stream' module is not supported yet",
    "loc": {

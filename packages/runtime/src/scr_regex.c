@@ -216,6 +216,7 @@ static uint8_t *scr_regex_bc(ScrRegex *re) {
      * compiles lazily, so the failure lands here (documented divergence —
      * tsc's parser has already caught plain syntax errors, so this is
      * rare). */
+    scr_stdout_settle();
     fflush(stdout);
     scr_trap_fmt("scriptc: SyntaxError: Invalid regular expression: /%s/%s: %s\n",
                  re->source->data, re->flags->data, error_msg);
@@ -563,6 +564,7 @@ __attribute__((noinline)) static int scr_exec_engine(ScrRegexInput *input, const
     ? scr_re_native_exec(input->native, input->capture, input->data, index, input->len)
     : lre_exec(input->capture, bc, input->data, index, input->len, input->wide, lre_opaque());
   if (rc < 0) {
+    scr_stdout_settle();
     fflush(stdout);
     scr_trap("scriptc: regular expression execution failed\n");
   }
@@ -1838,7 +1840,7 @@ ScrStr *scr_regex_replace_fn(ScrStr *s, ScrRegex *re, ScrClosure *f, uint32_t ar
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
  * DEALINGS IN THE SOFTWARE.
- * Node v24.22.0's pattern (internal/util/inspect.js), applied with /g:
+ * Node v24.22.1's pattern (internal/util/inspect.js), applied with /g:
  *   (?:\u001B\][\s\S]*?(?:\u0007|\u001B\u005C|\u009C))
  *   |[\u001B\u009B][[\]()#;?]*(?:\d{1,4}(?:[;:]\d{0,4})*)?
  *    [\dA-PR-TZcf-nq-uy=><~]
@@ -2145,22 +2147,55 @@ static void scr_case_put_cp(ScrJsonBuf *b, uint32_t cp) {
   }
 }
 
+/* 0x80 in each byte of `w`, eight ASCII bytes, that lies in [first, last].
+ * Every byte is below 0x80, so neither sum carries into the next byte: a
+ * byte's sum with 0x80 - first has its top bit set when the byte is at
+ * least `first`, and its sum with 0x7f - last when it is above `last`. */
+static inline uint64_t scr_ascii_range_mask(uint64_t w, unsigned char first, unsigned char last) {
+  const uint64_t ones = UINT64_C(0x0101010101010101);
+  return (w + ones * (uint64_t)(0x80 - first)) & ~(w + ones * (uint64_t)(0x7f - last)) &
+         (ones * 0x80);
+}
+
 static ScrStr *scr_str_case_conv(const ScrStr *s, int to_lower) {
   unsigned char first = to_lower ? 'A' : 'a';
   unsigned char last = to_lower ? 'Z' : 'z';
   if (scr_text_ascii(s)) {
+    /* ASCII text converts eight bytes at a time: a letter of the other
+     * case differs from its conversion only in bit 0x20. */
     size_t changed = 0;
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    for (; changed + 8 <= s->len; changed += 8) {
+      uint64_t w;
+      memcpy(&w, s->data + changed, 8);
+      uint64_t letters = scr_ascii_range_mask(w, first, last);
+      if (letters != 0) {
+        changed += (size_t)__builtin_ctzll(letters) >> 3;
+        break;
+      }
+    }
+#endif
     while (changed < s->len &&
            ((unsigned char)s->data[changed] < first || (unsigned char)s->data[changed] > last))
       changed++;
     if (changed == s->len) return scr_str_retain((ScrStr *)s);
     ScrStr *out = scr_str_alloc_raw(s->len, s->len);
     memcpy(out->data, s->data, changed);
-    for (size_t i = changed; i < s->len; i++) {
+    size_t i = changed;
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    for (; i + 8 <= s->len; i += 8) {
+      uint64_t w;
+      memcpy(&w, s->data + i, 8);
+      w ^= scr_ascii_range_mask(w, first, last) >> 2;
+      memcpy(out->data + i, &w, 8);
+    }
+#endif
+    for (; i < s->len; i++) {
       unsigned char c = (unsigned char)s->data[i];
       out->data[i] = (char)(c >= first && c <= last ? c ^ 0x20 : c);
     }
     out->data[s->len] = '\0';
+    scr_str_note_ascii(out);
     return out;
   }
   ScrJsonBuf b;

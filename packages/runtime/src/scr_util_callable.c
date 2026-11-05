@@ -311,7 +311,7 @@ ScrDyn *scr_util_deprecate(ScrDyn *fn, ScrDyn *msg, ScrDyn *code, ScrDyn *option
     return NULL;
   }
   ScrClosure *closure = scr_closure_new(NULL, UC_DEP_CAPS);
-  closure->function_kind = 4; /* an ordinary function with its own prototype */
+  closure->function_kind = SCR_CLOSURE_KIND_OWN_PROTOTYPE;
   closure->caps[UC_DEP_FN] = uc_box(scr_dyn_retain(fn));
   closure->caps[UC_DEP_MSG] = uc_box(scr_dyn_retain(msg));
   closure->caps[UC_DEP_CODE] = uc_box(scr_dyn_retain(code));
@@ -557,7 +557,7 @@ ScrDyn *scr_util_callbackify(ScrDyn *original) {
     return NULL;
   }
   ScrClosure *closure = scr_closure_new(NULL, 1);
-  closure->function_kind = 4; /* an ordinary function with its own prototype */
+  closure->function_kind = SCR_CLOSURE_KIND_OWN_PROTOTYPE;
   closure->caps[0] = uc_box(scr_dyn_retain(original));
   ScrDyn *callbackified =
     scr_dyn_new_func(closure, uc_callbackified_call, 0, "native:util.callbackify", "callbackified");
@@ -708,7 +708,7 @@ static ScrDyn *uc_debug_impl(bool enabled, ScrDyn *set) {
       scr_str_release(text);
     }
     ScrClosure *closure = scr_closure_new(NULL, 1);
-    closure->function_kind = 4;
+    closure->function_kind = SCR_CLOSURE_KIND_OWN_PROTOTYPE;
     closure->caps[0] = uc_box(scr_dyn_retain(set));
     impl = scr_dyn_new_func(closure, uc_debug_write, 0, "native:util.debuglog", "debug");
   } else {

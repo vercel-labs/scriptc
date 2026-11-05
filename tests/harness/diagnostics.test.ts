@@ -39,7 +39,14 @@ describe(`diagnostics corpus (${files.length} programs)`, () => {
       if (name.startsWith("checker-panic-")) process.env["SCRIPTC_CHECKER"] = "tsgo";
       let result: Awaited<ReturnType<typeof compile>>;
       try {
-        result = await compile(file, { outPath: join(outDir, "never"), outDir });
+        // --tier=static-only: these programs pin today's refusals, which
+        // localized failure otherwise turns into checked dynamic slots
+        // (the snapshots double as its proof that static-only keeps them).
+        result = await compile(file, {
+          outPath: join(outDir, "never"),
+          outDir,
+          tier: "static-only",
+        });
       } finally {
         if (checker === undefined) delete process.env["SCRIPTC_CHECKER"];
         else process.env["SCRIPTC_CHECKER"] = checker;

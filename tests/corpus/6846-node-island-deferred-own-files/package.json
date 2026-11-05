@@ -1,0 +1,1 @@
+{ "name": "island-deferred-own-files", "private": true, "type": "module", "scriptc": { "packages": { "data-pkg": "node" } } }

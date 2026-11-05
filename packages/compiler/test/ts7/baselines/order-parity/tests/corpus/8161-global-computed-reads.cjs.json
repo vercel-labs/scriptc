@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8161-global-computed-reads.cjs"
+ ],
+ "diags": []
+}

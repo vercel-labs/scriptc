@@ -1,3 +1,4 @@
+import { lowerWrapperToObject, programCreatesWrappers } from "../primitive-wrappers.js";
 import { keyedHelperName } from "../stable-names.js";
 import { nullProtoRecordShape, recordNullProtoTest } from "../null-prototype.js";
 import { countedFor, numLit, varRef } from "../../../ir/build.js";
@@ -21,12 +22,14 @@ import {
   type SrcLoc,
   UNDEFINED_T,
   arrayOf,
+  canDynCheckTo,
   isRefCounted,
   isSupportedIndexValue,
   isUnitType,
   typeEquals,
 } from "../../../ir/ir.js";
 import { tryLowerExpression } from "../expressions/try-lower-expression.js";
+import { recordMayKeepSource, recordSourceTest } from "../record-sources.js";
 import { locOf } from "../../program.js";
 import { typeKey } from "../../type-mapper.js";
 import { type WidthLift } from "../lowerer.js";
@@ -50,6 +53,13 @@ export function lowerObjectConstructor(
   }
   if (args.length !== 1 || ts.isSpreadElement(args[0]!)) return null;
   const value = lowerer.lowerExpr(args[0]!);
+  // ToObject of a value that may be a primitive, once the program creates
+  // wrapper objects (programCreatesWrappers counts this very call).
+  if (
+    ["dyn", "string", "f64", "bool"].includes(value.type.kind) &&
+    (lowerer.createsWrappers ??= programCreatesWrappers(lowerer))
+  )
+    return lowerWrapperToObject(lowerer, lowerer.coerceToExpected(value, DYN), loc);
   if (value.kind === "dynObjLit" || value.kind === "dynArrLit") return value;
   if (
     [
@@ -869,6 +879,143 @@ function lowerFromEntriesStringRows(
   return { kind: "call", callee: helper, args: [receiver], type: resultT, loc };
 }
 
+/** One destination-field initializer of the overflow capture reshape: a
+ * directly-lifted source field, or the target field's undefined arm (left
+ * absent for a runtime keyed write). */
+export type RecordOvfFieldInit =
+  | { name: string; kind: "undef"; unionId: string; utag: number }
+  | { name: string; kind: "direct"; src: IrType; lift: WidthLift };
+
+/** The planning half of lowerRecordOvfCaptureHelper (its doc is the
+ * contract): the same gates, with no interning and no observable state (a
+ * speculative widthLiftPlan call must not mark the source's key order
+ * observed — the builder does that), so the width relation can promise
+ * the reshape before any helper exists. */
+export interface RecordOvfCapturePlan {
+  inits: RecordOvfFieldInit[];
+  fieldLifts: Map<string, WidthLift | "dyn">;
+  orderedFields: IrRecordShape["fields"];
+  consumed: Set<string>;
+  /** How the source's own overflow slot enters the target's value slot. */
+  ovfLift: WidthLift | "dyn" | null;
+}
+
+export function recordOvfCapturePlan(
+  lowerer: Lowerer,
+  fromId: string,
+  toId: string,
+): RecordOvfCapturePlan | null {
+  const from = lowerer.shapes.get(fromId);
+  const to = lowerer.shapes.get(toId);
+  if (!from || !to?.indexValue || from.tuple || to.tuple) return null;
+  const planningKey = `ovfp:${fromId}:${toId}`;
+  // Recursive shapes re-enter their own pair through a field: assume the
+  // pair is coercible while the outer plan checks its other fields (the
+  // same rule recordWidthPlan applies).
+  if (lowerer.coercions.planning.has(planningKey))
+    return {
+      inits: [],
+      fieldLifts: new Map(),
+      orderedFields: [],
+      consumed: new Set(),
+      ovfLift: null,
+    };
+  lowerer.coercions.planning.add(planningKey);
+  try {
+    const fIv = from.indexValue ?? null;
+    const tIv = to.indexValue;
+    // How a source value enters the target's value slot: identity, the
+    // dyn conversion, or a width lift (wrap/retag/nested reshape).
+    const slotLift = (t: IrType): WidthLift | "dyn" | null => {
+      if (typeEquals(t, tIv)) return { how: "copy" };
+      if (tIv.kind === "dyn" && (t.kind === "dyn" || lowerer.dynConvertible(t))) return "dyn";
+      return lowerer.widthLiftPlan(t, tIv);
+    };
+    // The overflow value slot must line up (sources without an index
+    // signature have no overflow to carry over).
+    if (fIv && slotLift(fIv) === null) return null;
+    // Target declared fields initialize one of two ways. A same-named
+    // SOURCE declared field whose type lifts initializes the slot DIRECTLY
+    // (consumed — no keyed write below): the declared half of a width flow
+    // into a hybrid target (`{ a: 1, b: 2 }` into `{ a: number;
+    // [k: string]: number }`), which is also what admits REQUIRED declared
+    // target fields — tsc guarantees the source declares them (an index
+    // signature alone never satisfies a required member), and an
+    // index-signature source's OVERFLOW can never collide with them (its
+    // own declared name owns the key). Every other target field defaults
+    // to its undefined arm (fresh record), so it must be optional-flavored
+    // and must accept a runtime collision (dyn slots validate via dynCheck
+    // — fields must be dyn-convertible; typed slots write through
+    // directly).
+    const inits: RecordOvfFieldInit[] = [];
+    const consumed = new Set<string>();
+    for (const tf of to.fields) {
+      const sf = from.fields.find((f) => f.name === tf.name);
+      const directLift = sf ? lowerer.widthLiftPlan(sf.type, tf.type) : null;
+      if (sf && directLift) {
+        inits.push({ name: tf.name, kind: "direct", src: sf.type, lift: directLift });
+        consumed.add(tf.name);
+        continue;
+      }
+      if (tf.type.kind !== "union") return null;
+      const utag = lowerer.armTag(tf.type.unionId, UNDEFINED_T);
+      if (utag < 0) return null;
+      if (tIv.kind === "dyn" ? !lowerer.dynConvertible(tf.type) : !typeEquals(tf.type, tIv))
+        return null;
+      inits.push({ name: tf.name, kind: "undef", unionId: tf.type.unionId, utag });
+    }
+    // Every source declared field must flow into the keyed-write slot —
+    // in DECLARATION order (insertion order below; declaredOrder omits
+    // internal '%'-fields, which never enter the copy).
+    const orderedFields = from.declaredOrder
+      ? from.declaredOrder.flatMap((n) => {
+          const f = from.fields.find((x) => x.name === n);
+          return f ? [f] : [];
+        })
+      : from.fields;
+    const fieldLifts = new Map<string, WidthLift | "dyn">();
+    for (const ff of orderedFields) {
+      if (consumed.has(ff.name)) continue; // direct-initialized above
+      const lift = slotLift(ff.type);
+      if (lift === null) return null;
+      fieldLifts.set(ff.name, lift);
+    }
+    // DISPATCH writes — keys that can hit a declared target slot: the
+    // overflow loop's runtime keys, and a literal source-field name the
+    // target also declares. Non-dyn slots store THROUGH on a collision, so
+    // such writes need every declared field to BE the slot type (the
+    // validator's recordKeySet rule); dyn slots validate per field
+    // (dynCheck), so each field must be dyn-convertible. Writes to
+    // literal names the target does NOT declare are overflowOnly and
+    // exempt — which is what lets a direct-initialized required field
+    // (`id: number` beside a `number | undefined` slot) coexist with a
+    // declared-only source, while an index-signature source declines.
+    const dispatchWrites =
+      fIv !== undefined ||
+      orderedFields.some(
+        (ff) => !consumed.has(ff.name) && to.fields.some((f) => f.name === ff.name),
+      );
+    if (dispatchWrites) {
+      if (
+        tIv.kind === "dyn"
+          ? !to.fields.every((f) => lowerer.dynConvertible(f.type))
+          : !to.fields.every((f) => typeEquals(f.type, tIv))
+      ) {
+        return null;
+      }
+    }
+    return {
+      inits,
+      fieldLifts,
+      orderedFields,
+      consumed,
+      ovfLift: fIv ? slotLift(fIv) : null,
+    };
+  } finally {
+    lowerer.coercions.planning.delete(planningKey);
+  }
+}
+
 /** Interned `%rec.capture.<n>(s)` — the INDEX-SIGNATURE reshape behind
  * `Object.fromEntries(entries) as ModelPricing` (hybrid→hybrid width
  * coercion) and `const r: Record<string, number> = { a: 1, b: 2 }`
@@ -891,104 +1038,114 @@ function lowerFromEntriesStringRows(
  * slot), and every target field must either be initialized directly by
  * a same-named source declared field (the rule that admits REQUIRED
  * declared members) or be optional-flavored (the fresh record's
- * default) and writable at runtime. */
+ * default) and writable at runtime.
+ *
+ * The width relation's `{ how: "ovf" }` lift (a record into an
+ * index-signature record arm) builds this same helper through
+ * recordOvfCapturePlan. */
 export function lowerRecordOvfCaptureHelper(
   lowerer: Lowerer,
   fromId: string,
   toId: string,
   loc: SrcLoc,
 ): string | null {
-  const from = lowerer.shapes.get(fromId);
+  return buildRecordCaptureHelper(lowerer, fromId, toId, loc, {
+    key: `ovf:${fromId}:${toId}`,
+    namePrefix: "%rec.capture",
+    excluded: EMPTY_CAPTURE_EXCLUSION,
+    propagateNullProto: true,
+    keepSourceTail: true,
+  });
+}
+
+/** Interned `%rec.rest.<n>(s)` — the fresh object `const { a, x, ...rest } =
+ * s` binds over an INDEX-SIGNATURE source (or into an index-signature rest
+ * type): the capture reshape with an explicit EXCLUSION set, which is the
+ * one thing JavaScript's CopyDataProperties does differently from a plain
+ * reshape. Declared target fields the two shapes share are direct-copied
+ * (presence kept), every other source declared field is keyed-written in
+ * declaration order, and the source overflow is copied in JS own-key order
+ * — each skipping an excluded literal key. The result is always a fresh
+ * object with `Object.prototype` (a rest copy never inherits its source's
+ * null prototype), so `nullProto` is not propagated. Null when the pair is
+ * outside the matrix (recordOvfCapturePlan's gates), when the rest type
+ * declares an excluded name (never a rest type tsc produces), or when the
+ * source could keep an out-of-shape view that the field-by-field rebuild
+ * cannot see — the caller keeps its named fence for those. */
+export function lowerRecordRestCaptureHelper(
+  lowerer: Lowerer,
+  fromId: string,
+  toId: string,
+  excluded: readonly string[],
+  loc: SrcLoc,
+): string | null {
+  const names = [...new Set(excluded)].sort();
+  return buildRecordCaptureHelper(lowerer, fromId, toId, loc, {
+    // The set is part of the key, spelled so that two DIFFERENT sets can
+    // never produce one spelling: a property name may hold a comma
+    // (`{ "a,b": x, ...rest }` beside `{ a, b, ...rest }`) or be empty,
+    // and either would join into the other set's text.
+    key: `rest:${fromId}:${toId}:${JSON.stringify(names)}`,
+    namePrefix: "%rec.rest",
+    excluded: new Set(names),
+    propagateNullProto: false,
+    keepSourceTail: false,
+  });
+}
+
+const EMPTY_CAPTURE_EXCLUSION: ReadonlySet<string> = new Set();
+
+interface RecordCaptureOptions {
+  /** The interned-helper key (its hash names the function). */
+  key: string;
+  namePrefix: string;
+  /** Literal keys the reshape must NOT copy (the rest's consumed set). */
+  excluded: ReadonlySet<string>;
+  /** Whether a null-prototype source keeps its null prototype in the
+   * result. A rest copy is a fresh ordinary object, so it never does. */
+  propagateNullProto: boolean;
+  /** Whether a closed source's kept out-of-shape view is rebuilt through
+   * the checked conversion (a rest copy would carry the excluded keys). */
+  keepSourceTail: boolean;
+}
+
+function buildRecordCaptureHelper(
+  lowerer: Lowerer,
+  fromId: string,
+  toId: string,
+  loc: SrcLoc,
+  opts: RecordCaptureOptions,
+): string | null {
+  const plan = recordOvfCapturePlan(lowerer, fromId, toId);
+  if (!plan) return null;
   const to = lowerer.shapes.get(toId);
-  if (!from || !to?.indexValue || from.tuple || to.tuple) return null;
+  const from = lowerer.shapes.get(fromId);
+  if (!to || !from) return null;
   const fIv = from.indexValue ?? null;
   const tIv = to.indexValue;
-  // How a source value enters the target's value slot: identity, the
-  // dyn conversion, or a width lift (wrap/retag/nested reshape).
-  const slotLift = (t: IrType): WidthLift | "dyn" | null => {
-    if (typeEquals(t, tIv)) return { how: "copy" };
-    if (tIv.kind === "dyn" && (t.kind === "dyn" || lowerer.dynConvertible(t))) return "dyn";
-    return lowerer.widthLiftPlan(t, tIv);
-  };
-  // The overflow value slot must line up (sources without an index
-  // signature have no overflow to carry over).
-  if (fIv && slotLift(fIv) === null) return null;
-  // Target declared fields initialize one of two ways. A same-named
-  // SOURCE declared field whose type lifts initializes the slot DIRECTLY
-  // (consumed — no keyed write below): the declared half of a width flow
-  // into a hybrid target (`{ a: 1, b: 2 }` into `{ a: number;
-  // [k: string]: number }`), which is also what admits REQUIRED declared
-  // target fields — tsc guarantees the source declares them (an index
-  // signature alone never satisfies a required member), and an
-  // index-signature source's OVERFLOW can never collide with them (its
-  // own declared name owns the key). Every other target field defaults
-  // to its undefined arm (fresh record), so it must be optional-flavored
-  // and must accept a runtime collision (dyn slots validate via dynCheck
-  // — fields must be dyn-convertible; typed slots write through
-  // directly).
-  type FieldInit =
-    | { name: string; kind: "undef"; unionId: string; utag: number }
-    | { name: string; kind: "direct"; src: IrType; lift: WidthLift };
-  const inits: FieldInit[] = [];
-  const consumed = new Set<string>();
-  for (const tf of to.fields) {
-    const sf = from.fields.find((f) => f.name === tf.name);
-    const directLift = sf ? lowerer.widthLiftPlan(sf.type, tf.type) : null;
-    if (sf && directLift) {
-      inits.push({ name: tf.name, kind: "direct", src: sf.type, lift: directLift });
-      consumed.add(tf.name);
-      continue;
-    }
-    if (tf.type.kind !== "union") return null;
-    const utag = lowerer.armTag(tf.type.unionId, UNDEFINED_T);
-    if (utag < 0) return null;
-    if (tIv.kind === "dyn" ? !lowerer.dynConvertible(tf.type) : !typeEquals(tf.type, tIv))
-      return null;
-    inits.push({ name: tf.name, kind: "undef", unionId: tf.type.unionId, utag });
-  }
-  // Every source declared field must flow into the keyed-write slot —
-  // in DECLARATION order (insertion order below; declaredOrder omits
-  // internal '%'-fields, which never enter the copy).
+  if (tIv === undefined) return null;
+  const { excluded, propagateNullProto } = opts;
+  if (excluded.size > 0 && to.fields.some((f) => excluded.has(f.name))) return null;
+  // A rest reshape over a CLOSED source that can keep an out-of-shape view
+  // cannot see that view's keys, and the checked-conversion tail would
+  // carry the excluded ones back in — decline (the caller keeps its named
+  // fence).
+  if (
+    !opts.keepSourceTail &&
+    fIv === null &&
+    recordMayKeepSource(lowerer, { kind: "record", shapeId: fromId })
+  )
+    return null;
+  // The copy below writes the source's declared fields in order, so a
+  // program that reaches it observes that order (the plan itself is pure:
+  // a speculative widthLiftPlan call must not mark a shape observed).
   lowerer.keyOrder.observed.add(from.id);
-  const orderedFields = from.declaredOrder
-    ? from.declaredOrder.flatMap((n) => {
-        const f = from.fields.find((x) => x.name === n);
-        return f ? [f] : [];
-      })
-    : from.fields;
-  const fieldLifts = new Map<string, WidthLift | "dyn">();
-  for (const ff of orderedFields) {
-    if (consumed.has(ff.name)) continue; // direct-initialized above
-    const lift = slotLift(ff.type);
-    if (lift === null) return null;
-    fieldLifts.set(ff.name, lift);
-  }
-  // DISPATCH writes — keys that can hit a declared target slot: the
-  // overflow loop's runtime keys, and a literal source-field name the
-  // target also declares. Non-dyn slots store THROUGH on a collision, so
-  // such writes need every declared field to BE the slot type (the
-  // validator's recordKeySet rule); dyn slots validate per field
-  // (dynCheck), so each field must be dyn-convertible. Writes to
-  // literal names the target does NOT declare are overflowOnly and
-  // exempt — which is what lets a direct-initialized required field
-  // (`id: number` beside a `number | undefined` slot) coexist with a
-  // declared-only source, while an index-signature source declines.
-  const dispatchWrites =
-    fIv !== undefined ||
-    orderedFields.some((ff) => !consumed.has(ff.name) && to.fields.some((f) => f.name === ff.name));
-  if (dispatchWrites) {
-    if (
-      tIv.kind === "dyn"
-        ? !to.fields.every((f) => lowerer.dynConvertible(f.type))
-        : !to.fields.every((f) => typeEquals(f.type, tIv))
-    ) {
-      return null;
-    }
-  }
-  const key = `ovf:${fromId}:${toId}`;
+  const { fieldLifts, orderedFields, consumed } = plan;
+  const inits = excluded.size === 0 ? plan.inits : plan.inits.filter((d) => !excluded.has(d.name));
+  const key = opts.key;
   const existing = lowerer.valueHelpers.get(key);
   if (existing) return existing;
-  const name = keyedHelperName(lowerer, "%rec.capture", key);
+  const name = keyedHelperName(lowerer, opts.namePrefix, key);
   lowerer.valueHelpers.set(key, name);
   const fromT: IrType = { kind: "record", shapeId: fromId };
   const toT: IrType = { kind: "record", shapeId: toId };
@@ -1039,7 +1196,7 @@ export function lowerRecordOvfCaptureHelper(
   // The source and its reshape are one object in JavaScript, so a
   // null-prototype source (a match's groups, Object.groupBy) keeps it.
   const init: IrExpr =
-    nullProtoRecordShape(lowerer, fromT) && nullProtoRecordShape(lowerer, toT)
+    propagateNullProto && nullProtoRecordShape(lowerer, fromT) && nullProtoRecordShape(lowerer, toT)
       ? {
           kind: "ternary",
           cond: recordNullProtoTest(sRef, fromId, loc),
@@ -1054,7 +1211,7 @@ export function lowerRecordOvfCaptureHelper(
   // Source declared fields in declaration order, skipping unset
   // optionals (stance 37) and the direct-initialized (consumed) names.
   for (const ff of orderedFields) {
-    if (consumed.has(ff.name)) continue;
+    if (consumed.has(ff.name) || excluded.has(ff.name)) continue;
     const raw: IrExpr = {
       kind: "recordGet",
       obj: sRef,
@@ -1089,10 +1246,46 @@ export function lowerRecordOvfCaptureHelper(
     body.push(fieldStmt);
   }
   // The source overflow, in JS own-key order (only index-signature
-  // sources carry one).
+  // sources carry one). A rest reshape skips the excluded literal keys
+  // here (a strEq chain against the key literal), which is what removes
+  // the consumed entries from the fresh object.
   const ksT = arrayOf(STRING);
   if (fIv) {
-    const ovfLift = slotLift(fIv)!;
+    const ovfLift = plan.ovfLift!;
+    const ovfWrite: IrStmt = {
+      kind: "recordKeySet",
+      obj: outRef,
+      shapeId: toId,
+      key: varRef("k.0", STRING, loc),
+      value: intoSlot(
+        {
+          kind: "recordKeyGet",
+          obj: sRef,
+          shapeId: fromId,
+          key: varRef("k.0", STRING, loc),
+          overflowOnly: true,
+          type: fIv,
+          loc,
+        },
+        ovfLift,
+      ),
+      loc,
+    };
+    let notExcluded: IrExpr | null = null;
+    for (const name of [...excluded].sort()) {
+      const test: IrExpr = {
+        kind: "strEq",
+        negated: true,
+        left: varRef("k.0", STRING, loc),
+        right: { kind: "strLit", value: name, type: STRING, loc },
+        type: BOOL,
+        loc,
+      };
+      notExcluded =
+        notExcluded === null
+          ? test
+          : { kind: "logical", op: "&&", left: notExcluded, right: test, type: BOOL, loc };
+    }
     body.push(
       {
         kind: "varDecl",
@@ -1123,31 +1316,55 @@ export function lowerRecordOvfCaptureHelper(
             },
             loc,
           },
-          {
-            kind: "recordKeySet",
-            obj: outRef,
-            shapeId: toId,
-            key: varRef("k.0", STRING, loc),
-            value: intoSlot(
-              {
-                kind: "recordKeyGet",
-                obj: sRef,
-                shapeId: fromId,
-                key: varRef("k.0", STRING, loc),
-                overflowOnly: true,
-                type: fIv,
-                loc,
-              },
-              ovfLift,
-            ),
-            loc,
-          },
+          notExcluded === null
+            ? ovfWrite
+            : { kind: "if", cond: notExcluded, then: [ovfWrite], else_: null, loc },
         ],
       ),
     );
   }
+  // A CLOSED source can still hold own keys its shape does not declare: a
+  // record built from the checked-dynamic tree keeps them beside it (the
+  // record-sources.ts view), and every JS copy — spread, Object.assign,
+  // JSON — carries them. The field-by-field rebuild above cannot see
+  // them, so when the source kept such a view, rebuild the target from
+  // that live view instead: the validated keyed conversion the checked
+  // record builder performs, which copies exactly the keys Node copies.
+  // The declared-field copies before this branch are pure writes into a
+  // fresh local, so the redone work is only wasted slot stores on the
+  // rare path where the view exists.
+  // The conversion is only honest when the checked-dynamic tree can check it,
+  // and the view can only exist if the program converts something into a
+  // closed record at all. Both facts are settled before the shape helpers
+  // finalize their bodies, so the tail is chosen there.
+  const sourcedFromView =
+    opts.keepSourceTail &&
+    fIv === null &&
+    recordMayKeepSource(lowerer, fromT) &&
+    canDynCheckTo(
+      toT,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    );
   body.push({ kind: "return", value: outRef, loc });
   const suffix = body.slice(1 + fieldStmts.size);
+  const keptSourceTail = (): IrStmt[] => {
+    const fromView: IrExpr = {
+      kind: "dynCheck",
+      value: { kind: "dynFrom", value: sRef, type: DYN, loc },
+      type: toT,
+      loc,
+    };
+    const fromViewReturn: IrStmt = { kind: "return", value: fromView, loc };
+    const fromViewBranch: IrStmt = {
+      kind: "if",
+      cond: recordSourceTest(sRef, loc),
+      then: [fromViewReturn],
+      else_: null,
+      loc,
+    };
+    return [fromViewBranch, ...suffix];
+  };
   const fn: IrFunction = {
     name,
     params: [{ localId: "s.0", name: "s", type: fromT }],
@@ -1169,13 +1386,15 @@ export function lowerRecordOvfCaptureHelper(
   lowerer.shapeOrderHelperFinalizers.push(() => {
     const current = lowerer.shapes.get(fromId) ?? from;
     const currentOrder = current.declaredOrder ?? current.fields.map((f) => f.name);
+    let tail: IrStmt[] = suffix;
+    if (sourcedFromView && lowerer.recordSourcesPossible) tail = keptSourceTail();
     fn.body = [
       body[0]!,
       ...currentOrder.flatMap((field) => {
         const stmt = fieldStmts.get(field);
         return stmt ? [stmt] : [];
       }),
-      ...suffix,
+      ...tail,
     ];
   });
   lowerer.liftedFns.push(fn);
@@ -1225,14 +1444,46 @@ export function lowerObjectAssignIndexShape(
     return lowerer.widthLiftPlan(t, tIv);
   };
   // Validate EVERY source before interning anything.
-  interface SourcePlan {
+  interface RecordSourcePlan {
+    kind: "record";
     fromId: string;
     fields: { name: string; type: IrType; lift: WidthLift | "dyn" }[];
     ovfLift: (WidthLift | "dyn") | null;
   }
+  /** A source the frontend could only map to the checked-dynamic tree (an
+   * `unknown`/`any` argument, a value whose type it cannot model): nothing
+   * static is known about its keys or values, so the copy walks the
+   * source's own keys at runtime — the shape of the copy Node performs. */
+  interface DynSourcePlan {
+    kind: "dyn";
+  }
+  type SourcePlan = RecordSourcePlan | DynSourcePlan;
+  // A dyn source's values arrive untyped, so each one enters the target's
+  // index-value slot through a CHECKED conversion: a value outside the
+  // slot throws the catchable TypeError where JS stores it (SEMANTICS.md's
+  // cast divergence, the same stance every dyn→typed conversion takes). A
+  // runtime key can collide with a DECLARED target field, and the keyed
+  // write stores a non-dyn value through such a slot unchecked — so those
+  // fields must be the slot type (or, for a dyn slot, dyn-convertible).
+  const dynSourceOpen =
+    tIv.kind === "dyn"
+      ? to.fields.every((f) => lowerer.dynConvertible(f.type))
+      : canDynCheckTo(
+          tIv,
+          (id) => lowerer.shapes.get(id),
+          (id) => lowerer.unions.get(id),
+        ) && to.fields.every((f) => typeEquals(f.type, tIv));
   const plans: SourcePlan[] = [];
   for (const argNode of call.arguments.nodes.slice(1)) {
     const srcIr = lowerer.mapTypeOf(lowerer.typeOf(argNode));
+    if (srcIr?.kind === "dyn") {
+      // The target keeps its typed representation while the checker's
+      // `T & U` answer for a dyn `U` is some other type, so only the
+      // mutate-in-place spelling (result discarded) can be lowered.
+      if (!discarded || !dynSourceOpen) return null;
+      plans.push({ kind: "dyn" });
+      continue;
+    }
     if (srcIr?.kind !== "record") return null;
     const from = lowerer.shapes.get(srcIr.shapeId);
     if (!from || from.tuple) return null;
@@ -1244,7 +1495,7 @@ export function lowerObjectAssignIndexShape(
           return f ? [f] : [];
         })
       : from.fields;
-    const fields: SourcePlan["fields"] = [];
+    const fields: RecordSourcePlan["fields"] = [];
     for (const ff of orderedFields) {
       const lift = slotLift(ff.type);
       if (lift === null) return null;
@@ -1255,9 +1506,9 @@ export function lowerObjectAssignIndexShape(
       ovfLift = slotLift(from.indexValue);
       if (ovfLift === null) return null;
     }
-    plans.push({ fromId: srcIr.shapeId, fields, ovfLift });
+    plans.push({ kind: "record", fromId: srcIr.shapeId, fields, ovfLift });
   }
-  const helperFor = (plan: SourcePlan): string => {
+  const helperFor = (plan: RecordSourcePlan): string => {
     const key = `assign:${targetIr.shapeId}:${plan.fromId}`;
     const existing = lowerer.valueHelpers.get(key);
     if (existing) return existing;
@@ -1400,13 +1651,111 @@ export function lowerObjectAssignIndexShape(
     lowerer.liftedFns.push(fn);
     return name;
   };
+  /** Interned `%obj.assignDyn.<n>(t, s)` — the same keyed-write walk for a
+   * source with no static shape: `Object.keys(s)` own-key order (what
+   * `Object.assign` copies), each value read back through the key and
+   * checked into the target's index-value slot by the keyed write. A
+   * null/undefined source copies nothing, exactly JS's rule that
+   * `Object.assign` SKIPS such sources (where `Object.keys` would throw). */
+  const dynHelperFor = (): string => {
+    const key = `assign:${targetIr.shapeId}:dyn`;
+    const existing = lowerer.valueHelpers.get(key);
+    if (existing) return existing;
+    const name = keyedHelperName(lowerer, "%obj.assignDyn", key);
+    lowerer.valueHelpers.set(key, name);
+    const toT: IrType = { kind: "record", shapeId: targetIr.shapeId };
+    const tRef = varRef("t.0", toT, loc);
+    const sRef = varRef("s.0", DYN, loc);
+    const ksT = arrayOf(STRING);
+    const kRef = varRef("k.0", STRING, loc);
+    const read: IrExpr = { kind: "dynKeyGet", key: kRef, value: sRef, type: DYN, loc };
+    const value: IrExpr =
+      tIv.kind === "dyn" ? read : { kind: "dynCheck", value: read, type: tIv, loc };
+    const fn: IrFunction = {
+      name,
+      params: [
+        { localId: "t.0", name: "t", type: toT },
+        { localId: "s.0", name: "s", type: DYN },
+      ],
+      returnType: toT,
+      locals: [
+        { id: "t.0", name: "t", type: toT, mutable: true },
+        { id: "s.0", name: "s", type: DYN, mutable: false },
+        { id: "ks.0", name: "ks", type: ksT, mutable: false },
+        { id: "i.0", name: "i", type: F64, mutable: true },
+        { id: "k.0", name: "k", type: STRING, mutable: false },
+      ],
+      body: [
+        {
+          kind: "if",
+          cond: { kind: "dynTest", test: "nullish", value: sRef, type: BOOL, loc },
+          then: [{ kind: "return", value: tRef, loc }],
+          else_: [
+            {
+              kind: "varDecl",
+              localId: "ks.0",
+              init: {
+                kind: "libCall",
+                fn: "dyn.objKeyStrings",
+                args: [sRef],
+                type: ksT,
+                loc,
+              },
+              loc,
+            },
+            countedFor(
+              loc,
+              {
+                kind: "arrIntrinsic",
+                method: "length",
+                receiver: varRef("ks.0", ksT, loc),
+                args: [],
+                type: F64,
+                loc,
+              },
+              () => [
+                {
+                  kind: "varDecl",
+                  localId: "k.0",
+                  init: {
+                    kind: "arrayGet",
+                    arr: varRef("ks.0", ksT, loc),
+                    index: varRef("i.0", F64, loc),
+                    type: STRING,
+                    loc,
+                  },
+                  loc,
+                },
+                {
+                  kind: "recordKeySet",
+                  obj: tRef,
+                  shapeId: targetIr.shapeId,
+                  key: kRef,
+                  value,
+                  loc,
+                },
+              ],
+            ),
+          ],
+          loc,
+        },
+        { kind: "return", value: tRef, loc },
+      ],
+      loc,
+    };
+    lowerer.liftedFns.push(fn);
+    return name;
+  };
   let acc = lowerer.lowerExprExpecting(call.arguments.nodes[0]!, targetIr);
   for (let i = 0; i < plans.length; i++) {
-    const src = lowerer.lowerExprExpecting(call.arguments.nodes[i + 1]!, {
-      kind: "record",
-      shapeId: plans[i]!.fromId,
-    });
-    acc = { kind: "call", callee: helperFor(plans[i]!), args: [acc, src], type: targetIr, loc };
+    const plan = plans[i]!;
+    const argNode = call.arguments.nodes[i + 1]!;
+    const src: IrExpr =
+      plan.kind === "dyn"
+        ? lowerer.coerceToExpected(lowerer.lowerExpr(argNode), DYN)
+        : lowerer.lowerExprExpecting(argNode, { kind: "record", shapeId: plan.fromId });
+    const callee = plan.kind === "dyn" ? dynHelperFor() : helperFor(plan);
+    acc = { kind: "call", callee, args: [acc, src], type: targetIr, loc };
   }
   return acc;
 }

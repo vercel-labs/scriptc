@@ -14,3 +14,10 @@ console.log(stats.used_heap_size <= stats.total_heap_size);
 console.log(stats.heap_size_limit > 0, stats.total_available_size <= stats.heap_size_limit);
 console.log(stats.does_zap_garbage === 0 || stats.does_zap_garbage === 1);
 console.log(stats.number_of_native_contexts >= 1, warm.length);
+
+// external_memory is process.memoryUsage().external: it grows by the
+// storage of a new ArrayBuffer.
+const before = v8.getHeapStatistics().external_memory;
+const storage = new Uint8Array(4 * 1024 * 1024);
+const after = v8.getHeapStatistics();
+console.log(after.external_memory - before >= storage.byteLength, after.external_memory <= process.memoryUsage().external);

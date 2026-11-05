@@ -1,0 +1,26 @@
+error-capture-stack-trace-fences.ts:9:25 - error SC2020: 'Error.captureStackTrace on '{ message: string }' values' is part of the standard library types but has no scriptc lowering yet
+
+   8 | const report: Report = { message: "typed" };
+   9 | Error.captureStackTrace(report);
+     |                         ^~~~~~
+  10 | 
+
+  hint: pass an Error instance, or an untyped object in JavaScript
+
+error-capture-stack-trace-fences.ts:12:45 - error SC2020: 'Error.captureStackTrace with this constructor argument' is part of the standard library types but has no scriptc lowering yet
+
+  11 | const arrow = (): void => {};
+  12 | Error.captureStackTrace(new Error("arrow"), arrow);
+     |                                             ^~~~~
+  13 | 
+
+  hint: pass a function declaration, or this.constructor or the class inside its constructor
+
+error-capture-stack-trace-fences.ts:18:35 - error SC2020: 'Error.captureStackTrace with this constructor argument' is part of the standard library types but has no scriptc lowering yet
+
+  17 |     super("wrapped");
+  18 |     Error.captureStackTrace(this, Other);
+     |                                   ^~~~~
+  19 |   }
+
+  hint: pass a function declaration, or this.constructor or the class inside its constructor

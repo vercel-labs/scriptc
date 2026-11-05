@@ -3,8 +3,9 @@ import { numLit, strLit } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
-import { isChildSurfaceMember } from "../surfaces.js";
+import { isChildSurfaceMember, isChildWriterSurfaceMember } from "../surfaces.js";
 import {
+  BIGINT_T,
   BOOL,
   CHILDSTREAM_T,
   CHILDWRITER_T,
@@ -49,6 +50,22 @@ const STATS_FIELDS: Record<string, IrLibFn> = {
   birthtime: "stats.birthtime",
 };
 const DATE_FIELDS = new Set(["atime", "mtime", "ctime", "birthtime"]);
+/** BigIntStats answers a `bigint` for EVERY number member of Stats — the
+ * integers, the `*Ms` millisecond members (the truncated nanosecond
+ * quotient, as Node's binding computes them) and the BigIntStats-only `*Ns`
+ * nanosecond members. Only the four time members stay `Date`s. */
+const NANOSECOND_FIELDS: Record<string, IrLibFn> = {
+  atimeNs: "bigstats.atimeNs",
+  mtimeNs: "bigstats.mtimeNs",
+  ctimeNs: "bigstats.ctimeNs",
+  birthtimeNs: "bigstats.birthtimeNs",
+};
+const BIGINT_STATS_FIELDS: Record<string, IrLibFn> = {
+  ...Object.fromEntries(
+    Object.entries(STATS_FIELDS).map(([name]) => [name, `bigstats.${name}` as IrLibFn]),
+  ),
+  ...NANOSECOND_FIELDS,
+};
 export function lowerBuiltinExtraProperty(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,
@@ -136,6 +153,7 @@ export function lowerBuiltinExtraProperty(
   }
   if (
     kind !== "stats" &&
+    kind !== "bigintStats" &&
     kind !== "fileHandle" &&
     kind !== "dir" &&
     kind !== "spawnRes" &&
@@ -143,7 +161,13 @@ export function lowerBuiltinExtraProperty(
     kind !== "childWriter"
   )
     return null;
-  if (kind === "child" ? !isChildSurfaceMember(lowerer, expr) : !lowerer.isStdlibMember(expr))
+  if (
+    kind === "child"
+      ? !isChildSurfaceMember(lowerer, expr)
+      : kind === "childWriter"
+        ? !isChildWriterSurfaceMember(lowerer, expr)
+        : !lowerer.isStdlibMember(expr)
+  )
     return null;
   const name = expr.name.text;
   const loc = locOf(expr);
@@ -260,11 +284,15 @@ export function lowerBuiltinExtraProperty(
       lowerer.checker.getSymbolAtLocation(expr.name),
     );
   }
-  if (kind === "stats" && Object.hasOwn(STATS_FIELDS, name)) {
+  const statsFields =
+    kind === "stats" ? STATS_FIELDS : kind === "bigintStats" ? BIGINT_STATS_FIELDS : undefined;
+  if (statsFields !== undefined && Object.hasOwn(statsFields, name)) {
     const receiver = lowerer.lowerExpr(expr.expression);
-    const fn = STATS_FIELDS[name]!;
-    // The Date fields are the *Ms values rounded, as Node's dateFromMs builds them.
-    const type = DATE_FIELDS.has(name) ? DATE_T : F64;
+    const fn = statsFields[name]!;
+    // The Date fields are the millisecond value rounded, as Node's
+    // dateFromMs builds them; every other Stats number is a bigint on
+    // BigIntStats.
+    const type = DATE_FIELDS.has(name) ? DATE_T : kind === "bigintStats" ? BIGINT_T : F64;
     return { kind: "libCall", fn, args: [receiver], type, loc };
   }
   if (kind === "spawnRes" && name === "signal") {

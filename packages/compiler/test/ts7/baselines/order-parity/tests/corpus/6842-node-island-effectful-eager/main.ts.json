@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6842-node-island-effectful-eager/main.ts"
+ ],
+ "diags": []
+}

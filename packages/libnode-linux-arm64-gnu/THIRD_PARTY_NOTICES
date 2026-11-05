@@ -1,0 +1,15 @@
+This package contains libnode.so.137, a stripped build of the Node.js shared
+library (https://nodejs.org) from the official source release named in
+manifest.json, built without modification. Node.js is licensed under the
+MIT license. It bundles third-party components, among them V8, ICU,
+OpenSSL, libuv, zlib, brotli, nghttp2, nghttp3, ngtcp2, llhttp, c-ares,
+simdutf, ada and uvwasi, under the BSD, Apache-2.0, Unicode, MIT and
+other permissive licenses. LICENSE is the LICENSE file of that Node.js
+release, which carries the complete license text of Node.js and of every
+bundled component.
+
+libscr_node_bridge.so is the scriptc bridge between the scriptc runtime and Node.js,
+licensed under Apache-2.0 (SCRIPTC_LICENSE).
+
+A program that `scriptc build` links against this package redistributes
+Node.js; scriptc writes these notices next to such a program.

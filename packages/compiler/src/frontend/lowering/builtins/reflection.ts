@@ -10,6 +10,7 @@ import {
   type IrExpr,
   STRING,
   type SrcLoc,
+  VOID,
   arrayOf,
   isUnitType,
 } from "../../../ir/ir.js";
@@ -62,6 +63,72 @@ export function lowerReflectCall(
   }
   if (call.questionDotToken) return null;
   const reflectMember = lowerer.stdlibGlobalMember(access, "Reflect");
+  // Reflect.has(target, key) — the `in` operator's presence query over
+  // the target's checked-dynamic view (own and inherited names, proxy
+  // `has` traps included). A primitive target is Node's TypeError
+  // ("Reflect.has called on non-object"): a statically primitive target
+  // is refused, and a target held as any, unknown or a union is checked
+  // at run time (dyn.reflectHasTarget).
+  if (
+    reflectMember === "has" &&
+    call.arguments.nodes.length === 2 &&
+    !call.arguments.nodes.some(ts.isSpreadElement)
+  ) {
+    const loc = locOf(call);
+    const target = lowerer.lowerExpr(call.arguments.nodes[0]!);
+    const primitive =
+      isUnitType(target.type) ||
+      ["bool", "f64", "string", "bigint", "symbol"].includes(target.type.kind);
+    if (primitive)
+      lowerer.noLowering(
+        "Reflect.has on a primitive target",
+        call.arguments.nodes[0]!,
+        "Node throws a TypeError for a primitive target; narrow to an object first",
+      );
+    if (!lowerer.dynConvertible(target.type))
+      lowerer.noLowering("Reflect.has on this target", call.arguments.nodes[0]!);
+    const key = lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN);
+    if (target.type.kind !== "dyn" && target.type.kind !== "union") {
+      return {
+        kind: "libCall",
+        fn: "dyn.hasKeyComputed",
+        args: [lowerer.coerceToExpected(target, DYN), key],
+        type: BOOL,
+        loc,
+      };
+    }
+    // A target held as any, unknown or a union may be a primitive at run
+    // time: both arguments are evaluated, then the target is checked.
+    const targetLocal = lowerer.declareHiddenLocal("%reflectHasTarget", DYN);
+    const keyLocal = lowerer.declareHiddenLocal("%reflectHasKey", DYN);
+    const targetRef = varRef(targetLocal.id, DYN, loc);
+    return {
+      kind: "seqExpr",
+      stmts: [
+        {
+          kind: "varDecl",
+          localId: targetLocal.id,
+          init: lowerer.coerceToExpected(target, DYN),
+          loc,
+        },
+        { kind: "varDecl", localId: keyLocal.id, init: key, loc },
+        {
+          kind: "exprStmt",
+          expr: { kind: "libCall", fn: "dyn.reflectHasTarget", args: [targetRef], type: VOID, loc },
+          loc,
+        },
+      ],
+      result: {
+        kind: "libCall",
+        fn: "dyn.hasKeyComputed",
+        args: [targetRef, varRef(keyLocal.id, DYN, loc)],
+        type: BOOL,
+        loc,
+      },
+      type: BOOL,
+      loc,
+    };
+  }
   // Reflect.getOwnPropertyDescriptor and Reflect.defineProperty over
   // checked objects (execa's Promise mixin): the Object operations, with
   // defineProperty answering true. A non-object target throws the Object

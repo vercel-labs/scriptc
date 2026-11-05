@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8500-optional-method-call-receivers.ts"
+ ],
+ "diags": []
+}

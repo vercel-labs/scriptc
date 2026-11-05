@@ -1,0 +1,1 @@
+{ "name": "island-deferred-per-module", "private": true, "type": "module", "scriptc": { "packages": { "pkg-a": "node", "pkg-b": "node" } } }

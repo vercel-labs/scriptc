@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8412-module-namespace-untyped/mod.ts",
+  "<repo>/tests/corpus/8412-module-namespace-untyped/mod-default.ts",
+  "<repo>/tests/corpus/8412-module-namespace-untyped/main.ts"
+ ],
+ "diags": []
+}

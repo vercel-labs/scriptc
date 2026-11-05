@@ -94,3 +94,122 @@ test.for([
     invalid,
   );
 });
+
+test("JavaScript async generators may delegate over a runtime async-iterator shape", () => {
+  expect(
+    diagnostics(
+      `export async function* delegated() { yield* { [Symbol.asyncIterator]: 42 }; }
+export async function* looped() { for await (const value of { [Symbol.asyncIterator]() { return "text"; } }) console.dir(value); }`,
+      'import { delegated, looped } from "./library.js"; delegated(); looped();',
+    ),
+  ).toEqual([]);
+});
+
+test("TypeScript keeps the async-iterator demand", () => {
+  expect(
+    diagnostics(
+      "export async function* delegated() { yield* { [Symbol.asyncIterator]: 42 }; }",
+      'import { delegated } from "./library.js"; delegated();',
+      "ts",
+    ).some((diagnostic) => diagnostic.message.includes("Symbol.asyncIterator")),
+  ).toBe(true);
+});
+
+test("a JavaScript module keeps three checker opinions to itself", () => {
+  const library = `export const comma = (1, 2);
+export const arithmetic = null + 1;
+export function* generator() {
+  const sent = yield 1;
+  return sent;
+}
+`;
+  const main =
+    'import { arithmetic, comma, generator } from "./library.js"; console.log(comma, arithmetic, generator);';
+  expect(diagnostics(library, main)).toEqual([]);
+  expect(diagnostics(library, main, "ts").map((diagnostic) => diagnostic.message)).toEqual([
+    "Left side of comma operator is unused and has no side effects.",
+    "The value 'null' cannot be used here.",
+    "'yield' expression implicitly results in an 'any' type because its containing generator lacks a return-type annotation.",
+  ]);
+});
+
+test("a JavaScript module keeps the setter opinion to itself", () => {
+  const library = `export class Store {
+  constructor() {
+    this.stored = 0;
+  }
+  set value(next) {
+    this.stored = next;
+  }
+  get value() {
+    return this.stored;
+  }
+}
+export const bag = {
+  set only(next) {
+    console.log(next);
+  },
+};
+`;
+  const main =
+    'import { Store, bag } from "./library.js"; const store = new Store(); store.value = 2; bag.only = 3; console.log(store.value);';
+  // A JavaScript setter's parameter is whatever the caller passes, and the
+  // lowering gives it checked-dynamic storage and dynamic reads; the
+  // checker's "implicitly any" opinion belongs to TypeScript input, where an
+  // annotation is a promise.
+  expect(diagnostics(library, main)).toEqual([]);
+  expect(diagnostics(library, main, "ts").map((diagnostic) => diagnostic.message)).toContain(
+    "Property 'only' implicitly has type 'any', because its set accessor lacks a parameter type annotation.",
+  );
+});
+
+test.for([
+  [
+    "2704",
+    'export const box = {};\nObject.defineProperty(box, "flag", { value: 1, configurable: true });\nexport function drop() { delete box.flag; }',
+  ],
+  ["2464", "export const box = {};\nexport function keyed() { return { [box]: 1 }; }"],
+  ["2365", "export function joined() { return true + 1; }"],
+  ["2689", "export class Derived extends AsyncIterator {}"],
+  ["1166", 'export class Field { ["a" + "b"] = 1; }'],
+  [
+    "7032",
+    "export class Hidden { set #slot(next) { console.log(next); } run(value) { this.#slot = value; } }",
+  ],
+] as const)("a JavaScript module keeps the TS%s opinion it cannot lower", ([, library]) => {
+  // These codes stay refused: each names a program the lowerer cannot build
+  // exactly (a delete of a builtin's own property, a class element's computed
+  // key, an operator on operands it cannot convert, a class over a stdlib
+  // base, a class field with no stable key), so the relaxation must not
+  // admit them. The base is the async iterator interface: `extends Iterator`
+  // is a program the lowering builds, so it no longer carries an opinion to
+  // keep. The invalid assignment-target pair (2364 `f() += g()`,
+  // 2357 `f()++`) stays refused the same way: Node calls `f`, then throws.
+  expect(
+    diagnostics(library, 'import * as library from "./library.js"; console.log(library);').length,
+  ).toBeGreaterThan(0);
+});
+
+test("a checked JavaScript file keeps a typed slot its JSDoc declared", () => {
+  // TS2322 is one of the opinion table's `checkedJs: "enforce"` rows: a
+  // project that asked tsc to check its JavaScript keeps the error, while
+  // the same file unchecked takes the opinion (nothing at runtime checks the
+  // annotation Node never reads).
+  const main = 'import * as library from "./library.js"; console.log(library);';
+  const library = "/** @type {string} */\nexport let box = 1;\n";
+  expect(diagnostics(`// @ts-check\n${library}`, main).map((d) => d.message)).toContain(
+    "Type 'number' is not assignable to type 'string'.",
+  );
+  expect(diagnostics(library, main)).toEqual([]);
+});
+
+test("a checked JavaScript file still takes the opinions its JSDoc never asked for", () => {
+  // TS7006 has no `checkedJs: "enforce"`: checkJs asks tsc to check the
+  // JSDoc a file carries, not to invent parameter annotations it does not.
+  expect(
+    diagnostics(
+      "// @ts-check\nexport function add(a, b) { return a + b; }\n",
+      'import { add } from "./library.js"; console.log(add(1, 2));',
+    ),
+  ).toEqual([]);
+});

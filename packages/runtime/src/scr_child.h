@@ -6,7 +6,7 @@
 #include "scr_lib.h"
 
 /* ── child_process (scr_child.c) ─────────────────────────────────────
- * The synchronous slice: spawnSync as posix_spawnp + piped utf8 capture +
+ * The synchronous slice: spawnSync as posix_spawn + piped utf8 capture +
  * waitpid — blocks until the child is reaped (no zombie can outlive the
  * call). NEVER throws: spawn failure (nonexistent binary, EACCES) is data
  * — has_status false and empty outputs — like Node's `error` property
@@ -28,6 +28,25 @@ ScrSpawnRes *scr_spawn_sync_opts(ScrStr *cmd, ScrArr *args, double timeout_ms,
 ScrSpawnRes *scr_spawn_sync_env(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                 ScrStr *killsignal, double in_mode, double out_mode,
                                 double err_mode, ScrArr *env_pairs);
+/* The cwd/input/shell forms (cp.spawnSyncExt / cp.spawnSyncExtEnv): the
+ * options entry with the child started in `cwd` (NULL or "" = the
+ * parent's directory), `input` written to its stdin (has_input false
+ * leaves fd 0 to the stdio mode — "input: undefined" is an ABSENT option,
+ * "" pipes an empty stdin), and `shell` running the command line through
+ * /bin/sh -c (cmd.exe /d /s /c on Windows) — the compiler emits it with
+ * an empty args list only, because Node warns DEP0190 for unescaped
+ * separate shell arguments.
+ * Built only into programs that name these entries
+ * (SCR_CHILD_CP_OPTIONS: the compiler's childOptionExt feature), so the
+ * default object stays byte identical. */
+ScrSpawnRes *scr_spawn_sync_ext(ScrStr *cmd, ScrArr *args, double timeout_ms,
+                                 ScrStr *killsignal, double in_mode, double out_mode,
+                                 double err_mode, ScrStr *cwd, ScrStr *input,
+                                 bool has_input, bool shell);
+ScrSpawnRes *scr_spawn_sync_ext_env(ScrStr *cmd, ScrArr *args, double timeout_ms,
+                                     ScrStr *killsignal, double in_mode, double out_mode,
+                                     double err_mode, ScrStr *cwd, ScrStr *input,
+                                     bool has_input, bool shell, ScrArr *env_pairs);
 /* The runtime-string stdio entry: the compiler proved the value is
  * "pipe" | "ignore" | "inherit" by type; the mode mapping happens here. */
 ScrSpawnRes *scr_spawn_sync_stdio_str(ScrStr *cmd, ScrArr *args, double timeout_ms,
@@ -169,6 +188,11 @@ void scr_child_on_spawn(ScrChild *child, ScrClosure *cb); /* moves zero-argument
  * the command, as for scr_exec_sync. */
 ScrChild *scr_exec_file(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
                         ScrExecFileFn fn, bool shell);
+/* The same with the `cwd` option: the child starts in cwd (NULL or "" =
+ * the parent's directory). Built only into programs that name it
+ * (SCR_CHILD_CP_OPTIONS), like the spawnSync cwd/input entries. */
+ScrChild *scr_exec_file_cwd(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
+                            ScrExecFileFn fn, bool shell, ScrStr *cwd);
 ScrChild *scr_child_retain(ScrChild *c);
 void scr_child_release(ScrChild *c);
 void *scr_child_retain_v(void *p);
@@ -176,6 +200,12 @@ void scr_child_release_v(void *p);
 void scr_child_on_exit(ScrChild *c, ScrClosure *cb /*moves*/, ScrChildExitFn fn);
 void scr_child_on_close(ScrChild *c, ScrClosure *cb /*moves*/, ScrChildExitFn fn);
 void scr_child_on_error(ScrChild *c, ScrClosure *cb /*moves*/, ScrChildErrFn fn);
+/* remove-by-identity (child.off/removeListener): the listener is
+ * borrowed, compared by pointer, never retained. */
+void scr_child_off_spawn(ScrChild *c, ScrClosure *cb);
+void scr_child_off_exit(ScrChild *c, ScrClosure *cb);
+void scr_child_off_close(ScrChild *c, ScrClosure *cb);
+void scr_child_off_error(ScrChild *c, ScrClosure *cb);
 bool scr_child_ipc_present(ScrChild *c);
 bool scr_child_ipc_connected(ScrChild *c);
 bool scr_child_ipc_send(ScrChild *c, ScrStr *json);
@@ -251,6 +281,8 @@ bool scr_child_has_pid(ScrChild *c);
 double scr_child_pid(ScrChild *c);
 bool scr_child_has_exit_code(ScrChild *c);
 double scr_child_exit_code(ScrChild *c);
+bool scr_child_has_signal_code(ScrChild *c);
+ScrStr *scr_child_signal_code(ScrChild *c); /* returns +1 */
 bool scr_child_killed(ScrChild *c);
 bool scr_child_kill(ScrChild *c, const ScrStr *signal);
 bool scr_child_kill_num(ScrChild *c, double signum);

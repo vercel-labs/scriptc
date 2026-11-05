@@ -1,4 +1,5 @@
 import { lowerReadlineCursorCall } from "./builtins/readline.js";
+import { lowerFsWatchFileCall } from "./builtins/filesystem.js";
 import { lowerMonitorEventLoopDelayCall } from "./builtins/performance.js";
 import {
   lowerEnvironmentData,
@@ -10,6 +11,7 @@ import * as ts from "../ts7/adapter.js";
 import { dynUndefinedExpr } from "../../ir/build.js";
 import { DYN, type IrExpr, type SrcLoc } from "../../ir/ir.js";
 import { lowerEventsEmitterHelper, lowerEventsOnce } from "./lower-event-emitter.js";
+import { lowerBase64Call } from "./lower-calls.js";
 import type { Lowerer } from "./lowerer.js";
 import { lowerTimersMemberCall } from "./lower-timers.js";
 import { lowerStreamModuleCall } from "./lower-stream.js";
@@ -105,6 +107,9 @@ export function lowerBuiltinCall(
     return lowerAddAbortListener(lowerer, expr, loc);
   }
   if (bi.module === "events" && bi.member === "once") return lowerEventsOnce(lowerer, expr, loc);
+  if (bi.module === "buffer" && (bi.member === "atob" || bi.member === "btoa")) {
+    return lowerBase64Call(lowerer, expr, bi.member, loc);
+  }
   if (bi.module === "perf_hooks" && bi.member === "monitorEventLoopDelay") {
     return lowerMonitorEventLoopDelayCall(lowerer, expr);
   }
@@ -134,6 +139,13 @@ export function lowerBuiltinCall(
   if (streamServed) return streamServed;
   const fsTs = lowerer.lowerFsToUnixTimestampCall(expr, bi, loc);
   if (fsTs) return fsTs;
+  // fs.watchFile/fs.unwatchFile have no table entry (their checked-dynamic
+  // form is the fs.watchFileChk ladder below), so the typed polling forms
+  // dispatch here; anything else falls through to the ladder and the fence.
+  if (bi.module === "fs" && (bi.member === "watchFile" || bi.member === "unwatchFile")) {
+    const polling = lowerFsWatchFileCall(lowerer, expr, loc, bi.member === "unwatchFile");
+    if (polling) return polling;
+  }
   const fsLadder = lowerer.lowerFsLadderCall(expr, bi, loc);
   if (fsLadder) return fsLadder;
   const cryptoServed = lowerer.lowerCryptoModuleCall(expr, bi, loc);

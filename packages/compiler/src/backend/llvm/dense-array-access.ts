@@ -19,6 +19,7 @@
  * length, so reads never reach the state check for it; a write past the
  * bound tests the flag and, without states, appends at the length. */
 
+import { InternalCompilerError } from "../../errors.js";
 import { isRefCounted, type IrExpr, type IrType } from "../../ir/ir.js";
 import {
   f64Lit,
@@ -300,6 +301,9 @@ function loadState(host: LlvmEmitterContext, guard: DenseGuard): string {
   return state;
 }
 
+/** The ScrElemKind of double arrays (scr_array.h). */
+export const SCR_ELEM_F64 = 0;
+
 /** The ScrElemKind of int32 arrays (scr_array.h). */
 export const SCR_ELEM_I32 = 7;
 
@@ -349,8 +353,11 @@ export function emitDenseSlotUnlink(
 /** Strict element read with the runtime getter's result contract: a
  * double, an i1, or a pointer that is +1 (`retain`) or borrowed. The
  * runtime getter keeps the trap for holes, present undefined, and missing
- * properties; it also answers sparse indices. Null reference slots take
- * the runtime path, which returns them without a retain. */
+ * properties; it also answers sparse indices. A null reference slot that
+ * the guard or the state check admits is a value of the element type, and
+ * the runtime getter answers it with NULL and no retain: the inline path
+ * answers it the same way, so every absent element of an optional-element
+ * array stays off the runtime call. */
 export function emitDenseArrayGet(
   host: LlvmEmitterContext,
   array: string,
@@ -368,7 +375,9 @@ export function emitDenseArrayGet(
 
 /** emitDenseArrayGet, with the int32 of an int32 array's element: the
  * slot itself on the dense path, the runtime getter's double converted
- * (exactly: the element is an int32) on the other. */
+ * (exactly: the element is an int32) on the other. With `inexact`, the
+ * getter's double may be something other than an int32 (NaN from
+ * `scr_arr_get_number`): the read branches there when it is. */
 export function emitDenseArrayRead(
   host: LlvmEmitterContext,
   array: string,
@@ -379,6 +388,7 @@ export function emitDenseArrayRead(
   getter: string,
   retain: boolean,
   proven = false,
+  inexact?: string,
 ): { value: string; int32: string | null } {
   const B = host.B;
   const ty = valueType(acc);
@@ -420,7 +430,7 @@ export function emitDenseArrayRead(
   const ptr = valuePointer(host, guard, kind);
   let fast: string;
   let fastInt: string | null = null;
-  let fastLabel = valueLabel;
+  const fastLabel = valueLabel;
   if (acc === "f64") {
     fast = B.tmp();
     B.line(`${fast} = load double, ptr ${ptr}${host.fieldAliasAttachment(ptr)}`);
@@ -435,8 +445,7 @@ export function emitDenseArrayRead(
     B.line(`${raw} = load i8, ptr ${ptr}${host.fieldAliasAttachment(ptr)}`);
     B.line(`${fast} = icmp ne i8 ${raw}, 0`);
   } else {
-    const raw = B.tmp(),
-      nonnull = B.tmp();
+    const raw = B.tmp();
     if (kind === "cref") {
       const ref = B.tmp();
       B.line(`${ref} = load i32, ptr ${ptr}${host.fieldAliasAttachment(ptr)}`);
@@ -444,10 +453,6 @@ export function emitDenseArrayRead(
     } else {
       B.line(`${raw} = load ptr, ptr ${ptr}${host.fieldAliasAttachment(ptr)}`);
     }
-    B.line(`${nonnull} = icmp ne ptr ${raw}, null`);
-    fastLabel = B.newLabel("arr.get.ref");
-    B.condBr(nonnull, fastLabel, slow);
-    B.startBlock(fastLabel);
     fast = retain ? host.retainFrame(raw, element) : raw;
   }
   B.br(join);
@@ -460,20 +465,66 @@ export function emitDenseArrayRead(
       : READ_FALLBACK;
   B.line(`${slowValue} = call ${ty} @${getter}(ptr ${array}, double ${index.name})${attrs}`);
   let slowInt: string | null = null;
-  if (fastInt !== null) {
+  let slowLabel = slow;
+  if (fastInt !== null && inexact !== undefined) {
+    // An int32 that is not -0, or the inexact branch.
+    host.declare("declare i32 @llvm.fptosi.sat.i32.f64(double)");
+    slowInt = B.tmp();
+    const back = B.tmp(),
+      exact = B.tmp(),
+      bits = B.tmp(),
+      notNegativeZero = B.tmp(),
+      ok = B.tmp();
+    B.line(`${slowInt} = call i32 @llvm.fptosi.sat.i32.f64(double ${slowValue})`);
+    B.line(`${back} = sitofp i32 ${slowInt} to double`);
+    B.line(`${exact} = fcmp oeq double ${back}, ${slowValue}`);
+    B.line(`${bits} = bitcast double ${slowValue} to i64`);
+    B.line(`${notNegativeZero} = icmp ne i64 ${bits}, -9223372036854775808`);
+    B.line(`${ok} = and i1 ${exact}, ${notNegativeZero}`);
+    slowLabel = B.newLabel("arr.get.int32");
+    B.condBr(ok, slowLabel, inexact);
+    B.startBlock(slowLabel);
+  } else if (fastInt !== null) {
     slowInt = B.tmp();
     B.line(`${slowInt} = fptosi double ${slowValue} to i32`);
   }
   B.br(join);
   B.startBlock(join);
   const result = B.tmp();
-  B.line(`${result} = phi ${ty} [ ${fast}, %${fastLabel} ], [ ${slowValue}, %${slow} ]`);
+  B.line(`${result} = phi ${ty} [ ${fast}, %${fastLabel} ], [ ${slowValue}, %${slowLabel} ]`);
   let int32: string | null = null;
   if (fastInt !== null && slowInt !== null) {
     int32 = B.tmp();
-    B.line(`${int32} = phi i32 [ ${fastInt}, %${fastLabel} ], [ ${slowInt}, %${slow} ]`);
+    B.line(`${int32} = phi i32 [ ${fastInt}, %${fastLabel} ], [ ${slowInt}, %${slowLabel} ]`);
   }
   return { value: result, int32 };
+}
+
+/** emitDenseArrayNumber of an int32 array, with the element's int32: a
+ * read that answers NaN (or another value that is not an int32) branches
+ * to `inexact`. */
+export function emitDenseArrayNumberInt32(
+  host: LlvmEmitterContext,
+  array: string,
+  index: LlValue,
+  indexExpr: IrExpr | undefined,
+  proven: boolean,
+  inexact: string,
+): { value: string; int32: string } {
+  const read = emitDenseArrayRead(
+    host,
+    array,
+    index,
+    indexExpr,
+    "i32",
+    { kind: "f64" },
+    "scr_arr_get_number",
+    false,
+    proven,
+    inexact,
+  );
+  if (read.int32 === null) throw new InternalCompilerError("llvm emitter bug: int32 read");
+  return { value: read.value, int32: read.int32 };
 }
 
 /** `scr_arr_get_number`: a numeric element, or NaN for every missing,

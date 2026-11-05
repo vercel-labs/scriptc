@@ -1,27 +1,89 @@
-/* Runtime CPU dispatch for x86-64 executables (cloneForCpuDispatch): the
- * program's functions get a copy compiled for x86-64-v3, chosen once per
- * call by the CPU level the executable detects at startup. */
+/* CPU copies of the program's functions for x86-64 executables
+ * (cloneForCpuDispatch):
+ * - runtime CPU dispatch (`--cpu-dispatch`): a copy compiled for x86-64-v3,
+ *   chosen once per call by the CPU level the executable detects at startup;
+ * - `--target-cpu=x86-64-v3`: a baseline copy beside the x86-64-v3 code, so
+ *   that the LLVM helper can give a function the baseline's code where
+ *   x86-64-v3 only adds 128-bit vector instructions. */
 import type { TargetCpu } from "../target-cpu.js";
+
+/** How the program's functions are copied: "dispatch" for runtime CPU
+ * dispatch, "target" for code compiled for x86-64-v3. */
+export type CpuCopies = "dispatch" | "target";
 
 /** The levels a dispatching executable carries a copy of its program's
  * functions for, above the baseline. */
 export const CPU_DISPATCH_TIERS: readonly TargetCpu[] = ["x86-64-v3"];
+
+/** The most program text a build copies for x86-64-v3, in bytes, and the
+ * share of the module's text it may copy instead when that is less. A
+ * function earns a copy when the vectorizer can widen its loop, so the
+ * functions without one keep the baseline's single body and the copies stay
+ * a small part of the text a build optimizes. */
+export const CPU_COPY_TEXT_BYTES = 512 * 1024;
+export const CPU_COPY_TEXT_SHARE = 0.5;
+/** The copies take at least this much text, so a module of a few hundred
+ * kilobytes still copies the loops that make x86-64-v3 faster. */
+export const CPU_COPY_TEXT_FLOOR = 128 * 1024;
+
+/** Which program functions a build copies: `hot` restricts the candidates
+ * to the functions a profile names, and `capBytes` bounds the text the
+ * copies may add (CPU_COPY_TEXT_BYTES and CPU_COPY_TEXT_SHARE by default). */
+export interface CpuCopySelection {
+  hot?: ReadonlySet<string>;
+  capBytes?: number;
+}
+
+/** Whether the body has a back edge, the shape the loop vectorizer needs to
+ * widen it for x86-64-v3: a branch to a block defined at or above it. */
+export function hasLoop(body: string): boolean {
+  const lines = body.split("\n");
+  const labels = new Map<string, number>();
+  lines.forEach((line, index) => {
+    const label = /^([\w.$-]+):/.exec(line);
+    if (label !== null) labels.set(label[1]!, index);
+  });
+  for (let index = 0; index < lines.length; index++) {
+    for (const target of lines[index]!.matchAll(/\blabel %([\w.$-]+)/g)) {
+      const at = labels.get(target[1]!);
+      if (at !== undefined && at <= index) return true;
+    }
+  }
+  return false;
+}
 
 /** The CPU level the executable runs at: 1 (the x86-64 baseline) or 3
  * (x86-64-v3), set by @sc_cpu_level_init before the program runs. */
 const LEVEL = "@sc_cpu_level";
 
 /** The attribute groups of the x86-64-v3 copies: #0's and #2's (see
- * emit-module.ts functionAttributes) with the level's `target-cpu`. */
+ * emit-module.ts functionAttributes) with the level's `target-cpu`, and
+ * `scriptc-cpu-copy`, by which the LLVM helper finds the copies. After
+ * optimization, a copy whose code gains nothing from x86-64-v3 takes its
+ * baseline copy's code (native/llvm-codegen/src/cpu-copies.h). */
 const COPY_GROUPS: ReadonlyMap<string, string> = new Map([
   ["0", "3"],
   ["2", "4"],
 ]);
 
-export function cpuDispatchAttributes(asan: string): string[] {
+/** The attribute groups of the baseline copies in "target" mode: #0's and
+ * #2's without a `target-cpu`, since #0 and #2 carry x86-64-v3 there. */
+const BASE_GROUPS: ReadonlyMap<string, string> = new Map([
+  ["0", "5"],
+  ["2", "6"],
+]);
+
+export function cpuCopyAttributes(common: string, mode: CpuCopies): string[] {
+  const copy = `"target-cpu"="x86-64-v3" "scriptc-cpu-copy"`;
   return [
-    `attributes #3 = {${asan} "target-cpu"="x86-64-v3" }`,
-    `attributes #4 = { noinline${asan} "target-cpu"="x86-64-v3" }`,
+    `attributes #3 = {${common} ${copy} }`,
+    `attributes #4 = { noinline${common} ${copy} }`,
+    ...(mode === "target"
+      ? [
+          `attributes #5 = {${common || ' "scriptc-function"'} }`,
+          `attributes #6 = { noinline${common} }`,
+        ]
+      : []),
   ];
 }
 
@@ -51,6 +113,14 @@ const LEVEL_NAMES: readonly [string, number][] = [
   ["x86-64-v3", 3],
   ["x86-64-v4", 4],
 ];
+
+/** @sc_cpu_level for "target" mode: 3 from the start, with nothing that
+ * stores to it, so the dispatchers always call the x86-64-v3 copies. It is
+ * not internal, so LLVM keeps the dispatchers' tests and with them the
+ * baseline copies that the helper compares the x86-64-v3 copies with. */
+export function targetLevelDefs(): string[] {
+  return [`${LEVEL} = hidden global i32 3`];
+}
 
 /** @sc_cpu_level and @sc_cpu_level_init, which main calls first:
  * - CPUID reports every x86-64-v3 feature, and XGETBV that the operating
@@ -245,18 +315,29 @@ interface Definition {
 }
 
 /** Rewrites the program's function definitions in `parts` for runtime
- * dispatch. A definition is a part, or a `define` chunk of a part, that
- * follows a partition group line (emit-module.ts partitionGroupLines);
+ * dispatch, or for "target" mode. A definition is a part, or a `define`
+ * chunk of a part, that follows a partition group line (emit-module.ts
+ * partitionGroupLines);
  * runtime helpers and the module's entry points stay as they are. Each
  * cloneable function `@f` becomes:
- * - `@f.base`, its body as before;
+ * - `@f.base`, its body as before (in "target" mode, in a baseline
+ *   attribute group);
  * - `@f.v3`, the same body in an x86-64-v3 attribute group;
  * - `@f`, a dispatcher with the same signature, which every reference to
  *   the function as a value and every call from outside the program's
  *   functions still names; a function with no such reference gets none.
  * Direct calls between cloned functions go to the caller's own tier, so the
- * level is tested once on entry into the program's code. */
-export function cloneForCpuDispatch(parts: readonly string[]): string[] {
+ * level is tested once on entry into the program's code.
+ *
+ * With a `selection`, only the functions it keeps are copied, and the
+ * others keep their one body: the functions a profile names when the build
+ * uses one, whose body has a loop, up to the text the cap allows
+ * (selectCpuCopies). */
+export function cloneForCpuDispatch(
+  parts: readonly string[],
+  mode: CpuCopies = "dispatch",
+  selection?: CpuCopySelection,
+): string[] {
   const program: { index: number; chunks: string[] }[] = [];
   for (let i = 1; i < parts.length; i++)
     if (parts[i - 1]!.startsWith("; scriptc-group") && parts[i]!.startsWith("define "))
@@ -274,6 +355,7 @@ export function cloneForCpuDispatch(parts: readonly string[]): string[] {
       defs.set(header.name, { header, body, after: chunk.slice(close + 2) });
     }
   if (defs.size === 0) return [...parts];
+  if (selection !== undefined) selectCpuCopies(defs, parts, selection);
   const callee = /@([\w.$-]+)\(/g;
   const retarget = (body: string, tier: string): string =>
     body.replace(callee, (all, name: string) => (defs.has(name) ? `@${name}.${tier}(` : all));
@@ -290,7 +372,7 @@ export function cloneForCpuDispatch(parts: readonly string[]): string[] {
           `define internal ${h.ret} @${h.name}.${tier}(${h.params})${h.attrs} #${group}${h.rest}\n${retarget(def.body, tier)}`;
         return (
           [
-            copy("base", h.group),
+            copy("base", mode === "target" ? BASE_GROUPS.get(h.group)! : h.group),
             copy("v3", COPY_GROUPS.get(h.group)!),
             ...(named.has(h.name) ? [dispatcher(h)] : []),
           ].join("\n") + def.after
@@ -298,6 +380,69 @@ export function cloneForCpuDispatch(parts: readonly string[]): string[] {
       })
       .join("\n");
   return out;
+}
+
+/** The text a build may copy: CPU_COPY_TEXT_BYTES, or CPU_COPY_TEXT_SHARE of
+ * the module's text when that is less, but no less than the floor. */
+export function cpuCopyBudget(parts: readonly string[]): number {
+  const text = parts.reduce((bytes, part) => bytes + Buffer.byteLength(part), 0);
+  return Math.max(CPU_COPY_TEXT_FLOOR, Math.min(CPU_COPY_TEXT_BYTES, text * CPU_COPY_TEXT_SHARE));
+}
+
+/** Marks the program functions a dispatching build would copy `noinline`:
+ * the functions with a loop, in a group the pass copies. A build that records
+ * a profile emits one body per function, and without the mark the optimizer
+ * inlines those bodies into their callers, so the profile names the caller
+ * rather than the function a build that uses the profile copies. */
+export function keepCopiedBodiesOutOfLine(parts: readonly string[]): string[] {
+  const out = [...parts];
+  for (let i = 1; i < parts.length; i++) {
+    if (!parts[i - 1]!.startsWith("; scriptc-group") || !parts[i]!.startsWith("define ")) continue;
+    out[i] = parts[i]!.split(/\n(?=define )/)
+      .map((chunk) => {
+        const newline = chunk.indexOf("\n");
+        if (newline < 0) return chunk;
+        const header = parseHeader(chunk.slice(0, newline));
+        if (header === null) return chunk;
+        const close = chunk.indexOf("\n}", newline);
+        if (close < 0) return chunk;
+        const body = chunk.slice(newline + 1, close + 2);
+        if (!cloneable(header, body) || !hasLoop(body) || /\bnoinline\b/.test(header.attrs))
+          return chunk;
+        return (
+          `${header.linkage}${header.ret} @${header.name}(${header.params}) noinline${header.attrs} #${header.group}${header.rest}` +
+          chunk.slice(newline)
+        );
+      })
+      .join("\n");
+  }
+  return out;
+}
+
+/** Drops from `defs` the functions the build does not copy: the functions
+ * without a loop, and the functions a profile does not name, then the
+ * largest of the rest when their text exceeds the budget. */
+function selectCpuCopies(
+  defs: Map<string, Definition>,
+  parts: readonly string[],
+  selection: CpuCopySelection,
+): void {
+  const budget = selection.capBytes ?? cpuCopyBudget(parts);
+  const candidates = [...defs]
+    .filter(
+      ([name, def]) =>
+        (selection.hot === undefined || selection.hot.has(name)) && hasLoop(def.body),
+    )
+    .map(([name, def]) => ({ name, bytes: def.body.length }))
+    .sort((a, b) => b.bytes - a.bytes);
+  const kept = new Set<string>();
+  let copied = 0;
+  for (const { name, bytes } of candidates) {
+    if (copied + bytes > budget) continue;
+    kept.add(name);
+    copied += bytes;
+  }
+  for (const name of [...defs.keys()]) if (!kept.has(name)) defs.delete(name);
 }
 
 /** The cloned functions whose own name the module still uses once the

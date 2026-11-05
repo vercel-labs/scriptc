@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6802-node-call-async/main.ts"
+ ],
+ "diags": []
+}

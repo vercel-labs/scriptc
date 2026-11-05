@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8364-record-nullish-receiver-arm/main.ts"
+ ],
+ "diags": []
+}

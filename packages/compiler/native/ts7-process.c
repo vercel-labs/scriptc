@@ -414,8 +414,10 @@ static int connect_server(const char *path) {
 /* Starts the server in its own process group, so that a terminal's signals
  * to the build do not reach it, with its standard streams on /dev/null and
  * no other descriptor of this process, so that it holds no pipe a caller of
- * the build waits on. `limit` (TSC_TS_LISTEN_MEMORY=...) is added to the
- * environment unless it sets TSC_TS_LISTEN_MEMORY. */
+ * the build waits on. It runs in the root directory, so that it does not
+ * keep the build's directory in use; its working directory for the build's
+ * files is the --cwd argument. `limit` (TSC_TS_LISTEN_MEMORY=...) is added
+ * to the environment unless it sets TSC_TS_LISTEN_MEMORY. */
 static pid_t start_server(char **args, char *limit) {
 #ifdef __APPLE__
   char **inherited = *_NSGetEnviron();
@@ -440,7 +442,7 @@ static pid_t start_server(char **args, char *limit) {
     // Only async-signal-safe calls until exec.
     int null = open("/dev/null", O_RDWR);
     if (setpgid(0, 0) != 0 || null < 0 || dup2(null, STDIN_FILENO) < 0 || dup2(null, STDOUT_FILENO) < 0 ||
-        dup2(null, STDERR_FILENO) < 0)
+        dup2(null, STDERR_FILENO) < 0 || chdir("/") != 0)
       _exit(127);
 #if defined(__linux__) && defined(SYS_close_range)
     if (syscall(SYS_close_range, 3U, ~0U, 0U) != 0)
@@ -550,6 +552,41 @@ static int valid_range(const uint8_t *bytes, size_t size, uint32_t offset, uint3
   return 1;
 }
 
+#ifndef _WIN32
+/* How long a read polls the socket before it blocks. The server answers
+ * most requests within a few microseconds; a blocked reader that the reply
+ * wakes takes tens of microseconds more per round trip. */
+#define TS7_REPLY_POLL_NS 200000L
+
+static long monotonic_ns(void) {
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  return now.tv_sec * 1000000000L + now.tv_nsec;
+}
+
+/* recv on the server's socket: polls it for TS7_REPLY_POLL_NS, then waits. */
+static ssize_t ts7_recv(int socket, uint8_t *bytes, size_t length) {
+  long started = -1;
+  for (;;) {
+    ssize_t count = recv(socket, bytes, length, MSG_DONTWAIT);
+    if (count >= 0) return count;
+    if (errno == EINTR) continue;
+    if (errno != EAGAIN && errno != EWOULDBLOCK) return -1;
+    long now = monotonic_ns();
+    if (started < 0) started = now;
+    else if (now - started >= TS7_REPLY_POLL_NS) break;
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#elif defined(__aarch64__)
+    __asm__ volatile("yield");
+#endif
+  }
+  ssize_t count;
+  do { count = recv(socket, bytes, length, 0); } while (count < 0 && errno == EINTR);
+  return count;
+}
+#endif
+
 int32_t scriptc_ts7_read(uint32_t handle, uint8_t *bytes, size_t size,
                         uint32_t offset, uint32_t length) {
   Ts7Process *p = find_process(handle);
@@ -563,8 +600,7 @@ int32_t scriptc_ts7_read(uint32_t handle, uint8_t *bytes, size_t size,
   if (code == ERROR_BROKEN_PIPE) return 0;
   system_error(code); return -1;
 #else
-  ssize_t count;
-  do { count = recv(p->socket, bytes + offset, length, 0); } while (count < 0 && errno == EINTR);
+  ssize_t count = ts7_recv(p->socket, bytes + offset, length);
   if (count < 0) { system_error(errno); return -1; }
   return (int32_t)count;
 #endif

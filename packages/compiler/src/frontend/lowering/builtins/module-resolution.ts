@@ -194,9 +194,13 @@ function createRequireFence(
   surface: string,
   node: ts.Node,
   hint: string,
+  reason?: string,
 ): IrStmt & { kind: "runtimeFence" } {
   const loc = locOf(node);
   const d = noLoweringDiag(surface, loc, hint);
+  // The Node island reason the refusal would carry (a computed require is
+  // dynamic module loading), so island selection classifies the fence.
+  if (reason !== undefined) d.reason = reason;
   lowerer.runtimeFences.push(d);
   const line = ts.getLineAndCharacterOfPosition(ts.getSourceFileOfNode(node), loc.start).line + 1;
   return {
@@ -299,6 +303,7 @@ function deferredCreateRequireThrow(
   surface: string,
   hint: string,
   loc: SrcLoc,
+  reason?: string,
 ): IrExpr {
   const stmts: IrStmt[] = call.arguments.nodes.map((arg) => ({
     kind: "exprStmt",
@@ -310,7 +315,7 @@ function deferredCreateRequireThrow(
   slot.mutable = true;
   stmts.push(
     { kind: "varDecl", localId: slot.id, init: null, loc },
-    createRequireFence(lowerer, surface, call, hint),
+    createRequireFence(lowerer, surface, call, hint, reason),
   );
   return {
     kind: "seqExpr",
@@ -339,7 +344,7 @@ export function lowerCreateRequireCall(
     // Spread arguments have no run-time resolution: they run, then the
     // call throws the fence.
     if (args.some((a) => ts.isSpreadElement(a)))
-      return deferredCreateRequireThrow(lowerer, call, surface, hint, loc);
+      return deferredCreateRequireThrow(lowerer, call, surface, hint, loc, "dynamic-require");
     // Node evaluates every argument, then requires the first.
     const stmts: IrStmt[] = [];
     let id = args.length > 0 ? lowerer.lowerExprExpecting(args[0]!, DYN) : dynUndefinedExpr(loc);
@@ -462,10 +467,40 @@ export function lowerCreateRequireCall(
   }
 }
 
-function staticString(node: ts.Expression | undefined): string | null {
-  if (node === undefined) return null;
+/** The statically-known text of a module specifier expression. Module
+ * resolution is a build-time artifact, so only a value the compiler already
+ * knows can name a module: a string literal (or substitution-free
+ * template), a parenthesized or cast form of one, a `+` concatenation of
+ * those, or a `const` binding whose initializer folds to one
+ * (`const FS = "node:" + "fs"; import(FS)`). Null when the text is only
+ * known at run time. */
+export function staticString(
+  lowerer: Lowerer,
+  node: ts.Expression | undefined,
+  depth = 0,
+): string | null {
+  if (node === undefined || depth > 8) return null;
   const value = stripTypeCasts(node);
-  return ts.isStringLiteralLike(value) ? value.text : null;
+  if (ts.isStringLiteralLike(value)) return value.text;
+  if (ts.isBinaryExpression(value) && value.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+    const left = staticString(lowerer, value.left, depth + 1);
+    if (left === null) return null;
+    const right = staticString(lowerer, value.right, depth + 1);
+    return right === null ? null : left + right;
+  }
+  if (ts.isIdentifier(value)) {
+    const decl = lowerer.checker.getSymbolAtLocation(value)?.valueDeclaration;
+    if (
+      decl !== undefined &&
+      ts.isVariableDeclaration(decl) &&
+      decl.initializer !== undefined &&
+      decl.initializer !== value &&
+      ts.isVariableDeclarationList(decl.parent) &&
+      (decl.parent.flags & ts.NodeFlags.Const) !== 0
+    )
+      return staticString(lowerer, decl.initializer, depth + 1);
+  }
+  return null;
 }
 
 function runtimeResolveThrow(error: RuntimeResolveError, type: IrType, loc: SrcLoc): IrExpr {
@@ -498,7 +533,7 @@ export function lowerImportMetaResolveCall(
       'the lowered form is import.meta.resolve("<static specifier>") using the containing module as its parent',
     );
   }
-  const specifier = staticString(call.arguments.nodes[0]);
+  const specifier = staticString(lowerer, call.arguments.nodes[0]);
   if (specifier === null) {
     lowerer.noLowering(
       "import.meta.resolve with a runtime-computed specifier",
@@ -613,7 +648,7 @@ export function lowerRequireResolveCall(lowerer: Lowerer, call: ts.CallExpressio
       call,
     );
   }
-  const specifier = staticString(call.arguments.nodes[0]);
+  const specifier = staticString(lowerer, call.arguments.nodes[0]);
   // A computed request (or options) through a createRequire loader in
   // JavaScript source resolves at run time.
   if (

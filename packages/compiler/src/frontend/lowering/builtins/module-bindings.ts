@@ -31,6 +31,13 @@ export function builtinImportOf(
   return binding?.module === "stream/web" ? null : binding;
 }
 
+/** The member a node:stream/web import binding names (`import {
+ * WritableStream } from "node:stream/web"`, or its CommonJS twin), or null. */
+export function streamWebImportOf(lowerer: Lowerer, ident: ts.Identifier): string | null {
+  const binding = builtinModuleBindingOf(lowerer, ident);
+  return binding?.module === "stream/web" ? binding.member : null;
+}
+
 function builtinModuleBindingOf(
   lowerer: Lowerer,
   ident: ts.Identifier,

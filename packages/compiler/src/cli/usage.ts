@@ -38,13 +38,14 @@ Options:
                      (native-link-info implies --emit=obj and never links;
                      diagnostics prints the versioned JSON diagnostics
                      envelope for build and coverage)
-      --fail-on <blockers|divergences|dynamic|node-islands|eager-node-islands|island-gaps>
+      --fail-on <blockers|divergences|dynamic|dynamic-slots|node-islands|eager-node-islands|island-gaps>
                      coverage only: exit 1 when the entry path has blockers
                      (a build would fail), or also when it has Node
                      divergences, likely-hot functions that use untyped
-                     values (SC6101), any Node island (eager-node-islands is
-                     the same until deferred evaluation lands), or a gap
-                     island (a package scriptc should compile but cannot yet)
+                     values (SC6101), dynamic slots (SC6104), any Node
+                     island (eager-node-islands is the same until deferred
+                     evaluation lands), or a gap island (a package scriptc
+                     should compile but cannot yet)
       --backend <b>  code generator (llvm)
       --optimization <release|dev|speed>
                      native optimization posture (default: release/-O2). dev
@@ -55,6 +56,11 @@ Options:
                      counting, cache-line-aligned runtime code on x86-64)
       --strip        remove symbol/debug payload from the linked executable
                      for smaller builds (opt in; --emit=exe only)
+      --static       Linux: link the C library into the executable, which
+                     then starts without the dynamic loader. glibc builds
+                     need its static libraries (libc.a) on the build host
+                     and refuse executables that include host, user or
+                     group name lookups (opt in; --emit=exe only)
       --windows-subsystem <console|gui>
                      Windows executable subsystem (default: console). gui
                      prevents Windows from opening a console window
@@ -63,6 +69,31 @@ Options:
                      a helper process so the parent sees the exit sooner. The
                      helper keeps the executable mapped and its memory charged
                      for up to ~100 ms after exit (opt in; --emit=exe only)
+      --stdout-buffering
+                     keep console and process stdout bytes in a 64 KiB buffer
+                     when stdout is not a terminal, for programs that print
+                     many lines. A terminal keeps one write per call. The
+                     buffer settles when it fills, before stderr, when the
+                     event loop sleeps, before a blocking stdin read, on
+                     process.kill and process.exit, and at exit; a crash such
+                     as SIGKILL can lose up to 64 KiB (experimental; opt in;
+                     --emit=exe only)
+      --libnode <dir|beside>
+                     the libnode pack that calls into Node.js (@scriptc/node)
+                     load at run time, or beside to copy it next to the
+                     executable (default: SCRIPTC_LIBNODE at build time;
+                     SCRIPTC_LIBNODE overrides it at run time)
+      --large-pages  Linux: at startup, move the executable's code onto 2 MiB
+                     transparent huge pages when the system allows them, for
+                     large programs. Takes about 3 ms per 10 MiB of code, and
+                     all of the moved code stays resident (opt in; --emit=exe
+                     only)
+      --exceptions <common|rare>
+                     Linux: how often the program throws (default: common).
+                     rare lets recursive functions and functions near a
+                     throw propagate exceptions by unwinding: their calls
+                     need no exception check, and a throw that crosses them
+                     costs a native unwind of several microseconds
       --target-cpu <baseline|x86-64-v2|x86-64-v3|x86-64-v4|native>
                      x86-64: compile the program's code for a CPU level
                      (default: baseline, which runs on any x86-64 CPU). The
@@ -86,8 +117,11 @@ Options:
                      code is laid out, inlined and split by how the profiled
                      runs used it. Code the profile does not describe, or
                      describes from an older version of the program, is
-                     optimized as without one (release or speed; --emit=exe
-                     only)
+                     optimized as without one, unless a .blocks file beside
+                     the profile describes it. build prints how the profile
+                     matched on stderr, and warns when more than 10% of the
+                     functions it describes changed (release or speed;
+                     --emit=exe only)
       --keep-llvm    keep generated LLVM IR beside the executable (default)
       --no-keep-llvm delete generated LLVM IR after compiling
       --emit-ir      also write IR beside an executable or library archive;
@@ -108,6 +142,10 @@ Options:
                      (repeatable): --define='process.env.NODE_ENV="production"'.
                      JavaScript if statements it decides compile only their
                      taken branch
+      --no-shape-overlay
+                     compile npm packages' JavaScript without the types shape
+                     inference proves (per package: "scriptc": {"packages":
+                     {"<name>": {"shapes": false}}} in package.json)
       --provenance-sources
                      EXPERIMENTAL: compile npm dependencies from their
                      provenance-attested SOURCE (fetched at the attested
@@ -170,8 +208,13 @@ export const CLI_OPTIONS = {
   backend: { type: "string" },
   optimization: { type: "string" },
   strip: { type: "boolean", default: false },
+  static: { type: "boolean", default: false },
   "windows-subsystem": { type: "string" },
   "detached-exit": { type: "boolean", default: false },
+  "stdout-buffering": { type: "boolean", default: false },
+  libnode: { type: "string" },
+  "large-pages": { type: "boolean", default: false },
+  exceptions: { type: "string" },
   "target-cpu": { type: "string" },
   "cpu-dispatch": { type: "boolean" },
   "profile-generate": { type: "string" },
@@ -185,6 +228,7 @@ export const CLI_OPTIONS = {
   ffi: { type: "string" },
   "npm-static": { type: "string", multiple: true },
   define: { type: "string", multiple: true },
+  "shape-overlay": { type: "boolean" },
   "provenance-sources": { type: "boolean", default: false },
   "external-types": { type: "string", multiple: true },
   tier: { type: "string" },

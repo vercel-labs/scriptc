@@ -205,10 +205,9 @@ static ScrStr *qs_utf8_replace_decode(const unsigned char *p, size_t n) {
   return qb_take(&out);
 }
 
-/* Node's unescapeBuffer(s) (decodeSpaces false — neither qsUnescape nor
- * the exported unescape passes it) over the UTF-16 units, then the
- * replacement decode of the byte buffer. */
-static ScrStr *qs_unescape_buffer(const ScrStr *s) {
+/* Node's unescapeBuffer(s, decodeSpaces) over the UTF-16 units: the byte
+ * buffer and its length. Caller frees *out. */
+static unsigned char *qs_unescape_bytes(const ScrStr *s, bool decode_spaces, size_t *out_len) {
   size_t n;
   uint16_t *units = qs_utf16_units(s, &n);
   unsigned char *out = malloc(n ? n : 1);
@@ -238,20 +237,46 @@ static ScrStr *qs_unescape_buffer(const ScrStr *s) {
       }
       cur = (unsigned)(hexHigh * 16 + hexLow);
       index += 2;
+    } else if (decode_spaces && cur == '+') {
+      cur = ' ';
     }
     out[w++] = (unsigned char)(cur & 0xFF); /* Buffer write truncates */
     index++;
   }
   free(units);
+  *out_len = w;
+  return out;
+}
+
+/* unescapeBuffer(s).toString(): the replacement decode of the bytes. */
+static ScrStr *qs_unescape_buffer(const ScrStr *s, bool decode_spaces) {
+  size_t w;
+  unsigned char *out = qs_unescape_bytes(s, decode_spaces, &w);
   ScrStr *res = qs_utf8_replace_decode(out, w);
   free(out);
   return res;
 }
 
+ScrBytes *scr_qs_unescape_buffer(const ScrStr *s, bool decode_spaces) {
+  size_t w;
+  unsigned char *out = qs_unescape_bytes(s, decode_spaces, &w);
+  ScrBytes *buf = scr_buffer_alloc((double)w);
+  if (buf && w) memcpy(buf->data, out, w);
+  free(out);
+  return buf;
+}
+
 ScrStr *scr_qs_unescape(const ScrStr *s) {
   ScrStr *strict = scr_str_decode_uri_component_try((ScrStr *)s);
   if (strict) return strict;
-  return qs_unescape_buffer(s);
+  return qs_unescape_buffer(s, false);
+}
+
+/* qsUnescape(s, true), parse's fallback when a custom decoder throws. */
+static ScrStr *qs_unescape_spaces(const ScrStr *s) {
+  ScrStr *strict = scr_str_decode_uri_component_try((ScrStr *)s);
+  if (strict) return strict;
+  return qs_unescape_buffer(s, true);
 }
 
 /* ── parse ───────────────────────────────────────────────────────────── */
@@ -263,21 +288,57 @@ typedef struct {
   ScrMap *map;
   uint32_t str_tag, arr_tag;
   ScrDyn *obj;
+  /* A custom decodeURIComponent (a function), or NULL for the default. */
+  const ScrDyn *decoder;
 } QsSink;
+
+/* decodeStr(s, decoder): the decoder's string, or qsUnescape(s, true) when
+ * it throws. A decoder that answers another value has no lowering (the
+ * dictionary holds strings): NULL with SC2020 pending. */
+static ScrStr *qs_decode_custom(const ScrDyn *decoder, ScrStr *s) {
+  ScrDyn *arg = scr_dyn_new_str(s);
+  ScrDyn *result = scr_dyn_call(decoder, &arg, 1, "decodeURIComponent");
+  scr_dyn_release(arg);
+  if (!result) {
+    scr_exc_clear();
+    ScrStr *fallback = qs_unescape_spaces(s);
+    scr_str_release(s);
+    return fallback;
+  }
+  scr_str_release(s);
+  if (result->kind != SCR_DYN_STR) {
+    scr_dyn_release(result);
+    static const char message[] =
+        "querystring.parse with a decodeURIComponent that answers a value that is not a string has no lowering";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return NULL;
+  }
+  ScrStr *text = scr_str_retain(result->v.str);
+  scr_dyn_release(result);
+  return text;
+}
 
 /* addKeyVal's tail: decode-if-encoded, then group (first value = a
  * string; a repeat REPLACES it with a two-element string array; later
- * repeats push). key/value move in. */
-static void qs_add_key_val(QsSink *out, ScrStr *key, ScrStr *value,
+ * repeats push). key/value move in. False with an exception pending. */
+static bool qs_add_key_val(QsSink *out, ScrStr *key, ScrStr *value,
                            bool key_encoded, bool val_encoded) {
   if (key->len > 0 && key_encoded) {
-    ScrStr *dec = scr_qs_unescape(key);
+    ScrStr *dec = out->decoder ? qs_decode_custom(out->decoder, scr_str_retain(key)) : scr_qs_unescape(key);
     scr_str_release(key);
+    if (!dec) {
+      scr_str_release(value);
+      return false;
+    }
     key = dec;
   }
   if (value->len > 0 && val_encoded) {
-    ScrStr *dec = scr_qs_unescape(value);
+    ScrStr *dec = out->decoder ? qs_decode_custom(out->decoder, scr_str_retain(value)) : scr_qs_unescape(value);
     scr_str_release(value);
+    if (!dec) {
+      scr_str_release(key);
+      return false;
+    }
     value = dec;
   }
   if (out->obj) {
@@ -295,7 +356,7 @@ static void qs_add_key_val(QsSink *out, ScrStr *key, ScrStr *value,
       scr_dyn_arr_push(cur, boxed);
     }
     scr_str_release(key);
-    return;
+    return true;
   }
   uint32_t str_tag = out->str_tag, arr_tag = out->arr_tag;
   ScrUnion *cell = scr_map_get_str_ref(out->map, key);
@@ -304,7 +365,7 @@ static void qs_add_key_val(QsSink *out, ScrStr *key, ScrStr *value,
                         scr_union_new_ref(str_tag, value, &scr_str_retain_v,
                                           &scr_str_release_v, NULL));
     scr_str_release(key);
-    return;
+    return true;
   }
   if (cell->tag == str_tag) {
     /* obj[key] = [curValue, value] */
@@ -319,16 +380,19 @@ static void qs_add_key_val(QsSink *out, ScrStr *key, ScrStr *value,
   }
   scr_union_release(cell);
   scr_str_release(key);
+  return true;
 }
 
 static void qs_parse(QsSink *out, const ScrStr *qs, const ScrStr *sep,
                      const ScrStr *eq, double max_keys) {
   if (qs->len == 0) return;
-  /* Node's falsy rule: undefined/null/'' all mean the default. */
-  const char *sep_b = (sep && sep->len) ? sep->data : "&";
-  size_t sep_len = (sep && sep->len) ? sep->len : 1;
-  const char *eq_b = (eq && eq->len) ? eq->data : "=";
-  size_t eq_len = (eq && eq->len) ? eq->len : 1;
+  /* NULL is the default; the frontend resolves Node's falsy rule, so an
+   * empty sequence here is an explicitly empty one (String([]) is ''),
+   * which never matches. */
+  const char *sep_b = sep ? sep->data : "&";
+  size_t sep_len = sep ? sep->len : 1;
+  const char *eq_b = eq ? eq->data : "=";
+  size_t eq_len = eq ? eq->len : 1;
 
   /* pairs: Node's `maxKeys > 0 ? maxKeys : -1` as a double so Infinity
    * decrements forever, exactly like Node's -1 sentinel. */
@@ -340,7 +404,12 @@ static void qs_parse(QsSink *out, const ScrStr *qs, const ScrStr *sep,
   qb_init(&key);
   qb_init(&value);
   size_t last_pos = 0, sep_idx = 0, eq_idx = 0;
-  bool key_encoded = false, val_encoded = false;
+  /* A custom decoder decodes every key and value, and '+' reads as "%20"
+   * for it to decode. */
+  const bool custom = out->decoder != NULL;
+  const char *plus = custom ? "%20" : " ";
+  const size_t plus_len = custom ? 3 : 1;
+  bool key_encoded = custom, val_encoded = custom;
   int encode_check = 0;
   bool returned = false;
 
@@ -348,7 +417,7 @@ static void qs_parse(QsSink *out, const ScrStr *qs, const ScrStr *sep,
     unsigned char code = (unsigned char)p[i];
 
     /* Try matching the pair separator (e.g. '&'). */
-    if (code == (unsigned char)sep_b[sep_idx]) {
+    if (sep_len > 0 && code == (unsigned char)sep_b[sep_idx]) {
       if (++sep_idx == sep_len) {
         /* Key/value pair separator match. */
         size_t end = i - sep_idx + 1;
@@ -367,12 +436,15 @@ static void qs_parse(QsSink *out, const ScrStr *qs, const ScrStr *sep,
           qb_append(&value, p + last_pos, end - last_pos);
         }
 
-        qs_add_key_val(out, scr_str_new(key.data, key.len),
-                       scr_str_new(value.data, value.len), key_encoded,
-                       val_encoded);
+        if (!qs_add_key_val(out, scr_str_new(key.data, key.len),
+                            scr_str_new(value.data, value.len), key_encoded,
+                            val_encoded)) {
+          returned = true;
+          break;
+        }
 
         if (--pairs == 0) { returned = true; break; }
-        key_encoded = val_encoded = false;
+        key_encoded = val_encoded = custom;
         key.len = value.len = 0;
         encode_check = 0;
         last_pos = i + 1;
@@ -409,14 +481,14 @@ static void qs_parse(QsSink *out, const ScrStr *qs, const ScrStr *sep,
         }
         if (code == '+') {
           if (last_pos < i) qb_append(&key, p + last_pos, i - last_pos);
-          qb_push(&key, ' ');
+          qb_append(&key, plus, plus_len);
           last_pos = i + 1;
           continue;
         }
       }
       if (code == '+') {
         if (last_pos < i) qb_append(&value, p + last_pos, i - last_pos);
-        qb_push(&value, ' ');
+        qb_append(&value, plus, plus_len);
         last_pos = i + 1;
       } else if (!val_encoded) {
         if (code == '%') {
@@ -442,9 +514,9 @@ static void qs_parse(QsSink *out, const ScrStr *qs, const ScrStr *sep,
       ended_empty = true; /* ended on an empty substring */
     }
     if (!ended_empty) {
-      qs_add_key_val(out, scr_str_new(key.data, key.len),
-                     scr_str_new(value.data, value.len), key_encoded,
-                     val_encoded);
+      (void)qs_add_key_val(out, scr_str_new(key.data, key.len),
+                           scr_str_new(value.data, value.len), key_encoded,
+                           val_encoded);
     }
   }
   free(key.data);
@@ -455,6 +527,14 @@ void scr_qs_parse_into(ScrMap *out, const ScrStr *qs, const ScrStr *sep,
                        const ScrStr *eq, double max_keys, uint32_t str_tag,
                        uint32_t arr_tag) {
   QsSink sink = {.map = out, .str_tag = str_tag, .arr_tag = arr_tag};
+  qs_parse(&sink, qs, sep, eq, max_keys);
+}
+
+void scr_qs_parse_into_custom(ScrMap *out, const ScrStr *qs, const ScrStr *sep,
+                              const ScrStr *eq, double max_keys, const ScrDyn *decoder,
+                              uint32_t str_tag, uint32_t arr_tag) {
+  QsSink sink = {.map = out, .str_tag = str_tag, .arr_tag = arr_tag,
+                 .decoder = decoder->kind == SCR_DYN_FUNC ? decoder : NULL};
   qs_parse(&sink, qs, sep, eq, max_keys);
 }
 
@@ -512,6 +592,49 @@ static void qs_stringify_value(QsBuf *b, const ScrDyn *v) {
   }
 }
 
+/* obj[k] (+1), read as Node's `const v = obj[k]` reads it: an array's
+ * elements by index and its named properties by name, undefined for a key
+ * removed after ObjectKeys. A capsule answers from its native value as it
+ * is now, as the dynamic keyed read does. NULL with an exception pending
+ * (a throwing getter). */
+static ScrDyn *qs_read(const ScrDyn *obj, const ScrStr *k) {
+  if (obj->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *fast = scr_dyn_typed_ref_key_get(obj, k);
+    if (fast) return fast;
+    ScrDyn *view = scr_dyn_typed_ref_materialize(obj);
+    ScrDyn *v = view && !scr_exc_pending() ? qs_read(view, k) : NULL;
+    scr_dyn_release(view);
+    return v;
+  }
+  ScrDyn *v = scr_dyn_obj_read(obj, k->data, k->len);
+  if (!v) return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
+  return v;
+}
+
+/* v[index] (+1) for an array or an array capsule; a hole reads undefined. */
+static ScrDyn *qs_element(const ScrDyn *v, size_t index) {
+  if (v->kind == SCR_DYN_ARR) return scr_dyn_arr_at(v, (double)index);
+  char text[32];
+  int length = snprintf(text, sizeof text, "%zu", index);
+  ScrStr *key = scr_str_new(text, (size_t)length);
+  ScrDyn *item = qs_read(v, key);
+  scr_str_release(key);
+  return item;
+}
+
+/* qs_read, with a capsule value answered by its materialized view. */
+static ScrDyn *qs_member(const ScrDyn *obj, const ScrStr *k) {
+  ScrDyn *v = qs_read(obj, k);
+  if (!v || v->kind != SCR_DYN_TYPED_REF) return v;
+  ScrDyn *view = scr_dyn_typed_ref_materialize(v);
+  scr_dyn_release(v);
+  if (view && scr_exc_pending()) {
+    scr_dyn_release(view);
+    return NULL;
+  }
+  return view;
+}
+
 ScrStr *scr_qs_stringify(const ScrDyn *obj, const ScrStr *sep,
                          const ScrStr *eq) {
   if (obj && obj->kind == SCR_DYN_TYPED_REF) {
@@ -520,31 +643,35 @@ ScrStr *scr_qs_stringify(const ScrDyn *obj, const ScrStr *sep,
     scr_dyn_release(view);
     return result;
   }
-  const char *sep_b = (sep && sep->len) ? sep->data : "&";
-  size_t sep_len = (sep && sep->len) ? sep->len : 1;
-  const char *eq_b = (eq && eq->len) ? eq->data : "=";
-  size_t eq_len = (eq && eq->len) ? eq->len : 1;
-  if (!obj || obj->kind != SCR_DYN_OBJ) return scr_str_new("", 0);
+  const char *sep_b = sep ? sep->data : "&";
+  size_t sep_len = sep ? sep->len : 1;
+  const char *eq_b = eq ? eq->data : "=";
+  size_t eq_len = eq ? eq->len : 1;
+  /* An object, an array among them; any other value is the empty string. */
+  if (!obj || (obj->kind != SCR_DYN_OBJ && obj->kind != SCR_DYN_ARR)) return scr_str_new("", 0);
 
   QsBuf fields;
   qb_init(&fields);
-  /* JS own-key order (array-index keys ascending first) — ObjectKeys. */
+  /* JS own-key order (array-index keys ascending first) — ObjectKeys. An
+   * array's keys are the indices of its present elements. */
   ScrDyn *keys = scr_dyn_obj_keys((ScrDyn *)obj);
+  if (!keys) {
+    free(fields.data);
+    return NULL;
+  }
   for (size_t i = 0; i < keys->v.arr.len; i++) {
-    const ScrDyn *kd = keys->v.arr.items[i];
-    const ScrStr *k = kd->v.str;
-    const ScrDyn *v = scr_dyn_obj_get(obj, k->data, k->len);
-    if (!v) continue; /* unreachable: keys came from the object */
-    ScrDyn *view = v->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(v) : NULL;
-    if (view) v = view;
-    if (scr_exc_pending()) { scr_dyn_release(view); scr_dyn_release(keys); free(fields.data); return NULL; }
+    const ScrStr *k = keys->v.arr.items[i]->v.str;
+    ScrDyn *v = qs_member(obj, k);
+    if (!v) { scr_dyn_release(keys); free(fields.data); return NULL; }
     ScrStr *ks = scr_qs_escape((ScrStr *)k);
     if (v->kind == SCR_DYN_ARR) {
       for (size_t j = 0; j < v->v.arr.len; j++) {
         if (fields.len) qb_append(&fields, sep_b, sep_len);
         qb_append_str(&fields, ks);
         qb_append(&fields, eq_b, eq_len);
-        qs_stringify_value(&fields, v->v.arr.items[j]);
+        ScrDyn *item = scr_dyn_arr_at(v, (double)j); /* a hole reads undefined */
+        qs_stringify_value(&fields, item);
+        scr_dyn_release(item);
       }
     } else {
       if (fields.len) qb_append(&fields, sep_b, sep_len);
@@ -553,7 +680,7 @@ ScrStr *scr_qs_stringify(const ScrDyn *obj, const ScrStr *sep,
       qs_stringify_value(&fields, v);
     }
     scr_str_release(ks);
-    scr_dyn_release(view);
+    scr_dyn_release(v);
   }
   scr_dyn_release(keys);
   if (scr_exc_pending()) { /* a lone surrogate: URIError [ERR_INVALID_URI] */
@@ -561,4 +688,206 @@ ScrStr *scr_qs_stringify(const ScrDyn *obj, const ScrStr *sep,
     return NULL;
   }
   return qb_take(&fields);
+}
+
+/* stringify with a custom encodeURIComponent: Node's
+ * encodeStringifiedCustom, encode(stringifyPrimitive(v)), over each key
+ * (once per key, empty arrays included) and each value, in that order. The
+ * encoder's answers append with `+`, as Node's `fields +=` does. +1, or NULL
+ * with the encoder's exception pending. */
+static ScrDyn *qs_primitive_text(const ScrDyn *v) {
+  switch (v->kind) {
+    case SCR_DYN_STR:
+      return scr_dyn_retain((ScrDyn *)v);
+    case SCR_DYN_NUM:
+      if (isfinite(v->v.num)) {
+        ScrStr *num = scr_f64_to_scrstr(v->v.num);
+        ScrDyn *out = scr_dyn_new_str(num);
+        scr_str_release(num);
+        return out;
+      }
+      break;
+    case SCR_DYN_BIGINT: {
+      ScrStr *text = scr_bigint_to_string(v->v.bigint, 10);
+      ScrDyn *out = scr_dyn_new_str(text);
+      scr_str_release(text);
+      return out;
+    }
+    case SCR_DYN_BOOL: {
+      ScrStr *text = v->v.b ? scr_str_new("true", 4) : scr_str_new("false", 5);
+      ScrDyn *out = scr_dyn_new_str(text);
+      scr_str_release(text);
+      return out;
+    }
+    default:
+      break;
+  }
+  ScrStr *empty = scr_str_new("", 0);
+  ScrDyn *out = scr_dyn_new_str(empty);
+  scr_str_release(empty);
+  return out;
+}
+
+/* fields + encode(text): the encoder's answer appended with `+`. */
+static ScrDyn *qs_append_encoded(ScrDyn *fields, const ScrDyn *encoder, const ScrDyn *value) {
+  ScrDyn *text = qs_primitive_text(value);
+  ScrDyn *encoded = scr_dyn_call(encoder, &text, 1, "encodeURIComponent");
+  scr_dyn_release(text);
+  if (!encoded) {
+    scr_dyn_release(fields);
+    return NULL;
+  }
+  ScrDyn *joined = scr_dyn_add(fields, encoded);
+  scr_dyn_release(encoded);
+  scr_dyn_release(fields);
+  return joined;
+}
+
+static ScrDyn *qs_append_text(ScrDyn *fields, const char *bytes, size_t len) {
+  ScrStr *text = scr_str_new(bytes, len);
+  ScrDyn *piece = scr_dyn_new_str(text);
+  scr_str_release(text);
+  ScrDyn *joined = scr_dyn_add(fields, piece);
+  scr_dyn_release(piece);
+  scr_dyn_release(fields);
+  return joined;
+}
+
+ScrStr *scr_qs_stringify_custom(const ScrDyn *obj, const ScrStr *sep, const ScrStr *eq,
+                                const ScrDyn *encoder) {
+  if (encoder->kind != SCR_DYN_FUNC) return scr_qs_stringify(obj, sep, eq);
+  const char *sep_b = sep ? sep->data : "&";
+  size_t sep_len = sep ? sep->len : 1;
+  const char *eq_b = eq ? eq->data : "=";
+  size_t eq_len = eq ? eq->len : 1;
+  if (!obj) return scr_str_new("", 0);
+  /* ObjectKeys once; the values are read from obj itself as the loop
+   * reaches them, so a capsule answers what the encoder has changed. */
+  ScrDyn *keys = NULL;
+  if (obj->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *view = scr_dyn_typed_ref_materialize(obj);
+    if (!view || scr_exc_pending()) {
+      scr_dyn_release(view);
+      return NULL;
+    }
+    if (view->kind == SCR_DYN_OBJ || view->kind == SCR_DYN_ARR) keys = scr_dyn_obj_keys(view);
+    else keys = scr_dyn_new_arr();
+    scr_dyn_release(view);
+  } else if (obj->kind == SCR_DYN_OBJ || obj->kind == SCR_DYN_ARR) {
+    keys = scr_dyn_obj_keys((ScrDyn *)obj);
+  } else {
+    return scr_str_new("", 0);
+  }
+  if (!keys) return NULL;
+  ScrStr *empty = scr_str_new("", 0);
+  ScrDyn *fields = scr_dyn_new_str(empty);
+  scr_str_release(empty);
+  bool any = false;
+  for (size_t i = 0; fields && i < keys->v.arr.len; i++) {
+    const ScrDyn *kd = keys->v.arr.items[i];
+    /* v is held across the encoder calls below, which may replace or
+     * delete obj[k]. */
+    ScrDyn *v = qs_read(obj, kd->v.str);
+    if (!v) {
+      scr_dyn_release(fields);
+      fields = NULL;
+      break;
+    }
+    /* ks = convert(k, encode) + eq */
+    ScrDyn *ks = NULL;
+    {
+      ScrDyn *text = qs_primitive_text(kd);
+      ScrDyn *encoded = scr_dyn_call(encoder, &text, 1, "encodeURIComponent");
+      scr_dyn_release(text);
+      if (encoded) {
+        ScrStr *eqs = scr_str_new(eq_b, eq_len);
+        ScrDyn *eqd = scr_dyn_new_str(eqs);
+        scr_str_release(eqs);
+        ks = scr_dyn_add(encoded, eqd);
+        scr_dyn_release(eqd);
+        scr_dyn_release(encoded);
+      }
+    }
+    if (!ks) {
+      scr_dyn_release(v);
+      scr_dyn_release(fields);
+      fields = NULL;
+      break;
+    }
+    /* ArrayIsArray(v) and v.length, after the key's encoder call. */
+    bool array = v->kind == SCR_DYN_ARR;
+    size_t vlen = array ? v->v.arr.len : 0;
+    if (v->kind == SCR_DYN_TYPED_REF) {
+      ScrDyn *view = scr_dyn_typed_ref_materialize(v);
+      if (!view || scr_exc_pending()) {
+        scr_dyn_release(view);
+        scr_dyn_release(ks);
+        scr_dyn_release(v);
+        scr_dyn_release(fields);
+        fields = NULL;
+        break;
+      }
+      array = view->kind == SCR_DYN_ARR;
+      vlen = array ? view->v.arr.len : 0;
+      scr_dyn_release(view);
+    }
+    if (array) {
+      /* Node reads the length once and each element as the loop reaches
+       * it: an encoder that grows the array adds no values, and one that
+       * shrinks it leaves empty values. */
+      for (size_t j = 0; fields && j < vlen; j++) {
+        if (any) fields = qs_append_text(fields, sep_b, sep_len);
+        if (fields) {
+          ScrDyn *joined = scr_dyn_add(fields, ks);
+          scr_dyn_release(fields);
+          fields = joined;
+        }
+        if (fields) {
+          ScrDyn *item = qs_element(v, j);
+          if (item) fields = qs_append_encoded(fields, encoder, item);
+          else {
+            scr_dyn_release(fields);
+            fields = NULL;
+          }
+          scr_dyn_release(item);
+        }
+        any = true;
+      }
+    } else {
+      if (any) fields = qs_append_text(fields, sep_b, sep_len);
+      if (fields) {
+        ScrDyn *joined = scr_dyn_add(fields, ks);
+        scr_dyn_release(fields);
+        fields = joined;
+      }
+      if (fields) fields = qs_append_encoded(fields, encoder, v);
+      any = true;
+    }
+    scr_dyn_release(ks);
+    scr_dyn_release(v);
+  }
+  scr_dyn_release(keys);
+  if (!fields) return NULL;
+  ScrStr *out = scr_str_retain(fields->v.str);
+  scr_dyn_release(fields);
+  return out;
+}
+
+/* A sep or eq argument that may not be a string: a falsy value is the
+ * default. parse converts any other value with String(value), once.
+ * stringify appends the value with `+=` at each separator, which converts
+ * an object again each time and throws for a symbol only once a separator
+ * is appended: those have no lowering there (SC2020); other values convert
+ * as String(value) does. +1, or NULL with the exception pending. */
+ScrStr *scr_qs_separator(const ScrDyn *value, const ScrStr *fallback, bool parse) {
+  if (!scr_dyn_truthy(value)) return scr_str_retain((ScrStr *)fallback);
+  if (!parse && (value->kind == SCR_DYN_SYMBOL || value->kind == SCR_DYN_OBJ || value->kind == SCR_DYN_ARR ||
+                 value->kind == SCR_DYN_FUNC || value->kind == SCR_DYN_TYPED_REF || value->kind == SCR_DYN_BYTES ||
+                 value->kind == SCR_DYN_HANDLE || value->kind == SCR_DYN_PROXY || value->kind == SCR_DYN_PROMISE)) {
+    static const char message[] =
+        "querystring.stringify with a separator that is an object or a symbol has no lowering; pass a string";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return NULL;
+  }
+  return scr_dyn_string_constructor(value);
 }

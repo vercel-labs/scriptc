@@ -57,6 +57,8 @@ function isPure(e: IrExpr): boolean {
     case "arrayGet":
     case "arrayHas":
       return e.arr.kind === "varRef" && isPure(e.index);
+    case "arrIntrinsic":
+      return e.method === "getNumber" && e.receiver.kind === "varRef" && isPure(e.args[0]!);
     default:
       return false;
   }

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/fetch-body-queued-before-read-untyped.mjs"
+ ],
+ "diags": []
+}

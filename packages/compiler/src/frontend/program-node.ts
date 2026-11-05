@@ -8,6 +8,7 @@ import {
 import { createNodeFrontendServices } from "./services-node.js";
 import type { Ts7Host } from "./ts7/program-host.js";
 import type { Defines } from "./defines.js";
+import type { FrontendServices } from "./services.js";
 export * from "./program.js";
 
 export interface NodeProgramLoadOptions {
@@ -16,20 +17,33 @@ export interface NodeProgramLoadOptions {
   define?: Defines | undefined;
 }
 
+function serviceOptions(options: NodeProgramLoadOptions | undefined) {
+  return {
+    npmStatic: [...(options?.npmStatic ?? [])],
+    externalTypes:
+      options?.externalTypes instanceof Map
+        ? [...options.externalTypes]
+        : Object.entries(options?.externalTypes ?? {}),
+    define: options?.define,
+  };
+}
+
+/** A load on services the caller owns (and closes). */
+export function loadProgramWithServices(
+  entryPath: string,
+  services: FrontendServices,
+  options?: NodeProgramLoadOptions,
+): ReturnType<typeof loadWithServices> {
+  return loadWithServices(entryPath, services, serviceOptions(options));
+}
+
 export function loadProgram(
   entryPath: string,
   options?: NodeProgramLoadOptions,
 ): ReturnType<typeof loadWithServices> {
   const services = createNodeFrontendServices();
   try {
-    const load = loadWithServices(entryPath, services, {
-      npmStatic: [...(options?.npmStatic ?? [])],
-      externalTypes:
-        options?.externalTypes instanceof Map
-          ? [...options.externalTypes]
-          : Object.entries(options?.externalTypes ?? {}),
-      define: options?.define,
-    });
+    const load = loadWithServices(entryPath, services, serviceOptions(options));
     return {
       ...load,
       dispose: () => {

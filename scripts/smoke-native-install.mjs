@@ -54,7 +54,27 @@ function bytes(directory) {
   return size;
 }
 try {
-  const platformTarball = pack(platform);
+  // A platform package depends on its LLVM helper and runtime pack packages.
+  // Pack them from this checkout, and pack the platform package with the
+  // exact versions pnpm would publish for its workspace dependencies.
+  const dependencies = Object.keys(identity.dependencies ?? {});
+  let packed = platform;
+  if (dependencies.length > 0) {
+    packed = join(root, "platform");
+    mkdirSync(packed);
+    cpSync(join(platform, "dist"), join(packed, "dist"), { recursive: true });
+    writeFileSync(
+      join(packed, "package.json"),
+      JSON.stringify({
+        ...identity,
+        dependencies: Object.fromEntries(dependencies.map((name) => [name, identity.version])),
+      }),
+    );
+  }
+  const platformTarball = pack(packed);
+  const dependencyTarballs = dependencies.map((name) =>
+    pack(join(repository, "packages", name.replace("@scriptc/", ""))),
+  );
   const wrapper = join(root, "wrapper");
   mkdirSync(wrapper);
   cpSync(join(repository, "packages/cli/scripts"), join(wrapper, "scripts"), { recursive: true });
@@ -77,7 +97,11 @@ try {
   const tarball = pack(wrapper);
   const project = join(root, "project");
   mkdirSync(project);
-  command(npm, ["install", "--offline", "--no-audit", "--no-fund", tarball], project);
+  command(
+    npm,
+    ["install", "--offline", "--no-audit", "--no-fund", tarball, ...dependencyTarballs],
+    project,
+  );
   const executable = join(project, "node_modules/scriptc/bin/scriptc.exe");
   assert.equal(
     command(executable, ["--version"], project, { ...env, PATH: "" }).trim(),
@@ -99,8 +123,11 @@ try {
   );
   command(executable, ["build", entry, "-o", binary], project, compileEnv);
   assert.equal(command(binary, [], project, { PATH: "" }), "true true true\n");
-  const installed = readdirSync(join(project, "node_modules/@scriptc"));
-  assert.deepEqual(installed, [identity.name.slice("@scriptc/".length)]);
+  const installed = readdirSync(join(project, "node_modules/@scriptc")).sort();
+  assert.deepEqual(
+    installed,
+    [identity.name, ...dependencies].map((name) => name.slice("@scriptc/".length)).sort(),
+  );
   console.log(
     JSON.stringify({
       package: identity.name,

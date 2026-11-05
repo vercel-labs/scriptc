@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/optional-param-function-values.ts"
+ ],
+ "diags": []
+}

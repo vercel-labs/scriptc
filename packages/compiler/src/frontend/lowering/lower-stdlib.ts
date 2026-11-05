@@ -1,6 +1,9 @@
 import { dynUndefinedExpr, nodeThrowExpr } from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
 
+import { webStreamClassKindOf } from "./builtins/web-streams-dyn.js";
+import { staticString } from "./builtins/module-resolution.js";
+import { resolveImport } from "../program.js";
 import * as ts from "../ts7/adapter.js";
 import { lowerToNumberArguments } from "./lower-exprs.js";
 import type { Lowerer } from "./lowerer.js";
@@ -31,13 +34,21 @@ import {
   unsupportedNativeApiDiag,
   unsupportedPackageValueDiag,
 } from "../../diagnostics/diagnostic.js";
-import { esmNamedImportLinkCrash, isCjsJsFile, locOf, npmPackageNameOf } from "../program.js";
+import {
+  esmNamedImportLinkCrash,
+  isCjsJsFile,
+  isJsSourceFile,
+  locOf,
+  npmPackageNameOf,
+  type StartupCrash,
+} from "../program.js";
 import { foldedStringKeyOf, lowerDynObjectLiteral } from "./expressions/object-literals.js";
 import { noteEventListeners } from "./lower-event-target.js";
 import { PoisonError, newFnCtx, own } from "./lowerer.js";
 import { node24FetchCompatProfile, staticFetchMembers } from "../../compat/fetch-profile.js";
 import { classGeneratorIterable } from "./class-iterables.js";
 import { generatorDrain } from "./iterator-adapters.js";
+import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
 
 export function refuseUnsupportedApi(
   lowerer: Lowerer,
@@ -1026,6 +1037,12 @@ export function fenceStaticAbortControllerMemberRead(
   );
 }
 
+/** JavaScript sources read web stream values through their handles'
+ * checked-dynamic surfaces (scr_webstreams.c), not the static lowerings. */
+function inJavaScript(node: ts.Node): boolean {
+  return isJsSourceFile(ts.getSourceFileOfNode(node));
+}
+
 function isStdlibFetchInterface(lowerer: Lowerer, node: ts.Node, owner: string): ts.Symbol | null {
   const type = lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(node));
   for (const symbol of [type.getSymbol(), type.getAliasSymbol()]) {
@@ -1377,6 +1394,7 @@ export function fenceStaticReadableStreamMember(
   access: StaticResponseAccess,
   use: "read" | "call",
 ): IrExpr | null {
+  if (inJavaScript(access.expression)) return null;
   const sym = isStdlibFetchInterface(lowerer, access.expression, "ReadableStream");
   if (!sym) return null;
   const members = fetchAccessMemberNames(lowerer, access);
@@ -1410,7 +1428,7 @@ export function fenceStaticReadableStreamMember(
   lowerer.noLowering(
     `ReadableStream.${member} in a static build`,
     access,
-    "the native static ReadableStream surface is locked plus cancel() and getReader(); values()/[Symbol.asyncIterator]() compile when consumed directly by for await, while stored iterator handles remain unsupported",
+    "ReadableStream's locked compiles as a read, and getReader(), cancel(), tee(), pipeTo() and pipeThrough() as direct calls; values()/[Symbol.asyncIterator]() compile when consumed directly by for await, while method values and stored iterator handles remain unsupported",
     sym,
   );
 }
@@ -1481,6 +1499,9 @@ export function lowerStaticFetchCompanionCall(
     return null;
   }
   const root = call.expression.expression;
+  // JavaScript reads the web stream classes as constructor values
+  // (web-streams-dyn.ts).
+  if (webStreamClassKindOf(lowerer, root) !== null) return null;
   const symbol = lowerer.resolveValueSymbol(root);
   if ((!symbol || !lowerer.isStdlibSymbol(symbol)) && !isStreamWebReadableStream(lowerer, root))
     return null;
@@ -1500,7 +1521,7 @@ export function lowerStaticFetchCompanionCall(
             : dynUndefinedExpr(loc),
           (first) => ({
             kind: "libCall",
-            fn: "fetch.abortTimeout",
+            fn: "abort.timeout",
             args: [first],
             type: DYN,
             loc,
@@ -1510,7 +1531,7 @@ export function lowerStaticFetchCompanionCall(
         if (call.arguments.nodes.length === 0) {
           return {
             kind: "libCall",
-            fn: "fetch.abortNow",
+            fn: "abort.now",
             args: [dynUndefinedExpr(loc)],
             type: DYN,
             loc,
@@ -1523,7 +1544,7 @@ export function lowerStaticFetchCompanionCall(
           lowerLiveWebValue(lowerer, call.arguments.nodes[0]!),
           (first) => ({
             kind: "libCall",
-            fn: "fetch.abortNow",
+            fn: "abort.now",
             args: [first],
             type: DYN,
             loc,
@@ -1541,7 +1562,7 @@ export function lowerStaticFetchCompanionCall(
             : dynUndefinedExpr(loc),
           (first) => ({
             kind: "libCall",
-            fn: "fetch.abortAny",
+            fn: "abort.any",
             args: [first],
             type: DYN,
             loc,
@@ -1683,6 +1704,7 @@ export function lowerStaticReadableStreamControllerCall(
 ): IrExpr | null {
   const access = call.expression;
   if (
+    inJavaScript(call) ||
     call.questionDotToken ||
     call.arguments.nodes.length > 1 ||
     (!ts.isPropertyAccessExpression(access) && !ts.isElementAccessExpression(access)) ||
@@ -1739,6 +1761,7 @@ export function lowerStaticReadableStreamCancelCall(
 ): IrExpr | null {
   const access = call.expression;
   if (
+    inJavaScript(call) ||
     call.questionDotToken ||
     call.arguments.nodes.length > 1 ||
     call.arguments.nodes.some((argument) => ts.isSpreadElement(argument)) ||
@@ -1886,7 +1909,7 @@ export function lowerAbortControllerNew(lowerer: Lowerer, expr: ts.NewExpression
 
   const result: IrExpr = {
     kind: "libCall",
-    fn: "fetch.abortControllerNew",
+    fn: "abort.controllerNew",
     args: [],
     type: DYN,
     loc,
@@ -1945,8 +1968,9 @@ export function lowerStaticReadableStreamNew(
 
 /** `new TransformStream()`: the identity transform, a native handle whose
  * readable side is a native ReadableStream and whose writable side is the
- * runtime's WritableStream. A transformer or queuing strategies have no
- * native lowering yet and keep the SC2020 refusal. */
+ * runtime's WritableStream. A TransformStream with a transformer or
+ * queuing strategies is built with the web stream classes instead
+ * (web-streams-dyn.ts, lowerWebStreamNew). */
 export function lowerStaticTransformStreamNew(
   lowerer: Lowerer,
   expr: ts.NewExpression,
@@ -2163,6 +2187,7 @@ export function lowerStaticReadableStreamReaderCall(
 ): IrExpr | null {
   const access = call.expression;
   if (
+    inJavaScript(call) ||
     call.questionDotToken ||
     call.arguments.nodes.length !== 0 ||
     (!ts.isPropertyAccessExpression(access) && !ts.isElementAccessExpression(access)) ||
@@ -2208,7 +2233,11 @@ export function lowerStaticReadableStreamReaderCall(
 export function lowerDynamicImportCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
   if (call.expression.kind !== ts.SyntaxKind.ImportKeyword) return null;
   const arg = call.arguments.nodes[0];
-  if (arg === undefined || !ts.isStringLiteralLike(arg)) {
+  // The specifier text must be known at build time; a constant expression
+  // (`import("node:" + "fs")`, `import(FS)`) names its module just as a
+  // literal does. collectDynamicImports keys its table by the same text.
+  const specifier = arg === undefined ? null : staticString(lowerer, arg);
+  if (specifier === null) {
     lowerer.unsupported(
       "SC1090",
       call,
@@ -2221,10 +2250,11 @@ export function lowerDynamicImportCall(lowerer: Lowerer, call: ts.CallExpression
   if (call.arguments.nodes.length !== 1) {
     lowerer.unsupported("SC1090", call, "dynamic import() with import attributes");
   }
-  const res = lowerer.dynImports.get(`${ts.getSourceFileOfNode(call).fileName}\u0000${arg.text}`);
+  const res = lowerer.dynImports.get(`${ts.getSourceFileOfNode(call).fileName}\u0000${specifier}`);
   if (res === undefined) lowerer.refuseUnsupportedApi("'import()'", call);
+  if (res.kind === "rejected") return lowerRejectedImport(lowerer, call, res.crash);
   if (res.kind === "program-module") {
-    return lowerOwnStaticModuleImport(lowerer, call, arg);
+    return lowerOwnStaticModuleImport(lowerer, call, specifier);
   }
   return lowerStaticNamespaceImport(lowerer, call, {
     kind: "moduleNs",
@@ -2232,13 +2262,87 @@ export function lowerDynamicImportCall(lowerer: Lowerer, call: ts.CallExpression
   });
 }
 
-/** The checker-resolved program source behind one literal import(). */
-function programImportTarget(lowerer: Lowerer, arg: ts.StringLiteralLike): ts.SourceFile | null {
-  const modSym = lowerer.checker.getSymbolAtLocation(arg);
-  for (const d of modSym ? modSym.declarations : []) {
-    if (ts.isSourceFile(d) && !d.isDeclarationFile) return d;
+/** An import() Node rejects before any module of its graph evaluates
+ * (a package marked never loaded, a refused edge in the module's static
+ * graph): the promise rejects on a microtask with Node's error, and the
+ * module never joins the compiled graph. Its namespace is never produced,
+ * so the result is typed dynamically. */
+function lowerRejectedImport(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  crash: StartupCrash,
+): IrExpr {
+  const loc = locOf(call);
+  const resultT: IrType & { kind: "promise" } = { kind: "promise", inner: DYN };
+  const fnName = lowerer.closureName(loc, "_rejectedImport");
+  const fnType: IrType & { kind: "func" } = { kind: "func", params: [], ret: resultT };
+  const fnCtx = newFnCtx(true, null, fnType, DYN);
+  fnCtx.isAsync = true;
+  lowerer.fnStack.push(fnCtx);
+  try {
+    const hop: IrExpr = {
+      kind: "awaitExpr",
+      value: {
+        kind: "intrinsic",
+        name: "promise.resolve",
+        args: [],
+        type: { kind: "promise", inner: VOID },
+        loc,
+      },
+      type: VOID,
+      loc,
+    };
+    const errorKind = crash.className === "%TypeError" ? 1 : 0;
+    const body: IrStmt[] = [
+      { kind: "exprStmt", expr: hop, loc },
+      {
+        kind: "exprStmt",
+        expr: nodeThrowExpr(errorKind, crash.code ?? "", crash.message, VOID, loc, crash.url),
+        loc,
+      },
+      { kind: "return", value: dynUndefinedExpr(loc), loc },
+    ];
+    const ctx = lowerer.ctx;
+    lowerer.liftedFns.push({
+      name: fnName,
+      params: [],
+      returnType: DYN,
+      locals: ctx.locals,
+      captures: ctx.captures ?? [],
+      body,
+      async: true,
+      loc,
+    });
+  } finally {
+    lowerer.fnStack.pop();
   }
-  return null;
+  return {
+    kind: "callValue",
+    callee: { kind: "closure", fnName, captures: [], type: fnType, loc },
+    args: [],
+    type: resultT,
+    loc,
+  };
+}
+
+/** The compiled module a literal specifier names. A FOLDED specifier
+ * (a `const` or a `+` concatenation) carries no module symbol on its
+ * argument node, so it resolves through the checker's program import
+ * resolution instead; only modules already in the program resolve. */
+function programImportTarget(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  specifier: string,
+): ts.SourceFile | null {
+  const arg = call.arguments.nodes[0];
+  if (arg !== undefined && ts.isStringLiteralLike(arg)) {
+    const modSym = lowerer.checker.getSymbolAtLocation(arg);
+    for (const d of modSym ? modSym.declarations : []) {
+      if (ts.isSourceFile(d) && !d.isDeclarationFile) return d;
+    }
+  }
+  const resolved = resolveImport(lowerer.program, ts.getSourceFileOfNode(call), specifier);
+  return resolved !== null && !resolved.isDeclarationFile ? resolved : null;
 }
 
 /** Static literal import of one compiled ESM module. The async helper's
@@ -2249,14 +2353,14 @@ function programImportTarget(lowerer: Lowerer, arg: ts.StringLiteralLike): ts.So
 function lowerOwnStaticModuleImport(
   lowerer: Lowerer,
   call: ts.CallExpression,
-  arg: ts.StringLiteralLike,
+  specifier: string,
 ): IrExpr {
-  const dep = programImportTarget(lowerer, arg);
+  const dep = programImportTarget(lowerer, call, specifier);
   if (dep !== null && (dep.fileName.endsWith(".cts") || isCjsJsFile(dep, lowerer.program))) {
     lowerer.unsupported(
       "SC1090",
       call,
-      `dynamic import of the program's own CommonJS module '${arg.text}' ` +
+      `dynamic import of the program's own CommonJS module '${specifier}' ` +
         "(its namespace comes from module.exports through Node's CJS lexer, " +
         "which has no compiled story — require it, or import it statically)",
     );
@@ -2265,7 +2369,7 @@ function lowerOwnStaticModuleImport(
     lowerer.unsupported(
       "SC1090",
       call,
-      `dynamic import of the program's own module '${arg.text}' ` +
+      `dynamic import of the program's own module '${specifier}' ` +
         "(this module is not part of the compiled module graph)",
     );
   }
@@ -2528,11 +2632,57 @@ export function lowerStdlibMethodCall(
         loc,
       };
     }
+    // A fixed number tuple spreads as its positions: Node walks the
+    // tuple's own array, and every position is already a number, so the
+    // fold is the plain variadic form (arguments convert like any other
+    // number position — an all-f64 tuple needs no ToNumber at all). The
+    // receiver is bound once, then each slot is read in order.
+    const tupleShape =
+      src.type.kind === "record" && lowerer.isArrayValueType(src.type)
+        ? lowerer.shapes.get(src.type.shapeId)
+        : undefined;
+    if (tupleShape?.fields.every((f) => f.type.kind === "f64")) {
+      const srcType = src.type;
+      const fields = [...tupleShape.fields].sort((a, b) => Number(a.name) - Number(b.name));
+      const stmts: IrStmt[] = [];
+      let recv = src;
+      if (!isSafeToRepeat(src)) {
+        const temp = lowerer.declareHiddenLocal("%tupleSpread", src.type);
+        stmts.push({ kind: "varDecl", localId: temp.id, init: src, loc });
+        recv = { kind: "varRef", localId: temp.id, type: src.type, loc };
+      }
+      const shapeId = (srcType as IrType & { kind: "record" }).shapeId;
+      const values = fields.map((f): IrExpr => ({
+        kind: "recordGet",
+        obj: recv,
+        shapeId,
+        field: f.name,
+        type: f.type,
+        loc,
+      }));
+      // No positions is the fold's seed, exactly the zero-argument call.
+      if (values.length === 0) {
+        const seed: IrExpr = {
+          kind: "numLit",
+          value: name === "max" ? -Infinity : Infinity,
+          type: F64,
+          loc,
+        };
+        return afterArguments(stmts, seed);
+      }
+      const fn = name === "max" ? "math.max" : "math.min";
+      let acc = values[0]!;
+      for (let i = 1; i < values.length; i++) {
+        acc = { kind: "libCall", fn, args: [acc, values[i]!], type: F64, loc };
+      }
+      return afterArguments(stmts, acc);
+    }
     if (src.type.kind !== "array" || src.type.elem.kind !== "f64") {
       lowerer.unsupported(
         "SC1090",
         spread,
-        `spreading '${lowerer.fmt(src.type)}' into Math.${name} (only a number[] spreads)`,
+        `spreading '${lowerer.fmt(src.type)}' into Math.${name} ` +
+          "(only a number[] or a fixed-length numeric tuple spreads)",
       );
     }
     return {

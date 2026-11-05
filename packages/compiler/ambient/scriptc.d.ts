@@ -38,10 +38,15 @@ type RequestInfo = string | URL | Request;
 
 /* Node exposes the codec constructors globally, but older @types/node
  * versions rely on lib.dom for their instance type names. Keep those types
- * available in the ES-only program as well as the fallback type world. */
+ * available in the ES-only program as well as the fallback type world.
+ * `encode` allocates a new, non-shared ArrayBuffer (WHATWG encoding), which
+ * is what @types/node's `NonSharedUint8Array` and lib.dom spell: a plain
+ * `Uint8Array` defaults to `ArrayBufferLike`, and that shared view is not a
+ * `BufferSource` for lib.dom's Web Crypto signatures once a dependency
+ * brings lib.dom into the program. */
 interface TextEncoder {
   readonly encoding: string;
-  encode(input?: string): Uint8Array;
+  encode(input?: string): Uint8Array<ArrayBuffer>;
   encodeInto(source: string, destination: Uint8Array): { read: number; written: number };
 }
 interface TextDecoder {

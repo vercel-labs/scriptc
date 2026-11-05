@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7730-array-subclass-retyped-trace.ts"
+ ],
+ "diags": []
+}

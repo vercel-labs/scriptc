@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/stream-typed-chunk-weakmap.ts"
+ ],
+ "diags": []
+}

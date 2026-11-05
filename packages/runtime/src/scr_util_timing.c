@@ -951,7 +951,7 @@ static UtState *ut_state_new(bool throttle, ScrDyn *signal) {
  * refers to the returned function) stays collectable. */
 static ScrDyn *ut_build(UtState *s, ScrDyn *wrapped) {
   ScrClosure *closure = scr_closure_new(NULL, 2);
-  closure->function_kind = 4; /* an ordinary function with its own prototype */
+  closure->function_kind = SCR_CLOSURE_KIND_OWN_PROTOTYPE;
   UtOwner *owner = malloc(sizeof *owner);
   if (!owner) ut_oom();
   owner->rc = 1;

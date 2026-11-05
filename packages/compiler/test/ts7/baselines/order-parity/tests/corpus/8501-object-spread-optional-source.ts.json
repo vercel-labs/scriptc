@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8501-object-spread-optional-source.ts"
+ ],
+ "diags": []
+}

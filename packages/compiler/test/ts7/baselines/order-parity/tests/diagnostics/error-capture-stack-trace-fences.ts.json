@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/error-capture-stack-trace-fences.ts"
+ ],
+ "diags": []
+}

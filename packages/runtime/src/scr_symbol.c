@@ -138,6 +138,8 @@ static void scr_sym_registry_cleanup(void) {
   }
 }
 
+void scr_sym_for_install(void) { scr_sym_for_fn = scr_sym_for; }
+
 ScrSym *scr_sym_for(ScrStr *key) {
   for (ScrSym *s = g_sym_registry; s; s = s->reg_next) {
     if (scr_str_eq(s->reg_key, key)) return scr_sym_retain(s);
@@ -333,7 +335,7 @@ static void scr_dirent_init(void) {
     scr_dyn_obj_set(proto, methods[i].name, strlen(methods[i].name),
                     scr_dyn_new_func(scr_closure_new(NULL, 0), methods[i].thunk, 0, "native:fs.Dirent",
                                      methods[i].name));
-    proto->v.obj.entries[proto->v.obj.len - 1].enumerable = false;
+    scr_dyn_obj_set_attrs_at(proto, scr_dyn_obj_count(proto) - 1, true, false, true);
   }
   ScrStr *desc = scr_str_new("type", 4);
   ScrSym *sym = scr_sym_new(desc);
@@ -350,15 +352,14 @@ void scr_dyn_dirent_finish(ScrDyn *obj) {
   scr_dyn_region_store(obj, NULL); /* a prototype store (ScrDynRegion) */
   scr_dyn_release(obj->prototype);
   obj->prototype = scr_dyn_retain(scr_dirent_prototype);
-  for (size_t i = 0; i < obj->v.obj.len; i++) {
-    ScrDynEntry *ent = &obj->v.obj.entries[i];
-    if (ent->key_len != 6 || memcmp(ent->key, "%dtype", 6) != 0) continue;
-    ent->enumerable = false;
+  size_t i = scr_dyn_obj_index_of(obj, "%dtype", 6);
+  if (i != SIZE_MAX) {
+    ScrDynProp ent = scr_dyn_obj_prop_at(obj, i);
+    scr_dyn_obj_set_attrs_at(obj, i, ent.writable, false, ent.configurable);
     if (!obj->symbol_properties && !obj->symbol_keys)
-      scr_dyn_symbol_init_own(obj, scr_dirent_type_key, scr_dirent_type_storage, ent->value);
+      scr_dyn_symbol_init_own(obj, scr_dirent_type_key, scr_dirent_type_storage, ent.value);
     else
-      scr_dyn_symbol_key_set(obj, scr_dirent_type_key, ent->value);
-    break;
+      scr_dyn_symbol_key_set(obj, scr_dirent_type_key, ent.value);
   }
 }
 
@@ -580,6 +581,25 @@ static void scr_ds_put_value(ScrJsonBuf *b, const ScrDyn *value) {
     return;
   default: scr_jb_puts(b, "#<Object>"); return;
   }
+}
+
+/* Symbol.keyFor called through a function value (+1): the registry key of
+ * a symbol from Symbol.for, undefined for another symbol, or NULL with
+ * V8's TypeError ("1 is not a symbol") pending for any other value. */
+ScrDyn *scr_dyn_symbol_key_for(const ScrDyn *value) {
+  if (value->kind != SCR_DYN_SYMBOL || value->v.symbol.render != scr_sym_to_string) {
+    ScrJsonBuf message;
+    scr_jb_init(&message);
+    scr_ds_put_value(&message, value);
+    scr_jb_puts(&message, " is not a symbol");
+    scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
+    return NULL;
+  }
+  ScrStr *key = scr_sym_key_for((ScrSym *)value->v.symbol.value);
+  if (!key) return scr_dyn_retain(scr_dyn_undefined());
+  ScrDyn *out = scr_dyn_new_str(key);
+  scr_str_release(key);
+  return out;
 }
 
 static ScrDisposableStack *scr_ds_of(const ScrDyn *value) {

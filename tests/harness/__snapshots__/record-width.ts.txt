@@ -7,15 +7,6 @@ record-width.ts:12:25 - error SC2002: record shapes must match exactly or width-
 
   hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead
 
-record-width.ts:26:20 - error SC2002: record shapes must match exactly or width-coerce: expected '{ m: ({ a: number; b: number }) => void }', got '{ extra: number; m: ({ a: number }) => void }' — field 'm': '({ a: number }) => void' does not lift into '({ a: number; b: number }) => void'
-
-  25 | };
-  26 | const dstM: DstM = srcM;
-     |                    ^~~~
-  27 | console.log(dstM);
-
-  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead
-
 record-width.ts:27:13 - error SC1090: console.log of '{ m: ({ a: number; b: number }) => void }' values (function values have no inspect lowering (no runtime name exists — Node prints '[Function: name]'; pass the function's declared identifier directly to util.inspect for the baked form)) is not supported yet
 
   26 | const dstM: DstM = srcM;

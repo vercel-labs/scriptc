@@ -153,7 +153,7 @@ function candidates(mod: IrModule) {
 }
 function workBody(mod: IrModule, pointerBits: 32 | 64 = 64) {
   return /^define internal [^\n]*@sc_(?:b)?f_work(?:\.i32)?\([^]*?^}/m.exec(
-    emitLlvmModule(keepUnionsBoxed(mod), { pointerBits }),
+    emitLlvmModule(mod, { pointerBits, ...keepUnionsBoxed(mod) }),
   )![0];
 }
 

@@ -22,6 +22,10 @@ export interface NativeLinkFeatures {
   regex: boolean;
   copying: boolean;
   textDecoderLegacy: boolean;
+  /** A BigInt typed-array constructor is read as a value: its element kinds
+   * live in the JavaScript object model build (t262-da §J), which
+   * jsObjectModelFact ORs this fact into. */
+  bigintBytes: boolean;
   fileHandle: boolean;
   fetch: boolean;
   eventTarget?: boolean;
@@ -31,15 +35,58 @@ export interface NativeLinkFeatures {
   /** The program assigns process.emitWarning: links the
    * SCR_WARNING_REPLACE variant of the dyn-async unit. */
   warningReplace?: boolean;
+  /** The program uses a runtime feature only a JavaScript source reaches:
+   * links the SCR_JS_OBJECT_MODEL build of every unit those features touch
+   * (t262-da §J). Absent for every other program, so their objects stay
+   * identical. */
+  jsObjectModel?: boolean;
+  /** A JavaScript source resizes, grows or detaches an ArrayBuffer
+   * (frontend/lowering/buffers.ts): compiles scr_js_buffers.c, the views
+   * registry those operations maintain. The fact ORs into jsObjectModel
+   * (jsObjectModelFact), so it selects no build column of its own. Absent
+   * for every other program, so their objects stay identical. */
+  mutableBuffers?: boolean;
   /** The program uses process.stdin.setEncoding, string 'data' listeners
    * or stdio 'resize' events: links the SCR_STDIO_EXTENDED events unit. */
   stdioExtended?: boolean;
+  /** writeFile's `flag` disposition or copyFile's mode argument:
+   * scr_fs_flags.c and the SCR_FS_FLAGS build of scr_fs_cp.c. */
+  fsFlags?: boolean;
+  /** string_decoder's checked-dynamic chunk forms: scr_bytes_strdec_dyn.c. */
+  strdecDyn?: boolean;
+  /** process.prependListener, stdin.isRaw or server.off: the
+   * SCR_PROCESS_EXTRAS builds of scr_events.c and scr_async_dyn.c and the
+   * SCR_NET_SERVER_OFF build of scr_net.c. */
+  processExtras?: boolean;
+  /** A write completion callback takes the error argument: links the
+   * SCR_STREAM_WRITE_ERRORS build of the stream unit. */
+  streamWriteErrors?: boolean;
+  /** The program reaches the process output streams' write slot: links the
+   * SCR_STDIO_WRITE_SLOT build of the events unit. */
+  stdioWriteSlot?: boolean;
+  /** Calls into Node.js (@scriptc/node): scr_node_island.c and the
+   * SCR_NODE_ISLANDS variant of the event loop unit. */
+  nodeIsland?: boolean;
   /** Module namespace objects as checked-dynamic values link
    * scr_module_namespace.c; absent (false) otherwise. */
   moduleNamespace?: boolean;
+  /** A module namespace boxed for typed code links
+   * scr_module_namespace_dyn.c; absent (false) otherwise. */
+  moduleNamespaceDyn?: boolean;
+  /** Primitive wrapper objects link scr_js_wrapper.c; absent (false)
+   * otherwise. */
+  primitiveWrapper?: boolean;
+  /** The Promise statics through Function.prototype.call with a foreign
+   * constructor link scr_js_promise_generic.c; absent (false) otherwise. */
+  promiseGeneric?: boolean;
+  /** %Iterator% and %Iterator.prototype% as values link
+   * scr_js_iterator.c; absent (false) otherwise. */
+  iteratorProto?: boolean;
   zlib: boolean;
   /** node:zlib's Brotli forms: scr_brotli.c and the vendored brotli archive. */
   brotli?: boolean;
+  /** node:zlib's zstd forms: scr_zstd.c and the vendored zstd archive. */
+  zstd?: boolean;
   assert: boolean;
   inspect: boolean;
   dynInvoke: boolean;
@@ -54,16 +101,42 @@ export interface NativeLinkFeatures {
   /** Own properties JavaScript adds to children: scr_dyn_handle_props.c.
    * Absent (false) for programs without them. */
   handleProps?: boolean;
+  /** ChildProcess listener removal and signalCode link scr_child_lifecycle.c;
+   * absent (false) otherwise. */
+  childLifecycle?: boolean;
+  /** The spawnSync and exec/execFile-callback `cwd`/`input`/`shell`
+   * entries: selects the SCR_CHILD_CP_OPTIONS build of scr_child.c.
+   * Absent (false) otherwise. */
+  childOptionExt?: boolean;
+  /** The spawnSync result's `.error` errnoException fields (errno, syscall,
+   * path, spawnargs) select scr_child.c's SCR_CHILD_ERR_FIELDS build; absent
+   * (false) otherwise. */
+  childErrorFields?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
   /** for await over checked-dynamic values: scr_dyn_for_await.c. Absent
    * (false) for programs without it. */
   dynForAwait?: boolean;
+  /** Object.isExtensible and Object.isSealed of a value typed dynamically:
+   * scr_dyn_integrity.c. Absent (false) for programs without it. */
+  dynIntegrityQueries?: boolean;
+  /** A generator that binds its parameters at the call: scr_gen_bind.c.
+   * Absent (false) for programs without one. */
+  genBind?: boolean;
   /** events.once with options: scr_events_once_signal.c. Absent (not
    * false) for programs without it. */
   eventsOnceSignal?: boolean;
   /** util.MIMEType and util.MIMEParams: scr_mime.c. */
   mime?: boolean;
+  /** `--large-pages`: scr_text_pages.c, which moves the executable's code
+   * onto transparent huge pages at startup. Absent (false) without it. */
+  largePages?: boolean;
+  /** Web streams in checked-dynamic code: scr_webstreams.c and
+   * scr_dyn_handle_class.c. */
+  webStreams?: boolean;
+  /** AbortController and AbortSignal: scr_abort.c, unless the program
+   * links the fetch unit, which has them. */
+  abortSignal?: boolean;
   /** util.debounce and util.throttle: scr_util_timing.c. */
   utilTiming?: boolean;
   /** Buffer.prototype methods called on checked-dynamic values link
@@ -72,6 +145,18 @@ export interface NativeLinkFeatures {
   /** Builtin functions read as values (Buffer.byteLength, Buffer.alloc,
    * fs.realpathSync) link scr_builtin_values.c; absent (false) otherwise. */
   builtinValues?: boolean;
+  /** A standard library prototype object read as a value in a JavaScript
+   * source (`Date.prototype`) links scr_dyn_stdlib_prototype.c; absent
+   * (false) otherwise, so other programs keep their exact link line. */
+  stdlibPrototypeValue?: boolean;
+  /** DataView.prototype read as a value in a JavaScript source
+   * (`DataView.prototype`) links scr_data_view_proto.c; absent (false)
+   * otherwise, so other programs keep their exact link line. */
+  dataViewPrototypeValue?: boolean;
+  /** A computed read of the global object, or `… in globalThis`, links
+   * scr_global_host_absent.c and the SCR_GLOBAL_HOST_ABSENT build of
+   * scr_node_builtin.c; absent (false) otherwise. */
+  hostAbsentGlobals?: boolean;
   /** createRequire's computed require and require.resolve link
    * scr_require.c; absent (false) otherwise. */
   computedRequire?: boolean;
@@ -79,11 +164,22 @@ export interface NativeLinkFeatures {
   emitter: boolean;
   symbol: boolean;
   bigint: boolean;
+  /** BigIntStats member reads (`statSync(p, { bigint: true })` members):
+   * scr_stats_bigint.c. Absent (false) otherwise, so BigInt programs that
+   * never read a stat member keep their link line and size. */
+  bigstats?: boolean;
   searchParams: boolean;
   qs: boolean;
   utilPromisify: boolean;
   dynBuiltinClass: boolean;
   dynBuiltinStream: boolean;
+  /** An Array.prototype method runs over an array-like receiver:
+   * scr_dyn_array_like.c. Absent (false) otherwise, so programs that never
+   * call one over an array-like keep their exact link line. */
+  arrayLikeDispatch?: boolean;
+  /** A String.prototype trim method read as a value:
+   * scr_dyn_builtin_methods.c. Absent (false) otherwise. */
+  builtinMethodValue?: boolean;
   parseArgs: boolean;
   stream: boolean;
   net: boolean;
@@ -98,6 +194,8 @@ export interface NativeLinkFeatures {
    * scr_text_codec_dyn.c. */
   textCodecDyn: boolean;
   watch: boolean;
+  /** fs.watchFile/fs.unwatchFile: scr_watch_file.c. */
+  watchFile: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;
   tls: boolean;
@@ -122,6 +220,10 @@ export interface NativeLinkFeatures {
   x509: boolean;
   /** perf_hooks event-loop metrics: scr_perf_loop.c. */
   perfLoop: boolean;
+  /** Intl over ICU (scr_intl.c plus the ICU archive and its data
+   * file): the `icu.*` libCalls of the first slice. Absent (false) for
+   * programs without them, so their link features stay unchanged. */
+  intl?: boolean;
   tlsCa: boolean;
   /** crypto.subtle importKey/sign/verify/digest and CryptoKey values:
    * scr_webcrypto.c. */

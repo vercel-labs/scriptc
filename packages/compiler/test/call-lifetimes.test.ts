@@ -5,6 +5,7 @@ import { expect, test } from "vitest";
 import { compile, deserializeModule, validateModule } from "../src/index.js";
 import { analyzeCallLifetimes } from "../src/backend/llvm/call-lifetimes.js";
 import { emitLlvmModule } from "../src/backend/llvm/emitter.js";
+import { keepSetElementsBoxed } from "../src/backend/llvm/test-boxed-unions.js";
 import { type IrModule, type IrFunction } from "../src/ir/ir.js";
 
 async function lower(source: string): Promise<IrModule> {
@@ -170,7 +171,7 @@ function work(items: Item[]): number {
 }
 console.log(work([new Item(7)]));
 
-// Keeps the optional element union a tagged box (Set elements are boxes),
+// The Set's element union stays a tagged box under keepSetElementsBoxed,
 // so the stack-box paths stay exercised; nullable pointers bypass them.
 const keepBoxed = new Set<Item | undefined>();
 void keepBoxed;
@@ -181,7 +182,7 @@ void keepBoxed;
   const facts = analyzeCallLifetimes(new Map(mod.functions.map((item) => [item.name, item])));
   expect(facts.parameters.get("read")).toEqual(new Set([0]));
   expect(facts.parameters.get("relay")).toEqual(new Set([0]));
-  const llvm = emitLlvmModule(mod);
+  const llvm = emitLlvmModule(mod, keepSetElementsBoxed(mod));
   const work = body(llvm, "sc_bf_work");
   expect(work).toContain("alloca %ScrUnion");
   expect(work).toContain("@sc_bf_relay");

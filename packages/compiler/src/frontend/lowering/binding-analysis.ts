@@ -6,7 +6,8 @@ import { isGenericCallableMemberType } from "../type-mapper.js";
 
 /** True when nothing in `sym`'s DECLARING FILE ever writes it after the
  * initializer: assignments (plain and compound, destructuring targets
- * included), ++/--, and for-of/for-in expression targets all count.
+ * included), ++/--, for-of/for-in expression targets, a `var` in a
+ * for-of/for-in head, and redeclarations that initialize all count.
  * Sound file-locally for module-scope bindings because ESM import
  * bindings are read-only — no other file can write one. Cached per
  * symbol (the scan walks the whole file once). */
@@ -31,6 +32,7 @@ export function fileWritesBinding(
   file: ts.SourceFile,
   resolve: (ident: ts.Identifier) => ts.Symbol | null | undefined,
 ): boolean {
+  if (declarationsWriteBinding(sym)) return true;
   let written = false;
   // Text pre-check keeps the file walk cheap: only same-named
   // identifiers pay a symbol resolution.
@@ -76,6 +78,77 @@ export function fileWritesBinding(
   };
   ts.forEachChild(file, visit);
   return written;
+}
+
+/** True when `sym`'s own declarations write it after it holds a value:
+ * a `var` in a for-in or for-of head is written on every iteration, a
+ * `var` with an initializer inside a loop body is written each time the
+ * body runs, and a binding declared more than once (`var x = 1; ... var x
+ * = 2;`, a parameter or function declaration that a `var` redeclares) is
+ * written by each initializing declaration that runs. Only value
+ * declarations count, and of functions only implementations: overload
+ * signatures have no body. A redeclaration without an initializer is
+ * counted too, which only over-approximates. */
+function declarationsWriteBinding(sym: ts.Symbol): boolean {
+  let values = 0;
+  let initializing = 0;
+  for (const d of sym.declarations) {
+    let root: ts.Node = d;
+    while (
+      root.parent !== undefined &&
+      (ts.isBindingElement(root) ||
+        ts.isObjectBindingPattern(root) ||
+        ts.isArrayBindingPattern(root))
+    )
+      root = root.parent;
+    if (ts.isVariableDeclaration(root)) {
+      const list = root.parent;
+      if (
+        ts.isVariableDeclarationList(list) &&
+        (list.flags & ts.NodeFlags.BlockScoped) === 0 &&
+        (ts.isForInStatement(list.parent) || ts.isForOfStatement(list.parent))
+      )
+        return true;
+      values++;
+      if (root.initializer !== undefined) {
+        if (insideLoopBody(root)) return true;
+        initializing++;
+      }
+    } else if (
+      ts.isParameter(root) ||
+      (ts.isFunctionDeclaration(d) && d.body !== undefined) ||
+      ts.isClassDeclaration(d)
+    ) {
+      values++;
+      initializing++;
+    }
+  }
+  return values > 1 && initializing > 0;
+}
+
+/** Whether a declaration sits in the body of a loop of its own function,
+ * where it runs once per iteration. */
+function insideLoopBody(node: ts.Node): boolean {
+  let child = node;
+  for (let parent = node.parent; parent !== undefined; parent = parent.parent) {
+    if (
+      ts.isFunctionLike(parent) ||
+      ts.isClassStaticBlockDeclaration(parent) ||
+      ts.isSourceFile(parent)
+    )
+      return false;
+    if (
+      (ts.isForStatement(parent) ||
+        ts.isForInStatement(parent) ||
+        ts.isForOfStatement(parent) ||
+        ts.isWhileStatement(parent) ||
+        ts.isDoStatement(parent)) &&
+      parent.statement === child
+    )
+      return true;
+    child = parent;
+  }
+  return false;
 }
 
 /** Strips the value-preserving wrappers off an expression: parens,
@@ -219,6 +292,17 @@ export function nullishGenericBindingUnitOf(
   if (unit === null) return null;
   const declared = lowerer.checker.getTypeOfSymbol(sym);
   const mapped = lowerer.mapTypeOf(declared);
+  // A DECLARED generic signature (`let a: <T>() => T = null!`) maps to its
+  // erased func type, but a nullish value has no func slot either: the
+  // no-storage family keeps the binding, exactly as it does for the empty
+  // record below. A non-generic func slot keeps its storage and its
+  // representation error.
+  if (
+    mapped !== null &&
+    mapped.kind === "func" &&
+    lowerer.checker.getCallSignatures(declared).some((sig) => sig.getTypeParameters().length > 0)
+  )
+    return unit;
   if (mapped !== null) {
     // Only the EMPTY interned shape qualifies among record mappings —
     // the all-generic-signature interface (`I<A & B>`) whose struct has
@@ -359,8 +443,18 @@ export function deadUnmappableBinding(
   // The type gate LAST among the cheap checks: querying the checker for
   // a type is the expensive step (and can panic upstream — the 1e999
   // bug), so only survivors of the syntactic filters pay it. Mappable
-  // types keep their real storage.
-  if (lowerer.mapTypeOf(lowerer.checker.getTypeOfSymbol(sym)) !== null) return false;
+  // types keep their real storage, EXCEPT a generic signature, which now
+  // maps to its erased func type (`var a1: { <T, U extends T>(): void }`):
+  // a dead binding of one is still materialized and dropped by Node, so
+  // it keeps this family's zero code instead of gaining a func slot.
+  const declared = lowerer.checker.getTypeOfSymbol(sym);
+  const mapped = lowerer.mapTypeOf(declared);
+  if (mapped !== null) {
+    const erasedSignature =
+      mapped.kind === "func" &&
+      lowerer.checker.getCallSignatures(declared).some((sig) => sig.getTypeParameters().length > 0);
+    if (!erasedSignature) return false;
+  }
   const symText = ts.symbolName(sym);
   const namesSym = (e: ts.Node): boolean =>
     ts.isIdentifier(e) && e.text === symText && lowerer.resolveValueSymbol(e) === sym;

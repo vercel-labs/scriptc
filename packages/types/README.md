@@ -25,4 +25,4 @@ function isLetter(ch: number): NoThrow<boolean> {
 - `Acyclic` on a class (`class C implements Acyclic`), interface (`interface I extends Acyclic`) or object type alias (`type T = Acyclic<{ ... }>`): no chain of references can lead from such an object back to itself. Its objects carry no cycle-collector header.
 - `ProgramLifetime` in a class's `implements` clause: instances of the class and its subclasses are never freed, so scriptc skips reference counting and cycle collection for them. Memory only: discarded instances are not reclaimed.
 
-scriptc proves each contract or rejects the program with a diagnostic (SC7001-SC7008) that explains why it does not hold. A program that compiles behaves exactly as under Node.js. See https://scriptc.dev/docs/contracts.
+scriptc proves each contract or rejects the program with a diagnostic (SC7001-SC7009) that explains why it does not hold. A program that compiles behaves exactly as under Node.js. See https://scriptc.dev/docs/contracts.

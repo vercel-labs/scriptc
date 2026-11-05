@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/string-spread.ts"
+ ],
+ "diags": []
+}

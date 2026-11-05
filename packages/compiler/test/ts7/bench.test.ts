@@ -28,6 +28,8 @@ import type {
 } from "../../src/frontend/ts7/semantic-types.js";
 import { CheckerFacade } from "../../src/frontend/ts7/checker.js";
 import { ambientDtsPath, fallbackDtsPath, overridesDtsPath } from "../../src/frontend/program.js";
+import { fallbackModulesNamedIn } from "../../src/frontend/dts-paths.js";
+import { readFileSync } from "node:fs";
 import { ad, options7 } from "./harness.js";
 
 const repoRoot = fileURLToPath(new URL("../../../..", import.meta.url));
@@ -230,7 +232,13 @@ for (const workload of WORKLOADS) {
     { retry: 2 },
     () => {
       const program = createProgram(
-        [workload.entry, ambientDtsPath(), fallbackDtsPath(), overridesDtsPath()],
+        [
+          workload.entry,
+          ambientDtsPath(),
+          fallbackDtsPath(),
+          ...fallbackModulesNamedIn(readFileSync(workload.entry, "utf8")),
+          overridesDtsPath(),
+        ],
         options7(),
         host,
       );

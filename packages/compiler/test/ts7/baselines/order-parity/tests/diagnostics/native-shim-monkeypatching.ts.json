@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/native-shim-monkeypatching.ts"
+ ],
+ "diags": []
+}

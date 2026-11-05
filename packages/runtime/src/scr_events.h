@@ -35,8 +35,11 @@
 typedef struct ScrBytes ScrBytes; /* full definition below (C11 repeat) */
 void scr_events_install(void);
 void scr_signal_on(ScrStr *name, ScrDyn *cb, bool once);
+void scr_signal_prepend(ScrStr *name, ScrDyn *cb);
 void scr_signal_off(ScrStr *name, ScrDyn *cb);
 void scr_process_on_exit(ScrClosure *cb, void (*fn)(ScrClosure *, double), bool once);
+void scr_process_prepend_exit(ScrClosure *cb, void (*fn)(ScrClosure *, double));
+double scr_process_stdin_is_raw(void);
 void scr_process_off_exit(ScrClosure *cb);
 void scr_run_exit_listeners(double code);
 void scr_exit_thunk0(ScrClosure *cb, double code);
@@ -51,6 +54,17 @@ void scr_stdin_set_encoding(ScrStr *enc);
 void scr_stdin_data_thunk_str(ScrClosure *cb, ScrStr *text);
 void scr_stdin_on_end(ScrClosure *cb, bool once);
 void scr_stdin_on_error(ScrClosure *cb, ScrChildErrFn fn, bool once);
+/* A 'readable' listener (moves cb): paused mode, as in Node — input stays
+ * buffered for read(), and the event fires on the next tick when input
+ * arrives while a read wanted more, and once at EOF. */
+void scr_stdin_on_readable(ScrClosure *cb, bool once);
+void scr_stdin_pause(void);
+void scr_stdin_resume(void);
+bool scr_stdin_is_paused(void);
+double scr_stdin_readable_length(void);
+/* read([size]): the held input up to `size` bytes (+1), or NULL; Node's
+ * size coercion and ERR_OUT_OF_RANGE (see the definition). */
+ScrBytes *scr_stdin_read_bytes(bool all, double size);
 ScrPromise *scr_stdin_next_chunk(void); /* +1 */
 void scr_stdin_destroy(void);
 bool scr_stdin_pending(void);

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test, vi } from "vitest";
 import { forkTargetPaths } from "./fork-target.js";
-import { fallbackDtsPath } from "./dts-paths.js";
+import { fallbackDtsPath, fallbackModulePath } from "./dts-paths.js";
 import { Ts7Host } from "./ts7/program-host.js";
 import { Ts7Api } from "./ts7/rpc-api.js";
 import { ModuleKind, ModuleResolutionKind } from "./ts7/enums.js";
@@ -35,12 +35,15 @@ test("fork discovery batches only candidate bindings and preserves aliases and s
   `,
   );
   const host = new Ts7Host((options) => new Ts7Api(options), { cwd: directory });
-  const program = host.createProgram([entry, declarations], {
-    noLib: true,
-    types: [],
-    module: ModuleKind.ESNext,
-    moduleResolution: ModuleResolutionKind.Bundler,
-  });
+  const program = host.createProgram(
+    [entry, declarations, fallbackModulePath("node:child_process")!],
+    {
+      noLib: true,
+      types: [],
+      module: ModuleKind.ESNext,
+      moduleResolution: ModuleResolutionKind.Bundler,
+    },
+  );
   const checker = program.getTypeChecker();
   const batch = vi.spyOn(checker, "prefetchSymbolNodesExact");
   const whole = vi.spyOn(checker.raw, "getTypeOfSymbol");
@@ -73,12 +76,15 @@ function discover(files: Record<string, string>): { targets: string[]; queried: 
   for (const [name, text] of Object.entries(files)) writeFileSync(join(directory, name), text);
   const entry = join(directory, "main.ts");
   const host = new Ts7Host((options) => new Ts7Api(options), { cwd: directory });
-  const program = host.createProgram([entry, fallbackDtsPath()], {
-    noLib: true,
-    types: [],
-    module: ModuleKind.ESNext,
-    moduleResolution: ModuleResolutionKind.Bundler,
-  });
+  const program = host.createProgram(
+    [entry, fallbackDtsPath(), fallbackModulePath("node:child_process")!],
+    {
+      noLib: true,
+      types: [],
+      module: ModuleKind.ESNext,
+      moduleResolution: ModuleResolutionKind.Bundler,
+    },
+  );
   const batch = vi.spyOn(program.getTypeChecker(), "prefetchSymbolNodesExact");
   try {
     const targets = forkTargetPaths(program, [program.getSourceFile(entry)!]).map((path) =>

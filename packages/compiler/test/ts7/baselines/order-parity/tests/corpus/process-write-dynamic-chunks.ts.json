@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/process-write-dynamic-chunks.ts"
+ ],
+ "diags": []
+}

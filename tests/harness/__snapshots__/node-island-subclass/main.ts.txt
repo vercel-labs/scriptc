@@ -1,0 +1,15 @@
+node-island-subclass/main.ts:10:22 - error SC8011: a native class cannot extend a class owned by a Node island yet (native subclasses of island classes)
+
+   9 | 
+  10 | class Point3 extends Point {
+     |                      ^~~~~
+  11 |   z = 0;
+
+  hint: keep the subclass in Node: move it into the island module, or mark its module as a Node island; a registry shim of the package also lifts this
+
+node-island-subclass/main.ts:13:13 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+
+  12 | }
+  13 | console.log(new Point3(1, 2).norm());
+     |             ^~~~~~~~~~~~~~~~
+  14 | 

@@ -126,10 +126,12 @@ void scr_assert_loose_result(bool equal, bool negated, ScrStr *actual,
  * promise fulfilled): "Missing expected exception|rejection" with Node's
  * details — ` (${expected.name})` when the expected class/shape carries a
  * name (has_ename), then `: message` or `.`. */
-/* Node's expectsError over an error-INSTANCE expected: the expected dyn
- * error's keys (minus the %error marker) each deep-compare against the
- * caught value's; mismatches throw the deep-equal AssertionError. */
-void scr_assert_expects_err_dyn(ScrDyn *actual, ScrDyn *expected, ScrStr *msg, bool has_msg);
+/* Node's expectedException over an object expected (a validation object or
+ * an error instance): each key compares against the caught value's own or
+ * inherited one; a mismatch throws the Comparison deep-equal
+ * AssertionError with the throws (or rejects) operator. */
+void scr_assert_expects_err_dyn(ScrDyn *actual, ScrDyn *expected, ScrStr *msg, bool has_msg,
+                                bool rejection);
 void scr_assert_throws_none(bool rejection, ScrStr *ename, bool has_ename,
                             ScrStr *msg, bool has_msg);
 void scr_assert_throws_mismatch(ScrStr *expected_name, ScrError *err,

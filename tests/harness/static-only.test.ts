@@ -81,9 +81,12 @@ console.log(slash("a\\\\b"), /^a/.test("abc"), value + 1, path.basename("a/b"));
 test("an ineligible package fails with its package-specific native refusal", async () => {
   const directory = mkdtempSync(join(tmpdir(), "scriptc-package-refusal-"));
   try {
+    // Node islands off: the native refusal itself (with islands on, the
+    // package would run in a Node island instead).
     const result = await compile(join(root, "tests/fixtures/npm-static/typegap-mix.ts"), {
       outDir: directory,
       outPath: join(directory, "program"),
+      nodeIslands: { mode: "off" },
     });
     expect(result.ok).toBe(false);
     if (!result.ok)

@@ -24,6 +24,7 @@ beforeAll(async () => {
     bin,
     join(testDir, "test_sort.c"),
     join(testDir, "../src/scr_array.c"),
+    join(testDir, "../src/scr_arena.c"),
     // Checked-value collection equality shares the native JSON value runtime.
     join(testDir, "../src/scr_json.c"),
     join(testDir, "../src/scr_map.c"),

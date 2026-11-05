@@ -169,6 +169,27 @@ test("versioning is bounded and requires an integer consumer", () => {
   expect(matchIntegerCountedForLoop(counted(number(4)), locals)?.guarded).toBe(false);
 });
 
+test("a limit that multiplies loop-invariant values is a stable bound", () => {
+  const withRows = new Map(locals);
+  withRows.set("rows", { id: "rows", name: "rows", type: F64, mutable: false });
+  const product = (left: IrExpr, right: IrExpr): IrExpr => ({
+    kind: "bin",
+    op: "*",
+    left,
+    right,
+    type: F64,
+    loc,
+  });
+  expect(
+    matchIntegerCountedForLoop(counted(product(ref("rows"), number(61))), withRows),
+  ).toMatchObject({ localId: "i", guarded: true });
+  // Every factor has to be invariant, and the counter is not one of them.
+  expect(
+    matchIntegerCountedForLoop(counted(product(ref("rows"), ref("missing"))), withRows),
+  ).toBeNull();
+  expect(matchIntegerCountedForLoop(counted(product(ref("rows"), ref("i"))), withRows)).toBeNull();
+});
+
 test("an unproven start versions the loop on an exact integer start", () => {
   const withStart = new Map(locals);
   withStart.set("start", { id: "start", name: "start", type: F64, mutable: false });

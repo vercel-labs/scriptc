@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/dynamic-method-receiver-statements.mjs"
+ ],
+ "diags": []
+}

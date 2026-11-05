@@ -1,0 +1,5 @@
+- **Dynamic slots:** A field, parameter, return value, variable or expression whose declared type has no native representation compiles as a checked dynamic slot instead of failing the build.
+  The parts of the type that compile keep their native layout, and only the failing parts hold checked-dynamic values.
+  Operations on those values run in the dynamic tier, and reading one into typed code checks it against the type that reads it, so a value that contradicts its declaration throws a `TypeError` when typed code first uses it rather than when it is stored.
+  Each slot is an `SC6104` warning; `scriptc coverage --fail-on=dynamic-slots` fails on them, and `--tier=static-only` turns them back into build errors.
+  Values that scriptc cannot produce at all, such as `WeakRef` instances, still fail where they are created.

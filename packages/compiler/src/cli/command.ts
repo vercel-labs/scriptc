@@ -28,6 +28,7 @@ import {
 import { isTypePatchCode } from "../diagnostics/diagnostic.js";
 import { isPerformanceCode, renderPerformanceWarnings } from "../diagnostics/dynamic-tier.js";
 import { isNativeOptimization } from "../backend/optimization.js";
+import { renderNativeProfileMatch } from "../backend/native-profile.js";
 import {
   hostTargetCpu,
   isTargetCpuOption,
@@ -146,8 +147,12 @@ async function main(args: string[], host: CliHost): Promise<number> {
       values.ffi !== undefined ||
       values.profile !== undefined ||
       values.strip ||
+      values.static ||
       values["windows-subsystem"] !== undefined ||
       values["detached-exit"] ||
+      values["large-pages"] ||
+      values["stdout-buffering"] ||
+      values.exceptions !== undefined ||
       values["target-cpu"] !== undefined ||
       values["cpu-dispatch"] !== undefined ||
       values["profile-generate"] !== undefined ||
@@ -207,9 +212,13 @@ async function main(args: string[], host: CliHost): Promise<number> {
       values.ffi !== undefined ||
       values.profile !== undefined ||
       values.strip ||
+      values.static ||
       values.sanitize ||
       values["windows-subsystem"] !== undefined ||
       values["detached-exit"] ||
+      values["large-pages"] ||
+      values["stdout-buffering"] ||
+      values.exceptions !== undefined ||
       values["target-cpu"] !== undefined ||
       values["cpu-dispatch"] !== undefined ||
       values["profile-generate"] !== undefined ||
@@ -300,9 +309,13 @@ async function main(args: string[], host: CliHost): Promise<number> {
       values["fail-on"] !== undefined ||
       values.optimization !== undefined ||
       values.strip ||
+      values.static ||
       values.ffi !== undefined ||
       values["windows-subsystem"] !== undefined ||
       values["detached-exit"] ||
+      values["large-pages"] ||
+      values["stdout-buffering"] ||
+      values.exceptions !== undefined ||
       values["target-cpu"] !== undefined ||
       values["cpu-dispatch"] !== undefined ||
       values["profile-generate"] !== undefined ||
@@ -315,7 +328,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
       hasNodeIslandFlags(values)
     ) {
       fail(
-        "scriptc build --lib takes no --backend/--emit/--print/--optimization/--strip/--windows-subsystem/--detached-exit/--target-cpu/--cpu-dispatch/--profile-generate/--profile-use/--npm-static/--define/--ffi/--external-types/--tier/--explain-dynamic: the profile pins the emission and optimization, npm imports are judged automatically, --define and outbound FFI belong to executable builds, external type mappings belong to coverage, and library artifacts are static-tier only",
+        "scriptc build --lib takes no --backend/--emit/--print/--optimization/--strip/--static/--windows-subsystem/--detached-exit/--large-pages/--stdout-buffering/--exceptions/--target-cpu/--cpu-dispatch/--profile-generate/--profile-use/--npm-static/--define/--ffi/--external-types/--tier/--explain-dynamic: the profile pins the emission and optimization, npm imports are judged automatically, --define and outbound FFI belong to executable builds, external type mappings belong to coverage, and library artifacts are static-tier only",
       );
     }
     const profilePath = resolve(profileArg);
@@ -358,6 +371,9 @@ async function main(args: string[], host: CliHost): Promise<number> {
   if (command === "coverage" && values.strip) {
     fail(`--strip is a build/run option\n\n${USAGE}`);
   }
+  if (command === "coverage" && values.static) {
+    fail(`--static is a build/run option\n\n${USAGE}`);
+  }
   if (command === "coverage" && values["target-cpu"] !== undefined) {
     fail(`--target-cpu is a build/run option\n\n${USAGE}`);
   }
@@ -366,6 +382,19 @@ async function main(args: string[], host: CliHost): Promise<number> {
   }
   if (command === "coverage" && values["detached-exit"]) {
     fail(`--detached-exit is a build/run option\n\n${USAGE}`);
+  }
+  if (command === "coverage" && values["stdout-buffering"]) {
+    fail(`--stdout-buffering is a build/run option\n\n${USAGE}`);
+  }
+  if (command === "coverage" && values["large-pages"]) {
+    fail(`--large-pages is a build/run option\n\n${USAGE}`);
+  }
+  if (command === "coverage" && values.exceptions !== undefined) {
+    fail(`--exceptions is a build/run option\n\n${USAGE}`);
+  }
+  const exceptions = values.exceptions;
+  if (exceptions !== undefined && exceptions !== "common" && exceptions !== "rare") {
+    fail(`unknown exception frequency "${exceptions}" (supported: common, rare)\n\n${USAGE}`);
   }
   if (command === "coverage" && values["profile-generate"] !== undefined) {
     fail(`--profile-generate is a build/run option\n\n${USAGE}`);
@@ -543,7 +572,10 @@ async function main(args: string[], host: CliHost): Promise<number> {
           sanitize: values.sanitize,
           ...(values.optimization === undefined ? {} : { optimization: values.optimization }),
           strip: values.strip,
+          staticLink: values.static,
           detachedExit: values["detached-exit"],
+          stdoutBuffering: values["stdout-buffering"],
+          largePages: values["large-pages"],
           ...(values["cpu-dispatch"] === undefined ? {} : { cpuDispatch: values["cpu-dispatch"] }),
           ...(values["profile-generate"] === undefined
             ? {}
@@ -664,8 +696,20 @@ async function main(args: string[], host: CliHost): Promise<number> {
       ...(backend !== undefined ? { backend } : {}),
       ...(optimization !== undefined ? { optimization } : {}),
       ...(values.strip ? { strip: true } : {}),
+      ...(values.static ? { staticLink: true } : {}),
       ...(windowsSubsystem !== undefined ? { windowsSubsystem } : {}),
       ...(values["detached-exit"] ? { detachedExit: true } : {}),
+      ...(values["stdout-buffering"] ? { stdoutBuffering: true } : {}),
+      ...(values.libnode !== undefined
+        ? {
+            libnode:
+              values.libnode === "beside" || values.libnode.startsWith("$ORIGIN/")
+                ? values.libnode
+                : resolve(values.libnode),
+          }
+        : {}),
+      ...(values["large-pages"] ? { largePages: true } : {}),
+      ...(exceptions === "rare" ? { exceptions: "rare" as const } : {}),
       ...targetCpuField(targetCpu),
       ...(values["cpu-dispatch"] === undefined ? {} : { cpuDispatch: values["cpu-dispatch"] }),
       // The instrumented program resolves a relative pattern against its own
@@ -678,6 +722,8 @@ async function main(args: string[], host: CliHost): Promise<number> {
         : { profileUse: resolve(values["profile-use"]) }),
       ...(npmStatic !== undefined ? { npmStatic } : {}),
       ...(define !== undefined ? { define } : {}),
+      ...(nodeIslands !== undefined ? { nodeIslands } : {}),
+      ...(values["shape-overlay"] === false ? { shapeOverlay: false } : {}),
       ...(ffiProfilePath !== undefined ? { ffiProfilePath } : {}),
       ...(printNativeLinkInfo ? { nativeLinkInfo: true } : {}),
       ...(tier !== undefined ? { tier } : {}),
@@ -750,6 +796,15 @@ async function main(args: string[], host: CliHost): Promise<number> {
       }
     }
     if (result.artifact.kind === "exe") {
+      // How the profile matched the program's functions; `run` keeps stderr
+      // for the program's own output.
+      const profileUse = values["profile-use"];
+      if (
+        command === "build" &&
+        profileUse !== undefined &&
+        result.artifact.profileMatch !== undefined
+      )
+        process.stderr.write(renderNativeProfileMatch(profileUse, result.artifact.profileMatch));
       if (!values["keep-llvm"]) rmSync(result.artifact.translationUnitPath, { force: true });
     } else if (result.artifact.kind === "obj") {
       nativeLinkInfo = result.artifact.nativeLinkInfo;

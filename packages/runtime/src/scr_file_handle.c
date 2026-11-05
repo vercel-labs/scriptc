@@ -422,7 +422,7 @@ ScrBytes *scr_file_handle_read_file_bytes(ScrFileHandle *h) {
 static void scr_file_handle_write_all(ScrFileHandle *h, const void *data,
                                       size_t length) {
   if (!scr_file_handle_require_open(h)) return;
-  ScrBytes bytes = {SIZE_MAX, length, SCR_BYTES_U8, (uint8_t *)data, NULL};
+  ScrBytes bytes = {.rc = SIZE_MAX, .len = length, .elem = SCR_BYTES_U8, .data = (uint8_t *)data};
   size_t at = 0;
   while (at < length) {
     double count = scr_fs_write_sync((double)h->fd, &bytes, (double)at,

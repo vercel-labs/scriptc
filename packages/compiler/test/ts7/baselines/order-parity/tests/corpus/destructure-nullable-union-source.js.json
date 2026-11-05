@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/destructure-nullable-union-source.js"
+ ],
+ "diags": []
+}

@@ -1,4 +1,6 @@
 /* Increment, decrement and prefix unary operators, and compound field updates. */
+import { staticPrivateUpdateTarget } from "../private-statics.js";
+import { lowerCompoundValueToTarget } from "./binary.js";
 import {
   indexedUnionArms,
   lowerIndexedUnionNumberRead,
@@ -21,6 +23,7 @@ import {
   deferredSlotOr,
   dynCompoundValue,
   lowerOptionalNumber,
+  lowerOperatorNumber,
   operatorUnsupported,
   runtimeOptionalStorageOperand,
   symbolFieldTarget,
@@ -36,6 +39,7 @@ import {
   isUnitType,
   STRING,
   type SrcLoc,
+  typeEquals,
   UNDEFINED_T,
   VOID,
 } from "../../../ir/ir.js";
@@ -44,7 +48,7 @@ import { classToNumberConversion } from "../class-to-primitive.js";
 import { lowerPrimitiveUnionNumber } from "../lower-calls.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../../ir/build.js";
 import { fenceNodeModuleMutation } from "../lower-node-module.js";
-import { staticFieldWriteTarget } from "../lower-classes.js";
+import { findStaticOn, staticFieldWriteTarget } from "../lower-classes.js";
 import { expandoWritableTarget } from "../lower-expando.js";
 import { nsWritableTarget } from "../lower-namespaces.js";
 import { arrayNumberRead, arrayValueRead, arrayValueStore } from "../array-values.js";
@@ -52,7 +56,7 @@ import { isSafeToRepeat } from "./evaluation-safety.js";
 import { errorPropertyWrite } from "../error-methods.js";
 import type { CompoundOp } from "../surfaces.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
-import { hasRuntimeStatics } from "../class-runtime-statics.js";
+import { hasRuntimeStatics, runtimeStaticDefines } from "../class-runtime-statics.js";
 import { declareContextLocal } from "../function-context.js";
 import { keyedFieldTarget, keyedFieldWrite, saveKeyedFieldKey } from "./keyed-field-targets.js";
 
@@ -168,7 +172,7 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
                     type: F64,
                     loc,
                   } satisfies IrExpr)
-                : lowerOptionalNumber(lowerer, raw, loc, expr.operand);
+                : lowerOperatorNumber(lowerer, raw, loc, expr.operand);
       if (operand.type.kind !== "f64") operatorUnsupported(lowerer, expr, "-", [raw.type]);
       if (operand.kind === "numLit") return { ...operand, value: -operand.value, loc };
       return { kind: "unary", op: "-", operand, type: F64, loc };
@@ -177,6 +181,14 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
       const raw = lowerer.lowerExpr(expr.operand);
       if (raw.type.kind === "dyn") {
         return { kind: "libCall", fn: "dyn.toNumberCoerce", args: [raw], type: F64, loc };
+      }
+      // `+sym`: ToNumber of a Symbol throws "Cannot convert a Symbol value
+      // to a number", which the runtime's checked conversion raises. Only a
+      // JavaScript source reaches this, since the checker's own operator
+      // error still fences the TypeScript form.
+      if (raw.type.kind === "symbol") {
+        const boxed: IrExpr = { kind: "dynFrom", value: raw, type: DYN, loc };
+        return { kind: "libCall", fn: "dyn.toNumberCoerce", args: [boxed], type: F64, loc };
       }
       // A union of primitives (`+match[1]` over `string | undefined`): ToNumber
       // over the boxed value, as for a checked-dynamic operand.
@@ -196,7 +208,7 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
       if (raw.type.kind === "date") return dateTimeValue(raw, loc);
       const classNumber = classToNumberConversion(lowerer, raw, expr.operand, "unary plus");
       if (classNumber) return classNumber;
-      const operand = lowerOptionalNumber(lowerer, raw, loc, expr.operand);
+      const operand = lowerOperatorNumber(lowerer, raw, loc, expr.operand);
       if (operand.type.kind === "f64") return operand;
       // `+process.argv[2]`: a `string | undefined` (or other primitive
       // union) converts as Number(value) does.
@@ -238,7 +250,7 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
       // protocol. This is the static `any`/JS-lane answer for idioms
       // such as `while (~index)`, where inference may have widened an
       // otherwise numeric slot to the checked-dynamic tree.
-      const operand = lowerOptionalNumber(lowerer, raw, loc, expr.operand);
+      const operand = lowerOperatorNumber(lowerer, raw, loc, expr.operand);
       if (operand.type.kind !== "f64") operatorUnsupported(lowerer, expr, "~", [raw.type]);
       return { kind: "unary", op: "~", operand, type: F64, loc };
     }
@@ -269,6 +281,19 @@ export function lowerIncDec(
     }
     fenceNodeModuleMutation(lowerer, access, "assignment");
     if (ts.isPropertyAccessExpression(access)) {
+      // `this.#x++` on a static private field (private-statics.ts): the
+      // brand check, then the field's native global.
+      const staticPrivate = staticPrivateUpdateTarget(lowerer, access);
+      if (staticPrivate) {
+        const update = lowerIncDecTarget(lowerer, expr, staticPrivate.target, prefix);
+        return {
+          kind: "seqExpr",
+          stmts: [staticPrivate.brand],
+          result: update,
+          type: update.type,
+          loc,
+        };
+      }
       const target =
         staticFieldWriteTarget(lowerer, access) ??
         expandoWritableTarget(lowerer, access) ??
@@ -888,24 +913,100 @@ export function fieldSetStmt(
       loc,
     };
   }
-  return target.container === "class"
-    ? {
-        kind: "fieldSet",
-        obj: target.obj,
-        className: target.className,
-        field: target.field,
-        value,
-        ...(isStrictCode(blame) ? {} : { sloppy: true as const }),
-        loc,
-      }
-    : {
-        kind: "recordSet",
-        obj: target.obj,
-        shapeId: target.shapeId,
-        field: target.field,
-        value,
-        loc,
-      };
+  if (target.container === "class")
+    return {
+      kind: "fieldSet",
+      obj: target.obj,
+      className: target.className,
+      field: target.field,
+      value,
+      ...(isStrictCode(blame) ? {} : { sloppy: true as const }),
+      loc,
+    };
+  return {
+    kind: "recordSet",
+    obj: target.obj,
+    shapeId: target.shapeId,
+    field: target.field,
+    value,
+    loc,
+  };
+}
+
+/** The unasserted operand of a member access spelled through `as`/`<>`
+ * views (`(x as { k: string }).k`, parenthesized), or null when the
+ * receiver carries no assertion. Node erases the assertion, so the member
+ * lives on the object the operand names. */
+function assertedOperandOf(access: ts.PropertyAccessExpression): ts.Expression | null {
+  let node: ts.Expression = access.expression;
+  let asserted = false;
+  while (true) {
+    if (ts.isParenthesizedExpression(node)) node = node.expression;
+    else if (ts.isAsExpression(node) || ts.isTypeAssertion(node)) {
+      node = node.expression;
+      asserted = true;
+    } else break;
+  }
+  return asserted ? node : null;
+}
+
+/** `(u as { k: T }).k op= v` where `u` is a union of record layouts.
+ * fieldTarget declines because the ASSERTED view is not the value's own
+ * layout, and the assertion's conversion would build a copy the write
+ * would be lost in. Node mutates the object the operand names, so address
+ * the one arm whose layout holds `k` at the asserted type through the
+ * checked single-arm extraction: a value of any other arm throws instead
+ * of writing a member its layout cannot carry. Null for every other
+ * shape (the caller keeps its refusal). */
+function assertedUnionFieldTarget(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+): FieldTarget | null {
+  if (ts.isPrivateIdentifier(access.name)) return null;
+  const operand = assertedOperandOf(access);
+  if (operand === null) return null;
+  const asserted = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
+  if (asserted?.kind !== "record") return null;
+  const assertedField = lowerer.shapes
+    .get(asserted.shapeId)
+    ?.fields.find((f) => f.name === access.name.text);
+  if (!assertedField) return null;
+  // Decide from the mapped operand first: the probe must not lower (or
+  // convert) anything a declined call would leave behind.
+  const operandType = lowerer.mapTypeOf(lowerer.typeOf(operand));
+  if (operandType?.kind !== "union") return null;
+  const declared = lowerer.unions.get(operandType.unionId);
+  if (!declared) return null;
+  const shapeIds: string[] = [];
+  for (const arm of declared.arms) {
+    if (arm.kind !== "record") continue;
+    const field = lowerer.shapes.get(arm.shapeId)?.fields.find((f) => f.name === access.name.text);
+    if (field !== undefined && typeEquals(field.type, assertedField.type))
+      shapeIds.push(arm.shapeId);
+  }
+  // The assertion naming the one arm itself is an identity view the
+  // ordinary field target already addresses.
+  if (shapeIds.length !== 1 || shapeIds[0] === asserted.shapeId) return null;
+  const value = lowerer.lowerExpr(operand);
+  if (value.type.kind !== "union") return null;
+  let arm: IrType | null = null;
+  for (const candidate of lowerer.unions.get(value.type.unionId)?.arms ?? []) {
+    if (candidate.kind === "record" && candidate.shapeId === shapeIds[0]) {
+      arm = candidate;
+      break;
+    }
+  }
+  if (arm === null || arm.kind !== "record") return null;
+  const loc = locOf(access);
+  const helper = lowerer.narrowedArmHelper(value.type.unionId, arm, loc);
+  if (helper === null) return null;
+  return {
+    container: "record",
+    obj: lowerer.checkedNarrowCall(helper, value, arm, loc),
+    shapeId: arm.shapeId,
+    field: access.name.text,
+    fieldType: assertedField.type,
+  };
 }
 
 export function lowerFieldCompoundValue(
@@ -921,6 +1022,27 @@ export function lowerFieldCompoundValue(
       access,
       "compound assignment through 'super' (read and write separately)",
     );
+  }
+  // `this.#x op= v` on a static private field (private-statics.ts): the
+  // brand check, then the field's native global read before the right side.
+  if (
+    ts.isPropertyAccessExpression(access) &&
+    rhsNode !== null &&
+    ts.isBinaryExpression(access.parent) &&
+    access.parent.left === access
+  ) {
+    const staticPrivate = staticPrivateUpdateTarget(lowerer, access);
+    if (staticPrivate) {
+      const { target } = staticPrivate;
+      const value = lowerCompoundValueToTarget(lowerer, access.parent, op, target);
+      return {
+        kind: "seqExpr",
+        stmts: [staticPrivate.brand],
+        result: { kind: "assignExpr", localId: target.id, value, type: target.type, loc },
+        type: target.type,
+        loc,
+      };
+    }
   }
   const body: IrStmt[] = [];
   const save = (value: IrExpr, name: string): IrExpr => {
@@ -939,7 +1061,20 @@ export function lowerFieldCompoundValue(
     let probed = tryLowerExpression(lowerer, access.expression);
     const staticClass =
       probed?.type.kind === "classval" ? lowerer.classes.get(probed.type.className) : undefined;
-    if (probed && staticClass && hasRuntimeStatics(staticClass))
+    // A statically known member that the class value's table does not carry
+    // (a class whose only runtime static is its `Symbol.hasInstance` hook)
+    // updates its own storage, as it would without the hook; a member the
+    // class does not declare at all is a property of the class object.
+    const staticMember =
+      staticClass && !ts.isPrivateIdentifier(access.name)
+        ? findStaticOn(lowerer, staticClass, access.name.text)
+        : undefined;
+    if (
+      probed &&
+      staticClass &&
+      hasRuntimeStatics(staticClass) &&
+      (!staticMember || runtimeStaticDefines(lowerer, staticClass, access.name.text))
+    )
       probed = lowerer.coerceToExpected(probed, DYN);
     // A private name is the field of its class (fieldTarget).
     if (probed?.type.kind === "dyn" && !ts.isPrivateIdentifier(access.name)) {
@@ -955,8 +1090,20 @@ export function lowerFieldCompoundValue(
         "%compoundOld",
       );
       const cur: IrExpr = { kind: "dynCheck", value: read, type: F64, loc };
+      const rawRhs: IrExpr = rhsNode
+        ? lowerer.lowerExpr(rhsNode)
+        : { kind: "numLit", value: 1, type: F64, loc };
+      // A `null`/`undefined` literal right side has no value of its own to
+      // hold in the temporary. In a JavaScript source `+` is the abstract
+      // operation (ToNumber for arithmetic, ToString for a string left
+      // operand — `s += null` appends "null"), so the unit crosses as the
+      // dynamic null rather than as the number it would convert to.
       const rhs = save(
-        rhsNode ? lowerer.lowerExpr(rhsNode) : { kind: "numLit", value: 1, type: F64, loc },
+        rawRhs.kind === "unitLit"
+          ? isJsSourceFile(ts.getSourceFileOfNode(access))
+            ? lowerer.coerceToExpected(rawRhs, DYN)
+            : lowerOperatorNumber(lowerer, rawRhs, loc)
+          : rawRhs,
         "%compoundRhs",
       );
       if (isJsSourceFile(ts.getSourceFileOfNode(access)) && lowerer.dynConvertible(rhs.type)) {
@@ -991,7 +1138,7 @@ export function lowerFieldCompoundValue(
       const numericRhs: IrExpr =
         rhs.type.kind === "dyn"
           ? { kind: "dynCheck", value: rhs, type: F64, loc: rhs.loc }
-          : lowerOptionalNumber(lowerer, rhs, loc);
+          : lowerOperatorNumber(lowerer, rhs, loc);
       if (numericRhs.type.kind !== "f64")
         compoundUnsupported(lowerer, access, op, F64, numericRhs.type);
       const value = save(
@@ -1013,9 +1160,12 @@ export function lowerFieldCompoundValue(
       return { kind: "seqExpr", stmts: body, result: value, type: value.type, loc };
     }
   }
+  // The ordinary field target first: every write that resolved before keeps
+  // its byte-identical lowering. The asserted union view only answers where
+  // that target declined (SC1090 before this).
   const targetOf = (): FieldTarget | null =>
     ts.isPropertyAccessExpression(access)
-      ? lowerer.fieldTarget(access)
+      ? (lowerer.fieldTarget(access) ?? assertedUnionFieldTarget(lowerer, access))
       : (symbolFieldTarget(lowerer, access) ?? keyedFieldTarget(lowerer, access, true));
   const target = targetOf();
   if (!target)
@@ -1025,7 +1175,15 @@ export function lowerFieldCompoundValue(
   saveKeyedFieldKey(target, save);
   // Accessors observe getter, RHS side effects, then setter, all through
   // the saved receiver.
-  const fieldRead = lowerer.fieldGetExpr(target, locOf(access), access);
+  const fieldRead = lowerOptionalStringRead(
+    lowerer,
+    lowerer.fieldGetExpr(target, locOf(access), access),
+    access,
+    rhsNode,
+    op,
+    save,
+    loc,
+  );
   // `+=` on a stored string field reads it into a mutable local, so the
   // concat below can append to that local in place.
   const storedString =
@@ -1048,14 +1206,33 @@ export function lowerFieldCompoundValue(
   } else {
     read = save(fieldRead, "%compoundOld");
   }
+  // A `null`/`undefined` literal right side converts before it reaches the
+  // temporary: a local cannot hold a bare unit value. Every other right side
+  // keeps its own type in the temporary, as before.
+  const rawRhs: IrExpr = rhsNode
+    ? lowerer.lowerExpr(rhsNode)
+    : { kind: "numLit", value: 1, type: F64, loc };
+  // `s += null` on a STRING field appends "null": the abstract `+` converts
+  // the unit to its primitive and, with a string left operand, to a string.
+  // The unit has no value of its own to hold in the temporary, so it crosses
+  // as the dynamic null; every other compound operation converts it to a
+  // number (`n += null` adds 0).
+  const unitConcat =
+    rawRhs.kind === "unitLit" &&
+    read.type.kind === "string" &&
+    isJsSourceFile(ts.getSourceFileOfNode(access));
   const rhs = save(
-    rhsNode ? lowerer.lowerExpr(rhsNode) : { kind: "numLit", value: 1, type: F64, loc },
+    rawRhs.kind === "unitLit"
+      ? unitConcat
+        ? lowerer.coerceToExpected(rawRhs, DYN)
+        : lowerOperatorNumber(lowerer, rawRhs, loc)
+      : rawRhs,
     "%compoundRhs",
   );
   const numericRhs: IrExpr =
     rhs.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(access))
       ? { kind: "dynCheck", value: rhs, type: F64, loc: rhs.loc }
-      : lowerOptionalNumber(lowerer, rhs, loc);
+      : lowerOperatorNumber(lowerer, rhs, loc);
   let value: IrExpr;
   let appended: IrExpr | null = null;
   const numericRead = lowerOptionalNumber(lowerer, read, loc, access);
@@ -1113,4 +1290,70 @@ export function lowerFieldCompoundValue(
     lowerer.fieldSetStmt(target, lowerer.coerceInto(access, result, target.fieldType), loc, access),
   );
   return { kind: "seqExpr", stmts: body, result, type: result.type, loc };
+}
+
+/** `+=` on an OPTIONAL string field (`label?: string`, `errorMessage:
+ * string | undefined`). JavaScript reads the absent value as a value and
+ * the abstract `+` converts it with ToString, so `label += "x"` on a label
+ * nobody set appends the text "undefined"; the compiler's string concat
+ * needs a string operand, which the declared `string | undefined` slot is
+ * not. The checker may also have narrowed the slot to `string` at this site
+ * (an earlier assignment — `block.label = block.label || ""` — or a typeof
+ * guard); then the absent arm cannot run, and the read narrows through the
+ * string arm, trapping like every checked narrowing. Null conversions leave
+ * the read alone: the compound's own fences answer those. */
+function lowerOptionalStringRead(
+  lowerer: Lowerer,
+  read: IrExpr,
+  access: ts.Node,
+  rhsNode: ts.Node | null,
+  op: string,
+  save: (value: IrExpr, name: string) => IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  if (op !== "+" || read.type.kind !== "union") return read;
+  const unionId = read.type.unionId;
+  const absentTag = lowerer.armTag(unionId, UNDEFINED_T);
+  const presentTag = lowerer.armTag(unionId, STRING);
+  if (absentTag < 0 || presentTag < 0) return read;
+  const present = lowerer.stripUndefinedArm(read.type);
+  if (present.kind !== "string") return read;
+  const stable = save(read, "%compoundOldUnion");
+  const stringArm = (): IrExpr => ({
+    kind: "unionNarrow",
+    unionId,
+    tag: presentTag,
+    value: stable,
+    type: STRING,
+    loc,
+  });
+  // The checker proved the slot holds a string here: extract it, and a
+  // lying binding throws the catchable TypeError instead of appending to a
+  // value Node would have converted.
+  if (lowerer.mapTypeOf(lowerer.typeOf(access))?.kind === "string") {
+    const helper = lowerer.narrowedArmHelper(unionId, STRING, loc);
+    return helper ? lowerer.checkedNarrowCall(helper, stable, STRING, loc) : stringArm();
+  }
+  // An absent value appends its ToString, which is a string only when the
+  // right operand is one too (`undefined + 1` is NaN in JavaScript). Any
+  // other right side keeps the union read for the compound below, which
+  // takes the value already evaluated here: a getter runs once.
+  if (rhsNode === null || lowerer.mapTypeOf(lowerer.typeOf(rhsNode))?.kind !== "string")
+    return stable;
+  return {
+    kind: "ternary",
+    cond: {
+      kind: "unionIsTag",
+      unionId,
+      tag: absentTag,
+      negated: false,
+      value: stable,
+      type: BOOL,
+      loc,
+    },
+    then: { kind: "strLit", value: "undefined", type: STRING, loc },
+    else_: stringArm(),
+    type: STRING,
+    loc,
+  };
 }

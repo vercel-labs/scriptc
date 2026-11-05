@@ -55,9 +55,12 @@ static size_t scr_arr_prefix(const ScrArr *a) {
   return (a->spare & SCR_ARR_HAS_EXT) ? SCR_ARR_EXT_PREFIX : 0;
 }
 
-/* The start of the block the dense storage was allocated as. */
+/* The start of the block the dense storage was allocated as. The block is
+ * NULL while the array has no storage, and offsetting a null pointer, even
+ * by 0, is undefined: the address is computed as an integer, which keeps the
+ * callers' control flow (and the runtime profile's view of it) as it was. */
 static void *scr_arr_alloc_start(const ScrArr *a) {
-  return (char *)scr_arr_block(a) - scr_arr_prefix(a);
+  return (void *)((uintptr_t)scr_arr_block(a) - scr_arr_prefix(a));
 }
 
 /* Bytes per dense slot: an 8-byte value or a boolean byte, and its state
@@ -1426,15 +1429,53 @@ static void scr_arr_put_slots(ScrArr *a, size_t to, size_t count, const uint64_t
 
 /* Inlined into each constructor, so `small` and the slot unit fold to
  * constants there. */
+static void scr_arr_arena_dispose(void *object);
+static void scr_arr_arena_dispose_closed(void *object);
+static ScrCycType scr_arr_cyc_type;
+
+/* An array block of `size` bytes in the current group arena, or NULL.
+ * Its storage beyond the block is the heap's, so it goes on the arena's
+ * dispose list even when the arena is closed; there, its elements are
+ * arena objects and immortal values, which need no release. */
+static inline ScrArr *scr_arr_arena_block(size_t size, bool cyc) {
+  void *arena = scr_arena_cur;
+  if (!arena) return NULL;
+  size_t hdr = cyc ? sizeof(ScrCycHdr) : 0;
+  size_t n = (hdr + size + 7) & ~(size_t)7;
+  uint32_t id = cyc ? scr_cyc_type_id(&scr_arr_cyc_type) : 0;
+  char *block = scr_arena_bump(arena, n);
+  ScrArr *a;
+  if (block) {
+    /* The constructor sets every header field, as on the heap; only the
+     * collector header needs setting here. */
+    if (cyc) *(ScrCycHdr *)block = (ScrCycHdr){.id = (uint16_t)id, .buf = SCR_CYC_ACYCLIC};
+    a = (ScrArr *)(block + hdr);
+  } else {
+    a = scr_arena_obj(arena, size, cyc ? &scr_arr_cyc_type : NULL);
+    if (!a) return NULL;
+  }
+  scr_arena_dispose_later(arena, a,
+                          scr_arena_is_closed(arena) ? scr_arr_arena_dispose_closed
+                                                     : scr_arr_arena_dispose);
+  return a;
+}
+
 static inline __attribute__((always_inline)) ScrArr *scr_arr_make(ScrElemKind elem,
                                                                   size_t initial_cap,
-                                                                  bool small) {
+                                                                  bool small,
+                                                                  bool arena) {
   size_t unit = scr_elem_slot_width(elem);
   size_t inline_cap = small ? scr_arr_small_cap(SCR_ARR_INLINE_OFFSET, unit)
                             : scr_arr_known_cap(SCR_ARR_INLINE_OFFSET, initial_cap, unit);
-  ScrArr *a = scr_mem_alloc(inline_cap ? SCR_ARR_INLINE_OFFSET + inline_cap * unit : sizeof(ScrArr));
-  if (!a) scr_arr_oom();
-  a->rc = 1;
+  size_t size = inline_cap ? SCR_ARR_INLINE_OFFSET + inline_cap * unit : sizeof(ScrArr);
+  ScrArr *a = arena ? scr_arr_arena_block(size, false) : NULL;
+  if (a)
+    a->rc = SCR_ARENA_RC;
+  else {
+    a = scr_mem_alloc_ref(size);
+    if (!a) scr_arr_oom();
+    a->rc = 1;
+  }
   a->len = 0;
   a->cap = 0;
   a->elem = (uint8_t)elem;
@@ -1451,10 +1492,16 @@ static inline __attribute__((always_inline)) ScrArr *scr_arr_make(ScrElemKind el
 }
 
 ScrArr *scr_arr_new(ScrElemKind elem, size_t initial_cap) {
-  return scr_arr_make(elem, initial_cap, false);
+  return scr_arr_make(elem, initial_cap, false, false);
 }
 
-ScrArr *scr_arr_new_small(ScrElemKind elem) { return scr_arr_make(elem, 0, true); }
+ScrArr *scr_arr_new_small(ScrElemKind elem) { return scr_arr_make(elem, 0, true, false); }
+
+ScrArr *scr_arr_new_r(ScrElemKind elem, size_t initial_cap) {
+  return scr_arr_make(elem, initial_cap, false, true);
+}
+
+ScrArr *scr_arr_new_small_r(ScrElemKind elem) { return scr_arr_make(elem, 0, true, true); }
 
 /* A non-cycle array whose final length the runtime knows when it builds
  * it (regex match results): its `cap` slots share the header's block, so
@@ -1463,13 +1510,13 @@ ScrArr *scr_arr_new_small(ScrElemKind elem) { return scr_arr_make(elem, 0, true)
  * `cap` moves the slots out like any inline array. */
 ScrArr *scr_arr_new_inline(ScrElemKind elem, size_t cap, bool states) {
   if (cap == 0) {
-    ScrArr *a = scr_arr_make(elem, 0, false);
+    ScrArr *a = scr_arr_make(elem, 0, false, false);
     if (states) a->spare |= SCR_ARR_STATES;
     return a;
   }
   if (cap > SCR_ARR_MAX_LENGTH) scr_arr_oom();
   size_t unit = scr_elem_slot_width(elem) + (states ? 1 : 0);
-  ScrArr *a = scr_mem_alloc(SCR_ARR_INLINE_OFFSET + cap * unit);
+  ScrArr *a = scr_mem_alloc_ref(SCR_ARR_INLINE_OFFSET + cap * unit);
   if (!a) scr_arr_oom();
   a->rc = 1;
   a->len = 0;
@@ -1484,6 +1531,21 @@ ScrArr *scr_arr_new_inline(ScrElemKind elem, size_t cap, bool states) {
   scr_live_arrays++;
 #endif
   return a;
+}
+
+ScrArr *scr_arr_window_header(const ScrArr *image, ScrArr **slot) {
+  ScrArr *known = __atomic_load_n(slot, __ATOMIC_ACQUIRE);
+  if (known) return known;
+  ScrArr *made = scr_mem_alloc_ref(sizeof(ScrArr));
+  if (!made) scr_arr_oom();
+  memcpy(made, image, sizeof(ScrArr));
+  /* Other threads reach the copy through the slot. */
+  scr_sa_thread_shares();
+  ScrArr *expected = NULL;
+  if (__atomic_compare_exchange_n(slot, &expected, made, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+    return made;
+  scr_mem_free(made);
+  return expected;
 }
 
 void scr_arr_outline(ScrArr *a) {
@@ -1572,13 +1634,16 @@ static void scr_arr_gc_free(void *a0) {
   scr_cyc_free_inline(a);
 }
 
+static ScrCycType scr_arr_cyc_type = {&scr_arr_trace_v, &scr_arr_gc_free, SCR_CYC_KIND_ARRAY};
+
 /* Inlined into each constructor like scr_arr_make: with `small`, the count
  * and `elem` constant, scr_arr_new_ops_small's size class folds to a table
  * index and the slot sizes to constants. */
 static inline __attribute__((always_inline)) ScrArr *scr_arr_make_ops_kind(const ScrArrOps *ops,
                                                                            size_t initial_cap,
                                                                            bool small,
-                                                                           uint8_t elem) {
+                                                                           uint8_t elem,
+                                                                           bool arena) {
   ScrArr *a;
   bool cyc = ops->trace != NULL;
   /* The array starts without states: slots of the value width alone. */
@@ -1587,14 +1652,18 @@ static inline __attribute__((always_inline)) ScrArr *scr_arr_make_ops_kind(const
   size_t inline_cap =
       small ? scr_arr_small_cap(prefix, unit) : scr_arr_known_cap(prefix, initial_cap, unit);
   size_t size = inline_cap ? SCR_ARR_INLINE_OFFSET + inline_cap * unit : sizeof(ScrArr);
-  if (cyc) {
-    static ScrCycType cyc_type = { &scr_arr_trace_v, &scr_arr_gc_free, SCR_CYC_KIND_ARRAY };
-    a = scr_cyc_alloc_inline(size, &cyc_type);
-  } else {
-    a = scr_mem_alloc(size);
-    if (!a) scr_arr_oom();
+  a = arena ? scr_arr_arena_block(size, cyc) : NULL;
+  if (a)
+    a->rc = SCR_ARENA_RC;
+  else {
+    if (cyc)
+      a = scr_cyc_alloc_inline(size, &scr_arr_cyc_type);
+    else {
+      a = scr_mem_alloc_ref(size);
+      if (!a) scr_arr_oom();
+    }
+    a->rc = 1;
   }
-  a->rc = 1;
   a->len = 0;
   a->cap = 0;
   a->elem = elem;
@@ -1622,17 +1691,76 @@ static inline __attribute__((always_inline)) ScrArr *scr_arr_make_ops_kind(const
  * branch inlines scr_arr_make_ops_kind with a constant kind. */
 static inline __attribute__((always_inline)) ScrArr *scr_arr_make_ops(const ScrArrOps *ops,
                                                                       size_t initial_cap,
-                                                                      bool small) {
+                                                                      bool small,
+                                                                      bool arena) {
   if (__builtin_expect(scr_arr_ops_compact(ops), 0))
-    return scr_arr_make_ops_kind(ops, initial_cap, small, SCR_ELEM_CREF);
-  return scr_arr_make_ops_kind(ops, initial_cap, small, SCR_ELEM_REF);
+    return scr_arr_make_ops_kind(ops, initial_cap, small, SCR_ELEM_CREF, arena);
+  return scr_arr_make_ops_kind(ops, initial_cap, small, SCR_ELEM_REF, arena);
 }
 
 ScrArr *scr_arr_new_ops(const ScrArrOps *ops, size_t initial_cap) {
-  return scr_arr_make_ops(ops, initial_cap, false);
+  return scr_arr_make_ops(ops, initial_cap, false, false);
 }
 
-ScrArr *scr_arr_new_ops_small(const ScrArrOps *ops) { return scr_arr_make_ops(ops, 0, true); }
+ScrArr *scr_arr_new_ops_small(const ScrArrOps *ops) { return scr_arr_make_ops(ops, 0, true, false); }
+
+/* The constructors arena-aware functions call (llvm/arenas.ts): in the
+ * current group arena when one is open. */
+ScrArr *scr_arr_new_ops_r(const ScrArrOps *ops, size_t initial_cap) {
+  return scr_arr_make_ops(ops, initial_cap, false, true);
+}
+
+ScrArr *scr_arr_new_ops_small_r(const ScrArrOps *ops) { return scr_arr_make_ops(ops, 0, true, true); }
+
+/* An inline array field's elements as an array value (llvm/inline-arrays.ts).
+ * The field keeps `len` 32-bit references to compact instances at `slots`, in
+ * a program-lifetime instance, and never changes them. The header borrows
+ * them: SCR_ARR_INLINE_SLOTS keeps scr_arr_free_parts from freeing them and
+ * SCR_ARR_FROZEN keeps every write, and so every move, away from them.
+ * Element types whose ops lie past the registry keep their ops pointer in
+ * the word before the slots (scr_arr_ext), which belongs to the instance:
+ * those get a frozen copy instead. */
+ScrArr *scr_arr_view_cref(const ScrArrOps *ops, uint32_t *slots, uint32_t len) {
+  ScrArr *a = scr_arr_make_ops_kind(ops, 0, false, SCR_ELEM_CREF, false);
+  if (scr_arr_ops_id(ops) == SCR_ARR_OPS_OVERFLOW) {
+    if (len > 0) {
+      scr_arr_grow_dense_to(a, len, SCR_ARR_GROW_EXACT);
+      memcpy(a->data, slots, (size_t)len * sizeof(uint32_t));
+    }
+  } else {
+    a->data = (uint64_t *)slots;
+    a->cap = len;
+    a->spare |= SCR_ARR_INLINE_SLOTS;
+  }
+  a->len = len;
+  a->filled = len;
+  a->spare |= SCR_ARR_FROZEN;
+  return a;
+}
+
+/* The constructor's write of an inline array field: the `len` elements of
+ * `src`, an array of the field's element class, as 32-bit references at
+ * `slots`. `len` is the length the instance was allocated for, read from the
+ * same constructor argument, so another length, a hole or an element that
+ * is not a compact instance means the program broke the field's contract. */
+void scr_arr_copy_cref_tail(const ScrArr *src, uint32_t *slots, uint32_t len) {
+  if (src->len != len)
+    scr_trap("scriptc: an inline array field's array changed length during construction\n");
+  if (len == 0) return;
+  if (src->filled < len) scr_trap("scriptc: an inline array field's array has holes\n");
+  if (src->elem == SCR_ELEM_CREF) {
+    memcpy(slots, src->data, (size_t)len * sizeof(uint32_t));
+    return;
+  }
+  if (src->elem != SCR_ELEM_REF)
+    scr_trap("scriptc: an inline array field's array holds other values\n");
+  for (uint32_t i = 0; i < len; i++) {
+    uint64_t slot = src->data[i];
+    if (slot == 0)
+      scr_trap("scriptc: an inline array field's array holds a missing element\n");
+    slots[i] = scr_cref_encode(slot);
+  }
+}
 
 /* Frees an acyclic array whose elements are already released. */
 static inline __attribute__((always_inline)) void scr_arr_free(ScrArr *a) {
@@ -1669,8 +1797,8 @@ static void scr_arr_release_foreign(ScrArr *a) {
   x->foreign = false;
 }
 
-static void scr_arr_destroy(void *object) {
-  ScrArr *a = object;
+/* Releases an array's elements and ext contents (destroy's first half). */
+static void scr_arr_release_contents(ScrArr *a) {
   if (scr_arr_ext_of(a)) {
     scr_dyn_release(scr_arr_ext_of(a)->metadata);
     scr_arr_ext_of(a)->metadata = NULL;
@@ -1737,8 +1865,273 @@ static void scr_arr_destroy(void *object) {
       }
     }
   }
+}
+
+static void scr_arr_destroy(void *object) {
+  ScrArr *a = object;
+  scr_arr_release_contents(a);
   if (a->cyc) scr_arr_gc_free(a);
   else scr_arr_free(a);
+}
+
+/* An arena array at its arena's drop: its contents and the storage beyond
+ * its block go; the block goes with the arena. */
+static void scr_arr_arena_dispose(void *object) {
+  ScrArr *a = object;
+  scr_arr_release_contents(a);
+  scr_arr_free_parts(a);
+#ifdef SCR_RC_AUDIT
+  scr_live_arrays--;
+#endif
+}
+
+/* The same in a closed arena, whose objects hold only each other and
+ * immortal values: only the storage beyond the block goes. */
+static void scr_arr_arena_dispose_closed(void *object) {
+  scr_arr_free_parts((ScrArr *)object);
+#ifdef SCR_RC_AUDIT
+  scr_live_arrays--;
+#endif
+}
+
+void scr_arr_subclass_init(ScrArr *a, uint8_t elem, const ScrArrOps *ops, const ScrArrClass *cls,
+                           bool cyc) {
+  a->len = 0;
+  a->cap = 0;
+  a->elem = elem;
+  a->cyc = cyc ? 1 : 0;
+  uint32_t id = ops ? scr_arr_ops_id(ops) : 0;
+  a->spare = (uint16_t)(id << SCR_ARR_OPS_SHIFT);
+  a->filled = 0;
+  a->data = NULL;
+  ScrArrExt *x = scr_arr_ext(a);
+  if (id == SCR_ARR_OPS_OVERFLOW) x->ops = ops;
+  x->cls = cls;
+#ifdef SCR_RC_AUDIT
+  scr_live_arrays++;
+#endif
+}
+
+/* super(...args) in a class that extends Array, as the Array constructor:
+ * one number argument sets the length (a RangeError for an invalid length),
+ * otherwise the arguments become the elements. `args` has the instance's
+ * element type and is borrowed; `dyn_elems` says its elements are dyn
+ * values, whose number test reads the value. */
+void scr_arr_subclass_construct(ScrArr *a, ScrArr *args, bool dyn_elems) {
+  if (args->len == 1) {
+    if (args->elem == SCR_ELEM_F64 || args->elem == SCR_ELEM_I32) {
+      scr_arr_set_len(a, scr_arr_get_number(args, 0));
+      return;
+    }
+    if (dyn_elems) {
+      const ScrDyn *d = scr_arr_borrow_ref(args, 0);
+      if (d != NULL && d->kind == SCR_DYN_NUM) {
+        scr_arr_set_len(a, d->v.num);
+        return;
+      }
+    }
+  }
+  if (args->len > 0) (void)scr_arr_push_spread(a, args);
+}
+
+/* The implicit constructor of a class that extends Array forwards its
+ * arguments (a dyn array) to super: the same rule, each argument converted
+ * to the element type. Element types other than numbers, booleans, strings
+ * and dyn values take only the length form. */
+void scr_arr_subclass_construct_dyn(ScrArr *a, const ScrDyn *args, bool dyn_elems) {
+  if (args == NULL || args->kind != SCR_DYN_ARR) return;
+  size_t n = args->v.arr.len;
+  ScrDyn *const *items = args->v.arr.items;
+  if (n == 1 && items[0] != NULL && items[0]->kind == SCR_DYN_NUM) {
+    scr_arr_set_len(a, items[0]->v.num);
+    return;
+  }
+  for (size_t i = 0; i < n; i++) {
+    ScrDyn *d = items[i];
+    if (dyn_elems) {
+      (void)scr_arr_push_ref(a, scr_dyn_retain(d));
+      continue;
+    }
+    if ((a->elem == SCR_ELEM_F64 || a->elem == SCR_ELEM_I32) && d && d->kind == SCR_DYN_NUM) {
+      (void)scr_arr_push_f64(a, d->v.num);
+    } else if (a->elem == SCR_ELEM_BOOL && d && d->kind == SCR_DYN_BOOL) {
+      (void)scr_arr_push_bool(a, d->v.b);
+    } else if (a->elem == SCR_ELEM_STR && d && d->kind == SCR_DYN_STR) {
+      (void)scr_arr_push_ref(a, scr_str_retain(d->v.str));
+    } else {
+      static const char msg[] =
+          "constructing this Array subclass with element arguments is not supported yet";
+      scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+      return;
+    }
+  }
+}
+
+static void scr_arr_set_slot(ScrArr *a, double i, uint64_t slot);
+
+static ScrArr *scr_arr_species_fill(const ScrArrClass *cls, ScrArr *result, double ctor_length,
+                                    bool with_length, bool set_length);
+static ScrArr *scr_arr_species_move(ScrArr *species, ScrArr *result, bool set_length);
+
+/* Gives an Array subclass instance holding no elements (only holes) another
+ * element type: its storage is dropped and its length kept. */
+static void scr_arr_retype_empty(ScrArr *a, uint8_t elem, const ScrArrOps *ops) {
+  uint32_t len = a->len;
+  ScrArrExt *x = scr_arr_ext_of(a);
+  const ScrArrClass *cls = x->cls;
+  scr_arr_free_parts(a);
+  a->data = NULL;
+  a->len = a->cap = a->filled = 0;
+  a->elem = elem;
+  uint32_t id = ops ? scr_arr_ops_id(ops) : 0;
+  a->spare = (uint16_t)(id << SCR_ARR_OPS_SHIFT);
+  x = scr_arr_ext(a);
+  if (id == SCR_ARR_OPS_OVERFLOW) x->ops = ops;
+  x->cls = cls;
+  scr_arr_set_len(a, (double)len);
+}
+
+ScrArr *scr_arr_species_adopt(ScrArr *recv, ScrArr *result, double ctor_length, bool set_length) {
+  const ScrArrClass *cls = scr_arr_class_of(recv);
+  if (cls == NULL) return result;
+  if (ctor_length < 0) ctor_length = (double)result->len;
+  return scr_arr_species_fill(cls, result, ctor_length, true, set_length);
+}
+
+ScrArr *scr_arr_species_create(ScrArr *recv, double ctor_length) {
+  const ScrArrClass *cls = scr_arr_class_of(recv);
+  if (cls == NULL) return scr_arr_retain(recv);
+  if (cls->species == NULL) {
+    static const char msg[] =
+        "this Array subclass's constructor cannot construct a species result (Symbol.species)";
+    scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+    return scr_arr_retain(recv);
+  }
+  ScrArr *species = cls->species(ctor_length, true);
+  if (scr_exc_pending()) {
+    scr_arr_release(species);
+    return scr_arr_retain(recv);
+  }
+  return species;
+}
+
+ScrArr *scr_arr_species_finish(ScrArr *species, ScrArr *result, bool set_length) {
+  if (scr_arr_class_of(species) == NULL) return result;
+  return scr_arr_species_move(scr_arr_retain(species), result, set_length);
+}
+
+ScrArr *scr_arr_class_construct_adopt(const ScrArrClass *cls, ScrArr *result, double ctor_length) {
+  return scr_arr_species_fill(cls, result, ctor_length < 0 ? 0 : ctor_length, ctor_length >= 0, true);
+}
+
+static ScrArr *scr_arr_species_fill(const ScrArrClass *cls, ScrArr *result, double ctor_length,
+                                    bool with_length, bool set_length) {
+  if (cls->species == NULL) {
+    static const char msg[] =
+        "this Array subclass's constructor cannot construct a species result (Symbol.species)";
+    scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+    return result;
+  }
+  ScrArr *species = cls->species(ctor_length, with_length);
+  if (scr_exc_pending()) {
+    scr_arr_release(species);
+    return result;
+  }
+  return scr_arr_species_move(species, result, set_length);
+}
+
+/* Defines the present elements of `result` (owned) on the species instance
+ * `species` (owned) and answers the instance, or the result with an error
+ * pending when the instance cannot take them. */
+static ScrArr *scr_arr_species_move(ScrArr *species, ScrArr *result, bool set_length) {
+  if (species->elem != result->elem || scr_arr_ops(species) != scr_arr_ops(result)) {
+    /* A result of another element type (map, flatMap): an instance the
+     * constructor left without elements takes the result's element type;
+     * its length stays. An instance whose collector header the elements
+     * would need, or that already holds elements, cannot. */
+    const ScrArrOps *ops = scr_arr_ops(result);
+    bool traced = ops != NULL && ops->trace != NULL;
+    bool empty = true;
+    for (size_t i = 0; empty && i < species->len; i++) {
+      uint64_t slot;
+      empty = scr_arr_state_at(species, i, &slot) == SCR_ARR_HOLE;
+    }
+    if (!empty || (traced && !species->cyc)) {
+      static const char msg[] =
+          "an Array subclass's species result of another element type is not supported yet";
+      scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+      scr_arr_release(species);
+      return result;
+    }
+    scr_arr_retype_empty(species, result->elem, ops);
+  }
+  for (size_t i = 0; i < result->len; i++) {
+    uint64_t slot;
+    uint8_t state = scr_arr_state_at(result, i, &slot);
+    if (state == SCR_ARR_VALUE) scr_arr_set_slot(species, (double)i, scr_elem_retain_slot(result, slot));
+    else if (state == SCR_ARR_UNDEFINED) scr_arr_set_undefined(species, (double)i);
+    /* A value written through a dynamic view (scr_arr_set_foreign retains
+     * it); the instance has the result's element type. */
+    else if (state == SCR_ARR_FOREIGN) scr_arr_set_foreign(species, (double)i, scr_slot_to_ptr(slot));
+  }
+  if (set_length) scr_arr_set_len(species, (double)result->len);
+  scr_arr_release(result);
+  return species;
+}
+
+bool scr_dyn_is_array_class(const ScrDyn *d, const ScrArrClass *cls) {
+  if (d == NULL) return false;
+  /* A live view of the native instance. */
+  if (d->kind == SCR_DYN_TYPED_REF && d->v.typed_ref.array != NULL && !d->v.typed_ref.record &&
+      !d->v.typed_ref.klass && !d->v.typed_ref.bag_class)
+    return scr_arr_class_of(d->v.typed_ref.ptr) == cls;
+  /* A snapshot: scr_arr_copy_metadata names the class by its name's
+   * address, which each class owns. */
+  if (d->kind == SCR_DYN_ARR) {
+    const ScrDyn *props = d->v.arr.properties;
+    return props != NULL && props->v.obj.class_name == cls->name;
+  }
+  return false;
+}
+
+const ScrArrClass *scr_arr_class_of(const ScrArr *a) {
+  if (!(a->spare & SCR_ARR_HAS_EXT)) return NULL;
+  return scr_arr_ext_of((ScrArr *)a)->cls;
+}
+
+/* Whether an Array subclass instance's elements are the collector's: its
+ * current element ops trace them. A species result can retype an empty
+ * instance's storage (scr_arr_species_move), so this follows the storage,
+ * not the element type the class declares. */
+static bool scr_arr_subclass_elements_traced(const ScrArr *a) {
+  const ScrArrOps *ops = scr_arr_ops(a);
+  return ops != NULL && ops->trace != NULL;
+}
+
+void scr_arr_subclass_trace(void *a, ScrTraceVisit visit, void *ctx) {
+  if (scr_arr_subclass_elements_traced((ScrArr *)a)) scr_arr_trace_v(a, visit, ctx);
+}
+
+void scr_arr_subclass_gc_drop(ScrArr *a) {
+  if (!scr_arr_subclass_elements_traced(a)) scr_arr_release_contents(a);
+  scr_arr_free_parts(a);
+  a->data = NULL;
+  a->len = a->cap = a->filled = 0;
+  a->spare &= (uint16_t)~SCR_ARR_HAS_EXT;
+#ifdef SCR_RC_AUDIT
+  scr_live_arrays--;
+#endif
+}
+
+void scr_arr_subclass_drop(ScrArr *a) {
+  scr_arr_release_contents(a);
+  scr_arr_free_parts(a);
+  a->data = NULL;
+  a->len = a->cap = a->filled = 0;
+  a->spare &= (uint16_t)~SCR_ARR_HAS_EXT;
+#ifdef SCR_RC_AUDIT
+  scr_live_arrays--;
+#endif
 }
 
 /* Whether destroying `a`, an acyclic array, releases nothing: it has no ext
@@ -1754,6 +2147,12 @@ static inline bool scr_arr_releases_nothing(const ScrArr *a) {
 void scr_arr_release(ScrArr *a) {
   if (!a || a->rc == SIZE_MAX) return; /* NULL: an uninitialized `let` local */
   if (--a->rc == 0) {
+    /* An Array subclass instance: its class tears it down. */
+    if ((a->spare & SCR_ARR_HAS_EXT) && scr_arr_ext_of(a)->cls) {
+      if (a->cyc) scr_cyc_dead(a);
+      scr_rc_destroy(a, scr_arr_ext_of(a)->cls->destroy);
+      return;
+    }
     /* Nothing to tear down: free the storage without scr_rc_destroy's
      * queue (no release can recurse) or the element loop. */
     if (!a->cyc && scr_arr_releases_nothing(a)) {
@@ -5711,17 +6110,39 @@ bool scr_arr_numeric_key(const char *key, size_t len, double *out) {
 
 bool scr_arr_has_properties(const ScrArr *a) {
   const ScrArrExt *x = scr_arr_ext_of(a);
-  return x && (x->prop_len || x->metadata);
+  return x && (x->prop_len || x->metadata || x->cls);
+}
+
+/* The own fields of an Array subclass instance (ScrArrClass.fields), a
+ * fresh dyn object, or NULL. */
+static ScrDyn *scr_arr_class_fields(ScrArr *a) {
+  const ScrArrClass *cls = scr_arr_class_of(a);
+  if (!cls || !cls->fields) return NULL;
+  return cls->fields(scr_arr_retain(a));
 }
 
 void scr_arr_copy_metadata(ScrArr *a, ScrDyn *target) {
+  const ScrArrClass *cls = scr_arr_class_of(a);
+  if (cls) {
+    /* An Array subclass instance: the class name util.inspect prints before
+     * the elements, then the class's own fields as properties. */
+    if (!target->v.arr.properties) target->v.arr.properties = scr_dyn_new_obj();
+    target->v.arr.properties->v.obj.class_name = cls->name;
+    ScrDyn *fields = scr_arr_class_fields(a);
+    if (fields) {
+      for (size_t i = 0; i < scr_dyn_obj_count(fields); i++)
+        scr_dyn_copy_prop_at(target, fields, i);
+      scr_dyn_release(fields);
+    }
+    return;
+  }
   const ScrDyn *metadata = SCR_AX(a)->metadata;
   if (metadata && metadata->kind == SCR_DYN_HANDLE && metadata->v.handle.tag == SCR_DYNH_MATCH_SOURCE &&
       scr_arr_match_copy(a, target))
     return;
   metadata = SCR_AX(a)->metadata;
   if (!metadata) return;
-  for (size_t i = 0; i < metadata->v.obj.len; i++) scr_dyn_copy_entry(target, metadata, &metadata->v.obj.entries[i]);
+  for (size_t i = 0; i < scr_dyn_obj_count(metadata); i++) scr_dyn_copy_prop_at(target, metadata, i);
 }
 
 ScrArr *scr_arr_named_keys(ScrArr *a) {
@@ -5733,6 +6154,15 @@ ScrArr *scr_arr_named_keys(ScrArr *a) {
   ScrArr *keys = scr_arr_new(SCR_ELEM_STR, 0);
   for (size_t i = 0; i < x->prop_len; i++)
     scr_arr_push_ref(keys, scr_str_new(x->props[i].key, x->props[i].key_len));
+  ScrDyn *fields = scr_arr_class_fields(a);
+  if (fields) {
+    for (size_t i = 0; i < scr_dyn_obj_count(fields); i++) {
+      ScrDynProp entry = scr_dyn_obj_prop_at(fields, i);
+      if (entry.enumerable) scr_arr_push_ref(keys, scr_str_new(entry.key, entry.key_len));
+    }
+    scr_dyn_release(fields);
+    return keys;
+  }
   const ScrDyn *metadata = x->metadata;
   if (metadata && metadata->kind == SCR_DYN_HANDLE && metadata->v.handle.tag == SCR_DYNH_MATCH_SOURCE) {
     static const char *const names[] = {"index", "input", "groups"};
@@ -5740,10 +6170,10 @@ ScrArr *scr_arr_named_keys(ScrArr *a) {
     return keys;
   }
   if (!metadata || metadata->kind != SCR_DYN_OBJ) return keys;
-  for (size_t i = 0; i < metadata->v.obj.len; i++) {
-    const ScrDynEntry *entry = &metadata->v.obj.entries[i];
-    if (!entry->enumerable || scr_arr_prop_index(a, entry->key, entry->key_len) != SIZE_MAX) continue;
-    scr_arr_push_ref(keys, scr_str_new(entry->key, entry->key_len));
+  for (size_t i = 0; i < scr_dyn_obj_count(metadata); i++) {
+    ScrDynProp entry = scr_dyn_obj_prop_at(metadata, i);
+    if (!entry.enumerable || scr_arr_prop_index(a, entry.key, entry.key_len) != SIZE_MAX) continue;
+    scr_arr_push_ref(keys, scr_str_new(entry.key, entry.key_len));
   }
   return keys;
 }
@@ -5756,15 +6186,22 @@ bool scr_arr_has_named_key(ScrArr *a, ScrStr *key) {
   if (metadata && metadata->kind == SCR_DYN_HANDLE && metadata->v.handle.tag == SCR_DYNH_MATCH_SOURCE)
     return true; /* index, input and groups, the only keys a pending result lists */
   if (!metadata || metadata->kind != SCR_DYN_OBJ) return false;
-  for (size_t i = 0; i < metadata->v.obj.len; i++) {
-    const ScrDynEntry *entry = &metadata->v.obj.entries[i];
-    if (entry->key_len == key->len && memcmp(entry->key, key->data, key->len) == 0) return true;
+  for (size_t i = 0; i < scr_dyn_obj_count(metadata); i++) {
+    ScrDynProp entry = scr_dyn_obj_prop_at(metadata, i);
+    if (entry.key_len == key->len && memcmp(entry.key, key->data, key->len) == 0) return true;
   }
   return false;
 }
 
 void scr_arr_adopt_view_properties(ScrArr *a, ScrDyn *view, ScrArr *target) {
   ScrArrExt *from = scr_arr_ext_of(target);
+  /* An Array subclass instance's class is in its out-of-line storage, which
+   * the commit gives to `a`: the class moves to `a`'s, and so stays with the
+   * instance, while `a` is released as a plain array. */
+  if (from && from->cls) {
+    scr_arr_ext(a)->cls = from->cls;
+    from->cls = NULL;
+  }
   if (from && from->prop_len) {
     /* Both arrays have the same element type, so the slots keep their owner. */
     ScrArrExt *x = scr_arr_ext(a);
@@ -5778,20 +6215,22 @@ void scr_arr_adopt_view_properties(ScrArr *a, ScrDyn *view, ScrArr *target) {
     from->prop_cap = cap;
   }
   ScrDyn *named = view && view->kind == SCR_DYN_ARR ? view->v.arr.properties : NULL;
-  if (!named || named->v.obj.len == 0) return;
+  if (!named || scr_dyn_obj_count(named) == 0) return;
   /* The view's numeric properties are copies of the native ones (every
    * write to them goes to the native array), so only the others move. */
   bool numeric = false;
-  for (size_t i = 0; i < named->v.obj.len && !numeric; i++) {
+  for (size_t i = 0; i < scr_dyn_obj_count(named) && !numeric; i++) {
     double number;
-    numeric = scr_arr_numeric_key(named->v.obj.entries[i].key, named->v.obj.entries[i].key_len, &number);
+    size_t key_len;
+    const char *key = scr_dyn_obj_key_at(named, i, &key_len);
+    numeric = scr_arr_numeric_key(key, key_len, &number);
   }
   if (numeric) {
     ScrDyn *rest = scr_dyn_new_obj();
-    for (size_t i = 0; i < named->v.obj.len; i++) {
-      const ScrDynEntry *entry = &named->v.obj.entries[i];
+    for (size_t i = 0; i < scr_dyn_obj_count(named); i++) {
+      ScrDynProp entry = scr_dyn_obj_prop_at(named, i);
       double number;
-      if (!scr_arr_numeric_key(entry->key, entry->key_len, &number)) scr_dyn_copy_entry(rest, named, entry);
+      if (!scr_arr_numeric_key(entry.key, entry.key_len, &number)) scr_dyn_copy_prop_at(rest, named, i);
     }
     named = rest;
   } else {
@@ -5799,7 +6238,7 @@ void scr_arr_adopt_view_properties(ScrArr *a, ScrDyn *view, ScrArr *target) {
   }
   ScrArrExt *x = scr_arr_ext(a);
   ScrDyn *old = x->metadata;
-  x->metadata = named->v.obj.len ? named : NULL;
+  x->metadata = scr_dyn_obj_count(named) ? named : NULL;
   if (!x->metadata) scr_dyn_release(named);
   scr_dyn_release(old);
 }

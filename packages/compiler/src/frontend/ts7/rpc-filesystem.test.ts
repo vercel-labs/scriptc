@@ -15,7 +15,12 @@ const fallback: Ts7FileSystem = {
   getAccessibleEntries: () => undefined,
 };
 
-function callback(name: string, fs: Ts7FileSystem, payload = JSON.stringify("/file.ts")) {
+function callback(
+  name: string,
+  fs: Ts7FileSystem,
+  payload = JSON.stringify("/file.ts"),
+  ts71 = false,
+) {
   const incoming: number[] = [];
   const encoded = new Ts7Wire({
     read: () => 0,
@@ -47,7 +52,7 @@ function callback(name: string, fs: Ts7FileSystem, payload = JSON.stringify("/fi
       },
     }),
   );
-  registerTs7FileSystem(client, fs);
+  registerTs7FileSystem(client, fs, () => ts71);
   let error: unknown;
   try {
     client.requestText("query", "null");
@@ -86,6 +91,36 @@ test.each([
 
 test.each(TS7_FILE_SYSTEM_CALLBACKS.split(","))("%s delegates undefined to the server", (name) => {
   expect(callback(name, fallback)).toEqual({ kind: 2, text: "", error: undefined, closed: false });
+});
+
+test("TypeScript 7.1 replies carry the same answers as value, missing and useOS", () => {
+  const reply = (name: string, fs: Ts7FileSystem) =>
+    JSON.parse(callback(name, fs, JSON.stringify("/file.ts"), true).text) as unknown;
+  expect(reply("readFile", { ...fallback, readFile: () => "text" })).toEqual({
+    kind: "value",
+    value: "text",
+  });
+  expect(reply("readFile", { ...fallback, readFile: () => "" })).toEqual({
+    kind: "value",
+    value: "",
+  });
+  expect(reply("readFile", { ...fallback, readFile: () => null })).toEqual({ kind: "missing" });
+  for (const name of TS7_FILE_SYSTEM_CALLBACKS.split(","))
+    expect(reply(name, fallback), name).toEqual({ kind: "useOS" });
+  expect(reply("fileExists", { ...fallback, fileExists: () => false })).toEqual({
+    kind: "value",
+    value: false,
+  });
+  expect(reply("realpath", { ...fallback, realpath: () => "/real.ts" })).toEqual({
+    kind: "value",
+    value: "/real.ts",
+  });
+  expect(
+    reply("getAccessibleEntries", {
+      ...fallback,
+      getAccessibleEntries: () => ({ files: ["a.ts"], directories: [] }),
+    }),
+  ).toEqual({ kind: "value", value: { files: ["a.ts"], directories: [] } });
 });
 
 test("boolean false and empty directory entries do not fall through", () => {

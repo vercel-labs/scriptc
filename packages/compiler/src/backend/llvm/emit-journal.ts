@@ -103,6 +103,7 @@ export interface ChunkResult {
   readonly flags: {
     readonly usesCoroutines: boolean;
     readonly usesTimers: boolean;
+    readonly usesPromises: boolean;
     readonly usesGenSlots: boolean;
     readonly needsUnionNone: boolean;
     readonly needsNullableAbsent: boolean;

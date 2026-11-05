@@ -58,6 +58,12 @@ export function isIntegerBytesElem(elem: IrBytesElem): boolean {
   return elem !== "f16" && elem !== "f32" && elem !== "f64";
 }
 
+/** Typed-array constructors whose element kind is a BigInt. The typed IR has
+ * no BigInt element kind, so these exist only in the checked-dynamic tier:
+ * their value is the bytes.constructor libCall naming them, and every element
+ * they hold is a checked-dynamic BigInt. */
+export const BIGINT_BYTES_NAMES: ReadonlySet<string> = new Set(["BigInt64Array", "BigUint64Array"]);
+
 export const BYTES_ELEMENT_NAME: Record<IrBytesElem, string> = {
   u8: "Uint8Array",
   u8c: "Uint8ClampedArray",
@@ -171,6 +177,12 @@ export type IrType =
    * never part of a cycle, no trace. Same container rules as url: union
    * arms fine, arrays/maps/JSON fenced. */
   | { kind: "stats" }
+  /** statSync/lstatSync/fstatSync with `{ bigint: true }`: the SAME snapshot
+   * handle as `stats` (scr_stats_* retain/release), with Node's BigIntStats
+   * member table — the integer and `*Ns` members read as `bigint`, the `*Ms`
+   * members as `number`, the four time members as `Date`. Distinct kind so
+   * the member reads and the type identity differ from Stats. */
+  | { kind: "bigintStats" }
   /** A node:fs/promises FileHandle: heap, refcounted, MUTABLE — aliases
    * share one descriptor slot, so close() is idempotent and every alias
    * observes fd === -1 after closure. The final release closes a still-
@@ -401,6 +413,7 @@ export type IrType =
 
 const POINTER_HANDLE_KINDS = [
   "stats",
+  "bigintStats",
   "fileHandle",
   "dir",
   "spawnRes",
@@ -485,6 +498,7 @@ export const RUNTIME_RC_STEMS: Record<IrType["kind"], string> = {
   searchParams: "scr_sp",
   symbol: "scr_sym",
   stats: "scr_stats",
+  bigintStats: "scr_stats",
   fileHandle: "scr_file_handle",
   dir: "scr_dir",
   spawnRes: "scr_spawn_res",
@@ -552,6 +566,7 @@ export const REF_TRUTHY_KINDS: ReadonlySet<string> = new Set([
   "url",
   "searchParams",
   "stats",
+  "bigintStats",
   "fileHandle",
   "dir",
   "spawnRes",
@@ -596,6 +611,7 @@ export const URL_T: IrType = { kind: "url" };
 export const SEARCH_PARAMS_T: IrType = { kind: "searchParams" };
 export const SYMBOL_T: IrType = { kind: "symbol" };
 export const STATS_T: IrType = { kind: "stats" };
+export const BIGINT_STATS_T: IrType = { kind: "bigintStats" };
 export const FILEHANDLE_T: IrType = { kind: "fileHandle" };
 export const DIR_T: IrType = { kind: "dir" };
 export const SPAWNRES_T: IrType = { kind: "spawnRes" };
@@ -618,6 +634,14 @@ export const CHILDWRITER_T: IrType = { kind: "childWriter" };
 export const PROCSTREAM_T: IrType = { kind: "procStream" };
 export const VOID: IrType = { kind: "void" };
 export const DYN: IrType = { kind: "dyn" };
+/** The `foreign` type (scope-B NI-4): a value owned by a Node island,
+ * typed by the island package's declarations. Objects stay in V8 and cross
+ * as handles (identity is the V8 object's); member operations compile from
+ * the declarations into `nodeIsland.*` bridge calls. NI-4 represents it
+ * exactly as `dyn` (a handle box with the island tag, primitives as plain
+ * dyn values), so foreign -> any is the identity and the generic dyn paths
+ * (equality, inspection, any slots) apply unchanged. */
+export const FOREIGN: IrType = DYN;
 export const JSVAL: IrType = { kind: "jsval" };
 export const CAUGHT: IrType = { kind: "caught" };
 export const UNDEFINED_T: IrType = { kind: "undefinedT" };
@@ -661,6 +685,7 @@ export function isSupportedArrayElem(t: IrType): boolean {
     // fs.Stats snapshots (`await Promise.all(paths.map(stat))`): immutable
     // refcounted handles with their own retain/release adapters.
     case "stats":
+    case "bigintStats":
     case "symbol":
     case "classval":
     case "moduleNs":
@@ -701,6 +726,10 @@ export function isIdentityCollectionKey(t: IrType): boolean {
     // per evaluation), so pointer identity is JS function identity.
     // Closures are cycle-headered and traced like records.
     t.kind === "func" ||
+    // A promise is one object for its whole life, so pointer identity is
+    // JS promise identity; the runtime's scr_promise_{retain,release,trace}_v
+    // adapters already serve Map values and boxed captures.
+    t.kind === "promise" ||
     t.kind === "date"
   );
 }
@@ -1024,6 +1053,20 @@ export function isRefCounted(t: IrType): boolean {
 
 /* ── module ────────────────────────────────────────────────────────────── */
 
+/** The island module tree of a program (node-islands/modules.ts): paths
+ * relative to `root`, the directory on the build machine that holds them.
+ * Only the relative paths enter an executable. */
+export interface IrNodeIslandModules {
+  root: string;
+  /** `placeholder`: a program module the islands share, shipped as
+   * providedModulePlaceholder (node-islands/modules.ts), not its source. */
+  files: { path: string; size: number; sha256: string; placeholder?: true }[];
+  links: { path: string; target: string }[];
+  /** Where the executable finds the tree: absent when it carries the tree
+   * itself, else a `$ORIGIN/` path (`--libnode=beside`). */
+  location?: string;
+}
+
 export interface IrModule {
   /** Bumped on any breaking IR change; serialize.ts refuses mismatches. */
   irVersion: 17;
@@ -1063,6 +1106,11 @@ export interface IrModule {
    * closures boxed for package code return records and arrays as live
    * capsules, so a value that comes back keeps its identity. */
   declBoundary?: true;
+  /** Package files compiled from shape inference's typed overlay
+   * (frontend/shape-inference/overlay.ts), each with its package name: a
+   * checked conversion in them checks an analysis-proven fact, so its
+   * failure reports a compiler analysis bug instead of a type error. */
+  inferredFactFiles?: { file: string; pkg: string }[];
   /** Origins of package-declared types checked by `dynCheck.origin`
    * (frontend/lowering/decl-origin.ts): fields separated by \x1f —
    * package, version, suggested range, selector, where it is declared,
@@ -1076,14 +1124,34 @@ export interface IrModule {
    * hold elements outside their element type (SCR_ARR_FOREIGN), stored
    * through dynamic views; "*" for every array. Absent when none can. */
   foreignElementKeys?: string[];
+  /** The narrowing conversions that link a record copy to its source
+   * (record.link): a conversion from record type `from` into the narrower
+   * record type `to`, whose source has properties `to` does not declare.
+   * `compose(copy, source)` answers a record of type `from` with the
+   * copy's values for the fields both declare and the source's for the
+   * others: what the copy's reflective surfaces answer from. `pair` is
+   * the nonzero number the link stores. Absent when there are none. */
+  recordLinks?: IrRecordLink[];
   /** Classes used as ThreadSlots keys (@scriptc/experimental): the root of
    * each one's hierarchy carries a slot word (the slots.* intrinsics;
    * backend/llvm/thread-slots.ts). */
   threadSlotKeys?: string[];
+  /** A JavaScript source may resize, grow or detach an ArrayBuffer
+   * (frontend/lowering/buffers.ts `mutableBuffers`): a view's ScrBytes header
+   * is no longer fixed at construction, so bytes header loads keep their
+   * alias tag but lose `!invariant.load`, and typed-array loop versioning
+   * (bytes-loop-versions.ts) is off for this program. Absent in every other
+   * program, whose IR and LLVM are unchanged. */
+  bytesHeadersMutable?: true;
   /** typeKeys of the array types whose values the program may freeze
    * (frontend frozen-records.ts): their writes test the array's frozen bit
    * (SCR_ARR_FROZEN) and throw Node's TypeError when it is set. */
   freezableArrays?: string[];
+  /** Source ranges ("file\0start\0end") of untyped property writes in
+   * sloppy-mode code (frontend frozen-records.ts sloppyDynamicWrites):
+   * their dyn.keySet/keySetComputed calls ignore an assignment that strict
+   * mode refuses with a TypeError. */
+  sloppyDynWrites?: string[];
   /** The program freezes, seals or prevents extensions of untyped values
    * (frontend frozen-records.ts noteUntypedIntegrity). Class hierarchies
    * that can be held there carry an integrity word, which the runtime sets
@@ -1095,6 +1163,18 @@ export interface IrModule {
    * evaluation is itself awaited, so promise jobs queued by its body run
    * first. The event loop selects the matching first checkpoint. */
   commonJsEntry?: boolean;
+  /** Programs that call into Node islands (`nodeIsland.*` libCalls): the
+   * libnode pack directory (absolute, or `$ORIGIN/`-relative to the
+   * executable) and the exact Node version its bridge links. Set by the
+   * executable build (node-islands/libnode.ts); the emitted main records
+   * both before %main. */
+  nodeIsland?: {
+    libnode: string;
+    nodeVersion: string;
+    /** The modules the calls load (node-islands/modules.ts), when any call
+     * loads a file. */
+    modules?: IrNodeIslandModules;
+  };
   /** Outbound native FFI declarations used by `ffiCall` expressions.
    * These are link-time C ABI imports, not runtime dynamic-library handles:
    * executable builds resolve their symbols from the manifest's archive
@@ -1185,6 +1265,12 @@ export interface IrContracts {
    * static reference counting is elided, and the cycle analysis treats them
    * as leaves. */
   programLifetime?: string[];
+  /** Inline array fields, `${declaring class}\0${field}`: an array field of
+   * a ProgramLifetime class that its constructor writes once, from one of
+   * its parameters, and nothing else writes. Its elements are fixed for the
+   * instance's lifetime, so the backend may keep them in the instance itself
+   * (ir/inline-arrays.ts). */
+  inlineArrays?: string[];
 }
 
 export type IrFfiValueParamClass =
@@ -1482,6 +1568,14 @@ export interface IrLibIdentity {
   abiVersion: number;
 }
 
+/** One narrowing conversion that links copies to sources (IrModule.recordLinks). */
+export interface IrRecordLink {
+  pair: number;
+  from: string;
+  to: string;
+  compose: string;
+}
+
 export interface IrClassDef {
   name: string;
   /** Present for a class evaluated inside a function. Each evaluation owns
@@ -1513,6 +1607,12 @@ export interface IrClassDef {
   /** Native instance to the string its inherited Symbol.toStringTag getter
    * answers, read by the runtime for an instance seen as `unknown`. */
   stringTagHelper?: string;
+  /** The class's accessor-backed members, nearest declaration first: one
+   * helper per name a `get` accessor at or above the class answers, which
+   * an instance's checked view installs so a field behind an accessor
+   * reads the value the getter answers. `member` is the accessor's IR
+   * name (`get:<name>`). */
+  viewAccessors?: { member: string; helper: string }[];
   /** Public JavaScript fields record their creation in the shared property
    * bag. Its descriptors preserve presence and insertion order independently
    * of native layout order; field values remain in their native slots. */
@@ -1537,6 +1637,17 @@ export interface IrClassDef {
    * RUNTIME_ERROR_CLASSES). User subclasses are ordinary emitted classes
    * whose layout prefix embeds ScrError's fields. */
   runtime?: true;
+  /** A class declared `extends Array`: its instances are arrays of this
+   * element type. The struct begins with the runtime's array header (the
+   * reference count is the array's, field 0) and the class's fields follow
+   * it; the runtime finds the class through the array's ext. */
+  arrayElem?: IrType;
+  /** The function (array) => dyn listing such a class's own fields
+   * (ScrArrClass.fields); absent when it declares none. */
+  arrayFields?: string;
+  /** The function (length) => array constructing such a class for
+   * ArraySpeciesCreate (ScrArrClass.species). */
+  arraySpecies?: string;
   /** Base class name (single inheritance, `extends`). A class is IN A
    * HIERARCHY when it has a base or is some class's base; hierarchy classes
    * carry a vtable word after `rc` (backends), standalone classes are laid
@@ -1726,6 +1837,8 @@ export const ZLIB_STREAM_MODES: ReadonlyMap<string, number> = new Map([
   ["Unzip", 7],
   ["BrotliDecompress", 8],
   ["BrotliCompress", 9],
+  ["ZstdCompress", 10],
+  ["ZstdDecompress", 11],
 ]);
 
 export interface IrRecordShape {
@@ -1892,14 +2005,14 @@ export interface IrFunction {
   /** Original TS name (mangling is a backend concern). Lifted lambdas get
    * synthetic '%'-prefixed names ('%' can't appear in a TS identifier). */
   name: string;
-  /** Generated reflection dispatch contains speculative source-member edges.
-   * Target-only host operations behind those edges retain runtime refusals. */
-  speculativeDispatch?: boolean;
-  /** A read helper the backend can answer directly for dyn arrays and live
-   * array capsules, calling the helper only when that read has no answer.
-   * `index`: a computed read `(value, key)` whose callers pass a number
-   * converted to a string as the key. */
-  fastRead?: "index";
+  /** Source function name for native error stack frames. */
+  sourceName?: string;
+  /** The function's JavaScript `name` when it differs from sourceName: an
+   * object literal's method. Present only in modules that box function
+   * values into checked values (function-names.ts). */
+  displayName?: string;
+  /** Ordinary authored function declarations/expressions own a prototype. */
+  ownsPrototype?: true;
   params: IrParam[];
   returnType: IrType;
   /** All locals including params, pre-collected and scope-flat: ids are
@@ -1914,22 +2027,38 @@ export interface IrFunction {
    * their first (`this`) parameter. The slot indexes the class object's
    * capture array; no closure parameter is added to the method ABI. */
   classCaptures?: (IrParam & { slot: number })[];
+  body: IrStmt[];
+  loc: SrcLoc;
+  /** A closure body's jsval entry (ir/jsval.ts): a function with the same
+   * captures that takes jsval parameters. The backend gives each function
+   * value boxed from this closure a jsval call entry into it. */
+  jsEntry?: string;
+  /** The function's execution tier (ir/tiers.ts). Absent means static: the
+   * function may use dynamic values only through boundary operations
+   * (dynFrom, dynCheck, kind tests) and moves, which the validator enforces
+   * (invariant I1). "dynamic" admits the dynamic operation vocabulary
+   * (dynKeyGet, dynCall, dyn.* builtins, ...). Lowering assigns the field
+   * from the body (assignLegacyTiers); stage S2 of the two-tier design
+   * keeps it out of serialized IR, so loaders derive it again. */
+  tier?: "dynamic";
+  /** Generated reflection dispatch contains speculative source-member edges.
+   * Target-only host operations behind those edges retain runtime refusals. */
+  speculativeDispatch?: boolean;
+  /** A read helper the backend can answer directly for dyn arrays and live
+   * array capsules, calling the helper only when that read has no answer.
+   * `index`: a computed read `(value, key)` whose callers pass a number
+   * converted to a string as the key. */
+  fastRead?: "index";
+  /** The original body of a function versioned for int32 loop bounds, moved
+   * to `<fn>.int32Fallback` (parameter-versions.ts). It runs for arguments
+   * the version does not take, so the backend emits each of its loops once,
+   * as in the copy a failed version guard runs. */
+  plainLoops?: true;
   /** Async: the body runs on a fiber; `returnType` is the INNER type T (a
    * `return v` fulfills with v) while ordinary call sites receive
    * Promise<T>. With `generator` present, call sites receive the lazy
    * async-generator object instead. */
   async?: true;
-  /** Async module initializers only: a module-global Promise<T> slot where
-   * the spawn wrapper caches its first evaluation promise. Every later
-   * static/dynamic import receives that same promise, including while the
-   * first evaluation is suspended. */
-  asyncCacheGlobal?: string;
-  /** Async cyclic module initializers only: the SCC's shared Promise<T>
-   * slot. Eager recursive spawning writes member promises from the inside
-   * out, so the member that actually initiated evaluation writes last and
-   * becomes the runtime cycle root. Dynamic imports wait on this shared
-   * completion verdict instead of a build-time-selected member. */
-  asyncCycleCacheGlobal?: string;
   /** Generator (`function*` / `async function*`): the body runs on a fiber created SUSPENDED
    * (nothing runs until the first `.next()`; backends may instead compile a
    * synchronous body as a stackless coroutine with the same protocol); `returnType` is the
@@ -1957,21 +2086,25 @@ export interface IrFunction {
     /** The first parameter is a generator this one adapts: it prints with
      * that generator's tag. */
     inheritsTag?: true;
+    /** The parameter prologue ends in a `genBindBarrier`: the body binds its
+     * parameters at the CALL (FunctionDeclarationInstantiation runs before
+     * GeneratorStart), so the spawn wrapper enters the suspended body once,
+     * runs to the barrier, and returns the generator with the bindings
+     * already made. Absent when the parameters bind nothing (identifiers
+     * only), in which case nothing runs before the first resume. */
+    bindAtCall?: true;
   };
-  /** Source function name for native error stack frames. */
-  sourceName?: string;
-  /** Ordinary authored function declarations/expressions own a prototype. */
-  ownsPrototype?: true;
-  /** The function's execution tier (ir/tiers.ts). Absent means static: the
-   * function may use dynamic values only through boundary operations
-   * (dynFrom, dynCheck, kind tests) and moves, which the validator enforces
-   * (invariant I1). "dynamic" admits the dynamic operation vocabulary
-   * (dynKeyGet, dynCall, dyn.* builtins, ...). Lowering assigns the field
-   * from the body (assignLegacyTiers); stage S2 of the two-tier design
-   * keeps it out of serialized IR, so loaders derive it again. */
-  tier?: "dynamic";
-  body: IrStmt[];
-  loc: SrcLoc;
+  /** Async module initializers only: a module-global Promise<T> slot where
+   * the spawn wrapper caches its first evaluation promise. Every later
+   * static/dynamic import receives that same promise, including while the
+   * first evaluation is suspended. */
+  asyncCacheGlobal?: string;
+  /** Async cyclic module initializers only: the SCC's shared Promise<T>
+   * slot. Eager recursive spawning writes member promises from the inside
+   * out, so the member that actually initiated evaluation writes last and
+   * becomes the runtime cycle root. Dynamic imports wait on this shared
+   * completion verdict instead of a build-time-selected member. */
+  asyncCycleCacheGlobal?: string;
 }
 
 export interface IrParam {
@@ -1981,6 +2114,12 @@ export interface IrParam {
   /** Callers pass an owned reference, which the body holds for its whole
    * run, even when the parameter is never rebound. */
   owned?: true;
+  /** Every call passes an array of exactly this many present elements, and
+   * neither the length nor the hole-free prefix changes during the run:
+   * element-count reads are this value, and an index proven in [0, length)
+   * names a present element. Specialized calls set it (constant-length
+   * clones); every other caller leaves it off. */
+  constLength?: number;
 }
 
 export interface IrGlobal {
@@ -2140,6 +2279,15 @@ export type IrStmt =
    * it has no operand (`return;`). The request settles as the body
    * completes instead of one microtask turn later. */
   | { kind: "return"; value: IrExpr | null; awaited?: true; loc: SrcLoc }
+  /** The end of a generator's parameter prologue (fn.generator.bindAtCall).
+   * Parameters bind at the CALL — before GeneratorStart — so the spawn
+   * wrapper enters the suspended body once and runs to this statement. The
+   * barrier itself suspends invisibly: no OUT value is produced and no IN
+   * value is taken, and it carries the ordinary resumption check so
+   * `.return()`/`.throw()` before the first `.next()` still skip the body.
+   * Only a generator body may contain it, at most once, before its first
+   * yield. */
+  | { kind: "genBindBarrier"; loc: SrcLoc }
   /** Field write `obj.f = v` — statement-only, like `assign`/`arraySet`.
    * Evaluation order: obj, then value. The old value is released; ownership
    * of a refcounted new value MOVES into the object. `sloppy` marks a write
@@ -2208,7 +2356,7 @@ export type IrStmt =
   /** A bare lexical block `{ ... }` — its own scope. `labels` makes it a
    * labeled-break target (`lbl: { ... break lbl; ... }` and the wrapper
    * the frontend puts around labeled non-loop statements). */
-  | { kind: "block"; body: IrStmt[]; labels?: string[]; loc: SrcLoc }
+  | { kind: "block"; labels?: string[]; body: IrStmt[]; loc: SrcLoc }
   /** `throw v`. Any non-void value type can be thrown; ownership of a
    * refcounted value MOVES into the runtime's exception cell. Terminates
    * the path like `return`: control unwinds to the innermost enclosing
@@ -2252,15 +2400,15 @@ export type IrStmt =
       tryBody: IrStmt[];
       catchBody: IrStmt[] | null;
       catchLocalId: string | null;
-      finallyBody: IrStmt[] | null;
-      /** Resource-management cleanup: if the guarded body and cleanup both
-       * throw, raise a SuppressedError instead of replacing the first error. */
-      suppressFinallyErrors?: true;
       /** Iterator closing: if the guarded body threw and the cleanup throws
        * too, the cleanup's error is dropped and the first one propagates.
        * After a generator .return() the cleanup's error replaces it, and on
        * normal exits it propagates. */
       dropFinallyErrors?: true;
+      finallyBody: IrStmt[] | null;
+      /** Resource-management cleanup: if the guarded body and cleanup both
+       * throw, raise a SuppressedError instead of replacing the first error. */
+      suppressFinallyErrors?: true;
       loc: SrcLoc;
     };
 
@@ -3269,7 +3417,7 @@ export type IrExpr =
    * every classRef, so a value's construct thunk always has a constructor
    * to call; backends emit class objects (and thunks) for exactly the
    * classes some classRef in the module names. */
-  | { kind: "classRef"; className: string; captures?: string[]; type: IrType; loc: SrcLoc }
+  | { kind: "classRef"; className: string; type: IrType; loc: SrcLoc; captures?: string[] }
   /** `new X(args)` through a class VALUE: call the class object's
    * construct thunk. `callee` is classval-typed; args are completed
    * against `%<callee.className>.constructor`'s ABI — sound because every
@@ -3441,13 +3589,17 @@ export type IrExpr =
   | {
       kind: "dynFrom";
       value: IrExpr;
+      type: IrType;
+      loc: SrcLoc;
+      liveRef?: true;
       fnName?: string;
+      /** The callable answers `fnName` on the main thread and the empty
+       * string on a worker thread (Node's main-thread wrapper for
+       * `process.cwd`). */
+      fnNameMainThreadOnly?: true;
       /** A boxed function's `length` when it differs from its parameter
        * count (builtin function values). */
       fnLength?: number;
-      liveRef?: true;
-      type: IrType;
-      loc: SrcLoc;
     }
   /** CALLING a dyn value — `fn(a, b)` where fn is checked-dynamic (an
    * implicit-any JS binding, a dyn record member, a dynKeyGet result).
@@ -3461,7 +3613,10 @@ export type IrExpr =
    * message exactly). A function callee calls through the boxed thunk:
    * per-arg validation against the boxed signature (mismatches throw the
    * path-annotated TypeError), result converted back to dyn. Callee and
-   * args are borrowed; the result is owned (+1). MAY THROW.
+   * args are borrowed; the result is owned (+1). MAY THROW. In a
+   * dynamic-tier function the jsval pass may make an argument of the
+   * fixed-arity form a jsval (ir/jsval.ts): a callee with a jsval entry
+   * takes it as is, any other callee gets it boxed.
    *
    * `spreads` (the runtime-arity form — `f(...args)`, the rest-forwarding
    * idiom): entries name indices into `args` whose dyn values FLATTEN into
@@ -3493,7 +3648,8 @@ export type IrExpr =
    * the kind's prototype lacks throws Node's catchable "<calleeName> is
    * not a function"; OBJ receivers call the own member (own properties
    * shadow prototypes in JS too); undefined/null receivers throw Node's
-   * "Cannot read properties of ...". Arguments are already dyn.
+   * "Cannot read properties of ...". Arguments are already dyn, or jsvals
+   * as for dynCall.
    * `calleeName` is the source spelling for the error texts. Receiver and
    * args are borrowed; the result is owned (+1). MAY THROW. */
   | {
@@ -3989,6 +4145,12 @@ export type IrExpr =
        * evaluated; the AssertionError constructor consumes them, and a
        * call that passes clears them. */
       assertOptions?: { diff?: "full"; skipPrototype?: true };
+      /** An `emitter.on` or `emitter.onData` registration whose listener
+       * can read `this`: each call of the listener binds the receiver as
+       * `this`, as Node does. The checked-dynamic registrations
+       * (`emitter.onDyn`, `emitter.onDataDyn`, `emitter.onFlex`,
+       * `emitter.onAny`) always bind it. */
+      bindsThis?: true;
     }
   /** `JSON.stringify(v)` — type-DIRECTED serialization: `value`'s static IR
    * type must be JSON-safe (f64/string/bool/record/array/union of those,
@@ -4037,6 +4199,13 @@ export type IrExpr =
   /** `exact`: the value is known to be a capsule this program boxed from
    * exactly the class `type` names (a `dyn.typedRefKeyIs` test guards the
    * expression), so the check is one load of the capsule's instance. */
+  /** `partialView`: `value` is `dynFrom{liveRef}` of a record whose fields
+   * are a SUBSET of `type`'s, with equal types — a partial record literal
+   * asserted to a wider record type (`{ truncated: true } as
+   * TruncationResult`). The conversion answers a partial record view
+   * (record-views.ts): a `type` value whose fields the source lacks are
+   * absent, so presence tests answer false and reads of them throw the
+   * catchable TypeError. */
   /** `adopt`: the declaration-typed boundary's cast (decl-projection.ts).
    * The conversion preserves identity: a source object or array that
    * something else still references (reference count above one) is
@@ -4055,7 +4224,17 @@ export type IrExpr =
       preserveRefs?: true;
       adopt?: true;
       exact?: true;
+      partialView?: true;
+      /** Shape inference's overlay: this conversion checks an
+       * analysis-proven fact ("<package> <file>:<line>"); a failure is a
+       * compiler analysis bug and reports itself as one. */
+      inferredSite?: string;
       origin?: number;
+      /** The element position of an array literal whose store checks this
+       * value: a failure inside the check reports that position in its
+       * path (`$[0]`), where a standalone check names only the root
+       * (`$`). */
+      pathIndex?: number;
       type: IrType;
       loc: SrcLoc;
     };
@@ -4507,6 +4686,17 @@ function canBoxDynCompositeAt(
       return true;
     case "func":
       return canBoxFuncIntoDyn(t, getRecord, getUnion, visiting);
+    case "promise":
+      // Promises box by REFERENCE wherever the walker meets them, nested in
+      // records, arrays and unions exactly like a bare promise: promise<dyn>
+      // carries its ScrPromise, a void payload is absent, and any other inner
+      // converts through the adapter promise toDynHelper emits
+      // (scr_dyn_new_promise_adapting).
+      return (
+        t.inner.kind === "dyn" ||
+        t.inner.kind === "void" ||
+        canConvertToDyn(t.inner, getRecord, getUnion, visiting)
+      );
     case "set":
       return (
         canConvertToDyn(t.elem, getRecord, getUnion, visiting) &&
@@ -4586,6 +4776,13 @@ export function canDynCheckTo(
   return result;
 }
 
+/** The in-progress key of a checked composite. Marking it for the duration of
+ * the frame answers a recursion back-edge coinductively, and the wrapper
+ * keeps it as the success memo once the frame returns true. */
+function checkedVisitKey(t: IrType): string {
+  return `checked:${typeKey(t)}`;
+}
+
 /** Reuse completed subgraphs within one conversion query. A failed branch
  * invalidates successes that may depend on a coinductive back-edge to it;
  * active recursion keys remain until their owning calls unwind. */
@@ -4625,8 +4822,8 @@ function canDynCheckToAt(
   if (isDynTypedRefType(t)) return true;
   if (t.kind === "array") {
     if (t.elem.kind === "procStream") return false;
-    const key = typeKey(t);
-    if (visiting.has(key)) return false;
+    const key = checkedVisitKey(t);
+    if (visiting.has(key)) return true;
     visiting.add(key);
     const result = canDynCheckTo(t.elem, getRecord, getUnion, visiting);
     visiting.delete(key);
@@ -4635,8 +4832,14 @@ function canDynCheckToAt(
   // A codec handle unboxes to the record it holds.
   if (textCodecRecordClass(t, getRecord) !== null) return true;
   if (t.kind === "record") {
-    const key = typeKey(t);
-    if (visiting.has(key)) return false;
+    // Recursive shapes answer COINDUCTIVELY, like the composite dynFrom
+    // walk: assume the back-edge checks and verify every reachable field at
+    // its first visit. A recursion through a checked slot is ordinary in a
+    // callback-options graph — a method's options object takes a context
+    // whose methods take the same options — and refusing the back-edge
+    // would fence types whose every leaf is checkable.
+    const key = checkedVisitKey(t);
+    if (visiting.has(key)) return true;
     const shape = getRecord(t.shapeId);
     if (!shape || shapeHasAccessorSlots(shape)) return false;
     visiting.add(key);

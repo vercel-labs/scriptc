@@ -2,7 +2,7 @@ scriptc coverage tests/coverage-fixtures/wasm/main.ts
 
   statements analyzed   9
   compile statically    9  (100%)
-    in dynamic tier     4  (operate on values typed only at runtime; --explain-dynamic lists them)
+    in dynamic tier     1  (operate on values typed only at runtime; --explain-dynamic lists them)
 
   npm package compilation:
     wasm-fixture-pkg  static

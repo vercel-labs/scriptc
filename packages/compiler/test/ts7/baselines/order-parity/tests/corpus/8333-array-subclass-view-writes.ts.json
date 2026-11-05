@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8333-array-subclass-view-writes.ts"
+ ],
+ "diags": []
+}

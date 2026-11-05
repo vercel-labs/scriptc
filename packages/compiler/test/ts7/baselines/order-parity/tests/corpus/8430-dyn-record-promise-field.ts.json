@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8430-dyn-record-promise-field.ts"
+ ],
+ "diags": []
+}

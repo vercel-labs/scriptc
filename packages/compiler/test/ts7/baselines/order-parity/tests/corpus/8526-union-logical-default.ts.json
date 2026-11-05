@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8526-union-logical-default.ts"
+ ],
+ "diags": []
+}

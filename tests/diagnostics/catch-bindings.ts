@@ -4,6 +4,9 @@
 // under a proven narrow, rethrow, and the unknown-slot CONVERSION (an
 // un-narrowed use typed `unknown` converts to a dynamic value — corpus
 // 1554; `const copy = e` compiles now and is NOT in this fence corpus).
+// A destructured catch CLAUSE binds through the checked-dynamic tree
+// (corpus 8603) and is not in this fence corpus either; the promise
+// handler parameter, whose pattern the handler cannot bind, is.
 // Everything else must terminate in a clean fence — never a silent
 // mis-read of the payload.
 class Standalone {
@@ -23,12 +26,11 @@ try {
     console.log("no");
   }
 }
-try {
-  throw 4;
-} catch ({ message }: any) {
-  // destructuring patterns stay out
-  console.log("no");
-}
+// The catch CLAUSE form of this pattern compiles now (corpus 8603); a
+// promise handler's destructuring parameter keeps the fence.
+Promise.reject(new Error("four")).catch(({ message }: any) => {
+  console.log("no", message);
+});
 try {
   throw 5;
 } catch (e) {

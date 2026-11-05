@@ -22,7 +22,16 @@ export type WidthLift =
       absent: { tag: number; arm: IrType };
     }
   | { how: "width" }
+  /** A record into a record whose destination declares an index
+   * signature: the overflow CAPTURE reshape (declared fields copy off the
+   * source in declaration order, every other source field keys into the
+   * destination's overflow). A copy, like every width lift. */
+  | { how: "ovf" }
   | { how: "unionWidth" }
+  /** A union of tuples/arrays into one array slot that no arm already is:
+   * every arm converts on its own tag, unit arms take the stranded
+   * TypeError. */
+  | { how: "unionArr" }
   | { how: "arr" }
   | { how: "tupleArr" }
   | { how: "emptyArr" }
@@ -32,4 +41,15 @@ export type WidthLift =
   | { how: "dynIn" }
   | { how: "dynOut" }
   | { how: "upcast" }
-  | { how: "funcAdapt" };
+  | { how: "funcAdapt" }
+  /** A method field whose parameter records differ per instantiation
+   * (`Provider<"x">` into `Provider<Api>`, admitted by method bivariance):
+   * funcCoerceAdapter built in checked mode. Record-field planning only. */
+  | { how: "funcAdaptChecked" }
+  /** A union into a union where the `trappable` source arms have no home:
+   * they throw the catchable TypeError. Checked mode only. */
+  | { how: "checkedRetag"; trappable: number[] }
+  /** A promise whose payload widens (`Promise<void>` into `Promise<unknown>`):
+   * the checked payload widening coerceToExpected applies at a promise slot,
+   * which keeps the promise's identity and settlement turn. */
+  | { how: "promiseWiden" };

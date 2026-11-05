@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6884-js-readonly-declared-write/main.js"
+ ],
+ "diags": []
+}

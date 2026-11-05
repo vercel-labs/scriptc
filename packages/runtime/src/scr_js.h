@@ -180,45 +180,37 @@ ScrJsVal scr_js_increment(ScrJsVal value, bool increment);
 double scr_js_to_number(ScrJsVal value);
 bool scr_js_truthy(ScrJsVal value);
 
-/* ── shapes and inline caches (scr_js_object.c) ─────────────────────────
- * A checked object's hidden class (ScrDyn.v.obj.shape) names its key
- * sequence: a node of the thread's transition tree, whose depth is the
- * entry count and whose last key sits at entry index depth - 1. Shapes are
- * per thread and live until the thread's runtime state is torn down; a
- * thread's shape count and the key bytes they hold are bounded, and an
- * object whose key sequence would need a shape past either bound stays
- * unshaped, as do immortal objects, which threads share. The tier
- * computes an object's shape on a cache miss; the SCR_JS_TIER build of
- * scr_json.c resets it on every change to the key set.
- * Attributes stay in the entries and the prototype in the node: cache hits
- * test both live, so a shape only ever proves which key sits at which entry
- * index and which keys an object lacks.
+/* ── inline caches (scr_js_object.c) ───────────────────────────────────
+ * Caches key on object layouts (scr_dyn.h): a layout-mode object's layout
+ * names its key sequence, and all its properties are writable data
+ * properties, so a layout proves which key sits at which slot and which
+ * keys the object lacks. Dictionary-mode objects (layout NULL), including
+ * immortal objects, which threads share, never hit. The prototype stays in
+ * the node: cache hits test it live.
  *
  * Each property site of compiled dynamic-tier code owns one zeroed,
  * thread-local ScrJsIc with static storage: the reset that frees a
- * thread's shapes (at thread exit, and when a library session ends) clears
+ * thread's layouts (at thread exit, and when a library session ends) clears
  * every record that holds entries. The code at the site is fixed: it tests
  * entry 0 inline and calls a probe for everything else. Probes never run
  * user code: they answer from plain data properties or return a miss
  * (NULL / false) with nothing done, and the site then runs its generic
  * path.
  *
- *   load  entry: shape = receiver shape; target = NULL for an own property
- *         (slot indexes the receiver's entries), else the shape of
- *         `holder`, the receiver's prototype, whose entry `slot` holds it.
- *   store entry: shape = receiver shape before the store; target == shape
- *         replaces entry `slot`; any other target adds the key as entry
- *         `slot` and moves the receiver to `target`. An add requires the
- *         receiver's prototype to be `holder` (NULL or an object whose
- *         shape is holder_shape and that lacks the key).
- *   keyed entry: slot only; a hit compares the key bytes stored there. */
-typedef struct ScrJsShape ScrJsShape;
-
+ *   load  entry: layout = receiver layout; target = NULL for an own
+ *         property (slot indexes the receiver's slots), else the layout of
+ *         `holder`, the receiver's prototype, whose slot `slot` holds it.
+ *   store entry: layout = receiver layout before the store; target ==
+ *         layout replaces slot `slot`; any other target adds the key as
+ *         slot `slot` and moves the receiver to `target`. An add requires
+ *         the receiver's prototype to be `holder` (NULL or an object whose
+ *         layout is holder_layout and that lacks the key).
+ *   keyed entry: slot only; a hit compares the key stored there. */
 typedef struct ScrJsIcEntry {
-  const ScrJsShape *shape;
-  const ScrJsShape *target;
+  const ScrLayout *layout;
+  const ScrLayout *target;
   const ScrDyn *holder;
-  const ScrJsShape *holder_shape;
+  const ScrLayout *holder_layout;
   size_t slot;
 } ScrJsIcEntry;
 
@@ -228,6 +220,33 @@ typedef struct ScrJsIc {
   uint32_t count; /* filled entries */
   uint32_t next;  /* the entry a full cache replaces next */
 } ScrJsIc;
+
+/* ── object guard groups (backend/llvm/js-groups.ts) ───────────────────
+ * A group answers several constant-key reads of one subject through one
+ * probe of its layout. An entry records, for one layout, the slot of each
+ * of the group's keys, so the guard tests the layout once and every member
+ * reads its slot without a site of its own. A layout missing any of the
+ * keys has no entry: the guard then sends the object to its members' sites.
+ * Like ScrJsIc, a filled record is cleared by the reset that frees a
+ * thread's layouts. */
+#define SCR_JS_GROUP_KEYS 8
+#define SCR_JS_GROUP_WAYS 4
+typedef struct ScrJsGroupEntry {
+  const ScrLayout *layout;
+  uint8_t slot[SCR_JS_GROUP_KEYS];
+} ScrJsGroupEntry;
+
+typedef struct ScrJsGroup {
+  ScrJsGroupEntry entry[SCR_JS_GROUP_WAYS];
+  uint32_t count; /* filled entries */
+  uint32_t next;  /* the entry a full group replaces next */
+} ScrJsGroup;
+
+/* The entry of `group` for `object`, filled on a miss, or NULL when the
+ * object is not an ordinary layout-mode object, is immortal, or lacks one
+ * of the keys as an own property. Never runs user code. */
+const ScrJsGroupEntry *scr_js_group_probe(const ScrDyn *object, const ScrStr *const *keys,
+                                          uint32_t count, ScrJsGroup *group);
 
 /* `receiver.key` for a plain data property: +1 value, or NULL. */
 ScrDyn *scr_js_load_probe(ScrDyn *receiver, const ScrStr *key, ScrJsIc *ic);
@@ -242,6 +261,10 @@ ScrDyn *scr_js_get_probe_native(ScrDyn *receiver, const ScrStr *key, ScrJsIc *ic
 /* `receiver.key = value` (value borrowed) when it replaces a writable own
  * data property or adds one the prototype chain lacks: true when done. */
 bool scr_js_store_probe(ScrDyn *receiver, const ScrStr *key, ScrDyn *value, ScrJsIc *ic);
+/* scr_js_store_probe for an object literal's member store. It answers the
+ * same; it exists so that an attribution profile (SCRIPTC_DEBUG_JS_IC_WAYS)
+ * can tell literal members from other stores by entry point. */
+bool scr_js_literal_probe(ScrDyn *receiver, const ScrStr *key, ScrDyn *value, ScrJsIc *ic);
 /* `receiver[key]` for an array element or an own data property named by a
  * string key: +1 value, or NULL. */
 ScrDyn *scr_js_keyed_probe(ScrDyn *receiver, const ScrDyn *key, ScrJsIc *ic);

@@ -404,7 +404,7 @@ test("large record clones stay outlined while small clones remain inlineable", (
   expect(small).toContain("define internal ptr @sc_rclone_small(ptr %src) #0");
   expect(small).not.toContain("attributes #2");
   expect(large).toContain("define internal ptr @sc_rclone_large(ptr %src) #2");
-  expect(large).toContain("attributes #2 = { noinline sanitize_address }");
+  expect(large).toContain("attributes #2 = { noinline sanitize_address uwtable }");
 });
 
 test("Uint8ClampedArray stores clamp and round without a runtime call", () => {

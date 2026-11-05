@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/native-worker-terminate-short-inner-loops.ts"
+ ],
+ "diags": []
+}

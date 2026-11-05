@@ -27,6 +27,8 @@ const RECEIVER_FREE_EXPRS = new Set<IrExpr["kind"]>([
   "strCmp",
   "nullish",
   "orDefault",
+  "optChain",
+  "chainRecv",
   "unionWrap",
   "unionRetype",
   "unionNarrow",
@@ -35,9 +37,12 @@ const RECEIVER_FREE_EXPRS = new Set<IrExpr["kind"]>([
   "unionDisc",
   "upcast",
   "downcast",
+  "dynFrom",
   "instanceOf",
   "fieldGet",
+  "fieldAbsent",
   "recordGet",
+  "recordHas",
   "recordLit",
   "recordClone",
   "arrayGet",
@@ -58,6 +63,9 @@ const RECEIVER_FREE_EXPRS = new Set<IrExpr["kind"]>([
   "setIntrinsic",
   "mapNew",
   "setNew",
+  "bytesIntrinsic",
+  "bytesNew",
+  "intrinsic",
 ]);
 
 const RECEIVER_FREE_STMTS = new Set<IrStmt["kind"]>([
@@ -69,6 +77,7 @@ const RECEIVER_FREE_STMTS = new Set<IrStmt["kind"]>([
   "while",
   "doWhile",
   "for",
+  "forOf",
   "switch",
   "block",
   "break",
@@ -78,6 +87,7 @@ const RECEIVER_FREE_STMTS = new Set<IrStmt["kind"]>([
   "arraySet",
   "arraySetUndefined",
   "arraySetLength",
+  "bytesSet",
   "throw",
   "rethrow",
   "tryCatch",
@@ -101,7 +111,10 @@ const TRIVIALLY_RECEIVER_FREE = new Set<string>([
       kind !== "arrIntrinsic" &&
       kind !== "strIntrinsic" &&
       kind !== "mapIntrinsic" &&
-      kind !== "setIntrinsic",
+      kind !== "setIntrinsic" &&
+      kind !== "bytesIntrinsic" &&
+      kind !== "bytesNew" &&
+      kind !== "intrinsic",
   ),
 ]);
 
@@ -114,7 +127,43 @@ const RECEIVER_FREE_LIB_FNS = new Set<IrLibFn>([
   "math.minArr",
   "error.new",
   "error.nodeThrow",
+  "perf.now",
+  "atomics.op",
 ]);
+
+/** Intrinsics that only check a flag or switch the current lifetime
+ * region: the module binding check (which throws a fixed ReferenceError)
+ * and the LifetimeRegion operations. */
+const RECEIVER_FREE_INTRINSICS = new Set<string>([
+  "module.tdzCheck",
+  "region.create",
+  "region.enter",
+  "region.leave",
+  "region.release",
+]);
+
+function primitiveOperand(e: IrExpr): boolean {
+  const kind = e.type.kind;
+  return kind === "string" || kind === "f64" || kind === "bool";
+}
+
+/** A dynamic value boxed from a primitive, which converts to a string
+ * without user code. */
+function primitiveDynOperand(e: IrExpr): boolean {
+  if (e.kind !== "dynFrom") return false;
+  const kind = e.value.type.kind;
+  return kind === "string" || kind === "f64" || kind === "bool" || kind === "undefinedT";
+}
+
+/** Whether a library call runs no user code: scalar Math, the members
+ * above, `new Error(message, options)` over a primitive message without an
+ * options object, and string and number members over primitive operands. */
+function receiverFreeLibCall(e: Extract<IrExpr, { kind: "libCall" }>): boolean {
+  if (isBorrowSafeMath(e.fn) || RECEIVER_FREE_LIB_FNS.has(e.fn)) return true;
+  if (e.fn === "error.newOptions") return e.args.every(primitiveDynOperand);
+  if (e.fn.startsWith("string.") || e.fn.startsWith("num.")) return e.args.every(primitiveOperand);
+  return false;
+}
 
 /** Typed container and string operations. Their runtime paths compare and
  * copy values but never call back into compiled code, as long as no
@@ -128,7 +177,12 @@ function dataIntrinsicOperands(e: IrExpr): IrExpr[] | null {
     case "strIntrinsic":
     case "mapIntrinsic":
     case "setIntrinsic":
+    case "bytesIntrinsic":
       return [e.receiver, ...e.args];
+    // A typed source is copied element by element; a dynamic one may be an
+    // iterable whose iterator is user code.
+    case "bytesNew":
+      return e.source === null ? [] : [e.source];
     case "mapNew":
     case "setNew":
       return [];
@@ -210,7 +264,9 @@ export class AmbientReceiverReaders {
         return targets.length > 0 && targets.every(edge);
       }
       case "libCall":
-        return isBorrowSafeMath(expr.fn) || RECEIVER_FREE_LIB_FNS.has(expr.fn);
+        return receiverFreeLibCall(expr);
+      case "intrinsic":
+        return RECEIVER_FREE_INTRINSICS.has(expr.name);
       case "toString":
         return !opaqueOperand(expr.operand);
       default: {

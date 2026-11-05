@@ -38,13 +38,18 @@ export const RUNTIME_PACK_MATRIX = withLibraryRuntimeFlavors(
     executable_section_elimination: EXECUTABLE_SECTION_ELIMINATION,
     runtime_units: [
       ...BASE_RUNTIME_SOURCES.map((source) => ({ source, predicate: true })),
-      ...OPTIONAL_RUNTIME_SOURCES.map(([source, predicate]) => ({ source, predicate })),
+      // The macOS pack ships no ICU, so it omits scr_intl.c, and the compiler
+      // refuses the ICU-answered Intl forms for this target.
+      ...OPTIONAL_RUNTIME_SOURCES.filter(([source]) => source !== "scr_intl.c").map(
+        ([source, predicate]) => ({ source, predicate }),
+      ),
     ].map((unit) => ({ ...unit, variants: variantsFor(unit.source) })),
     archives: [
       { id: "quickjs", predicate: false },
       { id: "libregexp", predicate: "regex" },
       { id: "zlib", predicate: "zlibEffective" },
       { id: "brotli", predicate: all("zlib", "brotli") },
+      { id: "zstd", predicate: all("zlib", "zstd") },
       { id: "mbedtls", predicate: any("tlsEffective", "cipher", "ecdh", "dh", "pki") },
     ],
     system_libraries: [{ name: "System", predicate: true }],

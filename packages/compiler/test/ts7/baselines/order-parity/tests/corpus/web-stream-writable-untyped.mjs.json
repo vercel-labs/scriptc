@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/web-stream-writable-untyped.mjs"
+ ],
+ "diags": []
+}

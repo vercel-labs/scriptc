@@ -1,0 +1,3 @@
+- **Array subclasses:** A class that extends `Array` compiles: its instances are arrays, and `map`, `filter`, `slice` and the other methods that create arrays return instances of the subclass, as in Node.js.
+  A generic subclass (`class Bag<T> extends Array<T>`), a class that extends such a subclass, and a subclass that declares `Symbol.species` are unsupported.
+  A method whose result the subclass's constructor cannot construct throws a `TypeError`: the constructor's parameters must take the one length argument, and a `map` to another element type needs a constructor that adds no elements.

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/frozen-untyped-writes-sloppy.cjs"
+ ],
+ "diags": []
+}

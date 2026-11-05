@@ -1,7 +1,9 @@
-/* fs.writeSync contracts that need harness control over the native process's
- * descriptors. The ordinary byte/error behavior stays in differential corpus
- * 2685; this test controls stdout's pipe state, nonblocking mode, and the
- * process file-size limit to pin the signal-backed descriptor errors. */
+/* fs.writeSync and write-stream contracts that need harness control over the
+ * native process's descriptors. The ordinary byte/error behavior stays in
+ * differential corpus 2685; this test controls stdout's pipe state,
+ * nonblocking mode, and the process file-size limit to pin the signal-backed
+ * descriptor errors, on the calling thread (writeSync) and on the fs pool's
+ * threads (write streams). */
 import { execFileSync, spawn } from "node:child_process";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
@@ -80,6 +82,18 @@ describe.skipIf(process.platform === "win32")(
           "positioned first: 512\n" +
           "positioned caught: Error EFBIG EFBIG: file too large, write\n",
       );
+
+      const streamPipe = await run(result.binaryPath, ["stream-sigpipe"], true);
+      expect(streamPipe.outcome).toEqual({ code: 0, signal: null });
+      expect(streamPipe.stderr).toBe("stream caught: Error EPIPE EPIPE: broken pipe, write\n");
+
+      const thenSync = await run(result.binaryPath, ["stream-then-sync-sigpipe"], true);
+      expect(thenSync.outcome).toEqual({ code: 0, signal: null });
+      expect(thenSync.stderr).toBe("sync caught: Error EPIPE\n");
+
+      const streamLimit = await run(launcher, ["rlimit", result.binaryPath, "stream-efbig"]);
+      expect(streamLimit.outcome).toEqual({ code: 0, signal: null });
+      expect(streamLimit.stderr).toBe("stream caught: Error EFBIG EFBIG: file too large, write\n");
     });
   },
 );

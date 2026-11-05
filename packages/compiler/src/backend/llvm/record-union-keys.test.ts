@@ -58,6 +58,37 @@ console.log(seen.size, depth.get(nodes[1]!), seen.has({ kind: "num", value: 1 })
   expect(ir).not.toMatch(/call ptr @scr_union_new_ref/);
 });
 
+test("Sets and Maps of a class, null or undefined key the instance pointer", async () => {
+  const ir = await llvmFor(`
+class Leaf {
+  name: string;
+  constructor(name: string) {
+    this.name = name;
+  }
+}
+const a = new Leaf("a");
+const leaves = new Set<Leaf | undefined>([a, undefined, new Leaf("b")]);
+const counts = new Map<Leaf | null | undefined, number>();
+for (const leaf of [a, null, undefined, a]) counts.set(leaf, (counts.get(leaf) ?? 0) + 1);
+const child = (i: number): Leaf | undefined => (i < 2 ? a : undefined);
+console.log(leaves.has(undefined), counts.get(a), counts.get(null), child(1)?.name);
+`);
+  expect(ir).toMatch(/call ptr @scr_map_new\(i32 2,/);
+  expect(ir).not.toMatch(/call ptr @scr_map_new\(i32 [37],/);
+  expect(ir).not.toMatch(/call ptr @scr_union_new_ref/);
+});
+
+test("Maps keyed by a string or undefined keep union keys, which compare by value", async () => {
+  const ir = await llvmFor(`
+const names = new Map<string | undefined, number>([["a", 1], [undefined, 2]]);
+names.set(["a"].join(""), 3);
+console.log(names.size, names.get("a"), names.get(undefined));
+`);
+  // SCR_MAP_KEY_UNION_VALUE (7): the strings compare by their text.
+  expect(ir).toMatch(/call ptr @scr_map_new\(i32 7,/);
+  expect(ir).not.toMatch(/call ptr @scr_map_new\(i32 2,/);
+});
+
 const recordType = (shapeId: string): IrType => ({ kind: "record", shapeId });
 const wide: IrType = { kind: "union", unionId: "wide" };
 

@@ -1,0 +1,17 @@
+stdlib-snapshot-value-use.ts:7:9 - error SC2020: the stdlib-global snapshot 'proc' ('process') cannot be used as a value: the declaration lowers to alias plumbing (no storage, no code), and the global it names is not a value scriptc can hold
+
+  6 | function label(): unknown {
+  7 |   const proc = globalThis.process;
+    |         ^~~~
+  8 |   return proc;
+
+  hint: read the members through the global directly ('process.member') instead of passing 'proc' around as a value
+
+stdlib-snapshot-value-use.ts:8:10 - error SC2004: uses of 'proc' inherit the blocker on its declaration
+
+  7 |   const proc = globalThis.process;
+  8 |   return proc;
+    |          ^~~~
+  9 | }
+
+  hint: the declaration of 'proc' did not compile — fix the diagnostic reported there and these sites clear with it

@@ -102,7 +102,7 @@ typedef struct ScrSidx {
   bool points_complete;  /* points cover every stride of indexed prefix */
   uint32_t walks;        /* index walks before the offsets exist */
   uint16_t *units;       /* the UTF-16 code units, once reads warrant them */
-  uint32_t nunits;       /* units and offsets need at most 1 << 24 bytes */
+  uint32_t nunits;       /* the unit count, at most the byte length */
   uint32_t reads;        /* indexed reads that missed the unit array */
   ScrSidxOffsets *offsets; /* every unit's byte offset, once walks warrant */
 } ScrSidx; /* 128 bytes on 64-bit targets: every lookup clears or copies one */
@@ -357,7 +357,7 @@ static void scr_sidx_concat_append(const ScrStr *s, size_t oldlen) {
 
 static ScrStr *scr_str_alloc(size_t len, size_t cap) {
   if (len > cap || cap > SCR_STR_MAX_CAP) scr_oom();
-  ScrStr *s = scr_mem_alloc(sizeof(ScrStr) + cap + 1);
+  ScrStr *s = scr_mem_alloc_ref(sizeof(ScrStr) + cap + 1);
   if (!s) scr_oom();
   s->rc = 1;
   s->len = len;
@@ -432,9 +432,13 @@ static ScrStr *scr_str_new_ascii(const char *bytes, size_t len) {
 #ifndef SCR_RC_AUDIT
 static SCR_TL ScrStr *scr_str_spare;
 #endif
+/* The largest block the spare keeps. A larger one stays resident until a
+ * string of about its size comes along, which may be never: a program that
+ * replaces a 50 MB input with its edited copy would otherwise hold both. */
+#define SCR_STR_SPARE_MAX ((size_t)1 << 20)
 
 /* A spare-block reuse must not waste grossly (cap <= 4x the need) and only
- * sizable blocks are worth stashing (>= 512). */
+ * sizable blocks are worth stashing (512 bytes to SCR_STR_SPARE_MAX). */
 static ScrStr *scr_str_take_spare(size_t len) {
 #ifndef SCR_RC_AUDIT
   ScrStr *s = scr_str_spare;
@@ -466,7 +470,7 @@ ScrStr *scr_str_regrow(ScrStr *s, size_t newcap) {
   scr_short_forget(s);
   scr_str_hash_forget(s);
   scr_sidx_purge(s); /* realloc may move; the old address may be recycled */
-  ScrStr *r = scr_mem_realloc(s, sizeof(ScrStr) + newcap + 1);
+  ScrStr *r = scr_mem_realloc_ref(s, sizeof(ScrStr) + newcap + 1);
   if (!r) scr_oom();
   r->cap = newcap;
   return r;
@@ -483,7 +487,7 @@ void scr_str_release(ScrStr *s) {
     scr_live_strings--;
 #endif
 #ifndef SCR_RC_AUDIT
-    if (s->cap >= 512) {
+    if (s->cap >= 512 && s->cap <= SCR_STR_SPARE_MAX) {
       ScrStr *old = scr_str_spare;
       scr_str_spare = s;
       if (!old) return;
@@ -706,31 +710,42 @@ static inline size_t scr_utf16_units_short(const char *data, size_t len) {
 }
 
 /* A fresh concatenation (no head, the template-literal shape): numbers
- * format straight into the result, which reserves scr_f64_to_str's whole
- * 32-byte buffer for each. */
+ * format into a stack buffer first, so the result is allocated at its exact
+ * length. */
 #define SCR_F64_TEXT_MAX 32
 static __attribute__((noinline)) ScrStr *scr_str_concat_fresh(ScrStr *const *parts,
                                                               const double *nums, size_t count) {
-  size_t reserve = 0;
+  char texts[SCR_STR_MIXED_MAX * SCR_F64_TEXT_MAX];
+  size_t text_len[SCR_STR_MIXED_MAX];
+  size_t len = 0, used = 0;
   bool ascii = true;
   for (size_t i = 0; i < count; i++) {
-    size_t n = parts[i] ? parts[i]->len : SCR_F64_TEXT_MAX;
-    if (n > SCR_STR_MAX_CAP - reserve) scr_oom();
-    reserve += n;
-    if (parts[i]) ascii &= parts[i]->ascii;
+    size_t n;
+    if (parts[i]) {
+      n = parts[i]->len;
+      ascii &= parts[i]->ascii;
+    } else {
+      n = scr_f64_to_str(nums[i], texts + used);
+      text_len[i] = n;
+      used += n;
+    }
+    if (n > SCR_STR_MAX_CAP - len) scr_oom();
+    len += n;
   }
-  ScrStr *out = scr_str_take_spare(reserve);
-  if (!out) out = scr_str_alloc(reserve, reserve);
+  ScrStr *out = scr_str_take_spare(len);
+  if (!out) out = scr_str_alloc(len, len);
   char *w = out->data;
+  const char *text = texts;
   for (size_t i = 0; i < count; i++) {
     if (parts[i]) {
       scr_copy_bytes(w, parts[i]->data, parts[i]->len);
       w += parts[i]->len;
     } else {
-      w += scr_f64_to_str(nums[i], w);
+      scr_copy_bytes(w, text, text_len[i]);
+      w += text_len[i];
+      text += text_len[i];
     }
   }
-  size_t len = (size_t)(w - out->data);
   out->len = len;
   out->data[len] = '\0';
   out->ascii = ascii;
@@ -1030,6 +1045,8 @@ static const struct { size_t rc; size_t len; size_t cap; char data[1]; }
 
 static ScrStr *scr_str_empty(void) { return (ScrStr *)&scr_lit_empty; }
 
+ScrStr *scr_str_empty_value(void) { return scr_str_empty(); }
+
 /* Empty/ASCII characters are immortal; tiny spans share live heap strings. */
 static ScrStr *scr_str_from_span(const char *bytes, size_t len) {
   if (len == 0) return scr_str_empty();
@@ -1048,6 +1065,8 @@ static ScrStr *scr_str_from_span(const char *bytes, size_t len) {
   }
   return scr_str_new(bytes, len);
 }
+
+ScrStr *scr_str_intern_span(const char *bytes, size_t len) { return scr_str_from_span(bytes, len); }
 
 /* scr_str_from_span for a span of a proven-ASCII string: the result is
  * ASCII without another scan. */
@@ -1641,17 +1660,33 @@ static inline size_t scr_u16_to_byte_c(const ScrStr *s, ScrSidx *e, size_t u16,
 /* Index walks on one long non-ASCII receiver (slices, substrings and
  * indexed reads taken across it) each step through bytes from the nearest
  * known position. Once those walks would have paid for one pass over the
- * receiver (a walk per 32 bytes, at least 64 walks), a receiver from
- * SCR_SIDX_MIN_BYTES to SCR_SIDX_OFFSETS_MAX bytes keeps every unit's byte
- * offset: a 32-bit base per 64 units and one byte per unit past it (64 units
- * span at most 192 bytes). The low half of an astral character has its high
- * half's offset. The offsets are freed with the entry, and an append drops
- * them (scr_sidx_concat_append). */
+ * receiver (a walk per 32 bytes, at least 64 walks), a receiver keeps every
+ * unit's byte offset while that table fits the per-receiver budget: a 32-bit
+ * base per 64 units and one byte per unit past it (64 units span at most 192
+ * bytes), about 1.07 bytes per byte of receiver data. The low half of an
+ * astral character has its high half's offset. The offsets are freed with
+ * the entry, and an append drops them (scr_sidx_concat_append). */
 #define SCR_SIDX_OFFSET_BLOCK ((size_t)64)
-#define SCR_SIDX_OFFSETS_MAX ((size_t)1 << 24)
+#define SCR_SIDX_OFFSETS_BUDGET ((size_t)64 << 20)
+/* The largest receiver whose table fits the budget. Units never outnumber
+ * bytes, so it is at most one byte per byte of data plus one 32-bit base per
+ * 64 units, and the last 68 bytes cover the header and the rounding. Every
+ * walk consults this bound, so it is one comparison. */
+#define SCR_SIDX_OFFSETS_MAX_LEN                                     \
+  (((SCR_SIDX_OFFSETS_BUDGET - 68) * SCR_SIDX_OFFSET_BLOCK) /        \
+   (SCR_SIDX_OFFSET_BLOCK + sizeof(uint32_t)))
+_Static_assert(SCR_SIDX_OFFSETS_MAX_LEN +
+                       (SCR_SIDX_OFFSETS_MAX_LEN / SCR_SIDX_OFFSET_BLOCK + 1) * sizeof(uint32_t) +
+                       64 <=
+                   SCR_SIDX_OFFSETS_BUDGET,
+               "the largest offsets receiver's table fits the budget");
+/* Whether the offsets for a receiver of `len` bytes fit the budget. */
+static inline bool scr_sidx_offsets_fit(size_t len) {
+  return len <= SCR_SIDX_OFFSETS_MAX_LEN;
+}
 static bool scr_sidx_offsets(const ScrStr *s, ScrSidx *e) {
   if (e->offsets) return true;
-  if (s->len < SCR_SIDX_MIN_BYTES || s->len > SCR_SIDX_OFFSETS_MAX) return false;
+  if (s->len < SCR_SIDX_MIN_BYTES || !scr_sidx_offsets_fit(s->len)) return false;
   if (++e->walks < 64 || (size_t)e->walks * 32 < s->len) return false;
   size_t n = scr_sidx_len(s, e);
   if (s->ascii || e->u16len == s->len) return false;
@@ -1745,6 +1780,36 @@ static __attribute__((noinline)) size_t scr_u16_to_byte_walk(const ScrStr *s, Sc
     e->cb = cb;
     return cb;
   }
+  /* A forward access past the cached ASCII run (a scanner taking slices at
+   * increasing positions of a mostly ASCII text) grows the run over the
+   * ASCII bytes up to it. When a non-ASCII character ends the run first, a
+   * nearby access walks from the run's end or the hot cursor, whichever is
+   * nearer, and a new run starts where the walk lands, so the accesses after
+   * it map by arithmetic again. */
+  if (u16 >= e->ascii_cu) {
+    if (scr_sidx_ascii_grow(s, e, e->ascii_cb + (u16 - e->ascii_cu))) {
+      e->cb = e->ascii_cb + (u16 - e->ascii_cu);
+      e->cu = u16;
+      *mid = false;
+      return e->cb;
+    }
+    size_t run_cu = e->ascii_cu + (e->ascii_end - e->ascii_cb);
+    if (e->ascii_end < s->len && u16 - run_cu <= SCR_SIDX_NEAR_UNITS) {
+      size_t cu = run_cu, cb = e->ascii_end;
+      if (e->cb <= s->len && e->cu >= cu && e->cu <= u16) {
+        cu = e->cu;
+        cb = e->cb;
+      }
+      size_t at = scr_sidx_walk_from(s, e, cu, cb, u16, mid, false);
+      if (!*mid && at < s->len && (unsigned char)s->data[at] < 0x80) {
+        e->ascii_cu = e->cu;
+        e->ascii_cb = at;
+        e->ascii_end = at;
+        (void)scr_sidx_ascii_grow(s, e, at);
+      }
+      return at;
+    }
+  }
   /* Within a short distance of the hot cursor (a scanner
    * taking slices near its position), walk from that cursor: no index
    * search, extension or ASCII-run growth is cheaper. */
@@ -1773,12 +1838,6 @@ static __attribute__((noinline)) size_t scr_u16_to_byte_walk(const ScrStr *s, Sc
       *mid = m;
       return cb;
     }
-  }
-  if (u16 >= e->ascii_cu && scr_sidx_ascii_grow(s, e, e->ascii_cb + (u16 - e->ascii_cu))) {
-    e->cb = e->ascii_cb + (u16 - e->ascii_cu);
-    e->cu = u16;
-    *mid = false;
-    return e->cb;
   }
   scr_sidx_extend_to_u16(s, e, u16);
   /* Extending a far-end lookup can just have proved identity. Do not
@@ -1930,10 +1989,12 @@ static inline bool scr_needle_halves_pairs(const ScrStr *n) {
       0);
 }
 
-/* The UTF-16 code units of s (malloc'd); *n gets their count. */
-static uint16_t *scr_str_units(const ScrStr *s, size_t *n) {
+/* The UTF-16 code units of s (malloc'd); *n gets their count. NULL when the
+ * allocation fails, so a caller that can fall back does not have to treat
+ * exhausted memory as fatal. */
+static uint16_t *scr_str_units_try(const ScrStr *s, size_t *n) {
   uint16_t *u = malloc((s->len + 1) * sizeof *u); /* units <= bytes */
-  if (!u) scr_oom();
+  if (!u) return NULL;
   size_t k = 0;
   for (size_t i = 0; i < s->len;) {
     size_t adv;
@@ -1950,27 +2011,49 @@ static uint16_t *scr_str_units(const ScrStr *s, size_t *n) {
   return u;
 }
 
+static uint16_t *scr_str_units(const ScrStr *s, size_t *n) {
+  uint16_t *u = scr_str_units_try(s, n);
+  if (!u) scr_oom();
+  return u;
+}
+
 /* Indexed reads of one non-ASCII receiver (charCodeAt/charAt scans) map
  * UTF-16 units to bytes through the cursor and checkpoints. Once its
  * reads would have paid for converting it (one read per 16 bytes), a
- * receiver up to SCR_SIDX_UNITS_MAX units keeps its code units in its
- * entry and reads become loads. The bound admits source texts of several
- * megabytes, which scanners read in full. The array is freed with the
- * entry, and an append drops it (scr_sidx_concat_append). */
-#define SCR_SIDX_UNITS_MAX ((size_t)1 << 24)
-static void scr_sidx_take_units(const ScrStr *s, ScrSidx *e) {
+ * receiver keeps its code units in its entry while the array fits the
+ * per-receiver budget: at most two bytes per byte of UTF-8 data, since
+ * units never outnumber bytes. That admits source texts of tens of
+ * megabytes, which scanners read in full. The array is sized by byte
+ * length (the upper bound of the unit count, so multi-byte data leaves
+ * only untouched pages) and freed with the entry; an append drops it
+ * (scr_sidx_concat_append). */
+#define SCR_SIDX_UNITS_BUDGET ((size_t)96 << 20)
+/* The largest receiver whose unit array fits the budget. A loop entry
+ * consults this bound once, before it weighs a pass over the receiver. */
+#define SCR_SIDX_UNITS_MAX_LEN (SCR_SIDX_UNITS_BUDGET / sizeof(uint16_t) - 1)
+_Static_assert((SCR_SIDX_UNITS_MAX_LEN + 1) * sizeof(uint16_t) <= SCR_SIDX_UNITS_BUDGET,
+               "the largest units receiver's array fits the budget");
+/* Whether the unit array of a receiver of `len` bytes fits the budget. */
+static inline bool scr_sidx_units_fit(size_t len) {
+  return len <= SCR_SIDX_UNITS_MAX_LEN;
+}
+static bool scr_sidx_take_units(const ScrStr *s, ScrSidx *e) {
   size_t n = 0;
-  e->units = scr_str_units(s, &n);
+  uint16_t *u;
+  if (!scr_sidx_units_fit(s->len)) return false;
+  u = scr_str_units_try(s, &n);
+  if (!u) {
+    /* Wait another read interval before retrying under memory pressure. */
+    e->reads = 0;
+    return false;
+  }
+  e->units = u;
   e->nunits = (uint32_t)n;
+  return true;
 }
 
-static bool scr_sidx_units(const ScrStr *s, ScrSidx *e) {
-  if (!e->units) {
-    if (s->len > SCR_SIDX_UNITS_MAX || ++e->reads < 32 || (size_t)e->reads * 16 < s->len)
-      return false;
-    scr_sidx_take_units(s, e);
-  }
-  /* Publish the scan's receiver for emitted reads (scr_runtime.h). */
+/* Publish the scan's receiver for emitted reads (scr_runtime.h). */
+static inline bool scr_sidx_publish(const ScrStr *s, ScrSidx *e) {
   if (scr_str_scan.s != s) {
     scr_str_scan.s = s;
     scr_str_scan.units = e->units;
@@ -1979,23 +2062,56 @@ static bool scr_sidx_units(const ScrStr *s, ScrSidx *e) {
   return true;
 }
 
+/* A receiver past this size converts only from a loop entry, which knows the
+ * range the loop reads. A bare count of reads cannot weigh the pass it would
+ * buy: a strided scan that reads one unit per 17 bytes still performs close
+ * to one read per 16 bytes, so the count would convert a receiver the loop
+ * rarely touches. Converting such a receiver is only worth it when the
+ * entry reports a range that covers it. */
+#define SCR_SIDX_COUNTED_MAX ((size_t)1 << 24)
+
+/* Count one indexed read toward the threshold and convert when it is
+ * reached. The threshold is one read per 16 bytes and at least 32 reads, so
+ * reaching it has already cost about a pass over the receiver. */
+static bool scr_sidx_units(const ScrStr *s, ScrSidx *e) {
+  if (!e->units) {
+    if (s->len > SCR_SIDX_COUNTED_MAX || ++e->reads < 32 ||
+        (size_t)e->reads * 16 < s->len)
+      return false;
+    if (!scr_sidx_take_units(s, e)) return false;
+  }
+  return scr_sidx_publish(s, e);
+}
+
 /* A loop about to read s (bytes-loop-versions.ts) between the indexes
  * `from` and `to` (NaN: no bound) converts it at once instead of after the
- * threshold's reads, and publishes it as the scan's receiver, when that
- * range has at least one unit per 16 bytes of s (the threshold's ratio).
- * A shorter loop, such as one over a line of a source text, counts as one
- * read, so a short loop does not keep all of a long string's units. ASCII
- * receivers and receivers past SCR_SIDX_UNITS_MAX publish nothing; the
- * caller compares scr_str_scan.s with s. */
-void scr_str_scan_units_for(ScrStr *s, double from, double to) {
-  if (s->ascii || s->len > SCR_SIDX_UNITS_MAX) return;
+ * threshold's reads, and publishes it as the scan's receiver, when the loop
+ * reads s at least once per 16 bytes (the threshold's ratio). `step` is the
+ * loop counter's stride (NaN when the loop is not counted); a stride above
+ * 16 puts the read rate below that ratio, so a strided loop over a long
+ * string keeps walking bytes instead of paying a full pass at entry. A loop
+ * that runs to the string's own length reports no bound: its range is s
+ * itself, read once per stride, so it covers the whole receiver and a pass
+ * over it pays for itself. A loop with a known bound but no stride (a
+ * bounded while loop) converts at entry when that range is dense enough and
+ * counts its reads otherwise.
+ *
+ * A loop that declines counts as one indexed read, so a receiver the loops
+ * keep touching still converts once their reads would have paid for a pass;
+ * no single strided loop pays for one at its entry. ASCII receivers publish
+ * nothing; the caller compares scr_str_scan.s with s. */
+void scr_str_scan_units_for(ScrStr *s, double from, double to, double step) {
+  if (s->ascii) return;
   ScrSidx *e = scr_sidx(s);
   if (!e->units) {
-    if (fabs(to - from) * 16 < (double)s->len) {
+    double span = fabs(to - from);
+    if (isnan(span)) span = (double)s->len;
+    bool sparse = step >= 1.0 && span / step * 16 < (double)s->len;
+    if (sparse || span * 16 < (double)s->len) {
       (void)scr_sidx_units(s, e);
       return;
     }
-    scr_sidx_take_units(s, e);
+    if (!scr_sidx_take_units(s, e)) return;
   }
   if (scr_str_scan.s != s) {
     scr_str_scan.s = s;
@@ -2107,6 +2223,14 @@ double scr_str_utf16_len(ScrStr *s) {
   return (double)(int64_t)units;
 }
 
+/* scr_str_utf16_len as a size: proven-ASCII and short strings are counted
+ * here, without the call. */
+static inline size_t scr_str_len16(ScrStr *s) {
+  if (s->ascii) return s->len;
+  if (s->len <= 64) return scr_utf16_units_short(s->data, s->len);
+  return (size_t)scr_str_utf16_len(s);
+}
+
 /* Records the UTF-16 length of a string whose producer counted it (latin1
  * text has one unit per byte), so scr_str_utf16_len does not walk it. Only
  * strings that scr_str_utf16_len would otherwise record are kept. */
@@ -2118,6 +2242,39 @@ void scr_str_note_utf16_len(ScrStr *s, size_t units) {
     scr_sidx_register_cleanup();
   }
   *scr_u16len_slot(s) = (ScrU16Len){s, units};
+}
+
+/* A non-ASCII receiver up to this many bytes (a character, a short word)
+ * is decoded from its start on each read, as scr_str_utf16_len counts a
+ * short receiver: an index entry for it would cost more than the walk, and
+ * would evict the cursor of a long receiver being scanned meanwhile. */
+#define SCR_STR_DECODE_SHORT 16
+
+/* The UTF-16 unit at index i of a short receiver, or NaN past its end. */
+static double scr_str_char_code_short(const ScrStr *s, size_t i) {
+  size_t b = 0;
+  while (b < s->len) {
+    unsigned char c = (unsigned char)s->data[b];
+    if (c < 0x80) {
+      if (i == 0) return (double)c;
+      i--;
+      b++;
+      continue;
+    }
+    size_t adv;
+    uint32_t cp = scr_utf8_decode(s->data + b, &adv);
+    if (cp < 0x10000) {
+      if (i == 0) return (double)cp;
+      i--;
+    } else {
+      uint32_t v = cp - 0x10000;
+      if (i == 0) return (double)(0xD800 + (v >> 10));
+      if (i == 1) return (double)(0xDC00 + (v & 0x3FF));
+      i -= 2;
+    }
+    b += adv;
+  }
+  return NAN;
 }
 
 double scr_str_char_code_at(ScrStr *s, double i) {
@@ -2158,6 +2315,7 @@ double scr_str_char_code_at(ScrStr *s, double i) {
   /* UTF-16 length <= byte length always, so this also fences the cast. */
   if (idx >= (double)s->len) return NAN;
   if (s->ascii) return (double)(unsigned char)s->data[(size_t)idx];
+  if (s->len <= SCR_STR_DECODE_SHORT) return scr_str_char_code_short(s, (size_t)idx);
   ScrSidx *e = scr_sidx(s);
   if (s->ascii || e->u16len == s->len) return (double)(unsigned char)s->data[(size_t)idx];
   if (scr_sidx_units(s, e)) return idx < (double)e->nunits ? (double)e->units[(size_t)idx] : NAN;
@@ -2172,11 +2330,19 @@ double scr_str_char_code_at(ScrStr *s, double i) {
 }
 
 double scr_str_index_of(ScrStr *s, ScrStr *needle, double fromIndex) {
-  /* A search from the start of a proven-ASCII receiver: byte offsets are
-   * UTF-16 indexes, and a needle with other bytes is never found. A start
-   * index that is not positive (NaN, -0 or negative) clamps to 0. */
-  if (s->ascii && !(fromIndex > 0)) {
-    const char *found = scr_byte_find(s->data, s->len, needle->data, needle->len);
+  /* A proven-ASCII receiver: byte offsets are UTF-16 indexes, and a needle
+   * with other bytes is never found. A start index that is not positive
+   * (NaN, -0 or negative) clamps to 0, a positive one truncates
+   * (ToIntegerOrInfinity) and clamps to the length, where only the empty
+   * needle is found. */
+  if (s->ascii) {
+    size_t start = 0;
+    if (fromIndex > 0) {
+      if (fromIndex >= (double)s->len) return needle->len == 0 ? (double)s->len : -1.0;
+      start = (size_t)fromIndex;
+    }
+    const char *found =
+        scr_byte_find(s->data + start, s->len - start, needle->data, needle->len);
     return found ? (double)(found - s->data) : -1.0;
   }
   double pos = scr_to_integer_or_infinity(fromIndex);
@@ -2525,6 +2691,10 @@ ScrStr *scr_str_trim(ScrStr *s) {
     e = cs;
   }
   return scr_str_from_span(s->data + b, e - b);
+}
+
+ScrStr *scr_str_ascii_char(unsigned code) {
+  return (ScrStr *)&scr_ascii1[code & 0x7f];
 }
 
 ScrStr *scr_str_char_at(ScrStr *s, double i) {
@@ -3084,15 +3254,17 @@ ScrStr *scr_str_replace_literal(ScrStr *s, ScrStr *search, ScrStr *rep, bool all
 static ScrStr *scr_pad_impl(ScrStr *s, double maxLength, ScrStr *fill,
                              bool at_start) {
   double target = scr_to_integer_or_infinity(maxLength);
-  size_t len16 = scr_sidx_len(s, scr_sidx_for(s));
+  size_t len16 = scr_str_len16(s);
   if (!(target > (double)len16) || fill->len == 0) return scr_str_retain(s);
   /* Reject pad sizes malloc could not satisfy before the double→size_t
    * conversion can overflow (each unit is at most 3 bytes here: BMP chars
    * and lone surrogates; astral chars are 4 bytes for 2 units). */
   if (target > (double)((SIZE_MAX - sizeof(ScrStr) - 1) / 4)) scr_oom();
   size_t pad16 = (size_t)target - len16;
-  size_t fill16 = scr_sidx_len(fill, scr_sidx_for(fill));
-  size_t reps = pad16 / fill16, rem16 = pad16 % fill16;
+  size_t fill16 = scr_str_len16(fill);
+  /* A one-unit fill, the common case, needs no division. */
+  size_t reps = fill16 == 1 ? pad16 : pad16 / fill16;
+  size_t rem16 = fill16 == 1 ? 0 : pad16 % fill16;
   /* The truncated prefix of fill: whole chars while they fit in rem16
    * units; a final astral char that doesn't fit contributes its high
    * surrogate. */
@@ -3114,9 +3286,14 @@ static ScrStr *scr_pad_impl(ScrStr *s, double maxLength, ScrStr *fill,
   size_t total = s->len + pad_b;
   ScrStr *r = scr_str_alloc(total, total);
   char *w = r->data + (at_start ? 0 : s->len);
-  for (size_t i = 0; i < reps; i++) {
-    memcpy(w, fill->data, fill->len);
-    w += fill->len;
+  if (fill->len == 1) {
+    memset(w, fill->data[0], reps);
+    w += reps;
+  } else {
+    for (size_t i = 0; i < reps; i++) {
+      memcpy(w, fill->data, fill->len);
+      w += fill->len;
+    }
   }
   memcpy(w, fill->data, prefix_b);
   w += prefix_b;
@@ -3126,6 +3303,7 @@ static ScrStr *scr_pad_impl(ScrStr *s, double maxLength, ScrStr *fill,
   }
   memcpy(at_start ? w : r->data, s->data, s->len);
   r->data[total] = '\0';
+  if (s->ascii && fill->ascii) scr_str_note_ascii(r);
   /* Only a piece that starts with a lone low surrogate can complete a
    * pair across a seam: the fill (after a fill or the receiver) or the
    * receiver (after a fill ending in a high surrogate). */
@@ -3838,6 +4016,30 @@ ScrStr *scr_qs_escape(ScrStr *s) {
     return out ? out : scr_str_empty();
   }
   return scr_str_encode_uri_component(s);
+}
+
+/* querystring.escape(value) of a value that may not be a string: Node's
+ * qsEscape converts an object or null with String(value) and any other
+ * value with value + "", so a symbol throws TypeError. A function converts
+ * to its source text, which a compiled binary does not keep: SC2020. +1, or
+ * NULL with the exception pending. */
+ScrStr *scr_qs_escape_value(const ScrDyn *value) {
+  if (value->kind == SCR_DYN_SYMBOL) {
+    static const char message[] = "Cannot convert a Symbol value to a string";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  if (value->kind == SCR_DYN_FUNC) {
+    static const char message[] =
+        "querystring.escape of a function converts its source text, which a compiled binary does not keep";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return NULL;
+  }
+  ScrStr *text = scr_dyn_string_coerce_js(value);
+  if (!text) return NULL;
+  ScrStr *out = scr_qs_escape(text);
+  scr_str_release(text);
+  return out;
 }
 
 /* One %XX escape's byte, or -1 (bad hex / truncated). */

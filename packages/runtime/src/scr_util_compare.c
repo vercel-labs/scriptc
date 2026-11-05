@@ -26,15 +26,15 @@ static bool util_deep_equal(const ScrDyn *, const ScrDyn *, bool, const ScrDeepF
 
 static size_t util_deep_key_count(const ScrDyn *table) {
   size_t count = 0;
-  if (table) for (size_t i = 0; i < table->v.obj.len; i++) count += table->v.obj.entries[i].enumerable;
+  if (table) for (size_t i = 0; i < scr_dyn_obj_count(table); i++) count += scr_dyn_obj_prop_at(table, i).enumerable;
   return count;
 }
 
 static bool util_deep_same_keys(const ScrDyn *a, const ScrDyn *b) {
   if (util_deep_key_count(a) != util_deep_key_count(b)) return false;
-  if (a) for (size_t i = 0; i < a->v.obj.len; i++) {
-    const ScrDynEntry *e = &a->v.obj.entries[i];
-    if (e->enumerable && (!b || !scr_dyn_obj_enumerable(b, e->key, e->key_len))) return false;
+  if (a) for (size_t i = 0; i < scr_dyn_obj_count(a); i++) {
+    ScrDynProp e = scr_dyn_obj_prop_at(a, i);
+    if (e.enumerable && (!b || !scr_dyn_obj_enumerable(b, e.key, e.key_len))) return false;
   }
   return true;
 }
@@ -42,14 +42,14 @@ static bool util_deep_same_keys(const ScrDyn *a, const ScrDyn *b) {
 static ScrDyn *util_deep_constructor(const ScrDyn *value) {
   for (const ScrDyn *p = value; p; p = p->prototype) {
     const ScrDyn *table = p->kind == SCR_DYN_OBJ ? p : p->kind == SCR_DYN_ARR ? p->v.arr.properties : NULL;
-    if (table) for (size_t i = 0; i < table->v.obj.len; i++) {
-      const ScrDynEntry *e = &table->v.obj.entries[i];
-      if (e->key_len == 11 && !memcmp(e->key, "constructor", 11)) {
-        if (e->accessor) { util_deep_refused("native accessor properties"); return NULL; }
-        if (p == value && e->value->kind == SCR_DYN_FUNC) {
+    if (table) for (size_t i = 0; i < scr_dyn_obj_count(table); i++) {
+      ScrDynProp e = scr_dyn_obj_prop_at(table, i);
+      if (e.key_len == 11 && !memcmp(e.key, "constructor", 11)) {
+        if (e.accessor) { util_deep_refused("native accessor properties"); return NULL; }
+        if (p == value && e.value->kind == SCR_DYN_FUNC) {
           util_deep_refused("native own constructor functions"); return NULL;
         }
-        return scr_dyn_retain(e->value);
+        return scr_dyn_retain(e.value);
       }
     }
     if (!p->prototype) {
@@ -77,8 +77,8 @@ static ScrDyn *util_deep_tag(const ScrDyn *value) {
       if (!scr_dyn_same_value(keys->v.arr.items[i], key)) continue;
       // General native getters retain an explicit boundary, including
       // non-enumerable Symbol.toStringTag descriptors read by Node.
-      for (size_t j = 0; j < p->symbol_properties->v.obj.len; j++) {
-        if (p->symbol_properties->v.obj.entries[j].accessor) {
+      for (size_t j = 0; j < scr_dyn_obj_count(p->symbol_properties); j++) {
+        if (scr_dyn_obj_prop_at(p->symbol_properties, j).accessor) {
           scr_dyn_release(key); util_deep_refused("native accessor properties"); return NULL;
         }
       }
@@ -95,20 +95,21 @@ static bool util_deep_properties(const ScrDyn *a, const ScrDyn *b, bool skip,
                                   const ScrDeepFrame *frame) {
   if (util_deep_key_count(a) != util_deep_key_count(b)) return false;
   if (!a) return true;
-  for (size_t i = 0; i < a->v.obj.len; i++) {
-    const ScrDynEntry *x = &a->v.obj.entries[i];
-    if (!x->enumerable) continue;
-    const ScrDynEntry *y = NULL;
-    if (b) for (size_t j = 0; j < b->v.obj.len; j++) {
-      const ScrDynEntry *candidate = &b->v.obj.entries[j];
-      if (candidate->enumerable && candidate->key_len == x->key_len &&
-          !memcmp(candidate->key, x->key, x->key_len)) { y = candidate; break; }
+  for (size_t i = 0; i < scr_dyn_obj_count(a); i++) {
+    ScrDynProp x = scr_dyn_obj_prop_at(a, i);
+    if (!x.enumerable) continue;
+    ScrDynProp yp;
+    const ScrDynProp *y = NULL;
+    if (b) for (size_t j = 0; j < scr_dyn_obj_count(b); j++) {
+      ScrDynProp candidate = scr_dyn_obj_prop_at(b, j);
+      if (candidate.enumerable && candidate.key_len == x.key_len &&
+          !memcmp(candidate.key, x.key, x.key_len)) { yp = candidate; y = &yp; break; }
     }
     if (!y) return false;
-    if (x->accessor || y->accessor) return util_deep_refused("native accessor properties");
+    if (x.accessor || y->accessor) return util_deep_refused("native accessor properties");
     // Materializing a cyclic typed child can refresh its ancestor table.
     // Retain the values before that refresh replaces descriptor storage.
-    ScrDyn *xv = scr_dyn_retain(x->value), *yv = scr_dyn_retain(y->value);
+    ScrDyn *xv = scr_dyn_retain(x.value), *yv = scr_dyn_retain(y->value);
     bool same = util_deep_equal(xv, yv, skip, frame);
     scr_dyn_release(xv); scr_dyn_release(yv);
     if (!same) return false;

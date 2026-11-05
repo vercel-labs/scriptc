@@ -29,6 +29,9 @@ const cases = [
 ].flatMap((fixture) => ["native", "wasm32-wasi"].map((target) => ({ fixture, target })));
 test.for(cases)(
   "published $fixture runs statically on $target",
+  // Bundling three.js and building it with the sanitizer can pass the
+  // default 300 s on a busy runner, as in three.test.ts.
+  { timeout: 1_200_000 },
   async ({ fixture, target }, context) => {
     if (target === "wasm32-wasi" && !hasZig) context.skip();
     const dir = await mkdtemp("/tmp/scriptc-spatial-");

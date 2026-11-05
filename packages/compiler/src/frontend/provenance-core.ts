@@ -12,6 +12,7 @@ import {
 import { builtinModules } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { invalidateTrackedFilesystem } from "./input-tracker.js";
 import { sourceImportsOfFile } from "./module-syntax.js";
 import type { SourceFile } from "./ts7/ast-types.js";
 import type { Ts7SourceKind } from "./ts7/source-parser.js";
@@ -206,6 +207,9 @@ async function fetchSourceTree(repo: string, commit: string): Promise<string> {
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
+  // The tree appeared under this compile: anything it probed as missing
+  // before the extraction answers again from disk.
+  invalidateTrackedFilesystem();
   return dest;
 }
 

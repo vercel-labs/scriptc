@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8991-union-narrowed-field-read.ts"
+ ],
+ "diags": []
+}

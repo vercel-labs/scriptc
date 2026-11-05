@@ -1,0 +1,5 @@
+- **File watching:** `fs.watch` returns an `FSWatcher` whose `on`, `once`, `off`, and `close` take `change`, `rename`, `error`, and `close` listeners.
+  A listener may take the event name and the entry name, but the name arrives as a string (Node's default encoding), so a listener annotated with the `Buffer` arm of `@types/node`'s `change` overload has no lowering.
+  Watching a directory on macOS with a listener that reads the entry name is refused with `SC2020` because FSEvents is not implemented yet; file watches and listeners that ignore the name work on every target.
+- **Stat polling:** `fs.watchFile` polls the resolved path every `interval` milliseconds (default 5007) and calls its listener with `(current, previous)` `Stats`; `fs.unwatchFile` removes the last listener registered with that callback, or every listener when called without one.
+  The call must be a statement of its own, because the `StatWatcher` it returns in Node.js is not lowered, and `bigint: true` is refused.

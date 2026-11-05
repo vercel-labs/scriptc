@@ -15,6 +15,7 @@ import {
   vAdapters,
 } from "./shapes.js";
 import { mangleRecordRelease } from "../mangle.js";
+import { LOOP_SITE } from "./blocks.js";
 import { NullableUnions } from "./nullable-unions.js";
 import { InlineUnionFields } from "./inline-unions.js";
 
@@ -26,6 +27,10 @@ function declarationHost(
   const host: ShapeHost = {
     declare(decl) {
       declarations.push(decl);
+    },
+    cstr(text) {
+      declarations.push(`@cstr ${text}`);
+      return "@sc_cstr";
     },
     needOom() {},
     mapOps: (operands) => (operands.every((op) => op === "null") ? "null" : "@sc_map_ops"),
@@ -290,6 +295,19 @@ describe("inline release budgets", () => {
     const out = limited.slice(limited.indexOf("@large("));
     expect(out).not.toContain("@sc_rc_release_dyn(");
     expect(out.split("call void @scr_dyn_release(ptr %v)").length - 1).toBe(
+      INLINE_DYN_RELEASES_PER_FUNCTION + 1,
+    );
+  });
+
+  test("a function over the dyn budget keeps its in-loop sites inline", () => {
+    // Two sites emitted inside a loop, after more sites than the budget.
+    const large = body("large", INLINE_DYN_RELEASES_PER_FUNCTION + 1).replace(
+      "  ret void",
+      `  call void @sc_rc_release_dyn(ptr %v)${LOOP_SITE}\n  call void @sc_rc_release_dyn(ptr %v)${LOOP_SITE}\n  ret void`,
+    );
+    const limited = limitInlineReleases([large], "speed").join("\n");
+    expect(limited.split(`call void @sc_rc_release_dyn(ptr %v)${LOOP_SITE}`).length - 1).toBe(2);
+    expect(limited.split("call void @scr_dyn_release(ptr %v)\n").length - 1).toBe(
       INLINE_DYN_RELEASES_PER_FUNCTION + 1,
     );
   });

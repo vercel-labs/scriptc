@@ -10,3 +10,9 @@ console.log(direct({ b: 2 }, "b").value);
 
 var snap = require("./snapshot.cjs");
 console.log(typeof snap, snap.name, snap());
+console.log(require("./snapshot.cjs")());
+console.log(require("./reexport.cjs")());
+console.log(require("./split.cjs")());
+var viaReexport = require("./reexport.cjs");
+var viaSplit = require("./split.cjs");
+console.log(viaReexport.name, viaReexport(), viaSplit.name, viaSplit());

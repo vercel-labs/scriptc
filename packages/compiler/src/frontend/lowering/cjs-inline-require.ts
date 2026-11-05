@@ -465,10 +465,24 @@ export function wholeExportValue(
   if (whole === null || depth > 32) return null;
   const inner = inlineProgramRequireOf(lowerer, whole.rhs);
   if (inner !== null) return wholeExportValue(lowerer, inner.dep, blame, depth + 1);
-  // An identifier names a declaration of the exporting module (or a
-  // builtin global): reading it IS the export, exactly what requirer
-  // bindings alias to.
-  if (ts.isIdentifier(whole.rhs)) return lowerer.lowerExpr(whole.rhs);
+  if (ts.isIdentifier(whole.rhs)) {
+    // A source binding that is REASSIGNED in its module stores its VALUE in
+    // the snapshot global keyed by this statement (collectGlobals): Node's
+    // export keeps that storage, so requiring the module answers the
+    // snapshot, not the later binding value the identifier resolves to.
+    const slot = lowerer.globalsByDeclNode.get(whole.assign);
+    if (slot !== undefined)
+      return { kind: "varRef", localId: slot.id, type: slot.type, loc: locOf(blame) };
+    // A split require binding (`var m; m = require("./y")`) re-exports the
+    // module it names; the value is that module's whole export.
+    const split = splitRequireBindingOfIdent(lowerer, whole.rhs);
+    if (split !== null && wholeExportSymbolOfModule(lowerer, split.dep) !== null)
+      return wholeExportValue(lowerer, split.dep, blame, depth + 1);
+    // Otherwise the identifier names a declaration of the exporting module
+    // (or a builtin global): reading it IS the export, exactly what
+    // requirer bindings alias to.
+    return lowerer.lowerExpr(whole.rhs);
+  }
   if (ts.isClassExpression(whole.rhs)) {
     return lowerer.classValueRef(lowerer.lowerClassExpressionInfo(whole.rhs), blame);
   }

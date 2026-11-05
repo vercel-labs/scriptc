@@ -50,6 +50,9 @@ ScrNetSocket *scr_tls_connect_dyn(double port, ScrStr *host /*borrowed, nullable
  * picks it for an options literal that names the option, which links
  * scr_tls_identity.c; the plain walk keeps its fence. */
 ScrNetSocket *scr_tls_connect_dyn_identity(double port, ScrStr *host /*borrowed, nullable*/, const struct ScrDyn *opts /*borrowed, nullable*/, ScrClosure *cb /*moves, nullable*/); /* +1 or NULL+pending */
+/* The same walk with the runner installed (scr_tls_identity.c): the
+ * compiler selects it for an options value that names the option. */
+ScrNetSocket *scr_tls_identity_connect(double port, ScrStr *host /*borrowed, nullable*/, const struct ScrDyn *opts /*borrowed, nullable*/, ScrClosure *cb /*moves, nullable*/); /* +1 or NULL+pending */
 
 /* ── options.checkServerIdentity (scr_tls_identity.c) ─────────────────
  * The hook that builds Node's PeerCertificate and calls the user's
@@ -57,9 +60,6 @@ ScrNetSocket *scr_tls_connect_dyn_identity(double port, ScrStr *host /*borrowed,
  * knows how to build one, so scr_tls.c links without X.509 object code
  * (and without the certificate, the option keeps its fence). */
 void scr_tls_install_identity_runner(ScrDyn *(*runner)(ScrNetSocket *, ScrDyn *, const char *));
-/* https.request's literal-path carrier (the servername pattern): the
- * request that follows takes it. */
-void scr_tls_set_next_identity(const struct ScrDyn *fn /*borrowed*/);
 
 /* The TLSSocket member surface on the socket kind (all no-ops / honest
  * defaults on plain sockets): authorized answers Node's verify verdict

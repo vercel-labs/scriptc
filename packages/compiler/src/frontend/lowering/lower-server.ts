@@ -7563,34 +7563,10 @@ function lowerHttpClientCall(
         loc,
       });
     }
-    if (servername !== null) {
-      steps.push({
-        kind: "exprStmt",
-        expr: {
-          kind: "libCall",
-          fn: "https.nextServername",
-          args: [servername],
-          type: VOID,
-          loc,
-        },
-        loc,
-      });
-    }
-    if (identity !== null) {
-      // Node's constructor validates the option before it dials: a value
-      // that is not a function is the synchronous ERR_INVALID_ARG_TYPE.
-      steps.push({
-        kind: "exprStmt",
-        expr: {
-          kind: "libCall",
-          fn: "https.nextIdentity",
-          args: [identity],
-          type: VOID,
-          loc,
-        },
-        loc,
-      });
-    }
+    // options.servername and options.checkServerIdentity travel to the
+    // construction call as arguments (the call below), never through
+    // stored state: an options value that builds another https request
+    // while this one is being constructed keeps each request its own.
     steps.push({ kind: "varDecl", localId: local.id, init: request, loc });
     if (maxHeaderSize !== null) {
       steps.push({
@@ -7653,6 +7629,15 @@ function lowerHttpClientCall(
     reject ??= boolLit(true, loc); /* Node's default: verify */
     ca ??= strLit("", loc); /* none: /etc/ssl/cert.pem stands in for Node's roots */
     base.push(reject, ca);
+    if (identity !== null) {
+      // The checkServerIdentity form: the function (validated by the
+      // runtime call) and, whether the request also carries one, the
+      // servername — the option expects a string, and the flag says
+      // whether a name was given (absent leaves the host as the TLS name).
+      base.push(boolLit(servername !== null, loc), servername ?? strLit("", loc), identity);
+    } else if (servername !== null) {
+      base.push(servername);
+    }
   }
   if (agentVal !== null) base.push(agentVal);
   if (binding !== null) base.unshift(secureExpr());
@@ -7662,8 +7647,16 @@ function lowerHttpClientCall(
         ? "https.requestFn"
         : secure === true
           ? agentVal !== null
-            ? "https.requestAgent"
-            : "https.request"
+            ? identity !== null
+              ? "https.requestAgentTlsId"
+              : servername !== null
+                ? "https.requestAgentTls"
+                : "https.requestAgent"
+            : identity !== null
+              ? "https.requestTlsId"
+              : servername !== null
+                ? "https.requestTls"
+                : "https.request"
           : agentVal !== null
             ? "http.requestAgent"
             : "http.request";
@@ -7683,8 +7676,16 @@ function lowerHttpClientCall(
       ? "https.requestFnCb"
       : secure === true
         ? agentVal !== null
-          ? "https.requestAgentCb"
-          : "https.requestCb"
+          ? identity !== null
+            ? "https.requestAgentTlsIdCb"
+            : servername !== null
+              ? "https.requestAgentTlsCb"
+              : "https.requestAgentCb"
+          : identity !== null
+            ? "https.requestTlsIdCb"
+            : servername !== null
+              ? "https.requestTlsCb"
+              : "https.requestCb"
         : agentVal !== null
           ? "http.requestAgentCb"
           : "http.requestCb";

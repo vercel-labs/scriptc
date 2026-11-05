@@ -1817,7 +1817,10 @@ const RUNTIME_FEATURE_RULES = {
       "tls.sockGetCertificate",
       // options.checkServerIdentity's PeerCertificate argument: the
       // lowered forms select scr_tls_identity.c, which builds it here.
-      "https.nextIdentity",
+      "https.requestTlsId",
+      "https.requestTlsIdCb",
+      "https.requestAgentTlsId",
+      "https.requestAgentTlsIdCb",
       "tls.connectId",
       "tls.connectIdCb",
       "https.requestDynId",

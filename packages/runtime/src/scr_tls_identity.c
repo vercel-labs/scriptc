@@ -28,16 +28,32 @@ static void scr_tls_identity_install(void) {
   scr_tls_install_identity_runner(&scr_tls_identity_run);
 }
 
-/* https.request's literal-path step (the servername pattern): Node
- * validates the option where tls.connect reads it, a PRESENT key holding
- * anything but a function (undefined included) throwing now. */
-void scr_tls_identity_next(const ScrDyn *fn /*borrowed*/) {
-  if (fn->kind != SCR_DYN_FUNC) {
-    scr_dyn_prop_type_fail("options.checkServerIdentity", "of type function", fn);
-    return;
-  }
+/* https.request's literal-path entries (the compiler picks them for a
+ * literal that names the option): the request's own call carries the
+ * function, and this installs the runner the handshake calls. */
+ScrHttpClientReq *scr_tls_identity_https_request_tls(
+    ScrStr *host /*borrowed*/, double port, ScrStr *path /*borrowed*/,
+    ScrStr *method /*borrowed*/, double timeout_ms, ScrArr *header_pairs /*borrowed*/,
+    bool auto_end, bool reject_unauthorized, const char *ca /*borrowed, NULL = none*/,
+    size_t ca_len, bool has_servername, ScrStr *servername /*borrowed, nullable*/,
+    const ScrDyn *identity /*borrowed*/, ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn) {
   scr_tls_identity_install();
-  scr_tls_set_next_identity(fn);
+  return scr_https_request_tls(host, port, path, method, timeout_ms, header_pairs, auto_end,
+                               reject_unauthorized, ca, ca_len, has_servername, servername, identity,
+                               cb, fn);
+}
+
+ScrHttpClientReq *scr_tls_identity_https_request_agent_tls(
+    ScrStr *host /*borrowed*/, double port, ScrStr *path /*borrowed*/,
+    ScrStr *method /*borrowed*/, double timeout_ms, ScrArr *header_pairs /*borrowed*/,
+    bool auto_end, bool reject_unauthorized, const char *ca /*borrowed, NULL = none*/,
+    size_t ca_len, bool has_servername, ScrStr *servername /*borrowed, nullable*/,
+    const ScrDyn *identity /*borrowed*/, const ScrDyn *agent /*borrowed*/,
+    ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn) {
+  scr_tls_identity_install();
+  return scr_https_request_agent_tls(host, port, path, method, timeout_ms, header_pairs, auto_end,
+                                     reject_unauthorized, ca, ca_len, has_servername, servername,
+                                     identity, agent, cb, fn);
 }
 
 ScrNetSocket *scr_tls_identity_connect(double port, ScrStr *host /*borrowed, nullable*/,

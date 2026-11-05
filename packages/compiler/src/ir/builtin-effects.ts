@@ -412,7 +412,6 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "https.requestDynCb",
   // The checkServerIdentity forms validate the option (Node's
   // ERR_INVALID_ARG_TYPE for a present non-function).
-  "https.nextIdentity",
   "tls.connectId",
   "tls.connectIdCb",
   "https.requestDynId",
@@ -637,6 +636,16 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "https.requestAgentCb",
   "https.request",
   "https.requestCb",
+  // The option-carrying rows add options.checkServerIdentity's own
+  // validation (Node's ERR_INVALID_ARG_TYPE for a present non-function).
+  "https.requestTls",
+  "https.requestTlsCb",
+  "https.requestAgentTls",
+  "https.requestAgentTlsCb",
+  "https.requestTlsId",
+  "https.requestTlsIdCb",
+  "https.requestAgentTlsId",
+  "https.requestAgentTlsIdCb",
   // The URL-string form's parse, exactly http.requestUrl's (an
   // unparsable input, or a scheme that is not https).
   "https.requestUrl",

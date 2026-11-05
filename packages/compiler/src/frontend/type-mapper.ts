@@ -3935,7 +3935,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     isStdlibInterface("SharedArrayBuffer") ||
     isStdlibInterface("PropertyDescriptor") ||
     isStdlibInterface("ProcessVersions") ||
-    isStdlibInterface("ProcessRelease")
+    isStdlibInterface("ProcessRelease") ||
+    isStdlibInterface("ProcessReport")
   )
     return DYN;
   if (Object.values(BYTES_ELEMENT_NAME).some((name) => isStdlibInterface(`${name}Constructor`)))

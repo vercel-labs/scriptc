@@ -1781,6 +1781,32 @@ export function collectGlobals(
             !hasMemberExports
           ) &&
           cjsExportTargetLiteral(rhs, sf) === null;
+        // `module.exports = <identifier>` where the identifier's binding is
+        // REASSIGNED somewhere in its module (`var $gOPD = …; …; module.exports
+        // = $gOPD` — gopd's shape): Node copies the VALUE at this statement,
+        // so requirers must not read the live binding, which may change
+        // afterwards. Register one snapshot slot keyed by the statement,
+        // like the scalar and factory forms; the statement lowering assigns
+        // it and requirer aliases resolve to it
+        // (requireWholeExportSlotSymbolOf). A module that also attaches
+        // member exports to that object keeps the statement-level fence:
+        // those writes would have to reach the SAME object the snapshot
+        // holds.
+        if (ts.isIdentifier(rhs) && splitWholeBinding === null && !hasMemberExports) {
+          const vSym = lowerer.checker.getSymbolAtLocation(rhs);
+          const vDecl = vSym?.declarations.find(ts.isVariableDeclaration);
+          const vG = vSym ? lowerer.globalsBySymbol.get(vSym) : undefined;
+          if (vSym && vDecl && vG && vG.mutable && !bindingNeverReassigned(lowerer, vSym, vDecl)) {
+            const g: IrGlobal = {
+              id: `%g.${tag}exports`,
+              name: "exports",
+              type: vG.type,
+              mutable: false,
+            };
+            lowerer.globalsByDeclNode.set(cjs.expr, g);
+            lowerer.globalsList.push(g);
+          }
+        }
         if (cjsScalarLiteral(rhs) || fnValued || factoryValued) {
           const diagsBefore = lowerer.diags.length;
           try {

@@ -6089,6 +6089,16 @@ export class Lowerer {
     if (createdWhole) symbol = createdWhole;
     const createdMember = this.createRequireDestructuredExportSymbolOf(ident);
     if (createdMember) symbol = createdMember;
+    // A `require("./g")` binding whose target module exports ONE value
+    // that lives in the module's snapshot global (`module.exports =
+    // Object.getOwnPropertyDescriptor` — gopd's whole module — or the
+    // snapshot of an exported reassigned binding): tsgo's alias resolves
+    // PAST the export statement to the expression's own symbol (a stdlib
+    // declaration, or the live source binding), neither of which is
+    // Node's answer. Reconnect to the export= symbol that keys the
+    // snapshot.
+    const wholeSlot = this.requireWholeExportSlotSymbolOf(ident);
+    if (wholeSlot) symbol = wholeSlot;
     // tsgo synthesizes no expando symbol at a CJS MEMBER-EXPORT use site
     // (`common.GREETING` where the exporter attached GREETING with
     // `module.exports.GREETING = ...` — 5.9.3 answered the expando
@@ -6119,6 +6129,15 @@ export class Lowerer {
     // transform throws ReferenceError where tsc's emit would qualify —
     // lower-namespaces.ts); a no-op for programs without namespaces.
     fenceCrossBlockNsRef(this, ident, symbol);
+    // The reconnected export= symbol IS the snapshot's key: its declaration
+    // is the export statement, which is where globalOf reads the value.
+    // Chasing its alias would land on the exported EXPRESSION's symbol
+    // (a stdlib declaration, or the live source binding), which owns no
+    // storage here — the value Node's requirer sees is the snapshot.
+    if (wholeSlot) {
+      this.flushDeferred(wholeSlot);
+      return wholeSlot;
+    }
     if (symbol.flags & ts.SymbolFlags.Alias) {
       // SNAPSHOT aliases own storage keyed by the PRE-alias symbol
       // (`import x = N.y` of a mutable target — collectGlobals): the
@@ -6614,19 +6633,20 @@ export class Lowerer {
     return found;
   }
 
-  /** The represented single value behind a createRequire binding, or null
-   * when the target is a namespace/table module. Collection has already
-   * registered executable exports before entry-module uses lower, so the
-   * registries are the authority for whether the export= value exists in
-   * static storage or callable/class metadata. */
-  private createRequireWholeExportSymbolOf(ident: ts.Identifier): ts.Symbol | null {
-    const binding = this.checker.getSymbolAtLocation(ident);
-    const target = binding ? this.createRequireBindingTarget(binding) : null;
-    if (target === null) return null;
-    const moduleSym = this.checker.getSymbolAtLocation(target.dep);
-    let symbol = moduleSym?.getExports().get("export=" as ts.__String);
+  /** The module's `export=` symbol together with the whole-export
+   * statement it declares at, or null when the module's exports are not
+   * one top-level `module.exports = <value>` replacement. The statement is
+   * the key for represented single-value exports (`%g.<tag>exports` —
+   * collectGlobals): requirer aliases resolve to this symbol, whose
+   * declaration IS the statement, and globalOf's declaration-node
+   * fallback reads the value there. */
+  private wholeExportAssignmentOf(
+    dep: ts.SourceFile,
+  ): { symbol: ts.Symbol; assignment: ts.BinaryExpression } | null {
+    const moduleSym = this.checker.getSymbolAtLocation(dep);
+    const symbol = moduleSym?.getExports().get("export=" as ts.__String);
     if (!symbol) return null;
-    const wholeAssignment = symbol.declarations.find((d): d is ts.BinaryExpression => {
+    const assignment = symbol.declarations.find((d): d is ts.BinaryExpression => {
       if (
         !ts.isBinaryExpression(d) ||
         !ts.isExpressionStatement(d.parent) ||
@@ -6640,7 +6660,58 @@ export class Lowerer {
         cjsExportDiscardReason(d.parent) === null
       );
     });
-    if (wholeAssignment === undefined) return null;
+    return assignment === undefined ? null : { symbol, assignment };
+  }
+
+  /** A require-like binding of a module whose whole export is a value
+   * stored in the module's snapshot global: `module.exports =
+   * Object.getOwnPropertyDescriptor` (gopd's whole module — a stdlib
+   * member), a factory call, or an exported binding that is reassigned
+   * before the export. tsgo types the binding as an alias that resolves
+   * PAST the export statement to the expression's own symbol (the stdlib
+   * declaration, or the live source binding), so the ordinary alias chase
+   * lands on a symbol with no storage here. The snapshot global is the
+   * value Node's requirer sees, so reconnect the binding to the export=
+   * symbol that owns it. Identifier and class exports with no snapshot
+   * keep resolving straight to their declaration. */
+  private requireWholeExportSlotSymbolOf(ident: ts.Identifier): ts.Symbol | null {
+    const binding = this.checker.getSymbolAtLocation(ident);
+    if (!binding || !(binding.flags & ts.SymbolFlags.Alias)) return null;
+    const cached = this.requireWholeExportSlots.get(binding);
+    if (cached !== undefined) return cached;
+    const decl =
+      binding.declarations.find(ts.isVariableDeclaration) ??
+      binding.declarations.find(ts.isImportClause);
+    // Split bindings (`var m; m = require("./m")`) keep their own
+    // statement-position plumbing (cjs-inline-require.ts); other alias
+    // forms (named imports, import equals) have no module value here.
+    if (decl === undefined) return null;
+    if (ts.isVariableDeclaration(decl) && decl.initializer === undefined) return null;
+    let found: ts.Symbol | null = null;
+    const dep = this.localModuleBindingDepOf(ident);
+    const whole = dep === null ? null : this.wholeExportAssignmentOf(dep);
+    if (whole !== null && this.globalsByDeclNode.has(whole.assignment)) found = whole.symbol;
+    // Only the positive answer is cached: collection registers whole-export
+    // slots as it walks the exporting modules.
+    if (found !== null) this.requireWholeExportSlots.set(binding, found);
+    return found;
+  }
+
+  private readonly requireWholeExportSlots = new Map<ts.Symbol, ts.Symbol>();
+
+  /** The represented single value behind a createRequire binding, or null
+   * when the target is a namespace/table module. Collection has already
+   * registered executable exports before entry-module uses lower, so the
+   * registries are the authority for whether the export= value exists in
+   * static storage or callable/class metadata. */
+  private createRequireWholeExportSymbolOf(ident: ts.Identifier): ts.Symbol | null {
+    const binding = this.checker.getSymbolAtLocation(ident);
+    const target = binding ? this.createRequireBindingTarget(binding) : null;
+    if (target === null) return null;
+    const whole = this.wholeExportAssignmentOf(target.dep);
+    if (whole === null) return null;
+    let symbol = whole.symbol;
+    const wholeAssignment = whole.assignment;
     let rhs: ts.Expression = wholeAssignment.right;
     while (ts.isParenthesizedExpression(rhs)) rhs = rhs.expression;
     // A pure re-export (`module.exports = require("./core")`) is the inner

@@ -204,6 +204,35 @@ test("the zero-cost gate fails differing programs unless they match the signatur
   expect(verdict({}, true, ok, failed)).toEqual({ verdict: "build-error", fails: true });
 });
 
+test("the zero-cost gate lists a program the PR rewrote when the baseline cannot build it", () => {
+  const ok = { ok: true };
+  const failed = { ok: false, error: "SC1090" };
+  const verdict = (baseline: object, candidate: object, changedSource: boolean) =>
+    programVerdict({ baseline, candidate, artifacts: {}, allowed: false, changedSource });
+  expect(verdict(failed, ok, true)).toEqual({ verdict: "changed-by-pr", fails: false });
+  // The same failure without the change's own source is a regression.
+  expect(verdict(failed, ok, false)).toEqual({ verdict: "build-error", fails: true });
+  // The candidate must still build the source the PR provides.
+  expect(verdict(ok, failed, true)).toEqual({ verdict: "build-error", fails: true });
+  expect(
+    programLines({
+      id: "corpus/x.ts",
+      verdict: "changed-by-pr",
+      pr: "changed",
+      artifacts: {},
+      baselineError: "SC1090: nope",
+    }),
+  ).toEqual([
+    "PR-change  corpus/x.ts  source changed by the PR, built from the candidate checkout; " +
+      "the baseline compiler cannot build it, so the gate did not compare it",
+    "           baseline:",
+    "             SC1090: nope",
+  ]);
+  expect(programLines({ id: "corpus/y.ts", verdict: "removed-by-pr", artifacts: {} })).toEqual([
+    "PR-remove  corpus/y.ts  the candidate checkout removed it",
+  ]);
+});
+
 test("the zero-cost gate classifies runtime-only and nondeterministic differences", () => {
   const ok = { ok: true };
   const exeOnly = { ir: { identical: true }, llvm: { identical: true }, exe: { identical: false } };

@@ -1,0 +1,25 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8820-island-cjs-default-binding/main.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "Could not find a declaration file for module 'hljs/lib/core.js'. '<repo>/tests/corpus/8820-island-cjs-default-binding/node_modules/hljs/lib/core.js' implicitly has an 'any' type.\n  Try `npm i --save-dev @types/hljs` if it exists or add a new declaration (.d.ts) file containing `declare module 'hljs/lib/core.js';`",
+   "loc": {
+    "file": "<repo>/tests/corpus/8820-island-cjs-default-binding/main.ts",
+    "start": 318,
+    "end": 336
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Could not find a declaration file for module 'hljs/lib/languages/easy.js'. '<repo>/tests/corpus/8820-island-cjs-default-binding/node_modules/hljs/lib/languages/easy.js' implicitly has an 'any' type.\n  Try `npm i --save-dev @types/hljs` if it exists or add a new declaration (.d.ts) file containing `declare module 'hljs/lib/languages/easy.js';`",
+   "loc": {
+    "file": "<repo>/tests/corpus/8820-island-cjs-default-binding/main.ts",
+    "start": 355,
+    "end": 383
+   }
+  }
+ ]
+}

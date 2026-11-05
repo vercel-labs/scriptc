@@ -1,0 +1,9 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8830-cjs-whole-export-default-import/inst.cjs",
+  "<repo>/tests/corpus/8830-cjs-whole-export-default-import/fn.cjs",
+  "<repo>/tests/corpus/8830-cjs-whole-export-default-import/wrap.cjs",
+  "<repo>/tests/corpus/8830-cjs-whole-export-default-import/main.ts"
+ ],
+ "diags": []
+}

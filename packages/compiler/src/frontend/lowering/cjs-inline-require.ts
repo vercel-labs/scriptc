@@ -420,6 +420,11 @@ export function cjsWholeExportValueOf(
 export function cjsNamespaceModule(lowerer: Lowerer, dep: ts.SourceFile, depth = 0): boolean {
   const whole = cjsWholeExportValueOf(dep);
   if (whole === null) return true;
+  // Members attached after the replacement (`module.exports = class {};
+  // module.exports.Sub = …`) live on the same root object Node exposes, so
+  // the module still answers member reads from its export table even though
+  // the root itself is one value.
+  if (cjsHasLiveMemberExports(lowerer, dep)) return true;
   const inner = inlineProgramRequireOf(lowerer, whole.rhs);
   return inner !== null && depth < 32 && cjsNamespaceModule(lowerer, inner.dep, depth + 1);
 }

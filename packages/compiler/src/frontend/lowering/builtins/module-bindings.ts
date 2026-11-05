@@ -4,6 +4,7 @@ import { type Lowerer } from "../lowerer.js";
 import {
   canonicalBuiltinModule,
   isCreateRequireBinding7,
+  isJsSourceFile,
   npmStaticDepSf7,
   requireSpecOf,
   resolveImport,
@@ -271,8 +272,32 @@ export function builtinNamespaceDestructureModuleOf(
  * LOWERS (import.meta has no value representation): it only names the
  * file whose directory anchors the returned require's relative
  * resolution, and every supported spelling names the call's own file. */
+/** `undefined` in either spelling, through casts. */
+function isUndefinedValue(expr: ts.Expression): boolean {
+  const e = stripTypeCasts(expr);
+  return ts.isIdentifier(e) ? e.text === "undefined" : ts.isVoidExpression(e);
+}
+
+/** True for a read of the createRequire import binding itself (the value
+ * tested by a conditional initializer). */
+function isCreateRequireImportValue(lowerer: Lowerer, expr: ts.Expression): boolean {
+  const e = stripTypeCasts(expr);
+  if (!ts.isIdentifier(e)) return false;
+  const bi = builtinImportOf(lowerer, e);
+  return bi !== null && bi.module === "module" && bi.member === "createRequire";
+}
+
 function createRequireBaseCallOf(lowerer: Lowerer, expr: ts.Expression): ts.CallExpression | null {
   const e = stripTypeCasts(expr);
+  // `const require = createRequire ? createRequire(import.meta.url) :
+  // undefined`: the import binding is always a function, so the true arm
+  // is the value. Only that polarity folds; with the arms swapped the
+  // binding is undefined at run time.
+  if (ts.isConditionalExpression(e)) {
+    if (!isCreateRequireImportValue(lowerer, e.condition) || !isUndefinedValue(e.whenFalse))
+      return null;
+    return createRequireBaseCallOf(lowerer, e.whenTrue);
+  }
   if (!ts.isCallExpression(e) || e.questionDotToken) return null;
   if (!ts.isIdentifier(e.expression)) return null;
   const bi = builtinImportOf(lowerer, e.expression);
@@ -292,6 +317,117 @@ function createRequireBaseCallOf(lowerer: Lowerer, expr: ts.Expression): ts.Call
   return null;
 }
 
+/** The variable declaration `ident` names, following the import alias of
+ * an importing module, or null. */
+function createRequireBindingDeclOf(
+  lowerer: Lowerer,
+  ident: ts.Identifier,
+): ts.VariableDeclaration | null {
+  let symbol = lowerer.checker.getSymbolAtLocation(ident);
+  if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0)
+    symbol = lowerer.checker.getAliasedSymbol(symbol);
+  const decl = symbol ? symbol.declarations[0] : undefined;
+  return decl !== undefined && ts.isVariableDeclaration(decl) ? decl : null;
+}
+
+/** True for a binding destructured from the node:module namespace —
+ * `const { createRequire: cr } = require("node:module")` — the CommonJS
+ * twin of the named import: a factory that makes a require over a
+ * run-time base. */
+export function createRequireFactoryBinding(lowerer: Lowerer, ident: ts.Identifier): boolean {
+  if (!isJsSourceFile(ts.getSourceFileOfNode(ident))) return false;
+  const symbol = lowerer.checker.getSymbolAtLocation(ident);
+  const decl = symbol ? symbol.declarations[0] : undefined;
+  if (decl === undefined || !ts.isBindingElement(decl)) return false;
+  if (decl.dotDotDotToken !== undefined || decl.initializer !== undefined) return false;
+  if (!ts.isIdentifier(decl.name)) return false;
+  const name = decl.propertyName ?? decl.name;
+  if (!ts.isIdentifier(name) || name.text !== "createRequire") return false;
+  if (!ts.isObjectBindingPattern(decl.parent)) return false;
+  const varDecl = decl.parent.parent;
+  if (
+    !ts.isVariableDeclaration(varDecl) ||
+    varDecl.initializer === undefined ||
+    !ts.isVariableDeclarationList(varDecl.parent) ||
+    (varDecl.parent.flags & ts.NodeFlags.Const) === 0
+  )
+    return false;
+  const call = stripTypeCasts(varDecl.initializer);
+  if (!ts.isCallExpression(call)) return false;
+  const cr = createRequireSpecOf(lowerer, call);
+  return cr !== null && cr.spec !== null && canonicalBuiltinModule(cr.spec) === "module";
+}
+
+/** True when `expr` evaluates to a createRequire-made require whose base
+ * is a RUN-TIME value — `createRequire(from)`, through a factory binding
+ * (`cr(rootFile)`), or a stable binding over one. No file anchors the
+ * returned require's resolution, so uses lower to a deferred run-time
+ * fence rather than a static resolution. JavaScript sources only;
+ * TypeScript sources keep the refusal. */
+export function createRequireRuntimeBaseOf(lowerer: Lowerer, expr: ts.Expression): boolean {
+  if (!isJsSourceFile(ts.getSourceFileOfNode(expr))) return false;
+  const e = stripTypeCasts(expr);
+  if (ts.isCallExpression(e)) {
+    if (e.questionDotToken || !ts.isIdentifier(stripTypeCasts(e.expression))) return false;
+    const callee = stripTypeCasts(e.expression) as ts.Identifier;
+    // `cr(base)` — the factory call IS the run-time-base loader, so
+    // `cr(base)(spec)` reaches the loader through it.
+    if (createRequireFactoryBinding(lowerer, callee)) return true;
+    if (!isCreateRequireImportValue(lowerer, callee)) return false;
+    return createRequireBaseCallOf(lowerer, e) === null;
+  }
+  if (!ts.isIdentifier(e)) return false;
+  const decl = createRequireBindingDeclOf(lowerer, e);
+  if (
+    decl === null ||
+    decl.initializer === undefined ||
+    !ts.isIdentifier(decl.name) ||
+    !ts.isVariableDeclarationList(decl.parent) ||
+    (decl.parent.flags & ts.NodeFlags.Const) === 0
+  )
+    return false;
+  const init = stripTypeCasts(decl.initializer);
+  if (ts.isConditionalExpression(init)) return false;
+  if (!ts.isCallExpression(init) || init.questionDotToken) return false;
+  const callee = stripTypeCasts(init.expression);
+  if (!ts.isIdentifier(callee)) return false;
+  if (createRequireFactoryBinding(lowerer, callee)) return true;
+  return (
+    isCreateRequireImportValue(lowerer, callee) && createRequireBaseCallOf(lowerer, init) === null
+  );
+}
+
+/** True for the destructuring declaration `const { createRequire: cr } =
+ * require("node:module")` (or `= <loader>("module")`): the factory
+ * binding is compile-time plumbing, and its calls lower through
+ * createRequireFactoryBinding. */
+export function createRequireFactoryDecl(
+  lowerer: Lowerer,
+  nameNode: ts.Node,
+  init: ts.Expression | undefined,
+): boolean {
+  if (init === undefined || !ts.isObjectBindingPattern(nameNode)) return false;
+  if (!isJsSourceFile(ts.getSourceFileOfNode(nameNode))) return false;
+  const varDecl = nameNode.parent;
+  if (
+    !ts.isVariableDeclaration(varDecl) ||
+    varDecl.initializer === undefined ||
+    !ts.isVariableDeclarationList(varDecl.parent) ||
+    (varDecl.parent.flags & ts.NodeFlags.Const) === 0
+  )
+    return false;
+  for (const element of nameNode.elements.nodes) {
+    if (element.dotDotDotToken !== undefined || element.initializer !== undefined) return false;
+    const name = element.propertyName ?? element.name;
+    if (!ts.isIdentifier(name) || name.text !== "createRequire") return false;
+    if (!ts.isIdentifier(element.name)) return false;
+  }
+  const call = stripTypeCasts(init);
+  if (!ts.isCallExpression(call) || call.questionDotToken) return false;
+  const cr = createRequireSpecOf(lowerer, call);
+  return cr !== null && cr.spec !== null && canonicalBuiltinModule(cr.spec) === "module";
+}
+
 /** True for `const require = createRequire(import.meta.url)` — the
  * binding is compile-time plumbing (each call through it resolves per
  * site) with no storage and no code; both declaration walks skip by
@@ -302,22 +438,21 @@ export function createRequireBindingDecl(
   nameNode: ts.Node,
   init: ts.Expression | undefined,
 ): boolean {
-  if (
-    !ts.isIdentifier(nameNode) ||
-    init === undefined ||
-    createRequireBaseCallOf(lowerer, init) === null
-  )
-    return false;
+  if (!ts.isIdentifier(nameNode) || init === undefined) return false;
   // Preserve const loaders acquired through CommonJS member/destructure
   // aliases, which builtinImportOf also recognizes. Mutable syntax uses
   // preflight's narrower import provenance and whole-file stability proof.
   const decl = nameNode.parent;
-  if (
+  const isConst =
     ts.isVariableDeclaration(decl) &&
     ts.isVariableDeclarationList(decl.parent) &&
-    (decl.parent.flags & ts.NodeFlags.Const) !== 0
-  )
-    return true;
+    (decl.parent.flags & ts.NodeFlags.Const) !== 0;
+  if (createRequireBaseCallOf(lowerer, init) === null) {
+    // A run-time base has no build-time resolution: the binding is
+    // erased and every use lowers to the deferred fence.
+    return isConst && createRequireRuntimeBaseOf(lowerer, init);
+  }
+  if (isConst) return true;
   return isCreateRequireBinding7(lowerer.program, nameNode);
 }
 
@@ -335,7 +470,16 @@ export function createRequireCalleeFileOf(
     return createRequireBaseCallOf(lowerer, e) !== null ? ts.getSourceFileOfNode(e) : null;
   }
   if (!ts.isIdentifier(e)) return null;
-  const symbol = lowerer.checker.getSymbolAtLocation(e);
+  // A run-time base anchors nothing at build time: no static resolution
+  // through the loader (its uses take the deferred fence instead).
+  if (createRequireRuntimeBaseOf(lowerer, e)) return null;
+  let symbol = lowerer.checker.getSymbolAtLocation(e);
+  // An importing module reaches the loader through its export alias
+  // (`import { __require as require } from "./chunk"`): preflight proves
+  // those uses are the same supported calls, and the loader's own file
+  // anchors resolution either way.
+  if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0)
+    symbol = lowerer.checker.getAliasedSymbol(symbol);
   const decl = symbol ? symbol.declarations[0] : undefined;
   if (!decl || !ts.isVariableDeclaration(decl) || decl.initializer === undefined) return null;
   return createRequireBindingDecl(lowerer, decl.name, decl.initializer)

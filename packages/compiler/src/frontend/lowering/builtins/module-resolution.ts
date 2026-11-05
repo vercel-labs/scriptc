@@ -41,6 +41,8 @@ import {
   createRequireSpecOf,
   createRequireProgramModuleOf,
   createRequireCalleeFileOf,
+  createRequireFactoryBinding,
+  createRequireRuntimeBaseOf,
 } from "./module-bindings.js";
 import { stripTypeCasts } from "./arguments.js";
 import { keyedHelperName } from "../stable-names.js";
@@ -221,6 +223,14 @@ export function createRequireResolveValue(
   loc: SrcLoc,
 ): IrExpr {
   const baseFile = createRequireCalleeFileOf(lowerer, access.expression);
+  if (baseFile === null) {
+    // A run-time base resolves at run time: the value throws when called.
+    if (
+      isJsSourceFile(ts.getSourceFileOfNode(access)) &&
+      createRequireRuntimeBaseOf(lowerer, access.expression)
+    )
+      return createRequireResolveFenceValue(lowerer, access, loc);
+  }
   if (baseFile === null || !isJsSourceFile(ts.getSourceFileOfNode(access))) {
     lowerer.noLowering(
       "createRequire's require.resolve as a value",
@@ -262,16 +272,20 @@ export function createRequireResolveValue(
   };
 }
 
-/** A createRequire loader's `resolve.paths` read as a value in JavaScript
- * source: a function that throws the fence when called. */
+/** A createRequire loader's `resolve` (or `resolve.paths`) read as a value
+ * in JavaScript source where the compiled graph cannot back it: a function
+ * that throws the fence when called. */
 export function createRequireResolveFenceValue(
   lowerer: Lowerer,
   access: ts.PropertyAccessExpression,
   loc: SrcLoc,
 ): IrExpr {
-  const surface = "createRequire's require.resolve.paths as a value";
-  const hint =
-    'call it with a string literal (require.resolve.paths("<specifier>")), which resolves at build time';
+  const paths = access.name.text === "paths";
+  const surface = `createRequire's require.resolve${paths ? ".paths" : ""} as a value`;
+  const runtimeBase = createRequireRuntimeBaseOf(lowerer, access.expression);
+  const hint = runtimeBase
+    ? "createRequire needs this file (import.meta.url or __filename), which anchors build-time resolution"
+    : `call it with a string literal (require.resolve${paths ? ".paths" : ""}("<specifier>")), which resolves at build time`;
   if (!isJsSourceFile(ts.getSourceFileOfNode(access))) lowerer.noLowering(surface, access, hint);
   const name = keyedHelperName(lowerer, "%createRequire.fence", `${loc.file}:${loc.start}`);
   if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
@@ -280,7 +294,15 @@ export function createRequireResolveFenceValue(
       params: [],
       locals: [],
       returnType: DYN,
-      body: [createRequireFence(lowerer, surface, access, hint)],
+      body: [
+        createRequireFence(
+          lowerer,
+          surface,
+          access,
+          hint,
+          runtimeBase ? "dynamic-require" : undefined,
+        ),
+      ],
       loc,
     });
   }
@@ -288,6 +310,90 @@ export function createRequireResolveFenceValue(
     kind: "dynFrom",
     value: { kind: "closure", fnName: name, captures: [], type: funcOf([], DYN), loc },
     fnName: access.name.text,
+    type: DYN,
+    loc,
+  };
+}
+
+/** A createRequire loader read as a value in JavaScript source (stored in
+ * an object, passed on, returned): a require function over the runtime
+ * resolver. Calling it resolves its request like Node up to the compiled
+ * graph's boundary, where a specifier the build did not compile throws the
+ * SC2020 fence — the same deferred class as a computed-specifier call. */
+export function createRequireLoaderValue(
+  lowerer: Lowerer,
+  ident: ts.Identifier,
+  loc: SrcLoc,
+): IrExpr | null {
+  const baseFile = createRequireCalleeFileOf(lowerer, ident);
+  if (baseFile === null) {
+    // A loader over a run-time base cannot resolve against the compiled
+    // graph: its one value form is the fence, thrown when called. The
+    // destructured factory binding reads as a function the same way.
+    if (!isJsSourceFile(ts.getSourceFileOfNode(ident))) return null;
+    if (!createRequireRuntimeBaseOf(lowerer, ident) && !createRequireFactoryBinding(lowerer, ident))
+      return null;
+    return createRequireFenceFunctionValue(lowerer, ident, ident.text, loc);
+  }
+  if (!isJsSourceFile(ts.getSourceFileOfNode(ident))) return null;
+  const name = keyedHelperName(lowerer, "%createRequire.loader", `${loc.file}:${loc.start}`);
+  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+    const call: IrExpr = {
+      kind: "libCall",
+      fn: "module.requireComputed",
+      args: [
+        varRef("request", DYN, loc),
+        ...computedRequireArgs(lowerer, "createRequire's require", ident, baseFile),
+      ],
+      type: DYN,
+      loc,
+    };
+    lowerer.liftedFns.push({
+      name,
+      params: [{ localId: "request", name: "request", type: DYN }],
+      locals: [{ id: "request", name: "request", type: DYN, mutable: false }],
+      returnType: DYN,
+      body: [{ kind: "return", value: call, loc }],
+      loc,
+    });
+  }
+  return {
+    kind: "dynFrom",
+    value: { kind: "closure", fnName: name, captures: [], type: funcOf([DYN], DYN), loc },
+    fnName: ident.text,
+    type: DYN,
+    loc,
+  };
+}
+
+/** A createRequire-made require over a RUN-TIME base as a value: unlike a
+ * loader anchored at this file, no build-time resolution can back it, so
+ * the value is a function that throws the fence when called (typeof still
+ * reads "function", stores round-trip it). */
+function createRequireFenceFunctionValue(
+  lowerer: Lowerer,
+  node: ts.Node,
+  nameText: string,
+  loc: SrcLoc,
+): IrExpr {
+  const surface = "createRequire's require over a run-time base";
+  const hint =
+    "createRequire needs this file (import.meta.url or __filename), which anchors build-time resolution";
+  const name = keyedHelperName(lowerer, "%createRequire.fenceLoader", `${loc.file}:${loc.start}`);
+  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+    lowerer.liftedFns.push({
+      name,
+      params: [{ localId: "request", name: "request", type: DYN }],
+      locals: [{ id: "request", name: "request", type: DYN, mutable: false }],
+      returnType: DYN,
+      body: [createRequireFence(lowerer, surface, node, hint, "dynamic-require")],
+      loc,
+    });
+  }
+  return {
+    kind: "dynFrom",
+    value: { kind: "closure", fnName: name, captures: [], type: funcOf([DYN], DYN), loc },
+    fnName: nameText,
     type: DYN,
     loc,
   };
@@ -333,7 +439,27 @@ export function lowerCreateRequireCall(
   loc: SrcLoc,
 ): IrExpr | null {
   const cr = createRequireSpecOf(lowerer, call);
-  if (cr === null) return null;
+  if (cr === null) {
+    // A createRequire-made require with no build-time base: its use is a
+    // run-time require over a base the compiled graph cannot anchor.
+    if (!isJsSourceFile(ts.getSourceFileOfNode(call))) return null;
+    const callee = stripTypeCasts(call.expression);
+    if (ts.isIdentifier(callee) && createRequireFactoryBinding(lowerer, callee)) {
+      // `cr(base)` — the factory call yields the loader itself.
+      return createRequireFenceFunctionValue(lowerer, call, callee.text, loc);
+    }
+    if (createRequireRuntimeBaseOf(lowerer, callee)) {
+      return deferredCreateRequireThrow(
+        lowerer,
+        call,
+        "createRequire's require over a run-time base",
+        "createRequire needs this file (import.meta.url or __filename), which anchors build-time resolution",
+        loc,
+        "dynamic-require",
+      );
+    }
+    return null;
+  }
   if (cr.spec === null) {
     const args = call.arguments.nodes;
     const surface = "createRequire's require with a computed specifier or this argument shape";
@@ -614,6 +740,22 @@ export function lowerRequireResolveCall(lowerer: Lowerer, call: ts.CallExpressio
     pathsCall = true;
   } else {
     return null;
+  }
+  // A run-time-base loader's query: the anchor lives at run time, so the
+  // compiled graph cannot answer it. Its arguments run, then it throws.
+  if (
+    call.questionDotToken === undefined &&
+    createRequireRuntimeBaseOf(lowerer, receiver) &&
+    isJsSourceFile(ts.getSourceFileOfNode(call))
+  ) {
+    const surface = pathsCall ? "require.resolve.paths" : "require.resolve";
+    return deferredCreateRequireThrow(
+      lowerer,
+      call,
+      `createRequire's ${surface} over a run-time base`,
+      "createRequire needs this file (import.meta.url or __filename), which anchors build-time resolution",
+      locOf(call),
+    );
   }
   const baseFile = requireResolverBaseFile(lowerer, receiver);
   if (baseFile === null) return null;

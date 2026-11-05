@@ -189,6 +189,7 @@ import {
   requireEarlyReference,
   requireSpecOf,
 } from "../program.js";
+import { callableDeleteKey } from "./callable-properties.js";
 import { isStrictCode } from "./strict-mode.js";
 import {
   COMPOUND_ASSIGN_OPS,
@@ -212,7 +213,7 @@ import {
   nsWritableTarget,
   trapDeclRootOf,
 } from "./lower-namespaces.js";
-import { expandoWritableTarget, lowerExpandoAssignStmt } from "./lower-expando.js";
+import { fenceReadonlyExpandoWrite } from "./lower-expando.js";
 import {
   type ForOfIterProjection,
   lowerForOfArrayIter,
@@ -8621,9 +8622,9 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
     }
   }
   if (
-    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
     obj.type.kind === "func" &&
-    lowerer.dynConvertible(obj.type)
+    lowerer.dynConvertible(obj.type) &&
+    (isJsSourceFile(ts.getSourceFileOfNode(expr)) || callableDeleteKey(lowerer, target))
   ) {
     obj = lowerer.coerceToExpected(obj, DYN);
   }
@@ -9465,13 +9466,11 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
       const callableWrite = lowerNativeFunctionAssignment(lowerer, expr);
       if (callableWrite) return { kind: "exprStmt", expr: callableWrite, loc: locOf(expr) };
       // Expando function members (`foo.bar = 12`, `foo[SYM] = v` on a
-      // module-level function/callable const): the member's module
-      // global (lower-expando.ts) — claimed by symbol identity before
-      // any receiver-shape path.
-      {
-        const ex = lowerExpandoAssignStmt(lowerer, expr);
-        if (ex) return ex;
-      }
+      // module-level function/callable const): the write is the closure's
+      // own-property table store, like any other callable member; the
+      // read-only function members keep their fault fence.
+      if (ts.isPropertyAccessExpression(expr.left) || ts.isElementAccessExpression(expr.left))
+        fenceReadonlyExpandoWrite(lowerer, expr.left);
       {
         const dereferenced = lowerDereferencedElementWrite(lowerer, expr);
         if (dereferenced) return dereferenced;
@@ -10181,11 +10180,10 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
       if (ts.isPropertyAccessExpression(expr.left)) {
         // `N.x += v` — the namespace-qualified spelling of a module-
         // global compound assign (nsWritableTarget resolves the member's
-        // global; everything else keeps the field path). Expando
-        // function members (`foo.count += 1`) are module globals too.
+        // global; everything else keeps the field path). Expando function
+        // members (`foo.count += 1`) are callable-member table data.
         if (!expr.left.questionDotToken) {
-          const exT = expandoWritableTarget(lowerer, expr.left);
-          if (exT) return lowerCompoundToTarget(lowerer, expr, compound, exT);
+          fenceReadonlyExpandoWrite(lowerer, expr.left);
           const nsT = nsWritableTarget(lowerer, expr.left);
           if (nsT) return lowerCompoundToTarget(lowerer, expr, compound, nsT);
         }
@@ -10217,9 +10215,11 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
     if (ts.isPropertyAccessExpression(expr.operand) || ts.isElementAccessExpression(expr.operand)) {
       fenceDatePrototypeWrite(lowerer, expr.operand);
       // Statement and value positions share ToNumeric and reference order.
-      // Namespace/expando globals retain their direct binding path below.
+      // Namespace globals retain their direct binding path below.
+      if (ts.isPropertyAccessExpression(expr.operand))
+        fenceReadonlyExpandoWrite(lowerer, expr.operand);
       const binding = ts.isPropertyAccessExpression(expr.operand)
-        ? (expandoWritableTarget(lowerer, expr.operand) ?? nsWritableTarget(lowerer, expr.operand))
+        ? nsWritableTarget(lowerer, expr.operand)
         : null;
       if (binding) return lowerIncDecToTarget(lowerer, expr, binding);
       return {

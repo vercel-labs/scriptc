@@ -272,5 +272,10 @@ void scr_webstream_install(void);
 ScrDyn *scr_webstream_class(double kind);
 /* `value instanceof <class>` for those classes (value borrowed). */
 bool scr_webstream_instanceof(ScrDyn *value, double kind);
+/* `ReadableStream.from(iterable)` (webstream.from): the class's static,
+ * which steps a synchronous or asynchronous iterable, a compiled generator
+ * among them; +1. The call also counts as a runtime iterator step, so a
+ * program that passes a generator here registers its member getters. */
+ScrDyn *scr_webstream_from(ScrDyn *iterable);
 
 #endif /* SCR_GENERATOR_H */

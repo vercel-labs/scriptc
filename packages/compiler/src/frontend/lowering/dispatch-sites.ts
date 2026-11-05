@@ -25,6 +25,9 @@ const RUNTIME_STEP_LIB_FNS: ReadonlySet<string> = new Set([
   "dyn.fromEntries",
   "weakMap.new",
   "weakSet.new",
+  // ReadableStream.from steps the iterable it is given, a compiled
+  // generator among them.
+  "webstream.from",
 ]);
 
 /** What one function's body holds for the class dispatch pass and its

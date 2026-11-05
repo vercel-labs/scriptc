@@ -53,9 +53,6 @@ export const NODE_GLOBALS_WITHOUT_NATIVE: ReadonlySet<string> = new Set([
   "PerformanceObserver",
   "PerformanceObserverEntryList",
   "PerformanceResourceTiming",
-  "ReadableByteStreamController",
-  "ReadableStreamBYOBReader",
-  "ReadableStreamBYOBRequest",
   "URLPattern",
   "WebSocket",
 ]);
@@ -79,9 +76,6 @@ const HOST_GLOBAL_LENGTHS: ReadonlyMap<string, number> = new Map([
   ["PerformanceObserver", 1],
   ["PerformanceObserverEntryList", 0],
   ["PerformanceResourceTiming", 0],
-  ["ReadableByteStreamController", 0],
-  ["ReadableStreamBYOBReader", 1],
-  ["ReadableStreamBYOBRequest", 0],
   ["URLPattern", 0],
   ["WebSocket", 1],
 ]);

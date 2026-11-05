@@ -114,6 +114,45 @@ console.log(
   ordered.listenerCount("line"),
   ordered.listenerCount("pause"),
 );
+// The argument still evaluates even when it names no event: Node runs an
+// expression typed undefined (or null) for its side effects and its throws.
+let evaluated = 0;
+const undefinedCall = (): undefined => {
+  evaluated += 1;
+  return undefined;
+};
+const nullCall = (): null => {
+  evaluated += 1;
+  return null;
+};
+console.log(
+  "offAll undefined call",
+  ordered.removeAllListeners(undefinedCall()) === ordered,
+  evaluated,
+  ordered.listenerCount("line"),
+  ordered.listenerCount("pause"),
+);
+console.log(
+  "offAll null call",
+  ordered.removeAllListeners(nullCall() as unknown as undefined) === ordered,
+  evaluated,
+  ordered.listenerCount("line"),
+  ordered.listenerCount("pause"),
+);
+try {
+  const throws = (): undefined => {
+    throw new Error("removeAllListeners argument");
+  };
+  ordered.removeAllListeners(throws());
+  console.log("offAll throwing argument", "no throw");
+} catch (err) {
+  console.log("offAll throwing argument", (err as Error).message);
+}
+console.log(
+  "offAll after throws",
+  ordered.listenerCount("line"),
+  ordered.listenerCount("pause"),
+);
 console.log(
   "offAll null",
   ordered.removeAllListeners(null as unknown as undefined) === ordered,

@@ -795,9 +795,28 @@ export function lowerReadlineMethodCall(
     // Node removes every event only for the NO-argument call
     // (`arguments.length === 0`); an explicit undefined (or null, keyed as
     // "null") names an event no readline interface registers, so nothing
-    // leaves and the call answers the interface.
+    // leaves and the call answers the interface. The argument still
+    // evaluates, after the receiver and before the call returns: an
+    // expression typed undefined can be a call that throws or has side
+    // effects, and Node runs it.
     if (arg !== undefined && isNullishArg(lowerer, arg)) {
-      return lowerRlCall(lowerer, access, (recv) => recv);
+      const recvLocal = lowerer.declareHiddenLocal("%readlineReceiver", F64);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          {
+            kind: "varDecl",
+            localId: recvLocal.id,
+            init: receiver(),
+            loc,
+          },
+          // A DYN slot: a null answers a wrapped unit, not a bare null.
+          { kind: "exprStmt", expr: lowerer.lowerExprExpecting(arg, DYN), loc: locOf(arg) },
+        ],
+        result: { kind: "varRef", localId: recvLocal.id, type: F64, loc },
+        type: F64,
+        loc,
+      };
     }
     const event = arg === undefined ? null : literalEvent(lowerer, name, arg);
     return lowerRlChainable(lowerer, call, access, loc, (recv) => ({

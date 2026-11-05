@@ -4924,6 +4924,7 @@ export class Lowerer {
     "cjsWholeExportSymbols",
     "cjsLiveMemberExports",
     "cjsNamespaces",
+    "runtimeExports",
     "createRequireBindingTargets",
     "createRequireElementTargets",
     "computedGlobalReads",
@@ -5874,6 +5875,10 @@ export class Lowerer {
     { names: ReadonlySet<string>; assignedLater: ReadonlySet<string> | "all" }
   >();
 
+  /** The runtime export names of each module (runtimeExportNames): a pure
+   * function of the module graph, shared by every namespace key census. */
+  private readonly runtimeExports = new Map<ts.SourceFile, Set<string>>();
+
   cjsNamespaceOf(dep: ts.SourceFile): {
     names: ReadonlySet<string>;
     assignedLater: ReadonlySet<string> | "all";
@@ -5898,6 +5903,44 @@ export class Lowerer {
       this.cjsNamespaces.set(dep, namespace);
     }
     return namespace;
+  }
+
+  /** The runtime exports of a module: its own value exports except the
+   * names a type-only export declaration forwards, plus the runtime exports
+   * of every `export *` target. TypeScript's resolved export set also lists
+   * the names behind `export type *` and `export type { … }`; those carry no
+   * runtime binding, so a namespace key census must not take them from the
+   * resolved set alone. The set is a pure function of the module graph and
+   * is memoized; it is filled before recursing so `export *` cycles end. */
+  runtimeExportNames(source: ts.SourceFile): ReadonlySet<string> {
+    const cached = this.runtimeExports.get(source);
+    if (cached !== undefined) return cached;
+    const names = new Set<string>();
+    this.runtimeExports.set(source, names);
+    const moduleSymbol = this.checker.getSymbolAtLocation(source);
+    if (moduleSymbol !== undefined) {
+      for (const symbol of moduleSymbol.getExports().values()) {
+        if (exportedByTypeOnlyDeclaration(symbol)) continue;
+        const target =
+          symbol.flags & ts.SymbolFlags.Alias ? this.checker.getAliasedSymbol(symbol) : symbol;
+        if (target.flags & ts.SymbolFlags.Value) names.add(ts.symbolName(symbol));
+      }
+    }
+    for (const stmt of source.statements.nodes) {
+      if (
+        !ts.isExportDeclaration(stmt) ||
+        stmt.isTypeOnly ||
+        stmt.exportClause !== undefined ||
+        !ts.isStringLiteral(stmt.moduleSpecifier)
+      )
+        continue;
+      const dep = this.moduleSourceFileOf(source, stmt.moduleSpecifier);
+      if (dep === null) continue;
+      for (const name of this.runtimeExportNames(dep)) {
+        if (name !== "default") names.add(name);
+      }
+    }
+    return names;
   }
 
   sourceFileOfModuleNamespace(type: IrType): ts.SourceFile | null {
@@ -19119,6 +19162,27 @@ function droppedMembers(lowerer: Lowerer, from: IrType, to: IrType, seen: Set<st
     else out.push(...droppedMembers(lowerer, f.type, t.type, seen).map((n) => `${f.name}.${n}`));
   }
   return out;
+}
+
+/** Whether an export-table symbol is declared by a type-only export: the
+ * whole declaration (`export type { … }`, `export type * as ns from …`) or
+ * one specifier (`export { type x }`). Such a name exists for the type
+ * system alone and adds no runtime binding. */
+function exportedByTypeOnlyDeclaration(symbol: ts.Symbol): boolean {
+  return symbol.declarations.some((decl) => {
+    let owner: ts.Node | undefined;
+    if (ts.isExportSpecifier(decl)) {
+      if (decl.isTypeOnly) return true;
+      // A specifier sits in the named clause, whose parent is the
+      // declaration that may carry the `type` keyword.
+      owner = decl.parent?.parent;
+    } else if (ts.isNamespaceExport(decl)) {
+      owner = decl.parent;
+    } else {
+      return false;
+    }
+    return owner !== undefined && ts.isExportDeclaration(owner) && owner.isTypeOnly;
+  });
 }
 
 /** A JSDoc `@param` type on a set accessor's parameter is an annotation like

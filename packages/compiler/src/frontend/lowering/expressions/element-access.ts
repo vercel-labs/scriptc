@@ -33,6 +33,7 @@ import {
   unionContainerArmsOk,
 } from "../../../ir/ir.js";
 import { importMetaField, isImportMeta } from "../import-meta.js";
+import { boxedHandleReceiver, lowerHandlePropertyWrite } from "../handle-properties.js";
 import { heldEnvValueType } from "../builtins/environment.js";
 import { hasOptionalChainGuard, isOptionalChainTail } from "./optional-chains.js";
 import { lowerEnumAccess } from "../lower-enums.js";
@@ -75,6 +76,7 @@ import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
 import { assertedMemberRead, classFieldTarget, lowerUnionKeyedRead } from "./property-access.js";
 import {
+  assertedOnlyMemberWrite,
   assertedProbeAccessOf,
   assertedReceiverNode,
   probeMemberName,
@@ -2161,6 +2163,7 @@ export function lowerElementCompoundParts(
 ): { expr: IrExpr | null; stmts: IrStmt[] | null } {
   const target = expr.left as ts.ElementAccessExpression;
   fenceNodeModuleMutation(lowerer, target, "assignment");
+  fenceAssertedOnlyKeyedWrite(lowerer, target);
   const loc = locOf(expr);
   // A record through a computed key (`totals[side] += n` with a literal
   // union key, `counts[name] += 1` on an index-signature record): the
@@ -2461,11 +2464,23 @@ function arrayStringOperand(arr: IrExpr, index: IrExpr, loc: SrcLoc): IrExpr {
   };
 }
 
+/** A keyed write of a member only the receiver's asserted type declares
+ * (`x["icons"] = v`): refused by name, the write twin of
+ * assertedOptionalMemberRead. Node adds the property to the object; the
+ * record the binding holds has no slot for it. */
+function fenceAssertedOnlyKeyedWrite(lowerer: Lowerer, target: ts.ElementAccessExpression): void {
+  const member =
+    recordKeyLiteralText(target.argumentExpression) ??
+    recordKeyTypeLiteralText(lowerer, target.argumentExpression);
+  if (member !== null) assertedOnlyMemberWrite(lowerer, target.expression, member, target);
+}
+
 export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): IrStmt {
   const prototype = lowerClassPrototypeComputedAssignment(lowerer, expr);
   if (prototype) return { kind: "exprStmt", expr: prototype, loc: locOf(expr) };
   const target = expr.left as ts.ElementAccessExpression;
   fenceNodeModuleMutation(lowerer, target, "assignment");
+  fenceAssertedOnlyKeyedWrite(lowerer, target);
   const globalKey = globalSymbolKey(lowerer, target.expression, target.argumentExpression);
   if (globalKey) {
     const value = lowerer.lowerExprExpecting(expr.right, DYN);
@@ -2549,6 +2564,19 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
     );
   }
   const checkedReceiver = tryLowerExpression(lowerer, target.expression);
+  // `m[k] = v` over a typed handle in JavaScript: a property table entry
+  // of the handle (scr_dyn_handle_props.c).
+  {
+    const boxed = boxedHandleReceiver(lowerer, checkedReceiver);
+    if (boxed)
+      return lowerHandlePropertyWrite(
+        lowerer,
+        boxed,
+        lowerer.lowerExprExpecting(target.argumentExpression, DYN),
+        expr.right,
+        locOf(expr),
+      );
+  }
   if (checkedReceiver?.type.kind === "dyn") {
     return {
       kind: "exprStmt",

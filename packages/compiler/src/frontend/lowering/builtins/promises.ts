@@ -455,6 +455,13 @@ export function lowerPromiseStaticCall(
         const tuple = lowerTuplePromiseAll(lowerer, call, elems);
         if (tuple) return tuple;
       }
+      // A literal whose entries are `Promise<void>` and `Promise<void> |
+      // undefined` — the optional-call shape `Promise.all([a.close(),
+      // b?.close()])`, where the checker's tuple spelling mixes the armed
+      // union with the plain promise. The armed-array path below lowers
+      // the same mix; pack the literal into that one element type first.
+      const armedLiteral = armedVoidPromiseAllLiteral(lowerer, elems, loc);
+      if (armedLiteral) return armedLiteral;
       if (
         isJsSourceFile(ts.getSourceFileOfNode(call)) &&
         elems.every((entry) => lowerer.dynConvertible(entry.type))
@@ -1081,6 +1088,34 @@ export function lowerAwaitedUniformPromiseAll(
     type: tuple,
     loc,
   };
+}
+
+/** The array-LITERAL spelling of `armedVoidPromiseAll`: a literal whose
+ * entries are the armed `Promise<void> | undefined` union and/or the plain
+ * `Promise<void>` value it contains (`Promise.all([close(), opening?.catch(…)])`)
+ * packs into ONE array of the armed union, where the plain promises ride
+ * their own arm. Null when any entry is another promise type, so the
+ * existing fences keep their message. */
+function armedVoidPromiseAllLiteral(lowerer: Lowerer, elems: IrExpr[], loc: SrcLoc): IrExpr | null {
+  let armed: ReturnType<typeof armedVoidPromiseOf> = null;
+  for (const entry of elems) {
+    if (entry.type.kind === "promise" && entry.type.inner.kind === "void") continue;
+    const candidate = armedVoidPromiseOf(lowerer, entry.type);
+    if (!candidate || candidate.promise.inner.kind !== "void") return null;
+    armed ??= candidate;
+    if (candidate.unionId !== armed.unionId) return null;
+  }
+  // No armed entry: the identical-promise path owns that literal.
+  if (!armed) return null;
+  const unionT: IrType = { kind: "union", unionId: armed.unionId };
+  const packed = elems.map((entry) =>
+    entry.type.kind === "union" ? entry : lowerer.coerceToExpected(entry, unionT),
+  );
+  return armedVoidPromiseAll(
+    lowerer,
+    { kind: "arrayLit", elems: packed, type: arrayOf(unionT), loc },
+    loc,
+  );
 }
 
 /** `Promise.all(ps)` over `(Promise<void> | undefined)[]` — the `?.`

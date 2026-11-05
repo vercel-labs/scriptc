@@ -73,15 +73,31 @@ test("web streams and Node islands select an async build that defines both", () 
   ).toEqual([]);
 });
 
-test("scr_lib.c builds once per flavor, whatever the program's features", () => {
+test("scr_lib.c builds once per flavor for a dynamic link, plus the static link's build", () => {
   // A file read brands its bytes and fs.watchFile's stat entry points are
-  // always defined, so neither a read nor a poll selects a second build.
+  // always defined, so neither a read nor a poll selects a second build. The
+  // one other build is the link's: a static executable cannot load NSS
+  // modules, so it reads /etc/passwd itself (SCR_STATIC_PASSWD), and every
+  // dynamically linked build keeps the getpwuid_r object.
   const unit = matrix.runtime_units.find((u: { source: string }) => u.source === "scr_lib.c");
-  expect(unit.variants.map((v: { id: string }) => v.id)).toEqual(["default", "default-workers"]);
+  expect(unit.variants.map((v: { id: string }) => v.id)).toEqual([
+    "default",
+    "default-workers",
+    "static-passwd",
+    "static-passwd-workers",
+  ]);
   const plain = { workers: false, watchFile: false };
   expect(selected("scr_lib.c", plain).defines).toEqual([]);
   expect(selected("scr_lib.c", { ...plain, watchFile: true }).defines).toEqual([]);
   expect(selected("scr_lib.c", { ...plain, workers: true, watchFile: true }).defines).toEqual([
+    "SCR_WORKERS",
+  ]);
+  // staticLink is the link plan's fact, and only it selects the second build.
+  expect(selected("scr_lib.c", { ...plain, staticLink: true }).defines).toEqual([
+    "SCR_STATIC_PASSWD",
+  ]);
+  expect(selected("scr_lib.c", { ...plain, workers: true, staticLink: true }).defines).toEqual([
+    "SCR_STATIC_PASSWD",
     "SCR_WORKERS",
   ]);
 });
@@ -207,4 +223,30 @@ test("a dynamic global read selects the host-global build of the global unit", (
   expect(
     selected("scr_node_builtin.c", { hostAbsentGlobals: true, workers: true }).defines,
   ).toEqual(["SCR_GLOBAL_HOST_ABSENT", "SCR_WORKERS"]);
+});
+
+test("reading a spawnSync result's error selects the child build with its fields", () => {
+  // A program that reads `.error` links the build that keeps the spawn errno
+  // and argv on the result and stamps Node's errnoException fields.
+  expect(selected("scr_child.c", { workers: false, childErrorFields: true }).defines).toEqual([
+    "SCR_CHILD_ERR_FIELDS",
+  ]);
+  // A program that spawns but never reads `.error` keeps the default object
+  // and the result container exactly as they were, byte for byte.
+  expect(selected("scr_child.c", { workers: false, childErrorFields: false }).defines).toEqual([]);
+});
+
+test("extended spawn options beside an error read keep both child builds", () => {
+  // The cwd/input/shell entries and the errnoException fields live in two
+  // builds of scr_child.c; a program that passes those options and reads
+  // `.error` needs one object carrying both, not the options build alone.
+  expect(
+    selected("scr_child.c", { workers: false, childOptionExt: true, childErrorFields: true })
+      .defines,
+  ).toEqual(["SCR_CHILD_CP_OPTIONS", "SCR_CHILD_ERR_FIELDS"]);
+  // Each feature alone keeps its own build.
+  expect(
+    selected("scr_child.c", { workers: false, childOptionExt: true, childErrorFields: false })
+      .defines,
+  ).toEqual(["SCR_CHILD_CP_OPTIONS"]);
 });

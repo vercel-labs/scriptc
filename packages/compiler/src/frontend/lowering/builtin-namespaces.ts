@@ -223,18 +223,7 @@ function defineNamespaceBuilder(
         fn: "dyn.namespaceNew",
         args: [
           { kind: "strLit", value: canonical, type: STRING, loc },
-          {
-            kind: "dynFrom",
-            value: {
-              kind: "libCall",
-              fn: "sym.wellKnown",
-              args: [{ kind: "strLit", value: "toStringTag", type: STRING, loc }],
-              type: SYMBOL_T,
-              loc,
-            },
-            type: DYN,
-            loc,
-          },
+          wellKnownSymbolValue("toStringTag", loc),
         ],
         type: DYN,
         loc,
@@ -284,6 +273,25 @@ function defineNamespaceBuilder(
     body,
     loc,
   });
+}
+
+/** A well-known symbol (`toStringTag`, `iterator`, ...) as a dynamic value:
+ * the key a unit uses to give a standard object its own symbol-keyed
+ * property. The frontend passes the key so those units need no symbol entry
+ * points of their own. */
+export function wellKnownSymbolValue(name: string, loc: SrcLoc): IrExpr {
+  return {
+    kind: "dynFrom",
+    value: {
+      kind: "libCall",
+      fn: "sym.wellKnown",
+      args: [{ kind: "strLit", value: name, type: STRING, loc }],
+      type: SYMBOL_T,
+      loc,
+    },
+    type: DYN,
+    loc,
+  };
 }
 
 /** A Math constant, boxed. */

@@ -754,6 +754,12 @@ function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr 
     // island operations it stays a handle, like an array the island does
     // not declare.
     if (containerType(lowerer, tsType) && handleUseOk(lowerer, node)) return raw;
+    // A function the island declares through a types-only package
+    // (`express.json(): NextHandleFunction`): the value is a function object
+    // the island made, with no native representation, and the program
+    // reaches it through the island (it passes it back, or calls it through
+    // the bridge), so it stays the handle of that function.
+    if (callableType(lowerer, tsType)) return raw;
     boundaryFail(
       lowerer,
       `an island value of type '${lowerer.checker.typeToString(tsType)}'`,
@@ -983,6 +989,30 @@ function containerType(lowerer: Lowerer, type: ts.Type): boolean {
   if (lowerer.checker.isArrayType(type) || lowerer.checker.isTupleType(type)) return true;
   const name = type.getSymbol()?.escapedName;
   return name === "Map" || name === "Set" || builtinHandleClass(type);
+}
+
+/** Whether every non-nullish part of `type` is callable or constructible
+ * (at least one is): a function object declared by a types-only package —
+ * `express.json()` returns body-parser's `NextHandleFunction` — which the
+ * type mapper cannot represent natively. */
+function callableType(lowerer: Lowerer, type: ts.Type): boolean {
+  const parts =
+    type.isUnionType() || (type.flags & ts.TypeFlags.Intersection) !== 0
+      ? ts.constituentTypes(type)
+      : [type];
+  let any = false;
+  for (const part of parts) {
+    if ((part.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0)
+      continue;
+    if ((part.flags & ts.TypeFlags.Object) === 0) return false;
+    if (
+      lowerer.checker.getCallSignatures(part).length === 0 &&
+      lowerer.checker.getConstructSignatures(part).length === 0
+    )
+      return false;
+    any = true;
+  }
+  return any;
 }
 
 /** A member read, call, index or `new` whose receiver or callee is an

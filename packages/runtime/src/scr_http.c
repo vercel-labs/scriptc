@@ -1086,6 +1086,81 @@ struct ScrHttpRes {
   bool h2_close_held;
 };
 
+/* The response's five listener lists, in one array so the trace and the
+ * teardown visit the same set. */
+static void scr_http_res_lists(ScrHttpRes *r, ScrNetLs *lists[5]) {
+  lists[0] = &r->close_ls;
+  lists[1] = &r->timeout_ls;
+  lists[2] = &r->finish_ls;
+  lists[3] = &r->endcb_ls;
+  lists[4] = &r->wcb_ls;
+}
+
+/* A collected response's listener closures are traced edges: the collector
+ * frees the ones in the same cycle, so only the node arrays belong here. */
+static void scr_http_res_free_ls_arrays(ScrHttpRes *r) {
+  ScrNetLs *lists[5];
+  scr_http_res_lists(r, lists);
+  for (size_t l = 0; l < 5; l++) {
+    free(lists[l]->ls);
+    lists[l]->ls = NULL;
+    lists[l]->n = lists[l]->cap = 0;
+  }
+}
+
+void scr_http_res_trace(void *obj, ScrTraceVisit visit, void *ctx) {
+  ScrHttpRes *r = obj;
+  ScrNetLs *lists[5];
+  scr_http_res_lists(r, lists);
+  for (size_t l = 0; l < 5; l++)
+    for (size_t i = 0; i < lists[l]->n; i++) visit(lists[l]->ls[i].cb, ctx);
+}
+
+static void scr_http_res_drop(ScrHttpRes *r, bool collected) {
+  scr_als_ctx_release(r->als);
+  scr_als_ctx_release(r->end_als);
+  for (size_t i = 0; i < r->nheaders; i++) {
+    scr_str_release(r->hnames[i]);
+    scr_str_release(r->hvalues[i]);
+  }
+  free(r->hnames);
+  free(r->hvalues);
+  free(r->hkinds);
+  scr_http_trailers_clear(&r->trailers);
+  scr_str_release(r->status_msg);
+  /* The listener closures are traced edges: a collected response leaves
+   * them to the collector, which frees the members of the same cycle. */
+  if (collected) {
+    scr_http_res_free_ls_arrays(r);
+  } else {
+    scr_net_ls_drop(&r->close_ls);
+    scr_net_ls_drop(&r->timeout_ls);
+    scr_net_ls_drop(&r->finish_ls);
+    scr_net_ls_drop(&r->endcb_ls);
+    scr_net_ls_drop(&r->wcb_ls);
+  }
+  free(r->cork_buf);
+  free(r->held_head);
+  if (r->req_ref) scr_http_req_release(r->req_ref);
+  if (r->sock) scr_net_sock_release(r->sock);
+  if (r->h2_stream) scr_http_h2_ops->release(r->h2_stream);
+#ifdef SCR_RC_AUDIT
+  scr_http_live--;
+#endif
+  scr_cyc_free(r);
+}
+
+static void scr_http_res_gcfree(void *obj) { scr_http_res_drop(obj, true); }
+
+/* A response is cycle-collectible because a listener that captures it forms
+ * a cycle with it: an HTTP/2 compat response to a cancelled HEAD request
+ * keeps its 'finish'/'close' listeners for a later end() (Node's behavior),
+ * and that response must still be reclaimable while no JavaScript value
+ * reaches it. */
+static ScrCycType scr_http_res_cyc = {&scr_http_res_trace,
+                                      &scr_http_res_gcfree,
+                                      SCR_CYC_KIND_HTTP_RES};
+
 ScrHttpRes *scr_http_res_retain(ScrHttpRes *r) {
   if (r->rc != SIZE_MAX) r->rc++;
   return r;
@@ -1094,31 +1169,10 @@ ScrHttpRes *scr_http_res_retain(ScrHttpRes *r) {
 void scr_http_res_release(ScrHttpRes *r) {
   if (!r || r->rc == SIZE_MAX) return;
   if (--r->rc == 0) {
-    scr_als_ctx_release(r->als);
-    scr_als_ctx_release(r->end_als);
-    for (size_t i = 0; i < r->nheaders; i++) {
-      scr_str_release(r->hnames[i]);
-      scr_str_release(r->hvalues[i]);
-    }
-    free(r->hnames);
-    free(r->hvalues);
-    free(r->hkinds);
-    scr_http_trailers_clear(&r->trailers);
-    scr_str_release(r->status_msg);
-    scr_net_ls_drop(&r->close_ls);
-    scr_net_ls_drop(&r->timeout_ls);
-    scr_net_ls_drop(&r->finish_ls);
-    scr_net_ls_drop(&r->endcb_ls);
-    scr_net_ls_drop(&r->wcb_ls);
-    free(r->cork_buf);
-    free(r->held_head);
-    if (r->req_ref) scr_http_req_release(r->req_ref);
-    if (r->sock) scr_net_sock_release(r->sock);
-    if (r->h2_stream) scr_http_h2_ops->release(r->h2_stream);
-#ifdef SCR_RC_AUDIT
-    scr_http_live--;
-#endif
-    free(r);
+    scr_cyc_dead(r);
+    scr_http_res_drop(r, false);
+  } else {
+    scr_cyc_released(r);
   }
 }
 
@@ -3879,8 +3933,7 @@ static bool scr_http_conn_parse_head(ScrHttpConn *conn, size_t head_len, bool *o
     return true;
   }
 
-  ScrHttpRes *res = calloc(1, sizeof *res);
-  if (!res) scr_http_oom();
+  ScrHttpRes *res = scr_cyc_alloc(sizeof *res, &scr_http_res_cyc);
   res->rc = 1;
   res->als = scr_als_capture();
 #ifdef SCR_RC_AUDIT
@@ -4583,8 +4636,7 @@ void scr_http_h2_req_close(ScrHttpReq *r) { scr_http_queue_req_close(r); }
 ScrHttpRes *scr_http_h2_res_new(ScrNetSocket *sock /*borrowed, nullable*/,
                                  void *stream /*borrowed*/) {
   scr_http_install();
-  ScrHttpRes *res = calloc(1, sizeof *res);
-  if (!res) scr_http_oom();
+  ScrHttpRes *res = scr_cyc_alloc(sizeof *res, &scr_http_res_cyc);
   res->rc = 1;
   res->als = scr_als_capture();
   res->sock = sock ? scr_net_sock_retain(sock) : NULL;

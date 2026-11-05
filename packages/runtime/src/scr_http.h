@@ -31,6 +31,10 @@ ScrHttpRes *scr_http_res_retain(ScrHttpRes *r);
 void scr_http_res_release(ScrHttpRes *r);
 void *scr_http_res_retain_v(void *p);
 void scr_http_res_release_v(void *p);
+/* The response's collector entry point: its listener closures are its
+ * cycle-capable children, so a handle-shaped capture of the response stays
+ * visible to the collector. */
+void scr_http_res_trace(void *obj, ScrTraceVisit visit, void *ctx);
 
 /* ── the h2 compat seam (scr_http.c ⇄ scr_http2.c) ─────────────────────
  * Http2ServerRequest/Http2ServerResponse ARE the req/res handles above;

@@ -1146,6 +1146,12 @@ export function traceAdapter(host: ShapeHost, t: IrType): string | null {
       // is an arbitrary thrown value) — shapes.ts's row.
       host.declare(`declare void @scr_promise_trace_v(ptr, ptr, ptr)`);
       return "@scr_promise_trace_v";
+    case "httpRes":
+      // A response owns its listener closures, and a listener that captures
+      // its response forms a cycle with it (a cancelled HTTP/2 HEAD response
+      // keeps them for a later end()).
+      host.declare(`declare void @scr_http_res_trace(ptr, ptr, ptr)`);
+      return "@scr_http_res_trace";
     case "union": {
       const nullable = host.nullableUnions.get(t.unionId);
       if (nullable?.repr === "shapes")

@@ -11017,6 +11017,29 @@ bool scr_dyn_reflect_delete_property(ScrDyn *target, const ScrDyn *raw_key) {
   return deleted;
 }
 
+/* The members a function protocol owns. A program that writes, defines or
+ * deletes one of these names on a callable links the SCR_FN_MEMBER_PROPS
+ * build of this unit (runtime-pack-matrix.mjs); the default build keeps the
+ * refusal the fence below states, byte for byte. */
+#ifdef SCR_FN_MEMBER_PROPS
+/* Every inherited protocol member except these three is JSON-visible data
+ * on a function: `fn.call = f` creates an own property Node reads before it
+ * runs the builtin (scr_dyn_invoke.c), writes through scr_dyn_key_set, and a
+ * definition (Object.defineProperty) creates one too. Node answers
+ * caller/arguments through the builtin accessor (a TypeError) and
+ * `__proto__` through the prototype setter; neither is lowered on a
+ * function yet, so the assignment keeps its explicit refusal instead of
+ * inventing an own data property Node would not create. */
+static bool scr_dyn_fn_property_fence(const ScrStr *key) {
+  static const char message[] = "scriptc: overriding builtin function properties is not supported";
+  if ((key->len == 6 && memcmp(key->data, "caller", 6) == 0) ||
+      (key->len == 9 && (memcmp(key->data, "arguments", 9) == 0 || memcmp(key->data, "__proto__", 9) == 0))) {
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return true;
+  }
+  return false;
+}
+#else
 /* Native call/apply/bind lowering still owns these prototype operations.
  * Refuse overrides until every typed call site observes the property table. */
 static bool scr_dyn_fn_property_fence(const ScrStr *key) {
@@ -11033,6 +11056,7 @@ static bool scr_dyn_fn_property_fence(const ScrStr *key) {
   }
   return false;
 }
+#endif
 
 ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor) {
   if (scr_dyn_error_prototype_fence(target)) return NULL;
@@ -12936,7 +12960,34 @@ ScrDyn *scr_dyn_value_of(const ScrDyn *d, const ScrStr *what) {
     const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(d);
     return ops->invoke(d->v.handle.ptr, (ScrDyn *)d, "valueOf", NULL, 0, "valueOf");
   }
+#ifdef SCR_FN_MEMBER_PROPS
+  /* A function's own data property shadows Object.prototype.valueOf exactly
+   * as it does on a plain object (`fn.valueOf = f`): the closure's
+   * own-property table, checked only when the closure carries one, so a
+   * function that never received a property pays one pointer test. */
+  bool func_own = false;
+  ScrDyn *func_member = NULL;
+  if (d->kind == SCR_DYN_FUNC && scr_closure_identity(d->v.fn.clo)->props) {
+    func_member = scr_dyn_fn_get(d, "valueOf", 7);
+    if (scr_exc_pending()) return NULL;
+    func_own = func_member != NULL;
+  }
+  if (func_own) {
+    if (func_member->kind != SCR_DYN_FUNC) {
+      scr_dyn_release(func_member);
+    } else {
+      scr_dyn_this_push_dyn(d);
+      ScrDyn *value = scr_dyn_call(func_member, NULL, 0, what->data);
+      scr_dyn_this_pop();
+      scr_dyn_release(func_member);
+      return value;
+    }
+  } else if (d->kind == SCR_DYN_FUNC) {
+    return scr_dyn_retain((ScrDyn *)d);
+  } else if (d->kind == SCR_DYN_OBJ && scr_dyn_property_owner(d, "valueOf", 7)) {
+#else
   if (d->kind == SCR_DYN_OBJ && scr_dyn_property_owner(d, "valueOf", 7)) {
+#endif
     ScrDyn *member = scr_dyn_obj_read(d, "valueOf", 7);
     if (!member) return NULL;
     if (member->kind != SCR_DYN_FUNC) {

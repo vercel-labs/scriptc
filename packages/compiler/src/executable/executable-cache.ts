@@ -73,6 +73,9 @@ export interface EarlyExecutableNativeFeatures {
   mutableBuffers: boolean;
   stdioExtended?: boolean;
   fsFlags?: boolean;
+  /** A function's inherited member shadowed by an own data property:
+   * SCR_FN_MEMBER_PROPS. */
+  fnMemberProps?: boolean;
   strdecDyn?: boolean;
   processExtras?: boolean;
   /** Error-taking write completion callbacks: SCR_STREAM_WRITE_ERRORS. */

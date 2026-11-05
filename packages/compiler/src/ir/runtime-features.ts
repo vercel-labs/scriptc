@@ -2,6 +2,7 @@ import {
   BIGINT_BYTES_NAMES,
   type IrClassDef,
   type IrExpr,
+  type IrFunction,
   type IrModule,
   type IrRecordShape,
   type IrType,
@@ -1209,6 +1210,117 @@ export function jsObjectModelFact(features: {
   );
 }
 
+/** The Function.prototype and Object.prototype members a function's own
+ * data property can shadow, the names the runtime's function-property write
+ * path creates and its call/apply/bind and valueOf dispatch read first
+ * (`fn.call = f`). Mirrors the reserved list in
+ * packages/runtime/src/scr_json.c. */
+const FN_OWN_MEMBER_NAMES: ReadonlySet<string> = new Set([
+  "apply",
+  "bind",
+  "call",
+  "constructor",
+  "hasOwnProperty",
+  "isPrototypeOf",
+  "propertyIsEnumerable",
+  "toLocaleString",
+  "valueOf",
+]);
+
+/** The keyed operations that create or remove an own property; the member
+ * name is the second argument. */
+const FN_MEMBER_KEY_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  "dyn.defineProperty",
+  "dyn.definePropertyShapes",
+  "dyn.keyDelete",
+  "dyn.keyDeleteComputed",
+  "dyn.keySet",
+  "dyn.keySetComputed",
+]);
+
+/** The name a key expression spells, followed through the hidden local a
+ * keyed operation evaluates it into (lower-exprs.ts lowerDynMemberAssignment
+ * and the definition paths store the member name in a local first) and the
+ * dynamic box a string key takes. Undefined when the key is not a literal
+ * the source spells. */
+function spelledMemberName(expr: IrExpr, definitions: Map<string, IrExpr>): string | undefined {
+  let node: IrExpr | undefined = expr;
+  for (let step = 0; node !== undefined && step < 8; step++) {
+    if (node.kind === "strLit") return node.value;
+    if (node.kind === "dynFrom") node = node.value;
+    else if (node.kind === "varRef") node = definitions.get(node.localId);
+    else return undefined;
+  }
+  return undefined;
+}
+
+/** Whether the operand is the identity-preserving box a TYPED callable
+ * takes (callable-properties.ts callableBox): a func-typed value boxed into
+ * the checked-dynamic tier. Its property table is the closure's. */
+function isBoxedCallable(expr: IrExpr | undefined): boolean {
+  return expr !== undefined && expr.kind === "dynFrom" && expr.value.type.kind === "func";
+}
+
+/** Whether the module creates or removes an own property on a function:
+ * `fn.call = f`, `Object.defineProperty(fn, "bind", …)`, `delete fn.apply`,
+ * which JS answers with an own data property that shadows the inherited
+ * member. Such a program links the SCR_FN_MEMBER_PROPS builds of scr_json.c
+ * (the member write/define/delete and own-valueOf paths) and scr_dyn_invoke.c
+ * (the own call/apply/bind dispatch), selected by the fnMemberProps rule;
+ * every other program keeps those units' default objects, byte for byte. A
+ * keyed write whose key spells one of the names counts even on a
+ * checked-dynamic receiver, because the closure's table is the only object
+ * kind those names shadow. A definition counts only on a boxed callable:
+ * class and object lowering define `constructor` and `toString` on ordinary
+ * objects, which the function-property path never sees. */
+function moduleShadowsFunctionMember(mod: IrModule): boolean {
+  return mod.functions.some(functionShadowsMember);
+}
+
+/** One function's nodes: its hidden key locals are function-scope, and the
+ * same `%setKey.0` id names a different value in every function, so the
+ * definitions map must not cross a function boundary. */
+function functionShadowsMember(fn: IrFunction): boolean {
+  const definitions = new Map<string, IrExpr>();
+  const assigns = new Map<string, IrExpr[]>();
+  everyStmtList(fn.body, {
+    expr: () => true,
+    stmt: (node) => {
+      if (node.kind === "assign") {
+        const taken = assigns.get(node.localId);
+        if (taken === undefined) assigns.set(node.localId, [node.value]);
+        else taken.push(node.value);
+        return true;
+      }
+      if (node.kind === "varDecl" && node.init !== null) definitions.set(node.localId, node.init);
+      return true;
+    },
+  });
+  for (const [localId, values] of assigns) {
+    // A local assigned more than once could hold anything by the write.
+    if (values.length === 1) definitions.set(localId, values[0]!);
+    else definitions.delete(localId);
+  }
+  let found = false;
+  everyStmtList(fn.body, {
+    expr: (node) => {
+      if (found || node.kind !== "libCall" || !FN_MEMBER_KEY_LIB_FNS.has(node.fn)) return !found;
+      const target = node.args[0];
+      const key = node.args[1];
+      const name = key === undefined ? undefined : spelledMemberName(key, definitions);
+      if (name === undefined || !FN_OWN_MEMBER_NAMES.has(name)) return !found;
+      // A definition also has to name a callable receiver: class and object
+      // lowering define `constructor` and `toString` on ordinary objects,
+      // which the function-property path never sees. A keyed write is the
+      // shadow itself once it spells the name.
+      found = node.fn.startsWith("dyn.define") ? isBoxedCallable(target) : true;
+      return !found;
+    },
+    stmt: () => !found,
+  });
+  return found;
+}
+
 /** One rule per runtime feature, sorted by name. A new feature is an
  * entry here and its line in noRuntimeFeatures; RuntimeFeatures, the scan
  * and its early exit derive from this table. The lists above keep one
@@ -1854,6 +1966,14 @@ const RUNTIME_FEATURE_RULES = {
       "tls.sockGetCertificate",
     ],
   }),
+  /** A program that writes, defines or deletes one of a function's
+   * inherited member names (`fn.call = f`, `Object.defineProperty(fn,
+   * "bind", …)`, `delete fn.apply`): the SCR_FN_MEMBER_PROPS builds of
+   * scr_json.c (the member write/define/delete and own-valueOf paths) and
+   * scr_dyn_invoke.c (own call/apply/bind dispatch before the native
+   * lowering). Every other program keeps both units' default objects, byte
+   * for byte. */
+  fnMemberProps: rule({ initial: (mod) => moduleShadowsFunctionMember(mod) }),
   /** writeFile's `flag` disposition ("w" / "wx") and copyFile's mode
    * argument: scr_fs_flags.c and the SCR_FS_FLAGS build of scr_fs_cp.c.
    * Programs that never pass either keep both units' default objects. */
@@ -1932,6 +2052,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     eventsOnceSignal: false,
     fetch: false,
     fileHandle: false,
+    fnMemberProps: false,
     fsFlags: false,
     fsWatch: false,
     fsWatchFile: false,

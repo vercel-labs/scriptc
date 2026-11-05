@@ -300,6 +300,24 @@ export function variantsFor(source) {
       when: { nodeIsland: true },
       defines: ["SCR_NODE_ISLANDS"],
     });
+    // A program that writes, defines or deletes one of a function's
+    // inherited member names (`fn.call = f`, `Object.defineProperty(fn,
+    // "bind", …)`, `delete fn.apply`) keeps the own data property JS
+    // creates: scr_json.c's member write/define/delete and own-valueOf
+    // paths answer it, and scr_dyn_invoke.c's own call/apply/bind dispatch
+    // reads it first. The second build pairs this one with the node-island
+    // build above, so a program with both keeps one object.
+    // Every other program keeps the default object, byte for byte.
+    variants.push({
+      id: "fn-member-props",
+      when: { fnMemberProps: true },
+      defines: ["SCR_FN_MEMBER_PROPS"],
+    });
+    variants.push({
+      id: "node-island-fn-member-props",
+      when: { nodeIsland: true, fnMemberProps: true },
+      defines: ["SCR_NODE_ISLANDS", "SCR_FN_MEMBER_PROPS"],
+    });
     // The JavaScript object model build (t262-da §J): every runtime feature
     // reached only from JavaScript-source facts — builtin intrinsics, array
     // attributes, BigInt views, handle property tables, buffer views —
@@ -311,6 +329,18 @@ export function variantsFor(source) {
     // tier's primitives and each one gets its object model twin. Every other
     // program keeps the default object, byte for byte.
     withJsObjectModel(variants);
+  }
+  // A function's own call/apply/bind shadows the inherited member: the
+  // FUNC dispatch of a method call reads the closure's table first, which
+  // only the fnMemberProps programs can populate (scr_json.c's write path,
+  // the same variant). Every other program keeps the default object, byte
+  // for byte.
+  if (source === "scr_dyn_invoke.c") {
+    variants.push({
+      id: "fn-member-props",
+      when: { fnMemberProps: true },
+      defines: ["SCR_FN_MEMBER_PROPS"],
+    });
   }
   // util.inspect and instanceof of Node island handles; Node's report for
   // an uncaught island error.

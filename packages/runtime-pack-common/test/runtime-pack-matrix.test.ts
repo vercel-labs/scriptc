@@ -113,8 +113,12 @@ test("scr_json builds one object per flavor, plus its object model twin", () => 
   expect(variants.map((variant: { id: string }) => variant.id)).toEqual([
     "default",
     "node-island",
+    "fn-member-props",
+    "node-island-fn-member-props",
     "js-om",
     "js-om-node-island",
+    "js-om-fn-member-props",
+    "js-om-node-island-fn-member-props",
   ]);
   for (const variant of variants) {
     if (!variant.id.startsWith("js-om")) continue;
@@ -139,6 +143,23 @@ test("scr_json builds one object per flavor, plus its object model twin", () => 
   expect(
     selected("scr_json.c", { workers: false, jsObjectModel: true, nodeIsland: true }).defines,
   ).toEqual(["SCR_NODE_ISLANDS", "SCR_JS_OBJECT_MODEL"]);
+  // A program that writes, defines or deletes a function's inherited member
+  // name selects the fn-member-props build, alone and beside the island and
+  // object model builds it may also carry.
+  expect(selected("scr_json.c", { workers: false, fnMemberProps: true }).defines).toEqual([
+    "SCR_FN_MEMBER_PROPS",
+  ]);
+  expect(
+    selected("scr_json.c", { workers: false, nodeIsland: true, fnMemberProps: true }).defines,
+  ).toEqual(["SCR_NODE_ISLANDS", "SCR_FN_MEMBER_PROPS"]);
+  expect(
+    selected("scr_json.c", {
+      workers: false,
+      jsObjectModel: true,
+      nodeIsland: true,
+      fnMemberProps: true,
+    }).defines,
+  ).toEqual(["SCR_NODE_ISLANDS", "SCR_FN_MEMBER_PROPS", "SCR_JS_OBJECT_MODEL"]);
   // A partial record assertion selects nothing: the view slot answers NULL in
   // every build, so a program with one keeps the build its other features
   // name, alone or beside the island and object model builds.
@@ -157,6 +178,26 @@ test("scr_json builds one object per flavor, plus its object model twin", () => 
   // A program that reaches none of the features keeps the default object.
   expect(selected("scr_json.c", { workers: false }).id).toBe("default");
   expect(selected("scr_json.c", { workers: false }).defines).toEqual([]);
+});
+
+test("the dynamic call path reads an own call/apply/bind in one build", () => {
+  // scr_dyn_invoke.c reads a function's own call/apply/bind before the
+  // native lowering, in the same build as scr_json.c's member write path
+  // (both compile with SCR_FN_MEMBER_PROPS for a fnMemberProps program).
+  const plain = { workers: false, jsObjectModel: false, fnMemberProps: false };
+  expect(selected("scr_dyn_invoke.c", plain).defines).toEqual([]);
+  expect(selected("scr_dyn_invoke.c", { ...plain, fnMemberProps: true }).defines).toEqual([
+    "SCR_FN_MEMBER_PROPS",
+  ]);
+  // A program that also needs the object model build keeps one object.
+  expect(
+    selected("scr_dyn_invoke.c", { ...plain, jsObjectModel: true, fnMemberProps: true }).defines,
+  ).toEqual(["SCR_FN_MEMBER_PROPS", "SCR_JS_OBJECT_MODEL"]);
+  // And a worker program keeps its thread-state build.
+  expect(
+    selected("scr_dyn_invoke.c", { workers: true, jsObjectModel: false, fnMemberProps: true })
+      .defines,
+  ).toEqual(["SCR_FN_MEMBER_PROPS", "SCR_WORKERS"]);
 });
 
 test("the BigIntStats unit follows its own member-read gate, not bigint", () => {

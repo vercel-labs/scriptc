@@ -1,6 +1,15 @@
 import { describe, expect, test } from "vitest";
 import { IR_VERSION } from "./serialize.js";
-import { DYN, STRING, VOID, arrayOf, type IrExpr, type IrModule, type IrLibFn } from "./ir.js";
+import {
+  DYN,
+  STRING,
+  VOID,
+  arrayOf,
+  type IrExpr,
+  type IrFunction,
+  type IrModule,
+  type IrLibFn,
+} from "./ir.js";
 import {
   JS_OBJECT_MODEL_LIB_FNS,
   jsObjectModelFact,
@@ -471,6 +480,96 @@ describe("runtime feature snapshots", () => {
     expect(selects("dyn.keySet", str("length"), boxed(num(5000000)))).toBe(true);
     expect(selects("dyn.keySet", str("length"), boxed(num(8)))).toBe(false);
     expect(selects("dyn.keyDelete" as IrLibFn, str("987654321"))).toBe(false);
+  });
+
+  test("selects the function-property build for a spelled protocol member", () => {
+    // A function may carry an own data property named after an inherited
+    // member (`fn.call = f`). The runtime paths that admit it live in the
+    // SCR_FN_MEMBER_PROPS builds of scr_json.c and scr_dyn_invoke.c, so the
+    // fact follows the member name a keyed write, definition or delete
+    // spells; an ordinary expando write and a plain definition of a name
+    // every object literal defines select the default objects.
+    const boxed = (value: IrExpr): IrExpr => ({ kind: "dynFrom", value, type: DYN, loc });
+    const str = (value: string): IrExpr => ({ kind: "strLit", value, type: STRING, loc });
+    const receiver: IrExpr = { kind: "varRef", localId: "o", type: DYN, loc };
+    const fnValue: IrExpr = {
+      kind: "varRef",
+      localId: "f",
+      type: { kind: "func", params: [], ret: VOID },
+      loc,
+    };
+    const op = (fn: IrLibFn, target: IrExpr, key: IrExpr): IrModule => {
+      const mod = module();
+      mod.functions[0]!.body.push({
+        kind: "exprStmt",
+        loc,
+        expr: {
+          kind: "libCall",
+          fn,
+          args: [target, key, boxed(str("v"))],
+          type: fn.startsWith("dyn.define") ? DYN : VOID,
+          loc,
+        },
+      });
+      return mod;
+    };
+    const selects = (fn: IrLibFn, target: IrExpr, key: IrExpr): boolean =>
+      moduleRuntimeFeatures(op(fn, target, key)).fnMemberProps;
+    expect(moduleRuntimeFeatures(module()).fnMemberProps).toBe(false);
+    expect(selects("dyn.keySet", receiver, str("call"))).toBe(true);
+    expect(selects("dyn.keySet", receiver, str("apply"))).toBe(true);
+    // The keyed write evaluates its key into a hidden local first.
+    const local = op("dyn.keySet", receiver, { kind: "varRef", localId: "%key", type: DYN, loc });
+    local.functions[0]!.body.unshift({
+      kind: "varDecl",
+      localId: "%key",
+      init: boxed(str("bind")),
+      loc,
+    });
+    expect(moduleRuntimeFeatures(local).fnMemberProps).toBe(true);
+    expect(selects("dyn.keyDelete", receiver, str("valueOf"))).toBe(true);
+    // An expando member and a name a plain object literal defines select
+    // nothing: their writes never reach the function-property path.
+    expect(selects("dyn.keySet", receiver, str("extra"))).toBe(false);
+    expect(selects("dyn.defineProperty", receiver, boxed(str("toString")))).toBe(false);
+    // A definition on a boxed callable creates the own property Node does.
+    expect(selects("dyn.defineProperty", boxed(fnValue), boxed(str("bind")))).toBe(true);
+    // A key computed at run time cannot be proven a protocol member.
+    expect(
+      selects("dyn.keySetComputed", receiver, { kind: "varRef", localId: "k", type: DYN, loc }),
+    ).toBe(false);
+    // The hidden key local is function-scope: `%setKey.0` names a different
+    // value in the next function, so neither declaration answers the other.
+    const sibling = (name: string): IrFunction => ({
+      name,
+      params: [],
+      locals: [],
+      returnType: VOID,
+      loc,
+      body: [{ kind: "varDecl", localId: "%setKey.0", init: boxed(str("call")), loc }],
+    });
+    const own = module();
+    own.functions[0]!.body.push(
+      { kind: "varDecl", localId: "%setKey.0", init: boxed(str("extra")), loc },
+      {
+        kind: "exprStmt",
+        loc,
+        expr: {
+          kind: "libCall",
+          fn: "dyn.keySet",
+          args: [
+            receiver,
+            { kind: "varRef", localId: "%setKey.0", type: STRING, loc },
+            boxed(str("v")),
+          ],
+          type: VOID,
+          loc,
+        },
+      },
+    );
+    expect(moduleRuntimeFeatures(own).fnMemberProps).toBe(false);
+    own.functions.push(sibling("other"));
+    expect(moduleRuntimeFeatures(own).fnMemberProps).toBe(false);
   });
 
   test("arms the host-global check for a computed global read and `in`", () => {

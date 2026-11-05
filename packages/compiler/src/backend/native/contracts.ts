@@ -231,6 +231,10 @@ export interface CcOptions {
   /** SCR_FS_FLAGS: writeFile's `flag` option and copyFile's mode argument
    * (scr_fs_flags.c and that build of scr_fs_cp.c). */
   fsFlags?: boolean;
+  /** SCR_FN_MEMBER_PROPS: a function's inherited member shadowed by an own
+   * data property (`fn.call = f`; that build of scr_json.c and
+   * scr_dyn_invoke.c). */
+  fnMemberProps?: boolean;
   /** string_decoder's checked-dynamic chunk forms: compiles
    * scr_bytes_strdec_dyn.c. */
   strdecDyn?: boolean;

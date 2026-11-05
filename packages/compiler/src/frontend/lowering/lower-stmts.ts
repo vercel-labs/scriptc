@@ -186,7 +186,7 @@ import {
   requireEarlyReference,
   requireSpecOf,
 } from "../program.js";
-import { callableDeleteKey } from "./callable-properties.js";
+import { callableDeleteKey, callableMemberWriteTarget } from "./callable-properties.js";
 import { isStrictCode } from "./strict-mode.js";
 import {
   COMPOUND_ASSIGN_OPS,
@@ -9872,6 +9872,20 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
         // receiver's shape lacks. `(view).member` and `view!.member` reach
         // the same refusal as `view.member`.
         assertedOnlyMemberWrite(lowerer, expr.left.expression, expr.left.name.text, expr.left);
+        // `fn.name = v` on a typed CALLABLE, the inherited protocol names
+        // included: the write creates the own data property JS creates, so
+        // it is the closure's table store (callable-properties.ts) even when
+        // the value's type only inherits the name (`fn.call = f` shadows
+        // Function.prototype.call). Every other target keeps its own path.
+        if (!ts.isPrivateIdentifier(expr.left.name)) {
+          const recvT = lowerer.mapTypeOf(lowerer.typeOf(expr.left.expression));
+          const callableWrite =
+            recvT?.kind === "func" ? callableMemberWriteTarget(lowerer, expr.left, recvT) : null;
+          if (callableWrite) {
+            const value = lowerer.lowerExprExpecting(expr.right, callableWrite.fieldType);
+            return lowerer.fieldSetStmt(callableWrite, value, locOf(expr), expr.left);
+          }
+        }
         const target = lowerer.fieldTarget(expr.left);
         if (target) {
           const value = lowerer.lowerExprExpecting(expr.right, target.fieldType);

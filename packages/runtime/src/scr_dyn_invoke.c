@@ -34,6 +34,9 @@
  *     JS answer;
  *   - OBJ receivers: the own member calls (own properties shadow the
  *     prototype in JS too), otherwise "<spelling> is not a function";
+ *   - FUNC receivers: an OWN call/apply/bind (a program may shadow the
+ *     inherited member, as JS allows) calls first, then the native
+ *     call/apply/bind lowering;
  *   - undefined/null receivers: Node's "Cannot read properties of ...".
  *
  * recv/args are BORROWED; the result is owned (+1). MAY THROW (returns
@@ -1312,6 +1315,32 @@ static ScrDyn *scr_dyn_invoke_impl(
   }
 
   if (recv->kind == SCR_DYN_FUNC) {
+#ifdef SCR_FN_MEMBER_PROPS
+    /* A function's own data property shadows the inherited
+     * Function.prototype member of the same name (`fn.call = f`), and Node
+     * reads the property before it runs the builtin. The table is checked
+     * only when the closure carries one, so a function that never received
+     * a property pays one pointer test and runs the native lowering. */
+    if ((mid == DYN_M_apply || mid == DYN_M_call || mid == DYN_M_bind) &&
+        scr_closure_identity(recv->v.fn.clo)->props != NULL) {
+      ScrStr *key = scr_str_new(method, strlen(method));
+      bool own = scr_dyn_has_own(recv, key);
+      scr_str_release(key);
+      if (own) {
+        ScrDyn *member = scr_dyn_fn_get(recv, method, strlen(method));
+        if (member && member->kind == SCR_DYN_FUNC) {
+          scr_dyn_this_push_dyn(recv);
+          ScrDyn *r = scr_dyn_call(member, args, argc, what);
+          scr_dyn_this_pop();
+          scr_dyn_release(member);
+          return r;
+        }
+        scr_dyn_release(member);
+        dyn_throw_not_fn(what);
+        return NULL;
+      }
+    }
+#endif
     if ((mid == DYN_M_apply)) {
       return scr_dyn_apply_array_like(recv, argc ? args[0] : scr_dyn_undefined(),
         argc > 1 ? args[1] : scr_dyn_undefined(), what);

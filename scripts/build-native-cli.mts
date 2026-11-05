@@ -176,6 +176,14 @@ const cFlags = [
   target.linkerTargetTriple,
 ];
 const nativeSources = join(root, "packages/compiler/native");
+// Emitting the compiler takes minutes and prints nothing on its own. Each
+// phase reports its elapsed time on stderr so a CI log distinguishes a slow
+// build from a stuck one, and so a step timeout says which phase it lost.
+const started = Date.now();
+const report = (phase: string): void => {
+  console.error(`build-native-cli: ${phase} (${((Date.now() - started) / 1000).toFixed(0)}s)`);
+};
+report("compiling the host shims");
 const functions: unknown[] = [];
 const libraries: string[] = [];
 for (const name of ["ts7-process", "host"]) {
@@ -191,11 +199,13 @@ for (const name of ["ts7-process", "host"]) {
   functions.push(...manifest.functions);
   libraries.push(object);
 }
+report("host shims compiled");
 const ffi = join(seed, "compiler.ffi.json");
 writeFileSync(ffi, JSON.stringify({ ffi_format: 6, functions, libraries }, null, 2) + "\n");
 const executable = join(bin, "scriptc" + target.outputSuffixes.exe);
 const comptime = join(lib, "scriptc-comptime" + target.outputSuffixes.exe);
 const strip = process.env["SCRIPTC_NATIVE_KEEP_SYMBOLS"] !== "1";
+report("linking the comptime executable");
 execFileSync(
   compiler,
   [
@@ -222,6 +232,7 @@ execFileSync(
 // The Windows link writes the debug database beside the executable.
 if (strip && target.platform === "win32")
   rmSync(comptime.replace(/\.exe$/, ".pdb"), { force: true });
+report("lowering and emitting the compiler");
 const result = await compile(join(root, "packages/compiler/src/native/cli.ts"), {
   outDir: seed,
   outPath: executable,
@@ -250,6 +261,7 @@ if (!result.ok)
       )
       .join("\n"),
   );
+report("compiler emitted");
 // How well the profile still describes the compiler. The profile matches
 // builds laid out like the instrumented build; a build with another layout
 // (the bootstrap seed uses none) matches fewer functions however fresh the

@@ -1,11 +1,11 @@
 // Generated from packages/compiler/src/ir/ir.ts by scripts/generate-ir-codec.mjs.
 // Run `pnpm generate:ir-codec` after changing the IR's types.
-import type { IrBindingSource, IrClassDef, IrContracts, IrExpr, IrFfiCallbackParam, IrFfiContextParam, IrFfiImport, IrFfiParam, IrFfiReleaseParam, IrFunction, IrGlobal, IrLibCallback, IrLibExport, IrLibIdentity, IrLibSection, IrLibTrapOverlay, IrLocal, IrModule, IrNodeIslandModules, IrParam, IrRecordLink, IrRecordShape, IrStmt, IrType, IrUnionDef, IrUnionDiscriminant, IrWasmModule, IrWasmUntranslated, SrcLoc } from "./ir.js";
+import type { IrBindingSource, IrClassDef, IrContracts, IrExpr, IrFfiCallbackParam, IrFfiContextParam, IrFfiImport, IrFfiParam, IrFfiReleaseParam, IrFunction, IrGlobal, IrLibCallback, IrLibExport, IrLibIdentity, IrLibSection, IrLibTrapOverlay, IrLocal, IrModule, IrNodeIslandModules, IrParam, IrRecordField, IrRecordLink, IrRecordShape, IrStmt, IrType, IrUnionDef, IrUnionDiscriminant, IrWasmModule, IrWasmUntranslated, SrcLoc } from "./ir.js";
 import type { IrReader, IrWriter } from "./codec.js";
 
 /** A digest of the coders below: an encoding written with other coders is
  * refused instead of misread, also after a change that keeps IR_VERSION. */
-export const IR_CODEC_LAYOUT = "da41fec3347e3386";
+export const IR_CODEC_LAYOUT = "914939560c3e2086";
 
 /** Writes `mod` field by field (codec.ts describes the bytes). */
 export function encodeIrModule(w: IrWriter, mod: IrModule): void {
@@ -225,7 +225,7 @@ const KEYS197: readonly string[] = ["kind","className","method","args","type","l
 const KEYS198: readonly string[] = ["kind","value","awaited","delegated","captureCompletion","type","loc"];
 const KEYS199: readonly string[] = ["member","helper"];
 const KEYS200: readonly string[] = ["name","type"];
-const KEYS201: readonly string[] = ["name","type"];
+const KEYS201: readonly string[] = ["name","type","optional"];
 const KEYS202: readonly string[] = ["path","size","sha256","placeholder"];
 const KEYS203: readonly string[] = ["path","target"];
 const KEYS204: readonly string[] = ["diff","skipPrototype"];
@@ -2571,13 +2571,13 @@ function decIrBindingSource(r: IrReader): IrBindingSource {
 function encT47(w: IrWriter, v: NonNullable<IrRecordShape["fields"]>): void {
   w.length(v.length);
   for (const item of v) {
-    encT61(w, item);
+    encIrRecordField(w, item);
   }
 }
 function decT47(r: IrReader): NonNullable<IrRecordShape["fields"]> {
   const length = r.length();
   const out: NonNullable<IrRecordShape["fields"]>[number][] = [];
-  for (let i = 0; i < length; i++) out.push(decT61(r));
+  for (let i = 0; i < length; i++) out.push(decIrRecordField(r));
   return out;
 }
 
@@ -3208,7 +3208,11 @@ function encIrExpr(w: IrWriter, v: IrExpr): void {
     case "fieldAbsent": {
       w.length(36);
       w.keys(Object.keys(v), KEYS139);
-      w.str(v.unionId);
+      if (v.unionId === undefined) w.byte(0);
+      else {
+        w.byte(1);
+        w.str(v.unionId);
+      }
       encIrType(w, v.type);
       encSrcLoc(w, v.loc);
       return;
@@ -4179,10 +4183,10 @@ function decIrExpr(r: IrReader): IrExpr {
       return o;
     }
     case 36: {
-      const f0 = r.str();
+      const f0 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<fieldAbsent>.unionId") === 0 ? undefined : r.str();
       const f1 = decIrType(r);
       const f2 = decSrcLoc(r);
-      const o: Extract<IrExpr, { kind: "fieldAbsent" }> = { kind: "fieldAbsent", unionId: f0, type: f1, loc: f2 };
+      const o: Extract<IrExpr, { kind: "fieldAbsent" }> = { kind: "fieldAbsent", ...(f0 !== undefined ? { unionId: f0 } : {}), type: f1, loc: f2 };
       return o;
     }
     case 37: {
@@ -4754,15 +4758,21 @@ function decT60(r: IrReader): NonNullable<NonNullable<IrClassDef["fields"]>[numb
   return o;
 }
 
-function encT61(w: IrWriter, v: NonNullable<NonNullable<IrRecordShape["fields"]>[number]>): void {
+function encIrRecordField(w: IrWriter, v: IrRecordField): void {
   w.keys(Object.keys(v), KEYS201);
   w.str(v.name);
   encIrType(w, v.type);
+  if (v.optional === undefined) w.byte(0);
+  else {
+    w.byte(1);
+    w.bool(v.optional);
+  }
 }
-function decT61(r: IrReader): NonNullable<NonNullable<IrRecordShape["fields"]>[number]> {
+function decIrRecordField(r: IrReader): IrRecordField {
   const f0 = r.str();
   const f1 = decIrType(r);
-  const o: NonNullable<NonNullable<IrRecordShape["fields"]>[number]> = { name: f0, type: f1 };
+  const f2 = r.tag(2, "IrModule.records[].fields[].optional") === 0 ? undefined : (r.bool() as NonNullable<IrRecordField["optional"]>);
+  const o: IrRecordField = { name: f0, type: f1, ...(f2 !== undefined ? { optional: f2 } : {}) };
   return o;
 }
 

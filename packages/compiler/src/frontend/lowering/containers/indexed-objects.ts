@@ -1180,6 +1180,7 @@ function buildRecordCaptureHelper(
                 loc,
               ),
               loc,
+              to.fields.find((f) => f.name === d.name)!,
             )
           : ({
               // No source property of this name: the field starts

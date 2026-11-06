@@ -24,6 +24,7 @@ const features = {
   declAdopt: false,
   typeOrigins: false,
   dynForAwait: false,
+  dynCollections: false,
   dynIntegrityQueries: false,
   reflectProtoTarget: false,
   genBind: false,

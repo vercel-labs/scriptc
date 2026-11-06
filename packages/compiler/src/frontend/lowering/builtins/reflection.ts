@@ -1,7 +1,7 @@
 import { varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, jsFuncNameOf } from "../lowerer.js";
-import { locOf } from "../../program.js";
+import { isJsSourceFile, locOf } from "../../program.js";
 import { builtinModuleFnOf } from "../surfaces.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import {
@@ -56,6 +56,23 @@ export function lowerPrototypeReflectionCall(
       loc,
       ...(fnName !== null ? { fnName } : {}),
     };
+  }
+  // A JavaScript source asks about a native Set, Map, WeakMap or WeakSet:
+  // the runtime answers %<Class>.prototype% so Symbol.toStringTag and the
+  // prototype's methods are reachable (a typed source keeps the refusal
+  // below). The weak collections live in checked-dynamic storage, so their
+  // argument is already a dynamic handle; the runtime dispatches on it.
+  if (
+    member === "getPrototypeOf" &&
+    isJsSourceFile(ts.getSourceFileOfNode(call)) &&
+    (object.type.kind === "set" ||
+      object.type.kind === "map" ||
+      (object.type.kind === "dyn" &&
+        lowerer.weakCollectionNamesOf(lowerer.typeOf(call.arguments.nodes[0]!)) !== null))
+  ) {
+    const boxed = lowerer.coerceInto(call.arguments.nodes[0]!, object, DYN);
+    if (boxed.type.kind === "dyn")
+      return { kind: "libCall", fn: "dyn.collectionGetPrototype", args: [boxed], type: DYN, loc };
   }
   if (
     object.type.kind !== "dyn" &&

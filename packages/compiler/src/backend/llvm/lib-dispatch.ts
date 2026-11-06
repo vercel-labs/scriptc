@@ -176,10 +176,11 @@ export function emitIoLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue
     );
     return { name: "", type: e.type };
   }
-  if (e.fn === "rl.on") {
+  if (e.fn === "rl.on" || e.fn === "rl.onFirst") {
     // The listener MOVES into the interface's registry; the adapter is
     // picked by event and parameter count ('line': the text, 'error': the
-    // error, 'history': the history array, the rest none).
+    // error, 'history': the history array, the rest none). onFirst is
+    // prependListener's registration, at the front of the same list.
     host.usesTimers = true;
     const cbT = e.args[2]!.type;
     const evArg = e.args[1]!;
@@ -205,9 +206,10 @@ export function emitIoLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue
       host.declare(`declare void @${name}(ptr, ptr)`);
       adapter = `@${name}`;
     }
-    host.declare(`declare void @scr_rl_on(double, double, ptr, ptr, i1)`);
+    const target = e.fn === "rl.on" ? "scr_rl_on" : "scr_rl_on_first";
+    host.declare(`declare void @${target}(double, double, ptr, ptr, i1)`);
     B.line(
-      `call void @scr_rl_on(double ${id.name}, double ${ev.name}, ptr ${cb.name}, ptr ${adapter}, i1 ${once.name})`,
+      `call void @${target}(double ${id.name}, double ${ev.name}, ptr ${cb.name}, ptr ${adapter}, i1 ${once.name})`,
     );
     return { name: "", type: e.type };
   }

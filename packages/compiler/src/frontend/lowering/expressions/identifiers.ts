@@ -33,6 +33,7 @@ import {
   typeEquals,
 } from "../../../ir/ir.js";
 import { lowerNodeModuleIdentifier } from "../lower-node-module.js";
+import { createRequireLoaderValue } from "../builtins/module-resolution.js";
 import { lowerCjsExportsObjectValue } from "../cjs-exports-object.js";
 import {
   splitRequireBindingOfIdent,
@@ -143,6 +144,14 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   if (lowerer.isStdlibGlobal(expr, "console")) {
     return { kind: "libCall", fn: "console.native", args: [], type: DYN, loc };
   }
+
+  // A createRequire loader as a VALUE (not the callee of a lowered call or
+  // a resolve read, which their own lowerings own): a run-time require
+  // function over the runtime resolver. Checked before the node:module
+  // identifier fold, which would otherwise read the destructured factory
+  // binding as its identity token.
+  const createRequireValue = createRequireLoaderValue(lowerer, expr, loc);
+  if (createRequireValue !== null) return createRequireValue;
 
   const moduleValue = lowerNodeModuleIdentifier(lowerer, expr);
   if (moduleValue) return moduleValue;

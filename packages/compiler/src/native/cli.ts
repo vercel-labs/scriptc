@@ -249,6 +249,7 @@ async function main(): Promise<number> {
         sparse,
       });
     },
+    reinvoke: (args) => ({ file: process.execPath, args }),
     run: async (binary) => {
       const toolchain = getCompiler().toolchain;
       let executable = binary;

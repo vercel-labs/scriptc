@@ -1548,8 +1548,25 @@ export function emitRecordExpr(
       const { ptr, type, inline } = host.recordFieldPtr(obj.name, e.shapeId, e.field);
       if (inline) return host.own({ name: host.inlineFieldUnion(ptr, type), type: e.type });
       const v = host.loadRecordField(ptr, type, false);
-      if (isRefCounted(e.type))
-        return host.own({ name: host.retainFrame(v, e.type), type: e.type });
+      if (isRefCounted(e.type)) {
+        const owned = host.retainFrame(v, e.type);
+        // An optional checked-dynamic slot's ABSENT marker reads as the
+        // ordinary dyn undefined, so the state never escapes its slot.
+        if (
+          e.type.kind === "dyn" &&
+          host.recordsById.get(e.shapeId)?.fields.find((f) => f.name === e.field)?.optional === true
+        ) {
+          host.declare(`declare ptr @scr_dyn_undefined()`);
+          const absent = B.tmp();
+          const undef = B.tmp();
+          const value = B.tmp();
+          B.line(`${absent} = icmp eq ptr ${v}, ${host.dynAbsentRef()}`);
+          B.line(`${undef} = call ptr @scr_dyn_undefined()`);
+          B.line(`${value} = select i1 ${absent}, ptr ${undef}, ptr ${owned}`);
+          return host.own({ name: value, type: e.type });
+        }
+        return host.own({ name: owned, type: e.type });
+      }
       return { name: v, type: e.type };
     }
     case "recordLit": {
@@ -1591,12 +1608,20 @@ export function emitRecordExpr(
       // lack its property, by holding the ABSENT state, and a PARTIAL
       // record view (record-views.ts) can lack a field its viewed record
       // does not declare.
-      const fieldType = host.recordsById
-        .get(e.shapeId)
-        ?.fields.find((f) => f.name === e.field)?.type;
+      const shapeField = host.recordsById.get(e.shapeId)?.fields.find((f) => f.name === e.field);
+      const fieldType = shapeField?.type;
+      const dynAbsent = shapeField?.optional === true && fieldType?.kind === "dyn";
       const obj = host.emitReadReceiver(e.obj);
       if (host.shapeHost.recordViews?.partialMissing(e.shapeId, e.field) !== true) {
         const { ptr, type, inline } = host.recordFieldPtr(obj.name, e.shapeId, e.field);
+        if (dynAbsent) {
+          const v = host.loadField(ptr, type, inline);
+          const absent = B.tmp();
+          B.line(`${absent} = icmp eq ptr ${v}, ${host.dynAbsentRef()}`);
+          const present = B.tmp();
+          B.line(`${present} = xor i1 ${absent}, true`);
+          return { name: present, type: e.type };
+        }
         if (type.kind !== "union" || undefinedArmTag(type, host.unionsById) < 0)
           return { name: "true", type: e.type };
         const v = host.loadField(ptr, type, inline);
@@ -1639,6 +1664,27 @@ export function emitRecordExpr(
       B.startBlock(done);
       const hasView = B.tmp();
       B.line(`${hasView} = phi i1 [ true, %${rhFrom} ], [ ${fromView}, %${view} ]`);
+      if (dynAbsent) {
+        // A present slot still answers by its ABSENT marker, a field the
+        // view lacks by the view.
+        const check = B.newLabel("rh.present");
+        const join = B.newLabel("rh.join");
+        const from = B.currentLabel();
+        B.condBr(hasView, check, join);
+        B.startBlock(check);
+        const { ptr, type, inline } = host.recordFieldPtr(obj.name, e.shapeId, e.field);
+        const v = host.loadField(ptr, type, inline);
+        const absent = B.tmp();
+        B.line(`${absent} = icmp eq ptr ${v}, ${host.dynAbsentRef()}`);
+        const present = B.tmp();
+        B.line(`${present} = xor i1 ${absent}, true`);
+        const checked = B.currentLabel();
+        B.br(join);
+        B.startBlock(join);
+        const answer = B.tmp();
+        B.line(`${answer} = phi i1 [ false, %${from} ], [ ${present}, %${checked} ]`);
+        return { name: answer, type: e.type };
+      }
       if (fieldType === undefined || fieldType.kind !== "union")
         return { name: hasView, type: e.type };
       const unionId = fieldType.unionId;
@@ -1664,7 +1710,10 @@ export function emitRecordExpr(
       return { name: answer, type: e.type };
     }
     case "fieldAbsent":
-      return { name: host.absentInstanceRef(e.unionId), type: e.type };
+      return {
+        name: e.unionId !== undefined ? host.absentInstanceRef(e.unionId) : host.dynAbsentRef(),
+        type: e.type,
+      };
     case "recordOvfHas": {
       const obj = host.emitExpr(e.obj);
       const key = host.emitExpr(e.key);

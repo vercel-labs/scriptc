@@ -37,20 +37,25 @@ interface RunResult {
 
 /** Compiles an inline program and runs the binary, tolerating nonzero exit.
  * `ext` selects the source lane: "cjs" for the JS lane's per-site checked
- * lowerings (dyn member dispatch exists only there). */
+ * lowerings (dyn member dispatch exists only there). `files` adds sibling
+ * modules (a JavaScript module and its declaration sidecar) next to the
+ * entry, so a lying declaration can be exercised without a lying cast. */
 async function compileAndRun(
   name: string,
   source: string,
   ext: "ts" | "cjs" = "ts",
   compareNode = false,
+  files: Record<string, string> = {},
 ): Promise<RunResult> {
   const key = createHash("sha256")
     .update(source)
+    .update(JSON.stringify(files))
     .update(sanitize ? "san" : "plain")
     .digest("hex")
     .slice(0, 16);
   const outDir = join(cacheDir, `dyncheck-${key}`);
   mkdirSync(outDir, { recursive: true });
+  for (const [name, text] of Object.entries(files)) writeFileSync(join(outDir, name), text);
   const file = join(outDir, `${name}.${ext}`);
   writeFileSync(file, source);
   // Pinned: the exact TypeError text and path rendering of failed checked
@@ -1087,6 +1092,39 @@ console.log("unreachable", asNum());
     expect(r.stderr).toContain("Uncaught TypeError: expected number at $, got string");
   });
 
+  test("a TYPED-REST target adapts the boxed function and checks each argument", async () => {
+    // The cast's domain includes rest-parameter signatures: the adapter packs
+    // the call's trailing arguments and the source thunk checks every one
+    // against its own parameter type. Node calls the source function with
+    // whatever arrived (here numbers into string params) and prints "1,2".
+    const r = await compileAndRun(
+      "dynfn-rest-arg-mismatch",
+      `function asDyn(value: unknown): unknown { return value; }
+const src = asDyn((...values: string[]) => values.join(","));
+const f = src as (...values: number[]) => string;
+console.log(f(1, 2));
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain("Uncaught TypeError: expected string at $[0], got number");
+  });
+
+  test("a look-alike object cannot acquire the boxed native result's kind", async () => {
+    // A native result type with a boxed form unwraps the BOX only: the object
+    // is a different kind. Node erases the cast and reads status 0.
+    const r = await compileAndRun(
+      "dyn-spawnres-lookalike",
+      `import type { SpawnSyncReturns } from "node:child_process";
+function asDyn(value: unknown): unknown { return value; }
+const lookalike = asDyn({ status: 0, signal: null, stdout: "x", stderr: "", pid: 1, output: [] });
+const result = lookalike as SpawnSyncReturns;
+console.log(result.status);
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain("Uncaught TypeError: expected SpawnSyncReturns at $, got object");
+  });
+
   test("boundary TypeErrors are catchable and calls keep working after", async () => {
     const r = await compileAndRun(
       "dynfn-recover",
@@ -1993,6 +2031,62 @@ console.log(inspect(sab));
         "view SC2020 util.inspect with showHidden of SharedArrayBuffer values is not supported yet",
         "dataView SC2020 util.inspect with showHidden of SharedArrayBuffer values is not supported yet",
         "SharedArrayBuffer { [Uint8Contents]: <00 00 00 00>, [byteLength]: 4 }",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("collection seeds from a dynamic iterable convert every element through the checked boundary", async () => {
+    // `new Set(x)` / `new Map(x)` over a checked-dynamic source seed the
+    // declared collection by iterating with the dynamic iterator protocol and
+    // converting each element (and each Map key and value) through the existing
+    // checked conversion. A lying view — a marked accessor whose data members
+    // are typed Set<string> / Map<string, number> but hold JSON arrays — makes
+    // the conversion fail where Node, which never checks, copies silently: the
+    // documented checked-dynamic divergence. The seed stops at the first bad
+    // element and the TypeError is catchable.
+    const r = await compileAndRun(
+      "collection-dyn-seed-checked",
+      `interface State {
+  readonly label: string;
+  readonly pending: Set<string>;
+  readonly table: Map<string, number>;
+}
+function create(): State {
+  return {
+    get label(): string {
+      return "agent";
+    },
+    pending: JSON.parse("[1,2]"),
+    table: JSON.parse("[[1,2]]"),
+  };
+}
+class Owner {
+  private m: State = create();
+  get state(): State {
+    return this.m;
+  }
+}
+const owner = new Owner();
+try {
+  const copy = new Set(owner.state.pending);
+  console.log("set-ok", copy.size);
+} catch (error) {
+  console.log("set-threw", (error as Error).name, (error as Error).message);
+}
+try {
+  const table = new Map(owner.state.table);
+  console.log("map-ok", table.size);
+} catch (error) {
+  console.log("map-threw", (error as Error).name, (error as Error).message);
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "set-threw TypeError expected string at $, got number",
+        "map-threw TypeError expected string at $, got number",
         "",
       ].join("\n"),
     );

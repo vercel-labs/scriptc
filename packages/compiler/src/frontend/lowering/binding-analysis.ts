@@ -151,6 +151,29 @@ function insideLoopBody(node: ts.Node): boolean {
   return false;
 }
 
+/** An identifier that reads or declares a binding (not a member name).
+ * `o.value`, `{ value: 1 }`, `const { value: v } = o` and `value?: T` all put
+ * the identifier in a NAME position: the checker answers the MEMBER's symbol
+ * there, which no value slot holds. */
+export function isValueIdentifier(node: ts.Identifier): boolean {
+  const parent = node.parent;
+  if (ts.isPropertyAccessExpression(parent) && parent.name === node) return false;
+  if (ts.isQualifiedName(parent) && parent.right === node) return false;
+  if (ts.isImportSpecifier(parent) && parent.propertyName === node) return false;
+  if (ts.isBindingElement(parent) && parent.propertyName === node) return false;
+  if (
+    (ts.isPropertyAssignment(parent) ||
+      ts.isPropertyDeclaration(parent) ||
+      ts.isMethodDeclaration(parent) ||
+      ts.isPropertySignature(parent) ||
+      ts.isGetAccessorDeclaration(parent) ||
+      ts.isSetAccessorDeclaration(parent)) &&
+    parent.name === node
+  )
+    return false;
+  return true;
+}
+
 /** Strips the value-preserving wrappers off an expression: parens,
  * non-null assertions, `as`/`satisfies`/angle-bracket casts. What
  * remains is the expression that actually evaluates. */

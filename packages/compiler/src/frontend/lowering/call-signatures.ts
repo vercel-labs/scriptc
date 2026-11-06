@@ -403,9 +403,9 @@ export function paramShape(lowerer: Lowerer, param: ts.ParameterDeclaration): Pa
       ? { type: DYN, mode: "omittable", bodyType: DYN }
       : { type: DYN, mode: "required" };
   }
-  const moduleNs = lowerer.moduleNsParamOverrides.get(param);
-  if (moduleNs !== undefined) {
-    return { type: moduleNs, mode: param.questionToken ? "omittable" : "required" };
+  const namespaceParam = lowerer.namespaceHandlerParamOverrides.get(param);
+  if (namespaceParam !== undefined) {
+    return { type: namespaceParam, mode: param.questionToken ? "omittable" : "required" };
   }
   if (!ts.isIdentifier(param.name)) {
     // A destructuring pattern parameter — `([label, value]) => ...`,

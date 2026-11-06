@@ -128,6 +128,8 @@ import {
   stdlibGlobalNameOf,
 } from "./surfaces.js";
 import { dynStringReceiver } from "./containers/dynamic-receivers.js";
+import { builtinModuleKeys } from "./builtin-module-members.js";
+import { reflectOverNamespaceExpr } from "./builtin-namespace-probe.js";
 import {
   lowerArrayConstructor,
   lowerArrayFromCall,
@@ -1680,7 +1682,9 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   if (
     ts.isPropertyAccessExpression(expr.expression) &&
     !expr.expression.questionDotToken &&
-    lowerer.cjsLocalModuleBindingOf(expr.expression.expression)
+    (lowerer.cjsLocalModuleBindingOf(expr.expression.expression) ||
+      (ts.isIdentifier(expr.expression.name) &&
+        lowerer.cjsWholeExportMemberOf(expr.expression.expression, expr.expression.name.text)))
   ) {
     // A binding whose dep is a class-expression WHOLE export
     // (`module.exports = class {…}`): `C.describe()` is a STATIC call
@@ -4315,6 +4319,23 @@ function lowerDynReceiverMethodCall(
   let recv: IrExpr;
   if (checkerUntyped) {
     recv = lowerer.lowerExpr(access.expression);
+    // A checker-untyped receiver that still lowered to a compiled FUNCTION
+    // (a JavaScript parameter instantiated with a callable at the call
+    // site, so the binding carries the call-site type while the checker
+    // says `any`/`unknown`): box it and dispatch the member on the
+    // runtime kind, so `f.apply(...)`/`f.call(...)`/`f.bind(...)` reach
+    // Function.prototype exactly as they do for a stored dynamic callback.
+    if (
+      recv.type.kind === "func" &&
+      !call.arguments.nodes.some(ts.isSpreadElement) &&
+      canBoxFuncIntoDyn(
+        recv.type,
+        (id) => lowerer.shapes.get(id),
+        (id) => lowerer.unions.get(id),
+      )
+    ) {
+      recv = { kind: "dynFrom", value: recv, type: DYN, loc: locOf(call) };
+    }
   } else {
     // A checker-TYPED spelling whose VALUE is still checked-dynamic (an
     // evolving `let h = {}` object flowing back out of a JS helper —
@@ -6703,17 +6724,27 @@ function modulePromiseStorageTypeOf(lowerer: Lowerer, e: ts.Expression): IrType 
   return null;
 }
 
-function markModuleNsHandlerParams(
+/** A handler parameter the checker typed as a module namespace, on a promise
+ * settling `settled`. One namespace arm settles the namespace itself (its
+ * type has no mapping, so the handle is the parameter's only story); the
+ * merge of several arms settles that namespace OBJECT as one
+ * checked-dynamic value (`c ? import("./a.ts") : import("./b.ts")` — the two
+ * namespaces have no joint union tag), and the handler reads the same
+ * object's exports through the dynamic value. */
+function markNamespaceHandlerParams(
   lowerer: Lowerer,
   handler: ts.Expression,
-  type: IrType & { kind: "moduleNs" },
+  settled: IrType,
 ): void {
   let e = handler;
   while (ts.isParenthesizedExpression(e)) e = e.expression;
   if (!ts.isArrowFunction(e) && !ts.isFunctionExpression(e)) return;
   for (const p of e.parameters.nodes) {
-    if (ts.isIdentifier(p.name) && !p.dotDotDotToken && !p.initializer) {
-      lowerer.moduleNsParamOverrides.set(p, type);
+    if (!ts.isIdentifier(p.name) || p.dotDotDotToken || p.initializer) continue;
+    if (settled.kind === "moduleNs") {
+      lowerer.namespaceHandlerParamOverrides.set(p, settled);
+    } else if (settled.kind === "dyn" && lowerer.irTypeOf(p.name)?.kind === "moduleNs") {
+      lowerer.namespaceHandlerParamOverrides.set(p, DYN);
     }
   }
 }
@@ -6879,8 +6910,8 @@ export function lowerPromiseMethodCall(
         );
       }
       const R = resultT.inner;
-      if (!fulfilledAbsent && inner.kind === "moduleNs")
-        markModuleNsHandlerParams(lowerer, fulfilledNode, inner);
+      if (!fulfilledAbsent && (inner.kind === "moduleNs" || inner.kind === "dyn"))
+        markNamespaceHandlerParams(lowerer, fulfilledNode, inner);
       const boxHandler = (
         node: ts.Expression,
         allowDirect: boolean,
@@ -7114,8 +7145,8 @@ export function lowerPromiseMethodCall(
     // contextual type spelled (a module-namespace type has no mapping —
     // the handle is the value's only story, isIslandExpr's local rule).
 
-    if (inner.kind === "moduleNs")
-      markModuleNsHandlerParams(lowerer, call.arguments.nodes[0]!, inner);
+    if (inner.kind === "moduleNs" || inner.kind === "dyn")
+      markNamespaceHandlerParams(lowerer, call.arguments.nodes[0]!, inner);
     let cb =
       primitiveConversionHandler(lowerer, call.arguments.nodes[0]!, inner) ??
       lowerer.lowerExpr(call.arguments.nodes[0]!);
@@ -8800,6 +8831,29 @@ function lowerObjectStaticCall(
         ...(fnName !== null ? { fnName } : {}),
       };
     }
+    // A JavaScript source asks about a native Set, Map, WeakMap or WeakSet:
+    // the runtime answers %<Class>.prototype% so Symbol.toStringTag and the
+    // prototype's methods are reachable (a typed source keeps the refusal
+    // below). The weak collections live in checked-dynamic storage, so their
+    // argument is already a dynamic handle; the runtime dispatches on it.
+    if (
+      member === "getPrototypeOf" &&
+      isJsSourceFile(ts.getSourceFileOfNode(call)) &&
+      (object.type.kind === "set" ||
+        object.type.kind === "map" ||
+        (object.type.kind === "dyn" &&
+          lowerer.weakCollectionNamesOf(lowerer.typeOf(call.arguments.nodes[0]!)) !== null))
+    ) {
+      const boxed = lowerer.coerceInto(call.arguments.nodes[0]!, object, DYN);
+      if (boxed.type.kind === "dyn")
+        return {
+          kind: "libCall",
+          fn: "dyn.collectionGetPrototype",
+          args: [boxed],
+          type: DYN,
+          loc: locOf(call),
+        };
+    }
     if (
       object.type.kind !== "dyn" &&
       canConvertToDyn(
@@ -10010,8 +10064,9 @@ function lowerObjectStaticCall(
   // namespace's export names sorted with "default". values/entries would
   // include members that do not compile yet.
   const probedModule = tryLowerExpression(lowerer, argNode);
+  const namespaceShape = lowerer.builtinNamespaceShapeOf(argNode);
   if (
-    lowerer.builtinNamespaceModuleOf(argNode) === "util/types" ||
+    namespaceShape?.module === "util/types" ||
     (probedModule?.type.kind === "moduleNs" && probedModule.type.moduleId === "builtin:util/types")
   ) {
     if (member !== "keys") {
@@ -10021,27 +10076,79 @@ function lowerObjectStaticCall(
         "call the util.types predicates by name",
       );
     }
-    const symbol = ts.isIdentifier(argNode)
-      ? lowerer.checker.getSymbolAtLocation(argNode)
-      : undefined;
-    const namespace = symbol
-      ? symbol.declarations.some((decl) => ts.isNamespaceImport(decl))
-      : false;
-    const names = namespace ? [...UTIL_TYPES_KEYS, "default"].sort() : UTIL_TYPES_KEYS;
+    // The two shapes list the same names in the same order except for the
+    // "default" entry an ES module namespace adds; a value whose shape the
+    // type system does not fix cannot be answered either way.
+    const flavor = namespaceShape?.flavor ?? "unknown";
+    if (flavor === "unknown") {
+      lowerer.noLowering(
+        "Object.keys over a util.types namespace whose runtime shape is not known statically",
+        call,
+        "reflect on the namespace where it is bound (a namespace import, a require call or process.getBuiltinModule)",
+      );
+    }
+    const names = flavor === "esm" ? [...UTIL_TYPES_KEYS, "default"].sort() : UTIL_TYPES_KEYS;
     const loc = locOf(call);
-    return {
-      kind: "arrayLit",
-      elems: names.map((name) => ({ kind: "strLit", value: name, type: STRING, loc })),
-      type: arrayOf(STRING),
+    return reflectOverNamespaceExpr(
+      lowerer,
+      argNode,
+      {
+        kind: "arrayLit",
+        elems: names.map((name) => ({ kind: "strLit", value: name, type: STRING, loc })),
+        type: arrayOf(STRING),
+        loc,
+      },
       loc,
-    };
+    );
+  }
+  // A builtin module namespace (`Object.keys(zlib)` — also a callable
+  // module such as node:events, whose type maps to its exported function
+  // rather than to a module namespace): Node's member census answers, in
+  // the flavor's order — the CommonJS exports object's insertion order, or
+  // an ESM namespace's export names sorted with "default". A namespace
+  // whose shape the type system does not fix (a parameter, an untraced
+  // call result) has no answer here.
+  if (namespaceShape !== null) {
+    if (member !== "keys") {
+      lowerer.noLowering(
+        `Object.${member} over a builtin module namespace`,
+        call,
+        "access the builtin's named exports directly",
+      );
+    }
+    if (namespaceShape.flavor === "unknown") {
+      lowerer.noLowering(
+        "Object.keys over a builtin module namespace whose runtime shape is not known statically",
+        call,
+        "reflect on the namespace where it is bound (a namespace import, a require call or process.getBuiltinModule)",
+      );
+    }
+    const names = builtinModuleKeys(namespaceShape.module, namespaceShape.flavor);
+    if (names === null) {
+      lowerer.noLowering(
+        "Object.keys over a builtin module namespace",
+        call,
+        "access the builtin's named exports directly",
+      );
+    }
+    const loc = locOf(call);
+    return reflectOverNamespaceExpr(
+      lowerer,
+      argNode,
+      {
+        kind: "arrayLit",
+        elems: names.map((name) => ({ kind: "strLit", value: name, type: STRING, loc })),
+        type: arrayOf(STRING),
+        loc,
+      },
+      loc,
+    );
   }
   // A compiled PROGRAM module namespace is a nominal token whose members
   // remain live bindings, but its enumerable key set is static and Node
   // sorts it in code-unit order. Materialize exactly those value-export
   // names for Object.keys; values/entries would need a heterogeneous live
-  // view and stay explicitly fenced. Builtin namespaces also stay fenced:
-  // their exact runtime export set is Node-owned, not the ambient subset.
+  // view and stay explicitly fenced.
   {
     const probed = tryLowerExpression(lowerer, argNode);
     if (probed?.type.kind === "moduleNs") {
@@ -10057,20 +10164,29 @@ function lowerObjectStaticCall(
         lowerer.noLowering(
           "Object.keys over a builtin module namespace",
           call,
-          "access the builtin's named exports directly (the exact runtime key census is Node-owned)",
+          "access the builtin's named exports directly",
         );
       }
       const moduleSymbol = source ? lowerer.checker.getSymbolAtLocation(source) : undefined;
+      const runtimeNames = source === null ? new Set<string>() : lowerer.runtimeExportNames(source);
       const names: string[] = [];
-      moduleSymbol?.getExports().forEach((symbol, key) => {
+      // The resolved export set, so an `export * from` re-export lists the
+      // names it forwards — the same set the namespace object carries. A
+      // name a type-only export declaration forwards has no runtime
+      // binding, so the runtime export names decide that part of the set.
+      for (const symbol of moduleSymbol ? lowerer.checker.getExportsOfModule(moduleSymbol) : []) {
         // Internal names (`__export`) start with `__`; an exported name that
-        // does is keyed with an extra `_` (escapedSymbolName).
-        const name = String(key);
-        if ((name.startsWith("__") && !name.startsWith("___")) || name === "export=") return;
+        // does is keyed with an extra `_` (escapedSymbolName), so the escaped
+        // name is what tells the two apart. The name pushed is the export's
+        // own spelling, without that extra `_`.
+        const key = String(symbol.escapedName);
+        if ((key.startsWith("__") && !key.startsWith("___")) || key === "export=") continue;
+        const name = ts.symbolName(symbol);
+        if (!runtimeNames.has(name)) continue;
         const target =
           symbol.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(symbol) : symbol;
-        if (target.flags & ts.SymbolFlags.Value) names.push(ts.symbolName(symbol));
-      });
+        if (target.flags & ts.SymbolFlags.Value) names.push(name);
+      }
       names.sort();
       const loc = locOf(call);
       const result: IrExpr = {

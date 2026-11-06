@@ -21,7 +21,6 @@ import type { Lowerer } from "./lowerer.js";
 import {
   canonicalBuiltinModule,
   cjsExportAssignmentOf,
-  cjsExportDeclaratorOf,
   cjsExportDiscardReason,
   cjsExportTargetLiteral,
   isCjsJsFile,
@@ -479,17 +478,11 @@ export function wholeExportValue(
   if (ts.isClassExpression(whole.rhs)) {
     return lowerer.classValueRef(lowerer.lowerClassExpressionInfo(whole.rhs), blame);
   }
-  // `var x = module.exports = <value>`: the declarator's own module
-  // global is the export storage — the declaration assigns it once, at
-  // its source position. A declaration whose value has no represented
-  // storage (the ordinary declaration path registers none) has no read
-  // either: the caller fences instead of lowering a phantom binding.
-  const declarator = cjsExportDeclaratorOf(whole.assign);
-  if (declarator !== null) {
-    const g = lowerer.globalOf(declarator.name as ts.Identifier);
-    if (g === null) return null;
-    return { kind: "varRef", localId: g.id, type: g.type, loc: locOf(blame) };
-  }
+  // Every other value shape stores its snapshot on the export assignment
+  // itself (collectGlobals' export slot). The declaration spelling
+  // (`var x = module.exports = <value>`) registers that same slot: `x` is
+  // an ordinary binding initialized with the value, and REASSIGNING it
+  // leaves module.exports untouched, as in Node.
   const g = lowerer.globalsByDeclNode.get(whole.assign);
   if (g === undefined) return null;
   return { kind: "varRef", localId: g.id, type: g.type, loc: locOf(blame) };
@@ -504,8 +497,6 @@ export function hasWholeExportValue(lowerer: Lowerer, dep: ts.SourceFile, depth 
   const inner = inlineProgramRequireOf(lowerer, whole.rhs);
   if (inner !== null) return hasWholeExportValue(lowerer, inner.dep, depth + 1);
   if (ts.isIdentifier(whole.rhs) || ts.isClassExpression(whole.rhs)) return true;
-  const declarator = cjsExportDeclaratorOf(whole.assign);
-  if (declarator !== null) return lowerer.globalOf(declarator.name as ts.Identifier) !== null;
   return lowerer.globalsByDeclNode.has(whole.assign);
 }
 

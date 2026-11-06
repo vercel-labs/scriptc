@@ -9381,11 +9381,12 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
     );
   }
   // `var x = module.exports = <value>` — the chained whole-export
-  // declaration (cjsExportAssignmentOf's declaration spelling): the
-  // declarator's own module global IS module.exports (importers read it
-  // through cjsWholeExportValueOf), and this expression already yields
-  // the value to the declaration that assigns it, at its source
-  // position. The assignment itself adds nothing.
+  // declaration (cjsExportAssignmentOf's declaration spelling): module.exports
+  // has its own export slot (collectGlobals registers it keyed by this
+  // assignment), assigned here from the value the declaration already
+  // evaluated; the declarator is an ordinary binding initialized from the
+  // same value. Reassigning the declarator later therefore leaves the
+  // export alone, as in Node.
   {
     let top: ts.Node = expr;
     while (top.parent !== undefined && ts.isParenthesizedExpression(top.parent)) top = top.parent;
@@ -9400,7 +9401,30 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
       expr.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
       cjsExportAssignmentOf(ownerStmt)?.expr === expr
     ) {
-      return { kind: "block", body: [], loc: locOf(expr) };
+      // A later `module.exports =` replaces this export before any importer
+      // reads it (collectGlobals registers no slot then); the declarator
+      // still takes the value at its own initializer.
+      if (cjsExportDiscardReason(ownerStmt) !== null)
+        return { kind: "block", body: [], loc: locOf(expr) };
+      let rhs: ts.Expression = expr.right;
+      while (ts.isParenthesizedExpression(rhs)) rhs = rhs.expression;
+      // A class expression's value is the class itself: the declarator's
+      // initializer already evaluated it (the held value), so only the
+      // export symbol names the collected class.
+      if (ts.isClassExpression(rhs)) {
+        const info = lowerer.lowerClassExpressionInfo(rhs);
+        const exportSym = lowerer.checker.getSymbolAtLocation(expr.left);
+        if (exportSym && !lowerer.classBySymbol.has(exportSym))
+          lowerer.classBySymbol.set(exportSym, info);
+        return { kind: "block", body: [], loc: locOf(expr) };
+      }
+      // A require value already ran the module's initializer while the
+      // declaration evaluated it; importers of a re-exported module resolve
+      // through that module's own export machinery.
+      if (inlineProgramRequireOf(lowerer, rhs) !== null)
+        return { kind: "block", body: [], loc: locOf(expr) };
+      const single = lowerCjsSingleValueExport(lowerer, expr, locOf(expr));
+      if (single !== null) return single;
     }
   }
   // Replacing the export object (or rebinding `exports`) anywhere but a

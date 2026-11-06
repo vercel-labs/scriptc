@@ -11013,7 +11013,9 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
             expr.expression.expression.text === "exports" &&
             !lowerer.peekLocal(expr.expression.expression) &&
             !lowerer.globalOf(expr.expression.expression)))) ||
-        lowerer.cjsLocalModuleBindingOf(expr.expression.expression))
+        lowerer.cjsLocalModuleBindingOf(expr.expression.expression) ||
+        (ts.isIdentifier(expr.expression.name) &&
+          lowerer.cjsWholeExportMemberOf(expr.expression.expression, expr.expression.name.text)))
     ) {
       // Candidate symbols for the export global: the member symbol as
       // spelled, its alias-chased resolution (resolveValueSymbol carries

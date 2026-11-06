@@ -3,6 +3,7 @@
   "<repo>/tests/corpus/cjs-single-value-exports/chained.cjs",
   "<repo>/tests/corpus/cjs-single-value-exports/leaf.cjs",
   "<repo>/tests/corpus/cjs-single-value-exports/reexport.cjs",
+  "<repo>/tests/corpus/cjs-single-value-exports/factory.cjs",
   "<repo>/tests/corpus/cjs-single-value-exports/main.mjs"
  ],
  "diags": []

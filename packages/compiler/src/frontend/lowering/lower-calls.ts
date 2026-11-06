@@ -1680,7 +1680,9 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   if (
     ts.isPropertyAccessExpression(expr.expression) &&
     !expr.expression.questionDotToken &&
-    lowerer.cjsLocalModuleBindingOf(expr.expression.expression)
+    (lowerer.cjsLocalModuleBindingOf(expr.expression.expression) ||
+      (ts.isIdentifier(expr.expression.name) &&
+        lowerer.cjsWholeExportMemberOf(expr.expression.expression, expr.expression.name.text)))
   ) {
     // A binding whose dep is a class-expression WHOLE export
     // (`module.exports = class {…}`): `C.describe()` is a STATIC call

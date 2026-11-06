@@ -928,6 +928,21 @@ export function boundIdentifiersOf(name: ts.BindingName): ts.Identifier[] {
   return out;
 }
 
+/** Whether a declaration belongs to a module's own top level rather than to
+ * a function body inside it: a direct statement of the module, or a
+ * property of a module-scope object literal. A property of a value a module
+ * function returns is inside that function and belongs to the value. */
+function moduleScopeDeclarationOf(dep: ts.SourceFile, d: ts.Node): boolean {
+  let n: ts.Node = d;
+  while (n.parent !== undefined && n.parent !== dep) {
+    const parent = n.parent;
+    if (ts.isFunctionLike(parent) || ts.isBlock(parent) || ts.isReturnStatement(parent))
+      return false;
+    n = parent;
+  }
+  return n.parent === dep;
+}
+
 /** Statements a never-lowered body would have contributed to the coverage
  * totals: every element of a statement list (blocks, case clauses), plus
  * the single-statement bodies of control flow, nested functions included —
@@ -6102,11 +6117,16 @@ export class Lowerer {
       ident.parent.name === ident
     ) {
       const recv = ident.parent.expression;
-      if (this.cjsLocalModuleBindingOf(recv)) {
+      const namespaceRecv = this.cjsLocalModuleBindingOf(recv);
+      if (namespaceRecv || this.cjsWholeExportMemberOf(recv, ident.text)) {
         const dep = ts.isIdentifier(recv)
           ? this.localModuleBindingDepOf(recv)
           : this.cjsModuleRefDepOf(recv);
-        const exported = dep ? this.cjsModuleExportSymbol(dep, ident.text) : undefined;
+        const exported = dep
+          ? namespaceRecv
+            ? this.cjsModuleExportSymbol(dep, ident.text)
+            : this.cjsWholeExportMemberSymbol(dep, ident.text)
+          : undefined;
         // A createRequire call is typed as `any`, so tsgo can manufacture a
         // transient property symbol with no relation to the target module.
         // Prefer the real export-table symbol whenever the receiver is a
@@ -6768,6 +6788,55 @@ export class Lowerer {
       }
     }
     return true;
+  }
+
+  /** True when `expr` is a binding of a SINGLE-VALUE module whose export
+   * table carries the member `name`. `module.exports = <value>` followed
+   * by `module.exports.name = <expr>` keeps the member on the exported
+   * value in Node, so a member read through any require binding (plain
+   * require, default import, createRequire) answers that export member.
+   * Members the exported VALUE declares itself — a class's statics, a
+   * function's own `name`/`length`/`prototype`, expando properties attached
+   * through the declarator — have no export storage and read through the
+   * value. */
+  cjsWholeExportMemberOf(expr: ts.Expression, name: string): boolean {
+    if (!ts.isIdentifier(expr)) return false;
+    const dep = this.localModuleBindingDepOf(expr);
+    if (dep === null || cjsNamespaceModule(this, dep)) return false;
+    if (!hasWholeExportValue(this, dep)) return false;
+    let sym = this.cjsWholeExportMemberSymbol(dep, name);
+    if (sym === undefined) return false;
+    // The member has export storage (an expression-valued member), or it is
+    // alias plumbing naming a declaration importers resolve to. A property
+    // the checker synthesized from an expando write on the exported value
+    // has neither and belongs to the value.
+    if (this.globalsBySymbol.has(sym)) return true;
+    if (sym.flags & ts.SymbolFlags.Alias) sym = this.checker.getAliasedSymbol(sym);
+    if (this.globalsBySymbol.has(sym)) return true;
+    for (const d of sym.declarations) {
+      if (this.globalsByDeclNode.has(d)) return true;
+      if (!moduleScopeDeclarationOf(dep, d)) continue;
+      if (ts.isShorthandPropertyAssignment(d)) return true;
+      if (ts.isPropertyAssignment(d) && ts.isIdentifier(d.initializer)) return true;
+      if (ts.isFunctionDeclaration(d) || ts.isClassDeclaration(d)) return true;
+    }
+    return false;
+  }
+
+  /** The export symbol of member `name` in a SINGLE-VALUE module: the
+   * checker's exports table when it carries the member, otherwise the
+   * member statement itself (`module.exports.name = …` — a class-expression
+   * whole export's type has no expando property for the checker to put in
+   * the table). */
+  cjsWholeExportMemberSymbol(dep: ts.SourceFile, name: string): ts.Symbol | undefined {
+    const direct = this.cjsModuleExportSymbol(dep, name);
+    if (direct !== undefined) return direct;
+    for (const stmt of dep.statements.nodes) {
+      const member = cjsExportAssignmentOf(stmt);
+      if (member?.kind === "member" && ts.isIdentifier(member.name) && member.name.text === name)
+        return this.checker.getSymbolAtLocation(member.name) ?? undefined;
+    }
+    return undefined;
   }
 
   /** Assignment-target resolution: a function local (possibly captured) or

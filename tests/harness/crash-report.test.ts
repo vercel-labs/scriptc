@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { summarizeReport } from "./crash-report.js";
+import { reportNameMatches, summarizeReport } from "./crash-report.js";
 
 /** A `.ips` file: one metadata line, then the JSON payload. */
 function ips(payload: unknown): string {
@@ -69,6 +69,21 @@ describe("darwin crash reports", () => {
   test("a truncated payload falls back to the head instead of failing", () => {
     expect(summarizeReport("program.ips", '{"app_name":"program"}\n{"threads":[')).toContain(
       '{"threads":[',
+    );
+  });
+
+  test("a report whose name the kernel cut short still belongs to its binary", () => {
+    // ReportCrash names the file after the process name the kernel reports,
+    // which is the binary's basename cut to a task name's length.
+    expect(
+      reportNameMatches("program-llvm-rel-2026-11-06-044953.ips", "/tmp/x/program-llvm-release"),
+    ).toBe(true);
+  });
+
+  test("a report for another binary in the same directory does not match", () => {
+    // The shorter binary must not claim a report that names a longer one.
+    expect(reportNameMatches("program-llvm-rel-2026-11-06-044953.ips", "/tmp/x/program")).toBe(
+      false,
     );
   });
 });

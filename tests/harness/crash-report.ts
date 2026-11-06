@@ -17,8 +17,21 @@ const REPORT_DIRS = [
 const REPORT_WAIT_MS = 5000;
 const REPORT_POLL_MS = 200;
 
-function newestReport(binary: string, since: number): string | null {
+/** The timestamp ReportCrash ends a report's name with. */
+const REPORT_STAMP = /[-_]\d{4}-\d{2}-\d{2}[-_]\d{6}\.(?:ips|crash)$/;
+
+/** Whether a report's file name belongs to `binary`. ReportCrash names the
+ * file after the process name, which the kernel cuts to the length of a
+ * Darwin task name, so a longer binary name only matches by its prefix. */
+export function reportNameMatches(entry: string, binary: string): boolean {
   const name = basename(binary);
+  const stamp = REPORT_STAMP.exec(entry);
+  if (stamp === null) return entry.includes(name);
+  const processName = entry.slice(0, stamp.index);
+  return processName.length > 0 && name.slice(0, processName.length) === processName;
+}
+
+function newestReport(binary: string, since: number): string | null {
   let newest: { path: string; mtime: number } | null = null;
   for (const dir of REPORT_DIRS) {
     let entries: string[];
@@ -28,8 +41,8 @@ function newestReport(binary: string, since: number): string | null {
       continue;
     }
     for (const entry of entries) {
-      if (!entry.includes(name)) continue;
       if (!entry.endsWith(".ips") && !entry.endsWith(".crash")) continue;
+      if (!reportNameMatches(entry, binary)) continue;
       const path = join(dir, entry);
       try {
         const stats = statSync(path);

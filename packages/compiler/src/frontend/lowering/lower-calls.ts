@@ -4315,6 +4315,23 @@ function lowerDynReceiverMethodCall(
   let recv: IrExpr;
   if (checkerUntyped) {
     recv = lowerer.lowerExpr(access.expression);
+    // A checker-untyped receiver that still lowered to a compiled FUNCTION
+    // (a JavaScript parameter instantiated with a callable at the call
+    // site, so the binding carries the call-site type while the checker
+    // says `any`/`unknown`): box it and dispatch the member on the
+    // runtime kind, so `f.apply(...)`/`f.call(...)`/`f.bind(...)` reach
+    // Function.prototype exactly as they do for a stored dynamic callback.
+    if (
+      recv.type.kind === "func" &&
+      !call.arguments.nodes.some(ts.isSpreadElement) &&
+      canBoxFuncIntoDyn(
+        recv.type,
+        (id) => lowerer.shapes.get(id),
+        (id) => lowerer.unions.get(id),
+      )
+    ) {
+      recv = { kind: "dynFrom", value: recv, type: DYN, loc: locOf(call) };
+    }
   } else {
     // A checker-TYPED spelling whose VALUE is still checked-dynamic (an
     // evolving `let h = {}` object flowing back out of a JS helper —

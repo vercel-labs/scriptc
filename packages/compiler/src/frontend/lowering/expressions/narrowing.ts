@@ -709,14 +709,14 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
       lowerer.isStdlibMember(node)
     )
       return expr;
-    // A null-initialized JS field can later receive an object even when
-    // checker flow calls its non-null branch never. The live checked
-    // value remains authoritative; never is not a numeric guard.
-    if (
-      isJsSourceFile(ts.getSourceFileOfNode(node)) &&
-      (lowerer.typeOf(node).flags & ts.TypeFlags.Never) !== 0
-    )
-      return expr;
+    // The live value is authoritative even when checker flow calls it
+    // never. Two flows reach here: a null-initialized JS field that later
+    // receives an object, and a failed type predicate whose type is
+    // `unknown` (`Check(value: unknown): value is Encode` with an
+    // unconstrained `Encode`), which subtracts every member of the value
+    // and so narrows it to never. Never is not a numeric guard, and no
+    // check can produce an uninhabited value.
+    if ((lowerer.typeOf(node).flags & ts.TypeFlags.Never) !== 0) return expr;
     const narrowed = lowerer.mapTypeOf(lowerer.typeOf(node));
     if (
       narrowed &&

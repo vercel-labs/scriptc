@@ -3,15 +3,6 @@
 // blocking rule. (The width copies themselves — field-subset narrowing,
 // hybrid captures, per-field lifts — are differential corpus.)
 
-// An index-signature source cannot complete an absent optional field:
-// the overflow could hold the key at runtime, and a completed undefined
-// would drop that value.
-type Loose = { [k: string]: number };
-type PickedA = { a?: number };
-const loose: Loose = { a: 1 };
-const picked: PickedA = loose;
-console.log(picked);
-
 // A method field whose parameter shapes relate only BIVARIANTLY: the field
 // lifts as a checked adapter, so only the console.log below refuses (a
 // function value has no inspect lowering).

@@ -994,23 +994,28 @@ function buildRecordProjection(
           kind: "recordLit",
           fields: target.fields.map((field) => {
             const conversion = plan.get(field.name)!;
-            if ("overflow" in conversion) {
-              // The source keeps this member in its index signature: read
-              // the key from the overflow (a missing key answers undefined)
-              // instead of completing undefined over a value it holds.
+            if ("overflow" in conversion || "overflowAt" in conversion) {
+              // The source keeps this member in its index signature:
+              // read the key from the overflow instead of completing
+              // undefined over a value it holds. The key names no
+              // declared field of the source, so the read is an overflow
+              // read. A typed member reads at its own type, where a key
+              // the object never had is the type's undefined arm; a
+              // dynamic member reads as dyn, whose undefined the member's
+              // check rejects.
+              const atMember = "overflowAt" in conversion;
               const read: IrExpr = {
                 kind: "recordKeyGet",
                 obj: receiver,
                 shapeId: (source as IrType & { kind: "record" }).shapeId,
                 key: { kind: "strLit", value: field.name, type: STRING, loc },
-                type: conversion.overflow,
+                overflowOnly: true,
+                type: atMember ? conversion.overflowAt : conversion.overflow,
                 loc,
               };
               return {
                 name: field.name,
-                value: conversion.lift
-                  ? lowerer.applyWidthLift(conversion.lift, read, field.type, loc)
-                  : lowerer.coerceToExpected(read, field.type),
+                value: atMember ? read : lowerer.coerceToExpected(read, field.type),
               };
             }
             if ("absentDyn" in conversion)

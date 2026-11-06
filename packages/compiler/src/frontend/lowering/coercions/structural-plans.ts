@@ -9,6 +9,7 @@ import {
   UNDEFINED_T,
 } from "../../../ir/ir.js";
 import { type ClassInfo, findMethodOn, findGenericMethodOn } from "../lower-classes.js";
+import { recordKeyResultOk } from "../lower-exprs.js";
 import type { Lowerer } from "../lowerer.js";
 
 /** Whether a record pair relates ONLY through the index-signature rule: the
@@ -36,11 +37,30 @@ export type FieldLift =
   /** A target field the source does not declare: TypeScript lets the
    * source's index signature satisfy it, so the projection reads whatever
    * the overflow holds under that key (a copy would complete undefined and
-   * drop a value the object really has). `lift` is null for a
-   * checked-dynamic overflow, whose read coerces through dynCheck. */
-  | { overflow: IrType; lift: WidthLift | null }
+   * drop a value the object really has). Only a dynamic index value takes
+   * this arm: its read answers the dyn undefined for a key the object never
+   * had, which the member's check rejects. */
+  | { overflow: IrType }
+  /** The same overflow read taken at the target member's own type: the
+   * index value surfaces there, and the type's undefined arm is what a key
+   * the object never had answers (a read at the index value alone has no
+   * value to give a missing key). */
+  | { overflowAt: IrType }
   | { absent: true; utag: number }
   | { absentDyn: true };
+
+/** Whether the source's index signature can answer a target member at the
+ * member's own type: the overflow value reads there and the type holds
+ * undefined, so a key the object never had is a value the member can take. */
+function overflowReadsAt(lowerer: Lowerer, from: IrRecordShape, to: IrType): boolean {
+  return (
+    from.indexValue !== undefined &&
+    from.indexValue.kind !== "dyn" &&
+    to.kind === "union" &&
+    lowerer.armTag(to.unionId, UNDEFINED_T) >= 0 &&
+    recordKeyResultOk(lowerer, { ...from, fields: [] }, to)
+  );
+}
 
 /** Plan one recursive structural conversion without interning helpers.
  * Validate the entire plan before building it; ambiguous union destinations
@@ -551,17 +571,27 @@ export function recordWidthPlan(
       const ff = from.fields.find((f) => f.name === tf.name);
       if (!ff) {
         // A target field MISSING on the source: the source's INDEX
-        // SIGNATURE satisfies it (tsc lets the signature feed optional
-        // and required target members alike), so the projection reads the
-        // key from the overflow — completing undefined would drop a value
-        // the object really holds. A checked-dynamic overflow reads
-        // through dynCheck; a typed one lifts like any slot.
+        // SIGNATURE satisfies it, so the projection reads the key from
+        // the overflow — completing undefined would drop a value the
+        // object really holds.
         if (from.indexValue !== undefined && !from.tuple) {
           const iv = from.indexValue;
-          const lift = iv.kind === "dyn" ? null : lowerer.widthLiftPlan(iv, tf.type);
-          if (iv.kind === "dyn" ? !lowerer.dynExtractableTo(tf.type) : lift === null) return null;
-          plan.set(tf.name, { overflow: iv, lift });
-          continue;
+          // A key the object never had has no value to give: plan the read
+          // only where its result type holds the undefined a miss answers.
+          // A member whose type the index value surfaces at, with an
+          // undefined arm, reads at the member's own type; a dynamic index
+          // value reads as dyn. A typed value read at its own type has no
+          // undefined to answer a miss with, so the pair keeps the checked
+          // conversion it takes without a plan.
+          if (overflowReadsAt(lowerer, from, tf.type)) {
+            plan.set(tf.name, { overflowAt: tf.type });
+            continue;
+          }
+          if (iv.kind === "dyn" && lowerer.dynExtractableTo(tf.type)) {
+            plan.set(tf.name, { overflow: iv });
+            continue;
+          }
+          return null;
         }
         // Otherwise legal exactly when it is optional-flavored (an
         // undefined-armed union) — the unset field IS the undefined arm,
@@ -664,9 +694,8 @@ export function describeRecordWidthBlocker(
       if (from.indexValue !== undefined) {
         const iv = from.indexValue;
         const ok =
-          iv.kind === "dyn"
-            ? lowerer.dynExtractableTo(tf.type)
-            : lowerer.widthLiftPlan(iv, tf.type) !== null;
+          overflowReadsAt(lowerer, from, tf.type) ||
+          (iv.kind === "dyn" && lowerer.dynExtractableTo(tf.type));
         if (!ok)
           return `'${tf.name}' is not a declared field of the source, and the source's '[key: string]: ${lowerer.fmt(iv)}' overflow cannot produce '${lowerer.fmt(tf.type)}'`;
         continue;

@@ -334,10 +334,25 @@ export function islandModuleFile(
     if (islandOwnerOfFile(islands, resolved) === null) return null;
     file = resolved;
   } else {
+    // No island set owns any file: every answer below is null.
+    if (islands.packages.size === 0 && islands.modules.size === 0) return null;
+    // The runtime resolution first: the file Node loads is the island.
     const js = resolveBareModule(fromFile, spec, "js-only", kind);
-    if (js === null) return null;
-    if (islandOwnerOfFile(islands, js.typesFile) === null) return null;
-    file = js.typesFile;
+    if (js === null) {
+      // A workspace package exported as TypeScript source has no runnable
+      // entry under Node's conditions (its `exports` maps "import" to the
+      // .ts), so the runtime pass answers nothing. The program already
+      // loaded the file, so the island set names it: accept the source
+      // resolution only when the file is an island's, so an unrelated
+      // answer cannot become an island import.
+      const source = resolveBareModule(fromFile, spec, "runtime-source", kind);
+      if (source === null) return null;
+      if (islandOwnerOfFile(islands, source.typesFile) === null) return null;
+      file = source.typesFile;
+    } else {
+      if (islandOwnerOfFile(islands, js.typesFile) === null) return null;
+      file = js.typesFile;
+    }
   }
   try {
     return realpathSync(file);

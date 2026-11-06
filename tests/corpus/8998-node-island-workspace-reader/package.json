@@ -1,0 +1,1 @@
+{ "name": "node-island-workspace-reader", "private": true, "type": "module", "workspaces": ["packages/*"] }

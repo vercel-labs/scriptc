@@ -467,14 +467,56 @@ export function wholeExportValue(
   if (inner !== null) return wholeExportValue(lowerer, inner.dep, blame, depth + 1);
   // An identifier names a declaration of the exporting module (or a
   // builtin global): reading it IS the export, exactly what requirer
-  // bindings alias to.
-  if (ts.isIdentifier(whole.rhs)) return lowerer.lowerExpr(whole.rhs);
+  // bindings alias to. An identifier that is itself a required-module
+  // binding (`var $gOPD = require("./gOPD"); module.exports = $gOPD`)
+  // re-exports that module's whole-export value — its own binding is
+  // alias plumbing with no storage to read.
+  if (ts.isIdentifier(whole.rhs)) {
+    const rebound = wholeExportValueOfModuleBinding(lowerer, whole.rhs, depth + 1);
+    return rebound ?? lowerer.lowerExpr(whole.rhs);
+  }
   if (ts.isClassExpression(whole.rhs)) {
     return lowerer.classValueRef(lowerer.lowerClassExpressionInfo(whole.rhs), blame);
   }
+  // Every other value shape stores its snapshot on the export assignment
+  // itself (collectGlobals' export slot). The declaration spelling
+  // (`var x = module.exports = <value>`) registers that same slot: `x` is
+  // an ordinary binding initialized with the value, and REASSIGNING it
+  // leaves module.exports untouched, as in Node.
   const g = lowerer.globalsByDeclNode.get(whole.assign);
   if (g === undefined) return null;
   return { kind: "varRef", localId: g.id, type: g.type, loc: locOf(blame) };
+}
+
+/** True when wholeExportValue would answer a value for `dep` — the
+ * side-effect-free shape test used where lowering the value would be
+ * premature (binding classification, property-symbol resolution). */
+export function hasWholeExportValue(lowerer: Lowerer, dep: ts.SourceFile, depth = 0): boolean {
+  const whole = cjsWholeExportValueOf(dep);
+  if (whole === null || depth > 32) return false;
+  const inner = inlineProgramRequireOf(lowerer, whole.rhs);
+  if (inner !== null) return hasWholeExportValue(lowerer, inner.dep, depth + 1);
+  if (ts.isIdentifier(whole.rhs) || ts.isClassExpression(whole.rhs)) return true;
+  return lowerer.globalsByDeclNode.has(whole.assign);
+}
+
+/** The represented whole-export value behind a plain module binding
+ * (`const m = require("./x")`, `import d from "./x.cjs"`, a
+ * createRequire binding) of a single-value module: Node's require
+ * answers module.exports, so the binding IS that value. Null for table
+ * modules, for split bindings (`var m; m = require("./x")` — their own
+ * path owns the read), and for exports with no represented value. */
+export function wholeExportValueOfModuleBinding(
+  lowerer: Lowerer,
+  expr: ts.Identifier,
+  depth = 0,
+): IrExpr | null {
+  if (depth > 32) return null;
+  if (splitRequireBindingOfIdent(lowerer, expr) !== null) return null;
+  const dep = lowerer.cjsModuleBindingDepOf(expr);
+  if (dep === null || cjsNamespaceModule(lowerer, dep)) return null;
+  if (!hasWholeExportValue(lowerer, dep)) return null;
+  return wholeExportValue(lowerer, dep, expr, depth);
 }
 
 /** `require("./x")` as a value (`require("debug")("ns")`, `new

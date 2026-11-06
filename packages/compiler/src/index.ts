@@ -161,7 +161,6 @@ import {
   nativeCodegenDiag,
   nodeIslandNodeDiag,
   nodeIslandModuleDiag,
-  isTypePatchCode,
   type ScrDiagnostic,
 } from "./diagnostics/diagnostic.js";
 import { libnodeCacheKey, libnodeProbePack, libnodeRecord } from "./node-islands/libnode.js";
@@ -223,7 +222,6 @@ import {
   type EarlyExecutableNativeFeatures,
 } from "./executable/executable-cache.js";
 import { compilerImplementationIdentity } from "./library/compiler-self-identity.js";
-import { isPerformanceCode } from "./diagnostics/dynamic-tier.js";
 
 export const VERSION = "0.0.1";
 
@@ -602,12 +600,13 @@ interface CompileWarningSink {
   stats?: LowerStats;
 }
 
-/** The package.json texts type patch warnings point into, re-read for a
- * cache hit's code frames (performance warnings need none). */
+/** The texts a cache hit's warnings point into, re-read for their code
+ * frames: the same files the build read, unchanged since (the entry's
+ * frontend snapshot proved it). */
 function cachedWarningSources(warnings: readonly ScrDiagnostic[]): Map<string, string> {
   const texts = new Map<string, string>();
   for (const w of warnings) {
-    if (!isTypePatchCode(w.code) || texts.has(w.loc.file)) continue;
+    if (texts.has(w.loc.file)) continue;
     try {
       texts.set(w.loc.file, readFileSync(w.loc.file, "utf8"));
     } catch {
@@ -626,17 +625,14 @@ function islandFields(sink: CompileWarningSink | undefined): {
   return sink?.islands === undefined ? {} : { islands: sink.islands };
 }
 
-/** The build's performance warnings (SC61xx), stored with its cache entry
- * so a cache hit repeats them. */
-function performanceWarnings(sink: CompileWarningSink | undefined): {
-  performance?: ScrDiagnostic[];
+/** Every warning the build reported, stored with its cache entry so a cache
+ * hit repeats them exactly: a hit skips lowering, and skipping it must not
+ * hide a diagnostic the cold build prints. */
+function warningFields(sink: CompileWarningSink | undefined): {
+  warnings?: ScrDiagnostic[];
 } {
-  // Type patch warnings (SC8030–SC8033) describe the same unchanged inputs,
-  // so a hit repeats them too.
-  const performance = (sink?.warnings ?? []).filter(
-    (d) => isPerformanceCode(d.code) || isTypePatchCode(d.code),
-  );
-  return performance.length === 0 ? {} : { performance };
+  const warnings = sink?.warnings ?? [];
+  return warnings.length === 0 ? {} : { warnings };
 }
 
 /** The profile match of a --profile-use build's program object, for its
@@ -2201,11 +2197,12 @@ async function compileTracked(
     if (earlyCacheOptions === null) {
       throw new InternalCompilerError("executable cache hit without executable cache options");
     }
-    // A cached build repeats its performance warning (SC6101): the code it
-    // names is just as untyped as when it was built.
-    if (warningSink !== undefined && earlyHit.performance !== undefined) {
-      warningSink.warnings = earlyHit.performance;
-      warningSink.sourceTexts = cachedWarningSources(earlyHit.performance);
+    // A cached build repeats the warnings it reported: the code they name is
+    // unchanged (the entry proved its inputs), and a hit that skipped
+    // lowering must not hide a diagnostic.
+    if (warningSink !== undefined && earlyHit.warnings !== undefined) {
+      warningSink.warnings = earlyHit.warnings;
+      warningSink.sourceTexts = cachedWarningSources(earlyHit.warnings);
     }
     if (warningSink !== undefined && earlyHit.islands !== undefined)
       warningSink.islands = earlyHit.islands;
@@ -2457,7 +2454,7 @@ async function compileTracked(
               nativeDependencies: dependencies,
               frontend: frontendInputs.snapshot(),
               ...(irSourcePath === undefined ? {} : { irPath: irSourcePath }),
-              ...performanceWarnings(warningSink),
+              ...warningFields(warningSink),
               ...islandFields(warningSink),
               ...profileMatchField(nativeProgramObject),
               ...partitionsField(nativeProgramObject),
@@ -2481,7 +2478,7 @@ async function compileTracked(
         executableRestored: false,
         frontend: frontendInputs.snapshot(),
         ...(irSourcePath === undefined ? {} : { irPath: irSourcePath }),
-        ...performanceWarnings(warningSink),
+        ...warningFields(warningSink),
         ...islandFields(warningSink),
         ...profileMatchField(nativeProgramObject),
         ...partitionsField(nativeProgramObject),

@@ -1199,6 +1199,19 @@ test("a host-global fence inside a function body keeps its package native", asyn
       (islanded.warnings ?? []).filter((d) => d.code === "SC8001").map((d) => d.message),
     ).toEqual([expect.stringContaining("'fenced-module@1.0.0' runs in a Node island")]);
   else expect(islanded.diagnostics.map((d) => d.code)).toContain("SC8005");
+
+  // A second build of the same input is served by the executable cache, whose
+  // hit skips lowering: it reports the same warnings the cold build did, so a
+  // cache hit never hides a diagnostic.
+  const warm = await compile(entry("fenced-module"), {
+    outPath: join(dir, "fenced-module"),
+    outDir: dir,
+    sanitize,
+  });
+  expect(warm.ok).toBe(islanded.ok);
+  if (warm.ok && islanded.ok) expect(warm.warnings).toEqual(islanded.warnings);
+  else if (!warm.ok && !islanded.ok)
+    expect(warm.diagnostics.map((d) => d.code)).toEqual(islanded.diagnostics.map((d) => d.code));
 }, 300_000);
 
 // Lowering checks every argument and result type for JSON data; IR output

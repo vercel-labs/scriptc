@@ -169,7 +169,7 @@ export interface EarlyExecutableNativeFeatures {
 }
 
 interface EarlyExecutableCacheStamp {
-  version: 1;
+  version: 2;
   key: string;
   frontend: FrontendInputSnapshot;
   files: {
@@ -180,8 +180,10 @@ interface EarlyExecutableCacheStamp {
   };
   nativeDependencies: NativeArtifactDependency[] | null;
   native: EarlyExecutableNativeFeatures;
-  /** The build's performance warnings (SC61xx), which a cache hit repeats. */
-  performance?: ScrDiagnostic[];
+  /** Every warning the build reported (SC6xxx divergences and performance
+   * notes, SC8001/SC8020/SC8023 Node island notices, SC803x type patches),
+   * which a cache hit repeats exactly. */
+  warnings?: ScrDiagnostic[];
   /** The Node islands the build ran, which a cache hit reports again. */
   islands?: { packages: string[]; modules: string[] };
   /** Programs that call into Node.js: the libnode pack identity the build
@@ -313,8 +315,8 @@ export interface EarlyExecutableCacheHit {
   executableRestored: boolean;
   native: EarlyExecutableNativeFeatures;
   frontend: FrontendInputSnapshot;
-  /** The performance warnings the build reported (SC61xx), repeated on a hit. */
-  performance?: ScrDiagnostic[];
+  /** The warnings the build reported, repeated on a hit. */
+  warnings?: ScrDiagnostic[];
   /** The Node islands the build ran, repeated on a hit. */
   islands?: { packages: string[]; modules: string[] };
   /** How a --profile-use build's profile matched, reported again on a hit. */
@@ -335,6 +337,28 @@ function isIslands(value: unknown): value is { packages: string[]; modules: stri
     Array.isArray(islands.packages) &&
     Array.isArray(islands.modules) &&
     [...islands.packages, ...islands.modules].every((item) => typeof item === "string")
+  );
+}
+
+/** The build's warnings as its cache entry holds them: the JSON of the
+ * diagnostics its warning sink produced. */
+function isWarnings(value: unknown): value is ScrDiagnostic[] {
+  return (
+    Array.isArray(value) &&
+    value.every((item) => {
+      if (typeof item !== "object" || item === null) return false;
+      const warning = item as Record<string, unknown>;
+      const loc = warning.loc as Record<string, unknown> | undefined;
+      return (
+        typeof warning.code === "string" &&
+        typeof warning.message === "string" &&
+        typeof loc === "object" &&
+        loc !== null &&
+        typeof loc.file === "string" &&
+        typeof loc.start === "number" &&
+        typeof loc.end === "number"
+      );
+    })
   );
 }
 
@@ -676,7 +700,7 @@ async function readExecutableCache(
     const stamp = JSON.parse(await readFile(path, "utf8")) as EarlyExecutableCacheStamp;
     const { integrity, ...unsigned } = stamp;
     if (
-      stamp.version !== 1 ||
+      stamp.version !== 2 ||
       stamp.key !== cacheKey(options) ||
       !validFrontendInputSnapshot(stamp.frontend) ||
       !validNativeFeatures(stamp.native) ||
@@ -845,8 +869,8 @@ async function readExecutableCache(
       native: stamp.native,
       executableRestored,
       frontend: stamp.frontend,
-      ...(Array.isArray(stamp.performance) && stamp.performance.length > 0
-        ? { performance: stamp.performance }
+      ...(isWarnings(stamp.warnings) && stamp.warnings.length > 0
+        ? { warnings: stamp.warnings }
         : {}),
       ...(isIslands(stamp.islands) ? { islands: stamp.islands } : {}),
       ...(isProfileMatch(stamp.profileMatch) ? { profileMatch: stamp.profileMatch } : {}),
@@ -1026,7 +1050,7 @@ export async function publishEarlyExecutableCache(
     )
       return;
     const unsigned: Omit<EarlyExecutableCacheStamp, "integrity"> = {
-      version: 1,
+      version: 2,
       key: cacheKey(options),
       frontend: result.frontend,
       files: {
@@ -1040,9 +1064,9 @@ export async function publishEarlyExecutableCache(
       ...(executable !== null && result.partitions !== undefined
         ? { partitions: result.partitions }
         : {}),
-      ...(result.performance === undefined || result.performance.length === 0
+      ...(result.warnings === undefined || result.warnings.length === 0
         ? {}
-        : { performance: result.performance }),
+        : { warnings: result.warnings }),
       ...(result.islands === undefined ? {} : { islands: result.islands }),
       ...(result.native.nodeIsland === true ? { libnode: options.libnodeIdentity?.() ?? "" } : {}),
       ...(result.profileMatch === undefined ? {} : { profileMatch: result.profileMatch }),

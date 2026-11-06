@@ -17,6 +17,8 @@ import { processHasIpc } from "../builtins/process.js";
 import { lowerPerfHooksTypeof } from "../builtins/performance.js";
 import { isNodeModuleValue } from "../lower-node-module.js";
 import { builtinClassRefOf } from "../builtins/class-values.js";
+import { builtinModuleMemberCensus } from "../builtin-module-members.js";
+import { reflectOverNamespaceExpr } from "../builtin-namespace-probe.js";
 import { STRING_INDEX_METHODS, builtinModuleConstOf, stdlibGlobalNameOf } from "../surfaces.js";
 import {
   constructorGlobalTypeof,
@@ -109,6 +111,37 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
   if (performance) return performance;
   if (isNodeModuleValue(lowerer, expr.expression)) {
     return { kind: "strLit", value: "object", type: STRING, loc };
+  }
+  // A builtin module namespace: the census says whether the CommonJS
+  // exports value is callable (node:assert, node:events, node:module,
+  // node:test); an ESM namespace object is always "object". A namespace
+  // whose runtime shape is not known statically (a parameter, an untraced
+  // call result) answers either. Asked before the class-alias arm below,
+  // which spells a namespace import of a callable module (node:events) as
+  // the class it exports.
+  {
+    const shape = lowerer.builtinNamespaceShapeOf(expr.expression);
+    if (shape !== null) {
+      if (shape.flavor === "unknown")
+        lowerer.unsupported(
+          "SC1090",
+          expr.expression,
+          'typeof a builtin module namespace whose runtime shape is not known statically (an ES module namespace answers "object"; the CommonJS exports object of a callable module answers "function"; bind the namespace where it is imported or required)',
+        );
+      const census = builtinModuleMemberCensus(shape.module);
+      if (census !== null)
+        return reflectOverNamespaceExpr(
+          lowerer,
+          expr.expression,
+          {
+            kind: "strLit",
+            value: shape.flavor === "cjs" && census.callable ? "function" : "object",
+            type: STRING,
+            loc,
+          },
+          loc,
+        );
+    }
   }
   // `typeof EventEmitter`, `typeof zlib.Gzip`, `typeof C` over a
   // builtin class alias.

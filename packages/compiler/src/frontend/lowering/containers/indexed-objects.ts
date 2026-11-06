@@ -397,6 +397,17 @@ export function objectIterOverIndexShape(
           else_: null,
           loc,
         };
+      } else if (f.optional === true && f.type.kind === "dyn") {
+        // An OPTIONAL checked-dynamic field has an ABSENT state, and an
+        // absent property is not a key (the fixed-shape keys helper's rule
+        // exactly): push only while the slot is present.
+        fieldStmt = {
+          kind: "if",
+          cond: lowerer.recordFieldPresent(rRef, argIr.shapeId, f.name, loc),
+          then: [fieldStmt],
+          else_: null,
+          loc,
+        };
       }
       fieldStmts.set(f.name, fieldStmt);
       body.push(fieldStmt);
@@ -880,10 +891,10 @@ function lowerFromEntriesStringRows(
 }
 
 /** One destination-field initializer of the overflow capture reshape: a
- * directly-lifted source field, or the target field's undefined arm (left
- * absent for a runtime keyed write). */
+ * directly-lifted source field, or the target field's own absent state
+ * (left absent for a runtime keyed write). */
 export type RecordOvfFieldInit =
-  | { name: string; kind: "undef"; unionId: string; utag: number }
+  | { name: string; kind: "absent" }
   | { name: string; kind: "direct"; src: IrType; lift: WidthLift };
 
 /** The planning half of lowerRecordOvfCaptureHelper (its doc is the
@@ -943,7 +954,7 @@ export function recordOvfCapturePlan(
     // signature alone never satisfies a required member), and an
     // index-signature source's OVERFLOW can never collide with them (its
     // own declared name owns the key). Every other target field defaults
-    // to its undefined arm (fresh record), so it must be optional-flavored
+    // to its ABSENT state (fresh record), so it must be optional-flavored
     // and must accept a runtime collision (dyn slots validate via dynCheck
     // — fields must be dyn-convertible; typed slots write through
     // directly).
@@ -957,12 +968,21 @@ export function recordOvfCapturePlan(
         consumed.add(tf.name);
         continue;
       }
+      // An OPTIONAL checked-dynamic target field (`f?: unknown`) has a
+      // fresh-record default that is neither a copy nor an undefined arm:
+      // the ABSENT marker, the state a missing property reads, answers to
+      // `in`/`Object.keys` and serializes as. The keyed writes below still
+      // supply it when the source's overflow really holds the key.
+      if (tf.optional === true) {
+        inits.push({ name: tf.name, kind: "absent" });
+        continue;
+      }
       if (tf.type.kind !== "union") return null;
       const utag = lowerer.armTag(tf.type.unionId, UNDEFINED_T);
       if (utag < 0) return null;
       if (tIv.kind === "dyn" ? !lowerer.dynConvertible(tf.type) : !typeEquals(tf.type, tIv))
         return null;
-      inits.push({ name: tf.name, kind: "undef", unionId: tf.type.unionId, utag });
+      inits.push({ name: tf.name, kind: "absent" });
     }
     // Every source declared field must flow into the keyed-write slot —
     // in DECLARATION order (insertion order below; declaredOrder omits
@@ -1037,8 +1057,9 @@ export function recordOvfCapturePlan(
  * width lift — arm wrap/re-tag/nested reshape, or JSON-safe into a dyn
  * slot), and every target field must either be initialized directly by
  * a same-named source declared field (the rule that admits REQUIRED
- * declared members) or be optional-flavored (the fresh record's
- * default) and writable at runtime.
+ * declared members) or be optional-flavored — an undefined-armed union or
+ * an absentable `f?: unknown` slot (the fresh record's default) — and
+ * writable at runtime.
  *
  * The width relation's `{ how: "ovf" }` lift (a record into an
  * index-signature record arm) builds this same helper through
@@ -1182,14 +1203,14 @@ function buildRecordCaptureHelper(
               loc,
               to.fields.find((f) => f.name === d.name)!,
             )
-          : ({
-              // No source property of this name: the field starts
-              // absent (an overflow write below can supply it).
-              kind: "fieldAbsent",
-              unionId: d.unionId,
-              type: to.fields.find((f) => f.name === d.name)!.type,
+          : // No source property of this name: the field starts at its own
+            // absent state (an overflow write below can supply it) — the
+            // undefined arm of a union slot, the ABSENT marker of an
+            // optional checked-dynamic one.
+            lowerer.absentFieldValue(
+              to.fields.find((f) => f.name === d.name)!,
               loc,
-            } satisfies IrExpr),
+            )!,
     })),
     type: toT,
     loc,

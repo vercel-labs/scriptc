@@ -12463,6 +12463,19 @@ function objectPrototypeOwnMethod(lowerer: Lowerer, node: ts.Expression): string
   return name;
 }
 
+/** The file text a reflective-operation gate compares against, folded once
+ * per file: the gate looks for API names without depending on their
+ * spelling, and `Object.getOwnPropertyNames` spells `ownProperty` with a
+ * capital `O` at the start of the second word. */
+const reflectiveText = new WeakMap<ts.SourceFile, string>();
+function reflectiveTextOf(sf: ts.SourceFile): string {
+  const cached = reflectiveText.get(sf);
+  if (cached !== undefined) return cached;
+  const text = sf.text.toLowerCase();
+  reflectiveText.set(sf, text);
+  return text;
+}
+
 /** Whether a JavaScript class value is passed to a reflective operation as
  * its receiver (t262-da §5.1): `Object.getOwnPropertyNames(C)`,
  * `Reflect.ownKeys(C)`, `Object.prototype.hasOwnProperty.call(C, key)`,
@@ -12473,18 +12486,19 @@ function reflectedClassConstructor(lowerer: Lowerer, decl: ts.ClassLikeDeclarati
   const binding = classValueBindingOf(decl);
   if (binding === null) return false;
   const sf = ts.getSourceFileOfNode(decl);
+  const text = reflectiveTextOf(sf);
   if (
-    !sf.text.includes("ownProperty") &&
-    !sf.text.includes("ownKeys") &&
-    !sf.text.includes("hasOwn") &&
-    !sf.text.includes("propertyIsEnumerable") &&
-    !sf.text.includes("isFrozen") &&
-    !sf.text.includes("isSealed") &&
-    !sf.text.includes("isExtensible") &&
-    !sf.text.includes("Object.keys") &&
-    !sf.text.includes("Object.values") &&
-    !sf.text.includes("Object.entries") &&
-    !sf.text.includes("verify")
+    !text.includes("ownproperty") &&
+    !text.includes("ownkeys") &&
+    !text.includes("hasown") &&
+    !text.includes("propertyisenumerable") &&
+    !text.includes("isfrozen") &&
+    !text.includes("issealed") &&
+    !text.includes("isextensible") &&
+    !text.includes("object.keys") &&
+    !text.includes("object.values") &&
+    !text.includes("object.entries") &&
+    !text.includes("verify")
   )
     return false;
   const symbol = lowerer.checker.getSymbolAtLocation(binding);

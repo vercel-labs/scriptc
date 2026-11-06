@@ -103,6 +103,11 @@ ScrStr *scr_spawn_res_signal(ScrSpawnRes *r); /* +1; has_signal only */
  * stamped) when the spawn itself failed, NULL otherwise (the undefined
  * arm — the emitter wraps type-directedly, the envGet convention). */
 ScrError *scr_spawn_res_error(ScrSpawnRes *r);
+/* The result in the checked-dynamic tree: a HANDLE boxed by REFERENCE
+ * (identity, no copy), installing the tag's ops on first use. The typed
+ * slot reads it back through the tag check — a plain object that merely
+ * looks like a spawn result is not one and throws. Borrows (+1 out). */
+ScrDyn *scr_spawn_res_to_dyn(ScrSpawnRes *r);
 
 /* argv construction shared by spawnSync and spawn: a NULL-terminated
  * vector borrowing the strings (alive while cmd/args are); free() the
@@ -284,6 +289,11 @@ double scr_child_exit_code(ScrChild *c);
 bool scr_child_has_signal_code(ScrChild *c);
 ScrStr *scr_child_signal_code(ScrChild *c); /* returns +1 */
 bool scr_child_killed(ScrChild *c);
+/* spawnfile / spawnargs: the file the child was started from and the file
+ * followed by the arguments Node reports (a shell spawn reports the shell
+ * and its invocation). Both answer +1 references. */
+ScrStr *scr_child_spawnfile(ScrChild *c);
+ScrArr *scr_child_spawnargs(ScrChild *c);
 bool scr_child_kill(ScrChild *c, const ScrStr *signal);
 bool scr_child_kill_num(ScrChild *c, double signum);
 void scr_child_unref(ScrChild *c);
@@ -293,8 +303,8 @@ void scr_child_ref(ScrChild *c);
 void scr_child_dyn_install(void);
 void scr_child_on_dyn(ScrChild *child, ScrStr *event, ScrDyn *listener); /* borrowed */
 /* Own properties JavaScript adds to a child (scr_dyn_handle_props.c,
- * linked only by programs that add them). */
-void scr_dyn_handle_props_install(void);
+ * linked only by programs that add them). scr_dyn_handle_props_install is
+ * declared in scr_blob.h with the other handle entries. */
 ScrDyn *scr_dyn_define_property_hp(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor);
 ScrDyn *scr_dyn_get_own_property_descriptor_hp(ScrDyn *target, ScrDyn *key);
 ScrPromise *scr_dyn_promise_resolve_hp(ScrDyn *value, ScrDyn *reader);

@@ -383,6 +383,7 @@ import {
   classFieldTypes,
   classMembershipIntervals,
   classFieldIndex,
+  compactRefBaseOf,
   compactRefLoadLines,
   compactRefStoreLines,
   classPreLines,
@@ -422,6 +423,11 @@ import {
   type NullableUnion,
 } from "./nullable-unions.js";
 import { classUnionHeaders, emitClassUnionHelpers } from "./class-unions.js";
+
+/** The ABSENT marker of an optional checked-dynamic record field: an
+ * immortal ScrDyn of kind SCR_DYN_UNDEF that is address-distinct from
+ * scr_dyn_undefined(). Emitted only when a program references it. */
+export const DYN_ABSENT = "@sc_dyn_absent";
 import { emitNullablePresent, emitUnionPeek, emitUnionTag } from "./union-repr.js";
 import {
   emitConcatInputs,
@@ -674,11 +680,12 @@ export interface LlvmTargetOptions {
 
 /** LlvmTargetOptions.lowRegion for an executable: Linux targets without
  * sanitizers, whose address space below 32 GiB is free (ASan keeps its
- * shadow memory there; other systems map their own images and libraries
- * there). `platform` is a target platform (`linux`, `darwin`, `win32`,
- * `wasi`). */
+ * shadow memory there), and macOS targets without sanitizers, which keep the
+ * window at a fixed base instead (classes.ts compactRefBaseOf). Other systems
+ * map their own images and libraries below 32 GiB. `platform` is a target
+ * platform (`linux`, `darwin`, `win32`, `wasi`). */
 export function lowRegionTarget(platform: string, sanitize: boolean): boolean {
-  return platform === "linux" && !sanitize;
+  return (platform === "linux" || platform === "darwin") && !sanitize;
 }
 
 /** Function versions on loop-bounding number parameters
@@ -1193,6 +1200,10 @@ export class LlEmitter {
    * 32-bit references (LlClassMeta.compressed):
    * loadField/loadRef decode them and storeField/storeRef encode them. */
   readonly compressedFieldPtrs = new Set<string>();
+  /** The window base that 32-bit references are offsets from (classes.ts
+   * compactRefBaseOf): 0 unless the low region applies on a target that
+   * places the window at a base. */
+  readonly compactRefBase: bigint;
   /** Compact class instances live in the program-lifetime region below
    * 32 GiB (LlvmTargetOptions.lowRegion, and the program has compact
    * classes): main reserves it before compiled code runs (scr_plr_init), and
@@ -1586,6 +1597,8 @@ export class LlEmitter {
   readonly retypeGuards = new Map<string, string>();
   /** The nullable-union ABSENT sentinel was referenced (absentInstanceRef). */
   needsNullableAbsent = false;
+  /** The optional-dyn ABSENT marker was referenced (dynAbsentRef). */
+  needsDynAbsent = false;
   private readonly immortalValues = new Set<string>();
   /** Regex literal templates: "<flags>/<pattern>" → { symbol, interned
    * source/flags literal refs } — one immortal ScrRegex template per distinct
@@ -1842,6 +1855,10 @@ export class LlEmitter {
    * points (RuntimeFeatures asyncContext). */
   get schedulesInContext(): boolean {
     return this.runtimeFeatures.asyncContext;
+  }
+  /** The JavaScript object model build is on (jsObjectModelFact). */
+  get jsObjectModel(): boolean {
+    return jsObjectModelFact(this.runtimeFeatures);
   }
   /** Emitted ref-kind resolve thunks for new Promise, interned per inner
    * typeKey → thunk symbol. */
@@ -2342,6 +2359,7 @@ export class LlEmitter {
       (options.targetTriple
         ? /^(x86_64|amd64)\b/i.test(options.targetTriple)
         : process.arch === "x64");
+    this.compactRefBase = options.lowRegion === true ? compactRefBaseOf(options.targetTriple) : 0n;
     this.executableTls =
       mod.workers === true &&
       mod.lib === undefined &&
@@ -2643,8 +2661,9 @@ export class LlEmitter {
       // Worker programs keep one allocator per script thread: the inline
       // paths address its thread-local state.
       threadLocalAlloc: mod.workers === true,
-      // Linux executables find a block's owner in the chunk map.
-      windowMap: options.lowRegion === true,
+      // Linux executables find a block's owner in the chunk map, which
+      // indexes the low 32 GiB by address; a window with a base has none.
+      windowMap: options.lowRegion === true && compactRefBaseOf(options.targetTriple) === 0n,
       rcHelpers: this.rcHelpers,
       ...(this.rcMode !== undefined ? { rcMode: this.rcMode } : {}),
       ...(this.rcHelpersNoinline ? { rcHelpersNoinline: true } : {}),
@@ -2662,6 +2681,7 @@ export class LlEmitter {
       retypeGuardRef: (unionId) => this.retypeGuardRef(unionId),
       fieldAbsentTestIn: (B, value, unionId) => this.fieldAbsentTestIn(B, value, unionId),
       absentInstanceRef: (unionId) => this.absentInstanceRef(unionId),
+      dynAbsentRef: () => this.dynAbsentRef(),
       liveDynRefAdapter: (type) => this.liveDynRefAdapter(type),
       usesDynBuiltinStream: () => this.usesDynBuiltinStream,
       jsObjectModel: () => jsObjectModelFact(this.runtimeFeatures),
@@ -3967,6 +3987,16 @@ export class LlEmitter {
     const name = `@${sym}`;
     this.immortalValues.add(name);
     return name;
+  }
+
+  /** The ABSENT marker of an optional checked-dynamic record field slot
+   * (IR fieldAbsent without a union). Address-compared, never dereferenced
+   * by compiled code: reads select it to scr_dyn_undefined, presence tests
+   * compare against it, and boxing omits it. */
+  dynAbsentRef(): string {
+    this.needsDynAbsent = true;
+    this.immortalValues.add(DYN_ABSENT);
+    return DYN_ABSENT;
   }
 
   /** i1: a union value loaded from a field slot is the ABSENT state — the
@@ -5302,7 +5332,8 @@ export class LlEmitter {
     }
     const idx = B.tmp();
     B.line(`${idx} = load i32, ptr ${ptr}${tags}`);
-    for (const line of compactRefLoadLines(idx, v, `${v}.r`)) B.line(line.trimStart());
+    for (const line of compactRefLoadLines(this.compactRefBase, idx, v, `${v}.r`))
+      B.line(line.trimStart());
     return v;
   }
 
@@ -6349,6 +6380,7 @@ export class LlEmitter {
         usesGenSlots: this.usesGenSlots,
         needsUnionNone: this.needsUnionNone,
         needsNullableAbsent: this.needsNullableAbsent,
+        needsDynAbsent: this.needsDynAbsent,
         needsOom: this.needsOom,
         needsBadTag: this.needsBadTag,
         needsBadKey: this.needsBadKey,
@@ -6387,6 +6419,7 @@ export class LlEmitter {
     this.usesGenSlots ||= flags.usesGenSlots;
     this.needsUnionNone ||= flags.needsUnionNone;
     this.needsNullableAbsent ||= flags.needsNullableAbsent;
+    this.needsDynAbsent ||= flags.needsDynAbsent;
     this.needsOom ||= flags.needsOom;
     this.needsBadTag ||= flags.needsBadTag;
     this.needsBadKey ||= flags.needsBadKey;
@@ -7916,6 +7949,7 @@ export class LlEmitter {
       declare: (decl) => this.declare(decl),
       cstr: (text) => this.cstr(text),
       sizeType: this.sizeType,
+      compactRefBase: this.compactRefBase,
       rcAudit: this.shapeHost.objectAudit !== false,
       tracedShapes: this.tracedShapes,
       unionsById: this.unionsById,

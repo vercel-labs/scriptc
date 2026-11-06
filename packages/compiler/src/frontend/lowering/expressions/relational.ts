@@ -1,6 +1,7 @@
 /* instanceof and in, including private-name and runtime-key in. */
 import { lowerIteratorInstanceOf } from "../iterator-prototype.js";
 import { programCreatesWrappers, WRAPPER_KIND_NUMBER } from "../primitive-wrappers.js";
+import { boxedHandleReceiver } from "../handle-properties.js";
 import { lowerArrayClassInstanceOf } from "../builtins/array-classes.js";
 import { dateRootOf } from "../builtins/date-classes.js";
 import { keyedHelperName } from "../stable-names.js";
@@ -14,6 +15,7 @@ import {
   privateInMessage,
 } from "../private-brands.js";
 import type { Lowerer } from "../lowerer.js";
+import { isCallableValue } from "../callable-properties.js";
 import {
   BOOL,
   BYTES_ELEMENT_NAME,
@@ -1973,9 +1975,9 @@ export function lowerInExpression(
     recv.type.kind === "classval" ? lowerer.classes.get(recv.type.className) : undefined;
   if (
     (classInfo && (classInfo.callableBase || hasRuntimeStatics(classInfo))) ||
-    (isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
-      recv.type.kind === "func" &&
-      lowerer.dynConvertible(recv.type))
+    (recv.type.kind === "func" &&
+      lowerer.dynConvertible(recv.type) &&
+      (isJsSourceFile(ts.getSourceFileOfNode(expr)) || isCallableValue(lowerer, expr.right)))
   ) {
     recv = lowerer.coerceToExpected(recv, DYN);
   }
@@ -2167,8 +2169,8 @@ export function lowerInExpression(
       if (
         f &&
         !inherited &&
-        f.type.kind === "union" &&
-        lowerer.armTag(f.type.unionId, UNDEFINED_T) >= 0
+        ((f.type.kind === "union" && lowerer.armTag(f.type.unionId, UNDEFINED_T) >= 0) ||
+          (f.optional === true && f.type.kind === "dyn"))
       ) {
         answers.push({ tag, has: "slot", arm }); // presence is per-value
         continue;
@@ -2297,6 +2299,13 @@ export function lowerInExpression(
         };
   }
   if (recv.type.kind !== "record") {
+    // A typed handle in a program that adds properties to handles: own
+    // keys and the class's members answer from its property table
+    // (scr_dyn_handle_props.c).
+    {
+      const boxed = boxedHandleReceiver(lowerer, recv);
+      if (boxed) return { kind: "dynHasKey", key, value: boxed, type: BOOL, loc };
+    }
     lowerer.unsupported(
       "SC1090",
       expr,
@@ -2316,8 +2325,8 @@ export function lowerInExpression(
     }
     if (
       !OBJECT_PROTOTYPE_KEYS.has(key) &&
-      field.type.kind === "union" &&
-      lowerer.armTag(field.type.unionId, UNDEFINED_T) >= 0
+      ((field.type.kind === "union" && lowerer.armTag(field.type.unionId, UNDEFINED_T) >= 0) ||
+        (field.optional === true && field.type.kind === "dyn"))
     ) {
       // Optional slot: the key is present unless the field is absent
       // (omitted or deleted); an explicit undefined is present.

@@ -39,6 +39,7 @@ import {
   nestedCjsExportAssignmentsOf,
   splitRequireBindingOfIdent,
 } from "./cjs-inline-require.js";
+import { applyProtoDefinition } from "./expressions/object-literals.js";
 
 /** The export names an assignment chain attaches (`exports.a = exports.b =
  * value`), in the order Node attaches them: the rightmost assignment runs
@@ -70,6 +71,10 @@ function cjsExportChainNames(e: ts.BinaryExpression): string[] | null {
  * import. Statements a later `module.exports =` replaces are skipped
  * exactly as Node discards them.
  *
+ * `proto` is the table literal's non-computed `__proto__` initializer: that
+ * member sets the exports object's prototype as the literal is built (B.3.1)
+ * instead of naming an export.
+ *
  * Null when the table is not statically known: a computed name, a spread or
  * accessor in the table, or a replaced value that is not another program
  * module's exports — the caller keeps its refusal rather than publishing an
@@ -78,7 +83,7 @@ function cjsExportsTableNames(
   lowerer: Lowerer,
   dep: ts.SourceFile,
   depth = 0,
-): { owner: ts.SourceFile; names: string[] } | null {
+): { owner: ts.SourceFile; names: string[]; proto: ts.Expression | null } | null {
   if (depth > 32 || !lowerer.moduleOrder.includes(dep)) return null;
   const stmts = dep.statements.nodes;
   // The kept whole replacement, if the module has one: its names are the
@@ -105,6 +110,7 @@ function cjsExportsTableNames(
     return cjsExportsTableNames(lowerer, target, depth + 1);
   }
   const names: string[] = [];
+  let proto: ts.Expression | null = null;
   const seen = new Set<string>();
   const add = (name: string): void => {
     if (!seen.has(name)) {
@@ -138,6 +144,13 @@ function cjsExportsTableNames(
       }
       if (ts.isPropertyAssignment(prop)) {
         const name = prop.name;
+        if (!ts.isComputedPropertyName(name) && name.text === "__proto__") {
+          // B.3.1: this member sets the exports object's prototype; it is
+          // not an export name. A later one replaces it, as Node's literal
+          // evaluation does.
+          proto = prop.initializer;
+          continue;
+        }
         // A numeric name canonicalizes ('1e3' is the property '1000'), so
         // its written spelling is not the export name.
         if (ts.isIdentifier(name) || ts.isStringLiteral(name)) add(name.text);
@@ -149,7 +162,7 @@ function cjsExportsTableNames(
       add(method.name.text);
     }
   }
-  return { owner: dep, names };
+  return { owner: dep, names, proto };
 }
 
 /** The compiled getter behind an exports object: one lifted function per
@@ -250,7 +263,7 @@ export function lowerCjsExportsValue(
   // same one a direct requirer of the dependency holds.
   const moduleId = `cjs:${lowerer.pathOf(table.owner)}`;
   const getter = cjsExportsGetter(lowerer, table.owner, moduleId, table.names);
-  return {
+  const object: IrExpr = {
     kind: "libCall",
     fn: "module.cjsExports",
     args: [
@@ -277,4 +290,8 @@ export function lowerCjsExportsValue(
     type: DYN,
     loc,
   };
+  // A table literal's `__proto__` member sets the exports object's
+  // prototype as Node builds the literal; the runtime keeps one object per
+  // export table, so every holder sees the same prototype.
+  return table.proto === null ? object : applyProtoDefinition(lowerer, object, table.proto, loc);
 }

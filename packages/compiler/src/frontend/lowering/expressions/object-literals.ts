@@ -321,6 +321,45 @@ function protoLiteralHelper(lowerer: Lowerer, loc: SrcLoc): string {
   return name;
 }
 
+/** A non-computed `__proto__` member of an object literal (B.3.1): the
+ * object being built takes `initializer` as its prototype. A null value
+ * sets the prototype directly; an object or function does too, through the
+ * guarded helper (scr_dyn_set_prototype throws for primitives, where B.3.1
+ * silently ignores the value). The object expression is evaluated once. */
+export function applyProtoDefinition(
+  lowerer: Lowerer,
+  acc: IrExpr,
+  initializer: ts.Expression,
+  loc: SrcLoc,
+): IrExpr {
+  const value = lowerer.lowerExprExpecting(initializer, DYN);
+  if (initializer.kind === ts.SyntaxKind.NullKeyword) {
+    return { kind: "libCall", fn: "dyn.setPrototype", args: [acc, value], type: DYN, loc };
+  }
+  const local = lowerer.declareHiddenLocal("%protoLiteral", DYN);
+  const object: IrExpr = { kind: "varRef", localId: local.id, type: DYN, loc };
+  return {
+    kind: "seqExpr",
+    stmts: [
+      { kind: "varDecl", localId: local.id, init: acc, loc },
+      {
+        kind: "exprStmt",
+        expr: {
+          kind: "call",
+          callee: protoLiteralHelper(lowerer, loc),
+          args: [object, value],
+          type: VOID,
+          loc,
+        },
+        loc,
+      },
+    ],
+    result: object,
+    type: DYN,
+    loc,
+  };
+}
+
 /** The runtime-keyed JS object literal (a computed key that doesn't fold):
  * builds a dyn object member-by-member. Keys evaluate before their values,
  * properties in source order — JS's object-literal evaluation exactly.
@@ -389,42 +428,7 @@ export function lowerDynObjectLiteral(
     ) {
       flushFields();
       acc ??= { kind: "dynObjLit", fields: [], type: DYN, loc };
-      const value = lowerer.lowerExprExpecting(prop.initializer, DYN);
-      // B.3.1: a null value sets the prototype; an object or function does
-      // too, through the guarded helper (scr_dyn_set_prototype throws for
-      // primitives, where B.3.1 silently ignores the value).
-      if (prop.initializer.kind === ts.SyntaxKind.NullKeyword) {
-        acc = {
-          kind: "libCall",
-          fn: "dyn.setPrototype",
-          args: [acc, value],
-          type: DYN,
-          loc: locOf(prop),
-        };
-        continue;
-      }
-      const local = lowerer.declareHiddenLocal("%protoLiteral", DYN);
-      const object: IrExpr = { kind: "varRef", localId: local.id, type: DYN, loc };
-      acc = {
-        kind: "seqExpr",
-        stmts: [
-          { kind: "varDecl", localId: local.id, init: acc, loc },
-          {
-            kind: "exprStmt",
-            expr: {
-              kind: "call",
-              callee: protoLiteralHelper(lowerer, loc),
-              args: [object, value],
-              type: VOID,
-              loc,
-            },
-            loc,
-          },
-        ],
-        result: object,
-        type: DYN,
-        loc,
-      };
+      acc = applyProtoDefinition(lowerer, acc, prop.initializer, locOf(prop));
       continue;
     }
     if (ts.isSpreadAssignment(prop)) {

@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-exports-null-prototype/lib.cjs",
+  "<repo>/tests/corpus/cjs-exports-null-prototype/prototyped.cjs",
+  "<repo>/tests/corpus/cjs-exports-null-prototype/main.cjs"
+ ],
+ "diags": []
+}

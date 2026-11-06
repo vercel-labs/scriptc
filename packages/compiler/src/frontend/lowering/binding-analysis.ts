@@ -34,7 +34,6 @@ export function isValueIdentifier(node: ts.Identifier): boolean {
   return true;
 }
 
-
 /** The nullish unit `e` provably evaluates to: a bare null/undefined
  * literal (assertion-wrapped — `null as any`, `null!`), or a read of a
  * registered NULLISH binding (nullishGenericBindingUnitOf). Null when

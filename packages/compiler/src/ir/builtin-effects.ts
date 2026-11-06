@@ -737,6 +737,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // synchronously on a non-function argument (the closure form never
   // throws — the callback's own throw surfaces at drain, uncaught).
   "timers.queueMicrotaskDyn",
+  // the timer callback gate: a non-function throws ERR_INVALID_ARG_TYPE
+  // synchronously (Node validates before anything schedules)
+  "timers.checkCallback",
   // structuredClone: option validation throws Node's TypeErrors,
   // functions/handles the spec's DataCloneError, cycles the scriptc
   // fence; the zero-argument form always throws ERR_MISSING_ARGS. The

@@ -190,6 +190,10 @@ function boundParameter(
   if (fn === undefined || !ts.isFunctionLike(fn))
     return top(expr, `'${expr.text}', a parameter of a non-function scope`);
   if (decl.dotDotDotToken !== undefined) return top(expr, `'${expr.text}', a rest parameter`);
+  // A parameter the body writes holds a value no caller passed at the load
+  // site, so the call arguments no longer bound it.
+  if (!bindingNeverReassigned(lowerer, sym, decl))
+    return top(expr, `'${expr.text}', a parameter written after it is bound`);
   const binding = functionBindingName(fn);
   if (binding === null)
     return top(expr, `'${expr.text}', a parameter of a function with no local name`);

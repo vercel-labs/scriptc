@@ -4783,6 +4783,8 @@ export class Lowerer {
       checkedTable("objectMethodNames", () => this.objectMethodNames.size),
       checkedTable("forkTargetIdByPath", () => this.forkTargetIdByPath.size),
       checkedTable("nsBlocks", () => this.nsBlocks.size),
+      checkedTable("funduleMembers", () => this.funduleMembers.size),
+      checkedTable("funduleFnStores", () => this.funduleFnStores.size),
       checkedTable("initNameOf", () => this.initNameOf.size),
       checkedTable("cjsModuleIdOf", () => this.cjsModuleIdOf.size),
       checkedTable("cjsModuleFiles", () => this.cjsModuleFiles.length),

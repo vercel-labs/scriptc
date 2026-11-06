@@ -94,6 +94,7 @@
  *            object-model constructs in user JavaScript (SC8101–SC8105,
  *            behind --strict-user-js); programs that call into Node.js
  *            where the build finds no usable libnode pack (SC8005), or
+ *            a Node island as a native worker's entry (SC8012), or
  *            cannot collect the modules a call loads (SC8006); and type
  *            patches from `scriptc.typePatches` that did not apply as
  *            written (SC8030–SC8033, warnings)
@@ -373,6 +374,22 @@ export function nativeSubclassOfIslandDiag(loc: SrcLoc, detail?: string): ScrDia
         : `a native class extending a class owned by a Node island cannot have ${detail} yet`,
     loc,
     hint: "keep the subclass in Node: move it into the island module, or mark its module as a Node island; a registry shim of the package also lifts this",
+  };
+}
+
+/** SC8012 — a native worker's entry module is itself a Node island, so the
+ * native program has no compiled module for the worker thread to run. Island
+ * *operations* from a worker thread are routed to the island's thread, but a
+ * worker whose entry IS the island has nothing native to start, and the
+ * island module's own semantics (sloppy-only constructs, for example) are
+ * not implemented by compiled code — so the build refuses it by name. */
+export function nodeIslandWorkerThreadDiag(loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC8012",
+    message:
+      "the Worker's entry module runs in a Node island, so a native worker thread cannot run it",
+    loc,
+    hint: "give the worker an entry the build compiles natively: island modules run only in Node, and a worker thread runs the compiled program",
   };
 }
 

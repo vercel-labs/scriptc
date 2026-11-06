@@ -22,6 +22,10 @@ ScrPromise *scr_blob_text(ScrDyn *self);
 ScrPromise *scr_blob_bytes(ScrDyn *self);
 ScrPromise *scr_blob_array_buffer(ScrDyn *self);
 bool scr_blob_is(const ScrDyn *value, double kind);
+/* A Blob or File as a fetch body: the blob's bytes (+1) and its type
+ * (+1, NULL when the Blob has none), which becomes Content-Type. False,
+ * touching neither output, for every other value. */
+bool scr_blob_body_info(const ScrDyn *value, ScrBytes **bytes, ScrStr **type);
 
 ScrDyn *scr_intl_segmenter_new(void);
 /* A word or sentence Intl.Segmenter whose segment() throws `refusal`
@@ -94,6 +98,21 @@ ScrDyn *scr_dyn_new_handle(void *h, ScrDynHandleTag tag);
  * identity, no copy); anything else throws the path-annotated catchable
  * TypeError and returns NULL. */
 void *scr_dyn_handle_unbox(const ScrDyn *d, ScrDynHandleTag tag, const ScrDynPath *path, const char *want);
+/* Own properties JavaScript adds to a runtime handle (scr_dyn_handle_props.c,
+ * linked only by programs that add them). `child` is 1 when the program adds
+ * properties to children. */
+void scr_dyn_handle_props_install(double child);
+/* The member names the compiler reroutes through the box,
+ * `<Class>:<name>,<name>;<Class>:*`; a member key outside them (and every
+ * protocol and implicit-conversion name) keeps the member refusal. */
+void scr_dyn_handle_props_grant(ScrStr *grants);
+/* Object.defineProperties with a handle target. */
+ScrDyn *scr_dyn_define_props_hp(ScrDyn *target, ScrDyn *descs);
+/* The graph walkers' refusal: a value whose graph holds a handle with added
+ * properties cannot be printed or compared (+1, or NULL pending). */
+ScrDyn *scr_dyn_handle_props_guard(ScrDyn *value, ScrStr *consumer);
+ScrArr *scr_dyn_handle_props_guard_list(ScrArr *values, ScrStr *consumer);
+void scr_dyn_handle_props_check(ScrDyn *value, ScrStr *consumer);
 /* Keyed read on a HANDLE box (the emitted sc_dyn_key_get's arm): the
  * tag's modeled properties answer boxed values; everything else answers
  * the undefined singleton (the checked-dynamic tree's own-property stance — SEMANTICS.md)

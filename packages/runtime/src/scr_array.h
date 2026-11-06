@@ -382,7 +382,7 @@ static inline void scr_arr_need_states(ScrArr *a) {
 }
 /* A CREF slot's pointer, and the slot of a pointer (NULL or a compact
  * instance below 32 GiB). */
-static inline uint64_t scr_cref_decode(uint32_t ref) { return (uint64_t)ref << 3; }
+static inline uint64_t scr_cref_decode(uint32_t ref) { return scr_compact_ref_address(ref); }
 static inline uint32_t scr_cref_encode(uint64_t slot) { return (uint32_t)(slot >> 3); }
 
 /* The bits of `d` as a slot, and back. */

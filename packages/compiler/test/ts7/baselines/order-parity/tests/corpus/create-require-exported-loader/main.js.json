@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/create-require-exported-loader/chunk.js",
+  "<repo>/tests/corpus/create-require-exported-loader/main.js"
+ ],
+ "diags": []
+}

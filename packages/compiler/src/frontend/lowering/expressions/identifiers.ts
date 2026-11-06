@@ -6,6 +6,7 @@ import { hostGlobalValue } from "../host-global-values.js";
 import { predeclareForwardClass } from "../lower-stmts.js";
 import { cjsMemberAliasValueOf } from "../cjs-exports-object.js";
 import { builtinClassValue, builtinMemberClassKind } from "../builtins/builtin-class-dyn.js";
+import { legacyUrlClassValue } from "../builtins/url.js";
 import { lowerWebStreamClassRead } from "../builtins/web-streams-dyn.js";
 import * as ts from "../../ts7/adapter.js";
 import { globalFunctionValue } from "../global-function-values.js";
@@ -32,6 +33,7 @@ import {
   typeEquals,
 } from "../../../ir/ir.js";
 import { lowerNodeModuleIdentifier } from "../lower-node-module.js";
+import { createRequireLoaderValue } from "../builtins/module-resolution.js";
 import { lowerCjsExportsObjectValue } from "../cjs-exports-object.js";
 import {
   splitRequireBindingOfIdent,
@@ -144,6 +146,14 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     return { kind: "libCall", fn: "console.native", args: [], type: DYN, loc };
   }
 
+  // A createRequire loader as a VALUE (not the callee of a lowered call or
+  // a resolve read, which their own lowerings own): a run-time require
+  // function over the runtime resolver. Checked before the node:module
+  // identifier fold, which would otherwise read the destructured factory
+  // binding as its identity token.
+  const createRequireValue = createRequireLoaderValue(lowerer, expr, loc);
+  if (createRequireValue !== null) return createRequireValue;
+
   const moduleValue = lowerNodeModuleIdentifier(lowerer, expr);
   if (moduleValue) return moduleValue;
   if (expr.text === "exports") {
@@ -202,6 +212,15 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         "SC1090",
         expr,
         `a promisified builtin as a value (call '${expr.text}' directly)`,
+      );
+    }
+    if (projection?.kind === "client-function") {
+      // The client-function lowering works per call site (the module's
+      // protocol and secure defaults); there is no function object to read.
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        `an http client function alias as an escaping value (call '${expr.text}' directly)`,
       );
     }
     if (projection?.kind === "builtin-function") {
@@ -723,6 +742,10 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       // node:crypto's webcrypto is the WebCrypto global's object.
       if (bi.module === "crypto" && bi.member === "webcrypto")
         return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
+      // url.Url is Node's legacy Url constructor (JavaScript sources;
+      // @types/node declares Url as a type only), the class of url.parse()
+      // results.
+      if (bi.module === "url" && bi.member === "Url") return legacyUrlClassValue(loc);
       // JavaScript sources: an otherwise unsupported builtin VALUE is
       // the same identity-token story as stdlib globals above (the
       // harness adds worker_threads.Worker to its identity Set).

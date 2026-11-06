@@ -106,6 +106,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   mime: boolean;
   largePages: boolean;
   webStreams: boolean;
+  webBodies: boolean;
   abortSignal: boolean;
   utilTiming: boolean;
   dynBuffer: boolean;
@@ -127,6 +128,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   builtinMethodValue?: boolean;
   computedRequire: boolean;
   warningReplace: boolean;
+  promiseRejectDyn: boolean;
   /** The JavaScript object model build (t262-da §J): the runtime code every
    * feature reached only from JavaScript sources shares, the
    * SCR_JS_OBJECT_MODEL build of the units those features touch. Implies
@@ -343,6 +345,7 @@ export function effectiveRuntimeFeatures(
   return {
     ...features,
     workers: features.workers === true,
+    staticLink: features.staticLink === true,
     youngNursery: features.youngNursery === true,
     eventTarget: features.eventTarget === true,
     wasm: features.wasm === true,
@@ -363,6 +366,7 @@ export function effectiveRuntimeFeatures(
     mime: features.mime === true,
     largePages: features.largePages === true,
     webStreams: features.webStreams === true,
+    webBodies: features.webBodies === true,
     abortSignal: features.abortSignal === true,
     utilTiming: features.utilTiming === true,
     dynBuffer: features.dynBuffer === true,
@@ -374,6 +378,7 @@ export function effectiveRuntimeFeatures(
     builtinMethodValue: features.builtinMethodValue === true,
     computedRequire: features.computedRequire === true,
     warningReplace: features.warningReplace === true,
+    promiseRejectDyn: features.promiseRejectDyn === true,
     jsObjectModel,
     mutableBuffers: features.mutableBuffers === true,
     bigintBytes: features.bigintBytes === true,

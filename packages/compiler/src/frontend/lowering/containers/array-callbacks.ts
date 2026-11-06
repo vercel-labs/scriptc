@@ -2916,6 +2916,22 @@ export function lowerArraySortCall(
   }
   let fnArg =
     undefinedArg ?? lowerOptionalElementComparator(lowerer, argNode, unwrappedArg, elem, arrT);
+  // A comparator whose result may be `undefined` — the shape TS infers for a
+  // JavaScript function that falls off its end for equal elements (semver's
+  // `rcompare`) — still orders: JavaScript reads a comparator's result with
+  // ToNumber, so the adapter completes the unit arm as NaN, which the
+  // runtime's `result > 0` test reads as "not greater", exactly as Node.
+  if (fnArg.type.kind === "func") {
+    const numeric = lowerer.sortComparatorResultAdapter(fnArg.type, loc);
+    if (numeric !== null)
+      fnArg = {
+        kind: "call",
+        callee: numeric,
+        args: [fnArg],
+        type: funcOf(fnArg.type.params, F64),
+        loc,
+      };
+  }
   // Reusable JS comparators often accept checked values. Adapt the array's
   // element ABI just as other array callbacks do before sorting. A
   // comparator declaring MORE parameters than sort passes (`(a, b, loose?)`,

@@ -22,6 +22,10 @@ ScrPromise *scr_blob_text(ScrDyn *self);
 ScrPromise *scr_blob_bytes(ScrDyn *self);
 ScrPromise *scr_blob_array_buffer(ScrDyn *self);
 bool scr_blob_is(const ScrDyn *value, double kind);
+/* A Blob or File as a fetch body: the blob's bytes (+1) and its type
+ * (+1, NULL when the Blob has none), which becomes Content-Type. False,
+ * touching neither output, for every other value. */
+bool scr_blob_body_info(const ScrDyn *value, ScrBytes **bytes, ScrStr **type);
 
 ScrDyn *scr_intl_segmenter_new(void);
 /* A word or sentence Intl.Segmenter whose segment() throws `refusal`

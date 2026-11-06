@@ -10,7 +10,6 @@ import {
   BOOL,
   CAUGHT,
   DYN,
-  DYN_HANDLE_KINDS,
   type IrExpr,
   type IrLocal,
   type IrType,
@@ -20,7 +19,6 @@ import {
   UNDEFINED_T,
   VOID,
   arrayOf,
-  canAdaptDynFuncTo,
   canDynCheckTo,
   isDynTypedRefType,
   isUnitType,
@@ -981,11 +979,17 @@ function checkedStaleArm(
 
 /** V8's spelling of a callee in "is not a function": a string-literal
  * element key reads as a property name (`o["a"]` is `o.a`), other keys
- * keep their brackets, parentheses and non-null assertions disappear, and
- * a call result reads `f(...)`. */
+ * keep their brackets, parentheses and type syntax disappear (`!`, `as`,
+ * `satisfies`, `<T>` assertions), and a call result reads `f(...)`. */
 export function v8CalleeText(node: ts.Node): string {
-  // `!` is type-only syntax: the running JavaScript has no trace of it.
-  if (ts.isNonNullExpression(node) || ts.isParenthesizedExpression(node))
+  // Type syntax is type-only: the running JavaScript has no trace of it.
+  if (
+    ts.isNonNullExpression(node) ||
+    ts.isParenthesizedExpression(node) ||
+    ts.isAsExpression(node) ||
+    ts.isSatisfiesExpression(node) ||
+    ts.isTypeAssertion(node)
+  )
     return v8CalleeText(node.expression);
   // A call result prints with its arguments elided.
   if (ts.isCallExpression(node) && !node.questionDotToken)
@@ -1838,47 +1842,6 @@ export function lowerAsExpression(
       (id) => lowerer.unions.get(id),
     )
   ) {
-    // Bare undefined-armed targets pass when every OTHER arm is
-    // JSON-safe: the checked-dynamic tree holds a first-class undefined value now
-    // (index-signature overflow reads produce it for missing keys), and
-    // the undefined arm matches exactly it — `p[key] as string |
-    // undefined` is the missing-key idiom. Parsed JSON still never
-    // contains undefined, so casts over parse results keep failing on
-    // non-string values with the usual path-annotated TypeError.
-    if (target.kind === "union" && lowerer.dynConvertible(target)) {
-      return checkedDynCast(lowerer, expr, inner, target);
-    }
-    // Uint8Array targets: the checked-dynamic tree carries a bytes kind now (converted
-    // stdin chunks) — the extraction validates the kind and copies out.
-    if (target.kind === "bytes" && target.elem === "u8") {
-      return { kind: "dynCheck", value: inner, type: target, loc: locOf(expr) };
-    }
-    // Class instances round-trip only through compiler-owned typed
-    // references. Plain JSON objects fail the runtime class-brand check;
-    // exact capsules unwrap the original object by identity.
-    if (isDynTypedRefType(target)) {
-      return { kind: "dynCheck", value: inner, type: target, loc: locOf(expr) };
-    }
-    // ADAPTABLE function targets (`u as (x: number) => number` — the
-    // checked-dynamic function boundary): kind check, then exact unwrap
-    // or the per-target adapter shim. Non-adaptable signatures keep the
-    // fence below.
-    if (
-      target.kind === "func" &&
-      canAdaptDynFuncTo(
-        target,
-        (id) => lowerer.shapes.get(id),
-        (id) => lowerer.unions.get(id),
-      )
-    ) {
-      return { kind: "dynCheck", value: inner, type: target, loc: locOf(expr) };
-    }
-    // Runtime HANDLE targets (`u as IncomingMessage` — a boxed handle
-    // coming back out of an untyped wrapper): a tag-checked reference
-    // unwrap, identity preserved (DYN_HANDLE_KINDS).
-    if (DYN_HANDLE_KINDS.has(target.kind)) {
-      return { kind: "dynCheck", value: inner, type: target, loc: locOf(expr) };
-    }
     // `value as NodeJS.ReadableStream`: the general stream classes take
     // the checked cast (general-streams.ts).
     requestGeneralStreamSurface(lowerer, expr);
@@ -1886,8 +1849,7 @@ export function lowerAsExpression(
       "SC1090",
       expr,
       `a checked cast of 'unknown' to '${target.kind === "void" ? "void" : lowerer.fmt(target)}' ` +
-        `(a dynamic value can only be validated against JSON-representable types: ` +
-        `number, string, boolean, records, arrays, and unions of those)`,
+        `(${lowerer.dynCheckBlocker(target) ?? "this target"} is outside the checked conversion's domain)`,
     );
   }
   return checkedDynCast(lowerer, expr, inner, target);

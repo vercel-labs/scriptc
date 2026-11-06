@@ -879,6 +879,15 @@ export function lowerProcessProperty(
   if (member === "release") {
     return { kind: "libCall", fn: "process.release", args: [], type: DYN, loc };
   }
+  // process.report: the diagnostic report is answered by the Node island,
+  // which is this same process — one bridge call, no native
+  // reimplementation, and sharedObjects lists the binary's real libraries.
+  // A build without islands keeps the member fence that names
+  // process.report (no report is fabricated here).
+  if (member === "report") {
+    if (lowerer.nodeIslands === null) return null;
+    return { kind: "libCall", fn: "nodeIsland.processReport", args: [], type: DYN, loc };
+  }
   // process.execPath: the compiled binary's own resolved absolute path —
   // the honest answer where Node's is the node executable's (SEMANTICS.md
   // divergence 12, the argv[0]/argv[1] precedent).

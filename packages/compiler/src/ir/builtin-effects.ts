@@ -12,6 +12,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "nodeIsland.callSync",
   // Island module evaluation and member operations run JavaScript.
   "nodeIsland.require",
+  // process.report loads the process builtin and reads the report object.
+  "nodeIsland.processReport",
   "nodeIsland.defer",
   "nodeIsland.get",
   "nodeIsland.getKey",

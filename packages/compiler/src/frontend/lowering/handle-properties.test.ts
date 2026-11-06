@@ -109,3 +109,39 @@ console.log(new Map().size);
     expr: { fn: "handle.propsInstall" },
   });
 });
+
+test("a JavaScript file that only mentions child_process in text requests no child wrapper", async () => {
+  // The census reads the file as text, so a comment mentioning child_process
+  // and defineProperty asks for the child table; the module cannot hold a
+  // child handle, so the install must not ask scr_child.c's ops of a binary
+  // that never links them.
+  const mod = await compileIr(
+    `"use strict";
+// child_process and defineProperty are words here, not calls.
+const m = new Map();
+m.x = 1;
+console.log(m.size);
+`,
+    "js",
+  );
+  expect(installOf(mod)).toMatchObject({
+    kind: "exprStmt",
+    expr: { kind: "libCall", fn: "handle.propsInstall", args: [{ kind: "numLit", value: 0 }] },
+  });
+});
+
+test("a program that spawns a child still requests the child wrapper", async () => {
+  const mod = await compileIr(
+    `"use strict";
+const { spawn } = require("child_process");
+const child = spawn(process.execPath, ["-e", ""]);
+Reflect.defineProperty(child, "label", { value: 1, configurable: true });
+child.on("close", () => console.log("close"));
+`,
+    "js",
+  );
+  expect(installOf(mod)).toMatchObject({
+    kind: "exprStmt",
+    expr: { kind: "libCall", fn: "handle.propsInstall", args: [{ kind: "numLit", value: 1 }] },
+  });
+});

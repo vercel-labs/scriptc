@@ -15,6 +15,7 @@ import {
   privateInMessage,
 } from "../private-brands.js";
 import type { Lowerer } from "../lowerer.js";
+import { isCallableValue } from "../callable-properties.js";
 import {
   BOOL,
   BYTES_ELEMENT_NAME,
@@ -1974,9 +1975,9 @@ export function lowerInExpression(
     recv.type.kind === "classval" ? lowerer.classes.get(recv.type.className) : undefined;
   if (
     (classInfo && (classInfo.callableBase || hasRuntimeStatics(classInfo))) ||
-    (isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
-      recv.type.kind === "func" &&
-      lowerer.dynConvertible(recv.type))
+    (recv.type.kind === "func" &&
+      lowerer.dynConvertible(recv.type) &&
+      (isJsSourceFile(ts.getSourceFileOfNode(expr)) || isCallableValue(lowerer, expr.right)))
   ) {
     recv = lowerer.coerceToExpected(recv, DYN);
   }
@@ -2168,8 +2169,8 @@ export function lowerInExpression(
       if (
         f &&
         !inherited &&
-        f.type.kind === "union" &&
-        lowerer.armTag(f.type.unionId, UNDEFINED_T) >= 0
+        ((f.type.kind === "union" && lowerer.armTag(f.type.unionId, UNDEFINED_T) >= 0) ||
+          (f.optional === true && f.type.kind === "dyn"))
       ) {
         answers.push({ tag, has: "slot", arm }); // presence is per-value
         continue;
@@ -2324,8 +2325,8 @@ export function lowerInExpression(
     }
     if (
       !OBJECT_PROTOTYPE_KEYS.has(key) &&
-      field.type.kind === "union" &&
-      lowerer.armTag(field.type.unionId, UNDEFINED_T) >= 0
+      ((field.type.kind === "union" && lowerer.armTag(field.type.unionId, UNDEFINED_T) >= 0) ||
+        (field.optional === true && field.type.kind === "dyn"))
     ) {
       // Optional slot: the key is present unless the field is absent
       // (omitted or deleted); an explicit undefined is present.

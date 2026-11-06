@@ -3261,6 +3261,74 @@ function capturesEnclosingFrame(
   return captures;
 }
 
+/** Whether a captured value's type can change between two instantiations of
+ * the enclosing generic scopes: true when a type parameter reaches the type
+ * (directly, through a union, or as a type argument), and true for the shapes
+ * whose contents the walk cannot name — a mapped type, an inferred object
+ * literal, a signature — so those keep the fence they had. */
+function typeVariesWithEnclosingTypeParameters(lowerer: Lowerer, type: ts.Type): boolean {
+  const seen = new Set<ts.Type>();
+  const walk = (part: ts.Type, depth: number): boolean => {
+    if ((part.flags & ts.TypeFlags.TypeParameter) !== 0) return true;
+    if (depth > 8) return true;
+    if (seen.has(part)) return false;
+    seen.add(part);
+    if (part.isUnionType()) return ts.constituentTypes(part).some((p) => walk(p, depth + 1));
+    if ((part.flags & ts.TypeFlags.Intersection) !== 0)
+      return ts.constituentTypes(part).some((p) => walk(p, depth + 1));
+    if (part.getAliasTypeArguments().some((p) => walk(p, depth + 1))) return true;
+    // An indexed access, a conditional, a substitution or an index type is
+    // resolved from a source type this walk would have to reduce.
+    if (
+      (part.flags &
+        (ts.TypeFlags.Index |
+          ts.TypeFlags.IndexedAccess |
+          ts.TypeFlags.Conditional |
+          ts.TypeFlags.Substitution)) !==
+      0
+    )
+      return true;
+    if ((part.flags & ts.TypeFlags.Object) === 0) return false;
+    const flags = (part as ts.ObjectType).objectFlags;
+    // A reference names its type arguments — a class instance, an interface,
+    // an array, a tuple.
+    if ((flags & ts.ObjectFlags.Reference) !== 0)
+      return lowerer.checker
+        .getTypeArguments(part as ts.TypeReference)
+        .some((p) => walk(p, depth + 1));
+    // A mapped type reduces to its source's keys and type arguments.
+    if ((flags & ts.ObjectFlags.Mapped) !== 0) return true;
+    // An index signature names its value type directly, and its key is never
+    // a type parameter: `{ [key: string]: T }` varies exactly as `T` does,
+    // whether the type is an object literal's or a named one's.
+    for (const info of lowerer.checker.getIndexInfosOfType(part)) {
+      if (walk(info.type, depth + 1)) return true;
+    }
+    // A nominal instance whose type arguments the reference test above did
+    // not see carries none to miss.
+    if ((flags & ts.ObjectFlags.ClassOrInterface) !== 0) return false;
+    // An inferred object literal or a type alias's object type names its
+    // members instead of type arguments: read them, with a bounded width so
+    // a wide type cannot make this walk expensive.
+    let budget = 0;
+    for (const prop of lowerer.checker.getPropertiesOfType(part)) {
+      if (++budget > 64) return true;
+      if (walk(lowerer.checker.getTypeOfSymbol(prop), depth + 1)) return true;
+    }
+    for (const sig of [
+      ...lowerer.checker.getCallSignatures(part),
+      ...lowerer.checker.getConstructSignatures(part),
+    ]) {
+      for (const param of sig.getParameters()) {
+        if (walk(lowerer.checker.getTypeOfSymbol(param), depth + 1)) return true;
+      }
+      if (walk(lowerer.checker.getReturnTypeOfSignature(sig), depth + 1)) return true;
+    }
+    return false;
+  };
+  return walk(type, 0);
+}
+
 /** The enclosing-frame VALUES `fn`, bound by `decl`, reads — in first-use
  * order, the order the instances take them as trailing parameters. The
  * shape is the one the instance body resolves: a binding declared by an
@@ -3361,15 +3429,28 @@ function enclosingFrameCaptures(
   // A capture's type is fixed when the info is registered, once per
   // binding, while an enclosing generic function or class re-lowers its
   // frame per instantiation: the second instantiation's value would have a
-  // different type than the parameter the shared instance declares.
-  // Generic enclosing scopes keep the fence; non-generic ones carry no
-  // type argument for the instance to miss.
+  // different type than the parameter the shared instance declares. The
+  // fence is about that TYPE, not about genericity: a capture whose type
+  // reads none of the enclosing type parameters is the same type in every
+  // instantiation, and the instance reads it exactly (the getSlot shape:
+  // a generic arrow closing over a Map and a counter inside a generic
+  // provider function).
   if (captures.length > 0) {
+    let genericEnclosing = false;
     for (let p: ts.Node | undefined = fn.parent; p && !ts.isSourceFile(p); p = p.parent) {
       if (!ts.isFunctionLike(p) && !ts.isClassLikeDeclaration(p)) continue;
       const typeParameters = (p as { typeParameters?: ts.NodeArray<ts.TypeParameterDeclaration> })
         .typeParameters;
-      if (typeParameters !== undefined && typeParameters.nodes.length > 0) frameFence();
+      if (typeParameters !== undefined && typeParameters.nodes.length > 0) {
+        genericEnclosing = true;
+        break;
+      }
+    }
+    if (genericEnclosing) {
+      for (const capture of captures) {
+        if (typeVariesWithEnclosingTypeParameters(lowerer, lowerer.typeOf(capture.nameNode)))
+          frameFence();
+      }
     }
   }
   return captures;

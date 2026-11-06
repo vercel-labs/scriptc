@@ -265,7 +265,7 @@ export function finalizeRecordLinks(lowerer: Lowerer, functions: IrFunction[]): 
     )
       answering.add(helper.fn.name);
   }
-  for (const finalize of lowerer.linkedHelperFinalizers) finalize();
+  for (const finalize of lowerer.linkedHelperFinalizers) finalize(sourced);
   // The module's functions already hold the helpers lifted before.
   functions.push(...lowerer.liftedFns.slice(lifted));
   restoreStringConversions(lowerer, functions, answering);
@@ -433,7 +433,12 @@ function addComposer(lowerer: Lowerer, link: IrRecordLink, sourced: ReadonlySet<
     const [obj, shapeId] =
       own !== undefined && typeEquals(own.type, field.type) ? [copy, link.to] : [source, link.from];
     const read: IrExpr = { kind: "recordGet", obj, shapeId, field: name, type: field.type, loc };
-    return { name, value: lowerer.presenceKeepingCopy(obj, shapeId, name, read, loc) };
+    // The composed record has the SOURCE type, so its slot's absence state is
+    // the source field's, even when the value is read from the copy.
+    return {
+      name,
+      value: lowerer.presenceKeepingCopy(obj, shapeId, name, read, loc, field),
+    };
   });
   // A source type written in several key orders records each value's order
   // in a hidden field: the composed record enumerates in the source's.

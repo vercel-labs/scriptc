@@ -14,9 +14,14 @@
  *            statement list (SC0005/SC0006), a declaration where the
  *            grammar admits only a Statement (SC0007), an ImportCall
  *            argument list the grammar does not allow (SC0008), a private
- *            name with no declaring enclosing class (SC0009), and an
+ *            name with no declaring enclosing class (SC0009), an
  *            assignment target that is not a variable or a property access
- *            (SC0010)
+ *            (SC0010), `await` used as an identifier where the grammar
+ *            makes it an operator (SC0011), `arguments` in a class field
+ *            initializer or static block (SC0012), a script-top-level
+ *            `using` declaration (SC0013), assignment to `eval` or
+ *            `arguments` in strict code (SC0014), and a catch parameter
+ *            the catch block redeclares (SC0015)
  *   SC1xxx  supported-TypeScript-not-yet: valid TS outside the current subset
  *   SC2xxx  scriptc type rules (types we cannot compile yet)
  *   SC3xxx  backend/target coverage: the program is valid, but the selected

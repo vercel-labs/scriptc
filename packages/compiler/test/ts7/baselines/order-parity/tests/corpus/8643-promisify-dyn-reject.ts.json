@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8643-promisify-dyn-reject.ts"
+ ],
+ "diags": []
+}

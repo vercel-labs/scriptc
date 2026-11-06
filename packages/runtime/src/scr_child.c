@@ -105,6 +105,16 @@ static void scr_child_error_spawn_fields(ScrError *e, double uv_errno, const cha
   scr_error_set_prop(e, "spawnargs", 9, spawnargs);
 }
 
+#ifdef SCR_CHILD_ERR_FIELDS
+/* Node copies the spawn argument list before running the child, so
+ * `spawnargs` answers the values the call was given even when the program
+ * rewrites its array after the call; a snapshot of the same values keeps
+ * the two equal. +1; NULL for no arguments. */
+static ScrArr *scr_child_snapshot_args(ScrArr *args) {
+  return args != NULL ? scr_arr_slice(args, 0, (double)scr_arr_len(args)) : NULL;
+}
+#endif
+
 /* exec/execFile's command failure: code (the exit status, or null after a
  * signal), killed and signal, before cmd. */
 static void scr_child_error_exit_fields(ScrError *e, bool has_code, double code,
@@ -904,6 +914,7 @@ static void scr_win_run_sync(ScrStr *cmd, ScrArr *args, const ScrStr *input,
   if (in_mode == 2 || out_mode == 2 || err_mode == 2) {
     /* Inherited stdio: flush the parent's buffers first so earlier logs
      * precede the child's writes (Node's practical ordering). */
+    scr_stdout_settle();
     fflush(stdout);
     fflush(stderr);
   }
@@ -1028,6 +1039,16 @@ struct ScrSpawnRes {
   ScrStr *err;
   const char *spawn_errname;
   ScrStr *cmd;
+#ifdef SCR_CHILD_ERR_FIELDS
+  /* Node's errnoException `errno` for that failure (negative, as libuv
+   * reports it; 0 = no error) and the `spawnargs` Node carries after
+   * `path`: the arguments after the file (+1; NULL when there is no
+   * error). Both ride the result so `.error` answers Node's fields; the
+   * build without the define keeps this struct and release path as they
+   * were, so a program that never reads `.error` pays nothing. */
+  double spawn_errno;
+  ScrArr *args;
+#endif
   const char *signal_name;
 };
 
@@ -1042,6 +1063,9 @@ void scr_spawn_res_release(ScrSpawnRes *r) {
     scr_str_release(r->out);
     scr_str_release(r->err);
     scr_str_release(r->cmd); /* NULL-safe */
+#ifdef SCR_CHILD_ERR_FIELDS
+    if (r->args) scr_arr_release(r->args);
+#endif
     free(r);
   }
 }
@@ -1069,6 +1093,12 @@ ScrError *scr_spawn_res_error(ScrSpawnRes *r) {
   ScrError *e = scr_error_new(0 /* Error */, m);
   scr_str_release(m);
   scr_error_set_code(e, r->spawn_errname);
+#ifdef SCR_CHILD_ERR_FIELDS
+  /* Node's errnoException fields: errno (libuv's code), syscall
+   * "spawnSync <file>", path (the file) and spawnargs (the arguments
+   * after it). A timeout carries them too — code ETIMEDOUT. */
+  scr_child_error_spawn_fields(e, r->spawn_errno, "spawnSync", r->cmd, r->args);
+#endif
   return e;
 }
 
@@ -1082,6 +1112,10 @@ static ScrSpawnRes *scr_spawn_res_new(bool has_status, double status,
   r->out = out;
   r->err = err;
   r->spawn_errname = NULL;
+#ifdef SCR_CHILD_ERR_FIELDS
+  r->spawn_errno = 0;
+  r->args = NULL;
+#endif
   r->cmd = NULL;
   r->signal_name = NULL;
   return r;
@@ -1118,6 +1152,10 @@ static ScrSpawnRes *scr_spawn_sync_core(ScrStr *cmd, ScrArr *args, double timeou
     ScrSpawnRes *r = scr_spawn_res_new(false, 0, scr_str_new("", 0), scr_str_new("", 0));
     r->spawn_errname = w.spawn_errname;
     r->cmd = scr_str_retain(cmd);
+#ifdef SCR_CHILD_ERR_FIELDS
+    r->spawn_errno = (double)scr_win_uv_errno(w.spawn_errname);
+    r->args = scr_child_snapshot_args(args);
+#endif
     return r;
   }
   ScrStr *out_s = scr_str_new(w.out.data, w.out.len);
@@ -1135,6 +1173,12 @@ static ScrSpawnRes *scr_spawn_sync_core(ScrStr *cmd, ScrArr *args, double timeou
   if (r->signal_name == NULL) r->signal_name = "SIGTERM";
   r->spawn_errname = "ETIMEDOUT";
   r->cmd = scr_str_retain(cmd);
+#ifdef SCR_CHILD_ERR_FIELDS
+  /* libuv's UV_ETIMEDOUT (uv-errno.h); scr_win_uv_errno maps the spawn
+   * failure names and answers UV_UNKNOWN for the timeout's. */
+  r->spawn_errno = -4039.0;
+  r->args = scr_child_snapshot_args(args);
+#endif
   return r;
 }
 
@@ -1289,6 +1333,7 @@ static ScrStr *scr_exec_run(ScrStr *cmd, ScrArr *args, bool shell,
    * echoes to the parent's stderr AFTER completion, success, failure or
    * timeout. */
   if (stderr_mode == 0 && w.err.len > 0) {
+    scr_stdout_settle();
     fflush(stdout);
     fwrite(w.err.data, 1, w.err.len, stderr);
   }
@@ -1491,6 +1536,8 @@ struct ScrChild {
   ScrStr *exec_display;
   ScrStr *exec_file; /* the spawned file and its arguments (+1 each), for */
   ScrArr *exec_args; /* a spawn failure's path and spawnargs */
+  ScrStr *spawnfile; /* ChildProcess.spawnfile: the file that was spawned */
+  ScrArr *spawnargs; /* ChildProcess.spawnargs: the file followed by its arguments */
   void (*exec_props)(struct ScrChild *c, ScrError *error); /* Node's error properties */
   ScrChildStream *out_stream;
   ScrChildStream *err_stream;
@@ -1551,6 +1598,8 @@ void scr_child_release(ScrChild *c) {
     scr_str_release(c->exec_display);
     scr_str_release(c->exec_file);
     if (c->exec_args) scr_arr_release(c->exec_args);
+    scr_str_release(c->spawnfile);
+    if (c->spawnargs) scr_arr_release(c->spawnargs);
     scr_dyn_release(c->out_dyn);
     scr_dyn_release(c->err_dyn);
     scr_dyn_release(c->in_dyn);
@@ -2290,6 +2339,7 @@ static void scr_child_writer_fire_error(ScrChildWriter *w) {
 static void scr_child_writer_fire_error_in(ScrChildWriter *w) {
   w->error_pending = false;
   if (w->n_write_err == 0) {
+    scr_stdout_settle();
     fflush(stdout);
     fprintf(stderr, "Unhandled 'error' event: Error: %s\n", w->err_msg->data);
     _Exit(1);
@@ -2327,6 +2377,10 @@ static bool scr_child_writers_pending(void) {
   }
   return false;
 }
+
+/* The Windows sleep already switches on the writer's overlapped events and
+ * its own polling cap; the POSIX-arm ready rule does not apply. */
+static bool scr_child_writers_ready(void) { return false; }
 
 static void scr_child_writers_service(void) {
   ScrChildWriter **link = &scr_child_writers;
@@ -2370,11 +2424,97 @@ ScrChild *scr_spawn(ScrStr *cmd, ScrArr *args) {
 /* PER-SLOT stdio modes (the POSIX arm's numbering): in 0 = ignore (NUL),
  * 1 = inherit, 3 = pipe; out/err 0 = ignore, 1 = inherit, 2 = fd,
  * 3 = pipe. */
+/* Whether the shell path names cmd.exe (Node switches the switch form on
+ * that test alone). */
+static bool scr_child_shell_is_cmd(const ScrStr *s) {
+  static const char name[] = "cmd.exe";
+  size_t start = 0;
+  for (size_t i = 0; i < s->len; i++)
+    if (s->data[i] == '\\' || s->data[i] == '/') start = i + 1;
+  if (s->len - start != sizeof name - 1) return false;
+  for (size_t i = 0; i < sizeof name - 1; i++) {
+    char ch = s->data[start + i];
+    if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a');
+    if (ch != name[i]) return false;
+  }
+  return true;
+}
+
+/* %ComSpec%, or "cmd.exe" when it is unset: the shell Node runs a spawn
+ * with shell: true through. */
+static ScrStr *scr_child_comspec(void) {
+  DWORD need = GetEnvironmentVariableW(L"ComSpec", NULL, 0);
+  if (need == 0) return scr_str_new("cmd.exe", 7);
+  WCHAR *wide = malloc((size_t)need * sizeof(WCHAR));
+  if (!wide) scr_child_oom();
+  DWORD used = GetEnvironmentVariableW(L"ComSpec", wide, need);
+  ScrStr *out = NULL;
+  if (used > 0 && used < need) {
+    int bytes = WideCharToMultiByte(CP_UTF8, 0, wide, (int)used, NULL, 0, NULL, NULL);
+    if (bytes > 0) {
+      char *buf = malloc((size_t)bytes);
+      if (!buf) scr_child_oom();
+      WideCharToMultiByte(CP_UTF8, 0, wide, (int)used, buf, bytes, NULL, NULL);
+      out = scr_str_new(buf, (size_t)bytes);
+      free(buf);
+    }
+  }
+  free(wide);
+  return out != NULL ? out : scr_str_new("cmd.exe", 7);
+}
+
+/* Node's normalizeSpawnArguments result, kept for ChildProcess.spawnfile
+ * and spawnargs. A direct spawn reports the command and its arguments. The
+ * shell form joins the command and arguments into one command line and
+ * reports the shell it runs: cmd.exe with /d /s /c and the quoted line, or
+ * the named shell with -c and the line. */
+static void scr_child_record_spawn(ScrChild *c, ScrStr *cmd, ScrArr *args, bool shell) {
+  size_t n = (size_t)scr_arr_len(args);
+  ScrArr *spawnargs = scr_arr_new(SCR_ELEM_STR, n + 1);
+  if (shell) {
+    ScrStr **parts = malloc((1 + 2 * n) * sizeof *parts);
+    ScrStr *space = scr_str_new(" ", 1);
+    if (!parts) scr_child_oom();
+    parts[0] = cmd;
+    for (size_t i = 0; i < n; i++) {
+      parts[1 + 2 * i] = space;
+      parts[2 + 2 * i] = scr_arr_get_ref(args, (double)i);
+    }
+    ScrStr *command = scr_str_concat_parts(parts, 1 + 2 * n);
+    for (size_t i = 0; i < n; i++) scr_str_release(parts[2 + 2 * i]);
+    scr_str_release(space);
+    free(parts);
+    ScrStr *file = scr_child_comspec();
+    c->spawnfile = scr_str_retain(file);
+    scr_arr_push_ref(spawnargs, file);
+    if (scr_child_shell_is_cmd(file)) {
+      ScrStr *quote = scr_str_new("\"", 1);
+      ScrStr *quoted_parts[3] = {quote, command, quote};
+      ScrStr *quoted = scr_str_concat_parts(quoted_parts, 3);
+      scr_str_release(quote);
+      scr_str_release(command);
+      scr_arr_push_ref(spawnargs, scr_str_new("/d", 2));
+      scr_arr_push_ref(spawnargs, scr_str_new("/s", 2));
+      scr_arr_push_ref(spawnargs, scr_str_new("/c", 2));
+      scr_arr_push_ref(spawnargs, quoted);
+    } else {
+      scr_arr_push_ref(spawnargs, scr_str_new("-c", 2));
+      scr_arr_push_ref(spawnargs, command);
+    }
+  } else {
+    c->spawnfile = scr_str_retain(cmd);
+    scr_arr_push_ref(spawnargs, scr_str_retain(cmd));
+    for (size_t i = 0; i < n; i++) scr_arr_push_ref(spawnargs, scr_arr_get_ref(args, (double)i));
+  }
+  c->spawnargs = spawnargs;
+}
+
 ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
                          double out_mode, double err_mode, double out_fd,
                          double err_fd, bool detached, bool shell, bool has_env,
                          ScrArr *env_pairs, ScrStr *cwd) {
   if ((int)out_mode == 1 || (int)err_mode == 1 || (int)out_mode == 2 || (int)err_mode == 2) {
+    scr_stdout_settle();
     fflush(stdout);
     fflush(stderr);
   }
@@ -2382,6 +2522,7 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
   if (!c) scr_child_oom();
   c->rc = 1;
   c->als = scr_als_capture();
+  scr_child_record_spawn(c, cmd, args, shell);
 
   /* Piped slots: the pipe NOW; a pipe failure degrades the slot to NUL
    * and the stream husk answers eof (fd exhaustion — nothing real). */
@@ -2565,6 +2706,13 @@ double scr_child_exit_code(ScrChild *c) {
 }
 
 bool scr_child_killed(ScrChild *c) { return c->killed; }
+
+ScrStr *scr_child_spawnfile(ScrChild *c) {
+  return c->spawnfile ? scr_str_retain(c->spawnfile) : scr_str_new("", 0);
+}
+ScrArr *scr_child_spawnargs(ScrChild *c) {
+  return c->spawnargs ? scr_arr_retain(c->spawnargs) : scr_arr_new(SCR_ELEM_STR, 0);
+}
 
 /* child.kill core: libuv's uv_kill emulation. SIGTERM/SIGKILL/SIGINT/
  * SIGQUIT/SIGHUP → TerminateProcess(h, 1) with the signal name recorded
@@ -2867,6 +3015,7 @@ static void scr_child_settle_in(ScrChild *c) {
   }
   if (c->state == SCR_CHILD_SPAWN_FAILED) {
     if (c->n_err == 0 && c->exec_cb == NULL) {
+      scr_stdout_settle();
       fflush(stdout);
       fprintf(stderr, "Unhandled 'error' event: Error: %s\n", c->err_msg->data);
       _Exit(1);
@@ -3015,6 +3164,10 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
     ScrSpawnRes *r = scr_spawn_res_new(false, 0, scr_str_new("", 0), scr_str_new("", 0));
     r->spawn_errname = w.spawn_errname;
     r->cmd = scr_str_retain(cmd);
+#ifdef SCR_CHILD_ERR_FIELDS
+    r->spawn_errno = (double)scr_win_uv_errno(w.spawn_errname);
+    r->args = scr_child_snapshot_args(args);
+#endif
     return r;
   }
   ScrStr *out_s = scr_str_new(w.out.data, w.out.len);
@@ -3029,6 +3182,10 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
   if (r->signal_name == NULL) r->signal_name = "SIGTERM";
   r->spawn_errname = "ETIMEDOUT";
   r->cmd = scr_str_retain(cmd);
+#ifdef SCR_CHILD_ERR_FIELDS
+  r->spawn_errno = -4039.0;
+  r->args = scr_child_snapshot_args(args);
+#endif
   return r;
 }
 
@@ -3142,6 +3299,13 @@ struct ScrSpawnRes {
    * reads undefined, exactly Node. */
   const char *spawn_errname;
   ScrStr *cmd; /* +1, for the error message; NULL when spawn_errname is */
+#ifdef SCR_CHILD_ERR_FIELDS
+  /* Node's errnoException `errno` for that failure (negative, as libuv
+   * reports it; 0 = no error), so `.error` answers the same fields the
+   * sync throw does, and Node's `spawnargs` (+1; NULL when no error). */
+  double spawn_errno;
+  ScrArr *args;
+#endif
   /* The termination signal's name (static storage; "SIGTERM", ...) when a
    * signal killed the child — a timeout's killSignal included — NULL for
    * a normal exit or spawn failure. Node's result.signal. */
@@ -3159,6 +3323,9 @@ void scr_spawn_res_release(ScrSpawnRes *r) {
     scr_str_release(r->out);
     scr_str_release(r->err);
     scr_str_release(r->cmd); /* NULL-safe */
+#ifdef SCR_CHILD_ERR_FIELDS
+    if (r->args) scr_arr_release(r->args);
+#endif
     free(r);
   }
 }
@@ -3192,6 +3359,12 @@ ScrError *scr_spawn_res_error(ScrSpawnRes *r) {
   ScrError *e = scr_error_new(0 /* Error */, m);
   scr_str_release(m);
   scr_error_set_code(e, r->spawn_errname);
+#ifdef SCR_CHILD_ERR_FIELDS
+  /* Node's errnoException fields: errno (libuv's code), syscall
+   * "spawnSync <file>", path (the file) and spawnargs (the arguments
+   * after it). A timeout carries them too — code ETIMEDOUT. */
+  scr_child_error_spawn_fields(e, r->spawn_errno, "spawnSync", r->cmd, r->args);
+#endif
   return e;
 }
 
@@ -3270,6 +3443,10 @@ static ScrSpawnRes *scr_spawn_res_new(bool has_status, double status,
   r->out = out;
   r->err = err;
   r->spawn_errname = NULL;
+#ifdef SCR_CHILD_ERR_FIELDS
+  r->spawn_errno = 0;
+  r->args = NULL;
+#endif
   r->cmd = NULL;
   r->signal_name = NULL;
   return r;
@@ -3370,6 +3547,7 @@ static ScrSpawnRes *scr_spawn_sync_core(ScrStr *cmd, ScrArr *args, double timeou
   if (out_mode == 2 || err_mode == 2) {
     /* Inherited output fds: flush the parent's buffers first so earlier
      * logs precede the child's writes (Node's practical ordering). */
+    scr_stdout_settle();
     fflush(stdout);
     fflush(stderr);
   }
@@ -3418,6 +3596,10 @@ static ScrSpawnRes *scr_spawn_sync_core(ScrStr *cmd, ScrArr *args, double timeou
     ScrSpawnRes *r = scr_spawn_res_new(false, 0, scr_str_new("", 0), scr_str_new("", 0));
     r->spawn_errname = scr_errname(spawn_err);
     r->cmd = scr_str_retain(cmd);
+#ifdef SCR_CHILD_ERR_FIELDS
+    r->spawn_errno = -(double)spawn_err;
+    r->args = scr_child_snapshot_args(args);
+#endif
     return r;
   }
 
@@ -3501,6 +3683,10 @@ static ScrSpawnRes *scr_spawn_sync_core(ScrStr *cmd, ScrArr *args, double timeou
       if (r->signal_name == NULL) r->signal_name = scr_signal_name(killsig);
       r->spawn_errname = "ETIMEDOUT";
       r->cmd = scr_str_retain(cmd);
+#ifdef SCR_CHILD_ERR_FIELDS
+      r->spawn_errno = -(double)ETIMEDOUT;
+      r->args = scr_child_snapshot_args(args);
+#endif
     }
   }
   return r;
@@ -3708,6 +3894,7 @@ ScrStr *scr_exec_sync_core(ScrStr *cmd, ScrArr *args, const ScrExecOpts *o) {
   if (o->stdout_mode == 2 || o->stderr_mode == 3) {
     /* Inherited output fds: flush the parent's buffers first so earlier
      * logs precede the child's writes (Node's practical ordering). */
+    scr_stdout_settle();
     fflush(stdout);
     fflush(stderr);
   }
@@ -3874,6 +4061,7 @@ ScrStr *scr_exec_sync_core(ScrStr *cmd, ScrArr *args, const ScrExecOpts *o) {
    * echoes to the parent's stderr AFTER completion, success, failure or
    * timeout. */
   if (o->stderr_mode == 0 && err.len > 0) {
+    scr_stdout_settle();
     fflush(stdout);
     fwrite(err.data, 1, err.len, stderr);
   }
@@ -4105,6 +4293,8 @@ struct ScrChildWriter {
   bool drain_pending;
   bool finish_pending;
   bool error_pending;
+  bool armed;     /* EVFILT_WRITE registered on the child watch */
+  bool uncounted; /* counted into scr_children_unwatched (arm failure) */
   uint8_t *buf;
   size_t off, len, cap;
   ScrStr *err_msg;
@@ -4131,6 +4321,9 @@ static SCR_TL ScrChildWriter *scr_child_writers = NULL;
 static bool scr_child_writers_pending(void);
 static void scr_child_writers_service(void);
 static void scr_child_writer_child_settled(ScrChildWriter *w);
+static void scr_child_writer_dearm(ScrChildWriter *w);
+static bool scr_child_writers_blocked(void);
+static bool scr_child_writers_ready(void);
 
 struct ScrChild {
   size_t rc;
@@ -4162,6 +4355,8 @@ struct ScrChild {
   ScrStr *exec_display;
   ScrStr *exec_file; /* the spawned file and its arguments (+1 each), for */
   ScrArr *exec_args; /* a spawn failure's path and spawnargs */
+  ScrStr *spawnfile; /* ChildProcess.spawnfile: the file that was spawned */
+  ScrArr *spawnargs; /* ChildProcess.spawnargs: the file followed by its arguments */
   void (*exec_props)(struct ScrChild *c, ScrError *error); /* Node's error properties */
   /* Piped stdio (stdio mode 3): the stream handles child.stdout /
    * child.stderr answer — owned (+1 each), NULL when not piped. */
@@ -4285,7 +4480,9 @@ static void scr_child_unwatch(pid_t pid) { (void)pid; }
  * can wake for EVERY pending child — same condition as scr_children_wait.
  * -1 tells the caller to keep the ~1ms reap cap instead. */
 int scr_children_wake_fd(void) {
-  if (scr_child_writers_pending()) return -1;
+  /* A writer's queued bytes ride the same watch (its writability filter),
+   * so only a writer the watch could not arm keeps the polling cap. */
+  if (scr_child_writers_blocked()) return -1;
 #ifdef SCR_HAVE_KQUEUE
   if (scr_child_kq < 0 || scr_children_unwatched > 0) return -1;
   return scr_child_kq;
@@ -4298,7 +4495,7 @@ int scr_children_wake_fd(void) {
 }
 
 bool scr_children_wait(double max_wait_ms) {
-  if (scr_child_writers_pending()) return false;
+  if (scr_child_writers_blocked()) return false;
 #ifdef SCR_HAVE_KQUEUE
   if (scr_child_kq < 0 || scr_children_unwatched > 0) return false;
   if (!(max_wait_ms > 0)) max_wait_ms = 0;
@@ -4362,6 +4559,8 @@ void scr_child_release(ScrChild *c) {
     scr_str_release(c->exec_display);
     scr_str_release(c->exec_file);
     if (c->exec_args) scr_arr_release(c->exec_args);
+    scr_str_release(c->spawnfile);
+    if (c->spawnargs) scr_arr_release(c->spawnargs);
     scr_dyn_release(c->out_dyn);
     scr_dyn_release(c->err_dyn);
     scr_dyn_release(c->in_dyn);
@@ -4872,6 +5071,7 @@ ScrChildWriter *scr_child_writer_retain(ScrChildWriter *w) {
 void scr_child_writer_release(ScrChildWriter *w) {
   if (!w || w->rc == SIZE_MAX) return;
   if (--w->rc == 0) {
+    scr_child_writer_dearm(w);
     if (w->fd >= 0) close(w->fd);
     free(w->buf);
     scr_str_release(w->err_msg);
@@ -4906,7 +5106,74 @@ static ScrChildWriter *scr_child_writer_new(int fd) {
   return w;
 }
 
+/* Drops the writability filter (a no-op when none is armed): the writer
+ * has nothing queued for the pipe, so a ready-for-write pipe must not keep
+ * waking the loop. */
+static void scr_child_writer_dearm(ScrChildWriter *w) {
+  if (!w->armed) return;
+  w->armed = false;
+#ifdef SCR_HAVE_KQUEUE
+  if (scr_child_kq >= 0 && w->fd >= 0) {
+    struct kevent ev;
+    EV_SET(&ev, (uintptr_t)w->fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
+    struct timespec zero = {0, 0};
+    (void)kevent(scr_child_kq, &ev, 1, NULL, 0, &zero);
+  }
+#elif defined(SCR_CHILD_HAVE_PIDFD)
+  if (scr_child_ep >= 0 && w->fd >= 0) {
+    (void)epoll_ctl(scr_child_ep, EPOLL_CTL_DEL, w->fd, NULL);
+  }
+#endif
+}
+
+/* Arms the level-triggered writability filter for a writer with bytes
+ * still queued: a pipe that cannot take them (EAGAIN) is what makes the
+ * loop's sleep wait, and the filter wakes it as soon as room appears —
+ * the read filters' shape, on the write end. An arm failure joins the
+ * unwatched fallback so the loop keeps the ~1ms polling cap for it. */
+static void scr_child_writer_arm(ScrChildWriter *w) {
+  if (w->armed || w->fd < 0) return;
+#ifdef SCR_HAVE_KQUEUE
+  if (scr_child_kq < 0) scr_child_kq = kqueue();
+  if (scr_child_kq >= 0) {
+    struct kevent ev;
+    EV_SET(&ev, (uintptr_t)w->fd, EVFILT_WRITE, EV_ADD, 0, 0, NULL);
+    struct timespec zero = {0, 0};
+    if (kevent(scr_child_kq, &ev, 1, NULL, 0, &zero) == 0) {
+      w->armed = true;
+      if (w->uncounted) {
+        w->uncounted = false;
+        scr_children_unwatched--;
+      }
+      return;
+    }
+  }
+#elif defined(SCR_CHILD_HAVE_PIDFD)
+  if (scr_child_ep < 0) scr_child_ep = epoll_create1(EPOLL_CLOEXEC);
+  if (scr_child_ep >= 0) {
+    struct epoll_event ev = {.events = EPOLLOUT, .data = {.fd = w->fd}};
+    if (epoll_ctl(scr_child_ep, EPOLL_CTL_ADD, w->fd, &ev) == 0) {
+      w->armed = true;
+      if (w->uncounted) {
+        w->uncounted = false;
+        scr_children_unwatched--;
+      }
+      return;
+    }
+  }
+#endif
+  if (!w->uncounted) {
+    w->uncounted = true;
+    scr_children_unwatched++;
+  }
+}
+
 static void scr_child_writer_close(ScrChildWriter *w) {
+  scr_child_writer_dearm(w);
+  if (w->uncounted) {
+    w->uncounted = false;
+    scr_children_unwatched--;
+  }
   if (w->fd >= 0) {
     close(w->fd);
     w->fd = -1;
@@ -5007,7 +5274,12 @@ static void scr_child_writer_pump(ScrChildWriter *w) {
       continue;
     }
     if (n < 0 && errno == EINTR) continue;
-    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return;
+    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+      /* Bytes stay queued: wake on the pipe's writability, not on the
+       * loop's polling cap. */
+      scr_child_writer_arm(w);
+      return;
+    }
     if (n < 0 && errno == EPIPE) {
       scr_child_writer_fail(w, "write EPIPE", "EPIPE");
     } else {
@@ -5015,6 +5287,7 @@ static void scr_child_writer_pump(ScrChildWriter *w) {
     }
     return;
   }
+  scr_child_writer_dearm(w);
   if (scr_child_writer_queued(w) == 0) {
     w->off = w->len = 0;
     if (w->need_drain) {
@@ -5210,6 +5483,7 @@ static void scr_child_writer_fire_error(ScrChildWriter *w) {
 static void scr_child_writer_fire_error_in(ScrChildWriter *w) {
   w->error_pending = false;
   if (w->n_write_err == 0) {
+    scr_stdout_settle();
     fflush(stdout);
     fprintf(stderr, "Unhandled 'error' event: Error: %s\n", w->err_msg->data);
     _Exit(1);
@@ -5244,6 +5518,28 @@ static bool scr_child_writer_flushed(const ScrChildWriter *w) {
 static bool scr_child_writers_pending(void) {
   for (ScrChildWriter *w = scr_child_writers; w; w = w->next) {
     if (scr_child_writer_pending(w)) return true;
+  }
+  return false;
+}
+
+/* Bytes queued for a pipe with no wake filter: only the loop's polling
+ * cap can move them, so the quiescent sleep must keep the cap. */
+static bool scr_child_writers_blocked(void) {
+  for (ScrChildWriter *w = scr_child_writers; w; w = w->next) {
+    if (scr_child_writer_queued(w) > 0 && !w->armed) return true;
+  }
+  return false;
+}
+
+/* Writer work the loop can dispatch right now: nothing left queued for
+ * the pipe, a listener event waiting ('drain', 'finish', or the 'error' a
+ * failed write left pending). No fd wakes the loop for it — without this
+ * each one costs a polling-cap sleep. */
+static bool scr_child_writers_ready(void) {
+  for (ScrChildWriter *w = scr_child_writers; w; w = w->next) {
+    if (scr_child_writer_queued(w) == 0 &&
+        (w->drain_pending || w->finish_pending || w->error_pending))
+      return true;
   }
   return false;
 }
@@ -5285,6 +5581,38 @@ ScrChild *scr_spawn(ScrStr *cmd, ScrArr *args) {
   return scr_spawn_opts(cmd, args, 0, 0, 0, 0, 0, false, false, false, NULL, NULL);
 }
 
+/* Node's normalizeSpawnArguments result, kept for ChildProcess.spawnfile
+ * and spawnargs. A direct spawn reports the command and its arguments. The
+ * shell form joins the command and arguments into one command line and
+ * reports "/bin/sh" with -c and the line. */
+static void scr_child_record_spawn(ScrChild *c, ScrStr *cmd, ScrArr *args, bool shell) {
+  size_t n = (size_t)scr_arr_len(args);
+  ScrArr *spawnargs = scr_arr_new(SCR_ELEM_STR, n + 1);
+  if (shell) {
+    ScrStr **parts = malloc((1 + 2 * n) * sizeof *parts);
+    ScrStr *space = scr_str_new(" ", 1);
+    if (!parts) scr_child_oom();
+    parts[0] = cmd;
+    for (size_t i = 0; i < n; i++) {
+      parts[1 + 2 * i] = space;
+      parts[2 + 2 * i] = scr_arr_get_ref(args, (double)i);
+    }
+    ScrStr *command = scr_str_concat_parts(parts, 1 + 2 * n);
+    for (size_t i = 0; i < n; i++) scr_str_release(parts[2 + 2 * i]);
+    scr_str_release(space);
+    free(parts);
+    c->spawnfile = scr_str_new("/bin/sh", 7);
+    scr_arr_push_ref(spawnargs, scr_str_retain(c->spawnfile));
+    scr_arr_push_ref(spawnargs, scr_str_new("-c", 2));
+    scr_arr_push_ref(spawnargs, command);
+  } else {
+    c->spawnfile = scr_str_retain(cmd);
+    scr_arr_push_ref(spawnargs, scr_str_retain(cmd));
+    for (size_t i = 0; i < n; i++) scr_arr_push_ref(spawnargs, scr_arr_get_ref(args, (double)i));
+  }
+  c->spawnargs = spawnargs;
+}
+
 /* The options core behind cp.spawn/cp.spawnOpts. PER-SLOT stdio modes:
  * 0 = ignore (/dev/null), 1 = inherit (the parent's fd), 2 = fd (out/err
  * only — out_fd/err_fd dup2 into the child's slot, Node's stdio fd form:
@@ -5305,6 +5633,7 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
      * output first so everything logged BEFORE the spawn lands before
      * anything the child writes to the same destinations (Node's
      * practical ordering). */
+    scr_stdout_settle();
     fflush(stdout);
     fflush(stderr);
   }
@@ -5312,6 +5641,7 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
   if (!c) scr_child_oom();
   c->rc = 1;
   c->als = scr_als_capture();
+  scr_child_record_spawn(c, cmd, args, shell);
 
   /* Piped slots: pipe(2) NOW, both ends cloexec (the file action's dup2
    * clears the flag on the child's copy — every other descriptor closes
@@ -5554,6 +5884,13 @@ double scr_child_exit_code(ScrChild *c) {
 }
 
 bool scr_child_killed(ScrChild *c) { return c->killed; }
+
+ScrStr *scr_child_spawnfile(ScrChild *c) {
+  return c->spawnfile ? scr_str_retain(c->spawnfile) : scr_str_new("", 0);
+}
+ScrArr *scr_child_spawnargs(ScrChild *c) {
+  return c->spawnargs ? scr_arr_retain(c->spawnargs) : scr_arr_new(SCR_ELEM_STR, 0);
+}
 
 /* child.kill core, numeric signal already resolved: kill(2) while the
  * handle is live (spawned, not yet reaped — a zombie counts, exactly
@@ -5896,6 +6233,7 @@ static void scr_child_settle_in(ScrChild *c) {
        * _Exit skips atexit handlers (the RC audit above all) on purpose —
        * the loop dies mid-turn with frames and registries still live,
        * exactly like process.exit(). */
+      scr_stdout_settle();
       fflush(stdout);
       fprintf(stderr, "Unhandled 'error' event: Error: %s\n", c->err_msg->data);
       _Exit(1);
@@ -6021,6 +6359,7 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
   if (out_mode == 2 || err_mode == 2) {
     /* Inherited output fds: flush the parent's buffers first so earlier
      * logs precede the child's writes (Node's practical ordering). */
+    scr_stdout_settle();
     fflush(stdout);
     fflush(stderr);
   }
@@ -6097,6 +6436,10 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
     ScrSpawnRes *r = scr_spawn_res_new(false, 0, scr_str_new("", 0), scr_str_new("", 0));
     r->spawn_errname = scr_errname(spawn_err);
     r->cmd = scr_str_retain(cmd);
+#ifdef SCR_CHILD_ERR_FIELDS
+    r->spawn_errno = -(double)spawn_err;
+    r->args = scr_child_snapshot_args(args);
+#endif
     return r;
   }
 
@@ -6201,6 +6544,10 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
       if (r->signal_name == NULL) r->signal_name = scr_signal_name(killsig);
       r->spawn_errname = "ETIMEDOUT";
       r->cmd = scr_str_retain(cmd);
+#ifdef SCR_CHILD_ERR_FIELDS
+      r->spawn_errno = -(double)ETIMEDOUT;
+      r->args = scr_child_snapshot_args(args);
+#endif
     }
   }
   return r;
@@ -6251,6 +6598,83 @@ ScrChild *scr_exec_file_cwd(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
 #endif /* SCR_CHILD_CP_OPTIONS */
 
 #endif /* !_WIN32 */
+
+/* ── the spawnSync result in the checked-dynamic tree ──────────────────
+ * A SpawnSyncReturns boxes as a HANDLE by REFERENCE (identity, no copy):
+ * a dynamic wrapper hands the same result out, and the typed slot unwraps
+ * it through the tag check. A plain object that merely LOOKS like a
+ * spawn result is not one and fails the check (the checked-cast stance).
+ * Its members answer the accessors above; a call through the value is the
+ * usual "narrow first" fence. */
+static ScrDyn *scr_spawn_res_dyn_invoke(void *h, ScrDyn *self, const char *method,
+                                        ScrDyn *const *args, size_t argc, const char *what) {
+  (void)h;
+  (void)self;
+  (void)method;
+  (void)args;
+  (void)argc;
+  (void)what;
+  static const char msg[] =
+      "spawnSync result methods through an 'unknown' value are not supported yet — narrow the value first";
+  scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+  return NULL;
+}
+
+static ScrDyn *scr_spawn_res_dyn_str(ScrStr *s) {
+  ScrDyn *d = scr_dyn_new_str(s);
+  scr_str_release(s);
+  return d;
+}
+
+static ScrDyn *scr_spawn_res_dyn_get(void *h, const char *key, size_t len) {
+  ScrSpawnRes *r = h;
+  if (len == 6 && memcmp(key, "status", 6) == 0) {
+    return scr_spawn_res_has_status(r) ? scr_dyn_new_num(scr_spawn_res_status(r))
+                                       : scr_dyn_new_null();
+  }
+  if (len == 6 && memcmp(key, "stdout", 6) == 0) return scr_spawn_res_dyn_str(scr_spawn_res_stdout(r));
+  if (len == 6 && memcmp(key, "stderr", 6) == 0) return scr_spawn_res_dyn_str(scr_spawn_res_stderr(r));
+  if (len == 6 && memcmp(key, "signal", 6) == 0) {
+    return scr_spawn_res_has_signal(r) ? scr_spawn_res_dyn_str(scr_spawn_res_signal(r))
+                                       : scr_dyn_new_null();
+  }
+  if (len == 5 && memcmp(key, "error", 5) == 0) {
+    ScrError *e = scr_spawn_res_error(r);
+    if (!e) return NULL; /* the undefined arm, like Node */
+    ScrDyn *d = scr_dyn_from_error(e);
+    scr_error_release(e);
+    return d;
+  }
+  return NULL;
+}
+
+static bool scr_spawn_res_dyn_set(void *h, const char *key, size_t len, const ScrDyn *value) {
+  (void)h;
+  (void)key;
+  (void)len;
+  (void)value;
+  return false;
+}
+
+static void scr_spawn_res_dyn_install(void) {
+  static SCR_TL bool installed;
+  if (installed) return;
+  installed = true;
+  static const ScrDynHandleOps ops = {
+      .cls = "SpawnSyncReturns",
+      .retain = scr_spawn_res_retain_v,
+      .release = scr_spawn_res_release_v,
+      .invoke = scr_spawn_res_dyn_invoke,
+      .get = scr_spawn_res_dyn_get,
+      .set = scr_spawn_res_dyn_set,
+  };
+  scr_dyn_handle_install(SCR_DYNH_SPAWN_RES, &ops);
+}
+
+ScrDyn *scr_spawn_res_to_dyn(ScrSpawnRes *r) {
+  scr_spawn_res_dyn_install();
+  return scr_dyn_new_handle(r, SCR_DYNH_SPAWN_RES);
+}
 
 static void scr_child_drop_spawn_listeners(ScrChild *c) {
   for (size_t i = 0; i < c->n_spawn; i++) scr_closure_release(c->spawn_cbs[i]);
@@ -6985,7 +7409,10 @@ bool scr_children_ready(void) {
     }
     if (ipc->local_closing && scr_child_writer_flushed(ipc->writer)) return true;
   }
-  return false;
+  /* A child writer whose queued bytes all reached the pipe has a listener
+   * event ('drain', 'finish', the write's 'error') that only a service
+   * pass delivers — no fd wakes the loop for it. */
+  return scr_child_writers_ready();
 }
 
 double scr_process_fork_target(double target_count) {
@@ -7167,6 +7594,27 @@ static void scr_child_bridge_write_error(ScrClosure *cb, ScrStr *message) {
 static void scr_child_bridge_final_error(ScrClosure *cb, ScrStr *message) {
   scr_child_bridge_operation_error(cb, message, true);
 }
+/* The failure the writer is holding, as the bridged stream reports it: the
+ * stream's completion takes its own Error (the writer keeps its message for
+ * the listeners registered on it). */
+static ScrError *scr_child_bridge_failure(ScrChildWriter *writer) {
+  ScrError *error = scr_error_new(SCR_ERR_ERROR, writer->err_msg);
+  if (writer->err_code) scr_error_set_code(error, writer->err_code);
+  return error;
+}
+
+/* Takes the writer's pending failure: the bridged stream already completed
+ * its write with the error, so the writer has no listener left to answer —
+ * a registered listener keeps the failure from becoming the unhandled-
+ * 'error' exit. */
+static void scr_child_bridge_write_taken(ScrClosure *cb, ScrStr *message) {
+  (void)message;
+  ScrStream *stream = scr_box_get_ref(cb->caps[0]);
+  ScrChildWriter *writer = scr_box_get_ref(cb->caps[1]);
+  scr_child_writer_release(writer);
+  scr_child_stream_ops->release(stream);
+}
+
 static void scr_child_bridge_write(ScrClosure *cb, ScrStream *stream, ScrBytes *chunk) {
   ScrChildWriter *writer = scr_box_get_ref(cb->caps[0]);
   scr_child_writer_write_bytes(writer, chunk);
@@ -7174,15 +7622,23 @@ static void scr_child_bridge_write(ScrClosure *cb, ScrStream *stream, ScrBytes *
 #ifdef _WIN32
   pending = pending || writer->write_pending;
 #endif
-  if (pending || writer->error_pending) {
+  if (writer->error_pending || (writer->destroyed && writer->err_msg != NULL)) {
+    /* The pipe failed inside this write — a reader that closed its end
+     * answers EPIPE at once — or an earlier failure already closed it:
+     * Node's write answers false, and the completion callback and the
+     * 'error' event wait for a tick, exactly what completing the stream's
+     * write with the failure does. */
+    scr_child_writer_on_error(writer,
+        scr_child_bridge_operation(stream, writer, (void *)scr_child_bridge_write_taken),
+        scr_child_bridge_write_taken, true);
+    scr_child_stream_ops->write_done(stream, scr_child_bridge_failure(writer));
+  } else if (pending) {
     scr_child_writer_on_error(writer,
         scr_child_bridge_operation(stream, writer, (void *)scr_child_bridge_write_error),
         scr_child_bridge_write_error, true);
-    if (!writer->error_pending) {
-      writer->need_drain = true;
-      scr_child_writer_on_drain(writer,
-          scr_child_bridge_operation(stream, writer, (void *)scr_child_bridge_write_drained), true);
-    }
+    writer->need_drain = true;
+    scr_child_writer_on_drain(writer,
+        scr_child_bridge_operation(stream, writer, (void *)scr_child_bridge_write_drained), true);
   } else scr_child_stream_ops->write_done(stream, NULL);
   scr_child_writer_release(writer);
 }

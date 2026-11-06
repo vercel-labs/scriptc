@@ -345,6 +345,10 @@ export function islandModuleFile(
       // loaded the file, so the island set names it: accept the source
       // resolution only when the file is an island's, so an unrelated
       // answer cannot become an island import.
+      // The source resolution follows Node's import conditions, so it
+      // answers an import edge only: a package may map "require" to another
+      // file, and a require() must never bind to the import's island.
+      if (kind !== "import") return null;
       const source = resolveBareModule(fromFile, spec, "runtime-source", kind);
       if (source === null) return null;
       if (islandOwnerOfFile(islands, source.typesFile) === null) return null;

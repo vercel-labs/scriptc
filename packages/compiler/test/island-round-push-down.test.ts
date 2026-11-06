@@ -7,7 +7,7 @@
 // (a program that compiled then refuses with SC8020). So such a program is
 // decided from the stream pass in push-down mode, and a stream pass that
 // compiles is asked nothing.
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
@@ -72,6 +72,75 @@ test.for(STREAM_PROGRAMS)(
   600_000,
 );
 
+// The passes of one lowering, in order, with the result they left: what a
+// prepared round's retry decision changes and what it must leave alone.
+interface Lowered {
+  passes: string[];
+  diagnostics: string[];
+  fences: string[];
+  module: string | null;
+}
+
+/** Writes `source` as a one-file program and hands `run` a function that
+ * lowers it, collecting the lowering's pass records (SCRIPTC_TIMING). */
+function withProgram(
+  file: string,
+  source: string,
+  run: (lower: (options: LowerOptions) => Lowered) => void,
+): void {
+  const directory = mkdtempSync(join(tmpdir(), "scriptc-island-round-push-down-"));
+  writeFileSync(join(directory, file), source);
+  const load = loadProgram(join(directory, file));
+  const lower = (options: LowerOptions): Lowered => {
+    const previous = process.env["SCRIPTC_TIMING"];
+    const stderr = process.stderr.write;
+    const lines: string[] = [];
+    process.stderr.write = ((chunk: string | Uint8Array): boolean => {
+      lines.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    process.env["SCRIPTC_TIMING"] = "1";
+    try {
+      const result = lowerToIr(load.program, load.entry, load.moduleOrder, {
+        frontendServices: load.services,
+        ...options,
+      });
+      const passes = lines
+        .filter((line) => line.startsWith("scriptc lowering "))
+        .map(
+          (line) =>
+            JSON.parse(line.slice("scriptc lowering ".length)) as {
+              phase: string;
+              aborted?: string;
+            },
+        )
+        .filter(
+          ({ phase }) =>
+            phase === "reachable-emit" ||
+            phase === "stop-after-push-down" ||
+            phase.includes("relower"),
+        )
+        .map(({ phase, aborted }) => (aborted === undefined ? phase : `${phase} (${aborted})`));
+      return {
+        passes,
+        diagnostics: result.diagnostics.map((d) => `${d.code} ${d.message}`),
+        fences: result.runtimeFences.map((d) => `${d.code} ${d.message}`),
+        module: result.module === null ? null : serializeModule(result.module, true),
+      };
+    } finally {
+      process.stderr.write = stderr;
+      if (previous === undefined) delete process.env["SCRIPTC_TIMING"];
+      else process.env["SCRIPTC_TIMING"] = previous;
+    }
+  };
+  try {
+    run(lower);
+  } finally {
+    load.dispose();
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
 // A stream program's push-down pass ends at its last stream flag
 // (LowerOptions.abortOnStreamFlags) and leaves no result to decide from. A
 // prepared round then decides from the stream pass, and the pipeline keeps
@@ -96,48 +165,7 @@ run(Readable.from(["a", "b"]), sink);
 `;
 
 test("a push-down pass ended at its stream flags decides from the stream pass and reuses it", () => {
-  const directory = mkdtempSync(join(tmpdir(), "scriptc-island-round-push-down-"));
-  writeFileSync(join(directory, "stream.cjs"), BOTH_STREAM_FLAGS);
-  const load = loadProgram(join(directory, "stream.cjs"));
-  // Lower once, collecting the lowering's pass records (SCRIPTC_TIMING).
-  const lower = (options: LowerOptions) => {
-    const previous = process.env["SCRIPTC_TIMING"];
-    const stderr = process.stderr.write;
-    const lines: string[] = [];
-    process.stderr.write = ((chunk: string | Uint8Array): boolean => {
-      lines.push(String(chunk));
-      return true;
-    }) as typeof process.stderr.write;
-    process.env["SCRIPTC_TIMING"] = "1";
-    try {
-      const result = lowerToIr(load.program, load.entry, load.moduleOrder, {
-        frontendServices: load.services,
-        ...options,
-      });
-      const passes = lines
-        .filter((line) => line.startsWith("scriptc lowering "))
-        .map(
-          (line) =>
-            JSON.parse(line.slice("scriptc lowering ".length)) as {
-              phase: string;
-              aborted?: string;
-            },
-        )
-        .filter(({ phase }) => phase === "reachable-emit" || phase.includes("relower"))
-        .map(({ phase, aborted }) => (aborted === undefined ? phase : `${phase} (${aborted})`));
-      return {
-        passes,
-        diagnostics: result.diagnostics.map((d) => `${d.code} ${d.message}`),
-        fences: result.runtimeFences.map((d) => `${d.code} ${d.message}`),
-        module: result.module === null ? null : serializeModule(result.module, true),
-      };
-    } finally {
-      process.stderr.write = stderr;
-      if (previous === undefined) delete process.env["SCRIPTC_TIMING"];
-      else process.env["SCRIPTC_TIMING"] = previous;
-    }
-  };
-  try {
+  withProgram("stream.cjs", BOTH_STREAM_FLAGS, (lower) => {
     const asked: string[] = [];
     const decided = lower({
       stopAfterPushDown: (r) => {
@@ -166,8 +194,63 @@ test("a push-down pass ended at its stream flags decides from the stream pass an
       expect(other.fences).toEqual(decided.fences);
       expect(other.module).toEqual(decided.module);
     }
-  } finally {
-    load.dispose();
-    rmSync(directory, { recursive: true, force: true });
-  }
+  });
+}, 300_000);
+
+// A stream program that still fails after its stream pass: a corpus program
+// whose push-down pass needs the general stream representation, plus a class
+// holding a field whose function type has no lowering. That type degrades in
+// part, which is what the whole-slot comparison of a stream program judges.
+const UNLOWERED_FIELD = `
+class Holder {
+  read = function () {
+    return new.target;
+  };
+}
+const holder = new Holder();
+console.log(typeof holder.read);
+`;
+
+test("a failing stream program decides once, from its stream pass, and lowers with streams once", () => {
+  const source = `${readFileSync(join(corpus, STREAM_PROGRAMS[1]!), "utf8")}\n${UNLOWERED_FIELD}`;
+  withProgram("failing-stream.ts", source, (lower) => {
+    // A predicate that implies a retry ends the round at the stream pass:
+    // the whole-slot comparison would only pick the pass a failure is
+    // reported from, and the retry discards it.
+    const asked: string[] = [];
+    const retried = lower({
+      stopAfterPushDown: (r) => {
+        asked.push(r.module === null ? "failed" : "compiled");
+        return true;
+      },
+    });
+    expect(asked).toEqual(["failed"]);
+    expect(retried.passes).toEqual([
+      "reachable-emit",
+      "general-streams-relower",
+      "stop-after-push-down",
+    ]);
+    expect(retried.module).toBeNull();
+    expect(retried.diagnostics.length).toBeGreaterThan(0);
+    // A predicate that declines is the final round: the stream pass it was
+    // asked about is kept, and the whole-slot comparison runs on it. The
+    // program is never lowered with streams a second time.
+    const declined = lower({ stopAfterPushDown: () => false });
+    expect(declined.passes).toEqual([
+      "reachable-emit",
+      "general-streams-relower",
+      "stream-relower-reused",
+      "whole-slot-relower",
+    ]);
+    // It reports what the pipeline reports without a predicate.
+    const plain = lower({});
+    expect(plain.passes).toEqual([
+      "reachable-emit",
+      "general-streams-relower",
+      "whole-slot-relower",
+    ]);
+    expect(declined.diagnostics).toEqual(plain.diagnostics);
+    expect(declined.fences).toEqual(plain.fences);
+    expect(declined.module).toEqual(plain.module);
+  });
 }, 300_000);

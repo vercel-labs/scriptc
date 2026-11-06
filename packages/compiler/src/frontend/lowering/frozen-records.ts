@@ -13,6 +13,7 @@ import {
 import { numLit, strLit, varRef } from "../../ir/build.js";
 import { everyStmtList, transformStmtList } from "../../ir/traverse.js";
 import type { Lowerer } from "./lowerer.js";
+import type { FunctionCensus } from "./function-census.js";
 import { recordHasOwnHelper } from "./lower-calls.js";
 import { isStrictCode } from "./strict-mode.js";
 
@@ -240,7 +241,24 @@ function guardedWrite(
  * Node's TypeError in strict mode code; in sloppy-mode code it leaves the
  * record unchanged. Deleting a key the record does not have succeeds either
  * way. */
-export function guardFrozenWrites(lowerer: Lowerer, functions: IrFunction[]): void {
+export function guardFrozenWrites(
+  lowerer: Lowerer,
+  functions: IrFunction[],
+  census: FunctionCensus,
+): void {
+  // A program that never freezes anything guards no write, and without
+  // untyped integrity the scan below has no other seed either: the census
+  // answers that without walking the program.
+  if (
+    !lowerer.untypedIntegrity &&
+    !functions.some(
+      (fn) =>
+        census.hasLibFn(fn, "record.freeze") ||
+        census.hasLibFn(fn, "array.freeze") ||
+        census.hasLibFn(fn, "dyn.freeze"),
+    )
+  )
+    return;
   const { shapes: freezable, arrays } = freezableTypes(lowerer, functions);
   for (const id of freezable) {
     const shape = lowerer.shapes.get(id);
@@ -250,6 +268,13 @@ export function guardFrozenWrites(lowerer: Lowerer, functions: IrFunction[]): vo
   if (freezable.size === 0) return;
   const lifted = lowerer.liftedFns.length;
   for (const fn of functions) {
+    // Only a record write can be guarded; most functions hold none.
+    if (
+      !census.hasStmt(fn, "recordSet") &&
+      !census.hasStmt(fn, "recordKeySet") &&
+      !census.hasStmt(fn, "recordKeyDelete")
+    )
+      continue;
     const local = (type: IrType, loc: SrcLoc): Extract<IrExpr, { kind: "varRef" }> => {
       const id = `%frozenWrite.${fn.locals.length}`;
       fn.locals.push({ id, name: id, type, mutable: false });
@@ -384,10 +409,17 @@ export function freezableRecordType(lowerer: Lowerer, type: IrType): type is Rec
  * refuses with a TypeError (a frozen or non-extensible object, a read-only
  * property) leaves the object unchanged instead. Only programs with such
  * writes list any; the backend calls the sloppy entry points for them. */
-export function sloppyDynamicWrites(lowerer: Lowerer, functions: readonly IrFunction[]): string[] {
+export function sloppyDynamicWrites(
+  lowerer: Lowerer,
+  functions: readonly IrFunction[],
+  census: FunctionCensus,
+): string[] {
   const keys = new Set<string>();
   const strictness = new Map<string, boolean>();
   for (const fn of functions) {
+    // Only these two entry points make an untyped property write; a function
+    // without them (nearly all of a large program) has nothing to report.
+    if (!census.hasLibFn(fn, "dyn.keySet") && !census.hasLibFn(fn, "dyn.keySetComputed")) continue;
     everyStmtList(fn.body, {
       stmt: () => true,
       expr: (e) => {

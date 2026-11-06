@@ -96,7 +96,11 @@ import { installBuiltinStatics } from "./builtin-statics.js";
 import type { BuiltinModuleNamespaceFlavor } from "./builtin-module-members.js";
 import { functionKeepsRecordSources } from "./record-sources.js";
 import { exprFunctionReference } from "../../ir/function-references.js";
-import { everyStmtList, observeRecordLiteralRebuilds } from "../../ir/traverse.js";
+import {
+  everyStmtList,
+  observeRecordLiteralRebuilds,
+  withStructureSharing,
+} from "../../ir/traverse.js";
 import { checkedClassAssertion } from "./class-assertions.js";
 import { narrowStoredClassValue, narrowGenericClassValue } from "./class-unions.js";
 import {
@@ -236,6 +240,7 @@ import { addUntypedIntegrityWords, guardClassAttributeWrites } from "./class-att
 import { inferredCollectionType } from "./js-collection-types.js";
 import { sloppyDynamicWrites } from "./frozen-records.js";
 import { guardFrozenWrites, markSloppyRecordWrites } from "./frozen-records.js";
+import { FunctionCensus } from "./function-census.js";
 import { applyHandleProperties, handlePropertyScanRoots } from "./handle-properties.js";
 import { installBufferValue } from "./containers/bytes.js";
 import { installMutableBuffersArm } from "./buffers.js";
@@ -10717,13 +10722,17 @@ export class Lowerer {
       };
     }
 
-    return this.finishModule(functions);
+    return withStructureSharing(() => this.finishModule(functions));
   }
 
   /** Final retention, pruning, and module assembly shared by ordinary emit
    * and the retained reachability worklist. `library` is true for a native
    * library's emit, whose runtime has no builtin-statics unit. */
   finishModule(functions: IrFunction[], library = false): LowerResult {
+    // One census of the functions' node kinds serves every finish pass below
+    // that looks for a rare kind: they skip a function that cannot hold one
+    // instead of walking it.
+    const census = new FunctionCensus();
     // Every instance of every generic value is known now (the
     // monomorphization worklists drained): an identity comparison against
     // one is exact only if the declaration is held at a single signature.
@@ -10731,25 +10740,28 @@ export class Lowerer {
     finalizeRecordLinks(this, functions);
     // The statics lookup installs before value boxing, so the function
     // values it adds to the entry module are boxed with the rest.
-    if (!library) installBuiltinStatics(this, functions);
-    boxBuiltinValuesChecked(this, functions);
+    if (!library) installBuiltinStatics(this, functions, census);
+    boxBuiltinValuesChecked(this, functions, census);
     finalizeFunctionNames(this, functions);
     if (this.diags.length === 0) fuseArrayPipelines(this, functions);
     finalizeClassMethodValues(this, functions);
     finalizePrivateBrands(this, functions);
-    routeWrapperConsumers(this, functions);
-    trackClassFieldCreation(this, functions);
+    routeWrapperConsumers(this, functions, census);
+    trackClassFieldCreation(this, functions, census);
     boxClassInstancesExactly(this, functions);
     addUntypedIntegrityWords(this);
-    guardClassAttributeWrites(this, functions);
-    guardFrozenWrites(this, functions);
+    guardClassAttributeWrites(this, functions, census);
+    guardFrozenWrites(this, functions, census);
     applyHandleProperties(this, functions);
-    installBufferValue(functions);
+    // applyHandleProperties renames library calls in place, so the census of
+    // every function it touched no longer describes its body.
+    census.clear();
+    installBufferValue(functions, census);
     // A mutable-buffers program arms the views registry before any buffer
     // exists, so every buffer in it is detachable from the start.
     const buffersMutable = this.buffersMutable && installMutableBuffersArm(functions);
     installFetchBodyWebStreams(this, functions);
-    returnDispatchReceivers(this, functions);
+    returnDispatchReceivers(this, functions, census);
 
     // Globals typed by a class that never REGISTERED (a JS class whose
     // collection fenced — Symbol-keyed fields, an unsupported base): the
@@ -10841,7 +10853,7 @@ export class Lowerer {
     checkRequireBindingAccesses(this, functions);
     refuseX509DynValues(this, functions);
     markInferredFactChecks(functions, this.program);
-    const sloppyDynWrites = sloppyDynamicWrites(this, functions);
+    const sloppyDynWrites = sloppyDynamicWrites(this, functions, census);
     const module: IrModule | null =
       this.diags.length > 0
         ? null
@@ -11840,7 +11852,10 @@ export class Lowerer {
       files: parts.map((fp) => fp.sf),
     });
     this.reachableForArtifacts = reachable;
-    return { reachable, result: this.finishModule(functions, extraRoots !== undefined) };
+    return {
+      reachable,
+      result: withStructureSharing(() => this.finishModule(functions, extraRoots !== undefined)),
+    };
   }
 
   /** What the steps before the worklist settled for a top-level

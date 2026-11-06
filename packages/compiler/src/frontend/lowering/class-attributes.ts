@@ -26,6 +26,7 @@ import { transformStmtList } from "../../ir/traverse.js";
 import { locOf } from "../program.js";
 import { type Lowerer, PoisonError } from "./lowerer.js";
 import type { ClassInfo } from "./lower-classes.js";
+import type { FunctionCensus } from "./function-census.js";
 import { classPropertiesHelper } from "./class-dynamic-dispatch.js";
 import { runtimeRooted } from "./class-descriptors.js";
 
@@ -375,7 +376,11 @@ function instanceClassName(
  * before every write to a declared field of a hierarchy that has them. A
  * read-only field throws Node's TypeError in strict mode code; a sloppy-mode
  * write leaves it unchanged. Other classes keep their plain stores. */
-export function guardClassAttributeWrites(lowerer: Lowerer, functions: IrFunction[]): void {
+export function guardClassAttributeWrites(
+  lowerer: Lowerer,
+  functions: IrFunction[],
+  census: FunctionCensus,
+): void {
   const guarded = new Set(
     [...lowerer.classes.values()]
       .filter((info) => info.def.fields.some((field) => field.name === CLASS_ATTRIBUTES))
@@ -384,6 +389,8 @@ export function guardClassAttributeWrites(lowerer: Lowerer, functions: IrFunctio
   if (guarded.size === 0) return;
   const helpers = new Map<string, IrFunction>();
   for (const fn of functions) {
+    // Only a field write can be guarded.
+    if (!census.hasStmt(fn, "fieldSet")) continue;
     const local = (type: IrType, loc: SrcLoc): Extract<IrExpr, { kind: "varRef" }> => {
       const id = `%attributeWrite.${fn.locals.length}`;
       fn.locals.push({ id, name: id, type, mutable: false });

@@ -40,6 +40,7 @@ import { streamTypedRefEligible } from "../../ir/analysis.js";
 import { everyStmtList, transformExpr, transformStmtList } from "../../ir/traverse.js";
 import { PoisonError, type Lowerer } from "./lowerer.js";
 import { isSloppyAt } from "./frozen-records.js";
+import type { FunctionCensus } from "./function-census.js";
 import { erasedGenericInstance, implicitDefaultInstance } from "./generic-functions.js";
 import { type ParamShape } from "./call-signatures.js";
 import {
@@ -1141,7 +1142,11 @@ export function boxClassInstancesExactly(lowerer: Lowerer, functions: IrFunction
 /** Record field creation after the dispatch worklist closes, including writes
  * in generated member tables. Native values stay in their slots; the bag
  * owns only their property presence, attributes, and insertion position. */
-export function trackClassFieldCreation(lowerer: Lowerer, functions: IrFunction[]): void {
+export function trackClassFieldCreation(
+  lowerer: Lowerer,
+  functions: IrFunction[],
+  census: FunctionCensus,
+): void {
   if (![...lowerer.classes.values()].some((info) => info.def.tracksOwnFields)) return;
   const loc = functions[0]!.loc;
   const name = "%dyn.class.fieldCreated";
@@ -1306,6 +1311,8 @@ export function trackClassFieldCreation(lowerer: Lowerer, functions: IrFunction[
     (isClassOwnEnumerableFieldName(field) ||
       symbolMemberKey(lowerer, lowerer.classes.get(className)!, field, loc) !== null);
   for (const fn of functions) {
+    // Only a field write or update can be instrumented.
+    if (!census.hasStmt(fn, "fieldSet") && !census.hasExpr(fn, "fieldIncDec")) continue;
     // The transform revisits the replacement it returns. An instrumented
     // write is recognized by its receiver, a temporary created here.
     const receivers = new Set<string>();

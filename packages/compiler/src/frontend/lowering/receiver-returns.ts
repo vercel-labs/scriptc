@@ -16,6 +16,7 @@ import { VOID } from "../../ir/ir.js";
 import { varRef } from "../../ir/build.js";
 import { everyStmtList, transformStmtList } from "../../ir/traverse.js";
 import type { Lowerer } from "./lowerer.js";
+import type { FunctionCensus } from "./function-census.js";
 
 const DISPATCH_PREFIX = "%dyn.class.call.";
 const BOX_EXACT_PREFIX = "%dyn.class.boxExact:";
@@ -25,7 +26,11 @@ function receiverCopyName(method: string): string {
   return `%dyn.class.receiver:${method.slice(1)}`;
 }
 
-export function returnDispatchReceivers(lowerer: Lowerer, functions: IrFunction[]): void {
+export function returnDispatchReceivers(
+  lowerer: Lowerer,
+  functions: IrFunction[],
+  census: FunctionCensus,
+): void {
   const byName = new Map(functions.map((fn) => [fn.name, fn]));
   const copies = new Map<string, IrFunction | null>();
   const copyOf = (name: string): IrFunction | null => {
@@ -62,6 +67,7 @@ export function returnDispatchReceivers(lowerer: Lowerer, functions: IrFunction[
   // A direct call whose result nothing reads (`builder.set(1);` in typed
   // code) needs no capsule at all.
   for (const fn of [...functions]) {
+    if (!census.hasExpr(fn, "call")) continue;
     everyStmtList(fn.body, {
       stmt: (s) => {
         if (s.kind === "exprStmt" && s.expr.kind === "call") {

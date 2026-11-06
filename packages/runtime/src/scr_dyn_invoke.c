@@ -2180,7 +2180,8 @@ ScrDyn *scr_dyn_builtin_method(const ScrStr *prototype, const ScrStr *method) {
 #endif
 static const char dyn_s_error_tag[] SCR_DYN_COMPAT_STR = "[object Error]";
 static const char dyn_s0[] SCR_DYN_COMPAT_STR = "calling the %s constructor%s through a stored value is not supported yet";
-static const char dyn_s1[] SCR_DYN_COMPAT_STR = "calling '%s' through a stored value is not supported yet";
+static const char dyn_s1_head[] SCR_DYN_COMPAT_STR = "calling '";
+static const char dyn_s1_tail[] SCR_DYN_COMPAT_STR = "' through a stored value is not supported yet";
 static const char dyn_s3[] SCR_DYN_COMPAT_STR = "scriptc: invalid global constructor name\n";
 static const char dyn_s4[] SCR_DYN_COMPAT_STR = "propertyIsEnumerable";
 static const char dyn_s5[] SCR_DYN_COMPAT_STR = "ERR_INVALID_ARG_TYPE";
@@ -2636,9 +2637,16 @@ static ScrDyn *dyn_builtin_fn_call(ScrClosure *clo, ScrDyn *const *args, size_t 
     }
     result = scr_dyn_retain(scr_dyn_undefined());
   } else {
-    char message[160];
-    int length = snprintf(message, sizeof message, dyn_s1, name->data);
-    scr_throw_error_msg_code(SCR_ERR_ERROR, message, (size_t)length, dyn_s27);
+    /* The refusal text carries the name at its real length, not through a
+     * fixed buffer. */
+    ScrJsonBuf b;
+    scr_jb_init(&b);
+    scr_jb_puts(&b, dyn_s1_head);
+    scr_jb_put_str(&b, name);
+    scr_jb_puts(&b, dyn_s1_tail);
+    ScrStr *message = scr_jb_finish(&b);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message->data, message->len, dyn_s27);
+    scr_str_release(message);
   }
   scr_str_release(name);
   return result;

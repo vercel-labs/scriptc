@@ -144,5 +144,22 @@ writeEither(either, new Uint8Array([0x63]));
 fs.closeSync(either);
 console.log("either:", bytes("either.txt"));
 
+// Without an options record the arms take the defaults a one-type call
+// takes: the utf8 string arm writes the string itself, the byte arm takes
+// the no-option entry.
+function writeEitherPlain(target: number, data: string | Uint8Array): void {
+  fs.writeFileSync(target, data);
+}
+function appendEitherPlain(target: number, data: string | Uint8Array): void {
+  fs.appendFileSync(target, data);
+}
+const plainUnion = fs.openSync(file("either-plain.txt"), "w");
+writeEitherPlain(plainUnion, "ab");
+writeEitherPlain(plainUnion, new Uint8Array([0x63]));
+appendEitherPlain(plainUnion, "-d");
+appendEitherPlain(plainUnion, new Uint8Array([0x65]));
+fs.closeSync(plainUnion);
+console.log("either plain:", bytes("either-plain.txt"));
+
 fs.rmSync(dir, { recursive: true, force: true });
 console.log("removed:", !fs.existsSync(dir));

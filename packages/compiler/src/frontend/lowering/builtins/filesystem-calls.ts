@@ -1622,8 +1622,11 @@ function lowerWriteOptions(
       case "mode": {
         // parseFileMode: a number, or an octal string parsed to its numeric
         // value. A literal octal string folds to the number the runtime
-        // takes; any other string spelling would be a runtime error, so it
-        // is refused with the reason instead of being dropped.
+        // takes. An expression the checker types as one such string is not
+        // the string itself: Node still runs it, so a side effect happens
+        // and a throw stops the write, and its text parses the same way.
+        // Any other string spelling would be a runtime error, so it is
+        // refused with the reason instead of being dropped.
         const modeNode = stripTypeCasts(value);
         const modeType = lowerer.typeOf(modeNode);
         if (modeType.isStringLiteralType()) {
@@ -1634,14 +1637,21 @@ function lowerWriteOptions(
               "write mode takes a number or an octal digit string",
             );
           }
+          const modeLoc = locOf(value);
           entries.push({
             slot: "mode",
-            expr: {
-              kind: "numLit",
-              value: parseInt(modeType.value, 8),
-              type: F64,
-              loc: locOf(value),
-            },
+            expr: ts.isStringLiteral(modeNode)
+              ? { kind: "numLit", value: parseInt(modeType.value, 8), type: F64, loc: modeLoc }
+              : {
+                  kind: "libCall",
+                  fn: "num.parseInt",
+                  args: [
+                    lowerer.lowerExprExpecting(modeNode, STRING),
+                    { kind: "numLit", value: 8, type: F64, loc: modeLoc },
+                  ],
+                  type: F64,
+                  loc: modeLoc,
+                },
           });
         } else {
           entries.push({

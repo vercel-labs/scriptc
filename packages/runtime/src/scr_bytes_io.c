@@ -19,6 +19,9 @@ static ScrArrOps scr_bytes_io_bytes_ops = { scr_bytes_retain_v, scr_bytes_releas
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef _WIN32
+#include <io.h> /* _commit — the CRT descriptor's fsync */
+#endif
 #ifndef O_SYNC
 #define O_SYNC 0 /* Windows CRT opens have no separate synchronous flag. */
 #endif
@@ -158,6 +161,15 @@ static bool scr_fs_mode_number_valid(double v);
 static int scr_fs_flag_bits(const char *f);
 static void scr_fs_flag_invalid(const char *f);
 
+/* fsync(2), or the Windows CRT's _commit over the same descriptor. */
+static int scr_fs_sync_fd(int fd) {
+#ifdef _WIN32
+  return _commit(fd);
+#else
+  return fsync(fd);
+#endif
+}
+
 /* ── the write options record ────────────────────────────────────────────
  * writeFileSync/appendFileSync and fs/promises writeFile/appendFile carry
  * { encoding, mode, flag, flush }. Node validates in this order: the
@@ -254,7 +266,7 @@ static void scr_fs_write_opts_core(ScrStr *path, const ScrStr *text, const ScrBy
         close(fd);
         goto done;
       }
-      if (!fast && flush && fsync(fd) != 0) {
+      if (!fast && flush && scr_fs_sync_fd(fd) != 0) {
         int e = errno;
         close(fd);
         scr_fs_throw(e, "fsync", NULL);
@@ -335,7 +347,7 @@ static void scr_fs_write_fd_opts(double fd, const ScrStr *text, const ScrBytes *
   }
   if (flush) {
     if (!scr_fs_write_fd_valid(fd)) goto done;
-    if (fsync((int)fd) != 0) scr_fs_throw(errno, "fsync", NULL);
+    if (scr_fs_sync_fd((int)fd) != 0) scr_fs_throw(errno, "fsync", NULL);
   }
 done:
   scr_bytes_release(owned);
@@ -511,10 +523,15 @@ static int scr_fs_flag_bits(const char *f) {
   return -1;
 }
 
+/* stringToFlags' refusal: ERR_INVALID_ARG_VALUE for the argument 'flags'
+ * over the flag text, built at its real length — inspect's escaping and
+ * its 128-UTF-16-unit clip live in scr_dyn_arg_value_fail. */
 static void scr_fs_flag_invalid(const char *f) {
-  char message[160];
-  int length = snprintf(message, sizeof message, "The argument 'flags' is invalid. Received '%s'", f);
-  scr_throw_error_msg_code(SCR_ERR_TYPE, message, (size_t)length, "ERR_INVALID_ARG_VALUE");
+  ScrStr *text = scr_str_new(f, strlen(f));
+  ScrDyn *value = scr_dyn_new_str(text);
+  scr_str_release(text);
+  scr_dyn_arg_value_fail("flags", NULL, value);
+  scr_dyn_release(value);
 }
 
 /* open's flags check, which Node runs before its callback check. Numeric
@@ -2245,23 +2262,21 @@ static bool scr_fs_bigint_position_chk(ScrBigInt *position, double length) {
   bool group = scr_bigint_cmp_f64(position, bound) > 0 || scr_bigint_cmp_f64(position, negBound) < 0;
   scr_bigint_release(bound);
   scr_bigint_release(negBound);
-  /* addNumericalSeparator: underscores every three digits from the right,
-   * after an optional sign. */
-  char digits[200];
-  size_t len = decimal->len < 120 ? decimal->len : 120, out = 0;
-  size_t start = len > 0 && decimal->data[0] == '-' ? 1 : 0;
-  for (size_t i = 0; i < len; i++) {
-    if (group && i > start && (len - i) % 3 == 0) digits[out++] = '_';
-    digits[out++] = (char)decimal->data[i];
-  }
-  digits[out] = '\0';
-  char msg[384];
-  int n = snprintf(msg, sizeof msg,
-                   "The value of \"position\" is out of range. It must be >= -1 && <= %.*s. Received %sn",
-                   (int)limit->len, (const char *)limit->data, digits);
+  /* The received value renders in full; past 2^32 its digits group in
+   * threes, as addNumericalSeparator does. */
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "The value of \"position\" is out of range. It must be >= -1 && <= ");
+  scr_jb_put_str(&b, limit);
+  scr_jb_puts(&b, ". Received ");
+  if (group) scr_jb_put_decimal_separated(&b, decimal);
+  else scr_jb_put_str(&b, decimal);
+  scr_jb_putc(&b, 'n');
+  ScrStr *msg = scr_jb_finish(&b);
   scr_str_release(limit);
   scr_str_release(decimal);
-  scr_throw_error_msg_code(SCR_ERR_RANGE, msg, n < 0 ? 0 : (size_t)n, "ERR_OUT_OF_RANGE");
+  scr_throw_error_msg_code(SCR_ERR_RANGE, msg->data, msg->len, "ERR_OUT_OF_RANGE");
+  scr_str_release(msg);
   return false;
 }
 

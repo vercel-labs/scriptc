@@ -1123,19 +1123,18 @@ static bool sd_large_number(mbedtls_mpi *x, const char *name, bool property, con
       ScrBigInt *limit = scr_bigint_from_i64(-((int64_t)1 << 32));
       bool group = scr_bigint_cmp_f64(value->v.bigint, limit) < 0;
       scr_bigint_release(limit);
-      char digits[160];
-      size_t len = decimal->len < 120 ? decimal->len : 120, out = 0;
-      for (size_t i = 0; i < len; i++) {
-        size_t rest = len - i;
-        if (group && i > 1 && rest % 3 == 0) digits[out++] = '_';
-        digits[out++] = decimal->data[i];
-      }
-      digits[out] = '\0';
+      ScrJsonBuf b;
+      scr_jb_init(&b);
+      scr_jb_puts(&b, "The value of \"");
+      scr_jb_puts(&b, name);
+      scr_jb_puts(&b, "\" is out of range. It must be >= 0. Received ");
+      if (group) scr_jb_put_decimal_separated(&b, decimal);
+      else scr_jb_put_str(&b, decimal);
+      scr_jb_putc(&b, 'n');
+      ScrStr *message = scr_jb_finish(&b);
       scr_str_release(decimal);
-      char message[256];
-      int n = snprintf(message, sizeof message, "The value of \"%s\" is out of range. It must be >= 0. Received %sn",
-                       name, digits);
-      scr_throw_error_msg_code(SCR_ERR_RANGE, message, n < 0 ? 0 : (size_t)n, "ERR_OUT_OF_RANGE");
+      scr_throw_error_msg_code(SCR_ERR_RANGE, message->data, message->len, "ERR_OUT_OF_RANGE");
+      scr_str_release(message);
       return false;
     }
     char *hex = malloc(text->len + 1);

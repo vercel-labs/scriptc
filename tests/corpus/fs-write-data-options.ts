@@ -122,6 +122,33 @@ fs.writeFileSync(file("octal.txt"), "octal", { mode: "600" });
 fs.writeFileSync(file("mode.txt"), "rewritten", { mode: 0o444 });
 console.log("modes:", mode("mode.txt"), fs.readFileSync(file("mode.txt"), "utf8"), mode("octal.txt"));
 
+// A mode expression typed as one octal string still runs where Node
+// evaluates it: its side effect is observed, and one that throws stops
+// the write.
+const modeCalls: string[] = [];
+const octalMode = (): "600" => {
+  modeCalls.push("called");
+  return "600";
+};
+fs.writeFileSync(file("computed-mode.txt"), "computed", { mode: octalMode() });
+console.log("computed mode:", modeCalls.join(","), mode("computed-mode.txt"));
+const throwingMode = (): "600" => {
+  throw new Error("mode expression");
+};
+try {
+  fs.writeFileSync(file("throwing-mode.txt"), "x", { mode: throwingMode() });
+} catch (e) {
+  report("throwing-mode", e);
+}
+console.log("throwing-mode written:", fs.existsSync(file("throwing-mode.txt")));
+try {
+  fs.writeFileSync(file("throwing-mode-append.txt"), "x", { mode: octalMode() });
+  fs.appendFileSync(file("throwing-mode-append.txt"), "y", { mode: throwingMode() });
+} catch (e) {
+  report("append-throwing-mode", e);
+}
+console.log("throwing-mode-append:", fs.readFileSync(file("throwing-mode-append.txt"), "utf8"));
+
 // appendFile: "a" by default, and an empty flag stays "a".
 fs.writeFileSync(file("app.txt"), "start-");
 fs.appendFileSync(file("app.txt"), "one-", "latin1");

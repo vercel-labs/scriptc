@@ -92,6 +92,20 @@ try {
   }
 }
 
+// A long unknown type: the refusal prints the value at its real length,
+// escaped and clipped to 128 UTF-16 units plus "...", never a fixed
+// buffer.
+try {
+  getCACertificates("x".repeat(1024));
+  console.log("long-no-throw");
+} catch (e) {
+  if (e instanceof TypeError) {
+    console.log("long-type", (e as NodeJS.ErrnoException).code, e.message);
+  } else {
+    console.log("long-not-a-typeerror");
+  }
+}
+
 // A non-empty array with no certificate blocks: Node's
 // ERR_CRYPTO_OPERATION_FAILED, and the current set stays intact.
 try {

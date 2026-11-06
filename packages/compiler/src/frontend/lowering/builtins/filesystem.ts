@@ -641,8 +641,13 @@ export function lowerStringOrBytesWriteFd(
         },
       ];
       if (bytes) {
+        // The byte arm reads the record's encoding and flush only. Without
+        // a record it takes the defaults a one-type call takes, and the
+        // helper has no record parameters to read.
         callArgs.push(
-          varRef("encoding.0", STRING, loc),
+          options
+            ? varRef("encoding.0", STRING, loc)
+            : { kind: "strLit", value: "utf8", type: STRING, loc },
           options ? varRef("flush.0", BOOL, loc) : boolLit(false, loc),
         );
       } else if (options) {

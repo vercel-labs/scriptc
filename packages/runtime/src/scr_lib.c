@@ -4236,9 +4236,14 @@ double scr_fs_open_mode(ScrStr *path, ScrStr *flags, double mode) {
   else if (strcmp(f, "ax+") == 0 || strcmp(f, "xa+") == 0) of = O_APPEND | O_CREAT | O_RDWR | O_EXCL;
   else if (strcmp(f, "as+") == 0 || strcmp(f, "sa+") == 0) of = O_APPEND | O_CREAT | O_RDWR | O_SYNC;
   else {
-    char msg[128];
-    int len = snprintf(msg, sizeof msg, "The argument 'flags' is invalid. Received '%s'", f);
-    scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)len);
+    /* The message renders at the flag's real length with inspect's
+     * escaping and its 128-UTF-16-unit clip; scr_dyn_arg_value_fail
+     * stamps ERR_INVALID_ARG_VALUE. */
+    ScrStr *text = scr_str_new(f, strlen(f));
+    ScrDyn *value = scr_dyn_new_str(text);
+    scr_str_release(text);
+    scr_dyn_arg_value_fail("flags", NULL, value);
+    scr_dyn_release(value);
     return 0;
   }
   if (!scr_fs_file_mode_valid(mode)) return 0;

@@ -112,21 +112,38 @@ static void test_env_roundtrip(void) {
   scr_str_release(name);
   scr_str_release(value);
 
-  /* A present-but-empty value stays present and empty, as in Node: the
-   * wide lookup reports zero UTF-16 units for it, which is not the same as
-   * ERROR_ENVVAR_NOT_FOUND. */
+  /* A present-but-empty value stays present and empty, as in Node. The size
+   * query needs room for the terminating NUL even when the value is empty;
+   * the read then stores that NUL and reports zero characters, which is a
+   * successful read, not ERROR_ENVVAR_NOT_FOUND. */
   ScrStr *marker = S("SCRIPTC_WIN_ANSI_EMPTY");
   ScrStr *empty = S("");
   scr_env_set(marker, empty);
   ScrStr *empty_read = scr_env_get(marker);
   check(empty_read && empty_read->len == 0, "empty env value stays present and empty");
   scr_str_release(empty_read);
+  ScrStr *empty_again = scr_env_get(marker);
+  check(empty_again && empty_again->len == 0, "empty env value reads empty again");
+  scr_str_release(empty_again);
   scr_env_unset(marker);
   ScrStr *marker_gone = scr_env_get(marker);
   check(marker_gone == NULL, "empty env var deletes");
   scr_str_release(marker_gone);
   scr_str_release(marker);
   scr_str_release(empty);
+
+  /* The same empty value under a non-ASCII name: the read converts the
+   * UTF-8 name to UTF-16 before the lookup and still reports the entry. */
+  ScrStr *wide_name = S(kName);
+  ScrStr *wide_empty = S("");
+  scr_env_set(wide_name, wide_empty);
+  ScrStr *wide_read = scr_env_get(wide_name);
+  check(wide_read && wide_read->len == 0,
+        "empty value under a non-ASCII name stays present and empty");
+  scr_str_release(wide_read);
+  scr_env_unset(wide_name);
+  scr_str_release(wide_name);
+  scr_str_release(wide_empty);
 }
 
 static void test_process_paths(void) {

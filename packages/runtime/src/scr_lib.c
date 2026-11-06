@@ -1171,13 +1171,14 @@ ScrStr *scr_env_get(const ScrStr *name) {
   WCHAR *wname = scr_win_wide_utf8(k, strlen(k));
   scr_str_utf8_end(owned);
   if (!wname) return NULL;
-  SetLastError(ERROR_SUCCESS); /* an empty value returns 0 without failing */
+  SetLastError(ERROR_SUCCESS); /* the query reports absence through the error */
   DWORD need = GetEnvironmentVariableW(wname, NULL, 0);
   if (need == 0) {
+    /* Only a failed query means the variable is absent. A present-but-empty
+     * value still needs room for its terminating NUL, so a zero size with no
+     * error is present too; Node reports it as '', not undefined. */
     bool absent = GetLastError() == ERROR_ENVVAR_NOT_FOUND;
     free(wname);
-    /* A present-but-empty variable is 0 characters, not the NUL the
-     * non-empty size includes; Node reports it as '', not undefined. */
     return absent ? NULL : scr_str_new("", 0);
   }
   WCHAR *wvalue = malloc((size_t)need * sizeof *wvalue);
@@ -1185,11 +1186,20 @@ ScrStr *scr_env_get(const ScrStr *name) {
     free(wname);
     scr_trap("scriptc: out of memory\n");
   }
+  SetLastError(ERROR_SUCCESS);
   DWORD got = GetEnvironmentVariableW(wname, wvalue, need);
+  DWORD error = got == 0 ? GetLastError() : ERROR_SUCCESS;
   free(wname);
-  if (got == 0 || got >= need) {
-    /* The variable vanished, or grew past the size it reported; either
-     * way this read is stale. */
+  if (got == 0) {
+    /* A successful read reports the characters it stored, which is 0 for a
+     * present-but-empty value: the NUL went into the buffer and Node keeps
+     * the entry as ''. Only a failed read means the variable vanished
+     * between the query and this call. */
+    free(wvalue);
+    return error == ERROR_SUCCESS ? scr_str_new("", 0) : NULL;
+  }
+  if (got >= need) {
+    /* The value grew past the size the query reported: this read is stale. */
     free(wvalue);
     return NULL;
   }

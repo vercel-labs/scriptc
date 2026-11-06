@@ -1,8 +1,0 @@
-node-island-copy-out/main.ts:9:11 - error SC8010: an island object typed as the program record 'Rec' (keep the handle by declaring the island's type or 'unknown'/'any', or copy it explicitly with 'structuredClone(v)') cannot cross into or out of a Node island yet
-
-   8 | }
-   9 | const r = ident<Rec>({ n: 1 });
-     |           ^~~~~~~~~~~~~~~~~~~~
-  10 | console.log(same(r));
-
-  hint: pass primitives, strings, island objects or fresh object and array literals of those; callbacks, native objects and promises cross from NI-5 on

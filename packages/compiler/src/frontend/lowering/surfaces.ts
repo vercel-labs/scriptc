@@ -2293,6 +2293,22 @@ const DNS_ERROR_CODES: Record<string, string> = {
   CANCELLED: "ECANCELLED",
 };
 
+/** node:dns's getaddrinfo hint flags per TARGET libc. Node re-exports the
+ * three values its c-ares binding compiled against (src/cares_wrap.cc's
+ * NODE_DEFINE_CONSTANT of AI_ADDRCONFIG/AI_ALL/AI_V4MAPPED), so they are
+ * the target's <netdb.h> macros, not a portable libuv normalization:
+ * glibc and musl number them 0x20/0x10/0x8, while the BSD headers (macOS)
+ * and Windows' ws2tcpip.h use 0x400/0x100/0x800. Node:dns's own values
+ * follow the platform the program runs on, which is why the differential
+ * corpus sees 32 16 8 on Linux and 1024 256 2048 on macOS. */
+const DNS_HINT_CONSTS: Record<string, Record<string, number> | undefined> = {
+  // AI_ADDRCONFIG, AI_ALL, AI_V4MAPPED (glibc netdb.h; musl matches).
+  linux: { ADDRCONFIG: 0x0020, ALL: 0x0010, V4MAPPED: 0x0008 },
+  // BSD netdb.h (macOS/iOS) and ws2tcpip.h (win32) agree.
+  darwin: { ADDRCONFIG: 0x0400, ALL: 0x0100, V4MAPPED: 0x0800 },
+  win32: { ADDRCONFIG: 0x0400, ALL: 0x0100, V4MAPPED: 0x0800 },
+};
+
 /** Builtin-module CONSTANTS (value reads of named imports): each lowers to
  * a literal of its value's kind. The bare-module values are the TARGET
  * platform's (builtinModuleConstOf swaps the win32 values in under a win32
@@ -2327,9 +2343,12 @@ export const BUILTIN_MODULE_CONSTS: Record<
   zlib: Object.fromEntries(
     Object.entries(ZLIB_CONSTANTS).filter(([name]) => !name.startsWith("BROTLI")),
   ),
-  // node:dns's getaddrinfo hints are libuv's normalized flags (uv.h's
-  // UV_AI_*), the same numbers on every platform. The error codes are the
-  // module's exported strings; node:dns/promises exports the same ones.
+  // node:dns's getaddrinfo hints are the target libc's AI_* values
+  // (builtinModuleConstOf selects them from DNS_HINT_CONSTS); the names
+  // live here so the inventory, fence and manifest walks see them, and
+  // the glibc numbers are the fallback for a target with no entry. The
+  // error codes are the module's exported strings; node:dns/promises
+  // exports the same ones.
   dns: { ADDRCONFIG: 32, ALL: 16, V4MAPPED: 8, ...DNS_ERROR_CODES },
   "dns/promises": { ...DNS_ERROR_CODES },
 };
@@ -3344,6 +3363,13 @@ export function builtinModuleConstOf(
   module: string,
   member: string,
 ): string | number | boolean | undefined {
+  // node:dns's hint flags are the TARGET's libc macros, so they are
+  // selected per platform rather than taken from the shared table.
+  if (module === "dns") {
+    const hints = ownEntry(DNS_HINT_CONSTS, lowerer.targetPlatform);
+    const hint = hints ? ownEntry(hints, member) : undefined;
+    if (hint !== undefined) return hint;
+  }
   if (lowerer.targetPlatform === "win32") {
     const mod = ownEntry(WIN32_TARGET_CONSTS, module);
     const w = mod ? ownEntry(mod, member) : undefined;

@@ -799,6 +799,10 @@ function loadTargetInPass(
   } else if (/\.(js|jsx|mjs|cjs)$/.test(path) && isFile(path)) {
     return path;
   }
+  // A required JSON document is data, not JavaScript: Node reads it in every
+  // module system, so the runtime pass answers it too (mime-db's db.json, a
+  // package's own package.json).
+  if (pass === "js" && path.endsWith(".json") && isFile(path)) return path;
   const sub = (ext: string, flavor: "plain" | "x" | "m" | "c"): string | null => {
     const stem = path.slice(0, -ext.length);
     for (const r of extensionsFor(pass, flavor)) {

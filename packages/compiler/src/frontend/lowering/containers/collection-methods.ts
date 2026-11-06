@@ -40,6 +40,7 @@ import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "../opti
 import {
   collectionInput,
   collectionDestinationMatches,
+  dynCollectionSeed,
   ingestCollection,
   lowerCollectionInput,
 } from "../collection-ingestion.js";
@@ -995,6 +996,36 @@ function buildSetCombineFn(
   };
 }
 
+/** `new Set(dyn ?? fallback)` / `new Map(dyn ?? fallback)`: the checked-
+ * dynamic left selects the lazy fallback exactly when it is nullish and
+ * otherwise seeds from the dynamic iterable. The left lowers once. */
+function dynSeedOrFallback(
+  lowerer: Lowerer,
+  source: IrExpr,
+  destination: IrType & { kind: "map" | "set" },
+  fallback: () => IrExpr | null,
+  loc: SrcLoc,
+): IrExpr | null {
+  const other = fallback();
+  if (!other) return null;
+  const saved = lowerer.declareHiddenLocal("%dynSeed", DYN);
+  const ref = varRef(saved.id, DYN, loc);
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: saved.id, init: source, loc }],
+    result: {
+      kind: "ternary",
+      cond: { kind: "dynTest", test: "nullish", value: ref, type: BOOL, loc },
+      then: other,
+      else_: dynCollectionSeed(lowerer, ref, destination, loc),
+      type: destination,
+      loc,
+    },
+    type: destination,
+    loc,
+  };
+}
+
 /** Consume a Set seed immediately, including optional inherited sets used
  * by compiler tables. Nullish seeds construct empty sets; a lazy fallback
  * consumes its evaluated branch even when it reassigns the source binding. */
@@ -1024,6 +1055,14 @@ export function lowerSetSeedNew(
       const selected = lowerSetSeedNew(lowerer, fallback, setT);
       return selected ? defaultAfterUndefined(source, selected) : null;
     }
+    if (source.type.kind === "dyn")
+      return dynSeedOrFallback(
+        lowerer,
+        source,
+        setT,
+        () => lowerSetSeedNew(lowerer, fallback, setT),
+        loc,
+      );
     return setFromSeedValue(lowerer, source, setT, () => lowerSetSeedNew(lowerer, fallback, setT));
   }
   if (ts.isConditionalExpression(node)) {
@@ -1085,6 +1124,11 @@ export function lowerSetSeedNew(
       loc,
     };
   }
+  // A declared collection view whose element layout differs from the
+  // destination cannot keep element identity, so refuse it rather than let
+  // the dynamic seed convert (or fail) at run time. The Map seed refuses the
+  // same shape (collection-ingestion's destination check).
+  if (input && !collectionDestinationMatches(lowerer, input, setT)) return null;
   if (declared?.kind === "array" && typeEquals(declared.elem, setT.elem)) {
     // Preserve the existing checked scalar-iterable bridge. Reference
     // elements must retain identity and cannot enter via a copying exit.
@@ -1180,6 +1224,9 @@ function setFromSeedValue(
     const drained = generatorDrain(lowerer, generator, setT.elem, loc);
     return drained ? { kind: "setNew", seed: drained, type: setT, loc } : null;
   }
+  // A checked-dynamic iterable: step the dynamic iterator protocol once and
+  // add every value the element type checks into.
+  if (source.type.kind === "dyn") return dynCollectionSeed(lowerer, source, setT, loc);
   let seed: IrExpr;
   if (source.type.kind === "set" && typeEquals(source.type, setT)) {
     return { kind: "setIntrinsic", method: "clone", receiver: source, args: [], type: setT, loc };
@@ -1235,6 +1282,14 @@ export function lowerMapSeedNew(
       const fallback = lowerMapSeedNew(lowerer, argNode.right, mapT);
       return fallback ? defaultAfterUndefined(source, fallback) : null;
     }
+    if (source.type.kind === "dyn")
+      return dynSeedOrFallback(
+        lowerer,
+        source,
+        mapT,
+        () => lowerMapSeedNew(lowerer, argNode.right, mapT),
+        locOf(argNode),
+      );
     if (source.type.kind !== "union") return mapFromSeedValue(lowerer, source, mapT);
     const arms = lowerer.unions.get(source.type.unionId)?.arms;
     if (!arms) return null;
@@ -1423,10 +1478,13 @@ export function mapFromSeedValue(
     return { kind: "mapIntrinsic", method: "clone", receiver: seed, args: [], type: mapT, loc };
   }
 
+  // A checked-dynamic iterable: step the dynamic iterator protocol once and
+  // set every entry's checked key and value into native storage.
+  if (seed.type.kind === "dyn") return dynCollectionSeed(lowerer, seed, mapT, loc);
+
   if (
-    seed.type.kind === "dyn" ||
-    (seed.type.kind === "array" &&
-      !(seed.type.elem.kind === "record" && lowerer.shapes.get(seed.type.elem.shapeId)?.tuple))
+    seed.type.kind === "array" &&
+    !(seed.type.elem.kind === "record" && lowerer.shapes.get(seed.type.elem.shapeId)?.tuple)
   ) {
     const key = `checked-seed:${typeKey(mapT)}`;
     let name = lowerer.mapHofHelpers.get(key);
@@ -1517,8 +1575,7 @@ export function mapFromSeedValue(
         loc,
       });
     }
-    const source: IrExpr =
-      seed.type.kind === "dyn" ? seed : { kind: "dynFrom", value: seed, type: DYN, loc };
+    const source: IrExpr = { kind: "dynFrom", value: seed, type: DYN, loc };
     return { kind: "call", callee: name, args: [source], type: mapT, loc };
   }
   if (seed.type.kind !== "array" || seed.type.elem.kind !== "record") return null;

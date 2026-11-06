@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9213-checked-cast-rest-function.ts"
+ ],
+ "diags": []
+}

@@ -36,6 +36,7 @@ Building executables needs a linker and the platform SDK or sysroot, such as the
 - `scriptc run <file.ts>`: compile and run.
 - `scriptc coverage <file.ts>`: report what compiles, and explain what doesn't.
 - `scriptc build --lib --profile <profile.json>`: compile a static library, or a Wasm reactor on `wasm32-wasi`.
+- `scriptc mcp`: serve these commands as tools to an AI agent over the Model Context Protocol.
 
 See the [CLI reference](https://scriptc.dev/docs/cli) for every option.
 

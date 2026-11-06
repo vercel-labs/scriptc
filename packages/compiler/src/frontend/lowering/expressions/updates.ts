@@ -44,13 +44,14 @@ import {
   VOID,
 } from "../../../ir/ir.js";
 import { isJsSourceFile, locOf } from "../../program.js";
+import { callableBox, isCallableTableValue } from "../callable-properties.js";
 import { refuseShadowedImplicitReader } from "../handle-properties.js";
 import { classToNumberConversion } from "../class-to-primitive.js";
 import { lowerPrimitiveUnionNumber } from "../lower-calls.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../../ir/build.js";
 import { fenceNodeModuleMutation } from "../lower-node-module.js";
 import { findStaticOn, staticFieldWriteTarget } from "../lower-classes.js";
-import { expandoWritableTarget } from "../lower-expando.js";
+import { fenceReadonlyExpandoWrite } from "../lower-expando.js";
 import { nsWritableTarget } from "../lower-namespaces.js";
 import { arrayNumberRead, arrayValueRead, arrayValueStore } from "../array-values.js";
 import { isSafeToRepeat } from "./evaluation-safety.js";
@@ -301,10 +302,8 @@ export function lowerIncDec(
           loc,
         };
       }
-      const target =
-        staticFieldWriteTarget(lowerer, access) ??
-        expandoWritableTarget(lowerer, access) ??
-        nsWritableTarget(lowerer, access);
+      fenceReadonlyExpandoWrite(lowerer, access);
+      const target = staticFieldWriteTarget(lowerer, access) ?? nsWritableTarget(lowerer, access);
       if (target) {
         return lowerIncDecTarget(lowerer, expr, target, prefix);
       }
@@ -476,15 +475,23 @@ export function lowerIncDec(
       !isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
       raw.type.kind === "dyn" &&
       lowerer.mapTypeOf(lowerer.typeOf(access))?.kind === "f64";
+    // A typed callable's ELEMENT is its own-property table entry
+    // (`fn[k]++`): the same keyed read-modify-write, over the box.
+    const callableBoxed =
+      ts.isElementAccessExpression(access) &&
+      raw.type.kind === "func" &&
+      isCallableTableValue(lowerer, access.expression, raw)
+        ? callableBox(lowerer, raw)
+        : null;
     // A private name is the field of its class (fieldTarget).
     const privateName =
       ts.isPropertyAccessExpression(access) && ts.isPrivateIdentifier(access.name);
     if (
-      (isJsSourceFile(ts.getSourceFileOfNode(expr)) || checkedNumber) &&
-      raw.type.kind === "dyn" &&
+      (isJsSourceFile(ts.getSourceFileOfNode(expr)) || checkedNumber || callableBoxed !== null) &&
+      (raw.type.kind === "dyn" || callableBoxed !== null) &&
       !privateName
     ) {
-      const receiver = save(raw, "%incrementReceiver");
+      const receiver = save(callableBoxed ?? raw, "%incrementReceiver");
       const key = save(
         ts.isElementAccessExpression(access)
           ? lowerer.lowerExprExpecting(access.argumentExpression, DYN)

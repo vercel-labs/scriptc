@@ -117,6 +117,15 @@ __attribute__((used)) const char *__lsan_default_options(void) { return "print_s
 
 #define NI_STACK ((size_t)64 * 1024 * 1024)
 #define NI_GUARD ((size_t)64 * 1024)
+/* The context starts at the stack's top, so its first frame has no caller:
+ * makecontext fabricated the return address it unwinds to. A walk that
+ * unwinds past ni_trampoline follows that address out of the stack, and macOS
+ * reads the frame pointer chain through __thread_stack_pcs, which took one
+ * byte past the mapping's end and faulted (8830-process-report-island, in
+ * backtrace() below node::GetNodeReport). The mapping keeps a zeroed page
+ * above the stack that nothing uses, so that read lands in memory and returns
+ * the 0 that ends the walk. */
+#define NI_TAIL ((size_t)64 * 1024)
 
 static const char *ni_libnode = NULL;      /* recorded pack directory */
 static const char *ni_node_version = NULL; /* recorded Node version */
@@ -1020,7 +1029,7 @@ static void ni_on_node_stack(void (*job)(void *), void *arg) {
    * shared exports (NI-6). */
   scr_ni_shared_refresh();
   if (ni_stack == NULL) {
-    ni_stack = mmap(NULL, NI_STACK, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    ni_stack = mmap(NULL, NI_STACK + NI_TAIL, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     if (ni_stack == MAP_FAILED) ni_oom();
     (void)mprotect(ni_stack, NI_GUARD, PROT_NONE);
     scr_node_stack_has = &ni_stack_has;

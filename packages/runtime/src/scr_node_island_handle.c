@@ -739,6 +739,24 @@ SCR_COLD static void nh_worker_refusal(const char *what) {
                            "ERR_SCRIPTC_ISLAND_WORKER_VALUE");
 }
 
+/* Awaiting an island value registers its waiter in the island thread's
+ * table and settles the promise there, from the V8 reaction. A worker
+ * thread's promise belongs to the worker's heap, so the wait is refused by
+ * name, as an asynchronous island call is (scr_node_island.c): the promise
+ * rejects and the caller catches a coded Error. */
+SCR_COLD static void nh_worker_await_refusal(ScrPromise *p) {
+  static const char name[] = "ERR_SCRIPTC_ISLAND_WORKER_ASYNC";
+  static const char text[] =
+      "awaiting an island value from a worker thread is not supported; "
+      "await it on the main thread, which owns the Node island";
+  ScrStr *code = scr_str_new(name, sizeof name - 1);
+  ScrStr *message = scr_str_new(text, sizeof text - 1);
+  scr_throw_node_coded(0, code, message);
+  scr_str_release(message);
+  scr_str_release(code);
+  scr_promise_reject_pending(p);
+}
+
 /* An island promise as a scriptc promise: one per V8 promise while the
  * program holds it, settled by a reaction on the V8 side. */
 static ScrDyn *nh_promise_box(ScrNodeRef *ref) {
@@ -1624,6 +1642,12 @@ ScrPromise *scr_ni_await(ScrDyn *value) {
   if (ref == NULL) {
     scr_promise_fulfill_ref(p, scr_dyn_retain(value != NULL ? value : scr_dyn_undefined()),
                             scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+    return p;
+  }
+  /* An island value settles on the island's thread (nh_wait's table and the
+   * V8 reaction): a worker thread has no route for that and refuses. */
+  if (!scr_context_is_main()) {
+    nh_worker_await_refusal(p);
     return p;
   }
   nh_enter();

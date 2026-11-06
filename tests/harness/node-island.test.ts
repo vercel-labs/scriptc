@@ -239,7 +239,9 @@ describe.skipIf(skip)("Node islands in-process", () => {
       join(repoRoot, "tests/fixtures/node-island/worker.ts"),
     );
     expect(await run(worker, [])).toEqual({
-      stdout: "main 42\nworker called 42\nworker async ERR_SCRIPTC_ISLAND_WORKER_ASYNC\nexit 0\n",
+      stdout:
+        "main 42\nworker called 42\nworker async ERR_SCRIPTC_ISLAND_WORKER_ASYNC\n" +
+        "worker await ERR_SCRIPTC_ISLAND_WORKER_ASYNC\nexit 0\n",
       stderr: "",
       code: 0,
     });

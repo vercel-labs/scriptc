@@ -264,6 +264,9 @@ function lowerBoundedWorkerNew(
       loc,
     };
   }
+  // Both arguments are evaluated before the constructor reads either, as in
+  // Node: a filename the constructor rejects (a URL that is not a file URL)
+  // throws after the options expression has run, not instead of it.
   const stmts: IrStmt[] = [
     {
       kind: "varDecl",
@@ -271,13 +274,13 @@ function lowerBoundedWorkerNew(
       init: lowerer.lowerExprExpecting(filename, DYN),
       loc,
     },
-    { kind: "varDecl", localId: entryPath.id, init: resolvedPath, loc },
     {
       kind: "varDecl",
       localId: options.id,
       init: args[1] ? lowerer.lowerExprExpecting(args[1], DYN) : workerUndefinedOptions(loc),
       loc,
     },
+    { kind: "varDecl", localId: entryPath.id, init: resolvedPath, loc },
   ];
   if (capturesStdio(args[1])) {
     stmts.unshift({

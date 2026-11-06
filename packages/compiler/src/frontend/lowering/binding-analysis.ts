@@ -26,14 +26,33 @@ export function bindingNeverReassigned(
 }
 
 /** True when something in `file` writes `sym` (the writes
- * bindingNeverReassigned counts), resolving identifiers with `resolve`. */
+ * bindingNeverReassigned counts), resolving identifiers with `resolve`.
+ * With `afterPos`, a write counts only when it can run after that source
+ * position: a top-level write before it is already reflected in the value
+ * Node copies at an export statement there, while a write inside a
+ * function or class body runs on its own schedule and always counts. */
 export function fileWritesBinding(
   sym: ts.Symbol,
   file: ts.SourceFile,
   resolve: (ident: ts.Identifier) => ts.Symbol | null | undefined,
+  afterPos?: number,
 ): boolean {
   if (declarationsWriteBinding(sym)) return true;
   let written = false;
+  /** Whether a write at `n` can execute after `afterPos`. */
+  const lateEnough = (n: ts.Node): boolean => {
+    if (afterPos === undefined || n.getStart(file) > afterPos) return true;
+    for (let p = n.parent; p !== undefined && p !== file; p = p.parent) {
+      if (
+        ts.isFunctionLike(p) ||
+        ts.isClassDeclaration(p) ||
+        ts.isClassExpression(p) ||
+        ts.isClassStaticBlockDeclaration(p)
+      )
+        return true;
+    }
+    return false;
+  };
   // Text pre-check keeps the file walk cheap: only same-named
   // identifiers pay a symbol resolution.
   const symText = ts.symbolName(sym);
@@ -60,17 +79,24 @@ export function fileWritesBinding(
     if (written) return;
     if (ts.isBinaryExpression(n)) {
       const k = n.operatorToken.kind;
-      if (k >= ts.SyntaxKind.FirstAssignment && k <= ts.SyntaxKind.LastAssignment) {
+      if (
+        k >= ts.SyntaxKind.FirstAssignment &&
+        k <= ts.SyntaxKind.LastAssignment &&
+        lateEnough(n)
+      ) {
         scanTarget(n.left);
       }
     } else if (
       (ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) &&
-      (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken)
+      (n.operator === ts.SyntaxKind.PlusPlusToken ||
+        n.operator === ts.SyntaxKind.MinusMinusToken) &&
+      lateEnough(n)
     ) {
       scanTarget(n.operand as ts.Expression);
     } else if (
       (ts.isForOfStatement(n) || ts.isForInStatement(n)) &&
-      !ts.isVariableDeclarationList(n.initializer)
+      !ts.isVariableDeclarationList(n.initializer) &&
+      lateEnough(n)
     ) {
       scanTarget(n.initializer as ts.Expression);
     }
@@ -149,6 +175,29 @@ function insideLoopBody(node: ts.Node): boolean {
     child = parent;
   }
   return false;
+}
+
+/** An identifier that reads or declares a binding (not a member name).
+ * `o.value`, `{ value: 1 }`, `const { value: v } = o` and `value?: T` all put
+ * the identifier in a NAME position: the checker answers the MEMBER's symbol
+ * there, which no value slot holds. */
+export function isValueIdentifier(node: ts.Identifier): boolean {
+  const parent = node.parent;
+  if (ts.isPropertyAccessExpression(parent) && parent.name === node) return false;
+  if (ts.isQualifiedName(parent) && parent.right === node) return false;
+  if (ts.isImportSpecifier(parent) && parent.propertyName === node) return false;
+  if (ts.isBindingElement(parent) && parent.propertyName === node) return false;
+  if (
+    (ts.isPropertyAssignment(parent) ||
+      ts.isPropertyDeclaration(parent) ||
+      ts.isMethodDeclaration(parent) ||
+      ts.isPropertySignature(parent) ||
+      ts.isGetAccessorDeclaration(parent) ||
+      ts.isSetAccessorDeclaration(parent)) &&
+    parent.name === node
+  )
+    return false;
+  return true;
 }
 
 /** Strips the value-preserving wrappers off an expression: parens,

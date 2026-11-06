@@ -157,6 +157,10 @@ export interface CcOptions {
   typeOrigins?: boolean;
   /** for await over checked-dynamic values: compiles scr_dyn_for_await.c. */
   dynForAwait?: boolean;
+  /** The keyed collections' prototype objects and member values, their
+   * constructors' adder lookup and the ES2025 Set compositions: compiles
+   * scr_dyn_collections.c. */
+  dynCollections?: boolean;
   /** Object.isExtensible and Object.isSealed of a value typed dynamically:
    * compiles scr_dyn_integrity.c. */
   dynIntegrityQueries?: boolean;

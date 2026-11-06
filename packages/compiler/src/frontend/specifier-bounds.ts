@@ -101,8 +101,19 @@ export function specifierBoundContextOf(program: ts.Program): SpecifierBoundCont
  * bounding it: the full domain, with URL values and the residual part of a
  * partial bound. A module load (a Worker entry) reads this answer. */
 export function boundLoadValues(ctx: SpecifierBoundContext, expr: ts.Expression): SpecifierBound {
-  return bound(ctx, expr, new Set<ts.Symbol>());
+  const inProgress: InProgress = new Set();
+  return bound(ctx, expr, inProgress);
 }
+
+/** What the walk is in the middle of bounding, so a value that depends on
+ * itself is Top instead of an endless descent: a variable's symbol while its
+ * initializer is bounded, a function's symbol while the arguments its calls
+ * pass (its PARAMETERS) are, and a function's declaration while the values
+ * it RETURNS are. The last two are separate entries because a return value
+ * that reads the function's own parameter (`entryUrl(specifier)` returning
+ * `new URL(specifier, import.meta.url)`) is not a recursion: the parameter
+ * is bounded from the call sites while the returns are in progress. */
+type InProgress = Set<ts.Symbol | ts.SignatureDeclaration>;
 
 /** The values an `import()` specifier may evaluate to: `boundLoadValues`,
  * read as text values only. A URL value or a partial bound is Top — an
@@ -218,7 +229,7 @@ function concat(left: SpecifierBound, right: SpecifierBound, at: ts.Node): Speci
 function bound(
   ctx: SpecifierBoundContext,
   expression: ts.Expression,
-  inProgress: Set<ts.Symbol>,
+  inProgress: InProgress,
 ): SpecifierBound {
   const expr = stripValueWrappers(expression);
   if (ts.isStringLiteralLike(expr)) return textOf(expr.text);
@@ -285,7 +296,7 @@ function moduleUrlOf(node: ts.Node): SpecifierBound {
 function boundUrl(
   ctx: SpecifierBoundContext,
   expr: ts.NewExpression,
-  inProgress: Set<ts.Symbol>,
+  inProgress: InProgress,
 ): SpecifierBound | null {
   if (!isUrlConstructor(ctx.program, expr.expression)) return null;
   const args = expr.arguments?.nodes ?? [];
@@ -338,7 +349,7 @@ const FOLDED_STRING_METHODS: ReadonlySet<string> = new Set([
 function boundStringCall(
   ctx: SpecifierBoundContext,
   call: ts.CallExpression,
-  inProgress: Set<ts.Symbol>,
+  inProgress: InProgress,
 ): SpecifierBound | null {
   const callee = call.expression;
   if (!ts.isPropertyAccessExpression(callee)) return null;
@@ -490,7 +501,7 @@ function regexLiteralOf(node: ts.Expression): RegExp | null {
 function boundPatterns(
   ctx: SpecifierBoundContext,
   node: ts.Expression,
-  inProgress: Set<ts.Symbol>,
+  inProgress: InProgress,
 ): string[] | null {
   return textValues(bound(ctx, node, inProgress));
 }
@@ -532,7 +543,7 @@ function describeUnbounded(expr: ts.Expression): string {
 function boundIdentifier(
   ctx: SpecifierBoundContext,
   expr: ts.Identifier,
-  inProgress: Set<ts.Symbol>,
+  inProgress: InProgress,
 ): SpecifierBound {
   const sym = ctx.resolveValueSymbol(expr) ?? ctx.checker.getSymbolAtLocation(expr);
   if (sym === undefined) return top(expr, `'${expr.text}', which has no declaration`);
@@ -549,7 +560,7 @@ function boundVariable(
   expr: ts.Identifier,
   sym: ts.Symbol,
   decl: ts.VariableDeclaration,
-  inProgress: Set<ts.Symbol>,
+  inProgress: InProgress,
 ): SpecifierBound {
   const isConst = (ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) !== 0;
   if (!isConst && !bindingNeverReassigned(ctx, sym, decl))
@@ -573,7 +584,7 @@ function boundParameter(
   expr: ts.Identifier,
   sym: ts.Symbol,
   decl: ts.ParameterDeclaration,
-  inProgress: Set<ts.Symbol>,
+  inProgress: InProgress,
 ): SpecifierBound {
   const fn = decl.parent;
   if (fn === undefined || !ts.isFunctionLike(fn))
@@ -653,7 +664,7 @@ function scanCalls(
 function boundReturns(
   ctx: SpecifierBoundContext,
   call: ts.CallExpression,
-  inProgress: Set<ts.Symbol>,
+  inProgress: InProgress,
 ): SpecifierBound | null {
   if (call.questionDotToken !== undefined || call.arguments.nodes.some(ts.isSpreadElement))
     return null;
@@ -673,14 +684,14 @@ function boundReturns(
   if (isExported(ctx, binding)) return null;
   const fnSym = ctx.checker.getSymbolAtLocation(binding);
   if (fnSym === undefined) return top(binding, `'${binding.text}', whose function has no symbol`);
-  if (inProgress.has(fnSym)) return top(callee, `'${binding.text}', which is recursive`);
+  if (inProgress.has(fn)) return top(callee, `'${binding.text}', which is recursive`);
   const { escaped } = scanCalls(ctx, binding, fnSym);
   if (escaped !== null)
     return top(
       escaped,
       `the function value '${binding.text}', which is used other than as a direct call`,
     );
-  return returnedValues(ctx, fn, fnSym, inProgress);
+  return returnedValues(ctx, fn, inProgress);
 }
 
 /** The function a `const` binding's symbol declares, or null for anything
@@ -696,12 +707,13 @@ function localFunctionOf(sym: ts.Symbol): ts.SignatureDeclaration | null {
 
 /** The union of every value `fn` returns. A body that can fall off its end
  * returns undefined on that path, and a bare `return` has no value: both are
- * Top. */
+ * Top. A returned expression may read the function's own parameters; those
+ * are bounded from every call site (boundParameter), so the answer covers
+ * the returns of every call, not only the one being bounded. */
 function returnedValues(
   ctx: SpecifierBoundContext,
   fn: ts.SignatureDeclaration,
-  fnSym: ts.Symbol,
-  inProgress: Set<ts.Symbol>,
+  inProgress: InProgress,
 ): SpecifierBound {
   const body = fn.body;
   if (body === undefined) return top(fn, "a function with no body");
@@ -724,11 +736,11 @@ function returnedValues(
   }
   if (expressions.length === 0) return top(fn, "a function that returns no value");
   const bounds: SpecifierBound[] = [];
-  inProgress.add(fnSym);
+  inProgress.add(fn);
   try {
     for (const expression of expressions) bounds.push(bound(ctx, expression, inProgress));
   } finally {
-    inProgress.delete(fnSym);
+    inProgress.delete(fn);
   }
   return union(bounds, fn);
 }

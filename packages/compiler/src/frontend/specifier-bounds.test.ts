@@ -202,11 +202,41 @@ function start(specifier: string): Worker {
   return new Worker(new URL(specifier, import.meta.url), { workerData: 1 });
 }
 
+// A helper whose returned URL reads its own parameter: the parameter is
+// bounded from the helper's call sites, so this is not a recursion.
+function entryUrl(specifier: string): URL {
+  return new URL(specifier, import.meta.url);
+}
+
 const flag = process.argv.length > 2;
 export const worker = start(entryName(flag));
 export const direct = new Worker(new URL(entryName(flag), import.meta.url));
+export const helper = new Worker(entryUrl("./worker.ts"));
+export const nested = new Worker(entryUrl(entryName(flag)));
 `),
   ).toEqual([]);
+});
+
+test("a return value that depends on itself keeps the refusal", () => {
+  expect(
+    workerRefusals(`
+import { Worker } from "node:worker_threads";
+
+// The function returns its own call.
+function again(): URL {
+  return again();
+}
+
+// One call site passes a value computed from the parameter it binds, so the
+// call sites do not bound the parameter the returned URL reads.
+function grow(specifier: string): URL {
+  return specifier.length > 9 ? new URL(specifier, import.meta.url) : grow(specifier + "x");
+}
+
+export const first = new Worker(again());
+export const second = new Worker(grow("./worker.ts"));
+`).length,
+  ).toBe(2);
 });
 
 test("a partial bound keeps the bounded arms and the Top residual", () => {

@@ -186,6 +186,12 @@ export function reflectMemberValue(lowerer: Lowerer, member: string, loc: SrcLoc
   });
   switch (member) {
     case "isExtensible":
+      // The handle-aware query: the target arrives untyped, so it may be a
+      // native handle whose integrity the handle property table tracks (a
+      // program that adds own properties to handles installs it). The plain
+      // dyn.isExtensible entry answers false for every handle; the query
+      // answers from the table, and refuses a handle whose integrity nothing
+      // tracks, as Object.isExtensible does.
       return reflectMemberFunction(lowerer, member, BOOL, 1, loc, (args, locals) => {
         const target = memberLocal(locals, "t.0", "target");
         return [
@@ -193,7 +199,13 @@ export function reflectMemberValue(lowerer: Lowerer, member: string, loc: SrcLoc
           guard(target),
           {
             kind: "return",
-            value: { kind: "libCall", fn: "dyn.isExtensible", args: [target], type: BOOL, loc },
+            value: {
+              kind: "libCall",
+              fn: "dyn.isExtensibleQuery",
+              args: [target],
+              type: BOOL,
+              loc,
+            },
             loc,
           },
         ];
@@ -414,7 +426,11 @@ export function lowerReflectCall(
     if (reflectMember === "isExtensible")
       return withObjectTarget(lowerer, reflectMember, target, BOOL, locOf(call), (object) => ({
         kind: "libCall",
-        fn: "dyn.isExtensible",
+        // The target is a checked-dynamic value, so the handle-aware query
+        // answers a native handle from the handle property table (and
+        // refuses one nothing tracks) instead of the plain entry's false for
+        // every handle.
+        fn: "dyn.isExtensibleQuery",
         args: [object],
         type: BOOL,
         loc: locOf(call),

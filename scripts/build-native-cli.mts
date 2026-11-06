@@ -233,25 +233,35 @@ execFileSync(
 if (strip && target.platform === "win32")
   rmSync(comptime.replace(/\.exe$/, ".pdb"), { force: true });
 report("lowering and emitting the compiler");
-const result = await compile(join(root, "packages/compiler/src/native/cli.ts"), {
-  outDir: seed,
-  outPath: executable,
-  backend: "llvm",
-  optimization,
-  strip,
-  ffiProfilePath: ffi,
-  sanitize,
-  ...(profileGenerate === undefined ? {} : { profileGenerate }),
-  ...(profileUse === undefined ? {} : { profileUse }),
-  ...(functionLayout === undefined ? {} : { functionLayout }),
-  // Most of the compiler's runs are short (an unchanged rebuild takes tens of
-  // milliseconds), and a run maps every 2 MiB text window it touches whole. Text
-  // on 4 KiB pages keeps an unchanged rebuild at about a third of the peak RSS,
-  // and builds of tsc-ts take the same time. Executables the compiler builds
-  // keep huge text.
-  hugeText: false,
-  emitIr: process.env["SCRIPTC_NATIVE_EMIT_IR"] === "1",
-});
+// This phase prints nothing until it ends and takes the bulk of the build, so
+// a line a minute keeps a stalled build visible in the log timestamps instead
+// of looking like a slow one.
+const result = await (async () => {
+  const heartbeat = setInterval(() => report("still lowering and emitting the compiler"), 60_000);
+  try {
+    return await compile(join(root, "packages/compiler/src/native/cli.ts"), {
+      outDir: seed,
+      outPath: executable,
+      backend: "llvm",
+      optimization,
+      strip,
+      ffiProfilePath: ffi,
+      sanitize,
+      ...(profileGenerate === undefined ? {} : { profileGenerate }),
+      ...(profileUse === undefined ? {} : { profileUse }),
+      ...(functionLayout === undefined ? {} : { functionLayout }),
+      // Most of the compiler's runs are short (an unchanged rebuild takes tens of
+      // milliseconds), and a run maps every 2 MiB text window it touches whole. Text
+      // on 4 KiB pages keeps an unchanged rebuild at about a third of the peak RSS,
+      // and builds of tsc-ts take the same time. Executables the compiler builds
+      // keep huge text.
+      hugeText: false,
+      emitIr: process.env["SCRIPTC_NATIVE_EMIT_IR"] === "1",
+    });
+  } finally {
+    clearInterval(heartbeat);
+  }
+})();
 if (!result.ok)
   throw new Error(
     result.diagnostics

@@ -14,7 +14,8 @@ import { describe, expect, test } from "vitest";
 import ts5 from "typescript";
 import { compile } from "@scriptc/compiler";
 import { corpusSelect, shardSuffix } from "./shard.js";
-import { runStep, type Track } from "./step-timeout.js";
+import { recentCrashReport } from "./crash-report.js";
+import { abnormalExitMessage, runStep, type Track } from "./step-timeout.js";
 import { libnodePack, requiresLibnode } from "./libnode.js";
 import { tscJsxOracleEntry, wantsTscJsx } from "./jsx-oracle.js";
 
@@ -115,6 +116,7 @@ async function runBinary(
   for (let attempt = 0; ; attempt++) {
     const env: NodeJS.ProcessEnv = { ...process.env, ...extraEnv };
     if (cpuLevel !== undefined) env["SCRIPTC_CPU_LEVEL"] = cpuLevel;
+    const startedAt = Date.now();
     const pending = execFileAsync(cmd, args, {
       encoding: "buffer",
       ...(cpuLevel === undefined && Object.keys(extraEnv).length === 0 ? {} : { env }),
@@ -131,7 +133,11 @@ async function runBinary(
         continue;
       }
       if (typeof e.code !== "number" || !Buffer.isBuffer(e.stdout) || !Buffer.isBuffer(e.stderr)) {
-        throw err;
+        // A signal death has no exit code and no message tail: report the
+        // signal, both streams, and the darwin crash report instead of the
+        // bare command line.
+        const crash = await recentCrashReport(cmd, startedAt);
+        throw new Error(abnormalExitMessage(cmd, err, crash), { cause: err });
       }
       return { stdout: e.stdout, stderr: e.stderr, exitCode: e.code };
     }

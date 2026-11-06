@@ -20,6 +20,45 @@ export const STEP_TIMEOUT_MS =
 /** Registers a child process the step started, so the deadline can name it. */
 export type Track = (child: ChildProcess) => void;
 
+/** How much of one stream the abnormal-exit message quotes. A crash prints a
+ * few lines; a runaway child should not push the diagnosis out of the log. */
+const ABNORMAL_EXIT_LIMIT = 4000;
+
+function quoted(value: unknown): string {
+  const text = Buffer.isBuffer(value)
+    ? value.toString("utf8")
+    : typeof value === "string"
+      ? value
+      : null;
+  if (text === null) return "<none>";
+  return JSON.stringify(
+    text.length > ABNORMAL_EXIT_LIMIT
+      ? `${text.slice(0, ABNORMAL_EXIT_LIMIT)}… (${text.length} bytes)`
+      : text,
+  );
+}
+
+/** The failure message for a step child that did not exit on its own terms.
+ * `execFile` reports a signal death with a null `code` and a message that stops
+ * at the command line, so the failure would name only the binary. Keeping the
+ * signal and what crossed either stream makes a crash diagnosable from the log
+ * alone — the stdout shows how far the program got. `crash` carries the darwin
+ * crash report's exception line when one was found. */
+export function abnormalExitMessage(cmd: string, err: unknown, crash?: string | null): string {
+  const e = (err ?? {}) as {
+    code?: unknown;
+    signal?: unknown;
+    stdout?: unknown;
+    stderr?: unknown;
+  };
+  return (
+    `${cmd} did not exit normally (signal ${String(e.signal ?? "none")}, ` +
+    `code ${String(e.code ?? "none")}):\n` +
+    `  stdout ${quoted(e.stdout)}\n  stderr ${quoted(e.stderr)}` +
+    (crash === undefined || crash === null ? "" : `\n  crash report ${crash}`)
+  );
+}
+
 interface ProcessRow {
   pid: number;
   ppid: number;

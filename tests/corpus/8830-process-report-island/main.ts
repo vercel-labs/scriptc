@@ -7,6 +7,7 @@
 import { label, ping } from "reportsupport";
 
 console.log("island", label, ping());
+console.log("report", typeof process.report);
 
 const report = process.report.getReport() as {
   header?: unknown;

@@ -18033,10 +18033,14 @@ export class Lowerer {
     seen = new Set<ts.Node>(),
   ): BuiltinModuleNamespaceFlavor {
     const e = stripTypeCasts(expr);
-    // The value a dynamic import resolves to is an ES module namespace
-    // object. A promise is the only value whose resolved type is a builtin
-    // module namespace, because require is synchronous.
-    if (ts.isAwaitExpression(e)) return "esm";
+    // Awaiting a value answers that value unless it is a promise, so the
+    // shape is the shape of the awaited expression. The traced promise is
+    // the dynamic import call, whose resolved value is an ES module
+    // namespace object; a require() call, a default import or a
+    // sub-namespace member is not a promise, and awaiting it answers the
+    // CommonJS exports object itself. A promise this classification does
+    // not trace holds a value whose shape it cannot name.
+    if (ts.isAwaitExpression(e)) return this.builtinNamespaceFlavorOf(e.expression, seen);
     if (ts.isCallExpression(e)) {
       if (e.expression.kind === ts.SyntaxKind.ImportKeyword) return "esm";
       // require() and process.getBuiltinModule() answer the CommonJS

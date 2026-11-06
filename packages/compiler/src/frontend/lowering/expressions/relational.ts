@@ -1872,25 +1872,31 @@ export function lowerInExpression(
         if (member !== null) {
           // Node evaluates the key, then the receiver. The census answers
           // without reading the receiver, so a spelling the lowerers can
-          // evaluate still runs for its effects.
+          // evaluate still runs for its effects. The key is stabilized
+          // before that evaluation whatever spelling it has: a read of a
+          // mutable binding has no effects of its own, but it must not see
+          // writes the receiver makes, so it cannot be left inside the test
+          // the receiver now precedes.
           if (sideEffectFreeOptionValue(expr.right)) return member;
           const evaluated = tryLowerExpression(lowerer, expr.right);
           if (evaluated === null) return member;
-          const stmts: IrStmt[] = [];
-          let result = member;
-          if (!sideEffectFreeOptionValue(expr.left)) {
-            const keyLocal = lowerer.declareHiddenLocal("%inKey", STRING);
-            stmts.push({ kind: "varDecl", localId: keyLocal.id, init: keyExpr, loc });
-            result = builtinNamespaceMemberTest(
+          const keyLocal = lowerer.declareHiddenLocal("%inKey", STRING);
+          return {
+            kind: "seqExpr",
+            stmts: [
+              { kind: "varDecl", localId: keyLocal.id, init: keyExpr, loc },
+              { kind: "exprStmt", expr: evaluated, loc },
+            ],
+            result: builtinNamespaceMemberTest(
               lowerer,
               shape,
               false,
               varRef(keyLocal.id, STRING, loc),
               loc,
-            )!;
-          }
-          stmts.push({ kind: "exprStmt", expr: evaluated, loc });
-          return { kind: "seqExpr", stmts, result, type: BOOL, loc };
+            )!,
+            type: BOOL,
+            loc,
+          };
         }
       }
     }

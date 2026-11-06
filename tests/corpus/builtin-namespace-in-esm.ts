@@ -22,3 +22,8 @@ console.log('alias', 'createGzip' in alias, 'toString' in alias, Object.keys(ali
 
 console.log('cjs own', ['createGzip', 'nope', 'toString'].map((k) => k in zlibCjs));
 console.log('cjs keys', Object.keys(zlibCjs).join(','));
+
+// A runtime key over an awaited dynamic import: Node reads the key before
+// the import runs, so the key is held in a local first.
+const runtimeNames = ['deflateSync', 'nope', 'toString'];
+for (const k of runtimeNames) console.log('esm runtime', k, k in (await import('node:zlib')));

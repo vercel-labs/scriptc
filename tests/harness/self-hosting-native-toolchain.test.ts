@@ -20,6 +20,7 @@ const features: NativeLinkFeatures = {
   regex: false,
   copying: false,
   textDecoderLegacy: false,
+  bigintBytes: false,
   fileHandle: false,
   fetch: false,
   zlib: false,

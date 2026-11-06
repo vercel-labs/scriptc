@@ -1,0 +1,8 @@
+bigint-union-blocked-arm.ts:9:62 - error SC2020: 'BigInt of number values' is part of the standard library types but has no scriptc lowering yet
+
+   8 | function show(value: Stored): void {
+   9 |   if (typeof value === "number") console.log("count", BigInt(value));
+     |                                                              ^~~~~
+  10 | }
+
+  hint: the checker narrows the argument to number, but the stored value can also hold () => void at run time; string, number, boolean, bigint, byte views, and array arguments are supported

@@ -229,6 +229,13 @@ describe("native code-generation targets", () => {
     expect(executableOptimizationLinkerArgs("linux", "release")).toEqual([]);
   });
 
+  test("keeps Windows release links free of debug info so dead COMDATs drop", () => {
+    expect(executableOptimizationLinkerArgs("win32", "release")).toEqual(["-Wl,--strip-debug"]);
+    expect(executableOptimizationLinkerArgs("win32", "speed")).toEqual(["-Wl,--strip-debug"]);
+    expect(executableOptimizationLinkerArgs("win32", "dev")).toEqual([]);
+    expect(executableOptimizationLinkerArgs("darwin", "release")).toEqual([]);
+  });
+
   test("selects the PE GUI subsystem without changing default console links", () => {
     expect(windowsSubsystemLinkerArgs("win32", undefined)).toEqual([]);
     expect(windowsSubsystemLinkerArgs("win32", "console")).toEqual([]);

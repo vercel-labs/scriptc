@@ -3,7 +3,7 @@ import { numLit, strLit } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
-import { isChildSurfaceMember } from "../surfaces.js";
+import { isChildSurfaceMember, isChildWriterSurfaceMember } from "../surfaces.js";
 import {
   BIGINT_T,
   BOOL,
@@ -161,7 +161,13 @@ export function lowerBuiltinExtraProperty(
     kind !== "childWriter"
   )
     return null;
-  if (kind === "child" ? !isChildSurfaceMember(lowerer, expr) : !lowerer.isStdlibMember(expr))
+  if (
+    kind === "child"
+      ? !isChildSurfaceMember(lowerer, expr)
+      : kind === "childWriter"
+        ? !isChildWriterSurfaceMember(lowerer, expr)
+        : !lowerer.isStdlibMember(expr)
+  )
     return null;
   const name = expr.name.text;
   const loc = locOf(expr);

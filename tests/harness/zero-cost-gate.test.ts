@@ -11,7 +11,7 @@ import {
   definedFunctionNames,
   dynamicTierSymbols,
   linkedRuntimeFiles,
-  llvmFunctionHashes,
+  objectFunctionHashes,
   mergeReports,
   nmOutput,
   programInputsHash,
@@ -19,6 +19,7 @@ import {
   programVerdict,
   recordedBaseline,
   runtimePackDiff,
+  timingGroups,
   timingVerdict,
 } from "../../scripts/zero-cost-compare.mjs";
 
@@ -279,21 +280,30 @@ test("the zero-cost gate names the runtime pack files and functions that changed
     removed: [],
   });
 
-  const ll = (body: string, attrs: number) =>
+  // llvm-objdump -d -r --no-show-raw-insn --no-leading-addr output.
+  const objdump = (offset: number, call: string) =>
     [
-      `define i32 @scr_same(i32 %x) #${attrs} {`,
-      "  ret i32 %x, !dbg !" + attrs,
-      "}",
-      "define internal void @scr_changed() {",
-      `  ${body}`,
-      "}",
+      "scr_a.o:\tfile format elf64-x86-64",
+      "",
+      "Disassembly of section .text:",
+      "",
+      "<scr_same>:",
+      `               \tjl\t0x${(offset + 0x12).toString(16)} <scr_same+0x12>`,
+      `               \tcallq\t0x${(offset + 0xb).toString(16)} <scr_same+0xb>`,
+      "\t\tR_X86_64_PLT32\tscr_g-0x4",
+      "               \tretq",
+      "",
+      "<scr_changed>:",
+      `               \tcallq\t0x0 <scr_changed>`,
+      `\t\tR_X86_64_PLT32\t${call}-0x4`,
+      "               \tretq",
       "",
     ].join("\n");
-  const before = llvmFunctionHashes(ll("ret void", 0));
-  const after = llvmFunctionHashes(
-    ll("call void @f()\n  ret void", 7) + 'define void @"scr new"() {\n}\n',
+  const before = objectFunctionHashes(objdump(0, "scr_g"));
+  const after = objectFunctionHashes(
+    objdump(0x40, "scr_h") + "<scr new>:\n               \tretq\n",
   );
-  // Renumbered attribute groups and metadata are not changes.
+  // A function that only moved within its section is not a change.
   expect(changedFunctions(before, after)).toEqual({
     changed: ["scr_changed"],
     added: ["scr new"],
@@ -424,4 +434,37 @@ test("merged gate shards judge compile time and comparisons over every shard", (
   expect(programLines(runtimeOnly)).toEqual([
     "runtime    bench/r  exe: resized scr_a; runtime-only: links 1 changed runtime function (scr_a)",
   ]);
+});
+
+test("the gate times the self-hosting fixtures as their own compile-time group", () => {
+  const fixture = (ratios: number[]) => ({
+    id: "fixture/llvm-emitter",
+    baselineMs: ratios.map(() => 130_000),
+    candidateMs: ratios.map((ratio) => Math.round(130_000 * ratio)),
+    ratios,
+  });
+  const rows = [
+    fixture([1.0, 1.01]),
+    { id: "self/cli", baselineMs: [600], candidateMs: [606], ratios: [1.01] },
+  ];
+  // A fixture is not the self-hosted compiler: the two are judged apart.
+  expect(timingGroups(rows).fixtures.map((row) => row.id)).toEqual(["fixture/llvm-emitter"]);
+  expect(timingGroups(rows).self.map((row) => row.id)).toEqual(["self/cli"]);
+  expect(timingVerdict("fixtures", timingGroups(rows).fixtures, 0.02).fails).toBe(false);
+  // #2636 spent 3.8x the fixture's compile time in one fs Buffer brand scan.
+  const regression = timingVerdict("fixtures", [fixture([3.8, 3.81])], 0.02);
+  expect(regression.fails).toBe(true);
+  expect(regression.failure).toMatch(/^fixtures compile time grew \+2\d\d\.\d\d% \(CI low /);
+  const shard = {
+    schema: 1,
+    trees: { baseline: { revision: "a" }, candidate: { revision: "b" } },
+    programs: [{ id: "fixture/llvm-emitter", verdict: "identical", artifacts: {} }],
+    failures: [],
+    globalFailures: [],
+    timing: { runs: 1, maxGrowth: 0.02, rows: [fixture([3.8])], groups: {} },
+    elapsedMs: 1,
+  };
+  const merged = mergeReports([shard]);
+  expect(merged.report.verdict).toBe("fail");
+  expect(merged.report.failures).toEqual(["fixtures compile time grew +280.00% (CI low +280.00%)"]);
 });

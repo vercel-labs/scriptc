@@ -1,14 +1,20 @@
 /* Identifier references in expression position: lowerExprInner's identifier branch and its helpers. */
+import { isJsIteratorGlobal, iteratorConstructorExpr } from "../iterator-prototype.js";
 import { globalMemberValue, tsUntypedGlobalValue } from "../global-values.js";
+import { hostGlobalCallTarget, hostGlobalNameOfIdentifier } from "../host-globals.js";
+import { hostGlobalValue } from "../host-global-values.js";
 import { predeclareForwardClass } from "../lower-stmts.js";
 import { cjsMemberAliasValueOf } from "../cjs-exports-object.js";
 import { builtinClassValue, builtinMemberClassKind } from "../builtins/builtin-class-dyn.js";
+import { legacyUrlClassValue } from "../builtins/url.js";
 import { lowerWebStreamClassRead } from "../builtins/web-streams-dyn.js";
 import * as ts from "../../ts7/adapter.js";
+import { globalFunctionValue } from "../global-function-values.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as posix from "node:path/posix";
 import { type Lowerer, PoisonError } from "../lowerer.js";
 import {
+  BIGINT_BYTES_NAMES,
   BOOL,
   BYTES_ELEMENT_NAME,
   DATE_T,
@@ -27,6 +33,7 @@ import {
   typeEquals,
 } from "../../../ir/ir.js";
 import { lowerNodeModuleIdentifier } from "../lower-node-module.js";
+import { createRequireLoaderValue } from "../builtins/module-resolution.js";
 import { lowerCjsExportsObjectValue } from "../cjs-exports-object.js";
 import {
   splitRequireBindingOfIdent,
@@ -138,6 +145,14 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     return { kind: "libCall", fn: "console.native", args: [], type: DYN, loc };
   }
 
+  // A createRequire loader as a VALUE (not the callee of a lowered call or
+  // a resolve read, which their own lowerings own): a run-time require
+  // function over the runtime resolver. Checked before the node:module
+  // identifier fold, which would otherwise read the destructured factory
+  // binding as its identity token.
+  const createRequireValue = createRequireLoaderValue(lowerer, expr, loc);
+  if (createRequireValue !== null) return createRequireValue;
+
   const moduleValue = lowerNodeModuleIdentifier(lowerer, expr);
   if (moduleValue) return moduleValue;
   if (expr.text === "exports") {
@@ -165,6 +180,19 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       );
     }
   }
+  // A read of a Node 24 global the native runtime does not implement
+  // (WebSocket, FormData, …) answers the constructor Node has
+  // (host-global-values.ts); constructing or calling it is the use that
+  // refuses (SC2020, host-global). Imports, locals and program
+  // declarations of the same name are the program's own bindings and
+  // never reach here.
+  {
+    const hostGlobal = hostGlobalNameOfIdentifier(lowerer, expr);
+    if (hostGlobal !== null) {
+      if (hostGlobalCallTarget(expr)) lowerer.hostGlobalFence(hostGlobal, expr);
+      return hostGlobalValue(lowerer, hostGlobal, expr);
+    }
+  }
   // A compiler-projected adapter as a VALUE: the adapter has no
   // runtime function object (its calls rewrite directly) — call it
   // through its immutable binding instead.
@@ -183,6 +211,15 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         "SC1090",
         expr,
         `a promisified builtin as a value (call '${expr.text}' directly)`,
+      );
+    }
+    if (projection?.kind === "client-function") {
+      // The client-function lowering works per call site (the module's
+      // protocol and secure defaults); there is no function object to read.
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        `an http client function alias as an escaping value (call '${expr.text}' directly)`,
       );
     }
     if (projection?.kind === "builtin-function") {
@@ -700,6 +737,10 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       // node:crypto's webcrypto is the WebCrypto global's object.
       if (bi.module === "crypto" && bi.member === "webcrypto")
         return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
+      // url.Url is Node's legacy Url constructor (JavaScript sources;
+      // @types/node declares Url as a type only), the class of url.parse()
+      // results.
+      if (bi.module === "url" && bi.member === "Url") return legacyUrlClassValue(loc);
       // JavaScript sources: an otherwise unsupported builtin VALUE is
       // the same identity-token story as stdlib globals above (the
       // harness adds worker_threads.Worker to its identity Set).
@@ -754,6 +795,14 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     );
   }
   if (lowerer.stdlibGlobalFnOf(expr)) {
+    // JavaScript reads the global functions with values as those values
+    // (global-function-values.ts).
+    const canonical = stdlibGlobalNameOf(lowerer, expr);
+    const value =
+      canonical !== null && isJsSourceFile(ts.getSourceFileOfNode(expr))
+        ? globalFunctionValue(lowerer, canonical, loc)
+        : null;
+    if (value !== null) return value;
     lowerer.unsupported(
       "SC1090",
       expr,
@@ -815,7 +864,7 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   if (isJsSourceFile(ts.getSourceFileOfNode(expr)) && lowerer.isStdlibGlobal(expr, "Array"))
     return { kind: "libCall", fn: "dyn.arrayConstructor", args: [], type: DYN, loc };
   if (
-    Object.values(BYTES_ELEMENT_NAME).includes(expr.text) &&
+    (Object.values(BYTES_ELEMENT_NAME).includes(expr.text) || BIGINT_BYTES_NAMES.has(expr.text)) &&
     lowerer.isStdlibGlobal(expr, expr.text)
   ) {
     return {
@@ -890,6 +939,9 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     }
     if (lowerer.isStdlibSymbol(sym) || expr.text === "globalThis") {
       const canonical = stdlibGlobalNameOf(lowerer, expr) ?? expr.text;
+      // %Iterator% in JavaScript: the live constructor (scr_js_iterator.c).
+      if (canonical === "Iterator" && isJsIteratorGlobal(lowerer, expr))
+        return iteratorConstructorExpr(loc);
       // Builtin constructors have real function values in both source
       // languages (TypeScript reads them as dynamic values).
       const builtinValue = builtinGlobalValueAt(

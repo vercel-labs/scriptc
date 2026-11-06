@@ -16,10 +16,12 @@ import {
   everyStmtList,
   transformStmtList,
 } from "./traverse.js";
+import { type IrNodeIndex, type IrNodeKind, lacksNode } from "./node-index.js";
 
 const MAX_FIELDS = 4;
 const MAX_CALLEE_NODES = 256;
 const MAX_INLINE_NODES = 1024;
+const DECLARATION_KINDS: readonly IrNodeKind[] = ["varDecl"];
 
 interface Producer {
   fn: IrFunction;
@@ -544,8 +546,10 @@ function localReads(fn: IrFunction): Map<string, number> {
  * (findScalarStringSlices). The declarations stay in the caller's own
  * statement list, so every binding keeps its scope; parameters live to the
  * end of it, which only lengthens the arguments' lifetimes. Every other use
- * of the result binding keeps the call. */
-export function scalarizeLiteralResults(mod: IrModule): IrModule {
+ * of the result binding keeps the call. With `nodes`, an index of `mod`,
+ * the functions it records without a declaration from a producer's call
+ * are kept unwalked. */
+export function scalarizeLiteralResults(mod: IrModule, nodes?: IrNodeIndex): IrModule {
   const shapes = new Map((mod.records ?? []).map((s) => [s.id, s]));
   const producers = new Map<string, LiteralProducer>();
   for (const fn of mod.functions) {
@@ -555,8 +559,21 @@ export function scalarizeLiteralResults(mod: IrModule): IrModule {
   if (producers.size === 0) return mod;
   let changed = false;
   const globalIds = new Set((mod.globals ?? []).map((g) => g.id));
+  const declarations = nodes?.scan(DECLARATION_KINDS);
   const functions = mod.functions.map((fn): IrFunction => {
     if (fn.async || fn.generator) return fn;
+    if (
+      lacksNode(
+        fn,
+        declarations,
+        (node) =>
+          node.kind === "varDecl" &&
+          node.init?.kind === "call" &&
+          node.init.callee !== fn.name &&
+          producers.has(node.init.callee),
+      )
+    )
+      return fn;
     const locals = new Map(fn.locals.map((l) => [l.id, l]));
     // The names a fresh binding must avoid, collected when the first one is
     // made: most functions inline no producer.

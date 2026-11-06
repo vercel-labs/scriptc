@@ -70,7 +70,55 @@
       },
     },
     {
+      // A value import of one lowering module reaches the lowering hub
+      // (lowerer.ts) and puts its whole module graph behind every program that
+      // loads program.ts (see #2628): the self-hosting fixtures lower about 4x
+      // as many statements. Type-only imports are erased and stay free.
+      // The allow-listed names are the leaf modules the loader, type mapper
+      // and declaration projection already call as values; each of those
+      // modules imports only the IR, the TS7 adapter and input tracking.
+      // pipeline.ts is the lowering driver and calls lowerToIr itself.
+      // The lowering directory has its own block below, since its modules call
+      // each other as values.
       "files": ["packages/compiler/src/frontend/**"],
+      "excludeFiles": ["packages/compiler/src/frontend/lowering/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["**/backend/*", "**/backend/**"],
+                "message": "frontend must not import backend; use the IR interface.",
+              },
+              {
+                "group": ["**/ir/validate", "**/ir/validate.*"],
+                "message": "frontend must not import IR validation; use the shared builtin and intrinsic signatures.",
+              },
+              {
+                "group": ["typescript5", "typescript5/**"],
+                "message": "typescript5 is restricted to the explicit parser islands; TypeScript AST worlds must not mix.",
+              },
+              {
+                "group": ["**/lowering/*", "**/lowering/**"],
+                "allowTypeImports": true,
+                "allowImportNames": [
+                  "declarationSelector",
+                  "originAt",
+                  "resetDeclOriginVersions",
+                  "keyedHelperName",
+                  "contentDigest",
+                  "lowerToIr",
+                ],
+                "message": "a frontend module outside lowering may import lowering only with `import type`; a value import pulls the lowering module graph into every program that loads program.ts.",
+              },
+            ],
+          },
+        ],
+      },
+    },
+    {
+      "files": ["packages/compiler/src/frontend/lowering/**"],
       "rules": {
         "no-restricted-imports": [
           "error",
@@ -260,6 +308,11 @@
                 "group": ["**/ir/validate", "**/ir/validate.*"],
                 "message": "frontend must not import IR validation; use the shared builtin and intrinsic signatures.",
               },
+              {
+                "group": ["**/lowering/*", "**/lowering/**"],
+                "allowTypeImports": true,
+                "message": "a frontend module outside lowering may import lowering only with `import type`; a value import pulls the lowering module graph into every program that loads program.ts.",
+              },
             ],
           },
         ],
@@ -270,9 +323,11 @@
       "files": [
         "packages/compiler/src/frontend/lowering/**",
         "packages/compiler/src/backend/llvm/**",
+        "packages/compiler/src/backend/immutability.test.ts",
         "packages/compiler/src/backend/loop-polls.test.ts",
         "packages/compiler/src/backend/may-throw.test.ts",
         "packages/compiler/src/backend/stack-observations.test.ts",
+        "packages/compiler/src/backend/tree-classes.test.ts",
         "packages/compiler/src/ir/**",
         "packages/compiler/src/library/*.test.ts",
         "packages/compiler/test/**",

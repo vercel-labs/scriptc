@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { lstat, readFile, readdir } from "node:fs/promises";
+import { realpathSync } from "node:fs";
+import { lstat, mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -18,12 +19,38 @@ export interface CompilerImplementationIdentity {
   dependencies: CompilerImplementationDependency[];
 }
 
+/** Where an installed package keeps the digest it computed for itself. The
+ * directory is outside the hashed file set, and the metadata proof the record
+ * carries decides whether the digest still describes the package. */
+const INSTALL_RECORD_DIRECTORY = ".scriptc";
+const INSTALL_RECORD_NAME = "install-digest.json";
+
+interface InstallDigestRecord {
+  version: 1;
+  /** The install this digest describes. A package copied elsewhere carries the
+   * record with it, and its dependencies name the original's files, which are
+   * still present and still match; only a matching root says the record is
+   * about this install. */
+  root: string;
+  digest: string;
+  dependencies: CompilerImplementationDependency[];
+}
+
 /** The installed compiler package whose bytes define frontend identity. The
  * startup route also uses this location to keep metadata proofs from two
- * source checkouts sharing a cache root from standing in for one another. */
+ * source checkouts sharing a cache root from standing in for one another.
+ * A module reached through a symlinked package path (`--preserve-symlinks`
+ * keeps that spelling in module URLs) reports the directory the link names:
+ * retargeting the link selects a different install, so every proof and cache
+ * namespace built on this path has to follow it. */
 export function compilerImplementationRoot(): string {
   const moduleDir = dirname(fileURLToPath(import.meta.url));
-  return resolve(moduleDir, "..", "..");
+  const root = resolve(moduleDir, "..", "..");
+  try {
+    return realpathSync(root);
+  } catch {
+    return root;
+  }
 }
 
 function dependency(
@@ -44,35 +71,97 @@ function dependency(
       };
 }
 
+function installRecordPath(root: string): string {
+  return join(root, INSTALL_RECORD_DIRECTORY, INSTALL_RECORD_NAME);
+}
+
+async function readInstallDigest(root: string): Promise<InstallDigestRecord | null> {
+  try {
+    const parsed = JSON.parse(
+      await readFile(installRecordPath(root), "utf8"),
+    ) as Partial<InstallDigestRecord>;
+    if (parsed.version !== 1 || typeof parsed.digest !== "string") return null;
+    if (parsed.root !== root) return null;
+    if (!Array.isArray(parsed.dependencies) || parsed.dependencies.length === 0) return null;
+    return { version: 1, root, digest: parsed.digest, dependencies: parsed.dependencies };
+  } catch {
+    return null;
+  }
+}
+
+/** A read-only install has nowhere to keep a digest and keeps hashing its
+ * files on every build; the record is an optimization, never a requirement.
+ * An absent package root is left for the scan to report, not created here. */
+async function ensureInstallRecordDirectory(root: string): Promise<void> {
+  try {
+    if (!(await lstat(root)).isDirectory()) return;
+    await mkdir(join(root, INSTALL_RECORD_DIRECTORY), { recursive: true });
+  } catch {
+    // See above.
+  }
+}
+
+async function writeInstallDigest(
+  root: string,
+  digest: string,
+  dependencies: CompilerImplementationDependency[],
+): Promise<void> {
+  const record: InstallDigestRecord = { version: 1, root, digest, dependencies };
+  try {
+    await writeFile(installRecordPath(root), `${JSON.stringify(record)}\n`, { mode: 0o600 });
+  } catch {
+    // See above.
+  }
+}
+
 /** Content identity plus a cheap replay proof for the compiler package that
  * produced an early frontend artifact. Full compiles hash every byte before
  * publication; the CLI fast path validates the captured inode/time/size
- * metadata and loads the large compiler graph only when anything changed. */
+ * metadata and loads the large compiler graph only when anything changed.
+ * A build reuses the digest the package recorded for itself while that
+ * metadata proof still matches, so one install hashes its files once. */
 export async function compilerImplementationIdentity(
   captureDependencies = true,
   implementationRoot = compilerImplementationRoot(),
 ): Promise<CompilerImplementationIdentity> {
-  const entries: { path: string; directory?: CompilerImplementationDependency | null }[] = [];
+  // An installed package path can be a symlink to the package directory, so
+  // the scan starts at what the link names: the walk classifies a directory
+  // from its own type, and a symlink is not one of the kinds it records.
+  const root = await realpath(implementationRoot).catch(() => implementationRoot);
+  const recorded = await readInstallDigest(root);
+  if (
+    recorded !== null &&
+    (await compilerImplementationDependenciesStillMatch(recorded.dependencies))
+  )
+    return {
+      digest: recorded.digest,
+      dependencies: captureDependencies ? recorded.dependencies : [],
+    };
+  // Sorted depth-first order is deliberately DIFFERENT from sorting the
+  // complete paths (a.ts would precede a/index.ts).
+  const entries: { path: string; directory: CompilerImplementationDependency | null }[] = [];
   const dependencies: CompilerImplementationDependency[] = [];
   const walk = async (directory: string): Promise<void> => {
     // Capture directories BEFORE enumeration: a new child arriving during
     // the scan must invalidate this proof, even if readdir did not see it.
-    entries.push({
-      path: directory,
-      directory: captureDependencies ? dependency(directory, await lstat(directory)) : null,
-    });
+    entries.push({ path: directory, directory: dependency(directory, await lstat(directory)) });
     const children = await readdir(directory, { withFileTypes: true });
     children.sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of children) {
+      // The record directory is outside the identity; it is created before
+      // the scan so the root directory's captured metadata stays stable.
+      if (directory === root && entry.name === INSTALL_RECORD_DIRECTORY && entry.isDirectory())
+        continue;
       const path = join(directory, entry.name);
       if (entry.isDirectory()) {
         await walk(path);
       } else if (entry.isFile()) {
-        entries.push({ path });
+        entries.push({ path, directory: null });
       }
     }
   };
-  await walk(implementationRoot);
+  await ensureInstallRecordDirectory(root);
+  await walk(root);
   // Keep the v1 digest byte-identical: dependency metadata augments replay
   // validation without invalidating every existing library/executable entry.
   // Read bounded batches concurrently, then hash in the original sorted DFS
@@ -84,23 +173,24 @@ export async function compilerImplementationIdentity(
   for (let start = 0; start < entries.length; start += batchSize) {
     const batch = await Promise.all(
       entries.slice(start, start + batchSize).map(async (entry) => {
-        if (entry.directory !== undefined) return { ...entry, info: entry.directory, bytes: null };
-        const info = captureDependencies ? dependency(entry.path, await lstat(entry.path)) : null;
+        if (entry.directory !== null) return { ...entry, info: entry.directory, bytes: null };
+        const info = dependency(entry.path, await lstat(entry.path));
         return { ...entry, info, bytes: await readFile(entry.path) };
       }),
     );
     for (const entry of batch) {
       if (entry.info !== null) dependencies.push(entry.info);
       if (entry.bytes !== null) {
-        hash
-          .update(relative(implementationRoot, entry.path))
-          .update("\0")
-          .update(entry.bytes)
-          .update("\0");
+        hash.update(relative(root, entry.path)).update("\0").update(entry.bytes).update("\0");
       }
     }
   }
-  return { digest: hash.digest("hex"), dependencies };
+  const digest = hash.digest("hex");
+  await writeInstallDigest(root, digest, dependencies);
+  return {
+    digest,
+    dependencies: captureDependencies ? dependencies : [],
+  };
 }
 
 function validDependency(value: unknown): value is CompilerImplementationDependency {

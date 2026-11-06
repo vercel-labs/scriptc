@@ -102,7 +102,22 @@ function sameFileContent(
   return null;
 }
 
-function pathKind(path: string): Extract<FrontendInputProbe, { op: "kind" }>["kind"] {
+type FrontendPathKind = Extract<FrontendInputProbe, { op: "kind" }>["kind"];
+
+/** One file read this compile already performed: its text, the identity it
+ * was read with, and the content digest the probe recorded. */
+interface CachedRead {
+  text: string;
+  identity: string | null;
+  digest: string;
+}
+
+interface CachedListing {
+  files: string[];
+  directories: string[];
+}
+
+function pathKind(path: string): FrontendPathKind {
   try {
     const info = statSync(path);
     return info.isFile() ? "file" : info.isDirectory() ? "directory" : "other";
@@ -130,6 +145,25 @@ export class FrontendInputTracker {
   /** The digests `previous` recorded for files read with a settled identity. */
   private readonly known = new Map<string, { identity: string; digest: string }>();
 
+  /* One compile's view of the filesystem, keyed by resolved path. The
+   * frontend asks the same questions about the same few hundred thousand
+   * paths over and over — every load of an npm-static fixpoint resolves each
+   * import of every file again, and every resolution stats the same
+   * candidate list — and each answer is a syscall. A probe's first answer is
+   * kept here and served from memory afterwards.
+   *
+   * The compile is the cache's lifetime, so a change on disk between two
+   * probes of one path is not observed by re-reading it. That is sound
+   * because nothing but the compile itself writes while these probes run,
+   * and every such write drops the answers it invalidated (forget for one
+   * path, forgetAll for a directory tree); tracked filesystem helpers
+   * outside the compile have no tracker and are never cached. */
+  private readonly kinds = new Map<string, FrontendPathKind>();
+  private readonly reads = new Map<string, CachedRead | null>();
+  private readonly byteReads = new Map<string, Uint8Array | null>();
+  private readonly realpaths = new Map<string, string | null>();
+  private readonly listings = new Map<string, CachedListing | null>();
+
   /** `previous` is the snapshot of an earlier run whose cache entry is being
    * rebuilt: a file whose settled identity has not changed since then has the
    * content it hashed, so its digest is not computed again. */
@@ -143,6 +177,69 @@ export class FrontendInputTracker {
   knownDigest(path: string, identity: string): string | undefined {
     const known = this.known.get(path);
     return known?.identity === identity ? known.digest : undefined;
+  }
+
+  /** `undefined` when this compile has not classified `path` yet. */
+  kindFor(path: string): FrontendPathKind | undefined {
+    return this.kinds.get(path);
+  }
+
+  rememberKind(path: string, kind: FrontendPathKind): void {
+    this.kinds.set(path, kind);
+  }
+
+  /** `undefined` when this compile has not read `path` yet, `null` for a
+   * read that failed. */
+  readFor(path: string): CachedRead | null | undefined {
+    return this.reads.has(path) ? this.reads.get(path) : undefined;
+  }
+
+  rememberRead(path: string, read: CachedRead | null): void {
+    this.reads.set(path, read);
+  }
+
+  bytesFor(path: string): Uint8Array | null | undefined {
+    return this.byteReads.has(path) ? this.byteReads.get(path) : undefined;
+  }
+
+  rememberBytes(path: string, bytes: Uint8Array | null): void {
+    this.byteReads.set(path, bytes);
+  }
+
+  realpathFor(path: string): string | null | undefined {
+    return this.realpaths.has(path) ? this.realpaths.get(path) : undefined;
+  }
+
+  rememberRealpath(path: string, target: string | null): void {
+    this.realpaths.set(path, target);
+  }
+
+  listingFor(path: string): CachedListing | null | undefined {
+    return this.listings.has(path) ? this.listings.get(path) : undefined;
+  }
+
+  rememberListing(path: string, listing: CachedListing | null): void {
+    this.listings.set(path, listing);
+  }
+
+  /** Drops every answer cached for `path`, and its directory's listing when
+   * the path names that directory or an entry in it. */
+  forget(path: string): void {
+    this.kinds.delete(path);
+    this.reads.delete(path);
+    this.byteReads.delete(path);
+    this.realpaths.delete(path);
+    this.listings.delete(path);
+    this.listings.delete(dirname(path));
+  }
+
+  /** Drops every cached answer: the filesystem changed under this compile. */
+  forgetAll(): void {
+    this.kinds.clear();
+    this.reads.clear();
+    this.byteReads.clear();
+    this.realpaths.clear();
+    this.listings.clear();
   }
 
   run<T>(fn: () => T): T {
@@ -241,7 +338,39 @@ export class FrontendInputTracker {
 }
 
 function record(probe: FrontendInputProbe): void {
-  (synchronousTracker ?? activeTracker.getStore())?.record(probe);
+  activeFrontendTracker()?.record(probe);
+}
+
+/** The tracker this thread's frontend runs under, if any: the synchronous
+ * one the native frontend installs, else the async-context one. */
+function activeFrontendTracker(): FrontendInputTracker | undefined {
+  return synchronousTracker ?? activeTracker.getStore();
+}
+
+/** `path`'s kind, from this compile's answers when it already asked. */
+function kindOf(path: string, tracked: boolean): FrontendPathKind {
+  const tracker = activeFrontendTracker();
+  const cached = tracker?.kindFor(path);
+  if (cached !== undefined) return cached;
+  const kind = pathKind(path);
+  tracker?.rememberKind(path, kind);
+  if (tracked) record({ op: "kind", path, kind });
+  return kind;
+}
+
+/** Drops the running frontend's cached answer for `path` after the compile
+ * itself wrote it (a generated source, a cache file): the next probe reads
+ * the filesystem again. No-op outside a frontend run. */
+export function invalidateTrackedPath(path: string): void {
+  activeFrontendTracker()?.forget(resolve(path));
+}
+
+/** Drops every cached answer after the compile wrote files it may later probe.
+ * Prefer `invalidateTrackedPath`; this is for writers that do not know which
+ * paths they touched (a tarball extraction, a store compaction). No-op
+ * outside a frontend run. */
+export function invalidateTrackedFilesystem(): void {
+  activeFrontendTracker()?.forgetAll();
 }
 
 // Source text the frontend reads raw (call-site text in messages, comptime
@@ -264,7 +393,11 @@ export function markFrontendInputsUnstable(): void {
 const virtualSources = new Map<string, string>();
 
 export function setVirtualSource(path: string, text: string): void {
-  virtualSources.set(resolve(path), text);
+  path = resolve(path);
+  virtualSources.set(path, text);
+  // A virtual source answers for a path the compile may have probed as a
+  // real file (or as missing) before it was registered.
+  activeFrontendTracker()?.forget(path);
 }
 
 export function isVirtualSource(path: string): boolean {
@@ -272,6 +405,9 @@ export function isVirtualSource(path: string): boolean {
 }
 
 export function clearVirtualSources(): void {
+  // Each registration already dropped the real answer for its path, so a
+  // probe after this one asks the filesystem again; the compile's other
+  // answers are about paths the shadow never named.
   virtualSources.clear();
 }
 
@@ -279,18 +415,25 @@ export function trackedReadFile(path: string): string | null {
   path = resolve(path);
   const virtual = virtualSources.get(path);
   if (virtual !== undefined) return virtual;
+  const tracker = activeFrontendTracker();
+  const cached = tracker?.readFor(path);
+  // A read of a file that had changed too shortly before it has no identity,
+  // and a later read of the same bytes is what records one: the compile has
+  // to look again for that, so only reads whose identity stands for their
+  // content are served from here.
+  if (cached !== undefined && (cached === null || cached.identity !== null))
+    return cached === null ? null : cached.text;
   try {
     const { text, identity } = readWithIdentity(path);
-    const known =
-      identity === null
-        ? undefined
-        : (synchronousTracker ?? activeTracker.getStore())?.knownDigest(path, identity);
+    const known = identity === null ? undefined : tracker?.knownDigest(path, identity);
     const digest = known ?? frontendSourceDigest(text);
+    tracker?.rememberRead(path, { text, identity, digest });
     record(
       identity === null ? { op: "file", path, digest } : { op: "file", path, digest, identity },
     );
     return text;
   } catch {
+    tracker?.rememberRead(path, null);
     record({ op: "read-error", path });
     return null;
   }
@@ -301,11 +444,16 @@ export function trackedReadBytes(path: string): Uint8Array | null {
   path = resolve(path);
   const virtual = virtualSources.get(path);
   if (virtual !== undefined) return new TextEncoder().encode(virtual);
+  const tracker = activeFrontendTracker();
+  const cached = tracker?.bytesFor(path);
+  if (cached !== undefined) return cached;
   try {
     const bytes = new Uint8Array(readFileSync(path));
+    tracker?.rememberBytes(path, bytes);
     record({ op: "bytes", path, digest: createHash("sha256").update(bytes).digest("hex") });
     return bytes;
   } catch {
+    tracker?.rememberBytes(path, null);
     record({ op: "read-error", path });
     return null;
   }
@@ -314,35 +462,34 @@ export function trackedReadBytes(path: string): Uint8Array | null {
 export function trackedFileExists(path: string): boolean {
   path = resolve(path);
   if (virtualSources.has(path)) return true;
-  const kind = pathKind(path);
-  record({ op: "kind", path, kind });
-  return kind === "file";
+  return kindOf(path, true) === "file";
 }
 
 export function trackedDirectoryExists(path: string): boolean {
   path = resolve(path);
   if (virtualSources.has(path)) return false;
-  const kind = pathKind(path);
-  record({ op: "kind", path, kind });
-  return kind === "directory";
+  return kindOf(path, true) === "directory";
 }
 
 export function trackedExists(path: string): boolean {
   path = resolve(path);
   if (virtualSources.has(path)) return true;
-  const kind = pathKind(path);
-  record({ op: "kind", path, kind });
-  return kind !== "missing";
+  return kindOf(path, true) !== "missing";
 }
 
 export function trackedRealpath(path: string): string | null {
   path = resolve(path);
   if (virtualSources.has(path)) return path;
+  const tracker = activeFrontendTracker();
+  const cached = tracker?.realpathFor(path);
+  if (cached !== undefined) return cached;
   try {
     const target = systemRealpath(path);
+    tracker?.rememberRealpath(path, target);
     record({ op: "realpath", path, target });
     return target;
   } catch {
+    tracker?.rememberRealpath(path, null);
     record({ op: "realpath", path, target: null });
     return null;
   }
@@ -352,30 +499,45 @@ export function trackedAccessibleEntries(
   path: string,
 ): { files: string[]; directories: string[] } | null {
   path = resolve(path);
-  try {
-    const files: string[] = [];
-    const directories: string[] = [];
-    for (const entry of readdirSync(path, { withFileTypes: true })) {
-      const kind = entry.isSymbolicLink() ? pathKind(resolve(path, entry.name)) : null;
-      if (entry.isFile() || kind === "file") files.push(entry.name);
-      if (entry.isDirectory() || kind === "directory") directories.push(entry.name);
+  const tracker = activeFrontendTracker();
+  const cached = tracker?.listingFor(path);
+  let files: string[];
+  let directories: string[];
+  if (cached === undefined) {
+    try {
+      files = [];
+      directories = [];
+      for (const entry of readdirSync(path, { withFileTypes: true })) {
+        const kind = entry.isSymbolicLink() ? kindOf(resolve(path, entry.name), false) : null;
+        if (entry.isFile() || kind === "file") files.push(entry.name);
+        if (entry.isDirectory() || kind === "directory") directories.push(entry.name);
+      }
+      files.sort();
+      directories.sort();
+      record({ op: "entries", path, files: [...files], directories });
+      tracker?.rememberListing(path, { files: [...files], directories: [...directories] });
+    } catch {
+      // Enumeration can fail even while the path remains a directory. Preserve
+      // the failed operation itself so a permission/ACL repair invalidates the
+      // cached frontend rather than replaying only the unchanged path kind.
+      tracker?.rememberListing(path, null);
+      record({ op: "entries-error", path });
+      return null;
     }
-    files.sort();
-    directories.sort();
-    record({ op: "entries", path, files: [...files], directories });
-    for (const virtual of virtualSources.keys()) {
-      if (dirname(virtual) === path && !files.includes(basename(virtual)))
-        files.push(basename(virtual));
-    }
-    files.sort();
-    return { files, directories };
-  } catch {
-    // Enumeration can fail even while the path remains a directory. Preserve
-    // the failed operation itself so a permission/ACL repair invalidates the
-    // cached frontend rather than replaying only the unchanged path kind.
-    record({ op: "entries-error", path });
+  } else if (cached === null) {
     return null;
+  } else {
+    files = [...cached.files];
+    directories = [...cached.directories];
   }
+  // The shadow's sources are not part of the disk listing, so they are added
+  // to every answer, cached or fresh, and to the caller's own arrays.
+  for (const virtual of virtualSources.keys()) {
+    if (dirname(virtual) === path && !files.includes(basename(virtual)))
+      files.push(basename(virtual));
+  }
+  files.sort();
+  return { files, directories };
 }
 
 /** Re-run every recorded probe against the current filesystem. */

@@ -22,6 +22,7 @@ import { describe, expect, test } from "vitest";
 import ts5 from "typescript";
 import { compile } from "@scriptc/compiler";
 import { corpusSelect, shardSuffix } from "./shard.js";
+import { runStep, type Track } from "./step-timeout.js";
 import { oracleEnvKey } from "./oracle-env.js";
 import { libnodePack, requiresLibnode } from "./libnode.js";
 import { tscJsxOracleEntry, wantsTscJsx } from "./jsx-oracle.js";
@@ -236,6 +237,7 @@ async function runBinary(
   cmd: string,
   args: string[],
   env: Record<string, string> = {},
+  track?: Track,
 ): Promise<RunResult> {
   // Linux fork/exec race (observed on the sandbox lane, llvm flavor): a
   // sibling worker's fork can inherit the freshly-linked binary's write
@@ -252,6 +254,7 @@ async function runBinary(
       env: { ...process.env, ...env },
     });
     pending.child.stdin?.end();
+    track?.(pending.child);
     try {
       const { stdout, stderr } = await pending;
       return { stdout, stderr, exitCode: 0 };
@@ -366,7 +369,7 @@ function usesVolatileHostState(inputs: string[]): boolean {
   );
 }
 
-async function runNode(file: string): Promise<RunResult> {
+async function runNode(file: string, track?: Track): Promise<RunResult> {
   let cachePath: string | null = null;
   if (oracleDir !== null && !usesVolatileHostState(programInputs(file))) {
     const h = createHash("sha256").update(await oracleKeyBase());
@@ -404,7 +407,7 @@ async function runNode(file: string): Promise<RunResult> {
   // Node 24 strips types natively; the supported subset is erasable by
   // construction — except `// @transform-types` programs (namespaces),
   // which run under Node's transform mode.
-  const res = await runBinary("node", nodeOracleArgs(file), programEnv(file));
+  const res = await runBinary("node", nodeOracleArgs(file), programEnv(file), track);
   if (cachePath !== null) {
     try {
       const tmp = `${cachePath}.${process.pid}.${Math.random().toString(36).slice(2)}`;
@@ -425,7 +428,7 @@ async function runNode(file: string): Promise<RunResult> {
   return res;
 }
 
-async function compileAndRun(file: string): Promise<RunResult> {
+async function compileAndRun(rel: string, file: string): Promise<RunResult> {
   // Directory tests hash every sibling file so edits to imports bust the cache.
   const inputs = programInputs(file);
   const speed = wantsSpeed(file);
@@ -434,24 +437,31 @@ async function compileAndRun(file: string): Promise<RunResult> {
   const key = hash
     .update(sanitize ? "san" : "plain")
     .update(speed ? "speed" : "")
+    // Computed-access sites emit different code by default; an opt-out
+    // restores the key path, so the two builds key separately.
+    .update("index-arms:" + (process.env["SCRIPTC_DYN_INDEX_FASTPATH"] ?? "1"))
     .digest("hex")
     .slice(0, 16);
   const outDir = join(cacheDir, key);
   mkdirSync(outDir, { recursive: true });
-  const result = await compile(file, {
-    outPath: join(outDir, process.platform === "win32" ? "program.exe" : "program"),
-    outDir,
-    sanitize,
-    backend: "llvm",
-    ...(speed ? { optimization: "speed" as const } : {}),
-  });
+  const result = await runStep(`${rel}: compile`, () =>
+    compile(file, {
+      outPath: join(outDir, process.platform === "win32" ? "program.exe" : "program"),
+      outDir,
+      sanitize,
+      backend: "llvm",
+      ...(speed ? { optimization: "speed" as const } : {}),
+    }),
+  );
   if (!result.ok) {
     throw new Error(
       "corpus program failed to compile:\n" +
         result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"),
     );
   }
-  return runBinary(result.binaryPath, [], programEnv(file));
+  return runStep(`${rel}: run`, (track) =>
+    runBinary(result.binaryPath, [], programEnv(file), track),
+  );
 }
 
 describe(`differential corpus (${files.length} programs${sanitize ? ", sanitized" : ""}${shardSuffix()})`, () => {
@@ -463,12 +473,15 @@ describe(`differential corpus (${files.length} programs${sanitize ? ", sanitized
   test.for(files.map((f) => [f.slice(corpusDir.length + 1), f] as const))(
     "%s",
     { retry: 1 },
-    async ([, file], { skip }) => {
+    async ([rel, file], { skip }) => {
       // `// @requires-libnode`: the binary loads Node from a libnode pack,
       // required in the Linux CI lanes (libnode.ts), else skipped without one.
       if (requiresLibnode(file) && libnodePack() === null) skip();
       if (requiresIcu(file) && !icuAvailable()) skip();
-      const [nodeRes, nativeRes] = await Promise.all([runNode(file), compileAndRun(file)]);
+      const [nodeRes, nativeRes] = await Promise.all([
+        runStep(`${rel}: node oracle`, (track) => runNode(file, track)),
+        compileAndRun(rel, file),
+      ]);
       // Compare as bytes; decode only for the failure diff.
       if (!nodeRes.stdout.equals(nativeRes.stdout)) {
         expect(nativeRes.stdout.toString("utf8")).toBe(nodeRes.stdout.toString("utf8"));

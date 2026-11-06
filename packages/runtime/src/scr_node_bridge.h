@@ -284,7 +284,7 @@ typedef struct ScrNodeBridgeHost {
 
 typedef struct ScrNodeBridge {
   uint32_t abi;               /* SCR_NODE_BRIDGE_ABI */
-  const char *node_version;   /* the libnode it links: "24.22.0" */
+  const char *node_version;   /* the libnode it links: "24.22.1" */
   uint32_t module_version;    /* its NODE_MODULE_VERSION */
   /* Initializes Node once per process and runs `bootstrap` as the main
    * script of one environment. argv[0] names the executable. Every entry

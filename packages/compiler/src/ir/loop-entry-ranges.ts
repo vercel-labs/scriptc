@@ -7,6 +7,7 @@ import {
   type IntegerRangeFacts,
   type IntegerSlotFacts,
   type LoopEntryAssumptions,
+  NON_NEGATIVE_INT32_RANGE,
 } from "./integer-ranges.js";
 
 /** The range a versioned loop requires of each assumed local on entry. A
@@ -63,7 +64,7 @@ export function findLoopEntryVersions(
   );
   const known = (e: IrExpr): boolean => !!facts.ranges.get(e);
   // Keyed by the statement (a while or for loop).
-  let candidates = new Map<IrStmt, ReadonlyMap<string, IntegerRange>>();
+  const candidates = new Map<IrStmt, ReadonlyMap<string, IntegerRange>>();
   everyStmtList(fn.body, {
     expr: () => true,
     stmt: (s) => {
@@ -74,14 +75,55 @@ export function findLoopEntryVersions(
       return true;
     },
   });
-  if (candidates.size === 0) return result;
+  if (candidates.size > 0) versionLoops(fn, facts, slots, candidates, result, gainedOperands);
+  // A remainder-closed local (remainderClosedRange) whose reads carry no
+  // fact, or one wider than its remainder's range, is assumed in that range
+  // instead, together with the loop's other candidates: a linear
+  // congruential step such as `seed = (seed * 3877 + 29573) % 139968` is
+  // then exact in int32 with a non-negative dividend.
+  const narrowed = new Map<IrStmt, ReadonlyMap<string, IntegerRange>>();
+  everyStmtList(fn.body, {
+    expr: () => true,
+    stmt: (s) => {
+      if ((s.kind !== "while" && s.kind !== "for") || containsLoop(s.body) || result.has(s))
+        return true;
+      const entry = new Map(candidates.get(s) ?? []);
+      let changed = false;
+      for (const [id, closed] of remainderClosedLocals(s, eligible, facts)) {
+        entry.set(id, closed);
+        changed = true;
+      }
+      if (changed) narrowed.set(s, entry);
+      return true;
+    },
+  });
+  if (narrowed.size > 0)
+    versionLoops(fn, facts, slots, narrowed, result, (loop, known, versioned) => [
+      ...gainedOperands(loop, known, versioned),
+      ...narrowedDividends(loop, facts, versioned),
+    ]);
+  return result;
+}
+
+/** Versions the loops of `initial` whose assumed entry ranges give `roots`
+ * (the operands the version gains), into `result`. */
+function versionLoops(
+  fn: IrFunction,
+  facts: IntegerRangeFacts,
+  slots: IntegerSlotFacts,
+  initial: ReadonlyMap<IrStmt, ReadonlyMap<string, IntegerRange>>,
+  result: Map<IrStmt, LoopEntryVersion>,
+  roots: (loop: IrStmt, known: (e: IrExpr) => boolean, versioned: IntegerRangeFacts) => IrExpr[],
+): void {
+  const known = (e: IrExpr): boolean => !!facts.ranges.get(e);
+  let candidates = initial;
   let versioned = analyzeIntegerRangeFacts(fn, slots, assumptionsOf(candidates));
   const pruned = new Map<IrStmt, ReadonlyMap<string, IntegerRange>>();
   let dropped = false;
   for (const [loop, entry] of candidates) {
-    const roots = gainedOperands(loop, known, versioned);
-    if (roots.length === 0) continue;
-    const relevant = relevantLocals(loop, roots);
+    const gained = roots(loop, known, versioned);
+    if (gained.length === 0) continue;
+    const relevant = relevantLocals(loop, gained);
     const kept = new Map<string, IntegerRange>();
     for (const [id, range] of entry) if (relevant.has(id)) kept.set(id, range);
     if (kept.size < entry.size) dropped = true;
@@ -89,11 +131,11 @@ export function findLoopEntryVersions(
   }
   if (dropped) {
     candidates = pruned;
-    if (candidates.size === 0) return result;
+    if (candidates.size === 0) return;
     versioned = analyzeIntegerRangeFacts(fn, slots, assumptionsOf(candidates));
   }
   for (const [loop, entry] of candidates) {
-    if (gainedOperands(loop, known, versioned).length === 0) continue;
+    if (roots(loop, known, versioned).length === 0) continue;
     const ranges = new Map<IrExpr, IntegerRange>();
     const visit = (e: IrExpr): boolean => {
       const range = versioned.ranges.get(e);
@@ -106,7 +148,82 @@ export function findLoopEntryVersions(
     everyStmt(loop, { expr: visit, stmt: () => true });
     result.set(loop, { entry, ranges, loopRanges: versioned.loopRanges.get(loop) });
   }
+}
+
+/** The locals `loop` writes only as remainders by positive integer
+ * literals (at most 2^31) and reads without a fact within [0, m - 1], m the
+ * largest divisor: the values those writes give for non-negative
+ * dividends. A local the loop declares, or a for loop's initializer writes,
+ * holds no entry value to assume. */
+function remainderClosedLocals(
+  loop: IrStmt,
+  eligible: ReadonlySet<string>,
+  facts: IntegerRangeFacts,
+): Map<string, IntegerRange> {
+  const divisors = new Map<string, number>();
+  const open = new Set<string>();
+  const reads = new Map<string, IrExpr[]>();
+  everyStmt(loop, {
+    expr: (e) => {
+      if (e.kind === "assignExpr" || e.kind === "incDec") open.add(e.localId);
+      if (e.kind === "varRef") reads.set(e.localId, [...(reads.get(e.localId) ?? []), e]);
+      return true;
+    },
+    stmt: (s) => {
+      if (s.kind === "varDecl") open.add(s.localId);
+      else if (s.kind === "assign") {
+        const value = s.value;
+        const m =
+          value.kind === "bin" && value.op === "%" && value.right.kind === "numLit"
+            ? value.right.value
+            : NaN;
+        if (Number.isInteger(m) && m > 0 && m <= 2 ** 31)
+          divisors.set(s.localId, Math.max(divisors.get(s.localId) ?? 0, m));
+        else open.add(s.localId);
+      }
+      return true;
+    },
+  });
+  if (loop.kind === "for" && loop.init) for (const id of writtenIn(loop.init)) open.add(id);
+  const result = new Map<string, IntegerRange>();
+  for (const [id, m] of divisors) {
+    if (open.has(id) || !eligible.has(id)) continue;
+    const closed = { min: 0, max: m - 1 };
+    const narrower = (reads.get(id) ?? []).some((e) => {
+      const fact = facts.ranges.get(e);
+      return !fact || fact.min < closed.min || fact.max > closed.max;
+    });
+    if (narrower) result.set(id, closed);
+  }
   return result;
+}
+
+/** Dividends of the loop's remainders that the versioned analysis places
+ * in the non-negative int32 range where the function's own analysis does
+ * not: the remainder then runs as a 32-bit unsigned operation. */
+function narrowedDividends(
+  loop: IrStmt,
+  facts: IntegerRangeFacts,
+  versioned: IntegerRangeFacts,
+): IrExpr[] {
+  const operands: IrExpr[] = [];
+  const nonNegativeInt32 = (range: IntegerRange | null | undefined): boolean =>
+    !!range && range.min >= 0 && range.max <= NON_NEGATIVE_INT32_RANGE.max;
+  everyStmt(loop, {
+    expr: (e) => {
+      if (
+        e.kind === "bin" &&
+        e.op === "%" &&
+        !nonNegativeInt32(facts.ranges.get(e.left)) &&
+        nonNegativeInt32(versioned.ranges.get(e.left)) &&
+        !!versioned.ranges.get(e.right)
+      )
+        operands.push(e.left, e.right);
+      return true;
+    },
+    stmt: () => true,
+  });
+  return operands;
 }
 
 function assumptionsOf(

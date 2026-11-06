@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/js-function-name-inference.js"
+ ],
+ "diags": []
+}

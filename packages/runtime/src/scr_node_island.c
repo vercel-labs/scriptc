@@ -143,6 +143,7 @@ static char *ni_cstr_of(const char *bytes, size_t len) {
 }
 
 SCR_COLD static void ni_fatal(const char *message) {
+  scr_stdout_settle();
   fflush(stdout);
   fputs(message, stderr);
   fflush(stderr);
@@ -1254,6 +1255,7 @@ static void ni_stop_atexit(void) {
    * tests: acyclic island objects the program dropped are released). */
   const char *trace = getenv("SCRIPTC_NODE_ISLANDS_TRACE");
   if (trace != NULL && strcmp(trace, "handles") == 0) {
+    scr_stdout_settle();
     fflush(stdout);
     fprintf(stderr, "[node-islands] live handles %u\n", scr_ni_live_handles());
   }
@@ -1266,6 +1268,7 @@ static void ni_stop_atexit(void) {
     ScrNodeGcStats stats;
     memset(&stats, 0, sizeof stats);
     ni_bridge->gc_stats(&stats);
+    scr_stdout_settle();
     fflush(stdout);
     fprintf(stderr,
             "[node-islands] gc totals: major %llu, analyzed %llu, freed exports %llu, freed "
@@ -1380,6 +1383,7 @@ static void ni_start(void) {
   double since = scr_now_ms();
   const char *trace = getenv("SCRIPTC_NODE_ISLANDS_TRACE");
   if (trace != NULL && strstr(trace, "boot") != NULL) {
+    scr_stdout_settle();
     fflush(stdout);
     fprintf(stderr, "[node-islands] starting Node\n");
   }
@@ -1424,6 +1428,7 @@ static void ni_start(void) {
    * executable (libuv's exepath). */
   char argv0[] = "node";
   /* Flush first: Node writes to the same stdout. */
+  scr_stdout_settle();
   fflush(stdout);
   ni_bridge = bridge;
   ni_main_stack();

@@ -1,0 +1,8 @@
+js-const-reassignment.cjs:6:1 - error SC1090: assigning to a 'const' binding is not supported yet
+
+  5 | const answer = 42;
+  6 | answer = 43;
+    | ^~~~~~
+  7 | console.log(answer);
+
+  hint: Node throws a TypeError at the assignment (strict mode, and always in modules) (TypeScript reports TS2588 here.)

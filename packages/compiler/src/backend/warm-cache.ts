@@ -37,6 +37,7 @@ export async function warmNativeCaches(
         regex: false,
         copying: false,
         textDecoderLegacy: false,
+        bigintBytes: false,
         fileHandle: false,
         zlib: false,
         assert: false,

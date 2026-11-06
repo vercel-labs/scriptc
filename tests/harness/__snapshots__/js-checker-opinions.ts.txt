@@ -1,0 +1,27 @@
+js-checker-opinions.ts:7:14 - error SC0001: Left side of comma operator is unused and has no side effects.
+
+  6 |  * a value in a generator with no return-type annotation). */
+  7 | var comma = (1, 2);
+    |              ^
+  8 | var arithmetic = null + undefined;
+
+js-checker-opinions.ts:8:18 - error SC0001: The value 'null' cannot be used here.
+
+  7 | var comma = (1, 2);
+  8 | var arithmetic = null + undefined;
+    |                  ^~~~
+  9 | function* generator() {
+
+js-checker-opinions.ts:8:25 - error SC0001: The value 'undefined' cannot be used here.
+
+  7 | var comma = (1, 2);
+  8 | var arithmetic = null + undefined;
+    |                         ^~~~~~~~~
+  9 | function* generator() {
+
+js-checker-opinions.ts:10:14 - error SC0001: 'yield' expression implicitly results in an 'any' type because its containing generator lacks a return-type annotation.
+
+   9 | function* generator() {
+  10 |   var sent = yield 1;
+     |              ^~~~~
+  11 |   return sent;

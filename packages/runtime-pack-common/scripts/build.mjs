@@ -15,11 +15,12 @@ import {
   runtimeForbiddenStrings,
 } from "./artifact-policy.mjs";
 import { createDeterministicArchive } from "./archive.mjs";
-import { buildImportBitcode, buildRuntimeUnit, resolveRuntimeUnitHelper } from "./runtime-unit.mjs";
+import { buildRuntimeUnit, resolveRuntimeUnitHelper } from "./runtime-unit.mjs";
 import { installRuntimePack, withBuildLock } from "./build-state.mjs";
 import { shareIdenticalArtifacts } from "./share-artifacts.mjs";
 import { parallelMap } from "./parallel-map.mjs";
 import { zlibInputs } from "./zlib-inputs.mjs";
+import { zstdInputs } from "./zstd-inputs.mjs";
 import { ICU_DATA_FILE, ensurePackIcuData, ensureIcuSources, icuSourceList } from "./icu-data.mjs";
 
 const run = promisify(execFile);
@@ -113,6 +114,7 @@ async function build() {
   const zlib = join(vendorRoot, "zlib");
   const mbedtls = join(vendorRoot, "mbedtls");
   const brotli = join(vendorRoot, "brotli", "c");
+  const zstd = join(vendorRoot, "zstd", "lib");
   // ICU is fetched from its pinned release, not vendored (see icu-inputs.mjs),
   // and only a pack that ships it pays for the download.
   const icuSourceRoot = async () =>
@@ -120,6 +122,7 @@ async function build() {
   const qjsSources = ["dtoa.c", "libregexp.c", "libunicode.c", "quickjs.c"];
   const lreSources = ["libregexp.c", "libunicode.c"];
   const zlibBuild = zlibInputs(config.target.llvm_triple);
+  const zstdBuild = zstdInputs(config.target.llvm_triple);
   const sha256 = async (path) =>
     createHash("sha256")
       .update(await readFile(path))
@@ -141,8 +144,8 @@ async function build() {
     ]);
   };
   // Speed-flavor executable units are emitted through the host LLVM helper
-  // so their object and import bitcode come from one promoted module. The
-  // helper also reduces release units' bitcode to what programs can import.
+  // (runtime-unit.mjs), which promotes their local symbols and applies the
+  // runtime profile.
   const unitHelper =
     config.bitcode === false
       ? null
@@ -379,7 +382,7 @@ async function build() {
     const flavors = {};
     // The executable `speed` flavor (--optimization=speed) exists only when
     // it differs from release: its static units are emitted through the host
-    // LLVM helper with import bitcode.
+    // LLVM helper.
     const flavorPlan = [
       ...Object.entries(matrix.flavors),
       ...("release" in matrix.flavors && unitHelper !== null
@@ -432,6 +435,7 @@ async function build() {
                 ? ["-I", zlib]
                 : []),
               ...(unit.source === "scr_brotli.c" ? ["-I", join(brotli, "include")] : []),
+              ...(unit.source === "scr_zstd.c" ? ["-I", zstd] : []),
               // scr_intl.c includes ICU's C API headers straight from the
               // fetched release: the core ones in source/common/unicode/*.h,
               // and the format ones (udat.h, unumberformatter.h) in
@@ -463,8 +467,6 @@ async function build() {
               ...tlsFlags,
               ...includeFlags,
             ];
-            let bitcode;
-            const bitcodeOutput = output.replace(/\.o$/, ".bc");
             if (flavor === "speed") await mkdir(dirname(output), { recursive: true });
             let unitBuild = false;
             if (
@@ -489,7 +491,6 @@ async function build() {
                     ? ["--opt-level", "2"]
                     : (speedProfile?.args ?? []),
                 object: output,
-                bitcode: bitcodeOutput,
                 triple: matrix.target.llvm_triple,
                 tag: unit.source.replace(/\.c$/, ""),
                 sections:
@@ -500,40 +501,8 @@ async function build() {
             ) {
               if (unitBuild.profile !== undefined) profileMatches.push(unitBuild.profile);
               for (const name of unitBuild.functions ?? []) profiledFunctions.add(name);
-              bitcode = {
-                path: artifactPath(bitcodeOutput),
-                sha256: await sha256(bitcodeOutput),
-                size: (await stat(bitcodeOutput)).size,
-              };
             } else {
               await compile(join(runtimeSrc, unit.source), output, unitFlags);
-              if (
-                flavor === "release" &&
-                unitHelper !== null &&
-                (await buildImportBitcode({
-                  helper: unitHelper,
-                  compileBitcode: (optimized) =>
-                    run(compiler, [
-                      ...compilerArgs,
-                      ...sourcePathFlags,
-                      ...unitFlags,
-                      "-g0",
-                      "-emit-llvm",
-                      "-c",
-                      join(runtimeSrc, unit.source),
-                      "-o",
-                      optimized,
-                    ]),
-                  bitcode: bitcodeOutput,
-                  tag: unit.source.replace(/\.c$/, ""),
-                }))
-              ) {
-                bitcode = {
-                  path: artifactPath(bitcodeOutput),
-                  sha256: await sha256(bitcodeOutput),
-                  size: (await stat(bitcodeOutput)).size,
-                };
-              }
             }
             const built = {
               id: variant.id,
@@ -542,7 +511,6 @@ async function build() {
               path: artifactPath(output),
               sha256: await sha256(output),
               size: (await stat(output)).size,
-              ...(bitcode === undefined ? {} : { bitcode }),
             };
             variants.push(built);
           }
@@ -650,6 +618,20 @@ async function build() {
                   ]),
                 ]
               : []),
+            ...(requestedArchives.has("zstd")
+              ? [
+                  await archive("zstd", zstdBuild.sources, zstd, [
+                    ...vendorTarget,
+                    "-std=c11",
+                    "-O3",
+                    ...zstdBuild.defines.map((define) => `-D${define}`),
+                    ...zstdBuild.compileFlags,
+                    ...codeAlignment,
+                    "-I",
+                    zstd,
+                  ]),
+                ]
+              : []),
             ...(requestedArchives.has("icu") ? [await icuArchive()] : []),
             ...(requestedArchives.has("mbedtls")
               ? [
@@ -746,6 +728,7 @@ async function build() {
       [join(zlib, "LICENSE"), "artifacts/licenses/zlib.txt", "Zlib"],
       [join(zlib, "LICENSE.chromium"), "artifacts/licenses/zlib-chromium.txt", "BSD-3-Clause"],
       [join(vendorRoot, "brotli", "LICENSE"), "artifacts/licenses/brotli.txt", "MIT"],
+      [join(vendorRoot, "zstd", "LICENSE"), "artifacts/licenses/zstd.txt", "BSD-3-Clause"],
       [join(mbedtls, "LICENSE"), "artifacts/licenses/mbedtls.txt", "Apache-2.0"],
       // ICU's terms cover both the sources and the data file it ships; only a
       // pack that ships them carries its license.
@@ -788,7 +771,9 @@ async function build() {
           "SCR_STDIO_WRITE_SLOT",
           "SCR_NATIVE_REACTIONS",
           "SCR_HANDLE_CLASSES",
+          "SCR_WEB_BODIES",
           "SCR_YIN",
+          "SCR_CHILD_ERR_FIELDS",
           "SCR_NODE_ISLANDS",
         ],
         excluded: ["SCR_RC_AUDIT", "SCR_ASAN_FIBERS"],

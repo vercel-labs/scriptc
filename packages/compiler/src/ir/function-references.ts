@@ -15,15 +15,19 @@ export function exprFunctionReference(expr: IrExpr): string | undefined {
 export const FUNCTION_REFERENCE_KINDS = ["closure", "orDefault"] as const;
 
 /** Functions the module's metadata names: the entry, library exports,
- * closures' jsval entries, the class prototype helpers the runtime calls
- * and the record links' compose helpers the record walkers call. Class
- * methods and constructors follow the `%<class>.<method>` convention
- * instead of being named here; callers that need them derive them from
- * `mod.classes`. */
+ * closures' jsval entries, generic identity roots (an adopting instance's
+ * interned closure points at the root's, so the root is a value the module
+ * materializes), the class prototype helpers the runtime calls and the
+ * record links' compose helpers the record walkers call. Class methods and
+ * constructors follow the `%<class>.<method>` convention instead of being
+ * named here; callers that need them derive them from `mod.classes`. */
 export function moduleFunctionReferences(mod: IrModule): string[] {
   const names = [mod.entry];
   for (const entry of mod.lib?.exports ?? []) names.push(entry.fnName);
-  for (const fn of mod.functions) if (fn.jsEntry !== undefined) names.push(fn.jsEntry);
+  for (const fn of mod.functions) {
+    if (fn.jsEntry !== undefined) names.push(fn.jsEntry);
+    if (fn.identityRoot !== undefined) names.push(fn.identityRoot);
+  }
   for (const cls of mod.classes ?? []) {
     if (cls.prototypeDataHelper !== undefined) names.push(cls.prototypeDataHelper);
     if (cls.instancePrototypeHelper !== undefined) names.push(cls.instancePrototypeHelper);

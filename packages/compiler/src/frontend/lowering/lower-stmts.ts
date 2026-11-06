@@ -2240,6 +2240,11 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     // (predeclareForwardFnDecl) — its declaration and assignment are in
     // the list's output.
     if (lowerer.ctx.hoistedFnDecls.has(stmt)) return null;
+    // A generic `function` declaration inside a function compiles through
+    // the function-scoped generic machinery (nestedGenericFnInfoOf): its
+    // instances are module functions and the statement itself emits
+    // nothing, exactly like a generic arrow binding's declaration.
+    if (lowerer.nestedGenericFnInfoOf(stmt)) return null;
     return lowerer.lowerNestedFunctionDecl(stmt);
   }
   // Enum declarations: constant-member enums emit nothing (member reads

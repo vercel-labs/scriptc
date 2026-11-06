@@ -135,6 +135,7 @@ const FUNCTION_FIELDS: Record<StringFields<Omit<IrFunction, "body">>, Role> = {
   name: "other",
   sourceName: "other",
   jsEntry: "reference",
+  identityRoot: "reference",
   displayName: "other",
   asyncCacheGlobal: "other",
   asyncCycleCacheGlobal: "other",
@@ -302,6 +303,11 @@ const REFERENCE_FIXTURES: Record<string, () => IrModule> = {
   "functions[].jsEntry": () => {
     const mod = module();
     mod.functions.push({ ...entry(), name: "%m0.closure", captures: [], jsEntry: TARGET });
+    return mod;
+  },
+  "functions[].identityRoot": () => {
+    const mod = module();
+    mod.functions.push({ ...entry(), name: "%m0.instance", identityRoot: TARGET });
     return mod;
   },
   "classes[].prototypeDataHelper": () => ({

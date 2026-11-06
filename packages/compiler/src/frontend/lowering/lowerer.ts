@@ -1575,14 +1575,21 @@ function lowerToIrWithIslands(
     timing("whole-slot-relower", { reachable: wholeEmitted.reachable.size });
   }
   // Checked-dynamic async-iteration protocol slots (TypeMapperCtx.
-  // dynAsyncProtocol) are a per-program decision too: a program whose first
-  // pass met an AsyncIterable<T> / AsyncIterableIterator<T> / AsyncIterator<T>
+  // dynAsyncProtocol) are a per-program decision too: a program whose pass
+  // met an AsyncIterable<T> / AsyncIterableIterator<T> / AsyncIterator<T>
   // spelling (requiresDynAsyncProtocol) and still failed to lower lowers
   // again with them, and keeps that pass only when it resolves the program
-  // the generator spelling could not. A program that lowers on the first
-  // pass never gets here and keeps the pass above byte-identical.
-  const dynAsyncProtocol = resultLowerer.requiresDynAsyncProtocol;
-  if (dynAsyncProtocol && result.diagnostics.length > 0) {
+  // the generator spelling could not. A program that lowers without them
+  // never gets here and keeps its pass byte-identical. A stream program
+  // decides below, against the stream pass: that pass replaces this one's
+  // result outright, and a push-down pass that ended at its last stream
+  // flag has not seen the whole program's protocol spellings.
+  let dynAsyncProtocol = false;
+  if (
+    !generalNodeStreams &&
+    resultLowerer.requiresDynAsyncProtocol &&
+    result.diagnostics.length > 0
+  ) {
     const protocol = new Lowerer(program, entry, moduleOrder, {
       facts,
       frontendServices: options.frontendServices,
@@ -1613,6 +1620,7 @@ function lowerToIrWithIslands(
       reachable = protocolEmitted.reachable;
       result = protocolEmitted.result;
       resultLowerer = protocol;
+      dynAsyncProtocol = true;
     }
     timing("dyn-async-protocol-relower", { reachable: protocolEmitted.reachable.size });
   }
@@ -1620,7 +1628,7 @@ function lowerToIrWithIslands(
   // decision under the general representation: only a program that moves an
   // untyped value into a stream slot lowers again with them.
   let dynNodeStreams = reachableEmit.requiresDynNodeStreams;
-  const streamPass = (dyn: boolean): Lowerer => {
+  const streamPass = (dyn: boolean, asyncProtocol = false): Lowerer => {
     const general = new Lowerer(program, entry, moduleOrder, {
       facts,
       frontendServices: options.frontendServices,
@@ -1642,7 +1650,7 @@ function lowerToIrWithIslands(
       generalNodeStreams: true,
       ...(dyn ? { dynNodeStreams: true } : {}),
       ...(resultLowerer.wholeSlotDegradation ? { wholeSlotDegradation: true } : {}),
-      ...(dynAsyncProtocol ? { dynAsyncProtocol: true } : {}),
+      ...(asyncProtocol ? { dynAsyncProtocol: true } : {}),
     });
     for (const d of extraModuleCycleDiags) general.pushDiag(d);
     for (const d of ffiValidation.diagnostics) general.pushDiag(d);
@@ -1650,7 +1658,14 @@ function lowerToIrWithIslands(
     reachable = generalEmitted.reachable;
     result = generalEmitted.result;
     resultLowerer = general;
-    timing(dyn ? "dyn-streams-relower" : "general-streams-relower", { reachable: reachable.size });
+    timing(
+      asyncProtocol
+        ? "dyn-async-protocol-relower"
+        : dyn
+          ? "dyn-streams-relower"
+          : "general-streams-relower",
+      { reachable: reachable.size },
+    );
     return general;
   };
   if (generalNodeStreams) {
@@ -1658,6 +1673,20 @@ function lowerToIrWithIslands(
     if (!dynNodeStreams && general.requiresDynNodeStreams) {
       dynNodeStreams = true;
       streamPass(true);
+    }
+    // The protocol decision of a stream program, by the rule above: the
+    // stream pass met a protocol spelling and still failed, so the program
+    // lowers once more under the same stream representation with the
+    // protocol slots, and that pass stands only when it has fewer errors.
+    if (resultLowerer.requiresDynAsyncProtocol && result.diagnostics.length > 0) {
+      const kept = { reachable, result, resultLowerer, dynNodeStreams };
+      const protocol = streamPass(dynNodeStreams, true);
+      if (!dynNodeStreams && protocol.requiresDynNodeStreams) {
+        dynNodeStreams = true;
+        streamPass(true, true);
+      }
+      if (result.diagnostics.length < kept.result.diagnostics.length) dynAsyncProtocol = true;
+      else ({ reachable, result, resultLowerer, dynNodeStreams } = kept);
     }
   }
   // A generic class-rest support decision can depend on record metadata
@@ -1690,6 +1719,7 @@ function lowerToIrWithIslands(
       tierMode,
       runtimeOptionalReport,
       ...(resultLowerer.wholeSlotDegradation ? { wholeSlotDegradation: true } : {}),
+      ...(dynAsyncProtocol ? { dynAsyncProtocol: true } : {}),
     });
     for (const d of extraModuleCycleDiags) emit.pushDiag(d);
     for (const d of ffiValidation.diagnostics) emit.pushDiag(d);
@@ -1728,6 +1758,7 @@ function lowerToIrWithIslands(
       tierMode,
       runtimeOptionalReport,
       wholeSlotDegradation: true,
+      ...(dynAsyncProtocol ? { dynAsyncProtocol: true } : {}),
     });
     for (const d of extraModuleCycleDiags) whole.pushDiag(d);
     for (const d of ffiValidation.diagnostics) whole.pushDiag(d);

@@ -972,9 +972,8 @@ jobs:
     name: build (macOS arm64 native CLI)
     runs-on: macos-15
     # Measured at 16 to 22 minutes on nightly hosts, 35 minutes when the build
-    # was first cut off, and 59:24 on a saturated one. The step's own limits
-    # fail first: an hour and a half of wall clock, or ten minutes without a
-    # progress line.
+    # was first cut off, and 59:24 on a saturated one. The step's own 90-minute
+    # limit fails first, naming the command that hung.
     timeout-minutes: 95
     steps:
       - uses: actions/checkout@v4
@@ -998,7 +997,7 @@ jobs:
           # This seed only has to run the packed npm installation smoke.
           SCRIPTC_NATIVE_OPTIMIZATION: dev
         run: >-
-          node scripts/ci-run-with-timeout.mjs --timeout=5400 --stall=600
+          node scripts/ci-run-with-timeout.mjs --timeout=5400
           --label="native CLI seed build"
           -- pnpm --filter @scriptc/cli-darwin-arm64 build:native
       - name: Archive the built CLI

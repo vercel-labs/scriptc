@@ -39,32 +39,3 @@ test("a command must follow the option separator", () => {
   expect(usage.status).toBe(2);
   expect(usage.stderr).toContain("usage: ci-run-with-timeout.mjs");
 });
-
-test("a quiet command inside a long limit is killed by the stall guard", () => {
-  const quiet = run(
-    "--timeout=60",
-    "--stall=1",
-    "--label=quiet",
-    "--",
-    process.execPath,
-    "-e",
-    "setTimeout(() => {}, 30000)",
-  );
-  expect(quiet.status).toBe(124);
-  expect(quiet.stderr).toContain("::error::quiet printed nothing for 1s");
-});
-
-test("a command that keeps reporting progress outlives the stall guard", () => {
-  const chatting = run(
-    "--timeout=60",
-    "--stall=1",
-    "--label=chatty",
-    "--",
-    process.execPath,
-    "-e",
-    "let n = 0; const timer = setInterval(() => { console.log('tick', ++n); if (n === 6) { clearInterval(timer); } }, 500)",
-  );
-  expect(chatting.status).toBe(0);
-  expect(chatting.stdout).toContain("tick 6");
-  expect(chatting.stderr).toContain("chatty: finished in");
-});

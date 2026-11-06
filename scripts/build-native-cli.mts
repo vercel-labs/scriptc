@@ -234,8 +234,9 @@ if (strip && target.platform === "win32")
   rmSync(comptime.replace(/\.exe$/, ".pdb"), { force: true });
 report("lowering and emitting the compiler");
 // This phase prints nothing until it ends and takes the bulk of the build, so
-// a line a minute keeps a stalled build visible in the log timestamps instead
-// of looking like a slow one.
+// it reports elapsed time whenever it yields to the event loop: a log with
+// recent lines is a build that is working, and one with a long gap is at least
+// visibly silent.
 const result = await (async () => {
   const heartbeat = setInterval(() => report("still lowering and emitting the compiler"), 60_000);
   try {

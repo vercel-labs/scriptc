@@ -8274,8 +8274,10 @@ export function isModuleExportsAccess(expr: ts.Expression): expr is ts.PropertyA
  *             (obj is null when the RHS is not an object literal — the
  *             recognized-but-unsupported form, fenced by the caller);
  *   - member: `exports.f = <expr>` / `module.exports.f = <expr>`.
- * Null for everything else. Callers gate on top-level position in a JS
- * module file — these forms anywhere else keep their generic fences. */
+ * Null for everything else. A top-level `if (true)` or `if (false)` with
+ * one selected whole-export statement is equivalent to that statement;
+ * runtime-dependent conditions keep their refusal. Callers gate on the
+ * module's top-level position in a JavaScript file. */
 export function cjsExportAssignmentOf(stmt: ts.Statement):
   | {
       kind: "table";
@@ -8287,12 +8289,32 @@ export function cjsExportAssignmentOf(stmt: ts.Statement):
     }
   | { kind: "member"; name: ts.MemberName; value: ts.Expression; expr: ts.BinaryExpression }
   | null {
+  const conditional = ts.isIfStatement(stmt);
+  // A constant top-level branch has exactly one possible export assignment.
+  // Keep the ordinary conditional refusal for branches whose condition or
+  // selected body needs runtime evaluation or has multiple statements.
+  while (ts.isIfStatement(stmt)) {
+    let condition = stmt.expression;
+    while (ts.isParenthesizedExpression(condition)) condition = condition.expression;
+    const branch =
+      condition.kind === ts.SyntaxKind.TrueKeyword
+        ? stmt.thenStatement
+        : condition.kind === ts.SyntaxKind.FalseKeyword
+          ? stmt.elseStatement
+          : undefined;
+    if (branch === undefined) return null;
+    stmt =
+      ts.isBlock(branch) && branch.statements.nodes.length === 1
+        ? branch.statements.nodes[0]!
+        : branch;
+  }
   if (!ts.isExpressionStatement(stmt)) return null;
   const e = stmt.expression;
   if (!ts.isBinaryExpression(e) || e.operatorToken.kind !== ts.SyntaxKind.EqualsToken) return null;
   if (isModuleExportsAccess(e.left)) {
     return { kind: "table", obj: ts.isObjectLiteralExpression(e.right) ? e.right : null, expr: e };
   }
+  if (conditional) return null;
   if (ts.isIdentifier(e.left) && e.left.text === "exports") {
     let inner: ts.Expression = e.right;
     while (ts.isParenthesizedExpression(inner)) inner = inner.expression;

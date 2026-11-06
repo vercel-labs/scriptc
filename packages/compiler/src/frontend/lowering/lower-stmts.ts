@@ -1988,7 +1988,14 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     // A global-detection condition (static-typeof.ts) folds; its untaken
     // arm is code Node never runs and does not lower, unless it declares a
     // hoisted binding.
-    const decided = staticCondition(lowerer, test);
+    // A literal condition selecting one CommonJS whole export can discard
+    // its dead arm. staticCondition otherwise folds only detection guards.
+    const decided =
+      cond.kind === "boolLit" &&
+      ts.isSourceFile(stmt.parent) &&
+      cjsExportAssignmentOf(stmt) !== null
+        ? cond.value
+        : staticCondition(lowerer, test);
     if (decided !== null) {
       const taken = decided ? stmt.thenStatement : stmt.elseStatement;
       const untaken = decided ? stmt.elseStatement : stmt.thenStatement;
@@ -8779,7 +8786,8 @@ function unchangedAfterExport(
   return !fileWritesBinding(sym, exportFile, (ident) => lowerer.resolveValueSymbol(ident));
 }
 
-/** A top-level CommonJS export statement (see cjsExportAssignmentOf):
+/** A top-level CommonJS export statement, including a constant branch (see
+ * cjsExportAssignmentOf):
  * `exports.f = <expr>` and each expression-valued property of
  * `module.exports = { ... }` assign their pre-registered export globals
  * at this statement's source position (the `export default` shape);
@@ -8794,8 +8802,10 @@ function lowerCjsExportStatement(
   // Statements Node discards (a replaced export object) fence instead of
   // shipping tsc's answer — the checker models them as live exports.
   {
-    const stmt = cjs.expr.parent;
-    const discarded = ts.isExpressionStatement(stmt) ? cjsExportDiscardReason(stmt) : null;
+    let stmt = cjs.expr.parent;
+    while (stmt?.parent !== undefined && !ts.isSourceFile(stmt.parent)) stmt = stmt.parent;
+    const discarded =
+      stmt !== undefined && ts.isStatement(stmt) ? cjsExportDiscardReason(stmt) : null;
     if (discarded !== null) lowerer.unsupported("SC1090", cjs.expr, discarded);
   }
   const assignExport = (nameNode: ts.Node, value: ts.Expression, root?: IrGlobal): IrStmt => {
@@ -9283,11 +9293,28 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
   // Export assignments assign their pre-registered export globals
   // (collectGlobals); identifier/shorthand table properties are pure
   // alias plumbing and lower to nothing.
+  let topLevelStmt = stmtNode;
+  while (topLevelStmt !== undefined && !ts.isSourceFile(topLevelStmt.parent)) {
+    const parent = topLevelStmt.parent;
+    if (ts.isBlock(parent) && parent.statements.nodes.length === 1) {
+      topLevelStmt = parent;
+    } else if (
+      ts.isIfStatement(parent) &&
+      (parent.thenStatement === topLevelStmt || parent.elseStatement === topLevelStmt)
+    ) {
+      topLevelStmt = parent;
+    } else {
+      break;
+    }
+  }
   const topLevelJs =
     stmtNode !== undefined &&
     ts.isExpressionStatement(stmtNode) &&
-    ts.isSourceFile(stmtNode.parent) &&
-    isJsSourceFile(stmtNode.parent);
+    (ts.isSourceFile(stmtNode.parent) ||
+      (topLevelStmt !== undefined &&
+        ts.isSourceFile(topLevelStmt.parent) &&
+        cjsExportAssignmentOf(topLevelStmt as ts.Statement)?.expr === expr)) &&
+    isJsSourceFile(ts.getSourceFileOfNode(stmtNode));
   // createRequire's side-effect program-module form uses the same inline
   // run-once initializer as a CommonJS require statement. The expression
   // has no represented namespace value in statement position.

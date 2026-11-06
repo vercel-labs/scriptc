@@ -1,0 +1,9 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-constant-conditional-export/sleep.cjs",
+  "<repo>/tests/corpus/cjs-constant-conditional-export/fallback.cjs",
+  "<repo>/tests/corpus/cjs-constant-conditional-export/selected.cjs",
+  "<repo>/tests/corpus/cjs-constant-conditional-export/main.cjs"
+ ],
+ "diags": []
+}

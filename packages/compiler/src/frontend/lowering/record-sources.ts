@@ -380,10 +380,12 @@ export function deferSourceAwareArmRead(
 /** Settle the deferred answers (deferSourceAnswer) once the pass knows
  * whether the program keeps a record source. A program that does not keeps
  * every site's static answer, unchanged. One that does gets the source-aware
- * answer written into the site; when the receiver is pure that answer is an
- * ordinary inline expression, and a receiver that must be evaluated once is
- * passed to a `%record.in.<hash>(v)` helper that owns the local holding it
- * (the caller has no function context left to declare one). */
+ * answer written into the site: the site calls a `%record.in.<hash>(v)`
+ * helper that owns the receiver's single evaluation, and one helper serves
+ * every site asking the same question. The answers carry checked conversions
+ * of record types, and a program built from recursive types converts a large
+ * one, so an answer expanded into each site would multiply the module by the
+ * number of sites; the call keeps one copy of each answer. */
 export function finalizePendingSourceAnswers(
   lowerer: Lowerer,
   functions: readonly IrFunction[],
@@ -399,20 +401,6 @@ export function finalizePendingSourceAnswers(
   const replacements = new Map<IrExpr, IrExpr>();
   for (const site of sites) {
     const loc = site.node.loc;
-    // An answer that declares no local keeps its own receiver and is
-    // written into the site as it is: the common case, and the one that
-    // must cost a program nothing but the answer.
-    const inlineLocals: IrLocal[] = [];
-    const inlineDeclare: DeclareLocal = (name, type) => {
-      const local: IrLocal = { id: `${name}.0`, name, type, mutable: false };
-      inlineLocals.push(local);
-      return local;
-    };
-    const inline = site.build(() => site.recv, inlineDeclare);
-    if (inlineLocals.length === 0) {
-      replacements.set(site.node, inline);
-      continue;
-    }
     const name = keyedHelperName(lowerer, site.helperName ?? "%record.in", site.key);
     if (!built.has(name)) {
       built.add(name);

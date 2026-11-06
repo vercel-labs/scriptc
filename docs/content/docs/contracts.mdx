@@ -349,7 +349,7 @@ class Identifier extends SyntaxNode {
 }
 ```
 
-On Linux, except in builds with sanitizers, the instances also take less memory. An executable keeps them in one address range below 32 GiB that it reserves at startup (only the pages in use take memory), and a field typed `C`, `C | undefined` or `C | null`, where `C` is a program-lifetime class, stores the instance's address in 4 bytes instead of 8, as does each element of an array of such a type and each value of a `Map` with `string` keys and such a value type. In the example, `parent` takes 4 bytes.
+On Linux and macOS, except in builds with sanitizers, the instances also take less memory. An executable keeps them in one address range that it reserves at startup, below 32 GiB on Linux and from 1 TiB on macOS (only the pages in use take memory), and a field typed `C`, `C | undefined` or `C | null`, where `C` is a program-lifetime class, stores a reference to the instance in 4 bytes instead of an 8-byte address, as does each element of an array of such a type and each value of a `Map` with `string` keys and such a value type. In the example, `parent` takes 4 bytes.
 
 scriptc checks that the promise cannot change what the program computes (SC7008):
 

@@ -214,10 +214,13 @@ typedef enum {
   X(SEARCH_PARAMS, 33) /* live WHATWG URLSearchParams */ \
   X(SEGMENTER, 19) /* default Unicode grapheme segmentation */ \
   X(SEGMENTER_REFUSING, 80) /* word or sentence Segmenter whose segment() throws (scr_grapheme.c) */ \
+  X(SEGMENTER_WORD, 97) /* ICU word-granularity Segmenter (scr_intl.c) */ \
   X(SEGMENTS, 20) /* iterable immutable segmentation result */ \
+  X(SEGMENTS_WORD, 98) /* its word segmentation result (scr_intl.c) */ \
   X(SET, 25) /* native Set<unknown>, shared backing map */ \
   X(SHARED_ARRAY_BUFFER, 37) \
   X(SIGN, 67) /* node:crypto Sign (scr_pki.c) */ \
+  X(SPAWN_RES, 99) /* child_process spawnSync result (scr_child.c) */ \
   X(STDIO, 27) /* stable process stdin/stdout/stderr values */ \
   X(STRING_DECODER, 78) /* compiled StringDecoder record (scr_text_codec_dyn.c) */ \
   X(TEXT_DECODER, 76) /* compiled TextDecoder record (scr_text_codec_dyn.c) */ \
@@ -251,10 +254,9 @@ typedef enum {
   X(WS_WRITABLE, 95) /* WritableStream for checked-dynamic code (scr_webstreams.c) */ \
   X(WS_WRITER, 96) /* WritableStreamDefaultWriter (scr_webstreams.c) */
 
-/* Tags added since the last pin, by name only (see above). */
-#define SCR_DYNH_NEW_TAGS(Y) \
-  Y(SEGMENTER_WORD) /* ICU word-granularity Segmenter (scr_intl.c) */ \
-  Y(SEGMENTS_WORD) /* its word segmentation result (scr_intl.c) */
+/* Tags added since the last pin, by name only (see above). Every tag is
+ * pinned for now: the LLVM backend names each of them. */
+#define SCR_DYNH_NEW_TAGS(Y)
 
 /* Values below the largest pinned one that no tag holds, each with the
  * reason. Never reuse one without removing it here. */
@@ -1820,6 +1822,14 @@ bool scr_dyn_is_error_prototype(const ScrDyn *d);
  * non-object kinds throw Node's catchable TypeErrors (strict-mode
  * wording). All three operands BORROWED (the value is retained in). */
 void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value);
+/* A property DEFINITION (a member of a JavaScript object literal, dynObjLit):
+ * it creates or updates the own data property and never runs an inherited
+ * accessor, so a `__proto__` member is an ordinary own member instead of
+ * Object.prototype's prototype setter. A computed member coerces its key
+ * first (scr_dyn_key_define_computed). Every other key behaves as
+ * scr_dyn_key_set. All three operands BORROWED (the value is retained in). */
+void scr_dyn_key_define(ScrDyn *recv, ScrStr *key, ScrDyn *value);
+void scr_dyn_key_define_computed(ScrDyn *recv, ScrDyn *key, ScrDyn *value);
 /* The same in sloppy-mode code: an assignment strict mode refuses with a
  * TypeError is ignored. */
 void scr_dyn_key_set_sloppy(ScrDyn *recv, ScrStr *key, ScrDyn *value);
@@ -2106,6 +2116,13 @@ ScrDyn *scr_dyn_function_properties_existing(const ScrDyn *function);
 ScrDyn *scr_dyn_define_props(ScrDyn *target, ScrDyn *descs);
 /* The same, where each descriptor may be any object (scr_dyn_descriptor_snapshot). */
 ScrDyn *scr_dyn_define_props_shapes(ScrDyn *target, ScrDyn *descs);
+/* Object.defineProperties' read-and-convert half, for the entry points that
+ * define the properties themselves (the handle property table): an array of
+ * [key, descriptor] pairs (+1), every descriptor read and converted before
+ * any definition, or NULL with the exception pending. `read_any` admits
+ * descriptor objects of any shape (scr_dyn_descriptor_snapshot); NULL keeps
+ * the plain-object rule. */
+ScrDyn *scr_dyn_define_props_pending(ScrDyn *descs, ScrDyn *(*read_any)(const ScrDyn *descriptor));
 ScrDyn *scr_dyn_define_prototype_props(ScrDyn *target, ScrDyn *descs, ScrDyn *protected_keys);
 /* Boxes a closure as a callable dyn value. Ownership of `clo` MOVES in
  * (callers retain first when they keep their own reference); `sig`/`name`
@@ -2381,6 +2398,37 @@ typedef struct ScrDynHandleOps {
   ScrDyn *(*rejected)(void);
 } ScrDynHandleOps;
 
+/* The own-property tables of runtime handles (scr_dyn_handle_props.c),
+ * consulted by scr_json.c's JavaScript object model build (SCR_JS_OBJECT_MODEL).
+ * Each answers true when it handled the operation (its result in the out
+ * parameter; NULL results mean an exception is pending) and false to leave
+ * the handle to the ordinary path. NULL until the program's first
+ * handle.propsInstall. */
+typedef struct ScrDynHandlePropsHooks {
+  /* The handle's table (borrowed), or NULL when it has none. */
+  ScrDyn *(*table)(const ScrDyn *handle);
+  /* scr_dyn_handle_install: the ops to install for `tag` in place of
+   * `ops` (the wrapped ops when the tag has tables). */
+  const ScrDynHandleOps *(*install)(ScrDynHandleTag tag, const ScrDynHandleOps *ops);
+  /* The table a write of `key` lands in (borrowed, made on first use), or
+   * NULL when the write is not a table write (a modeled property, or a
+   * member key the slice refuses). */
+  ScrDyn *(*write_table)(ScrDyn *handle, const ScrStr *key);
+  bool (*in)(const ScrDyn *handle, const ScrStr *key, bool *out);
+  bool (*has_own)(const ScrDyn *handle, const ScrStr *key, bool enumerable_only, bool *out);
+  bool (*delete_key)(ScrDyn *handle, const ScrStr *key, bool strict);
+  bool (*own_descriptor)(ScrDyn *handle, ScrDyn *key, ScrDyn **out);
+  bool (*define)(ScrDyn *handle, ScrDyn *key, ScrDyn *descriptor, ScrDyn **out);
+  bool (*own_names)(const ScrDyn *handle, ScrDyn **out);
+  /* The ScrObjWalk modes private to scr_json.c: keys 0, values 1, entries 2. */
+  bool (*objwalk)(const ScrDyn *handle, int mode, ScrDyn **out);
+  bool (*for_in_keys)(const ScrDyn *handle, ScrDyn **out);
+  /* op: 0 preventExtensions, 1 seal, 2 freeze (out_value = the handle +1);
+   * 3 isExtensible, 4 isSealed, 5 isFrozen (out_bool). */
+  bool (*integrity)(ScrDyn *handle, int op, ScrDyn **out_value, bool *out_bool);
+} ScrDynHandlePropsHooks;
+extern SCR_TL const ScrDynHandlePropsHooks *scr_dyn_handle_props_hooks;
+
 /* ToPrimitive hints (scr_ni_to_primitive, Node island objects). */
 enum { SCR_DYN_HINT_DEFAULT = 0, SCR_DYN_HINT_NUMBER = 1, SCR_DYN_HINT_STRING = 2 };
 
@@ -2636,6 +2684,9 @@ ScrStr *scr_dyn_format_j(const ScrDyn *d);
  * exception stays pending and the result is NULL. */
 ScrStr *scr_util_format_j(const ScrDyn *d);
 ScrStr *scr_util_format_j_text(ScrStr *text); /* borrows text */
+/* util.format's %j over the value a toJSON hook returned, +1: the write
+ * step alone, so the hook does not run over its own result. */
+ScrStr *scr_util_format_j_value(const ScrDyn *d);
 /* Node's ERR_INVALID_ARG_TYPE listener gate over a dyn value — shared by
  * the emitter unit's checked-dynamic registrations and the handle
  * dispatchers' .on(...) paths (both render errors.js's

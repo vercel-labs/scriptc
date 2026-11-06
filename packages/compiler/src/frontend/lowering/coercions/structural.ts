@@ -926,7 +926,7 @@ export function classStaticsProjection(
     const found = findStaticOn(lowerer, info, tf.name);
     if (!found) {
       if (tf.type.kind !== "union") return null;
-      const u = lowerer.absentFieldValue(tf.type, loc);
+      const u = lowerer.absentFieldValue(tf, loc);
       if (!u) return null;
       fields.push({ name: tf.name, value: u });
       continue;
@@ -996,8 +996,13 @@ function buildRecordProjection(
           kind: "recordLit",
           fields: target.fields.map((field) => {
             const conversion = plan.get(field.name)!;
-            if ("absentDyn" in conversion)
-              return { name: field.name, value: dynUndefinedExpr(loc) };
+            if ("absentDyn" in conversion) {
+              // The source has no such property: an optional target field
+              // keeps the absent marker, a required one holds the dyn
+              // undefined (the options-record call shape's old behaviour).
+              const absent = lowerer.absentFieldValue(field, loc);
+              return { name: field.name, value: absent ?? dynUndefinedExpr(loc) };
+            }
             if ("absent" in conversion) {
               if (field.type.kind !== "union")
                 throw new InternalCompilerError(
@@ -1041,7 +1046,14 @@ function buildRecordProjection(
               name: field.name,
               value:
                 source.kind === "record"
-                  ? lowerer.presenceKeepingCopy(receiver, source.shapeId, field.name, lifted, loc)
+                  ? lowerer.presenceKeepingCopy(
+                      receiver,
+                      source.shapeId,
+                      field.name,
+                      lifted,
+                      loc,
+                      field,
+                    )
                   : lifted,
             };
           }),

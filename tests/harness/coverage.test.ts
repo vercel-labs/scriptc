@@ -137,7 +137,7 @@ test("conditional CommonJS exports still refuse replacements with a dynamic cond
 test("an earlier constant-branch export is not kept after a second whole-export replacement", () => {
   const { coverage } = analyze(fixture("cjs-conditional-replacements.cjs"));
   expect(coverage.runtimeFences?.map((d) => d.message)).toContain(
-    "multiple 'module.exports =' assignments (Node keeps only the last one — this table is discarded) is not supported yet",
+    "multiple 'module.exports =' assignments (Node keeps only the last one — this table is discarded) are not supported yet",
   );
 });
 

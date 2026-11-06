@@ -27,7 +27,7 @@ export function dynloadModuleSource(): string {
 const { createRequire, isBuiltin, registerHooks } = require("node:module");
 const { readFileSync, realpathSync, statSync } = require("node:fs");
 const { dirname, isAbsolute, join, relative, resolve, sep } = require("node:path");
-const { pathToFileURL } = require("node:url");
+const { fileURLToPath, pathToFileURL } = require("node:url");
 
 const root = resolve(__dirname, "..");
 const owned = new Set(require("./owned-modules.json"));
@@ -37,15 +37,50 @@ let callerDir = root;
 // require does. A hook registered later runs first (Node's chaining), and
 // the flag scopes the override to the require() calls load() makes.
 let loading = false;
+// The files this loader resolved outside the shipped tree, by URL. What such
+// a module requires in turn resolves as Node's require does as well, from
+// the module's own directory and whenever the require runs: a plugin's
+// "./helper" is its own file, during its first evaluation or in a function
+// called after load() returned.
+const external = new Set();
+
+function outsideTree(file) {
+  const inside = relative(root, file);
+  return inside === ".." || inside.startsWith(".." + sep) || isAbsolute(inside);
+}
+
+function resolved(url) {
+  try {
+    if (outsideTree(fileURLToPath(url))) external.add(url);
+  } catch {
+    /* not a file URL this platform can name: Node reports it at the load */
+  }
+  return { url, shortCircuit: true };
+}
+
+/* The directory a relative specifier resolves from: the requiring module's
+ * own, or the calling module's for the request load() itself makes. */
+function parentDir(context) {
+  try {
+    if (typeof context.parentURL === "string" && context.parentURL.startsWith("file:"))
+      return dirname(fileURLToPath(context.parentURL));
+  } catch {
+    /* fall through to the caller's directory */
+  }
+  return callerDir;
+}
+
 registerHooks({
   resolve(specifier, context, nextResolve) {
-    if (!loading) return nextResolve(specifier, context);
+    if (!loading && !external.has(context.parentURL)) return nextResolve(specifier, context);
     if (isBuiltin(specifier) || specifier.startsWith("node:"))
       return nextResolve(specifier, context);
-    if (specifier.startsWith("file:")) return { url: specifier, shortCircuit: true };
+    if (specifier.startsWith("file:")) return resolved(specifier);
     if (isAbsolute(specifier) || specifier.startsWith("./") || specifier.startsWith("../")) {
-      const file = probe(isAbsolute(specifier) ? specifier : resolve(callerDir, specifier));
-      return { url: pathToFileURL(file).href, shortCircuit: true };
+      const file = probe(
+        isAbsolute(specifier) ? specifier : resolve(parentDir(context), specifier),
+      );
+      return resolved(pathToFileURL(file).href);
     }
     // A bare name: the modules the program ships, as everywhere else.
     return nextResolve(specifier, context);

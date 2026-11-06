@@ -1027,6 +1027,12 @@ export interface LowerOptions {
    * diagnostics and stats under `unreached` — the whole-program analysis
    * builds deliberately gave up. */
   coverage?: boolean;
+  /** WP2-2: end a stream program's push-down pass as soon as both stream
+   * flags are set (default). `false` lowers that pass to the end, which is
+   * how the equivalence test compares the two pipelines. A unit store or
+   * coverage disables the abort regardless, because each reads the
+   * push-down pass itself. */
+  abortOnStreamFlags?: boolean;
   /** Coverage only: module files named by --wasm (absolute). */
   wasmFiles?: readonly string[];
   /** The platform the build TARGETS ("win32" under a windows cross triple,
@@ -1151,6 +1157,10 @@ export interface LowererMode {
    * dynamic, never to its pushed-down shape (lowerToIr's comparison
    * pass). */
   wholeSlotDegradation?: boolean;
+  /** WP2-2: end the pass as soon as both stream flags are set, because the
+   * stream pass replaces its result outright (lowerToIrWithIslands sets
+   * this on the push-down pass of a stream program). */
+  abortOnStreamFlags?: boolean;
   /** LowerOptions.externalTypes, threaded through every lowering pass. */
   externalTypes?: ReadonlyMap<string, string>;
   /** LowerOptions.externalTypeSpecifiersByFile, shared by every pass. */
@@ -1272,6 +1282,11 @@ function lowerShuffle(): ((wave: string[]) => void) | null {
 function emitSpecRoot(spec: EmitSpecRequest): string {
   return `%emit.${spec.info.def.name}.${spec.event}.${spec.ordinal}`;
 }
+
+/** WP2-2: a stream program's push-down pass ended at its last stream flag.
+ * The stream pass replaces its reachable set, result, diagnostics and
+ * Lowerer outright, so lowerToIrWithIslands keeps only the two flags. */
+class StreamFlagsAbort {}
 
 export function lowerToIr(
   program: ts.Program,
@@ -1403,6 +1418,15 @@ function lowerToIrWithIslands(
   // computed once here and shared (lowering-facts.ts); per-pass state stays
   // private to the pass.
   const facts = new LoweringFacts(program, moduleOrder, externalTypeSpecifiersByFile);
+  // WP2-2: the push-down pass of a stream program exists only to learn its
+  // two stream flags — the stream pass below replaces its reachable set,
+  // result, diagnostics and Lowerer outright. End it at the last flag. Not
+  // when a unit store records the pass's units for reuse, and not in
+  // coverage, whose analysis reads the push-down pass's reachable set.
+  const abortPushDown =
+    options.abortOnStreamFlags !== false &&
+    (options.unitStore ?? null) === null &&
+    options.coverage !== true;
   const validation = new Lowerer(program, entry, moduleOrder, {
     facts,
     frontendServices: options.frontendServices,
@@ -1418,6 +1442,7 @@ function lowerToIrWithIslands(
     workerTargets,
     externalTypes,
     externalTypeSpecifiersByFile,
+    abortOnStreamFlags: abortPushDown,
     tierMode,
     runtimeOptionalReport,
   });
@@ -1449,14 +1474,31 @@ function lowerToIrWithIslands(
           tierMode,
           runtimeOptionalReport,
           ffiBindingSymbols: ffiValidation.symbolsByName,
+          abortOnStreamFlags: abortPushDown,
         });
   for (const d of extraModuleCycleDiags) reachableEmit.pushDiag(d);
   for (const d of ffiValidation.diagnostics) reachableEmit.pushDiag(d);
-  const emitted = reachableEmit.emitReachable(options.libRoots, options.unitStore ?? null);
+  let pushDownAborted = false;
+  let emitted: { reachable: Set<string>; result: LowerResult };
+  try {
+    emitted = reachableEmit.emitReachable(options.libRoots, options.unitStore ?? null);
+  } catch (e) {
+    if (!(e instanceof StreamFlagsAbort)) throw e;
+    // Both flags are set, so the stream pass below replaces this pass's
+    // reachable set, result and Lowerer before any of them is read.
+    pushDownAborted = true;
+    emitted = {
+      reachable: new Set(),
+      result: { module: null, diagnostics: [], runtimeFences: [], stats: reachableEmit.stats },
+    };
+  }
   let { reachable } = emitted;
   let result = emitted.result;
   let resultLowerer = reachableEmit;
-  timing("reachable-emit", { reachable: reachable.size });
+  timing("reachable-emit", {
+    reachable: reachable.size,
+    ...(pushDownAborted ? { aborted: "stream-flags" } : {}),
+  });
   // The general stream representation (TypeMapperCtx.generalNodeStreams)
   // is a per-program decision: only a program whose reachable code moved
   // a general stream into a stdio-represented stream slot lowers again
@@ -1465,6 +1507,10 @@ function lowerToIrWithIslands(
   // whole-slot comparison runs after it for those programs (it would
   // otherwise pay for a result the stream pass throws away).
   const generalNodeStreams = reachableEmit.requiresGeneralNodeStreams;
+  if (pushDownAborted && !generalNodeStreams)
+    throw new InternalCompilerError(
+      "lowerer bug: a stream-flags abort without the general stream flag",
+    );
   // Localized failure (stage L3): push-down must never cost a failing
   // program more errors than the whole-slot checked dynamic. A pushed-down
   // type is baked into the globals, fields and signatures that hold it, so
@@ -3679,17 +3725,50 @@ export class Lowerer {
   /** Settled generic class-rest metadata requires the historical emit
    * fallback so its fence can poison the original statement atomically. */
   requiresHistoricalOrderRelower = false;
+  /** Storage of the requiresGeneralNodeStreams flag (journaled under that
+   * name; the accessor below raises the push-down abort). */
+  private generalNodeStreamsRequested = false;
+  /** Storage of the requiresDynNodeStreams flag (journaled under that
+   * name). */
+  private dynNodeStreamsRequested = false;
+  /** WP2-2: a push-down pass that may end at its last stream flag raised
+   * this (see abortOnStreamFlags). */
+  private streamFlagsAbortRequested = false;
+  /** WP2-2: this pass's result is replaced by the stream pass outright, so
+   * it ends as soon as both stream flags are set. Set only on the
+   * push-down pass, and only when no unit store records its units and
+   * coverage does not read its reachable set (lowerToIrWithIslands). */
+  readonly abortOnStreamFlags: boolean;
   /** A general stream value (a runtime stream class instance) reached a
    * slot the child/process stdio handles represent — NodeJS.ReadableStream,
    * NodeJS.WritableStream, or @types/node's stream.Readable/Writable — or
    * a stdio handle reached an 'unknown' slot. lowerToIr then lowers the
    * program again under the general stream representation. */
-  requiresGeneralNodeStreams = false;
+  get requiresGeneralNodeStreams(): boolean {
+    return this.generalNodeStreamsRequested;
+  }
+  set requiresGeneralNodeStreams(value: boolean) {
+    this.generalNodeStreamsRequested = value;
+    if (value && this.abortOnStreamFlags && this.dynNodeStreamsRequested)
+      this.streamFlagsAbortRequested = true;
+  }
   /** An untyped value reached a stream slot (a checked unwrap into a
    * runtime stream class, or an untyped pipe/pipeline stage). lowerToIr
    * then lowers the program again with checked-dynamic stream slots
    * (dyn-streams.ts). */
-  requiresDynNodeStreams = false;
+  get requiresDynNodeStreams(): boolean {
+    return this.dynNodeStreamsRequested;
+  }
+  set requiresDynNodeStreams(value: boolean) {
+    this.dynNodeStreamsRequested = value;
+    if (value && this.abortOnStreamFlags && this.generalNodeStreamsRequested)
+      this.streamFlagsAbortRequested = true;
+  }
+  /** Between units, and before the fixpoint: a pass whose result the
+   * stream pass will replace stops here once both flags are set. */
+  private checkStreamFlagsAbort(): void {
+    if (this.streamFlagsAbortRequested) throw new StreamFlagsAbort();
+  }
   /** Receiver representations forced by the per-value stream dispatch
    * (dyn-streams.ts): the native arm lowers a member call on the unboxed
    * stream through the ordinary class-method path. */
@@ -4933,6 +5012,13 @@ export class Lowerer {
     "ffiBindingSymbols",
     "priorRetriedSymbols",
     "wholeSlotDegradation",
+    "abortOnStreamFlags",
+    // Storage of the requiresGeneralNodeStreams / requiresDynNodeStreams
+    // flags, which are journaled under those names, and the abort request
+    // their setters raise (pass scratch).
+    "generalNodeStreamsRequested",
+    "dynNodeStreamsRequested",
+    "streamFlagsAbortRequested",
     "inferredCollectionTypes",
     "partialAssertions",
     "foreignElementKeys",
@@ -5505,6 +5591,7 @@ export class Lowerer {
         });
     this.priorRetriedSymbols = mode.retriedSymbols ?? new Set();
     this.wholeSlotDegradation = mode.wholeSlotDegradation ?? false;
+    this.abortOnStreamFlags = mode.abortOnStreamFlags === true;
     this.externalTypes = mode.externalTypes ?? new Map();
     this.ffiBindingSymbols = mode.ffiBindingSymbols ?? null;
     this.ffiImports = mode.ffiImports ?? [];
@@ -10760,6 +10847,23 @@ export class Lowerer {
     extraRoots?: readonly string[],
     unitStore: UnitStore | null = null,
   ): { reachable: Set<string>; result: LowerResult } {
+    try {
+      return this.emitReachablePass(extraRoots, unitStore);
+    } catch (e) {
+      if (!(e instanceof StreamFlagsAbort)) throw e;
+      // The pass unwound before it cleared the hooks it installed for the
+      // pass; the next pass must not observe this one's record literals or
+      // feed its edge sink.
+      observeRecordLiteralRebuilds(null);
+      this.onEdge = null;
+      throw e;
+    }
+  }
+
+  private emitReachablePass(
+    extraRoots?: readonly string[],
+    unitStore: UnitStore | null = null,
+  ): { reachable: Set<string>; result: LowerResult } {
     // Frontend passes below rewrite function bodies through the IR mapper
     // (caught-value and class dispatch); key-order notes follow the record
     // literals they rebuild until the witness pass has read them.
@@ -11150,6 +11254,7 @@ export class Lowerer {
             this.genericClassInstances.slice(clsInstLowered, waveEnd).flatMap(classMemberRoots),
           );
           while (clsInstLowered < waveEnd) {
+            this.checkStreamFlagsAbort();
             const info = this.genericClassInstances[clsInstLowered++]!;
             const owner = demandOwner();
             this.genericClassDemandOwner.set(info, owner);
@@ -11175,6 +11280,7 @@ export class Lowerer {
               .flatMap(({ info }) => functionRoots(info.decl)),
           );
           while (instLowered < waveEnd) {
+            this.checkStreamFlagsAbort();
             const { info, inst } = this.instantiationQueue[instLowered++]!;
             const owner = demandOwner();
             this.genericFunctionDemandOwner.set(inst, owner);
@@ -11219,6 +11325,7 @@ export class Lowerer {
               ),
           );
           while (specLowered < waveEnd) {
+            this.checkStreamFlagsAbort();
             try {
               const fn = this.shapes.withDeclaredOrderPriority([4, instanceMetadataOrder++], () => {
                 const spec = this.emitSpecQueue[specLowered++]!;
@@ -11248,6 +11355,7 @@ export class Lowerer {
       ]),
     ]);
     parts.forEach((fp, index) => {
+      this.checkStreamFlagsAbort();
       const priority = [2, index] as const;
       const owner = demandOwner(priority);
       initFunctions.push(
@@ -11358,6 +11466,7 @@ export class Lowerer {
       const held =
         host !== null && recorded !== null ? new HeldTables(host.tables, recorded) : null;
       while (queue.length > 0) {
+        this.checkStreamFlagsAbort();
         const wave = queue.splice(0);
         shuffle?.(wave);
         this.checker.prefetchRoots(wave.flatMap((name) => units.get(name)!.roots));
@@ -11373,6 +11482,7 @@ export class Lowerer {
           continue;
         }
         for (const name of wave) {
+          this.checkStreamFlagsAbort();
           // A body-level poison outside the per-statement catches (a fenced
           // constructor/method parameter default lowered by declareParams):
           // every edge fired before poisoning remains retained; the diagnostic
@@ -11404,6 +11514,7 @@ export class Lowerer {
         .sort(([left], [right]) => units.get(left)!.order - units.get(right)!.order)
         .map(([, fn]) => fn);
     for (;;) {
+      this.checkStreamFlagsAbort();
       drainInstances();
       const declared = unitsInOrder();
       const initializerChanged = this.deferredModuleInitializers.process(

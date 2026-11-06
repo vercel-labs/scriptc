@@ -1038,8 +1038,9 @@ jobs:
           # restores the cached libnode build, and names in $SCRIPTC_LIBNODE
           # otherwise. That other pack is CI's development fallback: it is
           # never published and records none of the release identity the
-          # prepack verification checks, so the smoke test packs it from a
-          # copy without that one script (its tarballs are checksum-verified
+          # prepack verification and an installed pack's check read, so the
+          # smoke test packs it from a copy that drops that one script and
+          # completes the identity (its tarballs are checksum-verified
           # against dev-pack.json as it assembles them).
           if [ "$SCRIPTC_LIBNODE" != "$PWD/packages/libnode-darwin-arm64" ]; then
             cp -R "$SCRIPTC_LIBNODE/." packages/libnode-darwin-arm64/

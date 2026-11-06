@@ -9,7 +9,9 @@
  * The pack directory is packed as a release packs it, except when it holds
  * CI's development fallback: that pack is never published and records no
  * release identity, so its packing copy omits the release-only prepack
- * verification instead of failing it. */
+ * verification instead of failing it and completes the identity an installed
+ * pack is checked for. The program's own package, @scriptc/node, installs
+ * beside the CLI in both projects, as a user installs it. */
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -18,6 +20,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   isReleasePackManifest,
+  withReleasePackIdentity,
   withoutReleasePrepack,
 } from "../packages/libnode-common/scripts/pin.mjs";
 
@@ -73,10 +76,11 @@ function pack(directory) {
 }
 
 /** The directory to pack: the pack directory itself when it holds a release
- * pack, or a copy whose package.json drops the release-only prepack
- * verification when it holds CI's development fallback. That fallback is
- * never published and records no release identity for the verification to
- * check (packages/libnode-common/scripts/pin.mjs). */
+ * pack, or a copy when it holds CI's development fallback. That fallback is
+ * never published and records none of the release identity (package, version,
+ * target) a build checks an installed pack for, so the copy drops the
+ * release-only prepack verification and completes the identity from the
+ * package (packages/libnode-common/scripts/pin.mjs). */
 function packableDirectory(directory) {
   const manifestPath = join(directory, "manifest.json");
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
@@ -87,6 +91,10 @@ function packableDirectory(directory) {
   writeFileSync(
     join(copy, "package.json"),
     `${JSON.stringify(withoutReleasePrepack(packageJson), null, 2)}\n`,
+  );
+  writeFileSync(
+    join(copy, "manifest.json"),
+    `${JSON.stringify(withReleasePackIdentity(manifest, packageJson), null, 2)}\n`,
   );
   return { directory: copy, development: true };
 }
@@ -128,11 +136,13 @@ try {
     join(repository, "packages", name.replace("@scriptc/", "")),
   );
   // The set the packed npm installation smoke installs, so the CLI is the one
-  // a user gets, not a workspace path.
+  // a user gets, not a workspace path. The program imports @scriptc/node,
+  // which a user installs beside the CLI, so both projects carry it.
   const tarballs = [
     join(repository, "packages/runtime"),
     ...platformPackages,
     join(repository, "packages/compiler"),
+    join(repository, "packages/node"),
     cliDirectory,
     join(repository, "packages/cli"),
   ].map(pack);

@@ -12,6 +12,7 @@ import {
   packFileNames,
   readPin,
   repoRoot,
+  withReleasePackIdentity,
   withoutReleasePrepack,
 } from "../scripts/pin.mjs";
 import { expectedTranscript } from "../scripts/smoke.mjs";
@@ -139,6 +140,44 @@ describe("pack identity", () => {
 
   test("packing a package with no scripts works", () => {
     expect(withoutReleasePrepack({ name: "x" })).toEqual({ name: "x", scripts: {} });
+  });
+
+  test("packing the fallback completes the identity an installed pack is checked for", () => {
+    // The build checks an installed pack's package and version
+    // (packages/compiler/src/node-islands/libnode.ts). The fallback records
+    // neither, so its packing copy takes the package's name and version and
+    // the platform its name ends in.
+    const packageJson = { name: "@scriptc/libnode-darwin-arm64", version: "0.1.0" };
+    const completed = withReleasePackIdentity(
+      {
+        schema: LIBNODE_PACK_SCHEMA,
+        nodeVersion: "24.22.0",
+        moduleVersion: 137,
+        bridgeAbi: bridgeAbi(),
+        platform: "darwin",
+        arch: "arm64",
+        libnode: "libnode.137.dylib",
+        bridge: "libscr_node_bridge.dylib",
+        files: {},
+      },
+      packageJson,
+    );
+    expect(completed.package).toBe("@scriptc/libnode-darwin-arm64");
+    expect(completed.version).toBe("0.1.0");
+    expect(completed.target).toBe("darwin-arm64");
+    expect(isReleasePackManifest(completed)).toBe(true);
+  });
+
+  test("a release manifest keeps the identity it records", () => {
+    const manifest = {
+      schema: LIBNODE_PACK_SCHEMA,
+      platform: "darwin",
+      arch: "arm64",
+      package: "@scriptc/libnode-darwin-arm64",
+      version: "0.2.0",
+      target: "darwin-arm64",
+    };
+    expect(withReleasePackIdentity(manifest, { name: "x", version: "9.9.9" })).toEqual(manifest);
   });
 });
 

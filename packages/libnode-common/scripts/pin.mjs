@@ -105,6 +105,26 @@ export function withoutReleasePrepack(packageJson) {
   return copy;
 }
 
+/** The manifest a development pack is packed with: the release identity the
+ * published pack records completed from the package (its name and version,
+ * and the platform its name ends in). A build that installs a pack checks
+ * that identity (packages/compiler/src/node-islands/libnode.ts), so the
+ * stand-in for the published package carries it; fields the manifest already
+ * records win. */
+export function withReleasePackIdentity(manifest, packageJson) {
+  const prefix = "@scriptc/libnode-";
+  return {
+    ...manifest,
+    package: manifest?.package ?? packageJson.name,
+    version: manifest?.version ?? packageJson.version,
+    target:
+      manifest?.target ??
+      (packageJson.name.startsWith(prefix)
+        ? packageJson.name.slice(prefix.length)
+        : `${manifest.platform}-${manifest.arch}`),
+  };
+}
+
 function sha256(text) {
   return createHash("sha256").update(text).digest("hex");
 }

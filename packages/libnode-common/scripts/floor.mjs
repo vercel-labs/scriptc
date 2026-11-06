@@ -29,13 +29,14 @@ import { expectedTranscript } from "./smoke.mjs";
  * RHEL 9: glibc 2.34, and the system libstdc++ from its GCC 11. */
 export const FLOOR_IMAGE = "almalinux:9";
 
-/** The shell the container runs. It prints the runtime it provides to
- * stderr, fails on any C++ runtime dependency of the pack's libraries, then
+/** The shell the container runs. It installs the compiler with its output on
+ * stderr (dnf writes its "Installed:" summary to stdout even with --quiet),
+ * prints the runtime it provides to stderr, fails on any C++ runtime dependency of the pack's libraries, then
  * loads the pack and writes the smoke transcript to stdout. */
 export function floorScript(names) {
   return [
     "set -eu",
-    "dnf install --assumeyes --quiet gcc",
+    "dnf install --assumeyes --quiet gcc >&2",
     "printf 'floor: glibc %s\\n' \"$(getconf GNU_LIBC_VERSION | cut -d' ' -f2)\" >&2",
     "if [ -e /usr/lib64/libstdc++.so.6 ]; then",
     "  printf 'floor: system libstdc++ %s\\n' \\",

@@ -43,6 +43,7 @@ import type { Lowerer } from "./lowerer.js";
 import { boundIdentifiersOf } from "./lowerer.js";
 import { NODE_GLOBALS_WITHOUT_NATIVE } from "./host-globals.js";
 import { isIslandImportBinding } from "./lower-node-island.js";
+import { funduleFunctionOf, funduleMemberOf } from "./lower-fundule.js";
 import type { FileParts } from "./lower-modules.js";
 import { isCjsJsFile, isJsSourceFile, locOf, resolveImport } from "../program.js";
 import { F64, type IrExpr, type IrStmt, type IrType, STRING } from "../../ir/ir.js";
@@ -134,7 +135,21 @@ export function collectNamespaceStmt(
   while (body !== undefined && ts.isModuleDeclaration(body)) body = body.body;
   if (body === undefined || !ts.isModuleBlock(body)) return; // bodyless non-ambient: tsc-rejected
   lowerer.nsBlocks.set(body, "flattened");
+  // `function N() {}` merged with `namespace N { ... }`: one value, and the
+  // block's EXPORTED members are that function object's own properties
+  // (lower-fundule.ts). Its members register in the merge registry instead
+  // of as module globals — and every exported member form this lowering
+  // cannot put on the object is refused by name rather than silently
+  // reading a module global Node does not have.
+  const mergedFn = funduleFunctionOf(lowerer, decl);
   for (const s of body.statements.nodes) {
+    if (
+      mergedFn !== null &&
+      (ts.getCombinedModifierFlags(s as ts.Declaration) & ts.ModifierFlags.Export) !== 0
+    ) {
+      collectFunduleMember(lowerer, mergedFn, s, fp);
+      continue;
+    }
     if (ts.isFunctionDeclaration(s)) fp.fnDecls.push(s);
     else if (ts.isClassDeclaration(s)) fp.classDecls.push(s);
     else if (ts.isInterfaceDeclaration(s) || ts.isTypeAliasDeclaration(s)) continue;
@@ -144,6 +159,69 @@ export function collectNamespaceStmt(
     // runs in the init body at its source position.
     else fp.topStmts.push(s);
   }
+}
+
+/** One EXPORTED member of a function+namespace merge: a table entry on the
+ * function object (lower-fundule.ts). Only the forms whose value this
+ * lowering can put there are collected — an exported const/let/var with an
+ * initializer, and an exported function. */
+function collectFunduleMember(
+  lowerer: Lowerer,
+  fn: ts.Identifier,
+  stmt: ts.Statement,
+  fp: FileParts,
+): void {
+  const register = (name: ts.Identifier): void => {
+    const sym = lowerer.checker.getSymbolAtLocation(name);
+    if (sym !== undefined) lowerer.funduleMembers.set(sym, { fn, key: name.text });
+  };
+  if (ts.isFunctionDeclaration(stmt) && stmt.name !== undefined) {
+    fp.fnDecls.push(stmt);
+    register(stmt.name);
+    const sf = ts.getSourceFileOfNode(stmt);
+    const list = lowerer.funduleFnStores.get(sf);
+    if (list === undefined) lowerer.funduleFnStores.set(sf, [stmt]);
+    else list.push(stmt);
+    return;
+  }
+  if (ts.isVariableStatement(stmt)) {
+    for (const decl of stmt.declarationList.declarations.nodes) {
+      if (!ts.isIdentifier(decl.name)) {
+        lowerer.unsupported(
+          "SC1090",
+          decl.name,
+          `a destructuring member of the function+namespace merge '${fn.text}'`,
+          "a merged namespace's exported members are own properties of the function object; declare them one per name (export const a = …, export const b = …)",
+        );
+      }
+      if (decl.initializer === undefined) {
+        lowerer.unsupported(
+          "SC1090",
+          decl,
+          `an exported binding without an initializer in the function+namespace merge '${fn.text}'`,
+          "Node's transform emits no property for an exported binding without an initializer; give it one (export const x = …) or move the binding out of the merged namespace",
+        );
+      }
+      register(decl.name);
+    }
+    fp.topStmts.push(stmt);
+    return;
+  }
+  const kind = ts.isClassDeclaration(stmt)
+    ? "class"
+    : ts.isEnumDeclaration(stmt)
+      ? "enum"
+      : ts.isModuleDeclaration(stmt)
+        ? "nested namespace"
+        : ts.isImportEqualsDeclaration(stmt)
+          ? "import= alias"
+          : "declaration";
+  lowerer.unsupported(
+    "SC1090",
+    stmt,
+    `an exported ${kind} in the function+namespace merge '${fn.text}'`,
+    "a merged namespace's exported members are own properties of the function object; this lowering writes exported const/let/var members with an initializer and exported functions there",
+  );
 }
 
 function registerTypeOnlyBlocks(lowerer: Lowerer, decl: ts.ModuleDeclaration): void {
@@ -938,6 +1016,11 @@ export function nsWritableTarget(
 ): { id: string; type: IrType } | null {
   const nsMember = nsMemberIdentOf(lowerer, access);
   if (!nsMember) return null;
+  // A member of a function+namespace merge is an own property of the
+  // function object: `N.x = v` is a callable-member table write, which the
+  // write lowering reaches through its callable target (lower-fundule.ts).
+  // Declining here keeps the module-global machinery out of it.
+  if (funduleMemberOf(lowerer, lowerer.checker.getSymbolAtLocation(nsMember)) !== null) return null;
   const memberSym = lowerer.checker.getSymbolAtLocation(nsMember);
   // An export read through a module namespace object (`import * as ns`):
   // the object is read-only, and Node's assignment throws a TypeError.

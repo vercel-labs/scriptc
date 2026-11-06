@@ -803,6 +803,7 @@ import {
   rejectThisInObjectMethod,
 } from "./expressions/object-literals.js";
 import type { ExpandoMembers } from "./lower-expando.js";
+import { funduleMemberOf, type FunduleMember } from "./lower-fundule.js";
 import { lowerRecordFieldCall, lowerObjectMethodCall } from "./lower-calls.js";
 import { fenceCrossBlockNsRef, nsPathPrefix } from "./lower-namespaces.js";
 import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
@@ -4087,6 +4088,15 @@ export class Lowerer {
    * still resolved statically). Ambient blocks never register — their
    * members keep the ReferenceError/fence paths (lower-namespaces.ts). */
   readonly nsBlocks = new Map<ts.Node, "flattened" | "typeOnly">();
+  /** Exported members of function+namespace merges, by member symbol: their
+   * storage is the merged function's own-property table, not a module
+   * global (lower-fundule.ts). Filled by splitFiles. */
+  readonly funduleMembers = new Map<ts.Symbol, FunduleMember>();
+  /** File → the exported FUNCTION members of its merged namespace blocks,
+   * whose property assignment runs at the declaration's source position
+   * (`fmt.helper = helper`) — lowerFileInit's init body interleaves them
+   * by position (lower-fundule.ts). */
+  readonly funduleFnStores = new Map<ts.SourceFile, ts.FunctionDeclaration[]>();
   /** File → its %init function name, filled by prepareModuleInits before
    * any body lowers: import headers and inline require statements call
    * dependency inits by these names. */
@@ -6782,6 +6792,19 @@ export class Lowerer {
     if (local) return local;
     const g = this.globalOf(ident);
     if (g) return g;
+    // A BARE write to an exported member of a function+namespace merge
+    // (lower-fundule.ts): Node's transform qualifies the reference, so it
+    // is a property write on the function object — which this compiler
+    // models through the qualified spelling.
+    const merged = funduleMemberOf(this, this.resolveValueSymbol(ident));
+    if (merged !== null) {
+      this.unsupported(
+        "SC1090",
+        ident,
+        `assignment to '${ident.text}' by its bare name inside the function+namespace merge '${merged.fn.text}'`,
+        `the member is a property of the function object; write ${merged.fn.text}.${ident.text}`,
+      );
+    }
     return null;
   }
 

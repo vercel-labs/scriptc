@@ -35,10 +35,11 @@
  * protocol lowering it has always had).
  *
  * The members a function carries because a NAMESPACE of the same name is
- * merged into it are still stored elsewhere: the namespace lowering's
- * flattened module globals own those names, so their reads, writes and
- * calls resolve by member symbol as before and only `Object.keys`/inspect
- * of such a function do not list them. */
+ * merged into it are table entries too: the merged block writes each
+ * exported member onto the function object at the member's source position,
+ * and reads, writes, `in` and `delete` go through the same keyed operations
+ * (lower-fundule.ts). A namespace that does NOT merge with a function keeps
+ * its flattened module globals — those are a different value. */
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { DYN, type IrExpr, type IrType } from "../../ir/ir.js";

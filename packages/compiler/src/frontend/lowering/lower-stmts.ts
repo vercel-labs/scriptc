@@ -211,6 +211,7 @@ import {
   trapDeclRootOf,
 } from "./lower-namespaces.js";
 import { fenceReadonlyExpandoWrite } from "./lower-expando.js";
+import { lowerFunduleMemberDecl } from "./lower-fundule.js";
 import {
   type ForOfIterProjection,
   lowerForOfArrayIter,
@@ -2290,6 +2291,11 @@ function lowerVarDeclarator(
   isConst: boolean,
   isLet: boolean,
 ): IrStmt[] {
+  // An EXPORTED member of a function+namespace merge: its value is an own
+  // property of the merged function object, written here at its source
+  // position (lower-fundule.ts) — no module global exists for it.
+  const funduleStore = lowerFunduleMemberDecl(lowerer, decl);
+  if (funduleStore !== null) return funduleStore;
   // `var m; m = require("./x")`: the declaration is alias plumbing; the
   // assignment owns the module's run-once %init (cjs-inline-require.ts).
   // A read that code before the assignment can reach keeps Node's hoisted

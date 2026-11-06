@@ -588,6 +588,9 @@ export function describeRecordWidthBlocker(
         }
         return `field '${tf.name}': '${lowerer.fmt(sf.type)}' does not lift into '${lowerer.fmt(tf.type)}'`;
       }
+      // An optional checked-dynamic slot has an ABSENT state, so a source
+      // that never declares it still produces the right property surface.
+      if (tf.optional === true) continue;
       if (tf.type.kind !== "union" || lowerer.armTag(tf.type.unionId, UNDEFINED_T) < 0) {
         return `the expected field '${tf.name}' is required and the source has no field to copy into it`;
       }

@@ -1544,6 +1544,8 @@ struct ScrChild {
   ScrStr *exec_display;
   ScrStr *exec_file; /* the spawned file and its arguments (+1 each), for */
   ScrArr *exec_args; /* a spawn failure's path and spawnargs */
+  ScrStr *spawnfile; /* ChildProcess.spawnfile: the file that was spawned */
+  ScrArr *spawnargs; /* ChildProcess.spawnargs: the file followed by its arguments */
   void (*exec_props)(struct ScrChild *c, ScrError *error); /* Node's error properties */
   ScrChildStream *out_stream;
   ScrChildStream *err_stream;
@@ -1604,6 +1606,8 @@ void scr_child_release(ScrChild *c) {
     scr_str_release(c->exec_display);
     scr_str_release(c->exec_file);
     if (c->exec_args) scr_arr_release(c->exec_args);
+    scr_str_release(c->spawnfile);
+    if (c->spawnargs) scr_arr_release(c->spawnargs);
     scr_dyn_release(c->out_dyn);
     scr_dyn_release(c->err_dyn);
     scr_dyn_release(c->in_dyn);
@@ -2428,6 +2432,91 @@ ScrChild *scr_spawn(ScrStr *cmd, ScrArr *args) {
 /* PER-SLOT stdio modes (the POSIX arm's numbering): in 0 = ignore (NUL),
  * 1 = inherit, 3 = pipe; out/err 0 = ignore, 1 = inherit, 2 = fd,
  * 3 = pipe. */
+/* Whether the shell path names cmd.exe (Node switches the switch form on
+ * that test alone). */
+static bool scr_child_shell_is_cmd(const ScrStr *s) {
+  static const char name[] = "cmd.exe";
+  size_t start = 0;
+  for (size_t i = 0; i < s->len; i++)
+    if (s->data[i] == '\\' || s->data[i] == '/') start = i + 1;
+  if (s->len - start != sizeof name - 1) return false;
+  for (size_t i = 0; i < sizeof name - 1; i++) {
+    char ch = s->data[start + i];
+    if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a');
+    if (ch != name[i]) return false;
+  }
+  return true;
+}
+
+/* %ComSpec%, or "cmd.exe" when it is unset: the shell Node runs a spawn
+ * with shell: true through. */
+static ScrStr *scr_child_comspec(void) {
+  DWORD need = GetEnvironmentVariableW(L"ComSpec", NULL, 0);
+  if (need == 0) return scr_str_new("cmd.exe", 7);
+  WCHAR *wide = malloc((size_t)need * sizeof(WCHAR));
+  if (!wide) scr_child_oom();
+  DWORD used = GetEnvironmentVariableW(L"ComSpec", wide, need);
+  ScrStr *out = NULL;
+  if (used > 0 && used < need) {
+    int bytes = WideCharToMultiByte(CP_UTF8, 0, wide, (int)used, NULL, 0, NULL, NULL);
+    if (bytes > 0) {
+      char *buf = malloc((size_t)bytes);
+      if (!buf) scr_child_oom();
+      WideCharToMultiByte(CP_UTF8, 0, wide, (int)used, buf, bytes, NULL, NULL);
+      out = scr_str_new(buf, (size_t)bytes);
+      free(buf);
+    }
+  }
+  free(wide);
+  return out != NULL ? out : scr_str_new("cmd.exe", 7);
+}
+
+/* Node's normalizeSpawnArguments result, kept for ChildProcess.spawnfile
+ * and spawnargs. A direct spawn reports the command and its arguments. The
+ * shell form joins the command and arguments into one command line and
+ * reports the shell it runs: cmd.exe with /d /s /c and the quoted line, or
+ * the named shell with -c and the line. */
+static void scr_child_record_spawn(ScrChild *c, ScrStr *cmd, ScrArr *args, bool shell) {
+  size_t n = (size_t)scr_arr_len(args);
+  ScrArr *spawnargs = scr_arr_new(SCR_ELEM_STR, n + 1);
+  if (shell) {
+    ScrStr **parts = malloc((1 + 2 * n) * sizeof *parts);
+    ScrStr *space = scr_str_new(" ", 1);
+    if (!parts) scr_child_oom();
+    parts[0] = cmd;
+    for (size_t i = 0; i < n; i++) {
+      parts[1 + 2 * i] = space;
+      parts[2 + 2 * i] = scr_arr_get_ref(args, (double)i);
+    }
+    ScrStr *command = scr_str_concat_parts(parts, 1 + 2 * n);
+    for (size_t i = 0; i < n; i++) scr_str_release(parts[2 + 2 * i]);
+    scr_str_release(space);
+    free(parts);
+    ScrStr *file = scr_child_comspec();
+    c->spawnfile = scr_str_retain(file);
+    scr_arr_push_ref(spawnargs, file);
+    if (scr_child_shell_is_cmd(file)) {
+      ScrStr *quote = scr_str_new("\"", 1);
+      ScrStr *quoted_parts[3] = {quote, command, quote};
+      ScrStr *quoted = scr_str_concat_parts(quoted_parts, 3);
+      scr_str_release(quote);
+      scr_str_release(command);
+      scr_arr_push_ref(spawnargs, scr_str_new("/d", 2));
+      scr_arr_push_ref(spawnargs, scr_str_new("/s", 2));
+      scr_arr_push_ref(spawnargs, scr_str_new("/c", 2));
+      scr_arr_push_ref(spawnargs, quoted);
+    } else {
+      scr_arr_push_ref(spawnargs, scr_str_new("-c", 2));
+      scr_arr_push_ref(spawnargs, command);
+    }
+  } else {
+    c->spawnfile = scr_str_retain(cmd);
+    scr_arr_push_ref(spawnargs, scr_str_retain(cmd));
+    for (size_t i = 0; i < n; i++) scr_arr_push_ref(spawnargs, scr_arr_get_ref(args, (double)i));
+  }
+  c->spawnargs = spawnargs;
+}
+
 ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
                          double out_mode, double err_mode, double out_fd,
                          double err_fd, bool detached, bool shell, bool has_env,
@@ -2441,6 +2530,7 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
   if (!c) scr_child_oom();
   c->rc = 1;
   c->als = scr_als_capture();
+  scr_child_record_spawn(c, cmd, args, shell);
 
   /* Piped slots: the pipe NOW; a pipe failure degrades the slot to NUL
    * and the stream husk answers eof (fd exhaustion — nothing real). */
@@ -2624,6 +2714,13 @@ double scr_child_exit_code(ScrChild *c) {
 }
 
 bool scr_child_killed(ScrChild *c) { return c->killed; }
+
+ScrStr *scr_child_spawnfile(ScrChild *c) {
+  return c->spawnfile ? scr_str_retain(c->spawnfile) : scr_str_new("", 0);
+}
+ScrArr *scr_child_spawnargs(ScrChild *c) {
+  return c->spawnargs ? scr_arr_retain(c->spawnargs) : scr_arr_new(SCR_ELEM_STR, 0);
+}
 
 /* child.kill core: libuv's uv_kill emulation. SIGTERM/SIGKILL/SIGINT/
  * SIGQUIT/SIGHUP → TerminateProcess(h, 1) with the signal name recorded
@@ -4266,6 +4363,8 @@ struct ScrChild {
   ScrStr *exec_display;
   ScrStr *exec_file; /* the spawned file and its arguments (+1 each), for */
   ScrArr *exec_args; /* a spawn failure's path and spawnargs */
+  ScrStr *spawnfile; /* ChildProcess.spawnfile: the file that was spawned */
+  ScrArr *spawnargs; /* ChildProcess.spawnargs: the file followed by its arguments */
   void (*exec_props)(struct ScrChild *c, ScrError *error); /* Node's error properties */
   /* Piped stdio (stdio mode 3): the stream handles child.stdout /
    * child.stderr answer — owned (+1 each), NULL when not piped. */
@@ -4468,6 +4567,8 @@ void scr_child_release(ScrChild *c) {
     scr_str_release(c->exec_display);
     scr_str_release(c->exec_file);
     if (c->exec_args) scr_arr_release(c->exec_args);
+    scr_str_release(c->spawnfile);
+    if (c->spawnargs) scr_arr_release(c->spawnargs);
     scr_dyn_release(c->out_dyn);
     scr_dyn_release(c->err_dyn);
     scr_dyn_release(c->in_dyn);
@@ -5488,6 +5589,38 @@ ScrChild *scr_spawn(ScrStr *cmd, ScrArr *args) {
   return scr_spawn_opts(cmd, args, 0, 0, 0, 0, 0, false, false, false, NULL, NULL);
 }
 
+/* Node's normalizeSpawnArguments result, kept for ChildProcess.spawnfile
+ * and spawnargs. A direct spawn reports the command and its arguments. The
+ * shell form joins the command and arguments into one command line and
+ * reports "/bin/sh" with -c and the line. */
+static void scr_child_record_spawn(ScrChild *c, ScrStr *cmd, ScrArr *args, bool shell) {
+  size_t n = (size_t)scr_arr_len(args);
+  ScrArr *spawnargs = scr_arr_new(SCR_ELEM_STR, n + 1);
+  if (shell) {
+    ScrStr **parts = malloc((1 + 2 * n) * sizeof *parts);
+    ScrStr *space = scr_str_new(" ", 1);
+    if (!parts) scr_child_oom();
+    parts[0] = cmd;
+    for (size_t i = 0; i < n; i++) {
+      parts[1 + 2 * i] = space;
+      parts[2 + 2 * i] = scr_arr_get_ref(args, (double)i);
+    }
+    ScrStr *command = scr_str_concat_parts(parts, 1 + 2 * n);
+    for (size_t i = 0; i < n; i++) scr_str_release(parts[2 + 2 * i]);
+    scr_str_release(space);
+    free(parts);
+    c->spawnfile = scr_str_new("/bin/sh", 7);
+    scr_arr_push_ref(spawnargs, scr_str_retain(c->spawnfile));
+    scr_arr_push_ref(spawnargs, scr_str_new("-c", 2));
+    scr_arr_push_ref(spawnargs, command);
+  } else {
+    c->spawnfile = scr_str_retain(cmd);
+    scr_arr_push_ref(spawnargs, scr_str_retain(cmd));
+    for (size_t i = 0; i < n; i++) scr_arr_push_ref(spawnargs, scr_arr_get_ref(args, (double)i));
+  }
+  c->spawnargs = spawnargs;
+}
+
 /* The options core behind cp.spawn/cp.spawnOpts. PER-SLOT stdio modes:
  * 0 = ignore (/dev/null), 1 = inherit (the parent's fd), 2 = fd (out/err
  * only — out_fd/err_fd dup2 into the child's slot, Node's stdio fd form:
@@ -5516,6 +5649,7 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
   if (!c) scr_child_oom();
   c->rc = 1;
   c->als = scr_als_capture();
+  scr_child_record_spawn(c, cmd, args, shell);
 
   /* Piped slots: pipe(2) NOW, both ends cloexec (the file action's dup2
    * clears the flag on the child's copy — every other descriptor closes
@@ -5758,6 +5892,13 @@ double scr_child_exit_code(ScrChild *c) {
 }
 
 bool scr_child_killed(ScrChild *c) { return c->killed; }
+
+ScrStr *scr_child_spawnfile(ScrChild *c) {
+  return c->spawnfile ? scr_str_retain(c->spawnfile) : scr_str_new("", 0);
+}
+ScrArr *scr_child_spawnargs(ScrChild *c) {
+  return c->spawnargs ? scr_arr_retain(c->spawnargs) : scr_arr_new(SCR_ELEM_STR, 0);
+}
 
 /* child.kill core, numeric signal already resolved: kill(2) while the
  * handle is live (spawned, not yet reaped — a zombie counts, exactly
@@ -6465,6 +6606,83 @@ ScrChild *scr_exec_file_cwd(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
 #endif /* SCR_CHILD_CP_OPTIONS */
 
 #endif /* !_WIN32 */
+
+/* ── the spawnSync result in the checked-dynamic tree ──────────────────
+ * A SpawnSyncReturns boxes as a HANDLE by REFERENCE (identity, no copy):
+ * a dynamic wrapper hands the same result out, and the typed slot unwraps
+ * it through the tag check. A plain object that merely LOOKS like a
+ * spawn result is not one and fails the check (the checked-cast stance).
+ * Its members answer the accessors above; a call through the value is the
+ * usual "narrow first" fence. */
+static ScrDyn *scr_spawn_res_dyn_invoke(void *h, ScrDyn *self, const char *method,
+                                        ScrDyn *const *args, size_t argc, const char *what) {
+  (void)h;
+  (void)self;
+  (void)method;
+  (void)args;
+  (void)argc;
+  (void)what;
+  static const char msg[] =
+      "spawnSync result methods through an 'unknown' value are not supported yet — narrow the value first";
+  scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+  return NULL;
+}
+
+static ScrDyn *scr_spawn_res_dyn_str(ScrStr *s) {
+  ScrDyn *d = scr_dyn_new_str(s);
+  scr_str_release(s);
+  return d;
+}
+
+static ScrDyn *scr_spawn_res_dyn_get(void *h, const char *key, size_t len) {
+  ScrSpawnRes *r = h;
+  if (len == 6 && memcmp(key, "status", 6) == 0) {
+    return scr_spawn_res_has_status(r) ? scr_dyn_new_num(scr_spawn_res_status(r))
+                                       : scr_dyn_new_null();
+  }
+  if (len == 6 && memcmp(key, "stdout", 6) == 0) return scr_spawn_res_dyn_str(scr_spawn_res_stdout(r));
+  if (len == 6 && memcmp(key, "stderr", 6) == 0) return scr_spawn_res_dyn_str(scr_spawn_res_stderr(r));
+  if (len == 6 && memcmp(key, "signal", 6) == 0) {
+    return scr_spawn_res_has_signal(r) ? scr_spawn_res_dyn_str(scr_spawn_res_signal(r))
+                                       : scr_dyn_new_null();
+  }
+  if (len == 5 && memcmp(key, "error", 5) == 0) {
+    ScrError *e = scr_spawn_res_error(r);
+    if (!e) return NULL; /* the undefined arm, like Node */
+    ScrDyn *d = scr_dyn_from_error(e);
+    scr_error_release(e);
+    return d;
+  }
+  return NULL;
+}
+
+static bool scr_spawn_res_dyn_set(void *h, const char *key, size_t len, const ScrDyn *value) {
+  (void)h;
+  (void)key;
+  (void)len;
+  (void)value;
+  return false;
+}
+
+static void scr_spawn_res_dyn_install(void) {
+  static SCR_TL bool installed;
+  if (installed) return;
+  installed = true;
+  static const ScrDynHandleOps ops = {
+      .cls = "SpawnSyncReturns",
+      .retain = scr_spawn_res_retain_v,
+      .release = scr_spawn_res_release_v,
+      .invoke = scr_spawn_res_dyn_invoke,
+      .get = scr_spawn_res_dyn_get,
+      .set = scr_spawn_res_dyn_set,
+  };
+  scr_dyn_handle_install(SCR_DYNH_SPAWN_RES, &ops);
+}
+
+ScrDyn *scr_spawn_res_to_dyn(ScrSpawnRes *r) {
+  scr_spawn_res_dyn_install();
+  return scr_dyn_new_handle(r, SCR_DYNH_SPAWN_RES);
+}
 
 static void scr_child_drop_spawn_listeners(ScrChild *c) {
   for (size_t i = 0; i < c->n_spawn; i++) scr_closure_release(c->spawn_cbs[i]);

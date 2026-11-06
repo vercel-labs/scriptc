@@ -21,7 +21,7 @@ import { type NativeArtifactDependency } from "../backend/native/contracts.js";
 import { optimizationKeyParts } from "../backend/optimization.js";
 import { type TargetCpu, cpuDispatchKeyParts, targetCpuKeyParts } from "../backend/target-cpu.js";
 import { laneShapesFromEnvironment, laneShapesKeyParts } from "../ir/lane-plans.js";
-import { nativeProgramPartitions } from "../backend/native-codegen-core.js";
+import { nativeBuildPartitions } from "../backend/native-codegen-core.js";
 import { privateSiblingPath } from "../backend/build-cache.js";
 import type { CompilerImplementationDependency } from "../library/compiler-self-identity.js";
 import {
@@ -67,6 +67,7 @@ export interface EarlyExecutableNativeFeatures {
   eventTarget?: boolean;
   wasm?: boolean;
   warningReplace?: boolean;
+  promiseRejectDyn?: boolean;
   jsObjectModel?: boolean;
   /** The buffer views registry: scr_js_buffers.c and mutable bytes headers. */
   mutableBuffers: boolean;
@@ -107,6 +108,7 @@ export interface EarlyExecutableNativeFeatures {
   eventsOnceSignal?: boolean;
   mime?: boolean;
   webStreams?: boolean;
+  webBodies?: boolean;
   abortSignal?: boolean;
   utilTiming?: boolean;
   dynBuffer?: boolean;
@@ -136,9 +138,6 @@ export interface EarlyExecutableNativeFeatures {
   dynBuiltinStream: boolean;
   /** Array.prototype methods over array-like receivers: scr_dyn_array_like.c. */
   arrayLikeDispatch?: boolean;
-  /** Number.prototype and Boolean.prototype as values:
-   * scr_dyn_builtin_prototype.c. */
-  builtinPrototypeValue?: boolean;
   /** A builtin prototype method (String's trim family, RegExp's exec/test/
    * toString) as a function value:
    * scr_dyn_builtin_methods.c. */
@@ -192,7 +191,7 @@ interface EarlyExecutableCacheStamp {
   /** How a --profile-use build's profile matched, which a cache hit reports. */
   profileMatch?: NativeProfileMatch;
   /** The partitions the executable was linked from (native-codegen-core.ts
-   * nativeProgramPartitions; one for a module small enough to stay whole, and
+   * nativeBuildPartitions; one for a module small enough to stay whole, and
    * left out of a link of a single native object). Part of the entry rather
    * than of the key: the count follows from the cached translation unit, so a
    * hit can derive it again. */
@@ -754,11 +753,15 @@ async function readExecutableCache(
     // and the executable is linked from those partitions: one built for
     // another count is not the executable this host builds, so it is a miss.
     // A module small enough to stay one partition gets that count on every
-    // host and keeps hitting.
+    // host and keeps hitting, and so does one a --cpu-dispatch build keeps
+    // whole (nativeBuildPartitions).
     if (
       stamp.partitions !== undefined &&
       stamp.partitions !==
-        nativeProgramPartitions(translationUnit.length, options.optimization === "dev")
+        nativeBuildPartitions(translationUnit.length, {
+          cpuDispatch: options.cpuDispatch === true,
+          unoptimized: options.optimization === "dev",
+        })
     )
       return null;
 

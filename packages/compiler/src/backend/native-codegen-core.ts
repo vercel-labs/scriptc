@@ -62,6 +62,35 @@ export function nativeProgramPartitions(
   return Math.min(MAX_PROGRAM_PARTITIONS, 2 ** Math.ceil(Math.log2(required)));
 }
 
+export interface NativeBuildPartitionsOptions {
+  /** The link takes one native object: a native program object, or a host
+   * without a native codegen target. */
+  singleObject?: boolean;
+  /** The build copies program functions for CPU dispatch. */
+  cpuDispatch?: boolean;
+  /** The executable is unoptimized (dev). */
+  unoptimized?: boolean;
+}
+
+/**
+ * The partitions a build compiles its module into: one when the link takes a
+ * single object, and one for a build that copies program functions for CPU
+ * dispatch. Cloning leaves a callee the copies share referenced by more than
+ * one definition, and the helper places a definition with several referrers by
+ * the hash of its name rather than with a caller (partition.cpp), so the
+ * copies and the functions they call land in different objects and LLVM
+ * cannot inline between them: the hot paths then pay a call that the module
+ * compiled whole does not.
+ */
+export function nativeBuildPartitions(
+  llvmBytes: number,
+  options: NativeBuildPartitionsOptions = {},
+): number {
+  return options.singleObject === true || options.cpuDispatch === true
+    ? 1
+    : nativeProgramPartitions(llvmBytes, options.unoptimized);
+}
+
 /** Output paths for each partition; the first is the requested path. */
 export function nativePartitionPaths(path: string, count: number): string[] {
   const dot = path.lastIndexOf(".");

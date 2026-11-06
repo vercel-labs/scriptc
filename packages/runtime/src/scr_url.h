@@ -60,6 +60,10 @@ ScrDyn *scr_url_to_http_options_dyn(const ScrDyn *value);
  * (ERR_MISSING_ARGS). All borrow; +1, or NULL with Node's error pending. */
 ScrDyn *scr_url_legacy_parse(const ScrDyn *url, const ScrDyn *parse_query, const ScrDyn *slashes,
                              bool warn);
+/* url.Url as a value: Node's legacy Url constructor, one per thread. Its
+ * prototype is the one url.parse() results carry. +1. */
+ScrDyn *scr_url_legacy_class(void);
+void scr_url_legacy_class_release(void); /* drops the cached Url class (process-lifetime state) */
 ScrStr *scr_url_legacy_format(const ScrDyn *object, const ScrDyn *options, bool warn);
 ScrStr *scr_url_legacy_resolve(const ScrDyn *from, const ScrDyn *to, bool warn);
 ScrStr *scr_url_domain_to_ascii(const ScrDyn *domain, bool missing);

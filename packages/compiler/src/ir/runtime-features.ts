@@ -91,8 +91,9 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "async.awaitDyn",
   // So does SlowBuffer's DEP0030.
   "buffer.slowBuffer",
-  // The child property table adopts thenables through the dyn-async unit.
-  "child.propsInstall",
+  // The handle property table adopts child thenables through the dyn-async
+  // unit.
+  "handle.propsInstall",
   "child.propsResolve",
   "crypto.native",
   // The crypto global's object extends crypto.native's.
@@ -200,6 +201,7 @@ const ASYNC_CONTEXT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 const LEGACY_URL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "url.domainToASCII",
   "url.domainToUnicode",
+  "url.legacyClass",
   "url.legacyFormat",
   "url.legacyParse",
   "url.legacyResolve",
@@ -250,6 +252,8 @@ const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.requestDynCb",
   "https.requestDyn",
   "https.requestDynCb",
+  "https.requestFnDyn",
+  "https.requestFnDynCb",
   "http.requestUrlDyn",
   "http.requestUrlDynCb",
   "https.requestUrlDyn",
@@ -367,6 +371,10 @@ const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.dataViewPrototype",
   "dyn.defineProperty",
   "dyn.definePropertyShapes",
+  "handle.propsDefineProps",
+  // The table's member test reads inherited prototype members through
+  // scr_dyn_invoke.c's scr_dyn_inherited_read.
+  "handle.propsInstall",
   "child.propsDefine",
   "dyn.defineProps",
   "dyn.definePropsShapes",
@@ -479,6 +487,9 @@ const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "buffer.staticValue",
   "buffer.prototypeMember",
   "buffer.prototypeObject",
+  // The array-like unit reads a receiver's @@isConcatSpreadable through
+  // scr_sym_well_known before it spreads that receiver's elements.
+  "dyn.arrayLikeProtoCall",
 ]);
 
 /** Entry points that link the querystring unit. */
@@ -1165,6 +1176,21 @@ export const JS_OBJECT_MODEL_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "arrayBuffer.armMutable",
 ]);
 
+/** The member name Object.prototype answers as an accessor (protoAccessor):
+ * a dynamic read (`dynKeyGet`) or a dynamic key write names it. */
+export function isProtoKeyLiteral(node: IrExpr): boolean {
+  return node.kind === "strLit" && node.value === "__proto__";
+}
+
+/** The dynamic key operations whose member-name argument reaches the write
+ * path (dyn.keySet, and the bag entries a JavaScript source's object
+ * literals use). */
+const PROTO_KEY_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  "dyn.bagGet",
+  "dyn.bagSet",
+  "dyn.keySet",
+]);
+
 /** The JavaScript object model build's program facts (t262-da §J): every
  * runtime feature that shares the one SCR_JS_OBJECT_MODEL build ORs in here
  * (BigInt views today, array attributes and handle property tables next), so
@@ -1173,13 +1199,17 @@ export const JS_OBJECT_MODEL_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
 export function jsObjectModelFact(features: {
   jsObjectModel?: boolean;
   bigintBytes?: boolean;
+  handleProps?: boolean;
   mutableBuffers?: boolean;
+  protoAccessor?: boolean;
   sparseArrays?: boolean;
 }): boolean {
   return (
     features.jsObjectModel === true ||
     features.bigintBytes === true ||
+    features.handleProps === true ||
     features.mutableBuffers === true ||
+    features.protoAccessor === true ||
     features.sparseArrays === true
   );
 }
@@ -1351,9 +1381,6 @@ const RUNTIME_FEATURE_RULES = {
    * (scr_dyn_array_like.c), which delegates every other name to the
    * dyn-invoke unit's array dispatch. */
   arrayLikeDispatch: rule({ fns: ["dyn.arrayLikeProtoCall"] }),
-  /** Number.prototype and Boolean.prototype as values
-   * (scr_dyn_builtin_prototype.c). */
-  builtinPrototypeValue: rule({ fns: ["dyn.builtinPrototype"] }),
   /** A builtin prototype method as a function value (String's trim family,
    * RegExp's exec/test/toString; scr_dyn_builtin_methods.c). */
   builtinMethodValue: rule({ fns: ["dyn.builtinMethodValue"] }),
@@ -1401,8 +1428,9 @@ const RUNTIME_FEATURE_RULES = {
   streamDyn: rule({
     fns: ["stream.dynNative", "stream.dynNativePipe", "stream.pipeDyn", "stream.unpipeDyn"],
   }),
-  /** Own properties JavaScript adds to children (scr_dyn_handle_props.c). */
-  handleProps: rule({ fns: ["child.propsInstall"] }),
+  /** Own properties JavaScript adds to runtime handles (scr_dyn_handle_props.c):
+   * a Date, RegExp, Map, Set, weak collection, buffer or child. */
+  handleProps: rule({ fns: ["handle.propsInstall", "handle.propsGrant"] }),
   /** The declaration-typed boundary's adoption (scr_decl_adopt.c): its
    * casts, and closures boxed in a boundary program, which adopt their
    * arguments. */
@@ -1505,6 +1533,11 @@ const RUNTIME_FEATURE_RULES = {
   mime: rule({ prefixes: ["mime."] }),
   /** Web streams in checked-dynamic code (scr_webstreams.c). */
   webStreams: rule({ prefixes: ["webstream."] }),
+  /** A program that builds a Blob or File can hand one to fetch: selects
+   * scr_fetch.c's SCR_WEB_BODIES build, which sends the blob's bytes and
+   * type as Node does. Every other program keeps the default fetch unit,
+   * byte for byte. */
+  webBodies: rule({ prefixes: ["blob."] }),
   /** AbortController and AbortSignal (scr_abort.c, or the fetch unit).
    * A WritableStream controller's signal is one (scr_webstreams.c). */
   abortSignal: rule({ prefixes: ["abort.", "webstream."] }),
@@ -1717,6 +1750,40 @@ const RUNTIME_FEATURE_RULES = {
       node.args[0]?.kind === "strLit" &&
       BIGINT_BYTES_NAMES.has(node.args[0].value),
   }),
+  /** `new Promise` whose executor takes a checked-dynamic reject parameter,
+   * and `Promise.withResolvers` on a checked-dynamic promise whose resolver
+   * record does: that reason is the program's own value, not an Error, so
+   * the emitter builds the reject closure with scr_make_reject_dyn — which
+   * lives in the SCR_PROMISE_REJECT_DYN build of scr_async.c. A promise
+   * lowered with an Error-taking reject (the typed `util.promisify` family,
+   * even for an unknown settled value; any typed `withResolvers`) keeps the
+   * default object. Every other program links the default object, byte for
+   * byte. */
+  promiseRejectDyn: rule({
+    expr: (node, tables) => {
+      if (node.kind === "newPromise")
+        return (
+          node.type.kind === "promise" &&
+          node.type.inner.kind === "dyn" &&
+          node.executor.type.kind === "func" &&
+          node.executor.type.params.length === 2 &&
+          node.executor.type.params[1] !== undefined &&
+          node.executor.type.params[1].kind === "func" &&
+          node.executor.type.params[1].params[0] !== undefined &&
+          node.executor.type.params[1].params[0].kind === "dyn"
+        );
+      if (node.kind !== "promiseWithResolvers" || node.type.kind !== "record") return false;
+      const shape = tables().records.get(node.type.shapeId);
+      const promT = shape?.fields.find((f) => f.name === "promise")?.type;
+      const rejectT = shape?.fields.find((f) => f.name === "reject")?.type;
+      return (
+        promT?.kind === "promise" &&
+        promT.inner.kind === "dyn" &&
+        rejectT?.kind === "func" &&
+        rejectT.params[0]?.kind === "dyn"
+      );
+    },
+  }),
   /** Sparse arrays (t262 W7): an array whose length exceeds its dense
    * prefix. Only a checked-dynamic member write can produce one, and only a
    * write the source spells an index proves it: a key computed at run time
@@ -1744,10 +1811,29 @@ const RUNTIME_FEATURE_RULES = {
   }),
   /** A module namespace boxed for typed code (scr_module_namespace_dyn.c). */
   moduleNamespaceDyn: rule({ fns: ["module.namespaceDyn"] }),
-  /** Primitive wrapper objects (scr_js_wrapper.c). */
-  primitiveWrapper: rule({ prefixes: ["wrapper."] }),
+  /** Primitive wrapper objects (scr_js_wrapper.c), which also own
+   * Number.prototype and Boolean.prototype: the value a JavaScript source
+   * reads through dyn.builtinPrototype, and the compiled constructor's
+   * `prototype` member of the same object. */
+  primitiveWrapper: rule({ prefixes: ["wrapper."], fns: ["dyn.builtinPrototype"] }),
   /** %Iterator% and %Iterator.prototype% as values (scr_js_iterator.c). */
   iteratorProto: rule({ prefixes: ["iterator."] }),
+  /** A JavaScript source reads or writes the member named `__proto__` by
+   * that literal name on a dynamic value, or builds a literal member with
+   * that name: Object.prototype's accessor answers the read with the
+   * receiver's [[Prototype]] and the write by replacing it, while a literal
+   * member is a property definition, both of which the object model build
+   * models (scr_json.c, expr-dynamic.ts). The fact ORs into jsObjectModel
+   * (jsObjectModelFact), so a program that names the member links that one
+   * build; every other program keeps the default object, byte for byte. */
+  protoAccessor: rule({
+    expr: (node) =>
+      (node.kind === "dynKeyGet" && isProtoKeyLiteral(node.key)) ||
+      (node.kind === "dynObjLit" &&
+        (node.fields ?? []).some((field) => isProtoKeyLiteral(field.key))),
+    libCall: (node) =>
+      PROTO_KEY_LIB_FNS.has(node.fn) && node.args.some((arg) => isProtoKeyLiteral(arg)),
+  }),
   /** The WebAssembly API (scr_wasm.c). */
   wasm: rule({ prefixes: ["wasm."] }),
   /** crypto.subtle importKey/sign/verify/digest and CryptoKey:
@@ -1849,7 +1935,6 @@ function noRuntimeFeatures(): RuntimeFeatures {
     hostAbsentGlobals: false,
     dynInvoke: false,
     arrayLikeDispatch: false,
-    builtinPrototypeValue: false,
     builtinMethodValue: false,
     dynTier: false,
     ecdh: false,
@@ -1872,6 +1957,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     mutableBuffers: false,
     legacyTextDecoder: false,
     mime: false,
+    webBodies: false,
     webStreams: false,
     abortSignal: false,
     utilTiming: false,
@@ -1897,6 +1983,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     moduleNamespaceDyn: false,
     primitiveWrapper: false,
     iteratorProto: false,
+    protoAccessor: false,
     stream: false,
     strdecDyn: false,
     streamDyn: false,
@@ -1920,6 +2007,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     tlsCa: false,
     utilPromisify: false,
     warningReplace: false,
+    promiseRejectDyn: false,
     bigintBytes: false,
     sparseArrays: false,
     wasm: false,

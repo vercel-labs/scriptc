@@ -391,7 +391,12 @@ test("references between ProgramLifetime instances are 32-bit indexes into their
     contracts: { programLifetime: ["Node"] },
   };
   // Linux executables without sanitizers (lowRegionTarget).
-  const llvm = emitLlvmModule(mod, { pointerBits: 64, objectAudit: false, lowRegion: true });
+  const llvm = emitLlvmModule(mod, {
+    pointerBits: 64,
+    objectAudit: false,
+    lowRegion: true,
+    targetTriple: "x86_64-unknown-linux-gnu",
+  });
   // parent and next take 4 bytes each; the string keeps its pointer.
   expect(llvm).toContain(`%${mangleClassStruct("Node")} = type { i32, i32 }`);
   expect(llvm).toContain(`%${mangleClassStruct("Leaf")} = type { i32, i32, ptr, i32 }`);
@@ -418,8 +423,22 @@ test("references between ProgramLifetime instances are 32-bit indexes into their
   expect(main).not.toContain("select");
   expect(lowRegionTarget("linux", false)).toBe(true);
   expect(lowRegionTarget("linux", true)).toBe(false);
-  expect(lowRegionTarget("darwin", false)).toBe(false);
+  expect(lowRegionTarget("darwin", false)).toBe(true);
+  expect(lowRegionTarget("darwin", true)).toBe(false);
   expect(lowRegionTarget("win32", false)).toBe(false);
+  // macOS keeps the window at a base (compactRefBaseOf): the layouts and the
+  // encoding are Linux's, and a read ORs the base into a nonzero reference.
+  const mac = emitLlvmModule(mod, {
+    pointerBits: 64,
+    objectAudit: false,
+    lowRegion: true,
+    targetTriple: "arm64-apple-macosx14.0.0",
+  });
+  expect(mac).toContain(`%${mangleClassStruct("Leaf")} = type { i32, i32, ptr, i32 }`);
+  const macMain = mac.split(/^define /m).find((fn) => fn.includes("; main\n")) ?? "";
+  expect(macMain).toMatch(/= or disjoint i64 %\S+, 1099511627776\n/);
+  expect(macMain).toMatch(/= select i1 %\S+, i64 0, i64 %\S+/);
+  expect(macMain).toMatch(/= ptrtoint ptr %\S+ to i64\n\s+%\S+ = lshr i64 %\S+, 3/);
   // Other targets, 32-bit targets and mortal classes keep pointers.
   const elsewhere = emitLlvmModule(mod, { pointerBits: 64, objectAudit: false });
   expect(elsewhere).toContain(`%${mangleClassStruct("Leaf")} = type { i32, ptr, ptr, ptr }`);

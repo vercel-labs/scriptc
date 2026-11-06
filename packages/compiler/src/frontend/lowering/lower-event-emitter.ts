@@ -2718,6 +2718,112 @@ export function lowerEmitterSuperCall(
   return lowerEmitterMethodCall(lowerer, call, access, cls, { thisRef, cls });
 }
 
+/** A typed emit that may also reach a listener registered through an
+ * untyped value with no typed form (an erased registration under a name
+ * the event table did not bridge). The dispatch converts the emitted
+ * tuple to checked-dynamic arguments ONLY when such a listener is there:
+ *
+ *   %emitter.typedEmit.<...>(r, a0, ...) {
+ *     if (emitter.hasDyn(r, name)) return emitter.emitMixed(r, name, k, <boxed a0...>, a0...);
+ *     return emitter.emit(r, name, a0...);
+ *   }
+ *
+ * The receiver and payloads evaluate once, as the helper's arguments; the
+ * typed adapter path inside the runtime still runs first for typed
+ * listeners. Null when a payload has no checked-dynamic conversion (the
+ * emit site keeps the plain typed call, whose listener forms the event
+ * table saw are all typed). */
+function typedEmitWithDynArgs(
+  lowerer: Lowerer,
+  receiver: IrExpr,
+  name: string,
+  args: IrExpr[],
+  loc: SrcLoc,
+): IrExpr | null {
+  const recvT = receiver.type;
+  const getRecord = (id: string) => lowerer.shapes.get(id);
+  const getUnion = (id: string) => lowerer.unions.get(id);
+  if (!args.every((a) => a.type.kind === "dyn" || canConvertToDyn(a.type, getRecord, getUnion)))
+    return null;
+  const key = `emitter.typedEmit:${typeKey(recvT)}:${name}:${args.map((a) => typeKey(a.type)).join(",")}`;
+  let helper = lowerer.arrHofHelpers.get(key);
+  if (!helper) {
+    helper = keyedHelperName(lowerer, "%emitter.typedEmit", key);
+    lowerer.arrHofHelpers.set(key, helper);
+    const params: IrParam[] = [
+      { localId: "r.0", name: "r", type: recvT },
+      ...args.map((a, i) => ({ localId: `a${i}.0`, name: `a${i}`, type: a.type })),
+    ];
+    const locals: IrLocal[] = params.map((p) => ({
+      id: p.localId,
+      name: p.name,
+      type: p.type,
+      mutable: false,
+    }));
+    const r = varRef("r.0", recvT, loc);
+    const n = eventNameExpr(name, loc);
+    const argRefs = args.map((a, i) => varRef(`a${i}.0`, a.type, loc));
+    const boxed = argRefs.map((a) => {
+      const value = lowerer.coerceToExpected(a, DYN);
+      if (!typeEquals(value.type, DYN)) return null;
+      return value;
+    });
+    if (boxed.every((b) => b !== null)) {
+      lowerer.liftedFns.push({
+        name: helper,
+        params,
+        returnType: BOOL,
+        locals,
+        body: [
+          {
+            kind: "if",
+            cond: { kind: "libCall", fn: "emitter.hasDyn", args: [r, n], type: BOOL, loc },
+            then: [
+              {
+                kind: "return",
+                value: {
+                  kind: "libCall",
+                  fn: "emitter.emitMixed",
+                  args: [
+                    r,
+                    n,
+                    { kind: "numLit", value: args.length, type: F64, loc },
+                    ...boxed.map((b) => b!),
+                    ...argRefs,
+                  ],
+                  type: BOOL,
+                  loc,
+                },
+                loc,
+              },
+            ],
+            else_: null,
+            loc,
+          },
+          {
+            kind: "return",
+            value: {
+              kind: "libCall",
+              fn: "emitter.emit",
+              args: [r, n, ...argRefs],
+              type: BOOL,
+              loc,
+            },
+            loc,
+          },
+        ],
+        loc,
+      });
+    } else {
+      // A payload the static→dyn boundary cannot write: leave the site on
+      // the plain typed emit rather than building an unreachable helper.
+      lowerer.arrHofHelpers.delete(key);
+      return null;
+    }
+  }
+  return { kind: "call", callee: helper, args: [receiver, ...args], type: BOOL, loc };
+}
+
 /** One emit site's dispatch: the plain runtime libCall when no override
  * is comparable to the receiver's static class; a direct or virtual
  * specialization call when an override sits at-or-above it; an interned
@@ -2734,22 +2840,26 @@ function emitDispatchExpr(
   loc: SrcLoc,
 ): IrExpr {
   const method = `emit:${name}`;
-  const runtime = (recv: IrExpr, args: IrExpr[]): IrExpr =>
-    name === "error"
-      ? {
-          kind: "libCall",
-          fn: "emitter.emitError",
-          args: [recv, eventNameExpr(name, loc), args[0]!],
-          type: BOOL,
-          loc,
-        }
-      : {
-          kind: "libCall",
-          fn: "emitter.emit",
-          args: [recv, eventNameExpr(name, loc), ...args],
-          type: BOOL,
-          loc,
-        };
+  const runtime = (recv: IrExpr, args: IrExpr[]): IrExpr => {
+    if (name === "error") {
+      return {
+        kind: "libCall",
+        fn: "emitter.emitError",
+        args: [recv, eventNameExpr(name, loc), args[0]!],
+        type: BOOL,
+        loc,
+      };
+    }
+    return (
+      typedEmitWithDynArgs(lowerer, recv, name, args, loc) ?? {
+        kind: "libCall",
+        fn: "emitter.emit",
+        args: [recv, eventNameExpr(name, loc), ...args],
+        type: BOOL,
+        loc,
+      }
+    );
+  };
   if (superOf !== undefined) {
     // super.emit: the nearest override STRICTLY ABOVE the lexical class.
     const anc = emitOverrideAtOrAbove(superOf.base);

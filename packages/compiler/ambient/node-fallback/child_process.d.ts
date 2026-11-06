@@ -78,15 +78,16 @@ declare module "child_process" {
 
   /* The named options interface for the string-encoding spawnSync form —
    * @types/node's SpawnSyncOptionsWithStringEncoding, narrowed to the
-   * honestly-implemented members (env and killSignal keep the inline
-   * literal form: a runtime record cannot carry a replacement
-   * environment). VALUES of this type are a real record (type-mapper.ts
+   * honestly-implemented members (killSignal keeps the inline literal
+   * form). VALUES of this type are a real record (type-mapper.ts
    * interns the shape), so a typed const or a runner function's options
    * parameter flows to spawnSync at runtime with its members read at the
    * call. */
   export interface SpawnSyncOptionsWithStringEncoding {
     encoding: "utf8" | "utf-8";
     cwd?: string;
+    /* A REPLACEMENT environment; an absent member inherits ours. */
+    env?: { [key: string]: string | undefined };
     input?: string;
     stdio?: "pipe" | "ignore" | "inherit" | ("pipe" | "ignore" | "inherit")[];
     timeout?: number;
@@ -173,6 +174,11 @@ declare module "child_process" {
      * runs, after a normal exit, and after a spawn failure. */
     readonly signalCode: string | null;
     readonly killed: boolean;
+    /* spawnfile is the file the child was started from and spawnargs that
+     * file followed by its arguments, both as Node reports them: a shell
+     * spawn names the shell and its invocation. */
+    readonly spawnfile: string;
+    readonly spawnargs: string[];
     kill(signal?: string | number): boolean;
     unref(): void;
     readonly connected: boolean;

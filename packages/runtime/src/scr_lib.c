@@ -47,7 +47,12 @@ static void scr_process_mask_init(void);
  * mingw-w64's CRT covers most of sync fs (open/read/write/stat/dirent —
  * the seams below note what it lacks: d_type, lstat, two-arg mkdir,
  * mkdtemp, O_SYNC) and the Win32 API covers the process/os surface
- * (GetTempPathA, GetUserNameA, RtlGetVersion, GetConsoleScreenBufferInfo).
+ * (GetTempPathW, GetUserNameW, RtlGetVersion, GetConsoleScreenBufferInfo).
+ * Every string the process surface reads or writes goes through the W
+ * forms: the A forms spell their text in the active ANSI code page, so a
+ * non-ASCII path or environment value garbles whenever that page is not
+ * UTF-8 (CP932, CP1251, …), while Node carries Windows strings as UTF-16
+ * throughout.
  * What has NO arm yet is stubbed honestly at its seam: process.kill and
  * getuid/getgid (needs-design: OpenProcess/TerminateProcess vs Node's
  * uv_kill; no uids exist on Windows — Node omits the members there),
@@ -65,7 +70,8 @@ static void scr_process_mask_init(void);
 #include <winioctl.h> /* FSCTL_GET_REPARSE_POINT */
 #define PSAPI_VERSION 2 /* K32GetProcessMemoryInfo, in kernel32 */
 #include <psapi.h>
-#include <lmcons.h>  /* UNLEN for GetUserNameA */
+#include <lmcons.h>  /* UNLEN for GetUserNameW */
+#include <wchar.h>   /* wcslen/wcschr over the UTF-16 environment block */
 #include "scr_win_stats.h"
 
 static WCHAR *scr_fs_win_wide(const ScrStr *path);
@@ -88,6 +94,29 @@ static ScrStr *scr_fs_win_utf8(const WCHAR *text, size_t length) {
   ScrStr *result = scr_str_new(bytes, (size_t)size);
   free(bytes);
   return result;
+}
+
+/* UTF-8 bytes → a NUL-terminated wide string for the W APIs: the reverse
+ * of scr_fs_win_utf8, and the conversion every UTF-8 argv into a Win32
+ * call needs (env names and values, paths). NULL, with the error left set,
+ * when the bytes are not valid UTF-8 or memory runs out. */
+static WCHAR *scr_win_wide_utf8(const char *text, size_t length) {
+  if (length > INT_MAX) {
+    SetLastError(ERROR_FILENAME_EXCED_RANGE);
+    return NULL;
+  }
+  int n = length > 0 ? MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, (int)length, NULL, 0) : 0;
+  if (length > 0 && n == 0) return NULL;
+  WCHAR *wide = malloc(((size_t)n + 1) * sizeof *wide);
+  if (!wide) {
+    SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+    return NULL;
+  }
+  if (n > 0) {
+    (void)MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, (int)length, wide, n);
+  }
+  wide[n] = L'\0';
+  return wide;
 }
 
 /* The CRT has no symlink view, so its internal lstat users degrade to stat.
@@ -1073,6 +1102,13 @@ ScrStr *scr_process_exec_path(void) {
   if (!scr_exec_path_str) {
     char raw[4096];
     raw[0] = '\0';
+#if defined(_WIN32)
+    /* Windows hands the path back as UTF-16 units; the W form (libuv's
+     * source of truth, and Node's spelling) then converts to the runtime's
+     * UTF-8. The result is already absolute, so the _fullpath below is
+     * skipped. */
+    bool absolute = false;
+#endif
 #if defined(__APPLE__)
     uint32_t size = sizeof(raw);
     extern int _NSGetExecutablePath(char *buf, uint32_t *bufsize);
@@ -1082,17 +1118,25 @@ ScrStr *scr_process_exec_path(void) {
     if (got > 0) raw[got] = '\0';
     else raw[0] = '\0';
 #elif defined(_WIN32)
-    /* uv_exepath's source of truth on Windows; already absolute, and
-     * spelled with backslashes like Node's own execPath there. */
-    DWORD got = GetModuleFileNameA(NULL, raw, sizeof(raw) - 1);
-    raw[got < sizeof(raw) ? got : 0] = '\0';
+    WCHAR wide[4096];
+    DWORD got = GetModuleFileNameW(NULL, wide, (DWORD)(sizeof wide / sizeof wide[0]));
+    if (got > 0 && got < sizeof wide / sizeof wide[0]) {
+      ScrStr *path = scr_fs_win_utf8(wide, got);
+      if (path) {
+        size_t n = path->len < sizeof(raw) - 1 ? path->len : sizeof(raw) - 1;
+        memcpy(raw, path->data, n);
+        raw[n] = '\0';
+        absolute = true;
+        scr_str_release(path);
+      }
+    }
 #endif
     if (raw[0] == '\0' && scr_lib_argc > 0) {
       snprintf(raw, sizeof(raw), "%s", scr_lib_argv[0]);
     }
     char resolved[PATH_MAX];
 #ifdef _WIN32
-    const char *use = _fullpath(resolved, raw, sizeof resolved) != NULL ? resolved : raw;
+    const char *use = absolute ? raw : (_fullpath(resolved, raw, sizeof resolved) != NULL ? resolved : raw);
 #else
     const char *use = realpath(raw, resolved) != NULL ? resolved : raw;
 #endif
@@ -1118,16 +1162,49 @@ ScrStr *scr_env_get(const ScrStr *name) {
 #ifdef _WIN32
   /* The WIN32 environment, not the CRT's startup snapshot — libuv's choice
    * too, and the one CreateProcess children inherit. Case-insensitive,
-   * like Node's process.env on Windows. */
-  DWORD need = GetEnvironmentVariableA(name->data, NULL, 0);
-  if (need == 0) return NULL; /* absent (an empty value still needs its NUL) */
-  char *buf = malloc(need);
-  if (!buf) {
+   * like Node's process.env on Windows. The W form keeps a non-ASCII name
+   * and value intact whatever the active ANSI code page is, and the name
+   * takes the same U+FFFD normalization scr_env_set applied when it stored
+   * the entry. */
+  char *owned;
+  const char *k = scr_str_utf8(name, &owned);
+  WCHAR *wname = scr_win_wide_utf8(k, strlen(k));
+  scr_str_utf8_end(owned);
+  if (!wname) return NULL;
+  SetLastError(ERROR_SUCCESS); /* the query reports absence through the error */
+  DWORD need = GetEnvironmentVariableW(wname, NULL, 0);
+  if (need == 0) {
+    /* Only a failed query means the variable is absent. A present-but-empty
+     * value still needs room for its terminating NUL, so a zero size with no
+     * error is present too; Node reports it as '', not undefined. */
+    bool absent = GetLastError() == ERROR_ENVVAR_NOT_FOUND;
+    free(wname);
+    return absent ? NULL : scr_str_new("", 0);
+  }
+  WCHAR *wvalue = malloc((size_t)need * sizeof *wvalue);
+  if (!wvalue) {
+    free(wname);
     scr_trap("scriptc: out of memory\n");
   }
-  DWORD got = GetEnvironmentVariableA(name->data, buf, need);
-  ScrStr *s = scr_str_new(buf, got);
-  free(buf);
+  SetLastError(ERROR_SUCCESS);
+  DWORD got = GetEnvironmentVariableW(wname, wvalue, need);
+  DWORD error = got == 0 ? GetLastError() : ERROR_SUCCESS;
+  free(wname);
+  if (got == 0) {
+    /* A successful read reports the characters it stored, which is 0 for a
+     * present-but-empty value: the NUL went into the buffer and Node keeps
+     * the entry as ''. Only a failed read means the variable vanished
+     * between the query and this call. */
+    free(wvalue);
+    return error == ERROR_SUCCESS ? scr_str_new("", 0) : NULL;
+  }
+  if (got >= need) {
+    /* The value grew past the size the query reported: this read is stale. */
+    free(wvalue);
+    return NULL;
+  }
+  ScrStr *s = scr_fs_win_utf8(wvalue, got);
+  free(wvalue);
   return s;
 #else
   const char *v = scr_getenv(name->data);
@@ -1198,8 +1275,14 @@ void scr_env_set(const ScrStr *name, const ScrStr *value) {
 #endif
 #ifdef _WIN32
   /* The WIN32 environment (see scr_env_get): an empty value stays a
-   * present-but-empty variable, and children inherit the write. */
-  SetEnvironmentVariableA(k, v);
+   * present-but-empty variable, and children inherit the write. The W form
+   * is UTF-16 like Node's; the A form would re-spell non-ASCII text in the
+   * active ANSI code page. */
+  WCHAR *wname = scr_win_wide_utf8(k, strlen(k));
+  WCHAR *wvalue = scr_win_wide_utf8(v, strlen(v));
+  if (wname && wvalue) SetEnvironmentVariableW(wname, wvalue);
+  free(wname);
+  free(wvalue);
 #else
   setenv(k, v, 1);
 #endif
@@ -1219,7 +1302,12 @@ void scr_env_unset(const ScrStr *name) {
   if (scr_context_env_set(name->data, NULL)) return;
 #endif
 #ifdef _WIN32
-  SetEnvironmentVariableA(name->data, NULL);
+  char *owned;
+  const char *k = scr_str_utf8(name, &owned);
+  WCHAR *wname = scr_win_wide_utf8(k, strlen(k));
+  if (wname) SetEnvironmentVariableW(wname, NULL);
+  free(wname);
+  scr_str_utf8_end(owned);
 #else
   unsetenv(name->data);
 #endif
@@ -1476,19 +1564,27 @@ ScrArr *scr_env_pairs(void) {
 #endif
   ScrArr *out = scr_arr_new(SCR_ELEM_STR, 0);
 #ifdef _WIN32
-  /* The WIN32 environment block (see scr_env_get): NUL-separated
-   * "K=V" entries, double-NUL terminated. Entries whose first byte is
-   * '=' are the hidden per-drive cwd variables ("=C:=..."), which libuv
-   * (and so Node's process.env) also skips. */
-  char *block = GetEnvironmentStringsA();
+  /* The WIN32 environment block (see scr_env_get): NUL-separated "K=V"
+   * entries, double-NUL terminated, read as UTF-16 and converted to the
+   * runtime's UTF-8. Entries whose first unit is '=' are the hidden
+   * per-drive cwd variables ("=C:=..."), which libuv (and so Node's
+   * process.env) also skips. */
+  WCHAR *block = GetEnvironmentStringsW();
   if (block != NULL) {
-    for (char *e = block; *e != '\0'; e += strlen(e) + 1) {
-      const char *eq = strchr(e, '=');
+    for (WCHAR *e = block; *e != L'\0'; e += wcslen(e) + 1) {
+      const WCHAR *eq = wcschr(e, L'=');
       if (!eq || eq == e) continue;
-      scr_arr_push_ref(out, scr_str_new(e, (size_t)(eq - e)));
-      scr_arr_push_ref(out, scr_str_new(eq + 1, strlen(eq + 1)));
+      ScrStr *key = scr_fs_win_utf8(e, (size_t)(eq - e));
+      ScrStr *value = scr_fs_win_utf8(eq + 1, wcslen(eq + 1));
+      if (key && value) {
+        scr_arr_push_ref(out, key); /* takes the +1 ref */
+        scr_arr_push_ref(out, value);
+      } else {
+        scr_str_release(key);
+        scr_str_release(value);
+      }
     }
-    FreeEnvironmentStringsA(block);
+    FreeEnvironmentStringsW(block);
   }
 #else
   for (char **e = environ; *e != NULL; e++) {
@@ -1841,12 +1937,16 @@ ScrStr *scr_os_homedir(void) {
 }
 
 ScrStr *scr_os_user_name(void) {
-  char buf[UNLEN + 1];
-  DWORD n = sizeof buf;
-  if (!GetUserNameA(buf, &n) || n == 0) {
+  WCHAR buf[UNLEN + 1];
+  DWORD n = (DWORD)(sizeof buf / sizeof buf[0]);
+  if (!GetUserNameW(buf, &n) || n == 0) {
     scr_trap("scriptc: os.userInfo() failed\n");
   }
-  return scr_str_new(buf, n - 1); /* n counts the NUL */
+  /* n counts the terminating NUL. The W form is UTF-16 like the name
+   * Node reads; the A form re-spells it in the ANSI code page. */
+  ScrStr *name = scr_fs_win_utf8(buf, n - 1);
+  if (!name) scr_trap("scriptc: os.userInfo() failed\n");
+  return name;
 }
 
 ScrStr *scr_os_user_shell(void) {
@@ -1907,16 +2007,19 @@ double scr_os_totalmem(void) {
 }
 
 ScrStr *scr_os_tmpdir(void) {
-  /* GetTempPathA is libuv's source (TMP → TEMP → USERPROFILE → windir),
-   * with Node's one-trailing-separator trim. */
-  char buf[MAX_PATH + 2];
-  DWORD n = GetTempPathA(sizeof buf, buf);
-  if (n == 0 || n >= sizeof buf) {
+  /* GetTempPathW is libuv's source (TMP → TEMP → USERPROFILE → windir),
+   * with Node's one-trailing-separator trim. Rendered from UTF-16 so a
+   * non-ASCII directory survives a non-UTF-8 ANSI code page. */
+  WCHAR buf[MAX_PATH + 2];
+  DWORD n = GetTempPathW((DWORD)(sizeof buf / sizeof buf[0]), buf);
+  if (n == 0 || n >= sizeof buf / sizeof buf[0]) {
     scr_trap("scriptc: os.tmpdir() failed\n");
   }
   size_t len = n;
-  if (len > 1 && (buf[len - 1] == '\\' || buf[len - 1] == '/')) len--;
-  return scr_str_new(buf, len);
+  if (len > 1 && (buf[len - 1] == L'\\' || buf[len - 1] == L'/')) len--;
+  ScrStr *dir = scr_fs_win_utf8(buf, len);
+  if (!dir) scr_trap("scriptc: os.tmpdir() failed\n");
+  return dir;
 }
 #elif defined(__wasi__)
 /* WASI has an inherited environment but no passwd database, uname, or
@@ -5285,26 +5388,7 @@ void scr_fs_copyfile(ScrStr *src, ScrStr *dest) {
  * Win32 API rather than the active-code-page `A` form. */
 #ifdef _WIN32
 static WCHAR *scr_fs_win_wide(const ScrStr *path) {
-  if (path->len > INT_MAX) {
-    SetLastError(ERROR_FILENAME_EXCED_RANGE);
-    return NULL;
-  }
-  int n = path->len > 0
-    ? MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
-                          path->data, (int)path->len, NULL, 0)
-    : 0;
-  if (path->len > 0 && n == 0) return NULL;
-  WCHAR *wide = malloc(((size_t)n + 1) * sizeof *wide);
-  if (!wide) {
-    SetLastError(ERROR_NOT_ENOUGH_MEMORY);
-    return NULL;
-  }
-  if (n > 0) {
-    (void)MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
-                              path->data, (int)path->len, wide, n);
-  }
-  wide[n] = L'\0';
-  return wide;
+  return scr_win_wide_utf8(path->data, path->len);
 }
 
 /* The reachable fs subset of libuv's uv_translate_sys_error table. */

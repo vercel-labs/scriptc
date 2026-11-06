@@ -10067,7 +10067,9 @@ function firstPatternProp(
  * default (`({ a = 1 } = v)`, `({ a: b = 1 } = v)`). V8 then lets the
  * keyed read throw ("Cannot read properties of null (reading 'a')")
  * instead of the pattern's RequireObjectCoercible check, the same way
- * `firstReadsWithDefault` skips the declaration's check. */
+ * `firstReadsWithDefault` skips the declaration's check. A computed first
+ * key does not: its key expression is evaluated after the pattern's check,
+ * so the check still throws first. */
 function firstAssignReadsWithDefault(target: ts.ObjectLiteralExpression): boolean {
   const first = target.properties.nodes[0];
   if (first === undefined) return false;
@@ -10075,6 +10077,7 @@ function firstAssignReadsWithDefault(target: ts.ObjectLiteralExpression): boolea
     return first.objectAssignmentInitializer !== undefined;
   return (
     ts.isPropertyAssignment(first) &&
+    !ts.isComputedPropertyName(first.name) &&
     ts.isBinaryExpression(first.initializer) &&
     first.initializer.operatorToken.kind === ts.SyntaxKind.EqualsToken
   );

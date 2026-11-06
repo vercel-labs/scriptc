@@ -212,4 +212,29 @@ attempt("for-of-decl-object-default", () => {
   for (const { a = 1 } of [null]) {
   }
 });
+attempt("assign-object-computed", () => {
+  let x;
+  ({ ["x"]: x } = null);
+  return x;
+});
+attempt("assign-object-computed-default", () => {
+  let x;
+  ({ ["x"]: x = 1 } = null);
+});
+attempt("assign-object-computed-default-undefined", () => {
+  let x;
+  ({ ["x"]: x = 1 } = undefined);
+});
+attempt("assign-object-computed-default-live", () => {
+  let x;
+  const source = { x: undefined };
+  ({ ["x"]: x = 1 } = source);
+  return x;
+});
+attempt("assign-object-computed-default-present", () => {
+  let x;
+  const source = { x: 7 };
+  ({ ["x"]: x = 1 } = source);
+  return x;
+});
 console.log(results.join("\n"));

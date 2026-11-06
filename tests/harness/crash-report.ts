@@ -44,18 +44,78 @@ function newestReport(binary: string, since: number): string | null {
   return newest?.path ?? null;
 }
 
-/** The exception and termination reason of a report, as one line. `.ips`
- * files are a metadata line followed by the payload; older `.crash` files are
- * plain text and keep their head instead. */
+function record(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+/** A sub-object of the payload as the text it appears as, so the line keeps
+ * the keys ReportCrash wrote. */
+function section(value: unknown): string | undefined {
+  const entry = record(value);
+  return entry === undefined ? undefined : `${JSON.stringify(entry)}`;
+}
+
+/** The crashing thread's top frames. A `.ips` payload carries the faulting
+ * thread's stack with the image each frame belongs to, which names the library
+ * the fault is in even when the images have no symbols. */
+function stack(value: unknown, limit: number): string | undefined {
+  const payload = record(value);
+  const threads = payload?.["threads"];
+  const faulting = payload?.["faultingThread"];
+  if (!Array.isArray(threads) || typeof faulting !== "number") return undefined;
+  const thread = record(threads[faulting]);
+  if (thread === undefined) return undefined;
+  const images = Array.isArray(thread["images"]) ? thread["images"] : [];
+  const image = (index: unknown): string => {
+    if (typeof index !== "number") return "?";
+    const name = record(images[index])?.["name"];
+    return typeof name === "string" ? name : `image ${index}`;
+  };
+  const frames = Array.isArray(thread["frames"]) ? thread["frames"] : [];
+  const rendered: string[] = [];
+  for (const frame of frames.slice(0, limit)) {
+    const entry = record(frame);
+    if (entry === undefined) continue;
+    const symbol = typeof entry["symbol"] === "string" ? entry["symbol"] : "";
+    const location = entry["symbolLocation"];
+    const offset = entry["imageOffset"];
+    let at = symbol;
+    if (symbol !== "") {
+      if (typeof location === "number") at = `${symbol}+${location}`;
+    } else {
+      at = typeof offset === "number" ? `+0x${offset.toString(16)}` : "+?";
+    }
+    rendered.push(`${image(entry["imageIndex"])} ${at}`);
+  }
+  return rendered.length === 0 ? undefined : `${rendered.join(" <- ")}`;
+}
+
+/** The exception, termination reason and crashing stack of a report file's
+ * contents, as one line. `.ips` files are a metadata line followed by a JSON
+ * payload; older `.crash` files are plain text and keep their head instead. */
+export function summarizeReport(name: string, text: string): string {
+  const newline = text.indexOf("\n");
+  let payload: unknown;
+  try {
+    payload = newline < 0 ? undefined : JSON.parse(text.slice(newline + 1));
+  } catch {
+    payload = undefined;
+  }
+  const entry = record(payload);
+  if (entry === undefined) return `${name}: ${text.slice(0, 800)}`;
+  const parts = [
+    name,
+    section(entry["exception"]),
+    section(entry["termination"]),
+    stack(payload, 12),
+  ].filter((part): part is string => part !== undefined);
+  return parts.join(" ");
+}
+
 function summarize(path: string): string {
-  const text = readFileSync(path, "utf8");
-  const payload = text.includes("\n") ? text.slice(text.indexOf("\n") + 1) : text;
-  const exception = /"exception"\s*:\s*\{[^}]*\}/.exec(payload)?.[0];
-  const termination = /"termination"\s*:\s*\{[^}]*\}/.exec(payload)?.[0];
-  const parts = [basename(path), exception, termination].filter(
-    (part): part is string => part !== undefined,
-  );
-  return parts.length > 1 ? parts.join(" ") : `${basename(path)}: ${text.slice(0, 800)}`;
+  return summarizeReport(basename(path), readFileSync(path, "utf8"));
 }
 
 /** The newest crash report for `binary` written after `since` (epoch ms), or

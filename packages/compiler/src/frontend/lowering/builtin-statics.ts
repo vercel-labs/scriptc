@@ -33,6 +33,7 @@ import {
 } from "./lower-builtin-values.js";
 import { lowerArrayFromValue } from "./containers/array-construction.js";
 import { numberPredicateValue } from "./builtins/numbers.js";
+import { reflectMemberValue } from "./builtins/reflection.js";
 
 const LOOKUP_FN = "%builtin.staticValue";
 
@@ -159,6 +160,10 @@ export function constructorStaticValue(
       return key === "captureStackTrace"
         ? { kind: "libCall", fn: "dyn.errorCaptureStackTraceFunction", args: [], type: DYN, loc }
         : null;
+    // The Reflect namespace reads as its member values: the same closures
+    // its JavaScript namespace object answers, with Node's name and length.
+    case "Reflect":
+      return reflectMemberValue(lowerer, key, loc);
     default:
       return null;
   }

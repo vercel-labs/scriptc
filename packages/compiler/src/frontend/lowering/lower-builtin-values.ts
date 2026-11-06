@@ -124,6 +124,17 @@ export function builtinPrototypeMethod(
   return owner;
 }
 
+/** Whether `expr` reads a member of the `Reflect` namespace object — one of
+ * the checked-dynamic member function values builtin-namespaces.ts installs
+ * for it. */
+export function reflectMemberValueRead(lowerer: Lowerer, expr: ts.Expression | undefined): boolean {
+  if (!expr) return false;
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  return (
+    ts.isPropertyAccessExpression(expr) && lowerer.stdlibGlobalMember(expr, "Reflect") !== null
+  );
+}
+
 /** These native callables own their argument checks. Unannotated JS aliases
  * keep the checked value instead of narrowing it to the ambient signature.
  * This selects storage only: reassignment still updates a real runtime slot. */
@@ -174,7 +185,7 @@ export function isNativeBuiltinValueInitializer(
         lowerer.stdlibGlobalMember(expr.expression, "process") === "hrtime") ||
       lowerer.stdlibGlobalMember(expr, "Array") === "isArray" ||
       lowerer.stdlibGlobalMember(expr, "Array") === "from" ||
-      lowerer.stdlibGlobalMember(expr, "Reflect") === "ownKeys" ||
+      lowerer.stdlibGlobalMember(expr, "Reflect") !== null ||
       ["fromCharCode", "fromCodePoint"].includes(
         lowerer.stdlibGlobalMember(expr, "String") ?? "",
       ) ||

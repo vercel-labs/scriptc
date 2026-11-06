@@ -2293,8 +2293,16 @@ export function lowerIntrinsicProperty(
       );
     }
   }
-  if (lowerer.stdlibGlobalMember(expr, "Reflect") === "ownKeys")
-    return reflectMemberValue(lowerer, "ownKeys", locOf(expr));
+  // A Reflect member read as a value (a callback table's `Reflect.has`): the
+  // same closure a JavaScript namespace read answers, with Node's name and
+  // length. Members without a faithful value keep the standard-library fence
+  // below.
+  {
+    const reflectMember = lowerer.stdlibGlobalMember(expr, "Reflect");
+    const value =
+      reflectMember === null ? null : reflectMemberValue(lowerer, reflectMember, locOf(expr));
+    if (value !== null) return value;
+  }
   // A write, `delete` or defineProperty through `Date.prototype` keeps its
   // fence: the value below is a read surface, and a typed Date never observes
   // a dynamic write to it. This runs before the chainBlocked early return

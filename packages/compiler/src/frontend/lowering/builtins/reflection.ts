@@ -1,13 +1,18 @@
-import { varRef } from "../../../ir/build.js";
+import { nodeThrowExpr, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import { builtinModuleFnOf } from "../surfaces.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
+import { noteUntypedIntegrity } from "../frozen-records.js";
 import {
   BOOL,
   DYN,
+  F64,
   type IrExpr,
+  type IrLocal,
+  type IrStmt,
+  type IrType,
   STRING,
   type SrcLoc,
   VOID,
@@ -15,21 +20,354 @@ import {
   isUnitType,
 } from "../../../ir/ir.js";
 
-/** The function value of the Reflect member `member` (ownKeys, on native
- * computed-key reflection), or null for members without one. */
-export function reflectMemberValue(lowerer: Lowerer, member: string, loc: SrcLoc): IrExpr | null {
-  if (member !== "ownKeys") return null;
-  const value = lowerer.lowerNativeCallableValue(
-    {
-      fn: "dyn.ownKeys",
-      params: [DYN],
-      result: DYN,
-      valueParams: [{ mode: "required", type: DYN }],
+const str = (value: string, loc: SrcLoc): IrExpr => ({ kind: "strLit", value, type: STRING, loc });
+
+/** `Type(target) is Object`: objects and functions, never null. This is the
+ * test every Reflect member applies before its operation, answering Node's
+ * TypeError when it fails. */
+function isObjectTarget(target: IrExpr, loc: SrcLoc): IrExpr {
+  return {
+    kind: "logical",
+    op: "||",
+    left: { kind: "dynTest", test: "function", value: target, type: BOOL, loc },
+    right: {
+      kind: "logical",
+      op: "&&",
+      left: { kind: "dynTest", test: "object", value: target, type: BOOL, loc },
+      right: { kind: "dynTest", test: "null", negated: true, value: target, type: BOOL, loc },
+      type: BOOL,
+      loc,
     },
-    "Reflect.ownKeys",
+    type: BOOL,
     loc,
-  )!;
-  return { kind: "dynFrom", value, fnName: "ownKeys", type: DYN, loc };
+  };
+}
+
+/** Node's TypeError for a Reflect target that is not an object. */
+function nonObjectThrow(member: string, type: IrType, loc: SrcLoc): IrExpr {
+  return nodeThrowExpr(1, "", `Reflect.${member} called on non-object`, type, loc);
+}
+
+/** Evaluates `node` once into a hidden checked-dynamic local and runs
+ * `operation` on it when it is an object, throwing `Reflect.<member>`'s
+ * non-object TypeError otherwise. The same shape the member values use. */
+function withObjectTarget(
+  lowerer: Lowerer,
+  member: string,
+  node: ts.Expression,
+  resultType: IrType,
+  loc: SrcLoc,
+  operation: (target: IrExpr) => IrExpr,
+  prelude: IrStmt[] = [],
+): IrExpr {
+  const local = lowerer.declareHiddenLocal("%reflectTarget", DYN);
+  const target = varRef(local.id, DYN, loc);
+  return {
+    kind: "seqExpr",
+    stmts: [
+      {
+        kind: "varDecl",
+        localId: local.id,
+        init: lowerer.lowerExprExpecting(node, DYN),
+        loc,
+      },
+      ...prelude,
+    ],
+    result: {
+      kind: "ternary",
+      cond: isObjectTarget(target, loc),
+      then: operation(target),
+      else_: nonObjectThrow(member, resultType, loc),
+      type: resultType,
+      loc,
+    },
+    type: resultType,
+    loc,
+  };
+}
+
+/** The value the hidden actual-argument array holds at `index`, or undefined
+ * past its length: a member value sees only the arguments its caller
+ * passed, exactly like Node's own function. */
+const actualArgument = (args: IrExpr, index: number, loc: SrcLoc): IrExpr => ({
+  kind: "dynKeyGet",
+  value: args,
+  key: str(String(index), loc),
+  type: DYN,
+  loc,
+});
+
+/** How many arguments the caller actually passed (`arguments.length`); a
+ * member whose receiver defaults only when the argument is ABSENT reads
+ * this (`Reflect.get(t, k)` vs `Reflect.get(t, k, undefined)`). */
+const actualArity = (args: IrExpr, loc: SrcLoc): IrExpr => ({
+  kind: "dynCheck",
+  value: { kind: "dynKeyGet", value: args, key: str("length", loc), type: DYN, loc },
+  type: F64,
+  loc,
+});
+
+const arityAtLeast = (args: IrExpr, count: number, loc: SrcLoc): IrExpr => ({
+  kind: "bin",
+  op: ">=",
+  left: actualArity(args, loc),
+  right: { kind: "numLit", value: count, type: F64, loc },
+  type: BOOL,
+  loc,
+});
+
+/** One Reflect member as a function value. `arguments` is the hidden
+ * actual-argument array (argumentsAll), so the closure sees the arity its
+ * caller used; `build` declares the locals it needs. The boxed value keeps
+ * Node's name and length and stays checked-dynamic, so calls through it
+ * convert arguments the way Node's own member function does. */
+function reflectMemberFunction(
+  lowerer: Lowerer,
+  member: string,
+  ret: IrType,
+  length: number,
+  loc: SrcLoc,
+  build: (args: IrExpr, locals: IrLocal[]) => IrStmt[],
+): IrExpr {
+  const name = `%builtin.Reflect.${member}`;
+  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+    const locals: IrLocal[] = [{ id: "args", name: "args", type: DYN, mutable: false }];
+    const body = build(varRef("args", DYN, loc), locals);
+    lowerer.liftedFns.push({
+      name,
+      // The one parameter is the hidden actual-argument array (argumentsAll):
+      // the member declares none, and reads every argument from it.
+      params: [{ localId: "args", name: "args", type: DYN }],
+      returnType: ret,
+      locals,
+      body,
+      loc,
+    });
+  }
+  return {
+    kind: "dynFrom",
+    value: {
+      kind: "closure",
+      fnName: name,
+      captures: [],
+      type: { kind: "func", params: [], ret, rest: true, argumentsAll: true },
+      loc,
+    },
+    fnName: member,
+    fnLength: length,
+    type: DYN,
+    loc,
+  };
+}
+
+/** The function value of the Reflect member `member`, or null for the three
+ * whose behavior has no faithful lowering yet (setPrototypeOf answers false
+ * where Object.setPrototypeOf throws, defineProperty answers false for a
+ * non-configurable member, and apply checks its target before the list —
+ * each would need runtime work, so they keep their call-time fence). */
+export function reflectMemberValue(lowerer: Lowerer, member: string, loc: SrcLoc): IrExpr | null {
+  const memberLocal = (locals: IrLocal[], ident: string, label: string): IrExpr => {
+    locals.push({ id: ident, name: label, type: DYN, mutable: false });
+    return varRef(ident, DYN, loc);
+  };
+  // The target check every guarded member shares, after reading argument 0.
+  const guard = (target: IrExpr): IrStmt => ({
+    kind: "if",
+    cond: {
+      kind: "unary",
+      op: "!",
+      operand: isObjectTarget(target, loc),
+      type: BOOL,
+      loc,
+    },
+    then: [{ kind: "exprStmt", expr: nonObjectThrow(member, VOID, loc), loc }],
+    else_: null,
+    loc,
+  });
+  switch (member) {
+    case "isExtensible":
+      return reflectMemberFunction(lowerer, member, BOOL, 1, loc, (args, locals) => {
+        const target = memberLocal(locals, "t.0", "target");
+        return [
+          { kind: "varDecl", localId: "t.0", init: actualArgument(args, 0, loc), loc },
+          guard(target),
+          {
+            kind: "return",
+            value: { kind: "libCall", fn: "dyn.isExtensible", args: [target], type: BOOL, loc },
+            loc,
+          },
+        ];
+      });
+    case "preventExtensions":
+      // The member function can prevent extensions of any untyped value it
+      // is passed, so the program keeps integrity words on untyped values
+      // (as Object.freeze as a value does).
+      lowerer.untypedIntegrity = true;
+      return reflectMemberFunction(lowerer, member, BOOL, 1, loc, (args, locals) => {
+        const target = memberLocal(locals, "t.0", "target");
+        return [
+          { kind: "varDecl", localId: "t.0", init: actualArgument(args, 0, loc), loc },
+          guard(target),
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "dyn.preventExtensions",
+              args: [target],
+              type: DYN,
+              loc,
+            },
+            loc,
+          },
+          { kind: "return", value: { kind: "boolLit", value: true, type: BOOL, loc }, loc },
+        ];
+      });
+    case "getOwnPropertyDescriptor":
+      return reflectMemberFunction(lowerer, member, DYN, 2, loc, (args, locals) => {
+        const target = memberLocal(locals, "t.0", "target");
+        return [
+          { kind: "varDecl", localId: "t.0", init: actualArgument(args, 0, loc), loc },
+          guard(target),
+          {
+            kind: "return",
+            value: {
+              kind: "libCall",
+              fn: "dyn.getOwnPropertyDescriptor",
+              args: [target, actualArgument(args, 1, loc)],
+              type: DYN,
+              loc,
+            },
+            loc,
+          },
+        ];
+      });
+    case "has":
+      return reflectMemberFunction(lowerer, member, BOOL, 2, loc, (args, locals) => {
+        const target = memberLocal(locals, "t.0", "target");
+        return [
+          { kind: "varDecl", localId: "t.0", init: actualArgument(args, 0, loc), loc },
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "dyn.reflectHasTarget",
+              args: [target],
+              type: VOID,
+              loc,
+            },
+            loc,
+          },
+          {
+            kind: "return",
+            value: {
+              kind: "libCall",
+              fn: "dyn.hasKeyComputed",
+              args: [target, actualArgument(args, 1, loc)],
+              type: BOOL,
+              loc,
+            },
+            loc,
+          },
+        ];
+      });
+    case "deleteProperty":
+      return reflectMemberFunction(lowerer, member, BOOL, 2, loc, (args, locals) => {
+        const target = memberLocal(locals, "t.0", "target");
+        return [
+          { kind: "varDecl", localId: "t.0", init: actualArgument(args, 0, loc), loc },
+          {
+            kind: "return",
+            value: {
+              kind: "libCall",
+              fn: "dyn.reflectDeleteProperty",
+              args: [target, actualArgument(args, 1, loc)],
+              type: BOOL,
+              loc,
+            },
+            loc,
+          },
+        ];
+      });
+    case "get":
+      return reflectMemberFunction(lowerer, member, DYN, 2, loc, (args, locals) => {
+        const target = memberLocal(locals, "t.0", "target");
+        const receiver = memberLocal(locals, "r.0", "receiver");
+        return [
+          { kind: "varDecl", localId: "t.0", init: actualArgument(args, 0, loc), loc },
+          {
+            kind: "varDecl",
+            localId: "r.0",
+            init: {
+              kind: "ternary",
+              cond: arityAtLeast(args, 3, loc),
+              then: actualArgument(args, 2, loc),
+              else_: target,
+              type: DYN,
+              loc,
+            },
+            loc,
+          },
+          {
+            kind: "return",
+            value: {
+              kind: "libCall",
+              fn: "dyn.reflectGet",
+              args: [target, actualArgument(args, 1, loc), receiver],
+              type: DYN,
+              loc,
+            },
+            loc,
+          },
+        ];
+      });
+    case "set":
+      return reflectMemberFunction(lowerer, member, BOOL, 3, loc, (args, locals) => {
+        const target = memberLocal(locals, "t.0", "target");
+        const receiver = memberLocal(locals, "r.0", "receiver");
+        return [
+          { kind: "varDecl", localId: "t.0", init: actualArgument(args, 0, loc), loc },
+          {
+            kind: "varDecl",
+            localId: "r.0",
+            init: {
+              kind: "ternary",
+              cond: arityAtLeast(args, 4, loc),
+              then: actualArgument(args, 3, loc),
+              else_: target,
+              type: DYN,
+              loc,
+            },
+            loc,
+          },
+          {
+            kind: "return",
+            value: {
+              kind: "libCall",
+              fn: "dyn.reflectSet",
+              args: [target, actualArgument(args, 1, loc), actualArgument(args, 2, loc), receiver],
+              type: BOOL,
+              loc,
+            },
+            loc,
+          },
+        ];
+      });
+    case "ownKeys": {
+      const value = lowerer.lowerNativeCallableValue(
+        {
+          fn: "dyn.ownKeys",
+          params: [DYN],
+          result: DYN,
+          valueParams: [{ mode: "required", type: DYN }],
+        },
+        "Reflect.ownKeys",
+        loc,
+      )!;
+      return { kind: "dynFrom", value, fnName: "ownKeys", type: DYN, loc };
+    }
+    default:
+      return null;
+  }
 }
 
 /** Reflect.ownKeys uses native computed-key reflection. Reflect.apply(target,
@@ -63,6 +401,48 @@ export function lowerReflectCall(
   }
   if (call.questionDotToken) return null;
   const reflectMember = lowerer.stdlibGlobalMember(access, "Reflect");
+  // Reflect.isExtensible / preventExtensions over an object target: the
+  // Object operation, behind Reflect's non-object TypeError.
+  // preventExtensions answers Node's boolean rather than the runtime's
+  // object.
+  if (
+    (reflectMember === "isExtensible" || reflectMember === "preventExtensions") &&
+    call.arguments.nodes.length === 1 &&
+    !ts.isSpreadElement(call.arguments.nodes[0]!)
+  ) {
+    const target = call.arguments.nodes[0]!;
+    if (reflectMember === "isExtensible")
+      return withObjectTarget(lowerer, reflectMember, target, BOOL, locOf(call), (object) => ({
+        kind: "libCall",
+        fn: "dyn.isExtensible",
+        args: [object],
+        type: BOOL,
+        loc: locOf(call),
+      }));
+    // The target can be any untyped value the program holds, so hierarchies
+    // reachable that way keep integrity words (as Object.preventExtensions's
+    // untyped form does).
+    noteUntypedIntegrity(lowerer, target);
+    return withObjectTarget(lowerer, reflectMember, target, BOOL, locOf(call), (object) => ({
+      kind: "seqExpr",
+      stmts: [
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "dyn.preventExtensions",
+            args: [object],
+            type: DYN,
+            loc: locOf(call),
+          },
+          loc: locOf(call),
+        },
+      ],
+      result: { kind: "boolLit", value: true, type: BOOL, loc: locOf(call) },
+      type: BOOL,
+      loc: locOf(call),
+    }));
+  }
   // Reflect.has(target, key) — the `in` operator's presence query over
   // the target's checked-dynamic view (own and inherited names, proxy
   // `has` traps included). A primitive target is Node's TypeError
@@ -129,19 +509,45 @@ export function lowerReflectCall(
       loc,
     };
   }
-  // Reflect.getOwnPropertyDescriptor and Reflect.defineProperty over
-  // checked objects (execa's Promise mixin): the Object operations, with
-  // defineProperty answering true. A non-object target throws the Object
-  // operation's TypeError.
+  // Reflect.getOwnPropertyDescriptor over checked objects: the Object
+  // operation behind Reflect's non-object TypeError (where the Object form
+  // boxes a primitive, this one throws).
   if (
-    (reflectMember === "getOwnPropertyDescriptor" && call.arguments.nodes.length === 2) ||
-    (reflectMember === "defineProperty" && call.arguments.nodes.length === 3)
+    reflectMember === "getOwnPropertyDescriptor" &&
+    call.arguments.nodes.length === 2 &&
+    !call.arguments.nodes.some(ts.isSpreadElement)
   ) {
+    const loc = locOf(call);
+    const key = lowerer.declareHiddenLocal("%reflectKey", DYN);
+    return withObjectTarget(
+      lowerer,
+      reflectMember,
+      call.arguments.nodes[0]!,
+      DYN,
+      loc,
+      (target) => ({
+        kind: "libCall",
+        fn: "dyn.getOwnPropertyDescriptor",
+        args: [target, varRef(key.id, DYN, loc)],
+        type: DYN,
+        loc,
+      }),
+      [
+        {
+          kind: "varDecl",
+          localId: key.id,
+          init: lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN),
+          loc,
+        },
+      ],
+    );
+  }
+  // Reflect.defineProperty over checked objects (execa's Promise mixin):
+  // the Object operation, with defineProperty answering true.
+  if (reflectMember === "defineProperty" && call.arguments.nodes.length === 3) {
     if (call.arguments.nodes.some(ts.isSpreadElement)) return null;
     const loc = locOf(call);
     const args = call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN));
-    if (reflectMember === "getOwnPropertyDescriptor")
-      return { kind: "libCall", fn: "dyn.getOwnPropertyDescriptor", args, type: DYN, loc };
     return {
       kind: "seqExpr",
       stmts: [

@@ -131,7 +131,10 @@ interface ChildAdditions {
 
 /** What the program's JavaScript adds to children: `child.name = value`
  * writes and defineProperty calls onto values the checker types as a
- * child, in any JavaScript file. */
+ * child, in any JavaScript file, and a definition whose target the checker
+ * does not resolve: an untyped parameter (`module.exports = (child) => {
+ * Reflect.defineProperty(child, ...) }`) holds a child at runtime and
+ * nothing types it. */
 function childAdditions(lowerer: Lowerer): ChildAdditions {
   let known = lowerer.childAdditions;
   if (known) return known;
@@ -149,6 +152,10 @@ function childAdditions(lowerer: Lowerer): ChildAdditions {
   // goes through the child's box.
   const spawns = files.some((sf) => sf.text.includes("child_process"));
   let everyName = false;
+  /** A definition whose target the checker does not resolve. An untyped
+   * parameter is the common case; a child reaches a helper through one, and
+   * a definition routed without the child's table is refused at runtime. */
+  let unresolvedDefine = false;
   const isChild = (e: ts.Expression): boolean =>
     lowerer.mapTypeOf(lowerer.typeOf(e))?.kind === "child";
   const key = (k: ts.Expression | ts.PropertyName): void => {
@@ -180,10 +187,16 @@ function childAdditions(lowerer: Lowerer): ChildAdditions {
       ) {
         const method = node.expression.name.text;
         const [target, second] = node.arguments.nodes;
-        if (target && second && isChild(target)) {
-          if (method === "defineProperty") key(second);
-          else if (method === "defineProperties") {
-            if (!ts.isObjectLiteralExpression(second)) everyName = true;
+        // The target is mapped for every Object/Reflect call that passes two
+        // arguments, as before: the memo state the walk leaves behind is part
+        // of the lowering it produces. Only a definition adds a member, though.
+        const mapped = target !== undefined && second !== undefined;
+        const targetType = mapped ? lowerer.mapTypeOf(lowerer.typeOf(target)) : null;
+        const defines = method === "defineProperty" || method === "defineProperties";
+        if (mapped && targetType?.kind === "child") {
+          if (defines) {
+            if (method === "defineProperty") key(second);
+            else if (!ts.isObjectLiteralExpression(second)) everyName = true;
             else
               for (const prop of second.properties.nodes) {
                 const name = prop.name;
@@ -197,12 +210,14 @@ function childAdditions(lowerer: Lowerer): ChildAdditions {
                 else everyName = true;
               }
           }
+        } else if (defines && mapped && targetType === null) {
+          unresolvedDefine = true;
         }
       }
       return true;
     });
   }
-  known = { written, everyName, any: written.size > 0 || everyName };
+  known = { written, everyName, any: written.size > 0 || everyName || unresolvedDefine };
   lowerer.childAdditions = known;
   return known;
 }

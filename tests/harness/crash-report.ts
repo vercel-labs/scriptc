@@ -66,6 +66,7 @@ function record(value: unknown): Record<string, unknown> | undefined {
 /** A sub-object of the payload as the text it appears as, so the line keeps
  * the keys ReportCrash wrote. */
 function section(value: unknown): string | undefined {
+  if (typeof value === "string") return JSON.stringify(value);
   const entry = record(value);
   return entry === undefined ? undefined : `${JSON.stringify(entry)}`;
 }
@@ -123,6 +124,9 @@ export function summarizeReport(name: string, text: string): string {
   const parts = [
     name,
     section(entry["exception"]),
+    // Names the region the fault address fell outside of, and how many bytes
+    // were left before the next one: a read just past the end of a mapping.
+    section(entry["vmRegionInfo"]),
     section(entry["termination"]),
     stack(payload, 12),
   ].filter((part): part is string => part !== undefined);

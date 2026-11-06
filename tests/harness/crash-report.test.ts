@@ -11,6 +11,7 @@ describe("darwin crash reports", () => {
     const text = ips({
       exception: { type: "EXC_BAD_ACCESS", signal: "SIGSEGV" },
       termination: { namespace: "SIGNAL", code: 11 },
+      vmRegionInfo: "0x10549c000 is not in any region.  Bytes before following region: 66060288",
       faultingThread: 1,
       threads: [
         { frames: [{ imageIndex: 0, imageOffset: 0x100, symbol: "main", symbolLocation: 12 }] },
@@ -37,6 +38,8 @@ describe("darwin crash reports", () => {
     const line = summarizeReport("program-2026-11-06-044953.ips", text);
     expect(line).toContain('"type":"EXC_BAD_ACCESS"');
     expect(line).toContain('"code":11');
+    // The fault address's place among the process's mappings.
+    expect(line).toContain("is not in any region.  Bytes before following region: 66060288");
     // Only the faulting thread's stack, with the images it references.
     expect(line).toContain("runtime.dylib scr_dyn_get+40 <- program +0x1f40 <- CoreFoundation +?");
     expect(line).not.toContain("main+12");

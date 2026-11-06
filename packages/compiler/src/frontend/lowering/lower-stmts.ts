@@ -9420,8 +9420,11 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
       }
       // A require value already ran the module's initializer while the
       // declaration evaluated it; importers of a re-exported module resolve
-      // through that module's own export machinery.
-      if (inlineProgramRequireOf(lowerer, rhs) !== null)
+      // through that module's own export machinery. A registered root slot
+      // (later member exports extend the object) still takes the required
+      // module's exports value: Node's module.exports IS that object, and
+      // the member writes below must reach it instead of an unset root.
+      if (inlineProgramRequireOf(lowerer, rhs) !== null && !lowerer.globalsByDeclNode.has(expr))
         return { kind: "block", body: [], loc: locOf(expr) };
       const single = lowerCjsSingleValueExport(lowerer, expr, locOf(expr));
       if (single !== null) return single;

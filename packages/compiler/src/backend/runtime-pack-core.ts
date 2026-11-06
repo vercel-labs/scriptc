@@ -102,6 +102,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   typeOrigins: boolean;
   dynForAwait: boolean;
   dynIntegrityQueries: boolean;
+  reflectProtoTarget: boolean;
   genBind: boolean;
   eventsOnceSignal: boolean;
   mime: boolean;
@@ -363,6 +364,7 @@ export function effectiveRuntimeFeatures(
     typeOrigins: features.typeOrigins === true,
     dynForAwait: features.dynForAwait === true,
     dynIntegrityQueries: features.dynIntegrityQueries === true,
+    reflectProtoTarget: features.reflectProtoTarget === true,
     genBind: features.genBind === true,
     eventsOnceSignal: features.eventsOnceSignal === true,
     mime: features.mime === true,

@@ -25,6 +25,7 @@ const features = {
   typeOrigins: false,
   dynForAwait: false,
   dynIntegrityQueries: false,
+  reflectProtoTarget: false,
   genBind: false,
   eventsOnceSignal: false,
   mime: false,

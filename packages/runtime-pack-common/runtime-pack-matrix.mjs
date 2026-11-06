@@ -202,6 +202,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // Object.isExtensible and Object.isSealed of a value typed dynamically; a
   // unit of its own so scr_json.c keeps its layout for every other program.
   ["scr_dyn_integrity.c", "dynIntegrityQueries"],
+  // Reflect.getPrototypeOf's primitive-target check; a unit of its own so
+  // scr_json.c keeps its layout for every program that never reflects.
+  ["scr_dyn_reflect_proto.c", "reflectProtoTarget"],
   // ChildProcess listener removal (off/removeListener) and signalCode; a
   // unit of its own so scr_child.c's layout stays put for every program.
   ["scr_child_lifecycle.c", "childLifecycle"],

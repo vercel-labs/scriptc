@@ -104,6 +104,7 @@ export interface EarlyExecutableNativeFeatures {
   typeOrigins?: boolean;
   dynForAwait?: boolean;
   dynIntegrityQueries?: boolean;
+  reflectProtoTarget?: boolean;
   genBind?: boolean;
   eventsOnceSignal?: boolean;
   mime?: boolean;

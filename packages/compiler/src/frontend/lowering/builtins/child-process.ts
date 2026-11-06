@@ -1166,7 +1166,8 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
   // Per-slot stdio modes (scr_child.c: 0 ignore, 1 inherit, 2 fd, 3 pipe)
   // and the out/err fd expressions for mode 2 (the daemon-log idiom:
   // stdio: ["ignore", logFd, logFd]). A slot whose TYPE is a union of the
-  // supported literals carries a runtime mode expression (stdioModeChain).
+  // supported literals carries a runtime mode expression (stdioModeExpr in
+  // spawn, stdioModeChain in spawnSync).
   let sawStdio = false;
   // A slot may be a runtime expression (a union of the three literals), so
   // each mode is an IrExpr: a literal here, the mapped expression there.
@@ -1314,12 +1315,12 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
             break;
           }
           const t = lowerer.typeOf(m.value);
-          // A scalar stdio expression can be a computed union too
-          // (`stdio: cond ? "pipe" : "ignore"`): it is bound once where the
-          // member sits, and the three modes read that one value.
-          const chain = stdioModeChain(lowerer, m.value, { pipe: 3, ignore: 0, inherit: 1 });
-          if (chain !== null) {
-            inMode = outMode = errMode = bind("%spawnStdioMode", chain);
+          // A scalar union-typed stdio expression feeds all three modes: it
+          // is read once into a hidden local, so a side effect in the
+          // expression runs once and the three modes cannot disagree.
+          const scalarMode = stdioModeExpr(lowerer, m.value, t, 0);
+          if (scalarMode !== null) {
+            inMode = outMode = errMode = bind("%spawnStdioMode", scalarMode);
             sawStdio = true;
             plain = false;
             break;

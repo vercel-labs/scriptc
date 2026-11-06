@@ -10928,14 +10928,6 @@ void scr_dyn_reflect_has_target(const ScrDyn *target) {
   static const char message[] = "Reflect.has called on non-object";
   scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
 }
-
-/* Reflect.getPrototypeOf's target check: unlike Object.getPrototypeOf, it
- * rejects every primitive (null and undefined included) instead of boxing. */
-void scr_dyn_reflect_get_prototype_target(const ScrDyn *target) {
-  if (!scr_dyn_primitive_kind(target)) return;
-  static const char message[] = "Reflect.getPrototypeOf called on non-object";
-  scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
-}
 bool scr_dyn_property_is_enumerable_computed(const ScrDyn *value, const ScrDyn *key) { return scr_dyn_key_probe_computed(value, key, 2); }
 
 static void scr_json_delete_member(ScrDyn *object, const ScrStr *key);

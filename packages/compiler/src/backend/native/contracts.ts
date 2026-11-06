@@ -162,6 +162,9 @@ export interface CcOptions {
   /** Object.isExtensible and Object.isSealed of a value typed dynamically:
    * compiles scr_dyn_integrity.c. */
   dynIntegrityQueries?: boolean;
+  /** Reflect.getPrototypeOf's primitive-target check: compiles
+   * scr_dyn_reflect_proto.c. */
+  reflectProtoTarget?: boolean;
   /** A generator that binds its parameters at the call: compiles
    * scr_gen_bind.c. */
   genBind?: boolean;

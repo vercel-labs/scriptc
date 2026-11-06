@@ -393,6 +393,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.spawnCaptureBytes === true, "scr_child_capture.c"),
   // Object.isExtensible and Object.isSealed of a value typed dynamically.
   unit((u) => u.opts.dynIntegrityQueries === true, "scr_dyn_integrity.c"),
+  // Reflect.getPrototypeOf's primitive-target check.
+  unit((u) => u.opts.reflectProtoTarget === true, "scr_dyn_reflect_proto.c"),
   // The declaration-typed boundary's adoption.
   unit((u) => u.opts.declAdopt === true, "scr_decl_adopt.c"),
   unit((u) => u.opts.typeOrigins === true, "scr_type_origin.c"),

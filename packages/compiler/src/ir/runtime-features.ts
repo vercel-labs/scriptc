@@ -1001,11 +1001,6 @@ export function moduleUsesWebCryptoAsymmetric(mod: IrModule): boolean {
   return webcrypto && named;
 }
 
-/** The typed reads that answer a ScrBytes: Node answers a Buffer, and
- * scr_lib.c's read entries brand it, so a typed read makes a Buffer value;
- * a spawnSync capture (spawnRes.stdoutBytes/stderrBytes) arrives from
- * scr_child_capture.c, whose accessors stamp the same brand. */
-
 /** Whether a property name spells a canonical array index `String(i)` for
  * an integer i below 2^32 - 1: digits only, and no leading zero unless the
  * whole name is "0". */
@@ -1152,6 +1147,10 @@ function moduleWritesSparseIndex(mod: IrModule): boolean {
   return sparse;
 }
 
+/** The typed reads that answer a ScrBytes: Node answers a Buffer, and
+ * scr_lib.c's read entries brand it, so a typed read makes a Buffer value.
+ * A spawnSync capture (spawnRes.stdoutBytes/stderrBytes) arrives from
+ * scr_child_capture.c, whose accessors stamp the same brand. */
 const FS_READ_BYTES_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "fs.readFileSyncBuf",
   "fs.readFileSyncBytes",
@@ -1446,6 +1445,9 @@ const RUNTIME_FEATURE_RULES = {
   /** Object.isExtensible and Object.isSealed of a value typed dynamically
    * (scr_dyn_integrity.c, a unit of its own so scr_json.c keeps its layout). */
   dynIntegrityQueries: rule({ fns: ["dyn.isExtensibleQuery", "dyn.isSealedQuery"] }),
+  /** Reflect.getPrototypeOf's primitive-target check (scr_dyn_reflect_proto.c,
+   * a unit of its own so scr_json.c keeps its layout). */
+  reflectProtoTarget: rule({ fns: ["dyn.reflectGetPrototypeTarget"] }),
   /** A generator that binds its parameters at the call (scr_gen_bind.c):
    * the spawn wrapper's eager step imports the bind helper, and every other
    * program links the default runtime objects. */
@@ -1996,6 +1998,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     typeOrigins: false,
     dynForAwait: false,
     dynIntegrityQueries: false,
+    reflectProtoTarget: false,
     dynBuffer: false,
     dynBufferMembers: false,
     bufferPrototypeObject: false,

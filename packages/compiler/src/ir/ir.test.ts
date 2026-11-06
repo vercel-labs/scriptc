@@ -19,6 +19,8 @@ import {
   POINTER_KINDS,
   STRING,
   arrayOf,
+  sortArms,
+  sortArmsTotal,
   typeEquals,
   typeKey,
 } from "./ir.js";
@@ -473,5 +475,95 @@ describe("checked conversion graph traversal", () => {
     expect(
       canConvertToDyn({ kind: "record", shapeId: "child" }, getRecord, () => undefined, visiting),
     ).toBe(false);
+  });
+});
+
+describe("arm sorting", () => {
+  // A deliberately mixed list: every kind typeKey distinguishes, a shared
+  // object twice (equal keys), and funcs whose keys differ only in their
+  // rest ABI spelling.
+  const pool = (): IrType[] => [
+    F64,
+    STRING,
+    DYN,
+    arrayOf(F64),
+    arrayOf(STRING),
+    { kind: "map", key: STRING, value: F64 },
+    { kind: "set", elem: STRING },
+    { kind: "record", shapeId: "r1" },
+    { kind: "record", shapeId: "r0" },
+    { kind: "union", unionId: "u9" },
+    { kind: "object", className: "B" },
+    { kind: "object", className: "A" },
+    { kind: "promise", inner: F64 },
+    { kind: "generator", yieldT: F64, retT: F64, nextT: F64 },
+    { kind: "func", params: [F64], ret: F64 },
+    { kind: "func", params: [F64], ret: F64, rest: true },
+    { kind: "func", params: [F64], ret: F64, rest: true, restAbi: "typed" },
+    { kind: "undefinedT" },
+    { kind: "nullT" },
+    { kind: "classval", className: "A" },
+    { kind: "moduleNs", moduleId: "m2" },
+  ];
+  const shuffled = (n: number): IrType[] => {
+    const base = pool();
+    const arms: IrType[] = [];
+    let seed = 12345;
+    for (let i = 0; i < n; i++) {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      arms.push(base[seed % base.length]!);
+    }
+    return arms;
+  };
+  const inlineOrder = (arms: IrType[]): number[] => {
+    const copy = [...arms];
+    copy.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+    return copy.map((arm) => arms.indexOf(arm));
+  };
+  const inlineTotalOrder = (arms: IrType[]): number[] => {
+    const copy = [...arms];
+    copy.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : typeKey(a) > typeKey(b) ? 1 : 0));
+    return copy.map((arm) => arms.indexOf(arm));
+  };
+
+  test("sorts arms by key in place and returns the same array", () => {
+    const arms = shuffled(64);
+    const before = arms.map(typeKey).sort();
+    expect(sortArms(arms)).toBe(arms);
+    expect(arms.map(typeKey)).toEqual(before);
+  });
+
+  test("leaves the order the inline comparator produces, ties included", () => {
+    for (const n of [2, 3, 5, 8, 17, 40, 64]) {
+      const arms = shuffled(n);
+      expect(sortArms([...arms]).map((arm) => arms.indexOf(arm))).toEqual(inlineOrder(arms));
+    }
+  });
+
+  test("the total-order form leaves the order the three-way comparator produces", () => {
+    for (const n of [2, 3, 5, 8, 17, 40, 64]) {
+      const arms = shuffled(n);
+      expect(sortArmsTotal([...arms]).map((arm) => arms.indexOf(arm))).toEqual(
+        inlineTotalOrder(arms),
+      );
+    }
+  });
+
+  test("keeps arms with equal keys in input order in the total-order form", () => {
+    const record = { kind: "record", shapeId: "r0" } as const;
+    const arms: IrType[] = [record, F64, record, STRING, record];
+    // "f64" < "record:r0" < "string": the three equal-key records stay in
+    // the order they appear in.
+    expect(sortArmsTotal(arms)).toEqual([F64, record, record, record, STRING]);
+    expect(arms.map((arm) => arm.kind)).toEqual(["f64", "record", "record", "record", "string"]);
+  });
+
+  test("passes empty and single-arm lists through untouched", () => {
+    const empty: IrType[] = [];
+    expect(sortArms(empty)).toBe(empty);
+    expect(sortArmsTotal(empty)).toBe(empty);
+    const one: IrType[] = [STRING];
+    expect(sortArms(one)).toBe(one);
+    expect(sortArmsTotal(one)).toBe(one);
   });
 });

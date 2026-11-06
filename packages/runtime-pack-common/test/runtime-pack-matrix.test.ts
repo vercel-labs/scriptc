@@ -73,15 +73,31 @@ test("web streams and Node islands select an async build that defines both", () 
   ).toEqual([]);
 });
 
-test("scr_lib.c builds once per flavor, whatever the program's features", () => {
+test("scr_lib.c builds once per flavor for a dynamic link, plus the static link's build", () => {
   // A file read brands its bytes and fs.watchFile's stat entry points are
-  // always defined, so neither a read nor a poll selects a second build.
+  // always defined, so neither a read nor a poll selects a second build. The
+  // one other build is the link's: a static executable cannot load NSS
+  // modules, so it reads /etc/passwd itself (SCR_STATIC_PASSWD), and every
+  // dynamically linked build keeps the getpwuid_r object.
   const unit = matrix.runtime_units.find((u: { source: string }) => u.source === "scr_lib.c");
-  expect(unit.variants.map((v: { id: string }) => v.id)).toEqual(["default", "default-workers"]);
+  expect(unit.variants.map((v: { id: string }) => v.id)).toEqual([
+    "default",
+    "default-workers",
+    "static-passwd",
+    "static-passwd-workers",
+  ]);
   const plain = { workers: false, watchFile: false };
   expect(selected("scr_lib.c", plain).defines).toEqual([]);
   expect(selected("scr_lib.c", { ...plain, watchFile: true }).defines).toEqual([]);
   expect(selected("scr_lib.c", { ...plain, workers: true, watchFile: true }).defines).toEqual([
+    "SCR_WORKERS",
+  ]);
+  // staticLink is the link plan's fact, and only it selects the second build.
+  expect(selected("scr_lib.c", { ...plain, staticLink: true }).defines).toEqual([
+    "SCR_STATIC_PASSWD",
+  ]);
+  expect(selected("scr_lib.c", { ...plain, workers: true, staticLink: true }).defines).toEqual([
+    "SCR_STATIC_PASSWD",
     "SCR_WORKERS",
   ]);
 });
@@ -222,6 +238,18 @@ test("the BigInt element kinds ride the JavaScript object model build", () => {
   ]) {
     expect(selected(source, plain).defines).toEqual([]);
   }
+});
+
+test("the shape store probe declines __proto__ in the object model build", () => {
+  // A dynamic store to the `__proto__` member is Object.prototype's setter,
+  // not a field the receiver's shape grows (object-literals.ts, scr_json.c),
+  // so the probe in scr_js_object.c declines it there; every other program
+  // keeps the default object, byte for byte.
+  const plain = { dynTier: false, jsObjectModel: false, workers: false };
+  expect(selected("scr_js_object.c", { ...plain, dynTier: true }).defines).toEqual([]);
+  expect(
+    selected("scr_js_object.c", { ...plain, dynTier: true, jsObjectModel: true }).defines,
+  ).toEqual(["SCR_JS_OBJECT_MODEL"]);
 });
 
 test("a dynamic global read selects the host-global build of the global unit", () => {

@@ -6,7 +6,9 @@
  *
  * url.parse() answers a checked-dynamic Url instance: an ordinary object
  * with Node's twelve own properties in Node's order (null where Node leaves
- * null), tagged with the "Url" class name for util.inspect. url.format()
+ * null), tagged with the "Url" class name for util.inspect. url.Url as a
+ * value is Node's constructor; it initializes its receiver with those same
+ * twelve fields and shares the prototype parse() results carry. url.format()
  * reads any object's fields with JS truthiness and string conversion;
  * url.resolve() runs entirely over fresh parses. The scans work on the
  * runtime's UTF-8 storage: every delimiter the algorithms test is ASCII,
@@ -936,15 +938,64 @@ LU_FENCED_METHOD(resolve)
 LU_FENCED_METHOD(resolveObject)
 LU_FENCED_METHOD(parseHost)
 
-static void lu_prototype_teardown(void) {
+static SCR_TL ScrDyn *lu_constructor = NULL;
+
+/* Node's Url constructor initializes its receiver only: the twelve fields in
+ * declaration order, all null, and answers undefined. Its body runs in
+ * strict mode, so a primitive or nullish receiver throws the catchable
+ * TypeError scr_dyn_key_set builds ("Cannot create property 'protocol' on
+ * number '5'", "Cannot set properties of undefined (setting 'protocol')"). */
+static ScrDyn *lu_construct(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure;
+  (void)args;
+  (void)argc;
+  static const char *const fields[] = {
+      "protocol", "slashes", "auth",   "host", "port",    "hostname",
+      "hash",     "search",  "query",  "pathname", "path", "href",
+  };
+  ScrDyn *self = scr_dyn_this_get();
+  for (size_t i = 0; i < sizeof fields / sizeof fields[0] && !scr_exc_pending(); i++) {
+    ScrStr *key = lu_cstr(fields[i]);
+    ScrDyn *null = scr_dyn_new_null();
+    scr_dyn_key_set(self, key, null);
+    scr_dyn_release(null);
+    scr_str_release(key);
+  }
+  scr_dyn_release(self);
+  if (scr_exc_pending()) return NULL;
+  return scr_dyn_undefined();
+}
+
+static void lu_class_teardown(void) {
+  if (lu_constructor) {
+    ScrDyn *ctor = lu_constructor;
+    lu_constructor = NULL;
+    scr_dyn_release(ctor);
+  }
   if (!lu_prototype) return;
+  /* The prototype's `constructor` holds the function, whose property table
+   * holds the prototype: drop that back edge so both fall to zero. */
+  ScrStr *key = lu_cstr("constructor");
+  scr_dyn_obj_delete_field(lu_prototype, key);
+  scr_str_release(key);
   lu_prototype->v.obj.class_name = NULL;
   scr_dyn_release(lu_prototype);
   lu_prototype = NULL;
 }
 
-static ScrDyn *lu_url_prototype(void) {
-  if (lu_prototype) return lu_prototype;
+/* The class is process-lifetime state (built once, released at exit). The
+ * RFC audit runs before atexit handlers, so it drops the class first; a
+ * later parse() call rebuilds it. Idempotent. */
+void scr_url_legacy_class_release(void) { lu_class_teardown(); }
+
+/* Url.prototype and the Url constructor exist together: parse() results carry
+ * the prototype, and the constructor's `prototype` is the same object, so
+ * `new Url()` is an instance of url.Url. The prototype's own keys are in
+ * Node's order (constructor, then the five enumerable methods) and the
+ * constructor's `prototype` is Node's ordinary-function property: writable,
+ * non-enumerable, non-configurable. */
+static ScrDyn *lu_url_class(void) {
+  if (lu_constructor) return lu_constructor;
   static const struct {
     const char *name;
     uint32_t arity;
@@ -958,14 +1009,33 @@ static ScrDyn *lu_url_prototype(void) {
   };
   ScrDyn *proto = scr_dyn_new_obj();
   proto->v.obj.class_name = "Url";
+  ScrClosure *closure = scr_closure_new(NULL, 1);
+  closure->function_kind = SCR_CLOSURE_KIND_OWN_PROTOTYPE;
+  ScrDyn *ctor = scr_dyn_new_func(closure, lu_construct, 0, "native:url", "Url");
+  scr_dyn_obj_set(proto, "constructor", 11, scr_dyn_retain(ctor));
+  size_t index = scr_dyn_obj_index_of(proto, "constructor", 11);
+  if (index != SIZE_MAX) scr_dyn_obj_set_attrs_at(proto, index, true, false, true);
   for (size_t i = 0; i < sizeof methods / sizeof methods[0]; i++)
     scr_dyn_obj_set(proto, methods[i].name, strlen(methods[i].name),
                     scr_dyn_new_func(scr_closure_new(NULL, 0), methods[i].thunk, methods[i].arity,
                                      "native:url.Url", methods[i].name));
+  scr_dyn_fn_seed_prototype(ctor, scr_dyn_retain(proto));
+  ScrDyn *table = scr_dyn_function_properties(ctor);
+  index = scr_dyn_obj_index_of(table, "prototype", 9);
+  if (index != SIZE_MAX) scr_dyn_obj_set_attrs_at(table, index, true, false, false);
+  scr_dyn_release(table);
   lu_prototype = proto;
-  scr_atexit(lu_prototype_teardown);
-  return proto;
+  lu_constructor = ctor;
+  scr_atexit(lu_class_teardown);
+  return ctor;
 }
+
+static ScrDyn *lu_url_prototype(void) {
+  if (!lu_prototype) lu_url_class();
+  return lu_prototype;
+}
+
+ScrDyn *scr_url_legacy_class(void) { return scr_dyn_retain(lu_url_class()); }
 
 /* ── resolve ───────────────────────────────────────────────────────── */
 

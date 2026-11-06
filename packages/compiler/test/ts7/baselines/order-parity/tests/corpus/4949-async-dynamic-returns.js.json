@@ -1,6 +1,0 @@
-{
- "order": [
-  "<repo>/tests/corpus/4949-async-dynamic-returns.js"
- ],
- "diags": []
-}

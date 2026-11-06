@@ -32,6 +32,7 @@ import {
   fenceDatePrototypeWrite,
   isDataViewPrototypeRead,
   isPromisePrototypeRead,
+  isCollectionPrototypeRead,
   lowerUnionKeyedRead,
 } from "./expressions/property-access.js";
 import {
@@ -1522,7 +1523,8 @@ function varBindingType(lowerer: Lowerer, nameNode: ts.Identifier): IrType | nul
   if (
     ts.isVariableDeclaration(nameNode.parent) &&
     !nameNode.parent.type &&
-    isDataViewPrototypeRead(lowerer, nameNode.parent.initializer)
+    (isDataViewPrototypeRead(lowerer, nameNode.parent.initializer) ||
+      isCollectionPrototypeRead(lowerer, nameNode.parent.initializer))
   )
     return DYN;
   let type = lowerer.mapTypeOf(lowerer.typeOf(nameNode));
@@ -6957,6 +6959,15 @@ export function lowerVarDecl(
           (existingValueForm(decl.initializer) || jsHoldsDynObject(lowerer, decl.initializer))))
     )
       g.type = DYN;
+    // %Set.prototype% and %Map.prototype% are ordinary objects the checker
+    // types Set<any> / Map<any, any>.
+    if (
+      isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+      !decl.type &&
+      !hasJsTypeAnnotation(decl) &&
+      isCollectionPrototypeRead(lowerer, decl.initializer)
+    )
+      g.type = DYN;
     g.type = inferredOptionalRecordType(lowerer, decl, g.type, raw.type);
     // A module const keeps its initializer's record or array layout, as a
     // function's const does (keepsInitializerLayout).
@@ -7140,6 +7151,14 @@ export function lowerVarDecl(
     type = init.type;
   // Promise.prototype is an ordinary object the checker types Promise<any>.
   if (!decl.type && !hasJsTypeAnnotation(decl) && isPromisePrototypeRead(lowerer, decl.initializer))
+    type = DYN;
+  // %Set.prototype% and %Map.prototype% are ordinary objects the checker
+  // types Set<any> / Map<any, any>.
+  if (
+    !decl.type &&
+    !hasJsTypeAnnotation(decl) &&
+    isCollectionPrototypeRead(lowerer, decl.initializer)
+  )
     type = DYN;
   // DataView.prototype (and its members) is likewise the prototype OBJECT,
   // though the checker types it DataView, whose lowering is a bytes view:

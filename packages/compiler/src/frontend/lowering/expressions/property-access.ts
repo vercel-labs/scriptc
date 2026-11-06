@@ -51,10 +51,13 @@ import {
   ARRAY_METHODS,
   MAP_METHODS,
   NARROW_FIRST,
+  SET_COMBINE_METHODS,
   SET_METHODS,
   STDLIB_SURFACE,
   STRING_INDEX_METHODS,
   STR_METHODS,
+  DYN_COLLECTION_CLASSES,
+  type DynCollectionClass,
   isChildSurfaceMember,
   stdlibGlobalNameOf,
 } from "../surfaces.js";
@@ -412,6 +415,24 @@ export function lowerPropertyAccessExpr(
     lowerer.buffersMutable = true;
   const arrayClassConstructor = lowerArrayClassConstructorRead(lowerer, expr, loc);
   if (arrayClassConstructor !== null) return arrayClassConstructor;
+  // `Set.prototype`, `Map.prototype`, `WeakMap.prototype` and
+  // `WeakSet.prototype` as values in a JavaScript source: the runtime's
+  // %<Class>.prototype% object, whose methods brand-check their receiver and
+  // which carries Symbol.toStringTag. Brand-check tests call through it, so
+  // this must answer BEFORE the builtin-constructor fence
+  // (fenceBuiltinConstructorStaticRead) claims the read.
+  {
+    const collection = dynCollectionPrototypeClass(lowerer, expr);
+    if (collection !== null)
+      return {
+        kind: "libCall",
+        fn: "dyn.collectionPrototype",
+        args: [strLit(collection, loc)],
+        type: DYN,
+        loc,
+      };
+  }
+
   // A createRequire loader's resolve read as a value (passed on, or
   // picked by `??`): a function that resolves its request at run time.
   // resolve.paths read as a value has no run-time lowering: a function
@@ -2273,6 +2294,39 @@ function dynCollectionMethodValue(
   };
 }
 
+/** An ES2025 Set composition read as a VALUE (`Set.prototype.union`,
+ * `s.union`): the runtime's interned method for that name, which applies
+ * the set-like protocol to its own receiver. JavaScript sources only; a
+ * typed source keeps the SC1090/SC2020 fence (the checker's Set signature
+ * has no value form). The receiver expression still runs for its effects. */
+function dynCollectionCombineValue(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+  name: string,
+): IrExpr {
+  const loc = locOf(expr);
+  const method: IrExpr = {
+    kind: "libCall",
+    fn: "dyn.collectionMethod",
+    args: [
+      { kind: "strLit", value: "Set", type: STRING, loc },
+      { kind: "strLit", value: name, type: STRING, loc: locOf(expr.name) },
+    ],
+    type: DYN,
+    loc,
+  };
+  const receiver = lowerer.lowerExpr(expr.expression);
+  return isSafeToDiscard(receiver)
+    ? method
+    : {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: receiver, loc: locOf(expr.expression) }],
+        result: method,
+        type: DYN,
+        loc,
+      };
+}
+
 /** Property access on a string or array receiver: `.length` lowers to the
  * matching intrinsic; a bare method reference (`const f = s.slice` — a
  * function value) is rejected with a specific message. Returns null for
@@ -3176,6 +3230,11 @@ export function lowerIntrinsicProperty(
         return dynCollectionMethodValue(lowerer, expr, "Set", name);
       lowerer.unsupported("SC1090", expr, `Set methods as values (call '${name}' directly)`);
     }
+    // The ES2025 compositions as values (`Set.prototype.union`,
+    // `s.union`): the runtime's interned function, which runs the set-like
+    // protocol on whatever receiver it is called with.
+    if (SET_COMBINE_METHODS.has(name) && isJsSourceFile(ts.getSourceFileOfNode(expr)))
+      return dynCollectionCombineValue(lowerer, expr, name);
     return null;
   }
   if (name === "length") {
@@ -6194,6 +6253,33 @@ export function isPromisePrototypeRead(lowerer: Lowerer, expr: ts.Expression | u
     inner.name.text === "constructor" &&
     lowerer.mapTypeOf(lowerer.typeOf(inner.expression))?.kind === "promise"
   );
+}
+
+/** `<Class>.prototype` read in a JavaScript source: the runtime's
+ * %<Class>.prototype% object (property-access.ts lowers the read to
+ * `dyn.collectionPrototype`), which the checker types `Set<any>` /
+ * `Map<any, any>` but which is an ordinary object, so a slot holds it as a
+ * checked-dynamic value. */
+export function isCollectionPrototypeRead(
+  lowerer: Lowerer,
+  expr: ts.Expression | undefined,
+): boolean {
+  return dynCollectionPrototypeClass(lowerer, expr) !== null;
+}
+
+/** `<Class>.prototype` read as a value: the class, or null for any other
+ * expression. A JavaScript source lowers the read to the runtime's
+ * %<Class>.prototype% object. */
+export function dynCollectionPrototypeClass(
+  lowerer: Lowerer,
+  expr: ts.Expression | undefined,
+): DynCollectionClass | null {
+  if (!expr || !isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  if (!ts.isPropertyAccessExpression(expr) || expr.questionDotToken) return null;
+  for (const name of DYN_COLLECTION_CLASSES)
+    if (lowerer.stdlibGlobalMember(expr, name) === "prototype") return name;
+  return null;
 }
 
 /** Whether `expr` reads DataView.prototype, or a member read through it, in

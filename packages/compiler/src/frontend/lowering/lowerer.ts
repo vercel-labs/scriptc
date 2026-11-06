@@ -2646,6 +2646,11 @@ export class Lowerer {
   /** Per JavaScript file, the declarations of the bindings it assigns an
    * own `toString` (jsAssignsOwnToString in lower-calls.ts). */
   readonly ownToStringTargets = new Map<ts.SourceFile, Set<ts.Node>>();
+  /** Per JavaScript file and keyed-collection class, whether the file
+   * patches that class's prototype (jsSourcePatchesCollectionPrototype in
+   * containers/collection-methods.ts). Both answers are kept, so a file's
+   * scan runs once per class however many constructors it holds. */
+  readonly collectionPrototypePatches = new Map<ts.SourceFile, Map<string, boolean>>();
   /** Per-symbol result of the never-reassigned file scan
    * (bindingNeverReassigned — object-literal generic-method receivers). */
   readonly neverReassignedCache = new Map<ts.Symbol, boolean>();
@@ -5077,6 +5082,7 @@ export class Lowerer {
     // its modules, so the answer is a memo computed on first use and the
     // census in handle-properties.ts reads it again when a unit replays.
     "handleJsSources",
+    "collectionPrototypePatches",
     // The whole-program prepass analyzeJsWidenedBindings computes this set
     // before lowering begins: a pure function of the program's modules.
     "jsWidenedBindings",

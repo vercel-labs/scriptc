@@ -2044,9 +2044,13 @@ try { console.log("delete index", "value", String(delete (s as any)[0])); } catc
     // read (direct, bracketed, through an alias or globalThis), and
     // reflection on or redefinition of their members, must stay a located
     // SC2020/SC1090 refusal, never an undefined or otherwise wrong value.
-    // Date.prototype is the one value: it reads as the prototype object, so
-    // a direct read, a member read through it and reflection on it answer as
-    // Node does. `key in Ctor` answers from the constructor's fixed keys.
+    // Date.prototype and the four keyed collections' prototypes are the
+    // values: Date.prototype reads as the prototype object, so a direct read, a
+    // member read through it and reflection on it answer as Node does; the
+    // Set/Map/WeakMap/WeakSet prototypes read as the objects the JavaScript
+    // lane provides (%Set.prototype% and friends), with their `constructor`
+    // member answering the interned constructor. `key in Ctor` answers from the
+    // constructor's fixed keys.
     // Test262 lost 769 refusals to undefined reads before this was pinned.
     const reads = [
       ["Map.prototype", "Map.prototype"],
@@ -2073,11 +2077,19 @@ try { console.log("delete index", "value", String(delete (s as any)[0])); } catc
       ["defineProperty(Promise)", 'Object.defineProperty(Promise, "resolve", { value: 1 })'],
       ["hasOwnProperty.call(Map)", 'Object.prototype.hasOwnProperty.call(Map, "groupBy")'],
     ] as const;
-    // The reads that answer from Date.prototype's object rather than refusing.
+    // The reads that answer from a prototype object rather than refusing.
     const readsAsValue = new Map<string, string>([
+      ["Map.prototype", "read object"],
       ["Date.prototype", "read object"],
       ["Date.prototype.getYear", "read function"],
+      ["Set.prototype", "read object"],
+      ["WeakMap.prototype", "read object"],
+      ["WeakSet.prototype", "read object"],
+      ["Map.prototype.constructor", "read function"],
+      ["getOwnPropertyDescriptor(Map.prototype)", "read object"],
       ["isExtensible(Date.prototype)", "read boolean"],
+      ["globalThis.Map.prototype", "read object"],
+      ["Map alias prototype", "read object"],
     ]);
     const source = `"use strict";
 const MapAlias = Map;
@@ -2110,8 +2122,8 @@ console.log("prototype" in Map, "groupBy" in Map, "captureStackTrace" in Error, 
           : `${label} ${read}`;
       }),
     );
-    // Promise.prototype reads as an object holding the runtime's methods,
-    // and `in` on a builtin constructor answers from its fixed keys.
+    // Promise.prototype reads as an object holding the runtime's methods, and
+    // `in` on a builtin constructor answers from its fixed keys.
     expect(lines.slice(reads.length)).toEqual([
       "7 2 1 1 0 0",
       "Date Map true true",

@@ -8,6 +8,9 @@
  * runtime heap. The entry initializes that thread's runtime before user code;
  * the thread wrapper drains its context before publishing the exit event. */
 typedef struct ScrWorkerThread ScrWorkerThread;
+/* The thread's process.env (scr_context.c under SCR_WORKERS). Named here so
+ * the start prototype compiles in every configuration. */
+typedef struct ScrContextEnv ScrContextEnv;
 typedef int (*ScrWorkerEntry)(uint32_t root);
 
 enum {

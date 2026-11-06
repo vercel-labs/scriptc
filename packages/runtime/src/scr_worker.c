@@ -121,7 +121,7 @@ void scr_worker_thread_release(ScrWorkerThread *worker) {
   scr_mailbox_release(worker->inbox);
   scr_mailbox_release(worker->parent);
   scr_message_free(worker->data);
-  scr_context_env_free(worker->environment);
+  scr_context_env_release(worker->environment);
   free(worker->name);
   for (int i = 0; i < worker->argc; i++) free(worker->argv[i]);
   free(worker->argv);
@@ -397,10 +397,14 @@ ScrWorkerThread *scr_worker_thread_start(ScrWorkerEntry entry, uint32_t root,
   worker->data = data;
   worker->environment_data = environment_data;
   worker->capture = capture;
-  /* A shared environment enters as NULL, which reads through to getenv and
-   * writes through to setenv (scr_context_env_enter). */
+  /* SHARE_ENV shares the environment of the thread that creates the worker,
+   * not the process environment: a worker with its own env option shares
+   * that one with its children (and is NULL, the process environment, only
+   * when the creating thread reads and writes the process's). The retained
+   * reference is what the new thread enters and releases at its exit. */
   worker->environment =
-      share_environment ? NULL : environment != NULL ? environment : scr_context_env_capture();
+      share_environment ? scr_context_env_retain(scr_context_env_current())
+                        : environment != NULL ? environment : scr_context_env_capture();
   worker->name = malloc(sizeof(ScrStr) + name->len + 1);
   if (!worker->name) scr_trap("scriptc: out of memory\n");
   memcpy(worker->name, name, sizeof(ScrStr) + name->len + 1);
@@ -450,7 +454,7 @@ failed:
   for (int i = 0; i < worker->argc; i++) free(worker->argv[i]);
   free(worker->argv);
   free(worker->name);
-  scr_context_env_free(worker->environment);
+  scr_context_env_release(worker->environment);
   scr_mailbox_release(worker->inbox);
   scr_mailbox_release(worker->parent);
   scr_message_free(worker->data);

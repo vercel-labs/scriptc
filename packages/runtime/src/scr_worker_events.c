@@ -1396,7 +1396,8 @@ static void scr_worker_share_env_cleanup(void) {
 
 ScrSym *scr_worker_share_env(void) {
   if (!scr_worker_share_env_symbol) {
-    ScrStr *description = scr_str_new("nodejs.worker_threads.SHARE_ENV", 32);
+    static const char text[] = "nodejs.worker_threads.SHARE_ENV";
+    ScrStr *description = scr_str_new(text, sizeof text - 1);
     scr_worker_share_env_symbol = scr_sym_new(description);
     scr_str_release(description);
     if (scr_atexit(scr_worker_share_env_cleanup)) scr_trap("scriptc: out of memory\n");
@@ -1405,8 +1406,10 @@ ScrSym *scr_worker_share_env(void) {
 }
 
 /* The option value's own enumerable entries as the environment's variables:
- * each value converts with String() (a getter runs, and a throw propagates),
- * and the text is stored as UTF-8, lone surrogates replaced as the process
+ * each value converts with ToString, so an object's Symbol.toPrimitive runs
+ * first (with the "string" hint, as String() does) and a getter or either
+ * hook can throw, the throw propagating out of the Worker constructor. The
+ * text is stored as UTF-8, lone surrogates replaced as the process
  * environment stores them. */
 static bool scr_worker_env_entries(ScrContextEnv *environment, ScrDyn *value) {
   ScrDynEntryPairs *pairs = scr_dyn_obj_entry_pairs(value);
@@ -1414,7 +1417,7 @@ static bool scr_worker_env_entries(ScrContextEnv *environment, ScrDyn *value) {
   bool ok = true;
   for (size_t i = 0; i < pairs->count; i++) {
     ScrDynEntryPair *pair = &pairs->pairs[i];
-    ScrStr *text = scr_dyn_string_coerce_js(pair->value);
+    ScrStr *text = scr_util_to_string(pair->value);
     if (!text) { ok = false; break; }
     char *name_owned, *value_owned;
     const char *name = scr_str_utf8(pair->key, &name_owned);
@@ -1434,8 +1437,8 @@ static bool scr_worker_env_entries(ScrContextEnv *environment, ScrDyn *value) {
 
 /* Node's env option (lib/internal/worker.js): an object's own enumerable
  * entries become the thread's process.env, null and undefined copy the
- * parent's environment, SHARE_ENV shares the process environment, and every
- * other value is ERR_INVALID_ARG_TYPE. */
+ * creating thread's environment, SHARE_ENV shares that environment, and
+ * every other value is ERR_INVALID_ARG_TYPE. */
 static bool scr_worker_env_option(ScrDyn *value, ScrContextEnv **environment, bool *share) {
   static const char expected[] =
       "of type object or one of undefined, null, or worker_threads.SHARE_ENV";
@@ -1465,7 +1468,7 @@ static bool scr_worker_env_option(ScrDyn *value, ScrContextEnv **environment, bo
   }
   ScrContextEnv *entries = scr_context_env_new();
   if (!scr_worker_env_entries(entries, value)) {
-    scr_context_env_free(entries);
+    scr_context_env_release(entries);
     return false;
   }
   *environment = entries;
@@ -1516,7 +1519,7 @@ static ScrDyn *scr_worker_new_options(double root, ScrStr *filename, ScrDyn *opt
   if (scr_dyn_truthy(name)) {
     if (name->kind != SCR_DYN_STR) {
       scr_arr_release(arguments);
-      scr_context_env_free(environment);
+      scr_context_env_release(environment);
       scr_dyn_prop_type_fail("options.name", "of type string", name);
       return NULL;
     }
@@ -1528,7 +1531,7 @@ static ScrDyn *scr_worker_new_options(double root, ScrStr *filename, ScrDyn *opt
   if (scr_exc_pending()) {
     scr_arr_release(arguments);
     scr_str_release(thread_name);
-    scr_context_env_free(environment);
+    scr_context_env_release(environment);
     return NULL;
   }
   bool environment_data;
@@ -1538,10 +1541,11 @@ static ScrDyn *scr_worker_new_options(double root, ScrStr *filename, ScrDyn *opt
   if (!wire) {
     scr_arr_release(arguments);
     scr_str_release(thread_name);
-    scr_context_env_free(environment);
+    scr_context_env_release(environment);
     return NULL;
   }
-  /* The thread record owns the environment (and a shared one is NULL). */
+  /* The thread record owns the environment; a shared one is the retained
+   * reference to the creating thread's environment. */
   ScrWorkerThread *thread = scr_worker_thread_start(sc_worker_entry, (uint32_t)root, wire, environment_data,
                                                     scr_worker_events, arguments, stack_size, thread_name,
                                                     capture, environment, share_environment);

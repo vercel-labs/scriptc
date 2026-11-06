@@ -26,7 +26,14 @@ SCR_TL void (*scr_context_report_error)(void);
 SCR_TL bool scr_context_report_rejection;
 
 typedef struct { char *name; char *value; } ScrContextEnvEntry;
-struct ScrContextEnv { size_t count; ScrContextEnvEntry *entries; };
+/* A SHARE_ENV worker shares the creating thread's environment rather than
+ * copying it, so two threads can hold one environment and either can outlive
+ * the other; the reference count spans both. */
+struct ScrContextEnv {
+  atomic_size_t references;
+  size_t count;
+  ScrContextEnvEntry *entries;
+};
 static SCR_TL ScrContextEnv *scr_context_environment;
 
 static char *scr_context_text_copy(const char *value) {
@@ -41,6 +48,7 @@ ScrContextEnv *scr_context_env_capture(void) {
   ScrArr *pairs = scr_env_pairs();
   ScrContextEnv *environment = calloc(1, sizeof(*environment));
   if (!environment) scr_trap("scriptc: out of memory\n");
+  atomic_init(&environment->references, 1);
   environment->count = pairs->len / 2;
   environment->entries = calloc(environment->count ? environment->count : 1, sizeof(*environment->entries));
   if (!environment->entries) scr_trap("scriptc: out of memory\n");
@@ -54,8 +62,16 @@ ScrContextEnv *scr_context_env_capture(void) {
   return environment;
 }
 
-void scr_context_env_free(ScrContextEnv *environment) {
+ScrContextEnv *scr_context_env_current(void) { return scr_context_environment; }
+
+ScrContextEnv *scr_context_env_retain(ScrContextEnv *environment) {
+  if (environment) atomic_fetch_add_explicit(&environment->references, 1, memory_order_relaxed);
+  return environment;
+}
+
+void scr_context_env_release(ScrContextEnv *environment) {
   if (!environment) return;
+  if (atomic_fetch_sub_explicit(&environment->references, 1, memory_order_acq_rel) != 1) return;
   for (size_t i = 0; i < environment->count; i++) {
     free(environment->entries[i].name); free(environment->entries[i].value);
   }
@@ -63,10 +79,13 @@ void scr_context_env_free(ScrContextEnv *environment) {
 }
 
 static void scr_context_env_cleanup(void) {
-  scr_context_env_free(scr_context_environment);
+  scr_context_env_release(scr_context_environment);
   scr_context_environment = NULL;
 }
 
+/* Takes ownership of the caller's reference for the thread's lifetime; a
+ * SHARE_ENV worker passes a reference it retained from the creating thread's
+ * environment, so both threads release the same environment independently. */
 void scr_context_env_enter(ScrContextEnv *environment) {
   scr_context_environment = environment;
   if (scr_context_atexit(scr_context_env_cleanup)) scr_trap("scriptc: out of memory\n");
@@ -82,6 +101,7 @@ const char *scr_context_getenv(const char *name) {
 ScrContextEnv *scr_context_env_new(void) {
   ScrContextEnv *environment = calloc(1, sizeof(*environment));
   if (!environment) scr_trap("scriptc: out of memory\n");
+  atomic_init(&environment->references, 1);
   environment->entries = calloc(1, sizeof(*environment->entries));
   if (!environment->entries) scr_trap("scriptc: out of memory\n");
   return environment;

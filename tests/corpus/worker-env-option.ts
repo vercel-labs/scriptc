@@ -1,7 +1,9 @@
-// The Worker env option: an object's own enumerable entries, String()-coerced,
+// The Worker env option: an object's own enumerable entries, ToString-ed,
 // become the worker's process.env; null or undefined copies this thread's
-// environment; every other value is ERR_INVALID_ARG_TYPE. The copy belongs to
-// the worker, so its writes do not reach the parent.
+// environment; every other value is ERR_INVALID_ARG_TYPE. The conversion runs
+// an object's Symbol.toPrimitive with the string hint, at construction, and
+// its throw leaves the constructor. The copy belongs to the worker, so its
+// writes do not reach the parent.
 import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
 
 type Env = { [key: string]: string | number | boolean | undefined } | null;
@@ -15,6 +17,56 @@ function phase(mode: string, env?: Env): Worker {
 function report(label: string, error: unknown): void {
   const shape = error as { code?: string; message?: string };
   console.log(label, shape.code, shape.message);
+}
+
+/** A rejected env conversion: Node reports the hook's own throw (whatever
+ * value it threw) or the object-to-primitive TypeError. */
+function rejected(label: string, value: any): void {
+  try {
+    const options: any = { env: { PRIM: value } };
+    new Worker(new URL(import.meta.url), options);
+    console.log(label, "not thrown");
+  } catch (error) {
+    if (typeof error === "string") {
+      console.log(label, "string", error);
+      return;
+    }
+    const shape = error as { name?: string; message?: string };
+    console.log(label, shape.name, shape.message);
+  }
+}
+
+/** The values convert at construction, before the worker starts: the hook's
+ * hint and result are visible, its throw escapes the constructor, and an
+ * object it answers with is the object-to-primitive TypeError. */
+function coercions(): void {
+  const log: string[] = [];
+  const hook: any = {
+    [Symbol.toPrimitive](hint: string) {
+      log.push("hint " + hint);
+      return "from-primitive";
+    },
+    toString() {
+      log.push("toString");
+      return "from-toString";
+    },
+  };
+  const options: any = { workerData: "coerced", env: { PRIM: hook } };
+  const worker = new Worker(new URL(import.meta.url), options);
+  worker.on("message", (message: unknown) => console.log("coerced:", message, "hook:", log.join(",")));
+  worker.on("exit", (code: number) => {
+    console.log("coerced exit:", code);
+    rejected("throwing:", {
+      [Symbol.toPrimitive]() {
+        throw "thrown-by-hook";
+      },
+    });
+    rejected("object answer:", {
+      [Symbol.toPrimitive]() {
+        return {};
+      },
+    });
+  });
 }
 
 if (isMainThread) {
@@ -47,7 +99,10 @@ if (isMainThread) {
         console.log("empty exit:", code3);
         const fourth = phase("omitted");
         fourth.on("message", (message: unknown) => console.log("omitted:", message));
-        fourth.on("exit", (code4: number) => console.log("omitted exit:", code4));
+        fourth.on("exit", (code4: number) => {
+          console.log("omitted exit:", code4);
+          coercions();
+        });
       });
     });
   });
@@ -81,6 +136,8 @@ if (isMainThread) {
       process.env.PATH === undefined,
     );
     parentPort!.postMessage("done");
+  } else if (mode === "coerced") {
+    parentPort!.postMessage(process.env.PRIM);
   } else {
     console.log("worker omitted:", process.env.PARENT_ONLY, process.env.A === undefined);
     parentPort!.postMessage("done");

@@ -345,12 +345,20 @@ extern SCR_TL void (*scr_context_report_error)(void);
 extern SCR_TL bool scr_context_report_rejection;
 typedef struct ScrContextEnv ScrContextEnv;
 ScrContextEnv *scr_context_env_capture(void);
+/* This thread's private environment, or NULL while it reads and writes the
+ * process environment. Borrowed. */
+ScrContextEnv *scr_context_env_current(void);
+/* Environments are reference counted: a SHARE_ENV worker enters the creating
+ * thread's environment, so either thread may exit first. */
+ScrContextEnv *scr_context_env_retain(ScrContextEnv *environment);
+void scr_context_env_release(ScrContextEnv *environment);
 /* A fresh empty environment (the Worker env option) and one entry set on
  * an environment the caller owns; both arguments are NUL-terminated UTF-8,
  * borrowed. */
 ScrContextEnv *scr_context_env_new(void);
 void scr_context_env_assign(ScrContextEnv *environment, const char *name, const char *value);
-void scr_context_env_free(ScrContextEnv *environment);
+/* Enters the environment for this thread, taking ownership of one
+ * reference; the thread's cleanup releases it. */
 void scr_context_env_enter(ScrContextEnv *environment);
 bool scr_context_env_set(const char *name, const char *value);
 const char *scr_context_getenv(const char *name);

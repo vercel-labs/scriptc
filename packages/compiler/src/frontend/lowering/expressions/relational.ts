@@ -1,6 +1,7 @@
 /* instanceof and in, including private-name and runtime-key in. */
 import { lowerIteratorInstanceOf } from "../iterator-prototype.js";
 import { programCreatesWrappers, WRAPPER_KIND_NUMBER } from "../primitive-wrappers.js";
+import { boxedHandleReceiver } from "../handle-properties.js";
 import { lowerArrayClassInstanceOf } from "../builtins/array-classes.js";
 import { dateRootOf } from "../builtins/date-classes.js";
 import { keyedHelperName } from "../stable-names.js";
@@ -14,6 +15,7 @@ import {
   privateInMessage,
 } from "../private-brands.js";
 import type { Lowerer } from "../lowerer.js";
+import { isCallableValue } from "../callable-properties.js";
 import {
   BOOL,
   BYTES_ELEMENT_NAME,
@@ -1853,6 +1855,16 @@ function mergeAwaitReach(a: AwaitReach, b: AwaitReach): AwaitReach {
   return "never";
 }
 
+/** How far an `await` stands before a test that takes one of two alternative
+ * paths: only a path that suspends on every one of its arms guarantees the
+ * suspension, so an arm without an `await` leaves the other arm's reach
+ * possible, not certain. */
+function eitherAwaitReach(a: AwaitReach, b: AwaitReach): AwaitReach {
+  if (a === "never" && b === "never") return "never";
+  if (a === "always" && b === "always") return "always";
+  return "maybe";
+}
+
 /** Whether executing `node` reaches an `await` in the same function: on every
  * path, on some path, or never. A short-circuit operand, conditional arm,
  * loop body or branch that may not run only makes the reach possible. A
@@ -1866,7 +1878,7 @@ function awaitReach(node: ts.Node): AwaitReach {
     if (condition === "always") return "always";
     if (node.condition.kind === ts.SyntaxKind.TrueKeyword) return awaitReach(node.whenTrue);
     if (node.condition.kind === ts.SyntaxKind.FalseKeyword) return awaitReach(node.whenFalse);
-    const arms = mergeAwaitReach(awaitReach(node.whenTrue), awaitReach(node.whenFalse));
+    const arms = eitherAwaitReach(awaitReach(node.whenTrue), awaitReach(node.whenFalse));
     if (arms === "never") return "never";
     return condition === "never" && arms === "always" ? "always" : "maybe";
   }
@@ -1876,7 +1888,7 @@ function awaitReach(node: ts.Node): AwaitReach {
     if (node.expression.kind === ts.SyntaxKind.TrueKeyword) return awaitReach(node.thenStatement);
     if (node.expression.kind === ts.SyntaxKind.FalseKeyword)
       return node.elseStatement ? awaitReach(node.elseStatement) : "never";
-    const arms = mergeAwaitReach(
+    const arms = eitherAwaitReach(
       awaitReach(node.thenStatement),
       node.elseStatement ? awaitReach(node.elseStatement) : "never",
     );
@@ -2018,11 +2030,17 @@ function declaredMembership(
   defined: number,
 ): boolean {
   if (OBJECT_PROTOTYPE_KEYS.has(key)) return true;
+  // A generic METHOD lives on the prototype like any other method. A field
+  // initialized with a generic arrow or function collects like a method (no
+  // closure slot can hold a generic function), but Node still defines its
+  // property when that field's own initializer runs, so it answers from the
+  // field order below.
+  const generic = findGenericMethodOn(lowerer, info, key);
   if (
     lowerer.findMethodOn(info, key) !== null ||
     lowerer.findMethodOn(info, `get:${key}`) !== null ||
     lowerer.findMethodOn(info, `set:${key}`) !== null ||
-    findGenericMethodOn(lowerer, info, key) !== null
+    (generic !== null && ts.isMethodDeclaration(generic.info.decl))
   )
     return true;
   for (let base = info.base; base; base = base.base) if (base.fields.has(key)) return true;
@@ -2030,7 +2048,16 @@ function declaredMembership(
   // field initializer has run (Node's transform), so it is not on `this` yet.
   if (info.paramProps?.some((pp) => pp.name === key)) return false;
   const own = info.fieldOrder.findIndex((f) => f.name === key);
-  if (own < 0) return false;
+  if (own < 0) {
+    if (generic === null) return false;
+    // An inherited generic function field was defined by the base's own
+    // initializers, which ran before this class's constructor body; this
+    // class's own answers from where its declaration sits in the body.
+    if (generic.declarer !== info) return true;
+    const current = info.fieldOrder[defined]?.initializer;
+    const field = generic.info.decl.parent;
+    return current !== undefined && field !== undefined && field.pos < current.pos;
+  }
   return own < defined;
 }
 
@@ -2368,9 +2395,9 @@ export function lowerInExpression(
     recv.type.kind === "classval" ? lowerer.classes.get(recv.type.className) : undefined;
   if (
     (classInfo && (classInfo.callableBase || hasRuntimeStatics(classInfo))) ||
-    (isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
-      recv.type.kind === "func" &&
-      lowerer.dynConvertible(recv.type))
+    (recv.type.kind === "func" &&
+      lowerer.dynConvertible(recv.type) &&
+      (isJsSourceFile(ts.getSourceFileOfNode(expr)) || isCallableValue(lowerer, expr.right)))
   ) {
     recv = lowerer.coerceToExpected(recv, DYN);
   }
@@ -2717,8 +2744,8 @@ export function lowerInExpression(
       if (
         f &&
         !inherited &&
-        f.type.kind === "union" &&
-        lowerer.armTag(f.type.unionId, UNDEFINED_T) >= 0
+        ((f.type.kind === "union" && lowerer.armTag(f.type.unionId, UNDEFINED_T) >= 0) ||
+          (f.optional === true && f.type.kind === "dyn"))
       ) {
         answers.push({ tag, has: "slot", arm }); // presence is per-value
         continue;
@@ -2849,6 +2876,13 @@ export function lowerInExpression(
         };
   }
   if (recv.type.kind !== "record") {
+    // A typed handle in a program that adds properties to handles: own
+    // keys and the class's members answer from its property table
+    // (scr_dyn_handle_props.c).
+    {
+      const boxed = boxedHandleReceiver(lowerer, recv);
+      if (boxed) return { kind: "dynHasKey", key, value: boxed, type: BOOL, loc };
+    }
     lowerer.unsupported(
       "SC1090",
       expr,
@@ -2868,8 +2902,8 @@ export function lowerInExpression(
     }
     if (
       !OBJECT_PROTOTYPE_KEYS.has(key) &&
-      field.type.kind === "union" &&
-      lowerer.armTag(field.type.unionId, UNDEFINED_T) >= 0
+      ((field.type.kind === "union" && lowerer.armTag(field.type.unionId, UNDEFINED_T) >= 0) ||
+        (field.optional === true && field.type.kind === "dyn"))
     ) {
       // Optional slot: the key is present unless the field is absent
       // (omitted or deleted); an explicit undefined is present.

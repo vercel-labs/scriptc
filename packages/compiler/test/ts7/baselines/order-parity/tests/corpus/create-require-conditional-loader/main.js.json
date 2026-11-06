@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/create-require-conditional-loader/main.js"
+ ],
+ "diags": []
+}

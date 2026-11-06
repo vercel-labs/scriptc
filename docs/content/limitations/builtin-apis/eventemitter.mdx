@@ -7,6 +7,7 @@
   Symbol names other than `events.errorMonitor` are unsupported.
   Once the program registers a listener under an unrestricted name, typed `listeners()`/`rawListeners()` results are unsupported for events that literal names register with typed listeners.
   An emitter reached through an untyped value shares one listener list with its typed uses, so untyped registrations and emits reach typed listeners and typed emits reach untyped listeners.
+  A `pipe` or `unpipe` emission reaches such a listener with a live view of the stream (its methods and properties), not the same object identity.
   An untyped `emit` of an event that has a listener with typed parameters converts its arguments to the event's typed tuple before any listener runs, and throws a `TypeError` when they do not convert.
   Through an untyped value, `listeners()` and `rawListeners()` of an event with a listener that has typed parameters are unsupported, and `emit('error')` of an object that is not an Error with no `error` listener is unsupported.
   A `newListener` or `removeListener` listener registered through an untyped value receives `undefined` in place of a listener registered with typed parameters.

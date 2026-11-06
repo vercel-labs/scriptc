@@ -20,6 +20,7 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     ...(features.eventTarget ? { eventTarget: true } : {}),
     ...(features.wasm ? { wasm: true } : {}),
     ...(features.warningReplace ? { warningReplace: true } : {}),
+    ...(features.promiseRejectDyn ? { promiseRejectDyn: true } : {}),
     ...(jsObjectModelFact(features) ? { jsObjectModel: true } : {}),
     mutableBuffers: features.mutableBuffers,
     ...(features.stdioExtended ? { stdioExtended: true } : {}),
@@ -56,6 +57,7 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
     ...(features.mime ? { mime: true } : {}),
     ...(features.webStreams ? { webStreams: true } : {}),
+    ...(features.webBodies ? { webBodies: true } : {}),
     ...(features.abortSignal ? { abortSignal: true } : {}),
     ...(features.utilTiming ? { utilTiming: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
@@ -64,7 +66,6 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     ...(features.dataViewPrototypeValue ? { dataViewPrototypeValue: true } : {}),
     ...(features.hostAbsentGlobals ? { hostAbsentGlobals: true } : {}),
     ...(features.arrayLikeDispatch ? { arrayLikeDispatch: true } : {}),
-    ...(features.builtinPrototypeValue ? { builtinPrototypeValue: true } : {}),
     ...(features.builtinMethodValue ? { builtinMethodValue: true } : {}),
     ...(features.computedRequire ? { computedRequire: true } : {}),
     // Island code's signal and exit listeners join the events unit's

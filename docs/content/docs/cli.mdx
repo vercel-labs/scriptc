@@ -2,7 +2,7 @@
 title: "CLI Reference"
 ---
 
-The `scriptc` command has six subcommands: `build`, `run`, `coverage`, `types`, `cache warm`, and `merge-profiles`. `scriptc --help` prints this summary and the options below, and `scriptc --version` prints the installed version.
+The `scriptc` command has seven subcommands: `build`, `run`, `coverage`, `types`, `cache warm`, `merge-profiles`, and `mcp`. `scriptc --help` prints this summary and the options below, and `scriptc --version` prints the installed version.
 
 ```console
 $ scriptc --help
@@ -28,7 +28,7 @@ Usage:
                                             package.json ("| undefined" widens)
   scriptc types list                        the project's type patches and what
                                             they match
-  scriptc cache warm [runtime|tls…] verify and load precompiled runtime families
+  scriptc cache warm [runtime|tls…]         verify and load precompiled runtime families
                                             for the current compiler/SDK/target
   scriptc merge-profiles -o <out.profdata> [--sparse] <profile…>
                                             merge the raw profiles that
@@ -37,6 +37,7 @@ Usage:
                                             profile for --profile-use;
                                             --sparse leaves out functions
                                             that never ran (a smaller file)
+  scriptc mcp                               serve these commands as MCP tools over stdio
 ```
 
 ## scriptc build
@@ -126,6 +127,18 @@ $ scriptc merge-profiles -o app.profdata profiles/*.profraw
 ```
 
 With `--sparse`, the profile leaves out the functions the runs never reached. The file is smaller, typically by about two thirds, and those functions are optimized as without a profile instead of as cold code.
+
+## scriptc mcp
+
+Serves the other commands as tools to an AI agent over the [Model Context Protocol](https://modelcontextprotocol.io), on stdin and stdout. Add it to an MCP client's configuration:
+
+```json
+{ "mcpServers": { "scriptc": { "command": "scriptc", "args": ["mcp"] } } }
+```
+
+Each command is one tool: `scriptc_build`, `scriptc_run`, `scriptc_coverage`, `scriptc_build_lib`, `scriptc_types_patch`, `scriptc_types_list`, `scriptc_cache_warm`, and `scriptc_merge_profiles`. A tool takes the command's arguments by name, with hyphens as underscores, such as `{ "file": "fib.ts", "npm_static": ["auto"], "keep_llvm": false }`, and runs that command as a child process of the same compiler. Relative paths resolve against the directory the server started in.
+
+`scriptc_build` and `scriptc_coverage` return the JSON diagnostics envelope of `--print=diagnostics`; the other tools return the command's exit status and output. `scriptc_run` runs the program with its stdin closed. The server runs at most four tool calls at once, keeps the first 8 MiB of each output stream, and stops a call's processes when the call is cancelled, runs longer than ten minutes, or the server receives SIGTERM or SIGINT. `scriptc_run` executes the program it compiles, so an agent connected to the server can run any code the signed-in user can.
 
 ## Options
 

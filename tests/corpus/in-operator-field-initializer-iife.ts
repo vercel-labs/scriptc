@@ -63,6 +63,11 @@ class Suspends {
     if (this.first === 0) await null;
     return "later" in this;
   })();
+  skippedArmExpression = (async () => {
+    const zero = this.first === 0;
+    const waited = zero ? await null : 0;
+    return waited === 0 && "later" in this;
+  })();
   expressionBody = (async () => (await null, "later" in this))();
   operandAwait = (async () => await ("later" in this))();
   branchAwait = (async () => {
@@ -83,6 +88,7 @@ console.log(
   await suspends.skippedAwait,
   await suspends.conditionalAwait,
   await suspends.skippedConditionalAwait,
+  await suspends.skippedArmExpression,
   await suspends.expressionBody,
   await suspends.operandAwait,
   await suspends.branchAwait,

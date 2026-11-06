@@ -29,6 +29,7 @@ import {
   canBoxFuncIntoDyn,
   funcOf,
   isUnitType,
+  setOf,
   typeKey,
 } from "../../../ir/ir.js";
 import { lowerBuiltinLoaderValue } from "../lower-builtin-values.js";
@@ -642,6 +643,8 @@ export function processDataMemberValue(
       return { kind: "libCall", fn: "process.pid", args: [], type: F64, loc };
     case "execPath":
       return { kind: "libCall", fn: "process.execPath", args: [], type: STRING, loc };
+    case "allowedNodeEnvironmentFlags":
+      return { kind: "libCall", fn: "process.allowedEnvFlags", args: [], type: setOf(STRING), loc };
     case "versions":
       return { kind: "libCall", fn: "process.versions", args: [], type: DYN, loc };
     default:
@@ -837,6 +840,12 @@ export function lowerProcessProperty(
   if (member === "execArgv") {
     return { kind: "libCall", fn: "process.execArgv", args: [], type: arrayOf(STRING), loc };
   }
+  // process.allowedNodeEnvironmentFlags: one stable set of the option
+  // names the compatibility target's NODE_OPTIONS accepts (the same
+  // identity on every read, like Node's).
+  if (member === "allowedNodeEnvironmentFlags") {
+    return { kind: "libCall", fn: "process.allowedEnvFlags", args: [], type: setOf(STRING), loc };
+  }
   // process._exiting — the runtime's exit-sequence flag (true while
   // 'exit' listeners run), Node's own undocumented member.
   if (member === "_exiting") {
@@ -869,6 +878,15 @@ export function lowerProcessProperty(
   // stable object like Node's.
   if (member === "release") {
     return { kind: "libCall", fn: "process.release", args: [], type: DYN, loc };
+  }
+  // process.report: the diagnostic report is answered by the Node island,
+  // which is this same process — one bridge call, no native
+  // reimplementation, and sharedObjects lists the binary's real libraries.
+  // A build without islands keeps the member fence that names
+  // process.report (no report is fabricated here).
+  if (member === "report") {
+    if (lowerer.nodeIslands === null) return null;
+    return { kind: "libCall", fn: "nodeIsland.processReport", args: [], type: DYN, loc };
   }
   // process.execPath: the compiled binary's own resolved absolute path —
   // the honest answer where Node's is the node executable's (SEMANTICS.md

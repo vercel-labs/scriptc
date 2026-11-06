@@ -235,6 +235,47 @@ function invokedOnTheSpot(node: ts.ArrowFunction): boolean {
   return false;
 }
 
+/** True when a nested function in `node` reads the function expression's
+ * own name. The body's direct reads lower to `selfRef` (the running
+ * closure), which a nested closure cannot use: its running closure is its
+ * own. Those reads need a binding to capture, so the name is materialized
+ * as a local initialized from the enclosing `selfRef`.
+ *
+ * Only a function expression needs this: a declaration's name is an
+ * ordinary binding of the enclosing scope, and nested declarations
+ * predeclare theirs. Reads that alias the name (import aliases, shorthand
+ * properties) resolve through the checker like every other reference. */
+function nestedSelfNameRead(
+  lowerer: Lowerer,
+  node: ts.FunctionExpression,
+  symbol: ts.Symbol,
+): boolean {
+  const name = node.name;
+  if (name === undefined) return false;
+  let found = false;
+  ts.walkPreorder(node, (n) => {
+    if (found || !ts.isIdentifier(n) || n.text !== name.text || n === name) return;
+    // A read in the function's own body scope reaches the running
+    // closure; only one behind a nested function needs the binding.
+    let nested = false;
+    for (let cur = n.parent; cur !== undefined && cur !== node; cur = cur.parent) {
+      if (ts.isFunctionLike(cur)) {
+        nested = true;
+        break;
+      }
+    }
+    if (!nested) return;
+    let target =
+      ts.isShorthandPropertyAssignment(n.parent) && n.parent.name === n
+        ? lowerer.checker.getShorthandAssignmentValueSymbol(n.parent)
+        : lowerer.checker.getSymbolAtLocation(n);
+    if (target !== undefined && (target.flags & ts.SymbolFlags.Alias) !== 0)
+      target = lowerer.checker.getAliasedSymbol(target);
+    if (target === symbol) found = true;
+  });
+  return found;
+}
+
 /** Lifts an arrow function / function expression / nested declaration /
  * object-literal shorthand method to a module-level function and yields
  * the `closure` expression creating it. */
@@ -430,6 +471,36 @@ export function lowerLambda(
   if (isGenerator && funcType.ret.kind === "generator") {
     fnCtx.generator = generatorMeta(lowerer, funcType.ret);
   }
+  // A named function expression stays a pure `selfRef` while only its own
+  // body reads the name. A nested function cannot read the running closure
+  // through `selfRef`, so the name becomes one local of this body, filled
+  // from the same `selfRef` at entry; nested functions then capture it like
+  // any outer binding. The type settles here only when return inference is
+  // off — an inferred return is settled after the body lowers, too late for
+  // a local the body's nested functions already captured — so that rare
+  // shape keeps its refusal.
+  let selfDecl: IrStmt | null = null;
+  if (
+    selfSymbol !== null &&
+    ts.isFunctionExpression(node) &&
+    fnCtx.inferReturn === undefined &&
+    nestedSelfNameRead(lowerer, node, selfSymbol)
+  ) {
+    const local = declareContextLocal(
+      fnCtx,
+      node.name!.text,
+      funcType,
+      false,
+      selfSymbol,
+      undefined,
+    );
+    selfDecl = {
+      kind: "varDecl",
+      localId: local.id,
+      init: { kind: "selfRef", type: funcType, loc },
+      loc,
+    };
+  }
   const diagsBefore = lowerer.diags.length;
   lowerer.fnStack.push(fnCtx);
   try {
@@ -477,6 +548,10 @@ export function lowerLambda(
       });
       fnCtx.suspendedFlag = suspended;
     }
+    // The name binding exists before the parameters evaluate, as Node
+    // creates it when the function object does: a default that reads the
+    // name (`(x = self) => …`) sees the function.
+    if (selfDecl !== null) prologue.unshift(selfDecl);
 
     const lowerBody = (): IrStmt[] => {
       let body: IrStmt[];

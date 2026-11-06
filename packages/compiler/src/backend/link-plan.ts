@@ -56,7 +56,14 @@ export async function createNativeLinkPlan(options: {
 }): Promise<NativeLinkPlan> {
   if (options.ffi?.frameworks?.length && options.target.platform !== "darwin")
     throw new Error("FFI frameworks require a Darwin target");
-  const runtimePack = await loadRuntimePack(options);
+  // A static executable cannot load NSS modules, so the pack selects the
+  // /etc/passwd build of the os unit for it (SCR_STATIC_PASSWD); every
+  // dynamically linked build keeps the getpwuid_r build.
+  const runtimePack = await loadRuntimePack({
+    ...options,
+    features:
+      options.staticLink === true ? { ...options.features, staticLink: true } : options.features,
+  });
   const hugeText =
     options.hugeText !== false &&
     hugeTextProgram(options.target, [options.programObject, ...(options.programPartitions ?? [])]);

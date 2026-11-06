@@ -48,6 +48,12 @@ describe("runtime feature snapshots", () => {
     expect(moduleUsesHttp2(mod)).toBe(false);
   });
 
+  test("links the inspect unit for a BigInt rendered in Node's form", () => {
+    const mod = module();
+    mod.functions[0]!.body.push(call("bigint.inspect"));
+    expect(moduleRuntimeFeatures(mod)).toMatchObject({ bigint: true, inspect: true });
+  });
+
   test("gates the BigIntStats unit on its member reads, not on bigint", () => {
     const reads = module();
     reads.functions[0]!.body.push(call("bigstats.size"));
@@ -61,6 +67,16 @@ describe("runtime feature snapshots", () => {
       type: { kind: "bigint" },
     });
     expect(moduleRuntimeFeatures(storage)).toMatchObject({ bigint: true, bigstats: false });
+  });
+
+  test("selects the fetch unit's Blob/File body build only for programs that build one", () => {
+    const plain = module();
+    plain.functions[0]!.body.push(call("fetch.input"));
+    expect(moduleRuntimeFeatures(plain)).toMatchObject({ fetch: true, webBodies: false });
+
+    const blob = module();
+    blob.functions[0]!.body.push(call("blob.new"), call("fetch.input"));
+    expect(moduleRuntimeFeatures(blob)).toMatchObject({ fetch: true, webBodies: true });
   });
 
   test("gates the call-time parameter bind unit on a barriered generator", () => {
@@ -219,6 +235,20 @@ describe("runtime feature snapshots", () => {
     }
   });
 
+  test("the generic Promise statics link the units their algorithms call", () => {
+    // The implementing unit calls C's resolve and the iterable's next/return
+    // through scr_dyn_invoke and builds and settles capability promises with
+    // scr_async_dyn: a program that makes only this call still links both, or
+    // the source build fails to link.
+    const mod = module();
+    mod.functions[0]!.body.push(call("promise.genericStatic"));
+    expect(moduleRuntimeFeatures(mod)).toMatchObject({
+      promiseGeneric: true,
+      dynInvoke: true,
+      dynAsync: true,
+    });
+  });
+
   test("constant-key reads of inherited method names link the dyn-invoke unit", () => {
     const reads = (key: string): IrModule => {
       const mod = module();
@@ -352,17 +382,220 @@ describe("runtime feature snapshots", () => {
     expect(moduleRuntimeFeatures(makesDate(literal)).dateAnnexB).toBe(false);
   });
 
-  test("the JavaScript object model build owns no entry yet", () => {
+  test("the JavaScript object model build owns the buffer views registry calls", () => {
     // t262-da §J: the features only a JavaScript source reaches share one
-    // runtime feature, whose entry list the slices fill as they land. This
-    // branch lists none, so a program with a sibling dynamic feature keeps
-    // the default objects.
-    expect(JS_OBJECT_MODEL_LIB_FNS.size).toBe(0);
+    // runtime feature, whose entry list the slices fill as they land. The
+    // buffer views registry (t262-dc C2) arms itself through these calls, and
+    // the resizable constructors lower to them, so a program that makes one
+    // selects the object model build; every other program keeps the default
+    // objects.
+    expect([...JS_OBJECT_MODEL_LIB_FNS].sort()).toEqual([
+      "arrayBuffer.armMutable",
+      "arrayBuffer.newResizable",
+      "sharedArrayBuffer.newGrowable",
+    ]);
     const mod = module();
     mod.functions[0]!.body.push(call("dyn.stdlibPrototype"));
     const features = moduleRuntimeFeatures(mod);
     expect(features.stdlibPrototypeValue).toBe(true);
     expect(features.jsObjectModel).toBe(false);
+    expect(features.mutableBuffers).toBe(false);
+    for (const fn of JS_OBJECT_MODEL_LIB_FNS) {
+      const armed = module();
+      armed.functions[0]!.body.push(call(fn));
+      expect(moduleRuntimeFeatures(armed).jsObjectModel, fn).toBe(true);
+      expect(moduleRuntimeFeatures(armed).mutableBuffers, fn).toBe(true);
+    }
+  });
+
+  test("a dynamic __proto__ key selects the object model build", () => {
+    // Object.prototype's __proto__ accessor is modelled in the object model
+    // build of scr_json.c, so a source that reads or writes the member by
+    // name under a dynamic key takes that build; every other program keeps
+    // the default object, byte for byte.
+    const obj = (): IrExpr => ({ kind: "varRef", localId: "o", type: DYN, loc });
+    const key = (value: string): IrExpr => ({ kind: "strLit", value, type: STRING, loc });
+    const read = module();
+    read.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: { kind: "dynKeyGet", value: obj(), key: key("__proto__"), type: DYN, loc },
+    });
+    const readFeatures = moduleRuntimeFeatures(read);
+    expect(readFeatures.protoAccessor).toBe(true);
+    expect(jsObjectModelFact(readFeatures)).toBe(true);
+    for (const fn of ["dyn.keySet", "dyn.bagGet", "dyn.bagSet"] as const) {
+      const write = module();
+      write.functions[0]!.body.push({
+        kind: "exprStmt",
+        loc,
+        expr: { kind: "libCall", fn, args: [obj(), key("__proto__"), obj()], type: VOID, loc },
+      });
+      const writeFeatures = moduleRuntimeFeatures(write);
+      expect(writeFeatures.protoAccessor, fn).toBe(true);
+      expect(jsObjectModelFact(writeFeatures), fn).toBe(true);
+    }
+    // A literal member named `__proto__` is a property definition, which the
+    // backend emits through the object model build's define entry.
+    const literal = module();
+    literal.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: {
+        kind: "dynObjLit",
+        fields: [{ key: key("__proto__"), value: obj() }],
+        type: DYN,
+        loc,
+      },
+    });
+    const literalFeatures = moduleRuntimeFeatures(literal);
+    expect(literalFeatures.protoAccessor).toBe(true);
+    expect(jsObjectModelFact(literalFeatures)).toBe(true);
+    const ordinary = module();
+    ordinary.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: { kind: "dynKeyGet", value: obj(), key: key("constructor"), type: DYN, loc },
+    });
+    ordinary.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: {
+        kind: "dynObjLit",
+        fields: [{ key: key("x"), value: obj() }],
+        type: DYN,
+        loc,
+      },
+    });
+    const ordinaryFeatures = moduleRuntimeFeatures(ordinary);
+    expect(ordinaryFeatures.protoAccessor).toBe(false);
+    expect(jsObjectModelFact(ordinaryFeatures)).toBe(false);
+  });
+
+  test("selects the JavaScript object model build for writes that spell a sparse index", () => {
+    // t262 W7: only a write the source spells an index past the dense
+    // prefix's materialization limit (1000000 elements, scr_json.c) selects
+    // the build, and a keyed write evaluates its key into a hidden local
+    // first, so the literal reaches the write through that local's
+    // definition. A key computed at run time cannot be proven sparse and
+    // keeps its SC2020 refusal: selecting the build for it would rebuild
+    // every program with a computed write.
+    const boxed = (value: IrExpr): IrExpr => ({ kind: "dynFrom", value, type: DYN, loc });
+    const num = (value: number): IrExpr => ({ kind: "numLit", value, type: DYN, loc });
+    const str = (value: string): IrExpr => ({ kind: "strLit", value, type: STRING, loc });
+    const value = boxed(str("v"));
+    const writes = (fn: IrLibFn, key: IrExpr, written: IrExpr = value): IrModule => {
+      const mod = module();
+      mod.functions[0]!.body.push(
+        { kind: "varDecl", localId: "%key", init: key, loc },
+        {
+          kind: "exprStmt",
+          loc,
+          expr: {
+            kind: "libCall",
+            fn,
+            args: [boxed(str("o")), { kind: "varRef", localId: "%key", type: DYN, loc }, written],
+            type: VOID,
+            loc,
+          },
+        },
+      );
+      return mod;
+    };
+    const selects = (fn: IrLibFn, key: IrExpr, written?: IrExpr): boolean =>
+      moduleRuntimeFeatures(writes(fn, key, written)).sparseArrays;
+    expect(selects("dyn.keySetComputed", boxed(num(2147483648)))).toBe(true);
+    expect(selects("dyn.keySet", str("987654321"))).toBe(true);
+    expect(selects("dyn.keySetComputed", boxed(num(7)))).toBe(false);
+    expect(selects("dyn.keySet", str("012"))).toBe(false);
+    expect(selects("dyn.keySetComputed", boxed(str("name")))).toBe(false);
+    // A key computed at run time is not a proven index.
+    expect(selects("dyn.keySetComputed", { kind: "varRef", localId: "k", type: DYN, loc })).toBe(
+      false,
+    );
+    // A live view of a native array keeps its far slots out of line already
+    // (the ScrArr ext), so a spelled far write through it selects nothing.
+    const view = module();
+    const native = arrayOf(DYN);
+    view.functions[0]!.locals.push({ id: "%typed", name: "typed", mutable: false, type: native });
+    view.functions[0]!.body.push(
+      {
+        kind: "varDecl",
+        localId: "%view",
+        init: boxed({ kind: "varRef", localId: "%typed", type: native, loc }),
+        loc,
+      },
+      { kind: "varDecl", localId: "%key", init: boxed(num(3000001)), loc },
+      {
+        kind: "exprStmt",
+        loc,
+        expr: {
+          kind: "libCall",
+          fn: "dyn.keySetComputed",
+          args: [
+            { kind: "varRef", localId: "%view", type: DYN, loc },
+            { kind: "varRef", localId: "%key", type: DYN, loc },
+            value,
+          ],
+          type: VOID,
+          loc,
+        },
+      },
+    );
+    expect(moduleRuntimeFeatures(view).sparseArrays).toBe(false);
+    // A module-level `const view: any = typed` initializes its global with an
+    // assign, and is the same live view.
+    const globalView = module();
+    globalView.functions[0]!.locals.push({
+      id: "%typed",
+      name: "typed",
+      mutable: false,
+      type: native,
+    });
+    globalView.functions[0]!.body.push(
+      {
+        kind: "assign",
+        localId: "%view",
+        value: boxed({ kind: "varRef", localId: "%typed", type: native, loc }),
+        initializes: true,
+        loc,
+      },
+      { kind: "varDecl", localId: "%key", init: boxed(num(3000001)), loc },
+      {
+        kind: "exprStmt",
+        loc,
+        expr: {
+          kind: "libCall",
+          fn: "dyn.keySetComputed",
+          args: [
+            { kind: "varRef", localId: "%view", type: DYN, loc },
+            { kind: "varRef", localId: "%key", type: DYN, loc },
+            value,
+          ],
+          type: VOID,
+          loc,
+        },
+      },
+    );
+    expect(moduleRuntimeFeatures(globalView).sparseArrays).toBe(false);
+    // `length` moves where the prefix ends, so the spelled value decides.
+    expect(selects("dyn.keySet", str("length"), boxed(num(5000000)))).toBe(true);
+    expect(selects("dyn.keySet", str("length"), boxed(num(8)))).toBe(false);
+    expect(selects("dyn.keyDelete" as IrLibFn, str("987654321"))).toBe(false);
+  });
+
+  test("arms the host-global check for a computed global read and `in`", () => {
+    // A computed read of the global object, or `… in globalThis`, links the
+    // derived name table's runtime check (scr_global_host_absent.c) and the
+    // SCR_GLOBAL_HOST_ABSENT build of scr_node_builtin.c.
+    for (const fn of ["global.hostAbsent", "dyn.globalHas"] as const) {
+      const mod = module();
+      mod.functions[0]!.body.push(call(fn));
+      const features = moduleRuntimeFeatures(mod);
+      expect(features.hostAbsentGlobals, fn).toBe(true);
+      expect(features.jsObjectModel, fn).toBe(false);
+    }
+    expect(moduleRuntimeFeatures(module()).hostAbsentGlobals).toBe(false);
   });
 
   test("gates the BigInt typed-array element kinds on the constructor name", () => {
@@ -389,5 +622,28 @@ describe("runtime feature snapshots", () => {
     const numeric = module();
     numeric.functions[0]!.body.push(bytesCall("Uint8Array"));
     expect(moduleRuntimeFeatures(numeric).bigintBytes).toBe(false);
+  });
+
+  test("gates the spawn error's errnoException fields on reading it", () => {
+    // The `.error` read is what selects scr_child.c's SCR_CHILD_ERR_FIELDS
+    // build; a program that only spawns keeps the default object.
+    const reader = module();
+    reader.functions[0]!.body.push(call("spawnRes.error"));
+    expect(moduleRuntimeFeatures(reader)).toMatchObject({
+      childProcess: true,
+      childErrorFields: true,
+    });
+
+    const spawner = module();
+    spawner.functions[0]!.locals.push({
+      id: "r",
+      name: "r",
+      mutable: false,
+      type: { kind: "spawnRes" },
+    });
+    expect(moduleRuntimeFeatures(spawner)).toMatchObject({
+      childProcess: true,
+      childErrorFields: false,
+    });
   });
 });

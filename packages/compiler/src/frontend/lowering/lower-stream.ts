@@ -77,6 +77,7 @@ import {
   canConvertToDyn,
   funcOf,
   typeEquals,
+  sortArms,
   typeKey,
   UNDEFINED_T,
 } from "../../ir/ir.js";
@@ -600,7 +601,7 @@ function cbTuples(lowerer: Lowerer): Record<string, (IrType | "fn")[]> {
 /** Interns a union from unsorted arms (the interner's identity is the
  * typeKey-SORTED arm list — mapType's canonicalization). */
 function unionOf(lowerer: Lowerer, arms: IrType[]): IrType {
-  const sorted = [...arms].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  const sorted = sortArms([...arms]);
   return { kind: "union", unionId: lowerer.unions.intern(sorted) };
 }
 

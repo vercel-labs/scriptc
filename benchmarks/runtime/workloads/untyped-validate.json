@@ -1,0 +1,6 @@
+{
+  "entry": "workloads/untyped-validate.mjs",
+  "args": [
+    "200000"
+  ]
+}

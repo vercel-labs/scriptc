@@ -7,32 +7,19 @@ const h: Hybrid = { base: "b", extra: "e" };
 delete h["extra"];
 console.log(h.base);
 
-// An OPTIONAL checked-dynamic field (`unknown`/`any`) has no ABSENT state
-// for a delete to write — the slot cannot represent "no property", and an
-// omitted one already reads as present — so the refusal names that reason
-// instead of calling the optional field required.
-interface Dyn {
-  content: string[];
-  structured?: unknown;
+// A key of SEVERAL literals (a parameter keeps the union; a `const`
+// binding narrows to its initializer's literal and folds) names no single
+// slot statically; the refusal names the key form instead of claiming a
+// field is required.
+interface Two {
+  a?: number;
+  b?: number;
 }
-const d: Dyn = { content: [] };
-delete d.structured;
-
-// The same fence on a union of records: every arm declares the field
-// optional and checked-dynamic.
-interface DynA {
-  content: string[];
-  structured?: unknown;
-  extra?: any;
+const two: Two = {};
+function dropTwo(which: "a" | "b"): void {
+  delete two[which];
 }
-interface DynB {
-  content: string[];
-  structured?: unknown;
-}
-function drop(u: DynA | DynB): void {
-  delete u.structured;
-}
-drop(d);
+dropTwo("a");
 
 // A REQUIRED record field has no absent state to write, so the refusal
 // names that reason (tsc rejects the delete itself; the fence explains

@@ -1638,7 +1638,7 @@ static void scr_dyn_thenable_schedule(ScrPromise *target, const ScrDyn *thenable
  * when the read threw (the exception stays pending). Program class
  * instances read through `reader`, the compiled property dispatch (no
  * reader: their own fields only). */
-static ScrDyn *scr_dyn_then_of(const ScrDyn *value, const ScrDyn *reader) {
+ScrDyn *scr_dyn_thenable_function(const ScrDyn *value, const ScrDyn *reader) {
   if (value->kind != SCR_DYN_OBJ && value->kind != SCR_DYN_FUNC && value->kind != SCR_DYN_PROXY &&
       value->kind != SCR_DYN_TYPED_REF)
     return NULL;
@@ -1673,7 +1673,7 @@ __attribute__((always_inline)) static inline void scr_dyn_resolve_value(ScrPromi
     scr_promise_resolve_dyn(target, scr_dyn_retain(value));
     return;
   }
-  ScrDyn *then = scr_dyn_then_of(value, reader);
+  ScrDyn *then = scr_dyn_thenable_function(value, reader);
   if (scr_exc_pending()) {
     scr_promise_reject_pending(target);
   } else if (then) {
@@ -1767,7 +1767,7 @@ static void scr_dyn_thenable_schedule(ScrPromise *target, const ScrDyn *thenable
 static ScrPromise *scr_dyn_promise_entry(ScrCombine *c, const ScrDyn *value, const ScrDyn *reader) {
   if (value->kind == SCR_DYN_PROMISE) return scr_promise_retain(value->v.promise);
   ScrPromise *source = scr_promise_new();
-  ScrDyn *then = scr_dyn_then_of(value, reader);
+  ScrDyn *then = scr_dyn_thenable_function(value, reader);
   if (scr_exc_pending()) {
     scr_promise_reject_pending(source);
   } else if (then) {

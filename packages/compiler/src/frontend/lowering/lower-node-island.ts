@@ -754,6 +754,12 @@ function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr 
     // island operations it stays a handle, like an array the island does
     // not declare.
     if (containerType(lowerer, tsType) && handleUseOk(lowerer, node)) return raw;
+    // A function the island declares through a types-only package
+    // (`express.json(): NextHandleFunction`): the value is a function object
+    // the island made, with no native representation, and the program
+    // reaches it through the island (it passes it back, or calls it through
+    // the bridge), so it stays the handle of that function.
+    if (callableType(lowerer, tsType)) return raw;
     boundaryFail(
       lowerer,
       `an island value of type '${lowerer.checker.typeToString(tsType)}'`,
@@ -983,6 +989,30 @@ function containerType(lowerer: Lowerer, type: ts.Type): boolean {
   if (lowerer.checker.isArrayType(type) || lowerer.checker.isTupleType(type)) return true;
   const name = type.getSymbol()?.escapedName;
   return name === "Map" || name === "Set" || builtinHandleClass(type);
+}
+
+/** Whether every non-nullish part of `type` is callable or constructible
+ * (at least one is): a function object declared by a types-only package —
+ * `express.json()` returns body-parser's `NextHandleFunction` — which the
+ * type mapper cannot represent natively. */
+function callableType(lowerer: Lowerer, type: ts.Type): boolean {
+  const parts =
+    type.isUnionType() || (type.flags & ts.TypeFlags.Intersection) !== 0
+      ? ts.constituentTypes(type)
+      : [type];
+  let any = false;
+  for (const part of parts) {
+    if ((part.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0)
+      continue;
+    if ((part.flags & ts.TypeFlags.Object) === 0) return false;
+    if (
+      lowerer.checker.getCallSignatures(part).length === 0 &&
+      lowerer.checker.getConstructSignatures(part).length === 0
+    )
+      return false;
+    any = true;
+  }
+  return any;
 }
 
 /** A member read, call, index or `new` whose receiver or callee is an
@@ -1265,7 +1295,11 @@ export function classConstructHelper(
   const info = lowerer.classes.get(className);
   if (info === undefined || info.def.runtime || info.localClass || info.generic) return null;
   for (let c: typeof info | null = info; c; c = c.base) if (c.def.baseValueGlobal) return null;
-  if (lowerer.inheritsBuiltinErrorCtor(info)) return null;
+  /* A ctor-less Error subclass keeps the builtin base's constructor
+   * parameters — the (message?, options?) checked-dynamic pair the
+   * synthesized constructor forwards — so its helper constructs exactly
+   * what native `new C(...)` does. Only an explicit constructor with
+   * another shape falls through the mode check below. */
   const shapes = info.ctorParams;
   if (shapes.some((s) => s.mode !== "required" && s.mode !== "omittable")) return null;
   const name = `%island.new:${className}`;
@@ -1650,7 +1684,9 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
   if (ts.isElementAccessExpression(expr)) {
     if (!isForeignExpr(lowerer, expr.expression)) return null;
     lowerer.usesNodeIsland = true;
-    const target = lowerer.lowerExpr(expr.expression);
+    // `(p as V)[k]`: an assertion on a handle is a view, never a conversion
+    // (the read meets the member's declared type in fromIsland below).
+    const target = lowerer.lowerExpr(stripTypeWrappers(expr.expression));
     const key = toIsland(lowerer, expr.argumentExpression);
     return fromIsland(
       lowerer,
@@ -1841,7 +1877,9 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
           stmts.push({ kind: "varDecl", localId: local.id, init, loc });
           return varRef(local.id, type, loc);
         };
-        const target = lowerer.lowerExpr(left.expression);
+        // `(p as V).k = v`: write the HANDLE the assertion views, not the
+        // asserted record the conversion would build.
+        const target = lowerer.lowerExpr(stripTypeWrappers(left.expression));
         const receiver = hold("%islandSetTarget", target, target.type);
         const key = ts.isPropertyAccessExpression(left)
           ? null
@@ -1914,9 +1952,10 @@ function islandCompoundAssign(
     stmts.push({ kind: "varDecl", localId: local.id, init, loc });
     return varRef(local.id, DYN, loc);
   };
+  // `(p as V).k op= v`: the view is erased, so the handle is the receiver.
   const target = hold(
     "%islandObj",
-    lowerer.coerceToExpected(lowerer.lowerExpr(left.expression), DYN),
+    lowerer.coerceToExpected(lowerer.lowerExpr(stripTypeWrappers(left.expression)), DYN),
   );
   const key = ts.isPropertyAccessExpression(left)
     ? null
@@ -1977,7 +2016,9 @@ function islandReceiver(
       return { value: exports };
     }
   }
-  return { value: lowerer.coerceToExpected(lowerer.lowerExpr(receiver), FOREIGN) };
+  // `(p as V).k`: the assertion is a view of `p`'s handle, not a
+  // conversion of it (the read meets the member's type in fromIsland).
+  return { value: lowerer.coerceToExpected(lowerer.lowerExpr(inner), FOREIGN) };
 }
 
 /** Whether `require(spec)` in `file` loads an island module. */

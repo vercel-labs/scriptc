@@ -165,8 +165,8 @@ function buildFetchCompatProfile() {
   return {
     schemaVersion: 1,
     target: {
-      node: "24.22.0",
-      undici: "7.29.1",
+      node: "24.22.1",
+      undici: "7.30.1",
     },
     requestInit: [
       {
@@ -184,8 +184,14 @@ function buildFetchCompatProfile() {
       {
         id: "stdlib.fetch.request-init.body",
         name: "RequestInit.body",
-        conversion: "string, Uint8Array, ReadableStream, or null",
-        evidence: [fixture("static"), fixture("static-stream"), fixture("static-coercion")],
+        conversion:
+          "string, Uint8Array, ReadableStream, Blob, File, or null; a FormData body is refused by name",
+        evidence: [
+          fixture("static"),
+          fixture("static-stream"),
+          fixture("static-coercion"),
+          fixture("web-body"),
+        ],
       },
       {
         id: "stdlib.fetch.request-init.duplex",
@@ -917,9 +923,9 @@ function buildFetchCompatProfile() {
       ],
       excludedInterfaces: [
         {
-          name: "Blob/File/FormData bodies",
+          name: "FormData bodies",
           reason:
-            "fetch request and response bodies do not accept or produce Blob, File, or FormData values",
+            "fetch request bodies do not accept FormData values; its multipart encoding is not implemented",
         },
         {
           name: "WritableStream/TransformStream",

@@ -73,10 +73,13 @@ test("web streams and Node islands select an async build that defines both", () 
   ).toEqual([]);
 });
 
-test("scr_lib.c builds once per flavor, whatever the program's features", () => {
+test("scr_lib.c builds once per flavor for a dynamic link, plus the static link's build", () => {
   // A file read brands its bytes and fs.watchFile's stat entry points are
   // always defined, so neither a read nor a poll selects a second build. The
-  // unit's one other object is the JavaScript object model twin (t262-da
+  // one other build is the link's: a static executable cannot load NSS
+  // modules, so it reads /etc/passwd itself (SCR_STATIC_PASSWD), and every
+  // dynamically linked build keeps the getpwuid_r object.
+  // The unit's other object is the JavaScript object model twin (t262-da
   // §J), which answers the checked-dynamic Date annexB accessors.
   const unit = matrix.runtime_units.find((u: { source: string }) => u.source === "scr_lib.c");
   expect(unit.variants.map((v: { id: string }) => v.id)).toEqual([
@@ -84,6 +87,8 @@ test("scr_lib.c builds once per flavor, whatever the program's features", () => 
     "default-workers",
     "js-om",
     "js-om-workers",
+    "static-passwd",
+    "static-passwd-workers",
   ]);
   const plain = { workers: false, watchFile: false };
   expect(selected("scr_lib.c", plain).defines).toEqual([]);
@@ -91,19 +96,29 @@ test("scr_lib.c builds once per flavor, whatever the program's features", () => 
   expect(selected("scr_lib.c", { ...plain, workers: true, watchFile: true }).defines).toEqual([
     "SCR_WORKERS",
   ]);
+  // staticLink is the link plan's fact, and only it selects the second build.
+  expect(selected("scr_lib.c", { ...plain, staticLink: true }).defines).toEqual([
+    "SCR_STATIC_PASSWD",
+  ]);
+  expect(selected("scr_lib.c", { ...plain, workers: true, staticLink: true }).defines).toEqual([
+    "SCR_STATIC_PASSWD",
+    "SCR_WORKERS",
+  ]);
 });
 
-test("every scr_json build has a JavaScript object model twin", () => {
+test("scr_json builds one object per flavor, plus its object model twin", () => {
   // The JavaScript object model build (t262-da §J) is one column for every
   // runtime feature only a JavaScript source reaches: each scr_json.c build
   // gets one twin, so any combination of features selects a build that
-  // carries the object model's code.
+  // carries the object model's code. The unit has no partial record view
+  // build: its view slot answers NULL for a field a partial record view does
+  // not have in every build.
   const variants = variantsFor("scr_json.c");
   expect(variants.map((variant: { id: string }) => variant.id)).toEqual([
     "default",
-    "record-view-partial",
+    "node-island",
     "js-om",
-    "js-om-record-view-partial",
+    "js-om-node-island",
   ]);
   for (const variant of variants) {
     if (!variant.id.startsWith("js-om")) continue;
@@ -115,24 +130,37 @@ test("every scr_json build has a JavaScript object model twin", () => {
   expect(selected("scr_json.c", { workers: false, jsObjectModel: true }).defines).toEqual([
     "SCR_JS_OBJECT_MODEL",
   ]);
-  // ...keeps the record-view twin beside a partial record assertion...
-  const partial = { workers: false, jsObjectModel: true, recordViewPartial: true };
-  expect(selected("scr_json.c", partial).id).toBe("js-om-record-view-partial");
-  expect(selected("scr_json.c", partial).defines).toEqual([
-    "SCR_RECORD_VIEW_PARTIAL",
-    "SCR_JS_OBJECT_MODEL",
-  ]);
   // ...and keeps the worker build when the program starts threads.
   expect(selected("scr_json.c", { workers: true, jsObjectModel: true }).defines).toEqual([
     "SCR_JS_OBJECT_MODEL",
     "SCR_WORKERS",
   ]);
+  // A program that runs a Node island selects the island build, alone and
+  // beside the object model build it may also carry.
+  expect(selected("scr_json.c", { workers: false, nodeIsland: true }).defines).toEqual([
+    "SCR_NODE_ISLANDS",
+  ]);
+  expect(
+    selected("scr_json.c", { workers: false, jsObjectModel: true, nodeIsland: true }).defines,
+  ).toEqual(["SCR_NODE_ISLANDS", "SCR_JS_OBJECT_MODEL"]);
+  // A partial record assertion selects nothing: the view slot answers NULL in
+  // every build, so a program with one keeps the build its other features
+  // name, alone or beside the island and object model builds.
+  expect(selected("scr_json.c", { workers: false, recordViewPartial: true }).defines).toEqual([]);
+  expect(
+    selected("scr_json.c", { workers: false, nodeIsland: true, recordViewPartial: true }).defines,
+  ).toEqual(["SCR_NODE_ISLANDS"]);
+  expect(
+    selected("scr_json.c", {
+      workers: false,
+      jsObjectModel: true,
+      nodeIsland: true,
+      recordViewPartial: true,
+    }).defines,
+  ).toEqual(["SCR_NODE_ISLANDS", "SCR_JS_OBJECT_MODEL"]);
   // A program that reaches none of the features keeps the default object.
   expect(selected("scr_json.c", { workers: false }).id).toBe("default");
   expect(selected("scr_json.c", { workers: false }).defines).toEqual([]);
-  expect(selected("scr_json.c", { workers: false, recordViewPartial: true }).defines).toEqual([
-    "SCR_RECORD_VIEW_PARTIAL",
-  ]);
 });
 
 test("a dynamic Date annexB accessor selects the JavaScript object model build", () => {
@@ -174,7 +202,6 @@ test("the BigInt element kinds ride the JavaScript object model build", () => {
   // gets a build column of its own.
   const plain = {
     jsObjectModel: false,
-    recordViewPartial: false,
     textDecoderLegacy: false,
     webStreams: false,
     nodeIsland: false,
@@ -206,4 +233,57 @@ test("the BigInt element kinds ride the JavaScript object model build", () => {
   ]) {
     expect(selected(source, plain).defines).toEqual([]);
   }
+});
+
+test("the shape store probe declines __proto__ in the object model build", () => {
+  // A dynamic store to the `__proto__` member is Object.prototype's setter,
+  // not a field the receiver's shape grows (object-literals.ts, scr_json.c),
+  // so the probe in scr_js_object.c declines it there; every other program
+  // keeps the default object, byte for byte.
+  const plain = { dynTier: false, jsObjectModel: false, workers: false };
+  expect(selected("scr_js_object.c", { ...plain, dynTier: true }).defines).toEqual([]);
+  expect(
+    selected("scr_js_object.c", { ...plain, dynTier: true, jsObjectModel: true }).defines,
+  ).toEqual(["SCR_JS_OBJECT_MODEL"]);
+});
+
+test("a dynamic global read selects the host-global build of the global unit", () => {
+  // A computed read of the global object, or `… in globalThis`, arms the
+  // check for the Node globals the native runtime does not implement
+  // (host-globals.ts); every other program keeps the default object.
+  const plain = { hostAbsentGlobals: false, workers: false };
+  expect(selected("scr_node_builtin.c", plain).defines).toEqual([]);
+  expect(selected("scr_node_builtin.c", { ...plain, hostAbsentGlobals: true }).defines).toEqual([
+    "SCR_GLOBAL_HOST_ABSENT",
+  ]);
+  // A worker program keeps its thread-state build AND the check.
+  expect(
+    selected("scr_node_builtin.c", { hostAbsentGlobals: true, workers: true }).defines,
+  ).toEqual(["SCR_GLOBAL_HOST_ABSENT", "SCR_WORKERS"]);
+});
+
+test("reading a spawnSync result's error selects the child build with its fields", () => {
+  // A program that reads `.error` links the build that keeps the spawn errno
+  // and argv on the result and stamps Node's errnoException fields.
+  expect(selected("scr_child.c", { workers: false, childErrorFields: true }).defines).toEqual([
+    "SCR_CHILD_ERR_FIELDS",
+  ]);
+  // A program that spawns but never reads `.error` keeps the default object
+  // and the result container exactly as they were, byte for byte.
+  expect(selected("scr_child.c", { workers: false, childErrorFields: false }).defines).toEqual([]);
+});
+
+test("extended spawn options beside an error read keep both child builds", () => {
+  // The cwd/input/shell entries and the errnoException fields live in two
+  // builds of scr_child.c; a program that passes those options and reads
+  // `.error` needs one object carrying both, not the options build alone.
+  expect(
+    selected("scr_child.c", { workers: false, childOptionExt: true, childErrorFields: true })
+      .defines,
+  ).toEqual(["SCR_CHILD_CP_OPTIONS", "SCR_CHILD_ERR_FIELDS"]);
+  // Each feature alone keeps its own build.
+  expect(
+    selected("scr_child.c", { workers: false, childOptionExt: true, childErrorFields: false })
+      .defines,
+  ).toEqual(["SCR_CHILD_CP_OPTIONS"]);
 });

@@ -38,24 +38,33 @@ interface JSON {
  * `new Promise<T>((resolve) => ...)` types resolve as `(value: T) => void`
  * — no PromiseLike union. The reject parameter is a real closure rejecting
  * the promise; its reason is pinned to Error (the lib says `reason?: any`)
- * because rejection payloads ride the same representation as thrown values
- * and the idiomatic reason IS an Error — reject(nonError) and bare
- * reject() typecheck only in the project world and meet the lowerer's
- * honest coercion fences instead. First settle wins, exactly JS: a reject
- * after resolve (or a second reject) is a no-op, and an executor throw
- * after any settle is swallowed. Executors that use the lib signature's
- * other extras (resolving with a thenable) still typecheck and fail
- * lowering on their types. */
+ * because a TYPED promise's rejection payloads ride the same
+ * representation as thrown values and the idiomatic reason IS an Error —
+ * reject(nonError) and bare reject() typecheck only in the project world
+ * and meet the lowerer's honest coercion fences instead. A promise whose
+ * settled value is unknown has no typed payload to protect: its reason is
+ * the checked-dynamic value the program rejected with, so `reject()`,
+ * `reject(42)` and `reject("s")` are the JS semantics there
+ * (`unknown extends T` is true exactly for the dynamic tier: unknown and
+ * an untyped JavaScript executor's inference). First settle wins, exactly
+ * JS: a reject after resolve (or a second reject) is a no-op, and an
+ * executor throw after any settle is swallowed. Executors that use the lib
+ * signature's other extras (resolving with a thenable) still typecheck and
+ * fail lowering on their types. */
 interface PromiseConstructor {
   new <T>(
-    executor: (resolve: (value: T) => void, reject: (reason: Error) => void) => void,
+    executor: (
+      resolve: (value: T) => void,
+      reject: (reason: unknown extends T ? unknown : Error) => void,
+    ) => void,
   ): Promise<T>;
   /* ES2024's Promise.withResolvers, in the executor's own scriptc shape:
    * resolve takes the plain value (no PromiseLike union; the conditional
    * collapses Promise<void>'s resolve to () => void so the record's
-   * field types map exactly), reject is the executor's Error-pinned
-   * rejection closure. The lib's own declaration would otherwise be
-   * unrepresentable field-by-field. */
+   * field types map exactly), reject is the executor's rejection closure —
+   * `unknown` for a promise whose settled value is unknown, exactly the
+   * `new Promise` executor's reason. The lib's own declaration would
+   * otherwise be unrepresentable field-by-field. */
   withResolvers<T>(): {
     promise: Promise<T>;
     // `0 extends 1 & T` detects any (untyped JS: Promise.withResolvers()
@@ -67,7 +76,7 @@ interface PromiseConstructor {
       : [T] extends [void]
         ? () => void
         : (value: T) => void;
-    reject: (reason: Error) => void;
+    reject: (reason: unknown extends T ? unknown : Error) => void;
   };
 }
 

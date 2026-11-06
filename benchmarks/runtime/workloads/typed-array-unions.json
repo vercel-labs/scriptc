@@ -1,0 +1,6 @@
+{
+  "entry": "workloads/typed-array-unions.ts",
+  "args": [
+    "1"
+  ]
+}

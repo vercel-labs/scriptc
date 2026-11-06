@@ -429,6 +429,10 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
       B.line(
         `call void @scr_net_server_set_timeout_cb(ptr ${args[0]!.name}, double ${args[1]!.name}, ptr ${args[2]!.name}, ptr @${adapter})`,
       );
+      // The callback joins the 'timeout' list the same way on() adds it: a
+      // 'newListener' handler can throw out of the call, and the add never
+      // happens.
+      host.emitPendingCheck();
     } else {
       const entry =
         e.fn === "net.serverOnSecureConnection"

@@ -48,6 +48,24 @@ try {
 console.log("unchanged", server.listeners("request").length);
 server.off("newListener", boom);
 
+// setTimeout(ms, callback) adds the callback to the 'timeout' list the same
+// way on() does, so a throwing 'newListener' handler escapes the call and
+// the add never happens. The ms value is stored before the add, as in Node.
+const guard = http.createServer(() => {});
+const timeoutBoom = () => {
+  throw new Error("timeout boom");
+};
+guard.on("newListener", timeoutBoom);
+try {
+  guard.setTimeout(5, () => console.log("timeout fired"));
+  console.log("unexpected timeout add");
+} catch (e) {
+  console.log("aborted timeout", (e as Error).message);
+}
+console.log("timeout property", guard.timeout);
+console.log("timeout listeners", guard.listeners("timeout").length);
+guard.off("newListener", timeoutBoom);
+
 // once('newListener') fires for the next add only.
 const onceSeen: string[] = [];
 server.once("newListener", (event: string) => onceSeen.push(event));
@@ -84,6 +102,23 @@ server.listen(0, () => {
           client.on("data", (chunk: string) => console.log("net body", chunk));
           client.on("close", () => {
             netServer.close(() => {});
+            // A 'newListener' handler that captures its own server is a
+            // cycle the traceability story cannot collect: settlement must
+            // drop the list so nothing outlives the close (the sanitized
+            // lane's RC audit checks it).
+            const cycle = http.createServer((_req: http.IncomingMessage, res: http.ServerResponse) =>
+              res.end("cycle"),
+            );
+            const cycleStates: boolean[] = [];
+            cycle.on("newListener", () => {
+              cycleStates.push(cycle.listening);
+            });
+            cycle.listen(0, "127.0.0.1", () => {
+              console.log("cycle listening");
+              cycle.close(() => {
+                console.log("cycle closed", cycle.listening);
+              });
+            });
           });
         });
       });

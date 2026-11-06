@@ -6163,6 +6163,8 @@ static void scr_net_server_settle(ScrNetServer *srv) {
   scr_net_ls_drop(&srv->listening_cbs);
   scr_net_ls_drop(&srv->timeout_ls);
   scr_net_ls_drop(&srv->client_error_ls);
+  scr_net_ls_drop(&srv->new_listener_ls);
+  scr_net_ls_drop(&srv->drop_ls);
   if (srv->proto_settle && srv->http_ctx) srv->proto_settle(srv->http_ctx);
   scr_net_server_unregister(srv);
 }

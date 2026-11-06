@@ -1094,6 +1094,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "net.serverOnDrop",
   "net.serverOnNewListener",
   "http.serverOnTimeout",
+  // setTimeout(ms, callback) adds the callback as a 'timeout' listener
+  // the same way on() does, so a 'newListener' handler can throw out
+  // of it.
+  "http.serverSetTimeoutCb",
   "http.serverOnRequest",
   "http.serverOnCheck",
   "http.serverOnConnect",

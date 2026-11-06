@@ -4893,6 +4893,9 @@ export class Lowerer {
     "frontendServices",
     "nodeIslands",
     "remainder",
+    // The reached pass of a report that skips the remainder is a setting of
+    // the pass (`--coverage=reached`), fixed before any unit lowers.
+    "coverageReached",
     "tierMode",
     "runtimeOptionalReport",
     "generalNodeStreams",

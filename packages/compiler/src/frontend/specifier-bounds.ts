@@ -666,7 +666,11 @@ function boundReturns(
   if (fn === null) return null;
   const binding = functionBindingName(fn);
   if (binding === null) return top(callee, `'${callee.text}', a function with no local name`);
-  if (isExported(ctx, binding)) return top(binding, `the exported function '${binding.text}'`);
+  // An exported function's callers may live in another file, so its returns
+  // are not this file's to bound: decline, and the site reports the call it
+  // actually wrote (`the result of \`tag(...)\``) rather than the
+  // declaration's own file.
+  if (isExported(ctx, binding)) return null;
   const fnSym = ctx.checker.getSymbolAtLocation(binding);
   if (fnSym === undefined) return top(binding, `'${binding.text}', whose function has no symbol`);
   if (inProgress.has(fnSym)) return top(callee, `'${binding.text}', which is recursive`);

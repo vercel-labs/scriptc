@@ -123,7 +123,7 @@ import { lowerX509Call, refuseX509DynValues } from "./builtins/x509.js";
 import { isEcdhType, lowerEcdhCall } from "./builtins/ecdh.js";
 import { isDiffieHellmanType, lowerDiffieHellmanCall } from "./builtins/dh.js";
 import { fenceWebCryptoMember, lowerWebCryptoCall } from "./builtins/webcrypto.js";
-import { valueStreamOf } from "./builtins/hash-stream.js";
+import { valueStreamOf, writableStreamOf } from "./builtins/hash-stream.js";
 import { lowerNetAddressCall, lowerNetAddressNew } from "./builtins/net-address.js";
 import { lowerMimeCall, lowerMimeNew } from "./builtins/mime.js";
 import {
@@ -4118,10 +4118,14 @@ export class Lowerer {
   /** Inline Promise.then parameters whose contextual type is a builtin
    * module namespace anonymous object. The settled native token is the
    * ABI truth even when the checker type has no stable module symbol. */
-  /** Receivers of a stream call on a Hash, Hmac, Cipheriv or Decipheriv
-   * (lowerHashStreamCall): for the duration of that call, the receiver
-   * lowers to the Transform of the value held in the named local. */
-  readonly valueStreamReceivers = new Map<ts.Expression, { localId: string; type: IrType }>();
+  /** Receivers of a stream call on a Hash, Hmac, Cipheriv, Decipheriv,
+   * Sign or Verify (lowerHashStreamCall): for the duration of that call,
+   * the receiver lowers to the native stream of the value held in the
+   * named local — its Transform, or for a signer its Writable. */
+  readonly valueStreamReceivers = new Map<
+    ts.Expression,
+    { localId: string; type: IrType; writable: boolean }
+  >();
   /** fs call arguments evaluated ahead of a URL path's conversion
    * (builtins/fs-paths.ts): each lowers to the hidden local that holds its
    * value, which is null until the path's lowering has saved it. */
@@ -17578,8 +17582,10 @@ export class Lowerer {
       }
     }
     const streamValue = this.valueStreamReceivers.get(expr);
-    if (streamValue)
-      return valueStreamOf(varRef(streamValue.localId, streamValue.type, locOf(expr)));
+    if (streamValue) {
+      const value = varRef(streamValue.localId, streamValue.type, locOf(expr));
+      return streamValue.writable ? writableStreamOf(value) : valueStreamOf(value);
+    }
     return this.stagedArgument(expr) ?? lowerExpr(this, expr);
   }
 

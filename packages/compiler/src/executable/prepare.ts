@@ -54,6 +54,7 @@ import type { NodeIslandScan } from "../node-islands/scan.js";
 import {
   foldFenceGrowth,
   growIslandSet,
+  islandReasonPackageOf,
   type IslandGrowthContext,
 } from "../node-islands/growth.js";
 import type { NodeIslandMarker } from "../node-islands/detect.js";
@@ -440,6 +441,19 @@ function prepareRound(
     }
     return growthInputs;
   };
+  // WP2-9 (D18): the decision pass's island test. Built on the first
+  // diagnostic from the same growth inputs decideRetry reads, so a round
+  // whose pass reports nothing never pays for them. A pass that reports a
+  // diagnostic this names already implies the retry that islands the
+  // package, so its remaining units cannot change the round's decision.
+  let islandReason: ((diag: ScrDiagnostic) => string | null) | null = null;
+  const islandReasonOf = (diag: ScrDiagnostic): string | null => {
+    if (islandReason === null) {
+      const growth = growthOf();
+      islandReason = growth === null ? () => null : islandReasonPackageOf(growth, lowerIslands);
+    }
+    return islandReason(diag);
+  };
   // A round that retries with more islands decides from one lowering result
   // alone (D-R, "only decide once"): the whole-slot and stream relowers
   // exist to pick the pass a failure is reported from, and a retry throws
@@ -581,6 +595,7 @@ function prepareRound(
           // (decideRetry above). A round that would not retry runs the full
           // pipeline, so a failing build still reports from the pass that
           // wins.
+          islandReasonOf,
           stopAfterPushDown: (result: LowerResult) => {
             pushDown.retry = decideRetry(result);
             return (

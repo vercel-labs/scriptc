@@ -218,6 +218,28 @@ function growFromLowering(
   growEsmImporters(ctx.policy, compiled, ctx.scan.edges, grown);
 }
 
+/** WP2-9 (D18): the lowering growth rule's answer for ONE diagnostic, as a
+ * per-pass test. A decision pass asks it after every diagnostic it reports;
+ * a non-null package name means the retry that pass decides already islands
+ * that package (growFromLowering grows it from this same diagnostic), so the
+ * pass skips the package's remaining units. The test mirrors that branch
+ * exactly, so it can only name a package the retry grows. */
+export function islandReasonPackageOf(
+  ctx: IslandGrowthContext,
+  islands: ReadonlyMap<string, IslandPackage>,
+): (diag: ScrDiagnostic) => string | null {
+  // growIslandSet decides nothing outside auto mode, so neither may this.
+  if (ctx.policy.mode !== "auto") return () => null;
+  const compiled = compiledPackages(ctx.npm, NO_EXPLICIT);
+  return (diag) => {
+    if (!isIslandReasonCode(diag.code)) return null;
+    const at = packageDirOf(diag.loc.file);
+    if (at === null || !compiled.has(at.name) || islands.has(at.name)) return null;
+    if (ctx.policy.forcedNative.has(at.name) || ctx.policy.unloaded.has(at.name)) return null;
+    return at.name;
+  };
+}
+
 /** The packages compiled natively whose runtime fences should make them
  * islands instead. "sure": a fence in top-level module code (which runs
  * when the module evaluates), or one that itself needs the runtime (R1) — a

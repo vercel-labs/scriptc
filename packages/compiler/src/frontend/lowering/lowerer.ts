@@ -817,6 +817,7 @@ import {
   promiseArmedUnionOf,
 } from "./maybe-promise.js";
 import { NodeIslandModuleCollector } from "../../node-islands/modules.js";
+import { packageDirOf } from "../../node-islands/origin.js";
 
 /** Entry function name. '%' cannot appear in a TS identifier, so a user
  * function can never collide with it (mangling is injective per prefix). */
@@ -1118,6 +1119,13 @@ export interface LowerOptions {
    * push-down pass failed, so it is the one whose diagnostics decide.
    * Absent for every other build, which keeps the full pipeline. */
   stopAfterPushDown?: ((result: LowerResult) => boolean) | undefined;
+  /** WP2-9 (D18): the round's island rule, asked after each diagnostic a
+   * decision pass reports. A non-null package name means the retry this pass
+   * decides already islands that package, so the pass skips its remaining
+   * units: their diagnostics are discarded with the pass, and the package's
+   * island reason is already known. Set only alongside `stopAfterPushDown`,
+   * whose result a retry discards — a reported pass never skips. */
+  islandReasonOf?: ((diag: ScrDiagnostic) => string | null) | undefined;
 }
 
 interface RuntimeFenceFallback {
@@ -1189,6 +1197,9 @@ export interface LowererMode {
    * stream pass replaces its result outright (lowerToIrWithIslands sets
    * this on the push-down pass of a stream program). */
   abortOnStreamFlags?: boolean;
+  /** WP2-9: LowerOptions.islandReasonOf, threaded into the pass that decides
+   * a prepared round's retry. */
+  islandReasonOf?: ((diag: ScrDiagnostic) => string | null) | undefined;
   /** LowerOptions.externalTypes, threaded through every lowering pass. */
   externalTypes?: ReadonlyMap<string, string>;
   /** LowerOptions.externalTypeSpecifiersByFile, shared by every pass. */
@@ -1473,6 +1484,11 @@ function lowerToIrWithIslands(
     options.abortOnStreamFlags !== false &&
     (options.unitStore ?? null) === null &&
     options.coverage !== true;
+  // WP2-9: the decision pass's island test, installed only on the passes a
+  // prepared round decides from (a retry discards them). A round that runs
+  // the full pipeline reports from its passes and never skips.
+  const islandReasonOf = options.islandReasonOf;
+  const doomedIsland = islandReasonOf !== undefined ? { islandReasonOf } : {};
   let pushDownEmit: Lowerer | null;
   let ffiValidation: FfiValidationResult;
   {
@@ -1492,6 +1508,7 @@ function lowerToIrWithIslands(
       externalTypes,
       externalTypeSpecifiersByFile,
       abortOnStreamFlags: abortPushDown,
+      ...doomedIsland,
       tierMode,
       runtimeOptionalReport,
     });
@@ -1525,6 +1542,7 @@ function lowerToIrWithIslands(
             runtimeOptionalReport,
             ffiBindingSymbols: ffiValidation.symbolsByName,
             abortOnStreamFlags: abortPushDown,
+            ...doomedIsland,
           });
   }
   for (const d of extraModuleCycleDiags) pushDownEmit.pushDiag(d);
@@ -1552,6 +1570,9 @@ function lowerToIrWithIslands(
   timing("reachable-emit", {
     reachable: reachable.size,
     ...(pushDownAborted ? { aborted: "stream-flags" } : {}),
+    ...(pushDownEmit !== null && pushDownEmit.doomedIslandUnitsSkipped > 0
+      ? { doomed_skipped: pushDownEmit.doomedIslandUnitsSkipped }
+      : {}),
   });
   // The general stream representation (TypeMapperCtx.generalNodeStreams)
   // is a per-program decision: only a program whose reachable code moved
@@ -1589,6 +1610,7 @@ function lowerToIrWithIslands(
       runtimeOptionalReport,
       ffiBindingSymbols: ffiValidation.symbolsByName,
       generalNodeStreams: true,
+      ...doomedIsland,
       ...(dyn ? { dynNodeStreams: true } : {}),
       ...(wholeSlotDegradation ? { wholeSlotDegradation: true } : {}),
     });
@@ -3917,6 +3939,18 @@ export class Lowerer {
    * push-down pass, and only when no unit store records its units and
    * coverage does not read its reachable set (lowerToIrWithIslands). */
   readonly abortOnStreamFlags: boolean;
+  /** WP2-9: the decision pass's island test (LowerOptions.islandReasonOf),
+   * or null for a pass that reports. */
+  private readonly islandReasonOf: ((diag: ScrDiagnostic) => string | null) | null;
+  /** WP2-9: the packages an island-reason diagnostic doomed in this pass,
+   * each with the report that doomed it. A diagnostic can be rolled back
+   * with its pass scratch (a speculative lowering that failed), so the doom
+   * is only trusted while its report is still in `diags`. */
+  private readonly doomedIslandReasons = new Map<string, ScrDiagnostic>();
+  /** WP2-9: the units this pass skipped because their package is doomed.
+   * Reported in the reachable-emit timing event, so a build's log shows the
+   * rule doing work. */
+  doomedIslandUnitsSkipped = 0;
   /** A general stream value (a runtime stream class instance) reached a
    * slot the child/process stdio handles represent — NodeJS.ReadableStream,
    * NodeJS.WritableStream, or @types/node's stream.Readable/Writable — or
@@ -5199,6 +5233,9 @@ export class Lowerer {
     "priorRetriedSymbols",
     "wholeSlotDegradation",
     "abortOnStreamFlags",
+    "islandReasonOf",
+    "doomedIslandReasons",
+    "doomedIslandUnitsSkipped",
     // Storage of the requiresGeneralNodeStreams / requiresDynNodeStreams
     // flags, which are journaled under those names, and the abort request
     // their setters raise (pass scratch).
@@ -5791,6 +5828,7 @@ export class Lowerer {
     this.priorRetriedSymbols = mode.retriedSymbols ?? new Set();
     this.wholeSlotDegradation = mode.wholeSlotDegradation ?? false;
     this.abortOnStreamFlags = mode.abortOnStreamFlags === true;
+    this.islandReasonOf = mode.islandReasonOf ?? null;
     this.externalTypes = mode.externalTypes ?? new Map();
     this.ffiBindingSymbols = mode.ffiBindingSymbols ?? null;
     this.ffiImports = mode.ffiImports ?? [];
@@ -11822,6 +11860,31 @@ export class Lowerer {
       const source = units.get(name)?.source;
       return source === undefined ? null : ts.getSourceFileOfNode(source).fileName;
     };
+    // WP2-9: a unit of a package this decision pass already doomed (its
+    // island reason is in hand) is not lowered. Only a pass whose result a
+    // retry discards has the predicate, so nothing reported changes.
+    const isDoomedIslandUnit = (name: string): boolean => {
+      if (this.doomedIslandReasons.size === 0) return false;
+      const file = fileOfUnit(name);
+      if (file === null) return false;
+      const at = packageDirOf(file);
+      if (at === null) return false;
+      const reason = this.doomedIslandReasons.get(at.name);
+      if (reason === undefined) return false;
+      // A speculative lowering can push a diagnostic and roll it back (a
+      // candidate that failed). Only a report the pass still holds implies
+      // the retry that islands the package.
+      if (!this.diags.includes(reason)) {
+        this.doomedIslandReasons.delete(at.name);
+        return false;
+      }
+      return true;
+    };
+    const skipDoomedUnit = (name: string): boolean => {
+      if (!isDoomedIslandUnit(name)) return false;
+      this.doomedIslandUnitsSkipped++;
+      return true;
+    };
     const waveReuse: WaveReuse | null =
       reuse === null || !reuse.records
         ? null
@@ -11853,11 +11916,17 @@ export class Lowerer {
         this.checkStreamFlagsAbort();
         const wave = queue.splice(0);
         shuffle?.(wave);
-        this.checker.prefetchRoots(wave.flatMap((name) => units.get(name)!.roots));
+        // WP2-9: the units of a package this pass already doomed are not
+        // lowered — not even prefetched, since nothing will read them.
+        const live =
+          this.doomedIslandReasons.size > 0
+            ? wave.filter((name) => !skipDoomedUnit(name))
+            : wave;
+        this.checker.prefetchRoots(live.flatMap((name) => units.get(name)!.roots));
         if (host !== null && recorded !== null) {
           lowerWaveRecorded(
             host,
-            wave,
+            live,
             recorded,
             dump === null ? null : recordLines,
             waveReuse,
@@ -11865,7 +11934,9 @@ export class Lowerer {
           );
           continue;
         }
-        for (const name of wave) {
+        for (const name of live) {
+          // A package doomed by an earlier unit of this same wave.
+          if (skipDoomedUnit(name)) continue;
           this.checkStreamFlagsAbort();
           // A body-level poison outside the per-statement catches (a fenced
           // constructor/method parameter default lowered by declareParams):
@@ -12393,6 +12464,13 @@ export class Lowerer {
       return;
     }
     this.diags.push(d);
+    // WP2-9: a diagnostic the island rule would grow a package from dooms
+    // that package for the rest of this decision pass (drainUnits).
+    const islandReasonOf = this.islandReasonOf;
+    if (islandReasonOf !== null) {
+      const pkg = islandReasonOf(d);
+      if (pkg !== null) this.doomedIslandReasons.set(pkg, d);
+    }
   }
 
   /** The module's Node island record: the collected module tree, with each

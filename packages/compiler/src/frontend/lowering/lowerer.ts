@@ -15657,6 +15657,48 @@ export class Lowerer {
     return stmt;
   }
 
+  /** `return v` where the checker types v as checked-dynamic and the async
+   * result is a concrete type: the run-time value decides. A promise adopts
+   * into the result the way a statically typed one does (JS's async
+   * resolution adopts a returned thenable): the function's promise settles
+   * where that one does, one turn later, and its rejection never reaches
+   * the function's own catch clauses. Any other value converts now, as the
+   * ordinary return does. The operand binds to a hidden local because the
+   * branch tests it and then returns it. Null when the return is not that
+   * shape, or when the result holds the value as it is (dyn, promise) or
+   * discards it (void). */
+  dynamicReturnStmt(node: ts.Expression, e: IrExpr, expected: IrType, loc: SrcLoc): IrStmt | null {
+    if (!this.adoptsReturnedPromise()) return null;
+    if (e.type.kind !== "dyn") return null;
+    if (expected.kind === "dyn" || expected.kind === "promise" || expected.kind === "void")
+      return null;
+    const local = this.declareHiddenLocal("%returned", DYN);
+    const read = (): IrExpr => varRef(local.id, DYN, loc);
+    // The test and the cast agree — both look for a native promise — so the
+    // cast cannot fail. A thenable object is a value here, not a promise: it
+    // converts (or fails to convert) like any other.
+    const awaited = this.returnedPromiseAwait({
+      kind: "dynCheck",
+      value: read(),
+      type: { kind: "promise", inner: DYN },
+      loc,
+    });
+    return {
+      kind: "block",
+      body: [
+        { kind: "varDecl", localId: local.id, init: e, loc },
+        {
+          kind: "if",
+          cond: { kind: "dynTest", test: "promise", value: read(), type: BOOL, loc },
+          then: [{ kind: "return", value: this.coerceInto(node, awaited, expected), loc }],
+          else_: [{ kind: "return", value: this.coerceInto(node, read(), expected), loc }],
+          loc,
+        },
+      ],
+      loc,
+    };
+  }
+
   private lowerReturnOf(node: ts.Expression, loc: SrcLoc): IrStmt {
     const expected = this.ctx.returnType;
     if (expected.kind === "void") {
@@ -15695,10 +15737,14 @@ export class Lowerer {
     ) {
       // The async return lowers its operand untyped first (a promise
       // adopts before its payload converts); a maybe-promise union needs
-      // the statement form, which branches between adoption and fulfillment.
+      // the statement form, which branches between adoption and fulfillment,
+      // and so does a checked-dynamic operand, whose run-time promise the
+      // branch adopts.
       const e = this.lowerExpr(node);
       const flattened = this.maybePromiseReturn(node, e, expected);
       if (flattened) return flattened;
+      const dynamic = this.dynamicReturnStmt(node, e, expected, loc);
+      if (dynamic) return dynamic;
       return { kind: "return", value: this.asyncReturnValueOf(node, e, expected), loc };
     }
     return { kind: "return", value: this.lowerReturnValue(node), loc };

@@ -8,6 +8,7 @@ import {
   splitUndefinedIndex,
   undefinedTypedArrayKeyFence,
 } from "../undefined-index.js";
+import { callableBox, isCallableTableValue } from "../callable-properties.js";
 import { type Lowerer, jsFuncNameOf, neverTaintedJsType } from "../lowerer.js";
 import { lowerIntrinsicElement } from "../intrinsics.js";
 import {
@@ -30,6 +31,7 @@ import {
   recordTextCodecClass,
   shapeHasAccessorSlots,
   typeEquals,
+  sortArms,
   typeKey,
   unionContainerArmsOk,
 } from "../../../ir/ir.js";
@@ -57,7 +59,7 @@ import { hostGlobalValue } from "../host-global-values.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { MUTABLE_BUFFER_MEMBERS } from "../buffers.js";
 import { lowerGlobalObjectValue } from "../lower-global-value.js";
-import { expandoMemberRead } from "../lower-expando.js";
+import { fenceExpandoRead } from "../lower-expando.js";
 import {
   assertedElementKeepsUndefined,
   compoundUnsupported,
@@ -367,12 +369,10 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
   }
   // Expando function members in element clothing (`foo[strMem]`,
   // `foo[_private]` where foo is a module-level function/callable const
-  // and the key folds or is a unique-symbol const): the member's module
-  // global — the dotted read's twin (lower-expando.ts).
-  {
-    const ex = expandoMemberRead(lowerer, expr);
-    if (ex) return lowerer.maybeNarrow(ex, expr);
-  }
+  // and the key folds or is a unique-symbol const): only the source-order
+  // fence lives here (lower-expando.ts); the read itself is the ordinary
+  // element read of the closure's own-property table.
+  fenceExpandoRead(lowerer, expr);
   // Symbol-keyed property READS (`this[kLimit]`): when the key is a
   // statically-resolvable symbol declared as a field of the receiver's
   // class (classSymbolKeyOf — the countdown.js/OpenTUI idioms), the
@@ -1962,7 +1962,7 @@ function joinedFieldType(lowerer: Lowerer, fields: readonly { type: IrType }[]):
   };
   for (const field of fields) if (!push(field.type)) return null;
   if (arms.length === 0) return null;
-  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  sortArms(arms);
   return arms.length === 1 ? arms[0]! : { kind: "union", unionId: lowerer.unions.intern(arms) };
 }
 
@@ -2104,7 +2104,7 @@ function lowerTupleIndexRead(
       `dynamic tuple indexing of '${lowerer.fmt({ kind: "record", shapeId })}' (an element type has no value representation)`,
     );
   }
-  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  sortArms(arms);
   if (arms.length > 1 && !unionContainerArmsOk(arms)) {
     lowerer.unsupported(
       "SC1090",
@@ -2178,14 +2178,27 @@ export function lowerElementCompoundParts(
   if (isKeyedFieldAccess(lowerer, target))
     return { expr: lowerFieldCompoundValue(lowerer, target, op, expr.right, loc), stmts: null };
   const checked = lowerer.lowerExpr(target.expression);
-  if (checked?.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+  // A typed callable's element is its own-property table entry: the same
+  // read-modify-write the checked-dynamic receiver takes, through the
+  // identity-preserving box (`fn[k] += 1`, `fn[k] -= 1`).
+  const callableElement =
+    checked !== null &&
+    checked !== undefined &&
+    checked.type.kind === "func" &&
+    isCallableTableValue(lowerer, target.expression, checked);
+  const dynReceiver = callableElement ? callableBox(lowerer, checked) : checked;
+  if (
+    dynReceiver &&
+    (callableElement ||
+      (checked?.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(expr))))
+  ) {
     const stmts: IrStmt[] = [];
     const save = (value: IrExpr, name: string): IrExpr => {
       const local = lowerer.declareHiddenLocal(name, value.type);
       stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
       return varRef(local.id, value.type, loc);
     };
-    const receiver = save(checked, "%compoundReceiver");
+    const receiver = save(dynReceiver, "%compoundReceiver");
     const key = save(lowerer.lowerExprExpecting(target.argumentExpression, DYN), "%compoundKey");
     const old = save({ kind: "dynKeyGet", value: receiver, key, type: DYN, loc }, "%compoundOld");
     const rhs = lowerer.lowerExprExpecting(expr.right, DYN);
@@ -2553,6 +2566,17 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
         expr: lowerDynMemberAssignment(lowerer, expr, receiver),
         loc: locOf(expr),
       };
+    // `fn[SYMBOL] = v` on a typed callable: a symbol-keyed own property of
+    // the closure's table, the computed keyed store the `any` view emits.
+    if (isCallableTableValue(lowerer, target.expression, receiver)) {
+      const boxed = callableBox(lowerer, receiver);
+      if (boxed)
+        return {
+          kind: "exprStmt",
+          expr: lowerDynMemberAssignment(lowerer, expr, boxed),
+          loc: locOf(expr),
+        };
+    }
     if (
       isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
       receiver.type.kind === "object" &&
@@ -2590,6 +2614,16 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
       expr: lowerDynMemberAssignment(lowerer, expr, checkedReceiver),
       loc: locOf(expr),
     };
+  }
+  // `fn[k] = v` on a typed callable: the closure's own-property table.
+  if (checkedReceiver && isCallableTableValue(lowerer, target.expression, checkedReceiver)) {
+    const boxed = callableBox(lowerer, checkedReceiver);
+    if (boxed)
+      return {
+        kind: "exprStmt",
+        expr: lowerDynMemberAssignment(lowerer, expr, boxed),
+        loc: locOf(expr),
+      };
   }
   if (checkedReceiver?.type.kind === "object" && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
     const info = lowerer.classes.get(checkedReceiver.type.className);

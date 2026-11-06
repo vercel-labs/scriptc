@@ -113,6 +113,7 @@ export interface EarlyExecutableNativeFeatures {
   eventsOnceSignal?: boolean;
   mime?: boolean;
   webStreams?: boolean;
+  webBodies?: boolean;
   abortSignal?: boolean;
   utilTiming?: boolean;
   dynBuffer?: boolean;

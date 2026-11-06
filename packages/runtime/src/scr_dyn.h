@@ -224,6 +224,7 @@ typedef enum {
   X(SET, 25) /* native Set<unknown>, shared backing map */ \
   X(SHARED_ARRAY_BUFFER, 37) \
   X(SIGN, 67) /* node:crypto Sign (scr_pki.c) */ \
+  X(SPAWN_RES, 99) /* child_process spawnSync result (scr_child.c) */ \
   X(STDIO, 27) /* stable process stdin/stdout/stderr values */ \
   X(STRING_DECODER, 78) /* compiled StringDecoder record (scr_text_codec_dyn.c) */ \
   X(TEXT_DECODER, 76) /* compiled TextDecoder record (scr_text_codec_dyn.c) */ \
@@ -257,7 +258,9 @@ typedef enum {
   X(WS_WRITABLE, 95) /* WritableStream for checked-dynamic code (scr_webstreams.c) */ \
   X(WS_WRITER, 96) /* WritableStreamDefaultWriter (scr_webstreams.c) */
 
-/* Tags added since the last pin, by name only (see above). */
+/* Tags added since the last pin, by name only (see above). Every pinned
+ * tag is named by the LLVM backend; the AsyncDisposableStack tag is the one
+ * this tree still numbers from the pinned span. */
 #define SCR_DYNH_NEW_TAGS(Y) \
   Y(ASYNC_DISPOSABLE_STACK) /* AsyncDisposableStack (scr_async_disposable_stack.c) */
 
@@ -1944,6 +1947,14 @@ bool scr_dyn_is_error_prototype(const ScrDyn *d);
  * non-object kinds throw Node's catchable TypeErrors (strict-mode
  * wording). All three operands BORROWED (the value is retained in). */
 void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value);
+/* A property DEFINITION (a member of a JavaScript object literal, dynObjLit):
+ * it creates or updates the own data property and never runs an inherited
+ * accessor, so a `__proto__` member is an ordinary own member instead of
+ * Object.prototype's prototype setter. A computed member coerces its key
+ * first (scr_dyn_key_define_computed). Every other key behaves as
+ * scr_dyn_key_set. All three operands BORROWED (the value is retained in). */
+void scr_dyn_key_define(ScrDyn *recv, ScrStr *key, ScrDyn *value);
+void scr_dyn_key_define_computed(ScrDyn *recv, ScrDyn *key, ScrDyn *value);
 /* The same in sloppy-mode code: an assignment strict mode refuses with a
  * TypeError is ignored. */
 void scr_dyn_key_set_sloppy(ScrDyn *recv, ScrStr *key, ScrDyn *value);

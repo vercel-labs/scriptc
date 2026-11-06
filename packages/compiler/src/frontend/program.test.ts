@@ -59,6 +59,18 @@ test("ambiguous module classification bounds ancestor work on deep expressions",
   }
 });
 
+function preflightDiagnosticsFor(files: Record<string, string>) {
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-lazy-cycle-"));
+  for (const [name, source] of Object.entries(files)) writeFileSync(join(dir, name), source);
+  const load = loadProgram(join(dir, "main.cjs"));
+  try {
+    return checkPreflight(load);
+  } finally {
+    load.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 function requireOrderDiagnostics(source: string, dependency = "exports.value = 'ready';\n") {
   const dir = mkdtempSync(join(tmpdir(), "scriptc-require-order-"));
   const entry = join(dir, "main.cjs");
@@ -228,6 +240,28 @@ function check() { return 1; }
 function probe() { return check(); }
 `),
   ).toEqual([]);
+});
+
+test("a lazy require admits the cycle it closes at run time", () => {
+  expect(
+    preflightDiagnosticsFor({
+      "main.cjs": "const root = require('./index.cjs'); console.log(root.tag, root.check());\n",
+      "index.cjs":
+        "const common = require('./common.cjs');\nmodule.exports = { tag: 'root', check: common.check };\n",
+      "common.cjs": "exports.check = function () { return require('./schemas.cjs').value; };\n",
+      "schemas.cjs": "const root = require('./index.cjs');\nexports.value = root.tag + '!';\n",
+    }),
+  ).toEqual([]);
+});
+
+test("an eager cycle inside a lazy subtree keeps full analysis", () => {
+  const diagnostics = preflightDiagnosticsFor({
+    "main.cjs": "const common = require('./common.cjs'); console.log(common.load());\n",
+    "common.cjs": "exports.load = function () { return require('./a.cjs').value; };\n",
+    "a.cjs": "const b = require('./b.cjs');\nexports.value = b.value + 1;\n",
+    "b.cjs": "const a = require('./a.cjs');\nexports.value = a.value + 1;\n",
+  });
+  expect(diagnostics.some((diag) => diag.code === "SC1016")).toBe(true);
 });
 
 test("a require cycle whose modules export first and use each other only later is admitted", () => {

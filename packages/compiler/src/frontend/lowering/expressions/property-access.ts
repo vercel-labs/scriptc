@@ -1,3 +1,4 @@
+import { callableMemberFieldTarget } from "../callable-properties.js";
 import { lowerIteratorMemberValue } from "../iterator-prototype.js";
 import { widensReducedRecords } from "../function-returns.js";
 import { nullishReadTypeError, throwAfterEach } from "../primitive-throws.js";
@@ -93,6 +94,8 @@ import {
   isDynTypedRefType,
   isUnitType,
   typeEquals,
+  sortArms,
+  sortArmsTotal,
   typeKey,
   unionContainerArmsOk,
   BYTES_ELEMENT_SIZE,
@@ -183,7 +186,7 @@ import {
   nsMemberIdentOf,
   nsUndefRead,
 } from "../lower-namespaces.js";
-import { expandoMemberRead } from "../lower-expando.js";
+import { fenceExpandoRead } from "../lower-expando.js";
 import { lowerProtocolPropertyRead } from "../class-protocol-dispatch.js";
 import { lowerReadlineProperty } from "../builtins/readline.js";
 import { lowerAsyncLocalStorageProperty } from "../builtins/async-context.js";
@@ -197,7 +200,10 @@ import { nullishGenericBindingUnitOf } from "../binding-analysis.js";
 import { blockedBindingUseDiag } from "../../../diagnostics/diagnostic.js";
 import { npmStaticPackageOfPath } from "../../npm-static.js";
 import { importMetaField, isImportMeta } from "../import-meta.js";
-import { createRequireCalleeFileOf } from "../builtins/module-bindings.js";
+import {
+  createRequireCalleeFileOf,
+  createRequireRuntimeBaseOf,
+} from "../builtins/module-bindings.js";
 import {
   createRequireResolveFenceValue,
   createRequireResolveValue,
@@ -396,7 +402,8 @@ function isCreateRequireResolveValue(lowerer: Lowerer, expr: ts.PropertyAccessEx
     !expr.questionDotToken &&
     ts.isPropertyAccessExpression(resolve) &&
     resolve.name.text === "resolve" &&
-    createRequireCalleeFileOf(lowerer, resolve.expression) !== null
+    (createRequireCalleeFileOf(lowerer, resolve.expression) !== null ||
+      createRequireRuntimeBaseOf(lowerer, resolve.expression))
   );
 }
 
@@ -412,6 +419,16 @@ export function lowerPropertyAccessExpr(
     lowerer.buffersMutable = true;
   const arrayClassConstructor = lowerArrayClassConstructorRead(lowerer, expr, loc);
   if (arrayClassConstructor !== null) return arrayClassConstructor;
+  // A createRequire loader's resolve read as a value (passed on, or
+  // picked by `??`): a function that resolves its request at run time.
+  // resolve.paths read as a value has no run-time lowering: a function
+  // that throws the fence when called. Claimed before the generic
+  // function-member reads below, which would otherwise read `.resolve`
+  // off the loader's run-time value form.
+  if (isCreateRequireResolveValue(lowerer, expr))
+    return expr.name.text === "paths"
+      ? createRequireResolveFenceValue(lowerer, expr, loc)
+      : createRequireResolveValue(lowerer, expr, loc);
   // `R.#x` for a static private on a checked-dynamic receiver: the brand
   // check, then the native storage (private-statics.ts).
   {
@@ -973,15 +990,10 @@ export function lowerPropertyAccessExpr(
       if (memberSym) fenceEarlyNsMemberRef(lowerer, expr, memberSym);
       return lowerExpr(lowerer, nsMember);
     }
-    // Expando function members (`foo.bar` after `foo.bar = 12`): the
-    // member's module global (lower-expando.ts), before the ambient-
-    // namespace fence — a declare-namespace merge over a real function
-    // (`declare namespace Foo { var baz: number }` + `function Foo`)
-    // reads its assigned members, not the ambient ReferenceError.
-    {
-      const ex = expandoMemberRead(lowerer, expr);
-      if (ex) return lowerer.maybeNarrow(ex, expr);
-    }
+    // Expando function members (`foo.bar` after `foo.bar = 12`) read
+    // through the closure's own-property table (the callable-member path
+    // below); this only keeps the source-order fence (lower-expando.ts).
+    fenceExpandoRead(lowerer, expr);
     // An AMBIENT namespace receiver (`M.x` where only `declare
     // namespace M` exists): the namespace object never exists at
     // runtime — Node's exact catchable ReferenceError at the access,
@@ -1552,14 +1564,6 @@ export function lowerPropertyAccessExpr(
       return declared && declared.kind !== "void" ? lowerer.coerceToExpected(read, declared) : read;
     }
   }
-  // A createRequire loader's resolve read as a value (passed on, or
-  // picked by `??`): a function that resolves its request at run time.
-  // resolve.paths read as a value has no run-time lowering: a function
-  // that throws the fence when called.
-  if (isCreateRequireResolveValue(lowerer, expr))
-    return expr.name.text === "paths"
-      ? createRequireResolveFenceValue(lowerer, expr, loc)
-      : createRequireResolveValue(lowerer, expr, loc);
   // The lib fence's PROPERTY chokepoint: a stdlib-declared member that
   // no lowering above claimed ([1,2].entries, Math.SQRT2, Promise.all,
   // re.exec as a value, ...) reports SC2020 here.
@@ -2091,9 +2095,7 @@ function mergeReadTypes(lowerer: Lowerer, types: IrType[]): IrType | null {
   }
   if (arms.length === 0) return null;
   if (arms.length === 1) return arms[0]!;
-  const canonical = arms.sort((a, b) =>
-    typeKey(a) < typeKey(b) ? -1 : typeKey(a) > typeKey(b) ? 1 : 0,
-  );
+  const canonical = sortArmsTotal(arms);
   return { kind: "union", unionId: lowerer.unions.intern(canonical) };
 }
 
@@ -4907,7 +4909,7 @@ export function lowerUnionKeyedRead(
   ) {
     return null;
   }
-  joinArms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  sortArms(joinArms);
   const type: IrType =
     joinArms.length === 1
       ? joinArms[0]!
@@ -5558,6 +5560,14 @@ export function fieldTarget(
       }
     }
     return null;
+  }
+  // A member of a typed CALLABLE: the closure's own-property table
+  // (callable-properties.ts). The receiver lowered as a closure, so its
+  // members are the function object's own data properties, read through the
+  // identity-preserving box with the declared member type checked back.
+  if (receiverIr?.kind === "func") {
+    const callable = callableMemberFieldTarget(lowerer, access, receiverIr);
+    if (callable) return callable;
   }
   return null;
 }

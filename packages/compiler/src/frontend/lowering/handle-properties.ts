@@ -26,9 +26,10 @@
 import * as ts from "../ts7/adapter.js";
 import { constituentTypes } from "../ts7/checker.js";
 import { isJsSourceFile, locOf } from "../program.js";
-import type { IrExpr, IrFunction, IrLibFn, IrStmt, IrType, SrcLoc } from "../../ir/ir.js";
+import type { IrExpr, IrFunction, IrLibFn, IrModule, IrStmt, IrType, SrcLoc } from "../../ir/ir.js";
 import { DYN, F64, STRING, VOID } from "../../ir/ir.js";
-import { everyStmt, transformStmtList } from "../../ir/traverse.js";
+import { moduleUsesChildProcess } from "../../ir/runtime-features.js";
+import { everyModuleNode, everyStmt, transformStmtList } from "../../ir/traverse.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { ENTRY_NAME, type Lowerer } from "./lowerer.js";
 import { GUARDED_CONSUMERS, consumerName } from "./primitive-wrappers.js";
@@ -918,6 +919,31 @@ export function applyHandleProperties(lowerer: Lowerer, functions: IrFunction[])
     main.body.unshift(...prologue);
   }
   if (handle) guardHandleConsumers(lowerer, functions);
+}
+
+/** The child wrapper `handle.propsInstall(1)` asks the runtime for needs
+ * scr_child.c's ops. They are installed by scr_child_dyn_install, which the
+ * emitter emits from the childProcess runtime feature — the module fact
+ * that links scr_child.c. `childAdditions` counts every JavaScript file the
+ * type checker loaded, not just the ones the program reaches, so a
+ * program whose npm-static packages merely mention child_process (a
+ * comment or a string is enough) asks for a wrapper for handles it can
+ * never box: the install probes a tag nothing installed and traps at start.
+ * Align the request with the unit once the module is final; a program that
+ * cannot carry a child handle needs no wrapper, and one that can still asks
+ * for it. */
+export function alignHandlePropertyChildFact(module: IrModule): void {
+  if (moduleUsesChildProcess(module)) return;
+  everyModuleNode(module, {
+    expr: (e) => {
+      if (e.kind !== "libCall" || e.fn !== "handle.propsInstall") return true;
+      const arg = e.args[0];
+      if (arg?.kind === "numLit" && arg.value === 1) arg.value = 0;
+      return true;
+    },
+    stmt: () => true,
+    type: () => true,
+  });
 }
 
 /** Whether a type holds a typed handle anywhere the dyn copy of the value

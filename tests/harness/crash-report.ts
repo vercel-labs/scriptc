@@ -58,8 +58,9 @@ function section(value: unknown): string | undefined {
 }
 
 /** The crashing thread's top frames. A `.ips` payload carries the faulting
- * thread's stack with the image each frame belongs to, which names the library
- * the fault is in even when the images have no symbols. */
+ * thread's stack, and the payload's `usedImages` table names the library each
+ * frame's `imageIndex` belongs to, which names the library the fault is in
+ * even when the frames have no symbols. */
 function stack(value: unknown, limit: number): string | undefined {
   const payload = record(value);
   const threads = payload?.["threads"];
@@ -67,7 +68,8 @@ function stack(value: unknown, limit: number): string | undefined {
   if (!Array.isArray(threads) || typeof faulting !== "number") return undefined;
   const thread = record(threads[faulting]);
   if (thread === undefined) return undefined;
-  const images = Array.isArray(thread["images"]) ? thread["images"] : [];
+  const used = payload?.["usedImages"];
+  const images = Array.isArray(used) ? used : [];
   const image = (index: unknown): string => {
     if (typeof index !== "number") return "?";
     const name = record(images[index])?.["name"];

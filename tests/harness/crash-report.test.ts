@@ -7,30 +7,30 @@ function ips(payload: unknown): string {
 }
 
 describe("darwin crash reports", () => {
-  test("the faulting thread's frames name the library and the symbol", () => {
+  test("the faulting thread's frames name the library from the payload's image table", () => {
     const text = ips({
       exception: { type: "EXC_BAD_ACCESS", signal: "SIGSEGV" },
       termination: { namespace: "SIGNAL", code: 11 },
       faultingThread: 1,
       threads: [
-        {
-          frames: [{ imageIndex: 0, imageOffset: 0x100, symbol: "main", symbolLocation: 12 }],
-          images: [{ name: "program" }],
-        },
+        { frames: [{ imageIndex: 0, imageOffset: 0x100, symbol: "main", symbolLocation: 12 }] },
         {
           frames: [
             { imageIndex: 1, imageOffset: 0x24, symbol: "scr_dyn_get", symbolLocation: 40 },
             { imageIndex: 0, imageOffset: 0x1f40 },
             { imageIndex: 5 },
           ],
-          images: [
-            { name: "program" },
-            { name: "runtime.dylib" },
-            { name: "libsystem_kernel.dylib" },
-            { name: "libnode.dylib" },
-            { name: "libc++.1.dylib" },
-            { name: "CoreFoundation" },
-          ],
+        },
+      ],
+      usedImages: [
+        { name: "program", path: "/Users/runner/program" },
+        { name: "runtime.dylib", path: "/Users/runner/runtime.dylib" },
+        { name: "libsystem_kernel.dylib", path: "/usr/lib/system/libsystem_kernel.dylib" },
+        { name: "libnode.dylib", path: "/Users/runner/libnode.dylib" },
+        { name: "libc++.1.dylib", path: "/usr/lib/libc++.1.dylib" },
+        {
+          name: "CoreFoundation",
+          path: "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation",
         },
       ],
     });
@@ -40,6 +40,17 @@ describe("darwin crash reports", () => {
     // Only the faulting thread's stack, with the images it references.
     expect(line).toContain("runtime.dylib scr_dyn_get+40 <- program +0x1f40 <- CoreFoundation +?");
     expect(line).not.toContain("main+12");
+  });
+
+  test("a frame whose image the table does not name keeps its index and offset", () => {
+    const line = summarizeReport(
+      "program.ips",
+      ips({
+        faultingThread: 0,
+        threads: [{ frames: [{ imageIndex: 1, imageOffset: 0x24 }, { imageOffset: 0x8 }] }],
+      }),
+    );
+    expect(line).toBe("program.ips image 1 +0x24 <- ? +0x8");
   });
 
   test("a report without a faulting stack keeps its exception and termination", () => {

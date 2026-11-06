@@ -1,0 +1,6 @@
+{
+  "name": "diag-island-copy-out",
+  "private": true,
+  "type": "module",
+  "scriptc": { "packages": { "copy-pkg": "node" } }
+}

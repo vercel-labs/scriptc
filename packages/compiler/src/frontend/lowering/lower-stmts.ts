@@ -106,6 +106,7 @@ import {
   splitRequireBindingOfIdent,
   splitRequireEarlyReadOf,
   wholeExportSymbolOfModule,
+  wholeExportValueOfModuleBinding,
 } from "./cjs-inline-require.js";
 import {
   cjsExportMemberWriteGlobalOf,
@@ -9112,6 +9113,13 @@ function lowerCjsSingleValueExport(
       }
       return { kind: "block", body: [], loc };
     }
+    // A binding of a single-value module (`var $gOPD = require("./gOPD");
+    // module.exports = $gOPD`): the export IS that module's whole-export
+    // value, which requirer reads lower through wholeExportValue — alias
+    // plumbing, and the binding's own statement already evaluated the
+    // module.
+    if (wholeExportValueOfModuleBinding(lowerer, rhs) !== null)
+      return { kind: "block", body: [], loc };
     const sym = lowerer.resolveValueSymbol(rhs);
     if (!sym) return null;
     if (
@@ -9380,6 +9388,56 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
       expr,
       "require() outside the module's top level (move it to the top of the file)",
     );
+  }
+  // `var x = module.exports = <value>` — the chained whole-export
+  // declaration (cjsExportAssignmentOf's declaration spelling): module.exports
+  // has its own export slot (collectGlobals registers it keyed by this
+  // assignment), assigned here from the value the declaration already
+  // evaluated; the declarator is an ordinary binding initialized from the
+  // same value. Reassigning the declarator later therefore leaves the
+  // export alone, as in Node.
+  {
+    let top: ts.Node = expr;
+    while (top.parent !== undefined && ts.isParenthesizedExpression(top.parent)) top = top.parent;
+    const declNode = top.parent;
+    const ownerStmt = declNode?.parent?.parent;
+    if (
+      declNode !== undefined &&
+      ts.isVariableDeclaration(declNode) &&
+      ownerStmt !== undefined &&
+      ts.isVariableStatement(ownerStmt) &&
+      ts.isBinaryExpression(expr) &&
+      expr.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      cjsExportAssignmentOf(ownerStmt)?.expr === expr
+    ) {
+      // A later `module.exports =` replaces this export before any importer
+      // reads it (collectGlobals registers no slot then); the declarator
+      // still takes the value at its own initializer.
+      if (cjsExportDiscardReason(ownerStmt) !== null)
+        return { kind: "block", body: [], loc: locOf(expr) };
+      let rhs: ts.Expression = expr.right;
+      while (ts.isParenthesizedExpression(rhs)) rhs = rhs.expression;
+      // A class expression's value is the class itself: the declarator's
+      // initializer already evaluated it (the held value), so only the
+      // export symbol names the collected class.
+      if (ts.isClassExpression(rhs)) {
+        const info = lowerer.lowerClassExpressionInfo(rhs);
+        const exportSym = lowerer.checker.getSymbolAtLocation(expr.left);
+        if (exportSym && !lowerer.classBySymbol.has(exportSym))
+          lowerer.classBySymbol.set(exportSym, info);
+        return { kind: "block", body: [], loc: locOf(expr) };
+      }
+      // A require value already ran the module's initializer while the
+      // declaration evaluated it; importers of a re-exported module resolve
+      // through that module's own export machinery. A registered root slot
+      // (later member exports extend the object) still takes the required
+      // module's exports value: Node's module.exports IS that object, and
+      // the member writes below must reach it instead of an unset root.
+      if (inlineProgramRequireOf(lowerer, rhs) !== null && !lowerer.globalsByDeclNode.has(expr))
+        return { kind: "block", body: [], loc: locOf(expr) };
+      const single = lowerCjsSingleValueExport(lowerer, expr, locOf(expr));
+      if (single !== null) return single;
+    }
   }
   // Replacing the export object (or rebinding `exports`) anywhere but a
   // top-level statement makes the module's exports depend on which path

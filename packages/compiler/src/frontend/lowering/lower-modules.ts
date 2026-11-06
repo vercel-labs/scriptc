@@ -36,9 +36,11 @@ import { isJsSourceFileName } from "../tsc-codes.js";
 import { isRelativeSpecifier } from "../workspace-registry.js";
 import {
   canonicalBuiltinModule,
+  cjsChainedExportValueOf,
   cjsExportAssignmentOf,
   cjsExportChainOf,
   cjsVoidInitPreambleReals,
+  cjsExportDeclaratorOf,
   cjsExportDiscardReason,
   cjsExportTargetLiteral,
   entryPackageFilePredicate,
@@ -1306,7 +1308,9 @@ function checkedGlobalReference(lowerer: Lowerer, expression: ts.Expression): bo
   const root = lowerer.checker.getSymbolAtLocation(expression.expression);
   const namespace = root && root.declarations.some(ts.isNamespaceImport);
   return (
-    (namespace || lowerer.cjsLocalModuleBindingOf(expression.expression)) &&
+    (namespace ||
+      lowerer.cjsLocalModuleBindingOf(expression.expression) ||
+      lowerer.cjsWholeExportMemberOf(expression.expression, expression.name.text)) &&
     lowerer.globalOf(expression.name)?.type.kind === "dyn"
   );
 }
@@ -1681,6 +1685,11 @@ export function collectGlobals(
       // Statements Node would DISCARD (a replaced export object) never
       // register storage — importer reads must not bind to values Node's
       // importers never see. The statement lowering owns the diagnostic.
+      // The chained declaration spelling (`var x = module.exports =
+      // <value>`) is a module-scope declaration AND an export statement:
+      // module.exports gets its own export slot here, while `x` keeps the
+      // ordinary declaration storage registered below. Reassigning `x`
+      // therefore leaves the exported value alone, as in Node.
       const cjs = cjsExportDiscardReason(stmt) === null ? cjsExportAssignmentOf(stmt) : null;
       const registerExport = (nameNode: ts.Node, name: string, typeNode: ts.Node): void => {
         const diagsBefore = lowerer.diags.length;
@@ -1869,7 +1878,10 @@ export function collectGlobals(
             deferJsCollectionDiags(lowerer, sf, diagsBefore);
           }
         }
-        continue;
+        // A chained declaration also declares the module-scope binding it
+        // initializes from the same value: register that ordinary storage
+        // below, so a later reassignment of the binding stays local.
+        if (cjsExportDeclaratorOf(cjs.expr) === null) continue;
       }
       if (cjs?.kind === "table" && cjs.obj) {
         for (const prop of cjs.obj.properties.nodes) {
@@ -2262,6 +2274,10 @@ export function collectGlobals(
       // desugar in the init function assigns the pre-registered globals,
       // exactly like plain declarations).
       const names = boundIdentifiersOf(decl.name);
+      // `var x = module.exports = <value>`: x and module.exports take the
+      // SAME value at this statement, so the declaration's storage is
+      // classified from the export value the chain assigns.
+      const declValue = cjsChainedExportValueOf(decl) ?? decl.initializer;
       // Localized failure: a degradable type failure at a module global
       // degrades that type and the same name registers again
       // (globalSlotRetry), at most MAX_GLOBAL_RETRIES times.
@@ -2585,7 +2601,7 @@ export function collectGlobals(
             !lowerer.mapTypeOf(lowerer.typeOf(nameNode)) &&
             ts.isIdentifier(decl.name) &&
             nameNode === decl.name &&
-            jsDynHoldableInitializer(lowerer, decl.initializer) &&
+            jsDynHoldableInitializer(lowerer, declValue) &&
             dynFallbackType(lowerer, nameNode, lowerer.typeOf(nameNode))?.kind === "dyn"
           ) {
             const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
@@ -2623,10 +2639,10 @@ export function collectGlobals(
             !lowerer.mapTypeOf(lowerer.typeOf(nameNode)) &&
             ts.isIdentifier(decl.name) &&
             nameNode === decl.name &&
-            decl.initializer &&
-            jsDynHoldableInitializer(lowerer, decl.initializer)
+            declValue &&
+            jsDynHoldableInitializer(lowerer, declValue)
           ) {
-            const initializer = decl.initializer;
+            const initializer = declValue;
             const member = ts.isPropertyAccessExpression(initializer)
               ? nsMemberIdentOf(lowerer, initializer)
               : null;

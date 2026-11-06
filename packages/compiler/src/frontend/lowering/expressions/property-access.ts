@@ -910,7 +910,12 @@ export function lowerPropertyAccessExpr(
   // so the NAME resolves exactly like a bare identifier reference
   // (resolveValueSymbol lands on the exporter's declaration and every
   // existing path — globals, function values, classes — applies).
-  if (!expr.questionDotToken && lowerer.cjsLocalModuleBindingOf(expr.expression)) {
+  if (
+    !expr.questionDotToken &&
+    (lowerer.cjsLocalModuleBindingOf(expr.expression) ||
+      (ts.isIdentifier(expr.name) &&
+        lowerer.cjsWholeExportMemberOf(expr.expression, expr.name.text)))
+  ) {
     // A binding whose dep is a class-expression WHOLE export
     // (`module.exports = class {…}`): the member surface is the
     // CLASS's — `C.name` folds to NamedEvaluation's answer and own

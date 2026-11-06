@@ -1,5 +1,5 @@
 /* node:zlib's Brotli codec over the vendored brotli 1.2.0 (the version Node
- * v24.22.0 bundles, so compressed bytes match Node's). Node's
+ * v24.22.1 bundles, so compressed bytes match Node's). Node's
  * BrotliEncoderContext and BrotliDecoderContext (src/node_zlib.cc) plug into
  * scr_zlib.c's engine as a codec, so the one-shot, callback, promise and
  * stream forms run exactly as their zlib counterparts do. The option ladder
@@ -316,7 +316,7 @@ static ScrZlibEngine *scr_brotli_engine(int mode, ScrZlibOptions *o) {
   return scr_zlib_engine_codec(mode, &scr_brotli_codec, b, o->reject_garbage);
 }
 
-static const ScrZlibBrotliHooks scr_brotli_hooks = {scr_brotli_options, scr_brotli_engine};
+static const ScrZlibCodecHooks scr_brotli_hooks = {scr_brotli_options, scr_brotli_engine};
 
 void scr_brotli_install(void) {
   scr_zlib_brotli_hooks = &scr_brotli_hooks;

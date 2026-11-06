@@ -178,11 +178,11 @@ test("hashed number-key lookups probe inline and call the runtime only for wide 
       /^define internal ptr @sc_map_entry_f64_hashed\(ptr %m, double %k\) noinline [^]*?^}/m.exec(
         module,
       )![0];
-    // The SameValueZero key word (canonical NaN, +0 for -0) and the
-    // scr_key_mix multipliers 0xbf58476d1ce4e5b9 and 0x94d049bb133111eb.
-    expect(hashed).toContain("select i1 %nan, i64 9221120237041090560, i64 %kzb");
-    expect(hashed).toContain("mul i64 %x1, -4658895280553007687");
-    expect(hashed).toContain("mul i64 %x3, -7723592293110705685");
+    // The SameValueZero key word (canonical NaN, +0 for -0) from integer
+    // tests alone, and the scr_key_word_hash multiplier 0x9e3779b97f4a7c15.
+    expect(hashed).toContain("select i1 %iszero, i64 0, i64 %ksn");
+    expect(hashed).not.toContain("fcmp");
+    expect(hashed).toContain("mul i64 %x1, -7046029254386353131");
     // Filter (field 10) before the small-map scan of the entry count (field
     // 8) only, and compact buckets (fields 13 and 14) tagged with the hash's
     // top byte.
@@ -230,7 +230,7 @@ test("a key with an integer view tests the direct index on the integer", () => {
     expect(hashed).toContain("select i1 %kzero, i64 0, i64 %kbits");
     expect(hashed).not.toContain("sitofp");
     expect(hashed).not.toContain("fcmp");
-    expect(hashed).toContain("mul i64 %x1, -4658895280553007687");
+    expect(hashed).toContain("mul i64 %x1, -7046029254386353131");
     expect(hashed).toContain(
       "call ptr @scr_map_entry_f64(ptr %m, double %k) memory(read) nounwind willreturn",
     );

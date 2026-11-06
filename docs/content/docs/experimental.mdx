@@ -403,4 +403,4 @@ Indexing the field, reading its `length` and iterating it with `for...of` read t
 
 Each element takes 4 bytes in the instance, and the field's own slot holds the count. The constructor copies the elements from the array it is passed, so that array can be released. The elements start at the same offset in every class of the hierarchy, after the largest set of fixed fields. A read that gets an array allocates a small header that refers to the instance's elements, and frees it when the read's value is released.
 
-The elements stay in an ordinary array object, and the field behaves like any other array field, in builds with sanitizers, in programs that use [`LifetimeRegion`](#lifetimeregion), and on platforms other than 64-bit Linux.
+The elements stay in an ordinary array object, and the field behaves like any other array field, in builds with sanitizers, in programs that use [`LifetimeRegion`](#lifetimeregion), and on platforms other than 64-bit Linux and macOS.

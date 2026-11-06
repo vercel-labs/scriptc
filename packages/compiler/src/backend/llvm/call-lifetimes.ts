@@ -316,6 +316,15 @@ function collectUses(
   };
   function stmt(node: IrStmt, inExpression: boolean): boolean {
     switch (node.kind) {
+      case "exprStmt":
+        // A discarded sequence (`j--` as a statement) runs its statements in
+        // order with nothing else of the expression in between.
+        if (node.expr.kind === "seqExpr") {
+          for (const inner of node.expr.stmts) stmt(inner, inExpression);
+          expr(node.expr.result);
+          return true;
+        }
+        break;
       case "return":
         // A register result reads the returned binding's tag and bits.
         if (registerReturn && node.value?.kind === "varRef") return true;

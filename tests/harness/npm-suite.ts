@@ -92,9 +92,18 @@ const KNOWN: Record<string, Known> = {
   "node24-mime": { run: "SC2020" },
   "node24-mime-errors": { run: "SC2020" },
   "node24-no-error-assertions": { run: "SC2020" },
-  "node24-parseargs": { run: "SC1090" },
+  // The dynamic `__proto__` writes in the args loop now match Node, so the
+  // program reaches a later limitation: the checked conversion of the options
+  // array's element union, whose `{ __proto__: null, ... }` arm (B.3.1) leaves
+  // a value without the `__proto__` member its literal type declares.
+  "node24-parseargs": {
+    divergence:
+      "the checked conversion into the options-literal union fails its `__proto__: null` arm",
+  },
   "node24-promise-timers": { run: "SC2020" },
-  "node24-string-decoder": { run: "SC2020" },
+  // The decoding, encoding and input-error lines match Node; the closing
+  // `d.encoding = 'hex'` assignment refuses.
+  "node24-string-decoder": { run: "SC1090" },
   "node24-style-text": { run: "SC2020" },
   "node24-system-errors": { run: "SC1090" },
   "node24-text-encoding": { run: "SC2020" },
@@ -113,6 +122,7 @@ const KNOWN: Record<string, Known> = {
   "node24-url-mutation": { run: "SC1090" },
   "node24-util-adapters": { run: "Object.create with this value is not supported yet" },
   "node24-util-types": { run: "SC1090" },
+  "late-island-refusal": { island: true },
   "package-imports": { island: true },
   "promise-bridge": { build: "SC1090" },
   "self-name": { build: "SC2013" },
@@ -122,7 +132,9 @@ const KNOWN: Record<string, Known> = {
   // `class Upper extends TransformStream`: extending a builtin class from JavaScript.
   "web-streams": { run: "SC1090" },
   "workspace-copied": { island: true },
-  "workspace-unclean": { build: "SC2013" },
+  // The SYMLINKED twin of workspace-copied: the automatic island policy
+  // places the refused package from its workspace realpath.
+  "workspace-unclean": { island: true },
 };
 
 /** Where the overlay changes how a case KNOWN refuses (none today). */

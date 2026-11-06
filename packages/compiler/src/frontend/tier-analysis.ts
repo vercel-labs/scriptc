@@ -37,6 +37,7 @@ import type {
 import { isWarningCode } from "../diagnostics/render.js";
 import type { IrFunction, SrcLoc } from "../ir/ir.js";
 import { dynamicOperationSites, type DynamicFunction } from "../ir/tiers.js";
+import type { RuntimeOptionalNarrowing } from "./lowering/runtime-optional-report.js";
 import * as ts from "./ts7/adapter.js";
 
 /** `--tier`: "auto" (the default) will demote; "static-only" keeps every
@@ -161,6 +162,11 @@ export interface TierReport {
   /** Units the requests would demote (reached and deferred scopes),
    * deduplicated, by kind then source order. */
   units: DemotedUnit[];
+  /** Runtime-optional storage (report-only): the widened bindings and
+   * parameters whose storage holds an absence the checker's type does not
+   * admit, the reads that narrow them back to the checker's type, and the
+   * decisions that widened them. */
+  runtimeOptional: RuntimeOptionalNarrowing[];
 }
 
 /* ── statements of dynamic functions ─────────────────────────────────── */
@@ -763,6 +769,9 @@ export interface TierAnalysisInput {
   reached: readonly ScrDiagnostic[];
   deferred: readonly ScrDiagnostic[];
   unreached: readonly ScrDiagnostic[];
+  /** Runtime-optional storage decisions of the lowering pass the report
+   * describes (see RuntimeOptionalNarrowing). */
+  runtimeOptional?: readonly RuntimeOptionalNarrowing[];
 }
 
 /** Coverage's statementsDynamic (see dynamicFunctionReports). */
@@ -809,5 +818,6 @@ export function analyzeTiers(program: ts.Program, input: TierAnalysisInput): Tie
     dynamicFunctions: dynamic.functions,
     requests,
     units: demotedUnits(requests),
+    runtimeOptional: [...(input.runtimeOptional ?? [])],
   };
 }

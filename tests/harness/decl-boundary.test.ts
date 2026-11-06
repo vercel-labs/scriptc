@@ -11,7 +11,8 @@
  * unbraced loop body. The zod JSON test checks that `S.parse(JSON.parse(text))`
  * with a statically known zod 3 schema compiles through the speculative
  * JSON shape (zod-json.ts); npm.test.ts's zod3-json case checks its output
- * against Node, fallbacks included. */
+ * against Node, fallbacks included. The guard test checks that a write to a
+ * schema-building member turns the rewrite off. */
 import { execFile } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -114,5 +115,27 @@ test(
     // One helper per site: the two Orders sites and the Point site.
     const llvm = readFileSync(result.llvmPath, "utf8");
     for (const site of [0, 1, 2]) expect(llvm).toContain(`__scriptc_zjson_${site}`);
+  },
+);
+
+test(
+  "an override of a schema-building method keeps the rewrite off",
+  { timeout: 600_000 },
+  async () => {
+    // The same schema and parse as the case above, plus a write to
+    // `ZodNumber.prototype.int` in a function that is never called. The
+    // guard is syntactic, so the write alone must turn the helper off.
+    const guard = join(repoRoot, "tests/fixtures/npm/cases/zod3-json/guard/main.ts");
+    mkdirSync(outDir, { recursive: true });
+    const result = await compile(guard, {
+      outPath: join(outDir, "zod-json-guard"),
+      outDir,
+      sanitize,
+    });
+    if (!result.ok) {
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    }
+    const llvm = readFileSync(result.llvmPath, "utf8");
+    expect(llvm).not.toContain("__scriptc_zjson_");
   },
 );

@@ -125,7 +125,7 @@ export class ZodJsonPlanner {
     if (!this.isGlobalJsonParse(inner.expression)) return this.decline(6);
     const text = inner.arguments.nodes[0]!;
     if (ts.isSpreadElement(text) || !this.isString(text)) return this.decline(7);
-    if (!this.isZodMethod(callee.name)) return this.decline(8);
+    if (!this.declaredByZod(callee.name)) return this.decline(8);
     const receiver = callee.expression;
     const sym = this.symbolOf(receiver);
     if (sym === undefined || !this.moduleLevelConst(sym, receiver)) return this.decline(9);
@@ -192,9 +192,12 @@ export class ZodJsonPlanner {
     );
   }
 
-  /** Whether a member name resolves to a declaration in zod 3's package. */
-  private isZodMethod(name: ts.Node): boolean {
-    const s = this.symbolOf(name);
+  /** Whether the symbol at `node` is declared by zod 3: a schema method
+   * (`int`), a factory (`number`), or a class (`ZodNumber`). Every
+   * declaration counts, so a user's own declaration under the same name
+   * keeps it out. */
+  private declaredByZod(node: ts.Node): boolean {
+    const s = this.symbolOf(node);
     return (
       s !== undefined && s.declarations.length > 0 && s.declarations.every((d) => this.inZod3(d))
     );
@@ -332,7 +335,7 @@ export class ZodJsonPlanner {
       }
     }
     // A method of a recognized schema.
-    if (!this.isZodMethod(callee.name)) return null;
+    if (!this.declaredByZod(callee.name)) return null;
     const base = this.schemaOf(callee.expression, visiting);
     if (base === null) return null;
     switch (name) {
@@ -394,6 +397,10 @@ export class ZodJsonPlanner {
                 : "*"
               : "";
           if (member === "*" || BYPASSED_MEMBERS.has(member)) ok = false;
+          // The schema builders are zod members too: an override of
+          // `z.number` or of `ZodNumber.prototype.int` changes what the
+          // schema accepts, and the planner read the declaration.
+          if (this.writesZodMember(target) || this.writesZodPrototype(target)) ok = false;
         }
         if (
           ts.isCallExpression(n) &&
@@ -418,6 +425,31 @@ export class ZodJsonPlanner {
     }
     this.guardOk = ok;
     return ok;
+  }
+
+  /** Whether an assignment writes a member the checker resolves to a zod 3
+   * declaration: a factory (`z.number = ...`) or a schema method
+   * (`ZodNumber.prototype.int = ...`). The planner read the declaration, so
+   * the override can change what the schema accepts. */
+  private writesZodMember(target: ts.Expression): boolean {
+    const name = ts.isPropertyAccessExpression(target)
+      ? target.name
+      : ts.isElementAccessExpression(target) && ts.isStringLiteral(target.argumentExpression)
+        ? target.argumentExpression
+        : undefined;
+    if (name === undefined) return false;
+    return this.declaredByZod(name);
+  }
+
+  /** Whether an assignment writes `<zod declaration>.prototype.<member>`: an
+   * assertion on the base hides the member's own symbol, not the write. */
+  private writesZodPrototype(target: ts.Expression): boolean {
+    if (!ts.isPropertyAccessExpression(target) && !ts.isElementAccessExpression(target))
+      return false;
+    const base = skipAssertions(target.expression);
+    if (!ts.isPropertyAccessExpression(base) || !ts.isIdentifier(base.name)) return false;
+    if (base.name.text !== "prototype") return false;
+    return this.declaredByZod(skipAssertions(base.expression));
   }
 
   private typedByZod(node: ts.Node): boolean {
@@ -621,6 +653,22 @@ class HelperWriter {
       return `${tmp} as ${out}`;
     }
     return `${read} as ${out}`;
+  }
+}
+
+/** `e` without the parentheses, `as` and `!` around it. */
+function skipAssertions(e: ts.Expression): ts.Expression {
+  for (;;) {
+    if (
+      ts.isParenthesizedExpression(e) ||
+      ts.isAsExpression(e) ||
+      ts.isNonNullExpression(e) ||
+      ts.isSatisfiesExpression(e)
+    ) {
+      e = e.expression;
+      continue;
+    }
+    return e;
   }
 }
 

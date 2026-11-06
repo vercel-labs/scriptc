@@ -34,6 +34,8 @@ import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
 import { nullProtoRecordShape, recordNullProtoTest } from "./null-prototype.js";
 import { recordHasOwnHelper } from "./lower-calls.js";
 import { OTHER_ARM_FAILURE_MESSAGE } from "./coercions/unions.js";
+import { recordMayKeepSource } from "./record-sources.js";
+import { recordStringCall } from "./record-links.js";
 
 /** Object.prototype's methods a record answers from its prototype. */
 export const RECORD_INHERITED_METHODS: ReadonlySet<string> = new Set([
@@ -466,6 +468,10 @@ function builtinAnswer(
 ): IrExpr {
   switch (method) {
     case "toString":
+      // A linked copy or a record with a kept source answers as its source
+      // does (record-links.ts).
+      if (recordMayKeepSource(lowerer, { kind: "record", shapeId }))
+        return recordStringCall(lowerer, o, "string", loc, "constant");
       return { kind: "strLit", value: "[object Object]", type: STRING, loc };
     case "toLocaleString":
       // Object.prototype.toLocaleString calls this.toString().
@@ -559,6 +565,14 @@ function propertyKeyOf(lowerer: Lowerer, arg: IrExpr | undefined, loc: SrcLoc): 
     return { kind: "toString", operand: arg, type: STRING, loc };
   // A record or class instance that answers Object.prototype.toString
   // spells "[object Object]" without running any code.
+  // A linked copy or a record with a kept source converts as its source
+  // does (record-links.ts).
+  if (
+    type.kind === "record" &&
+    defaultRecordToString(lowerer, type.shapeId) &&
+    recordMayKeepSource(lowerer, type)
+  )
+    return recordStringCall(lowerer, arg, "string", loc, "constant");
   if (
     (type.kind === "record" && defaultRecordToString(lowerer, type.shapeId)) ||
     (type.kind === "object" && defaultToString(lowerer, type.className))
@@ -627,7 +641,7 @@ function convertTo(lowerer: Lowerer, value: IrExpr, want: IrType): IrExpr | null
 /** `o.method(...args)` on a record: an own callable entry when the record
  * holds one, else the built-in. `calleeText` names the callee for Node's
  * "is not a function". */
-function callOwnOrBuiltin(
+export function callOwnOrBuiltin(
   lowerer: Lowerer,
   declare: DeclareLocal,
   o: IrExpr,
@@ -712,7 +726,7 @@ function ownEntryRead(
  * non-function throws Node's "is not a function"; a function whose
  * parameters or result cannot carry the call throws the checked-conversion
  * TypeError (the program's types claimed otherwise). */
-function callOwn(
+export function callOwn(
   lowerer: Lowerer,
   declare: DeclareLocal,
   own: IrExpr,
@@ -817,6 +831,8 @@ export function lowerRecordInheritedCall(
   if (recvT?.kind !== "record") return null;
   const shape = lowerer.shapes.get(recvT.shapeId);
   if (!shape || shape.tuple) return null;
+  if (method !== "toString")
+    lowerer.recordMethodCalls.push({ shapeId: recvT.shapeId, method, loc: locOf(call) });
   const want =
     method === "valueOf"
       ? (lowerer.mapTypeOf(lowerer.typeOf(call)) ?? recvT)

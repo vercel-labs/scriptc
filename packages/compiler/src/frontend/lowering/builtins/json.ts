@@ -170,9 +170,13 @@ export function lowerJsonMethodCall(
       value.type.kind === "object" &&
       lowerer.findMethodOn(lowerer.classes.get(value.type.className) ?? null, "toJSON") !== null &&
       lowerer.dynConvertible(value.type);
+    // A Buffer serializes through its toJSON ({ type: "Buffer", data }), and
+    // another typed array as an object keyed by index: the runtime walker
+    // tells them apart by the box.
     if (
       value.type.kind === "url" ||
       value.type.kind === "dyn" ||
+      value.type.kind === "bytes" ||
       toJsonClass ||
       isJsonStringifyDynamicType(
         value.type,

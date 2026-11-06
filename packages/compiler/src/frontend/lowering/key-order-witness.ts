@@ -74,13 +74,14 @@ import {
 import {
   everyExprChild,
   everyStmtChild,
-  everyStmtList,
   everyTypeChild,
   transformStmtList,
 } from "../../ir/traverse.js";
 import type { Lowerer } from "./lowerer.js";
 import * as ts from "../ts7/adapter.js";
 import { ALWAYS_THROW_LIB_FNS } from "../../ir/builtin-effects.js";
+import { replaceChildExpr } from "../../ir/fields.generated.js";
+import { InternalCompilerError } from "../../errors.js";
 import { recordMayKeepSource, recordSourceTest } from "./record-sources.js";
 
 /** The statements a key-order helper runs for record `ref`: `walks[0]`,
@@ -539,6 +540,12 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     if (opaque) shapesIn(type, opaqueShapes, opaqueSeen);
     else shapesIn(type, runtimeShapes, runtimeSeen, true);
   };
+  /** The shapes a checked conversion in this program builds, which are the
+   * only values that already hold a source when this pass runs (the ones
+   * this pass keeps join keptSourceShapes as it decides). Collected by the
+   * walk below, which already meets every conversion. */
+  const convertedShapes = new Set<string>();
+  const convertedSeen = new Set<string>();
 
   // ── collection ──────────────────────────────────────────────────────
   let pos = 0;
@@ -703,6 +710,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
         return;
       }
       case "dynCheck":
+        conversionShapes(lowerer, e.type, convertedShapes, convertedSeen);
         if (e.adopt === true) shapesIn(e.type, declaredShapes, declaredSeen);
         // Conversions that build no record: a boxed primitive, and a
         // replaceable method's result while no replacement the program can
@@ -779,21 +787,6 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
   // another width spread's target, so this runs until no site joins.
   const keptWidths = new Set<IrExpr>();
   const keptClones = new Set<IrExpr>();
-  /** The shapes a checked conversion in this program builds, which are the
-   * only values that already hold a source when this pass runs (the ones
-   * this pass keeps join keptSourceShapes as it decides). */
-  const convertedShapes = new Set<string>();
-  {
-    const seen = new Set<string>();
-    for (const fn of fns)
-      everyStmtList(fn.body, {
-        expr: (expr) => {
-          if (expr.kind === "dynCheck") conversionShapes(lowerer, expr.type, convertedShapes, seen);
-          return true;
-        },
-        stmt: () => true,
-      });
-  }
   /** The statements each kept site's literal evaluates in (the wrapper's
    * prologue), which the per-instance order plan reads a spread's source
    * binding from after keepWidthSpreads moved the literal into a
@@ -824,6 +817,14 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
           shapesIn(segment.value.type, early, earlySeen);
           if (early.size !== before) grew = true;
         }
+      }
+      // A copy narrowed from a record links to it (record-links.ts) and
+      // shows the record's own keys, so the record is observed through it.
+      for (const link of lowerer.recordLinks.values()) {
+        if (!early.has(link.to)) continue;
+        const before = early.size;
+        shapesIn({ kind: "record", shapeId: link.from }, early, earlySeen);
+        if (early.size !== before) grew = true;
       }
     }
     for (let grew = true; grew;) {
@@ -1131,7 +1132,12 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     return out;
   };
 
-  /** Today's table with every witness edge applied, or "unknown". */
+  /** Today's table with every witness edge applied, or "unknown".
+   *
+   * Kahn's algorithm takes the ready key the table holds first, which is
+   * the order the tables have always used. Ranks are unique, so a scan for
+   * the smallest ready rank settles each step exactly as reordering the
+   * whole ready set did. */
   const merge = (table: readonly string[], edges: readonly [string, string][]): Resolved => {
     const rank = new Map(table.map((k, i) => [k, i]));
     const succ = new Map<string, Set<string>>(table.map((k) => [k, new Set<string>()]));
@@ -1146,8 +1152,18 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     const order: string[] = [];
     const ready = table.filter((k) => indeg.get(k) === 0);
     while (ready.length > 0) {
-      ready.sort((a, b) => rank.get(a)! - rank.get(b)!);
-      const k = ready.shift()!;
+      let at = 0;
+      let best = rank.get(ready[0]!)!;
+      for (let i = 1; i < ready.length; i++) {
+        const r = rank.get(ready[i]!)!;
+        if (r < best) {
+          best = r;
+          at = i;
+        }
+      }
+      const k = ready[at]!;
+      ready[at] = ready[ready.length - 1]!;
+      ready.pop();
       order.push(k);
       for (const next of succ.get(k)!) {
         indeg.set(next, indeg.get(next)! - 1);
@@ -1163,6 +1179,9 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
 
   // ── resolution over inheritance edges ───────────────────────────────
   const result = new Map<string, Resolved>();
+  /** A shape's late-write edges: they read that shape's facts only, so they
+   * stay valid until the facts change (a shape becomes built at run time,
+   * below). */
   const late = new Map<string, [string, string][] | "unknown">();
   const dependencies = (id: string): string[] => {
     const f = facts.get(id);
@@ -1279,7 +1298,6 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
   };
   const resolveAll = (): void => {
     result.clear();
-    late.clear();
     for (const scc of sccs) {
       const members = new Set(scc);
       const guess = new Map<string, Resolved>();
@@ -1324,7 +1342,11 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
       const self = target.kind === "record" && target.shapeId === first.shapeId;
       if ((source === "unknown" && !self) || !ordersSpread(segments, sites)) continue;
       orderedSpreads.add(segments);
-      if (target.kind === "record") factsOf(target.shapeId).runtime = true;
+      if (target.kind === "record") {
+        factsOf(target.shapeId).runtime = true;
+        // Its presence answers and late-write edges just changed.
+        late.delete(target.shapeId);
+      }
       grew = true;
     }
     if (grew) resolveAll();
@@ -1952,23 +1974,48 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
   }
 }
 
-/** Rewrite a node its parent already holds a reference to: clear the fields
- * its old kind used, then copy the replacement's (a `seqExpr`). The compiler
- * compiles this file too, where `Object.keys` over a big node union has no
- * lowering, so the fields are cleared explicitly. */
-function replaceInPlace(node: IrExpr, replacement: IrExpr): void {
-  if (replacement.kind !== "seqExpr") return;
-  const fields = node as unknown as Record<string, unknown>;
-  delete fields["value"];
-  delete fields["stmts"];
-  delete fields["result"];
-  delete fields["source"];
-  delete fields["overrides"];
-  fields["kind"] = replacement.kind;
-  fields["stmts"] = replacement.stmts;
-  fields["result"] = replacement.result;
-  fields["type"] = replacement.type;
-  fields["loc"] = replacement.loc;
+/** The replacements recorded for `fn`. */
+function replacementsIn(
+  byFn: Map<IrFunction, Map<IrExpr, IrExpr>>,
+  fn: IrFunction,
+): Map<IrExpr, IrExpr> {
+  let replacements = byFn.get(fn);
+  if (replacements === undefined) byFn.set(fn, (replacements = new Map()));
+  return replacements;
+}
+
+/** Replaces each node of `replacements` in `fn` through the node that holds
+ * it (replaceChildExpr), and the nodes under a replacement in turn. A node
+ * is never rewritten into another kind in place: the compiler compiles this
+ * file too, and a node it builds keeps its kind's fields. */
+function replaceThroughParents(fn: IrFunction, replacements: ReadonlyMap<IrExpr, IrExpr>): void {
+  if (replacements.size === 0) return;
+  let replaced = 0;
+  const children = (parent: IrExpr | IrStmt) => ({
+    expr: (child: IrExpr): boolean => {
+      const to = replacements.get(child);
+      if (to !== undefined && replaceChildExpr(parent, child, to)) replaced++;
+      visitExpr(to ?? child);
+      return true;
+    },
+    stmt: (child: IrStmt): boolean => {
+      visitStmt(child);
+      return true;
+    },
+  });
+  function visitExpr(node: IrExpr): void {
+    const { expr, stmt } = children(node);
+    everyExprChild(node, expr, stmt);
+  }
+  function visitStmt(node: IrStmt): void {
+    const { expr, stmt } = children(node);
+    everyStmtChild(node, expr, stmt);
+  }
+  for (const stmt of fn.body) visitStmt(stmt);
+  if (replaced !== replacements.size)
+    throw new InternalCompilerError(
+      `key-order-witness: ${replacements.size - replaced} kept site(s) not found in ${fn.name}`,
+    );
 }
 
 /** Width spreads: `{ ...wide }` into a narrower declared record. Node's copy
@@ -2126,6 +2173,7 @@ function keepSourceProbes(
 ): void {
   if (!possible) return;
   let index = 0;
+  const byFn = new Map<IrFunction, Map<IrExpr, IrExpr>>();
   for (const { node, fn } of sites) {
     const probe = notes.sourceProbeOf(node);
     if (probe === undefined) continue;
@@ -2156,8 +2204,9 @@ function keepSourceProbes(
       type: BOOL,
       loc,
     };
-    replaceInPlace(node, replacement);
+    replacementsIn(byFn, fn).set(node, replacement);
   }
+  for (const [fn, replacements] of byFn) replaceThroughParents(fn, replacements);
 }
 
 /** Same-shape `{ ...r, k: v }` clones: Node's copy holds every own key of
@@ -2173,6 +2222,7 @@ function keepRecordClones(
   kept: ReadonlySet<IrExpr>,
 ): void {
   let index = 0;
+  const byFn = new Map<IrFunction, Map<IrExpr, IrExpr>>();
   for (const { node, fn } of sites) {
     if (!kept.has(node) || node.kind !== "recordClone") continue;
     const cloneT = node.type;
@@ -2244,6 +2294,7 @@ function keepRecordClones(
       type: cloneT,
       loc,
     };
-    replaceInPlace(node, replacement);
+    replacementsIn(byFn, fn).set(node, replacement);
   }
+  for (const [fn, replacements] of byFn) replaceThroughParents(fn, replacements);
 }

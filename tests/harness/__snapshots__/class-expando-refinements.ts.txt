@@ -1,0 +1,35 @@
+class-expando-refinements.ts:13:19 - error SC2008: values of type 'Narrowed' cannot be compiled: this intersection resolves to no runtime shape
+
+  12 | type Narrowed = Box & { w: 1; label?: string };
+  13 | function narrowed(view: Narrowed): number {
+     |                   ^~~~
+  14 |   return view.w;
+
+  hint: restate the intersection as a single interface or type literal with the combined members; mixin-produced intersections compile where the mixin chain pins one instantiation
+
+class-expando-refinements.ts:16:13 - error SC2004: uses of 'narrowed' inherit the blocker on its declaration
+
+  15 | }
+  16 | console.log(narrowed(new Box() as Narrowed));
+     |             ^~~~~~~~
+  17 | 
+
+  hint: the declaration of 'narrowed' did not compile — fix the diagnostic reported there and these sites clear with it
+
+class-expando-refinements.ts:19:16 - error SC2006: values of type 'Keyed' cannot be compiled: this index signature is outside the supported shape (string or number keys; values limited to numbers, strings, booleans, records, classes, arrays, unions, functions, Maps, Sets, RegExps, Dates, Promises, or 'unknown')
+
+  18 | type Keyed = Box & { [name: string]: number };
+  19 | function keyed(view: Keyed, key: string): number {
+     |                ^~~~
+  20 |   return view[key]!;
+
+  hint: string- and number-keyed index signatures over the supported value types compile directly; symbol keys and dual signatures with unequal value types have no lowering
+
+class-expando-refinements.ts:22:13 - error SC2004: uses of 'keyed' inherit the blocker on its declaration
+
+  21 | }
+  22 | console.log(keyed(new Box() as Keyed, "w"));
+     |             ^~~~~
+  23 | 
+
+  hint: the declaration of 'keyed' did not compile — fix the diagnostic reported there and these sites clear with it

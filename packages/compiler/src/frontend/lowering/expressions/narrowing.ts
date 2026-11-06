@@ -25,7 +25,7 @@ import {
   shapeHasAccessorSlots,
   typeEquals,
 } from "../../../ir/ir.js";
-import { isJsSourceFile, locOf } from "../../program.js";
+import { isJsSourceFile, isNodeTypesPath, locOf } from "../../program.js";
 import { lowerPartialAssertion, partialAssertionSite } from "../partial-assertions.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { jsBindingHasOpenWrites } from "../lower-stmts.js";
@@ -465,6 +465,30 @@ export function isDataViewPrototypeValue(expr: IrExpr): boolean {
   return expr.kind === "dynKeyGet" && isDataViewPrototypeValue(expr.value);
 }
 
+/** Whether `node` reads one of the ES lib interface's three view fields —
+ * `buffer`, `byteOffset`, `byteLength` — from a receiver the checker types
+ * as `ArrayBufferView`. That interface is the common supertype of every
+ * typed array and DataView, so it maps to the checked-dynamic value: its
+ * three reads answer from the native view the value holds (its buffer by
+ * identity) or from the dynamic tier, exactly as Node reads the property.
+ * Extracting them as the declared `number` would throw where Node answers a
+ * non-view value. @types/node's `NodeJS.ArrayBufferView` is its own
+ * interface with its own mapping, whose reads keep the extraction. */
+function isArrayBufferViewFieldRead(lowerer: Lowerer, node: ts.Node): boolean {
+  if (!ts.isPropertyAccessExpression(node)) return false;
+  const name = node.name.text;
+  if (name !== "buffer" && name !== "byteOffset" && name !== "byteLength") return false;
+  const type = lowerer.checker.getNonNullableType(lowerer.typeOf(node.expression));
+  const symbol = type.getSymbol();
+  if (symbol === undefined || ts.symbolName(symbol) !== "ArrayBufferView") return false;
+  return (
+    symbol.declarations?.some((decl) => {
+      const file = ts.getSourceFileOfNode(decl);
+      return lowerer.isStdlibFile(file) && !isNodeTypesPath(file.fileName);
+    }) ?? false
+  );
+}
+
 /** Checker-driven union narrowing. tsc's control-flow analysis narrows a
  * union-typed reference at use sites (`if (r.kind === "ok") { ...r... }`
  * types `r` as the ok-arm inside the branch); the IR value is still the
@@ -513,6 +537,14 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     // DataView.prototype (and its members) is the prototype OBJECT, though
     // @types/node declares the interface: extracting the view would throw.
     if (isDataViewPrototypeValue(expr)) return expr;
+    // A value typed `ArrayBufferView` reads its three view fields as the
+    // dynamic answer: the interface is the common supertype of every typed
+    // array and DataView, so the value is whatever view the program stored
+    // (or none — the checker's `number` does not make the property exist),
+    // and the dynamic tier answers the read from the native view behind it
+    // or the way Node reads the property. A consumer that needs a number
+    // checks it itself.
+    if (isArrayBufferViewFieldRead(lowerer, node)) return expr;
     // A process.versions entry declared as a string can be absent here.
     if (isOptionalProcessVersionsRead(lowerer, node))
       return lowerer.coerceToExpected(expr, lowerer.withUndefinedArm(STRING));

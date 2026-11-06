@@ -10088,16 +10088,25 @@ function lowerObjectStaticCall(
         );
       }
       const moduleSymbol = source ? lowerer.checker.getSymbolAtLocation(source) : undefined;
+      const runtimeNames = source === null ? new Set<string>() : lowerer.runtimeExportNames(source);
       const names: string[] = [];
-      moduleSymbol?.getExports().forEach((symbol, key) => {
+      // The resolved export set, so an `export * from` re-export lists the
+      // names it forwards — the same set the namespace object carries. A
+      // name a type-only export declaration forwards has no runtime
+      // binding, so the runtime export names decide that part of the set.
+      for (const symbol of moduleSymbol ? lowerer.checker.getExportsOfModule(moduleSymbol) : []) {
         // Internal names (`__export`) start with `__`; an exported name that
-        // does is keyed with an extra `_` (escapedSymbolName).
-        const name = String(key);
-        if ((name.startsWith("__") && !name.startsWith("___")) || name === "export=") return;
+        // does is keyed with an extra `_` (escapedSymbolName), so the escaped
+        // name is what tells the two apart. The name pushed is the export's
+        // own spelling, without that extra `_`.
+        const key = String(symbol.escapedName);
+        if ((key.startsWith("__") && !key.startsWith("___")) || key === "export=") continue;
+        const name = ts.symbolName(symbol);
+        if (!runtimeNames.has(name)) continue;
         const target =
           symbol.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(symbol) : symbol;
-        if (target.flags & ts.SymbolFlags.Value) names.push(ts.symbolName(symbol));
-      });
+        if (target.flags & ts.SymbolFlags.Value) names.push(name);
+      }
       names.sort();
       const loc = locOf(call);
       const result: IrExpr = {

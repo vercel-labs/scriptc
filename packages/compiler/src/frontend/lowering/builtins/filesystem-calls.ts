@@ -1435,7 +1435,7 @@ export function lowerFsAppendOptionsCall(
   // only has to be utf8. Stage the two operands so the encoding expression
   // lands in that order; otherwise a call statically typed as "utf8" fails
   // to run, or fails to throw.
-  const appendAfterEncoding = (): IrExpr => {
+  const appendAfterEncoding = (encoding: ts.Expression): IrExpr => {
     const dataType: IrType =
       unionArms !== null
         ? (dataIr as Extract<IrType, { kind: "union" }>)
@@ -1463,8 +1463,8 @@ export function lowerFsAppendOptionsCall(
         },
         {
           kind: "exprStmt",
-          expr: lowerer.lowerExprExpecting(optsNode, STRING),
-          loc: locOf(optsNode),
+          expr: lowerer.lowerExprExpecting(encoding, STRING),
+          loc: locOf(encoding),
         },
       ],
       result:
@@ -1490,10 +1490,11 @@ export function lowerFsAppendOptionsCall(
   };
   const t = lowerer.typeOf(optsNode);
   if (t.isStringLiteralType() && (t.value === "utf8" || t.value === "utf-8"))
-    return appendAfterEncoding();
+    return appendAfterEncoding(optsNode);
   const literal = optionsLiteralOf(lowerer, optsNode);
   if (literal !== null) {
     let encodingOnly = true;
+    let encoding: ts.Expression | null = null;
     for (const property of literal.properties.nodes) {
       const member = optionMember(property);
       if (!member || member.name !== "encoding") {
@@ -1510,8 +1511,14 @@ export function lowerFsAppendOptionsCall(
         encodingOnly = false;
         break;
       }
+      encoding = member.value;
     }
-    if (encodingOnly) return plainAppend();
+    // The options record is evaluated at the write site, as Node evaluates it:
+    // the encoding member's expression runs after the path and the data, so a
+    // call or getter behind a statically "utf8" value has its effects and
+    // exceptions, rather than being read for its type and dropped.
+    // A record with no member has no expression to evaluate.
+    if (encodingOnly) return encoding === null ? plainAppend() : appendAfterEncoding(encoding);
   }
   lowerer.noLowering("fs.appendFileSync with 3 arguments", optsNode, supported);
   return plainAppend();

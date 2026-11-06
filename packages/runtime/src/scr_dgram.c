@@ -328,6 +328,7 @@ static void scr_dgram_fire0(ScrDgramLs *l) {
  * 'error' (the scr_net.c stance — _Exit skips atexit on purpose). */
 static void scr_dgram_fire_err(ScrDgramLs *l, ScrStr *msg) {
   if (l->n == 0) {
+    scr_stdout_settle();
     fflush(stdout);
     fprintf(stderr, "Unhandled 'error' event: Error: %s\n", msg->data);
     _Exit(1);
@@ -1302,6 +1303,7 @@ static void scr_dns_warn_tick(ScrClosure *self) {
   if (scr_warning_emit_hook) {
     scr_warning_emit_hook("DeprecationWarning", "DEP0118", message);
   } else {
+    scr_stdout_settle();
     fflush(stdout);
 #ifdef _WIN32
     long pid = (long)_getpid();

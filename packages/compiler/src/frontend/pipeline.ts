@@ -7,13 +7,14 @@ import {
   restoreShapeOverlayState,
   setShapeOverlayDropped,
   shapeOverlayActive,
+  shapeOverlayEnabled,
   shapeOverlayMemoPlainFences,
   shapeOverlayReport,
 } from "./shape-inference/index.js";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import type { IrModule } from "../ir/ir.js";
 import type { SrcLoc } from "../ir/ir.js";
-import type { NpmStaticStatus } from "../coverage/report.js";
+import type { NpmStaticStatus } from "./npm-static-status.js";
 import { entryExportFacts, type EntryExport } from "./lib-exports.js";
 import { entryContractFacts, type ContractFacts } from "./lib-contract.js";
 import {
@@ -44,6 +45,7 @@ import { isJsSourceFileName } from "./tsc-codes.js";
 import { isRelativeSpecifier, packageNameOfSpecifier } from "./workspace-registry.js";
 import { lowerToIr, type LowerOptions, type LowerResult } from "./lowering/lowerer.js";
 import type { FrontendServices } from "./services.js";
+import type { Ladder, LadderRung } from "./npm-static-ladder.js";
 import {
   isIdentifier,
   isImportDeclaration,
@@ -60,7 +62,7 @@ import { NODE_API_MODULE } from "./node-api-import.js";
 import { erasedTypeOnlyImport } from "./type-only-imports.js";
 import { EXPERIMENTAL_MODULE } from "./experimental-import.js";
 import { readProjectConfig } from "../project-config.js";
-import { setFrontendIslands } from "../node-islands/boundary.js";
+import { recordFrontendIslandReads, setFrontendIslands } from "../node-islands/boundary.js";
 import { typePatchDiagnostics } from "./type-patches/layer.js";
 import { packageDirOf } from "../node-islands/origin.js";
 import {
@@ -230,6 +232,65 @@ function addDynamicImportGraph(load: LoadResult, scanned: Set<SourceFile>): void
   }
 }
 
+/** Adds the package modules a compiled package loads LAZILY to `scanned`: a
+ * `require()` call inside a function or a nested declaration lowers at the
+ * call, so its target is not in the startup module order — but that file's
+ * own top-level requires still name packages the program loads on that path,
+ * and library mode compiles the package whole. Package sources hide their
+ * dependency edges exactly there (fastify's logger-factory.js requires
+ * ./logger-pino.js inside createLogger, and only logger-pino.js requires
+ * pino). Every literal require()/import() call in the package's JavaScript
+ * counts, wherever it sits; the walk follows the files it reaches, including
+ * the files the package loader brought into the program for exactly this.
+ * A file the graph already holds keeps the graph's own static edges: the
+ * program pruned the ones a pure package's unused exports back (a
+ * re-exported module the program never reads, whose own `export *` would
+ * otherwise name a package), and rescanning its declarations here would add
+ * them back. Only the files this walk discovers owe their static
+ * declarations to it. */
+function addLazyRequireGraph(load: LoadResult, scanned: Set<SourceFile>): void {
+  const inGraph = new Set(scanned);
+  const queue = [...scanned];
+  while (queue.length > 0) {
+    const sf = queue.pop()!;
+    if (npmStaticPackageOfPath(sf.fileName) === null || !isJsSourceFileName(sf.fileName)) continue;
+    const candidates = moduleSourceCandidates(load.program, sf);
+    // `candidates.specifiers` also names every literal require() call, which
+    // resolves with the IMPORT conditions. A package's require edge must use
+    // its own ("@hapi/hoek" answers lib/index.js, not lib/index.mjs there),
+    // so the static declarations are read separately and the calls below.
+    const specs: { spec: string; kind: "import" | "require" }[] = [];
+    if (!inGraph.has(sf)) {
+      for (const stmt of sf.statements.nodes) {
+        if (
+          (isImportDeclaration(stmt) || isExportDeclaration(stmt)) &&
+          stmt.moduleSpecifier !== undefined &&
+          isStringLiteral(stmt.moduleSpecifier)
+        )
+          specs.push({ spec: stmt.moduleSpecifier.text, kind: "import" });
+      }
+    }
+    for (const call of candidates.calls) {
+      const arg = call.arguments.nodes[0];
+      if (arg === undefined || !isStringLiteralLike(arg)) continue;
+      if (call.expression.kind === SyntaxKind.ImportKeyword)
+        specs.push({ spec: arg.text, kind: "import" });
+      else if (isIdentifier(call.expression) && call.expression.text === "require")
+        specs.push({ spec: arg.text, kind: "require" });
+    }
+    for (const { spec, kind } of specs) {
+      if (canonicalBuiltinModule(spec) !== null) continue;
+      const dep =
+        resolveImport(load.program, sf, spec, kind) ??
+        npmStaticDepSf7(load.program, sf, spec, kind);
+      if (dep === null || scanned.has(dep) || dep.isDeclarationFile) continue;
+      if (dep.fileName.includes("/node_modules/") && !isJsSourceFileName(dep.fileName)) continue;
+      scanned.add(dep);
+      queue.push(dep);
+    }
+  }
+}
+
 function detectAutoPackages(
   load: LoadResult,
   statuses: NpmStaticStatus[],
@@ -237,8 +298,17 @@ function detectAutoPackages(
   judged?: Set<string>,
   sites?: Map<string, SrcLoc>,
   transitive: Set<string> = new Set(),
+  witness?: Set<string>,
 ): string[] {
   const chosen: string[] = [];
+  // Whether the package was already decided, recording that the answer
+  // depends on it: `judged` starts with the frontend's island packages, so a
+  // rung's outcome is a function of the island set through exactly the names
+  // this walk asks about (see LadderRung).
+  const judgedAlready = (pkg: string): boolean => {
+    witness?.add(pkg);
+    return judged?.has(pkg) ?? false;
+  };
   // package → the resolved types file AND the file whose import found it:
   // the runtime-JS probe below must resolve from the SAME importing file,
   // or a package visible only to a nested package.json realm (a pnpm
@@ -253,6 +323,9 @@ function detectAutoPackages(
   // dependencies.
   const scanned = new Set([...load.moduleOrder, load.entry]);
   addDynamicImportGraph(load, scanned);
+  // Library mode compiles a package whole: the modules a function-scoped
+  // require loads are part of its source graph, so their edges count.
+  if (mode === "lib") addLazyRequireGraph(load, scanned);
   const transitiveFiles =
     transitive.size === 0
       ? []
@@ -331,6 +404,9 @@ function detectAutoPackages(
     }
     for (const { spec, loc, nested } of edges) {
       if (load.externalTypes?.has(spec)) continue;
+      // A required JSON document is data the package reads, not a package
+      // dependency of its own: it never needs declarations or an opt-in.
+      if (spec.endsWith(".json")) continue;
       // scriptc's own packages are not npm dependencies: contract types are
       // declarations only, and @scriptc/threads and @scriptc/experimental
       // exports lower at their use sites (threads-import.ts,
@@ -360,7 +436,7 @@ function detectAutoPackages(
       if (npmBuiltinAliasOf(spec) !== null) continue;
       // Explicit attempts name the runtime package. Types-first resolution
       // may instead identify its @types twin, which has no runtime to admit.
-      if (judged?.has(packageNameOfSpecifier(spec))) continue;
+      if (judgedAlready(packageNameOfSpecifier(spec))) continue;
       const npm = resolveNpmImport(sf.fileName, spec);
       if (npm !== null && isNodeTypesPath(npm.typesFile)) continue;
       // The runtime package Node loads. Types-first resolution answers an
@@ -379,7 +455,7 @@ function detectAutoPackages(
       )
         continue;
       if (npm === null || runtimePkg !== null) {
-        if (mode !== "lib" || runtimePkg === null || judged!.has(runtimePkg)) continue;
+        if (mode !== "lib" || runtimePkg === null || judgedAlready(runtimePkg)) continue;
         judged!.add(runtimePkg);
         sites!.set(runtimePkg, loc);
         if (viaTransitive) {
@@ -411,7 +487,7 @@ function detectAutoPackages(
         });
         continue;
       }
-      if (judged?.has(npm.packageName)) continue;
+      if (judgedAlready(npm.packageName)) continue;
       // An @types twin with no runtime package installed has nothing to
       // compile (Node cannot load it either).
       if (viaTransitive && !npm.packageName.startsWith("@types/")) {
@@ -428,6 +504,8 @@ function detectAutoPackages(
     }
   }
   for (const [pkg, { typesFile, fromFile, spec, owner }] of seen) {
+    // npmStaticIneligibleReason reads the package's island membership.
+    witness?.add(pkg);
     judged?.add(pkg);
     // A package without a root entry (no "main", "exports" or index file)
     // can still serve the subpath the program imports.
@@ -571,6 +649,57 @@ export function runFrontend(
   }
 }
 
+/** Everything a rung's answer is a function of besides the island set: the
+ * entry, the npm-static list the rung loads with, the external-type map that
+ * decides what that load compiles, and the packages a `pkg...` selection
+ * opted in transitively. The last is not in the list: `runFrontend` strips
+ * the `...` before the load, so `pkg` and `pkg...` load the same list and
+ * answer differently — the transitive walk skips the declaration bar. */
+function ladderKey(
+  entryPath: string,
+  requested: readonly string[],
+  externalTypes: Readonly<Record<string, string>> | undefined,
+  transitive: ReadonlySet<string>,
+): string {
+  const types =
+    externalTypes === undefined
+      ? ""
+      : Object.keys(externalTypes)
+          .sort()
+          .map((spec) => `${spec}=${externalTypes[spec]}`)
+          .join("\n");
+  return `${entryPath}\n${requested.join("\n")}\n${[...transitive].sort().join("\n")}\n\n${types}`;
+}
+
+/** The recorded answer for this rung under an island set that answers the
+ * same about every package the recorded walk asked about.
+ *
+ * The island set is the one input the key does not spell out: it reaches a
+ * rung only by naming packages — a judged package is skipped, an island's
+ * undeclared subpath files serve their any-surface stub, and its imports
+ * pass the preflight fences — so the rung records every package whose
+ * membership it read together with the answers it ran under. Two island sets
+ * that agree on each of those packages leave every read unchanged, and a walk
+ * whose reads are unchanged cannot diverge. */
+function ladderRead(
+  ladder: Ladder,
+  key: string,
+  islands: ReadonlySet<string>,
+): LadderRung | undefined {
+  const entries = ladder.get(key);
+  if (entries === undefined) return undefined;
+  for (const entry of entries) {
+    let same = true;
+    for (const pkg of entry.witness)
+      if (islands.has(pkg) !== entry.islands.has(pkg)) {
+        same = false;
+        break;
+      }
+    if (same) return entry;
+  }
+  return undefined;
+}
+
 /** A file path as the frontend and the island decision spell it. */
 function normalizeFile(file: string): string {
   return file.replaceAll("\\", "/");
@@ -631,8 +760,10 @@ function loadFrontend(
   let requested: string[] = [];
   let reusableScout: ReturnType<typeof loadProgram> | null = null;
   let reusablePreflight: ScrDiagnostic[] | null = null;
+  let scoutServices: FrontendServices | undefined;
   if (npmStatic === "auto" || npmStatic === "lib") {
     const scout = loadProgram(entryPath, { externalTypes });
+    scoutServices = scout.services;
     let retained = false;
     try {
       const scoutPreflight = checkPreflight(scout);
@@ -689,14 +820,29 @@ function loadFrontend(
   // remove that package from the active source graph. Reloading restores
   // its declarations for analysis; the recorded refusal stops executable
   // and library builds with a package-specific diagnostic.
-  let load = reusableScout ?? loadProgram(entryPath, { npmStatic: requested, externalTypes });
-  let preflight = reusablePreflight ?? checkPreflight(load);
+  //
+  // `held` is the fixpoint's working program: the ladder below answers a rung
+  // with no load at all, so it may be absent until the converged rung needs
+  // one. `load` is the program the rest of the pipeline reads.
+  const islandsForLadder = options.islandPackages ?? new Set<string>();
+  // Only the library fixpoint walks rungs, and an overlay build keeps its
+  // first program's diagnostics for the fallback below: no memo there.
+  const ladder =
+    npmStatic === "lib" && !shapeOverlayEnabled() && scoutServices !== undefined
+      ? scoutServices.npmStaticLadder
+      : null;
+  let held: ReturnType<typeof loadProgram> | null = reusableScout;
+  let preflight: ScrDiagnostic[] = reusablePreflight ?? [];
+  if (held === null && ladder === null) {
+    held = loadProgram(entryPath, { npmStatic: requested, externalTypes });
+    preflight = checkPreflight(held);
+  }
   // Shape inference never makes the preflight fail: when the overlay's
   // program reports diagnostics the program without it does not (its type
   // references can load package files the program would not), the build
   // continues without the overlay.
-  if (preflight.length > 0 && load.shapeOverlayState !== undefined) {
-    restoreShapeOverlayState(load.shapeOverlayState);
+  if (held !== null && preflight.length > 0 && held.shapeOverlayState !== undefined) {
+    restoreShapeOverlayState(held.shapeOverlayState);
     if (shapeOverlayActive()) {
       const key = (d: ScrDiagnostic): string => `${d.code}|${d.loc.file}|${d.loc.start}`;
       setShapeOverlayDropped(true);
@@ -704,8 +850,8 @@ function loadFrontend(
       const plainPreflight = checkPreflight(plain);
       const known = new Set(plainPreflight.map(key));
       if (preflight.some((d) => !known.has(key(d)))) {
-        load.dispose();
-        load = plain;
+        held.dispose();
+        held = plain;
         preflight = plainPreflight;
         if (process.env["SCRIPTC_DEBUG_SHAPE_FALLBACK"] !== undefined)
           process.stderr.write(
@@ -724,24 +870,78 @@ function loadFrontend(
   // reloads; ineligible ones record a refusal. Bounded by the dependency
   // count (every iteration settles
   // at least one new package for good).
+  //
+  // A rung's only consumer is the next `detectAutoPackages`, which reads the
+  // module order and the dynamic-import rejections. Its diagnostics are read
+  // only if it turns out to be the fixpoint's LAST rung, so they wait for the
+  // single full preflight below (which completes this walk rather than
+  // repeating it). A rung this build already walked answers from the ladder,
+  // and the load that would only reproduce its program is skipped.
+  let walked = false;
   if (npmStatic === "lib") {
-    let reloaded = false;
     for (;;) {
-      const grown = detectAutoPackages(load, statuses, "lib", judged, npmSites, transitive);
+      const key = ladder === null ? "" : ladderKey(entryPath, requested, externalTypes, transitive);
+      const known = ladder === null ? undefined : ladderRead(ladder, key, islandsForLadder);
+      let grown: readonly string[];
+      if (known !== undefined) {
+        grown = known.grown;
+        for (const status of known.statuses) statuses.push(status);
+        for (const [pkg, loc] of known.sites) npmSites.set(pkg, loc);
+        for (const pkg of known.judged) judged.add(pkg);
+        for (const pkg of known.transitive) transitive.add(pkg);
+      } else {
+        const witness = new Set<string>();
+        const statusMark = statuses.length;
+        const siteMark = new Set(npmSites.keys());
+        const judgedMark = new Set(judged);
+        const transitiveMark = new Set(transitive);
+        // Everything this rung reads the island set through: the boundary's
+        // own answers while the load and its structure walk run, and the
+        // judged lookups in the walk below.
+        recordFrontendIslandReads(witness);
+        try {
+          if (held === null) {
+            held = loadProgram(entryPath, { npmStatic: requested, externalTypes });
+            checkModuleOrder(held);
+            walked = true;
+          }
+          grown = detectAutoPackages(held, statuses, "lib", judged, npmSites, transitive, witness);
+        } finally {
+          recordFrontendIslandReads(null);
+        }
+        if (grown.length > 0 && ladder !== null) {
+          const sites: (readonly [string, SrcLoc])[] = [];
+          for (const [pkg, loc] of npmSites) if (!siteMark.has(pkg)) sites.push([pkg, loc]);
+          const entries = ladder.get(key) ?? [];
+          entries.push({
+            grown,
+            statuses: statuses.slice(statusMark),
+            sites,
+            judged: [...judged].filter((pkg) => !judgedMark.has(pkg)),
+            transitive: [...transitive].filter((pkg) => !transitiveMark.has(pkg)),
+            islands: new Set(islandsForLadder),
+            witness: [...witness],
+          });
+          ladder.set(key, entries);
+        }
+      }
       if (grown.length === 0) break;
       requested = [...requested, ...grown];
-      load.dispose();
-      load = loadProgram(entryPath, { npmStatic: requested, externalTypes });
-      // A rung's only consumer is the next `detectAutoPackages`, which reads
-      // the module order and the dynamic-import rejections. Its diagnostics
-      // are read only if it turns out to be the fixpoint's LAST rung, so they
-      // wait for the single full preflight below (which completes this walk
-      // rather than repeating it).
-      checkModuleOrder(load);
-      reloaded = true;
+      if (held !== null) {
+        held.dispose();
+        held = null;
+      }
     }
-    if (reloaded) preflight = checkPreflight(load);
   }
+  if (held === null) {
+    // The converged rung's answer came from the ladder; the frontend still
+    // owns the one program it lowers.
+    held = loadProgram(entryPath, { npmStatic: requested, externalTypes });
+    checkModuleOrder(held);
+    walked = true;
+  }
+  let load = held;
+  if (walked) preflight = checkPreflight(load);
   const effective = new Set(requested);
   // Packages refused only because the program does not typecheck against
   // their inferred surface (no offender, no package-anchored diagnostic).

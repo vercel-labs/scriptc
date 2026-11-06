@@ -990,11 +990,13 @@ compileUnoptimizedPartitions(const EmitOptions &Options,
       return;
     }
     std::string LookupError;
+    // The context must outlive the target machine: the subtarget caches the
+    // GlobalISel selector, whose builder holds metadata handles into it.
+    LLVMContext Context;
     std::unique_ptr<TargetMachine> Machine =
         createTargetMachine(Options.Target, Options.OptLevel, LookupError);
     if (!Machine)
       return Failures.set({"target_machine_failed", LookupError});
-    LLVMContext Context;
     Expected<std::unique_ptr<Module>> Mod =
         loadPartition(Options, Plan.Modules[I], I, Context, *Machine);
     if (!Mod)
@@ -1045,11 +1047,13 @@ compileOptimizedPartitions(const EmitOptions &Options,
       return;
     }
     std::string LookupError;
+    // The context must outlive the target machine: the subtarget caches the
+    // GlobalISel selector, whose builder holds metadata handles into it.
+    LLVMContext Context;
     std::unique_ptr<TargetMachine> Machine =
         createTargetMachine(Options.Target, Options.OptLevel, LookupError);
     if (!Machine)
       return Failures.set({"target_machine_failed", LookupError});
-    LLVMContext Context;
     ProfileMatch PartitionMatch;
     std::vector<std::string> MismatchedNames;
     if (Annotating)
@@ -1649,11 +1653,13 @@ emitSplitCodegen(const EmitOptions &Options, Module &M, TargetMachine &Machine,
       return;
     }
     std::string LookupError;
+    // The context must outlive the target machine: the subtarget caches the
+    // GlobalISel selector, whose builder holds metadata handles into it.
+    LLVMContext Context;
     std::unique_ptr<TargetMachine> PartMachine =
         createTargetMachine(Options.Target, Options.OptLevel, LookupError);
     if (!PartMachine)
       return Failures.set({"target_machine_failed", LookupError});
-    LLVMContext Context;
     std::unique_ptr<Module> Part;
     if (Split) {
       Expected<std::unique_ptr<Module>> Parsed = parseBitcodeFile(

@@ -370,11 +370,17 @@ void scr_cyc_free(void *obj); /* frees the block, header included */
 
 void *scr_mem_realloc(void *p, size_t n);
 void *scr_rt_calloc(size_t n); /* emitted-code entry points */
-#if defined(__linux__) && SCR_SMALL_ALLOC
+/* The targets whose compact class fields hold 32-bit references
+ * (llvm/emitter.ts lowRegionTarget): Linux and 64-bit macOS. */
+#if SCR_SMALL_ALLOC && (defined(__linux__) || defined(__APPLE__))
+#define SCR_COMPACT_REFS 1
+#endif
+#ifdef SCR_COMPACT_REFS
 /* The program-lifetime region (scr_alloc.c): compact class instances of
- * programs built for Linux without sanitizers (llvm/emitter.ts
- * lowRegionTarget), which are never freed, at 8-byte aligned addresses below
- * 32 GiB, so their fields can hold address >> 3 in 32 bits (0 is NULL).
+ * programs built for Linux or macOS without sanitizers (llvm/emitter.ts
+ * lowRegionTarget), which are never freed, at 8-byte aligned addresses in
+ * [SCR_WINDOW_BASE, SCR_WINDOW_BASE + 32 GiB), so their fields can hold the
+ * offset >> 3 in 32 bits (0 is NULL).
  * scr_plr_init reserves it before compiled code runs; scr_plr_alloc returns
  * zeroed memory. */
 void scr_plr_init(void);

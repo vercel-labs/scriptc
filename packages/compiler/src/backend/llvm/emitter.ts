@@ -64,7 +64,11 @@ import {
   classJsName,
   classValueAbiEquals,
 } from "../../ir/ir.js";
-import { moduleRuntimeFeatures, type RuntimeFeatures } from "../../ir/runtime-features.js";
+import {
+  jsObjectModelFact,
+  moduleRuntimeFeatures,
+  type RuntimeFeatures,
+} from "../../ir/runtime-features.js";
 import { captureFreeFunctions, observesStacks } from "../stack-observations.js";
 import { findInitializedByteLoopBindings } from "./byte-windows.js";
 import { matchBytesLoopVersion } from "./bytes-loop-versions.js";
@@ -89,6 +93,7 @@ import {
 } from "./emit-journal.js";
 import { specializeNumericCalls } from "../../ir/numeric-call-specialization.js";
 import { specializeTypedArguments } from "../../ir/typed-argument-clones.js";
+import { specializeConstantArrayLengths } from "../../ir/constant-length-clones.js";
 import { versionLoopBoundParameters } from "../../ir/parameter-versions.js";
 import { inlineExpressionFunctions } from "../../ir/expression-inlining.js";
 import {
@@ -154,7 +159,11 @@ import { writeRepresentationReport } from "./repr-report.js";
 import { heapCensusOf, type HeapCensus } from "./heap-census.js";
 import { exactInteger, narrowInteger, widenInteger, type LlInteger } from "./integer-values.js";
 import { findInitializerBindings } from "../../ir/initializer-bindings.js";
-import { findConstantNumericTables, type ConstantNumericTable } from "../../ir/constant-tables.js";
+import {
+  findConstantNumericTables,
+  findStaticArrayTables,
+  type ConstantNumericTable,
+} from "../../ir/constant-tables.js";
 import {
   allocateFfiCallbackAdapters,
   hasForeignFfiCallback,
@@ -173,7 +182,12 @@ import {
   bridgePlainUnwindCalls,
   unwindAbiFunctions,
 } from "./unwind-abi.js";
-import { cloneForCpuDispatch, type CpuCopies } from "./cpu-dispatch.js";
+import {
+  cloneForCpuDispatch,
+  keepCopiedBodiesOutOfLine,
+  type CpuCopies,
+  type CpuCopySelection,
+} from "./cpu-dispatch.js";
 import {
   mangleAsyncInlineAwaitCall,
   mangleAsyncSpawn,
@@ -369,6 +383,7 @@ import {
   classFieldTypes,
   classMembershipIntervals,
   classFieldIndex,
+  compactRefBaseOf,
   compactRefLoadLines,
   compactRefStoreLines,
   classPreLines,
@@ -408,6 +423,11 @@ import {
   type NullableUnion,
 } from "./nullable-unions.js";
 import { classUnionHeaders, emitClassUnionHelpers } from "./class-unions.js";
+
+/** The ABSENT marker of an optional checked-dynamic record field: an
+ * immortal ScrDyn of kind SCR_DYN_UNDEF that is address-distinct from
+ * scr_dyn_undefined(). Emitted only when a program references it. */
+export const DYN_ABSENT = "@sc_dyn_absent";
 import { emitNullablePresent, emitUnionPeek, emitUnionTag } from "./union-repr.js";
 import {
   emitConcatInputs,
@@ -615,6 +635,11 @@ export interface LlvmTargetOptions {
    * teardown after `process.exit` to a helper process (`--detached-exit`).
    * Executables only; the runtime's weak default keeps it off. */
   detachedExit?: boolean;
+  /** Define `scr_stdout_buffering` so the runtime keeps JavaScript-visible
+   * stdout in its 64 KiB buffer when fd 1 is not a terminal
+   * (`--stdout-buffering`). Executables only; the runtime's weak default
+   * keeps the per-call policy. */
+  stdoutBuffering?: boolean;
   /** The files of the program's Node island module tree, in manifest order
    * (node-islands/modules.ts), when the executable carries the tree. */
   nodeIslandModuleData?: Uint8Array;
@@ -636,19 +661,31 @@ export interface LlvmTargetOptions {
    * runs on any x86-64 CPU. */
   targetCpu?: TargetCpu;
   /** Give an x86-64 executable without a `targetCpu` an x86-64-v3 copy of
-   * each program function, which it runs on CPUs at that level
-   * (cpu-dispatch.ts). Ignored for other targets, libraries and builds
-   * with debug information. */
+   * the program functions whose loop x86-64-v3 widens (cpu-dispatch.ts),
+   * which it runs on CPUs at that level. Ignored for other targets,
+   * libraries, builds with debug information and profile-recording builds. */
   cpuDispatch?: boolean;
+  /** The build records a profile: a dispatching build emits one body per
+   * function and keeps the functions a copy takes out of line, so the
+   * profile names the functions a `--profile-use` build copies. */
+  profileGenerate?: boolean;
+  /** The functions the build's profile names, when it uses one: the copies
+   * are limited to the functions among them that have a loop. */
+  cpuCopyFunctions?: ReadonlySet<string>;
+  /** The most program text the copies may take (cpu-dispatch.ts
+   * cpuCopyBudget by default): lowers the set for a build or a test that
+   * wants fewer copies. */
+  cpuCopyCapBytes?: number;
 }
 
 /** LlvmTargetOptions.lowRegion for an executable: Linux targets without
  * sanitizers, whose address space below 32 GiB is free (ASan keeps its
- * shadow memory there; other systems map their own images and libraries
- * there). `platform` is a target platform (`linux`, `darwin`, `win32`,
- * `wasi`). */
+ * shadow memory there), and macOS targets without sanitizers, which keep the
+ * window at a fixed base instead (classes.ts compactRefBaseOf). Other systems
+ * map their own images and libraries below 32 GiB. `platform` is a target
+ * platform (`linux`, `darwin`, `win32`, `wasi`). */
 export function lowRegionTarget(platform: string, sanitize: boolean): boolean {
-  return platform === "linux" && !sanitize;
+  return (platform === "linux" || platform === "darwin") && !sanitize;
 }
 
 /** Function versions on loop-bounding number parameters
@@ -799,21 +836,24 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
           scalarizeNumericRecords(
             specializeCallbackCalls(
               specializeNumericCalls(
-                specializeTypedArguments(
-                  pairRowSums(
-                    jamRuntimeCountLoops(
-                      jamSaturatingLoops(
-                        inlineArraysPass(
-                          options,
-                          inlineExpressionFunctions(
-                            foldConstantGlobals(
-                              copyStableCaptures(
-                                resolveSelfCaptures(
-                                  hoistFinalFieldReads(
-                                    freezeInitOnlyGlobals(
-                                      holdCharLocalsAsUnits(
-                                        dropUnwrittenPropertyBags(
-                                          runPairedWhileLoopsAsFor(mod, nodes),
+                specializeConstantArrayLengths(
+                  specializeTypedArguments(
+                    pairRowSums(
+                      jamRuntimeCountLoops(
+                        jamSaturatingLoops(
+                          inlineArraysPass(
+                            options,
+                            inlineExpressionFunctions(
+                              foldConstantGlobals(
+                                copyStableCaptures(
+                                  resolveSelfCaptures(
+                                    hoistFinalFieldReads(
+                                      freezeInitOnlyGlobals(
+                                        holdCharLocalsAsUnits(
+                                          dropUnwrittenPropertyBags(
+                                            runPairedWhileLoopsAsFor(mod, nodes),
+                                            nodes,
+                                          ),
                                           nodes,
                                         ),
                                         nodes,
@@ -828,13 +868,14 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
                               ),
                               nodes,
                             ),
-                            nodes,
                           ),
+                          nodes,
                         ),
                         nodes,
                       ),
                       nodes,
                     ),
+                    mangleFunction,
                     nodes,
                   ),
                   mangleFunction,
@@ -1159,6 +1200,10 @@ export class LlEmitter {
    * 32-bit references (LlClassMeta.compressed):
    * loadField/loadRef decode them and storeField/storeRef encode them. */
   readonly compressedFieldPtrs = new Set<string>();
+  /** The window base that 32-bit references are offsets from (classes.ts
+   * compactRefBaseOf): 0 unless the low region applies on a target that
+   * places the window at a base. */
+  readonly compactRefBase: bigint;
   /** Compact class instances live in the program-lifetime region below
    * 32 GiB (LlvmTargetOptions.lowRegion, and the program has compact
    * classes): main reserves it before compiled code runs (scr_plr_init), and
@@ -1429,8 +1474,25 @@ export class LlEmitter {
 
   /** Whether an element access at `index` of `arr` lies in the hole-free
    * prefix: a counter of a dense array loop's fast copy indexing one of the
-   * arrays its entry test covered. */
+   * arrays its entry test covered, or an index proven in range of a parameter
+   * whose every call passes an array of that many present elements
+   * (IrParam.constLength). */
   provenDenseIndex(arr: IrExpr, index: IrExpr): boolean {
+    if (arr.kind === "varRef") {
+      const length = this.constLengthParams.get(arr.localId);
+      if (length !== undefined) {
+        if (
+          index.kind === "numLit" &&
+          Number.isInteger(index.value) &&
+          index.value >= 0 &&
+          index.value < length
+        )
+          return true;
+        const range = this.integerRanges.get(index);
+        if (range !== null && range !== undefined && range.min >= 0 && range.max < length)
+          return true;
+      }
+    }
     const loop = LOOPS.of(this).denseLoop;
     return (
       loop !== null &&
@@ -1492,12 +1554,22 @@ export class LlEmitter {
   readonly emitLibraryIdentity: boolean;
   readonly runtimeAbiMarker: boolean;
   readonly detachedExit: boolean;
+  readonly stdoutBuffering: boolean;
   readonly nodeIslandModuleData: Uint8Array | null;
   readonly targetCpu: TargetCpu | undefined;
+  /** LlvmTargetOptions.targetTriple, or "" for the host's ABI. */
+  readonly targetTriple: string;
   /** Emitted functions carry `sanitize_address` (LlvmTargetOptions). */
   readonly sanitizeAttributes: boolean;
   /** LlvmTargetOptions.cpuDispatch, where it applies. */
   readonly cpuDispatch: boolean;
+  /** LlvmTargetOptions.cpuCopyFunctions. */
+  private readonly cpuCopyFunctions: ReadonlySet<string> | undefined;
+  /** LlvmTargetOptions.cpuCopyCapBytes. */
+  private readonly cpuCopyCapBytes: number | undefined;
+  /** Whether emission keeps the functions a dispatching build would copy out
+   * of line, so a recorded profile names them. */
+  private readonly keepCopyBodiesOutOfLine: boolean;
   /** How the program's functions are copied (cpu-dispatch.ts): for runtime
    * dispatch, for an x86-64-v3 `targetCpu` ("target"), or not at all. */
   readonly cpuCopies: CpuCopies | null;
@@ -1525,6 +1597,8 @@ export class LlEmitter {
   readonly retypeGuards = new Map<string, string>();
   /** The nullable-union ABSENT sentinel was referenced (absentInstanceRef). */
   needsNullableAbsent = false;
+  /** The optional-dyn ABSENT marker was referenced (dynAbsentRef). */
+  needsDynAbsent = false;
   private readonly immortalValues = new Set<string>();
   /** Regex literal templates: "<flags>/<pattern>" → { symbol, interned
    * source/flags literal refs } — one immortal ScrRegex template per distinct
@@ -1551,6 +1625,16 @@ export class LlEmitter {
   readonly cstrs = new Map<string, { sym: string; len: number }>();
   /** Interned ScrMapOps descriptors (scr_map.h): initializer → symbol. */
   readonly mapOpsConsts = new Map<string, string>();
+  /** Element data of the numeric array literals that become static tables
+   * (arrayLit, expr-primitives.ts): "<i32|double>:<literal location>" → the
+   * private constant's symbol, element type and the elements as their
+   * rendered literals. The array works from that data in place, so each
+   * entry also places the header in static storage (`<sym>_h`), initialized
+   * with the same table. */
+  readonly arrayConstData = new Map<
+    string,
+    { sym: string; type: "i32" | "double"; values: readonly string[] }
+  >();
   /** Method-id slots of checked-dynamic method calls
    * (scr_dyn_invoke_prepared_id): method name → symbol of an i32 the
    * runtime fills with the name's id on the first call. */
@@ -1677,6 +1761,9 @@ export class LlEmitter {
   readonly nodeIndex: IrNodeIndex;
   private readonly tdzGlobals = new Map<string, string>();
   readonly constantNumericTables: ReadonlyMap<string, ConstantNumericTable>;
+  /** Module-level numeric tables the emitter places in the program image,
+   * by their initializing array literal (ir/constant-tables.ts). */
+  readonly staticArrayTables: ReadonlySet<IrExpr>;
   /** Constant-key reads on checked-dynamic objects, each with its own
    * zero-initialized ScrDynReadIc (scr_runtime.h). */
   dynReadIcSites = 0;
@@ -1768,6 +1855,10 @@ export class LlEmitter {
    * points (RuntimeFeatures asyncContext). */
   get schedulesInContext(): boolean {
     return this.runtimeFeatures.asyncContext;
+  }
+  /** The JavaScript object model build is on (jsObjectModelFact). */
+  get jsObjectModel(): boolean {
+    return jsObjectModelFact(this.runtimeFeatures);
   }
   /** Emitted ref-kind resolve thunks for new Promise, interned per inner
    * typeKey → thunk symbol. */
@@ -2055,6 +2146,9 @@ export class LlEmitter {
    * not a constructor (where they change), not async or a generator. */
   finalFieldBorrows = false;
   integerRanges: IntegerRanges = new Map();
+  /** The current function's parameters whose every call passes an array of a
+   * known number of present elements (IrParam.constLength). */
+  constLengthParams = new Map<string, number>();
   /** The current function's bounded for-loop cursors (integer-ranges.ts). */
   integerLoopRanges: ReadonlyMap<IrStmt, ReadonlyMap<string, IntegerRange>> = new Map();
   /** Number arrays of the current function whose every present element is
@@ -2238,6 +2332,7 @@ export class LlEmitter {
             this.nullableUnions.armTypes(),
           );
     this.constantNumericTables = findConstantNumericTables(mod);
+    this.staticArrayTables = findStaticArrayTables(mod);
     this.untypedIntegrity = mod.untypedIntegrity === true;
     this.sloppyDynWrites = new Set(mod.sloppyDynWrites ?? []);
     this.liveViewsReadOnly =
@@ -2264,6 +2359,7 @@ export class LlEmitter {
       (options.targetTriple
         ? /^(x86_64|amd64)\b/i.test(options.targetTriple)
         : process.arch === "x64");
+    this.compactRefBase = options.lowRegion === true ? compactRefBaseOf(options.targetTriple) : 0n;
     this.executableTls =
       mod.workers === true &&
       mod.lib === undefined &&
@@ -2281,15 +2377,25 @@ export class LlEmitter {
     this.emitLibraryIdentity = options.emitLibraryIdentity !== false;
     this.runtimeAbiMarker = options.runtimeAbiMarker === true;
     this.detachedExit = options.detachedExit === true;
+    this.stdoutBuffering = options.stdoutBuffering === true;
     this.nodeIslandModuleData = options.nodeIslandModuleData ?? null;
     this.targetCpu = options.targetCpu;
+    this.targetTriple = options.targetTriple ?? "";
     this.sanitizeAttributes = options.sanitizeAttributes !== false;
     const copyable =
       !this.wasi &&
       mod.lib === undefined &&
       this.debug === null &&
       /^(x86_64|amd64|x64)\b/.test(options.targetTriple || process.arch);
-    this.cpuDispatch = options.cpuDispatch === true && options.targetCpu === undefined && copyable;
+    this.cpuDispatch =
+      options.cpuDispatch === true &&
+      options.targetCpu === undefined &&
+      copyable &&
+      options.profileGenerate !== true;
+    this.cpuCopyFunctions = options.cpuCopyFunctions;
+    this.cpuCopyCapBytes = options.cpuCopyCapBytes;
+    this.keepCopyBodiesOutOfLine =
+      options.cpuDispatch === true && options.profileGenerate === true && copyable;
     this.cpuCopies = this.cpuDispatch
       ? "dispatch"
       : options.targetCpu === "x86-64-v3" && copyable
@@ -2555,8 +2661,9 @@ export class LlEmitter {
       // Worker programs keep one allocator per script thread: the inline
       // paths address its thread-local state.
       threadLocalAlloc: mod.workers === true,
-      // Linux executables find a block's owner in the chunk map.
-      windowMap: options.lowRegion === true,
+      // Linux executables find a block's owner in the chunk map, which
+      // indexes the low 32 GiB by address; a window with a base has none.
+      windowMap: options.lowRegion === true && compactRefBaseOf(options.targetTriple) === 0n,
       rcHelpers: this.rcHelpers,
       ...(this.rcMode !== undefined ? { rcMode: this.rcMode } : {}),
       ...(this.rcHelpersNoinline ? { rcHelpersNoinline: true } : {}),
@@ -2574,8 +2681,10 @@ export class LlEmitter {
       retypeGuardRef: (unionId) => this.retypeGuardRef(unionId),
       fieldAbsentTestIn: (B, value, unionId) => this.fieldAbsentTestIn(B, value, unionId),
       absentInstanceRef: (unionId) => this.absentInstanceRef(unionId),
+      dynAbsentRef: () => this.dynAbsentRef(),
       liveDynRefAdapter: (type) => this.liveDynRefAdapter(type),
       usesDynBuiltinStream: () => this.usesDynBuiltinStream,
+      jsObjectModel: () => jsObjectModelFact(this.runtimeFeatures),
       liveDynUnionRefAdapter: (type) => this.liveDynUnionRefAdapter(type),
       declBoundary: () => this.mod.declBoundary === true,
       dynPromiseAdapter: (type) => this.dynPromiseAdapter(type),
@@ -2958,13 +3067,30 @@ export class LlEmitter {
     return emitFfiCallbackDefs(this);
   }
 
+  /** What a dispatching build copies: the profile's functions, when it uses
+   * one, within the text budget. */
+  private copySelection(): CpuCopySelection {
+    const selection: CpuCopySelection = {};
+    if (this.cpuCopyFunctions !== undefined) selection.hot = this.cpuCopyFunctions;
+    if (this.cpuCopyCapBytes !== undefined) selection.capBytes = this.cpuCopyCapBytes;
+    return selection;
+  }
+
   emit(): string {
     return this.emitParts().join("\n");
   }
   emitParts(): string[] {
     const parts = emitParts(this);
     const bridged = this.unwindAbi.size > 0 ? bridgePlainUnwindCalls(parts) : parts;
-    const out = this.cpuCopies === null ? bridged : cloneForCpuDispatch(bridged, this.cpuCopies);
+    const profiled = this.keepCopyBodiesOutOfLine ? keepCopiedBodiesOutOfLine(bridged) : bridged;
+    const out =
+      this.cpuCopies === null
+        ? profiled
+        : cloneForCpuDispatch(
+            profiled,
+            this.cpuCopies,
+            this.cpuCopies === "dispatch" ? this.copySelection() : undefined,
+          );
     return this.heapCensus === null ? out : [...out, this.heapCensus.definitions().join("\n")];
   }
 
@@ -3729,6 +3855,35 @@ export class LlEmitter {
     return name;
   }
 
+  /** The element data of the static array table at `at`
+   * (ir/constant-tables.ts), which the array itself holds: the emitter also
+   * places the header, `<sym>_h`, in static storage. Each table gets its own
+   * pair, so two tables with equal elements stay distinct arrays —
+   * `@`-refs, first-use order.
+   *
+   * The elements are rendered to their literals here, not in the module
+   * writer: a chunk's result crosses a JSON boundary (emit-module.ts), and
+   * JSON turns NaN and the infinities into null and negative zero into zero.
+   * `f64Lit` is the exact bit pattern, so every element survives it. */
+  staticArrayData(
+    at: IrExpr,
+    values: readonly number[],
+    type: "i32" | "double",
+  ): { data: string; header: string } {
+    const key = `${type}:${at.loc?.file}:${at.loc?.start}:${at.loc?.end}`;
+    let c = this.arrayConstData.get(key);
+    if (!c) {
+      c = {
+        sym: this.contentSymbol("sc_arr_const_", key),
+        type,
+        values: values.map((v) => (type === "i32" ? String(v) : f64Lit(v))),
+      };
+      this.arrayConstData.set(key, c);
+    }
+    this.journal?.entry("arrayConst", key, c);
+    return { data: `@${c.sym}`, header: `@${c.sym}_h` };
+  }
+
   /** Interned NUL-terminated C-string constant (the scr_jb_puts /
    * stringify-indent currency) — `@`-ref, first-use order. */
   cstr(text: string): string {
@@ -3832,6 +3987,16 @@ export class LlEmitter {
     const name = `@${sym}`;
     this.immortalValues.add(name);
     return name;
+  }
+
+  /** The ABSENT marker of an optional checked-dynamic record field slot
+   * (IR fieldAbsent without a union). Address-compared, never dereferenced
+   * by compiled code: reads select it to scr_dyn_undefined, presence tests
+   * compare against it, and boxing omits it. */
+  dynAbsentRef(): string {
+    this.needsDynAbsent = true;
+    this.immortalValues.add(DYN_ABSENT);
+    return DYN_ABSENT;
   }
 
   /** i1: a union value loaded from a field slot is the ABSENT state — the
@@ -5167,7 +5332,8 @@ export class LlEmitter {
     }
     const idx = B.tmp();
     B.line(`${idx} = load i32, ptr ${ptr}${tags}`);
-    for (const line of compactRefLoadLines(idx, v, `${v}.r`)) B.line(line.trimStart());
+    for (const line of compactRefLoadLines(this.compactRefBase, idx, v, `${v}.r`))
+      B.line(line.trimStart());
     return v;
   }
 
@@ -6214,6 +6380,7 @@ export class LlEmitter {
         usesGenSlots: this.usesGenSlots,
         needsUnionNone: this.needsUnionNone,
         needsNullableAbsent: this.needsNullableAbsent,
+        needsDynAbsent: this.needsDynAbsent,
         needsOom: this.needsOom,
         needsBadTag: this.needsBadTag,
         needsBadKey: this.needsBadKey,
@@ -6252,6 +6419,7 @@ export class LlEmitter {
     this.usesGenSlots ||= flags.usesGenSlots;
     this.needsUnionNone ||= flags.needsUnionNone;
     this.needsNullableAbsent ||= flags.needsNullableAbsent;
+    this.needsDynAbsent ||= flags.needsDynAbsent;
     this.needsOom ||= flags.needsOom;
     this.needsBadTag ||= flags.needsBadTag;
     this.needsBadKey ||= flags.needsBadKey;
@@ -6338,6 +6506,15 @@ export class LlEmitter {
           key,
           value as { sym: string; len: number },
           "sc_cs_",
+          names,
+        );
+        return;
+      case "arrayConst":
+        this.addContentEntry(
+          this.arrayConstData,
+          key,
+          value as { sym: string; type: "i32" | "double"; values: readonly string[] },
+          "sc_arr_const_",
           names,
         );
         return;
@@ -7772,6 +7949,7 @@ export class LlEmitter {
       declare: (decl) => this.declare(decl),
       cstr: (text) => this.cstr(text),
       sizeType: this.sizeType,
+      compactRefBase: this.compactRefBase,
       rcAudit: this.shapeHost.objectAudit !== false,
       tracedShapes: this.tracedShapes,
       unionsById: this.unionsById,

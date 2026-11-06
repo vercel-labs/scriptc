@@ -242,7 +242,7 @@ ScrStr *scr_fs_read_file_encoded(ScrStr *path, ScrStr *encoding);
  * check Node runs before it converts a URL path. */
 void scr_fs_check_read_encoding(ScrStr *encoding);
 ScrStr *scr_fs_read_fd_encoded(double fd, ScrStr *encoding);
-ScrDyn *scr_fs_callback_value(ScrStr *member);
+ScrDyn *scr_fs_callback_value(ScrStr *member, double length);
 ScrDyn *scr_fs_callback_call(ScrStr *member, const ScrDyn *args);
 /* The error-first callback queue (scr_bytes_io.c): a pending exception
  * becomes [err], otherwise [null, result(, buffer)]; the callback runs on

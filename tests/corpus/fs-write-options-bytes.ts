@@ -83,6 +83,26 @@ async function main(): Promise<void> {
   }
   console.log("log after encoding", JSON.stringify(readFileSync(logPath, "utf8")));
 
+  // The options record's encoding member is that same expression: the record
+  // is evaluated at the write site, so the call runs, and throws, as Node's.
+  let optionEncodingCalls = 0;
+  function optionEncoding(): "utf8" {
+    optionEncodingCalls++;
+    return "utf8";
+  }
+  appendFileSync(logPath, "six\n", { encoding: optionEncoding() });
+  console.log("option encoding evaluated", optionEncodingCalls);
+  function refuseOptionEncoding(): "utf8" {
+    throw new Error("refused option encoding");
+  }
+  try {
+    appendFileSync(logPath, "seven\n", { encoding: refuseOptionEncoding() });
+    console.log("refused option encoding wrote");
+  } catch {
+    console.log("refused option encoding threw");
+  }
+  console.log("log after option encoding", JSON.stringify(readFileSync(logPath, "utf8")));
+
   // writeFileSync(path, bytes, "utf8"): the bare spelling over byte data
   // writes the view unchanged, exactly like the record form.
   const bareBytes = join(dir, "bare-bytes.bin");

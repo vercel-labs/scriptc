@@ -10,7 +10,6 @@ import {
   BOOL,
   CAUGHT,
   DYN,
-  DYN_HANDLE_KINDS,
   type IrExpr,
   type IrLocal,
   type IrType,
@@ -20,7 +19,6 @@ import {
   UNDEFINED_T,
   VOID,
   arrayOf,
-  canAdaptDynFuncTo,
   canDynCheckTo,
   isDynTypedRefType,
   isUnitType,
@@ -44,6 +42,7 @@ import { literalValues } from "../../literal-values.js";
 import { literalUnionArm } from "../../union-discriminants.js";
 import { checkedArmExtraction } from "../coercions/unions.js";
 import {
+  assertedOptionalExtension,
   hostedStorageView,
   hostsAll,
   recordViewHosted,
@@ -440,6 +439,15 @@ function isPrimitivePrototypeValue(expr: IrExpr): boolean {
   return expr.kind === "dynKeyGet" && isPrimitivePrototypeValue(expr.value);
 }
 
+/** Whether `expr` is the DataView prototype value a JavaScript source read
+ * (dyn.dataViewPrototype), or one of its members: the value is the
+ * prototype OBJECT, and the interface's own bytes view is a different
+ * representation, so the checker's DataView type must not extract one. */
+export function isDataViewPrototypeValue(expr: IrExpr): boolean {
+  if (expr.kind === "libCall") return expr.fn === "dyn.dataViewPrototype";
+  return expr.kind === "dynKeyGet" && isDataViewPrototypeValue(expr.value);
+}
+
 /** Checker-driven union narrowing. tsc's control-flow analysis narrows a
  * union-typed reference at use sites (`if (r.kind === "ok") { ...r... }`
  * types `r` as the ok-arm inside the branch); the IR value is still the
@@ -485,6 +493,9 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     // prototype OBJECTS, though @types/node declares them with the wrapper
     // interface: extracting the wrapper's numeric value would throw.
     if (isPrimitivePrototypeValue(expr)) return expr;
+    // DataView.prototype (and its members) is the prototype OBJECT, though
+    // @types/node declares the interface: extracting the view would throw.
+    if (isDataViewPrototypeValue(expr)) return expr;
     // A process.versions entry declared as a string can be absent here.
     if (isOptionalProcessVersionsRead(lowerer, node))
       return lowerer.coerceToExpected(expr, lowerer.withUndefinedArm(STRING));
@@ -968,11 +979,17 @@ function checkedStaleArm(
 
 /** V8's spelling of a callee in "is not a function": a string-literal
  * element key reads as a property name (`o["a"]` is `o.a`), other keys
- * keep their brackets, parentheses and non-null assertions disappear, and
- * a call result reads `f(...)`. */
+ * keep their brackets, parentheses and type syntax disappear (`!`, `as`,
+ * `satisfies`, `<T>` assertions), and a call result reads `f(...)`. */
 export function v8CalleeText(node: ts.Node): string {
-  // `!` is type-only syntax: the running JavaScript has no trace of it.
-  if (ts.isNonNullExpression(node) || ts.isParenthesizedExpression(node))
+  // Type syntax is type-only: the running JavaScript has no trace of it.
+  if (
+    ts.isNonNullExpression(node) ||
+    ts.isParenthesizedExpression(node) ||
+    ts.isAsExpression(node) ||
+    ts.isSatisfiesExpression(node) ||
+    ts.isTypeAssertion(node)
+  )
     return v8CalleeText(node.expression);
   // A call result prints with its arguments elided.
   if (ts.isCallExpression(node) && !node.questionDotToken)
@@ -1513,15 +1530,28 @@ export function lowerAsExpression(
     // retains primitive values and native class identity before validating
     // the requested shape; an assertion does not bypass runtime checks.
     const narrowed = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
+    const narrowedFlags = lowerer.typeOf(expr.expression).flags;
     const bridged =
       (narrowed &&
         (narrowed.kind === "f64" ||
           narrowed.kind === "bool" ||
           narrowed.kind === "string" ||
           narrowed.kind === "object" ||
-          narrowed.kind === "dyn")) ||
+          narrowed.kind === "dyn" ||
+          // A control-flow test (`typeof e === "object" && "code" in e`)
+          // or a structural predicate narrowed the binding to the shape
+          // the assertion names. caughtRead crosses those as a
+          // checked-dynamic value — the same read an unnarrowed binding
+          // takes — so the assertion's own checked bridge validates it.
+          narrowed.kind === "record" ||
+          narrowed.kind === "union")) ||
       // `catch (e: any)`: the binding reads as its checked-dynamic value.
-      (narrowed === null && (lowerer.typeOf(expr.expression).flags & ts.TypeFlags.Any) !== 0);
+      // An intersection (`object & Record<"code", unknown>`) or an
+      // unmapped object shape has no IR type either; caughtRead crosses
+      // it the same way.
+      (narrowed === null &&
+        (narrowedFlags & (ts.TypeFlags.Any | ts.TypeFlags.Object | ts.TypeFlags.Intersection)) !==
+          0);
     if (!bridged) lowerer.unsupported("SC1063", expr);
   }
   // `{ ...message, content } as T`: the program claimed the literal's shape,
@@ -1664,6 +1694,24 @@ export function lowerAsExpression(
       lowerer.layoutKeptNodes.add(expr);
       return inner;
     }
+    // `const { icons } = item as Base & { icons?: unknown }`: the
+    // assertion only ADDS optional members to the record the value has,
+    // and Node erases it, so the pattern reads the properties off the
+    // value itself. The added members have no slot in the stored layout:
+    // the read answers them through the layout's kept source
+    // (assertedOnlyFieldRead), where a width copy would answer its own
+    // absent slot with undefined. The kept source is also why the binding
+    // is not reported as a copy (layoutKeptNodes): a write to an added
+    // member is refused where it happens (assertedOnlyMemberWrite).
+    if (
+      inner.type.kind === "record" &&
+      target &&
+      constSourceUse(expr) &&
+      assertedOptionalExtension(lowerer, inner.type, target)
+    ) {
+      lowerer.layoutKeptNodes.add(expr);
+      return inner;
+    }
     // Static assertions normally erase, but record layouts are
     // monomorphic: a consumer selected from the asserted shape must see
     // that shape physically. Reuse the ordinary slot coercion so plain
@@ -1794,47 +1842,6 @@ export function lowerAsExpression(
       (id) => lowerer.unions.get(id),
     )
   ) {
-    // Bare undefined-armed targets pass when every OTHER arm is
-    // JSON-safe: the checked-dynamic tree holds a first-class undefined value now
-    // (index-signature overflow reads produce it for missing keys), and
-    // the undefined arm matches exactly it — `p[key] as string |
-    // undefined` is the missing-key idiom. Parsed JSON still never
-    // contains undefined, so casts over parse results keep failing on
-    // non-string values with the usual path-annotated TypeError.
-    if (target.kind === "union" && lowerer.dynConvertible(target)) {
-      return checkedDynCast(lowerer, expr, inner, target);
-    }
-    // Uint8Array targets: the checked-dynamic tree carries a bytes kind now (converted
-    // stdin chunks) — the extraction validates the kind and copies out.
-    if (target.kind === "bytes" && target.elem === "u8") {
-      return { kind: "dynCheck", value: inner, type: target, loc: locOf(expr) };
-    }
-    // Class instances round-trip only through compiler-owned typed
-    // references. Plain JSON objects fail the runtime class-brand check;
-    // exact capsules unwrap the original object by identity.
-    if (isDynTypedRefType(target)) {
-      return { kind: "dynCheck", value: inner, type: target, loc: locOf(expr) };
-    }
-    // ADAPTABLE function targets (`u as (x: number) => number` — the
-    // checked-dynamic function boundary): kind check, then exact unwrap
-    // or the per-target adapter shim. Non-adaptable signatures keep the
-    // fence below.
-    if (
-      target.kind === "func" &&
-      canAdaptDynFuncTo(
-        target,
-        (id) => lowerer.shapes.get(id),
-        (id) => lowerer.unions.get(id),
-      )
-    ) {
-      return { kind: "dynCheck", value: inner, type: target, loc: locOf(expr) };
-    }
-    // Runtime HANDLE targets (`u as IncomingMessage` — a boxed handle
-    // coming back out of an untyped wrapper): a tag-checked reference
-    // unwrap, identity preserved (DYN_HANDLE_KINDS).
-    if (DYN_HANDLE_KINDS.has(target.kind)) {
-      return { kind: "dynCheck", value: inner, type: target, loc: locOf(expr) };
-    }
     // `value as NodeJS.ReadableStream`: the general stream classes take
     // the checked cast (general-streams.ts).
     requestGeneralStreamSurface(lowerer, expr);
@@ -1842,8 +1849,7 @@ export function lowerAsExpression(
       "SC1090",
       expr,
       `a checked cast of 'unknown' to '${target.kind === "void" ? "void" : lowerer.fmt(target)}' ` +
-        `(a dynamic value can only be validated against JSON-representable types: ` +
-        `number, string, boolean, records, arrays, and unions of those)`,
+        `(${lowerer.dynCheckBlocker(target) ?? "this target"} is outside the checked conversion's domain)`,
     );
   }
   return checkedDynCast(lowerer, expr, inner, target);
@@ -2143,4 +2149,28 @@ function adoptingCast(
     type: target,
     loc,
   };
+}
+
+/** Whether this assertion only FEEDS a `const` binding: it is a binding
+ * pattern's source (`const { a } = value as T`) or such a declaration's
+ * initializer, through parentheses. Node erases the assertion, so both
+ * read the members off the value itself; a `let` binding keeps its
+ * declared type (later assignments coerce into it). */
+function constSourceUse(assertion: ts.Expression): boolean {
+  let use: ts.Node = assertion;
+  for (;;) {
+    const parent = use.parent as ts.Node | undefined;
+    if (!parent || !ts.isParenthesizedExpression(parent) || parent.expression !== use) break;
+    use = parent;
+  }
+  const parent = use.parent as ts.Node | undefined;
+  if (parent === undefined || !ts.isVariableDeclaration(parent) || parent.initializer !== use) {
+    return false;
+  }
+  const list = parent.parent;
+  return (
+    list !== undefined &&
+    ts.isVariableDeclarationList(list) &&
+    (list.flags & ts.NodeFlags.Const) !== 0
+  );
 }

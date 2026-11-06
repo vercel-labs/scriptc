@@ -134,6 +134,7 @@ void scr_shared_store(void *dst, const void *src, size_t n);
 ScrSharedBytes *scr_shared_retain(ScrSharedBytes *);
 void scr_shared_release(ScrSharedBytes *);
 void scr_bytes_make_shared(ScrBytes *);
+ScrBytes *scr_bytes_new_shared(size_t bytes, size_t capacity);
 ScrBytes *scr_shared_wrap(ScrSharedBytes *);
 void scr_bytes_read(const ScrBytes *, size_t, void *, size_t);
 void scr_bytes_write(ScrBytes *, size_t, const void *, size_t);

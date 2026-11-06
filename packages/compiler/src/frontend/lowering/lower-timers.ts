@@ -470,6 +470,12 @@ function lowerTimerCall(
         : adaptZeroArgTimerCallback(lowerer, cbValue, cbNode, loc),
       loc,
     );
+    // A callback that may read `this` is bound to its timer handle, so the
+    // call needs the handle form even in statement position. The answer is
+    // recorded here because the retention below replaces the expression
+    // with a hidden local for a checked-dynamic callback with trailing
+    // arguments.
+    const cbBindsThis = cb.kind === "libCall" && cb.fn === "timers.thisCallback";
     // An omitted delay is NaN, Node's undefined: the loop clamps it to
     // 1ms, and mock.timers queues it to run at the next tick.
     let warned = false;
@@ -608,10 +614,7 @@ function lowerTimerCall(
     // historic fire-and-forget setTimeout, no clear surface). Both ride
     // the same heap; only the handle form can be unref'd/cleared.
     const resultT = lowerer.mapTypeOf(lowerer.typeOf(expr));
-    // A callback bound to its handle needs one, also in statement
-    // position.
-    const bindsThis = cb.kind === "libCall" && cb.fn === "timers.thisCallback";
-    if (bindsThis || (resultT?.kind === "f64" && !ts.isExpressionStatement(expr.parent))) {
+    if (cbBindsThis || (resultT?.kind === "f64" && !ts.isExpressionStatement(expr.parent))) {
       return scheduled({
         kind: "libCall",
         fn: "timers.setTimeoutHandle",

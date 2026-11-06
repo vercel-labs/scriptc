@@ -9938,7 +9938,7 @@ function maybePromiseUnionOk(
  * Null keeps the whole union fenced: a promise-of-a-promise payload, a
  * payload with no union home (regex, generator), or a dyn payload beside an
  * arm whose semantics would degrade. */
-function mergePromiseArms(arms: IrType[], ctx: TypeMapperCtx): IrType[] | null {
+export function mergePromiseArms(arms: IrType[], ctx: TypeMapperCtx): IrType[] | null {
   let promiseArms = 0;
   for (const arm of arms) if (arm.kind === "promise") promiseArms++;
   if (promiseArms < 2) return arms;

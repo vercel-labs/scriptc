@@ -391,6 +391,23 @@ export function lowerTernary(
           : dynJoin
             ? DYN
             : (anyJoin ?? (useCtx && ctxMapped ? ctxMapped : lowerer.irTypeOf(expr)));
+    // A checker type that names only ONE arm while the lowered arms
+    // disagree cannot be the join: the checker could not spell the other
+    // arm's type (a union of module namespace types does not serialize
+    // back, so `c ? import("./a") : import("./b")` reads as the first
+    // arm), and coercing the second arm into the first would claim the two
+    // namespaces are the same module. Join the arms the lowering actually
+    // holds with the union mapping's promise rule instead.
+    const namespaceArm = (t: IrType): boolean =>
+      t.kind === "promise" && t.inner.kind === "moduleNs";
+    if (
+      !typeEquals(thenRaw.type, elseRaw.type) &&
+      (namespaceArm(thenRaw.type) || namespaceArm(elseRaw.type)) &&
+      (typeEquals(type, thenRaw.type) || typeEquals(type, elseRaw.type))
+    ) {
+      const joined = lowerer.mergePromiseArmTypes([thenRaw.type, elseRaw.type]);
+      if (joined !== null) type = joined;
+    }
     // An arm the checker types at the join can still hold an absent value
     // at run time (`flag ? empty.a : empty.b`): an unchecked key or element
     // read whose storage carries the undefined arm. The join keeps that

@@ -394,6 +394,7 @@ import {
   isFetchHandleType,
   jsOpenObjectType,
   mapType,
+  mergePromiseArms,
   computeSymbolProvenance,
   declaresLegacyUrl,
   declaresWebAssemblyNamespace,
@@ -4037,10 +4038,12 @@ export class Lowerer {
    * lowered into the call itself (lowerFallibleFsUrlCall). A call may be
    * lowered more than once, and each lowering converts again. */
   readonly fallibleFsCalls = new Set<ts.CallExpression>();
-  readonly moduleNsParamOverrides = new Map<
-    ts.ParameterDeclaration,
-    IrType & { kind: "moduleNs" }
-  >();
+  /** What a promise handler's parameter takes where the checker typed it as
+   * a module namespace: the namespace itself when ONE module settles the
+   * promise, the namespace object's checked-dynamic value when SEVERAL
+   * namespace arms merge into one dyn payload (mergePromiseArms — a
+   * namespace has no union tag, so the arms are one object at runtime). */
+  readonly namespaceHandlerParamOverrides = new Map<ts.ParameterDeclaration, IrType>();
   /** File → qualifier prefix: "" for the entry, "%mI." otherwise. */
   readonly fileTag = new Map<ts.SourceFile, string>();
   /** Embedded fork roots and their private startup ids. */
@@ -4802,7 +4805,10 @@ export class Lowerer {
       checkedTable("checkedCallbackParams", () => this.checkedCallbackParams.size),
       checkedTable("valueStreamReceivers", () => this.valueStreamReceivers.size),
       checkedTable("stagedArguments", () => this.stagedArguments.size),
-      checkedTable("moduleNsParamOverrides", () => this.moduleNsParamOverrides.size),
+      checkedTable(
+        "namespaceHandlerParamOverrides",
+        () => this.namespaceHandlerParamOverrides.size,
+      ),
       checkedTable("fileTag", () => this.fileTag.size),
       checkedTable("forkTargets", () => this.forkTargets.length),
       checkedTable("workerTargets", () => this.workerTargets.length),
@@ -14896,6 +14902,21 @@ export class Lowerer {
     const type = withUndefinedArmCanonical(t, this.unions);
     this.addedUndefinedArms.set(t.unionId, { type, unions: this.unions.revision });
     return type;
+  }
+
+  /** The join of two IR arm types under the union-mapping rules
+   * (mergePromiseArms), or null when they have none. The checker sometimes
+   * types a conditional by ONE arm: a union of module namespace types
+   * cannot be serialized back from typescript-go, so `c ? import("./a") :
+   * import("./b")` reads as the first arm's promise and the second arm
+   * would be coerced into it (the two namespaces are different modules, not
+   * the same value). The promise-arm merge is exactly the join the union
+   * mapping would have built — several namespace payloads are one
+   * checked-dynamic payload — so the ternary can apply it to the arms it
+   * actually lowered. */
+  mergePromiseArmTypes(arms: readonly IrType[]): IrType | null {
+    const merged = mergePromiseArms([...arms], this.typeCtx);
+    return merged !== null && merged.length === 1 ? merged[0]! : null;
   }
 
   /** Whether a promise of `from` converts to a promise of `to` through the

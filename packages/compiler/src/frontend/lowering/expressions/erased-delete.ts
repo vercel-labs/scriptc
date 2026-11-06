@@ -21,6 +21,8 @@ import { BOOL, STRING, type IrExpr, type IrStmt, type SrcLoc } from "../../../ir
 import { locOf } from "../../program.js";
 import type { Lowerer } from "../lowerer.js";
 import { markSloppyRecordWrites } from "../frozen-records.js";
+import { recordMayKeepSource } from "../record-sources.js";
+import { isStrictCode } from "../strict-mode.js";
 import { isPureReference } from "../effect-free.js";
 import { isSafeToRepeat } from "./evaluation-safety.js";
 import { literalFieldKeys } from "./keyed-field-targets.js";
@@ -136,7 +138,12 @@ export function erasedDeletePlan(
   const held =
     (shape.indexValue !== undefined && shape.fields.length === 0 && !shape.tuple) ||
     member === null ||
-    (!shape.tuple && shape.fields.some((field) => field.name === member));
+    (!shape.tuple && shape.fields.some((field) => field.name === member)) ||
+    // A checked record can hold a key its own type does not declare in the
+    // kept source it notes from the value it was converted from
+    // (record-sources.ts): the delete addresses the operand and removes the
+    // key there, exactly as Node deletes the property from the one object.
+    recordMayKeepSource(lowerer, staticType);
   return held ? { operand } : { refuse: MISSING_ASSERTED_MEMBER(member) };
 }
 
@@ -330,6 +337,65 @@ function recordDeletePlan(
       "SC1090",
       expr,
       `'delete' through keys of ${keyNames.length} literals (${keyNames.map((k) => `'${k}'`).join(", ")}; delete one constant key at a time, or switch over the key)`,
+    );
+  }
+  // A constant key the shape does not DECLARE lives in the record's kept
+  // source (the undeclared-keys table, record-sources.ts): Node's object
+  // still has that own property, so the delete removes it there, and every
+  // reflective surface — Object.keys, `in`, hasOwn, JSON, spread, inspect —
+  // already answers from that table. A key the table never held is already
+  // absent, so the delete answers true and changes nothing. A frozen record
+  // keeps the key (sloppy code answers false) or refuses the delete
+  // (strict code throws), which the runtime call decides from the delete's
+  // own mode.
+  if (
+    constantKey !== null &&
+    field === undefined &&
+    !shape?.indexValue &&
+    recordMayKeepSource(lowerer, obj.type)
+  ) {
+    const deleted: IrExpr = {
+      kind: "libCall",
+      fn: "record.sourceDelete",
+      args: [
+        obj,
+        { kind: "strLit", value: constantKey, type: STRING, loc },
+        { kind: "boolLit", value: isStrictCode(expr), type: BOOL, loc },
+      ],
+      type: BOOL,
+      loc,
+    };
+    lowerer.recordSourcesPossible = true;
+    if (!withPresent) return { stmt: { kind: "exprStmt", expr: deleted, loc }, present: null };
+    // `delete` in value position: the call answers whether the property is
+    // gone, which IS the delete's value, so it is held once and the
+    // caller's `!present` reads it.
+    const slot = lowerer.declareHiddenLocal("%sourceDeleted", BOOL);
+    return {
+      stmt: { kind: "varDecl", localId: slot.id, init: deleted, loc },
+      present: {
+        kind: "unary",
+        op: "!",
+        operand: { kind: "varRef", localId: slot.id, type: BOOL, loc },
+        type: BOOL,
+        loc,
+      },
+    };
+  }
+  // A declared field with no absent state: the type says it is always
+  // there, so no delete can remove it without making the type lie.
+  if (field !== undefined) {
+    lowerer.unsupported(
+      "SC1090",
+      expr,
+      `'delete' of '${field.name}': the operand's type '${lowerer.fmt(obj.type)}' declares '${field.name}' required, so it cannot be absent (only an optional field, 'f?: T', has an absent state that Object.keys, 'in' and JSON.stringify follow; make '${field.name}' optional if the program must remove it)`,
+    );
+  }
+  if (constantKey !== null && !shape?.indexValue) {
+    lowerer.unsupported(
+      "SC1090",
+      expr,
+      `'delete' of a key '${constantKey}' the record's layout does not declare (only an optional declared field, an index-signature key, or an undeclared key a checked record keeps from its source can be removed)`,
     );
   }
   lowerer.unsupported(

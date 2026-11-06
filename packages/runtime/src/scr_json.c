@@ -4532,6 +4532,57 @@ void scr_record_source_spread(void *dst, const void *src, const char *const *nam
   scr_record_source_put(&probe);
 }
 
+static void scr_json_delete_member(ScrDyn *object, const ScrStr *key);
+
+/* `delete rec.key` of a key the record's declared layout does not hold: in
+ * Node the own property is still on the one object, so here it lives in the
+ * record's kept source, and the delete removes it there. Answers `delete`'s
+ * boolean: true when the property is gone (removed now, or never held), and
+ * false when it survives — a frozen or non-configurable property, which
+ * strict code refuses with Node's TypeError instead. A record view deletes
+ * from the record it views, where Node's object keeps the property, and a
+ * narrowed copy deletes on the record it was copied from
+ * (scr_record_link_source): Node has one object, so a key the copy's own
+ * layout does not declare is the source's property. Borrows the record and
+ * the key. */
+bool scr_record_source_delete(void *rec, const char *key, size_t key_len, bool strict) {
+  if (!rec || !key) return true;
+  ScrRecordSource *entry = scr_record_source_slot(rec);
+  const void *target = entry && entry->capsule ? entry->viewed : rec;
+  ScrRecordSource *source =
+      entry && entry->capsule ? scr_record_view_source(entry) : scr_record_source_find(rec);
+  const void *copied = NULL;
+  /* Copies nest (a narrower copy of a narrower copy), so follow the chain
+   * of links until a record keeps a source. */
+  for (const void *linked = rec; !source && (linked = scr_record_link_source(linked));) {
+    source = scr_record_source_find(linked);
+    target = linked;
+    copied = linked;
+  }
+  ScrDyn *store = source ? source->view : NULL;
+  ScrDynEntry *own = store ? scr_dyn_find_entry(store, key, key_len) : NULL;
+  /* The store lists the record's declared names too, as placeholders that
+   * fix their order: a declared name belongs to the record's slot, which
+   * only the absent-state write can empty, never to this table. */
+  if (own && scr_record_source_declared(source, key, key_len)) own = NULL;
+  if (!own) return true;
+  ScrStr *name = scr_str_new(key, key_len);
+  /* Node has one object where these records are two: freezing the copy
+   * freezes what the delete removes, so it refuses the removal too. */
+  if (!own->configurable || scr_rc_frozen(target) || (copied && scr_rc_frozen(rec))) {
+    if (strict) {
+      ScrStr *owner = scr_str_new("#<Object>", 9);
+      scr_record_throw_frozen(name, owner, 2);
+      scr_str_release(owner);
+    }
+    scr_str_release(name);
+    return false;
+  }
+  scr_json_delete_member(store, name);
+  scr_str_release(name);
+  return true;
+}
+
 /* ── Links from narrowed copies to their sources ──────────────────────
  * A conversion of a native record into a narrower record type builds a
  * copy with the declared fields. When the source has other properties,

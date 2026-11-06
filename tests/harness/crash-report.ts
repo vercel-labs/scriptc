@@ -34,7 +34,8 @@ function newestReport(binary: string, since: number): string | null {
       try {
         const stats = statSync(path);
         if (stats.mtimeMs < since) continue;
-        if (newest === null || stats.mtimeMs > newest.mtime) newest = { path, mtime: stats.mtimeMs };
+        if (newest === null || stats.mtimeMs > newest.mtime)
+          newest = { path, mtime: stats.mtimeMs };
       } catch {
         // The report was rotated away between the listing and the stat.
       }

@@ -6703,6 +6703,13 @@ export class Lowerer {
     return null;
   }
 
+  /** The export symbol that keys a module's whole-export snapshot global,
+   * or null when the value has no storage of its own (a class, a builtin
+   * member, a table module). Reads of the symbol resolve to that storage. */
+  wholeExportStorageSymbolOf(dep: ts.SourceFile): ts.Symbol | null {
+    return this.wholeExportStorageOf(dep)?.symbol ?? null;
+  }
+
   /** A require-like binding of a module whose whole export is a value
    * stored in the module's snapshot global: `module.exports =
    * Object.getOwnPropertyDescriptor` (gopd's whole module — a stdlib

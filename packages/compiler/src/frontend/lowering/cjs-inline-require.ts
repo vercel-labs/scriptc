@@ -241,10 +241,18 @@ function splitBindingOfSymbol(lowerer: Lowerer, symbol: ts.Symbol): SplitRequire
   return decl === undefined ? null : splitRequireBindingOf(lowerer, decl);
 }
 
-/** The target whole-export symbol behind a split-binding symbol. */
+/** The target whole-export symbol behind a split-binding symbol. When the
+ * target's value lives in a snapshot global (an exported binding the module
+ * reassigns before the export), the binding reads that storage: the alias
+ * chase would land on the live binding and answer a later value than Node's
+ * requirer sees. */
 function splitWholeExportSymbolOfSymbol(lowerer: Lowerer, symbol: ts.Symbol): ts.Symbol | null {
   const binding = splitBindingOfSymbol(lowerer, symbol);
-  return binding === null ? null : wholeExportSymbolOfModule(lowerer, binding.dep);
+  if (binding === null) return null;
+  return (
+    lowerer.wholeExportStorageSymbolOf(binding.dep) ??
+    wholeExportSymbolOfModule(lowerer, binding.dep)
+  );
 }
 
 /** True when a CommonJS module has a live member export (`exports.x` or

@@ -3992,9 +3992,13 @@ function buildLibFnSignatures() {
     "module.namespaceDyn": { argTypes: [STRING, arrayOf(STRING), DYN, DYN], result: DYN },
     /** A CommonJS module's exports object as a checked-dynamic value
      * (scr_cjs_exports_value): the module id, its export names in assignment
-     * order, and the compiled getter. One plain object per module. Never
-     * throws; assignment through the object refuses at run time. */
-    "module.cjsExports": { argTypes: [STRING, arrayOf(STRING), DYN], result: DYN },
+     * order, the compiled getter, and the value the table literal's
+     * `__proto__` member gave (undefined when the table had none). One plain
+     * object per module; the runtime builds it once and gives it that
+     * prototype, so every holder shares one prototype. Throws when the
+     * prototype cannot be applied; assignment through the object refuses at
+     * run time. */
+    "module.cjsExports": { argTypes: [STRING, arrayOf(STRING), DYN, DYN], result: DYN },
     /** A primitive wrapper object (scr_js_wrapper_new): the kind
      * (0 String, 1 Number, 2 Boolean), the value it converts, and the three
      * constructor values for the prototypes' `constructor`. */

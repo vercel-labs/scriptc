@@ -39,7 +39,6 @@ import {
   nestedCjsExportAssignmentsOf,
   splitRequireBindingOfIdent,
 } from "./cjs-inline-require.js";
-import { applyProtoDefinition } from "./expressions/object-literals.js";
 
 /** The export names an assignment chain attaches (`exports.a = exports.b =
  * value`), in the order Node attaches them: the rightmost assignment runs
@@ -162,6 +161,10 @@ function cjsExportsTableNames(
       add(method.name.text);
     }
   }
+  // The `__proto__` value the table statement stored (lower-modules.ts)
+  // builds the exports object's prototype. A table whose statement did not
+  // store one is not the statically known table this lowering can publish.
+  if (proto !== null && !lowerer.cjsProtoGlobals.has(lowerer.pathOf(dep))) return null;
   return { owner: dep, names, proto };
 }
 
@@ -263,7 +266,18 @@ export function lowerCjsExportsValue(
   // same one a direct requirer of the dependency holds.
   const moduleId = `cjs:${lowerer.pathOf(table.owner)}`;
   const getter = cjsExportsGetter(lowerer, table.owner, moduleId, table.names);
-  const object: IrExpr = {
+  // A table literal's `__proto__` member sets the exports object's
+  // prototype as Node builds the literal (B.3.1). The module's own table
+  // statement evaluated it once at its source position and stored the value
+  // (lower-stmts.ts); the runtime applies that same value when it builds the
+  // module's one exports object, so every holder sees one prototype and a
+  // mutation through it stays visible.
+  const protoGlobal =
+    table.proto === null ? undefined : lowerer.cjsProtoGlobals.get(lowerer.pathOf(table.owner));
+  const proto: IrExpr = protoGlobal
+    ? { kind: "varRef", localId: protoGlobal.id, type: DYN, loc }
+    : dynUndefinedExpr(loc);
+  return {
     kind: "libCall",
     fn: "module.cjsExports",
     args: [
@@ -286,12 +300,9 @@ export function lowerCjsExportsValue(
         type: DYN,
         loc,
       },
+      proto,
     ],
     type: DYN,
     loc,
   };
-  // A table literal's `__proto__` member sets the exports object's
-  // prototype as Node builds the literal; the runtime keeps one object per
-  // export table, so every holder sees the same prototype.
-  return table.proto === null ? object : applyProtoDefinition(lowerer, object, table.proto, loc);
 }

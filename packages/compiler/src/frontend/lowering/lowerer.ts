@@ -3916,6 +3916,12 @@ export class Lowerer {
    * property exports — different object, same declaration — so globalOf
    * falls back through the shared node (collectGlobals registers both). */
   readonly globalsByDeclNode = new Map<ts.Node, IrGlobal>();
+  /** The value a `module.exports` table literal's non-computed `__proto__`
+   * member gives the exports object (B.3.1), by module path: the table
+   * statement assigns it at its source position, and the exports object's
+   * lowering hands it to the runtime, which sets the prototype of the one
+   * object it builds per module (cjs-exports-value.ts). */
+  readonly cjsProtoGlobals = new Map<string, IrGlobal>();
   readonly globalsList: IrGlobal[] = [];
 
   readonly npmInitActions = new Map<ts.SourceFile, Map<ts.Statement, IrStmt[]>>();
@@ -4733,6 +4739,7 @@ export class Lowerer {
       checkedTable("globalsBySymbol", () => this.globalsBySymbol.size),
       checkedTable("expandoMembers", () => this.expandoMembers.size),
       checkedTable("globalsByDeclNode", () => this.globalsByDeclNode.size),
+      checkedTable("cjsProtoGlobals", () => this.cjsProtoGlobals.size),
       checkedTable("globalsList", () => this.globalsList.length),
       checkedTable("npmInitActions", () => this.npmInitActions.size),
       checkedTable("islandImportActions", () => this.islandImportActions.size),

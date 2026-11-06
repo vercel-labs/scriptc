@@ -8909,7 +8909,33 @@ function lowerCjsExportStatement(
       );
     }
   };
+  const protoGlobal = lowerer.cjsProtoGlobals.get(lowerer.pathOf(ts.getSourceFileOfNode(cjs.expr)));
   for (const prop of table.properties.nodes) {
+    // A non-computed `__proto__` member is not an export: it gives the
+    // exports object its prototype (B.3.1). Node evaluates the initializer
+    // once, here, as the literal is built, so the value is stored at this
+    // source position and the runtime sets the one exports object's
+    // prototype from it when a requirer first reads the namespace
+    // (cjs-exports-value.ts). A resolved const/proxy target already
+    // evaluated its literal; its expression entries keep the fence below.
+    if (
+      !resolvedTarget &&
+      ts.isPropertyAssignment(prop) &&
+      !ts.isComputedPropertyName(prop.name) &&
+      prop.name.text === "__proto__" &&
+      protoGlobal
+    ) {
+      const value = lowerer.lowerExprExpecting(prop.initializer, DYN);
+      if (value.type.kind !== "dyn") {
+        lowerer.unsupported(
+          "SC1101",
+          prop.initializer,
+          `the exports object's '__proto__' initializer ('${lowerer.fmt(value.type)}')`,
+        );
+      }
+      body.push({ kind: "assign", localId: protoGlobal.id, value, loc: locOf(prop.initializer) });
+      continue;
+    }
     if (ts.isShorthandPropertyAssignment(prop)) {
       fenceMutable(prop.name as ts.Identifier);
       continue; // alias plumbing

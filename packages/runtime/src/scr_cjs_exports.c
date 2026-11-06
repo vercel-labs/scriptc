@@ -9,10 +9,15 @@
  * Node's CommonJS exports object is a plain, extensible object whose
  * properties are the exports, so this object has Object.prototype, the
  * export names as own enumerable accessors in the module's assignment
- * order, and no Symbol.toStringTag. Reads stay live: each accessor calls the
- * compiled getter, so a value the exporting module assigns after it
- * finished evaluating is visible through the object. One object per module
- * keeps identity, and every holder of the namespace sees the same object.
+ * order, and no Symbol.toStringTag. A table literal's `__proto__` member
+ * sets that prototype as the object is built (B.3.1): the exporting module
+ * evaluated the initializer once when it built its table, and this object is
+ * given that one value, so every holder shares the prototype and a mutation
+ * through it persists.
+ * Reads stay live: each accessor calls the compiled getter, so a value the
+ * exporting module assigns after it finished evaluating is visible through
+ * the object. One object per module keeps identity, and every holder of the
+ * namespace sees the same object.
  *
  * The exports are read-only here: the compiler's export storage is a static
  * table, and a write through the object would not reach the exporting
@@ -104,7 +109,34 @@ static ScrDyn *scr_cjs_exports_build(ScrArr *keys, ScrDyn *getter) {
   return object;
 }
 
-ScrDyn *scr_cjs_exports_value(ScrStr *id, ScrArr *keys, ScrDyn *getter) {
+/* The table literal's `__proto__` member (B.3.1) applied to the exports
+ * object as it is built. `value` is the initializer's result, which the
+ * exporting module evaluated once when it built its table, so this object
+ * keeps that one prototype and a mutation through it stays visible to every
+ * holder. A null value gives the object the null prototype; an object or
+ * function becomes its prototype; every other value, primitives included,
+ * leaves the prototype unchanged, as the literal does. Returns false with
+ * the refusal pending. */
+static bool scr_cjs_exports_apply_proto(ScrDyn *object, ScrDyn *value) {
+  /* A namespace read that lands inside a require cycle can reach this
+   * object before the exporting module's table statement stored its value;
+   * the object keeps Object.prototype, as the exports holder Node answered
+   * at that point did. */
+  if (!value) return true;
+  switch (value->kind) {
+  case SCR_DYN_BOOL: case SCR_DYN_NUM: case SCR_DYN_STR: case SCR_DYN_SYMBOL:
+  case SCR_DYN_BIGINT: case SCR_DYN_UNDEF:
+    return true;
+  default:
+    break;
+  }
+  ScrDyn *applied = scr_dyn_set_prototype(object, value);
+  if (!applied) return false;
+  scr_dyn_release(applied);
+  return true;
+}
+
+ScrDyn *scr_cjs_exports_value(ScrStr *id, ScrArr *keys, ScrDyn *getter, ScrDyn *proto) {
   for (ScrCjsExports *exports = scr_cjs_exports; exports; exports = exports->next) {
     if (exports->id->len == id->len && memcmp(exports->id->data, id->data, id->len) == 0)
       return scr_dyn_retain(exports->object);
@@ -114,6 +146,10 @@ ScrDyn *scr_cjs_exports_value(ScrStr *id, ScrArr *keys, ScrDyn *getter) {
     scr_cjs_exports_cleanup_registered = true;
   }
   ScrDyn *object = scr_cjs_exports_build(keys, getter);
+  if (!scr_cjs_exports_apply_proto(object, proto)) {
+    scr_dyn_release(object);
+    return NULL;
+  }
   ScrCjsExports *exports = malloc(sizeof(*exports));
   if (!exports) scr_trap("scriptc: out of memory\n");
   *exports = (ScrCjsExports){ scr_str_retain(id), scr_dyn_retain(object), scr_cjs_exports };

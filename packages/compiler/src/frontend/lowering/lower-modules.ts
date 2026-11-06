@@ -1822,6 +1822,25 @@ export function collectGlobals(
       if (cjs?.kind === "table" && cjs.obj) {
         for (const prop of cjs.obj.properties.nodes) {
           if (ts.isShorthandPropertyAssignment(prop)) continue; // alias plumbing
+          // A non-computed `__proto__` member names no export: it gives the
+          // exports object its prototype (B.3.1). The statement lowering
+          // stores its value when the table is built, and every reader of
+          // the namespace hands that stored value to the runtime.
+          if (
+            ts.isPropertyAssignment(prop) &&
+            !ts.isComputedPropertyName(prop.name) &&
+            prop.name.text === "__proto__"
+          ) {
+            const g: IrGlobal = {
+              id: `%g.${tag}%proto`,
+              name: "__proto__",
+              type: DYN,
+              mutable: false,
+            };
+            lowerer.cjsProtoGlobals.set(lowerer.pathOf(sf), g);
+            lowerer.globalsList.push(g);
+            continue;
+          }
           if (ts.isPropertyAssignment(prop) && ts.isIdentifier(prop.initializer)) continue;
           if (ts.isPropertyAssignment(prop) && ts.isIdentifier(prop.name)) {
             registerExport(prop.name, prop.name.text, prop.initializer);

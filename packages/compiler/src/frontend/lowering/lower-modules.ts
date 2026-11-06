@@ -112,6 +112,7 @@ import {
   builtinMemberRequireDecl,
   builtinNamespaceDestructureModuleOf,
   createRequireBindingDecl,
+  createRequireFactoryDecl,
   createRequireNamespaceDecl,
   createRequireProgramModuleDecl,
 } from "./builtins/module-bindings.js";
@@ -148,7 +149,7 @@ import { streamClassAliasDecl } from "./lower-stream.js";
 import { isAssertClassNew } from "./assert-instances.js";
 import { stdlibGlobalAliasDecl, stdlibGlobalAliasNameOf, stdlibGlobalNameOf } from "./surfaces.js";
 import { isNativeBuiltinValueInitializer } from "./lower-builtin-values.js";
-import { isPromisePrototypeRead } from "./expressions/property-access.js";
+import { isDataViewPrototypeRead, isPromisePrototypeRead } from "./expressions/property-access.js";
 import {
   collectNamespaceStmt,
   nsMemberIdentOf,
@@ -236,14 +237,24 @@ function appendedEdgesOf(
 }
 
 /** Lazy inline requires run after their module's top level: their modules
- * join the order afterwards, as in preflight's walk. */
+ * join the order afterwards, as in preflight's walk. `lazyBases` records the
+ * stack depth of each enclosing subtree being entered here; a back edge into
+ * a module below it is a cache hit at run time (preflight's walk admits the
+ * same edges). */
 function visitLazyEdges(
   sf: ts.SourceFile,
   edgesOf: (sf: ts.SourceFile) => CycleEdge[],
   state: ReadonlyMap<ts.SourceFile, "visiting" | "done">,
   visit: (sf: ts.SourceFile) => void,
+  lazyBases: number[],
+  stackDepth: number,
 ): void {
-  for (const e of edgesOf(sf)) if (e.lazy === true && state.get(e.dep) === undefined) visit(e.dep);
+  for (const e of edgesOf(sf))
+    if (e.lazy === true && state.get(e.dep) === undefined) {
+      lazyBases.push(stackDepth);
+      visit(e.dep);
+      lazyBases.pop();
+    }
 }
 
 /** Program modules selected by statically resolved child_process.fork()
@@ -287,6 +298,7 @@ function appendEntryModules(
   for (const sf of order) state.set(sf, "done");
   const added: ts.SourceFile[] = [];
   const stack: string[] = [];
+  const lazyBases: number[] = [];
   const staticEdgesOf = appendedEdgesOf(program, graph);
   const cycleAdmissionReason = makeCycleAdmission(program, (sf) =>
     staticEdgesOf(sf).filter((e) => e.call === undefined),
@@ -305,6 +317,10 @@ function appendEntryModules(
           graph?.inlineCycleCalls?.add(edge.call);
           continue;
         }
+        // A back edge below the enclosing lazily-loaded subtree is a cache
+        // hit at run time; preflight's walk admits the same edges.
+        const lazyBase = lazyBases[lazyBases.length - 1];
+        if (lazyBase !== undefined && stack.indexOf(edge.dep.fileName) < lazyBase) continue;
         const reason = cycleAdmissionReason(sf, edge);
         if (reason !== null) {
           const cycleStart = stack.indexOf(edge.dep.fileName);
@@ -317,7 +333,7 @@ function appendEntryModules(
     stack.pop();
     state.set(sf, "done");
     added.push(sf);
-    visitLazyEdges(sf, staticEdgesOf, state, visit);
+    visitLazyEdges(sf, staticEdgesOf, state, visit, lazyBases, stack.length);
   };
 
   const knownTargets = new Set(targets);
@@ -436,6 +452,7 @@ export function appendDynamicImportModules(
   for (const sf of order) state.set(sf, "done");
   const added: ts.SourceFile[] = [];
   const stack: string[] = [];
+  const lazyBases: number[] = [];
   const staticEdgesOf = appendedEdgesOf(program, graph);
   const cycleAdmissionReason = makeCycleAdmission(program, (sf) =>
     staticEdgesOf(sf).filter((e) => e.call === undefined),
@@ -453,6 +470,10 @@ export function appendDynamicImportModules(
           graph?.inlineCycleCalls?.add(e.call);
           continue;
         }
+        // A back edge below the enclosing lazily-loaded subtree is a cache
+        // hit at run time; preflight's walk admits the same edges.
+        const lazyBase = lazyBases[lazyBases.length - 1];
+        if (lazyBase !== undefined && stack.indexOf(e.dep.fileName) < lazyBase) continue;
         // A back edge: Node answers it from the cache. Same admission
         // question as preflight's static walk, same fence when refused.
         const reason = cycleAdmissionReason(sf, e);
@@ -467,7 +488,7 @@ export function appendDynamicImportModules(
     stack.pop();
     state.set(sf, "done");
     added.push(sf);
-    visitLazyEdges(sf, staticEdgesOf, state, visit);
+    visitLazyEdges(sf, staticEdgesOf, state, visit, lazyBases, stack.length);
   };
   const scanned = new Set<ts.SourceFile>();
   for (;;) {
@@ -1061,8 +1082,10 @@ export function moduleArtifacts(
         case "unionKeyGet":
         case "unionIsTag":
         case "unionEq":
-        case "fieldAbsent":
           visitUnion(node.unionId);
+          break;
+        case "fieldAbsent":
+          if (node.unionId !== undefined) visitUnion(node.unionId);
           break;
         case "unionRetype":
           visitUnion(node.fromId);
@@ -1471,7 +1494,7 @@ function withoutRejectedClassMembers(
   if (!shape.fields.some((f) => rejected(f.type))) return type;
   const kept = shape.fields.filter((f) => !rejected(f.type));
   const shapeId = lowerer.shapes.intern(
-    kept.map((f) => ({ name: f.name, type: f.type })),
+    kept.map((f) => ({ ...f })),
     false,
     shape.indexValue,
   );
@@ -2149,6 +2172,9 @@ export function collectGlobals(
       // compile-time plumbing — no global storage; the statement
       // lowering skips it by the same test.
       if (createRequireBindingDecl(lowerer, decl.name, decl.initializer)) continue;
+      // `const { createRequire: cr } = require("node:module")` at file
+      // scope: the factory binding is the same compile-time plumbing.
+      if (createRequireFactoryDecl(lowerer, decl.name, decl.initializer)) continue;
       // `const fs = require("node:fs")` through that binding at file
       // scope — a namespace import in const clothing, same story.
       if (isConst && createRequireNamespaceDecl(lowerer, decl.name, decl.initializer)) continue;
@@ -2246,7 +2272,8 @@ export function collectGlobals(
           if (
             (nameNode === decl.name &&
               !decl.type &&
-              isPromisePrototypeRead(lowerer, decl.initializer)) ||
+              (isPromisePrototypeRead(lowerer, decl.initializer) ||
+                isDataViewPrototypeRead(lowerer, decl.initializer))) ||
             (isJsSourceFile(sf) &&
               nameNode === decl.name &&
               initializer &&

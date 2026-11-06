@@ -18,6 +18,7 @@ import { canReplaceWith, regexLiteralCompiles } from "./regex-matchers.js";
 import { isScalarUnionDef, loadInlineUnion, presentBits } from "./inline-unions.js";
 import { preservesRegexInputs } from "./reference-effects.js";
 import { emitNumberMapSlot, emitStringMapEntry } from "./map-number-lookup.js";
+import { fusedRecordValue, rememberRecordEntry } from "./record-entry-fusion.js";
 import { everyStmtList } from "../../ir/traverse.js";
 
 /** Widen one tagged read. The source is borrowed unless the overflow map
@@ -439,6 +440,7 @@ export function emitRecordKeyGetOr(
     e.loc,
     false,
     () => host.emitBranchInto(slot, fallback),
+    e,
   );
   B.startBlock(join);
   const t = B.tmp();
@@ -467,6 +469,8 @@ export function emitRecordKeyGet(
     e.overflowOnly === true,
     e.loc,
     e.missNaN === true,
+    null,
+    e,
   );
   B.startBlock(join);
   const t = B.tmp();
@@ -706,26 +710,42 @@ export function emitStackRecordKeyGet(
   const iv = shape.indexValue;
   if (iv) {
     const ovf = host.recordOvfPtr(obj.name, e.shapeId);
-    const outTy = iv.kind === "f64" ? "double" : "i8";
-    const outSlot = B.slot();
-    B.entryAllocas.push(`${outSlot} = alloca ${outTy}`);
-    B.line(`store ${outTy} ${iv.kind === "f64" ? f64Lit(0) : "0"}, ptr ${outSlot}`);
-    const getter = `scr_map_get_str_${iv.kind === "f64" ? "f64" : "bool"}`;
-    host.declare(`declare zeroext i1 @${getter}(ptr, ptr, ptr)`);
-    const found = B.tmp();
-    B.line(`${found} = call zeroext i1 @${getter}(ptr ${ovf}, ptr ${key.name}, ptr ${outSlot})`);
     const lh = B.newLabel("rks.h");
     const ln = B.newLabel("rks.n");
+    // A fused read resolves the overflow entry and parks it for its paired
+    // write (record-entry-fusion.ts): one probe for the get-then-set.
+    const paired = host.recordEntryFusion?.reads.get(e);
+    let found: string;
+    let hitValue: () => string;
+    if (paired && (iv.kind === "f64" || iv.kind === "bool")) {
+      const entry = emitStringMapEntry(host, ovf, key.name);
+      rememberRecordEntry(host, e, ovf, key.name, entry);
+      found = B.tmp();
+      B.line(`${found} = icmp ne ptr ${entry}, null`);
+      hitValue = () => fusedRecordValue(host, entry, iv.kind as "f64" | "bool");
+    } else {
+      const outTy = iv.kind === "f64" ? "double" : "i8";
+      const outSlot = B.slot();
+      B.entryAllocas.push(`${outSlot} = alloca ${outTy}`);
+      B.line(`store ${outTy} ${iv.kind === "f64" ? f64Lit(0) : "0"}, ptr ${outSlot}`);
+      const getter = `scr_map_get_str_${iv.kind === "f64" ? "f64" : "bool"}`;
+      host.declare(`declare zeroext i1 @${getter}(ptr, ptr, ptr)`);
+      found = B.tmp();
+      B.line(`${found} = call zeroext i1 @${getter}(ptr ${ovf}, ptr ${key.name}, ptr ${outSlot})`);
+      hitValue = () => {
+        const raw = B.tmp();
+        B.line(`${raw} = load ${outTy}, ptr ${outSlot}`);
+        if (iv.kind === "bool") {
+          const truncVal = B.tmp();
+          B.line(`${truncVal} = trunc i8 ${raw} to i1`);
+          return truncVal;
+        }
+        return raw;
+      };
+    }
     B.condBr(found, lh, ln);
     B.startBlock(lh);
-    const raw = B.tmp();
-    B.line(`${raw} = load ${outTy}, ptr ${outSlot}`);
-    let value = raw;
-    if (iv.kind === "bool") {
-      value = B.tmp();
-      B.line(`${value} = trunc i8 ${raw} to i1`);
-    }
-    storeScalar(iv, value);
+    storeScalar(iv, hitValue());
     B.br(join);
     B.startBlock(ln);
   }
@@ -749,6 +769,7 @@ export function keyedRecordReadInto(
   loc?: SrcLoc,
   missNaN = false,
   missInto: (() => void) | null = null,
+  read: IrExpr | null = null,
 ): void {
   const B = host.B;
   const shape = host.recordShape(shapeId);
@@ -790,7 +811,20 @@ export function keyedRecordReadInto(
           host.declare(`declare ptr @scr_dyn_retain_v(ptr)`);
           const r = B.tmp();
           B.line(`${r} = call ptr @scr_dyn_retain_v(ptr ${v})`);
-          B.line(`store ptr ${r}, ptr ${slot}`);
+          // An ABSENT optional dyn slot reads as the dyn undefined, so the
+          // marker never escapes through a keyed read either.
+          if (f.optional === true) {
+            host.declare(`declare ptr @scr_dyn_undefined()`);
+            const absent = B.tmp();
+            const undef = B.tmp();
+            const value = B.tmp();
+            B.line(`${absent} = icmp eq ptr ${v}, ${host.dynAbsentRef()}`);
+            B.line(`${undef} = call ptr @scr_dyn_undefined()`);
+            B.line(`${value} = select i1 ${absent}, ptr ${undef}, ptr ${r}`);
+            B.line(`store ptr ${value}, ptr ${slot}`);
+          } else {
+            B.line(`store ptr ${r}, ptr ${slot}`);
+          }
         } else {
           const r = host.dyn.liveReadToDyn(B, type, v);
           B.line(`store ptr ${r}, ptr ${slot}`);
@@ -922,29 +956,45 @@ export function keyedRecordReadInto(
   if (iv) {
     const ovf = host.recordOvfPtr(objName, shapeId);
     if (iv.kind === "f64" || iv.kind === "bool") {
-      const outTy = iv.kind === "f64" ? "double" : "i8";
-      const outSlot = B.slot();
-      B.entryAllocas.push(`${outSlot} = alloca ${outTy}`);
-      B.line(`store ${outTy} ${iv.kind === "f64" ? f64Lit(0) : "0"}, ptr ${outSlot}`);
-      host.declare(
-        `declare zeroext i1 @scr_map_get_str_${iv.kind === "f64" ? "f64" : "bool"}(ptr, ptr, ptr)`,
-      );
-      const found = B.tmp();
-      B.line(
-        `${found} = call zeroext i1 @scr_map_get_str_${iv.kind === "f64" ? "f64" : "bool"}(ptr ${ovf}, ptr ${keyName}, ptr ${outSlot})`,
-      );
       const lh = B.newLabel("rkg.h");
       const ln = B.newLabel("rkg.n");
+      // A fused read resolves the overflow entry and parks it for its paired
+      // write (record-entry-fusion.ts): one probe for the get-then-set.
+      const paired = read !== null ? host.recordEntryFusion?.reads.get(read) : undefined;
+      let found: string;
+      let hitValue: () => string;
+      if (paired) {
+        const entry = emitStringMapEntry(host, ovf, keyName);
+        rememberRecordEntry(host, read!, ovf, keyName, entry);
+        found = B.tmp();
+        B.line(`${found} = icmp ne ptr ${entry}, null`);
+        hitValue = () => fusedRecordValue(host, entry, iv.kind as "f64" | "bool");
+      } else {
+        const outTy = iv.kind === "f64" ? "double" : "i8";
+        const outSlot = B.slot();
+        B.entryAllocas.push(`${outSlot} = alloca ${outTy}`);
+        B.line(`store ${outTy} ${iv.kind === "f64" ? f64Lit(0) : "0"}, ptr ${outSlot}`);
+        host.declare(
+          `declare zeroext i1 @scr_map_get_str_${iv.kind === "f64" ? "f64" : "bool"}(ptr, ptr, ptr)`,
+        );
+        found = B.tmp();
+        B.line(
+          `${found} = call zeroext i1 @scr_map_get_str_${iv.kind === "f64" ? "f64" : "bool"}(ptr ${ovf}, ptr ${keyName}, ptr ${outSlot})`,
+        );
+        hitValue = () => {
+          const rawOut = B.tmp();
+          B.line(`${rawOut} = load ${outTy}, ptr ${outSlot}`);
+          if (iv.kind === "bool") {
+            const truncHit = B.tmp();
+            B.line(`${truncHit} = trunc i8 ${rawOut} to i1`);
+            return truncHit;
+          }
+          return rawOut;
+        };
+      }
       B.condBr(found, lh, ln);
       B.startBlock(lh);
-      const rawOut = B.tmp();
-      B.line(`${rawOut} = load ${outTy}, ptr ${outSlot}`);
-      let hitVal = rawOut;
-      if (iv.kind === "bool") {
-        hitVal = B.tmp();
-        B.line(`${hitVal} = trunc i8 ${rawOut} to i1`);
-      }
-      B.line(`store ${ty} ${surface(iv, hitVal, true)}, ptr ${slot}`);
+      B.line(`store ${ty} ${surface(iv, hitValue(), true)}, ptr ${slot}`);
       B.br(join);
       B.startBlock(ln);
     } else {

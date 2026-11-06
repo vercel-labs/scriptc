@@ -163,6 +163,8 @@ const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
   "classes[].arrayFields": "reference",
   "classes[].arraySpecies": "reference",
   "classes[].stringTagHelper": "reference",
+  "classes[].viewAccessors[].member": "other",
+  "classes[].viewAccessors[].helper": "reference",
   "classes[].localCaptures[].name": "other",
   "classes[].localCaptures[].localId": "other",
   "classes[].symbolFields[].field": "other",
@@ -321,6 +323,17 @@ const REFERENCE_FIXTURES: Record<string, () => IrModule> = {
   "classes[].stringTagHelper": () => ({
     ...module(),
     classes: [{ name: "%m0.Cell", fields: [], stringTagHelper: TARGET, loc }],
+  }),
+  "classes[].viewAccessors[].helper": () => ({
+    ...module(),
+    classes: [
+      {
+        name: "%m0.Cell",
+        fields: [],
+        viewAccessors: [{ member: "get:value", helper: TARGET }],
+        loc,
+      },
+    ],
   }),
   "recordLinks[].compose": () => ({
     ...module(),

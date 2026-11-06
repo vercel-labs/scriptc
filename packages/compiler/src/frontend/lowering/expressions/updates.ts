@@ -39,16 +39,19 @@ import {
   isUnitType,
   STRING,
   type SrcLoc,
+  typeEquals,
   UNDEFINED_T,
   VOID,
 } from "../../../ir/ir.js";
 import { isJsSourceFile, locOf } from "../../program.js";
+import { callableBox, isCallableTableValue } from "../callable-properties.js";
+import { refuseShadowedImplicitReader } from "../handle-properties.js";
 import { classToNumberConversion } from "../class-to-primitive.js";
 import { lowerPrimitiveUnionNumber } from "../lower-calls.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../../ir/build.js";
 import { fenceNodeModuleMutation } from "../lower-node-module.js";
 import { findStaticOn, staticFieldWriteTarget } from "../lower-classes.js";
-import { expandoWritableTarget } from "../lower-expando.js";
+import { fenceReadonlyExpandoWrite } from "../lower-expando.js";
 import { nsWritableTarget } from "../lower-namespaces.js";
 import { arrayNumberRead, arrayValueRead, arrayValueStore } from "../array-values.js";
 import { isSafeToRepeat } from "./evaluation-safety.js";
@@ -142,6 +145,12 @@ function booleanToNumber(value: IrExpr, loc: SrcLoc): IrExpr {
 
 export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpression): IrExpr {
   const loc = locOf(expr);
+  // Unary plus and minus convert with ToNumber, whose number hint reads the
+  // Date's valueOf; a program that replaces it needs the dynamic path.
+  const dateNumber = (value: IrExpr): IrExpr => {
+    refuseShadowedImplicitReader(lowerer, expr.operand, value.type, "valueOf", "number conversion");
+    return dateTimeValue(value, loc);
+  };
   switch (expr.operator) {
     case ts.SyntaxKind.MinusToken: {
       const raw = lowerer.lowerExpr(expr.operand);
@@ -154,7 +163,7 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
         raw.type.kind === "bool"
           ? booleanToNumber(raw, loc)
           : raw.type.kind === "date"
-            ? dateTimeValue(raw, loc)
+            ? dateNumber(raw)
             : coercedUnion(lowerer, raw.type)
               ? ({
                   kind: "libCall",
@@ -181,6 +190,14 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
       if (raw.type.kind === "dyn") {
         return { kind: "libCall", fn: "dyn.toNumberCoerce", args: [raw], type: F64, loc };
       }
+      // `+sym`: ToNumber of a Symbol throws "Cannot convert a Symbol value
+      // to a number", which the runtime's checked conversion raises. Only a
+      // JavaScript source reaches this, since the checker's own operator
+      // error still fences the TypeScript form.
+      if (raw.type.kind === "symbol") {
+        const boxed: IrExpr = { kind: "dynFrom", value: raw, type: DYN, loc };
+        return { kind: "libCall", fn: "dyn.toNumberCoerce", args: [boxed], type: F64, loc };
+      }
       // A union of primitives (`+match[1]` over `string | undefined`): ToNumber
       // over the boxed value, as for a checked-dynamic operand.
       if (coercedUnion(lowerer, raw.type)) {
@@ -196,7 +213,7 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
       }
       if (raw.type.kind === "bool") return booleanToNumber(raw, loc);
       // A Date's number hint answers its time value.
-      if (raw.type.kind === "date") return dateTimeValue(raw, loc);
+      if (raw.type.kind === "date") return dateNumber(raw);
       const classNumber = classToNumberConversion(lowerer, raw, expr.operand, "unary plus");
       if (classNumber) return classNumber;
       const operand = lowerOperatorNumber(lowerer, raw, loc, expr.operand);
@@ -285,10 +302,8 @@ export function lowerIncDec(
           loc,
         };
       }
-      const target =
-        staticFieldWriteTarget(lowerer, access) ??
-        expandoWritableTarget(lowerer, access) ??
-        nsWritableTarget(lowerer, access);
+      fenceReadonlyExpandoWrite(lowerer, access);
+      const target = staticFieldWriteTarget(lowerer, access) ?? nsWritableTarget(lowerer, access);
       if (target) {
         return lowerIncDecTarget(lowerer, expr, target, prefix);
       }
@@ -460,15 +475,23 @@ export function lowerIncDec(
       !isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
       raw.type.kind === "dyn" &&
       lowerer.mapTypeOf(lowerer.typeOf(access))?.kind === "f64";
+    // A typed callable's ELEMENT is its own-property table entry
+    // (`fn[k]++`): the same keyed read-modify-write, over the box.
+    const callableBoxed =
+      ts.isElementAccessExpression(access) &&
+      raw.type.kind === "func" &&
+      isCallableTableValue(lowerer, access.expression, raw)
+        ? callableBox(lowerer, raw)
+        : null;
     // A private name is the field of its class (fieldTarget).
     const privateName =
       ts.isPropertyAccessExpression(access) && ts.isPrivateIdentifier(access.name);
     if (
-      (isJsSourceFile(ts.getSourceFileOfNode(expr)) || checkedNumber) &&
-      raw.type.kind === "dyn" &&
+      (isJsSourceFile(ts.getSourceFileOfNode(expr)) || checkedNumber || callableBoxed !== null) &&
+      (raw.type.kind === "dyn" || callableBoxed !== null) &&
       !privateName
     ) {
-      const receiver = save(raw, "%incrementReceiver");
+      const receiver = save(callableBoxed ?? raw, "%incrementReceiver");
       const key = save(
         ts.isElementAccessExpression(access)
           ? lowerer.lowerExprExpecting(access.argumentExpression, DYN)
@@ -924,6 +947,82 @@ export function fieldSetStmt(
   };
 }
 
+/** The unasserted operand of a member access spelled through `as`/`<>`
+ * views (`(x as { k: string }).k`, parenthesized), or null when the
+ * receiver carries no assertion. Node erases the assertion, so the member
+ * lives on the object the operand names. */
+function assertedOperandOf(access: ts.PropertyAccessExpression): ts.Expression | null {
+  let node: ts.Expression = access.expression;
+  let asserted = false;
+  while (true) {
+    if (ts.isParenthesizedExpression(node)) node = node.expression;
+    else if (ts.isAsExpression(node) || ts.isTypeAssertion(node)) {
+      node = node.expression;
+      asserted = true;
+    } else break;
+  }
+  return asserted ? node : null;
+}
+
+/** `(u as { k: T }).k op= v` where `u` is a union of record layouts.
+ * fieldTarget declines because the ASSERTED view is not the value's own
+ * layout, and the assertion's conversion would build a copy the write
+ * would be lost in. Node mutates the object the operand names, so address
+ * the one arm whose layout holds `k` at the asserted type through the
+ * checked single-arm extraction: a value of any other arm throws instead
+ * of writing a member its layout cannot carry. Null for every other
+ * shape (the caller keeps its refusal). */
+function assertedUnionFieldTarget(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+): FieldTarget | null {
+  if (ts.isPrivateIdentifier(access.name)) return null;
+  const operand = assertedOperandOf(access);
+  if (operand === null) return null;
+  const asserted = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
+  if (asserted?.kind !== "record") return null;
+  const assertedField = lowerer.shapes
+    .get(asserted.shapeId)
+    ?.fields.find((f) => f.name === access.name.text);
+  if (!assertedField) return null;
+  // Decide from the mapped operand first: the probe must not lower (or
+  // convert) anything a declined call would leave behind.
+  const operandType = lowerer.mapTypeOf(lowerer.typeOf(operand));
+  if (operandType?.kind !== "union") return null;
+  const declared = lowerer.unions.get(operandType.unionId);
+  if (!declared) return null;
+  const shapeIds: string[] = [];
+  for (const arm of declared.arms) {
+    if (arm.kind !== "record") continue;
+    const field = lowerer.shapes.get(arm.shapeId)?.fields.find((f) => f.name === access.name.text);
+    if (field !== undefined && typeEquals(field.type, assertedField.type))
+      shapeIds.push(arm.shapeId);
+  }
+  // The assertion naming the one arm itself is an identity view the
+  // ordinary field target already addresses.
+  if (shapeIds.length !== 1 || shapeIds[0] === asserted.shapeId) return null;
+  const value = lowerer.lowerExpr(operand);
+  if (value.type.kind !== "union") return null;
+  let arm: IrType | null = null;
+  for (const candidate of lowerer.unions.get(value.type.unionId)?.arms ?? []) {
+    if (candidate.kind === "record" && candidate.shapeId === shapeIds[0]) {
+      arm = candidate;
+      break;
+    }
+  }
+  if (arm === null || arm.kind !== "record") return null;
+  const loc = locOf(access);
+  const helper = lowerer.narrowedArmHelper(value.type.unionId, arm, loc);
+  if (helper === null) return null;
+  return {
+    container: "record",
+    obj: lowerer.checkedNarrowCall(helper, value, arm, loc),
+    shapeId: arm.shapeId,
+    field: access.name.text,
+    fieldType: assertedField.type,
+  };
+}
+
 export function lowerFieldCompoundValue(
   lowerer: Lowerer,
   access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
@@ -1075,9 +1174,12 @@ export function lowerFieldCompoundValue(
       return { kind: "seqExpr", stmts: body, result: value, type: value.type, loc };
     }
   }
+  // The ordinary field target first: every write that resolved before keeps
+  // its byte-identical lowering. The asserted union view only answers where
+  // that target declined (SC1090 before this).
   const targetOf = (): FieldTarget | null =>
     ts.isPropertyAccessExpression(access)
-      ? lowerer.fieldTarget(access)
+      ? (lowerer.fieldTarget(access) ?? assertedUnionFieldTarget(lowerer, access))
       : (symbolFieldTarget(lowerer, access) ?? keyedFieldTarget(lowerer, access, true));
   const target = targetOf();
   if (!target)

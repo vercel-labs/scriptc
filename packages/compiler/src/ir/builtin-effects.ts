@@ -12,6 +12,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "nodeIsland.callSync",
   // Island module evaluation and member operations run JavaScript.
   "nodeIsland.require",
+  // process.report loads the process builtin and reads the report object.
+  "nodeIsland.processReport",
   "nodeIsland.defer",
   "nodeIsland.get",
   "nodeIsland.getKey",
@@ -201,6 +203,14 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "event.init",
   "event.targetCall",
   "event.targetDispatch",
+  // events.getEventListeners and events.listenerCount over an EventTarget:
+  // Node's receiver errors.
+  "event.targetListeners",
+  "event.targetListenersDyn",
+  "event.targetListenerCount",
+  "event.targetListenerCountDyn",
+  "event.targetGetMax",
+  "event.targetSetMax",
   "event.call",
   "blob.new",
   "blob.fileNew",
@@ -234,6 +244,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "num.toStringRadix",
   "num.toStringRadixF64",
   "insp.jsonDyn",
+  "insp.jsonDynValue",
   // The runtime formatter calls toString, valueOf and toJSON, and refuses
   // renderings it has no lowering for.
   "insp.format",
@@ -343,6 +354,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "emitter.emitAny",
   "emitter.emitErrorValue",
   "emitter.emitMixed",
+  "emitter.hasDyn",
   "emitter.listenersDyn",
   "emitter.emitError",
   "emitter.on",
@@ -400,6 +412,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.requestDynCb",
   "https.requestDyn",
   "https.requestDynCb",
+  "https.requestFnDyn",
+  "https.requestFnDynCb",
   // The URL+options form adds the URL parse's throws to that walk's.
   "http.requestUrlDyn",
   "http.requestUrlDynCb",
@@ -504,6 +518,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.requestConnCb",
   "process.kill",
   "process.killNum",
+  // A replaced process.stdout/stderr.write runs JavaScript: what it throws
+  // propagates from the call.
+  "process.stdioWriteStr",
   "process.setExitCode",
   "process.setExitCodeTracked",
   // Node's argument grammar throws ERR_INVALID_ARG_TYPE at the call.
@@ -842,11 +859,31 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "child.propsDefine",
   "child.propsDescriptor",
   "child.propsOnDyn",
+  // Handle own-property tables: the graph-walker refusals, a handle used as
+  // a descriptor, and Object.defineProperties throw.
+  "handle.propsDefineProps",
+  "handle.propsGuard",
+  "handle.propsGuardList",
+  "handle.propsCheck",
+  "handle.propsGrant",
   "dyn.arrayProtoCall",
   "dyn.arrayLikeProtoCall",
   "process.chdir",
   "os.getPriority",
   "os.setPriority",
+  // Node's SystemError when the passwd entry of the effective uid answers
+  // nothing: os.homedir() with HOME unset, and os.userInfo()'s fields, which
+  // take their own lookup when the record's begin call did not run.
+  "os.homedir",
+  "os.userInfoBegin",
+  "os.userName",
+  "os.userShell",
+  "os.userHomedir",
+  "os.userNameBuf",
+  "os.userShellBuf",
+  "os.userHomedirBuf",
+  "os.userUid",
+  "os.userGid",
   // Pattern length TypeError, brace-sequence RangeError, and the
   // SyntaxError of a segment regex invalid under the u flag.
   "path.matchesGlob",

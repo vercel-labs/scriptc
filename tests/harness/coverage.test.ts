@@ -97,15 +97,13 @@ test("divergences report as warnings, never as blockers", async () => {
 test("record width copies report at every storing site", async () => {
   const { coverage } = analyze(fixture("width-copies.ts"));
   expect(coverage.diagnostics).toEqual([]);
-  // Six sites copy: a narrower parameter, the empty record, a narrower
-  // assertion, a later assignment, an array element, and the last one, which
-  // narrows a union of records so the assertion selects an arm and the binding
-  // receives a copy of it. The unknown-only views at the end of the fixture are
-  // assertions too, but they keep the arm they select (there is no field to
-  // copy into), so they report nothing and the count stays at six.
+  // Four sites copy: a narrower parameter, the empty record, a later
+  // assignment, and an array element. The assertions report nothing: `tagged
+  // as Labeled` and the union arm `blocks[0] as { text: string }` name only
+  // members the value itself stores, so the binding keeps the value's storage
+  // and its writes reach that object (as do the unknown-only views at the end
+  // of the fixture, which have no field to copy into).
   expect((coverage.divergences ?? []).map((d) => d.code)).toEqual([
-    "SC6001",
-    "SC6001",
     "SC6001",
     "SC6001",
     "SC6001",
@@ -1207,6 +1205,27 @@ test("--strict-user-js reports R2 constructs in user JavaScript as SC8101–SC81
       { root: repoRoot },
     ),
   ).toMatchFileSnapshot("__snapshots__/coverage-node-islands-user-js.txt");
+});
+
+test("island packages: package data types and callable handles cross the boundary", () => {
+  // The types-only twin of an island package declares shapes the type
+  // mapper must read as data the program receives, never as a value the
+  // package's implementation produces: a union alias over Node data types
+  // (`Buffer | ArrayBuffer | Buffer[]`, `@types/ws`'s RawData) becomes the
+  // checked dynamic value, and a callable type with no native
+  // representation (`express.json()`'s NextHandleFunction) stays the handle
+  // of the function the island made.
+  for (const [name, pkg] of [
+    ["island-package-type-alias", "frames"],
+    ["island-callable-handle", "bodyish"],
+  ] as const) {
+    const { coverage } = analyze(join(repoRoot, "tests/corpus", name, "main.ts"));
+    expect(coverage.diagnostics, name).toEqual([]);
+    expect(
+      coverage.nodeIslands?.islands.map((i) => i.package),
+      name,
+    ).toContain(pkg);
+  }
 });
 
 test(`every corpus program is 100% static (corpus and coverage agree${shardSuffix()})`, async () => {

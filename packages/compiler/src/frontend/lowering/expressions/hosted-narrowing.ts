@@ -1,6 +1,13 @@
 /* Narrowings that refine record arms without naming a stored arm. */
 import type { Lowerer } from "../lowerer.js";
-import { type IrExpr, type IrType, type SrcLoc, typeEquals } from "../../../ir/ir.js";
+import {
+  type IrExpr,
+  type IrType,
+  type SrcLoc,
+  UNDEFINED_T,
+  shapeHasAccessorSlots,
+  typeEquals,
+} from "../../../ir/ir.js";
 
 /** A checker narrowing can refine the arms of a union of records with an
  * intersection: a predicate `r is Route & { path: string }`, or the
@@ -94,6 +101,49 @@ export function hostsAll(lowerer: Lowerer, storage: IrType, narrowed: IrType): b
   return refined;
 }
 
+/** Whether a type assertion to `target` only ADDS optional members to the
+ * record layout `storage` (`item as Base & { icons?: unknown }`): every
+ * member `storage` declares keeps its exact type, and every member only
+ * `target` declares can hold undefined. Node erases such an assertion, so
+ * the value keeps the storage layout — a read of an added member has no
+ * slot to read and answers from the layout's kept source instead
+ * (assertedOnlyFieldRead). A target that adds a REQUIRED member, narrows a
+ * stored one, or brings an index signature keeps its conversion: a closed
+ * record has no slot to hold what it adds. */
+export function assertedOptionalExtension(
+  lowerer: Lowerer,
+  storage: IrType,
+  target: IrType,
+): boolean {
+  if (storage.kind !== "record" || target.kind !== "record") return false;
+  if (storage.shapeId === target.shapeId) return false;
+  const stored = lowerer.shapes.get(storage.shapeId);
+  const added = lowerer.shapes.get(target.shapeId);
+  if (!stored || !added || stored.tuple || added.tuple) return false;
+  // A hybrid storage answers undeclared keys from its overflow store, so
+  // the assertion has nothing to add there; its own keyed read stands.
+  if (stored.indexValue !== undefined) return false;
+  if (added.indexValue !== undefined || added.fields.length === 0) return false;
+  // Accessor slots are not properties an assertion adds (they dispatch a
+  // getter), and a stored accessor keeps its own read.
+  if (stored.fields.some((f) => f.name.startsWith("%"))) return false;
+  if (added.fields.some((f) => f.name.startsWith("%"))) return false;
+  for (const field of stored.fields) {
+    const same = added.fields.find((f) => f.name === field.name);
+    if (!same || !typeEquals(same.type, field.type)) return false;
+  }
+  let extra = false;
+  for (const field of added.fields) {
+    if (stored.fields.some((f) => f.name === field.name)) continue;
+    const holdsUndefined =
+      field.type.kind === "dyn" ||
+      (field.type.kind === "union" && lowerer.armTag(field.type.unionId, UNDEFINED_T) >= 0);
+    if (!holdsUndefined) return false;
+    extra = true;
+  }
+  return extra;
+}
+
 function recordHosts(lowerer: Lowerer, storedId: string, narrowedId: string): boolean {
   const stored = lowerer.shapes.get(storedId);
   const narrowed = lowerer.shapes.get(narrowedId);
@@ -121,6 +171,54 @@ function slotRefines(lowerer: Lowerer, narrowed: IrType, stored: IrType): boolea
   if (narrowed.kind !== "union") return lowerer.armTag(stored.unionId, narrowed) >= 0;
   const arms = lowerer.unions.get(narrowed.unionId)?.arms;
   return !!arms && arms.every((arm) => lowerer.armTag(stored.unionId, arm) >= 0);
+}
+
+/** The stored arms that can PRESENT an asserted record view: the view names
+ * members the arm itself stores, at the same slot type, so the assertion is
+ * pure typing in Node and the arm's own storage answers every read and
+ * write. An intersection (hostedArmTags) adds members to the stored arms; a
+ * projection only asks for the members it names and may name FEWER of them
+ * (`{ text: string }` over `{ type: "text"; text: string }`). Unit arms
+ * cannot present a view — the checked extraction traps on them, as it does
+ * for every other arm the assertion excludes. Null when the union is not a
+ * bag of records or when no arm presents the view. */
+export function viewHostedArmTags(
+  lowerer: Lowerer,
+  fromId: string,
+  view: IrType,
+): Set<number> | null {
+  if (view.kind !== "record") return null;
+  const from = lowerer.unions.get(fromId);
+  if (!from) return null;
+  const allowed = new Set<number>();
+  let records = 0;
+  for (let tag = 0; tag < from.arms.length; tag++) {
+    const arm = from.arms[tag]!;
+    if (arm.kind === "undefinedT" || arm.kind === "nullT") continue;
+    if (arm.kind !== "record") return null;
+    records++;
+    if (recordViewHosted(lowerer, arm.shapeId, view.shapeId)) allowed.add(tag);
+  }
+  if (records === 0 || allowed.size === 0) return null;
+  return allowed;
+}
+
+/** Whether the stored record layout can answer a viewer of `view`: every
+ * member the view names sits in the stored record at the same slot type.
+ * The stored record may hold members the view does not name (a projection),
+ * and keeps its own field order — the order the object was built with. */
+export function recordViewHosted(lowerer: Lowerer, storedId: string, viewId: string): boolean {
+  if (storedId === viewId) return false;
+  const stored = lowerer.shapes.get(storedId);
+  const view = lowerer.shapes.get(viewId);
+  if (!stored || !view || stored.tuple || view.tuple) return false;
+  if (stored.indexValue || view.indexValue) return false;
+  if (view.fields.length === 0) return false;
+  if (shapeHasAccessorSlots(stored) || shapeHasAccessorSlots(view)) return false;
+  return view.fields.every((vf) => {
+    const sf = stored.fields.find((f) => f.name === vf.name);
+    return sf !== undefined && typeEquals(sf.type, vf.type);
+  });
 }
 
 /** The stored view of a hosted narrowing (see hostedArmTags): one stored

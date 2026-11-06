@@ -24,7 +24,9 @@ annotate(tagged);
 const anything: {} = tagged;
 console.log(anything === tagged);
 
-// An assertion to a narrower record type copies as well.
+// An assertion to a projection the record itself presents keeps the object:
+// `Labeled` names only `label`, which `Tagged` stores, so the write reaches
+// `tagged` exactly as it does in Node and nothing is reported.
 const asserted = tagged as Labeled;
 asserted.label = "asserted";
 
@@ -38,7 +40,8 @@ const list: Labeled[] = [tagged];
 for (const item of list) item.label = "element";
 console.log(tagged.label);
 
-// A union narrowed by an assertion copies the arm it selects.
+// A union narrowed by an assertion selects the one arm that presents the
+// view, and the binding keeps that arm: the write lands on the array element.
 interface TextBlock {
   type: "text";
   text: string;

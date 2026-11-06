@@ -19,6 +19,8 @@ JavaScript and TypeScript can store `process.stdin`, `stdout`, and `stderr`, rep
 A replaced `write` method does not receive console's error-callback argument.
 Input supports data/end/error/readable listeners, pause/resume, buffered reads with `read(size)` and `readableLength`, and TTY raw mode.
 Output writes are synchronous, with successful callbacks on the next-tick queue; queued backpressure is not modeled.
+An executable built with `--stdout-buffering` instead keeps stdout bytes in a 64 KiB buffer whenever stdout is not a terminal, so a pipe or file can receive a line later than the call that wrote it; the runtime settles the buffer when it fills, before a stderr write, when the event loop sleeps, before a blocking stdin read, before `process.kill`, on `process.exit`, on an uncaught error, and at exit, and output that a kill skips those paths for (such as `SIGKILL`) can be lost up to the buffer size.
+A terminal keeps one write per call.
 Because no write is ever queued, `writableLength` is 0, `writableNeedDrain` is false, `writableHighWaterMark` is 65536, and `'drain'` never fires, so drain listeners register silently and `events.once(process.stdout, "drain")` stays pending, as it does in Node when no write returned false.
 Stored streams do not support piping, encoding changes, arbitrary properties, or other events.
 A TypeScript `NodeJS.WritableStream` parameter that only receives `process.stdout` or `process.stderr` supports `write(string)`.

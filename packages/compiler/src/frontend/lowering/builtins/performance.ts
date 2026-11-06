@@ -229,7 +229,7 @@ function perfEntryRecord(
     loc,
   });
   const values: Record<string, IrExpr> = {
-    [PERF_ENTRY_MARKER]: lowerer.absentFieldValue(marker.type, loc)!,
+    [PERF_ENTRY_MARKER]: lowerer.absentFieldValue(marker, loc)!,
     detail: read("perf.entryDetail", DYN),
     duration: read("perf.entryDuration", F64),
     entryType: read("perf.entryType", STRING),

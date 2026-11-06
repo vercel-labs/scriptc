@@ -1,0 +1,27 @@
+delete-asserted-view-copy.ts:12:10 - error SC1090: 'delete' of 'max_tokens' through a type assertion to a member the value's own layout does not hold (Node erases the assertion and deletes from the operand; the asserted view's conversion would build a copy, so the delete would land on the temporary and disappear — declare the member on the value's type instead) is not supported yet
+
+  11 | function dropAddedOptional(params: Params): void {
+  12 |   delete (params as { model: string; max_tokens?: number }).max_tokens;
+     |          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  13 | }
+
+delete-asserted-view-copy.ts:16:10 - error SC1090: 'delete' of 'max_tokens' through a type assertion to a member the value's own layout does not hold (Node erases the assertion and deletes from the operand; the asserted view's conversion would build a copy, so the delete would land on the temporary and disappear — declare the member on the value's type instead) is not supported yet
+
+  15 | function dropAddedOptionalValue(params: Params): boolean {
+  16 |   return delete (params as { model: string; max_tokens?: number }).max_tokens;
+     |          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  17 | }
+
+delete-asserted-view-copy.ts:22:10 - error SC1090: 'delete' of 'extra' through a type assertion to a member the value's own layout does not hold (Node erases the assertion and deletes from the operand; the asserted view's conversion would build a copy, so the delete would land on the temporary and disappear — declare the member on the value's type instead) is not supported yet
+
+  21 | function dropThroughUnknown(bag: { a: number }): void {
+  22 |   delete (bag as unknown as { a: number; extra?: string }).extra;
+     |          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  23 | }
+
+delete-asserted-view-copy.ts:29:3 - error SC1090: 'delete' of required record fields (the shape's slot cannot be removed — only an optional field (`f?: T`) has an absent state, which Object.keys, 'in', and JSON.stringify follow; make the field optional if the program must remove it) are not supported yet
+
+  28 | function dropRequiredAsOptional(params: Params): void {
+  29 |   delete (params as { model?: string }).model;
+     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  30 | }

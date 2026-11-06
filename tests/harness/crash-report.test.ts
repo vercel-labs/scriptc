@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { reportNameMatches, summarizeReport } from "./crash-report.js";
+import { reportDirListing, reportNameMatches, summarizeReport } from "./crash-report.js";
 
 /** A `.ips` file: one metadata line, then the JSON payload. */
 function ips(payload: unknown): string {
@@ -88,5 +88,16 @@ describe("darwin crash reports", () => {
     expect(reportNameMatches("program-llvm-rel-2026-11-06-044953.ips", "/tmp/x/program")).toBe(
       false,
     );
+  });
+
+  test("a crash with no report of its own lists what the directories hold", () => {
+    const listing = reportDirListing((dir) => {
+      if (dir.startsWith("/Library")) throw new Error("denied");
+      return ["notes.txt", "program-2026-11-06-044953.ips", "other-2026-11-06-055000.ips"];
+    });
+    expect(listing).toContain("newest program-2026-11-06-044953.ips");
+    expect(listing).toContain("/Library/Logs/DiagnosticReports: unreadable");
+    // Only reports count: another file in the directory is not one.
+    expect(listing).not.toContain("notes.txt");
   });
 });

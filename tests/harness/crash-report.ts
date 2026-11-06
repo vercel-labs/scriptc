@@ -14,7 +14,7 @@ const REPORT_DIRS = [
 
 /** ReportCrash writes the file a moment after the process dies, so a lookup
  * polls briefly rather than reading once. */
-const REPORT_WAIT_MS = 5000;
+const REPORT_WAIT_MS = 15000;
 const REPORT_POLL_MS = 200;
 
 /** The timestamp ReportCrash ends a report's name with. */
@@ -137,8 +137,35 @@ function summarize(path: string): string {
   return summarizeReport(basename(path), readFileSync(path, "utf8"));
 }
 
+/** What the report directories hold, for a crash whose own report the lookup
+ * did not find: a report under a name the lookup did not expect, or none at
+ * all because ReportCrash does not run here. */
+export function reportDirListing(list: (dir: string) => string[]): string {
+  const parts: string[] = [];
+  for (const dir of REPORT_DIRS) {
+    let entries: string[];
+    try {
+      entries = list(dir)
+        .filter((entry) => entry.endsWith(".ips") || entry.endsWith(".crash"))
+        .sort();
+    } catch {
+      parts.push(`${dir}: unreadable`);
+      continue;
+    }
+    const newest = entries.slice(-3).reverse().join(", ");
+    parts.push(`${dir}: ${entries.length} reports${newest === "" ? "" : `, newest ${newest}`}`);
+  }
+  return parts.join("; ");
+}
+
+function listReports(dir: string): string[] {
+  return readdirSync(dir);
+}
+
 /** The newest crash report for `binary` written after `since` (epoch ms), or
- * null on another platform or when none appears in time. */
+ * null on another platform. A report that does not appear in time is
+ * described instead, since a missing report and a report the lookup missed
+ * call for different fixes. */
 export async function recentCrashReport(binary: string, since: number): Promise<string | null> {
   if (process.platform !== "darwin") return null;
   const deadline = Date.now() + REPORT_WAIT_MS;
@@ -151,7 +178,9 @@ export async function recentCrashReport(binary: string, since: number): Promise<
         return basename(path);
       }
     }
-    if (Date.now() >= deadline) return null;
+    if (Date.now() >= deadline) {
+      return `no report for ${basename(binary)} in ${REPORT_WAIT_MS} ms; ${reportDirListing(listReports)}`;
+    }
     await new Promise((resolve) => setTimeout(resolve, REPORT_POLL_MS));
   }
 }

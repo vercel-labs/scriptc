@@ -229,6 +229,9 @@ const REGEX_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fsp.globTypes",
   "path.matchesGlob",
   "path.win32MatchesGlob",
+  // `slice.index` / `slice.input` on a match-slice-typed value reads the
+  // match source through scr_regex_result_prop.
+  "regex.resultProp",
   "regexp.escape",
   "rl.cursorPos",
   "rl.keypressStdin",

@@ -1926,6 +1926,30 @@ export function lowerPropertyAccessExpr(
     const read = narrowedUnionValueRead(lowerer, expr, recvLowered);
     if (read) return read;
   }
+  // A member the static type does not declare, read in a JavaScript source
+  // file (`__expected.input`, a record's added `note`): JavaScript's [[Get]]
+  // answers the own property the program added, then the prototype chain,
+  // then undefined. The checked-dynamic view is where such properties live
+  // (the `.x = v` statement routes the write there), and only the
+  // identity-preserving conversions qualify, so the read sees a write made
+  // through any other view of the same object.
+  if (
+    !expr.questionDotToken &&
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    lowerer.jsDynamicMemberTarget(recvLowered.type) &&
+    !declaredMemberOf(lowerer, expr.expression, expr.name.text)
+  ) {
+    return lowerer.maybeNarrow(
+      {
+        kind: "dynKeyGet",
+        value: lowerer.coerceToExpected(recvLowered, DYN),
+        key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+        type: DYN,
+        loc,
+      },
+      expr,
+    );
+  }
   lowerer.unsupported(
     "SC1090",
     expr,

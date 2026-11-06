@@ -915,6 +915,43 @@ console.log(\`\${register(7)}\`);
     expect(r.stdout).toBe("caught: Cannot read properties of undefined (reading 'registry')\n");
     expect(r.stderr).toBe("");
   });
+
+  test("a tuple-typed receiver keeps the fence on an added property write (JS lane)", async () => {
+    // A tuple is a record layout whose checked view is an array rebuilt
+    // from the tuple's fields, so the view cannot hold a property the
+    // tuple does not declare: the write stays fenced instead of landing in
+    // a view whose next refresh drops it.
+    const r = await compileAndRun(
+      "tuple-added-property-write",
+      `/** @type {[number, number]} */
+const pair = [1, 2];
+pair.extra = "x";
+console.log(pair[0], pair[1]);
+`,
+      "js",
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: assignment to non-variables are not supported yet \[SC1090 at .*tuple-added-property-write\.js:3\]\n$/,
+    );
+  });
+
+  test("a tuple-typed receiver keeps the fence on an undeclared member read (JS lane)", async () => {
+    const r = await compileAndRun(
+      "tuple-added-property-read",
+      `/** @type {[number, number]} */
+const pair = [1, 2];
+console.log(pair.extra);
+`,
+      "js",
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: reading 'extra' from a value of type '\[number, number\]' is not supported yet \[SC1090 at .*tuple-added-property-read\.js:3\]\n$/,
+    );
+  });
 });
 
 // An RSA-PSS key whose parameters restrict it to a digest the runtime does

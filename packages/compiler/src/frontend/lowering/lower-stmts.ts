@@ -10242,6 +10242,46 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
           };
         }
       }
+      // A dotted write of a property the static type does not declare
+      // (`__expected.index = 0` on a string[] literal, `record.extra = v`)
+      // in a JavaScript source file: JavaScript creates an own property on
+      // the object, and the checked-dynamic layer is where such properties
+      // live — the array's named-property table and a record's live view
+      // keep them, and both refreshes and later reads see them (the write
+      // twin of the member read's `dynKeyGet` fallback). A name the static
+      // type DOES declare keeps its own lowering: a typed read would bypass
+      // the added property, so the explicit fence stays.
+      if (
+        ts.isPropertyAccessExpression(expr.left) &&
+        !expr.left.questionDotToken &&
+        !ts.isPrivateIdentifier(expr.left.name) &&
+        isJsSourceFile(ts.getSourceFileOfNode(expr))
+      ) {
+        const recv = tryLowerExpression(lowerer, expr.left.expression);
+        if (
+          recv &&
+          recv.type.kind !== "dyn" &&
+          lowerer.jsDynamicMemberTarget(recv.type) &&
+          !lowerer.checker.getSymbolAtLocation(expr.left)
+        ) {
+          const loc = locOf(expr);
+          return {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "dyn.keySet",
+              args: [
+                lowerer.coerceToExpected(recv, DYN),
+                { kind: "strLit", value: expr.left.name.text, type: STRING, loc },
+                lowerer.lowerExprExpecting(expr.right, DYN),
+              ],
+              type: VOID,
+              loc,
+            },
+            loc,
+          };
+        }
+      }
       if (!ts.isIdentifier(expr.left)) {
         lowerer.unsupported("SC1090", expr.left, "assignment to non-variables");
       }

@@ -59,13 +59,25 @@ test("worker discovery preserves imports, facades, CommonJS bindings and distinc
   ).toEqual(["one.ts", "two.ts", "three.ts", "four.ts", "main.ts", "/absolute/worker.ts"]);
 });
 
+test("worker discovery bounds a written binding's values", () => {
+  // A written binding is not a dynamic root while its values are bounded:
+  // the site selects on the runtime value and the residual arm throws
+  // ERR_SCRIPTC_WORKER_ENTRY, so a later reassignment to an unknown
+  // specifier cannot load the wrong file.
+  expect(
+    discover(`
+    import { Worker } from "node:worker_threads";
+    let filename = "/mutable.ts";
+    new Worker(filename);
+  `),
+  ).toEqual(["/mutable.ts"]);
+});
+
 test("worker discovery rejects dynamic roots and shadowed globals or constructors", () => {
   expect(
     discover(`
     import { Worker } from "node:worker_threads";
     new Worker("./cwd-dependent.ts");
-    let filename = "/mutable.ts";
-    new Worker(filename);
     function local(Worker: any) { new Worker("/local.ts"); }
     function loader(require: any) {
       const { Worker: Local } = require("worker_threads");

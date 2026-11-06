@@ -728,7 +728,10 @@ console.log(reader.payload.trim(), result.text);
       expect(blocked.islands?.packages ?? []).toEqual([]);
     }, 300_000);
 
-    test("a native read of the patched member through destructuring is SC8020", async () => {
+    test("a native read of the patched member through destructuring is SC8006", async () => {
+      // A destructured read is an entry read like a direct `fs.readFileSync`
+      // one: the entry stays native, so it cannot join the island set and
+      // would not see the patch.
       const dir = copyCorpus(
         "read-destructured",
         `import { createRequire } from "node:module";
@@ -741,7 +744,9 @@ console.log(result.text, readFileSync("payload.txt", "utf8"));
       );
       const result = await buildDir(dir, "main");
       expect(result.ok).toBe(false);
-      const read = messages(result).find((m) => m.startsWith("SC8020:"));
+      const read = messages(result).find(
+        (m) => m.startsWith("SC8006:") && m.includes("the entry module reads 'fs.readFileSync'"),
+      );
       expect(read).toBeDefined();
       expect(read).toContain("fs.readFileSync");
       expect(read).toContain("loader.ts");

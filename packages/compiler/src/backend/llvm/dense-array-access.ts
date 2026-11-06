@@ -32,7 +32,7 @@ import {
   storeArrCount,
 } from "./common.js";
 import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
-import { compactRefLoadLines, compactRefStoreLines } from "./classes.js";
+import { compactRefAddressLines, compactRefLoadLines, compactRefStoreLines } from "./classes.js";
 import { elemAccess } from "./shapes.js";
 import { indexInteger } from "./integer-values.js";
 import { integerOrNaNIndex } from "./wrapping-sums.js";
@@ -449,7 +449,8 @@ export function emitDenseArrayRead(
     if (kind === "cref") {
       const ref = B.tmp();
       B.line(`${ref} = load i32, ptr ${ptr}${host.fieldAliasAttachment(ptr)}`);
-      for (const line of compactRefLoadLines(ref, raw, `${raw}.r`)) B.line(line.trimStart());
+      for (const line of compactRefLoadLines(host.compactRefBase, ref, raw, `${raw}.r`))
+        B.line(line.trimStart());
     } else {
       B.line(`${raw} = load ptr, ptr ${ptr}${host.fieldAliasAttachment(ptr)}`);
     }
@@ -866,8 +867,12 @@ export function emitDenseArrayPop(
       // The 8-byte slot of a compact reference is its address.
       const wide = B.tmp(),
         address = B.tmp();
-      B.line(`${wide} = zext i32 ${raw} to i64`);
-      B.line(`${address} = shl nuw nsw i64 ${wide}, 3`);
+      if (host.compactRefBase === 0n) {
+        B.line(`${wide} = zext i32 ${raw} to i64`);
+        B.line(`${address} = shl nuw nsw i64 ${wide}, 3`);
+      } else
+        for (const line of compactRefAddressLines(host.compactRefBase, raw, address, `${wide}.r`))
+          B.line(line.trimStart());
       raw = address;
     } else {
       // The slot bits of an int32 element's double, as the f64 path returns them.

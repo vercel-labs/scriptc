@@ -1101,8 +1101,12 @@ test("a package a build islands by its module-init fence is the same island here
   const { coverage } = analyze(entry);
   expect(coverage.diagnostics).toEqual([]);
   expect(coverage.stats.statementsFailed).toBe(0);
+  // A Promise subclass needs the JavaScript runtime, and the reason now
+  // carries the rule that says so (R1.6 host-class-base), so the island is
+  // classed "runtime" rather than the unnamed "gap" a refusal without a
+  // reason id falls back to.
   expect(coverage.nodeIslands?.islands.map((i) => [i.package, i.class])).toEqual([
-    ["ni-sdk", "gap"],
+    ["ni-sdk", "runtime"],
   ]);
   // The build decides the same island: its SC8001 note names the package the
   // report lists.
@@ -1205,6 +1209,27 @@ test("--strict-user-js reports R2 constructs in user JavaScript as SC8101–SC81
       { root: repoRoot },
     ),
   ).toMatchFileSnapshot("__snapshots__/coverage-node-islands-user-js.txt");
+});
+
+test("island packages: package data types and callable handles cross the boundary", () => {
+  // The types-only twin of an island package declares shapes the type
+  // mapper must read as data the program receives, never as a value the
+  // package's implementation produces: a union alias over Node data types
+  // (`Buffer | ArrayBuffer | Buffer[]`, `@types/ws`'s RawData) becomes the
+  // checked dynamic value, and a callable type with no native
+  // representation (`express.json()`'s NextHandleFunction) stays the handle
+  // of the function the island made.
+  for (const [name, pkg] of [
+    ["island-package-type-alias", "frames"],
+    ["island-callable-handle", "bodyish"],
+  ] as const) {
+    const { coverage } = analyze(join(repoRoot, "tests/corpus", name, "main.ts"));
+    expect(coverage.diagnostics, name).toEqual([]);
+    expect(
+      coverage.nodeIslands?.islands.map((i) => i.package),
+      name,
+    ).toContain(pkg);
+  }
 });
 
 test(`every corpus program is 100% static (corpus and coverage agree${shardSuffix()})`, async () => {

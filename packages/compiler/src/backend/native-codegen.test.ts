@@ -38,6 +38,9 @@ async function fakePackage(
     protocol?: string;
     packageVersion?: string;
     emitFailure?: boolean;
+    emitExitStatus?: number;
+    emitSignal?: string;
+    emitStderr?: string;
     emptyOutput?: boolean;
     missingOutput?: boolean;
     changePackageDuringEmit?: boolean;
@@ -80,13 +83,19 @@ while [ "$#" -gt 0 ]; do
 done
 ${options.changePackageDuringEmit === true ? `printf '\\n' >> '${packageJson}'` : ""}
 ${
-  options.emitFailure === true
-    ? 'printf \'%s\\n\' \'{"ok":false,"code":"verification_failed","message":"bad module"}\' >&2; exit 1'
-    : options.emptyOutput === true
-      ? ': > "$output"'
-      : options.missingOutput === true
-        ? ":"
-        : 'for each in $outputs; do cp "$input" "$each"; done'
+  options.emitExitStatus !== undefined
+    ? `exit ${options.emitExitStatus}`
+    : options.emitSignal !== undefined
+      ? `kill -${options.emitSignal} $$`
+      : options.emitStderr !== undefined
+        ? `printf '%s\\n' '${options.emitStderr}' >&2; exit 1`
+        : options.emitFailure === true
+          ? 'printf \'%s\\n\' \'{"ok":false,"code":"verification_failed","message":"bad module"}\' >&2; exit 1'
+          : options.emptyOutput === true
+            ? ': > "$output"'
+            : options.missingOutput === true
+              ? ":"
+              : 'for each in $outputs; do cp "$input" "$each"; done'
 }
 ${options.profileReport === undefined ? "" : `printf '%s\\n' '${options.profileReport}'`}
 `,
@@ -399,6 +408,39 @@ test("translates structured helper failures and preserves an existing output", a
   });
   expect(await readFile(output, "utf8")).toBe("caller artifact\n");
 });
+
+test.skipIf(process.platform === "win32")(
+  "reports the exit status of a helper that fails without a diagnostic",
+  async () => {
+    const pkg = await fakePackage({ emitExitStatus: 3 });
+    await expect(emitNativeArtifact(request(pkg.root, pkg.packageJson))).rejects.toMatchObject({
+      diagnosticCode: "SC3004",
+      message: expect.stringContaining("exit status 3"),
+    });
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "reports the signal that ended a helper that printed nothing",
+  async () => {
+    const pkg = await fakePackage({ emitSignal: "SEGV" });
+    await expect(emitNativeArtifact(request(pkg.root, pkg.packageJson))).rejects.toMatchObject({
+      diagnosticCode: "SC3004",
+      message: expect.stringContaining("signal SIGSEGV"),
+    });
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "reports what a helper printed when it ends without a diagnostic",
+  async () => {
+    const pkg = await fakePackage({ emitStderr: "dyld: Library not loaded: libLLVM.dylib" });
+    await expect(emitNativeArtifact(request(pkg.root, pkg.packageJson))).rejects.toMatchObject({
+      diagnosticCode: "SC3004",
+      message: expect.stringContaining("dyld: Library not loaded: libLLVM.dylib"),
+    });
+  },
+);
 
 test("rejects a successful helper that leaves an empty staged output", async () => {
   const pkg = await fakePackage({ emptyOutput: true });

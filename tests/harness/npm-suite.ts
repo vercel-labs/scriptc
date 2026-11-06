@@ -92,7 +92,14 @@ const KNOWN: Record<string, Known> = {
   "node24-mime": { run: "SC2020" },
   "node24-mime-errors": { run: "SC2020" },
   "node24-no-error-assertions": { run: "SC2020" },
-  "node24-parseargs": { run: "SC1090" },
+  // The dynamic `__proto__` writes in the args loop now match Node, so the
+  // program reaches a later limitation: the checked conversion of the options
+  // array's element union, whose `{ __proto__: null, ... }` arm (B.3.1) leaves
+  // a value without the `__proto__` member its literal type declares.
+  "node24-parseargs": {
+    divergence:
+      "the checked conversion into the options-literal union fails its `__proto__: null` arm",
+  },
   "node24-promise-timers": { run: "SC2020" },
   // The decoding, encoding and input-error lines match Node; the closing
   // `d.encoding = 'hex'` assignment refuses.
@@ -125,8 +132,11 @@ const KNOWN: Record<string, Known> = {
   "util-shims": { run: "SC2020" },
   // The package redeclares the var it exported: Node copies the first value.
   "var-export-redeclared": { island: true },
-  // `class Upper extends TransformStream`: extending a builtin class from JavaScript.
-  "web-streams": { run: "SC1090" },
+  // `class Upper extends TransformStream`: extending a builtin class from
+  // JavaScript. The package is an island, and the worker-entry scan ships the
+  // modules it starts, so the program builds and runs: with a libnode pack it
+  // is compared against Node, and without one the build stops with SC8005.
+  "web-streams": { island: true },
   "workspace-copied": { island: true },
   // The SYMLINKED twin of workspace-copied: the automatic island policy
   // places the refused package from its workspace realpath.

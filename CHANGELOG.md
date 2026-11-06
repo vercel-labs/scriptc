@@ -6,6 +6,66 @@ All notable changes to scriptc will be documented in this file.
 
 <!-- release:start -->
 
+## 0.4.9
+
+### Highlights
+
+- **Faster programs:**
+  - Typed-array and dense `number[]` loops run as lane loops: elementwise stores and dense sums, counts and stores run whole vectors and finish the remainder with the scalar loop. The typed-array benchmark runs 1.83x faster, and integer sums and counts 1.56x.
+  - Typed arrays copy in bulk where the element kinds allow it: construction, `set()` and `TypedArray.from(view)` between typed arrays move same-width integer pairs with one `memmove` and convert every other pair in one loop. A `Uint8ClampedArray` over a decoded buffer runs 1.9x faster, at 1.19x Node's time instead of 2.39x.
+  - A callee called in a loop with an array parameter of one known length is compiled for that length, so the loop loses a per-element hole guard: n-body at 50,000,000 iterations is 5.0% faster.
+  - Byte loops that count a constant product and byte loops that index downwards are versioned on their trip count: 1.31x and 5.98x on probes of those shapes (1,305 ms to 1,000 ms and 1,140 ms to 190 ms).
+  - Dynamic computed access has a faster path: the fasta benchmark port runs at 1.73x Node's time instead of about 3.2x, a byte-array store falls from 63.3 to 20.4 ns per operation, and an indexed `charCodeAt` from 172.0 to 90.2 ns.
+  - `Buffer.write` with a latin1 or ascii encoding uses the word-wise encoder: a 16 MB write is 55% faster, from 3.9x to 1.75x Node's time. Indexed scans of long non-ASCII texts are 47-51% faster.
+  - Untyped `process.stdout.write(text)` and `process.stderr.write(text)` calls reach one runtime call: 10,000,000 writes to `/dev/null` take 1.38 s instead of 3.13 s. The opt-in `--stdout-buffering` keeps console output in the 64 KiB buffer when stdout is not a terminal: 10,000,000 `console.log` lines to a pipe take 0.54 s instead of 6.3 s.
+  - The collector does less work at collection points and sizes its nursery window from what it collects: channel-messages is 12.4% faster and worker-messages 5.9% faster. Object chunks of 1 MiB or more come from huge pages, an async function's statement frame stays out of a group when nothing in it awaits, and depth-21 binary-trees runs at 0.84 of its former wall time with 199 MB of peak memory instead of 253 MB.
+  - Large immutable number tables are built in the program image, so a small CLI program starts in 1.21 ms instead of 1.51 ms. An optional-element array read skips the runtime getter (13% faster, 35% fewer instructions), and 200,000 calls through builtin function values take 4.6 ms against Node's 75.3 ms.
+  - `--cpu-dispatch` copies only the functions whose body has a loop: 1.305x on mandelbrot and 1.068x on n-body against the default build.
+- **Faster builds:**
+  - A build whose inputs did not change returns the executable already on disk, without reading a source, lowering, emitting LLVM, generating objects or linking: a no-change build takes 16.6 ms instead of 71.9 ms, 17.6 ms instead of 426.8 ms with an LLVM helper set, and 58.6 ms instead of 959 ms with a profile and an FFI manifest.
+  - Runtime-pack selections and link-driver jobs are kept in the build cache: cold builds take 16.3 ms less on average over 369 paired builds.
+  - Partition groups are numbered from the file name relative to the entry module, so a warm one-function edit that adds a module recompiles 3 of 64 partitions and the module-init pass is 19.5% faster.
+  - A build's repeated frontend loads share one checker project, so parsed files carry between passes: a large multi-package program builds 15.9% faster (652.96 s to 549.05 s). Source parses are cached and declaration type queries batched (59,075 source-parser requests become 2,595), alias answers are memoized for one load (573,047 requests become 190,448), and npm-static package selection is memoized per build: in a separate pairing on the same program the build falls from 634.0 s to 404.6 s and the island reloads from 222.4 s to 188.1 s.
+  - Lowering a large program reads each mapped symbol name once, builds union arm keys once per sort and answers the library-file question once per file: a large compiler build's coverage analysis falls 20.2%, from 1,360.20 s to 1,085.14 s.
+  - A build of the compiler's own sources loads a 3.1-3.8 MB frontend graph instead of 15.7 MB, and one analyze and compile of a fixture falls from 111.9 s to 24.6 s. The bundled-library scan asks once per directory, 1.2 ms to 0.1 ms.
+  - Windows release executables request no debug info: hello world is 146,432 bytes instead of 1,803,264 bytes. Analysis peak memory falls 8.7% on a 1000-module graph and from 1207 MB to 1053 MB on 3000 modules, and a macOS type check's peak memory falls 19.0-21.5% with compact class references.
+  - Large shared buffers get a mapping of their own: a 16-checker type check's peak memory falls from 2856 MB to 2805 MB.
+- **Node.js parity:**
+  - node:dns lowers `lookup`, `lookupService`, `getServers` and the default result-order functions with Node's argument ladder, error codes and error properties, and its address, hint and error-code constants come from the target libc.
+  - node:tls accepts `tls.createServer({ SNICallback })` without a default `cert`/`key` pair.
+  - node:readline interfaces have `prependListener`, `prependOnceListener`, `removeListener`, `off`, `removeAllListeners`, `listenerCount` and `eventNames`, with removal by the registered function, and `question(query, { signal }, callback)` cancels on abort.
+  - `process.allowedNodeEnvironmentFlags` is the target's `NODE_OPTIONS` flag names, `process` emits `'beforeExit'` and has `abort()`, and `ChildProcess` reports `spawnfile` and `spawnargs`.
+  - child_process accepts stdio arrays past fd 2, `detached`, `options.signal` and `stdio: "inherit"`, and spawnSync's error carries Node's errno, code, syscall, path and spawnargs fields.
+  - `Buffer#toJSON` returns Node's snapshot, `Blob#stream()` and `Blob#textStream()` return real ReadableStreams, `URL.createObjectURL`, `URL.revokeObjectURL` and `buffer.resolveObjectURL` share Node's table, and fetch sends Blob and File bodies as their bytes with the blob's type.
+  - `url.Url` is Node's legacy constructor, strict-mode property writes name bigint and symbol receivers, `util.format` walks Error values for `%j`, and typed emits reach listeners registered through untyped values with `errorMonitor` first.
+  - Native handles accept own properties, and a class instance's getter-backed fields read through its checked view.
+  - `process.report` is answered by the Node island, node:test's context has `t.runOnly` and `t.waitFor`, and static builds read `/etc/passwd` for `os.homedir` and `os.userInfo` and throw Node's catchable `SystemError`.
+  - The compatibility ledger records the implemented web globals, the `Headers` class and the node:diagnostics_channel surface against the programs that exercise them.
+- **TypeScript parity:**
+  - Every dynamic-to-typed conversion asks one predicate, and an optional record field whose type maps to the checked-dynamic slot can be absent, so `delete` works and an omitted field is absent to `in`, `Object.hasOwn`, `Object.keys`, `util.inspect`, `JSON.stringify` and spread.
+  - `new Set(x)` and `new Map(x)` seed from a checked-dynamic iterable, and a Map or Set arm of a class field's undefined-armed union lowers.
+  - A function's own properties use one representation, a class instance passed to a callee that reads its fields keeps its record shape, and accessor literals for intersections, unions and mapped types keep their checked-identity view.
+  - Method calls on a union receiver with a primitive arm lower, `&&` spreads that drop the left operand's widened arm lower, `Promise.all` over a mixed armed-union array literal lowers, and `Object.assign` takes dynamic sources into index-signature records.
+  - Overrides that append trailing optional or defaulted parameters, optional captures, computed keys and variadic function values lower.
+  - Builtin members read as values compile: `Function.prototype`'s `call`, `apply` and `bind`, `RegExp.prototype`'s `exec`, `test` and `toString`, `DataView.prototype`, builtin functions carrying Node's `name` and `length`, and an `http.request` alias or a client chosen at run time.
+  - Packages that declare their data shapes in declaration files compile, as do package module edges reached through literal `require()` and `import()` calls, a package's own JSON documents, and rest bindings from a CommonJS module's export names.
+  - More JavaScript semantics compile in typed sources: BigInt operands of the arithmetic, shift and bitwise operators, symbol to string coercion, `Object.prototype.__proto__` on dynamic receivers, rest bindings over index-signature sources, and `delete` through an erased assertion.
+  - Five diagnostics are admitted for JavaScript sources, and a project that checks its JavaScript still reports them.
+- **CommonJS and islands:**
+  - A constant-decided top-level `if` exports what its branch exports, a failed CommonJS initializer retries on the next `require()`, and a shared module's exported function exists before the module evaluates.
+  - A local JavaScript import answers its runtime sibling through a typed sidecar, and shared exports publish between declarators.
+  - An island's module tree stops at a type-only import, and type-only island edges ship as the no-ops Node erases.
+  - A union type alias a package declares over Node data types lowers as the checked dynamic value, and a callable type from a types-only package stays the island's function handle.
+- **Fixes:**
+  - A nested marker table is a brand marker, so branded primitives stay `Map` keys. A parameter that shadows a builtin module alias is no longer reported as a patched module, and a generator declared to return `any` lowers instead of reporting SC2001.
+  - A boxed union map value widens into a pointer-union `Map.get` result, a `TypeError` for a non-callable callee names the callee as V8 does, and the unwinding ABI check no longer counts a source-frame push as a pending-flag test.
+  - The LLVM context is declared before the target machine in every partition compiler, which removes the intermittent aarch64 macOS dev build crash and timeout.
+  - An own property written through a checked view of an `Error` subclass is kept, and a member read that only an asserted intersection declares answers what the object carries.
+  - The child handle wrapper is installed only when the program links the child-process unit, and the stdio slot order program spawns `/bin/sh` so it runs on macOS.
+  - SC3004 reports the LLVM helper's exit status or signal together with the output it wrote.
+  - Reflection on a `Proxy` value answers its own keys again, and builtin prototypes and array-like `concat` match Node.
+<!-- release:end -->
+
 ## 0.4.8
 
 ### Highlights
@@ -40,8 +100,6 @@ All notable changes to scriptc will be documented in this file.
 - **Node islands:** coverage lowers once with the islands the build proves, packages that are not opted in keep their JavaScript out of the inferred surface, and npm-static packages are classified only from real loads.
 - **Correctness:** a record reached through an alias keeps writes made through either name when its shape widens under the shape overlay.
 - **TypeScript:** more record, union and generic patterns compile, among them overload sets held as values, class overload declarations, unions of a class and its subclasses, `Object.assign` over a narrowed record arm, and partial record views that gain keys through dynamic writes.
-
-<!-- release:end -->
 
 ## 0.4.7
 

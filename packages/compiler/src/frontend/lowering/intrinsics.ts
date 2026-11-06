@@ -20,7 +20,6 @@ import { DYN, STRING, type IrExpr, type SrcLoc } from "../../ir/ir.js";
 import { INTRINSIC_IDS, INTRINSIC_PROTOTYPE_MEMBERS } from "./intrinsic-ids.generated.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import { stdlibGlobalNameOf } from "./surfaces.js";
-import { builtinPrototypeMethod } from "./lower-builtin-values.js";
 import type { Lowerer } from "./lowerer.js";
 // The module graph already cycles here (lower-exprs imports the expression
 // modules, which import this one); the reference is used inside a function
@@ -242,15 +241,6 @@ export function lowerIntrinsicMember(
   const id = prototypeId(innerOwner);
   if (id === null) return null;
   if (DEDICATED_PROTOTYPE_OWNERS.has(innerOwner)) return null;
-  // A member the builtin-method lowering answers as a value of its own
-  // (String's trim family, RegExp's exec/test/toString, the Map and Set
-  // methods, the wrapper methods): that value carries the receiver brand
-  // check, and for RegExp its RegExpExec step, and it is the same interned
-  // function `''.trim`, `/a/.exec` and `m.get` answer. The graph's METHOD
-  // rows go through the runtime's receiver-keyed provider instead, which
-  // refuses a foreign `this` the language accepts, so those members keep
-  // their dedicated value.
-  if (builtinPrototypeMethod(lowerer, expr) !== null) return null;
   // `Function.prototype.apply` keeps `dyn.functionApply`, the runtime's
   // singleton that `f.apply` also answers; the table's Function.prototype
   // holds the same function, so both reads agree.

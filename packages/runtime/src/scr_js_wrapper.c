@@ -408,6 +408,17 @@ static ScrDyn *scr_js_wrapper_member_lookup(int kind, const char *name, size_t n
   const ScrJsWrapperMember *members = scr_js_wrapper_member_table(kind);
   size_t index = 0;
   name = scr_js_wrapper_canonical_member(name, name_length, &name_length);
+#ifdef SCR_JS_OBJECT_MODEL
+  /* The members the builtin-method unit implements (String's trim family)
+   * are that unit's interned values, so `String.prototype.trim` and
+   * `''.trim` are one function object and a call through either runs the
+   * method the language defines. This unit's own closure answers the member
+   * only when the program links no builtin-method unit. */
+  if (kind == SCR_JS_WRAPPER_STRING && scr_dyn_builtin_method_slot) {
+    ScrDyn *value = scr_dyn_builtin_method_slot("String", name, name_length);
+    if (value) return value;
+  }
+#endif
   for (const ScrJsWrapperMember *m = members; m->name; m++, index++) {
     if (strlen(m->name) != name_length || memcmp(m->name, name, name_length) != 0) continue;
     scr_js_wrapper_register_cleanup();
@@ -888,4 +899,8 @@ ScrDyn *scr_js_wrapper_this_string(ScrDyn *value, ScrStr *name) {
 ScrJsWrapperPrototypeSlot scr_js_wrapper_intrinsic_prototype_slot =
     scr_js_wrapper_intrinsic_prototype;
 ScrJsWrapperMemberSlot scr_js_wrapper_member_slot = scr_js_wrapper_member_for;
+/* The builtin-method unit's slot, which this unit reads for the String
+ * members that unit implements. A program that names a wrapper without
+ * linking that unit gets this zero fallback and answers its own closures. */
+SCR_JS_SLOT_FALLBACK(ScrDynBuiltinMethodSlot, scr_dyn_builtin_method_slot);
 #endif

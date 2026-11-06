@@ -1278,6 +1278,16 @@ ScrDyn *scr_dyn_global_constructor(const ScrStr *name);
  * refusal where it is NULL. */
 extern ScrDyn *(*scr_dyn_global_constructor_hook)(const ScrStr *name);
 #endif
+/* The builtin-method unit's interned function value for one of the members
+ * it implements — String's trim family, RegExp's exec, test and toString —
+ * +1, and NULL for every other pair and for a build without that unit
+ * (scr_dyn_builtin_methods.c). It is the value `''.trim` and `/a/.exec`
+ * answer, so the intrinsic graph's prototype member and the wrapper
+ * prototype's member are that same function object. The unit fills the slot
+ * with a static initializer; the readers carry the fallback below. */
+typedef ScrDyn *(*ScrDynBuiltinMethodSlot)(const char *owner, const char *member,
+                                           size_t member_length);
+extern ScrDynBuiltinMethodSlot scr_dyn_builtin_method_slot;
 #ifdef SCR_JS_OBJECT_MODEL
 /* String.prototype, Number.prototype and Boolean.prototype are the wrapper
  * unit's objects — only it builds one with the [[PrimitiveValue]] slot their

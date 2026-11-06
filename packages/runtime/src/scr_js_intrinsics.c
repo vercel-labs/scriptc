@@ -64,6 +64,13 @@
  * ordinary objects. See scr_dyn.h for the fallback. */
 SCR_JS_SLOT_FALLBACK(ScrJsWrapperPrototypeSlot, scr_js_wrapper_intrinsic_prototype_slot);
 SCR_JS_SLOT_FALLBACK(ScrJsWrapperMemberSlot, scr_js_wrapper_member_slot);
+/* The builtin-method unit's values: a member row this unit fills for String's
+ * trim family or RegExp's exec/test/toString is that unit's interned
+ * function, the one `''.trim` and `/a/.exec` answer, so one member is one
+ * function object (§4.4). The frontend marks the program fact for a graph
+ * read of one of those rows, so a program that reads such a member links the
+ * unit; without it the row keeps the interner's function. */
+SCR_JS_SLOT_FALLBACK(ScrDynBuiltinMethodSlot, scr_dyn_builtin_method_slot);
 
 /* ── the generated table ─────────────────────────────────────────────── */
 
@@ -772,8 +779,13 @@ static ScrDyn *scr_js_member_value(size_t index, const ScrJsIntrinsicRow *row) {
        * values, which scr_dyn_builtin_method answers through the provider
        * above — the same value a primitive's or a wrapper instance's member
        * read gets, so `new String("ab").repeat` is the member the frontend
-       * recognizes as String.prototype.repeat. */
-      ScrDyn *value = scr_dyn_builtin_method(prototype, method);
+       * recognizes as String.prototype.repeat. The members the
+       * builtin-method unit implements are its values instead, so the
+       * prototype holds the function `''.trim` and `/a/.exec` answer. */
+      ScrDyn *value = NULL;
+      if (scr_dyn_builtin_method_slot)
+        value = scr_dyn_builtin_method_slot(owner, row->a, method_length);
+      if (!value) value = scr_dyn_builtin_method(prototype, method);
       scr_str_release(method);
       scr_str_release(prototype);
       scr_js_define_length(value, scr_js_member_length(row->a));

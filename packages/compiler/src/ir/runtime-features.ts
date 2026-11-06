@@ -2,6 +2,7 @@ import {
   BIGINT_BYTES_NAMES,
   type IrClassDef,
   type IrExpr,
+  type IrFunction,
   type IrModule,
   type IrRecordShape,
   type IrType,
@@ -1196,6 +1197,86 @@ export function jsObjectModelFact(features: {
   );
 }
 
+/** The prototype members the builtin-method unit implements, by the
+ * intrinsic object the read starts from: String's trim family and RegExp's
+ * exec, test and toString. The graph's fill asks that unit's slot for a row
+ * here, so a keyed read of one of them links the unit. */
+const BUILTIN_METHOD_VALUE_READS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ["String.prototype", new Set(["trim", "trimStart", "trimEnd", "trimLeft", "trimRight"])],
+  ["RegExp.prototype", new Set(["exec", "test", "toString"])],
+]);
+
+/** The intrinsic id a `dyn.intrinsic` read names, through the
+ * `wrapper.installConstructor` call the primitive owners wrap it in. */
+function intrinsicIdOf(expr: IrExpr): string | null {
+  if (expr.kind !== "libCall") return null;
+  const inner = expr.args[0];
+  if (inner === undefined) return null;
+  if (expr.fn === "wrapper.installConstructor") return intrinsicIdOf(inner);
+  if (expr.fn !== "dyn.intrinsic") return null;
+  return inner.kind === "strLit" ? inner.value : null;
+}
+
+/** Whether `node` is a keyed read of a prototype member the builtin-method
+ * unit implements: `String.prototype.trim` or `RegExp.prototype.exec` read
+ * as a value in a JavaScript source. */
+function isPrototypeMemberValueRead(node: IrExpr): boolean {
+  if (node.kind !== "dynKeyGet" || node.key.kind !== "strLit") return false;
+  const members = BUILTIN_METHOD_VALUE_READS.get(intrinsicIdOf(node.value) ?? "");
+  return members !== undefined && members.has(node.key.value);
+}
+
+/** The member name of a constant-key property helper: the frontend builds
+ * one `%dyn.class.property.N` function per source-level member name
+ * (class-dynamic-dispatch.ts), and the helper's own body names that member
+ * as the string literal key of its generic read. A helper whose body reads
+ * more than one constant key has no single member to report. */
+function classPropertyHelperKey(fn: IrFunction): string | null {
+  if (!fn.name.startsWith("%dyn.class.property.")) return null;
+  let key: string | null = null;
+  let mixed = false;
+  const nodeKey = (node: IrExpr): IrExpr | null => {
+    if (node.kind === "dynKeyGet") return node.key;
+    if (node.kind === "libCall" && node.fn === "dyn.bagGet") return node.args[1] ?? null;
+    return null;
+  };
+  everyStmtList(fn.body, {
+    expr: (node) => {
+      const named = nodeKey(node);
+      if (named === null || named.kind !== "strLit") return true;
+      if (key === null) key = named.value;
+      else if (key !== named.value) mixed = true;
+      return !mixed;
+    },
+    stmt: () => !mixed,
+  });
+  return mixed ? null : key;
+}
+
+/** Whether a property helper is called on a prototype object whose member
+ * the builtin-method unit implements. The read of `String.prototype.trim`
+ * or `RegExp.prototype.exec` in a JavaScript source is a call to that
+ * member's helper with the intrinsic object as its receiver, so the helper
+ * names the member and the call names the owner. */
+function builtinMethodValueScan(mod: IrModule): RuleScan {
+  const keys = new Map<string, string | null>();
+  for (const fn of mod.functions) {
+    if (fn.name.startsWith("%dyn.class.property.")) keys.set(fn.name, classPropertyHelperKey(fn));
+  }
+  let found = false;
+  return {
+    expr: (node) => {
+      if (found || node.kind !== "call") return;
+      const key = keys.get(node.callee);
+      const receiver = node.args[0];
+      if (key === undefined || key === null || receiver === undefined) return;
+      const members = BUILTIN_METHOD_VALUE_READS.get(intrinsicIdOf(receiver) ?? "");
+      if (members !== undefined && members.has(key)) found = true;
+    },
+    result: () => found,
+  };
+}
+
 /** One rule per runtime feature, sorted by name. A new feature is an
  * entry here and its line in noRuntimeFeatures; RuntimeFeatures, the scan
  * and its early exit derive from this table. The lists above keep one
@@ -1361,8 +1442,15 @@ const RUNTIME_FEATURE_RULES = {
    * dyn-invoke unit's array dispatch. */
   arrayLikeDispatch: rule({ fns: ["dyn.arrayLikeProtoCall"] }),
   /** A builtin prototype method as a function value (String's trim family,
-   * RegExp's exec/test/toString; scr_dyn_builtin_methods.c). */
-  builtinMethodValue: rule({ fns: ["dyn.builtinMethodValue"] }),
+   * RegExp's exec/test/toString; scr_dyn_builtin_methods.c). The members
+   * read through their prototype object are that unit's values too — the
+   * graph's fill asks its slot — so the keyed read of `String.prototype
+   * .trim` or `RegExp.prototype.exec` marks the same fact. */
+  builtinMethodValue: rule({
+    fns: ["dyn.builtinMethodValue"],
+    scan: builtinMethodValueScan,
+    expr: (node) => isPrototypeMemberValueRead(node),
+  }),
   dynInvoke: rule({
     initial: (mod) => mod.workers === true,
     scan: computedBufferMemberScan,

@@ -391,7 +391,12 @@ test("references between ProgramLifetime instances are 32-bit indexes into their
     contracts: { programLifetime: ["Node"] },
   };
   // Linux executables without sanitizers (lowRegionTarget).
-  const llvm = emitLlvmModule(mod, { pointerBits: 64, objectAudit: false, lowRegion: true });
+  const llvm = emitLlvmModule(mod, {
+    pointerBits: 64,
+    objectAudit: false,
+    lowRegion: true,
+    targetTriple: "x86_64-unknown-linux-gnu",
+  });
   // parent and next take 4 bytes each; the string keeps its pointer.
   expect(llvm).toContain(`%${mangleClassStruct("Node")} = type { i32, i32 }`);
   expect(llvm).toContain(`%${mangleClassStruct("Leaf")} = type { i32, i32, ptr, i32 }`);
@@ -405,6 +410,9 @@ test("references between ProgramLifetime instances are 32-bit indexes into their
   expect(nw).toContain("store ptr %plr.end, ptr %plr.c");
   expect(nw).toMatch(/%plr.o = call ptr @scr_plr_alloc\(i64 /);
   expect(llvm).toMatch(/call void @scr_init\(\)\n {2}call void @scr_plr_init\(\)/);
+  // Every reference here names an instance of the program-lifetime region or
+  // a string, which keeps its pointer: no block the window must serve.
+  expect(llvm).not.toContain("scr_sa_require_window");
   // A reference is the instance's address over 8 (0 is NULL): a read
   // shifts the loaded word, a write shifts the pointer.
   const main = llvm.split(/^define /m).find((fn) => fn.includes("; main\n")) ?? "";
@@ -415,8 +423,22 @@ test("references between ProgramLifetime instances are 32-bit indexes into their
   expect(main).not.toContain("select");
   expect(lowRegionTarget("linux", false)).toBe(true);
   expect(lowRegionTarget("linux", true)).toBe(false);
-  expect(lowRegionTarget("darwin", false)).toBe(false);
+  expect(lowRegionTarget("darwin", false)).toBe(true);
+  expect(lowRegionTarget("darwin", true)).toBe(false);
   expect(lowRegionTarget("win32", false)).toBe(false);
+  // macOS keeps the window at a base (compactRefBaseOf): the layouts and the
+  // encoding are Linux's, and a read ORs the base into a nonzero reference.
+  const mac = emitLlvmModule(mod, {
+    pointerBits: 64,
+    objectAudit: false,
+    lowRegion: true,
+    targetTriple: "arm64-apple-macosx14.0.0",
+  });
+  expect(mac).toContain(`%${mangleClassStruct("Leaf")} = type { i32, i32, ptr, i32 }`);
+  const macMain = mac.split(/^define /m).find((fn) => fn.includes("; main\n")) ?? "";
+  expect(macMain).toMatch(/= or disjoint i64 %\S+, 1099511627776\n/);
+  expect(macMain).toMatch(/= select i1 %\S+, i64 0, i64 %\S+/);
+  expect(macMain).toMatch(/= ptrtoint ptr %\S+ to i64\n\s+%\S+ = lshr i64 %\S+, 3/);
   // Other targets, 32-bit targets and mortal classes keep pointers.
   const elsewhere = emitLlvmModule(mod, { pointerBits: 64, objectAudit: false });
   expect(elsewhere).toContain(`%${mangleClassStruct("Leaf")} = type { i32, ptr, ptr, ptr }`);
@@ -440,6 +462,48 @@ test("references between ProgramLifetime instances are 32-bit indexes into their
   expect(() => classFieldIndex(leafMeta, "next")).toThrow(/holds a 32-bit reference/);
   expect(classFieldIndex(leafMeta, "next", "compressed").compressed).toBe(true);
   expect(classFieldIndex(leafMeta, "label").compressed).toBe(false);
+});
+
+test("a compact field holding an array requires the allocator's window", () => {
+  const node = { kind: "object" as const, className: "Node" };
+  const items = { kind: "array" as const, elem: STRING };
+  const mod: IrModule = {
+    irVersion: 17,
+    sourceFile: loc.file,
+    entry: "main",
+    functions: [{ name: "main", params: [], returnType: VOID, locals: [], body: [], loc }],
+    classes: [
+      {
+        name: "Node",
+        fields: [
+          { name: "next", type: node },
+          { name: "items", type: items },
+        ],
+        methods: [],
+        loc,
+      },
+    ],
+    contracts: { programLifetime: ["Node"] },
+  };
+  const llvm = emitLlvmModule(mod, { pointerBits: 64, objectAudit: false, lowRegion: true });
+  // The array lies in the allocator's window, below 32 GiB, as a small block:
+  // the field keeps address >> 3 in 32 bits. The program then requires the
+  // window for every reference block, since one the window cannot serve
+  // would reach the field as a truncated system address.
+  expect(llvm).toContain(`%${mangleClassStruct("Node")} = type { i32, i32, i32 }`);
+  expect(llvm).toMatch(/^declare void @scr_sa_require_window\(\)$/m);
+  expect(llvm).toMatch(
+    /call void @scr_init\(\)\n {2}call void @scr_plr_init\(\)\n {2}call void @scr_sa_require_window\(\)/,
+  );
+  // Targets outside the low region keep pointers: no window to require.
+  for (const options of [
+    { pointerBits: 64 as const },
+    { pointerBits: 32 as const, lowRegion: true },
+  ]) {
+    const elsewhere = emitLlvmModule(mod, options);
+    expect(elsewhere).toContain(`%${mangleClassStruct("Node")} = type { i32, ptr, ptr }`);
+    expect(elsewhere).not.toContain("scr_sa_require_window");
+  }
 });
 
 test("arrays of ProgramLifetime instances keep 32-bit references in 4-byte slots", () => {

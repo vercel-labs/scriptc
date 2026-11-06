@@ -1,5 +1,7 @@
 /* instanceof and in, including private-name and runtime-key in. */
+import { lowerIteratorInstanceOf } from "../iterator-prototype.js";
 import { programCreatesWrappers, WRAPPER_KIND_NUMBER } from "../primitive-wrappers.js";
+import { boxedHandleReceiver } from "../handle-properties.js";
 import { lowerArrayClassInstanceOf } from "../builtins/array-classes.js";
 import { dateRootOf } from "../builtins/date-classes.js";
 import { keyedHelperName } from "../stable-names.js";
@@ -13,6 +15,7 @@ import {
   privateInMessage,
 } from "../private-brands.js";
 import type { Lowerer } from "../lowerer.js";
+import { isCallableValue } from "../callable-properties.js";
 import {
   BOOL,
   BYTES_ELEMENT_NAME,
@@ -46,6 +49,7 @@ import { lowerMimeInstanceof } from "../builtins/mime.js";
 import { typedArrayHasMember } from "../builtins/typed-array-members.js";
 import { fenceEarlyNsMemberRef, nsMemberIdentOf } from "../lower-namespaces.js";
 import { maybePromiseInstanceOf } from "../maybe-promise.js";
+import { lowerGlobalObjectValue } from "../lower-global-value.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
 import {
   inOperatorTypeError,
@@ -67,6 +71,11 @@ import { isJsSourceFile, locOf } from "../../program.js";
 import { checkedClassInstanceOf } from "../class-construction.js";
 import { unsupportedDiag } from "../../../diagnostics/diagnostic.js";
 import { globalSymbolKey } from "./global-symbols.js";
+import {
+  hostAbsentInstall,
+  isGlobalObjectRead,
+  NODE_GLOBALS_WITHOUT_NATIVE,
+} from "../host-globals.js";
 import { hasGlobalFunctionValue } from "../global-function-values.js";
 import { builtinGlobalHasKey } from "../builtins/global-namespace-keys.js";
 import { foldedStringKeyOf } from "./object-literals.js";
@@ -147,6 +156,8 @@ function hostGlobalInstanceOfAnswer(
  * Folding is limited to side-effect-free operands — dropping a computed
  * operand would skip its effects, so those are rejected instead. */
 export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc: SrcLoc): IrExpr {
+  const iteratorTest = lowerIteratorInstanceOf(lowerer, expr, loc);
+  if (iteratorTest !== null) return iteratorTest;
   // A listed Node global's value is a constructor native code never created
   // an instance from, so `x instanceof X` is false for every value — an
   // ordinary function's [[Prototype]] included, which the generic walk
@@ -1642,7 +1653,7 @@ const BUILTIN_ERROR_SLOT_KEYS: ReadonlySet<string> = new Set([
   "generatedMessage",
 ]);
 
-const OBJECT_PROTOTYPE_KEYS: ReadonlySet<string> = new Set([
+export const OBJECT_PROTOTYPE_KEYS: ReadonlySet<string> = new Set([
   "constructor",
   "__defineGetter__",
   "__defineSetter__",
@@ -1690,6 +1701,85 @@ export function lowerInExpression(
   // NAME, not a value.
   if (ts.isPrivateIdentifier(expr.left)) {
     return lowerPrivateIn(lowerer, expr, expr.left, loc);
+  }
+  // `… in <global object>`: presence on the runtime's global object. Node HAS
+  // the globals the native runtime does not implement, so the answer must not
+  // be a silent false — arming the compiler's derived set makes the runtime
+  // throw for them (host-globals.ts) and answer the global object's own
+  // presence otherwise. A symbol key keeps its checked-dynamic path below;
+  // this answer is keyed by a string.
+  const inGlobalKey = foldedStringKeyOf(lowerer, expr.left);
+  if (
+    isGlobalObjectRead(lowerer, expr.right) &&
+    lowerer.mapTypeOf(lowerer.typeOf(expr.left))?.kind !== "symbol" &&
+    // A static key the runtime already answers correctly (a name Node does
+    // not define) keeps its existing lowering, byte for byte.
+    (inGlobalKey === null || NODE_GLOBALS_WITHOUT_NATIVE.has(inGlobalKey))
+  ) {
+    const installedHas = (key: IrExpr): IrExpr => ({
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: hostAbsentInstall(loc), loc }],
+      result: { kind: "libCall", fn: "dyn.globalHas", args: [key], type: BOOL, loc },
+      type: BOOL,
+      loc,
+    });
+    if (inGlobalKey !== null)
+      return installedHas({ kind: "strLit", value: inGlobalKey, type: STRING, loc });
+    // JS evaluates the key before the receiver; the receiver is the global
+    // object, whose evaluation has no effects, so lowering the key first is
+    // the whole evaluation order.
+    const lowered = lowerer.lowerExpr(expr.left);
+    if (lowered.type.kind === "string") return installedHas(lowered);
+    // A key the type cannot prove to be a string may hold a symbol at
+    // runtime, and a symbol is an identity, not a name: it must reach the
+    // global object's symbol store rather than the string conversion (which
+    // throws for a symbol). The boxed key is stabilized first; the answer is
+    // the same presence query the dynamic path gives.
+    const keyLocal = lowerer.declareHiddenLocal("%inKey", DYN);
+    const boxedKey = varRef(keyLocal.id, DYN, loc);
+    return {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "exprStmt", expr: hostAbsentInstall(loc), loc },
+        {
+          kind: "varDecl",
+          localId: keyLocal.id,
+          init: lowerer.coerceInto(expr.left, lowered, DYN),
+          loc,
+        },
+      ],
+      result: {
+        kind: "ternary",
+        cond: {
+          kind: "strEq",
+          negated: false,
+          left: { kind: "libCall", fn: "dyn.typeof", args: [boxedKey], type: STRING, loc },
+          right: { kind: "strLit", value: "symbol", type: STRING, loc },
+          type: BOOL,
+          loc,
+        },
+        then: {
+          kind: "libCall",
+          fn: "dyn.hasKeyComputed",
+          args: [lowerGlobalObjectValue(lowerer, expr.right, locOf(expr.right)), boxedKey],
+          type: BOOL,
+          loc,
+        },
+        else_: {
+          kind: "libCall",
+          fn: "dyn.globalHas",
+          args: [
+            { kind: "libCall", fn: "dyn.toStringCoerce", args: [boxedKey], type: STRING, loc },
+          ],
+          type: BOOL,
+          loc,
+        },
+        type: BOOL,
+        loc,
+      },
+      type: BOOL,
+      loc,
+    };
   }
   // Compile-time-known STRING keys fold — literals, and the same
   // const/enum-literal and template folding computed property keys get
@@ -1885,9 +1975,9 @@ export function lowerInExpression(
     recv.type.kind === "classval" ? lowerer.classes.get(recv.type.className) : undefined;
   if (
     (classInfo && (classInfo.callableBase || hasRuntimeStatics(classInfo))) ||
-    (isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
-      recv.type.kind === "func" &&
-      lowerer.dynConvertible(recv.type))
+    (recv.type.kind === "func" &&
+      lowerer.dynConvertible(recv.type) &&
+      (isJsSourceFile(ts.getSourceFileOfNode(expr)) || isCallableValue(lowerer, expr.right)))
   ) {
     recv = lowerer.coerceToExpected(recv, DYN);
   }
@@ -2079,8 +2169,8 @@ export function lowerInExpression(
       if (
         f &&
         !inherited &&
-        f.type.kind === "union" &&
-        lowerer.armTag(f.type.unionId, UNDEFINED_T) >= 0
+        ((f.type.kind === "union" && lowerer.armTag(f.type.unionId, UNDEFINED_T) >= 0) ||
+          (f.optional === true && f.type.kind === "dyn"))
       ) {
         answers.push({ tag, has: "slot", arm }); // presence is per-value
         continue;
@@ -2209,6 +2299,13 @@ export function lowerInExpression(
         };
   }
   if (recv.type.kind !== "record") {
+    // A typed handle in a program that adds properties to handles: own
+    // keys and the class's members answer from its property table
+    // (scr_dyn_handle_props.c).
+    {
+      const boxed = boxedHandleReceiver(lowerer, recv);
+      if (boxed) return { kind: "dynHasKey", key, value: boxed, type: BOOL, loc };
+    }
     lowerer.unsupported(
       "SC1090",
       expr,
@@ -2228,8 +2325,8 @@ export function lowerInExpression(
     }
     if (
       !OBJECT_PROTOTYPE_KEYS.has(key) &&
-      field.type.kind === "union" &&
-      lowerer.armTag(field.type.unionId, UNDEFINED_T) >= 0
+      ((field.type.kind === "union" && lowerer.armTag(field.type.unionId, UNDEFINED_T) >= 0) ||
+        (field.optional === true && field.type.kind === "dyn"))
     ) {
       // Optional slot: the key is present unless the field is absent
       // (omitted or deleted); an explicit undefined is present.

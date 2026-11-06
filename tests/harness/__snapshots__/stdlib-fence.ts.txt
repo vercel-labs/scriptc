@@ -76,19 +76,3 @@ stdlib-fence.ts:41:43 - error SC2020: 'Number.prototype.toLocaleString at locale
   42 | // Unlowered call FORMS of lowered members. (push is fully variadic now —
 
   hint: what lowers is the default locale (no argument) and the composed en-US form — other locales are ICU data the binary does not negotiate yet
-
-stdlib-fence.ts:83:10 - error SC1090: comparisons of related class values beside structural union members (narrow first: check a discriminant field, or compare with '!== undefined'/'!== null' for unit arms) are not supported yet
-
-  82 | function relatedStrict(a: FenceValue, b: FenceValue): boolean {
-  83 |   return a === b;
-     |          ^~~~~~~
-  84 | }
-
-stdlib-fence.ts:86:10 - error SC2020: 'Object.is over related class values beside structural union members' is part of the standard library types but has no scriptc lowering yet
-
-  85 | function relatedSameValue(a: FenceValue, b: FenceSub): boolean {
-  86 |   return Object.is(a, b);
-     |          ^~~~~~~~~~~~~~~
-  87 | }
-
-  hint: narrow first: check a discriminant field, or compare with '!== undefined'/'!== null' for unit arms

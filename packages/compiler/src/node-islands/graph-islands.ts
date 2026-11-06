@@ -92,6 +92,16 @@ export function outsideGraphIslands(
   return grown;
 }
 
+/** An importer that grows along a sure island is sure too. */
+export interface ESMGrowthOptions {
+  /** The set the growth round started from: a package already islanded
+   * before this round goes wherever the round goes. */
+  known: ReadonlyMap<string, IslandPackage>;
+  /** The packages whose island surely joins the build (their fence surely
+   * fires): an importer of one joins it the same way. */
+  sure?: Set<string>;
+}
+
 /** Adds every package whose ES module imports an island CommonJS package to
  * `grown` (`--node-islands=auto` only): its native ES module would read the
  * island's bindings from the module's exports object, where Node gives it
@@ -103,6 +113,7 @@ export function growEsmImporters(
   compiled: ReadonlySet<string>,
   edges: readonly PackageEdge[] | undefined,
   grown: Map<string, IslandPackage>,
+  sureOf?: ESMGrowthOptions,
 ): void {
   if (edges === undefined) return;
   for (let added = true; added;) {
@@ -125,6 +136,10 @@ export function growEsmImporters(
         class: "packaging",
         reason: `an ES module of the package imports the CommonJS island package '${name}'`,
       });
+      // It goes wherever that island goes, the sure-fence retry included.
+      if (sureOf !== undefined && sureOf.sure !== undefined) {
+        if (sureOf.known.has(name) || sureOf.sure.has(name)) sureOf.sure.add(at.name);
+      }
       added = true;
     }
   }

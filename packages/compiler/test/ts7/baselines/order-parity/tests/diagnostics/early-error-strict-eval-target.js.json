@@ -1,0 +1,16 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/early-error-strict-eval-target.js"
+ ],
+ "diags": [
+  {
+   "code": "SC0014",
+   "message": "strict mode code may not assign to 'arguments'",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/early-error-strict-eval-target.js",
+    "start": 262,
+    "end": 279
+   }
+  }
+ ]
+}

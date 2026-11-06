@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/recursive-overload-return.ts"
+ ],
+ "diags": []
+}

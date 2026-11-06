@@ -18,7 +18,7 @@ import { checkerServerLost, createNativeTs7Api } from "../frontend/ts7/native-ap
 import { resolveProvenanceSourcesWithParser } from "../frontend/provenance-core.js";
 import { setCompilerReleaseVersion } from "../library/sidecar.js";
 import { NativeCompiler } from "./compiler.js";
-import { NATIVE_STRING_BYTES, openNativeCache } from "./cache.js";
+import { NATIVE_STRING_BYTES, openCompilerStateCache, openNativeCache } from "./cache.js";
 import {
   checkerExecutableIdentity,
   checkerPackageVersion,
@@ -89,6 +89,9 @@ async function main(): Promise<number> {
     if (toolchain.declarationsRoot !== undefined) setDeclarationRoot(toolchain.declarationsRoot);
     setCompilerReleaseVersion(toolchain.compilerVersion);
     cache = openNativeCache((path, harden) => compilerNativePrivateDirectory(path, harden));
+    const state = openCompilerStateCache((path, harden) =>
+      compilerNativePrivateDirectory(path, harden),
+    );
     if (cache !== null) {
       const store = cache;
       setLibDiagnosticsStore(
@@ -121,7 +124,7 @@ async function main(): Promise<number> {
         write: (key, text) => store.write("checker-features", key, text),
       });
     }
-    compiler = new NativeCompiler(toolchain, cache);
+    compiler = new NativeCompiler(toolchain, cache, state);
     return compiler;
   };
   return runCli(process.argv.slice(2), {
@@ -247,6 +250,7 @@ async function main(): Promise<number> {
         sparse,
       });
     },
+    reinvoke: (args) => ({ file: process.execPath, args }),
     run: async (binary) => {
       const toolchain = getCompiler().toolchain;
       let executable = binary;

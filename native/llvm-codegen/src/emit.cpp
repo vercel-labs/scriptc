@@ -58,6 +58,7 @@
 #include "llvm/Transforms/Utils/SplitModule.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <atomic>
 #include <mutex>
 #include <optional>
@@ -1024,11 +1025,13 @@ compileUnoptimizedPartitions(const EmitOptions &Options,
       return;
     }
     std::string LookupError;
+    // The context must outlive the target machine: the subtarget caches the
+    // GlobalISel selector, whose builder holds metadata handles into it.
+    LLVMContext Context;
     std::unique_ptr<TargetMachine> Machine =
         createTargetMachine(Options.Target, Options.OptLevel, LookupError);
     if (!Machine)
       return Failures.set({"target_machine_failed", LookupError});
-    LLVMContext Context;
     Expected<std::unique_ptr<Module>> Mod =
         loadPartition(Options, Plan.Modules[I], I, Context, *Machine);
     if (!Mod)
@@ -1079,11 +1082,13 @@ compileOptimizedPartitions(const EmitOptions &Options,
       return;
     }
     std::string LookupError;
+    // The context must outlive the target machine: the subtarget caches the
+    // GlobalISel selector, whose builder holds metadata handles into it.
+    LLVMContext Context;
     std::unique_ptr<TargetMachine> Machine =
         createTargetMachine(Options.Target, Options.OptLevel, LookupError);
     if (!Machine)
       return Failures.set({"target_machine_failed", LookupError});
-    LLVMContext Context;
     ProfileMatch PartitionMatch;
     std::vector<std::string> MismatchedNames;
     if (Annotating)
@@ -1119,7 +1124,13 @@ compileOptimizedPartitions(const EmitOptions &Options,
         P.collectAnnotated(Weigher.Annotated);
         P.afterProfileAnnotation(PartitionMatch);
       }
-      OptimizationLevel PreLink = preLinkLevel(Level, Annotating);
+      // Experiment only: one binary runs either pre-link level, chosen per
+      // build by SCRIPTC_PRELINK_LEVEL=o1, so a timing comparison between the
+      // two levels holds the helper binary fixed.
+      const char *PreLinkMode = std::getenv("SCRIPTC_PRELINK_LEVEL");
+      bool OldPreLink = PreLinkMode && std::string(PreLinkMode) == "o1";
+      OptimizationLevel PreLink =
+          OldPreLink ? preLinkLevel(Level, Annotating) : Level;
       if (PreLink != Level)
         addPreLinkValuePropagation(P.PB);
       ModulePassManager MPM =
@@ -1677,11 +1688,13 @@ emitSplitCodegen(const EmitOptions &Options, Module &M, TargetMachine &Machine,
       return;
     }
     std::string LookupError;
+    // The context must outlive the target machine: the subtarget caches the
+    // GlobalISel selector, whose builder holds metadata handles into it.
+    LLVMContext Context;
     std::unique_ptr<TargetMachine> PartMachine =
         createTargetMachine(Options.Target, Options.OptLevel, LookupError);
     if (!PartMachine)
       return Failures.set({"target_machine_failed", LookupError});
-    LLVMContext Context;
     std::unique_ptr<Module> Part;
     if (Split) {
       Expected<std::unique_ptr<Module>> Parsed = parseBitcodeFile(

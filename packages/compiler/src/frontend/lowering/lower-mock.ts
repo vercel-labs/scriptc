@@ -603,11 +603,14 @@ function mockContextLiteral(
 /** The Mock<F> value: the wrapper closure, carrying its context as the
  * `mock` own property of the function. That is the one representation Node
  * gives `Mock<F> = F & { mock }` — the mock IS the function object, so
- * `typeof` answers "function" and every alias observes the same property.
- * Node defines `mock` on the mock function itself but keeps it
- * NON-enumerable (`Object.keys(mockFn)` is `[]`, `"mock" in mockFn` is
- * true, `mockFn.mock` reads the context), so the property is defined with
- * a data descriptor rather than stored as an enumerable table entry.
+ * `typeof` answers "function" and every alias observes the same context.
+ * Node serves the context through a proxy: it is invisible to `Object.keys`
+ * and answers only on a read of `mockFn.mock`. The property is therefore
+ * defined with a non-enumerable data descriptor rather than stored as an
+ * enumerable table entry, so `Object.keys` stays empty. A proxy has no own
+ * property to report, so Node answers `"mock" in mockFn` false and
+ * `Object.getOwnPropertyNames` without it; an own property answers the
+ * other way. That reflection difference is the documented divergence.
  * The wrapper goes into a hidden local so the descriptor and the result
  * name the same closure. */
 function defineMockProps(

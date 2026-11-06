@@ -8758,8 +8758,17 @@ function unchangedAfterExport(
   };
   const sym = lowerer.resolveValueSymbol(nameNode);
   const decl = sym ? topLevelDeclaration(sym) : null;
-  if (!sym || !decl || !bindingNeverReassigned(lowerer, sym, decl)) return false;
-  if (ts.getSourceFileOfNode(decl) === exportFile) return runsBeforeExport(decl);
+  if (!sym || !decl) return false;
+  const resolve = (ident: ts.Identifier): ts.Symbol | null => lowerer.resolveValueSymbol(ident);
+  if (ts.getSourceFileOfNode(decl) === exportFile) {
+    // Writes that already ran before the export statement are in the value
+    // Node copies there; only a later write would change what an importer
+    // reading the aliased binding sees.
+    if (fileWritesBinding(sym, exportFile, resolve, exportStatement.getStart(exportFile)))
+      return false;
+    return runsBeforeExport(decl);
+  }
+  if (!bindingNeverReassigned(lowerer, sym, decl)) return false;
   // A binding of another module: the exporting module's own binding
   // `nameNode` names holds that module's require, evaluated before the
   // export, and this file does not assign the binding either.
@@ -9131,6 +9140,17 @@ function lowerCjsSingleValueExport(
       }
       return { kind: "block", body: [], loc };
     }
+    // A binding with no module storage and no alias target (an inferred
+    // union or otherwise unmappable type): the export is the snapshot
+    // global collectGlobals registered at this statement.
+    const snapshot = lowerer.globalsByDeclNode.get(expr);
+    if (snapshot !== undefined)
+      return {
+        kind: "assign",
+        localId: snapshot.id,
+        value: lowerer.lowerExprExpecting(rhs, snapshot.type),
+        loc: locOf(rhs),
+      };
     return null;
   }
   // `module.exports = class …{}` — the whole export IS the class

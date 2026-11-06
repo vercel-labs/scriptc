@@ -161,6 +161,20 @@ export function isNativeBuiltinValueInitializer(
       isNativeBuiltinValueInitializer(lowerer, expr.whenFalse, new Set(seen))
     );
   }
+  // A capability probe picks the builtin value or a fallback
+  // (`Object.defineProperty || false`): whichever operand supplies it,
+  // the stored value is that checked native callable.
+  if (ts.isBinaryExpression(expr)) {
+    const op = expr.operatorToken.kind;
+    if (
+      (op === ts.SyntaxKind.BarBarToken ||
+        op === ts.SyntaxKind.QuestionQuestionToken ||
+        op === ts.SyntaxKind.AmpersandAmpersandToken) &&
+      (isNativeBuiltinValueInitializer(lowerer, expr.left, new Set(seen)) ||
+        isNativeBuiltinValueInitializer(lowerer, expr.right, new Set(seen)))
+    )
+      return true;
+  }
   if (ts.isPropertyAccessExpression(expr)) {
     return (
       builtinPrototypeMethod(lowerer, expr) !== null ||

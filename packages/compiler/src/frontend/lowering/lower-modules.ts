@@ -1501,6 +1501,34 @@ function withoutRejectedClassMembers(
   return { kind: "record", shapeId };
 }
 
+/** The type of the snapshot `module.exports = <identifier>` stores, or
+ * null when the identifier needs no snapshot: a split require re-export,
+ * a class/function/builtin alias, or a binding with its own module
+ * storage all resolve through alias plumbing (lowerCjsSingleValueExport). */
+function cjsIdentExportSnapshotType(lowerer: Lowerer, id: ts.Identifier): IrType | null {
+  if (splitRequireBindingOfIdent(lowerer, id) !== null) return null;
+  const sym = lowerer.resolveValueSymbol(id);
+  if (sym === null) return null;
+  if (
+    lowerer.classBySymbol.has(sym) ||
+    lowerer.fnSigsBySymbol.has(sym) ||
+    lowerer.genericFnsBySymbol.has(sym) ||
+    lowerer.globalsBySymbol.has(sym) ||
+    lowerer.isStdlibSymbol(sym)
+  )
+    return null;
+  // Hoisted declarations may not have registered yet when the export
+  // statement comes first; they are alias plumbing all the same.
+  if (
+    sym.declarations.some(
+      (d) => ts.isSourceFile(d) || ts.isFunctionDeclaration(d) || ts.isClassDeclaration(d),
+    )
+  )
+    return null;
+  const strict = lowerer.typeOf(id);
+  return lowerer.mapTypeOf(strict) ?? dynFallbackType(lowerer, id, strict);
+}
+
 export function collectGlobals(
   lowerer: Lowerer,
   sf: ts.SourceFile,
@@ -1804,11 +1832,20 @@ export function collectGlobals(
             !hasMemberExports
           ) &&
           cjsExportTargetLiteral(rhs, sf) === null;
-        if (cjsScalarLiteral(rhs) || fnValued || factoryValued) {
+        // An identifier whose binding owns no module storage and has no
+        // alias target (`var $defineProperty = Object.defineProperty ||
+        // false` — an inferred union the type mapping does not carry):
+        // Node copies that binding's VALUE at this statement, so the
+        // export is a snapshot slot keyed by the statement, exactly the
+        // computed-value shape.
+        const identSnapshot =
+          ts.isIdentifier(rhs) && !splitWhole ? cjsIdentExportSnapshotType(lowerer, rhs) : null;
+        if (cjsScalarLiteral(rhs) || fnValued || factoryValued || identSnapshot !== null) {
           const diagsBefore = lowerer.diags.length;
           try {
             const strict = lowerer.typeOf(rhs);
             let t =
+              identSnapshot ??
               lowerer.mapTypeOf(strict) ??
               (fnValued || factoryValued ? dynFallbackType(lowerer, rhs, strict) : null);
             // A returned object remains the live CommonJS root; later

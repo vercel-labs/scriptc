@@ -35,6 +35,9 @@ export interface FnCtx {
   /** Parent-function localIds feeding each capture, parallel to captures. */
   captureSources: string[];
   captureBySymbol: Map<ts.Symbol, IrLocal>;
+  /** The same capture entries keyed by the enclosing context's local, for
+   * slots that have no checker symbol (lowering-owned hidden locals). */
+  captureByLocal: Map<IrLocal, IrLocal>;
   /** Named function expressions/declarations: the function's own name
    * symbol. Self-references become `selfRef` (NOT a capture — a box holding
    * its own closure would be an RC cycle and leak). */
@@ -97,6 +100,7 @@ export function newFnCtx(
     captures: lifted ? [] : null,
     captureSources: [],
     captureBySymbol: new Map(),
+    captureByLocal: new Map(),
     pureTuples: new Map(),
     selfSymbol,
     selfType,
@@ -222,6 +226,44 @@ export function captureContextBinding(
     return { local: parentEntry, origin, error: null };
   }
   return { local: null, origin: null, error: null };
+}
+
+/** Thread a function-scope slot that has no checker symbol (a value the
+ * lowering keeps for itself, such as a condition saved at a declaration)
+ * into the current function, the way captureContextBinding threads a source
+ * binding: the slot is boxed at its owner and one capture per function in
+ * between is allocated. Returns null when the owner is not an enclosing
+ * context or an intermediate function cannot capture. */
+export function captureContextLocal(stack: FnCtx[], origin: IrLocal, owner: FnCtx): IrLocal | null {
+  const current = stack[stack.length - 1];
+  if (current === undefined) return null;
+  if (current === owner) return origin;
+  const depth = stack.lastIndexOf(owner);
+  if (depth < 0) return null;
+  origin.boxed = true;
+  let parentEntry = origin;
+  for (let j = depth + 1; j < stack.length; j++) {
+    const ctx = stack[j]!;
+    let entry = ctx.captureByLocal.get(origin);
+    if (!entry) {
+      if (ctx.captures === null) return null;
+      entry = declareContextLocal(
+        ctx,
+        origin.name,
+        origin.type,
+        origin.mutable,
+        undefined,
+        origin.source,
+      );
+      entry.boxed = true;
+      if (origin.tdz) entry.tdz = true;
+      ctx.captureByLocal.set(origin, entry);
+      ctx.captures.push({ localId: entry.id, name: entry.name, type: entry.type });
+      ctx.captureSources.push(parentEntry.id);
+    }
+    parentEntry = entry;
+  }
+  return parentEntry;
 }
 
 export function captureContextArguments(stack: FnCtx[]): IrLocal | null {

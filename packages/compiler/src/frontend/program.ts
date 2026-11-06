@@ -7018,7 +7018,7 @@ function preflightGate7(load: LoadResult): PreflightGate {
     return close === -1 || close >= pos;
   };
   // JSX preflight checks original and rewritten trees with the same path.
-  const setterJsdocRanges = new WeakMap<ts.SourceFile, { pos: number; end: number }[]>();
+  const setterJsdocRanges = new Map<ts.SourceFile, { pos: number; end: number }[]>();
   const setterJsdocRangesOf = (sf: ts.SourceFile): readonly { pos: number; end: number }[] => {
     const cached = setterJsdocRanges.get(sf);
     if (cached !== undefined) return cached;

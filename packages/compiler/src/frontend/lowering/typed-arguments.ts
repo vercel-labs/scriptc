@@ -16,6 +16,7 @@ import { captureContextArguments } from "./function-context.js";
 import { isThisParameter, type ParamShape } from "./call-signatures.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { omittedArgFor } from "./call-arguments.js";
+import { callableDeclaresMember } from "./callable-properties.js";
 
 /** Variadic forwarding through a FIXED signature.
  *
@@ -397,6 +398,19 @@ export function lowerForwardingApply(
   if (argNodes.length !== 2 || argNodes.some(ts.isSpreadElement)) return null;
   const tupleType = forwardedTupleType(lowerer, argNodes[1]!);
   if (!tupleType) return null;
+  // A callable whose own type declares `apply` dispatches to its table entry,
+  // not to Function.prototype.apply: the direct call below would run the
+  // function body instead. The general member-call path reads the table, but
+  // it lowers the argument list as values, and a forwarded tuple has no value
+  // form (its positions are the caller's slots), so the combination refuses
+  // by name rather than diverging. An array argument keeps working there.
+  if (callableDeclaresMember(lowerer, access.expression, "apply")) {
+    lowerer.unsupported(
+      "SC1090",
+      call,
+      "forwarding a fixed argument tuple through 'apply' on a callable that declares its own 'apply' member",
+    );
+  }
   const callee = tryLowerExpression(lowerer, access.expression);
   if (callee?.type.kind !== "func") return null;
   const fnType = callee.type;

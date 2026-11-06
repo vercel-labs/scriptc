@@ -102,6 +102,22 @@ export function isCallableValue(lowerer: Lowerer, receiver: ts.Expression): bool
   return stdlibGlobalNameOf(lowerer, receiver) === null;
 }
 
+/** Whether the value's own type declares `name` as a user member, so a read
+ * of it is table data rather than the function protocol. The statically
+ * resolved protocol forms (`f.apply(thisArg, tuple)`, which a wrapper lowers
+ * to a direct call of the function body) must ask this before they take their
+ * shortcut: for such a value the own table entry is the callee, and the
+ * general member-call path is the one that reads it. */
+export function callableDeclaresMember(
+  lowerer: Lowerer,
+  receiver: ts.Expression,
+  name: string,
+): boolean {
+  const type = lowerer.checker.getNonNullableType(lowerer.typeOf(receiver));
+  const property = lowerer.checker.getPropertyOfType(type, name);
+  return property !== undefined && isUserDeclaredMember(lowerer, property);
+}
+
 /** The identity-preserving box of a callable value: `dynFrom` shares the
  * closure's property table, so a write through the box and a read through
  * the closure (or the reverse) observe one object. Null when the func cannot

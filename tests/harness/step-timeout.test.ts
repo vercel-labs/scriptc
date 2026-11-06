@@ -89,7 +89,7 @@ describe("abnormal exits", () => {
       stderr: Buffer.from(""),
     });
     const message = abnormalExitMessage("./program", failure);
-    expect(message).toContain("./program did not exit normally (signal SIGSEGV, code null)");
+    expect(message).toContain("./program did not exit normally (signal SIGSEGV, code none)");
     expect(message).toContain('stdout "a\\nb\\n"');
     expect(message).toContain('stderr ""');
   });

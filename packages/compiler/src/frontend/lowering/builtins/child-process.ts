@@ -97,6 +97,15 @@ const NODE_SIGNAL_NAMES = new Set([
   "SIGINFO",
 ]);
 
+/** A local, or a field or record member read through one: reading it again
+ * has no effect and yields the same value. A member read off anything else
+ * (a call's result, an arithmetic value) re-evaluates its receiver, so the
+ * mode chain must hold it in a local. */
+function plainRead(e: IrExpr): boolean {
+  if (e.kind === "varRef") return true;
+  return (e.kind === "fieldGet" || e.kind === "recordGet") && plainRead(e.obj);
+}
+
 /** A stdio slot's mode as a RUNTIME number. The slot's TYPE proves every
  * arm is one of "pipe"/"ignore"/"inherit", but which one arrives at the
  * call — a conditional over the literals (`stdio: [commandFromStdin ?
@@ -147,11 +156,11 @@ function stdioModeValue(
   const first = arms[0]!;
   if (arms.length === 1 && first.isStringLiteralType()) return numLit(modeOf(first.value, fd), loc);
   const lowered = lowerer.lowerExprExpecting(inner, STRING);
-  // A plain read is side-effect free, so the chain may re-read it once per
-  // comparison; any other expression (a call, an arithmetic value) is
-  // evaluated once into a hidden local the chain reads.
-  const isRead =
-    lowered.kind === "varRef" || lowered.kind === "recordGet" || lowered.kind === "fieldGet";
+  // A local, or a field or record member read through one, is side-effect
+  // free, so the chain may re-read it once per comparison; any other
+  // expression (a call, or a member read off one) is evaluated once into a
+  // hidden local the chain reads.
+  const isRead = plainRead(lowered);
   const slotLocal = isRead ? null : lowerer.declareHiddenLocal(`stdio${fd}`, STRING);
   if (slotLocal !== null) slotLocal.mutable = true;
   const value: IrExpr = slotLocal === null ? lowered : varRef(slotLocal.id, STRING, loc);

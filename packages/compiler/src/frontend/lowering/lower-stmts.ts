@@ -59,10 +59,7 @@ import {
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { runtimeKeyPatternRead } from "./expressions/keyed-field-targets.js";
 import {
-  OPTIONAL_CHECKED_DYN_DELETE,
   constantDeleteKey,
-  declaredOptionalProperty,
-  declaresCheckedDynField,
   erasedDeletePlan,
   lowerDeleteComputedKey,
   lowerDeleteKey,
@@ -4513,7 +4510,7 @@ function unionObjectRestValue(
     if (shape.indexValue !== undefined) {
       fenceIntegerKeyRest(lowerer, el, rem);
       const derivedId = lowerer.shapes.intern(
-        rem.map((f) => ({ name: f.name, type: f.type })),
+        rem.map((f) => ({ ...f })),
         false,
         shape.indexValue,
         (shape.declaredOrder ?? shape.fields.map((f) => f.name)).filter((n) =>
@@ -4558,11 +4555,12 @@ function unionObjectRestValue(
                 loc,
               },
               loc,
+              f,
             ),
           })),
           type: {
             kind: "record",
-            shapeId: lowerer.shapes.intern(rem.map((f) => ({ name: f.name, type: f.type }))),
+            shapeId: lowerer.shapes.intern(rem.map((f) => ({ ...f }))),
           },
           loc,
         },
@@ -5730,7 +5728,7 @@ function objectRestValue(
     if (shape.indexValue !== undefined) {
       fenceIntegerKeyRest(lowerer, el, rem);
       const derivedId = lowerer.shapes.intern(
-        rem.map((f) => ({ name: f.name, type: f.type })),
+        rem.map((f) => ({ ...f })),
         false,
         shape.indexValue,
         (shape.declaredOrder ?? shape.fields.map((f) => f.name)).filter((n) =>
@@ -5780,11 +5778,12 @@ function objectRestValue(
             loc,
           },
           loc,
+          f,
         ),
       })),
       type: {
         kind: "record",
-        shapeId: lowerer.shapes.intern(rem.map((f) => ({ name: f.name, type: f.type }))),
+        shapeId: lowerer.shapes.intern(rem.map((f) => ({ ...f }))),
       },
       loc,
     };
@@ -5873,6 +5872,7 @@ function objectRestValue(
         srcField.name,
         lowerer.coerceInto(el, read, f.type),
         loc,
+        f,
       ),
     };
   });
@@ -8696,19 +8696,8 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
   // read/write takes (literalFieldKeys): identifier evaluation is pure, so
   // skipping it matches JavaScript.
   const constantKey = constantDeleteKey(lowerer, target);
-  // An OPTIONAL `unknown`/`any` field rides the checked-dynamic slot,
-  // which has no ABSENT state yet (an omitted such field already reads as
-  // present), so it cannot delete. Name that reason instead of calling
-  // the field required or blaming the receiver.
-  const optionalCheckedDynDelete =
-    constantKey !== null &&
-    declaresCheckedDynField(lowerer, obj.type, constantKey) &&
-    declaredOptionalProperty(lowerer, target.expression, constantKey);
   if (obj.type.kind === "record") {
     return lowerRecordMemberDelete(lowerer, expr, target, obj, lowerKey);
-  }
-  if (optionalCheckedDynDelete) {
-    lowerer.unsupported("SC1090", expr, OPTIONAL_CHECKED_DYN_DELETE);
   }
   // A class field lives in the instance's fixed layout: there is no
   // per-field presence state for a delete to write, so Object.keys,
@@ -11070,7 +11059,7 @@ function destructuringAssignInto(
         }
         fenceIntegerKeyRest(lowerer, prop, remaining);
         const derivedId = lowerer.shapes.intern(
-          remaining.map((f) => ({ name: f.name, type: f.type })),
+          remaining.map((f) => ({ ...f })),
           false,
           shape.indexValue,
           restOrder,
@@ -11109,7 +11098,7 @@ function destructuringAssignInto(
         };
       } else {
         const restShapeId = lowerer.shapes.intern(
-          remaining.map((f) => ({ name: f.name, type: f.type })),
+          remaining.map((f) => ({ ...f })),
           false,
           undefined,
           restOrder,
@@ -11127,14 +11116,22 @@ function destructuringAssignInto(
             fields: remaining.map(
               (f): Extract<IrExpr, { kind: "recordLit" }>["fields"][number] => ({
                 name: f.name,
-                value: {
-                  kind: "recordGet",
-                  obj: { kind: "varRef", localId: tmp.id, type: srcType, loc: locOf(prop) },
-                  shapeId: srcType.shapeId,
-                  field: f.name,
-                  type: f.type,
-                  loc: locOf(prop),
-                },
+                // A field the source lacks keeps the rest copy absent too.
+                value: lowerer.presenceKeepingCopy(
+                  { kind: "varRef", localId: tmp.id, type: srcType, loc: locOf(prop) },
+                  srcType.shapeId,
+                  f.name,
+                  {
+                    kind: "recordGet",
+                    obj: { kind: "varRef", localId: tmp.id, type: srcType, loc: locOf(prop) },
+                    shapeId: srcType.shapeId,
+                    field: f.name,
+                    type: f.type,
+                    loc: locOf(prop),
+                  },
+                  locOf(prop),
+                  f,
+                ),
               }),
             ),
             type: { kind: "record", shapeId: restShapeId },

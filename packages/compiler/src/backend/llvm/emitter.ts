@@ -423,6 +423,11 @@ import {
   type NullableUnion,
 } from "./nullable-unions.js";
 import { classUnionHeaders, emitClassUnionHelpers } from "./class-unions.js";
+
+/** The ABSENT marker of an optional checked-dynamic record field: an
+ * immortal ScrDyn of kind SCR_DYN_UNDEF that is address-distinct from
+ * scr_dyn_undefined(). Emitted only when a program references it. */
+export const DYN_ABSENT = "@sc_dyn_absent";
 import { emitNullablePresent, emitUnionPeek, emitUnionTag } from "./union-repr.js";
 import {
   emitConcatInputs,
@@ -1592,6 +1597,8 @@ export class LlEmitter {
   readonly retypeGuards = new Map<string, string>();
   /** The nullable-union ABSENT sentinel was referenced (absentInstanceRef). */
   needsNullableAbsent = false;
+  /** The optional-dyn ABSENT marker was referenced (dynAbsentRef). */
+  needsDynAbsent = false;
   private readonly immortalValues = new Set<string>();
   /** Regex literal templates: "<flags>/<pattern>" → { symbol, interned
    * source/flags literal refs } — one immortal ScrRegex template per distinct
@@ -2674,6 +2681,7 @@ export class LlEmitter {
       retypeGuardRef: (unionId) => this.retypeGuardRef(unionId),
       fieldAbsentTestIn: (B, value, unionId) => this.fieldAbsentTestIn(B, value, unionId),
       absentInstanceRef: (unionId) => this.absentInstanceRef(unionId),
+      dynAbsentRef: () => this.dynAbsentRef(),
       liveDynRefAdapter: (type) => this.liveDynRefAdapter(type),
       usesDynBuiltinStream: () => this.usesDynBuiltinStream,
       jsObjectModel: () => jsObjectModelFact(this.runtimeFeatures),
@@ -3979,6 +3987,16 @@ export class LlEmitter {
     const name = `@${sym}`;
     this.immortalValues.add(name);
     return name;
+  }
+
+  /** The ABSENT marker of an optional checked-dynamic record field slot
+   * (IR fieldAbsent without a union). Address-compared, never dereferenced
+   * by compiled code: reads select it to scr_dyn_undefined, presence tests
+   * compare against it, and boxing omits it. */
+  dynAbsentRef(): string {
+    this.needsDynAbsent = true;
+    this.immortalValues.add(DYN_ABSENT);
+    return DYN_ABSENT;
   }
 
   /** i1: a union value loaded from a field slot is the ABSENT state — the
@@ -6362,6 +6380,7 @@ export class LlEmitter {
         usesGenSlots: this.usesGenSlots,
         needsUnionNone: this.needsUnionNone,
         needsNullableAbsent: this.needsNullableAbsent,
+        needsDynAbsent: this.needsDynAbsent,
         needsOom: this.needsOom,
         needsBadTag: this.needsBadTag,
         needsBadKey: this.needsBadKey,
@@ -6400,6 +6419,7 @@ export class LlEmitter {
     this.usesGenSlots ||= flags.usesGenSlots;
     this.needsUnionNone ||= flags.needsUnionNone;
     this.needsNullableAbsent ||= flags.needsNullableAbsent;
+    this.needsDynAbsent ||= flags.needsDynAbsent;
     this.needsOom ||= flags.needsOom;
     this.needsBadTag ||= flags.needsBadTag;
     this.needsBadKey ||= flags.needsBadKey;

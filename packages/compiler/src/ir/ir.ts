@@ -1870,11 +1870,24 @@ export const ZLIB_STREAM_MODES: ReadonlyMap<string, number> = new Map([
   ["ZstdDecompress", 11],
 ]);
 
+/** One declared field of a record shape. */
+export interface IrRecordField {
+  name: string;
+  type: IrType;
+  /** A checked-dynamic (`unknown`/`any`) field declared `?:` — the slot can
+   * hold the ABSENT marker (@sc_dyn_absent), so an omitted or deleted
+   * property reads absent to recordHas and every presence surface, and an
+   * explicit `undefined` stays present. Part of the shape's interned
+   * identity: `{ a?: unknown }` and `{ a: unknown }` are distinct shapes,
+   * because only the optional one can lack its key. */
+  optional?: true;
+}
+
 export interface IrRecordShape {
   /** Frontend-assigned shape id (`r0`, `r1`, ...). */
   id: string;
   /** Sorted by field name (canonical order). Types are never void. */
-  fields: { name: string; type: IrType }[];
+  fields: IrRecordField[];
   /** A TUPLE shape (`[string, number]`): fields are exactly "0".."n-1" —
    * one per position, arity = fields.length. Same struct/RC/trace emission
    * as any record; the flag changes the SURFACE (literal-index access,
@@ -3890,8 +3903,15 @@ export type IrExpr =
    * never escapes its slot. Legal only where a field slot is written
    * directly: a recordLit field value, a recordSet value, a recordClone
    * override, or a ternary arm in one of those positions. `type` is the
-   * union named by `unionId`, which has an undefined arm. Immortal. */
-  | { kind: "fieldAbsent"; unionId: string; type: IrType; loc: SrcLoc }
+   * union named by `unionId`, which has an undefined arm. Immortal.
+   *
+   * Without `unionId` it is the same state for an OPTIONAL dyn field
+   * (`optional: true` on the shape): an immortal ScrDyn of kind
+   * SCR_DYN_UNDEF that the module emits as @sc_dyn_absent when referenced.
+   * Field reads of such a slot select it to the ordinary dyn undefined, so
+   * the marker itself never escapes its slot; `type` is then the dyn type
+   * and the marker is address-distinct from scr_dyn_undefined(). */
+  | { kind: "fieldAbsent"; unionId?: string; type: IrType; loc: SrcLoc }
   /** Union construction: wrap an arm value into a fresh tagged box (the
    * frontend inserts these wherever a `B` flows into an `A | B` slot).
    * `tag` is the arm's index in the union's canonical arm list; `value` has

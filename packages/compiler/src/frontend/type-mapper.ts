@@ -4,7 +4,13 @@ import { contentDigest, type HeldContents, type JournalTable } from "./lowering/
 import { mockCallRecordType, mockContextType } from "./mock-shapes.js";
 import * as ts from "./ts7/adapter.js";
 import { bodyReadsArguments } from "./arguments-usage.js";
-import type { IrRecordShape, IrType, IrUnionDef, IrUnionDiscriminant } from "../ir/ir.js";
+import type {
+  IrRecordField,
+  IrRecordShape,
+  IrType,
+  IrUnionDef,
+  IrUnionDiscriminant,
+} from "../ir/ir.js";
 import {
   BYTES_ELEMENT_NAME,
   arrayOf,
@@ -378,15 +384,19 @@ export class ShapeRegistry {
 
   /** The interning key of a canonical field list — shared by intern and
    * finalizeRecursive so the two registration paths can never disagree. */
-  private keyOf(
-    fields: { name: string; type: IrType }[],
-    tuple: boolean,
-    indexValue?: IrType,
-  ): string {
+  private keyOf(fields: readonly IrRecordField[], tuple: boolean, indexValue?: IrType): string {
     return (
       (tuple ? "tuple!" : "") +
       (indexValue ? `idx<${typeKey(indexValue)}>!` : "") +
-      JSON.stringify(fields.map((f) => [f.name, typeKey(f.type)]))
+      // An absentable optional dyn field carries a third element in the
+      // key; every other entry keeps the historical two-element spelling,
+      // so a shape without one hashes exactly as before (zero-cost
+      // identity for programs that use no optional `unknown`/`any`).
+      JSON.stringify(
+        fields.map((f) =>
+          f.optional === true ? [f.name, typeKey(f.type), 1] : [f.name, typeKey(f.type)],
+        ),
+      )
     );
   }
 
@@ -507,7 +517,7 @@ export class ShapeRegistry {
    * authoritative for its own checker type either way). */
   finalizeRecursive(
     t: ts.Type,
-    fields: { name: string; type: IrType }[],
+    fields: IrRecordField[],
     indexValue?: IrType,
     declaredOrder?: string[],
   ): string {
@@ -538,7 +548,7 @@ export class ShapeRegistry {
    * declared fields with and without an overflow portion — or with
    * differently-typed ones — are different structs. */
   intern(
-    fields: { name: string; type: IrType }[],
+    fields: IrRecordField[],
     tuple = false,
     indexValue?: IrType,
     declaredOrder?: string[],
@@ -7371,7 +7381,7 @@ function mapBoundMappedType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null
   if (!bound || !key) return null;
   const template = checker.getTypeFromTypeNode(node.type);
   const modifier = node.questionToken?.kind;
-  const fields: { name: string; type: IrType }[] = [];
+  const fields: IrRecordField[] = [];
   const order: string[] = [];
   for (const property of checker.getPropertiesOfType(bound)) {
     const name = ts.symbolName(property);
@@ -7382,12 +7392,16 @@ function mapBoundMappedType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null
       modifier === ts.SyntaxKind.MinusToken
         ? false
         : modifier !== undefined || (property.flags & ts.SymbolFlags.Optional) !== 0;
+    let absentable = false;
     if (optional) {
-      const armed = withUndefinedArm(type, unions);
-      if (!armed) return null;
-      type = armed;
+      if (type.kind === "dyn") absentable = true;
+      else {
+        const armed = withUndefinedArm(type, unions);
+        if (!armed) return null;
+        type = armed;
+      }
     }
-    fields.push({ name, type });
+    fields.push({ name, type, ...(absentable ? { optional: true as const } : {}) });
     order.push(name);
   }
   fields.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
@@ -7735,8 +7749,14 @@ function mapGenericUtilityAlias(widened: ts.Type, ctx: TypeMapperCtx): IrType | 
   // Partial over an index-signature shape would need `V | undefined`
   // overflow arming; no generic body needs it yet — stay unmapped.
   if (shape.indexValue) return null;
-  const fields: { name: string; type: IrType }[] = [];
+  const fields: IrRecordField[] = [];
   for (const f of shape.fields) {
+    // Partial makes every property optional: a checked-dynamic slot becomes
+    // absentable, every other one gains the undefined arm.
+    if (f.type.kind === "dyn") {
+      fields.push({ name: f.name, type: f.type, optional: true });
+      continue;
+    }
     const armed = withUndefinedArm(f.type, unions);
     if (!armed) return null;
     fields.push({ name: f.name, type: armed });
@@ -7946,6 +7966,14 @@ export function withUndefinedArm(t: IrType, unions: UnionRegistry): IrType | nul
   return withUnitArm(t, "undefinedT", unions);
 }
 
+/** A record property declared `?:` whose mapped type is the checked-dynamic
+ * slot. Only such a field's shape carries an ABSENT state of its own (the
+ * absent marker); every other optional property maps to an undefined-armed
+ * union, whose absence is the union's ABSENT state. */
+function optionalCheckedDyn(p: ts.Symbol, type: IrType): boolean {
+  return type.kind === "dyn" && (p.flags & ts.SymbolFlags.Optional) !== 0;
+}
+
 /** Preserve a nullish runtime value that JavaScript inference omitted. */
 export function withUnitArm(
   t: IrType,
@@ -8132,14 +8160,18 @@ function mapHybridCallableRecord(widened: ts.Type, ctx: TypeMapperCtx): IrType |
   if (!funcPart) return null;
   const fn = mapType(funcPart, ctx);
   if (!fn || fn.kind !== "func") return null;
-  const fields: { name: string; type: IrType }[] = [{ name: "%call", type: fn }];
+  const fields: IrRecordField[] = [{ name: "%call", type: fn }];
   const declaredOrder: string[] = [];
   for (const p of checker.getPropertiesOfType(widened)) {
     if (p.flags & (ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor)) return null;
     const pt = mapType(checker.getTypeOfSymbol(p), ctx);
 
     if (!pt || pt.kind === "void") return null;
-    fields.push({ name: ts.symbolName(p), type: pt });
+    fields.push({
+      name: ts.symbolName(p),
+      type: pt,
+      ...(optionalCheckedDyn(p, pt) ? { optional: true as const } : {}),
+    });
     declaredOrder.push(ts.symbolName(p));
   }
   if (fields.length === 1) return null; // no properties — it is just F
@@ -8958,7 +8990,7 @@ function describeOverloadSetBlocker(
  * placeholder for the type mid-construction, to finalize INTO that
  * placeholder (the named-recursive-shape knot). */
 interface RecordShapeParts {
-  fields: { name: string; type: IrType }[];
+  fields: IrRecordField[];
   indexValue?: IrType;
   declaredOrder?: string[];
   accessorOrder?: string[];
@@ -9588,7 +9620,7 @@ function mapRecordTypeInner(
     ) {
       return DYN;
     }
-    const fields: { name: string; type: IrType }[] = [];
+    const fields: IrRecordField[] = [];
     for (let propertyIndex = 0; propertyIndex < props.length; propertyIndex++) {
       if (propertyIndex % 32 === 0) checker.prefetchMemberTypes(props, propertyIndex);
       const p = props[propertyIndex]!;
@@ -9740,7 +9772,11 @@ function mapRecordTypeInner(
 
       // an options record with `signal?: AbortSignal` must not turn its
 
-      fields.push({ name: ts.symbolName(p), type: pt });
+      fields.push({
+        name: ts.symbolName(p),
+        type: pt,
+        ...(optionalCheckedDyn(p, pt) ? { optional: true as const } : {}),
+      });
     }
     // getPropertiesOfType yields DECLARATION order (interface/alias/literal
     // source order) — captured before the canonical sort so Object.keys/

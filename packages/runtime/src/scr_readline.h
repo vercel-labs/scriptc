@@ -69,6 +69,15 @@ void scr_rl_set_prompt_dyn(double id, ScrDyn *prompt); /* borrows; may throw */
 ScrStr *scr_rl_get_prompt(double id); /* +1; may throw (a prompt that is not a string) */
 void scr_rl_write(double id, ScrStr *data); /* may throw ERR_USE_AFTER_CLOSE */
 void scr_rl_on(double id, double ev, ScrClosure *cb /*moves*/, void *fn, bool once);
+/* prependListener/prependOnceListener: the same registration, run first. */
+void scr_rl_on_first(double id, double ev, ScrClosure *cb /*moves*/, void *fn, bool once);
+/* removeListener/off: the last registration of cb leaves. cb is borrowed. */
+void scr_rl_off(double id, double ev, ScrClosure *cb);
+/* removeAllListeners(); ev -1 is the no-argument form. */
+void scr_rl_off_all(double id, double ev);
+double scr_rl_listener_count(double id, double ev);
+double scr_rl_listener_count_fn(double id, double ev, ScrClosure *cb); /* cb borrowed */
+ScrArr *scr_rl_event_names(double id); /* +1 string[] in registration order */
 /* createInterface's history and editing options, in Node's order: the
  * flags name the present ones (1 tabSize, 2 escapeCodeTimeout,
  * 4 historySize), checked before the interface opens (validateUint32,

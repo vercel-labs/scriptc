@@ -224,6 +224,8 @@ export interface DynHost extends WalkerHost {
   readonly programLifetime?: ReadonlySet<string>;
   /** The immortal ABSENT field-slot state of an undefined-armed union. */
   absentInstanceRef(unionId: string): string;
+  /** The optional checked-dynamic field slot's ABSENT marker. */
+  dynAbsentRef(): string;
   /** The shared adapter record: live array capsules read its `arrayOps`, so a
    * narrower return type would hand the native compiler a copy without it. */
   liveDynRefAdapter(t: IrType): LlStreamTypedRefAdapter;
@@ -991,6 +993,66 @@ export class LlDyn {
     B.condBr(absent, lSkip, lSet);
     B.startBlock(lSet);
     return lSkip;
+  }
+
+  /** Branches past the caller's next emission when an optional
+   * checked-dynamic field value is the ABSENT marker. Returns the label
+   * the caller must branch to and start after its emission, or null when
+   * the field is not an absentable dyn slot. */
+  private skipIfDynAbsent(
+    B: BlockBuilder,
+    value: string,
+    optional: boolean | undefined,
+    t: IrType,
+  ): string | null {
+    if (optional !== true || t.kind !== "dyn") return null;
+    const absent = B.tmp();
+    B.line(`${absent} = icmp eq ptr ${value}, ${this.host.dynAbsentRef()}`);
+    const lSkip = B.newLabel("tdr.absent");
+    const lSet = B.newLabel("tdr.set");
+    B.condBr(absent, lSkip, lSet);
+    B.startBlock(lSet);
+    return lSkip;
+  }
+
+  /** A checked dyn field value, or the field's ABSENT marker when the
+   * source object has no own property of that name (a missing JSON key
+   * stays missing; an explicit undefined stays present). Proxy sources
+   * answer through their reads, so they count as present. The checked value
+   * arrives +1: the missing branch hands it back (the immortal marker takes
+   * its slot), the present branch leaves it to the field write. */
+  private dynPresenceOf(B: BlockBuilder, d: string, key: string, value: string): string {
+    // Only an undefined value can stand for a missing key: every other
+    // value is present, and probing for it would read as absent for an
+    // own accessor property (a getter has no data entry).
+    const isUndef = B.tmp();
+    B.line(`${isUndef} = icmp eq i32 ${this.kindOf(B, value)}, ${DYN_KIND.UNDEF}`);
+    const kind = this.kindOf(B, d);
+    const isObj = B.tmp();
+    B.line(`${isObj} = icmp eq i32 ${kind}, ${DYN_KIND.OBJ}`);
+    const probe = B.tmp();
+    B.line(`${probe} = and i1 ${isUndef}, ${isObj}`);
+    const slot = B.slot();
+    B.entryAllocas.push(`${slot} = alloca ptr`);
+    B.line(`store ptr ${value}, ptr ${slot}`);
+    const lProbe = B.newLabel("dcr.dhas");
+    const lJoin = B.newLabel("dcr.dhasj");
+    B.condBr(probe, lProbe, lJoin);
+    B.startBlock(lProbe);
+    const own = this.objGetLit(B, d, key);
+    const missing = B.tmp();
+    B.line(`${missing} = icmp eq ptr ${own}, null`);
+    const lMissing = B.newLabel("dcr.dmiss");
+    B.condBr(missing, lMissing, lJoin);
+    B.startBlock(lMissing);
+    this.host.declare(`declare void @scr_dyn_release(ptr)`);
+    B.line(`call void @scr_dyn_release(ptr ${value})`);
+    B.line(`store ptr ${this.host.dynAbsentRef()}, ptr ${slot}`);
+    B.br(lJoin);
+    B.startBlock(lJoin);
+    const out = B.tmp();
+    B.line(`${out} = load ptr, ptr ${slot}`);
+    return out;
   }
 
   /** A checked undefined-armed field value, or the field's ABSENT state
@@ -2874,6 +2936,10 @@ export class LlDyn {
           if (f.type.kind === "union") {
             const stored = this.presenceOf(B, "%d", f.name, f.type, value);
             if (stored !== value) storeInto(f.name, f.type, stored);
+          } else if (f.optional === true && f.type.kind === "dyn") {
+            // A missing key stores the ABSENT marker; a present undefined
+            // keeps the dyn undefined the read produced.
+            storeInto(f.name, f.type, this.dynPresenceOf(B, "%d", f.name, value));
           }
           releaseInline(f.type, value);
         }
@@ -3753,7 +3819,7 @@ export class LlDyn {
                   return slot === null ? [] : [slot.prop];
                 }),
           );
-          type DynField = { name: string; type: IrType } | { accessor: string };
+          type DynField = { name: string; type: IrType; optional?: true } | { accessor: string };
           const dynFields: DynField[] = [
             ...order.flatMap((n) => {
               if (accessors.has(n)) return [{ accessor: n } as DynField];
@@ -3793,7 +3859,10 @@ export class LlDyn {
             const klen = Buffer.byteLength(f.name, "utf8");
             const fv = loadFieldOf(f.name, f.type);
             // An ABSENT optional field contributes no key.
-            const lSkip = f.type.kind === "union" ? this.skipIfAbsent(B, fv, f.type) : null;
+            const lSkip =
+              f.type.kind === "union"
+                ? this.skipIfAbsent(B, fv, f.type)
+                : this.skipIfDynAbsent(B, fv, f.optional, f.type);
             const conv = B.tmp();
             B.line(`${conv} = call ptr @${this.toDynHelper(f.type)}(${this.valTy(f.type)} ${fv})`);
             B.line(

@@ -1506,6 +1506,12 @@ export interface TypeMapperCtx {
    * `Number`, `Boolean`) map to the checked-dynamic value instead of the
    * primitive. Absent or false: every mapping is unchanged. */
   primitiveWrappers?: () => boolean;
+  /** Whether a compiled source names the lib `ArrayBufferView` interface
+   * (programNamesArrayBufferView): then a value of that type maps to the
+   * checked-dynamic one, whose three view reads stay dynamic. Absent or
+   * false: every mapping is unchanged, so a program that never names the
+   * type keeps the standard library's own paths. */
+  arrayBufferViewReads?: () => boolean;
   /** Node islands (scope-B NI-4): whether a type's values are island
    * handles, which map to the `foreign` type (a dyn value). Absent in
    * programs without islands. */
@@ -3293,8 +3299,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // typings declare an interface named AsyncIterator too — the native handle
   // timers/promises.setInterval answers, which that builtin's lowering
   // builds — so only the ES lib's declarations take the protocol mapping.
-  const isLibAsyncInterface = (name: string): boolean =>
+  const isLibInterface = (name: string): boolean =>
     provenance !== null && name === psymName && provenance.libInterface;
+  const isLibAsyncInterface = (name: string): boolean => isLibInterface(name);
   const isAsyncIterationProtocol = (): boolean =>
     isLibAsyncInterface("AsyncIterable") ||
     isLibAsyncInterface("AsyncIterator") ||
@@ -3951,6 +3958,23 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     return DYN;
   if (Object.values(BYTES_ELEMENT_NAME).some((name) => isStdlibInterface(`${name}Constructor`)))
     return DYN;
+  // The ES lib's `ArrayBufferView` is the common supertype of every typed
+  // array and DataView, so no single byte-view representation is honest:
+  // `ArrayBuffer.isView` narrowing admits a Float64Array. The value stays
+  // the checked dynamic one; its `buffer`, `byteOffset` and `byteLength`
+  // reads come from the native view the dynamic value holds (a buffer by
+  // identity) or from the dynamic tier, and every other member reads
+  // dynamically (narrowing.ts). @types/node's `NodeJS.ArrayBufferView` is its
+  // own interface with its own mapping and keeps it.
+  //
+  // Only a program that names the type takes this mapping. The name is also
+  // the third arm of the builtin declarations' `BinaryLike`
+  // (packages/compiler/ambient/node-fallback), so mapping it unconditionally
+  // makes whole ambient signature types statically representable and
+  // reshapes calls the program never wrote — the standard library keeps
+  // those paths. A program that never mentions `ArrayBufferView` lowers
+  // exactly as before.
+  if (ctx.arrayBufferViewReads?.() === true && isLibInterface("ArrayBufferView")) return DYN;
   if (isStdlibInterface("Uint8Array")) return bytesOf("u8");
   if (isStdlibInterface("Uint32Array")) return bytesOf("u32");
   if (isStdlibInterface("Uint8ClampedArray")) return bytesOf("u8c");

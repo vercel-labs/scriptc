@@ -3246,6 +3246,7 @@ export const FS_CALLBACK_MEMBERS = new Set([
   "rmdir",
   "unlink",
   "open",
+  "opendir",
   "close",
   "fstat",
   "ftruncate",

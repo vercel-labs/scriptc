@@ -7145,12 +7145,7 @@ export class Lowerer {
         if (scalar) return false;
       }
     }
-    // The module's own retained `module.exports = <value>` is the last word:
-    // a single-value export (`module.exports = highlight`, where `highlight`
-    // is a local the statement names) binds the importer to that VALUE, so
-    // its members read as properties of the export, not as export-table
-    // entries. Only a table-exporting module is a namespace over the table.
-    return cjsNamespaceModule(this, dep);
+    return true;
   }
 
   /** True when `expr` is a binding of a SINGLE-VALUE module whose export

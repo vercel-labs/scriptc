@@ -13166,37 +13166,22 @@ export class Lowerer {
     );
   }
 
-  /** Unwraps a HYBRID (function-with-properties) record to its callable:
-   * a record whose shape carries the reserved `%call` func field reads
-   * that field; anything else returns unchanged. The consumer half of
-   * type-mapper.ts's chalk-shape mapping — call paths and func-slot coercions
-   * share it. */
+  /** Unwraps a callable CLASS instance to its callable: a class whose
+   * merged interface carries a call signature stores its call behavior in
+   * a `%call` field (the chalk package shim's builder), so calls read the
+   * field. Every other value returns unchanged — a function with
+   * properties IS the function (callable-properties.ts), never a record
+   * carrying the callable in a field. */
   hybridCallUnwrap(expr: IrExpr): IrExpr {
-    // A callable CLASS instance: a class whose merged interface carries a
-    // call signature stores its call behavior in a `%call` field (the
-    // chalk package shim's builder). Calls read the field.
-    if (expr.type.kind === "object") {
-      const callType = this.classes.get(expr.type.className)?.fields.get("%call");
-      if (callType === undefined || callType.kind !== "func") return expr;
-      return {
-        kind: "fieldGet",
-        obj: expr,
-        className: expr.type.className,
-        field: "%call",
-        type: callType,
-        loc: expr.loc,
-      };
-    }
-    if (expr.type.kind !== "record") return expr;
-    const shape = this.shapes.get(expr.type.shapeId);
-    const call = shape?.fields.find((f) => f.name === "%call");
-    if (!call || call.type.kind !== "func") return expr;
+    if (expr.type.kind !== "object") return expr;
+    const callType = this.classes.get(expr.type.className)?.fields.get("%call");
+    if (callType === undefined || callType.kind !== "func") return expr;
     return {
-      kind: "recordGet",
+      kind: "fieldGet",
       obj: expr,
-      shapeId: expr.type.shapeId,
+      className: expr.type.className,
       field: "%call",
-      type: call.type,
+      type: callType,
       loc: expr.loc,
     };
   }
@@ -13559,18 +13544,16 @@ export class Lowerer {
       }
       return expr;
     }
-    // A HYBRID (function-with-properties) record flowing into a plain
-    // func slot extracts its reserved %call field — the chalk shape's
-    // "the value IS callable" half (type-mapper.ts's hybrid mapping).
-    if (expected.kind === "func" && (expr.type.kind === "record" || expr.type.kind === "object")) {
+    // A callable CLASS instance (the chalk shim's variadic builder) flowing
+    // into a plain func slot extracts its reserved %call field; a function
+    // with properties is already the function and needs no extraction.
+    if (expected.kind === "func" && expr.type.kind === "object") {
       const un = this.hybridCallUnwrap(expr);
       if (un !== expr && typeEquals(un.type, expected)) return un;
-      // A callable class instance (the chalk shim's variadic builder) in a
-      // narrower function slot: its call closure crosses the checked
-      // function boundary, which adapts the arity.
+      // ... in a narrower function slot: its call closure crosses the
+      // checked function boundary, which adapts the arity.
       if (
         un !== expr &&
-        expr.type.kind === "object" &&
         un.type.kind === "func" &&
         canBoxFuncIntoDyn(
           un.type,

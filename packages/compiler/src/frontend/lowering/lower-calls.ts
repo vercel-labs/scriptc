@@ -1644,8 +1644,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
           loc,
         });
       }
-      let callee = lowerer.lowerExpr(nsMember);
-      if (callee.type.kind === "record") callee = lowerer.hybridCallUnwrap(callee);
+      const callee = lowerer.lowerExpr(nsMember);
       const checked = lowerCheckedCallableValue(lowerer, expr, callee, loc);
       if (checked) return checked;
       if (callee.type.kind !== "func")
@@ -1708,8 +1707,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         loc,
       });
     }
-    let callee = lowerer.lowerExpr(nameId);
-    if (callee.type.kind === "record") callee = lowerer.hybridCallUnwrap(callee);
+    const callee = lowerer.lowerExpr(nameId);
     const checked = lowerCheckedCallableValue(lowerer, expr, callee, loc);
     if (checked) return checked;
     if (callee.type.kind !== "func")
@@ -2243,8 +2241,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     const direct = callableInstanceStringCall(lowerer, expr, callee, loc);
     if (direct) return direct;
   }
-  if (callee.type.kind === "record" || callee.type.kind === "object")
-    callee = lowerer.hybridCallUnwrap(callee);
+  if (callee.type.kind === "object") callee = lowerer.hybridCallUnwrap(callee);
   return lowerCallThroughValue(lowerer, expr, callee, loc);
 }
 
@@ -10843,8 +10840,7 @@ export function lowerRecordFieldCall(
     const closure = lowerer.hybridCallUnwrap(callee);
     if (closure !== callee) return lowerCallThroughValue(lowerer, call, closure, loc);
   }
-  if (callee.type.kind === "record" || callee.type.kind === "object")
-    callee = lowerer.hybridCallUnwrap(callee);
+  if (callee.type.kind === "object") callee = lowerer.hybridCallUnwrap(callee);
   // Inferred JavaScript option records can retain checked callables in
   // fields even when the checker only describes those members as any.
   // TypeScript reaches here for callable library types that are checked

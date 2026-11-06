@@ -22,6 +22,7 @@ All notable changes to scriptc will be documented in this file.
   - Large immutable number tables are built in the program image, so a small CLI program starts in 1.21 ms instead of 1.51 ms. An optional-element array read skips the runtime getter (13% faster, 35% fewer instructions), and 200,000 calls through builtin function values take 4.6 ms against Node's 75.3 ms.
   - `--cpu-dispatch` copies only the functions whose body has a loop: 1.305x on mandelbrot and 1.068x on n-body against the default build.
 - **Faster builds:**
+  - A failing program's whole-slot relower runs on the pass whose result is kept, after the general-streams relower: a large program that takes the general-streams relower builds 1.22x faster (1,141.9 s to 932.5 s cold).
   - A build whose inputs did not change returns the executable already on disk, without reading a source, lowering, emitting LLVM, generating objects or linking: a no-change build takes 16.6 ms instead of 71.9 ms, 17.6 ms instead of 426.8 ms with an LLVM helper set, and 58.6 ms instead of 959 ms with a profile and an FFI manifest.
   - Runtime-pack selections and link-driver jobs are kept in the build cache: cold builds take 16.3 ms less on average over 369 paired builds.
   - Partition groups are numbered from the file name relative to the entry module, so a warm one-function edit that adds a module recompiles 3 of 64 partitions and the module-init pass is 19.5% faster.

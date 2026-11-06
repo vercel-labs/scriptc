@@ -1457,13 +1457,25 @@ function lowerToIrWithIslands(
   let result = emitted.result;
   let resultLowerer = reachableEmit;
   timing("reachable-emit", { reachable: reachable.size });
+  // The general stream representation (TypeMapperCtx.generalNodeStreams)
+  // is a per-program decision: only a program whose reachable code moved
+  // a general stream into a stdio-represented stream slot lowers again
+  // with it. Every other program keeps the single pass above unchanged.
+  // The stream pass below replaces this pass's result outright, so the
+  // whole-slot comparison runs after it for those programs (it would
+  // otherwise pay for a result the stream pass throws away).
+  const generalNodeStreams = reachableEmit.requiresGeneralNodeStreams;
   // Localized failure (stage L3): push-down must never cost a failing
   // program more errors than the whole-slot checked dynamic. A pushed-down
   // type is baked into the globals, fields and signatures that hold it, so
   // when the program still fails, the emit runs once more with every
   // degraded type held whole, and the pass with fewer errors wins (ties
   // keep push-down). A program that compiles never takes this path.
-  if (result.diagnostics.length > 0 && reachableEmit.hasPartialDegradedTypes()) {
+  if (
+    !generalNodeStreams &&
+    result.diagnostics.length > 0 &&
+    reachableEmit.hasPartialDegradedTypes()
+  ) {
     const whole = new Lowerer(program, entry, moduleOrder, {
       facts,
       frontendServices: options.frontendServices,
@@ -1493,11 +1505,6 @@ function lowerToIrWithIslands(
     }
     timing("whole-slot-relower", { reachable: wholeEmitted.reachable.size });
   }
-  // The general stream representation (TypeMapperCtx.generalNodeStreams)
-  // is a per-program decision: only a program whose reachable code moved
-  // a general stream into a stdio-represented stream slot lowers again
-  // with it. Every other program keeps the single pass above unchanged.
-  const generalNodeStreams = reachableEmit.requiresGeneralNodeStreams;
   // Checked-dynamic stream slots (dyn-streams.ts) are a further per-program
   // decision under the general representation: only a program that moves an
   // untyped value into a stream slot lowers again with them.
@@ -1577,6 +1584,48 @@ function lowerToIrWithIslands(
     result = emit.run();
     resultLowerer = emit;
     timing("historical-order-relower");
+  }
+  // A stream program whose passes still fail takes the whole-slot
+  // comparison here, against the pass whose result stands: the stream pass
+  // replaces the earlier result outright, so the comparison is only worth
+  // paying for on the pass it would judge. The rule is unchanged — the
+  // whole-slot pass is kept only when it has strictly fewer errors.
+  if (
+    generalNodeStreams &&
+    result.diagnostics.length > 0 &&
+    resultLowerer.hasPartialDegradedTypes()
+  ) {
+    const whole = new Lowerer(program, entry, moduleOrder, {
+      facts,
+      frontendServices: options.frontendServices,
+      projectCheckJs: options.projectCheckJs ?? false,
+      generalNodeStreams: true,
+      ...(dynNodeStreams ? { dynNodeStreams: true } : {}),
+      targetPlatform,
+      startupCrash,
+      admittedOpinions: options.admittedOpinions,
+      inlineRequireCycleCalls,
+      dynamicImportRejections: options.dynamicImportRejections,
+      ffiImports,
+      libraryCallbacks,
+      forkTargets,
+      workerTargets,
+      ffiBindingSymbols: ffiValidation.symbolsByName,
+      externalTypes,
+      externalTypeSpecifiersByFile,
+      tierMode,
+      runtimeOptionalReport,
+      wholeSlotDegradation: true,
+    });
+    for (const d of extraModuleCycleDiags) whole.pushDiag(d);
+    for (const d of ffiValidation.diagnostics) whole.pushDiag(d);
+    const wholeEmitted = whole.emitReachable(options.libRoots);
+    if (wholeEmitted.result.diagnostics.length < result.diagnostics.length) {
+      reachable = wholeEmitted.reachable;
+      result = wholeEmitted.result;
+      resultLowerer = whole;
+    }
+    timing("whole-slot-relower", { reachable: wholeEmitted.reachable.size });
   }
   // LIBRARY mode: the profile's export names resolved to the units that
   // supply them — the entry's own unit for a direct export, the declaring

@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/create-require-loader-identity/chunk.mjs",
+  "<repo>/tests/corpus/create-require-loader-identity/main.mjs"
+ ],
+ "diags": []
+}

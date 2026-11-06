@@ -682,7 +682,18 @@ static SCR_TL size_t scr_cyc_nursery_freed = 0;
  * widens the window a doubling, up to the same cap the reclaim rule uses,
  * and any pass that reclaims puts it back to what that rule asks for. The
  * two counts are kept apart so the reclaim rule's transitions stay its own;
- * `nursery_spare` holds what the unproductive passes added. */
+ * `nursery_spare` holds what the unproductive passes added.
+ *
+ * The doubt a widening pass has to answer is whether the window it wants to
+ * skip was ever filled. A collection point can arrive with only a handful of
+ * candidates buffered — a program that reaches one between every message
+ * does — and such a pass has not walked the interval it asks to skip. A heap
+ * that raises those passes steadily is not quiet, it is only collecting
+ * rarely enough that each pass has little to walk, and widening on them
+ * delays the collection of what the heap does produce. So a pass widens only
+ * while it walked at least half the window, and a pass that walked less
+ * takes the spare back: the window follows what the heap actually buffers
+ * between collection points. */
 static SCR_TL unsigned char scr_cyc_nursery_spare = 0;
 
 static size_t scr_cyc_nursery_pinned(void) {
@@ -968,14 +979,21 @@ static SCR_CYC_SCHEDULING void scr_cyc_scheduled_pass(unsigned gen, bool by_grow
   size_t old_reclaimed = scr_cyc_old_freed - old_freed_before + scr_cyc_mature_dead;
   /* A pass that reclaimed nothing after walking candidates says the heap is
    * not producing garbage; at the nursery it widens the window, and any
-   * reclaim narrows it back. The explicit sweep is not a scheduling decision
-   * and leaves this alone. */
+   * reclaim narrows it back. A pass that walked less than half the window it
+   * had set arrived at a collection point the heap had not filled it for,
+   * and takes the spare back instead of keeping the window wide over
+   * candidates that are not there. The explicit sweep is not a scheduling
+   * decision and leaves this alone. */
   unsigned char spare = scr_cyc_nursery_spare;
   if (freed != 0)
     scr_cyc_nursery_spare = 0;
-  else if (gen == SCR_CYC_NURSERY && scr_cands.n != 0
-           && scr_cyc_nursery_shift + spare < SCR_CYC_NURSERY_MAX_SHIFT)
-    scr_cyc_nursery_spare = (unsigned char)(spare + 1);
+  else if (gen == SCR_CYC_NURSERY) {
+    if (scr_cands.n < scr_cyc_nursery_threshold() / 2) {
+      scr_cyc_nursery_spare = 0;
+    } else if (scr_cyc_nursery_shift + spare < SCR_CYC_NURSERY_MAX_SHIFT) {
+      scr_cyc_nursery_spare = (unsigned char)(spare + 1);
+    }
+  }
   if (scr_cyc_nursery_spare != spare) {
     scr_cyc_trigger = scr_cyc_buffered() + scr_cyc_nursery_threshold();
     scr_cyc_window_update();

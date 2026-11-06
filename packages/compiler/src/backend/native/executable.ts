@@ -228,14 +228,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // DataView.prototype as a value in a JavaScript source: the getter/setter
   // family's prototype object, the dynamic tier's gated unit.
   unit((u) => u.opts.dataViewPrototypeValue === true && u.opts.dynInvoke, "scr_data_view_proto.c"),
-  // Array.prototype's generic algorithms over array-like receivers, and the
-  // Number/Boolean prototype objects as values: the dynamic tier's gated
-  // units, whose work is JavaScript-only.
+  // Array.prototype's generic algorithms over array-like receivers: the
+  // dynamic tier's gated unit, whose work is JavaScript-only.
   unit((u) => u.opts.arrayLikeDispatch === true && u.opts.dynInvoke, "scr_dyn_array_like.c"),
-  unit(
-    (u) => u.opts.builtinPrototypeValue === true && u.opts.dynInvoke,
-    "scr_dyn_builtin_prototype.c",
-  ),
   unit((u) => u.opts.builtinMethodValue === true && u.opts.dynInvoke, "scr_dyn_builtin_methods.c"),
   // createRequire's computed require and require.resolve.
   unit((u) => u.opts.computedRequire === true, "scr_require.c"),
@@ -268,7 +263,10 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
       u.opts.fileHandle ||
       u.nativeFetch ||
       // Island promises cross as dyn promise boxes (scr_node_island_handle.c).
-      u.opts.nodeIsland === true,
+      u.opts.nodeIsland === true ||
+      // t.waitFor polls a dyn condition and returns a dyn promise
+      // (scr_test.c's waitFor entry).
+      u.opts.nodeTest,
     "scr_async_dyn.c",
   ),
   // Promise statics with a foreign constructor (`Promise.all.call(C, …)`):
@@ -495,6 +493,8 @@ const RUNTIME_DEFINES: readonly {
 }[] = [
   { define: "SCR_TEXT_DECODER_LEGACY", when: (opts) => opts.textDecoderLegacy },
   { define: "SCR_WARNING_REPLACE", when: (opts) => opts.warningReplace },
+  // scr_async.c's reject closure for a checked-dynamic promise reason.
+  { define: "SCR_PROMISE_REJECT_DYN", when: (opts) => opts.promiseRejectDyn },
   // scr_node_builtin.c's dynamic global read throws for the plain Node
   // globals the native runtime does not implement; a program with a computed
   // global read or `… in globalThis` selects that build (host-globals.ts).
@@ -525,7 +525,14 @@ const RUNTIME_DEFINES: readonly {
   // bodies of its streams.
   { define: "SCR_NATIVE_REACTIONS", when: (opts) => opts.webStreams },
   { define: "SCR_HANDLE_CLASSES", when: (opts) => opts.webStreams },
+  // scr_fetch.c's Blob/File request bodies: the blob's bytes, with its type
+  // as Content-Type when the request sets none.
+  { define: "SCR_WEB_BODIES", when: (opts) => opts.webBodies },
   { define: "SCR_YIN", when: (opts) => opts.youngNursery },
+  // scr_child.c's spawnSync result keeps the spawn errno and argv so
+  // `.error` answers Node's errnoException fields (errno, syscall, path,
+  // spawnargs); a program that never reads `.error` keeps the default build.
+  { define: "SCR_CHILD_ERR_FIELDS", when: (opts) => opts.childErrorFields },
   { define: "SCR_NODE_ISLANDS", when: (opts) => opts.nodeIsland },
 ];
 

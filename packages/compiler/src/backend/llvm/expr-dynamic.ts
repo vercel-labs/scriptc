@@ -35,7 +35,11 @@ import { emitUnionWiden } from "./expr-records.js";
 import { emitJsIcLiteralMember, emitJsIcMethod, jsIcMethods } from "./js-ic.js";
 import { jsImmediates } from "./jsval.js";
 import { jsIcLiteralKey } from "../../ir/js-ic.js";
-import { ARRAY_PROTOTYPE_MEMBER_NAMES, DYN_BUFFER_METHODS } from "../../ir/runtime-features.js";
+import {
+  ARRAY_PROTOTYPE_MEMBER_NAMES,
+  DYN_BUFFER_METHODS,
+  isProtoKeyLiteral,
+} from "../../ir/runtime-features.js";
 
 export function emitDynamicExpr(
   host: LlvmEmitterContext,
@@ -425,8 +429,37 @@ export function emitDynamicExpr(
       for (const f of e.fields ?? []) {
         const k = emitBorrowedInput(host, f.key);
         const v = emitBorrowedInput(host, f.value);
+        // A literal member is a property definition, not an assignment:
+        // `{ ["__proto__"]: v }` creates an own data property instead of
+        // running Object.prototype's prototype setter (scr_json.c). The
+        // object model build answers that, and this spelling selects it
+        // (runtime-features.ts).
+        if (isProtoKeyLiteral(f.key)) {
+          host.declare(`declare void @scr_dyn_key_define(ptr, ptr, ptr)`);
+          B.line(`call void @scr_dyn_key_define(ptr ${obj}, ptr ${k.name}, ptr ${v.name})`);
+          host.emitPendingCheck();
+          continue;
+        }
         if (cached && jsIcLiteralKey(f.key) !== null) {
           emitJsIcLiteralMember(host, obj, k.name, v.name);
+          continue;
+        }
+        if (f.key.kind !== "strLit" && host.jsObjectModel) {
+          // A key computed at run time can name `__proto__` too, and the
+          // member is a property definition: the object model build defines
+          // the own property (coercing the key first for a dynamic one)
+          // instead of replacing the literal's [[Prototype]] (scr_json.c).
+          // The compile-time spellings are the strLit keys above.
+          if (f.key.type.kind === "dyn") {
+            host.declare(`declare void @scr_dyn_key_define_computed(ptr, ptr, ptr)`);
+            B.line(
+              `call void @scr_dyn_key_define_computed(ptr ${obj}, ptr ${k.name}, ptr ${v.name})`,
+            );
+          } else {
+            host.declare(`declare void @scr_dyn_key_define(ptr, ptr, ptr)`);
+            B.line(`call void @scr_dyn_key_define(ptr ${obj}, ptr ${k.name}, ptr ${v.name})`);
+          }
+          host.emitPendingCheck();
           continue;
         }
         B.line(

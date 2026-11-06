@@ -716,6 +716,38 @@ static void check_unproductive_nursery_window(void) {
   scr_collect_cycles();
 }
 
+/* A scheduled nursery pass over a buffer that barely filled is a collection
+ * point, not a pass over a window of stale candidates: the few candidates it
+ * walked are all the work a wider window could save, and a heap that raises
+ * such passes steadily is collecting rarely enough that each one has little
+ * to walk. It must not widen the window. */
+static void check_unfilled_nursery_pass_does_not_widen(void) {
+  if (getenv("SCR_CYCLE_THRESHOLD") != NULL) return; /* it pins the trigger */
+  scr_cyc_set_nursery_threshold(0);
+  scr_collect_cycles();
+  check(scr_cyc_nursery_window_at() == 256, "the unpinned nursery trigger did not start at 256");
+  enum { ROUNDS = 8, LEAVES = 8 };
+  Node *leaves[ROUNDS * LEAVES];
+  size_t before = freed;
+  for (size_t round = 0; round < ROUNDS; round++) {
+    for (int i = 0; i < LEAVES; i++) {
+      Node *leaf = leaves[round * LEAVES + i] = make_leaf();
+      read_live(leaf);
+    }
+    scr_cyc_collect_scheduled();
+    check(freed == before, "a scheduled pass over live leaves freed something");
+    check(scr_cyc_nursery_window_at() == 256,
+          "a nursery pass over a barely filled buffer widened the trigger");
+  }
+  for (int i = 0; i < ROUNDS * LEAVES; i++) {
+    leaves[i]->rc--;
+    scr_cyc_on_dead(leaves[i]);
+    node_free(leaves[i]);
+  }
+  scr_cyc_set_nursery_threshold(0);
+  scr_collect_cycles();
+}
+
 /* The phase sweep (scr_collect_cycles_phase) is for a caller that knows a
  * phase's data has just died: it sweeps, and the growth schedule starts
  * over. After passes that find nothing have widened the old level's
@@ -1999,6 +2031,7 @@ int main(void) {
   check_program_nursery_threshold();
   check_adaptive_nursery_threshold();
   check_unproductive_nursery_window();
+  check_unfilled_nursery_pass_does_not_widen();
   printf("cycle collection checks passed: threshold=%zu growth_cap=%zu\n",
          configured_nursery_threshold(), configured_growth_cap());
   return 0;

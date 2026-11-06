@@ -10,6 +10,12 @@ import {
 import { moduleSourceCandidates } from "./module-source-candidates.js";
 import { canonicalBuiltinModule } from "./builtin-modules.js";
 import { resolveWorkerEntrySource } from "./resolve.js";
+import {
+  boundLoadValues,
+  specifierBoundContextOf,
+  type SpecifierBoundContext,
+  type SpecifierValue,
+} from "./specifier-bounds.js";
 
 function workerNamespace(program: ts.Program, expression: ts.Expression): boolean {
   if (
@@ -106,9 +112,38 @@ export function workerSourcePath(path: string): string {
   return resolveWorkerEntrySource(path) ?? path;
 }
 
+/** The path a bounded Worker entry value names, as Node resolves the Worker
+ * filename: a URL through fileURLToPath, an absolute path as itself. A
+ * relative string is resolved against the invocation's cwd in Node, so it
+ * fixes no build-time file and stays in the residual arm. */
+export function workerEntryValuePath(value: SpecifierValue): string | null {
+  try {
+    if (value.kind === "url") return fileURLToPath(value.href);
+    return isAbsolute(value.text) ? resolve(value.text) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The paths a computed Worker entry may name (wave2 §4.2): every value the
+ * shared specifier bounder answers, resolved the way Node resolves the
+ * filename. Values that name no build-time file — the Top residual, a
+ * cwd-relative string — are absent. */
+function boundedWorkerEntryPaths(ctx: SpecifierBoundContext, expression: ts.Expression): string[] {
+  const bound = boundLoadValues(ctx, expression);
+  if (bound.kind === "top") return [];
+  const paths: string[] = [];
+  for (const value of bound.values) {
+    const path = workerEntryValuePath(value);
+    if (path !== null && !paths.includes(path)) paths.push(path);
+  }
+  return paths;
+}
+
 export function workerTargetPaths(program: ts.Program, files: readonly ts.SourceFile[]): string[] {
   const targets = new Set<string>();
   const checker = program.getTypeChecker();
+  let ctx: SpecifierBoundContext | null = null;
   for (const source of files) {
     if (source.isDeclarationFile || source.fileName.endsWith(".json")) continue;
     const constructions = moduleSourceCandidates(program, source).constructions;
@@ -125,7 +160,13 @@ export function workerTargetPaths(program: ts.Program, files: readonly ts.Source
       const expression = construction.expression;
       if (!isWorkerConstructor(program, expression) || !construction.arguments?.nodes[0]) continue;
       const path = workerModulePath(program, construction.arguments.nodes[0]);
-      if (path !== null) targets.add(workerSourcePath(path));
+      if (path !== null) {
+        targets.add(workerSourcePath(path));
+        continue;
+      }
+      ctx ??= specifierBoundContextOf(program);
+      for (const bounded of boundedWorkerEntryPaths(ctx, construction.arguments.nodes[0]))
+        targets.add(workerSourcePath(bounded));
     }
   }
   return [...targets];

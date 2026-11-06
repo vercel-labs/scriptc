@@ -5910,13 +5910,40 @@ export class Lowerer {
    * of every `export *` target. TypeScript's resolved export set also lists
    * the names behind `export type *` and `export type { … }`; those carry no
    * runtime binding, so a namespace key census must not take them from the
-   * resolved set alone. The set is a pure function of the module graph and
-   * is memoized; it is filled before recursing so `export *` cycles end. */
+   * resolved set alone.
+   *
+   * `export *` is transitive, and a cycle of star re-exports is one union
+   * seen from each of its modules. The walk therefore collects every
+   * reachable module's own names before anything is memoized: a set handed
+   * out while the walk was still under way would be missing the names a
+   * module further around the cycle contributes, and every later census and
+   * dynamic read of that module would answer the short set. */
   runtimeExportNames(source: ts.SourceFile): ReadonlySet<string> {
     const cached = this.runtimeExports.get(source);
     if (cached !== undefined) return cached;
-    const names = new Set<string>();
+    const names = this.ownRuntimeExportNames(source);
+    const seen = new Set<ts.SourceFile>([source]);
+    const pending = [source];
+    while (pending.length > 0) {
+      for (const dep of this.starReexportTargets(pending.pop()!)) {
+        if (seen.has(dep)) continue;
+        seen.add(dep);
+        for (const name of this.ownRuntimeExportNames(dep)) {
+          if (name !== "default") names.add(name);
+        }
+        pending.push(dep);
+      }
+    }
     this.runtimeExports.set(source, names);
+    return names;
+  }
+
+  /** The value exports a module declares itself: its resolved export set
+   * minus the names a type-only declaration forwards. `default` is included
+   * (the module's own namespace carries it) and is dropped by the star walk
+   * that forwards this set to another module. */
+  private ownRuntimeExportNames(source: ts.SourceFile): Set<string> {
+    const names = new Set<string>();
     const moduleSymbol = this.checker.getSymbolAtLocation(source);
     if (moduleSymbol !== undefined) {
       for (const symbol of moduleSymbol.getExports().values()) {
@@ -5926,6 +5953,13 @@ export class Lowerer {
         if (target.flags & ts.SymbolFlags.Value) names.add(ts.symbolName(symbol));
       }
     }
+    return names;
+  }
+
+  /** The modules a module star-re-exports (`export * from "./m"`), in
+   * statement order. */
+  private starReexportTargets(source: ts.SourceFile): ts.SourceFile[] {
+    const targets: ts.SourceFile[] = [];
     for (const stmt of source.statements.nodes) {
       if (
         !ts.isExportDeclaration(stmt) ||
@@ -5935,12 +5969,9 @@ export class Lowerer {
       )
         continue;
       const dep = this.moduleSourceFileOf(source, stmt.moduleSpecifier);
-      if (dep === null) continue;
-      for (const name of this.runtimeExportNames(dep)) {
-        if (name !== "default") names.add(name);
-      }
+      if (dep !== null) targets.push(dep);
     }
-    return names;
+    return targets;
   }
 
   sourceFileOfModuleNamespace(type: IrType): ts.SourceFile | null {

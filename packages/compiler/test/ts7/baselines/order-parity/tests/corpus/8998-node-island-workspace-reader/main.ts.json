@@ -1,0 +1,9 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8998-node-island-workspace-reader/patch.ts",
+  "<repo>/tests/corpus/8998-node-island-workspace-reader/packages/probe-ai/src/utils/provider-env.ts",
+  "<repo>/tests/corpus/8998-node-island-workspace-reader/cache-warmer.ts",
+  "<repo>/tests/corpus/8998-node-island-workspace-reader/main.ts"
+ ],
+ "diags": []
+}

@@ -1726,10 +1726,11 @@ const RUNTIME_FEATURE_RULES = {
     prefixes: STREAM_LIB_PREFIXES,
   }),
   /** A Dirent row converted to dyn carries Node's Symbol(type) key
-   * (scr_dyn_dirent_finish, defined in scr_symbol.c). */
+   * (scr_dyn_dirent_finish, defined in scr_symbol.c), and a callback read
+   * builds its Dirent there. */
   symbol: rule({
     initial: (mod) => (mod.records ?? []).some(isDirentShape),
-    fns: [...SYMBOL_LIB_FNS],
+    fns: [...SYMBOL_LIB_FNS, "dir.readCb"],
     // %Iterator.prototype% (scr_js_iterator.c) defines its Symbol.iterator,
     // Symbol.toStringTag and Symbol.dispose members with the well-known
     // symbols scr_sym_well_known makes.

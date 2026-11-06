@@ -192,6 +192,7 @@ import { lowerErrorCaptureStackTraceCall, lowerErrorIsErrorCall } from "./builti
 import { lowerPromisifiedDnsCall } from "./lower-dgram.js";
 import { lowerDisposableStackUseCall } from "./builtins/disposable-stack.js";
 import {
+  lowerDirDisposeCall,
   lowerDirentMethodCall,
   lowerFileHandleMethodCall,
   lowerDirMethodCall,
@@ -2090,6 +2091,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     if (symbolMethod) return symbolMethod;
     const readlineDispose = lowerReadlineDisposeCall(lowerer, expr);
     if (readlineDispose) return readlineDispose;
+    const dirDispose = lowerDirDisposeCall(lowerer, expr);
+    if (dirDispose) return dirDispose;
     lowerer.fenceUnsupportedFetchConstructorMember(expr.expression);
     lowerer.fenceStaticResponseMember(expr.expression, "call");
     lowerer.fenceStaticHeadersMember(expr.expression, "call");

@@ -793,6 +793,10 @@ function buildLibFnSignatures() {
     "dir.read": { argTypes: [DIR_T], result: { kind: "promise", inner: VOID } },
     "dir.closeSync": { argTypes: [DIR_T], result: VOID },
     "dir.close": { argTypes: [DIR_T], result: { kind: "promise", inner: VOID } },
+    "dir.readCb": { argTypes: [DIR_T, DYN], result: VOID },
+    "dir.closeCb": { argTypes: [DIR_T, DYN], result: VOID },
+    "dir.dispose": { argTypes: [DIR_T], result: VOID },
+    "dir.asyncDispose": { argTypes: [DIR_T], result: { kind: "promise", inner: VOID } },
     /** node:path (scr_path.c ports BOTH of Node's implementations
      * function-by-function): the `path.*` family is posix, the
      * `path.win32*` family is Node v24's path.win32 ported exactly — the

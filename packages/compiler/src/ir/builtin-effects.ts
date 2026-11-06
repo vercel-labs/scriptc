@@ -1187,7 +1187,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.fsStreamClose",
   "fs.fsStreamCloseCb",
   "dir.readSync",
+  "dir.readCb",
   "dir.closeSync",
+  // Symbol.dispose is closeSync on an open Dir: ERR_DIR_CONCURRENT_OPERATION
+  // while an operation is queued.
+  "dir.dispose",
   "fs.copyFileSync",
   "fs.copyFileFlagsSync",
   "fs.renameSync",

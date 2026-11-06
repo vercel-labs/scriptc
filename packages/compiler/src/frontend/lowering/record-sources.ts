@@ -158,9 +158,10 @@ function projectionRecordLit(projection: IrFunction): (IrExpr & { kind: "recordL
   return found;
 }
 
-/** `record.sourceHas(r) ? <name read from r's kept source, typed
- * `field.type`> : absent`. A key the source lacks answers the undefined
- * singleton. */
+/** `record.sourceHasKey(r, name) ? <name read from r's kept source, typed
+ * `field.type`> : absent`. The presence test is per key: a record that keeps
+ * an unrelated extra key must still answer this field as absent, exactly as
+ * the erased assertion leaves a key the source never held. */
 function absentFieldFromSource(
   field: AbsentSourceField,
   receiver: IrExpr,
@@ -174,9 +175,16 @@ function absentFieldFromSource(
     type: DYN,
     loc,
   };
+  const present: IrExpr = {
+    kind: "libCall",
+    fn: "record.sourceHasKey",
+    args: [receiver, { kind: "strLit", value: field.name, type: STRING, loc }],
+    type: BOOL,
+    loc,
+  };
   return {
     kind: "ternary",
-    cond: recordSourceTest(receiver, loc),
+    cond: present,
     then:
       field.type.kind === "dyn"
         ? member

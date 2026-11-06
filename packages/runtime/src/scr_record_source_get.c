@@ -19,3 +19,14 @@ ScrDyn *scr_record_source_get(const void *rec, const char *key, size_t key_len) 
    * undefined, and an accessor runs with the view as its receiver. */
   return scr_dyn_obj_read(view, key, key_len);
 }
+
+bool scr_record_source_has_key(const void *rec, const char *key, size_t key_len) {
+  const ScrDyn *view = scr_record_source_view(rec);
+  if (view == NULL || view->kind != SCR_DYN_OBJ) return false;
+  /* Own-ness only: the view links no prototype, and a key the source lacks
+   * must leave the converted field absent rather than hold undefined. */
+  ScrStr *name = scr_str_new(key, key_len);
+  bool present = scr_dyn_has_own(view, name);
+  scr_str_release(name);
+  return present;
+}

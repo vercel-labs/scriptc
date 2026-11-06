@@ -5314,6 +5314,11 @@ function buildLibFnSignatures() {
      * with the view as its receiver, so a getter that throws leaves the
      * exception pending. */
     "record.sourceGet": { argTypes: [null, STRING], result: DYN },
+    /** `record.sourceHasKey(record, name)`: whether the record's kept source
+     * holds `name` as an own property (false when it keeps none). The name is
+     * a strLit. A conversion tests this before `record.sourceGet` so a key the
+     * source lacks leaves the target field absent. Never throws. */
+    "record.sourceHasKey": { argTypes: [null, STRING], result: BOOL },
     /** `record.sourceSpread(built, value)`: the record a literal starting
      * with `...value` just built keeps the order of value's kept source
      * (key-order-witness.ts ordered spreads). Both are record types. Never

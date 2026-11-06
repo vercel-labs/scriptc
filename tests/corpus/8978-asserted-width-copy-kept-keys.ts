@@ -79,3 +79,37 @@ console.log("array", String(views[0]!.snippet), String(views[1]!.snippet), JSON.
 // A cast of an array converts each element the same way.
 const cast = [t, bare] as unknown as View[];
 console.log("array-cast", String(cast[0]!.snippet), String(cast[1]!.snippet), cast[0]!.name);
+
+// An unrelated kept key does not make an absent target key present: the
+// presence test is per key, exactly as the erased assertion leaves a key the
+// source never held.
+const extra = JSON.parse('{"name":"e","label":"E","count":7}') as Tool;
+const ev = extra as unknown as View;
+console.log(
+  "extra",
+  String(ev.snippet),
+  "snippet" in ev,
+  Object.hasOwn(ev, "snippet"),
+  Object.keys(ev).join(","),
+  JSON.stringify(ev),
+);
+
+// A kept accessor runs with the view as its receiver, and a getter that
+// throws reaches the catch block as the erasure's own property read does.
+// The copy reads the key when it is built, so the assertion sits inside the
+// try: the read's exception must reach the same catch the erased read does.
+// The target field is of the untyped kind, so the read's value is the field.
+const dyn = JSON.parse('{"name":"g","label":"G"}');
+Object.defineProperty(dyn, "payload", {
+  get() {
+    throw new Error("boom");
+  },
+  enumerable: true,
+  configurable: true,
+});
+try {
+  const g = dyn as unknown as { name: string; payload?: unknown };
+  console.log("getter", String(g.payload));
+} catch (e) {
+  console.log("getter-caught", (e as Error).message);
+}

@@ -298,6 +298,23 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     B.line(`${t} = phi i1 [ false, %${from} ], [ ${has}, %${probed} ]`);
     return { name: t, type: e.type };
   }
+  if (e.fn === "record.sourceHasKey") {
+    // Own-key presence in the kept source: a key the source lacks must leave
+    // the converted field absent, not hold the undefined value.
+    const record = host.emitReadReceiver(e.args[0]!);
+    const key = e.args[1]!;
+    if (key.kind !== "strLit")
+      throw new InternalCompilerError(
+        "llvm emitter bug: record.sourceHasKey key is not a literal",
+      );
+    host.declare(`declare zeroext i1 @scr_record_source_has_key(ptr, ptr, ${host.sizeType})`);
+    const present = B.tmp();
+    const length = Buffer.byteLength(key.value, "utf8");
+    B.line(
+      `${present} = call zeroext i1 @scr_record_source_has_key(ptr ${record.name}, ptr ${host.cstr(key.value)}, ${host.sizeType} ${length})`,
+    );
+    return { name: present, type: e.type };
+  }
   if (e.fn === "record.sourceGet") {
     const record = host.emitReadReceiver(e.args[0]!);
     const key = e.args[1]!;
@@ -312,6 +329,10 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     B.line(
       `${value} = call ptr @scr_record_source_get(ptr ${record.name}, ptr ${host.cstr(key.value)}, ${host.sizeType} ${length}) ; +1`,
     );
+    // The read runs the view's accessor: a getter that throws leaves the
+    // exception pending and answers NULL, which must unwind here rather
+    // than reach the dynamic-value consumer as a value.
+    host.emitPendingCheck();
     return host.own({ name: value, type: e.type });
   }
   if (e.fn === "record.sourceSpread") {

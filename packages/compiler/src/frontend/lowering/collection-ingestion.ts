@@ -259,46 +259,8 @@ export function ingestCollection(
             loc,
           };
         else {
-          if (item.type.kind === "dyn") {
-            // Map discards the entry wrapper. Preserve its members, but do
-            // not require an ordinary checked pair to have a native tuple ABI.
-            const pair = lowerer.declareHiddenLocal("%entry", DYN);
-            const key = lowerer.declareHiddenLocal("%entryKey", DYN);
-            const value = lowerer.declareHiddenLocal("%entryValue", DYN);
-            const member = (field: string): IrExpr => ({
-              kind: "dynKeyGet",
-              value: varRef(pair.id, DYN, loc),
-              key: strLit(field, loc),
-              type: DYN,
-              loc,
-            });
-            const checked = (id: string, type: IrType): IrExpr =>
-              type.kind === "dyn"
-                ? varRef(id, DYN, loc)
-                : { kind: "dynCheck", value: varRef(id, DYN, loc), preserveRefs: true, type, loc };
-            return [
-              {
-                kind: "varDecl",
-                localId: pair.id,
-                init: { kind: "libCall", fn: "dyn.mapSeedEntry", args: [item], type: DYN, loc },
-                loc,
-              },
-              { kind: "varDecl", localId: key.id, init: member("0"), loc },
-              { kind: "varDecl", localId: value.id, init: member("1"), loc },
-              {
-                kind: "exprStmt",
-                expr: {
-                  kind: "mapIntrinsic",
-                  method: "set",
-                  receiver: out,
-                  args: [checked(key.id, destination.key), checked(value.id, destination.value)],
-                  type: VOID,
-                  loc,
-                },
-                loc,
-              },
-            ];
-          }
+          if (item.type.kind === "dyn")
+            return dynMapEntryStore(lowerer, out, item, destination, loc);
           if (item.type.kind !== "record")
             throw new InternalCompilerError("collection Map seed requires a tuple");
           const shapeId = item.type.shapeId;
@@ -385,6 +347,137 @@ export function ingestCollection(
   };
 }
 
+/** The `Map` seeding step for one checked-dynamic entry value. Node requires
+ * an entry OBJECT (`dyn.mapSeedEntry` throws its TypeError for a primitive),
+ * then reads "0" and "1" and converts both through the checked conversion.
+ * The entry wrapper never becomes a value of its own. */
+function dynMapEntryStore(
+  lowerer: Lowerer,
+  out: IrExpr,
+  item: IrExpr,
+  destination: IrType & { kind: "map" },
+  loc: SrcLoc,
+): IrStmt[] {
+  const pair = lowerer.declareHiddenLocal("%entry", DYN);
+  const key = lowerer.declareHiddenLocal("%entryKey", DYN);
+  const value = lowerer.declareHiddenLocal("%entryValue", DYN);
+  const member = (field: string): IrExpr => ({
+    kind: "dynKeyGet",
+    value: varRef(pair.id, DYN, loc),
+    key: strLit(field, loc),
+    type: DYN,
+    loc,
+  });
+  const checked = (id: string, type: IrType): IrExpr =>
+    type.kind === "dyn"
+      ? varRef(id, DYN, loc)
+      : { kind: "dynCheck", value: varRef(id, DYN, loc), preserveRefs: true, type, loc };
+  return [
+    {
+      kind: "varDecl",
+      localId: pair.id,
+      init: { kind: "libCall", fn: "dyn.mapSeedEntry", args: [item], type: DYN, loc },
+      loc,
+    },
+    { kind: "varDecl", localId: key.id, init: member("0"), loc },
+    { kind: "varDecl", localId: value.id, init: member("1"), loc },
+    {
+      kind: "exprStmt",
+      expr: {
+        kind: "mapIntrinsic",
+        method: "set",
+        receiver: out,
+        args: [checked(key.id, destination.key), checked(value.id, destination.value)],
+        type: VOID,
+        loc,
+      },
+      loc,
+    },
+  ];
+}
+
+/** `new Set<T>(source)` / `new Map<K, V>(source)` over a checked-dynamic
+ * value: acquire the dynamic iterator once and add every value into native
+ * storage, converting each Set element (and each Map entry's key and value)
+ * through the checked conversion. Node's constructor rules apply: a nullish
+ * source makes empty storage, a non-iterable throws V8's TypeError, a
+ * non-object Map entry throws its entry TypeError, and a conversion failure
+ * throws. Nothing is drained first, so an infinite iterator behaves as it
+ * does in Node. */
+export function dynCollectionSeed(
+  lowerer: Lowerer,
+  source: IrExpr,
+  destination: Collection,
+  loc: SrcLoc,
+): IrExpr {
+  const key = `dynSeed:${typeKey(destination)}`;
+  let name = lowerer.arrHofHelpers.get(key);
+  if (!name) {
+    name = keyedHelperName(lowerer, "%collection.dynSeed", key);
+    lowerer.arrHofHelpers.set(key, name);
+    const context = newFnCtx(false, null, null, destination);
+    lowerer.fnStack.push(context);
+    try {
+      const params = [{ localId: "source.0", name: "source", type: DYN }];
+      const sourceRef = varRef("source.0", DYN, loc);
+      const out = lowerer.declareHiddenLocal("%dynSeedStorage", destination);
+      const outRef = varRef(out.id, destination, loc);
+      const empty: IrExpr =
+        destination.kind === "map"
+          ? { kind: "mapNew", type: destination, loc }
+          : { kind: "setNew", type: destination, loc };
+      const append =
+        destination.kind === "set"
+          ? (value: IrExpr): IrStmt[] => [
+              {
+                kind: "exprStmt",
+                expr: {
+                  kind: "setIntrinsic",
+                  method: "add",
+                  receiver: outRef,
+                  args: [value],
+                  type: VOID,
+                  loc,
+                },
+                loc,
+              },
+            ]
+          : (value: IrExpr): IrStmt[] => dynMapEntryStore(lowerer, outRef, value, destination, loc);
+      const consumption = cursorConsumption(
+        lowerer,
+        sourceRef,
+        destination.kind === "map" ? DYN : destination.elem,
+        append,
+        true,
+        loc,
+        "",
+      );
+      lowerer.liftedFns.push({
+        name,
+        params,
+        returnType: destination,
+        locals: [{ id: "source.0", name: "source", type: DYN, mutable: false }, ...context.locals],
+        body: [
+          { kind: "varDecl", localId: out.id, init: empty, loc },
+          {
+            kind: "if",
+            cond: { kind: "dynTest", test: "nullish", value: sourceRef, type: BOOL, loc },
+            then: [{ kind: "return", value: outRef, loc }],
+            else_: null,
+            loc,
+          },
+          ...consumption,
+          { kind: "return", value: outRef, loc },
+        ],
+        loc,
+      });
+    } finally {
+      lowerer.fnStack.pop();
+    }
+  }
+  return { kind: "call", callee: name, args: [source], type: destination, loc };
+}
+
 function nativeConsumption(
   lowerer: Lowerer,
   input: CollectionInput,
@@ -469,6 +562,9 @@ function cursorConsumption(
   append: (value: IrExpr) => IrStmt[],
   requireIterable: boolean,
   loc: SrcLoc,
+  /** The TypeError text for a non-iterable source; the empty string uses
+   * V8's runtime kind wording (the collection constructors' message). */
+  iterableSpell = "Value is not iterable",
 ): IrStmt[] {
   const iterator = lowerer.declareHiddenLocal("%iterator", DYN);
   const next = lowerer.declareHiddenLocal("%next", DYN);
@@ -559,7 +655,7 @@ function cursorConsumption(
           {
             kind: "libCall",
             fn: requireIterable ? "dyn.iterator" : "dyn.arrayFromIterator",
-            args: requireIterable ? [source, strLit("Value is not iterable", loc)] : [source],
+            args: requireIterable ? [source, strLit(iterableSpell, loc)] : [source],
             type: DYN,
             loc,
           },

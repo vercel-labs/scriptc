@@ -173,6 +173,9 @@ export interface CcOptions {
   /** Web streams in checked-dynamic code: compiles scr_webstreams.c and
    * scr_dyn_handle_class.c. */
   webStreams?: boolean;
+  /** A program that builds a Blob or File: the SCR_WEB_BODIES build of
+   * scr_fetch.c, which sends the blob's bytes and its type as Content-Type. */
+  webBodies?: boolean;
   /** AbortController and AbortSignal: compiles scr_abort.c, unless the
    * program compiles the fetch unit, which has them. */
   abortSignal?: boolean;
@@ -200,9 +203,6 @@ export interface CcOptions {
    * compiles scr_dyn_array_like.c, which the dyn-invoke unit's array
    * dispatch calls for receivers that are not arrays. */
   arrayLikeDispatch?: boolean;
-  /** Number.prototype or Boolean.prototype read as a value in a JavaScript
-   * source: compiles scr_dyn_builtin_prototype.c. */
-  builtinPrototypeValue?: boolean;
   /** A builtin prototype method read as a value in a JavaScript source:
    * compiles scr_dyn_builtin_methods.c. */
   builtinMethodValue?: boolean;
@@ -215,6 +215,9 @@ export interface CcOptions {
   wasm?: boolean;
   /** SCR_WARNING_REPLACE: process.emitWarning replacement support. */
   warningReplace?: boolean;
+  /** SCR_PROMISE_REJECT_DYN: the scr_async.c build with the reject closure
+   * a checked-dynamic promise reasons with. */
+  promiseRejectDyn?: boolean;
   /** SCR_JS_OBJECT_MODEL: the build of a unit that carries every JavaScript
    * object model feature the program reaches (t262-da §J). */
   jsObjectModel?: boolean;
@@ -240,6 +243,9 @@ export interface CcOptions {
   /** SCR_STDIO_WRITE_SLOT: the events unit carries the typed write slot
    * (the write method as a value, its replacement, run-time-typed chunks). */
   stdioWriteSlot?: boolean;
+  /** SCR_CHILD_ERR_FIELDS: the spawnSync result's `.error` carries Node's
+   * errnoException fields (errno, syscall, path, spawnargs). */
+  childErrorFields?: boolean;
   /** Calls into Node.js (@scriptc/node): compiles scr_node_island.c and
    * the event loop with SCR_NODE_ISLANDS (its helper slot). */
   nodeIsland?: boolean;

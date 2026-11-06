@@ -29,7 +29,8 @@ export const STRING_CHAR_CODE_AT_DECL = "declare double @scr_str_char_code_at(pt
  * operands are the range of indexes it reads; bytes-loop-versions.ts).
  * Like the fallbacks below, it can evict an index entry, so it carries no
  * memory restriction. */
-export const STRING_SCAN_UNITS_DECL = "declare void @scr_str_scan_units_for(ptr, double, double)";
+export const STRING_SCAN_UNITS_DECL =
+  "declare void @scr_str_scan_units_for(ptr, double, double, double)";
 /** The runtime fallbacks are cold: both common cases read inline. They
  * carry no
  * memory restriction: a fallback can evict an index entry, which resets

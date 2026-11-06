@@ -4,6 +4,9 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__linux__)
+#include <sys/mman.h>
+#endif
 
 /* The first chunk lives inside the arena, so a small group (one result
  * record, a short builder) touches no other memory. */
@@ -18,10 +21,23 @@
  * heap, they could form cycles that outlive the drop (llvm/arenas.ts). */
 #define SCR_ARENA_CAP ((size_t)32 << 20)
 /* What a thread keeps for reuse: arenas, chunk bytes, and dispose list
- * entries per pooled arena. */
+ * entries per pooled arena. The byte budget has to cover the chunks of a
+ * large graph that a loop builds and drops: released, its pages are given
+ * back and the next round faults the same bytes in again, which costs more
+ * than holding them until the thread's next large group reuses them. */
 #define SCR_ARENA_POOL 64
-#define SCR_ARENA_POOL_BYTES ((size_t)8 << 20)
+#define SCR_ARENA_POOL_BYTES ((size_t)64 << 20)
 #define SCR_ARENA_POOL_DISPOSALS ((size_t)4096)
+/* A chunk of SCR_ARENA_CHUNK_MAX bytes or more gets a mapping of its own,
+ * aligned to a huge page and advised MADV_HUGEPAGE, instead of coming from
+ * the system allocator: a group that holds hundreds of megabytes then faults
+ * whole huge pages in as its objects are first written, rather than one
+ * 4 KiB page per object region, and the smallest chunks (a result record, a
+ * short builder) keep the inline chunk or a small malloc. */
+#if defined(__linux__) && defined(MADV_HUGEPAGE)
+#define SCR_ARENA_MAPPED 1
+#define SCR_ARENA_HUGE ((size_t)2 << 20)
+#endif
 
 /* A chunk's objects run from scr_arena_chunk_start to its end. */
 typedef struct ScrArenaChunk {
@@ -31,6 +47,11 @@ typedef struct ScrArenaChunk {
    * system allocator, so its objects can be named by a 32-bit field; freed
    * with scr_mem_free. */
   bool windowed;
+#ifdef SCR_ARENA_MAPPED
+  /* A mapping of this chunk's own: unmap rather than free. `size` is the
+   * whole mapping, which a huge page divides evenly. */
+  bool mapped;
+#endif
 } ScrArenaChunk;
 
 /* The leading fields are an ABI: emitted arena-aware constructors bump
@@ -80,7 +101,7 @@ static SCR_TL size_t scr_arena_chunk_bytes;
  * only the window's blocks to name, arena objects included. The compiler
  * calls scr_sa_require_window at startup, before any arena opens, so a
  * program's chunks have one source from the start. */
-#if defined(__linux__)
+#ifdef SCR_COMPACT_REFS
 static inline bool scr_arena_windowed(void) { return scr_sa_refs_required(); }
 #else
 static inline bool scr_arena_windowed(void) { return false; } /* no window */
@@ -181,16 +202,45 @@ static ScrArenaChunk *scr_arena_chunk(size_t want) {
       scr_arena_chunk_bytes -= c->size;
       return c;
     }
+#ifdef SCR_ARENA_MAPPED
+  if (!windowed && want >= SCR_ARENA_CHUNK_MAX) {
+    /* Rounded to a huge page, so the mapping is covered whole by huge
+     * pages and the padding at its end is usable by the arena. */
+    size_t span = (want + SCR_ARENA_HUGE - 1) & ~(SCR_ARENA_HUGE - 1);
+    char *p = mmap(NULL, span + SCR_ARENA_HUGE, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (p != MAP_FAILED) {
+      char *a = (char *)(((uintptr_t)p + SCR_ARENA_HUGE - 1) & ~(uintptr_t)(SCR_ARENA_HUGE - 1));
+      if (a > p) (void)munmap(p, (size_t)(a - p));
+      (void)munmap(a + span, (size_t)(p + span + SCR_ARENA_HUGE - (a + span)));
+      (void)madvise(a, span, MADV_HUGEPAGE);
+      ScrArenaChunk *c = (ScrArenaChunk *)a;
+      c->size = span;
+      c->windowed = false;
+      c->mapped = true;
+      return c;
+    }
+  }
+#endif
   /* A window chunk's objects can be truncated by a compact field; one the
    * window cannot serve ends the process (scr_sa_slow_ref). */
   ScrArenaChunk *c = windowed ? scr_mem_alloc_ref(want) : malloc(want);
   if (!c) scr_trap("scriptc: out of memory\n");
   c->size = want;
   c->windowed = windowed;
+#ifdef SCR_ARENA_MAPPED
+  c->mapped = false;
+#endif
   return c;
 }
 
 static void scr_arena_chunk_release(ScrArenaChunk *c) {
+#ifdef SCR_ARENA_MAPPED
+  if (c->mapped) {
+    munmap(c, c->size);
+    return;
+  }
+#endif
   if (c->windowed) scr_mem_free(c);
   else free(c);
 }

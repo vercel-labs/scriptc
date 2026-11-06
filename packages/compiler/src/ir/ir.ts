@@ -726,6 +726,10 @@ export function isIdentityCollectionKey(t: IrType): boolean {
     // per evaluation), so pointer identity is JS function identity.
     // Closures are cycle-headered and traced like records.
     t.kind === "func" ||
+    // A promise is one object for its whole life, so pointer identity is
+    // JS promise identity; the runtime's scr_promise_{retain,release,trace}_v
+    // adapters already serve Map values and boxed captures.
+    t.kind === "promise" ||
     t.kind === "date"
   );
 }
@@ -961,6 +965,35 @@ export function typeKey(t: IrType): string {
       throw new InternalCompilerError("unreachable");
     }
   }
+}
+
+/** Sorts arms into `typeKey` order, building each key once.
+ *
+ * The inline form this replaces, `arms.sort((a, b) => (typeKey(a) <
+ * typeKey(b) ? -1 : 1))`, builds two keys for every comparison — 2·n·log n
+ * key strings per sort, and a key walks its whole type. This form builds n
+ * keys and compares them from a map. The comparator answers the same way for
+ * every pair (a pure function of the two arms), so the sort visits the same
+ * comparisons and leaves the arms in the same order; a sort compacts the
+ * array in place, and so does this. */
+export function sortArms(arms: IrType[]): IrType[] {
+  if (arms.length < 2) return arms;
+  const keys = new Map<IrType, string>();
+  for (const arm of arms) if (!keys.has(arm)) keys.set(arm, typeKey(arm));
+  return arms.sort((a, b) => (keys.get(a)! < keys.get(b)! ? -1 : 1));
+}
+
+/** `sortArms` for the total-order form `< -1 : > 1 : 0`, which leaves arms
+ * with equal keys in their input order instead of reversing them. */
+export function sortArmsTotal(arms: IrType[]): IrType[] {
+  if (arms.length < 2) return arms;
+  const keys = new Map<IrType, string>();
+  for (const arm of arms) if (!keys.has(arm)) keys.set(arm, typeKey(arm));
+  return arms.sort((a, b) => {
+    const left = keys.get(a)!;
+    const right = keys.get(b)!;
+    return left < right ? -1 : left > right ? 1 : 0;
+  });
 }
 
 /** The type a CALL SITE (or function value) receives from a module
@@ -1603,6 +1636,12 @@ export interface IrClassDef {
   /** Native instance to the string its inherited Symbol.toStringTag getter
    * answers, read by the runtime for an instance seen as `unknown`. */
   stringTagHelper?: string;
+  /** The class's accessor-backed members, nearest declaration first: one
+   * helper per name a `get` accessor at or above the class answers, which
+   * an instance's checked view installs so a field behind an accessor
+   * reads the value the getter answers. `member` is the accessor's IR
+   * name (`get:<name>`). */
+  viewAccessors?: { member: string; helper: string }[];
   /** Public JavaScript fields record their creation in the shared property
    * bag. Its descriptors preserve presence and insertion order independently
    * of native layout order; field values remain in their native slots. */
@@ -1831,11 +1870,24 @@ export const ZLIB_STREAM_MODES: ReadonlyMap<string, number> = new Map([
   ["ZstdDecompress", 11],
 ]);
 
+/** One declared field of a record shape. */
+export interface IrRecordField {
+  name: string;
+  type: IrType;
+  /** A checked-dynamic (`unknown`/`any`) field declared `?:` — the slot can
+   * hold the ABSENT marker (@sc_dyn_absent), so an omitted or deleted
+   * property reads absent to recordHas and every presence surface, and an
+   * explicit `undefined` stays present. Part of the shape's interned
+   * identity: `{ a?: unknown }` and `{ a: unknown }` are distinct shapes,
+   * because only the optional one can lack its key. */
+  optional?: true;
+}
+
 export interface IrRecordShape {
   /** Frontend-assigned shape id (`r0`, `r1`, ...). */
   id: string;
   /** Sorted by field name (canonical order). Types are never void. */
-  fields: { name: string; type: IrType }[];
+  fields: IrRecordField[];
   /** A TUPLE shape (`[string, number]`): fields are exactly "0".."n-1" —
    * one per position, arity = fields.length. Same struct/RC/trace emission
    * as any record; the flag changes the SURFACE (literal-index access,
@@ -3851,8 +3903,15 @@ export type IrExpr =
    * never escapes its slot. Legal only where a field slot is written
    * directly: a recordLit field value, a recordSet value, a recordClone
    * override, or a ternary arm in one of those positions. `type` is the
-   * union named by `unionId`, which has an undefined arm. Immortal. */
-  | { kind: "fieldAbsent"; unionId: string; type: IrType; loc: SrcLoc }
+   * union named by `unionId`, which has an undefined arm. Immortal.
+   *
+   * Without `unionId` it is the same state for an OPTIONAL dyn field
+   * (`optional: true` on the shape): an immortal ScrDyn of kind
+   * SCR_DYN_UNDEF that the module emits as @sc_dyn_absent when referenced.
+   * Field reads of such a slot select it to the ordinary dyn undefined, so
+   * the marker itself never escapes its slot; `type` is then the dyn type
+   * and the marker is address-distinct from scr_dyn_undefined(). */
+  | { kind: "fieldAbsent"; unionId?: string; type: IrType; loc: SrcLoc }
   /** Union construction: wrap an arm value into a fresh tagged box (the
    * frontend inserts these wherever a `B` flows into an `A | B` slot).
    * `tag` is the arm's index in the union's canonical arm list; `value` has
@@ -4497,6 +4556,7 @@ export const DYN_HANDLE_KINDS: ReadonlyMap<string, { tag: string; cls: string }>
   ["httpClientReq", { tag: "SCR_DYNH_HTTP_CLIENT", cls: "ClientRequest" }],
   ["dgramSocket", { tag: "SCR_DYNH_DGRAM_SOCKET", cls: "Socket" }],
   ["dir", { tag: "SCR_DYNH_DIR", cls: "Dir" }],
+  ["spawnRes", { tag: "SCR_DYNH_SPAWN_RES", cls: "SpawnSyncReturns" }],
   ["cryptoHash", { tag: "SCR_DYNH_HASH", cls: "Hash" }],
   ["cryptoHmac", { tag: "SCR_DYNH_HMAC", cls: "Hmac" }],
 ]);
@@ -4896,9 +4956,12 @@ export function canAdaptDynFuncTo(
 ): boolean {
   return (
     t.kind === "func" &&
-    // Checked rest and arguments packs retain all actual arguments. Typed
-
-    (t.rest !== true || t.restAbi === undefined) &&
+    // Checked rest and arguments packs retain all actual arguments; typed
+    // rest is one trailing native array in `params`, which the adapter
+    // spreads into the dyn call's argument vector element by element.
+    (t.rest !== true ||
+      t.restAbi === undefined ||
+      (t.restAbi === "typed" && t.params.at(-1)?.kind === "array")) &&
     t.params.every((p) => p.kind === "dyn" || canConvertToDyn(p, getRecord, getUnion, visiting)) &&
     (t.ret.kind === "void" ||
       t.ret.kind === "dyn" ||

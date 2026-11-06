@@ -961,21 +961,21 @@ jobs:
 
   # The packed npm installation smoke installs the darwin-arm64 CLI, which has
   # to be built from source first. That seed build lowers and emits the whole
-  # compiler: 16 to 22 minutes on a quiet hosted runner, and 35 or more when
-  # the runner fleet is busy (measured on a pull request run alongside thirty
-  # other jobs), which is longer than the contracts job's whole budget. It runs
-  # here, with its own budget and its own command timeout. The LLVM
-  # differential shards do not depend on it, so they still start as soon as
-  # native_macos finishes.
+  # compiler: 16 to 22 minutes on a quiet hosted runner, and up to 59 minutes
+  # when the runner fleet is saturated, which is longer than the contracts job's
+  # whole budget. It runs here, with its own budget and its own command
+  # timeout. The LLVM differential shards do not depend on it, so they still
+  # start as soon as native_macos finishes.
   native_cli_macos_arm64:
     needs: [validation_scope, lanes, native_macos]
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.macos == 'true' }}
     name: build (macOS arm64 native CLI)
     runs-on: macos-15
-    # The seed build has taken 16 to 35 minutes on hosted runners and was still
-    # running when the contracts job's 30-minute budget cancelled it. The step's
-    # own one-hour limit fails first, naming the command that hung.
-    timeout-minutes: 75
+    # Measured at 16 to 22 minutes on nightly hosts, 35 minutes when the build
+    # was first cut off, and 59:24 on a saturated one. The step's own limits
+    # fail first: an hour and a half of wall clock, or ten minutes without a
+    # progress line.
+    timeout-minutes: 95
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -998,7 +998,7 @@ jobs:
           # This seed only has to run the packed npm installation smoke.
           SCRIPTC_NATIVE_OPTIMIZATION: dev
         run: >-
-          node scripts/ci-run-with-timeout.mjs --timeout=3600
+          node scripts/ci-run-with-timeout.mjs --timeout=5400 --stall=600
           --label="native CLI seed build"
           -- pnpm --filter @scriptc/cli-darwin-arm64 build:native
       - name: Archive the built CLI

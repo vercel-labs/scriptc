@@ -86,6 +86,7 @@ import { refreshDescriptorGuards } from "./class-descriptors.js";
 import { ClassConstructionDispatch } from "./class-construction.js";
 import { keyedHelperName } from "./stable-names.js";
 import { DispatchSites } from "./dispatch-sites.js";
+import { checkIncremental, FixpointWorklist } from "./fixpoint-worklist.js";
 import {
   emitterRooted,
   lowerDynamicEmitterEmit,
@@ -1483,6 +1484,10 @@ export class ClassDynamicDispatch {
   private readonly constructionDispatch = new ClassConstructionDispatch();
   /** What each function's body holds for this pass and its sub-passes. */
   readonly sites = new DispatchSites();
+  /** The bodies this pass has still to discover and rewrite. Re-scanning a
+   * body's sites and rebuilding a rewritten body for every function on every
+   * fixpoint iteration made the pass superlinear in the module size. */
+  private readonly worklist = new FixpointWorklist(this.sites);
   /** Property names a delete can remove (null: any name), for the field
    * creation tracking decision. */
   private deletedNames: Set<string> | null | undefined;
@@ -2203,12 +2208,17 @@ export class ClassDynamicDispatch {
     // same name (`n.toFixed(2)` while a class declares `get toFixed()`).
     // The runtime reads fields and other own properties of class instances
     // that early itself (scr_dyn_prepare_method).
+    const getterCapsuleTable = new Map<string, string[]>();
     const getterCapsules = (method: string): string[] => {
+      let cached = getterCapsuleTable.get(method);
+      if (cached !== undefined) return cached;
       const keys = new Set<string>();
       for (const { info, capsule } of this.propertyReceivers(lowerer, true))
         if (findMethodOn(lowerer, info, `get:${method}`))
           keys.add(typeKey({ kind: "object", className: capsule.def.name }));
-      return [...keys];
+      cached = [...keys];
+      getterCapsuleTable.set(method, cached);
+      return cached;
     };
     const getterCall = (
       fn: IrFunction,
@@ -2306,11 +2316,43 @@ export class ClassDynamicDispatch {
       }
       return set;
     };
+    // Static methods matter only for methods no instance answers.
+    const staticCandidateTable = new Map<string, boolean>();
+    const staticCandidates = (method: string): boolean => {
+      let cached = staticCandidateTable.get(method);
+      if (cached !== undefined) return cached;
+      cached = [...this.boxedConstructors].some((name) => {
+        const info = lowerer.classes.get(name);
+        return !!(info && findStaticOn(lowerer, info, method)?.method);
+      });
+      staticCandidateTable.set(method, cached);
+      return cached;
+    };
+    const hasError = lowerer.classes.has("%Error");
+    /** The current value of a rewrite dependency tag: the class tables a
+     * site the last rewrite left in place waited on. */
+    const depValue = (tag: string): string => {
+      const name = tag.slice(tag.indexOf(":") + 1);
+      if (tag.startsWith("method:"))
+        return `${candidates(name).length}:${staticCandidates(name) ? 1 : 0}:${getterCapsules(name).length}:${hasError && name === "toString" ? 1 : 0}`;
+      if (tag.startsWith("member:")) return prototypeMembers.has(name) ? "1" : "0";
+      if (tag.startsWith("hint:")) return converting.has(name as ToPrimitiveHint) ? "1" : "0";
+      if (tag.startsWith("call:")) return calling.has(name as "valueOf" | "toString") ? "1" : "0";
+      if (tag === "error") return hasError ? "1" : "0";
+      throw new InternalCompilerError(`unknown rewrite dependency ${tag}`);
+    };
     for (const fn of functions) {
       // Discovery already visits every expression. Preserve bodies without
       // dispatch sites instead of rebuilding their entire typed IR tree on
       // every reachability pass. Recompute this set as new bodies appear.
       if (this.generated.has(fn) || !rewrite.has(fn)) continue;
+      // A body whose last rewrite settled, with every table it deferred on
+      // unchanged, cannot change again.
+      const settled = !this.worklist.needsRewrite(fn, depValue);
+      if (settled && !checkIncremental) continue;
+      // The tables a site this rewrite leaves in place waits on. They are
+      // re-checked on the next call, in case a later class fills them.
+      const deferred = new Set<string>();
       // The bindings a key expression reads through, and the ones a write
       // rebinds. Only a dynamic-key site asks for them, so a body without one
       // keeps its IR walk.
@@ -2753,7 +2795,13 @@ export class ClassDynamicDispatch {
             loc,
           };
         }
-        if (expr.kind === "dynKeyGet" && expr.value.kind === "dynObjLit") return expr;
+        if (expr.kind === "dynKeyGet" && expr.value.kind === "dynObjLit") {
+          // Left to the runtime unless a conversion applies; that needs a
+          // boxed class declaring one.
+          const hint = toPrimitiveHint(expr);
+          if (hint !== null) deferred.add(`hint:${hint}`);
+          return expr;
+        }
         const reflectRead = expr.kind === "libCall" && expr.fn === "dyn.reflectGet" ? expr : null;
         const reflectWrite = expr.kind === "libCall" && expr.fn === "dyn.reflectSet" ? expr : null;
         const reflect = !!reflectRead || !!reflectWrite;
@@ -3352,12 +3400,6 @@ export class ClassDynamicDispatch {
           : expr.kind === "dynInvoke"
             ? expr
             : null;
-        // Static methods matter only for methods no instance answers.
-        const staticCandidates = (method: string): boolean =>
-          [...this.boxedConstructors].some((name) => {
-            const info = lowerer.classes.get(name);
-            return info && findStaticOn(lowerer, info, method)?.method;
-          });
         if (
           invoke &&
           expr.kind === "dynInvoke" &&
@@ -3375,9 +3417,27 @@ export class ClassDynamicDispatch {
           !invoke ||
           (candidates(invoke.method).length === 0 &&
             !staticCandidates(invoke.method) &&
-            !(invoke.method === "toString" && lowerer.classes.has("%Error")))
-        )
+            !(invoke.method === "toString" && hasError))
+        ) {
+          // The rewrite leaves this site to a class table that holds nothing
+          // now. A class lowered later can fill it, so record what the site
+          // waits on: the next call revisits the body when that table
+          // answers.
+          if (invoke) deferred.add(`method:${invoke.method}`);
+          else if (expr.kind === "dynHasKey") deferred.add(`member:${expr.key}`);
+          else if (expr.kind === "libCall" && expr.fn === "dyn.valueOf")
+            deferred.add("call:valueOf");
+          else if (expr.kind === "libCall" && expr.fn === "dyn.toString")
+            deferred.add("call:toString");
+          if (
+            expr.kind === "libCall" &&
+            (expr.fn === "dyn.toString" || expr.fn === "dyn.stringConstructor")
+          )
+            deferred.add("error");
+          const hint = toPrimitiveHint(expr);
+          if (hint !== null) deferred.add(`hint:${hint}`);
           return expr;
+        }
         const key = JSON.stringify([
           invoke.method,
           invoke.args.length,
@@ -3529,9 +3589,18 @@ export class ClassDynamicDispatch {
           return rewritten;
         },
       });
+      if (settled) {
+        // The check mode: the full walk the worklist replaced.
+        if (touched)
+          throw new InternalCompilerError(`the settled rewrite of ${fn.name} changed its body`);
+        continue;
+      }
       // A body the rewrite did not change keeps its statement list, so the
       // dispatch-site summaries the pass keeps stay valid.
       if (touched) fn.body = body;
+      const recorded = new Map<string, string>();
+      for (const tag of deferred) recorded.set(tag, depValue(tag));
+      this.worklist.record(fn, recorded);
     }
     for (const [target, cast] of this.checkedCasts) {
       for (const source of this.boxed) {
@@ -3573,6 +3642,8 @@ export class ClassDynamicDispatch {
       }
     }
     for (const dispatch of this.dispatches.values()) {
+      // This body has every branch the current receiver plans and class
+      // values call for.
       for (const name of this.boxedConstructors) {
         const info = lowerer.classes.get(name);
         // The class value's property table answers a static its chain defines

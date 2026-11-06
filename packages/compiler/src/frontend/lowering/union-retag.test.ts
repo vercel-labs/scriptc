@@ -834,6 +834,21 @@ describe("checked arm conversion", () => {
     expect(planUnionRetag(from, to, shapeOf, lift, undefined, undefined, checkedLift)).toBeNull();
   });
 
+  test("an arm the ordinary width reaches keeps the checked lift off another arm", () => {
+    const to: IrUnionDef = { id: "cu4", arms: [wide, wide2, UNDEFINED_T] };
+    const widthToW = (source: IrType, target: IrType): WidthLift | null =>
+      typeEquals(source, target)
+        ? { how: "copy" }
+        : target.kind === "record" && target.shapeId === "w"
+          ? { how: "width" }
+          : null;
+    const checkedToW2 = (source: IrType, target: IrType): WidthLift | null =>
+      target.kind === "record" && target.shapeId === "w2" ? { how: "checkedWiden" } : null;
+    expect(
+      planUnionRetag(from, to, shapeOf, widthToW, undefined, undefined, checkedToW2),
+    ).toBeNull();
+  });
+
   test("an exact arm still wins over the checked lift", () => {
     const to: IrUnionDef = { id: "cu3", arms: [narrow, wide, UNDEFINED_T] };
     expect(planUnionRetag(from, to, shapeOf, lift, undefined, undefined, checkedLift)).toEqual([

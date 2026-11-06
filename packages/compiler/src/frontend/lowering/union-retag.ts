@@ -236,10 +236,16 @@ export function planUnionRetag(
       // (a narrowed `{ role: string }` arm into the wider record arm its
       // predicate claimed): exactly one destination arm may accept it, and
       // reaching that arm validates the payload before the value enters the
-      // union. Only a caller that passes `checkedLift` sees this answer, and
-      // it passes it only after the ordinary plan declined — a program that
-      // converts today never plans a checked route.
-      const checked = checkedLift === undefined ? null : uniqueCheckedArm(to, source, checkedLift);
+      // union. It answers only when no destination arm accepts the source by
+      // ordinary width. A source that reaches an arm that way is not refused
+      // for want of a destination: the ordinary plan declined because several
+      // arms fit or another selection rule did, and resolving that with a
+      // route that throws would reject a value the arm it fits would hold.
+      const ordinaryArm = to.arms.some(
+        (arm) => !isUnitType(arm) && widthLift(source, arm) !== null,
+      );
+      const checked =
+        checkedLift === undefined || ordinaryArm ? null : uniqueCheckedArm(to, source, checkedLift);
       if (checked === null) return null;
       result.push({ kind: "direct", route: checked });
       continue;

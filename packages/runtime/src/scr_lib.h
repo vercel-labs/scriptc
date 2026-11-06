@@ -53,6 +53,9 @@ const char *scr_lib_arg(int i);
 bool scr_lib_take_flag(const char *flag);
 /* process.execArgv: the flag scr_lib_take_flag took, or [] (+1, fresh). */
 ScrArr *scr_process_exec_argv(void);
+/* process.allowedNodeEnvironmentFlags: one interned set of the option
+ * names the compatibility target accepts in NODE_OPTIONS (+1 per read). */
+ScrMap *scr_process_allowed_env_flags(void);
 /* Private self-reexec marker parsed and removed from process.argv by
  * scr_lib_init. False in an ordinary parent invocation. */
 bool scr_lib_fork_info(double *target, uintptr_t *read_handle,
@@ -71,6 +74,11 @@ ScrStr *scr_process_cwd(void);      /* +1 fresh (getcwd) */
 bool scr_stdio_write(int fd, const void *data, size_t len);
 bool scr_stdio_write_str(int fd, const ScrStr *s);
 int scr_stdio_write_raw(int fd, const void *data, size_t len);
+/* process.stdout/stderr.write(text) at an untyped call site: the write
+ * method's one-string form, calling a replaced write and otherwise writing
+ * the UTF-8 of `data` (borrowed). +1 true, or false after a failed write
+ * queued the stream's error event. */
+ScrDyn *scr_stdio_write_str_dyn(double fd, const ScrStr *data);
 /* `flags` describes the chunk a patched write receives: SCR_STDIO_HOOK_WIDE
  * marks string bytes that may hold lone surrogates (they become U+FFFD when
  * they reach the stream itself), SCR_STDIO_HOOK_CONSOLE a console line
@@ -521,9 +529,7 @@ double scr_stats_big_birthtime(ScrStats *s);
 /* fstat without throwing: +1, or NULL with *error set to the errno. */
 ScrStats *scr_stats_of_fd(int fd, int *error);
 /* stat(2) following symlinks without throwing (the fs.watchFile poll):
- * +1, or NULL with *error set to the errno. Both this and scr_stats_zero
- * exist only in the SCR_FS_WATCH_FILE build of scr_lib.c, which programs
- * that poll link; every other program links the default object. */
+ * +1, or NULL with *error set to the errno. */
 ScrStats *scr_stats_poll_path(ScrStr *path, int *error);
 /* The all-zero snapshot a failed poll reports (Node's kZeroStats). +1. */
 ScrStats *scr_stats_zero(void);

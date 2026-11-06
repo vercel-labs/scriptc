@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8701-js-setter-implicit-any.js"
+ ],
+ "diags": []
+}

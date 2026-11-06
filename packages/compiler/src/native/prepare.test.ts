@@ -11,7 +11,7 @@ import { runFrontend, type FrontendFactory } from "../frontend/pipeline.js";
 import { loadProgram } from "../frontend/program-node.js";
 import { ts7Executable } from "../frontend/ts7/rpc-api.js";
 import { deserializeModule } from "../ir/serialize.js";
-import { NativeCache } from "./cache.js";
+import { NativeCache, partsDigest } from "./cache.js";
 import { prepareNativeExecutable } from "./prepare.js";
 import type { NativeToolchain } from "./toolchain.js";
 
@@ -203,6 +203,7 @@ test("timing, cache placement and emission worker variables keep the frontend ou
     "SCRIPTC_CACHE_DIR",
     "SCRIPTC_CACHE_MAX_MB",
     "SCRIPTC_EMIT_WORKERS",
+    "SCRIPTC_EMIT_WORKER_FAIL",
     "SCRIPTC_EMIT_WORKER_FUNCTIONS",
     "SCRIPTC_TIMING",
     "SCRIPTC_TEST_FRONTEND_KEY",
@@ -213,6 +214,7 @@ test("timing, cache placement and emission worker variables keep the frontend ou
   vi.stubEnv("SCRIPTC_CACHE_DIR", f.cache.root);
   vi.stubEnv("SCRIPTC_CACHE_MAX_MB", "8192");
   vi.stubEnv("SCRIPTC_EMIT_WORKERS", "1");
+  vi.stubEnv("SCRIPTC_EMIT_WORKER_FAIL", "all");
   vi.stubEnv("SCRIPTC_EMIT_WORKER_FUNCTIONS", "100");
   vi.stubEnv("SCRIPTC_TIMING", "0");
   expect(f.prepare().ok).toBe(true);
@@ -236,13 +238,35 @@ test("serialized IR travels as bounded parts through the frontend cache", () => 
   const family = join(f.cache.root, "frontend");
   const key = readdirSync(family).find((name) => /^[0-9a-f]{64}$/.test(name))!;
   const payload = JSON.parse(readFileSync(join(family, key), "utf8"));
-  expect(payload.schema).toBe("scriptc.native-frontend.v3");
+  expect(payload.schema).toBe("scriptc.native-frontend.v4");
   // The placeholders keep NativeExecutableInput's member types: the native
   // compiler checks the parsed entry against them when it reads it back.
   expect(payload.input.llvm).toEqual([]);
   expect(payload.input.ir).toBeNull();
-  expect(payload.llvm).toBe(first.llvm.join(""));
+  expect(payload.input.llvmDigest).toBeUndefined();
+  // The LLVM text is its own entry, named by its digest.
+  expect(payload.llvm).toBe(partsDigest(first.llvm));
+  expect(readFileSync(join(f.cache.root, "frontend-llvm", payload.llvm), "utf8")).toBe(
+    first.llvm.join(""),
+  );
   expect(payload.ir).toEqual(first.ir);
+  expect(warm.ok && warm.llvmDigest).toBe(payload.llvm);
+});
+
+test("an LLVM text entry that is missing or does not match its digest causes a rebuild", () => {
+  const f = fixture();
+  const first = f.prepare();
+  expect(first.ok, JSON.stringify(first)).toBe(true);
+  if (!first.ok) return;
+  const family = join(f.cache.root, "frontend-llvm");
+  const digest = partsDigest(first.llvm);
+  writeFileSync(join(family, digest), first.llvm.join("") + "\n");
+  const rebuilt = f.prepare();
+  expect(f.loads()).toBe(2);
+  expect(text(rebuilt)).toEqual(text(first));
+  rmSync(join(family, digest));
+  expect(f.prepare().ok).toBe(true);
+  expect(f.loads()).toBe(3);
 });
 
 test("an x86-64 level is refused for targets that are not x86-64 before the frontend runs", () => {

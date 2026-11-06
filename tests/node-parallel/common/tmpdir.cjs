@@ -3,6 +3,7 @@
 // beside test/parallel, with the semantics of Node's helper.
 const fs = require("fs");
 const path = require("path");
+const { pathToFileURL } = require("url");
 
 const testRoot = path.resolve(__dirname, "..");
 let tmpPath = path.join(testRoot, `.tmp.${process.env.TEST_SERIAL_ID || process.env.TEST_THREAD_ID || "0"}`);
@@ -24,7 +25,18 @@ function resolve(...paths) {
   return path.resolve(tmpPath, ...paths);
 }
 
+function hasEnoughSpace(size) {
+  const { bavail, bsize } = fs.statfsSync(tmpPath);
+  return bavail >= Math.ceil(size / bsize);
+}
+
+function fileURL(...paths) {
+  return pathToFileURL(resolve(...paths));
+}
+
 module.exports = {
+  fileURL,
+  hasEnoughSpace,
   refresh,
   resolve,
   get path() {

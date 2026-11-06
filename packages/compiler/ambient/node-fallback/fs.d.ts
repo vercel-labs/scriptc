@@ -471,8 +471,9 @@ declare module "node:fs" {
   ): BigIntStats;
   export function lstatSync(path: string | URL, options: StatSyncOptions): Stats | undefined;
   /* The fd pair behind spawn's fd-stdio form: openSync(path, flags) →
-   * the raw fd. Numeric flags use an inline OR of the O_* constants. */
-  export function openSync(path: string | URL, flags: string): number;
+   * the raw fd. Numeric flags use an inline OR of the O_* constants. The
+   * mode is open(2)'s creation mode and applies to both flag forms. */
+  export function openSync(path: string | URL, flags: string, mode?: number): number;
   export function openSync(path: string | URL, flags: number, mode?: number): number;
   export function closeSync(fd: number): void;
   export function fdatasyncSync(fd: number): void;

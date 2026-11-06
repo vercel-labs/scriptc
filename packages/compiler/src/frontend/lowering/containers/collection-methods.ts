@@ -20,6 +20,7 @@ import {
   type IrFunction,
   type IrLocal,
   type IrMapIntrinsicMethod,
+  type IrParam,
   type IrSetIntrinsicMethod,
   type IrStmt,
   type IrType,
@@ -48,6 +49,7 @@ import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "../opti
 import {
   collectionInput,
   collectionDestinationMatches,
+  dynCollectionSeed,
   ingestCollection,
   lowerCollectionInput,
 } from "../collection-ingestion.js";
@@ -107,6 +109,21 @@ function lowerCollectionForEachDyn(
   };
 }
 
+/** The collection arm of a unit-armed union — `Map | undefined`, the
+ * layout of a JS class field first assigned below the constructor's top
+ * level. Null unless the non-unit arm is exactly one Map (or Set) and every
+ * other arm is a unit: the runtime presence check below then narrows it. */
+function unitArmedCollectionArm(
+  lowerer: Lowerer,
+  type: IrType | null | undefined,
+  kind: "map" | "set",
+): IrType | null {
+  if (type?.kind !== "union") return null;
+  const arms = lowerer.unions.get(type.unionId)?.arms ?? [];
+  const arm = arms.find((a) => a.kind === kind);
+  return arm && arms.every((a) => a === arm || isUnitType(a)) ? arm : null;
+}
+
 /** Ambient Map method calls. `get`/`set`/`has`/`delete`/`clear` lower to
  * mapIntrinsic; `forEach` desugars to a direct call of a synthetic loop
  * function over the iteration primitives (lowerMapForEachCall). Null when
@@ -129,6 +146,7 @@ export function lowerMapMethodCall(
       probedUntyped = true;
     }
   }
+  if (receiverIr?.kind !== "map") receiverIr = unitArmedCollectionArm(lowerer, receiverIr, "map");
   if (receiverIr?.kind !== "map") return null;
   // Collection views can refine has() while retaining its native ABI.
   if (!probedUntyped && !lowerer.isStdlibMember(access) && name !== "has") return null;
@@ -154,18 +172,13 @@ export function lowerMapMethodCall(
       "the lowered set() produces no value — call each set(k, v) as its own statement",
     );
   }
-  // The lib declares a thisArg parameter on forEach; a typed source cannot
-  // express it (fenced). A JavaScript source lowers it through the
-  // checked-dynamic forEach, which passes it to the callback.
-  if (
-    name === "forEach" &&
-    call.arguments.nodes.length !== 1 &&
-    !isJsSourceFile(ts.getSourceFileOfNode(call))
-  ) {
+  // The lib declares a thisArg parameter on forEach: the callback and an
+  // optional thisArg lower; a longer call stays a truthful refusal.
+  if (name === "forEach" && call.arguments.nodes.length > 2) {
     lowerer.noLowering(
       `.forEach with ${call.arguments.nodes.length} arguments`,
       call,
-      "the thisArg parameter has no lowering — use an arrow function",
+      "the supported form takes the callback and an optional thisArg",
     );
   }
 
@@ -607,14 +620,23 @@ export function lowerMapForEachCall(
   // JS's forEach does.
   const arity = fnArg.type.params.length;
   const fnRet = fnArg.type.ret;
-  const key = `${typeKey(mapT.key)}:${typeKey(mapT.value)}:${arity}:${typeKey(fnRet)}`;
+  const thisArg = collectionForEachThisArg(lowerer, call);
+  const key = `${typeKey(mapT.key)}:${typeKey(mapT.value)}:${arity}:${typeKey(fnRet)}${thisArg ? ":this" : ""}`;
   let helper = lowerer.mapHofHelpers.get(key);
   if (!helper) {
     helper = keyedHelperName(lowerer, "%map.forEach", key);
     lowerer.mapHofHelpers.set(key, helper);
-    lowerer.liftedFns.push(buildCollectionForEachFn(helper, mapT, arity, fnRet, loc));
+    lowerer.liftedFns.push(
+      buildCollectionForEachFn(helper, mapT, arity, fnRet, loc, thisArg !== null),
+    );
   }
-  return { kind: "call", callee: helper, args: [receiver, fnArg], type: VOID, loc };
+  return {
+    kind: "call",
+    callee: helper,
+    args: [receiver, fnArg, ...(thisArg ? [thisArg] : [])],
+    type: VOID,
+    loc,
+  };
 }
 
 /** True when an arrow's expression body is lowered as a statement: the
@@ -691,6 +713,7 @@ export function lowerSetMethodCall(
       probedUntyped = true;
     }
   }
+  if (receiverIr?.kind !== "set") receiverIr = unitArmedCollectionArm(lowerer, receiverIr, "set");
   if (receiverIr?.kind !== "set") return null;
   // A collection interface may refine has() into a type predicate.
   // Type mapping checked that view's native ABI; the value check below
@@ -709,15 +732,11 @@ export function lowerSetMethodCall(
       "the lowered add() produces no value — call each add(v) as its own statement",
     );
   }
-  if (
-    name === "forEach" &&
-    call.arguments.nodes.length !== 1 &&
-    !isJsSourceFile(ts.getSourceFileOfNode(call))
-  ) {
+  if (name === "forEach" && call.arguments.nodes.length > 2) {
     lowerer.noLowering(
       `.forEach with ${call.arguments.nodes.length} arguments`,
       call,
-      "the thisArg parameter has no lowering — use an arrow function",
+      "the supported form takes the callback and an optional thisArg",
     );
   }
   if (COLLECTION_ITERATOR_METHODS.has(name)) {
@@ -799,14 +818,23 @@ export function lowerSetForEachCall(
   }
   const arity = fnArg.type.params.length;
   const fnRet = fnArg.type.ret;
-  const key = `${typeKey(setT.elem)}:${arity}:${typeKey(fnRet)}`;
+  const thisArg = collectionForEachThisArg(lowerer, call);
+  const key = `${typeKey(setT.elem)}:${arity}:${typeKey(fnRet)}${thisArg ? ":this" : ""}`;
   let helper = lowerer.setHofHelpers.get(key);
   if (!helper) {
     helper = keyedHelperName(lowerer, "%set.forEach", key);
     lowerer.setHofHelpers.set(key, helper);
-    lowerer.liftedFns.push(buildCollectionForEachFn(helper, setT, arity, fnRet, loc));
+    lowerer.liftedFns.push(
+      buildCollectionForEachFn(helper, setT, arity, fnRet, loc, thisArg !== null),
+    );
   }
-  return { kind: "call", callee: helper, args: [receiver, fnArg], type: VOID, loc };
+  return {
+    kind: "call",
+    callee: helper,
+    args: [receiver, fnArg, ...(thisArg ? [thisArg] : [])],
+    type: VOID,
+    loc,
+  };
 }
 
 /** The ES2025 Set composition methods (union/intersection/difference/
@@ -1180,6 +1208,36 @@ function dynCollectionsSeedPreservesIdentity(t: IrType): boolean {
   return t.kind === "array" && scalar(t.elem);
 }
 
+/** `new Set(dyn ?? fallback)` / `new Map(dyn ?? fallback)`: the checked-
+ * dynamic left selects the lazy fallback exactly when it is nullish and
+ * otherwise seeds from the dynamic iterable. The left lowers once. */
+function dynSeedOrFallback(
+  lowerer: Lowerer,
+  source: IrExpr,
+  destination: IrType & { kind: "map" | "set" },
+  fallback: () => IrExpr | null,
+  loc: SrcLoc,
+): IrExpr | null {
+  const other = fallback();
+  if (!other) return null;
+  const saved = lowerer.declareHiddenLocal("%dynSeed", DYN);
+  const ref = varRef(saved.id, DYN, loc);
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: saved.id, init: source, loc }],
+    result: {
+      kind: "ternary",
+      cond: { kind: "dynTest", test: "nullish", value: ref, type: BOOL, loc },
+      then: other,
+      else_: dynCollectionSeed(lowerer, ref, destination, loc),
+      type: destination,
+      loc,
+    },
+    type: destination,
+    loc,
+  };
+}
+
 /** Consume a Set seed immediately, including optional inherited sets used
  * by compiler tables. Nullish seeds construct empty sets; a lazy fallback
  * consumes its evaluated branch even when it reassigns the source binding. */
@@ -1242,6 +1300,14 @@ export function lowerSetSeedNew(
       const selected = lowerSetSeedNew(lowerer, fallback, setT);
       return selected ? defaultAfterUndefined(source, selected) : null;
     }
+    if (source.type.kind === "dyn")
+      return dynSeedOrFallback(
+        lowerer,
+        source,
+        setT,
+        () => lowerSetSeedNew(lowerer, fallback, setT),
+        loc,
+      );
     return setFromSeedValue(lowerer, source, setT, () => lowerSetSeedNew(lowerer, fallback, setT));
   }
   if (ts.isConditionalExpression(node)) {
@@ -1309,6 +1375,11 @@ export function lowerSetSeedNew(
       loc,
     };
   }
+  // A declared collection view whose element layout differs from the
+  // destination cannot keep element identity, so refuse it rather than let
+  // the dynamic seed convert (or fail) at run time. The Map seed refuses the
+  // same shape (collection-ingestion's destination check).
+  if (input && !collectionDestinationMatches(lowerer, input, setT)) return null;
   if (declared?.kind === "array" && typeEquals(declared.elem, setT.elem)) {
     // Preserve the existing checked scalar-iterable bridge. Reference
     // elements must retain identity and cannot enter via a copying exit.
@@ -1404,6 +1475,9 @@ function setFromSeedValue(
     const drained = generatorDrain(lowerer, generator, setT.elem, loc);
     return drained ? { kind: "setNew", seed: drained, type: setT, loc } : null;
   }
+  // A checked-dynamic iterable: step the dynamic iterator protocol once and
+  // add every value the element type checks into.
+  if (source.type.kind === "dyn") return dynCollectionSeed(lowerer, source, setT, loc);
   let seed: IrExpr;
   if (source.type.kind === "set" && typeEquals(source.type, setT)) {
     return { kind: "setIntrinsic", method: "clone", receiver: source, args: [], type: setT, loc };
@@ -1481,6 +1555,14 @@ export function lowerMapSeedNew(
       const fallback = lowerMapSeedNew(lowerer, argNode.right, mapT);
       return fallback ? defaultAfterUndefined(source, fallback) : null;
     }
+    if (source.type.kind === "dyn")
+      return dynSeedOrFallback(
+        lowerer,
+        source,
+        mapT,
+        () => lowerMapSeedNew(lowerer, argNode.right, mapT),
+        locOf(argNode),
+      );
     if (source.type.kind !== "union") return mapFromSeedValue(lowerer, source, mapT);
     const arms = lowerer.unions.get(source.type.unionId)?.arms;
     if (!arms) return null;
@@ -1669,10 +1751,13 @@ export function mapFromSeedValue(
     return { kind: "mapIntrinsic", method: "clone", receiver: seed, args: [], type: mapT, loc };
   }
 
+  // A checked-dynamic iterable: step the dynamic iterator protocol once and
+  // set every entry's checked key and value into native storage.
+  if (seed.type.kind === "dyn") return dynCollectionSeed(lowerer, seed, mapT, loc);
+
   if (
-    seed.type.kind === "dyn" ||
-    (seed.type.kind === "array" &&
-      !(seed.type.elem.kind === "record" && lowerer.shapes.get(seed.type.elem.shapeId)?.tuple))
+    seed.type.kind === "array" &&
+    !(seed.type.elem.kind === "record" && lowerer.shapes.get(seed.type.elem.shapeId)?.tuple)
   ) {
     const key = `checked-seed:${typeKey(mapT)}`;
     let name = lowerer.mapHofHelpers.get(key);
@@ -1763,8 +1848,7 @@ export function mapFromSeedValue(
         loc,
       });
     }
-    const source: IrExpr =
-      seed.type.kind === "dyn" ? seed : { kind: "dynFrom", value: seed, type: DYN, loc };
+    const source: IrExpr = { kind: "dynFrom", value: seed, type: DYN, loc };
     return { kind: "call", callee: name, args: [source], type: mapT, loc };
   }
   if (seed.type.kind !== "array" || seed.type.elem.kind !== "record") return null;
@@ -1851,6 +1935,15 @@ function buildMapSeedFn(
   };
 }
 
+/** The optional thisArg of a `forEach(callback, thisArg)` call, lowered as
+ * the checked-dynamic value the helper passes as the callback's call-site
+ * receiver. Null when the call has none, which keeps the two-slot helper
+ * frame and the callback's ambient `this`, exactly as before. */
+function collectionForEachThisArg(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
+  const node = call.arguments.nodes[1];
+  return node === undefined ? null : lowerer.lowerExprExpecting(node, DYN);
+}
+
 /** Map and Set forEach share live iteration and exception cleanup. Preserve
  * Map's (value, key) reads and Set's repeated value argument; neither reads
  * an entry that the callback's declared arity does not consume. iterCount is
@@ -1863,6 +1956,7 @@ function buildCollectionForEachFn(
   arity: number,
   fnRet: IrType,
   loc: SrcLoc,
+  withThis = false,
 ): IrFunction {
   const valueT = collectionT.kind === "map" ? collectionT.value : collectionT.elem;
   const fnT = funcOf(
@@ -1890,6 +1984,14 @@ function buildCollectionForEachFn(
     { id: "f.0", name: "f", type: fnT, mutable: true },
     { id: "i.0", name: "i", type: F64, mutable: true },
   ];
+  const params: IrParam[] = [
+    { localId: "m.0", name: "m", type: collectionT },
+    { localId: "f.0", name: "f", type: fnT },
+  ];
+  if (withThis) {
+    locals.push({ id: "t.0", name: "t", type: DYN, mutable: false });
+    params.push({ localId: "t.0", name: "t", type: DYN });
+  }
   const visitBody: IrStmt[] = [];
   const callArgs: IrExpr[] = [];
   if (arity >= 1) {
@@ -1925,7 +2027,14 @@ function buildCollectionForEachFn(
   }
   visitBody.push({
     kind: "exprStmt",
-    expr: { kind: "callValue", callee: varRef("f.0", fnT, loc), args: callArgs, type: fnRet, loc },
+    expr: {
+      kind: "callValue",
+      callee: varRef("f.0", fnT, loc),
+      args: callArgs,
+      ...(withThis ? { receiver: varRef("t.0", DYN, loc) as IrExpr } : {}),
+      type: fnRet,
+      loc,
+    },
     loc,
   });
   const loop = countedFor(loc, iter("iterCount", [], F64), () => [
@@ -1933,10 +2042,7 @@ function buildCollectionForEachFn(
   ]);
   return {
     name,
-    params: [
-      { localId: "m.0", name: "m", type: collectionT },
-      { localId: "f.0", name: "f", type: fnT },
-    ],
+    params,
     returnType: VOID,
     locals,
     body: [

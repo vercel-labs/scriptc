@@ -7,6 +7,17 @@
 
 /* ── console ──────────────────────────────────────────────────────────── */
 
+/* Build-time stdout policy (`--stdout-buffering`): the program object defines
+ * scr_stdout_buffering = 1, overriding the runtime's weak 0. When it is set
+ * and fd 1 is not a terminal, JavaScript-visible stdout bytes stay in the
+ * runtime's buffer until the buffer fills or the runtime settles them at an
+ * observable boundary — a stderr write, the event loop's sleep, a blocking
+ * stdin read, process.kill, process.exit, an uncaught exception, or exit. */
+extern const unsigned char scr_stdout_buffering;
+/* Submit buffered JavaScript-visible stdout. A no-op when the build did not
+ * opt in or stdout is a terminal. */
+void scr_stdout_settle(void);
+
 enum {
   SCR_ARG_F64,  /* a number argument: inspect rendering (-0 prints "-0") */
   SCR_ARG_STR,  /* a string, verbatim */
@@ -60,6 +71,7 @@ void scr_console_group(double delta);
 void scr_console_clear(void);
 void scr_console_table(ScrDyn *data, ScrDyn *properties);
 ScrStr *scr_console_dir_dyn(ScrDyn *value, double depth);
+ScrStr *scr_console_dir_hidden(ScrDyn *value, double depth);
 /* console.table's cell rendering (scr_inspect.c): Node's _inspect — depth
  * 0 (-1 for objects with more than two keys), maxArrayLength 3, breakLength
  * Infinity. +1. */

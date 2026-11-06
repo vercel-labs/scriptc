@@ -24,6 +24,7 @@ import {
   isUnitType,
   typeEquals,
   type IrExpr,
+  type IrRecordField,
   type IrStmt,
   type IrType,
   type SrcLoc,
@@ -229,10 +230,21 @@ function keepAbsence(
   lowerer: Lowerer,
   input: IrExpr,
   shapeId: string,
-  field: { name: string; type: IrType },
+  field: IrRecordField,
   value: IrExpr,
   loc: SrcLoc,
 ): IrExpr {
+  // An optional checked-dynamic field has its own ABSENT state: a source
+  // that lacks it keeps it absent in the copy too.
+  if (field.optional === true && field.type.kind === "dyn")
+    return {
+      kind: "ternary",
+      cond: { kind: "recordHas", obj: input, shapeId, field: field.name, type: BOOL, loc },
+      then: value,
+      else_: { kind: "fieldAbsent", type: field.type, loc },
+      type: field.type,
+      loc,
+    };
   if (field.type.kind !== "union") return value;
   if (!lowerer.unions.get(field.type.unionId)?.arms.some((arm) => arm.kind === "undefinedT"))
     return value;

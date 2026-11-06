@@ -44,7 +44,6 @@ const localized = (1234.5).toLocaleString("de-DE");
 const nums = [1, 2, 3];
 const found = nums.indexOf(2, 1); // the fromIndex overload lowers
 const joined = nums.join(); // the omitted separator lowers
-nums.forEach((x) => console.log(x), { unused: true }); // thisArg stays fenced
 const pos = "abc".includes("b", 1); // the position form lowers now (indexOf's clamp)
 const rev = JSON.parse("1", (_k, v) => v);
 // (stringify with a null replacer + LITERAL space now lowers — the pretty
@@ -71,8 +70,8 @@ function pick(a: string | number, b: number | boolean): boolean {
 }
 const picked = pick(1, 2);
 
-// Related classes may store one object under different union tags. A
-// structural arm beside them leaves no identity-preserving comparison.
+// A union of a class, its subclass and a structural member stores the base
+// class, so comparisons of its values keep identity.
 class FenceBase {
   id = 1;
 }

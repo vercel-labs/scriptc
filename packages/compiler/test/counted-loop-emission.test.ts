@@ -281,11 +281,13 @@ test("worker programs poll no loop whose proven ranges bound its runs inside ano
     const ll = emitLlvmModule(deserializeModule(await readFile(outPath, "utf8")), {
       targetTriple: "x86_64-unknown-linux-gnu",
     });
+    // The function's text, including its int32 clone and the copies a
+    // loop-bound parameter splits the body into (parameter-versions.ts).
     const body = (name: string): string =>
       [
         ...ll.matchAll(
           new RegExp(
-            `define internal [^\\n]+ @sc_b?f_${name}(?:\\.i32)?\\([^\\n]*\\n([\\s\\S]*?)\\n\\}`,
+            `define internal [^\\n]+ @sc_b?f_${name}(?:\\.i32|_int32Params(?:\\.i32)?|_int32Fallback(?:\\.i32)?)?\\([^\\n]*\\n([\\s\\S]*?)\\n\\}`,
             "g",
           ),
         ),
@@ -313,10 +315,10 @@ test("worker programs poll no loop whose proven ranges bound its runs inside ano
     expect(open).toMatch(/^loop\.poll\.run\d+:$/m);
     // The body the version leaves runs for other arguments and emits each
     // loop once: its loops poll without strip-mining.
-    const generic = body("open");
-    expect(polls(generic)).toBeGreaterThan(polls(rows));
-    expect(generic).not.toMatch(/^loop\.end\d+:$/m);
-    expect(generic).not.toMatch(/^loop\.poll\.run\d+:$/m);
+    const fallback = body("open_int32Fallback");
+    expect(fallback).toMatch(/^loop\.poll\d+:$/m);
+    expect(fallback).not.toMatch(/^loop\.end\d+:$/m);
+    expect(fallback).not.toMatch(/^loop\.poll\.run\d+:$/m);
     // Steps of 1 below 2^53 are exact, so 50 runs near it are bounded. From
     // 2^53, `j + 1 === j`: a counter ranging up to it can run without end
     // and keeps its poll.
@@ -547,11 +549,13 @@ test("worker programs run short runs of small innermost loops inside another loo
     const ll = emitLlvmModule(deserializeModule(await readFile(outPath, "utf8")), {
       targetTriple: "x86_64-unknown-linux-gnu",
     });
+    // The function's text, including its int32 clone and the copies a
+    // loop-bound parameter splits the body into (parameter-versions.ts).
     const body = (name: string): string =>
       [
         ...ll.matchAll(
           new RegExp(
-            `define internal [^\\n]+ @sc_b?f_${name}(?:\\.i32)?\\([^\\n]*\\n([\\s\\S]*?)\\n\\}`,
+            `define internal [^\\n]+ @sc_b?f_${name}(?:\\.i32|_int32Params(?:\\.i32)?|_int32Fallback(?:\\.i32)?)?\\([^\\n]*\\n([\\s\\S]*?)\\n\\}`,
             "g",
           ),
         ),

@@ -1,7 +1,13 @@
 import { describe, expect, test } from "vitest";
 import { IR_VERSION } from "./serialize.js";
-import { BOOL, DYN, STRING, VOID, arrayOf, type IrModule, type IrLibFn } from "./ir.js";
-import { moduleRuntimeFeatures, moduleUsesHttp2, moduleUsesTlsCa } from "./runtime-features.js";
+import { DYN, STRING, VOID, arrayOf, type IrExpr, type IrModule, type IrLibFn } from "./ir.js";
+import {
+  JS_OBJECT_MODEL_LIB_FNS,
+  jsObjectModelFact,
+  moduleRuntimeFeatures,
+  moduleUsesHttp2,
+  moduleUsesTlsCa,
+} from "./runtime-features.js";
 
 describe("runtime feature snapshots", () => {
   const loc = { file: "features.ts", start: 0, end: 0 };
@@ -42,6 +48,12 @@ describe("runtime feature snapshots", () => {
     expect(moduleUsesHttp2(mod)).toBe(false);
   });
 
+  test("links the inspect unit for a BigInt rendered in Node's form", () => {
+    const mod = module();
+    mod.functions[0]!.body.push(call("bigint.inspect"));
+    expect(moduleRuntimeFeatures(mod)).toMatchObject({ bigint: true, inspect: true });
+  });
+
   test("gates the BigIntStats unit on its member reads, not on bigint", () => {
     const reads = module();
     reads.functions[0]!.body.push(call("bigstats.size"));
@@ -55,6 +67,38 @@ describe("runtime feature snapshots", () => {
       type: { kind: "bigint" },
     });
     expect(moduleRuntimeFeatures(storage)).toMatchObject({ bigint: true, bigstats: false });
+  });
+
+  test("selects the fetch unit's Blob/File body build only for programs that build one", () => {
+    const plain = module();
+    plain.functions[0]!.body.push(call("fetch.input"));
+    expect(moduleRuntimeFeatures(plain)).toMatchObject({ fetch: true, webBodies: false });
+
+    const blob = module();
+    blob.functions[0]!.body.push(call("blob.new"), call("fetch.input"));
+    expect(moduleRuntimeFeatures(blob)).toMatchObject({ fetch: true, webBodies: true });
+  });
+
+  test("gates the call-time parameter bind unit on a barriered generator", () => {
+    const mod = module();
+    const generator = (bindAtCall: boolean): IrModule["functions"][number] => ({
+      name: bindAtCall ? "pick" : "plain",
+      params: [],
+      locals: [],
+      returnType: VOID,
+      body: [],
+      loc,
+      generator: {
+        yieldT: STRING,
+        nextT: VOID,
+        resultType: { kind: "record", shapeId: "gen-result" },
+        ...(bindAtCall ? { bindAtCall: true as const } : {}),
+      },
+    });
+    mod.functions.push(generator(false));
+    expect(moduleRuntimeFeatures(mod).genBind).toBe(false);
+    mod.functions.push(generator(true));
+    expect(moduleRuntimeFeatures(mod).genBind).toBe(true);
   });
 
   test("keeps legacy HTTP/2 calls and isolated CA inspection out of the HTTP/2 unit", () => {
@@ -191,168 +235,304 @@ describe("runtime feature snapshots", () => {
     }
   });
 
-  test("gates the fs read's Buffer brand on a typed read plus an observable brand", () => {
-    const bytes = { kind: "bytes" as const, elem: "u8" as const };
-    const data = { kind: "varRef" as const, localId: "data", type: bytes, loc };
-    const withRead = (): IrModule => {
-      const mod = module();
-      mod.functions[0]!.locals.push({ id: "data", name: "data", mutable: false, type: bytes });
-      mod.functions[0]!.body.push({
-        kind: "exprStmt",
-        loc,
-        expr: { kind: "libCall", fn: "fs.readFileSyncBytes", args: [], type: bytes, loc },
-      });
-      return mod;
-    };
-    // A read alone keeps the default scr_lib.c object.
-    expect(moduleRuntimeFeatures(withRead()).fsBufferBrand).toBe(false);
-    // Buffer.isBuffer on bytes reads the brand.
-    const branded = withRead();
-    branded.functions[0]!.body.push({
-      kind: "exprStmt",
-      loc,
-      expr: { kind: "libCall", fn: "buffer.isBranded", args: [data], type: BOOL, loc },
+  test("the generic Promise statics link the units their algorithms call", () => {
+    // The implementing unit calls C's resolve and the iterable's next/return
+    // through scr_dyn_invoke and builds and settles capability promises with
+    // scr_async_dyn: a program that makes only this call still links both, or
+    // the source build fails to link.
+    const mod = module();
+    mod.functions[0]!.body.push(call("promise.genericStatic"));
+    expect(moduleRuntimeFeatures(mod)).toMatchObject({
+      promiseGeneric: true,
+      dynInvoke: true,
+      dynAsync: true,
     });
-    expect(moduleRuntimeFeatures(branded).fsBufferBrand).toBe(true);
-    // inspect of a Uint8Array-typed bytes value renders the Buffer form.
-    const inspected = withRead();
-    inspected.functions[0]!.body.push({
-      kind: "exprStmt",
-      loc,
-      expr: { kind: "libCall", fn: "insp.bytes", args: [data], type: STRING, loc },
-    });
-    expect(moduleRuntimeFeatures(inspected).fsBufferBrand).toBe(true);
-    // Boxing to dyn (unknown, .constructor, instanceof) carries the brand.
-    const boxed = withRead();
-    boxed.functions[0]!.body.push({
-      kind: "exprStmt",
-      loc,
-      expr: { kind: "dynFrom", type: DYN, loc, value: data },
-    });
-    expect(moduleRuntimeFeatures(boxed).fsBufferBrand).toBe(true);
-    // A function returning bytes boxed into dyn: its call thunk boxes the
-    // result.
-    const reader = { kind: "func" as const, params: [], ret: bytes };
-    const boxedReader = withRead();
-    boxedReader.functions[0]!.locals.push({
-      id: "reader",
-      name: "reader",
-      mutable: false,
-      type: reader,
-    });
-    boxedReader.functions[0]!.body.push({
-      kind: "exprStmt",
-      loc,
-      expr: {
-        kind: "dynFrom",
-        type: DYN,
-        loc,
-        value: { kind: "varRef", localId: "reader", type: reader, loc },
-      },
-    });
-    expect(moduleRuntimeFeatures(boxedReader).fsBufferBrand).toBe(true);
-    // A checked-dynamic function typed to take bytes: its thunk boxes the
-    // argument.
-    const consumer = { kind: "func" as const, params: [bytes], ret: VOID };
-    const checkedConsumer = withRead();
-    checkedConsumer.functions[0]!.body.push({
-      kind: "exprStmt",
-      loc,
-      expr: {
-        kind: "dynCheck",
-        type: consumer,
-        loc,
-        value: { kind: "varRef", localId: "callback", type: DYN, loc },
-      },
-    });
-    expect(moduleRuntimeFeatures(checkedConsumer).fsBufferBrand).toBe(true);
   });
 
-  test("gates the Buffer brand off without a typed read", () => {
-    const bytes = { kind: "bytes" as const, elem: "u8" as const };
-    // A dynamic read brands through scr_dyn_new_buffer already.
-    const dynamic = module();
-    dynamic.functions[0]!.body.push(call("fs.readFileSyncDyn"));
-    dynamic.functions[0]!.body.push({
-      kind: "exprStmt",
-      loc,
-      expr: {
-        kind: "dynTest",
-        test: "buffer",
-        value: { kind: "varRef", localId: "data", type: DYN, loc },
-        type: BOOL,
-        loc,
-      },
-    });
-    expect(moduleRuntimeFeatures(dynamic).fsBufferBrand).toBe(false);
-    // Observing bytes that no typed read produced selects nothing.
-    const observationOnly = module();
-    observationOnly.functions[0]!.locals.push({
-      id: "data",
-      name: "data",
-      mutable: false,
-      type: bytes,
-    });
-    observationOnly.functions[0]!.body.push({
-      kind: "exprStmt",
-      loc,
-      expr: { kind: "libCall", fn: "buffer.isBranded", args: [], type: BOOL, loc },
-    });
-    expect(moduleRuntimeFeatures(observationOnly).fsBufferBrand).toBe(false);
-  });
-
-  test("reaches bytes through nested and recursive declarations", () => {
-    const bytes = { kind: "bytes" as const, elem: "u8" as const };
-    const boxedShape = (records: NonNullable<IrModule["records"]>, shapeId: string): IrModule => {
+  test("constant-key reads of inherited method names link the dyn-invoke unit", () => {
+    const reads = (key: string): IrModule => {
       const mod = module();
-      mod.functions[0]!.body.push({
-        kind: "exprStmt",
-        loc,
-        expr: { kind: "libCall", fn: "fs.readFileSyncBytes", args: [], type: bytes, loc },
-      });
-      mod.records = records;
-      const shape = { kind: "record" as const, shapeId };
-      mod.functions[0]!.locals.push({ id: "shape", name: "shape", mutable: false, type: shape });
       mod.functions[0]!.body.push({
         kind: "exprStmt",
         loc,
         expr: {
-          kind: "dynFrom",
+          kind: "dynKeyGet",
+          value: { kind: "varRef", localId: "value", type: DYN, loc },
+          key: { kind: "strLit", value: key, type: STRING, loc },
           type: DYN,
           loc,
-          value: { kind: "varRef", localId: "shape", type: shape, loc },
         },
       });
       return mod;
     };
-    // A record holding a record that holds bytes.
-    const nested = boxedShape(
-      [
-        { id: "r0", fields: [{ name: "inner", type: { kind: "record", shapeId: "r1" } }] },
-        { id: "r1", fields: [{ name: "data", type: bytes }] },
-      ],
-      "r0",
-    );
-    expect(moduleRuntimeFeatures(nested).fsBufferBrand).toBe(true);
-    // A record that refers to itself and holds bytes.
-    const recursive = boxedShape(
-      [
+    for (const key of ["toString", "slice", "map", "findLastIndex"])
+      expect(moduleRuntimeFeatures(reads(key)).dynInvoke, key).toBe(true);
+    for (const key of ["length", "name", "nope"])
+      expect(moduleRuntimeFeatures(reads(key)).dynInvoke, key).toBe(false);
+  });
+
+  test("the JavaScript object model build owns the buffer views registry calls", () => {
+    // t262-da §J: the features only a JavaScript source reaches share one
+    // runtime feature, whose entry list the slices fill as they land. The
+    // buffer views registry (t262-dc C2) arms itself through these calls, and
+    // the resizable constructors lower to them, so a program that makes one
+    // selects the object model build; every other program keeps the default
+    // objects.
+    expect([...JS_OBJECT_MODEL_LIB_FNS].sort()).toEqual([
+      "arrayBuffer.armMutable",
+      "arrayBuffer.newResizable",
+      "sharedArrayBuffer.newGrowable",
+    ]);
+    const mod = module();
+    mod.functions[0]!.body.push(call("dyn.stdlibPrototype"));
+    const features = moduleRuntimeFeatures(mod);
+    expect(features.stdlibPrototypeValue).toBe(true);
+    expect(features.jsObjectModel).toBe(false);
+    expect(features.mutableBuffers).toBe(false);
+    for (const fn of JS_OBJECT_MODEL_LIB_FNS) {
+      const armed = module();
+      armed.functions[0]!.body.push(call(fn));
+      expect(moduleRuntimeFeatures(armed).jsObjectModel, fn).toBe(true);
+      expect(moduleRuntimeFeatures(armed).mutableBuffers, fn).toBe(true);
+    }
+  });
+
+  test("a dynamic __proto__ key selects the object model build", () => {
+    // Object.prototype's __proto__ accessor is modelled in the object model
+    // build of scr_json.c, so a source that reads or writes the member by
+    // name under a dynamic key takes that build; every other program keeps
+    // the default object, byte for byte.
+    const obj = (): IrExpr => ({ kind: "varRef", localId: "o", type: DYN, loc });
+    const key = (value: string): IrExpr => ({ kind: "strLit", value, type: STRING, loc });
+    const read = module();
+    read.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: { kind: "dynKeyGet", value: obj(), key: key("__proto__"), type: DYN, loc },
+    });
+    const readFeatures = moduleRuntimeFeatures(read);
+    expect(readFeatures.protoAccessor).toBe(true);
+    expect(jsObjectModelFact(readFeatures)).toBe(true);
+    for (const fn of ["dyn.keySet", "dyn.bagGet", "dyn.bagSet"] as const) {
+      const write = module();
+      write.functions[0]!.body.push({
+        kind: "exprStmt",
+        loc,
+        expr: { kind: "libCall", fn, args: [obj(), key("__proto__"), obj()], type: VOID, loc },
+      });
+      const writeFeatures = moduleRuntimeFeatures(write);
+      expect(writeFeatures.protoAccessor, fn).toBe(true);
+      expect(jsObjectModelFact(writeFeatures), fn).toBe(true);
+    }
+    // A literal member named `__proto__` is a property definition, which the
+    // backend emits through the object model build's define entry.
+    const literal = module();
+    literal.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: {
+        kind: "dynObjLit",
+        fields: [{ key: key("__proto__"), value: obj() }],
+        type: DYN,
+        loc,
+      },
+    });
+    const literalFeatures = moduleRuntimeFeatures(literal);
+    expect(literalFeatures.protoAccessor).toBe(true);
+    expect(jsObjectModelFact(literalFeatures)).toBe(true);
+    const ordinary = module();
+    ordinary.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: { kind: "dynKeyGet", value: obj(), key: key("constructor"), type: DYN, loc },
+    });
+    ordinary.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: {
+        kind: "dynObjLit",
+        fields: [{ key: key("x"), value: obj() }],
+        type: DYN,
+        loc,
+      },
+    });
+    const ordinaryFeatures = moduleRuntimeFeatures(ordinary);
+    expect(ordinaryFeatures.protoAccessor).toBe(false);
+    expect(jsObjectModelFact(ordinaryFeatures)).toBe(false);
+  });
+
+  test("selects the JavaScript object model build for writes that spell a sparse index", () => {
+    // t262 W7: only a write the source spells an index past the dense
+    // prefix's materialization limit (1000000 elements, scr_json.c) selects
+    // the build, and a keyed write evaluates its key into a hidden local
+    // first, so the literal reaches the write through that local's
+    // definition. A key computed at run time cannot be proven sparse and
+    // keeps its SC2020 refusal: selecting the build for it would rebuild
+    // every program with a computed write.
+    const boxed = (value: IrExpr): IrExpr => ({ kind: "dynFrom", value, type: DYN, loc });
+    const num = (value: number): IrExpr => ({ kind: "numLit", value, type: DYN, loc });
+    const str = (value: string): IrExpr => ({ kind: "strLit", value, type: STRING, loc });
+    const value = boxed(str("v"));
+    const writes = (fn: IrLibFn, key: IrExpr, written: IrExpr = value): IrModule => {
+      const mod = module();
+      mod.functions[0]!.body.push(
+        { kind: "varDecl", localId: "%key", init: key, loc },
         {
-          id: "r0",
-          fields: [
-            { name: "next", type: { kind: "record", shapeId: "r0" } },
-            { name: "data", type: bytes },
-          ],
+          kind: "exprStmt",
+          loc,
+          expr: {
+            kind: "libCall",
+            fn,
+            args: [boxed(str("o")), { kind: "varRef", localId: "%key", type: DYN, loc }, written],
+            type: VOID,
+            loc,
+          },
         },
-      ],
-      "r0",
+      );
+      return mod;
+    };
+    const selects = (fn: IrLibFn, key: IrExpr, written?: IrExpr): boolean =>
+      moduleRuntimeFeatures(writes(fn, key, written)).sparseArrays;
+    expect(selects("dyn.keySetComputed", boxed(num(2147483648)))).toBe(true);
+    expect(selects("dyn.keySet", str("987654321"))).toBe(true);
+    expect(selects("dyn.keySetComputed", boxed(num(7)))).toBe(false);
+    expect(selects("dyn.keySet", str("012"))).toBe(false);
+    expect(selects("dyn.keySetComputed", boxed(str("name")))).toBe(false);
+    // A key computed at run time is not a proven index.
+    expect(selects("dyn.keySetComputed", { kind: "varRef", localId: "k", type: DYN, loc })).toBe(
+      false,
     );
-    expect(moduleRuntimeFeatures(recursive).fsBufferBrand).toBe(true);
-    // A record cycle that never reaches bytes.
-    const empty = boxedShape(
-      [{ id: "r0", fields: [{ name: "next", type: { kind: "record", shapeId: "r0" } }] }],
-      "r0",
+    // A live view of a native array keeps its far slots out of line already
+    // (the ScrArr ext), so a spelled far write through it selects nothing.
+    const view = module();
+    const native = arrayOf(DYN);
+    view.functions[0]!.locals.push({ id: "%typed", name: "typed", mutable: false, type: native });
+    view.functions[0]!.body.push(
+      {
+        kind: "varDecl",
+        localId: "%view",
+        init: boxed({ kind: "varRef", localId: "%typed", type: native, loc }),
+        loc,
+      },
+      { kind: "varDecl", localId: "%key", init: boxed(num(3000001)), loc },
+      {
+        kind: "exprStmt",
+        loc,
+        expr: {
+          kind: "libCall",
+          fn: "dyn.keySetComputed",
+          args: [
+            { kind: "varRef", localId: "%view", type: DYN, loc },
+            { kind: "varRef", localId: "%key", type: DYN, loc },
+            value,
+          ],
+          type: VOID,
+          loc,
+        },
+      },
     );
-    expect(moduleRuntimeFeatures(empty).fsBufferBrand).toBe(false);
+    expect(moduleRuntimeFeatures(view).sparseArrays).toBe(false);
+    // A module-level `const view: any = typed` initializes its global with an
+    // assign, and is the same live view.
+    const globalView = module();
+    globalView.functions[0]!.locals.push({
+      id: "%typed",
+      name: "typed",
+      mutable: false,
+      type: native,
+    });
+    globalView.functions[0]!.body.push(
+      {
+        kind: "assign",
+        localId: "%view",
+        value: boxed({ kind: "varRef", localId: "%typed", type: native, loc }),
+        initializes: true,
+        loc,
+      },
+      { kind: "varDecl", localId: "%key", init: boxed(num(3000001)), loc },
+      {
+        kind: "exprStmt",
+        loc,
+        expr: {
+          kind: "libCall",
+          fn: "dyn.keySetComputed",
+          args: [
+            { kind: "varRef", localId: "%view", type: DYN, loc },
+            { kind: "varRef", localId: "%key", type: DYN, loc },
+            value,
+          ],
+          type: VOID,
+          loc,
+        },
+      },
+    );
+    expect(moduleRuntimeFeatures(globalView).sparseArrays).toBe(false);
+    // `length` moves where the prefix ends, so the spelled value decides.
+    expect(selects("dyn.keySet", str("length"), boxed(num(5000000)))).toBe(true);
+    expect(selects("dyn.keySet", str("length"), boxed(num(8)))).toBe(false);
+    expect(selects("dyn.keyDelete" as IrLibFn, str("987654321"))).toBe(false);
+  });
+
+  test("arms the host-global check for a computed global read and `in`", () => {
+    // A computed read of the global object, or `… in globalThis`, links the
+    // derived name table's runtime check (scr_global_host_absent.c) and the
+    // SCR_GLOBAL_HOST_ABSENT build of scr_node_builtin.c.
+    for (const fn of ["global.hostAbsent", "dyn.globalHas"] as const) {
+      const mod = module();
+      mod.functions[0]!.body.push(call(fn));
+      const features = moduleRuntimeFeatures(mod);
+      expect(features.hostAbsentGlobals, fn).toBe(true);
+      expect(features.jsObjectModel, fn).toBe(false);
+    }
+    expect(moduleRuntimeFeatures(module()).hostAbsentGlobals).toBe(false);
+  });
+
+  test("gates the BigInt typed-array element kinds on the constructor name", () => {
+    // The two BigInt kinds have no double-backed element, so their code lives
+    // in the JavaScript object model build (t262-da §J); every other typed
+    // array keeps the default one.
+    const bytesCall = (name: string) => ({
+      kind: "exprStmt" as const,
+      loc,
+      expr: {
+        kind: "libCall" as const,
+        fn: "bytes.constructor" as IrLibFn,
+        args: [{ kind: "strLit" as const, value: name, type: STRING, loc }],
+        type: DYN,
+        loc,
+      },
+    });
+    for (const name of ["BigInt64Array", "BigUint64Array"]) {
+      const mod = module();
+      expect(moduleRuntimeFeatures(mod).bigintBytes).toBe(false);
+      mod.functions[0]!.body.push(bytesCall(name));
+      expect(moduleRuntimeFeatures(mod).bigintBytes).toBe(true);
+    }
+    const numeric = module();
+    numeric.functions[0]!.body.push(bytesCall("Uint8Array"));
+    expect(moduleRuntimeFeatures(numeric).bigintBytes).toBe(false);
+  });
+
+  test("gates the spawn error's errnoException fields on reading it", () => {
+    // The `.error` read is what selects scr_child.c's SCR_CHILD_ERR_FIELDS
+    // build; a program that only spawns keeps the default object.
+    const reader = module();
+    reader.functions[0]!.body.push(call("spawnRes.error"));
+    expect(moduleRuntimeFeatures(reader)).toMatchObject({
+      childProcess: true,
+      childErrorFields: true,
+    });
+
+    const spawner = module();
+    spawner.functions[0]!.locals.push({
+      id: "r",
+      name: "r",
+      mutable: false,
+      type: { kind: "spawnRes" },
+    });
+    expect(moduleRuntimeFeatures(spawner)).toMatchObject({
+      childProcess: true,
+      childErrorFields: false,
+    });
   });
 });

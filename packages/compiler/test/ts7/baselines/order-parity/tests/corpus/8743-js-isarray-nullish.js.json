@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8743-js-isarray-nullish.js"
+ ],
+ "diags": []
+}

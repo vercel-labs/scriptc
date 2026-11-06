@@ -71,6 +71,12 @@ export default defineConfig({
     ...(effectConcurrency === "2" ? { maxConcurrency: 2 } : {}),
     env: {
       SCRIPTC_CACHE_DIR: cacheDir,
+      // The compiler-level store sits outside the build cache by design; point
+      // it at the repo-local test directory too, so a test run leaves nothing
+      // in the user's cache.
+      SCRIPTC_STATE_DIR: fileURLToPath(
+        new URL("./node_modules/.cache/scriptc-tests/compiler-state", import.meta.url),
+      ),
       // The differential lanes run against one immutable checkout/toolchain
       // per worker. Reuse expensive compiler/linker metadata probes inside
       // that session; cc.test.ts removes this flag to keep exercising

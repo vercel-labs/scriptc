@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8799-js-promise-statics-foreign-this.js"
+ ],
+ "diags": []
+}

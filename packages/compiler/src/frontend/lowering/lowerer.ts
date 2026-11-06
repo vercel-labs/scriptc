@@ -600,6 +600,7 @@ import {
   esmImportBindingKind,
 } from "./builtins/module-bindings.js";
 import { stripTypeCasts } from "./builtins/arguments.js";
+import { derivedBuiltinValueFn } from "./builtins/module-call-values.js";
 import { lowerBuiltinModuleCall } from "./builtins/module-calls.js";
 import { lowerTimersPromisesSetInterval, lowerTimeoutMethodCall } from "./builtins/timers.js";
 import {
@@ -18898,7 +18899,15 @@ export class Lowerer {
       if (mode !== undefined) return this.lowerZlibStreamFactoryValue(bi.member, mode, loc);
     }
     const fn = builtinModuleFnOf(this, bi.module, bi.member);
-    return fn ? this.lowerNativeCallableValue(fn, `${bi.module}.${bi.member}`, loc) : null;
+    if (!fn) return null;
+    // A row without an explicit contract still answers a value when its own
+    // direct-call ABI is the whole story (derivedBuiltinValueFn): the value's
+    // body is the row's libCall at the row's parameter types, one interned
+    // closure per member, so identity through a slot holds.
+    const callable = fn.valueParams ? fn : derivedBuiltinValueFn(bi, fn);
+    return callable
+      ? this.lowerNativeCallableValue(callable, `${bi.module}.${bi.member}`, loc)
+      : null;
   }
 
   /** An error-first filesystem function as a value: the checked-dynamic

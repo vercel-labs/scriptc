@@ -809,6 +809,12 @@ export interface ClassInfo {
      * only evaluates its arguments (the abstract constructor checks
      * NewTarget, which is never %Iterator% for a subclass). */
     iterator?: true;
+    /** The Node 24 global this base read answers (`class extends
+     * WebSocket`): a global native code does not provide, whose value is
+     * the constructor Node has (host-global-values.ts). Instances can never
+     * exist — super() reaches the value's SC2020 fence — and a TypeScript
+     * `new` of the derived class reports that fence at the construction. */
+    hostGlobal?: string;
   };
   factoryBaseExpression?: ts.Expression;
   /** DIRECT subclasses, filled as derived classes collect — the frontend's
@@ -2388,6 +2394,30 @@ export function collectClassShapeInner(
       ) {
         lowerer.pushDiag(nativeSubclassOfIslandDiag(locOf(t)));
         throw new PoisonError();
+      }
+      // `class extends WebSocket` — a Node 24 global native code does not
+      // provide (host-globals.ts). Its read answers the constructor Node
+      // has (host-global-values.ts), and the subclass adopts that value as
+      // its callable base: the class is an ordinary class value whose
+      // constructor runs until `super(...)`, which calls the value and
+      // throws the SC2020 host-global fence — the same throw constructing
+      // the global through the value gives. No instance can exist, so the
+      // inherited instance surface is unreachable; `new` in TypeScript
+      // source reports the fence at the construction (lowerProgramClassNew).
+      // This is what lets a branch only Bun takes (`process.versions.bun`,
+      // absent natively) compile.
+      if (t && !familyMode && !inst && !mixin) {
+        const hostGlobal = hostGlobalNameOfRead(lowerer, t.expression);
+        if (hostGlobal !== null) {
+          if (t.typeArguments?.nodes) lowerer.unsupported("SC1090", t, "extending generic classes");
+          callableBase = {
+            expression: t.expression,
+            constructorId: `%g.${className}.base`,
+            prototypeId: `%g.${className}.basePrototype`,
+            hostGlobal,
+          };
+          continue;
+        }
       }
       if (!t || !ts.isIdentifier(t.expression)) {
         if (t && adoptCallableBase(t.expression)) continue;
@@ -10425,6 +10455,14 @@ function lowerProgramClassNew(
 ): IrExpr {
   const info = genericNewTarget(lowerer, expr, declaredInfo);
   fenceDecorationThrows(lowerer, info, expr);
+  // A class extending a Node 24 global native code does not provide has no
+  // instances: its constructor's super() throws the SC2020 host-global fence
+  // (host-global-values.ts), so the construction is that fence. Report it
+  // here, where the TypeScript source writes the `new`.
+  for (let current: ClassInfo | null = info; current; current = current.base) {
+    const hostGlobal = current.callableBase?.hostGlobal;
+    if (hostGlobal !== undefined) lowerer.hostGlobalFence(hostGlobal, expr);
+  }
   if (info.localClass)
     lowerer.unsupported(
       "SC1090",

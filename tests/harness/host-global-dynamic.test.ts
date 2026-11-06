@@ -207,3 +207,58 @@ console.log(s[key], key in globalThis);
   expect(read.exitCode).toBe(0);
   expect(read.stdout).toBe(["undefined false", ""].join("\n"));
 });
+
+/** The programs below name the global, so they declare it as Node's own
+ * .d.ts does (the harness compiles without lib.dom). */
+const webSocketDeclaration = `interface HostSocket {
+  readonly readyState: number;
+}
+declare var WebSocket: { new (url: string): HostSocket; readonly prototype: HostSocket };
+`;
+
+test("constructing a class that extends a host global is the host-global fence", async () => {
+  // `class Sock extends WebSocket` compiles — the class value is the global
+  // constructor, observable in every way (corpus: host-global-extends-class).
+  // Its super() reaches the constructor value's SC2020 throw, so the class is
+  // unconstructible rather than constructible-with-a-wrong-base. The direct
+  // `new Sock()` spelling is refused at build (the diagnostics corpus); a
+  // construction through an opaque class value throws the same fence at run
+  // time, and so does a subclass of the subclass.
+  const result = await runProgram(
+    "extends-runtime",
+    `${webSocketDeclaration}
+class Sock extends WebSocket {
+  constructor(url: string) {
+    super(url);
+  }
+}
+class Retrying extends Sock {}
+function construct(make: typeof Sock, url: string): unknown {
+  return new make(url);
+}
+console.log(typeof Sock, Sock.name);
+construct(Retrying, "ws://localhost:1");
+console.log("unreachable");
+`,
+  );
+  expect(result.exitCode).toBe(1);
+  expect(result.stdout).toBe(["function Sock", ""].join("\n"));
+  expect(result.stderr).toContain(`'WebSocket' is a Node global that native code does not provide`);
+  expect(result.stderr).toContain("[SC2020");
+});
+
+test("a class extending a host global is not a Function instance natively", async () => {
+  // Node's class chain reaches Function.prototype; the native instanceof
+  // approximation walks the .prototype property, which a class-built value
+  // does not carry toward Function.prototype. Pin the divergence so it stays
+  // visible instead of surprising a program that branches on it.
+  const result = await runProgram(
+    "extends-function-instanceof",
+    `${webSocketDeclaration}
+class Sock extends WebSocket {}
+console.log(Sock instanceof Function);
+`,
+  );
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout).toBe("false\n");
+});

@@ -866,8 +866,10 @@ export type BuiltinValueParam =
 /** The common first-class shape for builtin functions whose supported
  * source signature is already exactly the fixed native ABI. Keeping the
  * opt-in on each table row is deliberate: dispatch sentinels and functions
- * with call-site validation must provide a real adapter instead. */
-function exactValueParams(...types: IrType[]): BuiltinValueParam[] {
+ * with call-site validation must provide a real adapter instead (the
+ * derivation in builtins/module-call-values.ts derives a row's value only
+ * where that condition holds). */
+export function exactValueParams(...types: IrType[]): BuiltinValueParam[] {
   return types.map((type) => ({ mode: "required", type }));
 }
 

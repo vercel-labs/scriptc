@@ -92,6 +92,7 @@ import { identityPreservingWidening } from "./coercions/identity.js";
 import { scanDivergences } from "./divergences.js";
 import { applyKeyOrderWitnesses, KeyOrderNotes } from "./key-order-witness.js";
 import { installBuiltinStatics } from "./builtin-statics.js";
+import type { BuiltinModuleNamespaceFlavor } from "./builtin-module-members.js";
 import { functionKeepsRecordSources } from "./record-sources.js";
 import { exprFunctionReference } from "../../ir/function-references.js";
 import { everyStmtList, observeRecordLiteralRebuilds } from "../../ir/traverse.js";
@@ -18191,6 +18192,25 @@ export class Lowerer {
     // Default and CommonJS process bindings alias the global object, whose
     // methods and properties keep their existing process lowerings.
     if (stdlibGlobalNameOf(this, expr) === "process") return null;
+    // A namespace import binding (`import * as events from "node:events"`)
+    // of a supported builtin: the binding IS that module's ES namespace
+    // object. Answered from the import declaration because a CALLABLE
+    // module's type (node:events, node:assert, node:module, node:test)
+    // maps to the exported function rather than to a module namespace, so
+    // the type-based arms below would miss it.
+    if (ts.isIdentifier(expr)) {
+      const decl = this.checker.getSymbolAtLocation(expr)?.declarations.find(ts.isNamespaceImport);
+      const importDecl: ts.Node | undefined = decl?.parent?.parent;
+      if (importDecl !== undefined && ts.isImportDeclaration(importDecl)) {
+        const spec = importDecl.moduleSpecifier;
+        if (ts.isStringLiteral(spec)) {
+          const module = canonicalBuiltinModule(spec.text);
+          // The platform namespaces stay on their checked-dynamic module
+          // value (the type-based arm below owns them).
+          if (module !== null && module !== "path/posix" && module !== "path/win32") return module;
+        }
+      }
+    }
     const imported = ts.isIdentifier(expr) ? this.builtinImportOf(expr) : null;
     if (imported?.module === "util" && imported.member === "types") return "util/types";
     // path.win32 / path.posix as NAMED import bindings (`import { win32 }
@@ -18209,7 +18229,11 @@ export class Lowerer {
     const stored = ts.isIdentifier(expr)
       ? (this.peekLocal(expr)?.type ?? this.globalOf(expr)?.type)
       : undefined;
-    const mapped = stored ?? this.mapTypeOf(this.typeOf(expr));
+    // A literal `await import("node:fs")` read directly: the checker's
+    // awaited type for the call carries the module namespace, so the
+    // syntax-level resolution answers where the type mapping does not.
+    const mapped =
+      stored ?? staticImportNamespaceType(this, expr) ?? this.mapTypeOf(this.typeOf(expr));
     if (mapped?.kind === "moduleNs" && mapped.moduleId.startsWith("builtin:")) {
       return mapped.moduleId.slice("builtin:".length);
     }
@@ -18321,6 +18345,94 @@ export class Lowerer {
       return canonicalBuiltinModule(`${outer}/${expr.name.text}`);
     }
     return null;
+  }
+
+  /** The runtime SHAPE a builtin module namespace expression evaluates to.
+   * An `import * as ns` binding (directly, or through a binding initialized
+   * from one) and the value a dynamic import resolves to are ECMAScript
+   * module namespace objects; a require() value, a default import, a
+   * sub-namespace such as `fs.promises` and a named import of one are the
+   * CommonJS exports object. A parameter, or a call the compiler does not
+   * trace, holds whatever its caller stored, so its shape is unknown.
+   * Reflection over the shapes answers differently (builtin-module-members),
+   * so the distinction travels with the module name. Null when the
+   * expression is not a builtin module namespace. */
+  builtinNamespaceShapeOf(expr: ts.Expression): {
+    module: string;
+    flavor: BuiltinModuleNamespaceFlavor;
+  } | null {
+    const module = this.builtinNamespaceModuleOf(expr);
+    if (module === null) return null;
+    return { module, flavor: this.builtinNamespaceFlavorOf(expr) };
+  }
+
+  /** The runtime shape the namespace expression names, or "unknown" when its
+   * origin does not fix one. */
+  private builtinNamespaceFlavorOf(
+    expr: ts.Expression,
+    seen = new Set<ts.Node>(),
+  ): BuiltinModuleNamespaceFlavor {
+    const e = stripTypeCasts(expr);
+    // Awaiting a value answers that value unless it is a promise, so the
+    // shape is the shape of the awaited expression. The traced promise is
+    // the dynamic import call, whose resolved value is an ES module
+    // namespace object; a require() call, a default import or a
+    // sub-namespace member is not a promise, and awaiting it answers the
+    // CommonJS exports object itself. A promise this classification does
+    // not trace holds a value whose shape it cannot name.
+    if (ts.isAwaitExpression(e)) return this.builtinNamespaceFlavorOf(e.expression, seen);
+    if (ts.isCallExpression(e)) {
+      if (e.expression.kind === ts.SyntaxKind.ImportKeyword) return "esm";
+      // require() and process.getBuiltinModule() answer the CommonJS
+      // exports object.
+      if (requireSpecOf(e) !== null) return "cjs";
+      const cr = createRequireSpecOf(this, e);
+      if (cr !== null && cr.spec !== null) return "cjs";
+      if (
+        ts.isPropertyAccessExpression(e.expression) &&
+        e.expression.name.text === "getBuiltinModule" &&
+        this.stdlibGlobalMember(e.expression, "process") === "getBuiltinModule"
+      )
+        return "cjs";
+      return "unknown";
+    }
+    // A member of the module object that is itself a module
+    // (`fs.promises`, `path.win32`, `util.types`) is that module's CommonJS
+    // exports object; any other property holds whatever its owner stored.
+    if (ts.isPropertyAccessExpression(e)) {
+      const outer = this.builtinNamespaceModuleOf(e.expression);
+      return outer !== null && canonicalBuiltinModule(`${outer}/${e.name.text}`) !== null
+        ? "cjs"
+        : "unknown";
+    }
+    if (!ts.isIdentifier(e)) return "unknown";
+    const symbol = this.checker.getSymbolAtLocation(e);
+    const decl = symbol?.declarations[0];
+    // A binding chain that leads back to itself has no module namespace to
+    // report.
+    if (decl === undefined || seen.has(decl)) return "unknown";
+    seen.add(decl);
+    if (ts.isNamespaceImport(decl)) return "esm";
+    // A default import binds the CommonJS module object, a named import one
+    // of its members, and an import-equals binding the require() value.
+    if (ts.isImportClause(decl)) return "cjs";
+    if (ts.isImportSpecifier(decl)) return "cjs";
+    if (ts.isImportEqualsDeclaration(decl)) return "cjs";
+    // A destructured sub-namespace member is the CommonJS exports object.
+    if (ts.isBindingElement(decl)) return "cjs";
+    // A parameter holds whatever value the caller passed; its declared type
+    // names the module, not the shape.
+    if (ts.isParameter(decl)) return "unknown";
+    // A plain binding whose initializer carries the namespace
+    // (`const z = zlib`, `const fs = require("fs")`).
+    if (
+      ts.isVariableDeclaration(decl) &&
+      ts.isIdentifier(decl.name) &&
+      decl.initializer !== undefined
+    ) {
+      return this.builtinNamespaceFlavorOf(decl.initializer, seen);
+    }
+    return "unknown";
   }
 
   /** A member access on a supported builtin namespace import —

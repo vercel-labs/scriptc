@@ -128,6 +128,8 @@ import {
   stdlibGlobalNameOf,
 } from "./surfaces.js";
 import { dynStringReceiver } from "./containers/dynamic-receivers.js";
+import { builtinModuleKeys } from "./builtin-module-members.js";
+import { reflectOverNamespaceExpr } from "./builtin-namespace-probe.js";
 import {
   lowerArrayConstructor,
   lowerArrayFromCall,
@@ -10039,8 +10041,9 @@ function lowerObjectStaticCall(
   // namespace's export names sorted with "default". values/entries would
   // include members that do not compile yet.
   const probedModule = tryLowerExpression(lowerer, argNode);
+  const namespaceShape = lowerer.builtinNamespaceShapeOf(argNode);
   if (
-    lowerer.builtinNamespaceModuleOf(argNode) === "util/types" ||
+    namespaceShape?.module === "util/types" ||
     (probedModule?.type.kind === "moduleNs" && probedModule.type.moduleId === "builtin:util/types")
   ) {
     if (member !== "keys") {
@@ -10050,27 +10053,79 @@ function lowerObjectStaticCall(
         "call the util.types predicates by name",
       );
     }
-    const symbol = ts.isIdentifier(argNode)
-      ? lowerer.checker.getSymbolAtLocation(argNode)
-      : undefined;
-    const namespace = symbol
-      ? symbol.declarations.some((decl) => ts.isNamespaceImport(decl))
-      : false;
-    const names = namespace ? [...UTIL_TYPES_KEYS, "default"].sort() : UTIL_TYPES_KEYS;
+    // The two shapes list the same names in the same order except for the
+    // "default" entry an ES module namespace adds; a value whose shape the
+    // type system does not fix cannot be answered either way.
+    const flavor = namespaceShape?.flavor ?? "unknown";
+    if (flavor === "unknown") {
+      lowerer.noLowering(
+        "Object.keys over a util.types namespace whose runtime shape is not known statically",
+        call,
+        "reflect on the namespace where it is bound (a namespace import, a require call or process.getBuiltinModule)",
+      );
+    }
+    const names = flavor === "esm" ? [...UTIL_TYPES_KEYS, "default"].sort() : UTIL_TYPES_KEYS;
     const loc = locOf(call);
-    return {
-      kind: "arrayLit",
-      elems: names.map((name) => ({ kind: "strLit", value: name, type: STRING, loc })),
-      type: arrayOf(STRING),
+    return reflectOverNamespaceExpr(
+      lowerer,
+      argNode,
+      {
+        kind: "arrayLit",
+        elems: names.map((name) => ({ kind: "strLit", value: name, type: STRING, loc })),
+        type: arrayOf(STRING),
+        loc,
+      },
       loc,
-    };
+    );
+  }
+  // A builtin module namespace (`Object.keys(zlib)` — also a callable
+  // module such as node:events, whose type maps to its exported function
+  // rather than to a module namespace): Node's member census answers, in
+  // the flavor's order — the CommonJS exports object's insertion order, or
+  // an ESM namespace's export names sorted with "default". A namespace
+  // whose shape the type system does not fix (a parameter, an untraced
+  // call result) has no answer here.
+  if (namespaceShape !== null) {
+    if (member !== "keys") {
+      lowerer.noLowering(
+        `Object.${member} over a builtin module namespace`,
+        call,
+        "access the builtin's named exports directly",
+      );
+    }
+    if (namespaceShape.flavor === "unknown") {
+      lowerer.noLowering(
+        "Object.keys over a builtin module namespace whose runtime shape is not known statically",
+        call,
+        "reflect on the namespace where it is bound (a namespace import, a require call or process.getBuiltinModule)",
+      );
+    }
+    const names = builtinModuleKeys(namespaceShape.module, namespaceShape.flavor);
+    if (names === null) {
+      lowerer.noLowering(
+        "Object.keys over a builtin module namespace",
+        call,
+        "access the builtin's named exports directly",
+      );
+    }
+    const loc = locOf(call);
+    return reflectOverNamespaceExpr(
+      lowerer,
+      argNode,
+      {
+        kind: "arrayLit",
+        elems: names.map((name) => ({ kind: "strLit", value: name, type: STRING, loc })),
+        type: arrayOf(STRING),
+        loc,
+      },
+      loc,
+    );
   }
   // A compiled PROGRAM module namespace is a nominal token whose members
   // remain live bindings, but its enumerable key set is static and Node
   // sorts it in code-unit order. Materialize exactly those value-export
   // names for Object.keys; values/entries would need a heterogeneous live
-  // view and stay explicitly fenced. Builtin namespaces also stay fenced:
-  // their exact runtime export set is Node-owned, not the ambient subset.
+  // view and stay explicitly fenced.
   {
     const probed = tryLowerExpression(lowerer, argNode);
     if (probed?.type.kind === "moduleNs") {
@@ -10086,7 +10141,7 @@ function lowerObjectStaticCall(
         lowerer.noLowering(
           "Object.keys over a builtin module namespace",
           call,
-          "access the builtin's named exports directly (the exact runtime key census is Node-owned)",
+          "access the builtin's named exports directly",
         );
       }
       const moduleSymbol = source ? lowerer.checker.getSymbolAtLocation(source) : undefined;

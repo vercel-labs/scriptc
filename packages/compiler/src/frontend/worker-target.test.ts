@@ -67,10 +67,26 @@ test("worker discovery bounds a written binding's values", () => {
   expect(
     discover(`
     import { Worker } from "node:worker_threads";
-    let filename = "/mutable.ts";
+    let filename = new URL("./facade.ts", import.meta.url);
     new Worker(filename);
   `),
-  ).toEqual(["/mutable.ts"]);
+  ).toEqual(["facade.ts"]);
+});
+
+test("worker discovery leaves a bounded value with no file to the run-time arm", () => {
+  // A bound is a superset of what the site loads. A value whose file does
+  // not exist gets no native arm, so it must not become a root either: the
+  // missing root would fail a build whose other values run.
+  expect(
+    discover(`
+    import { Worker } from "node:worker_threads";
+    declare const flag: boolean;
+    const name = flag ? "./facade.ts" : "./missing.ts";
+    new Worker(new URL(name, import.meta.url));
+    let absent = "/mutable.ts";
+    new Worker(absent);
+  `),
+  ).toEqual(["facade.ts"]);
 });
 
 test("worker discovery rejects dynamic roots and shadowed globals or constructors", () => {

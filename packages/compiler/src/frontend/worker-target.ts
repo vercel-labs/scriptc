@@ -125,19 +125,27 @@ export function workerEntryValuePath(value: SpecifierValue): string | null {
   }
 }
 
-/** The paths a computed Worker entry may name (wave2 §4.2): every value the
- * shared specifier bounder answers, resolved the way Node resolves the
- * filename. Values that name no build-time file — the Top residual, a
- * cwd-relative string — are absent. */
-function boundedWorkerEntryPaths(ctx: SpecifierBoundContext, expression: ts.Expression): string[] {
+/** The compiled sources a computed Worker entry may name (wave2 §4.2): every
+ * value the shared specifier bounder answers, resolved the way Node resolves
+ * the filename. Values that name no build-time file — the Top residual, a
+ * cwd-relative string — are absent, and so is a bounded value whose file
+ * does not exist: a bound is a superset of what the site loads, so a missing
+ * file is the site's run-time ERR_SCRIPTC_WORKER_ENTRY arm (boundedWorkerArms
+ * gives it no native arm), not a root whose absence fails the build. A
+ * written literal keeps reporting its missing file (workerSourcePath). */
+function boundedWorkerEntrySources(
+  ctx: SpecifierBoundContext,
+  expression: ts.Expression,
+): string[] {
   const bound = boundLoadValues(ctx, expression);
   if (bound.kind === "top") return [];
-  const paths: string[] = [];
+  const sources: string[] = [];
   for (const value of bound.values) {
     const path = workerEntryValuePath(value);
-    if (path !== null && !paths.includes(path)) paths.push(path);
+    const source = path === null ? null : resolveWorkerEntrySource(path);
+    if (source !== null && !sources.includes(source)) sources.push(source);
   }
-  return paths;
+  return sources;
 }
 
 export function workerTargetPaths(program: ts.Program, files: readonly ts.SourceFile[]): string[] {
@@ -165,8 +173,8 @@ export function workerTargetPaths(program: ts.Program, files: readonly ts.Source
         continue;
       }
       ctx ??= specifierBoundContextOf(program);
-      for (const bounded of boundedWorkerEntryPaths(ctx, construction.arguments.nodes[0]))
-        targets.add(workerSourcePath(bounded));
+      for (const source of boundedWorkerEntrySources(ctx, construction.arguments.nodes[0]))
+        targets.add(source);
     }
   }
   return [...targets];

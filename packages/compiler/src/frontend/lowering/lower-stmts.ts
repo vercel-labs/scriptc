@@ -529,6 +529,26 @@ function cleanupCall(
       async: true,
     };
   }
+  if (value.type.kind === "dir") {
+    /* [Symbol.dispose] returns without closing when the Dir is already
+     * closed; [Symbol.asyncDispose] resolves in that case and otherwise
+     * awaits the close promise. */
+    if (awaited)
+      return {
+        call: {
+          kind: "libCall",
+          fn: "dir.asyncDispose",
+          args: [value],
+          type: { kind: "promise", inner: VOID },
+          loc,
+        },
+        async: true,
+      };
+    return {
+      call: { kind: "libCall", fn: "dir.dispose", args: [value], type: VOID, loc },
+      async: false,
+    };
+  }
   if (value.type.kind === "child") {
     return {
       call: {

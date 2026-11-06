@@ -298,6 +298,20 @@ static void sf_type_error(const char *message) {
   scr_throw_error_msg(SCR_ERR_TYPE, message, strlen(message));
 }
 
+#ifdef SCR_WEB_BODIES
+/* A Blob or File body is not BodyInit's USVString fallback: extractBody sends
+ * the blob's bytes, and a non-empty type becomes Content-Type when the
+ * headers do not set one. Both outputs are +1 (NULL `type` when the blob
+ * has none); the caller releases them. */
+static bool sf_blob_body(const ScrDyn *body, ScrBytes **bytes, ScrStr **type) {
+  if (!body || body->kind != SCR_DYN_HANDLE) return false;
+  if (body->v.handle.tag != SCR_DYNH_BLOB &&
+      body->v.handle.tag != SCR_DYNH_FILE)
+    return false;
+  return scr_blob_body_info(body, bytes, type);
+}
+#endif
+
 static void sf_not_function(const char *what) {
   size_t n = strlen(what);
   char *message = malloc(n + 19);
@@ -6566,6 +6580,9 @@ static ScrDyn *sf_response_construct(ScrDyn *body, ScrDyn *init,
   bool null_body = !json_body &&
       (!body || body->kind == SCR_DYN_UNDEF || body->kind == SCR_DYN_NULL);
   bool text_body = false;
+#ifdef SCR_WEB_BODIES
+  ScrStr *web_type = NULL;
+#endif
   int status = 200;
   bool status_range_error = false;
   /* The lightweight-response classification (see SfResponse.light): a
@@ -6591,6 +6608,11 @@ static ScrDyn *sf_response_construct(ScrDyn *body, ScrDyn *init,
    * while a ReadableStream is only brand-converted here — its locked/
    * disturbed state belongs to the later body-extraction phase. */
   if (!null_body && !json_body && !sf_is_stream_body(body)) {
+#ifdef SCR_WEB_BODIES
+    if (sf_blob_body(body, &body_bytes, &web_type)) {
+      /* extractBody: the blob's bytes are the body, its type applies below. */
+    } else
+#endif
     if (body->kind == SCR_DYN_BYTES) {
       ScrBytes *raw = scr_bytes_raw_view(body->v.bytes);
       body_bytes = scr_bytes_copy(raw);
@@ -6732,6 +6754,18 @@ static ScrDyn *sf_response_construct(ScrDyn *body, ScrDyn *init,
   scr_arr_release(converted_headers);
   converted_headers = NULL;
 
+#ifdef SCR_WEB_BODIES
+  if (web_type) {
+    if (web_type->len > 0 && !sf_pairs_have(header_pairs, "content-type")) {
+      scr_arr_push_ref(header_pairs, scr_str_new("content-type", 12));
+      scr_arr_push_ref(header_pairs, web_type); /* the pair owns the +1 */
+      web_type = NULL;
+    }
+    scr_str_release(web_type);
+    web_type = NULL;
+  }
+#endif
+
   if (!null_body &&
       (status == 204 || status == 205 || status == 304)) {
     char message[80];
@@ -6781,6 +6815,9 @@ static ScrDyn *sf_response_construct(ScrDyn *body, ScrDyn *init,
 fail:
   sf_stream_release(stream);
   scr_bytes_release(body_bytes);
+#ifdef SCR_WEB_BODIES
+  scr_str_release(web_type);
+#endif
   scr_str_release(status_text);
   scr_arr_release(header_pairs);
   scr_arr_release(converted_headers);
@@ -7157,6 +7194,17 @@ ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init) {
    * arrays, and plain objects (with the ordinary JS object coercion
    * protocol), while null and undefined continue to mean no body. */
   ScrDyn *coerced_body = NULL;
+#ifdef SCR_WEB_BODIES
+  ScrStr *web_type = NULL;
+  if (body_present) {
+    ScrBytes *web_bytes = NULL;
+    if (sf_blob_body(body, &web_bytes, &web_type)) {
+      coerced_body = scr_dyn_new_bytes(web_bytes);
+      scr_bytes_release(web_bytes);
+      body = coerced_body;
+    }
+  }
+#endif
 #ifdef SCR_HANDLE_CLASSES
   if (body_present && sf_is_web_body(body)) {
     coerced_body = sf_web_body(body);
@@ -7204,6 +7252,9 @@ ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init) {
     ScrStr *duplex_mode = scr_dyn_string_coerce_js(duplex);
     if (!duplex_mode) {
       scr_dyn_release(coerced_body);
+#ifdef SCR_WEB_BODIES
+      scr_str_release(web_type);
+#endif
       return sf_reject_now(promise, "fetch failed");
     }
     duplex_half =
@@ -7213,6 +7264,9 @@ ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init) {
   }
   if (duplex_present && !duplex_half) {
     scr_dyn_release(coerced_body);
+#ifdef SCR_WEB_BODIES
+    scr_str_release(web_type);
+#endif
     return sf_reject_now(
         promise, "RequestInit.duplex must be 'half'");
   }
@@ -7225,8 +7279,19 @@ ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init) {
   if (!sf_add_headers(headers, init_headers, true)) {
     scr_dyn_release(coerced_body);
     scr_arr_release(headers);
+#ifdef SCR_WEB_BODIES
+    scr_str_release(web_type);
+#endif
     return sf_reject_now(promise, "fetch failed");
   }
+#ifdef SCR_WEB_BODIES
+  if (web_type) {
+    if (web_type->len > 0 && !sf_pairs_have(headers, "content-type"))
+      sf_push_header_text(headers, "content-type", web_type->data, web_type->len);
+    scr_str_release(web_type);
+    web_type = NULL;
+  }
+#endif
 
   ScrStr *method = sf_method_value(init);
   if (!method) {

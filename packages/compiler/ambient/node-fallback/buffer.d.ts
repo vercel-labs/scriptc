@@ -11,6 +11,8 @@ declare module "buffer" {
   export function btoa(data: string): string;
   export const kMaxLength: number;
   export const kStringMaxLength: number;
+  export const INSPECT_MAX_BYTES: number;
+  export const constants: { MAX_LENGTH: number; MAX_STRING_LENGTH: number };
   export const Buffer: BufferConstructor;
   export type Blob = globalThis.Blob;
   export type File = globalThis.File;

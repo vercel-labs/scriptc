@@ -1207,6 +1207,27 @@ test("--strict-user-js reports R2 constructs in user JavaScript as SC8101–SC81
   ).toMatchFileSnapshot("__snapshots__/coverage-node-islands-user-js.txt");
 });
 
+test("island packages: package data types and callable handles cross the boundary", () => {
+  // The types-only twin of an island package declares shapes the type
+  // mapper must read as data the program receives, never as a value the
+  // package's implementation produces: a union alias over Node data types
+  // (`Buffer | ArrayBuffer | Buffer[]`, `@types/ws`'s RawData) becomes the
+  // checked dynamic value, and a callable type with no native
+  // representation (`express.json()`'s NextHandleFunction) stays the handle
+  // of the function the island made.
+  for (const [name, pkg] of [
+    ["island-package-type-alias", "frames"],
+    ["island-callable-handle", "bodyish"],
+  ] as const) {
+    const { coverage } = analyze(join(repoRoot, "tests/corpus", name, "main.ts"));
+    expect(coverage.diagnostics, name).toEqual([]);
+    expect(
+      coverage.nodeIslands?.islands.map((i) => i.package),
+      name,
+    ).toContain(pkg);
+  }
+});
+
 test(`every corpus program is 100% static (corpus and coverage agree${shardSuffix()})`, async () => {
   // The differential corpus compiles by definition; coverage must agree.
 

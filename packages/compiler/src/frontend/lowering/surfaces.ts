@@ -2249,6 +2249,35 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
   };
 }
 
+/** node:dns's DNS error-code constants: the `code` a resolver failure
+ * carries, exported by node:dns and node:dns/promises alike. */
+const DNS_ERROR_CODES: Record<string, string> = {
+  NODATA: "ENODATA",
+  FORMERR: "EFORMERR",
+  SERVFAIL: "ESERVFAIL",
+  NOTFOUND: "ENOTFOUND",
+  NOTIMP: "ENOTIMP",
+  REFUSED: "EREFUSED",
+  BADQUERY: "EBADQUERY",
+  BADNAME: "EBADNAME",
+  BADFAMILY: "EBADFAMILY",
+  BADRESP: "EBADRESP",
+  CONNREFUSED: "ECONNREFUSED",
+  TIMEOUT: "ETIMEOUT",
+  EOF: "EOF",
+  FILE: "EFILE",
+  NOMEM: "ENOMEM",
+  DESTRUCTION: "EDESTRUCTION",
+  BADSTR: "EBADSTR",
+  BADFLAGS: "EBADFLAGS",
+  NONAME: "ENONAME",
+  BADHINTS: "EBADHINTS",
+  NOTINITIALIZED: "ENOTINITIALIZED",
+  LOADIPHLPAPI: "ELOADIPHLPAPI",
+  ADDRGETNETWORKPARAMS: "EADDRGETNETWORKPARAMS",
+  CANCELLED: "ECANCELLED",
+};
+
 /** Builtin-module CONSTANTS (value reads of named imports): each lowers to
  * a literal of its value's kind. The bare-module values are the TARGET
  * platform's (builtinModuleConstOf swaps the win32 values in under a win32
@@ -2271,13 +2300,23 @@ export const BUILTIN_MODULE_CONSTS: Record<
   worker_threads: { isMainThread: true, threadId: 0 },
   cluster: { isPrimary: true, isMaster: true, isWorker: false },
   punycode: { version: "2.1.0" },
-  // The largest Buffer length, the bound the allocation checks use.
-  buffer: { kMaxLength: 9007199254740991 },
+  // The largest Buffer length, the bound the allocation checks use; V8's
+  // string length limit (code units), and the inspect preview width.
+  buffer: {
+    kMaxLength: 9007199254740991,
+    kStringMaxLength: 536870888,
+    INSPECT_MAX_BYTES: 50,
+  },
   // zlib's module-level copies of its constants (every member outside
   // BROTLI_*, Node's own loop over zlib.constants).
   zlib: Object.fromEntries(
     Object.entries(ZLIB_CONSTANTS).filter(([name]) => !name.startsWith("BROTLI")),
   ),
+  // node:dns's getaddrinfo hints are libuv's normalized flags (uv.h's
+  // UV_AI_*), the same numbers on every platform. The error codes are the
+  // module's exported strings; node:dns/promises exports the same ones.
+  dns: { ADDRCONFIG: 32, ALL: 16, V4MAPPED: 8, ...DNS_ERROR_CODES },
+  "dns/promises": { ...DNS_ERROR_CODES },
 };
 
 /** ALTERNATE libCall spellings of tabled builtin members: lowerings the
@@ -2957,6 +2996,13 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       fns: ["process.execPath"],
     },
     {
+      id: "node-builtin.process.allowedNodeEnvironmentFlags",
+      kind: "node-builtin",
+      name: "process.allowedNodeEnvironmentFlags",
+      fns: ["process.allowedEnvFlags"],
+      note: "one stable set of the option names the compatibility target accepts in NODE_OPTIONS",
+    },
+    {
       id: "node-builtin.process.uptime",
       kind: "node-builtin",
       name: "process.uptime",
@@ -3202,6 +3248,52 @@ export const FS_CALLBACK_MEMBERS = new Set([
   "appendFile",
   "readdir",
 ]);
+
+/** The `length` Node's filesystem callback functions carry
+ * (`fs.readFile.length` is 3). The value adapter reports it through
+ * Function.length; the direct call accepts the arguments it always did. */
+export const FS_CALLBACK_VALUE_LENGTHS: Readonly<Record<string, number | undefined>> = {
+  access: 3,
+  cp: 4,
+  copyFile: 4,
+  chmod: 3,
+  chown: 4,
+  lchown: 4,
+  fchown: 4,
+  glob: 3,
+  link: 3,
+  mkdir: 3,
+  mkdtemp: 3,
+  rm: 3,
+  rmdir: 3,
+  unlink: 2,
+  open: 4,
+  close: 1,
+  fstat: 1,
+  ftruncate: 1,
+  fsync: 2,
+  fdatasync: 2,
+  fchmod: 3,
+  read: 6,
+  write: 6,
+  readv: 4,
+  writev: 4,
+  readlink: 3,
+  realpath: 3,
+  rename: 3,
+  stat: 1,
+  lstat: 1,
+  symlink: 4,
+  statfs: 1,
+  truncate: 3,
+  utimes: 4,
+  futimes: 4,
+  lutimes: 4,
+  readFile: 3,
+  writeFile: 4,
+  appendFile: 4,
+  readdir: 3,
+};
 
 /** One member's fence hint, own-property-safe (a collision would print an
  * inherited function into the diagnostic text). */

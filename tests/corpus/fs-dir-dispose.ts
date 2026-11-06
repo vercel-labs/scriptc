@@ -1,5 +1,6 @@
 // Dir disposal: Symbol.dispose closes with closeSync and returns silently on
-// an already-closed Dir, Symbol.asyncDispose awaits close but resolves on an
+// an already-closed Dir and throws a catchable ERR_DIR_CONCURRENT_OPERATION
+// while a read is queued, Symbol.asyncDispose awaits close but resolves on an
 // already-closed Dir, and `using`/`await using` dispose at scope exit in
 // reverse order.
 import * as fs from "node:fs";
@@ -60,6 +61,19 @@ async function asyncDispose(): Promise<void> {
     const again: string[] = [];
     for await (const entry of second) again.push(entry.name);
     console.log("nested", again.join(), first.path === dir);
+  }
+  {
+    // Symbol.dispose is closeSync, which throws while a read is queued.
+    const busy = fs.opendirSync(dir);
+    const pending = busy.read();
+    try {
+      busy[Symbol.dispose]();
+      console.log("dispose during a read", "returned");
+    } catch (error) {
+      console.log("dispose during a read", (error as { code?: string }).code);
+    }
+    console.log("the read still settles", (await pending) !== null);
+    busy.closeSync();
   }
   fs.rmSync(dir, { recursive: true });
   console.log("removed", fs.existsSync(dir));

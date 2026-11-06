@@ -1279,11 +1279,15 @@ static ScrDyn *scr_fs_cb_value_call(ScrClosure *closure, ScrDyn *const *args, si
   return result;
 }
 
-ScrDyn *scr_fs_callback_value(ScrStr *member) {
+ScrDyn *scr_fs_callback_value(ScrStr *member, double length) {
   ScrClosure *closure = scr_closure_new(NULL, 1);
   closure->caps[0] = scr_box_new(SCR_BOX_STR);
   scr_box_set_ref(closure->caps[0], scr_str_retain(member));
-  return scr_dyn_new_func(closure, scr_fs_cb_value_call, 0, "native:fs.callback", "filesystemCallback");
+  /* Node names each callback after its member; the compiler supplies the
+   * declared length (fs.readFile.length is 3). The member is a compiler
+   * string literal, which lives for the whole run. */
+  return scr_dyn_new_func(closure, scr_fs_cb_value_call, (uint32_t)length, "native:fs.callback",
+                          member->data);
 }
 
 ScrDyn *scr_fs_callback_call(ScrStr *member, const ScrDyn *args) {

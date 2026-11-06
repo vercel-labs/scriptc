@@ -29,6 +29,7 @@ const features = {
   mime: false,
   largePages: false,
   webStreams: false,
+  webBodies: false,
   abortSignal: false,
   utilTiming: false,
   dynBuffer: false,

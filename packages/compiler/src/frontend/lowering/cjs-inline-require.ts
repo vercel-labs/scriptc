@@ -579,6 +579,109 @@ export function requireNestedPatternsOf(decl: ts.VariableDeclaration): ts.Bindin
   );
 }
 
+/** The rest elements of a top-level `const { a, ...rest } = require("./x")`
+ * declaration over a program-module table (preflight admits exactly these):
+ * Node copies the module's remaining own enumerable exports into a fresh
+ * object at the require, which lower-stmts.ts materializes from the table's
+ * statically known members. */
+export function requireRestElementsOf(decl: ts.VariableDeclaration): ts.BindingElement[] {
+  if (!ts.isObjectBindingPattern(decl.name) || decl.initializer === undefined) return [];
+  const spec = requireSpecOf(decl.initializer);
+  if (spec === null || canonicalBuiltinModule(spec) !== null) return [];
+  if (!isJsSourceFile(ts.getSourceFileOfNode(decl))) return [];
+  return decl.name.elements.nodes.filter(
+    (e): e is ts.BindingElement =>
+      e.name !== undefined && ts.isIdentifier(e.name) && e.dotDotDotToken !== undefined,
+  );
+}
+
+/** The runtime own enumerable export names of a CommonJS table module, in
+ * Node's insertion order — the object's own key order, which is what
+ * `{ a, ...rest } = require("./m")` copies. Follows `module.exports =
+ * require("./y")` re-exports. Null when the exports object's keys are not
+ * statically known (computed keys, spreads, non-literal table values). */
+export function cjsTableExportNamesInOrder(
+  lowerer: Lowerer,
+  dep: ts.SourceFile,
+  depth = 0,
+): string[] | null {
+  return cjsTableExportNamesOf(
+    dep,
+    depth,
+    (expr) => inlineProgramRequireOf(lowerer, expr)?.dep ?? null,
+  );
+}
+
+/** The lowerer-free core of cjsTableExportNamesInOrder: `reExportDepOf`
+ * names the program module a `module.exports = require("<spec>")` value
+ * re-exports, or null when that value is not such a re-export. */
+export function cjsTableExportNamesOf(
+  dep: ts.SourceFile,
+  depth: number,
+  reExportDepOf: (expr: ts.Expression) => ts.SourceFile | null,
+): string[] | null {
+  if (depth > 32) return null;
+  const stmts = dep.statements.nodes;
+  let lastTable = -1;
+  for (let i = 0; i < stmts.length; i++) {
+    const cjs = cjsExportAssignmentOf(stmts[i]!);
+    if (cjs?.kind === "table" && cjsExportDiscardReason(stmts[i]!) === null) lastTable = i;
+  }
+  const names: string[] = [];
+  const seen = new Set<string>();
+  const add = (name: string): void => {
+    if (seen.has(name)) return;
+    seen.add(name);
+    names.push(name);
+  };
+  if (lastTable >= 0) {
+    const table = cjsExportAssignmentOf(stmts[lastTable]!);
+    if (table?.kind !== "table") return null;
+    let rhs = table.expr.right;
+    while (ts.isParenthesizedExpression(rhs)) rhs = rhs.expression;
+    const inner = reExportDepOf(rhs);
+    if (inner !== null) {
+      // A re-export: the export object IS the inner module's, so its own
+      // keys come first, and this module's member writes after the
+      // assignment append to that same object. A `module.exports.f =`
+      // write lands on the assigned object; an `exports.f =` write only
+      // when the assignment rebinds `exports`, which the discard test
+      // below enforces (Node drops the others).
+      const innerNames = cjsTableExportNamesOf(inner, depth + 1, reExportDepOf);
+      if (innerNames === null) return null;
+      for (const name of innerNames) add(name);
+    } else {
+      const lit = table.obj ?? cjsExportTargetLiteral(rhs, dep);
+      if (lit === null) return null;
+      for (const prop of lit.properties.nodes) {
+        if (ts.isSpreadAssignment(prop)) return null;
+        const nameNode = prop.name;
+        if (nameNode === undefined || ts.isComputedPropertyName(nameNode)) return null;
+        if (!(ts.isIdentifier(nameNode) || ts.isStringLiteralLike(nameNode))) return null;
+        // `__proto__: value` sets the prototype; it is not an own key.
+        if (nameNode.text === "__proto__" && !ts.isShorthandPropertyAssignment(prop)) continue;
+        add(nameNode.text);
+      }
+    }
+    for (let i = lastTable + 1; i < stmts.length; i++) {
+      const member = cjsExportAssignmentOf(stmts[i]!);
+      if (member?.kind !== "member" || cjsExportDiscardReason(stmts[i]!) !== null) continue;
+      if (!ts.isIdentifier(member.name)) return null;
+      add(member.name.text);
+    }
+    return names;
+  }
+  // Member exports only (`exports.a = …`): the original exports object's
+  // own keys, in assignment order.
+  for (const stmt of stmts) {
+    const member = cjsExportAssignmentOf(stmt);
+    if (member === null || cjsExportDiscardReason(stmt) !== null) continue;
+    if (member.kind !== "member" || !ts.isIdentifier(member.name)) return null;
+    add(member.name.text);
+  }
+  return names;
+}
+
 /** A plain method entry of a `module.exports = { ... }` table: identifier
  * name, a body, not a generator. Its value is the method's function. */
 export function cjsTableMethodEntry(

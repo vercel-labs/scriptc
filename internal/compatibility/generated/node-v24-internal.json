@@ -26583,7 +26583,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75962,7 +75963,8 @@
           "tests/corpus/5147-path-matches-glob-extglob.ts",
           "tests/corpus/5148-path-matches-glob-classes.ts",
           "tests/corpus/9205-path-namespace-members.ts",
-          "tests/corpus/957-builtins-namespace.ts"
+          "tests/corpus/957-builtins-namespace.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -76016,7 +76018,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76047,7 +76050,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76078,7 +76082,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76105,6 +76110,7 @@
         "evidence": "surface-manifest:node-builtin.path.format",
         "tests": [
           "tests/corpus/5142-path-parse-format.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts",
           "packages/runtime/test/path.test.ts"
         ]
       },
@@ -76166,7 +76172,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76197,7 +76204,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76228,7 +76236,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76255,6 +76264,7 @@
         "evidence": "surface-manifest:node-builtin.path.parse",
         "tests": [
           "tests/corpus/5142-path-parse-format.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts",
           "packages/runtime/test/path.test.ts"
         ]
       },
@@ -76286,7 +76296,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76317,7 +76328,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76348,7 +76360,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76379,7 +76392,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -76410,7 +76424,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -76441,7 +76456,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -76472,7 +76488,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "chapter"

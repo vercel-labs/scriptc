@@ -254,9 +254,13 @@ typedef enum {
   X(WS_WRITABLE, 95) /* WritableStream for checked-dynamic code (scr_webstreams.c) */ \
   X(WS_WRITER, 96) /* WritableStreamDefaultWriter (scr_webstreams.c) */
 
-/* Tags added since the last pin, by name only (see above). Every tag is
- * pinned for now: the LLVM backend names each of them. */
-#define SCR_DYNH_NEW_TAGS(Y)
+/* Tags added since the last pin, by name only (see above). The words
+ * segmenter and its result are pinned above (97, 98); the byte-stream
+ * objects are new. */
+#define SCR_DYNH_NEW_TAGS(Y) \
+  Y(WS_BYOB_CONTROLLER) /* ReadableByteStreamController (scr_webstreams.c) */ \
+  Y(WS_BYOB_READER) /* ReadableStreamBYOBReader (scr_webstreams.c) */ \
+  Y(WS_BYOB_REQUEST) /* ReadableStreamBYOBRequest (scr_webstreams.c) */
 
 /* Values below the largest pinned one that no tag holds, each with the
  * reason. Never reuse one without removing it here. */
@@ -2577,8 +2581,8 @@ ScrDyn *scr_dyn_handle_class_member(ScrDynHandleTag tag, void *h, const char *ke
  * NULL with the exception pending. */
 ScrDyn *scr_dyn_handle_class_method_call(const ScrDynHandleOps *ops, ScrDyn *self, const char *method,
                                          ScrDyn *const *args, size_t argc);
-/* The class operations scr_json.c's handle paths reach (instanceof, and a
- * method value's receiver and call). scr_dyn_handle_class.c installs them
+/* The class operations scr_json.c's handle paths reach (instanceof, a method
+ * value's receiver and call, and `in`); scr_dyn_handle_class.c installs them
  * from a constructor, so scr_json.c builds one object whether or not a
  * program links that unit; NULL in programs without handle classes. */
 typedef struct ScrDynHandleClassOps {
@@ -2586,6 +2590,10 @@ typedef struct ScrDynHandleClassOps {
   bool (*receiver)(ScrDynHandleTag klass_tag, ScrDyn *self, ScrDyn **out);
   ScrDyn *(*method_call)(const ScrDynHandleOps *ops, ScrDyn *self, const char *method,
                          ScrDyn *const *args, size_t argc);
+  /* The class's getters (its ScrDynHandleClass accessors), or NULL for a
+   * handle whose class declares none; an alias tag answers its class's
+   * table. */
+  const ScrDynHandleAccessor *(*accessors)(const ScrDyn *handle);
 } ScrDynHandleClassOps;
 extern const ScrDynHandleClassOps *scr_dyn_handle_class_ops;
 

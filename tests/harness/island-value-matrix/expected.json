@@ -641,7 +641,7 @@
   "i2n/U.json": "unsupported",
   "i2n/U.forin": "unsupported",
   "i2n/U.clone": "unsupported",
-  "i2n/N.cast": "exit",
+  "i2n/N.cast.read.sum": "throws",
   "clo-n2i/N.callback": "clone=unsupported,forin=unsupported,json=unsupported",
   "clo-i2n/U.json": "unsupported",
   "clo-i2n/U.forin": "unsupported",
@@ -1463,7 +1463,6 @@
  "fn-async.control.-": {
   "T.json": "refused:SC1090",
   "T.clone": "message",
-  "U.json": "wrong",
   "U.tag": "wrong",
   "U.clone": "message"
  },
@@ -1471,7 +1470,6 @@
   "n2i/I.inspect": "clone=message,ctor=wrong,own=wrong,proto=wrong,tag=wrong",
   "i2n/T.json": "unsupported",
   "i2n/U.json": "unsupported",
-  "n2i2n/U.json": "wrong",
   "n2i2n/U.tag": "wrong",
   "n2i2n/U.clone": "message",
   "clo-n2i/I.thunk": "clone=message,ctor=wrong,own=wrong,proto=wrong,tag=wrong",
@@ -1482,7 +1480,6 @@
   "n2i/I.inspect": "clone=message,ctor=wrong,own=wrong,proto=wrong,tag=wrong",
   "i2n/T.json": "unsupported",
   "i2n/U.json": "unsupported",
-  "n2i2n/U.json": "wrong",
   "n2i2n/U.tag": "wrong",
   "n2i2n/U.clone": "message",
   "clo-n2i/I.thunk": "clone=message,ctor=wrong,own=wrong,proto=wrong,tag=wrong",
@@ -1493,7 +1490,6 @@
  "fn-rec.control.-": {
   "T.json": "refused:SC1090",
   "T.clone": "message",
-  "U.json": "wrong",
   "U.clone": "message"
  },
  "fn-rec.p": {
@@ -1503,7 +1499,6 @@
   "i2n/T.json": "refused:SC1090",
   "i2n/U.json": "unsupported",
   "i2n/N.param": "roundtrip=wrong",
-  "n2i2n/U.json": "wrong",
   "n2i2n/U.clone": "message",
   "i2n2i/N.read@mixed.roundtrip": "wrong",
   "clo-n2i/I.thunk": "clone=message,own=wrong,roundtrip=throws",
@@ -1518,7 +1513,6 @@
   "i2n/T.json": "unsupported",
   "i2n/U.json": "unsupported",
   "i2n/N.cast.read.roundtrip": "wrong",
-  "n2i2n/U.json": "wrong",
   "n2i2n/U.clone": "message",
   "clo-n2i/I.thunk": "clone=message,own=wrong,roundtrip=throws",
   "clo-n2i/N.callback": "json=unsupported",
@@ -1528,14 +1522,12 @@
  "fn-rest.control.-": {
   "T.json": "refused:SC1090",
   "T.clone": "message",
-  "U.json": "wrong",
   "U.clone": "message"
  },
  "fn-rest.p": {
   "n2i/I.inspect": "clone=message,own=wrong",
   "i2n/T.json": "unsupported",
   "i2n/U.json": "unsupported",
-  "n2i2n/U.json": "wrong",
   "n2i2n/U.clone": "message",
   "clo-n2i/I.thunk": "clone=message,own=wrong",
   "clo-i2n/U.json": "unsupported",
@@ -1545,7 +1537,6 @@
   "n2i/I.inspect": "clone=message,own=wrong",
   "i2n/T.json": "unsupported",
   "i2n/U.json": "unsupported",
-  "n2i2n/U.json": "wrong",
   "n2i2n/U.clone": "message",
   "clo-n2i/I.thunk": "clone=message,own=wrong",
   "clo-n2i/N.callback": "json=unsupported",
@@ -1555,14 +1546,12 @@
  "fn-state.control.-": {
   "T.json": "refused:SC1090",
   "T.clone": "message",
-  "U.json": "wrong",
   "U.clone": "message"
  },
  "fn-state.p": {
   "n2i/I.inspect": "clone=message,own=wrong",
   "i2n/T.json": "unsupported",
   "i2n/U.json": "unsupported",
-  "n2i2n/U.json": "wrong",
   "n2i2n/U.clone": "message",
   "clo-n2i/I.thunk": "clone=message,own=wrong",
   "clo-i2n/U.json": "unsupported",
@@ -1572,7 +1561,6 @@
   "n2i/I.inspect": "clone=message,own=wrong",
   "i2n/T.json": "unsupported",
   "i2n/U.json": "unsupported",
-  "n2i2n/U.json": "wrong",
   "n2i2n/U.clone": "message",
   "clo-n2i/I.thunk": "clone=message,own=wrong",
   "clo-n2i/N.callback": "json=unsupported",
@@ -1582,14 +1570,12 @@
  "fn-this.control.-": {
   "T.json": "refused:SC1090",
   "T.clone": "message",
-  "U.json": "wrong",
   "U.clone": "message"
  },
  "fn-this.p": {
   "n2i/I.inspect": "clone=message,own=wrong",
   "i2n/T.json": "refused:SC1090",
   "i2n/U.json": "unsupported",
-  "n2i2n/U.json": "wrong",
   "n2i2n/U.clone": "message",
   "clo-n2i/I.thunk": "clone=message,own=wrong",
   "clo-i2n/U.json": "unsupported",
@@ -1599,7 +1585,6 @@
   "n2i/I.inspect": "clone=message,own=wrong",
   "i2n/T.json": "unsupported",
   "i2n/U.json": "unsupported",
-  "n2i2n/U.json": "wrong",
   "n2i2n/U.clone": "message",
   "clo-n2i/I.thunk": "clone=message,own=wrong",
   "clo-n2i/N.callback": "json=unsupported",
@@ -1609,14 +1594,12 @@
  "fn-throw.control.-": {
   "T.json": "refused:SC1090",
   "T.clone": "message",
-  "U.json": "wrong",
   "U.clone": "message"
  },
  "fn-throw.p": {
   "n2i/I.inspect": "clone=message,own=wrong",
   "i2n/T.json": "unsupported",
   "i2n/U.json": "unsupported",
-  "n2i2n/U.json": "wrong",
   "n2i2n/U.clone": "message",
   "clo-n2i/I.thunk": "clone=message,own=wrong",
   "clo-i2n/U.json": "unsupported",
@@ -1626,7 +1609,6 @@
   "n2i/I.inspect": "clone=message,own=wrong",
   "i2n/T.json": "unsupported",
   "i2n/U.json": "unsupported",
-  "n2i2n/U.json": "wrong",
   "n2i2n/U.clone": "message",
   "clo-n2i/I.thunk": "clone=message,own=wrong",
   "clo-n2i/N.callback": "json=unsupported",
@@ -1636,7 +1618,6 @@
  "fn.control.-": {
   "T.json": "refused:SC1090",
   "T.clone": "message",
-  "U.json": "wrong",
   "U.clone": "message"
  },
  "fn.p": {
@@ -1644,7 +1625,6 @@
   "n2i/I.read": "badArg=wrong,noArg=wrong",
   "i2n/T.json": "unsupported",
   "i2n/U.json": "unsupported",
-  "n2i2n/U.json": "wrong",
   "n2i2n/U.clone": "message",
   "clo-n2i/I.thunk": "badArg=wrong,clone=message,noArg=wrong,own=wrong",
   "clo-i2n/U.json": "unsupported",
@@ -1655,7 +1635,6 @@
   "n2i/I.read": "badArg=wrong,noArg=wrong",
   "i2n/T.json": "unsupported",
   "i2n/U.json": "unsupported",
-  "n2i2n/U.json": "wrong",
   "n2i2n/U.clone": "message",
   "clo-n2i/I.thunk": "badArg=wrong,clone=message,noArg=wrong,own=wrong",
   "clo-n2i/N.callback": "json=unsupported",
@@ -1667,7 +1646,6 @@
   "n2i/I.read": "badArg=wrong,noArg=wrong",
   "i2n/T.json": "unsupported",
   "i2n/U.json": "unsupported",
-  "n2i2n/U.json": "wrong",
   "n2i2n/U.clone": "message",
   "clo-n2i/I.thunk": "badArg=wrong,clone=message,noArg=wrong,own=wrong",
   "clo-i2n/U.json": "unsupported",
@@ -3755,13 +3733,9 @@
  "str.w": {},
  "sym.control.-": {
   "T.json#local": "refused:SC1090",
-  "U.json#local": "wrong",
   "T.json#registered": "refused:SC1090",
-  "U.json#registered": "wrong",
   "T.json#wellknown": "refused:SC1090",
-  "U.json#wellknown": "wrong",
-  "T.json#nodesc": "refused:SC1090",
-  "U.json#nodesc": "wrong"
+  "T.json#nodesc": "refused:SC1090"
  },
  "sym.p": {
   "n2i/I.inspect#local": "refused:SC8010",
@@ -4486,39 +4460,16 @@
   "clo-i2n/U.json#empty": "wrong"
  },
  "undef.control.-": {
-  "T.json": "refused:SC1090",
-  "U.json": "wrong",
-  "U.clone": "wrong"
+  "T.json": "refused:SC1090"
  },
  "undef.p": {
   "i2n/T.json": "refused:SC1090",
-  "i2n/U.json": "wrong",
-  "i2n/U.clone": "wrong",
-  "n2i2n/N.indexOf": "refused:SC2003",
-  "n2i2n/U.json": "wrong",
-  "n2i2n/U.clone": "wrong",
-  "clo-i2n/U.json": "wrong",
-  "clo-i2n/U.clone": "wrong"
+  "n2i2n/N.indexOf": "refused:SC2003"
  },
- "undef.u": {
-  "i2n/T.json": "wrong",
-  "i2n/U.json": "wrong",
-  "i2n/U.clone": "wrong",
-  "n2i2n/U.json": "wrong",
-  "n2i2n/U.clone": "wrong",
-  "clo-n2i/N.callback": "clone=wrong,json=wrong",
-  "clo-i2n/U.json": "wrong",
-  "clo-i2n/U.clone": "wrong"
- },
+ "undef.u": {},
  "undef.w": {
   "i2n/T.json": "refused:SC1090",
-  "i2n/U.json": "wrong",
-  "i2n/U.clone": "wrong",
-  "n2i2n/N.indexOf": "refused:SC2003",
-  "n2i2n/U.json": "wrong",
-  "n2i2n/U.clone": "wrong",
-  "clo-i2n/U.json": "wrong",
-  "clo-i2n/U.clone": "wrong"
+  "n2i2n/N.indexOf": "refused:SC2003"
  },
  "url.control.-": {
   "T.typeof": "refused:SC1090",
@@ -4618,19 +4569,22 @@
   "U.clone": "message"
  },
  "weakmap.p": {
-  "n2i/I.inspect": "throws",
-  "n2i/I.read": "throws",
-  "n2i/I.keep": "throws",
-  "n2i/I.same": "throws",
+  "n2i/I.inspect": "refused:SC8010",
+  "n2i/I.read": "refused:SC8010",
+  "n2i/I.keep": "refused:SC8010",
+  "n2i/I.same": "refused:SC8010",
   "i2n/T.json": "unsupported",
   "i2n/U.json": "unsupported",
   "i2n/U.forin": "unsupported",
-  "n2i2n/S.back": "exit",
-  "clo-n2i/I.keep": "throws",
+  "i2n/I.same@param": "refused:SC8010",
+  "i2n/I.same@field": "refused:SC8010",
+  "i2n/I.same@element": "refused:SC8010",
+  "n2i2n/S.back": "refused:SC8010",
+  "clo-n2i/I.keep": "refused:SC8010",
   "clo-n2i/I.thunk": "throws",
   "clo-i2n/U.json": "unsupported",
   "clo-i2n/U.forin": "unsupported",
-  "clo-i2n/I.taker": "throws"
+  "clo-i2n/I.taker": "refused:SC8010"
  },
  "weakmap.u": {
   "n2i/I.inspect": "throws",
@@ -4640,6 +4594,7 @@
   "i2n/T.json": "unsupported",
   "i2n/U.json": "unsupported",
   "i2n/U.forin": "unsupported",
+  "i2n/I.same@cast": "refused:SC8010",
   "n2i2n/S.back": "exit",
   "clo-n2i/I.keep": "throws",
   "clo-n2i/I.thunk": "throws",

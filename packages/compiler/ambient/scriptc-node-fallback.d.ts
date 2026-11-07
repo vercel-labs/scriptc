@@ -1169,10 +1169,52 @@ interface UnderlyingSource<T = unknown> {
   pull?(controller: ReadableStreamDefaultController<T>): unknown;
   cancel?(reason?: unknown): unknown;
 }
+/* A byte stream's source and its controller, request and reader
+ * (@types/node's stream/web shapes). */
+interface UnderlyingByteSource {
+  type: "bytes";
+  autoAllocateChunkSize?: number;
+  start?(controller: ReadableByteStreamController): unknown;
+  pull?(controller: ReadableByteStreamController): unknown;
+  cancel?(reason?: unknown): unknown;
+}
+interface ReadableStreamBYOBRequest {
+  readonly view: Uint8Array | null;
+  respond(bytesWritten: number): void;
+  respondWithNewView(view: Uint8Array): void;
+}
+interface ReadableByteStreamController {
+  readonly byobRequest: ReadableStreamBYOBRequest | null;
+  readonly desiredSize: number | null;
+  enqueue(chunk?: ArrayBufferView): void;
+  close(): void;
+  error(reason?: unknown): void;
+}
+interface ReadableStreamBYOBReadValueResult<T extends ArrayBufferView> {
+  done: false;
+  value: T;
+}
+interface ReadableStreamBYOBReadDoneResult<T extends ArrayBufferView> {
+  done: true;
+  value: T | undefined;
+}
+type ReadableStreamBYOBReadResult<T extends ArrayBufferView> =
+  | ReadableStreamBYOBReadValueResult<T>
+  | ReadableStreamBYOBReadDoneResult<T>;
+interface ReadableStreamBYOBReader {
+  readonly closed: Promise<void>;
+  read<T extends ArrayBufferView>(
+    view: T,
+    options?: { min?: number },
+  ): Promise<ReadableStreamBYOBReadResult<T>>;
+  cancel(reason?: unknown): Promise<void>;
+  releaseLock(): void;
+}
 interface ReadableStream<T = unknown> {
   readonly locked: boolean;
   cancel(reason?: unknown): Promise<void>;
   getReader(): ReadableStreamDefaultReader<T>;
+  getReader(options: { mode: "byob" }): ReadableStreamBYOBReader;
   tee(): [ReadableStream<T>, ReadableStream<T>];
   pipeTo(destination: WritableStream<T>, options?: StreamPipeOptions): Promise<void>;
   pipeThrough<O>(
@@ -1183,11 +1225,32 @@ interface ReadableStream<T = unknown> {
   values(options?: { preventCancel?: boolean }): AsyncIterableIterator<T>;
 }
 declare var ReadableStream: {
-  new <T = unknown>(source?: UnderlyingSource<T>): ReadableStream<T>;
+  /* Two constructor signatures, like @types/node's: a union of the two
+   * source shapes in one signature would drop the contextual type of a
+   * `pull(controller)` callback, since TypeScript gives no contextual
+   * signature for a property whose type differs across the union. */
+  new (
+    source: UnderlyingByteSource,
+    strategy?: QueuingStrategy<Uint8Array>,
+  ): ReadableStream<Uint8Array>;
+  new <T = unknown>(source?: UnderlyingSource<T>, strategy?: QueuingStrategy<T>): ReadableStream<T>;
   from<T>(iterable: readonly T[]): ReadableStream<T>;
   from(iterable: Uint8Array): ReadableStream<number>;
   from(iterable: string): ReadableStream<string>;
+  from<T>(iterable: Iterable<T> | AsyncIterable<T>): ReadableStream<T>;
   readonly prototype: ReadableStream<unknown>;
+};
+declare var ReadableStreamBYOBReader: {
+  new (stream: ReadableStream<Uint8Array>): ReadableStreamBYOBReader;
+  readonly prototype: ReadableStreamBYOBReader;
+};
+declare var ReadableByteStreamController: {
+  new (): ReadableByteStreamController;
+  readonly prototype: ReadableByteStreamController;
+};
+declare var ReadableStreamBYOBRequest: {
+  new (): ReadableStreamBYOBRequest;
+  readonly prototype: ReadableStreamBYOBRequest;
 };
 /* The writable side of a TransformStream and its writer. A program that
  * constructs a WritableStream, or a TransformStream with a transformer,

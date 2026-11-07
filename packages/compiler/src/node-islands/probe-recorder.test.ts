@@ -151,6 +151,65 @@ test("a shared dependency's environment reads reach every load that gets its exp
   expect(calls.map((c) => c.fn)).toEqual(["nodeIsland.require", "nodeIsland.require"]);
 });
 
+test("a module that shares a file another load evaluated takes no constants from it", () => {
+  // `common` reads the process arguments when it evaluates. The first load
+  // in a run may be `b`, written under a condition, so the probe evaluates
+  // `a` first and `common` reads there; `b` then gets the module cache's
+  // exports and its own record holds no read. The width its snapshot would
+  // carry is the build's, so the snapshot carries no constants and the
+  // first read evaluates it in Node.
+  const root = project({
+    "package.json": '{ "name": "app" }',
+    "node_modules/kit/package.json": '{ "name": "kit" }',
+    "node_modules/kit/common.js": "module.exports = { width: process.argv.length };\n",
+    "node_modules/kit/a.js": 'module.exports = { w: require("./common.js").width };\n',
+    "node_modules/kit/b.js": 'module.exports = { w: require("./common.js").width };\n',
+  });
+  const a = join(root, "node_modules/kit/a.js");
+  const b = join(root, "node_modules/kit/b.js");
+  const out = probeOutput(root, [a, b]);
+  expect(out.results[0]!.inputs.length).toBeGreaterThan(0);
+  expect(out.results[1]!.inputs).toEqual([]);
+  expect(out.results[1]!.files).toContain(join(root, "node_modules/kit/common.js"));
+
+  const call = (path: string) => ({
+    kind: "libCall",
+    fn: "nodeIsland.defer",
+    args: [
+      { kind: "strLit", value: path },
+      { kind: "strLit", value: "" },
+    ],
+  });
+  const bLoad = call(b);
+  const aLoad = call(a);
+  const mod = {
+    entry: "%main",
+    functions: [
+      {
+        name: "%main",
+        body: [
+          {
+            kind: "varDecl",
+            localId: "v",
+            init: {
+              kind: "logical",
+              op: "&&",
+              left: { kind: "varRef", localId: "use" },
+              right: bLoad,
+            },
+          },
+          { kind: "assign", localId: "%g.island.0", value: aLoad },
+        ],
+      },
+    ],
+    globals: [],
+  } as unknown as IrModule;
+  const decisions = finalizeDeferredIslands(mod, join(root, "main.ts"), root, () => out);
+  expect(decisions.map((d) => d.deferred)).toEqual([false, true]);
+  expect(decisions[1]!.reason).toContain("no constants");
+  expect((bLoad.args[1] as { value: string }).value).not.toContain("K ");
+});
+
 test("a package that catches the refusal does not defer, nor does one that loads it later", () => {
   const root = project({
     "src/config.js": marker("config"),

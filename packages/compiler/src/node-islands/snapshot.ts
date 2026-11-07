@@ -274,27 +274,27 @@ function traceDecision(d: DeferralDecision): void {
     );
 }
 
-/** A probed module with effects that `result` shares a file with, and the
- * file. A file that two modules load evaluates once, in the load of
- * whichever the run reaches first, and the probe recorded what that
- * evaluation did in the load it reached first. The two are not always the
- * same load: one written under a condition (`flag && require("a")`, an arm
- * of `?:`, a branch, after an early `return`) is probed where it is written
- * and skipped in a run where the condition fails, and then the shared file
- * evaluates, with its effects, in the other module's load. So a module is
- * not deferred when a load it shares a file with has effects, whichever of
- * the two the probe reached first. */
-function sharedEffects(
+/** Every probed load that `result` shares a file with, and the file. A file that
+ * two modules load evaluates once, in the load of whichever the run reaches
+ * first, and the probe recorded what that evaluation did in the load it
+ * reached first. The two are not always the same load: one written under a
+ * condition (`flag && require("a")`, an arm of `?:`, a branch, after an
+ * early `return`) is probed where it is written and skipped in a run where
+ * the condition fails, and then the shared file evaluates in the other
+ * module's load. So what the probe recorded under one load stands for both,
+ * whichever of the two the probe reached first. */
+function sharedRecords(
   result: ProbeResult,
   results: ProbeResult[],
-): { with: ProbeResult; file: string } | null {
+): { with: ProbeResult; file: string }[] {
   const files = new Set(result.files);
+  const shared: { with: ProbeResult; file: string }[] = [];
   for (const other of results) {
-    if (other === result || other.effects.length === 0) continue;
+    if (other === result) continue;
     const file = other.files.find((f) => files.has(f));
-    if (file !== undefined) return { with: other, file };
+    if (file !== undefined) shared.push({ with: other, file });
   }
-  return null;
+  return shared;
 }
 
 /** Island loads lowering emitted at call sites (`require()`, `import()`). */
@@ -372,9 +372,15 @@ export function finalizeDeferredIslands(
   // against its digests when it opens): only files outside it need guards.
   const tree = mod.nodeIsland?.modules;
   const shipped = new Set(tree?.files.map((f) => join(tree.root, f.path)) ?? []);
-  const deferred: { call: DeferCall; result: ProbeResult; why: string }[] = [];
+  const deferred: {
+    call: DeferCall;
+    result: ProbeResult;
+    why: string;
+    shared: { path: string; file: string; reads: string[] } | null;
+  }[] = [];
   for (const c of candidates) {
     const result = probe.results.find((r) => r.path === c.path);
+    const shared = result === undefined ? [] : sharedRecords(result, probe.results);
     const why = (() => {
       if (result === undefined) return "the probe did not load it";
       if (result.throws !== undefined) return `its evaluation throws: ${result.throws}`;
@@ -391,9 +397,9 @@ export function finalizeDeferredIslands(
       if (c.lazy) return null;
       if (result.effects.length > 0) return `its load has effects: ${result.effects.join(", ")}`;
       if (result.inputs.length > 0) return `its load reads ${result.inputs.join(", ")}`;
-      const shared = sharedEffects(result, probe.results);
-      if (shared !== null)
-        return `it shares ${shared.file} with ${shared.with.path}, whose load has effects (${shared.with.effects.join(", ")}): the file evaluates in whichever of the two the program reaches first`;
+      const effectful = shared.find((s) => s.with.effects.length > 0);
+      if (effectful !== undefined)
+        return `it shares ${effectful.file} with ${effectful.with.path}, whose load has effects (${effectful.with.effects.join(", ")}): the file evaluates in whichever of the two the program reaches first`;
       return null;
     })();
     if (why !== null || result === undefined) {
@@ -406,7 +412,25 @@ export function finalizeDeferredIslands(
       : c.gate === ""
         ? "static gate"
         : `recorded load is deterministic (static gate: ${c.gate})`;
-    deferred.push({ call: c.call, result, why: how });
+    // A shared file that was evaluated in another load recorded what it read
+    // there, not in this load's record, and the value the probe took from it
+    // is the build machine's. The module can still defer; its snapshot then
+    // carries no constants, so the first read of one of its values evaluates
+    // it in Node and reads the value the run has.
+    const read = shared.find((s) => s.with.inputs.length > 0 || s.with.volatile.length > 0);
+    deferred.push({
+      call: c.call,
+      result,
+      why: how,
+      shared:
+        read === undefined
+          ? null
+          : {
+              path: read.with.path,
+              file: read.file,
+              reads: [...read.with.inputs, ...read.with.volatile],
+            },
+    });
   }
   // Per-module evaluation once Node runs (no materialize-all at start):
   // every static island import is deferred, none mutates builtin state,
@@ -438,13 +462,23 @@ export function finalizeDeferredIslands(
       ...r.tty.map(([fd, isTty]) => `T ${fd} ${isTty ? 1 : 0}`),
       ...(lazyMode ? [`M ${component.get(r.path)}`] : []),
     ];
-    const text = encodeSnapshot(probe, r.root!, guards, r.volatile.length === 0);
+    const text = encodeSnapshot(
+      probe,
+      r.root!,
+      guards,
+      r.volatile.length === 0 && d.shared === null,
+    );
     const arg = d.call.args[1];
     if (arg !== undefined && arg.kind === "strLit") (arg as { value: string }).value = text;
     const notes = [
       d.why,
       ...(r.env.length > 0 ? [`env guards ${r.env.map(([k]) => k).join(",")}`] : []),
       ...(r.volatile.length > 0 ? [`volatile ${r.volatile.join(",")}: no constants`] : []),
+      ...(d.shared !== null
+        ? [
+            `${d.shared.path} evaluated ${d.shared.file} at build time and read ${d.shared.reads.join(", ")}: no constants`,
+          ]
+        : []),
       ...(r.mutations.length > 0 ? [`mutates ${r.mutations.join(",")}`] : []),
       lazyMode ? `per-module (component ${component.get(r.path)})` : "evaluated when Node starts",
     ];

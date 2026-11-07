@@ -142,7 +142,7 @@ function computeSplitRequireBinding(
 ): SplitRequireBinding | null {
   const sf = ts.getSourceFileOfNode(decl);
   if (!isCjsJsFile(sf, lowerer.program)) return null;
-  if (!sf.text.includes("require")) return null;
+  if (!ts.sourceTextIncludes(sf, "require")) return null;
   const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
   if (symbol === undefined) return null;
   // Merged declarations make the binding's initialization order ambiguous;

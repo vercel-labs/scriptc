@@ -7940,8 +7940,12 @@ export function hasJsTypeAnnotation(decl: ts.VariableDeclaration): boolean {
   const statement = decl.parent?.parent;
   return (
     !!statement &&
-    /@type\b/.test(
-      ts.getSourceFileOfNode(decl).text.slice(statement.pos, ts.tokenStartOfNode(decl)),
+    ts.sourceTextRangeMatches(
+      ts.getSourceFileOfNode(decl),
+      statement.pos,
+      ts.tokenStartOfNode(decl),
+      /@type\b/,
+      ts.LEADING_SPAN,
     )
   );
 }

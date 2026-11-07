@@ -7613,7 +7613,7 @@ export class Lowerer {
   analyzeDateJsonResults(parts: FileParts[]): void {
     const nullable = dateJsonType(this);
     for (const { sf } of parts) {
-      if (!sf.text.includes("toJSON")) continue;
+      if (!ts.sourceTextIncludes(sf, "toJSON")) continue;
       ts.walkPreorder(sf, (node) => {
         // `x = d.toJSON()`: the checker narrows x to string after the
         // assignment, so its reads must stay checked.

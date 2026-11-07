@@ -380,7 +380,7 @@ export function isOptionalProcessVersionsRead(lowerer: Lowerer, node: ts.Node): 
 function programMentionsVersions(lowerer: Lowerer): boolean {
   lowerer.mentionsProcessVersions ??= lowerer.program
     .getImplementationSourceFiles()
-    .some((sf) => !sf.isDeclarationFile && sf.text.includes("versions"));
+    .some((sf) => !sf.isDeclarationFile && ts.sourceTextIncludes(sf, "versions"));
   return lowerer.mentionsProcessVersions;
 }
 

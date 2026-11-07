@@ -18,7 +18,7 @@ import type { Lowerer } from "./lowerer.js";
 export function programNamesArrayBufferView(lowerer: Lowerer): boolean {
   for (const sf of lowerer.program.getSourceFiles()) {
     if (sf.isDeclarationFile) continue;
-    if (!sf.text.includes("ArrayBufferView")) continue;
+    if (!ts.sourceTextIncludes(sf, "ArrayBufferView")) continue;
     let found = false;
     const visit = (node: ts.Node): void => {
       if (found) return;

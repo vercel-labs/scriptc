@@ -16,3 +16,4 @@ import "./object-typed.ts";
 import "./view-literal-no-accessor.ts";
 import "./class-instance-as-interface.ts";
 import "./class-declared-field.ts";
+import "./record-behind-unknown.ts";

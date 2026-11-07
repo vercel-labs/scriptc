@@ -14,6 +14,7 @@
   "<repo>/tests/corpus/define-properties-receivers/view-literal-no-accessor.ts",
   "<repo>/tests/corpus/define-properties-receivers/class-instance-as-interface.ts",
   "<repo>/tests/corpus/define-properties-receivers/class-declared-field.ts",
+  "<repo>/tests/corpus/define-properties-receivers/record-behind-unknown.ts",
   "<repo>/tests/corpus/define-properties-receivers/main.ts"
  ],
  "diags": []

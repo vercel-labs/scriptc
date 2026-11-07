@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8737-fs-read-directory-typed.ts"
+ ],
+ "diags": []
+}

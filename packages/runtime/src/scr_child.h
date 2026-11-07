@@ -94,6 +94,16 @@ bool scr_spawn_res_has_status(ScrSpawnRes *r);
 double scr_spawn_res_status(ScrSpawnRes *r);
 ScrStr *scr_spawn_res_stdout(ScrSpawnRes *r); /* +1 */
 ScrStr *scr_spawn_res_stderr(ScrSpawnRes *r); /* +1 */
+/* The Buffer captures (spawnSync without an encoding option): the same
+ * bytes as a bytes<u8> value, carrying the Buffer brand Node's capture has
+ * (+1). All three entries live in scr_child_capture.c, a unit linked only
+ * by programs that read a capture, so scr_child.c keeps its layout and no
+ * always-linked unit names an optional one. */
+ScrBytes *scr_spawn_res_stdout_bytes(ScrSpawnRes *r);
+ScrBytes *scr_spawn_res_stderr_bytes(ScrSpawnRes *r);
+/* The Buffer behind one capture (NULL = the stream was not piped): the
+ * one-Buffer-per-capture memo the accessors above answer from. +1. */
+ScrBytes *scr_spawn_res_capture_bytes(ScrStr *capture);
 /* result.signal — the termination signal's name when a signal killed the
  * child (a timeout's killSignal included), the null arm otherwise; the
  * emitter wraps type-directedly over the has/get pair like status. */
@@ -103,6 +113,11 @@ ScrStr *scr_spawn_res_signal(ScrSpawnRes *r); /* +1; has_signal only */
  * stamped) when the spawn itself failed, NULL otherwise (the undefined
  * arm — the emitter wraps type-directedly, the envGet convention). */
 ScrError *scr_spawn_res_error(ScrSpawnRes *r);
+/* The result in the checked-dynamic tree: a HANDLE boxed by REFERENCE
+ * (identity, no copy), installing the tag's ops on first use. The typed
+ * slot reads it back through the tag check — a plain object that merely
+ * looks like a spawn result is not one and throws. Borrows (+1 out). */
+ScrDyn *scr_spawn_res_to_dyn(ScrSpawnRes *r);
 
 /* argv construction shared by spawnSync and spawn: a NULL-terminated
  * vector borrowing the strings (alive while cmd/args are); free() the
@@ -180,6 +195,15 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
 /* Runtime options use the same spawn core; validation and explicit
  * unsupported-option refusals throw before starting a child. Borrows. */
 ScrChild *scr_spawn_dynamic(ScrStr *cmd, ScrArr *args, const ScrDyn *options);
+/* cp.checkArgs: Node's argument checks for the launch that follows it
+ * (normalizeSpawnArguments, normalizeExecArgs). A NUL in the file or
+ * command, an argument, cwd ("" = absent) or an environment key or value
+ * ([k,v,...] pairs, empty = inherit), or an empty file, throws
+ * ERR_INVALID_ARG_VALUE. form: 0 = cmd is the file and args its arguments;
+ * 1 = exec's shell launch, args[1] is the command; 2 = execFile's shell
+ * launch, args[1] is the file; 3 = fork, no file, args follow the module
+ * path. Borrows. */
+void scr_child_check_args(double form, ScrStr *cmd, ScrArr *args, ScrArr *env_pairs, ScrStr *cwd);
 void scr_child_on_spawn(ScrChild *child, ScrClosure *cb); /* moves zero-argument callback */
 /* The callback slice: file + args, default options. The returned child has
  * all three stdio slots piped; stdout/stderr are captured internally and
@@ -296,6 +320,13 @@ void scr_child_ref(ScrChild *c);
 /* Installs ChildProcess's checked-dynamic handle identity bridge. Emitted
  * programs call this only when the child_process surface is present. */
 void scr_child_dyn_install(void);
+/* Installs the builder of a failed spawn's 'error' object (errno, code,
+ * syscall, path, spawnargs; one object for every listener). Called once at
+ * start by a program that can register an 'error' listener on a child. */
+void scr_child_error_event_install(void);
+/* The installed builder (+1 error), NULL in a program that cannot register
+ * an 'error' listener on a child. Read by the settle path. */
+extern ScrError *(*scr_child_spawn_error_hook)(ScrChild *c);
 void scr_child_on_dyn(ScrChild *child, ScrStr *event, ScrDyn *listener); /* borrowed */
 /* Own properties JavaScript adds to a child (scr_dyn_handle_props.c,
  * linked only by programs that add them). scr_dyn_handle_props_install is

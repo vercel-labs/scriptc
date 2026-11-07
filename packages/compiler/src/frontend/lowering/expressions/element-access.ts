@@ -8,6 +8,7 @@ import {
   splitUndefinedIndex,
   undefinedTypedArrayKeyFence,
 } from "../undefined-index.js";
+import { callableBox, isCallableTableValue } from "../callable-properties.js";
 import { type Lowerer, jsFuncNameOf, neverTaintedJsType } from "../lowerer.js";
 import {
   BOOL,
@@ -29,6 +30,7 @@ import {
   recordTextCodecClass,
   shapeHasAccessorSlots,
   typeEquals,
+  sortArms,
   typeKey,
   unionContainerArmsOk,
 } from "../../../ir/ir.js";
@@ -56,7 +58,7 @@ import { hostGlobalValue } from "../host-global-values.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { MUTABLE_BUFFER_MEMBERS } from "../buffers.js";
 import { lowerGlobalObjectValue } from "../lower-global-value.js";
-import { expandoMemberRead } from "../lower-expando.js";
+import { fenceExpandoRead } from "../lower-expando.js";
 import {
   assertedElementKeepsUndefined,
   compoundUnsupported,
@@ -87,6 +89,7 @@ import {
   arrayValueStore,
   arrayValueType,
   elementMayBeForeign,
+  foreignElementThrow,
   lowerSafeBytesRead,
   lowerSafeIndexRead,
   primitiveElement,
@@ -360,12 +363,10 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
   }
   // Expando function members in element clothing (`foo[strMem]`,
   // `foo[_private]` where foo is a module-level function/callable const
-  // and the key folds or is a unique-symbol const): the member's module
-  // global — the dotted read's twin (lower-expando.ts).
-  {
-    const ex = expandoMemberRead(lowerer, expr);
-    if (ex) return lowerer.maybeNarrow(ex, expr);
-  }
+  // and the key folds or is a unique-symbol const): only the source-order
+  // fence lives here (lower-expando.ts); the read itself is the ordinary
+  // element read of the closure's own-property table.
+  fenceExpandoRead(lowerer, expr);
   // Symbol-keyed property READS (`this[kLimit]`): when the key is a
   // statically-resolvable symbol declared as a field of the receiver's
   // class (classSymbolKeyOf — the countdown.js/OpenTUI idioms), the
@@ -1955,7 +1956,7 @@ function joinedFieldType(lowerer: Lowerer, fields: readonly { type: IrType }[]):
   };
   for (const field of fields) if (!push(field.type)) return null;
   if (arms.length === 0) return null;
-  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  sortArms(arms);
   return arms.length === 1 ? arms[0]! : { kind: "union", unionId: lowerer.unions.intern(arms) };
 }
 
@@ -2097,7 +2098,7 @@ function lowerTupleIndexRead(
       `dynamic tuple indexing of '${lowerer.fmt({ kind: "record", shapeId })}' (an element type has no value representation)`,
     );
   }
-  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  sortArms(arms);
   if (arms.length > 1 && !unionContainerArmsOk(arms)) {
     lowerer.unsupported(
       "SC1090",
@@ -2171,14 +2172,27 @@ export function lowerElementCompoundParts(
   if (isKeyedFieldAccess(lowerer, target))
     return { expr: lowerFieldCompoundValue(lowerer, target, op, expr.right, loc), stmts: null };
   const checked = lowerer.lowerExpr(target.expression);
-  if (checked?.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+  // A typed callable's element is its own-property table entry: the same
+  // read-modify-write the checked-dynamic receiver takes, through the
+  // identity-preserving box (`fn[k] += 1`, `fn[k] -= 1`).
+  const callableElement =
+    checked !== null &&
+    checked !== undefined &&
+    checked.type.kind === "func" &&
+    isCallableTableValue(lowerer, target.expression, checked);
+  const dynReceiver = callableElement ? callableBox(lowerer, checked) : checked;
+  if (
+    dynReceiver &&
+    (callableElement ||
+      (checked?.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(expr))))
+  ) {
     const stmts: IrStmt[] = [];
     const save = (value: IrExpr, name: string): IrExpr => {
       const local = lowerer.declareHiddenLocal(name, value.type);
       stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
       return varRef(local.id, value.type, loc);
     };
-    const receiver = save(checked, "%compoundReceiver");
+    const receiver = save(dynReceiver, "%compoundReceiver");
     const key = save(lowerer.lowerExprExpecting(target.argumentExpression, DYN), "%compoundKey");
     const old = save({ kind: "dynKeyGet", value: receiver, key, type: DYN, loc }, "%compoundOld");
     const rhs = lowerer.lowerExprExpecting(expr.right, DYN);
@@ -2268,8 +2282,10 @@ export function lowerElementCompoundParts(
           arrayNumberRead(receiverRef(), indexRef(), locOf(target))
         : receiver.type.elem.kind === "string" &&
             op === "+" &&
-            !elementMayBeForeign(lowerer, receiver.type.elem)
-          ? arrayStringOperand(receiverRef(), indexRef(), locOf(target))
+            (statement || !elementMayBeForeign(lowerer, receiver.type.elem))
+          ? // The statement form's append reads the element inside its
+            // concat, so its operand is a string in every program.
+            arrayStringOperand(lowerer, receiverRef(), indexRef(), locOf(target))
           : arrayValueRead(lowerer, receiverRef(), indexRef(), receiver.type.elem, locOf(target))
       : {
           // An invalid index reads undefined in Node, which every numeric
@@ -2445,20 +2461,37 @@ function lowerIndexedUnionCompound(
 }
 
 /** ToString of one stabilized `string[]` element read for `+=`: a missing
- * element concatenates as "undefined". */
-function arrayStringOperand(arr: IrExpr, index: IrExpr, loc: SrcLoc): IrExpr {
+ * element concatenates as "undefined". Where string arrays can hold foreign
+ * elements, one throws the checked conversion's TypeError, as the typed
+ * read does (arrayValueRead). */
+function arrayStringOperand(lowerer: Lowerer, arr: IrExpr, index: IrExpr, loc: SrcLoc): IrExpr {
+  const stateIs = (state: number): IrExpr => ({
+    kind: "bin",
+    op: "===",
+    left: { kind: "arrayState", arr, index, type: F64, loc },
+    right: { kind: "numLit", value: state, type: F64, loc },
+    type: BOOL,
+    loc,
+  });
+  let missing: IrExpr = strLit("undefined", loc);
+  if (elementMayBeForeign(lowerer, STRING)) {
+    missing = {
+      kind: "ternary",
+      cond: stateIs(3),
+      then: {
+        ...foreignElementThrow(lowerer, arr, index, arrayValueType(lowerer, STRING), loc),
+        type: STRING,
+      },
+      else_: missing,
+      type: STRING,
+      loc,
+    };
+  }
   return {
     kind: "ternary",
-    cond: {
-      kind: "bin",
-      op: "===",
-      left: { kind: "arrayState", arr, index, type: F64, loc },
-      right: { kind: "numLit", value: 1, type: F64, loc },
-      type: BOOL,
-      loc,
-    },
+    cond: stateIs(1),
     then: { kind: "arrayGet", arr, index, type: STRING, loc },
-    else_: strLit("undefined", loc),
+    else_: missing,
     type: STRING,
     loc,
   };
@@ -2546,6 +2579,17 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
         expr: lowerDynMemberAssignment(lowerer, expr, receiver),
         loc: locOf(expr),
       };
+    // `fn[SYMBOL] = v` on a typed callable: a symbol-keyed own property of
+    // the closure's table, the computed keyed store the `any` view emits.
+    if (isCallableTableValue(lowerer, target.expression, receiver)) {
+      const boxed = callableBox(lowerer, receiver);
+      if (boxed)
+        return {
+          kind: "exprStmt",
+          expr: lowerDynMemberAssignment(lowerer, expr, boxed),
+          loc: locOf(expr),
+        };
+    }
     if (
       isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
       receiver.type.kind === "object" &&
@@ -2583,6 +2627,16 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
       expr: lowerDynMemberAssignment(lowerer, expr, checkedReceiver),
       loc: locOf(expr),
     };
+  }
+  // `fn[k] = v` on a typed callable: the closure's own-property table.
+  if (checkedReceiver && isCallableTableValue(lowerer, target.expression, checkedReceiver)) {
+    const boxed = callableBox(lowerer, checkedReceiver);
+    if (boxed)
+      return {
+        kind: "exprStmt",
+        expr: lowerDynMemberAssignment(lowerer, expr, boxed),
+        loc: locOf(expr),
+      };
   }
   if (checkedReceiver?.type.kind === "object" && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
     const info = lowerer.classes.get(checkedReceiver.type.className);

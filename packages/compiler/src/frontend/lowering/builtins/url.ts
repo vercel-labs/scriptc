@@ -149,6 +149,13 @@ export function lowerUrlAssignment(lowerer: Lowerer, expr: ts.BinaryExpression):
   return { kind: "seqExpr", stmts, result, type: result.type, loc };
 }
 
+/** `url.Url` as a value: Node's legacy Url constructor. JavaScript sources
+ * reach it the way parseurl does (`var Url = url.Url`); url.parse() results
+ * are instances of it. One identity per thread. */
+export function legacyUrlClassValue(loc: SrcLoc): IrExpr {
+  return { kind: "libCall", fn: "url.legacyClass", args: [], type: DYN, loc };
+}
+
 /** Method calls on URL-typed receivers: `u.toString()` and `u.toJSON()` are Node's href
  * serialization (the href getter's libCall). Everything else the lib
  * declares fences member-qualified. Null for non-URL receivers. */

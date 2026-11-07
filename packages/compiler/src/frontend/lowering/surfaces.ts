@@ -1,4 +1,5 @@
 import { isWebStreamMemberInJavaScript } from "./builtins/web-streams-dyn.js";
+import { isLoweredConsoleMember } from "./builtins/console.js";
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { staticCondition, staticallySelected } from "./static-typeof.js";
@@ -579,6 +580,12 @@ export const SET_COMBINE_METHODS = new Set([
   "isSupersetOf",
   "isDisjointFrom",
 ]);
+
+/** The keyed-collection classes whose `prototype` reads, members and
+ * constructors have a checked-dynamic form (scr_dyn_collections.c). */
+export const DYN_COLLECTION_CLASSES = ["Set", "Map", "WeakMap", "WeakSet"] as const;
+
+export type DynCollectionClass = (typeof DYN_COLLECTION_CLASSES)[number];
 
 export type CompoundOp = "+" | "-" | "*" | "/" | "%" | "**" | "&" | "|" | "^" | "<<" | ">>" | ">>>";
 
@@ -2128,6 +2135,44 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
     // os.constants' groups, fs.constants and crypto.constants): bindings of
     // the module read it as a checked-dynamic value (builtinConstantsObject).
     constants: {},
+    // node:sea: a compiled program is not a Node single-executable
+    // application and holds no injected assets, so the module answers what
+    // Node answers outside one. isSea() is false; the asset readers check
+    // their arguments in lib/sea.js's order (getAsset's encoding when given,
+    // then the key) and throw ERR_NOT_IN_SINGLE_EXECUTABLE_APPLICATION. The
+    // rows are in Node's key order, which the module object reports.
+    sea: {
+      isSea: { fn: "sea.isSea", params: [], result: BOOL, valueParams: [] },
+      getAsset: {
+        fn: "sea.getAsset",
+        params: [STRING, STRING],
+        result: DYN,
+        defaults: [""],
+        valueParams: [
+          { mode: "required", type: STRING, name: "key" },
+          { mode: "optional", type: STRING, defaultValue: "", name: "encoding" },
+        ],
+        valueOrder: [1, 0],
+        valueLength: 2,
+      },
+      getRawAsset: {
+        fn: "sea.getRawAsset",
+        params: [STRING],
+        result: DYN,
+        valueParams: [{ mode: "required", type: STRING, name: "key" }],
+      },
+      getAssetAsBlob: {
+        fn: "sea.getAssetAsBlob",
+        params: [STRING, DYN],
+        result: DYN,
+        valueParams: [
+          { mode: "required", type: STRING, name: "key" },
+          { mode: "optional", type: DYN, defaultValue: undefined },
+        ],
+        valueLength: 2,
+      },
+      getAssetKeys: { fn: "sea.getAssetKeys", params: [], result: DYN, valueParams: [] },
+    },
     // node:readline: createInterface's options are entirely special-cased
     // (exactly { input: process.stdin, output?: process.stdout } — see
     // lowerBuiltinModuleCall); the entry carries the canonical shape. The
@@ -2249,6 +2294,51 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
   };
 }
 
+/** node:dns's DNS error-code constants: the `code` a resolver failure
+ * carries, exported by node:dns and node:dns/promises alike. */
+const DNS_ERROR_CODES: Record<string, string> = {
+  NODATA: "ENODATA",
+  FORMERR: "EFORMERR",
+  SERVFAIL: "ESERVFAIL",
+  NOTFOUND: "ENOTFOUND",
+  NOTIMP: "ENOTIMP",
+  REFUSED: "EREFUSED",
+  BADQUERY: "EBADQUERY",
+  BADNAME: "EBADNAME",
+  BADFAMILY: "EBADFAMILY",
+  BADRESP: "EBADRESP",
+  CONNREFUSED: "ECONNREFUSED",
+  TIMEOUT: "ETIMEOUT",
+  EOF: "EOF",
+  FILE: "EFILE",
+  NOMEM: "ENOMEM",
+  DESTRUCTION: "EDESTRUCTION",
+  BADSTR: "EBADSTR",
+  BADFLAGS: "EBADFLAGS",
+  NONAME: "ENONAME",
+  BADHINTS: "EBADHINTS",
+  NOTINITIALIZED: "ENOTINITIALIZED",
+  LOADIPHLPAPI: "ELOADIPHLPAPI",
+  ADDRGETNETWORKPARAMS: "EADDRGETNETWORKPARAMS",
+  CANCELLED: "ECANCELLED",
+};
+
+/** node:dns's getaddrinfo hint flags per TARGET libc. Node re-exports the
+ * three values its c-ares binding compiled against (src/cares_wrap.cc's
+ * NODE_DEFINE_CONSTANT of AI_ADDRCONFIG/AI_ALL/AI_V4MAPPED), so they are
+ * the target's <netdb.h> macros, not a portable libuv normalization:
+ * glibc and musl number them 0x20/0x10/0x8, while the BSD headers (macOS)
+ * and Windows' ws2tcpip.h use 0x400/0x100/0x800. Node:dns's own values
+ * follow the platform the program runs on, which is why the differential
+ * corpus sees 32 16 8 on Linux and 1024 256 2048 on macOS. */
+const DNS_HINT_CONSTS: Record<string, Record<string, number> | undefined> = {
+  // AI_ADDRCONFIG, AI_ALL, AI_V4MAPPED (glibc netdb.h; musl matches).
+  linux: { ADDRCONFIG: 0x0020, ALL: 0x0010, V4MAPPED: 0x0008 },
+  // BSD netdb.h (macOS/iOS) and ws2tcpip.h (win32) agree.
+  darwin: { ADDRCONFIG: 0x0400, ALL: 0x0100, V4MAPPED: 0x0800 },
+  win32: { ADDRCONFIG: 0x0400, ALL: 0x0100, V4MAPPED: 0x0800 },
+};
+
 /** Builtin-module CONSTANTS (value reads of named imports): each lowers to
  * a literal of its value's kind. The bare-module values are the TARGET
  * platform's (builtinModuleConstOf swaps the win32 values in under a win32
@@ -2283,6 +2373,14 @@ export const BUILTIN_MODULE_CONSTS: Record<
   zlib: Object.fromEntries(
     Object.entries(ZLIB_CONSTANTS).filter(([name]) => !name.startsWith("BROTLI")),
   ),
+  // node:dns's getaddrinfo hints are the target libc's AI_* values
+  // (builtinModuleConstOf selects them from DNS_HINT_CONSTS); the names
+  // live here so the inventory, fence and manifest walks see them, and
+  // the glibc numbers are the fallback for a target with no entry. The
+  // error codes are the module's exported strings; node:dns/promises
+  // exports the same ones.
+  dns: { ADDRCONFIG: 32, ALL: 16, V4MAPPED: 8, ...DNS_ERROR_CODES },
+  "dns/promises": { ...DNS_ERROR_CODES },
 };
 
 /** ALTERNATE libCall spellings of tabled builtin members: lowerings the
@@ -2330,6 +2428,7 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     // file-descriptor data form.
     writeFileSync: [
       "fs.writeFileSyncBytes",
+      "fs.writeFileSyncBytesFlags",
       "fs.writeFileModeSync",
       "fs.writeFileFlagsSync",
       "fs.writeFileSyncFd",
@@ -2384,8 +2483,14 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     // The Buffer form (no encoding) and the runtime-encoding forms.
     readFile: ["fsp.readFileBytes", "fsp.readFileEncoded"],
     readlink: ["fsp.readlinkStr", "fsp.readlinkBuffer"],
-    // The string-data { mode, flag } options forms.
-    writeFile: ["fsp.writeFileMode", "fsp.writeFileFlags"],
+    // The string-data and Uint8Array/Buffer-data { mode, flag } options
+    // forms (and the Buffer-data two-argument write).
+    writeFile: [
+      "fsp.writeFileMode",
+      "fsp.writeFileFlags",
+      "fsp.writeFileBytes",
+      "fsp.writeFileBytesFlags",
+    ],
     // The { withFileTypes: true } Dirent form.
     readdir: ["fsp.readdirTypes"],
     glob: ["fsp.globTypes"],
@@ -2872,7 +2977,7 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
         "process.builtinObject",
         "process.builtinUnsupported",
       ],
-      note: "native path and os export subsets plus current-thread worker_threads metadata; other modules and exports throw SC2020",
+      note: "a literal id of a supported module answers its namespace; a computed id serves the path families, os, util/types, node:sea and current-thread worker_threads metadata, answers undefined for an id Node does not have, and throws SC2020 for Node's other modules",
     },
     {
       id: "node-builtin.process.versions",
@@ -3187,6 +3292,7 @@ export const FS_CALLBACK_MEMBERS = new Set([
   "rmdir",
   "unlink",
   "open",
+  "opendir",
   "close",
   "fstat",
   "ftruncate",
@@ -3278,6 +3384,13 @@ export function builtinModuleConstOf(
   module: string,
   member: string,
 ): string | number | boolean | undefined {
+  // node:dns's hint flags are the TARGET's libc macros, so they are
+  // selected per platform rather than taken from the shared table.
+  if (module === "dns") {
+    const hints = ownEntry(DNS_HINT_CONSTS, lowerer.targetPlatform);
+    const hint = hints ? ownEntry(hints, member) : undefined;
+    if (hint !== undefined) return hint;
+  }
   if (lowerer.targetPlatform === "win32") {
     const mod = ownEntry(WIN32_TARGET_CONSTS, module);
     const w = mod ? ownEntry(mod, member) : undefined;
@@ -3496,7 +3609,14 @@ export function stdlibMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExp
   // at runtime through the dyn/handle machinery — the keyed-read claim
   // below this fence answers, member-or-refusal ladder, so no compile
   // fence belongs here.
-  if (lowerer.mapTypeOf(lowerer.typeOf(recv))?.kind === "dyn") return;
+  // The global console is such a receiver too, but a direct call of a
+  // member with no lowering (`console.trace()`) has nothing to dispatch
+  // to: it keeps this fence and its hint in both type worlds.
+  if (
+    lowerer.mapTypeOf(lowerer.typeOf(recv))?.kind === "dyn" &&
+    !(lowerer.isStdlibGlobal(recv, "console") && !isLoweredConsoleMember(member))
+  )
+    return;
   // JavaScript reads web stream values (read results, sources, strategies)
   // as checked-dynamic objects (web-streams-dyn.ts).
   if (isWebStreamMemberInJavaScript(lowerer, access)) return;

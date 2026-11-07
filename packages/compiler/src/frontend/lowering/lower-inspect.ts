@@ -294,8 +294,8 @@ function jsonErrorFieldsRecord(
   if (fields.length === 0) return strLit("{}", loc);
   const marker = `%jsonOrder:${className}`;
   const shapeId = lowerer.shapes.intern(
-    [...fields.map((f) => ({ name: f.name, type: f.type })), { name: marker, type: F64 }].sort(
-      (a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0),
+    [...fields.map((f) => ({ ...f })), { name: marker, type: F64 }].sort((a, b) =>
+      a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
     ),
     false,
     undefined,

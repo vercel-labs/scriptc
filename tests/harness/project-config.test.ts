@@ -100,6 +100,7 @@ for (const [name, title] of [
     "eventLoopUtilization and monitorEventLoopDelay follow @types/node's types",
   ],
   ["timeout-type", "NodeJS.Timeout fields, ref/unref/hasRef and clearInterval under @types/node"],
+  ["console-values", "console and its output methods as values under @types/node"],
   ["x509-methods", "X509Certificate's methods and the legacy object under @types/node"],
   ["tls-peer-certificates", "TLS socket certificate accessors under @types/node"],
   ["tls-client-certificates", "mutual TLS with client certificates under @types/node"],
@@ -435,6 +436,22 @@ test("indexed-strict: the project's EXTRA strictness is honored — preflight fa
   expect(result.diagnostics.some((d) => d.message.includes("possibly 'undefined'"))).toBe(true);
 });
 
+test("spi-off-union-field: a union-typed field with an initializer compiles under strictPropertyInitialization OFF", async () => {
+  const outDir = outDirFor("spi-off-union-field");
+  const entry = join(fixture("spi-off-union-field"), "main.ts");
+  const result = await compile(entry, { outPath: join(outDir, "main"), outDir, sanitize });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  // The same program without the field initializer is fenced (see
+  // tests/fixtures/strictness/spi-off-union-field/main.ts and the
+  // diagnostics/spi-off fixture); Node is the oracle for this direction.
+  expect(native.stdout).toBe(node.stdout);
+});
+
 test("project paths: TS 7 checking and native module lowering share the configured aliases", async () => {
   const outDir = outDirFor("project-paths");
   const result = await compile(join(fixture("project-paths"), "main.ts"), {
@@ -627,6 +644,23 @@ test("node-types: RequestInit-derived options carry BodyInit and HeadersInit int
   ]);
   expect(native.stdout).toBe(node.stdout);
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("node-types: a FormData fetch body fences by name instead of stringifying", async () => {
+  const outDir = outDirFor("fetch-formdata-body-fences");
+  const result = await compile(join(nodeTypesDir, "fetch-formdata-body-fences.ts"), {
+    outPath: join(outDir, "fetch-formdata-body-fences"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  const rendered = renderDiagnostics(result.diagnostics, result.sourceTexts, {
+    color: false,
+  }).replaceAll(nodeTypesDir + "/", "");
+  await expect(rendered).toMatchFileSnapshot(
+    "__snapshots__/node-types-fetch-formdata-body-fences.txt",
+  );
 });
 
 test("node-types: stream subclasses extend the @types/node stream classes", async () => {

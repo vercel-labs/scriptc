@@ -64,7 +64,13 @@ import { iterableSlotValue, iterableUnionOf } from "../iterable-values.js";
 import { isDeclBoundaryTypeNode } from "../../decl-projection.js";
 import { isMessageListenerCall } from "./message-listeners.js";
 import { nativeProxyEntering, refuseProxyInTypedSlot } from "./native-proxy.js";
-import { assertedProbeAccessOf, deferredMemberReadTarget } from "./asserted-receiver.js";
+import {
+  assertedProbeAccessOf,
+  convertingAssertion,
+  deferredMemberReadTarget,
+  plainAssignmentTarget,
+} from "./asserted-receiver.js";
+import { DELETE_NULLISH_RECEIVER } from "./erased-delete.js";
 
 /** `c ? a : b`. An explicit destination constructs each branch at that
  * layout before joining it. Without one, retain the expression's inferred
@@ -1103,6 +1109,11 @@ export function staleReadMessage(node: ts.Node, found: IrType): string | null {
   else if (ts.isStringLiteral(parent.argumentExpression)) key = parent.argumentExpression.text;
   else if (ts.isNumericLiteral(parent.argumentExpression))
     key = String(Number(parent.argumentExpression.text));
+  // `delete x!.k`: ToObject runs before the key is used, and its TypeError
+  // names neither the receiver nor the key.
+  let use: ts.Node = parent;
+  while (ts.isParenthesizedExpression(use.parent)) use = use.parent;
+  if (ts.isDeleteExpression(use.parent)) return DELETE_NULLISH_RECEIVER;
   if (key === null) return null;
   const store = parent.parent;
   return ts.isBinaryExpression(store) &&
@@ -1212,7 +1223,7 @@ export function runtimeOptionalReceiverRead(
       then: nodeThrowExpr(
         1,
         "",
-        runtimeOptionalReceiverMessage(expr, property),
+        runtimeOptionalReceiverMessage(lowerer, expr, property),
         extracted.type,
         loc,
       ),
@@ -1289,7 +1300,7 @@ export function runtimeOptionalReceiverRead(
       "a runtime-optional receiver without a representable value arm",
     );
   }
-  const message = runtimeOptionalReceiverMessage(expr, property);
+  const message = runtimeOptionalReceiverMessage(lowerer, expr, property);
   return lowerer.maybeNarrow(
     {
       kind: "ternary",
@@ -1318,12 +1329,62 @@ export function runtimeOptionalReceiverRead(
   );
 }
 
+/** The member access `node` is the receiver of, through the erased
+ * wrappers (`x.k`, `x!.k`, `(x as View)["k"]`), with the outermost wrapper
+ * (the access's own receiver node). Null when `node` is not a receiver. */
+function receiverAccessOf(node: ts.Expression): {
+  receiver: ts.Expression;
+  access: ts.PropertyAccessExpression | ts.ElementAccessExpression;
+} | null {
+  let receiver: ts.Expression = node;
+  for (;;) {
+    const parent: ts.Node | undefined = receiver.parent;
+    if (
+      parent !== undefined &&
+      (ts.isParenthesizedExpression(parent) ||
+        ts.isAssertionExpression(parent) ||
+        ts.isSatisfiesExpression(parent) ||
+        ts.isNonNullExpression(parent)) &&
+      parent.expression === receiver
+    ) {
+      receiver = parent;
+      continue;
+    }
+    break;
+  }
+  const access = receiver.parent;
+  if (
+    access === undefined ||
+    !(ts.isPropertyAccessExpression(access) || ts.isElementAccessExpression(access)) ||
+    access.expression !== receiver
+  )
+    return null;
+  return { receiver, access };
+}
+
 /** Node's TypeError message for a member read (`property`) or a call
- * (`property` null) through an undefined runtime-optional receiver. */
-function runtimeOptionalReceiverMessage(expr: ts.Identifier, property: string | null): string {
-  return property === null
-    ? `${expr.text} is not a function`
-    : `Cannot read properties of undefined (reading '${property}')`;
+ * (`property` null) through an undefined runtime-optional receiver. A
+ * member `delete` through an erased wrapper (`delete x!.k`,
+ * `delete (x as View).k`) runs ToObject on the receiver instead of reading
+ * it, and a plain assignment through a converting assertion, which
+ * addresses this receiver in place (asserted-receiver.ts), sets the member
+ * without reading it. */
+function runtimeOptionalReceiverMessage(
+  lowerer: Lowerer,
+  expr: ts.Identifier,
+  property: string | null,
+): string {
+  if (property === null) return `${expr.text} is not a function`;
+  const use = receiverAccessOf(expr);
+  if (use !== null) {
+    let outer: ts.Node = use.access;
+    while (ts.isParenthesizedExpression(outer.parent)) outer = outer.parent;
+    if (use.receiver !== expr && ts.isDeleteExpression(outer.parent))
+      return DELETE_NULLISH_RECEIVER;
+    if (plainAssignmentTarget(use.access) && convertingAssertion(lowerer, use.receiver) !== null)
+      return `Cannot set properties of undefined (setting '${property}')`;
+  }
+  return `Cannot read properties of undefined (reading '${property}')`;
 }
 
 export function runtimeOptionalTrueIds(lowerer: Lowerer, node: ts.Expression): IrLocal[] {
@@ -1794,14 +1855,34 @@ export function lowerAsExpression(
       target?.kind === "record" &&
       inner.type.shapeId !== target.shapeId
     ) {
-      // A pair outside the width family (an index-signature record asserted
-      // to a record of its own keys: a `Record<string, V>` filled key by
-      // key and cast to `{ k: V }`) converts checked (assertedConversion):
-      // every claimed field validated, the value's own keys kept. The claim
-      // follows the value the assertion PRODUCED, not the operand it read —
-      // a generic body's operand keeps the caller's layout while its
-      // asserted result carries the target's — so later slots check the
-      // shape the assertion actually made.
+      // An index-signature record asserted to a record of its own keys (a
+      // `Record<string, V>` filled key by key and cast to `{ k: V }`): the
+      // value's own keys stay observable — Node erases the assertion, so
+      // JSON and Object.keys see every property the object holds, including
+      // the ones the target does not declare. A field copy would drop them.
+      // The value keeps its storage, and a read of a target field answers
+      // through the source's index signature (the keyed read the bracket
+      // spelling takes). The claim still follows the assertion's result, so
+      // a slot that needs the target layout converts it there.
+      const source = lowerer.shapes.get(inner.type.shapeId);
+      const dest = lowerer.shapes.get(target.shapeId);
+      if (
+        source?.indexValue !== undefined &&
+        !source.tuple &&
+        dest !== undefined &&
+        !dest.tuple &&
+        dest.indexValue === undefined
+      ) {
+        lowerer.layoutKeptNodes.add(expr);
+        lowerer.assertedValues.set(inner, target);
+        return inner;
+      }
+      // A pair outside the width family converts checked
+      // (assertedConversion): every claimed field validated, the value's
+      // own keys kept. The claim follows the value the assertion PRODUCED,
+      // not the operand it read — a generic body's operand keeps the
+      // caller's layout while its asserted result carries the target's — so
+      // later slots check the shape the assertion actually made.
       const converted = lowerer.coerceInto(expr, inner, target);
       if (converted !== inner) lowerer.assertedValues.set(converted, target);
       return converted;

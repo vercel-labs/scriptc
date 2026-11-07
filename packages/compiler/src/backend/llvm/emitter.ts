@@ -256,6 +256,7 @@ import {
   type StringSliceSnapshot,
 } from "./string-slices.js";
 import { LazyCaptures } from "./lazy-captures.js";
+import { type EnvironmentLayout, ValueCaptures } from "./value-captures.js";
 import { StackCaptures } from "./stack-captures.js";
 import {
   CLOSURE_KIND,
@@ -1836,8 +1837,17 @@ export class LlEmitter {
   readonly receiverReaders: AmbientReceiverReaders;
   readonly stackCaptures: StackCaptures;
   readonly lazyCaptures: LazyCaptures;
-  /** Unchanged captured parameters of the current function: each maps to
-   * the slot caching its box, NULL until the first closure needs it. */
+  readonly valueCaptures: ValueCaptures;
+  /** Bindings of the current function that the IR boxes and that hold
+   * their value in a plain slot here (value-captures.ts): stable bindings
+   * whose every capture copies the value, and captures this body receives
+   * by value. Closures read them like any local; nothing else reads or
+   * writes the slot. */
+  valueBindings: ReadonlySet<string> = new Set<string>();
+  /** Unchanged captured parameters of the current function, and captures
+   * it received by value, that a box-holding environment captures: each
+   * maps to the slot caching its box, NULL until the first such closure
+   * needs it. */
   readonly lazyCaptureBoxes = new Map<string, string>();
   readonly lazyStackBoxes = new Map<string, string>();
   borrowedParameters = new Set<string>();
@@ -2238,7 +2248,8 @@ export class LlEmitter {
           local !== undefined &&
           !local.boxed &&
           !this.captureIds.has(id) &&
-          !this.lazyCaptureBoxes.has(id)
+          !this.lazyCaptureBoxes.has(id) &&
+          !this.valueBindings.has(id)
         );
       },
       leafId: () => `%spec.leaf.${this.speculativeLeaves++}`,
@@ -2770,6 +2781,7 @@ export class LlEmitter {
     this.receiverReaders = new AmbientReceiverReaders(this.fnByName, this.nodeIndex);
     this.stackCaptures = new StackCaptures(this.fnByName, this.callLifetimes, this.stackCallbacks);
     this.lazyCaptures = new LazyCaptures(this.fnByName, this.nodeIndex);
+    this.valueCaptures = new ValueCaptures(this.fnByName, this.debug === null);
     const traced = computeTraced(mod, dynamicStores, cycleMutability);
     this.tracedShapes = traced.shapes;
     this.tracedUnions = traced.unions;
@@ -5195,6 +5207,7 @@ export class LlEmitter {
       this.localUnionStorage.has(id) ||
       this.reboundOwnerSlots.has(id) ||
       this.lazyCaptureBoxes.has(id) ||
+      this.valueBindings.has(id) ||
       this.privateSplitLocals.has(id)
     );
   }
@@ -6473,6 +6486,94 @@ export class LlEmitter {
     return t;
   }
 
+  /** The LLVM type of a closure of lifted function `fnName` whose
+   * environment holds values (scr_closure.h, "captured values"): the
+   * header, the boxes, the values descriptor, the reference values and the
+   * scalar values. */
+  environmentType(layout: EnvironmentLayout): string {
+    const scalars = layout.scalars.map((type) => `, ${type}`).join("");
+    return `{ %ScrClosure, [${layout.boxes} x ptr], ptr, [${layout.references.length} x ptr]${scalars} }`;
+  }
+
+  /** The address of capture `index`'s value in an environment of `layout`
+   * at `closure`, and the type stored there. */
+  environmentValue(
+    layout: EnvironmentLayout,
+    closure: string,
+    index: number,
+  ): { ptr: string; type: "ptr" | "double" | "i8" } {
+    const slot = layout.slots[index]!;
+    if (slot.kind === "box")
+      throw new InternalCompilerError("llvm emitter bug: a boxed capture has no value slot");
+    const ptr = this.B.tmp();
+    const type = this.environmentType(layout);
+    if (slot.kind === "reference") {
+      this.B.line(
+        `${ptr} = getelementptr inbounds ${type}, ptr ${closure}, i32 0, i32 3, i32 ${slot.index}`,
+      );
+      return { ptr, type: "ptr" };
+    }
+    this.B.line(
+      `${ptr} = getelementptr inbounds ${type}, ptr ${closure}, i32 0, i32 ${4 + slot.index}`,
+    );
+    return { ptr, type: layout.scalars[slot.index]! };
+  }
+
+  /** The constant ScrClosureValues of `layout`: one row per reference
+   * value, with the release and trace entry points a box of its type
+   * carries. Named by content, so equal layouts share one. */
+  environmentValues(layout: EnvironmentLayout): string {
+    const rows = layout.references.map((type) => {
+      const adapters = vAdapters(this.shapeHost, type);
+      return `{ ptr, ptr } { ptr ${adapters.release}, ptr ${traceArg(this.shapeHost, type)} }`;
+    });
+    const count = rows.length;
+    const body = `{ ${this.sizeType}, [${count} x { ptr, ptr }] } { ${this.sizeType} ${count}, [${count} x { ptr, ptr }] [${rows.join(", ")}] }`;
+    const name = `@sc_env_values.${createHash("sha256").update(body).digest("hex").slice(0, 16)}`;
+    this.declare(`${name} = internal constant ${body}`);
+    return name;
+  }
+
+  /** Stores binding `localId` of the current function into capture `index`
+   * of a new environment of `layout` at `closure`. With `owned`, the
+   * environment takes a reference of its own; otherwise it borrows the
+   * binding's, which the caller keeps alive for the environment's life. */
+  storeEnvironmentValue(
+    layout: EnvironmentLayout,
+    closure: string,
+    index: number,
+    localId: string,
+    owned: boolean,
+    loc: SrcLoc,
+  ): void {
+    const local = this.currentLocals.get(localId);
+    if (local === undefined)
+      throw new InternalCompilerError(`llvm emitter bug: captured value ${localId} is not a local`);
+    // An ordinary read of the binding: whatever storage it has here (a
+    // plain slot, a box, an integer view) answers its current value.
+    const read: IrExpr = { kind: "varRef", localId, type: local.type, loc };
+    const B = this.B;
+    const slot = this.environmentValue(layout, closure, index);
+    if (slot.type === "ptr") {
+      if (owned) {
+        const value = this.emitExpr(read);
+        this.toHeap(value);
+        B.line(`store ptr ${value.name}, ptr ${slot.ptr}`);
+      } else {
+        B.line(`store ptr ${this.emitReadReceiver(read).name}, ptr ${slot.ptr}`);
+      }
+      return;
+    }
+    const value = this.emitExpr(read);
+    if (slot.type === "double") {
+      B.line(`store double ${value.name}, ptr ${slot.ptr}`);
+      return;
+    }
+    const byte = B.tmp();
+    B.line(`${byte} = zext i1 ${value.name} to i8`);
+    B.line(`store i8 ${byte}, ptr ${slot.ptr}`);
+  }
+
   /** The initializing write of a scalar TDZ box: mint the one-element
    * array cell holding the value and move it into the ARR-kind box
    * (set_ref releases nothing — the slot was the empty sentinel). */
@@ -6812,7 +6913,12 @@ export class LlEmitter {
       if (s.kind !== "varDecl") break;
       if (s.init?.kind !== "varRef" || s.init.type.kind !== "f64") continue;
       const source = s.init.localId;
-      if (this.captureIds.has(source) || this.lazyCaptureBoxes.has(source)) copies.push(s.localId);
+      if (
+        this.captureIds.has(source) ||
+        this.lazyCaptureBoxes.has(source) ||
+        this.valueBindings.has(source)
+      )
+        copies.push(s.localId);
     }
     return copies;
   }

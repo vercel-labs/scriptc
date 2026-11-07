@@ -1030,6 +1030,56 @@ function buildRecordProjection(
           kind: "recordLit",
           fields: target.fields.map((field) => {
             const conversion = plan.get(field.name)!;
+            if ("overflow" in conversion || "overflowAt" in conversion) {
+              // The source keeps this member in its index signature:
+              // read the key from the overflow instead of completing
+              // undefined over a value it holds. The key names no
+              // declared field of the source, so the read is an overflow
+              // read. A typed member reads at its own type, where a key
+              // the object never had is the type's undefined arm; a
+              // dynamic member reads as dyn, whose undefined the member's
+              // check rejects.
+              const atMember = "overflowAt" in conversion;
+              const shapeId = (source as IrType & { kind: "record" }).shapeId;
+              const read: IrExpr = {
+                kind: "recordKeyGet",
+                obj: receiver,
+                shapeId,
+                key: { kind: "strLit", value: field.name, type: STRING, loc },
+                overflowOnly: true,
+                type: atMember ? conversion.overflowAt : conversion.overflow,
+                loc,
+              };
+              const value: IrExpr = atMember ? read : lowerer.coerceToExpected(read, field.type);
+              // The key lives in the source's index signature, so the
+              // projection cannot know it is there: a key the object never
+              // had keeps the target slot ABSENT instead of writing the
+              // type's undefined arm as a present property, the state `in`,
+              // Object.hasOwn and Object.keys observe. A stored undefined
+              // is still a present key, which the overflow test tells apart.
+              const absent = lowerer.absentFieldValue(field, loc);
+              if (absent?.kind === "fieldAbsent") {
+                return {
+                  name: field.name,
+                  value: {
+                    kind: "ternary",
+                    cond: {
+                      kind: "recordOvfHas",
+                      obj: receiver,
+                      shapeId,
+                      key: { kind: "strLit", value: field.name, type: STRING, loc },
+                      type: BOOL,
+                      loc,
+                    },
+                    then: value,
+                    else_: absent,
+                    type: value.type,
+                    loc,
+                  },
+                };
+              }
+              return { name: field.name, value };
+            }
             if ("absentDyn" in conversion) {
               // The source has no such property: an optional target field
               // keeps the absent marker, a required one holds the dyn

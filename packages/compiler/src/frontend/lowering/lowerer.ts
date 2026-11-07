@@ -618,7 +618,7 @@ import {
   lowerProcessEnvGet,
   refuseHeldEnvWrite,
 } from "./builtins/environment.js";
-import { lowerJsonMethodCall, lowerJsonProperty } from "./builtins/json.js";
+import { jsonResultTextOnly, lowerJsonMethodCall, lowerJsonProperty } from "./builtins/json.js";
 import { lowerCryptoComposedCall, lowerCryptoModuleCall } from "./builtins/crypto.js";
 import {
   legacyUrlClassValue,
@@ -8758,6 +8758,26 @@ export class Lowerer {
         this.isStdlibGlobal(e.expression.expression, "JSON")
       )
         return true;
+      // An untyped root can serialize to undefined; the result keeps it
+      // unless every use reads it as text (jsonResultTextOnly).
+      if (
+        ts.isCallExpression(e) &&
+        e.arguments.nodes.length > 0 &&
+        ts.isPropertyAccessExpression(e.expression) &&
+        e.expression.name.text === "stringify" &&
+        this.isStdlibGlobal(e.expression.expression, "JSON") &&
+        !ts.isSpreadElement(e.arguments.nodes[0]!) &&
+        !jsonResultTextOnly(this, e)
+      ) {
+        // A JavaScript parameter has no mapping yet: its checker type says.
+        const root = this.typeOf(e.arguments.nodes[0]!);
+        const mapped = this.mapTypeOf(root);
+        if (
+          mapped?.kind === "dyn" ||
+          (mapped === null && (root.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0)
+        )
+          return true;
+      }
       if (
         ts.isCallExpression(e) &&
         ts.isPropertyAccessExpression(e.expression) &&

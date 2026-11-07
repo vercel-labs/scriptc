@@ -2717,6 +2717,7 @@ export class LlEmitter {
       },
       pendingTestLines: (dest) => this.pendingTestLines(dest),
       closureNames: () => this.closureNames(),
+      threadLocalState: mod.workers === true || mod.lib?.threadInstances === true,
       virtualEntry: (implFn) => this.virtualEntry(implFn),
       programLifetime: this.programLifetime,
       regionAliasTag: (word) => this.memoryAliasAttachment(`region.${word}`),

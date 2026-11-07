@@ -158,9 +158,18 @@ export function contextualCallCount(
 ): number | "varies" | null {
   const contextual = lowerer.checker.getContextualType(node);
   if (contextual === undefined) return null;
-  const signatures = lowerer.checker.getCallSignatures(
-    lowerer.checker.getNonNullableType(contextual),
-  );
+  const expected = lowerer.checker.getNonNullableType(contextual);
+  let signatures = lowerer.checker.getCallSignatures(expected);
+  // A slot that takes a function or something else (a callback or an
+  // options object, a listener or a listener object): the function is
+  // called through the one member that is a function type.
+  if (signatures.length === 0 && expected.isUnionType()) {
+    const callable = ts
+      .constituentTypes(expected)
+      .map((member) => lowerer.checker.getCallSignatures(member))
+      .filter((member) => member.length > 0);
+    if (callable.length === 1) signatures = callable[0]!;
+  }
   if (signatures.length !== 1) return null;
   const declaration = signatures[0]!.declaration;
   if (declaration === undefined) return null;

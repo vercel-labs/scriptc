@@ -242,10 +242,45 @@ export function funcSlotAdaptable(
   return src.ret.kind === "void" && dst.ret.kind === "dyn";
 }
 
-/** Why a checked-dynamic variadic function (`(...args) => R`, the hidden
- * argument-array ABI) cannot serve a slot of another signature, or null
- * when it can. Such a value has no native call form: every call of it, a
- * direct one included, boxes the function and applies it to a runtime
+/** THE RULE for calling a variadic function through a fixed parameter list.
+ *
+ * A function that takes its arguments through a rest parameter, or reads
+ * `arguments`, observes every argument its caller passes: how many, and
+ * each one. The adapter below (variadicBoundaryAdapter) calls it with the
+ * parameters of the slot it is stored in. That is exact only where those
+ * parameters are the whole list the caller passes under JavaScript
+ * semantics:
+ *
+ * - A slot the program declares (a typed binding, parameter, result, field,
+ *   member or element, or a value a declaration types) is called with its
+ *   declared parameters and nothing else, so the adapter is exact there.
+ * - A slot the compiler made is not such a slot. A library method's loop
+ *   passes its callback the parameters the callback names, which is fewer
+ *   than the arguments JavaScript passes it (`xs.map(f)` passes three; the
+ *   helper's slot for a callback that names none is `() => T`). A variadic
+ *   function adapted to that slot would receive none of them, silently.
+ *
+ * So the adapter is taken only while a slot-directed conversion is in
+ * progress whose destination the checker types as that slot
+ * (Lowerer.callListDeclared, set by coerceInto), or where the caller states
+ * that its slot is a declared one (Lowerer.withDeclaredCallList). Every
+ * other conversion, the ones lowering makes for its own helper slots
+ * included, answers as it did before the adapter existed: the function
+ * keeps its variadic type, and the site refuses it by name or hands it
+ * every argument through the checked-dynamic call. This predicate is the
+ * one place that decides; funcCoerceAdapter, cleanFuncAdaptable and
+ * funcSlotAdaptable all ask it.
+ *
+ * Two checks over the finished IR complete the rule
+ * (variadic-functions.ts): a variadic function that reaches a native call
+ * of fixed arity unadapted is refused there by name, and a store is
+ * refused when the program hands a function of the slot's type to a caller
+ * that passes more than the type names.
+ *
+ * Why a checked-dynamic variadic function (`(...args) => R`, the hidden
+ * argument-array ABI) cannot serve a declared slot of another signature, or
+ * null when it can. Such a value has no native call form: every call of it,
+ * a direct one included, boxes the function and applies it to a runtime
  * argument list. A slot of another signature therefore holds an adapter
  * that makes that same boxed call with the slot's arguments
  * (variadicBoundaryAdapter), under the checked function boundary's domain:
@@ -277,15 +312,22 @@ export function variadicBoundaryBlocker(
 }
 
 /** Whether a checked-dynamic variadic function value converts into a slot
- * of another signature (variadicBoundaryBlocker). */
+ * of another signature: the slot's parameters are the whole list its
+ * callers pass (THE RULE above), and nothing blocks the adapter
+ * (variadicBoundaryBlocker). */
 export function variadicBoundaryFits(
   lowerer: Lowerer,
   fromT: IrType & { kind: "func" },
   toT: IrType & { kind: "func" },
 ): boolean {
   if (fromT.rest !== true || fromT.restAbi !== undefined || typeEquals(fromT, toT)) return false;
+  if (!lowerer.callListDeclared()) return false;
   return variadicBoundaryBlocker(lowerer, fromT, toT) === null;
 }
+
+/** The name prefix of every variadic adapter, by which
+ * variadic-functions.ts finds the stores once lowering ends. */
+export const VARIADIC_ADAPTER_PREFIX = "%fn.variadic";
 
 /** The adapter for variadicBoundaryFits: box the function and call it with
  * the slot's arguments as its argument list, under the receiver the slot
@@ -308,7 +350,7 @@ function variadicBoundaryAdapter(
   const key = `fnvariadic:${typeKey(fromT)}:${typeKey(toT)}`;
   const existing = lowerer.coercions.retags.get(key);
   if (existing) return existing;
-  const name = keyedHelperName(lowerer, "%fn.adapt", key);
+  const name = keyedHelperName(lowerer, VARIADIC_ADAPTER_PREFIX, key);
   lowerer.coercions.retags.set(key, name);
   lowerer.freshClosureAdapters.add(name);
   const params: IrParam[] = toT.params.map((type, i) => ({

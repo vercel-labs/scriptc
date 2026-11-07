@@ -771,6 +771,17 @@ function lambdaSpellsCompletedAbi(
   return mappedRet !== null && typeEquals(mappedRet, funcType.ret);
 }
 
+/** funcSlotAdaptable for a slot the checker types: calls through it pass
+ * its declared parameters (function-adapters.ts, THE RULE). */
+function declaredSlotAdaptable(
+  lowerer: Lowerer,
+  value: IrType & { kind: "func" },
+  slot: IrType & { kind: "func" },
+  blame: ts.Node,
+): boolean {
+  return lowerer.withDeclaredCallList(() => funcSlotAdaptable(lowerer, value, slot, locOf(blame)));
+}
+
 /** DECISION (docs/ir.md): function VALUES carry one completed native ABI.
  * Optional/default parameters appear as literal `T | undefined` slots;
  * typed rest parameters appear as one trailing typed-array slot plus the
@@ -875,10 +886,12 @@ export function requireExactArityValue(
     // verbatim (a required narrower interface parameter where the method
     // declares `ctx?: Ctx`, completing to `Ctx | undefined`): the slot
     // coercion adapts the pair like any other function value.
+    // The slot is the member's declared type: calls through it pass its
+    // parameters (function-adapters.ts, THE RULE).
     if (
       slot?.kind === "func" &&
       funcType.kind === "func" &&
-      funcSlotAdaptable(lowerer, funcType, slot, locOf(blame))
+      declaredSlotAdaptable(lowerer, funcType, slot, blame)
     )
       return;
     // An UNCONTEXTUALIZED literal's own inferred type is what every later
@@ -940,10 +953,13 @@ export function requireExactArityValue(
   // undefined, JavaScript's surplus-argument rule) or a parameter pair the
   // adapter converts (a required narrower interface parameter against the
   // value's `Ctx | undefined` completed slot).
+  // The slot judged here is the checker's own type for the position, a
+  // declared one; the conversion at the site the value lands in decides
+  // again, for the slot it really has.
   if (
     mappedFn?.kind === "func" &&
     funcType.kind === "func" &&
-    funcSlotAdaptable(lowerer, funcType, mappedFn, locOf(blame))
+    declaredSlotAdaptable(lowerer, funcType, mappedFn, blame)
   ) {
     return;
   }
@@ -1187,10 +1203,14 @@ export function lambdaSignature(
   // A parameterless function expression forwarding its `arguments`,
   // asserted to a fixed signature: that signature is its ABI.
   if (typedArgumentsCandidate(node) && !node.typeParameters?.nodes.length) {
-    const target = typedArgumentsTarget(lowerer, node);
+    const origin = { contextual: false };
+    const target = typedArgumentsTarget(lowerer, node, origin);
     if (target) {
       const shapes = typedArgumentsShapes(target);
       lowerer.typedArgumentsLambdas.add(node);
+      // Written into a declared slot, the function is a variadic function
+      // stored under that slot's signature (function-adapters.ts, THE RULE).
+      if (origin.contextual) lowerer.noteVariadicStore(node, target);
       return { shapes, funcType: funcTypeFromParamShapes(shapes, target.ret) };
     }
   }

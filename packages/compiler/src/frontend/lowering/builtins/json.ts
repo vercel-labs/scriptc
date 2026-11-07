@@ -1,3 +1,4 @@
+import { callbackTakesEveryArgument } from "../callback-arg.js";
 import { widensReducedRecords } from "../function-returns.js";
 import { keyedHelperName } from "../stable-names.js";
 import { isDateJsonSource } from "./dates.js";
@@ -532,6 +533,15 @@ function lowerJsonCallback(
   node: ts.Expression,
   role: "replacer" | "reviver",
 ): IrExpr {
+  // Node passes a reviver three arguments: the key, the value and the
+  // source context, which has no native form. A reviver that names two
+  // parameters cannot tell; one that takes every argument can.
+  if (role === "reviver" && callbackTakesEveryArgument(lowerer, node))
+    lowerer.unsupported(
+      "SC1090",
+      node,
+      "a reviver that takes a rest parameter or reads 'arguments' (JSON.parse passes it a third argument, the source context, which is not supported: name the key and value parameters)",
+    );
   const callback = lowerer.lowerExpr(node);
   if (callback.type.kind === "dyn") return callback;
   if (

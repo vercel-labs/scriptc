@@ -4,6 +4,8 @@
   Builtin function values have API-specific restrictions; see [Builtin function values](#builtin-function-values).
   A function called as a member of an object, a tuple, or an array (`holder.fn()`, `holder["fn"]()`, `holder.fn?.()`, `list[0]()`) receives that object as `this`, as in Node.js, and writes through `this` reach it.
   A timer calls its callback without a `this`, where Node.js passes the timer object.
+  In a TypeScript source, a callback whose own body reads `this`, or whose signature declares a `this` parameter, is refused with `SC1090` when it is passed to a timer, a `process` listener, a `node:crypto` or `node:zlib` callback, or a stream option as a function value, where Node.js passes an object of its own.
+  A function stored under a type that declares no `this` parameter is called without a `this` by a timer, an event emitter, a `process` listener, and a stream, where Node.js passes the timer, the emitter, `process`, or the stream.
 - **JavaScript parameters:** In a JavaScript file TypeScript does not check, a prototype method (`C.prototype.m = function (...) {}`) takes whatever values its callers pass; its JSDoc types document the usual values without constraining them.
   A sloppy-mode function with named parameters may read `arguments` only where the aliasing of its parameters cannot show: it reads `arguments.length`, or reads elements and never writes a parameter or an element.
   Other uses of `arguments` in such a function are refused with `SC1090`; ES modules, `'use strict'` code, classes, and functions with default, rest, or destructured parameters have no such restriction.

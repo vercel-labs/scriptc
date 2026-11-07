@@ -36,11 +36,21 @@ export interface UnionClassRoute {
   arm: IrType & { kind: "object" };
 }
 
+/** A destination arm a record source arm enters when the value has none of
+ * the source properties in `absent`: the properties some destination arm
+ * declares and this one does not. */
+export interface UnionPresenceRoute {
+  tag: number;
+  lift: WidthLift;
+  absent: string[];
+}
+
 export type UnionRetagArm =
   | { kind: "trap" }
   | { kind: "direct"; route: UnionRetagRoute }
   | { kind: "discriminant"; field: string; fieldType: IrType; routes: UnionRetagRoute[] }
-  | { kind: "classRoute"; routes: readonly UnionClassRoute[] };
+  | { kind: "classRoute"; routes: readonly UnionClassRoute[] }
+  | { kind: "presence"; routes: UnionPresenceRoute[] };
 
 export interface RecordUnionWrapPlan {
   field: string;
@@ -125,6 +135,61 @@ export function planRecordUnionLift(
   return routes.length > 0 ? { field: discriminant.field, fieldType, routes } : null;
 }
 
+/** A record source arm that is not a destination arm and that several
+ * destination record arms hold by width: its layout cannot say which of
+ * them the value is, and neither can its tag, because a record of optional
+ * members was given the first arm it fitted when it was built. The value's
+ * own properties decide, as in JavaScript. A destination arm holds the
+ * value when it declares every property the value carries among those any
+ * destination arm declares, so each read the destination type allows (a
+ * member, `in`, the narrowing `in` gives) answers what the object answers.
+ * Arms that all hold it differ only in members the value lacks, which read
+ * as absent in each; the first in the union's order takes it. A value whose
+ * properties no single arm declares has no arm and throws the catchable
+ * TypeError where the conversion runs.
+ *
+ * Null when the source or a destination arm is not a closed fixed record
+ * (a tuple, an index signature, accessor slots), when an arm of another
+ * kind accepts the source, or when fewer than two arms hold it by width
+ * (the unique-width-arm rule covers one). */
+export function planPresenceRoutes(
+  source: IrType,
+  to: IrUnionDef,
+  shapeOf: (id: string) => IrRecordShape | undefined,
+  widthLift: (src: IrType, dst: IrType) => WidthLift | null,
+): UnionPresenceRoute[] | null {
+  if (source.kind !== "record") return null;
+  const shape = shapeOf(source.shapeId);
+  if (!shape || shape.tuple || shape.indexValue !== undefined || shapeHasAccessorSlots(shape))
+    return null;
+  const own = new Set(shape.fields.map((field) => field.name));
+  const declared = new Set<string>();
+  const candidates: { tag: number; lift: WidthLift; names: Set<string> }[] = [];
+  for (let tag = 0; tag < to.arms.length; tag++) {
+    const arm = to.arms[tag]!;
+    if (isUnitType(arm)) continue;
+    if (arm.kind !== "record") {
+      if (widthLift(source, arm) !== null) return null;
+      continue;
+    }
+    const target = shapeOf(arm.shapeId);
+    if (!target || target.indexValue !== undefined || shapeHasAccessorSlots(target)) return null;
+    if (target.tuple) continue;
+    const names = new Set(target.fields.map((field) => field.name));
+    for (const name of names) if (own.has(name)) declared.add(name);
+    const lift = widthLift(source, arm);
+    if (lift !== null) candidates.push({ tag, lift, names });
+  }
+  if (candidates.length < 2) return null;
+  // Source field order, so the tests read the record front to back.
+  const ordered = shape.fields.map((field) => field.name).filter((name) => declared.has(name));
+  return candidates.map(({ tag, lift, names }) => ({
+    tag,
+    lift,
+    absent: ordered.filter((name) => !names.has(name)),
+  }));
+}
+
 /** Pure conversion planning. A source storage tag need not denote just
  * one semantic variant: refinements can coalesce recursive record layouts.
  * When both unions name the same discriminant, its values select target
@@ -138,6 +203,7 @@ export function planUnionRetag(
   trappable?: ReadonlySet<number>,
   classRoutes?: ReadonlyMap<number, readonly UnionClassRoute[]>,
   checkedLift?: (src: IrType, dst: IrType) => WidthLift | null,
+  byPresence = false,
 ): UnionRetagArm[] | null {
   const result: UnionRetagArm[] = [];
   const target: IrType = { kind: "union", unionId: to.id };
@@ -246,9 +312,33 @@ export function planUnionRetag(
       );
       const checked =
         checkedLift === undefined || ordinaryArm ? null : uniqueCheckedArm(to, source, checkedLift);
-      if (checked === null) return null;
-      result.push({ kind: "direct", route: checked });
+      if (checked !== null) {
+        result.push({ kind: "direct", route: checked });
+        continue;
+      }
+      // Several arms hold the source and no rule selects one: in a checked
+      // conversion the value's properties do (planPresenceRoutes). Only where
+      // the union has no lift for the record at all, so a discriminant or a
+      // selection rule that answered keeps its route.
+      const routes =
+        byPresence && lift === null && ordinaryArm
+          ? planPresenceRoutes(source, to, shapeOf, widthLift)
+          : null;
+      if (routes === null) return null;
+      result.push({ kind: "presence", routes });
       continue;
+    }
+    // A conversion that routes by properties routes every arm with several
+    // homes that way. A compile-time rule placed this one by its declared
+    // members; when the arm it chose lacks a member another arm declares, a
+    // value that has that member belongs to the other arm.
+    if (byPresence) {
+      const routes = planPresenceRoutes(source, to, shapeOf, widthLift);
+      const chosen = routes?.find((route) => route.tag === lift.tag);
+      if (routes && (chosen === undefined || chosen.absent.length > 0)) {
+        result.push({ kind: "presence", routes });
+        continue;
+      }
     }
     const inner = widthLift(source, lift.arm);
     if (!inner) return null;
@@ -514,6 +604,57 @@ export function buildUnionRetag(
           },
           loc,
         });
+      } else if (armPlan.kind === "presence") {
+        if (arm.kind !== "record")
+          throw new InternalCompilerError("lowerer bug: presence route on non-record arm");
+        // The payload is read once per test and once by the copy: hold it.
+        const localId = `held.${tag}`;
+        fn.locals.push({ id: localId, name: "held", type: arm, mutable: false });
+        statements.push({ kind: "varDecl", localId, init: payload, loc });
+        const held: IrExpr = { kind: "varRef", localId, type: arm, loc };
+        let always = false;
+        for (const route of armPlan.routes) {
+          const enter: IrStmt = {
+            kind: "return",
+            value: {
+              kind: "unionWrap",
+              unionId: to.id,
+              tag: route.tag,
+              value: applyLift(route.lift, held, to.arms[route.tag]!),
+              type: toType,
+              loc,
+            },
+            loc,
+          };
+          let carried: IrExpr | null = null;
+          for (const field of route.absent) {
+            const has: IrExpr = {
+              kind: "recordHas",
+              obj: held,
+              shapeId: arm.shapeId,
+              field,
+              type: BOOL,
+              loc,
+            };
+            carried =
+              carried === null
+                ? has
+                : { kind: "logical", op: "||", left: carried, right: has, type: BOOL, loc };
+          }
+          if (carried === null) {
+            statements.push(enter);
+            always = true;
+            break;
+          }
+          statements.push({ kind: "if", cond: carried, then: [], else_: [enter], loc });
+        }
+        if (!always)
+          statements.push(
+            typeError(
+              `a '${formatType(arm)}' value is not representable in the target union (no arm of it declares every property the value has)`,
+              loc,
+            ),
+          );
       } else if (armPlan.kind === "classRoute") {
         if (arm.kind !== "object")
           throw new InternalCompilerError("lowerer bug: class route on non-object arm");

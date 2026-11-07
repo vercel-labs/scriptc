@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/interface-untyped-callers.ts"
+ ],
+ "diags": []
+}

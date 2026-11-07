@@ -1289,6 +1289,10 @@ export interface LowererMode {
    * dynamic, never to its pushed-down shape (lowerToIr's comparison
    * pass). */
   wholeSlotDegradation?: boolean;
+  /** Hold every class-backed protocol as the checked-dynamic view, none
+   * as its classes' pointer (closed-protocols.ts): lowerToIr's comparison
+   * pass for a failing program that used a closed protocol. */
+  openProtocols?: boolean;
   /** End the pass where it asks for the next stream mode, because that
    * pass replaces its result outright (lowerToIrWithIslands sets this on
    * the push-down pass and on the general stream pass). */
@@ -1919,6 +1923,48 @@ function lowerToIrWithIslands(
     }
     timing("whole-slot-relower", { reachable: wholeEmitted.reachable.size });
   }
+  // A closed protocol (closed-protocols.ts) is held as its classes' own
+  // pointer, and the union-of-classes lowering does not answer every use
+  // the checked-dynamic view does. Holding one must never cost a program an
+  // error: a failing program that has a closed protocol lowers once more
+  // with every protocol checked-dynamic, and that pass stands when it has
+  // strictly fewer errors. A program that compiles, or one with no closed
+  // protocol, never takes this path.
+  if (result.diagnostics.length > 0 && facts.classProtocols().anyClosed()) {
+    const open = new Lowerer(program, entry, moduleOrder, {
+      facts,
+      frontendServices: options.frontendServices,
+      projectCheckJs: options.projectCheckJs ?? false,
+      ...(generalNodeStreams ? { generalNodeStreams: true } : {}),
+      ...(generalNodeStreams && dynNodeStreams ? { dynNodeStreams: true } : {}),
+      targetPlatform,
+      startupCrash,
+      admittedOpinions: options.admittedOpinions,
+      inlineRequireCycleCalls,
+      dynamicImportRejections: options.dynamicImportRejections,
+      ffiImports,
+      libraryCallbacks,
+      forkTargets,
+      workerTargets,
+      ffiBindingSymbols: ffiValidation.symbolsByName,
+      externalTypes,
+      externalTypeSpecifiersByFile,
+      tierMode,
+      runtimeOptionalReport,
+      ...(resultLowerer.wholeSlotDegradation ? { wholeSlotDegradation: true } : {}),
+      ...(dynAsyncProtocol ? { dynAsyncProtocol: true } : {}),
+      openProtocols: true,
+    });
+    for (const d of extraModuleCycleDiags) open.pushDiag(d);
+    for (const d of ffiValidation.diagnostics) open.pushDiag(d);
+    const openEmitted = open.emitReachable(options.libRoots);
+    if (openEmitted.result.diagnostics.length < result.diagnostics.length) {
+      reachable = openEmitted.reachable;
+      result = openEmitted.result;
+      resultLowerer = open;
+    }
+    timing("open-protocols-relower", { reachable: openEmitted.reachable.size });
+  }
   // LIBRARY mode: the profile's export names resolved to the units that
   // supply them — the entry's own unit for a direct export, the declaring
   // module's tagged unit for a re-exported one. The export-map resolution
@@ -2058,6 +2104,7 @@ function lowerToIrWithIslands(
       ...(general ? { generalNodeStreams: true } : {}),
       ...(general && dyn ? { dynNodeStreams: true } : {}),
       ...(dynAsyncProtocol ? { dynAsyncProtocol: true } : {}),
+      ...(resultLowerer.openProtocols ? { openProtocols: true } : {}),
       reachable,
       remainder: true,
       alreadyFlushed: resultLowerer.flushedSymbols,
@@ -5350,6 +5397,7 @@ export class Lowerer {
     "ffiBindingSymbols",
     "priorRetriedSymbols",
     "wholeSlotDegradation",
+    "openProtocols",
     "abortOnStreamFlags",
     // The stream mode the pass settled on asking for (pass scratch, read
     // from the journaled requiresGeneralNodeStreams / requiresDynNodeStreams).
@@ -5791,6 +5839,8 @@ export class Lowerer {
   readonly priorRetriedSymbols: ReadonlySet<ts.Symbol>;
   /** LowererMode.wholeSlotDegradation. */
   readonly wholeSlotDegradation: boolean;
+  /** LowererMode.openProtocols. */
+  readonly openProtocols: boolean;
   /** Bodies run() skipped because their declaration had not registered. */
   readonly skippedBodies = new Set<ts.Node>();
   /** Declarations retryDeferred registered, in order: run() lowers the
@@ -6185,6 +6235,7 @@ export class Lowerer {
         });
     this.priorRetriedSymbols = mode.retriedSymbols ?? new Set();
     this.wholeSlotDegradation = mode.wholeSlotDegradation ?? false;
+    this.openProtocols = mode.openProtocols === true;
     this.abortOnStreamFlags = mode.abortOnStreamFlags === true;
     this.externalTypes = mode.externalTypes ?? new Map();
     this.ffiBindingSymbols = mode.ffiBindingSymbols ?? null;
@@ -6348,6 +6399,8 @@ export class Lowerer {
       mixinIntersectionInstance: (widened) => mixinIntersectionInstanceType(this, widened),
       classImplementedProtocol: (type) => this.classImplementedProtocol(type),
       enumObjectEntries: (symbol) => this.enumObjects.get(symbol)?.entries ?? null,
+      closedProtocolClasses: (type) =>
+        this.openProtocols ? null : this.facts.classProtocols().closedClasses(type),
       isStdlibFile: (sf) => this.isStdlibFile(sf),
       primitiveWrappers: () => (this.createsWrappers ??= programCreatesWrappers(this)),
       isNpmFile: (sf) => this.isNpmFile(sf),

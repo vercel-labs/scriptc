@@ -145,4 +145,49 @@ describe.skipIf(skip)("Node island cross-heap cycles", () => {
     });
     expect(stdout).toBe("remembered\n");
   }, 300_000);
+
+  test("program errors that crossed into the island are freed when both sides drop them", async () => {
+    // Each iteration sends four program errors into the island (one V8
+    // Error each, held through the export table, and two callbacks) and
+    // keeps none. The runtime's error-view cache holds every error's view
+    // and the error until nothing else does, and the export table's
+    // collector must not take that for a holder: the resident memory of
+    // 300,000 iterations stays within a factor of 1.5 (plus 32 MiB) of
+    // 100,000.
+    const dir = join(outDir, "gc-native-errors");
+    mkdirSync(dir, { recursive: true });
+    const result = await compile(join(fixtures, "gc-native-errors.mjs"), {
+      outPath: join(dir, "gc-native-errors"),
+      outDir: dir,
+      sanitize,
+    });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const crossed = async (n: number): Promise<Run> => {
+      const { stdout, stderr } = await execFileAsync(result.binaryPath, [String(n)], {
+        cwd: fixtures,
+        env: { ...process.env, SCRIPTC_NODE_ISLANDS_TRACE: "gc" },
+        encoding: "utf8",
+        maxBuffer: 64 * 1024 * 1024,
+      });
+      expect(stderr).not.toMatch(/used after V8 collected|AddressSanitizer|LeakSanitizer/);
+      expect(stdout).toBe(`iterations ${n} checks ${4 * n}\n`);
+      const line = /\[node-islands\] gc totals: (.*)/.exec(stderr);
+      expect(line).not.toBeNull();
+      const totals: Record<string, number> = {};
+      for (const m of line![1]!.matchAll(/([a-z ]+?) (\d+(?:\.\d+)?)(?: ms)?(?:,|$)/g))
+        totals[m[1]!.trim()] = Number(m[2]);
+      return { stdout, stderr, totals, rss: Number(/peak rss (\d+) KiB/.exec(stderr)?.[1]) };
+    };
+    const [few, many] = sanitize ? [2_000, 20_000] : [100_000, 300_000];
+    const small = await crossed(few);
+    const large = await crossed(many);
+    // Six exports per iteration, nearly all collected: what is alive at
+    // exit is what crossed since the last major GC.
+    expect(large.totals["analyzed"]).toBe(large.totals["major"]);
+    expect(large.totals["freed exports"]).toBeGreaterThan((sanitize ? 0.5 : 0.9) * 6 * many);
+    expect(large.totals["held exports"]).toBeLessThan(0.1 * 6 * many + 20_000);
+    // ASan's quarantine makes the sanitized lane's resident set meaningless.
+    if (!sanitize) expect(large.rss).toBeLessThan(small.rss * 1.5 + 32 * 1024);
+  }, 600_000);
 });

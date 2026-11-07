@@ -9,7 +9,7 @@
  * program defines thenables itself (thenables.ts), and `Promise.resolve`
  * of a dynamic value, which is emitted as an already fulfilled promise. */
 import { DYN, type IrExpr, type IrFunction, type IrLibFn } from "../../ir/ir.js";
-import { everyStmt } from "../../ir/traverse.js";
+import { everyStmt, transformStmtList } from "../../ir/traverse.js";
 import type { Lowerer } from "./lowerer.js";
 
 /** The library calls that take the operand of a dynamic `await` or
@@ -20,44 +20,62 @@ const DYN_AWAIT_OPERANDS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "child.propsResolve",
 ]);
 
+/** `Promise.resolve(v)` of a dynamic value, emitted as an already fulfilled
+ * promise of it. */
+function resolvesDynamicValue(e: IrExpr): boolean {
+  return (
+    e.kind === "intrinsic" &&
+    e.name === "promise.resolve" &&
+    e.args.length === 1 &&
+    e.args[0]!.type.kind === "dyn" &&
+    e.type.kind === "promise" &&
+    e.type.inner.kind === "dyn"
+  );
+}
+
 /** Routes the operands through `nodeIsland.adoptThenable` and a fulfilled
  * promise of a dynamic value through `nodeIsland.promiseResolve`, over the
- * final functions, in place. Programs without islands are left as they
- * are. */
+ * final functions. Programs without islands are left as they are. */
 export function adoptIslandThenables(lowerer: Lowerer, functions: IrFunction[]): void {
   if (!lowerer.usesNodeIsland) return;
+  // The fulfilled promises first: a function that has one gets a rewritten
+  // body (the typed rewrite never changes a node in place), every other
+  // function keeps its own.
+  for (const fn of functions) {
+    let found = false;
+    const finder = {
+      expr: (e: IrExpr): boolean => {
+        if (resolvesDynamicValue(e)) found = true;
+        return !found;
+      },
+      stmt: (): boolean => !found,
+    };
+    for (const s of fn.body) if (!everyStmt(s, finder)) break;
+    if (!found) continue;
+    fn.body = transformStmtList(fn.body, {
+      expr: (e: IrExpr): IrExpr =>
+        resolvesDynamicValue(e) && e.kind === "intrinsic"
+          ? {
+              kind: "libCall",
+              fn: "nodeIsland.promiseResolve",
+              args: [e.args[0]!],
+              type: e.type,
+              loc: e.loc,
+            }
+          : e,
+      stmt: (s) => s,
+    });
+  }
   // A node the IR shares at several places is wrapped once.
   const calls = new Set<IrExpr & { kind: "libCall" }>();
-  const resolved = new Set<IrExpr & { kind: "intrinsic" }>();
   const visitor = {
     expr: (e: IrExpr): boolean => {
       if (e.kind === "libCall" && DYN_AWAIT_OPERANDS.has(e.fn)) calls.add(e);
-      if (
-        e.kind === "intrinsic" &&
-        e.name === "promise.resolve" &&
-        e.args.length === 1 &&
-        e.args[0]!.type.kind === "dyn" &&
-        e.type.kind === "promise" &&
-        e.type.inner.kind === "dyn"
-      )
-        resolved.add(e);
       return true;
     },
     stmt: (): boolean => true,
   };
   for (const fn of functions) for (const s of fn.body) everyStmt(s, visitor);
-  for (const node of resolved) {
-    const call: IrExpr = {
-      kind: "libCall",
-      fn: "nodeIsland.promiseResolve",
-      args: [node.args[0]!],
-      type: node.type,
-      loc: node.loc,
-    };
-    const target = node as unknown as Record<string, unknown>;
-    for (const key of Object.keys(target)) delete target[key];
-    Object.assign(target, call);
-  }
   for (const call of calls) {
     const operand = call.args[0]!;
     call.args[0] = {

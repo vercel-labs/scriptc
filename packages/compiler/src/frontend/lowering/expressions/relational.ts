@@ -2766,7 +2766,7 @@ export function lowerInExpression(
     const arms = lowerer.unions.get(unionId)?.arms ?? [];
     const answers: {
       tag: number;
-      has: boolean | "slot" | "unit" | "keyed" | "probe";
+      has: boolean | "slot" | "unit" | "keyed" | "probe" | "source";
       arm: IrType;
     }[] = [];
     const armClasses = new Set(
@@ -2832,6 +2832,21 @@ export function lowerInExpression(
       // true without invoking the getter) — either slot present makes
       // the name a member.
       const acc = shape.fields.some((x) => x.name === `%get:${key}` || x.name === `%set:${key}`);
+      // A key the arm does not declare is an own key of a linked copy's
+      // source or of a kept source, as for a single record receiver
+      // below: the value answers, not the tag (unless another arm declares
+      // the key, see after the loop).
+      if (
+        arm.kind === "record" &&
+        f === undefined &&
+        !acc &&
+        !inherited &&
+        !shape.indexValue &&
+        recordMayKeepSource(lowerer, arm)
+      ) {
+        answers.push({ tag, has: "source", arm });
+        continue;
+      }
       if (f !== undefined || acc || !shape.indexValue) {
         answers.push({ tag, has: f !== undefined || acc || inherited, arm });
         continue;
@@ -2840,10 +2855,21 @@ export function lowerInExpression(
       // stored undefined is present), or the prototype's name.
       answers.push({ tag, has: "keyed", arm });
     }
+    // When another arm declares the key, the test also narrows the value
+    // to that arm, by tag: an arm that lacks the key must then answer false
+    // whatever its value kept, or the narrowed read would meet the wrong
+    // arm. Only a key no arm declares is the value's to answer.
+    if (answers.some((a) => a.has === true || a.has === "slot" || a.has === "probe"))
+      for (const a of answers) if (a.has === "source") a.has = false;
     if (
       staticAnswers &&
       answers.some(
-        (a) => a.has === "slot" || a.has === "unit" || a.has === "keyed" || a.has === "probe",
+        (a) =>
+          a.has === "slot" ||
+          a.has === "unit" ||
+          a.has === "keyed" ||
+          a.has === "probe" ||
+          a.has === "source",
       )
     ) {
       return perValueUnionIn(lowerer, recv, unionId, key, answers, loc);
@@ -3070,7 +3096,7 @@ function perValueUnionIn(
   key: string,
   answers: readonly {
     tag: number;
-    has: boolean | "slot" | "unit" | "keyed" | "probe";
+    has: boolean | "slot" | "unit" | "keyed" | "probe" | "source";
     arm: IrType;
   }[],
   loc: SrcLoc,
@@ -3136,6 +3162,33 @@ function perValueUnionIn(
           kind: "dynHasKey",
           key,
           value: lowerer.coerceToExpected(narrowed, DYN),
+          type: BOOL,
+          loc,
+        },
+        type: BOOL,
+        loc,
+      };
+    }
+    if (a.has === "source" && a.arm.kind === "record") {
+      // The arm does not declare the key, but its value may be a copy
+      // linked to a source that has it, or keep a source of its own: the
+      // own-key helper of the arm's type answers for the narrowed value.
+      const narrowed: IrExpr = {
+        kind: "unionNarrow",
+        unionId,
+        tag: a.tag,
+        value: ref(),
+        type: a.arm,
+        loc,
+      };
+      test = {
+        kind: "logical",
+        op: "&&",
+        left: test,
+        right: {
+          kind: "call",
+          callee: recordHasOwnHelper(lowerer, a.arm.shapeId, loc),
+          args: [narrowed, { kind: "strLit", value: key, type: STRING, loc }],
           type: BOOL,
           loc,
         },

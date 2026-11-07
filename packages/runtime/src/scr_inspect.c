@@ -574,6 +574,20 @@ ScrStr *scr_insp_circular(double id) {
   return insp_styled_lit(buf, (size_t)n, INSP_SPECIAL);
 }
 
+/* The native value behind a checked view the walk is about to render (a
+ * typed array or record held by reference): the key its container entry
+ * uses, which is the key the compiled inspect helpers push for the same
+ * value. Consumed by the next container. */
+static SCR_TL const void *g_seen_alias;
+
+/* The seen-stack key of an untyped array or object: itself, or the native
+ * value it is a view of. */
+static const void *insp_container_key(const ScrDyn *d) {
+  const void *key = g_seen_alias ? g_seen_alias : d;
+  g_seen_alias = NULL;
+  return key;
+}
+
 /* Pops the value's seen entry after its frame closed. scr_insp_end already
  * wrote the `<ref *N>` prefix of a circular target. */
 ScrStr *scr_insp_ref_wrap(const void *v, ScrStr *s) {
@@ -3419,6 +3433,12 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
     case SCR_DYN_STR:
       return scr_insp_str(d->v.str);
     case SCR_DYN_ARR: {
+      /* An array already on the traversal stack (it holds itself, directly
+       * or through other values) is Node's [Circular *N], decided before
+       * the empty and depth answers. */
+      const void *self = insp_container_key(d);
+      double circular = scr_insp_circ_check(self);
+      if (circular > 0) return scr_insp_circular(circular);
       size_t len = d->v.arr.len;
       /* Named and noncanonical numeric properties follow the elements as
        * `key: value` entries (Node's array extras); under showHidden the
@@ -3458,6 +3478,8 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         ib_char(&eb, ']');
         return insp_styled(ib_take(&eb), INSP_SPECIAL);
       }
+      size_t seen_before = g_nseen;
+      g_pending_seen = self;
       scr_insp_begin(recurse + 1);
       /* Node's maxArrayLength counts output entries; a run of holes is
        * one `<n empty items>` entry (formatSpecialArray). */
@@ -3572,6 +3594,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
       ScrStr *b0 = ib_take(&ob);
       ScrStr *b1 = scr_str_new("]", 1);
       ScrStr *out = insp_end_tail(base, b0, b1, recurse + 1, true, last_out, sort_tail);
+      if (g_nseen > seen_before) g_nseen = seen_before;
       scr_str_release(base);
       scr_str_release(b0);
       scr_str_release(b1);
@@ -3589,7 +3612,15 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
        * with "[Object: null prototype]" (formatValue's constructor-less
        * base), the empty form included, and the beyond-depth answer IS
        * the bare marker (where a plain object says [Object]). */
-      return scr_insp_obj(d, recurse, depth, scr_dyn_class_name(d));
+      const void *self = insp_container_key(d);
+      double circular = scr_insp_circ_check(self);
+      if (circular > 0) return scr_insp_circular(circular);
+      size_t seen_before = g_nseen;
+      g_pending_seen = self;
+      ScrStr *out = scr_insp_obj(d, recurse, depth, scr_dyn_class_name(d));
+      g_pending_seen = NULL;
+      if (g_nseen > seen_before) g_nseen = seen_before;
+      return out;
     }
     case SCR_DYN_FUNC:
       return scr_insp_dyn_func(d, recurse, depth);
@@ -3604,8 +3635,17 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
           d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER) {
         return scr_insp_array_buffer(d->v.handle.ptr, scr_dyn_handle_cls(d), recurse, depth);
       }
-      if (d->v.handle.tag == SCR_DYNH_SET || d->v.handle.tag == SCR_DYNH_MAP)
-        return scr_insp_dyn_collection(d, recurse, depth, d->v.handle.tag == SCR_DYNH_MAP);
+      if (d->v.handle.tag == SCR_DYNH_SET || d->v.handle.tag == SCR_DYNH_MAP) {
+        /* The native collection is the key, as for the compiled helpers. */
+        double circular = scr_insp_circ_check(d->v.handle.ptr);
+        if (circular > 0) return scr_insp_circular(circular);
+        size_t seen_before = g_nseen;
+        g_pending_seen = d->v.handle.ptr;
+        ScrStr *out = scr_insp_dyn_collection(d, recurse, depth, d->v.handle.tag == SCR_DYNH_MAP);
+        g_pending_seen = NULL;
+        if (g_nseen > seen_before) g_nseen = seen_before;
+        return out;
+      }
       if (d->v.handle.tag == SCR_DYNH_WEAK_MAP || d->v.handle.tag == SCR_DYNH_WEAK_SET)
         return scr_insp_weak_collection(d->v.handle.tag == SCR_DYNH_WEAK_MAP ? "WeakMap" : "WeakSet",
                                         recurse, depth);
@@ -3804,7 +3844,9 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         scr_str_release(stack);
         scr_error_release(owner);
       } else {
+        g_seen_alias = instance;
         out = scr_insp_dyn(materialized, recurse, depth);
+        g_seen_alias = NULL;
       }
       scr_dyn_release(materialized);
       return out;

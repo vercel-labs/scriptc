@@ -41,6 +41,23 @@ export function assertedReceiverNode(
   return ts.isAsExpression(e) || ts.isTypeAssertion(e) ? e : null;
 }
 
+/** The assertion a non-null assertion wraps (`(value as T | undefined)!`),
+ * through parentheses; null for every other node. */
+function nonNullAssertedNode(node: ts.Expression): ts.AsExpression | ts.TypeAssertion | null {
+  let e = node;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  return ts.isNonNullExpression(e) ? assertedReceiverNode(e.expression) : null;
+}
+
+/** The record a possibly absent value holds when it is present: the one
+ * arm beside `undefined` and `null`. Null for any other type. */
+function presentRecord(lowerer: Lowerer, type: IrType): (IrType & { kind: "record" }) | null {
+  if (type.kind !== "union") return null;
+  const present = (lowerer.unions.get(type.unionId)?.arms ?? []).filter((arm) => !isUnitType(arm));
+  const only = present[0];
+  return present.length === 1 && only?.kind === "record" ? only : null;
+}
+
 /** The member a probe access names: a property access's name, or an
  * element access's literal key (the bracket spelling of the same read).
  * Null for an element key that is not a literal string or number. */
@@ -265,8 +282,11 @@ function declaredMember(lowerer: Lowerer, ident: ts.Identifier, member: string):
  * `storage` is the layout of that object; `field` is the member as the
  * asserted type declares it. Null for every other access — a member the
  * stored layout declares is an ordinary field of it. An optional chain
- * (`x?.member`) needs no separate answer: its nullish test never fires for
- * a value whose layout is a record. */
+ * over a value whose layout is a record (`x?.member`) needs no separate
+ * answer: its nullish test never fires. Over a nullable value
+ * (`(x as T | undefined)?.member`) the chain's guard binds the present
+ * record to the receiver, and that record is the object read here; the
+ * non-null spelling (`(x as T | undefined)!.member`) reads the same one. */
 function assertedOptionalMember(
   lowerer: Lowerer,
   receiver: ts.Expression,
@@ -279,10 +299,18 @@ function assertedOptionalMember(
   // The value's own layout: the assertion erases (Node reads the property
   // off the value), and a binding stores what its initializer produced.
   const assertion = assertedReceiverNode(receiver);
+  const nonNull = assertion ? null : nonNullAssertedNode(receiver);
   let storage: IrType | null | undefined;
   let binding: ts.Identifier | null = null;
   if (assertion) {
-    storage = lowerer.mapTypeOf(lowerer.typeOf(assertion.expression));
+    storage =
+      lowerer.chainRecvByNode.get(receiver)?.type ??
+      lowerer.mapTypeOf(lowerer.typeOf(assertion.expression));
+  } else if (nonNull) {
+    // `(value as T | undefined)!.member`: the non-null assertion erases
+    // too, and reads the record the value holds when it is present.
+    const operand = lowerer.mapTypeOf(lowerer.typeOf(nonNull.expression));
+    storage = operand ? (presentRecord(lowerer, operand) ?? operand) : operand;
   } else {
     binding = bindingIdentifier(lowerer, receiver);
     if (binding === null) return null;
@@ -330,8 +358,22 @@ export function assertedOptionalMemberRead(
   const member = assertedOptionalMember(lowerer, access.expression, access.name.text);
   if (member === null) return null;
   const assertion = assertedReceiverNode(access.expression);
-  const value = lowerer.lowerExpr(assertion?.expression ?? access.expression);
-  if (value.type.kind !== "record") return null;
+  // Inside an optional chain's guard the receiver is already evaluated: the
+  // chain bound its present value to the receiver node.
+  const value =
+    lowerer.chainRecvByNode.get(access.expression) ??
+    lowerer.lowerExpr(assertion?.expression ?? access.expression);
+  if (value.type.kind !== "record") {
+    // `(value as T | undefined)!.member`: the value is still nullable
+    // here, and the member has no slot in the record it holds when present.
+    if (nonNullAssertedNode(access.expression) && presentRecord(lowerer, value.type))
+      lowerer.unsupported(
+        "SC1090",
+        access,
+        `reading '${access.name.text}' through a non-null assertion over a type assertion to a member the value's own layout does not hold (rule the absent value out first, then assert the type)`,
+      );
+    return null;
+  }
   if (!assertedOptionalExtension(lowerer, value.type, member.asserted)) return null;
   const answer = lowerer.assertedOnlyFieldRead(
     access.name.text,

@@ -3721,18 +3721,20 @@ function lowerH2SessionMethodCall(
     }
     if (event === "goaway") {
       const cb = lowerer.lowerExpr(args[1]!);
-      if (cb.type.kind !== "func" || cb.type.ret.kind !== "void" || cb.type.params.length > 3) {
+      // The runtime hands a listener (errorCode, lastStreamID): a third
+      // parameter would read an argument nobody passed.
+      if (cb.type.kind !== "func" || cb.type.ret.kind !== "void" || cb.type.params.length > 2) {
         lowerer.unsupported(
           "SC1090",
           args[1]!,
-          "goaway listeners with more than three parameters or returning a value",
+          "goaway listeners with more than two parameters (the opaque data is not passed) or returning a value",
         );
       }
-      if (cb.type.params.some((p) => p.kind !== "f64" && p.kind !== "bytes")) {
+      if (cb.type.params.some((p) => p.kind !== "f64")) {
         lowerer.unsupported(
           "SC1090",
           args[1]!,
-          "goaway listeners whose parameters are not (errorCode, lastStreamID, opaqueData?)",
+          "goaway listeners whose parameters are not (errorCode: number, lastStreamID: number)",
         );
       }
       return {

@@ -68,7 +68,11 @@ export function executableLinkInputs(options: {
       ...options.target.executableLinkerArgs.map((arg, index, args) =>
         index > 0 && args[index - 1] === "-target" ? options.target.linkerTargetTriple : arg,
       ),
-      ...executableOptimizationLinkerArgs(options.target.platform, options.optimization),
+      ...executableOptimizationLinkerArgs(
+        options.target.platform,
+        options.optimization,
+        options.target.name.endsWith("-musl"),
+      ),
       ...executableStripLinkerArgs(options.target.platform, options.strip ?? false),
       ...executableStaticLinkerArgs(options.target, options.staticLink ?? false),
       ...windowsSubsystemLinkerArgs(options.target.platform, options.windowsSubsystem),

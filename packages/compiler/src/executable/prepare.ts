@@ -44,6 +44,7 @@ import {
   type NodeIslandPathMark,
   type NodeIslandPolicy,
 } from "../node-islands/policy.js";
+import { checkPackageMarks, commandLinePackageMarks } from "../node-islands/package-marks.js";
 import { buildNodeIslandReport } from "../node-islands/report.js";
 import { nodeIslandSet } from "../node-islands/boundary.js";
 import type { IslandModule, IslandPackage, NodeIslandSet } from "../node-islands/boundary.js";
@@ -90,11 +91,34 @@ export function prepareExecutableModule(
   unitStore: UnitStore | null = null,
   lowerModules: ReadonlyMap<string, IslandModule> = new Map(),
 ): PreparedExecutableModule | CompileFailure {
-  // The island decision reads the detector's scan unless islands are off.
-  const islandScan =
-    nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands, entryPath).mode !== "off";
+  // The island decision reads the detector's scan unless islands are off,
+  // and so does the check of the command line's --native and --npm-static
+  // marks (node-islands/package-marks.ts).
+  const loadPolicy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands, entryPath);
+  const packageMarks = commandLinePackageMarks(loadPolicy, opts.npmStatic);
+  const islandScan = loadPolicy.mode !== "off" || packageMarks.length > 0;
   let fe = createFrontend(entryPath, opts.npmStatic, undefined, undefined, { islandScan });
   timing("frontend-load");
+  // A mark that names nothing the build could act on is refused instead of
+  // compiling as if the flag were not there. The program is the same on
+  // every retry, so the first load answers for all of them.
+  if (
+    packageMarks.length > 0 &&
+    fe.nodeIslandScan !== undefined &&
+    lowerIslands.size === 0 &&
+    lowerModules.size === 0
+  ) {
+    const diagnostics = checkPackageMarks(
+      entryPath,
+      packageMarks,
+      fe.nodeIslandScan({ userJs: false }),
+    ).problems;
+    if (diagnostics.length > 0) {
+      const sourceTexts = fe.sourceTexts();
+      fe.dispose();
+      return { ok: false, diagnostics, sourceTexts };
+    }
+  }
   // Node islands (scope-B NI-4): packages refused natively run in Node,
   // unless the policy says otherwise. The frontend reloads without them,
   // so their declarations type the program.

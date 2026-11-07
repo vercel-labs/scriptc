@@ -29,6 +29,7 @@ const features = {
   reflectProtoTarget: false,
   recordKeyOrder: false,
   recordSourceDelete: false,
+  recordViewFrozen: false,
   genBind: false,
   genReceiver: false,
   eventsOnceSignal: false,

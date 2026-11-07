@@ -110,6 +110,7 @@ export interface EarlyExecutableNativeFeatures {
   reflectProtoTarget?: boolean;
   recordKeyOrder?: boolean;
   recordSourceDelete?: boolean;
+  recordViewFrozen?: boolean;
   genBind?: boolean;
   genReceiver?: boolean;
   eventsOnceSignal?: boolean;

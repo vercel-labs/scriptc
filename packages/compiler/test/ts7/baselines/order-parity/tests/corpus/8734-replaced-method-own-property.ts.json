@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8734-replaced-method-own-property.ts"
+ ],
+ "diags": []
+}

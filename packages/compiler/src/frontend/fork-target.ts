@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as ts from "./ts7/adapter.js";
+import { withoutParenthesesAssertionsNonNull } from "./outer-expressions.js";
 import {
   ambientDtsPath,
   isFallbackDtsPath,
@@ -27,19 +28,6 @@ export function isNodeGlobal(program: ts.Program, expression: ts.Identifier): bo
       );
     })
   );
-}
-
-function strip(expr: ts.Expression): ts.Expression {
-  let current = expr;
-  while (
-    ts.isParenthesizedExpression(current) ||
-    ts.isAsExpression(current) ||
-    ts.isTypeAssertion(current) ||
-    ts.isNonNullExpression(current)
-  ) {
-    current = current.expression;
-  }
-  return current;
 }
 
 /** True when an identifier is a named import of one Node builtin member.
@@ -157,7 +145,7 @@ export function isBuiltinNamespaceImport(
 }
 
 function constInitializer(program: ts.Program, expr: ts.Expression): ts.Expression | null {
-  const current = strip(expr);
+  const current = withoutParenthesesAssertionsNonNull(expr);
   if (!ts.isIdentifier(current)) return null;
   const symbol = program.getTypeChecker().getSymbolAtLocation(current);
   const decl = symbol
@@ -177,7 +165,7 @@ function constInitializer(program: ts.Program, expr: ts.Expression): ts.Expressi
 }
 
 function importMetaUrl(expr: ts.Expression): boolean {
-  const current = strip(expr);
+  const current = withoutParenthesesAssertionsNonNull(expr);
   return (
     ts.isPropertyAccessExpression(current) &&
     !current.questionDotToken &&
@@ -193,7 +181,7 @@ function staticBoolean(
   expr: ts.Expression,
   seen: Set<ts.Symbol>,
 ): boolean | null {
-  const current = strip(expr);
+  const current = withoutParenthesesAssertionsNonNull(expr);
   if (current.kind === ts.SyntaxKind.TrueKeyword) return true;
   if (current.kind === ts.SyntaxKind.FalseKeyword) return false;
   const init = constInitializer(program, current);
@@ -239,7 +227,7 @@ function staticString(
   expr: ts.Expression,
   seen: Set<ts.Symbol>,
 ): string | null {
-  const current = strip(expr);
+  const current = withoutParenthesesAssertionsNonNull(expr);
   if (ts.isStringLiteralLike(current)) return current.text;
   if (importMetaUrl(current)) return pathToFileURL(ts.getSourceFileOfNode(current).fileName).href;
   if (ts.isTemplateExpression(current)) {
@@ -305,7 +293,7 @@ function staticString(
  * path. Plain runtime strings are intentionally excluded: worker selection
  * is part of the compiled graph, not a runtime filesystem lookup. */
 export function staticForkModulePath(program: ts.Program, expr: ts.Expression): string | null {
-  const current = strip(expr);
+  const current = withoutParenthesesAssertionsNonNull(expr);
   const init = constInitializer(program, current);
   if (init !== null && ts.isIdentifier(current)) return staticForkModulePath(program, init);
   const supported =
@@ -330,7 +318,7 @@ export function staticForkModulePath(program: ts.Program, expr: ts.Expression): 
 
 export function forkCallModulePath(program: ts.Program, call: ts.CallExpression): string | null {
   if (call.questionDotToken || call.arguments.nodes[0] === undefined) return null;
-  const callee = strip(call.expression);
+  const callee = withoutParenthesesAssertionsNonNull(call.expression);
   const isFork =
     (ts.isIdentifier(callee) && isBuiltinMemberImport(program, callee, "child_process", "fork")) ||
     (ts.isPropertyAccessExpression(callee) &&
@@ -431,7 +419,7 @@ export function forkTargetPaths(program: ts.Program, files: readonly ts.SourceFi
     const bindings: ts.Node[] = [];
     for (const call of calls) {
       if (call.questionDotToken || call.arguments.nodes[0] === undefined) continue;
-      const callee = strip(call.expression);
+      const callee = withoutParenthesesAssertionsNonNull(call.expression);
       if (ts.isIdentifier(callee)) bindings.push(callee);
       else if (
         ts.isPropertyAccessExpression(callee) &&

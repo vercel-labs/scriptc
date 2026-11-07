@@ -4,6 +4,7 @@ import { staticNameBindings } from "./static-function-names.js";
 import { positionTag } from "./structural-positions.js";
 import { keyedHelperName } from "./stable-names.js";
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { heritageElementTarget, isHeritageTypeReference } from "../heritage-elements.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
 import type { Lowerer } from "./lowerer.js";
@@ -25,6 +26,7 @@ import { helperLoc, nodeThrowExpr } from "../../ir/build.js";
 import { unsupportedDiag } from "../../diagnostics/diagnostic.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import { typeKey } from "../type-mapper.js";
+import { literalValues } from "../literal-values.js";
 import { functionCanReturnUndefined } from "../function-completion.js";
 import { PoisonError, dynFallbackType, neverTaintedJsType, newFnCtx } from "./lowerer.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
@@ -48,11 +50,7 @@ import {
   hasExplicitJsDocReturn,
   promiseCarriesDyn,
 } from "./function-returns.js";
-import {
-  bindingNeverReassigned,
-  isValueIdentifier,
-  stripValueWrappers,
-} from "./binding-analysis.js";
+import { bindingNeverReassigned, isValueIdentifier } from "./binding-analysis.js";
 import { declareContextLocal } from "./function-context.js";
 import {
   extendInstantiationPath,
@@ -89,6 +87,10 @@ export interface GenericFnInfo {
    * literal (no cross-literal sharing) and keep the checker types
    * (tsBindings) the body resolves through. */
   keyofTps?: Set<ts.Symbol>;
+  /** Lazily computed (memberPatternTypeParams): the type parameters the
+   * body names in a member pattern (`Extract<U, { kind: K }>`). The body
+   * maps such a type by K's bound literals, so instances key on them too. */
+  patternTps?: Set<ts.Symbol>;
   /** Instantiation key (comma-joined typeKeys of the mapped param types +
    * `=>` + return typeKey) → instance. Key identity IS signature identity:
    * two call sites whose inferred types map to the same IR types share one
@@ -491,12 +493,19 @@ export function genericCallInstance(
   // share one runtime-keyed instance per IR signature, exactly the
   // widened discipline.
   const named = staticNameBindings(lowerer, expr, info);
-  if (keyofConstrainedTypeParams(info).size > 0) {
+  const keyofKeyed = keyofConstrainedTypeParams(info).size > 0;
+  // So is the literal bound to a parameter the body names in a member
+  // pattern (memberPatternTypeParams): the body maps `Extract<U, { kind: K
+  // }>` by it, and two literals can map to one IR signature.
+  const patternKeyed = memberPatternTypeParams(lowerer, info).size > 0;
+  if (keyofKeyed || patternKeyed) {
     const tsBindings = new Map<ts.Symbol, ts.Type>();
     const bindings = lowerer.inferTypeParamBindings(expr, info, rsig, tsBindings);
+    const pattern = patternKeyed ? memberPatternKey(lowerer, info, tsBindings) : null;
     return internGenericInstance(lowerer, expr, info, params, returnType, () => bindings, {
-      extraKey: `${keyofLiteralKey(info, tsBindings)}${named?.key ?? ""}`,
+      extraKey: `${keyofKeyed ? keyofLiteralKey(info, tsBindings) : ""}${pattern?.key ?? ""}${named?.key ?? ""}`,
       tsBindings,
+      ...(pattern ? { pinned: pattern.pinned } : {}),
       ...(named ? { staticFnNames: named.names } : {}),
     });
   }
@@ -677,11 +686,19 @@ function overloadCallInstance(
   // keyof-constrained parameters key their instance on the bound literal,
   // as on the implementation-signature path.
   const runtimeReturn = runtimeReturnType(lowerer, info, returnType);
+  const keyofKeyed = keyofConstrainedTypeParams(info).size > 0;
+  const pattern =
+    memberPatternTypeParams(lowerer, info).size > 0
+      ? memberPatternKey(lowerer, info, tsBindings)
+      : null;
   return internGenericInstance(lowerer, expr, info, params, runtimeReturn, () => bindings, {
-    ...(keyofConstrainedTypeParams(info).size > 0
-      ? { extraKey: keyofLiteralKey(info, tsBindings) }
+    ...(keyofKeyed || pattern
+      ? {
+          extraKey: `${keyofKeyed ? keyofLiteralKey(info, tsBindings) : ""}${pattern?.key ?? ""}`,
+        }
       : {}),
     tsBindings,
+    ...(pattern ? { pinned: pattern.pinned } : {}),
   });
 }
 
@@ -973,6 +990,9 @@ function internGenericInstance(
   opts?: {
     extraKey?: string;
     tsBindings?: Map<ts.Symbol, ts.Type>;
+    /** The parameters whose bound literals `extraKey` names
+     * (memberPatternKey). */
+    pinned?: ReadonlySet<ts.Symbol>;
     staticFnNames?: Map<ts.Symbol, string | null>;
   },
 ): GenericInstance {
@@ -1020,10 +1040,89 @@ function internGenericInstance(
       ...(opts?.staticFnNames ? { staticFnNames: opts.staticFnNames } : {}),
     };
     info.instances.set(key, inst);
+    if (opts?.pinned !== undefined && opts.pinned.size > 0)
+      lowerer.pinnedTypeParams.push({ tsBindings, pinned: opts.pinned });
     lowerer.instantiationQueue.push({ info, inst });
   }
   lowerer.noteGenericInstanceDemand(inst);
   return inst;
+}
+
+const TYPE_LITERAL_KINDS: ReadonlySet<ts.SyntaxKind> = new Set([ts.SyntaxKind.TypeLiteral]);
+
+/** The type parameters of `info` its body names in a MEMBER PATTERN: as the
+ * type of a property of a type literal that is a type argument or the
+ * `extends` side of a conditional type (`slot as Extract<Slot, { type: K
+ * }>`, `S extends { kind: K } ? S : never`). Such a type selects the
+ * members of a union by K's bound literals, so the instance body depends
+ * on them where the IR signature (K maps to string) does not. Computed
+ * once per info from the body's syntax; a pattern in the signature alone
+ * maps from each call's resolved signature and needs no key. */
+function memberPatternTypeParams(lowerer: Lowerer, info: GenericFnInfo): Set<ts.Symbol> {
+  if (info.patternTps) return info.patternTps;
+  const out = new Set<ts.Symbol>();
+  const body = info.decl.body;
+  if (body !== undefined && info.typeParams.length > 0) {
+    const names = new Set(info.typeParams.map((tp) => ts.symbolName(tp)));
+    ts.walkPreorder(
+      body,
+      (node) => {
+        if (!ts.isTypeLiteralNode(node)) return;
+        const parent = node.parent;
+        const pattern =
+          parent !== undefined &&
+          (ts.isTypeReferenceNode(parent) ||
+            (ts.isConditionalTypeNode(parent) && parent.extendsType === node));
+        if (!pattern) return;
+        for (const member of node.members.nodes) {
+          if (!ts.isPropertySignature(member) || member.type === undefined) continue;
+          const type = member.type;
+          if (
+            !ts.isTypeReferenceNode(type) ||
+            type.typeArguments !== undefined ||
+            !ts.isIdentifier(type.typeName) ||
+            !names.has(type.typeName.text)
+          )
+            continue;
+          const symbol = lowerer.checker.getSymbolAtLocation(type.typeName);
+          if (symbol !== undefined && info.typeParams.includes(symbol)) out.add(symbol);
+        }
+      },
+      TYPE_LITERAL_KINDS,
+    );
+  }
+  info.patternTps = out;
+  return out;
+}
+
+/** The instance-key suffix of the literals bound to `info`'s member-pattern
+ * type parameters (`#"a"|"b"`; `*` for a binding that is not a finite set
+ * of literals), and the parameters it names a literal set for. */
+function memberPatternKey(
+  lowerer: Lowerer,
+  info: GenericFnInfo,
+  tsBindings: Map<ts.Symbol, ts.Type>,
+): { key: string; pinned: Set<ts.Symbol> } {
+  const patternTps = memberPatternTypeParams(lowerer, info);
+  const pinned = new Set<ts.Symbol>();
+  const parts: string[] = [];
+  for (const tp of info.typeParams) {
+    if (!patternTps.has(tp)) continue;
+    const bound = tsBindings.get(tp);
+    const values = bound === undefined ? null : literalValues(bound);
+    if (values === null) {
+      parts.push("*");
+      continue;
+    }
+    pinned.add(tp);
+    parts.push(
+      values
+        .map((value) => JSON.stringify(value))
+        .sort()
+        .join("|"),
+    );
+  }
+  return { key: `#${parts.join(",")}`, pinned };
 }
 
 /** The instance of a receiver-dependent static member specialized for one
@@ -3719,7 +3818,7 @@ export function bindingGenericFnNodeOf(
   if (!ts.isIdentifier(decl.name) || decl.initializer === undefined) return null;
   // Assertion wrappers strip like parens: `const r = (<T>(x: T) => x) as
   // Mapper` evaluates the arrow — the cast only renames its type.
-  const init = stripValueWrappers(decl.initializer);
+  const init = withoutParenthesesTypeWrappers(decl.initializer);
   if (
     (ts.isArrowFunction(init) || ts.isFunctionExpression(init)) &&
     init.typeParameters !== undefined &&
@@ -3749,7 +3848,7 @@ export function bindingContextualGenericFnNodeOf(
   // asserted signature exactly like an annotation would).
   const asserted = ts.isAsExpression(decl.initializer) || ts.isTypeAssertion(decl.initializer);
   if (decl.type === undefined && !asserted) return null;
-  const init = stripValueWrappers(decl.initializer);
+  const init = withoutParenthesesTypeWrappers(decl.initializer);
   if (
     !(ts.isArrowFunction(init) || ts.isFunctionExpression(init)) ||
     init.typeParameters !== undefined ||

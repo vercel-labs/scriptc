@@ -59,6 +59,13 @@
  * typed by the signature it is written for, and a typed rest function
  * packed behind a fixed signature.
  *
+ * The receiver is the other thing a caller passes that a type may not
+ * name. A callback whose own type shows that it reads `this` is refused
+ * where Node passes a receiver the native call does not (callback-arg.ts).
+ * A variadic function that reads `this`, stored under a type that does not
+ * show it, is refused here when the program hands a function of that type
+ * to such a caller.
+ *
  * What this cannot see: a declaration that names fewer parameters than the
  * library passes at run time. */
 
@@ -161,15 +168,18 @@ export function checkVariadicFunctions(lowerer: Lowerer, functions: readonly IrF
     if (kind === "adapter") entry.kind = kind;
     entry.locs.push(loc);
   };
+  /** The stores of a variadic function that reads `this`, by the slot's
+   * type: refused where a function of the type is handed to a caller Node
+   * gives a receiver and the native call does not. */
+  const receiverStores = new Map<string, { text: string; locs: SrcLoc[] }>();
   for (const entry of lowerer.notedVariadicStores) {
-    const [key, text, names, file, start, end] = entry.split("\u001f");
-    store(
-      key!,
-      text!,
-      Number(names),
-      { file: file!, start: Number(start), end: Number(end) },
-      "noted",
-    );
+    const [key, text, names, file, start, end, receiver] = entry.split("\u001f");
+    const loc = { file: file!, start: Number(start), end: Number(end) };
+    if (receiver === "receiver") {
+      let stores = receiverStores.get(key!);
+      if (stores === undefined) receiverStores.set(key!, (stores = { text: text!, locs: [] }));
+      stores.locs.push(loc);
+    } else store(key!, text!, Number(names), loc, "noted");
   }
 
   /** Conversions that keep the parameter count: the result calls the value
@@ -187,9 +197,15 @@ export function checkVariadicFunctions(lowerer: Lowerer, functions: readonly IrF
   };
   const callsLonger: CallsLonger = (type, loc, what, kind) =>
     keyCallsLonger(typeKey(type), loc, what, kind);
+  /** The first call of each function type by a caller that Node gives a
+   * receiver. */
+  const receiverCalls = new Map<string, LongerCall>();
   for (const entry of lowerer.notedLongerCalls) {
-    const [key, what, file, start, end] = entry.split("\u001f");
-    keyCallsLonger(key!, { file: file!, start: Number(start), end: Number(end) }, what!, "certain");
+    const [key, what, file, start, end, kind] = entry.split("\u001f");
+    const loc = { file: file!, start: Number(start), end: Number(end) };
+    if (kind === "receiver") {
+      if (!receiverCalls.has(key!)) receiverCalls.set(key!, { loc, what: what! });
+    } else keyCallsLonger(key!, loc, what!, "certain");
   }
   /** Where a function value was made untyped for untyped code to call: a
    * library call's argument boxed there is handed over as an untyped
@@ -316,24 +332,39 @@ export function checkVariadicFunctions(lowerer: Lowerer, functions: readonly IrF
       },
     });
   }
-  if (stored.size === 0) return;
-  libraryCalls(lowerer, callsLonger, (loc) => boxedAt.has(place(loc)));
-
-  for (const { key, text, names, locs, kind } of stored.values()) {
-    // The store's type and every view of it.
-    const calls = longer[kind];
+  /** The first call in `calls` of the type `key` or of a view of it. */
+  const firstCall = (key: string, calls: Map<string, LongerCall>): LongerCall | undefined => {
     const reached = new Set<string>([key]);
     const work = [key];
-    let hit: LongerCall | undefined;
-    while (hit === undefined && work.length > 0) {
+    while (work.length > 0) {
       const next = work.pop()!;
-      hit = calls.get(next);
+      const hit = calls.get(next);
+      if (hit !== undefined) return hit;
       for (const viewed of views.get(next) ?? []) {
         if (reached.has(viewed)) continue;
         reached.add(viewed);
         work.push(viewed);
       }
     }
+    return undefined;
+  };
+  for (const [key, { text, locs }] of receiverStores) {
+    const hit = firstCall(key, receiverCalls);
+    if (hit === undefined) continue;
+    for (const loc of locs)
+      lowerer.pushDiag(
+        unsupportedDiag(
+          "SC1090",
+          loc,
+          `variadic function values that read 'this', stored as '${text}' in a program that hands a function of that type to ${hit.what} at ${where(lowerer, hit.loc)} (Node.js calls it there with a receiver the native call does not pass, and the type no longer shows that the function reads it: read that value by name)`,
+        ),
+      );
+  }
+  if (stored.size === 0) return;
+  libraryCalls(lowerer, callsLonger, (loc) => boxedAt.has(place(loc)));
+
+  for (const { key, text, names, locs, kind } of stored.values()) {
+    const hit = firstCall(key, longer[kind]);
     if (hit === undefined) continue;
     for (const loc of locs)
       lowerer.pushDiag(

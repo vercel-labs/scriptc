@@ -1605,6 +1605,9 @@ function lowerListenerArg(
   // A typed listener is called with the parameters its type names, of the
   // arguments the event carries.
   lowerer.noteLongerCall(node, cbT, `'${member}'`, tuple.length);
+  // The emitter is passed as `this` only to a listener whose own type
+  // shows that it reads it.
+  if (!listenerReadsThis(lowerer, node)) lowerer.noteReceiverCall(node, `'${member}'`);
   // Node ignores listener return values, so value-returning listeners
   // (expression-body arrows, mustCall wrappers) register fine — the
   // emitted invoke adapter calls through the listener's true signature

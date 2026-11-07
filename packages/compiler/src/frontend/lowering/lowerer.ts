@@ -165,7 +165,11 @@ import {
   classStaticsProjection,
 } from "./coercions/structural.js";
 import { checkVariadicFunctions } from "./variadic-functions.js";
-import { callbackTakesEveryArgument, namesDeclaredFunction } from "./callback-arg.js";
+import {
+  callbackReadsThis,
+  callbackTakesEveryArgument,
+  namesDeclaredFunction,
+} from "./callback-arg.js";
 import {
   funcReturnWidthAdapter,
   coercibleValue,
@@ -6275,7 +6279,63 @@ export class Lowerer {
     if (type.kind !== "func" || type.rest === true || type.params.length >= passes) return;
     if (namesDeclaredFunction(this, node)) return;
     const loc = locOf(node);
-    this.notedLongerCalls.add([typeKey(type), what, loc.file, loc.start, loc.end].join("\u001f"));
+    this.notedLongerCalls.add(
+      [typeKey(type), what, loc.file, loc.start, loc.end, "arguments"].join("\u001f"),
+    );
+  }
+
+  /** Records that the function value `node` is handed to `what`, which
+   * Node.js calls with a receiver the native call does not pass (a timer,
+   * a process listener, a stream). A function whose own type shows that it
+   * reads `this` is refused there; one stored under a type that does not
+   * is what this records, for the stores of variadic functions that read
+   * `this` (noteReceiverReadingStore). */
+  noteReceiverCall(node: ts.Expression, what: string): void {
+    if (namesDeclaredFunction(this, node)) return;
+    const type = panicSafe(() => this.mapTypeOf(this.typeOf(node)), null);
+    const funcs =
+      type?.kind === "func"
+        ? [type]
+        : type?.kind === "union"
+          ? (this.unions.get(type.unionId)?.arms ?? []).filter((arm) => arm.kind === "func")
+          : [];
+    const loc = locOf(node);
+    for (const func of funcs)
+      if (func.kind === "func" && func.rest !== true)
+        this.notedLongerCalls.add(
+          [typeKey(func), what, loc.file, loc.start, loc.end, "receiver"].join("\u001f"),
+        );
+  }
+
+  /** A variadic function whose own body reads `this` (or whose signature
+   * declares a `this` parameter), stored under a fixed signature: the
+   * slot's type no longer shows the read, so a library function that
+   * passes no receiver cannot refuse it. Recorded for the check that runs
+   * when lowering ends (variadic-functions.ts). */
+  private noteReceiverReadingStore(node: ts.Node, expr: IrExpr, expected: IrType): void {
+    const variadic =
+      expr.type.kind === "dyn" ||
+      (expr.type.kind === "func" && expr.type.rest === true && expr.type.restAbi === undefined);
+    if (!variadic || !ts.isExpression(node)) return;
+    let slot: IrType | undefined = expected;
+    if (expected.kind === "union") {
+      const arms = this.unions.get(expected.unionId)?.arms.filter((arm) => arm.kind === "func");
+      slot = arms?.length === 1 ? arms[0] : undefined;
+    }
+    if (slot?.kind !== "func" || slot.rest === true) return;
+    if (!callbackTakesEveryArgument(this, node) || !callbackReadsThis(this, node)) return;
+    const loc = locOf(node);
+    this.notedVariadicStores.add(
+      [
+        typeKey(slot),
+        this.fmt(slot),
+        slot.params.length,
+        loc.file,
+        loc.start,
+        loc.end,
+        "receiver",
+      ].join("\u001f"),
+    );
   }
 
   /** Records a store of a variadic function under the fixed signature
@@ -16192,6 +16252,7 @@ export class Lowerer {
       }
     }
     this.noteUntypedVariadicStore(node, expr, expected);
+    this.noteReceiverReadingStore(node, expr, expected);
     let e = this.coerceToExpected(expr, expected, ownArmSite);
     // Keep storage intact when ordinary widening already accepts it. Only
     // a destination needing a more specific class layout uses the site's

@@ -46,3 +46,10 @@ variadic-store-longer-call.ts:55:39 - error SC1090: variadic function values sto
   55 | const packed: (a: string) => number = (...parts: string[]): number => parts.length;
      |                                       ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   56 | console.log(["a"].map(packed).join(","));
+
+variadic-store-longer-call.ts:61:52 - error SC1090: variadic function values that read 'this', stored as '(boolean, number) => void' in a program that hands a function of that type to a timer at variadic-store-longer-call.ts:67:12 (Node.js calls it there with a receiver the native call does not pass, and the type no longer shows that the function reads it: read that value by name) is not supported yet
+
+  60 | // timer, which Node calls with the timer object as `this`.
+  61 | const hidden: (flag: boolean, n: number) => void = function (
+     |                                                    ^~~~~~~~~~
+  62 |   this: unknown,

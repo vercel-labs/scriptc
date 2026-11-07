@@ -101,7 +101,12 @@ export function refuseCallbackThis(
   receiver: string,
 ): void {
   if (isJsSourceFile(ts.getSourceFileOfNode(node))) return;
-  if (!callbackReadsThis(lowerer, node)) return;
+  if (!callbackReadsThis(lowerer, node)) {
+    // A function stored under a type that hides its read of `this` can
+    // still arrive here: the store is what answers for it.
+    lowerer.noteReceiverCall(node, what);
+    return;
+  }
   lowerer.unsupported(
     "SC1090",
     node,

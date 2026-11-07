@@ -533,24 +533,23 @@ function lowerJsonCallback(
   node: ts.Expression,
   role: "replacer" | "reviver",
 ): IrExpr {
+  const callback = lowerer.lowerExpr(node);
   // Node passes a reviver three arguments: the key, the value and the
   // source context, which has no native form. A reviver that names two
-  // parameters cannot tell; one that takes every argument can.
-  if (role === "reviver" && callbackTakesEveryArgument(lowerer, node))
-    lowerer.unsupported(
-      "SC1090",
-      node,
-      "a reviver that takes a rest parameter or reads 'arguments' (JSON.parse passes it a third argument, the source context, which is not supported: name the key and value parameters)",
-    );
-  const callback = lowerer.lowerExpr(node);
-  if (callback.type.kind === "dyn") return callback;
+  // parameters cannot tell; one that takes every argument can, whatever
+  // type its value arrives as (held untyped by a constant, or lowered
+  // against the two-parameter signature), so it takes the refusal below.
+  const context = role === "reviver" && callbackTakesEveryArgument(lowerer, node);
+  if (callback.type.kind === "dyn" && !context) return callback;
   if (
+    !context &&
     role === "replacer" &&
     callback.type.kind === "array" &&
     lowerer.dynConvertible(callback.type)
   )
     return lowerer.coerceToExpected(callback, DYN);
   if (
+    !context &&
     callback.type.kind === "union" &&
     lowerer.dynConvertible(callback.type) &&
     lowerer.unions
@@ -566,6 +565,7 @@ function lowerJsonCallback(
   )
     return lowerer.coerceToExpected(callback, DYN);
   if (
+    !context &&
     callback.type.kind === "func" &&
     callback.type.params.length <= 2 &&
     (role !== "reviver" || (!callback.type.rest && !callback.type.argumentsAll)) &&

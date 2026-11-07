@@ -54,3 +54,14 @@ console.log(filled("x"));
 // (7) A typed rest function packed behind a fixed signature.
 const packed: (a: string) => number = (...parts: string[]): number => parts.length;
 console.log(["a"].map(packed).join(","));
+
+// (8) A variadic function that reads `this`, stored under a type that does
+// not show the read, in a program that hands a function of that type to a
+// timer, which Node calls with the timer object as `this`.
+const hidden: (flag: boolean, n: number) => void = function (
+  this: unknown,
+  ...args: unknown[]
+): void {
+  console.log(typeof this, args.length);
+};
+setTimeout(hidden, 0, true, 1);

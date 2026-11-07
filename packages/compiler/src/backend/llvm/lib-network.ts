@@ -13,6 +13,7 @@ import { emitTlsLibCall } from "./lib-tls.js";
 /* Focused LLVM library-call emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 import { undefinedArmTag } from "../../ir/analysis.js";
+import { MAY_THROW_LIB_FNS } from "../../ir/builtin-effects.js";
 import { arrayOf, NETSOCKET_T, STRING } from "../../ir/ir.js";
 import { mangleRecordNew, mangleRecordStruct } from "../mangle.js";
 import type { LlvmEmitterContext, LibCallExpr, LlValue } from "./expr-context.js";
@@ -385,6 +386,10 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     host.toHeap(args[1]!);
     host.declare(`declare void @${entry}(ptr, ptr, i1 zeroext)`);
     B.line(`call void @${entry}(ptr ${args[0]!.name}, ptr ${args[1]!.name}, i1 ${args[2]!.name})`);
+    // A registration the runtime can refuse raises ('prefinish' on the
+    // HTTP/2 compatibility response): the caller sees it here, before the
+    // statement after the registration runs.
+    if (MAY_THROW_LIB_FNS.has(e.fn)) host.emitPendingCheck();
     return { name: "", type: e.type };
   }
   if (

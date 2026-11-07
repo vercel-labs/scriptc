@@ -291,6 +291,21 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: [],
   },
   {
+    name: "builtin-member-native-readers",
+    file: `${SRC}/frontend/lowering/builtin-member-readers.ts`,
+    symbol: "refuseUnseenBuiltinMemberWrites",
+    source: "types",
+    scope: "program",
+    setBy:
+      "a use of a built-in member that does not read it from its object (a native call, a conversion, an iteration, a decided feature test), anywhere in a program that also writes that member",
+    gates:
+      "the write is refused at its own site (SC1092); a program without such a use keeps the write's lowering",
+    narrower:
+      "the reader: a mark on the member that only its native readers test at run time, which every typed call of the member would pay for",
+    tracked: "pi-decisions 2026-11-07 (replacing a built-in member)",
+    lowererFields: [],
+  },
+  {
     name: "node-stream-modes",
     file: `${SRC}/frontend/lowering/lowerer.ts`,
     symbol: "requiresGeneralNodeStreams",

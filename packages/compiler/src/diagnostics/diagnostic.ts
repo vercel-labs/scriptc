@@ -1357,6 +1357,31 @@ export function hostGlobalDiag(name: string, loc: SrcLoc): ScrDiagnostic {
   };
 }
 
+/** A write to a member of a built-in object (`Array.prototype.push = f`,
+ * `delete Math.random`) in a program that also uses that member through
+ * code that does not read it from the object: a native call, a conversion
+ * or an iteration the compiler lowers directly, or a feature test it
+ * decided at build time. The program would keep running the built-in where
+ * Node runs the replacement. `member` is the member as the program names
+ * it; `use` is the rest of the sentence: what uses the member, where, and
+ * why that use would not see the change. */
+export function builtinMemberWriteDiag(
+  member: string,
+  action: "replace" | "delete" | "add",
+  use: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  const verb = action === "delete" ? "deleting" : action === "add" ? "adding" : "replacing";
+  return {
+    code: "SC1092",
+    message: `${verb} the built-in '${member}' here is not supported: ${use}`,
+    loc,
+    milestone: "later",
+    hint: "a program may change a member of a built-in object only when nothing it compiles uses that member natively. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead",
+    reason: "builtin-write",
+  };
+}
+
 /** A stdlib-global snapshot reached a site that needs its VALUE (an
  * argument, a return, a stored field). The declaration emitted no storage
  * — alias plumbing only serves member and call reads — and the global's

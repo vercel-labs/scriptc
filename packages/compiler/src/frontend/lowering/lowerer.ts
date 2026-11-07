@@ -133,6 +133,8 @@ import { encodeBase64 } from "../../wasm/base64.js";
 import { resolveRequireRuntime } from "../runtime-resolve.js";
 import { lowerKeyObjectCall } from "./builtins/key-object.js";
 import { lowerX509Call, refuseX509DynValues } from "./builtins/x509.js";
+import type { BuiltinMemberWrite } from "./builtin-member-writes.js";
+import { refuseUnseenBuiltinMemberWrites } from "./builtin-member-readers.js";
 import { isEcdhType, lowerEcdhCall } from "./builtins/ecdh.js";
 import { isDiffieHellmanType, lowerDiffieHellmanCall } from "./builtins/dh.js";
 import { fenceWebCryptoMember, lowerWebCryptoCall } from "./builtins/webcrypto.js";
@@ -3248,6 +3250,18 @@ export class Lowerer {
   /** The write-replacement site programPatchesStdio found: the executable
    * planner refuses it beside Node islands (SC8006). */
   readonly stdioPatchSites: StdioPatchSite[] = [];
+  /** The writes to members of built-in objects that lowering met, by the
+   * node each is reported at: the end of lowering refuses the ones whose
+   * member the program also uses natively (builtin-member-readers.ts). */
+  readonly builtinMemberWrites = new Map<ts.Node, BuiltinMemberWrite>();
+  /** The feature tests of built-in members that lowering decided from the
+   * census (builtin-member-writes.ts): each reads its members at build
+   * time. */
+  readonly builtinFeatureTests = new Set<ts.Expression>();
+  /** Per file, the `const` names that may denote a built-in object, for
+   * the syntactic test in front of the write detection
+   * (builtin-member-writes.ts): a function of the file alone. */
+  readonly builtinAliasNames = new Map<ts.SourceFile, Set<string>>();
   requestInitPropMutatedSyms: Set<ts.Symbol> | null = null;
   emitterEventTable: Map<string, EventSig> | null = null;
   emitterComputedPatterns: ComputedEventPattern[] = [];
@@ -5141,6 +5155,12 @@ export class Lowerer {
       checkedTable("rebindableFunctions", () => this.rebindableFunctions.size),
       checkedTable("trapBindings", () => this.trapBindings.size),
       checkedTable("deadBindings", () => this.deadBindings.size),
+      // A write to a built-in member, and a feature test decided from the
+      // census, are judged against the whole program when lowering ends
+      // (builtin-member-readers.ts): a unit that has one lowers again
+      // rather than replaying a record.
+      checkedTable("builtinMemberWrites", () => this.builtinMemberWrites.size),
+      checkedTable("builtinFeatureTests", () => this.builtinFeatureTests.size),
       checkedTable("instantiationQueue", () => this.instantiationQueue.length),
       checkedTable("genericFunctionDemandOwner", () => this.genericFunctionDemandOwner.size),
       checkedTable("genericClassDemandOwner", () => this.genericClassDemandOwner.size),
@@ -5425,6 +5445,7 @@ export class Lowerer {
     "readsExitCode",
     "patchesStdio",
     "stdioPatchSites",
+    "builtinAliasNames",
     "requestInitPropMutatedSyms",
     // familyFieldLayoutFixed and familyAnswersFromInstance answer from the
     // class declarations and the module order, which do not change while a
@@ -12225,6 +12246,7 @@ export class Lowerer {
     // reference are untouched — byte-stability holds.
     checkRequireBindingAccesses(this, functions);
     refuseX509DynValues(this, functions);
+    refuseUnseenBuiltinMemberWrites(this);
     markInferredFactChecks(functions, this.program);
     const sloppyDynWrites = sloppyDynamicWrites(this, functions);
     const module: IrModule | null =

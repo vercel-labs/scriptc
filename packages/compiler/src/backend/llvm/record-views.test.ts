@@ -351,3 +351,74 @@ console.log(made.run());
 `),
   ).toEqual([]);
 });
+
+test("a program that starts workers keeps its partial views and plans no ordinary view", async () => {
+  // A view belongs to the thread that made it, and a message carries a copy,
+  // so a partial view is sound in a worker program. Ordinary views stay off
+  // there until they are measured.
+  const partial = await partialModule(
+    `
+type Wide = { a: number; b: string };
+type Narrow = { a: number; z: boolean };
+const wide: Wide = { a: 1, b: "x" };
+const o: unknown = wide;
+const v = o as Narrow;
+console.log(v.a);
+`,
+    "a,b",
+    "a,z",
+  );
+  const idOf = (mod: IrModule, fields: string): string =>
+    (mod.records ?? []).find((shape) => shape.fields.map((f) => f.name).join(",") === fields)!.id;
+  const kept = planRecordViews(partial, {
+    traced: () => false,
+    excluded: () => false,
+    workers: true,
+  });
+  expect(kept.partial(idOf(partial, "a,z"), idOf(partial, "a,b"))).toBe(true);
+  expect(kept.declinedPartials).toEqual([]);
+  const full = await partialModule(
+    `
+type Wide = { a: number; b: string };
+type Narrow = { a: number };
+const wide: Wide = { a: 1, b: "x" };
+const o: unknown = wide;
+const v = o as Narrow;
+console.log(v.a);
+`,
+    "a,b",
+    "a",
+  );
+  const options = { traced: () => false, excluded: () => false };
+  expect(planRecordViews(full, options).targets.size).toBe(1);
+  expect(planRecordViews(full, { ...options, workers: true }).targets.size).toBe(0);
+});
+
+test("a type whose values can be published gets no view, with or without workers", async () => {
+  // A published object is read by threads whose record-source table has no
+  // entry for it: it must never be a view.
+  const mod = await partialModule(
+    `
+type Wide = { a: number; b: string };
+type Narrow = { a: number; z: boolean };
+const wide: Wide = { a: 1, b: "x" };
+const o: unknown = wide;
+const v = o as Narrow;
+console.log(v.a);
+`,
+    "a,b",
+    "a,z",
+  );
+  const target = (mod.records ?? []).find(
+    (shape) => shape.fields.map((f) => f.name).join(",") === "a,z",
+  )!.id;
+  for (const workers of [false, true]) {
+    const views = planRecordViews(mod, {
+      traced: () => false,
+      excluded: (id) => id === target,
+      workers,
+    });
+    expect(views.targets.has(target)).toBe(false);
+    expect(views.declinedPartials.map((site) => site.reason)).toEqual(["shared"]);
+  }
+});

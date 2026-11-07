@@ -1,3 +1,5 @@
+import { publish } from "@scriptc/threads";
+
 // An object literal asserted to a record type whose required properties it
 // does not write is completed in place through a partial record view. Where
 // the asserted type can have no view, the checked conversion would throw
@@ -52,5 +54,16 @@ function spans(): Span[] {
   return [forward, backward, filled];
 }
 
-console.log(handler().run(), JSON.stringify(circle(2)), item("a", undefined).name);
+// Values of the asserted type are published to other threads.
+type Shared = { hits: number; misses: number };
+function shared(): Shared {
+  const fixed: Shared = { hits: 1, misses: 2 };
+  publish(fixed);
+  const filled = {} as Shared;
+  filled.hits = 3;
+  filled.misses = 4;
+  return filled.hits > fixed.hits ? filled : fixed;
+}
+
+console.log(handler().run(), JSON.stringify(circle(2)), item("a", undefined).name, shared().hits);
 console.log(spans().map((span) => Object.keys(span).join(",")).join(" "));

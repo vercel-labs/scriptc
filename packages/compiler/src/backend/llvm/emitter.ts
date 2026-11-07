@@ -2854,11 +2854,12 @@ export class LlEmitter {
       const views = planRecordViews(mod, {
         traced: (id) => this.tracedShapes.has(`record:${id}`),
         // A tagged shape's values share field reads with the other arms of
-        // its shape union.
+        // its shape union, and a published value is read by threads that
+        // have no entry for it (record-views.ts).
         excluded: (id) =>
           this.nullableUnions.shapeNumber(id) !== 0 ||
-          this.publishedTypes?.recordGuarded(id) === true ||
-          mod.workers === true,
+          this.publishedTypes?.recordGuarded(id) === true,
+        workers: mod.workers === true,
       });
       this.shapeHost.recordViews = views;
       this.recordViewTargets = views.targets as Set<string>;

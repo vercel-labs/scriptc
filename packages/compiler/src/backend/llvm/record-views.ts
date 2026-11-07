@@ -36,7 +36,17 @@
  * asks the table out of line, so an unfrozen record that is no view pays
  * what any view target's value pays. A view has no frozen state of its
  * own: freezing it freezes the record it views, and its frozen answer is
- * that record's (`marked` below). */
+ * that record's (`marked` below).
+ *
+ * A view belongs to the thread that made it. Its record-source entry lives
+ * in that thread's table (scr_json.c keeps the table per script thread in
+ * worker executables), so only that thread can tell that the object is a
+ * view and find the record behind it. Nothing hands a view to another
+ * thread by reference: a message encodes a copy of the viewed record
+ * (scr_message.c shares only published objects), and a type whose values
+ * can be published is never a view target (`excluded`). A program that
+ * starts workers may therefore keep its partial views; ordinary views stay
+ * off there (`workers`), as they were, until they are measured. */
 import {
   isDirentShape,
   KEY_ORDER_FIELD,
@@ -94,7 +104,7 @@ export const PARTIAL_DECLINE_TEXT: Record<PartialDeclineReason, string> = {
     "values of only one of the asserted type and the literal's own type may be frozen in this program",
   cyclic: "values of the asserted type may be part of a reference cycle",
   shared:
-    "the asserted type is one arm of a union of object types, is published to another unit, or the program starts worker threads",
+    "the asserted type is one arm of a union of object types or its values can be published to other threads",
   holds:
     "the literal holds a value that may reference the asserted type (a function, a class instance, an untyped value or the type itself)",
 };
@@ -117,7 +127,11 @@ export const NO_RECORD_VIEWS: RecordViews = {
 
 interface ViewOptions {
   readonly traced: (shapeId: string) => boolean;
+  /** Shapes that can be no view target at all: an arm of a shape union,
+   * and a type whose values can be published to other threads. */
   readonly excluded: (shapeId: string) => boolean;
+  /** The program starts worker threads: it plans partial views only. */
+  readonly workers?: boolean;
 }
 
 /** Value kinds that hold no reference to a record. */
@@ -275,7 +289,7 @@ export function planRecordViews(mod: IrModule, options: ViewOptions): RecordView
   for (const id of reachable) {
     const target = shapes.get(id);
     if (!target || !plainShape(target) || target.freezable === true) continue;
-    if (options.traced(id) || options.excluded(id)) continue;
+    if (options.traced(id) || options.excluded(id) || options.workers === true) continue;
     const found: string[] = [];
     for (const source of shapes.values()) {
       if (source.id === id || !live.has(source.id) || !plainShape(source)) continue;
@@ -362,14 +376,20 @@ export function planRecordViews(mod: IrModule, options: ViewOptions): RecordView
   // every target field from the literal's capsule: it throws whenever the
   // literal leaves out a field that cannot hold `undefined`.
   const declinedPartials: DeclinedPartial[] = [];
+  // One report per assertion: a function lowered more than once repeats it.
+  const reported = new Set<string>();
   for (const pair of partialPairs) {
     const reason = declined.get(pairKey(pair));
     if (reason === undefined) continue;
+    const at = `${pair.loc.file}:${pair.loc.start}:${pair.loc.end}`;
+    if (reported.has(at)) continue;
     const written = new Set((shapes.get(pair.source)?.fields ?? []).map((field) => field.name));
     const fails = (shapes.get(pair.target)?.fields ?? []).some(
       (field) => !written.has(field.name) && !admitsUndefined(field.type, unions),
     );
-    if (fails) declinedPartials.push({ loc: pair.loc, reason });
+    if (!fails) continue;
+    reported.add(at);
+    declinedPartials.push({ loc: pair.loc, reason });
   }
   if (sources.size === 0)
     return declinedPartials.length === 0

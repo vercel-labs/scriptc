@@ -33,7 +33,7 @@ A rest binding over an index-signature source copies its source's key order, so 
 An object literal asserted with `as` to a record type whose required properties it does not write, such as `const point = {} as Point`, keeps its identity, and the properties the program assigns afterwards complete it.
 Reading a required property that nothing wrote throws a `TypeError`, where Node.js answers `undefined`.
 Freezing such an object freezes it for every reference, whether or not it is complete.
-`scriptc build` reports `SC3001` at such an assertion when the object cannot be completed in place: when values of the asserted type may be part of a reference cycle, are one arm of a union of object types, are published or keep more than one property order, when the program starts worker threads, or when the literal holds a function.
+`scriptc build` reports `SC3001` at such an assertion when the object cannot be completed in place: when values of the asserted type may be part of a reference cycle, are one arm of a union of object types, are published or keep more than one property order, or when the literal holds a function.
 Write every required property in the literal instead, or collect the properties in a `Record<string, T>` or `Partial<T>` value and assert that value once it is complete.
 
 Optional fields and properties added through a record's `unknown` view can be deleted.

@@ -164,6 +164,51 @@ describe.skipIf(skip)("Node island cross-heap cycles", () => {
     expect(large.totals["representatives"]).toBeLessThan(40_000);
   }, 600_000);
 
+  test("child processes an island started and typed code used are collected with their listeners", async () => {
+    // Each child is adopted into a ChildProcess slot and its listeners
+    // capture it (tests/fixtures/node-island/gc-children.ts): the island's
+    // ChildProcess, the listener functions and the native child of every
+    // child that closed are freed, so what stays alive does not depend on
+    // how many came and went.
+    const dir = join(outDir, "gc-children");
+    mkdirSync(dir, { recursive: true });
+    const result = await compile(join(fixtures, "gc-children.ts"), {
+      outPath: join(dir, "gc-children"),
+      outDir: dir,
+      sanitize,
+    });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const [few, many] = sanitize ? [200, 2000] : [400, 6000];
+    const small = await run([String(few)], {}, result.binaryPath);
+    const large = await run([String(many)], {}, result.binaryPath);
+    const expected = (n: number): string => {
+      let bytes = 0;
+      let codes = 0;
+      for (let i = 0; i < n; i++) {
+        bytes += String(i).length + 1;
+        codes += 2 * (i % 3);
+      }
+      return `closed ${n} bytes ${bytes} codes ${codes} kept 0\n`;
+    };
+    expect(small.stdout).toBe(expected(few));
+    expect(large.stdout).toBe(expected(many));
+    for (const r of [small, large]) {
+      expect(r.totals["analyzed"]).toBe(r.totals["major"]);
+      // The program ends with full collections. Each child made four
+      // exports (its three listeners and the function that releases them
+      // when the child closes) and one import; what is left is what the
+      // program keeps and at most the last batches of children, whatever
+      // the number of children (measured: 2 exports after 400 and after
+      // 6,000 children, 24,000 freed).
+      expect(r.totals["held exports"]).toBeLessThan(200);
+      expect(r.totals["representatives"]).toBeLessThan(200);
+      expect(r.totals["held handles"]).toBeLessThan(50);
+      expect(r.totals["import entries"]).toBeLessThan(200);
+    }
+    expect(large.totals["freed exports"]).toBeGreaterThan(4 * many - 200);
+  }, 900_000);
+
   test("a native object the program keeps keeps its identity in island weak maps", async () => {
     // A typed object crosses in a capsule the export table alone holds;
     // the program holds the object itself.

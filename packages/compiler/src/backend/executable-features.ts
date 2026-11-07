@@ -58,6 +58,7 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     ...(features.dynIntegrityQueries ? { dynIntegrityQueries: true } : {}),
     ...(features.reflectProtoTarget ? { reflectProtoTarget: true } : {}),
     ...(features.recordKeyOrder ? { recordKeyOrder: true } : {}),
+    ...(features.recordSourceDelete ? { recordSourceDelete: true } : {}),
     ...(features.genBind ? { genBind: true } : {}),
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
     ...(features.mime ? { mime: true } : {}),

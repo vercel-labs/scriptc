@@ -172,6 +172,9 @@ export interface CcOptions {
   /** A record's keys in creation order, kept per value: compiles
    * scr_record_order.c. */
   recordKeyOrder?: boolean;
+  /** `delete` of a key a record's type does not declare: compiles
+   * scr_record_source_delete.c. */
+  recordSourceDelete?: boolean;
   /** A generator that binds its parameters at the call: compiles
    * scr_gen_bind.c. */
   genBind?: boolean;

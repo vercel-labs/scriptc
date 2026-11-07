@@ -1,21 +1,21 @@
 scriptc coverage tests/coverage-fixtures/divergences.ts
 
-  statements analyzed   16
-  compile statically    16  (100%)
+  statements analyzed   17
+  compile statically    17  (100%)
     in dynamic tier     1  (operate on values typed only at runtime; --explain-dynamic lists them)
 
   fully static — all analyzed statements compile to native code.
 
   differs from Node   4 sites (compiles; the native program can behave differently)
       ×1  SC6001  passing a 'Tagged' where 'Labeled' is expected copies the object (converting to a record type with other properties compiles as a field copy): the write to 'target.label' updates only the copy, while…
-          at tests/coverage-fixtures/divergences.ts:16:9
+          at tests/coverage-fixtures/divergences.ts:19:16
           hint: declare the parameter or binding with the value's full type ('Tagged'), or make the shape a class — class instances keep their identity when passed as a base class
       ×1  SC6001  storing a 'Tagged' in a 'Labeled' binding copies the object (converting to a record type with other properties compiles as a field copy): 'view === tagged' compares the copy, which is never the origi…
-          at tests/coverage-fixtures/divergences.ts:20:23
+          at tests/coverage-fixtures/divergences.ts:23:23
           hint: declare the parameter or binding with the value's full type ('Tagged'), or make the shape a class — class instances keep their identity when passed as a base class
       ×1  SC6003  localeCompare over 'яблоко' compares characters outside the built-in collation (Latin letters, digits, punctuation and symbols) by code point natively, while Node applies ICU's full collation
-          at tests/coverage-fixtures/divergences.ts:24:70
+          at tests/coverage-fixtures/divergences.ts:27:70
           hint: results agree with Node for Latin-script text; for other scripts compare explicitly (for example by code point with < and >) so both runtimes agree
       ×1  SC6004  this 'Circle' reaches a cast to the unrelated class 'Square' in the callee: natively the checked cast throws a TypeError when it executes, while Node reads the members structurally
-          at tests/coverage-fixtures/divergences.ts:39:20
+          at tests/coverage-fixtures/divergences.ts:42:20
           hint: narrow with 'instanceof Square' before casting, or cast to a base class or interface both classes share

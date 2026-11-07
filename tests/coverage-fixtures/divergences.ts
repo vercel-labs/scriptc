@@ -8,12 +8,15 @@ interface Tagged {
   tag: string;
 }
 
-// A narrower record parameter is a field copy: the write is lost.
-function relabel(target: Labeled): void {
-  target.label = "renamed";
-}
+// A narrower record parameter of a method is a field copy: the write is lost.
+// (A declared function called directly runs on the caller's record instead.)
+const labels = {
+  relabel(target: Labeled): void {
+    target.label = "renamed";
+  },
+};
 const tagged: Tagged = { label: "first", tag: "t" };
-relabel(tagged);
+labels.relabel(tagged);
 console.log(tagged.label);
 
 // A narrower binding is a copy too: identity comparison is false.

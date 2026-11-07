@@ -210,6 +210,10 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // A record's keys in creation order, kept per value; a unit of its own so
   // scr_json.c keeps its layout for every other program.
   ["scr_record_order.c", "recordKeyOrder"],
+  // `delete` of a key a record's type does not declare, removed from the
+  // record's kept source; a unit of its own so scr_json.c keeps its layout
+  // for every other program.
+  ["scr_record_source_delete.c", "recordSourceDelete"],
   // ChildProcess listener removal (off/removeListener) and signalCode; a
   // unit of its own so scr_child.c's layout stays put for every program.
   ["scr_child_lifecycle.c", "childLifecycle"],

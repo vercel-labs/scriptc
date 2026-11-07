@@ -28,6 +28,7 @@ const features = {
   dynIntegrityQueries: false,
   reflectProtoTarget: false,
   recordKeyOrder: false,
+  recordSourceDelete: false,
   genBind: false,
   eventsOnceSignal: false,
   mime: false,

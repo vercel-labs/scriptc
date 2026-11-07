@@ -67,3 +67,6 @@ tmp-*/
 # the vendored fs-extra corpus package: its lib/output module and jsonfile's own universalify
 !tests/corpus/fs-extra-package/node_modules/fs-extra/lib/output/
 !tests/corpus/fs-extra-package/node_modules/jsonfile/node_modules/
+
+# the island start-up benchmark's fixture packages are committed on purpose
+!benchmarks/startup/islands/node_modules/

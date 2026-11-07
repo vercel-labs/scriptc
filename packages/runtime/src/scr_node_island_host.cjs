@@ -44,6 +44,9 @@ if (typeof islandRoot === "string" && islandRoot !== "/") {
       return result;
     },
   });
+  // Registered after the guard, so it answers first: what the program's
+  // load plan holds is a file of the tree (scr_node_island_hooks.cjs).
+  scriptcLoadPlan(root, islandRoot);
 }
 
 // Error classes that cross as copies, at their scr_error.h kind index.

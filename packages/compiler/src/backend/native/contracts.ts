@@ -169,6 +169,10 @@ export interface CcOptions {
   /** Reflect.getPrototypeOf's primitive-target check: compiles
    * scr_dyn_reflect_proto.c. */
   reflectProtoTarget?: boolean;
+  /** An fs.Stats converts to or from an untyped value: compiles
+   * scr_stats_dyn.c, so programs that keep every Stats typed keep their
+   * exact link line. */
+  statsDyn?: boolean;
   /** `delete` of a key a record's type does not declare: compiles
    * scr_record_source_delete.c. */
   recordSourceDelete?: boolean;

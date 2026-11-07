@@ -60,7 +60,7 @@ const KNOWN: Record<string, Known> = {
   "esbuild-require": { island: true },
   "esm-missing-default": { build: "SC1090" },
   "esm-missing-export": { build: "SC1090" },
-  "fs-shims": { run: "SC1101" },
+  "fs-shims": { run: "SC1090" },
   "import-refusal": { build: "SC2020" },
   "island-registry": { build: "SC2011" },
   "island-timers": {

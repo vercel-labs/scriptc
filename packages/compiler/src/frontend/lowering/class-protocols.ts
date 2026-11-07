@@ -33,6 +33,10 @@ export class ClassProtocols {
   private readonly islandViews = new Set<ts.Type>();
   /** islandValue's answers: which expressions read an island handle. */
   private readonly islandValues = new Map<ts.Node, boolean>();
+  /** resultsOf's answers: the result types of each function type. */
+  private readonly results = new Map<ts.Type, readonly ts.Type[]>();
+  /** literalMembers' answers: the members of each object literal's type. */
+  private readonly members = new Map<ts.Type, readonly (readonly [string, ts.Type])[]>();
 
   constructor(
     private readonly checker: ts.TypeChecker,
@@ -457,8 +461,18 @@ export class ClassProtocols {
       /** The call the expression is an argument of, and its position. */
       call: { node: ts.CallExpression | ts.NewExpression; index: number } | undefined;
     }[] = [];
+    /** Object spreads: the operand and the literal it is spread into. A
+     * spread copies, so the operand itself goes nowhere, but each member it
+     * holds lands in the member of the same name in the literal's type
+     * (`{ ...base }` typed `Ops`). Kept apart from `sites`, whose sources
+     * flow as themselves. */
+    const spreads: { source: ts.Expression; literal: ts.ObjectLiteralExpression }[] = [];
     /** Expressions whose values are observed as whole objects. */
     const observed: ts.Expression[] = [];
+    /** The observed expressions whose own properties are listed, copied or
+     * printed (spreads, for-in, templates, console, JSON, Object, util and
+     * assert calls), as opposed to compared by identity. */
+    const enumerated: ts.Expression[] = [];
     /** Receivers whose type arguments or elements are observed (Set and Map
      * keys, array search haystacks). */
     const observedContainers: ts.Expression[] = [];
@@ -526,8 +540,10 @@ export class ClassProtocols {
         write(node.expression);
       } else if (ts.isSpreadAssignment(node) || ts.isTemplateSpan(node)) {
         observed.push(node.expression);
+        enumerated.push(node.expression);
       } else if (ts.isForInStatement(node)) {
         observed.push(node.expression);
+        enumerated.push(node.expression);
       } else if (ts.isSwitchStatement(node)) {
         // `switch` matches its cases with ===.
         const cases = node.caseBlock.clauses.nodes
@@ -550,6 +566,8 @@ export class ClassProtocols {
               (ts.isNewExpression(node) && IDENTITY_CONSTRUCTORS.has(callee.text))))
         ) {
           observed.push(...args.filter((arg) => !ts.isSpreadElement(arg)));
+          if (!ts.isNewExpression(node))
+            enumerated.push(...args.filter((arg) => !ts.isSpreadElement(arg)));
           // Object.assign(target, ...) and Object.defineProperty write the target.
           if (owner === "Object" && args[0] !== undefined && OBJECT_WRITERS.has(member ?? ""))
             writes.push({ receiver: args[0], name: null });
@@ -582,6 +600,8 @@ export class ClassProtocols {
       else if (ts.isPropertyAssignment(node)) flow(node.initializer);
       else if (ts.isShorthandPropertyAssignment(node) && ts.isIdentifier(node.name))
         flow(node.name);
+      else if (ts.isSpreadAssignment(node) && ts.isObjectLiteralExpression(node.parent))
+        spreads.push({ source: node.expression, literal: node.parent });
       else if (
         ts.isBinaryExpression(node) &&
         node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
@@ -610,7 +630,7 @@ export class ClassProtocols {
       ts.forEachChild(node, visit);
     };
     for (const source of this.sources) if (!source.isDeclarationFile) visit(source);
-    if (sites.length === 0 && callbackParams.length === 0) return;
+    if (sites.length === 0 && callbackParams.length === 0 && spreads.length === 0) return;
 
     // One batched checker round trip for every node the scan reads: flow
     // sites sit in bodies whose reachability is not known yet, so the
@@ -637,6 +657,7 @@ export class ClassProtocols {
     const marked = protocols;
     const facts: FlowFacts = {
       observed: new Set(),
+      enumerated: new Set(),
       written: new Map(),
       loose: [],
       bases: new Map(),
@@ -663,6 +684,10 @@ export class ClassProtocols {
           if (ts.isTypeParameterDeclaration(declaration) && declaration.parent !== undefined)
             facts.genericObservers.add(declaration.parent);
       }
+    }
+    for (const expr of enumerated) {
+      const type = typeOf(this.flowSourceNode(expr));
+      if (type !== undefined) this.collectSymbols(type, facts.enumerated, 0);
     }
     for (let i = 0; i < writes.length; i++) {
       const symbols = new Set<ts.Symbol>();
@@ -701,6 +726,11 @@ export class ClassProtocols {
       contextual?: ts.Expression;
       /** The call the source is an argument of, and its position. */
       call: { node: ts.CallExpression | ts.NewExpression; index: number } | undefined;
+      /** The source is an object literal written at the site: its members
+       * are sites of their own. */
+      written?: true;
+      /** The source is spread into the target: only its members flow. */
+      spread?: true;
     }[] = [];
     /** Views a value of unknown origin is asserted to and that expose a
      * method of a class the view accepts (see methodViewSources). */
@@ -724,11 +754,26 @@ export class ClassProtocols {
           }
         continue;
       }
-      pending.push(
-        site.contextual === undefined
-          ? { sourceType, target: site.target, call: site.call }
-          : { sourceType, target: site.target, contextual: site.contextual, call: site.call },
-      );
+      pending.push({
+        sourceType,
+        target: site.target,
+        call: site.call,
+        ...(site.contextual === undefined ? {} : { contextual: site.contextual }),
+        ...(ts.isObjectLiteralExpression(source) ? { written: true as const } : {}),
+      });
+    }
+    // A spread operand is an observed expression, so its type is already
+    // fetched. Only the type of an object literal has members to follow.
+    for (const { source, literal } of spreads) {
+      const sourceType = typeOf(this.flowSourceNode(source));
+      if (sourceType !== undefined && this.literalMembers(sourceType).length > 0)
+        pending.push({
+          sourceType,
+          target: contextual(literal),
+          contextual: literal,
+          call: undefined,
+          spread: true,
+        });
     }
     for (const { fn, index, name } of callbackParams) {
       attempt(() => {
@@ -752,6 +797,12 @@ export class ClassProtocols {
     }
     // Every site is revisited until nothing new is marked, so each mark's
     // flows and origins are complete.
+    const handsOn = (entry: (typeof pending)[number]): boolean =>
+      entry.spread
+        ? this.literalMembers(entry.sourceType).some(([, member]) =>
+            this.handsOnIdentity(member, marked),
+          )
+        : this.handsOnIdentity(entry.sourceType, marked, entry.written);
     const before = new Set(marked);
     const targets = new Map<number, ts.Type | undefined>();
     // The fixpoint asks the target of each site whose source carries
@@ -760,8 +811,7 @@ export class ClassProtocols {
     attempt(() =>
       this.checker.prefetchContextualTypes(
         pending.flatMap((entry) =>
-          entry.contextual !== undefined &&
-          attempt(() => this.carriesIdentity(entry.sourceType, marked)) === true
+          entry.contextual !== undefined && attempt(() => handsOn(entry)) === true
             ? [entry.contextual]
             : [],
         ),
@@ -772,13 +822,15 @@ export class ClassProtocols {
       changed = false;
       for (let i = pending.length - 1; i >= 0; i--) {
         const entry = pending[i]!;
-        if (attempt(() => this.carriesIdentity(entry.sourceType, marked)) !== true) continue;
+        if (attempt(() => handsOn(entry)) !== true) continue;
         if (!targets.has(i)) targets.set(i, attempt(entry.target));
         const target = targets.get(i);
         if (
           target !== undefined &&
           attempt(() =>
-            this.markTarget(entry.sourceType, target, marked, entry.call ?? null, true),
+            entry.spread
+              ? this.markLiteralMembers(entry.sourceType, target, marked, null)
+              : this.markTarget(entry.sourceType, target, marked, entry.call ?? null, true),
           ) === true
         )
           changed = true;
@@ -993,6 +1045,14 @@ export class ClassProtocols {
     }
     // An argument holding the type, passed where any value is accepted or
     // to a generic function or class that observes its type parameter.
+    return this.reachesAnyValue(symbol, facts);
+  }
+
+  /** Whether a value of the marked type `symbol` is passed where any value
+   * is accepted (`unknown`, `any`, `object`, `{}`, an unresolved type
+   * parameter) or to a generic function or class that observes its type
+   * parameter: code that can do with it what it could do with any object. */
+  private reachesAnyValue(symbol: ts.Symbol, facts: FlowFacts): boolean {
     return facts.loose.some(
       (arg) =>
         arg.symbols.has(symbol) &&
@@ -1589,6 +1649,34 @@ export class ClassProtocols {
     );
   }
 
+  /** A platform object the runtime holds by reference and hands to
+   * checked-dynamic code as itself: a handle whose members answer from the
+   * object (ir.ts DYN_HANDLE_KINDS, whose member set must cover the type's
+   * own). Held at a structural type that names some of its members
+   * (`{ isDirectory(): boolean }` over an `fs.Stats`), it has no record
+   * form: its methods read the object, and a record of them would be a
+   * second object. The view is the object itself, like a Map's. The names
+   * are those of node:fs's declarations, in @types/node or the fallback. */
+  private isPlatformObject(type: ts.Type): boolean {
+    if ((type.flags & ts.TypeFlags.Object) === 0) return false;
+    const symbol = type.getSymbol();
+    if (symbol === undefined) return false;
+    const modules = PLATFORM_OBJECTS.get(ts.symbolName(symbol));
+    return (
+      modules !== undefined &&
+      symbol.declarations.length > 0 &&
+      symbol.declarations.every(
+        (declaration) =>
+          ts.getSourceFileOfNode(declaration).isDeclarationFile &&
+          declaration.parent !== undefined &&
+          ts.isModuleBlock(declaration.parent) &&
+          ts.isModuleDeclaration(declaration.parent.parent) &&
+          ts.isStringLiteral(declaration.parent.parent.name) &&
+          modules.has(declaration.parent.parent.name.text),
+      )
+    );
+  }
+
   private isProgramClassInstance(type: ts.Type): boolean {
     const symbol = type.getSymbol();
     return (
@@ -1600,6 +1688,114 @@ export class ClassProtocols {
       // `typeof C` (the class value) shares the class symbol.
       this.checker.getConstructSignatures(type).length === 0
     );
+  }
+
+  /** Whether a value of `type` is, or hands on, a value with identity: it
+   * carries identity itself, or it is a promise that settles with such a
+   * value, a function that answers one, an array of those, or an object
+   * written as a literal that holds one of those in a member. The value reaches a structural
+   * type through the promise's payload, the function's result or the
+   * member exactly as it would by a direct assignment (`stat: statOf` in a
+   * record whose member is `(path) => Promise<Entry> | Entry`), so the flow
+   * is followed there. `written` is the literal expression itself at its
+   * own site: its members are sites of their own and are not read again. */
+  private handsOnIdentity(
+    type: ts.Type,
+    marked: ReadonlySet<ts.Symbol>,
+    written?: true,
+    depth = 0,
+  ): boolean {
+    if (type.isUnionType())
+      return ts
+        .constituentTypes(type)
+        .some((part) => this.handsOnIdentity(part, marked, written, depth));
+    if (this.carriesIdentity(type, marked)) return true;
+    // Recursive types (`type Step = () => Step`) end here.
+    if (depth > 3 || (type.flags & ts.TypeFlags.Object) === 0) return false;
+    // An array of promises or functions hands on what its elements do
+    // (carriesIdentity answered for elements that carry identity themselves).
+    if (this.checker.isArrayType(type)) {
+      const [element] = this.checker.getTypeArguments(type as ts.TypeReference);
+      return element !== undefined && this.handsOnIdentity(element, marked, undefined, depth + 1);
+    }
+    const settled = this.promisePayload(type);
+    if (settled !== undefined) return this.handsOnIdentity(settled, marked, undefined, depth + 1);
+    if (
+      this.resultsOf(type).some((result) =>
+        this.handsOnIdentity(result, marked, undefined, depth + 1),
+      )
+    )
+      return true;
+    return (
+      written === undefined &&
+      this.literalMembers(type).some(([, member]) =>
+        this.handsOnIdentity(member, marked, undefined, depth + 1),
+      )
+    );
+  }
+
+  /** The members of the type of an object literal (`const base = { run }`
+   * read back as `base`): their names and types. None for any other type,
+   * so the checker is asked once per literal type that a binding, a member
+   * read or a call hands on, and never for a declared type. */
+  private literalMembers(type: ts.Type): readonly (readonly [string, ts.Type])[] {
+    if ((type.flags & ts.TypeFlags.Object) === 0) return NO_MEMBERS;
+    const symbol = type.getSymbol();
+    if (symbol === undefined || (symbol.flags & ts.SymbolFlags.ObjectLiteral) === 0)
+      return NO_MEMBERS;
+    const known = this.members.get(type);
+    if (known !== undefined) return known;
+    const members =
+      attempt(() =>
+        this.checker
+          .getPropertiesOfType(type)
+          .map(
+            (property) =>
+              [ts.symbolName(property), this.checker.getTypeOfSymbol(property)] as const,
+          ),
+      ) ?? NO_MEMBERS;
+    this.members.set(type, members);
+    return members;
+  }
+
+  /** The type a lib Promise or PromiseLike settles with; undefined for any
+   * other type. */
+  private promisePayload(type: ts.Type): ts.Type | undefined {
+    if ((type.flags & ts.TypeFlags.Object) === 0 || !type.isTypeReference()) return undefined;
+    const symbol = type.getTarget()?.getSymbol() ?? type.getSymbol();
+    if (symbol === undefined) return undefined;
+    const name = ts.symbolName(symbol);
+    if ((name !== "Promise" && name !== "PromiseLike") || !libSymbol(symbol)) return undefined;
+    return this.checker.getTypeArguments(type)[0];
+  }
+
+  /** The result types of a function type's call signatures; none for any
+   * other type. The checker is asked only for a type whose own declarations
+   * spell a signature, a test on syntax, so the scan stays one query per
+   * function type and none for every record, class and array it meets. */
+  private resultsOf(type: ts.Type): readonly ts.Type[] {
+    if ((type.flags & ts.TypeFlags.Object) === 0) return NO_TYPES;
+    const known = this.results.get(type);
+    if (known !== undefined) return known;
+    const symbol = type.getSymbol();
+    const spelled =
+      symbol !== undefined &&
+      (symbol.flags & ts.SymbolFlags.Class) === 0 &&
+      symbol.declarations.some(
+        (declaration) =>
+          ts.isFunctionLike(declaration) ||
+          ((ts.isTypeLiteralNode(declaration) || ts.isInterfaceDeclaration(declaration)) &&
+            declaration.members.nodes.some((member) => ts.isCallSignatureDeclaration(member))),
+      );
+    const results = spelled
+      ? (attempt(() =>
+          this.checker
+            .getCallSignatures(type)
+            .map((signature) => this.checker.getReturnTypeOfSignature(signature)),
+        ) ?? NO_TYPES)
+      : NO_TYPES;
+    this.results.set(type, results);
+    return results;
   }
 
   private carriesIdentity(type: ts.Type, marked: ReadonlySet<ts.Symbol>): boolean {
@@ -1619,6 +1815,8 @@ export class ClassProtocols {
     // A builtin Error keeps its own identity too: extra fields the program
     // puts on it (a status, a body) belong to the error, not to a copy.
     if (this.isBuiltinError(type)) return true;
+    // A platform object the runtime holds by reference stays that object.
+    if (this.isPlatformObject(type)) return true;
     // A live Pick or Omit view of a program class holds the instance itself.
     if (this.pickOfProgramClass(type) && this.usesCheckedIdentity(type)) return true;
     // A homomorphic mapped view of a marked type is the live view itself.
@@ -1668,11 +1866,35 @@ export class ClassProtocols {
       let changed = false;
       for (const part of ts.constituentTypes(source))
         if (
-          this.carriesIdentity(part, marked) &&
+          this.handsOnIdentity(part, marked) &&
           this.markTarget(part, target, marked, site, false)
         )
           changed = true;
       return changed;
+    }
+    // A promise hands on the value it settles with, and a function the value
+    // it answers: the value flows into the payload of each promise the
+    // target holds (`Promise<Shape>`, the promise arm of `Promise<Shape> |
+    // Shape`) or into the result of each function type it holds (a function
+    // returning an instance stored in a `(path) => Shape` slot). The promise
+    // or function itself keeps its own representation in either type.
+    const settled = this.promisePayload(source);
+    const handed = settled !== undefined ? [settled] : this.resultsOf(source);
+    if (handed.length > 0) {
+      let changed = false;
+      for (const part of target.isUnionType() ? ts.constituentTypes(target) : [target]) {
+        // A promise lands in a promise and a function in a function.
+        const payload = settled !== undefined ? this.promisePayload(part) : undefined;
+        const into = settled === undefined ? this.resultsOf(part) : payload ? [payload] : NO_TYPES;
+        for (const from of handed)
+          for (const result of into)
+            if (
+              this.handsOnIdentity(from, marked) &&
+              this.markTarget(from, result, marked, site, false)
+            )
+              changed = true;
+      }
+      return (settled !== undefined && this.joinSettledArms(target, marked, site)) || changed;
     }
     if (target.isUnionType()) {
       // Only the arms that accept the value receive it. An accepting arm
@@ -1689,7 +1911,7 @@ export class ClassProtocols {
       let changed = false;
       for (const part of accepting)
         if (this.markTarget(source, part, marked, site, false)) changed = true;
-      return changed;
+      return this.joinSettledArms(target, marked, site) || changed;
     }
     if (this.checker.isArrayType(source) && this.checker.isArrayType(target)) {
       const [from] = this.checker.getTypeArguments(source as ts.TypeReference);
@@ -1699,11 +1921,33 @@ export class ClassProtocols {
       );
     }
     if (!this.isStructuralTarget(target)) return false;
+    // An object written as a literal and read back (`base` after `const base
+    // = { run }`) has no identity a copy would lose here, but each member
+    // keeps its own: it flows into the member of the same name.
+    const carried = this.carriesIdentity(source, marked);
+    if (!carried && this.literalMembers(source).length > 0)
+      return this.markLiteralMembers(source, target, marked, site);
+    // Only a value with identity makes the type that receives it a view.
+    if (!carried) return false;
     const symbol = target.getSymbol();
     if (symbol === undefined) return false;
     const from = source.getSymbol();
     if (from === symbol) return false;
     const facts = this.facts;
+    // A platform object answers the members its handle models: a read or a
+    // call. A view whose values the program writes through, lists the
+    // properties of, copies, prints or hands to code that accepts any value
+    // would need the object's whole property table, which a handle does not
+    // carry (it lists none). Such a type stays a record, and the flow into it
+    // keeps the refusal a record has for a value it cannot be built from.
+    if (
+      facts !== null &&
+      this.isPlatformObject(source) &&
+      (facts.written.has(symbol) ||
+        facts.enumerated.has(symbol) ||
+        this.reachesAnyValue(symbol, facts))
+    )
+      return false;
     let collectionGrew = false;
     if (facts !== null) {
       // A Map or Set that reaches the view, which answers one of its
@@ -1720,7 +1964,8 @@ export class ClassProtocols {
               this.checker.getPropertiesOfType(target).map((property) => ts.symbolName(property)),
             ),
           )
-        : from !== undefined && this.collectionViews.has(from);
+        : // A platform object answers every member the view names itself.
+          this.isPlatformObject(source) || (from !== undefined && this.collectionViews.has(from));
       if (collection && !this.collectionViews.has(symbol)) {
         this.collectionViews.add(symbol);
         collectionGrew = true;
@@ -1753,6 +1998,65 @@ export class ClassProtocols {
     if (marked.has(symbol)) return collectionGrew;
     marked.add(symbol);
     return true;
+  }
+
+  /** The members of an object written as a literal (`base` after `const base
+   * = { run }`, or the operand of a spread) flow into the members of the
+   * same name in each structural part of `target`. The object has no
+   * identity a copy would lose here, but each member keeps its own. Answers
+   * whether anything new was marked. */
+  private markLiteralMembers(
+    source: ts.Type,
+    target: ts.Type,
+    marked: Set<ts.Symbol>,
+    site: { node: ts.CallExpression | ts.NewExpression; index: number } | null,
+  ): boolean {
+    let changed = false;
+    for (const part of target.isUnionType() ? ts.constituentTypes(target) : [target]) {
+      if (!this.isStructuralTarget(part)) continue;
+      for (const [name, member] of this.literalMembers(source)) {
+        if (!this.handsOnIdentity(member, marked)) continue;
+        const into = this.checker.getPropertyOfType(part, name);
+        if (
+          into !== undefined &&
+          this.markTarget(member, this.checker.getTypeOfSymbol(into), marked, site, false)
+        )
+          changed = true;
+      }
+    }
+    return changed;
+  }
+
+  /** A promise-or-value type (`Promise<Entry> | Entry`) is read with one
+   * `await`, which answers the promise's payload and the plain arms as one
+   * value. Once a value with identity reaches one of the two, the other is
+   * the same view: with only one marked, the awaited value would be a live
+   * object or a record copy depending on which arm produced it, and the two
+   * arms are often two spellings of one type literal, each with its own
+   * symbol. Each marked structural part therefore flows into the others.
+   * Answers whether anything new was marked. */
+  private joinSettledArms(
+    target: ts.Type,
+    marked: Set<ts.Symbol>,
+    site: { node: ts.CallExpression | ts.NewExpression; index: number } | null,
+  ): boolean {
+    if (!target.isUnionType()) return false;
+    const parts = ts.constituentTypes(target);
+    const settled = parts.flatMap((part) => this.promisePayload(part) ?? []);
+    if (settled.length === 0) return false;
+    const plain = parts.filter((part) => this.promisePayload(part) === undefined);
+    const structural = [...settled, ...plain]
+      .flatMap((part) => (part.isUnionType() ? ts.constituentTypes(part) : [part]))
+      .filter((part) => this.isStructuralTarget(part));
+    let changed = false;
+    for (const from of structural) {
+      const symbol = from.getSymbol();
+      if (symbol === undefined || !(marked.has(symbol) || this.collectionViews.has(symbol)))
+        continue;
+      for (const into of structural)
+        if (into !== from && this.markTarget(from, into, marked, site, false)) changed = true;
+    }
+    return changed;
   }
 
   /** Whether `type` is a structural view that a Map or Set reaches and that
@@ -1842,6 +2146,9 @@ export class ClassProtocols {
 }
 
 interface FlowFacts {
+  /** Types whose values are read as whole objects: their own properties
+   * listed, copied or printed (a subset of `observed`). */
+  enumerated: Set<ts.Symbol>;
   /** Types whose values reach identity comparisons, Set/Map keys, array
    * searches or whole-object observers. */
   observed: Set<ts.Symbol>;
@@ -1876,6 +2183,14 @@ interface FlowFacts {
 
 /** The empty answer of the symbol maps above. */
 const NO_SYMBOLS: ReadonlySet<ts.Symbol> = new Set();
+const NO_TYPES: readonly ts.Type[] = [];
+const NO_MEMBERS: readonly (readonly [string, ts.Type])[] = [];
+
+/** The platform objects that keep their identity in a structural view
+ * (isPlatformObject), each with the ambient modules that declare it. */
+const PLATFORM_OBJECTS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ["Stats", new Set(["fs", "node:fs"])],
+]);
 
 /** The lib names RUNTIME_ERROR_CLASSES gives the runtime error encoding
  * (`%Error`, `%TypeError`, ...; ir.ts). */

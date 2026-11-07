@@ -27,6 +27,7 @@ const features = {
   dynCollections: false,
   dynIntegrityQueries: false,
   reflectProtoTarget: false,
+  statsDyn: false,
   recordSourceDelete: false,
   genBind: false,
   genReceiver: false,

@@ -140,6 +140,7 @@ export const DYN_HANDLE_TAG_NUM: Record<string, number> = {
   dgramSocket: 62,
   cryptoHash: 52,
   cryptoHmac: 53,
+  stats: 101,
 };
 
 /** The handle tags of TextEncoder and TextDecoder records boxed as dyn
@@ -163,6 +164,7 @@ const DYN_HANDLE_BOX_FN: Record<string, string> = {
   cryptoHmac: "scr_crypto_hash_to_dyn",
   dgramSocket: "scr_dgram_to_dyn",
   spawnRes: "scr_spawn_res_to_dyn",
+  stats: "scr_stats_to_dyn",
 };
 
 /** Handle kinds whose box holds a unit-owned wrapper rather than the

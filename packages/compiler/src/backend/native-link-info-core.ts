@@ -139,6 +139,9 @@ export interface NativeLinkFeatures {
   /** Reflect.getPrototypeOf's primitive-target check compiles
    * scr_dyn_reflect_proto.c; absent (false) otherwise. */
   reflectProtoTarget?: boolean;
+  /** An fs.Stats converts to or from an untyped value: scr_stats_dyn.c.
+   * Absent (false) for programs that keep every Stats typed. */
+  statsDyn?: boolean;
   /** `delete` of a key a record's type does not declare:
    * scr_record_source_delete.c. Absent (false) for programs without one. */
   recordSourceDelete?: boolean;

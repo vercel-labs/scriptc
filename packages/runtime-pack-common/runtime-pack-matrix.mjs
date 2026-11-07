@@ -212,6 +212,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // Reflect.getPrototypeOf's primitive-target check; a unit of its own so
   // scr_json.c keeps its layout for every program that never reflects.
   ["scr_dyn_reflect_proto.c", "reflectProtoTarget"],
+  // An fs.Stats boxed as an untyped value; a unit of its own so programs
+  // that keep every Stats typed link none of it.
+  ["scr_stats_dyn.c", "statsDyn"],
   // `delete` of a key a record's type does not declare, removed from the
   // record's kept source; a unit of its own so scr_json.c keeps its layout
   // for every other program.

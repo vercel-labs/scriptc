@@ -866,10 +866,6 @@ const HTTP2_LEGACY_FNS: ReadonlySet<IrLibFn> = new Set([
   "http2.streamUndefCall",
 ]);
 
-/** Names that reach the extended process-stream surface (the
- * SCR_STDIO_EXTENDED events unit): stdin.setEncoding and 'resize'. */
-const STDIO_EXTENDED_NAMES: ReadonlySet<string> = new Set(["setEncoding", "resize"]);
-
 /** The libCall nodes the rules below test. */
 type LibCallNode = IrExpr & { kind: "libCall" };
 
@@ -1397,6 +1393,9 @@ const RUNTIME_FEATURE_RULES = {
       "crypto.ecdhNew",
       "crypto.generateKeyPairCb",
       "crypto.generateKeyPairSync",
+      // existsSync's DEP0187 report (scr_fs_exists_dyn.c) defers through
+      // this unit's warning queue.
+      "fs.existsSyncValue",
     ],
     prefixes: [...READABLE_DYN_ASYNC_PREFIXES, "wasm."],
     expr: (node, tables) =>
@@ -1783,34 +1782,11 @@ const RUNTIME_FEATURE_RULES = {
   /** URL programs install the IDNA unit's ToASCII for the WHATWG host
    * parser (scr_url_idna_install). */
   urlIdna: rule({ prefixes: URL_PREFIXES, types: ["url"] }),
-  /** stdin setEncoding / string data listeners / stdio 'resize' events. A
-   * typed string 'data' listener takes setEncoding-decoded chunks; the
-   * process stream object's setEncoding and 'resize' members are reached
-   * by name (dynamic member calls and event-name strings). */
-  stdioExtended: rule({
-    libCall: (node) =>
-      node.fn === "stdin.onData" &&
-      node.args[0]?.type.kind === "func" &&
-      node.args[0].type.params[0]?.kind === "string",
-    expr: (node, _tables) =>
-      (node.kind === "dynInvoke" && STDIO_EXTENDED_NAMES.has(node.method)) ||
-      (node.kind === "strLit" && STDIO_EXTENDED_NAMES.has(node.value)),
-  }),
   /** A write completion callback that takes the error argument lowers
    * through writable.writeEcb: the SCR_STREAM_WRITE_ERRORS stream unit
    * publishes the error the adapter delivers. */
   streamWriteErrors: rule({ fns: ["writable.writeEcb"] }),
-  /** The program reaches the process output streams' write slot — the
-   * write method as a value (process.stdioSlot), its replacement, a patched
-   * program's typed writes, a run-time-typed chunk
-   * (process.stdioWriteDyn), or the untyped one-string write
-   * (process.stdioWriteStr): the SCR_STDIO_WRITE_SLOT build of the events
-   * unit carries the shared write body, the dynamic-chunk entry point,
-   * the string entry point and Node's anonymous write function. Every
-   * other program links the default object unchanged. */
-  stdioWriteSlot: rule({
-    fns: ["process.stdioSlot", "process.stdioWriteDyn", "process.stdioWriteStr"],
-  }),
+
   stream: rule({
     initial: (mod) => (mod.classes ?? []).some((c) => RUNTIME_STREAM_CLASSES.has(c.name)),
     fns: [...STREAM_LIB_FNS, "dyn.builtinStreamClass"],
@@ -1985,6 +1961,10 @@ const RUNTIME_FEATURE_RULES = {
       "fsp.writeFileFlags",
     ],
   }),
+  /** existsSync over a path value that is not statically a string:
+   * scr_fs_exists_dyn.c, which reports DEP0187 through the warning queue the
+   * dynAsync rule brings in. */
+  fsExistsValue: rule({ fns: ["fs.existsSyncValue"] }),
   /** The BYTE-data spellings of the options write and of
    * fs.promises.writeFile: scr_fs_bytes_write.c, so a program that writes no
    * byte payload keeps scr_fs_flags.c's and scr_bytes_io.c's objects byte
@@ -1998,8 +1978,8 @@ const RUNTIME_FEATURE_RULES = {
   strdecDyn: rule({ fns: ["strdec.nextDyn", "strdec.writeDyn"] }),
   /** The process and stream event registries' extras — prependListener for
    * signals, 'exit' and uncaught exceptions, stdin.isRaw, and server.off:
-   * the SCR_PROCESS_EXTRAS builds of scr_events.c and scr_async_dyn.c and
-   * the SCR_NET_SERVER_OFF build of scr_net.c. */
+   * the SCR_PROCESS_EXTRAS build of scr_async_dyn.c and the
+   * SCR_NET_SERVER_OFF build of scr_net.c. */
   processExtras: rule({
     fns: [
       "net.serverOff",
@@ -2061,6 +2041,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     fetch: false,
     fileHandle: false,
     fsFlags: false,
+    fsExistsValue: false,
     fsBytesWrites: false,
     fsWatch: false,
     fsWatchFile: false,
@@ -2092,8 +2073,6 @@ function noRuntimeFeatures(): RuntimeFeatures {
     regex: false,
     searchParams: false,
     urlIdna: false,
-    stdioExtended: false,
-    stdioWriteSlot: false,
     streamWriteErrors: false,
     moduleNamespace: false,
     moduleNamespaceDyn: false,

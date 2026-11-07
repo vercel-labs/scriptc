@@ -462,6 +462,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "date.toDateString": "scr_date_to_date_string",
   "date.toTimeString": "scr_date_to_time_string",
   "fs.existsSync": "scr_fs_exists",
+  "fs.existsSyncValue": "scr_fs_exists_value",
+  "fs.existsSyncBytes": "scr_fs_exists_bytes",
   // ── the throwing slice (MAY_THROW_LIB_FNS members): the generic path
   // emits the standard pending check after each — exprs.ts's finish.
   "process.cpuPrevValidate": "scr_cpu_prev_validate",
@@ -836,6 +838,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.begin": "scr_insp_begin",
   "insp.layout": "scr_insp_layout",
   "insp.maxArrayLength": "scr_insp_max_array_length",
+  "insp.numericSeparator": "scr_insp_numeric_separator",
   "insp.maxStringLength": "scr_insp_max_string_length",
   "insp.getters": "scr_insp_getters",
   "insp.gettersMode": "scr_insp_getters_mode",
@@ -1100,7 +1103,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "bigint.cmpNumber": "scr_bigint_cmp_number",
   "bigint.truthy": "scr_bigint_truthy",
   "bigint.toString": "scr_bigint_to_string",
-  "bigint.inspect": "scr_bigint_inspect",
+  "bigint.inspect": "scr_insp_bigint",
   "bigint.toF64": "scr_bigint_to_f64",
   "bigint.asUintN": "scr_bigint_as_uint_n",
   "bigint.asIntN": "scr_bigint_as_int_n",

@@ -179,7 +179,7 @@ export function lowerNodeApiCall(
     if (bad !== null)
       lowerer.noLowering(`'${lowerer.fmt(bad)}' results of ${surface}`, call, JSON_HINT);
   }
-  lowerer.usesNodeIsland = true;
+  lowerer.noteNodeIslandUse(loc.file, surface);
   // The caller's tree path is known once every call is collected (Lowerer).
   const callerLiteral: IrExpr & { kind: "strLit" } = {
     kind: "strLit",
@@ -235,7 +235,7 @@ function lowerRequireModule(lowerer: Lowerer, call: ts.CallExpression, surface: 
       "install the module or fix the specifier",
     );
   }
-  lowerer.usesNodeIsland = true;
+  lowerer.noteNodeIslandUse(loc.file, surface);
   const raw: IrExpr = {
     kind: "libCall",
     fn: "nodeIsland.require",
@@ -489,7 +489,7 @@ export function collectIslandImport(
       );
       return true;
     }
-    lowerer.usesNodeIsland = true;
+    lowerer.noteNodeIslandUse(sf.fileName, `the island module '${spec}'`);
     const exportLoc = locOf(stmt);
     const exported = islandModuleGlobal(lowerer, path);
     const initActions = islandStatementActions(lowerer, sf, stmt);
@@ -516,7 +516,7 @@ export function collectIslandImport(
     }
     return true;
   }
-  lowerer.usesNodeIsland = true;
+  lowerer.noteNodeIslandUse(sf.fileName, `the island module '${spec}'`);
   const loc = locOf(stmt);
   const binding = islandModuleGlobal(lowerer, path);
   const actions = islandStatementActions(lowerer, sf, stmt);

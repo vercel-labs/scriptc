@@ -166,7 +166,7 @@ test("--emit-ir remains additive but reports its deprecation", async () => {
 
 test("run and incompatible compatibility flags reject non-executable outputs", async () => {
   const { entry } = await fixture();
-  await expect(cli(["run", entry, "--emit=llvm"])).rejects.toMatchObject({
+  await expect(cli(["run", "--emit=llvm", entry])).rejects.toMatchObject({
     code: 1,
     stderr: expect.stringContaining("scriptc run requires --emit=exe"),
   });

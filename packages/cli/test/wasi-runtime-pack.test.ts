@@ -38,9 +38,9 @@ test.runIf(supported)(
           tsxLoader,
           cliEntry,
           "run",
-          join(repoRoot, "tests/corpus/001-hello.ts"),
           "-o",
           output,
+          join(repoRoot, "tests/corpus/001-hello.ts"),
         ],
         {
           env: {

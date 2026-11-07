@@ -12,7 +12,7 @@ scriptc coverage tests/coverage-fixtures/node-islands/main.ts
     ni-typed    static
     ni-dep      static
 
-  Node islands   (would-be, report-only: the build is unchanged; --node-islands=auto)
+  Node islands   (a build runs these in Node where it cannot compile them natively; --node-islands=auto)
     gap           ni-gap@1.0.0
           tests/coverage-fixtures/node-islands/node_modules/ni-gap/index.js:7:17: SC1090: a builtin function alias as an escaping value (call 'ext' directly) is not supported yet
     runtime       ni-eval@1.0.0

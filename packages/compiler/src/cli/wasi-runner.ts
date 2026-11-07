@@ -17,14 +17,15 @@ declare const WebAssembly: {
   ): Promise<{ instance: WasiInstance }>;
 };
 
-const binary = process.argv[2];
+// The module, then the arguments `scriptc run` forwards to the program.
+const [binary, ...programArgs] = process.argv.slice(2);
 if (binary === undefined) throw new Error("scriptc WASI runner needs a module path");
 const cwd = process.cwd();
 const hostTmp = tmpdir();
 
 const wasi = new WASI({
   version: "preview1",
-  args: [wasiGuestPath(binary, cwd, hostTmp) ?? binary],
+  args: [wasiGuestPath(binary, cwd, hostTmp) ?? binary, ...programArgs],
   env: wasiEnvironment(process.env, cwd, hostTmp),
   // A native scriptc executable inherits access to the caller's filesystem.
   // WASI is capability-based, so expose the caller's working tree as `/`

@@ -266,7 +266,7 @@ test(
         const oracle = await exec(process.execPath, [hello], options);
         const throughLink = await exec(
           linkedSeed,
-          ["run", hello, "-o", executable("linked-hello"), "--optimization=dev", "--strip"],
+          ["run", "-o", executable("linked-hello"), "--optimization=dev", "--strip", hello],
           {
             ...nativeOptions,
             env: { ...nativeOptions.env, SCRIPTC_TOOLCHAIN: undefined },
@@ -306,8 +306,14 @@ test(
           "const answer = comptime(() => [1, 2, 3].reduce((sum, value) => sum + value, 0) * 7); console.log(answer);\n",
         );
         expect(
-          await invoke(probe, ["run", comptime, "-o", executable("comptime"), "--strip"]),
+          await invoke(probe, ["run", "-o", executable("comptime"), "--strip", comptime]),
         ).toBe("42\n");
+        // What follows the entry is the program's, as with node.
+        const argv = join(directory, "argv.ts");
+        writeFileSync(argv, "console.log(JSON.stringify(process.argv.slice(2)));\n");
+        expect(await invoke(probe, ["run", argv, "a", "--strip", "--", "b"])).toBe(
+          '["a","--strip","--","b"]\n',
+        );
 
         const object = join(directory, "program.obj");
         const linkInfo = JSON.parse(

@@ -13,6 +13,8 @@ type JsonObject = Record<string, unknown>;
 const scratch = mkdtempSync(join(tmpdir(), "scriptc-mcp-test-"));
 const declaration = join(scratch, "host.d.ts");
 writeFileSync(declaration, "export declare const value: number;\n");
+// The command line refuses an entry that is not a file before it reaches the host.
+writeFileSync(join(scratch, "main.ts"), "export {};\n");
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
 beforeEach(() => {
@@ -77,6 +79,7 @@ async function dispatch(argv: string[], platform?: string): Promise<Reached | nu
 
 const SAMPLES: Record<string, Json> = {
   file: join(scratch, "main.ts"),
+  args: ["--strip", "value"],
   package: "commander",
   selector: "HelpContext.helpWidth",
   type: "| undefined",
@@ -183,6 +186,9 @@ test("the command line accepts every property of every tool, true and false", as
 
 test("flag-shaped values stay values", async () => {
   const hostile = "--print=native-link-info";
+  // The entry must exist; resolve it in the scratch directory.
+  vi.spyOn(process, "cwd").mockReturnValue(scratch);
+  writeFileSync(join(scratch, hostile), "export {};\n");
   const outcome = await dispatch(
     toolArgv(command("build"), { file: hostile, out: "--emit=llvm", node_island: ["-o"] }),
   );
@@ -227,6 +233,18 @@ test("build and coverage always write the diagnostics envelope, and --print is t
   expect(() => toolArgv(command("run"), { file: "a.ts", print: "diagnostics" })).toThrow(
     /unknown argument "print"/,
   );
+});
+
+test("run passes the program's arguments after the entry, where no option is scriptc's", async () => {
+  const entry = join(scratch, "main.ts");
+  const argv = toolArgv(command("run"), { file: entry, strip: true, args: ["--emit=llvm", "-o"] });
+  expect(argv).toEqual(["run", "--strip", "--", entry, "--emit=llvm", "-o"]);
+  const built = await dispatch(argv);
+  expect(built).toBeInstanceOf(Reached);
+  const [, options] = (built as Reached).detail as [string, Record<string, unknown>];
+  expect(options["outputKind"]).toBe("exe");
+  expect(options["strip"]).toBe(true);
+  expect(options["outPath"]).toBe(join(scratch, ".scriptc", "main"));
 });
 
 test("wrong types and unknown arguments are refused before anything runs", () => {

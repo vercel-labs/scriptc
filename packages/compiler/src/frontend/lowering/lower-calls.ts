@@ -26,6 +26,7 @@ import {
 import { refuseModuleMemberThis } from "./module-member-this.js";
 import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.js";
 import { lowerHashStreamCall } from "./builtins/hash-stream.js";
+import { lowerUntypedStringLastIndexOfCall } from "./builtins/strings.js";
 import { lowerWebAssemblyValueOf } from "./builtins/webassembly.js";
 import { lowerResponseStaticJson } from "./lower-stdlib.js";
 import { lowerArrayCallbackCall } from "./containers/array-callback-call.js";
@@ -4533,7 +4534,8 @@ function lowerDynReceiverMethodCall(
   if (recv.type.kind === "string") {
     return (
       lowerRegexMethodCall(lowerer, call, access, () => recv) ??
-      lowerStringMethodCall(lowerer, call, access, () => recv)
+      lowerStringMethodCall(lowerer, call, access, () => recv) ??
+      lowerUntypedStringLastIndexOfCall(lowerer, call, access, recv)
     );
   }
   // A checker-untyped JS binding holding `string | undefined` (string-

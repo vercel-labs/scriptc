@@ -234,8 +234,8 @@
   },
   "npm/hono-zod-default-hook": {
     "island:@hono/zod-validator": {
-      "category": "build",
-      "signature": "SC8006"
+      "category": "stdout",
+      "signature": "ok 500 Internal Server Error"
     },
     "island:hono": {
       "category": "build",
@@ -248,8 +248,8 @@
   },
   "npm/hono-zod-validator": {
     "island:@hono/zod-validator": {
-      "category": "build",
-      "signature": "SC8006"
+      "category": "exit",
+      "signature": "exit 1, Node 0: Error: Malformed JSON in request body"
     },
     "island:hono": {
       "category": "build",

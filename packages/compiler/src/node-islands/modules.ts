@@ -32,6 +32,7 @@ import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "nod
 import { builtinModules } from "node:module";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
+  isVirtualSource,
   trackedAccessibleEntries,
   trackedDirectoryExists,
   trackedFileExists,
@@ -532,6 +533,11 @@ export class NodeIslandModuleCollector {
     const entries = trackedAccessibleEntries(dir);
     if (entries === null) return;
     for (const file of entries.files) {
+      // A source the compiler synthesized beside the package's files (the
+      // native compile's generated declarations, a bundle's split chunks)
+      // is listed with them and is on no disk: Node loads the package's
+      // own files, so the tree ships only those.
+      if (isVirtualSource(join(dir, file))) continue;
       this.files.add(join(dir, file));
       if (SCRIPT.test(file)) scripts.push(join(dir, file));
     }

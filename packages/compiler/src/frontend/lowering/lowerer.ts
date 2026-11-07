@@ -6978,7 +6978,17 @@ export class Lowerer {
         this.flushDeferred(snap);
         return snap;
       }
-      symbol = this.checker.getAliasedSymbol(symbol);
+      const aliased = this.checker.getAliasedSymbol(symbol);
+      // `const { member } = require("./x")` of a module that builds its
+      // export object anew (`exports = module.exports = {}`, then
+      // `exports.member = …`): the checker answers a property that has no
+      // declaration, which keys nothing here. The module's export table
+      // still names the member, the symbol its own statements and a
+      // `x.member` read resolve to.
+      symbol =
+        aliased.declarations.length === 0
+          ? (this.requireDestructuredExportSymbolOf(symbol) ?? aliased)
+          : aliased;
     }
     // CommonJS export plumbing: a binding that resolved to a PROPERTY of a
     // top-level `module.exports = { ... }` literal (shorthand, or a plain
@@ -7639,6 +7649,33 @@ export class Lowerer {
         ? property.text
         : ident.text;
     return this.cjsModuleExportSymbol(target.dep, name) ?? null;
+  }
+
+  /** The target export behind `const { member: local } = require("./x")`
+   * of a program module whose exports are a table, by the member's name in
+   * that table. Null when the binding is not such an element or the table
+   * does not name the member. */
+  private requireDestructuredExportSymbolOf(binding: ts.Symbol): ts.Symbol | null {
+    const element = binding.declarations.find(ts.isBindingElement);
+    if (
+      element === undefined ||
+      element.name === undefined ||
+      !ts.isIdentifier(element.name) ||
+      element.dotDotDotToken !== undefined ||
+      !ts.isObjectBindingPattern(element.parent)
+    )
+      return null;
+    const declaration = element.parent.parent;
+    if (!ts.isVariableDeclaration(declaration) || declaration.initializer === undefined)
+      return null;
+    const required = inlineProgramRequireOf(this, declaration.initializer);
+    // A module that exports one value whole keeps its members as
+    // properties of that value (cjsMemberAliasValueOf answers those).
+    if (required === null || !cjsNamespaceModule(this, required.dep)) return null;
+    const property = element.propertyName;
+    if (property !== undefined && !ts.isIdentifier(property) && !ts.isStringLiteralLike(property))
+      return null;
+    return this.cjsModuleExportSymbol(required.dep, (property ?? element.name).text) ?? null;
   }
 
   /** True when `expr` is an identifier bound by a top-level
@@ -13072,7 +13109,7 @@ export class Lowerer {
 
   /** The runtimeFence statement that throws `first`'s message (or the
    * fallback's) at `node`. */
-  private runtimeFenceStmt(
+  runtimeFenceStmt(
     first: ScrDiagnostic | undefined,
     node: ts.Node,
     fallback: { code: string; message: string } | undefined,

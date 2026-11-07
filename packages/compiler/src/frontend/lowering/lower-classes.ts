@@ -7403,7 +7403,7 @@ function staticCallOn(
   // func-typed static field. The read is the ordinary static read, with
   // its rules for a class-value receiver and a receiver-dependent getter.
   if (!found && findStaticAccessorOn(info, access.name.text)) {
-    return staticValueCall(lowerer, call, access, lowerer.lowerExpr(access));
+    return staticValueCall(lowerer, call, access, lowerer.lowerExpr(access), throughValue);
   }
   if (!found) {
     // GENERIC static methods: monomorphized like top-level generic
@@ -7446,12 +7446,13 @@ function staticCallOn(
   if (found.field !== undefined) {
     // A func-typed static field in call position: read the global,
     // call through the value (the ctor-assigned-callback pattern).
-    return staticValueCall(lowerer, call, access, {
-      kind: "varRef",
-      localId: found.field.globalId,
-      type: found.field.type,
-      loc,
-    });
+    return staticValueCall(
+      lowerer,
+      call,
+      access,
+      { kind: "varRef", localId: found.field.globalId, type: found.field.type, loc },
+      false,
+    );
   }
   if (found.method.member.body && usesStaticReceiver(found.method.member)) {
     const generic = (found.method.receiverInfo ??= {
@@ -7483,13 +7484,19 @@ function staticCallOn(
 
 /** `C.x(args)` where the static `x` holds a function (a func-typed field,
  * or an accessor whose getter answers one): the call goes through the
- * value `callee`, with the class as its `this`. Null when the value is not
- * a function the call can name. */
+ * value `callee`, with the class as its `this`. JavaScript evaluates the
+ * receiver once, before it reads the member, and calls the function on
+ * that value. A getter is code: it can rebind the variable a class-value
+ * receiver is read from (`holder.make()` where the getter assigns
+ * `holder`), so with `receiverMayChange` the receiver is held before the
+ * read; a class name and `this` cannot be rebound, and reading a field
+ * runs nothing. Null when the value is not a function the call can name. */
 function staticValueCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
   callee: IrExpr,
+  receiverMayChange: boolean,
 ): IrExpr | null {
   if (callee.type.kind !== "func") return null;
   const loc = locOf(call);
@@ -7506,12 +7513,15 @@ function staticValueCall(
     }
     args.push(absent);
   }
+  const receiver = lowerer.lowerExprExpecting(access.expression, DYN);
+  const type = callee.type.ret;
+  if (!receiverMayChange) return { kind: "callValue", callee, receiver, args, type, loc };
+  const held = lowerer.declareHiddenLocal("%staticReceiver", DYN);
   return {
-    kind: "callValue",
-    callee,
-    receiver: lowerer.lowerExprExpecting(access.expression, DYN),
-    args,
-    type: callee.type.ret,
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: held.id, init: receiver, loc }],
+    result: { kind: "callValue", callee, receiver: varRef(held.id, DYN, loc), args, type, loc },
+    type,
     loc,
   };
 }

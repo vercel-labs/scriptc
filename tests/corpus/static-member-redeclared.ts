@@ -139,3 +139,20 @@ class Fixed extends Sized {
 console.log(Sized.size, Fixed.size, Sized.total(), Fixed.total(), Fixed.count);
 Sized.size = 5;
 console.log(Sized.size, Fixed.size, Sized.total(), Fixed.total());
+
+// The receiver is evaluated once, before the getter runs: a getter that
+// rebinds the variable the class was read from does not change the class
+// its function is called on.
+class Origin {
+  static get who(): (this: typeof Origin) => string {
+    holder = Moved;
+    return function (this: typeof Origin): string {
+      return this === Origin ? "called on Origin" : "called on another class";
+    };
+  }
+}
+class Moved extends Origin {}
+let holder: typeof Origin = Origin;
+console.log(holder.who(), holder === Moved);
+console.log(Origin.who());
+

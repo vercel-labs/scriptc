@@ -1,0 +1,10 @@
+{
+ "order": [
+  "<repo>/tests/corpus/workspace-source-package-js/source/helper.js",
+  "<repo>/tests/corpus/workspace-source-package-js/source/impl.js",
+  "<repo>/tests/corpus/workspace-source-package-js/source/counter.js",
+  "<repo>/tests/corpus/workspace-source-package-js/source/index.ts",
+  "<repo>/tests/corpus/workspace-source-package-js/main.ts"
+ ],
+ "diags": []
+}

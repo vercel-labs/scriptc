@@ -580,6 +580,12 @@ export const SET_COMBINE_METHODS = new Set([
   "isDisjointFrom",
 ]);
 
+/** The keyed-collection classes whose `prototype` reads, members and
+ * constructors have a checked-dynamic form (scr_dyn_collections.c). */
+export const DYN_COLLECTION_CLASSES = ["Set", "Map", "WeakMap", "WeakSet"] as const;
+
+export type DynCollectionClass = (typeof DYN_COLLECTION_CLASSES)[number];
+
 export type CompoundOp = "+" | "-" | "*" | "/" | "%" | "**" | "&" | "|" | "^" | "<<" | ">>" | ">>>";
 
 export const COMPOUND_ASSIGN_OPS: Partial<Record<ts.SyntaxKind, CompoundOp>> = {
@@ -2383,6 +2389,7 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     // file-descriptor data form.
     writeFileSync: [
       "fs.writeFileSyncBytes",
+      "fs.writeFileSyncBytesFlags",
       "fs.writeFileModeSync",
       "fs.writeFileFlagsSync",
       "fs.writeFileSyncFd",
@@ -2437,8 +2444,14 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     // The Buffer form (no encoding) and the runtime-encoding forms.
     readFile: ["fsp.readFileBytes", "fsp.readFileEncoded"],
     readlink: ["fsp.readlinkStr", "fsp.readlinkBuffer"],
-    // The string-data { mode, flag } options forms.
-    writeFile: ["fsp.writeFileMode", "fsp.writeFileFlags"],
+    // The string-data and Uint8Array/Buffer-data { mode, flag } options
+    // forms (and the Buffer-data two-argument write).
+    writeFile: [
+      "fsp.writeFileMode",
+      "fsp.writeFileFlags",
+      "fsp.writeFileBytes",
+      "fsp.writeFileBytesFlags",
+    ],
     // The { withFileTypes: true } Dirent form.
     readdir: ["fsp.readdirTypes"],
     glob: ["fsp.globTypes"],
@@ -3240,6 +3253,7 @@ export const FS_CALLBACK_MEMBERS = new Set([
   "rmdir",
   "unlink",
   "open",
+  "opendir",
   "close",
   "fstat",
   "ftruncate",

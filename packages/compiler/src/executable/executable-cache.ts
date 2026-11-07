@@ -76,6 +76,7 @@ export interface EarlyExecutableNativeFeatures {
   /** A function's inherited member shadowed by an own data property:
    * SCR_FN_MEMBER_PROPS. */
   fnMemberProps?: boolean;
+  fsBytesWrites?: boolean;
   strdecDyn?: boolean;
   processExtras?: boolean;
   /** Error-taking write completion callbacks: SCR_STREAM_WRITE_ERRORS. */
@@ -102,10 +103,13 @@ export interface EarlyExecutableNativeFeatures {
   handleProps?: boolean;
   childLifecycle?: boolean;
   childOptionExt?: boolean;
+  spawnCaptureBytes?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
   dynForAwait?: boolean;
+  dynCollections?: boolean;
   dynIntegrityQueries?: boolean;
+  reflectProtoTarget?: boolean;
   genBind?: boolean;
   eventsOnceSignal?: boolean;
   mime?: boolean;

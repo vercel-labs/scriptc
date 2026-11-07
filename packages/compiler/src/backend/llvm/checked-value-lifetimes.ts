@@ -7,6 +7,7 @@ export function preservesDynTest(test: string): boolean {
     case "truthy":
     case "classCapsule":
     case "funcKind":
+    case "handle":
     case "nullish":
     case "promise":
     case "buffer":

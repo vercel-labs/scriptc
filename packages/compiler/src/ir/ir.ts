@@ -3747,7 +3747,10 @@ export type IrExpr =
    * dynCheck against %Error extracts it. `"function"` is `typeof v ===
    * "function"` — true exactly for the checked-dynamic tree's function kind (boxed
    * closures); function values are truthy and answer FALSE to the
-   * `"object"` test, JS-exact. */
+   * `"object"` test, JS-exact. `"handle"` is true exactly for a native
+   * handle of kind `handleKind` (DYN_HANDLE_KINDS) boxed by reference: the
+   * test that lets a dyn value take a handle's typed entry points without
+   * the throwing dynCheck. */
   | {
       kind: "dynTest";
       test:
@@ -3770,8 +3773,11 @@ export type IrExpr =
         /** The value is a capsule of a compiled class instance. */
         | "classCapsule"
         /** The value is a boxed function or class value (exact kind test). */
-        | "funcKind";
+        | "funcKind"
+        /** The value is a boxed native handle of kind `handleKind`. */
+        | "handle";
       bytesElem?: IrBytesElem;
+      handleKind?: IrType["kind"];
       negated?: true;
       value: IrExpr;
       type: IrType;

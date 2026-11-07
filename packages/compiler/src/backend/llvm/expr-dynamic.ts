@@ -26,7 +26,7 @@ import {
   VOID,
 } from "../../ir/ir.js";
 import { BYTES_ELEM_NUM, closureIdentityEqual } from "./common.js";
-import { DYN_KIND } from "./dyn.js";
+import { DYN_HANDLE_TAG_NUM, DYN_KIND } from "./dyn.js";
 import { elemAccess, releaseSym, vAdapters } from "./shapes.js";
 import { JS_BITS } from "./jsval-encoding.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
@@ -892,6 +892,31 @@ export function emitDynamicExpr(
         host.declare(`declare zeroext i1 @scr_dyn_is_class_capsule(ptr)`);
         test = B.tmp();
         B.line(`${test} = call zeroext i1 @scr_dyn_is_class_capsule(ptr ${d.name})`);
+      } else if (e.test === "handle") {
+        // A handle box of this kind: the tag is read only once the value
+        // is known to be a handle box.
+        const isHandle = B.tmp();
+        B.line(`${isHandle} = icmp eq i32 ${host.dynKind(d.name)}, ${DYN_KIND.HANDLE}`);
+        const slot = B.slot();
+        B.entryAllocas.push(`${slot} = alloca i1`);
+        B.line(`store i1 false, ptr ${slot}`);
+        const lTag = B.newLabel("dth.t");
+        const lj = B.newLabel("dth.j");
+        B.condBr(isHandle, lTag, lj);
+        B.startBlock(lTag);
+        const tagPtr = B.tmp();
+        const tag = B.tmp();
+        const same = B.tmp();
+        B.line(
+          `${tagPtr} = getelementptr inbounds i8, ptr ${d.name}, i64 ${host.abiOffset(24, 20)} ; ->v.handle.tag`,
+        );
+        B.line(`${tag} = load i32, ptr ${tagPtr}`);
+        B.line(`${same} = icmp eq i32 ${tag}, ${DYN_HANDLE_TAG_NUM[e.handleKind!]}`);
+        B.line(`store i1 ${same}, ptr ${slot}`);
+        B.br(lj);
+        B.startBlock(lj);
+        test = B.tmp();
+        B.line(`${test} = load i1, ptr ${slot}`);
       } else if (e.test === "truthy") {
         host.declare(`declare zeroext i1 @scr_dyn_truthy(ptr)`);
         test = B.tmp();

@@ -237,6 +237,7 @@ import { inferredCollectionType } from "./js-collection-types.js";
 import { sloppyDynamicWrites } from "./frozen-records.js";
 import { guardFrozenWrites, markSloppyRecordWrites } from "./frozen-records.js";
 import { applyHandleProperties, handlePropertyScanRoots } from "./handle-properties.js";
+import { applyHandleMemberArms } from "./handle-member-arms.js";
 import { installBufferValue } from "./containers/bytes.js";
 import { installMutableBuffersArm } from "./buffers.js";
 import { ClassProtocols } from "./class-protocols.js";
@@ -3154,6 +3155,10 @@ export class Lowerer {
   /** Inline program-module require calls whose %init the enclosing member
    * read or member call is already sequencing (cjs-inline-require.ts). */
   readonly inlineRequireInitDone = new Set<ts.CallExpression>();
+  /** Whether lowered code creates a handle of a class with a member table
+   * (handle-members.ts): its table members are then served on dynamic
+   * receivers too (handle-member-arms.ts). */
+  createsMemberTableHandles = false;
   /** Whether lowered code writes properties onto children, and what the
    * program's JavaScript adds to them (handle-properties.ts). */
   writesOntoChildren = false;
@@ -5315,6 +5320,11 @@ export class Lowerer {
         "handleEventReader",
         () => this.handleEventReader,
         () => (this.handleEventReader = true),
+      ),
+      flag(
+        "createsMemberTableHandles",
+        () => this.createsMemberTableHandles,
+        () => (this.createsMemberTableHandles = true),
       ),
       flag(
         "writesOntoChildren",
@@ -10850,6 +10860,7 @@ export class Lowerer {
     guardClassAttributeWrites(this, functions);
     guardFrozenWrites(this, functions);
     applyHandleProperties(this, functions);
+    applyHandleMemberArms(this, functions);
     installBufferValue(functions);
     // A mutable-buffers program arms the views registry before any buffer
     // exists, so every buffer in it is detachable from the start.

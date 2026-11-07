@@ -213,6 +213,7 @@ export function eachStringField(
       visit(node.kind, "kind");
       visit(node.test, "test");
       if (typeof node.bytesElem === "string") visit(node.bytesElem, "bytesElem");
+      if (typeof node.handleKind === "string") visit(node.handleKind, "handleKind");
       return;
     }
     case "exprStmt": {
@@ -974,6 +975,9 @@ export function walkExprFields(node: IrExpr, walker: IrFieldWalker, skipType: bo
       walker.string(node.test);
       if (node.bytesElem !== undefined && node.bytesElem !== null) {
         walker.string(node.bytesElem);
+      }
+      if (node.handleKind !== undefined && node.handleKind !== null) {
+        walker.string(node.handleKind);
       }
       walkExprFields(node.value, walker, skipType);
       if (!skipType) {
@@ -3173,7 +3177,7 @@ export type IrFieldsCurrent = [
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "dynObjLit" }>, "kind" | "fields" | "type" | "loc">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "dynScalarEq" }>, "kind" | "left" | "right" | "negated" | "type" | "loc">>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynScalarEq" }>["negated"]>>,
-  Unread<FieldsNotRead<Extract<IrExpr, { kind: "dynTest" }>, "kind" | "test" | "bytesElem" | "negated" | "value" | "type" | "loc">>,
+  Unread<FieldsNotRead<Extract<IrExpr, { kind: "dynTest" }>, "kind" | "test" | "bytesElem" | "handleKind" | "negated" | "value" | "type" | "loc">>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynTest" }>["negated"]>>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "ffiCall" }>, "kind" | "import" | "args" | "type" | "loc">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "fieldAbsent" }>, "kind" | "unionId" | "type" | "loc">>,

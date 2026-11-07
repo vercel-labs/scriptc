@@ -5,8 +5,8 @@
  * A row is a method-shaped name for a builtin's signature row
  * (ir/builtin-signatures.ts) and restates nothing that row holds. The
  * builtin's first argument is the handle, its other arguments are the
- * member's parameters and its result is the member's result; a `void` result
- * makes the call a statement, because Node returns the handle there. Whether
+ * member's parameters and its result is the member's result. A `void` result
+ * is Node's undefined; typed code calls such a member as a statement. Whether
  * the builtin can throw, its runtime symbol and its link feature are
  * attributes of the builtin, not of the member.
  *
@@ -14,9 +14,12 @@
  * (handle-members.test.ts): every member it declares is a row whose
  * signature agrees with the declaration, or is one of the members a
  * dedicated lowering compiles. A member with no row and no dedicated
- * lowering is refused by name where it is used. */
+ * lowering is refused by name where it is used.
+ *
+ * The same rows serve a handle seen through no type (`any`, `unknown`, a
+ * JavaScript parameter): handle-member-arms.ts. */
 import { libFnSignatures } from "../../ir/builtin-signatures.js";
-import type { IrLibFn, IrType } from "../../ir/ir.js";
+import { DGRAMSOCK_T, type IrLibFn, type IrType } from "../../ir/ir.js";
 
 export interface HandleMember {
   /** The builtin that implements the member; its first argument is the handle. */
@@ -49,6 +52,19 @@ export const DGRAM_SOCKET_MEMBERS: HandleMemberTable = {
   getSendQueueCount: { fn: "dgram.getSendQueueCount" },
   disconnect: { fn: "dgram.disconnect" },
 };
+
+/** A handle class with a member table: the IR type of its handles (a
+ * DYN_HANDLE_KINDS kind, boxed by reference into a dynamic value) and the
+ * table. A program that creates a handle of the class sets
+ * Lowerer.createsMemberTableHandles where it lowers the creation. */
+export interface HandleMemberClass {
+  readonly type: IrType;
+  readonly table: HandleMemberTable;
+}
+
+export const HANDLE_MEMBER_CLASSES: readonly HandleMemberClass[] = [
+  { type: DGRAMSOCK_T, table: DGRAM_SOCKET_MEMBERS },
+];
 
 /** A member's parameter and result types, read from its builtin. */
 export interface HandleMemberSignature {

@@ -6,12 +6,13 @@ import { lowerToIr, type LowerResult } from "../src/frontend/lowering/lowerer.js
 import { loadProgram } from "../src/frontend/program-node.js";
 import { serializeModule } from "../src/ir/serialize.js";
 
-// A stream program decides its checked-dynamic async-iteration protocol
-// slots against the stream pass, not the push-down pass: the stream pass
-// replaces the push-down result outright, and a push-down pass that ends where
-// it asks for a stream mode (stream-flags-abort.test.ts) has not seen the protocol
-// spellings that follow. These fixtures pin that the decision is the same
-// whether or not the push-down pass ran to its end.
+// Which async-iteration protocol types hold a checked-dynamic value is a
+// fact of the program (async-protocol-holders.ts), not of a lowering pass.
+// A stream program's push-down pass can end where it asks for a stream mode
+// (stream-flags-abort.test.ts), before it has seen the protocol spellings
+// that follow; these fixtures pin that the stream pass maps them the same
+// way whether or not the push-down pass ran to its end, and that no pass
+// exists only to find out.
 
 // Untyped pipeline stages and a Writable in a stdio-represented slot set
 // both stream flags, as in stream-flags-abort.test.ts.
@@ -32,8 +33,8 @@ run(Readable.from(["a", "b"]), sink);
 `;
 
 // After the stream flow: a class implementing the protocol in an
-// AsyncIterable<T> slot, which the generator spelling of the slot refuses
-// and the protocol slots hold.
+// AsyncIterable<T> slot, which makes AsyncIterable<number> hold the
+// checked-dynamic value.
 const PROTOCOL = `
 class Counter implements AsyncIterable<number> {
   async *[Symbol.asyncIterator](): AsyncIterator<number> {
@@ -50,7 +51,7 @@ sum(new Counter()).then((total) => console.log("sum", total));
 `;
 
 // After the stream flow: only compiled async generators reach the slot, so
-// the generator spelling lowers the program and the protocol slots never run.
+// it stays a generator slot.
 const GENERATORS = `
 async function* doubling(limit: number): AsyncIterableIterator<number> {
   for (let n = 1; n <= limit; n++) yield n * 2;
@@ -132,31 +133,45 @@ function outcome({ result, phases }: Lowering): unknown {
   };
 }
 
-const passes = ({ phases }: Lowering): string[] => phases.map((phase) => phase.phase);
+/** The passes that lower the program, without the scans that follow them. */
+const passes = ({ phases }: Lowering): string[] => {
+  const names = phases.map((phase) => phase.phase);
+  return names.slice(0, names.indexOf("async-protocol-flows") + 1);
+};
+/** A stream program's passes: the push-down pass, the stream pass, and the
+ * line that says the protocol analysis ran. No pass decides the protocol. */
+const PASSES = ["ffi-validate", "reachable-emit", "dyn-streams-relower", "async-protocol-flows"];
 
-test("a stream program takes the protocol slots after an aborted push-down pass", () => {
+/** The IR type of `sum`'s parameter. */
+function sumParameter({ result }: Lowering): string | undefined {
+  return result.module?.functions.find((fn) => fn.name === "sum")?.params[0]?.type.kind;
+}
+
+test("a stream program holds an implementor after an aborted push-down pass", () => {
   const full = lower(protocol, false);
   const aborted = lower(protocol, true);
   expect(full.phases.find((phase) => phase.phase === "reachable-emit")?.aborted).toBeUndefined();
   expect(aborted.phases.find((phase) => phase.phase === "reachable-emit")?.aborted).toBe(
     "stream-flags",
   );
-  // The stream pass refuses the class in the generator slot; the protocol
-  // pass over the same stream representation resolves it and stands.
-  expect(passes(aborted)).toContain("dyn-async-protocol-relower");
+  // The stream pass holds the class in a checked-dynamic slot; no further
+  // pass decides it.
+  expect(passes(full)).not.toContain("dyn-async-protocol-relower");
+  expect(passes(aborted)).toEqual(PASSES);
   expect(aborted.result.diagnostics).toEqual([]);
   expect(aborted.result.module).not.toBeNull();
+  expect(sumParameter(aborted)).toBe("dyn");
   expect(outcome(aborted)).toEqual(outcome(full));
 });
 
-test("a stream program the generator spelling lowers never runs the protocol pass", () => {
+test("a stream program of compiled generators keeps its generator slots", () => {
   const full = lower(generators, false);
   const aborted = lower(generators, true);
   expect(aborted.phases.find((phase) => phase.phase === "reachable-emit")?.aborted).toBe(
     "stream-flags",
   );
-  expect(passes(full)).not.toContain("dyn-async-protocol-relower");
-  expect(passes(aborted)).not.toContain("dyn-async-protocol-relower");
+  expect(passes(aborted)).toEqual(PASSES);
   expect(aborted.result.diagnostics).toEqual([]);
+  expect(sumParameter(aborted)).toBe("generator");
   expect(outcome(aborted)).toEqual(outcome(full));
 });

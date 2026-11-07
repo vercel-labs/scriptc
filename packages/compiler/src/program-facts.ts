@@ -66,6 +66,21 @@ const SRC = "packages/compiler/src";
 
 export const PROGRAM_FACTS: readonly ProgramFact[] = [
   {
+    name: "member-call-receivers",
+    file: `${SRC}/frontend/lowering/member-call-receivers.ts`,
+    symbol: "memberCallReceivers",
+    source: "symbols",
+    scope: "program",
+    setBy:
+      "a store of a function that reads the receiver of its call (a function with its own `this`, outside classes) into a member, by the member's name; and, once such a function reaches a place the census does not follow, any store of a value it cannot classify",
+    gates:
+      "a member call on a record whose member has that name passes the record as the call's receiver, boxed only if the callee reads it",
+    narrower:
+      "the member's declaring symbol instead of its name, and the function values that can reach the store, by type flow",
+    tracked: "pi-decisions DECISIONS.md 2026-11-07, unbound-method-this slice 2",
+    lowererFields: ["memberReceivers"],
+  },
+  {
     name: "thenables-may-be-defined",
     file: `${SRC}/frontend/lowering/thenables.ts`,
     symbol: "programMayDefineThenables",
@@ -300,18 +315,18 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: [],
   },
   {
-    name: "dyn-async-protocol",
-    file: `${SRC}/frontend/lowering/lowerer.ts`,
-    symbol: "requiresDynAsyncProtocol",
+    name: "async-protocol-holders",
+    file: `${SRC}/frontend/lowering/async-protocol-holders.ts`,
+    symbol: "AsyncProtocolHolders",
     source: "types",
-    scope: "program",
+    scope: "type",
     setBy:
-      "a value no compiled async generator can hold in an AsyncIterable, AsyncIterableIterator or AsyncIterator slot, in a program that does not lower without it",
+      "a value that is not a compiled async generator flowing into an AsyncIterable, AsyncIterableIterator or AsyncIterator slot, or a Node island's declarations naming one of the three",
     gates:
-      "every async-iteration slot takes the checked-dynamic protocol form, and another lowering of the whole program",
-    narrower: "the slot",
-    tracked: "FOLLOWUPS 2026-11-03; #2814",
-    lowererFields: [],
+      "every slot of the three interfaces over that element type holds the checked-dynamic value",
+    narrower: "the slot, once type mapping knows the declaration it serves",
+    tracked: "FOLLOWUPS 2026-11-03; pi-decisions 2026-11-07 island-cliffs",
+    lowererFields: ["ownAsyncProtocolHolders"],
   },
   {
     name: "partial-assertion-targets",
@@ -520,6 +535,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "a split require binding's own file has to spell `require`",
   ),
   scan(
+    "frontend/lowering/construction-reads.ts#classHierarchyOf",
+    1,
+    "prefilter",
+    "a file that never spells `extends` declares no derived class",
+  ),
+  scan(
     "frontend/lowering/cycle-initialization.ts#earlyHeritageReference",
     1,
     "closed-world",
@@ -635,6 +656,7 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     1,
     "partial-assertion-targets",
   ),
+  decides("frontend/lowering/member-call-receivers.ts#takeCensus", 1, "member-call-receivers"),
   decides("frontend/lowering/primitive-wrappers.ts#programCreatesWrappers", 1, "creates-wrappers"),
   scan(
     "frontend/lowering/symbol-fields.ts#tablePropertyWritten",

@@ -249,6 +249,9 @@ export function classMethodValue(
   const type = funcTypeFromParamShapes(params, ret);
   const name = `%method.value:${callee}`;
   if (!lowerer.classMethodValueHelpers.has(name)) {
+    const member = classMethodMember(lowerer, owner, method, false);
+    if (member !== undefined && readsReceiver(member))
+      lowerer.receiverReadingMethodValues.add(name);
     const thunkParams = params.map((param, i) => ({
       localId: `p.${i}`,
       name: `p${i}`,
@@ -340,22 +343,20 @@ export function reflectedClassStaticMethodValue(
   return reflectedMethodValue(lowerer, info, method, true);
 }
 
-function reflectedMethodValue(
+/** The declaration with a body behind `method` of `info`'s own class
+ * declaration (an accessor's name is `get:x` or `set:x`). An overloaded
+ * method's signatures have none; its implementation is the one. */
+function classMethodMember(
   lowerer: Lowerer,
   info: ClassInfo,
   method: string,
   staticMethod: boolean,
-): IrExpr | null {
-  const existing = (staticMethod ? info.staticMethodValues : info.prototypeMethodValues)?.get(
-    method,
-  );
-  if (existing) return existing;
-  const declaration = info.decl;
-  if (!declaration) return null;
-  const member = declaration.members.nodes.find((member) => {
+): ts.MethodDeclaration | ts.AccessorDeclaration | undefined {
+  const member = info.decl?.members.nodes.find((member) => {
     if (
       (!ts.isMethodDeclaration(member) && !ts.isAccessor(member)) ||
       !member.name ||
+      !member.body ||
       !!ts
         .getModifiers(member)
         ?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword) !== staticMethod
@@ -372,8 +373,43 @@ function reflectedMethodValue(
             : null) === method
     );
   });
-  if (!member || (!ts.isMethodDeclaration(member) && !ts.isAccessor(member)) || !member.body)
-    return null;
+  return member && (ts.isMethodDeclaration(member) || ts.isAccessor(member)) && member.body
+    ? member
+    : undefined;
+}
+
+/** Whether a method's source reads its receiver: `this` or `super` in its
+ * parameters or body, outside nested functions and classes, which bind
+ * their own (arrow functions see the method's). */
+function readsReceiver(member: ts.MethodDeclaration | ts.AccessorDeclaration): boolean {
+  const reads = (node: ts.Node): boolean => {
+    if (node.kind === ts.SyntaxKind.ThisKeyword || node.kind === ts.SyntaxKind.SuperKeyword)
+      return true;
+    if (
+      (ts.isFunctionLike(node) && !ts.isArrowFunction(node)) ||
+      ts.isClassDeclaration(node) ||
+      ts.isClassExpression(node)
+    )
+      return false;
+    return ts.forEachChild(node, (child) => (reads(child) ? true : undefined)) === true;
+  };
+  return ts.forEachChild(member, (child) => (reads(child) ? true : undefined)) === true;
+}
+
+function reflectedMethodValue(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  method: string,
+  staticMethod: boolean,
+): IrExpr | null {
+  const existing = (staticMethod ? info.staticMethodValues : info.prototypeMethodValues)?.get(
+    method,
+  );
+  if (existing) return existing;
+  const declaration = info.decl;
+  if (!declaration) return null;
+  const member = classMethodMember(lowerer, info, method, staticMethod);
+  if (!member) return null;
   let needsNativeReceiver =
     !isJsSourceFile(ts.getSourceFileOfNode(declaration)) ||
     info.localClass !== undefined ||
@@ -618,7 +654,13 @@ export function finalizeClassMethodValues(lowerer: Lowerer, functions: IrFunctio
           !(expr.kind === "varRef" && expr.localId === thisParam.localId) &&
           !(expr.kind === "closure" && expr.captures.includes(thisParam.localId)),
       });
-    if (usesThis) continue;
+    // The lowered body alone does not decide this. A test of the receiver
+    // (`this === undefined`, `typeof this`, `this instanceof C`) and a test
+    // of a member's type (`typeof this.name`) are answered from the type
+    // `this` has after the check below, and leave no read behind: skipping
+    // the check for such a method would run it with those answers on a
+    // receiver that is not an instance.
+    if (usesThis || lowerer.receiverReadingMethodValues.has(fn.name)) continue;
     // A method that never uses this remains callable when detached. Without
     // class captures it needs no class environment, so the detached copy
     // drops the (empty) capture list, which requires a receiver.

@@ -588,6 +588,9 @@ export function lowerLambda(
           // statement branches instead of a forbidden void-valued ternary.
           let stripped: ts.Expression = bodyExpr;
           while (ts.isParenthesizedExpression(stripped)) stripped = stripped.expression;
+          // A body whose value the checker typed `undefined` from a
+          // narrowing a call may have undone would be dropped here.
+          lowerer.refuseDroppedStaleReturn(bodyExpr);
           if (ts.isVoidExpression(stripped) || ts.isConditionalExpression(stripped)) {
             body = [lowerer.lowerExprStatement(stripped)];
           } else {
@@ -622,21 +625,29 @@ export function lowerLambda(
             isAsync && !fnCtx.inferReturn
               ? lowerer.maybePromiseReturn(bodyExpr, value, bodyReturn)
               : null;
-          body = flattened
-            ? [flattened]
-            : value.type.kind === "void" && lowerer.wrappedUndefined(bodyReturn, locOf(node.body!))
-              ? [{ kind: "exprStmt", expr: value, loc: locOf(node.body!) }]
-              : [
-                  {
-                    kind: "return",
-                    value: fnCtx.inferReturn
-                      ? value
-                      : settles
-                        ? lowerer.returnedPayloadInto(bodyExpr, value, bodyReturn)
-                        : lowerer.coerceInto(bodyExpr, value, bodyReturn),
-                    loc: locOf(node.body!),
-                  },
-                ];
+          // A checked-dynamic body value settles the same way a returned
+          // promise does when it holds one at run time.
+          const dynamic =
+            flattened === null && isAsync && !fnCtx.inferReturn
+              ? lowerer.dynamicReturnStmt(bodyExpr, value, bodyReturn, locOf(node.body!))
+              : null;
+          const bodyLoc = locOf(node.body!);
+          if (flattened !== null) body = [flattened];
+          else if (dynamic !== null) body = [dynamic];
+          else if (value.type.kind === "void" && lowerer.wrappedUndefined(bodyReturn, bodyLoc))
+            body = [{ kind: "exprStmt", expr: value, loc: bodyLoc }];
+          else
+            body = [
+              {
+                kind: "return",
+                value: fnCtx.inferReturn
+                  ? value
+                  : settles
+                    ? lowerer.returnedPayloadInto(bodyExpr, value, bodyReturn)
+                    : lowerer.coerceInto(bodyExpr, value, bodyReturn),
+                loc: bodyLoc,
+              },
+            ];
           if (fnCtx.inferReturn && body[0]?.kind === "return")
             fnCtx.inferReturn.entries.push({ stmt: body[0], node: bodyExpr });
         }

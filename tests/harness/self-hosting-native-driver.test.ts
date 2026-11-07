@@ -56,6 +56,18 @@ function absoluteCommand(command: string): string {
   throw new Error(`native tool is not on PATH: ${command}`);
 }
 
+// The seed build is the compiler compiling itself, so it grows with main: on
+// 32-vCPU Sandboxes its fastest plain build went from 471 s (base of
+// 2026-10-27) to 712 s (2026-11-07), about 145 s a week, and the same tree
+// takes up to 1.66 times as long on one machine as on another. Of 244 plain
+// builds on 2026-11-07 the median took 1009 s and the slowest tenth 1447 s
+// or more, and eight were stopped at the 1800 s every step is allowed. Its
+// own limit is twice that, which the fastest build reaches after about ten
+// more weeks of the same growth on the slowest machine; the limit is the
+// place to look when it does. CI builds the seed in a job of its own
+// (bootstrap_seed) and never runs this step.
+const seedBuildTimeoutMs = sanitize ? 5_400_000 : 3_600_000;
+
 test(
   `the production CLI passes ${phase} bootstrap contracts with Node unavailable`,
   async () => {
@@ -91,6 +103,7 @@ test(
               // seed avoids optimizing the huge compiler module before ASan can
               // exercise its complete traversal, serialization and LLVM emission.
               ...options,
+              timeout: seedBuildTimeoutMs,
               env: { ...process.env, ...seedBuildEnvironment(sanitize) },
             },
           ),
@@ -533,6 +546,31 @@ test(
         expect(failed.status).toBe(1);
         expect(failed.stderr.toString()).toContain("not assignable");
         expect(readFileSync(retained, "utf8")).toBe("existing output");
+
+        // Which options a command takes is read from the command table
+        // (cli/usage.ts): the native CLI refuses the same ones with the same line.
+        for (const [args, refusal] of [
+          [
+            ["cache", "warm", "--strip"],
+            "scriptc cache warm takes only native optimization/sanitizer options and profile names",
+          ],
+          [
+            ["merge-profiles", "-o", join(directory, "merged.profdata"), "--tier=auto", "a"],
+            "scriptc merge-profiles takes -o <out.profdata>, optionally --sparse, and one or more profiles",
+          ],
+          [
+            ["build", "--lib", "--profile", profile, "--node-island=left-pad"],
+            "scriptc build --lib takes no --backend/--emit/--print/",
+          ],
+          [["build", "--wasm=module.wasm", hello], "--wasm is a coverage-only option"],
+        ] as const) {
+          const refused = spawnSync(probe, args, nativeOptions);
+          expect(refused.status, args.join(" ")).toBe(1);
+          expect(
+            comparableStderr(refused.stderr.toString()).split("\n")[0],
+            args.join(" "),
+          ).toContain(refusal);
+        }
       };
       // The production chain owns the complete frontend and emitter proof:
       // compare the Node seed's IR and LLVM with the native self-rebuild, then
@@ -730,5 +768,6 @@ test(
       rmSync(directory, { recursive: true, force: true });
     }
   },
-  sanitize ? 10_800_000 : 5_400_000,
+  // The plain rebuild phase took up to 3892 s with a seed built in 1800 s or less.
+  sanitize ? 10_800_000 : 7_200_000,
 );

@@ -2,7 +2,8 @@ import * as ts from "../ts7/adapter.js";
 import type { IrType } from "../../ir/ir.js";
 import { typeEquals, UNDEFINED_T } from "../../ir/ir.js";
 import type { FnSig, ParamShape } from "./call-signatures.js";
-import { isThisParameter } from "./call-signatures.js";
+import { funcTypeFromParamShapes, isThisParameter } from "./call-signatures.js";
+import { findMethodOn } from "./lower-classes.js";
 import {
   internImplicitInstanceOr,
   paramWrittenInBody,
@@ -95,7 +96,9 @@ function standsFor(
 /** Whether converting `from` into `to` copies a value that could keep its
  * own layout instead. */
 function copies(lowerer: Lowerer, from: IrType, to: IrType): boolean {
-  if (typeEquals(from, to) || !standsFor(lowerer, from, to)) return false;
+  if (typeEquals(from, to)) return false;
+  if (from.kind === "procStream") return procStreamStandsFor(lowerer, to);
+  if (!standsFor(lowerer, from, to)) return false;
   const plan = lowerer.widthLiftPlan(from, to);
   return plan !== null && (plan.how === "arr" || plan.how === "width");
 }
@@ -372,10 +375,57 @@ export function keptLayoutTypeOf(lowerer: Lowerer, arg: ts.Expression): ts.Type 
   return type;
 }
 
+/** Whether a class instance presents the record type `to` without a copy:
+ * every member `to` names is a class field at the same slot type, or a
+ * method whose signature its function type adapts to (Node's `Sink` over
+ * `process.stdout`: `write` is the stream's method). The binding's storage
+ * stays the instance, so reads, calls and writes reach the one object and
+ * a method call keeps the instance as its receiver. */
+function classStandsFor(lowerer: Lowerer, className: string, to: IrType): boolean {
+  if (to.kind !== "record") return false;
+  const target = lowerer.shapes.get(to.shapeId);
+  const info = lowerer.classes.get(className);
+  if (!target || !info || target.tuple || target.indexValue) return false;
+  if (target.fields.length === 0) return false;
+  if (target.fields.some((field) => field.name.startsWith("%"))) return false;
+  for (const tf of target.fields) {
+    const field = info.fields.get(tf.name);
+    if (field !== undefined) {
+      if (!typeEquals(field, tf.type)) return false;
+      continue;
+    }
+    const method = findMethodOn(lowerer, info, tf.name);
+    if (!method || method.sig.abstract) return false;
+    if (tf.type.kind !== "func") return false;
+    const funcType = funcTypeFromParamShapes(method.sig.params, method.sig.ret);
+    if (lowerer.widthLiftPlan(funcType, tf.type) === null) return false;
+  }
+  return true;
+}
+
+/** Whether a process-stream value (the file-descriptor scalar behind
+ * `process.stdout`) presents the record type `to`: `write` is the stream's
+ * own method, so a binding may keep the descriptor and route its calls to
+ * the stream the descriptor names. */
+function procStreamStandsFor(lowerer: Lowerer, to: IrType): boolean {
+  if (to.kind !== "record") return false;
+  const target = lowerer.shapes.get(to.shapeId);
+  if (!target || target.tuple || target.indexValue || target.fields.length === 0) return false;
+  return target.fields.every(
+    (tf) =>
+      tf.name === "write" &&
+      tf.type.kind === "func" &&
+      tf.type.params.length === 1 &&
+      tf.type.params[0]?.kind === "string" &&
+      (tf.type.ret.kind === "void" || tf.type.ret.kind === "bool"),
+  );
+}
+
 /** Whether a `const` binding typed `declared` keeps the record or array
  * layout `actual` of an initializer that names an existing value or returns
  * one, instead of converting it by a copy. Fresh literals convert as
- * declared: their copy is not observable. */
+ * declared: their copy is not observable. A class instance whose members
+ * answer the declared record keeps the instance. */
 export function keepsInitializerLayout(
   lowerer: Lowerer,
   initializer: ts.Expression,
@@ -386,6 +436,8 @@ export function keepsInitializerLayout(
   while (ts.isParenthesizedExpression(e)) e = e.expression;
   if (!namesExistingValue(e) && !ts.isCallExpression(e)) return false;
   if (lowerer.isRuntimeOptionalRecordVariant(actual, declared)) return false;
+  if (actual.kind === "object" && declared.kind === "record")
+    return classStandsFor(lowerer, actual.className, declared);
   return copies(lowerer, actual, declared);
 }
 

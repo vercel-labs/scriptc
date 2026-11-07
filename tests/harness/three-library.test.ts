@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { compileLibrary } from "@scriptc/compiler";
 import { beforeEach, describe, expect, test } from "vitest";
-import { skipUnownedTest } from "./shard.js";
+import { skipUnownedTest, suiteCosts } from "./shard.js";
 
 const fixture = join(import.meta.dirname, "../library-mode/wasm");
 const hasClang = spawnSync("clang", ["--version"]).status === 0;
@@ -15,11 +15,12 @@ const hasClang = spawnSync("clang", ["--version"]).status === 0;
 function timeoutFor(optimization: "dev" | "release"): number {
   return optimization === "release" || process.env["SCRIPTC_SAN"] === "1" ? 1_200_000 : 600_000;
 }
-// The two optimizations take similar time (about 10 minutes each under ASan):
+// The two optimizations take four to five minutes each under ASan:
 // SCRIPTC_TEST_SHARD runs them on different shards (tests/harness/shard.ts).
 // skipUnownedTest partitions a describe block's tests.
+const testCosts = suiteCosts(import.meta.filename);
 describe("three.js native library", () => {
-  beforeEach((context) => skipUnownedTest(context, {}));
+  beforeEach((context) => skipUnownedTest(context, testCosts));
   for (const optimization of ["dev", "release"] as const) {
     test.skipIf(!hasClang)(
       `three.js sends animated geometry, materials and resource lifecycle to a native host in ${optimization}`,

@@ -1582,6 +1582,17 @@ void *scr_record_link_source(const void *copy);
  * that order. Undeclared keys are not copied, as the literal copies none. */
 void scr_record_source_spread(void *dst, const void *src, const char *const *names,
                               const size_t *lens, size_t count);
+/* The creation order of a record's declared keys, kept per value
+ * (scr_record_order.c). `append`: a write is about to create the declared
+ * key `key` on `rec`, which becomes its last own key; `capsule` is the
+ * record's checked view. `copy`: `rec`, just built from
+ * the fields of a record whose own keys `keys` lists in order, keeps that
+ * order over the keys its shape declares. `names` lists the shape's fields
+ * in the order the record serializes them. Both borrow. */
+void scr_record_order_append(void *rec, ScrDyn *capsule, const char *const *names,
+                             const size_t *lens, size_t count, const char *key, size_t key_len);
+void scr_record_order_copy(void *rec, const ScrDyn *keys, const char *const *names,
+                           const size_t *lens, size_t count);
 /* Object.freeze of a record a program may freeze: sets SCR_RC_FROZEN in its
  * rc word (immortal records are left as they are). */
 void scr_record_freeze(void *record);

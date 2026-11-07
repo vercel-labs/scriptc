@@ -2100,6 +2100,39 @@ export class LlDyn {
     );
   }
 
+  /** `record.orderAppend(record, view, key)`: the declared key a write is
+   * about to create becomes the record's last own key. */
+  emitRecordOrderAppend(
+    B: BlockBuilder,
+    record: string,
+    view: string,
+    key: string,
+    shapeId: string,
+  ): void {
+    const host = this.host;
+    const shape = host.recordsById.get(shapeId)!;
+    const S = host.sizeType;
+    this.keepsRecordSources = true;
+    const names = this.recordNameTable(shapeId, shape);
+    host.declare(`declare void @scr_record_order_append(ptr, ptr, ptr, ptr, ${S}, ptr, ${S})`);
+    B.line(
+      `call void @scr_record_order_append(ptr ${record}, ptr ${view}, ptr ${names.names}, ptr ${names.lens}, ${S} ${shape.fields.length}, ptr ${host.cstr(key)}, ${S} ${Buffer.byteLength(key, "utf8")})`,
+    );
+  }
+
+  /** `record.orderCopy(built, keys)`: the built record keeps the order
+   * `keys` lists its declared names in. */
+  emitRecordOrderCopy(B: BlockBuilder, built: string, keys: string, shapeId: string): void {
+    const host = this.host;
+    const shape = host.recordsById.get(shapeId)!;
+    this.keepsRecordSources = true;
+    const names = this.recordNameTable(shapeId, shape);
+    host.declare(`declare void @scr_record_order_copy(ptr, ptr, ptr, ptr, ${host.sizeType})`);
+    B.line(
+      `call void @scr_record_order_copy(ptr ${built}, ptr ${keys}, ptr ${names.names}, ptr ${names.lens}, ${host.sizeType} ${shape.fields.length})`,
+    );
+  }
+
   /** The declared-name tables scr_record_source_note scans: parallel
    * constant arrays of field-name bytes and byte lengths in declaration
    * order (the order the record serializes), interned per shape. Internal

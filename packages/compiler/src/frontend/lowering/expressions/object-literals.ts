@@ -18,7 +18,15 @@ import {
   shapeHasAccessorSlots,
   typeEquals,
 } from "../../../ir/ir.js";
-import type { IrExpr, IrLocal, IrRecordShape, IrStmt, IrType, SrcLoc } from "../../../ir/ir.js";
+import type {
+  IrExpr,
+  IrFunction,
+  IrLocal,
+  IrRecordShape,
+  IrStmt,
+  IrType,
+  SrcLoc,
+} from "../../../ir/ir.js";
 import { isCjsExportTableLiteral, isJsSourceFile, locOf } from "../../program.js";
 import { NARROW_FIRST } from "../surfaces.js";
 import {
@@ -31,6 +39,7 @@ import { lowerIndexMergeHelper } from "../containers/indexed-objects.js";
 import type { IndexMergeContributor } from "../containers/indexed-objects.js";
 import type { KeyOrderSegment, WidthSegment } from "../key-order-witness.js";
 import { recordMayKeepSource } from "../record-sources.js";
+import { orderCopiedWrites } from "../lower-calls.js";
 import {
   PERF_ENTRY_MARKER,
   X509_PUBLIC_KEY_FIELD,
@@ -2271,7 +2280,12 @@ export function lowerObjectLiteral(
               ? lowerer.checkedNarrowCall(helper, srcRef(), recArm, locOf(prop))
               : srcNarrowed();
           };
-          orderSegments.push({ kind: "spread", shapeId: recArm.shapeId, maybeAbsent: true });
+          orderSegments.push({
+            kind: "spread",
+            shapeId: recArm.shapeId,
+            maybeAbsent: true,
+            ...(srcLowered.kind === "varRef" ? { value: srcLowered } : {}),
+          });
           for (const f of srcShape.fields) {
             if (laterNames.has(f.name)) continue;
             const targetType = fieldTypes.get(f.name);
@@ -2543,7 +2557,7 @@ export function lowerObjectLiteral(
       // A checked-dynamic source's keys are a run-time fact.
       orderSegments.push(
         srcLowered.type.kind === "dyn"
-          ? { kind: "opaque" }
+          ? { kind: "opaque", ...(srcLowered.kind === "varRef" ? { value: srcLowered } : {}) }
           : {
               kind: "spread",
               shapeId: srcType.shapeId,
@@ -4081,7 +4095,12 @@ function lowerDeclaredSpreadMerge(
     if (!helper) {
       helper = keyedHelperName(lowerer, "%rec.declmerge", key);
       const destination = varRef("out.0", type, loc);
-      const receiver = varRef("source.0", sourceType, loc);
+      const receiver: IrExpr & { kind: "varRef" } = {
+        kind: "varRef",
+        localId: "source.0",
+        type: sourceType,
+        loc,
+      };
       const locals: IrLocal[] = [
         { id: "out.0", name: "out", type, mutable: false },
         { id: "source.0", name: "source", type: sourceType, mutable: false },
@@ -4098,9 +4117,12 @@ function lowerDeclaredSpreadMerge(
           loc,
         });
       }
+      const firstCopy = body.length;
+      const copied: string[] = [];
       for (const field of source.shape?.fields ?? []) {
         const target = shape.fields.find((candidate) => candidate.name === field.name);
         if (!target) continue; // The declared destination drops extra keys.
+        copied.push(field.name);
         const raw: IrExpr = {
           kind: "recordGet",
           obj: receiver,
@@ -4248,7 +4270,7 @@ function lowerDeclaredSpreadMerge(
         );
       }
       body.push({ kind: "return", value: destination, loc });
-      lowerer.liftedFns.push({
+      const fn: IrFunction = {
         name: helper,
         params: [
           { localId: "out.0", name: "out", type },
@@ -4258,7 +4280,10 @@ function lowerDeclaredSpreadMerge(
         locals,
         body,
         loc,
-      });
+      };
+      lowerer.liftedFns.push(fn);
+      // The declared fields are created in the source's key order.
+      orderCopiedWrites(lowerer, fn, firstCopy, copied, receiver, loc);
       // Publish only a fully checked helper: rejected conversions must not
       // leave an entry that a later literal could reuse without a body.
       lowerer.valueHelpers.set(key, helper);

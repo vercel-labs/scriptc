@@ -11937,9 +11937,11 @@ export class Lowerer {
       break;
     }
     applyKeyOrderWitnesses(this, keyOrderFunctions);
-    // A kept width spread builds a record that holds undeclared keys, so the
-    // captures that consult a kept source must be active for it too.
-    if (this.keyOrder.keptWidthSpreads > 0) this.recordSourcesPossible = true;
+    // A kept width spread builds a record that holds undeclared keys, and a
+    // record of a tracked shape keeps its own key order, so the captures
+    // that consult a kept source must be active for them too.
+    if (this.keyOrder.keptWidthSpreads > 0 || this.keyOrder.tracked.size > 0)
+      this.recordSourcesPossible = true;
     observeRecordLiteralRebuilds(null);
     for (const finalize of this.shapeOrderHelperFinalizers) finalize();
     this.settleSharedHelperLocations([

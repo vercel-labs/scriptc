@@ -15,6 +15,7 @@ import { locOf } from "../program.js";
 import { isNodeModulesPath } from "../resolve.js";
 import {
   keyOrderDivergenceDiag,
+  keyOrderFallbackDiag,
   localeCompareDivergenceDiag,
   unrelatedClassCastDivergenceDiag,
   widthCopyDivergenceDiag,
@@ -328,6 +329,29 @@ export function scanDivergences(
           locOf(lit),
         ),
       );
+    }
+  }
+
+  // ── key order: what the lowering could not order ────────────────────
+  // The key-order pass decides each record type's enumeration from every
+  // construction and write of the whole program, and names the observed
+  // types it left in one order though their objects are created in several
+  // (key-order-witness.ts). Those facts are the lowering's own, so no flow
+  // has to be re-derived here; a literal reported above is not repeated.
+  {
+    const reported = new Set(
+      out.filter((d) => d.code === "SC6002").map((d) => `${d.loc.file}:${d.loc.start}`),
+    );
+    const once = (diag: ScrDiagnostic): void => {
+      const at = `${diag.loc.file}:${diag.loc.start}`;
+      if (reported.has(at)) return;
+      reported.add(at);
+      out.push(diag);
+    };
+    for (const [shapeId, { loc, cause }] of lowerer.keyOrder.unordered) {
+      const shape = lowerer.shapes.get(shapeId);
+      const keys = (shape?.declaredOrder ?? []).filter((name) => !name.startsWith("%"));
+      once(keyOrderFallbackDiag(keys.join(", "), cause, loc));
     }
   }
 
@@ -975,6 +999,8 @@ function keyOrderFinding(
   const mapped = safely(() => lowerer.mapTypeOf(contextual));
   if (mapped?.kind === "record" && lowerer.shapes.get(mapped.shapeId)?.orderVariants !== undefined)
     return null;
+  // So do values of a tracked shape, which keep their own key list.
+  if (mapped?.kind === "record" && lowerer.keyOrder.tracked.has(mapped.shapeId)) return null;
   // A shape whose table the witness pass re-chose (key-order-witness.ts)
   // enumerates that table, not the checker's declaration order.
   const table = witnessTable(lowerer, contextual);

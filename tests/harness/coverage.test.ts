@@ -83,7 +83,6 @@ test("divergences report as warnings, never as blockers", async () => {
   expect((coverage.divergences ?? []).map((d) => d.code)).toEqual([
     "SC6001",
     "SC6001",
-    "SC6002",
     "SC6003",
     "SC6004",
   ]);
@@ -373,11 +372,11 @@ test("CLI: build --print=diagnostics reports failures and divergence warnings as
     };
     expect(envelope.success).toBe(true);
     expect(envelope.artifact).toBe(join(outDir, "out.ir.json"));
-    expect(envelope.diagnostics.map((d) => d.severity)).toEqual(Array(5).fill("warning"));
+    expect(envelope.diagnostics.map((d) => d.severity)).toEqual(Array(4).fill("warning"));
     const human = build(fixture("divergences.ts"));
     expect(human.status).toBe(0);
     expect(human.stderr).toContain("warning SC6001");
-    expect(human.stderr).toContain("5 warnings: the program compiled");
+    expect(human.stderr).toContain("4 warnings: the program compiled");
   } finally {
     rmSync(outDir, { recursive: true, force: true });
   }

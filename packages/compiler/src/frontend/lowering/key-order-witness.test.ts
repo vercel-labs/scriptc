@@ -995,3 +995,150 @@ test("a spread of a converted value into a wider shape orders the wider shape", 
   expect(f.order(ab)).toEqual(["b", "a"]);
   expect(f.order(abc)).toEqual(["b", "a", "c"]);
 });
+
+/** `{ ...s }`-style literal of `out`: the sequence that binds the spread
+ * value, then builds the literal. */
+const spreadLiteral = (
+  f: Fixture,
+  out: IrType & { kind: "record" },
+  keys: string[],
+  binding: string,
+  value: IrExpr,
+  segments: (bound: IrExpr & { kind: "varRef" }) => KeyOrderSegment[],
+): IrExpr => ({
+  kind: "seqExpr",
+  stmts: [decl(binding, value)],
+  result: f.literal(out, keys, segments(ref(binding, value.type) as IrExpr & { kind: "varRef" })),
+  type: out,
+  loc,
+});
+const countOf = (fn: IrFunction, libFn: string): number =>
+  JSON.stringify(fn.body).split(`"fn":"${libFn}"`).length - 1;
+
+test("spreads at different positions make each value keep its own key list", () => {
+  const f = fixture();
+  const src = f.record(
+    [
+      ["a", F64],
+      ["b", F64],
+    ],
+    ["a", "b"],
+  );
+  const out = f.record(
+    [
+      ["a", F64],
+      ["b", F64],
+      ["c", F64],
+    ],
+    ["a", "b", "c"],
+  );
+  const c: KeyOrderSegment = { kind: "key", name: "c", definite: true };
+  const spread = (value: IrExpr & { kind: "varRef" }): KeyOrderSegment => ({
+    kind: "spread",
+    shapeId: src.shapeId,
+    maybeAbsent: false,
+    value,
+  });
+  const fn = f.run([
+    // { c, ...s } and { ...s, c }: two orders, neither a list of explicit keys.
+    observe(
+      spreadLiteral(f, out, ["a", "b", "c"], "s1", f.literal(src, ["a", "b"]), (s) => [
+        c,
+        spread(s),
+      ]),
+    ),
+    observe(
+      spreadLiteral(f, out, ["a", "b", "c"], "s2", f.literal(src, ["a", "b"]), (s) => [
+        spread(s),
+        c,
+      ]),
+    ),
+    // Explicit keys in the table's order have nothing to note.
+    observe(f.literal(out, ["a", "b", "c"])),
+  ]);
+  expect(f.notes.tracked.has(out.shapeId)).toBe(true);
+  expect(f.notes.unordered.size).toBe(0);
+  // The table stays as it was: a value in its order keeps no list.
+  expect(f.order(out)).toEqual(["a", "b", "c"]);
+  expect(f.shapes.get(out.shapeId)?.orderVariants).toBeUndefined();
+  expect(countOf(fn, "record.sourceNote")).toBe(2);
+});
+
+test("a write that creates a key of a tracked shape moves the key last", () => {
+  const f = fixture();
+  const t = f.record(
+    [
+      ["id", F64],
+      ["x", OPT],
+      ["y", OPT],
+    ],
+    ["id", "x", "y"],
+  );
+  // A clone that can add `y` takes its source's order, so the orders of the
+  // shape's values cannot be counted.
+  const clone: IrExpr = f.notes.clone({
+    kind: "recordClone",
+    source: ref("p", t),
+    overrides: [{ name: "y", value: num(3) }],
+    type: t,
+    loc,
+  });
+  const fn = f.run([
+    decl("p", f.literal(t, ["id"])),
+    decl("q", clone),
+    set(ref("q", t), "x"),
+    observe(ref("q", t)),
+  ]);
+  expect(f.notes.tracked.has(t.shapeId)).toBe(true);
+  expect(f.shapes.get(t.shapeId)?.orderVariants).toBeUndefined();
+  // The clone notes its source's keys and its override; the write appends.
+  expect(countOf(fn, "record.sourceNote")).toBe(1);
+  expect(countOf(fn, "record.orderAppend")).toBe(1);
+});
+
+test("a shape whose values are built in the table's order is left as it is", () => {
+  const f = fixture();
+  const t = f.record(
+    [
+      ["id", F64],
+      ["x", OPT],
+    ],
+    ["id", "x"],
+  );
+  const body = [observe(f.literal(t, ["id", "x"])), observe(f.literal(t, ["id"]))];
+  const before = JSON.stringify(body);
+  const fn = f.run(body);
+  expect(JSON.stringify(fn.body)).toBe(before);
+  expect(f.notes.tracked.size).toBe(0);
+  expect(f.notes.unordered.size).toBe(0);
+});
+
+test("a spread with no binding to read leaves the shape in one order, and says so", () => {
+  const f = fixture();
+  const src = f.record(
+    [
+      ["a", F64],
+      ["b", F64],
+    ],
+    ["a", "b"],
+  );
+  const out = f.record(
+    [
+      ["a", F64],
+      ["b", F64],
+      ["c", F64],
+    ],
+    ["a", "b", "c"],
+  );
+  const c: KeyOrderSegment = { kind: "key", name: "c", definite: true };
+  const spread: KeyOrderSegment = { kind: "spread", shapeId: src.shapeId, maybeAbsent: false };
+  const fn = f.run([
+    decl("s", f.literal(src, ["a", "b"])),
+    observe(f.literal(out, ["a", "b", "c"], [c, spread])),
+    observe(f.literal(out, ["a", "b", "c"], [spread, c])),
+  ]);
+  expect(f.notes.tracked.has(out.shapeId)).toBe(false);
+  expect(f.notes.unordered.get(out.shapeId)?.cause).toBe("spread");
+  expect(countOf(fn, "record.sourceNote")).toBe(0);
+  expect(f.order(out)).toEqual(["a", "b", "c"]);
+});

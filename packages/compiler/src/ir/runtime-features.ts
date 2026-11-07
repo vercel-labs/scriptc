@@ -1476,6 +1476,10 @@ const RUNTIME_FEATURE_RULES = {
   /** Reflect.getPrototypeOf's primitive-target check (scr_dyn_reflect_proto.c,
    * a unit of its own so scr_json.c keeps its layout). */
   reflectProtoTarget: rule({ fns: ["dyn.reflectGetPrototypeTarget"] }),
+  /** A record's keys in creation order where neither its type's table nor
+   * an order index holds it (scr_record_order.c, a unit of its own so
+   * scr_json.c keeps its layout). */
+  recordKeyOrder: rule({ fns: ["record.orderAppend", "record.orderCopy"] }),
   /** A generator that binds its parameters at the call (scr_gen_bind.c):
    * the spawn wrapper's eager step imports the bind helper, and every other
    * program links the default runtime objects. */
@@ -2038,6 +2042,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynCollections: false,
     dynIntegrityQueries: false,
     reflectProtoTarget: false,
+    recordKeyOrder: false,
     dynBuffer: false,
     dynBufferMembers: false,
     bufferPrototypeObject: false,

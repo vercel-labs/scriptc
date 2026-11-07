@@ -362,6 +362,25 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     host.dyn.emitRecordSourceNote(B, built.name, keys.name, type.shapeId);
     return { name: "", type: e.type };
   }
+  if (e.fn === "record.orderAppend") {
+    const record = host.emitReadReceiver(e.args[0]!);
+    const view = emitBorrowedInput(host, e.args[1]!);
+    const key = e.args[2]!;
+    const type = e.args[0]!.type;
+    if (type.kind !== "record" || key.kind !== "strLit")
+      throw new InternalCompilerError("llvm emitter bug: record.orderAppend of a non-record");
+    host.dyn.emitRecordOrderAppend(B, record.name, view.name, key.value, type.shapeId);
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "record.orderCopy") {
+    const built = host.emitReadReceiver(e.args[0]!);
+    const keys = emitBorrowedInput(host, e.args[1]!);
+    const type = e.args[0]!.type;
+    if (type.kind !== "record")
+      throw new InternalCompilerError("llvm emitter bug: record.orderCopy of a non-record");
+    host.dyn.emitRecordOrderCopy(B, built.name, keys.name, type.shapeId);
+    return { name: "", type: e.type };
+  }
   if (e.fn === "array.speciesCreate") {
     // The receiver is borrowed; the call answers a new reference.
     const receiver = emitBorrowedInput(host, e.args[0]!);

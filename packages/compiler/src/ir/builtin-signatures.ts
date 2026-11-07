@@ -5390,6 +5390,17 @@ function buildLibFnSignatures() {
      * another order (scr_record_source_note). The first is a record type,
      * the second dyn (borrowed). Never throws. */
     "record.sourceNote": { argTypes: [null, DYN], result: VOID },
+    /** `record.orderAppend(record, view, key)`: a write is about to create
+     * the declared key `key` (a strLit) on the record, which lacks it: the
+     * key becomes the record's last own key (scr_record_order.c,
+     * key-order-witness.ts tracked shapes). `view` is the record's live
+     * checked view (dyn, borrowed). Never throws. */
+    "record.orderAppend": { argTypes: [null, DYN, STRING], result: VOID },
+    /** `record.orderCopy(built, keys)`: the record a copy just built from
+     * the fields of another keeps the order `keys` (a snapshot of the
+     * source's own keys; dyn, borrowed) lists the keys it declares in.
+     * Never throws. */
+    "record.orderCopy": { argTypes: [null, DYN], result: VOID },
     "insp.key": { argTypes: [STRING], result: STRING },
     "insp.moreItems": { argTypes: [F64], result: STRING },
     "insp.end": { argTypes: [STRING, STRING, STRING, F64, BOOL, BOOL], result: STRING },

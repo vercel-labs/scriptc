@@ -56,6 +56,10 @@ const sized: Record<string, readonly string[]> = {
     "observed",
     "changed",
     "keptSourceShapes",
+    "tracked",
+    "orderedAssigns",
+    "converted",
+    "unordered",
   ],
 };
 

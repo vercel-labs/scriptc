@@ -114,6 +114,39 @@ for (const line of lines) {
 }
 `;
 
+// Two workers that fail their first conversion at the same moment, each
+// through the same `try` whose handler means "no total".
+const workers = `import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
+interface Usage {
+  total: number;
+}
+function totalOf(text: string): string {
+  try {
+    return typeof (JSON.parse(text) as Usage).total;
+  } catch {
+    return "undefined";
+  }
+}
+if (isMainThread) {
+  const gate = new SharedArrayBuffer(4);
+  const answers: string[] = [];
+  let left = 2;
+  for (let i = 0; i < 2; i++) {
+    const worker = new Worker(new URL(import.meta.url), { workerData: gate });
+    worker.on("message", (answer: string) => answers.push(answer));
+    worker.on("exit", () => {
+      left -= 1;
+      if (left === 0) console.log("workers", answers.join(" "));
+    });
+  }
+} else {
+  const view = new Int32Array(workerData as SharedArrayBuffer);
+  Atomics.add(view, 0, 1);
+  while (Atomics.load(view, 0) < 2) {}
+  parentPort!.postMessage(totalOf('{"input":1}'));
+}
+`;
+
 describe(`SCRIPTC_CONVERSION_TRACE (scriptc-only${sanitize ? ", sanitized" : ""})`, () => {
   test("a dev build reports a failed conversion the program catches", async () => {
     const binary = await build("skipped", skipped, { optimization: "dev" });
@@ -140,6 +173,31 @@ describe(`SCRIPTC_CONVERSION_TRACE (scriptc-only${sanitize ? ", sanitized" : ""}
       expect(r.stdout).toBe("message 1\nskipped\nskipped\n");
       expect(r.stderr).toBe("");
     }
+  });
+
+  test("two workers that fail their first conversion together both report", async () => {
+    const binary = await build("workers", workers, { optimization: "dev" });
+    const r = await run(binary, "1");
+    expect(r.exitCode).toBe(0);
+    // The program runs as it does without the report.
+    expect(r.stdout).toBe("workers undefined undefined\n");
+    // Each thread reports its own failure. One report is several writes to
+    // stderr, so the two may interleave at any byte, not only between lines:
+    // what is pinned is that both messages and both frames are there, and
+    // nothing else.
+    const message =
+      "scriptc: checked conversion failed: TypeError: expected number at $.total, got undefined";
+    const frame = "    at totalOf (workers.ts:7:20)";
+    const joined = r.stderr.replace(/\n/g, "");
+    expect(joined.split(message).length - 1).toBe(2);
+    expect(joined.split(frame).length - 1).toBe(2);
+    expect(joined.length).toBe(2 * (message.length + frame.length));
+    // The same failures with the variable unset write nothing, and leave
+    // the program's output as it is.
+    const off = await run(binary, undefined);
+    expect(off.exitCode).toBe(0);
+    expect(off.stdout).toBe("workers undefined undefined\n");
+    expect(off.stderr).toBe("");
   });
 
   test("a release build and a stripped dev build have no report", async () => {

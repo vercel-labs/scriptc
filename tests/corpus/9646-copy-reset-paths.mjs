@@ -110,6 +110,42 @@ function earlyExit(stop) {
   return holder.show(c) + " / " + "abcd".slice(n);
 }
 
+function afterReturn(stop) {
+  var text, size;
+  function fill() {
+    text = "filled";
+    size = 2;
+  }
+  fill();
+  var c = text;
+  var n = size;
+  if (stop) return holder.show(c) + " / " + "abcd".slice(n);
+  c = undefined;
+  n = undefined;
+  return holder.show(c) + " / " + "abcd".slice(n);
+}
+
+function afterThrow(fail) {
+  var text, size;
+  function fill() {
+    text = "filled";
+    size = 2;
+  }
+  fill();
+  var c = text;
+  var n = size;
+  var inside;
+  try {
+    if (fail) throw new Error("stop");
+    c = undefined;
+    n = undefined;
+    inside = holder.show(c) + " / " + "abcd".slice(n);
+  } catch (e) {
+    inside = "caught " + holder.show(c) + " / " + "abcd".slice(n);
+  }
+  return inside + " then " + holder.show(c) + " / " + "abcd".slice(n);
+}
+
 function loopBody(times) {
   var text, size;
   function fill() {
@@ -310,6 +346,8 @@ for (const form of ["&&", "||", "??", "?:", "?.()"]) {
   console.log("reset under " + form + ":", shortCircuit(form, true), "|", shortCircuit(form, false));
 }
 console.log("reset after an early exit:", earlyExit(true), "|", earlyExit(false));
+console.log("reset after an early return:", afterReturn(true), "|", afterReturn(false));
+console.log("reset after a throw:", afterThrow(true), "|", afterThrow(false));
 console.log("reset in a loop body:", loopBody(0), "|", loopBody(2));
 console.log("reset in try:", inTry(true), "|", inTry(false));
 console.log("reset in catch:", inCatch(true), "|", inCatch(false));

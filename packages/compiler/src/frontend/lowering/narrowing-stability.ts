@@ -306,7 +306,12 @@ export class NarrowingStability {
         found.push(
           decl.initializer === undefined
             ? { at: decl, value: null, kind: "declared", stale: false }
-            : { at: decl, value: decl.initializer, kind: "assigned", stale: stale(decl.initializer) },
+            : {
+                at: decl,
+                value: decl.initializer,
+                kind: "assigned",
+                stale: stale(decl.initializer),
+              },
         );
         for (const write of this.writesIn(ts.getSourceFileOfNode(decl)).get(
           ts.symbolName(symbol),
@@ -384,7 +389,8 @@ export class NarrowingStability {
         own = write;
       }
       if (own === null || own.kind === "unknown") return null;
-      if (ts.isVariableStatement(statement)) return own.at.parent?.parent === statement ? own : null;
+      if (ts.isVariableStatement(statement))
+        return own.at.parent?.parent === statement ? own : null;
       if (ts.isExpressionStatement(statement))
         return skipParentheses(statement.expression) === own.at ? own : null;
       return null;

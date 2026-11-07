@@ -8287,6 +8287,31 @@ export function cjsExportAssignmentOf(stmt: ts.Statement):
     }
   | { kind: "member"; name: ts.MemberName; value: ts.Expression; expr: ts.BinaryExpression }
   | null {
+  if (ts.isVariableStatement(stmt)) {
+    // `var x = module.exports = <value>` / `var x = (module.exports = <value>)`:
+    // Node's whole-export replacement spelled as a declaration initializer
+    // (the value is stored in module.exports and in `x` alike, evaluated
+    // once). The declaration's own binding is the module's export storage,
+    // so this statement owns the export exactly like the expression
+    // statement spelling. An object-literal value keeps its own statement
+    // path (its members are export globals), and a destructured declarator
+    // has no single binding to read the export through.
+    const decls = stmt.declarationList.declarations.nodes;
+    if (decls.length !== 1) return null;
+    const decl = decls[0]!;
+    if (!ts.isIdentifier(decl.name) || decl.initializer === undefined) return null;
+    let init: ts.Expression = decl.initializer;
+    while (ts.isParenthesizedExpression(init)) init = init.expression;
+    if (
+      ts.isBinaryExpression(init) &&
+      init.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      isModuleExportsAccess(init.left) &&
+      !ts.isObjectLiteralExpression(init.right)
+    ) {
+      return { kind: "table", obj: null, expr: init };
+    }
+    return null;
+  }
   if (!ts.isExpressionStatement(stmt)) return null;
   const e = stmt.expression;
   if (!ts.isBinaryExpression(e) || e.operatorToken.kind !== ts.SyntaxKind.EqualsToken) return null;
@@ -8315,6 +8340,39 @@ export function cjsExportAssignmentOf(stmt: ts.Statement):
     }
   }
   return null;
+}
+
+/** The declarator of a chained whole-export declaration (`var x =
+ * module.exports = <value>` — cjsExportAssignmentOf's declaration
+ * spelling), or null when the assignment is the expression-statement
+ * spelling. The declarator's binding is where the export value lives. */
+export function cjsExportDeclaratorOf(assign: ts.BinaryExpression): ts.VariableDeclaration | null {
+  // `var x = (module.exports = value)` wraps the assignment in parens.
+  let node: ts.Node = assign;
+  while (node.parent !== undefined && ts.isParenthesizedExpression(node.parent)) node = node.parent;
+  const decl = node.parent;
+  if (!ts.isVariableDeclaration(decl) || !ts.isIdentifier(decl.name)) return null;
+  const list = decl.parent;
+  if (!ts.isVariableDeclarationList(list)) return null;
+  const stmt = list.parent;
+  if (!ts.isVariableStatement(stmt) || !ts.isSourceFile(stmt.parent)) return null;
+  return decl;
+}
+
+/** `var x = module.exports = <value>`: the value the declarator is
+ * initialized with. Node assigns the export object and the binding the same
+ * value, so the declaration's own storage takes the export value's type and
+ * initialization. Null when the statement is not a chained whole-export
+ * declaration. */
+export function cjsChainedExportValueOf(decl: ts.VariableDeclaration): ts.Expression | null {
+  const stmt = decl.parent?.parent;
+  if (stmt === undefined || !ts.isVariableStatement(stmt)) return null;
+  const cjs = cjsExportAssignmentOf(stmt);
+  if (cjs?.kind !== "table" || cjs.obj !== null) return null;
+  if (cjsExportDeclaratorOf(cjs.expr) !== decl) return null;
+  let rhs: ts.Expression = cjs.expr.right;
+  while (ts.isParenthesizedExpression(rhs)) rhs = rhs.expression;
+  return rhs;
 }
 
 /** The tsc VOID-INIT PREAMBLE (`exports.a = exports.b = void 0;` with the

@@ -36,9 +36,11 @@ import { isJsSourceFileName } from "../tsc-codes.js";
 import { isRelativeSpecifier } from "../workspace-registry.js";
 import {
   canonicalBuiltinModule,
+  cjsChainedExportValueOf,
   cjsExportAssignmentOf,
   cjsExportChainOf,
   cjsVoidInitPreambleReals,
+  cjsExportDeclaratorOf,
   cjsExportDiscardReason,
   cjsExportTargetLiteral,
   entryPackageFilePredicate,
@@ -1307,7 +1309,9 @@ function checkedGlobalReference(lowerer: Lowerer, expression: ts.Expression): bo
   const root = lowerer.checker.getSymbolAtLocation(expression.expression);
   const namespace = root && root.declarations.some(ts.isNamespaceImport);
   return (
-    (namespace || lowerer.cjsLocalModuleBindingOf(expression.expression)) &&
+    (namespace ||
+      lowerer.cjsLocalModuleBindingOf(expression.expression) ||
+      lowerer.cjsWholeExportMemberOf(expression.expression, expression.name.text)) &&
     lowerer.globalOf(expression.name)?.type.kind === "dyn"
   );
 }
@@ -1502,6 +1506,34 @@ function withoutRejectedClassMembers(
   return { kind: "record", shapeId };
 }
 
+/** The type of the snapshot `module.exports = <identifier>` stores, or
+ * null when the identifier needs no snapshot: a split require re-export,
+ * a class/function/builtin alias, or a binding with its own module
+ * storage all resolve through alias plumbing (lowerCjsSingleValueExport). */
+function cjsIdentExportSnapshotType(lowerer: Lowerer, id: ts.Identifier): IrType | null {
+  if (splitRequireBindingOfIdent(lowerer, id) !== null) return null;
+  const sym = lowerer.resolveValueSymbol(id);
+  if (sym === null) return null;
+  if (
+    lowerer.classBySymbol.has(sym) ||
+    lowerer.fnSigsBySymbol.has(sym) ||
+    lowerer.genericFnsBySymbol.has(sym) ||
+    lowerer.globalsBySymbol.has(sym) ||
+    lowerer.isStdlibSymbol(sym)
+  )
+    return null;
+  // Hoisted declarations may not have registered yet when the export
+  // statement comes first; they are alias plumbing all the same.
+  if (
+    sym.declarations.some(
+      (d) => ts.isSourceFile(d) || ts.isFunctionDeclaration(d) || ts.isClassDeclaration(d),
+    )
+  )
+    return null;
+  const strict = lowerer.typeOf(id);
+  return lowerer.mapTypeOf(strict) ?? dynFallbackType(lowerer, id, strict);
+}
+
 export function collectGlobals(
   lowerer: Lowerer,
   sf: ts.SourceFile,
@@ -1654,6 +1686,11 @@ export function collectGlobals(
       // Statements Node would DISCARD (a replaced export object) never
       // register storage — importer reads must not bind to values Node's
       // importers never see. The statement lowering owns the diagnostic.
+      // The chained declaration spelling (`var x = module.exports =
+      // <value>`) is a module-scope declaration AND an export statement:
+      // module.exports gets its own export slot here, while `x` keeps the
+      // ordinary declaration storage registered below. Reassigning `x`
+      // therefore leaves the exported value alone, as in Node.
       const cjs = cjsExportDiscardReason(stmt) === null ? cjsExportAssignmentOf(stmt) : null;
       const registerExport = (nameNode: ts.Node, name: string, typeNode: ts.Node): void => {
         const diagsBefore = lowerer.diags.length;
@@ -1805,11 +1842,20 @@ export function collectGlobals(
             !hasMemberExports
           ) &&
           cjsExportTargetLiteral(rhs, sf) === null;
-        if (cjsScalarLiteral(rhs) || fnValued || factoryValued) {
+        // An identifier whose binding owns no module storage and has no
+        // alias target (`var $defineProperty = Object.defineProperty ||
+        // false` — an inferred union the type mapping does not carry):
+        // Node copies that binding's VALUE at this statement, so the
+        // export is a snapshot slot keyed by the statement, exactly the
+        // computed-value shape.
+        const identSnapshot =
+          ts.isIdentifier(rhs) && !splitWhole ? cjsIdentExportSnapshotType(lowerer, rhs) : null;
+        if (cjsScalarLiteral(rhs) || fnValued || factoryValued || identSnapshot !== null) {
           const diagsBefore = lowerer.diags.length;
           try {
             const strict = lowerer.typeOf(rhs);
             let t =
+              identSnapshot ??
               lowerer.mapTypeOf(strict) ??
               (fnValued || factoryValued ? dynFallbackType(lowerer, rhs, strict) : null);
             // A returned object remains the live CommonJS root; later
@@ -1833,7 +1879,10 @@ export function collectGlobals(
             deferJsCollectionDiags(lowerer, sf, diagsBefore);
           }
         }
-        continue;
+        // A chained declaration also declares the module-scope binding it
+        // initializes from the same value: register that ordinary storage
+        // below, so a later reassignment of the binding stays local.
+        if (cjsExportDeclaratorOf(cjs.expr) === null) continue;
       }
       if (cjs?.kind === "table" && cjs.obj) {
         for (const prop of cjs.obj.properties.nodes) {
@@ -2226,6 +2275,10 @@ export function collectGlobals(
       // desugar in the init function assigns the pre-registered globals,
       // exactly like plain declarations).
       const names = boundIdentifiersOf(decl.name);
+      // `var x = module.exports = <value>`: x and module.exports take the
+      // SAME value at this statement, so the declaration's storage is
+      // classified from the export value the chain assigns.
+      const declValue = cjsChainedExportValueOf(decl) ?? decl.initializer;
       // Localized failure: a degradable type failure at a module global
       // degrades that type and the same name registers again
       // (globalSlotRetry), at most MAX_GLOBAL_RETRIES times.
@@ -2549,7 +2602,7 @@ export function collectGlobals(
             !lowerer.mapTypeOf(lowerer.typeOf(nameNode)) &&
             ts.isIdentifier(decl.name) &&
             nameNode === decl.name &&
-            jsDynHoldableInitializer(lowerer, decl.initializer) &&
+            jsDynHoldableInitializer(lowerer, declValue) &&
             dynFallbackType(lowerer, nameNode, lowerer.typeOf(nameNode))?.kind === "dyn"
           ) {
             const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
@@ -2587,10 +2640,10 @@ export function collectGlobals(
             !lowerer.mapTypeOf(lowerer.typeOf(nameNode)) &&
             ts.isIdentifier(decl.name) &&
             nameNode === decl.name &&
-            decl.initializer &&
-            jsDynHoldableInitializer(lowerer, decl.initializer)
+            declValue &&
+            jsDynHoldableInitializer(lowerer, declValue)
           ) {
-            const initializer = decl.initializer;
+            const initializer = declValue;
             const member = ts.isPropertyAccessExpression(initializer)
               ? nsMemberIdentOf(lowerer, initializer)
               : null;

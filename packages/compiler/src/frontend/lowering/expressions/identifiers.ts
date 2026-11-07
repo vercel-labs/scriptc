@@ -39,6 +39,7 @@ import {
   splitRequireBindingOfIdent,
   wholeExportSymbolOfModule,
   wholeExportValue,
+  wholeExportValueOfModuleBinding,
 } from "../cjs-inline-require.js";
 import { captureContextArguments } from "../function-context.js";
 import { argumentsOwner, typedArgumentsCandidate } from "../typed-arguments.js";
@@ -791,6 +792,13 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   if (builtinNamespace !== null) {
     const type: IrType = { kind: "moduleNs", moduleId: `builtin:${builtinNamespace}` };
     return { kind: "moduleNsRef", moduleId: type.moduleId, type, loc };
+  }
+  // A binding of a SINGLE-VALUE module used as a bare value: Node's
+  // require answers module.exports, so the read IS that value (the same
+  // answer the split-binding path below gives).
+  {
+    const required = wholeExportValueOfModuleBinding(lowerer, expr);
+    if (required !== null) return required;
   }
   if (lowerer.cjsLocalModuleBindingOf(expr)) {
     lowerer.unsupported(

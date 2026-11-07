@@ -299,14 +299,8 @@ function routeLinkedStringify(lowerer: Lowerer, stringified: readonly StringifyS
   for (const { site, fn } of stringified) {
     const t = site.value.type;
     if (t.kind === "dyn" || rerouted.has(site)) continue;
-    // The targets of kept links the serialized type reaches.
-    const targets: string[] = [];
-    const safe = isJsonStringifySafeType(t, getRecord, getUnion, (id) => {
-      const sources = sourcesOf.get(id);
-      if (sources) targets.push(id);
-      return sources;
-    });
-    if (safe) continue;
+    if (isJsonStringifySafeType(t, getRecord, getUnion, linkSources)) continue;
+    const targets = linkTargetsReached(lowerer, t, sourcesOf);
     // The runtime traversal walks whichever source a copy is linked to, so
     // the call takes it only when every source of every reached target is
     // serializable on some path. The first that is not is the one to name.
@@ -357,6 +351,48 @@ function routeLinkedStringify(lowerer: Lowerer, stringified: readonly StringifyS
       expr: (e) => (e.kind === "jsonStringify" && rerouted.has(e) ? runtimeStringify(e) : e),
     });
   }
+}
+
+/** The targets of kept links a serialized type reaches, through its
+ * members and through the sources of the links themselves (a composed
+ * record is a record of the source's type). Every one is listed: the walk
+ * does not stop at a member that is not serializable. */
+function linkTargetsReached(
+  lowerer: Lowerer,
+  root: IrType,
+  sourcesOf: ReadonlyMap<string, readonly string[]>,
+): string[] {
+  const targets: string[] = [];
+  const seen = new Set<string>();
+  const visit = (t: IrType): void => {
+    switch (t.kind) {
+      case "array":
+        visit(t.elem);
+        return;
+      case "union": {
+        if (seen.has(`u:${t.unionId}`)) return;
+        seen.add(`u:${t.unionId}`);
+        for (const arm of lowerer.unions.get(t.unionId)?.arms ?? []) visit(arm);
+        return;
+      }
+      case "record": {
+        if (seen.has(t.shapeId)) return;
+        seen.add(t.shapeId);
+        const shape = lowerer.shapes.get(t.shapeId);
+        for (const field of shape?.fields ?? []) visit(field.type);
+        if (shape?.indexValue !== undefined) visit(shape.indexValue);
+        const sources = sourcesOf.get(t.shapeId);
+        if (sources === undefined) return;
+        targets.push(t.shapeId);
+        for (const from of sources) visit({ kind: "record", shapeId: from });
+        return;
+      }
+      default:
+        return;
+    }
+  };
+  visit(root);
+  return targets;
 }
 
 /** The runtime JSON traversal of a typed serialization's value: the boxed

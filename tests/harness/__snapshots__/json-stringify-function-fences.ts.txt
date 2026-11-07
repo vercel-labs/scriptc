@@ -22,3 +22,12 @@ json-stringify-function-fences.ts:45:15 - error SC1090: JSON.stringify of '{ key
   46 | 
 
   hint: serialize an object literal that names the properties to write
+
+json-stringify-function-fences.ts:70:15 - error SC1090: JSON.stringify of '{ code: number }' values converted from '{ code: number; pattern: Pattern }' (the value keeps its source object's other properties, and that type has members the JSON writer cannot serialize) is not supported yet
+
+  69 | const pair: Pair = { first: trim({ tag: 1 }), second: lean({ code: 2, pattern: new Pattern() }) };
+  70 | const later = JSON.stringify(pair);
+     |               ^~~~~~~~~~~~~~~~~~~~
+  71 | 
+
+  hint: serialize an object literal that names the properties to write

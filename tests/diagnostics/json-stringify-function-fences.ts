@@ -43,3 +43,28 @@ function fromPattern(wide: WithPattern): Slim {
   return wide;
 }
 const mixed = JSON.stringify([fromCallback({ key: 1 }), fromPattern({ key: 2, pattern: new Pattern() })]);
+
+// The same holds for a later member: the first member's copies can take
+// the runtime traversal, the second member's cannot.
+interface Trim {
+  tag: number;
+}
+interface Lean {
+  code: number;
+}
+interface LeanPattern {
+  code: number;
+  pattern: Pattern;
+}
+interface Pair {
+  first: Trim;
+  second: Lean;
+}
+function trim(wide: { tag: number; later?: () => void }): Trim {
+  return wide;
+}
+function lean(wide: LeanPattern): Lean {
+  return wide;
+}
+const pair: Pair = { first: trim({ tag: 1 }), second: lean({ code: 2, pattern: new Pattern() }) };
+const later = JSON.stringify(pair);

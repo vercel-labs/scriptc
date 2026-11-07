@@ -535,4 +535,24 @@ describe("runtime feature snapshots", () => {
       childErrorFields: false,
     });
   });
+
+  test("gates a child stream's flowing state on pausing, resuming or reading it", () => {
+    // Each of the four members selects scr_child.c's SCR_CHILD_STREAM_FLOW
+    // build; a program that only listens to a child's output keeps the
+    // default object.
+    for (const fn of [
+      "stream.childPause",
+      "stream.childResume",
+      "stream.childIsPaused",
+      "stream.childFlowing",
+    ] as const) {
+      const flow = module();
+      flow.functions[0]!.body.push(call(fn));
+      expect(moduleRuntimeFeatures(flow).childStreamFlow).toBe(true);
+    }
+
+    const listener = module();
+    listener.functions[0]!.body.push(call("stream.onEnd"));
+    expect(moduleRuntimeFeatures(listener).childStreamFlow).toBe(false);
+  });
 });

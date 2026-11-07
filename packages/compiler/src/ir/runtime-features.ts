@@ -1297,6 +1297,14 @@ const RUNTIME_FEATURE_RULES = {
    * program that never reads `.error` keeps the default object and the
    * result container exactly as they were. */
   childErrorFields: rule({ fns: ["spawnRes.error"] }),
+  /** pause(), resume(), isPaused() and readableFlowing on a child's output
+   * stream: Node's flowing state lives on the handle in a build of
+   * scr_child.c of its own (SCR_CHILD_STREAM_FLOW), so a program that never
+   * calls them keeps the default object, where a stream reads its pipe only
+   * while it has a 'data' listener and holds nothing back. */
+  childStreamFlow: rule({
+    fns: ["stream.childPause", "stream.childResume", "stream.childIsPaused", "stream.childFlowing"],
+  }),
   /** scr_cipher.c over the mbedTLS archive; DEP0182 reports through the
    * process-warning unit, and unknown output encodings render through the
    * inspect unit. WebCrypto's encrypt, decrypt, wrapKey and unwrapKey
@@ -2032,6 +2040,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     childOptionExt: false,
     spawnCaptureBytes: false,
     childErrorFields: false,
+    childStreamFlow: false,
     declAdopt: false,
     typeOrigins: false,
     dynForAwait: false,

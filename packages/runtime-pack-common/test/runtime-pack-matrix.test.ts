@@ -262,3 +262,32 @@ test("extended spawn options beside an error read keep both child builds", () =>
       .defines,
   ).toEqual(["SCR_CHILD_CP_OPTIONS"]);
 });
+
+test("pausing a child's output selects the child build with the flowing state", () => {
+  // pause(), resume(), isPaused() and readableFlowing on a child stream link
+  // the build whose stream handle keeps Node's flowing state.
+  expect(selected("scr_child.c", { workers: false, childStreamFlow: true }).defines).toEqual([
+    "SCR_CHILD_STREAM_FLOW",
+  ]);
+  // A program that only listens to a child's output keeps the default
+  // object, byte for byte.
+  expect(selected("scr_child.c", { workers: false, childStreamFlow: false }).defines).toEqual([]);
+  // The flowing state beside the other child builds is one object carrying
+  // every define, not the build with the most recent feature alone.
+  expect(
+    selected("scr_child.c", { workers: false, childOptionExt: true, childStreamFlow: true })
+      .defines,
+  ).toEqual(["SCR_CHILD_CP_OPTIONS", "SCR_CHILD_STREAM_FLOW"]);
+  expect(
+    selected("scr_child.c", { workers: false, childErrorFields: true, childStreamFlow: true })
+      .defines,
+  ).toEqual(["SCR_CHILD_ERR_FIELDS", "SCR_CHILD_STREAM_FLOW"]);
+  expect(
+    selected("scr_child.c", {
+      workers: false,
+      childOptionExt: true,
+      childErrorFields: true,
+      childStreamFlow: true,
+    }).defines,
+  ).toEqual(["SCR_CHILD_CP_OPTIONS", "SCR_CHILD_ERR_FIELDS", "SCR_CHILD_STREAM_FLOW"]);
+});

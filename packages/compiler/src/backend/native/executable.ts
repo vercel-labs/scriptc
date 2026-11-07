@@ -544,6 +544,9 @@ const RUNTIME_DEFINES: readonly {
   // `.error` answers Node's errnoException fields (errno, syscall, path,
   // spawnargs); a program that never reads `.error` keeps the default build.
   { define: "SCR_CHILD_ERR_FIELDS", when: (opts) => opts.childErrorFields },
+  // scr_child.c's flowing state for a child's output streams (pause(),
+  // resume(), isPaused(), readableFlowing).
+  { define: "SCR_CHILD_STREAM_FLOW", when: (opts) => opts.childStreamFlow },
   { define: "SCR_NODE_ISLANDS", when: (opts) => opts.nodeIsland },
 ];
 

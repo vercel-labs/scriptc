@@ -82,6 +82,8 @@ export interface EarlyExecutableNativeFeatures {
   stdioWriteSlot?: boolean;
   /** The spawnSync result's `.error` errnoException fields: SCR_CHILD_ERR_FIELDS. */
   childErrorFields?: boolean;
+  /** A child output stream's flowing state: SCR_CHILD_STREAM_FLOW. */
+  childStreamFlow?: boolean;
   nodeIsland?: boolean;
   moduleNamespace?: boolean;
   moduleNamespaceDyn?: boolean;

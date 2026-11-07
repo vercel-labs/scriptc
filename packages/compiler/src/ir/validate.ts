@@ -5553,6 +5553,19 @@ function validateFunction(
       }
       return true;
     }
+    if (e.fn === "stream.childFlowing") {
+      // readableFlowing: the interned `boolean | null` union.
+      const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
+      const ok =
+        def &&
+        def.arms.length === 2 &&
+        def.arms.some((a) => a.kind === "bool") &&
+        def.arms.some((a) => a.kind === "nullT");
+      if (!ok) {
+        err(`libCall stream.childFlowing must return the 'boolean | null' union`, e.loc);
+      }
+      return true;
+    }
     if (e.fn === "child.pid" || e.fn === "child.exitCode") {
       // pid: the interned `number | undefined`; exitCode: `number | null`.
       const wantUnit = e.fn === "child.pid" ? "undefinedT" : "nullT";

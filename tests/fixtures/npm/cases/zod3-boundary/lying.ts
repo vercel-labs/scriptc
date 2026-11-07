@@ -43,3 +43,13 @@ try {
 } catch (e) {
   console.log("accessor threw", (e as Error).message);
 }
+// An index-signature record keeps the keys its type does not declare in a
+// map, which holds no attributes: a non-enumerable key has no place there
+// and the boundary refuses it rather than list it as an ordinary one.
+const Bag = z.custom<{ [key: string]: number }>();
+try {
+  const b = Bag.parse(tagged({ value: 2, enumerable: false, writable: true, configurable: true }));
+  console.log("index", JSON.stringify(b), Object.keys(b).join(","));
+} catch (e) {
+  console.log("index threw", (e as Error).message);
+}

@@ -51,7 +51,18 @@ static void scr_decl_adopt_push(ScrDeclAdoptList *list, ScrDyn *node, ScrDyn *ca
   list->len++;
 }
 
-static bool scr_decl_adopt_plain(const ScrDyn *n, const ScrDynPath *path, bool lenient) {
+/* Whether the value built from a node holds a view of its source: the one
+ * place a record has for a property attribute its layout cannot carry
+ * (scr_record_source_note keeps a source for a non-enumerable declared
+ * key). A layout without one, such as an index-signature record, which
+ * captures undeclared keys into a map that holds no attributes, would list
+ * such a key as an ordinary one. */
+static bool scr_decl_adopt_keeps_attributes(const ScrDyn *capsule) {
+  return capsule->kind == SCR_DYN_TYPED_REF && scr_record_source_has(capsule->v.typed_ref.ptr);
+}
+
+static bool scr_decl_adopt_plain(const ScrDyn *n, const ScrDyn *capsule, const ScrDynPath *path,
+                                 bool lenient) {
   const char *want = NULL;
   if (n->kind == SCR_DYN_OBJ) {
     if (n->prototype || n->null_proto || n->v.obj.class_name)
@@ -63,14 +74,17 @@ static bool scr_decl_adopt_plain(const ScrDyn *n, const ScrDynPath *path, bool l
     else if (n->v.obj.source_access && !n->v.obj.source_identity)
       want = "a plain object";
     else {
+      const bool keeps_attributes = scr_decl_adopt_keeps_attributes(capsule);
       for (size_t i = 0; i < scr_dyn_obj_count(n) && !want; i++) {
         ScrDynProp e = scr_dyn_obj_prop_at(n, i);
-        /* A non-enumerable data property stays one: the built record's
-         * kept source holds that attribute (scr_record_source_note). A
-         * read-only or non-configurable one has no native form yet. */
+        /* A non-enumerable data property stays one only where the built
+         * record keeps a view of its source; a read-only or
+         * non-configurable one has no native form yet. */
         if (e.accessor) want = "a plain object (this value has accessor properties)";
         else if (!e.writable || !e.configurable)
           want = "a plain object (this value has read-only or non-configurable properties)";
+        else if (!e.enumerable && !keeps_attributes)
+          want = "a plain object (this value has a non-enumerable key its record type cannot keep)";
       }
     }
   } else if (n->kind == SCR_DYN_ARR) {
@@ -108,7 +122,7 @@ static bool scr_decl_adopt_walk(ScrDeclAdoptList *list, ScrDyn *n, ScrDyn *capsu
     scr_dyn_release(capsule);
     return true;
   }
-  if (!scr_decl_adopt_plain(n, path, list->lenient)) {
+  if (!scr_decl_adopt_plain(n, capsule, path, list->lenient)) {
     scr_dyn_release(capsule);
     return list->lenient;
   }

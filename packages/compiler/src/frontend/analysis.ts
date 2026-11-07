@@ -357,17 +357,21 @@ export function analyzeWithFrontend(
   }
 }
 
-/** `fe` with its island scan answered once per `userJs`: the decision asks
- * the first load for the same whole-program walk in every round. */
+/** `fe` with its island scan answered once per kind of request: the
+ * decision asks the first load for the same whole-program walk in every
+ * round. A request that carries the policy's marks is its own kind (the
+ * scan then checks whether Node can run each marked TypeScript module);
+ * one analysis has one policy, so every such request has the same marks. */
 function scanOnce(fe: Frontend): Frontend {
   const scan = fe.nodeIslandScan;
   if (scan === undefined) return fe;
-  const answers = new Map<boolean, ReturnType<typeof scan>>();
+  const answers = new Map<string, ReturnType<typeof scan>>();
   return {
     ...fe,
     nodeIslandScan: (options) => {
-      let answer = answers.get(options.userJs);
-      if (answer === undefined) answers.set(options.userJs, (answer = scan(options)));
+      const kind = `${options.userJs}:${options.marked !== undefined}`;
+      let answer = answers.get(kind);
+      if (answer === undefined) answers.set(kind, (answer = scan(options)));
       return answer;
     },
   };

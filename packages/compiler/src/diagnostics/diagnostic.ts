@@ -407,6 +407,82 @@ export function nodeIslandStripDiag(file: string, construct: string, loc: SrcLoc
   };
 }
 
+/** How a mark reads in a message: the flag, or the project setting. */
+function islandMarkOf(source: "cli" | "config"): string {
+  return source === "cli" ? "--node-island" : "scriptc.nodeIslands.modules";
+}
+
+/** SC8006 — the entry module is marked to run in a Node island. The entry
+ * always stays native (a whole-file island is a different feature), so the
+ * mark would be accepted and ignored: the build refuses it instead. */
+export function nodeIslandEntryMarkDiag(
+  file: string,
+  source: "cli" | "config",
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC8006",
+    message: `${islandMarkOf(source)} marks the entry module to run in a Node island, and the entry module stays native`,
+    loc,
+    hint: `move the code that needs Node into a module of its own and mark that module; the entry module ${file} is the program the build compiles`,
+  };
+}
+
+/** SC8006 — a user TypeScript module is marked to run in a Node island but
+ * uses syntax Node cannot run with type stripping only. */
+export function nodeIslandMarkStripDiag(
+  file: string,
+  source: "cli" | "config",
+  construct: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC8006",
+    message: `${islandMarkOf(source)} marks '${file}' to run in a Node island, but Node cannot strip its types: ${construct}`,
+    loc,
+    hint: "Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports of types; a .js module can run in a Node island as it is",
+  };
+}
+
+/** SC8006 — a `--node-island=<path>` value matches no module of the
+ * program: the build would run nothing in Node for it. */
+export function nodeIslandUnmatchedMarkDiag(pattern: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC8006",
+    message: `--node-island=${pattern} names no module of this program`,
+    loc,
+    hint: "a path or glob marks the program's own modules, resolved from the working directory; a package runs in a Node island by its name (--node-island=<package>)",
+  };
+}
+
+/** SC8006 — `--node-island=<package>` names a package the program does not
+ * load from node_modules, so there is nothing to run in Node: scriptc
+ * compiles the package from its own implementation (`shim`), the package is
+ * a Node builtin under another name (`builtin`), or the program loads no
+ * module of it (`absent`: not imported, imported for its types only, or a
+ * workspace package compiled from source, which is the program's own code). */
+export function nodeIslandUnmatchedPackageDiag(
+  name: string,
+  why: "shim" | "builtin" | "absent",
+  loc: SrcLoc,
+): ScrDiagnostic {
+  const message =
+    why === "shim"
+      ? `--node-island=${name} cannot run '${name}' in a Node island: scriptc compiles this package from its own implementation, not from the installed one`
+      : why === "builtin"
+        ? `--node-island=${name} cannot run '${name}' in a Node island: at its installed version the package is a Node builtin module, which the program reaches directly`
+        : `--node-island=${name} names no package this program loads from node_modules`;
+  return {
+    code: "SC8006",
+    message,
+    loc,
+    hint:
+      why === "absent"
+        ? "a package runs in a Node island when the program imports a module of it; a workspace package compiled from source is the program's own code, so mark its modules by path (--node-island=<path>)"
+        : "drop the flag: this package has no island form",
+  };
+}
+
 /** SC8006 — the entry module reads a builtin module member that an island
  * module patches. The entry always stays native, so it cannot join the
  * island set: Node would show this read the patch, the native build cannot.

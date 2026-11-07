@@ -11,5 +11,8 @@ A Promise converted from `unknown` to a typed result validates its fulfilled val
 A mismatch rejects with a `TypeError`.
 Rejection reasons and reference equality are preserved across conversions.
 
+A rejection handler that declares its parameter's type, such as `(error: Error) => ...`, validates the rejection reason when it runs, whether it is written inline or passed as a function value.
+A mismatch rejects the promise that `catch` or `then` returned with a `TypeError`, where Node.js calls the handler with the reason unchanged.
+
 A non-null assertion (`value!`) checks the value when it extracts an object, array or other non-nullable member from a union.
 If the value holds `null` or `undefined`, the assertion throws a `TypeError`, even when the result is never used; Node.js continues until a property of the value is read.

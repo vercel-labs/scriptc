@@ -167,13 +167,13 @@ const TIMEOUTS: Record<string, number> = {
   "zod3-infer": 600_000,
 };
 
-interface RunResult {
+export interface RunResult {
   stdout: Buffer;
   stderr: Buffer;
   exitCode: number;
 }
 
-function programStderr(stderr: Buffer): Buffer {
+export function programStderr(stderr: Buffer): Buffer {
   if (!sanitize) return stderr;
   // Linux ASan emits this instrumentation warning at the first fiber swap.
   // Latin-1 preserves every other byte, including non-UTF-8 program output.
@@ -188,7 +188,7 @@ function programStderr(stderr: Buffer): Buffer {
   );
 }
 
-async function runBinary(cmd: string, args: string[], cwd: string): Promise<RunResult> {
+export async function runBinary(cmd: string, args: string[], cwd: string): Promise<RunResult> {
   try {
     // stdin closes immediately, as in differential.test.ts: a program that
     // reads fd 0 to EOF must not hang on an open pipe.
@@ -241,7 +241,7 @@ async function build(entry: string, shapeOverlay: boolean | undefined): Promise<
 /** Node's uncaught-error report ends with `Node.js v<version>`: the island
  * prints libnode's release, which may differ from the reference Node's
  * patch release. */
-function normalizeNodeVersion([a, b]: [string, string]): [string, string] {
+export function normalizeNodeVersion([a, b]: [string, string]): [string, string] {
   const re = /^Node\.js v\d+\.\d+\.\d+$/m;
   return [a.replace(re, "Node.js v<version>"), b.replace(re, "Node.js v<version>")];
 }
@@ -251,7 +251,7 @@ function normalizeNodeVersion([a, b]: [string, string]): [string, string] {
  * whose frames match Node's from the throw site up to the first native
  * frame, which has no Node-identical spelling (DESIGN.md §2.10). Every
  * other line, and each run's common leading frames, compare exactly. */
-function sharedFrames(native: Buffer, node: Buffer): [string, string] {
+export function sharedFrames(native: Buffer, node: Buffer): [string, string] {
   const frame = (line: string): boolean => /^ {4}at /.test(line);
   const a = native.toString("utf8").split("\n");
   const b = node.toString("utf8").split("\n");

@@ -215,11 +215,12 @@ describe.skipIf(skip)("Node island handles", () => {
     );
   }, 300_000);
 
-  test("an island record that contradicts its declaration throws at the crossing", async () => {
-    // A record the island hands back crosses as a deep checked copy:
-    // `unsafe<T>` declares the caller's own record type and hands back a
-    // JSON object whose `fg` is a number, so the copy's conversion throws
-    // before a number reaches a native string field.
+  test("an island record that contradicts its declaration throws at the read", async () => {
+    // The program record type the island's value is declared with is a
+    // checked-identity view (wave-2 6 = C), so the value keeps its identity
+    // and every read checks the declared type: `unsafe<T>` hands back a JSON
+    // object whose `fg` is a number, and reading it as the declared string
+    // throws instead of handing a number to native code.
     const root = join(outDir, "unsafe-record-lie");
     rmSync(root, { recursive: true, force: true });
     cpSync(join(repoRoot, "tests/corpus/6899-node-island-unsafe-record"), root, {
@@ -237,7 +238,7 @@ describe.skipIf(skip)("Node island handles", () => {
     if (!result.ok)
       throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
     expect(await refusal(result.binaryPath)).toContain(
-      "TypeError: expected string at $.fg, got number",
+      "TypeError: expected string at $, got number",
     );
   }, 300_000);
 

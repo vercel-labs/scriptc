@@ -37,6 +37,8 @@ import {
   insertedValues,
   optionalElementValue,
   primitiveElement,
+  unionReadAsArray,
+  unionTupleJoin,
 } from "../array-values.js";
 import { typeKey } from "../../type-mapper.js";
 import {
@@ -506,6 +508,19 @@ const DYN_ELEMENT_METHODS = new Set([
   "with",
 ]);
 
+/** Array methods that write the array they are called on. */
+const RECEIVER_WRITING_METHODS = new Set([
+  "copyWithin",
+  "fill",
+  "pop",
+  "push",
+  "reverse",
+  "shift",
+  "sort",
+  "splice",
+  "unshift",
+]);
+
 export function lowerArrayMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -628,6 +643,10 @@ export function lowerArrayMethodCall(
   if (receiverIr?.kind === "union") {
     const unionHof = lowerArrayUnionHofCall(lowerer, call, access, receiverIr);
     if (unionHof) return unionHof;
+    // A union of tuples whose elements all have one type (the values of an
+    // `as const` table): the method runs on the array the value converts
+    // to, as it does behind an assertion to that array type.
+    receiverIr = unionTupleJoin(lowerer, receiverIr) ?? receiverIr;
   }
   if (receiverIr?.kind !== "array") return null;
   if (!probedUntyped && !lowerer.isStdlibMember(access)) return null;
@@ -660,6 +679,22 @@ export function lowerArrayMethodCall(
         const array =
           lowerer.runtimeOptionalPropertyReceiver(access.expression, receiver, present, name) ??
           lowerer.coerceInto(access.expression, receiver, present);
+        return lowerer.withExpressionOverride(access.expression, array, () =>
+          lowerArrayMethodCall(lowerer, call, access),
+        );
+      }
+      // A union of tuples and arrays that the checker reads as ONE array
+      // (unionReadAsArray): the receiver of a method is no slot, so it
+      // takes the slot's conversion here. A method that writes its receiver
+      // would change the copy and refuses.
+      const array = unionReadAsArray(lowerer, receiver, receiverIr, locOf(access.expression));
+      if (array) {
+        if (RECEIVER_WRITING_METHODS.has(name))
+          lowerer.unsupported(
+            "SC1090",
+            call,
+            `'.${name}()' on a union of tuples and arrays read as '${lowerer.fmt(receiverIr)}' (the call writes its receiver, and the value has no single array to write: narrow it to one arm first)`,
+          );
         return lowerer.withExpressionOverride(access.expression, array, () =>
           lowerArrayMethodCall(lowerer, call, access),
         );

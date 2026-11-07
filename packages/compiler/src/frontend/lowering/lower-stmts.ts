@@ -130,6 +130,8 @@ import {
   arrayValueType,
   unionArrayValueRead,
   unionArrayValueType,
+  unionReadAsArray,
+  unionTupleJoin,
   lowerSafeIndexRead,
 } from "./array-values.js";
 import {
@@ -12912,6 +12914,18 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
         type: checkerIterable,
         loc: locOf(iterSrc),
       };
+  }
+  // A union of tuples and arrays the checker reads as one array, or whose
+  // elements all have one type: the loop walks the array the value converts
+  // to (unionReadAsArray).
+  if (!stmt.awaitModifier) {
+    const array = unionReadAsArray(
+      lowerer,
+      iterable,
+      checkerIterable?.kind === "array" ? checkerIterable : unionTupleJoin(lowerer, iterable.type),
+      locOf(iterSrc),
+    );
+    if (array) iterable = array;
   }
   if (iterable.type.kind === "bytes" || indexedUnionArms(lowerer, iterable.type)) {
     return lowerForOfBytes(lowerer, stmt, iterable, labels);

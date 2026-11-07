@@ -99,6 +99,7 @@ import {
   lowerSafeIndexRead,
   primitiveElement,
   unionArrayValueRead,
+  unionReadAsArray,
   unaffectedByIndex,
 } from "../array-values.js";
 import { lowerOptionalStringIndex, lowerUnionStringIndex } from "../string-index.js";
@@ -1090,6 +1091,13 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
     arr = helper
       ? lowerer.checkedNarrowCall(helper, arr, present, locOf(expr.expression))
       : lowerer.maybeNarrow(arr, expr.expression);
+  }
+
+  // A union of tuples and arrays the checker reads as one array: the
+  // element of the array the value converts to (unionReadAsArray).
+  {
+    const array = unionReadAsArray(lowerer, arr, receiverIr, locOf(expr.expression));
+    if (array) arr = array;
   }
 
   // An alias or container of an evolving array whose reads disagree

@@ -417,7 +417,13 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
 
   const unreachedDiags = [...(un?.diagnostics ?? []), ...(un?.runtimeFences ?? [])];
   if (failed === 0 && input.diagnostics.length === 0 && unreachedDiags.length === 0) {
-    out.push(`  ${c(GREEN, "fully static")} — all analyzed statements compile to native code.`);
+    // Deferred operations the entry reaches compile to throws: the program
+    // builds, and those statements are not native code that runs.
+    out.push(
+      fences.length === 0
+        ? `  ${c(GREEN, "fully static")} — all analyzed statements compile to native code.`
+        : `  ${c(YELLOW, "builds")} — every other analyzed statement compiles to native code; the ${fences.length === 1 ? "site" : `${fences.length} sites`} above ${fences.length === 1 ? "throws" : "throw"} if the program reaches ${fences.length === 1 ? "it" : "them"}.`,
+    );
     if (divergences.length > 0) {
       out.push("");
       renderDivergences();
@@ -953,7 +959,7 @@ function renderNodeIslands(
 ): void {
   const n = report.islands.length + report.userModules.length;
   out.push(
-    `  ${c(BOLD, "Node islands")}   ${c(DIM, `(would-be, report-only: the build is unchanged; --node-islands=${report.policy})`)}`,
+    `  ${c(BOLD, "Node islands")}   ${c(DIM, `(what a build runs in Node.js; --node-islands=${report.policy})`)}`,
   );
   if (n === 0) out.push(`    ${c(DIM, "none")}`);
   const widest = Math.max(0, ...report.islands.map((i) => i.class.length));
@@ -981,9 +987,16 @@ function renderNodeIslands(
     if (details.length > 0) out.push(`          ${c(DIM, details.join("; "))}`);
   }
   for (const m of report.userModules) {
+    // The packages only this module imports run inside its island.
+    const inside = report.packages
+      .filter((p) => p.status === "inside" && p.islands.includes(m.file))
+      .map((p) => p.package);
     out.push(
-      `    ${c(YELLOW, "marked".padEnd(widest))}  ${displayPath(m.file, root)} ${c(DIM, `(user module, marked by ${m.source === "cli" ? "--node-island" : "nodeIslands.modules"})`)}`,
+      m.source === "auto"
+        ? `    ${c(YELLOW, "module".padEnd(widest))}  ${displayPath(m.file, root)} ${c(DIM, `(user module${m.reason === undefined ? "" : `: ${capMessage(m.reason)}`})`)}`
+        : `    ${c(YELLOW, "marked".padEnd(widest))}  ${displayPath(m.file, root)} ${c(DIM, `(user module, marked by ${m.source === "cli" ? "--node-island" : "nodeIslands.modules"})`)}`,
     );
+    if (inside.length > 0) out.push(`          ${c(DIM, `carries ${inside.join(", ")}`)}`);
   }
   for (const v of report.violations) {
     out.push(`    ${c(RED, v.code)}  ${capMessage(v.message)}`);
@@ -999,6 +1012,16 @@ function renderNodeIslands(
     out.push(
       `    ${c(DIM, `${counted(native.length, "package")} stay${native.length === 1 ? "s" : ""} native: ${native.map((p) => p.package).join(", ")}`)}`,
     );
+    // A native package with reasons to need Node: what the build compiled
+    // all the same (a marked construct whose lowering holds, or a refusal
+    // deferred to the operation that reaches it).
+    for (const p of native) {
+      if (p.outside === undefined) continue;
+      const more = p.outside.reasons - 1;
+      out.push(
+        `          ${c(DIM, capMessage(`${p.package} compiles with ${p.outside.class}: ${p.outside.reason}${more > 0 ? ` (+${more} more)` : ""}`))}`,
+      );
+    }
   }
   if (report.unknownPackages.length > 0) {
     out.push(
@@ -1045,13 +1068,15 @@ export function renderExplainIsland(
       );
     } else {
       out.push(`  '${query}' is not a Node island: it compiles natively`);
+      if (pkg.outside !== undefined)
+        out.push(
+          `    ${counted(pkg.outside.reasons, "reason")} it could need Node.js, first ${pkg.outside.class}: ${capMessage(pkg.outside.reason)}`,
+        );
     }
     return out.join("\n");
   }
   for (const island of matches) {
-    out.push(
-      `  ${c(BOLD, "Node island")} ${islandName(island)}   ${c(DIM, "(would-be, report-only)")}`,
-    );
+    out.push(`  ${c(BOLD, "Node island")} ${islandName(island)}`);
     if (island.path !== null) out.push(`    path        ${displayPath(island.path, opts.root)}`);
     out.push(`    class       ${island.class}: ${classDescription(island.class)}`);
     out.push(
@@ -1138,6 +1163,7 @@ function nodeIslandsEnvelope(
       path: p.path,
       status: p.status,
       islands: p.islands,
+      ...(p.outside !== undefined ? { outside: p.outside } : {}),
     })),
     violations: report.violations.map((v) => ({ code: v.code, message: v.message, ...pos(v.loc) })),
     unknownPackages: report.unknownPackages,

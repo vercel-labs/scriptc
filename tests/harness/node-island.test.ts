@@ -25,7 +25,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { beforeAll, describe, expect, test, vi } from "vitest";
-import { compile, deserializeModule } from "@scriptc/compiler";
+import { analyze, compile, deserializeModule } from "@scriptc/compiler";
 import { definedFunctionNames, nodeIslandSymbols } from "../../scripts/zero-cost-compare.mjs";
 import { libnodePack } from "./libnode.js";
 
@@ -1309,15 +1309,17 @@ test("a program module that runs in an island is never a deferral candidate", as
   }
 }, 300_000);
 
-// A use of a Node 24 global native code does not provide is the one runtime
-// refusal JavaScript defers honestly: the statement throws where it is
-// reached (SC2020, host-global), so a package that keeps such a path inside
-// a function body keeps compiling natively (jose's CompressionStream). Only
-// a use in module code, which throws before the module finishes evaluating,
-// makes the package a Node island. Needs no libnode pack: the native build
-// links without one, and the island build stops before linking without one.
-test("a host-global fence inside a function body keeps its package native", async () => {
-  const dir = join(outDir, "host-global-fence");
+// A JavaScript statement that does not compile defers its refusal to the
+// operation that reaches it (a runtime fence). A fence in a package's module
+// code throws before the module finishes evaluating, so that package runs in
+// a Node island; where the policy forbids the island the build fails by
+// name. A fence inside a function body (a use of a Node 24 global native code
+// does not provide, here: jose's CompressionStream shape) stays the deferred
+// refusal it is, and the build says so with SC6006 unless the package is
+// named in `--npm-static`. Needs no libnode pack: the native builds link
+// without one, and an island build stops before linking without one.
+test("a reached runtime fence islands its package or is reported", async () => {
+  const dir = join(outDir, "reached-fence");
   rmSync(dir, { recursive: true, force: true });
   const writePackage = (name: string, body: string): void => {
     const at = join(dir, "node_modules", name);
@@ -1366,27 +1368,112 @@ test("a host-global fence inside a function body keeps its package native", asyn
       "",
     ].join("\n"),
   );
-  const native = await compile(entry("fenced-body"), {
-    outPath: join(dir, "fenced-body"),
-    outDir: dir,
-    sanitize,
-  });
-  expect(native.ok ? [] : native.diagnostics.map((d) => `${d.code}: ${d.message}`)).toEqual([]);
+  type Options = NonNullable<Parameters<typeof compile>[1]>;
+  const build = (name: string, out: string, options: Partial<Options> = {}) =>
+    compile(entry(name), { outPath: join(dir, out), outDir: dir, sanitize, ...options });
+  const messages = (result: Awaited<ReturnType<typeof compile>>): string[] =>
+    result.ok ? [] : result.diagnostics.map((d) => `${d.code}: ${d.message}`);
+
+  // A build that reuses a cached executable does not lower the program and
+  // so repeats none of its warnings: this one has to lower.
+  const cache = process.env["SCRIPTC_NO_CACHE"];
+  process.env["SCRIPTC_NO_CACHE"] = "1";
+  let native: Awaited<ReturnType<typeof compile>>;
+  try {
+    native = await build("fenced-body", "fenced-body");
+  } finally {
+    if (cache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+    else process.env["SCRIPTC_NO_CACHE"] = cache;
+  }
+  expect(messages(native)).toEqual([]);
   if (!native.ok) return;
   expect((native.warnings ?? []).map((d) => d.code)).not.toContain("SC8001");
+  expect((native.warnings ?? []).filter((d) => d.code === "SC6006").map((d) => d.message)).toEqual([
+    expect.stringMatching(
+      /^npm package 'fenced-body' compiles with an operation the program can reach that does not compile: it throws when the program reaches it \(first SC2020: /,
+    ),
+  ]);
   expect(await run(native.binaryPath, [])).toEqual({ stdout: "native\n", stderr: "", code: 0 });
+  // Named in --npm-static, the package's fences are the user's choice.
+  const named = await build("fenced-body", "fenced-body-named", { npmStatic: ["fenced-body"] });
+  expect(messages(named)).toEqual([]);
+  if (named.ok) expect((named.warnings ?? []).map((d) => d.code)).not.toContain("SC6006");
 
-  const islanded = await compile(entry("fenced-module"), {
-    outPath: join(dir, "fenced-module"),
-    outDir: dir,
-    sanitize,
-  });
-  if (islanded.ok)
-    expect(
-      (islanded.warnings ?? []).filter((d) => d.code === "SC8001").map((d) => d.message),
-    ).toEqual([expect.stringContaining("'fenced-module@1.0.0' runs in a Node island")]);
+  // The island list survives an executable cache hit; the notes do not.
+  const islanded = await build("fenced-module", "fenced-module");
+  if (islanded.ok) expect(islanded.islands?.packages).toEqual(["fenced-module"]);
   else expect(islanded.diagnostics.map((d) => d.code)).toContain("SC8005");
+  // Where the package may not run in Node, the fence that islands it fails
+  // the build instead.
+  for (const nodeIslands of [{ mode: "off" }, { mode: "explicit" }] as const) {
+    expect(
+      messages(await build("fenced-module", "fenced-module-refused", { nodeIslands })),
+    ).toEqual([
+      expect.stringMatching(
+        /^SC8002: npm package 'fenced-module' is outside the native subset \(2 operations the program can reach do not compile, first R1\.6 SC2020: 'FormData' is a Node global that native code does not provide\) and Node islands are off$/,
+      ),
+    ]);
+  }
+  expect(
+    messages(
+      await build("fenced-module", "fenced-module-refused", {
+        nodeIslands: { native: ["fenced-module"] },
+      }),
+    ),
+  ).toEqual([
+    expect.stringMatching(
+      /^SC8003: npm package 'fenced-module' is marked native but is outside the native subset: 2 operations the program can reach do not compile, first R1\.6 SC2020: /,
+    ),
+  ]);
 }, 300_000);
+
+// A coverage analysis makes the build's island decision with the build's
+// functions (node-islands/decide.ts, growth.ts), round by round, so it names
+// the islands the build runs and fails exactly when the build fails. One
+// program per way a set is decided: a package refused before lowering, a
+// fence in module code, a require() of an island from a CommonJS entry
+// (bound only by the island reload), a nested require, a module that runs
+// in Node, a refusal no island can place, an island build that fails, a
+// TypeScript module the project marks to run in Node, and two marks the
+// build refuses (the entry module, a module Node cannot strip).
+// IR output needs no libnode pack.
+test("coverage names the islands a build runs", async () => {
+  const entries = [
+    "tests/corpus/6819-node-island-fenced/main.ts",
+    "tests/corpus/6825-node-island-init-fence/main.ts",
+    "tests/corpus/6880-node-island-cjs-entry/main.js",
+    "tests/corpus/6882-node-island-nested-require/main.js",
+    "tests/corpus/8731-node-island-implicit-global/main.cjs",
+    "tests/fixtures/npm/cases/self-name/main.ts",
+    "tests/fixtures/npm/cases/create-require/main.ts",
+    "tests/corpus/8874-node-island-marked-ts-module/main.ts",
+    "tests/diagnostics/node-island-marked-entry/main.ts",
+    "tests/diagnostics/node-island-marked-strip/main.ts",
+  ];
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-island-agree-"));
+  try {
+    for (const relative of entries) {
+      const entry = join(repoRoot, relative);
+      const { coverage } = analyze(entry, {});
+      const built = await compile(entry, {
+        outputKind: "ir",
+        outPath: join(dir, "main.ir.json"),
+        outDir: dir,
+      });
+      const blockers = coverage.diagnostics.filter((d) => !d.code.startsWith("SC6"));
+      expect(!coverage.preflightFailed && blockers.length === 0, relative).toBe(built.ok);
+      if (!built.ok) continue;
+      expect((coverage.nodeIslands?.islands ?? []).map((i) => i.package).sort(), relative).toEqual(
+        [...(built.islands?.packages ?? [])].sort(),
+      );
+      expect((coverage.nodeIslands?.userModules ?? []).map((m) => m.file).sort(), relative).toEqual(
+        [...(built.islands?.modules ?? [])].sort(),
+      );
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 600_000);
 
 // Lowering checks every argument and result type for JSON data; IR output
 // needs no libnode pack.

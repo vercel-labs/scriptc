@@ -1480,10 +1480,17 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
       },
       { package: "escape-string-regexp", status: "static" },
     ]);
-    // Report package eligibility rather than errors in unselected source.
+    // Report package eligibility rather than errors in unselected source. A
+    // build runs the ineligible package in a Node island, so its refusal is
+    // that island's reason and not a blocker.
+    expect(coverage.diagnostics.filter((d) => d.code === "SC2013")).toEqual([]);
     expect(
-      coverage.diagnostics.some((d) => d.code === "SC2013" && d.message.includes("typegapped")),
-    ).toBe(true);
+      coverage.nodeIslands?.islands.map((i) => [
+        i.package,
+        i.class,
+        i.reason.includes("no own .d.ts"),
+      ]),
+    ).toEqual([["typegapped", "packaging", true]]);
   }, 120_000);
 
   test("opted-in npm packages retain imports deeper than four JavaScript modules", async () => {
@@ -2239,7 +2246,10 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
   test("a copied workspace member classifies identically to a symlinked one", () => {
     const { coverage } = analyze(join(fixturesRoot, "npm/cases/workspace-copied/main.ts"));
     expect(coverage.preflightFailed).toBe(false);
-    const all = JSON.stringify(coverage.diagnostics);
+    // The member is refused as a package and runs in a Node island, as an
+    // installed copy does: the island names it, and no diagnostic reads its
+    // source as the program's.
+    const all = JSON.stringify([coverage.diagnostics, coverage.nodeIslands?.islands ?? []]);
     expect(all).toContain("wscopied");
     expect(all).not.toContain("nothing installed resolves");
     expect(all).not.toContain("implicitly has an 'any' type");

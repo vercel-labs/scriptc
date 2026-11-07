@@ -1,7 +1,9 @@
-/* The Node island report: which packages and user modules would run in a
- * Node island, and why (DESIGN.md §1.3–§1.7). Report-only: the decisions
- * are computed from the detector and the policy, and nothing about the
- * build changes.
+/* The Node island report: which packages and user modules run in a Node
+ * island, and why (DESIGN.md §1.3–§1.7). With `decided` (a coverage
+ * analysis), the islands are the ones the build's decision chose
+ * (decide.ts and growth.ts), and the report explains them; without it (the
+ * growth rules reading a package's class), every package with a reason is
+ * listed.
  *
  *  1. Reasons per package instance: pre-scan markers in its modules,
  *     refusals and runtime fences the lowering produced in its modules, and
@@ -35,10 +37,10 @@ import {
   type NodeIslandReport,
   type UserModuleIsland,
 } from "./summary.js";
-import { type IslandPackage, nodeIslandSet, type NodeIslandSet } from "./boundary.js";
+import type { IslandModule, IslandPackage } from "./boundary.js";
 import { packageDirOf, packageVersionOf } from "./origin.js";
 import { isMarkedUserModule, type NodeIslandPolicy } from "./policy.js";
-import { classRank, reportRank, ruleInfo } from "./rules.js";
+import { classRank, reportRank, ruleInfo, type NodeIslandClass } from "./rules.js";
 import type { NodeIslandScan, RefusalRecord } from "./scan.js";
 
 /** One dependency's native compilation outcome (coverage/report.ts's
@@ -58,6 +60,14 @@ export interface NodeIslandReportInput {
   diagnostics: readonly ScrDiagnostic[];
   fences: readonly ScrDiagnostic[];
   policy: NodeIslandPolicy;
+  /** The island set a build of the program runs (the decision of
+   * decide.ts and growth.ts): the report names exactly these as islands,
+   * with the build's class and reason, and leaves the policy's refusals to
+   * the diagnostics the build fails with. */
+  decided?: {
+    packages: ReadonlyMap<string, IslandPackage>;
+    modules: ReadonlyMap<string, IslandModule>;
+  };
 }
 
 /** Reasons kept per package (the report renders the first per module). */
@@ -76,37 +86,6 @@ interface PackageState {
   decision: IslandDecision;
   carriedBy: string | null;
   violation: boolean;
-}
-
-/** The packages a report decided run in Node, as the lowering's island set,
- * for the packages a build would island (`select`: refused, or marked by the
- * policy). The report is would-be: it also lists the islands a build would
- * choose for packages it compiles natively today, and those must stay
- * natively compiled here (a build's island decision skips them too,
- * executable/prepare.ts's decideNodeIslands). Coverage lowers with the set:
- * the packages' values are island handles, so a use a build resolves through
- * its island is not reported as a refusal. A package whose implementation is
- * not part of the program has no directory in the report; `resolveDir`
- * supplies the installed one (a build resolves it the same way). */
-export function reportIslandSet(
-  report: NodeIslandReport,
-  select: (name: string) => boolean,
-  resolveDir?: (name: string) => string | null,
-): NodeIslandSet {
-  const packages = new Map<string, IslandPackage>();
-  for (const island of report.islands) {
-    if (!select(island.package)) continue;
-    const dir = island.path ?? resolveDir?.(island.package) ?? null;
-    if (dir === null) continue;
-    packages.set(island.package, {
-      name: island.package,
-      version: island.version,
-      dir,
-      class: island.class,
-      reason: island.reason,
-    });
-  }
-  return nodeIslandSet(packages, new Map());
 }
 
 export function buildNodeIslandReport(input: NodeIslandReportInput): NodeIslandReport {
@@ -148,11 +127,17 @@ export function buildNodeIslandReport(input: NodeIslandReportInput): NodeIslandR
     const s = state(m.packageName, m.packageDir);
     for (const marker of m.markers) addReason(s, classifyMarker(marker));
   }
-  // Import edges. A marked user module is an island owner of its own
-  // (unless islands are off, where it is a violation and stays native).
+  // Import edges. A user module that runs in Node is an island owner of its
+  // own: one the build decided (marked, or islanded automatically for a
+  // sloppy construct, a builtin patch or a refusal of its lowering), or,
+  // without a decision, one the policy marks (unless islands are off, where
+  // it is a violation and stays native).
+  const decided = input.decided;
   const USER = "user:";
   const userIsland = (file: string): boolean =>
-    policy.mode !== "off" && isMarkedUserModule(policy, file) !== null;
+    decided !== undefined
+      ? decided.modules.has(file)
+      : policy.mode !== "off" && isMarkedUserModule(policy, file) !== null;
   const imports = new Map<string, Set<string>>();
   for (const e of input.scan.edges) {
     if (e.shim || ignored(e.to)) continue;
@@ -197,7 +182,27 @@ export function buildNodeIslandReport(input: NodeIslandReportInput): NodeIslandR
   // Decisions.
   const violations: ScrDiagnostic[] = [];
   const fallbackLoc: SrcLoc = { file: input.entry, start: 0, end: 0 };
-  for (const s of states.values()) {
+  // The build's decision: its packages are the islands, whatever reasons
+  // the report holds for the others (a package with reasons the build keeps
+  // native is a native package).
+  if (decided !== undefined) {
+    for (const island of decided.packages.values()) {
+      const target = state(island.name, island.dir);
+      // Reasons recorded before the package had a directory (a refusal of a
+      // package the program does not hold) belong to the island.
+      const unplaced = states.get(`name:${island.name}`);
+      if (unplaced !== undefined && unplaced !== target) {
+        for (const r of unplaced.reasons) addReason(target, r);
+        for (const from of unplaced.importers) target.importers.add(from);
+        target.sites.push(...unplaced.sites);
+        states.delete(unplaced.key);
+      }
+      target.island = true;
+      target.decision = policy.forcedNode.get(island.name) ?? "auto";
+    }
+    for (const s of states.values()) sortReasons(s.reasons);
+  }
+  for (const s of decided === undefined ? states.values() : []) {
     sortReasons(s.reasons);
     const forcedNode = policy.forcedNode.get(s.name);
     const forcedNative = policy.forcedNative.get(s.name);
@@ -311,12 +316,24 @@ export function buildNodeIslandReport(input: NodeIslandReportInput): NodeIslandR
         if (other.carriedBy === s.key) carries.push(other.name);
       }
       carries.sort();
+      const built = decided?.packages.get(s.name);
       islands.push({
         package: s.name,
         version,
         path: s.dir,
-        class: first === undefined ? "marked" : first.class,
-        reason: first === undefined ? markedReason(s.decision) : describe(first),
+        // The build's own class and reason (what its SC8001 note prints).
+        class:
+          built !== undefined && built.class !== ""
+            ? (built.class as NodeIslandClass)
+            : first === undefined
+              ? "marked"
+              : first.class,
+        reason:
+          built !== undefined && built.reason !== ""
+            ? built.reason
+            : first === undefined
+              ? markedReason(s.decision)
+              : describe(first),
         diagnostic: first === undefined ? null : first.code,
         decision: s.decision,
         reasons: s.reasons,
@@ -338,6 +355,15 @@ export function buildNodeIslandReport(input: NodeIslandReportInput): NodeIslandR
       path: s.dir,
       status: s.carriedBy !== null ? "inside" : reachingIslands.length > 0 ? "shared" : "native",
       islands: s.carriedBy !== null ? [ownerName(s.carriedBy)] : reachingIslands,
+      ...(s.reasons.length > 0
+        ? {
+            outside: {
+              class: s.reasons[0]!.class,
+              reason: describe(s.reasons[0]!),
+              reasons: s.reasons.length,
+            },
+          }
+        : {}),
     });
   }
   islands.sort(
@@ -356,11 +382,21 @@ export function buildNodeIslandReport(input: NodeIslandReportInput): NodeIslandR
   for (const m of input.scan.modules) {
     if (m.origin !== "user") continue;
     const marked = isMarkedUserModule(policy, m.file);
-    if (marked !== null && policy.mode !== "off") {
+    if (decided !== undefined) {
+      const module = decided.modules.get(m.file);
+      if (module !== undefined) {
+        userModules.push({
+          file: m.file,
+          source: module.decision === "auto" || marked === null ? "auto" : marked,
+          reason: module.reason,
+        });
+        continue;
+      }
+    } else if (marked !== null && policy.mode !== "off") {
       userModules.push({ file: m.file, source: marked });
       continue;
     }
-    if (marked !== null) {
+    if (marked !== null && decided === undefined) {
       violations.push(nodeIslandsOffModuleDiag(m.file, marked, { file: m.file, start: 0, end: 0 }));
     }
     if (!policy.strictUserJs) continue;
@@ -384,7 +420,7 @@ export function buildNodeIslandReport(input: NodeIslandReportInput): NodeIslandR
   unknownPackages.sort();
 
   return {
-    mode: "would-be",
+    mode: decided === undefined ? "would-be" : "build",
     policy: policy.mode,
     islands,
     packages,

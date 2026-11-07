@@ -139,7 +139,7 @@ CommonJS packages compile with Node.js's module semantics. Each `require()` eval
 
 ## Unsupported code inside a package
 
-A JavaScript package can contain operations scriptc can't compile, often in functions your program never calls. These don't fail the build: each one compiles to code that throws a runtime error if it ever runs. Coverage reports list them as deferred sites, so review the list and test the parts of the package your program uses. Sites in a module's top-level code are listed under `runs at startup`: that code runs when the module loads, at startup for a module the program imports.
+A JavaScript package can contain operations scriptc can't compile, often in functions your program never calls. These don't fail the build: each one compiles to code that throws a runtime error if it ever runs. When your program can reach such an operation, the build prints an `SC6006` warning that names the package, the number of operations, and the first one. Coverage reports list every one as a deferred site, so review the list and test the parts of the package your program uses. Naming the package with `--npm-static` accepts its deferred operations and drops the warning. Sites in a module's top-level code are listed under `runs at startup`: that code runs when the module loads, at startup for a module the program imports.
 
 ## Fix a package's types
 

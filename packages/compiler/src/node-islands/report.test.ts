@@ -9,6 +9,7 @@ import {
   type NodeIslandOptions,
 } from "./policy.js";
 import { buildNodeIslandReport, type NpmOutcome } from "./report.js";
+import { hasNodeIslandFindings } from "./summary.js";
 import type { NodeIslandScan, PackageEdge, ScannedModule } from "./scan.js";
 
 const NM = "/app/node_modules";
@@ -279,5 +280,106 @@ describe("reachability", () => {
     expect(r.violations.map((v) => v.code)).toEqual(["SC8002"]);
     expect(r.violations[0]!.message).toContain(`user module '${file}'`);
     expect(r.userJs.map((d) => d.code)).toEqual(["SC8101"]);
+  });
+});
+
+describe("the report of a build's decision", () => {
+  const npm: NpmOutcome[] = [
+    { package: "a", status: "static" },
+    { package: "c", status: "static" },
+    { package: "d", status: "static" },
+  ];
+  const policy = nodeIslandPolicy(emptyProjectConfig(), {});
+  const legacy = "/app/legacy.cjs";
+  /** legacy.cjs imports a and d; main.ts imports c, and a too when `shared`. */
+  const scan = (shared: boolean): NodeIslandScan => ({
+    modules: [
+      mod(null, "/app/main.ts"),
+      mod(null, legacy),
+      mod("a", `${NM}/a/index.js`, [marker(`${NM}/a/index.js`, "R2.1", "constructor-function")]),
+      mod("c", `${NM}/c/index.js`),
+      mod("d", `${NM}/d/index.js`),
+    ],
+    edges: [
+      edge(null, "c"),
+      ...(shared ? [edge(null, "a")] : []),
+      { ...edge(null, "a"), fromFile: legacy, loc: { file: legacy, start: 0, end: 1 } },
+      { ...edge(null, "d"), fromFile: legacy, loc: { file: legacy, start: 0, end: 1 } },
+    ],
+    refusals: [],
+  });
+  const module = { file: legacy, class: "object-model", reason: "'with' statement" };
+
+  test("a package only an automatically islanded module imports runs inside that island", () => {
+    const r = buildNodeIslandReport({
+      entry: "/app/main.ts",
+      scan: scan(false),
+      npm,
+      diagnostics: [],
+      fences: [],
+      policy,
+      decided: {
+        packages: new Map(),
+        modules: new Map([[legacy, { ...module, decision: "auto" as const }]]),
+      },
+    });
+    expect(r.mode).toBe("build");
+    expect(r.islands).toEqual([]);
+    expect(r.userModules.map((m) => [m.file, m.source])).toEqual([[legacy, "auto"]]);
+    expect(r.packages.map((p) => [p.package, p.status, p.islands])).toEqual([
+      ["a", "inside", [legacy]],
+      ["c", "native", []],
+      ["d", "inside", [legacy]],
+    ]);
+    // Imported by native code too, the package compiles and is also reached
+    // from the island.
+    const both = buildNodeIslandReport({
+      entry: "/app/main.ts",
+      scan: scan(true),
+      npm,
+      diagnostics: [],
+      fences: [],
+      policy,
+      decided: {
+        packages: new Map(),
+        modules: new Map([[legacy, { ...module, decision: "auto" as const }]]),
+      },
+    });
+    expect(both.packages.map((p) => [p.package, p.status, p.islands])).toEqual([
+      ["a", "shared", [legacy]],
+      ["c", "native", []],
+      ["d", "inside", [legacy]],
+    ]);
+  });
+
+  test("a native package's reason is a finding when nothing is islanded", () => {
+    const r = buildNodeIslandReport({
+      entry: "/app/main.ts",
+      scan: scan(true),
+      npm,
+      diagnostics: [],
+      fences: [],
+      policy,
+      decided: { packages: new Map(), modules: new Map() },
+    });
+    expect(r.islands).toEqual([]);
+    expect(r.userModules).toEqual([]);
+    expect(r.packages.map((p) => [p.package, p.status, p.outside?.class])).toEqual([
+      ["a", "native", "object-model"],
+      ["c", "native", undefined],
+      ["d", "native", undefined],
+    ]);
+    expect(hasNodeIslandFindings(r)).toBe(true);
+    // Without a reason on any package there is nothing to show.
+    const plain = buildNodeIslandReport({
+      entry: "/app/main.ts",
+      scan: { ...scan(true), modules: scan(true).modules.map((m) => ({ ...m, markers: [] })) },
+      npm,
+      diagnostics: [],
+      fences: [],
+      policy,
+      decided: { packages: new Map(), modules: new Map() },
+    });
+    expect(hasNodeIslandFindings(plain)).toBe(false);
   });
 });

@@ -155,20 +155,21 @@ describe.skipIf(skip)("Node island handles", () => {
     ]);
   }, 300_000);
 
-  test("without islands, a package's deferred refusals refuse at run time", async () => {
-    // With --node-islands=off, packages whose native builds have deferred
-    // refusals compile natively and report them when they run: orderkit's
-    // createRequire call with a computed specifier (SC2020), and the first
-    // one cjs-esm-named reaches in its packages (esmbridge, cjszoo).
+  test("without islands, a package the fence rule islands fails the build", async () => {
+    // With --node-islands=off, a package whose native build holds a refusal
+    // that fires as it loads or needs the runtime itself is a build error
+    // (SC8002), as the island note's hint says, not a program that throws
+    // when it runs: orderkit's createRequire call with a computed specifier
+    // (SC2020), and cjs-esm-named's packages (esmbridge, cjszoo).
     const cases = [
-      ["order-off", "tests/fixtures/node-island/order/main.ts", /\[SC2020 at [^\]]*\/orderkit\//],
+      ["order-off", "tests/fixtures/node-island/order/main.ts", /^npm package 'orderkit' /],
       [
         "esm-named-off",
         "tests/fixtures/npm/cases/cjs-esm-named/main.ts",
-        /\[SC\d{4} at [^\]]*\/node_modules\/(?:esmbridge|cjszoo)\//,
+        /^npm package '(?:esmbridge|cjszoo)' /,
       ],
     ] as const;
-    for (const [name, entry, code] of cases) {
+    for (const [name, entry, named] of cases) {
       const dir = join(outDir, name);
       mkdirSync(dir, { recursive: true });
       const result = await compile(join(repoRoot, entry), {
@@ -177,10 +178,14 @@ describe.skipIf(skip)("Node island handles", () => {
         sanitize,
         nodeIslands: { mode: "off" },
       });
-      expect(result.ok, name).toBe(true);
-      if (!result.ok) continue;
-      expect((result.warnings ?? []).map((d) => d.code)).not.toContain("SC8001");
-      expect(await refusal(result.binaryPath), name).toMatch(code);
+      expect(result.ok, name).toBe(false);
+      if (result.ok) continue;
+      const refused = result.diagnostics.filter((d) => d.code === "SC8002");
+      expect(refused.length, name).toBeGreaterThan(0);
+      for (const d of refused) {
+        expect(d.message, name).toMatch(named);
+        expect(d.message, name).toContain("and Node islands are off");
+      }
     }
   }, 300_000);
 

@@ -52,7 +52,11 @@ const KNOWN: Record<string, Known> = {
   "cjs-lexer-aligned": { island: true },
   "commander-calc": { run: "SC1090", argvs: [["--help"]] },
   "commander-calc-async": { run: "SC1090", argvs: [["--help"]] },
-  "create-require": { run: "SC1090" },
+  // cjszoo's module code holds refusals that fire when it loads, so the
+  // package runs in a Node island, and the island does not bind the
+  // program's createRequire() of it: the build fails by name. It used to
+  // fall back to the native build, which threw SC1090 when it ran.
+  "create-require": { build: "SC2013" },
   "dotfolder": { island: true },
   "dual-package-kinds": { island: true },
   "dynamic-import": { island: true },

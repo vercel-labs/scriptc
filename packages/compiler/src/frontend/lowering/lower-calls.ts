@@ -10682,6 +10682,19 @@ function lowerObjectStaticCall(
     if (receiver.type.kind !== "dyn") lowerer.badType(argNode, lowerer.typeOf(argNode));
     if (receiver.kind === "dynFrom" && receiver.value.type.kind === "record")
       receiver = { ...receiver, liveRef: true };
+    // The same native list as over a checked-dynamic operand above.
+    if (
+      member === "values" &&
+      !isJsSourceFile(ts.getSourceFileOfNode(call)) &&
+      consumesValueList(call)
+    )
+      return {
+        kind: "libCall",
+        fn: "dyn.objValueList",
+        args: [receiver],
+        type: arrayOf(DYN),
+        loc: locOf(call),
+      };
     return {
       kind: "libCall",
       fn: member === "values" ? "dyn.objValues" : "dyn.objEntries",
@@ -11255,8 +11268,9 @@ function consumesEntryPairs(call: ts.CallExpression): boolean {
   );
 }
 
-/** Whether an Object.values result is only iterated, indexed or passed to
- * a read-only array method, so no code observes or changes its array
+/** Whether an Object.values result is only iterated, indexed, passed to an
+ * array method that reads it, or handed to the flatten of a `.flatMap`
+ * over such a list, so no code observes or changes its array
  * representation. A bare `.length` read keeps the checked-dynamic array,
  * which measures as fast. */
 function consumesValueList(call: ts.CallExpression): boolean {
@@ -11266,12 +11280,77 @@ function consumesValueList(call: ts.CallExpression): boolean {
   if (ts.isForOfStatement(parent)) return parent.expression === node && !parent.awaitModifier;
   if (ts.isElementAccessExpression(parent))
     return parent.expression === node && !isWriteTarget(parent);
+  if (ts.isArrowFunction(parent)) return parent.body === node && flattensIntoValueList(parent);
   if (!ts.isPropertyAccessExpression(parent) || parent.expression !== node) return false;
   return (
     VALUE_LIST_METHODS.has(parent.name.text) &&
     ts.isCallExpression(parent.parent) &&
     parent.parent.expression === parent
   );
+}
+
+/** Whether `callback` is the inline callback of a `.flatMap` over a value
+ * list: the flatten reads the elements of the array it returns and keeps
+ * nothing else of it. */
+function flattensIntoValueList(callback: ts.ArrowFunction): boolean {
+  let node: ts.Node = callback;
+  while (ts.isParenthesizedExpression(node.parent)) node = node.parent;
+  const call = node.parent;
+  return (
+    ts.isCallExpression(call) &&
+    call.arguments.nodes[0] === node &&
+    ts.isPropertyAccessExpression(call.expression) &&
+    call.expression.name.text === "flatMap" &&
+    isValueListChain(call.expression.expression)
+  );
+}
+
+/** Whether an expression is spelled as a value list: an `Object.values`
+ * call that hands its result to a consumer above, or a list one of the
+ * array methods below builds from one. Only a prediction of how the
+ * expression lowers (a link can still fall back to the checked-dynamic
+ * array); its callers stay correct either way. */
+export function isValueListChain(expr: ts.Expression): boolean {
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  if (!ts.isCallExpression(expr) || !ts.isPropertyAccessExpression(expr.expression)) return false;
+  const access = expr.expression;
+  if (access.name.text === "values")
+    return (
+      ts.isIdentifier(access.expression) &&
+      access.expression.text === "Object" &&
+      consumesValueList(expr)
+    );
+  return VALUE_LIST_RESULT_METHODS.has(access.name.text) && isValueListChain(access.expression);
+}
+
+/** The return type of a `.flatMap` callback that returns a value list: the
+ * native list, where the checker's `object[]` maps to the checked-dynamic
+ * array. Undefined for every other callback, which keeps its own type. */
+export function valueListCallbackReturn(
+  lowerer: Lowerer,
+  callback: ts.Expression,
+): IrType | undefined {
+  while (ts.isParenthesizedExpression(callback)) callback = callback.expression;
+  if (!ts.isArrowFunction(callback) || isJsSourceFile(ts.getSourceFileOfNode(callback)))
+    return undefined;
+  let body: ts.Node = callback.body;
+  while (ts.isParenthesizedExpression(body)) body = body.expression;
+  if (
+    !ts.isCallExpression(body) ||
+    body.questionDotToken ||
+    !ts.isPropertyAccessExpression(body.expression) ||
+    body.expression.questionDotToken ||
+    body.expression.name.text !== "values" ||
+    !lowerer.isStdlibGlobal(body.expression.expression, "Object") ||
+    body.arguments.nodes.length !== 1 ||
+    ts.isSpreadElement(body.arguments.nodes[0]!) ||
+    !consumesValueList(body)
+  )
+    return undefined;
+  const type = lowerer.typeOf(body);
+  return lowerer.checker.isArrayType(type) && lowerer.mapTypeOf(type)?.kind === "dyn"
+    ? arrayOf(DYN)
+    : undefined;
 }
 
 /** Whether an access is assigned, updated or deleted. */
@@ -11293,7 +11372,24 @@ function isWriteTarget(access: ts.Expression): boolean {
   return ts.isDeleteExpression(parent);
 }
 
-const VALUE_LIST_METHODS = new Set(["every", "findIndex", "forEach", "join", "reduce", "some"]);
+/** The array methods with native lowerings over a list of checked-dynamic
+ * values (array-methods.ts DYN_ELEMENT_METHODS) that only read it. */
+const VALUE_LIST_METHODS = new Set([
+  "every",
+  "filter",
+  "findIndex",
+  "findLastIndex",
+  "flatMap",
+  "forEach",
+  "join",
+  "map",
+  "reduce",
+  "reduceRight",
+  "some",
+]);
+
+/** Those that answer a new list. */
+const VALUE_LIST_RESULT_METHODS = new Set(["filter", "flatMap", "map"]);
 
 const ENTRY_PAIR_CALLBACK_METHODS = new Set([
   "every",

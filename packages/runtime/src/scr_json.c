@@ -14559,10 +14559,11 @@ void scr_dyn_check_fail(const ScrDynPath *path, const char *want, const ScrDyn *
 }
 
 /* ── recursive shapes: cycle-aware dynMatch and the dynCheck memo ──────
- * The tables are open-addressed sets keyed by a dyn value's address and a
- * generated helper's address. A visit session lasts while any matcher or
- * builder of a type holding a recursive shape runs; the memo and the
- * capsule views are dropped when the outermost one returns. */
+ * The tables are open-addressed sets keyed by a dyn value's identity (the
+ * box, or the value a handle box carries) and a generated helper's
+ * address. A visit session lasts while any matcher or builder of a type
+ * holding a recursive shape runs; the memo and the capsule views are
+ * dropped when the outermost one returns. */
 typedef struct {
   ScrDyn *d; /* NULL marks an empty slot */
   const void *helper;
@@ -14613,8 +14614,16 @@ static SCR_TL bool scr_dyn_session_ran_code;
 /* Tables up to this many slots stay allocated for the next session. */
 #define SCR_DYN_VISIT_KEEP 4096
 
+/* The value a visit tracks. A handle is tracked by the value behind its
+ * box: a member read of an island answers a fresh box for the same Node
+ * value every time, so the box address does not identify it. */
+static const void *scr_dyn_visit_identity(const ScrDyn *d) {
+  const void *refer = d->kind == SCR_DYN_HANDLE ? d->v.handle.ptr : NULL;
+  return refer != NULL ? refer : (const void *)d;
+}
+
 static size_t scr_dyn_visit_slot(const ScrDynVisitSet *s, const ScrDyn *d, const void *helper) {
-  uint64_t h = (uint64_t)(uintptr_t)d * 0x9E3779B97F4A7C15ull;
+  uint64_t h = (uint64_t)(uintptr_t)scr_dyn_visit_identity(d) * 0x9E3779B97F4A7C15ull;
   h ^= (uint64_t)(uintptr_t)helper * 0xC2B2AE3D27D4EB4Full;
   h ^= h >> 29;
   return (size_t)h & (s->cap - 1);
@@ -14623,10 +14632,11 @@ static size_t scr_dyn_visit_slot(const ScrDynVisitSet *s, const ScrDyn *d, const
 static ScrDynVisit *scr_dyn_visit_find(const ScrDynVisitSet *s, const ScrDyn *d,
                                        const void *helper) {
   if (s->count == 0) return NULL;
+  const void *identity = scr_dyn_visit_identity(d);
   for (size_t i = scr_dyn_visit_slot(s, d, helper);; i = (i + 1) & (s->cap - 1)) {
     ScrDynVisit *e = &s->slots[i];
     if (!e->d) return NULL;
-    if (e->d == d && e->helper == helper) return e;
+    if (scr_dyn_visit_identity(e->d) == identity && e->helper == helper) return e;
   }
 }
 
@@ -14811,6 +14821,9 @@ void scr_dyn_release_held(ScrDyn *d) {
  * value twice takes two references. */
 static bool scr_dyn_visit_shared(const ScrDyn *d) {
   if (!d) return false;
+  /* A handle box is made for the read that answers it, so its reference
+   * count says nothing about whether the visit meets the value again. */
+  if (d->kind == SCR_DYN_HANDLE) return true;
   if (d->rc == SIZE_MAX) return true;
   return d->rc - (scr_dyn_visit_held == d ? 1 : 0) >= 2;
 }
@@ -16732,15 +16745,12 @@ static ScrDyn *scr_json_key_arg(const ScrStr *key, size_t index) {
   return name;
 }
 
-#ifdef SCR_NODE_ISLANDS
-/* Whether a Node island value is a symbol (`typeof` answers it). */
-static bool scr_json_island_symbol(const ScrDyn *value) {
-  ScrStr *type = scr_ni_dyn_ops->type_of((ScrDyn *)value);
-  bool symbol = type->len == 6 && memcmp(type->data, "symbol", 6) == 0;
-  scr_str_release(type);
-  return symbol;
+/* Whether a member answers toJSON: a native function, or an island function
+ * a spread or Object.assign copied onto the object. */
+static bool scr_json_callable(const ScrDyn *value) {
+  if (value->kind == SCR_DYN_FUNC) return true;
+  return scr_ni_dyn_handle(value) && scr_ni_dyn_ops->is_function(value);
 }
-#endif
 
 static ScrDyn *scr_json_to_json_at(ScrDyn *value, const ScrStr *key, size_t index) {
   /* An instance of a class declared `extends Date` converts through its
@@ -16773,8 +16783,7 @@ static ScrDyn *scr_json_to_json_at(ScrDyn *value, const ScrStr *key, size_t inde
     /* An island object's toJSON runs in Node, like any other member read. */
     ScrDyn *method = scr_dyn_obj_read(inspected, "toJSON", 6);
     if (!method) { scr_dyn_release(view); scr_dyn_release(value); return NULL; }
-    if (method->kind == SCR_DYN_FUNC ||
-        (scr_ni_dyn_handle(method) && scr_ni_dyn_ops->is_function(method))) {
+    if (scr_json_callable(method)) {
       ScrDyn *name = scr_json_key_arg(key, index);
       ScrDyn *args[] = { name };
       scr_dyn_this_push_dyn(value);
@@ -16792,7 +16801,7 @@ static ScrDyn *scr_json_to_json_at(ScrDyn *value, const ScrStr *key, size_t inde
   } else if (inspected->kind == SCR_DYN_OBJ) {
     ScrDyn *method = scr_dyn_obj_read(inspected, "toJSON", 6);
     if (!method) { scr_dyn_release(view); scr_dyn_release(value); return NULL; }
-    if (method->kind == SCR_DYN_FUNC) {
+    if (scr_json_callable(method)) {
       ScrDyn *name = scr_json_key_arg(key, index);
       ScrDyn *args[] = { name };
       scr_dyn_this_push_dyn(value);
@@ -16823,11 +16832,15 @@ static ScrDyn *scr_json_replace(const ScrDyn *holder, const ScrStr *key, const S
 }
 
 static bool scr_json_omitted(const ScrDyn *value) {
-#ifdef SCR_NODE_ISLANDS
-  /* An island symbol is omitted like a native one. */
-  if (scr_ni_dyn_handle(value) && scr_json_island_symbol(value)) return true;
-#endif
-  if (scr_ni_dyn_handle(value)) return scr_ni_dyn_ops->is_function(value);
+  if (scr_ni_dyn_handle(value)) {
+    if (scr_ni_dyn_ops->is_function(value)) return true;
+    /* A symbol has no JSON text: an object member is omitted and an array
+     * element is null, as for a native symbol. */
+    ScrStr *type = scr_ni_dyn_ops->type_of((ScrDyn *)value);
+    bool symbol = type != NULL && type->len == 6 && memcmp(type->data, "symbol", 6) == 0;
+    scr_str_release(type);
+    return symbol;
+  }
   return value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_FUNC || value->kind == SCR_DYN_SYMBOL;
 }
 

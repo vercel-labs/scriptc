@@ -14180,7 +14180,12 @@ export class Lowerer {
     // ts7/checker.ts withPanicFence): the analysis learns nothing from the
     // node, and a statement that does lower it meets the panic inside its
     // own fence, which reports it there.
-    return panicSafe(() => this.typeOfNode(node), this.checker.getAnyType());
+    try {
+      return this.typeOfNode(node);
+    } catch (e) {
+      if (isCheckerPanic(e)) return this.checker.getAnyType();
+      throw e;
+    }
   }
 
   private typeOfNode(node: ts.Node): ts.Type {

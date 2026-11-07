@@ -134,6 +134,7 @@ export const DIAGNOSTIC_CODES = {
   SC8021: "Node island evaluation notes (deferred or at startup)",
   SC8022: "island code extends a class of a compiled module",
   SC8023: "Node island build failed; built natively with runtime fences",
+  SC8024: "Node island retry did not type-check; diagnostics are from the build before it",
   SC8030: "type patch: no range covers the installed copy",
   SC8031: "type patch: selector matches nothing",
   SC8032: "type patch: declaration already has the type",

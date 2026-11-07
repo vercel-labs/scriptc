@@ -1319,3 +1319,50 @@ test.skipIf(skip)(
   },
   300_000,
 );
+
+// A build that fails is tried again with more of the program in Node
+// islands, and an island is typed by its declarations: the retry's program
+// can fail to type-check where the build before it did not. Reported alone,
+// those checker errors replace every diagnostic of the build the user wrote
+// against. Here `hljs` is compiled statically first (its JavaScript takes
+// any `code`), the dynamic import of its own CommonJS module refuses, and
+// the retry islands it, where its declarations want a string. The build
+// reports the refusal it had before the retry, and a note carries the
+// retry's first error.
+test.skipIf(skip)(
+  "an island retry that does not type-check reports the build before it",
+  async () => {
+    const dir = join(outDir, "island-retry-typecheck");
+    rmSync(dir, { recursive: true, force: true });
+    cpSync(join(repoRoot, "tests/corpus/8826-island-typed-beside-static"), dir, {
+      recursive: true,
+    });
+    const main = join(dir, "main.ts");
+    writeFileSync(
+      main,
+      `${readFileSync(main, "utf8")}console.log(hljs.highlight(42, { language: "easy" }).value);\n`,
+    );
+    const result = await compile(main, {
+      outPath: join(dir, "main"),
+      outDir: dir,
+      sanitize,
+      npmStatic: ["hljs", "plainpkg"],
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    const codes = result.diagnostics.map((d) => d.code);
+    expect(codes).not.toContain("SC0001");
+    expect(codes.at(-1)).toBe("SC8024");
+    expect(result.diagnostics.slice(0, -1).map((d) => `${d.code}: ${d.message}`)).toEqual([
+      expect.stringMatching(
+        /^SC1090: dynamic import of the program's own CommonJS module 'hljs\/lib\/index\.js'/,
+      ),
+    ]);
+    const note = result.diagnostics.at(-1)!.message;
+    expect(note).toContain("running 'hljs' in a Node island was tried and did not type-check");
+    expect(note).toContain(
+      "Argument of type 'number' is not assignable to parameter of type 'string'",
+    );
+  },
+  300_000,
+);

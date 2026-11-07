@@ -19,7 +19,7 @@ import {
   type NodeIslandsMode,
 } from "../node-islands/policy.js";
 import { TIER_MODES, type TierMode } from "../frontend/tier-analysis.js";
-import { buildEnvelope } from "../diagnostics/envelope.js";
+import { buildEnvelope, isNodeIslandNoticeCode } from "../diagnostics/envelope.js";
 import {
   renderConfigWarnings,
   renderTypePatchWarnings,
@@ -711,7 +711,8 @@ async function main(args: string[], host: CliHost): Promise<number> {
       process.stderr.write(
         renderDiagnostics(result.diagnostics, result.sourceTexts, { color }) + "\n",
       );
-      const n = result.diagnostics.length;
+      // A failed build's note (SC8024) is not one of its errors.
+      const n = result.diagnostics.filter((d) => !isNodeIslandNoticeCode(d.code)).length;
       process.stderr.write(`\n${n} error${n === 1 ? "" : "s"}.\n`);
       throw new CliExit(1);
     }

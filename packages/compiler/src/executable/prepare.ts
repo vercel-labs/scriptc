@@ -12,6 +12,7 @@ import {
   nodeIslandReaderStripDiag,
   nodeIslandStripDiag,
   nodeIslandRetryFailedDiag,
+  nodeIslandRetryTypecheckDiag,
   npmStaticRefusalDiag,
   nativePackageDiag,
   iceDiag,
@@ -156,24 +157,7 @@ export function prepareExecutableModule(
       // too (the `retry`/`proper-lockfile` shape) — is islanded here under
       // the automatic policy, and the program is analysed once more.
       const late = refusalIslands(entryPath, opts, fe, refused, islanded);
-      if (late !== null) {
-        fe.dispose();
-        frontendDisposed();
-        disposed = true;
-        return prepareExecutableModule(
-          entryPath,
-          opts,
-          ffi,
-          buildPlatform,
-          createFrontend,
-          timing,
-          late,
-          retryFences,
-          unitStore,
-          lowerModules,
-        );
-      }
-      return fail(
+      const refusals = fail(
         refused.map((entry) =>
           npmStaticRefusalDiag(
             entry.package,
@@ -183,6 +167,30 @@ export function prepareExecutableModule(
           ),
         ),
       );
+      if (late !== null) {
+        fe.dispose();
+        frontendDisposed();
+        disposed = true;
+        return reportedBeforeRetry(
+          refusals,
+          prepareExecutableModule(
+            entryPath,
+            opts,
+            ffi,
+            buildPlatform,
+            createFrontend,
+            timing,
+            late,
+            retryFences,
+            unitStore,
+            lowerModules,
+          ),
+          lowerIslands,
+          late,
+          entryPath,
+        );
+      }
+      return refusals;
     }
     if (fe.preflight.length > 0) {
       // An import of a natively compiled package that preflight refuses
@@ -191,24 +199,31 @@ export function prepareExecutableModule(
       const growth = growthOf();
       const grown =
         growth === null ? null : growIslandSet(growth, lowerIslands, { preflight: fe.preflight });
+      const preflightFailure = fail(fe.preflight);
       if (grown !== null) {
         fe.dispose();
         frontendDisposed();
         disposed = true;
-        return prepareExecutableModule(
-          entryPath,
-          opts,
-          ffi,
-          buildPlatform,
-          createFrontend,
-          timing,
+        return reportedBeforeRetry(
+          preflightFailure,
+          prepareExecutableModule(
+            entryPath,
+            opts,
+            ffi,
+            buildPlatform,
+            createFrontend,
+            timing,
+            grown,
+            retryFences,
+            unitStore,
+            lowerModules,
+          ),
+          lowerIslands,
           grown,
-          retryFences,
-          unitStore,
-          lowerModules,
+          entryPath,
         );
       }
-      return fail(fe.preflight);
+      return preflightFailure;
     }
 
     try {
@@ -252,20 +267,27 @@ export function prepareExecutableModule(
       // never one round per module.
       const grownModules = loweringModules(entryPath, opts, lowered.diagnostics, lowerModules);
       if (grown !== null || grownModules !== null) {
+        const loweringFailure = fail(lowered.diagnostics);
         fe.dispose();
         frontendDisposed();
         disposed = true;
-        return prepareExecutableModule(
+        return reportedBeforeRetry(
+          loweringFailure,
+          prepareExecutableModule(
+            entryPath,
+            opts,
+            ffi,
+            buildPlatform,
+            createFrontend,
+            timing,
+            grown ?? lowerIslands,
+            retryFences,
+            unitStore,
+            grownModules ?? lowerModules,
+          ),
+          lowerIslands,
+          grown,
           entryPath,
-          opts,
-          ffi,
-          buildPlatform,
-          createFrontend,
-          timing,
-          grown ?? lowerIslands,
-          retryFences,
-          unitStore,
-          grownModules ?? lowerModules,
         );
       }
       // A failed program whose compiled packages need the runtime or a
@@ -417,6 +439,44 @@ export function prepareExecutableModule(
     }
   }
   return prepared;
+}
+
+/** The answer of a build that failed and was tried again with more of the
+ * program in Node islands. An island is typed by its declarations, so the
+ * retry's program can fail to type-check where the build before it did not.
+ * Those checker errors describe the retry's program alone: reported by
+ * themselves they replace every diagnostic of the build the user wrote
+ * against ("1 error" for a program with dozens of sites to fix). When the
+ * retry fails with checker errors the build before it did not have, the
+ * build reports what it had before the retry, and a note (SC8024) names the
+ * retry's first error. A retry that fails for any other reason, or
+ * succeeds, is the answer as before. */
+function reportedBeforeRetry(
+  before: CompileFailure,
+  retried: PreparedExecutableModule | CompileFailure,
+  known: ReadonlyMap<string, IslandPackage>,
+  grown: ReadonlyMap<string, IslandPackage> | null,
+  entryPath: string,
+): PreparedExecutableModule | CompileFailure {
+  if (retried.ok) return retried;
+  const checker = retried.diagnostics.filter((d) => d.code === "SC0001");
+  if (checker.length === 0 || before.diagnostics.some((d) => d.code === "SC0001")) return retried;
+  const added = grown === null ? [] : [...grown.keys()].filter((name) => !known.has(name)).sort();
+  const sourceTexts = new Map(before.sourceTexts);
+  for (const [file, text] of retried.sourceTexts)
+    if (!sourceTexts.has(file)) sourceTexts.set(file, text);
+  return {
+    ok: false,
+    diagnostics: [
+      ...before.diagnostics,
+      nodeIslandRetryTypecheckDiag(added, checker[0]!, checker.length, {
+        file: entryPath,
+        start: 0,
+        end: 0,
+      }),
+    ],
+    sourceTexts,
+  };
 }
 
 /** Whether two spellings name the same file (the checker resolves through

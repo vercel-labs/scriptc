@@ -606,6 +606,30 @@ export function nodeIslandRetryFailedDiag(
   };
 }
 
+/** SC8024 — a build that failed was tried again with more packages in Node
+ * islands, and that program did not type-check: an island is typed by its
+ * declarations, which can type its importers differently from the
+ * JavaScript the build before compiled. The checker errors describe the
+ * retry's program only, so the build reports the diagnostics it had before
+ * the retry and this note names the retry's first error. */
+export function nodeIslandRetryTypecheckDiag(
+  packages: readonly string[],
+  first: ScrDiagnostic,
+  count: number,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  const what =
+    packages.length === 0
+      ? "running more of the program in Node islands"
+      : `running ${packages.map((p) => `'${p}'`).join(", ")} in ${packages.length === 1 ? "a Node island" : "Node islands"}`;
+  return {
+    code: "SC8024",
+    message: `${what} was tried and did not type-check (${count} error${count === 1 ? "" : "s"}; first: ${first.code} at ${first.loc.file}:${first.loc.start}: ${first.message.split("\n", 1)[0]}); the diagnostics reported are from the build before that retry`,
+    loc,
+    hint: "fix the reported diagnostics, or mark the packages with --node-island=<pkg> to see the island build's errors",
+  };
+}
+
 /** SC8030–SC8033 — a type patch (`scriptc.typePatches`) that did not
  * apply as written: no range covers the installed copy (SC8030), its
  * selector matches nothing (SC8031), the declaration already has the type

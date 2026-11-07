@@ -8988,15 +8988,24 @@ export function isPlainDescriptorMap(
 }
 
 /** A descriptor map as Object.defineProperties and Object.create read it:
- * an ordinary object. A record literal written at the call is boxed as a
- * copy rather than by reference (nothing else holds the literal, so the
- * copy is unobservable), which is the plain object the runtime's property
- * walk reads. */
-function descriptorMapValue(descriptors: IrExpr): IrExpr {
-  if (descriptors.kind !== "dynFrom" || descriptors.liveRef !== true) return descriptors;
-  if (descriptors.value.kind !== "recordLit") return descriptors;
-  const { liveRef: _live, ...copied } = descriptors;
-  return copied;
+ * an ordinary object. A record literal written at the call is rebuilt as an
+ * untyped object with the same members in the same order (nothing else
+ * holds the literal, so its own identity is unobservable); each member, a
+ * descriptor, is boxed as any other typed value is, so the `value`, `get`
+ * and `set` it carries stay the program's own objects. Null when the
+ * expression is anything else, which the caller passes as it is. */
+function descriptorMapLiteral(lowerer: Lowerer, descriptors: IrExpr): IrExpr | null {
+  if (descriptors.kind !== "dynFrom" || descriptors.liveRef !== true) return null;
+  const literal = descriptors.value;
+  if (literal.kind !== "recordLit") return null;
+  if (literal.fields.some((field) => field.value.kind === "fieldAbsent")) return null;
+  const loc = descriptors.loc;
+  const fields = literal.fields.map((field) => ({
+    key: { kind: "strLit", value: field.name, type: STRING, loc } as IrExpr,
+    value: lowerer.coerceToExpected(field.value, DYN),
+  }));
+  if (fields.some((field) => field.value.type.kind !== "dyn")) return null;
+  return { kind: "dynObjLit", fields, type: DYN, loc };
 }
 
 function lowerObjectStaticCall(
@@ -9310,18 +9319,20 @@ function lowerObjectStaticCall(
     if (proto.type.kind === "dyn") {
       if (call.arguments.nodes.length === 1)
         return { kind: "libCall", fn: "dyn.objCreate", args: [proto], type: DYN, loc };
-      const descriptors = descriptorMapValue(
-        lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN),
-      );
+      const written = lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN);
+      const rebuilt = descriptorMapLiteral(lowerer, written);
+      const descriptors = rebuilt ?? written;
       if (descriptors.type.kind === "dyn")
         return {
           kind: "libCall",
           // A descriptor map built by an expression, or a literal map with a
           // descriptor built by one, may hold an array, a function or an
-          // object with inherited fields.
-          fn: isPlainDescriptorMap(descriptors, (id) => lowerer.shapes.get(id))
-            ? "dyn.objCreateWithProperties"
-            : "dyn.objCreateWithPropertiesShapes",
+          // object with inherited fields. A rebuilt TypeScript literal's
+          // descriptors are typed records, read the same way.
+          fn:
+            rebuilt === null && isPlainDescriptorMap(descriptors, (id) => lowerer.shapes.get(id))
+              ? "dyn.objCreateWithProperties"
+              : "dyn.objCreateWithPropertiesShapes",
           args: [proto, descriptors],
           type: DYN,
           loc,
@@ -9848,16 +9859,19 @@ function lowerObjectStaticCall(
       if (boxed) target = boxed;
     }
     if (target?.type.kind === "dyn") {
-      const descs = descriptorMapValue(lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN));
+      const written = lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN);
+      const rebuilt = descriptorMapLiteral(lowerer, written);
+      const descs = rebuilt ?? written;
       if (descs.type.kind === "dyn") {
         return {
           kind: "libCall",
           // As for Object.create above: a descriptor map built by an
-          // expression, or a literal map with a descriptor built by one, takes
-          // the any-object entry point.
-          fn: isPlainDescriptorMap(descs, (id) => lowerer.shapes.get(id))
-            ? "dyn.defineProps"
-            : "dyn.definePropsShapes",
+          // expression, a literal map with a descriptor built by one, or a
+          // rebuilt TypeScript literal takes the any-object entry point.
+          fn:
+            rebuilt === null && isPlainDescriptorMap(descs, (id) => lowerer.shapes.get(id))
+              ? "dyn.defineProps"
+              : "dyn.definePropsShapes",
           args: [target, descs],
           type: DYN,
           loc: locOf(call),

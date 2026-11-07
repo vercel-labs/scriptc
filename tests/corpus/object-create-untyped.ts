@@ -25,3 +25,19 @@ dictionary.a = 1;
 console.log(Object.keys(dictionary).join(","), JSON.stringify(dictionary), "toString" in dictionary);
 const viewed = Object.create(proto) as Record<string, unknown>;
 console.log(viewed.name, Object.keys(viewed).length, Object.getPrototypeOf(viewed) === proto);
+
+// A descriptor's value is the program's own object: the created object
+// holds it by reference.
+const list = [1];
+const shared = { n: 1 };
+const holder: any = Object.create(null, {
+  list: { value: list, enumerable: true },
+  shared: { value: shared, enumerable: true, writable: true },
+});
+list.push(2);
+shared.n = 2;
+console.log(holder.list === list, holder.list.length, holder.shared === shared, holder.shared.n);
+const target: any = {};
+Object.defineProperties(target, { list: { value: list, enumerable: true }, hidden: { value: shared } });
+list.push(3);
+console.log(target.list === list, target.list.length, target.hidden === shared, Object.keys(target).join(","));

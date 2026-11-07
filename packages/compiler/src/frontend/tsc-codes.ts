@@ -183,6 +183,30 @@ const nonUnicodeRegexLiteral = (node: ts.Node): boolean => {
   return !flags.includes("u") && !flags.includes("v");
 };
 
+/** A discarded negation only evaluates its operand: ToBoolean and `!`
+ * cannot call user code. A consumed result or short-circuit operand still
+ * needs a runtime value even when the checker calls it void. */
+const discardedNegation = (node: ts.Node): boolean => {
+  let current = node;
+  let negated = false;
+  for (;;) {
+    if (ts.isPrefixUnaryExpression(current) && current.operator === ts.SyntaxKind.ExclamationToken)
+      negated = true;
+    const parent = current.parent;
+    if (
+      parent !== undefined &&
+      ((ts.isParenthesizedExpression(parent) && parent.expression === current) ||
+        (ts.isPrefixUnaryExpression(parent) &&
+          parent.operator === ts.SyntaxKind.ExclamationToken &&
+          parent.operand === current))
+    ) {
+      current = parent;
+      continue;
+    }
+    return negated && parent !== undefined && ts.isExpressionStatement(parent);
+  }
+};
+
 /** TS2362/2363/2365 fire on an operator whose other operand is bigint-ish;
  * plain JavaScript admits the `any` operand, a primitive wrapper operand
  * (`new Number(1) * 2`) converts with ToPrimitive like any object, and a
@@ -309,6 +333,18 @@ const LEGACY_REGEX_ESCAPE = at(
 );
 
 const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
+  [
+    1345,
+    inCheckedJs(
+      at(
+        discardedNegation,
+        CHECKER(
+          "a discarded JavaScript negation evaluates its operand once without observing the boolean result",
+          ["tests/corpus/js-discarded-void-negation.js"],
+        ),
+      ),
+    ),
+  ],
   // legacy decimal escapes in non-Unicode regex literals
   [1533, LEGACY_REGEX_ESCAPE],
   [1534, LEGACY_REGEX_ESCAPE],

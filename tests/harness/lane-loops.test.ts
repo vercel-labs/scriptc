@@ -124,6 +124,9 @@ test("the planned build really carries lane loops", async () => {
   // Two inner statements, the second reading the first's result: both are
   // planned, and each reads the slots the group before it stored.
   expect(fn("sc_f_pairRowStepwise")).toMatch(/outer\.g\d+:/);
+  // A chain of declarations that each reuse the previous local is planned
+  // too, so the parity above covers the slots the chain reads.
+  expect(fn("sc_f_pairRowChain")).toMatch(/outer\.g\d+:/);
   // Rows that keep their scalar form: a counter the integer lowering keeps in
   // a register, a second inner loop, a branch inside it, a write to a local
   // the row did not declare, an instance that changes class, a stride, and a

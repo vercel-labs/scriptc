@@ -443,6 +443,15 @@ function flattenValue(value: LaneValue, id: string, group: number): LaneOuterSlo
   return slots.length === 0 ? null : slots;
 }
 
+/** The frame value that reads a local back from its slots instead of carrying
+ * the expression that computed it. */
+function slotState(id: string, value: LaneValue): LaneValue {
+  if (value.kind === "num") return { kind: "num", num: { kind: "state", id, field: null } };
+  const fields = new Map<string, LaneNum>();
+  for (const field of value.fields.keys()) fields.set(field, { kind: "state", id, field });
+  return { kind: "obj", className: value.className, fields };
+}
+
 /** The counter and bound of a `for` loop whose counter is an ordinary
  * number local stepped by one, or null. */
 function outerCounter(stmt: IrStmt & { kind: "for" }): { id: string; bound: IrExpr } | null {
@@ -538,24 +547,20 @@ function outerPlan(
     const slots = flattenValue(value, s.localId, decl);
     if (slots === null) return null;
     initial.push(...slots);
-    ctx.frame.set(s.localId, value);
+    // The declaration's slots are stored before the next statement's values
+    // are computed, so a later initializer reads this one's slot. Keeping its
+    // tree in the frame instead would inline it again at every use, and a
+    // chain of declarations that reuse the previous one would then carry a
+    // copy of the whole chain into the last one: exponential LLVM output from
+    // a handful of rows.
+    ctx.frame.set(s.localId, slotState(s.localId, value));
     decl++;
   }
   if (initial.length === 0) return null;
   // From here on a read of a carried local is a read of its slot: the
   // declarations above gave the slots their per-lane values, and the inner
   // loop's tests and assignments read what the last iteration left there.
-  const state = new Map<string, LaneValue>();
-  for (const [id, value] of ctx.frame) {
-    if (value.kind === "num") {
-      state.set(id, { kind: "num", num: { kind: "state", id, field: null } });
-      continue;
-    }
-    const fields = new Map<string, LaneNum>();
-    for (const field of value.fields.keys()) fields.set(field, { kind: "state", id, field });
-    state.set(id, { kind: "obj", className: value.className, fields });
-  }
-  ctx.frame = new Map(state);
+  const state = new Map(ctx.frame);
   const cond = outerCond(inner.cond, ctx);
   if (cond === null) return null;
   const steps: LaneOuterSlot[] = [];

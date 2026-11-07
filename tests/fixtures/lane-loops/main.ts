@@ -810,6 +810,32 @@ function pairRowStepwise(size: number, limit: number, cim: number): number {
   return inside;
 }
 
+// The row's constant built through a chain of declarations that each reuse
+// the previous one. The declarations' slots are stored before the next
+// declaration's value is computed, so the chain reads slots; inlining each
+// declaration's tree into the next would make the row's constant grow with
+// the chain and duplicate every step.
+function pairRowChain(size: number, limit: number, cim: number): number {
+  let inside = 0;
+  for (let x = 0; x < size; x++) {
+    let t0 = (x / size) * 3 - 2;
+    let t1 = t0 * 0.5 + 0.25;
+    let t2 = t1 * 0.5 + 0.25;
+    let t3 = t2 * 0.5 + 0.25;
+    let t4 = t3 * 0.5 + 0.25;
+    let t5 = t4 * 0.5 + 0.25;
+    const c = new Pair(t5, cim);
+    let z = new Pair(0, 0);
+    let n = 0;
+    while (n < limit && z.norm() <= 4) {
+      z = z.times(z).plus(c);
+      n++;
+    }
+    if (n === limit) inside++;
+  }
+  return inside;
+}
+
 // Carried numbers, with the third assignment reading what the first left
 // behind: the lanes compute and store one statement at a time.
 function numberRow(size: number, limit: number, cim: number): number {
@@ -1031,6 +1057,7 @@ for (const size of rowSizes) {
         pairRowNot(size, limit, cim),
         pairRowOr(size, limit, cim),
         pairRowStepwise(size, limit, cim),
+        pairRowChain(size, limit, cim),
       );
     }
   }

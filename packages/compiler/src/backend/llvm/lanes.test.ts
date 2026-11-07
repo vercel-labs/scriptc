@@ -588,6 +588,40 @@ test("rows the lane body cannot take keep their scalar loops", async () => {
   expect(body(llvm, "sc_f_rowAgain")).toMatch(/outer\.g\d+:/);
 });
 
+test("a row's chained initializers read their slots instead of inlining the chain", async () => {
+  const plain = body(
+    await emittedLlvm("outer-chain-plain", OUTER_SOURCE, { plan: "outer" }),
+    "sc_f_row",
+  );
+  // Eight declarations that each reuse the previous temp, feeding the row's
+  // constant. Inlining every initializer's tree into the next would make the
+  // row grow by a factor with each line.
+  const chain = ["    let t0 = (x / size) * 3 - 2;"];
+  for (let i = 1; i <= 8; i++) chain.push(`    let t${i} = t${i - 1} * t${i - 1} + t${i - 1} + 1;`);
+  const source = OUTER_SOURCE.replace(
+    "    const c = new Pair((x / size) * 3 - 2, cim);",
+    [...chain, "    const c = new Pair(t8, cim);"].join("\n"),
+  );
+  const fn = body(await emittedLlvm("outer-chain", source, { plan: "outer" }), "sc_f_row");
+  expect(fn).toMatch(/outer\.g\d+:/);
+  // Each temp is one lane slot, and the next temp's value loads the slot the
+  // earlier declaration stored, in that order.
+  const slot = (name: string): string => {
+    const found = fn.match(new RegExp(`%(\\w+) = alloca <4 x double> ; lane ${name}\\n`));
+    if (found === null) throw new Error(`no lane slot for ${name}`);
+    return found[1]!;
+  };
+  const seven = slot("t7"),
+    eight = slot("t8");
+  const firstLoad = fn.indexOf(`load <4 x double>, ptr %${seven}`);
+  const lastStore = fn.indexOf(`ptr %${eight}`);
+  expect(firstLoad).toBeGreaterThanOrEqual(0);
+  expect(lastStore).toBeGreaterThan(firstLoad);
+  // The chain costs a fixed few lines per declaration: the row stays close to
+  // the plain row's size instead of multiplying it.
+  expect(fn.length).toBeLessThan(plain.length * 2);
+});
+
 test("the other shapes alone do not lower an outer row", async () => {
   const llvm = await emittedLlvm("outer-other", OUTER_SOURCE, { plan: "sum,count,store" });
   expect(body(llvm, "sc_f_row")).not.toMatch(/outer\./);

@@ -4,6 +4,8 @@
  * tests/harness/lane-loops.test.ts. */
 import { expect, test } from "vitest";
 import {
+  type LaneNum,
+  type LaneOuterPlan,
   type LanePlan,
   type LaneShape,
   type LaneStorePlan,
@@ -955,6 +957,78 @@ test("a row's test reads the slots and its constant keeps the counter", () => {
   });
   // The carried instance starts from its own constructor's field writes.
   expect(p.initial[2]!.value).toEqual({ kind: "const", value: 0 });
+});
+
+test("a chained initializer reads the earlier initializer's slot", () => {
+  // `let t1 = t0 * t0 + t0 + 1`, through `t8`, then a row whose constant is
+  // `t8`. A declaration's slots are stored before the next declaration's
+  // values are computed, so each initializer can read the one before it from
+  // its slot. Carrying the trees instead would inline the whole chain at each
+  // use, and the last row's constant would hold a copy of every step.
+  const locals = [
+    ...rowLocals,
+    ...Array.from({ length: 9 }, (_, i): IrLocal => ({
+      id: `t${i}`,
+      name: `t${i}`,
+      type: F64,
+      mutable: false,
+    })),
+  ];
+  const rowOf = (length: number): LaneOuterPlan => {
+    const body: IrStmt[] = [
+      decl("t0", bin("-", bin("*", bin("/", ref("x"), ref("size")), num(3)), num(2))),
+    ];
+    for (let i = 1; i <= length; i++) {
+      const prev = ref(`t${i - 1}`);
+      body.push(decl(`t${i}`, bin("+", bin("*", prev, ref(`t${i - 1}`)), bin("+", prev, num(1)))));
+    }
+    // The row's constant and everything after it, with `t<length>` for the
+    // counter expression the plain row starts from.
+    body.push(decl("c", newOf(PAIR, [ref(`t${length}`), ref("limit")])));
+    body.push(...rowBody().slice(1));
+    const p = rowPlan([row(body)], { locals });
+    if (p?.shape !== "outer") throw new Error("expected an outer plan");
+    return p;
+  };
+  const nodes = (v: LaneNum): number => {
+    switch (v.kind) {
+      case "op":
+        return 1 + nodes(v.left) + nodes(v.right);
+      case "neg":
+        return 1 + nodes(v.operand);
+      default:
+        return 1;
+    }
+  };
+  // Every step adds the same seven nodes whatever the chain's length: the two
+  // reads of the previous temp, its product, the term's read, `1`, the sum,
+  // and the assignment. Inlining the previous trees instead doubled the count
+  // with each declaration.
+  const initial = (length: number) => rowOf(length).initial;
+  expect([2, 4, 8].map((n) => nodes(initial(n)[n]!.value))).toEqual([7, 7, 7]);
+  expect(initial(8)[8]!.value).toMatchObject({
+    kind: "op",
+    op: "+",
+    left: {
+      kind: "op",
+      op: "*",
+      left: { kind: "state", id: "t7" },
+      right: { kind: "state", id: "t7" },
+    },
+    right: {
+      kind: "op",
+      op: "+",
+      left: { kind: "state", id: "t7" },
+      right: { kind: "const", value: 1 },
+    },
+  });
+  // The constant after the chain reads the last temp's slot.
+  expect(initial(8)[9]).toEqual({
+    id: "c",
+    field: "re",
+    group: 9,
+    value: { kind: "state", id: "t8", field: null },
+  });
 });
 
 test("a row without the trailing count still plans, and one statement too many does not", () => {

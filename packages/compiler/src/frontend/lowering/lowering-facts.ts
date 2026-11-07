@@ -89,6 +89,8 @@ type OpinionIndex = ReadonlyMap<string, readonly AdmittedOpinion[]>;
 export interface LoweringFactsOptions {
   /** Override the SCRIPTC_LOWERING_FACTS_VERIFY environment (tests). */
   verify?: boolean;
+  /** LowerOptions.separateUnionMembers: no classes of record types. */
+  separateUnionMembers?: boolean;
 }
 
 /** The program facts every pass of one island round shares
@@ -144,6 +146,7 @@ export class LoweringFacts {
     options: LoweringFactsOptions = {},
   ) {
     this.verify = options.verify ?? verifyFromEnvironment;
+    if (options.separateUnionMembers === true) this.unionClassesValue = new Map();
   }
 
   /** tsgoPath(resolve(sf.fileName)): the path spelling the module tables key

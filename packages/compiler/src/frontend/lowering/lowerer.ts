@@ -62,7 +62,7 @@ import {
 } from "./general-streams.js";
 import { extendAssertedRecordMembers } from "./assertion-members.js";
 import { LoweringFacts } from "./lowering-facts.js";
-import { collectUnionClasses, type UnionClassState } from "../union-classes.js";
+import type { UnionClassState } from "../union-classes.js";
 import { type AdmittedOpinion, isJsSourceFileName } from "../tsc-codes.js";
 import {
   builtinClassKind,
@@ -1126,6 +1126,12 @@ export interface LowerOptions {
    * program-authored signature-only ambient function with the callback
    * teaching instead of the ambient ReferenceError lowering. */
   libraryCallbacks?: boolean;
+  /** LIBRARY mode: the record types of a union that share a discriminant
+   * literal keep their own layouts instead of becoming one record
+   * (union-classes.ts). The sidecar names every occurrence of a composed
+   * union's repeated arm and tracks an integer obligation per occurrence
+   * (library/sidecar.ts), which needs a layout per occurrence. */
+  separateUnionMembers?: boolean;
   /** Coverage-only external host type surfaces. Their declarations inform
    * the checker, while every runtime value use remains an SC1010 fence. */
   externalTypes?: ReadonlyMap<string, string>;
@@ -1476,7 +1482,9 @@ function lowerToIrWithIslands(
   // in their mode flags, so every fact they derive from the program alone is
   // computed once here and shared (lowering-facts.ts); per-pass state stays
   // private to the pass.
-  const facts = new LoweringFacts(program, moduleOrder, externalTypeSpecifiersByFile);
+  const facts = new LoweringFacts(program, moduleOrder, externalTypeSpecifiersByFile, {
+    ...(options.separateUnionMembers === true ? { separateUnionMembers: true } : {}),
+  });
   // The push-down pass of a stream program exists only to learn the stream
   // mode it asks for, and the general stream pass of a program that needs
   // checked-dynamic stream slots only to ask for them: the pass that
@@ -6200,10 +6208,7 @@ export class Lowerer {
     // Record types that share a discriminant literal in a declared union
     // are one record (union-classes.ts). Each pass maps a class once, the
     // first time one of its types is mapped.
-    const unionClasses =
-      this.moduleOrder.length === 0
-        ? collectUnionClasses([entry], this.checker)
-        : this.facts.unionClasses();
+    const unionClasses = this.facts.unionClasses();
     if (unionClasses.size > 0) {
       const states = new Map<readonly ts.Type[], UnionClassState>();
       this.typeCtx.unionClassRecords = new Map();

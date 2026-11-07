@@ -875,11 +875,36 @@ function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr 
   // calls its return() when a consumer leaves the loop early. The async
   // sibling awaits each island promise, and the island host normalizes a
   // synchronous source to the async-from-sync protocol.
-  if (mapped.kind === "generator") {
-    const adapted =
-      mapped.async === true
-        ? dynAsyncIteratorAdapter(lowerer, raw, mapped, "island")
-        : dynIteratorAdapter(lowerer, raw, mapped, "island");
+  if (mapped.kind === "generator" && mapped.async === true) {
+    // A native async generator the program passed in comes back as itself
+    // (NI-5): the checked cast unboxes it, so its identity and its own
+    // protocol hold. Only an island's iterator is adapted.
+    const held = lowerer.declareHiddenLocal("%island.asyncIterator", DYN);
+    const value = varRef(held.id, DYN, raw.loc);
+    const adapted = dynAsyncIteratorAdapter(lowerer, value, mapped, "island");
+    if (adapted !== null)
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "varDecl", localId: held.id, init: raw, loc: raw.loc }],
+        result: {
+          kind: "ternary",
+          cond: {
+            kind: "libCall",
+            fn: "nodeIsland.isHandle",
+            args: [value],
+            type: BOOL,
+            loc: raw.loc,
+          },
+          then: adapted,
+          else_: lowerer.coerceToExpected(value, mapped),
+          type: mapped,
+          loc: raw.loc,
+        },
+        type: mapped,
+        loc: raw.loc,
+      };
+  } else if (mapped.kind === "generator") {
+    const adapted = dynIteratorAdapter(lowerer, raw, mapped, "island");
     if (adapted !== null) return adapted;
   }
   // An Iterable<T> crossing takes the iterable union's generator arm the

@@ -378,7 +378,7 @@ static void scr_ee_symbol_name_fence(const char *what) {
   char message[160];
   snprintf(message, sizeof message, "%s with an events.errorMonitor listener is not supported yet",
            what);
-  scr_throw_error(SCR_ERR_ERROR, scr_str_new(message, strlen(message)));
+  { ScrStr *refused = scr_str_new(message, strlen(message)); scr_throw_error_msg_code(SCR_ERR_ERROR, refused->data, refused->len, "SC2020"); scr_str_release(refused); }
 }
 
 /* Whether any entry of the bucket was registered as a checked-dynamic
@@ -1092,7 +1092,10 @@ SCR_COLD static void scr_ee_listener_mismatch(const ScrStr *name, bool typed_emi
     scr_jb_puts(&text, "' listener has typed parameters the arguments of this untyped emit do not convert to");
   }
   ScrStr *message = scr_jb_finish(&text);
-  scr_throw_error(typed_emit ? SCR_ERR_ERROR : SCR_ERR_TYPE, message);
+  if (typed_emit) {
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message->data, message->len, "SC2020");
+    scr_str_release(message);
+  } else scr_throw_error(SCR_ERR_TYPE, message);
 }
 
 /* A message emit (scr_emitter_emit_message): listeners with a typed message
@@ -1318,7 +1321,7 @@ static void scr_ee_unhandled_error(const ScrDyn *er) {
   } else {
     const char *refusal =
         "emit('error') through an untyped value with this non-Error payload and no 'error' listener is not supported yet";
-    scr_throw_error(SCR_ERR_ERROR, scr_str_new(refusal, strlen(refusal)));
+    { ScrStr *refused = scr_str_new(refusal, strlen(refusal)); scr_throw_error_msg_code(SCR_ERR_ERROR, refused->data, refused->len, "SC2020"); scr_str_release(refused); }
   }
   scr_str_release(message);
 }
@@ -1559,7 +1562,7 @@ ScrDyn *scr_emitter_listeners_dyn(ScrEmitter *em, ScrStr *name) {
     if (!fn) {
       scr_dyn_release(out);
       const char *message = "listeners() through an untyped value of an event with a typed listener is not supported yet";
-      scr_throw_error(SCR_ERR_ERROR, scr_str_new(message, strlen(message)));
+      { ScrStr *refused = scr_str_new(message, strlen(message)); scr_throw_error_msg_code(SCR_ERR_ERROR, refused->data, refused->len, "SC2020"); scr_str_release(refused); }
       return scr_dyn_new_arr();
     }
     scr_dyn_arr_push(out, fn);

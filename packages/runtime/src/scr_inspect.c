@@ -2171,7 +2171,7 @@ static ScrStr *scr_insp_generator(const ScrDyn *d) {
   const char *tag = __atomic_load_n(&scr_gen_tag_reader, __ATOMIC_RELAXED)(d->v.typed_ref.ptr);
   if (tag[0] == '!') {
     static const char message[] = "util.inspect of this iterator object is not supported yet";
-    scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
     return scr_str_new("", 0);
   }
   InspBuf out = {0};
@@ -3278,7 +3278,7 @@ static ScrStr *scr_insp_dyn_func(ScrDyn *d, double recurse, double depth) {
      * does not hold them (the reflection fence's stance). */
     scr_str_release(tag);
     static const char message[] = "util.inspect of a class with static fields through unknown is not supported yet";
-    scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
     return scr_str_new("", 0);
   }
   size_t shown = 0;
@@ -3669,7 +3669,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         ib_cstr(&out, "util.inspect of a ");
         ib_cstr(&out, ops->cls);
         ib_cstr(&out, " with customInspect: false is not supported yet");
-        scr_throw_error(SCR_ERR_ERROR, ib_take(&out));
+        { ScrStr *refused = ib_take(&out); scr_throw_error_msg_code(SCR_ERR_ERROR, refused->data, refused->len, "SC2020"); scr_str_release(refused); }
         return scr_str_new("", 0);
       }
       if (ops->inspect_text)
@@ -3727,7 +3727,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
       ib_cstr(&out, "util.inspect of a dynamic ");
       ib_cstr(&out, scr_dyn_handle_cls(d));
       ib_cstr(&out, " is not supported yet");
-      scr_throw_error(SCR_ERR_ERROR, ib_take(&out));
+      { ScrStr *refused = ib_take(&out); scr_throw_error_msg_code(SCR_ERR_ERROR, refused->data, refused->len, "SC2020"); scr_str_release(refused); }
       return scr_str_new("", 0);
     }
 
@@ -3859,7 +3859,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
        * handle stance). */
       InspBuf out = {0};
       ib_cstr(&out, "util.inspect of a promise value is not supported yet");
-      scr_throw_error(SCR_ERR_ERROR, ib_take(&out));
+      { ScrStr *refused = ib_take(&out); scr_throw_error_msg_code(SCR_ERR_ERROR, refused->data, refused->len, "SC2020"); scr_str_release(refused); }
       return scr_str_new("", 0);
     }
     case SCR_DYN_BYTES: {

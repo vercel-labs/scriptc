@@ -19,8 +19,7 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import ts from "typescript5";
-import { expect, test } from "vitest";
+import { afterAll, expect, test } from "vitest";
 import {
   missingDecisionMessage,
   readUndecided,
@@ -29,6 +28,9 @@ import {
   undecidedDigest,
 } from "../../../scripts/builtin-throw-census.mjs";
 import { LIB_FN_SYMS, MOCK_TIMER_SYMS, PURE_MATH_LIB_FNS } from "../src/backend/llvm/lib-shared.js";
+import { withoutParenthesesAsSatisfiesNonNull as bare } from "../src/frontend/outer-expressions.js";
+import { closeSourceParser, parseSourceFile } from "../src/frontend/ts7/source-parser-node.js";
+import * as ts from "../src/frontend/ts7/syntax.js";
 import { ALWAYS_THROW_LIB_FNS, MAY_THROW_LIB_FNS } from "../src/ir/builtin-effects.js";
 import { NEVER_THROW_LIB_FNS } from "../src/ir/builtin-never-throw.js";
 import { libFnSignatures } from "../src/ir/builtin-signatures.js";
@@ -249,36 +251,25 @@ function sourceFiles(dir: string, out: string[] = []): string[] {
 const SOURCES: ReadonlyMap<string, ts.SourceFile> = new Map(
   sourceFiles(sourceRoot).map((file) => [
     relative(sourceRoot, file).split("\\").join("/"),
-    ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true),
+    parseSourceFile(file, readFileSync(file, "utf8"), "ts"),
   ]),
 );
-
-/** `node` without parentheses and the wrappers that only state a type. */
-function bare(node: ts.Expression): ts.Expression {
-  while (
-    ts.isParenthesizedExpression(node) ||
-    ts.isAsExpression(node) ||
-    ts.isSatisfiesExpression(node) ||
-    ts.isNonNullExpression(node)
-  )
-    node = node.expression;
-  return node;
-}
+afterAll(closeSourceParser);
 
 /** The types written on `node`'s wrappers and on a `new Set<…>` or
  * `new Map<…>` under them. */
-function writtenTypes(node: ts.Expression, source: ts.SourceFile): string {
+function writtenTypes(node: ts.Expression): string {
   const types: string[] = [];
   for (;;) {
     if (ts.isAsExpression(node) || ts.isSatisfiesExpression(node)) {
-      types.push(node.type.getText(source));
+      types.push(ts.getTextOfNode(node.type));
       node = node.expression;
     } else if (ts.isParenthesizedExpression(node) || ts.isNonNullExpression(node))
       node = node.expression;
     else break;
   }
   if (ts.isNewExpression(node))
-    for (const argument of node.typeArguments ?? []) types.push(argument.getText(source));
+    for (const argument of node.typeArguments?.nodes ?? []) types.push(ts.getTextOfNode(argument));
   return types.join(" ");
 }
 
@@ -291,22 +282,22 @@ function listedNames(node: ts.Expression): string[] | undefined {
     ts.isNewExpression(node) &&
     ts.isIdentifier(node.expression) &&
     (node.expression.text === "Set" || node.expression.text === "Map") &&
-    node.arguments?.length === 1
+    node.arguments?.nodes.length === 1
   )
-    return listedNames(node.arguments[0]!);
+    return listedNames(node.arguments.nodes[0]!);
   if (ts.isArrayLiteralExpression(node)) {
     const names: string[] = [];
-    for (const element of node.elements) {
+    for (const element of node.elements.nodes) {
       let item = bare(element);
-      if (ts.isArrayLiteralExpression(item) && item.elements.length > 0)
-        item = bare(item.elements[0]!);
+      if (ts.isArrayLiteralExpression(item) && item.elements.nodes.length > 0)
+        item = bare(item.elements.nodes[0]!);
       if (ts.isStringLiteralLike(item)) names.push(item.text);
     }
     return names;
   }
   if (ts.isObjectLiteralExpression(node)) {
     const names: string[] = [];
-    for (const property of node.properties)
+    for (const property of node.properties.nodes)
       if (property.name !== undefined && ts.isStringLiteralLike(property.name))
         names.push(property.name.text);
     return names;
@@ -354,7 +345,7 @@ function untypedBuiltinLists(): Map<string, string[]> {
       if (names === undefined) return;
       if (!names.some((item) => startsBuiltin(item) || (!prefixesOnly && BUILTIN.has(item))))
         return;
-      if (/\bIrLibFn\b/.test(`${declared} ${writtenTypes(literal, source)}`)) return;
+      if (/\bIrLibFn\b/.test(`${declared} ${writtenTypes(literal)}`)) return;
       const site = `${name}#${owner}`;
       lists.set(site, [...(lists.get(site) ?? []), ...names]);
     };
@@ -364,7 +355,11 @@ function untypedBuiltinLists(): Map<string, string[]> {
         node.initializer !== undefined &&
         ts.isIdentifier(node.name)
       )
-        note(node.name.text, node.initializer, node.type?.getText(source) ?? "");
+        note(
+          node.name.text,
+          node.initializer,
+          node.type === undefined ? "" : ts.getTextOfNode(node.type),
+        );
       else if (
         ts.isPropertyAccessExpression(node) &&
         ts.isArrayLiteralExpression(bare(node.expression))
@@ -418,27 +413,27 @@ test("a list of builtins that is not typed names builtins", () => {
 /* ---- errors delivered by an emitter arm ---- */
 
 /** Whether `node` reads a `fn`: `fn`, `e.fn`, `call.fn`. */
-function readsFn(node: ts.Expression, source: ts.SourceFile): boolean {
-  return /(^|\.)fn$/.test(bare(node).getText(source));
+function readsFn(node: ts.Expression): boolean {
+  return /(^|\.)fn$/.test(ts.getTextOfNode(bare(node)));
 }
 
 /** The builtins a condition holds for when it tests a `fn` against names:
  * `e.fn === "a" || e.fn === "b"`, `["a", "b"].includes(e.fn)`, and either
  * of them and-ed with another condition. Undefined for other conditions. */
-function builtinsTested(condition: ts.Expression, source: ts.SourceFile): string[] | undefined {
+function builtinsTested(condition: ts.Expression): string[] | undefined {
   condition = bare(condition);
   if (ts.isBinaryExpression(condition)) {
     const operator = condition.operatorToken.kind;
     if (operator === ts.SyntaxKind.BarBarToken) {
-      const left = builtinsTested(condition.left, source);
-      const right = builtinsTested(condition.right, source);
+      const left = builtinsTested(condition.left);
+      const right = builtinsTested(condition.right);
       return left !== undefined && right !== undefined ? [...left, ...right] : undefined;
     }
     if (operator === ts.SyntaxKind.AmpersandAmpersandToken)
-      return builtinsTested(condition.left, source) ?? builtinsTested(condition.right, source);
+      return builtinsTested(condition.left) ?? builtinsTested(condition.right);
     if (
       operator === ts.SyntaxKind.EqualsEqualsEqualsToken &&
-      readsFn(condition.left, source) &&
+      readsFn(condition.left) &&
       ts.isStringLiteralLike(condition.right)
     )
       return [condition.right.text];
@@ -448,8 +443,8 @@ function builtinsTested(condition: ts.Expression, source: ts.SourceFile): string
     ts.isCallExpression(condition) &&
     ts.isPropertyAccessExpression(condition.expression) &&
     condition.expression.name.text === "includes" &&
-    condition.arguments.length === 1 &&
-    readsFn(condition.arguments[0]!, source)
+    condition.arguments.nodes.length === 1 &&
+    readsFn(condition.arguments.nodes[0]!)
   )
     return listedNames(condition.expression.expression);
   return undefined;
@@ -471,7 +466,7 @@ function builtinsWithPendingCheck(): Map<string, string> {
         ts.isPropertyAccessExpression(node.expression) &&
         node.expression.name.text === "emitPendingCheck"
       ) {
-        const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
+        const line = source.getLineAndCharacterOfPosition(ts.tokenStartOfNode(node)).line + 1;
         let names: string[] | undefined;
         for (
           let inner: ts.Node = node, at = node.parent;
@@ -480,15 +475,20 @@ function builtinsWithPendingCheck(): Map<string, string> {
         ) {
           if (ts.isFunctionDeclaration(at) || ts.isMethodDeclaration(at)) break;
           if (ts.isIfStatement(at) && at.thenStatement === inner) {
-            if (at.expression.getText(source).includes("MAY_THROW_LIB_FNS.has(")) break;
-            names = builtinsTested(at.expression, source);
-          } else if (ts.isCaseClause(at) && readsFn(at.parent.parent.expression, source)) {
+            if (ts.getTextOfNode(at.expression).includes("MAY_THROW_LIB_FNS.has(")) break;
+            names = builtinsTested(at.expression);
+          } else if (
+            ts.isCaseClause(at) &&
+            ts.isCaseBlock(at.parent) &&
+            ts.isSwitchStatement(at.parent.parent) &&
+            readsFn(at.parent.parent.expression)
+          ) {
             // The labels that fall into this clause, and its own.
             names = [];
-            const clauses = at.parent.clauses;
+            const clauses = at.parent.clauses.nodes;
             for (let i = clauses.indexOf(at); i >= 0; i--) {
               const clause = clauses[i]!;
-              if (clause !== at && clause.statements.length > 0) break;
+              if (clause !== at && clause.statements.nodes.length > 0) break;
               if (ts.isCaseClause(clause) && ts.isStringLiteralLike(clause.expression))
                 names.push(clause.expression.text);
             }

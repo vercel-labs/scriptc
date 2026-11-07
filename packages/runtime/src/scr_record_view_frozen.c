@@ -20,16 +20,6 @@
  */
 #include "scr_record_source_private.h"
 
-/* Emitted code declares these itself (llvm/record-views.ts); no runtime unit
- * calls them, so they have no header. */
-bool scr_record_marked_is_view(void *obj);
-void *scr_record_marked_slot(void *obj, size_t position, void *own);
-void *scr_record_marked_field(void *value, size_t offset, size_t position);
-bool scr_record_marked_frozen(void *obj);
-void scr_record_marked_freeze(void *record);
-void *scr_dyn_record_view_kept(ScrDyn *d, const ScrRecordViewSource *sources, size_t count,
-                               const char *key, size_t key_len, void *(*alloc)(void));
-
 /* The view entry of `obj`, or NULL when it is no view (a frozen record, or a
  * record that kept a source). */
 static ScrRecordSource *scr_record_frozen_view_entry(const void *obj) {

@@ -42,3 +42,28 @@ function serialize(value: unknown) {
 }
 const viaHelper = serialize(undefined);
 console.log(typeof viaHelper, viaHelper === undefined, serialize(1), serialize("x"));
+
+// A class whose toJSON answers undefined serializes to undefined as well,
+// through a helper with an inferred result too.
+class Quiet {
+  toJSON(): unknown {
+    return undefined;
+  }
+}
+class Tagged {
+  tag: string;
+  constructor(tag: string) {
+    this.tag = tag;
+  }
+  toJSON(): unknown {
+    return { tag: this.tag };
+  }
+}
+function serializeQuiet(value: Quiet) {
+  return JSON.stringify(value);
+}
+function serializeTagged(value: Tagged) {
+  return JSON.stringify(value);
+}
+const quiet = serializeQuiet(new Quiet());
+console.log(typeof quiet, quiet === undefined, serializeTagged(new Tagged("t")));

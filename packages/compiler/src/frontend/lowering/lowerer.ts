@@ -8770,11 +8770,15 @@ export class Lowerer {
         !jsonResultTextOnly(this, e)
       ) {
         // A JavaScript parameter has no mapping yet: its checker type says.
+        // An instance of a class with a toJSON method serializes what the
+        // method returns, which can be undefined too.
         const root = this.typeOf(e.arguments.nodes[0]!);
         const mapped = this.mapTypeOf(root);
         if (
           mapped?.kind === "dyn" ||
-          (mapped === null && (root.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0)
+          (mapped === null && (root.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) ||
+          (mapped?.kind === "object" &&
+            this.findMethodOn(this.classes.get(mapped.className) ?? null, "toJSON") !== null)
         )
           return true;
       }

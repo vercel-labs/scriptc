@@ -58,6 +58,7 @@ import {
   arrayOf,
   funcOf,
   isUnitType,
+  keyedRecordFields,
   typeEquals,
   sortArms,
 } from "../../ir/ir.js";
@@ -2710,7 +2711,7 @@ export function recordKeyResultOk(lowerer: Lowerer, shape: IrRecordShape, type: 
     (type.kind === "union" && lowerer.armTag(type.unionId, t) >= 0) ||
     exactUnionWidening(lowerer, t, type) ||
     (type.kind === "dyn" && lowerer.dynConvertible(t));
-  if (!shape.fields.every((f) => surfaces(f.type))) return false;
+  if (!keyedRecordFields(shape).every((f) => surfaces(f.type))) return false;
   if (shape.indexValue) {
     if (type.kind === "dyn") return shape.indexValue.kind === "dyn";
     if (!surfaces(shape.indexValue)) return false;
@@ -3080,6 +3081,28 @@ export function lowerCaughtTypeofTest(
   return null;
 }
 
+/** Whether values of `type` are JavaScript functions kept in a `%call`
+ * slot: a function with members (a hybrid record), or an instance of a
+ * class whose merged interface carries a call signature. The slot is how
+ * the value is called (hybridCallUnwrap); to `typeof` it is a function. */
+export function hasCallSlot(lowerer: Lowerer, type: IrType): boolean {
+  if (type.kind === "object")
+    return lowerer.classes.get(type.className)?.fields.get("%call")?.kind === "func";
+  if (type.kind === "record")
+    return (
+      lowerer.shapes
+        .get(type.shapeId)
+        ?.fields.some((f) => f.name === "%call" && f.type.kind === "func") === true
+    );
+  return false;
+}
+
+/** typeofAnswer for a lowerer's types: a value with a `%call` slot is a
+ * function, whatever its representation. */
+export function typeofAnswerOf(lowerer: Lowerer): (arm: IrType) => string | null {
+  return (arm) => (hasCallSlot(lowerer, arm) ? "function" : typeofAnswer(arm));
+}
+
 export function typeofAnswer(arm: IrType): string | null {
   switch (arm.kind) {
     case "f64":
@@ -3232,7 +3255,7 @@ function aliasTypeofArmOf(
     const mapped = lowerer.mapTypeOf(valT);
     if (mapped?.kind !== "union") continue;
     const def = lowerer.unions.get(mapped.unionId);
-    const answers = def?.arms.map(typeofAnswer);
+    const answers = def?.arms.map(typeofAnswerOf(lowerer));
     if (!def || !answers || !answers.every((s): s is string => s !== null)) continue;
     const tags = answers.flatMap((s, i) => (s === b.text ? [i] : []));
     if (tags.length !== 1) continue;

@@ -6,7 +6,9 @@
  * lives here is the uncaught STDERR contract: Node prints a source excerpt
  * and a stack trace (and its display shows the CONSTRUCTOR's name where it
  * differs from .name); scriptc prints one `Uncaught <toString>` line —
- * SEMANTICS.md divergence 11. These pins keep that line's shape exact.
+ * SEMANTICS.md divergence 11 — and under it the frames the Error captured,
+ * which only programs that read a stack trace keep. These pins keep that
+ * report's shape exact.
  *
  * SCRIPTC_SAN=1 builds these with ASan + the RC audit like every harness lane.
  */
@@ -225,6 +227,101 @@ console.log("sync done");
     expect(r.exitCode).toBe(1);
     expect(r.stdout).toBe("sync done\n");
     expect(r.stderr).toBe("Unhandled promise rejection: TypeError: from resolvers\n");
+  });
+
+  // A program that reads a stack trace keeps source frames in every
+  // function that can throw (the compiler's observesStacks), and each Error
+  // captures them when it is created. The reports print them under the
+  // heading, as Node prints its stack trace; the programs above read no
+  // stack, capture nothing and print the heading alone.
+  test("an uncaught error prints the frames it captured", async () => {
+    const r = await compileAndRun(
+      "uncaught-frames",
+      `function helper(n: number): number {
+  if (n < 0) throw new RangeError("negative input: " + n);
+  return n;
+}
+function level2(n: number): number {
+  return helper(n) + 1;
+}
+try {
+  level2(-1);
+} catch (e) {
+  console.log((e as Error).stack?.split("\\n").length);
+}
+level2(-2);
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("3\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught RangeError: negative input: -2\n    at helper \(.*uncaught-frames\.ts\)\n    at level2 \(.*uncaught-frames\.ts\)\n$/,
+    );
+  });
+
+  test("an error escaping a timer callback prints the frames it captured", async () => {
+    const r = await compileAndRun(
+      "uncaught-timer-frames",
+      `function fail(where: string): never {
+  throw new Error("callback failed in " + where);
+}
+console.log((new Error("probe").stack ?? "").split("\\n").length);
+setTimeout(() => {
+  fail("timer");
+}, 1);
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("1\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: callback failed in timer\n    at fail \(.*uncaught-timer-frames\.ts\)\n/,
+    );
+  });
+
+  test("an unhandled rejection prints the frames its Error captured", async () => {
+    const r = await compileAndRun(
+      "unhandled-rejection-frames",
+      `function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+async function load(n: number): Promise<number> {
+  await sleep(1);
+  if (n > 1) throw new TypeError("bad n " + n);
+  return n;
+}
+async function main(): Promise<void> {
+  try {
+    await load(2);
+  } catch (e) {
+    console.log((e as Error).stack?.split("\\n").length);
+  }
+  await load(5);
+}
+main();
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("2\n");
+    expect(r.stderr).toMatch(
+      /^Unhandled promise rejection: TypeError: bad n 5\n    at load \(.*unhandled-rejection-frames\.ts\)\n$/,
+    );
+  });
+
+  test("an unhandled checked-dynamic rejection prints the frames its Error captured", async () => {
+    const r = await compileAndRun(
+      "unhandled-dyn-rejection-frames",
+      `function make(): Error {
+  return new Error("boom");
+}
+console.log(make().stack?.split("\\n").length);
+new Promise((resolve, reject) => reject(make()));
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("2\n");
+    expect(r.stderr).toMatch(
+      /^Unhandled promise rejection: Error: boom\n    at make \(.*unhandled-dyn-rejection-frames\.ts\)\n    at <anonymous> \(.*unhandled-dyn-rejection-frames\.ts\)\n$/,
+    );
   });
 });
 

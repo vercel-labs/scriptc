@@ -90,6 +90,7 @@ import {
   arrayValueStore,
   arrayValueType,
   elementMayBeForeign,
+  foreignElementThrow,
   lowerSafeBytesRead,
   lowerSafeIndexRead,
   primitiveElement,
@@ -2288,8 +2289,10 @@ export function lowerElementCompoundParts(
           arrayNumberRead(receiverRef(), indexRef(), locOf(target))
         : receiver.type.elem.kind === "string" &&
             op === "+" &&
-            !elementMayBeForeign(lowerer, receiver.type.elem)
-          ? arrayStringOperand(receiverRef(), indexRef(), locOf(target))
+            (statement || !elementMayBeForeign(lowerer, receiver.type.elem))
+          ? // The statement form's append reads the element inside its
+            // concat, so its operand is a string in every program.
+            arrayStringOperand(lowerer, receiverRef(), indexRef(), locOf(target))
           : arrayValueRead(lowerer, receiverRef(), indexRef(), receiver.type.elem, locOf(target))
       : {
           // An invalid index reads undefined in Node, which every numeric
@@ -2465,20 +2468,37 @@ function lowerIndexedUnionCompound(
 }
 
 /** ToString of one stabilized `string[]` element read for `+=`: a missing
- * element concatenates as "undefined". */
-function arrayStringOperand(arr: IrExpr, index: IrExpr, loc: SrcLoc): IrExpr {
+ * element concatenates as "undefined". Where string arrays can hold foreign
+ * elements, one throws the checked conversion's TypeError, as the typed
+ * read does (arrayValueRead). */
+function arrayStringOperand(lowerer: Lowerer, arr: IrExpr, index: IrExpr, loc: SrcLoc): IrExpr {
+  const stateIs = (state: number): IrExpr => ({
+    kind: "bin",
+    op: "===",
+    left: { kind: "arrayState", arr, index, type: F64, loc },
+    right: { kind: "numLit", value: state, type: F64, loc },
+    type: BOOL,
+    loc,
+  });
+  let missing: IrExpr = strLit("undefined", loc);
+  if (elementMayBeForeign(lowerer, STRING)) {
+    missing = {
+      kind: "ternary",
+      cond: stateIs(3),
+      then: {
+        ...foreignElementThrow(lowerer, arr, index, arrayValueType(lowerer, STRING), loc),
+        type: STRING,
+      },
+      else_: missing,
+      type: STRING,
+      loc,
+    };
+  }
   return {
     kind: "ternary",
-    cond: {
-      kind: "bin",
-      op: "===",
-      left: { kind: "arrayState", arr, index, type: F64, loc },
-      right: { kind: "numLit", value: 1, type: F64, loc },
-      type: BOOL,
-      loc,
-    },
+    cond: stateIs(1),
     then: { kind: "arrayGet", arr, index, type: STRING, loc },
-    else_: strLit("undefined", loc),
+    else_: missing,
     type: STRING,
     loc,
   };

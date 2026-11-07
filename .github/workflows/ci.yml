@@ -967,7 +967,8 @@ jobs:
     # The no-clang object, helper parity, packaged helper and packed npm
     # installation contracts: about 12 minutes, which used to run in front
     # of shard 1's differential slice and took that job to 45-50 minutes.
-    timeout-minutes: 30
+    # Its native CLI build alone can pass 30 minutes on a busy runner.
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

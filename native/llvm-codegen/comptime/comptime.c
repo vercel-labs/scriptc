@@ -23,7 +23,10 @@
 #include <time.h>
 #include <unistd.h>
 #ifdef __APPLE__
-#include <malloc/malloc.h>
+/* <malloc/malloc.h> does not compile under _POSIX_C_SOURCE (its typed
+ * allocation declarations need Darwin's extensions), and this is the one
+ * function wanted from it. */
+extern size_t malloc_size(const void *ptr);
 #else
 #include <malloc.h>
 #endif

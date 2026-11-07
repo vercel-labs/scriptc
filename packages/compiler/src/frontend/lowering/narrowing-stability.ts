@@ -50,9 +50,9 @@ export class NarrowingStability {
   private readonly effects = new Map<ts.Node, boolean>();
   private readonly capturedMutable = new Map<ts.Symbol, boolean>();
   private readonly staleBindings = new Map<ts.Symbol, boolean>();
-  /** Bindings whose inherited type is being computed: a cycle of bindings
-   * assigned from each other contributes nothing. */
-  private readonly inherited = new Set<ts.Symbol>();
+  /** Reads whose inherited type is being computed: a cycle of reads of one
+   * binding contributes nothing. */
+  private readonly inherited = new Set<ts.Node>();
   private readonly identifierWrites = new Map<ts.SourceFile, Map<string, ts.Identifier[]>>();
   private readonly widened = new Map<ts.Node, ts.Type | null>();
   private readonly plainContainers = new Map<ts.Node, boolean>();
@@ -93,27 +93,38 @@ export class NarrowingStability {
    * a lowering that discards a value because its type is `undefined`
    * consults this first. */
   restoredNothingRead(expression: ts.Expression): ts.Expression | null {
-    if (this.files === null) return null;
+    return this.restoredNothingReads(expression)[0] ?? null;
+  }
+
+  /** Every stale read `expression` can evaluate to, in evaluation order. */
+  private restoredNothingReads(
+    expression: ts.Expression,
+    out: ts.Expression[] = [],
+  ): ts.Expression[] {
+    if (this.files === null) return out;
     const e = skipOuter(expression);
     if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e)) {
-      return this.widenedType(e) !== null && isNothing(this.lowerer.checker.getTypeAtLocation(e))
-        ? e
-        : null;
+      if (this.widenedType(e) !== null && isNothing(this.lowerer.checker.getTypeAtLocation(e)))
+        out.push(e);
+      return out;
     }
-    if (ts.isConditionalExpression(e))
-      return this.restoredNothingRead(e.whenTrue) ?? this.restoredNothingRead(e.whenFalse);
+    if (ts.isConditionalExpression(e)) {
+      this.restoredNothingReads(e.whenTrue, out);
+      return this.restoredNothingReads(e.whenFalse, out);
+    }
     if (ts.isBinaryExpression(e)) {
       switch (e.operatorToken.kind) {
         case ts.SyntaxKind.AmpersandAmpersandToken:
         case ts.SyntaxKind.BarBarToken:
         case ts.SyntaxKind.QuestionQuestionToken:
-          return this.restoredNothingRead(e.left) ?? this.restoredNothingRead(e.right);
+          this.restoredNothingReads(e.left, out);
+          return this.restoredNothingReads(e.right, out);
         case ts.SyntaxKind.CommaToken:
         case ts.SyntaxKind.EqualsToken:
-          return this.restoredNothingRead(e.right);
+          return this.restoredNothingReads(e.right, out);
       }
     }
-    return null;
+    return out;
   }
 
   /** The checker narrows this reference below its declared type, and the
@@ -252,9 +263,10 @@ export class NarrowingStability {
    * an explicit `y = undefined` after the initializer leaves nothing to
    * inherit, and the read is genuinely absent. */
   private inheritedType(symbol: ts.Symbol, node: ts.Identifier): ts.Type | null {
-    // A cycle of bindings assigned from each other contributes nothing.
-    if (this.inherited.has(symbol)) return null;
-    this.inherited.add(symbol);
+    // A cycle of reads of the same binding, which cannot resolve to anything
+    // but itself, contributes nothing.
+    if (this.inherited.has(node)) return null;
+    this.inherited.add(node);
     try {
       const decl = symbol.valueDeclaration;
       if (decl === undefined || !ts.isVariableDeclaration(decl) || decl.type !== undefined)
@@ -271,18 +283,28 @@ export class NarrowingStability {
           assignment.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
           this.lowerer.resolveValueSymbol(write) === symbol
         )
-          sources.push({ source: assignment.right, definite: runsBefore(write, node) });
+          sources.push({ source: assignment.right, definite: runsBefore(assignment, node) });
       }
+      // The type a write can store: the union of the restored reads it can
+      // evaluate to, every arm of a conditional or operand of `&&` included.
+      // A write of the binding's own value (`copy = keep ? copy : undefined`)
+      // stores what the read before it held.
+      const storedType = (source: ts.Expression): ts.Type | null => {
+        let stored: ts.Type | null = null;
+        for (const read of this.restoredNothingReads(source)) {
+          const widened = this.widenedType(read);
+          if (widened === null) continue;
+          stored =
+            stored === null || stored === widened ? widened : this.lowerer.checker.getAnyType();
+        }
+        return stored;
+      };
       // The latest write that certainly runs before the read is the value
       // it sees; when that write stores nothing, the binding holds nothing.
       let latest: ts.Expression | null = null;
       for (const { source, definite } of sources)
         if (definite && (latest === null || source.pos > latest.pos)) latest = source;
-      let result: ts.Type | null = null;
-      if (latest !== null) {
-        const read = this.restoredNothingRead(latest);
-        result = read === null ? null : this.widenedType(read);
-      }
+      let result: ts.Type | null = latest === null ? null : storedType(latest);
       // A write in a branch, loop body or another function that the read
       // does not share may still have run since a call: it widens the
       // inherited type, but only a restored read gives it one. In this
@@ -292,15 +314,14 @@ export class NarrowingStability {
       for (const { source, definite } of sources) {
         if (definite) continue;
         if (flowBoundary(source) === flowBoundary(node) && source.pos < definitePos) continue;
-        const read = this.restoredNothingRead(source);
-        const restored = read === null ? null : this.widenedType(read);
+        const restored = storedType(source);
         if (restored === null) continue;
         result =
           result === null || result === restored ? restored : this.lowerer.checker.getAnyType();
       }
       return result;
     } finally {
-      this.inherited.delete(symbol);
+      this.inherited.delete(node);
     }
   }
 
@@ -1247,11 +1268,11 @@ function shortCircuits(kind: ts.SyntaxKind): boolean {
 }
 
 /** Whether `write` certainly runs before `read` on every path that reaches
- * it: both in one function, the write earlier in the text, and every
- * conditional construct in between one the read is inside too. */
+ * it: both in one function, the write finished before the read starts, and
+ * every conditional construct in between one the read is inside too. */
 function runsBefore(write: ts.Node, read: ts.Node): boolean {
   if (flowBoundary(write) !== flowBoundary(read)) return false;
-  if (write.pos >= read.pos) return false;
+  if (write.end > read.pos) return false;
   for (
     let n: ts.Node | undefined = write.parent;
     n !== undefined && !isFlowBoundary(n);

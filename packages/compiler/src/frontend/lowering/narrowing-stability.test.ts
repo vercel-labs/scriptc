@@ -335,6 +335,27 @@ console.log(stale());
   expect(readsLocal(module, "stale", "copy")).toBe(true);
 });
 
+test("a copy written from itself in a conditional keeps the type it held before the write", async () => {
+  // `keep ? copy : undefined` stores the value `copy` already held when
+  // `keep` is true, so the argument still reads the binding.
+  const module = await lower(`
+let start: number | undefined = undefined;
+const set = (): void => {
+  start = 2;
+};
+let keep = true;
+function stale(): string {
+  start = undefined;
+  set();
+  let copy = start;
+  copy = keep ? copy : undefined;
+  return "abcd".slice(copy);
+}
+console.log(stale());
+`);
+  expect(readsLocal(module, "stale", "copy")).toBe(true);
+});
+
 test("an untyped copy assigned the stale read again after a reset is refused", async () => {
   await expect(
     lower(`

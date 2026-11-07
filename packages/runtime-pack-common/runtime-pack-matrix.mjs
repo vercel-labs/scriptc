@@ -312,16 +312,6 @@ export function variantsFor(source) {
   // A full view holds an offset for every target field, so the NULL case is
   // unreachable in a program without a partial assertion.
   if (source === "scr_json.c") {
-    // An error thrown by island code answers `constructor` from V8 (NI-4),
-    // so `e.constructor === TypeError` holds with the island's TypeError.
-    // Pushed before the object model twins below, so a program that has both
-    // selects one build that carries both defines. Every other program keeps
-    // the default object, byte for byte.
-    variants.push({
-      id: "node-island",
-      when: { nodeIsland: true },
-      defines: ["SCR_NODE_ISLANDS"],
-    });
     // The JavaScript object model build (t262-da §J): every runtime feature
     // reached only from JavaScript-source facts — builtin intrinsics, array
     // attributes, BigInt views, handle property tables, buffer views —
@@ -334,19 +324,12 @@ export function variantsFor(source) {
     // program keeps the default object, byte for byte.
     withJsObjectModel(variants);
   }
-  // util.inspect and instanceof of Node island handles; Node's report for
-  // an uncaught island error.
-  if (
-    source === "scr_inspect.c" ||
-    source === "scr_dyn_builtin_class.c" ||
-    source === "scr_exception.c"
-  ) {
-    variants.push({
-      id: "node-island",
-      when: { nodeIsland: true },
-      defines: ["SCR_NODE_ISLANDS"],
-    });
-  }
+  // util.inspect and instanceof of Node island handles, Node's report for
+  // an uncaught island error and an island error's constructor need no
+  // build of their own: scr_inspect.c, scr_dyn_builtin_class.c,
+  // scr_exception.c and scr_json.c reach the island units through the
+  // table scr_node_island_handle.c installs (ScrNiDynOps), which is NULL in
+  // a program without them.
   if (source === "scr_bytes.c") {
     variants.push({
       id: "text-decoder-legacy",
@@ -372,9 +355,7 @@ export function variantsFor(source) {
   // accessor: every other program keeps the default object, byte for byte.
   if (source === "scr_js_object.c") withJsObjectModel(variants);
   // util.inspect prints a BigInt typed array by reading its elements as
-  // BigInts, whichever build of the unit the program selects. Its Node island
-  // build is not the one these variants name: island output keeps its own
-  // object.
+  // BigInts, whichever build of the unit the program selects.
   // A method call on an island promise reaches the island object for the
   // methods an island Promise subclass adds (a request promise's
   // `withResponse()`): the Node island build of the invoke unit asks it.
@@ -503,14 +484,6 @@ export function variantsFor(source) {
       id: "handle-classes-web-bodies",
       when: { webStreams: true, webBodies: true },
       defines: ["SCR_HANDLE_CLASSES", "SCR_WEB_BODIES"],
-    });
-  }
-  // instanceof over both web stream and Node island handles.
-  if (source === "scr_dyn_builtin_class.c") {
-    variants.push({
-      id: "handle-classes-node-island",
-      when: { webStreams: true, nodeIsland: true },
-      defines: ["SCR_HANDLE_CLASSES", "SCR_NODE_ISLANDS"],
     });
   }
   // stdin setEncoding, string data listeners and stdio 'resize' events.

@@ -130,11 +130,15 @@ ScrDyn *scr_node_island_adopt_thenable(ScrDyn *value);
 ScrPromise *scr_node_island_promise_resolve(ScrDyn *value);
 uint32_t scr_ni_live_handles(void); /* live import-table entries (leak tests) */
 
-/* The operations scr_json.c's dynamic paths route to an island handle
- * (typeof, calls, ToPrimitive, `in`, delete, Object.keys and the rest).
+/* The operations the units every program can link route to the island
+ * units: what scr_json.c's dynamic paths do with an island handle (typeof,
+ * calls, ToPrimitive, `in`, delete, Object.keys and the rest), util.inspect
+ * of one (scr_inspect.c), instanceof against one (scr_dyn_builtin_class.c)
+ * and the uncaught report of an island error (scr_exception.c).
  * scr_node_island_handle.c installs them from a constructor, so they are
- * set in every program that can hold an island handle, and scr_json.c
- * builds one object whether or not a program links the island units. */
+ * set in every program that can hold an island handle and NULL in every
+ * other, and each of those units builds one object whether or not a program
+ * links the island units. */
 typedef struct ScrNiDynOps {
   ScrDyn *(*get)(ScrDyn *obj, ScrDyn *key);
   ScrDyn *(*get_str)(ScrDyn *obj, const char *key, size_t len);
@@ -180,6 +184,11 @@ typedef struct ScrNiDynOps {
    * (a throw stays pending). 1 for the mirror of an island promise, 0 for
    * any other. */
   int (*promise_set)(const ScrDyn *promise, const char *key, size_t len, ScrDyn *value);
+  /* util.inspect of an island value (scr_ni_inspect). */
+  ScrStr *(*inspect)(const ScrDyn *value, double recurse, double depth);
+  /* Node's uncaught-exception report for an error island code threw
+   * (scr_ni_report_uncaught): true when it printed one. */
+  bool (*report_uncaught)(struct ScrError *error);
 } ScrNiDynOps;
 extern const ScrNiDynOps *scr_ni_dyn_ops;
 

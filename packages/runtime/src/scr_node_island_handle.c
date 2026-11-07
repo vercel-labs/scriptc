@@ -2015,6 +2015,8 @@ static const ScrNiDynOps nh_dyn_ops = {
     .promise_get = nh_promise_get,
     .promise_has = nh_promise_has,
     .promise_set = nh_promise_set,
+    .inspect = scr_ni_inspect,
+    .report_uncaught = scr_ni_report_uncaught,
 };
 
 __attribute__((constructor)) static void nh_install(void) {

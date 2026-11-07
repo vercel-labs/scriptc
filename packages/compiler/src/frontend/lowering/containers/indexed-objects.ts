@@ -167,6 +167,10 @@ export function objectIterOverIndexShape(
   // also holds numbers): each overflow value checks into the element type,
   // so a value of a dropped arm throws instead of mistyping.
   let ivNarrows = false;
+  // An index value into an `any` element (`Object.entries` of a union the
+  // checker types `[string, any][]`): each overflow value boxes as a
+  // declared field's does.
+  let ivBoxes = false;
   // `T | undefined` values into a `(T | undefined)[]`, which stores T
   // elements (primitiveElement): each value is stored with its present
   // undefined.
@@ -179,8 +183,10 @@ export function objectIterOverIndexShape(
       typeEquals(iv, valueT) ||
       (valueT.kind === "union" && lowerer.armTag(valueT.unionId, iv) >= 0) ||
       (valueT.kind === "dyn" && iv.kind === "dyn");
+    ivBoxes = !ivSurfaces && valueT.kind === "dyn" && lowerer.dynConvertible(iv);
     if (
       !ivSurfaces &&
+      !ivBoxes &&
       iv.kind === "union" &&
       lowerer.dynConvertible(iv) &&
       lowerer.dynConvertible(valueT)
@@ -191,7 +197,7 @@ export function objectIterOverIndexShape(
       ivNarrows =
         narrowArms.length > 0 && narrowArms.every((a) => lowerer.armTag(ivUnion.unionId, a) >= 0);
     }
-    if (!ivSurfaces && !ivNarrows) {
+    if (!ivSurfaces && !ivNarrows && !ivBoxes) {
       lowerer.unsupported(
         "SC1090",
         node,
@@ -451,15 +457,30 @@ export function objectIterOverIndexShape(
               type: valueT,
               loc,
             }
-          : {
-              kind: "recordKeyGet",
-              obj: rRef,
-              shapeId: argIr.shapeId,
-              key: kRef,
-              overflowOnly: true,
-              type: valueT,
-              loc,
-            };
+          : ivBoxes
+            ? {
+                kind: "dynFrom",
+                value: {
+                  kind: "recordKeyGet",
+                  obj: rRef,
+                  shapeId: argIr.shapeId,
+                  key: kRef,
+                  overflowOnly: true,
+                  type: iv,
+                  loc,
+                },
+                type: DYN,
+                loc,
+              }
+            : {
+                kind: "recordKeyGet",
+                obj: rRef,
+                shapeId: argIr.shapeId,
+                key: kRef,
+                overflowOnly: true,
+                type: valueT,
+                loc,
+              };
     const loopPushed: IrExpr =
       member === "keys"
         ? kRef

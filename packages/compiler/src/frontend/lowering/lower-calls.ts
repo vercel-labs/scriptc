@@ -5252,6 +5252,8 @@ const DYN_DISPATCH_METHODS = new Set([
   "every",
   "find",
   "findIndex",
+  "reduce",
+  "reduceRight",
   // The native-handle receiver surface (SCR_DYN_HANDLE — req/res/socket
   // boxed through the checked-dynamic boundary): these names dispatch on
   // the runtime kind so a boxed IncomingMessage/ServerResponse/Socket
@@ -10514,8 +10516,16 @@ function lowerObjectStaticCall(
  * The value is bound to one hidden local, then each arm's own static walk
  * reads it under the arm's runtime tag (`unionNarrow`); the arms' answers
  * are ternaries over the tag (the first arm is the fallthrough). The result
- * type is the checker's call type, shared by every arm. Null when an arm
- * is not a fixed record shape or a unit (the caller's fence then applies).
+ * type is the checker's call type, shared by every arm.
+ *
+ * An array or primitive arm beside the records (a JSON value: `Json[] |
+ * boolean | number | string | { [key: string]: Json }`, whose stored union
+ * a `typeof v === "object"` test leaves in place) answers through the
+ * checked-dynamic walk a lone array or primitive argument takes, which is
+ * Node's own for each: an array's indices and named properties, a string's
+ * indices, nothing for a number or a boolean. Null when an arm is none of
+ * a fixed record shape, such a value or a unit, or when those arms have no
+ * answer of the result type (the caller's fence then applies).
  *
  * The checker's type for an indexed read under noUncheckedIndexedAccess
  * drops the undefined the storage can hold, so the local takes the lowered
@@ -10534,11 +10544,23 @@ function lowerObjectEnumerationOverRecordUnion(
   const arms = lowerer.unions.get(source.unionId)?.arms ?? [];
   if (arms.length === 0) return null;
   const records: { tag: number; arm: IrType & { kind: "record" }; shape: IrRecordShape }[] = [];
+  // Arms the checked-dynamic walk answers: arrays (through their live
+  // view) and primitives.
+  const walked: { tag: number; arm: IrType }[] = [];
   const units: number[] = [];
   for (let tag = 0; tag < arms.length; tag++) {
     const arm = arms[tag]!;
     if (isUnitType(arm)) {
       units.push(tag);
+      continue;
+    }
+    if (
+      (arm.kind === "array" && lowerer.dynConvertible(arm)) ||
+      arm.kind === "string" ||
+      arm.kind === "f64" ||
+      arm.kind === "bool"
+    ) {
+      walked.push({ tag, arm });
       continue;
     }
     if (arm.kind !== "record") return null;
@@ -10547,6 +10569,24 @@ function lowerObjectEnumerationOverRecordUnion(
     records.push({ tag, arm, shape });
   }
   if (records.length === 0) return null;
+  // A walked arm's answer in the records' result type: the keys as strings,
+  // the entries as the native pairs a lone argument's entries are, anything
+  // else checked into the result.
+  const walkedAnswer = (resultT: IrType & { kind: "array" }): IrLibFn | "checked" | null => {
+    if (member === "keys") return resultT.elem.kind === "string" ? "dyn.objKeyStrings" : null;
+    if (member === "entries" && isDynEntryPairsType(lowerer, resultT)) return "dyn.objEntryPairs";
+    return canDynCheckTo(
+      resultT,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+      ? "checked"
+      : null;
+  };
+  if (walked.length > 0) {
+    const mapped = lowerer.mapTypeOf(lowerer.typeOf(call));
+    if (mapped?.kind !== "array" || walkedAnswer(mapped) === null) return null;
+  }
   const checkedT = lowerer.irTypeOf(call);
   if (checkedT.kind !== "array") lowerer.badType(call, lowerer.typeOf(call)); // defensive
   const resultT = checkedT;
@@ -10588,6 +10628,39 @@ function lowerObjectEnumerationOverRecordUnion(
       answer === null
         ? armAnswer
         : { kind: "ternary", cond: isTag(tag), then: armAnswer, else_: answer, type: resultT, loc };
+  }
+  for (const { tag, arm } of walked) {
+    const view: IrExpr = {
+      kind: "dynFrom",
+      value: { kind: "unionNarrow", unionId: source.unionId, tag, value: ref(), type: arm, loc },
+      ...(arm.kind === "array" ? { liveRef: true as const } : {}),
+      type: DYN,
+      loc,
+    };
+    const direct = walkedAnswer(resultT)!;
+    const armAnswer: IrExpr =
+      direct !== "checked"
+        ? { kind: "libCall", fn: direct, args: [view], type: resultT, loc }
+        : {
+            kind: "dynCheck",
+            value: {
+              kind: "libCall",
+              fn: member === "values" ? "dyn.objValues" : "dyn.objEntries",
+              args: [view],
+              type: DYN,
+              loc,
+            },
+            type: resultT,
+            loc,
+          };
+    answer = {
+      kind: "ternary",
+      cond: isTag(tag),
+      then: armAnswer,
+      else_: answer!,
+      type: resultT,
+      loc,
+    };
   }
   for (const tag of units) {
     answer = {

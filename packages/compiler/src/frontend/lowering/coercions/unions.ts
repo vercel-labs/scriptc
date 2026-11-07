@@ -395,6 +395,7 @@ export function unionRetagHelper(
     trappable,
     classRoutes,
     checked ? (src, dst) => lowerer.checkedWidthLift(src, dst) : undefined,
+    undefined,
     byPresence,
   );
   if (plan === null) return null;

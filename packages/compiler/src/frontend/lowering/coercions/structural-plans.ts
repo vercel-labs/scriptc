@@ -102,6 +102,7 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
               new Set(trappable),
               undefined,
               undefined,
+              undefined,
               true,
             )?.some((arm) => arm.kind === "presence") === true
           )

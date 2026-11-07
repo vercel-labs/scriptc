@@ -31,6 +31,7 @@
  * forms keep the selection and first check that the constructor the
  * instance reads is still its class. */
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import {
   BOOL,
   DYN,
@@ -103,24 +104,6 @@ function displayName(info: ClassInfo): string {
   return info.def.jsName || info.def.name.replace(/^%|^%m\d+\./, "");
 }
 
-/** Parentheses and the wrappers Node erases: `as T`, `<T>e`, `e!`,
- * `e satisfies T`. */
-function erased(node: ts.Expression): ts.Expression {
-  for (;;) {
-    if (
-      ts.isParenthesizedExpression(node) ||
-      ts.isAsExpression(node) ||
-      ts.isTypeAssertion(node) ||
-      ts.isNonNullExpression(node) ||
-      ts.isSatisfiesExpression(node)
-    ) {
-      node = node.expression;
-      continue;
-    }
-    return node;
-  }
-}
-
 /** Whether instances of `info` answer `constructor` from their class: the
  * class and every class above it up to a runtime-provided root is a class a
  * TypeScript source declares, whose members the compiler lays out itself.
@@ -173,7 +156,7 @@ export function instanceConstructorOf(
   lowerer: Lowerer,
   node: ts.Expression,
 ): InstanceConstructor | null {
-  const access = erased(node);
+  const access = withoutParenthesesTypeWrappers(node);
   if (
     !ts.isPropertyAccessExpression(access) ||
     access.questionDotToken ||
@@ -810,7 +793,7 @@ function lowerUnionConstructorRead(
   kind: "name" | "value",
   loc: SrcLoc,
 ): IrExpr | null {
-  const access = erased(node);
+  const access = withoutParenthesesTypeWrappers(node);
   if (
     !ts.isPropertyAccessExpression(access) ||
     access.questionDotToken ||
@@ -893,7 +876,7 @@ export function lowerInstanceConstructorRead(
 ): IrExpr | null {
   if (ts.isPrivateIdentifier(expr.name)) return null;
   const own = instanceConstructorOf(lowerer, expr);
-  if (own && erased(expr) === expr) {
+  if (own && withoutParenthesesTypeWrappers(expr) === expr) {
     const target = assertedClassValue(lowerer, expr);
     const recv = lowerReceiver(lowerer, own);
     if (target !== null && identityHierarchy(target)) {
@@ -1015,7 +998,7 @@ export function lowerInstanceConstructorIs(
 ): IrExpr | null {
   const ctor = instanceConstructorOf(lowerer, side);
   if (!ctor) return null;
-  const target = exactClassOfReceiver(lowerer, erased(other));
+  const target = exactClassOfReceiver(lowerer, withoutParenthesesTypeWrappers(other));
   if (!target || target.generic || !target.decl) return null;
   // A function-local class is a new class object at each evaluation of its
   // enclosing body, but the compiled class identity is one declaration: the

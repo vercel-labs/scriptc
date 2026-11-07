@@ -52,6 +52,10 @@ export type UnionRetagArm =
   | { kind: "classRoute"; routes: readonly UnionClassRoute[] }
   | { kind: "presence"; routes: UnionPresenceRoute[] };
 
+/** A source arm's routes by the values of one discriminant field, planned
+ * for one conversion from the checker types of its site. */
+export type UnionSiteRoute = UnionRetagArm & { kind: "discriminant" };
+
 export interface RecordUnionWrapPlan {
   field: string;
   fieldType: IrType;
@@ -215,6 +219,7 @@ export function planUnionRetag(
   trappable?: ReadonlySet<number>,
   classRoutes?: ReadonlyMap<number, readonly UnionClassRoute[]>,
   checkedLift?: (src: IrType, dst: IrType) => WidthLift | null,
+  siteRoutes?: ReadonlyMap<number, UnionSiteRoute>,
   byPresence = false,
 ): UnionRetagArm[] | null {
   const result: UnionRetagArm[] = [];
@@ -326,6 +331,13 @@ export function planUnionRetag(
         checkedLift === undefined || ordinaryArm ? null : uniqueCheckedArm(to, source, checkedLift);
       if (checked !== null) {
         result.push({ kind: "direct", route: checked });
+        continue;
+      }
+      // The conversion's own routes (site-discriminant.ts), asked only
+      // for an arm no rule above places.
+      const routed = siteRoutes?.get(tag);
+      if (routed !== undefined) {
+        result.push(routed);
         continue;
       }
       // Several arms hold the source and no rule selects one: in a checked

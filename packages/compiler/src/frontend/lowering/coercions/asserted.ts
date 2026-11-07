@@ -17,7 +17,12 @@ import { unionRetagHelper } from "./unions.js";
  * - A record or array whose member types the assertion narrows (`models as
  *   Model<"one">[]` on a union-element array): the checked deep conversion
  *   a cast of an unknown value takes, which validates the value member by
- *   member and names the deepest failing path. */
+ *   member and names the deepest failing path.
+ * - A record or array beside unit arms asserted to a type it has no
+ *   structural conversion into (`result as Sub` on `Base | undefined`, Sub
+ *   declaring required members Base lacks): the unit arms throw the
+ *   TypeError of a lying assertion, and the one value arm takes that same
+ *   checked deep conversion. */
 export function assertedConversion(
   lowerer: Lowerer,
   expr: IrExpr,
@@ -31,7 +36,28 @@ export function assertedConversion(
     if (!from) return null;
     const values = from.arms.filter((arm) => !isUnitType(arm));
     const kept = values.filter((arm) => convertsInto(lowerer, arm, asserted, loc));
-    if (kept.length === 0 || kept.length === values.length) return null;
+    if (kept.length === 0) {
+      // No arm reaches T by a structural conversion. One record or array
+      // beside units is the value T names: extract it (a unit contradicts
+      // the assertion) and check it into T member by member, then place
+      // the result in the slot as a value of T.
+      const arm = values.length === 1 ? values[0]! : null;
+      if (arm === null || (arm.kind !== "record" && arm.kind !== "array")) return null;
+      if (!checkedDeepConvertible(lowerer, arm, asserted)) return null;
+      // Planned before any helper is interned, so a slot T does not reach
+      // leaves the program as it was.
+      const place = lowerer.widthLiftPlan(asserted, expected);
+      if (place === null) return null;
+      const helper = lowerer.narrowedArmHelper(from.id, arm, loc);
+      if (!helper) return null;
+      const claimed = checkedDeepConversion(
+        lowerer,
+        lowerer.checkedNarrowCall(helper, expr, arm, loc),
+        asserted,
+      );
+      return lowerer.applyWidthLift(place, claimed, expected, loc);
+    }
+    if (kept.length === values.length) return null;
     if (asserted.kind === "union" && expected.kind === "union") {
       // The arms T excludes trap; the others (units included) re-tag.
       const trappable = new Set<number>();
@@ -52,19 +78,35 @@ export function assertedConversion(
     const converted = lowerer.coerceToExpected(narrowed, expected);
     return typeEquals(converted.type, expected) ? converted : null;
   }
-  if (expected.kind !== "record" && expected.kind !== "array") return null;
+  if (!checkedDeepConvertible(lowerer, expr.type, expected)) return null;
+  return checkedDeepConversion(lowerer, expr, expected);
+}
+
+/** Whether a value of `source` can take the checked deep conversion into
+ * `expected`: a record without an index signature or an array, reached
+ * from a value the checked-dynamic representation holds. */
+function checkedDeepConvertible(lowerer: Lowerer, source: IrType, expected: IrType): boolean {
+  if (expected.kind !== "record" && expected.kind !== "array") return false;
   if (expected.kind === "record" && lowerer.shapes.get(expected.shapeId)?.indexValue !== undefined)
-    return null;
-  if (
-    !lowerer.dynConvertible(expr.type) ||
-    !canDynCheckTo(
+    return false;
+  return (
+    lowerer.dynConvertible(source) &&
+    canDynCheckTo(
       expected,
       (id) => lowerer.shapes.get(id),
       (id) => lowerer.unions.get(id),
     )
-  )
-    return null;
-  return { kind: "dynCheck", value: lowerer.coerceToExpected(expr, DYN), type: expected, loc };
+  );
+}
+
+/** The checked deep conversion itself (checkedDeepConvertible held). */
+function checkedDeepConversion(lowerer: Lowerer, expr: IrExpr, expected: IrType): IrExpr {
+  return {
+    kind: "dynCheck",
+    value: lowerer.coerceToExpected(expr, DYN),
+    type: expected,
+    loc: expr.loc,
+  };
 }
 
 /** True when a value of `arm` has a structural conversion into `target`:

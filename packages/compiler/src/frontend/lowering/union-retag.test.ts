@@ -1002,6 +1002,7 @@ describe("an arm several destination arms hold, routed by the value's properties
         new Set<number>(),
         undefined,
         undefined,
+        undefined,
         byPresence,
       );
     expect(plan(false)).toBeNull();
@@ -1030,7 +1031,7 @@ describe("an arm several destination arms hold, routed by the value's properties
       arms: [record("a"), record("c"), record("d"), record("b")],
     };
     const plan = (byPresence: boolean): UnionRetagArm[] | null =>
-      planUnionRetag(wide, to, lookup, placed, new Set<number>(), undefined, undefined, byPresence);
+      planUnionRetag(wide, to, lookup, placed, new Set<number>(), undefined, undefined, undefined, byPresence);
     expect(plan(false)).toBeNull();
     expect(plan(true)?.[2]).toEqual({
       kind: "presence",
@@ -1054,6 +1055,7 @@ describe("an arm several destination arms hold, routed by the value's properties
       shapeOf,
       widthLift,
       new Set<number>(),
+      undefined,
       undefined,
       undefined,
       true,

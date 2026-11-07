@@ -1,4 +1,5 @@
 import * as ts from "../ts7/adapter.js";
+import { withoutParentheses } from "../outer-expressions.js";
 import { isJsSourceFile } from "../program.js";
 
 /* Proves that a string element read `text[i]` names an existing UTF-16 code
@@ -55,12 +56,6 @@ const NO_FACTS: IndexFacts = {
   belowLengthOf: null,
 };
 
-function peel(node: ts.Expression): ts.Expression {
-  let e = node;
-  while (ts.isParenthesizedExpression(e)) e = e.expression;
-  return e;
-}
-
 function isBoundary(node: ts.Node): boolean {
   return (
     ts.isSourceFile(node) ||
@@ -87,7 +82,7 @@ function isLoop(node: ts.Node): boolean {
 }
 
 function integerLiteral(node: ts.Expression): number | null {
-  const e = peel(node);
+  const e = withoutParentheses(node);
   if (ts.isNumericLiteral(e)) {
     const value = Number(e.text);
     return Number.isSafeInteger(value) ? value : null;
@@ -327,14 +322,14 @@ export class StringIndexBounds {
   private valueFacts(value: ts.Expression): IndexFacts {
     const literal = integerLiteral(value);
     if (literal !== null) return { integer: true, nonNegative: literal >= 0, belowLengthOf: null };
-    const e = peel(value);
+    const e = withoutParentheses(value);
     if (this.lengthOf(e)) return { integer: true, nonNegative: true, belowLengthOf: null };
     if (
       ts.isBinaryExpression(e) &&
       (e.operatorToken.kind === ts.SyntaxKind.MinusToken ||
         e.operatorToken.kind === ts.SyntaxKind.PlusToken)
     ) {
-      const of = this.lengthOf(peel(e.left));
+      const of = this.lengthOf(withoutParentheses(e.left));
       const amount = integerLiteral(e.right);
       if (of && amount !== null) {
         const delta = e.operatorToken.kind === ts.SyntaxKind.PlusToken ? amount : -amount;
@@ -393,7 +388,7 @@ export class StringIndexBounds {
   /** `text.length`, or a const binding initialized from it while `text`
    * itself is never reassigned. */
   private isLength(node: ts.Expression, text: ts.Symbol): boolean {
-    const e = peel(node);
+    const e = withoutParentheses(node);
     if (ts.isPropertyAccessExpression(e)) return this.lengthOf(e) === text;
     if (!ts.isIdentifier(e)) return false;
     const alias = this.symbolAt(e);
@@ -406,13 +401,13 @@ export class StringIndexBounds {
       !(declaration.parent.flags & ts.NodeFlags.Const)
     )
       return false;
-    if (this.lengthOf(peel(declaration.initializer)) !== text) return false;
+    if (this.lengthOf(withoutParentheses(declaration.initializer)) !== text) return false;
     return this.binding(text)?.constant === true;
   }
 
   /** `text.length - k` for an integer k >= 1. */
   private isLengthMinusOne(node: ts.Expression, text: ts.Symbol): boolean {
-    const e = peel(node);
+    const e = withoutParentheses(node);
     if (!ts.isBinaryExpression(e) || e.operatorToken.kind !== ts.SyntaxKind.MinusToken)
       return false;
     const amount = integerLiteral(e.right);
@@ -420,7 +415,7 @@ export class StringIndexBounds {
   }
 
   private isIndex(node: ts.Expression, index: ts.Symbol): boolean {
-    const e = peel(node);
+    const e = withoutParentheses(node);
     return ts.isIdentifier(e) && this.symbolAt(e) === index;
   }
 
@@ -434,7 +429,7 @@ export class StringIndexBounds {
     index: ts.Symbol,
     text: ts.Symbol,
   ): boolean {
-    const e = peel(node);
+    const e = withoutParentheses(node);
     if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken)
       return this.holds(e.operand, !truthy, bound, index, text);
     if (!ts.isBinaryExpression(e)) return false;

@@ -16,8 +16,14 @@ import {
 } from "../backend/llvm/emitter.js";
 import { inlineRcOption } from "../backend/llvm/shapes.js";
 import { executableLinkFeatures } from "../backend/executable-features.js";
+import { REQUIRED_LINK_FEATURES } from "../backend/native-link-info-core.js";
 import type { NativeLinkFeatures } from "../backend/native-link-info-core.js";
 import { finishNodeIslands } from "../executable/islands.js";
+import {
+  loweringOptions,
+  prepareLoweredProgram,
+  usesLoweredProgram,
+} from "../executable/lowered.js";
 import { prepareExecutableModule } from "../executable/prepare.js";
 import type { FfiProfile } from "../ffi/ffi-manifest.js";
 import type { FrontendFactory } from "../frontend/pipeline.js";
@@ -31,6 +37,7 @@ import {
   trackedReadFile,
 } from "../frontend/input-tracker.js";
 import { compilerOwnedFileRoots } from "../frontend/dts-paths.js";
+import { frontendEnvironment } from "../frontend/environment.js";
 import { provenanceSources } from "../frontend/provenance-registry.js";
 import { processFork } from "../frontend/process-fork.js";
 import { unitReuseEnabled, type UnitStore } from "../frontend/lowering/unit-reuse.js";
@@ -265,83 +272,13 @@ function implementationIdentity(toolchain: NativeToolchain): string {
   );
 }
 
-/** SCRIPTC_* variables that report on a build, place its cache or control
- * backend emission (its parallelism, a requested worker failure). The
- * frontend's output does not depend on them, so they are left out of its
- * cache key. */
-const FRONTEND_INDEPENDENT_VARIABLES = new Set([
-  "SCRIPTC_CACHE_DIR",
-  "SCRIPTC_CACHE_MAX_MB",
-  // The shared checker server answers as the build's own checker does.
-  "SCRIPTC_CHECKER_SERVER",
-  "SCRIPTC_EMIT_WORKERS",
-  "SCRIPTC_EMIT_WORKER_FAIL",
-  "SCRIPTC_EMIT_WORKER_FUNCTIONS",
-  // Reusing lowered units leaves the lowered module as it is.
-  "SCRIPTC_INCR_LOWERING",
-  "SCRIPTC_INCR_VERIFY",
-  "SCRIPTC_TIMING",
-]);
-
-/** The SCRIPTC_* variables a frontend cache entry depends on, sorted by name. */
-function frontendEnvironment(): [string, string | undefined][] {
-  return Object.entries(process.env)
-    .filter(([name]) => name.startsWith("SCRIPTC_") && !FRONTEND_INDEPENDENT_VARIABLES.has(name))
-    .sort(([a], [b]) => a.localeCompare(b));
-}
-
 function validFeatures(value: unknown): value is NativeLinkFeatures {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const features = value as Record<string, unknown>;
   if (features["workers"] !== undefined && typeof features["workers"] !== "boolean") return false;
   if (features["youngNursery"] !== undefined && typeof features["youngNursery"] !== "boolean")
     return false;
-  return [
-    "regex",
-    "copying",
-    "textDecoderLegacy",
-    "bigintBytes",
-    "fileHandle",
-    "fetch",
-    "zlib",
-    "assert",
-    "inspect",
-    "dynInvoke",
-    "dc",
-    "dynAsync",
-    "events",
-    "emitter",
-    "symbol",
-    "bigint",
-    "searchParams",
-    "qs",
-    "utilPromisify",
-    "dynBuiltinClass",
-    "dynBuiltinStream",
-    "parseArgs",
-    "stream",
-    "net",
-    "http",
-    "http2",
-    "dgram",
-    "dnsPromises",
-    "dgramDyn",
-    "textCodecDyn",
-    "watch",
-    "watchFile",
-    "foreignFfi",
-    "nodeTest",
-    "tls",
-    "tlsCa",
-    "cipher",
-    "ecdh",
-    "dh",
-    "pki",
-    "ed25519",
-    "x509",
-    "webcrypto",
-    "perfLoop",
-  ].every((name) => typeof features[name] === "boolean");
+  return REQUIRED_LINK_FEATURES.every((name) => typeof features[name] === "boolean");
 }
 
 function validCachedInput(value: unknown): value is FrontendCacheEntry {
@@ -390,7 +327,9 @@ const BOOTSTRAP_IR_INPUT = "SCRIPTC_BOOTSTRAP_IR_INPUT";
  * and the SCRIPTC_* variables that reach the frontend. The sources and the
  * configuration are not part of it; the entry's probes prove those. Null when
  * an entry cannot describe the build: provenance rewriting replaces the
- * sources with build products, and a bootstrap build supplies the IR. */
+ * sources with build products, a build that writes or reads a lowered
+ * program (executable/lowered.ts) runs its frontend, or none, whatever an
+ * entry holds, and a bootstrap build supplies the IR. */
 function nativeFrontendInputs(
   entry: string,
   options: CompileRequestOptions,
@@ -398,7 +337,7 @@ function nativeFrontendInputs(
   toolchain: NativeToolchain,
 ): Record<string, unknown> | null {
   const irInput = process.env[BOOTSTRAP_IR_INPUT] ?? "";
-  if (irInput !== "" || provenanceSources() !== null) return null;
+  if (usesLoweredProgram(options) || irInput !== "" || provenanceSources() !== null) return null;
   return {
     schema: 1,
     entry,
@@ -546,8 +485,7 @@ export function prepareNativeExecutable(
     try {
       key = contentDigest(JSON.stringify(inputs));
       if (unitReuseEnabled()) {
-        const { outPath: _outPath, outDir: _outDir, ...lowering } = options;
-        unitKey = contentDigest(JSON.stringify({ ...inputs, options: lowering }));
+        unitKey = contentDigest(JSON.stringify({ ...inputs, options: loweringOptions(options) }));
       }
       const read = readFrontendCache(cache, key, exclusions);
       const cached =
@@ -584,41 +522,51 @@ export function prepareNativeExecutable(
   const tracker = new FrontendInputTracker(previous);
   // The island steps (executable/islands.ts) follow lowering inside the
   // tracker, so the project configuration they read is an input too.
-  const lowered =
-    irInput !== ""
-      ? { prepared: preparedFromIr(irInput, entry, options), islandModuleData: undefined }
-      : tracker.runSynchronous(() => {
-          const prepared = prepareExecutableModule(
+  const lowered = tracker.runSynchronous(() => {
+    const prepared =
+      irInput !== ""
+        ? preparedFromIr(irInput, entry, options)
+        : prepareLoweredProgram(
             entry,
             options,
-            ffi,
             toolchain.target.platform,
-            frontend,
             timing,
-            new Map(),
-            true,
-            cache !== null && unitKey !== null ? nativeUnitStore(cache, unitKey) : null,
+            {
+              compiler: () => implementationIdentity(toolchain),
+              outputs: exclusions.outputPaths ?? [],
+            },
+            () =>
+              prepareExecutableModule(
+                entry,
+                options,
+                ffi,
+                toolchain.target.platform,
+                frontend,
+                timing,
+                new Map(),
+                true,
+                cache !== null && unitKey !== null ? nativeUnitStore(cache, unitKey) : null,
+              ),
           );
-          if (!prepared.ok) return { prepared, islandModuleData: undefined };
-          const islands = finishNodeIslands(prepared.mod, entry, {
-            outputKind,
-            outPath: options.outPath,
-            libnode: options.libnode,
-            target: () => toolchain.target.name,
-          });
-          if (!islands.ok) {
-            const failed: CompileFailure = {
-              ok: false,
-              diagnostics: [islands.diagnostic],
-              sourceTexts: prepared.sourceTexts,
-            };
-            return { prepared: failed, islandModuleData: undefined };
-          }
-          return { prepared, islandModuleData: islands.moduleData };
-        });
+    if (!prepared.ok || irInput !== "") return { prepared, islandModuleData: undefined };
+    const islands = finishNodeIslands(prepared.mod, entry, {
+      outputKind,
+      outPath: options.outPath,
+      libnode: options.libnode,
+      target: () => toolchain.target.name,
+    });
+    if (!islands.ok) {
+      const failed: CompileFailure = {
+        ok: false,
+        diagnostics: [islands.diagnostic],
+        sourceTexts: prepared.sourceTexts,
+      };
+      return { prepared: failed, islandModuleData: undefined };
+    }
+    return { prepared, islandModuleData: islands.moduleData };
+  });
   const { prepared, islandModuleData } = lowered;
   if (!prepared.ok) return prepared;
-  if (irInput !== "") timing("ir-input");
   const ir =
     outputKind === "ir" || options.emitIr
       ? batchTextParts(serializeModuleParts(prepared.mod, compilerOwnedFileRoots()))

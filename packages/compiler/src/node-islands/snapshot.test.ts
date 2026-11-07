@@ -468,13 +468,20 @@ describe("the loads a snapshot was recorded after", () => {
         files: [paths.get(name)!],
         ...records[name],
       })),
-      objects: Object.fromEntries(distinct.map((_, i) => [String(i + 1), { f: 0, p: false, m: [] }])),
+      objects: Object.fromEntries(
+        distinct.map((_, i) => [String(i + 1), { f: 0, p: false, m: [] }]),
+      ),
     };
     const seen: string[][] = [];
-    const decisions = finalizeDeferredIslands(mod, join(root, "main.ts"), root, (_pack, modules) => {
-      seen.push(modules);
-      return probe;
-    });
+    const decisions = finalizeDeferredIslands(
+      mod,
+      join(root, "main.ts"),
+      root,
+      (_pack, modules) => {
+        seen.push(modules);
+        return probe;
+      },
+    );
     const record = (i: number): string | undefined =>
       /^P .*$/m.exec((calls[i]!.args[1] as { value: string }).value)?.[0];
     const before = (...loaded: string[]): string =>

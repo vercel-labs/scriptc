@@ -35,6 +35,9 @@ import { analyzeWithFrontend } from "../src/frontend/analysis.js";
 import { runFrontend, type FrontendFactory } from "../src/frontend/pipeline.js";
 import { loadProgram } from "../src/frontend/program-node.js";
 import { serializeModule } from "../src/ir/serialize.js";
+import { islandDecisionKey, writeIslandDecision } from "../src/node-islands/decision-file.js";
+import { nodeIslandPolicy } from "../src/node-islands/policy.js";
+import { emptyProjectConfig } from "../src/project-config.js";
 
 const repoRoot = join(import.meta.dirname, "../../..");
 const scratch: string[] = [];
@@ -823,9 +826,8 @@ test("an analysis of a program whose island module fails the type check stops th
   // A sloppy CommonJS module with a `with` statement. A build checks the
   // program it reloads without the module; this analysis checks its first
   // load, which still holds the module, and stops at the checker's error
-  // before it lowers anything. It never islands a program module either, so
-  // a recorded island module is not replayed by it: the record changes
-  // nothing here.
+  // before it lowers anything, so the record, which takes effect when the
+  // analysis lowers, changes nothing here.
   const dir = fixture("tests/corpus/8427-sloppy-with-island");
   const file = join(dir, "islands.json");
   const from = analyze(dir, null, "main.js");
@@ -833,4 +835,53 @@ test("an analysis of a program whose island module fails the type check stops th
   expect(buildEntry(dir, "main.js", file)).toBe(true);
   expect(recordedModules(file)).toMatchObject([{ file: "lookup.js", rule: "load" }]);
   expect(analyze(dir, file, "main.js")).toEqual(from);
+}, 600_000);
+
+test("an analysis lowers a recorded user-module island out of the program, as a build does", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-island-decision-"));
+  scratch.push(dir);
+  // A user module a native build refuses at run time (SC2020), recorded as a
+  // module island: the build that replays the record runs it in Node.
+  const legacy = join(dir, "legacy.js").split("\\").join("/");
+  writeFileSync(
+    legacy,
+    '"use strict";\nexports.bump = function () { var r = new WeakRef({}); return typeof r.deref(); };\n',
+  );
+  writeFileSync(join(dir, "legacy.d.ts"), "export declare function bump(): unknown;\n");
+  writeFileSync(
+    join(dir, "main.ts"),
+    'import { bump } from "./legacy.js";\nconsole.log(bump());\n',
+  );
+  const file = join(dir, "islands.json");
+  writeIslandDecision(
+    file,
+    islandDecisionKey(join(dir, "main.ts"), undefined, undefined, undefined, process.platform),
+    nodeIslandPolicy(emptyProjectConfig()),
+    {
+      packages: new Map(),
+      modules: new Map([
+        [legacy, { file: legacy, class: "object-model", reason: "recorded", decision: "auto" }],
+      ]),
+    },
+    "compiles",
+  );
+  expect(build(dir, file).result).toContain('"modules":["<dir>/legacy.js"]');
+  const coverage = (decision: string | null) =>
+    analyzeWithFrontend(
+      join(dir, "main.ts"),
+      decision === null ? {} : { nodeIslands: { decision } },
+      process.platform,
+      (entry, npmStatic, externalTypes, libraryNpmStatic, options) =>
+        runFrontend(entry, loadProgram, npmStatic, externalTypes, libraryNpmStatic, options),
+    ).coverage;
+  const fenced = (c: ReturnType<typeof coverage>) =>
+    (c.runtimeFences ?? []).map((d) => [d.code, d.loc.file.split(dir).join("<dir>")]);
+  // From scratch the module is native and its fence is a blocker.
+  expect(fenced(coverage(null))).toEqual([["SC2020", "<dir>/legacy.js"]]);
+  // With the record, the analysis lowers the program the build compiles: the
+  // module runs in Node, and only the entry's statements are counted.
+  const replayed = coverage(file);
+  expect(fenced(replayed)).toEqual([]);
+  expect(replayed.stats.statementsFailed).toBe(0);
+  expect(replayed.stats.statementsTotal).toBeLessThan(coverage(null).stats.statementsTotal);
 }, 600_000);

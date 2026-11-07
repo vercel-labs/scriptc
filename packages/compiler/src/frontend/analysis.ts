@@ -316,6 +316,7 @@ export function analyzeWithFrontend(
         ...(lowered.divergences !== undefined ? { divergences: lowered.divergences } : {}),
         ...(lowered.performance !== undefined ? { performance: lowered.performance } : {}),
         ...(lowered.dynamicSlots !== undefined ? { dynamicSlots: lowered.dynamicSlots } : {}),
+        ...(lowered.typeClaims !== undefined ? { typeClaims: lowered.typeClaims } : {}),
         ...(lowered.unreached ? { unreached: lowered.unreached } : {}),
         ...(compiledPackages.length > 0 ? { npmStatic: compiledPackages } : {}),
         // --provenance-sources: the per-package attribution inputs (the

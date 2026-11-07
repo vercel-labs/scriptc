@@ -546,6 +546,31 @@ test(
         expect(failed.status).toBe(1);
         expect(failed.stderr.toString()).toContain("not assignable");
         expect(readFileSync(retained, "utf8")).toBe("existing output");
+
+        // Which options a command takes is read from the command table
+        // (cli/usage.ts): the native CLI refuses the same ones with the same line.
+        for (const [args, refusal] of [
+          [
+            ["cache", "warm", "--strip"],
+            "scriptc cache warm takes only native optimization/sanitizer options and profile names",
+          ],
+          [
+            ["merge-profiles", "-o", join(directory, "merged.profdata"), "--tier=auto", "a"],
+            "scriptc merge-profiles takes -o <out.profdata>, optionally --sparse, and one or more profiles",
+          ],
+          [
+            ["build", "--lib", "--profile", profile, "--node-island=left-pad"],
+            "scriptc build --lib takes no --backend/--emit/--print/",
+          ],
+          [["build", "--wasm=module.wasm", hello], "--wasm is a coverage-only option"],
+        ] as const) {
+          const refused = spawnSync(probe, args, nativeOptions);
+          expect(refused.status, args.join(" ")).toBe(1);
+          expect(
+            comparableStderr(refused.stderr.toString()).split("\n")[0],
+            args.join(" "),
+          ).toContain(refusal);
+        }
       };
       // The production chain owns the complete frontend and emitter proof:
       // compare the Node seed's IR and LLVM with the native self-rebuild, then

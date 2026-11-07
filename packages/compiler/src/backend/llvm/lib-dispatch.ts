@@ -1579,6 +1579,8 @@ function emitArrayForeignThrow(host: LlvmEmitterContext, e: LibCallExpr): LlValu
   B.line(
     `call void @scr_arr_foreign_throw(ptr ${arr.name}, double ${index.name}, ptr ${want.name})`,
   );
+  // The element's deferred checked conversion: a dev build reports it.
+  host.conversionTraceAt(e.loc)?.();
   const ty = host.llType(e.type);
   if (ty === "void") {
     host.emitAlwaysPendingUnwind();

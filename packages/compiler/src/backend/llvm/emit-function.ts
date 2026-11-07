@@ -583,6 +583,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   // while suspended. The active exception context owns the chain, so
   // concurrent fibers isolate it.
   emitter.framePositions = null;
+  emitter.currentFrameName = emitter.conversionTrace ? emitter.frameNameOf(fn) : undefined;
   const positions = emitter.framePositionsOf(fn);
   if (
     emitter.stackTraces &&

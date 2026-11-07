@@ -2,5 +2,6 @@
   "entry": "workloads/log-lines.ts",
   "args": [
     "4"
-  ]
+  ],
+  "scaleArg": 0
 }

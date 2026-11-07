@@ -26,7 +26,7 @@ import {
   trackedWholeText,
   validFrontendInputSnapshot,
 } from "./input-tracker.js";
-import { observedSourceText, TOKEN_SPAN } from "./ts7/ast-node.js";
+import { observedSourceText, rewrittenSourceText, TOKEN_SPAN } from "./ts7/ast-node.js";
 
 const scratch: string[] = [];
 
@@ -275,6 +275,197 @@ test("nested trackers join their text reads, and a whole read wins", async () =>
   expect(probes).toContainEqual({ op: "text", path: other });
 });
 
+/* A file compiled in a rewritten form (SourceTextRewrite). `A, ` is blanked
+ * from the start of `A` (offset 9) to the start of `b` (offset 12). */
+const ELIDED = 'import { A, b } from "./m";\nconsole.log(b);\n';
+const REWRITE = { blanks: [19, 25], tail: 'import type { A } from "./m";\n' };
+
+test("a rewrite is recorded with the reads of the form it gives, apart from the reads of the text", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
+  scratch.push(dir);
+  const source = join(dir, "entry.ts");
+  await writeFile(source, ELIDED);
+  const tracker = new FrontendInputTracker();
+  const observer = observedSourceText()!;
+  const blanked = { kind: "includes" as const, needle: "A," };
+  tracker.run(() => {
+    const text = trackedReadSource(source)!;
+    const rewritten = rewrittenSourceText(text, REWRITE);
+    expect(rewritten).toBe(
+      'import {    b } from "./m";\nconsole.log(b);\nimport type { A } from "./m";\n',
+    );
+    observer.rewrite(source, text, REWRITE, rewritten);
+    // The same rewrite again (a second load of the program) is the same form.
+    observer.rewrite(source, text, { ...REWRITE, blanks: [...REWRITE.blanks] }, rewritten);
+    // The start of `console`, asked of the text and of the form.
+    observer.position(source, text, 28);
+    observer.position(source, rewritten, 28);
+    // The `A` of the appended declaration.
+    observer.range(source, rewritten, 58, 59, TOKEN_SPAN);
+    observer.fact(source, text, blanked, true, -1, -1, TOKEN_SPAN);
+    observer.fact(source, rewritten, blanked, false, -1, -1, TOKEN_SPAN);
+  });
+  const snapshot = tracker.snapshot();
+  expect(validFrontendInputSnapshot(snapshot)).toBe(true);
+  expect(snapshot.probes).toContainEqual({
+    op: "text",
+    path: source,
+    reads: {
+      ranges: [],
+      positions: [28],
+      facts: [{ predicate: blanked, whole: true, yes: [], no: [] }],
+      rewritten: {
+        ...REWRITE,
+        ranges: [117, 118],
+        positions: [28],
+        facts: [{ predicate: blanked, whole: false, yes: [], no: [] }],
+      },
+    },
+  });
+  // A comment inside the blanked span and one after the last token: the
+  // entry is kept, with the rewrite and its reads moved to the edited text.
+  const current = ELIDED.replace("A, ", "A, /* a type */ ") + "// trail\n";
+  await writeFile(source, current);
+  const kept = frontendInputsSemanticallyMatch(snapshot, new Map([[source, ELIDED]]), () => true);
+  expect(kept?.snapshot.probes).toContainEqual({
+    op: "text",
+    path: source,
+    reads: {
+      ranges: [],
+      positions: [41],
+      facts: [{ predicate: blanked, whole: true, yes: [], no: [] }],
+      rewritten: {
+        blanks: [19, 51],
+        tail: REWRITE.tail,
+        ranges: [161, 162],
+        positions: [41],
+        facts: [{ predicate: blanked, whole: false, yes: [], no: [] }],
+      },
+    },
+  });
+  expect(validFrontendInputSnapshot(kept!.snapshot)).toBe(true);
+  // The form has text after the file's: a reader that moves source
+  // locations to the edited text is told so.
+  expect(kept?.changed).toEqual([{ path: source, previous: ELIDED, current, appended: true }]);
+  // A comment the form's predicate matches: the form of the edited text
+  // answers differently, though the text as written answers as before.
+  await writeFile(source, ELIDED + "// A, then b\n");
+  const refused = vi.fn();
+  expect(
+    frontendInputsSemanticallyMatch(snapshot, new Map([[source, ELIDED]]), () => true, {}, refused),
+  ).toBeNull();
+  expect(refused).toHaveBeenCalledExactlyOnceWith(source, "edit");
+  // With source positions recorded, a line after the last token moves the
+  // appended declaration.
+  await writeFile(source, ELIDED + "// trail\n");
+  const match = (positions: boolean) =>
+    frontendInputsSemanticallyMatch(
+      {
+        ...snapshot,
+        probes: snapshot.probes.map((probe): FrontendInputProbe =>
+          probe.op === "text"
+            ? {
+                op: "text",
+                path: source,
+                reads: {
+                  ranges: [],
+                  positions: [],
+                  facts: [],
+                  rewritten: { ...REWRITE, ranges: [], positions: [], facts: [] },
+                },
+              }
+            : probe,
+        ),
+      },
+      new Map([[source, ELIDED]]),
+      () => true,
+      {},
+      undefined,
+      positions,
+    );
+  expect(match(false)).not.toBeNull();
+  expect(match(true)).toBeNull();
+});
+
+test("a file compiled in two forms, or rewritten from text that is not its content, counts as read whole", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
+  scratch.push(dir);
+  const twice = join(dir, "twice.ts");
+  const derived = join(dir, "derived.ts");
+  const later = join(dir, "later.ts");
+  const misplaced = join(dir, "misplaced.ts");
+  for (const path of [twice, derived, later, misplaced]) await writeFile(path, ELIDED);
+  const tracker = new FrontendInputTracker();
+  const observer = observedSourceText()!;
+  tracker.run(() => {
+    const text = trackedReadSource(twice)!;
+    observer.rewrite(twice, text, REWRITE, rewrittenSourceText(text, REWRITE));
+    const other = { blanks: REWRITE.blanks, tail: "export {};\n" };
+    observer.rewrite(twice, text, other, rewrittenSourceText(text, other));
+    // A rewrite of a rewrite: the text it starts from is not the file's.
+    trackedReadSource(derived);
+    const lowered = ELIDED.replace("console.log(b)", "print(b)");
+    observer.rewrite(derived, lowered, REWRITE, rewrittenSourceText(lowered, REWRITE));
+    // A read of a form no rewrite has reported yet.
+    trackedReadSource(later);
+    observer.position(later, rewrittenSourceText(ELIDED, REWRITE), 28);
+    observer.rewrite(later, ELIDED, REWRITE, rewrittenSourceText(ELIDED, REWRITE));
+    // Blanks that overlap, or lie outside the text.
+    trackedReadSource(misplaced);
+    const overlapping = { blanks: [19, 25, 21, 29], tail: "" };
+    observer.rewrite(misplaced, ELIDED, overlapping, ELIDED);
+  });
+  const probes = tracker.snapshot().probes;
+  for (const path of [twice, derived, later, misplaced])
+    expect(probes).toContainEqual({ op: "text", path });
+});
+
+test("nested trackers join a rewrite and the reads of its form", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
+  scratch.push(dir);
+  const source = join(dir, "entry.ts");
+  const other = join(dir, "other.ts");
+  await writeFile(source, ELIDED);
+  await writeFile(other, ELIDED);
+  const outer = new FrontendInputTracker();
+  const observer = observedSourceText()!;
+  const rewritten = rewrittenSourceText(ELIDED, REWRITE);
+  outer.runSynchronous(() => {
+    const text = trackedReadSource(source)!;
+    observer.rewrite(source, text, REWRITE, rewritten);
+    observer.position(source, rewritten, 28);
+    const otherText = trackedReadSource(other)!;
+    observer.rewrite(other, otherText, REWRITE, rewritten);
+    new FrontendInputTracker().runSynchronous(() => {
+      const again = trackedReadSource(source)!;
+      observer.rewrite(source, again, REWRITE, rewritten);
+      observer.position(source, rewritten, 44);
+      // Another form of the second file.
+      const second = { blanks: REWRITE.blanks, tail: "" };
+      observer.rewrite(
+        other,
+        trackedReadSource(other)!,
+        second,
+        rewrittenSourceText(ELIDED, second),
+      );
+    });
+    // The outer tracker still takes reads of the form after the join.
+    observer.position(source, rewritten, 51);
+  });
+  const probes = outer.snapshot().probes;
+  expect(probes).toContainEqual({
+    op: "text",
+    path: source,
+    reads: {
+      ranges: [],
+      positions: [],
+      facts: [],
+      rewritten: { ...REWRITE, ranges: [], positions: [28, 44, 51], facts: [] },
+    },
+  });
+  expect(probes).toContainEqual({ op: "text", path: other });
+});
+
 test("malformed text reads make a snapshot invalid", () => {
   const snapshot = (reads: unknown) => ({
     version: 1,
@@ -296,6 +487,21 @@ test("malformed text reads make a snapshot invalid", () => {
     false,
   );
   expect(validFrontendInputSnapshot(fact({ kind: "evaluates", source: "a" }))).toBe(false);
+  // The reads of a rewritten form carry its rewrite and no form of their own.
+  const form = (rewritten: unknown) =>
+    snapshot({ ranges: [], positions: [], facts: [], rewritten });
+  const reads = { ranges: [], positions: [], facts: [] };
+  expect(validFrontendInputSnapshot(form({ blanks: [1, 4], tail: "", ...reads }))).toBe(true);
+  expect(validFrontendInputSnapshot(form({ blanks: [1], tail: "", ...reads }))).toBe(false);
+  expect(validFrontendInputSnapshot(form({ blanks: [], ...reads }))).toBe(false);
+  expect(validFrontendInputSnapshot(form({ blanks: [], tail: "", ...reads, ranges: [3] }))).toBe(
+    false,
+  );
+  expect(
+    validFrontendInputSnapshot(
+      form({ blanks: [], tail: "", ...reads, rewritten: { blanks: [], tail: "", ...reads } }),
+    ),
+  ).toBe(false);
 });
 
 test("tracked frontend reads invalidate on byte edits", async () => {

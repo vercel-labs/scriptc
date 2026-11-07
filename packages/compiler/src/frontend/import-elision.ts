@@ -19,6 +19,15 @@
  * the original text. A diagnostic's position in the rewritten file is its
  * position in the file on disk.
  *
+ * What is dropped is decided from the syntax tree and the checker alone,
+ * never from the file's text: the spans to blank are spans between tokens,
+ * and the added declarations are spelled from the names and module
+ * specifiers of the tree. The text is made by sourceTextRewritten, which
+ * reports the rewrite itself (SourceTextRewrite), so the frontend cache
+ * knows the form the file is compiled in, makes it again for an edited
+ * version, and still answers an edit of comments or whitespace. A file that
+ * loses nothing has no read of its text here.
+ *
  * The rules are tsc's own (checker.ts: markAliasReferenced,
  * markPropertyAliasReferenced, isValueAliasDeclaration; transformers/ts.ts:
  * visitImportDeclaration, visitExportDeclaration):
@@ -218,13 +227,17 @@ function namespaceInstanceState(decl: ts.ModuleDeclaration): 0 | 1 | 2 {
   return state;
 }
 
-function blank(text: string): string {
-  let out = "";
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i]!;
-    out += ch === "\n" || ch === "\r" ? ch : " ";
-  }
-  return out;
+/** A name of an import or export specifier as source: an identifier, or
+ * the string literal of an arbitrary module export name. */
+function nameSource(name: ts.Node): string {
+  const text = (name as ts.Identifier).text;
+  return ts.isStringLiteral(name) ? JSON.stringify(text) : text;
+}
+
+/** A module specifier as source, or null when it is not a string literal
+ * (a file that does not parse). */
+function specifierSource(specifier: ts.Node): string | null {
+  return ts.isStringLiteral(specifier) ? JSON.stringify(specifier.text) : null;
 }
 
 /** The rewritten text of one TypeScript source file, or null when tsc keeps
@@ -235,9 +248,7 @@ export function elideImports(
   options: ImportElisionOptions,
 ): ImportElision | null {
   const checker = program.getTypeChecker();
-  const text = sf.text;
   const startOf = (node: ts.Node): number => ts.tokenStartOfNode(node);
-  const sourceOf = (node: ts.Node): string => text.slice(startOf(node), node.end);
 
   // ---- the candidates: every import binding that exists at run time ----
   const aliases: Alias[] = [];
@@ -272,6 +283,7 @@ export function elideImports(
       // A side-effect import and `import type` are already what they will
       // be; `import defer` is left as written.
       if (clause === undefined || clause.phaseModifier !== undefined) continue;
+      if (!ts.isStringLiteral(stmt.moduleSpecifier)) continue;
       imports.push(stmt);
       if (clause.name !== undefined) addAlias(clause, clause.name);
       const bindings = clause.namedBindings;
@@ -292,7 +304,8 @@ export function elideImports(
       if (
         !stmt.isTypeOnly &&
         stmt.exportClause !== undefined &&
-        ts.isNamedExports(stmt.exportClause)
+        ts.isNamedExports(stmt.exportClause) &&
+        (stmt.moduleSpecifier === undefined || ts.isStringLiteral(stmt.moduleSpecifier))
       )
         exportLists.push(stmt);
     } else if (ts.isExportAssignment(stmt)) {
@@ -574,7 +587,20 @@ export function elideImports(
   for (const alias of aliases) keptNode.set(alias.node, kept(alias));
 
   // ---- the rewrite ----
-  const blanks: [number, number][] = [];
+  const blanks: ts.SourceTextBlank[] = [];
+  /** Blanks from the first token of `from` to the last token of `to`. */
+  const blankNodes = (from: ts.Node, to: ts.Node = from): void => {
+    blanks.push({ start: startOf(from), end: to.end, span: ts.TOKEN_SPAN });
+  };
+  /** Blanks from the first token of `from` up to the first token of `next`. */
+  const blankUpTo = (from: ts.Node, next: ts.Node): void => {
+    blanks.push({ start: startOf(from), end: startOf(next), span: ts.UP_TO_TOKEN_SPAN });
+  };
+  /** Blanks what follows the last token of `after` through the last token
+   * of `to`. */
+  const blankAfter = (after: ts.Node, to: ts.Node): void => {
+    blanks.push({ start: after.end, end: to.end, span: ts.FULL_SPAN });
+  };
   const added: string[] = [];
   const inlinedOnly: ImportElision["inlinedOnly"] = [];
   const inlined = aliases
@@ -585,8 +611,8 @@ export function elideImports(
   let lostModuleSyntax = false;
   const specifierText = (element: ts.ImportSpecifier | ts.ExportSpecifier): string =>
     element.propertyName === undefined
-      ? sourceOf(element.name)
-      : `${sourceOf(element.propertyName)} as ${sourceOf(element.name)}`;
+      ? nameSource(element.name)
+      : `${nameSource(element.propertyName)} as ${nameSource(element.name)}`;
   /** Blanks the dropped elements of a brace list, each with the separator
    * that follows it. */
   const blankElements = (
@@ -596,13 +622,14 @@ export function elideImports(
     elements.forEach((element, index) => {
       if (!dropped(element)) return;
       const next = elements[index + 1];
-      blanks.push([startOf(element), next === undefined ? element.end : startOf(next)]);
+      if (next === undefined) blankNodes(element);
+      else blankUpTo(element, next);
     });
   };
 
   for (const stmt of imports) {
     const clause = stmt.importClause!;
-    const from = sourceOf(stmt.moduleSpecifier);
+    const from = specifierSource(stmt.moduleSpecifier)!;
     const named =
       clause.namedBindings !== undefined && ts.isNamedImports(clause.namedBindings)
         ? clause.namedBindings
@@ -635,25 +662,25 @@ export function elideImports(
       for (const element of elements) typeNames.push(specifierText(element));
       if (options.preserveImportEdges) {
         // The module is still loaded, where the declaration stands.
-        blanks.push([startOf(clause), startOf(stmt.moduleSpecifier)]);
+        blankUpTo(clause, stmt.moduleSpecifier);
         bindings += aliases.filter(
           (alias) => alias.node === clause || alias.node === namespace,
         ).length;
         bindings += elements.filter(droppedElement).length;
       } else {
-        blanks.push([startOf(stmt), stmt.end]);
+        blankNodes(stmt);
         declarations++;
         lostModuleSyntax = true;
       }
     } else {
       if (clause.name !== undefined && !keepsDefault) {
         added.push(`import type ${clause.name.text} from ${from};`);
-        blanks.push([startOf(clause.name), startOf(clause.namedBindings!)]);
+        blankUpTo(clause.name, clause.namedBindings!);
         bindings++;
       }
       if (namespace !== undefined && !keepsNamespace) {
         added.push(`import type * as ${namespace.name.text} from ${from};`);
-        blanks.push([clause.name!.end, namespace.end]);
+        blankAfter(clause.name!, namespace);
         bindings++;
       }
       if (named !== undefined && !keepsNamed) {
@@ -661,7 +688,7 @@ export function elideImports(
         // `import d from`.
         if (elements.some(droppedElement)) {
           for (const element of elements) typeNames.push(specifierText(element));
-          blanks.push([clause.name!.end, named.end]);
+          blankAfter(clause.name!, named);
           bindings += elements.filter(droppedElement).length;
         }
       } else if (named !== undefined) {
@@ -677,15 +704,19 @@ export function elideImports(
   }
 
   for (const node of droppedEntityAliases) {
-    blanks.push([startOf(node), node.end]);
+    blankNodes(node);
     declarations++;
   }
   for (const alias of aliases) {
     const node = alias.node;
     if (!ts.isImportEqualsDeclaration(node) || keptNode.get(node) === true) continue;
     if (!ts.isExternalModuleReference(node.moduleReference)) continue;
-    blanks.push([startOf(node), node.end]);
-    added.push(`import type ${node.name.text} = ${sourceOf(node.moduleReference)};`);
+    // `import x = require(…)` of anything but a string literal does not
+    // parse; it is left as written.
+    const required = specifierSource(node.moduleReference.expression);
+    if (required === null) continue;
+    blankNodes(node);
+    added.push(`import type ${node.name.text} = require(${required});`);
     declarations++;
   }
 
@@ -700,7 +731,7 @@ export function elideImports(
     const from =
       declaration.moduleSpecifier === undefined
         ? ""
-        : ` from ${sourceOf(declaration.moduleSpecifier)}`;
+        : ` from ${specifierSource(declaration.moduleSpecifier)!}`;
     const typeNames: string[] = [];
     if (keepsAny) {
       for (const element of elements)
@@ -712,12 +743,11 @@ export function elideImports(
     } else if (options.preserveImportEdges && declaration.moduleSpecifier !== undefined) {
       // `export {} from "./m"` still loads the module.
       for (const element of elements) typeNames.push(specifierText(element));
-      if (elements.length > 0)
-        blanks.push([startOf(elements[0]!), elements[elements.length - 1]!.end]);
+      if (elements.length > 0) blankNodes(elements[0]!, elements[elements.length - 1]!);
       bindings += elements.filter(dropped).length;
     } else {
       for (const element of elements) typeNames.push(specifierText(element));
-      blanks.push([startOf(declaration), declaration.end]);
+      blankNodes(declaration);
       declarations++;
       lostModuleSyntax = true;
     }
@@ -725,7 +755,7 @@ export function elideImports(
   }
 
   for (const assignment of droppedDefaults) {
-    blanks.push([startOf(assignment), assignment.end]);
+    blankNodes(assignment);
     added.push(`export type { ${(assignment.expression as ts.Identifier).text} as default };`);
     declarations++;
     lostModuleSyntax = true;
@@ -742,17 +772,14 @@ export function elideImports(
     (stmt) => ts.isExportAssignment(stmt) && stmt.isExportEquals,
   );
   if (lostModuleSyntax && !exportEquals && !sf.fileName.endsWith(".cts")) added.push("export {};");
-  blanks.sort((a, b) => a[0] - b[0]);
-  let out = "";
-  let at = 0;
-  for (const [start, end] of blanks) {
-    if (start < at) continue;
-    out += text.slice(at, start) + blank(text.slice(start, end));
-    at = end;
-  }
-  out += text.slice(at);
-  if (added.length > 0) out += `${out.endsWith("\n") ? "" : "\n"}${added.join("\n")}\n`;
-  return { text: out, declarations, bindings, inlined, inlinedOnly };
+  const tail = added.length > 0 ? `${added.join("\n")}\n` : "";
+  return {
+    text: ts.sourceTextRewritten(sf, blanks, tail),
+    declarations,
+    bindings,
+    inlined,
+    inlinedOnly,
+  };
 }
 
 /** What a parsed tsconfig's compiler options say about elision, or null when

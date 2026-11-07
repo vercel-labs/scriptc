@@ -219,6 +219,7 @@ function equivalentFrontendInput(
             ? `${path}: the build compiled a rewritten form of it`
             : `${path}: ${editDifference(stale, path, previousSources, debugInfo)}`;
     },
+    debugInfo,
   );
   // With no reason, an input other than a program source changed.
   if (match === null) return { reason };

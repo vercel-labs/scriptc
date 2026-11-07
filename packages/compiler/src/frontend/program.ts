@@ -635,6 +635,12 @@ export interface LoadResult {
   /** SC6008 warnings: imports the build keeps although tsc's output drops
    * them (import-elision.ts, inlinedOnly). */
   importWarnings?: ScrDiagnostic[];
+  /** The files the program holds with imports or exports elided
+   * (import-elision.ts), with the text each was rewritten from. The
+   * rewrite keeps every offset, so this text is the build's record of the
+   * source: diagnostics and debug positions point into it, and the frontend
+   * cache compares an edit with it. Absent when there is none. */
+  elidedSources?: ReadonlyMap<string, string>;
   /** The TypeScript files whose tsconfig compiles class fields in the
    * constructor (`target` below ES2022, or `useDefineForClassFields: false`):
    * a class declared there assigns its parameter properties before its
@@ -1438,6 +1444,7 @@ function loadProgram7(
     const importWarnings = elision.inlinedOnly.map((kept) =>
       inlinedImportKeptDiag(kept.specifier, { file: kept.file, start: kept.start, end: kept.end }),
     );
+    const elidedSources = new Map<string, string>();
     if (elisions.size > 0) {
       const before = program;
       // The gate's diagnostics are taken before the rewritten files replace
@@ -1456,8 +1463,12 @@ function loadProgram7(
         gateWorld.diagnostics();
       }
       for (const [file, text] of elisions) {
-        if (!overlayOriginals.has(file))
-          overlayOriginals.set(file, before.getSourceFile(file)?.text ?? null);
+        // The text is carried, not inspected: what the elision took from it
+        // is the rewrite it reported.
+        const written = before.getSourceFile(file);
+        const original = written === undefined ? null : ts.carriedSourceText(written);
+        if (original !== null) elidedSources.set(file, original);
+        if (!overlayOriginals.has(file)) overlayOriginals.set(file, original);
         host.addVirtualFile(file, text);
       }
       program = host.createProgram([...programRoots, overridesDtsPath()], options, false, lineage);
@@ -1523,6 +1534,7 @@ function loadProgram7(
       configDiags: config.diags,
       ...(declBoundaryNotes.length > 0 ? { declBoundaryNotes } : {}),
       ...(importWarnings.length > 0 ? { importWarnings } : {}),
+      ...(elidedSources.size > 0 ? { elidedSources } : {}),
       ...(parameterPropertiesFirst.size > 0 ? { parameterPropertiesFirst } : {}),
       typeWorld: {
         nodeFallback: nodeTypes === null,
@@ -9067,7 +9079,8 @@ function parameterPropertyOrderSuppressed(
   const sf = program.getSourceFile(d.fileName);
   if (sf === undefined) return false;
   const pos = d.pos;
-  const name = sf.text.slice(pos, d.end ?? pos);
+  // The property's name, where the error stands.
+  const name = ts.sourceTextRange(sf, pos, d.end ?? pos);
   // The innermost class around the read, and its constructor's parameters.
   let owner: ts.Node | null = null;
   ts.walkPreorder(

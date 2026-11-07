@@ -815,3 +815,178 @@ test("an edit of a file a warning names runs the frontend again", () => {
   const result = rebuilt(WARNED, { "hot.ts": "// Sums untyped values.\n" + HOT });
   expect(result).toEqual({ frontendRuns: 1, changed: false });
 });
+
+/* Import elision. The project's tsconfig does not set `verbatimModuleSyntax`,
+ * so an import no value use reaches is dropped as tsc drops it
+ * (import-elision.ts) and the file is compiled in a rewritten form: the
+ * dropped bindings blanked, type-only declarations after its last line. The
+ * rewrite is a recorded read of the file, so an edit of comments or
+ * whitespace is still answered from the cache, and an edit that changes
+ * what is dropped is not. */
+const SHAPES =
+  "export interface Shape {\n  sides: number;\n}\nexport const square: Shape = { sides: 4 };\n";
+const LABELS = 'export class Label {\n  text = "plain";\n}\nconsole.log("labels loaded");\n';
+const DRAW = [
+  'import { Shape, square } from "./shapes.js";',
+  'import { Label } from "./labels.js";',
+  "export function draw(label: Label | null): string {",
+  "  const shape: Shape = square;",
+  '  return `${label === null ? "none" : label.text} ${shape.sides}`;',
+  "}",
+  "",
+].join("\n");
+const ELIDED = {
+  "main.ts": 'import { draw } from "./draw.js";\nconsole.log(draw(null));\n',
+  "draw.ts": DRAW,
+  "shapes.ts": SHAPES,
+  "labels.ts": LABELS,
+};
+
+test("the edit cases below are of a program with elided imports", () => {
+  const p = project(ELIDED);
+  // The module imported only for its type is not part of the program, and
+  // the build's record of draw.ts is the file as written.
+  const first = p.build(p.root, p.cache);
+  expect(first.llvm).not.toContain("labels loaded");
+  expect(new Map(first.sources).get(join(p.root, "draw.ts"))).toBe(DRAW);
+  // Under Node's rule the same import loads the module.
+  const verbatim = project({
+    ...ELIDED,
+    "tsconfig.json": JSON.stringify({
+      compilerOptions: {
+        strict: true,
+        types: [],
+        target: "esnext",
+        module: "nodenext",
+        verbatimModuleSyntax: true,
+      },
+    }),
+    "draw.ts": DRAW.replace("{ Shape, square }", "{ type Shape, square }"),
+  });
+  expect(verbatim.build(verbatim.root, verbatim.cache).llvm).toContain("labels loaded");
+});
+
+test.each([
+  ["a comment appended", { "draw.ts": DRAW + "// Draws one shape.\n" }],
+  ["a comment at the top", { "draw.ts": "// Draws one shape.\n" + DRAW }],
+  [
+    "a comment inside a dropped import",
+    { "draw.ts": DRAW.replace("{ Label }", "{ /* a class */ Label }") },
+  ],
+  [
+    "a comment beside a dropped binding",
+    { "draw.ts": DRAW.replace("{ Shape, square }", "{ Shape /* a type */, square }") },
+  ],
+  [
+    "a comment between a dropped import and a kept one",
+    { "draw.ts": DRAW.replace("\nimport { Label }", "\n/* labels */\nimport { Label }") },
+  ],
+  ["blank lines and indentation", { "draw.ts": "\n\n" + DRAW.replaceAll("\n", "\n  ") + "\n" }],
+  ["a final line break removed", { "draw.ts": DRAW.slice(0, -1) }],
+  ["a comment in the module imported for its type", { "labels.ts": "// Labels.\n" + LABELS }],
+  ["a comment in the entry", { "main.ts": "/* entry */\n" + ELIDED["main.ts"] + "// end\n" }],
+])(
+  "%s of a program with elided imports is answered from the cache, as a cold build would answer",
+  (_name, edit) => {
+    expect(rebuilt(ELIDED, edit)).toEqual({ frontendRuns: 0, changed: false });
+  },
+);
+
+test.each([
+  [
+    "a value use of a binding that was dropped",
+    {
+      "draw.ts": DRAW.replace('"none"', "new Label().text"),
+    },
+    true,
+  ],
+  [
+    "a `type` modifier added to a dropped binding",
+    { "draw.ts": DRAW.replace("{ Shape, square }", "{ type Shape, square }") },
+    false,
+  ],
+  [
+    "`import type` written for a dropped import",
+    { "draw.ts": DRAW.replace("import { Label }", "import type { Label }") },
+    false,
+  ],
+  [
+    "a side-effect import of the module that was dropped",
+    { "draw.ts": 'import "./labels.js";\n' + DRAW },
+    true,
+  ],
+  [
+    "a comment the checker reads",
+    { "draw.ts": DRAW.replace("  const shape", "  // @ts-ignore\n  const shape") },
+    false,
+  ],
+  ["a comment that turns the checker off", { "draw.ts": "// @ts-nocheck\n" + DRAW }, false],
+  ["a reference directive", { "draw.ts": '/// <reference path="./shapes.ts" />\n' + DRAW }, false],
+  [
+    "verbatimModuleSyntax set in tsconfig.json",
+    {
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          types: [],
+          target: "esnext",
+          module: "nodenext",
+          verbatimModuleSyntax: true,
+        },
+      }),
+      "draw.ts": DRAW.replace("{ Shape, square }", "{ type Shape, square }"),
+    },
+    true,
+  ],
+])(
+  "%s runs the frontend again in a program with elided imports, and matches a cold build",
+  (_name, edit, changed) => {
+    expect(rebuilt(ELIDED, edit)).toEqual({ frontendRuns: 1, changed });
+  },
+);
+
+test("a `type` modifier removed from an import runs the frontend again", () => {
+  const written = {
+    ...ELIDED,
+    "draw.ts": DRAW.replace("import { Label }", "import type { Label }"),
+  };
+  expect(rebuilt(written, { "draw.ts": DRAW })).toEqual({ frontendRuns: 1, changed: false });
+});
+
+test("a dev build of a program with elided imports keeps its output while every token stays in place", () => {
+  const dev = { optimization: "dev" as const };
+  // A comment's text within its line.
+  const noted = DRAW.replace("  const shape", "  /* one */ const shape");
+  expect(
+    rebuilt(
+      { ...ELIDED, "draw.ts": noted },
+      { "draw.ts": noted.replace("/* one */", "/* two */") },
+      dev,
+    ),
+  ).toEqual({ frontendRuns: 0, changed: false });
+  // A line after the last token moves the declarations the elision adds
+  // after the text, and they have positions too.
+  expect(rebuilt(ELIDED, { "draw.ts": DRAW + "// Draws one shape.\n" }, dev).frontendRuns).toBe(1);
+  expect(rebuilt(ELIDED, { "draw.ts": "// lead\n" + DRAW }, dev).frontendRuns).toBe(1);
+});
+
+test("an edit after an equivalent edit of a file with elided imports is compared with the edited text", () => {
+  const p = project(ELIDED);
+  const first = p.build(p.root, p.cache);
+  const moved = "// lead\n\n" + DRAW.replace("{ Label }", "{ /* a class */ Label }");
+  p.write(p.root, { "draw.ts": moved });
+  const again = p.build(p.root, p.cache);
+  expect(p.loads()).toBe(1);
+  expect(again.llvm).toBe(first.llvm);
+  expect(new Map(again.sources).get(join(p.root, "draw.ts"))).toBe(moved);
+  // A second comment edit of the moved text is still answered.
+  p.write(p.root, { "draw.ts": moved + "// end\n" });
+  p.build(p.root, p.cache);
+  expect(p.loads()).toBe(1);
+  // And a value use of the dropped binding in it is not.
+  p.write(p.root, { "draw.ts": moved.replace('"none"', "new Label().text") });
+  const used = p.build(p.root, p.cache);
+  expect(p.loads()).toBe(2);
+  expect(used).toEqual(p.build(p.root, p.cold()));
+  expect(used.llvm).toContain("labels loaded");
+});

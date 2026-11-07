@@ -1163,7 +1163,7 @@ function loadFrontend(
       report && configDiagnostics.length > 0 ? [...configDiagnostics, ...preflight] : preflight,
     ),
     ...(buildWarnings.length > 0 ? { warnings: buildWarnings } : {}),
-    entryText: () => finalLoad.entry.text,
+    entryText: () => finalLoad.elidedSources?.get(finalLoad.entry.fileName) ?? finalLoad.entry.text,
     entryExports: (names) => entryExportFacts(finalLoad.program, finalLoad.entry, names),
     // The contract scans the PROGRAM's source files, not the runtime
     // module order: a type-only module (nothing but exported types) has no
@@ -1195,7 +1195,12 @@ function loadFrontend(
           finalLoad.entry,
           ...finalLoad.moduleOrder,
           ...finalLoad.program.getImplementationSourceFiles().filter((sf) => !sf.isDeclarationFile),
-        ].map((sf) => [sf.fileName, carriedSourceText(sf)]),
+          // A file compiled with imports elided is recorded as it was
+          // before the elision: the same offsets, and the text on disk.
+        ].map((sf) => [
+          sf.fileName,
+          finalLoad.elidedSources?.get(sf.fileName) ?? carriedSourceText(sf),
+        ]),
       );
       // SC8004 and type patch diagnostics point into the project's
       // package.json.

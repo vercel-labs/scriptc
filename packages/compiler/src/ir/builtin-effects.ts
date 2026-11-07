@@ -435,6 +435,17 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http2.connectCb",
   "http2.sessionRequest",
   "http2.streamSetEncoding",
+  // Settings are validated (ERR_HTTP2_INVALID_SETTING_VALUE), a ping's
+  // payload and a destroyed session are refused, and a dynamic listener
+  // that is not a function is a TypeError.
+  "http2.sessionSettings",
+  "http2.sessionSettingsCb0",
+  "http2.sessionSettingsDynCb",
+  "http2.sessionOnSettingsDyn",
+  "http2.sessionPing",
+  "http2.sessionPingPayload",
+  "http2.getPackedSettings",
+  "http2.getUnpackedSettings",
   "http2.streamRespond",
   "http2.streamWrite",
   "http2.streamWriteBytes",

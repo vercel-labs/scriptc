@@ -510,7 +510,9 @@ export function symbolCheck({ typed, allowed, island = false, baseline, candidat
  * bench/stream-buffered-drain, also added later, drains an object-mode
  * Readable, whose chunks are checked-dynamic values. bench/catalog-tables,
  * also added later, walks dictionaries of `object` values from JSON.parse.
- * Every other bench workload is fully typed and must link none. The gate and
+ * bench/regex-tokenizer, also added later, calls `exec` as bench/regex-logs
+ * does (regex exec metadata). Every other bench workload is fully typed and
+ * must link none. The gate and
  * tests/harness/bench-dynamic-tier.test.ts enforce that, and the test also
  * fails when a listed workload stops linking them, so remove a workload here
  * when a leak fix makes its binary clean. */
@@ -540,6 +542,7 @@ export const DYNAMIC_WORKLOADS = new Set([
   "bench/stream-buffered-drain",
   "bench/untyped-validate",
   "bench/catalog-tables",
+  "bench/regex-tokenizer",
 ]);
 
 /** Names of the functions (text and weak symbols) in `nm` output. Mach-O

@@ -69,9 +69,10 @@ test("awaiting a direct call to a body that never suspends skips the promise", a
   expect(definition(llvm, "sc_f_middle")).toContain("call double @sc_aw_leaf(double");
   const entry = definition(llvm, "sc_aw_leaf");
   expect(entry).toContain("call double @sc_f_leaf(double %a0)");
-  // Nothing here enters an AsyncLocalStorage store or reads a stack, so the
-  // body runs with a plain call (fiberlessFrames).
-  expect(entry).not.toContain("@scr_async_inline_enter");
+  // A debug build keeps source frames whatever the program reads
+  // (frame-positions.ts), so the body runs inside the frame that isolates
+  // its frame chain (fiberlessFrames), as in a program that reads a stack.
+  expect(entry).toContain("call void @scr_async_inline_enter(ptr %frame)");
   // The clean result takes the await's microtask turn and returns directly;
   // only the throw path builds the rejected promise.
   const clean = entry.slice(entry.indexOf("clean:"), entry.indexOf("thrown:"));

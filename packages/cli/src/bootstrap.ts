@@ -68,6 +68,10 @@ async function tryFastPath(): Promise<number | null> {
     (values.emit !== undefined && values.emit !== "exe") ||
     values.print !== undefined ||
     values["emit-ir"] ||
+    // A build that writes or reads a lowered program always runs.
+    values["emit-lowered"] !== undefined ||
+    values["from-lowered"] !== undefined ||
+    (values["from-lowered-accept"] ?? []).length > 0 ||
     values.lib ||
     values["provenance-sources"] ||
     // The full compiler keys these builds by the profile's bytes.
@@ -273,6 +277,9 @@ async function coverageFastPath(
     values["windows-subsystem"] !== undefined ||
     values["provenance-sources"] ||
     values["emit-ir"] ||
+    values["emit-lowered"] !== undefined ||
+    values["from-lowered"] !== undefined ||
+    (values["from-lowered-accept"] ?? []).length > 0 ||
     (values["npm-static"] ?? []).length > 0 ||
     values["shape-overlay"] === false ||
     (values["external-types"] ?? []).length > 0 ||

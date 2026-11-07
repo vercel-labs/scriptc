@@ -189,6 +189,19 @@ function retainedTimerCallback(
   return { value, callback, hold: [{ kind: "varDecl", localId: held.id, init: source, loc }] };
 }
 
+/** A timer's callback argument, lowered. One that is statically not a
+ * function (`setTimeout("x")`, a number, undefined) crosses untyped, so
+ * the gate below throws Node's ERR_INVALID_ARG_TYPE where the call runs,
+ * exactly as it does for an untyped value that turns out not to be a
+ * function. A function, an untyped value and a checked cast are returned
+ * as lowered. */
+function timerCallbackArgument(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): IrExpr {
+  const cb = lowerer.lowerExpr(node);
+  if (cb.type.kind === "func" || cb.type.kind === "dyn") return cb;
+  if (cb.kind !== "unitLit" && !lowerer.dynConvertible(cb.type)) return cb;
+  return { kind: "dynFrom", value: cb, type: DYN, loc };
+}
+
 /** The gate over a retained callback: a non-function throws Node's
  * ERR_INVALID_ARG_TYPE synchronously (scr_timers_check_callback). */
 function timerCallbackCheck(cb: IrExpr, loc: SrcLoc): IrStmt {
@@ -452,7 +465,7 @@ function lowerTimerCall(
     }
     const cbNode = expr.arguments.nodes[0]!;
     const trailing = expr.arguments.nodes.slice(2);
-    const cbLowered = lowerer.lowerExpr(cbNode);
+    const cbLowered = timerCallbackArgument(lowerer, cbNode, loc);
     const retained = retainedTimerCallback(lowerer, cbLowered, loc);
     // With trailing arguments the interned thunk boxes the callback and
     // dynCalls it when the timer fires, so the gate's dynamic value is
@@ -679,7 +692,7 @@ function lowerTimerCall(
     }
     const cbNode = expr.arguments.nodes[0]!;
     const trailing = expr.arguments.nodes.slice(1);
-    const cbLowered = lowerer.lowerExpr(cbNode);
+    const cbLowered = timerCallbackArgument(lowerer, cbNode, loc);
     const retained = retainedTimerCallback(lowerer, cbLowered, loc);
     // As with setTimeout's trailing form: the thunk captures the gate's
     // dynamic value and calls it at fire time.

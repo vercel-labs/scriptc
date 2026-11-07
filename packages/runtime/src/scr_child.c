@@ -4319,6 +4319,8 @@ struct ScrChildStream {
   uint8_t *capture_data;
   size_t capture_len, capture_cap;
   bool armed;     /* EVFILT_READ registered on the child kqueue */
+  bool arm_queued; /* registers at the loop's next poll (scr_child_arm_queue) */
+  uint32_t arm_seq; /* names this registration in the kernel's events */
   bool uncounted; /* counted into scr_children_unwatched (arm failure) */
   bool short_read_yields; /* a short read ends this pass's reads */
   unsigned long short_read_pass;
@@ -4375,6 +4377,7 @@ static void scr_child_writer_child_settled(ScrChildWriter *w);
 static void scr_child_writer_dearm(ScrChildWriter *w);
 static bool scr_child_writers_blocked(void);
 static bool scr_child_writers_ready(void);
+static void scr_child_streams_arm_flush(void);
 
 struct ScrChild {
   size_t rc;
@@ -4531,6 +4534,9 @@ static void scr_child_unwatch(pid_t pid) { (void)pid; }
  * can wake for EVERY pending child — same condition as scr_children_wait.
  * -1 tells the caller to keep the ~1ms reap cap instead. */
 int scr_children_wake_fd(void) {
+  /* Streams whose first consumer attached this turn join the watch now,
+   * before the sleep that must wake for them. */
+  scr_child_streams_arm_flush();
   /* A writer's queued bytes ride the same watch (its writability filter),
    * so only a writer the watch could not arm keeps the polling cap. */
   if (scr_child_writers_blocked()) return -1;
@@ -4546,6 +4552,7 @@ int scr_children_wake_fd(void) {
 }
 
 bool scr_children_wait(double max_wait_ms) {
+  scr_child_streams_arm_flush(); /* as scr_children_wake_fd */
   if (scr_child_writers_blocked()) return false;
 #ifdef SCR_HAVE_KQUEUE
   if (scr_child_kq < 0 || scr_children_unwatched > 0) return false;
@@ -4895,23 +4902,138 @@ static bool scr_child_stream_pump(ScrChildStream *s) {
   return false;
 }
 
-/* The registry's service walk: every watched stream pumps; EOF finishes
- * and unlinks (the children_poll unlink-before-fire pattern). */
-static void scr_child_streams_service(void) {
-  ScrChildStream **link = &scr_child_streams;
-  while (*link) {
-    ScrChildStream *s = *link;
-    bool ended = scr_child_stream_pump(s);
-    if (ended) {
-      *link = s->next;
-      s->next = NULL;
-      scr_child_stream_finish(s, true);
-      scr_child_stream_release(s); /* the registry's reference */
-    } else {
-      link = &s->next;
+/* ── the order of a turn's stream events ─────────────────────────────────
+ *
+ * Node hands out a turn's I/O in the order its kernel queue reports it:
+ * libuv walks the array epoll_wait (kevent on BSD) filled and runs each
+ * descriptor's callback in that order (uv__io_poll). The kernel appends a
+ * descriptor to that queue when it becomes readable, or, when it already
+ * was readable, when it is registered; and libuv registers a descriptor at
+ * its next poll after reading started, in the order reading started. So
+ * two pipes that fill while the loop sleeps come back in the order they
+ * filled, and two pipes that filled before the loop next polled (the
+ * program computed after spawn(), or the child was quicker than the
+ * program's way back to the loop) come back in the order their first
+ * consumers attached. That second half is an accident of registration, not
+ * a documented order, and programs observe it: a child that writes stderr
+ * and then stdout while its parent computes is delivered stdout first when
+ * stdout's listener was attached first.
+ *
+ * Both halves are matched here on purpose, by doing what libuv does with
+ * the same kernel object. A stream's read filter is registered at the
+ * loop's next poll after its first consumer attached (the queue below, in
+ * attach order), never at the attach itself; and a pass serves the streams
+ * the kernel reports, in the order it reports them. A stream the kernel
+ * did not report is not read in that pass. Before, a pass read every
+ * watched stream in the registry's order, newest first, which served
+ * stderr ahead of stdout whenever both were readable.
+ *
+ * Each registration carries a number, so an event names one registration
+ * of one stream: a descriptor closed and opened again within a pass does
+ * not hand its event to the stream that now owns the number. A stream the
+ * kernel queue could not take (a failed registration, a platform with
+ * neither queue) has no place in that order; the pass reads those after,
+ * in registry order, as it always did. */
+
+typedef struct {
+  int fd;
+  uint32_t seq; /* the registration's number (ScrChildStream.arm_seq) */
+} ScrChildReady;
+
+/* More ready streams than this wait for the next pass: their filters are
+ * level-triggered, and the kernel queue keeps their order. */
+#define SCR_CHILD_READY_MAX 64
+
+/* Streams whose first consumer attached since the loop last polled, in
+ * attach order (+1 each). */
+static SCR_TL ScrChildStream **scr_child_arm_queue = NULL;
+static SCR_TL size_t scr_child_arm_queue_n = 0, scr_child_arm_queue_cap = 0;
+static SCR_TL uint32_t scr_child_arm_seq = 0;
+
+/* Registers the level-triggered read filter (see the design note: no
+ * EV_CLEAR — the wait's drain discards events, and level readiness keeps
+ * the queue readable while unread data sits in the pipe, so no wakeup is
+ * lost). A failure joins the unwatched fallback so the loop keeps the ~1ms
+ * polling cap for the stream. */
+static void scr_child_stream_register(ScrChildStream *s) {
+  uint32_t seq = ++scr_child_arm_seq;
+  if (seq == 0) seq = ++scr_child_arm_seq; /* 0: an event that names no stream */
+#ifdef SCR_HAVE_KQUEUE
+  if (scr_child_kq < 0) scr_child_kq = kqueue();
+  if (scr_child_kq >= 0) {
+    struct kevent ev;
+    EV_SET(&ev, (uintptr_t)s->fd, EVFILT_READ, EV_ADD, 0, 0, (void *)(uintptr_t)seq);
+    struct timespec zero = {0, 0};
+    if (kevent(scr_child_kq, &ev, 1, NULL, 0, &zero) == 0) {
+      s->armed = true;
+      s->arm_seq = seq;
+      return;
     }
-    if (scr_exc_pending()) return;
   }
+#elif defined(SCR_CHILD_HAVE_PIDFD)
+  if (scr_child_ep < 0) scr_child_ep = epoll_create1(EPOLL_CLOEXEC);
+  if (scr_child_ep >= 0) {
+    struct epoll_event ev = {.events = EPOLLIN,
+                             .data = {.u64 = ((uint64_t)seq << 32) | (uint32_t)s->fd}};
+    if (epoll_ctl(scr_child_ep, EPOLL_CTL_ADD, s->fd, &ev) == 0) {
+      s->armed = true;
+      s->arm_seq = seq;
+      return;
+    }
+  }
+#else
+  (void)seq;
+#endif
+  if (!s->uncounted) {
+    s->uncounted = true;
+    scr_children_unwatched++;
+  }
+}
+
+/* The loop is about to poll: the queued streams register, in attach order.
+ * One whose last consumer left, or that ended, since it was queued is
+ * skipped. */
+static void scr_child_streams_arm_flush(void) {
+  for (size_t i = 0; i < scr_child_arm_queue_n; i++) {
+    ScrChildStream *s = scr_child_arm_queue[i];
+    if (s->arm_queued) {
+      s->arm_queued = false;
+      if (s->fd >= 0 && !s->armed) scr_child_stream_register(s);
+    }
+    scr_child_stream_release(s);
+  }
+  scr_child_arm_queue_n = 0;
+}
+
+/* Polls the kernel queue without waiting and writes the streams it reports
+ * to `out`, in its order. Exit and writability events on the same queue
+ * are wakeups only and are skipped: level-triggered, they stay until the
+ * reap and the writer service consume their cause. */
+static int scr_child_streams_ready(ScrChildReady *out) {
+  scr_child_streams_arm_flush();
+  int n = 0;
+#ifdef SCR_HAVE_KQUEUE
+  if (scr_child_kq < 0) return 0;
+  struct kevent evs[SCR_CHILD_READY_MAX];
+  struct timespec zero = {0, 0};
+  int got = kevent(scr_child_kq, NULL, 0, evs, SCR_CHILD_READY_MAX, &zero);
+  for (int i = 0; i < got; i++) {
+    if (evs[i].filter != EVFILT_READ || evs[i].udata == NULL) continue;
+    out[n++] = (ScrChildReady){(int)evs[i].ident, (uint32_t)(uintptr_t)evs[i].udata};
+  }
+#elif defined(SCR_CHILD_HAVE_PIDFD)
+  if (scr_child_ep < 0) return 0;
+  struct epoll_event evs[SCR_CHILD_READY_MAX];
+  int got = epoll_wait(scr_child_ep, evs, SCR_CHILD_READY_MAX, 0);
+  for (int i = 0; i < got; i++) {
+    uint32_t seq = (uint32_t)(evs[i].data.u64 >> 32);
+    if (seq == 0) continue; /* a pidfd or a writer: registered by fd alone */
+    out[n++] = (ScrChildReady){(int)(uint32_t)evs[i].data.u64, seq};
+  }
+#else
+  (void)out;
+#endif
+  return n;
 }
 
 /* The settle-path drain (Node's pinned ordering: stream 'end' before
@@ -4934,10 +5056,58 @@ static void scr_child_stream_drain_now(ScrChildStream *s) {
   }
 }
 
+/* The stream an event names, or NULL when that registration is gone (the
+ * stream ended or lost its last consumer earlier in the pass). */
+static ScrChildStream *scr_child_stream_ready_find(ScrChildReady ready) {
+  for (ScrChildStream *s = scr_child_streams; s != NULL; s = s->next) {
+    if (s->armed && s->fd == ready.fd && s->arm_seq == ready.seq) return s;
+  }
+  return NULL;
+}
+
+/* The pass's stream service: the streams the kernel reports pump in its
+ * order (the note above), then the streams it cannot report, in registry
+ * order. EOF finishes and unlinks a stream (scr_child_stream_drain_now). */
+static void scr_child_streams_service(void) {
+  if (scr_child_streams_watching == 0) return;
+  ScrChildReady ready[SCR_CHILD_READY_MAX];
+  int n = scr_child_streams_ready(ready);
+  for (int i = 0; i < n; i++) {
+    scr_child_stream_drain_now(scr_child_stream_ready_find(ready[i]));
+    if (scr_exc_pending()) return;
+  }
+  if (scr_children_unwatched == 0) return;
+  for (ScrChildStream *s = scr_child_streams; s != NULL;) {
+    ScrChildStream *next = s->next; /* a listener adds streams at the head only */
+    if (!s->armed) scr_child_stream_drain_now(s);
+    if (scr_exc_pending()) return;
+    s = next;
+  }
+}
+
+/* An exiting child's two streams, when both may still hold output: the
+ * child wrote to both and exited after this pass took its events, so the
+ * settle path is the first to see them. They drain in the kernel's order,
+ * like any two streams of a pass; the caller's own drains then find them
+ * done. */
+static void scr_child_streams_drain_ordered(ScrChildStream *a, ScrChildStream *b) {
+  if (a == NULL || b == NULL || !scr_child_stream_watching(a) || !scr_child_stream_watching(b))
+    return;
+  ScrChildReady ready[SCR_CHILD_READY_MAX];
+  int n = scr_child_streams_ready(ready);
+  for (int i = 0; i < n; i++) {
+    ScrChildStream *s = scr_child_stream_ready_find(ready[i]);
+    if (s != a && s != b) continue;
+    scr_child_stream_drain_now(s);
+    if (scr_exc_pending()) return;
+  }
+}
+
 /* Drops the read filter when the LAST consumer leaves (a once-listener
  * removal): a level-triggered filter over an unread pipe would otherwise
  * wake every idle sleep for data nobody consumes. */
 static void scr_child_stream_dearm(ScrChildStream *s) {
+  s->arm_queued = false; /* a registration that had not happened yet */
   if (!s->armed) return;
   s->armed = false;
 #ifdef SCR_HAVE_KQUEUE
@@ -4954,40 +5124,20 @@ static void scr_child_stream_dearm(ScrChildStream *s) {
 #endif
 }
 
-/* Arms the level-triggered read filter for a consumer-owning stream (see
- * the design note: no EV_CLEAR — the wait's drain discards events). An
- * arm failure joins the unwatched fallback so the loop keeps the ~1ms
- * polling cap for it. */
+/* A consumer-owning stream wants its read filter: it registers at the
+ * loop's next poll (scr_child_streams_arm_flush), in the order streams
+ * asked, as libuv registers a handle that started reading. */
 static void scr_child_stream_arm(ScrChildStream *s) {
-  if (s->armed || s->fd < 0) return;
-#ifdef SCR_HAVE_KQUEUE
-  if (scr_child_kq < 0) scr_child_kq = kqueue();
-  if (scr_child_kq >= 0) {
-    struct kevent ev;
-    EV_SET(&ev, (uintptr_t)s->fd, EVFILT_READ, EV_ADD, 0, 0, NULL);
-    struct timespec zero = {0, 0};
-    if (kevent(scr_child_kq, &ev, 1, NULL, 0, &zero) == 0) {
-      s->armed = true;
-      return;
-    }
+  if (s->armed || s->arm_queued || s->fd < 0) return;
+  if (scr_child_arm_queue_n == scr_child_arm_queue_cap) {
+    size_t cap = scr_child_arm_queue_cap ? scr_child_arm_queue_cap * 2 : 8;
+    ScrChildStream **grown = realloc(scr_child_arm_queue, cap * sizeof *grown);
+    if (!grown) scr_child_oom();
+    scr_child_arm_queue = grown;
+    scr_child_arm_queue_cap = cap;
   }
-#elif defined(SCR_CHILD_HAVE_PIDFD)
-  /* Level-triggered EPOLLIN, exactly the kqueue arm's level filter: the
-   * wait's drain discards events, and level readiness keeps the epoll fd
-   * readable while unread data sits in the pipe — no wakeup is lost. */
-  if (scr_child_ep < 0) scr_child_ep = epoll_create1(EPOLL_CLOEXEC);
-  if (scr_child_ep >= 0) {
-    struct epoll_event ev = {.events = EPOLLIN, .data = {.fd = s->fd}};
-    if (epoll_ctl(scr_child_ep, EPOLL_CTL_ADD, s->fd, &ev) == 0) {
-      s->armed = true;
-      return;
-    }
-  }
-#endif
-  if (!s->uncounted) {
-    s->uncounted = true;
-    scr_children_unwatched++;
-  }
+  scr_child_arm_queue[scr_child_arm_queue_n++] = scr_child_stream_retain(s);
+  s->arm_queued = true;
 }
 
 /* stream.on/once("data", cb): the consumer that makes the pipe flow (and
@@ -6017,6 +6167,11 @@ void scr_children_teardown(void) {
     scr_child_stream_finish(s, false);
     scr_child_stream_release(s);
   }
+  for (size_t i = 0; i < scr_child_arm_queue_n; i++) {
+    scr_child_arm_queue[i]->arm_queued = false;
+    scr_child_stream_release(scr_child_arm_queue[i]);
+  }
+  scr_child_arm_queue_n = 0;
   while (scr_child_writers != NULL) {
     ScrChildWriter *w = scr_child_writers;
     scr_child_writers = w->next;
@@ -6295,6 +6450,7 @@ static void scr_child_settle_in(ScrChild *c) {
    * Node emits 'spawn' before any data or 'exit', so it fires here first. */
   if (c->state == SCR_CHILD_EXITED) {
     if (!c->spawn_done) scr_child_fire_spawn(c);
+    if (!scr_exc_pending()) scr_child_streams_drain_ordered(c->out_stream, c->err_stream);
     if (!scr_exc_pending()) scr_child_stream_drain_now(c->out_stream);
     if (!scr_exc_pending()) scr_child_stream_drain_now(c->err_stream);
     if (!scr_exc_pending()) scr_ipc_settle(c->ipc);

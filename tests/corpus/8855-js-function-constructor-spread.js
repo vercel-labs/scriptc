@@ -67,3 +67,32 @@ function spreadOf(value) {
 console.log(spreadOf(5));
 console.log(spreadOf(undefined));
 console.log(spreadOf("ab"));
+
+// A class instance among the elements converts through its own toString,
+// and an exception it throws leaves before the refusal.
+class Named {
+  toString() {
+    order.push("named");
+    return "x";
+  }
+}
+class Loud {
+  toString() {
+    order.push("loud");
+    throw new RangeError("loud");
+  }
+}
+order.length = 0;
+console.log(build(new Named(), "return x"), order.join(","));
+console.log(build("a", new Loud(), new Named()), order.join(","));
+const parts = [new Named(), new Loud()];
+try {
+  new Function(...parts);
+} catch (e) {
+  console.log(e.constructor.name, e.message, order.join(","));
+}
+try {
+  Function(...[new Named()], new Loud());
+} catch (e) {
+  console.log(e.constructor.name, e.message, order.join(","));
+}

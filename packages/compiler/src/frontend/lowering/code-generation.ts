@@ -11,6 +11,7 @@ import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import {
+  BOOL,
   DYN,
   F64,
   type IrExpr,
@@ -19,7 +20,7 @@ import {
   type SrcLoc,
   STRING,
 } from "../../ir/ir.js";
-import { dynUndefinedExpr, nodeThrowExpr, varRef } from "../../ir/build.js";
+import { dynUndefinedExpr, nodeThrowExpr, strLit, varRef } from "../../ir/build.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { ambientUndefReadType, contextualUndefReadType } from "./lower-namespaces.js";
 import { stdlibGlobalNameOf } from "./surfaces.js";
@@ -164,12 +165,16 @@ function lowerFunctionSpreadCall(
 }
 
 /** The Function constructor as a value that receives every argument: each
- * converts to a string in order (the array's own join converts them, and
- * leaves undefined and null alone, which convert without running program
- * code), then the EvalError. */
+ * converts to a string in order, with the conversion any single argument
+ * gets (an object's own toString runs, and its exception leaves before the
+ * refusal), then the EvalError. */
 function functionConstructorValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
-  const name = "%builtin.global.Function";
-  if (!lowerer.liftedFns.some((fn) => fn.name === name))
+  // A `%dyn.` helper: generated code, which the likely-hot report leaves out.
+  const name = "%dyn.FunctionConstructor";
+  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+    const values = varRef("values", DYN, loc);
+    const index = varRef("index", F64, loc);
+    const number = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
     lowerer.liftedFns.push({
       name,
       params: [
@@ -179,19 +184,60 @@ function functionConstructorValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
       locals: [
         { id: "first", name: "first", type: DYN, mutable: false },
         { id: "values", name: "values", type: DYN, mutable: false },
+        { id: "index", name: "index", type: F64, mutable: true },
       ],
       returnType: DYN,
       body: [
+        { kind: "varDecl", localId: "index", init: number(0), loc },
         {
-          kind: "exprStmt",
-          expr: {
-            kind: "libCall",
-            fn: "dyn.toStringCoerce",
-            args: [varRef("values", DYN, loc)],
-            type: STRING,
+          kind: "while",
+          cond: {
+            kind: "bin",
+            op: "<",
+            left: index,
+            right: {
+              kind: "dynCheck",
+              value: {
+                kind: "dynKeyGet",
+                value: values,
+                key: strLit("length", loc),
+                type: DYN,
+                loc,
+              },
+              type: F64,
+              loc,
+            },
+            type: BOOL,
             loc,
           },
           loc,
+          body: [
+            {
+              kind: "exprStmt",
+              expr: {
+                kind: "libCall",
+                fn: "dyn.toStringCoerce",
+                args: [
+                  {
+                    kind: "dynKeyGet",
+                    value: values,
+                    key: lowerer.coerceToExpected(index, DYN),
+                    type: DYN,
+                    loc,
+                  },
+                ],
+                type: STRING,
+                loc,
+              },
+              loc,
+            },
+            {
+              kind: "assign",
+              localId: "index",
+              value: { kind: "bin", op: "+", left: index, right: number(1), type: F64, loc },
+              loc,
+            },
+          ],
         },
         {
           kind: "exprStmt",
@@ -202,6 +248,7 @@ function functionConstructorValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
       ],
       loc,
     });
+  }
   return {
     kind: "dynFrom",
     value: {

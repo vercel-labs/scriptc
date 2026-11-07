@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # A merge queue group, once the repository turns the queue on: the tree that would become main, tested before
+  # it does. It runs what a push to main runs. Nothing starts such a run until then.
+  merge_group:
   # Nightly full macOS sweep. Pushes to main run no macOS jobs, and pull requests run them only when they change
   # darwin code (scripts/ci-lanes.mjs).
   schedule:
@@ -24,9 +27,9 @@ on:
         default: all
 
 concurrency:
-  # A new push to a pull request cancels its previous run. Every push to main runs to completion in a group of
-  # its own commit, so each merged commit gets a result (releases require a green run on their commit). The
-  # nightly sweep and manual runs neither cancel nor are cancelled by main pushes.
+  # A new push to a pull request cancels its previous run. Every push to main, and every merge queue group, runs
+  # to completion in a group of its own commit, so each merged commit gets a result (releases require a green run
+  # on their commit). The nightly sweep and manual runs neither cancel nor are cancelled by main pushes.
   group: ci-${{ github.event_name == 'schedule' && 'schedule' || github.event_name == 'workflow_dispatch' && format('dispatch-{0}', github.run_id) || github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
@@ -73,8 +76,9 @@ jobs:
           NODE
 
   # Which expensive lanes a pull request needs (scripts/ci-lanes.mjs, run from the base commit against the pull
-  # request's diff, so a pull request cannot change its own selection). Pushes to main run every lane except macos
-  # and islands, whose jobs the nightly sweep runs on main. The nightly sweep and manual runs run every lane.
+  # request's diff, so a pull request cannot change its own selection). Pushes to main and merge queue groups run
+  # every lane except macos and islands, whose jobs the nightly sweep runs on main. The nightly sweep and manual runs
+  # run every lane.
   lanes:
     needs: validation_scope
     if: ${{ needs.validation_scope.outputs.full == 'true' }}
@@ -106,7 +110,7 @@ jobs:
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           every() { printf 'linux=true\nmacos=true\neffects=true\nbootstrap=true\nprofile=true\nislands=true\n' | tee -a "$GITHUB_OUTPUT"; }
-          if [ "$EVENT" = push ]; then
+          if [ "$EVENT" = push ] || [ "$EVENT" = merge_group ]; then
             printf 'linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=false\n' | tee -a "$GITHUB_OUTPUT"
           elif [ "$EVENT" != pull_request ]; then
             every
@@ -812,11 +816,16 @@ jobs:
   checker_identity:
     needs: [validation_scope, lanes]
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
-    name: test (tsgo and tsc-ts give the same IR)
+    name: test (tsgo and tsc-ts give the same IR, ${{ matrix.optimization }})
     runs-on: ubuntu-24.04
-    # The two corpus compiles run back to back and take close to 30 minutes on a
-    # slow hosted runner, so a 30-minute limit cancels otherwise healthy runs.
-    timeout-minutes: 60
+    # The release and the dev corpus compiles do not depend on each other, so
+    # each has its own job: 15 minutes at the median and 20 on a slow hosted
+    # runner, where the two back to back took 31 and 41.
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        optimization: [release, dev]
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -828,10 +837,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
-      - name: Corpus LLVM IR with tsgo and with tsc-ts (release)
-        run: pnpm test:checker-identity --optimization release
-      - name: Corpus LLVM IR with tsgo and with tsc-ts (dev)
-        run: pnpm test:checker-identity --optimization dev
+      - name: Corpus LLVM IR with tsgo and with tsc-ts (${{ matrix.optimization }})
+        run: pnpm test:checker-identity --optimization ${{ matrix.optimization }}
 
   llvm_artifacts_linux_x64:
     needs: [validation_scope, lanes, native_linux]

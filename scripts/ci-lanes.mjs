@@ -29,8 +29,8 @@
 //   packages, and a corpus program's own node_modules).
 // Every lane is on when the change touches CI configuration, the workspace manifests or lockfile, vitest
 // configuration, the shared test harness modules or this script, or when the diff cannot be computed. Pushes to main,
-// the nightly sweep and manual runs do not use this script: pushes to main run every lane except macos and islands, and
-// the others run every lane.
+// merge queue groups, the nightly sweep and manual runs do not use this script: pushes to main and merge queue groups
+// run every lane except macos and islands, and the others run every lane.
 import { execFileSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
 
@@ -46,7 +46,7 @@ const everything = [
   /^\.node-version$/,
   /^patches\//,
   /^vitest\.config\.ts$/,
-  /^tests\/harness\/(shard\.ts|suite-lock\.mjs)$/,
+  /^tests\/harness\/(shard\.ts|shard-balance\.mjs|suite-lock\.mjs)$/,
   /^packages\/[^/]+\/package\.json$/,
 ];
 const documentation = [/^docs\//, /\.mdx?$/, /^LICENSE$/, /^CHANGELOG\.md$/];

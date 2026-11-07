@@ -65,7 +65,7 @@ static inline ScrClassObj *scr_classobj_retain(ScrClassObj *c) {
 }
 void scr_classobj_release(ScrClassObj *c);
 void scr_classobj_clear_properties(ScrClassObj *c);
-ScrClassObj *scr_classobj_new(const ScrClassObj *template, size_t ncaps);
+ScrClassObj *scr_classobj_new(const ScrClassObj *tpl, size_t ncaps);
 void scr_classobj_trace_v(void *c, ScrTraceVisit visit, void *ctx);
 /* void*-signature RC adapters (container slots) — scr_object.c. */
 void *scr_classobj_retain_v(void *c);

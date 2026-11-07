@@ -13,6 +13,7 @@ import {
   BOOL,
   DYN,
   STRING,
+  VOID,
   isUnitType,
   type IrExpr,
   type IrStmt,
@@ -22,8 +23,16 @@ import {
 import { numLit, strLit } from "../../ir/build.js";
 import { locOf } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
+import { denotesEnvironment } from "./builtins/environment.js";
+import {
+  erasedDeletePlan,
+  lowerDeleteKey,
+  lowerRecordDeleteExpr,
+} from "./expressions/erased-delete.js";
+import { lowerEnvironmentKey } from "./expressions/element-access.js";
 import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
 import { isStrictCode } from "./strict-mode.js";
+import { callableBox, callableDeleteKey } from "./callable-properties.js";
 
 /** IR types whose JS value is a primitive: no own or inherited properties,
  * so a property read, `in`, or `delete` coerces it — and `in` throws.
@@ -162,6 +171,44 @@ export function nullishReadTypeError(
   );
 }
 
+/** The text every builtin identity token carries: the identifier chokepoint
+ * and the JavaScript destructuring rule intern `[builtin <name>]`
+ * (identifiers.ts, property-access.ts, global-values.ts, lower-stmts.ts). */
+const BUILTIN_TOKEN_PREFIX = "[builtin ";
+const BUILTIN_TOKEN_SUFFIX = "]";
+
+/** A builtin identity token, which is NOT a primitive the program can
+ * observe. The identifier chokepoint represents a JavaScript source's
+ * unsupported builtin value (`import { AsyncResource } from
+ * "node:async_hooks"`) as an IR string whose text Node never produces, so
+ * identity flows (`===`, Set membership) agree between spellings. The
+ * object-coercion lowerings throw Node's TypeError for a primitive and
+ * spell it from the value, which for a token would report the carrier as if
+ * the program could see it ("AsyncResource is not a constructor" for a
+ * class Node constructs), so those branches leave the site to the
+ * reference's own fence instead.
+ *
+ * A token is recognized by its interned TEXT, not by its type alone: a
+ * program's own string casts to `any` as readily as an unsupported builtin
+ * export does, and `new ("hello" as any)()` is a Node TypeError to run, not
+ * a lowering fence. The checker test stays as a second condition, so a
+ * string the checker types as a string keeps its Node answer even when it
+ * spells a token. */
+export function isBuiltinIdentityToken(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  value: IrExpr,
+): boolean {
+  if (value.kind !== "strLit") return false;
+  if (!value.value.startsWith(BUILTIN_TOKEN_PREFIX)) return false;
+  if (!value.value.endsWith(BUILTIN_TOKEN_SUFFIX)) return false;
+  function stringLike(t: ts.Type): boolean {
+    if ((t.flags & ts.TypeFlags.StringLike) !== 0) return true;
+    return t.isUnionType() && ts.constituentTypes(t).every(stringLike);
+  }
+  return !stringLike(lowerer.typeOf(node));
+}
+
 /** The statements that evaluate `expr` for its effects alone. A value the
  * IR cannot spell (a unit — JavaScript's null/undefined has no standalone
  * runtime value, so a bare unit literal fails validation) contributes only
@@ -182,15 +229,112 @@ export function throwAfterEach(values: readonly IrExpr[], thrown: IrExpr, loc: S
     : { kind: "seqExpr", stmts, result: thrown, type: thrown.type, loc };
 }
 
+/** Whether a member `delete` with this receiver deletes from the environment:
+ * the ambient `process.env` object itself or a value HELD from it
+ * (environment.ts), whose member accesses alias the live table. Parentheses
+ * and the erased wrappers name the same object, so `(process.env).X` and
+ * `process.env!.X` delete from the environment too (denotesEnvironment). */
+function isEnvironmentReceiver(lowerer: Lowerer, node: ts.Expression): boolean {
+  return denotesEnvironment(lowerer, node);
+}
+
+/** Expression-position `delete` of an environment member — `delete
+ * process.env.X`, a bracket key, or a member through a held or asserted view
+ * of the environment. Node's environment is one live object, so the delete
+ * unsets the variable and answers `true`: every environment entry is
+ * configurable, sloppy or strict. Lowering the receiver as the value its type
+ * gives would delete the member from a SNAPSHOT record instead, answering
+ * `true` while the actual variable stayed set. The delete therefore takes
+ * the same unset the statement form does (lower-stmts.ts), and the receiver
+ * — the ambient object or a binding read, neither of which runs program code
+ * — is not evaluated at all. */
+function lowerEnvironmentDeleteExpr(
+  lowerer: Lowerer,
+  expr: ts.DeleteExpression,
+  target: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+): IrExpr {
+  const loc = locOf(expr);
+  const key = ts.isPropertyAccessExpression(target)
+    ? lowerDeleteKey(lowerer, target)
+    : lowerEnvironmentKey(lowerer, target.argumentExpression);
+  if (key.type.kind !== "string")
+    lowerer.unsupported(
+      "SC1090",
+      expr,
+      `'delete' of environment keys of '${lowerer.fmt(key.type)}' values (env keys are strings; a Symbol key removes nothing)`,
+    );
+  return {
+    kind: "seqExpr",
+    stmts: [
+      {
+        kind: "exprStmt",
+        expr: { kind: "libCall", fn: "process.envUnset", args: [key], type: VOID, loc },
+        loc,
+      },
+    ],
+    result: { kind: "boolLit", value: true, type: BOOL, loc },
+    type: BOOL,
+    loc,
+  };
+}
+
 /** Expression-position `delete` (`const ok = delete x.y`). Every receiver but
  * a primitive keeps the statement-position-only fence. */
 export function lowerDeleteExpression(lowerer: Lowerer, expr: ts.DeleteExpression): IrExpr {
   let target: ts.Expression = expr.expression;
   while (ts.isParenthesizedExpression(target)) target = target.expression;
   if (ts.isPropertyAccessExpression(target) || ts.isElementAccessExpression(target)) {
+    // The same rule as the statement form (erased-delete.ts): a delete
+    // through a chain of type assertions addresses the operand, in place.
+    const erased = erasedDeletePlan(lowerer, target);
+    if (erased !== null) {
+      if ("refuse" in erased) lowerer.unsupported("SC1090", expr, erased.refuse);
+      if (isEnvironmentReceiver(lowerer, erased.operand))
+        return lowerEnvironmentDeleteExpr(lowerer, expr, target);
+      return lowerRecordDeleteExpr(lowerer, expr, target, lowerer.lowerExpr(erased.operand));
+    }
+    // The environment is one live object in Node: the delete unsets the
+    // variable rather than removing a member from a snapshot of it.
+    if (isEnvironmentReceiver(lowerer, target.expression))
+      return lowerEnvironmentDeleteExpr(lowerer, expr, target);
     const obj = lowerer.lowerExpr(target.expression);
-    if (isPrimitiveValueType(obj.type)) {
+    if (obj.type.kind === "record") return lowerRecordDeleteExpr(lowerer, expr, target, obj);
+    if (
+      isPrimitiveValueType(obj.type) &&
+      !isBuiltinIdentityToken(lowerer, target.expression, obj)
+    ) {
       return lowerPrimitiveBaseDelete(lowerer, expr, target, obj, BOOL);
+    }
+    // `const ok = delete fn.k` on a typed callable: the closure table entry's
+    // removal, answering true like Node's configurable own property.
+    if (obj.type.kind === "func" && callableDeleteKey(lowerer, target)) {
+      const loc = locOf(expr);
+      const boxed = callableBox(lowerer, obj);
+      if (boxed) {
+        const strict = { kind: "boolLit" as const, value: isStrictCode(expr), type: BOOL, loc };
+        const call: IrExpr = ts.isPropertyAccessExpression(target)
+          ? {
+              kind: "libCall",
+              fn: "dyn.keyDelete",
+              args: [boxed, strLit(target.name.text, loc), strict],
+              type: VOID,
+              loc,
+            }
+          : {
+              kind: "libCall",
+              fn: "dyn.keyDeleteComputed",
+              args: [boxed, lowerer.lowerExprExpecting(target.argumentExpression, DYN), strict],
+              type: VOID,
+              loc,
+            };
+        return {
+          kind: "seqExpr",
+          stmts: [{ kind: "exprStmt", expr: call, loc }],
+          result: { kind: "boolLit", value: true, type: BOOL, loc },
+          type: BOOL,
+          loc,
+        };
+      }
     }
   }
   lowerer.unsupported("SC1090", expr, "delete expressions");

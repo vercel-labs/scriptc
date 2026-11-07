@@ -85,12 +85,6 @@ static inline uint64_t scr_map_hash_str(const ScrStr *k) {
 #endif
 }
 
-/* Mix the complete normalized number or identity word. Float exponents
- * and aligned pointers need high bits to reach the low bucket-index bits. */
-static uint64_t scr_map_hash_word(uint64_t value) {
-  return scr_key_mix(value);
-}
-
 /* ── slot packing (8-byte slots, like ScrArr) ──────────────────────────── */
 
 static uint64_t scr_map_slot_from_f64(double v) {
@@ -109,9 +103,19 @@ static uint64_t scr_map_slot_from_ptr(void *p) { return (uint64_t)(uintptr_t)p; 
 
 static void *scr_map_slot_to_ptr(uint64_t s) { return (void *)(uintptr_t)s; }
 
+/* A promise's key identity is the cell its adapter boxes share. The adapter
+ * comes from the map's ops, so this file links without the promise runtime:
+ * only a map that holds such a key carries it. */
+static uint64_t scr_map_promise_identity(const ScrMap *m, void *promise) {
+  const ScrMapIdentityOps *ops = (const ScrMapIdentityOps *)m->ops;
+  return scr_map_slot_from_ptr(ops->key_identity(promise));
+}
+
 /* Union boxes are a compiler representation, not JavaScript objects. Keep
  * the box as the owned key, but hash and compare its reference payload. */
 static uint64_t scr_map_identity(const ScrMap *m, uint64_t key) {
+  if (m->key_kind == SCR_MAP_KEY_PROMISE)
+    return scr_map_promise_identity(m, scr_map_slot_to_ptr(key));
   if (m->key_kind == SCR_MAP_KEY_UNION_REF) {
     const ScrUnion *u = (const ScrUnion *)scr_map_slot_to_ptr(key);
     return scr_map_slot_from_ptr(scr_union_peek(u));
@@ -150,7 +154,7 @@ static uint64_t scr_map_hash_dyn(const ScrDyn *d) {
 
   default: value = scr_map_slot_from_ptr((void *)d); break;
   }
-  return scr_map_hash_word(value) ^ kind;
+  return scr_key_word_hash(value) ^ kind;
 }
 
 static bool scr_map_dyn_eq(const ScrDyn *a, const ScrDyn *b) {
@@ -168,11 +172,12 @@ static uint64_t scr_map_hash_union(const ScrMap *m, const ScrUnion *key) {
   switch (kind) {
   case SCR_MAP_KEY_STR: return scr_map_hash_str(scr_union_peek(key));
   case SCR_MAP_KEY_BIGINT: return scr_bigint_hash(scr_union_peek(key));
-  case SCR_MAP_KEY_F64: return scr_map_hash_word(scr_map_f64_bits(scr_map_slot_to_f64(key->slot)));
+  case SCR_MAP_KEY_F64: return scr_key_word_hash(scr_map_f64_bits(scr_map_slot_to_f64(key->slot)));
   case SCR_MAP_KEY_NULL:
-  case SCR_MAP_KEY_UNDEFINED: return scr_map_hash_word((uint64_t)kind);
-  case SCR_MAP_KEY_CLOSURE: return scr_map_hash_word(scr_map_slot_from_ptr(scr_closure_identity(scr_union_peek(key))));
-  default: return scr_map_hash_word(key->slot);
+  case SCR_MAP_KEY_UNDEFINED: return scr_key_word_hash((uint64_t)kind);
+  case SCR_MAP_KEY_CLOSURE: return scr_key_word_hash(scr_map_slot_from_ptr(scr_closure_identity(scr_union_peek(key))));
+  case SCR_MAP_KEY_PROMISE: return scr_key_word_hash(scr_map_promise_identity(m, scr_union_peek(key)));
+  default: return scr_key_word_hash(key->slot);
   }
 }
 
@@ -187,6 +192,9 @@ static bool scr_map_union_eq(const ScrMap *m, const ScrUnion *a, const ScrUnion 
   case SCR_MAP_KEY_NULL:
   case SCR_MAP_KEY_UNDEFINED: return true;
   case SCR_MAP_KEY_CLOSURE: return scr_closure_identity_equal(scr_union_peek(a), scr_union_peek(b));
+  case SCR_MAP_KEY_PROMISE:
+    return scr_map_promise_identity(m, scr_union_peek(a)) ==
+           scr_map_promise_identity(m, scr_union_peek(b));
   default: return a->slot == b->slot;
   }
 }
@@ -197,7 +205,7 @@ static uint64_t scr_map_hash_key(const ScrMap *m, uint64_t key) {
   if (m->key_kind == SCR_MAP_KEY_BIGINT) return scr_bigint_hash(scr_map_slot_to_ptr(key));
   if (m->key_kind == SCR_MAP_KEY_UNION_VALUE) return scr_map_hash_union(m, scr_map_slot_to_ptr(key));
   uint64_t identity = scr_map_identity(m, key);
-  return scr_map_hash_word(identity);
+  return scr_key_word_hash(identity);
 }
 
 /* Stored keys are pre-normalized, so bit equality IS SameValueZero for f64
@@ -221,7 +229,7 @@ static bool scr_map_key_eq(const ScrMap *m, uint64_t stored, uint64_t probe) {
 
 /* ── entry layout ──────────────────────────────────────────────────────
  * A number-key map (SCR_MAP_KEY_F64) keeps 16-byte entries, the key and
- * the value: its hash is the key word's scr_key_mix, which is cheap to
+ * the value: its hash is the key word's mix (scr_key_word_hash), cheap to
  * recompute, and its stored keys are normalized (one NaN pattern, +0), so
  * a dead entry marks its key with a NaN pattern that no stored key has.
  * A SCR_MAP_VAL_CREF map (string keys, compact class values) keeps 16-byte
@@ -265,7 +273,7 @@ static inline uint64_t scr_map_hash_at(const ScrMap *m, size_t e) {
   if (scr_map_num(m)) {
     uint64_t key = ((const ScrMapNumEntry *)m->entries)[e].key;
     if (key == SCR_MAP_NUM_DEAD) return 0;
-    uint64_t hash = scr_map_hash_word(key);
+    uint64_t hash = scr_key_word_hash(key);
     return hash ? hash : 1;
   }
   if (scr_map_cref(m)) {
@@ -283,7 +291,7 @@ static inline void scr_map_kill_at(ScrMap *m, size_t e) {
 
 /* A compact value's 4-byte form and back (scr_cref_encode in scr_array.h). */
 static inline uint32_t scr_map_cref_encode(uint64_t val) { return (uint32_t)(val >> 3); }
-static inline uint64_t scr_map_cref_decode(uint32_t val) { return (uint64_t)val << 3; }
+static inline uint64_t scr_map_cref_decode(uint32_t val) { return scr_compact_ref_address(val); }
 
 /* The value of entry e as an 8-byte slot, and its store. */
 static inline uint64_t scr_map_val_at(const ScrMap *m, size_t e) {
@@ -569,7 +577,7 @@ static size_t scr_map_find_f64(const ScrMap *m, double key) {
   if (m->ndense) return scr_map_find_dense(m, key);
   if (m->nlive == 0) return SCR_MAP_EMPTY;
   uint64_t k = scr_map_f64_bits(key);
-  return scr_map_find_with(m, scr_map_hash_word(k), k, SCR_MAP_LOOKUP_NUM);
+  return scr_map_find_with(m, scr_key_word_hash(k), k, SCR_MAP_LOOKUP_NUM);
 }
 
 const ScrMapEntry *scr_map_entry_f64(const ScrMap *m, double key) {
@@ -851,7 +859,8 @@ static void scr_map_reserve_append(ScrMap *m) {
 
 static bool scr_map_ref_key(ScrMapKeyKind kind) {
   return kind == SCR_MAP_KEY_REF || kind == SCR_MAP_KEY_UNION_REF || kind == SCR_MAP_KEY_DYN ||
-         kind == SCR_MAP_KEY_BIGINT || kind == SCR_MAP_KEY_UNION_VALUE || kind == SCR_MAP_KEY_CLOSURE;
+         kind == SCR_MAP_KEY_BIGINT || kind == SCR_MAP_KEY_UNION_VALUE ||
+         kind == SCR_MAP_KEY_CLOSURE || kind == SCR_MAP_KEY_PROMISE;
 }
 
 static void scr_map_release_key(ScrMap *m, uint64_t key) {
@@ -899,9 +908,11 @@ static void scr_map_gcfree(void *o) {
 }
 
 /* Map construction inlines into its callers; keeping the header allocation
- * out of line keeps those call sites as small as the libc call they had. */
+ * out of line keeps those call sites as small as the libc call they had.
+ * The header is a reference block: a compact class field can name a map or
+ * a set, so it must lie in the window (scr_mem_calloc_ref). */
 static __attribute__((noinline)) ScrMap *scr_map_alloc_plain(void) {
-  return scr_mem_calloc(sizeof(ScrMap));
+  return scr_mem_calloc_ref(sizeof(ScrMap));
 }
 
 static const ScrMapOps scr_map_no_ops = {0};
@@ -1092,7 +1103,7 @@ static size_t scr_map_find_ref(const ScrMap *m, const void *key) {
   if (m->nlive == 0) return SCR_MAP_EMPTY;
   uint64_t k = scr_map_slot_from_ptr((void *)key);
   if (m->key_kind == SCR_MAP_KEY_REF) {
-    return scr_map_find_with(m, scr_map_hash_word(k), k, SCR_MAP_LOOKUP_WORD);
+    return scr_map_find_with(m, scr_key_word_hash(k), k, SCR_MAP_LOOKUP_WORD);
   }
   return scr_map_find(m, scr_map_hash_key(m, k), k);
 }
@@ -1261,7 +1272,7 @@ static void scr_map_set_f64_slot(ScrMap *m, uint64_t key, uint64_t val) {
       if (m->nentries < UINT32_MAX - 1) {
         scr_map_reserve_append(m); /* may compact, which refills the table */
         size_t idx = m->nentries++;
-        uint64_t hash = scr_map_hash_word(key);
+        uint64_t hash = scr_key_word_hash(key);
         hash = hash ? hash : 1;
         scr_map_put_at(m, idx, key, val, hash);
         m->filter |= scr_map_filter_bits(hash);
@@ -1272,7 +1283,7 @@ static void scr_map_set_f64_slot(ScrMap *m, uint64_t key, uint64_t val) {
     }
     scr_map_leave_dense(m);
   }
-  scr_map_set_num(m, scr_map_hash_word(key), key, val);
+  scr_map_set_num(m, scr_key_word_hash(key), key, val);
 }
 
 static void scr_map_set(ScrMap *m, uint64_t hash, uint64_t key, uint64_t val) {
@@ -1512,7 +1523,7 @@ void *scr_map_get_ref_ref(const ScrMap *m, const void *key) {
 static size_t scr_map_find_bool(const ScrMap *m, bool key) {
   if (m->nlive == 0) return SCR_MAP_EMPTY;
   uint64_t slot = key ? 1 : 0;
-  return scr_map_find_with(m, scr_map_hash_word(slot), slot, SCR_MAP_LOOKUP_WORD);
+  return scr_map_find_with(m, scr_key_word_hash(slot), slot, SCR_MAP_LOOKUP_WORD);
 }
 
 bool scr_map_has_bool(const ScrMap *m, bool key) {
@@ -1524,15 +1535,15 @@ bool scr_map_delete_bool(ScrMap *m, bool key) {
 }
 
 void scr_map_set_bool_f64(ScrMap *m, bool key, double value) {
-  scr_map_set(m, scr_map_hash_word(key ? 1 : 0), key ? 1 : 0, scr_map_slot_from_f64(value));
+  scr_map_set(m, scr_key_word_hash(key ? 1 : 0), key ? 1 : 0, scr_map_slot_from_f64(value));
 }
 
 void scr_map_set_bool_bool(ScrMap *m, bool key, bool value) {
-  scr_map_set(m, scr_map_hash_word(key ? 1 : 0), key ? 1 : 0, value ? 1 : 0);
+  scr_map_set(m, scr_key_word_hash(key ? 1 : 0), key ? 1 : 0, value ? 1 : 0);
 }
 
 void scr_map_set_bool_ref(ScrMap *m, bool key, void *value) {
-  scr_map_set(m, scr_map_hash_word(key ? 1 : 0), key ? 1 : 0, scr_map_slot_from_ptr(value));
+  scr_map_set(m, scr_key_word_hash(key ? 1 : 0), key ? 1 : 0, scr_map_slot_from_ptr(value));
 }
 
 bool scr_map_get_bool_f64(const ScrMap *m, bool key, double *out) {

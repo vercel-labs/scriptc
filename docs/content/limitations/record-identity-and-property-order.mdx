@@ -2,6 +2,8 @@ A record converted to a record type with a different set of properties, such as 
 Mutations through the converted reference do not affect the original, and the copy is not `===` to it.
 Empty record layouts are also snapshots because they have no property storage.
 `scriptc coverage` and `scriptc build` report `SC6001` where a copied value is then written or compared, whether the record was passed as an argument, stored in a typed binding, asserted with `as`, assigned to a typed binding later, or stored as an element of a typed array literal.
+An `as` assertion that only adds optional members to the properties a record type declares is not such a copy: it is erased, so the value keeps its identity and reading an added member answers what the object carries, as in Node.js.
+`scriptc build` reports `SC1031` where such a member is assigned, because a record's layout has no storage for it.
 
 Typed records with declared fields, indexed records, and arrays retain identity and mutations through native checked storage.
 A record or class instance converted to a string-keyed dictionary type such as `Record<string, string>`, directly, through a `{}`, `object` or `unknown` binding or parameter, or as an element of a constant `unknown[]` array that holds such records, keeps its identity when the program writes through, compares or inspects values of that dictionary type.
@@ -26,6 +28,7 @@ Calling `valueOf` or `isPrototypeOf` by name on a record type that such an objec
 For a record converted from an object with more properties, these surfaces read the object's other properties when they run, so later writes to those properties are visible; the declared fields are a copy taken at the conversion.
 Copies of such a record made by object spread, `Object.assign` or rest destructuring contain only the declared fields; a conversion to another record type keeps the properties too.
 Index-signature records list declared fields before the other keys.
+A rest binding over an index-signature source copies its source's key order, so it lists the remaining declared fields before the other keys even when the source object created the other keys first.
 
 Optional fields and properties added through a record's `unknown` view can be deleted.
 A required field has no absent state, so deleting it through the view throws `TypeError: Cannot delete property 'x' of #<Object>` and leaves the record unchanged, where Node.js removes the property.

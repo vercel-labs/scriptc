@@ -330,10 +330,14 @@ function bytesCallbackHelper(
     type: F64,
     loc,
   });
+  // A mutable-buffers program's receiver length can shrink inside the
+  // callback (the buffer resizes or detaches), while Node's visit captures
+  // %TypedArrayLength once: the loop bound is the captured `n` there.
+  const bound = (): IrExpr => (lowerer.buffersMutable ? n() : length());
   const inRange = (): IrExpr =>
     backward
       ? { kind: "bin", op: ">=", left: i(), right: numLit(0, loc), type: BOOL, loc }
-      : { kind: "bin", op: "<", left: i(), right: length(), type: BOOL, loc };
+      : { kind: "bin", op: "<", left: i(), right: bound(), type: BOOL, loc };
   const advance = (): IrStmt => ({
     kind: "assign",
     localId: "i.0",
@@ -373,7 +377,27 @@ function bytesCallbackHelper(
     { localId: "f.0", name: "f", type: fnT },
     ...(hasInit ? [{ localId: "z.0", name: "z", type: resultT }] : []),
   ];
-  const visit: IrStmt[] = [{ kind: "assign", localId: "v.0", value: at(i()), loc }];
+  // A mutable-buffers program's visit runs to the captured length even after
+  // the buffer shrinks under it, where Node's element Get answers undefined.
+  // The typed model has no undefined in an element slot, so an out-of-view
+  // index reads as NaN, which is what every numeric use of undefined converts
+  // to. The callback still runs, and the result array is independent of the
+  // source, so its element Set always stores.
+  const inView = (): IrExpr =>
+    lowerer.buffersMutable
+      ? { kind: "bin", op: "<", left: i(), right: length(), type: BOOL, loc }
+      : boolLit(true, loc);
+  const visit: IrStmt[] = lowerer.buffersMutable
+    ? [
+        {
+          kind: "if",
+          cond: inView(),
+          then: [{ kind: "assign", localId: "v.0", value: at(i()), loc }],
+          else_: [{ kind: "assign", localId: "v.0", value: numLit(NaN, loc), loc }],
+          loc,
+        },
+      ]
+    : [{ kind: "assign", localId: "v.0", value: at(i()), loc }];
   let seeded = false;
   const prologue: IrStmt[] = [];
   let epilogue: IrStmt[];
@@ -389,13 +413,8 @@ function bytesCallbackHelper(
         init: { kind: "bytesNew", source: n(), type: bytesT, loc },
         loc,
       });
-      visit.push({
-        kind: "bytesSet",
-        arr: acc(),
-        index: i(),
-        value: lowerer.coerceToExpected(callback(), F64),
-        loc,
-      });
+      const mapped = lowerer.coerceToExpected(callback(), F64);
+      visit.push({ kind: "bytesSet", arr: acc(), index: i(), value: mapped, loc });
       if (bytesT.elem === "u8") prologue.push(copyBrand(acc()));
       epilogue = [ret(acc())];
       break;
@@ -618,7 +637,16 @@ export function lowerBytesNew(
     lowerer.isStdlibSymbol(symbol)
   ) {
     const args = expr.arguments?.nodes ?? [];
-    if (args.length > 1 || args.some(ts.isSpreadElement)) {
+    // `new ArrayBuffer(len, { maxByteLength })` is a resizable, growable or
+    // detachable buffer (t262-dc C2). Only a JavaScript source may build
+    // one: the TypeScript surface keeps the fixed-length refusal.
+    const options =
+      args.length === 2 &&
+      !args.some(ts.isSpreadElement) &&
+      isJsSourceFile(ts.getSourceFileOfNode(expr))
+        ? args[1]
+        : undefined;
+    if (args.length > (options ? 2 : 1) || args.some(ts.isSpreadElement)) {
       lowerer.noLowering(
         "resizable ArrayBuffer construction",
         expr,
@@ -628,10 +656,22 @@ export function lowerBytesNew(
     const length = args[0]
       ? lowerer.coerceInto(args[0], lowerer.lowerExpr(args[0]), DYN)
       : dynUndefinedExpr(locOf(expr));
+    const shared = ts.symbolName(symbol) === "SharedArrayBuffer";
+    if (options) {
+      // A resizable or growable construction is the mutableBuffers fact by
+      // itself: the buffer it builds can change length later.
+      lowerer.buffersMutable = true;
+      return {
+        kind: "libCall",
+        fn: shared ? "sharedArrayBuffer.newGrowable" : "arrayBuffer.newResizable",
+        args: [length, lowerer.coerceInto(options, lowerer.lowerExpr(options), DYN)],
+        type: DYN,
+        loc: locOf(expr),
+      };
+    }
     return {
       kind: "libCall",
-      fn:
-        ts.symbolName(symbol) === "SharedArrayBuffer" ? "sharedArrayBuffer.new" : "arrayBuffer.new",
+      fn: shared ? "sharedArrayBuffer.new" : "arrayBuffer.new",
       args: [length],
       type: DYN,
       loc: locOf(expr),
@@ -1608,9 +1648,12 @@ export function lowerBytesMethodCall(
   // Node's RangeError on a bad offset (may-throw seeds).
   const dvBigGetter = own(DV_BIG_GETTERS, name);
   if (dvBigGetter !== undefined && receiverIr.elem === "u8") {
-    if (nArgs < 1 || nArgs > 2) lowerer.noLowering(`.${name} with ${nArgs} arguments`, call);
+    if (nArgs > 2) lowerer.noLowering(`.${name} with ${nArgs} arguments`, call);
     const receiver = lowerer.lowerExprExpecting(access.expression, receiverIr);
-    const offset = lowerer.lowerExprExpecting(call.arguments.nodes[0]!, F64);
+    // ToIndex(undefined) is ToIndex(NaN): a missing offset reads offset 0.
+    const offset: IrExpr = call.arguments.nodes[0]
+      ? lowerer.lowerExprExpecting(call.arguments.nodes[0], F64)
+      : numLit(NaN, loc);
     const sign: IrExpr = { kind: "boolLit", value: dvBigGetter.sign, type: BOOL, loc };
     const le: IrExpr = call.arguments.nodes[1]
       ? lowerer.lowerExprExpecting(call.arguments.nodes[1], BOOL)
@@ -1626,12 +1669,16 @@ export function lowerBytesMethodCall(
   const dvGetter = own(DV_GETTERS, name);
   if (dvGetter !== undefined && receiverIr.elem === "u8") {
     const maxArgs = dvGetter.le ? 2 : 1;
-    if (nArgs < 1 || nArgs > maxArgs) {
+    if (nArgs > maxArgs) {
       lowerer.noLowering(`.${name} with ${nArgs} arguments`, call);
     }
     const receiver = lowerer.lowerExprExpecting(access.expression, receiverIr);
     // ToIndex(undefined) is ToIndex(NaN): a missing offset reads offset 0.
-    const args = [lowerToNumberArgument(lowerer, call.arguments.nodes[0]!)];
+    const args = [
+      call.arguments.nodes[0]
+        ? lowerToNumberArgument(lowerer, call.arguments.nodes[0])
+        : numLit(NaN, loc),
+    ];
     if (nArgs === 2) args.push(lowerer.lowerExprExpecting(call.arguments.nodes[1]!, BOOL));
     return { kind: "bytesIntrinsic", method: dvGetter.method, receiver, args, type: F64, loc };
   }
@@ -1643,10 +1690,17 @@ export function lowerBytesMethodCall(
   // fence, as does setFloat16.
   const dvSetter = own(DV_SETTERS, name);
   if ((name === "setBigUint64" || name === "setBigInt64") && receiverIr.elem === "u8") {
-    if (nArgs < 2 || nArgs > 3) lowerer.noLowering(`.${name} with ${nArgs} arguments`, call);
+    if (nArgs > 3) lowerer.noLowering(`.${name} with ${nArgs} arguments`, call);
     const receiver = lowerer.lowerExprExpecting(access.expression, receiverIr);
-    const offset = lowerer.lowerExprExpecting(call.arguments.nodes[0]!, F64);
-    const value = lowerer.lowerExprExpecting(call.arguments.nodes[1]!, BIGINT_T);
+    // The offset (ToIndex) treats a missing value as NaN (offset 0); the
+    // value (ToBigInt) throws its TypeError for a missing one, the answer
+    // Node gives a call that omits it.
+    const offset: IrExpr = call.arguments.nodes[0]
+      ? lowerer.lowerExprExpecting(call.arguments.nodes[0], F64)
+      : numLit(NaN, loc);
+    const value: IrExpr = call.arguments.nodes[1]
+      ? lowerer.lowerExprExpecting(call.arguments.nodes[1], BIGINT_T)
+      : nodeThrowExpr(1, "", "Cannot convert undefined to a BigInt", BIGINT_T, loc);
     const le: IrExpr = call.arguments.nodes[2]
       ? lowerer.lowerExprExpecting(call.arguments.nodes[2], BOOL)
       : { kind: "boolLit", value: false, type: BOOL, loc };
@@ -1660,15 +1714,19 @@ export function lowerBytesMethodCall(
   }
   if (dvSetter !== undefined && receiverIr.elem === "u8") {
     const maxArgs = dvSetter.le ? 3 : 2;
-    if (nArgs < 2 || nArgs > maxArgs) {
+    if (nArgs > maxArgs) {
       lowerer.noLowering(`.${name} with ${nArgs} arguments`, call);
     }
     const receiver = lowerer.lowerExprExpecting(access.expression, receiverIr);
     // The offset (ToIndex) and the value (ToNumber) treat a missing value
     // as NaN.
     const args = [
-      lowerToNumberArgument(lowerer, call.arguments.nodes[0]!),
-      lowerToNumberArgument(lowerer, call.arguments.nodes[1]!),
+      call.arguments.nodes[0]
+        ? lowerToNumberArgument(lowerer, call.arguments.nodes[0])
+        : numLit(NaN, loc),
+      call.arguments.nodes[1]
+        ? lowerToNumberArgument(lowerer, call.arguments.nodes[1])
+        : numLit(NaN, loc),
     ];
     if (nArgs === 3) args.push(lowerer.lowerExprExpecting(call.arguments.nodes[2]!, BOOL));
     return { kind: "bytesIntrinsic", method: dvSetter.method, receiver, args, type: VOID, loc };
@@ -2298,6 +2356,43 @@ function lowerBufferInstanceMethod(
     if (nArgs !== 0) lowerer.noLowering(`.${name} with ${nArgs} arguments`, call);
     const receiver = lowerer.lowerExprExpecting(access.expression, BYTES_U8);
     return { kind: "bytesIntrinsic", method: name, receiver, args: [], type: BYTES_U8, loc };
+  }
+  if (name === "toJSON") {
+    // The declared result is the literal { type: "Buffer", data: [...] }:
+    // a fresh plain object whose data array copies the bytes. The record
+    // form keeps .type/.data reads static; a caller that only stringifies
+    // it sees the same JSON Node prints.
+    if (nArgs !== 0) lowerer.noLowering(`.toJSON with ${nArgs} arguments`, call);
+    const receiver = lowerer.lowerExprExpecting(access.expression, BYTES_U8);
+    const data: IrExpr = {
+      kind: "bytesIntrinsic",
+      method: "toArray",
+      receiver,
+      args: [],
+      type: arrayOf(F64),
+      loc,
+    };
+    const mapped = lowerer.mapTypeOf(lowerer.typeOf(call));
+    if (mapped?.kind === "record") {
+      return {
+        kind: "recordLit",
+        fields: [
+          { name: "type", value: { kind: "strLit", value: "Buffer", type: STRING, loc } },
+          { name: "data", value: data },
+        ],
+        type: mapped,
+        loc,
+      };
+    }
+    return {
+      kind: "dynInvoke",
+      recv: { kind: "dynFrom", value: receiver, type: DYN, loc, liveRef: true },
+      method: "toJSON",
+      calleeName: "Buffer.toJSON",
+      args: [],
+      type: DYN,
+      loc,
+    };
   }
   if (name === "write") {
     if (nArgs < 1 || nArgs > 4) lowerer.noLowering(`.write with ${nArgs} arguments`, call);

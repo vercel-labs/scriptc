@@ -28,12 +28,18 @@ function pairs(s: string, t: string): number {
   for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) === t.charCodeAt(i % t.length)) n++;
   return n;
 }
+function every17(s: string): number {
+  let n = 0;
+  for (let i = 0; i < s.length; i += 17) n += s.charCodeAt(i);
+  return n;
+}
 let text = "";
 for (let k = 0; k < 400; k++) text += k % 3 === 0 ? "café " : "naïve façade ";
 const other = text.replace(/a/g, "ä");
 let total = 0;
 for (let pass = 0; pass < 4; pass++)
   total += spaces(text) + spaces(other) + pairs(text, other) + skip(text);
+total += every17(text) + every17(other);
 console.log(total, spaces("plain ascii text"), spaces(""));
 `,
     );
@@ -54,7 +60,7 @@ console.log(total, spaces("plain ascii text"), spaces(""));
     // scan receiver once, before the loop, and its copy loads units. The
     // loop runs to the length, so it gives the runtime no range (NaN).
     expect(spaces).toMatch(
-      /call void @scr_str_scan_units_for\(ptr %\S+, double 0x7FF8000000000000, double 0x7FF8000000000000\)/,
+      /call void @scr_str_scan_units_for\(ptr %\S+, double 0x7FF8000000000000, double 0x7FF8000000000000, double 0x3FF0000000000000\)/,
     );
     // The copies follow the checked one: bytes, then units.
     const bytesAt = spaces.search(/^bytes\.version\.fast\d+:/m);
@@ -78,6 +84,11 @@ console.log(total, spaces("plain ascii text"), spaces(""));
     expect(skip.slice(skipFastAt)).not.toContain("@sc_str_utf16_len");
     // Two strings cannot both be the scan receiver.
     expect(body("pairs")).not.toContain("bytes.version.fast.units");
+    // A counted loop gives the runtime its counter stride, so a scan that
+    // reads one unit per 17 can decline the conversion at the loop entry.
+    expect(body("every17")).toMatch(
+      /call void @scr_str_scan_units_for\(ptr %\S+, double 0x7FF8000000000000, double 0x7FF8000000000000, double 0x4031000000000000\)/,
+    );
 
     const exe = join(dir, "main");
     const built = await compile(entry, { outputKind: "exe", outDir: dir, outPath: exe });
@@ -89,7 +100,10 @@ console.log(total, spaces("plain ascii text"), spaces(""));
     let pairs = 0;
     for (let i = 0; i < text.length; i++)
       if (text.charCodeAt(i) === other.charCodeAt(i % other.length)) pairs++;
-    const total = 4 * (count(text) + count(other) + pairs + text.indexOf(" "));
+    let every17 = 0;
+    for (let i = 0; i < text.length; i += 17) every17 += text.charCodeAt(i);
+    for (let i = 0; i < other.length; i += 17) every17 += other.charCodeAt(i);
+    const total = 4 * (count(text) + count(other) + pairs + text.indexOf(" ")) + every17;
     expect(execFileSync(exe, { encoding: "utf8" })).toBe(`${total} 2 0\n`);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -142,14 +156,16 @@ console.log(words(text), words(text.replace(/a/g, "ä")), words("plain ascii"));
       expect(block).not.toBeNull();
       const lines = block[1]!.split("\n").map((line) => line.trim());
       expect(lines.at(-1)).toMatch(
-        new RegExp(`^call void @scr_str_scan_units_for\\(ptr ${s}, double \\S+, double \\S+\\)$`),
+        new RegExp(
+          `^call void @scr_str_scan_units_for\\(ptr ${s}, double \\S+, double \\S+, double \\S+\\)$`,
+        ),
       );
       expect(lines.slice(0, -1).filter((line) => /\bcall\b(?! double @llvm\.)/.test(line))).toEqual(
         [],
       );
     }
     const calls = words.match(
-      /call void @scr_str_scan_units_for\(ptr %\S+, double \S+, double \S+\)/g,
+      /call void @scr_str_scan_units_for\(ptr %\S+, double \S+, double \S+, double \S+\)/g,
     )!;
     expect(calls.length).toBe(guards.length);
 
@@ -209,7 +225,7 @@ console.log(kept, breaks);
       expect(block, name).not.toBeNull();
       const [, lines] = block;
       const call = lines!.match(
-        /call void @scr_str_scan_units_for\(ptr %\S+, double (%\S+), double (%\S+)\)/,
+        /call void @scr_str_scan_units_for\(ptr %\S+, double (%\S+), double (%\S+), double \S+\)/,
       )!;
       expect(call, name).not.toBeNull();
       expect(call[1]).not.toBe(call[2]);

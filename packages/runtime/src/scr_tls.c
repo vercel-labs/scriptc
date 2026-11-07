@@ -203,6 +203,7 @@ static int scr_tls_parse_key(mbedtls_pk_context *pk, const char *pem, size_t len
 static void scr_tls_bad_material(const char *what, int err) {
   char detail[128];
   mbedtls_strerror(err, detail, sizeof detail);
+  scr_stdout_settle();
   fflush(stdout);
   fprintf(stderr, "scriptc: tls: failed to parse %s (%s)\n", what, detail);
   _Exit(1);
@@ -465,10 +466,21 @@ static ScrTlsSrv *scr_tls_srv_new(const char *cert, size_t cert_len, const char 
   mbedtls_x509_crt_init(&s->ca);
   mbedtls_pk_init(&s->pk);
   mbedtls_ssl_config_init(&s->conf);
-  int r = scr_tls_parse_crt(&s->cert, cert, cert_len);
-  if (r != 0) scr_tls_bad_material("certificate", r);
-  r = scr_tls_parse_key(&s->pk, key, key_len);
-  if (r != 0) scr_tls_bad_material("private key", r);
+  /* Node accepts a server whose options carry neither key nor cert (or
+   * only one of them): the default context then has no pair, and an
+   * SNICallback answer supplies the handshake's certificate. Absent
+   * material is not parsed, and only a complete pair is configured as the
+   * default. */
+  const bool have_cert = cert != NULL && cert_len > 0;
+  const bool have_key = key != NULL && key_len > 0;
+  if (have_cert) {
+    int r = scr_tls_parse_crt(&s->cert, cert, cert_len);
+    if (r != 0) scr_tls_bad_material("certificate", r);
+  }
+  if (have_key) {
+    int r = scr_tls_parse_key(&s->pk, key, key_len);
+    if (r != 0) scr_tls_bad_material("private key", r);
+  }
   if (mbedtls_ssl_config_defaults(&s->conf, MBEDTLS_SSL_IS_SERVER,
                                   MBEDTLS_SSL_TRANSPORT_STREAM,
                                   MBEDTLS_SSL_PRESET_DEFAULT) != 0) {
@@ -477,8 +489,10 @@ static ScrTlsSrv *scr_tls_srv_new(const char *cert, size_t cert_len, const char 
   mbedtls_ssl_conf_rng(&s->conf, mbedtls_ctr_drbg_random, &scr_tls_drbg);
   /* no client certificate unless requestCert asks (scr_tls_srv_client_auth) */
   mbedtls_ssl_conf_authmode(&s->conf, MBEDTLS_SSL_VERIFY_NONE);
-  if (mbedtls_ssl_conf_own_cert(&s->conf, &s->cert, &s->pk) != 0) {
-    scr_tls_bad_material("certificate/key pair", 0);
+  if (have_cert && have_key) {
+    if (mbedtls_ssl_conf_own_cert(&s->conf, &s->cert, &s->pk) != 0) {
+      scr_tls_bad_material("certificate/key pair", 0);
+    }
   }
   if (alpn_http11) mbedtls_ssl_conf_alpn_protocols(&s->conf, SCR_TLS_ALPN_HTTP11);
   return s;
@@ -2182,9 +2196,9 @@ ScrHttpClientReq *scr_https_request_url(ScrStr *url /*borrowed*/, ScrStr *method
   ScrStr *host;
   ScrStr *path;
   double port;
-  if (!scr_http_url_parts(url, true, &host, &port, &path)) {
+  if (!scr_http_url_parts(url, true, "https.request", &host, &port, &path)) {
     if (cb) scr_closure_release(cb);
-    return NULL; /* Invalid URL / ERR_INVALID_PROTOCOL pending */
+    return NULL; /* Invalid URL / ERR_INVALID_PROTOCOL / credentials pending */
   }
   ScrArr *pairs = scr_arr_new(SCR_ELEM_STR, 0);
   ScrHttpClientReq *c = scr_https_request(host, port, path, method, 0, pairs, auto_end,
@@ -2442,6 +2456,36 @@ ScrHttpClientReq *scr_https_request_dyn(const ScrDyn *opts /*borrowed*/, bool au
   scr_str_release(key);
   if (ca) scr_bytes_release(ca);
   scr_http_req_opts_free(&o);
+  return req;
+}
+
+/* The options form of a client chosen at runtime (`const fn = c ?
+ * https.request : http.request`): the same walk, with the dial and the
+ * TLS options following `secure` — false is exactly http.request, whose
+ * options walk ignores TLS members like Node does. */
+ScrHttpClientReq *scr_http_request_dyn_secure(const ScrDyn *opts /*borrowed*/, bool auto_end,
+                                              bool secure, ScrClosure *cb /*moves, nullable*/,
+                                              ScrHttpRespFn fn,
+                                              ScrDyn *(*add_abort)(ScrDyn *signal,
+                                                                  ScrDyn *listener)) {
+  if (secure) return scr_https_request_dyn(opts, auto_end, cb, fn, add_abort);
+  return scr_http_request_dyn(opts, auto_end, cb, fn, add_abort);
+}
+
+/* https.request/get(url[, options][, cb]) — the URL's fields merged under
+ * the options value (scr_http.c's merge), then the same runtime walk,
+ * TLS options included, as the options form. */
+ScrHttpClientReq *scr_https_request_url_dyn(ScrStr *url /*borrowed*/,
+                                            const ScrDyn *opts /*borrowed*/, bool auto_end,
+                                            ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn,
+                                            ScrDyn *(*add_abort)(ScrDyn *signal, ScrDyn *listener)) {
+  ScrDyn *merged = scr_http_url_req_options(url, opts, "https.request");
+  if (merged == NULL) {
+    if (cb) scr_closure_release(cb);
+    return NULL;
+  }
+  ScrHttpClientReq *req = scr_https_request_dyn(merged, auto_end, cb, fn, add_abort);
+  scr_dyn_release(merged);
   return req;
 }
 

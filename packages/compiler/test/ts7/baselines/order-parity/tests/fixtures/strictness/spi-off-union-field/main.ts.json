@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/strictness/spi-off-union-field/main.ts"
+ ],
+ "diags": []
+}

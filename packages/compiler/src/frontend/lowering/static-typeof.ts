@@ -10,14 +10,13 @@ import { ambientUndefinedFnSymbolOf, ambientUndefinedVarSymbolOf } from "./lower
  * undeclared global such as window or self, and typeof never throws for
  * one), and the Node global object and process answer "object". Null for
  * every other operand. A Node 24 global the native runtime does not provide
- * has no static answer: reading it refuses (SC2020, host-global), even
- * though this fold would otherwise answer "undefined". */
+ * answers "function" statically: Node has the constructor, and typeof is a
+ * read, not a use (host-global-values.ts). */
 export function staticTypeofAnswer(lowerer: Lowerer, operand: ts.Expression): string | null {
   let e = operand;
   while (ts.isParenthesizedExpression(e)) e = e.expression;
   if (!ts.isIdentifier(e)) return null;
-  const hostGlobal = hostGlobalNameOfIdentifier(lowerer, e);
-  if (hostGlobal !== null) lowerer.hostGlobalFence(hostGlobal, e);
+  if (hostGlobalNameOfIdentifier(lowerer, e) !== null) return "function";
   if (lowerer.checker.getSymbolAtLocation(e) === undefined) return "undefined";
   for (const name of ["global", "globalThis", "process"])
     if (lowerer.isStdlibGlobal(e, name)) return "object";

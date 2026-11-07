@@ -9,6 +9,7 @@ import {
   MBEDTLS_VERSION,
   QJS_COMMIT,
   ZLIB_VERSION,
+  ZSTD_VERSION,
 } from "../vendor-inputs.js";
 import { stableTestMemo } from "./session.js";
 
@@ -146,6 +147,7 @@ async function runtimeFingerprintFresh(rtDir: string): Promise<string> {
     .update(MBEDTLS_VERSION)
     .update(ZLIB_VERSION)
     .update(BROTLI_VERSION)
+    .update(ZSTD_VERSION)
     .update(ICU_VERSION)
     .update("\0backend-recipe\0");
   for (const path of NATIVE_RECIPE_IMPLEMENTATION_PATHS) {
@@ -184,6 +186,7 @@ async function runtimeFingerprintInputGroups(
         { label: "mbedtls", dir: join(rtDir, "..", "vendor", "mbedtls") },
         { label: "zlib", dir: join(rtDir, "..", "vendor", "zlib") },
         { label: "brotli", dir: join(rtDir, "..", "vendor", "brotli", "c") },
+        { label: "zstd", dir: join(rtDir, "..", "vendor", "zstd", "lib") },
         // ICU is fetched, not vendored: its pinned version and sha256 key the
         // archive's cache path (vendor-archives.ts icuArchivePath), so it is
         // not part of the runtime tree's fingerprint.

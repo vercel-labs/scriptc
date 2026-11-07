@@ -1,6 +1,14 @@
 /** Build the production CLI seed and its relocatable compiler assets. */
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,7 +22,7 @@ import {
 import { tsgoExecutable } from "../packages/compiler/src/frontend/ts7/rpc-api.js";
 import { PACK_VERIFIED_FILE } from "../packages/compiler/src/backend/runtime-pack-native.js";
 import { prebuiltLibDiagnosticsText } from "../packages/compiler/src/frontend/ts7/lib-diagnostics.js";
-import { judgeProfileMatch } from "./build-native-cli-profile.mjs";
+import { REFRESH_COMMAND, judgeProfileMatch } from "./build-native-cli-profile.mjs";
 import { stageNativeCliAssets } from "./native-cli-assets.mjs";
 import type { NativeToolchainManifest } from "../packages/compiler/src/native/toolchain.js";
 
@@ -36,12 +44,37 @@ const sanitize = process.env["SCRIPTC_SAN"] === "1";
 // profile (cli.blocks.gz beside cli.profdata.gz) annotate the functions
 // whose control flow changed since the profile was collected.
 const profileGenerate = process.env["SCRIPTC_NATIVE_PROFILE_GENERATE"] || undefined;
-// SCRIPTC_NATIVE_PROFILE_CHECK=1 fails a build with the committed profile
-// when it matches fewer than FAIL_BELOW of the functions it describes
-// (scripts/build-native-cli-profile.mjs); CI sets it.
+// SCRIPTC_NATIVE_PROFILE_CHECK=1 makes a build with the committed profile
+// report the share of the profile's functions it matches and annotate the run
+// page with it (scripts/build-native-cli-profile.mjs); CI sets it. The share
+// does not fail the build. The check fails only when the profile cannot be
+// judged: it is missing, cannot be read, or the build is laid out differently
+// from the instrumented build that collected it.
 const profileCheck = process.env["SCRIPTC_NATIVE_PROFILE_CHECK"] === "1";
 const committedProfile = join(root, "packages/compiler/native/cli.profdata.gz");
 const requestedProfile = process.env["SCRIPTC_NATIVE_PROFILE_USE"];
+// The profile this build uses, and how its messages name it.
+const profileInUse = requestedProfile ?? committedProfile;
+const profileName =
+  requestedProfile === undefined ? "packages/compiler/native/cli.profdata.gz" : requestedProfile;
+function failProfileCheck(problem: string): never {
+  console.error(`error: ${problem}`);
+  process.exit(1);
+}
+if (profileCheck) {
+  if (optimization === "dev" || sanitize)
+    failProfileCheck(
+      "the native compiler profile check needs an optimized build; unset SCRIPTC_SAN and SCRIPTC_NATIVE_OPTIMIZATION",
+    );
+  if (profileInUse === "")
+    failProfileCheck(
+      "the native compiler profile check needs a profile, and SCRIPTC_NATIVE_PROFILE_USE is empty",
+    );
+  if (!existsSync(profileInUse))
+    failProfileCheck(
+      `the native compiler profile ${profileName} is missing; collect it with \`${REFRESH_COMMAND} --context-sensitive\` on a Linux x64 host and commit it`,
+    );
+}
 const useProfile =
   (profileGenerate === undefined || (requestedProfile !== undefined && requestedProfile !== "")) &&
   optimization !== "dev" &&
@@ -61,6 +94,32 @@ const functionLayout =
   requestedLayout === ""
     ? undefined
     : (requestedLayout ?? (existsSync(committedLayout) ? committedLayout : undefined));
+// Whether the build lays the compiler out with the committed layout file. The
+// files are compared by their resolved paths, so another name for the same
+// file, such as a relative one, still counts.
+const committedLayoutInUse =
+  functionLayout !== undefined &&
+  existsSync(functionLayout) &&
+  existsSync(committedLayout) &&
+  realpathSync(functionLayout) === realpathSync(committedLayout);
+// The profile describes the functions of builds laid out like the
+// instrumented build that collected it. A check build with another layout
+// could not report a comparable match, so it fails rather than reporting a
+// lower one that a refresh would not raise.
+if (profileCheck) {
+  if (!existsSync(committedLayout))
+    failProfileCheck(
+      "the native compiler profile check needs packages/compiler/native/cli.layout.gz, which is missing; collect it with `node scripts/refresh-cli-layout.mjs` on a Linux x64 host and commit it",
+    );
+  if (!committedLayoutInUse)
+    failProfileCheck(
+      "the native compiler profile was collected with packages/compiler/native/cli.layout.gz, and this build lays the compiler out differently; a profile matches only builds laid out like the instrumented build",
+    );
+}
+if (profileCheck && !useProfile)
+  failProfileCheck(
+    "the native compiler profile check needs a build that uses the profile; unset SCRIPTC_NATIVE_PROFILE_GENERATE",
+  );
 let target = nativeCodegenTarget();
 if (target === null || target.platform === "wasi")
   throw new Error("a supported native host is required to build the compiler");
@@ -78,19 +137,29 @@ const seed = join(dirname(output), ".scriptc", basename(output) + "-seed");
 for (const dir of [bin, lib, seed]) mkdirSync(dir, { recursive: true });
 let profileUse: string | undefined;
 if (useProfile) {
-  profileUse = requestedProfile ?? committedProfile;
+  profileUse = profileInUse;
   if (profileUse.endsWith(".gz")) {
     const compressed = profileUse;
     profileUse = join(seed, "cli.profdata");
-    writeFileSync(profileUse, gunzipSync(readFileSync(compressed)));
-    // The compiler reads the block counts beside the profile it uses.
-    const blocks = join(seed, "cli.blocks");
-    const compressedBlocks = compressed.endsWith(".profdata.gz")
-      ? `${compressed.slice(0, -".profdata.gz".length)}.blocks.gz`
-      : `${compressed}.blocks.gz`;
-    rmSync(blocks, { force: true });
-    if (existsSync(compressedBlocks))
-      writeFileSync(blocks, gunzipSync(readFileSync(compressedBlocks)));
+    // A check build that cannot read the profile fails with what it tried to
+    // read; elsewhere the error stands as it is.
+    try {
+      writeFileSync(profileUse, gunzipSync(readFileSync(compressed)));
+      // The compiler reads the block counts beside the profile it uses.
+      const blocks = join(seed, "cli.blocks");
+      const compressedBlocks = compressed.endsWith(".profdata.gz")
+        ? `${compressed.slice(0, -".profdata.gz".length)}.blocks.gz`
+        : `${compressed}.blocks.gz`;
+      rmSync(blocks, { force: true });
+      if (existsSync(compressedBlocks))
+        writeFileSync(blocks, gunzipSync(readFileSync(compressedBlocks)));
+    } catch (error) {
+      if (profileCheck)
+        failProfileCheck(
+          `the native compiler profile ${profileName} cannot be read: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      throw error;
+    }
   }
 }
 const compiler = process.env["SCRIPTC_CC"] ?? target.defaultLinker;
@@ -109,7 +178,7 @@ const cFlags = [
 const nativeSources = join(root, "packages/compiler/native");
 const functions: unknown[] = [];
 const libraries: string[] = [];
-for (const name of ["ts7-process", "host"]) {
+for (const name of ["ts7-process", "codegen-process", "host"]) {
   const object = join(seed, name + target.outputSuffixes.obj);
   execFileSync(
     compiler,
@@ -184,18 +253,19 @@ if (!result.ok)
 // How well the profile still describes the compiler. The profile matches
 // builds laid out like the instrumented build; a build with another layout
 // (the bootstrap seed uses none) matches fewer functions however fresh the
-// profile is, so its summary is printed but not graded.
+// profile is, so its summary is printed without a warning.
 const match = useProfile && "artifact" in result ? result.artifact.profileMatch : undefined;
 if (match !== undefined) {
-  const verdict = judgeProfileMatch(match, {
-    check: profileCheck,
-    layoutMatchesProfile: functionLayout === committedLayout,
-  });
+  const verdict = judgeProfileMatch(match, { layoutMatchesProfile: committedLayoutInUse });
   console.log(verdict.summary);
-  if (verdict.warning !== undefined) console.warn(`warning: ${verdict.warning}`);
-  if (verdict.error !== undefined) {
-    console.error(`error: ${verdict.error}`);
-    process.exit(1);
+  // The profile lane annotates the run page with the match, so a stale
+  // profile is visible without opening the log. The share is reported, not
+  // enforced.
+  const annotate = profileCheck && process.env["GITHUB_ACTIONS"] === "true";
+  if (annotate) console.log(`::notice title=native compiler profile::${verdict.summary}`);
+  if (verdict.warning !== undefined) {
+    console.warn(`warning: ${verdict.warning}`);
+    if (annotate) console.log(`::warning title=native compiler profile::${verdict.warning}`);
   }
 }
 const compilerVersion = (

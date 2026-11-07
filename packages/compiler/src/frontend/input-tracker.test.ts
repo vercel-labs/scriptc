@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import {
   FrontendInputTracker,
@@ -12,6 +12,7 @@ import {
   invalidateTrackedFilesystem,
   invalidateTrackedPath,
   setVirtualSource,
+  COMPILER_SCRATCH_PREFIX,
   clearVirtualSources,
   trackedAccessibleEntries,
   trackedDirectoryExists,
@@ -203,6 +204,60 @@ test("compiler outputs do not invalidate a fresh output directory", async () => 
   expect(frontendInputsStillMatch(snapshot, exclusions)).toBe(true);
 
   await writeFile(join(outDir, "new-source.ts"), "export const appeared = true;\n");
+  expect(frontendInputsStillMatch(snapshot, exclusions)).toBe(false);
+});
+
+test("the compiler's scratch entries beside an output do not invalidate a listing", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
+  scratch.push(dir);
+  const output = join(dir, "app");
+  await writeFile(join(dir, "main.ts"), "export {};\n");
+  // A build in progress: its private files sit beside the output it will
+  // write, named as privateSiblingPath names them.
+  const mine = join(dir, `${COMPILER_SCRATCH_PREFIX}frontend-4242-k3v9x1`);
+  await writeFile(mine, "{}");
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => trackedAccessibleEntries(dir));
+  const snapshot = tracker.snapshot();
+  expect(snapshot.probes).toContainEqual({
+    op: "entries",
+    path: dir,
+    files: [basename(mine), "main.ts"].sort(),
+    directories: [],
+  });
+  const exclusions = { outputPaths: [output], outputDirectories: [dir] };
+  // The build finished: its scratch file is gone and its output is there.
+  await rm(mine);
+  await writeFile(output, "binary");
+  expect(frontendInputsStillMatch(snapshot, exclusions)).toBe(true);
+  // The next build's scratch file and staging directory, while it checks.
+  await writeFile(join(dir, `${COMPILER_SCRATCH_PREFIX}llvm-4343-p0q8z2.ll`), "");
+  await mkdir(join(dir, ".scriptc-native-a1b2c3"));
+  expect(frontendInputsStillMatch(snapshot, exclusions)).toBe(true);
+  // Only beside an output, and only the compiler's names.
+  expect(frontendInputsStillMatch(snapshot)).toBe(false);
+  expect(frontendInputsStillMatch(snapshot, { outputPaths: [join(dir, "elsewhere", "app")] })).toBe(
+    false,
+  );
+  await writeFile(join(dir, ".hidden.ts"), "export {};\n");
+  expect(frontendInputsStillMatch(snapshot, exclusions)).toBe(false);
+});
+
+test("a fresh output directory may hold the compiler's scratch entries beside its outputs", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
+  scratch.push(dir);
+  const outDir = join(dir, "dist");
+  const output = join(outDir, "app");
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => trackedDirectoryExists(outDir));
+  const snapshot = tracker.snapshot();
+  const exclusions = { outputPaths: [output], outputDirectories: [outDir, dir] };
+  await mkdir(outDir);
+  await writeFile(output, "binary");
+  await writeFile(join(outDir, `${COMPILER_SCRATCH_PREFIX}native-exe-4444-a7b6c5`), "");
+  expect(frontendInputsStillMatch(snapshot, exclusions)).toBe(true);
+  // A file of the user's there is still a change.
+  await writeFile(join(outDir, "notes.ts"), "export {};\n");
   expect(frontendInputsStillMatch(snapshot, exclusions)).toBe(false);
 });
 

@@ -1599,7 +1599,8 @@ function lowerNetServerMethodCall(
     // and throws ERR_SOCKET_BAD_PORT for every other number (a fraction, a
     // negative, NaN, 70000). A literal in that range needs no check; any
     // other number takes the check an untyped port takes, so the bind never
-    // sees a value truncated into the range.
+    // sees a value truncated into the range. A number is never the options
+    // object or pipe path that check fences, so it carries no fence.
     const validatedPort = (port: IrExpr): IrExpr => {
       if (port.type.kind !== "f64") return port;
       if (
@@ -1609,7 +1610,16 @@ function lowerNetServerMethodCall(
         port.value <= 65535
       )
         return port;
-      return portOfUntyped(lowerer.coerceToExpected(port, DYN));
+      return {
+        kind: "libCall",
+        fn: "net.listenPortDyn",
+        args: [
+          lowerer.coerceToExpected(port, DYN),
+          { kind: "strLit", value: "", type: STRING, loc },
+        ],
+        type: F64,
+        loc,
+      };
     };
     if (args.length === 1 && untyped) {
       // An untyped single argument: a function is the callback on an

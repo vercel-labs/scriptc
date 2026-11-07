@@ -605,11 +605,18 @@ static int scr_uncaught_dispatch(bool from_promise) {
   scr_dyn_release(args[0]);
   scr_dyn_release(args[1]);
   scr_uncaught_sync_hook();
-  if (!ok && scr_context_is_main()) {
+#ifdef SCR_WORKERS
+  /* A worker reports an uncaught error to its parent through this hook
+   * (scr_exc_print_uncaught), which the main context never has. */
+  bool fatal = !ok && scr_context_report_error == NULL;
+#else
+  bool fatal = !ok;
+#endif
+  if (fatal) {
     /* A listener itself threw: Node leaves through its fatal exit (status
      * 7), which emits no 'exit' event and runs nothing else. The report
      * and the exit are the ones a throwing 'exit' listener takes
-     * (scr_run_exit_listeners). A worker reports through its own path. */
+     * (scr_run_exit_listeners). */
     scr_caught_release(caught);
     scr_exc_print_uncaught();
     scr_stdout_settle();

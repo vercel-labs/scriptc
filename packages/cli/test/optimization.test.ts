@@ -19,7 +19,7 @@ test("--optimization accepts release, dev, and speed and names them when rejecti
     expect(help.stdout).toContain("--optimization <release|dev|speed>");
     for (const args of [
       ["build", entry, "--optimization=fast"],
-      ["run", entry, "--optimization", "O3"],
+      ["run", "--optimization", "O3", entry],
       ["cache", "warm", "--optimization=fast"],
     ]) {
       await expect(

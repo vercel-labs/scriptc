@@ -1030,7 +1030,7 @@ test("a cycle whose top level calls a builtin with a builtin function value is a
   expect(out).toContain("statements analyzed");
 });
 
-test("Node islands (report-only): one package per class, gap islands first", async () => {
+test("Node islands: one package per class, gap islands first", async () => {
   // ni-gap (a fence inside the native subset), ni-eval (new Function),
   // ni-ctor (a constructor function, carrying ni-dep), ni-bundled (not
   // compilable as shipped), ni-typed (native, also reached from ni-ctor).

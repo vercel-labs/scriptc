@@ -10,7 +10,10 @@ scriptc — TypeScript/JavaScript to native and WebAssembly executables (experim
 
 Usage:
   scriptc build <file.ts|.js> [options]     compile to an executable or source artifact
-  scriptc run <file.ts|.js> [options]       compile and run
+  scriptc run [options] <file.ts|.js> [args]
+                                            compile and run; everything after the
+                                            file is passed to the program, as with
+                                            node, so options go before the file
   scriptc coverage <file.ts|.js>            how much compiles statically, and why not
   scriptc coverage <file.ts|.js> --external-types <specifier=file.d.ts>
                                             type-resolve an embedder-provided module for analysis
@@ -90,7 +93,14 @@ $ scriptc run fib.ts
 832040
 ```
 
-`run` does not pass extra command-line arguments to the program. To pass arguments, build an executable and run it directly.
+Everything after the entry file is passed to the program, as with `node`: the program reads it from `process.argv[2]` on, including arguments that look like options and a `--`. scriptc's own options therefore go before the file, and a `--` before the file ends them.
+
+```console
+$ scriptc run --optimization dev hello.ts scriptc --strip
+hello, scriptc
+```
+
+`run` exits with the program's exit code. SIGTERM and SIGHUP sent to `run` go to the program, and so does SIGINT when `run` has no terminal. With a terminal on its standard input, output or error, `run` does not pass a SIGINT on: the terminal's interrupt key already reaches the program together with `run`, and a second one would make a program that counts interrupts quit early. A SIGINT sent to `run` alone from another process is indistinguishable from that and is not passed on either, so send SIGTERM to stop a `run` that has a terminal. When a signal kills the program, `run` exits with 128 plus the signal's number, and names the signal on stderr unless `run` itself was sent it. `run` prints the program's output only: the warnings and notes of a build appear with `scriptc build`.
 
 ## scriptc coverage
 
@@ -138,7 +148,7 @@ Serves the other commands as tools to an AI agent over the [Model Context Protoc
 
 Each command is one tool: `scriptc_build`, `scriptc_run`, `scriptc_coverage`, `scriptc_build_lib`, `scriptc_types_patch`, `scriptc_types_list`, `scriptc_cache_warm`, and `scriptc_merge_profiles`. A tool takes the command's arguments by name, with hyphens as underscores, such as `{ "file": "fib.ts", "npm_static": ["auto"], "keep_llvm": false }`, and runs that command as a child process of the same compiler. Relative paths resolve against the directory the server started in.
 
-`scriptc_build` and `scriptc_coverage` return the JSON diagnostics envelope of `--print=diagnostics`; the other tools return the command's exit status and output. `scriptc_run` runs the program with its stdin closed. The server runs at most four tool calls at once, keeps the first 8 MiB of each output stream, and stops a call's processes when the call is cancelled, runs longer than ten minutes, or the server receives SIGTERM or SIGINT. `scriptc_run` executes the program it compiles, so an agent connected to the server can run any code the signed-in user can.
+`scriptc_build` and `scriptc_coverage` return the JSON diagnostics envelope of `--print=diagnostics`; the other tools return the command's exit status and output. `scriptc_run` passes `args` to the program and runs it with its stdin closed. The server runs at most four tool calls at once, keeps the first 8 MiB of each output stream, and stops a call's processes when the call is cancelled, runs longer than ten minutes, or the server receives SIGTERM or SIGINT. `scriptc_run` executes the program it compiles, so an agent connected to the server can run any code the signed-in user can.
 
 ## Options
 

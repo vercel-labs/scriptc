@@ -3,6 +3,7 @@ import { appendFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCli } from "../cli/command.js";
+import { runProgram } from "../cli/run-program.js";
 import type { NativeCacheWarmProfile } from "../cli/host.js";
 import {
   selectNativeRuntimePack,
@@ -251,30 +252,17 @@ async function main(): Promise<number> {
       });
     },
     reinvoke: (args) => ({ file: process.execPath, args }),
-    run: async (binary) => {
+    run: async (binary, programArgs) => {
       const toolchain = getCompiler().toolchain;
-      let executable = binary;
-      const args: string[] = [];
-      if (toolchain.target.platform === "wasi") {
-        if (toolchain.wasiNodeRunner === undefined)
-          throw new Error("the WASI runner is missing from this installation");
-        executable = "node";
-        args.push("--no-warnings", toolchain.wasiNodeRunner, binary);
-      }
-      const result = spawnSync(executable, args, { stdio: "inherit" });
-      if (result.error) {
-        if (toolchain.target.platform === "wasi") {
-          throw new Error(
-            `could not start the Node.js WASI host: ${result.error.message}; running WASI modules requires Node.js 24 or newer on PATH; use scriptc build to compile without Node`,
-          );
-        }
-        throw new Error(result.error.message);
-      }
-      if (result.signal) {
-        process.stderr.write(`scriptc: program killed by ${result.signal}\n`);
-        return 1;
-      }
-      return result.status ?? 0;
+      if (toolchain.target.platform !== "wasi") return runProgram(binary, programArgs);
+      if (toolchain.wasiNodeRunner === undefined)
+        throw new Error("the WASI runner is missing from this installation");
+      return runProgram(
+        "node",
+        ["--no-warnings", toolchain.wasiNodeRunner, binary, ...programArgs],
+        (message) =>
+          `could not start the Node.js WASI host: ${message}; running WASI modules requires Node.js 24 or newer on PATH; use scriptc build to compile without Node`,
+      );
     },
   });
 }

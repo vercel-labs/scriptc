@@ -1,4 +1,4 @@
-  Node island ni-ctor@1.0.0   (would-be, report-only)
+  Node island ni-ctor@1.0.0
     path        tests/coverage-fixtures/node-islands/node_modules/ni-ctor
     class       object-model: needs a mutable object model
     decision    automatic (npm code outside the native subset)

@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
 import { readFile, rm } from "node:fs/promises";
 import { enableCompileCache } from "node:module";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { CLI_OPTIONS, USAGE } from "./usage.js";
+import { runProgram } from "./run-program.js";
+import { CLI_OPTIONS, programArgumentsStart, USAGE } from "./usage.js";
 
 // Node 24 can persist V8's compiled module bytecode. scriptc's CLI imports
 // the compiler and its lowering/backend graph before handling any command, so
@@ -42,8 +42,16 @@ async function tryFastPath(): Promise<number | null> {
   let parsed: ReturnType<
     typeof parseArgs<{ options: typeof CLI_OPTIONS; allowPositionals: true; allowNegative: true }>
   >;
+  // `scriptc run`: what follows the entry file is the program's, not parsed.
+  const argv = process.argv.slice(2);
+  const programStart = programArgumentsStart(argv);
   try {
-    parsed = parseArgs({ options: CLI_OPTIONS, allowPositionals: true, allowNegative: true });
+    parsed = parseArgs({
+      args: argv.slice(0, programStart),
+      options: CLI_OPTIONS,
+      allowPositionals: true,
+      allowNegative: true,
+    });
   } catch {
     return null; // main owns exact user-error wording
   }
@@ -208,17 +216,7 @@ async function tryFastPath(): Promise<number | null> {
     process.stdout.write(`${outPath}\n`);
     return 0;
   }
-  return new Promise<number>((resolveExit) => {
-    const child = spawn(outPath, [], { stdio: "inherit" });
-    child.on("exit", (code, signal) => {
-      if (signal) {
-        process.stderr.write(`scriptc: program killed by ${signal}\n`);
-        resolveExit(1);
-      } else {
-        resolveExit(code ?? 0);
-      }
-    });
-  });
+  return runProgram(outPath, argv.slice(programStart));
 }
 
 function hasNodeIslandFlags(

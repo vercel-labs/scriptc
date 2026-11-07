@@ -7,7 +7,7 @@ scriptc coverage tests/coverage-fixtures/node-islands-config-writes/main.ts
   npm package compilation:
     ni-config  refused (its shipped JS carries build-transform markers (bundled/transpiled dist))
 
-  Node islands   (would-be, report-only: the build is unchanged; --node-islands=auto)
+  Node islands   (a build runs these in Node where it cannot compile them natively; --node-islands=auto)
     packaging  ni-config@1.0.0
           SC2013: its shipped JS carries build-transform markers (bundled/transpiled dist)
     hint: scriptc coverage --explain-island=<package> lists every reason

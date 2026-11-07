@@ -423,11 +423,11 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
       {
         term: "--node-islands <auto|explicit|off>",
         help: [
-          "Node island policy (default: auto): npm packages outside",
-          "the native subset run in Node automatically; explicit",
-          "allows only marked islands; off allows none. REPORT-ONLY",
-          "in this version: coverage reports the islands a build",
-          "would choose; builds compile as before",
+          "Node island policy (default: auto): a build runs npm",
+          "packages it cannot compile natively in Node and names",
+          "each in an SC8001 note; explicit runs only marked",
+          "packages and modules in Node; off runs none, so those",
+          "packages are errors",
         ],
       },
     ],
@@ -438,8 +438,7 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
         term: "--node-island <pkg-or-path>",
         help: [
           "mark an npm package or one of your modules (a path or",
-          "glob) to run in a Node island (repeatable, comma lists;",
-          "report-only)",
+          "glob) to run in a Node island (repeatable, comma lists)",
         ],
       },
     ],
@@ -450,14 +449,20 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
         term: "--native <pkg>",
         help: [
           "require an npm package to compile natively; outside the",
-          "native subset it is SC8003 (repeatable; report-only)",
+          "native subset it is SC8003 (repeatable)",
         ],
       },
     ],
   },
   node: {
     entries: [
-      { term: "--node <path>", help: ["the node executable Node islands use (report-only)"] },
+      {
+        term: "--node <path>",
+        help: [
+          "accepted and ignored: Node islands run in the libnode",
+          "pack (--libnode), not in a node executable",
+        ],
+      },
     ],
   },
   "explain-island": {
@@ -465,7 +470,7 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
       {
         term: "--explain-island <pkg>",
         help: [
-          "coverage only: why a package would run in a Node island,",
+          "coverage only: why a package runs in a Node island,",
           "with the first reason per module, the native import",
           "sites and the packages inside its closure",
         ],
@@ -547,6 +552,14 @@ const ENTRY: CliPositional = {
   variadic: false,
 };
 
+/** What follows the entry file of `scriptc run`. */
+const PROGRAM_ARGUMENTS: CliPositional = {
+  name: "args",
+  summary: "the arguments the program receives, from process.argv[2] on",
+  required: false,
+  variadic: true,
+};
+
 const NODE_ISLAND_OPTIONS: readonly CliOptionName[] = [
   "node-islands",
   "node-island",
@@ -603,8 +616,17 @@ export const CLI_COMMANDS: readonly CliCommand[] = [
   {
     name: "run",
     argv: ["run"],
-    usage: [{ term: "scriptc run <file.ts|.js> [options]", help: ["compile and run"] }],
-    positionals: [ENTRY],
+    usage: [
+      {
+        term: "scriptc run [options] <file.ts|.js> [args]",
+        help: [
+          "compile and run; everything after the",
+          "file is passed to the program, as with",
+          "node, so options go before the file",
+        ],
+      },
+    ],
+    positionals: [ENTRY, PROGRAM_ARGUMENTS],
     options: EXECUTABLE_OPTIONS,
     requiredOptions: [],
     diagnostics: false,
@@ -811,3 +833,54 @@ export const USAGE =
     Object.values(CLI_OPTION_DOCS).flatMap((doc) => doc.entries),
     OPTION_HELP_COLUMN,
   );
+
+/** How the argument parser reads each option, by name. */
+const OPTION_CONFIGS: Readonly<Record<string, { type: string; short?: string }>> = CLI_OPTIONS;
+
+/** Every spelling `--<name>` accepts: the option names, and `no-<name>` for the boolean ones. */
+export function cliOptionSpellings(): string[] {
+  const spellings: string[] = [];
+  for (const [name, option] of Object.entries(OPTION_CONFIGS)) {
+    spellings.push(name);
+    if (option.type === "boolean") spellings.push(`no-${name}`);
+  }
+  return spellings;
+}
+
+/** Whether `arg`, an option, takes the next argument as its value: a string option written
+ * without `=`, or a group of short options that ends in one. */
+function takesNextArgument(arg: string): boolean {
+  if (arg.startsWith("--")) {
+    return !arg.includes("=") && OPTION_CONFIGS[arg.slice(2)]?.type === "string";
+  }
+  const isStringShort = (letter: string): boolean =>
+    Object.values(OPTION_CONFIGS).some(
+      (option) => option.short === letter && option.type === "string",
+    );
+  // `-o<value>` carries its value.
+  if (arg.length > 2 && isStringShort(arg.charAt(1))) return false;
+  return isStringShort(arg.charAt(arg.length - 1));
+}
+
+/** The index in `args` where the arguments of the program `scriptc run` starts begin; the
+ * arguments before it are scriptc's own. As with `node`, everything after the entry file is the
+ * program's, including options and a `--`. scriptc's options come before the entry, and a `--`
+ * before it ends them. Any other command has no program arguments: the result is `args.length`. */
+export function programArgumentsStart(args: readonly string[]): number {
+  let optionsEnded = false;
+  let commandSeen = false;
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]!;
+    if (!optionsEnded && arg === "--") {
+      optionsEnded = true;
+    } else if (!optionsEnded && arg.length > 1 && arg.startsWith("-")) {
+      if (takesNextArgument(arg)) index++;
+    } else if (!commandSeen) {
+      if (arg !== "run") break;
+      commandSeen = true;
+    } else {
+      return index + 1;
+    }
+  }
+  return args.length;
+}

@@ -88,7 +88,7 @@ export interface CoverageInput {
   /** The WebAssembly modules the build can see (wasm/discover.ts): their
    * size, validity and the proposals they use. */
   wasmModules?: WasmModuleReport[];
-  /** Node islands, report-only: the packages and user modules that would
+  /** Node islands: the packages and user modules that would
    * run in a Node island, and why. Present when there is something to
    * report. */
   nodeIslands?: NodeIslandReport;
@@ -264,8 +264,8 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
     out.push("");
   }
 
-  // Node islands (report-only): what would run in Node, gap islands
-  // first (DESIGN.md §1.3: a gap island is compiler work an island hides).
+  // Node islands: what is outside the native subset, gap islands first
+  // (DESIGN.md §1.3: a gap island is compiler work an island hides).
   if (input.nodeIslands !== undefined && hasNodeIslandDecisions(input.nodeIslands)) {
     renderNodeIslands(
       input.nodeIslands,
@@ -566,8 +566,8 @@ export function coveragePasses(input: CoverageInput, failOn?: CoverageFailOn): b
   if (failOn === "dynamic" && (input.performance ?? []).some((d) => !isDynamicSlotCode(d.code)))
     return false;
   if (failOn === "dynamic-slots" && (input.dynamicSlots?.length ?? 0) > 0) return false;
-  // The Node island gates (report-only islands count: they are what a
-  // build would choose). Every island evaluates eagerly until deferred
+  // The Node island gates (every reported island counts, including one a
+  // build still compiles natively). Every island evaluates eagerly until deferred
   // evaluation lands, so eager-node-islands equals node-islands for now.
   // Would-be policy errors (SC8002, SC8003) fail every island gate.
   const islands = input.nodeIslands;
@@ -936,9 +936,20 @@ export function renderExplainDynamic(
   return out.join("\n");
 }
 
-/* ── Node islands (report-only) ───────────────────────────────────────── */
+/* ── Node islands ─────────────────────────────────────────────────────── */
 
 const ISLAND_REASONS_SHOWN = 1;
+
+/** What a build does with the packages and modules the section lists, per
+ * policy (executable/prepare.ts's decideNodeIslands). The list is the
+ * detector's: under `auto` it can name a package a build still compiles
+ * natively, so the sentence says which of them a build runs in Node (it
+ * names each one in an SC8001 note). */
+function islandPolicyEffect(policy: NodeIslandReport["policy"]): string {
+  if (policy === "auto") return "a build runs these in Node where it cannot compile them natively";
+  if (policy === "explicit") return "a build runs only marked packages and modules in Node";
+  return "a build runs nothing in Node";
+}
 
 function islandName(i: { package: string; version: string | null }): string {
   return i.version === null ? i.package : `${i.package}@${i.version}`;
@@ -953,7 +964,7 @@ function renderNodeIslands(
 ): void {
   const n = report.islands.length + report.userModules.length;
   out.push(
-    `  ${c(BOLD, "Node islands")}   ${c(DIM, `(would-be, report-only: the build is unchanged; --node-islands=${report.policy})`)}`,
+    `  ${c(BOLD, "Node islands")}   ${c(DIM, `(${islandPolicyEffect(report.policy)}; --node-islands=${report.policy})`)}`,
   );
   if (n === 0) out.push(`    ${c(DIM, "none")}`);
   const widest = Math.max(0, ...report.islands.map((i) => i.class.length));
@@ -1012,7 +1023,7 @@ function renderNodeIslands(
   }
 }
 
-/** `scriptc coverage --explain-island=<package>`: why a package would run
+/** `scriptc coverage --explain-island=<package>`: why a package runs
  * in a Node island — every module's first reason, the native import sites
  * (the boundary), the packages inside its closure, and what later
  * milestones decide. */
@@ -1049,9 +1060,7 @@ export function renderExplainIsland(
     return out.join("\n");
   }
   for (const island of matches) {
-    out.push(
-      `  ${c(BOLD, "Node island")} ${islandName(island)}   ${c(DIM, "(would-be, report-only)")}`,
-    );
+    out.push(`  ${c(BOLD, "Node island")} ${islandName(island)}`);
     if (island.path !== null) out.push(`    path        ${displayPath(island.path, opts.root)}`);
     out.push(`    class       ${island.class}: ${classDescription(island.class)}`);
     out.push(

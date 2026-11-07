@@ -43,6 +43,13 @@ $ scriptc run hello.ts
 hello, world
 ```
 
+Everything after the file name is passed to the program, as with `node`:
+
+```console
+$ scriptc run hello.ts scriptc
+hello, scriptc
+```
+
 `scriptc build` writes an executable instead. It prints the path of the file it writes; the examples in these docs discard that line with `>/dev/null`:
 
 ```console
@@ -51,7 +58,7 @@ $ ./hello scriptc
 hello, scriptc
 ```
 
-The executable runs on its own, without Node.js or scriptc installed. `scriptc run` does not pass extra arguments to the program, so build an executable when you need them.
+The executable runs on its own, without Node.js or scriptc installed.
 
 On Windows, build `hello.exe` and run it with `.\hello.exe`.
 

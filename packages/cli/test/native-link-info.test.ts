@@ -44,7 +44,7 @@ test("print option validation is explicit", async () => {
   await expect(
     cli(["build", entry, "--print=native-link-info", "--emit=llvm"]),
   ).rejects.toMatchObject({ stderr: expect.stringContaining("requires --emit=obj") });
-  await expect(cli(["run", entry, "--print=native-link-info"])).rejects.toMatchObject({
+  await expect(cli(["run", "--print=native-link-info", entry])).rejects.toMatchObject({
     stderr: expect.stringContaining("is a build option"),
   });
 });

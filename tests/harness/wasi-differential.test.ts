@@ -591,10 +591,10 @@ ${[0, 1, 2]
       loader,
       join(repoRoot, "packages/cli/src/main.ts"),
       "run",
-      entry,
       "--no-keep-llvm",
       "-o",
       join(outDir, "program.wasm"),
+      entry,
     ]);
     const node = await execFileAsync(process.execPath, [entry]);
     expect(result.stdout).toBe(node.stdout);

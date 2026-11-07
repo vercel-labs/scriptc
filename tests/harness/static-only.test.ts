@@ -10,7 +10,7 @@ const root = join(import.meta.dirname, "../..");
 test.each(["build", "run", "coverage"])("%s rejects the retired --dynamic option", (command) => {
   const result = spawnSync(
     process.execPath,
-    ["--import", "tsx", join(root, "packages/cli/src/main.ts"), command, "main.ts", "--dynamic"],
+    ["--import", "tsx", join(root, "packages/cli/src/main.ts"), command, "--dynamic", "main.ts"],
     { cwd: root, encoding: "utf8" },
   );
   expect(result.status).toBe(1);

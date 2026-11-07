@@ -36,7 +36,10 @@ export interface CliHost {
   mergeProfiles: (outputPath: string, inputPaths: string[], sparse: boolean) => Promise<void>;
   /** `scriptc types patch|list` (frontend/type-patches/command.ts). */
   typePatches: (request: TypePatchCommandRequest) => Promise<TypePatchCommandResult>;
-  run: (binary: string) => Promise<number>;
+  /** Runs the built program with `args` as its arguments and the caller's stdio, and resolves
+   * to the exit status `scriptc run` ends with: the program's own, or 128 plus the signal's
+   * number when a signal killed it. */
+  run: (binary: string, args: readonly string[]) => Promise<number>;
   /** The executable and arguments that run this same compiler with the command-line arguments
    * `args`; `scriptc mcp` runs each tool call this way. */
   reinvoke: (args: string[]) => { file: string; args: string[] };

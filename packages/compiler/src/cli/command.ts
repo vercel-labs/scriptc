@@ -41,7 +41,13 @@ import type { CliHost, NativeCacheWarmProfile } from "./host.js";
 import { resolveOutputOptions } from "./output-options.js";
 import { selectOutputPaths } from "./paths.js";
 import { serveMcp } from "./mcp.js";
-import { CLI_OPTIONS, USAGE } from "./usage.js";
+import {
+  CLI_COMMANDS,
+  CLI_OPTIONS,
+  cliOptionSpellings,
+  programArgumentsStart,
+  USAGE,
+} from "./usage.js";
 
 /* The exit discipline: NEVER process.exit() after writing output. stdout/
  * stderr to a PIPE are async streams — process.exit() drops whatever libuv
@@ -61,7 +67,72 @@ function fail(msg: string): never {
   throw new CliExit(1);
 }
 
-/** parseArgs, with its throw turned into the CLI's own one-line error.
+/** A command line scriptc cannot act on: the message, then where the help
+ * is. The help itself is some 200 lines, and printing it after the message
+ * scrolls the message off the screen. */
+function usageError(msg: string): never {
+  fail(`${msg}\nRun 'scriptc --help' for the commands and options.`);
+}
+
+/** The number of edits that turn `a` into `b`: a character inserted, removed
+ * or replaced, or two neighbours swapped. */
+function editDistance(a: string, b: string): number {
+  // rows[i][j] is the distance between the first i characters of a and the
+  // first j of b.
+  const rows: number[][] = [];
+  for (let i = 0; i <= a.length; i++) {
+    const row: number[] = [i];
+    for (let j = 1; j <= b.length; j++) {
+      if (i === 0) {
+        row.push(j);
+        continue;
+      }
+      const same = a.charAt(i - 1) === b.charAt(j - 1);
+      let best = Math.min(
+        rows[i - 1]![j]! + 1,
+        row[j - 1]! + 1,
+        rows[i - 1]![j - 1]! + (same ? 0 : 1),
+      );
+      if (
+        i > 1 &&
+        j > 1 &&
+        a.charAt(i - 1) === b.charAt(j - 2) &&
+        a.charAt(i - 2) === b.charAt(j - 1)
+      )
+        best = Math.min(best, rows[i - 2]![j - 2]! + 1);
+      row.push(best);
+    }
+    rows.push(row);
+  }
+  return rows[a.length]![b.length]!;
+}
+
+/** The candidate a mistyped `name` most likely meant: the closest one within
+ * a third of the name's length in edits, or else the only candidate that
+ * `name` abbreviates or extends. Null when nothing is close. */
+function nearest(name: string, candidates: readonly string[]): string | null {
+  let best: string | null = null;
+  let bestDistance = Math.max(1, Math.floor(name.length / 3)) + 1;
+  for (const candidate of candidates) {
+    const distance = editDistance(name, candidate);
+    if (distance < bestDistance) {
+      best = candidate;
+      bestDistance = distance;
+    }
+  }
+  if (best !== null || name.length < 3) return best;
+  const related = candidates.filter(
+    (candidate) => candidate.startsWith(name) || name.startsWith(candidate),
+  );
+  return related.length === 1 ? related[0]! : null;
+}
+
+/** `--explain-dynamic` takes an optional value: alone it lists every unit. */
+function withOptionalValues(args: readonly string[]): string[] {
+  return args.map((arg) => (arg === "--explain-dynamic" ? "--explain-dynamic=" : arg));
+}
+
+/** parseArgs, with its throw turned into the CLI's own short error.
  * Unparseable arguments are a USER error — an unknown flag or a missing
  * value used to reach the top level as an uncaught ERR_PARSE_ARGS_* and
  * print a Node stack trace over the user's terminal. */
@@ -70,11 +141,9 @@ function parseCli(
 ): ReturnType<
   typeof parseArgs<{ options: typeof CLI_OPTIONS; allowPositionals: true; allowNegative: true }>
 > {
-  // `--explain-dynamic` takes an optional value: alone it lists every unit.
-  const normalized = args.map((arg) => (arg === "--explain-dynamic" ? "--explain-dynamic=" : arg));
   try {
     return parseArgs({
-      args: normalized,
+      args,
       options: CLI_OPTIONS,
       allowPositionals: true,
       allowNegative: true,
@@ -82,15 +151,31 @@ function parseCli(
   } catch (err) {
     // parseArgs appends a paragraph about `--` and positionals to the
     // unknown-option message; the first sentence is the part that names
-    // what was wrong, and USAGE below already covers what was meant.
+    // what was wrong.
     const raw = err instanceof Error ? err.message : String(err);
     const msg = raw.split("\n")[0]!.split(". ")[0]!;
-    fail(`scriptc: ${msg}\n\n${USAGE}`);
+    const unknown = /^Unknown option '--([^'=]+)/.exec(msg);
+    const meant = unknown === null ? null : nearest(unknown[1]!, cliOptionSpellings());
+    usageError(`scriptc: ${msg}${meant === null ? "" : `\n  did you mean '--${meant}'?`}`);
   }
 }
 
+/** What an unknown command most likely meant: a file to run, or a command
+ * spelled differently. */
+function unknownCommandHint(command: string): string {
+  if (/\.(?:[cm]?[jt]s)$/.test(command))
+    return `\n  to compile and run a file: scriptc run ${command}`;
+  const commands = [...new Set(CLI_COMMANDS.map((candidate) => candidate.argv[0]!)), "mcp"];
+  const meant = nearest(command, commands);
+  return meant === null ? "" : `\n  did you mean '${meant}'?`;
+}
+
 async function main(args: string[], host: CliHost): Promise<number> {
-  const { values, positionals } = parseCli(args);
+  // `scriptc run`: what follows the entry file is the program's, as written.
+  const ownArgs = withOptionalValues(args);
+  const programStart = programArgumentsStart(ownArgs);
+  const programArgs = args.slice(programStart);
+  const { values, positionals } = parseCli(ownArgs.slice(0, programStart));
   const externalTypeArgs = values["external-types"] ?? [];
 
   if (values.version) {
@@ -105,12 +190,12 @@ async function main(args: string[], host: CliHost): Promise<number> {
 
   const [command, inputArg] = positionals;
   if (command === "mcp") {
-    if (args.length !== 1) fail(`scriptc mcp takes no arguments\n\n${USAGE}`);
+    if (args.length !== 1) usageError(`scriptc mcp takes no arguments`);
     return serveMcp(host);
   }
   if (command === "cache") {
     if (inputArg !== "warm")
-      fail(`unknown cache command "${inputArg ?? ""}" (supported: warm)\n\n${USAGE}`);
+      usageError(`unknown cache command "${inputArg ?? ""}" (supported: warm)`);
     if (
       values.lib ||
       values.backend !== undefined ||
@@ -141,13 +226,13 @@ async function main(args: string[], host: CliHost): Promise<number> {
       hasNodeIslandFlags(values) ||
       !values["keep-llvm"]
     ) {
-      fail(
-        `scriptc cache warm takes only native optimization/sanitizer options and profile names\n\n${USAGE}`,
+      usageError(
+        `scriptc cache warm takes only native optimization/sanitizer options and profile names`,
       );
     }
     const optimization = values.optimization;
     if (optimization !== undefined && !isNativeOptimization(optimization)) {
-      fail(`unknown optimization "${optimization}" (supported: release, dev, speed)\n\n${USAGE}`);
+      usageError(`unknown optimization "${optimization}" (supported: release, dev, speed)`);
     }
     const profileArgs = positionals.slice(2);
     const knownProfiles = new Set<NativeCacheWarmProfile>(["runtime", "tls"]);
@@ -205,8 +290,8 @@ async function main(args: string[], host: CliHost): Promise<number> {
       hasNodeIslandFlags(values) ||
       !values["keep-llvm"];
     if (values.out === undefined || inputs.length === 0 || others) {
-      fail(
-        `scriptc merge-profiles takes -o <out.profdata>, optionally --sparse, and one or more profiles\n\n${USAGE}`,
+      usageError(
+        `scriptc merge-profiles takes -o <out.profdata>, optionally --sparse, and one or more profiles`,
       );
     }
     const outputPath = resolve(values.out);
@@ -244,8 +329,8 @@ async function main(args: string[], host: CliHost): Promise<number> {
     ) {
       request = { action: "list", cwd: process.cwd() };
     } else {
-      fail(
-        `scriptc types takes "patch <package> <selector> <type>" (with --range or --dry-run) or "list"\n\n${USAGE}`,
+      usageError(
+        `scriptc types takes "patch <package> <selector> <type>" (with --range or --dry-run) or "list"`,
       );
     }
     const result = await host.typePatches(request);
@@ -254,10 +339,10 @@ async function main(args: string[], host: CliHost): Promise<number> {
     return result.exitCode;
   }
   if (values.range !== undefined || values["dry-run"])
-    fail(`--range and --dry-run are scriptc types patch options\n\n${USAGE}`);
-  if (values.sparse) fail(`--sparse is a merge-profiles option\n\n${USAGE}`);
+    usageError(`--range and --dry-run are scriptc types patch options`);
+  if (values.sparse) usageError(`--sparse is a merge-profiles option`);
   if (command !== "build" && command !== "run" && command !== "coverage") {
-    fail(`unknown command "${command}"\n\n${USAGE}`);
+    usageError(`unknown command "${command}"${unknownCommandHint(command ?? "")}`);
   }
   if (values.lib) {
     // LIBRARY mode: the profile names the entry module and pins the
@@ -267,9 +352,9 @@ async function main(args: string[], host: CliHost): Promise<number> {
     // eligibility bar runs automatically, eligible packages compile into
     // the graph, ineligible ones refuse with SC4013).
     if (command !== "build")
-      fail(`--lib is a build mode (scriptc build --lib --profile <p.json>)\n\n${USAGE}`);
+      usageError(`--lib is a build mode (scriptc build --lib --profile <p.json>)`);
     const profileArg = values.profile;
-    if (!profileArg) fail(`scriptc build --lib needs --profile <profile.json>\n\n${USAGE}`);
+    if (!profileArg) usageError(`scriptc build --lib needs --profile <profile.json>`);
     if (inputArg) {
       fail("scriptc build --lib takes no input positional: the profile names the entry module");
     }
@@ -333,97 +418,95 @@ async function main(args: string[], host: CliHost): Promise<number> {
       "scriptc: warning: --emit-ir is deprecated; use --emit=ir for IR as the primary output\n",
     );
   }
-  if (!inputArg) fail(`missing input file\n\n${USAGE}`);
+  if (!inputArg) usageError(`missing input file`);
   const input = resolve(inputArg);
   if (command === "coverage" && values.emit !== undefined) {
-    fail(`--emit is a build/run option\n\n${USAGE}`);
+    usageError(`--emit is a build/run option`);
   }
   if (command === "coverage" && values.strip) {
-    fail(`--strip is a build/run option\n\n${USAGE}`);
+    usageError(`--strip is a build/run option`);
   }
   if (command === "coverage" && values.static) {
-    fail(`--static is a build/run option\n\n${USAGE}`);
+    usageError(`--static is a build/run option`);
   }
   if (command === "coverage" && values["target-cpu"] !== undefined) {
-    fail(`--target-cpu is a build/run option\n\n${USAGE}`);
+    usageError(`--target-cpu is a build/run option`);
   }
   if (command === "coverage" && values["cpu-dispatch"] !== undefined) {
-    fail(`--cpu-dispatch is a build/run option\n\n${USAGE}`);
+    usageError(`--cpu-dispatch is a build/run option`);
   }
   if (command === "coverage" && values["detached-exit"]) {
-    fail(`--detached-exit is a build/run option\n\n${USAGE}`);
+    usageError(`--detached-exit is a build/run option`);
   }
   if (command === "coverage" && values["stdout-buffering"]) {
-    fail(`--stdout-buffering is a build/run option\n\n${USAGE}`);
+    usageError(`--stdout-buffering is a build/run option`);
   }
   if (command === "coverage" && values["large-pages"]) {
-    fail(`--large-pages is a build/run option\n\n${USAGE}`);
+    usageError(`--large-pages is a build/run option`);
   }
   if (command === "coverage" && values.exceptions !== undefined) {
-    fail(`--exceptions is a build/run option\n\n${USAGE}`);
+    usageError(`--exceptions is a build/run option`);
   }
   const exceptions = values.exceptions;
   if (exceptions !== undefined && exceptions !== "common" && exceptions !== "rare") {
-    fail(`unknown exception frequency "${exceptions}" (supported: common, rare)\n\n${USAGE}`);
+    usageError(`unknown exception frequency "${exceptions}" (supported: common, rare)`);
   }
   if (command === "coverage" && values["profile-generate"] !== undefined) {
-    fail(`--profile-generate is a build/run option\n\n${USAGE}`);
+    usageError(`--profile-generate is a build/run option`);
   }
   if (command === "coverage" && values["profile-use"] !== undefined) {
-    fail(`--profile-use is a build/run option\n\n${USAGE}`);
+    usageError(`--profile-use is a build/run option`);
   }
   if (
     values.print !== undefined &&
     values.print !== "native-link-info" &&
     values.print !== "diagnostics"
   ) {
-    fail(
-      `unknown print kind "${values.print}" (supported: native-link-info, diagnostics)\n\n${USAGE}`,
-    );
+    usageError(`unknown print kind "${values.print}" (supported: native-link-info, diagnostics)`);
   }
   const printNativeLinkInfo = values.print === "native-link-info";
   const printDiagnostics = values.print === "diagnostics";
   if (printDiagnostics && command === "run") {
-    fail(`--print=diagnostics is a build/coverage option\n\n${USAGE}`);
+    usageError(`--print=diagnostics is a build/coverage option`);
   }
   const failOnRaw = values["fail-on"];
   if (failOnRaw !== undefined && !(COVERAGE_FAIL_ON as readonly string[]).includes(failOnRaw)) {
-    fail(
-      `unknown --fail-on value "${failOnRaw}" (supported: ${COVERAGE_FAIL_ON.join(", ")})\n\n${USAGE}`,
+    usageError(
+      `unknown --fail-on value "${failOnRaw}" (supported: ${COVERAGE_FAIL_ON.join(", ")})`,
     );
   }
   // --no-dynamic-tier-warning leaves out SC6101 (diagnostics/dynamic-tier.ts).
   const dynamicTierWarning = values["dynamic-tier-warning"] !== false;
   if (failOnRaw === "dynamic" && !dynamicTierWarning) {
-    fail(`--fail-on=dynamic checks the warning --no-dynamic-tier-warning leaves out\n\n${USAGE}`);
+    usageError(`--fail-on=dynamic checks the warning --no-dynamic-tier-warning leaves out`);
   }
   if (failOnRaw !== undefined && command !== "coverage") {
-    fail(`--fail-on is a coverage option (a build already fails on blockers)\n\n${USAGE}`);
+    usageError(`--fail-on is a coverage option (a build already fails on blockers)`);
   }
   const failOn = failOnRaw as CoverageFailOn | undefined;
   const tierRaw = values.tier;
   if (tierRaw !== undefined && !(TIER_MODES as readonly string[]).includes(tierRaw)) {
-    fail(`unknown --tier value "${tierRaw}" (supported: ${TIER_MODES.join(", ")})\n\n${USAGE}`);
+    usageError(`unknown --tier value "${tierRaw}" (supported: ${TIER_MODES.join(", ")})`);
   }
   const tier = tierRaw as TierMode | undefined;
   const explainDynamic = values["explain-dynamic"];
   if (explainDynamic !== undefined && command !== "coverage") {
-    fail(`--explain-dynamic is a coverage option\n\n${USAGE}`);
+    usageError(`--explain-dynamic is a coverage option`);
   }
   const explainIsland = values["explain-island"];
   if (explainIsland !== undefined && command !== "coverage") {
-    fail(`--explain-island is a coverage option\n\n${USAGE}`);
+    usageError(`--explain-island is a coverage option`);
   }
-  if (explainIsland === "") fail(`--explain-island needs a package name\n\n${USAGE}`);
+  if (explainIsland === "") usageError(`--explain-island needs a package name`);
   if (values["strict-user-js"] && command !== "coverage") {
-    fail(`--strict-user-js is a coverage option\n\n${USAGE}`);
+    usageError(`--strict-user-js is a coverage option`);
   }
-  // The Node island policy's command-line half. Report-only: build and run
-  // validate it, coverage reports the islands it would choose.
+  // The Node island policy's command-line half: build and run decide their
+  // islands with it, and coverage reports them.
   const islandMode = values["node-islands"];
   if (islandMode !== undefined && !(NODE_ISLANDS_MODES as readonly string[]).includes(islandMode)) {
-    fail(
-      `unknown --node-islands value "${islandMode}" (supported: ${NODE_ISLANDS_MODES.join(", ")})\n\n${USAGE}`,
+    usageError(
+      `unknown --node-islands value "${islandMode}" (supported: ${NODE_ISLANDS_MODES.join(", ")})`,
     );
   }
   const listValues = (raw: string[] | undefined): string[] =>
@@ -435,9 +518,9 @@ async function main(args: string[], host: CliHost): Promise<number> {
   const nativeArgs = listValues(values.native);
   for (const name of nativeArgs) {
     if (islandArgs.includes(name))
-      fail(`--native=${name} and --node-island=${name} contradict each other\n\n${USAGE}`);
+      usageError(`--native=${name} and --node-island=${name} contradict each other`);
   }
-  if (values.node === "") fail(`--node needs the path of a node executable\n\n${USAGE}`);
+  if (values.node === "") usageError(`--node needs the path of a node executable`);
   const nodeIslands: NodeIslandOptions | undefined =
     islandMode === undefined &&
     islandArgs.length === 0 &&
@@ -453,13 +536,13 @@ async function main(args: string[], host: CliHost): Promise<number> {
           ...(values["strict-user-js"] ? { strictUserJs: true } : {}),
         };
   if (printNativeLinkInfo && command !== "build") {
-    fail(`--print=native-link-info is a build option\n\n${USAGE}`);
+    usageError(`--print=native-link-info is a build option`);
   }
   if (printNativeLinkInfo && values.emit !== undefined && values.emit !== "obj") {
-    fail(`--print=native-link-info requires --emit=obj\n\n${USAGE}`);
+    usageError(`--print=native-link-info requires --emit=obj`);
   }
   if (externalTypeArgs.length > 0 && command !== "coverage") {
-    fail(`--external-types is a coverage-only option\n\n${USAGE}`);
+    usageError(`--external-types is a coverage-only option`);
   }
   const externalTypes: Record<string, string> = Object.create(null) as Record<string, string>;
   for (const mapping of externalTypeArgs) {
@@ -494,16 +577,16 @@ async function main(args: string[], host: CliHost): Promise<number> {
   }
   const wasmArgs = values.wasm ?? [];
   if (wasmArgs.length > 0 && command !== "coverage") {
-    fail(`--wasm is a coverage-only option\n\n${USAGE}`);
+    usageError(`--wasm is a coverage-only option`);
   }
   const wasmFiles = wasmArgs.map((file) => resolve(file));
   const ffiProfilePath = values.ffi !== undefined ? resolve(values.ffi) : undefined;
   if (values.backend !== undefined && values.backend !== "llvm") {
-    fail(`unknown backend "${values.backend}" (supported: llvm)\n\n${USAGE}`);
+    usageError(`unknown backend "${values.backend}" (supported: llvm)`);
   }
   const optimization = values.optimization;
   if (optimization !== undefined && !isNativeOptimization(optimization)) {
-    fail(`unknown optimization "${optimization}" (supported: release, dev, speed)\n\n${USAGE}`);
+    usageError(`unknown optimization "${optimization}" (supported: release, dev, speed)`);
   }
   const windowsSubsystem = values["windows-subsystem"];
   if (
@@ -511,15 +594,15 @@ async function main(args: string[], host: CliHost): Promise<number> {
     windowsSubsystem !== "console" &&
     windowsSubsystem !== "gui"
   ) {
-    fail(`unknown Windows subsystem "${windowsSubsystem}" (supported: console, gui)\n\n${USAGE}`);
+    usageError(`unknown --windows-subsystem value "${windowsSubsystem}" (supported: console, gui)`);
   }
   if (windowsSubsystem !== undefined && command === "coverage") {
-    fail(`--windows-subsystem is only supported for executable builds\n\n${USAGE}`);
+    usageError(`--windows-subsystem is only supported for executable builds`);
   }
   const targetCpuOption = values["target-cpu"];
   if (targetCpuOption !== undefined && !isTargetCpuOption(targetCpuOption)) {
-    fail(
-      `unknown target CPU "${targetCpuOption}" (supported: ${TARGET_CPU_OPTIONS.join(", ")})\n\n${USAGE}`,
+    usageError(
+      `unknown target CPU "${targetCpuOption}" (supported: ${TARGET_CPU_OPTIONS.join(", ")})`,
     );
   }
   let targetCpu: TargetCpu | undefined = targetCpuOption === "native" ? undefined : targetCpuOption;
@@ -554,7 +637,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
           ...(windowsSubsystem === undefined ? {} : { windowsSubsystem }),
           ...(values.ffi === undefined ? {} : { ffi: values.ffi }),
         });
-  if (output !== null && !output.ok) fail(`${output.message}\n\n${USAGE}`);
+  if (output !== null && !output.ok) usageError(`${output.message}`);
   const backend = output === null ? undefined : output.backend;
 
   // --npm-static: repeatable and comma-splittable; the literal "auto"
@@ -567,11 +650,21 @@ async function main(args: string[], host: CliHost): Promise<number> {
   let npmStatic: string[] | "auto" | undefined;
   if (npmStaticRaw.includes("auto")) {
     if (npmStaticRaw.length > 1)
-      fail(`--npm-static auto cannot be combined with package names\n\n${USAGE}`);
+      usageError(`--npm-static auto cannot be combined with package names`);
     npmStatic = "auto";
   } else if (npmStaticRaw.length > 0) {
     npmStatic = npmStaticRaw;
   }
+
+  // The frontend cannot load a missing entry and says so with an internal
+  // error; a file that is not there is the user's to fix, in one line.
+  let entryIsFile = false;
+  try {
+    entryIsFile = statSync(input).isFile();
+  } catch {
+    fail(`scriptc: entry file not found: ${input}`);
+  }
+  if (!entryIsFile) fail(`scriptc: entry is not a file: ${input}`);
 
   // --provenance-sources resolves BEFORE the program loads (tsgo needs the
   // source "paths" at creation): attestations and source trees fetch (or
@@ -643,7 +736,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
 
   if (output === null || !output.ok) throw new Error("internal output-option state");
   if (windowsSubsystem !== undefined && host.sourceTargetPlatform() !== "win32") {
-    fail(`--windows-subsystem requires a Windows executable target\n\n${USAGE}`);
+    usageError(`--windows-subsystem requires a Windows executable target`);
   }
   const { outDir, outPath } = selectOutputPaths(
     input,
@@ -782,7 +875,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
   const binary = await build();
 
   if (command === "run") {
-    return host.run(binary);
+    return host.run(binary, programArgs);
   }
 
   if (printDiagnostics) {

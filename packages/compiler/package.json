@@ -23,6 +23,7 @@
     "./cli/host": "./dist/cli/host.js",
     "./cli/paths": "./dist/cli/paths.js",
     "./cli/output-options": "./dist/cli/output-options.js",
+    "./cli/run-program": "./dist/cli/run-program.js",
     "./cli/usage": "./dist/cli/usage.js",
     "./cli/wasi-runner": "./dist/cli/wasi-runner.js"
   },

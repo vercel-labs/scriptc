@@ -22,10 +22,10 @@
  *     }
  *   }
  *
- * Node islands are report-only in this version: the policy decides which
- * packages and modules WOULD run in Node, and coverage reports it, but code
- * generation does not change. Other keys of the `scriptc` object are left
- * to their own readers. */
+ * The Node island policy decides which packages and modules run in Node: a
+ * build compiles them out of the native program and loads them in its Node
+ * island (executable/prepare.ts), and coverage reports the decision. Other
+ * keys of the `scriptc` object are left to their own readers. */
 import { dirname, join, resolve } from "node:path";
 import { projectConfigDiag, type ScrDiagnostic } from "./diagnostics/diagnostic.js";
 import { trackedFileExists, trackedReadFile } from "./frontend/input-tracker.js";

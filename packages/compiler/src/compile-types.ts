@@ -260,8 +260,8 @@ export interface AnalyzeOptions {
   /** `--wasm <file>`: WebAssembly module files the program loads that its
    * sources do not name (absolute paths); reported with the discovered ones. */
   wasm?: readonly string[];
-  /** The Node island policy's command-line half (report-only: coverage
-   * reports which packages and modules would run in a Node island). */
+  /** The Node island policy's command-line half: which packages and
+   * modules the build runs in a Node island. */
   nodeIslands?: NodeIslandOptions;
 }
 

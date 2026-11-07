@@ -27,6 +27,7 @@ import { PoisonError, newFnCtx, type Lowerer } from "./lowerer.js";
 import {
   BOOL,
   DYN,
+  DYN_HANDLE_KINDS,
   FOREIGN,
   NULL_T,
   STRING,
@@ -1563,11 +1564,24 @@ function islandMade(lowerer: Lowerer, node: ts.Expression): boolean {
   );
 }
 
+/** The runtime handle tags the island export table holds: `scr_ni_exportable`
+ * (scr_node_island_export.c) accepts a handle only with the Map or the Set
+ * tag. lower-node-island.test.ts reads that function and fails when the two
+ * lists differ, so a handle the runtime starts to export (a class that
+ * crosses as a twin, say) is added here, and the build-time refusal below
+ * cannot drift from the run-time one. */
+export const ISLAND_EXPORTED_HANDLE_TAGS: ReadonlySet<string> = new Set([
+  "SCR_DYNH_MAP",
+  "SCR_DYNH_SET",
+]);
+
 /** The part of `type` whose native value the island export table does not
- * hold, or null: a WeakMap or WeakSet, alone or as an arm of a union. Weak
- * storage has no export, and the runtime refuses it when it crosses (`this
- * native object cannot cross into a Node island yet`); a statically typed
- * one is refused here, by name. */
+ * hold, or null: a WeakMap or WeakSet (weak storage has no export), or a
+ * stateful I/O handle of DYN_HANDLE_KINDS (a ChildProcess, a socket, a
+ * server), whose checked-dynamic box is a runtime handle with a tag the
+ * table does not take. The runtime refuses each of them when it crosses
+ * (`this native object cannot cross into a Node island yet`); a statically
+ * typed one is refused here, by name, alone or as an arm of a union. */
 function unexportedNative(lowerer: Lowerer, type: ts.Type): ts.Type | null {
   if (type.isUnionType()) {
     for (const part of ts.constituentTypes(type)) {
@@ -1577,7 +1591,9 @@ function unexportedNative(lowerer: Lowerer, type: ts.Type): ts.Type | null {
     return null;
   }
   if ((type.flags & ts.TypeFlags.Object) === 0) return null;
-  return lowerer.weakCollectionNamesOf(type) !== null ? type : null;
+  if (lowerer.weakCollectionNamesOf(type) !== null) return type;
+  const handle = DYN_HANDLE_KINDS.get(lowerer.mapTypeOf(type)?.kind ?? "");
+  return handle !== undefined && !ISLAND_EXPORTED_HANDLE_TAGS.has(handle.tag) ? type : null;
 }
 
 /** Whether a value of native IR type `t` crosses INTO an island by

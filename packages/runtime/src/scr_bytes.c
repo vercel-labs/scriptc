@@ -779,45 +779,9 @@ void scr_bytes_shared_set(ScrBytes *b, size_t i, double v) {
   scr_bytes_store(b, i, v);
 }
 
-/* Dispatch once per bounded block, not once per element. Loads and stores
- * use memcpy so views and external storage need no stronger alignment or
- * aliasing promise. A bounded scratch block avoids a kind-pair code matrix. */
-static void scr_bytes_read_numbers(double *out, const uint8_t *src, ScrBytesElem elem, size_t count) {
-#define SCR_READ_NUMBERS(kind, type) \
-  case kind: \
-    for (size_t i = 0; i < count; i++) { \
-      type value; \
-      memcpy(&value, src + i * sizeof value, sizeof value); \
-      out[i] = (double)value; \
-    } \
-    return
-  switch (elem) {
-    case SCR_BYTES_U8C:
-    SCR_READ_NUMBERS(SCR_BYTES_U8, uint8_t);
-    SCR_READ_NUMBERS(SCR_BYTES_I8, int8_t);
-    SCR_READ_NUMBERS(SCR_BYTES_U16, uint16_t);
-    SCR_READ_NUMBERS(SCR_BYTES_I16, int16_t);
-    SCR_READ_NUMBERS(SCR_BYTES_U32, uint32_t);
-    SCR_READ_NUMBERS(SCR_BYTES_I32, int32_t);
-    SCR_READ_NUMBERS(SCR_BYTES_F32, float);
-    SCR_READ_NUMBERS(SCR_BYTES_F64, double);
-    case SCR_BYTES_F16:
-      for (size_t i = 0; i < count; i++) {
-        uint16_t value;
-        memcpy(&value, src + i * sizeof value, sizeof value);
-        out[i] = scr_f16_to_f64(value);
-      }
-      return;
-#ifdef SCR_JS_OBJECT_MODEL
-    case SCR_BYTES_I64: case SCR_BYTES_U64:
-      /* No double holds a BigInt element; the dynamic tier reads these one
-       * at a time through scr_bytes_get_bigint. */
-      scr_trap("scriptc: numeric read of a BigInt typed array\n");
-#endif
-  }
-#undef SCR_READ_NUMBERS
-}
-
+/* Element stores for a double value, one per destination kind. Loads and
+ * stores use memcpy so views and external storage need no stronger alignment
+ * or aliasing promise. */
 static void scr_bytes_write_numbers(uint8_t *dst, ScrBytesElem elem, const double *src, size_t count) {
 #define SCR_WRITE_NUMBERS(type, expression) \
   for (size_t i = 0; i < count; i++) { \
@@ -858,21 +822,144 @@ static void scr_bytes_write_numbers(uint8_t *dst, ScrBytesElem elem, const doubl
 #undef SCR_WRITE_NUMBERS
 }
 
+/* The kinds whose conversion is an integer truncation modulo the element
+ * width. The BigInt kinds are excluded: they never convert through a double. */
+static bool scr_bytes_integer_kind(ScrBytesElem elem) {
+  switch (elem) {
+    case SCR_BYTES_U8:
+    case SCR_BYTES_U8C:
+    case SCR_BYTES_I8:
+    case SCR_BYTES_U16:
+    case SCR_BYTES_I16:
+    case SCR_BYTES_U32:
+    case SCR_BYTES_I32:
+      return true;
+    case SCR_BYTES_F16:
+    case SCR_BYTES_F32:
+    case SCR_BYTES_F64:
+      return false;
+#ifdef SCR_JS_OBJECT_MODEL
+    case SCR_BYTES_I64:
+    case SCR_BYTES_U64:
+      return false;
+#endif
+  }
+  return false;
+}
+
+/* Whether a raw byte copy of the source span produces exactly the elements
+ * the value-wise conversion stores. For an integer destination the store is
+ * the source value's ToUint32 truncated to the destination's width, and a
+ * same-width integer source already is that truncation (the read is exact
+ * and the round trip through the double reproduces the same bits). A
+ * Uint8ClampedArray destination instead clamps, which keeps a same-width
+ * source's bits only when every source value is in 0..255 already: itself
+ * and Uint8Array. An Int8Array's -1 clamps to 0 but is 0xFF as bits, and a
+ * wider source can exceed 255. */
+static bool scr_bytes_copy_kinds(ScrBytesElem dst, ScrBytesElem src) {
+  if (!scr_bytes_integer_kind(dst) || !scr_bytes_integer_kind(src)) return false;
+  if (scr_bytes_elem_size(dst) != scr_bytes_elem_size(src)) return false;
+  if (dst == SCR_BYTES_U8C) return src == SCR_BYTES_U8 || src == SCR_BYTES_U8C;
+  return true;
+}
+
+/* One loop per (source kind, destination kind) pair. The source element is
+ * read in its own type and the destination stored in its own type, through
+ * the same conversions scr_bytes_write_numbers applies to a double, so the
+ * values are the ones the two-loop block conversion produced, and no
+ * double-width scratch is written and read back between them. Loads and
+ * stores are constant-width memcpy, so a view at an unaligned byteOffset and
+ * external storage need no alignment promise. */
+#define SCR_PAIR(dst_type, dst_value) \
+  { \
+    for (size_t i = 0; i < count; i++) { \
+      src_type value; \
+      memcpy(&value, src + i * sizeof value, sizeof value); \
+      dst_type out = (dst_type)(dst_value); \
+      memcpy(dst + i * sizeof out, &out, sizeof out); \
+    } \
+    return; \
+  }
+#define SCR_DESTS(value) \
+  switch (dest_elem) { \
+    case SCR_BYTES_U8: \
+      SCR_PAIR(uint8_t, (uint8_t)scr_numeric_to_u32(value)); \
+    case SCR_BYTES_I8: \
+      SCR_PAIR(uint8_t, (uint8_t)scr_numeric_to_u32(value)); \
+    case SCR_BYTES_U8C: \
+      SCR_PAIR(uint8_t, (uint8_t)scr_bytes_to_u8_clamp(value)); \
+    case SCR_BYTES_U16: \
+      SCR_PAIR(uint16_t, (uint16_t)scr_numeric_to_u32(value)); \
+    case SCR_BYTES_I16: \
+      SCR_PAIR(uint16_t, (uint16_t)scr_numeric_to_u32(value)); \
+    case SCR_BYTES_U32: \
+      SCR_PAIR(uint32_t, scr_numeric_to_u32(value)); \
+    case SCR_BYTES_I32: \
+      SCR_PAIR(uint32_t, scr_numeric_to_u32(value)); \
+    case SCR_BYTES_F16: \
+      SCR_PAIR(uint16_t, scr_f16_from_f64(value)); \
+    case SCR_BYTES_F32: \
+      SCR_PAIR(float, (float)(value)); \
+    case SCR_BYTES_F64: \
+      SCR_PAIR(double, value); \
+    default: \
+      scr_trap("scriptc: numeric conversion of a BigInt typed array\n"); \
+  }
 /* Caller guarantees disjoint spans, or snapshots the source before entry. */
 static void scr_bytes_convert_span(uint8_t *dst, ScrBytesElem dest_elem,
                                     const uint8_t *src, ScrBytesElem src_elem, size_t count) {
-  size_t source_width = scr_bytes_elem_size(src_elem);
-  size_t dest_width = scr_bytes_elem_size(dest_elem);
-  double values[128];
-  while (count) {
-    size_t block = count < 128 ? count : 128;
-    scr_bytes_read_numbers(values, src, src_elem, block);
-    scr_bytes_write_numbers(dst, dest_elem, values, block);
-    src += block * source_width;
-    dst += block * dest_width;
-    count -= block;
+  if (count == 0) return;
+  if (scr_bytes_copy_kinds(dest_elem, src_elem)) {
+    memmove(dst, src, count * scr_bytes_elem_size(src_elem));
+    return;
+  }
+  switch (src_elem) {
+    case SCR_BYTES_U8:
+    case SCR_BYTES_U8C: {
+      typedef uint8_t src_type;
+      SCR_DESTS(value);
+    }
+    case SCR_BYTES_I8: {
+      typedef int8_t src_type;
+      SCR_DESTS(value);
+    }
+    case SCR_BYTES_U16: {
+      typedef uint16_t src_type;
+      SCR_DESTS(value);
+    }
+    case SCR_BYTES_I16: {
+      typedef int16_t src_type;
+      SCR_DESTS(value);
+    }
+    case SCR_BYTES_U32: {
+      typedef uint32_t src_type;
+      SCR_DESTS(value);
+    }
+    case SCR_BYTES_I32: {
+      typedef int32_t src_type;
+      SCR_DESTS(value);
+    }
+    case SCR_BYTES_F16: {
+      typedef uint16_t src_type;
+      SCR_DESTS(scr_f16_to_f64(value));
+    }
+    case SCR_BYTES_F32: {
+      typedef float src_type;
+      SCR_DESTS(value);
+    }
+    case SCR_BYTES_F64: {
+      typedef double src_type;
+      SCR_DESTS(value);
+    }
+#ifdef SCR_JS_OBJECT_MODEL
+    case SCR_BYTES_I64:
+    case SCR_BYTES_U64:
+      scr_trap("scriptc: numeric conversion of a BigInt typed array\n");
+#endif
   }
 }
+#undef SCR_DESTS
+#undef SCR_PAIR
 
 #ifdef SCR_JS_OBJECT_MODEL
 /* set()/construction between a BigInt view and a numeric one. */
@@ -1097,6 +1184,12 @@ void scr_bytes_set_from(ScrBytes *dst, const ScrBytes *src, double offset) {
   }
   uint8_t *target = dst->data + (size_t)t * width;
   if (dst->elem == src->elem) {
+    memmove(target, src->data, src->len * width);
+    return;
+  }
+  if (scr_bytes_copy_kinds(dst->elem, src->elem)) {
+    /* A bit-compatible pair copies the source's bytes, so an overlapping
+     * source range (views of one buffer) needs no snapshot. */
     memmove(target, src->data, src->len * width);
     return;
   }

@@ -516,6 +516,11 @@ double scr_set_immediate(ScrClosure *cb); /* cb ownership moves in */
 void scr_queue_microtask(ScrClosure *cb);
 void scr_queue_microtask_dyn(const ScrDyn *cb);
 void scr_queue_microtask_dyn_als(const ScrDyn *cb);
+/* Node's timer callback gate, raised where the callback is not statically
+ * a function: a non-function throws ERR_INVALID_ARG_TYPE synchronously,
+ * with the "Received ..." rendering, before anything schedules and before
+ * the delay converts. Borrowed. */
+void scr_timers_check_callback(const ScrDyn *cb);
 /* setImmediate AS A dyn VALUE (the traceCallback shape): a minted dyn
  * callable that schedules args[0](args[1..]) on the immediate queue and
  * answers undefined; a non-function first argument throws Node's

@@ -97,6 +97,7 @@ import {
   isSupportedSetElem,
   isUnitType,
   typeEquals,
+  sortArms,
 } from "../../ir/ir.js";
 import {
   genericCallInstance,
@@ -151,6 +152,8 @@ import { isCjsRequireGlobal } from "./lower-node-module.js";
 import { lowerArrayConstructor } from "./containers/array-construction.js";
 import { initializedCollectionType } from "./js-collection-types.js";
 import {
+  jsSourcePatchesCollectionPrototype,
+  jsSourcePatchesSetPrototype,
   lowerMapSeedNew,
   lowerSetSeedNew,
   mapFromSeedValue,
@@ -655,6 +658,12 @@ export interface ClassInfo {
   /** ALL fields visible on instances — the inherited ones included — for
    * receiver-side lookup (def.fields carries the layout order). */
   fields: Map<string, IrType>;
+  /** `declare` fields of this class: erased at run time (no slot, no own
+   * property), so they take no part in the layout or the membership
+   * answers, and a read of the name asks the instance's property bag. A
+   * subclass answers for an inherited erased name through the base chain,
+   * the same way `fields` already carries inherited entries. */
+  erasedFields?: ReadonlySet<string>;
   /** OWN fields only (declaration order) with their initializers: the
    * class's constructor runs exactly these — inherited fields initialize in
    * the base constructor, before/via super(). */
@@ -1602,13 +1611,13 @@ function undefArmedFieldType(lowerer: Lowerer, p: ts.Symbol): IrType | null {
   const arms =
     mapped.kind === "union" ? (lowerer.unions.get(mapped.unionId)?.arms ?? []) : [mapped];
   for (const a of arms) {
-    if (a.kind === "map" || a.kind === "regex" || a.kind === "generator") {
+    if (a.kind === "regex" || a.kind === "generator") {
       return null;
     }
     byKey.set(typeKey(a), a);
   }
   byKey.set(typeKey(UNDEFINED_T), UNDEFINED_T);
-  const sorted = [...byKey.values()].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  const sorted = sortArms([...byKey.values()]);
   return { kind: "union", unionId: lowerer.unions.intern(sorted) };
 }
 
@@ -2555,6 +2564,7 @@ export function collectClassShapeInner(
     if (base?.symbolMethods)
       for (const [symbol, name] of base.symbolMethods) symbolMethods.set(symbol, name);
     const fieldOrder: ClassInfo["fieldOrder"] = [];
+    const erasedFields = new Set<string>();
     const methods = new Map<
       string,
       {
@@ -3062,6 +3072,21 @@ export function collectClassShapeInner(
         // ABSTRACT-typed receivers resolve the concrete instance's
         // property through checked class dispatch.
         if (modifiers?.some((m) => m.kind === ts.SyntaxKind.AbstractKeyword)) continue;
+        // A DECLARE field is erased the same way: JavaScript emits no field
+        // for it (verified: `declare p: number` leaves the instance without
+        // an own property, so `'p' in instance` is false and an unassigned
+        // read is undefined), so it contributes nothing to the layout. Its
+        // type still answers the checker; a value under that name can only
+        // come from elsewhere (a base class, a decorator, an assignment
+        // through an untyped view or the constructor), so a read asks the
+        // instance rather than a slot (erasedFields, property-access.ts).
+        if (modifiers?.some((m) => m.kind === ts.SyntaxKind.DeclareKeyword)) {
+          if (ts.isIdentifier(member.name) || ts.isStringLiteralLike(member.name))
+            erasedFields.add(member.name.text);
+          else if (ts.isNumericLiteral(member.name))
+            erasedFields.add(String(Number(member.name.text)));
+          continue;
+        }
         if (modifiers?.some((m) => m.kind === ts.SyntaxKind.AccessorKeyword)) {
           // `accessor x = 1` desugars (in JS) to a private slot plus a
           // get/set pair — declare the field and accessors explicitly.
@@ -4759,6 +4784,7 @@ export function collectClassShapeInner(
       },
       fields,
       fieldOrder,
+      ...(erasedFields.size > 0 ? { erasedFields } : {}),
       methods,
       ...(methodEntryFences.size > 0 ? { methodEntryFences } : {}),
       ...(returnAdapters.size > 0 ? { returnAdapters } : {}),
@@ -9410,7 +9436,7 @@ function superBaseOf(info: ClassInfo): ClassInfo | null {
 export function fieldInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrLocal): IrStmt[] {
   const out: IrStmt[] = [];
   const thisType: IrType = { kind: "object", className: info.def.name };
-  for (const f of info.fieldOrder) {
+  for (const [index, f] of info.fieldOrder.entries()) {
     if (f.errorCause) {
       const loc = f.initializer ? locOf(f.initializer) : f.undefinedInitializer!;
       const value = f.initializer
@@ -9445,6 +9471,11 @@ export function fieldInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrL
     lowerer.countStatement(f.initializer, locOf(f.initializer).file);
     const diagsBefore = lowerer.diags.length;
     const sinkMark = lowerer.diagSinkMark();
+    // `'k' in this` inside the initializer answers from the fields defined
+    // SO FAR (Node defines each field as its own initializer finishes), so
+    // the lowering needs this field's position in the order.
+    const previousInitializer = lowerer.fieldInitializer;
+    lowerer.fieldInitializer = { info, index, initializer: f.initializer };
     try {
       const value = lowerer.lowerExprExpecting(f.initializer, f.type);
       out.push({
@@ -9466,6 +9497,8 @@ export function fieldInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrL
             : lowerer.capturedRuntimeFence(sinkMark, f.initializer);
         if (fence) out.push(fence);
       }
+    } finally {
+      lowerer.fieldInitializer = previousInitializer;
     }
   }
   return out;
@@ -10783,9 +10816,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
           ? yesType
           : {
               kind: "union",
-              unionId: lowerer.unions.intern(
-                [yesType, noType].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1)),
-              ),
+              unionId: lowerer.unions.intern(sortArms([yesType, noType])),
             };
       return {
         kind: "ternary",
@@ -11014,7 +11045,9 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
             expr.expression.expression.text === "exports" &&
             !lowerer.peekLocal(expr.expression.expression) &&
             !lowerer.globalOf(expr.expression.expression)))) ||
-        lowerer.cjsLocalModuleBindingOf(expr.expression.expression))
+        lowerer.cjsLocalModuleBindingOf(expr.expression.expression) ||
+        (ts.isIdentifier(expr.expression.name) &&
+          lowerer.cjsWholeExportMemberOf(expr.expression.expression, expr.expression.name.text)))
     ) {
       // Candidate symbols for the export global: the member symbol as
       // spelled, its alias-chased resolution (resolveValueSymbol carries
@@ -11670,6 +11703,29 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
           "a source whose map layouts differ (give the empty `new Map()` its type arguments)",
         );
       }
+      // A JavaScript source that patches Map.prototype makes the
+      // constructor's `set` lookup observable, for a pair-literal seed too
+      // (which otherwise takes the destination's bulk layout). A
+      // statically typed destination lowers the seed in lowerMapSeedNew;
+      // with no static map type build the checked-dynamic map directly.
+      if (
+        seedArg &&
+        isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+        jsSourcePatchesCollectionPrototype(lowerer, expr, "Map")
+      ) {
+        if (mapped?.kind === "map") {
+          const patched = lowerMapSeedNew(lowerer, seedArg, mapped);
+          if (patched) return patched;
+        } else if (mapped === null) {
+          return {
+            kind: "libCall",
+            fn: "dyn.collectionConstruct",
+            args: [strLit("Map", loc), lowerer.lowerExprExpecting(seedArg, DYN)],
+            type: DYN,
+            loc,
+          };
+        }
+      }
       if (seedArg && !entriesLit && mapped?.kind === "map") {
         const seeded = lowerMapSeedNew(lowerer, seedArg, mapped);
         if (seeded) return seeded;
@@ -11817,14 +11873,18 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         (expr.arguments?.nodes.length ?? 0) <= 1 &&
         !expr.arguments?.nodes.some(ts.isSpreadElement)
       ) {
+        // With a seed the constructor reads `add` off the new set and steps
+        // the iterable, so a program's own Set.prototype.add runs per
+        // element and a throwing one closes the iterator. The no-argument
+        // form reads nothing, and a program that never patches the
+        // prototype cannot observe the bulk native path.
+        const seed = expr.arguments?.nodes[0];
+        const patched = !!seed && jsSourcePatchesSetPrototype(lowerer, expr);
+        const seedIr = seed ? lowerer.lowerExprExpecting(seed, DYN) : dynUndefinedExpr(loc);
         return {
           kind: "libCall",
-          fn: "dyn.nativeSetNew",
-          args: [
-            expr.arguments?.nodes[0]
-              ? lowerer.lowerExprExpecting(expr.arguments.nodes[0], DYN)
-              : dynUndefinedExpr(loc),
-          ],
+          fn: patched ? "dyn.collectionConstruct" : "dyn.nativeSetNew",
+          args: patched ? [strLit("Set", loc), seedIr] : [seedIr],
           type: DYN,
           loc,
         };
@@ -11933,25 +11993,32 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       // real closure rejecting the promise with an Error reason (the
       // ambient override pins `reason: Error` — rejection payloads share
       // the thrown-value representation, and the OBJ kind keeps
-      // catch-side instanceof and the uncaught printer working). First
-      // settle wins, exactly JS: reject-after-resolve and double-reject
-      // are no-ops, and an executor throw after any settle is swallowed.
+      // catch-side instanceof and the uncaught printer working). A
+      // checked-dynamic promise has no typed payload to protect: its
+      // reason is whatever the program rejected with, so its reject
+      // closure carries the dyn value (the override types the reason
+      // `unknown` for exactly that tier). First settle wins, exactly JS:
+      // reject-after-resolve and double-reject are no-ops, and an
+      // executor throw after any settle is swallowed.
       let executor = lowerer.lowerExpr(args[0]!);
       if (executor.type.kind !== "func") lowerer.badType(args[0]!, lowerer.typeOf(args[0]!));
       executor = adaptPromiseExecutor(lowerer, executor, type.inner, loc) ?? executor;
       if (executor.type.kind !== "func") lowerer.badType(args[0]!, lowerer.typeOf(args[0]!));
       if (executor.type.params.length > 1) {
         const rj = executor.type.params[1]!;
+        const param = rj.kind === "func" && rj.params.length === 1 ? rj.params[0]! : null;
+        const errorPinned =
+          param !== null && param.kind === "object" && param.className === "%Error";
+        const dynPinned = param !== null && param.kind === "dyn" && type.inner.kind === "dyn";
         if (
           executor.type.params.length > 2 ||
           rj.kind !== "func" ||
           rj.ret.kind !== "void" ||
-          rj.params.length !== 1 ||
-          rj.params[0]!.kind !== "object" ||
-          rj.params[0]!.className !== "%Error"
+          (!errorPinned && !dynPinned)
         ) {
           // A non-contextually-typed executor VALUE whose second param
-          // isn't the pinned (reason: Error) => void shape.
+          // isn't the pinned (reason: Error) => void shape (or the dyn
+          // reason of a checked-dynamic promise).
           lowerer.unsupported(
             "SC1090",
             args[0]!,

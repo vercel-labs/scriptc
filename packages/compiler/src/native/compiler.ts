@@ -40,6 +40,7 @@ import {
   type RuntimePackStore,
 } from "../backend/runtime-pack-native.js";
 import { RuntimePackError } from "../backend/runtime-pack-core.js";
+import { codegenServerName } from "../backend/codegen-server.js";
 import {
   NativeCodegenError,
   nativePartitionPaths,
@@ -162,6 +163,9 @@ function nativeProfile(options: CompileRequestOptions): NativeProfileOptions | u
 /** Shared frontend semantics with native processes for code generation and linking. */
 export class NativeCompiler {
   private readonly frontend: FrontendFactory;
+  /** The shared code generation server this build's helper commands run on,
+   * or null when the build runs the helper as its own process. */
+  private readonly codegenServer: string | null;
 
   constructor(
     readonly toolchain: NativeToolchain,
@@ -170,6 +174,11 @@ export class NativeCompiler {
      * build on this machine shares, even one whose build cache starts empty. */
     private readonly state: NativeCache | null = null,
   ) {
+    this.codegenServer = codegenServerName(
+      toolchain.helperExecutable,
+      toolchain.compilerVersion,
+      toolchain.target.llvmTriple,
+    );
     const evaluator = toolchain.comptimeExecutable;
     this.frontend = (entry, npmStatic, externalTypes, libraryNpmStatic, options) =>
       runNativeFrontend(
@@ -293,6 +302,7 @@ export class NativeCompiler {
       compilerVersion: toolchain.compilerVersion,
       target: toolchain.target,
       helper: toolchain.helper,
+      server: this.codegenServer,
       ...this.helperVerification(),
     };
     let key: string | null = null;
@@ -580,6 +590,13 @@ export class NativeCompiler {
         return { ok: true, artifact: { kind: "ir", path: output } };
       }
       const { llvm, features } = prepared;
+      // The runtime pack's selection belongs to the link, not to the program:
+      // a static executable needs the os unit's /etc/passwd build
+      // (SCR_STATIC_PASSWD), and the executable cache keys the selection, so
+      // the static link names it here as the link plan does for the
+      // JavaScript compiler.
+      const linkFeatures =
+        options.staticLink === true ? { ...features, staticLink: true } : features;
       // The executable and object caches key the same LLVM text.
       let llvmDigest: string | undefined;
       const digestLlvm = (): string => (llvmDigest ??= prepared.llvmDigest ?? partsDigest(llvm));
@@ -603,7 +620,7 @@ export class NativeCompiler {
           toolchain.runtimePackRoot,
           target,
           toolchain.compilerVersion,
-          features,
+          linkFeatures,
           optimization,
           "executable",
           this.runtimePackStore(),
@@ -620,7 +637,7 @@ export class NativeCompiler {
               ffi,
               {
                 root: toolchain.runtimePackRoot,
-                features,
+                features: linkFeatures,
                 flavor: optimization,
                 select: selectPack,
               },
@@ -675,7 +692,7 @@ export class NativeCompiler {
                   toolchain.runtimePackRoot,
                   target,
                   toolchain.compilerVersion,
-                  features,
+                  linkFeatures,
                   optimization,
                   "executable",
                   this.runtimePackStore(),

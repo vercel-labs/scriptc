@@ -22,6 +22,7 @@ import {
   concatOperand,
   deferredSlotOr,
   dynCompoundValue,
+  lowerOptionalBigint,
   lowerOptionalNumber,
   lowerOperatorNumber,
   operatorUnsupported,
@@ -44,12 +45,14 @@ import {
   VOID,
 } from "../../../ir/ir.js";
 import { isJsSourceFile, locOf } from "../../program.js";
+import { callableBox, isCallableTableValue } from "../callable-properties.js";
+import { refuseShadowedImplicitReader } from "../handle-properties.js";
 import { classToNumberConversion } from "../class-to-primitive.js";
 import { lowerPrimitiveUnionNumber } from "../lower-calls.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../../ir/build.js";
 import { fenceNodeModuleMutation } from "../lower-node-module.js";
 import { findStaticOn, staticFieldWriteTarget } from "../lower-classes.js";
-import { expandoWritableTarget } from "../lower-expando.js";
+import { fenceReadonlyExpandoWrite } from "../lower-expando.js";
 import { nsWritableTarget } from "../lower-namespaces.js";
 import { arrayNumberRead, arrayValueRead, arrayValueStore } from "../array-values.js";
 import { isSafeToRepeat } from "./evaluation-safety.js";
@@ -143,6 +146,12 @@ function booleanToNumber(value: IrExpr, loc: SrcLoc): IrExpr {
 
 export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpression): IrExpr {
   const loc = locOf(expr);
+  // Unary plus and minus convert with ToNumber, whose number hint reads the
+  // Date's valueOf; a program that replaces it needs the dynamic path.
+  const dateNumber = (value: IrExpr): IrExpr => {
+    refuseShadowedImplicitReader(lowerer, expr.operand, value.type, "valueOf", "number conversion");
+    return dateTimeValue(value, loc);
+  };
   switch (expr.operator) {
     case ts.SyntaxKind.MinusToken: {
       const raw = lowerer.lowerExpr(expr.operand);
@@ -155,7 +164,7 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
         raw.type.kind === "bool"
           ? booleanToNumber(raw, loc)
           : raw.type.kind === "date"
-            ? dateTimeValue(raw, loc)
+            ? dateNumber(raw)
             : coercedUnion(lowerer, raw.type)
               ? ({
                   kind: "libCall",
@@ -205,7 +214,7 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
       }
       if (raw.type.kind === "bool") return booleanToNumber(raw, loc);
       // A Date's number hint answers its time value.
-      if (raw.type.kind === "date") return dateTimeValue(raw, loc);
+      if (raw.type.kind === "date") return dateNumber(raw);
       const classNumber = classToNumberConversion(lowerer, raw, expr.operand, "unary plus");
       if (classNumber) return classNumber;
       const operand = lowerOperatorNumber(lowerer, raw, loc, expr.operand);
@@ -294,10 +303,8 @@ export function lowerIncDec(
           loc,
         };
       }
-      const target =
-        staticFieldWriteTarget(lowerer, access) ??
-        expandoWritableTarget(lowerer, access) ??
-        nsWritableTarget(lowerer, access);
+      fenceReadonlyExpandoWrite(lowerer, access);
+      const target = staticFieldWriteTarget(lowerer, access) ?? nsWritableTarget(lowerer, access);
       if (target) {
         return lowerIncDecTarget(lowerer, expr, target, prefix);
       }
@@ -469,15 +476,23 @@ export function lowerIncDec(
       !isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
       raw.type.kind === "dyn" &&
       lowerer.mapTypeOf(lowerer.typeOf(access))?.kind === "f64";
+    // A typed callable's ELEMENT is its own-property table entry
+    // (`fn[k]++`): the same keyed read-modify-write, over the box.
+    const callableBoxed =
+      ts.isElementAccessExpression(access) &&
+      raw.type.kind === "func" &&
+      isCallableTableValue(lowerer, access.expression, raw)
+        ? callableBox(lowerer, raw)
+        : null;
     // A private name is the field of its class (fieldTarget).
     const privateName =
       ts.isPropertyAccessExpression(access) && ts.isPrivateIdentifier(access.name);
     if (
-      (isJsSourceFile(ts.getSourceFileOfNode(expr)) || checkedNumber) &&
-      raw.type.kind === "dyn" &&
+      (isJsSourceFile(ts.getSourceFileOfNode(expr)) || checkedNumber || callableBoxed !== null) &&
+      (raw.type.kind === "dyn" || callableBoxed !== null) &&
       !privateName
     ) {
-      const receiver = save(raw, "%incrementReceiver");
+      const receiver = save(callableBoxed ?? raw, "%incrementReceiver");
       const key = save(
         ts.isElementAccessExpression(access)
           ? lowerer.lowerExprExpecting(access.argumentExpression, DYN)
@@ -636,6 +651,37 @@ export function lowerIncDecTarget(
         ],
         result,
         type: F64,
+        loc,
+      };
+    }
+    const bigintRead = lowerOptionalBigint(
+      lowerer,
+      varRef(target.id, target.type, loc),
+      loc,
+      expr.operand,
+    );
+    if (bigintRead) {
+      const old = lowerer.declareHiddenLocal("%bigintOld", BIGINT_T);
+      const next = lowerer.declareHiddenLocal("%bigintNext", BIGINT_T);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: old.id, init: bigintRead, loc },
+          {
+            kind: "varDecl",
+            localId: next.id,
+            init: bigintStep(op, varRef(old.id, BIGINT_T, loc), loc),
+            loc,
+          },
+          {
+            kind: "assign",
+            localId: target.id,
+            value: lowerer.coerceInto(expr.operand, varRef(next.id, BIGINT_T, loc), target.type),
+            loc,
+          },
+        ],
+        result: varRef(prefix ? next.id : old.id, BIGINT_T, loc),
+        type: BIGINT_T,
         loc,
       };
     }

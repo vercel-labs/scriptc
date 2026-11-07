@@ -38,6 +38,7 @@ import {
   URL_T,
   VOID,
   funcOf,
+  setOf,
 } from "./ir.js";
 
 /** Runtime call slots. A null argument accepts a program-dependent type;
@@ -210,6 +211,9 @@ function buildLibFnSignatures() {
      * writes and calls on island values, argument lists as one dyn array.
      * requireModule(specifier) of @scriptc/node lowers to require too. */
     "nodeIsland.require": { argTypes: [STRING], result: DYN },
+    /** process.report, answered by the island (the same process): the
+     * diagnostic report object of the running binary. */
+    "nodeIsland.processReport": { argTypes: [], result: DYN },
     /** NI-7: a deferred island module (path, boot guards + interface snapshot). */
     "nodeIsland.defer": { argTypes: [STRING, STRING], result: DYN },
     "nodeIsland.import": { argTypes: [STRING], result: { kind: "promise", inner: DYN } },
@@ -384,6 +388,8 @@ function buildLibFnSignatures() {
     "collection.preventExtensions": { argTypes: [null], result: VOID },
     "collection.isExtensible": { argTypes: [null], result: BOOL },
     "dyn.nativeSetNew": { argTypes: [DYN], result: DYN },
+    "dyn.collectionConstruct": { argTypes: [STRING, DYN], result: DYN },
+    "dyn.setValues": { argTypes: [DYN], result: DYN },
     "dyn.nativeSetIs": { argTypes: [DYN], result: BOOL },
     "dyn.nativeMapIs": { argTypes: [DYN], result: BOOL },
     "dyn.nativeUrlIs": { argTypes: [DYN], result: BOOL },
@@ -566,6 +572,12 @@ function buildLibFnSignatures() {
      * the function with zero arguments at drain. */
     "timers.queueMicrotask": { argTypes: [{ kind: "func", params: [], ret: VOID }], result: VOID },
     "timers.queueMicrotaskDyn": { argTypes: [DYN], result: VOID },
+    /** Node's synchronous timer callback gate (scr_timers_check_callback):
+     * a non-function throws ERR_INVALID_ARG_TYPE before anything schedules.
+     * Lowered only for a callback that is not statically a function — a
+     * checked-dynamic value — and sequenced after every argument
+     * expression evaluates, where Node validates the callback. */
+    "timers.checkCallback": { argTypes: [DYN], result: VOID },
     "timers.clearImmediate": { argTypes: [F64], result: VOID },
     /** process.nextTick(cb, ...args) — the user tick queue. args: [cb
      * (() => void; trailing call arguments ride the timer surface's
@@ -781,6 +793,10 @@ function buildLibFnSignatures() {
     "dir.read": { argTypes: [DIR_T], result: { kind: "promise", inner: VOID } },
     "dir.closeSync": { argTypes: [DIR_T], result: VOID },
     "dir.close": { argTypes: [DIR_T], result: { kind: "promise", inner: VOID } },
+    "dir.readCb": { argTypes: [DIR_T, DYN], result: VOID },
+    "dir.closeCb": { argTypes: [DIR_T, DYN], result: VOID },
+    "dir.dispose": { argTypes: [DIR_T], result: VOID },
+    "dir.asyncDispose": { argTypes: [DIR_T], result: { kind: "promise", inner: VOID } },
     /** node:path (scr_path.c ports BOTH of Node's implementations
      * function-by-function): the `path.*` family is posix, the
      * `path.win32*` family is Node v24's path.win32 ported exactly — the
@@ -1233,6 +1249,9 @@ function buildLibFnSignatures() {
      * whether the call site emits DEP0169. domainToASCII/domainToUnicode
      * take the domain and whether it was omitted. Node's validation errors
      * throw catchably. */
+    /** url.Url as a value: Node's legacy Url constructor, the class of
+     * url.parse() results. One identity per thread. */
+    "url.legacyClass": { argTypes: [], result: DYN },
     "url.legacyParse": { argTypes: [DYN, DYN, DYN, BOOL], result: DYN },
     "url.legacyFormat": { argTypes: [DYN, DYN, BOOL], result: STRING },
     "url.legacyResolve": { argTypes: [DYN, DYN, BOOL], result: STRING },
@@ -2082,6 +2101,8 @@ function buildLibFnSignatures() {
     "test.ctxHook": { argTypes: [TESTCTX_T, F64, null, F64], result: VOID },
     // t.plan(count), and the count of one t.assert call.
     "test.ctxPlan": { argTypes: [TESTCTX_T, F64], result: VOID },
+    "test.ctxRunOnly": { argTypes: [TESTCTX_T, BOOL], result: VOID },
+    "test.ctxWaitFor": { argTypes: [TESTCTX_T, DYN, BOOL, F64, BOOL, F64], result: DYN },
     "test.ctxCount": { argTypes: [TESTCTX_T], result: VOID },
     // The mock trackers: the module's `mock` and t.mock keep each mock's
     // restore closure (moved) for restoreAll and reset.
@@ -2894,6 +2915,19 @@ function buildLibFnSignatures() {
       argTypes: [BOOL, STRING, F64, STRING, STRING, F64, arrayOf(STRING), BOOL, BOOL, null, null],
       result: HTTPCLIENTREQ_T,
     },
+    /** The same binding's RUNTIME-OPTIONS rows: the options value is walked
+     * at run time (a RequestOptions variable or a spreading literal), and
+     * the leading secure bool chooses the dial — false is exactly
+     * http.request, TLS options included on that arm like Node ignores them
+     * there. */
+    "https.requestFnDyn": {
+      argTypes: [BOOL, DYN, BOOL],
+      result: HTTPCLIENTREQ_T,
+    },
+    "https.requestFnDynCb": {
+      argTypes: [BOOL, DYN, BOOL, null],
+      result: HTTPCLIENTREQ_T,
+    },
     "http.clientWrite": { argTypes: [HTTPCLIENTREQ_T, STRING], result: VOID },
     "http.clientSetHeader": { argTypes: [HTTPCLIENTREQ_T, STRING, STRING], result: VOID },
     "http.clientGetHeader": { argTypes: [HTTPCLIENTREQ_T, STRING], result: VOID },
@@ -3048,8 +3082,16 @@ function buildLibFnSignatures() {
     "child.onSpawn": { argTypes: [CHILD_T, null], result: VOID },
     /** Rest listeners use the checked function bridge to pack event arguments. */
     "child.onDyn": { argTypes: [CHILD_T, STRING, DYN], result: VOID },
-    // Own properties JavaScript adds to children (handle-properties.ts).
-    "child.propsInstall": { argTypes: [], result: VOID },
+    // Own properties JavaScript adds to runtime handles: the child's, and
+    // Date/RegExp/Map/Set/weak collections/buffers (handle-properties.ts).
+    // The install call's argument is 1 when the program adds properties to
+    // children (the child unit's wrapped ops), 0 otherwise.
+    "handle.propsInstall": { argTypes: [F64], result: VOID },
+    "handle.propsGrant": { argTypes: [STRING], result: VOID },
+    "handle.propsDefineProps": { argTypes: [DYN, DYN], result: DYN },
+    "handle.propsGuard": { argTypes: [DYN, STRING], result: DYN },
+    "handle.propsGuardList": { argTypes: [arrayOf(DYN), STRING], result: arrayOf(DYN) },
+    "handle.propsCheck": { argTypes: [DYN, STRING], result: VOID },
     "child.propsDefine": { argTypes: [DYN, DYN, DYN], result: DYN },
     "child.propsDescriptor": { argTypes: [DYN, DYN], result: DYN },
     "child.propsResolve": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
@@ -3288,6 +3330,11 @@ function buildLibFnSignatures() {
       result: { kind: "object", className: "%Writable" },
     },
     "child.killed": { argTypes: [CHILD_T], result: BOOL },
+    /** spawnfile and spawnargs: the file the child was started from, and
+     * that file followed by its arguments (Node's own reporting: a shell
+     * spawn reports the shell and its invocation). Both are +1. */
+    "child.spawnfile": { argTypes: [CHILD_T], result: STRING },
+    "child.spawnargs": { argTypes: [CHILD_T], result: arrayOf(STRING) },
     "child.kill": { argTypes: [CHILD_T, STRING], result: BOOL },
     "child.killNum": { argTypes: [CHILD_T, F64], result: BOOL },
     "child.unref": { argTypes: [CHILD_T], result: VOID },
@@ -3863,6 +3910,10 @@ function buildLibFnSignatures() {
     // The Node runtime flag a node:test binary took out of process.argv
     // (--test-update-snapshots), or [] — a fresh array per read.
     "process.execArgv": { argTypes: [], result: arrayOf(STRING) },
+    /** process.allowedNodeEnvironmentFlags: the interned set of option
+     * names the compatibility target accepts in NODE_OPTIONS (+1 read of
+     * one stable set). */
+    "process.allowedEnvFlags": { argTypes: [], result: setOf(STRING) },
     "process.platform": { argTypes: [], result: STRING },
     // The one libCall whose result type is program-dependent (union ids are
     // per-module): the `result` here is a placeholder — the libCall case
@@ -3992,7 +4043,7 @@ function buildLibFnSignatures() {
      * a Boolean wrapper receiver and throw Node's brand-check TypeError for
      * a foreign one. `constructor` is the compiled Boolean constructor. */
     "wrapper.booleanPrototype": { argTypes: [DYN], result: DYN },
-    "fs.callbackValue": { argTypes: [STRING], result: DYN },
+    "fs.callbackValue": { argTypes: [STRING, F64], result: DYN },
     "fs.callbackCall": { argTypes: [STRING, DYN], result: DYN },
     "process.hrtimeValue": { argTypes: [], result: DYN },
     /** process.versions.node: the runtime's Node COMPATIBILITY TARGET —
@@ -4411,6 +4462,22 @@ function buildLibFnSignatures() {
     "dyn.errorCaptureStackTraceFunction": { argTypes: [], result: DYN },
     "dyn.functionApply": { argTypes: [], result: DYN },
     "dyn.builtinMethod": { argTypes: [STRING, STRING], result: DYN },
+    /** A <Class>.prototype member value (scr_dyn_collections.c) for Set,
+     * Map, WeakMap or WeakSet: one interned function per (class, name), so
+     * `Map.prototype.get.call(receiver, key)` brand-checks and runs the
+     * member's implementation. */
+    "dyn.collectionMethod": { argTypes: [STRING, STRING], result: DYN },
+    /** %<Class>.prototype%, the object `Object.getPrototypeOf(new Map())`
+     * answers. */
+    "dyn.collectionPrototype": { argTypes: [STRING], result: DYN },
+    /** Object.getPrototypeOf for a value that may be a collection handle. */
+    "dyn.collectionGetPrototype": { argTypes: [DYN], result: DYN },
+    /** The ES2025 Set compositions over a set-like argument. */
+    "dyn.setCombine": { argTypes: [DYN, STRING, DYN], result: DYN },
+    /** <Class>.prototype.forEach with a callback that is not statically a
+     * function: Node's `<value> is not a function` for a non-callable, and
+     * (value, value, set) / (value, key, map) visits otherwise. */
+    "dyn.collectionForEach": { argTypes: [DYN, STRING, DYN, DYN], result: VOID },
     /** A builtin prototype method as a function value, by its prototype
      * (`String`, `RegExp`) and canonical member name (`trim`, `trimStart`,
      * `trimEnd`; `exec`, `test`, `toString`): the unit in
@@ -4642,6 +4709,10 @@ function buildLibFnSignatures() {
      * listener of the name needs the converted tuple. */
     "emitter.emitMixed": { argTypes: [null, STRING, F64], result: BOOL },
     "emitter.hasTyped": { argTypes: [null, STRING], result: BOOL },
+    /** The converse: whether a listener of the name was registered through
+     * an untyped value with no typed form, so a typed emit's arguments must
+     * also convert to checked-dynamic values. */
+    "emitter.hasDyn": { argTypes: [null, STRING], result: BOOL },
     "emitter.emitError": { argTypes: [null, STRING, null], result: BOOL },
     "emitter.count": { argTypes: [null, STRING], result: F64 },
     "emitter.countFn": { argTypes: [null, STRING, null], result: F64 },
@@ -5166,6 +5237,10 @@ function buildLibFnSignatures() {
      * "undefined"; a handle in the tree throws the "not supported yet"
      * Error). */
     "insp.jsonDyn": { argTypes: [DYN], result: STRING },
+    /** util.format %j over the value a toJSON hook returned: the same walk
+     * starting at the write step, so the hook never runs over its own
+     * result. */
+    "insp.jsonDynValue": { argTypes: [DYN], result: STRING },
     "insp.str": { argTypes: [STRING], result: STRING },
     "insp.regex": { argTypes: [REGEX], result: STRING },
     /** A Date's inspect text: toISOString(), or "Invalid Date". */
@@ -5388,6 +5463,12 @@ function buildLibFnSignatures() {
       result: VOID,
     },
     "rl.on": { argTypes: [F64, F64, null, BOOL], result: VOID },
+    "rl.onFirst": { argTypes: [F64, F64, null, BOOL], result: VOID },
+    "rl.off": { argTypes: [F64, F64, null], result: VOID },
+    "rl.offAll": { argTypes: [F64, F64], result: VOID },
+    "rl.listenerCount": { argTypes: [F64, F64], result: F64 },
+    "rl.listenerCountFn": { argTypes: [F64, F64, null], result: F64 },
+    "rl.eventNames": { argTypes: [F64], result: arrayOf(STRING) },
     "rl.iterOpen": { argTypes: [F64], result: VOID },
     "rl.iterNext": { argTypes: [F64], result: { kind: "promise", inner: DYN } },
     "rl.iterReturn": { argTypes: [F64], result: VOID },

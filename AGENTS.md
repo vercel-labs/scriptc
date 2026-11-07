@@ -106,12 +106,13 @@ The Node.js compatibility system is an implementation inventory and planning too
 - Compiler source and `packages/compiler/surface-manifest.json`, augmented by `internal/compatibility/static-support.json`, define static-native support.
 - Test evidence determines positive behavioral claims. Source manifests alone do not prove Node-compatible behavior.
 
-Compatibility describes native compilation. There is no runtime JavaScript engine tier.
+Compatibility describes native compilation. There is no runtime JavaScript engine tier. `island-served` is the one explicit exception to "native compilation": it records that an island build answers an API through the Node island scriptc already embeds, and is never a native support claim.
 
 ### Status contract
 
 - `supported` — broadly implemented. This requires test evidence.
 - `partial` — a useful implemented subset. This requires test evidence, but evidence may cover an API family rather than every documented overload.
+- `island-served` — in an island build, a Node island answers this API; a build without islands keeps its refusal. This requires test evidence and is not native support. Do not infer it from an island being present: only an island-specific implementation path with differential tests earns it.
 - `refused` — a named compiler diagnostic exists. Never infer this status from absence.
 - `not-implemented` — no implementation claim. Its verification basis decides whether it is ready to implement or must first be investigated.
 - `by-design` — intentionally outside a scriptc execution model. This requires an explicit implementation-owned architectural policy.
@@ -125,6 +126,7 @@ Chapter rows are generated summaries of their descendants, never independent sup
 Read a row's verification basis before acting:
 
 - `test-backed` — mapped to implementation and relevant tests. Audit the exact overload or behavior before broadening a `partial` claim.
+- `island-test-backed` — mapped to an island-specific implementation path and differential tests that run under the pinned Node and as a compiled island binary; the evidence names the tests, and a build without islands keeps the refusal.
 - `explicit-refusal` — source-verified refusal boundary.
 - `verified-absence` — a runtime presence test confirms absence.
 - `declared-gap` — an implementation-owned manifest explicitly declares the gap; it is ready for implementation.
@@ -139,6 +141,8 @@ Read a row's verification basis before acting:
 - `replace-refusal` — add support where an explicit refusal currently exists.
 - `audit-partial` — identify and implement missing behavior in a tested subset, or tighten an overbroad mapping.
 - `classify` — establish ownership and evidence for an unreviewed row.
+
+`island-served` rows emit no action: the island already answers them, so they are neither native implementation work nor a refusal to replace. Native support for them would still be a separate, explicitly justified change.
 
 Backlog priority is a heuristic based on Node stability: stable APIs are raised, release-candidate or unrated APIs remain normal, and experimental, deprecated, and legacy APIs are lowered. It is not a product roadmap.
 

@@ -359,7 +359,12 @@ export function streamTypedRefCommitAdapter(
         ...(compressed
           ? [
               `  %f${index}_oldidx = load i32, ptr %f${index}_ptr`,
-              ...compactRefLoadLines(`%f${index}_oldidx`, `%f${index}_old`, `%f${index}_od`),
+              ...compactRefLoadLines(
+                host.compactRefBase,
+                `%f${index}_oldidx`,
+                `%f${index}_old`,
+                `%f${index}_od`,
+              ),
             ]
           : [`  %f${index}_old = load ${fieldTy}, ptr %f${index}_ptr`]),
       );
@@ -1265,6 +1270,14 @@ export function streamTypedRefMaterializeAdapter(
             const set = B.newLabel("live.record.set");
             B.condBr(absent, skip, set);
             B.startBlock(set);
+          } else if (field.optional === true && field.type.kind === "dyn") {
+            // An absent optional checked-dynamic slot contributes no key.
+            const absent = B.tmp();
+            B.line(`${absent} = icmp eq ptr ${fieldValue}, ${host.dynAbsentRef()}`);
+            skip = B.newLabel("live.record.absent");
+            const set = B.newLabel("live.record.set");
+            B.condBr(absent, skip, set);
+            B.startBlock(set);
           }
           const boxed = host.streamTypedRefBoxValue(B, field.type, fieldValue);
           B.line(
@@ -1521,7 +1534,8 @@ function liveRecordOps(
     .map((field, position) => ({ field, position }))
     .filter(
       ({ field }) =>
-        field.type.kind === "union" && undefinedArmTag(field.type, host.unionsById) >= 0,
+        (field.type.kind === "union" && undefinedArmTag(field.type, host.unionsById) >= 0) ||
+        (field.optional === true && field.type.kind === "dyn"),
     );
   const hasLabels = optional.map(() => H.newLabel("live.record.has"));
   const always = H.newLabel("live.record.always");
@@ -1533,11 +1547,13 @@ function liveRecordOps(
   optional.forEach(({ field }, k) => {
     H.startBlock(hasLabels[k]!);
     const value = loadField(H, field);
-    const absent = host.fieldAbsentTestIn(
-      H,
-      value,
-      (field.type as IrType & { kind: "union" }).unionId,
-    );
+    let absent: string;
+    if (field.type.kind === "union") {
+      absent = host.fieldAbsentTestIn(H, value, field.type.unionId);
+    } else {
+      absent = H.tmp();
+      H.line(`${absent} = icmp eq ptr ${value}, ${host.dynAbsentRef()}`);
+    }
     const present = H.tmp();
     H.line(`${present} = xor i1 ${absent}, true`);
     H.terminate(`ret i1 ${present}`);
@@ -1861,7 +1877,7 @@ function classFieldDynValue(
   else if (compressed) {
     const idx = B.tmp();
     B.line(`${idx} = load i32, ptr ${fieldPtr}`);
-    for (const line of compactRefLoadLines(idx, fieldValue, `${fieldValue}.r`))
+    for (const line of compactRefLoadLines(host.compactRefBase, idx, fieldValue, `${fieldValue}.r`))
       B.line(line.trimStart());
   } else B.line(`${fieldValue} = load ${llFieldType(field.type, false)}, ptr ${fieldPtr}`);
   if (llFieldType(field.type, false) === "i8") {

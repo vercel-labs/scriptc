@@ -17,16 +17,8 @@
  * (also exactly Node). The static type decides before lowering, so an
  * operand with side effects is lowered exactly once. */
 import * as ts from "../../ts7/adapter.js";
-import {
-  BOOL,
-  STRING,
-  type IrExpr,
-  type IrStmt,
-  type IrType,
-  type SrcLoc,
-} from "../../../ir/ir.js";
+import { BOOL, STRING, type IrExpr, type IrStmt, type SrcLoc } from "../../../ir/ir.js";
 import { locOf } from "../../program.js";
-import { constituentTypes } from "../../ts7/checker.js";
 import type { Lowerer } from "../lowerer.js";
 import { markSloppyRecordWrites } from "../frozen-records.js";
 import { isPureReference } from "../effect-free.js";
@@ -105,11 +97,6 @@ export function lowerDeleteComputedKey(lowerer: Lowerer, keyNode: ts.Expression)
   }
   return key;
 }
-
-/** The refusal for `delete` of an optional `unknown`/`any` field, whose
- * slot is the checked-dynamic one and so has no ABSENT state to write. */
-export const OPTIONAL_CHECKED_DYN_DELETE =
-  "'delete' of optional 'unknown'/'any' fields (the checked-dynamic slot has no absent state yet — an omitted such field already reads as present)";
 
 /** The constant member a delete through an assertion names. */
 const MISSING_ASSERTED_MEMBER = (member: string): string =>
@@ -301,7 +288,7 @@ function recordDeletePlan(
       ? shape?.fields.find((f) => f.name === constantKey)
       : undefined;
   if (field) {
-    const absent = lowerer.absentFieldValue(field.type, loc);
+    const absent = lowerer.absentFieldValue(field, loc);
     if (absent) {
       const stmt = markSloppyRecordWrites(
         lowerer,
@@ -332,17 +319,6 @@ function recordDeletePlan(
       "'delete' of hybrid index-signature keys (declared struct slots and overflow entries answer differently — model deletable dynamic keys with a pure Record<string, T>)",
     );
   }
-  // An OPTIONAL `unknown`/`any` field rides the checked-dynamic slot,
-  // which has no ABSENT state yet (an omitted such field already reads as
-  // present), so it cannot delete. Name that reason instead of calling
-  // the field required or blaming the receiver.
-  if (
-    constantKey !== null &&
-    declaresCheckedDynField(lowerer, obj.type, constantKey) &&
-    declaredOptionalProperty(lowerer, target.expression, constantKey)
-  ) {
-    lowerer.unsupported("SC1090", expr, OPTIONAL_CHECKED_DYN_DELETE);
-  }
   // A key of SEVERAL literals names no single slot: say that instead of
   // blaming a field the caller never named.
   const keyNames =
@@ -361,37 +337,4 @@ function recordDeletePlan(
     expr,
     "'delete' of required record fields (the shape's slot cannot be removed — only an optional field (`f?: T`) has an absent state, which Object.keys, 'in', and JSON.stringify follow; make the field optional if the program must remove it)",
   );
-}
-
-/** TypeScript's declaration marks property `name` of `receiver` optional
- * (`?:`), in every union constituent. A mapped IR type cannot tell an
- * optional `unknown`/`any` field from a required one — both ride the
- * checked-dynamic slot — so a refused `delete`'s real reason comes from
- * the declaration. */
-export function declaredOptionalProperty(
-  lowerer: Lowerer,
-  receiver: ts.Expression,
-  name: string,
-): boolean {
-  const receiverType = lowerer.typeOf(receiver);
-  const parts =
-    receiverType.flags & ts.TypeFlags.Union ? constituentTypes(receiverType) : [receiverType];
-  return parts.every((part) => {
-    const property = lowerer.checker.getPropertyOfType(part, name);
-    return property !== undefined && (property.flags & ts.SymbolFlags.Optional) !== 0;
-  });
-}
-
-/** `type` — a record or a union whose every arm is a non-tuple record —
- * declares `name` in the checked-dynamic slot, which has no ABSENT state:
- * an optional such field cannot be removed by a `delete`. */
-export function declaresCheckedDynField(lowerer: Lowerer, type: IrType, name: string): boolean {
-  if (type.kind === "record") {
-    const shape = lowerer.shapes.get(type.shapeId);
-    if (!shape || shape.tuple) return false;
-    return shape.fields.find((f) => f.name === name)?.type.kind === "dyn";
-  }
-  if (type.kind !== "union") return false;
-  const arms = lowerer.unions.get(type.unionId)?.arms ?? [];
-  return arms.length > 0 && arms.every((arm) => declaresCheckedDynField(lowerer, arm, name));
 }

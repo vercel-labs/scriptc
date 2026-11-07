@@ -968,20 +968,31 @@ function refuseUnreceivableMember(lowerer: Lowerer, type: ts.Type, node: ts.Expr
   );
 }
 
+/** How many member visits the walk below follows before it stops. A type can
+ * name itself with an instantiation that grows at every level (`Chain<T>`
+ * whose member is declared `Chain<T[]>`): those are distinct types on every
+ * visit, so `seen` never repeats one, and a program's own record has no end
+ * to its member paths. A real view nests a few levels deep, so the walk ends
+ * well past any of them. */
+const MAX_VIEW_DEPTH = 32;
+
 /** The first member of the live view `type`, or of a view one of its
  * members is declared with, that an island value cannot be read into
  * (refuseUnreceivableMember); null when there is none, and for a type that
  * is not such a view (`object`, an island-declared type). `seen` ends a
- * type that names itself. */
+ * type that names itself, and `depth` a type that names itself with a
+ * growing instantiation. */
 function unreceivableMember(
   lowerer: Lowerer,
   type: ts.Type,
   path: string,
   seen: Set<ts.Type>,
+  depth = 0,
 ): { path: string; type: ts.Type } | null {
+  if (depth > MAX_VIEW_DEPTH) return null;
   if (type.isUnionType()) {
     for (const part of ts.constituentTypes(type)) {
-      const found = unreceivableMember(lowerer, part, path, seen);
+      const found = unreceivableMember(lowerer, part, path, seen, depth);
       if (found !== null) return found;
     }
     return null;
@@ -992,7 +1003,7 @@ function unreceivableMember(
   if (seen.has(type)) return null;
   seen.add(type);
   const member = (name: string, declared: ts.Type): { path: string; type: ts.Type } | null =>
-    unreceivableValue(lowerer, declared, path === "" ? name : `${path}.${name}`, seen);
+    unreceivableValue(lowerer, declared, path === "" ? name : `${path}.${name}`, seen, depth + 1);
   for (const property of lowerer.checker.getPropertiesOfType(type)) {
     const name = ts.symbolName(property);
     // A symbol-keyed member is read through the object's own descriptor.
@@ -1009,16 +1020,19 @@ function unreceivableMember(
 
 /** unreceivableMember for the value a member (or a promise) holds: the
  * part of `declared` whose native representation an island value never
- * meets, at `path`. */
+ * meets, at `path`. `depth` bounds a type that names itself with a growing
+ * instantiation. */
 function unreceivableValue(
   lowerer: Lowerer,
   declared: ts.Type,
   path: string,
   seen: Set<ts.Type>,
+  depth = 0,
 ): { path: string; type: ts.Type } | null {
+  if (depth > MAX_VIEW_DEPTH) return null;
   if (declared.isUnionType()) {
     for (const part of ts.constituentTypes(declared)) {
-      const found = unreceivableValue(lowerer, part, path, seen);
+      const found = unreceivableValue(lowerer, part, path, seen, depth);
       if (found !== null) return found;
     }
     return null;
@@ -1031,7 +1045,7 @@ function unreceivableValue(
   if (mapped === null || mapped.kind === "void") return null;
   // Another view (the marking follows members), or a value that stays
   // checked-dynamic for a reason of its own.
-  if (mapped.kind === "dyn") return unreceivableMember(lowerer, declared, path, seen);
+  if (mapped.kind === "dyn") return unreceivableMember(lowerer, declared, path, seen, depth + 1);
   // Byte views share their memory, and an island function is called through
   // the bridge behind a native closure.
   if (copiedType(lowerer, mapped) || mapped.kind === "func") return null;
@@ -1039,7 +1053,7 @@ function unreceivableValue(
   if (mapped.kind === "promise") {
     const settled = lowerer.checker.getAwaitedType(declared);
     if (settled === undefined || settled === declared) return null;
-    return unreceivableValue(lowerer, settled, path, seen) === null
+    return unreceivableValue(lowerer, settled, path, seen, depth + 1) === null
       ? null
       : { path, type: declared };
   }

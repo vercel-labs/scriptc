@@ -14,6 +14,7 @@ import { describe, expect, test } from "vitest";
 import ts5 from "typescript";
 import { compile } from "@scriptc/compiler";
 import { corpusSelect, shardSuffix } from "./shard.js";
+import { spawnFailure } from "./spawn-failure.js";
 import { runStep, type Track } from "./step-timeout.js";
 import { libnodePack, requiresLibnode } from "./libnode.js";
 import { tscOracleEntry, wantsTscOracle } from "./jsx-oracle.js";
@@ -131,7 +132,7 @@ async function runBinary(
         continue;
       }
       if (typeof e.code !== "number" || !Buffer.isBuffer(e.stdout) || !Buffer.isBuffer(e.stderr)) {
-        throw err;
+        throw spawnFailure(err);
       }
       return { stdout: e.stdout, stderr: e.stderr, exitCode: e.code };
     }

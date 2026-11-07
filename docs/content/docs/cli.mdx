@@ -152,8 +152,8 @@ Each command is one tool: `scriptc_build`, `scriptc_run`, `scriptc_coverage`, `s
   <dt><code>--print &lt;native-link-info|diagnostics&gt;</code></dt>
   <dd><code>native-link-info</code>: build an object (equivalent to <code>--emit=obj</code>) and print its machine-readable external link recipe as JSON instead of printing the artifact path. The document names the exact installed precompiled runtime pack and all link inputs, but does not invoke a linker. <code>diagnostics</code>: for <code>build</code> and <code>coverage</code>, print the versioned JSON diagnostics document described in <a href="/docs/coverage#machine-readable-diagnostics">Coverage Reports</a> instead of the human output.</dd>
 
-  <dt><code>--fail-on &lt;blockers|divergences|dynamic|dynamic-slots&gt;</code></dt>
-  <dd>Coverage only. Exit with status 1 when the entry has blockers that would fail a build, with <code>divergences</code>, also when it has Node divergence warnings, with <code>dynamic</code>, also when it has the <code>SC6101</code> warning for untyped code that likely runs often, or with <code>dynamic-slots</code>, also when it has <a href="/docs/coverage#dynamic-slots">dynamic slots</a> (<code>SC6104</code>). See <a href="/docs/coverage#gating-builds-and-ci">Gating builds and CI</a>.</dd>
+  <dt><code>--fail-on &lt;blockers|divergences|dynamic|dynamic-slots|type-claims&gt;</code></dt>
+  <dd>Coverage only. Exit with status 1 when the entry has blockers that would fail a build, with <code>divergences</code>, also when it has Node divergence warnings, with <code>dynamic</code>, also when it has the <code>SC6101</code> warning for untyped code that likely runs often, with <code>dynamic-slots</code>, also when it has <a href="/docs/coverage#dynamic-slots">dynamic slots</a> (<code>SC6104</code>), or with <code>type-claims</code>, also when it has <a href="/docs/coverage#type-claims">type claims</a>. See <a href="/docs/coverage#gating-builds-and-ci">Gating builds and CI</a>.</dd>
 
   <dt><code>--ffi &lt;file&gt;</code></dt>
   <dd>Bind signature-only TypeScript declarations to native C ABI symbols and link the manifest's archive, object, and system-library inputs. See <a href="/docs/ffi">Native FFI</a>.</dd>
@@ -214,6 +214,12 @@ Each command is one tool: `scriptc_build`, `scriptc_run`, `scriptc_coverage`, `s
 
   <dt><code>--no-dynamic-tier-warning</code></dt>
   <dd>Build and coverage. Leave out <code>SC6101</code>, the warning that names functions that likely run often and use untyped values. Not allowed with <code>--fail-on=dynamic</code>. See <a href="/docs/coverage#untyped-code-that-likely-runs-often">Untyped code that likely runs often</a>.</dd>
+
+  <dt><code>--no-copy-warning</code></dt>
+  <dd>Build and coverage. Leave out <code>SC6001</code>, the warning at conversions that copy a value the program can tell from the original. Not allowed with <code>--fail-on=divergences</code>. See <a href="/docs/coverage#node-divergences">Node divergences</a>.</dd>
+
+  <dt><code>--no-ignored-failure-warning</code></dt>
+  <dd>Build and coverage. Leave out <code>SC6009</code>, the warning at a runtime type check whose failure a handler would ignore. Not allowed with <code>--fail-on=divergences</code>. See <a href="/docs/coverage#node-divergences">Node divergences</a>.</dd>
 
   <dt><code>--wasm &lt;file.wasm&gt;</code></dt>
   <dd>Coverage only. Report a WebAssembly module the program loads from a path its sources do not spell out. The report already lists modules whose paths the compiler resolves, modules inlined as base64 literals, and <code>.wasm</code> files shipped by packages that use WebAssembly; a <code>scriptc.wasm</code> array in <code>package.json</code> adds files the same way as this flag. Each module is listed with its size, whether it validates, and the WebAssembly proposals it uses. Builds translate the modules they find to native code; a build reads the <code>scriptc.wasm</code> array but not this flag. Repeatable.</dd>

@@ -5,7 +5,7 @@ import { countedFor, dynUndefinedExpr, varRef } from "../../../ir/build.js";
 import type { FieldLift } from "./structural-plans.js";
 import { buildArrayConversion } from "./builders.js";
 import { arrayValueRead, arrayValueStore, primitiveElement } from "../array-values.js";
-import type { WidthLift } from "../width-lift.js";
+import { COPY_HELPERS, ROUTING_HELPERS, type WidthLift } from "../width-lift.js";
 import { InternalCompilerError } from "../../../errors.js";
 import type { IrExpr, IrFunction, IrRecordShape, IrStmt, IrType, SrcLoc } from "../../../ir/ir.js";
 import { BOOL, DYN, F64, STRING, UNDEFINED_T, isUnitType, typeEquals } from "../../../ir/ir.js";
@@ -202,7 +202,7 @@ export function applyWidthLift(
       const key = `presence:${typeKey(sourceType)}:${dst.unionId}:${lift.field}`;
       let helper = lowerer.valueHelpers.get(key);
       if (!helper) {
-        helper = `%union.presence.${lowerer.valueHelpers.size}`;
+        helper = `${ROUTING_HELPERS.presence}.${lowerer.valueHelpers.size}`;
         lowerer.valueHelpers.set(key, helper);
         const source = (): IrExpr => varRef("v.0", sourceType, loc);
         const arm = (route: { tag: number; arm: IrType }): IrExpr => {
@@ -407,7 +407,7 @@ export function unionRecordWidthHelper(
   const key = `unionWidth:${fromId}:${target.shapeId}`;
   const existing = lowerer.valueHelpers.get(key);
   if (existing) return existing;
-  const name = keyedHelperName(lowerer, "%union.record", key);
+  const name = keyedHelperName(lowerer, ROUTING_HELPERS.unionRecord, key);
   lowerer.valueHelpers.set(key, name);
   const type: IrType = { kind: "union", unionId: fromId };
   const value = varRef("value.0", type, loc);
@@ -465,7 +465,7 @@ export function unionArrayWidthHelper(
   const key = `unionArr:${fromId}:${typeKey(target)}`;
   const existing = lowerer.valueHelpers.get(key);
   if (existing) return existing;
-  const name = keyedHelperName(lowerer, "%union.arr", key);
+  const name = keyedHelperName(lowerer, ROUTING_HELPERS.unionArr, key);
   lowerer.valueHelpers.set(key, name);
   const type: IrType = { kind: "union", unionId: fromId };
   const value = varRef("value.0", type, loc);
@@ -560,7 +560,7 @@ export function recordWidthHelper(
     declared === null ? `rec:${fromId}:${toId}` : `rec:${fromId}:${toId}:origin:${declared.key}`;
   const existing = lowerer.valueHelpers.get(key);
   if (existing) return existing;
-  const name = keyedHelperName(lowerer, "%rec.width", key);
+  const name = keyedHelperName(lowerer, COPY_HELPERS.width, key);
   // Interned BEFORE the body builds: a recursive nested-width field
   // (self-referential shapes) resolves to this helper itself.
   lowerer.valueHelpers.set(key, name);
@@ -608,7 +608,7 @@ export function tupleArrayWidthHelper(
   const key = `tuparr:${fromId}:${typeKey(toT.elem)}`;
   const existing = lowerer.valueHelpers.get(key);
   if (existing) return existing;
-  const name = keyedHelperName(lowerer, "%tup.arr", key);
+  const name = keyedHelperName(lowerer, COPY_HELPERS.tupleArr, key);
   lowerer.valueHelpers.set(key, name);
   const fromT: IrType = { kind: "record", shapeId: fromId };
   const t: IrExpr = { kind: "varRef", localId: "t.0", type: fromT, loc };
@@ -655,7 +655,7 @@ export function emptyArrayLiftHelper(
   const key = `emptyarr:${typeKey(fromT.elem)}:${typeKey(toT.elem)}`;
   const existing = lowerer.valueHelpers.get(key);
   if (existing) return existing;
-  const name = keyedHelperName(lowerer, "%arr.empty", key);
+  const name = keyedHelperName(lowerer, COPY_HELPERS.emptyArr, key);
   lowerer.valueHelpers.set(key, name);
   const a: IrExpr = { kind: "varRef", localId: "a.0", type: fromT, loc };
   lowerer.liftedFns.push({
@@ -726,7 +726,7 @@ function optionalArrayHelper(
   const key = `arrOptional:${typeKey(from)}:${typeKey(to)}`;
   const existing = lowerer.valueHelpers.get(key);
   if (existing) return existing;
-  const name = keyedHelperName(lowerer, "%arr.width", key);
+  const name = keyedHelperName(lowerer, COPY_HELPERS.arr, key);
   lowerer.valueHelpers.set(key, name);
   const input = varRef("a.0", fromT, loc);
   const out = varRef("out.0", toT, loc);
@@ -782,7 +782,7 @@ export function arrayWidthHelper(
   const key = `arr:${typeKey(fromElem)}:${typeKey(toElem)}`;
   const existing = lowerer.valueHelpers.get(key);
   if (existing) return existing;
-  const name = keyedHelperName(lowerer, "%arr.width", key);
+  const name = keyedHelperName(lowerer, COPY_HELPERS.arr, key);
   lowerer.valueHelpers.set(key, name);
   const arrT: IrType = { kind: "array", elem: fromElem };
   const outT: IrType = { kind: "array", elem: toElem };
@@ -845,7 +845,7 @@ export function objRecordWidthHelper(
   const key = `obj:${className}:${toId}`;
   const existing = lowerer.valueHelpers.get(key);
   if (existing) return existing;
-  const name = keyedHelperName(lowerer, "%obj.width", key);
+  const name = keyedHelperName(lowerer, COPY_HELPERS.objWidth, key);
   lowerer.valueHelpers.set(key, name);
   const fromT: IrType = { kind: "object", className };
   lowerer.liftedFns.push(buildRecordProjection(lowerer, name, fromT, to, plan, loc));
@@ -870,7 +870,7 @@ export function recordClassWidthHelper(
   const key = `cls:${fromId}:${className}`;
   const existing = lowerer.valueHelpers.get(key);
   if (existing) return existing;
-  const name = keyedHelperName(lowerer, "%cls.width", key);
+  const name = keyedHelperName(lowerer, COPY_HELPERS.clsWidth, key);
   lowerer.valueHelpers.set(key, name);
   lowerer.noteEdge(`%${className}.constructor`);
   const fromT: IrType = { kind: "record", shapeId: fromId };

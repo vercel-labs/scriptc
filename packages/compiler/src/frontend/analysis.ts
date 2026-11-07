@@ -290,6 +290,7 @@ export function analyzeWithFrontend(
         ...(lowered.divergences !== undefined ? { divergences: lowered.divergences } : {}),
         ...(lowered.performance !== undefined ? { performance: lowered.performance } : {}),
         ...(lowered.dynamicSlots !== undefined ? { dynamicSlots: lowered.dynamicSlots } : {}),
+        ...(lowered.typeClaims !== undefined ? { typeClaims: lowered.typeClaims } : {}),
         ...(lowered.unreached ? { unreached: lowered.unreached } : {}),
         ...(fe.npmStatic.length > 0 ? { npmStatic: fe.npmStatic } : {}),
         // --provenance-sources: the per-package attribution inputs (the
@@ -308,6 +309,7 @@ export function analyzeWithFrontend(
         lowerLoad.fe === null
           ? fe.sourceTexts()
           : new Map([...fe.sourceTexts(), ...lowerLoad.fe.sourceTexts()]),
+      ...(lowered.widthCopies !== undefined ? { widthCopies: lowered.widthCopies } : {}),
     };
   } finally {
     lowerLoad.fe?.dispose();

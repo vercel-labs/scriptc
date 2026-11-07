@@ -73,7 +73,9 @@
  *            order that differs from insertion order where the program
  *            observes it (SC6002), localeCompare over text the built-in
  *            collation does not cover (SC6003), a call feeding an instance
- *            to a cast to an unrelated class (SC6004); SC6005 (Date strings
+ *            to a cast to an unrelated class (SC6004), a checked conversion
+ *            of unverified data whose failure ends in a handler that
+ *            ignores it (SC6009); SC6005 (Date strings
  *            outside the native parser's grammar) is retired — the runtime
  *            parses date strings with V8's grammar. SC61xx are performance
  *            notes, also warnings (coverage --fail-on=dynamic opts in):
@@ -258,35 +260,33 @@ export function nodeIslandDataFileDiag(message: string, loc: SrcLoc): ScrDiagnos
 
 /* ── SC6xxx: divergences from Node (warnings) ─────────────────────────── */
 
-/** SC6001 — a value passed to (or declared as) a narrower record type is
- * copied field by field, and the program then writes through or compares
- * the copy: under Node it is the same object, so the write would be
- * visible to the original and `===` would be true. */
+/** SC6001 — a conversion copies an object something else can still reach
+ * (a record into a record type with other properties, an array into an
+ * array of another element layout, a tuple into an array, a record into a
+ * class instance), and the program observes one of the two layouts in a way
+ * that tells the copy from the object: under Node there is one object, so a
+ * write through either name is visible through the other and `===` is true.
+ * `what` names the copied object when it is a member of the converted value
+ * (a field, an element) rather than the value itself. */
 export function widthCopyDivergenceDiag(
-  sourceType: string,
-  targetType: string,
-  use: "write" | "compare",
-  useText: string,
-  site: "call" | "declaration" | "cast" | "element",
+  conversion: { from: string; to: string; member: boolean },
+  observed: { how: "write" | "identity" | "untyped"; what: string; where: string },
   loc: SrcLoc,
 ): ScrDiagnostic {
-  const how =
-    site === "call"
-      ? `passing a '${sourceType}' where '${targetType}' is expected`
-      : site === "cast"
-        ? `asserting a '${sourceType}' as '${targetType}'`
-        : site === "element"
-          ? `storing a '${sourceType}' as an element of '${targetType}[]'`
-          : `storing a '${sourceType}' in a '${targetType}' binding`;
+  const subject = conversion.member
+    ? `this conversion copies the '${conversion.from}' inside the value into a '${conversion.to}'`
+    : `converting this '${conversion.from}' to '${conversion.to}' copies it`;
   const effect =
-    use === "write"
-      ? `the write to '${useText}' updates only the copy, while under Node it updates the original object`
-      : `'${useText}' compares the copy, which is never the original object, while under Node it is the same object`;
+    observed.how === "write"
+      ? `the program writes ${observed.what} (${observed.where}), and such a write reaches only one of the two objects`
+      : observed.how === "identity"
+        ? `the program compares ${observed.what} by identity (${observed.where}), and the copy is never the object it was made from`
+        : `${observed.what} (${observed.where}), where a write or an identity comparison tells the copy from the object it was made from`;
   return {
     code: "SC6001",
-    message: `${how} copies the object (converting to a record type with other properties compiles as a field copy): ${effect}`,
+    message: `${subject} (a conversion to another layout builds a new object), while under Node both names refer to one object: ${effect}`,
     loc,
-    hint: `declare the parameter or binding with the value's full type ('${sourceType}'), or make the shape a class — class instances keep their identity when passed as a base class`,
+    hint: `keep the value at its own type ('${conversion.from}') where it is passed or stored, or copy it explicitly (a spread, 'structuredClone') so that Node copies it too`,
   };
 }
 
@@ -341,6 +341,36 @@ export function unrelatedClassCastDivergenceDiag(
     message: `this '${source}' reaches a cast to the unrelated class '${target}' in the callee: natively the checked cast throws a TypeError when it executes, while Node reads the members structurally`,
     loc,
     hint: `narrow with 'instanceof ${target}' before casting, or cast to a base class or interface both classes share`,
+  };
+}
+
+/** SC6009 — a checked conversion of a value no build can verify (parsed
+ * data, a Node island's value, a value typed by a package declaration, an
+ * `any`) sits where its failure ends in a handler that neither reads the
+ * error nor throws. Natively a value that contradicts the claimed type
+ * throws a TypeError there and the handler's path runs with nothing said;
+ * Node.js checks nothing and continues with the value. `handler` is the
+ * `try` statement (or the `.catch(…)` call of a promise's rejection
+ * handler) and where it is; `through` is the call the failure travels
+ * through when the conversion is in a function the guarded code calls. */
+export function swallowedConversionDivergenceDiag(
+  claimed: string,
+  handler: { kind: "catch" | "finally" | "rejection"; where: string },
+  through: string | undefined,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  const route = through === undefined ? "" : `, reached through the call at ${through},`;
+  const ends =
+    handler.kind === "catch"
+      ? `is caught by the handler of the 'try' at ${handler.where}, which neither reads the error nor throws`
+      : handler.kind === "rejection"
+        ? `rejects a promise whose handler at ${handler.where} neither reads the reason nor throws`
+        : `is discarded by the 'finally' of the 'try' at ${handler.where}, which leaves with 'return', 'break' or 'continue'`;
+  return {
+    code: "SC6009",
+    message: `a value that is not '${claimed}' throws a TypeError at this checked conversion, and that error${route} ${ends}: the program takes the handler's path with no sign of why, while Node.js checks nothing here and continues with the value`,
+    loc,
+    hint: `check the value before giving it this type (a schema, or tests on an 'unknown' value), declare the type the data really has, or let the handler tell failures apart: read the caught error, or rethrow what it does not expect`,
   };
 }
 

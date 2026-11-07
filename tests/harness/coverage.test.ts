@@ -94,21 +94,52 @@ test("divergences report as warnings, never as blockers", async () => {
   );
 });
 
+test("a checked conversion whose failure a handler ignores is a divergence", async () => {
+  const entry = fixture("swallowed-conversions.ts");
+  const { coverage } = analyze(entry);
+  expect(coverage.diagnostics).toEqual([]);
+  // Four conversions fail into a handler that ignores the error: in a try
+  // whose catch has no binding, under a finally that returns, in a function
+  // such a try calls, and in a callback of a promise chain whose rejection
+  // handler takes no argument. The three whose handler reads the error, or
+  // rethrows it, are claims and not warnings.
+  expect((coverage.divergences ?? []).map((d) => d.code)).toEqual([
+    "SC6009",
+    "SC6009",
+    "SC6009",
+    "SC6009",
+  ]);
+  // The warnings are the claims the report marks.
+  const marked = (coverage.typeClaims ?? []).filter((site) => site.swallowed !== undefined);
+  expect(marked.map((site) => site.loc.start).sort((a, b) => a - b)).toEqual(
+    (coverage.divergences ?? []).map((d) => d.loc.start).sort((a, b) => a - b),
+  );
+  expect(marked.map((site) => site.swallowed!.handler.kind).sort()).toEqual([
+    "catch",
+    "catch",
+    "finally",
+    "rejection",
+  ]);
+  expect(coverage.typeClaims?.length).toBe(7);
+  expect(coveragePasses(coverage, "blockers")).toBe(true);
+  expect(coveragePasses(coverage, "divergences")).toBe(false);
+  await expect(report(entry)).toMatchFileSnapshot(
+    "__snapshots__/coverage-swallowed-conversions.txt",
+  );
+});
+
 test("record width copies report at every storing site", async () => {
   const { coverage } = analyze(fixture("width-copies.ts"));
   expect(coverage.diagnostics).toEqual([]);
-  // Four sites copy: a narrower parameter, the empty record, a later
-  // assignment, and an array element. The assertions report nothing: `tagged
-  // as Labeled` and the union arm `blocks[0] as { text: string }` name only
-  // members the value itself stores, so the binding keeps the value's storage
-  // and its writes reach that object (as do the unknown-only views at the end
-  // of the fixture, which have no field to copy into).
-  expect((coverage.divergences ?? []).map((d) => d.code)).toEqual([
-    "SC6001",
-    "SC6001",
-    "SC6001",
-    "SC6001",
-  ]);
+  // Three sites copy: a parameter that adds an optional property, a later
+  // assignment, and an array element. The empty record type has no field to
+  // copy into, so its binding holds the object itself and `===` is true, as
+  // under Node. The assertions report nothing either: `tagged as Labeled`
+  // and the union arm `blocks[0] as { text: string }` name only members the
+  // value itself stores, so the binding keeps the value's storage and its
+  // writes reach that object (as do the unknown-only views at the end of the
+  // fixture).
+  expect((coverage.divergences ?? []).map((d) => d.code)).toEqual(["SC6001", "SC6001", "SC6001"]);
   await expect(report(fixture("width-copies.ts"))).toMatchFileSnapshot(
     "__snapshots__/coverage-width-copies.txt",
   );
@@ -311,6 +342,76 @@ test("the diagnostics envelope is versioned and located", () => {
   expect(envelope.diagnostics[0]!.hint.length).toBeGreaterThan(0);
 });
 
+test("type claims list the checked conversions that trust an unverified type", async () => {
+  // One of each: parsed data under an assertion, a value through `any`, a
+  // Node island's values (one read twice, one of a type no island object
+  // converts to, one declared `any`), a function the island calls, and a
+  // package compiled from its JavaScript, and an assertion over a value the
+  // build holds dynamically. The read `size` guards with `typeof` is not a
+  // claim; the one `late` makes before its test is.
+  const entry = fixture("node-islands-type-claims/main.ts");
+  await expect(report(entry)).toMatchFileSnapshot("__snapshots__/coverage-type-claims.txt");
+  const { coverage, sourceTexts } = analyze(entry);
+  expect(coverage.diagnostics).toEqual([]);
+  const envelope = coverageEnvelope(coverage, { compilerVersion: "test", sourceTexts });
+  const claims = envelope.typeClaims ?? [];
+  expect(
+    claims.map((g) => [
+      g.kind,
+      g.declaration?.selector ?? g.declaration?.name ?? g.package?.name ?? g.claimed[0],
+      g.count,
+      g.sites.map((s) => s.line),
+    ]),
+  ).toEqual([
+    // Throws whenever it runs: first, whatever its count.
+    ["island", "started()", 1, [32]],
+    // A conversion whose failure the program would not see: second.
+    ["parsed", "{ name: string; retries: number }", 3, [52, 14, 15]],
+    ["island", "Session.ttl", 2, [26, 27]],
+    ["parsed", "number", 2, [18, 19]],
+    ["island", "each(visit)", 1, [28]],
+    ["island", "label()", 1, [35]],
+    ["island", "load()", 1, [31]],
+    // `table(2) as Catalog`; `entries`, read back under its declared type,
+    // is not listed.
+    ["untyped", "{ a: { n: number } }", 1, [45]],
+    // `late` converts before it tests the kind: the test guards nothing.
+    ["untyped", "number", 1, [62]],
+    // A compiled package's own conversions: after the program's.
+    ["package", "tc-native", 1, [9]],
+  ]);
+  expect(claims[0]).toMatchObject({
+    nativeOnly: 1,
+    declaration: {
+      package: "tc-island",
+      version: "3.1.0",
+      at: "index.d.ts:8",
+      declaredType: "Date",
+    },
+  });
+  // `readEntry` converts inside a try whose handler ignores the error.
+  expect(claims[1]!.swallowed?.map((s) => s.line)).toEqual([52]);
+  expect(claims[2]!.fix).toContain("scriptc types patch tc-island Session.ttl '<type>'");
+  expect(claims[4]).toMatchObject({ callbacks: 1, claimed: ["(string, number) => void"] });
+  expect(claims[8]).toMatchObject({ binding: { name: "value", line: 61 } });
+  expect(claims[9]).toMatchObject({
+    package: { name: "tc-native", version: "1.4.2" },
+    declarations: [{ selector: "width()", at: "index.js:8", declaredType: "number", count: 1 }],
+  });
+  expect(claims[7]).toMatchObject({ asserted: 1, binding: { name: "table()", line: 40 } });
+  // Never a blocker; its own gate.
+  expect(coveragePasses(coverage, "blockers")).toBe(true);
+  expect(coveragePasses(coverage, "type-claims")).toBe(false);
+});
+
+test("a program that converts only its own values reports no type claims", () => {
+  for (const name of ["no-divergences.ts", "width-copies.ts", "divergences.ts"]) {
+    const { coverage } = analyze(fixture(name));
+    expect(coverage.typeClaims, name).toBeUndefined();
+    expect(coveragePasses(coverage, "type-claims"), name).toBe(true);
+  }
+});
+
 test("CLI: --print=diagnostics and --fail-on set the output and exit status", () => {
   const scriptcCli = join(repoRoot, "packages/cli/src/main.ts");
   const run = (...args: string[]) =>
@@ -329,6 +430,8 @@ test("CLI: --print=diagnostics and --fail-on set the output and exit status", ()
   expect(envelope).toMatchObject({ schemaVersion: 1, success: false });
   expect(run(fixture("divergences.ts"), "--fail-on=blockers").status).toBe(0);
   expect(run(fixture("divergences.ts"), "--fail-on=divergences").status).toBe(1);
+  expect(run(fixture("node-islands-type-claims/main.ts"), "--fail-on=blockers").status).toBe(0);
+  expect(run(fixture("node-islands-type-claims/main.ts"), "--fail-on=type-claims").status).toBe(1);
   // Unreached blockers cannot fail a build, so they never fail the gate.
   expect(run(fixture("unreached.ts"), "--fail-on=blockers").status).toBe(0);
   const bad = run(fixture("mixed.ts"), "--fail-on=everything");
@@ -1255,9 +1358,25 @@ test(`every corpus program is 100% static (corpus and coverage agree${shardSuffi
     const deferred = /^\/\/ @deferred-fences:\s*(\d+)\s*$/.exec(firstLine);
     const { coverage } = analyze(file, {});
     expect.soft(coverage.diagnostics, file).toEqual([]);
-    // Corpus programs match Node by definition: a divergence warning on one
-    // is a false positive.
-    expect.soft(coverage.divergences ?? [], file).toEqual([]);
+    // Corpus programs match Node on the path the corpus runs: a divergence
+    // warning on one is a false positive, except SC6001 and SC6009. Those
+    // two are sound rather than exact. SC6001 names every conversion that
+    // copies a value the program could tell from the original
+    // (lowering/width-copies.ts), and a corpus program can hold one on a
+    // path it does not take. What keeps it honest is
+    // tests/harness/copy-soundness.test.ts, which counts the conversions
+    // that copy and the warnings that were not needed. SC6009 names a
+    // checked conversion whose failure a handler would ignore
+    // (lowering/swallowed-conversions.ts): a corpus program's data fits its
+    // types, so the conversion does not fail there, and the warning is about
+    // data that does not. packages/compiler/test/swallowed-conversions.test.ts
+    // pins which handlers count.
+    expect
+      .soft(
+        (coverage.divergences ?? []).filter((d) => d.code !== "SC6001" && d.code !== "SC6009"),
+        file,
+      )
+      .toEqual([]);
     expect.soft(coverage.stats.statementsFailed, file).toBe(deferred ? Number(deferred[1]) : 0);
     if (++n % 10 === 0) await new Promise((r) => setImmediate(r));
   }

@@ -12,12 +12,13 @@
  *       { "typePatches": { "termctx@^1.2.0": { "declarations":
  *       { "Terminal.columns()": "| undefined" } } } }
  *
- * The origin is found for three kinds of slots: a value a package function
+ * The origin is found for four kinds of slots: a value a package function
  * returns under a written return type, a property of an object literal
- * typed by a package-declared type, and a declaration-boundary cast (a
+ * typed by a package-declared type, a declaration-boundary cast (a
  * value user code receives from a package; decl-projection.ts records
- * those with originAt). Generic declarations get none: their types come
- * from how the program instantiates them. Checks in
+ * those with originAt), and a value a Node island hands over, typed by the
+ * island package's declarations (islandValueOrigin). Generic declarations
+ * get none: their types come from how the program instantiates them. Checks in
  * code that names no package declaration carry no origin, so programs
  * without npm packages lower exactly as before.
  *
@@ -81,6 +82,12 @@ function packageFileOf(fileName: string): PackageFile | null {
     versions.set(versionRoot, version);
   }
   return { pkg, version, rel: parts.slice(nameParts).join("/") };
+}
+
+/** The installed package a file belongs to, or null. */
+export function packageOfFile(fileName: string): { name: string; version: string } | null {
+  const file = packageFileOf(fileName);
+  return file === null ? null : { name: file.pkg, version: file.version };
 }
 
 /** True for a node in an installed package's file. */
@@ -245,7 +252,7 @@ export function slotOrigin(checker: ts.TypeChecker, node: ts.Node): string | nul
     if (file === null) return null;
     return encode(
       file,
-      `${typeName}.${name}`,
+      `${namespacesOf(typeSymbol?.declarations[0])}${typeName}.${name}`,
       `${file.rel}:${lineOf(decl)}`,
       typeText(checker, checker.getTypeOfSymbol(symbol)),
     );
@@ -275,6 +282,9 @@ export function slotOrigin(checker: ts.TypeChecker, node: ts.Node): string | nul
 export interface RecordOrigin {
   type: ts.Type;
   name: string;
+  /** The type's patch selector: its name with the namespaces it is
+   * declared in. */
+  selector: string;
   /** The declaration's identity (package, version, file, line and name):
    * records of the same shape and name declared by two packages differ. */
   key: string;
@@ -291,7 +301,7 @@ export function recordOrigin(checker: ts.TypeChecker, node: ts.Node): RecordOrig
   const file = packageFileOf(ts.getSourceFileOfNode(decl).fileName);
   if (file === null) return null;
   const key = [file.pkg, file.version, file.rel, lineOf(decl), name].join(ORIGIN_SEPARATOR);
-  return { type: contextual, name, key };
+  return { type: contextual, name, selector: `${namespacesOf(decl)}${name}`, key };
 }
 
 /** The origin of one field of a package-declared record type. */
@@ -307,7 +317,7 @@ export function fieldOrigin(
   if (file === null) return null;
   return encode(
     file,
-    `${record.name}.${field}`,
+    `${record.selector}.${field}`,
     `${file.rel}:${lineOf(decl)}`,
     typeText(checker, checker.getTypeOfSymbol(symbol)),
   );
@@ -318,6 +328,237 @@ export function originAt(decl: ts.Node, selector: string, declared: string): str
   const file = packageFileOf(ts.getSourceFileOfNode(decl).fileName);
   if (file === null) return null;
   return encode(file, selector, `${file.rel}:${lineOf(decl)}`, declared);
+}
+
+/** The declaration that types the value of an expression: the signature a
+ * call or `new` resolves to, or the declaration of the member or binding
+ * read. `call` is true for the first. (The declaration-typed boundary
+ * resolves its casts the same way, decl-projection.ts's castOrigin.) */
+function valueDeclaration(
+  checker: ts.TypeChecker,
+  node: ts.Node,
+): { decl: ts.Node; call: boolean } | null {
+  let inner = node as ts.Expression;
+  while (
+    ts.isParenthesizedExpression(inner) ||
+    ts.isAwaitExpression(inner) ||
+    ts.isNonNullExpression(inner)
+  )
+    inner = inner.expression;
+  if (ts.isCallExpression(inner) || ts.isNewExpression(inner)) {
+    const decl = checker.getResolvedSignature(inner)?.declaration;
+    return decl === undefined ? null : { decl, call: true };
+  }
+  // `value["member"]` reads the member `value.member` reads.
+  if (ts.isElementAccessExpression(inner) && ts.isStringLiteral(inner.argumentExpression)) {
+    const member = checker.getPropertyOfType(
+      checker.getTypeAtLocation(inner.expression),
+      inner.argumentExpression.text,
+    );
+    const decl = member?.declarations[0];
+    return decl === undefined ? null : { decl, call: false };
+  }
+  const name = ts.isPropertyAccessExpression(inner)
+    ? inner.name
+    : ts.isIdentifier(inner)
+      ? inner
+      : null;
+  if (name === null) return null;
+  let symbol = checker.getSymbolAtLocation(name);
+  if (symbol !== undefined && symbol.flags & ts.SymbolFlags.Alias)
+    symbol = checker.getAliasedSymbol(symbol);
+  const decl = symbol?.declarations[0];
+  return decl === undefined ? null : { decl, call: false };
+}
+
+/** The receiver of a member read, an element read or a method call, or
+ * null. `element` is true for a read of an array by a number
+ * (`values()[0]`): the value is an element of what the receiver's
+ * declaration types, the selector's `[]`. A read by any other key, or of
+ * an object with an index signature, is a member's. */
+function receiverOf(
+  checker: ts.TypeChecker,
+  node: ts.Node,
+): { receiver: ts.Expression; element: boolean } | null {
+  let inner = node as ts.Expression;
+  while (
+    ts.isParenthesizedExpression(inner) ||
+    ts.isAwaitExpression(inner) ||
+    ts.isNonNullExpression(inner)
+  )
+    inner = inner.expression;
+  if (ts.isElementAccessExpression(inner)) {
+    const key = checker.getTypeAtLocation(inner.argumentExpression);
+    return {
+      receiver: inner.expression,
+      element:
+        (key.flags & ts.TypeFlags.NumberLike) !== 0 &&
+        checker.isArrayType(checker.getTypeAtLocation(inner.expression)),
+    };
+  }
+  if (ts.isCallExpression(inner)) inner = inner.expression;
+  return ts.isPropertyAccessExpression(inner) || ts.isElementAccessExpression(inner)
+    ? { receiver: inner.expression, element: false }
+    : null;
+}
+
+/** Where a declaration is: its file in the package, under the @types
+ * package when one holds it, and its line. */
+function declaredAt(decl: ts.Node, file: PackageFile): string {
+  const path = ts.getSourceFileOfNode(decl).fileName.split("\\").join("/");
+  const installed = path.slice(path.lastIndexOf("/node_modules/") + "/node_modules/".length);
+  return `${installed.startsWith("@types/") ? installed : file.rel}:${lineOf(decl)}`;
+}
+
+/** The origin of the package type that types the receiver of a member read
+ * no declaration can be named for (a member of a mapped or inferred type,
+ * `settings.theme` with `settings: Static<typeof Settings>`): the named
+ * type of the nearest receiver that a package declares. Never patchable by
+ * selector. */
+function islandTypeOrigin(
+  checker: ts.TypeChecker,
+  node: ts.Node,
+  isLibraryFile: (file: ts.SourceFile) => boolean,
+): string | null {
+  let at = receiverOf(checker, node)?.receiver ?? null;
+  for (
+    let depth = 0;
+    at !== null && depth < 32;
+    depth++, at = receiverOf(checker, at)?.receiver ?? null
+  ) {
+    const type = checker.getTypeAtLocation(at);
+    const symbol = type.getAliasSymbol() ?? type.getSymbol();
+    const decl = symbol?.declarations[0];
+    if (symbol === undefined || decl === undefined) continue;
+    if (isLibraryFile(ts.getSourceFileOfNode(decl))) continue;
+    const file = packageFileOf(ts.getSourceFileOfNode(decl).fileName);
+    const name = ts.symbolName(symbol);
+    // An anonymous type (`__type`, `__object`) names nothing.
+    if (file === null || !/^(?!__)[A-Za-z_$][\w$]*$/.test(name)) continue;
+    return [
+      file.pkg,
+      file.version,
+      "",
+      name,
+      declaredAt(decl, file),
+      typeText(checker, type).replace(/\s+/g, " "),
+    ].join(ORIGIN_SEPARATOR);
+  }
+  return null;
+}
+
+/** The origin of the package declaration that types a Node island value
+ * (coverage's type claims). A declaration no selector reaches (a generic
+ * one, whose type the program instantiates) is still named, with an empty
+ * patch range: it can be reported, not patched by selector. A member the
+ * standard library declares (`.length` or `.join()` of an array the island
+ * returned) is typed by what declares its receiver, and is named without
+ * a patch range: patching the receiver's declaration would not describe
+ * the member. An element (`values()[0]`) is the receiver's `[]`. With
+ * `argument`, the
+ * origin is that parameter of the call `node` (a function the island calls
+ * with its own values). Null when the value is typed by no package
+ * declaration. */
+export function islandValueOrigin(
+  checker: ts.TypeChecker,
+  node: ts.Node,
+  type: ts.Type,
+  isLibraryFile: (file: ts.SourceFile) => boolean,
+  argument?: number,
+): string | null {
+  let at: ts.Node | null = node;
+  let hopped = false;
+  // How the value is reached from the declaration found: as an element of
+  // its type (`[]` in the selector), or through a member the standard
+  // library declares, which no selector of the package reaches.
+  let elements = 0;
+  let viaMember = false;
+  const valueType = type;
+  let found: { decl: ts.Node; call: boolean } | null = null;
+  for (let depth = 0; at !== null && depth < 32; depth++) {
+    try {
+      found = valueDeclaration(checker, at);
+    } catch {
+      found = null;
+    }
+    if (found !== null) {
+      const decl: ts.Node = found.decl;
+      if (!isLibraryFile(ts.getSourceFileOfNode(decl))) {
+        // A binding of the program holds what its initializer produced.
+        if (
+          found.call ||
+          !ts.isVariableDeclaration(decl) ||
+          decl.initializer === undefined ||
+          packageFileOf(ts.getSourceFileOfNode(decl).fileName) !== null
+        )
+          break;
+        found = null;
+        at = decl.initializer;
+        type = checker.getTypeAtLocation(at);
+        continue;
+      }
+    }
+    // A member the standard library declares, or an element: what declares
+    // its receiver types it, and an argument of the member is no parameter
+    // of that.
+    found = null;
+    const hop = receiverOf(checker, at);
+    at = hop === null ? null : hop.receiver;
+    hopped = true;
+    if (hop !== null && hop.element) elements++;
+    else viaMember = true;
+    if (at !== null) type = checker.getTypeAtLocation(at);
+  }
+  if (found === null || packageFileOf(ts.getSourceFileOfNode(found.decl).fileName) === null)
+    return argument === undefined ? islandTypeOrigin(checker, node, isLibraryFile) : null;
+  const { decl, call } = found;
+  const file = packageFileOf(ts.getSourceFileOfNode(decl).fileName);
+  if (file === null) return null;
+  // An element's declared type is the value's own; a value reached through
+  // a member is described by its receiver's.
+  const declared = typeText(checker, elements > 0 && !viaMember ? valueType : type);
+  // `f()` names a call's result, `f(name)` one of its parameters.
+  let suffix = call ? "()" : "";
+  if (argument !== undefined && !hopped) {
+    const parameters = (decl as ts.SignatureDeclaration).parameters?.nodes ?? [];
+    const parameter = parameters[Math.min(argument, parameters.length - 1)];
+    const parameterName = parameter === undefined ? null : nameOf(parameter.name);
+    if (!call || parameterName === null) return null;
+    suffix = `(${parameterName})`;
+  }
+  const where = declaredAt(decl, file);
+  const selector = declarationSelector(decl);
+  if (selector !== null) {
+    return [
+      file.pkg,
+      file.version,
+      viaMember ? "" : file.version === "" ? "*" : `^${file.version}`,
+      `${selector}${suffix}${"[]".repeat(elements)}`,
+      where,
+      declared.replace(/\s+/g, " "),
+    ].join(ORIGIN_SEPARATOR);
+  }
+  let own = nameOf((decl as ts.FunctionDeclaration).name);
+  let owner: string | null = null;
+  if (own === null) {
+    // A call signature of a variable or member type (`declare const f: {
+    // (x: string): number }`) is named by what holds it.
+    for (let p = decl.parent; p !== undefined && !ts.isSourceFile(p); p = p.parent) {
+      own = nameOf((p as ts.VariableDeclaration).name);
+      if (own !== null) break;
+    }
+  } else {
+    const holder = decl.parent;
+    if (
+      holder !== undefined &&
+      (ts.isClassDeclaration(holder) || ts.isInterfaceDeclaration(holder))
+    )
+      owner = nameOf(holder.name);
+  }
+  const name = `${owner === null ? "" : `${owner}.`}${own ?? "a value"}${suffix}`;
+  return [file.pkg, file.version, "", name, where, declared.replace(/\s+/g, " ")].join(
+    ORIGIN_SEPARATOR,
+  );
 }
 
 /** True when a declaration or the class, interface or type alias holding
@@ -331,14 +572,29 @@ function genericDeclaration(decl: ts.Node): boolean {
   return false;
 }
 
+/** The names of the namespaces a declaration is in, each followed by a
+ * dot: a type patch selector reaches a member of `declare namespace debug`
+ * as `debug.<member>` (type-patches/selector.ts). `declare module "name"`
+ * and `declare global` are not part of a selector. */
+function namespacesOf(decl: ts.Node | undefined): string {
+  let namespaces = "";
+  for (let p = decl?.parent; p !== undefined && !ts.isSourceFile(p); p = p.parent) {
+    if (ts.isModuleDeclaration(p) && ts.isIdentifier(p.name) && p.name.text !== "global")
+      namespaces = `${p.name.text}.${namespaces}`;
+  }
+  return namespaces;
+}
+
 /** The selector of a declaration in a declaration file: a function, a
- * member of a class, interface or named object type, or null (also for
- * generic declarations, whose types the program supplies). */
+ * member of a class, interface or named object type, with the namespaces
+ * it is declared in, or null (also for generic declarations, whose types
+ * the program supplies). */
 export function declarationSelector(decl: ts.Node): string | null {
   if (genericDeclaration(decl)) return null;
   const own = nameOf((decl as ts.FunctionDeclaration).name);
   if (own === null) return null;
-  if (ts.isFunctionDeclaration(decl) || ts.isVariableDeclaration(decl)) return own;
+  if (ts.isFunctionDeclaration(decl) || ts.isVariableDeclaration(decl))
+    return `${namespacesOf(decl)}${own}`;
   let holder = decl.parent;
   if (holder !== undefined && ts.isTypeLiteralNode(holder)) holder = holder.parent;
   if (
@@ -348,7 +604,7 @@ export function declarationSelector(decl: ts.Node): string | null {
       ts.isTypeAliasDeclaration(holder))
   ) {
     const owner = nameOf(holder.name);
-    return owner === null ? null : `${owner}.${own}`;
+    return owner === null ? null : `${namespacesOf(holder)}${owner}.${own}`;
   }
   return null;
 }

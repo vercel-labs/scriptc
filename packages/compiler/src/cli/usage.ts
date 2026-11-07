@@ -38,6 +38,8 @@ export const CLI_OPTIONS = {
   tier: { type: "string" },
   "explain-dynamic": { type: "string" },
   "dynamic-tier-warning": { type: "boolean", default: true },
+  "copy-warning": { type: "boolean", default: true },
+  "ignored-failure-warning": { type: "boolean", default: true },
   wasm: { type: "string", multiple: true },
   "node-islands": { type: "string" },
   "node-island": { type: "string", multiple: true },
@@ -105,12 +107,13 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
   "fail-on": {
     entries: [
       {
-        term: "--fail-on <blockers|divergences|dynamic|dynamic-slots|node-islands|eager-node-islands|island-gaps>",
+        term: "--fail-on <blockers|divergences|dynamic|dynamic-slots|type-claims|node-islands|eager-node-islands|island-gaps>",
         help: [
           "coverage only: exit 1 when the entry path has blockers",
           "(a build would fail), or also when it has Node",
           "divergences, likely-hot functions that use untyped",
-          "values (SC6101), dynamic slots (SC6104), any Node",
+          "values (SC6101), dynamic slots (SC6104), checked",
+          "conversions that trust an unverified type, any Node",
           "island (eager-node-islands is the same until deferred",
           "evaluation lands), or a gap island (a package scriptc",
           "should compile but cannot yet)",
@@ -459,6 +462,29 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
       },
     ],
   },
+  "copy-warning": {
+    entries: [
+      {
+        term: "--no-copy-warning",
+        help: [
+          "build and coverage: leave out SC6001, the warning at",
+          "conversions that copy a value the program can tell from",
+          "the original",
+        ],
+      },
+    ],
+  },
+  "ignored-failure-warning": {
+    entries: [
+      {
+        term: "--no-ignored-failure-warning",
+        help: [
+          "build and coverage: leave out SC6009, the warning at checked",
+          "conversions whose failure a handler would ignore",
+        ],
+      },
+    ],
+  },
   "node-islands": {
     entries: [
       {
@@ -621,6 +647,8 @@ const EXECUTABLE_OPTIONS: readonly CliOptionName[] = [
   "provenance-sources",
   "tier",
   "dynamic-tier-warning",
+  "copy-warning",
+  "ignored-failure-warning",
   ...NODE_ISLAND_OPTIONS,
 ];
 
@@ -681,6 +709,8 @@ export const CLI_COMMANDS: readonly CliCommand[] = [
       "tier",
       "explain-dynamic",
       "dynamic-tier-warning",
+      "copy-warning",
+      "ignored-failure-warning",
       ...NODE_ISLAND_OPTIONS,
       "explain-island",
       "strict-user-js",

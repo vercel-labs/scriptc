@@ -418,6 +418,22 @@ async function main(args: string[], host: CliHost): Promise<number> {
   if (failOnRaw === "dynamic" && !dynamicTierWarning) {
     fail(`--fail-on=dynamic checks the warning --no-dynamic-tier-warning leaves out\n\n${USAGE}`);
   }
+  // --no-copy-warning leaves out SC6001 (frontend/lowering/width-copies.ts).
+  const copyWarning = values["copy-warning"] !== false;
+  if (failOnRaw === "divergences" && !copyWarning) {
+    fail(`--fail-on=divergences checks the warning --no-copy-warning leaves out\n\n${USAGE}`);
+  }
+  // --no-ignored-failure-warning leaves out SC6009
+  // (frontend/lowering/swallowed-conversions.ts).
+  const ignoredFailureWarning = values["ignored-failure-warning"] !== false;
+  if (failOnRaw === "divergences" && !ignoredFailureWarning) {
+    fail(
+      `--fail-on=divergences checks the warning --no-ignored-failure-warning leaves out\n\n${USAGE}`,
+    );
+  }
+  /** A divergence warning a flag of this command leaves out. */
+  const leftOut = (code: string): boolean =>
+    (!copyWarning && code === "SC6001") || (!ignoredFailureWarning && code === "SC6009");
   if (failOnRaw !== undefined && command !== "coverage") {
     fail(`--fail-on is a coverage option (a build already fails on blockers)\n\n${USAGE}`);
   }
@@ -622,6 +638,8 @@ async function main(args: string[], host: CliHost): Promise<number> {
       ...(nodeIslands !== undefined ? { nodeIslands } : {}),
     });
     if (!dynamicTierWarning) delete coverage.performance;
+    if (coverage.divergences !== undefined)
+      coverage.divergences = coverage.divergences.filter((d) => !leftOut(d.code));
     if (printDiagnostics) {
       // Keep stdout pure JSON for tooling.
       const envelope = coverageEnvelope(coverage, {
@@ -744,7 +762,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
       throw new CliExit(1);
     }
     const warnings = (result.warnings ?? []).filter(
-      (d) => dynamicTierWarning || !isPerformanceCode(d.code),
+      (d) => (dynamicTierWarning || !isPerformanceCode(d.code)) && !leftOut(d.code),
     );
     if (printDiagnostics) {
       diagnosticsEnvelope = buildEnvelope({

@@ -27,7 +27,8 @@ import {
   lowerPromiseThenPresence,
   operandPairs,
   runtimeOptionalStorageOperand,
-  typeofAnswer,
+  hasCallSlot,
+  typeofAnswerOf,
 } from "../lower-exprs.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
 import { isJsSourceFile, isNodeEsmFile } from "../../program.js";
@@ -344,11 +345,15 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
     undefinedT: "undefined",
     nullT: "object",
   };
-  // An f64 handle (a readline Interface, a Timeout) is an object.
+  // An f64 handle (a readline Interface, a Timeout) is an object, and a
+  // value called through a `%call` slot (a function with members, a callable
+  // class instance) is a function.
   const folded =
     operand.type.kind === "f64" && isF64HandleTyped(lowerer, expr.expression)
       ? "object"
-      : FOLD[operand.type.kind];
+      : hasCallSlot(lowerer, operand.type)
+        ? "function"
+        : FOLD[operand.type.kind];
   if (folded) {
     const result: IrExpr = { kind: "strLit", value: folded, type: STRING, loc };
     return isSafeToDiscard(operand)
@@ -376,7 +381,7 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
   }
   if (operand.type.kind === "union" && isSafeToRepeat(operand)) {
     const def = lowerer.unions.get(operand.type.unionId);
-    const answers = def?.arms.map(typeofAnswer);
+    const answers = def?.arms.map(typeofAnswerOf(lowerer));
     if (def && answers && answers.every((s): s is string => s !== null)) {
       const groups = new Map<string, number[]>();
       answers.forEach((s, i) => groups.set(s, [...(groups.get(s) ?? []), i]));

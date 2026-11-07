@@ -62,6 +62,8 @@ export const BASE_RUNTIME_SOURCES = [
 export const OPTIONAL_RUNTIME_SOURCES = [
   // The call-time parameter bind of a generator (fn.generator.bindAtCall).
   ["scr_gen_bind.c", "genBind"],
+  // The receiver a generator function's body reads (dyn.generatorThis).
+  ["scr_gen_receiver.c", "genReceiver"],
   ["scr_copying.c", "copying"],
   ["scr_file_handle.c", "fileHandle"],
   // writeFile's `flag` disposition and the fs/promises twins; the copyFile
@@ -204,9 +206,18 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // Object.isExtensible and Object.isSealed of a value typed dynamically; a
   // unit of its own so scr_json.c keeps its layout for every other program.
   ["scr_dyn_integrity.c", "dynIntegrityQueries"],
+  // Reflect.getPrototypeOf's primitive-target check; a unit of its own so
+  // scr_json.c keeps its layout for every program that never reflects.
+  ["scr_dyn_reflect_proto.c", "reflectProtoTarget"],
+  // `delete` of a key a record's type does not declare, removed from the
+  // record's kept source; a unit of its own so scr_json.c keeps its layout
+  // for every other program.
+  ["scr_record_source_delete.c", "recordSourceDelete"],
   // ChildProcess listener removal (off/removeListener) and signalCode; a
   // unit of its own so scr_child.c's layout stays put for every program.
   ["scr_child_lifecycle.c", "childLifecycle"],
+  // The spawnSync capture Buffers; a unit of its own for the same reason.
+  ["scr_child_capture.c", "spawnCaptureBytes"],
   ["scr_decl_adopt.c", "declAdopt"],
   ["scr_type_origin.c", "typeOrigins"],
   // for await over checked-dynamic values.

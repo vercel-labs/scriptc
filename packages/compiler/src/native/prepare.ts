@@ -17,6 +17,11 @@ import {
 import { inlineRcOption } from "../backend/llvm/shapes.js";
 import { executableLinkFeatures } from "../backend/executable-features.js";
 import type { NativeLinkFeatures } from "../backend/native-link-info-core.js";
+import {
+  loweringOptions,
+  prepareLoweredProgram,
+  usesLoweredProgram,
+} from "../executable/lowered.js";
 import { prepareExecutableModule } from "../executable/prepare.js";
 import type { FfiProfile } from "../ffi/ffi-manifest.js";
 import type { FrontendFactory } from "../frontend/pipeline.js";
@@ -30,6 +35,7 @@ import {
   trackedReadFile,
 } from "../frontend/input-tracker.js";
 import { compilerOwnedFileRoots } from "../frontend/dts-paths.js";
+import { frontendEnvironment } from "../frontend/environment.js";
 import { provenanceSources } from "../frontend/provenance-registry.js";
 import { processFork } from "../frontend/process-fork.js";
 import { unitReuseEnabled, type UnitStore } from "../frontend/lowering/unit-reuse.js";
@@ -41,8 +47,7 @@ import {
 import { llvmBytes, wtf8Bytes } from "../backend/literals.js";
 import { prepareLibrary } from "../library/prepare.js";
 import type { LibraryProfile } from "../library/library-profile.js";
-import type { IrModule } from "../ir/ir.js";
-import { deserializeModuleBytes, serializeModuleParts } from "../ir/serialize.js";
+import { serializeModuleParts } from "../ir/serialize.js";
 import { contentDigest, NATIVE_STRING_BYTES, type NativeCache } from "./cache.js";
 import { batchTextParts, joinedParts } from "./text-file.js";
 import type { NativeToolchain } from "./toolchain.js";
@@ -303,31 +308,6 @@ function implementationIdentity(toolchain: NativeToolchain): string {
   );
 }
 
-/** SCRIPTC_* variables that report on a build, place its cache or control
- * backend emission (its parallelism, a requested worker failure). The
- * frontend's output does not depend on them, so they are left out of its
- * cache key. */
-const FRONTEND_INDEPENDENT_VARIABLES = new Set([
-  "SCRIPTC_CACHE_DIR",
-  "SCRIPTC_CACHE_MAX_MB",
-  // The shared checker server answers as the build's own checker does.
-  "SCRIPTC_CHECKER_SERVER",
-  "SCRIPTC_EMIT_WORKERS",
-  "SCRIPTC_EMIT_WORKER_FAIL",
-  "SCRIPTC_EMIT_WORKER_FUNCTIONS",
-  // Reusing lowered units leaves the lowered module as it is.
-  "SCRIPTC_INCR_LOWERING",
-  "SCRIPTC_INCR_VERIFY",
-  "SCRIPTC_TIMING",
-]);
-
-/** The SCRIPTC_* variables a frontend cache entry depends on, sorted by name. */
-function frontendEnvironment(): [string, string | undefined][] {
-  return Object.entries(process.env)
-    .filter(([name]) => name.startsWith("SCRIPTC_") && !FRONTEND_INDEPENDENT_VARIABLES.has(name))
-    .sort(([a], [b]) => a.localeCompare(b));
-}
-
 function validFeatures(value: unknown): value is NativeLinkFeatures {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const features = value as Record<string, unknown>;
@@ -413,27 +393,21 @@ function validCachedInput(value: unknown): value is FrontendCacheEntry {
   );
 }
 
-/** Bootstrap-only input for the split sanitized self-rebuild: emit an
- * executable from a serialized IR artifact of the same entry instead of
- * running the frontend. A separate run compares that artifact with the IR the
- * native frontend lowers itself. Debug metadata needs source text, so only
- * stripped executables are accepted. */
-const BOOTSTRAP_IR_INPUT = "SCRIPTC_BOOTSTRAP_IR_INPUT";
-
 /** The inputs a native frontend cache entry depends on: the entry, the
  * request's options and FFI manifest, the toolchain that lowers and emits,
  * and the SCRIPTC_* variables that reach the frontend. The sources and the
  * configuration are not part of it; the entry's probes prove those. Null when
  * an entry cannot describe the build: provenance rewriting replaces the
- * sources with build products, and a bootstrap build supplies the IR. */
+ * sources with build products, and a build that writes or reads a lowered
+ * program (executable/lowered.ts) runs its frontend, or none, whatever an
+ * entry holds. */
 function nativeFrontendInputs(
   entry: string,
   options: CompileRequestOptions,
   ffi: FfiProfile | null,
   toolchain: NativeToolchain,
 ): Record<string, unknown> | null {
-  const irInput = process.env[BOOTSTRAP_IR_INPUT] ?? "";
-  if (irInput !== "" || provenanceSources() !== null) return null;
+  if (usesLoweredProgram(options) || provenanceSources() !== null) return null;
   return {
     schema: 1,
     entry,
@@ -487,19 +461,6 @@ export function nativeFrontendExclusions(
   return { outputPaths, outputDirectories: [...directories] };
 }
 
-function preparedFromIr(
-  path: string,
-  entry: string,
-  options: CompileRequestOptions,
-): { ok: true; mod: IrModule; sourceTexts: Map<string, string>; warnings: ScrDiagnostic[] } {
-  if ((options.outputKind ?? "exe") !== "exe" || options.strip !== true)
-    throw new Error(`${BOOTSTRAP_IR_INPUT} requires a stripped executable build`);
-  const mod = deserializeModuleBytes(readFileSync(path));
-  if (resolve(mod.sourceFile) !== resolve(entry))
-    throw new Error(`${BOOTSTRAP_IR_INPUT} was lowered from a different entry`);
-  return { ok: true, mod, sourceTexts: new Map(), warnings: [] };
-}
-
 /** Keep the checker and typed IR out of the native optimizer's live heap. */
 export function prepareNativeExecutable(
   entry: string,
@@ -527,7 +488,6 @@ export function prepareNativeExecutable(
       sourceTexts: new Map(),
     };
   const exclusions = nativeFrontendExclusions(entry, options);
-  const irInput = process.env[BOOTSTRAP_IR_INPUT] ?? "";
   let key: string | null = null;
   // The unit store's key (unit-reuse.ts): the frontend's inputs without the
   // output paths, which lowering does not read.
@@ -546,8 +506,7 @@ export function prepareNativeExecutable(
     try {
       key = contentDigest(JSON.stringify(inputs));
       if (unitReuseEnabled()) {
-        const { outPath: _outPath, outDir: _outDir, ...lowering } = options;
-        unitKey = contentDigest(JSON.stringify({ ...inputs, options: lowering }));
+        unitKey = contentDigest(JSON.stringify({ ...inputs, options: loweringOptions(options) }));
       }
       const cached = readFrontendCache(cache, key, exclusions);
       if (cached !== null && "input" in cached) {
@@ -574,24 +533,31 @@ export function prepareNativeExecutable(
   // Why an edit that keeps the tokens still runs the frontend.
   timing("frontend-cache-miss", missReason === null ? undefined : { reason: missReason });
   const tracker = new FrontendInputTracker(previous);
-  const prepared =
-    irInput !== ""
-      ? preparedFromIr(irInput, entry, options)
-      : tracker.runSynchronous(() =>
-          prepareExecutableModule(
-            entry,
-            options,
-            ffi,
-            toolchain.target.platform,
-            frontend,
-            timing,
-            new Map(),
-            true,
-            cache !== null && unitKey !== null ? nativeUnitStore(cache, unitKey) : null,
-          ),
-        );
+  const prepared = tracker.runSynchronous(() =>
+    prepareLoweredProgram(
+      entry,
+      options,
+      toolchain.target.platform,
+      timing,
+      {
+        compiler: () => implementationIdentity(toolchain),
+        outputs: exclusions.outputPaths ?? [],
+      },
+      () =>
+        prepareExecutableModule(
+          entry,
+          options,
+          ffi,
+          toolchain.target.platform,
+          frontend,
+          timing,
+          new Map(),
+          true,
+          cache !== null && unitKey !== null ? nativeUnitStore(cache, unitKey) : null,
+        ),
+    ),
+  );
   if (!prepared.ok) return prepared;
-  if (irInput !== "") timing("ir-input");
   const ir =
     outputKind === "ir" || options.emitIr
       ? batchTextParts(serializeModuleParts(prepared.mod, compilerOwnedFileRoots()))

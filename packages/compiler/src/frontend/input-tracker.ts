@@ -336,6 +336,7 @@ export class FrontendInputTracker {
       const result = fn();
       for (const probe of this.probes.values()) parent.record(probe);
       for (const probe of this.textProbes()) parent.record(probe);
+      if (!this.stable) parent.markUnstable();
       return result;
     });
   }
@@ -600,6 +601,21 @@ function activeFrontendTracker(): FrontendInputTracker | undefined {
   return synchronousTracker ?? activeTracker.getStore();
 }
 
+/** Runs the synchronous `fn` under a tracker of its own, inside the running
+ * one when there is one (which still receives every probe), and returns what
+ * `fn` observed. */
+export function observeFrontendInputs<T>(fn: () => T): {
+  result: T;
+  inputs: FrontendInputSnapshot;
+} {
+  const tracker = new FrontendInputTracker();
+  const result =
+    synchronousTracker !== undefined || activeTracker.getStore() === undefined
+      ? tracker.runSynchronous(fn)
+      : tracker.run(fn);
+  return { result, inputs: tracker.snapshot() };
+}
+
 /** `path`'s kind, from this compile's answers when it already asked. */
 function kindOf(path: string, tracked: boolean): FrontendPathKind {
   const tracker = activeFrontendTracker();
@@ -830,6 +846,16 @@ export function frontendInputsStillMatch(
   if (snapshot.version !== 1 || snapshot.stable !== true || !Array.isArray(snapshot.probes)) {
     return false;
   }
+  return changedFrontendInput(snapshot, exclusions) === null;
+}
+
+/** The first recorded probe the current filesystem answers differently, or
+ * null when every one still holds. Whether the snapshot is stable is the
+ * caller's question. */
+export function changedFrontendInput(
+  snapshot: FrontendInputSnapshot,
+  exclusions: FrontendInputExclusions = {},
+): FrontendInputProbe | null {
   const outputPaths = new Set([...(exclusions.outputPaths ?? [])].map((path) => resolve(path)));
   const outputDirectories = new Set(
     [...(exclusions.outputDirectories ?? [])].map((path) => resolve(path)),
@@ -855,7 +881,7 @@ export function frontendInputsStillMatch(
       return false;
     }
   };
-  return snapshot.probes.every((probe) => {
+  const holds = (probe: FrontendInputProbe): boolean => {
     if (outputPaths.has(probe.path)) return true;
     if (outputDirectories.has(probe.path)) {
       // A fresh output directory can be absent while the frontend runs and
@@ -969,7 +995,8 @@ export function frontendInputsStillMatch(
         // The file probe of the same path checks its content.
         return true;
     }
-  });
+  };
+  return snapshot.probes.find((probe) => !holds(probe)) ?? null;
 }
 
 /**

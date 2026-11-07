@@ -33268,6 +33268,7 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
+          "tests/corpus/2195-require-missing-package/main.mjs",
           "tests/corpus/2564-stream-promises-finished.ts",
           "tests/corpus/2570-buffer-arg-validation.cjs",
           "tests/corpus/2597-dgram-send-ladders.cjs",
@@ -33318,14 +33319,23 @@
           "tests/corpus/compat-error-classes.cjs",
           "tests/corpus/compat-error-properties.mjs",
           "tests/corpus/compat-error-properties.ts",
+          "tests/corpus/compat-errors-core.mjs",
+          "tests/corpus/compat-errors-crypto.mjs",
+          "tests/corpus/compat-errors-http.mjs",
+          "tests/corpus/compat-errors-net.mjs",
+          "tests/corpus/compat-errors-stream.mjs",
+          "tests/corpus/compat-errors-worker.mjs",
           "tests/corpus/compat-web-globals.ts",
           "tests/corpus/error-stack-frames.ts",
           "tests/corpus/error-stack-limit.ts",
           "tests/corpus/fs-dir-dispose.ts",
+          "tests/corpus/http-parser-response-checks.ts",
           "tests/corpus/http-response-header-errors.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/web-stream-readable-untyped.mjs",
           "tests/corpus/zstd-compress.cjs",
+          "tests/diagnostics/compat-absent-node-apis.ts",
+          "tests/diagnostics/compat-absent-web-globals.ts",
           "tests/fixtures/node-types/terminal-error-fields.ts",
           "tests/harness/project-config.test.ts"
         ]
@@ -33915,8 +33925,11 @@
       "anchor": "erroropensslerrorstack",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.error.opensslErrorStack",
+        "tests": [
+          "tests/corpus/compat-errors-crypto.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -33951,8 +33964,11 @@
       "anchor": "errorlibrary",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.error.library",
+        "tests": [
+          "tests/corpus/compat-errors-crypto.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -33969,8 +33985,11 @@
       "anchor": "errorreason",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.error.reason",
+        "tests": [
+          "tests/corpus/compat-errors-crypto.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -34005,8 +34024,11 @@
       "anchor": "abort_err",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ABORT_ERR",
+        "tests": [
+          "tests/corpus/compat-errors-core.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -34024,7 +34046,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_ACCESS_DENIED"
       },
       "anchorSource": "exact"
     },
@@ -34059,8 +34081,11 @@
       "anchor": "err_arg_not_iterable",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_ARG_NOT_ITERABLE",
+        "tests": [
+          "tests/corpus/compat-errors-core.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -34099,7 +34124,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_ASYNC_CALLBACK"
       },
       "anchorSource": "exact"
     },
@@ -34117,7 +34142,10 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_ASYNC_LOADER_REQUEST_NEVER_SETTLED",
+        "tests": [
+          "tests/diagnostics/compat-absent-node-apis.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -34135,7 +34163,10 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_ASYNC_TYPE",
+        "tests": [
+          "tests/diagnostics/compat-absent-node-apis.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -34191,8 +34222,8 @@
       "anchor": "err_buffer_context_not_available",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -34252,7 +34283,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_CANNOT_WATCH_SIGINT"
       },
       "anchorSource": "exact"
     },
@@ -34270,7 +34301,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_CHILD_CLOSED_BEFORE_REPLY"
       },
       "anchorSource": "exact"
     },
@@ -34288,7 +34319,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_CHILD_PROCESS_IPC_REQUIRED"
       },
       "anchorSource": "exact"
     },
@@ -34324,7 +34355,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_CLOSED_MESSAGE_PORT"
       },
       "anchorSource": "exact"
     },
@@ -34342,7 +34373,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_CONSOLE_WRITABLE_STREAM"
       },
       "anchorSource": "exact"
     },
@@ -34360,7 +34391,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_CONSTRUCT_CALL_INVALID"
       },
       "anchorSource": "exact"
     },
@@ -34378,7 +34409,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_CONSTRUCT_CALL_REQUIRED"
       },
       "anchorSource": "exact"
     },
@@ -34395,8 +34426,8 @@
       "anchor": "err_context_not_initialized",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -34413,8 +34444,8 @@
       "anchor": "err_cpu_profile_already_started",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:v8"
       },
       "anchorSource": "exact"
     },
@@ -34431,8 +34462,8 @@
       "anchor": "err_cpu_profile_not_started",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:v8"
       },
       "anchorSource": "exact"
     },
@@ -34449,8 +34480,8 @@
       "anchor": "err_cpu_profile_too_many",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:v8"
       },
       "anchorSource": "exact"
     },
@@ -34468,7 +34499,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_ARGON2_NOT_SUPPORTED"
       },
       "anchorSource": "exact"
     },
@@ -34486,7 +34517,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_CUSTOM_ENGINE_NOT_SUPPORTED"
       },
       "anchorSource": "exact"
     },
@@ -34546,7 +34577,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_ENGINE_UNKNOWN"
       },
       "anchorSource": "exact"
     },
@@ -34563,8 +34594,8 @@
       "anchor": "err_crypto_fips_forced",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_FIPS_FORCED"
       },
       "anchorSource": "exact"
     },
@@ -34582,7 +34613,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_FIPS_UNAVAILABLE"
       },
       "anchorSource": "exact"
     },
@@ -34684,7 +34715,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_INITIALIZATION_FAILED"
       },
       "anchorSource": "exact"
     },
@@ -34723,7 +34754,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_INVALID_COUNTER"
       },
       "anchorSource": "exact"
     },
@@ -34803,8 +34834,11 @@
       "anchor": "err_crypto_invalid_jwk",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_INVALID_JWK",
+        "tests": [
+          "tests/corpus/compat-errors-crypto.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -34906,7 +34940,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_INVALID_MAC"
       },
       "anchorSource": "exact"
     },
@@ -34987,7 +35021,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_INVALID_TAG_LENGTH"
       },
       "anchorSource": "exact"
     },
@@ -35005,7 +35039,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_JOB_INIT_FAILED"
       },
       "anchorSource": "exact"
     },
@@ -35062,7 +35096,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_KEM_NOT_SUPPORTED"
       },
       "anchorSource": "exact"
     },
@@ -35080,7 +35114,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_MAC_FINALIZED"
       },
       "anchorSource": "exact"
     },
@@ -35098,7 +35132,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_MAC_NOT_SUPPORTED"
       },
       "anchorSource": "exact"
     },
@@ -35116,7 +35150,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_MAC_UPDATE_FAILED"
       },
       "anchorSource": "exact"
     },
@@ -35155,7 +35189,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_PBKDF2_ERROR"
       },
       "anchorSource": "exact"
     },
@@ -35173,7 +35207,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_SCRYPT_NOT_SUPPORTED"
       },
       "anchorSource": "exact"
     },
@@ -35190,8 +35224,11 @@
       "anchor": "err_crypto_sign_key_required",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_SIGN_KEY_REQUIRED",
+        "tests": [
+          "tests/corpus/compat-errors-crypto.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -35292,8 +35329,8 @@
       "anchor": "err_debugger_error",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_DEBUGGER_ERROR"
       },
       "anchorSource": "exact"
     },
@@ -35310,8 +35347,8 @@
       "anchor": "err_debugger_startup_error",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_DEBUGGER_STARTUP_ERROR"
       },
       "anchorSource": "exact"
     },
@@ -35370,8 +35407,8 @@
       "anchor": "err_dlopen_disabled",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:addons"
       },
       "anchorSource": "exact"
     },
@@ -35388,8 +35425,8 @@
       "anchor": "err_dlopen_failed",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:addons"
       },
       "anchorSource": "exact"
     },
@@ -35407,7 +35444,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_DNS_SET_SERVERS_FAILED"
       },
       "anchorSource": "exact"
     },
@@ -35424,8 +35461,8 @@
       "anchor": "err_domain_callback_not_available",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:domain"
       },
       "anchorSource": "exact"
     },
@@ -35442,8 +35479,8 @@
       "anchor": "err_domain_cannot_set_uncaught_exception_capture",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:domain"
       },
       "anchorSource": "exact"
     },
@@ -35460,8 +35497,8 @@
       "anchor": "err_duplicate_startup_snapshot_main_function",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_DUPLICATE_STARTUP_SNAPSHOT_MAIN_FUNCTION"
       },
       "anchorSource": "exact"
     },
@@ -35520,8 +35557,8 @@
       "anchor": "err_eval_esm_cannot_print",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_EVAL_ESM_CANNOT_PRINT"
       },
       "anchorSource": "exact"
     },
@@ -35560,7 +35597,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_EXECUTION_ENVIRONMENT_NOT_AVAILABLE"
       },
       "anchorSource": "exact"
     },
@@ -35599,7 +35636,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"
       },
       "anchorSource": "exact"
     },
@@ -35679,8 +35716,11 @@
       "anchor": "err_fs_cp_fifo_pipe",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_FS_CP_FIFO_PIPE",
+        "tests": [
+          "tests/corpus/compat-errors-core.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -35718,8 +35758,11 @@
       "anchor": "err_fs_cp_socket",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_FS_CP_SOCKET",
+        "tests": [
+          "tests/corpus/compat-errors-core.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -35736,8 +35779,11 @@
       "anchor": "err_fs_cp_symlink_to_subdirectory",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_FS_CP_SYMLINK_TO_SUBDIRECTORY",
+        "tests": [
+          "tests/corpus/compat-errors-core.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -35812,7 +35858,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_FS_WATCH_QUEUE_OVERFLOW"
       },
       "anchorSource": "exact"
     },
@@ -35830,7 +35876,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_ALTSVC_INVALID_ORIGIN"
       },
       "anchorSource": "exact"
     },
@@ -35848,7 +35894,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_ALTSVC_LENGTH"
       },
       "anchorSource": "exact"
     },
@@ -35866,7 +35912,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_CONNECT_AUTHORITY"
       },
       "anchorSource": "exact"
     },
@@ -35884,7 +35930,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_CONNECT_PATH"
       },
       "anchorSource": "exact"
     },
@@ -35902,7 +35948,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_CONNECT_SCHEME"
       },
       "anchorSource": "exact"
     },
@@ -35920,7 +35966,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_ERROR"
       },
       "anchorSource": "exact"
     },
@@ -35938,7 +35984,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_GOAWAY_SESSION"
       },
       "anchorSource": "exact"
     },
@@ -35956,7 +36002,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_HEADERS_AFTER_RESPOND"
       },
       "anchorSource": "exact"
     },
@@ -35974,7 +36020,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_HEADERS_SENT"
       },
       "anchorSource": "exact"
     },
@@ -35992,7 +36038,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_HEADER_SINGLE_VALUE"
       },
       "anchorSource": "exact"
     },
@@ -36010,7 +36056,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_INFO_STATUS_NOT_ALLOWED"
       },
       "anchorSource": "exact"
     },
@@ -36028,7 +36074,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_INVALID_CONNECTION_HEADERS"
       },
       "anchorSource": "exact"
     },
@@ -36046,7 +36092,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_INVALID_HEADER_VALUE"
       },
       "anchorSource": "exact"
     },
@@ -36064,7 +36110,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_INVALID_INFO_STATUS"
       },
       "anchorSource": "exact"
     },
@@ -36082,7 +36128,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_INVALID_ORIGIN"
       },
       "anchorSource": "exact"
     },
@@ -36100,7 +36146,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_INVALID_PACKED_SETTINGS_LENGTH"
       },
       "anchorSource": "exact"
     },
@@ -36118,7 +36164,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_INVALID_PSEUDOHEADER"
       },
       "anchorSource": "exact"
     },
@@ -36172,7 +36218,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_INVALID_STREAM"
       },
       "anchorSource": "exact"
     },
@@ -36190,7 +36236,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_MAX_PENDING_SETTINGS_ACK"
       },
       "anchorSource": "exact"
     },
@@ -36208,7 +36254,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_NESTED_PUSH"
       },
       "anchorSource": "exact"
     },
@@ -36226,7 +36272,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_NO_MEM"
       },
       "anchorSource": "exact"
     },
@@ -36244,7 +36290,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_NO_SOCKET_MANIPULATION"
       },
       "anchorSource": "exact"
     },
@@ -36262,7 +36308,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_ORIGIN_LENGTH"
       },
       "anchorSource": "exact"
     },
@@ -36280,7 +36326,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_OUT_OF_STREAMS"
       },
       "anchorSource": "exact"
     },
@@ -36298,7 +36344,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_PAYLOAD_FORBIDDEN"
       },
       "anchorSource": "exact"
     },
@@ -36316,7 +36362,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_PING_CANCEL"
       },
       "anchorSource": "exact"
     },
@@ -36334,7 +36380,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_PING_LENGTH"
       },
       "anchorSource": "exact"
     },
@@ -36352,7 +36398,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_PSEUDOHEADER_NOT_ALLOWED"
       },
       "anchorSource": "exact"
     },
@@ -36370,7 +36416,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_PUSH_DISABLED"
       },
       "anchorSource": "exact"
     },
@@ -36388,7 +36434,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_SEND_FILE"
       },
       "anchorSource": "exact"
     },
@@ -36406,7 +36452,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_SEND_FILE_NOSEEK"
       },
       "anchorSource": "exact"
     },
@@ -36424,7 +36470,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_SESSION_ERROR"
       },
       "anchorSource": "exact"
     },
@@ -36442,7 +36488,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_SETTINGS_CANCEL"
       },
       "anchorSource": "exact"
     },
@@ -36460,7 +36506,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_SOCKET_BOUND"
       },
       "anchorSource": "exact"
     },
@@ -36478,7 +36524,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_SOCKET_UNBOUND"
       },
       "anchorSource": "exact"
     },
@@ -36496,7 +36542,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_STATUS_101"
       },
       "anchorSource": "exact"
     },
@@ -36514,7 +36560,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_STATUS_INVALID"
       },
       "anchorSource": "exact"
     },
@@ -36532,7 +36578,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_STREAM_CANCEL"
       },
       "anchorSource": "exact"
     },
@@ -36568,7 +36614,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_STREAM_SELF_DEPENDENCY"
       },
       "anchorSource": "exact"
     },
@@ -36586,7 +36632,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_TOO_MANY_CUSTOM_SETTINGS"
       },
       "anchorSource": "exact"
     },
@@ -36604,7 +36650,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_TOO_MANY_INVALID_FRAMES"
       },
       "anchorSource": "exact"
     },
@@ -36622,7 +36668,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_TOO_MANY_ORIGINS"
       },
       "anchorSource": "exact"
     },
@@ -36640,7 +36686,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_TRAILERS_ALREADY_SENT"
       },
       "anchorSource": "exact"
     },
@@ -36658,7 +36704,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_TRAILERS_NOT_READY"
       },
       "anchorSource": "exact"
     },
@@ -36676,7 +36722,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP2_UNSUPPORTED_PROTOCOL"
       },
       "anchorSource": "exact"
     },
@@ -36694,7 +36740,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP_BODY_NOT_ALLOWED"
       },
       "anchorSource": "exact"
     },
@@ -36796,7 +36842,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP_REQUEST_TIMEOUT"
       },
       "anchorSource": "exact"
     },
@@ -36814,7 +36860,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_HTTP_SOCKET_ASSIGNED"
       },
       "anchorSource": "exact"
     },
@@ -36831,8 +36877,11 @@
       "anchor": "err_http_socket_encoding",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_HTTP_SOCKET_ENCODING",
+        "tests": [
+          "tests/corpus/compat-errors-http.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -36849,8 +36898,11 @@
       "anchor": "err_http_trailer_invalid",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_HTTP_TRAILER_INVALID",
+        "tests": [
+          "tests/corpus/compat-errors-http.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -36889,7 +36941,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_IMPORT_ATTRIBUTE_MISSING"
       },
       "anchorSource": "exact"
     },
@@ -36907,7 +36959,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_IMPORT_ATTRIBUTE_TYPE_INCOMPATIBLE"
       },
       "anchorSource": "exact"
     },
@@ -36925,7 +36977,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_IMPORT_ATTRIBUTE_UNSUPPORTED"
       },
       "anchorSource": "exact"
     },
@@ -36963,8 +37015,8 @@
       "anchor": "err_input_type_not_allowed",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_INPUT_TYPE_NOT_ALLOWED"
       },
       "anchorSource": "exact"
     },
@@ -36981,8 +37033,8 @@
       "anchor": "err_inspector_already_activated",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -36999,8 +37051,8 @@
       "anchor": "err_inspector_already_connected",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -37017,8 +37069,8 @@
       "anchor": "err_inspector_closed",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -37035,8 +37087,8 @@
       "anchor": "err_inspector_command",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -37053,8 +37105,8 @@
       "anchor": "err_inspector_not_active",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -37071,8 +37123,8 @@
       "anchor": "err_inspector_not_available",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -37089,8 +37141,8 @@
       "anchor": "err_inspector_not_connected",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -37107,8 +37159,8 @@
       "anchor": "err_inspector_not_worker",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -37168,7 +37220,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_INVALID_ADDRESS_FAMILY"
       },
       "anchorSource": "exact"
     },
@@ -37228,7 +37280,10 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_INVALID_ASYNC_ID",
+        "tests": [
+          "tests/diagnostics/compat-absent-node-apis.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -37309,7 +37364,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_INVALID_FD"
       },
       "anchorSource": "exact"
     },
@@ -37327,7 +37382,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_INVALID_FD_TYPE"
       },
       "anchorSource": "exact"
     },
@@ -37429,7 +37484,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_INVALID_IP_ADDRESS"
       },
       "anchorSource": "exact"
     },
@@ -37467,8 +37522,8 @@
       "anchor": "err_invalid_module",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_INVALID_MODULE"
       },
       "anchorSource": "exact"
     },
@@ -37504,7 +37559,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_INVALID_OBJECT_DEFINE_PROPERTY"
       },
       "anchorSource": "exact"
     },
@@ -37579,7 +37634,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_INVALID_REPL_EVAL_CONFIG"
       },
       "anchorSource": "exact"
     },
@@ -37597,7 +37652,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_INVALID_REPL_INPUT"
       },
       "anchorSource": "exact"
     },
@@ -37615,7 +37670,10 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_INVALID_RETURN_PROPERTY",
+        "tests": [
+          "tests/diagnostics/compat-absent-node-apis.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -37633,7 +37691,10 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_INVALID_RETURN_PROPERTY_VALUE",
+        "tests": [
+          "tests/diagnostics/compat-absent-node-apis.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -37693,7 +37754,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_INVALID_SYNC_FORK_INPUT"
       },
       "anchorSource": "exact"
     },
@@ -37731,8 +37792,11 @@
       "anchor": "err_invalid_tuple",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_INVALID_TUPLE",
+        "tests": [
+          "tests/corpus/compat-errors-core.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -37749,8 +37813,8 @@
       "anchor": "err_invalid_typescript_syntax",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_INVALID_TYPESCRIPT_SYNTAX"
       },
       "anchorSource": "exact"
     },
@@ -37810,7 +37874,10 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_INVALID_URL_PATTERN",
+        "tests": [
+          "tests/diagnostics/compat-absent-web-globals.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -37867,7 +37934,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_IPC_DISCONNECTED"
       },
       "anchorSource": "exact"
     },
@@ -37885,7 +37952,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_IPC_ONE_PIPE"
       },
       "anchorSource": "exact"
     },
@@ -37903,7 +37970,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_IPC_SYNC_FORK"
       },
       "anchorSource": "exact"
     },
@@ -37921,7 +37988,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_IP_BLOCKED"
       },
       "anchorSource": "exact"
     },
@@ -37939,7 +38006,10 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_LOADER_CHAIN_INCOMPLETE",
+        "tests": [
+          "tests/diagnostics/compat-absent-node-apis.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -37957,7 +38027,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_LOAD_SQLITE_EXTENSION"
       },
       "anchorSource": "exact"
     },
@@ -37974,8 +38044,8 @@
       "anchor": "err_memory_allocation_failed",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:v8"
       },
       "anchorSource": "exact"
     },
@@ -37992,8 +38062,8 @@
       "anchor": "err_message_target_context_unavailable",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -38094,8 +38164,8 @@
       "anchor": "err_missing_platform_for_worker",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_MISSING_PLATFORM_FOR_WORKER"
       },
       "anchorSource": "exact"
     },
@@ -38112,8 +38182,8 @@
       "anchor": "err_module_link_mismatch",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -38172,8 +38242,8 @@
       "anchor": "err_napi_cons_function",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:addons"
       },
       "anchorSource": "exact"
     },
@@ -38190,8 +38260,8 @@
       "anchor": "err_napi_invalid_dataview_args",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:addons"
       },
       "anchorSource": "exact"
     },
@@ -38208,8 +38278,8 @@
       "anchor": "err_napi_invalid_typedarray_alignment",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:addons"
       },
       "anchorSource": "exact"
     },
@@ -38226,8 +38296,8 @@
       "anchor": "err_napi_invalid_typedarray_length",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:addons"
       },
       "anchorSource": "exact"
     },
@@ -38244,8 +38314,8 @@
       "anchor": "err_napi_tsfn_call_js",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:addons"
       },
       "anchorSource": "exact"
     },
@@ -38262,8 +38332,8 @@
       "anchor": "err_napi_tsfn_get_undefined",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:addons"
       },
       "anchorSource": "exact"
     },
@@ -38280,8 +38350,8 @@
       "anchor": "err_non_context_aware_disabled",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:addons"
       },
       "anchorSource": "exact"
     },
@@ -38298,8 +38368,8 @@
       "anchor": "err_not_building_snapshot",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_NOT_BUILDING_SNAPSHOT"
       },
       "anchorSource": "exact"
     },
@@ -38316,8 +38386,8 @@
       "anchor": "err_not_in_single_executable_application",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_NOT_IN_SINGLE_EXECUTABLE_APPLICATION"
       },
       "anchorSource": "exact"
     },
@@ -38334,8 +38404,8 @@
       "anchor": "err_not_supported_in_snapshot",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_NOT_SUPPORTED_IN_SNAPSHOT"
       },
       "anchorSource": "exact"
     },
@@ -38352,8 +38422,8 @@
       "anchor": "err_no_crypto",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_NO_CRYPTO"
       },
       "anchorSource": "exact"
     },
@@ -38370,8 +38440,8 @@
       "anchor": "err_no_icu",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_NO_ICU"
       },
       "anchorSource": "exact"
     },
@@ -38388,8 +38458,8 @@
       "anchor": "err_no_typescript",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_NO_TYPESCRIPT"
       },
       "anchorSource": "exact"
     },
@@ -38407,7 +38477,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_OPERATION_FAILED"
       },
       "anchorSource": "exact"
     },
@@ -38424,8 +38494,8 @@
       "anchor": "err_options_before_bootstrapping",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_OPTIONS_BEFORE_BOOTSTRAPPING"
       },
       "anchorSource": "exact"
     },
@@ -38481,8 +38551,8 @@
       "anchor": "err_package_map_external_file",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_PACKAGE_MAP_EXTERNAL_FILE"
       },
       "anchorSource": "exact"
     },
@@ -38499,8 +38569,8 @@
       "anchor": "err_package_map_invalid",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_PACKAGE_MAP_INVALID"
       },
       "anchorSource": "exact"
     },
@@ -38517,8 +38587,8 @@
       "anchor": "err_package_map_key_not_found",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_PACKAGE_MAP_KEY_NOT_FOUND"
       },
       "anchorSource": "exact"
     },
@@ -38658,8 +38728,8 @@
       "anchor": "err_proto_access",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:v8"
       },
       "anchorSource": "exact"
     },
@@ -38677,7 +38747,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_PROXY_INVALID_CONFIG"
       },
       "anchorSource": "exact"
     },
@@ -38695,7 +38765,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_PROXY_TUNNEL"
       },
       "anchorSource": "exact"
     },
@@ -38718,7 +38788,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_QUIC_APPLICATION_ERROR"
       },
       "anchorSource": "exact"
     },
@@ -38741,7 +38811,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_QUIC_CONNECTION_FAILED"
       },
       "anchorSource": "exact"
     },
@@ -38764,7 +38834,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_QUIC_ENDPOINT_CLOSED"
       },
       "anchorSource": "exact"
     },
@@ -38787,7 +38857,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_QUIC_OPEN_STREAM_FAILED"
       },
       "anchorSource": "exact"
     },
@@ -38810,7 +38880,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_QUIC_STREAM_ABORTED"
       },
       "anchorSource": "exact"
     },
@@ -38833,7 +38903,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_QUIC_STREAM_RESET"
       },
       "anchorSource": "exact"
     },
@@ -38856,7 +38926,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_QUIC_TRANSPORT_ERROR"
       },
       "anchorSource": "exact"
     },
@@ -38879,7 +38949,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_QUIC_VERSION_NEGOTIATION_ERROR"
       },
       "anchorSource": "exact"
     },
@@ -38897,7 +38967,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_REQUIRE_ASYNC_MODULE"
       },
       "anchorSource": "exact"
     },
@@ -38915,7 +38985,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_REQUIRE_CYCLE_MODULE"
       },
       "anchorSource": "exact"
     },
@@ -38938,7 +39008,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_REQUIRE_ESM"
       },
       "anchorSource": "exact"
     },
@@ -38961,7 +39031,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_REQUIRE_ESM_RACE_CONDITION"
       },
       "anchorSource": "exact"
     },
@@ -38978,8 +39048,8 @@
       "anchor": "err_script_execution_interrupted",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -38996,8 +39066,8 @@
       "anchor": "err_script_execution_timeout",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -39032,8 +39102,11 @@
       "anchor": "err_server_not_running",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_SERVER_NOT_RUNNING",
+        "tests": [
+          "tests/corpus/compat-errors-net.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -39050,8 +39123,8 @@
       "anchor": "err_single_executable_application_asset_not_found",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_SINGLE_EXECUTABLE_APPLICATION_ASSET_NOT_FOUND"
       },
       "anchorSource": "exact"
     },
@@ -39068,8 +39141,11 @@
       "anchor": "err_socket_already_bound",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_SOCKET_ALREADY_BOUND",
+        "tests": [
+          "tests/corpus/compat-errors-net.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -39129,7 +39205,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_SOCKET_BAD_TYPE"
       },
       "anchorSource": "exact"
     },
@@ -39168,7 +39244,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_SOCKET_CLOSED"
       },
       "anchorSource": "exact"
     },
@@ -39185,8 +39261,11 @@
       "anchor": "err_socket_closed_before_connection",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_SOCKET_CLOSED_BEFORE_CONNECTION",
+        "tests": [
+          "tests/corpus/compat-errors-net.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -39204,7 +39283,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_SOCKET_CONNECTION_TIMEOUT"
       },
       "anchorSource": "exact"
     },
@@ -39285,7 +39364,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_SOCKET_HANDLE_ADOPTED"
       },
       "anchorSource": "exact"
     },
@@ -39302,8 +39381,8 @@
       "anchor": "err_source_map_corrupt",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_SOURCE_MAP_CORRUPT"
       },
       "anchorSource": "exact"
     },
@@ -39320,8 +39399,8 @@
       "anchor": "err_source_map_missing_source",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_SOURCE_MAP_MISSING_SOURCE"
       },
       "anchorSource": "exact"
     },
@@ -39339,7 +39418,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_SOURCE_PHASE_NOT_DEFINED"
       },
       "anchorSource": "exact"
     },
@@ -39357,7 +39436,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_SQLITE_ERROR"
       },
       "anchorSource": "exact"
     },
@@ -39374,8 +39453,8 @@
       "anchor": "err_sri_parse",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_SRI_PARSE"
       },
       "anchorSource": "exact"
     },
@@ -39410,8 +39489,11 @@
       "anchor": "err_stream_cannot_pipe",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_STREAM_CANNOT_PIPE",
+        "tests": [
+          "tests/corpus/compat-errors-http.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -39450,7 +39532,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_STREAM_ITER_MISSING_FLAG"
       },
       "anchorSource": "exact"
     },
@@ -39509,8 +39591,11 @@
       "anchor": "err_stream_push_after_eof",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_STREAM_PUSH_AFTER_EOF",
+        "tests": [
+          "tests/corpus/compat-errors-stream.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -39527,8 +39612,11 @@
       "anchor": "err_stream_unable_to_pipe",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_STREAM_UNABLE_TO_PIPE",
+        "tests": [
+          "tests/corpus/compat-errors-stream.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -39545,8 +39633,11 @@
       "anchor": "err_stream_unshift_after_end_event",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_STREAM_UNSHIFT_AFTER_END_EVENT",
+        "tests": [
+          "tests/corpus/compat-errors-stream.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -39564,7 +39655,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_STREAM_WRAP"
       },
       "anchorSource": "exact"
     },
@@ -39602,8 +39693,8 @@
       "anchor": "err_string_too_long",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:v8"
       },
       "anchorSource": "exact"
     },
@@ -39621,7 +39712,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_SYNTHETIC"
       },
       "anchorSource": "exact"
     },
@@ -39699,7 +39790,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_TLS_ALPN_CALLBACK_INVALID_RESULT"
       },
       "anchorSource": "exact"
     },
@@ -39717,7 +39808,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_TLS_ALPN_CALLBACK_WITH_PROTOCOLS"
       },
       "anchorSource": "exact"
     },
@@ -39735,7 +39826,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_TLS_CERT_ALTNAME_FORMAT"
       },
       "anchorSource": "exact"
     },
@@ -39792,7 +39883,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_TLS_HANDSHAKE_TIMEOUT"
       },
       "anchorSource": "exact"
     },
@@ -39810,7 +39901,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_TLS_INVALID_CONTEXT"
       },
       "anchorSource": "exact"
     },
@@ -39828,7 +39919,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_TLS_INVALID_PROTOCOL_METHOD"
       },
       "anchorSource": "exact"
     },
@@ -39867,7 +39958,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_TLS_INVALID_STATE"
       },
       "anchorSource": "exact"
     },
@@ -39906,7 +39997,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_TLS_PSK_SET_IDENTITY_HINT_FAILED"
       },
       "anchorSource": "exact"
     },
@@ -39924,7 +40015,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_TLS_RENEGOTIATION_DISABLED"
       },
       "anchorSource": "exact"
     },
@@ -39942,7 +40033,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_TLS_RENEGOTIATION_UNSUPPORTED"
       },
       "anchorSource": "exact"
     },
@@ -39981,7 +40072,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_TLS_SESSION_ATTACK"
       },
       "anchorSource": "exact"
     },
@@ -39999,7 +40090,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_TLS_SNI_FROM_SERVER"
       },
       "anchorSource": "exact"
     },
@@ -40017,7 +40108,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_TRACE_EVENTS_CATEGORY_REQUIRED"
       },
       "anchorSource": "exact"
     },
@@ -40035,7 +40126,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_TRACE_EVENTS_UNAVAILABLE"
       },
       "anchorSource": "exact"
     },
@@ -40073,8 +40164,8 @@
       "anchor": "err_transform_already_transforming",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_TRANSFORM_ALREADY_TRANSFORMING"
       },
       "anchorSource": "exact"
     },
@@ -40091,8 +40182,8 @@
       "anchor": "err_transform_with_length_0",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_TRANSFORM_WITH_LENGTH_0"
       },
       "anchorSource": "exact"
     },
@@ -40110,7 +40201,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_TTY_INIT_FAILED"
       },
       "anchorSource": "exact"
     },
@@ -40128,7 +40219,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_UNAVAILABLE_DURING_EXIT"
       },
       "anchorSource": "exact"
     },
@@ -40146,7 +40237,10 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET",
+        "tests": [
+          "tests/diagnostics/compat-absent-node-apis.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -40227,7 +40321,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_UNKNOWN_CREDENTIAL"
       },
       "anchorSource": "exact"
     },
@@ -40266,7 +40360,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_UNKNOWN_FILE_EXTENSION"
       },
       "anchorSource": "exact"
     },
@@ -40284,7 +40378,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_UNKNOWN_MODULE_FORMAT"
       },
       "anchorSource": "exact"
     },
@@ -40341,7 +40435,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_UNSUPPORTED_ESM_URL_SCHEME"
       },
       "anchorSource": "exact"
     },
@@ -40358,8 +40452,8 @@
       "anchor": "err_unsupported_node_modules_type_stripping",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING"
       },
       "anchorSource": "exact"
     },
@@ -40377,7 +40471,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_UNSUPPORTED_RESOLVE_REQUEST"
       },
       "anchorSource": "exact"
     },
@@ -40394,8 +40488,8 @@
       "anchor": "err_unsupported_typescript_syntax",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX"
       },
       "anchorSource": "exact"
     },
@@ -40433,8 +40527,8 @@
       "anchor": "err_valid_performance_entry_type",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_VALID_PERFORMANCE_ENTRY_TYPE"
       },
       "anchorSource": "exact"
     },
@@ -40451,8 +40545,8 @@
       "anchor": "err_vm_dynamic_import_callback_missing",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -40469,8 +40563,8 @@
       "anchor": "err_vm_dynamic_import_callback_missing_flag",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -40487,8 +40581,8 @@
       "anchor": "err_vm_module_already_linked",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -40505,8 +40599,8 @@
       "anchor": "err_vm_module_cached_data_rejected",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -40523,8 +40617,8 @@
       "anchor": "err_vm_module_cannot_create_cached_data",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -40541,8 +40635,8 @@
       "anchor": "err_vm_module_different_context",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -40559,8 +40653,8 @@
       "anchor": "err_vm_module_link_failure",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -40577,8 +40671,8 @@
       "anchor": "err_vm_module_not_module",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -40595,8 +40689,8 @@
       "anchor": "err_vm_module_status",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -40613,8 +40707,8 @@
       "anchor": "err_wasi_already_started",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:wasi"
       },
       "anchorSource": "exact"
     },
@@ -40631,8 +40725,8 @@
       "anchor": "err_wasi_not_started",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:wasi"
       },
       "anchorSource": "exact"
     },
@@ -40649,8 +40743,8 @@
       "anchor": "err_webassembly_not_supported",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_WEBASSEMBLY_NOT_SUPPORTED"
       },
       "anchorSource": "exact"
     },
@@ -40668,7 +40762,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_WEBASSEMBLY_RESPONSE"
       },
       "anchorSource": "exact"
     },
@@ -40686,7 +40780,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_WORKER_HANDLE_NOT_TRANSFERABLE"
       },
       "anchorSource": "exact"
     },
@@ -40722,7 +40816,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_WORKER_INVALID_EXEC_ARGV"
       },
       "anchorSource": "exact"
     },
@@ -40745,7 +40839,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_WORKER_MESSAGING_ERRORED"
       },
       "anchorSource": "exact"
     },
@@ -40768,7 +40862,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_WORKER_MESSAGING_FAILED"
       },
       "anchorSource": "exact"
     },
@@ -40791,7 +40885,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_WORKER_MESSAGING_SAME_THREAD"
       },
       "anchorSource": "exact"
     },
@@ -40814,7 +40908,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_WORKER_MESSAGING_TIMEOUT"
       },
       "anchorSource": "exact"
     },
@@ -40832,7 +40926,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_WORKER_NOT_RUNNING"
       },
       "anchorSource": "exact"
     },
@@ -40849,8 +40943,8 @@
       "anchor": "err_worker_out_of_memory",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:v8"
       },
       "anchorSource": "exact"
     },
@@ -40868,7 +40962,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERR_WORKER_PATH"
       },
       "anchorSource": "exact"
     },
@@ -40903,8 +40997,11 @@
       "anchor": "err_worker_unsupported_operation",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_WORKER_UNSUPPORTED_OPERATION",
+        "tests": [
+          "tests/corpus/compat-errors-worker.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -40963,8 +41060,11 @@
       "anchor": "hpe_chunk_extensions_overflow",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.HPE_CHUNK_EXTENSIONS_OVERFLOW",
+        "tests": [
+          "tests/corpus/http-parser-response-checks.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -40981,8 +41081,11 @@
       "anchor": "hpe_header_overflow",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.HPE_HEADER_OVERFLOW",
+        "tests": [
+          "tests/corpus/compat-errors-http.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -40999,8 +41102,11 @@
       "anchor": "hpe_unexpected_content_length",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.HPE_UNEXPECTED_CONTENT_LENGTH",
+        "tests": [
+          "tests/corpus/http-parser-response-checks.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -41017,8 +41123,11 @@
       "anchor": "module_not_found",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.MODULE_NOT_FOUND",
+        "tests": [
+          "tests/corpus/2195-require-missing-package/main.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -41063,8 +41172,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_CANNOT_TRANSFER_OBJECT"
       },
       "anchorSource": "exact"
     },
@@ -41086,8 +41195,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_CPU_USAGE"
       },
       "anchorSource": "exact"
     },
@@ -41109,8 +41218,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_HASH_DIGEST_NO_UTF16"
       },
       "anchorSource": "exact"
     },
@@ -41132,8 +41241,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_SCRYPT_INVALID_PARAMETER"
       },
       "anchorSource": "exact"
     },
@@ -41155,8 +41264,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_FS_INVALID_SYMLINK_TYPE"
       },
       "anchorSource": "exact"
     },
@@ -41178,8 +41287,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_HTTP2_FRAME_ERROR"
       },
       "anchorSource": "exact"
     },
@@ -41201,8 +41310,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_HTTP2_HEADERS_OBJECT"
       },
       "anchorSource": "exact"
     },
@@ -41224,8 +41333,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_HTTP2_HEADER_REQUIRED"
       },
       "anchorSource": "exact"
     },
@@ -41247,8 +41356,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_HTTP2_INFO_HEADERS_AFTER_RESPOND"
       },
       "anchorSource": "exact"
     },
@@ -41270,8 +41379,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_HTTP2_STREAM_CLOSED"
       },
       "anchorSource": "exact"
     },
@@ -41293,8 +41402,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_HTTP_INVALID_CHAR"
       },
       "anchorSource": "exact"
     },
@@ -41316,8 +41425,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_IMPORT_ASSERTION_TYPE_FAILED"
       },
       "anchorSource": "exact"
     },
@@ -41339,8 +41448,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_IMPORT_ASSERTION_TYPE_MISSING"
       },
       "anchorSource": "exact"
     },
@@ -41362,8 +41471,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_IMPORT_ASSERTION_TYPE_UNSUPPORTED"
       },
       "anchorSource": "exact"
     },
@@ -41385,8 +41494,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_INDEX_OUT_OF_RANGE"
       },
       "anchorSource": "exact"
     },
@@ -41408,8 +41517,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_INVALID_OPT_VALUE"
       },
       "anchorSource": "exact"
     },
@@ -41431,8 +41540,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_INVALID_OPT_VALUE_ENCODING"
       },
       "anchorSource": "exact"
     },
@@ -41454,8 +41563,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_INVALID_PERFORMANCE_MARK"
       },
       "anchorSource": "exact"
     },
@@ -41477,8 +41586,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_INVALID_TRANSFER_OBJECT"
       },
       "anchorSource": "exact"
     },
@@ -41500,8 +41609,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_MANIFEST_ASSERT_INTEGRITY"
       },
       "anchorSource": "exact"
     },
@@ -41523,8 +41632,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_MANIFEST_DEPENDENCY_MISSING"
       },
       "anchorSource": "exact"
     },
@@ -41546,8 +41655,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_MANIFEST_INTEGRITY_MISMATCH"
       },
       "anchorSource": "exact"
     },
@@ -41569,8 +41678,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_MANIFEST_INVALID_RESOURCE_FIELD"
       },
       "anchorSource": "exact"
     },
@@ -41592,8 +41701,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_MANIFEST_INVALID_SPECIFIER"
       },
       "anchorSource": "exact"
     },
@@ -41615,8 +41724,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_MANIFEST_PARSE_POLICY"
       },
       "anchorSource": "exact"
     },
@@ -41638,8 +41747,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_MANIFEST_TDZ"
       },
       "anchorSource": "exact"
     },
@@ -41661,8 +41770,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_MANIFEST_UNKNOWN_ONERROR"
       },
       "anchorSource": "exact"
     },
@@ -41684,8 +41793,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_MISSING_MESSAGE_PORT_IN_TRANSFER_LIST"
       },
       "anchorSource": "exact"
     },
@@ -41707,8 +41816,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_MISSING_TRANSFERABLE_IN_TRANSFER_LIST"
       },
       "anchorSource": "exact"
     },
@@ -41730,8 +41839,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_NAPI_CONS_PROTOTYPE_OBJECT"
       },
       "anchorSource": "exact"
     },
@@ -41753,8 +41862,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_NAPI_TSFN_START_IDLE_LOOP"
       },
       "anchorSource": "exact"
     },
@@ -41776,8 +41885,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_NAPI_TSFN_STOP_IDLE_LOOP"
       },
       "anchorSource": "exact"
     },
@@ -41799,8 +41908,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_NO_LONGER_SUPPORTED"
       },
       "anchorSource": "exact"
     },
@@ -41822,8 +41931,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_OUTOFMEMORY"
       },
       "anchorSource": "exact"
     },
@@ -41845,8 +41954,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_PARSE_HISTORY_DATA"
       },
       "anchorSource": "exact"
     },
@@ -41868,8 +41977,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_SOCKET_CANNOT_SEND"
       },
       "anchorSource": "exact"
     },
@@ -41891,8 +42000,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_STDERR_CLOSE"
       },
       "anchorSource": "exact"
     },
@@ -41914,8 +42023,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_STDOUT_CLOSE"
       },
       "anchorSource": "exact"
     },
@@ -41937,8 +42046,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_STREAM_READ_NOT_IMPLEMENTED"
       },
       "anchorSource": "exact"
     },
@@ -41960,8 +42069,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_TAP_LEXER_ERROR"
       },
       "anchorSource": "exact"
     },
@@ -41983,8 +42092,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_TAP_PARSER_ERROR"
       },
       "anchorSource": "exact"
     },
@@ -42006,8 +42115,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_TAP_VALIDATION_ERROR"
       },
       "anchorSource": "exact"
     },
@@ -42029,8 +42138,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_TLS_RENEGOTIATION_FAILED"
       },
       "anchorSource": "exact"
     },
@@ -42052,8 +42161,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_TRANSFERRING_EXTERNALIZED_SHAREDARRAYBUFFER"
       },
       "anchorSource": "exact"
     },
@@ -42075,8 +42184,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_UNKNOWN_STDIN_TYPE"
       },
       "anchorSource": "exact"
     },
@@ -42098,8 +42207,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_UNKNOWN_STREAM_TYPE"
       },
       "anchorSource": "exact"
     },
@@ -42121,8 +42230,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_V8BREAKITERATOR"
       },
       "anchorSource": "exact"
     },
@@ -42144,8 +42253,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_VALUE_OUT_OF_RANGE"
       },
       "anchorSource": "exact"
     },
@@ -42167,8 +42276,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_VM_MODULE_LINKING_ERRORED"
       },
       "anchorSource": "exact"
     },
@@ -42190,8 +42299,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_VM_MODULE_NOT_LINKED"
       },
       "anchorSource": "exact"
     },
@@ -42213,8 +42322,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_WORKER_UNSUPPORTED_EXTENSION"
       },
       "anchorSource": "exact"
     },
@@ -42236,8 +42345,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_ZLIB_BINDING_CLOSED"
       },
       "anchorSource": "exact"
     },
@@ -42291,7 +42400,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.CERT_NOT_YET_VALID"
       },
       "anchorSource": "exact"
     },
@@ -42327,7 +42436,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.CRL_NOT_YET_VALID"
       },
       "anchorSource": "exact"
     },
@@ -42345,7 +42454,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.CRL_HAS_EXPIRED"
       },
       "anchorSource": "exact"
     },
@@ -42363,7 +42472,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.CERT_REVOKED"
       },
       "anchorSource": "exact"
     },
@@ -42420,7 +42529,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.UNABLE_TO_GET_ISSUER_CERT_LOCALLY"
       },
       "anchorSource": "exact"
     },
@@ -42480,7 +42589,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.CERT_CHAIN_TOO_LONG"
       },
       "anchorSource": "exact"
     },
@@ -42498,7 +42607,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.UNABLE_TO_GET_CRL"
       },
       "anchorSource": "exact"
     },
@@ -42537,7 +42646,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.CERT_UNTRUSTED"
       },
       "anchorSource": "exact"
     },
@@ -42573,7 +42682,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.INVALID_CA"
       },
       "anchorSource": "exact"
     },
@@ -42591,7 +42700,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.PATH_LENGTH_EXCEEDED"
       },
       "anchorSource": "exact"
     },
@@ -42627,7 +42736,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.HOSTNAME_MISMATCH"
       },
       "anchorSource": "exact"
     },
@@ -42684,7 +42793,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.CERT_REJECTED"
       },
       "anchorSource": "exact"
     },
@@ -42720,7 +42829,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.CERT_SIGNATURE_FAILURE"
       },
       "anchorSource": "exact"
     },
@@ -42738,7 +42847,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.CRL_SIGNATURE_FAILURE"
       },
       "anchorSource": "exact"
     },
@@ -42756,7 +42865,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERROR_IN_CERT_NOT_BEFORE_FIELD"
       },
       "anchorSource": "exact"
     },
@@ -42774,7 +42883,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERROR_IN_CERT_NOT_AFTER_FIELD"
       },
       "anchorSource": "exact"
     },
@@ -42792,7 +42901,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERROR_IN_CRL_LAST_UPDATE_FIELD"
       },
       "anchorSource": "exact"
     },
@@ -42810,7 +42919,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.ERROR_IN_CRL_NEXT_UPDATE_FIELD"
       },
       "anchorSource": "exact"
     },
@@ -42828,7 +42937,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.UNABLE_TO_DECRYPT_CERT_SIGNATURE"
       },
       "anchorSource": "exact"
     },
@@ -42846,7 +42955,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.UNABLE_TO_DECRYPT_CRL_SIGNATURE"
       },
       "anchorSource": "exact"
     },
@@ -42864,7 +42973,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.UNABLE_TO_DECODE_ISSUER_PUBLIC_KEY"
       },
       "anchorSource": "exact"
     },
@@ -42900,7 +43009,7 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "evidence": "compiler-feature:errors.OUT_OF_MEM"
       },
       "anchorSource": "exact"
     },

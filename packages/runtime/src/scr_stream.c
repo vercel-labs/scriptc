@@ -7047,8 +7047,24 @@ bool scr_stream_push_null(ScrStream *s) {
   return false;
 }
 
+/* unshift() after 'end': Node's readableAddChunk reports
+ * ERR_STREAM_UNSHIFT_AFTER_END_EVENT through errorOrDestroy and adds
+ * nothing. True when it did. */
+static bool scr_stream_unshift_after_end(ScrStream *s) {
+  ScrStreamState *st = s->st;
+  if (!st->has_r || !st->r.end_emitted) return false;
+  ScrError *e = scr_stream_mkerr("ERR_STREAM_UNSHIFT_AFTER_END_EVENT", "stream.unshift() after end event");
+  scr_stream_error_or_destroy(s, e);
+  scr_error_release(e);
+  return true;
+}
+
 void scr_stream_unshift(ScrStream *s, ScrBytes *chunk) {
   ScrStreamState *st = s->st;
+  /* A byte-mode stream drops a chunk that adds nothing before the 'end'
+   * check, as readableAddChunkUnshiftByteMode returns early for one. */
+  if (!((st->has_r && st->r.object_entries) || chunk->len > 0)) return;
+  if (scr_stream_unshift_after_end(s)) return;
   if (st->r.head_off > 0) {
     /* materialize the part-read head so the front slot is whole */
     void *rest = scr_stream_rbuf_take(st, scr_stream_entry_len(st, st->r.buf[st->r.first]) - st->r.head_off);
@@ -7083,7 +7099,12 @@ void scr_stream_unshift_dyn(ScrStream *s, const ScrDyn *d) {
     scr_stream_push_null(s);
     return;
   }
-  if (st->has_r && st->r.object_entries) {
+  bool object = st->has_r && st->r.object_entries;
+  if (!object && (d->kind == SCR_DYN_UNDEF || (d->kind == SCR_DYN_STR && d->v.str->len == 0) ||
+                  (d->kind == SCR_DYN_BYTES && d->v.bytes->len == 0)))
+    return; /* nothing to add: Node answers without complaint, even after 'end' */
+  if (scr_stream_unshift_after_end(s)) return;
+  if (object) {
     void *entry;
     ScrEntryKind kind;
     if (d->kind == SCR_DYN_STR) {

@@ -1314,6 +1314,10 @@ static ScrDyn *bcs_method_call(ScrClosure *closure, ScrDyn *const *args, size_t 
     } else if (first->kind == SCR_DYN_NULL) {
       scr_stream_push_null(s);
       result = bcs_undefined();
+    } else if (first->kind == SCR_DYN_UNDEF) {
+      /* a byte-mode stream drops undefined, an object-mode one takes it */
+      scr_stream_unshift_dyn(s, first);
+      result = bcs_undefined();
     } else {
       scr_dyn_arg_type_fail("chunk", "of type string or an instance of Buffer or Uint8Array", first);
     }

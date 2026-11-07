@@ -83,6 +83,8 @@
 #include <sys/socket.h>
 #endif
 
+#include "scr_system_error_event.h"
+
 static void scr_dgram_oom(void) {
   fputs("scriptc: out of memory\n", stderr);
   abort();
@@ -333,6 +335,17 @@ static void scr_dgram_fire_err(ScrDgramLs *l, ScrStr *msg) {
     fprintf(stderr, "Unhandled 'error' event: Error: %s\n", msg->data);
     _Exit(1);
   }
+  /* Node's error object for the message, as far as the error itself
+   * holds it: errno, code and syscall. Every listener receives the same
+   * object. The address and port (or hostname) Node also sets are
+   * properties of the error's untyped view; building that view here would
+   * link the dynamic object model into every program with a datagram
+   * socket, typed ones included, so an 'error' event does not carry them. */
+  const char *detail;
+  ScrError *system = scr_system_error_fields(msg, &detail);
+  (void)detail;
+  ScrError *saved = scr_event_error_payload;
+  if (system != NULL) scr_event_error_payload = system;
   ScrDgramL *snap;
   size_t n = scr_dgram_ls_snapshot(l, &snap);
   for (size_t i = 0; i < n; i++) {
@@ -340,6 +353,8 @@ static void scr_dgram_fire_err(ScrDgramLs *l, ScrStr *msg) {
     scr_closure_release(snap[i].cb);
   }
   free(snap);
+  scr_event_error_payload = saved;
+  if (system != NULL) scr_error_release(system);
 }
 
 /* ── the handle ──────────────────────────────────────────────────────── */
@@ -718,25 +733,18 @@ void scr_dgram_ref(ScrDgramSocket *s) { s->unrefed = false; }
  * Node's handle is null, so most members throw the TypeError reading a
  * property of null; the ones that call healthCheck() throw "Not running". */
 
-typedef struct { int value; const char *name; const char *message; } ScrDgramUvError;
-#define SCR_DGRAM_UV_ERROR(name, message) { SCR_NODE_UV__##name, #name, message },
-static const ScrDgramUvError scr_dgram_uv_errors[] = { SCR_NODE_UV_ERRNO_MAP(SCR_DGRAM_UV_ERROR) };
-#undef SCR_DGRAM_UV_ERROR
-
 /* The libuv name, number and message for an errno value (by name, so
  * the win32 arm's translated errno values find the same entries). */
-static const ScrDgramUvError *scr_dgram_uv_error(int err) {
-  static const ScrDgramUvError unknown = { SCR_NODE_UV__UNKNOWN, "UNKNOWN", "unknown error" };
+static const ScrUvError *scr_dgram_uv_error(int err) {
+  static const ScrUvError unknown = { SCR_NODE_UV__UNKNOWN, "UNKNOWN", "unknown error" };
   const char *name = scr_dgram_errname(err);
-  for (size_t i = 0; i < sizeof scr_dgram_uv_errors / sizeof scr_dgram_uv_errors[0]; i++) {
-    if (strcmp(scr_dgram_uv_errors[i].name, name) == 0) return &scr_dgram_uv_errors[i];
-  }
-  return &unknown;
+  const ScrUvError *known = scr_uv_error_named(name, strlen(name));
+  return known != NULL ? known : &unknown;
 }
 
 /* Node's ErrnoException: "<syscall> <CODE>" with code, errno and syscall. */
 static void scr_dgram_throw_errno(int err, const char *syscall) {
-  const ScrDgramUvError *uv = scr_dgram_uv_error(err);
+  const ScrUvError *uv = scr_dgram_uv_error(err);
   char text[96];
   int n = snprintf(text, sizeof text, "%s %s", syscall, uv->name);
   ScrStr *msg = scr_str_new(text, n < 0 ? 0 : (size_t)n);
@@ -751,7 +759,7 @@ static void scr_dgram_throw_errno(int err, const char *syscall) {
 /* Node's ERR_SOCKET_BUFFER_SIZE SystemError for a failed libuv buffer
  * size call. */
 static void scr_dgram_throw_buffer_size(int err, const char *syscall) {
-  const ScrDgramUvError *uv = scr_dgram_uv_error(err);
+  const ScrUvError *uv = scr_dgram_uv_error(err);
   char text[192];
   int n = snprintf(text, sizeof text, "Could not get or set buffer size: %s returned %s (%s)", syscall,
                    uv->name, uv->message);
@@ -1919,22 +1927,12 @@ static const char SCR_DGRAM_BUF_EXPECTED[] =
 
 /* A send failure as the Error Node hands a send callback: the message
  * ("send ECONNREFUSED 127.0.0.1:41234", "getaddrinfo ENOTFOUND nohost")
- * with the code its second word names. +1. */
+ * with the system error fields it names. +1. */
 static ScrDyn *scr_dgram_send_error(const char *msg) {
   ScrStr *text = scr_str_new(msg, strlen(msg));
-  ScrError *e = scr_error_new(0 /* Error */, text);
+  ScrError *e = scr_system_error_from_message(text);
+  if (e == NULL) e = scr_error_new(0 /* Error */, text);
   scr_str_release(text);
-  const char *sp = strchr(msg, ' ');
-  if (sp != NULL) {
-    char code[48];
-    size_t n = 0;
-    while (sp[1 + n] != '\0' && sp[1 + n] != ' ') n++;
-    if (n > 0 && n < sizeof code) {
-      memcpy(code, sp + 1, n);
-      code[n] = '\0';
-      scr_error_set_code(e, code);
-    }
-  }
   ScrDyn *d = scr_dyn_from_error(e);
   scr_error_release(e);
   return d;

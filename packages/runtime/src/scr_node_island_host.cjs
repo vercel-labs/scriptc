@@ -20,6 +20,18 @@ const timers = require("node:timers");
 
 const nativeHost = globalThis.__scriptcNodeIslandHost;
 
+// The process state the program already has (scr_node_island.c prefixes
+// this script with it): process.argv is the program's own, so island code
+// that parses the command line reads the arguments the program was started
+// with, and a Node that starts during the exit sequence is exiting too
+// (process.nextTick drops its callbacks, as it does in an 'exit' listener).
+const programProcess = globalThis.__scriptcNodeIslandProcess;
+delete globalThis.__scriptcNodeIslandProcess;
+if (programProcess !== undefined) {
+  process.argv = programProcess.argv;
+  if (programProcess.exiting) process._exiting = true;
+}
+
 // The program's island module tree (scr_node_island.c prefixes this script
 // with its root, then the bridge removes the global): modules resolve only
 // to files inside it, never to a file elsewhere on the machine.
@@ -813,6 +825,10 @@ processMethods.prependListener = function prependListener(event, listener) {
 };
 
 function emit(kind, id, name, arg) {
+  // The runtime's exit sequence began (it announces it with listener 0
+  // before the first 'exit' listener of either side): process._exiting is
+  // true from here on, as in Node, so process.nextTick drops its callbacks.
+  if (kind === EVENT_EXIT) process._exiting = true;
   const entry = islandListeners.find((e) => e.id === id);
   if (entry === undefined) return;
   // The registered function: the listener itself, or its once wrapper,

@@ -3,7 +3,8 @@
  * includes a Node or V8 header: it loads the bridge library of a libnode
  * pack with dlopen on first use and talks to it only through this table.
  * The bridge links libnode and pins the Node ABI; the runtime pins only
- * SCR_NODE_BRIDGE_ABI, which changes with any change to these structs.
+ * SCR_NODE_BRIDGE_ABI, which changes with any change to these structs and
+ * with any change to what an entry does that the runtime relies on.
  *
  * Conventions: strings are UTF-8 and borrowed unless noted. Call outcomes
  * are "R<json>" (returned; "R" alone is undefined) or "T<json>" (threw;
@@ -358,9 +359,14 @@ typedef struct ScrNodeBridge {
    * starts at the poll phase instead of the timers phase. */
   int (*run_loop)(int continue_turn);
   /* Calls island listener `listener` of a process event: a signal (`name`,
-   * signal number `arg`) or exit (code `arg`). */
+   * signal number `arg`) or exit (code `arg`). A signal listener runs in a
+   * callback scope (ticks and microtasks drain after it); an exit listener
+   * is a plain call, after which nothing drains. Exit with listener 0 calls
+   * no listener: it tells island code that the exit sequence began
+   * (process._exiting). */
   void (*emit)(uint32_t event, uint32_t listener, const char *name, int arg);
-  /* Tears Node down at process exit. */
+  /* Tears Node down at process exit. No JavaScript runs from here on: the
+   * timers and immediates still due are dropped. */
   void (*stop)(void);
   /* ── object handles (NI-4). Each operation answers 0 (returned: *out is
    * the result) or 1 (threw: *out is the thrown value). ── */

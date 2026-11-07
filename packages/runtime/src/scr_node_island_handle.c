@@ -1144,20 +1144,41 @@ int scr_ni_instanceof(ScrDyn *value, ScrDyn *ctor) {
   return out.tag == SCR_NV_BOOL && out.u.boolean ? 1 : 0;
 }
 
-/* NI-4: the `constructor` an error thrown by island code keeps. The
- * runtime's error view answers the interned native constructor, but this
- * error IS a V8 error: in the island's realm its `constructor` is V8's
- * TypeError — the very value the island's own `TypeError` crosses as — so
- * `e.constructor === TypeError` holds as it does in one realm, agreeing
- * with the bridge's instanceof. 0 for an error the runtime made itself. */
-static int nh_error_constructor(const struct ScrError *err, ScrDyn **out) {
+/* NI-4: what the native view of an error island code threw does not hold.
+ * The view carries the name, message, stack and string code every error
+ * has; this error IS a V8 error, so every other property the program reads
+ * (an own `status` or `errno`, `cause`, an AggregateError's `errors`, a
+ * method of its class, and `constructor`, which in the island's realm is
+ * V8's TypeError, the very value the island's own `TypeError` crosses as)
+ * is read from it. Errors among the results are native views themselves.
+ * 0 for an error the runtime made itself. */
+static int nh_error_get(const struct ScrError *err, const char *key, size_t len, ScrDyn **out) {
   ScrNodeRef *ref = nh_pinned((void *)err, NH_PIN_ERROR);
   if (ref == NULL) return 0;
-  ScrDyn *handle = scr_dyn_new_handle(ref, SCR_DYNH_NODE_ISLAND); /* retains */
-  ScrDyn *ctor = scr_ni_get_str(handle, "constructor", 11);
-  scr_dyn_release(handle);
-  *out = ctor;
+  *out = NULL;
+  if (!nh_live(ref)) return 1;
+  nh_enter();
+  ScrNodeValue k = {.tag = SCR_NV_STRING}, value;
+  k.u.str.data = key;
+  k.u.str.len = len;
+  NhCall c = {.op = NH_GET, .h = ref->id, .a = &k, .out = &value};
+  nh_run(&c);
+  if (c.threw) nh_throw_value(&value);
+  else *out = scr_ni_arg_in(&value);
   return 1;
+}
+
+static int nh_error_has(const struct ScrError *err, const char *key, size_t len) {
+  ScrNodeRef *ref = nh_pinned((void *)err, NH_PIN_ERROR);
+  if (ref == NULL) return -1;
+  ScrDyn *handle = scr_dyn_new_handle(ref, SCR_DYNH_NODE_ISLAND); /* retains */
+  ScrStr *name = scr_str_new(key, len);
+  ScrDyn *k = scr_dyn_new_str(name);
+  scr_str_release(name);
+  int found = scr_ni_has(handle, k);
+  scr_dyn_release(k);
+  scr_dyn_release(handle);
+  return found == 1 ? 1 : 0;
 }
 
 ScrDyn *scr_ni_own_keys(ScrDyn *obj, int mode) {
@@ -1213,6 +1234,32 @@ ScrPromise *scr_ni_await(ScrDyn *value) {
     scr_promise_reject_pending(p);
   }
   return p;
+}
+
+/* PromiseResolve of a value the program awaits, for the island values the
+ * dynamic await does not know: an island object or function with a callable
+ * `then` is a thenable, adopted by V8 (its `then` runs as a promise job,
+ * with V8's resolving functions), and the program awaits the promise of
+ * that. A `then` getter that throws rejects the await with what it threw.
+ * Every other value is itself. +1. */
+ScrDyn *scr_node_island_adopt_thenable(ScrDyn *value) {
+  ScrNodeRef *ref = nh_ref_of(value);
+  if (ref == NULL || !scr_context_is_main()) return scr_dyn_retain(value);
+  ScrDyn *then = scr_ni_get_str(value, "then", 4);
+  if (then == NULL) {
+    ScrPromise *failed = scr_promise_new();
+    scr_promise_reject_pending(failed);
+    ScrDyn *box = scr_dyn_new_promise(failed);
+    scr_promise_release(failed);
+    return box;
+  }
+  bool callable = scr_dyn_is_callable(then);
+  scr_dyn_release(then);
+  if (!callable) return scr_dyn_retain(value);
+  ScrPromise *adopted = scr_ni_await(value);
+  ScrDyn *box = scr_dyn_new_promise(adopted);
+  scr_promise_release(adopted);
+  return box;
 }
 
 bool scr_ni_is_function(const ScrDyn *value) {
@@ -1807,7 +1854,8 @@ static const ScrNiDynOps nh_dyn_ops = {
     .instance_of = scr_ni_instanceof,
     .to_primitive = scr_ni_to_primitive,
     .is_function = scr_ni_is_function,
-    .error_constructor = nh_error_constructor,
+    .error_get = nh_error_get,
+    .error_has = nh_error_has,
     .object_tag = nh_object_tag,
     .function_identity = nh_function_identity,
     .function_of_identity = nh_function_of_identity,

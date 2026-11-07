@@ -2791,8 +2791,15 @@ export function collectClassShapeInner(
           const initializerSymbol = ts.isIdentifier(member.initializer)
             ? lowerer.resolveValueSymbol(member.initializer)
             : null;
-          // Enum namespace aliases are erased; member reads fold through the checker.
-          if (initializerSymbol && (initializerSymbol.flags & ts.SymbolFlags.Enum) !== 0) continue;
+          // An alias of an enum that has no object is erased; member reads
+          // fold through the checker. An enum whose object is built
+          // (enum-objects.ts) is stored like any other value.
+          if (
+            initializerSymbol &&
+            (initializerSymbol.flags & ts.SymbolFlags.Enum) !== 0 &&
+            !lowerer.enumObjects.has(initializerSymbol)
+          )
+            continue;
           const type = lowerer.irTypeOf(member.name);
           if (type.kind === "void") lowerer.badType(member.name, lowerer.typeOf(member.name));
           if (

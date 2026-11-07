@@ -144,6 +144,34 @@ export function isTruthinessOnlyRead(lowerer: Lowerer, node: ts.Expression): boo
   return false;
 }
 
+/** The exit code the process would end with now. In a program with Node
+ * islands island code may have assigned it since the program last looked:
+ * nodeIsland.hasExitCode reads Node's process.exitCode into the runtime's
+ * code first (scr_ni_process_has_exit_code). */
+function currentExitCode(lowerer: Lowerer, loc: SrcLoc): IrExpr {
+  const current: IrExpr = {
+    kind: "libCall",
+    fn: "process.currentExitCode",
+    args: [],
+    type: F64,
+    loc,
+  };
+  if (lowerer.nodeIslands === null) return current;
+  return {
+    kind: "seqExpr",
+    stmts: [
+      {
+        kind: "exprStmt",
+        expr: { kind: "libCall", fn: "nodeIsland.hasExitCode", args: [], type: BOOL, loc },
+        loc,
+      },
+    ],
+    result: current,
+    type: F64,
+    loc,
+  };
+}
+
 /** Whether a program source reads process.exitCode. Such a program
  * records its exit-code assignments (process.setExitCodeTracked), so a
  * read can tell an unset code from 0; other programs keep the untracked
@@ -778,11 +806,20 @@ export function lowerProcessProperty(
       type: F64,
       loc,
     };
-    if (lowerer.mapTypeOf(lowerer.typeOf(expr))?.kind === "f64") return current;
+    if (lowerer.mapTypeOf(lowerer.typeOf(expr))?.kind === "f64")
+      return currentExitCode(lowerer, loc);
     const type: IrType = { kind: "union", unionId: lowerer.unions.intern([F64, UNDEFINED_T]) };
     return {
       kind: "ternary",
-      cond: { kind: "libCall", fn: "process.hasExitCode", args: [], type: BOOL, loc },
+      cond: {
+        kind: "libCall",
+        // Island code may have assigned it: read Node's property first
+        // (scr_ni_process_has_exit_code).
+        fn: lowerer.nodeIslands !== null ? "nodeIsland.hasExitCode" : "process.hasExitCode",
+        args: [],
+        type: BOOL,
+        loc,
+      },
       then: lowerer.coerceToExpected(current, type),
       else_: lowerer.coerceToExpected(
         { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
@@ -2253,7 +2290,17 @@ export function lowerProcessMethodCall(
     if (dir.type.kind !== "string") {
       lowerer.noLowering("process.chdir of non-string paths", call.arguments.nodes[0]!);
     }
-    return { kind: "libCall", fn: "process.chdir", args: [dir], type: VOID, loc };
+    const chdir: IrExpr = { kind: "libCall", fn: "process.chdir", args: [dir], type: VOID, loc };
+    if (lowerer.nodeIslands === null) return chdir;
+    // Node caches process.cwd(): island code must see the directory the
+    // program changed to (scr_ni_process_cwd_changed).
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: chdir, loc }],
+      result: { kind: "libCall", fn: "nodeIsland.cwdChanged", args: [], type: VOID, loc },
+      type: VOID,
+      loc,
+    };
   }
   // getuid(2): POSIX-only target, so the call always answers a number —
   // the plain-f64 result is honest here even though @types/node declares
@@ -2298,13 +2345,11 @@ export function lowerProcessMethodCall(
   if (member === "exit") {
     const arg = call.arguments.nodes[0];
     let code: IrExpr =
-      arg !== undefined
-        ? lowerer.lowerExprExpecting(arg, F64)
-        : { kind: "libCall", fn: "process.currentExitCode", args: [], type: F64, loc };
+      arg !== undefined ? lowerer.lowerExprExpecting(arg, F64) : currentExitCode(lowerer, loc);
     // process.exit(code) assigns process.exitCode before the 'exit'
     // listeners run. Only a program that reads the property can observe
     // that, so only such a program records the assignment.
-    if (arg !== undefined && programReadsExitCode(lowerer)) {
+    if (arg !== undefined && (programReadsExitCode(lowerer) || lowerer.nodeIslands !== null)) {
       const binding = lowerer.declareHiddenLocal("%exitCode", F64);
       code = {
         kind: "seqExpr",
@@ -2314,7 +2359,10 @@ export function lowerProcessMethodCall(
             kind: "exprStmt",
             expr: {
               kind: "libCall",
-              fn: "process.setExitCodeTracked",
+              fn:
+                lowerer.nodeIslands !== null
+                  ? "nodeIsland.setExitCode"
+                  : "process.setExitCodeTracked",
               args: [varRef(binding.id, F64, loc)],
               type: VOID,
               loc,

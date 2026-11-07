@@ -90,6 +90,25 @@ ScrPromise *scr_ni_import(ScrStr *path);  /* import(absolute path): the namespac
  * the report's sharedObjects lists the binary's real libraries. Compiler
  * builds that have no island keep the process.report refusal instead. */
 ScrDyn *scr_ni_process_report(void);
+/* Process state is one state (scr_node_island.c). Once Node is loaded its
+ * process.exitCode is the one exit code: the program's assignments go there
+ * too (scr_ni_process_set_exit_code), and the program reads it from there
+ * (scr_ni_process_has_exit_code pulls it into the runtime's code first, as
+ * scr_ni_process_exit_code_pull does where the runtime needs the code: a
+ * process.exit() without one, and the end of the loop). A pull applies the
+ * property only when island code assigned it since the runtime last wrote
+ * or read it, so a code the runtime notes by itself stays. A Node that starts
+ * later starts with the code the program assigned. Node caches
+ * process.cwd() until its own process.chdir runs, so the program's chdir is
+ * followed by scr_ni_process_cwd_changed. In a program with Node islands
+ * these replace process.setExitCode and process.hasExitCode. */
+void scr_ni_process_set_exit_code(double code);
+bool scr_ni_process_has_exit_code(void);
+void scr_ni_process_exit_code_pull(void);
+void scr_ni_process_cwd_changed(void);
+/* Whether the program holds an exit code for a Node that starts now, and
+ * the code: the property's first value. */
+bool scr_ni_process_exit_code_start(int *code);
 ScrDyn *scr_ni_get(ScrDyn *obj, ScrDyn *key);
 ScrDyn *scr_ni_get_str(ScrDyn *obj, const char *key, size_t len);
 bool scr_ni_set(ScrDyn *obj, ScrDyn *key, ScrDyn *value);

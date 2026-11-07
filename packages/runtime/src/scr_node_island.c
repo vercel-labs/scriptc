@@ -727,11 +727,12 @@ static char *ni_caller_path(const ScrStr *relative) {
   return ni_tree_path(relative->data, relative->len);
 }
 
-/* The bootstrap: the tree root for the host's resolution guard, then the
- * host script. +1 malloc'd. */
+/* The bootstrap: the tree root for the host's resolution guard, the exit
+ * code the program already assigned (process.exitCode is one value), then
+ * the host script. +1 malloc'd. */
 static char *ni_bootstrap(void) {
   size_t host = strlen(scr_node_island_host_js);
-  size_t cap = 64 + strlen(ni_root) * 6 + host;
+  size_t cap = 160 + strlen(ni_root) * 6 + host;
   char *out = malloc(cap);
   if (out == NULL) ni_oom();
   size_t n = (size_t)snprintf(out, cap, "globalThis.__scriptcNodeIslandRoot = \"");
@@ -745,6 +746,10 @@ static char *ni_bootstrap(void) {
       out[n++] = (char)c;
   }
   n += (size_t)snprintf(out + n, cap - n, "\";\n");
+  int exit_code = 0;
+  if (scr_ni_process_exit_code_start(&exit_code))
+    n += (size_t)snprintf(out + n, cap - n, "globalThis.__scriptcNodeIslandExitCode = %d;\n",
+                          exit_code);
   memcpy(out + n, scr_node_island_host_js, host + 1);
   return out;
 }
@@ -1298,7 +1303,12 @@ static void ni_run_loop_job(void *p) {
 static int ni_run_loop(int continue_turn) {
   NiRunLoop a = {continue_turn, 0};
   ni_on_node_stack(ni_run_loop_job, &a);
-  return a.code;
+  /* The loop ended: the program exits with process.exitCode as island code
+   * left it, an assignment of undefined included (the bridge's own answer
+   * cannot tell "none" from 0). The pull makes an assignment by island
+   * code the runtime's code, so the hosted loop has nothing left to merge. */
+  scr_ni_process_exit_code_pull();
+  return 0;
 }
 
 /* The bridge as the hosted loop sees it. Every entry that runs JavaScript

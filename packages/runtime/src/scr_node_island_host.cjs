@@ -691,6 +691,14 @@ function installProcessMethods() {
 }
 installProcessMethods();
 
+// process.exitCode is one value (scr_node_island.c): a Node that starts
+// after the program assigned a code starts with it.
+{
+  const initial = globalThis.__scriptcNodeIslandExitCode;
+  delete globalThis.__scriptcNodeIslandExitCode;
+  if (initial !== undefined) process.exitCode = initial;
+}
+
 // Writes reach the shared stdout and stderr before control returns to the
 // program, as the program's own writes do.
 for (const stream of [process.stdout, process.stderr]) {

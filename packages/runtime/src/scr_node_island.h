@@ -135,7 +135,7 @@ void scr_ni_process_listen(int mode, const char *event, ScrDyn *listener);
 int scr_ni_uncaught(bool from_promise);          /* scr_uncaught_exception_hook */
 void scr_ni_promise_unhandled(ScrPromise *p);    /* scr_urj_node_fn */
 void scr_ni_promise_handled(ScrPromise *p);      /* scr_rjh_notify_fn */
-bool scr_ni_warning(ScrDyn *warning, bool no_deprecation);
+bool scr_ni_warning(ScrDyn *warning, ScrDyn *code, ScrDyn *detail, bool no_deprecation);
 /* The SCR_NODE_ISLANDS build of scr_async.c: when set, a rejected promise
  * nobody observed at a hosted checkpoint is handed to Node's tracking
  * instead of the runtime's report. */

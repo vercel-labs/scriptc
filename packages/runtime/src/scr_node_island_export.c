@@ -785,6 +785,9 @@ static void ni_settle_export(uint32_t id, ScrPromise *p) {
     payload = NULL; /* a void fulfillment */
   }
   if (payload == NULL) payload = scr_dyn_retain(scr_dyn_undefined());
+  /* Node raises `unhandledRejection` with this reason if nobody handles the
+   * V8 promise: a native listener receives the native error itself. */
+  if (rejected) scr_ni_error_link(payload);
   if (!scr_ni_value_out(payload, &value)) {
     /* The payload cannot cross: the promise rejects with that error. */
     scr_dyn_release(payload);

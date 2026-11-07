@@ -17,6 +17,7 @@ log(`count ${lib.count()}`);
 
 process.emitWarning("from native", "CustomWarning", "W001");
 log("after the native emit");
+process.emitWarning("with options", { type: "DetailWarning", code: "W002", detail: "more text" });
 lib.call(() => process.emitWarning("from a native callback", "OtherWarning"));
 lib.emit("from the island", "IslandWarning");
 log("main end");

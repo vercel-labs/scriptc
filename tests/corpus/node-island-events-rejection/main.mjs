@@ -11,12 +11,20 @@ import { requireModule } from "@scriptc/node";
 const lib = requireModule("./lib.cjs");
 const log = (s) => console.log(s);
 
+class Failure extends Error {
+  constructor(message, status) {
+    super(message);
+    this.status = status;
+  }
+}
+
 let held;
 let why;
 let events = 0;
 process.on("unhandledRejection", (reason, promise) => {
   events++;
-  log(`native first: ${reason.message} ${promise instanceof Promise} held=${promise === held} why=${reason === why}`);
+  const status = reason instanceof Failure ? ` status=${reason.status}` : "";
+  log(`native first: ${reason.message} ${promise instanceof Promise} held=${promise === held} why=${reason === why}${status}`);
 });
 lib.listen("second");
 const once = (reason) => log(`native once: ${reason.message}`);
@@ -37,11 +45,15 @@ const steps = [
     held = lib.rejected("island, native holds");
   },
   () => {
-    held = Promise.reject(new Error("native, island holds"));
+    // The reason of a promise that crossed before Node reports it is still
+    // the native error, with its class and fields.
+    why = new Failure("native, island holds", 7);
+    held = Promise.reject(why);
     lib.hold(held);
   },
   () => {
     held = undefined;
+    why = undefined;
     // Handled on the other side: no event.
     lib.rejected("island, native catches").catch((e) => log(`native caught: ${e.message}`));
   },
@@ -58,7 +70,8 @@ const steps = [
   },
   () => {
     // A pending native promise island code holds, rejected later.
-    held = new Promise((_, reject) => setTimeout(() => reject(new Error("native, pending when the island took it")), 5));
+    why = new Failure("native, pending when the island took it", 8);
+    held = new Promise((_, reject) => setTimeout(() => reject(why), 5));
     lib.hold(held);
   },
   () => {

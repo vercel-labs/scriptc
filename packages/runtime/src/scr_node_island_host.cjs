@@ -478,10 +478,28 @@ const islandHelpers = {
     Promise.prototype.then.call(promise, undefined, () => {});
   },
   // A warning native code emitted, as process.emitWarning's own tick emits
-  // it: Node's listener prints it, then the program's listeners run.
-  processWarning(warning, noDeprecation) {
-    if (noDeprecation && !process.noDeprecation) process.noDeprecation = true;
-    process.emit("warning", warning);
+  // it: Node's listener prints it, then the program's listeners run. The
+  // V8 error a native warning crosses as has its name, message and stack;
+  // its code and detail, which Node's report prints, come beside it. While
+  // native code has process.noDeprecation set, Node's report reads it as set
+  // for this warning, and finds its own value again afterwards.
+  processWarning(warning, noDeprecation, code, detail) {
+    if (warning !== null && typeof warning === "object") {
+      if (typeof code === "string" && warning.code === undefined) warning.code = code;
+      if (typeof detail === "string" && warning.detail === undefined) warning.detail = detail;
+    }
+    if (!noDeprecation || process.noDeprecation) {
+      process.emit("warning", warning);
+      return;
+    }
+    const own = Object.getOwnPropertyDescriptor(process, "noDeprecation");
+    process.noDeprecation = true;
+    try {
+      process.emit("warning", warning);
+    } finally {
+      if (own === undefined) delete process.noDeprecation;
+      else Object.defineProperty(process, "noDeprecation", own);
+    }
   },
   // process.exitCode is Node's property once Node is loaded: the runtime
   // writes it here and reads it back. An unset code (undefined or null) is

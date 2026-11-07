@@ -69,4 +69,29 @@ describe.skipIf(skip)("Node island process integration", () => {
     expect(node.stderr).toContain(error);
     expect(native.stderr).toContain(error);
   });
+
+  // Node's report of a warning, from the program's native warnings. The
+  // report names the process id, and Node itself warns about this fixture's
+  // module type first (which takes the one-time hint), so the binary's
+  // stderr is compared with the text Node prints for these warnings alone,
+  // and Node's run is checked for the same reports.
+  test("native-warnings", { timeout: 300_000 }, async () => {
+    const { node, native } = await both("native-warnings");
+    const report = (run: Run) =>
+      run.stderr
+        .replace(/^==\d+==WARNING: ASan doesn't fully support makecontext\/swapcontext.*\n/gm, "")
+        .replace(/^scriptc RC audit skipped:.*\n/gm, "")
+        .replace(/\(node:\d+\)/g, "(node:PID)");
+    const detailed = "(node:PID) [X1] CustomWarning: with detail\nmore\n";
+    const printed = "(node:PID) DeprecationWarning: printed\n";
+    expect(node.code).toBe(0);
+    expect(native.code).toBe(0);
+    expect(native.stdout).toBe(node.stdout);
+    expect(report(node)).toContain(detailed);
+    expect(report(node)).toContain(printed);
+    expect(report(node)).not.toContain("silenced");
+    expect(report(native)).toBe(
+      `${detailed}(Use \`node --trace-warnings ...\` to show where the warning was created)\n${printed}`,
+    );
+  });
 });

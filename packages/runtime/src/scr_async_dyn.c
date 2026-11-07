@@ -1061,7 +1061,15 @@ static void scr_warning_dispatch(ScrDyn *w) {
    * them: it prints what the report below prints, under the same rule for
    * deprecations (process.noDeprecation, which the emit carries over). */
   if (scr_pe_node) {
-    (void)scr_ni_warning(w, scr_warning_is_deprecation(w) && scr_process_deprecation_flag_on(0));
+    /* The V8 error the warning crosses as holds its name, message and
+     * stack; the report also prints its code and its detail. */
+    ScrDyn *code = scr_warning_field(w, "code", 4);
+    ScrDyn *detail = scr_exc_pending() ? NULL : scr_warning_field(w, "detail", 6);
+    if (!scr_exc_pending())
+      (void)scr_ni_warning(w, code, detail,
+                           scr_warning_is_deprecation(w) && scr_process_deprecation_flag_on(0));
+    scr_dyn_release(code);
+    scr_dyn_release(detail);
     return;
   }
 #endif

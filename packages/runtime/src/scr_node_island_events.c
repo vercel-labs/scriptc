@@ -119,15 +119,19 @@ void scr_ni_promise_handled(ScrPromise *p) {
   scr_dyn_release(boxed);
 }
 
-/* A warning native code emitted, on Node's `process`. `no_deprecation`:
- * the program set process.noDeprecation in native code, which Node's
- * report reads from its own `process`. false with the exception pending
- * when a listener threw. */
-bool scr_ni_warning(ScrDyn *warning, bool no_deprecation) {
+/* A warning native code emitted, on Node's `process`. `code` and `detail`
+ * (NULL, or any value: only strings count) are the warning's own, which
+ * its V8 error does not carry. `no_deprecation`: process.noDeprecation is
+ * set in native code now, which Node's report reads from its own
+ * `process`. false with the exception pending when a listener threw. */
+bool scr_ni_warning(ScrDyn *warning, ScrDyn *code, ScrDyn *detail, bool no_deprecation) {
   scr_ni_error_link(warning);
-  ScrDyn *args[2] = {warning, scr_dyn_new_bool(no_deprecation)};
-  ScrDyn *r = scr_ni_helper("processWarning", args, 2);
+  ScrDyn *none = scr_dyn_retain(scr_dyn_undefined());
+  ScrDyn *args[4] = {warning, scr_dyn_new_bool(no_deprecation), code != NULL ? code : none,
+                     detail != NULL ? detail : none};
+  ScrDyn *r = scr_ni_helper("processWarning", args, 4);
   scr_dyn_release(args[1]);
+  scr_dyn_release(none);
   bool ok = r != NULL && !scr_exc_pending();
   scr_dyn_release(r);
   return ok;

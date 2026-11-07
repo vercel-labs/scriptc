@@ -138,8 +138,29 @@ function isThenable(value) {
   );
 }
 
+// Errors by which Node says it did not find a file, thrown while a call's
+// module loaded, before its function ran. The runtime may put back files
+// the installed module tree lost and repeat such a call (scr_node_island.c,
+// "What a start does"); once the function has run, a call is never
+// repeated.
+const loadFailures = new WeakSet();
+const MISSING_FILE_CODES = new Set(["MODULE_NOT_FOUND", "ERR_MODULE_NOT_FOUND", "ENOENT"]);
+
+function loadedFunction(file, specifier, name) {
+  try {
+    return exportedFunction(file, specifier, name);
+  } catch (error) {
+    try {
+      if (error instanceof Error && MISSING_FILE_CODES.has(error.code)) loadFailures.add(error);
+    } catch {
+      // An error whose code cannot be read is not one of Node's.
+    }
+    throw error;
+  }
+}
+
 function invokeSync(file, specifier, name, args) {
-  const { fn, namespace } = exportedFunction(file, specifier, name);
+  const { fn, namespace } = loadedFunction(file, specifier, name);
   const result = Reflect.apply(fn, namespace, args);
   if (isThenable(result)) {
     // The promise is dropped: its rejection must not end the process.
@@ -152,7 +173,7 @@ function invokeSync(file, specifier, name, args) {
 }
 
 async function invokeAsync(file, specifier, name, args) {
-  const { fn, namespace } = exportedFunction(file, specifier, name);
+  const { fn, namespace } = loadedFunction(file, specifier, name);
   return await Reflect.apply(fn, namespace, args);
 }
 
@@ -177,6 +198,7 @@ function thrownCopy(error) {
   if (error instanceof Error) {
     const copy = { kind: errorKind(error), message: String(error.message) };
     if (typeof error.code === "string") copy.code = error.code;
+    if (loadFailures.has(error)) copy.load = true;
     return `T${JSON.stringify({ error: copy })}`;
   }
   let text;
@@ -283,10 +305,147 @@ const INTRINSIC_CLASSES = {
   AggregateError,
 };
 const collectionSyncs = new WeakMap();
+
+// ── twins (scr_node_bridge.h SCR_NVF_TWIN) ───────────────────────────────
+// A native object of a platform class whose receivers here test its brand
+// (fetch, addEventListener's `signal`, AbortSignal.any, events.once and
+// timers/promises all refuse anything but a real AbortSignal) crosses as a
+// real object of this realm's class: its twin. One twin per native object
+// while either side holds it, and the native object again when the twin
+// crosses back. Each class says how to make a twin, how the twin takes its
+// native object's state when it becomes that object's representative
+// (`start`), and what the native side tells it afterwards (`tell`).
+// `native` reads a property of the native object (`get`), calls one of
+// its methods (`invoke`) and tells it what changed here (`tell`).
+//
+// The other way, an object of such a class made here that reaches native
+// code is adopted: a native object stands for it there, and this object is
+// that native object's representative (`adopt` says how it keeps the native
+// object in step). twinPrototypes tells the bridge which objects those are.
+const TWIN_GET = 16;
+const TWIN_INVOKE = 17;
+const TWIN_TELL = 18;
+const twinStates = new WeakMap(); // twin -> { cls, native, adopted }
+
+function twinNative(op) {
+  return {
+    get: (key) => op(TWIN_GET, key),
+    invoke: (method, ...args) => op(TWIN_INVOKE, method, ...args),
+    tell: (event, value) => op(TWIN_TELL, event, value),
+  };
+}
+const nodeAbort = AbortController.prototype.abort;
+// The controller of each AbortSignal twin: it aborts the twin when the
+// native signal aborts, and it is the twin of the native AbortController.
+const twinControllers = new WeakMap();
+
+// A reason that cannot cross reaches the twin as the error that says so.
+function nativeReason(native) {
+  try {
+    return native.get("reason");
+  } catch (error) {
+    return error;
+  }
+}
+
+const twinClasses = {
+  AbortSignal: {
+    prototype: AbortSignal.prototype,
+    make() {
+      const controller = new AbortController();
+      twinControllers.set(controller.signal, controller);
+      return controller.signal;
+    },
+    start(signal, native) {
+      if (native.get("aborted")) this.tell.abort(signal, nativeReason(native));
+    },
+    // A signal made here reached native code, where a native signal now
+    // stands for it. That one aborts when this one does: through a signal
+    // of the bootstrap's that follows this one, so this signal's own
+    // listeners are the island's only and run before the native ones.
+    adopt(signal, native) {
+      if (signal.aborted) {
+        native.tell("abort", signal.reason);
+        return;
+      }
+      const follower = AbortSignal.any([signal]);
+      follower.addEventListener("abort", () => native.tell("abort", follower.reason), {
+        once: true,
+      });
+    },
+    tell: {
+      // The native signal aborted: before its own 'abort' listeners run,
+      // so both sides answer `aborted` and `reason` alike in every listener.
+      abort(signal, reason) {
+        Reflect.apply(nodeAbort, twinControllers.get(signal), [reason]);
+      },
+    },
+  },
+  AbortController: {
+    // The controller of the native signal's twin. Its abort() aborts the
+    // native signal, which aborts the twin (tell.abort), so the two sides
+    // change together whichever side aborts.
+    make(native) {
+      const controller = twinControllers.get(native.get("signal"));
+      Object.defineProperty(controller, "abort", {
+        value: function abort(reason = undefined) {
+          if (this !== controller) return Reflect.apply(nodeAbort, this, arguments);
+          native.invoke("abort", reason);
+        },
+        writable: true,
+        enumerable: false,
+        configurable: true,
+      });
+      return controller;
+    },
+    start() {},
+    tell: {},
+  },
+};
+
 const islandHelpers = {
+  makeTwin(name, op) {
+    const cls = twinClasses[name];
+    const native = twinNative(op);
+    const twin = cls.make(native);
+    twinStates.set(twin, { cls, native, adopted: false });
+    return twin;
+  },
+  // An object made here became the representative of the native object
+  // that adopts it.
+  adoptTwin(name, twin, op) {
+    twinStates.set(twin, { cls: twinClasses[name], native: twinNative(op), adopted: true });
+  },
+  startTwin(twin) {
+    const state = twinStates.get(twin);
+    if (state === undefined) return;
+    if (state.adopted) state.cls.adopt(twin, state.native);
+    else state.cls.start(twin, state.native);
+  },
+  // The class that adopts `value`, by its prototype, or undefined. A value
+  // that a native object adopted since its handle was made (the same
+  // object twice in one argument list) answers itself: it crosses back as
+  // that native object.
+  twinClassOf(value) {
+    if (twinStates.has(value)) return value;
+    const prototype = Object.getPrototypeOf(value);
+    for (const name of Object.keys(twinClasses)) {
+      const cls = twinClasses[name];
+      if (cls.adopt !== undefined && cls.prototype === prototype) return name;
+    }
+    return undefined;
+  },
+  twinReady(twin) {
+    return twinStates.has(twin);
+  },
+  tellTwin(name, event, twin, value) {
+    twinClasses[name].tell[event](twin, value);
+  },
   isInstance(value, name) {
-    const C = INTRINSIC_CLASSES[name];
-    return C !== undefined && value instanceof C;
+    // The error classes by their intrinsics; any other standard class by
+    // the global of that name (Array, Map, Date, …).
+    const C = INTRINSIC_CLASSES[name] ?? globalThis[name];
+    return typeof C === "function" && value instanceof C;
   },
   subclass(Base, name, ctor, fields, methods, getters, setters) {
     const C = {
@@ -442,6 +601,8 @@ let sharedModules = null;
 function load(path, esm) {
   if (path === "scriptc:toPrimitive") return toPrimitive;
   if (path === "scriptc:spread") return (value) => [...value];
+  if (path === "scriptc:clone") return (value) => structuredClone(value);
+  if (path === "scriptc:objectTag") return (value) => Object.prototype.toString.call(value);
   if (path === "scriptc:island-helpers") return islandHelpers;
   // A built-in module's name, with or without the node: prefix.
   if (isBuiltin(path)) return require(path);
@@ -728,4 +889,8 @@ globalThis.__scriptcNodeIsland = {
   emit,
   load,
   sharedPush,
+  // The prototypes of the classes whose objects native code adopts.
+  twinPrototypes: Object.values(twinClasses)
+    .filter((cls) => cls.adopt !== undefined)
+    .map((cls) => cls.prototype),
 };

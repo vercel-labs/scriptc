@@ -3,6 +3,7 @@ import * as ts from "../ts7/adapter.js";
 import {
   BOOL,
   DYN,
+  DYN_CLASS_PROPERTIES,
   STRING,
   VOID,
   isClassOwnEnumerableFieldName,
@@ -56,6 +57,89 @@ function observedSlot(lowerer: Lowerer, receiver: IrExpr, name: string, loc: Src
   return info
     ? observedPrototypeMethod(lowerer, info, name, loc, receiver)
     : lowerer.prototypeMethodAccesses.has(name);
+}
+
+/** `%class.methodsIntact:<root>()`: whether no prototype object of the class
+ * family rooted at `<root>` exists yet. ClassDynamicDispatch.finalize writes
+ * the body once the family is known; until then it answers false. */
+export const METHODS_INTACT_PREFIX = "%class.methodsIntact:";
+
+/** Whether the instances of `info` keep their properties and their prototype
+ * the way the unreplaced test reads them: a module-level class whose
+ * prototype object, if any, is its `%prototype.data` helper's. */
+export function methodsIntactMember(info: ClassInfo): boolean {
+  return !(
+    info.localClass ||
+    info.generic ||
+    info.genericInstance ||
+    info.mixinInstance ||
+    info.callableBase ||
+    info.factoryBaseExpression ||
+    info.def.runtime ||
+    info.builtinError ||
+    info.builtinEmitter ||
+    info.builtinStream
+  );
+}
+
+/** Whether every method of `receiver`, an instance of `info` or of a class
+ * below it, is still the one its class declares. JavaScript replaces a
+ * method either with an own property of the instance or by changing a
+ * prototype on its chain. An own dynamic property lives in the instance's
+ * property table, which is undefined until the first one is stored; and a
+ * prototype object that no code has asked for cannot have been changed. So
+ * the two tests are exact, whatever write the census could not bound. Null
+ * when a class above `info` keeps its own property contract. */
+function methodsUnreplaced(
+  lowerer: Lowerer,
+  receiver: IrExpr,
+  info: ClassInfo,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (receiver.kind !== "varRef" || receiver.type.kind !== "object") return null;
+  if (receiver.type.className !== info.def.name) return null;
+  let root = info;
+  for (let current: ClassInfo | null = info; current; current = current.base) {
+    if (!methodsIntactMember(current)) return null;
+    root = current;
+  }
+  const name = `${METHODS_INTACT_PREFIX}${root.def.name}`;
+  lowerer.shareHelper(name);
+  if (!lowerer.liftedFnNamed(name))
+    lowerer.liftedFns.push({
+      name,
+      params: [],
+      returnType: BOOL,
+      locals: [],
+      body: [{ kind: "return", value: { kind: "boolLit", value: false, type: BOOL, loc }, loc }],
+      loc,
+    });
+  return {
+    kind: "logical",
+    op: "&&",
+    left: {
+      kind: "dynTest",
+      test: "undefined",
+      value: propertyTable(receiver, info, loc),
+      type: BOOL,
+      loc,
+    },
+    right: { kind: "call", callee: name, args: [], type: BOOL, loc },
+    type: BOOL,
+    loc,
+  };
+}
+
+/** The hidden property table of `receiver`, an instance of `info`. */
+function propertyTable(receiver: IrExpr, info: ClassInfo, loc: SrcLoc): IrExpr {
+  return {
+    kind: "fieldGet",
+    obj: receiver,
+    className: info.def.name,
+    field: DYN_CLASS_PROPERTIES,
+    type: DYN,
+    loc,
+  };
 }
 
 function callbackBag(
@@ -172,6 +256,9 @@ export function classCallbackCall(
   loc: SrcLoc,
   calleeName = name,
   original?: { originalId: () => string | undefined; directCall: () => IrExpr },
+  /** The receiver's class, when `fallback` is what the call does while the
+   * method is the declared one (methodsUnreplaced). */
+  declared?: ClassInfo,
 ): IrExpr {
   const bag = lowerer.declareHiddenLocal("%callbackBag", DYN);
   const present = lowerer.declareHiddenLocal("%callbackPresent", BOOL);
@@ -247,6 +334,28 @@ export function classCallbackCall(
   }
   // Read after observedSlot built the prototype data and its originals.
   const originalId = observed ? original?.originalId() : undefined;
+  // While nothing has replaced a method of the receiver, the call is the
+  // declared one. The test runs where the property read would, before the
+  // arguments.
+  const declaredCall: IrExpr =
+    fallback.type.kind === "void"
+      ? {
+          kind: "seqExpr",
+          stmts: [{ kind: "exprStmt", expr: fallback, loc }],
+          result: dynUndefinedExpr(loc),
+          type: DYN,
+          loc,
+        }
+      : fallback;
+  const unreplacedTest =
+    declared &&
+    observed &&
+    ((original && originalId !== undefined) || typeEquals(declaredCall.type, answer.type))
+      ? methodsUnreplaced(lowerer, receiver, declared, loc)
+      : null;
+  const unreplaced = unreplacedTest
+    ? lowerer.declareHiddenLocal("%callbackUnreplaced", BOOL)
+    : null;
   if (original && originalId !== undefined) {
     // The slot still holds the method's original value: calling it is
     // calling the method, so the call stays native (no boxed arguments,
@@ -258,11 +367,21 @@ export function classCallbackCall(
       type: BOOL,
       loc,
     };
+    const direct: IrExpr = unreplaced
+      ? {
+          kind: "logical",
+          op: "||",
+          left: varRef(unreplaced.id, BOOL, loc),
+          right: unchanged,
+          type: BOOL,
+          loc,
+        }
+      : unchanged;
     answer =
       fallback.type.kind === "void"
         ? {
             kind: "ternary",
-            cond: unchanged,
+            cond: direct,
             then: {
               kind: "seqExpr",
               stmts: [{ kind: "exprStmt", expr: original.directCall(), loc }],
@@ -276,20 +395,48 @@ export function classCallbackCall(
           }
         : {
             kind: "ternary",
-            cond: unchanged,
+            cond: direct,
             then: original.directCall(),
             else_: answer,
             type: answer.type,
             loc,
           };
+  } else if (unreplaced) {
+    // No original value to compare with (an override below): the declared
+    // dispatch is still the call while nothing has been replaced.
+    answer = {
+      kind: "ternary",
+      cond: varRef(unreplaced.id, BOOL, loc),
+      then: declaredCall,
+      else_: answer,
+      type: answer.type,
+      loc,
+    };
   }
+  const readBag = callbackBag(lowerer, receiver, loc, name, true);
+  // The locals stay in scope for the dynamic arm, so an unreplaced method
+  // fills them with what it has at hand: its own undefined table, and that
+  // again as the callback. Neither is read on that path.
   return {
     kind: "seqExpr",
     stmts: [
+      ...(unreplaced && unreplacedTest
+        ? [{ kind: "varDecl" as const, localId: unreplaced.id, init: unreplacedTest, loc }]
+        : []),
       {
         kind: "varDecl",
         localId: bag.id,
-        init: callbackBag(lowerer, receiver, loc, name, true),
+        init:
+          unreplaced && declared
+            ? {
+                kind: "ternary",
+                cond: varRef(unreplaced.id, BOOL, loc),
+                then: propertyTable(receiver, declared, loc),
+                else_: readBag,
+                type: DYN,
+                loc,
+              }
+            : readBag,
         loc,
       },
       {
@@ -306,7 +453,7 @@ export function classCallbackCall(
         init: {
           kind: "ternary",
           cond: { kind: "dynTest", test: "undefined", value, type: BOOL, loc },
-          then: dynUndefinedExpr(loc),
+          then: unreplaced ? varRef(bag.id, DYN, loc) : dynUndefinedExpr(loc),
           else_: { kind: "dynKeyGet", value, key, type: DYN, loc },
           type: DYN,
           loc,

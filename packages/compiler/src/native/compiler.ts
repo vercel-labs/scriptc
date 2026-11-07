@@ -46,7 +46,7 @@ import {
   nativePartitionPaths,
   nativeProgramPartitions,
 } from "../backend/native-codegen-core.js";
-import { llvmRefusalDiag } from "../backend/target-diagnostics.js";
+import { llvmRefusalDiags } from "../backend/target-diagnostics.js";
 import { nativeCodegenDiag, type ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import { loadFfiProfile, type FfiProfile } from "../ffi/ffi-manifest.js";
 import { analyzeWithFrontend } from "../frontend/analysis.js";
@@ -82,6 +82,7 @@ import {
   prepareNativeExecutable,
   prepareNativeLibrary,
 } from "./prepare.js";
+import { usesLoweredProgram } from "../executable/lowered.js";
 import { readUnchangedBuild, recordUnchangedBuild, unchangedBuildKey } from "./unchanged.js";
 import { buildSanitizedRuntime, sanitizerDriver, sanitizerFlags } from "./sanitizer.js";
 import { inputsWithoutLld, lldLinkerArgs } from "../backend/lld.js";
@@ -527,9 +528,10 @@ export class NativeCompiler {
       }
       const exclusions = nativeFrontendExclusions(entry, options);
       // An unchanged build keeps what the last build of the same inputs left
-      // in place (native/unchanged.ts), before the frontend reads a source.
+      // in place (native/unchanged.ts), before the frontend reads a source. A
+      // build that writes or reads a lowered program always runs.
       const unchangedKey =
-        outputKind === "exe"
+        outputKind === "exe" && !usesLoweredProgram(options)
           ? unchangedBuildKey({
               entry,
               options,
@@ -884,7 +886,7 @@ export class NativeCompiler {
       // Keep subclass reads at the catch boundary, where the thrown object
       // retains its class identity and source location.
       if (error instanceof LlvmUnsupportedError)
-        return { ok: false, diagnostics: [llvmRefusalDiag(error, entry)], sourceTexts };
+        return { ok: false, diagnostics: llvmRefusalDiags(error, entry), sourceTexts };
       if (error instanceof NativeCodegenError)
         return {
           ok: false,
@@ -1045,7 +1047,7 @@ export class NativeCompiler {
       if (error instanceof LlvmUnsupportedError)
         return {
           ok: false,
-          diagnostics: [llvmRefusalDiag(error, options.profilePath)],
+          diagnostics: llvmRefusalDiags(error, options.profilePath),
           sourceTexts,
         };
       if (error instanceof NativeCodegenError)

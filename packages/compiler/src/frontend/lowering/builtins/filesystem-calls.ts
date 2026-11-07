@@ -1,7 +1,8 @@
 import { dynUndefinedExpr, boolLit, numLit, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
+import { withoutParenthesesAssertionsNonNull } from "../../outer-expressions.js";
 import { type Lowerer } from "../lowerer.js";
-import { lowerFsPath } from "./fs-paths.js";
+import { jsFsPathValue, lowerFsPath } from "./fs-paths.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import {
   type BuiltinModuleFn,
@@ -28,12 +29,7 @@ import {
   typeEquals,
 } from "../../../ir/ir.js";
 import { InternalCompilerError } from "../../../errors.js";
-import {
-  lowerBuiltinOptionalDefault,
-  optionMember,
-  literalBoolOptions,
-  stripTypeCasts,
-} from "./arguments.js";
+import { lowerBuiltinOptionalDefault, optionMember, literalBoolOptions } from "./arguments.js";
 import { constInitializerOf } from "../lower-exprs.js";
 import {
   fsWriteFdLibFn,
@@ -1200,7 +1196,7 @@ function writeFastArg(
   loc: SrcLoc,
 ): IrExpr {
   if (!encoding) {
-    const flags = lowerer.typeOf(stripTypeCasts(optsNode)).flags;
+    const flags = lowerer.typeOf(withoutParenthesesAssertionsNonNull(optsNode)).flags;
     return boolLit(
       (flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0,
       loc,
@@ -1487,7 +1483,7 @@ export function lowerFileHandleWrite(
   if (encodingOnly) {
     const encoding = lowerBuiltinOptionalDefault(
       lowerer,
-      stripTypeCasts(optsNode),
+      withoutParenthesesAssertionsNonNull(optsNode),
       STRING,
       utf8,
       true,
@@ -1583,7 +1579,7 @@ function lowerWriteOptions(
     return entries;
   }
   if (lowerer.mapTypeOf(t)?.kind === "string") {
-    const unwrapped = stripTypeCasts(optsNode);
+    const unwrapped = withoutParenthesesAssertionsNonNull(optsNode);
     const bare = lowerer.typeOf(unwrapped);
     entries.push({
       slot: "encoding",
@@ -1610,7 +1606,7 @@ function lowerWriteOptions(
         // An encoding assertion (`maybe as BufferEncoding`) selects the
         // value as written: Node validates the value itself and never
         // converts it, so the assertion adds nothing at run time.
-        const unwrapped = stripTypeCasts(value);
+        const unwrapped = withoutParenthesesAssertionsNonNull(value);
         const valueType = lowerer.typeOf(unwrapped);
         entries.push({
           slot: "encoding",
@@ -1627,7 +1623,7 @@ function lowerWriteOptions(
         // and a throw stops the write, and its text parses the same way.
         // Any other string spelling would be a runtime error, so it is
         // refused with the reason instead of being dropped.
-        const modeNode = stripTypeCasts(value);
+        const modeNode = withoutParenthesesAssertionsNonNull(value);
         const modeType = lowerer.typeOf(modeNode);
         if (modeType.isStringLiteralType()) {
           if (!/^[0-7]+$/.test(modeType.value)) {
@@ -1714,8 +1710,8 @@ function optionsLiteralOf(
   lowerer: Lowerer,
   node: ts.Expression,
 ): ts.ObjectLiteralExpression | null {
-  // stripTypeCasts also strips parentheses: `({...} as const)` is the literal.
-  const unwrap = (expr: ts.Expression): ts.Expression => stripTypeCasts(expr);
+  // `({...} as const)` is the literal: the parentheses go with the assertion.
+  const unwrap = (expr: ts.Expression): ts.Expression => withoutParenthesesAssertionsNonNull(expr);
   const bare = unwrap(node);
   if (ts.isObjectLiteralExpression(bare)) return bare;
   if (!ts.isIdentifier(bare)) return null;
@@ -1759,14 +1755,22 @@ export function lowerFsReadPathCall(
   // (test/common fixtures.js's readFixtureKey(name, enc) — BOTH the
   // path and the encoding are untyped JS values there: the path is
   // fixturesPath(...)'s checker-any, so the LOWERED kind decides and
-  // a dyn path rides a validated string extraction — Node's
-  // non-string paths throw ERR_INVALID_ARG_TYPE where the dynCheck
-  // throws its path-annotated TypeError. The fd forms (a number
-  // argument) and literal-utf8 reads keep their existing lowerings.
+  // a dyn path rides a validated string extraction: in a JavaScript
+  // source Node's getValidatedPath (dyn.validateFsPath, which throws
+  // ERR_INVALID_ARG_TYPE for a non-path), in a TypeScript source the
+  // checked cast. The fd forms (a number argument) and literal-utf8
+  // reads keep their existing lowerings.
   const pathV = lowerer.lowerExpr(expr.arguments.nodes[0]!);
   if (pathV.type.kind === "string" || pathV.type.kind === "dyn") {
     const pathArg: IrExpr =
-      pathV.type.kind === "dyn" ? { kind: "dynCheck", value: pathV, type: STRING, loc } : pathV;
+      pathV.type.kind === "dyn"
+        ? (jsFsPathValue(lowerer, expr.arguments.nodes[0]!, pathV) ?? {
+            kind: "dynCheck",
+            value: pathV,
+            type: STRING,
+            loc,
+          })
+        : pathV;
     if (expr.arguments.nodes.length === 1) {
       return { kind: "libCall", fn: "fs.readFileSyncBuf", args: [pathArg], type: BYTES_U8, loc };
     }

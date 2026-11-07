@@ -3,11 +3,14 @@ import { type IrModule } from "../ir/ir.js";
 import { jsObjectModelFact, moduleRuntimeFeatures } from "../ir/runtime-features.js";
 import { hasForeignFfiCallback } from "./ffi-callbacks.js";
 import type { NativeLinkFeatures } from "./native-link-info.js";
+import { withRequiredLinkFeatures } from "./native-link-info-core.js";
 import { youngNurseryRequested } from "./young-nursery.js";
 
 export function executableLinkFeatures(mod: IrModule, largePages = false): NativeLinkFeatures {
   const features = moduleRuntimeFeatures(mod);
-  return {
+  // A feature that calls into another feature's units links those too
+  // (LINK_FEATURE_REQUIREMENTS), whichever fact selected it.
+  return withRequiredLinkFeatures({
     ...(mod.workers ? { workers: true } : {}),
     ...(largePages ? { largePages: true } : {}),
     ...(youngNurseryRequested() && mod.lib === undefined ? { youngNursery: true } : {}),
@@ -56,14 +59,23 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     ...(features.dynCollections ? { dynCollections: true } : {}),
     ...(features.dynIntegrityQueries ? { dynIntegrityQueries: true } : {}),
     ...(features.reflectProtoTarget ? { reflectProtoTarget: true } : {}),
+    ...(features.recordSourceDelete ? { recordSourceDelete: true } : {}),
+    ...(features.recordViewFrozen ? { recordViewFrozen: true } : {}),
     ...(features.genBind ? { genBind: true } : {}),
+    ...(features.genReceiver ? { genReceiver: true } : {}),
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
     ...(features.mime ? { mime: true } : {}),
     ...(features.webStreams ? { webStreams: true } : {}),
     ...(features.webBodies ? { webBodies: true } : {}),
-    ...(features.abortSignal ? { abortSignal: true } : {}),
+    // A Node island can hand its own AbortSignal to any native receiver of
+    // one, and a native signal then stands for it (scr_node_island_abort.c):
+    // a program with islands and a receiver links the signal unit too.
+    ...(features.abortSignal || (features.nodeIsland && features.eventTarget)
+      ? { abortSignal: true }
+      : {}),
     ...(features.utilTiming ? { utilTiming: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
+    ...(features.fsPathValue ? { fsPathValue: true } : {}),
     ...(features.builtinValues ? { builtinValues: true } : {}),
     ...(features.stdlibPrototypeValue ? { stdlibPrototypeValue: true } : {}),
     ...(features.dataViewPrototypeValue ? { dataViewPrototypeValue: true } : {}),
@@ -107,5 +119,5 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     webcrypto: features.webcrypto,
     perfLoop: features.perfLoop,
     ...(features.icu ? { intl: true } : {}),
-  };
+  });
 }

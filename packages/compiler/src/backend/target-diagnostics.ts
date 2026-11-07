@@ -1,7 +1,8 @@
 import { everyModuleNode, everyStmtList } from "../ir/traverse.js";
 import type { LlvmUnsupportedError } from "./llvm/emitter.js";
-import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
+import { iceDiag, type ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import { type IrModule, type SrcLoc } from "../ir/ir.js";
+import type { IrLibFn } from "../ir/builtin-signatures.js";
 import {
   DH_LIB_FNS,
   PKI_LIB_FNS,
@@ -87,13 +88,30 @@ export function fenceSpeculativeWasiFunctions(mod: IrModule): void {
 /** The LLVM backend's tier refusal as a diagnostic. SC3xxx = backend
  * coverage (the program is fine — this backend doesn't compile it yet);
  * the parenthesized kind tag is machine-readable for the differential
- * harness's histogram. */
+ * harness's histogram, and the text after it names the type and the
+ * function. A refusal is reported at the source span of the IR node whose
+ * emission raised it. One that reaches here without a span was raised
+ * outside every statement, function and global, which is a compiler bug:
+ * it reports as an internal error, never as a refusal at the entry file's
+ * first byte. */
 export function llvmRefusalDiag(err: LlvmUnsupportedError, entryPath: string): ScrDiagnostic {
+  if (err.loc === undefined)
+    return iceDiag(
+      `the LLVM backend refused a construct without a source position: ${err.describe()}`,
+      { file: entryPath, start: 0, end: 0 },
+    );
   return {
     code: "SC3001",
-    message: err.message,
-    loc: err.loc ?? { file: entryPath, start: 0, end: 0 },
+    message: err.describe(),
+    loc: err.loc,
+    ...(err.hint === undefined ? {} : { hint: err.hint }),
   };
+}
+
+/** The diagnostics of a refusal and of the further sites it carries
+ * (LlvmUnsupportedError.also), in order. */
+export function llvmRefusalDiags(err: LlvmUnsupportedError, entryPath: string): ScrDiagnostic[] {
+  return [err, ...err.also].map((refusal) => llvmRefusalDiag(refusal, entryPath));
 }
 
 /** A valid program surface that the selected execution target cannot host.
@@ -109,7 +127,7 @@ export function targetRefusalDiag(target: string, surface: string, loc: SrcLoc):
 }
 
 /** node:os and process host facts WASI Preview 1 has no interface for. */
-const WASI_UNAVAILABLE_HOST_FACTS: ReadonlyMap<string, string> = new Map([
+const WASI_UNAVAILABLE_HOST_FACTS: ReadonlyMap<IrLibFn, string> = new Map([
   ["os.cpusTake", "CPU enumeration (WASI Preview 1 has no processor API)"],
   ["os.hostname", "the host name (WASI Preview 1 has no host-name API)"],
   ["os.freemem", "system memory statistics (WASI Preview 1 has no memory API)"],
@@ -134,7 +152,6 @@ export function moduleWasiUnavailableSurface(
     ["http.", "network sockets (WASI Preview 1 has no socket API)"],
     ["https.", "network sockets (WASI Preview 1 has no socket API)"],
     ["http2.", "network sockets (WASI Preview 1 has no socket API)"],
-    ["h2.", "network sockets (WASI Preview 1 has no socket API)"],
     ["dgram.", "network sockets (WASI Preview 1 has no socket API)"],
     ["dns.", "network sockets (WASI Preview 1 has no socket API)"],
     ["tls.", "network sockets (WASI Preview 1 has no socket API)"],

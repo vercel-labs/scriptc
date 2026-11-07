@@ -309,7 +309,12 @@ export function genResultThunkFor(
     host.journal?.built();
     return sym;
   }
-  if (valueT.kind !== "union") throw new LlvmUnsupportedError(`genResume:${valueT.kind}`);
+  if (valueT.kind !== "union")
+    throw new LlvmUnsupportedError(
+      `genResume:${valueT.kind}`,
+      undefined,
+      `a generator resumed with a value of type ${typeKey(valueT)}`,
+    );
   const def = host.unionsById.get(valueT.unionId);
   if (!def) throw new InternalCompilerError("llvm emitter bug: genResume value union unknown");
   const tagOf = (t: IrType): number => {

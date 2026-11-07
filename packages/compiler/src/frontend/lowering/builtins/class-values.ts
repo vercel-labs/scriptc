@@ -1,9 +1,9 @@
 import * as ts from "../../ts7/adapter.js";
+import { withoutParenthesesAssertionsNonNull } from "../../outer-expressions.js";
 import { type Lowerer } from "../lowerer.js";
 import { type ClassInfo } from "../lower-classes.js";
 import { isJsSourceFile } from "../../program.js";
 import { builtinMemberRequireDecl } from "./module-bindings.js";
-import { stripTypeCasts } from "./arguments.js";
 import { streamClassAliasDecl } from "../lower-stream.js";
 import { zlibClassName, zlibStreamModeOf } from "./compression.js";
 import { stdlibGlobalNameOf } from "../surfaces.js";
@@ -25,7 +25,7 @@ export type BuiltinClassRef =
  * an imported alias), through parentheses and type assertions. Null for
  * anything else. */
 export function builtinClassRefOf(lowerer: Lowerer, expr: ts.Expression): BuiltinClassRef | null {
-  const e = stripTypeCasts(expr);
+  const e = withoutParenthesesAssertionsNonNull(expr);
   // Checker lookups only: answering must not run the fences and deferred
   // diagnostics of a lowered reference (resolveValueSymbol).
   let symbol: ts.Symbol | undefined;

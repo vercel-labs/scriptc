@@ -25,6 +25,7 @@ import {
   runNativeBootstrapChecks,
 } from "../../scripts/ci-native-bootstrap.mjs";
 import { withoutFirstLine } from "./large-artifacts.js";
+import { checkBuildCacheContracts } from "./native-build-cache-contracts.js";
 import { bootstrapStep } from "./self-hosting-timing.js";
 import { unbundlePlatformPackages } from "../../scripts/native-cli-bundle.mjs";
 
@@ -54,6 +55,18 @@ function absoluteCommand(command: string): string {
   }
   throw new Error(`native tool is not on PATH: ${command}`);
 }
+
+// The seed build is the compiler compiling itself, so it grows with main: on
+// 32-vCPU Sandboxes its fastest plain build went from 471 s (base of
+// 2026-10-27) to 712 s (2026-11-07), about 145 s a week, and the same tree
+// takes up to 1.66 times as long on one machine as on another. Of 244 plain
+// builds on 2026-11-07 the median took 1009 s and the slowest tenth 1447 s
+// or more, and eight were stopped at the 1800 s every step is allowed. Its
+// own limit is twice that, which the fastest build reaches after about ten
+// more weeks of the same growth on the slowest machine; the limit is the
+// place to look when it does. CI builds the seed in a job of its own
+// (bootstrap_seed) and never runs this step.
+const seedBuildTimeoutMs = sanitize ? 5_400_000 : 3_600_000;
 
 test(
   `the production CLI passes ${phase} bootstrap contracts with Node unavailable`,
@@ -90,6 +103,7 @@ test(
               // seed avoids optimizing the huge compiler module before ASan can
               // exercise its complete traversal, serialization and LLVM emission.
               ...options,
+              timeout: seedBuildTimeoutMs,
               env: { ...process.env, ...seedBuildEnvironment(sanitize) },
             },
           ),
@@ -286,6 +300,44 @@ test(
         await checkProgram(probe, join(root, "tests/corpus/4591-weak-keys-union-records.ts"));
         await checkProgram(probe, join(root, "tests/corpus/4593-weak-keys-empty-objects.ts"));
 
+        // A build from a lowered program (executable/lowered.ts) writes the
+        // executable a build from the sources writes, and refuses the file
+        // once a source changed.
+        const loweredSource = join(directory, "lowered-probe.ts");
+        writeFileSync(
+          loweredSource,
+          'const parts: string[] = ["lowered", "program"];\nconsole.log(parts.join(" "));\n',
+        );
+        const loweredFile = join(directory, "lowered-probe.lowered");
+        const loweredOutput = executable("lowered-probe");
+        const loweredArgs = [
+          "build",
+          loweredSource,
+          "-o",
+          loweredOutput,
+          "--optimization=dev",
+          "--strip",
+        ];
+        await invoke(probe, [...loweredArgs, "--emit-lowered", loweredFile]);
+        const fromSources = readFileSync(loweredOutput);
+        const loweredLlvm = readFileSync(join(directory, "lowered-probe.ll"));
+        await invoke(probe, [...loweredArgs, "--from-lowered", loweredFile]);
+        expect(readFileSync(join(directory, "lowered-probe.ll")).equals(loweredLlvm)).toBe(true);
+        expect(readFileSync(loweredOutput).equals(fromSources)).toBe(true);
+        expect(spawnSync(loweredOutput, [], nativeOptions).stdout.toString()).toBe(
+          "lowered program\n",
+        );
+        writeFileSync(loweredSource, readFileSync(loweredSource, "utf8") + "// edited\n");
+        const stale = spawnSync(
+          probe,
+          [...loweredArgs, "--from-lowered", loweredFile],
+          nativeOptions,
+        );
+        expect(stale.status).toBe(1);
+        expect(stale.stderr.toString()).toContain(
+          `--from-lowered: ${loweredFile} does not match this build's inputs: ${loweredSource} changed since it was lowered`,
+        );
+
         const fetchOptions = join(directory, "fetch-options.ts");
         writeFileSync(
           fetchOptions,
@@ -308,6 +360,14 @@ test(
         expect(
           await invoke(probe, ["run", comptime, "-o", executable("comptime"), "--strip"]),
         ).toBe("42\n");
+
+        // A rebuild answers as a cold build does, whatever was edited.
+        await checkBuildCacheContracts({
+          compiler: probe,
+          directory: join(directory, "build-cache"),
+          env: nativeOptions.env,
+          run: (file, args, env) => exec(file, args, { ...nativeOptions, env }),
+        });
 
         const object = join(directory, "program.obj");
         const linkInfo = JSON.parse(
@@ -650,10 +710,24 @@ test(
               ffi,
               "--sanitize",
               "--optimization=dev",
+              // The seed's IR, lowered by the JavaScript compiler with the
+              // seed build's options: an IR artifact records none of what a
+              // lowered program depends on, so each kind is accepted here,
+              // and the two comparisons around this build stand in for them.
+              "--from-lowered",
+              seedIr,
+              "--from-lowered-accept=compiler,options,inputs",
               quiet,
             ],
-            "",
-            { SCRIPTC_BOOTSTRAP_IR_INPUT: seedIr },
+            "scriptc: warning: --from-lowered: building from " +
+              seedIr +
+              " although its compiler differs: the file holds only an IR module, which does not record its compiler\n" +
+              "scriptc: warning: --from-lowered: building from " +
+              seedIr +
+              " although its options differ: the file holds only an IR module, which does not record its options\n" +
+              "scriptc: warning: --from-lowered: building from " +
+              seedIr +
+              " although its inputs differ: the file holds only an IR module, which does not record its inputs\n",
           ),
         );
         expect(self.trim()).toBe(rebuilt);
@@ -669,5 +743,6 @@ test(
       rmSync(directory, { recursive: true, force: true });
     }
   },
-  sanitize ? 10_800_000 : 5_400_000,
+  // The plain rebuild phase took up to 3892 s with a seed built in 1800 s or less.
+  sanitize ? 10_800_000 : 7_200_000,
 );

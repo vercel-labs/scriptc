@@ -2,7 +2,7 @@ scriptc coverage tests/coverage-fixtures/node-islands-fenced-sdk-values/main.ts
 
   statements analyzed   16
   compile statically    16  (100%)
-    in dynamic tier     11  (operate on values typed only at runtime; --explain-dynamic lists them)
+    in dynamic tier     12  (operate on values typed only at runtime; --explain-dynamic lists them)
 
   npm package compilation:
     ni-sdk  static

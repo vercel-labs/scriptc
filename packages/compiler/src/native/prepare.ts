@@ -17,7 +17,8 @@ import {
 import { inlineRcOption } from "../backend/llvm/shapes.js";
 import { executableLinkFeatures } from "../backend/executable-features.js";
 import type { NativeLinkFeatures } from "../backend/native-link-info-core.js";
-import { prepareExecutableModule } from "../executable/prepare.js";
+import { prepareExecutableBuild } from "../executable/prepare.js";
+import { islandDecisionDigest } from "../node-islands/decision-file.js";
 import type { FfiProfile } from "../ffi/ffi-manifest.js";
 import type { FrontendFactory } from "../frontend/pipeline.js";
 import {
@@ -393,6 +394,10 @@ function nativeFrontendInputs(
     target: toolchain.target.name,
     declarations: toolchain.declarationsRoot ?? null,
     environment: frontendEnvironment(),
+    // A recorded island decision is an input the options name by path only.
+    ...(options.nodeIslands?.decision === undefined
+      ? {}
+      : { islandDecision: islandDecisionDigest(options.nodeIslands.decision) }),
   };
 }
 
@@ -525,15 +530,13 @@ export function prepareNativeExecutable(
     irInput !== ""
       ? preparedFromIr(irInput, entry, options)
       : tracker.runSynchronous(() =>
-          prepareExecutableModule(
+          prepareExecutableBuild(
             entry,
             options,
             ffi,
             toolchain.target.platform,
             frontend,
             timing,
-            new Map(),
-            true,
             cache !== null && unitKey !== null ? nativeUnitStore(cache, unitKey) : null,
           ),
         );

@@ -98,6 +98,7 @@ const SAMPLES: Record<string, Json> = {
   explain_dynamic: "",
   node_islands: "auto",
   node_island: ["left-pad"],
+  node_island_decision: join(scratch, "islands.json"),
   native: ["right-pad"],
   node: process.execPath,
   wasm: [join(scratch, "module.wasm")],

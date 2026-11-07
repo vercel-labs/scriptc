@@ -76,14 +76,16 @@ type WriteForm = "assign" | "define" | "delete";
 /** Whether Node lets the write change what a read of `owner.member` finds.
  * An assignment to data that is not writable, or to an accessor without a
  * setter, changes nothing (and throws in strict code), also when the member
- * is inherited; a definition over, or a deletion of, an own member that is
- * not configurable is refused; deleting a member the object only inherits
- * deletes nothing. */
+ * is inherited; a deletion of an own member that is not configurable is
+ * refused, and so is a definition over one unless it is writable data, whose
+ * value a definition may still change (`Array.prototype.length`); deleting
+ * a member the object only inherits deletes nothing. */
 function writeTakesEffect(owner: string, member: string, form: WriteForm): boolean {
   table();
   const own = builtinOwnMemberKind(owner, member) !== null;
-  if (form === "delete") return own && !unconfigurable!.has(`${owner} ${member}`);
-  if (form === "define") return !own || !unconfigurable!.has(`${owner} ${member}`);
+  const name = `${owner} ${member}`;
+  if (form === "delete") return own && !unconfigurable!.has(name);
+  if (form === "define") return !own || !unconfigurable!.has(name) || !unassignable!.has(name);
   for (let at: string | undefined = owner; at !== undefined; at = BUILTIN_OBJECT_INHERITS[at])
     if (builtinOwnMemberKind(at, member) !== null) return !unassignable!.has(`${at} ${member}`);
   return true;
@@ -535,6 +537,14 @@ function builtinMemberWriteCall(
       for (const member of literal.properties.nodes) {
         const target = hit(literalMemberName(lowerer, member));
         if (target === null) continue;
+        // A descriptor that only changes the member's attributes is no
+        // write, as for Object.defineProperty.
+        if (
+          method === "defineProperties" &&
+          ts.isPropertyAssignment(member) &&
+          keepsMemberValue(lowerer, member.initializer, target)
+        )
+          continue;
         const write = writeOf(target, method === "assign" ? "assign" : "define", call, member);
         if (write === null) continue;
         if (all === null) return write;
@@ -684,8 +694,16 @@ function isUndefinedOrNull(e: ts.Expression): boolean {
 /** `typeof X.m` for a member whose answer is fixed: "function" for a
  * function. Truthy data is some other type, which is enough to answer a
  * comparison against "function" or "undefined". */
+/** The built-in member a feature test reads and can be decided from: not
+ * one the program may assign as state (`Error.stackTraceLimit`), whose
+ * value is whatever the program last gave it. */
+function testedMemberOf(lowerer: Lowerer, expr: ts.Expression): BuiltinMember | null {
+  const member = builtinMemberOf(lowerer, expr);
+  return member === null || isAssignableState(member) ? null : member;
+}
+
 function typeofComparison(lowerer: Lowerer, operand: ts.Expression, text: string): boolean | null {
-  const member = builtinMemberOf(lowerer, operand);
+  const member = testedMemberOf(lowerer, operand);
   if (member === null) return null;
   if (member.kind === "f") return text === "function";
   if (member.kind === "t") return text === "function" || text === "undefined" ? false : null;
@@ -755,7 +773,7 @@ export function builtinPresenceTest(
       answer = typeofComparison(lowerer, right.expression, left.text);
     else {
       const read = isUndefinedOrNull(right) ? left : isUndefinedOrNull(left) ? right : null;
-      const member = read === null ? null : builtinMemberOf(lowerer, read);
+      const member = read === null ? null : testedMemberOf(lowerer, read);
       if (member !== null && alwaysTruthy(member)) answer = false;
     }
     return answer === null ? null : equal ? answer : !answer;
@@ -775,7 +793,7 @@ export function builtinPresenceTest(
     const owner = builtinObjectOf(lowerer, callee.expression);
     return owner !== null && builtinOwnMemberKind(owner, key.text) !== null ? true : null;
   }
-  const member = builtinMemberOf(lowerer, e);
+  const member = testedMemberOf(lowerer, e);
   if (member === null || member.kind === "a") return null;
   return member.kind !== "z";
 }
@@ -832,7 +850,7 @@ export function isDeadBuiltinPolyfill(lowerer: Lowerer, expr: ts.Expression): bo
   }
   let skipsRight: boolean;
   if (op === ts.SyntaxKind.QuestionQuestionToken) {
-    const member = builtinMemberOf(lowerer, e.left);
+    const member = testedMemberOf(lowerer, e.left);
     skipsRight = member !== null && alwaysTruthy(member);
   } else if (op === ts.SyntaxKind.AmpersandAmpersandToken || op === ts.SyntaxKind.BarBarToken) {
     const left = builtinPresenceTest(lowerer, e.left);

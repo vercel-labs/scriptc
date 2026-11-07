@@ -73,3 +73,13 @@ function Replacement() {}
 Array.prototype.constructor = Replacement;
 var names = Object.getOwnPropertyNames(Array.prototype);
 console.log("constructor", names[0], names[1], JSON.parse("[1]").constructor === Replacement);
+
+// A test of a member the program may assign is evaluated when it runs, not
+// decided from what the member is at startup.
+Error.stackTraceLimit = 0;
+if (!Error.stackTraceLimit) {
+  Array.prototype.lastIndexOf = function () {
+    return -2;
+  };
+  console.log("limit", Error.stackTraceLimit, typeof Array.prototype.lastIndexOf);
+}

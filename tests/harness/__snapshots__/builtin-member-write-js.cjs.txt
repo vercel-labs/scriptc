@@ -159,3 +159,12 @@ builtin-member-write-js.cjs:86:3 - error SC1092: replacing the built-in 'Map.pro
   87 |     configurable: true,
 
   hint: a program may change a member of a built-in object only when nothing it compiles uses that member natively. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+
+builtin-member-write-js.cjs:96:1 - error SC1092: replacing the built-in 'Array.prototype.length' here is not supported: the feature test at builtin-member-write-js.cjs:97:5 reads it and was decided when the program was built, so it would not see the change
+
+  95 | // when it is writable; the feature test below was decided from the old one.
+  96 | Object.defineProperty(Array.prototype, "length", { value: 5 });
+     | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  97 | if (Array.prototype.length) {
+
+  hint: a program may change a member of a built-in object only when nothing it compiles uses that member natively. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead

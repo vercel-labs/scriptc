@@ -91,6 +91,15 @@ function patchMap() {
   });
 }
 
+// A definition may change the value of a member that is not configurable
+// when it is writable; the feature test below was decided from the old one.
+Object.defineProperty(Array.prototype, "length", { value: 5 });
+if (Array.prototype.length) {
+  Array.prototype.fill = function () {
+    return this;
+  };
+}
+
 install();
 patchMap();
 console.log(report({}), remember, firstOf, pairs);

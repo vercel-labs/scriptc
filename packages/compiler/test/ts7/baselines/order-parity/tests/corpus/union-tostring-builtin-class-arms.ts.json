@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/union-tostring-builtin-class-arms.ts"
+ ],
+ "diags": []
+}

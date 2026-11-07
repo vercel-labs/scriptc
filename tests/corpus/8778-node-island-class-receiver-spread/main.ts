@@ -9,10 +9,12 @@
 import {
   makeAdder,
   makeSink,
+  makeStepper,
   tableSize,
   type Adder,
   type Names,
   type Sink,
+  type Stepper,
   type Table,
 } from "spread-pkg";
 
@@ -96,7 +98,23 @@ const entry: [string, number] = ["k", 1];
 table.set(...entry);
 console.log(tableSize(table), table.get(...(["k"] as [string])));
 
-// 6. A member that is not a function is Node's TypeError, after the
+// 6. A native generator typed by the island's interface: its steps are
+// dispatched by compiled code too.
+function* count(): Generator<number, void, number | undefined> {
+  let n = 0;
+  for (;;) {
+    const step = yield n;
+    n += step ?? 1;
+  }
+}
+const steps: [number] = [3];
+function advance(stepper: Stepper): string {
+  return JSON.stringify(stepper.next(...steps));
+}
+const counting: Stepper = count();
+console.log(JSON.stringify(counting.next()), advance(counting), advance(makeStepper()));
+
+// 7. A member that is not a function is Node's TypeError, after the
 // arguments ran.
 try {
   sink.note!(...(["n" + next()] as [string]));

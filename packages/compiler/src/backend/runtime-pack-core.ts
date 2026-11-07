@@ -93,6 +93,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   wasm: boolean;
   dynTier: boolean;
   streamDyn: boolean;
+  streamStdin: boolean;
   handleProps: boolean;
   childLifecycle: boolean;
   childOptionExt: boolean;
@@ -356,6 +357,7 @@ export function effectiveRuntimeFeatures(
     // program with it links the dynamic-tier units too.
     dynTier: features.dynTier === true || jsObjectModel,
     streamDyn: features.streamDyn === true,
+    streamStdin: features.streamStdin === true,
     handleProps: features.handleProps === true,
     childLifecycle: features.childLifecycle === true,
     childOptionExt: features.childOptionExt === true,

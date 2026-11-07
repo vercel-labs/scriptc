@@ -876,6 +876,7 @@ async function compileExecutableNative(
     ...(features.dynTier ? { dynTier: true } : {}),
     ...(features.promiseGeneric ? { promiseGeneric: true } : {}),
     ...(features.streamDyn ? { streamDyn: true } : {}),
+    ...(features.streamStdin ? { streamStdin: true } : {}),
     ...(features.handleProps ? { handleProps: true } : {}),
     ...(features.childLifecycle ? { childLifecycle: true } : {}),
     ...(features.childOptionExt ? { childOptionExt: true } : {}),

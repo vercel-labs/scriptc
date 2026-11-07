@@ -199,6 +199,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_stream_ops.c", all("stream", "dynAsync")],
   // Checked-dynamic stream slots call JavaScript members through the dyn-invoke unit.
   ["scr_stream_dyn.c", "streamDyn"],
+  // process.stdin as a Readable: a consumer of the stdin unit that feeds a stream.
+  ["scr_stream_stdin.c", "streamStdin"],
   // Own properties JavaScript adds to children.
   ["scr_dyn_handle_props.c", "handleProps"],
   // Object.isExtensible and Object.isSealed of a value typed dynamically; a

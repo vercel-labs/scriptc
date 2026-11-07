@@ -46,6 +46,7 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     ...(features.promiseGeneric ? { promiseGeneric: true } : {}),
     ...(features.dynTier ? { dynTier: true } : {}),
     ...(features.streamDyn ? { streamDyn: true } : {}),
+    ...(features.streamStdin ? { streamStdin: true } : {}),
     ...(features.handleProps ? { handleProps: true } : {}),
     ...(features.childLifecycle ? { childLifecycle: true } : {}),
     ...(features.childOptionExt ? { childOptionExt: true } : {}),

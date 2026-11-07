@@ -107,6 +107,10 @@ for (const [name, title] of [
     "tls-server-contexts",
     "tls.Server addContext, setSecureContext and tlsClientError under @types/node",
   ],
+  [
+    "stdout-writable-parameter",
+    "process.stdout and process.stderr where a node:stream Writable is declared, as one stream each",
+  ],
 ] as const) {
   test(`node-types: ${title}`, async () => {
     const outDir = outDirFor(name);

@@ -13976,7 +13976,7 @@ export class Lowerer {
         return { kind: "classRef", className: info.def.name, type: expected, loc: expr.loc };
       }
     }
-    // process.stdout/stderr into a general Writable slot (general-streams.ts).
+    // A process stream into a runtime stream slot (general-streams.ts).
     const stdioStream = stdioIntoGeneralStream(this, expr, expected);
     if (stdioStream) return this.coerceToExpected(stdioStream, expected);
     // Iterator-typed slots: native iterators and differently typed

@@ -25,3 +25,11 @@ Because no write is ever queued, `writableLength` is 0, `writableNeedDrain` is f
 Stored streams do not support piping, encoding changes, arbitrary properties, or other events.
 A TypeScript `NodeJS.WritableStream` parameter that only receives `process.stdout` or `process.stderr` supports `write(string)`.
 When other streams flow into the same parameter, the process streams join them as `Writable` instances with the full writable surface.
+Under `@types/node`, `process.stdin` passed, stored or returned where `stream.Readable` is declared is one `Readable` over the process's input, and `process.stdout` and `process.stderr` where `stream.Writable` is declared are one `Writable` each.
+Every conversion answers the same stream, and a binding of the stream class compares identical to the process stream it was read from.
+The stdin stream receives each chunk once, beside any listener registered on `process.stdin` itself, and ends when the input ends.
+Listeners registered on `process.stdin` and listeners registered on the stream are kept separately, so for one event their relative order can differ from Node's registration order.
+For the same reason `process.stdin.isPaused()` does not report a `pause()` of the stream, and `listenerCount` does not include the listeners Node itself attaches to a pipe or a terminal.
+A process stream held as an untyped value does not convert to a stream class: asserting or passing it as `Readable` or `Writable` throws a TypeError.
+Passing `process.stdin` where `Duplex`, `net.Socket` or `EventEmitter` is declared throws the same TypeError.
+The bundled declarations declare `process.stdin` by its own members, so these conversions need `@types/node`.

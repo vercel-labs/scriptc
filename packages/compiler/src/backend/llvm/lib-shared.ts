@@ -981,6 +981,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "child.ref": "scr_child_ref",
   "procStream.write": "scr_proc_stream_write",
   "stream.stdioWritable": "scr_stream_stdio_writable",
+  "stream.stdioReadable": "scr_stream_stdio_readable",
   "stream.unboxDyn": "scr_stream_unbox_dyn",
   "stream.dynIterableSource": "scr_stream_dyn_iterable_source",
   "stream.dynSourceValue": "scr_stream_dyn_source_value",

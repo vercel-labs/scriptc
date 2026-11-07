@@ -29,6 +29,7 @@ import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { resolveFrom } from "../../node-islands/resolve.js";
 import { join } from "node:path";
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { locOf, isCjsJsFile } from "../program.js";
 import { PoisonError, newFnCtx, type Lowerer } from "./lowerer.js";
 import { BOOL, DYN, STRING, VOID, type IrExpr, type IrStmt, type SrcLoc } from "../../ir/ir.js";
@@ -47,7 +48,6 @@ import {
 } from "./lower-node-island.js";
 import { dynUndefinedExpr } from "../../ir/build.js";
 import { funcTypeFromParamShapes } from "./call-signatures.js";
-import { stripTypeWrappers } from "./typed-arguments.js";
 
 type ExportKind = "function" | "class" | "let" | "const" | "var";
 
@@ -249,7 +249,7 @@ const MUTATING_METHODS = new Set([
  * is judged on its own), and object, array and operator expressions over
  * those. */
 function inertInitializer(node: ts.Expression): boolean {
-  const e = stripTypeWrappers(node);
+  const e = withoutParenthesesTypeWrappers(node);
   if (
     ts.isIdentifier(e) ||
     ts.isLiteralExpression(e) ||
@@ -399,8 +399,8 @@ export function sharedModulePlans(lowerer: Lowerer): SharedModulePlan[] {
   const queue: string[] = [];
   const candidates = new Set<ts.SourceFile>();
   for (const sf of lowerer.moduleOrder) {
+    if (!ts.sourceTextIncludes(sf, "requireModule")) continue;
     const text = sf.text;
-    if (!text.includes("requireModule")) continue;
     const from = real(sf.fileName);
     for (const spec of requireModuleSpecifiers(text)) {
       try {

@@ -1,6 +1,7 @@
 /* Shared tables and emission shapes for LLVM standard-library dispatch. */
 import type { LibCallExpr, LlValue, LlvmEmitterContext } from "./expr-context.js";
 import { f64Lit } from "./common.js";
+import type { IrLibFn } from "../../ir/builtin-signatures.js";
 
 /** Emit a validation-ladder call that always throws, preserving the typed
  * dummy-result ownership shape until the pending check unwinds it. */
@@ -27,7 +28,7 @@ export function emitAlwaysThrowLibCall(
  * (scr_assert.c). The first argument is the verdict; the value is the index
  * of the `negated` flag, or null when the call fails exactly when the
  * verdict is false. A passing assertion branches around the call. */
-export const ASSERT_VERDICT_LIB_FNS: ReadonlyMap<string, number | null> = new Map([
+export const ASSERT_VERDICT_LIB_FNS: ReadonlyMap<IrLibFn, number | null> = new Map([
   ["assert.ok", null],
   ["assert.looseResult", 1],
   ["assert.deepResult", 1],
@@ -37,7 +38,7 @@ export const ASSERT_VERDICT_LIB_FNS: ReadonlyMap<string, number | null> = new Ma
 
 /** The Math functions that call scr_ieee754.c. They read and write no
  * memory, so calls with the same argument fold and loops may hoist them. */
-export const PURE_MATH_LIB_FNS: ReadonlySet<string> = new Set([
+export const PURE_MATH_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "math.sin",
   "math.sinh",
   "math.cos",
@@ -486,6 +487,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fs.realpathValue": "scr_fs_realpath_value",
   "dyn.validateString": "scr_value_string",
   "dyn.validateStrings": "scr_value_strings",
+  "dyn.validateFsPath": "scr_value_fs_path",
   "path.resolveValue": "scr_path_resolve_value",
   "path.parseValue": "scr_path_parse_value",
   "path.formatValue": "scr_path_format_value",
@@ -616,6 +618,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fs.readFileSyncBuf": "scr_fs_read_file_bytes",
   "fs.readFileSyncBytes": "scr_fs_read_file_bytes",
   "fs.writeFileSyncBytes": "scr_fs_write_file_bytes",
+  "fs.writeFileSyncBytesFlags": "scr_fs_write_file_flags_bytes",
   "fs.writeFileSyncFd": "scr_fs_write_file_fd",
   "fs.appendFileSyncBytes": "scr_fs_append_file_bytes",
   "fs.readFdSyncBytes": "scr_fs_read_fd_bytes",
@@ -855,6 +858,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.circular": "scr_insp_circular",
   // Undeclared source properties kept beside a checked record (scr_json.c).
   "record.sourceHas": "scr_record_source_has",
+  // scr_record_source_delete.c, a gated unit.
+  "record.sourceDelete": "scr_record_source_delete",
   "record.sourceSpread": "scr_record_source_spread",
   "record.sourceShare": "scr_record_source_share",
   "record.sourceNote": "scr_record_source_note",
@@ -956,6 +961,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // (execSync/execCapture throw — the may-throw check); handle getters
   // are pure reads. Registration forms are special-cased (moves + per-
   // shape adapters); spawn itself is special-cased for usesTimers.
+  "cp.checkArgs": "scr_child_check_args",
   "cp.spawnSync": "scr_spawn_sync",
   "cp.spawnSyncOpts": "scr_spawn_sync_opts",
   "cp.spawnSyncStdioStr": "scr_spawn_sync_stdio_str",
@@ -966,6 +972,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "cp.execCapture": "scr_exec_capture",
   "spawnRes.stdout": "scr_spawn_res_stdout",
   "spawnRes.stderr": "scr_spawn_res_stderr",
+  "spawnRes.stdoutBytes": "scr_spawn_res_stdout_bytes",
+  "spawnRes.stderrBytes": "scr_spawn_res_stderr_bytes",
   "child.killed": "scr_child_killed",
   "child.spawnfile": "scr_child_spawnfile",
   "child.spawnargs": "scr_child_spawnargs",
@@ -1010,6 +1018,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fsp.truncate": "scr_fsp_truncate",
   "fsp.appendFile": "scr_fsp_append_file",
   "fsp.appendFileBytes": "scr_fsp_append_file_bytes",
+  "fsp.writeFileBytes": "scr_fsp_write_file_bytes",
+  "fsp.writeFileBytesFlags": "scr_fsp_write_file_flags_bytes",
   "fsp.copyFile": "scr_fsp_copyfile",
   "fsp.mkdtemp": "scr_fsp_mkdtemp",
   "fsp.readFileEncoded": "scr_fsp_read_file_encoded",
@@ -1217,6 +1227,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.primitiveDelete": "scr_dyn_primitive_delete",
   "dyn.reflectDeleteProperty": "scr_dyn_reflect_delete_property",
   "dyn.reflectHasTarget": "scr_dyn_reflect_has_target",
+  "dyn.reflectGetPrototypeTarget": "scr_dyn_reflect_get_prototype_target",
   "dyn.hasKeyComputed": "scr_dyn_has_key_computed",
   "dyn.hasOwnComputed": "scr_dyn_has_own_computed",
   "dyn.propertyIsEnumerableComputed": "scr_dyn_property_is_enumerable_computed",
@@ -1270,7 +1281,6 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "handle.propsCheck": "scr_dyn_handle_props_check",
   // Promise statics with a foreign `this` (scr_js_promise_generic.c).
   "promise.genericStatic": "scr_js_promise_generic_call",
-  "child.propsInstall": "scr_dyn_handle_props_install",
   "child.propsDefine": "scr_dyn_define_property_hp",
   "child.propsDescriptor": "scr_dyn_get_own_property_descriptor_hp",
   "child.propsResolve": "scr_dyn_promise_resolve_hp",
@@ -2002,7 +2012,7 @@ export function mockTimerSym(
   return host.mockTimers && !e.realTimer ? MOCK_TIMER_SYMS[e.fn] : undefined;
 }
 
-export const USES_TIMERS_LIB_FNS = new Set<string>([
+export const USES_TIMERS_LIB_FNS = new Set<IrLibFn>([
   "crypto.generateKeyPairCb",
   "crypto.diffieHellman",
   "crypto.checkPrimeCb",

@@ -267,6 +267,8 @@ export function everyExprChild(
       return expr(node.arr) && expr(node.index);
     case "arrayState":
       return expr(node.arr) && expr(node.index);
+    case "constCell":
+      return expr(node.index);
     case "arrIntrinsic":
       return expr(node.receiver) && everyOf(node.args, expr);
     case "bytesNew":
@@ -599,6 +601,8 @@ export function mapExprChildren(
       return { ...node, arr: expr(node.arr), index: expr(node.index) };
     case "arrayState":
       return { ...node, arr: expr(node.arr), index: expr(node.index) };
+    case "constCell":
+      return { ...node, index: expr(node.index) };
     case "arrIntrinsic":
       return {
         ...node,

@@ -29,13 +29,16 @@ const skip = process.platform !== "linux" || process.env["SCRIPTC_SAN"] === "1";
 interface Workload {
   name: string;
   entry: string;
+  requires?: string[];
 }
 
 // One program per entry file, named after its first workload, as the gate
-// names them.
+// names them. The workloads with Node islands (`requires: ["libnode"]`) are
+// the programs that do call into Node.js: the invariant is about the others.
 const programs = new Map<string, string>();
 for (const w of readWorkloads(suite) as Workload[])
-  if (![...programs.values()].includes(w.entry)) programs.set(`bench/${w.name}`, w.entry);
+  if (!(w.requires ?? []).includes("libnode") && ![...programs.values()].includes(w.entry))
+    programs.set(`bench/${w.name}`, w.entry);
 
 test("every workload the gate lists as dynamic is a bench program", () => {
   for (const id of DYNAMIC_WORKLOADS) expect(programs.has(id), id).toBe(true);

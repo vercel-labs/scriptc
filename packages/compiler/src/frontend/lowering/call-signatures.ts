@@ -68,6 +68,11 @@ export interface ParamShape {
   mode: ParamMode;
   bodyType?: IrType;
   callDefault?: IrExpr;
+  /** The declared default is a builtin handle that no value of the
+   * parameter's record type holds (callerDeliversDefault): a direct call
+   * that omits the argument passes the handle to an instance bound to it,
+   * and completing the argument with undefined any other way is refused. */
+  handleDefault?: true;
   entryNarrow?: IrType;
   slotType?: IrType;
   /** One flattened position of a fixed-tuple rest parameter

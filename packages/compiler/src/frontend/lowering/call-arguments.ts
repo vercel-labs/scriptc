@@ -6,6 +6,8 @@ import * as ts from "../ts7/adapter.js";
 import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { AstNode } from "../ts7/ast-node.js";
 import type { Lowerer } from "./lowerer.js";
+import { PoisonError } from "./lowerer.js";
+import { handleDefaultRefusalDiag } from "../../diagnostics/diagnostic.js";
 import {
   DYN,
   F64,
@@ -349,6 +351,7 @@ export function completeArgs(
     });
     const fixed = positional.map((shape, i): IrExpr => {
       if (i < passed.length) return passed[i]!;
+      if (shape.handleDefault) refuseHandleDefault(lowerer, blame);
       if (shape.mode === "omittable" || lowerer.bareUndefinedArmedUnion(shape.type))
         return shape.callDefault ?? lowerer.undefinedArgFor(shape.type, loc, blame);
       if (shape.type.kind === "dyn") return dynUndefinedExpr(loc);
@@ -384,6 +387,8 @@ export function completeArgs(
         const effect = lowerStaticallyUndefinedArgument(lowerer, operand);
         if (absent && effect) return defaultAfterUndefined(effect, absent);
       }
+      if (shape.handleDefault && mayBeUndefined(lowerer, operand))
+        refuseHandleDefault(lowerer, arg);
       return lowerer.lowerExprExpecting(arg, shape.type);
     }
     if (shape.mode !== "omittable" && !lowerer.bareUndefinedArmedUnion(shape.type)) {
@@ -400,6 +405,7 @@ export function completeArgs(
       lowerer.unsupported("SC1090", blame, "this call form");
     }
     if (shape.callDefault) return shape.callDefault;
+    if (shape.handleDefault) refuseHandleDefault(lowerer, blame);
     return lowerer.undefinedArgFor(shape.type, loc, blame);
   });
   if (restAt >= 0 && shapes[restAt]!.mode === "dynRest") {
@@ -599,6 +605,24 @@ export function wrappedUndefined(lowerer: Lowerer, type: IrType, loc: SrcLoc): I
 /** The synthesized argument for an omitted omittable param: the interned
  * undefined arm of the param's `T | undefined` ABI union, or the checked-dynamic tree
  * undefined for a checked-dynamic param (`bar?: any`). */
+
+/** Whether the argument `arg` can be undefined when it is evaluated, as
+ * the checker types it: `undefined` or `void` itself, a union with one of
+ * them, or a value of unchecked type. */
+function mayBeUndefined(lowerer: Lowerer, arg: ts.Expression): boolean {
+  const absent =
+    ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.Undefined | ts.TypeFlags.Void;
+  const checked = lowerer.typeOf(arg);
+  if (checked.flags & absent) return true;
+  return checked.isUnionType() && ts.constituentTypes(checked).some((part) => part.flags & absent);
+}
+
+/** Refuses a call that would hand undefined to a parameter whose default
+ * only a direct call can deliver (ParamShape.handleDefault). */
+function refuseHandleDefault(lowerer: Lowerer, blame: ts.Node): never {
+  lowerer.pushDiag(handleDefaultRefusalDiag(null, null, null, "call", locOf(blame)));
+  throw new PoisonError();
+}
 
 export function omittedArgFor(lowerer: Lowerer, type: IrType, loc: SrcLoc): IrExpr | null {
   if (type.kind === "dyn") return dynUndefinedExpr(loc);

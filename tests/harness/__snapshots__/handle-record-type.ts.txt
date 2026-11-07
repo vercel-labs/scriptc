@@ -1,0 +1,89 @@
+handle-record-type.ts:8:66 - error SC2002: record shapes must match exactly or width-coerce: expected '{ isTTY: boolean | undefined }', got 'WriteStream' — a 'WriteStream' stays itself as the argument of a directly called function declaration or in a const; here its members would be copied into a record, which stops following it
+
+  7 | // A record field, an array element, a returned value and a `let`.
+  8 | const options: { stream: TermStream; label: string } = { stream: process.stderr, label: "a" };
+    |                                                                  ^~~~~~~~~~~~~~
+  9 | console.log(options.label);
+
+  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead
+
+handle-record-type.ts:10:28 - error SC2002: record shapes must match exactly or width-coerce: expected '{ isTTY: boolean | undefined }', got 'WriteStream' — a 'WriteStream' stays itself as the argument of a directly called function declaration or in a const; here its members would be copied into a record, which stops following it
+
+   9 | console.log(options.label);
+  10 | const all: TermStream[] = [process.stdout];
+     |                            ^~~~~~~~~~~~~~
+  11 | console.log(all.length);
+
+  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead
+
+handle-record-type.ts:13:10 - error SC2002: record shapes must match exactly or width-coerce: expected '{ isTTY: boolean | undefined }', got 'WriteStream' — a 'WriteStream' stays itself as the argument of a directly called function declaration or in a const; here its members would be copied into a record, which stops following it
+
+  12 | function pick(): TermStream {
+  13 |   return process.stdout;
+     |          ^~~~~~~~~~~~~~
+  14 | }
+
+  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead
+
+handle-record-type.ts:16:27 - error SC2002: record shapes must match exactly or width-coerce: expected '{ isTTY: boolean | undefined }', got 'WriteStream' — a 'WriteStream' stays itself as the argument of a directly called function declaration or in a const; here its members would be copied into a record, which stops following it
+
+  15 | console.log(pick());
+  16 | let current: TermStream = process.stdout;
+     |                           ^~~~~~~~~~~~~~
+  17 | current = {};
+
+  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead
+
+handle-record-type.ts:26:28 - error SC2002: record shapes must match exactly or width-coerce: expected '{ isTTY: boolean | undefined }', got 'WriteStream' — a 'WriteStream' stays itself as the argument of a directly called function declaration or in a const; here its members would be copied into a record, which stops following it
+
+  25 | }
+  26 | console.log(new Theme().of(process.stderr));
+     |                            ^~~~~~~~~~~~~~
+  27 | const arrow = (stream: TermStream): boolean => stream === process.stderr;
+
+  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead
+
+handle-record-type.ts:28:19 - error SC2002: record shapes must match exactly or width-coerce: expected '{ isTTY: boolean | undefined }', got 'WriteStream' — a 'WriteStream' stays itself as the argument of a directly called function declaration or in a const; here its members would be copied into a record, which stops following it
+
+  27 | const arrow = (stream: TermStream): boolean => stream === process.stderr;
+  28 | console.log(arrow(process.stderr));
+     |                   ^~~~~~~~~~~~~~
+  29 | 
+
+  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead
+
+handle-record-type.ts:37:16 - error SC2002: this call can leave undefined in a parameter whose default is a builtin handle (such as process.stdout): the parameter's record type holds the handle only when a direct call of the function omits the argument or passes the handle
+
+  36 | function forward(stream?: TermStream): boolean {
+  37 |   return theme(stream);
+     |                ^~~~~~
+  38 | }
+
+  hint: pass the handle or a record of the declared type explicitly, or call the function declaration directly without the argument
+
+handle-record-type.ts:39:30 - error SC2002: this call can leave undefined in a parameter whose default is a builtin handle (such as process.stdout): the parameter's record type holds the handle only when a direct call of the function omits the argument or passes the handle
+
+  38 | }
+  39 | console.log(forward(), theme(undefined));
+     |                              ^~~~~~~~~
+  40 | 
+
+  hint: pass the handle or a record of the declared type explicitly, or call the function declaration directly without the argument
+
+handle-record-type.ts:44:13 - error SC2020: 'Object.keys' is part of the standard library types but has no scriptc lowering yet
+
+  43 | const sink: { write(text: string): boolean } = process.stdout;
+  44 | console.log(Object.keys(sink).length);
+     |             ^~~~~~~~~~~
+  45 | 
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+handle-record-type.ts:48:34 - error SC2002: record shapes must match exactly or width-coerce: expected '{ isRaw: boolean | undefined }', got 'a process stream' — a builtin handle is not a plain object, so the checked conversion into a record type throws when it runs; it stays itself as the argument of a directly called function declaration or in a const
+
+  47 | // a record type admits plain objects only and would throw when it runs.
+  48 | let input: { isRaw?: boolean } = process.stdin;
+     |                                  ^~~~~~~~~~~~~
+  49 | input = {};
+
+  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead

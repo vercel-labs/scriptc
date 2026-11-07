@@ -1607,9 +1607,9 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         if (layout) {
           return reconcileOverloadReturn(lowerer, expr, {
             kind: "call",
-            callee: layout.name,
-            args: lowerer.completeArgs(expr.arguments.nodes, layout.params, loc, expr),
-            type: layout.returnType,
+            callee: layout.instance.name,
+            args: lowerer.completeArgs(layout.args, layout.instance.params, loc, expr),
+            type: layout.instance.returnType,
             loc,
           });
         }

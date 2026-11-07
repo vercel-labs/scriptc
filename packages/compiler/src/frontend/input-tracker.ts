@@ -268,6 +268,7 @@ export class FrontendInputTracker {
     return activeTracker.run(this, () => {
       const result = fn();
       for (const probe of this.probes.values()) parent.record(probe);
+      if (!this.stable) parent.markUnstable();
       return result;
     });
   }
@@ -373,6 +374,21 @@ function record(probe: FrontendInputProbe): void {
  * one the native frontend installs, else the async-context one. */
 function activeFrontendTracker(): FrontendInputTracker | undefined {
   return synchronousTracker ?? activeTracker.getStore();
+}
+
+/** Runs the synchronous `fn` under a tracker of its own, inside the running
+ * one when there is one (which still receives every probe), and returns what
+ * `fn` observed. */
+export function observeFrontendInputs<T>(fn: () => T): {
+  result: T;
+  inputs: FrontendInputSnapshot;
+} {
+  const tracker = new FrontendInputTracker();
+  const result =
+    synchronousTracker !== undefined || activeTracker.getStore() === undefined
+      ? tracker.runSynchronous(fn)
+      : tracker.run(fn);
+  return { result, inputs: tracker.snapshot() };
 }
 
 /** `path`'s kind, from this compile's answers when it already asked. */
@@ -586,18 +602,19 @@ export function frontendInputsStillMatch(
   snapshot: FrontendInputSnapshot,
   exclusions: FrontendInputExclusions = {},
 ): boolean {
-  return frontendInputMismatch(snapshot, exclusions) === null;
+  if (snapshot.version !== 1 || snapshot.stable !== true || !Array.isArray(snapshot.probes)) {
+    return false;
+  }
+  return changedFrontendInput(snapshot, exclusions) === null;
 }
 
-/** The first recorded probe that no longer has its answer, null when every
- * probe does, and "invalid" for a snapshot that is unstable or malformed. */
-export function frontendInputMismatch(
+/** The first recorded probe the current filesystem answers differently, or
+ * null when every one still holds. Whether the snapshot is stable is the
+ * caller's question. */
+export function changedFrontendInput(
   snapshot: FrontendInputSnapshot,
   exclusions: FrontendInputExclusions = {},
-): FrontendInputProbe | "invalid" | null {
-  if (snapshot.version !== 1 || snapshot.stable !== true || !Array.isArray(snapshot.probes)) {
-    return "invalid";
-  }
+): FrontendInputProbe | null {
   const outputPaths = new Set([...(exclusions.outputPaths ?? [])].map((path) => resolve(path)));
   const outputDirectories = new Set(
     [...(exclusions.outputDirectories ?? [])].map((path) => resolve(path)),
@@ -623,7 +640,7 @@ export function frontendInputMismatch(
       return false;
     }
   };
-  const matches = (probe: FrontendInputProbe): boolean => {
+  const holds = (probe: FrontendInputProbe): boolean => {
     // A host fact's name is not a path.
     if (probe.op === "host") return hostFact(probe.path) === probe.value;
     if (outputPaths.has(probe.path)) return true;
@@ -740,7 +757,7 @@ export function frontendInputMismatch(
         return true;
     }
   };
-  return snapshot.probes.find((probe) => !matches(probe)) ?? null;
+  return snapshot.probes.find((probe) => !holds(probe)) ?? null;
 }
 
 /**

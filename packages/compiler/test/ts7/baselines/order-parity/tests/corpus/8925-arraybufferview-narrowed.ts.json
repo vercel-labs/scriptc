@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8925-arraybufferview-narrowed.ts"
+ ],
+ "diags": []
+}

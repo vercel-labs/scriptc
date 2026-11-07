@@ -1,0 +1,17 @@
+node-island-function-value/main.ts:9:36 - error SC8010: the function 'settle' of Node island package 'ordkit' (type '(resolve: (value: number) => void, reject: (reason: unknown) => void) => void') is used here as a native value, which a Node island's value of this type cannot become yet
+
+   8 | 
+   9 | const answer = new Promise<number>(settle);
+     |                                    ^~~~~~
+  10 | answer.then((value) => console.log(value));
+
+  hint: call it from a function of the program, such as `(a, b) => f(a, b)`, or give the slot a function type the program declares
+
+node-island-function-value/main.ts:13:29 - error SC8010: the function of Node island package 'ordkit' (type '((a: string, b: string) => number) | undefined') is used here as a native value, which a Node island's value of this type cannot become yet
+
+  12 | const reverse = process.argv.length > 99;
+  13 | console.log(["b", "a"].sort(reverse ? undefined : compare).join(","));
+     |                             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  14 | 
+
+  hint: call it from a function of the program, such as `(a, b) => f(a, b)`, or give the slot a function type the program declares

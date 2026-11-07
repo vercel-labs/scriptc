@@ -52,6 +52,16 @@ export interface FrontendInputExclusions {
   outputDirectories?: readonly string[];
 }
 
+/** The prefix of every scratch name the compiler creates beside an output
+ * while it builds: privateSiblingPath's `.scriptc-<label>-<pid>-<random>`
+ * files and the `.scriptc-native-`, `.scriptc-library-`, `.scriptc-dsym-`
+ * and `.scriptc-exe-bin-` staging entries. A build of the same project may
+ * be running, or may have died, at any time, so a directory that holds an
+ * output can hold such an entry whenever it is listed. No program reaches
+ * one through a listing: project file discovery skips names that start
+ * with a dot, and an import of one probes its exact path. */
+export const COMPILER_SCRATCH_PREFIX = ".scriptc-";
+
 function frontendSourceDigest(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
@@ -248,6 +258,7 @@ export class FrontendInputTracker {
     return activeTracker.run(this, () => {
       const result = fn();
       for (const probe of this.probes.values()) parent.record(probe);
+      if (!this.stable) parent.markUnstable();
       return result;
     });
   }
@@ -345,6 +356,21 @@ function record(probe: FrontendInputProbe): void {
  * one the native frontend installs, else the async-context one. */
 function activeFrontendTracker(): FrontendInputTracker | undefined {
   return synchronousTracker ?? activeTracker.getStore();
+}
+
+/** Runs the synchronous `fn` under a tracker of its own, inside the running
+ * one when there is one (which still receives every probe), and returns what
+ * `fn` observed. */
+export function observeFrontendInputs<T>(fn: () => T): {
+  result: T;
+  inputs: FrontendInputSnapshot;
+} {
+  const tracker = new FrontendInputTracker();
+  const result =
+    synchronousTracker !== undefined || activeTracker.getStore() === undefined
+      ? tracker.runSynchronous(fn)
+      : tracker.run(fn);
+  return { result, inputs: tracker.snapshot() };
 }
 
 /** `path`'s kind, from this compile's answers when it already asked. */
@@ -548,10 +574,22 @@ export function frontendInputsStillMatch(
   if (snapshot.version !== 1 || snapshot.stable !== true || !Array.isArray(snapshot.probes)) {
     return false;
   }
+  return changedFrontendInput(snapshot, exclusions) === null;
+}
+
+/** The first recorded probe the current filesystem answers differently, or
+ * null when every one still holds. Whether the snapshot is stable is the
+ * caller's question. */
+export function changedFrontendInput(
+  snapshot: FrontendInputSnapshot,
+  exclusions: FrontendInputExclusions = {},
+): FrontendInputProbe | null {
   const outputPaths = new Set([...(exclusions.outputPaths ?? [])].map((path) => resolve(path)));
   const outputDirectories = new Set(
     [...(exclusions.outputDirectories ?? [])].map((path) => resolve(path)),
   );
+  // Directories that hold one of the build's outputs.
+  const outputParents = new Set([...outputPaths].map((output) => dirname(output)));
   const generatedOnlyDirectory = (directory: string): boolean => {
     const allowedFiles = new Set<string>();
     for (const output of outputPaths) {
@@ -566,6 +604,7 @@ export function frontendInputsStillMatch(
     try {
       return readdirSync(directory).every((name) => {
         if (allowedFiles.has(name)) return true;
+        if (allowedFiles.size > 0 && name.startsWith(COMPILER_SCRATCH_PREFIX)) return true;
         const child = allowedDirectories.get(name);
         return child !== undefined && generatedOnlyDirectory(child);
       });
@@ -573,7 +612,7 @@ export function frontendInputsStillMatch(
       return false;
     }
   };
-  return snapshot.probes.every((probe) => {
+  const holds = (probe: FrontendInputProbe): boolean => {
     if (outputPaths.has(probe.path)) return true;
     if (outputDirectories.has(probe.path)) {
       // A fresh output directory can be absent while the frontend runs and
@@ -658,11 +697,15 @@ export function frontendInputsStillMatch(
           }
           files.sort();
           directories.sort();
+          // The compiler's scratch entries beside an output come and go with
+          // each build, in the listing that was recorded and in this one.
+          const scratch = outputParents.has(probe.path);
+          const kept = (name: string): boolean =>
+            !ignored.has(name) && !(scratch && name.startsWith(COMPILER_SCRATCH_PREFIX));
           return (
-            JSON.stringify(files.filter((name) => !ignored.has(name))) ===
-              JSON.stringify(probe.files.filter((name) => !ignored.has(name))) &&
-            JSON.stringify(directories.filter((name) => !ignored.has(name))) ===
-              JSON.stringify(probe.directories.filter((name) => !ignored.has(name)))
+            JSON.stringify(files.filter(kept)) === JSON.stringify(probe.files.filter(kept)) &&
+            JSON.stringify(directories.filter(kept)) ===
+              JSON.stringify(probe.directories.filter(kept))
           );
         } catch {
           return false;
@@ -687,7 +730,8 @@ export function frontendInputsStillMatch(
         // The file probe of the same path checks its content.
         return true;
     }
-  });
+  };
+  return snapshot.probes.find((probe) => !holds(probe)) ?? null;
 }
 
 /**

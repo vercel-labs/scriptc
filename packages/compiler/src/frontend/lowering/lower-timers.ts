@@ -752,7 +752,9 @@ function untypedTimerHandle(
 ): IrExpr {
   const handle = lowerer.lowerExpr(expr.arguments.nodes[0]!);
   if (handle.type.kind !== "dyn") return handle;
-  const islands = lowerer.nodeIslands !== null || programImportsNodeApi(lowerer.program);
+  const islands =
+    lowerer.nodeIslands !== null ||
+    (lowerer.importsNodeApi ??= programImportsNodeApi(lowerer.program));
   if (!islands && !isJsSourceFile(ts.getSourceFileOfNode(expr))) return handle;
   const stored = lowerer.declareHiddenLocal("%timer.clear", DYN);
   const ref = varRef(stored.id, DYN, loc);

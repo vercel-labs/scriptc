@@ -16,10 +16,10 @@ async function main() {
 
   const order = [];
   await Promise.all([
-    lib.sleep(20, "island 20").then((v) => order.push(v)),
-    sleep(10, "native 10").then((v) => order.push(v)),
-    lib.sleep(30, "island 30").then((v) => order.push(v)),
-    sleep(40, "native 40").then((v) => order.push(v)),
+    lib.sleep(100, "island 100").then((v) => order.push(v)),
+    sleep(50, "native 50").then((v) => order.push(v)),
+    lib.sleep(150, "island 150").then((v) => order.push(v)),
+    sleep(200, "native 200").then((v) => order.push(v)),
   ]);
   log(order.join(", "));
 

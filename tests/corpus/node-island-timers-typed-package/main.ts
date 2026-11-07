@@ -9,17 +9,17 @@ let own = 0;
 const mine = setInterval(() => {
   console.log(`native interval tick ${++own}`);
   if (own === 2) cancel(mine);
-}, 20);
+}, 100);
 
 const t = start(10, "NOT REACHED island timeout");
 clearTimeout(t);
 const i = soon("NOT REACHED island immediate");
 clearImmediate(i);
 let ticks = 0;
-const interval = every(30, () => {
+const interval = every(150, () => {
   console.log(`island interval tick ${++ticks}`);
   if (ticks === 2) clearInterval(interval);
 });
-const kept = start(15, "fires");
+const kept = start(50, "fires");
 console.log(`hasRef ${kept.hasRef()}`);
-setTimeout(() => console.log("end"), 120);
+setTimeout(() => console.log("end"), 500);

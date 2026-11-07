@@ -9,7 +9,7 @@ const log = (s: string): void => console.log(s);
 clearTimeout(lib.timeout(10, "NOT REACHED timeout"));
 clearImmediate(lib.immediate("NOT REACHED immediate"));
 let ticks = 0;
-const islandInterval = lib.interval(5, () => {
+const islandInterval = lib.interval(100, () => {
   log(`island interval tick ${++ticks}`);
   if (ticks === 2) clearInterval(islandInterval);
 });
@@ -22,9 +22,9 @@ let own = 0;
 const nativeInterval: ReturnType<typeof setInterval> = setInterval(() => {
   log(`native interval tick ${++own}`);
   if (own === 2) lib.clearI(nativeInterval);
-}, 7);
+}, 140);
 let maybe: ReturnType<typeof setTimeout> | undefined = setTimeout(() => log("NOT REACHED optional"), 10);
 lib.clearT(maybe);
 maybe = undefined;
 clearTimeout(maybe);
-setTimeout(() => log("end"), 50);
+setTimeout(() => log("end"), 400);

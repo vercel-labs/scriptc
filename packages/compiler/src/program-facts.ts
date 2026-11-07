@@ -446,7 +446,7 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     narrower:
       "the handle, at run time: a requireModule result and everything reached from it is untyped, so no site knows whether its value came from an island",
     tracked: "pi-decisions DECISIONS island-timers-iteration 2026-11-07",
-    lowererFields: [],
+    lowererFields: ["importsNodeApi"],
   },
 ];
 

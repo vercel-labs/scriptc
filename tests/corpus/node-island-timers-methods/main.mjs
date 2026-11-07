@@ -7,7 +7,7 @@ import { requireModule } from "@scriptc/node";
 const lib = requireModule("./lib.cjs");
 const log = (s) => console.log(s);
 
-const t = lib.timeout(20, "refreshed");
+const t = lib.timeout(200, "refreshed");
 log(`hasRef ${t.hasRef()}`);
 log(`unref returns the timer ${t.unref() === t}`);
 log(`hasRef ${t.hasRef()} island agrees ${lib.hasRef(t) === false}`);
@@ -15,8 +15,8 @@ log(`ref returns the timer ${t.ref() === t} hasRef ${t.hasRef()}`);
 setTimeout(() => {
   log("refresh");
   t.refresh();
-}, 12);
-setTimeout(() => log("native 25"), 25);
+}, 60);
+setTimeout(() => log("native timer"), 150);
 
 const closed = lib.timeout(10, "NOT REACHED closed");
 log(`close returns the timer ${closed.close() === closed}`);
@@ -37,4 +37,4 @@ immediate.ref();
 const background = lib.interval(1000, "NOT REACHED background");
 background.unref();
 log(`background hasRef ${background.hasRef()}`);
-setTimeout(() => log("end"), 60);
+setTimeout(() => log("end"), 400);

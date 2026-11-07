@@ -4015,6 +4015,10 @@ export class Lowerer {
   /** Whether a compiled source creates primitive wrapper objects
    * (programCreatesWrappers), computed on first use. */
   createsWrappers: boolean | undefined = undefined;
+  /** Whether the program imports @scriptc/node (programImportsNodeApi), so
+   * a checked-dynamic value may be a Node island value; computed on first
+   * use. */
+  importsNodeApi: boolean | undefined = undefined;
   /** Whether a compiled source names the lib `ArrayBufferView` interface
    * (programNamesArrayBufferView), computed on first use. */
   namesArrayBufferView: boolean | undefined = undefined;
@@ -5149,6 +5153,7 @@ export class Lowerer {
     "nanCodedReads",
     "mentionsProcessVersions",
     "createsWrappers",
+    "importsNodeApi",
     "namesArrayBufferView",
     "stringIndexBoundsCache",
     "functionLocalSubclasses",

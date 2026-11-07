@@ -21,35 +21,35 @@ lib.moduleClearImm(setImmediate(() => log("NOT REACHED module immediate")));
 // clearTimeout does not clear an immediate, and clearImmediate does not
 // clear a timeout.
 lib.clearT(setImmediate(() => log("immediate kept")));
-lib.clearImm(setTimeout(() => log("timeout kept"), 5));
+lib.clearImm(setTimeout(() => log("timeout kept"), 10));
 
 let ticks = 0;
 const interval = setInterval(() => {
   log(`native interval tick ${++ticks}`);
   if (ticks === 3) lib.clearI(interval);
-}, 20);
+}, 100);
 
 // An interval stopped by island code from a timer of the program.
 let other = 0;
-const stopped = setInterval(() => log(`second interval tick ${++other}`), 50);
-setTimeout(() => lib.moduleClearI(stopped), 110);
+const stopped = setInterval(() => log(`second interval tick ${++other}`), 250);
+setTimeout(() => lib.moduleClearI(stopped), 560);
 
 const list = [];
 for (let i = 0; i < 4; i++) list.push(setTimeout(() => log(`NOT REACHED list ${i}`), 30));
-const survivor = setTimeout(() => log("survivor fires"), 130);
+const survivor = setTimeout(() => log("survivor fires"), 650);
 lib.clearAll(list);
 
 // A handle that already fired clears nothing; one that is pending clears.
-const fired = setTimeout(() => log("fired once"), 10);
-const pending = setTimeout(() => log("NOT REACHED pending"), 170);
+const fired = setTimeout(() => log("fired once"), 50);
+const pending = setTimeout(() => log("NOT REACHED pending"), 850);
 setTimeout(() => {
   lib.clearT(fired);
   lib.clearT(pending);
   log("cleared after firing");
-}, 150);
+}, 750);
 
 const self = setTimeout(() => {
   lib.clearT(self);
   log("cleared itself");
-}, 35);
-setTimeout(() => log("end"), 200);
+}, 150);
+setTimeout(() => log("end"), 900);

@@ -27,21 +27,21 @@ const kept = lib.immediate("kept");
 clearTimeout(kept);
 
 let ticks = 0;
-const interval = lib.interval(20, () => {
+const interval = lib.interval(100, () => {
   log(`island interval tick ${++ticks}`);
   if (ticks === 3) clearInterval(interval);
 });
 
-const late = lib.timeout(30, "fires");
+const late = lib.timeout(150, "fires");
 setTimeout(() => {
   clearTimeout(late);
   log(`late destroyed ${lib.destroyed(late)}`);
-}, 90);
+}, 450);
 
 // An interval stopped from a timer of the program, with clearTimeout.
 let stops = 0;
-const stoppedByTimer = lib.interval(50, () => log(`second interval tick ${++stops}`));
-setTimeout(() => clearTimeout(stoppedByTimer), 110);
+const stoppedByTimer = lib.interval(250, () => log(`second interval tick ${++stops}`));
+setTimeout(() => clearTimeout(stoppedByTimer), 560);
 
 // Values that are not timers clear nothing.
 for (const value of [lib, {}, "text", true, [], () => {}]) {
@@ -49,4 +49,4 @@ for (const value of [lib, {}, "text", true, [], () => {}]) {
   clearInterval(value);
   clearImmediate(value);
 }
-setTimeout(() => log("end"), 200);
+setTimeout(() => log("end"), 700);

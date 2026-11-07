@@ -241,6 +241,8 @@ import { installBufferValue } from "./containers/bytes.js";
 import { installMutableBuffersArm } from "./buffers.js";
 import { ClassProtocols } from "./class-protocols.js";
 import { earlyReadVarSymbols } from "./var-hoisting.js";
+import { enumObjectRefusal, type EnumObject } from "./enum-objects.js";
+import { enumNumberReadMayMiss } from "./lower-enums.js";
 import { recordTextCodecClass, sortArms } from "../../ir/ir.js";
 import { assignLegacyTiers, type DynamicFunction } from "../../ir/tiers.js";
 import { dynamicSlotOperationCounts, dynamicTierWarning } from "./dynamic-tier.js";
@@ -3158,6 +3160,11 @@ export class Lowerer {
   /** `var` bindings code can read before their first store
    * (var-hoisting.ts): their storage holds undefined until then. */
   readonly earlyReadVars = new Set<ts.Symbol>();
+  /** Enums whose object some code uses as a value (enum-objects.ts), by
+   * symbol and by their first and last declarations. Filled before the
+   * globals are collected. */
+  readonly enumObjects = new Map<ts.Symbol, EnumObject>();
+  readonly enumObjectDecls = new Map<ts.EnumDeclaration, EnumObject>();
   /** Globals whose checker-bare type was widened because an indexed read can
    * carry undefined at runtime. Identifier reads keep the union tag so
    * typeof and later boundaries observe the real value. */
@@ -4942,6 +4949,8 @@ export class Lowerer {
       checkedTable("emitterComputedPatterns", () => this.emitterComputedPatterns.length),
       checkedTable("unstableSwitchBindings", () => this.unstableSwitchBindings.size),
       checkedTable("earlyReadVars", () => this.earlyReadVars.size),
+      checkedTable("enumObjects", () => this.enumObjects.size),
+      checkedTable("enumObjectDecls", () => this.enumObjectDecls.size),
       checkedTable("runtimeOptionalGlobals", () => this.runtimeOptionalGlobals.size),
       checkedTable("cjsExportsThis", () => this.cjsExportsThis.size),
       checkedTable("inlineRequireInitDone", () => this.inlineRequireInitDone.size),
@@ -5922,6 +5931,7 @@ export class Lowerer {
       },
       mixinIntersectionInstance: (widened) => mixinIntersectionInstanceType(this, widened),
       classImplementedProtocol: (type) => this.classImplementedProtocol(type),
+      enumObjectEntries: (symbol) => this.enumObjects.get(symbol)?.entries ?? null,
       isStdlibFile: (sf) => this.isStdlibFile(sf),
       primitiveWrappers: () => (this.createsWrappers ??= programCreatesWrappers(this)),
       isNpmFile: (sf) => this.isNpmFile(sf),
@@ -8329,7 +8339,11 @@ export class Lowerer {
       // every consumer treats undefined like NaN.
       if (kind === "bytes") return !nanCoded.isNumericRead(e);
       if (kind === "record")
-        return this.optionalIndexSignatureRead(e) !== null && !nanCoded.isNumericRead(e);
+        return (
+          (this.optionalIndexSignatureRead(e) !== null && !nanCoded.isNumericRead(e)) ||
+          // An enum's reverse lookup through a runtime number.
+          enumNumberReadMayMiss(this, e)
+        );
       return kind === "array";
     };
     /** `r.name` where the name resolves to the receiver's index signature. */
@@ -12420,6 +12434,26 @@ export class Lowerer {
         globals.push(this.globalsByDeclNode.get(decl) ?? null);
       return JSON.stringify(globals, positionFree);
     }
+    // An enum's fact is whether its object is built: a use elsewhere
+    // decides it, and the declaration's statement lowers differently. A
+    // namespace statement holds the facts of the enums declared in it.
+    if (
+      this.enumObjectDecls.size > 0 &&
+      (ts.isEnumDeclaration(declaration) || ts.isModuleDeclaration(declaration))
+    ) {
+      const built: IrGlobal[] = [];
+      for (const [decl, info] of this.enumObjectDecls) {
+        if (decl !== info.first || info.object === undefined) continue;
+        if (
+          decl === declaration ||
+          (ts.getSourceFileOfNode(decl) === ts.getSourceFileOfNode(declaration) &&
+            decl.pos >= declaration.pos &&
+            decl.end <= declaration.end)
+        )
+          built.push(info.object);
+      }
+      return built.length === 0 ? "" : JSON.stringify(built, positionFree);
+    }
     return "";
   }
 
@@ -13166,13 +13200,12 @@ export class Lowerer {
         unsupportedNativeApiDiag(`a value of type '${ts.symbolName(typeSym)}'`, locOf(node)),
       );
     }
-    // ENUM OBJECTS (`typeof e` — a numeric enum's type carries the
-    // reverse-map index signature, a string enum's just its members):
-    // shaped like a hybrid record, but the enum identifier has no value
-    // lowering, so the honest fence names the construct in the same voice
-    // as the per-site identifier fence — never the index-signature
-    // recitation.
+    // ENUM OBJECTS (`typeof e`) whose type did not map: the enum has no
+    // closed layout (enum-object-layout.ts names why), so the honest fence
+    // names the construct in the same voice as the per-site identifier
+    // fence — never the index-signature recitation.
     if (typeSym && (typeSym.flags & ts.SymbolFlags.Enum) !== 0) {
+      const why = enumObjectRefusal(this, typeSym);
       this.typeFail(
         node,
         type,
@@ -13180,7 +13213,7 @@ export class Lowerer {
         unsupportedDiag(
           "SC1090",
           locOf(node),
-          `enum objects as values ('${ts.symbolName(typeSym)}' — member reads like '${ts.symbolName(typeSym)}.X' compile to constants; the object itself has no runtime representation)`,
+          `enum objects as values ('${ts.symbolName(typeSym)}': ${why}; member reads like '${ts.symbolName(typeSym)}.A' compile to constants)`,
         ),
       );
     }

@@ -137,7 +137,7 @@ import {
 } from "../builtins/runtime-constructor.js";
 import { findGenericMethodOn, lowerStaticFieldRead } from "../lower-classes.js";
 import { isErrorPrototypeValue, lowerClassPrototypeData } from "../class-prototypes.js";
-import { lowerEnumAccess } from "../lower-enums.js";
+import { isEnumMemberRead, lowerEnumAccess } from "../lower-enums.js";
 import {
   hasOptionalChainGuard,
   isOptionalChainTail,
@@ -5229,6 +5229,8 @@ export function fieldTarget(
   access: ts.PropertyAccessExpression,
 ): FieldTarget | null {
   if (lowerer.cjsLocalModuleBindingOf(access.expression)) return null;
+  // `E.A` of an enum whose object is built: the member's constant.
+  if (isEnumMemberRead(lowerer, access)) return null;
   // `module.exports` / `module.id`: CommonJS module surface, never a field.
   if (isCjsModuleGlobal(lowerer, access.expression)) return null;
   if (isCjsExportsIdentifier(lowerer, access.expression)) return null;

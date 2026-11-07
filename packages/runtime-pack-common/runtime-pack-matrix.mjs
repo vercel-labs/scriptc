@@ -265,6 +265,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_node_island_export.c", "nodeIsland"],
   ["scr_node_island_boot.c", "nodeIsland"],
   ["scr_node_island_gc.c", "nodeIsland"],
+  // A native AbortSignal's twin in an island: programs with islands and
+  // native signals (the signal unit or the fetch unit).
+  ["scr_node_island_abort.c", { all: ["nodeIsland"], any: ["abortSignal", "nativeFetch"] }],
   ["scr_stream_from_web.c", all("stream", "nativeFetch")],
   // The dynamic global object's answer for the Node globals the native runtime
   // does not implement (host-globals.ts): the compiler hands over its derived

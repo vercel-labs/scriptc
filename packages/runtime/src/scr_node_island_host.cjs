@@ -283,7 +283,93 @@ const INTRINSIC_CLASSES = {
   AggregateError,
 };
 const collectionSyncs = new WeakMap();
+
+// ── twins (scr_node_bridge.h SCR_NVF_TWIN) ───────────────────────────────
+// A native object of a platform class whose receivers here test its brand
+// (fetch, addEventListener's `signal`, AbortSignal.any, events.once and
+// timers/promises all refuse anything but a real AbortSignal) crosses as a
+// real object of this realm's class: its twin. One twin per native object
+// while either side holds it, and the native object again when the twin
+// crosses back. Each class says how to make a twin, how the twin takes its
+// native object's state when it becomes that object's representative
+// (`start`), and what the native side tells it afterwards (`tell`).
+// `native` reads a property of the native object (`get`) and calls one of
+// its methods (`invoke`).
+const TWIN_GET = 16;
+const TWIN_INVOKE = 17;
+const twinStates = new WeakMap(); // twin -> { cls, native }
+const nodeAbort = AbortController.prototype.abort;
+// The controller of each AbortSignal twin: it aborts the twin when the
+// native signal aborts, and it is the twin of the native AbortController.
+const twinControllers = new WeakMap();
+
+// A reason that cannot cross reaches the twin as the error that says so.
+function nativeReason(native) {
+  try {
+    return native.get("reason");
+  } catch (error) {
+    return error;
+  }
+}
+
+const twinClasses = {
+  AbortSignal: {
+    make() {
+      const controller = new AbortController();
+      twinControllers.set(controller.signal, controller);
+      return controller.signal;
+    },
+    start(signal, native) {
+      if (native.get("aborted")) this.tell.abort(signal, nativeReason(native));
+    },
+    tell: {
+      // The native signal aborted: before its own 'abort' listeners run,
+      // so both sides answer `aborted` and `reason` alike in every listener.
+      abort(signal, reason) {
+        Reflect.apply(nodeAbort, twinControllers.get(signal), [reason]);
+      },
+    },
+  },
+  AbortController: {
+    // The controller of the native signal's twin. Its abort() aborts the
+    // native signal, which aborts the twin (tell.abort), so the two sides
+    // change together whichever side aborts.
+    make(native) {
+      const controller = twinControllers.get(native.get("signal"));
+      Object.defineProperty(controller, "abort", {
+        value: function abort(reason = undefined) {
+          if (this !== controller) return Reflect.apply(nodeAbort, this, arguments);
+          native.invoke("abort", reason);
+        },
+        writable: true,
+        enumerable: false,
+        configurable: true,
+      });
+      return controller;
+    },
+    start() {},
+    tell: {},
+  },
+};
+
 const islandHelpers = {
+  makeTwin(name, op) {
+    const cls = twinClasses[name];
+    const native = {
+      get: (key) => op(TWIN_GET, key),
+      invoke: (method, ...args) => op(TWIN_INVOKE, method, ...args),
+    };
+    const twin = cls.make(native);
+    twinStates.set(twin, { cls, native });
+    return twin;
+  },
+  startTwin(twin) {
+    const state = twinStates.get(twin);
+    if (state !== undefined) state.cls.start(twin, state.native);
+  },
+  tellTwin(name, event, twin, value) {
+    twinClasses[name].tell[event](twin, value);
+  },
   isInstance(value, name) {
     // The error classes by their intrinsics; any other standard class by
     // the global of that name (Array, Map, Date, …).

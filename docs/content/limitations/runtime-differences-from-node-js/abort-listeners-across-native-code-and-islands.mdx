@@ -1,0 +1,5 @@
+- **Abort listeners across native code and islands:** An `AbortSignal` the program hands to JavaScript running in a Node island is one signal under Node.js, with one list of listeners that run in the order they were added.
+  A compiled program gives the island a signal of its own that follows the program's: both report `aborted` and the same `reason` before any listener runs, and each side keeps its own list.
+  When the signal aborts, the island's listeners run first, in the order they were added, and then the program's, in theirs.
+  `getEventListeners` and `listenerCount` on either side count that side's listeners only.
+  Only programs that depend on the order between a native and an island listener of one signal, or that count a signal's listeners across the two sides, are affected.

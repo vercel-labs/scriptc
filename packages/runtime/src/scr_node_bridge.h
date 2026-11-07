@@ -17,7 +17,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SCR_NODE_BRIDGE_ABI 10u
+#define SCR_NODE_BRIDGE_ABI 13u
 /* The symbol a bridge library exports: `const ScrNodeBridge *(void)`. */
 #define SCR_NODE_BRIDGE_ENTRY "scr_node_bridge_v1"
 
@@ -30,6 +30,16 @@ enum {
   SCR_NODE_COLLECTION_CLEAR = 4,
   SCR_NODE_COLLECTION_SIZE = 5,
   SCR_NODE_COLLECTION_ENTRIES = 6,
+};
+
+/* Operations on twin exports (host->export_op, SCR_NVF_TWIN): the island
+ * object asks its native object. GET: args[0] names a property, the answer
+ * is its value. INVOKE: args[0] names a method, the rest are its arguments,
+ * the answer is its result. Both are the native handle's own property read
+ * and method call. */
+enum {
+  SCR_NODE_TWIN_GET = 16,
+  SCR_NODE_TWIN_INVOKE = 17,
 };
 
 /* Kinds of runtime jobs the bridge schedules on Node's queues (`run`). */
@@ -96,7 +106,8 @@ enum {
   SCR_NV_ERROR = 8,  /* into V8 only: a new Error of an intrinsic class */
   SCR_NV_JSON = 9,   /* into V8 only: str is JSON text, parsed there (a copy) */
   SCR_NV_EXPORT = 10, /* exp: a runtime value exported by reference (NI-5); flags: SCR_NVF_FUNCTION,
-                         SCR_NVF_PROMISE, SCR_NVF_ARRAY or 0 for an object */
+                         SCR_NVF_PROMISE, SCR_NVF_ARRAY, SCR_NVF_MAP, SCR_NVF_SET, SCR_NVF_TWIN
+                         or 0 for an object */
 };
 /* What a handle is, reported with every handle the bridge answers. */
 enum {
@@ -110,6 +121,12 @@ enum {
   SCR_NVF_DATAVIEW = 128,
   SCR_NVF_MAP = 256, /* EXPORT: a native Map (NI-5b) */
   SCR_NVF_SET = 512, /* EXPORT: a native Set (NI-5b) */
+  /* EXPORT: a native object of a platform class whose island receivers
+   * brand-check it (an AbortSignal). Its representative is a real object of
+   * the island's own class, made by the bootstrap's makeTwin from the class
+   * name in exp.name: the twin. The runtime keeps the twin's state in step
+   * with the native object's. */
+  SCR_NVF_TWIN = 1024,
 };
 /* BYTES element kinds: ScrBytesElem's numbering (scr_bytes.h). */
 typedef struct ScrNodeValue {
@@ -138,7 +155,7 @@ typedef struct ScrNodeValue {
     struct {
       uint32_t id;     /* the runtime's export-table id */
       uint32_t length; /* functions: their `length` */
-      const char *name; /* functions: their `name` (NULL: anonymous) */
+      const char *name; /* functions: their `name` (NULL: anonymous); twins: their class */
       size_t name_len;
     } exp;
   } u;
@@ -270,9 +287,9 @@ typedef struct ScrNodeBridgeHost {
   /* The exports in their temporal dead zone now, as SCR_NV_STRING JSON
    * [[mod, slot], ...]. */
   void (*shared_tdz)(ScrNodeValue *out);
-  /* A Map or Set export's operation (SCR_NODE_COLLECTION_*): 0 returned
-   * (*out), 1 threw. ENTRIES answers an array export: [key, value] pairs
-   * of a Map, the values of a Set. */
+  /* A Map or Set export's operation (SCR_NODE_COLLECTION_*) or a twin
+   * export's (SCR_NODE_TWIN_*): 0 returned (*out), 1 threw. ENTRIES answers
+   * an array export: [key, value] pairs of a Map, the values of a Set. */
   int (*export_op)(uint32_t id, uint32_t op, const ScrNodeValue *args, size_t argc,
                    ScrNodeValue *out);
   /* NI-8: the analysis before a major GC, over the `nexports` exports that

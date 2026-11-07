@@ -24,6 +24,9 @@
  *    and key enumeration goes to the native storage (Reflect.get/set over
  *    the dyn value: a typed record capsule reads and commits its fields).
  *
+ *  - a native object of a twin class (below) is a real object of the
+ *    island's own class, made by the bootstrap: its twin.
+ *
  * When V8 collects a representative, the bridge reports export_release at
  * its next entry (never inside a GC) and the table drops its reference.
  * Cycles through both heaps are found by the analysis of
@@ -47,6 +50,8 @@ typedef struct {
   ScrDyn *value; /* +1; NULL for a free slot */
   const void *identity;
   uint32_t flags;
+  const ScrNiTwinClass *twin; /* the value's twin class, or NULL */
+  void *attachment;           /* what the twin class's attach answered */
 } NiExport;
 
 static NiExport *ni_exports = NULL; /* index = id; id 0 unused */
@@ -126,6 +131,43 @@ static void ni_ids_del(const void *key) {
   }
 }
 
+/* ── twins ────────────────────────────────────────────────────────────
+ * A native object of a platform class whose receivers in the island test
+ * its brand (undici's fetch, addEventListener, AbortSignal.any and
+ * events.once all test a signal's) cannot be an interceptor object there.
+ * It crosses as an export whose representative is a real object of the
+ * island's own class, its twin, so identity (one twin per native object,
+ * the native object again when the twin crosses back) and lifetime (the
+ * table holds the native object while V8 can reach the twin, and V8 holds
+ * the twin while the program holds the native object) are the table's.
+ * The twin asks its native object through the handle's own property read
+ * and method call (ni_twin_op), and the class's unit tells the twin what
+ * changes natively afterwards (scr_ni_twin_tell).
+ *
+ * The classes register from their own units, which link only into programs
+ * that have both islands and the class's native objects. */
+static ScrNiTwinClass *ni_twin_classes = NULL;
+
+void scr_ni_twin_register(ScrNiTwinClass *cls) {
+  cls->next = ni_twin_classes;
+  ni_twin_classes = cls;
+}
+
+static const ScrNiTwinClass *ni_twin_class(const ScrDyn *v) {
+  if (v->kind != SCR_DYN_HANDLE) return NULL;
+  for (const ScrNiTwinClass *c = ni_twin_classes; c != NULL; c = c->next)
+    if ((int)v->v.handle.tag == c->tag) return c;
+  return NULL;
+}
+
+bool scr_ni_twin_box(const ScrDyn *v) { return ni_twin_class(v) != NULL; }
+
+/* The identity of the second class of a shared native object: the object's
+ * address with its low bit set, which no object has. */
+static const void *ni_twin_second(const void *object) {
+  return (const void *)((uintptr_t)object | 1u);
+}
+
 /* The identity of a value that crosses by reference: the referent for
  * boxes that wrap one (closures, typed capsules), a promise's shared
  * identity (a typed promise boxes a fresh adapter each time it crosses),
@@ -140,8 +182,11 @@ static const void *ni_identity(const ScrDyn *v) {
     return scr_promise_identity_key(v->v.promise);
   case SCR_DYN_TYPED_REF:
     return v->v.typed_ref.ptr;
-  case SCR_DYN_HANDLE:
-    return v->v.handle.ptr; /* a Map or Set: its native storage */
+  case SCR_DYN_HANDLE: {
+    /* A Map or Set: its native storage. A twin: its native object. */
+    const ScrNiTwinClass *twin = ni_twin_class(v);
+    return twin != NULL && twin->shares_object ? ni_twin_second(v->v.handle.ptr) : v->v.handle.ptr;
+  }
   default:
     return v;
   }
@@ -198,6 +243,7 @@ uint32_t scr_ni_export_flags(const ScrDyn *v) {
     return SCR_NVF_ARRAY;
   case SCR_DYN_HANDLE:
   case SCR_DYN_TYPED_REF: {
+    if (ni_twin_class(v) != NULL) return SCR_NVF_TWIN;
     if (v->kind == SCR_DYN_TYPED_REF && ni_is_array(v)) return SCR_NVF_ARRAY;
     bool set = false;
     ScrDyn *c = ni_collection(v, &set);
@@ -220,8 +266,9 @@ bool scr_ni_exportable(const ScrDyn *v) {
   case SCR_DYN_ARR: /* a Proxy over an Array in V8 (NI-5b) */
   case SCR_DYN_TYPED_REF:
     return true;
-  case SCR_DYN_HANDLE: /* Maps and Sets (NI-5b) */
-    return v->v.handle.tag == SCR_DYNH_MAP || v->v.handle.tag == SCR_DYNH_SET;
+  case SCR_DYN_HANDLE: /* Maps and Sets (NI-5b), and twins */
+    return v->v.handle.tag == SCR_DYNH_MAP || v->v.handle.tag == SCR_DYNH_SET ||
+           ni_twin_class(v) != NULL;
   default:
     return false;
   }
@@ -252,7 +299,14 @@ uint32_t scr_ni_export_id(ScrDyn *v) {
    * freed cell's address could come back as another promise's. */
   if (v->kind == SCR_DYN_PROMISE) scr_promise_identity_hold(identity);
   ni_exports[id].flags = scr_ni_export_flags(v);
+  ni_exports[id].twin = ni_twin_class(v);
+  ni_exports[id].attachment = NULL;
   ni_ids_put(identity, id);
+  const ScrNiTwinClass *twin = ni_exports[id].twin;
+  if (twin != NULL && twin->attach != NULL) {
+    void *attachment = twin->attach(id, v->v.handle.ptr);
+    ni_exports[id].attachment = attachment;
+  }
   return id;
 }
 
@@ -275,7 +329,20 @@ void scr_ni_export_out(ScrDyn *v, ScrNodeValue *out) {
       out->u.exp.name = v->v.fn.name;
       out->u.exp.name_len = strlen(v->v.fn.name);
     }
+  } else if (ni_exports[id].twin != NULL) {
+    out->u.exp.name = ni_exports[id].twin->name;
+    out->u.exp.name_len = strlen(ni_exports[id].twin->name);
   }
+}
+
+/* NI-8: the exports whose twins stand for native object `object`: one per
+ * twin class that shares it. Answers how many. */
+size_t scr_ni_twin_exports(const void *object, uint32_t ids[2]) {
+  size_t n = 0;
+  uint32_t first = ni_ids_get(object), second = ni_ids_get(ni_twin_second(object));
+  if (first != 0) ids[n++] = first;
+  if (second != 0) ids[n++] = second;
+  return n;
 }
 
 /* NI-8: the identity of export `id` (the referent its representative
@@ -714,10 +781,44 @@ int scr_ni_host_export_keys(uint32_t id, ScrNodeValue *out) {
   return 0;
 }
 
+/* A twin asks its native object (SCR_NODE_TWIN_*): the handle's own
+ * property read or method call, named by the first argument. */
+static int ni_twin_op(ScrDyn *target, uint32_t op, const ScrNodeValue *args, size_t argc,
+                      ScrNodeValue *out) {
+  const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(target);
+  ScrDyn *small[4];
+  ScrDyn **in = ni_args_in(args, argc, small, 4);
+  ScrDyn *result = NULL;
+  scr_dyn_retain(target);
+  if (ops != NULL && argc > 0 && in[0]->kind == SCR_DYN_STR) {
+    const ScrStr *name = in[0]->v.str;
+    void *object = target->v.handle.ptr;
+    if (op == SCR_NODE_TWIN_GET && ops->get != NULL) {
+      result = ops->get(object, name->data, name->len);
+    } else if (op == SCR_NODE_TWIN_INVOKE && ops->invoke != NULL) {
+      char method[64];
+      size_t len = name->len < sizeof method ? name->len : sizeof method - 1;
+      memcpy(method, name->data, len);
+      method[len] = '\0';
+      result = ops->invoke(object, target, method, in + 1, argc - 1, method);
+      scr_ni_shared_refresh();
+    }
+  }
+  ni_args_free(in, argc, small);
+  scr_dyn_release(target);
+  if (scr_exc_pending()) {
+    scr_dyn_release(result);
+    return ni_threw(out);
+  }
+  if (result == NULL) result = scr_dyn_retain(scr_dyn_undefined());
+  return ni_returned(result, out);
+}
+
 int scr_ni_host_export_op(uint32_t id, uint32_t op, const ScrNodeValue *args, size_t argc,
                           ScrNodeValue *out) {
   ni_keep_set(NULL);
   ScrDyn *target = scr_ni_export_value(id);
+  if (target != NULL && ni_exports[id].twin != NULL) return ni_twin_op(target, op, args, argc, out);
   bool set = false;
   ScrDyn *view = target != NULL ? ni_collection(target, &set) : NULL;
   if (view == NULL) {
@@ -753,9 +854,22 @@ int scr_ni_host_export_op(uint32_t id, uint32_t op, const ScrNodeValue *args, si
   return ni_returned(result, out);
 }
 
+/* The native object of export `id` stops telling its twin. */
+static void ni_twin_detach(uint32_t id) {
+  void *attachment = ni_exports[id].attachment;
+  if (attachment == NULL) return;
+  ni_exports[id].attachment = NULL;
+  ni_exports[id].twin->detach(attachment);
+}
+
+void scr_ni_twin_detached(uint32_t id) {
+  if (id != 0 && id < ni_exports_len) ni_exports[id].attachment = NULL;
+}
+
 void scr_ni_host_export_release(uint32_t id) {
   if (id == 0 || id >= ni_exports_len || ni_exports[id].value == NULL) return;
   ScrDyn *v = ni_exports[id].value;
+  ni_twin_detach(id);
   ni_ids_del(ni_exports[id].identity);
   if (v->kind == SCR_DYN_PROMISE) scr_promise_identity_drop(ni_exports[id].identity);
   ni_exports[id].value = NULL;
@@ -1105,6 +1219,7 @@ void scr_ni_exports_release_all(void) {
   for (uint32_t i = 1; i < ni_exports_len; i++) {
     ScrDyn *v = ni_exports[i].value;
     if (v == NULL) continue;
+    ni_twin_detach(i);
     if (v->kind == SCR_DYN_PROMISE) scr_promise_identity_drop(ni_exports[i].identity);
     ni_exports[i].value = NULL;
     scr_dyn_release(v);
@@ -1161,6 +1276,43 @@ static ScrDyn *ni_helper(const char *name, ScrDyn *const *args, size_t argc) {
     scr_atexit(ni_helpers_cleanup);
   }
   return scr_ni_call_method(ni_helpers, name, strlen(name), args, argc);
+}
+
+/* The native object of export `id` tells its twin that `event` happened,
+ * with `value` (borrowed): the bootstrap's tellTwin(class, event, twin,
+ * value). Called from inside the native object's own state change, so the
+ * twin's state is the native object's before either side's listeners run.
+ * A value that cannot cross reaches the twin as the error that says so. */
+void scr_ni_twin_tell(uint32_t id, const char *event, ScrDyn *value) {
+  ScrDyn *target = scr_ni_export_value(id);
+  if (target == NULL || ni_exports[id].twin == NULL || scr_ni_bridge_loaded() == NULL) return;
+  ScrCaught *saved = scr_exc_pending() ? scr_exc_take() : NULL;
+  const char *name = ni_exports[id].twin->name;
+  ScrStr *cs = scr_str_new(name, strlen(name)), *es = scr_str_new(event, strlen(event));
+  ScrDyn *args[4] = {scr_dyn_new_str(cs), scr_dyn_new_str(es), scr_dyn_retain(target),
+                     value != NULL ? value : scr_dyn_undefined()};
+  scr_str_release(cs);
+  scr_str_release(es);
+  ScrDyn *answer = ni_helper("tellTwin", args, 4);
+  if (answer == NULL && scr_exc_pending()) {
+    ScrCaught *caught = scr_exc_take();
+    ScrDyn *thrown = scr_caught_to_dyn(caught);
+    scr_caught_release(caught);
+    if (thrown != NULL) {
+      args[3] = thrown;
+      answer = ni_helper("tellTwin", args, 4);
+      scr_dyn_release(thrown);
+    }
+    if (scr_exc_pending()) scr_exc_clear();
+  }
+  scr_dyn_release(answer);
+  scr_dyn_release(args[0]);
+  scr_dyn_release(args[1]);
+  scr_dyn_release(args[2]);
+  if (saved != NULL) {
+    scr_rethrow(saved);
+    scr_caught_release(saved);
+  }
 }
 
 /* args: a dyn array whose items cross one by one (never as a copy). */

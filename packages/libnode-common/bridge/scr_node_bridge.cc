@@ -1770,6 +1770,34 @@ Local<Object> CollectionView(Isolate *isolate, Local<Context> context, Local<Val
   return Object::New(isolate);
 }
 
+// ── twin exports: a native object of a platform class whose island
+// receivers test its brand (an AbortSignal) is a real object of the
+// island's own class, made by the bootstrap's makeTwin from the class name.
+// The twin asks its native object through `op` (host->export_op,
+// SCR_NODE_TWIN_*). makeTwin reads no native state: startTwin does, once the
+// twin is the export's representative, so that state which names the native
+// object itself (a signal aborted with itself as the reason) finds it.
+Local<Value> TwinHelper(Isolate *isolate, Local<Context> context, const char *name, int argc,
+                        Local<Value> *argv) {
+  TryCatch try_catch(isolate);
+  Local<Value> helpers, fn, result;
+  Local<Value> load_argv[] = {Utf8(isolate, "scriptc:island-helpers"), v8::False(isolate)};
+  if (g_load.Get(isolate)->Call(context, v8::Undefined(isolate), 2, load_argv).ToLocal(&helpers) &&
+      helpers->IsObject() &&
+      helpers.As<Object>()->Get(context, Utf8(isolate, name)).ToLocal(&fn) && fn->IsFunction() &&
+      fn.As<Function>()->Call(context, helpers, argc, argv).ToLocal(&result))
+    return result;
+  return v8::Undefined(isolate);
+}
+
+Local<Object> TwinObject(Isolate *isolate, Local<Context> context, Local<Value> data,
+                         const ScrNodeValue *in) {
+  Local<Value> argv[] = {FromWtf8(isolate, in->u.exp.name, in->u.exp.name_len),
+                         Function::New(context, CollectionOp, data).ToLocalChecked()};
+  Local<Value> twin = TwinHelper(isolate, context, "makeTwin", 2, argv);
+  return twin->IsObject() ? twin.As<Object>() : Object::New(isolate);
+}
+
 Local<Object> ArrayProxy(Isolate *isolate, Local<Context> context, Local<Value> data) {
   Local<Object> handler = Object::New(isolate);
   struct Trap {
@@ -1882,6 +1910,8 @@ Local<Value> ExportValue(Isolate *isolate, Local<Context> context, const ScrNode
     obj = resolver->GetPromise();
   } else if (in->flags & (SCR_NVF_MAP | SCR_NVF_SET)) {
     obj = CollectionView(isolate, context, data, (in->flags & SCR_NVF_MAP) != 0);
+  } else if (in->flags & SCR_NVF_TWIN) {
+    obj = TwinObject(isolate, context, data, in);
   } else if (in->flags & SCR_NVF_ARRAY) {
     obj = ArrayProxy(isolate, context, data);
     g_proxy_ids.emplace(obj->GetIdentityHash(), id);
@@ -1901,6 +1931,10 @@ Local<Value> ExportValue(Isolate *isolate, Local<Context> context, const ScrNode
   slot.SetWeak(reinterpret_cast<void *>(static_cast<uintptr_t>(id)), OnExportGone,
                v8::WeakCallbackType::kParameter);
   if (in->flags & SCR_NVF_PROMISE) g_host->export_watch(id);
+  if (in->flags & SCR_NVF_TWIN) {
+    Local<Value> argv[] = {obj};
+    TwinHelper(isolate, context, "startTwin", 1, argv);
+  }
   RefreshMirror(isolate, context, id, in->flags, obj);
   return obj;
 }

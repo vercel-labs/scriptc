@@ -22,6 +22,14 @@ const record = { root: "/", name: "z", ext: ".y" };
 const formatted: any = path.format(record);
 console.log(formatted, typeof formatted, formatted.toUpperCase());
 
+// A typed record that crossed an `any` parameter arrives as a checked value
+// rather than a plain object, and format still reads its fields as Node does.
+function formatAny(pathObject: any): any {
+  return path.format(pathObject);
+}
+console.log(formatAny(record), formatAny({ dir: "/a", name: Buffer.from("bn"), ext: ".e" }));
+console.log(formatAny({ dir: "/a", base: Buffer.from("bn.e") }), formatAny({}));
+
 // A path that is not a string fails Node's validateString.
 for (const bad of [42, undefined, null]) {
   try {

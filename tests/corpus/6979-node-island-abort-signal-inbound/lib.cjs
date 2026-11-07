@@ -8,6 +8,14 @@ exports.timeout = (ms) => AbortSignal.timeout(ms);
 
 // What the island still sees of a signal native code used.
 exports.same = (controller, signal) => controller.signal === signal;
+// One island signal in two arguments of one native call, before either
+// argument has crossed; the signal aborts after the call.
+exports.pair = (callback) => {
+  const controller = new AbortController();
+  const answer = callback(controller.signal, controller.signal);
+  controller.abort("paired");
+  return answer;
+};
 exports.keep = (signal) => {
   const same = kept === signal;
   kept = signal;

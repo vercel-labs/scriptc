@@ -1472,6 +1472,45 @@ function defineIfAbsent(lowerer: Lowerer, bag: IrExpr, key: IrExpr, loc: SrcLoc)
   ];
 }
 
+/** A key table's string key parameter. The dispatch helpers name their key
+ * `p.key` whatever its type, so a member body that reads the helper's key
+ * instead of the table's fails IR validation. */
+const TABLE_KEY = "p.name";
+
+/** The operation a computed dispatch helper's per-class key tables answer:
+ * everything about the helper that a table's members and fallthrough depend
+ * on, and nothing else. Helpers of one operation share a class's table.
+ *
+ * - `write`, `reflect` and `probe` select the member bodies: a read, a
+ *   write, Reflect.get, Reflect.set, `in`, hasOwnProperty or
+ *   propertyIsEnumerable.
+ * - `numericKey` selects the names: a helper whose key is a number looks up
+ *   only the names a number can spell.
+ * - `sloppyWrite` is the strictness of the helper's sites. An untyped write
+ *   is sloppy by its source range (IrModule.sloppyDynWrites), and a shared
+ *   helper takes the range of one of its users
+ *   (settleSharedHelperLocations), so a table may only be shared by helpers
+ *   whose sites agree; the dispatch helpers are split the same way.
+ *
+ * How the key arrives (a string, an untyped value, a number to format) and
+ * whether the read is optional do not reach a table: the helper passes the
+ * key's string, and an optional read differs only in the helper's own
+ * statements. */
+function computedTableOperation(shape: {
+  write: boolean;
+  reflect: boolean;
+  probe: "in" | "own" | "enumerable" | undefined;
+  numericKey: boolean;
+  sloppyWrite: boolean;
+}): string {
+  const base = shape.probe ?? (shape.write ? "set" : "get");
+  return [
+    shape.reflect ? `reflect.${base}` : base,
+    ...(shape.sloppyWrite ? ["sloppy"] : []),
+    ...(shape.numericKey ? ["index"] : []),
+  ].join(":");
+}
+
 /** Calls on native class capsules keep the instance's compiled methods. The
  * reachable-body fixed point discovers both the boxed classes and method
  * names before generating checked native dispatch; ordinary dyn receivers
@@ -1511,8 +1550,14 @@ export class ClassDynamicDispatch {
       dynamicKey: boolean;
       numericKey: boolean;
       probe: "in" | "own" | "enumerable" | undefined;
+      /** The operation the helper's per-class key tables answer
+       * (computedTableOperation). */
+      operation: string;
     }
   >();
+  /** The key table of each class, by operation and class name. A class has
+   * one table per operation, shared by every dispatch helper of that
+   * operation. */
   private readonly computedClassHelpers = new Map<string, IrFunction>();
   private normalization: IrFunction | null = null;
   private normalizationKey = "";
@@ -2868,8 +2913,9 @@ export class ClassDynamicDispatch {
               ? computedRead.key
               : null;
           // A sloppy-mode write ignores a refused assignment
-          // (sloppyDynamicWrites), so its sites share their own helper,
-          // whose write takes the first such site's source range.
+          // (sloppyDynamicWrites), so its sites share their own helper and
+          // their own per-class key tables (computedTableOperation), whose
+          // writes take the source range of one such site.
           const sloppyWrite = !!computedWrite && !reflect && isSloppyAt(lowerer, computedWrite.loc);
           const key = JSON.stringify([
             !!computedWrite,
@@ -3170,6 +3216,13 @@ export class ClassDynamicDispatch {
               dynamicKey,
               numericKey,
               probe,
+              operation: computedTableOperation({
+                write: !!computedWrite,
+                reflect,
+                probe,
+                numericKey,
+                sloppyWrite,
+              }),
             };
             this.computed.set(key, dispatch);
             this.generated.add(helper);
@@ -3438,11 +3491,15 @@ export class ClassDynamicDispatch {
           if (hint !== null) deferred.add(`hint:${hint}`);
           return expr;
         }
+        // The helper takes an iterator call's other arguments (the spelling
+        // its error names) as parameters, so it depends on their types and
+        // not on what a site passes: sites that open the same protocol share
+        // one helper.
         const key = JSON.stringify([
           invoke.method,
           invoke.args.length,
           iterator?.fn,
-          iterator?.args[1],
+          ...(iterator?.args.slice(1).map((argument) => typeKey(argument.type)) ?? []),
         ]);
         let dispatch = this.dispatches.get(key);
         if (!dispatch) {
@@ -4063,16 +4120,20 @@ export class ClassDynamicDispatch {
         const selected = this.propertyReceiver(plan, loc);
         const receiverType: IrType = { kind: "object", className: info.def.name };
         const receiver = varRef("p.receiver", receiverType, loc);
-        const helperKey = JSON.stringify([dispatch.fn.name, info.def.name]);
+        const helperKey = JSON.stringify([dispatch.operation, info.def.name]);
         const existingHelper = this.computedClassHelpers.get(helperKey);
         const callHelper = (helper: IrFunction): IrStmt => {
           const call: IrExpr = {
             kind: "call",
             callee: helper.name,
+            // A table takes the key as a string, whichever local of this
+            // helper holds it.
             args: helper.params.map((param) =>
               param.localId === "p.receiver"
                 ? selected.receiver
-                : varRef(param.localId, param.type, loc),
+                : param.localId === TABLE_KEY
+                  ? varRef(dispatch.keyLocal, STRING, loc)
+                  : varRef(param.localId, param.type, loc),
             ),
             type: helper.returnType,
             loc,
@@ -4175,6 +4236,9 @@ export class ClassDynamicDispatch {
             ];
           }
           const bag = this.branchPropertyBag(lowerer, info, receiver, true, loc);
+          // A symbol-keyed member is probed by the helper's own symbol
+          // branches, where `p.key` is the untyped key; a key table compares
+          // names and has no such member.
           const symbol = name.startsWith("sym:") || name.startsWith("%symbol:");
           const fn =
             dispatch.probe === "in"
@@ -4393,7 +4457,7 @@ export class ClassDynamicDispatch {
             kind: "if",
             cond: {
               kind: "strEq",
-              left: varRef(dispatch.keyLocal, STRING, loc),
+              left: varRef(TABLE_KEY, STRING, loc),
               right: { kind: "strLit", value: name, type: STRING, loc },
               negated: false,
               type: BOOL,
@@ -4407,14 +4471,25 @@ export class ClassDynamicDispatch {
         // Keep each class's key table in a separate function. A single
         // function containing every boxed class grows quadratically during
         // LLVM's control-flow optimization for large library workloads.
-        const params = [
-          ...dispatch.fn.params,
+        //
+        // The table's signature is its operation's, not this helper's: the
+        // value, the key as a string, what a write stores, Reflect's
+        // receiver, and the instance. Every helper of the operation calls it,
+        // so it takes nothing that only one of them has (the key before
+        // conversion, an index).
+        const params: IrParam[] = [
+          { localId: "p.0", name: "value", type: DYN },
+          { localId: TABLE_KEY, name: "key", type: STRING },
+          ...(dispatch.write ? [{ localId: "p.1", name: "stored", type: DYN }] : []),
+          ...(dispatch.reflect
+            ? [{ localId: "p.reflectReceiver", name: "receiver", type: DYN }]
+            : []),
           { localId: "p.receiver", name: "receiver", type: receiverType },
         ];
-        // A derived key (a dynamic key's string, or an index's name) is a
-        // local of the dispatch helper; pass it along.
-        if (!dispatch.fn.params.some((param) => param.localId === dispatch.keyLocal))
-          params.push({ localId: dispatch.keyLocal, name: "key", type: STRING });
+        // A key no member answers falls through to the helper's own generic
+        // operation on the instance's property bag: its last statement, and
+        // the bare return after a write's store.
+        const fallthrough = dispatch.fn.body.slice(dispatch.write && !dispatch.reflect ? -2 : -1);
         const helper: IrFunction = {
           name: keyedHelperName(lowerer, "%dyn.class.keys", helperKey),
           params,
@@ -4427,28 +4502,30 @@ export class ClassDynamicDispatch {
           })),
           body: [
             ...branch,
-            ...transformStmtList(dispatch.fn.body.slice(dispatch.write ? -2 : -1), {
+            ...transformStmtList(fallthrough, {
               stmt: (statement) => statement,
               expr: (expression) =>
-                expression.kind === "dynKeyGet" && expression.key.type.kind === "string"
-                  ? {
-                      kind: "libCall",
-                      fn: "dyn.bagGet",
-                      args: [
-                        expression.value,
-                        expression.key,
-                        lowerer.coerceToExpected(receiver, DYN),
-                      ],
-                      type: DYN,
-                      loc,
-                    }
-                  : expression.kind === "libCall" && expression.fn === "dyn.keySet"
+                expression.kind === "varRef" && expression.localId === dispatch.keyLocal
+                  ? varRef(TABLE_KEY, STRING, expression.loc)
+                  : expression.kind === "dynKeyGet" && expression.key.type.kind === "string"
                     ? {
-                        ...expression,
-                        fn: "dyn.bagSet",
-                        args: [...expression.args, lowerer.coerceToExpected(receiver, DYN)],
+                        kind: "libCall",
+                        fn: "dyn.bagGet",
+                        args: [
+                          expression.value,
+                          expression.key,
+                          lowerer.coerceToExpected(receiver, DYN),
+                        ],
+                        type: DYN,
+                        loc,
                       }
-                    : expression,
+                    : expression.kind === "libCall" && expression.fn === "dyn.keySet"
+                      ? {
+                          ...expression,
+                          fn: "dyn.bagSet",
+                          args: [...expression.args, lowerer.coerceToExpected(receiver, DYN)],
+                        }
+                      : expression,
             }),
           ],
           loc,

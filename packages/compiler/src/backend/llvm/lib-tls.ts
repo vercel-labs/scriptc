@@ -144,6 +144,15 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
     case "tls.connectCb":
       if (args[3] !== undefined) host.toHeap(args[3]);
       return finishRuntimeCall(host, e, "scr_tls_connect_dyn", [...a.slice(0, 3), a[3] ?? ptr()]);
+    // checkServerIdentity's options walk, which needs the certificate
+    // builder (scr_tls_identity.c, linked for these names).
+    case "tls.connectId":
+    case "tls.connectIdCb":
+      if (args[3] !== undefined) host.toHeap(args[3]);
+      return finishRuntimeCall(host, e, "scr_tls_identity_connect", [
+        ...a.slice(0, 3),
+        a[3] ?? ptr(),
+      ]);
     case "tls.sockOnSecureConnect":
       host.toHeap(args[1]!);
       return finishRuntimeCall(host, e, "scr_tls_sock_on_secure_connect", a);
@@ -189,6 +198,53 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
         a[9]!,
         ...handler,
       ]);
+    }
+    // The literal options form's option-carrying rows: the request's own
+    // servername and checkServerIdentity travel as arguments, so a
+    // request built while another one's options evaluate keeps its own
+    // (the runtime's entry takes them; the identity rows also install
+    // the PeerCertificate runner).
+    case "https.requestTls":
+    case "https.requestTlsCb":
+    case "https.requestAgentTls":
+    case "https.requestAgentTlsCb":
+    case "https.requestTlsId":
+    case "https.requestTlsIdCb":
+    case "https.requestAgentTlsId":
+    case "https.requestAgentTlsIdCb": {
+      const isAgent = e.fn.includes("Agent");
+      const hasIdentity = e.fn.includes("TlsId");
+      const cb = args[hasIdentity ? (isAgent ? 13 : 12) : isAgent ? 11 : 10];
+      const handler =
+        cb === undefined
+          ? [ptr(), ptr()]
+          : callbackAdapter(
+              host,
+              cb,
+              callbackType(cb).params.length === 0
+                ? "scr_http_resp_thunk0"
+                : "scr_http_resp_thunk_res",
+              ["ptr", "ptr"],
+            );
+      const options = hasIdentity ? [a[9]!, a[10]!, a[11]!] : [a[9]!];
+      return finishRuntimeCall(
+        host,
+        e,
+        hasIdentity
+          ? isAgent
+            ? "scr_tls_identity_https_request_agent_tls"
+            : "scr_tls_identity_https_request_tls"
+          : isAgent
+            ? "scr_https_request_agent_sni"
+            : "scr_https_request_sni",
+        [
+          ...a.slice(0, 8),
+          ...caBytes(host, args[8]!),
+          ...options,
+          ...(isAgent ? [a[hasIdentity ? 12 : 10]!] : []),
+          ...handler,
+        ],
+      );
     }
     case "https.requestFn":
     case "https.requestFnCb": {

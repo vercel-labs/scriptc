@@ -14,6 +14,7 @@ import { jsGlobalValueByName } from "./global-values.js";
 import { lowerTupleAliasDecl } from "./typed-arguments.js";
 import {
   islandHandleBinding,
+  islandOwnedBinding,
   lowerIslandExpr,
   isIslandRequireSpec,
   lowerIslandRequireAtStatement,
@@ -1213,8 +1214,10 @@ export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): b
       type = DYN;
     // An island handle binding holds a checked-dynamic value whatever its
     // declared type says: its own declaration lowers as one, and so must
-    // the slot a closure captured first.
-    if (islandHandleBinding(lowerer, decl.name)) type = DYN;
+    // the slot a closure captured first. A value the island owns is the
+    // same story (`const server = app.listen(0)` captured before its
+    // declaration).
+    if (islandHandleBinding(lowerer, decl.name) || islandOwnedBinding(lowerer, decl)) type = DYN;
     if (!TDZ_KINDS.has(type.kind) || isUnitType(type)) return false;
     const name = decl.name.text;
     const count = entry.ctx.localCounters.get(name) ?? 0;
@@ -1534,6 +1537,15 @@ function jsDeclarationExpandsObject(
  * file rides the dyn fallback). Null when no static type can hold the
  * binding. */
 function varBindingType(lowerer: Lowerer, nameNode: ts.Identifier): IrType | null {
+  // `var server = app.listen(0)`: the island owns the value, so its hoisted
+  // slot holds the checked-dynamic handle, the same way a const or let
+  // declaration of it does (islandOwnedBinding).
+  if (
+    ts.isVariableDeclaration(nameNode.parent) &&
+    nameNode.parent.name === nameNode &&
+    islandOwnedBinding(lowerer, nameNode.parent)
+  )
+    return DYN;
   if (
     ts.isVariableDeclaration(nameNode.parent) &&
     isNativeProxyInitializer(lowerer, nameNode.parent.initializer)
@@ -7128,6 +7140,14 @@ export function lowerVarDecl(
   }
 
   if (ts.isIdentifier(decl.name) && islandHandleBinding(lowerer, decl.name)) {
+    const init = lowerer.coerceToExpected(lowerer.lowerExpr(decl.initializer), DYN);
+    const local = lowerer.declareLocal(decl.name, decl.name.text, DYN, isLet);
+    return { kind: "varDecl", localId: local.id, init, loc: locOf(decl) };
+  }
+
+  // `const server = app.listen(...)`: a value the island owns (see
+  // islandOwnedBinding) — the handle, not a native server or record.
+  if (ts.isIdentifier(decl.name) && islandOwnedBinding(lowerer, decl)) {
     const init = lowerer.coerceToExpected(lowerer.lowerExpr(decl.initializer), DYN);
     const local = lowerer.declareLocal(decl.name, decl.name.text, DYN, isLet);
     return { kind: "varDecl", localId: local.id, init, loc: locOf(decl) };

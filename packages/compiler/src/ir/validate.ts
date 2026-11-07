@@ -4760,7 +4760,11 @@ function validateFunction(
       e.fn === "https.requestUrlCb" ||
       e.fn === "http.requestDynCb" ||
       e.fn === "https.requestDynCb" ||
-      e.fn === "https.requestFnDynCb"
+      e.fn === "https.requestFnDynCb" ||
+      e.fn === "https.requestTlsCb" ||
+      e.fn === "https.requestAgentTlsCb" ||
+      e.fn === "https.requestTlsIdCb" ||
+      e.fn === "https.requestAgentTlsIdCb"
     ) {
       // The response listener: void, no params or exactly (res: httpReq).
       const cbT =
@@ -4777,9 +4781,15 @@ function validateFunction(
                     ? 3
                     : e.fn === "http.requestAgentCb"
                       ? 8
-                      : e.fn === "https.requestAgentCb"
+                      : e.fn === "https.requestAgentCb" || e.fn === "https.requestTlsCb"
                         ? 10
-                        : 1
+                        : e.fn === "https.requestAgentTlsCb"
+                          ? 11
+                          : e.fn === "https.requestTlsIdCb"
+                            ? 12
+                            : e.fn === "https.requestAgentTlsIdCb"
+                              ? 13
+                              : 1
         ]?.type;
       let ok = cbT?.kind === "func" && cbT.ret.kind === "void" && cbT.params.length <= 1;
       if (ok && cbT?.kind === "func" && cbT.params.length === 1) {

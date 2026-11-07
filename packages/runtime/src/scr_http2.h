@@ -166,9 +166,6 @@ long scr_http2_live_count(void);
 ScrNetServer *scr_https_create_server(const char *cert, size_t cert_len, const char *key, size_t key_len, ScrClosure *handler /*moves*/, ScrHttpReqFn fn); /* +1 */
 /* The runtime-options-record twin (the tls block's divergence-66 walk). */
 ScrNetServer *scr_https_create_server_dyn(const struct ScrDyn *opts /*borrowed*/, ScrClosure *handler /*moves, nullable*/, ScrHttpReqFn fn); /* +1 or NULL+pending */
-/* https.request's servername option (borrowed), stored for the next
- * https request construction call. */
-void scr_https_set_next_servername(ScrStr *name);
 ScrHttpClientReq *scr_https_request(ScrStr *host /*borrowed*/, double port,
                                      ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
                                      double timeout_ms, ScrArr *header_pairs /*borrowed*/,
@@ -190,6 +187,64 @@ ScrHttpClientReq *scr_https_request_agent(ScrStr *host /*borrowed*/, double port
                                            const char *ca /*borrowed, NULL = none*/, size_t ca_len,
                                            const struct ScrDyn *agent /*borrowed*/,
                                            ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn); /* +1 */
+/* The option-carrying construction calls (options.servername and
+ * options.checkServerIdentity travel as arguments; the identity forms
+ * are declared with the checkServerIdentity hook above). */
+ScrHttpClientReq *scr_https_request_tls(ScrStr *host /*borrowed*/, double port,
+                                        ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
+                                        double timeout_ms, ScrArr *header_pairs /*borrowed*/,
+                                        bool auto_end, bool reject_unauthorized,
+                                        const char *ca /*borrowed, NULL = none*/, size_t ca_len,
+                                        bool has_servername,
+                                        ScrStr *servername /*borrowed, nullable*/,
+                                        const struct ScrDyn *identity /*borrowed, nullable*/,
+                                        ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn); /* +1 */
+ScrHttpClientReq *scr_https_request_sni(ScrStr *host /*borrowed*/, double port,
+                                         ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
+                                         double timeout_ms, ScrArr *header_pairs /*borrowed*/,
+                                         bool auto_end, bool reject_unauthorized,
+                                         const char *ca /*borrowed, NULL = none*/, size_t ca_len,
+                                         ScrStr *servername /*borrowed*/,
+                                         ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn); /* +1 */
+ScrHttpClientReq *scr_https_request_agent_tls(
+    ScrStr *host /*borrowed*/, double port, ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
+    double timeout_ms, ScrArr *header_pairs /*borrowed*/, bool auto_end, bool reject_unauthorized,
+    const char *ca /*borrowed, NULL = none*/, size_t ca_len, bool has_servername,
+    ScrStr *servername /*borrowed, nullable*/, const struct ScrDyn *identity /*borrowed, nullable*/,
+    const struct ScrDyn *agent /*borrowed*/, ScrClosure *cb /*moves, nullable*/,
+    ScrHttpRespFn fn); /* +1 */
+ScrHttpClientReq *scr_https_request_agent_sni(
+    ScrStr *host /*borrowed*/, double port, ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
+    double timeout_ms, ScrArr *header_pairs /*borrowed*/, bool auto_end, bool reject_unauthorized,
+    const char *ca /*borrowed, NULL = none*/, size_t ca_len, ScrStr *servername /*borrowed*/,
+    const struct ScrDyn *agent /*borrowed*/, ScrClosure *cb /*moves, nullable*/,
+    ScrHttpRespFn fn); /* +1 */
+/* options.checkServerIdentity's literal-path entries (scr_tls_identity.c):
+ * they install the PeerCertificate runner, then construct the request
+ * with the function the call carries. */
+ScrHttpClientReq *scr_tls_identity_https_request_tls(
+    ScrStr *host /*borrowed*/, double port, ScrStr *path /*borrowed*/,
+    ScrStr *method /*borrowed*/, double timeout_ms, ScrArr *header_pairs /*borrowed*/,
+    bool auto_end, bool reject_unauthorized, const char *ca /*borrowed, NULL = none*/,
+    size_t ca_len, bool has_servername, ScrStr *servername /*borrowed, nullable*/,
+    const struct ScrDyn *identity /*borrowed*/, ScrClosure *cb /*moves, nullable*/,
+    ScrHttpRespFn fn); /* +1 or NULL+pending */
+ScrHttpClientReq *scr_tls_identity_https_request_agent_tls(
+    ScrStr *host /*borrowed*/, double port, ScrStr *path /*borrowed*/,
+    ScrStr *method /*borrowed*/, double timeout_ms, ScrArr *header_pairs /*borrowed*/,
+    bool auto_end, bool reject_unauthorized, const char *ca /*borrowed, NULL = none*/,
+    size_t ca_len, bool has_servername, ScrStr *servername /*borrowed, nullable*/,
+    const struct ScrDyn *identity /*borrowed*/, const struct ScrDyn *agent /*borrowed*/,
+    ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn); /* +1 or NULL+pending */
+/* The runtime options walks with options.checkServerIdentity accepted
+ * (scr_tls_identity.c): the https.request walk and its URL+options twin. */
+ScrHttpClientReq *scr_tls_identity_https_request(
+    const struct ScrDyn *opts /*borrowed*/, bool auto_end, ScrClosure *cb /*moves, nullable*/,
+    ScrHttpRespFn fn, ScrDyn *(*add_abort)(ScrDyn *signal, ScrDyn *listener));
+ScrHttpClientReq *scr_tls_identity_https_request_url(
+    const ScrStr *url /*borrowed*/, const struct ScrDyn *opts /*borrowed*/, bool auto_end,
+    ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn,
+    ScrDyn *(*add_abort)(ScrDyn *signal, ScrDyn *listener));
 /* The fetch unit's https leg (defined in scr_tls.c): a client transport
  * context (SNI/verify against the URL hostname — the DIALED address may
  * be a resolved IP) plus the wrap hook scr_http_request_ex installs on

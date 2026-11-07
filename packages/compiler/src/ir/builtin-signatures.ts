@@ -2470,10 +2470,6 @@ function buildLibFnSignatures() {
      * carry no Agent value). MAY THROW ERR_INVALID_PROTOCOL. */
     "http.clientProtocolCheck": { argTypes: [DYN, BOOL], result: VOID },
     "http.clientProtocolCheckAgent": { argTypes: [DYN, BOOL, DYN], result: VOID },
-    /** https.request's servername option, stored for the construction call
-     * that follows: the TLS name sent and verified, and part of the pooled
-     * socket key. The "https." prefix keeps the TLS unit linked. */
-    "https.nextServername": { argTypes: [STRING], result: VOID },
     /** The maxHeaderSize option of createServer / http.request: Node's
      * validateInteger (ERR_OUT_OF_RANGE) then the header size bound.
      * MAY THROW. */
@@ -2521,6 +2517,121 @@ function buildLibFnSignatures() {
     "http.requestUrlDynCb": { argTypes: [STRING, DYN, BOOL, null], result: HTTPCLIENTREQ_T },
     "https.requestUrlDyn": { argTypes: [STRING, DYN, BOOL], result: HTTPCLIENTREQ_T },
     "https.requestUrlDynCb": { argTypes: [STRING, DYN, BOOL, null], result: HTTPCLIENTREQ_T },
+    /** The literal options form's option-carrying rows: https.request's
+     * shape with the request's servername as a trailing argument
+     * (requestTls), and with options.checkServerIdentity too
+     * (requestTlsId — the compiler selects that pair for a literal
+     * naming the option, which links the PeerCertificate builder). The
+     * options belong to the call, so building one request while another
+     * request's options evaluate keeps each request its own. */
+    "https.requestTls": {
+      argTypes: [STRING, F64, STRING, STRING, F64, arrayOf(STRING), BOOL, BOOL, null, STRING],
+      result: HTTPCLIENTREQ_T,
+    },
+    "https.requestTlsCb": {
+      argTypes: [STRING, F64, STRING, STRING, F64, arrayOf(STRING), BOOL, BOOL, null, STRING, null],
+      result: HTTPCLIENTREQ_T,
+    },
+    "https.requestAgentTls": {
+      argTypes: [STRING, F64, STRING, STRING, F64, arrayOf(STRING), BOOL, BOOL, null, STRING, DYN],
+      result: HTTPCLIENTREQ_T,
+    },
+    "https.requestAgentTlsCb": {
+      argTypes: [
+        STRING,
+        F64,
+        STRING,
+        STRING,
+        F64,
+        arrayOf(STRING),
+        BOOL,
+        BOOL,
+        null,
+        STRING,
+        DYN,
+        null,
+      ],
+      result: HTTPCLIENTREQ_T,
+    },
+    "https.requestTlsId": {
+      argTypes: [
+        STRING,
+        F64,
+        STRING,
+        STRING,
+        F64,
+        arrayOf(STRING),
+        BOOL,
+        BOOL,
+        null,
+        BOOL,
+        STRING,
+        DYN,
+      ],
+      result: HTTPCLIENTREQ_T,
+    },
+    "https.requestTlsIdCb": {
+      argTypes: [
+        STRING,
+        F64,
+        STRING,
+        STRING,
+        F64,
+        arrayOf(STRING),
+        BOOL,
+        BOOL,
+        null,
+        BOOL,
+        STRING,
+        DYN,
+        null,
+      ],
+      result: HTTPCLIENTREQ_T,
+    },
+    "https.requestAgentTlsId": {
+      argTypes: [
+        STRING,
+        F64,
+        STRING,
+        STRING,
+        F64,
+        arrayOf(STRING),
+        BOOL,
+        BOOL,
+        null,
+        BOOL,
+        STRING,
+        DYN,
+        DYN,
+      ],
+      result: HTTPCLIENTREQ_T,
+    },
+    "https.requestAgentTlsIdCb": {
+      argTypes: [
+        STRING,
+        F64,
+        STRING,
+        STRING,
+        F64,
+        arrayOf(STRING),
+        BOOL,
+        BOOL,
+        null,
+        BOOL,
+        STRING,
+        DYN,
+        DYN,
+        null,
+      ],
+      result: HTTPCLIENTREQ_T,
+    },
+    /** The checkServerIdentity forms of the https option walks: the
+     * compiler selects them when the source names the option, which links
+     * the PeerCertificate builder. */
+    "https.requestDynId": { argTypes: [DYN, BOOL], result: HTTPCLIENTREQ_T },
+    "https.requestDynIdCb": { argTypes: [DYN, BOOL, null], result: HTTPCLIENTREQ_T },
+    "https.requestUrlDynId": { argTypes: [STRING, DYN, BOOL], result: HTTPCLIENTREQ_T },
+    "https.requestUrlDynIdCb": { argTypes: [STRING, DYN, BOOL, null], result: HTTPCLIENTREQ_T },
     /** The paused-mode demux surface (portless's first-byte TLS peek:
      * once('readable') + read(1) + unshift + emit('connection')).
      * sockOnReadable registers a zero-param listener (a consumer: arrived
@@ -2674,6 +2785,11 @@ function buildLibFnSignatures() {
      * callback fires post-handshake — Node's secureConnect timing. */
     "tls.connect": { argTypes: [F64, STRING, DYN], result: NETSOCKET_T },
     "tls.connectCb": { argTypes: [F64, STRING, DYN, null], result: NETSOCKET_T },
+    /** The checkServerIdentity forms: the same walk with the option
+     * accepted, linking the unit that builds the PeerCertificate it
+     * receives. */
+    "tls.connectId": { argTypes: [F64, STRING, DYN], result: NETSOCKET_T },
+    "tls.connectIdCb": { argTypes: [F64, STRING, DYN, null], result: NETSOCKET_T },
     // The TLSSocket member surface (authError's `string | null` union is
     // shape-checked in the special cases in validate.ts — the reqHeader pattern).
     /** The TLSSocket member surface on the socket kind: authorized (bool —

@@ -1,0 +1,1 @@
+{ "name": "island-server-handle-forms", "private": true, "type": "module", "scriptc": { "packages": { "server-pkg": "node" } } }

@@ -261,6 +261,10 @@ const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.requestUrlDynCb",
   "https.requestUrlDyn",
   "https.requestUrlDynCb",
+  "https.requestDynId",
+  "https.requestDynIdCb",
+  "https.requestUrlDynId",
+  "https.requestUrlDynIdCb",
   "rl.createSignal",
   "rl.questionAsyncSignal",
   "sp.finishedOptsSignal",
@@ -1959,6 +1963,18 @@ const RUNTIME_FEATURE_RULES = {
       // getPeerCertificate and getCertificate build with scr_x509.c too.
       "tls.sockGetPeerCertificate",
       "tls.sockGetCertificate",
+      // options.checkServerIdentity's PeerCertificate argument: the
+      // lowered forms select scr_tls_identity.c, which builds it here.
+      "https.requestTlsId",
+      "https.requestTlsIdCb",
+      "https.requestAgentTlsId",
+      "https.requestAgentTlsIdCb",
+      "tls.connectId",
+      "tls.connectIdCb",
+      "https.requestDynId",
+      "https.requestDynIdCb",
+      "https.requestUrlDynId",
+      "https.requestUrlDynIdCb",
     ],
   }),
   /** writeFile's `flag` disposition ("w" / "wx") and copyFile's mode

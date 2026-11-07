@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/https-check-server-identity.ts"
+ ],
+ "diags": []
+}

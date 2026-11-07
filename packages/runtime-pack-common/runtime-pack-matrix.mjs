@@ -268,6 +268,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_x509.c", "x509"],
   // The TLS socket certificate accessors read scr_tls.c and build with scr_x509.c.
   ["scr_tls_x509.c", all("tlsEffective", "x509")],
+  // options.checkServerIdentity's runner builds the same PeerCertificate.
+  ["scr_tls_identity.c", all("tlsEffective", "x509")],
   // WebCrypto's AES ciphers run over the cipher feature's mbedTLS archive.
   ["scr_webcrypto_aes.c", all("cipher", "webcrypto")],
   ["scr_abort.c", "abortSignalOnly"],

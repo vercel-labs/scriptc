@@ -3,7 +3,11 @@ import { isIslandSubclassDecl } from "../../node-islands/boundary.js";
 import { globalValuesInstall, installsGlobalValues } from "./global-values.js";
 import type { TypeFailureSlot } from "../../diagnostics/diagnostic.js";
 import { THREADS_MODULE } from "../threads-import.js";
-import { collectIslandImport, collectIslandRequires } from "./lower-node-island.js";
+import {
+  collectIslandImport,
+  collectIslandRequires,
+  islandOwnedBinding,
+} from "./lower-node-island.js";
 import { staticString } from "./builtins/module-resolution.js";
 import { NODE_API_MODULE } from "../node-api-import.js";
 import { positionTag } from "./structural-positions.js";
@@ -2745,6 +2749,7 @@ export function collectGlobals(
             ts.isIdentifier(decl.name) && nameNode === decl.name
               ? ((isNativeProxyInitializer(lowerer, decl.initializer) ? DYN : null) ??
                 staticImportNamespaceType(lowerer, decl.initializer) ??
+                (islandOwnedBinding(lowerer, decl) ? DYN : null) ??
                 null)
               : null;
           // JavaScript factory results with unmappable annotations still

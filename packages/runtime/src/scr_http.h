@@ -448,6 +448,18 @@ ScrHttpClientReq *scr_https_request_url_dyn(ScrStr *url /*borrowed*/,
                                             const ScrDyn *opts /*borrowed*/, bool auto_end,
                                             ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn,
                                             ScrDyn *(*add_abort)(ScrDyn *signal, ScrDyn *listener)); /* +1 */
+/* The same walks with options.checkServerIdentity accepted (the compiler
+ * picks them for a literal that names the option, which links
+ * scr_tls_identity.c). The plain walks keep their fence. */
+ScrHttpClientReq *scr_https_request_dyn_impl(const ScrDyn *opts /*borrowed*/, bool auto_end,
+                                             ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn,
+                                             ScrDyn *(*add_abort)(ScrDyn *signal, ScrDyn *listener),
+                                             bool identity_ok); /* +1 or NULL+pending */
+ScrHttpClientReq *scr_https_request_url_dyn_impl(const ScrStr *url /*borrowed*/,
+                                                 const ScrDyn *opts /*borrowed*/, bool auto_end,
+                                                 ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn,
+                                                 ScrDyn *(*add_abort)(ScrDyn *signal, ScrDyn *listener),
+                                                 bool identity_ok); /* +1 or NULL+pending */
 #ifdef SCR_RC_AUDIT
 long scr_http_live_count(void);
 #endif

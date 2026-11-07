@@ -60,6 +60,7 @@ import {
   TLS_SERVER_DOCUMENTED_OPTIONS,
 } from "./surfaces.js";
 import { conditionalSpreadOf, lowerDynObjectLiteral } from "./expressions/object-literals.js";
+import { islandOwnedBinding, islandOwnedValue } from "./lower-node-island.js";
 import { resultIsDiscarded } from "./call-position.js";
 import { lowerCallbackArg as lowerCallbackArgShared } from "./callback-arg.js";
 import { pairsSnapshotHelper } from "./pairs-snapshot.js";
@@ -378,6 +379,39 @@ function coerceToHandle(lowerer: Lowerer, node: ts.Expression, want: IrType): Ir
     return { kind: "dynCheck", value: recv, type: want, loc: locOf(node) };
   }
   return recv;
+}
+
+/** Whether the receiver is the checked-dynamic value a binding took from
+ * an island (`const server = app.listen(...)`). The declared type can
+ * still name a Node handle, but the value is generally the ISLAND's
+ * object — the island's http.Server, whose listening socket no native
+ * handle stands for — so its member surface dispatches at run time into
+ * the handle (lowerDynReceiverMethodCall) instead of the static one.
+ *
+ * A native handle held in a checked slot keeps the static surface: its
+ * argument conversions honour Node's shapes (writeHead's header object,
+ * setHeader's name and value), which the generic dispatch cannot. Only a
+ * value the island produced needs the run-time route, and
+ * islandOwnedBinding names exactly those bindings.
+ *
+ * A receiver no binding names — `httpServer(() => {}).address()`, the
+ * factory's result used in place — is the island's server just the same,
+ * so the expression form of the same rule decides. */
+function dynStoredReceiver(lowerer: Lowerer, node: ts.Expression): boolean {
+  let e: ts.Expression = node;
+  while (
+    ts.isParenthesizedExpression(e) ||
+    ts.isAsExpression(e) ||
+    ts.isNonNullExpression(e) ||
+    ts.isSatisfiesExpression(e)
+  )
+    e = e.expression;
+  if (!ts.isIdentifier(e)) return islandOwnedValue(lowerer, e);
+  const stored = lowerer.peekLocal(e)?.type ?? lowerer.globalOf(e)?.type;
+  if (stored === undefined || stored.kind !== "dyn") return false;
+  const symbol = lowerer.resolveValueSymbol(e) ?? lowerer.checker.getSymbolAtLocation(e);
+  const decl = symbol?.valueDeclaration;
+  return decl !== undefined && ts.isVariableDeclaration(decl) && islandOwnedBinding(lowerer, decl);
 }
 
 /** Statements that build a header record `out` (a pre-declared local of
@@ -3346,6 +3380,7 @@ export function lowerServerMethodCall(
 ): IrExpr | null {
   if (call.questionDotToken || (access.questionDotToken && !lowerer.chainHandled.has(access)))
     return null;
+  if (dynStoredReceiver(lowerer, access.expression)) return null;
   return (
     lowerServerCloseBind(lowerer, call, access) ??
     lowerNetServerMethodCall(lowerer, call, access) ??
@@ -3967,6 +4002,7 @@ export function lowerServerProperty(
   expr: ts.PropertyAccessExpression,
 ): IrExpr | null {
   if (expr.questionDotToken && !lowerer.chainHandled.has(expr)) return null;
+  if (dynStoredReceiver(lowerer, expr.expression)) return null;
   const loc = locOf(expr);
   // req.url / req.method — always-present strings on server requests;
   // req.headers.NAME — the `string | undefined` union (envGet's type).
@@ -5567,15 +5603,18 @@ function lowerTlsConnectCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Src
   if (
     literal !== null &&
     ts.isObjectLiteralExpression(literal) &&
-    literal.properties.nodes.some(
+    (literal.properties.nodes.some(
       (p) =>
         (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) &&
         ts.isIdentifier(p.name) &&
         p.name.text === "socket",
-    )
+    ) ||
+      literalNamesIdentity(literal))
   ) {
-    // A socket member is a handle the record form cannot box: the literal
-    // builds the checked-dynamic object member by member.
+    // A socket member is a handle the record form cannot box, and a
+    // checkServerIdentity member's declared function type has no record
+    // field lowering: the literal builds the checked-dynamic object member
+    // by member, which the runtime walk reads.
     opts = lowerDynObjectLiteral(lowerer, literal);
   } else if (optsNode !== null) {
     const o = lowerer.lowerExpr(optsNode);
@@ -5620,9 +5659,25 @@ function lowerTlsConnectCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Src
     );
     cb = r.cb;
   }
+  // A literal naming checkServerIdentity takes the identity-capable entry
+  // point (scr_tls_identity.c's), whose walk lowers the option; a record
+  // value that may carry it keeps the catchable runtime fence.
+  const identityOpt = literal !== null && literalNamesIdentity(literal);
   return cb !== null
-    ? { kind: "libCall", fn: "tls.connectCb", args: [port, host, opts, cb], type: NETSOCKET_T, loc }
-    : { kind: "libCall", fn: "tls.connect", args: [port, host, opts], type: NETSOCKET_T, loc };
+    ? {
+        kind: "libCall",
+        fn: identityOpt ? "tls.connectIdCb" : "tls.connectCb",
+        args: [port, host, opts, cb],
+        type: NETSOCKET_T,
+        loc,
+      }
+    : {
+        kind: "libCall",
+        fn: identityOpt ? "tls.connectId" : "tls.connect",
+        args: [port, host, opts],
+        type: NETSOCKET_T,
+        loc,
+      };
 }
 
 /** Module-function calls on tls import bindings: createServer(options[,
@@ -6877,6 +6932,22 @@ function runtimeRequestOptions(
   return lowerer.coerceToExpected(lowerer.lowerExpr(optsNode), DYN);
 }
 
+/** Whether an options argument is a literal that names checkServerIdentity.
+ * The runtime request walk reads the member, and a request whose literal
+ * names it takes the identity-capable entry point (scr_tls_identity.c's),
+ * which lowers the option instead of fencing it. A value the literal
+ * spreads can carry the key too, but the walk cannot know before it runs,
+ * so it keeps the catchable runtime fence. */
+function literalNamesIdentity(node: ts.Expression): boolean {
+  if (!ts.isObjectLiteralExpression(node)) return false;
+  return node.properties.nodes.some(
+    (prop) =>
+      (ts.isPropertyAssignment(prop) || ts.isShorthandPropertyAssignment(prop)) &&
+      (ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name)) &&
+      prop.name.text === "checkServerIdentity",
+  );
+}
+
 /** Whether the second argument of a URL-form client call is the response
  * callback rather than an options value: a function literal, or a value
  * whose type is a function. Node's overloads disambiguate the same way —
@@ -7002,6 +7073,7 @@ function lowerHttpClientCall(
     // travels with the walk so the dial follows the same runtime choice.
     const autoEnd = boolLit(member === "get", loc);
     const secureDyn = secure === true;
+    const identityDyn = secureDyn && literalNamesIdentity(optsNode);
     const call = (cb: IrExpr | null): IrExpr => {
       if (binding !== null) {
         const secureArg = secureExpr();
@@ -7019,7 +7091,11 @@ function lowerHttpClientCall(
       if (cb === null) {
         return {
           kind: "libCall",
-          fn: secureDyn ? "https.requestDyn" : "http.requestDyn",
+          fn: identityDyn
+            ? "https.requestDynId"
+            : secureDyn
+              ? "https.requestDyn"
+              : "http.requestDyn",
           args: [runtimeOptions, autoEnd],
           type: HTTPCLIENTREQ_T,
           loc,
@@ -7027,7 +7103,11 @@ function lowerHttpClientCall(
       }
       return {
         kind: "libCall",
-        fn: secureDyn ? "https.requestDynCb" : "http.requestDynCb",
+        fn: identityDyn
+          ? "https.requestDynIdCb"
+          : secureDyn
+            ? "https.requestDynCb"
+            : "http.requestDynCb",
         args: [runtimeOptions, autoEnd, cb],
         type: HTTPCLIENTREQ_T,
         loc,
@@ -7087,8 +7167,13 @@ function lowerHttpClientCall(
       }
       if (urlOpts !== null) {
         const dynOpts = lowerUrlFormOptions(lowerer, urlOpts);
+        const identityDyn = isTls && literalNamesIdentity(urlOpts);
         if (cbNode === null) {
-          const fn = isTls ? ("https.requestUrlDyn" as const) : ("http.requestUrlDyn" as const);
+          const fn = identityDyn
+            ? ("https.requestUrlDynId" as const)
+            : isTls
+              ? ("https.requestUrlDyn" as const)
+              : ("http.requestUrlDyn" as const);
           return {
             kind: "libCall",
             fn,
@@ -7106,7 +7191,11 @@ function lowerHttpClientCall(
           "use (res) or ()",
           [HTTPREQ_T],
         );
-        const fn = isTls ? ("https.requestUrlDynCb" as const) : ("http.requestUrlDynCb" as const);
+        const fn = identityDyn
+          ? ("https.requestUrlDynIdCb" as const)
+          : isTls
+            ? ("https.requestUrlDynCb" as const)
+            : ("http.requestUrlDynCb" as const);
         return {
           kind: "libCall",
           fn,
@@ -7166,6 +7255,9 @@ function lowerHttpClientCall(
   let signal: IrExpr | null = null;
   /** servername: the TLS name for SNI and certificate verification. */
   let servername: IrExpr | null = null;
+  /** checkServerIdentity: the caller's own identity check, a function the
+   * TLS client runs over the peer certificate once the chain verifies. */
+  let identity: IrExpr | null = null;
   /** maxHeaderSize: the response head's size bound. */
   let maxHeaderSize: IrExpr | null = null;
   /** protocol: the scheme the request claims. It dials nothing; Node
@@ -7303,6 +7395,51 @@ function lowerHttpClientCall(
         }
         servername = lowerVal("string");
         break;
+      case "checkServerIdentity": {
+        if (binding !== null) {
+          lowerer.noLowering(
+            `${member} option 'checkServerIdentity' through a module-function binding`,
+            prop,
+            "call https.request directly when passing checkServerIdentity",
+          );
+        }
+        if (!secureish) {
+          lowerer.noLowering(
+            `${member} option 'checkServerIdentity'`,
+            prop,
+            "checkServerIdentity is an https.request option — the plain http client has no TLS layer",
+          );
+        }
+        const v =
+          initializer !== null
+            ? lowerer.lowerExpr(initializer)
+            : lowerer.lowerShorthandValue(prop as ts.ShorthandPropertyAssignment);
+        // The runtime calls the function through the checked-dynamic
+        // boundary: a dyn function passes as is; a typed one boxes with
+        // per-argument checks (the certificate argument arrives as the
+        // checked-dynamic PeerCertificate record). Anything else is a
+        // value the runtime's function check refuses with Node's
+        // ERR_INVALID_ARG_TYPE, so it converts like any dyn slot.
+        if (v.type.kind === "func") {
+          if (
+            !canBoxFuncIntoDyn(
+              v.type,
+              (id) => lowerer.shapes.get(id),
+              (id) => lowerer.unions.get(id),
+            )
+          ) {
+            lowerer.noLowering(
+              `a ${member} 'checkServerIdentity' callback whose parameters cannot cross the checked-dynamic boundary`,
+              prop,
+              "the certificate arrives as the checked-dynamic PeerCertificate — use the parameters' own types, or read what the check needs off the certificate",
+            );
+          }
+          identity = { kind: "dynFrom", value: v, type: DYN, loc: locOf(prop) };
+        } else {
+          identity = lowerer.coerceToExpected(v, DYN);
+        }
+        break;
+      }
       case "signal": {
         const v =
           initializer !== null
@@ -7469,7 +7606,7 @@ function lowerHttpClientCall(
           member,
           secureish ? HTTPS_CLIENT_DOCUMENTED_OPTIONS : HTTP_CLIENT_DOCUMENTED_OPTIONS,
           secureish
-            ? "hostname/host, port, path, method, timeout, headers, agent, signal, maxHeaderSize, protocol, rejectUnauthorized, ca, and servername are the supported options"
+            ? "hostname/host, port, path, method, timeout, headers, agent, signal, maxHeaderSize, protocol, rejectUnauthorized, ca, servername, and checkServerIdentity are the supported options"
             : "hostname/host, port, path, method, timeout, headers, agent, signal, maxHeaderSize, and protocol are the supported options",
         );
     }
@@ -7574,7 +7711,13 @@ function lowerHttpClientCall(
   // built request (an already aborted signal destroys it at once, like
   // Node's constructor).
   const withSignal = (request: IrExpr): IrExpr => {
-    if (signal === null && servername === null && maxHeaderSize === null && protocol === null)
+    if (
+      signal === null &&
+      servername === null &&
+      identity === null &&
+      maxHeaderSize === null &&
+      protocol === null
+    )
       return request;
     const local = lowerer.declareHiddenLocal("%requestOptions", HTTPCLIENTREQ_T);
     const ref = (): IrExpr => varRef(local.id, HTTPCLIENTREQ_T, loc);
@@ -7628,19 +7771,10 @@ function lowerHttpClientCall(
         loc,
       });
     }
-    if (servername !== null) {
-      steps.push({
-        kind: "exprStmt",
-        expr: {
-          kind: "libCall",
-          fn: "https.nextServername",
-          args: [servername],
-          type: VOID,
-          loc,
-        },
-        loc,
-      });
-    }
+    // options.servername and options.checkServerIdentity travel to the
+    // construction call as arguments (the call below), never through
+    // stored state: an options value that builds another https request
+    // while this one is being constructed keeps each request its own.
     steps.push({ kind: "varDecl", localId: local.id, init: request, loc });
     if (maxHeaderSize !== null) {
       steps.push({
@@ -7703,6 +7837,15 @@ function lowerHttpClientCall(
     reject ??= boolLit(true, loc); /* Node's default: verify */
     ca ??= strLit("", loc); /* none: /etc/ssl/cert.pem stands in for Node's roots */
     base.push(reject, ca);
+    if (identity !== null) {
+      // The checkServerIdentity form: the function (validated by the
+      // runtime call) and, whether the request also carries one, the
+      // servername — the option expects a string, and the flag says
+      // whether a name was given (absent leaves the host as the TLS name).
+      base.push(boolLit(servername !== null, loc), servername ?? strLit("", loc), identity);
+    } else if (servername !== null) {
+      base.push(servername);
+    }
   }
   if (agentVal !== null) base.push(agentVal);
   if (binding !== null) base.unshift(secureExpr());
@@ -7712,8 +7855,16 @@ function lowerHttpClientCall(
         ? "https.requestFn"
         : secure === true
           ? agentVal !== null
-            ? "https.requestAgent"
-            : "https.request"
+            ? identity !== null
+              ? "https.requestAgentTlsId"
+              : servername !== null
+                ? "https.requestAgentTls"
+                : "https.requestAgent"
+            : identity !== null
+              ? "https.requestTlsId"
+              : servername !== null
+                ? "https.requestTls"
+                : "https.request"
           : agentVal !== null
             ? "http.requestAgent"
             : "http.request";
@@ -7733,8 +7884,16 @@ function lowerHttpClientCall(
       ? "https.requestFnCb"
       : secure === true
         ? agentVal !== null
-          ? "https.requestAgentCb"
-          : "https.requestCb"
+          ? identity !== null
+            ? "https.requestAgentTlsIdCb"
+            : servername !== null
+              ? "https.requestAgentTlsCb"
+              : "https.requestAgentCb"
+          : identity !== null
+            ? "https.requestTlsIdCb"
+            : servername !== null
+              ? "https.requestTlsCb"
+              : "https.requestCb"
         : agentVal !== null
           ? "http.requestAgentCb"
           : "http.requestCb";

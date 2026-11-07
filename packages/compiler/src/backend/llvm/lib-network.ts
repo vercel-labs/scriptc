@@ -27,6 +27,14 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
       "https.createServerDynCb",
       "https.requestAgent",
       "https.requestAgentCb",
+      "https.requestTls",
+      "https.requestTlsCb",
+      "https.requestAgentTls",
+      "https.requestAgentTlsCb",
+      "https.requestTlsId",
+      "https.requestTlsIdCb",
+      "https.requestAgentTlsId",
+      "https.requestAgentTlsIdCb",
       "https.requestFn",
       "https.requestFnCb",
     ].includes(e.fn)
@@ -94,7 +102,11 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     e.fn === "http.requestUrlDyn" ||
     e.fn === "http.requestUrlDynCb" ||
     e.fn === "https.requestUrlDyn" ||
-    e.fn === "https.requestUrlDynCb"
+    e.fn === "https.requestUrlDynCb" ||
+    e.fn === "https.requestDynId" ||
+    e.fn === "https.requestDynIdCb" ||
+    e.fn === "https.requestUrlDynId" ||
+    e.fn === "https.requestUrlDynIdCb"
   ) {
     // [options, autoEnd(, cb)] — [url, options, autoEnd(, cb)] for the
     // URL+options form: the runtime walks the options record (after merging
@@ -117,13 +129,18 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
             ["ptr", "ptr"],
           );
     host.declare(`declare ptr @scr_events_add_abort_listener(ptr, ptr)`);
-    const entry = e.fn.startsWith("https.")
+    const identity = e.fn.includes("DynId");
+    const entry = identity
       ? isUrl
-        ? "scr_https_request_url_dyn"
-        : "scr_https_request_dyn"
-      : isUrl
-        ? "scr_http_request_url_dyn"
-        : "scr_http_request_dyn";
+        ? "scr_tls_identity_https_request_url"
+        : "scr_tls_identity_https_request"
+      : e.fn.startsWith("https.")
+        ? isUrl
+          ? "scr_https_request_url_dyn"
+          : "scr_https_request_dyn"
+        : isUrl
+          ? "scr_http_request_url_dyn"
+          : "scr_http_request_dyn";
     return finishRuntimeCall(host, e, entry, [
       abiValue(host, args[0]!),
       abiValue(host, args[1]!),

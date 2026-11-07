@@ -596,6 +596,10 @@ typedef struct ScrTlsCli {
   mbedtls_x509_crt ca;
   char *hostname;    /* the SNI name; NULL sends none (an IP literal, servername: "") */
   char *verify_name; /* the name the leaf is checked against; NULL fails the check */
+  /* the name options.checkServerIdentity is handed (Node's
+   * getSessionServerIdentity: the Agent's normalized servername, which
+   * an explicit Host header can change); NULL means verify_name */
+  char *identity_name;
   /* true when the handshake RECORDS verification (VERIFY_OPTIONAL /
    * VERIFY_REQUIRED) — socket.authorized answers from the result; a
    * VERIFY_NONE socket (the https client's rejectUnauthorized:false)
@@ -614,6 +618,12 @@ typedef struct ScrTlsCli {
   bool has_own;
   mbedtls_x509_crt own;
   mbedtls_pk_context own_pk;
+  /* options.checkServerIdentity (+1; NULL = the built-in name check). The
+   * user's function replaces the identity check but not chain
+   * verification, Node's split: it is called with (servername, peer
+   * certificate) once the handshake stands and a defined answer fails the
+   * connection with that error. */
+  ScrDyn *identity_fn;
 } ScrTlsCli;
 
 /* The default trust anchors when no `ca` option is given: the host trust
@@ -745,6 +755,31 @@ static ScrTlsCli *scr_tls_cli_new2(ScrStr *host, bool reject_unauthorized, const
   return c;
 }
 
+/* options.checkServerIdentity: the user's identity verifier (+1), with
+ * the name it is handed (borrowed; NULL keeps verify_name, which is what
+ * tls.connect passes: its servername-or-host). A rejectUnauthorized:
+ * false client still records the chain verdict in Node — the identity
+ * check runs only beside a verified chain, and authorizationError reports
+ * the chain when it fails — so the config verifies in OPTIONAL mode from
+ * here. */
+static void scr_tls_cli_set_identity(ScrTlsCli *c, const ScrDyn *fn, const ScrStr *name) {
+  free(c->identity_name);
+  c->identity_name = NULL;
+  if (name != NULL) {
+    c->identity_name = malloc(name->len + 1);
+    if (!c->identity_name) scr_tls_oom();
+    memcpy(c->identity_name, name->data, name->len);
+    c->identity_name[name->len] = '\0';
+  }
+  scr_dyn_release(c->identity_fn);
+  c->identity_fn = scr_dyn_retain(fn);
+  if (c->identity_fn != NULL && !c->reject && !c->verify_recorded) {
+    c->verify_recorded = true;
+    mbedtls_ssl_conf_authmode(&c->conf, MBEDTLS_SSL_VERIFY_OPTIONAL);
+    mbedtls_ssl_conf_ca_chain(&c->conf, c->has_ca ? &c->ca : scr_tls_system_ca(), NULL);
+  }
+}
+
 /* The servername option: a non-empty name is both the SNI name and the
  * verified name; "" sends no SNI and keeps the host as the verified name,
  * as in Node. */
@@ -771,12 +806,14 @@ static ScrTlsCli *scr_tls_cli_new(ScrStr *host, bool reject_unauthorized, const 
 
 static void scr_tls_cli_free(ScrTlsCli *c) {
   mbedtls_ssl_config_free(&c->conf);
+  scr_dyn_release(c->identity_fn);
   scr_tls_alpn_free(c->alpn);
   mbedtls_x509_crt_free(&c->ca);
   mbedtls_x509_crt_free(&c->own);
   mbedtls_pk_free(&c->own_pk);
   free(c->hostname);
   free(c->verify_name);
+  free(c->identity_name);
   free(c);
 }
 
@@ -850,6 +887,10 @@ typedef struct ScrTlsSock {
   /* a client whose verification failed: like Node's, it closes without
    * sending the alert, so later writes are dropped */
   bool quiet_failure;
+  /* options.checkServerIdentity answered an error beside
+   * rejectUnauthorized: false: the connection stands, with Node's
+   * authorizationError text (verifyError.code || verifyError.message). */
+  ScrStr *identity_error;
   /* the served context's chain completed from the server's ca */
   mbedtls_x509_crt served_chain;
   /* what the handshake's last step and the established callbacks write:
@@ -892,7 +933,14 @@ static bool scr_tls_leaf_has_ip(const mbedtls_x509_crt *crt, const char *ip) {
  * a mismatch. */
 static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t *flags) {
   ScrTlsSock *t = (ScrTlsSock *)ctx;
-  if (depth == 0 && t->cli != NULL && t->cli->hostname == NULL) {
+  if (depth == 0 && t->cli != NULL && t->cli->identity_fn != NULL) {
+    /* a custom checkServerIdentity owns the identity verdict: the chain
+     * still verifies, the name does not (Node calls the user's function
+     * after OpenSSL's chain verification and never its own name check). */
+    *flags &= ~MBEDTLS_X509_BADCERT_CN_MISMATCH;
+  }
+  if (depth == 0 && t->cli != NULL && t->cli->hostname == NULL &&
+      t->cli->identity_fn == NULL) {
     const char *name = t->cli->verify_name;
     if (name == NULL || name[0] == '\0') {
       *flags |= MBEDTLS_X509_BADCERT_CN_MISMATCH;
@@ -1531,6 +1579,12 @@ static void scr_tls_hold_until_immediate(ScrTlsSock *t) {
   (void)scr_set_immediate(cb);
 }
 
+/* scr_tls_identity.c's runner: it builds the PeerCertificate and calls
+ * the user's function, and is absent from programs that link no identity
+ * support (the hook stays NULL and no client config carries the
+ * function). */
+static SCR_TL ScrDyn *(*scr_tls_identity_runner)(ScrNetSocket *, ScrDyn *, const char *);
+
 static int scr_tls_handshake(void *tctx) {
   ScrTlsSock *t = (ScrTlsSock *)tctx;
   if (t->cli != NULL && t->cli->no_protocols) {
@@ -1553,6 +1607,53 @@ static int scr_tls_handshake(void *tctx) {
               : mbedtls_ssl_handshake(&t->ssl);
   scr_tls_current = NULL;
   if (r == 0) {
+    /* Node's onConnectSecure runs options.checkServerIdentity beside a
+     * VERIFIED chain (a chain error dominates the identity check, and is
+     * left to authorizationError); a truthy answer is the failure. */
+    if (t->srv == NULL && t->cli != NULL && t->cli->identity_fn != NULL &&
+        mbedtls_ssl_get_verify_result(&t->ssl) == 0 && scr_tls_identity_runner != NULL) {
+      /* The certificate accessors read the peer chain only once the
+       * handshake has stood: it has, so the PeerCertificate argument can
+       * be built here, ahead of on_established. */
+      t->established = true;
+      ScrDyn *answer = scr_tls_identity_runner(
+          t->sock, t->cli->identity_fn,
+          t->cli->identity_name != NULL ? t->cli->identity_name : t->cli->verify_name);
+      if (scr_exc_pending()) return -1; /* the user's function threw */
+      if (answer != NULL && scr_dyn_truthy(answer)) {
+        ScrError *err = scr_error_from_dyn(answer);
+        /* Node reads verifyError.code || verifyError.message off the answer
+         * itself. A program class instance arrives as a typed capsule, so
+         * the read goes through its materialized view (the fields a generic
+         * property read sees). */
+        ScrDyn *view = answer->kind == SCR_DYN_TYPED_REF ? scr_dyn_visit_view(answer) : NULL;
+        ScrDyn *code = scr_dyn_obj_read(view != NULL ? view : answer, "code", 4);
+        if (scr_exc_pending()) {
+          scr_dyn_release(code);
+          scr_dyn_release(view);
+          scr_error_release(err);
+          scr_dyn_release(answer);
+          return -1;
+        }
+        const ScrStr *text;
+        if (code != NULL && code->kind == SCR_DYN_STR && code->v.str->len > 0) {
+          text = code->v.str;
+        } else {
+          text = err->code != NULL ? err->code : err->message;
+        }
+        scr_str_release(t->identity_error);
+        t->identity_error = scr_str_new(text != NULL ? text->data : "", text != NULL ? text->len : 0);
+        scr_dyn_release(code);
+        scr_dyn_release(view);
+        if (t->cli->reject) {
+          scr_dyn_release(answer);
+          scr_net_sock_transport_error_object(t->sock, err); /* moves err */
+          return -1;
+        }
+        scr_error_release(err);
+      }
+      scr_dyn_release(answer);
+    }
     scr_tls_hold_until_immediate(t);
   } else {
     /* a step that did not finish the handshake sends what it wrote now */
@@ -1688,6 +1789,7 @@ static void scr_tls_free(void *tctx) {
   free(t->hello);
   scr_secure_ctx_release(t->sni_ctx);
   mbedtls_x509_crt_free(&t->served_chain);
+  scr_str_release(t->identity_error);
   if (t->server) scr_net_server_release(t->server);
   free(t->held);
   free(t);
@@ -1883,19 +1985,16 @@ void scr_tls_fetch_client_wrap(ScrNetSocket *sock, void *ctx) {
   scr_tls_cli_wrap(sock, ctx);
 }
 
-/* https.request's `servername` option: the request's lowering stores it
- * just before the construction call, which takes it (+1, NULL = none). */
-static SCR_TL ScrStr *scr_https_next_servername = NULL;
-
-void scr_https_set_next_servername(ScrStr *name /*borrowed*/) {
-  scr_str_release(scr_https_next_servername);
-  scr_https_next_servername = scr_str_retain(name);
+void scr_tls_install_identity_runner(ScrDyn *(*runner)(ScrNetSocket *, ScrDyn *, const char *)) {
+  scr_tls_identity_runner = runner;
 }
 
-static ScrStr *scr_https_take_servername(void) {
-  ScrStr *name = scr_https_next_servername;
-  scr_https_next_servername = NULL;
-  return name;
+/* Node's checkServerIdentity validation: a PRESENT key must hold a
+ * function, undefined included (`'checkServerIdentity' in options`). */
+static bool scr_tls_identity_check(const ScrDyn *v) {
+  if (v->kind == SCR_DYN_FUNC) return true;
+  scr_dyn_prop_type_fail("options.checkServerIdentity", "of type function", v);
+  return false;
 }
 
 /* The client config with the servername (when given) as the name the
@@ -2173,16 +2272,94 @@ void scr_tls_fetch_tunnel_wrap(ScrNetSocket *sock, void *vctx) {
   scr_net_sock_set_transport(sock, &SCR_TLS_TUNNEL_OPS, tun);
 }
 
-ScrHttpClientReq *scr_https_request(ScrStr *host /*borrowed*/, double port,
-                                     ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
-                                     double timeout_ms, ScrArr *header_pairs /*borrowed*/,
-                                     bool auto_end, bool reject_unauthorized,
-                                     const char *ca /*borrowed, NULL = none*/, size_t ca_len,
-                                     ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn) {
-  ScrStr *servername = scr_https_take_servername();
-  ScrTlsCli *cli = scr_tls_cli_for(host, reject_unauthorized, ca, ca_len, servername);
-  ScrStr *key = scr_tls_pool_key(host, reject_unauthorized, ca, ca_len, servername);
-  scr_str_release(servername);
+/* ── the name options.checkServerIdentity is handed ────────────────────
+ * Node's Agent.normalizeServerName: options.servername when the caller
+ * set a non-empty one (an explicit "" suppresses the derivation), else
+ * the Host header's name with the port (or IPv6 brackets) removed, else
+ * the dialled host. An IP is never a name, so a Host header naming one
+ * answers the host as well. Only the identity verifier sees this; SNI
+ * keeps its own derivation. +1 */
+static ScrStr *scr_https_tls_name(ScrStr *host /*borrowed*/,
+                                   ScrStr *servername /*borrowed, nullable*/,
+                                   ScrArr *headers /*borrowed, nullable*/) {
+  if (servername != NULL) {
+    return servername->len > 0 ? scr_str_retain(servername) : scr_str_retain(host);
+  }
+  ScrStr *value = NULL;
+  size_t npairs = headers != NULL ? (size_t)scr_arr_len(headers) : 0;
+  for (size_t i = 0; i + 1 < npairs; i += 2) {
+    ScrStr *name = (ScrStr *)scr_arr_get_ref(headers, (double)i);
+    bool is_host = name->len == 4;
+    for (size_t j = 0; is_host && j < 4; j++)
+      is_host = tolower((unsigned char)name->data[j]) == "host"[j];
+    scr_str_release(name);
+    if (!is_host) continue;
+    value = (ScrStr *)scr_arr_get_ref(headers, (double)(i + 1));
+    break;
+  }
+  if (value == NULL) return scr_str_retain(host);
+  /* Node trims the whole header value before it splits off the port */
+  const char *s = value->data;
+  size_t off = 0;
+  size_t end = value->len;
+  while (off < end && isspace((unsigned char)s[off])) off++;
+  while (end > off && isspace((unsigned char)s[end - 1])) end--;
+  size_t take = end - off;
+  if (take > 0 && s[off] == '[') {
+    const char *close = memchr(s + off, ']', take);
+    if (close != NULL) {
+      off += 1;
+      take = (size_t)(close - (s + off));
+    }
+  } else {
+    const char *colon = memchr(s + off, ':', take);
+    if (colon != NULL) take = (size_t)(colon - (s + off));
+  }
+  char *z = malloc(take + 1);
+  if (!z) scr_tls_oom();
+  memcpy(z, s + off, take);
+  z[take] = '\0';
+  bool ip = take == 0 || scr_tls_is_ip(z);
+  scr_str_release(value);
+  if (ip) {
+    free(z);
+    return scr_str_retain(host);
+  }
+  ScrStr *name = scr_str_new(z, take);
+  free(z);
+  return name;
+}
+
+/* The https.request construction call, with the request's own TLS
+ * options as arguments. They used to travel through thread-local slots
+ * the lowering filled before the call, which a request built while
+ * another request's options evaluated (an options value with a side
+ * effect, e.g. a headers value that dials) consumed instead: the inner
+ * request took the outer request's checkServerIdentity and servername.
+ * Passing them per call leaves each request its own options however the
+ * evaluations nest. `identity` is the checkServerIdentity function, or
+ * NULL for none. */
+ScrHttpClientReq *scr_https_request_tls(ScrStr *host /*borrowed*/, double port,
+                                        ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
+                                        double timeout_ms, ScrArr *header_pairs /*borrowed*/,
+                                        bool auto_end, bool reject_unauthorized,
+                                        const char *ca /*borrowed, NULL = none*/, size_t ca_len,
+                                        bool has_servername,
+                                        ScrStr *servername /*borrowed, nullable*/,
+                                        const ScrDyn *identity /*borrowed, nullable*/,
+                                        ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn) {
+  ScrStr *name = has_servername ? servername : NULL;
+  if (identity != NULL && !scr_tls_identity_check(identity)) {
+    if (cb) scr_closure_release(cb);
+    return NULL;
+  }
+  ScrTlsCli *cli = scr_tls_cli_for(host, reject_unauthorized, ca, ca_len, name);
+  if (identity != NULL) {
+    ScrStr *tls_name = scr_https_tls_name(host, name, header_pairs);
+    scr_tls_cli_set_identity(cli, identity, tls_name);
+    scr_str_release(tls_name);
+  }
+  ScrStr *key = scr_tls_pool_key(host, reject_unauthorized, ca, ca_len, name);
   ScrHttpClientReq *c = scr_http_request_agent_ex(host, port, path, method, timeout_ms, header_pairs,
                                                   auto_end, NULL, cb, fn, 443, &scr_tls_cli_wrap,
                                                   cli, key);
@@ -2190,6 +2367,29 @@ ScrHttpClientReq *scr_https_request(ScrStr *host /*borrowed*/, double port,
   /* a constructor check threw before any socket took the config */
   if (c == NULL) scr_tls_cli_free(cli);
   return c;
+}
+
+ScrHttpClientReq *scr_https_request(ScrStr *host /*borrowed*/, double port,
+                                     ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
+                                     double timeout_ms, ScrArr *header_pairs /*borrowed*/,
+                                     bool auto_end, bool reject_unauthorized,
+                                     const char *ca /*borrowed, NULL = none*/, size_t ca_len,
+                                     ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn) {
+  return scr_https_request_tls(host, port, path, method, timeout_ms, header_pairs, auto_end,
+                               reject_unauthorized, ca, ca_len, false, NULL, NULL, cb, fn);
+}
+
+/* The servername option's literal form: the name the handshake sends and
+ * verifies, and part of the pooled socket key. */
+ScrHttpClientReq *scr_https_request_sni(ScrStr *host /*borrowed*/, double port,
+                                         ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
+                                         double timeout_ms, ScrArr *header_pairs /*borrowed*/,
+                                         bool auto_end, bool reject_unauthorized,
+                                         const char *ca /*borrowed, NULL = none*/, size_t ca_len,
+                                         ScrStr *servername /*borrowed*/,
+                                         ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn) {
+  return scr_https_request_tls(host, port, path, method, timeout_ms, header_pairs, auto_end,
+                               reject_unauthorized, ca, ca_len, true, servername, NULL, cb, fn);
 }
 
 /* https.get('https://host/path') — the URL-string spelling, sharing
@@ -2216,17 +2416,28 @@ ScrHttpClientReq *scr_https_request_url(ScrStr *url /*borrowed*/, ScrStr *method
   return c;
 }
 
-ScrHttpClientReq *scr_https_request_agent(ScrStr *host /*borrowed*/, double port,
-                                           ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
-                                           double timeout_ms, ScrArr *header_pairs /*borrowed*/,
-                                           bool auto_end, bool reject_unauthorized,
-                                           const char *ca /*borrowed, NULL = none*/, size_t ca_len,
-                                           const ScrDyn *agent /*borrowed*/,
-                                           ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn) {
-  ScrStr *servername = scr_https_take_servername();
-  ScrTlsCli *cli = scr_tls_cli_for(host, reject_unauthorized, ca, ca_len, servername);
-  ScrStr *key = scr_tls_pool_key(host, reject_unauthorized, ca, ca_len, servername);
-  scr_str_release(servername);
+ScrHttpClientReq *scr_https_request_agent_tls(ScrStr *host /*borrowed*/, double port,
+                                              ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
+                                              double timeout_ms, ScrArr *header_pairs /*borrowed*/,
+                                              bool auto_end, bool reject_unauthorized,
+                                              const char *ca /*borrowed, NULL = none*/, size_t ca_len,
+                                              bool has_servername,
+                                              ScrStr *servername /*borrowed, nullable*/,
+                                              const ScrDyn *identity /*borrowed, nullable*/,
+                                              const ScrDyn *agent /*borrowed*/,
+                                              ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn) {
+  ScrStr *name = has_servername ? servername : NULL;
+  if (identity != NULL && !scr_tls_identity_check(identity)) {
+    if (cb) scr_closure_release(cb);
+    return NULL;
+  }
+  ScrTlsCli *cli = scr_tls_cli_for(host, reject_unauthorized, ca, ca_len, name);
+  if (identity != NULL) {
+    ScrStr *tls_name = scr_https_tls_name(host, name, header_pairs);
+    scr_tls_cli_set_identity(cli, identity, tls_name);
+    scr_str_release(tls_name);
+  }
+  ScrStr *key = scr_tls_pool_key(host, reject_unauthorized, ca, ca_len, name);
   ScrHttpClientReq *c = scr_http_request_agent_ex(host, port, path, method, timeout_ms, header_pairs,
                                                   auto_end, agent, cb, fn, 443, &scr_tls_cli_wrap,
                                                   cli, key);
@@ -2234,6 +2445,33 @@ ScrHttpClientReq *scr_https_request_agent(ScrStr *host /*borrowed*/, double port
   /* a constructor check threw before any socket took the config */
   if (c == NULL) scr_tls_cli_free(cli);
   return c;
+}
+
+ScrHttpClientReq *scr_https_request_agent(ScrStr *host /*borrowed*/, double port,
+                                           ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
+                                           double timeout_ms, ScrArr *header_pairs /*borrowed*/,
+                                           bool auto_end, bool reject_unauthorized,
+                                           const char *ca /*borrowed, NULL = none*/, size_t ca_len,
+                                           const ScrDyn *agent /*borrowed*/,
+                                           ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn) {
+  return scr_https_request_agent_tls(host, port, path, method, timeout_ms, header_pairs, auto_end,
+                                     reject_unauthorized, ca, ca_len, false, NULL, NULL, agent, cb,
+                                     fn);
+}
+
+ScrHttpClientReq *scr_https_request_agent_sni(ScrStr *host /*borrowed*/, double port,
+                                               ScrStr *path /*borrowed*/,
+                                               ScrStr *method /*borrowed*/, double timeout_ms,
+                                               ScrArr *header_pairs /*borrowed*/, bool auto_end,
+                                               bool reject_unauthorized,
+                                               const char *ca /*borrowed, NULL = none*/,
+                                               size_t ca_len, ScrStr *servername /*borrowed*/,
+                                               const ScrDyn *agent /*borrowed*/,
+                                               ScrClosure *cb /*moves, nullable*/,
+                                               ScrHttpRespFn fn) {
+  return scr_https_request_agent_tls(host, port, path, method, timeout_ms, header_pairs, auto_end,
+                                     reject_unauthorized, ca, ca_len, true, servername, NULL, agent,
+                                     cb, fn);
 }
 
 /* ── RUNTIME options records (the divergence-66 stance) ────────────────
@@ -2371,14 +2609,19 @@ static const char *scr_tls_ca_data(const ScrBytes *ca) {
  * servername) and a client certificate (cert and key). Other tls.connect
  * options fence when they carry a value. */
 static const char *const SCR_HTTPS_REQ_FENCED_OPTIONS[] = {
-  "ALPNProtocols", "checkServerIdentity", "ciphers", "crl", "dhparam", "ecdhCurve",
+  "ALPNProtocols", "ciphers", "crl", "dhparam", "ecdhCurve",
   "honorCipherOrder", "maxVersion", "minVersion", "passphrase", "pfx", "secureContext",
   "secureOptions", "secureProtocol", "session", "sessionIdContext", "sigalgs", NULL,
 };
 
-ScrHttpClientReq *scr_https_request_dyn(const ScrDyn *opts /*borrowed*/, bool auto_end,
-                                        ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn,
-                                        ScrDyn *(*add_abort)(ScrDyn *signal, ScrDyn *listener)) {
+/* The runtime options walk. `identity_ok` tells whether the program's
+ * source carries checkServerIdentity (the compiler then linked the unit
+ * that builds the PeerCertificate); without it the key fences like the
+ * other documented members. */
+ScrHttpClientReq *scr_https_request_dyn_impl(const ScrDyn *opts /*borrowed*/, bool auto_end,
+                                             ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn,
+                                             ScrDyn *(*add_abort)(ScrDyn *signal, ScrDyn *listener),
+                                             bool identity_ok) {
   ScrHttpReqOpts o;
   if (!scr_http_req_opts_read(opts, true, "https.request", &o)) {
     if (cb) scr_closure_release(cb);
@@ -2389,8 +2632,21 @@ ScrHttpClientReq *scr_https_request_dyn(const ScrDyn *opts /*borrowed*/, bool au
   ScrBytes *ca = NULL;
   ScrBytes *own_cert = NULL, *own_key = NULL;
   ScrStr *servername = NULL;
+  const ScrDyn *identity = NULL;
   bool ok = true;
   if (rec != NULL && rec->kind == SCR_DYN_OBJ) {
+    const ScrDyn *csi = scr_dyn_obj_get(rec, "checkServerIdentity", 19);
+    if (csi != NULL && ok) {
+      if (!identity_ok) {
+        scr_http_req_opts_fence("https.request", "checkServerIdentity",
+                                "the option lowers when the request's options are an object literal");
+        ok = false;
+      } else if (scr_tls_identity_check(csi)) {
+        identity = csi;
+      } else {
+        ok = false;
+      }
+    }
     for (size_t i = 0; ok && SCR_HTTPS_REQ_FENCED_OPTIONS[i] != NULL; i++) {
       const char *key = SCR_HTTPS_REQ_FENCED_OPTIONS[i];
       const ScrDyn *v = scr_dyn_obj_get(rec, key, strlen(key));
@@ -2442,6 +2698,11 @@ ScrHttpClientReq *scr_https_request_dyn(const ScrDyn *opts /*borrowed*/, bool au
   const char *ca_data = scr_tls_ca_data(ca);
   size_t ca_len = ca ? ca->len : 0;
   ScrTlsCli *cli = scr_tls_cli_for(o.host, reject, ca_data, ca_len, servername);
+  if (identity != NULL) {
+    ScrStr *tls_name = scr_https_tls_name(o.host, servername, o.headers);
+    scr_tls_cli_set_identity(cli, identity, tls_name);
+    scr_str_release(tls_name);
+  }
   ScrStr *key = scr_tls_pool_key(o.host, reject, ca_data, ca_len, servername);
   if (own_cert != NULL) {
     /* Node's agent keys pooled sockets by the client certificate too */
@@ -2483,6 +2744,27 @@ ScrHttpClientReq *scr_http_request_dyn_secure(const ScrDyn *opts /*borrowed*/, b
   return scr_http_request_dyn(opts, auto_end, cb, fn, add_abort);
 }
 
+ScrHttpClientReq *scr_https_request_dyn(const ScrDyn *opts /*borrowed*/, bool auto_end,
+                                        ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn,
+                                        ScrDyn *(*add_abort)(ScrDyn *signal, ScrDyn *listener)) {
+  return scr_https_request_dyn_impl(opts, auto_end, cb, fn, add_abort, false);
+}
+
+ScrHttpClientReq *scr_https_request_url_dyn_impl(const ScrStr *url /*borrowed*/,
+                                                 const ScrDyn *opts /*borrowed*/, bool auto_end,
+                                                 ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn,
+                                                 ScrDyn *(*add_abort)(ScrDyn *signal, ScrDyn *listener),
+                                                 bool identity_ok) {
+  ScrDyn *merged = scr_http_url_req_options(url, opts, "https.request");
+  if (merged == NULL) {
+    if (cb) scr_closure_release(cb);
+    return NULL;
+  }
+  ScrHttpClientReq *req = scr_https_request_dyn_impl(merged, auto_end, cb, fn, add_abort, identity_ok);
+  scr_dyn_release(merged);
+  return req;
+}
+
 /* https.request/get(url[, options][, cb]) — the URL's fields merged under
  * the options value (scr_http.c's merge), then the same runtime walk,
  * TLS options included, as the options form. */
@@ -2490,14 +2772,7 @@ ScrHttpClientReq *scr_https_request_url_dyn(ScrStr *url /*borrowed*/,
                                             const ScrDyn *opts /*borrowed*/, bool auto_end,
                                             ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn,
                                             ScrDyn *(*add_abort)(ScrDyn *signal, ScrDyn *listener)) {
-  ScrDyn *merged = scr_http_url_req_options(url, opts, "https.request");
-  if (merged == NULL) {
-    if (cb) scr_closure_release(cb);
-    return NULL;
-  }
-  ScrHttpClientReq *req = scr_https_request_dyn(merged, auto_end, cb, fn, add_abort);
-  scr_dyn_release(merged);
-  return req;
+  return scr_https_request_url_dyn_impl(url, opts, auto_end, cb, fn, add_abort, false);
 }
 
 /* The literal path's runtime-valued cert/key extraction (the compiler's
@@ -3282,26 +3557,38 @@ static const char *const SCR_TLS_CONNECT_FENCED_OPTIONS[] = {
 
 static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed, nullable*/,
                                            const ScrDyn *opts /*borrowed, nullable*/,
-                                           ScrClosure *cb /*moves, nullable*/);
+                                           ScrClosure *cb /*moves, nullable*/, bool identity_ok);
 
-ScrNetSocket *scr_tls_connect_dyn(double port, ScrStr *host /*borrowed, nullable*/,
-                                   const ScrDyn *opts /*borrowed, nullable*/,
-                                   ScrClosure *cb /*moves, nullable*/) {
-  if (opts == NULL || opts->kind != SCR_DYN_TYPED_REF) return scr_tls_connect_plain(port, host, opts, cb);
+static ScrNetSocket *scr_tls_connect_kind(double port, ScrStr *host, const ScrDyn *opts,
+                                          ScrClosure *cb, bool identity_ok) {
+  if (opts == NULL || opts->kind != SCR_DYN_TYPED_REF)
+    return scr_tls_connect_plain(port, host, opts, cb, identity_ok);
   /* a typed record (an options binding): its fields, as a plain object */
   ScrDyn *plain = scr_dyn_typed_ref_materialize(opts);
   if (plain == NULL) {
     scr_closure_release(cb);
     return NULL;
   }
-  ScrNetSocket *s = scr_tls_connect_plain(port, host, plain, cb);
+  ScrNetSocket *s = scr_tls_connect_plain(port, host, plain, cb, identity_ok);
   scr_dyn_release(plain);
   return s;
 }
 
+ScrNetSocket *scr_tls_connect_dyn(double port, ScrStr *host /*borrowed, nullable*/,
+                                   const ScrDyn *opts /*borrowed, nullable*/,
+                                   ScrClosure *cb /*moves, nullable*/) {
+  return scr_tls_connect_kind(port, host, opts, cb, false);
+}
+
+ScrNetSocket *scr_tls_connect_dyn_identity(double port, ScrStr *host /*borrowed, nullable*/,
+                                            const ScrDyn *opts /*borrowed, nullable*/,
+                                            ScrClosure *cb /*moves, nullable*/) {
+  return scr_tls_connect_kind(port, host, opts, cb, true);
+}
+
 static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed, nullable*/,
                                            const ScrDyn *opts /*borrowed, nullable*/,
-                                           ScrClosure *cb /*moves, nullable*/) {
+                                           ScrClosure *cb /*moves, nullable*/, bool identity_ok) {
   scr_tls_rng_init();
   bool reject = true;
   ScrBytes *ca = NULL;
@@ -3311,6 +3598,7 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
   char **alpn = NULL;
   const ScrDyn *alpn_value = NULL;
   const ScrDyn *timeout_value = NULL;
+  const ScrDyn *identity = NULL;
   int min_version = 12, max_version = 13;
   ScrNetSocket *wrap = NULL; /* options.socket: the open socket to take over */
   bool ok = true;
@@ -3329,15 +3617,16 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
         /* Node spreads user options over the defaults, so a PRESENT key
          * replaces the builtin verifier even when its value is undefined
          * — validateFunction then throws for anything non-callable. A
-         * real function keeps the fence (custom verification has no
-         * lowering). */
-        if (v->kind != SCR_DYN_FUNC) {
-          scr_dyn_prop_type_fail("options.checkServerIdentity", "of type function", v);
+         * function runs only when the compiler saw the literal key (the
+         * unit that builds its PeerCertificate is linked then). */
+        if (!scr_tls_identity_check(v)) {
+          ok = false;
+        } else if (!identity_ok) {
+          scr_tls_opt_fence("tls.connect", "checkServerIdentity",
+                            "custom identity verification lowers when the options are an object literal");
           ok = false;
         } else {
-          scr_tls_opt_fence("tls.connect", "checkServerIdentity",
-                            "custom identity verification has no lowering — the runtime verifies against the servername/host");
-          ok = false;
+          identity = v;
         }
         continue;
       }
@@ -3492,6 +3781,7 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
   ScrTlsCli *cli = scr_tls_cli_new2(verify_host, reject,
                                      scr_tls_ca_data(ca), ca != NULL ? ca->len : 0, !reject);
   if (servername != NULL) scr_tls_cli_set_servername(cli, servername);
+  if (identity != NULL) scr_tls_cli_set_identity(cli, identity, NULL);
   if (own_cert != NULL) scr_tls_cli_set_own(cli, own_cert, own_key);
   scr_bytes_release(own_cert);
   scr_bytes_release(own_key);
@@ -3637,14 +3927,15 @@ static bool scr_tls_sock_verifies(const ScrTlsSock *t) {
 
 bool scr_tls_sock_authorized(ScrNetSocket *s) {
   ScrTlsSock *t = scr_tls_sock_of(s);
-  return t != NULL && scr_tls_sock_verifies(t) && mbedtls_ssl_get_verify_result(&t->ssl) == 0;
+  return t != NULL && scr_tls_sock_verifies(t) && mbedtls_ssl_get_verify_result(&t->ssl) == 0 &&
+         t->identity_error == NULL;
 }
 
 ScrStr *scr_tls_sock_auth_error(ScrNetSocket *s) {
   ScrTlsSock *t = scr_tls_sock_of(s);
-  if (t == NULL || !scr_tls_sock_verifies(t) || mbedtls_ssl_get_verify_result(&t->ssl) == 0) {
-    return NULL; /* the null arm — authorized, or never verified */
-  }
+  if (t == NULL || !scr_tls_sock_verifies(t)) return NULL; /* never verified */
+  if (t->identity_error != NULL) return scr_str_retain(t->identity_error);
+  if (mbedtls_ssl_get_verify_result(&t->ssl) == 0) return NULL; /* authorized */
   const char *code = t->srv != NULL ? scr_tls_client_cert_code(t) : scr_tls_auth_code(t);
   return scr_str_new(code, strlen(code));
 }
@@ -3871,9 +4162,9 @@ static bool scr_tls_dynh_get(ScrNetSocket *s, const char *key, ScrDyn **out) {
   ScrTlsSock *t = scr_tls_sock_of(s);
   if (t == NULL) return false; /* a plain socket: the net dispatch answers */
   if (strcmp(key, "authorized") == 0) {
-    bool a = t->established && t->cli != NULL && t->cli->verify_recorded &&
-             mbedtls_ssl_get_verify_result(&t->ssl) == 0;
-    *out = scr_dyn_new_bool(a);
+    /* the static accessor, so a rejection the custom verifier returned on
+     * a lenient connection counts here too */
+    *out = scr_dyn_new_bool(scr_tls_sock_authorized(s));
     return true;
   }
   if (strcmp(key, "alpnProtocol") == 0) {
@@ -3881,15 +4172,13 @@ static bool scr_tls_dynh_get(ScrNetSocket *s, const char *key, ScrDyn **out) {
     return true;
   }
   if (strcmp(key, "authorizationError") == 0) {
-    if (!t->established || t->cli == NULL || !t->cli->verify_recorded ||
-        mbedtls_ssl_get_verify_result(&t->ssl) == 0) {
+    ScrStr *err = scr_tls_sock_auth_error(s);
+    if (err == NULL) {
       *out = scr_dyn_new_null();
-      return true;
+    } else {
+      *out = scr_dyn_new_str(err);
+      scr_str_release(err);
     }
-    const char *code = scr_tls_auth_code(t);
-    ScrStr *str = scr_str_new(code, strlen(code));
-    *out = scr_dyn_new_str(str);
-    scr_str_release(str);
     return true;
   }
   return false;

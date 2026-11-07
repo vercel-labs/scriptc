@@ -28,6 +28,7 @@ import { PoisonError, newFnCtx, type Lowerer } from "./lowerer.js";
 import {
   BOOL,
   DYN,
+  DYN_HANDLE_KINDS,
   FOREIGN,
   NULL_T,
   STRING,
@@ -975,6 +976,23 @@ function islandValueAt(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrEx
     };
     return lowerer.coerceToExpected(copy, mapped);
   }
+  // The island's own handle kinds (net.Server, net.Socket, IncomingMessage,
+  // …): the island made the object behind the value — `app.listen(0)`
+  // returns its node:http Server, a package's `makeServer()` its node:net
+  // Server — and no native handle can adopt it, because the listening
+  // socket lives in the island. The checked-dynamic handle IS the value:
+  // address(), close(), listening and the events dispatch through it into
+  // the island, the canonical crossing DYN_HANDLE_KINDS exists for.
+  if (DYN_HANDLE_KINDS.has(mapped.kind)) return raw;
+  // Otherwise the value can only land in a native one when the PROGRAM
+  // declares its type: such an instance is one the program made and passed
+  // in, and the island hands it back by reference. A type supplied by a
+  // declaration file — AddressInfo, a Date, a union with an object arm —
+  // has no native instance the island could have made (and the fallback
+  // declarations narrow some of those, address() answering a record where
+  // Node answers null), so the island value stays the handle and a native
+  // use converts it when it needs to.
+  if (!copiedType(lowerer, mapped) && !programRecordType(tsType)) return raw;
   // An island object whose declared type is a program record is a deep
   // checked copy, so identity and the island's later changes are lost (K1).
   // The copy is never implicit: the program states it with structuredClone,
@@ -1335,6 +1353,97 @@ export function islandHandleBinding(lowerer: Lowerer, name: ts.Identifier): bool
     isIslandHandleExpr(lowerer, d.initializer);
   lowerer.islandHandleBindings.set(symbol, result);
   return result;
+}
+
+/** Whether an expression's value is reached through dynamic dispatch: a
+ * member call on an island value (`app.listen()` where `app` is an island
+ * package's app), or a call of an island function (`pkg.makeServer()`, or a
+ * function value the program holds as checked-dynamic). Its result belongs
+ * to the island. */
+function dynDispatchedValue(lowerer: Lowerer, node: ts.Expression): boolean {
+  const isDynBinding = (x: ts.Expression): boolean => {
+    const inner = withoutParenthesesTypeWrappers(x);
+    if (!ts.isIdentifier(inner)) return false;
+    const stored = lowerer.peekLocal(inner)?.type ?? lowerer.globalOf(inner)?.type;
+    return stored !== undefined && stored.kind === "dyn";
+  };
+  const dispatches = (callee: ts.Expression): boolean =>
+    isDynBinding(callee) || isForeignExpr(lowerer, callee);
+  const e = withoutParenthesesTypeWrappers(node);
+  if (!ts.isCallExpression(e)) return isDynBinding(e);
+  const callee = withoutParenthesesTypeWrappers(e.expression);
+  if (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee))
+    return isDynBinding(callee.expression) || isForeignExpr(lowerer, callee.expression);
+  return dispatches(callee);
+}
+
+/** Whether a value of TypeScript type `tsType` reached through dynamic
+ * dispatch crosses as a handle: the decision fromIsland makes at the
+ * boundary, so the holder keeps what the crossing produces. A copied value
+ * or a record the program declares becomes the native value it converts
+ * to, a promise keeps its own lowering (which adopts the island's
+ * thenable), and every other value is the handle. `containerBinding` names
+ * the binding whose island array, tuple, Map or Set already crossed as a
+ * handle, when a binding names the value at all. */
+function crossesAsHandle(
+  lowerer: Lowerer,
+  tsType: ts.Type,
+  containerBinding: ts.Identifier | null,
+): boolean {
+  const mapped = lowerer.mapTypeOf(tsType);
+  if (mapped === null || mapped.kind === "dyn" || mapped.kind === "void") return false;
+  if (mapped.kind === "promise") return false;
+  if (callableType(lowerer, tsType)) return true;
+  if (copiedType(lowerer, mapped)) return false;
+  if (DYN_HANDLE_KINDS.has(mapped.kind)) return true;
+  if (copyableArrayType(lowerer, mapped)) return false;
+  if (
+    containerType(lowerer, tsType) &&
+    containerBinding !== null &&
+    islandHandleBinding(lowerer, containerBinding)
+  )
+    return true;
+  return !programRecordType(tsType);
+}
+
+/** Whether a binding holds a value the island owns. The boundary copies
+ * primitives, strings and bytes; every other island value crosses as a
+ * handle, and a handle is what native code can use — no native server,
+ * record or class stands for it. So when a declared type with no copyable
+ * representation (`const server = app.listen(0)` — the island's own
+ * http.Server, whose listening socket lives in the island — or
+ * `const addr = server.address()` — the island's address record) is
+ * initialized from a value reached through dynamic dispatch, the binding
+ * keeps the checked-dynamic handle: address(), close(), listening, `port`
+ * and the event methods dispatch through it into the island, the
+ * NextHandleFunction boundary's rule for an island value with no native
+ * counterpart. Promise-valued dispatch keeps its own lowering, which
+ * already adopts the island's thenable, and a copied value or a record the
+ * program declares keeps the native value the crossing makes of it. */
+export function islandOwnedBinding(lowerer: Lowerer, decl: ts.VariableDeclaration): boolean {
+  if (lowerer.nodeIslands === null) return false;
+  if (!ts.isIdentifier(decl.name) || decl.initializer === undefined) return false;
+  if (!dynDispatchedValue(lowerer, decl.initializer)) return false;
+  return crossesAsHandle(lowerer, lowerer.typeOf(decl.name), decl.name);
+}
+
+/** Whether an expression evaluates to a value the island owns, for a
+ * receiver no binding names — `httpServer(() => {}).address()` calls the
+ * member straight on the factory's result, which is the island's server
+ * all the same, so the member surface must dispatch through it instead of
+ * taking the native server path. Only the handle kinds are claimed: an
+ * expression has no binding whose crossing was decided earlier, and the
+ * remaining shapes reach the same run-time dispatch by their own routes. */
+export function islandOwnedValue(lowerer: Lowerer, node: ts.Expression): boolean {
+  if (lowerer.nodeIslands === null) return false;
+  if (!dynDispatchedValue(lowerer, node)) return false;
+  const tsType = lowerer.typeOf(withoutParenthesesTypeWrappers(node));
+  const mapped = lowerer.mapTypeOf(tsType);
+  if (mapped === null || mapped.kind === "dyn" || mapped.kind === "void") return false;
+  if (mapped.kind === "promise") return false;
+  if (callableType(lowerer, tsType)) return true;
+  if (copiedType(lowerer, mapped)) return false;
+  return DYN_HANDLE_KINDS.has(mapped.kind);
 }
 
 /** `a === b` / `a !== b` where both sides are island values and one is
@@ -1746,6 +1855,28 @@ function copiedRecordType(lowerer: Lowerer, type: ts.Type): boolean {
           copiedRecordType(lowerer, t),
       );
   return exportedByReference(lowerer, type);
+}
+
+/** A record type the PROGRAM declares, which an island value crosses OUT
+ * into: the instance is one the program made and passed in, and the island
+ * hands the same native object back (the checked cast unboxes it). A union
+ * or intersection of those qualifies arm by arm (`Counter | null`, or the
+ * mapped pair `{[K in Fg]: V} & {[K in Bg]?: V}` — one record). A type a
+ * declaration file supplies has no native instance the program could have
+ * made, so its island value stays a handle instead. */
+function programRecordType(type: ts.Type): boolean {
+  if (type.isUnionType() || (type.flags & ts.TypeFlags.Intersection) !== 0)
+    return ts
+      .constituentTypes(type)
+      .every(
+        (t) =>
+          (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0 ||
+          programRecordType(t),
+      );
+  if ((type.flags & ts.TypeFlags.Object) === 0) return false;
+  const symbol = type.getSymbol();
+  if (symbol === undefined || symbol.declarations.length === 0) return false;
+  return symbol.declarations.every((d) => !ts.getSourceFileOfNode(d).isDeclarationFile);
 }
 
 /** Whether meeting the declared type `mapped` builds a native record: the

@@ -184,9 +184,10 @@ static ScrStr *scr_regex_plain_text(const ScrRegex *re) {
   return lit;
 }
 
-static void *scr_regex_native_build(const ScrRegex *re, const uint8_t *bc) {
+static void *scr_regex_native_build(const ScrRegex *re, uint8_t *bc) {
   ScrReNative *native = scr_re_native_build(bc);
   if (native) native->lit = scr_regex_plain_text(re);
+  scr_re_anchor_search(bc, native);
   return native;
 }
 

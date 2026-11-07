@@ -508,7 +508,9 @@ export function symbolCheck({ typed, allowed, island = false, baseline, candidat
  * scr_error_dyn_fields. Their constructors are not a root: `super(message)`
  * with a string message takes the typed entry.
  * bench/stream-buffered-drain, also added later, drains an object-mode
- * Readable, whose chunks are checked-dynamic values. Every other bench
+ * Readable, whose chunks are checked-dynamic values. bench/regex-tokenizer,
+ * also added later, calls `exec` as bench/regex-logs does (regex exec
+ * metadata). Every other bench
  * workload is fully typed and must link none. The gate and
  * tests/harness/bench-dynamic-tier.test.ts enforce that, and the test also
  * fails when a listed workload stops linking them, so remove a workload here
@@ -538,6 +540,7 @@ export const DYNAMIC_WORKLOADS = new Set([
   "bench/layered-errors",
   "bench/stream-buffered-drain",
   "bench/untyped-validate",
+  "bench/regex-tokenizer",
 ]);
 
 /** Names of the functions (text and weak symbols) in `nm` output. Mach-O

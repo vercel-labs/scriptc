@@ -670,6 +670,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "program roots named by createRequire calls",
   ),
   scan(
+    "frontend/program.ts#boundedDynamicImportRoots7",
+    1,
+    "discovery",
+    "program roots named only by a bounded dynamic import()",
+  ),
+  scan(
     "frontend/program.ts#entryPackageProgramRoots7",
     1,
     "discovery",

@@ -1,3 +1,4 @@
+import { memberCallReceivers, type MemberCallReceivers } from "./member-call-receivers.js";
 import { programCreatesWrappers, routeWrapperConsumers } from "./primitive-wrappers.js";
 import type { DiagnosticCode } from "../../diagnostics/codes.js";
 import { markInferredFactChecks, shapeOverlayFileNames } from "../shape-inference/index.js";
@@ -4166,6 +4167,9 @@ export class Lowerer {
   /** Whether a compiled source creates primitive wrapper objects
    * (programCreatesWrappers), computed on first use. */
   createsWrappers: boolean | undefined = undefined;
+  /** Which member calls on records pass the record as the receiver
+   * (memberCallReceivers), computed on first use. */
+  memberReceivers: MemberCallReceivers | undefined = undefined;
   /** Builtin-module FUNCTIONS admitted as values by their surface-table
    * entries. The resolved runtime function plus ABI is the identity key,
    * so named imports, namespace reads, CommonJS bindings, and alias chains
@@ -5334,6 +5338,7 @@ export class Lowerer {
     "nanCodedReads",
     "mentionsProcessVersions",
     "createsWrappers",
+    "memberReceivers",
     "stringIndexBoundsCache",
     "functionLocalSubclasses",
     "socketEncodingReachable",
@@ -18927,6 +18932,17 @@ export class Lowerer {
       entry.bindings === this.typeParamBindings
       ? entry.value
       : null;
+  }
+
+  /** Whether a call of member `name` on a record passes the record as the
+   * call's receiver: a function that reads the receiver of its call can be
+   * the member's value (member-call-receivers.ts). */
+  memberCallCarriesReceiver(name: string): boolean {
+    return this.memberCallReceiverCensus().carries(name);
+  }
+
+  memberCallReceiverCensus(): MemberCallReceivers {
+    return (this.memberReceivers ??= memberCallReceivers(this));
   }
 
   /** The saved value of a staged fs argument (stagedArguments, keyed

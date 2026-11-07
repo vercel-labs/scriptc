@@ -139,6 +139,78 @@ export {};
   expect(refusal[0]).toContain("keeps the initializer's layout");
 });
 
+test("a short-circuit reassignment of a kept let is refused", async () => {
+  const { messages } = await compileSource(`type Item = { n: number; k: number };
+function f(anyValue: any): void {
+  const value = { n: anyValue, k: 1 };
+  let alias: Item = value;
+  const replacement: Item = { n: 2, k: 3 };
+  alias &&= replacement;
+  replacement.n = 9;
+  console.log(alias.n, replacement.n);
+}
+f(1);
+export {};
+`);
+  // `&&=` stores the same replacement the plain assignment does, so the
+  // kept layout rebuilds it and the later write reaches only the copy.
+  const refusal = messages.filter((m) => m.startsWith("SC2021"));
+  expect(refusal).toHaveLength(1);
+  expect(refusal[0]).toContain("'alias'");
+  expect(refusal[0]).toContain("keeps the initializer's layout");
+});
+
+test("a short-circuit reassignment a kept let never stores still compiles", async () => {
+  const { ok, messages } = await compileSource(`type Item = { n: number; k: number };
+function f(anyValue: any): void {
+  const value = { n: anyValue, k: 1 };
+  let alias: Item = value;
+  alias ??= { n: 2, k: 3 };
+  console.log(alias.n);
+}
+f(1);
+export {};
+`);
+  // A record is never nullish: `??=` reads and stores nothing, so no copy
+  // can take a write.
+  expect(messages).toEqual([]);
+  expect(ok).toBe(true);
+});
+
+test("a store into an element of a kept array is refused", async () => {
+  const { messages } = await compileSource(`type Nested = { lists: number[][] };
+const seed = { lists: [[1]] as any[][] };
+const alias: Nested = seed;
+const existing: number[] = [5];
+alias.lists[0] = existing;
+existing.push(6);
+console.log(alias.lists[0].length);
+export {};
+`);
+  // The kept `any[][]` element slot rebuilds the assigned `number[]`, so a
+  // later push through `existing` would not be seen through `alias.lists[0]`.
+  const refusal = messages.filter((m) => m.startsWith("SC2021"));
+  expect(refusal).toHaveLength(1);
+  expect(refusal[0]).toContain("'alias.lists[0]'");
+  expect(refusal[0]).toContain("'unknown[]'");
+  expect(refusal[0]).toContain("'number[]'");
+});
+
+test("a store of a value already in the kept element layout still compiles", async () => {
+  const { ok, messages } = await compileSource(`type Nested = { lists: number[][] };
+const seed = { lists: [[1]] as any[][] };
+const alias: Nested = seed;
+const same = { lists: [[2]] as any[][] };
+alias.lists[1] = same.lists[0];
+console.log("stored");
+export {};
+`);
+  // `same.lists[0]` is a `unknown[]` array, the layout the store keeps: the
+  // two names stay one object.
+  expect(messages).toEqual([]);
+  expect(ok).toBe(true);
+});
+
 test("reassigning a kept let with a fresh literal still converts", async () => {
   const { ok, messages } = await compileSource(`type Item = { n: number; k: number };
 function f(anyValue: any): void {

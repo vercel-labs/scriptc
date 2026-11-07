@@ -505,12 +505,16 @@ export function copiedStoreIntoKeptLayout(
   target: ts.Expression,
   slot: IrType,
   value: ts.Expression,
-): { binding: string; field: string | null; kept: IrType } | null {
+): { binding: string; field: string | null; element: boolean; kept: IrType } | null {
   let e: ts.Expression = target;
   let field: string | null = null;
+  // An element store (`kept.list[i] = v`) rebuilds through the array's own
+  // element slot; the target names the element, not the binding.
+  let element = false;
   if (ts.isPropertyAccessExpression(e) && !ts.isPrivateIdentifier(e.name)) field = e.name.text;
   else if (ts.isElementAccessExpression(e) && ts.isStringLiteralLike(e.argumentExpression))
     field = e.argumentExpression.text;
+  else if (ts.isElementAccessExpression(e)) element = true;
   for (;;) {
     if (ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) e = e.expression;
     else if (ts.isParenthesizedExpression(e) || ts.isNonNullExpression(e)) e = e.expression;
@@ -521,7 +525,7 @@ export function copiedStoreIntoKeptLayout(
   if (!namesExistingValue(value)) return null;
   const source = lowerer.mapTypeOf(keptLayoutTypeOf(lowerer, value) ?? lowerer.typeOf(value));
   if (!source || !storeRebuilds(lowerer, source, slot)) return null;
-  return { binding: root.text, field, kept: slot };
+  return { binding: root.text, field, element, kept: slot };
 }
 
 /** Refuse a store that would copy an existing value into a binding that kept
@@ -539,9 +543,14 @@ export function refuseCopiedStore(
   const checker = lowerer.checker;
   const sourceText = checker.typeToString(lowerer.typeOf(value));
   const declaredText = checker.typeToString(lowerer.typeOf(target));
-  const targetName = store.field === null ? store.binding : `${store.binding}.${store.field}`;
-  const detail =
-    store.field === null
+  const targetName = store.element
+    ? target.getText()
+    : store.field === null
+      ? store.binding
+      : `${store.binding}.${store.field}`;
+  const detail = store.element
+    ? `'${targetName}' is an element of a kept array ('${lowerer.fmt(store.kept)}') while the declared element is '${declaredText}'`
+    : store.field === null
       ? `'${store.binding}' keeps the initializer's layout ('${lowerer.fmt(store.kept)}') instead of the declared '${declaredText}'`
       : `'${store.binding}' keeps the initializer's layout, so its field '${store.field}' is '${lowerer.fmt(store.kept)}' while the declared field is '${declaredText}'`;
   lowerer.pushDiag(

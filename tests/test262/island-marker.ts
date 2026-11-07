@@ -26,13 +26,21 @@ export interface IslandRuleMarker {
 let serial = 0;
 
 /** The decisive marker of one variant's source, or null when the pre-scan
- * finds none or the source does not parse (a syntax negative has no module
- * to scan). A strict variant is scanned as the strict module the runner
- * builds from it, a sloppy variant as the CommonJS script it stays. A
- * runtime rule (R1) outranks an object-model rule (R2), as it does when the
- * compiler names a package's island reason; within a class the first marker
- * in source order decides. */
-export function islandRuleMarker(source: string, variant: string): IslandRuleMarker | null {
+ * finds none or the test is a syntax negative. A syntax negative has no
+ * module to scan, and the test's own metadata is what says so
+ * (`negative.phase: parse`): the parser recovers from a syntax error and
+ * returns a tree, so a scan of such a source would mark whatever construct
+ * the recovered tree happens to hold. A strict variant is scanned as the
+ * strict module the runner builds from it, a sloppy variant as the CommonJS
+ * script it stays. A runtime rule (R1) outranks an object-model rule (R2),
+ * as it does when the compiler names a package's island reason; within a
+ * class the first marker in source order decides. */
+export function islandRuleMarker(
+  source: string,
+  variant: string,
+  syntaxNegative = false,
+): IslandRuleMarker | null {
+  if (syntaxNegative) return null;
   const strict = variant !== "sloppy";
   try {
     const file = parseSourceFile(

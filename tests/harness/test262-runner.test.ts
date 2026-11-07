@@ -516,8 +516,13 @@ test("the island-rule marker reads the test body as its variant runs it", () => 
         "strict",
       ),
     ).toEqual({ rule: "R1.1", reason: "code-from-string" });
-    // A source that does not parse has no module to scan.
-    expect(islandRuleMarker("var = ;", "strict")).toBeNull();
+    // A syntax negative has no module to scan, whatever construct the
+    // parser's recovered tree holds: the test's metadata decides, because
+    // the parser does not throw on a syntax error.
+    const broken = 'Object.defineProperty({}, "x", { value: 1 }); var = ;';
+    expect(islandRuleMarker(broken, "strict", true)).toBeNull();
+    expect(islandRuleMarker(broken, "sloppy", true)).toBeNull();
+    expect(islandRuleMarker("var = ;", "strict", true)).toBeNull();
   } finally {
     closeIslandRuleScanner();
   }

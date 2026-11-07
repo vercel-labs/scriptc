@@ -158,8 +158,9 @@ pass and an island failure of such a variant is not a native regression.`);
         : raw;
       // The island-rule marker sits beside every result, passing, failing or
       // excluded: a marked variant stays in the denominator, and the report
-      // counts both views.
-      const islandRule = islandRuleMarker(item.source, item.variant);
+      // counts both views. A syntax negative carries none: it has no module
+      // whose constructs could put it in an island.
+      const islandRule = islandRuleMarker(item.source, item.variant, item.negative?.phase === "parse");
       const result = { id: item.id, path: item.path, variant: item.variant, features: item.features, lifted: item.lifted, islandRule, ...outcome };
       if (journalPath) appendFileSync(journalPath, `${JSON.stringify(result)}\n`);
       results.push(result);

@@ -1,4 +1,9 @@
 import * as ts from "../ts7/adapter.js";
+import {
+  activeNodeIslands,
+  isForeignType,
+  type NodeIslandSet,
+} from "../../node-islands/boundary.js";
 import { ClosedProtocols, OBSERVER_FUNCTIONS, OBSERVER_NAMESPACES } from "./closed-protocols.js";
 
 /** Index only program classes. Ambient declarations describe APIs, not
@@ -32,6 +37,11 @@ export class ClassProtocols {
   private readonly literalMarks = new Set<ts.Symbol>();
   /** The closed protocols (closed-protocols.ts), built on first use. */
   private closedProtocols: ClosedProtocols | null = null;
+  /** The program types that receive island values and cannot carry the
+   * marking on a symbol, recorded by the type itself (see markIslandView). */
+  private readonly islandViews = new Set<ts.Type>();
+  /** islandValue's answers: which expressions read an island handle. */
+  private readonly islandValues = new Map<ts.Node, boolean>();
 
   constructor(
     private readonly checker: ts.TypeChecker,
@@ -89,11 +99,24 @@ export class ClassProtocols {
     // program, so it must stay syntax-cheap).
     const accessorNames = new Set<string>();
     const literals: ts.ObjectLiteralExpression[] = [];
+    // The expressions that may read a value out of an island handle, when the
+    // program runs islands at all: their declared types are marked once the
+    // walk ends (markIslandView).
+    const islands = activeNodeIslands();
+    const crossings: ts.Expression[] = [];
     const visit = (node: ts.Node): void => {
       if (ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node)) {
         const name = propertyNameText(node.name);
         if (name !== null) accessorNames.add(name);
       }
+      if (
+        islands !== null &&
+        (ts.isPropertyAccessExpression(node) ||
+          ts.isElementAccessExpression(node) ||
+          ts.isCallExpression(node)) &&
+        this.islandValue(node.expression, islands)
+      )
+        crossings.push(node);
       if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
         for (const clause of node.heritageClauses?.nodes ?? [])
           if (clause.token === ts.SyntaxKind.ImplementsKeyword)
@@ -145,8 +168,119 @@ export class ClassProtocols {
     for (const source of this.sources) if (!source.isDeclarationFile) visit(source);
     for (const literal of literals)
       this.markMemberKindViews(literal, accessorNames, (type) => add(type));
+    // A type that receives island values is marked like a literal's: its
+    // values are not all instances, so it is never closed.
+    for (const crossing of crossings) this.markIslandView(crossing, islands, (type) => add(type));
     this.markIdentityFlows(protocols);
     return protocols;
+  }
+
+  /** Marks the program types that receive island values (SPEC 6 = C). An
+   * island object crossing into a program record type used to be refused
+   * (SC8010): a deep checked copy loses the identity and every later write
+   * the island makes to the object. The checked-identity view is the one
+   * representation for "a native-typed value that must stay a live
+   * JavaScript object", so a program type that receives island values
+   * becomes a view instead: an island object is already a live dynamic
+   * object natively (a handle), and every other value of the type is the
+   * checked-dynamic object a view builds, so identity and later changes are
+   * shared exactly and the copy never happens.
+   *
+   * The types are the DECLARED types at the reads that produce island
+   * values (`doc.colors`, `event.usage.cache_creation`, `islandFn()`), the
+   * set `fromIsland` answers for. An intersection or union marks its object
+   * parts; an island-declared part is a handle already and is skipped. A
+   * type that cannot carry the marking on its symbol — a mapped type, whose
+   * symbol is the shared `__type` — is recorded by instance instead. */
+  private markIslandView(
+    crossing: ts.Expression,
+    islands: NodeIslandSet | null,
+    add: (type: ts.Type) => void,
+  ): void {
+    const type = attempt(() => this.checker.getTypeAtLocation(crossing));
+    if (type !== undefined) this.markReceivedView(type, islands, add, 0);
+  }
+
+  private markReceivedView(
+    type: ts.Type,
+    islands: NodeIslandSet | null,
+    add: (type: ts.Type) => void,
+    depth: number,
+  ): void {
+    if (depth > 6) return;
+    if (type.isUnionType() || type.isIntersectionType()) {
+      for (const part of ts.constituentTypes(type))
+        this.markReceivedView(part, islands, add, depth + 1);
+      return;
+    }
+    if ((type.flags & ts.TypeFlags.Object) === 0) return;
+    if (islands !== null && isForeignType(islands, type, this.checker)) return;
+    // A promise the island returns is adopted, never converted: it is the
+    // same promise on both sides, and the value that crosses is the one it
+    // settles with, where the program awaits it or a reaction receives it.
+    // That value's declared type is the promise's type argument, so the
+    // argument is the type that receives the island value
+    // (`await later<Rec>()` reads an island object as a `Rec`).
+    const settled = attempt(() => this.checker.getAwaitedType(type));
+    if (settled !== undefined && settled !== type) {
+      this.markReceivedView(settled, islands, add, depth + 1);
+      return;
+    }
+    // A mapped type's symbol is the shared `__type` every mapped type in the
+    // program uses, so it can never carry the marking: a homomorphic view
+    // marks what it maps (as a literal view does), and any other mapped type
+    // (`Record<string, V>`, an inline `{ [K in ...]: V }`) is recorded by the
+    // type itself. This is what keeps the fact from spreading to every Pick,
+    // Partial and Record in the program.
+    const source = this.mappedViewSource(type);
+    if (source !== null) {
+      if (this.isStructuralTarget(source)) add(source);
+      else this.islandViews.add(type);
+      return;
+    }
+    if (((type as ts.ObjectType).objectFlags & ts.ObjectFlags.Mapped) !== 0) {
+      this.islandViews.add(type);
+      return;
+    }
+    if (this.isStructuralTarget(type)) {
+      add(type);
+      return;
+    }
+    // A class instance keeps its own native value (fromIsland unboxes it, it
+    // is never copied), and an array, tuple or function has its own crossing
+    // rule: neither is a record this marking can help.
+    if (this.isProgramClassInstance(type) || this.checker.isArrayType(type)) return;
+    if (this.checker.isTupleType(type)) return;
+    if (this.checker.getCallSignatures(type).length > 0) return;
+    this.islandViews.add(type);
+  }
+
+  /** Whether `expr` reads a value out of an island handle: its receiver
+   * chain is rooted at a binding of an island-declared type. A value a
+   * program type holds is a program value — that type is the one this pass
+   * marks — so the chain never has to be followed through one. */
+  private islandValue(expr: ts.Expression, islands: NodeIslandSet): boolean {
+    const known = this.islandValues.get(expr);
+    if (known !== undefined) return known;
+    let inner: ts.Expression = expr;
+    for (;;) {
+      if (ts.isParenthesizedExpression(inner) || ts.isNonNullExpression(inner))
+        inner = inner.expression;
+      else if (ts.isAssertionExpression(inner) || ts.isSatisfiesExpression(inner))
+        inner = inner.expression;
+      else break;
+    }
+    let answer = false;
+    if (ts.isPropertyAccessExpression(inner) || ts.isElementAccessExpression(inner))
+      answer = this.islandValue(inner.expression, islands);
+    else if (ts.isCallExpression(inner)) answer = this.islandValue(inner.expression, islands);
+    else if (ts.isIdentifier(inner))
+      answer =
+        attempt(() =>
+          isForeignType(islands, this.checker.getTypeAtLocation(inner), this.checker),
+        ) === true;
+    this.islandValues.set(expr, answer);
+    return answer;
   }
 
   /** Marks the structural types a literal's member kinds disagree with: a
@@ -1670,6 +1804,7 @@ export class ClassProtocols {
     if ((type.flags & ts.TypeFlags.Object) === 0) return null;
     const symbol = type.getSymbol();
     if (symbol === undefined || !this.implementers.has(symbol)) return null;
+    if (this.islandViews.has(type)) return null;
     const classes = this.closedIndex().classesOf(symbol);
     return classes === null
       ? null
@@ -1731,6 +1866,9 @@ export class ClassProtocols {
     // itself (index): the receiver-dependent literal typed as it needs the
     // live object, and no other view of that source does.
     if (this.literalViews.has(type)) return true;
+    // A program type that receives island values, recorded by the type
+    // itself because it has no symbol to mark (markIslandView).
+    if (this.islandViews.has(type)) return true;
     // A homomorphic mapped view (Partial, Pick, Omit, Readonly) has no
     // symbol of its own to mark, so it is a view exactly when the type it
     // maps is one.

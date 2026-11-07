@@ -16,8 +16,8 @@
  * notices a program that redistributes Node.js carries. */
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { islandBuildHost } from "./host.js";
 
 export const LIBNODE_PACK_SCHEMA = "scriptc.libnode-pack.v1";
 
@@ -217,13 +217,9 @@ function findInstalled(name: string, from: string): string | null {
 }
 
 function resolveNextToCompiler(name: string): string | null {
-  try {
-    const dir = dirname(createRequire(import.meta.url).resolve(`${name}/package.json`));
-    // An unbuilt workspace package is not a pack.
-    return existsSync(join(dir, "manifest.json")) ? dir : null;
-  } catch {
-    return null;
-  }
+  const dir = islandBuildHost().compilerPackage(name);
+  // An unbuilt workspace package is not a pack.
+  return dir !== null && existsSync(join(dir, "manifest.json")) ? dir : null;
 }
 
 /** The installed pack directory for `targetName`, or null when none is

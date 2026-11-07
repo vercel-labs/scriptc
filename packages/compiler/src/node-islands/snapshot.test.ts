@@ -83,7 +83,10 @@ function deferredProject(scriptc: unknown, env: [string, string | null][], url: 
       { kind: "strLit", value: "" },
     ],
   };
-  const mod = { functions: [{ body: [call] }], globals: [] } as unknown as IrModule;
+  const mod = {
+    functions: [{ body: [{ kind: "exprStmt", expr: call }] }],
+    globals: [],
+  } as unknown as IrModule;
   const probe: ProbeOutput = {
     results: [
       {

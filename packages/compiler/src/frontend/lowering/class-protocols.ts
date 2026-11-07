@@ -31,6 +31,10 @@ export class ClassProtocols {
   /** The program types that receive island values and cannot carry the
    * marking on a symbol, recorded by the type itself (see markIslandView). */
   private readonly islandViews = new Set<ts.Type>();
+  /** The program types that receive island values and carry the marking on
+   * their symbol (markReceivedView): with islandViews, the types whose
+   * values may be an island's object. */
+  private readonly islandSymbols = new Set<ts.Symbol>();
   /** islandValue's answers: which expressions read an island handle. */
   private readonly islandValues = new Map<ts.Node, boolean>();
   /** The object types markReceivedView has answered for, so a type that
@@ -219,7 +223,7 @@ export class ClassProtocols {
     // Partial and Record in the program.
     const source = this.mappedViewSource(type);
     if (source !== null) {
-      if (this.isStructuralTarget(source)) add(source);
+      if (this.isStructuralTarget(source)) this.addIslandReceiver(source, add);
       else this.islandViews.add(type);
       this.markReceivedMembers(type, islands, add, depth);
       return;
@@ -230,7 +234,7 @@ export class ClassProtocols {
       return;
     }
     if (this.isStructuralTarget(type)) {
-      add(type);
+      this.addIslandReceiver(type, add);
       this.markReceivedMembers(type, islands, add, depth);
       return;
     }
@@ -247,6 +251,36 @@ export class ClassProtocols {
     if (this.isLibraryClassInstance(type)) return;
     this.islandViews.add(type);
     this.markReceivedMembers(type, islands, add, depth);
+  }
+
+  private addIslandReceiver(type: ts.Type, add: (type: ts.Type) => void): void {
+    add(type);
+    const symbol = type.getSymbol();
+    if (symbol !== undefined) this.islandSymbols.add(symbol);
+  }
+
+  /** Whether a value of `type` may be an island's own object: a program
+   * type that receives island values (markIslandView), so a member read of
+   * it may be answered by the island, whatever the member's declaration
+   * says. A class-backed protocol or a receiver-dependent literal keeps
+   * checked identity too, but its values are the program's own and their
+   * members hold what they are declared to hold. */
+  receivesIslandValues(type: ts.Type): boolean {
+    this.index();
+    if (type.isUnionType()) {
+      const present = ts
+        .constituentTypes(type)
+        .filter((part) => (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null)) === 0);
+      return present.length > 0 && present.every((part) => this.receivesIslandValues(part));
+    }
+    if (type.isIntersectionType())
+      return ts.constituentTypes(type).some((part) => this.receivesIslandValues(part));
+    if ((type.flags & ts.TypeFlags.Object) === 0) return false;
+    if (this.islandViews.has(type)) return true;
+    const mapped = this.mappedViewSource(type);
+    if (mapped !== null) return this.receivesIslandValues(mapped);
+    const symbol = type.getSymbol();
+    return symbol !== undefined && this.islandSymbols.has(symbol);
   }
 
   /** Marks the types the members of a marked type are declared with: the

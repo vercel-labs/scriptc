@@ -1008,6 +1008,118 @@ export function patchAndBump(): number {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 300_000);
+
+  // A member an island package declares `T | null` reads as the island's own
+  // value where the use answers for every JavaScript value (corpus 9587,
+  // which matches Node). Every use that needs a typed value still converts:
+  // to the declared type, or to the narrowed type behind a guard, and the
+  // result of `||` and `??` to the expression's type. A member that is absent
+  // or of another type than its declaration then throws, where Node goes on
+  // with a value the type does not have.
+  test("an island member that is not what it is declared still fails a typed use", async () => {
+    const dir = join(outDir, "nullable-typed-uses");
+    rmSync(dir, { recursive: true, force: true });
+    const corpus = join(repoRoot, "tests/corpus/9587-node-island-nullable-member-reads");
+    cpSync(join(corpus, "node_modules"), join(dir, "node_modules"), { recursive: true });
+    cpSync(join(corpus, "package.json"), join(dir, "package.json"));
+    writeFileSync(
+      join(dir, "main.ts"),
+      [
+        "import { make, usage } from \"nullable-pkg\";",
+        "",
+        "interface View {",
+        "  input: number | null;",
+        "  output: number;",
+        "  label: string | null;",
+        "}",
+        "",
+        "function attempt(name: string, f: () => unknown): void {",
+        "  try {",
+        "    console.log(name, String(f()));",
+        "  } catch (e) {",
+        "    console.log(name, \"throws:\", (e as Error).message);",
+        "  }",
+        "}",
+        "function take(n: number | null): string {",
+        "  return String(n);",
+        "}",
+        "",
+        "const absent = usage(\"absent\");",
+        "const wrong = usage(\"wrong\");",
+        "const view = make<View>(\"absent\");",
+        "const wrongView = make<View>(\"wrong\");",
+        "",
+        "attempt(\"binding\", () => {",
+        "  const n: number | null = absent.input;",
+        "  return n;",
+        "});",
+        "attempt(\"inferred binding\", () => {",
+        "  const n = absent.input;",
+        "  return n;",
+        "});",
+        "attempt(\"argument\", () => take(absent.input));",
+        "attempt(\"field\", () => {",
+        "  const r: { v: number | null } = { v: 0 };",
+        "  r.v = absent.input;",
+        "  return r.v;",
+        "});",
+        "attempt(\"&& as a value\", () => absent.label && absent.label.length);",
+        "attempt(\"branch of ?:\", () => (absent.output > 0 ? absent.input : 0));",
+        "attempt(\"view binding\", () => {",
+        "  const n: number | null = view.input;",
+        "  return n;",
+        "});",
+        "attempt(\"view argument\", () => take(view.input));",
+        "attempt(\"wrong ||\", () => wrong.input || 0);",
+        "attempt(\"wrong ??\", () => wrong.label ?? \"none\");",
+        "attempt(\"wrong behind a guard\", () => {",
+        "  if (wrong.input != null) {",
+        "    const n: number = wrong.input;",
+        "    return n;",
+        "  }",
+        "  return \"skipped\";",
+        "});",
+        "attempt(\"wrong view ||\", () => wrongView.input || 0);",
+        "attempt(\"wrong view behind a guard\", () => {",
+        "  if (wrongView.label) {",
+        "    const s: string = wrongView.label;",
+        "    return s;",
+        "  }",
+        "  return \"skipped\";",
+        "});",
+        "attempt(\"wrong test\", () => (wrong.input ? \"truthy\" : \"falsy\"));",
+        "attempt(\"wrong typeof\", () => typeof wrong.label);",
+        "attempt(\"wrong === literal\", () => wrong.kind === \"a\");",
+        "attempt(\"wrong template\", () => `<${wrong.flag}>`);",
+        "",
+      ].join("\n"),
+    );
+    const typedUses = await build("nullable-typed-uses", pack!, join(dir, "main.ts"));
+    expect(await run(typedUses, [])).toEqual({
+      stdout: [
+        "binding throws: expected number | null at $, got undefined",
+        "inferred binding throws: expected number | null at $, got undefined",
+        "argument throws: expected number | null at $, got undefined",
+        "field throws: expected number | null at $, got undefined",
+        "&& as a value throws: expected null | string at $, got undefined",
+        "branch of ?: throws: expected number | null at $, got undefined",
+        "view binding throws: expected number | null at $, got undefined",
+        "view argument throws: expected number | null at $, got undefined",
+        "wrong || throws: expected number at $, got string",
+        "wrong ?? throws: expected string at $, got number",
+        "wrong behind a guard throws: expected number at $, got string",
+        "wrong view || throws: expected number at $, got string",
+        "wrong view behind a guard throws: expected string at $, got number",
+        "wrong test truthy",
+        "wrong typeof number",
+        "wrong === literal false",
+        "wrong template <yes>",
+        "",
+      ].join("\n"),
+      stderr: "",
+      code: 0,
+    });
+  }, 300_000);
 });
 
 /** A CommonJS program whose entry requires a sloppy-mode module that writes

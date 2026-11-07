@@ -533,6 +533,14 @@ static ScrError *nh_error_of(const ScrNodeValue *v) {
   }
   ScrNodeErrorInfo info;
   nh_error_info(ref->id, &info);
+  /* Node did not find a file, and the error names the installed module
+   * tree: a tool may have removed files from it. What is missing is put
+   * back (scr_ni_tree_repair), for nh_load's second attempt and for every
+   * later load. */
+  if (info.code != NULL && scr_ni_missing_file_code(info.code, info.code_len) &&
+      ((info.message != NULL && scr_ni_tree_named(info.message, info.message_len)) ||
+       (info.stack != NULL && scr_ni_tree_named(info.stack, info.stack_len))))
+    scr_ni_tree_repair();
   ScrStr *message = nh_str(info.message ? info.message : "", info.message_len);
   ScrError *e = scr_error_new((int)info.kind, message);
   scr_str_release(message);
@@ -896,13 +904,20 @@ static bool nh_receiver(ScrDyn *obj, uint32_t *id, const char *what) {
 
 static ScrDyn *nh_load(ScrStr *path, int esm) {
   nh_bridge();
-  nh_enter();
-  char *p = scr_ni_module_path(path);
-  ScrNodeValue out;
-  NhCall c = {.op = NH_LOAD, .path = p, .mode = esm, .out = &out};
-  nh_run(&c);
-  free(p);
-  return nh_outcome(&c);
+  for (int attempt = 0;; attempt++) {
+    size_t repairs = scr_ni_tree_repairs();
+    nh_enter();
+    char *p = scr_ni_module_path(path);
+    ScrNodeValue out;
+    NhCall c = {.op = NH_LOAD, .path = p, .mode = esm, .out = &out};
+    nh_run(&c);
+    free(p);
+    ScrDyn *loaded = nh_outcome(&c);
+    if (loaded != NULL || attempt > 0 || scr_ni_tree_repairs() == repairs) return loaded;
+    /* The load failed on a file the installed tree had lost, and the file
+     * is back: the load once more. */
+    scr_caught_release(scr_exc_take());
+  }
 }
 
 ScrDyn *scr_ni_require(ScrStr *path) { return nh_load(path, 0); }

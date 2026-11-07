@@ -172,6 +172,10 @@
         "id": "choose-where-code-runs"
       },
       {
+        "text": "Record the island decision",
+        "id": "record-the-island-decision"
+      },
+      {
         "text": "Values that cross the boundary",
         "id": "values-that-cross-the-boundary"
       },

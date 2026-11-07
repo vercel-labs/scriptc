@@ -206,6 +206,15 @@ Each command is one tool: `scriptc_build`, `scriptc_run`, `scriptc_coverage`, `s
   <dt><code>--node-island &lt;pkg-or-path&gt;</code></dt>
   <dd>Run an npm package, or a JavaScript module of the program named by a path or glob, in a Node island. Repeatable, and accepts a comma-separated list. The same choice can be written in <code>package.json</code>; see <a href="/docs/node-islands#choose-where-code-runs">Choose where code runs</a>.</dd>
 
+  <dt><code>--node-island-decision &lt;file&gt;</code></dt>
+  <dd>Keep the Node island decision of this entry in the file, and start from it when it is recorded there, so a large program finds its islands in one compile pass instead of several. <code>build</code> and <code>run</code> read and write the file; <code>coverage</code> only reads it. A project names the file once with `"nodeIslands": { "decision": true }` in <code>package.json</code>. See <a href="/docs/node-islands#record-the-island-decision">Record the island decision</a>.</dd>
+
+  <dt><code>--node-island-decision-check</code></dt>
+  <dd>Build only. Decide the islands from scratch, generate no code, and compare with the decision file. Prints what differs and exits with status 1 when anything does.</dd>
+
+  <dt><code>--ignore-node-island-decision</code></dt>
+  <dd>Neither read nor write the project's decision file for this command.</dd>
+
   <dt><code>--native &lt;pkg&gt;</code></dt>
   <dd>Keep an npm package out of Node islands. Coverage reports <code>SC8003</code> when the package can't compile natively. Repeatable. Not allowed together with <code>--node-island</code> for the same package.</dd>
 

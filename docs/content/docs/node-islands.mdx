@@ -296,9 +296,180 @@ The same choices can live in the `scriptc` object of the `package.json` nearest 
 
   <dt>`"nodeIslands": { "auto": false }`</dt>
   <dd>The <code>explicit</code> policy: only marked packages and modules run in islands.</dd>
+
+  <dt>`"nodeIslands": { "decision": true }`</dt>
+  <dd>Keep the island decision in a file and start each build from it. See <a href="#record-the-island-decision">Record the island decision</a>.</dd>
 </dl>
 
 Command-line options override these settings. A setting scriptc doesn't know is not ignored silently: the build prints an `SC8004` warning that names the key and goes on without it.
+
+## Record the island decision
+
+scriptc finds a program's islands by compiling it. It compiles everything natively, moves the packages that refused into Node.js, and compiles the program again, until nothing more refuses. Each repetition is a full pass over the program, and on a large program the passes that only find the islands are most of the build. The answer rarely changes from one build to the next, so scriptc can keep it in a file and start the next build from it.
+
+Turn it on in the `package.json` nearest your entry file:
+
+```json:package.json
+{
+  "name": "app",
+  "private": true,
+  "scriptc": {
+    "nodeIslands": {
+      "decision": true
+    }
+  }
+}
+```
+
+The first build decides as before, writes `scriptc-islands.json` beside the `package.json`, and says so:
+
+```console
+$ scriptc build greet.ts -o greet
+scriptc: recorded the Node island decision in scriptc-islands.json (1 package)
+  + ejs@7.0.2 (fence-report): R1.1 code from strings: new Function()
+/work/app/greet.ts:1:1 - note SC8001: package 'ejs@7.0.2' runs in a Node island: runtime: R1.1 code from strings: new Function()
+
+  1 | import ejs from "ejs";
+    | ^~~~~~~~~~~~~~~~~~~~~~
+  2 | 
+
+  hint: it runs in Node.js loaded into the program on first use; --node-islands=off makes this an error
+/work/app/greet
+$ cat scriptc-islands.json
+{
+  "format": 2,
+  "decisions": [
+    {
+      "entry": "greet.ts",
+      "target": "linux",
+      "compiler": "0.4.9",
+      "outcome": "compiles",
+      "packages": [
+        {
+          "name": "ejs",
+          "version": "7.0.2",
+          "dir": "node_modules/ejs",
+          "rule": "fence-report",
+          "class": "runtime",
+          "reason": "R1.1 code from strings: new Function()"
+        }
+      ],
+      "modules": []
+    }
+  ]
+}
+```
+
+That build compiled the program twice: once natively, which failed, and once with `ejs` in an island. The next build starts with `ejs` in an island and compiles the program once. It produces the same executable and prints the same notes, and it says nothing about the file, because the decision stands:
+
+```console
+$ scriptc build greet.ts -o greet
+/work/app/greet.ts:1:1 - note SC8001: package 'ejs@7.0.2' runs in a Node island: runtime: R1.1 code from strings: new Function()
+
+  1 | import ejs from "ejs";
+    | ^~~~~~~~~~~~~~~~~~~~~~
+  2 | 
+
+  hint: it runs in Node.js loaded into the program on first use; --node-islands=off makes this an error
+/work/app/greet
+$ ./greet
+Hello, Ada!
+```
+
+`build` and `run` read and write the file. `coverage` reads it, so its report describes the program a build compiles, and never writes it. Only the default policy, `--node-islands=auto`, records a decision.
+
+### What the file holds
+
+The file has one section for each entry file, target platform, and set of options that steer the decision (`--node-island`, `--native`, `--npm-static`, `--tier`), so one file serves every program of a project. A section lists every package and module the build ran in an island. Paths are relative to the file, so the file can be committed and the project can move.
+
+Each package records the rule that put it in the set:
+
+<table>
+  <thead>
+    <tr><th>Rule</th><th>The package is in an island because</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>load</code></td><td>The program can't even be loaded with it compiled, or you marked it. Every build decides these again when it loads the program, so they cost nothing to find.</td></tr>
+    <tr><td><code>refusal</code>, <code>preflight</code>, <code>lowering</code></td><td>Compiling the program found code in it, or an import of it, that can't be compiled.</td></tr>
+    <tr><td><code>esm-importer</code></td><td>One of its ES modules imports a CommonJS package that is an island. <code>follows</code> names that package.</td></tr>
+    <tr><td><code>fence-report</code></td><td>The native build failed, and the package has a reason to need Node.js.</td></tr>
+    <tr><td><code>fence-sure</code></td><td>The native build compiled, but the package holds code that would fail as soon as it runs.</td></tr>
+  </tbody>
+</table>
+
+`outcome` appears when a `fence-report` or `fence-sure` package is listed. It says whether the build that wrote the section compiled.
+
+### When a build decides again
+
+A build doesn't trust the file blindly. Before it uses a section, and while it builds, it checks what it can check cheaply:
+
+<table>
+  <thead>
+    <tr><th>What changed</th><th>What the next build does</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>You upgraded scriptc</td><td>Decides the section from scratch. A newer compiler may compile a package the old one could not.</td></tr>
+    <tr><td>The entry, the target, or one of the options above</td><td>Uses another section, or decides from scratch and adds one.</td></tr>
+    <tr><td>A listed package has another version, or is gone</td><td>Decides that package again, together with every <code>esm-importer</code> package that follows it.</td></tr>
+    <tr><td>The program no longer imports a listed package</td><td>Drops it. The package is not shipped in the executable.</td></tr>
+    <tr><td>The program imports a new package that can't compile</td><td>Compiles once more with it in an island, and adds it to the file.</td></tr>
+    <tr><td>The build failed when the section was written and compiles now, or the other way round</td><td>Decides the <code>fence-report</code> and <code>fence-sure</code> packages again, because those rules depend on whether the build fails.</td></tr>
+  </tbody>
+</table>
+
+A build that changes the file prints what it changed. Here the program stopped importing `ejs`:
+
+```console
+$ scriptc build greet.ts -o greet
+scriptc: updated the Node island decision in scriptc-islands.json (no islands)
+  ~ outcome: compiles -> none
+  - ejs@7.0.2: the program no longer imports it
+/work/app/greet
+```
+
+A build that stops before it compiles anything, for example at a type error, leaves the file as it is.
+
+One change a build can't notice: a listed package that would now compile natively. An edit to your program, or a new version of another package, can remove the reason a package was put in an island, and the only way to find out is to compile that package natively, which is the work the file saves. Such a package keeps running in Node.js, where it works, until you check.
+
+### Check the file
+
+`--node-island-decision-check` decides the islands from scratch, compares the result with the file, and builds nothing:
+
+```console
+$ scriptc build greet.ts --node-island-decision-check
+the Node island decision of greet.ts matches scriptc-islands.json (1 package, 0 modules)
+```
+
+It exits with status 1 and prints the difference when the file isn't what a build from scratch decides. This is the check made before the build above dropped `ejs`:
+
+```console
+$ scriptc build greet.ts --node-island-decision-check
+the Node island decision of greet.ts differs from scriptc-islands.json
+  ~ outcome: compiles -> none
+  - ejs@7.0.2
+a build from scratch decides 0 packages, 0 modules; "+" is an island the file lacks, "-" one a build from scratch does not run in Node
+to record the decision again, delete this entry from scriptc-islands.json (or the file) and build
+```
+
+The check takes as long as a build's compile passes without the file. Run it in CI rather than on every build.
+
+### Commit the file
+
+Commit `scriptc-islands.json`. It is a lockfile for the island decision: a fresh checkout builds in one pass, and a reviewer sees in the diff when a package starts or stops running in Node.js, with the rule and the reason. While a build is failing the file can hold the failing program's decision. It returns to the same bytes when the program compiles again.
+
+<dl>
+  <dt>`"nodeIslands": { "decision": true }`</dt>
+  <dd>Keep the decision in <code>scriptc-islands.json</code> beside the <code>package.json</code>. A string names another file, relative to the <code>package.json</code>.</dd>
+
+  <dt><code>--node-island-decision &lt;file&gt;</code></dt>
+  <dd>Use this file for one command, whatever the project says.</dd>
+
+  <dt><code>--ignore-node-island-decision</code></dt>
+  <dd>Don't read or write the project's file for one command. The build decides from scratch.</dd>
+
+  <dt><code>--node-island-decision-check</code></dt>
+  <dd>With <code>build</code>: compare the file with a decision made from scratch, as above.</dd>
+</dl>
 
 ## Values that cross the boundary
 

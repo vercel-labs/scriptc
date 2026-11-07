@@ -8,6 +8,7 @@ import {
   DYN,
   F64,
   STRING,
+  SYMBOL_T,
   UNDEFINED_T,
   VOID,
   isFfiCallbackParam,
@@ -16,8 +17,14 @@ import {
 } from "../../../ir/ir.js";
 import type { Lowerer } from "../lowerer.js";
 
-export function lowerWorkerMetadata(member: string, loc: SrcLoc): IrExpr | null {
+export function lowerWorkerMetadata(lowerer: Lowerer, member: string, loc: SrcLoc): IrExpr | null {
   switch (member) {
+    case "SHARE_ENV":
+      // The env option's "share the parent's environment" marker. The worker
+      // unit owns its identity (scr_worker_share_env), so reading it links
+      // that unit like any other worker API.
+      lowerer.usesWorkers = true;
+      return { kind: "libCall", fn: "worker.shareEnv", args: [], type: SYMBOL_T, loc };
     case "isMainThread":
       return { kind: "libCall", fn: "worker.isMainThread", args: [], type: BOOL, loc };
     case "threadId":

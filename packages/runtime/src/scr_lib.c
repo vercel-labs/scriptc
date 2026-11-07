@@ -1167,6 +1167,69 @@ ScrStr *scr_process_exec_path(void) {
   return scr_str_retain(scr_exec_path_str);
 }
 
+/* A NUL-terminated copy of length bytes of text, +1 for the caller: the
+ * shape every process-environment read answers. */
+static char *scr_env_copy_text(const char *text, size_t length) {
+  char *copy = malloc(length + 1);
+  if (!copy) scr_trap("scriptc: out of memory\n");
+  memcpy(copy, text, length);
+  copy[length] = '\0';
+  return copy;
+}
+
+/* One read of the process environment, copied. A worker reads the process
+ * environment through scr_context_getenv, which lands here, so the Win32
+ * environment — what scr_env_set writes on Windows — has to be the source
+ * there too: the CRT's getenv answers the snapshot it took at startup and
+ * would miss either thread's writes. */
+char *scr_env_process_copy(const char *name) {
+#ifdef _WIN32
+  WCHAR *wname = scr_win_wide_utf8(name, strlen(name));
+  if (!wname) return NULL;
+  SetLastError(ERROR_SUCCESS); /* the query reports absence through the error */
+  DWORD need = GetEnvironmentVariableW(wname, NULL, 0);
+  if (need == 0) {
+    /* Only a failed query means the variable is absent. A present-but-empty
+     * value still needs room for its terminating NUL, so a zero size with no
+     * error is present too; Node reports it as '', not undefined. */
+    bool absent = GetLastError() == ERROR_ENVVAR_NOT_FOUND;
+    free(wname);
+    return absent ? NULL : scr_env_copy_text("", 0);
+  }
+  WCHAR *wvalue = malloc((size_t)need * sizeof *wvalue);
+  if (!wvalue) {
+    free(wname);
+    scr_trap("scriptc: out of memory\n");
+  }
+  SetLastError(ERROR_SUCCESS);
+  DWORD got = GetEnvironmentVariableW(wname, wvalue, need);
+  DWORD error = got == 0 ? GetLastError() : ERROR_SUCCESS;
+  free(wname);
+  if (got == 0) {
+    /* A successful read reports the characters it stored, which is 0 for a
+     * present-but-empty value: the NUL went into the buffer and Node keeps
+     * the entry as ''. Only a failed read means the variable vanished
+     * between the query and this call. */
+    free(wvalue);
+    return error == ERROR_SUCCESS ? scr_env_copy_text("", 0) : NULL;
+  }
+  if (got >= need) {
+    /* The value grew past the size the query reported: this read is stale. */
+    free(wvalue);
+    return NULL;
+  }
+  ScrStr *text = scr_fs_win_utf8(wvalue, got);
+  free(wvalue);
+  if (!text) return NULL;
+  char *copy = scr_env_copy_text(text->data, text->len);
+  scr_str_release(text);
+  return copy;
+#else
+  const char *value = getenv(name);
+  return value ? scr_env_copy_text(value, strlen(value)) : NULL;
+#endif
+}
+
 ScrStr *scr_env_get(const ScrStr *name) {
 #ifdef SCR_WORKERS
   if (!scr_context_is_main()) {
@@ -1187,43 +1250,11 @@ ScrStr *scr_env_get(const ScrStr *name) {
    * the entry. */
   char *owned;
   const char *k = scr_str_utf8(name, &owned);
-  WCHAR *wname = scr_win_wide_utf8(k, strlen(k));
+  char *copy = scr_env_process_copy(k);
   scr_str_utf8_end(owned);
-  if (!wname) return NULL;
-  SetLastError(ERROR_SUCCESS); /* the query reports absence through the error */
-  DWORD need = GetEnvironmentVariableW(wname, NULL, 0);
-  if (need == 0) {
-    /* Only a failed query means the variable is absent. A present-but-empty
-     * value still needs room for its terminating NUL, so a zero size with no
-     * error is present too; Node reports it as '', not undefined. */
-    bool absent = GetLastError() == ERROR_ENVVAR_NOT_FOUND;
-    free(wname);
-    return absent ? NULL : scr_str_new("", 0);
-  }
-  WCHAR *wvalue = malloc((size_t)need * sizeof *wvalue);
-  if (!wvalue) {
-    free(wname);
-    scr_trap("scriptc: out of memory\n");
-  }
-  SetLastError(ERROR_SUCCESS);
-  DWORD got = GetEnvironmentVariableW(wname, wvalue, need);
-  DWORD error = got == 0 ? GetLastError() : ERROR_SUCCESS;
-  free(wname);
-  if (got == 0) {
-    /* A successful read reports the characters it stored, which is 0 for a
-     * present-but-empty value: the NUL went into the buffer and Node keeps
-     * the entry as ''. Only a failed read means the variable vanished
-     * between the query and this call. */
-    free(wvalue);
-    return error == ERROR_SUCCESS ? scr_str_new("", 0) : NULL;
-  }
-  if (got >= need) {
-    /* The value grew past the size the query reported: this read is stale. */
-    free(wvalue);
-    return NULL;
-  }
-  ScrStr *s = scr_fs_win_utf8(wvalue, got);
-  free(wvalue);
+  if (!copy) return NULL;
+  ScrStr *s = scr_str_new(copy, strlen(copy));
+  free(copy);
   return s;
 #else
   const char *v = scr_getenv(name->data);
@@ -1291,6 +1322,7 @@ void scr_env_set(const ScrStr *name, const ScrStr *value) {
   const char *k = scr_str_utf8(name, &name_owned), *v = scr_str_utf8(value, &value_owned);
 #ifdef SCR_WORKERS
   if (scr_context_env_set(k, v)) goto done;
+  scr_context_env_process_lock();
 #endif
 #ifdef _WIN32
   /* The WIN32 environment (see scr_env_get): an empty value stays a
@@ -1304,6 +1336,9 @@ void scr_env_set(const ScrStr *name, const ScrStr *value) {
   free(wvalue);
 #else
   setenv(k, v, 1);
+#endif
+#ifdef SCR_WORKERS
+  scr_context_env_process_unlock();
 #endif
   scr_env_tz_changed(name);
 #ifdef SCR_WORKERS
@@ -1319,6 +1354,7 @@ void scr_env_unset(const ScrStr *name) {
   scr_node_debug_capture(name);
 #ifdef SCR_WORKERS
   if (scr_context_env_set(name->data, NULL)) return;
+  scr_context_env_process_lock();
 #endif
 #ifdef _WIN32
   char *owned;
@@ -1329,6 +1365,9 @@ void scr_env_unset(const ScrStr *name) {
   scr_str_utf8_end(owned);
 #else
   unsetenv(name->data);
+#endif
+#ifdef SCR_WORKERS
+  scr_context_env_process_unlock();
 #endif
   scr_env_tz_changed(name);
 }
@@ -1582,6 +1621,10 @@ ScrArr *scr_env_pairs(void) {
   if (local) return local;
 #endif
   ScrArr *out = scr_arr_new(SCR_ELEM_STR, 0);
+#ifdef SCR_WORKERS
+  /* The walk reads the environ array another thread's write can reallocate. */
+  scr_context_env_process_lock();
+#endif
 #ifdef _WIN32
   /* The WIN32 environment block (see scr_env_get): NUL-separated "K=V"
    * entries, double-NUL terminated, read as UTF-16 and converted to the
@@ -1612,6 +1655,9 @@ ScrArr *scr_env_pairs(void) {
     scr_arr_push_ref(out, scr_str_new(*e, (size_t)(eq - *e)));
     scr_arr_push_ref(out, scr_str_new(eq + 1, strlen(eq + 1)));
   }
+#endif
+#ifdef SCR_WORKERS
+  scr_context_env_process_unlock();
 #endif
   return out;
 }
@@ -2629,6 +2675,7 @@ void scr_os_ifaddrs_free(ScrIfaddrs *s) {
  * event-free binaries and in the standalone runtime C tests). */
 SCR_TL void (*scr_process_exit_hook)(double code) = NULL;
 SCR_TL void (*scr_warning_emit_hook)(const char *name, const char *code, ScrStr *message) = NULL;
+SCR_TL void (*scr_warning_leak_hook)(ScrDyn *type, double count, ScrDyn *emitter, ScrStr *message) = NULL;
 SCR_TL bool scr_warning_trace_hint_shown = false;
 SCR_TL void (*scr_stdin_destroy_hook)(void) = NULL;
 

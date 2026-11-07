@@ -406,7 +406,7 @@ export function nodeIslandStripDiag(file: string, construct: string, loc: SrcLoc
     code: "SC8006",
     message: `'${file}' patches a builtin module's CommonJS object, but Node cannot strip its types: ${construct}`,
     loc,
-    hint: "Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports of types; a separate .js module can hold this patch",
+    hint: "Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports and exports of types; a separate .js module can hold this patch",
   };
 }
 
@@ -443,7 +443,7 @@ export function nodeIslandMarkStripDiag(
     code: "SC8006",
     message: `${islandMarkOf(source)} marks '${file}' to run in a Node island, but Node cannot strip its types: ${construct}`,
     loc,
-    hint: "Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports of types; a .js module can run in a Node island as it is",
+    hint: "Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports and exports of types; a .js module can run in a Node island as it is",
   };
 }
 
@@ -564,7 +564,7 @@ export function nodeIslandReaderStripDiag(
     code: "SC8006",
     message: `'${file}' reads '${member}', which island module ${patchFile} patches, but Node cannot strip its types: ${construct}`,
     loc,
-    hint: "Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports of types; a separate .js module can hold this read",
+    hint: "Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports and exports of types; a separate .js module can hold this read",
   };
 }
 

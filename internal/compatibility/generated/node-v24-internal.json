@@ -43131,6 +43131,7 @@
           "tests/corpus/5847-events-cjs-default-max.cjs",
           "tests/corpus/5885-events-max-listener-helpers.ts",
           "tests/corpus/compat-emitter-listener-events.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts",
           "tests/diagnostics/compat-absent-node-apis.ts"
         ]
@@ -44438,6 +44439,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -44489,6 +44491,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -44517,6 +44520,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -44545,6 +44549,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -44573,6 +44578,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -44601,6 +44607,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -44629,6 +44636,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -44657,6 +44665,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -44685,6 +44694,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -44713,6 +44723,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -44741,6 +44752,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -44769,6 +44781,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -44797,6 +44810,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -44825,6 +44839,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -44853,6 +44868,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -44881,6 +44897,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -45135,6 +45152,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -118007,6 +118025,8 @@
           "tests/corpus/native-worker-terminate-loop.ts",
           "tests/corpus/native-worker-terminate-suspended.ts",
           "tests/corpus/native-worker-terminate-wait.ts",
+          "tests/corpus/worker-env-option.ts",
+          "tests/corpus/worker-share-env.ts",
           "tests/diagnostics/compat-absent-node-values.ts"
         ]
       },
@@ -118635,7 +118655,9 @@
           "tests/corpus/native-worker-messages.ts",
           "tests/corpus/native-worker-commonjs.cjs",
           "tests/corpus/native-worker-environment.ts",
-          "tests/corpus/native-worker-roots/main.ts"
+          "tests/corpus/native-worker-roots/main.ts",
+          "tests/corpus/worker-env-option.ts",
+          "tests/corpus/worker-share-env.ts"
         ]
       },
       "anchorSource": "exact"

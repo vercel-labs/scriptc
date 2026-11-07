@@ -647,7 +647,7 @@ function moduleValue(lowerer: Lowerer, module: string, loc: SrcLoc): IrExpr {
       if (callable) add(member, lowerer.checkedBuiltinValue(callable));
     }
     for (const member of Object.keys(BUILTIN_MODULE_CONSTS[module] ?? {})) {
-      const worker = module === "worker_threads" ? lowerWorkerMetadata(member, loc) : null;
+      const worker = module === "worker_threads" ? lowerWorkerMetadata(lowerer, member, loc) : null;
       const value = builtinModuleConstOf(lowerer, module, member);
       if (worker) add(member, worker);
       else if (value !== undefined) add(member, builtinConstLit(value, loc));
@@ -661,7 +661,7 @@ function moduleValue(lowerer: Lowerer, module: string, loc: SrcLoc): IrExpr {
     }
     if (module === "worker_threads") {
       for (const member of ["isInternalThread", "parentPort", "workerData"])
-        add(member, lowerWorkerMetadata(member, loc)!);
+        add(member, lowerWorkerMetadata(lowerer, member, loc)!);
     }
     // A path family, like node:sea, is the whole of Node's object, so
     // another key is absent there too.

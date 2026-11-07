@@ -7456,8 +7456,9 @@ export function lowerVarDecl(
   ) {
     const present = lowerer.stripUndefinedArm(init.type);
     if (!typeEquals(present, type) && lowerer.widthLiftPlan(present, type) !== null) {
-      const widened =
-        type.kind === "union" ? lowerer.withUndefinedArmOf(type) : lowerer.withUndefinedArm(type);
+      // Null for a slot that takes no undefined arm: the checked dynamic
+      // already holds undefined, so it keeps its own type.
+      const widened = lowerer.withUndefinedArmOf(type);
       if (widened && lowerer.widthLiftPlan(init.type, widened) !== null) {
         type = widened;
         runtimeOptional = true;

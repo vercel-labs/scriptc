@@ -835,19 +835,27 @@ function entryPackageProgramRoots7(
  * programs that refer to the global (programRefersToTemporal7). */
 const TEMPORAL_LIB = "lib.esnext.temporal.d.ts";
 
-/** Whether `id` names a member, a module's export or a label: a position
- * that looks no binding up. A declaration's own name is not listed here: it
- * resolves to the declaration. */
+/** Whether `id` names a member, another module's export or a label: a
+ * position that looks no binding up. A declaration's own name is not listed
+ * here: it resolves to the declaration. */
 function namesMemberOrLabel7(id: ts.Identifier): boolean {
   const parent = id.parent;
   if (parent === undefined) return true;
   if (ts.isPropertyAccessExpression(parent)) return parent.name === id;
   if (ts.isQualifiedName(parent)) return parent.right === id;
-  // `import { a as b }` imports the module's `a`; `export { a as b }` exports
-  // the local `a` under the name `b`.
-  if (ts.isImportSpecifier(parent) || ts.isBindingElement(parent))
-    return parent.propertyName === id;
-  if (ts.isExportSpecifier(parent)) return parent.propertyName !== undefined && parent.name === id;
+  // `import { a as b }` imports the module's `a`.
+  if (ts.isImportSpecifier(parent)) return parent.propertyName === id;
+  // `export { a as b }` exports the local `a` under the name `b`; with a
+  // module specifier both names are the other module's, as is the name of
+  // `export * as a from`.
+  if (ts.isExportSpecifier(parent)) {
+    const declaration = parent.parent?.parent;
+    if (declaration !== undefined && ts.isExportDeclaration(declaration)) {
+      if (declaration.moduleSpecifier !== undefined) return true;
+    }
+    return parent.propertyName !== undefined && parent.name === id;
+  }
+  if (ts.isNamespaceExport(parent)) return true;
   if (
     ts.isPropertyAssignment(parent) ||
     ts.isMethodDeclaration(parent) ||
@@ -869,18 +877,43 @@ function namesMemberOrLabel7(id: ts.Identifier): boolean {
   );
 }
 
+/** The meaning the reference at `id` needs from its binding: a type for a
+ * type reference's own name, a namespace for the root of a qualified type
+ * name, a value everywhere else (expressions and `typeof` queries). A
+ * program's type-only declaration of the name binds only the first. */
+function lookupMeaning7(id: ts.Identifier): ts.SymbolFlags {
+  let node: ts.Node = id;
+  let qualified = false;
+  while (
+    node.parent !== undefined &&
+    ts.isQualifiedName(node.parent) &&
+    node.parent.left === node
+  ) {
+    node = node.parent;
+    qualified = true;
+  }
+  if (node.parent !== undefined && ts.isTypeReferenceNode(node.parent))
+    return qualified ? ts.SymbolFlags.Namespace : ts.SymbolFlags.Type;
+  return ts.SymbolFlags.Value;
+}
+
 /** True when the program refers to the temporal global, which only the lib
  * slice declares: an identifier of that name where a binding is looked up
- * and nothing binds it, or a member of that name read from the global object
- * (`globalThis.X`, `globalThis["X"]`). The checker's library set belongs to
- * the whole program, so this stays a program-wide fact; it is decided from
- * the syntax tree and the checker's scopes. A comment, a string, a member
- * that carries the name and a program's own binding of it (a polyfill
- * import) add nothing. The text test only skips files that cannot hold the
- * name. */
+ * and nothing binds it with the meaning the reference needs, or a member of
+ * that name read from the global object (`globalThis.X`, `globalThis["X"]`,
+ * `const { X } = globalThis`). The checker's library set belongs to the
+ * whole program, so this stays a program-wide fact; it is decided from the
+ * syntax tree and the checker's scopes. A comment, a string, a member that
+ * carries the name, another module's export of it and a program's own
+ * binding of it (a polyfill import) add nothing. The text test only skips
+ * files that cannot hold the name. */
 function programRefersToTemporal7(program: ts.Program): boolean {
-  const meaning = ts.SymbolFlags.Value | ts.SymbolFlags.Type | ts.SymbolFlags.Namespace;
-  const unbound = (name: string, at: ts.Node, excludeGlobals: boolean): boolean =>
+  const unbound = (
+    name: string,
+    at: ts.Node,
+    meaning: ts.SymbolFlags,
+    excludeGlobals: boolean,
+  ): boolean =>
     program.getTypeChecker().resolveName(name, meaning, at, excludeGlobals) === undefined;
   // The global object by one of its own names, unless the program shadows it.
   const isGlobalObject = (receiver: ts.Expression): boolean => {
@@ -889,7 +922,22 @@ function programRefersToTemporal7(program: ts.Program): boolean {
     return (
       ts.isIdentifier(inner) &&
       (inner.text === "globalThis" || inner.text === "global") &&
-      unbound(inner.text, inner, true)
+      unbound(inner.text, inner, ts.SymbolFlags.Value, true)
+    );
+  };
+  // `const { X } = globalThis` and `const { X: local } = globalThis` read
+  // the member; `{ other: X }` only declares a local of that name.
+  const destructuredFromGlobal = (element: ts.BindingElement, id: ts.Identifier): boolean => {
+    if ((element.propertyName ?? element.name) !== id) return false;
+    const pattern = element.parent;
+    const declaration = pattern?.parent;
+    return (
+      pattern !== undefined &&
+      ts.isObjectBindingPattern(pattern) &&
+      declaration !== undefined &&
+      ts.isVariableDeclaration(declaration) &&
+      declaration.initializer !== undefined &&
+      isGlobalObject(declaration.initializer)
     );
   };
   for (const sf of program.getImplementationSourceFiles()) {
@@ -900,7 +948,10 @@ function programRefersToTemporal7(program: ts.Program): boolean {
         const parent = node.parent;
         if (parent !== undefined && ts.isPropertyAccessExpression(parent) && parent.name === node)
           found = isGlobalObject(parent.expression);
-        else if (!namesMemberOrLabel7(node)) found = unbound(TEMPORAL_GLOBAL, node, false);
+        else if (parent !== undefined && ts.isBindingElement(parent) && parent.initializer !== node)
+          found = destructuredFromGlobal(parent, node);
+        else if (!namesMemberOrLabel7(node))
+          found = unbound(TEMPORAL_GLOBAL, node, lookupMeaning7(node), false);
       } else if (
         ts.isElementAccessExpression(node) &&
         ts.isStringLiteralLike(node.argumentExpression) &&

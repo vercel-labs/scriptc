@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8929-temporal-reexport/clock.ts",
+  "<repo>/tests/corpus/8929-temporal-reexport/main.ts"
+ ],
+ "diags": []
+}

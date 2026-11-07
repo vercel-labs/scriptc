@@ -56,7 +56,6 @@ import { InternalCompilerError } from "../../errors.js";
  * hierarchy registration. */
 import { fsStreamClassOf, lowerFsStreamNew } from "./builtins/fs-streams.js";
 import { codeGenerationCalleeOf, lowerCodeGenerationCall } from "./code-generation.js";
-import { mentionsTypeParameter } from "./call-signatures.js";
 import { TEMPORAL_GLOBAL } from "../builtin-modules.js";
 import * as ts from "../ts7/adapter.js";
 import { lowerZlibStreamNew, zlibClassName, zlibStreamModeOf } from "./builtins/compression.js";
@@ -8160,6 +8159,49 @@ export function collectVirtualJsMethods(lowerer: Lowerer, files: readonly ts.Sou
   }
 }
 
+/** Whether a declared type names a type parameter anywhere inside it — a
+ * bare `T`, a union arm, a type argument, or a record member or index
+ * signature. `mentionsTypeParameter` answers only for the first three;
+ * this walk also looks through object members, because a slot typed
+ * `{ value: T }` is as unnameable on an ancestor class as a slot typed
+ * `T`. */
+function mentionsTypeParameterInShape(
+  lowerer: Lowerer,
+  type: ts.Type,
+  seen: Set<ts.Type> = new Set(),
+): boolean {
+  if ((type.flags & ts.TypeFlags.TypeParameter) !== 0) return true;
+  if (seen.has(type)) return false;
+  seen.add(type);
+  const mentions = (part: ts.Type | undefined): boolean =>
+    part !== undefined && mentionsTypeParameterInShape(lowerer, part, seen);
+  if (type.isUnionType() || type.isIntersectionType())
+    return ts.constituentTypes(type).some(mentions);
+  if (type.getAliasTypeArguments().some(mentions)) return true;
+  const checker = lowerer.checker;
+  const signatureMentions = (signature: ts.Signature): boolean =>
+    mentions(checker.getReturnTypeOfSignature(signature)) ||
+    signature.getParameters().some((parameter) => mentions(checker.getTypeOfSymbol(parameter)));
+  if (checker.getCallSignatures(type).some(signatureMentions)) return true;
+  if (checker.getConstructSignatures(type).some(signatureMentions)) return true;
+  if ((type.flags & ts.TypeFlags.Object) !== 0) {
+    const object = type as ts.ObjectType;
+    if (
+      (object.objectFlags & ts.ObjectFlags.Reference) !== 0 &&
+      checker.getTypeArguments(object as ts.TypeReference).some(mentions)
+    )
+      return true;
+    if (
+      checker
+        .getPropertiesOfType(type)
+        .some((property) => mentions(checker.getTypeOfSymbol(property)))
+    )
+      return true;
+    if (checker.getIndexInfosOfType(type).some((info) => mentions(info.type))) return true;
+  }
+  return false;
+}
+
 /** Discover TypeScript overrides that ADD trailing omittable parameters
  * (`m(a: A, b?: B)` over `m(a: A)`) before any class shape is collected.
  * The added parameter is part of the override's body signature, but a
@@ -8263,8 +8305,11 @@ export function collectOverrideParamReservations(
             // A slot typed by one of the subclass's type parameters has no
             // type the ancestor can name: reserving it would put an
             // unresolved 'T' on the base's shape and refuse every use of the
-            // base, so the family keeps the exactness fence instead.
-            if (added.some((p) => mentionsTypeParameter(lowerer, lowerer.typeOf(p.name)))) continue;
+            // base, so the family keeps the exactness fence instead. A
+            // record or function shape built over that type parameter is
+            // just as unnameable — `{ value: T }` cannot reserve either.
+            if (added.some((p) => mentionsTypeParameterInShape(lowerer, lowerer.typeOf(p.name))))
+              continue;
             record(declaration, member.parameters.nodes);
           }
         }

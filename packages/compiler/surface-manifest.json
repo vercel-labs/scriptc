@@ -2438,6 +2438,13 @@
       "note": "numeric writes in statement position set the implicit exit status; reads answer the assigned code or undefined; process.exit() reads it"
     },
     {
+      "id": "node-builtin.process.features",
+      "kind": "node-builtin",
+      "name": "process.features",
+      "status": "static",
+      "note": "Node's feature flags as booleans that describe the compiled binary: inspector, debug, uv, tls_ocsp, cached_builtins, quic and typescript are false, the others match Node"
+    },
+    {
       "id": "node-builtin.process.getBuiltinModule",
       "kind": "node-builtin",
       "name": "process.getBuiltinModule",

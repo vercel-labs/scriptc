@@ -294,6 +294,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "process.setTitle": "scr_process_set_title",
   "process.argv0": "scr_process_argv0",
   "process.release": "scr_process_release",
+  "process.features": "scr_process_features",
   "process.execPath": "scr_process_exec_path",
   "process.arch": "scr_process_arch",
   "process.versionsNode": "scr_process_versions_node",

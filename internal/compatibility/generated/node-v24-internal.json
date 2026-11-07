@@ -81908,6 +81908,8 @@
           "tests/corpus/6423-process-exitcode-default.ts",
           "tests/corpus/6424-process-exit-keeps-exitcode.ts",
           "tests/corpus/8830-process-report-island/main.ts",
+          "tests/corpus/8856-process-features-typed/main.ts",
+          "tests/corpus/8856-process-features.ts",
           "tests/corpus/990-process-basics.ts",
           "tests/corpus/compat-core-members.mjs",
           "tests/corpus/compat-core-members.ts",
@@ -83704,8 +83706,12 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "compiler-feature:process.cached_builtins",
+        "tests": [
+          "tests/corpus/8856-process-features.ts",
+          "tests/corpus/8856-process-features-typed/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -83722,8 +83728,12 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "compiler-feature:process.debug",
+        "tests": [
+          "tests/corpus/8856-process-features.ts",
+          "tests/corpus/8856-process-features-typed/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -83740,8 +83750,12 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "compiler-feature:process.inspector",
+        "tests": [
+          "tests/corpus/8856-process-features.ts",
+          "tests/corpus/8856-process-features-typed/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -83763,8 +83777,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "compiler-feature:process.ipv6",
+        "tests": [
+          "tests/corpus/8856-process-features.ts",
+          "tests/corpus/8856-process-features-typed/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -83781,8 +83799,12 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "compiler-feature:process.require_module",
+        "tests": [
+          "tests/corpus/8856-process-features.ts",
+          "tests/corpus/8856-process-features-typed/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -83799,8 +83821,12 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "compiler-feature:process.tls",
+        "tests": [
+          "tests/corpus/8856-process-features.ts",
+          "tests/corpus/8856-process-features-typed/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -83822,8 +83848,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "compiler-feature:process.tls_alpn",
+        "tests": [
+          "tests/corpus/8856-process-features.ts",
+          "tests/corpus/8856-process-features-typed/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -83845,8 +83875,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "compiler-feature:process.tls_ocsp",
+        "tests": [
+          "tests/corpus/8856-process-features.ts",
+          "tests/corpus/8856-process-features-typed/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -83868,8 +83902,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "compiler-feature:process.tls_sni",
+        "tests": [
+          "tests/corpus/8856-process-features.ts",
+          "tests/corpus/8856-process-features-typed/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -83891,8 +83929,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "compiler-feature:process.typescript",
+        "tests": [
+          "tests/corpus/8856-process-features.ts",
+          "tests/corpus/8856-process-features-typed/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -83914,8 +83956,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "compiler-feature:process.uv",
+        "tests": [
+          "tests/corpus/8856-process-features.ts",
+          "tests/corpus/8856-process-features-typed/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },

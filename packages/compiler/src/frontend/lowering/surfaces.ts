@@ -2976,6 +2976,13 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       note: "the compatibility target's release metadata as one stable read-only object",
     },
     {
+      id: "node-builtin.process.features",
+      kind: "node-builtin",
+      name: "process.features",
+      fns: ["process.features"],
+      note: "Node's feature flags as booleans that describe the compiled binary: inspector, debug, uv, tls_ocsp, cached_builtins, quic and typescript are false, the others match Node",
+    },
+    {
       id: "node-builtin.process.chdir",
       kind: "node-builtin",
       name: "process.chdir",

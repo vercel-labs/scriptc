@@ -568,6 +568,14 @@ describe("runtime feature snapshots", () => {
     expect(moduleRuntimeFeatures(untyped).streamPipeEvents).toBe(true);
   });
 
+  test("gates the process.features object on reading it as a value", () => {
+    // Member reads are constants; only the value form links the unit.
+    const reader = module();
+    reader.functions[0]!.body.push(call("process.features"));
+    expect(moduleRuntimeFeatures(reader).processFeatures).toBe(true);
+    expect(moduleRuntimeFeatures(module()).processFeatures).toBe(false);
+  });
+
   test("installs a failed spawn's error object only where an 'error' listener can be registered", () => {
     // The fact decides the emitted scr_child_error_event_install call: a
     // program that only spawns keeps the settle path's hook empty and links

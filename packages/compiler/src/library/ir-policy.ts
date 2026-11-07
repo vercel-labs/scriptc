@@ -42,6 +42,10 @@ const LIB_MODE_REFUSED_PREFIXES: readonly [string, string][] = [
   ["spawnRes.", "the child_process surface"],
   ["process.on", "process signal/exit listeners"],
   ["process.off", "process signal/exit listeners"],
+  // The flags object lives in a gated runtime unit (scr_process_features.c)
+  // that library archives do not carry. A flag read by name
+  // (process.features.tls) is a constant and links nothing.
+  ["process.features", "process.features as a value (read a flag by name instead)"],
   ["stdin.", "the stdin event surface"],
   ["rl.", "the node:readline surface"],
   ["net.", "the node:net surface"],

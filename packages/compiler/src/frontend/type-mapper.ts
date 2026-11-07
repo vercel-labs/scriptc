@@ -4009,6 +4009,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     isStdlibInterface("PropertyDescriptor") ||
     isStdlibInterface("ProcessVersions") ||
     isStdlibInterface("ProcessRelease") ||
+    isStdlibInterface("ProcessFeatures") ||
     isStdlibInterface("ProcessReport")
   )
     return DYN;

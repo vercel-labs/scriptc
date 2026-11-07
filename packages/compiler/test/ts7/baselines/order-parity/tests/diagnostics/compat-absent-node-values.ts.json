@@ -1,0 +1,80 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/compat-absent-node-values.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "Module '\"node:worker_threads\"' has no exported member 'SHARE_ENV'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-node-values.ts",
+    "start": 392,
+    "end": 401
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Property 'setDefaultSnapshotSerializers' does not exist on type '(...args: unknown[]) => unknown'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-node-values.ts",
+    "start": 558,
+    "end": 587
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Property 'setResolveSnapshotPath' does not exist on type '(...args: unknown[]) => unknown'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-node-values.ts",
+    "start": 602,
+    "end": 624
+   },
+   "typeWorld": true,
+   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'setResolveSnapshotPath' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
+  },
+  {
+   "code": "SC0001",
+   "message": "Property 'mainModule' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-node-values.ts",
+    "start": 756,
+    "end": 766
+   },
+   "typeWorld": true,
+   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'mainModule' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
+  },
+  {
+   "code": "SC0001",
+   "message": "Property 'finalization' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-node-values.ts",
+    "start": 777,
+    "end": 789
+   },
+   "typeWorld": true,
+   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'finalization' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
+  },
+  {
+   "code": "SC0001",
+   "message": "Property 'finalization' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-node-values.ts",
+    "start": 838,
+    "end": 850
+   },
+   "typeWorld": true,
+   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'finalization' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
+  },
+  {
+   "code": "SC0001",
+   "message": "Property 'abort' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-node-values.ts",
+    "start": 881,
+    "end": 886
+   },
+   "typeWorld": true,
+   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'abort' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
+  }
+ ]
+}

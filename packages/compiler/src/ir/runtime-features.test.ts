@@ -271,6 +271,117 @@ describe("runtime feature snapshots", () => {
       expect(moduleRuntimeFeatures(reads(key)).dynInvoke, key).toBe(false);
   });
 
+  test("gates the Date annexB dispatch on a dynamic getYear/setYear use", () => {
+    const dyn = { kind: "varRef" as const, localId: "date", type: DYN, loc };
+    const memberRead = (name: string) => ({
+      kind: "exprStmt" as const,
+      loc,
+      expr: {
+        kind: "dynKeyGet" as const,
+        value: dyn,
+        key: { kind: "strLit" as const, value: name, type: STRING, loc },
+        type: DYN,
+        loc,
+      },
+    });
+    // Reading the prototype for its other members keeps the default object.
+    const other = module();
+    other.functions[0]!.body.push(memberRead("getFullYear"), memberRead("toISOString"));
+    expect(moduleRuntimeFeatures(other).dateAnnexB).toBe(false);
+    // A method value taken off a Date or Date.prototype dispatches by name.
+    const read = module();
+    read.functions[0]!.body.push(memberRead("getYear"));
+    expect(moduleRuntimeFeatures(read).dateAnnexB).toBe(true);
+    // A dynamic call names the method the dispatch receives.
+    const invoked = module();
+    invoked.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: {
+        kind: "dynInvoke",
+        recv: dyn,
+        method: "setYear",
+        calleeName: "setYear",
+        args: [],
+        type: DYN,
+        loc,
+      },
+    });
+    // The fact ORs into the JavaScript object model build (t262-da §J), so
+    // a program that reaches them links that build of scr_lib.c rather than
+    // a variant column of its own.
+    expect(jsObjectModelFact(moduleRuntimeFeatures(invoked))).toBe(true);
+    expect(jsObjectModelFact(moduleRuntimeFeatures(other))).toBe(false);
+  });
+
+  test("gates the Date annexB dispatch on a member read through a computed key", () => {
+    const dyn = { kind: "varRef" as const, localId: "date", type: DYN, loc };
+    const key = { kind: "varRef" as const, localId: "key", type: STRING, loc };
+    const computedRead = (receiver: IrExpr, keyExpr: IrExpr = key): IrModule => {
+      const mod = module();
+      mod.functions[0]!.body.push({
+        kind: "exprStmt",
+        loc,
+        expr: {
+          kind: "dynKeyGet",
+          value: receiver,
+          key: keyExpr,
+          type: DYN,
+          loc,
+        },
+      });
+      return mod;
+    };
+    const makesDate = (mod: IrModule): IrModule => {
+      mod.functions[0]!.body.push(call("date.nativeNewValue"));
+      return mod;
+    };
+    // A computed key reaches scr_native_date_methods, which lists both names,
+    // so a Date value in the module needs the dispatch that answers them.
+    expect(moduleRuntimeFeatures(makesDate(computedRead(dyn))).dateAnnexB).toBe(true);
+    // A stored Date constructor builds the same Date without a date call of
+    // its own, so reading the global constructor counts as holding one.
+    const globalConstructor = (name: string): IrModule => {
+      const mod = computedRead(dyn);
+      mod.functions[0]!.body.push({
+        kind: "exprStmt",
+        loc,
+        expr: {
+          kind: "libCall",
+          fn: "dyn.globalConstructor",
+          args: [{ kind: "strLit", value: name, type: STRING, loc }],
+          type: DYN,
+          loc,
+        },
+      });
+      return mod;
+    };
+    expect(moduleRuntimeFeatures(globalConstructor("Date")).dateAnnexB).toBe(true);
+    // A constructor of another builtin builds no Date.
+    expect(moduleRuntimeFeatures(globalConstructor("Error")).dateAnnexB).toBe(false);
+    // A Date-typed receiver answers them without the construction call.
+    expect(
+      moduleRuntimeFeatures(
+        computedRead({ kind: "varRef", localId: "d", type: { kind: "date" }, loc }),
+      ).dateAnnexB,
+    ).toBe(true);
+    // Date.prototype always lists getYear and setYear, so a computed read of
+    // the materialized prototype reaches them too.
+    const prototype = computedRead({
+      kind: "libCall",
+      fn: "dyn.stdlibPrototype",
+      args: [{ kind: "strLit", value: "Date", type: STRING, loc }],
+      type: DYN,
+      loc,
+    });
+    expect(moduleRuntimeFeatures(prototype).dateAnnexB).toBe(true);
+    // Without a Date anywhere, the computed key reads some other object.
+    expect(moduleRuntimeFeatures(computedRead(dyn)).dateAnnexB).toBe(false);
+    // A literal name outside the two keeps the default even beside a Date.
+    const literal = computedRead(dyn, { kind: "strLit", value: "getFullYear", type: STRING, loc });
+    expect(moduleRuntimeFeatures(makesDate(literal)).dateAnnexB).toBe(false);
+  });
+
   test("the JavaScript object model build owns the buffer views registry calls", () => {
     // t262-da §J: the features only a JavaScript source reaches share one
     // runtime feature, whose entry list the slices fill as they land. The

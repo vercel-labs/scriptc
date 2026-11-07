@@ -376,6 +376,31 @@ export function variantsFor(source) {
   if (source === "scr_dyn_integrity.c") {
     withJsObjectModel(variants);
   }
+  // Date.prototype's annexB getYear/setYear in the checked-dynamic dispatch
+  // are part of the JavaScript object model build (t262-da §J):
+  // jsObjectModelFact ORs the dateAnnexB fact into jsObjectModel, so a
+  // program that calls either name dynamically selects that build. scr_lib.c
+  // builds once per flavor (no fs variants since #2765), so its object model
+  // twin is the unit's second object, one per variant; every later feature
+  // sharing the build adds code to these objects and no variants. Every
+  // other program keeps the default object, byte for byte.
+  if (source === "scr_lib.c") {
+    // A static executable cannot load NSS modules, so the os unit's passwd
+    // fallback (os.homedir() with HOME unset, and os.userInfo()) reads
+    // /etc/passwd directly in that build; every dynamically linked build
+    // keeps the unchanged getpwuid_r object. staticLink is the link
+    // plan's fact (link-plan.ts), not a program fact. It is pushed before
+    // the object model twins, so a static executable whose program selects
+    // the object model build links one object that carries both defines:
+    // with two one-condition builds the selection would take the object
+    // model one and lose SCR_STATIC_PASSWD.
+    variants.push({
+      id: "static-passwd",
+      when: { staticLink: true },
+      defines: ["SCR_STATIC_PASSWD"],
+    });
+    withJsObjectModel(variants);
+  }
   // Programs that assign process.emitWarning link the replacement-aware
   // warning paths; every other program keeps the default object.
   if (source === "scr_async_dyn.c") {
@@ -639,18 +664,6 @@ export function variantsFor(source) {
       id: "cp-options-err-fields",
       when: { childOptionExt: true, childErrorFields: true },
       defines: ["SCR_CHILD_CP_OPTIONS", "SCR_CHILD_ERR_FIELDS"],
-    });
-  }
-  // A static executable cannot load NSS modules, so the os unit's passwd
-  // fallback (os.homedir() with HOME unset, and os.userInfo()) reads
-  // /etc/passwd directly in that build; every dynamically linked build
-  // keeps the unchanged getpwuid_r object. staticLink is the link
-  // plan's fact (link-plan.ts), not a program fact.
-  if (source === "scr_lib.c") {
-    variants.push({
-      id: "static-passwd",
-      when: { staticLink: true },
-      defines: ["SCR_STATIC_PASSWD"],
     });
   }
   return variants;

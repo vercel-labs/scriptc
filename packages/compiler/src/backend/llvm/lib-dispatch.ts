@@ -24,6 +24,7 @@ import {
   USES_TIMERS_LIB_FNS,
 } from "./lib-shared.js";
 import { isDynUndefined } from "../../ir/runtime-features.js";
+import { everyStmtList } from "../../ir/traverse.js";
 import { DYN_KIND } from "./dyn.js";
 import { CLASS_KEY_LEN_MIX } from "../../ir/class-key-index.js";
 import { caBytes, callRuntime, ptr } from "./lib-abi.js";
@@ -1549,7 +1550,14 @@ function allTupleAdapterFor(host: LlvmEmitterContext, fnName: string, tuple: IrT
   host.declare(`declare void @scr_promise_fulfill_ref(ptr, ptr, ptr, ptr, ptr)`);
   // A builder that checks a checked-dynamic entry into its tuple position
   // can throw: the result rejects with that error, and there is no tuple.
-  const throws = host.mayThrow.has(fnName);
+  // Every other builder only reads fulfilled values and keeps its adapter.
+  const builder = host.fnByName.get(fnName);
+  const throws =
+    builder !== undefined &&
+    !everyStmtList(builder.body, {
+      expr: (e) => e.kind !== "dynCheck",
+      stmt: () => true,
+    });
   if (throws) {
     host.declare(`declare zeroext i1 @scr_exc_pending()`);
     host.declare(`declare void @scr_promise_reject_pending(ptr)`);

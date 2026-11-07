@@ -171,6 +171,40 @@ function scheduledArgumentsIndex(lowerer: Lowerer, call: ts.Expression): number 
   return -1;
 }
 
+/** The type of the callback parameter at `index` in the first overload of
+ * the callee that the call's other arguments select, or null. A callee picks
+ * what it passes to a listener by those arguments (`on("finish", listener)`
+ * passes what the "finish" event carries), whatever parameters the listener
+ * declares; the overload the checker resolved also had to fit the listener,
+ * so for a listener with one parameter it is the catch-all one. */
+function selectedCallbackType(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  index: number,
+): ts.Type | null {
+  const { checker } = lowerer;
+  const args = call.arguments.nodes;
+  for (const signature of checker.getCallSignatures(lowerer.typeOf(call.expression))) {
+    const parameters = signature.getParameters();
+    if (parameters.length < args.length) continue;
+    let selected = true;
+    for (let i = 0; i < args.length && selected; i++) {
+      const declaration = parameters[i]!.valueDeclaration;
+      if (declaration === undefined || !ts.isParameter(declaration) || declaration.dotDotDotToken)
+        selected = false;
+      else if (i !== index)
+        selected =
+          !ts.isSpreadElement(args[i]!) &&
+          checker.isTypeAssignableTo(
+            lowerer.typeOf(args[i]!),
+            checker.getTypeOfSymbol(parameters[i]!),
+          );
+    }
+    if (selected) return checker.getTypeOfSymbol(parameters[index]!);
+  }
+  return null;
+}
+
 /** Whether the static types prove that the executor of a `new Promise` of a
  * checked-dynamic value never gives its resolve function a promise or a
  * thenable. The executor is a function written in place, and every use of
@@ -225,8 +259,12 @@ export function executorResolvesPlainly(lowerer: Lowerer, executor: ts.Expressio
         if (ts.isSpreadElement(first)) return false;
         return !mayResolveThroughThen(lowerer, lowerer.typeOf(first));
       }
-      // The parameter of the overload the call resolved to: the contextual
-      // type of an argument is the union over every overload.
+      const selected = ts.isCallExpression(parent)
+        ? selectedCallbackType(lowerer, parent, index)
+        : null;
+      if (selected !== null) return receivesPlainValue(lowerer, selected);
+      // Otherwise the parameter of the overload the call resolved to: the
+      // contextual type of an argument is the union over every overload.
       const parameter = checker.getResolvedSignature(parent)?.getParameters()[index];
       const declaration = parameter?.valueDeclaration;
       if (

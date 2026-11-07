@@ -28,6 +28,7 @@ function resolvingCalls(llvm: string): number {
 
 const prelude = `
 import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 const emitter = new EventEmitter();
 class Box { value = 1; }
 class Lazy extends Box { then(done: (v: number) => void): void { done(this.value); } }
@@ -51,6 +52,9 @@ async function main(): Promise<void> {
   // A \`then\` member that cannot be called makes no thenable.
   await new Promise((resolve) => { resolve({ kind: "if", then: [1], else_: [2] }); });
   await new Promise((resolve) => { (resolve)(3); });
+  // The listener of an event that carries nothing.
+  const sink = new PassThrough();
+  await new Promise((resolve) => { sink.on("finish", resolve); sink.end(); });
   await new Promise<void>((resolve) => setTimeout(resolve, 1));
   await new Promise<number>((resolve) => { resolve(4); });
   console.log(emitter.listenerCount("go"), untyped() === 1);

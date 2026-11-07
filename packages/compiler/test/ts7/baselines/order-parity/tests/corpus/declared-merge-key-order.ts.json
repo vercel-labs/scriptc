@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/declared-merge-key-order.ts"
+ ],
+ "diags": []
+}

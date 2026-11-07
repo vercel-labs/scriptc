@@ -6040,11 +6040,19 @@ export class Lowerer {
     );
   }
 
+  /** A program type whose values may be an island's own object (a live
+   * island view): its member reads may be answered by the island. */
+  receivesIslandValues(type: ts.Type): boolean {
+    return this.verifyProtocol("receivesIslandValues", type, (protocols) =>
+      protocols.receivesIslandValues(type),
+    );
+  }
+
   /** The round's shared class protocol index (lowering-facts.ts): a pure
    * analysis of (checker, moduleOrder). With SCRIPTC_LOWERING_FACTS_VERIFY
    * this Lowerer builds its own index and every answer is compared. */
   private verifyProtocol(
-    query: "usesCheckedIdentity" | "collectionView",
+    query: "usesCheckedIdentity" | "collectionView" | "receivesIslandValues",
     type: ts.Type,
     ask: (protocols: ClassProtocols) => boolean,
   ): boolean {

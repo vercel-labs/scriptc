@@ -31,6 +31,7 @@ import {
   NULL_T,
   STRING,
   VOID,
+  typeEquals,
   type IrExpr,
   type IrGlobal,
   type IrLocal,
@@ -59,6 +60,8 @@ import {
   type NodeIslandSet,
 } from "../../node-islands/boundary.js";
 import { stripTypeWrappers } from "./typed-arguments.js";
+import { comparedLiteral, defaultedOnward, optionalReceiver, totalUse } from "./total-uses.js";
+import { hasOptionalChainGuard } from "./expressions/optional-chains.js";
 import { thenReader } from "./checked-promise-all.js";
 import { dynCompoundValue } from "./lower-exprs.js";
 import { COMPOUND_ASSIGN_OPS } from "./surfaces.js";
@@ -738,28 +741,15 @@ function islandBindingValue(
   }
 }
 
-/* The island read whose value `islandUnitComparison` wants as the island
- * answered it, before it meets its declared type. Set for one synchronous
- * lowering of that node. */
-let rawIslandRead: ts.Node | null = null;
-
-/** `null` or the global `undefined`, by name. */
-function unitLiteralOf(lowerer: Lowerer, node: ts.Expression): "null" | "undefined" | null {
-  const inner = stripTypeWrappers(node);
-  if (inner.kind === ts.SyntaxKind.NullKeyword) return "null";
-  if (!ts.isIdentifier(inner) || inner.text !== "undefined") return null;
-  return (lowerer.typeOf(inner).flags & ts.TypeFlags.Undefined) !== 0 ? "undefined" : null;
-}
-
-/** `read === undefined`, `read !== null`, `read == null`, `read != null`
- * where `read` is a member read, an index or a call on an island value: the
- * value the island answered decides, before it meets the declared type. A
- * missing key or index reads undefined whatever the declaration says
- * (TypeScript types `table[key]` and `list[i]` as the value type), and the
- * native unit comparison folds an operand whose type has no such arm to a
+/** `read === literal`, `read !== literal`, and `read == null`, `read != null`,
+ * where `read` is a member read, an index or a call on an island value, or
+ * a member read on a live island view: the value the island answered
+ * decides, before it meets the declared type (total-uses.ts). A missing key
+ * or an absent member reads undefined whatever the declaration says, and
+ * the native comparison folds an operand whose type has no such arm to a
  * constant, so `table[key] === undefined` answered false for a key the
  * island does not have. */
-function islandUnitComparison(
+function unconvertedComparison(
   lowerer: Lowerer,
   expr: ts.BinaryExpression,
   loc: SrcLoc,
@@ -771,33 +761,40 @@ function islandUnitComparison(
   const loose =
     op === ts.SyntaxKind.EqualsEqualsToken || op === ts.SyntaxKind.ExclamationEqualsToken;
   if (!strict && !loose) return null;
-  const leftUnit = unitLiteralOf(lowerer, expr.left);
-  const rightUnit = unitLiteralOf(lowerer, expr.right);
-  if ((leftUnit === null) === (rightUnit === null)) return null;
-  const unit = leftUnit ?? rightUnit!;
-  const read = stripTypeWrappers(leftUnit === null ? expr.left : expr.right);
+  const leftLiteral = comparedLiteral(lowerer, expr.left);
+  const rightLiteral = comparedLiteral(lowerer, expr.right);
+  if ((leftLiteral === null) === (rightLiteral === null)) return null;
+  const literal = leftLiteral ?? rightLiteral!;
+  if (loose && literal === "scalar") return null;
+  const read = stripTypeWrappers(leftLiteral === null ? expr.left : expr.right);
+  if (!islandRooted(lowerer, read) && !viewMemberRead(lowerer, read)) return null;
   if (
     !ts.isPropertyAccessExpression(read) &&
     !ts.isElementAccessExpression(read) &&
     !ts.isCallExpression(read)
   )
     return null;
-  if (!islandRooted(lowerer, read)) return null;
-  const saved = rawIslandRead;
-  rawIslandRead = read;
-  let raw: IrExpr | null;
-  try {
-    raw = lowerIslandExpr(lowerer, read);
-  } finally {
-    rawIslandRead = saved;
-  }
+  const raw = lowerer.lowerExpr(read);
   // A form that did not end in the read itself (an optional chain, an
   // awaited load) keeps the ordinary comparison.
-  if (raw === null || raw.type.kind !== "dyn") return null;
-  lowerer.usesNodeIsland = true;
+  if (raw.type.kind !== "dyn") return null;
   const negated =
     op === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
     op === ts.SyntaxKind.ExclamationEqualsToken;
+  if (literal === "scalar") {
+    // Source order: the literal has no effects, the read may.
+    const scalar = lowerer.lowerExpr(leftLiteral === null ? expr.right : expr.left);
+    if (scalar.type.kind !== "f64" && scalar.type.kind !== "string" && scalar.type.kind !== "bool")
+      return null;
+    return {
+      kind: "dynScalarEq",
+      left: leftLiteral === null ? raw : scalar,
+      right: leftLiteral === null ? scalar : raw,
+      ...(negated ? { negated: true as const } : {}),
+      type: BOOL,
+      loc,
+    };
+  }
   const dynNull: IrExpr = {
     kind: "dynFrom",
     value: { kind: "unitLit", unit: "null", type: NULL_T, loc },
@@ -812,7 +809,7 @@ function islandUnitComparison(
     type: BOOL,
     loc,
   });
-  if (strict) return equals(raw, unit, negated);
+  if (strict) return equals(raw, literal, negated);
   // `== null` holds for both units: the read is evaluated once.
   const held = lowerer.declareHiddenLocal("%islandUnit", DYN);
   const ref = varRef(held.id, DYN, loc);
@@ -832,11 +829,188 @@ function islandUnitComparison(
   };
 }
 
+/** A member read on a live island view: a property of a program type that
+ * receives island values (ClassProtocols.markIslandView), read from a
+ * TypeScript source. The object behind the view may be the island's, so the
+ * member holds what the island put there, whatever its declaration says. A
+ * member that is itself a view, `unknown` or an island type is that value
+ * already and has no conversion to skip. */
+function viewMemberRead(
+  lowerer: Lowerer,
+  node: ts.Expression,
+): node is ts.PropertyAccessExpression {
+  if (!ts.isPropertyAccessExpression(node) || !ts.isIdentifier(node.name)) return false;
+  if (node.questionDotToken !== undefined || hasOptionalChainGuard(node.expression)) return false;
+  if (isJsSourceFile(ts.getSourceFileOfNode(node))) return false;
+  const receiver = lowerer.typeOf(node.expression);
+  if (!lowerer.receivesIslandValues(receiver)) return false;
+  const property = lowerer.checker.getPropertyOfType(receiver, node.name.text);
+  const declarations = property ? property.declarations : [];
+  if (declarations.length === 0 || !declarations.every((d) => ts.isPropertySignature(d)))
+    return false;
+  const mapped = lowerer.mapTypeOf(lowerer.typeOf(node));
+  return mapped === null || (mapped.kind !== "dyn" && mapped.kind !== "void");
+}
+
+/** Whether the conversion of an island value to `mapped` can be done on the
+ * result of `read || d` or `read ?? d` instead of on the read
+ * (convertedIslandValue): a copied value, a promise that is adopted, an
+ * array of copied values. A type whose crossing is a handle rule, a
+ * refusal or a cast that only the program's own object passes keeps its
+ * conversion at the read. */
+function deferredConversion(lowerer: Lowerer, mapped: IrType): boolean {
+  if (copiedType(lowerer, mapped) || copyableArrayType(lowerer, mapped)) return true;
+  return (
+    mapped.kind === "promise" &&
+    (mapped.inner.kind === "dyn" ||
+      copiedType(lowerer, mapped.inner) ||
+      copiedArrayType(lowerer, mapped.inner))
+  );
+}
+
+/** The member of a live island view where nothing needs it at its declared
+ * type (total-uses.ts): the value the object behind the view answers,
+ * unconverted. Every other read of the member converts to its type at that
+ * point (narrowed behind a guard) and throws when the value is not one. */
+function unconvertedViewRead(lowerer: Lowerer, expr: ts.Expression, loc: SrcLoc): IrExpr | null {
+  // The position first: it is syntax, and it rules out most member reads
+  // before any type is asked for.
+  if (!totalUse(lowerer, expr) || !viewMemberRead(lowerer, expr)) return null;
+  if (defaultedOnward(lowerer, expr) && !deferredRead(lowerer, expr)) return null;
+  const receiver = lowerer.lowerExpr(expr.expression);
+  if (receiver.type.kind !== "dyn") return null;
+  const raw: IrExpr = {
+    kind: "dynKeyGet",
+    value: receiver,
+    key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+    type: DYN,
+    loc,
+  };
+  return guardedReceiver(lowerer, raw, expr, lowerer.mapTypeOf(lowerer.typeOf(expr))) ?? raw;
+}
+
+/** The receiver of a `?.` whose type is a copied value (`label?.length`,
+ * `count?.toFixed(1)`): the guarded steps go on to use it at its type, so
+ * it converts here, to its declared type with `undefined` admitted. An
+ * absent member then takes the guard's short way out, as in Node, and the
+ * steps after the guard are the typed ones they were. Null for any other
+ * receiver: an island object, array or function answers its own members. */
+function guardedReceiver(
+  lowerer: Lowerer,
+  raw: IrExpr,
+  node: ts.Expression,
+  mapped: IrType | null,
+): IrExpr | null {
+  if (mapped === null || !copiedType(lowerer, mapped) || !optionalReceiver(node)) return null;
+  const admitted = lowerer.runtimeOptionalType(mapped);
+  const converted = lowerer.coerceToExpected(raw, admitted);
+  return typeEquals(converted.type, admitted) ? converted : null;
+}
+
+/** Whether `node` lowers to the island's own value where its use is total
+ * (total-uses.ts) although its type has a native representation, and whose
+ * conversion can be made up for on the value it becomes
+ * (deferredConversion): a read fromIsland would otherwise convert, a view
+ * member, or a `||`, `??` or `&&` over one, whose operands share its use.
+ * Type-only wrappers hand the value on (lowerIslandExpr). */
+function yieldsUnconverted(lowerer: Lowerer, node: ts.Expression): boolean {
+  const inner = stripTypeWrappers(node);
+  if (ts.isBinaryExpression(inner)) {
+    const op = inner.operatorToken.kind;
+    return (
+      (op === ts.SyntaxKind.BarBarToken ||
+        op === ts.SyntaxKind.QuestionQuestionToken ||
+        op === ts.SyntaxKind.AmpersandAmpersandToken) &&
+      (yieldsUnconverted(lowerer, inner.left) || yieldsUnconverted(lowerer, inner.right))
+    );
+  }
+  if (viewMemberRead(lowerer, inner)) return deferredRead(lowerer, inner);
+  if (!islandRooted(lowerer, inner)) return false;
+  const type = lowerer.typeOf(inner);
+  if (isForeignType(lowerer.nodeIslands!, type, lowerer.checker)) return false;
+  if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return false;
+  return deferredRead(lowerer, inner);
+}
+
+/** deferredConversion for the type of the read `node`. */
+function deferredRead(lowerer: Lowerer, node: ts.Expression): boolean {
+  const mapped = lowerer.mapTypeOf(lowerer.typeOf(node));
+  return mapped !== null && deferredConversion(lowerer, mapped);
+}
+
+/** The `||` and `??` expressions being lowered by unconvertedDefault. */
+const defaultsInProgress = new Set<ts.Node>();
+
+/** `read || d` and `read ?? d` where `read` stays the island's own value
+ * (yieldsUnconverted) and the expression's value goes on to a use that
+ * needs a typed one: the operator decides on the island's value, as in
+ * Node, and its result converts to the expression's type. An absent or null
+ * member takes the default; a value of another type than the declaration
+ * says still fails the conversion. */
+function unconvertedDefault(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr | null {
+  const op = expr.operatorToken.kind;
+  if (op !== ts.SyntaxKind.BarBarToken && op !== ts.SyntaxKind.QuestionQuestionToken) return null;
+  if (defaultsInProgress.has(expr)) return null;
+  // In a total use of its own the result stays unconverted for that use.
+  if (totalUse(lowerer, expr)) return null;
+  if (!yieldsUnconverted(lowerer, expr.left)) return null;
+  defaultsInProgress.add(expr);
+  let value: IrExpr;
+  try {
+    value = lowerer.lowerExpr(expr);
+  } finally {
+    defaultsInProgress.delete(expr);
+  }
+  if (value.type.kind !== "dyn") return value;
+  const mapped = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  if (mapped === null || mapped.kind === "dyn" || mapped.kind === "void") return value;
+  return convertedIslandValue(lowerer, value, mapped);
+}
+
+/** An island value, or the program's default that took its place, at the
+ * native type `mapped`: fromIsland's conversions without its refusals. A
+ * promise is adopted and an array of copied values is copied (both leave a
+ * native value as it is); everything else meets the checked conversion.
+ * The plain conversion alone would refuse the island's array, which
+ * `list() ?? []` has always received as a copy. */
+function convertedIslandValue(lowerer: Lowerer, value: IrExpr, mapped: IrType): IrExpr {
+  const loc = value.loc;
+  if (
+    mapped.kind === "promise" &&
+    (mapped.inner.kind === "dyn" || copiedType(lowerer, mapped.inner))
+  ) {
+    const promise: IrExpr = {
+      kind: "libCall",
+      fn: "dyn.promiseResolve",
+      args: [value, thenReader(lowerer, loc)],
+      type: { kind: "promise", inner: DYN },
+      loc,
+    };
+    return mapped.inner.kind === "dyn" ? promise : lowerer.coerceToExpected(promise, mapped);
+  }
+  if (mapped.kind === "promise" && copiedArrayType(lowerer, mapped.inner))
+    return lowerer.coerceToExpected(
+      {
+        kind: "libCall",
+        fn: "nodeIsland.awaitCopy",
+        args: [value],
+        type: { kind: "promise", inner: DYN },
+        loc,
+      },
+      mapped,
+    );
+  if (copyableArrayType(lowerer, mapped))
+    return lowerer.coerceToExpected(
+      { kind: "libCall", fn: "nodeIsland.copyArrays", args: [value], type: DYN, loc },
+      mapped,
+    );
+  return lowerer.coerceToExpected(value, mapped);
+}
+
 /** An island value (dyn) at the declared type of `node`: island handles
  * stay dyn (FOREIGN), primitives and strings meet their declared type
  * through the checked conversion. */
 function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr {
-  if (node === rawIslandRead) return raw;
   const tsType = lowerer.typeOf(node);
   const islands = lowerer.nodeIslands!;
   if (isForeignType(islands, tsType, lowerer.checker)) return raw;
@@ -844,7 +1018,21 @@ function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr 
   // A conversion whose value nobody reads is never a copy the program can
   // observe: `obj.k = v;` and `void obj.k` (the read itself stays in raw).
   if (isDiscarded(node)) return raw;
+  // A use that answers for every JavaScript value (a condition, `||`, `??`,
+  // `== null`, a comparison with a literal, `typeof`, `?.`, a template)
+  // takes the island's value as it is: the island's answer decides, as in
+  // Node, also when the member is absent although its declaration says
+  // `T | null`. The read converts where a typed value is needed.
+  // Where the value can still go on as the result of `||` or `??`, that
+  // result has to become the typed value this read would have been, which
+  // only the conversions of convertedIslandValue can do after the fact;
+  // every other type is converted, or refused, here as before.
   const mapped = lowerer.mapTypeOf(tsType);
+  if (
+    totalUse(lowerer, node) &&
+    (!defaultedOnward(lowerer, node) || (mapped !== null && deferredConversion(lowerer, mapped)))
+  )
+    return guardedReceiver(lowerer, raw, node, mapped) ?? raw;
   if (mapped === null) {
     // An intersection of containers (`Choice[] & GenChoice[]`: the
     // island's array extended by the caller's own type) has no native
@@ -1960,6 +2148,19 @@ function islandHandleLocal(lowerer: Lowerer, ident: ts.Identifier): IrLocal | nu
 export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr | null {
   if (lowerer.nodeIslands === null) return null;
   const loc = locOf(expr);
+  // `read!`, `read as T` and `read satisfies T` in a use that answers for
+  // every value (total-uses.ts): the wrapper changes no value, so the
+  // island's own value goes on to that use as it is. Anywhere else the
+  // wrapper's operand converts to its declared type first, as before.
+  if (
+    (ts.isNonNullExpression(expr) ||
+      ts.isAsExpression(expr) ||
+      ts.isTypeAssertion(expr) ||
+      ts.isSatisfiesExpression(expr)) &&
+    totalUse(lowerer, expr) &&
+    yieldsUnconverted(lowerer, expr.expression)
+  )
+    return lowerer.lowerExpr(expr.expression);
   if (ts.isIdentifier(expr)) {
     const subclass = islandSubclassGlobal(lowerer, expr);
     if (subclass !== null) {
@@ -2021,7 +2222,7 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
   if (ts.isPropertyAccessExpression(expr) && ts.isIdentifier(expr.name)) {
     const caughtRead = islandCaughtRead(lowerer, expr);
     if (caughtRead !== null) return caughtRead;
-    if (!isForeignExpr(lowerer, expr.expression)) return null;
+    if (!isForeignExpr(lowerer, expr.expression)) return unconvertedViewRead(lowerer, expr, loc);
     lowerer.usesNodeIsland = true;
     const target = islandReceiver(lowerer, expr.expression, expr.name.text, loc);
     if (target.direct !== undefined) return fromIsland(lowerer, target.direct, expr);
@@ -2205,8 +2406,10 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
       const ctor = lowerer.lowerExpr(expr.right);
       return { kind: "libCall", fn: "nodeIsland.instanceof", args: [value, ctor], type: BOOL, loc };
     }
-    const unitTest = islandUnitComparison(lowerer, expr, loc);
-    if (unitTest !== null) return unitTest;
+    const comparison = unconvertedComparison(lowerer, expr, loc);
+    if (comparison !== null) return comparison;
+    const defaulted = unconvertedDefault(lowerer, expr);
+    if (defaulted !== null) return defaulted;
     if (isIslandIdentityTest(lowerer, expr)) {
       lowerer.usesNodeIsland = true;
       return {

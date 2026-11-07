@@ -62,7 +62,8 @@ import {
 } from "../library/prepare.js";
 import { clearFenceEvalCaches } from "../library/fence-eval.js";
 import { archiveNativeLibrary, localizeNativeLibrary, linkNativeWasmLibrary } from "./library.js";
-import type { NativeToolchain } from "./toolchain.js";
+import { compilerInstalledPackage, type NativeToolchain } from "./toolchain.js";
+import { setIslandBuildHost } from "../node-islands/host.js";
 import { evaluateNativeComptime } from "./comptime.js";
 import { contentDigest, fileDigest, partsDigest, type NativeCache } from "./cache.js";
 import {
@@ -161,6 +162,14 @@ function nativeProfile(options: CompileRequestOptions): NativeProfileOptions | u
 }
 
 /** Shared frontend semantics with native processes for code generation and linking. */
+/** What a build reports beside its result. */
+interface NativeCompileSink {
+  warnings: ScrDiagnostic[];
+  sources: Map<string, string>;
+  /** The Node islands the build ran (CompileWarnings.islands). */
+  islands?: { packages: string[]; modules: string[] };
+}
+
 export class NativeCompiler {
   private readonly frontend: FrontendFactory;
   /** The shared code generation server this build's helper commands run on,
@@ -179,6 +188,13 @@ export class NativeCompiler {
       toolchain.compilerVersion,
       toolchain.target.llvmTriple,
     );
+    // Island builds (executable/islands.ts) find the libnode pack installed
+    // with this compiler and build their probe host from its runtime sources.
+    setIslandBuildHost({
+      compilerPackage: (name) => compilerInstalledPackage(toolchain, name),
+      runtimeSources: () =>
+        toolchain.runtimeSourceRoot === undefined ? null : join(toolchain.runtimeSourceRoot, "src"),
+    });
     const evaluator = toolchain.comptimeExecutable;
     this.frontend = (entry, npmStatic, externalTypes, libraryNpmStatic, options) =>
       runNativeFrontend(
@@ -461,20 +477,21 @@ export class NativeCompiler {
   }
 
   compile(entry: string, options: CompileRequestOptions): CompileRequestResult {
-    const sink: { warnings: ScrDiagnostic[]; sources: Map<string, string> } = {
-      warnings: [],
-      sources: new Map(),
-    };
+    const sink: NativeCompileSink = { warnings: [], sources: new Map() };
     const result = this.compileWithWarnings(entry, options, sink);
-    // Divergence warnings ride a successful result (never a failure).
-    if (!result.ok || sink.warnings.length === 0) return result;
-    return { ...result, warnings: sink.warnings, sourceTexts: sink.sources };
+    // Divergence warnings and the islands the build ran ride a successful
+    // result (never a failure).
+    if (!result.ok) return result;
+    const islands = sink.islands === undefined ? {} : { islands: sink.islands };
+    if (sink.warnings.length === 0)
+      return sink.islands === undefined ? result : { ...result, ...islands };
+    return { ...result, ...islands, warnings: sink.warnings, sourceTexts: sink.sources };
   }
 
   private compileWithWarnings(
     entry: string,
     options: CompileRequestOptions,
-    sink: { warnings: ScrDiagnostic[]; sources: Map<string, string> },
+    sink: NativeCompileSink,
   ): CompileRequestResult {
     const timing = compilationTiming();
     const toolchain = this.toolchain;
@@ -581,6 +598,7 @@ export class NativeCompiler {
         sink.warnings = prepared.warnings;
         sink.sources = sourceTexts;
       }
+      if (prepared.islands !== undefined) sink.islands = prepared.islands;
       mkdirSync(dirname(output), { recursive: true });
       stage = mkdtempSync(join(dirname(output), ".scriptc-native-"));
       const stagedOutput = join(stage, basename(output));
@@ -835,8 +853,15 @@ export class NativeCompiler {
       if (target.platform === "darwin" && (optimization !== "dev" || options.strip))
         rmSync(output + ".dSYM", { recursive: true, force: true });
       // A build that found divergence warnings lowers again (their sources
-      // are not part of the record), so it records nothing.
-      if (unchangedKey !== null && probes !== null && sink.warnings.length === 0) {
+      // are not part of the record), so it records nothing. Neither does a
+      // program that calls into Node: its libnode pack is not an input the
+      // record observes (the frontend cache entry checks it, prepare.ts).
+      if (
+        unchangedKey !== null &&
+        probes !== null &&
+        sink.warnings.length === 0 &&
+        features.nodeIsland !== true
+      ) {
         // The pack's artifacts are this executable's link inputs and run-time
         // data; a pack edited in place changes them, and only their
         // identities tell.

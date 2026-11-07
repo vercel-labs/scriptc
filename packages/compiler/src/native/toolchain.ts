@@ -22,6 +22,9 @@ export interface NativeToolchain {
   helperPackageRoot: string;
   runtimePackRoot: string;
   runtimeSourceRoot?: string;
+  /** The directory the installation's own packages are found from: the
+   * manifest's. */
+  installRoot?: string;
   linker: string;
   linkerArgs: string[];
   dsymutil: string;
@@ -107,6 +110,13 @@ function installedPackage(start: string, packageName: string): string | undefine
     if (parent === directory) return undefined;
     directory = parent;
   }
+}
+
+/** The directory of package `name` installed with this compiler (found as
+ * its other packages are, from the manifest's directory upward), or null. */
+export function compilerInstalledPackage(toolchain: NativeToolchain, name: string): string | null {
+  if (toolchain.installRoot === undefined) return null;
+  return installedPackage(toolchain.installRoot, name) ?? null;
 }
 
 export function loadNativeToolchain(
@@ -242,6 +252,7 @@ export function loadNativeToolchain(
         host.platform === "win32" ? "scriptc-llvm-codegen.exe" : "scriptc-llvm-codegen",
       ),
     runtimePackRoot: pathFrom(root, env["SCRIPTC_RUNTIME_PACK"] ?? runtimePath!),
+    installRoot: root,
     ...(manifest.runtime_sources === undefined
       ? {}
       : { runtimeSourceRoot: pathFrom(root, manifest.runtime_sources) }),

@@ -17,7 +17,7 @@
  * thrown Error crosses as its nearest intrinsic class with its message and
  * string `code`. */
 import { readFileSync, realpathSync, statSync } from "node:fs";
-import { resolveFrom } from "../../node-islands/resolve.js";
+import { resolveFrom } from "../../node-islands/host.js";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import * as ts from "../ts7/adapter.js";
 import { isJsSourceFile, locOf } from "../program.js";

@@ -1,4 +1,3 @@
-import { createRequire } from "node:module";
 import { setShapeOverlayMemoDir, shapeOverlayEnabled } from "./frontend/shape-inference/index.js";
 import { jsInferenceEnabled } from "./frontend/js-inference.js";
 import {
@@ -17,9 +16,10 @@ import { optimizationField, type NativeOptimization } from "./backend/optimizati
 import { targetCpuField, targetCpuTargetRefusal } from "./backend/target-cpu.js";
 import { compilationTiming, type CompilationTiming, type TimingClock } from "./timing.js";
 import { prepareExecutableModule, type PreparedExecutableModule } from "./executable/prepare.js";
+import { finishNodeIslands } from "./executable/islands.js";
 import type { LowerStats } from "./frontend/lowering/lowerer.js";
 import { nodeIslandOptionsKey } from "./node-islands/policy.js";
-import { setIslandResolver } from "./node-islands/resolve.js";
+import { installNodeIslandBuildHost } from "./node-islands/host-node.js";
 import {
   prepareLibrary,
   libraryLocalizeSymbols,
@@ -159,14 +159,10 @@ import {
   ffiNativeBuildDiag,
   iceDiag,
   nativeCodegenDiag,
-  nodeIslandNodeDiag,
-  nodeIslandModuleDiag,
   isTypePatchCode,
   type ScrDiagnostic,
 } from "./diagnostics/diagnostic.js";
-import { libnodeCacheKey, libnodeProbePack, libnodeRecord } from "./node-islands/libnode.js";
-import { placeNodeIslandModules, readNodeIslandModules } from "./node-islands/modules.js";
-import { finalizeDeferredIslands } from "./node-islands/snapshot.js";
+import { libnodeCacheKey, libnodeTarget } from "./node-islands/libnode.js";
 import { loadLibraryProfile, type LibraryProfile } from "./library/library-profile.js";
 import { clearFenceEvalCaches, decorateLibraryRefusals } from "./library/fence-eval.js";
 import {
@@ -495,9 +491,8 @@ export async function analyzeCached(
   return result;
 }
 
-// Island code resolves through Node (node-islands/resolve.ts; the
-// self-hosted compiler resolves with the shared filesystem resolver).
-setIslandResolver((fromFile, spec) => createRequire(fromFile).resolve(spec));
+// Island builds ask Node where the compiler runs under it (node-islands/host.ts).
+installNodeIslandBuildHost();
 
 const nodeFrontend: FrontendFactory = (
   entry,
@@ -1215,53 +1210,16 @@ async function prepareExecutableInput(
   }
   if (!prepared.ok) return prepared;
   const { mod, sourceTexts } = prepared;
-  // Calls into Node record the libnode pack an executable loads at run
-  // time. IR, LLVM and object outputs need no pack: their record stays
-  // empty, and SCRIPTC_LIBNODE supplies the pack when such a program runs.
-  if (mod.nodeIsland !== undefined) {
-    if (!moduleRuntimeFeatures(mod).nodeIsland) {
-      delete mod.nodeIsland;
-    } else if (outputKind === "exe") {
-      const recorded = libnodeRecord(opts.libnode, opts.outPath, process.env, dirname(entryPath));
-      if (typeof recorded === "string")
-        return { ok: false, diagnostics: [nodeIslandNodeDiag(recorded, entryPath)], sourceTexts };
-      mod.nodeIsland = { ...mod.nodeIsland, ...recorded };
-      // Deferred island modules (scope-B NI-7): probed in the same pack.
-      finalizeDeferredIslands(
-        mod,
-        entryPath,
-        libnodeProbePack(opts.libnode, process.env, dirname(entryPath)),
-      );
-    } else {
-      // IR, LLVM and object outputs have no pack to probe with: eager.
-      finalizeDeferredIslands(mod, entryPath, null);
-    }
-  }
-  // The island module tree ships with the program: beside the executable
-  // with --libnode=beside, else inside it (node-islands/modules.ts).
-  let nodeIslandModuleData: Uint8Array | undefined;
-  const islandModules = mod.nodeIsland?.modules;
-  if (islandModules !== undefined && outputKind !== "ir") {
-    if (outputKind === "exe" && opts.libnode === "beside") {
-      const problem = placeNodeIslandModules(islandModules, `${opts.outPath}.libnode/modules`);
-      if (problem !== null)
-        return {
-          ok: false,
-          diagnostics: [nodeIslandModuleDiag(problem, { file: entryPath, start: 0, end: 0 })],
-          sourceTexts,
-        };
-      islandModules.location = `$ORIGIN/${basename(opts.outPath)}.libnode/modules`;
-    } else {
-      const data = readNodeIslandModules(islandModules);
-      if (typeof data === "string")
-        return {
-          ok: false,
-          diagnostics: [nodeIslandModuleDiag(data, { file: entryPath, start: 0, end: 0 })],
-          sourceTexts,
-        };
-      nodeIslandModuleData = data;
-    }
-  }
+  // The island steps (executable/islands.ts): the libnode record, the
+  // deferral probe and the module tree.
+  const islands = finishNodeIslands(mod, entryPath, {
+    outputKind,
+    outPath: opts.outPath,
+    libnode: opts.libnode,
+    target: () => libnodeTarget(process.env),
+  });
+  if (!islands.ok) return { ok: false, diagnostics: [islands.diagnostic], sourceTexts };
+  const nodeIslandModuleData = islands.moduleData;
   if (warningSink !== undefined && prepared.warnings.length > 0) {
     warningSink.warnings = prepared.warnings;
     warningSink.sourceTexts = sourceTexts;

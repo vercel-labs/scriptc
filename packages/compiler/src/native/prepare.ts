@@ -17,6 +17,7 @@ import {
 import { inlineRcOption } from "../backend/llvm/shapes.js";
 import { executableLinkFeatures } from "../backend/executable-features.js";
 import type { NativeLinkFeatures } from "../backend/native-link-info-core.js";
+import { finishNodeIslands } from "../executable/islands.js";
 import { prepareExecutableModule } from "../executable/prepare.js";
 import type { FfiProfile } from "../ffi/ffi-manifest.js";
 import type { FrontendFactory } from "../frontend/pipeline.js";
@@ -39,9 +40,9 @@ import {
 } from "../frontend/token-equivalence.js";
 import { llvmBytes, wtf8Bytes } from "../backend/literals.js";
 import { prepareLibrary } from "../library/prepare.js";
+import { libnodeCacheKeyFor } from "../node-islands/libnode.js";
 import type { LibraryProfile } from "../library/library-profile.js";
 import type { IrModule } from "../ir/ir.js";
-import { moduleRuntimeFeatures } from "../ir/runtime-features.js";
 import { deserializeModuleBytes, serializeModuleParts } from "../ir/serialize.js";
 import { contentDigest, NATIVE_STRING_BYTES, type NativeCache } from "./cache.js";
 import { batchTextParts, joinedParts } from "./text-file.js";
@@ -65,6 +66,13 @@ export interface NativeExecutableInput {
   /** partsDigest of `llvm`, when the frontend cache has computed it: the key
    * of the text's `frontend-llvm` entry. */
   llvmDigest?: string;
+  /** The Node islands the build ran (PreparedExecutableModule.islands). */
+  islands?: { packages: string[]; modules: string[] };
+  /** For a program that calls into Node (`features.nodeIsland`): the
+   * identity of the libnode pack its executable records (libnodeCacheKey),
+   * "" when no pack is named or installed. A cached input is this build's
+   * only while the identity is unchanged. */
+  libnode?: string;
 }
 
 /** The LLVM text is a separate `frontend-llvm` entry under its digest, which
@@ -188,11 +196,14 @@ function equivalentFrontendInput(
   options: CompileRequestOptions,
   exclusions: FrontendInputExclusions,
 ): { input: NativeExecutableInput; probes: FrontendInputSnapshot } | null {
+  // An island program's LLVM text carries the bytes of its island modules
+  // and the probe's snapshots, which no token comparison of sources covers.
   if (
     options.sanitize === true ||
     options.emitIr === true ||
     stale.ir !== null ||
-    (stale.input.warnings?.length ?? 0) > 0
+    (stale.input.warnings?.length ?? 0) > 0 ||
+    stale.input.features.nodeIsland === true
   )
     return null;
   const debugInfo = options.optimization === "dev" && !options.strip;
@@ -353,6 +364,9 @@ function validCachedInput(value: unknown): value is FrontendCacheEntry {
       (Array.isArray(entry.ir) && entry.ir.every((part) => typeof part === "string"))) &&
     (input.sidecarJson === null || typeof input.sidecarJson === "string") &&
     validFeatures(input.features) &&
+    (input.libnode === undefined || typeof input.libnode === "string") &&
+    (input.islands === undefined ||
+      (Array.isArray(input.islands.packages) && Array.isArray(input.islands.modules))) &&
     Array.isArray(input.sources) &&
     input.sources.every(
       (pair) =>
@@ -458,35 +472,33 @@ function preparedFromIr(
   return { ok: true, mod, sourceTexts: new Map(), warnings: [] };
 }
 
-/** A program that calls into a Node island needs three build steps this
- * driver does not have (index.ts runs them for the Node-hosted compiler): the
- * record of the libnode pack the executable loads, the deferral probe, and
- * the island module tree the executable ships. Without them the executable
- * records a module manifest with no files and stops when it starts, so the
- * build refuses, for every output kind: the IR and LLVM text would not be
- * the Node-hosted compiler's either. */
-function nodeIslandRefusal(
-  mod: IrModule,
+/** The identity of the libnode pack a build of `entry` records, as a
+ * cached input stores it. */
+function libnodeIdentity(
   entry: string,
-  islands: { packages: string[]; modules: string[] } | undefined,
-): ScrDiagnostic | null {
-  if (mod.nodeIsland === undefined || !moduleRuntimeFeatures(mod).nodeIsland) return null;
-  // The SC8001 notes that name the islands ride a successful build only.
-  const named = [
-    ...(islands?.packages ?? []).map((name) => `package ${name}`),
-    ...(islands?.modules ?? []).map((file) => `module ${file}`),
-  ];
-  const shown = named.slice(0, 5).join(", ");
-  const names =
-    named.length === 0
-      ? ""
-      : ` (${shown}${named.length > 5 ? `, and ${named.length - 5} more` : ""})`;
-  return nativeCodegenDiag(
-    "SC3002",
-    `this program runs code in a Node island, which the natively compiled scriptc cannot build yet${names}`,
-    entry,
-    "build it with the Node-hosted compiler (from a source checkout: node packages/cli/dist/main.js build ...), or keep the program inside the native subset (--node-islands=off names what is outside it)",
+  options: CompileRequestOptions,
+  toolchain: NativeToolchain,
+): string {
+  return (
+    libnodeCacheKeyFor(toolchain.target.name, options.libnode, process.env, dirname(entry)) ?? ""
   );
+}
+
+/** Whether a cached input can stand for this build as far as its islands
+ * go. A program without islands always can. One that calls into Node
+ * recorded a libnode pack, which must still be the one this build would
+ * record; and `--libnode=beside` places the pack and the island modules
+ * next to the output from the lowered module, which a cached input does
+ * not have, so such a build always lowers. */
+function islandInputCurrent(
+  input: NativeExecutableInput,
+  entry: string,
+  options: CompileRequestOptions,
+  toolchain: NativeToolchain,
+): boolean {
+  if (input.features.nodeIsland !== true) return true;
+  if (options.libnode === "beside") return false;
+  return input.libnode === libnodeIdentity(entry, options, toolchain);
 }
 
 /** Keep the checker and typed IR out of the native optimizer's live heap. */
@@ -537,7 +549,17 @@ export function prepareNativeExecutable(
         const { outPath: _outPath, outDir: _outDir, ...lowering } = options;
         unitKey = contentDigest(JSON.stringify({ ...inputs, options: lowering }));
       }
-      const cached = readFrontendCache(cache, key, exclusions);
+      const read = readFrontendCache(cache, key, exclusions);
+      const cached =
+        read !== null &&
+        !islandInputCurrent(
+          "input" in read ? read.input : read.stale.input,
+          entry,
+          options,
+          toolchain,
+        )
+          ? null
+          : read;
       if (cached !== null && "input" in cached) {
         onInputs?.(cached.probes);
         timing("frontend-cache-hit");
@@ -560,11 +582,13 @@ export function prepareNativeExecutable(
   }
   timing("frontend-cache-miss");
   const tracker = new FrontendInputTracker(previous);
-  const prepared =
+  // The island steps (executable/islands.ts) follow lowering inside the
+  // tracker, so the project configuration they read is an input too.
+  const lowered =
     irInput !== ""
-      ? preparedFromIr(irInput, entry, options)
-      : tracker.runSynchronous(() =>
-          prepareExecutableModule(
+      ? { prepared: preparedFromIr(irInput, entry, options), islandModuleData: undefined }
+      : tracker.runSynchronous(() => {
+          const prepared = prepareExecutableModule(
             entry,
             options,
             ffi,
@@ -574,13 +598,27 @@ export function prepareNativeExecutable(
             new Map(),
             true,
             cache !== null && unitKey !== null ? nativeUnitStore(cache, unitKey) : null,
-          ),
-        );
+          );
+          if (!prepared.ok) return { prepared, islandModuleData: undefined };
+          const islands = finishNodeIslands(prepared.mod, entry, {
+            outputKind,
+            outPath: options.outPath,
+            libnode: options.libnode,
+            target: () => toolchain.target.name,
+          });
+          if (!islands.ok) {
+            const failed: CompileFailure = {
+              ok: false,
+              diagnostics: [islands.diagnostic],
+              sourceTexts: prepared.sourceTexts,
+            };
+            return { prepared: failed, islandModuleData: undefined };
+          }
+          return { prepared, islandModuleData: islands.moduleData };
+        });
+  const { prepared, islandModuleData } = lowered;
   if (!prepared.ok) return prepared;
   if (irInput !== "") timing("ir-input");
-  const islandRefusal = nodeIslandRefusal(prepared.mod, entry, prepared.islands);
-  if (islandRefusal !== null)
-    return { ok: false, diagnostics: [islandRefusal], sourceTexts: prepared.sourceTexts };
   const ir =
     outputKind === "ir" || options.emitIr
       ? batchTextParts(serializeModuleParts(prepared.mod, compilerOwnedFileRoots()))
@@ -616,19 +654,25 @@ export function prepareNativeExecutable(
           ...(options.optimization === "dev" && !options.strip
             ? { debugSources: prepared.sourceTexts }
             : {}),
+          ...(islandModuleData === undefined ? {} : { nodeIslandModuleData: islandModuleData }),
         });
   timing("llvm-emit");
+  const features = executableLinkFeatures(
+    prepared.mod,
+    options.largePages === true && outputKind === "exe",
+  );
   const input: NativeExecutableInput = {
     ok: true,
     llvm,
     ir,
     sidecarJson: null,
-    features: executableLinkFeatures(
-      prepared.mod,
-      options.largePages === true && outputKind === "exe",
-    ),
+    features,
     sources: [...prepared.sourceTexts],
     ...(prepared.warnings.length > 0 ? { warnings: prepared.warnings } : {}),
+    ...(prepared.islands === undefined ? {} : { islands: prepared.islands }),
+    ...(features.nodeIsland === true
+      ? { libnode: libnodeIdentity(entry, options, toolchain) }
+      : {}),
   };
   timing("link-features");
   const probes = tracker.snapshot();
@@ -636,7 +680,8 @@ export function prepareNativeExecutable(
     cache !== null &&
     key !== null &&
     probes.stable &&
-    frontendInputsStillMatch(probes, exclusions)
+    frontendInputsStillMatch(probes, exclusions) &&
+    islandInputCurrent(input, entry, options, toolchain)
   ) {
     publishFrontendCache(cache, key, probes, input);
     onInputs?.(probes);

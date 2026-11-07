@@ -920,6 +920,16 @@ function buildLibFnSignatures() {
     // name, and node:path's value adapters (scr_builtin_values.c).
     "dyn.validateString": { argTypes: [DYN, STRING], result: STRING },
     "dyn.validateStrings": { argTypes: [DYN, STRING], result: arrayOf(STRING) },
+    /** getValidatedPath over an untyped path of a synchronous fs function
+     * (JavaScript sources): [value, Node's parameter name, whether Node
+     * first asks for a file descriptor]. A string, a URL or a Uint8Array
+     * answers its path; anything else throws Node's ERR_INVALID_ARG_TYPE.
+     * In a descriptor position the value first converts to a number, as
+     * Node's test does, and a number throws the named refusal. May-throw.
+     * Named in the dyn family, not fs: it converts an argument and reads
+     * no file system state, so it is not an ambient operation (the fs call
+     * that takes the path is). */
+    "dyn.validateFsPath": { argTypes: [DYN, STRING, BOOL], result: STRING },
     "path.resolveValue": { argTypes: [DYN, BOOL], result: STRING },
     "path.parseValue": { argTypes: [DYN, BOOL], result: DYN },
     "path.formatValue": { argTypes: [DYN, BOOL], result: DYN },
@@ -3153,6 +3163,19 @@ function buildLibFnSignatures() {
     /** Runtime options normalized into the native spawn core; unsupported
      * process features retain explicit refusals. (command, args, options). */
     "cp.spawnDynamic": { argTypes: [STRING, arrayOf(STRING), DYN], result: CHILD_T },
+    /** Node's argument checks for the child launch that follows
+     * (normalizeSpawnArguments, normalizeExecArgs): a NUL in the file or
+     * command, an argument, cwd or an environment key or value, or an
+     * empty file, throws ERR_INVALID_ARG_VALUE before a process starts.
+     * (form, cmd, args, envPairs, cwd): form 0 reads cmd as the file and
+     * args as its arguments; 1 and 2 are the /bin/sh -c launches, whose
+     * args[1] is exec's command (1) or execFile's file (2); 3 is fork,
+     * which has no file. An absent cwd is "", an inherited environment an
+     * empty array. */
+    "cp.checkArgs": {
+      argTypes: [F64, STRING, arrayOf(STRING), arrayOf(STRING), STRING],
+      result: VOID,
+    },
     // The callback's func type is program-dependent (zero params, or the
     // `number | null` union / the %Error class) — the libCall case checks
     // the shape; the slot here only pins arity and the child receiver.

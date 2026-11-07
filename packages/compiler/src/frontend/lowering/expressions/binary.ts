@@ -879,6 +879,12 @@ export function ensureString(
   node: ts.Node,
   hint: StringConversionHint = "string",
 ): IrExpr {
+  // A primitive deferred-init field converts its slot, so an unassigned one
+  // reads "undefined" as in Node instead of failing the checked read.
+  if (e.type.kind === "string" || e.type.kind === "f64" || e.type.kind === "bool") {
+    const slot = lowerer.deferredFieldSlot(e);
+    if (slot) return ensureString(lowerer, slot, node, hint);
+  }
   if (e.type.kind === "string") return e;
   if (e.type.kind === "url")
     return { kind: "libCall", fn: "url.href", args: [e], type: STRING, loc: e.loc };

@@ -2239,11 +2239,15 @@ export interface IrLocal {
 export type IrStmt =
   /** First initialization of a local at its source position. `init: null`
    * means "declared, uninitialized" (`let x: number;`) — the local must be
-   * `mutable`. SOUNDNESS: tsc strict-mode definite-assignment analysis
-   * (TS2454 "used before being assigned") rejects any READ before an
-   * assignment on every path, so backends never need a runtime
-   * initialized-check; refcounted locals simply stay NULL until the first
-   * `assign`. */
+   * `mutable`. SOUNDNESS: the frontend emits it only for a binding no read
+   * can reach before a store. tsc's definite-assignment analysis (TS2454
+   * "used before being assigned") rejects such a read in the declaring
+   * function's own code; a binding that a nested function or an unchecked
+   * declaration (`let x!: number`) can read earlier is declared with an
+   * undefined-armed type and an undefined `init` instead
+   * (frontend/lowering/var-hoisting.ts). Backends therefore never need a
+   * runtime initialized-check; refcounted locals simply stay NULL until
+   * the first `assign`. */
   | { kind: "varDecl"; localId: string; init: IrExpr | null; loc: SrcLoc }
   /** `initializes` marks a TDZ binding's declaration, whose store may
    * initialize an empty box. Ordinary assignments must check it first. */
@@ -3486,14 +3490,21 @@ export type IrExpr =
   | { kind: "awaitUnionExpr"; value: IrExpr; promiseTag: number; type: IrType; loc: SrcLoc }
   /** `new Promise<T>((resolve) => ...)`: creates a pending promise and runs
    * the executor synchronously with a resolve closure; an executor throw
-   * rejects the promise (JS-exact). Result +1. */
-  | { kind: "newPromise"; executor: IrExpr; type: IrType; loc: SrcLoc }
+   * rejects the promise (JS-exact). Result +1.
+   * `resolves`: the resolve function runs the promise resolution procedure
+   * on a checked-dynamic value that the static types do not prove plain: a
+   * promise it is given is adopted, and from then on neither resolving
+   * function nor a throw of the executor changes the promise. Only on a
+   * promise of a checked-dynamic value. */
+  | { kind: "newPromise"; executor: IrExpr; resolves?: true; type: IrType; loc: SrcLoc }
   /** `Promise.withResolvers<T>()`: a pending promise plus its runtime
    * resolve/reject closures (the newPromise pieces without an executor),
    * assembled into the record `{ promise, resolve, reject }` — `type` is
    * that record; the shape's promise field carries T, resolve is
    * (T) => void (() => void for void T), reject is (%Error) => void.
-   * Result +1; never throws. */
+   * Result +1; never throws. The resolve function of a promise of a
+   * checked-dynamic value runs the promise resolution procedure, as a
+   * newPromise with `resolves` does: its callers are not known here. */
   | { kind: "promiseWithResolvers"; type: IrType; loc: SrcLoc }
   /** `new C(args)`: allocate (fields zeroed), then call `%C.constructor`
    * with the new object as arg 0 (retained — the ctor owns and releases its

@@ -556,7 +556,11 @@ function missingArgumentInstance(
 /** The instance of `info` a call names under `bindings` the caller chose
  * over the resolved signature's: its parameters and result are the
  * DECLARATION's, mapped under those bindings (as overloadCallInstance maps
- * an implementation's). Null when the result has no mapping there. */
+ * an implementation's). A generic-class method's declaration also names the
+ * class's type parameters, which the receiver's instantiation binds: they
+ * map under those class bindings with the call's own on top, the binding
+ * sets lowerGenericInstance lowers the body under. Null when the result
+ * has no mapping there. */
 function instanceForBindings(
   lowerer: Lowerer,
   expr: ts.CallExpression,
@@ -567,7 +571,8 @@ function instanceForBindings(
 ): GenericInstance | null {
   const previous = lowerer.typeParamBindings;
   const previousTs = lowerer.typeParamTsBindings;
-  lowerer.typeParamBindings = bindings;
+  const clsBindings = info.member?.cls.genericInstance?.bindings;
+  lowerer.typeParamBindings = clsBindings ? new Map([...clsBindings, ...bindings]) : bindings;
   lowerer.typeParamTsBindings = tsBindings;
   let params: ParamShape[];
   let returnType: IrType | null;

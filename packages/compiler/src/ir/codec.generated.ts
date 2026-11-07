@@ -5,7 +5,7 @@ import type { IrReader, IrWriter } from "./codec.js";
 
 /** A digest of the coders below: an encoding written with other coders is
  * refused instead of misread, also after a change that keeps IR_VERSION. */
-export const IR_CODEC_LAYOUT = "528d304fc8e263e9";
+export const IR_CODEC_LAYOUT = "55ff1cab7c8d559b";
 
 /** Writes `mod` field by field (codec.ts describes the bytes). */
 export function encodeIrModule(w: IrWriter, mod: IrModule): void {
@@ -179,7 +179,7 @@ const KEYS151: readonly string[] = ["kind","method","receiver","args","type","lo
 const KEYS152: readonly string[] = ["kind","seed","type","loc"];
 const KEYS153: readonly string[] = ["kind","moduleId","type","loc"];
 const KEYS154: readonly string[] = ["kind","className","args","type","loc"];
-const KEYS155: readonly string[] = ["kind","executor","type","loc"];
+const KEYS155: readonly string[] = ["kind","executor","resolves","type","loc"];
 const KEYS156: readonly string[] = ["kind","callee","args","type","loc"];
 const KEYS157: readonly string[] = ["kind","left","right","type","loc"];
 const KEYS158: readonly string[] = ["kind","value","spelling","type","loc"];
@@ -3421,6 +3421,11 @@ function encIrExpr(w: IrWriter, v: IrExpr): void {
       w.length(52);
       w.keys(Object.keys(v), KEYS155);
       encIrExpr(w, v.executor);
+      if (v.resolves === undefined) w.byte(0);
+      else {
+        w.byte(1);
+        w.bool(v.resolves);
+      }
       encIrType(w, v.type);
       encSrcLoc(w, v.loc);
       return;
@@ -4355,9 +4360,10 @@ function decIrExpr(r: IrReader): IrExpr {
     }
     case 52: {
       const f0 = decIrExpr(r);
-      const f1 = decIrType(r);
-      const f2 = decSrcLoc(r);
-      const o: Extract<IrExpr, { kind: "newPromise" }> = { kind: "newPromise", executor: f0, type: f1, loc: f2 };
+      const f1 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<newPromise>.resolves") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "newPromise" }>["resolves"]>);
+      const f2 = decIrType(r);
+      const f3 = decSrcLoc(r);
+      const o: Extract<IrExpr, { kind: "newPromise" }> = { kind: "newPromise", executor: f0, ...(f1 !== undefined ? { resolves: f1 } : {}), type: f2, loc: f3 };
       return o;
     }
     case 53: {

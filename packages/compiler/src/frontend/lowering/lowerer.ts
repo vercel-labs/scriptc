@@ -251,6 +251,7 @@ import { installBufferValue } from "./containers/bytes.js";
 import { installMutableBuffersArm } from "./buffers.js";
 import { ClassProtocols } from "./class-protocols.js";
 import { earlyReadVarSymbols } from "./var-hoisting.js";
+import { type ClassHierarchy, classHierarchyOf } from "./construction-reads.js";
 import { enumObjectRefusal, type EnumObject } from "./enum-objects.js";
 import { enumNumberReadMayMiss } from "./lower-enums.js";
 import { recordTextCodecClass, sortArms } from "../../ir/ir.js";
@@ -836,6 +837,7 @@ import {
   maybePromiseUnionOf,
   promiseArmedUnionOf,
 } from "./maybe-promise.js";
+import { mayResolveThroughThen } from "./promise-resolution.js";
 import { NodeIslandModuleCollector } from "../../node-islands/modules.js";
 
 /** Entry function name. '%' cannot appear in a TS identifier, so a user
@@ -2174,7 +2176,10 @@ export function staticImportNamespaceType(
     }
   }
   if (moduleId === null) return null;
-  const ns: IrType = { kind: "moduleNs", moduleId };
+  // node:constants has no census and its ESM namespace is a checked-dynamic
+  // object (sorted runtime names plus "default"), so the import's value is
+  // typed dynamically rather than as a module namespace token.
+  const ns: IrType = moduleId === "builtin:constants" ? DYN : { kind: "moduleNs", moduleId };
   return awaited ? ns : { kind: "promise", inner: ns };
 }
 
@@ -3294,8 +3299,37 @@ export class Lowerer {
   /** All storage slots widened for runtime absence, including slots whose
    * current control-flow branch has temporarily narrowed the value. */
   readonly runtimeOptionalStorageLocals = new Set<IrLocal>();
-  /** `var` bindings code can read before their first store
-   * (var-hoisting.ts): their storage holds undefined until then. */
+  /** The files being lowered, for whole-program syntax scans. */
+  programSourceFiles: readonly ts.SourceFile[] = [];
+  private classHierarchyCache: ClassHierarchy | null = null;
+
+  /** The program's classes by base class (construction-reads.ts). */
+  classHierarchy(): ClassHierarchy {
+    return (this.classHierarchyCache ??= classHierarchyOf(this.programSourceFiles, (heritage) => {
+      let base = heritage;
+      while (ts.isParenthesizedExpression(base)) base = base.expression;
+      if (!ts.isIdentifier(base) && !ts.isPropertyAccessExpression(base)) return undefined;
+      let symbol = panicSafe(() => this.checker.getSymbolAtLocation(base), undefined);
+      if (symbol && symbol.flags & ts.SymbolFlags.Alias)
+        symbol = panicSafe(() => this.checker.getAliasedSymbol(symbol!), undefined);
+      const declaration = symbol?.valueDeclaration;
+      if (!declaration) return undefined;
+      // A runtime or library class runs no program code while it constructs.
+      if (ts.getSourceFileOfNode(declaration).isDeclarationFile) return null;
+      if (ts.isClassDeclaration(declaration) || ts.isClassExpression(declaration))
+        return declaration;
+      if (ts.isVariableDeclaration(declaration) && declaration.initializer) {
+        let value = declaration.initializer;
+        while (ts.isParenthesizedExpression(value)) value = value.expression;
+        if (ts.isClassExpression(value)) return value;
+      }
+      return undefined;
+    }));
+  }
+
+  /** `var` bindings, and `let` bindings declared without an initializer,
+   * that code can read before their first store (var-hoisting.ts): their
+   * storage holds undefined until then. */
   readonly earlyReadVars = new Set<ts.Symbol>();
   /** Enums whose object some code uses as a value (enum-objects.ts), by
    * symbol and by their first and last declarations. Filled before the
@@ -5033,6 +5067,7 @@ export class Lowerer {
       mapTable("unionCallHelpers", this.unionCallHelpers),
       mapTable("indexedUnionNumericTwins", this.indexedUnionNumericTwins),
       setTable("coercions.checkedNarrows", this.coercions.checkedNarrows),
+      setTable("coercions.deferredRetags", this.coercions.deferredRetags),
       irDataTable("coercions.checkedNarrowArms", this.coercions.checkedNarrowArms),
       mapTable("coercions.retags", this.coercions.retags),
       mapTable("coercions.narrows", this.coercions.narrows),
@@ -5370,6 +5405,8 @@ export class Lowerer {
     "partialAssertions",
     "foreignElementKeys",
     // caches made when first needed
+    "programSourceFiles",
+    "classHierarchyCache",
     "nanCodedReads",
     "mentionsProcessVersions",
     "createsWrappers",
@@ -5510,6 +5547,9 @@ export class Lowerer {
     "narrowing.effects",
     "narrowing.capturedMutable",
     "narrowing.staleBindings",
+    "narrowing.inherited",
+    "narrowing.writes",
+    "narrowing.resolving",
     "narrowing.identifierWrites",
     "narrowing.widened",
     "narrowing.plainContainers",
@@ -8655,8 +8695,67 @@ export class Lowerer {
     // A constrained type parameter keeps the checker's binding, since the
     // body may use what the constraint promises.
     type BareSlots = { params: (ts.Symbol | null)[]; result: ts.Symbol | null };
+    /** What the slots are read from: the function-like a call instantiates
+     * and the symbols of its own type parameters. */
+    type GenericCallee = Pick<GenericFnInfo, "decl" | "typeParams" | "implicitParams">;
+    // A generic member of a class (a method, a static method, a field that
+    // holds a generic function) is instantiated per call as a generic
+    // function is, through the same genericCallInstance. Its GenericFnInfo
+    // is made when its class lowers, and a generic class makes one for each
+    // of its instantiations, some of them after this scan. The slots depend
+    // on the declaration alone, so the callee is read from it. An overloaded
+    // method keeps the checker's bindings: its calls instantiate through the
+    // overload they resolve to.
+    const genericMembers = new Map<ts.Symbol, GenericCallee | null>();
+    const genericMemberOf = (symbol: ts.Symbol): GenericCallee | null => {
+      const cached = genericMembers.get(symbol);
+      if (cached !== undefined) return cached;
+      const compute = (): GenericCallee | null => {
+        const declaration = symbol.valueDeclaration;
+        if (
+          !declaration ||
+          !(ts.isMethodDeclaration(declaration) || ts.isPropertyDeclaration(declaration)) ||
+          !declaration.parent ||
+          !(ts.isClassDeclaration(declaration.parent) || ts.isClassExpression(declaration.parent))
+        )
+          return null;
+        // A field names the function it holds directly: an assertion around
+        // the function gives the field that type, not the function's own
+        // type parameters.
+        let decl: ts.Node | undefined = declaration;
+        if (ts.isPropertyDeclaration(declaration)) {
+          decl = declaration.initializer;
+          while (decl && ts.isParenthesizedExpression(decl)) decl = decl.expression;
+        }
+        if (
+          !decl ||
+          !(
+            ts.isMethodDeclaration(decl) ||
+            ts.isArrowFunction(decl) ||
+            ts.isFunctionExpression(decl)
+          ) ||
+          !decl.body ||
+          (decl.typeParameters?.nodes.length ?? 0) === 0 ||
+          symbol.declarations.length !== 1
+        )
+          return null;
+        const typeParams: ts.Symbol[] = [];
+        for (const parameter of decl.typeParameters!.nodes) {
+          const typeParameter = symbolOf(parameter.name);
+          if (!typeParameter) return null;
+          typeParams.push(typeParameter);
+        }
+        return { decl, typeParams };
+      };
+      const member = panicSafe(compute, null);
+      genericMembers.set(symbol, member);
+      return member;
+    };
+    /** The generic function or member a call of `symbol` instantiates. */
+    const genericCalleeOf = (symbol: ts.Symbol): GenericCallee | null =>
+      this.genericFnsBySymbol.get(symbol) ?? genericMemberOf(symbol);
     const bareSlots = new Map<ts.Node, BareSlots | null>();
-    const bareTypeParameterSlots = (info: GenericFnInfo): BareSlots | null => {
+    const bareTypeParameterSlots = (info: GenericCallee): BareSlots | null => {
       const decl = info.decl;
       const cached = bareSlots.get(decl);
       if (cached !== undefined) return cached;
@@ -8733,7 +8832,7 @@ export class Lowerer {
       if (!ts.isIdentifier(call.expression) && !ts.isPropertyAccessExpression(call.expression))
         return false;
       const symbol = callableSymbolOf(call.expression);
-      const info = symbol ? this.genericFnsBySymbol.get(symbol) : undefined;
+      const info = symbol ? genericCalleeOf(symbol) : null;
       const result = info ? bareTypeParameterSlots(info)?.result : null;
       return !!result && bound.has(result);
     };
@@ -10754,10 +10853,11 @@ export class Lowerer {
             return ts.isCallExpression(use.parent) && use.parent.expression !== use;
           };
           if (!sig) {
-            // A generic function has one signature per instance. A possibly
-            // missing argument at a slot declared as a bare type parameter
-            // binds that parameter with undefined for this call's instance.
-            const generic = this.genericFnsBySymbol.get(symbol);
+            // A generic function or member has one signature per instance.
+            // A possibly missing argument at a slot declared as a bare type
+            // parameter binds that parameter with undefined for this call's
+            // instance.
+            const generic = genericCalleeOf(symbol);
             if (generic) {
               const slots = bareTypeParameterSlots(generic);
               if (!slots || node.arguments.nodes.some(ts.isSpreadElement)) return;
@@ -11043,9 +11143,9 @@ export class Lowerer {
       }
       return changed;
     };
-    // A `var` that code can read before its first store holds undefined
-    // there, whatever its declared type.
-    for (const symbol of earlyReadVarSymbols(this, sourceFiles)) {
+    // A `var` or an uninitialized `let` that code can read before its first
+    // store holds undefined there, whatever its declared type.
+    for (const [symbol, read] of earlyReadVarSymbols(this, sourceFiles)) {
       // Text codec bindings keep their own presence-checked storage.
       const declaration = symbol.valueDeclaration;
       const mapped =
@@ -11056,6 +11156,15 @@ export class Lowerer {
         continue;
       optionalSymbols.add(symbol);
       this.earlyReadVars.add(symbol);
+      if (declaration && ts.isVariableDeclaration(declaration))
+        provenance?.note("unassigned-read", declaration.name, read);
+      // `let f: () => void;` guards its dead zone with the empty function
+      // pointer. The widened slot holds undefined as that pointer, so the
+      // dead zone moves to the binding's initialization flag
+      // (cycle-initialization.ts gives every such binding one) and the slot
+      // keeps its typed storage.
+      const global = this.globalsBySymbol.get(symbol);
+      if (global?.tdz && this.uninitializedLexicalGlobals.has(global.id)) delete global.tdz;
     }
     // Number the sites of every file. The first and the last pass visit
     // every site; the passes between visit only the sites whose facts
@@ -11548,6 +11657,8 @@ export class Lowerer {
   run(): LowerResult {
     const parts = this.splitFiles();
     this.narrowing.setFiles(parts.map((fp) => fp.sf));
+    this.programSourceFiles = parts.map((fp) => fp.sf);
+    this.classHierarchyCache = null;
     // The coverage remainder deliberately visits every body that reachable
     // emit skipped. Those files are already phase-managed, so an ordinary
     // checker miss would stay a one-node IPC query instead of falling back
@@ -12182,6 +12293,8 @@ export class Lowerer {
     this.deferredModuleInitializers = new DeferredModuleInitializers();
     const parts = this.splitFiles();
     this.narrowing.setFiles(parts.map((fp) => fp.sf));
+    this.programSourceFiles = parts.map((fp) => fp.sf);
+    this.classHierarchyCache = null;
     // Direct lowering callers do not necessarily run program preflight.
     // Establish the same managed header/top-level batch here before
     // collection, while the production path simply finds warm memos.
@@ -17039,11 +17152,26 @@ export class Lowerer {
     const s = this.lowerReturnOf(node, loc);
     const awaited = this.returnAwaitedPromise;
     this.returnAwaitedPromise = saved;
-    if (!awaited) return s;
-    if (s.kind === "return") return { ...s, awaited: true };
+    // A checked-dynamic operand may hold a promise: the same await settles
+    // it, and takes its one turn for any other value.
+    const settled = (ret: IrStmt & { kind: "return" }): IrStmt & { kind: "return" } => {
+      if (awaited) return { ...ret, awaited: true };
+      if (ret.value?.type.kind !== "dyn" || !mayResolveThroughThen(this, this.typeOf(node)))
+        return ret;
+      const value: IrExpr = {
+        kind: "libCall",
+        fn: "async.awaitDyn",
+        args: [ret.value],
+        type: DYN,
+        loc: ret.value.loc,
+      };
+      return { ...ret, value, awaited: true };
+    };
+    if (s.kind === "return") return settled(s);
     if (s.kind === "block" && s.body.at(-1)?.kind === "return") {
       const last = s.body.at(-1) as IrStmt & { kind: "return" };
-      return { ...s, body: [...s.body.slice(0, -1), { ...last, awaited: true }] };
+      const ret = settled(last);
+      return ret === last ? s : { ...s, body: [...s.body.slice(0, -1), ret] };
     }
     return s;
   }
@@ -17071,6 +17199,7 @@ export class Lowerer {
   private lowerReturnOf(node: ts.Expression, loc: SrcLoc): IrStmt {
     const expected = this.ctx.returnType;
     if (expected.kind === "void") {
+      this.refuseDroppedStaleReturn(node);
       let e = this.lowerExpr(node);
       const flattened = this.maybePromiseReturn(node, e, expected);
       if (flattened) return flattened;
@@ -17113,6 +17242,22 @@ export class Lowerer {
       return { kind: "return", value: this.asyncReturnValueOf(node, e, expected), loc };
     }
     return { kind: "return", value: this.lowerReturnValue(node), loc };
+  }
+
+  /** A function returns nothing when the checker inferred its return type
+   * from a read it narrowed to `undefined`. A call may have stored a value
+   * there since (widenedType restored the read), and returning nothing
+   * would drop it; the caller's types were inferred from the same
+   * narrowing, so only a declared return type can carry the value. */
+  refuseDroppedStaleReturn(node: ts.Expression): void {
+    const stale = this.narrowing.restoredNothingRead(node);
+    if (stale === null) return;
+    this.unsupported(
+      "SC1090",
+      node,
+      `returning '${ts.getTextOfNode(stale)}' from a function whose return type TypeScript infers as 'undefined' (it types the read by the last assignment in this function, and a call made since can have assigned it from another function)`,
+      "declare the function's return type, so the result is the value stored at the return",
+    );
   }
 
   maybeNarrow(expr: IrExpr, node: ts.Node): IrExpr {
@@ -19851,6 +19996,7 @@ export class Lowerer {
     if (read.kind !== "fieldGet" || read.type.kind !== "union") return null;
     if (this.classes.get(read.className)?.deferredInitFields?.has(read.field) !== true) return null;
     return this.coercions.checkedNarrows.has(value.callee) ||
+      this.coercions.deferredRetags.has(value.callee) ||
       value.callee.startsWith("%deferred.read.")
       ? read
       : null;

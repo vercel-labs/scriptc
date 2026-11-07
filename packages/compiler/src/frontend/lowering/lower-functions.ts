@@ -588,6 +588,9 @@ export function lowerLambda(
           // statement branches instead of a forbidden void-valued ternary.
           let stripped: ts.Expression = bodyExpr;
           while (ts.isParenthesizedExpression(stripped)) stripped = stripped.expression;
+          // A body whose value the checker typed `undefined` from a
+          // narrowing a call may have undone would be dropped here.
+          lowerer.refuseDroppedStaleReturn(bodyExpr);
           if (ts.isVoidExpression(stripped) || ts.isConditionalExpression(stripped)) {
             body = [lowerer.lowerExprStatement(stripped)];
           } else {

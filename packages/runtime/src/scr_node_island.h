@@ -123,6 +123,9 @@ ScrPromise *scr_ni_await(ScrDyn *value);
 /* Island arrays as copies for results typed as arrays of copied values. */
 ScrDyn *scr_node_island_copy_arrays(ScrDyn *value);
 ScrPromise *scr_node_island_await_copy(ScrDyn *value);
+/* An island thenable as the promise V8 adopts it into; any other value as
+ * itself (the operand of a dynamic await or PromiseResolve). +1. */
+ScrDyn *scr_node_island_adopt_thenable(ScrDyn *value);
 uint32_t scr_ni_live_handles(void); /* live import-table entries (leak tests) */
 
 /* The operations scr_json.c's dynamic paths route to an island handle
@@ -143,11 +146,14 @@ typedef struct ScrNiDynOps {
   int (*instance_of)(ScrDyn *value, ScrDyn *ctor);
   ScrDyn *(*to_primitive)(const ScrDyn *self, int hint);
   bool (*is_function)(const ScrDyn *value);
-  /* The `constructor` of an error island code threw, answered by V8 (+1 in
-   * *out): an error keeps its realm's constructor, so a native
-   * `e.constructor === TypeError` holds with the island's TypeError. 1 for
-   * an island error, 0 for any other. */
-  int (*error_constructor)(const struct ScrError *err, ScrDyn **out);
+  /* A property of an error island code threw that its native view does not
+   * hold, read from the V8 error (+1 in *out, NULL with the exception
+   * pending when the read threw): own properties, its class's methods and
+   * accessors, and `constructor`, its own realm's. 1 for an island error,
+   * 0 for any other. error_has is the `in` operator on the same error: 1,
+   * 0, or -1 for an error the runtime made itself. */
+  int (*error_get)(const struct ScrError *err, const char *key, size_t len, ScrDyn **out);
+  int (*error_has)(const struct ScrError *err, const char *key, size_t len);
   /* Object.prototype.toString.call(value), answered by Node (+1; NULL with
    * the exception pending). */
   ScrStr *(*object_tag)(const ScrDyn *value);

@@ -1,0 +1,56 @@
+import { expect, test } from "vitest";
+import { DYN, VOID, type IrExpr, type IrFunction, type IrStmt, type SrcLoc } from "../../ir/ir.js";
+import { adoptIslandThenables } from "./island-thenables.js";
+import { ENTRY_NAME, type Lowerer } from "./lowerer.js";
+
+const loc: SrcLoc = { file: "main.mjs", start: 0, end: 1 };
+const fn = (name: string, body: IrStmt[]): IrFunction => ({
+  name,
+  body,
+  params: [],
+  locals: [],
+  returnType: VOID,
+  loc,
+});
+const operand = (): IrExpr => ({ kind: "varRef", localId: "%v", type: DYN, loc }) as IrExpr;
+const awaitDyn = (): IrExpr & { kind: "libCall" } => ({
+  kind: "libCall",
+  fn: "async.awaitDyn",
+  args: [operand()],
+  type: DYN,
+  loc,
+});
+
+test("a program with Node islands adopts island thenables at every dynamic await", () => {
+  const first = awaitDyn();
+  const resolve: IrExpr & { kind: "libCall" } = {
+    kind: "libCall",
+    fn: "dyn.promiseResolve",
+    args: [operand(), operand()],
+    type: { kind: "promise", inner: DYN },
+    loc,
+  };
+  // One node the IR reaches from two statements is wrapped once.
+  const use: IrStmt = { kind: "exprStmt", expr: first, loc };
+  const functions = [
+    fn(ENTRY_NAME, [use, use]),
+    fn("helper", [{ kind: "exprStmt", expr: resolve, loc }]),
+  ];
+  adoptIslandThenables({ usesNodeIsland: true } as unknown as Lowerer, functions);
+  expect(first.args[0]).toMatchObject({
+    kind: "libCall",
+    fn: "nodeIsland.adoptThenable",
+    args: [{ kind: "varRef", localId: "%v" }],
+  });
+  expect(resolve.args[0]).toMatchObject({ kind: "libCall", fn: "nodeIsland.adoptThenable" });
+  // The then-reader argument of PromiseResolve is left as it is.
+  expect(resolve.args[1]).toMatchObject({ kind: "varRef" });
+});
+
+test("a program without Node islands keeps the plain dynamic await", () => {
+  const call = awaitDyn();
+  adoptIslandThenables({ usesNodeIsland: false } as unknown as Lowerer, [
+    fn(ENTRY_NAME, [{ kind: "exprStmt", expr: call, loc }]),
+  ]);
+  expect(call.args[0]).toMatchObject({ kind: "varRef" });
+});

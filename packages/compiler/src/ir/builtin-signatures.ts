@@ -258,6 +258,10 @@ function buildLibFnSignatures() {
      * promise's value). */
     "nodeIsland.copyArrays": { argTypes: [DYN], result: DYN },
     "nodeIsland.awaitCopy": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+    /** The operand of a dynamic await or PromiseResolve in a program with
+     * Node islands: an island thenable as the promise V8 adopts it into,
+     * any other value as itself. */
+    "nodeIsland.adoptThenable": { argTypes: [DYN], result: DYN },
     /** Keyed WRITE on a dyn value — `h.onDone = cb` / `h["k"] = v` on a
      * checked-dynamic object (args: receiver, key string, value — all
      * borrowed; the runtime copies the key and retains the value in). An

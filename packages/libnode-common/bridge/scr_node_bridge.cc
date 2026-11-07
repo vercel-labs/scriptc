@@ -704,20 +704,37 @@ int RunLoop(int continue_turn) {
   return code;
 }
 
-// An island listener of a process event: through MakeCallback, so a throw
-// is an uncaught exception as in Node's own emit.
+// An island listener of a process event. A signal listener runs through
+// MakeCallback: ticks and microtasks drain after it, and a throw is an
+// uncaught exception, as in Node's own emit. An 'exit' listener is a plain
+// call, as Node's own 'exit' emission is: process.exit() emits it from
+// JavaScript and ends the process, so nothing queued before or by the
+// listeners runs between them or after them (the runtime drains the
+// microtasks once after the last listener when the program ends by running
+// dry). The verbose TryCatch hands a throw to Node's uncaught-exception path.
+// Listener 0 names no listener: the runtime announces that the exit sequence
+// began (the bootstrap sets process._exiting).
 void Emit(uint32_t event, uint32_t listener, const char *name, int arg) {
   Enter e;
   Local<Value> argv[] = {Num(e, event), Num(e, listener), Utf8(e.isolate, name), Num(e, arg)};
+  if (event == SCR_NODE_EVENT_EXIT) {
+    TryCatch try_catch(e.isolate);
+    try_catch.SetVerbose(true);
+    (void)g_emit.Get(e.isolate)->Call(e.context, e.context->Global(), 4, argv);
+    return;
+  }
   node::MakeCallback(e.isolate, e.context->Global(), g_emit.Get(e.isolate), 4, argv,
                      node::async_context{0, 0});
 }
 
 void Stop() {
   if (!g_setup) return;
-  UnhostLoop();
   Isolate *isolate = g_setup->isolate();
+  // Node stops first: the loop iteration that closes the hosted loop's
+  // handles (UnhostLoop) would otherwise run the timers and immediates that
+  // are due, after the 'exit' listeners, when Node itself runs nothing more.
   node::Stop(g_setup->env());
+  UnhostLoop();
   g_call.Reset();
   g_load.Reset();
   StopCollector(isolate);

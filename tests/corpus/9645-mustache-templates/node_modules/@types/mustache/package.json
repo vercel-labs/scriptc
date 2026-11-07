@@ -1,0 +1,45 @@
+{
+    "name": "@types/mustache",
+    "version": "4.2.6",
+    "description": "TypeScript definitions for mustache",
+    "homepage": "https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/mustache",
+    "license": "MIT",
+    "contributors": [
+        {
+            "name": "Mark Ashley Bell",
+            "githubUsername": "markashleybell",
+            "url": "https://github.com/markashleybell"
+        },
+        {
+            "name": "Phillip Johnsen",
+            "githubUsername": "phillipj",
+            "url": "https://github.com/phillipj"
+        },
+        {
+            "name": "Steve Dignam",
+            "githubUsername": "sbdchd",
+            "url": "https://github.com/sbdchd"
+        }
+    ],
+    "main": "",
+    "types": "index.d.ts",
+    "exports": {
+        "./package.json": "./package.json",
+        ".": {
+            "types": {
+                "import": "./index.d.mts",
+                "default": "./index.d.ts"
+            }
+        }
+    },
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/DefinitelyTyped/DefinitelyTyped.git",
+        "directory": "types/mustache"
+    },
+    "scripts": {},
+    "dependencies": {},
+    "peerDependencies": {},
+    "typesPublisherContentHash": "1bcf802ee7b66f5a4d9ea5510555598f8661648e7874d53fcf00cf14c65a0ebf",
+    "typeScriptVersion": "5.1"
+}

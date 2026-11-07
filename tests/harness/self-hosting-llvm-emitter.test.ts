@@ -145,6 +145,10 @@ function buildSeed(): Promise<IrModule> {
     const { stdout } = await execFileAsync(
       process.execPath,
       [
+        // The seed's frontend peak is about 2.0 GB; the other self-hosting
+        // harnesses raise the bound too, and darwin's default heap is that
+        // size exactly (the plain macOS lane died at 2042 MB).
+        "--max-old-space-size=8192",
         "--import",
         "tsx",
         "--input-type=module",

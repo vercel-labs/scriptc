@@ -242,6 +242,9 @@ function programInputs(entry) {
   return [...files];
 }
 
+/** Whether a bench workload is a program with Node islands. */
+const islandWorkload = (w) => (w?.requires ?? []).includes("libnode");
+
 function goodCodeSet() {
   const programs = [];
   if (sets.has("bench")) {
@@ -251,6 +254,10 @@ function goodCodeSet() {
       const entry = join(suite, w.entry);
       if (seen.has(entry)) continue;
       seen.add(entry);
+      // A workload with Node islands builds only where a libnode pack is
+      // (benchmarks/runtime/README.md, "requires"); without one it is left
+      // out on both sides, as the island programs of the corpus are.
+      if (islandWorkload(w) && !process.env.SCRIPTC_LIBNODE) continue;
       programs.push({ id: `bench/${w.name}`, entry, kind: "exe", workload: w });
     }
   }
@@ -403,7 +410,8 @@ const definedFunctions = (binary) => definedFunctionNames(nm(binary));
  * bench workload may contain none at all. */
 function dynamicTierCheck(program, baseline, candidate, artifacts, allowed) {
   if (!baseline.exe || !artifacts.exe) return null;
-  const typed = program.id.startsWith("bench/") && !DYNAMIC_WORKLOADS.has(program.id);
+  const island = islandWorkload(program.workload);
+  const typed = program.id.startsWith("bench/") && !DYNAMIC_WORKLOADS.has(program.id) && !island;
   if (artifacts.exe.identical && !typed) return null;
   const after = dynamicTierSymbols(definedFunctions(candidate.exe));
   const before = artifacts.exe.identical
@@ -411,9 +419,10 @@ function dynamicTierCheck(program, baseline, candidate, artifacts, allowed) {
     : dynamicTierSymbols(definedFunctions(baseline.exe));
   const added = after.filter((name) => !before.includes(name));
   const failures = [];
-  // No good-code program calls into Node.js, so none may link its runtime.
+  // No good-code program calls into Node.js, so none may link its runtime;
+  // the island workloads are the programs that do.
   const nodeIsland = nodeIslandSymbols(definedFunctions(candidate.exe));
-  if (nodeIsland.length > 0 && !allowed)
+  if (nodeIsland.length > 0 && !allowed && !island)
     failures.push(`links Node island symbols: ${nodeIsland.slice(0, 5).join(", ")}`);
   // Intl over ICU is linked only into programs whose IR lowers to it. A
   // program that legitimately calls it names the pattern in --allow.

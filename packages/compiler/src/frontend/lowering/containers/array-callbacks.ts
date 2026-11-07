@@ -287,8 +287,9 @@ function filterKeptElem(
     "(the checker then skips the predicate) or annotate the result with the receiver's own " +
     "element type — and narrow the elements after";
   // A record target that declares fields the receiver's record element has no
-  // slot for: the elements were narrowed when they were stored, so those
-  // fields no longer exist at runtime and no per-field check can recover them.
+  // slot for: no field copy can supply them, and the checked widening
+  // (width-lift.ts) covers only pairs whose element fields are target fields
+  // with equal types — one the element lacks for another reason stays here.
   const widened = supersetGuardFields(lowerer, elem, outElem);
   const missingFields =
     widened === null
@@ -296,9 +297,9 @@ function filterKeptElem(
       : ` (the receiver's element type has no slot for ${widened
           .slice(0, 4)
           .map((field) => `'${field}'`)
-          .join(", ")}${widened.length > 4 ? ` and ${widened.length - 4} more` : ""} — each ` +
-        `element was narrowed when it was stored, so those fields do not exist at runtime and ` +
-        `the predicate cannot make them real)`;
+          .join(", ")}${widened.length > 4 ? ` and ${widened.length - 4} more` : ""} — no ` +
+        `field copy can supply them, and the checked widening covers only an element whose ` +
+        `own fields the target declares with equal types)`;
   const written =
     !booleanFilter &&
     ((!ts.isArrowFunction(argNode) && !ts.isFunctionExpression(argNode)) ||
@@ -3698,11 +3699,19 @@ export function boundedArrayHofHelper(lowerer: Lowerer, name: string): string | 
     return { ...stmt, init: varRef("bound.0", F64, stmt.loc) };
   });
   if (!replaced) return null;
+  // The copy owns its parameter and local records: the jsval promotion
+  // retypes a function's locals in place.
   lowerer.liftedFns.push({
     ...fn,
     name: bounded,
-    params: [...fn.params, { localId: "bound.0", name: "bound", type: F64 }],
-    locals: [...fn.locals, { id: "bound.0", name: "bound", type: F64, mutable: false }],
+    params: [
+      ...fn.params.map((param) => ({ ...param })),
+      { localId: "bound.0", name: "bound", type: F64 },
+    ],
+    locals: [
+      ...fn.locals.map((local) => ({ ...local })),
+      { id: "bound.0", name: "bound", type: F64, mutable: false },
+    ],
     body,
   });
   return bounded;

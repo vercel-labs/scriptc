@@ -22,6 +22,7 @@ import {
   concatOperand,
   deferredSlotOr,
   dynCompoundValue,
+  lowerOptionalBigint,
   lowerOptionalNumber,
   lowerOperatorNumber,
   operatorUnsupported,
@@ -653,6 +654,37 @@ export function lowerIncDecTarget(
         loc,
       };
     }
+    const bigintRead = lowerOptionalBigint(
+      lowerer,
+      varRef(target.id, target.type, loc),
+      loc,
+      expr.operand,
+    );
+    if (bigintRead) {
+      const old = lowerer.declareHiddenLocal("%bigintOld", BIGINT_T);
+      const next = lowerer.declareHiddenLocal("%bigintNext", BIGINT_T);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: old.id, init: bigintRead, loc },
+          {
+            kind: "varDecl",
+            localId: next.id,
+            init: bigintStep(op, varRef(old.id, BIGINT_T, loc), loc),
+            loc,
+          },
+          {
+            kind: "assign",
+            localId: target.id,
+            value: lowerer.coerceInto(expr.operand, varRef(next.id, BIGINT_T, loc), target.type),
+            loc,
+          },
+        ],
+        result: varRef(prefix ? next.id : old.id, BIGINT_T, loc),
+        type: BIGINT_T,
+        loc,
+      };
+    }
   }
   if (target.type.kind === "bigint") {
     const old = lowerer.declareHiddenLocal("%bigintOld", BIGINT_T);
@@ -1148,6 +1180,36 @@ export function lowerFieldCompoundValue(
           loc,
         });
         return { kind: "seqExpr", stmts: body, result: value, type: DYN, loc };
+      }
+      // A member the checker types as a string (`detail.text += chunk`,
+      // where the program holds values of the record type as checked-dynamic
+      // values): the member validates as a string, as it validates as a
+      // number below, and the right side appends as it does to a string
+      // field.
+      if (
+        op === "+" &&
+        rhsNode !== null &&
+        lowerer.mapTypeOf(lowerer.typeOf(access))?.kind === "string"
+      ) {
+        const old: IrExpr = { kind: "dynCheck", value: read, type: STRING, loc };
+        const appended = concatOperand(lowerer, rhs, rhsNode);
+        const value = save(
+          { kind: "strConcat", left: old, right: appended, type: STRING, loc },
+          "%compoundResult",
+        );
+        const boxed: IrExpr = { kind: "dynFrom", value, type: DYN, loc };
+        body.push({
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "dyn.keySet",
+            args: [receiver, { ...key }, boxed],
+            type: VOID,
+            loc,
+          },
+          loc,
+        });
+        return { kind: "seqExpr", stmts: body, result: value, type: value.type, loc };
       }
       const numericRhs: IrExpr =
         rhs.type.kind === "dyn"

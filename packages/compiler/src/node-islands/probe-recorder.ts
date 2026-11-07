@@ -614,7 +614,11 @@ exports.probe = function probe(input) {
       tty: [...tty],
       files: [...files],
     };
-    if (withheld !== null && threw !== undefined) {
+    // A generated module that catches a withheld call goes on with the
+    // fallback its catch block produces, and its export shape, which the
+    // executable never runs: neither the value nor what it does next is the
+    // module's, so it does not defer.
+    if (withheld !== null) {
       record.reason = "its evaluation has effects or reads inputs: " + withheld + ", which the build does not perform";
       results.push(record);
       continue;

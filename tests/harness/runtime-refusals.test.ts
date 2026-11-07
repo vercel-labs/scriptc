@@ -2,7 +2,7 @@
  * sources: which raising call a refusal message is attributed to decides
  * whether the lint sees its diagnostic code. `pnpm lint` runs the same
  * script over packages/runtime/src. */
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -86,21 +86,25 @@ void widget_use(int kind) {
   expect(local.status).toBe(0);
 });
 
-test("the site list reaches a reader that is slower than the script", async () => {
-  // The list for the runtime is larger than a pipe's buffer. The reader
-  // starts after the script has written what fits and would have exited:
-  // an exit at that point drops the rest, and the status still says 0.
-  const child = spawn(process.execPath, [script, "--json"], {
-    stdio: ["ignore", "pipe", "inherit"],
-  });
-  const status = new Promise<number | null>((resolve) => child.on("exit", (code) => resolve(code)));
-  await new Promise((resolve) => setTimeout(resolve, 1000));
-  let text = "";
-  child.stdout.setEncoding("utf8");
-  for await (const chunk of child.stdout) text += chunk;
-  expect(await status).toBe(0);
-  expect(text.length).toBeGreaterThan(64 * 1024);
-  const sites = JSON.parse(text) as { file: string; message: string }[];
-  expect(sites.length).toBeGreaterThan(300);
-  expect(sites.every((site) => typeof site.file === "string")).toBe(true);
-}, 30_000);
+test.skipIf(process.platform === "win32")(
+  "the site list reaches a reader that is slower than the script",
+  () => {
+    // The list for the runtime is larger than a pipe's buffer. The reader at
+    // the other end of the pipe starts a second after the script, which by
+    // then has written what fits and has nothing left to do but wait: an
+    // exit at that point drops the rest where pipe writes are asynchronous
+    // (macOS), and the status still says 0.
+    const result = spawnSync(
+      "sh",
+      ["-c", '"$0" "$1" --json | (sleep 1; cat)', process.execPath, script],
+      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+    );
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout.length).toBeGreaterThan(64 * 1024);
+    const sites = JSON.parse(result.stdout) as { file: string; message: string }[];
+    expect(sites.length).toBeGreaterThan(300);
+    expect(sites.every((site) => typeof site.file === "string")).toBe(true);
+  },
+  30_000,
+);

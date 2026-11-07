@@ -119,6 +119,52 @@ describe(`dynamic-boundary checks (scriptc-only${sanitize ? ", sanitized" : ""})
     expect(r.stderr).toBe("");
   });
 
+  test("joining an untyped array refuses an instance whose class defines toString", async () => {
+    // Node runs the class's toString for each element. The walk over an
+    // untyped array cannot call a compiled method, and "[object Object]"
+    // would be a wrong answer, so the conversion throws by name.
+    const r = await compileAndRun(
+      "untyped-join-class-to-string",
+      `
+      class Named { toString(): string { return "x"; } }
+      class Sub extends Named {}
+      class Plain { a = 1; }
+      const attempt = (label: string, go: () => unknown): void => {
+        try { console.log(label, go()); }
+        catch (error) { console.log(label, (error as Error).name, (error as Error).message); }
+      };
+      const named: unknown[] = [new Named(), "a"];
+      const sub: unknown[] = ["a", new Sub()];
+      const nested: unknown[] = [1, [new Named()]];
+      const plain: unknown[] = [new Plain(), "a", null, undefined, 1];
+      const one: unknown = new Named();
+      attempt("join", () => named.join("+"));
+      attempt("String", () => String(named));
+      attempt("template", () => \`\${named}\`);
+      attempt("inherited", () => sub.join("+"));
+      attempt("nested", () => nested.join("+"));
+      attempt("plain", () => plain.join("+"));
+      attempt("direct", () => String(one));
+    `,
+    );
+    const refusal =
+      "Error String conversion of a class instance whose class defines toString has no lowering where the value is untyped; convert the instance where its class is known";
+    expect(r.stdout).toBe(
+      [
+        `join ${refusal}`,
+        `String ${refusal}`,
+        `template ${refusal}`,
+        `inherited ${refusal}`,
+        `nested ${refusal}`,
+        "plain [object Object]+a+++1",
+        "direct x",
+        "",
+      ].join("\n"),
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).toBe("");
+  });
+
   test("assertions narrowing record members or union arms check the value", async () => {
     const r = await compileAndRun(
       "narrowing-record-assertions",

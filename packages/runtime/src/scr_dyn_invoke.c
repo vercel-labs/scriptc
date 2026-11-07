@@ -154,10 +154,18 @@ static void scr_dyn_display_buf(ScrJsonBuf *b, const ScrDyn *d, bool to_string) 
     return;
 
   case SCR_DYN_TYPED_REF: {
-    /* ToString of a class instance that converts through
-     * Object.prototype.toString shows its Symbol.toStringTag getter's
-     * string. */
-    if (to_string && scr_dyn_typed_ref_put_tag(b, d)) return;
+    /* ToString of a class instance or a typed record is the one conversion
+     * String() runs (scr_dyn_string_coerce_js): its Symbol.toStringTag
+     * getter's string, a Date subclass's text, a toString its view
+     * reaches, or the refusal for a class whose compiled toString this
+     * walk cannot call. */
+    if (to_string) {
+      ScrStr *text = scr_dyn_string_coerce_js(d);
+      if (!text) return;
+      scr_jb_write(b, text->data, text->len);
+      scr_str_release(text);
+      return;
+    }
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(d);
     scr_dyn_display_buf(b, materialized, to_string);
     scr_dyn_release(materialized);

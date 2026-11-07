@@ -358,8 +358,10 @@ function valueDeclaration(
   return decl === undefined ? null : { decl, call: false };
 }
 
-/** The receiver of a member read or method call, or null. */
-function receiverOf(node: ts.Node): ts.Expression | null {
+/** The receiver of a member read, an element read or a method call, or
+ * null. `element` is true for an element read (`values()[0]`): the value is
+ * an element of what the receiver's declaration types. */
+function receiverOf(node: ts.Node): { receiver: ts.Expression; element: boolean } | null {
   let inner = node as ts.Expression;
   while (
     ts.isParenthesizedExpression(inner) ||
@@ -367,9 +369,10 @@ function receiverOf(node: ts.Node): ts.Expression | null {
     ts.isNonNullExpression(inner)
   )
     inner = inner.expression;
+  if (ts.isElementAccessExpression(inner)) return { receiver: inner.expression, element: true };
   if (ts.isCallExpression(inner)) inner = inner.expression;
   return ts.isPropertyAccessExpression(inner) || ts.isElementAccessExpression(inner)
-    ? inner.expression
+    ? { receiver: inner.expression, element: false }
     : null;
 }
 
@@ -391,8 +394,8 @@ function islandTypeOrigin(
   node: ts.Node,
   isLibraryFile: (file: ts.SourceFile) => boolean,
 ): string | null {
-  let at = receiverOf(node);
-  for (let depth = 0; at !== null && depth < 32; depth++, at = receiverOf(at)) {
+  let at = receiverOf(node)?.receiver ?? null;
+  for (let depth = 0; at !== null && depth < 32; depth++, at = receiverOf(at)?.receiver ?? null) {
     const type = checker.getTypeAtLocation(at);
     const symbol = type.getAliasSymbol() ?? type.getSymbol();
     const decl = symbol?.declarations[0];
@@ -419,7 +422,10 @@ function islandTypeOrigin(
  * one, whose type the program instantiates) is still named, with an empty
  * patch range: it can be reported, not patched by selector. A member the
  * standard library declares (`.length` or `.join()` of an array the island
- * returned) is typed by what declares its receiver. With `argument`, the
+ * returned) is typed by what declares its receiver, and is named without
+ * a patch range: patching the receiver's declaration would not describe
+ * the member. An element (`values()[0]`) is the receiver's `[]`. With
+ * `argument`, the
  * origin is that parameter of the call `node` (a function the island calls
  * with its own values). Null when the value is typed by no package
  * declaration. */
@@ -432,6 +438,12 @@ export function islandValueOrigin(
 ): string | null {
   let at: ts.Node | null = node;
   let hopped = false;
+  // How the value is reached from the declaration found: as an element of
+  // its type (`[]` in the selector), or through a member the standard
+  // library declares, which no selector of the package reaches.
+  let elements = 0;
+  let viaMember = false;
+  const valueType = type;
   let found: { decl: ts.Node; call: boolean } | null = null;
   for (let depth = 0; at !== null && depth < 32; depth++) {
     try {
@@ -456,11 +468,15 @@ export function islandValueOrigin(
         continue;
       }
     }
-    // A member the standard library declares: what declares its receiver
-    // types it, and an argument of the member is no parameter of that.
+    // A member the standard library declares, or an element: what declares
+    // its receiver types it, and an argument of the member is no parameter
+    // of that.
     found = null;
-    at = receiverOf(at);
+    const hop = receiverOf(at);
+    at = hop === null ? null : hop.receiver;
     hopped = true;
+    if (hop !== null && hop.element) elements++;
+    else viaMember = true;
     if (at !== null) type = checker.getTypeAtLocation(at);
   }
   if (found === null || packageFileOf(ts.getSourceFileOfNode(found.decl).fileName) === null)
@@ -468,7 +484,9 @@ export function islandValueOrigin(
   const { decl, call } = found;
   const file = packageFileOf(ts.getSourceFileOfNode(decl).fileName);
   if (file === null) return null;
-  const declared = typeText(checker, type);
+  // An element's declared type is the value's own; a value reached through
+  // a member is described by its receiver's.
+  const declared = typeText(checker, elements > 0 && !viaMember ? valueType : type);
   // `f()` names a call's result, `f(name)` one of its parameters.
   let suffix = call ? "()" : "";
   if (argument !== undefined && !hopped) {
@@ -491,8 +509,8 @@ export function islandValueOrigin(
     return [
       file.pkg,
       file.version,
-      file.version === "" ? "*" : `^${file.version}`,
-      `${namespaces}${selector}${suffix}`,
+      viaMember ? "" : file.version === "" ? "*" : `^${file.version}`,
+      `${namespaces}${selector}${suffix}${"[]".repeat(elements)}`,
       where,
       declared.replace(/\s+/g, " "),
     ].join(ORIGIN_SEPARATOR);

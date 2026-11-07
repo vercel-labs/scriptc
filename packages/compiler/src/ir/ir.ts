@@ -2218,11 +2218,15 @@ export interface IrLocal {
 export type IrStmt =
   /** First initialization of a local at its source position. `init: null`
    * means "declared, uninitialized" (`let x: number;`) — the local must be
-   * `mutable`. SOUNDNESS: tsc strict-mode definite-assignment analysis
-   * (TS2454 "used before being assigned") rejects any READ before an
-   * assignment on every path, so backends never need a runtime
-   * initialized-check; refcounted locals simply stay NULL until the first
-   * `assign`. */
+   * `mutable`. SOUNDNESS: the frontend emits it only for a binding no read
+   * can reach before a store. tsc's definite-assignment analysis (TS2454
+   * "used before being assigned") rejects such a read in the declaring
+   * function's own code; a binding that a nested function or an unchecked
+   * declaration (`let x!: number`) can read earlier is declared with an
+   * undefined-armed type and an undefined `init` instead
+   * (frontend/lowering/var-hoisting.ts). Backends therefore never need a
+   * runtime initialized-check; refcounted locals simply stay NULL until
+   * the first `assign`. */
   | { kind: "varDecl"; localId: string; init: IrExpr | null; loc: SrcLoc }
   /** `initializes` marks a TDZ binding's declaration, whose store may
    * initialize an empty box. Ordinary assignments must check it first. */

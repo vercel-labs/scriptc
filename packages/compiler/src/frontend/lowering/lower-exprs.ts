@@ -1894,8 +1894,14 @@ export function lowerNullishCoalesce(
  * sides of the default. */
 function assertedPresenceOperand(lowerer: Lowerer, node: ts.Expression): IrExpr {
   const probe = lowerAbsenceProbe(lowerer, node);
+  // An unassigned deferred-init field takes the default too.
   if (probe === null)
-    return runtimeOptionalStorageOperand(lowerer, node) ?? lowerer.lowerExpr(node);
+    return (
+      runtimeOptionalStorageOperand(lowerer, node) ??
+      deferredSlotOr(lowerer, lowerer.lowerExpr(node))
+    );
+  const slot = lowerer.deferredFieldSlot(probe);
+  if (slot) return slot;
   if (probe.type.kind !== "union" && probe.type.kind !== "object") return probe;
   let outer = node;
   while (ts.isParenthesizedExpression(outer)) outer = outer.expression;

@@ -390,7 +390,7 @@ export function lowerExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     // An internal error or a checker panic on its way out: the innermost
     // expression being lowered is where the diagnostic belongs
     // (diagnostics/crash-site.ts). A poison passes untouched.
-    if (!(e instanceof PoisonError) && isCompilerCrash(e)) noteCrashSite(e, locOf(expr));
+    if (!(e instanceof PoisonError) && isCompilerCrash(e)) noteCrashSite(e, () => locOf(expr));
     throw e;
   } finally {
     lowerExprDepth--;

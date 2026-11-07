@@ -25,10 +25,17 @@ export function isCompilerCrash(e: unknown): e is Error {
   return e instanceof InternalCompilerError || isCheckerPanic(e);
 }
 
-/** Notes `loc` as the site of `error` unless a frame nearer the throw
- * already named one. */
-export function noteCrashSite(error: Error, loc: SrcLoc): void {
+/** Notes the site of `error` unless a frame nearer the throw already
+ * named one. The site is asked for only then, and a node with no position
+ * (one the lowering made up) names none: the crash keeps the next frame's. */
+export function noteCrashSite(error: Error, site: () => SrcLoc): void {
   if (noted !== null && noted.error === error) return;
+  let loc: SrcLoc;
+  try {
+    loc = site();
+  } catch {
+    return;
+  }
   noted = { error, loc };
 }
 

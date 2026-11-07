@@ -17467,7 +17467,7 @@ export class Lowerer {
         const decl = symbol ? symbol.declarations[0] : undefined;
         const declLoc = decl ? locOf(decl) : { file: this.entry.fileName, start: 0, end: 0 };
         if (e instanceof InternalCompilerError && previousSink !== null) {
-          noteCrashSite(e, declLoc);
+          noteCrashSite(e, () => declLoc);
           throw e;
         }
         sink.push(compilerCrashDiag(e, declLoc));

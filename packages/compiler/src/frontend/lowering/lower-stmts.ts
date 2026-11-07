@@ -937,7 +937,7 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
         ) {
           lowerer.pushDiag(compilerCrashDiag(e, locOf(stmt)));
         } else if (!(e instanceof PoisonError)) {
-          if (e instanceof InternalCompilerError) noteCrashSite(e, locOf(stmt));
+          if (e instanceof InternalCompilerError) noteCrashSite(e, () => locOf(stmt));
           throw e;
         }
         if (!lowerer.suppressStats) lowerer.countStatementFailed(stmt, sf?.fileName);

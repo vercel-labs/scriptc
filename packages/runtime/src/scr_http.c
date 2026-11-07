@@ -7981,6 +7981,27 @@ static void scr_http_dynh_fire_info(ScrClosure *cb, ScrHttpReq *res /* +1 */) {
   scr_http_req_release(res);
 }
 
+/* The 'connect' fire for a listener registered through the handle
+ * dispatch: (response, socket, head), each boxed by reference. The
+ * ScrHttpUpgradeFn ABI: all three arrive +1 and the adapter owns them. */
+static void scr_http_dynh_fire_handover(ScrClosure *cb, ScrHttpReq *res /* +1 */, ScrNetSocket *sock /* +1 */,
+                                        ScrBytes *head /* +1 */) {
+  ScrDyn *fn = scr_dyn_listener_fn(cb);
+  ScrDyn *dres = scr_dyn_new_handle(res, SCR_DYNH_HTTP_REQ);
+  ScrDyn *dsock = scr_dyn_new_handle(sock, SCR_DYNH_NET_SOCKET);
+  ScrDyn *dhead = scr_dyn_new_bytes(head);
+  ScrDyn *args3[3] = { dres, dsock, dhead };
+  ScrDyn *r = scr_dyn_call(fn, args3, 3, "listener");
+  scr_dyn_release(r);
+  scr_dyn_release(dhead);
+  scr_dyn_release(dsock);
+  scr_dyn_release(dres);
+  scr_dyn_release(fn);
+  scr_bytes_release(head);
+  scr_net_sock_release(sock);
+  scr_http_req_release(res);
+}
+
 static ScrDyn *scr_http_dynh_client_invoke(void *h, ScrDyn *self, const char *method,
                                            ScrDyn *const *args, size_t argc, const char *what) {
   ScrHttpClientReq *c = (ScrHttpClientReq *)h;
@@ -8004,6 +8025,9 @@ static ScrDyn *scr_http_dynh_client_invoke(void *h, ScrDyn *self, const char *me
     } else if (scr_http_dynh_name_is(name, "information")) {
       scr_http_client_on_information(c, scr_dyn_listener_closure_fn(cb, (void *)&scr_http_dynh_fire_info),
                                      (ScrHttpRespFn)&scr_http_dynh_fire_info, once);
+    } else if (scr_http_dynh_name_is(name, "connect")) {
+      scr_http_client_on_connect(c, scr_dyn_listener_closure_fn(cb, (void *)&scr_http_dynh_fire_handover),
+                                 (ScrHttpUpgradeFn)&scr_http_dynh_fire_handover, once);
     } else {
       scr_http_dynh_event_unsupported("ClientRequest", name);
       return NULL;

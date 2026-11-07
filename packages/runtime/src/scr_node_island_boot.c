@@ -35,7 +35,6 @@
  *   R <oid>                            the module's value
  *   E <len>:<key> <0|1> <len>:<value>  an env key the load read (absent: 0)
  *   T <fd> <0|1>                       the isTTY state the load read
- *   M <component>                      per-module mode (NI-7b): see below
  * where <value> is o<oid>, u, l, t, f, n<number> or s<len>:<bytes>. */
 #define _XOPEN_SOURCE 700
 #define _DARWIN_C_SOURCE 1
@@ -88,7 +87,6 @@ typedef struct {
 
 typedef struct NbModule {
   char *path;
-  uint32_t component; /* per-module mode: modules evaluated together */
   bool done;
   NbEnv *env;
   size_t nenv;
@@ -104,12 +102,6 @@ static size_t nb_stubs_cap = 0;
 static NbModule **nb_modules = NULL;
 static size_t nb_nmodules = 0, nb_modules_cap = 0;
 static bool nb_installed = false;
-/* Per-module mode (NI-7b, `M` records): Node starting does not evaluate
- * every deferred module; each component evaluates on the first use of one
- * of its stubs. The build chooses it only when every static island import
- * is deferred, none mutates builtin state and no island module loads at a
- * call site, so nothing but these stubs can reach the modules' objects. */
-static bool nb_lazy = false;
 static int nb_trace = -1;
 
 static bool nb_tracing(void) {
@@ -328,20 +320,14 @@ static void nb_materialize(NbModule *m) {
   free(needed);
 }
 
+/* Node started: every deferred module evaluates now, in import order,
+ * before the operation that needed Node. A module never waits for its own
+ * first use: island code the program calls can write state a later load
+ * reads, and Node ran every one of these loads before any call. */
 static void nb_started(void) {
-  if (nb_lazy) return; /* each component evaluates on first use */
   if (nb_tracing() && nb_nmodules > 0)
     fprintf(stderr, "[node-islands] Node started: evaluating %zu deferred module(s)\n", nb_nmodules);
   for (size_t i = 0; i < nb_nmodules; i++) nb_materialize(nb_modules[i]);
-}
-
-void scr_ni_boot_materialize(void *stub) {
-  NbModule *owner = ((NbStub *)stub)->module;
-  for (size_t i = 0; i < nb_nmodules; i++) {
-    NbModule *m = nb_modules[i];
-    if (m == owner || (owner->component != 0 && m->component == owner->component))
-      nb_materialize(m);
-  }
 }
 
 void scr_ni_boot_stub_failed(void *stub) {
@@ -388,11 +374,10 @@ ScrDyn *scr_ni_boot_member(void *stub, const char *key, size_t len) {
 bool scr_ni_boot_plain_class(void *stub) { return ((NbStub *)stub)->plain; }
 
 /* Whether the snapshot still describes the stub's value: its module has
- * not evaluated. Before Node starts nothing has; in per-module mode, a
- * component's objects are unreachable to any code until it evaluates. */
+ * not evaluated, which holds exactly until Node starts. */
 bool scr_ni_boot_snapshot_valid(void *stub) {
   NbStub *s = stub;
-  return !s->module->done && (nb_lazy || scr_ni_bridge_loaded() == NULL);
+  return !s->module->done && scr_ni_bridge_loaded() == NULL;
 }
 
 /* ── nodeIsland.defer ─────────────────────────────────────────────────── */
@@ -459,18 +444,11 @@ static NbStub *nb_new_stub(uint32_t oid, uint32_t flags, bool plain, NbModule *m
 }
 
 ScrDyn *scr_node_island_defer(ScrStr *path, ScrStr *snapshot) {
-  /* Pass 1: the guards, and the mode. */
-  NbCursor c = {snapshot->data, snapshot->data + snapshot->len, false};
-  bool lazy = false;
-  while (c.p < c.end && !c.bad) {
-    char tag = *c.p++;
-    if (tag == 'M') lazy = true;
-    nb_line_end(&c);
-  }
-  /* In per-module mode a module can stay deferred while Node runs. */
-  if (!lazy && scr_ni_bridge_loaded() != NULL) return nb_eager(path, "Node is already running");
+  /* Island code has run: the module loads at its position, as in Node. */
+  if (scr_ni_bridge_loaded() != NULL) return nb_eager(path, "Node is already running");
   nb_install();
-  c = (NbCursor){snapshot->data, snapshot->data + snapshot->len, false};
+  /* Pass 1: the guards. */
+  NbCursor c = {snapshot->data, snapshot->data + snapshot->len, false};
   while (c.p < c.end && !c.bad) {
     char tag = *c.p++;
     if (tag == 'E') {
@@ -555,9 +533,6 @@ ScrDyn *scr_node_island_defer(ScrStr *path, ScrStr *snapshot) {
       }
     } else if (tag == 'R') {
       m->root = (uint32_t)nb_uint(&c);
-    } else if (tag == 'M') {
-      m->component = (uint32_t)nb_uint(&c);
-      nb_lazy = true;
     } else if (tag == 'E') {
       NbEnv e = {0};
       e.key = nb_str(&c, &e.key_len);

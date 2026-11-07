@@ -149,6 +149,25 @@ describe.skipIf(skip)("island modules whose loads read unset environment variabl
   }, 300_000);
 });
 
+describe.skipIf(skip)("when deferred island modules evaluate", () => {
+  test("all of them when Node starts, in import order, before the first call", async () => {
+    const name = "8750-node-island-deferred-call-order";
+    const { binary, trace } = await build(name, corpus);
+    expect(trace.filter((l) => l.startsWith("[node-islands] defer "))).toHaveLength(2);
+    expect(trace.every((l) => l.endsWith("evaluated when Node starts"))).toBe(true);
+    const ran = await runTraced(binary);
+    expect(ran.stdout).toBe(await underNode(name));
+    expect(ran.trace.map((l) => l.replace(/ \S*node_modules\//, " "))).toEqual([
+      "[node-islands] deferred patch-pkg/index.js",
+      "[node-islands] deferred reader-pkg/index.js",
+      "[node-islands] starting Node",
+      "[node-islands] Node started: evaluating 2 deferred module(s)",
+      "[node-islands] evaluating deferred patch-pkg/index.js",
+      "[node-islands] evaluating deferred reader-pkg/index.js",
+    ]);
+  }, 300_000);
+});
+
 describe.skipIf(skip)("deferred Node island modules", () => {
   test("a load that changes another island module's exports defers neither", async () => {
     const { binary, trace } = await build("mutate");

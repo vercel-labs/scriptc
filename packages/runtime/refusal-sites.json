@@ -236,7 +236,7 @@
  {
   "file": "scr_console_native.c",
   "function": "scr_console_method_call",
-  "message": "Format strings through stored console methods have no lowering",
+  "message": "Calling %s through a stored value has no lowering; call it directly",
   "code": "SC2020"
  },
  {
@@ -577,6 +577,12 @@
  },
  {
   "file": "scr_dyn_invoke.c",
+  "function": "dyn_define_props_pending",
+  "message": "Object.defineProperties with this value as the property map is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_invoke.c",
   "function": "scr_dyn_define_props_internal",
   "message": "Replacing compiled class prototype members has no native lowering [SC1090]",
   "code": "SC1090"
@@ -663,6 +669,18 @@
   "file": "scr_fs_cp.c",
   "function": "cp_filter",
   "message": "fs.cp filter promises that are still pending have no native lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_fs_path_value.c",
+  "function": "scr_value_fs_path",
+  "message": "A path given as bytes that are not UTF-8 text is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_fs_path_value.c",
+  "function": "scr_value_fs_path",
+  "message": "A file descriptor passed through an untyped value is not supported yet",
   "code": "SC2020"
  },
  {
@@ -1267,6 +1285,12 @@
  },
  {
   "file": "scr_json.c",
+  "function": "scr_finalization_key",
+  "message": "FinalizationRegistry with symbol targets or tokens is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
   "function": "scr_finalization_registry_get",
   "message": "FinalizationRegistry method values have no native lowering",
   "code": "SC2020"
@@ -1467,6 +1491,18 @@
   "file": "scr_pki.c",
   "function": "sp_not_supported",
   "message": "'%s' is part of the standard library types but has no scriptc lowering yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_pki.c",
+  "function": "sp_stream_fence",
+  "message": "This Sign or Verify stream member has no lowering when called through an untyped value",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_pki.c",
+  "function": "sp_stream_fence",
+  "message": "Sign and Verify stream members called through an untyped value have no lowering in a program that uses no streams",
   "code": "SC2020"
  },
  {
@@ -1903,26 +1939,8 @@
  },
  {
   "file": "scr_webstreams.c",
-  "function": "ws_readable_construct",
-  "message": "ReadableStream byte streams ({ type: 'bytes' }) are not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_webstreams.c",
   "function": "ws_readable_from",
   "message": "ReadableStream.from of a function that is not iterable is not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_webstreams.c",
-  "function": "ws_rejected_pending_box",
-  "message": "ReadableStreamBYOBReader is not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_webstreams.c",
-  "function": "ws_text_decoder_construct",
-  "message": "TextDecoderStream for the '%.*s' encoding is not supported yet",
   "code": "SC2020"
  },
  {
@@ -2160,6 +2178,18 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_events.c",
+  "function": "scr_stdin_deliver_parts",
+  "message": "process.stdin 'data' listener takes a Buffer, but setEncoding makes the chunks strings (declare the listener's parameter as string) [SC2020]",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_events.c",
+  "function": "scr_stdin_read_bytes",
+  "message": "process.stdin.read() answers a Buffer, but setEncoding makes the chunks strings (leave the encoding unset and decode the Buffer) [SC2020]",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_fs_stream.c",
   "function": "scr_fss_unsupported",
   "message": "",
@@ -2233,7 +2263,7 @@
  },
  {
   "file": "scr_json.c",
-  "function": "scr_weak_set",
+  "function": "scr_weak_island_key",
   "message": "Weak collection keys of this native reference type have no weak lifetime lowering",
   "code": "SC2020"
  },

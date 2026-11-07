@@ -258,6 +258,9 @@ test("early executable keys isolate compile modes, paths, implementation, checke
     { ...f.options, checker: "tsc-ts-executable-identity" },
     { ...f.options, shapeOverlay: true },
     { ...f.options, jsInference: true },
+    { ...f.options, jsIcWays: 0 },
+    { ...f.options, jsIcWays: 1 },
+    { ...f.options, jsIcWays: 2 },
     { ...f.options, npmStatic: "auto" },
     { ...f.options, npmStatic: ["commander"] },
     { ...f.options, outPath: join(f.options.outDir, "other") },
@@ -274,6 +277,52 @@ test("early executable keys isolate compile modes, paths, implementation, checke
   for (const options of variants) {
     expect(await readEarlyExecutableCache(f.root, options)).toBeNull();
   }
+});
+
+test("an attribution build's inline cache way count is part of the build key", async () => {
+  const f = await fixture();
+  const nativeDependency = join(f.options.outDir, "native-tool");
+  await Promise.all([
+    writeFile(f.options.outPath, "native-v1\n"),
+    writeFile(nativeDependency, "tool-v1\n"),
+  ]);
+  const nativeInfo = await stat(nativeDependency);
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => trackedReadFile(f.source));
+  const publish = (options: EarlyExecutableCacheOptions) =>
+    publishEarlyExecutableCache(f.root, options, {
+      llvmPath: f.llvmPath,
+      irPath: f.irPath,
+      native,
+      executableRestored: true,
+      nativeDependencies: [
+        {
+          path: nativeDependency,
+          kind: "file",
+          dev: nativeInfo.dev,
+          ino: nativeInfo.ino,
+          size: nativeInfo.size,
+          mtimeMs: nativeInfo.mtimeMs,
+          ctimeMs: nativeInfo.ctimeMs,
+        },
+      ],
+      frontend: tracker.snapshot(),
+    });
+  const route = (options: EarlyExecutableCacheOptions) => {
+    const plain = { ...options };
+    delete (plain as Partial<EarlyExecutableCacheOptions>).implementation;
+    delete (plain as Partial<EarlyExecutableCacheOptions>).implementationDependencies;
+    return plain;
+  };
+  await publish(f.options);
+  expect(await readEarlyExecutableCache(f.root, f.options)).not.toBeNull();
+  expect(await readEarlyExecutableCache(f.root, { ...f.options, jsIcWays: 0 })).toBeNull();
+  expect(await readEarlyExecutableCache(f.root, { ...f.options, jsIcWays: 1 })).toBeNull();
+  expect(await readRoutedExecutableCache(f.root, route(f.options))).not.toBeNull();
+  expect(await readRoutedExecutableCache(f.root, route({ ...f.options, jsIcWays: 0 }))).toBeNull();
+  // The attribution build is a separate entry, and it stays one.
+  await publish({ ...f.options, jsIcWays: 0 });
+  expect(await readEarlyExecutableCache(f.root, { ...f.options, jsIcWays: 0 })).not.toBeNull();
 });
 
 test("speed entries round-trip their posture and stay isolated from release and dev", async () => {

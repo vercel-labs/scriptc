@@ -1,4 +1,5 @@
 import * as ts from "../ts7/adapter.js";
+import { arrayOf, type IrExpr, STRING, type SrcLoc, VOID } from "../../ir/ir.js";
 import type { Lowerer } from "./lowerer.js";
 import { stdlibGlobalNameOf, withoutTypeCasts } from "./surfaces.js";
 
@@ -167,20 +168,24 @@ export function hostGlobalNameOfIdentifier(lowerer: Lowerer, id: ts.Identifier):
  * programs spell the global object, and the runtime's dynamic global object
  * answers undefined for these names. A `let` is not followed: it can be
  * reassigned to another object. */
-function isGlobalObjectRead(lowerer: Lowerer, receiver: ts.Expression): boolean {
+export function isGlobalObjectRead(
+  lowerer: Lowerer,
+  receiver: ts.Expression,
+  seen: Set<ts.Symbol> = new Set(),
+  name = stdlibGlobalNameOf(lowerer, receiver),
+): boolean {
+  if (name === "globalThis") return true;
   const uncast = withoutTypeCasts(receiver);
-  if (stdlibGlobalNameOf(lowerer, uncast) === "globalThis") return true;
+  if (uncast !== receiver) return isGlobalObjectRead(lowerer, uncast, seen);
   if (!ts.isIdentifier(uncast)) return false;
   const symbol = lowerer.checker.getSymbolAtLocation(uncast);
-  const decl = symbol?.declarations?.[0];
-  return (
-    decl !== undefined &&
-    ts.isVariableDeclaration(decl) &&
-    decl.parent !== undefined &&
-    (decl.parent.flags & ts.NodeFlags.Const) !== 0 &&
-    decl.initializer !== undefined &&
-    stdlibGlobalNameOf(lowerer, withoutTypeCasts(decl.initializer)) === "globalThis"
-  );
+  if (symbol === undefined || seen.has(symbol)) return false;
+  seen.add(symbol);
+  const decl = symbol.valueDeclaration ?? symbol.declarations?.[0];
+  if (decl === undefined || !ts.isVariableDeclaration(decl) || decl.initializer === undefined)
+    return false;
+  if ((ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) === 0) return false;
+  return isGlobalObjectRead(lowerer, decl.initializer, seen);
 }
 
 /** Whether `access` reads one of those globals off the global object —
@@ -348,4 +353,30 @@ export function hostGlobalNameOfTypeofOperand(
   operand: ts.Expression,
 ): string | null {
   return hostGlobalNameOfRead(lowerer, operand);
+}
+
+/** The compiler's derived name table as the runtime's immortal
+ * `templateStrings` array (one per program): the runtime never carries a
+ * hand-copied list of host globals. */
+export function hostAbsentNamesArg(loc: SrcLoc): IrExpr {
+  const names = [...NODE_GLOBALS_WITHOUT_NATIVE].sort();
+  return {
+    kind: "templateStrings",
+    key: `%hostAbsent.names:${names.join(",")}`,
+    cooked: names,
+    type: arrayOf(STRING),
+    loc,
+  };
+}
+
+/** Arms the runtime check at a dynamic site (idempotent): the runtime's
+ * global-object read and `in` answers throw for exactly these names. */
+export function hostAbsentInstall(loc: SrcLoc): IrExpr {
+  return {
+    kind: "libCall",
+    fn: "global.hostAbsent",
+    args: [hostAbsentNamesArg(loc)],
+    type: VOID,
+    loc,
+  };
 }

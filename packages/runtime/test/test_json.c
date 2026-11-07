@@ -636,6 +636,112 @@ static void test_copy_property_descriptors(void) {
   scr_dyn_release(getter);
 }
 
+/* A class instance's checked view installs the class's accessor-backed
+ * members as getters that run on the instance (scr_dyn_class_view_accessors):
+ * a read answers the getter's value, while own-property queries answer as
+ * they do for the instance, where such a member is a prototype accessor. */
+static void *class_view_seen;
+static void *class_view_retain(void *value) { return scr_dyn_retain(value); }
+static void class_view_release(void *value) { scr_dyn_release(value); }
+static ScrDyn *class_view_get(void *instance, size_t index) {
+  class_view_seen = instance;
+  return scr_dyn_new_num(index == 0 ? 10 : 20);
+}
+
+static void test_class_view_accessors(void) {
+  ScrStr *names[2] = {S("kind"), S("value")};
+  ScrDynTypedClassOps ops = {0};
+  ops.accessor_count = 2;
+  ops.accessor_names = names;
+  ops.accessor_get = class_view_get;
+  ScrDyn *instance = scr_dyn_new_obj();
+  ScrDyn *view = scr_dyn_new_obj();
+  ScrStr *tagged = S("tagged");
+  scr_dyn_obj_set(view, "label", 5, scr_dyn_new_str(tagged));
+  scr_str_release(tagged);
+  /* An own field that shadows a getter keeps its value. */
+  scr_dyn_obj_set(view, "value", 5, scr_dyn_new_num(7));
+  scr_dyn_class_view_accessors(view, &ops, instance, class_view_retain, class_view_release, NULL);
+  check(view->v.obj.len == 3, "the view gains one accessor per accessor-backed member");
+
+  ScrDyn *kind = scr_dyn_obj_read(view, "kind", 4);
+  check(kind && kind->kind == SCR_DYN_NUM && kind->v.num == 10, "a view read answers the member's getter");
+  scr_dyn_release(kind);
+  check(class_view_seen == instance, "the getter runs on the instance, not on the view");
+  ScrDyn *shadowed = scr_dyn_obj_read(view, "value", 5);
+  check(shadowed && shadowed->kind == SCR_DYN_NUM && shadowed->v.num == 7,
+        "an own field shadowing a getter keeps its value");
+  scr_dyn_release(shadowed);
+
+  check(scr_dyn_obj_get(view, "kind", 4) == NULL, "the member is not an own data property of the view");
+  ScrStr *kind_name = S("kind");
+  ScrDyn *descriptor = scr_dyn_own_descriptor(view, kind_name);
+  check(descriptor && descriptor->kind == SCR_DYN_UNDEF, "the view has no own descriptor for the member");
+  scr_dyn_release(descriptor);
+  scr_str_release(kind_name);
+  ScrDyn *keys = scr_dyn_obj_own_keys(view);
+  check(keys->v.arr.len == 2 && str_is(keys->v.arr.items[0]->v.str, "label") &&
+            str_is(keys->v.arr.items[1]->v.str, "value"),
+        "own-key walks leave the class member out");
+  scr_dyn_release(keys);
+
+  /* Installing again finds the entry and changes nothing. */
+  scr_dyn_class_view_accessors(view, &ops, instance, class_view_retain, class_view_release, NULL);
+  check(view->v.obj.len == 3, "the installer keeps one entry per member");
+  kind = scr_dyn_obj_read(view, "kind", 4);
+  check(kind && kind->v.num == 10, "the member still answers its getter");
+  scr_dyn_release(kind);
+
+  /* The member's entry stands for a prototype accessor, so defining it
+   * creates an own property of the view in its place. */
+  scr_dyn_release(define_from(view, "kind", scr_dyn_new_num(42), true, true, true));
+  ScrDyn *defined = scr_dyn_obj_get(view, "kind", 4);
+  check(!scr_exc_pending() && defined && defined->kind == SCR_DYN_NUM && defined->v.num == 42 &&
+            !entry_of(view, "kind")->class_view,
+        "defining the member makes it an own data property");
+  scr_dyn_release(defined);
+  ScrStr *defined_name = S("kind");
+  ScrDyn *defined_descriptor = scr_dyn_own_descriptor(view, defined_name);
+  check(defined_descriptor && defined_descriptor->kind == SCR_DYN_OBJ,
+        "the view now has an own descriptor for the member");
+  scr_dyn_release(defined_descriptor);
+  scr_str_release(defined_name);
+  keys = scr_dyn_obj_own_keys(view);
+  check(keys->v.arr.len == 3 && str_is(keys->v.arr.items[2]->v.str, "kind"),
+        "own-key walks include the defined member");
+  scr_dyn_release(keys);
+  kind = scr_dyn_obj_read(view, "kind", 4);
+  check(kind && kind->v.num == 42, "a read answers the defined value");
+
+  /* Defining again overwrites the own property, whose attributes are now
+   * read from the previous definition rather than from the class member. */
+  scr_dyn_release(define_from(view, "kind", scr_dyn_new_num(43), true, true, true));
+  const ScrDynEntry *redefined = entry_of(view, "kind");
+  check(redefined && redefined->value->v.num == 43 && redefined->writable && redefined->enumerable &&
+            redefined->configurable,
+        "a second definition keeps the attributes of the first");
+  scr_dyn_release(kind);
+
+  /* Being no own property, a class member is a new property to a closed
+   * view, which refuses it and keeps answering its getter. */
+  ScrDyn *closed_view = scr_dyn_new_obj();
+  scr_dyn_class_view_accessors(closed_view, &ops, instance, class_view_retain, class_view_release, NULL);
+  scr_dyn_release(scr_dyn_prevent_extensions(closed_view));
+  scr_dyn_release(define_from(closed_view, "kind", scr_dyn_new_num(1), true, true, true));
+  check(scr_exc_pending(), "a non-extensible view refuses a definition of the member");
+  scr_exc_clear();
+  ScrDyn *kept = scr_dyn_obj_read(closed_view, "kind", 4);
+  check(kept && kept->v.num == 10 && !scr_dyn_obj_get(closed_view, "kind", 4),
+        "the refused definition leaves the member answering its getter");
+  scr_dyn_release(kept);
+  scr_dyn_release(closed_view);
+
+  scr_dyn_release(view);
+  scr_dyn_release(instance);
+  scr_str_release(names[0]);
+  scr_str_release(names[1]);
+}
+
 static void test_primitive_owners(void) {
   ScrDyn *values[] = {scr_dyn_new_null(), scr_dyn_new_bool(false), scr_dyn_new_bool(true)};
   const char *texts[] = {"null", "false", "true"};
@@ -665,6 +771,7 @@ int main(void) {
   scr_init();
   test_primitive_owners();
   test_copy_property_descriptors();
+  test_class_view_accessors();
 
   /* ── primitives ─────────────────────────────────────────────────── */
   ScrDyn *d = parse_ok("null", "parse null");

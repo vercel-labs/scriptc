@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test, vi } from "vitest";
 import {
+  checkModuleOrder,
   checkPreflight,
   cycleEarlyBindings,
   isNodeEsmFile,
@@ -57,6 +58,18 @@ test("ambiguous module classification bounds ancestor work on deep expressions",
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+function preflightDiagnosticsFor(files: Record<string, string>) {
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-lazy-cycle-"));
+  for (const [name, source] of Object.entries(files)) writeFileSync(join(dir, name), source);
+  const load = loadProgram(join(dir, "main.cjs"));
+  try {
+    return checkPreflight(load);
+  } finally {
+    load.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 function requireOrderDiagnostics(source: string, dependency = "exports.value = 'ready';\n") {
   const dir = mkdtempSync(join(tmpdir(), "scriptc-require-order-"));
@@ -227,6 +240,28 @@ function check() { return 1; }
 function probe() { return check(); }
 `),
   ).toEqual([]);
+});
+
+test("a lazy require admits the cycle it closes at run time", () => {
+  expect(
+    preflightDiagnosticsFor({
+      "main.cjs": "const root = require('./index.cjs'); console.log(root.tag, root.check());\n",
+      "index.cjs":
+        "const common = require('./common.cjs');\nmodule.exports = { tag: 'root', check: common.check };\n",
+      "common.cjs": "exports.check = function () { return require('./schemas.cjs').value; };\n",
+      "schemas.cjs": "const root = require('./index.cjs');\nexports.value = root.tag + '!';\n",
+    }),
+  ).toEqual([]);
+});
+
+test("an eager cycle inside a lazy subtree keeps full analysis", () => {
+  const diagnostics = preflightDiagnosticsFor({
+    "main.cjs": "const common = require('./common.cjs'); console.log(common.load());\n",
+    "common.cjs": "exports.load = function () { return require('./a.cjs').value; };\n",
+    "a.cjs": "const b = require('./b.cjs');\nexports.value = b.value + 1;\n",
+    "b.cjs": "const a = require('./a.cjs');\nexports.value = a.value + 1;\n",
+  });
+  expect(diagnostics.some((diag) => diag.code === "SC1016")).toBe(true);
 });
 
 test("a require cycle whose modules export first and use each other only later is admitted", () => {
@@ -536,6 +571,47 @@ test.for([
     expect(found.map((binding) => binding.name.text).sort()).toEqual([...early]);
   } finally {
     load.dispose();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("asking for the module order first leaves the report and the order as they were", () => {
+  // `--npm-static`'s fixpoint reloads once per discovered package and reads
+  // the order alone; the last load's full preflight completes that walk. The
+  // reordered path must report exactly what the single pass reports, and must
+  // reuse the array the order pass installed rather than walk again.
+  const directory = mkdtempSync(
+    join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-module-order-"),
+  );
+  const entry = join(directory, "main.ts");
+  writeFileSync(join(directory, "package.json"), '{"type":"module"}');
+  writeFileSync(join(directory, "dep.ts"), "export const value: number = 1;\n");
+  writeFileSync(
+    entry,
+    'import { value } from "./dep.js";\nconst bad: number = "text";\nconsole.log(value, bad);\n',
+  );
+  const report = (load: ReturnType<typeof loadProgram>) => ({
+    diags: checkPreflight(load),
+    order: load.moduleOrder.map((sf) => sf.fileName),
+    rejections: [...(load.dynamicImportRejections?.keys() ?? [])].map((sf) => sf.fileName),
+    cycles: load.inlineRequireCycleCalls?.size ?? 0,
+    crash: load.startupCrash ?? null,
+  });
+  const single = loadProgram(entry);
+  const ordered = loadProgram(entry);
+  try {
+    const direct = report(single);
+    expect(direct.diags.length).toBeGreaterThan(0);
+    expect(direct.order.length).toBe(2);
+    checkModuleOrder(ordered);
+    const before = ordered.moduleOrder;
+    expect(before.map((sf) => sf.fileName)).toEqual(direct.order);
+    expect(report(ordered)).toEqual(direct);
+    // The full preflight completed the memoized walk instead of repeating it.
+    expect(ordered.moduleOrder).toBe(before);
+  } finally {
+    single.dispose();
+    ordered.dispose();
     rmSync(directory, { recursive: true, force: true });
   }
 });

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/large-string-index-budget.ts"
+ ],
+ "diags": []
+}

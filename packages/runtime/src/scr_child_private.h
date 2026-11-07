@@ -67,6 +67,8 @@ struct ScrChild {
   ScrStr *exec_display;
   ScrStr *exec_file; /* the spawned file and its arguments (+1 each), for */
   ScrArr *exec_args; /* a spawn failure's path and spawnargs */
+  ScrStr *spawnfile; /* ChildProcess.spawnfile: the file that was spawned */
+  ScrArr *spawnargs; /* ChildProcess.spawnargs: the file followed by its arguments */
   void (*exec_props)(struct ScrChild *c, ScrError *error); /* Node's error properties */
   ScrChildStream *out_stream;
   ScrChildStream *err_stream;
@@ -127,6 +129,8 @@ struct ScrChild {
   ScrStr *exec_display;
   ScrStr *exec_file; /* the spawned file and its arguments (+1 each), for */
   ScrArr *exec_args; /* a spawn failure's path and spawnargs */
+  ScrStr *spawnfile; /* ChildProcess.spawnfile: the file that was spawned */
+  ScrArr *spawnargs; /* ChildProcess.spawnargs: the file followed by its arguments */
   void (*exec_props)(struct ScrChild *c, ScrError *error); /* Node's error properties */
   /* Piped stdio (stdio mode 3): the stream handles child.stdout /
    * child.stderr answer — owned (+1 each), NULL when not piped. */

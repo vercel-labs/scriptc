@@ -311,13 +311,18 @@ declare module "http" {
    * `target` is a URL string or URL object (the spelling a from-scratch
    * client reaches for first — dialed directly, with a non-http scheme
    * an ERR_INVALID_PROTOCOL at runtime rather than a type error), or
-   * the options record. */
+   * the options record. A URL target's second argument is the response
+   * callback or the options value the runtime merges under the URL's
+   * fields (`request(url, options[, callback])`); the lowering tells
+   * the two apart by the argument's own type. */
   export function request(
     target: RequestOptions | string | URL,
+    optionsOrCallback?: RequestOptions | ((res: IncomingMessage) => void),
     callback?: (res: IncomingMessage) => void,
   ): ClientRequest;
   export function get(
     target: RequestOptions | string | URL,
+    optionsOrCallback?: RequestOptions | ((res: IncomingMessage) => void),
     callback?: (res: IncomingMessage) => void,
   ): ClientRequest;
   export function validateHeaderName(name: string, label?: string): void;

@@ -76,14 +76,19 @@ export function checkedClassInstanceOf(
   };
 }
 
-/** Checked construction dispatches to emitted native constructor thunks. */
+/** Checked construction dispatches to emitted native constructor thunks.
+ * `calleeText` is the callee as V8 spells it in "<callee> is not a
+ * constructor"; without it the runtime's own description of the callee
+ * stands. */
 export function checkedClassConstruction(
   lowerer: Lowerer,
   callee: IrExpr,
   args: IrExpr[],
   loc: SrcLoc,
+  calleeText?: string,
 ): IrExpr {
-  const name = `${PREFIX}${args.length}`;
+  const name =
+    calleeText === undefined ? `${PREFIX}${args.length}` : `${PREFIX}${args.length}:${calleeText}`;
   if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
     const params = [callee, ...args].map((_, index) => ({
       localId: `p.${index}`,
@@ -110,7 +115,7 @@ export function checkedClassConstruction(
                 type: DYN,
                 loc,
               },
-              { kind: "strLit", value: "constructor", type: STRING, loc },
+              { kind: "strLit", value: calleeText ?? "constructor", type: STRING, loc },
             ],
             type: DYN,
             loc,

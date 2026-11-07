@@ -444,6 +444,174 @@ describe.each(EMISSIONS)("ask-4 corpus, %s emission", (emission) => {
     expect(r.diagnostics[0]!.message).toContain("Infinity");
   });
 
+  /* ── aliased exports share ONE unit's slots ───────────────────────────
+   * Two profile exports may land on one compiled function (alias exports
+   * of the same declaration). That unit has ONE return value and ONE set
+   * of parameter bindings, so a later export's declaration may not replace
+   * an earlier one's proof obligations: the return is proven for the
+   * STRICTER declared class (u64's range sits inside i64's) and a call
+   * site must meet both parameter classes. Otherwise the looser alias
+   * would let an unproven integer cross the stricter alias's ABI. */
+
+  test("an aliased export keeps the stricter return obligation", async () => {
+    const source =
+      `export function delta(flag: boolean): number {\n  return flag ? 1 : -1;\n}\n` +
+      `export { delta as deltaSigned, delta as deltaI64 };\n`;
+    const profile = {
+      profile_format: 1,
+      name: "alias-return",
+      entry: "lib.ts",
+      emission,
+      abi: {
+        prefix: "al_",
+        init_symbol: "al_init",
+        sink_register_symbol: "al_set_panic_sink",
+        collect_symbol: null,
+        result_reset_symbol: null,
+      },
+      exports: [
+        { export: "deltaSigned", symbol: "al_delta_signed", params: ["bool"], returns: "u64" },
+        { export: "deltaI64", symbol: "al_delta_i64", params: ["bool"], returns: "i64" },
+      ],
+    };
+    const r = await buildCase(`alias-return-${emission}`, source, profile);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.diagnostics.map((d) => d.code)).toEqual(["SC4023"]);
+    // The u64 alias declared first; the later i64 alias must not take over
+    // the unit's return slot and hide the negative branch.
+    expect(r.diagnostics[0]!.message).toContain("'exports.deltaSigned.return'");
+    expect(r.diagnostics[0]!.message).toContain("range failed");
+  });
+
+  test("an aliased export keeps the stricter parameter obligation", async () => {
+    const source =
+      `function take(x: number): void {\n  if (x > 1) return;\n}\n` +
+      `export function run(flag: boolean): void {\n  take(flag ? 1 : -1);\n}\n` +
+      `export { take as takeU, take as takeI };\n`;
+    const profile = {
+      profile_format: 1,
+      name: "alias-param",
+      entry: "lib.ts",
+      emission,
+      abi: {
+        prefix: "ap_",
+        init_symbol: "ap_init",
+        sink_register_symbol: "ap_set_panic_sink",
+        collect_symbol: null,
+        result_reset_symbol: null,
+      },
+      exports: [
+        { export: "takeU", symbol: "ap_take_u", params: ["u64"], returns: "void" },
+        { export: "takeI", symbol: "ap_take_i", params: ["i64"], returns: "void" },
+        { export: "run", symbol: "ap_run", params: ["bool"], returns: "void" },
+      ],
+    };
+    const r = await buildCase(`alias-param-${emission}`, source, profile);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.diagnostics.map((d) => d.code)).toEqual(["SC4023"]);
+    // The call inside `run` crosses both declared parameter classes, so it
+    // has to discharge the u64 one the earlier alias declared.
+    expect(r.diagnostics[0]!.message).toContain("'exports.takeU.params[0]'");
+    expect(r.diagnostics[0]!.message).toContain("range failed");
+  });
+
+  test("aliases whose declarations agree still compile", async () => {
+    // The merge narrows nothing a single declaration proves: a non-negative
+    // whole return discharges both classes, so the aliases coalesce instead
+    // of refusing.
+    const source =
+      `export function count(): number {\n  return 0;\n}\n` +
+      `export { count as countI, count as countU };\n`;
+    const profile = {
+      profile_format: 1,
+      name: "alias-agree",
+      entry: "lib.ts",
+      emission,
+      abi: {
+        prefix: "ag_",
+        init_symbol: "ag_init",
+        sink_register_symbol: "ag_set_panic_sink",
+        collect_symbol: null,
+        result_reset_symbol: null,
+      },
+      exports: [
+        { export: "countI", symbol: "ag_count_i", params: [], returns: "i64" },
+        { export: "countU", symbol: "ag_count_u", params: [], returns: "u64" },
+      ],
+    };
+    const r = await buildCase(`alias-agree-${emission}`, source, profile);
+    expect(r.ok, r.ok ? "" : r.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n")).toBe(
+      true,
+    );
+  });
+
+  test("a plain f64 alias cannot be proven from a sibling integer entry", async () => {
+    // The unit's parameter binding receives whatever EACH alias's wrapper
+    // passes: through echoF64 any double at all, including fractions and
+    // NaN. The integer alias's tighter class proves nothing about those
+    // arrivals, so a pass-through body cannot discharge the shared integer
+    // return obligation for both entries.
+    const source =
+      `export function echo(x: number): number {\n  return x;\n}\n` +
+      `export { echo as echoF64, echo as echoI64 };\n`;
+    const profile = {
+      profile_format: 1,
+      name: "alias-f64",
+      entry: "lib.ts",
+      emission,
+      abi: {
+        prefix: "af_",
+        init_symbol: "af_init",
+        sink_register_symbol: "af_set_panic_sink",
+        collect_symbol: null,
+        result_reset_symbol: null,
+      },
+      exports: [
+        { export: "echoF64", symbol: "af_echo_f64", params: ["f64"], returns: "i64" },
+        { export: "echoI64", symbol: "af_echo_i64", params: ["i64"], returns: "i64" },
+      ],
+    };
+    const r = await buildCase(`alias-f64-${emission}`, source, profile);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.diagnostics.map((d) => d.code)).toEqual(["SC4022"]);
+    expect(r.diagnostics[0]!.message).toContain("'exports.echoF64.return'");
+    expect(r.diagnostics[0]!.message).toContain("wholeness failed");
+    expect(r.diagnostics[0]!.message).toContain("NaN");
+  });
+
+  test("an f64 alias only limits the proof, it does not refuse the profile", async () => {
+    // Same aliases over a body whose result is whole whatever arrives: the
+    // unrestricted f64 arrival is bounded by the body, so the integer
+    // return still proves and both entries compile.
+    const source =
+      `export function sign(x: number): number {\n  return x > 0 ? 1 : 0;\n}\n` +
+      `export { sign as signF64, sign as signI64 };\n`;
+    const profile = {
+      profile_format: 1,
+      name: "alias-f64-proved",
+      entry: "lib.ts",
+      emission,
+      abi: {
+        prefix: "afp_",
+        init_symbol: "afp_init",
+        sink_register_symbol: "afp_set_panic_sink",
+        collect_symbol: null,
+        result_reset_symbol: null,
+      },
+      exports: [
+        { export: "signF64", symbol: "afp_sign_f64", params: ["f64"], returns: "i64" },
+        { export: "signI64", symbol: "afp_sign_i64", params: ["i64"], returns: "i64" },
+      ],
+    };
+    const r = await buildCase(`alias-f64-proved-${emission}`, source, profile);
+    expect(r.ok, r.ok ? "" : r.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n")).toBe(
+      true,
+    );
+  });
+
   /* ── outbound integer returns: real int64_t/uint64_t crossings ─────── */
 
   test("declared integer returns cross as exact int64_t/uint64_t", async () => {

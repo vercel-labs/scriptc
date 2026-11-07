@@ -1024,14 +1024,15 @@ export function fenceStaticHeadersMember(
     lowerer.noLowering(
       `Headers.${member}`,
       access,
-      "symbol-keyed Headers iteration is unsupported; use forEach()",
+      fetchInventoryReason("Headers", member, "prototype") ??
+        "this Headers operation has no compiler lowering",
       sym,
     );
   }
   lowerer.noLowering(
     `Headers.${member} in a static build`,
     access,
-    "the native static Headers surface is append/delete/get/getSetCookie/has/set/forEach; keys()/values()/entries(), symbol-keyed iteration, and construction remain unsupported",
+    "the native static Headers surface is append/delete/get/getSetCookie/has/set/forEach and the keys()/values()/entries() iterators, each called directly, plus iteration of the Headers itself; a method read as a value is unsupported",
     sym,
   );
 }
@@ -1206,29 +1207,6 @@ export function fenceFetchObjectAssignment(
       const member = fetchObjectAssignmentMemberName(lowerer, property);
       return member === null ? [] : [{ member, node: property }];
     }),
-  );
-}
-
-/** Iteration syntax invokes Headers[Symbol.iterator] without constructing
- * an element-access node, so the member chokepoint above never sees it.
- * Use the same SC2020 profile row for for-of, array spread, and array destructuring. */
-export function fenceStaticHeadersIteration(lowerer: Lowerer, node: ts.Node): void {
-  // The initializer is the value being iterated. Asking for the binding
-  // pattern's synthesized tuple type can panic in TypeScript serialization.
-  const source =
-    ts.isArrayBindingPattern(node) &&
-    ts.isVariableDeclaration(node.parent) &&
-    node.parent.initializer
-      ? node.parent.initializer
-      : node;
-  const value = ts.isExpression(source) ? withoutParenthesesTypeWrappers(source) : source;
-  const sym = isStdlibFetchInterface(lowerer, value, "Headers");
-  if (!sym) return;
-  lowerer.noLowering(
-    "Headers.[Symbol.iterator] in a static build",
-    node,
-    "Headers iteration is unsupported; use append/delete/get/getSetCookie/has/set/forEach",
-    sym,
   );
 }
 

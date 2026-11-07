@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/forward-let-unassigned-state.ts"
+ ],
+ "diags": []
+}

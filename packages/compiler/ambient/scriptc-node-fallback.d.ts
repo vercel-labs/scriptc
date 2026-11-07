@@ -1334,6 +1334,9 @@ interface Headers {
     callbackfn: (value: string, key: string, parent: Headers) => void,
     thisArg?: unknown,
   ): void;
+  entries(): IterableIterator<[string, string]>;
+  keys(): IterableIterator<string>;
+  values(): IterableIterator<string>;
   [Symbol.iterator](): IterableIterator<[string, string]>;
 }
 declare var Headers: {

@@ -188,6 +188,23 @@ class Store {
   console.log("class field", store.state.files.length, store.state.count);
 }
 
+// A generic body: each instance has its own array, of its own element
+// type, also where the type parameter is inside the element.
+function collect<T>(first: T): { rows: { value: T }[]; plain: T[] } {
+  const o = { rows: [], plain: [] };
+  const rows: { value: T }[] = o.rows;
+  rows.push({ value: first });
+  const plain: T[] = o.plain;
+  plain.push(first);
+  return o;
+}
+console.log(
+  "generic",
+  JSON.stringify(collect("s")),
+  JSON.stringify(collect(1)),
+  JSON.stringify(collect({ k: true })),
+);
+
 // No typed name at all: the array stays empty and is still one array.
 {
   const o = { files: [] };

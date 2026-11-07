@@ -78,6 +78,19 @@ export function emptyArrayInitializer(decl: ts.Node | undefined): ts.ArrayLitera
   return ts.isArrayLiteralExpression(init) && init.elements.nodes.length === 0 ? init : null;
 }
 
+/** Whether `node` is inside a function or class that declares type
+ * parameters: types written there can name them at any depth. */
+function insideGenericDeclaration(node: ts.Node): boolean {
+  for (let outer = node.parent; outer !== undefined; outer = outer.parent) {
+    if (
+      (ts.isFunctionLike(outer) || ts.isClassDeclaration(outer) || ts.isClassExpression(outer)) &&
+      (outer.typeParameters?.nodes.length ?? 0) > 0
+    )
+      return true;
+  }
+  return false;
+}
+
 /** The array type the untyped empty array of `decl` (`name: []`,
  * `const NONE = [] as const`) has: the one its contextual type names, or
  * the one array type the typed slots its value reaches agree on. Null when
@@ -110,9 +123,10 @@ export function emptyArrayPlaceType(lowerer: Lowerer, decl: EmptyArrayOrigin): I
     places.active.delete(decl);
   }
   if (places.reentered.delete(decl)) decided = null;
-  // A slot typed by a type parameter maps per instance of the generic
-  // function it is in, so its answer is not kept across instances.
-  if (!generic) places.decided.set(decl, decided);
+  // A slot typed through a type parameter maps per instance of the generic
+  // declaration it is in (`{ value: T }[]` is one array type per T), so an
+  // answer found in or for a generic body is not kept across instances.
+  if (!generic && !insideGenericDeclaration(decl)) places.decided.set(decl, decided);
   return decided;
 }
 

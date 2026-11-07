@@ -18,6 +18,7 @@ import {
 import { cleanFuncAdaptable } from "../coercions/function-adapters.js";
 import { checkedNarrowOperand } from "../coercions/unions.js";
 import { type Lowerer, jsFuncNameOf } from "../lowerer.js";
+import { refuseCopiedStore } from "../structural-instances.js";
 import { recordMayKeepSource } from "../record-sources.js";
 import { recordStringCall } from "../record-links.js";
 import {
@@ -1413,6 +1414,7 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
         );
       }
       const value = lowerer.lowerExprExpecting(expr.right, target.type);
+      refuseCopiedStore(lowerer, expr.left, target.type, expr.right);
       const runtimeOptionalRoot = lowerer.runtimeOptionalRootOf(target);
       if (lowerer.runtimeOptionalStorageLocals.has(runtimeOptionalRoot))
         lowerer.runtimeOptionalLocals.add(runtimeOptionalRoot);
@@ -1515,6 +1517,7 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
         : null;
       if (target) {
         const value = lowerer.lowerExprExpecting(expr.right, target.type);
+        refuseCopiedStore(lowerer, expr.left, target.type, expr.right);
         return { kind: "assignExpr", localId: target.id, value, type: target.type, loc };
       }
       // Bundled numeric enums use e[e["name"] = value] = "name".
@@ -1649,6 +1652,7 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
           const receiver = field.obj;
           field.obj = varRef(recvTmp.id, receiver.type, loc);
           const value = lowerer.lowerExprExpecting(expr.right, field.fieldType);
+          refuseCopiedStore(lowerer, expr.left, field.fieldType, expr.right);
           const valTmp = lowerer.declareHiddenLocal("%setValue", value.type);
           const result = varRef(valTmp.id, value.type, loc);
           return {

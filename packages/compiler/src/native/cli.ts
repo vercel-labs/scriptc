@@ -9,6 +9,7 @@ import {
   stageNativeRuntimeSelection,
 } from "../backend/runtime-pack-native.js";
 import { mergeNativeProfiles } from "../backend/native-tools.js";
+import "../backend/native-codegen-server.js";
 import { setDeclarationRoot } from "../frontend/dts-paths.js";
 import { setFrontendDisposedHook } from "../frontend/dispose-hook.js";
 import { FrontendServices } from "../frontend/services.js";

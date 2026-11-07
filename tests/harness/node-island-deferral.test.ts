@@ -163,7 +163,10 @@ describe.skipIf(skip)("when deferred island modules evaluate", () => {
     expect(trace.every((l) => l.endsWith("evaluated when Node starts"))).toBe(true);
     const ran = await runTraced(binary);
     expect(ran.stdout).toBe(await underNode(name));
-    expect(ran.trace.map((l) => l.replace(/ \S*node_modules\//, " "))).toEqual([
+    // The module tree's install is traced where Node starts, by its own
+    // unit; this test is about which deferred modules evaluate and when.
+    const evaluation = ran.trace.filter((l) => l !== "[node-islands] installing the module tree");
+    expect(evaluation.map((l) => l.replace(/ \S*node_modules\//, " "))).toEqual([
       "[node-islands] deferred patch-pkg/index.js",
       "[node-islands] deferred reader-pkg/index.js",
       "[node-islands] starting Node",

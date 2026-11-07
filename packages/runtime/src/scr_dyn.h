@@ -2098,13 +2098,21 @@ ScrError *scr_errdyn_err_of(const ScrDyn *d); /* +1 or NULL */
 void scr_error_capture_stack_trace(ScrDyn *target, const char *through, bool skip);
 void scr_errdyn_put(ScrError *e, ScrDyn *d);  /* retains both sides */
 /* Sets an own property on an error: its checked-dynamic node, which casts
- * and util.inspect read. Moves value. */
+ * and util.inspect read. An error that has no node keeps the property
+ * until scr_dyn_from_error builds one. Moves value; `key` is a string
+ * literal. */
 void scr_error_set_prop(ScrError *e, const char *key, size_t key_len, ScrDyn *value);
+/* scr_error_set_prop with the error itself as the value. */
+void scr_error_set_prop_self(ScrError *e, const char *key, size_t key_len);
 /* scr_throw_node_coded with an own `url` property (error.nodeThrow's
  * fourth argument). Borrows the strings; always throws. */
 SCR_COLD void scr_throw_node_coded_url(double kind, const ScrStr *code, const ScrStr *msg,
                                        const ScrStr *url);
 ScrDyn *scr_errdyn_view_of(const ScrError *e); /* borrowed or NULL */
+/* scr_errdyn_view_of for util.inspect, which prints an error's extra own
+ * properties: it first builds the node of an error whose
+ * scr_error_set_prop properties wait for one. */
+ScrDyn *scr_errdyn_node_of(const ScrError *e); /* borrowed or NULL */
 /* ToBoolean over the dyn kind (JS-exact); borrowed, never throws. */
 bool scr_dyn_truthy(const ScrDyn *d);
 /* Math.max/Math.min(...src) over an untyped iterable; `what` names the
@@ -2342,9 +2350,10 @@ bool scr_dyn_trusted_build(void);
 
 /* ── native handles in the checked-dynamic tree (SCR_DYN_HANDLE) ────────────────────────
  * Per-tag dispatch ops, registered by the handle's owning unit
- * (scr_http_dyn_install / scr_net_dyn_install — emitted main() calls
- * them exactly when the unit is linked, the scr_net_install story), so
- * this always-linked core never references gated units. */
+ * (scr_http_dyn_install / scr_net_dyn_install — the unit's boxing
+ * functions call them, and the emitted main() of a program that reads the
+ * dynamic receiver), so this always-linked core never references gated
+ * units. */
 /* A method a handle class answers through invoke, read as a value
  * (`typeof req.json`, `raw[key]()`): the read answers one function per
  * (tag, method) that calls invoke on its `this`. length is the method's

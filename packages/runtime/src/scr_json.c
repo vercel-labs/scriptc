@@ -7878,11 +7878,13 @@ ScrDyn *scr_dyn_bind(ScrDyn *target, ScrDyn *const *args, size_t argc) {
 }
 
 /* ── native handles in the checked-dynamic tree (SCR_DYN_HANDLE) ───────────────────────
- * Per-tag ops stamped by the owning units at main() (scr_http_dyn_install
- * / scr_net_dyn_install — the scr_net_install hook story), so this
- * always-linked core never references gated units. A missing tag at use
- * is an internal error: emitted programs install a unit's ops whenever
- * they can box its handles. */
+ * Per-tag ops stamped by the owning units (scr_http_dyn_install /
+ * scr_net_dyn_install — the scr_net_install hook story), so this
+ * always-linked core never references gated units. A unit installs its
+ * ops where one of its handles is first boxed (its scr_*_to_dyn), and the
+ * emitted main() installs them before %main in a program that can read
+ * the dynamic receiver, which boxes by tag (scr_dyn_this_get). A missing
+ * tag at use is an internal error. */
 static SCR_TL const ScrDynHandleOps *scr_dynh_ops[SCR_DYNH_CAPACITY];
 
 /* BroadcastChannel's EventTarget table (scr_et_broadcast_install). */
@@ -11825,7 +11827,8 @@ ScrStr *scr_dyn_format_j(const ScrDyn *d) {
  * either side is referenced elsewhere, and a sweep releases the entries
  * whose error and node only the cache still references (the rest are
  * released atexit before the RC audit). The node also holds the error's
- * extra own properties (scr_error_set_prop) and SNAPSHOTS name/message/
+ * extra own properties (scr_error_set_prop, taken when the node is built)
+ * and SNAPSHOTS name/message/
  * code at first crossing — a later mutation of the error is invisible
  * through it (SEMANTICS.md). Two pointer-keyed hash
  * indexes find an entry by either side: Promise.allSettled and
@@ -11855,6 +11858,15 @@ static SCR_TL size_t scr_errdyn_slots = 0; /* a power of two */
 /* The entry count that triggers the next sweep: twice the entries the
  * previous sweep kept, so sweeping costs amortized O(1) per entry. */
 static SCR_TL size_t scr_errdyn_sweep_at = 64;
+/* The property write scr_error_set_prop uses on an error whose node
+ * exists, set when the first node enters the cache: a program that never
+ * builds an error node does not link the object writes. A pointer with
+ * external linkage: the compiler folds a static one whose only stored
+ * value is the write back into a direct call. */
+extern SCR_TL void (*scr_errdyn_prop_set)(ScrDyn *node, const char *key, size_t key_len,
+                                          ScrDyn *value);
+SCR_TL void (*scr_errdyn_prop_set)(ScrDyn *node, const char *key, size_t key_len,
+                                   ScrDyn *value) = NULL;
 
 static size_t scr_errdyn_hash(const void *p) {
   size_t x = (size_t)(uintptr_t)p >> 4;
@@ -11965,6 +11977,7 @@ static void scr_errdyn_append(ScrError *e, ScrDyn *d) {
   }
   if (!scr_errdyn_teardown_registered) {
     scr_errdyn_teardown_registered = true;
+    scr_errdyn_prop_set = &scr_dyn_obj_put;
     scr_atexit(scr_errdyn_teardown);
   }
   scr_errdyn_cache[scr_errdyn_n].err = scr_error_retain(e);
@@ -12391,9 +12404,63 @@ void scr_error_dyn_follow_bag(ScrDyn *view, const ScrDyn *bag, const ScrError *e
   }
 }
 
+/* ── own properties a throw site attaches (scr_error_set_prop) ───────────
+ * A throw site gives an error Node's extra own properties (a connect
+ * error's address and port, an exec error's status) before any code can
+ * see the error. They wait here until the error's node is built
+ * (scr_dyn_from_error), which takes them in order after the properties its
+ * slots give; an error whose node exists takes a property at once. Typed
+ * code never reads them, so a program that builds no error node keeps
+ * them here and links none of the dynamic object model for them. The
+ * table retains each error: a sweep releases the entries whose error
+ * nothing else references, and the rest go at exit. Releasing a property
+ * value or an error runs no code that attaches a property. */
+typedef struct {
+  const char *key; /* outlives the error: a string literal */
+  size_t key_len;
+  ScrDyn *value;   /* owned; NULL = the node itself */
+} ScrErrProp;
+typedef struct {
+  ScrError *err; /* retained */
+  ScrErrProp *props;
+  size_t n;
+} ScrErrProps;
+static SCR_TL ScrErrProps *scr_errprops = NULL;
+static SCR_TL size_t scr_errprops_n = 0, scr_errprops_cap = 0;
+/* The entry count that triggers the next sweep, as scr_errdyn_sweep_at. */
+static SCR_TL size_t scr_errprops_sweep_at = 64;
+static SCR_TL bool scr_errprops_teardown_registered = false;
+
+/* The table's readers, set when the first property is recorded: the code
+ * that builds an error's node (and `key in err`) reaches them through this
+ * pointer, so a program that records no property links none of them. A
+ * pointer with external linkage, as scr_errdyn_prop_set. */
+typedef struct {
+  bool (*begin)(const ScrError *e, ScrStr **code);
+  void (*finish)(const ScrError *e, ScrDyn *node, ScrStr *code,
+                 void (*set)(ScrDyn *node, const char *key, size_t key_len, ScrDyn *value));
+  bool (*has)(const ScrError *e, const char *key, size_t key_len);
+} ScrErrPropsReaders;
+extern SCR_TL const ScrErrPropsReaders *scr_errprops_readers;
+SCR_TL const ScrErrPropsReaders *scr_errprops_readers = NULL;
+/* The function that records a property, defined at the end of the file
+ * and named here only through this constant, which the compiler folds into
+ * a direct call: a function first named in the middle of the unit would be
+ * emitted there and renumber what follows, which changes the bytes of
+ * programs that link none of this. */
+typedef struct {
+  void (*add)(ScrError *e, const char *key, size_t key_len, ScrDyn *value);
+} ScrErrPropsFns;
+static const ScrErrPropsFns scr_errprops_fns;
+
 ScrDyn *scr_dyn_from_error(const ScrError *e) {
   size_t hit = scr_errdyn_find(e, true);
   if (hit != SIZE_MAX) return scr_dyn_retain(scr_errdyn_cache[hit].dyn);
+  /* The properties its throw site attached (scr_error_set_prop) join the
+   * node once it is built. */
+  ScrStr *code = NULL;
+  const ScrErrPropsReaders *attached = scr_errprops_n != 0 ? scr_errprops_readers : NULL;
+  if (attached != NULL && !attached->begin(e, &code)) attached = NULL;
   ScrDyn *d = NULL;
   for (size_t i = 0; i < scr_error_dyn_type_count; i++) {
     if (scr_error_dyn_types[i].vt == e->vt) {
@@ -12409,17 +12476,19 @@ ScrDyn *scr_dyn_from_error(const ScrError *e) {
     ent->fields_view = true;
     ent->view_prototype = d->prototype ? scr_dyn_retain(d->prototype) : NULL;
   }
+  if (attached != NULL) attached->finish(e, d, code, &scr_dyn_obj_put);
   return d;
 }
 
 /* An own property on an error, as a throw site attaches Node's extra
  * fields (a dns error's hostname, an exec error's status): set on the
  * error's checked-dynamic node, which casts, the checked-dynamic surface
- * and util.inspect read. Moves value. */
+ * and util.inspect read. An error that has no node yet keeps the property
+ * until it gets one (see above). Moves value; `key` is a string literal. */
 void scr_error_set_prop(ScrError *e, const char *key, size_t key_len, ScrDyn *value) {
-  ScrDyn *view = scr_dyn_from_error(e);
-  scr_dyn_obj_set(view, key, key_len, value);
-  scr_dyn_release(view);
+  size_t hit = scr_errdyn_find(e, true);
+  if (hit != SIZE_MAX) scr_errdyn_prop_set(scr_errdyn_cache[hit].dyn, key, key_len, value);
+  else scr_errprops_fns.add(e, key, key_len, value);
 }
 
 /* scr_throw_node_coded with Node's `url` own property: the
@@ -12436,8 +12505,7 @@ void scr_throw_node_coded_url(double kind, const ScrStr *code, const ScrStr *msg
   scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
 }
 
-/* The error's checked-dynamic node when it has one (borrowed), else NULL:
- * util.inspect reads its extra own properties. */
+/* The error's checked-dynamic node when it has one (borrowed), else NULL. */
 ScrDyn *scr_errdyn_view_of(const ScrError *e) {
   size_t hit = scr_errdyn_find(e, true);
   return hit == SIZE_MAX ? NULL : scr_errdyn_cache[hit].dyn;
@@ -22411,7 +22479,9 @@ void scr_error_assign_dyn(ScrError *e, const ScrDyn *sources) {
 bool scr_error_has_code(ScrError *e) {
   if (e->code != NULL) return true;
   const ScrDyn *view = scr_errdyn_view_of(e);
-  if (view == NULL) return false;
+  /* Without a node, a property its throw site attached still waits for
+   * one (an exec error's numeric `code`). */
+  if (view == NULL) return scr_errprops_n != 0 && scr_errprops_readers->has(e, "code", 4);
   ScrStr *key = scr_str_new("code", 4);
   bool own = scr_dyn_has_own(view, key);
   scr_str_release(key);
@@ -22479,6 +22549,10 @@ void scr_error_accessor_set(ScrError *e, const ScrStr *key, ScrDyn *value) {
 
 bool scr_error_has_key(ScrError *e, const ScrStr *key) {
   ScrDyn *view = scr_errdyn_view_of(e);
+  /* Without a node, the properties its throw site attached still wait for
+   * one (a connect error's `address`). */
+  if (view == NULL && scr_errprops_n != 0 && scr_errprops_readers->has(e, key->data, key->len))
+    return true;
   if (view != NULL) {
     /* A checked view of a compiled class is a live capsule the view's own
      * properties are read through (scr_typed_ref_view_keep_own). */
@@ -22700,3 +22774,165 @@ bool scr_dyn_is_async_iterator_symbol(const ScrDyn *key) {
   return scr_async_iterator_symbol && key->kind == SCR_DYN_SYMBOL &&
          key->v.symbol.value == scr_async_iterator_symbol->v.symbol.value;
 }
+
+/* The table behind scr_error_set_prop (declared with the error identity
+ * cache). Kept at the end of the file, like the writes above, so the rest
+ * of the unit emits in its existing order. */
+
+static bool scr_errprop_is_code(const ScrErrProp *prop) {
+  return prop->key_len == 4 && memcmp(prop->key, "code", 4) == 0;
+}
+
+/* Releases the entries whose error only the table references (no code can
+ * build that error's node any more), or every entry at exit. */
+static void scr_errprops_release(bool all) {
+  size_t kept = 0;
+  for (size_t i = 0; i < scr_errprops_n; i++) {
+    ScrErrProps entry = scr_errprops[i];
+    if (!all && entry.err->rc != 1) {
+      scr_errprops[kept++] = entry;
+      continue;
+    }
+    for (size_t j = 0; j < entry.n; j++) scr_dyn_release(entry.props[j].value); /* NULL-safe */
+    free(entry.props);
+    scr_error_release(entry.err);
+  }
+  scr_errprops_n = kept;
+  scr_errprops_sweep_at = kept * 2 > 64 ? kept * 2 : 64;
+}
+
+static void scr_errprops_teardown(void) {
+  scr_errprops_release(true);
+  free(scr_errprops);
+  scr_errprops = NULL;
+  scr_errprops_cap = 0;
+}
+
+static bool scr_errprops_begin(const ScrError *e, ScrStr **code);
+static void scr_errprops_finish(const ScrError *e, ScrDyn *node, ScrStr *code,
+                                void (*set)(ScrDyn *node, const char *key, size_t key_len,
+                                            ScrDyn *value));
+static bool scr_errprops_has(const ScrError *e, const char *key, size_t key_len);
+static const ScrErrPropsReaders scr_errprops_readers_impl = {
+  &scr_errprops_begin,
+  &scr_errprops_finish,
+  &scr_errprops_has,
+};
+
+/* Records a property of an error that has no node. A throw site sets its
+ * properties one after another, so the error's entry is the last one. */
+static void scr_errprops_add(ScrError *e, const char *key, size_t key_len, ScrDyn *value) {
+  scr_errprops_readers = &scr_errprops_readers_impl;
+  ScrErrProps *entry = scr_errprops_n > 0 ? &scr_errprops[scr_errprops_n - 1] : NULL;
+  if (entry == NULL || entry->err != e) {
+    if (scr_errprops_n >= scr_errprops_sweep_at) scr_errprops_release(false);
+    if (scr_errprops_n == scr_errprops_cap) {
+      scr_errprops_cap = scr_errprops_cap ? scr_errprops_cap * 2 : 8;
+      scr_errprops = realloc(scr_errprops, scr_errprops_cap * sizeof *scr_errprops);
+      if (!scr_errprops) scr_trap("scriptc: out of memory\n");
+    }
+    if (!scr_errprops_teardown_registered) {
+      scr_errprops_teardown_registered = true;
+      scr_atexit(scr_errprops_teardown);
+    }
+    entry = &scr_errprops[scr_errprops_n++];
+    *entry = (ScrErrProps){ scr_error_retain(e), NULL, 0 };
+  }
+  /* A handful of properties per error: grow by one. */
+  entry->props = realloc(entry->props, (entry->n + 1) * sizeof *entry->props);
+  if (!entry->props) scr_trap("scriptc: out of memory\n");
+  entry->props[entry->n++] = (ScrErrProp){ key, key_len, value };
+}
+
+/* scr_dyn_from_error before it builds the node of an error with recorded
+ * properties (false: it has none). A recorded `code` keeps the position its
+ * throw site gave it: a site that stamps the code slot and then sets `code`
+ * after other properties (library, reason, code) places the key there, so
+ * the node's fields leave the slot's out. `*code` takes the slot. */
+static bool scr_errprops_begin(const ScrError *e, ScrStr **code) {
+  bool found = false, places_code = false;
+  for (size_t i = 0; i < scr_errprops_n; i++) {
+    if (scr_errprops[i].err != e) continue;
+    found = true;
+    for (size_t j = 0; j < scr_errprops[i].n; j++)
+      if (scr_errprop_is_code(&scr_errprops[i].props[j])) places_code = true;
+  }
+  if (!found) return false;
+  *code = e->code;
+  if (places_code) ((ScrError *)e)->code = NULL;
+  return true;
+}
+
+/* scr_dyn_from_error once the node exists: the error's recorded properties
+ * leave the table and land on the node (through `set`, the node builder's
+ * own write, which this side does not name) in the order the throw site set
+ * them, and the code slot comes back. A recorded `code` reads the slot when
+ * it holds a string. Building the node may have built other errors' nodes
+ * (a registered box), which left the table too: it is read afresh. */
+static void scr_errprops_finish(const ScrError *e, ScrDyn *node, ScrStr *code,
+                                void (*set)(ScrDyn *node, const char *key, size_t key_len,
+                                            ScrDyn *value)) {
+  ((ScrError *)e)->code = code;
+  size_t kept = 0;
+  for (size_t i = 0; i < scr_errprops_n; i++) {
+    ScrErrProps entry = scr_errprops[i];
+    if (entry.err != e) {
+      scr_errprops[kept++] = entry;
+      continue;
+    }
+    for (size_t j = 0; j < entry.n; j++) {
+      const ScrErrProp *prop = &entry.props[j];
+      ScrDyn *value = prop->value ? prop->value : scr_dyn_retain(node);
+      if (code != NULL && scr_errprop_is_code(prop)) {
+        scr_dyn_release(value);
+        value = scr_dyn_new_str(code);
+      }
+      set(node, prop->key, prop->key_len, value);
+    }
+    free(entry.props);
+    scr_error_release(entry.err); /* the caller holds e */
+  }
+  scr_errprops_n = kept;
+}
+
+/* Whether a property of that name waits for the error's node: `key in err`
+ * from typed code, which must not build the node to answer. */
+static bool scr_errprops_has(const ScrError *e, const char *key, size_t key_len) {
+  for (size_t i = 0; i < scr_errprops_n; i++) {
+    if (scr_errprops[i].err != e) continue;
+    for (size_t j = 0; j < scr_errprops[i].n; j++) {
+      const ScrErrProp *prop = &scr_errprops[i].props[j];
+      if (prop->key_len == key_len && memcmp(prop->key, key, key_len) == 0) return true;
+    }
+  }
+  return false;
+}
+
+/* scr_error_set_prop with the error itself as the value (a spawnSync
+ * error's `error`). */
+void scr_error_set_prop_self(ScrError *e, const char *key, size_t key_len) {
+  size_t hit = scr_errdyn_find(e, true);
+  if (hit != SIZE_MAX) {
+    ScrDyn *node = scr_errdyn_cache[hit].dyn;
+    scr_errdyn_prop_set(node, key, key_len, scr_dyn_retain(node));
+  } else {
+    scr_errprops_add(e, key, key_len, NULL);
+  }
+}
+
+/* scr_errdyn_view_of for util.inspect, which prints an error's extra own
+ * properties: an error whose properties still wait for a node
+ * (scr_error_set_prop) gets it here. */
+ScrDyn *scr_errdyn_node_of(const ScrError *e) {
+  size_t hit = scr_errdyn_find(e, true);
+  if (hit != SIZE_MAX) return scr_errdyn_cache[hit].dyn;
+  for (size_t i = 0; i < scr_errprops_n; i++) {
+    if (scr_errprops[i].err != e) continue;
+    ScrDyn *node = scr_dyn_from_error(e);
+    scr_dyn_release(node); /* the cache holds it */
+    return node;
+  }
+  return NULL;
+}
+
+static const ScrErrPropsFns scr_errprops_fns = { &scr_errprops_add };

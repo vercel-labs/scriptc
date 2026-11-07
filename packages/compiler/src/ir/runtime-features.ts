@@ -581,6 +581,8 @@ interface TypeTables {
   textDecoderCarriers?: TypeCarriers;
   /** mentionsU8Bytes's carriers. */
   u8BytesCarriers?: TypeCarriers;
+  /** mentionsFunction's carriers. */
+  functionCarriers?: TypeCarriers;
 }
 
 /** Whether boxing a value of type `t` as dyn boxes a promise, which goes
@@ -979,6 +981,16 @@ const u8BytesLeaf: CarrierLeaf = (t) => t.kind === "bytes" && t.elem === "u8";
 function mentionsU8Bytes(t: IrType, tables: TypeTables): boolean {
   tables.u8BytesCarriers ??= leafCarriers(tables, u8BytesLeaf);
   return carriesLeaf(t, tables.u8BytesCarriers, u8BytesLeaf, tables);
+}
+
+const functionLeaf: CarrierLeaf = (t) => t.kind === "func";
+
+/** Whether a checked conversion to type `t` can turn a dynamic value into
+ * a function: a function type, or a collection, record, union, promise or
+ * class instance that carries one. */
+function mentionsFunction(t: IrType, tables: TypeTables): boolean {
+  tables.functionCarriers ??= leafCarriers(tables, functionLeaf);
+  return carriesLeaf(t, tables.functionCarriers, functionLeaf, tables);
 }
 
 /** A checked-dynamic read with a key computed at run time, or one naming a
@@ -1525,6 +1537,23 @@ const RUNTIME_FEATURE_RULES = {
     fns: ["buffer.prototypeMember", "buffer.prototypeObject"],
     scan: computedBufferMemberScan,
     expr: (node, _tables) => node.kind === "dynInvoke" && DYN_BUFFER_METHODS.has(node.method),
+  }),
+  /** The program can read the dynamic receiver: a JavaScript function's
+   * `this` (dyn.this, dyn.generatorThis), or a dynamic value converted to a
+   * function type, which may be a builtin function that reads its
+   * receiver. (A typed function boxed and converted back on the spot, the
+   * listener adapters' shape, is neither.) A listener of a net, HTTP or
+   * child handle reads the handle there, which the runtime boxes by tag
+   * (scr_dyn_this_get), so the emitted main installs those units' handle
+   * ops before %main. A program without one installs them where it first
+   * boxes a handle, and links none of the units' dynamic members when it
+   * boxes none. */
+  dynReceiver: rule({
+    fns: ["dyn.generatorThis", "dyn.this"],
+    expr: (node, tables) =>
+      node.kind === "dynCheck" &&
+      !(node.value.kind === "dynFrom" && node.value.value.type.kind === "func") &&
+      mentionsFunction(node.type, tables()),
   }),
   /** Checked-dynamic reads that answer Buffer.prototype methods by name
    * (`buf[name]`, `buf.indexOf` as a value, Buffer.prototype): the program
@@ -2082,6 +2111,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynBuffer: false,
     dynBufferMembers: false,
     genReceiver: false,
+    dynReceiver: false,
     bufferPrototypeObject: false,
     fsPathValue: false,
     builtinValues: false,

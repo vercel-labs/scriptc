@@ -317,9 +317,15 @@ bool scr_child_kill(ScrChild *c, const ScrStr *signal);
 bool scr_child_kill_num(ScrChild *c, double signum);
 void scr_child_unref(ScrChild *c);
 void scr_child_ref(ScrChild *c);
-/* Installs ChildProcess's checked-dynamic handle identity bridge. Emitted
- * programs call this only when the child_process surface is present. */
+/* Installs ChildProcess's checked-dynamic handle ops, once per thread.
+ * scr_child_to_dyn and the dynamic listener entry call it; the emitted
+ * main() calls it before %main in a program that reads the dynamic
+ * receiver (a listener's `this` boxes the child by tag) or adds properties
+ * to handles (scr_dyn_handle_props_install wraps the installed ops). A
+ * program that does none of these links none of the dynamic members. */
 void scr_child_dyn_install(void);
+/* The child as a dynamic value (+1; borrows the child). */
+ScrDyn *scr_child_to_dyn(ScrChild *child);
 /* Installs the builder of a failed spawn's 'error' object (errno, code,
  * syscall, path, spawnargs; one object for every listener). Called once at
  * start by a program that can register an 'error' listener on a child. */

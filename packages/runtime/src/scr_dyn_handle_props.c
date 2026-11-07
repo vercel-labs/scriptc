@@ -928,8 +928,8 @@ ScrPromise *scr_dyn_promise_resolve_hp(ScrDyn *value, ScrDyn *reader) {
   return scr_dyn_promise_resolve(value, reader);
 }
 
-/* child.on(event, listener) from typed code reinstalls the child unit's
- * ops; wrap them again. */
+/* child.on(event, listener) from typed code installs the child unit's
+ * ops when nothing has; wrap them. */
 void scr_child_on_dyn_hp(ScrChild *child, ScrStr *event, ScrDyn *listener) {
   scr_child_on_dyn(child, event, listener);
   scr_dyn_handle_props_install(1.0);

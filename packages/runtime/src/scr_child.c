@@ -67,8 +67,9 @@ enum {
 };
 
 /* ── error properties (lib/child_process.js) ──────────────────────────
- * The own properties Node attaches to child_process errors, set on the
- * error's checked-dynamic node (scr_error_set_prop) in Node's key order. */
+ * The own properties Node attaches to child_process errors, which the
+ * error's checked-dynamic node takes (scr_error_set_prop) in Node's key
+ * order. */
 
 static ScrDyn *scr_child_dyn_cstr(const char *text) {
   ScrStr *s = scr_str_new(text, strlen(text));
@@ -127,7 +128,7 @@ static void scr_child_error_exit_fields(ScrError *e, bool has_code, double code,
 /* The sync forms' spawn failure and timeout carry the error itself as
  * `error` (Node assigns the spawnSync result, whose error it is). */
 static void scr_child_error_self(ScrError *e) {
-  scr_error_set_prop(e, "error", 5, scr_dyn_from_error(e));
+  scr_error_set_prop_self(e, "error", 5);
 }
 
 static void scr_child_error_cmd(ScrError *e, const char *cmd) {
@@ -7738,6 +7739,9 @@ static SCR_TL ScrDyn *(*scr_child_writable_box)(void *);
 
 void scr_child_dyn_streams_install(const ScrChildStreamOps *ops,
     ScrDyn *(*readable_box)(void *), ScrDyn *(*writable_box)(void *)) {
+  /* The stream unit reads a child's stdio streams through the child's
+   * checked-dynamic members (scr_stream_child_stdio boxes it by tag). */
+  scr_child_dyn_install();
   scr_child_stream_ops = ops;
   scr_child_readable_box = readable_box;
   scr_child_writable_box = writable_box;
@@ -8097,7 +8101,15 @@ static const ScrDynHandleOps scr_child_dyn_ops = {
 };
 
 void scr_child_dyn_install(void) {
+  static SCR_TL bool installed = false;
+  if (installed) return;
+  installed = true;
   scr_dyn_handle_install(SCR_DYNH_CHILD, &scr_child_dyn_ops);
+}
+
+ScrDyn *scr_child_to_dyn(ScrChild *child) {
+  scr_child_dyn_install();
+  return scr_dyn_new_handle(child, SCR_DYNH_CHILD);
 }
 
 static const ScrLoopChildren scr_child_loop_hooks = {
@@ -8121,8 +8133,7 @@ static void scr_child_loop_install(void) {
 }
 
 void scr_child_on_dyn(ScrChild *child, ScrStr *event, ScrDyn *listener) {
-  scr_child_dyn_install();
-  ScrDyn *self = scr_dyn_new_handle(child, SCR_DYNH_CHILD);
+  ScrDyn *self = scr_child_to_dyn(child);
   ScrDyn *name = scr_dyn_new_str(event);
   ScrDyn *args[] = { name, listener };
   ScrDyn *result = scr_child_dyn_invoke(child, self, "on", args, 2, "child listener");

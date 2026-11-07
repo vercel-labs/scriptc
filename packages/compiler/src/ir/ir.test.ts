@@ -526,6 +526,60 @@ describe("recursive checked graphs", () => {
     expect(canDynCheckTo({ kind: "record", shapeId: "unsafeContext" }, record, union)).toBe(false);
     expect(canDynCheckTo({ kind: "record", shapeId: "unsafeOptions" }, record, union)).toBe(false);
   });
+
+  test("a union reached again through its own function arm ends", () => {
+    // `type Step = (() => Step) | number`: the cycle passes through a union
+    // and a function type, with no record on it.
+    const step: IrType = { kind: "union", unionId: "step" };
+    const stepFn: IrType = { kind: "func", params: [], ret: step };
+    const steps = new Map<string, IrUnionDef>([["step", { id: "step", arms: [F64, stepFn] }]]);
+    const stepUnion = (id: string): IrUnionDef | undefined => steps.get(id);
+    expect(canDynCheckTo(step, record, stepUnion)).toBe(true);
+    expect(canDynCheckTo(stepFn, record, stepUnion)).toBe(true);
+    expect(canConvertToDyn(stepFn, record, stepUnion)).toBe(true);
+  });
+
+  test("a failed alternative inside a recursive record keeps the record in progress", () => {
+    // The method's generator parameter fails the composite walk before the
+    // generator rule accepts it; that failure clears the query's results,
+    // and must not clear the mark of the record being checked.
+    const chain: IrType = { kind: "record", shapeId: "chain" };
+    const chains = new Map<string, IrRecordShape>([
+      [
+        "chain",
+        {
+          id: "chain",
+          fields: [
+            {
+              name: "feed",
+              type: {
+                kind: "func",
+                params: [
+                  {
+                    kind: "generator",
+                    yieldT: F64,
+                    retT: { kind: "void" },
+                    nextT: { kind: "undefinedT" },
+                  },
+                ],
+                ret: chain,
+              },
+            },
+            { name: "total", type: F64 },
+          ],
+        },
+      ],
+    ]);
+    expect(canDynCheckTo(chain, (id) => chains.get(id), union)).toBe(true);
+  });
+
+  test("a union whose function arm returns it and whose other arm does not convert is refused", () => {
+    const loop: IrType = { kind: "union", unionId: "loop" };
+    const loops = new Map<string, IrUnionDef>([
+      ["loop", { id: "loop", arms: [{ kind: "func", params: [], ret: loop }, { kind: "jsval" }] }],
+    ]);
+    expect(canConvertToDyn(loop, record, (id) => loops.get(id))).toBe(false);
+  });
 });
 
 describe("checked conversion graph traversal", () => {

@@ -109,9 +109,15 @@ function keepsSingleBody(
 }
 
 /** Statements and expressions of a loop whose work is numeric: arithmetic,
- * element and field reads and writes, `Math` calls and calls of simple
- * functions. Loops that allocate, build strings or call other code gain
- * little from an integer bound and would only grow the copy. */
+ * element, class field and record field reads and writes, `Math` calls and
+ * calls of simple functions. Loops that allocate, build strings or call
+ * other code gain little from an integer bound and would only grow the copy.
+ *
+ * This list decides what is worth a copy, not what is safe to copy (see
+ * `versionLoopBoundParameters`): no statement in a loop can make the version
+ * wrong. A `seqExpr` is how a compound assignment to a field (`r.f -= e`)
+ * and an assignment used as a value lower; its statements and result pass
+ * through the same two lists, so it admits nothing they would not. */
 const NUMERIC_STATEMENTS = new Set<string>([
   ...SIMPLE_STATEMENTS,
   "for",
@@ -121,8 +127,14 @@ const NUMERIC_STATEMENTS = new Set<string>([
   "continue",
   "arraySet",
   "fieldSet",
+  "recordSet",
 ]);
-const NUMERIC_EXPRESSIONS = new Set<string>([...SIMPLE_EXPRESSIONS, "arrayHas", "arrayState"]);
+const NUMERIC_EXPRESSIONS = new Set<string>([
+  ...SIMPLE_EXPRESSIONS,
+  "arrayHas",
+  "arrayState",
+  "seqExpr",
+]);
 
 function numericLoop(loop: IrStmt, functions: ReadonlyMap<string, IrFunction>): boolean {
   const expr = (e: IrExpr): boolean => {
@@ -184,6 +196,24 @@ function loopBounds(
  * (INT32_FALLBACK_SUFFIX) that the backend compiles cold: the function
  * itself keeps only the test and the two calls. That fallback body emits
  * each loop once (`plainLoops`), like the copy a failed guard runs.
+ *
+ * Why the version computes what the body would, whatever the body does.
+ * The test reads only the parameters, before any statement of the body, so
+ * nothing can run between the test and the call. When it passes, `p | 0`
+ * and `p` are the same number, so the copy starts in the state the body
+ * would start in and runs the same statements. The version assumes nothing
+ * about the parameter after entry: it only makes the copy's one caller
+ * pass a proven int32. Whether the copy's parameter slot then becomes an
+ * i32 is decided by the slot analysis over the copy's own body
+ * (int32-slots.ts), which sees every assignment to the parameter; a body
+ * that stores a fraction in it keeps a double slot and is no worse than
+ * before. A write through a reference (`bodies[i].vx -= e`, `this.n = e`,
+ * `a[i] = e`) cannot change the parameter: a versioned parameter is an
+ * unboxed local of the frame (boxed and TDZ locals are skipped below, and
+ * functions with captures are not versioned), and no array element, class
+ * field or record field aliases a frame slot. Such a write can change what
+ * the loop reads on its next iteration, but the copy and the body read it
+ * alike. So the kinds `numericLoop` admits are a cost choice only.
  *
  * Only plain synchronous functions qualify: not class members, no
  * captures, not the module entry, not dynamic-tier, at most

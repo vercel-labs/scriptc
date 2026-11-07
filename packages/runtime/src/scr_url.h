@@ -140,5 +140,6 @@ ScrStr *scr_sp_to_string(ScrSearchParams *sp); /* +1 urlencoded serialization */
  * scr_sp_size each pass — live, like the spec's index-based iterator). */
 ScrStr *scr_sp_key_at(ScrSearchParams *sp, double i); /* +1; "" out of range */
 ScrStr *scr_sp_val_at(ScrSearchParams *sp, double i); /* +1; "" out of range */
+ScrUrl *scr_sp_owner(ScrSearchParams *sp); /* borrowed: the URL it is the live view of, or NULL */
 
 #endif /* SCR_URL_H */

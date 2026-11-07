@@ -482,6 +482,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     "scr_node_island_boot.c",
     "scr_node_island_gc.c",
   ),
+  // A native Date, URL or URLSearchParams crossing into an island: a real
+  // object of the island's class whose state the export table keeps equal.
+  unit((u) => u.opts.nodeIsland === true, "scr_node_island_values.c"),
   // A native AbortSignal or AbortController crossing into an island: the
   // signal's twin there follows it through the signal unit's watcher list.
   unit(

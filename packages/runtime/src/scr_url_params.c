@@ -592,3 +592,9 @@ ScrStr *scr_sp_val_at(ScrSearchParams *sp, double i) {
   if (idx >= sp->len) return scr_str_empty_value();
   return scr_str_retain(sp->vals[idx]);
 }
+
+/* The URL whose live searchParams view this list is (borrowed), or NULL
+ * for a list that stands alone. Only the Node island unit asks
+ * (scr_node_island_search_params.c): it stays at the end of the unit so
+ * that no other program's link changes. */
+ScrUrl *scr_sp_owner(ScrSearchParams *sp) { return sp->owner; }

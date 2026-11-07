@@ -1632,10 +1632,36 @@ static uintptr_t ni_stack_start(void) {
   return ni_stack_has(sp) ? (uintptr_t)ni_stack + NI_STACK : 0;
 }
 
+/* Twins with state both sides can change (scr_node_island_export.c) are
+ * made equal wherever control passes between the sides. Where no program
+ * code can catch a state one side could not hold, its TypeError is an
+ * uncaught exception. */
+static void ni_twins_refused(void) {
+  if (!scr_exc_pending() || scr_exc_handle_uncaught(false)) return;
+  scr_exc_print_uncaught();
+  scr_process_exit((double)scr_exit_code_hint_get());
+}
+
+/* Runtime code is about to run from Node's frames, and has run. */
+static void ni_native_begin(void) {
+  if (!scr_ni_twins_pull()) ni_twins_refused();
+}
+
+static void ni_native_end(void) {
+  if (!scr_ni_twins_push()) ni_twins_refused();
+}
+
+/* Island code runs inside job(arg), with nothing to catch a refused state. */
+static void ni_island_run(void (*job)(void *), void *arg) {
+  if (!scr_ni_run_island(job, arg)) ni_twins_refused();
+}
+
 /* The host callbacks that run runtime code, with the mark recorded. */
 static void ni_host_settle(uint32_t id, const char *outcome, size_t len) {
   NI_MARK_BEGIN;
+  ni_native_begin();
   ni_settle(id, outcome, len);
+  ni_native_end();
   NI_MARK_END;
 }
 
@@ -1647,20 +1673,26 @@ static void ni_host_exit(int code) {
 
 static void ni_host_run(uint32_t kind, uint32_t token) {
   NI_MARK_BEGIN;
+  ni_native_begin();
   scr_loop_hosted_run(kind, token);
   scr_ni_shared_refresh();
+  ni_native_end();
   NI_MARK_END;
 }
 
 static void ni_host_io(void) {
   NI_MARK_BEGIN;
+  ni_native_begin();
   scr_loop_hosted_io();
+  ni_native_end();
   NI_MARK_END;
 }
 
 static void ni_host_microtasks_done(void) {
   NI_MARK_BEGIN;
+  ni_native_begin();
   scr_loop_hosted_microtasks_done();
+  ni_native_end();
   NI_MARK_END;
 }
 
@@ -1720,7 +1752,7 @@ void scr_node_island_emit(uint32_t event, uint32_t listener, ScrStr *name, int a
   memcpy(n, name->data, name->len);
   n[name->len] = '\0';
   NiEmit e = {event, listener, n, arg};
-  ni_on_node_stack(ni_emit_job, &e);
+  ni_island_run(ni_emit_job, &e);
   free(n);
 }
 
@@ -1781,7 +1813,7 @@ static void ni_run_loop_job(void *p) {
 
 static int ni_run_loop(int continue_turn) {
   NiRunLoop a = {continue_turn, 0};
-  ni_on_node_stack(ni_run_loop_job, &a);
+  ni_island_run(ni_run_loop_job, &a);
   return a.code;
 }
 
@@ -1831,7 +1863,9 @@ static void ni_hosted_job(void *p) {
 
 static uint32_t ni_hosted_run(int op, uint32_t a, double d0, double d1, int i0) {
   NiHosted h = {op, a, 0, d0, d1, i0, 0};
-  ni_on_node_stack(ni_hosted_job, &h);
+  /* Only a checkpoint runs island code; the others schedule. */
+  if (op == NI_H_CHECKPOINT) ni_island_run(ni_hosted_job, &h);
+  else ni_on_node_stack(ni_hosted_job, &h);
   return h.result;
 }
 
@@ -1966,6 +2000,27 @@ char *scr_ni_module_path(const ScrStr *path) {
 
 void scr_ni_on_node_stack(void (*job)(void *), void *arg) { ni_on_node_stack(job, arg); }
 
+/* The pull follows the job on Node's stack, in the same entry: a second
+ * switch of stacks would cost as much as the call itself. */
+typedef struct {
+  void (*job)(void *);
+  void *arg;
+  bool pulled;
+} NiIslandRun;
+
+static void ni_island_job(void *p) {
+  NiIslandRun *run = p;
+  run->job(run->arg);
+  run->pulled = scr_ni_twins_pull();
+}
+
+bool scr_ni_run_island(void (*job)(void *), void *arg) {
+  if (!scr_ni_twins_push()) return false;
+  NiIslandRun run = {job, arg, true};
+  ni_on_node_stack(ni_island_job, &run);
+  return run.pulled;
+}
+
 /* ── calls ────────────────────────────────────────────────────────────── */
 
 /* The JSON text of the argument array (+1 dyn string), or NULL with the
@@ -1986,7 +2041,8 @@ static char *ni_call(uint32_t id, bool sync, ScrStr *file, ScrStr *specifier, Sc
                      ScrDyn *json, size_t *len) {
   char *f = ni_caller_path(file), *s = ni_cstr(specifier), *n = ni_cstr(name);
   NiCall call = {id, sync ? 1 : 0, f, s, n, json->v.str->data, json->v.str->len, 0, NULL};
-  ni_on_node_stack(ni_call_job, &call);
+  /* A refused state leaves its TypeError pending for the call's own check. */
+  (void)scr_ni_run_island(ni_call_job, &call);
   char *outcome = call.outcome;
   *len = call.len;
   free(f);

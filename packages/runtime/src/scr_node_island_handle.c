@@ -490,7 +490,7 @@ static ScrDyn *nh_from_node(const ScrNodeValue *v) {
   case SCR_NV_BYTES: return nh_bytes_box(v);
   case SCR_NV_EXPORT: {
     /* A native value's representative came back: the value itself. */
-    ScrDyn *d = scr_ni_export_value(v->u.exp.id);
+    ScrDyn *d = scr_ni_export_in(v->u.exp.id);
     return d != NULL ? scr_dyn_retain(d) : scr_dyn_undefined();
   }
   default: return scr_dyn_undefined();
@@ -566,6 +566,8 @@ ScrDyn *scr_ni_arg_in(const ScrNodeValue *v) {
  * message, stack and string code, pinned to the V8 error so that it is
  * that error again if it crosses back. */
 static void nh_throw_value(const ScrNodeValue *v) {
+  /* A twin's state could not cross (nh_run): that TypeError is the throw. */
+  if (scr_exc_pending()) return;
   if (v->tag == SCR_NV_HANDLE && (v->flags & SCR_NVF_ERROR)) {
     ScrError *e = nh_error_of(v);
     scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
@@ -575,6 +577,8 @@ static void nh_throw_value(const ScrNodeValue *v) {
   if (d == NULL) return; /* a conversion error is pending */
   scr_dyn_throw(d);
 }
+
+void scr_ni_throw_in(const ScrNodeValue *v) { nh_throw_value(v); }
 
 /* A V8 reaction settled an awaited thenable. */
 void scr_ni_settle_value(uint32_t token, int rejected, const ScrNodeValue *value) {
@@ -649,12 +653,26 @@ SCR_COLD static bool nh_refuse(const char *what) {
 /* The values NI-5 exports by reference (closures, promises, typed refs,
  * native objects and arrays). Until then: plain dyn objects and arrays
  * cross as a JSON copy (the NI-4 shortcut), anything else is refused. */
+/* An instance of a class that extends Date keeps its time in a field of
+ * the class: as a capsule it would be an object that is no Date in the
+ * island (no Date brand, no getTime), where Node has a Date. A native Date
+ * crosses as a real Date; this has no such form yet. */
+SCR_COLD static bool nh_refuse_date_class(void) {
+  static const char message[] =
+      "scriptc: an instance of a class that extends Date cannot cross into a Node island yet (it "
+      "would not be a Date there)";
+  scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+  return false;
+}
+
 static bool nh_export_value(ScrDyn *v, ScrNodeValue *out, NhKeep *keep) {
+  double time;
+  if (v->kind == SCR_DYN_TYPED_REF && scr_dyn_date_class_time(v, &time)) return nh_refuse_date_class();
   /* NI-5: closures, promises, records, class instances and dyn objects
    * cross by reference (scr_node_island_export.c). */
   if (scr_ni_exportable(v)) {
     scr_ni_export_out(v, out);
-    return true;
+    return scr_ni_twin_ready(v);
   }
   /* Arrays (dyn, and typed array capsules: NI-6 shortcut, as for dyn
    * arrays) keep NI-4's JSON copy. */
@@ -839,8 +857,15 @@ static void nh_call_job(void *p) {
 }
 
 static int nh_run(NhCall *c) {
+  bool pending = scr_exc_pending();
   scr_ni_shared_refresh();
-  scr_ni_on_node_stack(nh_call_job, c);
+  if (!scr_ni_run_island(nh_call_job, c) && !pending) {
+    /* A twin's state could not cross and its TypeError is pending. What the
+     * island threw comes first: the twins are compared again at the next
+     * crossing, which throws then. */
+    if (c->threw) scr_exc_clear();
+    else c->threw = 1;
+  }
   return c->threw;
 }
 

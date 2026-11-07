@@ -76,6 +76,7 @@ typedef struct {
   uint8_t kind;
   uint8_t black;   /* held natively */
   uint8_t walked;  /* NI_OBJ: its children were (or are queued to be) counted */
+  uint8_t leaf;    /* NI_OBJ: a capsule's referent with no cycle header (gc_count_leaf) */
 } NiGcNode;
 
 static NiGcNode *gc_nodes = NULL;
@@ -199,17 +200,71 @@ static void *gc_twin_object(void *obj) {
   return scr_ni_twin_box(d) ? d->v.handle.ptr : NULL;
 }
 
+/* A twin object that is a live part of another one (the searchParams of a
+ * URL) holds its owner once, which the count explains: an owner that
+ * nothing else holds is then not held natively, and the pair can go when
+ * the island lets go of it. A part that is held natively holds its owner
+ * natively (gc_black_parts). */
+typedef struct {
+  void *part, *owner;
+} NiGcPart;
+static NiGcPart *gc_parts = NULL;
+static size_t gc_nparts = 0, gc_parts_cap = 0;
+
 /* A walked box holds its twin object once. */
 static void gc_count_twin(void *obj) {
   void *object = gc_twin_object(obj);
   if (object == NULL) return;
   bool fresh;
   gc_insert(object, NI_TWIN, (int64_t)*(const size_t *)object, &fresh)->count--;
+  if (!fresh) return;
+  void *owner = scr_ni_twin_owner(obj);
+  if (owner == NULL) return;
+  gc_insert(owner, NI_TWIN, (int64_t)*(const size_t *)owner, &fresh)->count--;
+  if (gc_nparts == gc_parts_cap) {
+    gc_parts_cap = gc_parts_cap ? gc_parts_cap * 2 : 16;
+    gc_parts = gc_realloc(gc_parts, gc_parts_cap * sizeof *gc_parts);
+  }
+  gc_parts[gc_nparts++] = (NiGcPart){object, owner};
+}
+
+static void gc_black_parts(void) {
+  for (bool again = true; again;) {
+    again = false;
+    for (size_t i = 0; i < gc_nparts; i++) {
+      NiGcNode *part = gc_lookup(gc_parts[i].part), *owner = gc_lookup(gc_parts[i].owner);
+      if (part != NULL && owner != NULL && part->black && !owner->black) {
+        owner->black = 1;
+        again = true;
+      }
+    }
+  }
 }
 
 static void gc_black_twin(void *obj) {
   NiGcNode *t = gc_lookup(gc_twin_object(obj));
   if (t != NULL) t->black = 1;
+}
+
+/* ── capsule referents without a cycle header ────────────────────────────
+ * A record or class instance whose fields cannot form a cycle has no cycle
+ * header, so its capsule's trace does not visit it, but the capsule holds it
+ * once. The walk counts that reference and never enters the referent: it
+ * has no trace function, and what it holds leads nowhere across the
+ * boundary, except to a twin's object, whose count then stays unexplained
+ * (it is held, by this referent). Without this count the referent always
+ * looks held from outside, and every such record an island was handed
+ * stays a root for good. */
+static void *gc_leaf_of(void *obj) {
+  if (scr_cyc_type(scr_cyc_hdr(obj))->kind != SCR_CYC_KIND_DYN) return NULL;
+  const ScrDyn *d = obj;
+  if (d->kind != SCR_DYN_TYPED_REF || d->v.typed_ref.traced) return NULL;
+  return gc_skip(d->v.typed_ref.ptr) ? NULL : d->v.typed_ref.ptr;
+}
+
+static void gc_black_leaf(void *obj) {
+  NiGcNode *leaf = gc_lookup(gc_leaf_of(obj));
+  if (leaf != NULL) leaf->black = 1;
 }
 
 /* ── pins ─────────────────────────────────────────────────────────────── */
@@ -316,6 +371,15 @@ static void gc_count_ref(void *ref) {
   n->count--;
 }
 
+/* A walked capsule holds its header-less referent once. */
+static void gc_count_leaf(void *obj) {
+  void *leaf = gc_leaf_of(obj);
+  if (leaf == NULL) return;
+  NiGcNode *n = gc_obj_node(leaf);
+  n->count--;
+  n->leaf = 1;
+}
+
 /* Counts the subgraph under the queued objects, until the budget. */
 static void gc_count(void) {
   while (gc_nwork > 0 && !gc_failed && gc_len <= gc_budget) {
@@ -328,6 +392,7 @@ static void gc_count(void) {
     gc_children(obj, gc_count_visit);
     gc_refs_of(obj, gc_lookup(obj)->pin, gc_count_ref);
     gc_count_twin(obj);
+    gc_count_leaf(obj);
   }
   /* Left over when the budget ran out: their children were not counted,
    * so they must not pass for walked (they become black). */
@@ -364,7 +429,7 @@ static void gc_blacken(void) {
     }
     /* Held from outside, or never walked: its children are unknown, and
      * what it holds is a root as far as this analysis can tell. */
-    if (n->kind == NI_OBJ && (n->count > 0 || !n->walked) && !n->black) {
+    if (n->kind == NI_OBJ && (n->count > 0 || (!n->walked && !n->leaf)) && !n->black) {
       n->black = 1;
       if (n->walked) gc_push(n->key);
     }
@@ -374,6 +439,7 @@ static void gc_blacken(void) {
       gc_children(obj, gc_black_visit);
       gc_refs_of(obj, gc_lookup(obj)->pin, gc_black_ref);
       gc_black_twin(obj);
+      gc_black_leaf(obj);
     }
   }
 }
@@ -477,6 +543,7 @@ static void gc_reset(size_t expect) {
   gc_nwork = 0;
   gc_nfree = 0;
   gc_nreach = 0;
+  gc_nparts = 0;
   gc_failed = false;
 }
 
@@ -530,6 +597,7 @@ int scr_ni_host_gc_analyze(const uint32_t *exports, size_t n, ScrNodeGcResult *o
     gc_count();
   }
   if (!gc_failed) gc_blacken();
+  if (!gc_failed) gc_black_parts();
   last_len = gc_len;
   if (gc_failed) return 1;
 
@@ -585,6 +653,9 @@ void scr_ni_gc_cleanup(void) {
   free(gc_reach);
   free(gc_pin_next);
   free(gc_pin_map);
+  free(gc_parts);
+  gc_parts = NULL;
+  gc_nparts = gc_parts_cap = 0;
   gc_nodes = NULL;
   gc_work = NULL;
   gc_free = NULL;

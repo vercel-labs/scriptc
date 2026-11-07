@@ -16,6 +16,11 @@
  *    their own once a GC found them live (tests/fixtures/node-island/gc-held.mjs).
  *  - A native AbortSignal's twin in the island is collected with it, and
  *    lives while either side holds the signal (tests/fixtures/node-island/gc-signals.mjs).
+ *  - A record without a cycle header (its fields cannot form a cycle) that
+ *    both sides dropped is collected (tests/fixtures/node-island/gc-records.ts).
+ *  - The twins of native Dates, URLs and URLSearchParams are collected with
+ *    them, a URL whose searchParams crossed included, and live while either
+ *    side holds the value (tests/fixtures/node-island/gc-values.ts).
  * Needs a libnode pack in SCRIPTC_LIBNODE (libnode.ts). */
 import { execFile } from "node:child_process";
 import { mkdirSync } from "node:fs";
@@ -162,6 +167,69 @@ describe.skipIf(skip)("Node island cross-heap cycles", () => {
     expect(large.totals["freed exports"]).toBeGreaterThan(3 * 100_000 - 40_000);
     expect(large.totals["held exports"]).toBeLessThan(40_000);
     expect(large.totals["representatives"]).toBeLessThan(40_000);
+  }, 600_000);
+
+  test("records without a cycle header are collected with their requests", async () => {
+    // A typed record of a number and a string per request, handed to the
+    // island and dropped by both sides. The walk before a major GC cannot
+    // enter such a record (it has no trace function) and counts the one
+    // reference its capsule holds: a record nothing else holds is not a
+    // root. The ten the program keeps keep their identity in the island's
+    // WeakMap, and the four the island holds stay alive.
+    const dir = join(outDir, "gc-records");
+    mkdirSync(dir, { recursive: true });
+    const result = await compile(join(fixtures, "gc-records.ts"), {
+      outPath: join(dir, "gc-records"),
+      outDir: dir,
+      sanitize,
+    });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const large = await run(["200000"], {}, result.binaryPath);
+    expect(large.stdout).toBe(
+      "200000 1288890 r10,r11,r12,r13 10/10 1000,1001,1002,1003,1004,1005,1006,1007,1008,1009\n",
+    );
+    expect(large.totals["analyzed"]).toBe(large.totals["major"]);
+    // One export per iteration. V8 schedules a major GC per 32k of them:
+    // what is left is what the last interval made, where every record used
+    // to stay a root.
+    expect(large.totals["freed exports"]).toBeGreaterThan(200_000 - 70_000);
+    expect(large.totals["held exports"]).toBeLessThan(70_000);
+  }, 600_000);
+
+  test("Date, URL and URLSearchParams twins are collected with their requests", async () => {
+    // A native Date and URL per request, handed to the island in a record
+    // and dropped by both sides; every fourth URL's searchParams crosses
+    // too, and holds its URL natively. The ten pairs the program keeps are
+    // still the objects the island noted in a WeakMap, with the island's
+    // writes and the program's, and the four pairs the island holds are
+    // still the program's values.
+    const dir = join(outDir, "gc-values");
+    mkdirSync(dir, { recursive: true });
+    const result = await compile(join(fixtures, "gc-values.ts"), {
+      outPath: join(dir, "gc-values"),
+      outDir: dir,
+      sanitize,
+    });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const noted = "10/10 1001,1002,1003,1004,1005,1006,1007,1008,1009,1010";
+    const heldValues = "11?q=2,12?q=2,13?q=2,14?q=2";
+    const small = await run(["4000"], {}, result.binaryPath);
+    const large = await run(["40000"], {}, result.binaryPath);
+    expect(small.stdout).toBe(`4000 1000 ${heldValues} ${noted}\n`);
+    expect(large.stdout).toBe(`40000 10000 ${heldValues} ${noted}\n`);
+    for (const r of [small, large]) expect(r.totals["analyzed"]).toBe(r.totals["major"]);
+    // Three exports per iteration (the record, the Date, the URL) and a
+    // fourth (the searchParams) every fourth one. What is left at the end
+    // is what the iterations since the last major collections made:
+    // bounded, where a leak (a record without a cycle header that the walk
+    // takes for held, a URL its own searchParams keeps alive) would hold a
+    // share of all 130,000. Compared twins make V8 collect far more often
+    // than exports alone do, so the bound is a few thousand.
+    expect(large.totals["freed exports"]).toBeGreaterThan(130_000 - 6_000);
+    expect(large.totals["held exports"]).toBeLessThan(6_000);
+    expect(large.totals["representatives"]).toBeLessThan(6_000);
   }, 600_000);
 
   test("a native object the program keeps keeps its identity in island weak maps", async () => {

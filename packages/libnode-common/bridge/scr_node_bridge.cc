@@ -96,6 +96,7 @@ Global<Function> g_load; // the bootstrap's module loader (NI-4)
 // The prototypes of the island classes whose objects native code adopts
 // (the bootstrap's twinPrototypes): a handle of one is flagged SCR_NVF_TWIN.
 std::vector<Global<Object>> g_twin_prototypes;
+Global<Function> g_pull_twins; // the bootstrap's pullTwins, once a pull needed it
 Global<Function> g_shared_push; // the loader hooks' binding updates (NI-6)
 void SharedTable(const FunctionCallbackInfo<Value> &info);
 void SharedGet(const FunctionCallbackInfo<Value> &info);
@@ -733,6 +734,7 @@ void Stop() {
   g_call.Reset();
   g_load.Reset();
   g_twin_prototypes.clear();
+  g_pull_twins.Reset();
   StopCollector(isolate);
   DropAllHandles();
   DropAllExports();
@@ -1010,9 +1012,35 @@ constexpr int64_t kExportExternalFloor = 64;
 int64_t g_export_external_bytes = kExportExternalBytes;
 uint64_t g_cycle_new_exports = 0; // exports made since the last major GC
 int64_t g_external_reported = 0;
+// Twins whose state is compared at every crossing (TwinPull) cost time per
+// crossing for as long as either heap still holds them, and most are held
+// by garbage of the other heap that only a major GC finds (a Date in a
+// record that both sides dropped). Each one compared counts as this much
+// external memory, so V8 schedules a major GC per few hundred of them
+// instead of per 32k exports; twins a GC leaves in place schedule no more.
+constexpr int64_t kTwinCompareBytes = 256 * 1024;
+size_t g_twins_compared = 0;
+// The count stops growing when the program stops making such twins, and the
+// ones a past burst left behind would then be compared at every crossing
+// for as long as no major GC happens to run. While any is compared, every
+// g_twin_stale_period pulls ask for a major GC outright (kTwinStaleBytes
+// more external memory, taken back after it). A GC that leaves the count
+// where it was doubles the period: those twins are held by the program and
+// the island, not by garbage, and a program that shares a few for its
+// whole run is asked a handful of times in all.
+constexpr size_t kTwinStaleCount = 1;
+constexpr uint32_t kTwinStalePeriod = 2048;
+constexpr int64_t kTwinStaleBytes = 96ll * 1024 * 1024;
+uint32_t g_twin_stale_period = kTwinStalePeriod;
+uint32_t g_twin_pulls = 0;           // pulls that compared a twin since a major GC
+size_t g_twins_compared_at_ask = 0;  // the count when the last such GC was asked for
+bool g_twin_gc_asked = false;
+bool g_twin_gc_ran = false;          // a major GC ran since the last pull
 
 void ReportExternal(Isolate *isolate) {
-  int64_t want = static_cast<int64_t>(g_export_gc.size()) * g_export_external_bytes;
+  int64_t want = static_cast<int64_t>(g_export_gc.size()) * g_export_external_bytes +
+                 static_cast<int64_t>(g_twins_compared) * kTwinCompareBytes +
+                 (g_twin_gc_asked ? kTwinStaleBytes : 0);
   if (want == g_external_reported) return;
   isolate->AdjustAmountOfExternalAllocatedMemory(want - g_external_reported);
   g_external_reported = want;
@@ -2000,6 +2028,7 @@ void DropAllExports() {
 // next analysis.
 void OnGcEpilogue(Isolate *isolate, v8::GCType, v8::GCCallbackFlags, void *) {
   HandleScope handles(isolate);
+  g_twin_gc_ran = true;
   uint64_t freed_imports = 0;
   std::vector<uint32_t> refresh, dead;
   {
@@ -2635,6 +2664,84 @@ void SharedPush(uint32_t mod, uint32_t slot, const ScrNodeValue *value) {
   Helper(e, g_shared_push, 3, argv);
 }
 
+// ── twins with state both sides can change (a Date's time value) ─────────
+// Island code ran. The runtime names the exports whose native objects its
+// code can still reach; the bootstrap's pullTwins compares each of those
+// twins with the state it last shared and tells the native object what
+// moved (host->export_op, SCR_NODE_TWIN_TELL). A representative V8 already
+// collected cannot have changed. The runtime calls this between an
+// operation and reading that operation's values, so unlike every other
+// entry it never clears the scratch they live in.
+int TwinPull(const uint32_t *ids, size_t n, ScrNodeValue *out) {
+  Enter e;
+  TryCatch try_catch(e.isolate);
+  struct Depth {
+    Depth() { g_entry_depth++; }
+    ~Depth() { g_entry_depth--; }
+  } depth;
+  std::memset(out, 0, sizeof *out);
+  out->tag = SCR_NV_UNDEFINED;
+  // The report can run the major GC it asks for: it comes before any twin
+  // is in a handle of this scope, where that GC would find it held.
+  size_t compared = 0;
+  for (size_t i = 0; i < n; i++) {
+    auto found = g_exports.find(ids[i]);
+    compared += found != g_exports.end() && !found->second.IsEmpty();
+  }
+  bool report = compared != g_twins_compared;
+  g_twins_compared = compared;
+  if (g_twin_gc_ran) {
+    // What the GC this bridge asked for left behind decides when to ask again.
+    if (g_twin_gc_asked)
+      g_twin_stale_period = compared * 4 >= g_twins_compared_at_ask * 3
+                                ? (g_twin_stale_period < (1u << 24) ? g_twin_stale_period * 2 : g_twin_stale_period)
+                                : kTwinStalePeriod;
+    report |= g_twin_gc_asked;
+    g_twin_gc_asked = g_twin_gc_ran = false;
+    g_twin_pulls = 0;
+  } else if (compared >= kTwinStaleCount && !g_twin_gc_asked && ++g_twin_pulls >= g_twin_stale_period) {
+    g_twin_gc_asked = report = true;
+    g_twins_compared_at_ask = compared;
+  }
+  if (report) ReportExternal(e.isolate);
+  // V8 marks for an external-memory GC in steps, one per report over its
+  // limit: a count that no longer changes reports nothing, so the GC that
+  // was asked for is driven from here until it has run.
+  if (g_twin_gc_asked) {
+    e.isolate->AdjustAmountOfExternalAllocatedMemory(1);
+    e.isolate->AdjustAmountOfExternalAllocatedMemory(-1);
+  }
+  std::vector<Local<Value>> twins;
+  twins.reserve(n);
+  for (size_t i = 0; i < n; i++) {
+    auto found = g_exports.find(ids[i]);
+    if (found != g_exports.end() && !found->second.IsEmpty())
+      twins.push_back(found->second.Get(e.isolate));
+  }
+  if (twins.empty()) return 0;
+  if (g_pull_twins.IsEmpty()) {
+    Local<Value> helpers, fn;
+    Local<Value> load_argv[] = {Utf8(e.isolate, "scriptc:island-helpers"), v8::False(e.isolate)};
+    if (g_load.Get(e.isolate)->Call(e.context, v8::Undefined(e.isolate), 2, load_argv).ToLocal(&helpers) &&
+        helpers->IsObject() &&
+        helpers.As<Object>()->Get(e.context, Utf8(e.isolate, "pullTwins")).ToLocal(&fn) &&
+        fn->IsFunction())
+      g_pull_twins.Reset(e.isolate, fn.As<Function>());
+  }
+  Local<Value> result;
+  if (!g_pull_twins.IsEmpty()) {
+    Local<Value> argv[] = {v8::Array::New(e.isolate, twins.data(), twins.size())};
+    if (g_pull_twins.Get(e.isolate)->Call(e.context, v8::Undefined(e.isolate), 1, argv).ToLocal(&result))
+      return 0;
+  }
+  if (try_catch.HasCaught() && !try_catch.HasTerminated()) {
+    Local<Value> exception = try_catch.Exception();
+    try_catch.Reset();
+    FromV8(e.isolate, e.context, exception, out);
+  }
+  return 1;
+}
+
 const ScrNodeBridge kBridge = {
     SCR_NODE_BRIDGE_ABI,
     NODE_VERSION_STRING,
@@ -2673,6 +2780,7 @@ const ScrNodeBridge kBridge = {
     ExportSettle,
     SharedPush,
     GcStats,
+    TwinPull,
 };
 
 }  // namespace

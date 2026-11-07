@@ -177,6 +177,14 @@ bool scr_ni_tree_named(const char *text, size_t len);
 void scr_ni_tree_repair(void);
 size_t scr_ni_tree_repairs(void);
 void scr_ni_on_node_stack(void (*job)(void *), void *arg);
+/* job(arg) on Node's stack, where it runs island code: twins with state
+ * both sides can change take the native state before it and give theirs
+ * back after it (scr_ni_twins_push, scr_ni_twins_pull). False with a
+ * TypeError pending: one side could not hold the other's state (the job
+ * did not run when the twin refused). */
+bool scr_ni_run_island(void (*job)(void *), void *arg);
+/* Leaves a value the island threw pending as a scriptc exception. */
+void scr_ni_throw_in(const struct ScrNodeValue *v);
 void scr_ni_settle_value(uint32_t token, int rejected, const struct ScrNodeValue *value);
 void scr_ni_bytes_free(void *owner);
 void scr_ni_handles_install(void);
@@ -255,10 +263,55 @@ typedef struct ScrNiTwinClass {
   /* The island object told its native object that `event` happened, with
    * `value` (borrowed): SCR_NODE_TWIN_TELL. NULL: nothing to hear. */
   void (*hear)(void *object, const char *event, ScrDyn *value);
+  /* A class whose objects have state that code on either side can change
+   * (a Date's time value, a URL's href, a URLSearchParams' list) says how
+   * to read it, and `hear` takes it back as the event "state". The export
+   * table then keeps the object and its twin equal whenever control passes
+   * from one side to the other (scr_ni_twins_push, scr_ni_twins_pull).
+   * `state`: the object's state as a value both sides read alike, a number
+   * or a string (+1); the attachment (never NULL for such a class)
+   * remembers it. `moved`: the object's state is no longer what `state`
+   * last answered for this attachment. NULL: the class has no such state. */
+  ScrDyn *(*state)(void *object, void *attachment);
+  bool (*moved)(void *object, void *attachment);
+  /* The island's class may refuse a state the native class holds (Node's
+   * URL parser, an href the native parser accepted): the twin is then made
+   * before the object first crosses, so that a refusal is a TypeError at
+   * the crossing (scr_ni_twin_ready) and not a stand-in object. */
+  bool refuses;
+  /* The native object this one is a live part of (borrowed), or NULL: a
+   * URLSearchParams that is the searchParams of a URL. Its twin is the
+   * member of the owner's twin that the island's class keeps, and NI-8
+   * counts the reference the part holds on its owner. `box`, when not
+   * NULL, takes the owner as a value (+1). NULL: never a part. */
+  void *(*owner)(void *object, ScrDyn **box);
+  /* The other side of `owner`: the object's live part (borrowed), which
+   * holds the object once, or NULL. A part that nothing native holds is
+   * not native code's way to the object. NULL: the class has no parts. */
+  void *(*part)(void *object);
   struct ScrNiTwinClass *next;
 } ScrNiTwinClass;
 void scr_ni_twin_register(ScrNiTwinClass *cls);
 bool scr_ni_twin_box(const ScrDyn *v); /* a native object of a twin class */
+/* Twins with state both sides can change. Push: island code is about to
+ * run, and the twins of natively changed objects take their state. Pull:
+ * island code ran, and the objects whose twins changed take theirs. Both
+ * answer false with a TypeError pending when one side cannot hold the
+ * other's state. An exception already pending stays the pending one: push
+ * still sends (native code that threw also wrote), pull waits for the next
+ * crossing. Cheap while no such twin's object is held natively. */
+bool scr_ni_twins_push(void);
+bool scr_ni_twins_pull(void);
+/* The value of export `id` as it comes back from the island (borrowed), or
+ * NULL: a twin's object that only the island held takes its twin's state. */
+ScrDyn *scr_ni_export_in(uint32_t id);
+/* `v` (borrowed) was just written as an export: false with a TypeError
+ * pending when it is a state twin's object whose twin the island's class
+ * refused to make. */
+bool scr_ni_twin_ready(ScrDyn *v);
+/* NI-8: the native object that the twin object behind box `v` holds as its
+ * owner (borrowed), or NULL. */
+void *scr_ni_twin_owner(const ScrDyn *v);
 /* The native object of export `id` tells its twin that `event` happened,
  * with `value` (borrowed). */
 void scr_ni_twin_tell(uint32_t id, const char *event, ScrDyn *value);

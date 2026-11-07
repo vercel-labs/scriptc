@@ -84,6 +84,18 @@ describe.skipIf(skip)("Node island handles", () => {
     );
   }, 300_000);
 
+  test("a native Date shared with an island: what differs from Node", async () => {
+    // Under Node: "[object Date] true 1700000000000", "stamp via unknown:
+    // [object Date] true 1700000000000" and "1 1". An instance of a native
+    // class that extends Date has no form in the island and is refused by
+    // name; a property the island adds to its Date stays in the island.
+    const refusal =
+      "TypeError: scriptc: an instance of a class that extends Date cannot cross into a Node island yet (it would not be a Date there)";
+    expect(await runFixture("value-twin-differences", "value-twin-differences/main.ts")).toBe(
+      `${refusal}\nstamp via unknown: ${refusal}\nundefined 1\n`,
+    );
+  }, 300_000);
+
   test("requireModule() loads Node's built-in modules", async () => {
     expect(await runFixture("builtins", "builtins.ts")).toBe("a/b string\n");
   }, 300_000);

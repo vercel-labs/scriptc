@@ -1,0 +1,6 @@
+- **Dates and URLs shared with islands:** A `Date`, `URL` or `URLSearchParams` the program hands to JavaScript running in a Node island is one object under Node.js.
+  A compiled program keeps an object on each side: the island's is a real `Date`, `URL` or `URLSearchParams` of Node.js, and the same one every time the program's object crosses.
+  The two are made equal whenever control passes from one side to the other, so a setter called on either side shows on the other, whichever side still holds the object.
+  A property the island adds to its object stays in the island: native code does not see it.
+  An instance of a native class that `extends Date` cannot be handed to an island: the call throws a `TypeError` that says so.
+  While the program keeps many such objects that an island has seen, each call into the island compares them all.

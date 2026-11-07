@@ -17,7 +17,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SCR_NODE_BRIDGE_ABI 13u
+#define SCR_NODE_BRIDGE_ABI 17u
 /* The symbol a bridge library exports: `const ScrNodeBridge *(void)`. */
 #define SCR_NODE_BRIDGE_ENTRY "scr_node_bridge_v1"
 
@@ -38,11 +38,18 @@ enum {
  * the answer is its result. Both are the native handle's own property read
  * and method call. TELL: the island object changed; args[0] names the
  * event and args[1] is its value (an island signal aborted: "abort" and
- * the reason). */
+ * the reason; a Date's time value changed: "state" and the time). STATE:
+ * the native object's state as a value, for a class whose state both sides
+ * can change (a Date's time value, a URL's href); undefined for any other
+ * class. OWNER: the native object this one is a live part of (the URL of
+ * its searchParams), whose twin then holds this object's twin; undefined
+ * when it stands alone. */
 enum {
   SCR_NODE_TWIN_GET = 16,
   SCR_NODE_TWIN_INVOKE = 17,
   SCR_NODE_TWIN_TELL = 18,
+  SCR_NODE_TWIN_STATE = 19,
+  SCR_NODE_TWIN_OWNER = 20,
 };
 
 /* Kinds of runtime jobs the bridge schedules on Node's queues (`run`). */
@@ -399,6 +406,12 @@ typedef struct ScrNodeBridge {
   void (*shared_push)(uint32_t mod, uint32_t slot, const ScrNodeValue *value);
   /* NI-8: the cross-heap collector's counters. */
   void (*gc_stats)(ScrNodeGcStats *out);
+  /* Twins with state both sides can change: island code ran, and the
+   * twins of exports `ids` whose state is no longer what the runtime last
+   * heard tell it (host->export_op, SCR_NODE_TWIN_TELL "state"). 0, or 1
+   * with *out thrown: a native object refused its twin's state. Leaves
+   * the values of the operation before it readable. */
+  int (*twin_pull)(const uint32_t *ids, size_t n, ScrNodeValue *out);
 } ScrNodeBridge;
 
 #endif /* SCR_NODE_BRIDGE_H */

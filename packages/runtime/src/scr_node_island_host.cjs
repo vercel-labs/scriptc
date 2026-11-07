@@ -64,10 +64,13 @@ const ERROR_KINDS = [
 // objects and arrays around them are copied (own enumerable string keys,
 // shared references and cycles kept), everything else is cloned as is.
 const nodeStructuredClone = globalThis.structuredClone;
+// A twin (below) is a real object of one of Node's classes: Node clones it,
+// or refuses to, as it does any object of that class.
+const isNativeData = (value) => nativeHost.isExport(value) && !twinStates.has(value);
 function plainCopy(value, memo) {
   if (value === null || typeof value !== "object") return value;
   if (memo.has(value)) return memo.get(value);
-  const native = nativeHost.isExport(value);
+  const native = isNativeData(value);
   if (Array.isArray(value)) {
     // Own enumerable keys, as structuredClone copies them: holes stay holes
     // and named properties come along.
@@ -86,7 +89,7 @@ function plainCopy(value, memo) {
 function holdsNative(value, seen) {
   if (value === null || typeof value !== "object" || seen.has(value)) return false;
   seen.add(value);
-  if (nativeHost.isExport(value)) return true;
+  if (isNativeData(value)) return true;
   const proto = Object.getPrototypeOf(value);
   if (!Array.isArray(value) && proto !== Object.prototype && proto !== null) return false;
   for (const key of Object.keys(value)) if (holdsNative(value[key], seen)) return true;
@@ -325,13 +328,17 @@ const collectionSyncs = new WeakMap();
 const TWIN_GET = 16;
 const TWIN_INVOKE = 17;
 const TWIN_TELL = 18;
-const twinStates = new WeakMap(); // twin -> { cls, native, adopted }
+const TWIN_STATE = 19;
+const TWIN_OWNER = 20;
+const twinStates = new WeakMap(); // twin -> { cls, native, adopted, last }
 
 function twinNative(op) {
   return {
     get: (key) => op(TWIN_GET, key),
     invoke: (method, ...args) => op(TWIN_INVOKE, method, ...args),
     tell: (event, value) => op(TWIN_TELL, event, value),
+    state: () => op(TWIN_STATE),
+    owner: () => op(TWIN_OWNER),
   };
 }
 const nodeAbort = AbortController.prototype.abort;
@@ -403,24 +410,99 @@ const twinClasses = {
   },
 };
 
+// ── twins with state both sides can change ───────────────────────────────
+// A Date's time value, a URL's href and a URLSearchParams' list change
+// under code on either side, and no hook sees it: a real Date keeps its
+// time in a slot only V8's setters write. Such a class says how to make a
+// twin from a state (`make`), how to read a twin's state as a number or a
+// string that the native class reads alike (`read`), and how to give a
+// twin a state (`write`). The runtime makes each pair equal whenever
+// control passes from one side to the other: before island code runs the
+// twin takes what changed natively (tellTwin, event "state"), and after it
+// ran the native object takes what changed here (pullTwins). A twin whose
+// native object is a live part of another one (a URL's searchParams) is
+// the member the owner's twin holds.
+//
+// A class takes what it needs from Node when its first twin is made, with
+// the methods uncurried so that a twin's own properties do not answer for
+// its state: a program that passes none pays nothing at start-up.
+const uncurry = (fn) => Function.prototype.call.bind(fn);
+const sameState = (a, b) => a === b || (a !== a && b !== b);
+const showState = (state) => (typeof state === "string" ? JSON.stringify(state) : String(state));
+const stateTwinClasses = {
+  Date() {
+    const NodeDate = Date;
+    return {
+      make: (native, state) => new NodeDate(state),
+      read: uncurry(NodeDate.prototype.getTime),
+      write: uncurry(NodeDate.prototype.setTime),
+    };
+  },
+  URL() {
+    const NodeURL = URL;
+    const href = Object.getOwnPropertyDescriptor(NodeURL.prototype, "href");
+    return {
+      make: (native, state) => new NodeURL(state),
+      read: uncurry(href.get),
+      write: uncurry(href.set),
+    };
+  },
+  URLSearchParams() {
+    const Params = URLSearchParams;
+    const keys = uncurry(Params.prototype.keys);
+    const remove = uncurry(Params.prototype.delete);
+    const append = uncurry(Params.prototype.append);
+    const ownParams = uncurry(Object.getOwnPropertyDescriptor(URL.prototype, "searchParams").get);
+    return {
+      // The searchParams of a native URL is the one object its URL's twin
+      // answers; a list of its own is made from its serialization.
+      make(native, state) {
+        const owner = native.owner();
+        return owner === undefined ? new Params(state) : ownParams(owner);
+      },
+      read: uncurry(Params.prototype.toString),
+      write(params, state) {
+        for (const key of [...keys(params)]) remove(params, key);
+        for (const [key, value] of new Params(state)) append(params, key, value);
+      },
+    };
+  },
+};
+
+// The twin class of a name: one of twinClasses, or a state twin class,
+// which is set up the first time it is asked for.
+function twinClass(name) {
+  return (twinClasses[name] ??= stateTwinClasses[name]());
+}
+
 const islandHelpers = {
   makeTwin(name, op) {
-    const cls = twinClasses[name];
+    const cls = twinClass(name);
     const native = twinNative(op);
-    const twin = cls.make(native);
-    twinStates.set(twin, { cls, native, adopted: false });
+    if (cls.read === undefined) {
+      const twin = cls.make(native);
+      twinStates.set(twin, { cls, native, adopted: false });
+      return twin;
+    }
+    // What the twin reads is the state the pair shares from here on. When
+    // this class reads the native state differently, the difference counts
+    // as a change made here, and the native object takes it at the next
+    // pull or refuses it there.
+    const state = native.state();
+    const twin = cls.make(native, state);
+    twinStates.set(twin, { cls, native, adopted: false, last: state });
     return twin;
   },
   // An object made here became the representative of the native object
   // that adopts it.
   adoptTwin(name, twin, op) {
-    twinStates.set(twin, { cls: twinClasses[name], native: twinNative(op), adopted: true });
+    twinStates.set(twin, { cls: twinClass(name), native: twinNative(op), adopted: true });
   },
   startTwin(twin) {
     const state = twinStates.get(twin);
     if (state === undefined) return;
     if (state.adopted) state.cls.adopt(twin, state.native);
-    else state.cls.start(twin, state.native);
+    else if (state.cls.start !== undefined) state.cls.start(twin, state.native);
   },
   // The class that adopts `value`, by its prototype, or undefined. A value
   // that a native object adopted since its handle was made (the same
@@ -439,7 +521,36 @@ const islandHelpers = {
     return twinStates.has(twin);
   },
   tellTwin(name, event, twin, value) {
-    twinClasses[name].tell[event](twin, value);
+    const cls = twinClass(name);
+    if (cls.read === undefined) {
+      cls.tell[event](twin, value);
+      return;
+    }
+    // The native object's state changed: the twin takes it. What the twin
+    // then reads must be that state, or the two classes disagree about it.
+    const state = twinStates.get(twin);
+    cls.write(twin, value);
+    const now = cls.read(twin);
+    if (!sameState(now, value))
+      throw new TypeError(
+        `scriptc: a native ${name} and its twin in a Node island do not agree on its state: ` +
+          `the native object has ${showState(value)}, the island reads ${showState(now)}`,
+      );
+    state.last = now;
+  },
+  // Island code ran: each of these twins whose state is no longer the one
+  // it last shared tells its native object (which throws when it cannot
+  // hold it; that twin is then compared again at the next pull).
+  pullTwins(twins) {
+    for (let i = 0; i < twins.length; i++) {
+      const twin = twins[i];
+      const state = twinStates.get(twin);
+      if (state === undefined || state.cls.read === undefined) continue;
+      const now = state.cls.read(twin);
+      if (sameState(now, state.last)) continue;
+      state.native.tell("state", now);
+      state.last = now;
+    }
   },
   isInstance(value, name) {
     // The error classes by their intrinsics; any other standard class by

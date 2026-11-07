@@ -5345,6 +5345,7 @@ export class Lowerer {
     "narrowing.effects",
     "narrowing.capturedMutable",
     "narrowing.staleBindings",
+    "narrowing.inherited",
     "narrowing.identifierWrites",
     "narrowing.widened",
     "narrowing.plainContainers",

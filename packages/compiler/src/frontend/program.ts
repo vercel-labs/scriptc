@@ -44,10 +44,12 @@ import { builtinModules } from "node:module";
 import { dirname, isAbsolute, resolve } from "node:path";
 import * as ts from "./ts7/adapter.js";
 import { withoutParenthesesAssertionsNonNull } from "./outer-expressions.js";
+import { InternalCompilerError } from "../errors.js";
 import { isSourcePhaseImport } from "./ts7/ast-node.js";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import {
   commonJsModuleSyntaxDiag,
+  inlinedImportKeptDiag,
   invalidPackageConfigDiag,
   strictNullChecksFloorDiag,
   tscPassthroughDiag,
@@ -153,6 +155,11 @@ import {
   typeOnlyReachedFiles,
 } from "./type-only-imports.js";
 import { moduleSourceCandidates } from "./module-source-candidates.js";
+import {
+  elideProgramImports,
+  importElisionOptions,
+  type ImportElisionOptions,
+} from "./import-elision.js";
 import {
   planDeclProjection,
   resetDeclBoundaryOrigins,
@@ -364,6 +371,43 @@ function adoptProjectConfig7(
   };
 }
 
+/** The import elision settings of the tsconfig that governs each file: the
+ * nearest `tsconfig.json` above it, as for tsc's own editors and for
+ * single-file transpilers. A file with no tsconfig above it, a file under
+ * `node_modules`, and a file whose tsconfig sets `verbatimModuleSyntax` keep
+ * Node's rule (null). Each directory and each tsconfig is read once. */
+function importElisionSettings7(
+  host: ts.Ts7Host,
+): (fileName: string) => ImportElisionOptions | null {
+  const byDirectory = new Map<string, ImportElisionOptions | null>();
+  const byConfig = new Map<string, ImportElisionOptions | null>();
+  const ofConfig = (configFile: string): ImportElisionOptions | null => {
+    let options = byConfig.get(configFile);
+    if (options === undefined) {
+      // A config that does not parse selects nothing: the entry's own is
+      // reported by adoptProjectConfig7, and a file keeps Node's rule.
+      options =
+        jsoncSyntaxError(ts.sys.readFile(configFile) ?? "") !== null
+          ? null
+          : importElisionOptions(host.parseConfigFile(configFile).options);
+      byConfig.set(configFile, options);
+    }
+    return options;
+  };
+  return (fileName) => {
+    const normalized = fileName.split("\\").join("/");
+    if (normalized.includes("/node_modules/")) return null;
+    const directory = dirname(fileName);
+    let options = byDirectory.get(directory);
+    if (options === undefined) {
+      const configFile = ts.findConfigFile(directory, ts.sys.fileExists) ?? null;
+      options = configFile === null ? null : ofConfig(configFile);
+      byDirectory.set(directory, options);
+    }
+    return options;
+  };
+}
+
 /** The target project's @types/node, resolved with the OWN resolver's
  * type-directive lookup anchored at the ENTRY (typeRoots-free — exactly the
  * secondary lookup 5.9.3 ran with typeRoots emptied). */
@@ -441,6 +485,9 @@ export interface LoadResult {
   /** SC6102 performance notes of the declaration-typed boundary
    * (decl-projection.ts): files whose projection was dropped. */
   declBoundaryNotes?: ScrDiagnostic[];
+  /** SC6008 warnings: imports the build keeps although tsc's output drops
+   * them (import-elision.ts, inlinedOnly). */
+  importWarnings?: ScrDiagnostic[];
   /** The files whose JSX the program lowers (jsx-source.ts), by file name.
    * The program holds their rewritten text; positions in diagnostics refer
    * to it. */
@@ -583,6 +630,9 @@ export interface StartupCrash {
   /** The error's own `url` property: the missing file's URL, for Node's
    * ERR_MODULE_NOT_FOUND of an import() whose target does not exist. */
   url?: string;
+  /** How to change the source so Node accepts it, for the build's warning
+   * (SC6201). The compiled program never reads it. */
+  hint?: string;
 }
 
 /** True when a coverage mapping names one exact bare host module. TypeScript
@@ -1223,6 +1273,41 @@ function loadProgram7(
         if (shapeOverlayDone()) break;
       }
     }
+    // tsc's import elision (import-elision.ts): a TypeScript file of a
+    // project that does not set `verbatimModuleSyntax` is compiled with the
+    // imports and exports tsc keeps. The tsc gate reads the files as
+    // written; the rewrite keeps their offsets.
+    const elision = elideProgramImports(program, importElisionSettings7(host));
+    const elisions = elision.texts;
+    const importWarnings = elision.inlinedOnly.map((kept) =>
+      inlinedImportKeptDiag(kept.specifier, { file: kept.file, start: kept.start, end: kept.end }),
+    );
+    if (elisions.size > 0) {
+      const before = program;
+      // The gate's diagnostics are taken before the rewritten files replace
+      // the files as written on the host.
+      let gateWorld = tscWorld;
+      if (gateWorld === undefined) {
+        const diagnostics = ts.getPreEmitDiagnostics(before, tscGateFileKept);
+        gateWorld = {
+          program: before,
+          diagnostics: () => diagnostics,
+          projectWorld: null,
+          declWorldFallback: true,
+        };
+        tscWorld = gateWorld;
+      } else {
+        gateWorld.diagnostics();
+      }
+      for (const [file, text] of elisions) {
+        if (!overlayOriginals.has(file))
+          overlayOriginals.set(file, before.getSourceFile(file)?.text ?? null);
+        host.addVirtualFile(file, text);
+      }
+      program = host.createProgram([...programRoots, overridesDtsPath()], options, false, lineage);
+      if (gateWorld.program !== before) before.dispose();
+      assertElisionKeptValues7(program, elisions.keys());
+    }
     const entry = program.getSourceFile(entryPath);
     if (!entry) throw new Error(`could not load ${entryPath}`);
     const externalTypeSpecifiersByFile = externalTypeFileClosure7(program, externalTypes);
@@ -1234,6 +1319,7 @@ function loadProgram7(
       moduleOrder: [],
       configDiags: config.diags,
       ...(declBoundaryNotes.length > 0 ? { declBoundaryNotes } : {}),
+      ...(importWarnings.length > 0 ? { importWarnings } : {}),
       typeWorld: {
         nodeFallback: nodeTypes === null,
         projectLib: config.projectLib ?? null,
@@ -1278,6 +1364,23 @@ export interface ProgramLoadOptions {
   npmStatic?: readonly string[];
   /** Exact host module specifiers paired with their declaration paths. */
   externalTypes?: readonly (readonly [string, string])[];
+}
+
+/** A binding the elision dropped is declared type-only, so a value use of
+ * it that the analysis missed is a TypeScript error in the rewritten file
+ * (TS1361, TS1362) where the file as written has none. That is a compiler
+ * bug to report, never a program to lower with the import missing. */
+function assertElisionKeptValues7(program: ts.Program, files: Iterable<string>): void {
+  for (const file of files) {
+    const sf = program.getSourceFile(file);
+    if (sf === undefined) continue;
+    for (const d of program.getSemanticDiagnostics(sf)) {
+      if (d.code !== 1361 && d.code !== 1362) continue;
+      throw new InternalCompilerError(
+        `import elision dropped a binding that ${file} uses as a value: ${ts.flattenDiagnosticMessageText(d, "\n")}`,
+      );
+    }
+  }
 }
 
 /** Runs `build` with the overlay's files served as written (their original
@@ -7846,6 +7949,8 @@ interface BadEsmImport {
   spec: string;
   nameNode: ts.Node;
   sf: ts.SourceFile;
+  /** The module the request names. */
+  dep: ts.SourceFile;
 }
 
 interface EsmNamedImportLinkAnalysis {
@@ -7988,6 +8093,7 @@ function analyzeEsmNamedImportLinks(
           spec: request.spec,
           nameNode: request.nameNode,
           sf,
+          dep: request.dep,
         };
       }
     }
@@ -8005,7 +8111,7 @@ function analyzeEsmNamedImportLinks(
         if (element.isTypeOnly) continue;
         const nameNode = element.propertyName ?? element.name;
         if (runtimeExport(dep, nameNode.text) === undefined) {
-          return { exportName: nameNode.text, spec, nameNode, sf };
+          return { exportName: nameNode.text, spec, nameNode, sf, dep };
         }
       }
     }
@@ -8043,11 +8149,23 @@ function analyzeEsmNamedImportLinks(
   // promise rejection rather than a startup crash.
   const bad = isNodeEsmFile7(entry, program) ? dfs(entry) : null;
   if (bad !== null) {
+    // The usual cause: the name is a type, which Node's type stripping
+    // leaves in a plain import.
+    const declaresType =
+      checker
+        .getSymbolAtLocation(bad.dep)
+        ?.getExports()
+        .get(ts.escapedSymbolName(bad.exportName)) !== undefined;
     return {
       crash: {
         message: `The requested module '${bad.spec}' does not provide an export named '${bad.exportName}'`,
         className: "%SyntaxError",
         loc: locOf7(bad.nameNode),
+        ...(declaresType
+          ? {
+              hint: `'${bad.exportName}' is a type, and Node's type stripping keeps a plain import of it: mark it 'type' (import type { … } or import { type … }). In a project whose tsconfig.json does not set verbatimModuleSyntax, scriptc drops such imports as tsc does`,
+            }
+          : {}),
       },
       visited,
       firstMissingOf,

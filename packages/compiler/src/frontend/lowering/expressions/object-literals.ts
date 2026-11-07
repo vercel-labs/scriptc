@@ -53,6 +53,7 @@ import { builtinGlobalValue } from "./property-access.js";
 import { holdsEvolvingArray } from "../lower-stmts.js";
 import { builtinNamespaceValue } from "../builtin-namespaces.js";
 import { tsUntypedGlobalValue } from "../global-values.js";
+import { consoleOwnKeysObject, isConsoleObjectRead } from "../coercions/console-records.js";
 
 /** `{ a: 1, b: "x" }` → recordLit. The record type comes from the
  * contextual type when tsc has one (annotated declarations, arguments,
@@ -453,7 +454,14 @@ export function lowerDynObjectLiteral(
               ? lowerer.lowerExprExpecting(prop.expression, DYN)
               : lowerer.lowerExpr(prop.expression);
       fenceSymbolFieldCopy(lowerer, prop.expression, raw.type);
-      const source = boxValue ? boxValue(prop.expression, raw) : lowerer.coerceToExpected(raw, DYN);
+      // `{ ...console }` copies console's own keys. Console is a native
+      // handle, which holds no data properties for the copy below to read,
+      // so the spread names the keys (console-records.ts).
+      const source = isConsoleObjectRead(raw)
+        ? consoleOwnKeysObject(raw, locOf(prop))
+        : boxValue
+          ? boxValue(prop.expression, raw)
+          : lowerer.coerceToExpected(raw, DYN);
       if (source.type.kind !== "dyn") {
         lowerer.unsupported(
           "SC1101",

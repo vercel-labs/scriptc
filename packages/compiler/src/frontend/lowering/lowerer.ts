@@ -90,6 +90,7 @@ import {
   type RequireInitFlag,
 } from "./require-initialization.js";
 import { identityPreservingWidening } from "./coercions/identity.js";
+import { consoleInto, isConsoleObjectRead, isConsoleTyped } from "./coercions/console-records.js";
 import { scanDivergences } from "./divergences.js";
 import { applyKeyOrderWitnesses, KeyOrderNotes } from "./key-order-witness.js";
 import { installBuiltinStatics } from "./builtin-statics.js";
@@ -7978,7 +7979,7 @@ export class Lowerer {
   analyzeDateJsonResults(parts: FileParts[]): void {
     const nullable = dateJsonType(this);
     for (const { sf } of parts) {
-      if (!sf.text.includes("toJSON")) continue;
+      if (!ts.sourceTextIncludes(sf, "toJSON")) continue;
       ts.walkPreorder(sf, (node) => {
         // `x = d.toJSON()`: the checker narrows x to string after the
         // assignment, so its reads must stay checked.
@@ -14726,6 +14727,13 @@ export class Lowerer {
         );
         throw new PoisonError();
       }
+      // The console object into a record of its members: the members are
+      // read off console by name (console-records.ts). The checked
+      // conversion below reads a property bag, which console is not.
+      if (isConsoleObjectRead(expr)) {
+        const projected = consoleInto(this, expr, expected, expr.loc);
+        if (projected) return projected;
+      }
       if (
         canDynCheckTo(
           expected,
@@ -15396,6 +15404,20 @@ export class Lowerer {
 
   private coerceIntoSlot(node: ts.Node, expr: IrExpr, expected: IrType): IrExpr {
     refuseInferredCallbackDrops(this, node, expr.type, expected);
+    // A binding the checker types as the console object (`const c =
+    // console`, a `Console` parameter) into a record of its members: the
+    // same member-by-name copy the direct `console` spelling takes
+    // (console-records.ts), decided here because only the site knows the
+    // checked-dynamic value is console.
+    if (
+      expr.type.kind === "dyn" &&
+      (expected.kind === "record" || expected.kind === "union") &&
+      !isConsoleObjectRead(expr) &&
+      isConsoleTyped(this, node)
+    ) {
+      const projected = consoleInto(this, expr, expected, expr.loc);
+      if (projected) return projected;
+    }
     // A union into one of its record arms extracts that arm, trusting the
     // checker to have excluded the others. A built-in object arm the checker
     // still types the site with (`c ?? new Map()` into an interface the
@@ -19596,7 +19618,9 @@ export class Lowerer {
    * { module, member } shape builtinImportOf gives named imports, so both
    * import forms key the same lowering tables. Null for everything else. */
   builtinMemberOf(access: ts.PropertyAccessExpression): { module: string; member: string } | null {
-    if (access.questionDotToken) return null;
+    // A guarded step keeps its chain lowering, except one the chain lowering
+    // has already found to be a plain access (a namespace is never nullish).
+    if (access.questionDotToken && !this.chainHandled.has(access)) return null;
     // Function-owned builtin members still require import provenance. A
     // user object named realpathSync must retain its ordinary method call.
     if (access.name.text === "native") {

@@ -381,9 +381,9 @@ function namesChildProcess(program: ts.Program): boolean {
   const own = new Set([ambientDtsPath(), overridesDtsPath()]);
   // Implementation files are already fetched; any other file is read as
   // the host serves it, without fetching its syntax tree.
-  const texts = new Map<string, string>();
+  const fetched = new Map<string, ts.SourceFile>();
   for (const sourceFile of program.getImplementationSourceFiles())
-    texts.set(tsgoPath(sourceFile.fileName), sourceFile.text);
+    fetched.set(tsgoPath(sourceFile.fileName), sourceFile);
   const scopes = new Set<unknown>();
   let names = false;
   for (const fileName of program.getSourceFileNames()) {
@@ -392,10 +392,15 @@ function namesChildProcess(program: ts.Program): boolean {
     // TypeScript's bundled libraries name no Node builtin, and asking for
     // the text of each of them reads the whole library set on every build.
     if (isBundledLibraryFile(program, fileName)) continue;
-    const text = texts.get(path) ?? program.getSourceText(fileName) ?? "";
+    const sourceFile = fetched.get(path);
+    const text = sourceFile === undefined ? (program.getSourceText(fileName) ?? "") : "";
     if (
-      text.includes("child_process") ||
-      (text.includes("\\") && SPELLED_CHILD_PROCESS.test(text))
+      sourceFile === undefined
+        ? text.includes("child_process") ||
+          (text.includes("\\") && SPELLED_CHILD_PROCESS.test(text))
+        : ts.sourceTextIncludes(sourceFile, "child_process") ||
+          (ts.sourceTextIncludes(sourceFile, "\\") &&
+            ts.sourceTextMatches(sourceFile, SPELLED_CHILD_PROCESS))
     ) {
       names = true;
       break;

@@ -1,6 +1,7 @@
 import { targetCpuField, targetCpuTargetRefusal } from "../backend/target-cpu.js";
 import { nativeCodegenDiag, type ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import type { CompilationTiming } from "../timing.js";
+import { readFileSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import type {
@@ -42,6 +43,7 @@ import { provenanceSources } from "../frontend/provenance-registry.js";
 import { processFork } from "../frontend/process-fork.js";
 import { unitReuseEnabled, type UnitStore } from "../frontend/lowering/unit-reuse.js";
 import {
+  sourceEditDifference,
   tokenEquivalentSource,
   tokenPositionEquivalentSource,
 } from "../frontend/token-equivalence.js";
@@ -192,40 +194,64 @@ function readFrontendCache(
  * debug information of dev builds and the serialized IR carry. A build
  * with debug information accepts only edits that keep every token's line
  * and column, the positions the debug information records. Diagnostics
- * carry locations too, so an entry that reported warnings is rebuilt. A changed
- * source whose raw text or line positions the frontend read (call-site text
- * in messages, comptime callbacks, test locations) is rebuilt as well:
- * frontendInputsSemanticallyMatch refuses its `text` probe. */
+ * carry locations too: a warning that names a changed source would point
+ * at its old text, so such an edit is rebuilt, while warnings about other
+ * files stand as they are. The
+ * frontend also reads raw text beside the tokens (call-site text in
+ * messages, comptime callbacks, test locations, whole-file scans); the
+ * entry's `text` probes record what it read of each source, and a changed
+ * source is rebuilt unless every such read has the same answer over the new
+ * text (token-equivalence.ts). A source whose whole text was read is always
+ * rebuilt. When the entry cannot be reused, the result says why. */
 function equivalentFrontendInput(
   cache: NativeCache,
   stale: FrontendCacheEntry,
   options: CompileRequestOptions,
   exclusions: FrontendInputExclusions,
-): { input: NativeExecutableInput; probes: FrontendInputSnapshot } | null {
+): { input: NativeExecutableInput; probes: FrontendInputSnapshot } | { reason: string | null } {
+  if (options.sanitize === true) return { reason: "a sanitized build runs the frontend" };
+  if (options.emitIr === true || stale.ir !== null)
+    return { reason: "the serialized IR carries source positions" };
   // An island program's LLVM text carries the bytes of its island modules
   // and the probe's snapshots, which no token comparison of sources covers.
-  if (
-    options.sanitize === true ||
-    options.emitIr === true ||
-    stale.ir !== null ||
-    (stale.input.warnings?.length ?? 0) > 0 ||
-    stale.input.features.nodeIsland === true
-  )
-    return null;
+  if (stale.input.features.nodeIsland === true)
+    return { reason: "the output carries the program's Node island modules" };
   const debugInfo = options.optimization === "dev" && !options.strip;
+  const previousSources = new Map(stale.input.sources);
+  let reason: string | null = null;
   const match = frontendInputsSemanticallyMatch(
     stale.probes,
-    new Map(stale.input.sources),
+    previousSources,
     debugInfo ? tokenPositionEquivalentSource : tokenEquivalentSource,
     exclusions,
+    (path, why) => {
+      reason =
+        why === "unread"
+          ? `${path}: the build did not read it from the file`
+          : why === "rewritten"
+            ? `${path}: the build compiled a rewritten form of it`
+            : `${path}: ${editDifference(stale, path, previousSources, debugInfo)}`;
+    },
   );
-  if (match === null || match.changed.length === 0) return null;
+  // With no reason, an input other than a program source changed.
+  if (match === null) return { reason };
+  if (match.changed.length === 0) return { reason: null };
+  // A warning's location is offsets into its file, and its text can name a
+  // file with them. Every path a warning holds is spelled in its JSON.
+  const warnings = JSON.stringify(stale.input.warnings ?? []);
+  const warned = match.changed.find(({ path }) =>
+    warnings.includes(JSON.stringify(path).slice(1, -1)),
+  );
+  if (warned !== undefined)
+    return { reason: `${warned.path}: the cached build reported a warning that names it` };
   const llvm = readFrontendLlvm(cache, stale.llvm);
-  if (llvm === null) return null;
+  if (llvm === null) return { reason: null };
   // Runtime fences and unsupported-construct messages name their source as
   // `[<code> at <file>:<line>]`, and an equivalent edit can move the line.
-  if (match.changed.some(({ path }) => llvm.includes(` at ${llvmBytes(wtf8Bytes(path), false)}:`)))
-    return null;
+  const named = match.changed.find(({ path }) =>
+    llvm.includes(` at ${llvmBytes(wtf8Bytes(path), false)}:`),
+  );
+  if (named !== undefined) return { reason: `${named.path}: the output names a source line in it` };
   return {
     input: {
       ...stale.input,
@@ -239,6 +265,32 @@ function equivalentFrontendInput(
     },
     probes: match.snapshot,
   };
+}
+
+/** Why the edit of `path` is not equivalent to the source `stale` was built
+ * from, for the build's timing line. */
+function editDifference(
+  stale: FrontendCacheEntry,
+  path: string,
+  previousSources: ReadonlyMap<string, string>,
+  debugInfo: boolean,
+): string {
+  const probe = stale.probes.probes.find((entry) => entry.op === "text" && entry.path === path);
+  if (probe !== undefined && probe.op === "text" && probe.reads === undefined)
+    return "the frontend read its whole text";
+  try {
+    return (
+      sourceEditDifference(
+        path,
+        previousSources.get(path) ?? "",
+        readFileSync(path, "utf8"),
+        debugInfo,
+        probe !== undefined && probe.op === "text" ? probe.reads : undefined,
+      ) ?? "it changed again while it was compared"
+    );
+  } catch {
+    return "it cannot be read";
+  }
 }
 
 /** The unit store of a build whose unit key is `key`: its program entry
@@ -462,6 +514,7 @@ export function prepareNativeExecutable(
   let unitKey: string | null = null;
   // The entry this build replaces: its probes give the digests of unchanged files.
   let previous: FrontendInputSnapshot | undefined;
+  let missReason: string | null = null;
   // A toolchain input that cannot be read leaves the build to its cache misses.
   let inputs: Record<string, unknown> | null = null;
   try {
@@ -497,18 +550,20 @@ export function prepareNativeExecutable(
         cached === null || outputKind === "ir"
           ? null
           : equivalentFrontendInput(cache, cached.stale, options, exclusions);
-      if (equivalent !== null) {
+      if (equivalent !== null && "input" in equivalent) {
         publishFrontendCache(cache, key, equivalent.probes, equivalent.input);
         onInputs?.(equivalent.probes);
         timing("frontend-cache-equivalent");
         return equivalent.input;
       }
+      missReason = equivalent?.reason ?? null;
     } catch {
       key = null;
       keyless = "the frontend cache could not be read";
     }
   }
-  timing("frontend-cache-miss");
+  // Why an edit that keeps the tokens still runs the frontend.
+  timing("frontend-cache-miss", missReason === null ? undefined : { reason: missReason });
   const tracker = new FrontendInputTracker(previous);
   // The island steps (executable/islands.ts) follow lowering inside the
   // tracker, so the project configuration they read is an input too.

@@ -661,7 +661,7 @@ function identityUse(
   // not reused after a source edit, so the read is not recorded as a source
   // text dependency (ts.getTextOfNode would record it).
   const textOf = (node: ts.Node): string => {
-    const text = ts.getSourceFileOfNode(node).text.slice(ts.tokenStartOfNode(node), node.end);
+    const text = ts.getTextOfNode(node);
     return text.length > 60 ? `${text.slice(0, 57)}...` : text;
   };
   /** Records a write at `target`, or remembers it and keeps scanning when

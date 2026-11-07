@@ -399,8 +399,8 @@ export function sharedModulePlans(lowerer: Lowerer): SharedModulePlan[] {
   const queue: string[] = [];
   const candidates = new Set<ts.SourceFile>();
   for (const sf of lowerer.moduleOrder) {
+    if (!ts.sourceTextIncludes(sf, "requireModule")) continue;
     const text = sf.text;
-    if (!text.includes("requireModule")) continue;
     const from = real(sf.fileName);
     for (const spec of requireModuleSpecifiers(text)) {
       try {

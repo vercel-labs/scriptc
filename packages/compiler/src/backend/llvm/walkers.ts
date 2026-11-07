@@ -263,7 +263,11 @@ export class LlWalkers {
         this.emitUnionWriter(B, t.unionId);
         break;
       default:
-        throw new LlvmUnsupportedError(`jsonStringify:${t.kind}`);
+        throw new LlvmUnsupportedError(
+          `jsonStringify:${t.kind}`,
+          undefined,
+          `JSON.stringify reaching a value of type ${typeKey(t)}`,
+        );
     }
     B.terminate("ret void");
     this.defs.push(
@@ -1098,7 +1102,11 @@ export class LlWalkers {
             break;
           }
           default:
-            throw new LlvmUnsupportedError(`unionJoin:${arm.kind}`);
+            throw new LlvmUnsupportedError(
+              `unionJoin:${arm.kind}`,
+              undefined,
+              `Array.prototype.join over a union with an arm of type ${typeKey(arm)}`,
+            );
         }
         B.br(written);
       });

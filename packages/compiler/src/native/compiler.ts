@@ -40,6 +40,7 @@ import {
   type RuntimePackStore,
 } from "../backend/runtime-pack-native.js";
 import { RuntimePackError } from "../backend/runtime-pack-core.js";
+import { codegenServerName } from "../backend/codegen-server.js";
 import {
   NativeCodegenError,
   nativePartitionPaths,
@@ -81,6 +82,7 @@ import {
   prepareNativeExecutable,
   prepareNativeLibrary,
 } from "./prepare.js";
+import { usesLoweredProgram } from "../executable/lowered.js";
 import { readUnchangedBuild, recordUnchangedBuild, unchangedBuildKey } from "./unchanged.js";
 import { buildSanitizedRuntime, sanitizerDriver, sanitizerFlags } from "./sanitizer.js";
 import { inputsWithoutLld, lldLinkerArgs } from "../backend/lld.js";
@@ -162,6 +164,9 @@ function nativeProfile(options: CompileRequestOptions): NativeProfileOptions | u
 /** Shared frontend semantics with native processes for code generation and linking. */
 export class NativeCompiler {
   private readonly frontend: FrontendFactory;
+  /** The shared code generation server this build's helper commands run on,
+   * or null when the build runs the helper as its own process. */
+  private readonly codegenServer: string | null;
 
   constructor(
     readonly toolchain: NativeToolchain,
@@ -170,6 +175,11 @@ export class NativeCompiler {
      * build on this machine shares, even one whose build cache starts empty. */
     private readonly state: NativeCache | null = null,
   ) {
+    this.codegenServer = codegenServerName(
+      toolchain.helperExecutable,
+      toolchain.compilerVersion,
+      toolchain.target.llvmTriple,
+    );
     const evaluator = toolchain.comptimeExecutable;
     this.frontend = (entry, npmStatic, externalTypes, libraryNpmStatic, options) =>
       runNativeFrontend(
@@ -293,6 +303,7 @@ export class NativeCompiler {
       compilerVersion: toolchain.compilerVersion,
       target: toolchain.target,
       helper: toolchain.helper,
+      server: this.codegenServer,
       ...this.helperVerification(),
     };
     let key: string | null = null;
@@ -517,9 +528,10 @@ export class NativeCompiler {
       }
       const exclusions = nativeFrontendExclusions(entry, options);
       // An unchanged build keeps what the last build of the same inputs left
-      // in place (native/unchanged.ts), before the frontend reads a source.
+      // in place (native/unchanged.ts), before the frontend reads a source. A
+      // build that writes or reads a lowered program always runs.
       const unchangedKey =
-        outputKind === "exe"
+        outputKind === "exe" && !usesLoweredProgram(options)
           ? unchangedBuildKey({
               entry,
               options,

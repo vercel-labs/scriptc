@@ -1023,8 +1023,11 @@ export function buildArraySortFn(
       [{ kind: "return", value: receiver, loc }],
     );
   const body: IrStmt[] = [
-    ...(native && !copyFirst ? [dense(a)] : []),
     b.bind(n, b.length(a)),
+    // In-place sort does not write back a zero/one-element receiver. This
+    // also avoids touching a published singleton's immutable storage.
+    ...(!copyFirst ? [b.branch(b.lt(n, b.num(2)), [{ kind: "return", value: a, loc }])] : []),
+    ...(native && !copyFirst ? [dense(a)] : []),
     b.bind(src, { kind: "arrIntrinsic", method: "slice", receiver: a, args: [], type: arrT, loc }),
     ...(native && copyFirst ? [dense(src)] : []),
     b.bind(valueCount, b.num(0)),

@@ -1,5 +1,16 @@
 import { expect, test } from "vitest";
-import { arrayOf, BOOL, F64, STRING, VOID, type IrExpr, type IrModule, type IrStmt } from "./ir.js";
+import {
+  arrayOf,
+  BOOL,
+  F64,
+  mapOf,
+  STRING,
+  VOID,
+  type IrExpr,
+  type IrModule,
+  type IrStmt,
+  type IrType,
+} from "./ir.js";
 import { rollLiteralTables, TABLE_MIN_ROWS } from "./literal-tables.js";
 import { validateModule } from "./validate.js";
 
@@ -68,6 +79,15 @@ function evaluate(mod: IrModule): unknown {
         const values = e.args.map(expr);
         return (expr(e.receiver) as unknown[]).push(...values);
       }
+      case "mapNew":
+        return new Map((e.seed ?? []).map((pair) => [expr(pair.key), expr(pair.value)]));
+      case "mapIntrinsic": {
+        if (e.method !== "set") throw new Error(`method ${e.method}`);
+        (expr(e.receiver) as Map<unknown, unknown>).set(expr(e.args[0]!), expr(e.args[1]!));
+        return undefined;
+      }
+      case "recordLit":
+        return new Map(e.fields.map((field) => [field.name, expr(field.value)]));
       case "seqExpr":
         e.stmts.forEach(stmt);
         return expr(e.result);
@@ -88,6 +108,10 @@ function evaluate(mod: IrModule): unknown {
         return;
       case "while":
         while (expr(s.cond) === true) s.body.forEach(stmt);
+        return;
+      case "recordKeySet":
+        if (s.overflowOnly !== true) throw new Error("a keyed write that may name a field");
+        (expr(s.obj) as Map<unknown, unknown>).set(expr(s.key), expr(s.value));
         return;
       default:
         throw new Error(`statement ${s.kind}`);
@@ -193,4 +217,47 @@ test("a literal with a spread is left alone", () => {
   (table as IrExpr & { kind: "arrayLit" }).elems[4] = list([str("x")]);
   const mod = moduleOf(table);
   expect(rollLiteralTables(mod)).toBe(mod);
+});
+
+test("the seeds of a Map are set by one loop, in source order", () => {
+  const seed = Array.from({ length: 150 }, (_, i) => ({
+    key: str(i === 90 ? "key-3" : `key-${i}`),
+    value: i % 2 === 0 ? num(i) : neg(i),
+  }));
+  const mod = moduleOf({ kind: "mapNew", seed, type: mapOf(STRING, F64), loc });
+  expect(validateModule(mod)).toEqual([]);
+  const rolled = rollLiteralTables(mod);
+  expect(validateModule(rolled)).toEqual([]);
+  expect(kinds(rolled)).toEqual(["varDecl", "varDecl", "while"]);
+  const built = evaluate(rolled) as Map<string, number>;
+  expect([...built]).toEqual([...(evaluate(mod) as Map<string, number>)]);
+  // The repeated key keeps its first place and takes its last value.
+  expect([...built.keys()][3]).toBe("key-3");
+  expect(built.get("key-3")).toBe(90);
+});
+
+test("index-signature entries are written by one loop after the declared fields", () => {
+  const shape: IrType = { kind: "record", shapeId: "codes" };
+  const entries = (from: number, count: number) =>
+    Array.from({ length: count }, (_, i) => ({
+      name: `code-${from + i}`,
+      value: num(from + i),
+      overflow: true as const,
+    }));
+  const table = (fields: { name: string; value: IrExpr; overflow?: true }[]): IrModule => ({
+    ...moduleOf({ kind: "recordLit", fields, type: shape, loc }),
+    records: [{ id: "codes", fields: [{ name: "size", type: F64 }], indexValue: F64 }],
+  });
+  const mod = table([{ name: "size", value: num(1) }, ...entries(0, 100)]);
+  expect(validateModule(mod)).toEqual([]);
+  const rolled = rollLiteralTables(mod);
+  expect(validateModule(rolled)).toEqual([]);
+  expect(kinds(rolled)).toEqual(["varDecl", "varDecl", "while"]);
+  expect([...(evaluate(rolled) as Map<string, number>)]).toEqual([
+    ...(evaluate(mod) as Map<string, number>),
+  ]);
+  // A declared field after the entries cannot be written by a statement
+  // that only inserts: the literal stays whole.
+  const late = table([...entries(0, 100), { name: "size", value: num(1) }]);
+  expect(rollLiteralTables(late)).toBe(late);
 });

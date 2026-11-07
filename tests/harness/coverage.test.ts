@@ -120,6 +120,27 @@ test("ordinary code reports no divergence", () => {
   expect(coverage.divergences ?? []).toEqual([]);
 });
 
+test("constant CommonJS branches preserve their selected whole-export value", () => {
+  const entry = join(repoRoot, "tests/corpus/cjs-constant-conditional-export/main.cjs");
+  const { coverage } = analyze(entry);
+  expect(coverage.runtimeFences ?? []).toEqual([]);
+  expect(coverage.diagnostics).toEqual([]);
+});
+
+test("conditional CommonJS exports still refuse replacements with a dynamic condition", () => {
+  const { coverage } = analyze(fixture("cjs-runtime-conditional.cjs"));
+  expect(coverage.runtimeFences?.map((d) => d.message)).toContain(
+    "replacing module.exports outside a top-level statement (a conditional or environment-dependent export object) is not supported yet",
+  );
+});
+
+test("an earlier constant-branch export is not kept after a second whole-export replacement", () => {
+  const { coverage } = analyze(fixture("cjs-conditional-replacements.cjs"));
+  expect(coverage.runtimeFences?.map((d) => d.message)).toContain(
+    "multiple 'module.exports =' assignments (Node keeps only the last one — this table is discarded) are not supported yet",
+  );
+});
+
 test("likely-hot functions with untyped values report as a performance warning", async () => {
   const { coverage } = analyze(fixture("dynamic-tier/hot.js"));
   expect(coverage.diagnostics).toEqual([]);

@@ -142,11 +142,27 @@ export function collectNamespaceStmt(
   // cannot put on the object is refused by name rather than silently
   // reading a module global Node does not have.
   const mergedFn = funduleFunctionOf(lowerer, decl);
+  // `namespace f.inner { … }` merged with `function f`: Node's transform
+  // nests a second object, so the function's one own property is `inner`
+  // and the block's exports are that object's. This lowering has no nested
+  // object to put there; storing the exports on `f` itself would answer
+  // `Object.keys(f)` with the inner names. The same refusal as the
+  // `export namespace inner` spelling.
+  if (mergedFn !== null && decl.body !== undefined && ts.isModuleDeclaration(decl.body))
+    refuseFunduleMember(lowerer, mergedFn, decl.body, "nested namespace");
   for (const s of body.statements.nodes) {
     if (
       mergedFn !== null &&
       (ts.getCombinedModifierFlags(s as ts.Declaration) & ts.ModifierFlags.Export) !== 0
     ) {
+      // An exported interface, type alias or type-only namespace is no
+      // property of the function object: Node's transform emits nothing
+      // for it, exactly as in a namespace that merges with no function.
+      if (ts.isInterfaceDeclaration(s) || ts.isTypeAliasDeclaration(s)) continue;
+      if (ts.isModuleDeclaration(s) && nsZeroRuntime(s)) {
+        collectNamespaceStmt(lowerer, s, fp);
+        continue;
+      }
       collectFunduleMember(lowerer, mergedFn, s, fp);
       continue;
     }
@@ -216,9 +232,20 @@ function collectFunduleMember(
         : ts.isImportEqualsDeclaration(stmt)
           ? "import= alias"
           : "declaration";
+  refuseFunduleMember(lowerer, fn, stmt, kind);
+}
+
+/** The refusal for an exported member form the function object's table
+ * cannot hold. */
+function refuseFunduleMember(
+  lowerer: Lowerer,
+  fn: ts.Identifier,
+  node: ts.Node,
+  kind: string,
+): never {
   lowerer.unsupported(
     "SC1090",
-    stmt,
+    node,
     `an exported ${kind} in the function+namespace merge '${fn.text}'`,
     "a merged namespace's exported members are own properties of the function object; this lowering writes exported const/let/var members with an initializer and exported functions there",
   );

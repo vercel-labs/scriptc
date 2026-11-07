@@ -163,18 +163,35 @@ function isDeclarationName(id: ts.Identifier): boolean {
   );
 }
 
-/** A BARE read of a member inside the merged block (`digits`, which Node's
- * transform qualifies to `fmt.digits`), or null when the identifier is not
- * a member of a merge. The read walks the function's table and checks the
- * value back into the member's declared type. */
+/** Whether `ident` names an exported FUNCTION of the block by its bare
+ * name. Node's transform keeps the declaration as the block's own hoisted
+ * binding beside the property (`function helper() {}  fmt.helper = helper`)
+ * and does not qualify a bare reference to it, so the reference is the
+ * declared function: before the store has run, and after the property was
+ * replaced. Only the qualified spelling `fmt.helper` reads the property. */
+function isBareFunctionReference(ident: ts.Identifier, sym: ts.Symbol | null | undefined): boolean {
+  if (sym === undefined || sym === null) return false;
+  if (!sym.declarations.some((d) => ts.isFunctionDeclaration(d))) return false;
+  const p = ident.parent;
+  return !(p !== undefined && ts.isPropertyAccessExpression(p) && p.name === ident);
+}
+
+/** A read of a merged block's member by the member's name: BARE inside the
+ * block (`digits`, which Node's transform qualifies to `fmt.digits`) or
+ * the name of the qualified spelling; null when the identifier is not a
+ * member of a merge, or is a bare reference to an exported function. The
+ * read walks the function's table and checks the value back into the
+ * member's declared type. */
 export function lowerFunduleMemberRead(
   lowerer: Lowerer,
   ident: ts.Identifier,
   loc: SrcLoc,
 ): IrExpr | null {
   if (isDeclarationName(ident)) return null;
-  const member = funduleMemberOf(lowerer, lowerer.resolveValueSymbol(ident));
+  const sym = lowerer.resolveValueSymbol(ident);
+  const member = funduleMemberOf(lowerer, sym);
   if (member === null) return null;
+  if (isBareFunctionReference(ident, sym)) return null;
   const boxed = callableBox(lowerer, lowerer.lowerExpr(member.fn));
   if (boxed === null) return null;
   const fieldType = lowerer.mapTypeOf(lowerer.typeOf(ident));

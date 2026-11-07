@@ -9,6 +9,7 @@ import { emitTestLibCall } from "./lib-test.js";
 import { FN_ATTRS, arrNewCall, releaseSym, traceArg, vAdapters } from "./shapes.js";
 /* Focused LLVM library-call emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
+import { nodeThrowExpr } from "../../ir/build.js";
 
 import { MAY_THROW_LIB_FNS } from "../../ir/builtin-effects.js";
 import { BYTES_ELEMENT_SIZE, F64, type IrExpr, type IrType } from "../../ir/ir.js";
@@ -338,6 +339,20 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     host.dyn.keepsRecordSources = true;
     host.declare(`declare void @scr_record_source_share(ptr, ptr)`);
     B.line(`call void @scr_record_source_share(ptr ${built.name}, ptr ${value.name})`);
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "closure.shareIdentity") {
+    const adapter = host.emitReadReceiver(e.args[0]!);
+    const root = host.emitReadReceiver(e.args[1]!);
+    const length = e.args[2]!;
+    if (length.kind !== "numLit")
+      throw new InternalCompilerError(
+        "llvm emitter bug: closure.shareIdentity length is not a literal",
+      );
+    host.declare(`declare void @scr_closure_adopt_identity(ptr, ptr, i32)`);
+    B.line(
+      `call void @scr_closure_adopt_identity(ptr ${adapter.name}, ptr ${root.name}, i32 ${length.value})`,
+    );
     return { name: "", type: e.type };
   }
   if (e.fn === "record.link") {
@@ -1452,8 +1467,11 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "array":
       if (e.fn === "array.foreignThrow") return emitArrayForeignThrow(host, e);
       return host.emitGenericLibCall(e);
+    case "sea":
+      return emitSeaLibCall(host, e);
     case "collection":
     case "record":
+    case "closure":
     case "disposable":
     case "punycode":
     case "constants":
@@ -1494,6 +1512,24 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
 /** `array.foreignThrow`: the checked conversion's TypeError for a foreign
  * element read into a typed result. Always throws; the result is a dummy
  * of the replaced read's type (the error.argTypeThrow pattern). */
+/** node:sea outside a single-executable application, which is every
+ * compiled program: `isSea()` is the constant false, and an asset reader
+ * evaluates its arguments and throws Node's coded error (the same throw
+ * error.nodeThrow emits). */
+function emitSeaLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
+  if (e.fn === "sea.isSea") return { name: "false", type: e.type };
+  for (const arg of e.args) host.emitExpr(arg);
+  return host.emitExpr(
+    nodeThrowExpr(
+      0,
+      "ERR_NOT_IN_SINGLE_EXECUTABLE_APPLICATION",
+      "Operation cannot be invoked when not in a single-executable application",
+      e.type,
+      e.loc,
+    ),
+  );
+}
+
 function emitArrayForeignThrow(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
   const arr = host.emitExpr(e.args[0]!);

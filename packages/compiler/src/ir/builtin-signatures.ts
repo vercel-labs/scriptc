@@ -920,6 +920,16 @@ function buildLibFnSignatures() {
     // name, and node:path's value adapters (scr_builtin_values.c).
     "dyn.validateString": { argTypes: [DYN, STRING], result: STRING },
     "dyn.validateStrings": { argTypes: [DYN, STRING], result: arrayOf(STRING) },
+    /** getValidatedPath over an untyped path of a synchronous fs function
+     * (JavaScript sources): [value, Node's parameter name, whether Node
+     * first asks for a file descriptor]. A string, a URL or a Uint8Array
+     * answers its path; anything else throws Node's ERR_INVALID_ARG_TYPE.
+     * In a descriptor position the value first converts to a number, as
+     * Node's test does, and a number throws the named refusal. May-throw.
+     * Named in the dyn family, not fs: it converts an argument and reads
+     * no file system state, so it is not an ambient operation (the fs call
+     * that takes the path is). */
+    "dyn.validateFsPath": { argTypes: [DYN, STRING, BOOL], result: STRING },
     "path.resolveValue": { argTypes: [DYN, BOOL], result: STRING },
     "path.parseValue": { argTypes: [DYN, BOOL], result: DYN },
     "path.formatValue": { argTypes: [DYN, BOOL], result: DYN },
@@ -1277,6 +1287,15 @@ function buildLibFnSignatures() {
     "punycode.ucs2Decode": { argTypes: [STRING], result: arrayOf(F64) },
     "punycode.ucs2Encode": { argTypes: [arrayOf(F64)], result: STRING },
     "punycode.warn": { argTypes: [BOOL, BOOL], result: VOID },
+    /** node:sea in a program that is not a Node single-executable
+     * application (every compiled program): isSea is false, and each asset
+     * reader throws ERR_NOT_IN_SINGLE_EXECUTABLE_APPLICATION once its
+     * arguments are evaluated. Emitted in place; no runtime entry. */
+    "sea.isSea": { argTypes: [], result: BOOL },
+    "sea.getAsset": { argTypes: [STRING, STRING], result: DYN },
+    "sea.getRawAsset": { argTypes: [STRING], result: DYN },
+    "sea.getAssetAsBlob": { argTypes: [STRING, DYN], result: DYN },
+    "sea.getAssetKeys": { argTypes: [], result: DYN },
     "url.fileURLToPathBuffer": { argTypes: [DYN, DYN], result: BYTES_U8 },
     "url.pathToFileURLChecked": { argTypes: [DYN, DYN], result: URL_T },
     "url.fileURLToPathStr": { argTypes: [STRING], result: STRING },
@@ -3153,6 +3172,19 @@ function buildLibFnSignatures() {
     /** Runtime options normalized into the native spawn core; unsupported
      * process features retain explicit refusals. (command, args, options). */
     "cp.spawnDynamic": { argTypes: [STRING, arrayOf(STRING), DYN], result: CHILD_T },
+    /** Node's argument checks for the child launch that follows
+     * (normalizeSpawnArguments, normalizeExecArgs): a NUL in the file or
+     * command, an argument, cwd or an environment key or value, or an
+     * empty file, throws ERR_INVALID_ARG_VALUE before a process starts.
+     * (form, cmd, args, envPairs, cwd): form 0 reads cmd as the file and
+     * args as its arguments; 1 and 2 are the /bin/sh -c launches, whose
+     * args[1] is exec's command (1) or execFile's file (2); 3 is fork,
+     * which has no file. An absent cwd is "", an inherited environment an
+     * empty array. */
+    "cp.checkArgs": {
+      argTypes: [F64, STRING, arrayOf(STRING), arrayOf(STRING), STRING],
+      result: VOID,
+    },
     // The callback's func type is program-dependent (zero params, or the
     // `number | null` union / the %Error class) — the libCall case checks
     // the shape; the slot here only pins arity and the child receiver.
@@ -5391,6 +5423,13 @@ function buildLibFnSignatures() {
     /** `record.linkIs(copy, pair)`: whether the record links to a source
      * through the pair (a numLit). Never throws. */
     "record.linkIs": { argTypes: [null, F64], result: BOOL },
+    /** `closure.shareIdentity(adapter, root, length)`: the function value
+     * `adapter` stands for the function `root` from here on, so `===`,
+     * SameValue, searches, collection keys and own properties see one
+     * function (scr_closure_adopt_identity); `length` (a numLit) is the
+     * `length` its untyped values report. Both are function-typed. Never
+     * throws. */
+    "closure.shareIdentity": { argTypes: [null, null, F64], result: VOID },
     /** `record.linkSource(copy, pair)`: the source a record links to
      * through the pair, which the caller has tested (record.linkIs); its
      * type is the pair's source type. Never throws. */

@@ -1,4 +1,5 @@
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesAssertionsSatisfies } from "../outer-expressions.js";
 import type { IrExpr, IrType, SrcLoc } from "../../ir/ir.js";
 import { BOOL, F64, isUnitType, STRING, typeEquals } from "../../ir/ir.js";
 import { nodeThrowExpr, numLit, strLit } from "../../ir/build.js";
@@ -10,18 +11,6 @@ export function lowerStaticallyUndefinedArgument(
   lowerer: Lowerer,
   node: ts.Expression,
 ): IrExpr | null {
-  const peelErasableWrappers = (value: ts.Expression): ts.Expression => {
-    let expr = value;
-    while (
-      ts.isParenthesizedExpression(expr) ||
-      ts.isAsExpression(expr) ||
-      ts.isTypeAssertion(expr) ||
-      ts.isSatisfiesExpression(expr)
-    ) {
-      expr = expr.expression;
-    }
-    return expr;
-  };
   let expr = node;
   while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
   if ((lowerer.typeOf(expr).flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) === 0)
@@ -34,11 +23,11 @@ export function lowerStaticallyUndefinedArgument(
   // void operand) before receiver coercion. Do not evaluate it again.
   const stabilized = lowerer.chainRecvByNode.get(node);
   if (stabilized) return stabilized;
-  expr = peelErasableWrappers(expr);
+  expr = withoutParenthesesAssertionsSatisfies(expr);
   let sawVoid = false;
   while (ts.isVoidExpression(expr)) {
     sawVoid = true;
-    expr = peelErasableWrappers(expr.expression);
+    expr = withoutParenthesesAssertionsSatisfies(expr.expression);
   }
   return sawVoid ? lowerer.lowerExpr(expr) : lowerer.lowerExpr(node);
 }

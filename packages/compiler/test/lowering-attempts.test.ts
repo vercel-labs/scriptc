@@ -41,6 +41,13 @@ function arrayChain(links: number): string {
   return `const result = ${chain}\n  .length;\nconsole.log(result);\n`;
 }
 
+/** An array literal nested `levels` deep. */
+function nestedLiteral(levels: number): string {
+  let literal = "[1]";
+  for (let i = 0; i < levels; i++) literal = `[${literal}]`;
+  return `const result = ${literal};\nconsole.log(result.length);\n`;
+}
+
 function codes(name: string, source: string): string[] {
   const dir = join(directory, name);
   mkdirSync(dir);
@@ -66,12 +73,13 @@ test("a 40-link chain on a refused import is refused inside a budget doubling ex
 }, 60_000);
 
 test("a statement past its attempt budget is refused by name", () => {
-  // Eleven array methods taking arrow functions cost three lowerings per
-  // link today, about a million in all. The statement has 131 nodes, so its
-  // budget is the per-node one (2,000 each) once the floor is out of the way.
+  // An array literal lowers each element twice (once to find the element
+  // type, once for it), so one nested 18 deep takes half a million
+  // lowerings. The statement has 22 nodes, so its budget is the per-node
+  // one (2,000 each) once the floor is out of the way.
   const previous = setLowerExprAttemptsFloor(20_000);
   try {
-    const found = codes("array-chain", arrayChain(11));
+    const found = codes("nested-literal", nestedLiteral(18));
     expect(found.length).toBeGreaterThan(0);
     expect(found[0]).toContain("SC1090");
     expect(found[0]).toMatch(/statements that take more than \d+ lowering attempts/);
@@ -81,5 +89,16 @@ test("a statement past its attempt budget is refused by name", () => {
 }, 60_000);
 
 test("the same statement inside its budget compiles", () => {
-  expect(codes("array-chain-short", arrayChain(4))).toEqual([]);
+  expect(codes("nested-literal-short", nestedLiteral(4))).toEqual([]);
+}, 60_000);
+
+test("an array chain that used to pass the budget compiles", () => {
+  // Three lowerings per link was 3^14 for this chain; its receivers are
+  // lowered once now (Lowerer.dispatchedReceiver).
+  const previous = setLowerExprAttemptsFloor(20_000);
+  try {
+    expect(codes("array-chain", arrayChain(14))).toEqual([]);
+  } finally {
+    setLowerExprAttemptsFloor(previous);
+  }
 }, 60_000);

@@ -99,7 +99,18 @@ export function llvmRefusalDiag(err: LlvmUnsupportedError, entryPath: string): S
       `the LLVM backend refused a construct without a source position: ${err.describe()}`,
       { file: entryPath, start: 0, end: 0 },
     );
-  return { code: "SC3001", message: err.describe(), loc: err.loc };
+  return {
+    code: "SC3001",
+    message: err.describe(),
+    loc: err.loc,
+    ...(err.hint === undefined ? {} : { hint: err.hint }),
+  };
+}
+
+/** The diagnostics of a refusal and of the further sites it carries
+ * (LlvmUnsupportedError.also), in order. */
+export function llvmRefusalDiags(err: LlvmUnsupportedError, entryPath: string): ScrDiagnostic[] {
+  return [err, ...err.also].map((refusal) => llvmRefusalDiag(refusal, entryPath));
 }
 
 /** A valid program surface that the selected execution target cannot host.

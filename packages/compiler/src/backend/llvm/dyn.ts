@@ -3572,9 +3572,12 @@ export class LlDyn {
   ): { source: string; owned: string | null } {
     if (!this.islandReads()) return { source: "%d", owned: null };
     const fn = view === "array" ? "scr_dyn_island_array" : "scr_dyn_island_object";
-    const skip = view === "object" ? declared : undefined;
+    // Only the array view takes the one-argument form. The object view always
+    // takes the declared field table, so a shape that declares no field passes
+    // an empty one (`null`) rather than a second, conflicting declaration.
+    const table = view === "object" ? (declared ?? null) : undefined;
     this.host.declare(
-      skip === undefined
+      table === undefined
         ? `declare ptr @${fn}(ptr)`
         : `declare ptr @${fn}(ptr, ptr, ptr, ${this.S})`,
     );
@@ -3589,9 +3592,11 @@ export class LlDyn {
     const made = B.tmp();
     const viewVal = B.tmp();
     B.line(
-      skip === undefined
+      table === undefined
         ? `${viewVal} = call ptr @${fn}(ptr %d)`
-        : `${viewVal} = call ptr @${fn}(ptr %d, ptr ${skip.names}, ptr ${skip.lens}, ${this.S} ${skip.count})`,
+        : table === null
+          ? `${viewVal} = call ptr @${fn}(ptr %d, ptr null, ptr null, ${this.S} 0)`
+          : `${viewVal} = call ptr @${fn}(ptr %d, ptr ${table.names}, ptr ${table.lens}, ${this.S} ${table.count})`,
     );
     B.line(`${made} = icmp ne ptr ${viewVal}, null`);
     B.condBr(made, lMade, lNull);

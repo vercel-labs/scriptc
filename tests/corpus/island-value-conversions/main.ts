@@ -60,6 +60,13 @@ console.log("inherited", inherited.label, inherited.count);
 const hidden = makeHidden() as { [k: string]: number; hidden: number };
 console.log("hidden", hidden.hidden, hidden["visible"]);
 
+// A target that declares no field of its own converts through the same
+// object view, with an empty declared-field table: every own key converts.
+function listNumbers(r: { [k: string]: number }): string {
+  return `${Object.keys(r).join(",")}:${r["visible"]}`;
+}
+console.log("fieldless", listNumbers(makeHidden()));
+
 // An index-signature record's declared field is a getter: the conversion
 // that builds the record at the call reads it once, so the callee sees the
 // getter's first answer.

@@ -307,35 +307,35 @@ function routeLinkedStringify(lowerer: Lowerer, stringified: readonly StringifyS
       return sources;
     });
     if (safe) continue;
+    // The runtime traversal walks whichever source a copy is linked to, so
+    // the call takes it only when every source of every reached target is
+    // serializable on some path. The first that is not is the one to name.
     let pair: { to: string; from: string } | null = null;
     for (const to of targets) {
-      const from = sourcesOf
-        .get(to)!
-        .find(
-          (id) =>
-            !isJsonStringifySafeType(
-              { kind: "record", shapeId: id },
-              getRecord,
-              getUnion,
-              linkSources,
-            ),
+      const target: IrType = { kind: "record", shapeId: to };
+      const from = sourcesOf.get(to)!.find((id) => {
+        const only = (shapeId: string) => (shapeId === to ? [id] : sourcesOf.get(shapeId));
+        if (isJsonStringifySafeType(target, getRecord, getUnion, only)) return false;
+        return (
+          !isJsonStringifyDynamicType(target, getRecord, getUnion, only) ||
+          classFieldWithoutJsonView(lowerer, { kind: "record", shapeId: id }, new Set()) !== null
         );
+      });
       if (from !== undefined) {
         pair = { to, from };
         break;
       }
     }
-    // The type itself was serializable when its call was lowered.
-    if (pair === null) continue;
-    const sourceT: IrType = { kind: "record", shapeId: pair.from };
-    if (
-      isJsonStringifyDynamicType(t, getRecord, getUnion, linkSources) &&
-      classFieldWithoutJsonView(lowerer, sourceT, new Set()) === null
-    ) {
-      rerouted.add(site);
-      owners.add(fn);
+    if (pair === null) {
+      // The type itself was serializable when its call was lowered, so a
+      // source needs the runtime traversal and all of them can take it.
+      if (isJsonStringifyDynamicType(t, getRecord, getUnion, linkSources)) {
+        rerouted.add(site);
+        owners.add(fn);
+      }
       continue;
     }
+    const sourceT: IrType = { kind: "record", shapeId: pair.from };
     const key = `${site.loc.file}:${site.loc.start}:${typeKey(t)}`;
     if (refused.has(key)) continue;
     refused.add(key);

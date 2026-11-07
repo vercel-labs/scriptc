@@ -197,26 +197,16 @@ function dedicatedIndex(compat) {
   return out;
 }
 
-/** The chapters a feature entry speaks for. One API documented in several
- * chapters (a global and the module that owns it) is one entry with
- * `chapters`, so its rows cannot be classified apart. */
-function featureChapters(entry) {
-  return entry.chapters ?? [entry.chapter];
-}
-
 function featureEntries(compat) {
   for (const entry of compat.features ?? []) {
-    const label = `${featureChapters(entry).join("/")} compatibility features`;
-    if ((entry.chapter === undefined) === (entry.chapters === undefined))
-      throw new Error(`${label}: name the chapter with exactly one of 'chapter' and 'chapters'`);
-    validateStatus(entry.status, label);
+    validateStatus(entry.status, `${entry.chapter} compatibility features`);
     if (requiresEvidence(entry.status)) {
-      validateEvidence(entry.evidence, label);
+      validateEvidence(entry.evidence, `${entry.chapter} compatibility features`);
     }
     // A not-implemented entry that names a test claims a verified absence:
     // the test must exist, like the evidence of a positive claim.
     if (entry.status === "not-implemented" && (entry.evidence?.length ?? 0) > 0) {
-      validateEvidence(entry.evidence, label);
+      validateEvidence(entry.evidence, `${entry.chapter} compatibility features`);
     }
   }
   return compat.features ?? [];
@@ -225,7 +215,7 @@ function featureEntries(compat) {
 function featureOf(row, entries, parentSignature) {
   return entries.find(
     (entry) =>
-      featureChapters(entry).includes(row.chapter) &&
+      entry.chapter === row.chapter &&
       (entry.parent === undefined || entry.parent === parentSignature) &&
       ((entry.symbols ?? []).includes(row.apiSymbol) ||
         (entry.signatures ?? []).includes(row.signature)),
@@ -552,7 +542,7 @@ function assertGlobalTwinsAgree(snapshot) {
   }
   if (disagreements.length > 0) {
     throw new Error(
-      `a global and the chapter that owns it disagree; map both rows in static-support.json (one 'features' entry with 'chapters'):\n  ${disagreements.join("\n  ")}`,
+      `a global and the chapter that owns it disagree; map both rows in static-support.json, or classify the difference explicitly:\n  ${disagreements.join("\n  ")}`,
     );
   }
 }

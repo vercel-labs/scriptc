@@ -5259,12 +5259,18 @@ function assertedWrite(
   }
   const value = lowerer.lowerExpr(operand);
   if (value.type.kind === "record") {
-    const field = lowerer.shapes
-      .get(value.type.shapeId)
-      ?.fields.find((f) => f.name === access.name.text);
-    return field && typeEquals(field.type, fieldType)
-      ? { receiver: value, refuse: false }
-      : { receiver: null, refuse: true };
+    const shape = lowerer.shapes.get(value.type.shapeId);
+    const field = shape?.fields.find((f) => f.name === access.name.text);
+    if (field)
+      return typeEquals(field.type, fieldType)
+        ? { receiver: value, refuse: false }
+        : { receiver: null, refuse: true };
+    // An index-signature record holds the property as an entry of its
+    // signature (an asserted `Record<string, V>`): the write lands on the
+    // value itself through the keyed store.
+    if (shape?.indexValue !== undefined && !shape.tuple && typeEquals(shape.indexValue, fieldType))
+      return { receiver: value, refuse: false };
+    return { receiver: null, refuse: true };
   }
   // The value stayed non-record (a generic body, an aliased layout): keep
   // the assertion's conversion over the value already lowered.
@@ -5538,6 +5544,25 @@ export function fieldTarget(
             : lowerer.maybeNarrow(obj, access.expression));
       }
       if (obj.type.kind !== "record") return null;
+      const actualShape = lowerer.shapes.get(obj.type.shapeId);
+      const actualField = actualShape?.fields.find((f) => f.name === access.name.text);
+      // The value's stored layout is an index-signature record that does not
+      // declare the field (an asserted `Record<string, V>` whose declared
+      // type names the key): the property is an entry of the signature, so
+      // the read and write are the keyed ones the bracket spelling takes.
+      if (
+        actualField === undefined &&
+        actualShape?.indexValue !== undefined &&
+        !actualShape.tuple
+      ) {
+        return {
+          container: "recordOvf",
+          obj,
+          shapeId: obj.type.shapeId,
+          field: access.name.text,
+          fieldType: actualShape.indexValue,
+        };
+      }
       // A write through a type assertion that the value's own layout cannot
       // host would land on the assertion's converted copy (`%rec.width.<id>`)
       // and be dropped. Node erases the assertion and mutates the object the
@@ -5549,8 +5574,6 @@ export function fieldTarget(
           `writing '${access.name.text}' through a type assertion to a member the value's own layout does not hold (the write would land on a converted copy; declare the member on the value's type)`,
         );
       }
-      const actualShape = lowerer.shapes.get(obj.type.shapeId);
-      const actualField = actualShape?.fields.find((f) => f.name === access.name.text);
       return {
         container: "record",
         obj,

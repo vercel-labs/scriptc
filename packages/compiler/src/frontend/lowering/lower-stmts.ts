@@ -15291,6 +15291,20 @@ function isAssertionInitializer(node: ts.Expression): boolean {
   return ts.isAsExpression(e) || ts.isTypeAssertion(e);
 }
 
+/** Whether the record `settled` declares only fields its source's index
+ * signature supplies at the same type: every read of such a field answers
+ * the signature's value, so the value itself can stand for `settled`
+ * without a field copy. */
+function indexSignatureSuppliesFields(lowerer: Lowerer, init: IrType, settled: IrType): boolean {
+  if (init.kind !== "record" || settled.kind !== "record") return false;
+  const source = lowerer.shapes.get(init.shapeId);
+  const target = lowerer.shapes.get(settled.shapeId);
+  if (!source || !target || source.tuple || target.tuple) return false;
+  const value = source.indexValue;
+  if (value === undefined || target.indexValue !== undefined) return false;
+  return target.fields.every((field) => typeEquals(field.type, value));
+}
+
 /** `const view = route as Route & { order: number }`: the asserted type
  * refines the record arms the value is stored in (hosted-narrowing.ts), and
  * a projection (`{ text: string }` over `TextBlock`) only names members the
@@ -15307,6 +15321,13 @@ function assertionKeepsStorageLayout(
   if (settled.kind !== "union" && settled.kind !== "record") return false;
   if (init.kind !== "union" && init.kind !== "record") return false;
   if (hostsAll(lowerer, init, settled)) return true;
+  // An index-signature record asserted to a record of its own keys
+  // (`const colors: Colors = source as Colors` over a `Record<string, V>`):
+  // Node erases the assertion, and the object keeps every key it holds. A
+  // copy that keeps the declared fields alone would drop the others from
+  // JSON and Object.keys, so the binding keeps the stored value and reads
+  // the declared fields through the signature's keyed read.
+  if (indexSignatureSuppliesFields(lowerer, init, settled)) return true;
   // An assertion that only ADDS optional members (`item as Base & { icons?:
   // unknown }`) keeps the value too: Node erases it, and the added members
   // have no slot in the stored layout, so reads answer them through the

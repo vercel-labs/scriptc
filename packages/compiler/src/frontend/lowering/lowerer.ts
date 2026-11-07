@@ -14466,10 +14466,21 @@ export class Lowerer {
           const shape = type.kind === "record" ? this.shapes.get(type.shapeId) : undefined;
           return !!shape && (shape.fields.length > 0 || shape.indexValue !== undefined);
         };
+        // The empty literal itself, written with no element type
+        // (`Array.isArray(v) ? v : []` beside an untyped arm): no other
+        // name holds it, so it becomes the untyped slot's own empty array.
+        // A live view of it would be a view of an array of nothing, which
+        // no later push fits (empty-array-places.ts).
+        const freshEmptyLiteral =
+          expr.kind === "arrayLit" &&
+          expr.elems.length === 0 &&
+          expr.type.kind === "array" &&
+          this.unitOnlyElem(expr.type.elem);
         const liveRef =
-          liveReference(expr.type) ||
-          (expr.type.kind === "union" &&
-            (this.unions.get(expr.type.unionId)?.arms.some(liveReference) ?? false));
+          !freshEmptyLiteral &&
+          (liveReference(expr.type) ||
+            (expr.type.kind === "union" &&
+              (this.unions.get(expr.type.unionId)?.arms.some(liveReference) ?? false)));
         return {
           kind: "dynFrom",
           value: this.checkedBuiltinValue(expr),

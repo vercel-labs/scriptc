@@ -1715,7 +1715,7 @@ function exportedByReference(lowerer: Lowerer, type: ts.Type): boolean {
  * checked-dynamic (a WeakMap's) holds such a value as the island's handle. */
 function islandMade(lowerer: Lowerer, node: ts.Expression): boolean {
   if (islandValue(lowerer, node)) return true;
-  const name = stripTypeWrappers(node);
+  const name = withoutParenthesesTypeWrappers(node);
   if (!ts.isIdentifier(name)) return false;
   const declaration = lowerer.resolveValueSymbol(name)?.valueDeclaration;
   return (
@@ -1731,7 +1731,7 @@ function islandMade(lowerer: Lowerer, node: ts.Expression): boolean {
  * read, call or construction, or a name an island module exports. */
 function islandValue(lowerer: Lowerer, node: ts.Expression): boolean {
   if (islandRooted(lowerer, node)) return true;
-  const name = stripTypeWrappers(node);
+  const name = withoutParenthesesTypeWrappers(node);
   return ts.isIdentifier(name) && islandBindingOf(lowerer, name) !== null;
 }
 

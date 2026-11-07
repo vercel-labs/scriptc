@@ -143,7 +143,7 @@ import {
   lowerStaticSuperRead,
 } from "../lower-classes.js";
 import { isErrorPrototypeValue, lowerClassPrototypeData } from "../class-prototypes.js";
-import { lowerEnumAccess } from "../lower-enums.js";
+import { isEnumMemberRead, lowerEnumAccess } from "../lower-enums.js";
 import {
   hasOptionalChainGuard,
   isOptionalChainTail,
@@ -2423,8 +2423,16 @@ export function lowerIntrinsicProperty(
       );
     }
   }
-  if (lowerer.stdlibGlobalMember(expr, "Reflect") === "ownKeys")
-    return reflectMemberValue(lowerer, "ownKeys", locOf(expr));
+  // A Reflect member read as a value (a callback table's `Reflect.has`): the
+  // same closure a JavaScript namespace read answers, with Node's name and
+  // length. Members without a faithful value keep the standard-library fence
+  // below.
+  {
+    const reflectMember = lowerer.stdlibGlobalMember(expr, "Reflect");
+    const value =
+      reflectMember === null ? null : reflectMemberValue(lowerer, reflectMember, locOf(expr));
+    if (value !== null) return value;
+  }
   // A write, `delete` or defineProperty through `Date.prototype` keeps its
   // fence: the value below is a read surface, and a typed Date never observes
   // a dynamic write to it. This runs before the chainBlocked early return
@@ -2617,7 +2625,7 @@ export function lowerIntrinsicProperty(
   if (lowerer.stdlibGlobalMember(expr, "Function") === "prototype") {
     const loc = locOf(expr);
     const name = "%dyn.functionPrototype";
-    if (!lowerer.liftedFns.some((fn) => fn.name === name))
+    if (lowerer.liftedFnNamed(name) === undefined)
       lowerer.liftedFns.push({
         name,
         params: [],
@@ -5268,6 +5276,8 @@ export function fieldTarget(
   access: ts.PropertyAccessExpression,
 ): FieldTarget | null {
   if (lowerer.cjsLocalModuleBindingOf(access.expression)) return null;
+  // `E.A` of an enum whose object is built: the member's constant.
+  if (isEnumMemberRead(lowerer, access)) return null;
   // `module.exports` / `module.id`: CommonJS module surface, never a field.
   if (isCjsModuleGlobal(lowerer, access.expression)) return null;
   if (isCjsExportsIdentifier(lowerer, access.expression)) return null;
@@ -5876,6 +5886,15 @@ export function fieldGetExpr(
           type: inner,
           loc,
         };
+      }
+      // A field declared with a union type reads as that union: the
+      // unassigned arm traps like the checked extraction of a single arm.
+      if (inner.kind === "union" && undefTag >= 0) {
+        const retag = lowerer.unionRetagHelper(unionId, inner.unionId, loc, new Set([undefTag]));
+        if (retag) {
+          lowerer.coercions.deferredRetags.add(retag);
+          return { kind: "call", callee: retag, args: [read], type: inner, loc };
+        }
       }
       const helper = lowerer.deferredReadHelper(target.fieldType.unionId, inner, loc);
       if (helper) return { kind: "call", callee: helper, args: [read], type: inner, loc };
@@ -6530,7 +6549,7 @@ function globalThisWrittenNames(lowerer: Lowerer, globalType: ts.Type): Set<stri
   const names = new Set<string>();
   lowerer.globalThisWrittenNames = names;
   for (const sf of lowerer.program.getImplementationSourceFiles()) {
-    if (sf.isDeclarationFile || !sf.text.includes("globalThis")) continue;
+    if (sf.isDeclarationFile || !ts.sourceTextIncludes(sf, "globalThis")) continue;
     ts.walkPreorder(sf, (node) => {
       if (
         ts.isBinaryExpression(node) &&

@@ -33,9 +33,12 @@
  *
  * Process state is shared, not mirrored: island listeners for signals and
  * 'exit' join the runtime's registries (scr_events.c) at their position,
- * so the runtime keeps owning every signal disposition; the exit code
- * island code leaves in process.exitCode becomes the program's when the
- * loop ends; Node's process.exit runs the runtime's exit sequence.
+ * so the runtime keeps owning every signal disposition; the listeners of
+ * the events Node raises itself (uncaughtException, unhandledRejection,
+ * warning) are all on Node's `process`, native ones included, and
+ * process.exitCode is Node's property, which native code reads and writes
+ * (scr_node_island_events.c); Node's process.exit runs the runtime's exit
+ * sequence.
  *
  * Node's stack. V8 fixes an isolate's stack limit where it is created, and
  * calls into Node can come from any async fiber (512 KB stacks without a
@@ -1159,16 +1162,11 @@ static char *ni_caller_path(const ScrStr *relative) {
   return ni_tree_path(relative->data, relative->len);
 }
 
-/* The bootstrap: the tree root for the host's resolution guard, then the
- * host script. +1 malloc'd. */
-static char *ni_bootstrap(void) {
-  size_t host = strlen(scr_node_island_host_js);
-  size_t cap = 64 + strlen(ni_root) * 6 + host;
-  char *out = malloc(cap);
-  if (out == NULL) ni_oom();
-  size_t n = (size_t)snprintf(out, cap, "globalThis.__scriptcNodeIslandRoot = \"");
-  for (const char *p = ni_root; *p != '\0'; p++) {
-    unsigned char c = (unsigned char)*p;
+/* Appends `text` to the bootstrap as the body of a JavaScript string
+ * literal. The caller reserved six bytes per input byte. */
+static size_t ni_js_string(char *out, size_t cap, size_t n, const char *text, size_t len) {
+  for (size_t i = 0; i < len; i++) {
+    unsigned char c = (unsigned char)text[i];
     if (c == '"' || c == '\\')
       n += (size_t)snprintf(out + n, cap - n, "\\%c", c);
     else if (c < 0x20)
@@ -1176,7 +1174,38 @@ static char *ni_bootstrap(void) {
     else
       out[n++] = (char)c;
   }
-  n += (size_t)snprintf(out + n, cap - n, "\";\n");
+  return n;
+}
+
+/* The bootstrap: the tree root for the host's resolution guard and the
+ * program's process state Node cannot read for itself (the command line as
+ * process.argv has it, scr_process_argv's ["scriptc", argv[0], ...], and
+ * whether the exit sequence already began), then the host script. +1
+ * malloc'd. */
+static char *ni_bootstrap(void) {
+  size_t host = strlen(scr_node_island_host_js);
+  int argc = scr_lib_arg_count();
+  size_t argv_bytes = 0;
+  /* A malformed byte becomes U+FFFD (three bytes), and an escaped byte six. */
+  for (int i = 0; i < argc; i++) argv_bytes += strlen(scr_lib_arg(i)) * 18 + 4;
+  size_t cap = 192 + strlen(ni_root) * 6 + argv_bytes + host;
+  char *out = malloc(cap);
+  if (out == NULL) ni_oom();
+  size_t n = (size_t)snprintf(out, cap, "globalThis.__scriptcNodeIslandRoot = \"");
+  n = ni_js_string(out, cap, n, ni_root, strlen(ni_root));
+  n += (size_t)snprintf(out + n, cap - n,
+                        "\";\nglobalThis.__scriptcNodeIslandProcess = {exiting: %s, argv: [\"scriptc\",",
+                        scr_process_exiting() ? "true" : "false");
+  for (int i = 0; i < argc; i++) {
+    const char *raw = scr_lib_arg(i);
+    ScrStr *arg = scr_str_from_utf8_lossy((const uint8_t *)raw, strlen(raw));
+    out[n++] = '"';
+    n = ni_js_string(out, cap, n, arg->data, arg->len);
+    out[n++] = '"';
+    out[n++] = ',';
+    scr_str_release(arg);
+  }
+  n += (size_t)snprintf(out + n, cap - n, "]};\n");
   memcpy(out + n, scr_node_island_host_js, host + 1);
   return out;
 }
@@ -1817,6 +1846,15 @@ static void ni_host_io(void) {
   NI_MARK_END;
 }
 
+/* V8's reaction job for a promise native code reacted to: the native
+ * reactions run inside it (scr_ni_settle_value). */
+static void ni_host_settle_value(uint32_t token, int rejected, const ScrNodeValue *value) {
+  NI_MARK_BEGIN;
+  scr_ni_settle_value(token, rejected, value);
+  scr_ni_shared_refresh();
+  NI_MARK_END;
+}
+
 static void ni_host_microtasks_done(void) {
   NI_MARK_BEGIN;
   scr_loop_hosted_microtasks_done();
@@ -1840,7 +1878,7 @@ static const ScrNodeBridgeHost ni_host = {
     &ni_host_listen,
     &ni_stack_limit,
     &ni_stack_start,
-    &scr_ni_settle_value,
+    &ni_host_settle_value,
     &scr_ni_bytes_free,
     &scr_ni_host_export_call,
     &scr_ni_host_export_construct,
@@ -1889,11 +1927,22 @@ static void ni_stop_job(void *p) {
   ni_bridge->stop();
 }
 
+static void ni_h_checkpoint(int microtasks_first);
+
 /* Process end after a normal return: the 'exit' listeners of both sides
  * run while Node can still call into JavaScript (this handler runs before
  * the events unit's own, which then finds them done), then Node stops. */
 static void ni_stop_atexit(void) {
   scr_run_exit_listeners((double)scr_exit_code_hint_get());
+  /* The program ended by running dry: Node drains the microtasks the 'exit'
+   * listeners queued once, after the last listener (ticks queued while
+   * exiting were dropped when they were queued). process.exit() never gets
+   * here: it ends the process from inside the exit sequence. */
+  ni_h_checkpoint(1);
+#ifdef SCR_NODE_ISLAND_STDIO
+  /* The shared output streams' helper, after the listeners' writes. */
+  scr_ni_stdio_stop();
+#endif
   /* SCRIPTC_NODE_ISLANDS_TRACE=handles: the import table at exit (leak
    * tests: acyclic island objects the program dropped are released). */
   const char *trace = getenv("SCRIPTC_NODE_ISLANDS_TRACE");
@@ -1923,6 +1972,9 @@ static void ni_stop_atexit(void) {
             (double)stats.max_analysis_ns / 1e6, (double)stats.analysis_ns / 1e6);
   }
   ni_on_node_stack(ni_stop_job, NULL);
+  /* Timers and immediates the 'exit' listeners armed never run: release
+   * their callbacks, as the loop's teardown released the ones before. */
+  scr_timers_teardown();
   /* Node is gone: no representative can call in again. */
   scr_ni_exports_release_all();
   scr_ni_gc_cleanup();
@@ -2111,6 +2163,21 @@ static void ni_start(void) {
   ni_hosted.immediate_ref = &ni_h_immediate_ref;
   ni_hosted.checkpoint = &ni_h_checkpoint;
   scr_loop_host(&ni_hosted, since);
+#ifdef SCR_NODE_ISLAND_STDIO
+  /* The island's process.stdout.write and process.stderr.write become the
+   * program's write slots (scr_node_island_stdio.c) before any island
+   * module runs. */
+  scr_ni_stdio_started();
+#endif
+  /* Node's `process` is the registry of the process events from here on,
+   * and process.exitCode its property (scr_node_island_events.c): the
+   * program's native listeners move over first, in their order, and a code
+   * the program already set goes with them. */
+  scr_process_events_to_node();
+  if (scr_process_has_exit_code()) {
+    double ignored;
+    (void)scr_ni_exit_code(true, scr_process_exit_code_or_zero(), &ignored);
+  }
   /* NI-7: deferred island modules evaluate now, before the operation that
    * needed Node, in their import order. */
   if (scr_ni_started_hook != NULL) scr_ni_started_hook();

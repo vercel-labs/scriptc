@@ -8,6 +8,7 @@ import { chmod, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promise
 import { availableParallelism, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import {
+  executableHardeningLinkerArgs,
   executableOptimizationLinkerArgs,
   executableStripLinkerArgs,
   windowsSubsystemLinkerArgs,
@@ -405,9 +406,13 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.reflectProtoTarget === true, "scr_dyn_reflect_proto.c"),
   // `delete` of a key a record's type does not declare.
   unit((u) => u.opts.recordSourceDelete === true, "scr_record_source_delete.c"),
+  // Record views of types whose values may also be frozen.
+  unit((u) => u.opts.recordViewFrozen === true, "scr_record_view_frozen.c"),
   // The declaration-typed boundary's adoption.
   unit((u) => u.opts.declAdopt === true, "scr_decl_adopt.c"),
   unit((u) => u.opts.typeOrigins === true, "scr_type_origin.c"),
+  // A dev executable's report of failed checked conversions.
+  unit((u) => u.opts.conversionTrace === true, "scr_conversion_trace.c"),
   // for await over checked-dynamic values.
   unit((u) => u.opts.dynForAwait === true, "scr_dyn_for_await.c"),
   // The keyed collections' prototype objects, member values, their
@@ -483,6 +488,16 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     "scr_node_island_export.c",
     "scr_node_island_boot.c",
     "scr_node_island_gc.c",
+    "scr_node_island_events.c",
+  ),
+  // One process.stdout.write for the program and its islands: only a program
+  // that holds a process output stream as a value can replace the method.
+  unit((u) => u.opts.nodeIsland === true && u.opts.stdioObject === true, "scr_node_island_stdio.c"),
+  // A native AbortSignal or AbortController crossing into an island: the
+  // signal's twin there follows it through the signal unit's watcher list.
+  unit(
+    (u) => u.opts.nodeIsland === true && (u.nativeFetch || u.opts.abortSignal === true),
+    "scr_node_island_abort.c",
   ),
   // Readable.fromWeb reads a web ReadableStream through its reader.
   unit((u) => u.nativeFetch && u.opts.stream, "scr_stream_from_web.c"),
@@ -551,6 +566,9 @@ const RUNTIME_DEFINES: readonly {
   // spawnargs); a program that never reads `.error` keeps the default build.
   { define: "SCR_CHILD_ERR_FIELDS", when: (opts) => opts.childErrorFields },
   { define: "SCR_NODE_ISLANDS", when: (opts) => opts.nodeIsland },
+  // scr_node_island.c's bootstrap carries the stdio accessor and calls
+  // scr_node_island_stdio.c when Node has started.
+  { define: "SCR_NODE_ISLAND_STDIO", when: (opts) => opts.nodeIsland && opts.stdioObject },
 ];
 
 function runtimeDefineArgs(opts: CcOptions): string[] {
@@ -621,7 +639,8 @@ export async function compileCInternal(
   );
   const executableLinkFlags = [
     ...executableSectionFlags.link,
-    ...executableOptimizationLinkerArgs(targetPlatform(driver), optimization),
+    ...executableHardeningLinkerArgs(targetPlatform(driver), isMuslTarget(driver)),
+    ...executableOptimizationLinkerArgs(targetPlatform(driver), optimization, isMuslTarget(driver)),
     ...executableStripLinkerArgs(targetPlatform(driver), opts.strip ?? false),
     ...windowsSubsystemArgs,
   ];

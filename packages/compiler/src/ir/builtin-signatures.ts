@@ -258,6 +258,19 @@ function buildLibFnSignatures() {
      * promise's value). */
     "nodeIsland.copyArrays": { argTypes: [DYN], result: DYN },
     "nodeIsland.awaitCopy": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+    /** The operand of a dynamic await or PromiseResolve in a program with
+     * Node islands: an island thenable as the promise V8 adopts it into,
+     * any other value as itself. */
+    "nodeIsland.adoptThenable": { argTypes: [DYN], result: DYN },
+    /** `Promise.resolve(v)` over a dynamic value in a program with Node
+     * islands: PromiseResolve, so an island thenable is adopted. */
+    "nodeIsland.promiseResolve": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+    /** process.exitCode in a program with Node islands: Node's property
+     * once Node is loaded, the runtime's own value before
+     * (island-process-state.ts). */
+    "nodeIsland.setExitCode": { argTypes: [F64], result: VOID },
+    "nodeIsland.exitCode": { argTypes: [], result: F64 },
+    "nodeIsland.hasExitCode": { argTypes: [], result: BOOL },
     /** Keyed WRITE on a dyn value — `h.onDone = cb` / `h["k"] = v` on a
      * checked-dynamic object (args: receiver, key string, value — all
      * borrowed; the runtime copies the key and retains the value in). An
@@ -1420,6 +1433,7 @@ function buildLibFnSignatures() {
     "util.debounce": { argTypes: [DYN, DYN, DYN], result: DYN },
     "util.throttle": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
     "webstream.class": { argTypes: [F64], result: DYN },
+    "webstream.from": { argTypes: [DYN], result: DYN },
     "webstream.instanceOf": { argTypes: [DYN, F64], result: BOOL },
     "webstream.install": { argTypes: [], result: VOID },
     "mime.typeNew": { argTypes: [DYN, DYN], result: DYN },
@@ -3341,6 +3355,12 @@ function buildLibFnSignatures() {
     "stream.handleStream": {
       argTypes: [DYN],
       result: { kind: "object", className: "%Transform" },
+    },
+    /** stream.handleWritable for a value typed as a Writable handle class
+     * (a Sign or Verify): the value's native Writable (+1). */
+    "stream.handleWritable": {
+      argTypes: [DYN],
+      result: { kind: "object", className: "%Writable" },
     },
     /** Checked-dynamic stream slots (dyn-streams.ts): the native stream a
      * checked-dynamic value boxes (+1) — a runtime stream with the readable
@@ -5423,6 +5443,13 @@ function buildLibFnSignatures() {
     /** `record.linkIs(copy, pair)`: whether the record links to a source
      * through the pair (a numLit). Never throws. */
     "record.linkIs": { argTypes: [null, F64], result: BOOL },
+    /** `closure.shareIdentity(adapter, root, length)`: the function value
+     * `adapter` stands for the function `root` from here on, so `===`,
+     * SameValue, searches, collection keys and own properties see one
+     * function (scr_closure_adopt_identity); `length` (a numLit) is the
+     * `length` its untyped values report. Both are function-typed. Never
+     * throws. */
+    "closure.shareIdentity": { argTypes: [null, null, F64], result: VOID },
     /** `record.linkSource(copy, pair)`: the source a record links to
      * through the pair, which the caller has tested (record.linkIs); its
      * type is the pair's source type. Never throws. */

@@ -14,6 +14,8 @@
  *    maps still find it (tests/fixtures/node-island/gc-capsule).
  *  - Exports the island keeps for the whole run schedule no major GCs of
  *    their own once a GC found them live (tests/fixtures/node-island/gc-held.mjs).
+ *  - A native AbortSignal's twin in the island is collected with it, and
+ *    lives while either side holds the signal (tests/fixtures/node-island/gc-signals.mjs).
  * Needs a libnode pack in SCRIPTC_LIBNODE (libnode.ts). */
 import { execFile } from "node:child_process";
 import { mkdirSync } from "node:fs";
@@ -39,8 +41,12 @@ interface Run {
 
 let binary = "";
 
-async function run(args: string[], env: Record<string, string> = {}): Promise<Run> {
-  const { stdout, stderr } = await execFileAsync(binary, args, {
+async function run(
+  args: string[],
+  env: Record<string, string> = {},
+  program: string = binary,
+): Promise<Run> {
+  const { stdout, stderr } = await execFileAsync(program, args, {
     cwd: fixtures,
     env: { ...process.env, SCRIPTC_NODE_ISLANDS_TRACE: "gc", ...env },
     encoding: "utf8",
@@ -127,6 +133,37 @@ describe.skipIf(skip)("Node island cross-heap cycles", () => {
     expect(major).toBeLessThanOrEqual(3);
   }, 300_000);
 
+  test("AbortSignal twins are collected with their requests", async () => {
+    // One native controller per request, its signal handed to the island in
+    // a record and dropped by both sides. A twin lives while either side
+    // holds its signal, so the ten controllers the program keeps still reach
+    // the island's listeners at the end, and nothing else is left.
+    const dir = join(outDir, "gc-signals");
+    mkdirSync(dir, { recursive: true });
+    const result = await compile(join(fixtures, "gc-signals.mjs"), {
+      outPath: join(dir, "gc-signals"),
+      outDir: dir,
+      sanitize,
+    });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const small = await run(["10000"], {}, result.binaryPath);
+    const large = await run(["100000"], {}, result.binaryPath);
+    // Requests, aborts the island's listeners saw, and the signals the
+    // island holds that aborted: the two that follow a kept controller.
+    expect(small.stdout).toBe("10000 20 2/6 0\n");
+    expect(large.stdout).toBe("100000 110 2/6 0\n");
+    for (const r of [small, large]) expect(r.totals["analyzed"]).toBe(r.totals["major"]);
+    // Three exports per iteration: the options record and the signal the
+    // program made, and the native signal that stands for the island's.
+    // What is left at the end is what the iterations since the last major
+    // collection made, which V8 schedules by the exports' size and not by
+    // their count so far: bounded, where a leak would hold all 300,000.
+    expect(large.totals["freed exports"]).toBeGreaterThan(3 * 100_000 - 40_000);
+    expect(large.totals["held exports"]).toBeLessThan(40_000);
+    expect(large.totals["representatives"]).toBeLessThan(40_000);
+  }, 600_000);
+
   test("a native object the program keeps keeps its identity in island weak maps", async () => {
     // A typed object crosses in a capsule the export table alone holds;
     // the program holds the object itself.
@@ -145,4 +182,89 @@ describe.skipIf(skip)("Node island cross-heap cycles", () => {
     });
     expect(stdout).toBe("remembered\n");
   }, 300_000);
+
+  test("program errors that crossed into the island are freed when both sides drop them", async () => {
+    // Each iteration sends four program errors into the island (one V8
+    // Error each, held through the export table, and two callbacks) and
+    // keeps none. The runtime's error-view cache holds every error's view
+    // and the error until nothing else does, and the export table's
+    // collector must not take that for a holder: the resident memory of
+    // 300,000 iterations stays within a factor of 1.5 (plus 32 MiB) of
+    // 100,000.
+    const dir = join(outDir, "gc-native-errors");
+    mkdirSync(dir, { recursive: true });
+    const result = await compile(join(fixtures, "gc-native-errors.mjs"), {
+      outPath: join(dir, "gc-native-errors"),
+      outDir: dir,
+      sanitize,
+    });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const crossed = async (n: number): Promise<Run> => {
+      const { stdout, stderr } = await execFileAsync(result.binaryPath, [String(n)], {
+        cwd: fixtures,
+        env: { ...process.env, SCRIPTC_NODE_ISLANDS_TRACE: "gc" },
+        encoding: "utf8",
+        maxBuffer: 64 * 1024 * 1024,
+      });
+      expect(stderr).not.toMatch(/used after V8 collected|AddressSanitizer|LeakSanitizer/);
+      expect(stdout).toBe(`iterations ${n} checks ${4 * n}\n`);
+      const line = /\[node-islands\] gc totals: (.*)/.exec(stderr);
+      expect(line).not.toBeNull();
+      const totals: Record<string, number> = {};
+      for (const m of line![1]!.matchAll(/([a-z ]+?) (\d+(?:\.\d+)?)(?: ms)?(?:,|$)/g))
+        totals[m[1]!.trim()] = Number(m[2]);
+      return { stdout, stderr, totals, rss: Number(/peak rss (\d+) KiB/.exec(stderr)?.[1]) };
+    };
+    const [few, many] = sanitize ? [2_000, 20_000] : [100_000, 300_000];
+    const small = await crossed(few);
+    const large = await crossed(many);
+    // Six exports per iteration, nearly all collected: what is alive at
+    // exit is what crossed since the last major GC.
+    expect(large.totals["analyzed"]).toBe(large.totals["major"]);
+    expect(large.totals["freed exports"]).toBeGreaterThan((sanitize ? 0.5 : 0.9) * 6 * many);
+    expect(large.totals["held exports"]).toBeLessThan(0.1 * 6 * many + 20_000);
+    // ASan's quarantine makes the sanitized lane's resident set meaningless.
+    if (!sanitize) expect(large.rss).toBeLessThan(small.rss * 1.5 + 32 * 1024);
+  }, 600_000);
+
+  test("island errors the program caught are released", async () => {
+    // A caught island error has a native view pinned to its island handle,
+    // and the runtime's error-view cache holds the view once the program
+    // read it as a dynamic value. Neither may keep the other's entry: the
+    // resident memory of 300,000 caught errors stays within a factor of
+    // 1.5 (plus 32 MiB) of 100,000.
+    const dir = join(outDir, "gc-island-errors");
+    mkdirSync(dir, { recursive: true });
+    const result = await compile(join(fixtures, "gc-island-errors.mjs"), {
+      outPath: join(dir, "gc-island-errors"),
+      outDir: dir,
+      sanitize,
+    });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const caught = async (n: number): Promise<{ rss: number; imports: number }> => {
+      const { stdout, stderr } = await execFileAsync(result.binaryPath, [String(n)], {
+        cwd: fixtures,
+        env: { ...process.env, SCRIPTC_NODE_ISLANDS_TRACE: "gc" },
+        encoding: "utf8",
+        maxBuffer: 64 * 1024 * 1024,
+      });
+      expect(stderr).not.toMatch(/used after V8 collected|AddressSanitizer|LeakSanitizer/);
+      expect(stdout).toBe(`iterations ${n} checks ${n}\n`);
+      return {
+        rss: Number(/peak rss (\d+) KiB/.exec(stderr)?.[1]),
+        imports: Number(/import entries (\d+)/.exec(stderr)?.[1]),
+      };
+    };
+    const [few, many] = sanitize ? [5_000, 15_000] : [100_000, 300_000];
+    const small = await caught(few);
+    const large = await caught(many);
+    // The island objects still imported at exit do not grow with the errors
+    // caught (each unreleased error keeps its V8 error imported).
+    expect(small.imports).toBeLessThan(2_000);
+    expect(large.imports).toBeLessThan(2_000);
+    // ASan's quarantine makes the sanitized lane's resident set meaningless.
+    if (!sanitize) expect(large.rss).toBeLessThan(small.rss * 1.5 + 32 * 1024);
+  }, 600_000);
 });

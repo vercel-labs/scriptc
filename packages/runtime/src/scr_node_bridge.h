@@ -3,7 +3,8 @@
  * includes a Node or V8 header: it loads the bridge library of a libnode
  * pack with dlopen on first use and talks to it only through this table.
  * The bridge links libnode and pins the Node ABI; the runtime pins only
- * SCR_NODE_BRIDGE_ABI, which changes with any change to these structs.
+ * SCR_NODE_BRIDGE_ABI, which changes with any change to these structs and
+ * with any change to what an entry does that the runtime relies on.
  *
  * Conventions: strings are UTF-8 and borrowed unless noted. Call outcomes
  * are "R<json>" (returned; "R" alone is undefined) or "T<json>" (threw;
@@ -17,11 +18,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SCR_NODE_BRIDGE_ABI 10u
+#define SCR_NODE_BRIDGE_ABI 19u
 /* The symbol a bridge library exports: `const ScrNodeBridge *(void)`. */
 #define SCR_NODE_BRIDGE_ENTRY "scr_node_bridge_v1"
 
-/* Operations on Map and Set exports (host->export_op, NI-5b). */
+/* Operations on exports (host->export_op): on Map and Set exports (NI-5b),
+ * and on a native error's export. */
 enum {
   SCR_NODE_COLLECTION_GET = 0,
   SCR_NODE_COLLECTION_SET = 1, /* Map#set, Set#add */
@@ -30,6 +32,25 @@ enum {
   SCR_NODE_COLLECTION_CLEAR = 4,
   SCR_NODE_COLLECTION_SIZE = 5,
   SCR_NODE_COLLECTION_ENTRIES = 6,
+  /* A native error's own string-keyed data properties, in order, as
+   * SCR_NV_JSON: [name, attributes, name, attributes, ..., state].
+   * attributes: 1 writable, 2 enumerable, 4 configurable. state: 1 when the
+   * error is not extensible. `stack` is not listed: it is every error's
+   * accessor, read and written through export_get and export_set. */
+  SCR_NODE_EXPORT_OWN = 7,
+};
+
+/* Operations on twin exports (host->export_op, SCR_NVF_TWIN): the island
+ * object asks its native object. GET: args[0] names a property, the answer
+ * is its value. INVOKE: args[0] names a method, the rest are its arguments,
+ * the answer is its result. Both are the native handle's own property read
+ * and method call. TELL: the island object changed; args[0] names the
+ * event and args[1] is its value (an island signal aborted: "abort" and
+ * the reason). */
+enum {
+  SCR_NODE_TWIN_GET = 16,
+  SCR_NODE_TWIN_INVOKE = 17,
+  SCR_NODE_TWIN_TELL = 18,
 };
 
 /* Kinds of runtime jobs the bridge schedules on Node's queues (`run`). */
@@ -93,10 +114,14 @@ enum {
   SCR_NV_BIGINT = 5, /* str: decimal text with an optional leading '-' */
   SCR_NV_HANDLE = 6, /* handle: an import-table id; flags: SCR_NVF_* */
   SCR_NV_BYTES = 7,  /* bytes: a typed array / Buffer / DataView over shared memory */
-  SCR_NV_ERROR = 8,  /* into V8 only: a new Error of an intrinsic class */
+  SCR_NV_ERROR = 8,  /* into V8 only: a native Error, by reference: one V8 Error of its
+                        intrinsic class per export id, which is SCR_NV_EXPORT when it crosses
+                        back. Its own properties are the export's (SCR_NODE_EXPORT_OWN,
+                        export_get, export_set, export_delete) */
   SCR_NV_JSON = 9,   /* into V8 only: str is JSON text, parsed there (a copy) */
   SCR_NV_EXPORT = 10, /* exp: a runtime value exported by reference (NI-5); flags: SCR_NVF_FUNCTION,
-                         SCR_NVF_PROMISE, SCR_NVF_ARRAY or 0 for an object */
+                         SCR_NVF_PROMISE, SCR_NVF_ARRAY, SCR_NVF_MAP, SCR_NVF_SET, SCR_NVF_TWIN
+                         or 0 for an object */
 };
 /* What a handle is, reported with every handle the bridge answers. */
 enum {
@@ -110,6 +135,16 @@ enum {
   SCR_NVF_DATAVIEW = 128,
   SCR_NVF_MAP = 256, /* EXPORT: a native Map (NI-5b) */
   SCR_NVF_SET = 512, /* EXPORT: a native Set (NI-5b) */
+  /* EXPORT: a native object of a platform class whose island receivers
+   * brand-check it (an AbortSignal). Its representative is a real object of
+   * the island's own class, the twin: made by the bootstrap's makeTwin from
+   * the class name in exp.name, or, when exp.length names an import, that
+   * island object, which the export adopts (adoptTwin). The runtime keeps
+   * the two objects' state in step.
+   * HANDLE: an island object of a class the bootstrap lists in
+   * twinPrototypes: the runtime may answer it with a native object that
+   * adopts it. */
+  SCR_NVF_TWIN = 1024,
 };
 /* BYTES element kinds: ScrBytesElem's numbering (scr_bytes.h). */
 typedef struct ScrNodeValue {
@@ -132,13 +167,14 @@ typedef struct ScrNodeValue {
     } bytes;
     struct {
       uint32_t kind; /* scr_error.h SCR_ERR_* (intrinsic class) */
-      const char *name, *message, *stack, *code; /* code NULL: none */
-      size_t name_len, message_len, stack_len, code_len;
+      uint32_t export_id; /* the runtime's export-table id of the error */
+      uint32_t class_instance; /* an instance of a program class: the export also
+                                  answers its class's members */
     } error;
     struct {
       uint32_t id;     /* the runtime's export-table id */
-      uint32_t length; /* functions: their `length` */
-      const char *name; /* functions: their `name` (NULL: anonymous) */
+      uint32_t length; /* functions: their `length`; twins: the import the export adopts (0: none) */
+      const char *name; /* functions: their `name` (NULL: anonymous); twins: their class */
       size_t name_len;
     } exp;
   } u;
@@ -270,9 +306,10 @@ typedef struct ScrNodeBridgeHost {
   /* The exports in their temporal dead zone now, as SCR_NV_STRING JSON
    * [[mod, slot], ...]. */
   void (*shared_tdz)(ScrNodeValue *out);
-  /* A Map or Set export's operation (SCR_NODE_COLLECTION_*): 0 returned
-   * (*out), 1 threw. ENTRIES answers an array export: [key, value] pairs
-   * of a Map, the values of a Set. */
+  /* An export's operation: a Map's or Set's (SCR_NODE_COLLECTION_*), a twin
+   * export's (SCR_NODE_TWIN_*), or a native error's own properties
+   * (SCR_NODE_EXPORT_OWN). 0 returned (*out), 1 threw. ENTRIES answers an
+   * array export: [key, value] pairs of a Map, the values of a Set. */
   int (*export_op)(uint32_t id, uint32_t op, const ScrNodeValue *args, size_t argc,
                    ScrNodeValue *out);
   /* NI-8: the analysis before a major GC, over the `nexports` exports that
@@ -334,9 +371,14 @@ typedef struct ScrNodeBridge {
    * starts at the poll phase instead of the timers phase. */
   int (*run_loop)(int continue_turn);
   /* Calls island listener `listener` of a process event: a signal (`name`,
-   * signal number `arg`) or exit (code `arg`). */
+   * signal number `arg`) or exit (code `arg`). A signal listener runs in a
+   * callback scope (ticks and microtasks drain after it); an exit listener
+   * is a plain call, after which nothing drains. Exit with listener 0 calls
+   * no listener: it tells island code that the exit sequence began
+   * (process._exiting). */
   void (*emit)(uint32_t event, uint32_t listener, const char *name, int arg);
-  /* Tears Node down at process exit. */
+  /* Tears Node down at process exit. No JavaScript runs from here on: the
+   * timers and immediates still due are dropped. */
   void (*stop)(void);
   /* ── object handles (NI-4). Each operation answers 0 (returned: *out is
    * the result) or 1 (threw: *out is the thrown value). ── */

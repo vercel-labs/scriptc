@@ -23,9 +23,11 @@ import { InternalCompilerError } from "../../errors.js";
  * ToBoolean/ToString coercion helpers, and field/element reads and writes
  * (FieldTarget). */
 import * as ts from "../ts7/adapter.js";
+import { withoutParentheses } from "../outer-expressions.js";
 import { checkedPrivateReceiver, localPrivateBrandClass } from "./private-brands.js";
 import { staticCondition } from "./static-typeof.js";
 import { constituentTypes } from "../ts7/checker.js";
+import { lowerDeferredCallbackCall } from "./expressions/library-callbacks.js";
 import { PoisonError } from "./lowerer.js";
 import type { Lowerer } from "./lowerer.js";
 import { recordMayKeepSource } from "./record-sources.js";
@@ -361,6 +363,7 @@ export function lowerExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   }
   const outermost = openLoweringBudget(expr);
   const frame = lowerer.openRefusedProbeFrame();
+  const operands = lowerer.openOperandFrame();
   lowerExprDepth++;
   try {
     if (!outermost && ++lowerExprAttempts > lowerExprAttemptLimit)
@@ -384,6 +387,7 @@ export function lowerExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     return lowered;
   } finally {
     lowerExprDepth--;
+    lowerer.closeOperandFrame(operands);
     lowerer.closeRefusedProbeFrame(frame);
     closeLoweringBudget();
   }
@@ -463,6 +467,15 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   const webAssemblyValue = lowerWebAssemblyValue(lowerer, expr);
   if (webAssemblyValue !== null) return webAssemblyValue;
   refuseWebAssemblyUse(lowerer, expr);
+
+  // A callback that may be unassigned, with observable arguments after it:
+  // the library checks it once they are evaluated
+  // (expressions/library-callbacks.ts). A program whose bindings are all
+  // stored before they are read skips it.
+  if (lowerer.earlyReadVars.size > 0 && (ts.isCallExpression(expr) || ts.isNewExpression(expr))) {
+    const deferred = lowerDeferredCallbackCall(lowerer, expr);
+    if (deferred !== null) return deferred;
+  }
 
   if (ts.isNumericLiteral(expr)) {
     const value = Number(expr.text.replace(/_/g, ""));
@@ -2008,8 +2021,14 @@ export function lowerNullishCoalesce(
  * sides of the default. */
 function assertedPresenceOperand(lowerer: Lowerer, node: ts.Expression): IrExpr {
   const probe = lowerAbsenceProbe(lowerer, node);
+  // An unassigned deferred-init field takes the default too.
   if (probe === null)
-    return runtimeOptionalStorageOperand(lowerer, node) ?? lowerer.lowerExpr(node);
+    return (
+      runtimeOptionalStorageOperand(lowerer, node) ??
+      deferredSlotOr(lowerer, lowerer.lowerExpr(node))
+    );
+  const slot = lowerer.deferredFieldSlot(probe);
+  if (slot) return slot;
   if (probe.type.kind !== "union" && probe.type.kind !== "object") return probe;
   let outer = node;
   while (ts.isParenthesizedExpression(outer)) outer = outer.expression;
@@ -3290,12 +3309,8 @@ export function aliasTypeofNarrows(
   polarity: boolean,
 ): { sym: ts.Symbol; tsArm: ts.Type }[] {
   const out: { sym: ts.Symbol; tsArm: ts.Type }[] = [];
-  const strip = (e: ts.Expression): ts.Expression => {
-    while (ts.isParenthesizedExpression(e)) e = e.expression;
-    return e;
-  };
   const walk = (e0: ts.Expression, pol: boolean): void => {
-    const e = strip(e0);
+    const e = withoutParentheses(e0);
     if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken) {
       walk(e.operand, !pol);
       return;
@@ -3316,7 +3331,7 @@ export function aliasTypeofNarrows(
       (k === ts.SyntaxKind.EqualsEqualsEqualsToken && pol) ||
       (k === ts.SyntaxKind.ExclamationEqualsEqualsToken && !pol);
     if (!positive) return;
-    const leaf = aliasTypeofArmOf(lowerer, e, strip);
+    const leaf = aliasTypeofArmOf(lowerer, e, withoutParentheses);
     if (leaf) out.push(leaf);
   };
   if (implicitMonoFile(ts.getSourceFileOfNode(cond))) walk(cond, polarity);

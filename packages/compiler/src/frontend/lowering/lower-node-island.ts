@@ -20,6 +20,7 @@ import { readFileSync, realpathSync, statSync } from "node:fs";
 import { resolveFrom } from "../../node-islands/resolve.js";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import { isRelativeSpecifier } from "../workspace-registry.js";
 import type { NodeApiMember } from "../node-api-import.js";
@@ -27,6 +28,7 @@ import { PoisonError, newFnCtx, type Lowerer } from "./lowerer.js";
 import {
   BOOL,
   DYN,
+  DYN_HANDLE_KINDS,
   FOREIGN,
   NULL_T,
   STRING,
@@ -40,6 +42,8 @@ import {
   type SrcLoc,
 } from "../../ir/ir.js";
 import { dynUndefinedExpr, varRef } from "../../ir/build.js";
+import { islandValueOrigin, ORIGIN_SEPARATOR } from "./decl-origin.js";
+import { claimKey } from "./type-claims.js";
 import { classMethodValue } from "./class-method-values.js";
 import { funcTypeFromParamShapes } from "./call-signatures.js";
 import { resolveBareModule } from "../resolve.js";
@@ -59,7 +63,6 @@ import {
   islandOwnerOfFile,
   type NodeIslandSet,
 } from "../../node-islands/boundary.js";
-import { stripTypeWrappers } from "./typed-arguments.js";
 import { thenReader } from "./checked-promise-all.js";
 import { dynCompoundValue } from "./lower-exprs.js";
 import { COMPOUND_ASSIGN_OPS } from "./surfaces.js";
@@ -754,7 +757,7 @@ let rawIslandRead: ts.Node | null = null;
 
 /** `null` or the global `undefined`, by name. */
 function unitLiteralOf(lowerer: Lowerer, node: ts.Expression): "null" | "undefined" | null {
-  const inner = stripTypeWrappers(node);
+  const inner = withoutParenthesesTypeWrappers(node);
   if (inner.kind === ts.SyntaxKind.NullKeyword) return "null";
   if (!ts.isIdentifier(inner) || inner.text !== "undefined") return null;
   return (lowerer.typeOf(inner).flags & ts.TypeFlags.Undefined) !== 0 ? "undefined" : null;
@@ -784,7 +787,7 @@ function islandUnitComparison(
   const rightUnit = unitLiteralOf(lowerer, expr.right);
   if ((leftUnit === null) === (rightUnit === null)) return null;
   const unit = leftUnit ?? rightUnit!;
-  const read = stripTypeWrappers(leftUnit === null ? expr.left : expr.right);
+  const read = withoutParenthesesTypeWrappers(leftUnit === null ? expr.left : expr.right);
   if (
     !ts.isPropertyAccessExpression(read) &&
     !ts.isElementAccessExpression(read) &&
@@ -843,8 +846,56 @@ function islandUnitComparison(
 
 /** An island value (dyn) at the declared type of `node`: island handles
  * stay dyn (FOREIGN), primitives and strings meet their declared type
- * through the checked conversion. */
+ * through the checked conversion. A coverage analysis also records the
+ * package declaration that types the value, for the type-claims report
+ * (type-claims.ts); the lowered code is the same either way. */
 function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr {
+  const out = islandValueAt(lowerer, raw, node);
+  if (lowerer.typeClaims) noteIslandClaim(lowerer, out, node, node);
+  // The conversion names the declaration that types the value, so its
+  // TypeError carries the type patch that would admit it (decl-origin.ts).
+  // A declaration no selector reaches (an empty patch range) is left out,
+  // as every generic declaration is.
+  if (out.kind !== "dynCheck" || out.origin !== undefined || out === raw) return out;
+  const origin = islandOriginOf(lowerer, node, node);
+  if (origin === null || origin.split(ORIGIN_SEPARATOR)[2] === "") return out;
+  return { ...out, origin: lowerer.declOriginIndex(origin) };
+}
+
+function islandOriginOf(
+  lowerer: Lowerer,
+  declaredBy: ts.Node,
+  typed: ts.Expression,
+  argument?: number,
+): string | null {
+  try {
+    return islandValueOrigin(
+      lowerer.checker,
+      declaredBy,
+      lowerer.typeOf(typed),
+      (file) => lowerer.program.isSourceFileDefaultLibrary(file),
+      argument,
+    );
+  } catch {
+    return null;
+  }
+}
+
+/** Coverage's type claims: `value` is an island's, or a function an island
+ * calls, typed by the declaration of `declaredBy` (type-claims.ts). */
+function noteIslandClaim(
+  lowerer: Lowerer,
+  value: IrExpr,
+  declaredBy: ts.Node,
+  typed: ts.Expression,
+  argument?: number,
+): void {
+  const key = claimKey(value.loc);
+  if (lowerer.islandClaimOrigins.has(key)) return;
+  lowerer.islandClaimOrigins.set(key, islandOriginOf(lowerer, declaredBy, typed, argument) ?? "");
+}
+
+function islandValueAt(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr {
   if (node === rawIslandRead) return raw;
   const tsType = lowerer.typeOf(node);
   const islands = lowerer.nodeIslands!;
@@ -873,7 +924,10 @@ function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr 
       node,
     );
   }
-  if (mapped.kind === "dyn") return raw;
+  if (mapped.kind === "dyn") {
+    refuseUnreceivableMember(lowerer, tsType, node);
+    return raw;
+  }
   if (mapped.kind === "void") return raw;
   // An island promise is the same promise on both sides (the runtime keeps
   // one ScrPromise per V8 promise): PromiseResolve of the dyn value, whose
@@ -882,6 +936,9 @@ function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr 
     mapped.kind === "promise" &&
     (mapped.inner.kind === "dyn" || copiedType(lowerer, mapped.inner))
   ) {
+    // The value that crosses is the one the promise settles with.
+    if (mapped.inner.kind === "dyn")
+      refuseUnreceivableMember(lowerer, lowerer.checker.getAwaitedType(tsType) ?? tsType, node);
     const promise: IrExpr = {
       kind: "libCall",
       fn: "dyn.promiseResolve",
@@ -948,6 +1005,132 @@ function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr 
       node,
     );
   return lowerer.coerceToExpected(raw, mapped);
+}
+
+/** Refuses (SC8010) an island object received by the live view `type`
+ * when a member it can be read through cannot hold what the island put
+ * there. A program type that receives island values is a checked-identity
+ * view (wave-2 6 = C): the value stays the island's object, and every member
+ * read is a checked conversion into the member's native type. Primitives,
+ * byte views, functions, promises and other views meet that conversion; an
+ * island array, tuple, Map, Set or library object (a Date, a RegExp, an
+ * Error) never does, because its native counterpart is a different object,
+ * so the read would throw a TypeError in a program whose types are true.
+ * The crossing is where the island value takes the program's type, so that
+ * is where the member is named. */
+function refuseUnreceivableMember(lowerer: Lowerer, type: ts.Type, node: ts.Expression): void {
+  const found = unreceivableMember(lowerer, type, "", new Set());
+  if (found === null) return;
+  boundaryFail(
+    lowerer,
+    `an island object typed as the program record '${lowerer.checker.typeToString(type)}', whose member '${found.path}' is declared '${lowerer.checker.typeToString(found.type)}' (an island array, tuple, Map, Set or library object has no native counterpart yet; declare the member with the island's type or 'unknown')`,
+    node,
+  );
+}
+
+/** How many member visits the walk below follows before it stops. A type can
+ * name itself with an instantiation that grows at every level (`Chain<T>`
+ * whose member is declared `Chain<T[]>`): those are distinct types on every
+ * visit, so `seen` never repeats one, and a program's own record has no end
+ * to its member paths. A real view nests a few levels deep, so the walk ends
+ * well past any of them. */
+const MAX_VIEW_DEPTH = 32;
+
+/** The first member of the live view `type`, or of a view one of its
+ * members is declared with, that an island value cannot be read into
+ * (refuseUnreceivableMember); null when there is none, and for a type that
+ * is not such a view (`object`, an island-declared type). `seen` ends a
+ * type that names itself, and `depth` a type that names itself with a
+ * growing instantiation. */
+function unreceivableMember(
+  lowerer: Lowerer,
+  type: ts.Type,
+  path: string,
+  seen: Set<ts.Type>,
+  depth = 0,
+): { path: string; type: ts.Type } | null {
+  if (depth > MAX_VIEW_DEPTH) return null;
+  if (type.isUnionType()) {
+    for (const part of ts.constituentTypes(type)) {
+      const found = unreceivableMember(lowerer, part, path, seen, depth);
+      if (found !== null) return found;
+    }
+    return null;
+  }
+  if ((type.flags & (ts.TypeFlags.Object | ts.TypeFlags.Intersection)) === 0) return null;
+  if (isForeignType(lowerer.nodeIslands!, type, lowerer.checker)) return null;
+  if (!lowerer.classImplementedProtocol(type)) return null;
+  if (seen.has(type)) return null;
+  seen.add(type);
+  const member = (name: string, declared: ts.Type): { path: string; type: ts.Type } | null =>
+    unreceivableValue(lowerer, declared, path === "" ? name : `${path}.${name}`, seen, depth + 1);
+  for (const property of lowerer.checker.getPropertiesOfType(type)) {
+    const name = ts.symbolName(property);
+    // A symbol-keyed member is read through the object's own descriptor.
+    if (name.startsWith("__@")) continue;
+    const found = member(name, lowerer.checker.getTypeOfSymbol(property));
+    if (found !== null) return found;
+  }
+  for (const index of lowerer.checker.getIndexInfosOfType(type)) {
+    const found = member("[key]", index.type);
+    if (found !== null) return found;
+  }
+  return null;
+}
+
+/** unreceivableMember for the value a member (or a promise) holds: the
+ * part of `declared` whose native representation an island value never
+ * meets, at `path`. `depth` bounds a type that names itself with a growing
+ * instantiation. */
+function unreceivableValue(
+  lowerer: Lowerer,
+  declared: ts.Type,
+  path: string,
+  seen: Set<ts.Type>,
+  depth = 0,
+): { path: string; type: ts.Type } | null {
+  if (depth > MAX_VIEW_DEPTH) return null;
+  if (declared.isUnionType()) {
+    for (const part of ts.constituentTypes(declared)) {
+      const found = unreceivableValue(lowerer, part, path, seen, depth);
+      if (found !== null) return found;
+    }
+    return null;
+  }
+  // Primitives are copied; `any`, `unknown` and `object` hold the handle.
+  if ((declared.flags & (ts.TypeFlags.Object | ts.TypeFlags.Intersection)) === 0) return null;
+  if (isForeignType(lowerer.nodeIslands!, declared, lowerer.checker)) return null;
+  const mapped = lowerer.mapTypeOf(declared);
+  // A member with no native representation is refused where it is read.
+  if (mapped === null || mapped.kind === "void") return null;
+  // Another view (the marking follows members), or a value that stays
+  // checked-dynamic for a reason of its own.
+  if (mapped.kind === "dyn") return unreceivableMember(lowerer, declared, path, seen, depth + 1);
+  // Byte views share their memory, and an island function is called through
+  // the bridge behind a native closure.
+  if (copiedType(lowerer, mapped) || mapped.kind === "func") return null;
+  // An island promise is adopted; what it settles with is received in turn.
+  if (mapped.kind === "promise") {
+    const settled = lowerer.checker.getAwaitedType(declared);
+    if (settled === undefined || settled === declared) return null;
+    return unreceivableValue(lowerer, settled, path, seen, depth + 1) === null
+      ? null
+      : { path, type: declared };
+  }
+  // A program class instance is the program's own object: an island can
+  // only hand back one it was given, which the checked conversion unboxes.
+  if (mapped.kind === "object" && programClassInstance(declared)) return null;
+  return { path, type: declared };
+}
+
+/** An instance of a class the program declares. */
+function programClassInstance(type: ts.Type): boolean {
+  const symbol = type.getSymbol();
+  return (
+    symbol !== undefined &&
+    (symbol.flags & ts.SymbolFlags.Class) !== 0 &&
+    symbol.declarations.some((d) => !ts.getSourceFileOfNode(d).isDeclarationFile)
+  );
 }
 
 /** An array whose elements are copied values or such arrays. */
@@ -1045,7 +1228,7 @@ function isStructuredCloneArgument(lowerer: Lowerer, node: ts.Node): boolean {
 function isForeignExpr(lowerer: Lowerer, node: ts.Expression): boolean {
   const islands = lowerer.nodeIslands;
   if (islands === null) return false;
-  const inner = stripTypeWrappers(node);
+  const inner = withoutParenthesesTypeWrappers(node);
   // super(...) and super.m(...) of an island subclass lower on their own.
   if (inner.kind === ts.SyntaxKind.SuperKeyword) return false;
   // `this` in an island subclass member (its checker type is the
@@ -1061,7 +1244,7 @@ function isForeignExpr(lowerer: Lowerer, node: ts.Expression): boolean {
       ts.isVariableDeclaration(decl) &&
       decl.initializer !== undefined &&
       (ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) !== 0 &&
-      isIslandPromisifyCall(lowerer, stripTypeWrappers(decl.initializer))
+      isIslandPromisifyCall(lowerer, withoutParenthesesTypeWrappers(decl.initializer))
     )
       return true;
   }
@@ -1168,10 +1351,10 @@ function callableType(lowerer: Lowerer, type: ts.Type): boolean {
 /** A member read, call, index or `new` whose receiver or callee is an
  * island value. */
 function islandRooted(lowerer: Lowerer, node: ts.Expression): boolean {
-  const e = stripTypeWrappers(node);
+  const e = withoutParenthesesTypeWrappers(node);
   if (ts.isCallExpression(e)) {
     if (e.expression.kind === ts.SyntaxKind.ImportKeyword) return false;
-    const callee = stripTypeWrappers(e.expression);
+    const callee = withoutParenthesesTypeWrappers(e.expression);
     if (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee))
       return isForeignExpr(lowerer, callee.expression);
     return isForeignExpr(lowerer, callee);
@@ -1297,7 +1480,7 @@ function isIslandIdentityTest(lowerer: Lowerer, e: ts.BinaryExpression): boolean
   )
     return false;
   const handle = (x: ts.Expression): boolean => {
-    const inner = stripTypeWrappers(x);
+    const inner = withoutParenthesesTypeWrappers(x);
     return (
       (ts.isIdentifier(inner) && islandHandleBinding(lowerer, inner)) ||
       isIslandHandleExpr(lowerer, inner)
@@ -1329,7 +1512,7 @@ function handleUseOk(lowerer: Lowerer, node: ts.Expression): boolean {
   if ((ts.isPropertyAccessExpression(p) || ts.isElementAccessExpression(p)) && p.expression === n)
     return true;
   const islandCallee = (callee: ts.Expression): boolean => {
-    const c = stripTypeWrappers(callee);
+    const c = withoutParenthesesTypeWrappers(callee);
     if (ts.isPropertyAccessExpression(c) || ts.isElementAccessExpression(c))
       return isForeignExpr(lowerer, c.expression);
     return isForeignExpr(lowerer, c);
@@ -1368,7 +1551,7 @@ export function isIslandPromisifyCall(lowerer: Lowerer, node: ts.Node): node is 
  * dyn. */
 function toIsland(lowerer: Lowerer, node: ts.Expression): IrExpr {
   const islands = lowerer.nodeIslands!;
-  const inner = stripTypeWrappers(node);
+  const inner = withoutParenthesesTypeWrappers(node);
   if (ts.isObjectLiteralExpression(inner) || ts.isArrayLiteralExpression(inner)) {
     return freshLiteral(lowerer, inner);
   }
@@ -1429,6 +1612,15 @@ function toIsland(lowerer: Lowerer, node: ts.Expression): IrExpr {
       const crossByReference = (): IrExpr => {
         const lowered = lowerer.lowerExpr(node);
         const value = boxed(lowered);
+        // A function the island calls: the call it is an argument of
+        // declares the parameters its thunk checks.
+        if (lowerer.typeClaims && lowered.type.kind === "func") {
+          const call = node.parent;
+          if (call !== undefined && (ts.isCallExpression(call) || ts.isNewExpression(call))) {
+            const index = (call.arguments?.nodes ?? []).indexOf(node);
+            if (index >= 0) noteIslandClaim(lowerer, value, call, node, index);
+          }
+        }
         return lowered.type.kind === "object"
           ? withClassMethods(lowerer, value, lowered.type.className, node)
           : value;
@@ -1440,6 +1632,19 @@ function toIsland(lowerer: Lowerer, node: ts.Expression): IrExpr {
       // arm through its dyn box. The runtime exports objects by reference
       // and copies primitives, so the representation is already exact.
       const mapped = lowerer.mapTypeOf(type);
+      // What the export table does not hold is refused first: a WeakMap is a
+      // checked-dynamic value natively, so its representation alone would
+      // let it through to the runtime's own refusal. A value the island
+      // made is its handle and goes back as one.
+      const unexported = islandMade(lowerer, inner) ? null : unexportedNative(lowerer, type);
+      if (unexported !== null)
+        return boundaryFail(
+          lowerer,
+          unexported === type
+            ? `a '${lowerer.checker.typeToString(type)}' value (its native representation has no island export)`
+            : `a '${lowerer.checker.typeToString(type)}' value (its '${lowerer.checker.typeToString(unexported)}' arm has no island export)`,
+          node,
+        );
       if (mapped !== null && crossesByRepresentation(lowerer, mapped)) return crossByReference();
       // NI-5: closures, promises, records and class instances cross by
       // reference (scr_node_island_export.c): their dyn boxes keep the
@@ -1635,6 +1840,73 @@ function exportedByReference(lowerer: Lowerer, type: ts.Type): boolean {
   return true;
 }
 
+/** Whether `node` is visibly a value an island made: an island read, call
+ * or construction, a name imported from an island module (`import {
+ * registry } from "pkg"`: the island's own export), or a `const`
+ * initialized with one of those. A slot whose native type is
+ * checked-dynamic (a WeakMap's) holds such a value as the island's handle. */
+function islandMade(lowerer: Lowerer, node: ts.Expression): boolean {
+  if (islandValue(lowerer, node)) return true;
+  const name = withoutParenthesesTypeWrappers(node);
+  if (!ts.isIdentifier(name)) return false;
+  const declaration = lowerer.resolveValueSymbol(name)?.valueDeclaration;
+  return (
+    declaration !== undefined &&
+    ts.isVariableDeclaration(declaration) &&
+    declaration.initializer !== undefined &&
+    (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) !== 0 &&
+    islandValue(lowerer, declaration.initializer)
+  );
+}
+
+/** Whether `node` reads a value out of an island where it stands: an island
+ * read, call or construction, or a name an island module exports. */
+function islandValue(lowerer: Lowerer, node: ts.Expression): boolean {
+  if (islandRooted(lowerer, node)) return true;
+  const name = withoutParenthesesTypeWrappers(node);
+  return ts.isIdentifier(name) && islandBindingOf(lowerer, name) !== null;
+}
+
+/** The runtime handle tags the island export table holds: `scr_ni_exportable`
+ * (scr_node_island_export.c) accepts a handle only with the Map or the Set
+ * tag. lower-node-island.test.ts reads that function and fails when the two
+ * lists differ, so a handle the runtime starts to export (a class that
+ * crosses as a twin, say) is added here, and the build-time refusal below
+ * cannot drift from the run-time one. */
+export const ISLAND_EXPORTED_HANDLE_TAGS: ReadonlySet<string> = new Set([
+  "SCR_DYNH_MAP",
+  "SCR_DYNH_SET",
+]);
+
+/** The part of `type` whose native value the island export table does not
+ * hold, or null: a WeakMap or WeakSet (weak storage has no export), or a
+ * stateful I/O handle of DYN_HANDLE_KINDS (a ChildProcess, a socket, a
+ * server), whose checked-dynamic box is a runtime handle with a tag the
+ * table does not take. The runtime refuses each of them when it crosses
+ * (`this native object cannot cross into a Node island yet`); a statically
+ * typed one is refused here, by name, alone or as an arm of a union. */
+function unexportedNative(lowerer: Lowerer, type: ts.Type): ts.Type | null {
+  if (type.isUnionType()) {
+    for (const part of ts.constituentTypes(type)) {
+      const found = unexportedNative(lowerer, part);
+      if (found !== null) return found;
+    }
+    return null;
+  }
+  // A refined handle (`ServerResponse & { req: IncomingMessage }`,
+  // `ChildProcess & { label: string }`) is the native object of its handle
+  // part, so it has that part's missing export.
+  if (type.isIntersectionType()) {
+    for (const part of ts.constituentTypes(type))
+      if (unexportedNative(lowerer, part) !== null) return type;
+    return null;
+  }
+  if ((type.flags & ts.TypeFlags.Object) === 0) return null;
+  if (lowerer.weakCollectionNamesOf(type) !== null) return type;
+  const handle = DYN_HANDLE_KINDS.get(lowerer.mapTypeOf(type)?.kind ?? "");
+  return handle !== undefined && !ISLAND_EXPORTED_HANDLE_TAGS.has(handle.tag) ? type : null;
+}
+
 /** Whether a value of native IR type `t` crosses INTO an island by
  * reference: a dyn value (the runtime exports its objects, and copies its
  * primitives), or a union whose arms are all copied values or kinds the
@@ -1757,7 +2029,7 @@ function freshLiteral(
  * (`+`, `-`, `~`) converts its operand with ToNumber, which calls a
  * user-defined `valueOf`: only a numeric literal operand is inert. */
 function inertArgument(node: ts.Expression): boolean {
-  const e = stripTypeWrappers(node);
+  const e = withoutParenthesesTypeWrappers(node);
   if (
     ts.isIdentifier(e) ||
     ts.isLiteralExpression(e) ||
@@ -1879,7 +2151,7 @@ function lowerIslandChain(
   const stmts: IrStmt[] = [];
   const run = (lower: () => IrExpr): IrExpr => {
     // `x.m?.()`: the method's receiver evaluates once, before the guard.
-    const recv = stripTypeWrappers(chain.recv);
+    const recv = withoutParenthesesTypeWrappers(chain.recv);
     if (
       ts.isCallExpression(chain.dot) &&
       (ts.isPropertyAccessExpression(recv) || ts.isElementAccessExpression(recv))
@@ -2002,7 +2274,7 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
     lowerer.usesNodeIsland = true;
     // `(p as V)[k]`: an assertion on a handle is a view, never a conversion
     // (the read meets the member's declared type in fromIsland below).
-    const target = lowerer.lowerExpr(stripTypeWrappers(expr.expression));
+    const target = lowerer.lowerExpr(withoutParenthesesTypeWrappers(expr.expression));
     const key = toIsland(lowerer, expr.argumentExpression);
     return fromIsland(
       lowerer,
@@ -2023,7 +2295,7 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
   if (ts.isCallExpression(expr)) {
     const dynamicLoad = lowerIslandLoadCall(lowerer, expr, loc);
     if (dynamicLoad !== undefined) return dynamicLoad;
-    const callee = stripTypeWrappers(expr.expression);
+    const callee = withoutParenthesesTypeWrappers(expr.expression);
     if (expr.questionDotToken && !handledDots.has(expr)) return null;
     const args = expr.arguments.nodes;
     if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.name)) {
@@ -2126,7 +2398,7 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
         if (
           errorClass !== null &&
           isForeignExpr(lowerer, expr.left) &&
-          !ts.isIdentifier(stripTypeWrappers(expr.left))
+          !ts.isIdentifier(withoutParenthesesTypeWrappers(expr.left))
         ) {
           lowerer.usesNodeIsland = true;
           const value = lowerer.coerceToExpected(lowerer.lowerExpr(expr.left), DYN);
@@ -2139,7 +2411,7 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
           };
         }
         // A dyn or caught value may hold one: the native test, else Node's.
-        const left = stripTypeWrappers(expr.left);
+        const left = withoutParenthesesTypeWrappers(expr.left);
         if (ts.isIdentifier(left)) {
           const probe = lowerer.lowerExpr(left);
           if (probe.type.kind === "dyn" || probe.type.kind === "caught") {
@@ -2189,7 +2461,7 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
       };
     }
     if (op === ts.SyntaxKind.EqualsToken) {
-      const left = stripTypeWrappers(expr.left);
+      const left = withoutParenthesesTypeWrappers(expr.left);
       if (
         (ts.isPropertyAccessExpression(left) && ts.isIdentifier(left.name)) ||
         ts.isElementAccessExpression(left)
@@ -2205,7 +2477,7 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
         };
         // `(p as V).k = v`: write the HANDLE the assertion views, not the
         // asserted record the conversion would build.
-        const target = lowerer.lowerExpr(stripTypeWrappers(left.expression));
+        const target = lowerer.lowerExpr(withoutParenthesesTypeWrappers(left.expression));
         const receiver = hold("%islandSetTarget", target, target.type);
         const key = ts.isPropertyAccessExpression(left)
           ? null
@@ -2240,12 +2512,14 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
                 },
           loc,
         });
-        const result = fromIsland(lowerer, v, expr);
+        // The assignment answers the value the program wrote, at the
+        // member's declared type: the program's own, not an island's claim.
+        const result = islandValueAt(lowerer, v, expr);
         return { kind: "seqExpr", stmts, result, type: result.type, loc };
       }
       return null;
     }
-    const left = stripTypeWrappers(expr.left);
+    const left = withoutParenthesesTypeWrappers(expr.left);
     if (
       op >= ts.SyntaxKind.FirstCompoundAssignment &&
       op <= ts.SyntaxKind.LastCompoundAssignment &&
@@ -2281,7 +2555,10 @@ function islandCompoundAssign(
   // `(p as V).k op= v`: the view is erased, so the handle is the receiver.
   const target = hold(
     "%islandObj",
-    lowerer.coerceToExpected(lowerer.lowerExpr(stripTypeWrappers(left.expression)), DYN),
+    lowerer.coerceToExpected(
+      lowerer.lowerExpr(withoutParenthesesTypeWrappers(left.expression)),
+      DYN,
+    ),
   );
   const key = ts.isPropertyAccessExpression(left)
     ? null
@@ -2315,7 +2592,9 @@ function islandCompoundAssign(
           },
     loc,
   });
-  const result = fromIsland(lowerer, next, expr);
+  // The value written is not noted as an island's: where the member's old
+  // value flows into it, the claims pass finds that read by itself.
+  const result = islandValueAt(lowerer, next, expr);
   return { kind: "seqExpr", stmts, result, type: result.type, loc };
 }
 
@@ -2330,7 +2609,7 @@ function islandReceiver(
   loc: SrcLoc,
   call = false,
 ): { value: IrExpr; direct?: IrExpr } {
-  const inner = stripTypeWrappers(receiver);
+  const inner = withoutParenthesesTypeWrappers(receiver);
   if (ts.isIdentifier(inner)) {
     const b = islandBindingOf(lowerer, inner);
     if (b !== null && b.kind === "namespace" && !b.module.esm) {
@@ -2865,7 +3144,7 @@ const INTRINSIC_ERRORS = new Set([
 /** The name of the builtin Error class an expression names (the global, not
  * a shadowing binding), or null. */
 function intrinsicErrorClassOf(lowerer: Lowerer, node: ts.Expression): string | null {
-  const inner = stripTypeWrappers(node);
+  const inner = withoutParenthesesTypeWrappers(node);
   if (!ts.isIdentifier(inner) || !INTRINSIC_ERRORS.has(inner.text)) return null;
   const decl = lowerer.checker.getSymbolAtLocation(inner)?.declarations[0];
   if (decl === undefined || !ts.getSourceFileOfNode(decl).isDeclarationFile) return null;
@@ -2877,7 +3156,7 @@ function intrinsicErrorClassOf(lowerer: Lowerer, node: ts.Expression): string | 
  * null. An island's instance of one is an island object, which only Node
  * can test against its own global of that name. */
 function standardClassOf(lowerer: Lowerer, node: ts.Expression): string | null {
-  const inner = stripTypeWrappers(node);
+  const inner = withoutParenthesesTypeWrappers(node);
   if (!ts.isIdentifier(inner) || !lowerer.isStdlibGlobal(inner, inner.text)) return null;
   const type = lowerer.checker.getTypeAtLocation(inner);
   return lowerer.checker.getConstructSignatures(type).length > 0 ? inner.text : null;
@@ -2889,7 +3168,7 @@ function standardClassOf(lowerer: Lowerer, node: ts.Expression): string | null {
  * are island reads; anything else takes the ordinary narrowed read. */
 function islandCaughtRead(lowerer: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
   if (lowerer.islandInstanceofHandled.has(expr) || expr.questionDotToken) return null;
-  const receiver = stripTypeWrappers(expr.expression);
+  const receiver = withoutParenthesesTypeWrappers(expr.expression);
   if (!ts.isIdentifier(receiver)) return null;
   const caught = lowerer.caughtLocalOf(receiver);
   if (caught === null || isForeignExpr(lowerer, receiver)) return null;

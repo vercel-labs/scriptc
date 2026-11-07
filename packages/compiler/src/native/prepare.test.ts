@@ -1,6 +1,14 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import {
   LINUX_ARM64_GNU_TARGET,
@@ -441,4 +449,399 @@ test("an x86-64 level is refused for targets that are not x86-64 before the fron
       ["SC3002", "--target-cpu=x86-64-v3 requires an x86-64 target"],
     ]);
   }
+});
+
+/* Every kind of edit, against a cold build. A project is built, edited and
+ * built again with the same cache, and the second build's whole frontend
+ * output (the LLVM text, the link features, the sources and the warnings:
+ * everything the backend compiles the executable from) must be the one a
+ * build of the edited project with an empty cache produces. `reuse` says
+ * whether the rebuild may answer from the cache without running the
+ * frontend; a build that reuses when it must not would fail the
+ * comparison, and one that runs the frontend when it need not fails the
+ * count. */
+type Files = Record<string, string>;
+
+const TSCONFIG = JSON.stringify({
+  compilerOptions: { strict: true, types: [], target: "esnext", module: "nodenext" },
+});
+
+function project(files: Files) {
+  const temporary = mkdtempSync(join(tmpdir(), "scriptc-native-edits-"));
+  scratch.push(temporary);
+  const root = join(temporary, "project");
+  const write = (directory: string, entries: Files): void => {
+    for (const [name, text] of Object.entries(entries)) {
+      mkdirSync(dirname(join(directory, name)), { recursive: true });
+      writeFileSync(join(directory, name), text);
+    }
+  };
+  write(root, { "tsconfig.json": TSCONFIG, "package.json": '{"type":"module"}', ...files });
+  const toolchain = fixtureToolchain();
+  let loads = 0;
+  const frontend: FrontendFactory = (path, npmStatic, externalTypes) => {
+    loads++;
+    return runFrontend(path, loadProgram, npmStatic, externalTypes);
+  };
+  let caches = 0;
+  const build = (
+    directory: string,
+    cache: NativeCache,
+    extra: { optimization?: "release" | "dev"; strip?: boolean } = {},
+  ) => {
+    const input = prepareNativeExecutable(
+      join(directory, "main.ts"),
+      {
+        outPath: join(directory, ".scriptc", "main"),
+        outDir: join(directory, ".scriptc"),
+        optimization: "release" as const,
+        ...extra,
+      },
+      null,
+      toolchain,
+      frontend,
+      cache,
+    );
+    if (!input.ok) throw new Error(JSON.stringify(input.diagnostics));
+    return {
+      llvm: input.llvm.join(""),
+      features: input.features,
+      sources: input.sources,
+      warnings: input.warnings ?? [],
+    };
+  };
+  const cache = new NativeCache(join(temporary, "cache"));
+  const cold = () => new NativeCache(join(temporary, `cold-${caches++}`));
+  return { root, temporary, write, build, cache, cold, loads: () => loads };
+}
+
+/** Builds `files`, applies `edit`, rebuilds with the same cache and compares
+ * the rebuild with a cold build of the edited project. */
+function rebuilt(
+  files: Files,
+  edit: Files,
+  extra: { optimization?: "release" | "dev"; strip?: boolean } = {},
+) {
+  const p = project(files);
+  const first = p.build(p.root, p.cache, extra);
+  p.write(p.root, edit);
+  const before = p.loads();
+  const again = p.build(p.root, p.cache, extra);
+  const frontendRuns = p.loads() - before;
+  const fresh = p.build(p.root, p.cold(), extra);
+  expect(again).toEqual(fresh);
+  return { frontendRuns, changed: again.llvm !== first.llvm };
+}
+
+const MAIN = 'import { value } from "./value.js";\nconsole.log(value);\n';
+const VALUE = 'export const value = "first";\n';
+
+test.each([
+  ["a comment appended", { "value.ts": VALUE + "// The exported value.\n" }],
+  ["a comment at the top", { "value.ts": "// The exported value.\n" + VALUE }],
+  ["a comment between tokens", { "value.ts": 'export const value = /* text */ "first";\n' }],
+  ["blank lines and indentation", { "value.ts": '\n\n  export  const  value  =  "first" ;\n\n' }],
+  ["a comment in the entry", { "main.ts": "/* entry */\n" + MAIN + "// end\n" }],
+])("%s is answered from the cache, as a cold build would answer", (_name, edit) => {
+  expect(rebuilt({ "main.ts": MAIN, "value.ts": VALUE }, edit)).toEqual({
+    frontendRuns: 0,
+    changed: false,
+  });
+});
+
+test.each([
+  ["a string literal", { "value.ts": 'export const value = "second";\n' }],
+  [
+    "a string literal that looks like a comment",
+    { "value.ts": 'export const value = "// first";\n' },
+  ],
+  ["a comment the checker reads", { "value.ts": "// @ts-nocheck\n" + VALUE }],
+  [
+    "an import added",
+    {
+      "main.ts": 'import { other } from "./other.js";\n' + MAIN + "console.log(other);\n",
+      "other.ts": "export const other = 2;\n",
+    },
+  ],
+  ["an import removed", { "main.ts": 'console.log("no import");\n' }],
+  [
+    "a compiler option in tsconfig.json",
+    {
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          noUnusedLocals: true,
+          types: [],
+          target: "esnext",
+          module: "nodenext",
+        },
+      }),
+    },
+  ],
+  ["a field of package.json", { "package.json": '{"type":"module","name":"renamed"}' }],
+])("%s runs the frontend again, and matches a cold build", (_name, edit) => {
+  expect(rebuilt({ "main.ts": MAIN, "value.ts": VALUE }, edit).frontendRuns).toBe(1);
+});
+
+test("a file added beside a source it could stand for matches a cold build", () => {
+  // `./value.js` names value.ts while there is no value.js; whichever the
+  // resolver picks afterwards, the rebuild picks the same.
+  rebuilt(
+    { "main.ts": MAIN, "value.ts": VALUE },
+    { "value.js": 'export const value = "from js";\n' },
+  );
+});
+
+/* Whole-file text scans. The frontend decides some program-wide facts from a
+ * file's raw text, comments included, so a comment can change the output. */
+const AWAITS =
+  'const value: any = JSON.parse("1");\nasync function main(): Promise<void> {\n  console.log(await value);\n}\nvoid main();\n';
+
+test("a comment that a whole-file text scan matches runs the frontend again", () => {
+  // The await of an untyped value adopts thenables only in a program whose
+  // text can define one, and the scan for that reads comments too.
+  const result = rebuilt(
+    { "main.ts": AWAITS },
+    { "main.ts": AWAITS + "// then: the value settles\n" },
+  );
+  expect(result).toEqual({ frontendRuns: 1, changed: true });
+});
+
+test("a comment that no text scan matches keeps the cached output of a scanned file", () => {
+  const result = rebuilt({ "main.ts": AWAITS }, { "main.ts": AWAITS + "// the value settles\n" });
+  expect(result).toEqual({ frontendRuns: 0, changed: false });
+});
+
+test("a string literal that a text scan matches runs the frontend again", () => {
+  const result = rebuilt(
+    { "main.ts": AWAITS },
+    { "main.ts": AWAITS.replace('JSON.parse("1")', "JSON.parse('{\"then\":1}')") },
+  );
+  expect(result.frontendRuns).toBe(1);
+});
+
+/* Source text and positions the output carries. */
+const ASSERTS = (call: string, tail = "") =>
+  `import assert from "node:assert";\nexport const value = "first";\n${call};\n${tail}`;
+
+test("a comment outside a call whose text the output carries keeps the cached output", () => {
+  // A failing assert(value) reports its call's source text; nothing else of
+  // the file's raw text is in the output.
+  const result = rebuilt(
+    { "main.ts": MAIN, "value.ts": ASSERTS("assert(value.length > 0)") },
+    { "value.ts": "// checked below\n" + ASSERTS("assert(value.length > 0)", "// done\n") },
+  );
+  expect(result).toEqual({ frontendRuns: 0, changed: false });
+});
+
+test("whitespace inside a call whose text the output carries runs the frontend again", () => {
+  const result = rebuilt(
+    { "main.ts": MAIN, "value.ts": ASSERTS("assert(value.length > 0)") },
+    { "value.ts": ASSERTS("assert(value.length  >  0)") },
+  );
+  expect(result).toEqual({ frontendRuns: 1, changed: true });
+});
+
+const TESTS = (gap: string, tail = "") =>
+  `import { test } from "node:test";\nexport const value = "first";\n${gap}test("value", () => {});\n${tail}`;
+
+test("a comment after a reported source line keeps the cached output", () => {
+  // node:test reports the file, line and column of each test.
+  const result = rebuilt(
+    { "main.ts": MAIN, "value.ts": TESTS("") },
+    { "value.ts": TESTS("", "// more tests to come\n") },
+  );
+  expect(result).toEqual({ frontendRuns: 0, changed: false });
+});
+
+test("a comment that moves a reported source line runs the frontend again", () => {
+  const result = rebuilt(
+    { "main.ts": MAIN, "value.ts": TESTS("") },
+    { "value.ts": TESTS("// the only test\n") },
+  );
+  expect(result).toEqual({ frontendRuns: 1, changed: true });
+});
+
+test("a dev build is rebuilt when a comment moves a token, and matches a cold build", () => {
+  const dev = { optimization: "dev" as const };
+  expect(
+    rebuilt({ "main.ts": MAIN, "value.ts": VALUE }, { "value.ts": "// lead\n" + VALUE }, dev)
+      .frontendRuns,
+  ).toBe(1);
+  expect(
+    rebuilt({ "main.ts": MAIN, "value.ts": VALUE }, { "value.ts": VALUE + "// trail\n" }, dev),
+  ).toEqual({ frontendRuns: 0, changed: false });
+});
+
+test("a JavaScript dependency's comment is code, and its edit matches a cold build", () => {
+  // JavaScript types come from JSDoc, so every comment of a .js file counts.
+  const files = {
+    "main.ts": 'import { twice } from "./twice.js";\nconsole.log(twice(2));\n',
+    "twice.js": "/** @param {number} n */\nexport function twice(n) {\n  return n * 2;\n}\n",
+    "tsconfig.json": JSON.stringify({
+      compilerOptions: {
+        strict: true,
+        types: [],
+        target: "esnext",
+        module: "nodenext",
+        allowJs: true,
+        checkJs: true,
+      },
+    }),
+  };
+  expect(
+    rebuilt(files, {
+      "twice.js":
+        "/** @param {number} n */\nexport function twice(n) {\n  // doubled\n  return n * 2;\n}\n",
+    }).frontendRuns,
+  ).toBe(1);
+  // Whitespace alone: reused or not, the output is a cold build's.
+  rebuilt(files, {
+    "twice.js": "/** @param {number} n */\nexport function twice(n) {\n    return n * 2;\n}\n",
+  });
+});
+
+test("the same sources at another path are built for that path, as a cold build builds them", () => {
+  const p = project({ "main.ts": MAIN, "value.ts": VALUE });
+  const first = p.build(p.root, p.cache);
+  const moved = join(p.temporary, "moved");
+  cpSync(p.root, moved, { recursive: true });
+  rmSync(join(moved, ".scriptc"), { recursive: true, force: true });
+  const there = p.build(moved, p.cache);
+  expect(p.loads()).toBe(2);
+  expect(there).toEqual(p.build(moved, p.cold()));
+  expect(there.sources.map(([path]) => path)).not.toEqual(first.sources.map(([path]) => path));
+  // Each path keeps its own entry.
+  expect(p.build(p.root, p.cache)).toEqual(first);
+  expect(p.loads()).toBe(3);
+});
+
+test("an option or a variable that reaches the frontend selects another entry", () => {
+  const p = project({ "main.ts": MAIN, "value.ts": VALUE });
+  const release = p.build(p.root, p.cache);
+  const dev = p.build(p.root, p.cache, { optimization: "dev" });
+  expect(p.loads()).toBe(2);
+  expect(dev).toEqual(p.build(p.root, p.cold(), { optimization: "dev" }));
+  expect(dev.llvm).not.toBe(release.llvm);
+  vi.stubEnv("SCRIPTC_TEST_FRONTEND_KEY", "1");
+  expect(p.build(p.root, p.cache)).toEqual(release);
+  expect(p.loads()).toBe(4);
+  vi.stubEnv("SCRIPTC_TEST_FRONTEND_KEY", undefined);
+  expect(p.build(p.root, p.cache)).toEqual(release);
+  expect(p.loads()).toBe(4);
+});
+
+test("an edit after an equivalent edit is compared with the edited text", () => {
+  // The entry an equivalent edit refreshes holds the new text, and the
+  // reads recorded for the old one no longer describe it.
+  const p = project({ "main.ts": MAIN, "value.ts": ASSERTS("assert(value.length > 0)") });
+  p.build(p.root, p.cache);
+  p.write(p.root, { "value.ts": "// lead\n" + ASSERTS("assert(value.length > 0)") });
+  p.build(p.root, p.cache);
+  expect(p.loads()).toBe(1);
+  // Whitespace inside the call the output carries, in the moved text.
+  p.write(p.root, { "value.ts": "// lead\n" + ASSERTS("assert(value.length  >  0)") });
+  const again = p.build(p.root, p.cache);
+  expect(p.loads()).toBe(2);
+  expect(again).toEqual(p.build(p.root, p.cold()));
+});
+
+test("a rebuild that runs the frontend says why on its timing line", () => {
+  const p = project({ "main.ts": AWAITS });
+  p.build(p.root, p.cache);
+  p.write(p.root, { "main.ts": AWAITS + "// then: the value settles\n" });
+  const phases: [string, Record<string, unknown> | undefined][] = [];
+  const input = prepareNativeExecutable(
+    join(p.root, "main.ts"),
+    {
+      outPath: join(p.root, ".scriptc", "main"),
+      outDir: join(p.root, ".scriptc"),
+      optimization: "release",
+    },
+    null,
+    fixtureToolchain(),
+    (path, npmStatic, externalTypes) => runFrontend(path, loadProgram, npmStatic, externalTypes),
+    p.cache,
+    (phase, detail) => phases.push([phase, detail]),
+  );
+  expect(input.ok).toBe(true);
+  const miss = phases.find(([phase]) => phase === "frontend-cache-miss");
+  expect(miss?.[1]?.["reason"]).toMatch(
+    /main\.ts: the frontend asked of the text whether \/.*then.*\/m matches it/,
+  );
+});
+
+test("a line break added between two tokens runs the frontend again", () => {
+  // Automatic semicolon insertion depends on line breaks between tokens.
+  const result = rebuilt(
+    { "main.ts": MAIN, "value.ts": VALUE },
+    { "value.ts": 'export const value =\n  "first";\n' },
+  );
+  expect(result).toEqual({ frontendRuns: 1, changed: false });
+});
+
+/* Warnings. A cached build's warnings are reported again by a rebuild that
+ * reuses it, and they point into source text. */
+const HOT = [
+  "export function total(values: any): number {",
+  "  let sum = 0;",
+  "  for (const value of values) sum += value;",
+  "  return sum;",
+  "}",
+  "",
+].join("\n");
+const WARNED = {
+  "main.ts":
+    'import { total } from "./hot.js";\nimport { value } from "./value.js";\nconsole.log(total([1, 2, 3]), value);\n',
+  "hot.ts": HOT,
+  "value.ts": VALUE,
+};
+
+test("a build with warnings is reused after an edit of a file no warning names", () => {
+  const p = project(WARNED);
+  const first = p.build(p.root, p.cache);
+  // The program must warn for this test to mean anything.
+  expect(first.warnings.map((warning) => [warning.code, warning.loc.file])).toEqual([
+    ["SC6101", join(p.root, "hot.ts")],
+  ]);
+  expect(rebuilt(WARNED, { "value.ts": "// The exported value.\n" + VALUE })).toEqual({
+    frontendRuns: 0,
+    changed: false,
+  });
+});
+
+test("an edit of a file a warning names runs the frontend again", () => {
+  // The warning's location is offsets into the file, which the comment moves.
+  const result = rebuilt(WARNED, { "hot.ts": "// Sums untyped values.\n" + HOT });
+  expect(result).toEqual({ frontendRuns: 1, changed: false });
+});
+
+/* An enum another file can name is looked for in every file of the program
+ * (enum-objects.ts): whether a file's text names it is a question the entry
+ * records and asks again, not a read of the whole text. */
+const COLORS = {
+  "main.ts":
+    'import { Color, keys } from "./color.js";\nimport { value } from "./value.js";\nconsole.log(keys(Color), Color.Green, value);\n',
+  "color.ts":
+    'export enum Color {\n  Red,\n  Green,\n}\nexport function keys(colors: object): string {\n  return Object.keys(colors).join(",");\n}\n',
+  "value.ts": VALUE,
+};
+
+test("a comment edit is answered from the cache in a program that declares an exported enum", () => {
+  // In a file that does not name the enum, and in the files that do.
+  for (const edit of [
+    { "value.ts": "// The exported value.\n" + VALUE },
+    { "main.ts": "/* entry */\n" + COLORS["main.ts"] + "// end\n" },
+    { "color.ts": COLORS["color.ts"] + "// The colors.\n" },
+  ])
+    expect(rebuilt(COLORS, edit)).toEqual({ frontendRuns: 0, changed: false });
+});
+
+test("a comment that names an exported enum in a file that did not runs the frontend again", () => {
+  // The text now names the enum, and the lookup goes on to its identifiers:
+  // there is none, and the output is the same.
+  expect(rebuilt(COLORS, { "value.ts": "// Not a Color.\n" + VALUE })).toEqual({
+    frontendRuns: 1,
+    changed: false,
+  });
 });

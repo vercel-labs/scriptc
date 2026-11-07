@@ -1198,6 +1198,20 @@ compileOptimizedPartitions(const EmitOptions &Options,
   Triple TargetTriple(Options.Target);
   Config.CPU = "generic";
   Config.Options = targetOptions(TargetTriple);
+  // A definition another partition references is promoted out of internal
+  // linkage before the thin link, which decides what stays external from
+  // the references each partition holds before it is optimized. A reference
+  // the optimizer then removes (a branch on a module constant that folds
+  // once the constant is imported, a call the importer inlines) leaves the
+  // definition external with nothing referring to it: its own partition
+  // cannot drop it, and neither can the link while every function of an
+  // object shares one section. One section per function and per datum lets
+  // the link's --gc-sections drop it, as it drops unreferenced runtime
+  // code. Mach-O objects are already divided at their symbols.
+  if (TargetTriple.isOSBinFormatELF()) {
+    Config.Options.FunctionSections = true;
+    Config.Options.DataSections = true;
+  }
   Config.RelocModel = Reloc::PIC_;
   Config.CodeModel = CodeModel::Small;
   Config.CGOptLevel = codeGenLevel(Options.OptLevel);

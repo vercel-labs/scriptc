@@ -5,8 +5,11 @@ import {
   DYN,
   F64,
   STRING,
+  SYMBOL_T,
   UNDEFINED_T,
+  VOID,
   arrayOf,
+  funcOf,
   type IrExpr,
   type IrFunction,
   type IrLibFn,
@@ -16,7 +19,7 @@ import {
   typeEquals,
   typeKey,
 } from "../../ir/ir.js";
-import { boolLit, dynUndefinedExpr, strLit, varRef } from "../../ir/build.js";
+import { boolLit, dynUndefinedExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { everyStmtList, transformStmtList } from "../../ir/traverse.js";
 import { isJsSourceFile } from "../program.js";
 import { funcTypeFromParamShapes, type ParamShape } from "./call-signatures.js";
@@ -124,6 +127,17 @@ export function builtinPrototypeMethod(
   return owner;
 }
 
+/** Whether `expr` reads a member of the `Reflect` namespace object — one of
+ * the checked-dynamic member function values builtin-namespaces.ts installs
+ * for it. */
+export function reflectMemberValueRead(lowerer: Lowerer, expr: ts.Expression | undefined): boolean {
+  if (!expr) return false;
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  return (
+    ts.isPropertyAccessExpression(expr) && lowerer.stdlibGlobalMember(expr, "Reflect") !== null
+  );
+}
+
 /** These native callables own their argument checks. Unannotated JS aliases
  * keep the checked value instead of narrowing it to the ambient signature.
  * This selects storage only: reassignment still updates a real runtime slot. */
@@ -196,7 +210,7 @@ export function isNativeBuiltinValueInitializer(
         lowerer.stdlibGlobalMember(expr.expression, "process") === "hrtime") ||
       lowerer.stdlibGlobalMember(expr, "Array") === "isArray" ||
       lowerer.stdlibGlobalMember(expr, "Array") === "from" ||
-      lowerer.stdlibGlobalMember(expr, "Reflect") === "ownKeys" ||
+      lowerer.stdlibGlobalMember(expr, "Reflect") !== null ||
       ["fromCharCode", "fromCodePoint"].includes(
         lowerer.stdlibGlobalMember(expr, "String") ?? "",
       ) ||
@@ -270,7 +284,7 @@ export function lowerStringCodesValue(
   loc: SrcLoc,
 ): IrExpr {
   const name = `%builtin.String.${member}`;
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const values = varRef("values", DYN, loc),
       index = varRef("index", F64, loc),
       codes = varRef("codes", arrayOf(F64), loc),
@@ -408,7 +422,7 @@ export function lowerCheckedPredicateValue(
   predicate?: IrLibFn,
 ): IrExpr {
   const name = `%builtin.${display}`;
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const value = varRef("value", DYN, loc);
     const matches: IrExpr = { kind: "dynTest", test, value, type: BOOL, loc };
     const result: IrExpr = predicate
@@ -452,7 +466,7 @@ export function lowerNumberParserValue(
 ): IrExpr {
   const name = `%builtin.Number.${member}`;
   const types = member === "parseInt" ? [DYN, DYN] : [DYN];
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const params = types.map((type, index) => ({ localId: `p.${index}`, name: `p${index}`, type }));
     const text: IrExpr = {
       kind: "libCall",
@@ -736,7 +750,7 @@ const PATH_MODULE_KEYS = [
  * Module handles cache values and preserve aliases without a JS engine. */
 export function lowerObjectAssignValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
   const name = "%builtin.Object.assign";
-  if (!lowerer.liftedFns.some((fn) => fn.name === name))
+  if (lowerer.liftedFnNamed(name) === undefined)
     lowerer.liftedFns.push({
       name,
       params: [
@@ -878,6 +892,138 @@ export function builtinConstantsObject(lowerer: Lowerer, loc: SrcLoc): IrExpr {
   return { kind: "libCall", fn: "constants.object", args: [box(table)], type: DYN, loc };
 }
 
+/** The ES module namespace of the deprecated node:constants module: its
+ * export names are the CommonJS object's own enumerable keys plus "default",
+ * sorted by code unit, with a null prototype and no hasOwnProperty. The names
+ * come from the platform's C library, so neither the compiler nor a census
+ * can list them: the runtime sorts the keys of the merged constants object,
+ * and a getter answers each read — "default" is the CommonJS object itself,
+ * every other name a member of it. */
+export function builtinConstantsEsmNamespace(lowerer: Lowerer, loc: SrcLoc): IrExpr {
+  const name = "%builtin.constants.esm";
+  if (!lowerer.builtinCallableValueFns.has(name)) {
+    lowerer.builtinCallableValueFns.set(name, name);
+    const member = (): IrExpr => varRef("constants", DYN, loc);
+    lowerer.liftedFns.push({
+      name,
+      params: [{ localId: "key.0", name: "key", type: STRING }],
+      returnType: DYN,
+      locals: [
+        { id: "key.0", name: "key", type: STRING, mutable: false },
+        { id: "constants", name: "constants", type: DYN, mutable: false },
+      ],
+      body: [
+        {
+          kind: "varDecl",
+          localId: "constants",
+          init: builtinConstantsObject(lowerer, loc),
+          loc,
+        },
+        {
+          kind: "if",
+          cond: {
+            kind: "strEq",
+            negated: false,
+            left: varRef("key.0", STRING, loc),
+            right: strLit("default", loc),
+            type: BOOL,
+            loc,
+          },
+          then: [{ kind: "return", value: member(), loc }],
+          else_: null,
+          loc,
+        },
+        {
+          kind: "return",
+          value: {
+            kind: "dynKeyGet",
+            value: member(),
+            key: varRef("key.0", STRING, loc),
+            type: DYN,
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    });
+  }
+  const keys = lowerer.declareHiddenLocal("%constantsKeys", arrayOf(STRING));
+  const keyRef = (): IrExpr => varRef(keys.id, arrayOf(STRING), loc);
+  return {
+    kind: "seqExpr",
+    stmts: [
+      {
+        kind: "varDecl",
+        localId: keys.id,
+        init: {
+          kind: "libCall",
+          fn: "dyn.objKeyStrings",
+          args: [builtinConstantsObject(lowerer, loc)],
+          type: arrayOf(STRING),
+          loc,
+        },
+        loc,
+      },
+      {
+        kind: "exprStmt",
+        expr: {
+          kind: "arrIntrinsic",
+          method: "push",
+          receiver: keyRef(),
+          args: [strLit("default", loc)],
+          type: F64,
+          loc,
+        },
+        loc,
+      },
+    ],
+    result: {
+      kind: "libCall",
+      fn: "module.namespaceDyn",
+      args: [
+        strLit("builtin:constants", loc),
+        {
+          kind: "arrIntrinsic",
+          method: "sortPrimitive",
+          receiver: keyRef(),
+          args: [],
+          type: arrayOf(STRING),
+          loc,
+        },
+        {
+          kind: "dynFrom",
+          value: {
+            kind: "closure",
+            fnName: name,
+            captures: [],
+            type: funcOf([STRING], DYN),
+            loc,
+          },
+          type: DYN,
+          loc,
+        },
+        {
+          kind: "dynFrom",
+          value: {
+            kind: "libCall",
+            fn: "sym.wellKnown",
+            args: [strLit("toStringTag", loc)],
+            type: SYMBOL_T,
+            loc,
+          },
+          type: DYN,
+          loc,
+        },
+      ],
+      type: DYN,
+      loc,
+    },
+    type: DYN,
+    loc,
+  };
+}
+
 /** The untyped-caller twin of a builtin function value whose parameters
  * carry Node's validator names (BuiltinValueParam.name): every argument
  * arrives as a checked-dynamic value. With a `checked` entry point the
@@ -892,15 +1038,8 @@ export function checkedNativeCallableValue(
   loc: SrcLoc,
 ): IrExpr {
   const valueParams = fn.valueParams ?? [];
-  const callee = fn.checked?.fn ?? fn.valueFn ?? fn.fn;
-  const result = fn.checked ? (fn.checked.result ?? fn.result) : fn.result;
   const raw = fn.checked !== undefined;
-  const shapes: ParamShape[] = valueParams.map((param): ParamShape => ({
-    mode: param.mode === "rest" ? "dynRest" : param.mode === "optional" ? "omittable" : "required",
-    type: DYN,
-  }));
-  const funcType = funcTypeFromParamShapes(shapes, result);
-  const key = `checked:${callee}:${JSON.stringify(fn.checked?.args ?? [])}:${typeKey(funcType)}`;
+  const { callee, result, funcType, key } = checkedTwinSignature(fn);
   let fnName = lowerer.builtinCallableValueFns.get(key);
   if (!fnName) {
     fnName = keyedHelperName(lowerer, `%builtin.value.${callee}`, key);
@@ -985,9 +1124,92 @@ export function checkedNativeCallableValue(
         : { kind: "return", value: call, loc },
     );
     if (result.kind === "void") body.push({ kind: "return", value: null, loc });
-    lowerer.liftedFns.push({ name: fnName, params, returnType: result, locals, body, loc });
+    lowerer.liftedFns.push({
+      name: fnName,
+      ...(fn.valueNameMainThreadOnly
+        ? {}
+        : { displayName: fn.valueName ?? display.slice(display.lastIndexOf(".") + 1) }),
+      params,
+      returnType: result,
+      locals,
+      body,
+      loc,
+    });
   }
   return { kind: "closure", fnName, captures: [], type: funcType, loc };
+}
+
+/** The entry point, result, function type and interning key of a builtin's
+ * checked twin (checkedNativeCallableValue). */
+function checkedTwinSignature(fn: BuiltinModuleFn): {
+  callee: IrLibFn;
+  result: IrType;
+  funcType: IrType & { kind: "func" };
+  key: string;
+} {
+  const callee = fn.checked?.fn ?? fn.valueFn ?? fn.fn;
+  const result = fn.checked ? (fn.checked.result ?? fn.result) : fn.result;
+  const shapes: ParamShape[] = (fn.valueParams ?? []).map((param): ParamShape => ({
+    mode: param.mode === "rest" ? "dynRest" : param.mode === "optional" ? "omittable" : "required",
+    type: DYN,
+  }));
+  const funcType = funcTypeFromParamShapes(shapes, result);
+  const key = `checked:${callee}:${JSON.stringify(fn.checked?.args ?? [])}:${typeKey(funcType)}`;
+  return { callee, result, funcType, key };
+}
+
+/** A builtin function a module holds both as its typed adapter and as its
+ * checked twin is one JavaScript function: the entry module's
+ * initialization makes the adapter stand for the twin
+ * (closure.shareIdentity), so the two compare equal, key the same Map entry
+ * and share one property table however each reached the comparison (a typed
+ * slot, an array element, a generic helper's result, an untyped value). A
+ * module that makes only one of the two has nothing to reconcile and is
+ * left as it is. */
+export function shareBuiltinValueIdentities(lowerer: Lowerer, functions: IrFunction[]): void {
+  if (lowerer.builtinCheckedValues.size === 0) return;
+  const entryInit = lowerer.initNameOf.get(lowerer.entry);
+  const entry = functions.find((fn) => fn.name === entryInit);
+  if (entry === undefined) return;
+  // The function values the module's code makes, by function name.
+  const made = new Set<string>();
+  for (const fn of functions)
+    everyStmtList(fn.body, {
+      expr: (expr) => {
+        if (expr.kind === "closure" && expr.captures.length === 0) made.add(expr.fnName);
+        return true;
+      },
+      stmt: () => true,
+    });
+  const shares: IrStmt[] = [];
+  const loc: SrcLoc = { ...entry.loc, end: entry.loc.start };
+  for (const [adapter, { fn, type }] of lowerer.builtinCheckedValues) {
+    const twin = checkedTwinSignature(fn);
+    const twinName = lowerer.builtinCallableValueFns.get(twin.key);
+    if (twinName === undefined || twinName === adapter) continue;
+    if (!made.has(adapter) || !made.has(twinName)) continue;
+    shares.push({
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "closure.shareIdentity",
+        args: [
+          { kind: "closure", fnName: adapter, captures: [], type, loc },
+          { kind: "closure", fnName: twinName, captures: [], type: twin.funcType, loc },
+          // Node's `length` for the builtin: a rest parameter does not count.
+          numLit(
+            fn.valueLength ??
+              (fn.valueParams ?? []).filter((param) => param.mode !== "rest").length,
+            loc,
+          ),
+        ],
+        type: VOID,
+        loc,
+      },
+      loc,
+    });
+  }
+  entry.body.unshift(...shares);
 }
 
 /** Every builtin function value that becomes untyped boxes as its checked

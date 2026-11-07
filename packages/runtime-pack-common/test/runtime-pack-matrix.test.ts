@@ -1,5 +1,10 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
 import { createRuntimePackMatrix, variantsFor } from "../runtime-pack-matrix.mjs";
+
+const runtimeSources = fileURLToPath(new URL("../../runtime/src", import.meta.url));
 
 const matrix = createRuntimePackMatrix({
   target: { object_format: "elf" },
@@ -56,6 +61,62 @@ test("the typed stdio write slot selects the events build that carries it", () =
   ).toEqual(["SCR_STDIO_EXTENDED", "SCR_NODE_ISLANDS"]);
 });
 
+test("Node islands select the dynamic promise build that adopts island thenables", () => {
+  const plain = { warningReplace: false, processExtras: false, nodeIsland: false, workers: false };
+  expect(selected("scr_async_dyn.c", { ...plain, nodeIsland: true }).defines).toEqual([
+    "SCR_NODE_ISLANDS",
+  ]);
+  // Beside the unit's other builds it keeps each one's defines.
+  expect(
+    selected("scr_async_dyn.c", { ...plain, processExtras: true, nodeIsland: true }).defines,
+  ).toEqual(["SCR_PROCESS_EXTRAS", "SCR_NODE_ISLANDS"]);
+  expect(
+    selected("scr_async_dyn.c", {
+      ...plain,
+      warningReplace: true,
+      processExtras: true,
+      nodeIsland: true,
+    }).defines,
+  ).toEqual(["SCR_WARNING_REPLACE", "SCR_PROCESS_EXTRAS", "SCR_NODE_ISLANDS"]);
+  // A program without islands keeps the objects it had.
+  expect(selected("scr_async_dyn.c", plain).defines).toEqual([]);
+  expect(selected("scr_async_dyn.c", { ...plain, processExtras: true }).defines).toEqual([
+    "SCR_PROCESS_EXTRAS",
+  ]);
+});
+
+test("Node islands select the invoke build that reaches an island promise's own methods", () => {
+  const plain = { jsObjectModel: false, nodeIsland: false, workers: false };
+  expect(selected("scr_dyn_invoke.c", { ...plain, nodeIsland: true }).defines).toEqual([
+    "SCR_NODE_ISLANDS",
+  ]);
+  expect(
+    selected("scr_dyn_invoke.c", { ...plain, nodeIsland: true, jsObjectModel: true }).defines,
+  ).toEqual(["SCR_NODE_ISLANDS", "SCR_JS_OBJECT_MODEL"]);
+  // A program without islands keeps the objects it had.
+  expect(selected("scr_dyn_invoke.c", plain).defines).toEqual([]);
+  expect(selected("scr_dyn_invoke.c", { ...plain, jsObjectModel: true }).defines).toEqual([
+    "SCR_JS_OBJECT_MODEL",
+  ]);
+});
+
+test("a process stream held as a value selects the island build that shares its write", () => {
+  // The unit that joins the island's process.stdout.write to the program's
+  // links only with both features.
+  const unit = matrix.runtime_units.find(
+    (u: { source: string }) => u.source === "scr_node_island_stdio.c",
+  );
+  expect(unit.predicate).toEqual({ all: ["nodeIsland", "stdioObject"] });
+  expect(selected("scr_node_island.c", { stdioObject: true, workers: false }).defines).toEqual([
+    "SCR_NODE_ISLAND_STDIO",
+  ]);
+  // Every other program with islands keeps the default object.
+  expect(selected("scr_node_island.c", { stdioObject: false, workers: false })).toMatchObject({
+    id: "default",
+    defines: [],
+  });
+});
+
 test("web streams and Node islands select an async build that defines both", () => {
   const variant = selected("scr_async.c", { webStreams: true, nodeIsland: true, workers: false });
   expect(variant.defines).toEqual(
@@ -110,12 +171,7 @@ test("scr_json builds one object per flavor, plus its object model twin", () => 
   // build: its view slot answers NULL for a field a partial record view does
   // not have in every build.
   const variants = variantsFor("scr_json.c");
-  expect(variants.map((variant: { id: string }) => variant.id)).toEqual([
-    "default",
-    "node-island",
-    "js-om",
-    "js-om-node-island",
-  ]);
+  expect(variants.map((variant: { id: string }) => variant.id)).toEqual(["default", "js-om"]);
   for (const variant of variants) {
     if (!variant.id.startsWith("js-om")) continue;
     expect(variant.when.jsObjectModel).toBe(true);
@@ -131,21 +187,17 @@ test("scr_json builds one object per flavor, plus its object model twin", () => 
     "SCR_JS_OBJECT_MODEL",
     "SCR_WORKERS",
   ]);
-  // A program that runs a Node island selects the island build, alone and
-  // beside the object model build it may also carry.
-  expect(selected("scr_json.c", { workers: false, nodeIsland: true }).defines).toEqual([
-    "SCR_NODE_ISLANDS",
-  ]);
+  // A program that runs a Node island selects no build of its own: the
+  // island paths call through the table the island units install, so it
+  // links the default object, or the object model build it may also carry.
+  expect(selected("scr_json.c", { workers: false, nodeIsland: true }).defines).toEqual([]);
   expect(
     selected("scr_json.c", { workers: false, jsObjectModel: true, nodeIsland: true }).defines,
-  ).toEqual(["SCR_NODE_ISLANDS", "SCR_JS_OBJECT_MODEL"]);
+  ).toEqual(["SCR_JS_OBJECT_MODEL"]);
   // A partial record assertion selects nothing: the view slot answers NULL in
   // every build, so a program with one keeps the build its other features
-  // name, alone or beside the island and object model builds.
+  // name, alone or beside the object model build.
   expect(selected("scr_json.c", { workers: false, recordViewPartial: true }).defines).toEqual([]);
-  expect(
-    selected("scr_json.c", { workers: false, nodeIsland: true, recordViewPartial: true }).defines,
-  ).toEqual(["SCR_NODE_ISLANDS"]);
   expect(
     selected("scr_json.c", {
       workers: false,
@@ -153,7 +205,7 @@ test("scr_json builds one object per flavor, plus its object model twin", () => 
       nodeIsland: true,
       recordViewPartial: true,
     }).defines,
-  ).toEqual(["SCR_NODE_ISLANDS", "SCR_JS_OBJECT_MODEL"]);
+  ).toEqual(["SCR_JS_OBJECT_MODEL"]);
   // A program that reaches none of the features keeps the default object.
   expect(selected("scr_json.c", { workers: false }).id).toBe("default");
   expect(selected("scr_json.c", { workers: false }).defines).toEqual([]);
@@ -188,11 +240,11 @@ test("the BigInt element kinds ride the JavaScript object model build", () => {
   expect(
     selected("scr_bytes.c", { ...plain, jsObjectModel: true, textDecoderLegacy: true }).defines,
   ).toEqual(["SCR_TEXT_DECODER_LEGACY", "SCR_JS_OBJECT_MODEL"]);
-  // The units with other builds keep each one's object model counterpart: a
-  // program with Node islands selects the build that carries both.
+  // Node islands select no build of the inspect unit: island values print
+  // through the table the island units install.
   expect(
     selected("scr_inspect.c", { ...plain, jsObjectModel: true, nodeIsland: true }).defines,
-  ).toEqual(["SCR_NODE_ISLANDS", "SCR_JS_OBJECT_MODEL"]);
+  ).toEqual(["SCR_JS_OBJECT_MODEL"]);
   expect(selected("scr_console_native.c", { ...plain, jsObjectModel: true }).defines).toEqual([
     "SCR_JS_OBJECT_MODEL",
   ]);
@@ -261,4 +313,52 @@ test("extended spawn options beside an error read keep both child builds", () =>
     selected("scr_child.c", { workers: false, childOptionExt: true, childErrorFields: false })
       .defines,
   ).toEqual(["SCR_CHILD_CP_OPTIONS"]);
+});
+
+test("Node islands select no build of the units that reach them through the installed table", () => {
+  // util.inspect and instanceof of an island value, an island error's
+  // constructor and its uncaught report call through ScrNiDynOps, which
+  // scr_node_island_handle.c installs: an island program links the same
+  // object of these units as every other program.
+  for (const source of [
+    "scr_json.c",
+    "scr_inspect.c",
+    "scr_exception.c",
+    "scr_dyn_builtin_class.c",
+  ]) {
+    for (const variant of variantsFor(source)) {
+      expect(variant.when.nodeIsland).toBeUndefined();
+      expect(variant.defines).not.toContain("SCR_NODE_ISLANDS");
+    }
+    expect(selected(source, { workers: false, nodeIsland: true }).defines).toEqual(
+      selected(source, { workers: false }).defines,
+    );
+  }
+  expect(variantsFor("scr_exception.c").map((variant: { id: string }) => variant.id)).toEqual([
+    "default",
+  ]);
+  // instanceof over web stream handles keeps its build, with or without islands.
+  expect(
+    selected("scr_dyn_builtin_class.c", { workers: false, webStreams: true, nodeIsland: true })
+      .defines,
+  ).toEqual(["SCR_HANDLE_CLASSES"]);
+});
+
+test("a unit that tests SCR_NODE_ISLANDS has a build that defines it", () => {
+  // A block under the define in a unit with no such build is compiled into
+  // no program, so an island path added there would never run. In those
+  // units an island path calls through the installed table instead.
+  const testsDefine = /^[ \t]*#[ \t]*(?:if|ifdef|ifndef|elif)\b.*\bSCR_NODE_ISLANDS\b/m;
+  const units = readdirSync(runtimeSources).filter((name) => {
+    if (!name.endsWith(".c")) return false;
+    return testsDefine.test(readFileSync(join(runtimeSources, name), "utf8"));
+  });
+  expect(units).toContain("scr_async.c");
+  const withoutBuild = units.filter(
+    (unit) =>
+      !variantsFor(unit).some((variant: { defines: string[] }) =>
+        variant.defines.includes("SCR_NODE_ISLANDS"),
+      ),
+  );
+  expect(withoutBuild).toEqual([]);
 });

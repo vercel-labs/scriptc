@@ -72,6 +72,12 @@ export interface NativeLinkFeatures {
   /** The program reaches the process output streams' write slot: links the
    * SCR_STDIO_WRITE_SLOT build of the events unit. */
   stdioWriteSlot?: boolean;
+  /** The program holds a process output stream as a value, so it can
+   * replace the stream's write method. With Node islands it links
+   * scr_node_island_stdio.c and the SCR_NODE_ISLAND_STDIO build of
+   * scr_node_island.c, which join the island's process.stdout.write and
+   * process.stderr.write to the program's write slots. */
+  stdioObject?: boolean;
   /** Calls into Node.js (@scriptc/node): scr_node_island.c and the
    * SCR_NODE_ISLANDS variant of the event loop unit. */
   nodeIsland?: boolean;
@@ -125,6 +131,10 @@ export interface NativeLinkFeatures {
   childErrorFields?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
+  /** The executable carries debug sources (`--optimization dev` without
+   * `--strip`): its checked conversions report their failures
+   * (scr_conversion_trace.c). Absent (false) for every other build. */
+  conversionTrace?: boolean;
   /** for await over checked-dynamic values: scr_dyn_for_await.c. Absent
    * (false) for programs without it. */
   dynForAwait?: boolean;
@@ -142,6 +152,9 @@ export interface NativeLinkFeatures {
   /** `delete` of a key a record's type does not declare:
    * scr_record_source_delete.c. Absent (false) for programs without one. */
   recordSourceDelete?: boolean;
+  /** A partial record assertion to a type whose values may be frozen
+   * compiles scr_record_view_frozen.c; absent (false) otherwise. */
+  recordViewFrozen?: boolean;
   /** A generator that binds its parameters at the call: scr_gen_bind.c.
    * Absent (false) for programs without one. */
   genBind?: boolean;
@@ -346,6 +359,51 @@ export const REQUIRED_LINK_FEATURES: readonly RequiredLinkFeatureName[] = requir
  * what it links: `{ ...noLinkFeatures(), fetch: true }`. */
 export function noLinkFeatures(): NativeLinkFeatures {
   return { ...NO_LINK_FEATURES };
+}
+
+/** A link feature whose runtime units call into another feature's units,
+ * with the features that own those units. */
+interface LinkFeatureRequirement {
+  feature: RequiredLinkFeatureName;
+  requires: readonly RequiredLinkFeatureName[];
+}
+
+/** The link features that cannot link alone: each one's runtime units call
+ * functions of the units its `requires` features select, on a path the
+ * program reaches as soon as the feature is on. executableLinkFeatures turns
+ * the required features on, so the one list says what a feature needs
+ * whichever fact of the program selected it.
+ *
+ * `http2`: scr_http2.c releases a stream's compatibility request and
+ * response through scr_http.c and runs its sockets through scr_net.c. A
+ * program that only holds a session or stream type (`ClientHttp2Session` in
+ * a signature, with no node:http2 call left) selects the http2 units for the
+ * type's reference counting, and reaches those calls.
+ *
+ * A reference that only a call selecting the other unit reaches needs no
+ * line: the link's section collection drops it otherwise. The reference
+ * check in tests/harness/runtime-unit-references.test.ts lists those, and
+ * fails on a reference that is in neither list. */
+export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
+  { feature: "http2", requires: ["http", "net"] },
+];
+
+/** Turns on, in `features`, every feature that one of its features
+ * requires, directly or through another requirement, and returns it. The
+ * value keeps its keys and their order. */
+export function withRequiredLinkFeatures(features: NativeLinkFeatures): NativeLinkFeatures {
+  for (;;) {
+    let changed = false;
+    for (const { feature, requires } of LINK_FEATURE_REQUIREMENTS) {
+      if (!features[feature]) continue;
+      for (const name of requires) {
+        if (features[name]) continue;
+        features[name] = true;
+        changed = true;
+      }
+    }
+    if (!changed) return features;
+  }
 }
 
 export interface NativeLinkInfo {

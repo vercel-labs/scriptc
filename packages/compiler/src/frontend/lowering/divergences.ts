@@ -538,7 +538,9 @@ function sharesMember(
   member: string,
 ): boolean {
   const checker = lowerer.checker;
-  const source = checker.getTypeAtLocation(cast.source);
+  // The value the copy was made from, as widthCopyBetween sees it: beside
+  // `undefined` the record itself, whose members the copy shares.
+  const source = copiedValueType(checker, checker.getTypeAtLocation(cast.source));
   const target = checker.getTypeFromTypeNode(cast.type);
   const from = checker.getPropertyOfType(source, member);
   const to = checker.getPropertyOfType(target, member);
@@ -661,7 +663,7 @@ function identityUse(
   // not reused after a source edit, so the read is not recorded as a source
   // text dependency (ts.getTextOfNode would record it).
   const textOf = (node: ts.Node): string => {
-    const text = ts.getSourceFileOfNode(node).text.slice(ts.tokenStartOfNode(node), node.end);
+    const text = ts.getTextOfNode(node);
     return text.length > 60 ? `${text.slice(0, 57)}...` : text;
   };
   /** Records a write at `target`, or remembers it and keeps scanning when
@@ -863,7 +865,7 @@ function widthCopyBetween(
   targetNode: ts.TypeNode,
 ): { source: string; target: string } | null {
   const checker = lowerer.checker;
-  const s = checker.getTypeAtLocation(source);
+  const s = copiedValueType(checker, checker.getTypeAtLocation(source));
   const t = checker.getTypeFromTypeNode(targetNode);
   if (!isPlainRecordType(checker, t)) return null;
   const classSource = isProgramClassType(checker, s);
@@ -905,6 +907,26 @@ function widthCopyBetween(
       return null;
   }
   return { source: checker.typeToString(s), target: checker.typeToString(t) };
+}
+
+/** The type of the value a conversion of `type` copies. Beside `null` or
+ * `undefined` (`r as Sub` on `Base | undefined`) it is the one member that
+ * holds a value: a nullish value has nothing to copy. A value narrowed by
+ * `in` (`Base & Record<"k", unknown>`) still has the layout of the one
+ * program record in the intersection. Every other type is itself. */
+function copiedValueType(checker: ts.TypeChecker, type: ts.Type): ts.Type {
+  const nullish = ts.TypeFlags.Undefined | ts.TypeFlags.Null | ts.TypeFlags.Void;
+  if (type.isUnionType()) {
+    const present = ts.constituentTypes(type).filter((member) => (member.flags & nullish) === 0);
+    if (present.length === 1) type = present[0]!;
+  }
+  if (type.isIntersectionType()) {
+    const records = ts
+      .constituentTypes(type)
+      .filter((member) => isPlainRecordType(checker, member));
+    if (records.length === 1) return records[0]!;
+  }
+  return type;
 }
 
 /** Whether asserting to `target` keeps the value it selects: the

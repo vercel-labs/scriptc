@@ -42,7 +42,7 @@ import {
   type UnitStore,
 } from "./frontend/lowering/unit-reuse.js";
 import { commentOnlyReplay } from "./coverage/verdict-semantic.js";
-import { llvmRefusalDiag, targetRefusalDiag } from "./backend/target-diagnostics.js";
+import { llvmRefusalDiags, targetRefusalDiag } from "./backend/target-diagnostics.js";
 import type {
   CompileOptions,
   CompileSourceOptions,
@@ -166,7 +166,6 @@ import {
   nativeCodegenDiag,
   nodeIslandNodeDiag,
   nodeIslandModuleDiag,
-  isTypePatchCode,
   type ScrDiagnostic,
 } from "./diagnostics/diagnostic.js";
 import { libnodeCacheKey, libnodeProbePack, libnodeRecord } from "./node-islands/libnode.js";
@@ -197,7 +196,7 @@ import {
 } from "./frontend/provenance-registry.js";
 import { clearResolveCaches } from "./frontend/resolve.js";
 import { loadFfiProfile, type FfiProfile } from "./ffi/ffi-manifest.js";
-import { executableLinkFeatures } from "./backend/executable-features.js";
+import { carriesDebugSources, executableLinkFeatures } from "./backend/executable-features.js";
 import { youngNurseryRequested } from "./backend/young-nursery.js";
 import { heapCensusRequested } from "./backend/llvm/heap-census.js";
 import { debugJsIcWays } from "./backend/llvm/js-ic.js";
@@ -228,7 +227,6 @@ import {
   type EarlyExecutableNativeFeatures,
 } from "./executable/executable-cache.js";
 import { compilerImplementationIdentity } from "./library/compiler-self-identity.js";
-import { isPerformanceCode } from "./diagnostics/dynamic-tier.js";
 
 export const VERSION = "0.0.1";
 
@@ -607,12 +605,22 @@ interface CompileWarningSink {
   stats?: LowerStats;
 }
 
-/** The package.json texts type patch warnings point into, re-read for a
- * cache hit's code frames (performance warnings need none). */
-function cachedWarningSources(warnings: readonly ScrDiagnostic[]): Map<string, string> {
+/** The texts a cache hit's warnings point into, re-read for their code
+ * frames: the same files the build read, unchanged since (the entry's
+ * frontend snapshot proved it). A file the frontend rewrote before the
+ * warnings were located in it (its JSX) keeps the text the entry stores. */
+function cachedWarningSources(
+  warnings: readonly ScrDiagnostic[],
+  stored: Record<string, string> | undefined,
+): Map<string, string> {
   const texts = new Map<string, string>();
   for (const w of warnings) {
-    if (!isTypePatchCode(w.code) || texts.has(w.loc.file)) continue;
+    if (texts.has(w.loc.file)) continue;
+    const kept = stored?.[w.loc.file];
+    if (kept !== undefined) {
+      texts.set(w.loc.file, kept);
+      continue;
+    }
     try {
       texts.set(w.loc.file, readFileSync(w.loc.file, "utf8"));
     } catch {
@@ -631,17 +639,23 @@ function islandFields(sink: CompileWarningSink | undefined): {
   return sink?.islands === undefined ? {} : { islands: sink.islands };
 }
 
-/** The build's performance warnings (SC61xx), stored with its cache entry
- * so a cache hit repeats them. */
-function performanceWarnings(sink: CompileWarningSink | undefined): {
-  performance?: ScrDiagnostic[];
+/** Every warning the build reported, stored with its cache entry so a cache
+ * hit repeats them exactly: a hit skips lowering, and skipping it must not
+ * hide a diagnostic the cold build prints. The texts their frames render from
+ * ride along for the files the frontend rewrote (its JSX): the file on disk
+ * no longer holds the positions the warnings name. */
+function warningFields(sink: CompileWarningSink | undefined): {
+  warnings?: ScrDiagnostic[];
+  warningTexts?: ReadonlyMap<string, string>;
 } {
-  // Type patch warnings (SC8030–SC8033) describe the same unchanged inputs,
-  // so a hit repeats them too.
-  const performance = (sink?.warnings ?? []).filter(
-    (d) => isPerformanceCode(d.code) || isTypePatchCode(d.code),
-  );
-  return performance.length === 0 ? {} : { performance };
+  const warnings = sink?.warnings ?? [];
+  if (warnings.length === 0) return {};
+  const texts = new Map<string, string>();
+  for (const w of warnings) {
+    const text = sink?.sourceTexts?.get(w.loc.file);
+    if (text !== undefined) texts.set(w.loc.file, text);
+  }
+  return { warnings, ...(texts.size === 0 ? {} : { warningTexts: texts }) };
 }
 
 /** The profile match of a --profile-use build's program object, for its
@@ -703,11 +717,12 @@ function executableNativeFeatures(
   backend: "llvm",
   optimization: NativeOptimization,
   largePages: boolean,
+  strip: boolean,
 ): EarlyExecutableNativeFeatures {
   const features = {
     backend,
     ...optimizationField(optimization),
-    ...executableLinkFeatures(mod, largePages),
+    ...executableLinkFeatures(mod, largePages, carriesDebugSources(optimization, strip)),
   };
   // The executable cache record spells every boolean key (BOOLEAN_NATIVE_KEYS
   // in executable-cache.ts), and mutableBuffers is optional in the link
@@ -863,6 +878,7 @@ async function compileExecutableNative(
     ...(features.processExtras ? { processExtras: true } : {}),
     ...(features.streamWriteErrors ? { streamWriteErrors: true } : {}),
     ...(features.stdioWriteSlot ? { stdioWriteSlot: true } : {}),
+    ...(features.stdioObject ? { stdioObject: true } : {}),
     ...(features.nodeIsland ? { nodeIsland: true } : {}),
     ...(features.moduleNamespace ? { moduleNamespace: true } : {}),
     ...(features.moduleNamespaceDyn ? { moduleNamespaceDyn: true } : {}),
@@ -888,11 +904,13 @@ async function compileExecutableNative(
     ...(features.childErrorFields ? { childErrorFields: true } : {}),
     ...(features.declAdopt ? { declAdopt: true } : {}),
     ...(features.typeOrigins ? { typeOrigins: true } : {}),
+    ...(features.conversionTrace ? { conversionTrace: true } : {}),
     ...(features.dynForAwait ? { dynForAwait: true } : {}),
     ...(features.dynCollections ? { dynCollections: true } : {}),
     ...(features.dynIntegrityQueries ? { dynIntegrityQueries: true } : {}),
     ...(features.reflectProtoTarget ? { reflectProtoTarget: true } : {}),
     ...(features.recordSourceDelete ? { recordSourceDelete: true } : {}),
+    ...(features.recordViewFrozen ? { recordViewFrozen: true } : {}),
     ...(features.genBind ? { genBind: true } : {}),
     ...(features.genReceiver ? { genReceiver: true } : {}),
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
@@ -1323,8 +1341,18 @@ async function prepareExecutableInput(
     ir: join(opts.outDir, `${stem}.ir.json`),
     llvm: join(opts.outDir, `${stem}.ll`),
   } as const;
-  const debugOptions =
-    opts.optimization === "dev" && !opts.strip ? { debugSources: sourceTexts } : {};
+  const debugOptions = carriesDebugSources(opts.optimization, opts.strip)
+    ? { debugSources: sourceTexts }
+    : {};
+  // An executable, and a program object that carries its link information,
+  // link what their features name (executableNativeFeatures sets
+  // conversionTrace for the same builds). LLVM text, assembly and a bare
+  // object are linked by whoever takes them.
+  const traceOptions =
+    "debugSources" in debugOptions &&
+    (outputKind === "exe" || (outputKind === "obj" && opts.nativeLinkInfo === true))
+      ? { conversionTrace: true }
+      : {};
 
   if (outputKind === "ir") {
     await mkdir(dirname(opts.outPath), { recursive: true });
@@ -1338,6 +1366,7 @@ async function prepareExecutableInput(
       llvm = emitLlvmModuleSource(mod, {
         targetTriple: process.env["SCRIPTC_TARGET"] ?? "",
         ...debugOptions,
+        ...traceOptions,
         ...(await readFunctionLayout(opts)),
         pointerBits: buildPlatform === "wasi" ? 32 : 64,
         wasi: buildPlatform === "wasi",
@@ -1357,7 +1386,7 @@ async function prepareExecutableInput(
       });
     } catch (err) {
       if (!(err instanceof LlvmUnsupportedError)) throw err;
-      return { ok: false, diagnostics: [llvmRefusalDiag(err, entryPath)], sourceTexts };
+      return { ok: false, diagnostics: llvmRefusalDiags(err, entryPath), sourceTexts };
     }
     timing("llvm-emit");
     if (outputKind === "llvm") {
@@ -1401,6 +1430,7 @@ async function prepareExecutableInput(
               "llvm",
               opts.optimization ?? "release",
               opts.largePages === true,
+              opts.strip === true,
             ),
             ffi,
             optimization: opts.optimization ?? "release",
@@ -1424,6 +1454,7 @@ async function prepareExecutableInput(
     llvmSource = emitLlvmModuleSource(mod, {
       targetTriple: process.env["SCRIPTC_TARGET"] ?? "",
       ...debugOptions,
+      ...traceOptions,
       ...(await readFunctionLayout(opts)),
       pointerBits: buildPlatform === "wasi" ? 32 : 64,
       wasi: buildPlatform === "wasi",
@@ -1446,7 +1477,7 @@ async function prepareExecutableInput(
     });
   } catch (err) {
     if (!(err instanceof LlvmUnsupportedError)) throw err;
-    return { ok: false, diagnostics: [llvmRefusalDiag(err, entryPath)], sourceTexts };
+    return { ok: false, diagnostics: llvmRefusalDiags(err, entryPath), sourceTexts };
   }
   timing("llvm-emit");
   await writeLlvmSource(llvmSourcePath, llvmSource);
@@ -1464,6 +1495,7 @@ async function prepareExecutableInput(
     backend,
     opts.optimization ?? "release",
     opts.largePages === true,
+    opts.strip === true,
   );
   timing("link-features");
   const programSplit =
@@ -2260,11 +2292,12 @@ async function compileTracked(
     if (earlyCacheOptions === null) {
       throw new InternalCompilerError("executable cache hit without executable cache options");
     }
-    // A cached build repeats its performance warning (SC6101): the code it
-    // names is just as untyped as when it was built.
-    if (warningSink !== undefined && earlyHit.performance !== undefined) {
-      warningSink.warnings = earlyHit.performance;
-      warningSink.sourceTexts = cachedWarningSources(earlyHit.performance);
+    // A cached build repeats the warnings it reported: the code they name is
+    // unchanged (the entry proved its inputs), and a hit that skipped
+    // lowering must not hide a diagnostic.
+    if (warningSink !== undefined && earlyHit.warnings !== undefined) {
+      warningSink.warnings = earlyHit.warnings;
+      warningSink.sourceTexts = cachedWarningSources(earlyHit.warnings, earlyHit.warningSources);
     }
     if (warningSink !== undefined && earlyHit.islands !== undefined)
       warningSink.islands = earlyHit.islands;
@@ -2366,6 +2399,9 @@ async function compileTracked(
                 executableRestored: true,
                 nativeDependencies: dependencies,
                 frontend: earlyHit.frontend,
+                ...(earlyHit.warningSources === undefined
+                  ? {}
+                  : { warningTexts: new Map(Object.entries(earlyHit.warningSources)) }),
                 ...profileMatchField(nativeProgramObject),
                 ...partitionsField(nativeProgramObject),
               });
@@ -2516,7 +2552,7 @@ async function compileTracked(
               nativeDependencies: dependencies,
               frontend: frontendInputs.snapshot(),
               ...(irSourcePath === undefined ? {} : { irPath: irSourcePath }),
-              ...performanceWarnings(warningSink),
+              ...warningFields(warningSink),
               ...islandFields(warningSink),
               ...profileMatchField(nativeProgramObject),
               ...partitionsField(nativeProgramObject),
@@ -2540,7 +2576,7 @@ async function compileTracked(
         executableRestored: false,
         frontend: frontendInputs.snapshot(),
         ...(irSourcePath === undefined ? {} : { irPath: irSourcePath }),
-        ...performanceWarnings(warningSink),
+        ...warningFields(warningSink),
         ...islandFields(warningSink),
         ...profileMatchField(nativeProgramObject),
         ...partitionsField(nativeProgramObject),
@@ -3056,7 +3092,7 @@ async function compileLibraryTracked(
     timing("llvm-write");
   } catch (err) {
     if (!(err instanceof LlvmUnsupportedError)) throw err;
-    return fail([llvmRefusalDiag(err, entryPath)]);
+    return fail(llvmRefusalDiags(err, entryPath));
   }
 
   let irPath: string | undefined;

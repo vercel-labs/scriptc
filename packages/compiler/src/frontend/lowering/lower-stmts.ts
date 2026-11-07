@@ -11,7 +11,7 @@ import { recordSourceTest } from "./record-sources.js";
 import { keyedHelperName } from "./stable-names.js";
 import { OBJECT_PROTOTYPE_KEYS } from "./expressions/relational.js";
 import { jsGlobalValueByName } from "./global-values.js";
-import { lowerTupleAliasDecl, stripTypeWrappers } from "./typed-arguments.js";
+import { lowerTupleAliasDecl } from "./typed-arguments.js";
 import {
   islandHandleBinding,
   lowerIslandExpr,
@@ -84,6 +84,7 @@ import { InternalCompilerError } from "../../errors.js";
  * explicit resource management, and blocked-binding poisoning. */
 import { isWebStreamValueInJavaScript, typeInvolvesWebStream } from "./builtins/web-streams-dyn.js";
 import * as ts from "../ts7/adapter.js";
+import { withoutParentheses, withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { lowerOptionalIndex } from "./undefined-index.js";
 import { processDataMemberValue, programReadsExitCode } from "./builtins/process.js";
 import { heldEnvValueType, refuseHeldEnvCopyHold } from "./builtins/environment.js";
@@ -206,7 +207,7 @@ import {
   bufferNamespaceMember,
   stdlibGlobalNameOf,
 } from "./surfaces.js";
-import { isNativeBuiltinValueInitializer } from "./lower-builtin-values.js";
+import { isNativeBuiltinValueInitializer, reflectMemberValueRead } from "./lower-builtin-values.js";
 import {
   fenceConsoleMemberValue,
   fenceConsoleMutation,
@@ -1538,6 +1539,18 @@ function varBindingType(lowerer: Lowerer, nameNode: ts.Identifier): IrType | nul
     isNativeProxyInitializer(lowerer, nameNode.parent.initializer)
   )
     return DYN;
+  // A Reflect member read as a value is a checked-dynamic closure that sees
+  // the arity of its call, exactly like Node's own member: `Reflect.get(t,
+  // k)` defaults the receiver to the target only when the receiver argument
+  // is ABSENT. Narrowing the binding to the lib signature's fixed parameters
+  // would pad that omitted optional receiver with undefined, erasing the
+  // distinction, so the binding keeps the value the namespace answers.
+  if (
+    ts.isVariableDeclaration(nameNode.parent) &&
+    nameNode.parent.name === nameNode &&
+    reflectMemberValueRead(lowerer, nameNode.parent.initializer)
+  )
+    return DYN;
   if (
     isJsSourceFile(ts.getSourceFileOfNode(nameNode)) &&
     ts.isVariableDeclaration(nameNode.parent) &&
@@ -1722,8 +1735,9 @@ export function predeclareForwardVar(lowerer: Lowerer, symbol: ts.Symbol): boole
   return true;
 }
 
-/** A var readable before its first store (the runtime-optional analysis
- * widened it): reads keep the undefined-armed value. */
+/** A `var`, or a `let` declared without an initializer, readable before its
+ * first store (the runtime-optional analysis widened it): reads keep the
+ * undefined-armed value. */
 function noteEarlyReadVar(lowerer: Lowerer, symbol: ts.Symbol, local: IrLocal): void {
   if (!lowerer.earlyReadVars.has(symbol)) return;
   const root = lowerer.runtimeOptionalRootOf(local);
@@ -6941,8 +6955,10 @@ export function lowerVarDecl(
       // `let x: string | undefined;` at file scope: READABLE before any
       // assignment — JS gives undefined, so the slot must hold the
       // interned undefined arm, not stay NULL (a tag test on NULL would
-      // fault). Other uninitialized globals need no statement (tsc's
-      // definite-assignment analysis guards their reads).
+      // fault). A `let x: string;` that code can read before its first
+      // store was widened to that union (var-hoisting.ts) and takes the
+      // same statement. Other uninitialized globals need none: every read
+      // of them runs after a store.
       // `var x: string | undefined;` emits nothing HERE: its undefined
       // arm was assigned at the file init's entry (lowerFileInit's var
       // hoisting), and re-running the statement — a declaration inside
@@ -7094,8 +7110,12 @@ export function lowerVarDecl(
   }
 
   if (!decl.initializer) {
-    // `let x: number;` — declared, uninitialized. tsc guarantees no read
-    // before assignment (TS2454) and rejects uninitialized const (TS1155).
+    // `let x: number;` — declared, uninitialized. tsc rejects a read before
+    // assignment in the declaring function's own code (TS2454) and an
+    // uninitialized const (TS1155). It checks no read inside a nested
+    // function and none behind `let x!: number`: a binding such a read can
+    // reach before its first store was widened to hold undefined
+    // (var-hoisting.ts), and reads keep that value (noteEarlyReadVar).
     // Unannotated `let x;` is an evolving `any` — the checked-dynamic
     // binding fallback (irTypeOf → dynFallbackType) unless its writes agree
     // on a type.
@@ -7103,6 +7123,8 @@ export function lowerVarDecl(
     // immediately (the type covers the unassigned state), so they
     // initialize to the interned undefined arm like an omitted optional.
     let type = lowerer.irTypeOf(decl.name);
+    const earlyRead = declSymbol !== undefined && lowerer.earlyReadVars.has(declSymbol);
+    if (earlyRead) type = lowerer.runtimeOptionalBindingType(decl.name, type);
     if (type.kind === "dyn" && isLet && decl.type === undefined) {
       type = inferredEvolvingLetType(lowerer, decl) ?? type;
     }
@@ -7117,6 +7139,7 @@ export function lowerVarDecl(
     }
     if (type.kind === "void") lowerer.badType(decl.name, lowerer.typeOf(decl.name));
     const local = lowerer.declareLocal(decl.name, decl.name.text, type, isLet);
+    if (earlyRead) noteEarlyReadVar(lowerer, declSymbol, local);
     // tsc's definite-assignment analysis never guards `any` reads, so
     // uninitialized checked-value bindings must hold native undefined.
     const init =
@@ -7214,6 +7237,14 @@ export function lowerVarDecl(
     isDataViewPrototypeRead(lowerer, decl.initializer)
   )
     type = DYN;
+  // A Reflect member read as a value is a checked-dynamic closure that sees
+  // the arity of its call, exactly like Node's own member: `Reflect.get(t,
+  // k)` defaults the receiver to the target only when the receiver argument
+  // is ABSENT. Narrowing the binding to the lib signature's fixed parameters
+  // would pad that omitted optional receiver with undefined, erasing the
+  // distinction, so the binding keeps the value the namespace answers.
+  if (!decl.type && !hasJsTypeAnnotation(decl) && reflectMemberValueRead(lowerer, decl.initializer))
+    type = DYN;
   // A web stream value in JavaScript keeps its checked-dynamic identity.
   if (
     init.type.kind === "dyn" &&
@@ -7266,8 +7297,8 @@ export function lowerVarDecl(
   if (
     !decl.type &&
     init.type.kind === "func" &&
-    (lowerer.typedArgumentsLambdas.has(stripTypeWrappers(decl.initializer)) ||
-      lowerer.nullishFuncResults.has(stripTypeWrappers(decl.initializer)))
+    (lowerer.typedArgumentsLambdas.has(withoutParenthesesTypeWrappers(decl.initializer)) ||
+      lowerer.nullishFuncResults.has(withoutParenthesesTypeWrappers(decl.initializer)))
   )
     type = init.type;
   // A TypeScript lambda whose closure returns the runtime result (a missing
@@ -7425,8 +7456,9 @@ export function lowerVarDecl(
   ) {
     const present = lowerer.stripUndefinedArm(init.type);
     if (!typeEquals(present, type) && lowerer.widthLiftPlan(present, type) !== null) {
-      const widened =
-        type.kind === "union" ? lowerer.withUndefinedArmOf(type) : lowerer.withUndefinedArm(type);
+      // Null for a slot that takes no undefined arm: the checked dynamic
+      // already holds undefined, so it keeps its own type.
+      const widened = lowerer.withUndefinedArmOf(type);
       if (widened && lowerer.widthLiftPlan(init.type, widened) !== null) {
         type = widened;
         runtimeOptional = true;
@@ -7903,10 +7935,6 @@ function jsObjectBindingExpands(
   let scope: ts.Node = decl;
   while (scope.parent && !ts.isFunctionLike(scope) && !ts.isSourceFile(scope)) scope = scope.parent;
   const aliases = new Set([symbol]);
-  const unwrap = (node: ts.Expression): ts.Expression => {
-    while (ts.isParenthesizedExpression(node)) node = node.expression;
-    return node;
-  };
   let changed = true;
   while (changed) {
     changed = false;
@@ -7918,7 +7946,7 @@ function jsObjectBindingExpands(
         !node.type &&
         !hasJsTypeAnnotation(node)
       ) {
-        const source = unwrap(node.initializer);
+        const source = withoutParentheses(node.initializer);
         const sourceSymbol = ts.isIdentifier(source)
           ? lowerer.resolveValueSymbol(source)
           : undefined;
@@ -7936,7 +7964,7 @@ function jsObjectBindingExpands(
   const property = (node: ts.Node): string | null | undefined => {
     if (!ts.isPropertyAccessExpression(node) && !ts.isElementAccessExpression(node))
       return undefined;
-    const receiver = unwrap(node.expression);
+    const receiver = withoutParentheses(node.expression);
     const receiverSymbol = ts.isIdentifier(receiver)
       ? lowerer.resolveValueSymbol(receiver)
       : undefined;
@@ -7958,8 +7986,8 @@ function jsObjectBindingExpands(
       if (name === null || (name !== undefined && !names.has(name))) expands = true;
       // `state = { _tag: "Done", right }` stores an object with properties
       // the initializer's shape lacks; later reads of them must see them.
-      const target = unwrap(node.left);
-      const value = unwrap(node.right);
+      const target = withoutParentheses(node.left);
+      const value = withoutParentheses(node.right);
       const targetSymbol = ts.isIdentifier(target) ? lowerer.resolveValueSymbol(target) : undefined;
       if (
         targetSymbol &&
@@ -7996,8 +8024,12 @@ export function hasJsTypeAnnotation(decl: ts.VariableDeclaration): boolean {
   const statement = decl.parent?.parent;
   return (
     !!statement &&
-    /@type\b/.test(
-      ts.getSourceFileOfNode(decl).text.slice(statement.pos, ts.tokenStartOfNode(decl)),
+    ts.sourceTextRangeMatches(
+      ts.getSourceFileOfNode(decl),
+      statement.pos,
+      ts.tokenStartOfNode(decl),
+      /@type\b/,
+      ts.LEADING_SPAN,
     )
   );
 }
@@ -8220,15 +8252,11 @@ function immediateAbsenceGuard(
   const next = index >= 0 ? statements[index + 1] : undefined;
   if (!next || !ts.isIfStatement(next)) return null;
   const binding = lowerer.resolveValueSymbol(decl.name);
-  const peel = (node: ts.Expression): ts.Expression => {
-    while (ts.isParenthesizedExpression(node)) node = node.expression;
-    return node;
-  };
   const isBinding = (node: ts.Expression): boolean => {
-    const operand = peel(node);
+    const operand = withoutParentheses(node);
     return ts.isIdentifier(operand) && lowerer.resolveValueSymbol(operand) === binding;
   };
-  const condition = peel(next.expression);
+  const condition = withoutParentheses(next.expression);
   if (ts.isPrefixUnaryExpression(condition))
     return condition.operator === ts.SyntaxKind.ExclamationToken && isBinding(condition.operand)
       ? "falsy"
@@ -8242,7 +8270,7 @@ function immediateAbsenceGuard(
     op === ts.SyntaxKind.EqualsEqualsToken || op === ts.SyntaxKind.ExclamationEqualsToken;
   if (!strict && !loose) return null;
   const isUndefined = (node: ts.Expression): boolean => {
-    const operand = peel(node);
+    const operand = withoutParentheses(node);
     if (ts.isVoidExpression(operand)) return true;
     return (
       ts.isIdentifier(operand) &&
@@ -8250,14 +8278,15 @@ function immediateAbsenceGuard(
       (lowerer.typeOf(operand).flags & ts.TypeFlags.Undefined) !== 0
     );
   };
-  const isNull = (node: ts.Expression): boolean => peel(node).kind === ts.SyntaxKind.NullKeyword;
+  const isNull = (node: ts.Expression): boolean =>
+    withoutParentheses(node).kind === ts.SyntaxKind.NullKeyword;
   const missing = (node: ts.Expression): boolean => isUndefined(node) || (loose && isNull(node));
   const isTypeofBinding = (node: ts.Expression): boolean => {
-    const operand = peel(node);
+    const operand = withoutParentheses(node);
     return ts.isTypeOfExpression(operand) && isBinding(operand.expression);
   };
   const isUndefinedTag = (node: ts.Expression): boolean => {
-    const operand = peel(node);
+    const operand = withoutParentheses(node);
     return ts.isStringLiteralLike(operand) && operand.text === "undefined";
   };
   const { left, right } = condition;
@@ -10633,27 +10662,23 @@ function lowerLogicalBranch(lowerer: Lowerer, expr: ts.BinaryExpression): IrStmt
  * stdlibGlobalNameOf) — user shadows and computed receivers keep their
  * ordinary lowerings and fences. */
 function droppedPureStdlibStatement(lowerer: Lowerer, expr: ts.Expression): boolean {
-  const strip = (e: ts.Expression): ts.Expression => {
-    while (ts.isParenthesizedExpression(e)) e = e.expression;
-    return e;
-  };
   if (ts.isCallExpression(expr)) {
-    const callee = strip(expr.expression);
+    const callee = withoutParentheses(expr.expression);
     if (!ts.isPropertyAccessExpression(callee)) return false;
     if (!PURE_PROTOTYPE_METHODS.has(callee.name.text)) return false;
-    const proto = strip(callee.expression);
+    const proto = withoutParentheses(callee.expression);
     if (!ts.isPropertyAccessExpression(proto) || proto.name.text !== "prototype") return false;
     if (!isStdlibMember(lowerer, proto) || !isStdlibMember(lowerer, callee)) return false;
-    const root = stdlibGlobalNameOf(lowerer, strip(proto.expression));
+    const root = stdlibGlobalNameOf(lowerer, withoutParentheses(proto.expression));
     if (root !== "Array" && root !== "String") return false;
     return expr.arguments.nodes.every((a) => sideEffectFreeOptionValue(a));
   }
   if (ts.isPropertyAccessExpression(expr)) {
-    return stdlibGlobalNameOf(lowerer, strip(expr.expression)) !== null;
+    return stdlibGlobalNameOf(lowerer, withoutParentheses(expr.expression)) !== null;
   }
   if (ts.isElementAccessExpression(expr)) {
     return (
-      stdlibGlobalNameOf(lowerer, strip(expr.expression)) !== null &&
+      stdlibGlobalNameOf(lowerer, withoutParentheses(expr.expression)) !== null &&
       sideEffectFreeOptionValue(expr.argumentExpression)
     );
   }

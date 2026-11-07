@@ -370,7 +370,13 @@ export function prepareExecutableBuild(
       unitStore,
     );
   const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands);
-  const key = islandDecisionKey(entryPath, opts.nodeIslands, opts.npmStatic, opts.tier, buildPlatform);
+  const key = islandDecisionKey(
+    entryPath,
+    opts.nodeIslands,
+    opts.npmStatic,
+    opts.tier,
+    buildPlatform,
+  );
   const recorded = readIslandDecision(file, key, policy);
   // Why each recorded island that is not in the written decision left it.
   const gone = new Map<string, string>(recorded?.gone ?? []);
@@ -476,7 +482,13 @@ export function checkIslandDecision(
   if (file === undefined)
     return { file: null, differences: [], packages: 0, modules: 0, undecided: null };
   const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands);
-  const key = islandDecisionKey(entryPath, opts.nodeIslands, opts.npmStatic, opts.tier, buildPlatform);
+  const key = islandDecisionKey(
+    entryPath,
+    opts.nodeIslands,
+    opts.npmStatic,
+    opts.tier,
+    buildPlatform,
+  );
   const build = decideBuild(
     entryPath,
     opts,

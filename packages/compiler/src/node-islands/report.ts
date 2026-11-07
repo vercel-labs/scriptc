@@ -38,7 +38,7 @@ import {
 import { type IslandPackage, nodeIslandSet, type NodeIslandSet } from "./boundary.js";
 import { packageDirOf, packageVersionOf } from "./origin.js";
 import { isMarkedUserModule, type NodeIslandPolicy } from "./policy.js";
-import { classRank, reportRank, ruleInfo } from "./rules.js";
+import { classRank, reportRank, ruleInfo, type NodeIslandClass } from "./rules.js";
 import type { NodeIslandScan, RefusalRecord } from "./scan.js";
 
 /** One dependency's native compilation outcome (coverage/report.ts's
@@ -63,6 +63,14 @@ export interface NodeIslandReportInput {
    * natively, so it has no refusal of its own to show for them: the report
    * lists each with the class and reason the build recorded. */
   recorded?: ReadonlyMap<string, IslandPackage>;
+}
+
+/** The island class a recorded decision names, or null for a word that is
+ * not one. */
+function islandClassOf(text: string): NodeIslandClass | null {
+  const classes: NodeIslandClass[] = ["runtime", "object-model", "gap", "packaging", "marked"];
+  for (const cls of classes) if (cls === text) return cls;
+  return null;
 }
 
 /** Reasons kept per package (the report renders the first per module). */
@@ -326,7 +334,8 @@ export function buildNodeIslandReport(input: NodeIslandReportInput): NodeIslandR
         version,
         path: s.dir,
         class:
-          recorded !== undefined ? recorded.class : first === undefined ? "marked" : first.class,
+          (recorded === undefined ? null : islandClassOf(recorded.class)) ??
+          (first === undefined ? "marked" : first.class),
         reason:
           recorded !== undefined
             ? recorded.reason

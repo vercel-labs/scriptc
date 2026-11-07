@@ -166,13 +166,18 @@ export function analyzeWithFrontend(
       const compiled = packages.filter((name) =>
         fe.npmStatic.some((e) => e.package === name && e.status === "static"),
       );
-      if (compiled.length === 0) return fe;
+      // The first load serves a set that needs no reload only until a reload
+      // has run: the loads of one analysis share their program host, so a
+      // later load replaces the first one's program. A replayed decision
+      // whose islands are decided again goes back to a smaller set after a
+      // reload, and that set gets a load of its own.
+      if (compiled.length === 0 && lowerLoad.fe === null) return fe;
       const key = packages.join("\n");
       if (lowerLoad.fe === null || key !== lowerLoad.key) {
         lowerLoad.fe?.dispose();
         lowerLoad.fe = createFrontend(entryPath, opts.npmStatic, opts.externalTypes, undefined, {
           nodeIslands: true,
-          islandPackages: new Set(packages),
+          ...(compiled.length === 0 ? {} : { islandPackages: new Set(packages) }),
         });
         lowerLoad.key = key;
       }
@@ -290,7 +295,13 @@ export function analyzeWithFrontend(
         ? null
         : readIslandDecision(
             decisionFile,
-            islandDecisionKey(entryPath, opts.nodeIslands, opts.npmStatic, opts.tier, buildPlatform),
+            islandDecisionKey(
+              entryPath,
+              opts.nodeIslands,
+              opts.npmStatic,
+              opts.tier,
+              buildPlatform,
+            ),
             policy,
           );
     let replayed: ReadonlyMap<string, IslandPackage> =

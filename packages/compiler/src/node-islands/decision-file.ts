@@ -41,7 +41,14 @@
  * in Node, correctly. `compareIslandDecision` is the check for it: it holds
  * a decision made from scratch against the section. */
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import type { AnalyzeOptions, CompileRequestOptions } from "../compile-types.js";
 import { compilerReleaseVersion } from "../library/sidecar.js";
@@ -280,27 +287,23 @@ function sectionOf(
   const base = dirname(resolve(file));
   const packages = [...state.packages.values()]
     .sort((a, b) => byText(a.name, b.name))
-    .map(
-      (p): SectionPackage => ({
-        name: p.name,
-        version: p.version,
-        dir: recorded(base, p.dir),
-        rule: p.rule ?? "",
-        follows: p.follows ?? "",
-        class: p.class,
-        reason: p.reason,
-      }),
-    );
+    .map((p): SectionPackage => ({
+      name: p.name,
+      version: p.version,
+      dir: recorded(base, p.dir),
+      rule: p.rule ?? "",
+      follows: p.follows ?? "",
+      class: p.class,
+      reason: p.reason,
+    }));
   const modules = [...state.modules.values()]
     .sort((a, b) => byText(a.file, b.file))
-    .map(
-      (m): SectionModule => ({
-        file: recorded(base, m.file),
-        class: m.class,
-        reason: m.reason,
-        decision: m.decision,
-      }),
-    );
+    .map((m): SectionModule => ({
+      file: recorded(base, m.file),
+      class: m.class,
+      reason: m.reason,
+      decision: m.decision,
+    }));
   let dependsOnOutcome = false;
   for (const p of state.packages.values()) if (holdsWhile(p.rule) !== null) dependsOnOutcome = true;
   return {

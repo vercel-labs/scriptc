@@ -707,9 +707,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
     const count = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? "" : "s"}`;
     const decided = `${count(check.packages, "package")}, ${count(check.modules, "module")}`;
     if (check.differences.length === 0) {
-      process.stdout.write(
-        `the Node island decision of ${entry} matches ${file} (${decided})\n`,
-      );
+      process.stdout.write(`the Node island decision of ${entry} matches ${file} (${decided})\n`);
       return 0;
     }
     process.stdout.write(

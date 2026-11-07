@@ -482,10 +482,7 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
     entries: [
       {
         term: "--ignore-node-island-decision",
-        help: [
-          "neither read nor write the project's decision file for",
-          "this command",
-        ],
+        help: ["neither read nor write the project's decision file for", "this command"],
       },
     ],
   },

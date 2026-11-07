@@ -137,7 +137,10 @@ interface Recorded {
 /** The file's one section (these builds use one entry and one set of
  * options). */
 function recorded(file: string): Recorded {
-  const parsed = JSON.parse(readFileSync(file, "utf8")) as { format: number; decisions: Recorded[] };
+  const parsed = JSON.parse(readFileSync(file, "utf8")) as {
+    format: number;
+    decisions: Recorded[];
+  };
   expect(parsed.format).toBe(2);
   expect(parsed.decisions).toHaveLength(1);
   return parsed.decisions[0]!;
@@ -198,9 +201,7 @@ test("a lowering refusal's island is replayed in one round", () => {
   expect(r.scratchBuild.rounds).toBe(2);
   expect(r.replay.rounds).toBe(1);
   expect(r.replay.result).toBe(r.scratchBuild.result);
-  expect(recorded(r.file).packages.map((p) => [p.name, p.rule])).toEqual([
-    ["sdk-pkg", "lowering"],
-  ]);
+  expect(recorded(r.file).packages.map((p) => [p.name, p.rule])).toEqual([["sdk-pkg", "lowering"]]);
   // No island here depends on how the build ends.
   expect(recorded(r.file).outcome).toBeUndefined();
 }, 600_000);

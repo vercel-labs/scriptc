@@ -391,9 +391,9 @@ test("a comparison names each kind of difference", () => {
     compareIslandDecision(p.file, key, state([sdk, cfg], [p.legacy, plugin]), "fails"),
   ).toEqual(["+ module src/plugin.js: R2.4 sloppy-mode semantics: a 'with' statement"]);
   // Another compiler release.
-  expect(
-    compareIslandDecision(p.file, { ...key, compiler: "9.9.9" }, decided, "fails"),
-  ).toEqual([`~ compiler: ${key.compiler} -> 9.9.9`]);
+  expect(compareIslandDecision(p.file, { ...key, compiler: "9.9.9" }, decided, "fails")).toEqual([
+    `~ compiler: ${key.compiler} -> 9.9.9`,
+  ]);
 });
 
 test("a build says what it changed in the file", () => {
@@ -436,7 +436,9 @@ test("a file this compiler does not read is replaced, never replayed", () => {
           entry: "src/main.ts",
           target: "linux",
           compiler: key.compiler,
-          packages: [{ name: "sdk", version: "1.2.3", dir: "x", rule: "guess", class: "", reason: "" }],
+          packages: [
+            { name: "sdk", version: "1.2.3", dir: "x", rule: "guess", class: "", reason: "" },
+          ],
           modules: [],
         },
       ],

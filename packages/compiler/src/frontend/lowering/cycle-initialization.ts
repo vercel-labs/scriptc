@@ -290,7 +290,7 @@ function classLocalNames(
   aliases: boolean,
 ): Set<string> {
   const names = new Set<string>();
-  if (sf.text.includes(declared)) names.add(declared);
+  if (ts.sourceTextIncludes(sf, declared)) names.add(declared);
   if (!aliases) return names;
   for (const statement of sf.statements.nodes) {
     if (!ts.isImportDeclaration(statement)) continue;

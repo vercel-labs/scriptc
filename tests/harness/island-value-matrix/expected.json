@@ -1334,7 +1334,6 @@
   "i2n/T.json": "refused:SC1090",
   "i2n/U.json": "unsupported",
   "i2n/N.param": "roundtrip=wrong",
-  "i2n/N.ident": "wrong",
   "n2i2n/U.json": "wrong",
   "n2i2n/U.clone": "message",
   "i2n2i/N.read@mixed.roundtrip": "wrong",
@@ -1342,7 +1341,6 @@
   "clo-n2i/N.callback": "roundtrip=wrong",
   "clo-i2n/N.read.roundtrip": "wrong",
   "clo-i2n/U.json": "unsupported",
-  "clo-i2n/N.ident": "wrong",
   "clo-i2n/I.taker": "clone=message,own=wrong,roundtrip=throws"
  },
  "fn-rec.u": {
@@ -1422,12 +1420,10 @@
   "n2i/I.inspect": "clone=message,own=wrong",
   "i2n/T.json": "refused:SC1090",
   "i2n/U.json": "unsupported",
-  "i2n/N.ident": "wrong",
   "n2i2n/U.json": "wrong",
   "n2i2n/U.clone": "message",
   "clo-n2i/I.thunk": "clone=message,own=wrong",
   "clo-i2n/U.json": "unsupported",
-  "clo-i2n/N.ident": "wrong",
   "clo-i2n/I.taker": "clone=message,own=wrong"
  },
  "fn-this.u": {

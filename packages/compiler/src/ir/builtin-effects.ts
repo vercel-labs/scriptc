@@ -1,12 +1,14 @@
 import type { IrLibFn } from "./builtin-signatures.js";
 
 /** The may-throw seed: libCall members that can raise. Every fs.* member
- * EXCEPT existsSync (which, like Node's, swallows errors and returns false)
- * throws a catchable error on failure; json.parse throws a catchable
- * SyntaxError-shaped string on malformed input. Backends' may-throw analyses must treat a function containing one
- * of these as throwing, exactly like a `throw` statement (and must ALSO
- * seed on `dynCheck` and `awaitExpr` nodes, which throw on validation
- * failure / promise rejection). */
+ * except existsSync (which, like Node's, swallows path errors and returns
+ * false) throws a catchable error on failure; fs.existsSyncValue is here
+ * because reporting DEP0187 for an invalid argument type runs
+ * process.emitWarning, whose replacement may throw. json.parse throws a
+ * catchable SyntaxError-shaped string on malformed input. Backends' may-throw
+ * analyses must treat a function containing one of these as throwing, exactly
+ * like a `throw` statement (and must ALSO seed on `dynCheck` and `awaitExpr`
+ * nodes, which throw on validation failure / promise rejection). */
 export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // The copied error of a synchronous call into Node (@scriptc/node).
   "nodeIsland.callSync",
@@ -574,6 +576,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.propertyKey",
   "dyn.toNumeric",
   "dyn.increment",
+  "dyn.negate",
   // The dynamic-tier operators run the same coercions (scr_js_value.c), and
   // js.toF64 throws dynCheck's TypeError for a non-number.
   "js.toF64",
@@ -583,6 +586,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "js.compare",
   "js.toNumeric",
   "js.increment",
+  "js.negate",
   "js.toNumberCoerce",
   // Error messages use the same coercion protocol before installing cause.
   "error.newOptions",
@@ -919,6 +923,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.loadEnvFile",
   "fs.realpathSync",
   "fs.realpathNativeSync",
+  "fs.existsSyncValue",
   "fs.readFileSync",
   "fs.writeFileSync",
   "fs.appendFileSync",
@@ -1230,6 +1235,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.readlinkSyncBuffer",
   "fs.writeFileModeSync",
   "fs.writeFileFlagsSync",
+  "fs.writeFileOptionsSync",
+  "fs.appendFileOptionsSync",
+  "fs.writeFileBytesOptionsSync",
+  "fs.appendFileBytesOptionsSync",
   "fs.mkdirModeSync",
   "fs.mkdirRecursiveModeSync",
   "fs.openSync",

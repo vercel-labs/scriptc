@@ -1009,8 +1009,8 @@ bool scr_dyn_field_eq_bool(const ScrDyn *d, const ScrStr *key, bool value);
  * index in `values` of the string `d`'s own data property `key` holds, or
  * -1 when every literal test above fails (`d` is not an object, or its own
  * data property `key` holds no string among `values`), or -2 when only the
- * tests themselves can tell (a typed capsule, an accessor, or a property
- * `d` does not own). Borrowed args. */
+ * tests themselves can tell (an accessor, a property `d` does not own, or a
+ * typed capsule that is not a record). Borrowed args. */
 int32_t scr_dyn_discriminant_case(const ScrDyn *d, const ScrStr *key, ScrStr *const *values,
                                   size_t count);
 
@@ -1285,6 +1285,8 @@ ScrStr *scr_dyn_string_constructor(const ScrDyn *value);
 ScrDyn *scr_dyn_property_key_value(const ScrDyn *value);
 ScrDyn *scr_dyn_to_numeric(const ScrDyn *value);
 ScrDyn *scr_dyn_increment(const ScrDyn *value, bool increment);
+/* Unary minus: ToNumeric, then the negation of that number or BigInt. */
+ScrDyn *scr_dyn_negate(const ScrDyn *value);
 /* Internal constructor consumes a retained symbol with its native operations. */
 ScrDyn *scr_dyn_symbol_ref(ScrSym *value, void (*release)(ScrSym *), ScrStr *(*render)(ScrSym *), ScrStr *(*description)(ScrSym *));
 ScrDyn *scr_dyn_new_str(ScrStr *s);

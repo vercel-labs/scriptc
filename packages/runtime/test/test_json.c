@@ -250,6 +250,31 @@ static void live_record_ref_tests(void) {
   got = scr_dyn_typed_ref_key_get(capsule, x);
   check(!got, "a viewed record reads through the view");
   check(scr_dyn_has_own(capsule, extra), "presence reads the view");
+  /* A union's checked match reads a capsule's discriminant once for all of
+   * the union's literals, as each literal test reads it. */
+  ScrStr *p = S("p"), *q = S("q"), *r = S("r");
+  ScrStr *const literals[] = { q, p };
+  ScrStr *const others[] = { q, r };
+  check(scr_dyn_field_eq_num(capsule, extra, 1) && scr_dyn_field_eq_str(capsule, label, p) &&
+      !scr_dyn_field_eq_str(capsule, label, q), "literal tests read the capsule");
+  check(scr_dyn_discriminant_case(capsule, label, literals, 2) == 1,
+      "a capsule's discriminant selects its case");
+  check(scr_dyn_discriminant_case(capsule, label, others, 2) == -1,
+      "a string among no literal matches none");
+  check(scr_dyn_discriminant_case(capsule, x, literals, 2) == -1,
+      "a discriminant that is not a string matches no literal");
+  check(scr_dyn_discriminant_case(capsule, missing, literals, 2) == -1,
+      "a member the capsule lacks matches no literal");
+  /* A capsule that is not a record (a class instance: its member can be a
+   * getter) is left to the literal tests and is not read here. */
+  ScrDyn *instance = scr_dyn_new_typed_ref(rec, live_record_retain, live_record_release,
+      "object:t", 8, live_record_materialize, NULL);
+  size_t materialized = live_record_materializations;
+  check(scr_dyn_discriminant_case(instance, label, literals, 2) == -2 &&
+      live_record_materializations == materialized,
+      "a capsule that is not a record is left to the literal tests, unread");
+  scr_dyn_release(instance);
+  scr_str_release(p); scr_str_release(q); scr_str_release(r);
   check(!scr_exc_pending(), "live record queries raise nothing");
 
   scr_str_release(x); scr_str_release(label); scr_str_release(extra); scr_str_release(missing);

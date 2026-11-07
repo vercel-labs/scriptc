@@ -1149,6 +1149,69 @@ ScrStr *scr_process_exec_path(void) {
   return scr_str_retain(scr_exec_path_str);
 }
 
+/* A NUL-terminated copy of length bytes of text, +1 for the caller: the
+ * shape every process-environment read answers. */
+static char *scr_env_copy_text(const char *text, size_t length) {
+  char *copy = malloc(length + 1);
+  if (!copy) scr_trap("scriptc: out of memory\n");
+  memcpy(copy, text, length);
+  copy[length] = '\0';
+  return copy;
+}
+
+/* One read of the process environment, copied. A worker reads the process
+ * environment through scr_context_getenv, which lands here, so the Win32
+ * environment — what scr_env_set writes on Windows — has to be the source
+ * there too: the CRT's getenv answers the snapshot it took at startup and
+ * would miss either thread's writes. */
+char *scr_env_process_copy(const char *name) {
+#ifdef _WIN32
+  WCHAR *wname = scr_win_wide_utf8(name, strlen(name));
+  if (!wname) return NULL;
+  SetLastError(ERROR_SUCCESS); /* the query reports absence through the error */
+  DWORD need = GetEnvironmentVariableW(wname, NULL, 0);
+  if (need == 0) {
+    /* Only a failed query means the variable is absent. A present-but-empty
+     * value still needs room for its terminating NUL, so a zero size with no
+     * error is present too; Node reports it as '', not undefined. */
+    bool absent = GetLastError() == ERROR_ENVVAR_NOT_FOUND;
+    free(wname);
+    return absent ? NULL : scr_env_copy_text("", 0);
+  }
+  WCHAR *wvalue = malloc((size_t)need * sizeof *wvalue);
+  if (!wvalue) {
+    free(wname);
+    scr_trap("scriptc: out of memory\n");
+  }
+  SetLastError(ERROR_SUCCESS);
+  DWORD got = GetEnvironmentVariableW(wname, wvalue, need);
+  DWORD error = got == 0 ? GetLastError() : ERROR_SUCCESS;
+  free(wname);
+  if (got == 0) {
+    /* A successful read reports the characters it stored, which is 0 for a
+     * present-but-empty value: the NUL went into the buffer and Node keeps
+     * the entry as ''. Only a failed read means the variable vanished
+     * between the query and this call. */
+    free(wvalue);
+    return error == ERROR_SUCCESS ? scr_env_copy_text("", 0) : NULL;
+  }
+  if (got >= need) {
+    /* The value grew past the size the query reported: this read is stale. */
+    free(wvalue);
+    return NULL;
+  }
+  ScrStr *text = scr_fs_win_utf8(wvalue, got);
+  free(wvalue);
+  if (!text) return NULL;
+  char *copy = scr_env_copy_text(text->data, text->len);
+  scr_str_release(text);
+  return copy;
+#else
+  const char *value = getenv(name);
+  return value ? scr_env_copy_text(value, strlen(value)) : NULL;
+#endif
+}
+
 ScrStr *scr_env_get(const ScrStr *name) {
 #ifdef SCR_WORKERS
   if (!scr_context_is_main()) {
@@ -1169,43 +1232,11 @@ ScrStr *scr_env_get(const ScrStr *name) {
    * the entry. */
   char *owned;
   const char *k = scr_str_utf8(name, &owned);
-  WCHAR *wname = scr_win_wide_utf8(k, strlen(k));
+  char *copy = scr_env_process_copy(k);
   scr_str_utf8_end(owned);
-  if (!wname) return NULL;
-  SetLastError(ERROR_SUCCESS); /* the query reports absence through the error */
-  DWORD need = GetEnvironmentVariableW(wname, NULL, 0);
-  if (need == 0) {
-    /* Only a failed query means the variable is absent. A present-but-empty
-     * value still needs room for its terminating NUL, so a zero size with no
-     * error is present too; Node reports it as '', not undefined. */
-    bool absent = GetLastError() == ERROR_ENVVAR_NOT_FOUND;
-    free(wname);
-    return absent ? NULL : scr_str_new("", 0);
-  }
-  WCHAR *wvalue = malloc((size_t)need * sizeof *wvalue);
-  if (!wvalue) {
-    free(wname);
-    scr_trap("scriptc: out of memory\n");
-  }
-  SetLastError(ERROR_SUCCESS);
-  DWORD got = GetEnvironmentVariableW(wname, wvalue, need);
-  DWORD error = got == 0 ? GetLastError() : ERROR_SUCCESS;
-  free(wname);
-  if (got == 0) {
-    /* A successful read reports the characters it stored, which is 0 for a
-     * present-but-empty value: the NUL went into the buffer and Node keeps
-     * the entry as ''. Only a failed read means the variable vanished
-     * between the query and this call. */
-    free(wvalue);
-    return error == ERROR_SUCCESS ? scr_str_new("", 0) : NULL;
-  }
-  if (got >= need) {
-    /* The value grew past the size the query reported: this read is stale. */
-    free(wvalue);
-    return NULL;
-  }
-  ScrStr *s = scr_fs_win_utf8(wvalue, got);
-  free(wvalue);
+  if (!copy) return NULL;
+  ScrStr *s = scr_str_new(copy, strlen(copy));
+  free(copy);
   return s;
 #else
   const char *v = scr_getenv(name->data);
@@ -4249,6 +4280,17 @@ bool scr_fs_exists(ScrStr *path) {
    * path with a null byte, ...) is simply false — never a throw. */
   if (memchr(path->data, 0, path->len)) return false;
   return access(path->data, F_OK) == 0;
+}
+
+bool scr_fs_exists_bytes(ScrBytes *bytes) {
+  /* A statically typed Buffer path: decode it to the string the probe runs
+   * on. The value form (scr_fs_exists_dyn.c) converts the same way, and a
+   * typed path reaches this entry point without boxing, so a program whose
+   * paths are all typed links no dynamic tier. */
+  ScrStr *path = scr_bytes_string(bytes, 0, bytes->len);
+  bool found = scr_fs_exists(path);
+  scr_str_release(path);
+  return found;
 }
 
 void scr_fs_mkdir(ScrStr *path) {
@@ -7701,7 +7743,7 @@ static ScrDyn *scr_dir_dyn_invoke(void *h, ScrDyn *self, const char *method, Scr
     return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
   }
   static const char msg[] = "Dir method calls through an 'unknown' value are not supported yet — narrow the value to Dir first";
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
   return NULL;
 }
 

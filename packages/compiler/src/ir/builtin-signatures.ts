@@ -751,6 +751,13 @@ function buildLibFnSignatures() {
     "fs.writeFileSync": { argTypes: [STRING, STRING], result: VOID },
     "fs.appendFileSync": { argTypes: [STRING, STRING], result: VOID },
     "fs.existsSync": { argTypes: [STRING], result: BOOL },
+    /** existsSync over a path value that is not statically a string: the
+     * string case is fs.existsSync, and any other value answers false with
+     * Node's one DEP0187 report (scr_fs_exists_dyn.c). */
+    "fs.existsSyncValue": { argTypes: [DYN], result: BOOL },
+    /** existsSync over a statically typed byte path: the bytes decode to the
+     * path and the probe runs (scr_lib.c), no boxing and no dynamic tier. */
+    "fs.existsSyncBytes": { argTypes: [BYTES_U8], result: BOOL },
     "fs.mkdirSync": { argTypes: [STRING], result: VOID },
     "fs.rmSync": { argTypes: [STRING], result: VOID },
     "fs.rmdirSync": { argTypes: [STRING], result: VOID },
@@ -1664,6 +1671,21 @@ function buildLibFnSignatures() {
      * with the disposition flag — flag 1 is "wx" (O_EXCL: EEXIST when the
      * path exists), 0 is "w" (the default truncate-or-create). */
     "fs.writeFileFlagsSync": { argTypes: [STRING, STRING, F64, F64], result: VOID },
+    /** writeFileSync(path, data, { encoding, mode, flag }): the same open(2)
+     * write with the data encoded for `encoding` and the flag table Node
+     * documents (scr_fs_flags.c). appendFileOptionsSync is appendFileSync's
+     * three-argument form, whose default flag is "a"; the Bytes twins write
+     * a Buffer/TypedArray argument with the mode and flag options. */
+    "fs.writeFileOptionsSync": { argTypes: [STRING, STRING, STRING, F64, STRING], result: VOID },
+    "fs.appendFileOptionsSync": { argTypes: [STRING, STRING, STRING, F64, STRING], result: VOID },
+    "fs.writeFileBytesOptionsSync": {
+      argTypes: [STRING, BYTES_U8, STRING, F64, STRING],
+      result: VOID,
+    },
+    "fs.appendFileBytesOptionsSync": {
+      argTypes: [STRING, BYTES_U8, STRING, F64, STRING],
+      result: VOID,
+    },
     "fs.mkdirModeSync": { argTypes: [STRING, F64], result: VOID },
     "fs.mkdirRecursiveModeSync": { argTypes: [STRING, F64], result: VOID },
     "atomics.wait": { argTypes: [bytesOf("i32"), F64, F64, F64], result: STRING },
@@ -4134,8 +4156,7 @@ function buildLibFnSignatures() {
     "process.stdio": { argTypes: [F64], result: DYN },
     /** The same stream object, reached by the typed write-slot lowering
      * (the write method as a value, its replacement, a patched program's
-     * typed writes): identical at run time, and the link switch for the
-     * SCR_STDIO_WRITE_SLOT build of the events unit. */
+     * typed writes): identical at run time. */
     "process.stdioSlot": { argTypes: [F64], result: DYN },
     /** process.stdout/stderr.write(chunk) with a run-time chunk: Node's
      * Writable validation, then a synchronous write. */
@@ -4220,6 +4241,8 @@ function buildLibFnSignatures() {
     "dyn.propertyKey": { argTypes: [DYN], result: DYN },
     "dyn.toNumeric": { argTypes: [DYN], result: DYN },
     "dyn.increment": { argTypes: [DYN, BOOL], result: DYN },
+    /** Unary minus: ToNumeric, then the negation of that number or BigInt. */
+    "dyn.negate": { argTypes: [DYN], result: DYN },
     /** JS ToNumber over a dyn value WITH the object protocol (number-hint
      * valueOf/toString ordering; user throws propagate). Borrowed dyn;
      * f64 result, or a throw. Used by statically lowered numeric coercions
@@ -4254,6 +4277,7 @@ function buildLibFnSignatures() {
     "js.compare": { argTypes: [JSVAL, JSVAL, STRING], result: BOOL },
     "js.toNumeric": { argTypes: [JSVAL], result: JSVAL },
     "js.increment": { argTypes: [JSVAL, BOOL], result: JSVAL },
+    "js.negate": { argTypes: [JSVAL], result: JSVAL },
     "js.toNumberCoerce": { argTypes: [JSVAL], result: F64 },
     // Always throws; the result is the READ's declared type (a typed dummy
     // the unwind abandons) — the libCall case skips the result check.
@@ -5379,6 +5403,7 @@ function buildLibFnSignatures() {
     /** The render's maxArrayLength, which the array, Map and Set traversals
      * read: the option applies at every nesting level. */
     "insp.maxArrayLength": { argTypes: [], result: F64 },
+    "insp.numericSeparator": { argTypes: [BOOL], result: BOOL },
     /** ctx.maxStringLength for the renders that follow; answers the previous
      * value so the call site can restore it. */
     "insp.maxStringLength": { argTypes: [F64], result: F64 },

@@ -69,6 +69,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // writeFile's `flag` disposition and the fs/promises twins; the copyFile
   // mode form is the SCR_FS_FLAGS build of scr_fs_cp.c.
   ["scr_fs_flags.c", "fsFlags"],
+  // existsSync over a path value that may not be a string (the DEP0187
+  // fallback), apart from scr_lib.c's typed form.
+  ["scr_fs_exists_dyn.c", "fsExistsValue"],
   // The BYTE-data spellings of the option write and fs.promises.writeFile.
   ["scr_fs_bytes_write.c", "fsBytesWrites"],
   // string_decoder's checked-dynamic chunk forms, apart from scr_bytes.c's
@@ -374,6 +377,16 @@ export function variantsFor(source) {
   if (source === "scr_console_native.c") {
     withJsObjectModel(variants);
   }
+  // DataView.prototype's byteLength and byteOffset accessors read through
+  // the buffer registry in the object model build, where a view over a
+  // resized or detached buffer throws, and the array-like algorithms read an
+  // array's length, which that build keeps apart from its dense prefix
+  // (scr_dyn.h's scr_dyn_arr_length). Both units test the define, so both
+  // need its build: without one a program with the object model linked the
+  // arm written for programs without it.
+  if (source === "scr_data_view_proto.c" || source === "scr_dyn_array_like.c") {
+    withJsObjectModel(variants);
+  }
   // The integrity queries answer from the handle property table when the
   // program's JavaScript object model build carries it (a program whose
   // JavaScript adds own properties to handles).
@@ -471,96 +484,6 @@ export function variantsFor(source) {
       when: { webStreams: true, webBodies: true },
       defines: ["SCR_HANDLE_CLASSES", "SCR_WEB_BODIES"],
     });
-  }
-  // stdin setEncoding, string data listeners and stdio 'resize' events.
-  if (source === "scr_events.c") {
-    variants.push({
-      id: "stdio-extended",
-      when: { stdioExtended: true },
-      defines: ["SCR_STDIO_EXTENDED"],
-    });
-    // Island listeners for signals and 'exit' join the registries.
-    variants.push({
-      id: "node-island",
-      when: { nodeIsland: true },
-      defines: ["SCR_NODE_ISLANDS"],
-    });
-    variants.push({
-      id: "stdio-extended-node-island",
-      when: { stdioExtended: true, nodeIsland: true },
-      defines: ["SCR_STDIO_EXTENDED", "SCR_NODE_ISLANDS"],
-    });
-    // processExtras adds the prepend registrations and stdin's raw-mode
-    // flag; the combinations above then need their own builds, since the
-    // variant with the most conditions is the one selected.
-    variants.push({
-      id: "process-extras",
-      when: { processExtras: true },
-      defines: ["SCR_PROCESS_EXTRAS"],
-    });
-    variants.push({
-      id: "process-extras-stdio-extended",
-      when: { processExtras: true, stdioExtended: true },
-      defines: ["SCR_PROCESS_EXTRAS", "SCR_STDIO_EXTENDED"],
-    });
-    variants.push({
-      id: "process-extras-node-island",
-      when: { processExtras: true, nodeIsland: true },
-      defines: ["SCR_PROCESS_EXTRAS", "SCR_NODE_ISLANDS"],
-    });
-    variants.push({
-      id: "process-extras-stdio-extended-node-island",
-      when: { processExtras: true, stdioExtended: true, nodeIsland: true },
-      defines: ["SCR_PROCESS_EXTRAS", "SCR_STDIO_EXTENDED", "SCR_NODE_ISLANDS"],
-    });
-    // The typed process output write slot (the write method as a value, its
-    // replacement, run-time-typed chunks): the shared write body, the
-    // dynamic-chunk entry point and Node's anonymous write function. Every
-    // other program keeps the default object, byte for byte.
-    for (const [id, when, defines] of [
-      ["stdio-write-slot", { stdioWriteSlot: true }, ["SCR_STDIO_WRITE_SLOT"]],
-      [
-        "stdio-extended-write-slot",
-        { stdioExtended: true, stdioWriteSlot: true },
-        ["SCR_STDIO_EXTENDED", "SCR_STDIO_WRITE_SLOT"],
-      ],
-      [
-        "node-island-write-slot",
-        { nodeIsland: true, stdioWriteSlot: true },
-        ["SCR_NODE_ISLANDS", "SCR_STDIO_WRITE_SLOT"],
-      ],
-      [
-        "stdio-extended-node-island-write-slot",
-        { stdioExtended: true, nodeIsland: true, stdioWriteSlot: true },
-        ["SCR_STDIO_EXTENDED", "SCR_NODE_ISLANDS", "SCR_STDIO_WRITE_SLOT"],
-      ],
-    ])
-      variants.push({ id, when, defines });
-    // A program with both the process extras and the write slot needs both
-    // defines in one build.
-    for (const [id, when, defines] of [
-      [
-        "process-extras-write-slot",
-        { processExtras: true, stdioWriteSlot: true },
-        ["SCR_PROCESS_EXTRAS", "SCR_STDIO_WRITE_SLOT"],
-      ],
-      [
-        "process-extras-stdio-extended-write-slot",
-        { processExtras: true, stdioExtended: true, stdioWriteSlot: true },
-        ["SCR_PROCESS_EXTRAS", "SCR_STDIO_EXTENDED", "SCR_STDIO_WRITE_SLOT"],
-      ],
-      [
-        "process-extras-node-island-write-slot",
-        { processExtras: true, nodeIsland: true, stdioWriteSlot: true },
-        ["SCR_PROCESS_EXTRAS", "SCR_NODE_ISLANDS", "SCR_STDIO_WRITE_SLOT"],
-      ],
-      [
-        "process-extras-stdio-extended-node-island-write-slot",
-        { processExtras: true, stdioExtended: true, nodeIsland: true, stdioWriteSlot: true },
-        ["SCR_PROCESS_EXTRAS", "SCR_STDIO_EXTENDED", "SCR_NODE_ISLANDS", "SCR_STDIO_WRITE_SLOT"],
-      ],
-    ])
-      variants.push({ id, when, defines });
   }
   // Programs with Node islands link the event loop with the Node island slot;
   // every other program keeps the default object, byte for byte.

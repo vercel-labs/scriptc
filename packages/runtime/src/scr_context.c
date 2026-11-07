@@ -193,9 +193,13 @@ void scr_context_env_process_unlock(void) { pthread_mutex_unlock(&scr_context_pr
 const char *scr_context_getenv(const char *name) {
   ScrContextEnv *environment = scr_context_environment;
   if (!environment) {
+    /* The process environment goes through the same read scr_env_get uses:
+     * on Windows that is the Win32 environment, which scr_env_set writes,
+     * not the CRT's startup snapshot. A SHARE_ENV worker has no environment
+     * of its own, so it reads here and must see the writes either thread
+     * made. */
     pthread_mutex_lock(&scr_context_process_env_lock);
-    const char *value = getenv(name);
-    char *copy = value ? scr_context_text_copy(value) : NULL;
+    char *copy = scr_env_process_copy(name);
     pthread_mutex_unlock(&scr_context_process_env_lock);
     return scr_context_env_copy_track(copy);
   }

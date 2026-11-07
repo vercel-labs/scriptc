@@ -1,0 +1,8 @@
+record-width-alias-call.ts:12:6 - error SC2021: passing a '{ next: any; count: number; }' to a parameter declared 'Box' copies the object, and the program writes through it: the callee writes through 'box', so the write would reach only the copy
+
+  11 | const value = { next: undefined as any, count: 0 };
+  12 | bump(value);
+     |      ^~~~~
+  13 | console.log(value.count);
+
+  hint: declare the argument with the parameter's type ('Box') so the callee receives the caller's object, or make the shape a class

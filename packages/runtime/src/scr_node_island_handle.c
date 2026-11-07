@@ -136,7 +136,7 @@ static bool nh_pin_unheld(const NhPin *pin) {
   if (view == NULL || view->kind != SCR_DYN_OBJ) return false;
   /* The view's own entries may hold the view itself. */
   size_t self = 0;
-  for (size_t i = 0; i < view->v.obj.len; i++) self += scr_dyn_obj_value_at(view, i) == view;
+  for (size_t i = 0; i < scr_dyn_obj_count(view); i++) self += scr_dyn_obj_value_at(view, i) == view;
   return SCR_RC_COUNT(view) == 1 + self;
 }
 

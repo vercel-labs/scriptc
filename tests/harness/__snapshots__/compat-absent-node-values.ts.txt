@@ -1,0 +1,58 @@
+compat-absent-node-values.ts:7:10 - error SC0001: Module '"node:worker_threads"' has no exported member 'SHARE_ENV'.
+
+  6 | import { snapshot } from "node:test";
+  7 | import { SHARE_ENV } from "node:worker_threads";
+    |          ^~~~~~~~~
+  8 | 
+
+compat-absent-node-values.ts:13:10 - error SC0001: Property 'setDefaultSnapshotSerializers' does not exist on type '(...args: unknown[]) => unknown'.
+
+  12 | // test: snapshot configuration.
+  13 | snapshot.setDefaultSnapshotSerializers([]);
+     |          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  14 | snapshot.setResolveSnapshotPath((path: string) => `${path}.snapshot`);
+
+compat-absent-node-values.ts:14:10 - error SC0001: Property 'setResolveSnapshotPath' does not exist on type '(...args: unknown[]) => unknown'.
+
+  13 | snapshot.setDefaultSnapshotSerializers([]);
+  14 | snapshot.setResolveSnapshotPath((path: string) => `${path}.snapshot`);
+     |          ^~~~~~~~~~~~~~~~~~~~~~
+  15 | 
+
+  hint: the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'setResolveSnapshotPath' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint
+
+compat-absent-node-values.ts:17:21 - error SC0001: Property 'mainModule' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.
+
+  16 | // process: the entry module object, finalization callbacks and abort.
+  17 | console.log(process.mainModule);
+     |                     ^~~~~~~~~~
+  18 | process.finalization.registerBeforeExit({ n: 1 }, () => {});
+
+  hint: the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'mainModule' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint
+
+compat-absent-node-values.ts:18:9 - error SC0001: Property 'finalization' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.
+
+  17 | console.log(process.mainModule);
+  18 | process.finalization.registerBeforeExit({ n: 1 }, () => {});
+     |         ^~~~~~~~~~~~
+  19 | process.finalization.unregister({ n: 1 });
+
+  hint: the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'finalization' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint
+
+compat-absent-node-values.ts:19:9 - error SC0001: Property 'finalization' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.
+
+  18 | process.finalization.registerBeforeExit({ n: 1 }, () => {});
+  19 | process.finalization.unregister({ n: 1 });
+     |         ^~~~~~~~~~~~
+  20 | process.abort();
+
+  hint: the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'finalization' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint
+
+compat-absent-node-values.ts:20:9 - error SC0001: Property 'abort' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.
+
+  19 | process.finalization.unregister({ n: 1 });
+  20 | process.abort();
+     |         ^~~~~
+  21 | // End with a nonblank context line so diagnostic snapshots carry no trailing whitespace.
+
+  hint: the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'abort' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint

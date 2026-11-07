@@ -199,7 +199,9 @@ declare module "net" {
     address(): import("node:dgram").AddressInfo;
     /* The demux route: hand an accepted socket to another server. */
     emit(event: "connection", socket: Socket): boolean;
-    on(event: "connection" | "secureConnection", listener: (socket: Socket) => void): void;
+    on(event: "connection", listener: (socket: Socket) => void): void;
+    /* tls and https servers: the socket after its handshake */
+    on(event: "secureConnection", listener: (socket: import("tls").TLSSocket) => void): void;
     /* tls and https servers: a handshake that failed */
     on(
       event: "tlsClientError",
@@ -245,7 +247,8 @@ declare module "net" {
       event: "request" | "checkContinue" | "checkExpectation",
       listener: (req: import("http").IncomingMessage, res: import("http").ServerResponse) => void,
     ): void;
-    once(event: "connection" | "secureConnection", listener: (socket: Socket) => void): void;
+    once(event: "connection", listener: (socket: Socket) => void): void;
+    once(event: "secureConnection", listener: (socket: import("tls").TLSSocket) => void): void;
     /* tls and https servers: a handshake that failed */
     once(
       event: "tlsClientError",

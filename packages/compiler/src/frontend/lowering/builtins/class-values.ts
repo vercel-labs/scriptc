@@ -85,7 +85,7 @@ export function builtinClassAliasOf(lowerer: Lowerer, symbol: ts.Symbol): Builti
  * runtime slot: new, instanceof, typeof, .name and === lower at each use,
  * and other uses report SC1090. In JavaScript files, a binding whose
  * initializer has a value (`const E = EventEmitter`, `const M =
- * globalThis.Map`, both identity tokens) keeps its slot; only builtin
+ * globalThis.Map`, both function values) keeps its slot; only builtin
  * module members (`zlib.Gzip`) and copies of slotless aliases own none.
  * The `require("events").EventEmitter` and `stream.Writable` spellings
  * keep their own declaration handling. */

@@ -292,6 +292,7 @@ import {
 import {
   STREAM_API_MEMBERS,
   STREAM_OPERATORS,
+  lowerStreamAsyncDisposeCall,
   lowerStreamMethodCall,
   lowerStreamStaticCall,
   streamSidesOf,
@@ -2166,6 +2167,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     if (readlineDispose) return readlineDispose;
     const dirDispose = lowerDirDisposeCall(lowerer, expr);
     if (dirDispose) return dirDispose;
+    const streamDispose = lowerStreamAsyncDisposeCall(lowerer, expr);
+    if (streamDispose) return streamDispose;
     lowerer.fenceUnsupportedFetchConstructorMember(expr.expression);
     lowerer.fenceStaticResponseMember(expr.expression, "call");
     lowerer.fenceStaticHeadersMember(expr.expression, "call");

@@ -37,7 +37,13 @@
   In TypeScript, `new TransformStream()` without arguments builds the identity transform: its readable side is a web `ReadableStream`, its writable side supports `getWriter`, `abort`, `close`, and `locked`, and the writer supports `write`, `close`, `abort`, `releaseLock`, `ready`, `closed`, and `desiredSize`, with Node's backpressure (a write completes when the readable side reads its chunk).
   In TypeScript, `tee`, `pipeTo`, and `pipeThrough`, the `WritableStream` constructor with an underlying sink, and a `TransformStream` with a transformer or queuing strategies compile: a program that uses one of them builds its `ReadableStream`, `WritableStream`, and `TransformStream` values with the same classes as JavaScript, and a `Response` or `Request` body has those members too.
   A TypeScript program that uses only `getReader`, `cancel`, `locked`, and the identity `TransformStream` keeps the smaller native streams.
-  A web stream in a later compose stage and `Readable.toWeb` are unsupported.
+  A web stream in a later compose stage is unsupported.
+  `stream.isDestroyed`, `isErrored`, `isDisturbed`, `isReadable`, and `isWritable`, and `Readable.isDisturbed`, answer for the `node:stream` classes and their subclasses, for file and zlib streams, for an untyped value that holds one of those, and for primitives.
+  For any other value, such as a plain object, a web stream, a socket, an HTTP message, or a process stream, they throw a not-supported error, and for a child-process stream they answer only about the side the stream has.
+  `readableAborted`, `readableDidRead`, `readableEncoding`, and `writableAborted` read as in Node, on a typed stream and through an untyped value.
+  `writableAborted` is `undefined` on a `Duplex`, `Transform`, or `PassThrough`, as in Node, so a `boolean` slot refuses that read with a TypeError.
+  `stream[Symbol.asyncDispose]()` and `await using` work on a value typed as a stream class; on an untyped value they are unsupported.
+  `stream.setDefaultHighWaterMark`, `stream.duplexPair`, `readable.wrap`, `Readable.toWeb`, `Writable.toWeb`, `Writable.fromWeb`, `Duplex.fromWeb`, and `Duplex.toWeb` are unsupported.
   The `ERR_INVALID_ARG_VALUE` message for a stream that is no longer readable or writable names the stream's class instead of printing the stream.
   `readable.compose(stage, { signal })` is `stream.compose(readable, stage)` with the signal added; the options are an object literal whose `signal` is a variable or a property read.
   `pipeline` from `node:stream/promises` accepts a trailing `{ signal, end }` object, with or without function stages, and `finished` accepts `readable`, `writable`, `error`, `cleanup`, and `signal` options, with boolean literals for the flags.

@@ -444,6 +444,7 @@ void scr_lib_init(int argc, char **argv) {
 
 #ifdef SCR_LIB
 static void scr_process_allowed_env_flags_cleanup(void);
+static void scr_process_exec_argv_cleanup(void);
 /* Library builds never call scr_lib_init (a library artifact has no argv and registers no
  * atexit handlers); the interned process values above still intern lazily
  * on first read, so the library reset seam releases them here instead —
@@ -456,6 +457,7 @@ void scr_lib_session_cleanup(void) {
   scr_process_versions_node_cleanup();
   scr_process_versions_openssl_cleanup();
   scr_process_allowed_env_flags_cleanup();
+  scr_process_exec_argv_cleanup();
 }
 #endif
 
@@ -635,11 +637,27 @@ bool scr_lib_take_flag(const char *flag) {
   return true;
 }
 
+/* process.execArgv: +1 on ONE array per thread, like process.argv: Node's
+ * `process.execArgv === process.execArgv` is true and a push is seen by the
+ * next read. */
+static SCR_TL ScrArr *scr_exec_argv_arr = NULL;
+
+static void scr_process_exec_argv_cleanup(void) {
+  scr_arr_release(scr_exec_argv_arr);
+  scr_exec_argv_arr = NULL;
+}
+
 ScrArr *scr_process_exec_argv(void) {
-  ScrArr *arr = scr_arr_new(SCR_ELEM_STR, 1);
-  if (scr_lib_exec_flag)
-    scr_arr_push_ref(arr, scr_str_new(scr_lib_exec_flag, strlen(scr_lib_exec_flag)));
-  return arr;
+  if (!scr_exec_argv_arr) {
+    scr_exec_argv_arr = scr_arr_new(SCR_ELEM_STR, 1);
+    if (scr_lib_exec_flag)
+      scr_arr_push_ref(scr_exec_argv_arr,
+                       scr_str_new(scr_lib_exec_flag, strlen(scr_lib_exec_flag)));
+#ifndef SCR_LIB
+    scr_atexit(scr_process_exec_argv_cleanup);
+#endif
+  }
+  return scr_arr_retain(scr_exec_argv_arr);
 }
 
 /* process.allowedNodeEnvironmentFlags — the option names the

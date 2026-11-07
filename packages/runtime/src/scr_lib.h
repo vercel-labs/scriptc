@@ -276,6 +276,9 @@ ScrStr *scr_process_argv0(void);
 /* process.release: the stable { name, lts, sourceUrl, headersUrl[,
  * libUrl] } object of the compatibility target's release. +1. */
 ScrDyn *scr_process_release(void);
+/* process.features: the stable object of Node's feature flags, holding
+ * the compiled binary's values. +1. */
+ScrDyn *scr_process_features(void);
 /* geteuid(2) / getegid(2) / getgroups(2) (with the effective gid added
  * when missing, like Node). Windows has no such members: the calls throw
  * the TypeError Node's missing member does. */

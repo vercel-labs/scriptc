@@ -955,14 +955,16 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
         ? "scr_dyn_builtin_stream_unbox"
         : e.fn === "stream.unboxDynStage" && host.usesDynBuiltinStream
           ? "scr_dyn_builtin_stream_unbox_stage"
-          : // for await over a checked-dynamic value iterates a native
-            // stream behind it (scr_dyn_for_await_stream.c)
-            e.fn === "dyn.asyncIteratorOpen" && host.dynForAwaitStreams
-            ? "scr_stream_dyn_async_iterator_open"
-            : (e.fn === "dyn.keySet" || e.fn === "dyn.keySetComputed") &&
-                host.sloppyDynWrites.has(`${e.loc.file}\0${e.loc.start}\0${e.loc.end}`)
-              ? `${LIB_FN_SYMS[e.fn]}_sloppy`
-              : LIB_FN_SYMS[e.fn]);
+          : e.fn === "stream.isDyn" && host.usesDynBuiltinStream
+            ? "scr_dyn_builtin_stream_util_is"
+            : // for await over a checked-dynamic value iterates a native
+              // stream behind it (scr_dyn_for_await_stream.c)
+              e.fn === "dyn.asyncIteratorOpen" && host.dynForAwaitStreams
+              ? "scr_stream_dyn_async_iterator_open"
+              : (e.fn === "dyn.keySet" || e.fn === "dyn.keySetComputed") &&
+                  host.sloppyDynWrites.has(`${e.loc.file}\0${e.loc.start}\0${e.loc.end}`)
+                ? `${LIB_FN_SYMS[e.fn]}_sloppy`
+                : LIB_FN_SYMS[e.fn]);
   if (sym === undefined) throw new LlvmUnsupportedError(`libCall:${e.fn}`, e.loc);
   // The runtime's Date functions take and answer time values: a Date
   // operand passes its time value, read at once from the borrowed object,

@@ -57,12 +57,7 @@ import { fenceEarlyNsMemberRef, nsMemberIdentOf } from "../lower-namespaces.js";
 import { maybePromiseInstanceOf } from "../maybe-promise.js";
 import { lowerGlobalObjectValue } from "../lower-global-value.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
-import {
-  inOperatorTypeError,
-  isBuiltinIdentityToken,
-  isPrimitiveValueType,
-  throwAfterEach,
-} from "../primitive-throws.js";
+import { inOperatorTypeError, isPrimitiveValueType, throwAfterEach } from "../primitive-throws.js";
 import { partialFieldPresence } from "../partial-assertions.js";
 import {
   classDeclaresHasInstanceHook,
@@ -78,11 +73,8 @@ import { isJsSourceFile, locOf } from "../../program.js";
 import { checkedClassInstanceOf } from "../class-construction.js";
 import { unsupportedDiag } from "../../../diagnostics/diagnostic.js";
 import { globalSymbolKey } from "./global-symbols.js";
-import {
-  hostAbsentInstall,
-  isGlobalObjectRead,
-  NODE_GLOBALS_WITHOUT_NATIVE,
-} from "../host-globals.js";
+import { hostAbsentInstall, isGlobalObjectRead } from "../host-globals.js";
+import { globalObjectPresentNamesArg } from "../global-object-names.js";
 import { hasGlobalFunctionValue } from "../global-function-values.js";
 import { builtinGlobalHasKey } from "../builtins/global-namespace-keys.js";
 import { foldedStringKeyOf } from "./object-literals.js";
@@ -807,8 +799,7 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     }
     // A builtin global function value read off the global (`parseInt`,
     // `Symbol`, `WeakRef`, ...) is not a class value: the boxed value has
-    // no prototype to test against, so the test keeps the refusal the
-    // global's identity token answered.
+    // no prototype to test against, so the test is refused.
     if (
       isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
       hasGlobalFunctionValue(stdlibGlobalNameOf(lowerer, expr.right) ?? "")
@@ -2098,6 +2089,101 @@ function fieldInitializerAnswer(
   return { kind: "fixed", value: inside };
 }
 
+/** `key in <global object>` with a key that is not statically a symbol:
+ * presence on the runtime's global object, whose answer is the program's own
+ * global properties, then the names Node's global object has
+ * (globalObjectPresentNamesArg). Node HAS the globals the native runtime
+ * does not implement, so their answer must not be a silent false: arming the
+ * compiler's derived set makes the runtime throw for them (host-globals.ts).
+ * A literal key and a computed one take the same query: a literal names a
+ * property the program may have added. A key that may hold a symbol at run
+ * time reaches the global object's symbol store instead. Null when
+ * `receiver` is not the global object or the key is a symbol. Also the
+ * lowering of `Reflect.has(<global object>, key)`, the same query. */
+export function lowerInGlobalObject(
+  lowerer: Lowerer,
+  keyNode: ts.Expression,
+  receiver: ts.Expression,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (
+    !isGlobalObjectRead(lowerer, receiver) ||
+    lowerer.mapTypeOf(lowerer.typeOf(keyNode))?.kind === "symbol"
+  )
+    return null;
+  const inGlobalKey = foldedStringKeyOf(lowerer, keyNode);
+  const present = globalObjectPresentNamesArg(lowerer, receiver, loc);
+  const globalHas = (key: IrExpr): IrExpr => ({
+    kind: "libCall",
+    fn: "dyn.globalHas",
+    args: [key, present],
+    type: BOOL,
+    loc,
+  });
+  const installedHas = (key: IrExpr): IrExpr => ({
+    kind: "seqExpr",
+    stmts: [{ kind: "exprStmt", expr: hostAbsentInstall(loc), loc }],
+    result: globalHas(key),
+    type: BOOL,
+    loc,
+  });
+  if (inGlobalKey !== null)
+    return installedHas({ kind: "strLit", value: inGlobalKey, type: STRING, loc });
+  // JS evaluates the key before the receiver; the receiver is the global
+  // object, whose evaluation has no effects, so lowering the key first is
+  // the whole evaluation order.
+  const lowered = lowerer.lowerExpr(keyNode);
+  if (lowered.type.kind === "string") return installedHas(lowered);
+  // A key the type cannot prove to be a string may hold a symbol at
+  // runtime, and a symbol is an identity, not a name: it must reach the
+  // global object's symbol store rather than the string conversion (which
+  // throws for a symbol). The boxed key is stabilized first; the answer is
+  // the same presence query the dynamic path gives.
+  const keyLocal = lowerer.declareHiddenLocal("%inKey", DYN);
+  const boxedKey = varRef(keyLocal.id, DYN, loc);
+  return {
+    kind: "seqExpr",
+    stmts: [
+      { kind: "exprStmt", expr: hostAbsentInstall(loc), loc },
+      {
+        kind: "varDecl",
+        localId: keyLocal.id,
+        init: lowerer.coerceInto(keyNode, lowered, DYN),
+        loc,
+      },
+    ],
+    result: {
+      kind: "ternary",
+      cond: {
+        kind: "strEq",
+        negated: false,
+        left: { kind: "libCall", fn: "dyn.typeof", args: [boxedKey], type: STRING, loc },
+        right: { kind: "strLit", value: "symbol", type: STRING, loc },
+        type: BOOL,
+        loc,
+      },
+      then: {
+        kind: "libCall",
+        fn: "dyn.hasKeyComputed",
+        args: [lowerGlobalObjectValue(lowerer, receiver, locOf(receiver)), boxedKey],
+        type: BOOL,
+        loc,
+      },
+      else_: globalHas({
+        kind: "libCall",
+        fn: "dyn.toStringCoerce",
+        args: [boxedKey],
+        type: STRING,
+        loc,
+      }),
+      type: BOOL,
+      loc,
+    },
+    type: BOOL,
+    loc,
+  };
+}
+
 /** `"key" in v` — the key-presence test. Three lowered receivers:
  * process.env (getenv(3) presence — Node-exact, an empty value still
  * counts as present), and monomorphic record shapes, where the answer is
@@ -2138,84 +2224,9 @@ export function lowerInExpression(
   if (ts.isPrivateIdentifier(expr.left)) {
     return lowerPrivateIn(lowerer, expr, expr.left, loc);
   }
-  // `… in <global object>`: presence on the runtime's global object. Node HAS
-  // the globals the native runtime does not implement, so the answer must not
-  // be a silent false — arming the compiler's derived set makes the runtime
-  // throw for them (host-globals.ts) and answer the global object's own
-  // presence otherwise. A symbol key keeps its checked-dynamic path below;
-  // this answer is keyed by a string.
-  const inGlobalKey = foldedStringKeyOf(lowerer, expr.left);
-  if (
-    isGlobalObjectRead(lowerer, expr.right) &&
-    lowerer.mapTypeOf(lowerer.typeOf(expr.left))?.kind !== "symbol" &&
-    // A static key the runtime already answers correctly (a name Node does
-    // not define) keeps its existing lowering, byte for byte.
-    (inGlobalKey === null || NODE_GLOBALS_WITHOUT_NATIVE.has(inGlobalKey))
-  ) {
-    const installedHas = (key: IrExpr): IrExpr => ({
-      kind: "seqExpr",
-      stmts: [{ kind: "exprStmt", expr: hostAbsentInstall(loc), loc }],
-      result: { kind: "libCall", fn: "dyn.globalHas", args: [key], type: BOOL, loc },
-      type: BOOL,
-      loc,
-    });
-    if (inGlobalKey !== null)
-      return installedHas({ kind: "strLit", value: inGlobalKey, type: STRING, loc });
-    // JS evaluates the key before the receiver; the receiver is the global
-    // object, whose evaluation has no effects, so lowering the key first is
-    // the whole evaluation order.
-    const lowered = lowerer.lowerExpr(expr.left);
-    if (lowered.type.kind === "string") return installedHas(lowered);
-    // A key the type cannot prove to be a string may hold a symbol at
-    // runtime, and a symbol is an identity, not a name: it must reach the
-    // global object's symbol store rather than the string conversion (which
-    // throws for a symbol). The boxed key is stabilized first; the answer is
-    // the same presence query the dynamic path gives.
-    const keyLocal = lowerer.declareHiddenLocal("%inKey", DYN);
-    const boxedKey = varRef(keyLocal.id, DYN, loc);
-    return {
-      kind: "seqExpr",
-      stmts: [
-        { kind: "exprStmt", expr: hostAbsentInstall(loc), loc },
-        {
-          kind: "varDecl",
-          localId: keyLocal.id,
-          init: lowerer.coerceInto(expr.left, lowered, DYN),
-          loc,
-        },
-      ],
-      result: {
-        kind: "ternary",
-        cond: {
-          kind: "strEq",
-          negated: false,
-          left: { kind: "libCall", fn: "dyn.typeof", args: [boxedKey], type: STRING, loc },
-          right: { kind: "strLit", value: "symbol", type: STRING, loc },
-          type: BOOL,
-          loc,
-        },
-        then: {
-          kind: "libCall",
-          fn: "dyn.hasKeyComputed",
-          args: [lowerGlobalObjectValue(lowerer, expr.right, locOf(expr.right)), boxedKey],
-          type: BOOL,
-          loc,
-        },
-        else_: {
-          kind: "libCall",
-          fn: "dyn.globalHas",
-          args: [
-            { kind: "libCall", fn: "dyn.toStringCoerce", args: [boxedKey], type: STRING, loc },
-          ],
-          type: BOOL,
-          loc,
-        },
-        type: BOOL,
-        loc,
-      },
-      type: BOOL,
-      loc,
-    };
+  {
+    const inGlobal = lowerInGlobalObject(lowerer, expr.left, expr.right, loc);
+    if (inGlobal !== null) return inGlobal;
   }
   // Compile-time-known STRING keys fold — literals, and the same
   // const/enum-literal and template folding computed property keys get
@@ -2467,7 +2478,7 @@ export function lowerInExpression(
   // that reaches here, so only the receiver's own evaluation remains. The
   // message spells the receiver's value, so a receiver the IR cannot
   // re-evaluate (`receiver()`) evaluates once into a hidden local.
-  if (isPrimitiveValueType(recv.type) && !isBuiltinIdentityToken(lowerer, expr.right, recv)) {
+  if (isPrimitiveValueType(recv.type)) {
     if (isUnitType(recv.type) || isSafeToRepeat(recv)) {
       return throwAfterEach([recv], inOperatorTypeError(lowerer, key, recv, BOOL, loc), loc);
     }

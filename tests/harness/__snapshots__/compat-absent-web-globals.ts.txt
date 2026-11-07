@@ -1,0 +1,62 @@
+compat-absent-web-globals.ts:5:21 - error SC0001: Cannot find name 'BroadcastChannel'.
+
+  4 | // rather than an unverified registry gap.
+  5 | const channel = new BroadcastChannel("updates");
+    |                     ^~~~~~~~~~~~~~~~
+  6 | channel.close();
+
+compat-absent-web-globals.ts:8:20 - error SC0001: Cannot find name 'EventSource'.
+
+  7 | 
+  8 | const events = new EventSource("http://localhost:1/stream");
+    |                    ^~~~~~~~~~~
+  9 | events.close();
+
+compat-absent-web-globals.ts:11:20 - error SC0001: Cannot find name 'WebSocket'. Did you mean 'socket'?
+
+  10 | 
+  11 | const socket = new WebSocket("ws://localhost:1");
+     |                    ^~~~~~~~~
+  12 | socket.close();
+
+compat-absent-web-globals.ts:14:21 - error SC0001: Cannot find name 'URLPattern'. Did you mean 'pattern'?
+
+  13 | 
+  14 | const pattern = new URLPattern({ pathname: "/books/:id" });
+     |                     ^~~~~~~~~~
+  15 | console.log(pattern.test("http://localhost/books/1"));
+
+compat-absent-web-globals.ts:17:18 - error SC0001: Cannot find name 'CompressionStream'.
+
+  16 | 
+  17 | const gzip = new CompressionStream("gzip");
+     |                  ^~~~~~~~~~~~~~~~~
+  18 | const gunzip = new DecompressionStream("gzip");
+
+compat-absent-web-globals.ts:18:20 - error SC0001: Cannot find name 'DecompressionStream'.
+
+  17 | const gzip = new CompressionStream("gzip");
+  18 | const gunzip = new DecompressionStream("gzip");
+     |                    ^~~~~~~~~~~~~~~~~~~
+  19 | console.log(typeof gzip.readable, typeof gunzip.writable);
+
+compat-absent-web-globals.ts:24:18 - error SC0001: Cannot find name 'PerformanceMark'. Did you mean 'performance'?
+
+  23 | // perf_hooks rows); the three global classes are not.
+  24 | const mark = new PerformanceMark("m");
+     |                  ^~~~~~~~~~~~~~~
+  25 | console.log(mark instanceof PerformanceEntry, mark instanceof PerformanceMeasure);
+
+compat-absent-web-globals.ts:25:29 - error SC0001: Cannot find name 'PerformanceEntry'. Did you mean 'performance'?
+
+  24 | const mark = new PerformanceMark("m");
+  25 | console.log(mark instanceof PerformanceEntry, mark instanceof PerformanceMeasure);
+     |                             ^~~~~~~~~~~~~~~~
+  26 | 
+
+compat-absent-web-globals.ts:25:63 - error SC0001: Cannot find name 'PerformanceMeasure'.
+
+  24 | const mark = new PerformanceMark("m");
+  25 | console.log(mark instanceof PerformanceEntry, mark instanceof PerformanceMeasure);
+     |                                                               ^~~~~~~~~~~~~~~~~~
+  26 | 

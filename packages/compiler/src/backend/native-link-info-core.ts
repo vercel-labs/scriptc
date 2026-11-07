@@ -69,6 +69,9 @@ export interface NativeLinkFeatures {
   /** A write completion callback takes the error argument: links the
    * SCR_STREAM_WRITE_ERRORS build of the stream unit. */
   streamWriteErrors?: boolean;
+  /** The program pipes or unpipes a stream: links scr_stream_pipe_events.c,
+   * which installs Node's pipe lifecycle into the stream unit. */
+  streamPipeEvents?: boolean;
   /** The program reaches the process output streams' write slot: links the
    * SCR_STDIO_WRITE_SLOT build of the events unit. */
   stdioWriteSlot?: boolean;
@@ -112,6 +115,9 @@ export interface NativeLinkFeatures {
   /** ChildProcess listener removal and signalCode link scr_child_lifecycle.c;
    * absent (false) otherwise. */
   childLifecycle?: boolean;
+  /** process.features read as a value links scr_process_features.c (the
+   * stable flags object); absent (false) otherwise. */
+  processFeatures?: boolean;
   /** The spawnSync and exec/execFile-callback `cwd`/`input`/`shell`
    * entries: selects the SCR_CHILD_CP_OPTIONS build of scr_child.c.
    * Absent (false) otherwise. */
@@ -123,6 +129,10 @@ export interface NativeLinkFeatures {
    * path, spawnargs) select scr_child.c's SCR_CHILD_ERR_FIELDS build; absent
    * (false) otherwise. */
   childErrorFields?: boolean;
+  /** pause(), resume(), isPaused() or readableFlowing on a child's output
+   * stream selects scr_child.c's SCR_CHILD_STREAM_FLOW build; absent (false)
+   * otherwise. */
+  childStreamFlow?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
   /** The executable carries debug sources (`--optimization dev` without

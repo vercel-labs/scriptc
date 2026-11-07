@@ -99,6 +99,7 @@ import { scanDivergences } from "./divergences.js";
 import { applyKeyOrderWitnesses, KeyOrderNotes } from "./key-order-witness.js";
 import { installBuiltinStatics } from "./builtin-statics.js";
 import type { BuiltinModuleNamespaceFlavor } from "./builtin-module-members.js";
+import { unloweredModuleMemberValue } from "./node-value-reads.js";
 import { foldRecordSourceTests, programKeepsRecordSources } from "./record-sources.js";
 import { exprFunctionReference, withoutUnreachedFunctions } from "../../ir/function-references.js";
 import { everyStmtList, observeRecordLiteralRebuilds } from "../../ir/traverse.js";
@@ -318,6 +319,7 @@ import {
   isCheckerPanic,
   genericSignatureTypeDiag,
   hostGlobalDiag,
+  nodeValueDiag,
   indexSignatureTypeDiag,
   intersectionTypeDiag,
   noLoweringDiag,
@@ -466,7 +468,12 @@ import {
   appendForkModules,
   appendWorkerModules,
 } from "./lower-modules.js";
-import { prepareCjsModuleGraph, usesCjsTopLevelThis } from "./lower-node-module.js";
+import {
+  isNodeModuleHandle,
+  prepareCjsModuleGraph,
+  untypedModuleValueFence,
+  usesCjsTopLevelThis,
+} from "./lower-node-module.js";
 import {
   type SplitRequireBinding,
   cjsHasLiveMemberExports,
@@ -619,6 +626,7 @@ import {
   createRequireSpecOf,
   fencedBuiltinImportOf,
   esmImportBindingKind,
+  namespaceNonExportRead,
 } from "./builtins/module-bindings.js";
 import { lowerBuiltinModuleCall } from "./builtins/module-calls.js";
 import { lowerTimersPromisesSetInterval, lowerTimeoutMethodCall } from "./builtins/timers.js";
@@ -4642,6 +4650,9 @@ export class Lowerer {
   /** global-values.ts's answer: the names the program's global lookup
    * answers; undefined until asked. */
   globalLookupNames: readonly string[] | undefined = undefined;
+  /** node-value-reads.ts's answer per global object (`process`,
+   * `performance`): whether a JavaScript source reads it as a value. */
+  readonly nodeObjectValueReads = new Map<string, boolean>();
   /** web-streams-dyn.ts's answer: whether a JavaScript source names a web
    * stream class; undefined until asked. */
   namesWebStreamClass: boolean | undefined = undefined;
@@ -5396,6 +5407,7 @@ export class Lowerer {
     "computedGlobalReads",
     "sloppyThisGlobalReads",
     "globalLookupNames",
+    "nodeObjectValueReads",
     "namesWebStreamClass",
     "typedWebStreams",
     "timeValueDateDecisions",
@@ -14042,6 +14054,13 @@ export class Lowerer {
     throw new PoisonError();
   }
 
+  /** A JavaScript read of a Node value native code has no value for
+   * (node-values.ts): Node defines it, so the read is refused by name. */
+  nodeValueFence(surface: string, node: ts.Node, hint?: string): never {
+    this.pushDiag(nodeValueDiag(surface, locOf(node), hint));
+    throw new PoisonError();
+  }
+
   /** A read of a Node 24 global the native runtime does not implement
    * (host-globals.ts): refusing is the honest answer, and the reason id
    * lets a Node island run the module instead. */
@@ -15808,6 +15827,19 @@ export class Lowerer {
     payloadSite?: IrType,
   ): IrExpr {
     refuseInferredCallbackDrops(this, node, expr.type, expected);
+    // The CommonJS module object is a handle (a number) wherever its type
+    // is known; an untyped slot would hold that number, where Node holds
+    // the object (`typeof` of it is "object", its keys are the module's).
+    // Only a program with a CommonJS module record has such a value, so
+    // every other program skips the type query.
+    if (
+      expected.kind === "dyn" &&
+      this.cjsModuleIdOf.size > 0 &&
+      (expr.type.kind === "f64" || expr.type.kind === "union") &&
+      isNodeModuleHandle(this, node)
+    ) {
+      untypedModuleValueFence(this, node);
+    }
     // A binding the checker types as the console object (`const c =
     // console`, a `Console` parameter) into a record of its members: the
     // same member-by-name copy the direct `console` spelling takes
@@ -20423,6 +20455,15 @@ export class Lowerer {
     }
     const bi = this.builtinMemberOf(expr);
     if (!bi) return null;
+    // A TypeScript read through an ES module namespace of a name Node's
+    // namespace object does not export (`zlib.Z_NO_FLUSH`): refused by name.
+    {
+      const refusal = namespaceNonExportRead(this, expr, bi.module, bi.member);
+      if (refusal !== null) {
+        this.pushDiag(refusal);
+        throw new PoisonError();
+      }
+    }
     if (
       (bi.module === "path" || bi.module === "path/posix" || bi.module === "path/win32") &&
       (bi.member === "posix" || bi.member === "win32")
@@ -20498,7 +20539,7 @@ export class Lowerer {
     // === globalThis.ReadableStream`) read in JavaScript sources as their
     // global spelling does.
     if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
-      const global = globalMemberValue(this, bi, loc);
+      const global = globalMemberValue(this, bi, expr, loc);
       if (global) return global;
     }
     // A bare `fs.constants` read (not one of the baked bits above).
@@ -20509,7 +20550,8 @@ export class Lowerer {
       const classKind = builtinMemberClassKind(bi.module, bi.member);
       if (classKind !== null) return builtinClassValue(classKind, loc);
     }
-    if (builtinModuleFnOf(this, bi.module, bi.member)) {
+    const js = isJsSourceFile(ts.getSourceFileOfNode(expr));
+    if (!js && builtinModuleFnOf(this, bi.module, bi.member)) {
       this.unsupported(
         "SC1090",
         expr,
@@ -20525,6 +20567,11 @@ export class Lowerer {
         return { kind: "moduleNsRef", moduleId: type.moduleId, type, loc };
       }
     }
+    // A JavaScript source reads what Node's kind of value calls for
+    // (node-value-reads.ts): a function is a function value that refuses
+    // when it is called, a name the module does not have reads undefined,
+    // any other value is refused by name.
+    if (js) return unloweredModuleMemberValue(this, bi, expr, loc, false);
     this.noLowering(
       `${bi.module}.${bi.member}`,
       expr,

@@ -536,6 +536,66 @@ describe("runtime feature snapshots", () => {
     });
   });
 
+  test("gates Node's pipe lifecycle on a pipe, an unpipe or a pipeline", () => {
+    // A stream program that never pipes links the stream unit alone.
+    const writer = module();
+    writer.functions[0]!.body.push(call("writable.write"));
+    expect(moduleRuntimeFeatures(writer)).toMatchObject({ stream: true, streamPipeEvents: false });
+
+    const piping = ["readable.pipe", "readable.unpipe", "stream.pipeline", "sp.pipeline"] as const;
+    for (const fn of piping) {
+      const mod = module();
+      mod.functions[0]!.body.push(call(fn));
+      expect(moduleRuntimeFeatures(mod).streamPipeEvents).toBe(true);
+    }
+
+    // A member named pipe called on an untyped value can reach a native
+    // stream's own method.
+    const untyped = module();
+    untyped.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: {
+        kind: "dynInvoke",
+        recv: { kind: "unitLit", unit: "undefined", type: DYN, loc },
+        method: "pipe",
+        calleeName: "source.pipe",
+        args: [],
+        type: DYN,
+        loc,
+      },
+    });
+    expect(moduleRuntimeFeatures(untyped).streamPipeEvents).toBe(true);
+  });
+
+  test("gates the process.features object on reading it as a value", () => {
+    // Member reads are constants; only the value form links the unit.
+    const reader = module();
+    reader.functions[0]!.body.push(call("process.features"));
+    expect(moduleRuntimeFeatures(reader).processFeatures).toBe(true);
+    expect(moduleRuntimeFeatures(module()).processFeatures).toBe(false);
+  });
+
+  test("gates a child stream's flowing state on pausing, resuming or reading it", () => {
+    // Each of the four members selects scr_child.c's SCR_CHILD_STREAM_FLOW
+    // build; a program that only listens to a child's output keeps the
+    // default object.
+    for (const fn of [
+      "stream.childPause",
+      "stream.childResume",
+      "stream.childIsPaused",
+      "stream.childFlowing",
+    ] as const) {
+      const flow = module();
+      flow.functions[0]!.body.push(call(fn));
+      expect(moduleRuntimeFeatures(flow).childStreamFlow).toBe(true);
+    }
+
+    const listener = module();
+    listener.functions[0]!.body.push(call("stream.onEnd"));
+    expect(moduleRuntimeFeatures(listener).childStreamFlow).toBe(false);
+  });
+
   test("installs a failed spawn's error object only where an 'error' listener can be registered", () => {
     // The fact decides the emitted scr_child_error_event_install call: a
     // program that only spawns keeps the settle path's hook empty and links

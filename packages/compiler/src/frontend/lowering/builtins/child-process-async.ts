@@ -14,6 +14,7 @@ import {
   SPAWNRES_T,
   STRING,
   type SrcLoc,
+  VOID,
   arrayOf,
 } from "../../../ir/ir.js";
 import { optionMember } from "./arguments.js";
@@ -29,7 +30,8 @@ import { execResultShape } from "../../type-mapper.js";
  * promisified execFile/exec behind an already-settled promise (the
  * fs/promises stance, divergence 23). Options are the exec-sync slice minus stdio (the async form always
  * captures both streams, no echo): encoding must spell utf8, cwd/env/
- * timeout lower, maxBuffer/windowsHide are accepted no-ops, killSignal
+ * timeout lower, maxBuffer limits each stream (Node's RangeError
+ * ERR_CHILD_PROCESS_STDIO_MAXBUFFER; 1 MiB without it), windowsHide is a no-op, killSignal
  * only as its SIGTERM default. Rejections carry Node's async messages
  * ("Command failed: <cmd>\n<stderr>" — the trailing newline is Node's —
  * and "spawn <file> ENOENT" with .code); Node's numeric `.code` on a
@@ -86,6 +88,8 @@ export function lowerExecFileAsyncCall(
   let cwd: IrExpr = emptyStr;
   let env: IrExpr = envRec(false, emptyPairs());
   let timeout: IrExpr = numLit(0, loc);
+  // Node's default maxBuffer for exec and execFile.
+  let maxBuffer: IrExpr = numLit(1024 * 1024, loc);
   if (optsNode) {
     if (!ts.isObjectLiteralExpression(optsNode)) {
       lowerer.noLowering(
@@ -162,7 +166,7 @@ export function lowerExecFileAsyncCall(
           timeout = lowerer.lowerExprExpecting(m.value, F64);
           break;
         case "maxBuffer":
-          lowerer.lowerExpr(m.value); // accepted, not enforced (divergence 50)
+          maxBuffer = lowerer.lowerExprExpecting(m.value, F64);
           break;
         case "windowsHide":
           lowerer.lowerExpr(m.value); // Node no-op on POSIX
@@ -188,14 +192,15 @@ export function lowerExecFileAsyncCall(
     }
   }
   // Node's promisified function calls execFile before it returns its
-  // promise, so an argument execFile refuses throws from the call itself;
-  // the check therefore sits at the call, outside the async helper.
+  // promise, so an argument execFile refuses, or an invalid maxBuffer,
+  // throws from the call itself; the checks therefore sit at the call,
+  // outside the async helper, which arms the limit for its capture.
   return withChildArgsCheck(
     lowerer,
     {
       kind: "call",
       callee: helper.name,
-      args: [cmd, argv, cwd, env, timeout],
+      args: [cmd, argv, cwd, env, timeout, maxBuffer],
       type: { kind: "promise", inner: { kind: "record", shapeId: helper.shapeId } },
       loc,
     },
@@ -216,6 +221,7 @@ export function lowerExecFileAsyncCall(
           type: arrayOf(STRING),
           loc,
         },
+        maxBuffer: { value: a[5]!, arm: false, sync: false },
       };
     },
     loc,
@@ -224,7 +230,8 @@ export function lowerExecFileAsyncCall(
 
 /** The interned `%execFileAsync` helper behind promisified-execFile
  * calls (`%execAsync`, with `shell`, behind promisified-exec ones): an
- * ASYNC IR function (params: cmd, argv, cwd, env {has, pairs}, timeoutMs)
+ * ASYNC IR function (params: cmd, argv, cwd, env {has, pairs}, timeoutMs,
+ * maxBuffer)
  * whose body runs the may-throw cp.execCapture libCall — the async
  * machinery turns a throw into the rejection, Node's promisified
  * behavior — and returns the `{ stdout, stderr }` record built from the
@@ -252,6 +259,18 @@ function execFileAsyncHelper(
   const strArrT = arrayOf(STRING);
 
   const body: IrStmt[] = [
+    // The limit of the capture that follows.
+    {
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "cp.maxBuffer",
+        args: [varRef("maxBuffer.0", F64, loc), boolLit(true, loc)],
+        type: VOID,
+        loc,
+      },
+      loc,
+    },
     {
       kind: "varDecl",
       localId: "r.0",
@@ -326,6 +345,7 @@ function execFileAsyncHelper(
       { localId: "cwd.0", name: "cwd", type: STRING },
       { localId: "env.0", name: "env", type: envRecT },
       { localId: "timeout.0", name: "timeout", type: F64 },
+      { localId: "maxBuffer.0", name: "maxBuffer", type: F64 },
     ],
     returnType: recT,
     async: true,
@@ -335,6 +355,7 @@ function execFileAsyncHelper(
       { id: "cwd.0", name: "cwd", type: STRING, mutable: false },
       { id: "env.0", name: "env", type: envRecT, mutable: false },
       { id: "timeout.0", name: "timeout", type: F64, mutable: false },
+      { id: "maxBuffer.0", name: "maxBuffer", type: F64, mutable: false },
       { id: "r.0", name: "r", type: SPAWNRES_T, mutable: false },
     ],
     body,

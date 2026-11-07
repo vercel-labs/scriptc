@@ -8,6 +8,7 @@ import { chmod, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promise
 import { availableParallelism, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import {
+  executableHardeningLinkerArgs,
   executableOptimizationLinkerArgs,
   executableStripLinkerArgs,
   windowsSubsystemLinkerArgs,
@@ -405,6 +406,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.reflectProtoTarget === true, "scr_dyn_reflect_proto.c"),
   // `delete` of a key a record's type does not declare.
   unit((u) => u.opts.recordSourceDelete === true, "scr_record_source_delete.c"),
+  // Record views of types whose values may also be frozen.
+  unit((u) => u.opts.recordViewFrozen === true, "scr_record_view_frozen.c"),
   // The declaration-typed boundary's adoption.
   unit((u) => u.opts.declAdopt === true, "scr_decl_adopt.c"),
   unit((u) => u.opts.typeOrigins === true, "scr_type_origin.c"),
@@ -630,7 +633,8 @@ export async function compileCInternal(
   );
   const executableLinkFlags = [
     ...executableSectionFlags.link,
-    ...executableOptimizationLinkerArgs(targetPlatform(driver), optimization),
+    ...executableHardeningLinkerArgs(targetPlatform(driver), isMuslTarget(driver)),
+    ...executableOptimizationLinkerArgs(targetPlatform(driver), optimization, isMuslTarget(driver)),
     ...executableStripLinkerArgs(targetPlatform(driver), opts.strip ?? false),
     ...windowsSubsystemArgs,
   ];

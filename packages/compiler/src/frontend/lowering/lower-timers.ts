@@ -17,6 +17,7 @@ import {
   type SrcLoc,
   typeKey,
 } from "../../ir/ir.js";
+import type { IrLibFn } from "../../ir/builtin-signatures.js";
 import { buildFunctionAdapter } from "./coercions/builders.js";
 import { lowerOptionalNumber } from "./lower-exprs.js";
 import type { Lowerer } from "./lowerer.js";
@@ -396,7 +397,7 @@ function optionalTimerHandle(lowerer: Lowerer, handle: IrExpr, loc: SrcLoc): IrE
   return { kind: "nullish", left: handle, right: numLit(0, loc), type: F64, loc };
 }
 
-const MOCKABLE_TIMER_FNS: ReadonlySet<string> = new Set([
+const MOCKABLE_TIMER_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "timers.setTimeout",
   "timers.setTimeoutHandle",
   "timers.setInterval",

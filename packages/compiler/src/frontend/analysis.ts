@@ -9,6 +9,7 @@ import { resolveBareModule } from "./resolve.js";
 import { readProjectConfig } from "../project-config.js";
 import { type NodeIslandSet, nodeIslandSet } from "../node-islands/boundary.js";
 import { packageDirOf } from "../node-islands/origin.js";
+import { checkPackageMarks, commandLinePackageMarks } from "../node-islands/package-marks.js";
 import { nodeIslandPolicy } from "../node-islands/policy.js";
 import { buildNodeIslandReport, reportIslandSet } from "../node-islands/report.js";
 import { hasNodeIslandFindings } from "../node-islands/summary.js";
@@ -127,6 +128,31 @@ export function analyzeWithFrontend(
     // One scan of the program decides every island question below: the
     // lowering's set, the graph-proven growth of it, and the final report.
     const scan = fe.nodeIslandScan?.({ userJs: policy.strictUserJs });
+    // A --native or --npm-static mark a build refuses
+    // (node-islands/package-marks.ts) is reported here too, instead of a
+    // program the build stops on. A --npm-static name the program does not
+    // load selects nothing: it is not listed as a compiled package.
+    const marks =
+      scan === undefined
+        ? null
+        : checkPackageMarks(entryPath, commandLinePackageMarks(policy, opts.npmStatic), scan);
+    if (marks !== null && marks.problems.length > 0) {
+      return {
+        coverage: {
+          file: entryPath,
+          stats: emptyStats,
+          diagnostics: marks.problems,
+          preflightFailed: true,
+        },
+        sourceTexts: fe.sourceTexts(),
+      };
+    }
+    const compiledPackages =
+      marks === null || marks.unloaded.size === 0
+        ? fe.npmStatic
+        : fe.npmStatic.filter(
+            (entry) => entry.status !== "static" || !marks.unloaded.has(entry.package),
+          );
     const lowerIslands =
       scan === undefined
         ? null
@@ -291,7 +317,7 @@ export function analyzeWithFrontend(
         ...(lowered.performance !== undefined ? { performance: lowered.performance } : {}),
         ...(lowered.dynamicSlots !== undefined ? { dynamicSlots: lowered.dynamicSlots } : {}),
         ...(lowered.unreached ? { unreached: lowered.unreached } : {}),
-        ...(fe.npmStatic.length > 0 ? { npmStatic: fe.npmStatic } : {}),
+        ...(compiledPackages.length > 0 ? { npmStatic: compiledPackages } : {}),
         // --provenance-sources: the per-package attribution inputs (the
         // report aggregates statsByFile under each package's source dir).
         ...(provenance !== null ? { provenance } : {}),

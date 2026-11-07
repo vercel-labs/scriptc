@@ -329,18 +329,20 @@ export function variadicBoundaryFits(
  * variadic-functions.ts finds the stores once lowering ends. */
 export const VARIADIC_ADAPTER_PREFIX = "%fn.variadic";
 
-/** The adapter for variadicBoundaryFits: box the function and call it with
- * the slot's arguments as its argument list, under the receiver the slot
- * was called with. Each argument becomes an untyped value through the
- * slot conversion (coerceToExpected), which keeps an array's or a record's
+/** The adapter for variadicBoundaryFits: call the boxed function with the
+ * slot's arguments as its argument list, under the receiver the slot was
+ * called with. The factory takes the function already boxed (adaptedFunction
+ * boxes it where the value is stored), which makes the closure a checked
+ * adapter: made untyped again it is the original function, so untyped code
+ * calls that with every argument it passes, and `===` and searches see the
+ * one function. Each argument becomes an untyped value through the slot
+ * conversion (coerceToExpected), which keeps an array's or a record's
  * identity, so a write the function makes reaches the caller's object as
  * it does in a direct call; the backend's own adapter from an untyped
  * function to a typed signature copies them instead. A rest slot's array
  * spreads into the list, so the function sees every argument the caller
  * passed. The result is dropped for a `void` slot and checked into any
- * other result type; a promise keeps its identity. The adapter closure
- * takes the function's identity, so `===` and searches still see the one
- * function. */
+ * other result type; a promise keeps its identity. */
 function variadicBoundaryAdapter(
   lowerer: Lowerer,
   fromT: IrType & { kind: "func" },
@@ -380,12 +382,7 @@ function variadicBoundaryAdapter(
     });
     const call: IrExpr = {
       kind: "dynCall",
-      callee: {
-        kind: "dynFrom",
-        value: { kind: "varRef", localId: "f.0", type: fromT, loc },
-        type: DYN,
-        loc,
-      },
+      callee: { kind: "varRef", localId: "f.0", type: DYN, loc },
       receiver: { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
       calleeName: "value",
       args,
@@ -410,9 +407,19 @@ function variadicBoundaryAdapter(
     lowerer.fnStack.pop();
   }
   lowerer.liftedFns.push(
-    ...buildFunctionAdapter(name, fromT, toT, params, context.locals, body, loc),
+    ...buildFunctionAdapter(name, { kind: "dyn" }, toT, params, context.locals, body, loc),
   );
   return name;
+}
+
+/** The function `value` adapted to the slot type `type` by the adapter
+ * funcCoerceAdapter answered: the adapter's factory applied to the value,
+ * boxed first for the variadic adapter, which calls the boxed function. */
+export function adaptedFunction(adapter: string, value: IrExpr, type: IrType, loc: SrcLoc): IrExpr {
+  const original: IrExpr = adapter.startsWith(`${VARIADIC_ADAPTER_PREFIX}.`)
+    ? { kind: "dynFrom", value, type: DYN, loc }
+    : value;
+  return { kind: "call", callee: adapter, args: [original], type, loc };
 }
 
 /** Whether a typed-rest function (`(...m: T[]) => R`) can serve a slot

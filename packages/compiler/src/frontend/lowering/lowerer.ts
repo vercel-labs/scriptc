@@ -171,6 +171,7 @@ import {
   coercibleValue,
   cleanFuncAdaptable,
   funcCoerceAdapter,
+  adaptedFunction,
   variadicBoundaryBlocker,
   sortComparatorResultAdapter,
   spawnResFnAdapterPlan,
@@ -15464,9 +15465,7 @@ export class Lowerer {
     // their pointed shapes keep winning.
     if (expected.kind === "func" && expr.type.kind === "func" && !typeEquals(expr.type, expected)) {
       const adapter = this.funcCoerceAdapter(expr.type, expected, expr.loc);
-      if (adapter) {
-        return { kind: "call", callee: adapter, args: [expr], type: expected, loc: expr.loc };
-      }
+      if (adapter) return adaptedFunction(adapter, expr, expected, expr.loc);
     }
     // Derived-into-base widening: a legal implicit upcast (prefix layout —
     // a pointer reinterpret). Exactness stays required in every other

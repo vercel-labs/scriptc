@@ -1,6 +1,7 @@
 - **Function values:** Immutable aliases of overloaded program functions retain per-call overload resolution and identity.
   A function stored in a slot with a different signature remains the same function for equality, array searches, `length`, and own properties.
   Typed rest-parameter functions can be stored and called indirectly, including through a slot with fixed parameters, where the slot's arguments arrive in the rest array.
+  That store is refused with `SC1090` when the program hands a function of the slot's type to a caller that passes more arguments than the type names, because the rest array would not receive them.
   Builtin function values have API-specific restrictions; see [Builtin function values](#builtin-function-values).
   A function called as a member of an object, a tuple, or an array (`holder.fn()`, `holder["fn"]()`, `holder.fn?.()`, `list[0]()`) receives that object as `this`, as in Node.js, and writes through `this` reach it.
   A timer calls its callback without a `this`, where Node.js passes the timer object.

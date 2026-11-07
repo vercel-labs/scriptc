@@ -38,25 +38,29 @@
  *   conversion drops what the narrower type does not name);
  * - a library function whose callback takes more arguments than the type
  *   names, by its declaration (`map`, `then`) or by what its lowering knows
- *   it passes (an event's arguments, a replacer's);
- * - an untyped value (code that holds it untyped calls it with any list):
- *   the function itself, or what a promise settles with or a collection
- *   holds. An object that holds one in a member is not followed there.
+ *   it passes (an event's arguments, a replacer's).
+ *
+ * Untyped code is not such a caller. The adapter is a checked adapter over
+ * the boxed function, so the value made untyped again is the original
+ * function (scr_dyn_new_func), and untyped code calls that with every
+ * argument it passes: directly, as what a promise settles with, or through
+ * a member of an object it was handed. A runtime builtin that is given the
+ * box and calls the typed entry behind it is a native caller.
  *
  * The test is by type, not by value: it asks whether any function value of
  * the slot's type takes one of those paths, not whether the stored one
  * does. A function the program writes in place, or names by its
  * declaration, is not such a value: it is a function, not a slot's content.
  *
- * Two older conversions store a variadic function under a fixed signature
- * without the adapter, and are held to the same rule where the loss is
- * certain (StoreKind): an untyped variadic function through the checked
- * function boundary, and a function expression whose `arguments` is typed
- * by the signature it is written for.
+ * Three older conversions store a variadic function under a fixed
+ * signature without that adapter, and are held to the same rule where the
+ * loss is certain (StoreKind): an untyped variadic function through the
+ * checked function boundary, a function expression whose `arguments` is
+ * typed by the signature it is written for, and a typed rest function
+ * packed behind a fixed signature.
  *
  * What this cannot see: a declaration that names fewer parameters than the
- * library passes at run time, and what untyped code does with the members
- * of an object it was handed. */
+ * library passes at run time. */
 
 import type { IrExpr, IrFunction, IrType, SrcLoc } from "../../ir/ir.js";
 import { typeEquals } from "../../ir/ir.js";
@@ -89,14 +93,13 @@ type StoreKind =
   /** Through the variadic adapter: any call that can pass more refuses it. */
   | "adapter"
   /** A store that compiled before the adapter existed: an untyped variadic
-   * function through the checked function boundary, or a function
-   * expression whose `arguments` is typed by the signature it is written
-   * for (the form wrappers forward their arguments with). Programs that
-   * compile today keep compiling unless they certainly lose arguments:
-   * only a native call that certainly passes more refuses it. Untyped code
-   * calls the function behind the boundary with every argument, and a
-   * wrapper that only forwards loses nothing where more is merely
-   * possible. */
+   * function through the checked function boundary, a typed rest function
+   * packed behind a fixed signature, or a function expression whose
+   * `arguments` is typed by the signature it is written for (the form
+   * wrappers forward their arguments with). Programs that compile today
+   * keep compiling unless they certainly lose arguments: only a call that
+   * certainly passes more refuses it. A wrapper that only forwards loses
+   * nothing where more is merely possible. */
   | "noted";
 
 /** The stores of one slot type. */
@@ -110,15 +113,13 @@ interface Stores {
   kind: StoreKind;
 }
 
-/** How a function value is handed to a caller with a longer list. */
+/** How a native caller passes a function value a longer list. */
 type LongerKind =
-  /** Natively, and the caller's type names more parameters. */
+  /** The caller's type names more parameters. */
   | "certain"
-  /** Natively, and the caller may pass more (a rest parameter, a slot the
-   * declaration does not type). */
-  | "possible"
-  /** As an untyped value. */
-  | "untyped";
+  /** The caller may pass more (a rest parameter, a slot the declaration
+   * does not type). */
+  | "possible";
 
 /** Whether `type` is a function type with a fixed parameter list. */
 function fixedFunc(type: IrType): type is FuncType {
@@ -136,16 +137,20 @@ const NATIVE_CALL =
 
 /** The checks of this file's head, in one walk of the finished IR. */
 export function checkVariadicFunctions(lowerer: Lowerer, functions: readonly IrFunction[]): void {
-  // Every function adapter is a factory of one function parameter that
-  // answers the adapted function (coercions/builders.ts).
+  // Every function adapter is a factory of one parameter, the adapted
+  // function, that answers the adapter (coercions/builders.ts). The
+  // variadic adapter's takes the function boxed.
   const factories = new Map<string, { from: FuncType; to: FuncType }>();
+  const variadicFactories = new Map<string, FuncType>();
   const byName = new Map<string, IrFunction>();
   for (const fn of functions) {
     byName.set(fn.name, fn);
     if (!lowerer.freshClosureAdapters.has(fn.name) || fn.params.length !== 1) continue;
     const from = fn.params[0]!.type;
     const to = fn.returnType;
-    if (from.kind === "func" && to.kind === "func") factories.set(fn.name, { from, to });
+    if (to.kind !== "func") continue;
+    if (fn.name.startsWith(`${VARIADIC_ADAPTER_PREFIX}.`)) variadicFactories.set(fn.name, to);
+    else if (from.kind === "func") factories.set(fn.name, { from, to });
   }
 
   /** The stores, by the slot's type. */
@@ -171,8 +176,7 @@ export function checkVariadicFunctions(lowerer: Lowerer, functions: readonly IrF
    * with everything it is called with, so it is another view of the store. */
   const views = new Map<string, Set<string>>();
   /** The first longer call of each function type, by the store kind it
-   * refuses: any call refuses an adapter's store, a certain native one a
-   * noted store. */
+   * refuses: any refuses an adapter's store, a certain one a noted store. */
   const longer: Record<StoreKind, Map<string, LongerCall>> = {
     adapter: new Map(),
     noted: new Map(),
@@ -189,9 +193,9 @@ export function checkVariadicFunctions(lowerer: Lowerer, functions: readonly IrF
   }
   /** Where a function value was made untyped for untyped code to call: a
    * library call's argument boxed there is handed over as an untyped
-   * value, which calls the function behind an untyped store's boundary
-   * with every argument. A runtime builtin that takes the box itself
-   * (builtinTaken) calls the typed entry instead, natively. */
+   * value, which calls the function behind a store with every argument. A
+   * runtime builtin that takes the box itself (builtinTaken) may call the
+   * typed entry behind it instead, natively. */
   const boxedAt = new Set<string>();
   const builtinTaken = new Set<IrExpr>();
   const place = (loc: SrcLoc): string => `${loc.file}:${loc.start}:${loc.end}`;
@@ -248,6 +252,11 @@ export function checkVariadicFunctions(lowerer: Lowerer, functions: readonly IrF
           return true;
         }
         if (node.kind === "call") {
+          const slot = variadicFactories.get(node.callee);
+          if (slot !== undefined) {
+            store(typeKey(slot), lowerer.fmt(slot), slot.params.length, node.loc, "adapter");
+            return true;
+          }
           const adapter = factories.get(node.callee);
           const value = node.args[0];
           if (adapter === undefined || value === undefined) {
@@ -266,8 +275,10 @@ export function checkVariadicFunctions(lowerer: Lowerer, functions: readonly IrF
             return true;
           }
           const { from, to } = adapter;
-          if (node.callee.startsWith(`${VARIADIC_ADAPTER_PREFIX}.`)) {
-            store(typeKey(to), lowerer.fmt(to), to.params.length, node.loc, "adapter");
+          // A typed rest function packed behind a fixed signature receives
+          // the slot's arguments in its rest array: the same kind of store.
+          if (from.rest === true && from.restAbi === "typed" && fixedFunc(to)) {
+            store(typeKey(to), lowerer.fmt(to), to.params.length, node.loc, "noted");
             return true;
           }
           if (!fixedFunc(from)) return true;
@@ -289,19 +300,17 @@ export function checkVariadicFunctions(lowerer: Lowerer, functions: readonly IrF
           view(node.value.type, node.type);
           return true;
         }
-        // The function made untyped: itself, or as what a promise settles
-        // with or a list or collection holds (a conversion between two
-        // such types of different function types goes through the untyped
-        // value). An object or record that holds one in a member is boxed
-        // wherever it is a call's receiver, and what untyped code does
-        // with such an object's members is not followed.
-        if (node.kind === "dynFrom" && !compared.has(node) && !plainFunction(node.value)) {
-          const carried = carriedFunctionTypes(lowerer, node.value.type);
-          for (const type of carried) callsLonger(type, node.loc, "an untyped value", "untyped");
-          if (carried.length > 0 && !builtinTaken.has(node)) {
-            boxedAt.add(place(node.loc));
-            boxedAt.add(place(node.value.loc));
-          }
+        // A function made untyped where untyped code takes it: itself, or
+        // as what a promise settles with or a collection holds.
+        if (
+          node.kind === "dynFrom" &&
+          !compared.has(node) &&
+          !builtinTaken.has(node) &&
+          !plainFunction(node.value) &&
+          carriedFunctionTypes(lowerer, node.value.type).length > 0
+        ) {
+          boxedAt.add(place(node.loc));
+          boxedAt.add(place(node.value.loc));
         }
         return true;
       },

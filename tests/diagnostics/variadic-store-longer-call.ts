@@ -22,10 +22,9 @@ const none: () => void = quiet();
 const wider: (x: number) => void = none;
 wider(5);
 
-// (3) An untyped value: code that holds it untyped calls it with any list.
-const text: (s: string) => void = quiet();
-const untyped: unknown = text;
-console.log(typeof untyped);
+// (3) A replacer receives the match, its offset and the subject.
+const text: (s: string) => string = counter() as (...args: unknown[]) => string;
+console.log("a1".replace("1", text));
 
 // (4) An event listener receives the event's arguments.
 const flag: (on: boolean) => void = quiet();
@@ -48,3 +47,7 @@ const empty: () => number = function () {
 };
 const filled: (x: string) => number = empty;
 console.log(filled("x"));
+
+// (7) A typed rest function packed behind a fixed signature.
+const packed: (a: string, b: string) => number = (...parts: string[]): number => parts.length;
+console.log(["a"].map(packed).join(","));

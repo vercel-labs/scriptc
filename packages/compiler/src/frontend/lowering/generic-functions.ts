@@ -68,7 +68,14 @@ import {
  * signature (type arguments substituted) becomes an instantiation key, and
  * the body is lowered once per distinct key (monomorphization). */
 export interface GenericFnInfo {
-  decl: ts.FunctionDeclaration | ts.MethodDeclaration | ts.FunctionExpression | ts.ArrowFunction;
+  decl:
+    | ts.FunctionDeclaration
+    | ts.MethodDeclaration
+    | ts.FunctionExpression
+    | ts.ArrowFunction
+    // A static accessor that reads `this` (staticReceiver).
+    | ts.GetAccessorDeclaration
+    | ts.SetAccessorDeclaration;
   /** Unqualified source name, for diagnostics. */
   baseName: string;
   /** Program-wide qualified name; instance `n` is named `<qualified>%<n>`
@@ -1121,6 +1128,21 @@ function memberPatternKey(
   return { key: `#${parts.join(",")}`, pinned };
 }
 
+/** The instance of a receiver-dependent static member specialized for one
+ * receiver class (`info.staticReceiver`), when no call expression supplies
+ * the signature: the member has no type parameters, so its collected
+ * parameters and result are the instance's. A call of the same member
+ * through the receiver's name interns the same instance. */
+export function staticReceiverInstance(
+  lowerer: Lowerer,
+  blame: ts.Node,
+  info: GenericFnInfo,
+  params: ParamShape[],
+  returnType: IrType,
+): GenericInstance {
+  return internGenericInstance(lowerer, blame, info, params, returnType, () => new Map());
+}
+
 /** The type parameters of `info` declared with a `keyof` CONSTRAINT
  * (`K extends keyof T`) — the parameters whose bound literal is semantic
  * (the body's `o[k]` reads the named field), computed once per info from
@@ -1519,8 +1541,9 @@ export function lowerGenericInstance(
   if (inst.erased) lowerer.erasingDepth++;
   try {
     // Static specializations bind lexical this only when the caller
-    // proved its exact receiver. Other instances retain the fence;
-    // super remains unsupported. Arrows inherit the lexical receiver.
+    // proved its exact receiver, and `super` members then resolve from the
+    // declaring class's base with that receiver (lowerStaticSuperRead).
+    // Other instances retain the fence. Arrows inherit the lexical receiver.
     if (info.member?.kind === "static" && decl.body) {
       rejectStaticThis(
         lowerer,
@@ -1528,6 +1551,7 @@ export function lowerGenericInstance(
         (keyword) =>
           `'${keyword}' in static methods (it names the RECEIVER class — a dynamic value; reference the class by name instead)`,
         false,
+        info.staticReceiver !== undefined,
         info.staticReceiver !== undefined,
       );
     }
@@ -2568,7 +2592,7 @@ export interface ImplicitPattern {
  * decl.parameters. */
 export function implicitPatternsOf(
   lowerer: Lowerer,
-  decl: ts.FunctionDeclaration | ts.MethodDeclaration | ts.FunctionExpression | ts.ArrowFunction,
+  decl: GenericFnInfo["decl"],
 ): (ImplicitPattern | null)[] {
   return decl.parameters.nodes.map((param): ImplicitPattern | null => {
     if (!ts.isObjectBindingPattern(param.name) || !decl.body) return null;

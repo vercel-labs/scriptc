@@ -233,6 +233,7 @@ import {
   boxClassInstancesExactly,
   trackClassFieldCreation,
 } from "./class-dynamic-dispatch.js";
+import { settleClassIdentityHelpers } from "./class-instance-constructor.js";
 import { addUntypedIntegrityWords, guardClassAttributeWrites } from "./class-attributes.js";
 import { inferredCollectionType } from "./js-collection-types.js";
 import { sloppyDynamicWrites } from "./frozen-records.js";
@@ -4515,6 +4516,11 @@ export class Lowerer {
    * the scr_js_buffers views registry in %main. */
   buffersMutable = false;
   readonly liftedFns: IrFunction[] = [];
+  /** Each `x.constructor` helper's body as it was last built from the class
+   * graph, by helper name (class-instance-constructor.ts): later passes
+   * rewrite a helper in place, so the settle step compares what it builds
+   * with this. A cache: a helper it lacks is built again once. */
+  readonly classIdentityBuilt = new Map<string, string>();
   /** `for … of` and `for await` loops over untyped iterables, by their
    * generator-kind local (generator-dynamic-dispatch.ts steps the program's
    * own generators there on the typed path). Local ids repeat across
@@ -5162,6 +5168,9 @@ export class Lowerer {
    * unwinds before the unit ends, and state that applying the unit's events
    * rebuilds. */
   static readonly unjournaled: readonly string[] = [
+    // What the class-identity helpers were last built as: rebuilt from the
+    // class graph whenever an entry is missing.
+    "classIdentityBuilt",
     // settings
     "frontendServices",
     "nodeIslands",
@@ -8018,6 +8027,8 @@ export class Lowerer {
       // Static methods never share a dispatch slot: each is its own family.
       if (info.staticMethods) {
         for (const sig of info.staticMethods.values()) {
+          // A static accessor's two halves share the property's symbol.
+          if (!ts.isMethodDeclaration(sig.member)) continue;
           const name = sig.member.name;
           if (!(ts.isIdentifier(name) || ts.isStringLiteral(name))) continue;
           const symbol = symbolOf(name);
@@ -11203,6 +11214,10 @@ export class Lowerer {
         dispatchChanged =
           !this.remainder &&
           classDispatch.process(this, [...functions, ...this.liftedFns, ...this.implicitFns]);
+        // `x.constructor` helpers answer from the class graph, which the
+        // bodies lowered since may have grown (class-instance-constructor.ts).
+        if (settleClassIdentityHelpers(this, (fn) => classDispatch.sites.forget(fn)))
+          dispatchChanged = true;
       }
       classDispatch.finalize(this);
     }
@@ -12313,7 +12328,12 @@ export class Lowerer {
         ...byName(this.liftedFns),
         ...byName(this.implicitFns),
       ]);
-      if (queue.length === 0 && !dispatchChanged && !initializerChanged) break;
+      // `x.constructor` helpers answer from the class graph, which the
+      // bodies lowered since may have grown (class-instance-constructor.ts).
+      const identityChanged = settleClassIdentityHelpers(this, (fn) =>
+        classDispatch.sites.forget(fn),
+      );
+      if (queue.length === 0 && !dispatchChanged && !initializerChanged && !identityChanged) break;
       drainUnits();
       this.restoreGenericInstanceOrder(instLowered);
       this.restoreGenericClassInstanceOrder(clsInstLowered);

@@ -979,8 +979,11 @@ function arrayCopyUse(lowerer: Lowerer, node: ts.Expression): IslandArrayCopyUse
   }
   if (ts.isBinaryExpression(p)) {
     const op = p.operatorToken.kind;
-    if (op === ts.SyntaxKind.EqualsToken && p.right === n)
-      return ts.isArrayLiteralExpression(p.left) ? null : "assignment";
+    if (op === ts.SyntaxKind.EqualsToken && p.right === n) {
+      if (!ts.isArrayLiteralExpression(p.left)) return "assignment";
+      // `[row] = grid()`: the pattern of a declaration, as an assignment.
+      return destructuringHoldsArray(lowerer, node, p.left) ? "destructuring" : null;
+    }
     if (
       (op === ts.SyntaxKind.EqualsEqualsEqualsToken ||
         op === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
@@ -1008,16 +1011,17 @@ function arrayCopyUse(lowerer: Lowerer, node: ts.Expression): IslandArrayCopyUse
   return "value";
 }
 
-/** Whether destructuring the island array at `node` with `pattern` keeps a
- * copy of an element. A pattern that binds nothing keeps nothing, and a flat
- * array of copied values binds those values alone. An array whose elements
- * are arrays binds them as their native copies, and a write through the
- * binding no longer reaches the island, so that destructuring is the copy
- * SC6007 warns about. */
+/** Whether destructuring the island array at `node` with `pattern` (a
+ * declaration's binding pattern, or the array literal an assignment
+ * destructures into) keeps a copy of an element. A pattern that binds
+ * nothing keeps nothing, and a flat array of copied values binds those
+ * values alone. An array whose elements are arrays binds them as their
+ * native copies, and a write through the binding no longer reaches the
+ * island, so that destructuring is the copy SC6007 warns about. */
 function destructuringHoldsArray(
   lowerer: Lowerer,
   node: ts.Expression,
-  pattern: ts.ArrayBindingPattern,
+  pattern: ts.ArrayBindingPattern | ts.ArrayLiteralExpression,
 ): boolean {
   if (!pattern.elements.nodes.some((element) => !ts.isOmittedExpression(element))) return false;
   const mapped = lowerer.mapTypeOf(lowerer.typeOf(node));
@@ -1612,7 +1616,8 @@ function classMethodsBuilderOf(
       if (isSynthesizedSetter(c, m)) continue;
       if (!names.includes(m)) names.push(m);
     }
-    for (const m of c.def.methods ?? []) if (islandMemberName(m)) claimed.add(islandPropertyName(m));
+    for (const m of c.def.methods ?? [])
+      if (islandMemberName(m)) claimed.add(islandPropertyName(m));
   }
   if (names.length === 0) return null;
   const builder = `%island.methods:${className}`;

@@ -57,6 +57,15 @@ let nested: number[][] = grid();
 const [row] = grid();
 const [, secondRow] = grid();
 
+// The same pattern as an assignment's target. A flat array's elements are
+// copied values, and assigning them keeps nothing of the island's array.
+let assignedRow: number[];
+let skippedRow: number[];
+[assignedRow] = grid();
+[, skippedRow] = grid();
+let firstItem: number;
+[firstItem] = makeList();
+
 // A standard function that can keep what it is given.
 const kept: number[][] = [];
 kept.push(makeList());

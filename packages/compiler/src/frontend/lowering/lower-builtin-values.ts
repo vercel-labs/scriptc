@@ -507,7 +507,7 @@ export function lowerNumberParserValue(
 // These module values expose native callable lowerings and current-thread
 // metadata. Stored Worker constructors remain refused: native worker roots
 // must be resolved from the source at compilation time.
-const MODULES = ["path/posix", "path/win32", "os", "worker_threads", "util/types"] as const;
+const MODULES = ["path/posix", "path/win32", "os", "worker_threads", "util/types", "sea"] as const;
 
 const box = (value: IrExpr): IrExpr =>
   value.type.kind === "dyn" ? value : { kind: "dynFrom", value, type: DYN, loc: value.loc };
@@ -600,6 +600,12 @@ export function lowerUtilTypeValue(lowerer: Lowerer, member: string, loc: SrcLoc
 
 function moduleValue(lowerer: Lowerer, module: string, loc: SrcLoc): IrExpr {
   const cacheKey = `%builtin.module.get.${module}`;
+  // The modules served as a plain object holding all of Node's members.
+  const plainObjectKeys = module.startsWith("path/")
+    ? PATH_MODULE_KEYS
+    : module === "sea"
+      ? Object.keys(builtinModuleFns()[module] ?? {})
+      : null;
   let name = lowerer.builtinCallableValueFns.get(cacheKey);
   if (!name) {
     name = cacheKey;
@@ -643,19 +649,20 @@ function moduleValue(lowerer: Lowerer, module: string, loc: SrcLoc): IrExpr {
       for (const member of ["isInternalThread", "parentPort", "workerData"])
         add(member, lowerWorkerMetadata(member, loc)!);
     }
-    // A path family is the whole of Node's object, so another key is
-    // absent there too.
+    // A path family, like node:sea, is the whole of Node's object, so
+    // another key is absent there too.
     body.push({
       kind: "return",
-      value: module.startsWith("path/")
-        ? dynUndefinedExpr(loc)
-        : {
-            kind: "libCall",
-            fn: "process.builtinUnsupported",
-            args: [strLit(module, loc), key],
-            type: DYN,
-            loc,
-          },
+      value:
+        plainObjectKeys !== null
+          ? dynUndefinedExpr(loc)
+          : {
+              kind: "libCall",
+              fn: "process.builtinUnsupported",
+              args: [strLit(module, loc), key],
+              type: DYN,
+              loc,
+            },
       loc,
     });
     lowerer.liftedFns.push({
@@ -676,8 +683,8 @@ function moduleValue(lowerer: Lowerer, module: string, loc: SrcLoc): IrExpr {
   };
   // A path family is a plain object holding Node's members in Node's
   // order, so reflection over it (Object.keys, Object.assign, spreads,
-  // own-property checks) sees them.
-  if (module.startsWith("path/")) {
+  // own-property checks) sees them. node:sea is one too.
+  if (plainObjectKeys !== null) {
     return {
       kind: "libCall",
       fn: "process.builtinObject",
@@ -686,7 +693,7 @@ function moduleValue(lowerer: Lowerer, module: string, loc: SrcLoc): IrExpr {
         box(getter),
         {
           kind: "arrayLit",
-          elems: PATH_MODULE_KEYS.map((key) => strLit(key, loc)),
+          elems: plainObjectKeys.map((key) => strLit(key, loc)),
           type: arrayOf(STRING),
           loc,
         },

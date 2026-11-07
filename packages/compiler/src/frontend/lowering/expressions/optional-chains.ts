@@ -269,6 +269,21 @@ export function lowerOptionalChain(
       lowerer.chainHandled.delete(dotNode);
     }
   }
+  // `process.getBuiltinModule("node:os")?.arch()`, `ns?.member`: a builtin
+  // module's namespace object is never nullish, and its members lower at
+  // their access sites (the namespace has no value form to guard), so the
+  // guarded step is the plain member access.
+  if (
+    ts.isPropertyAccessExpression(dotNode) &&
+    lowerer.builtinNamespaceModuleOf(recvNode) !== null
+  ) {
+    lowerer.chainHandled.add(dotNode);
+    try {
+      return lowerer.lowerExpr(expr);
+    } finally {
+      lowerer.chainHandled.delete(dotNode);
+    }
+  }
   // `d?.getTime()` on a handle whose JavaScript shadows `getTime`: the
   // guard cannot short-circuit a receiver the checker types never nullish,
   // so the step is the plain call, which reads the own property

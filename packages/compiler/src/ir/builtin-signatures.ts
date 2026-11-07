@@ -1277,6 +1277,15 @@ function buildLibFnSignatures() {
     "punycode.ucs2Decode": { argTypes: [STRING], result: arrayOf(F64) },
     "punycode.ucs2Encode": { argTypes: [arrayOf(F64)], result: STRING },
     "punycode.warn": { argTypes: [BOOL, BOOL], result: VOID },
+    /** node:sea in a program that is not a Node single-executable
+     * application (every compiled program): isSea is false, and each asset
+     * reader throws ERR_NOT_IN_SINGLE_EXECUTABLE_APPLICATION once its
+     * arguments are evaluated. Emitted in place; no runtime entry. */
+    "sea.isSea": { argTypes: [], result: BOOL },
+    "sea.getAsset": { argTypes: [STRING, STRING], result: DYN },
+    "sea.getRawAsset": { argTypes: [STRING], result: DYN },
+    "sea.getAssetAsBlob": { argTypes: [STRING, DYN], result: DYN },
+    "sea.getAssetKeys": { argTypes: [], result: DYN },
     "url.fileURLToPathBuffer": { argTypes: [DYN, DYN], result: BYTES_U8 },
     "url.pathToFileURLChecked": { argTypes: [DYN, DYN], result: URL_T },
     "url.fileURLToPathStr": { argTypes: [STRING], result: STRING },

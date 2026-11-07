@@ -1,4 +1,5 @@
 /* Type narrowing of lowered values, conditional and as-expressions, and runtime-optional receiver reads. */
+import { consoleInto, isConsoleObjectRead, isConsoleTyped } from "../coercions/console-records.js";
 import { declBoundaryOrigin } from "../../decl-projection.js";
 import {
   isWebStreamMemberInJavaScript,
@@ -1880,6 +1881,17 @@ export function lowerAsExpression(
   // reach it (assertion-identity.ts).
   if (extractionCopiesReference(lowerer, target) && assertsGlobalObject(lowerer, expr))
     return inner;
+  // console asserted to a record of its members (`console as unknown as
+  // Logger`): the member-by-name copy its plain flow takes
+  // (console-records.ts). The checked conversion reads a property bag,
+  // which console is not.
+  if (
+    isConsoleObjectRead(inner) ||
+    (inner.type.kind === "dyn" && isConsoleTyped(lowerer, expr.expression))
+  ) {
+    const projected = consoleInto(lowerer, inner, target, locOf(expr));
+    if (projected) return projected;
+  }
   // `value as Iterable<T>`: the value's own iterator, stepped lazily with
   // each element checked against T (the generator arm's adapter).
   const iterable = iterableSlotValue(lowerer, inner, target);

@@ -61,10 +61,11 @@
 
 #if !defined(_WIN32) && !defined(__wasi__)
 
-/* One object of the walk: a headered native object, or (NI_REF) the
- * ScrNodeRef of an island handle box. `count` starts at the object's
+/* One object of the walk: a headered native object, (NI_REF) the
+ * ScrNodeRef of an island handle box, or (NI_TWIN) the native object of a
+ * twin class, which has no collector header. `count` starts at the object's
  * reference count and loses one per reference the walk explains. */
-enum { NI_OBJ = 1, NI_REF = 2 };
+enum { NI_OBJ = 1, NI_REF = 2, NI_TWIN = 3 };
 typedef struct {
   void *key;
   int64_t count;
@@ -183,6 +184,34 @@ static bool gc_island_box(void *obj) {
   return d->kind == SCR_DYN_HANDLE && d->v.handle.tag == SCR_DYNH_NODE_ISLAND;
 }
 
+/* ── twins ────────────────────────────────────────────────────────────
+ * The native object behind a twin box (scr_node_island_export.c) has no
+ * collector header and no trace function, so the walk never enters it. It
+ * counts the boxes that hold the object: one held by anything else (the
+ * program's own boxes, a timer, a signal that follows it) is held natively,
+ * and so are the exports of its twins, which keeps the island's object and
+ * its listeners alive for as long as the program can still reach the
+ * native one. What the object itself holds stays unexplained, that is,
+ * held, as it is for the cycle collector. */
+static void *gc_twin_object(void *obj) {
+  if (scr_cyc_type(scr_cyc_hdr(obj))->kind != SCR_CYC_KIND_DYN) return NULL;
+  const ScrDyn *d = obj;
+  return scr_ni_twin_box(d) ? d->v.handle.ptr : NULL;
+}
+
+/* A walked box holds its twin object once. */
+static void gc_count_twin(void *obj) {
+  void *object = gc_twin_object(obj);
+  if (object == NULL) return;
+  bool fresh;
+  gc_insert(object, NI_TWIN, (int64_t)*(const size_t *)object, &fresh)->count--;
+}
+
+static void gc_black_twin(void *obj) {
+  NiGcNode *t = gc_lookup(gc_twin_object(obj));
+  if (t != NULL) t->black = 1;
+}
+
 /* ── pins ─────────────────────────────────────────────────────────────── */
 
 static void gc_pins_load(void) {
@@ -298,6 +327,7 @@ static void gc_count(void) {
     }
     gc_children(obj, gc_count_visit);
     gc_refs_of(obj, gc_lookup(obj)->pin, gc_count_ref);
+    gc_count_twin(obj);
   }
   /* Left over when the budget ran out: their children were not counted,
    * so they must not pass for walked (they become black). */
@@ -338,10 +368,12 @@ static void gc_blacken(void) {
       n->black = 1;
       if (n->walked) gc_push(n->key);
     }
+    if (n->kind == NI_TWIN && n->count > 0) n->black = 1;
     while (gc_nwork > 0) {
       void *obj = gc_work[--gc_nwork];
       gc_children(obj, gc_black_visit);
       gc_refs_of(obj, gc_lookup(obj)->pin, gc_black_ref);
+      gc_black_twin(obj);
     }
   }
 }
@@ -383,6 +415,20 @@ static void gc_reach_ref(void *ref) {
   }
 }
 
+/* A white twin object the walked export reaches through a box: V8 marks
+ * the object's twins (the other exports that stand for it) with the walked
+ * export's representative. */
+static void gc_reach_twin(void *obj) {
+  void *object = gc_twin_object(obj);
+  NiGcNode *t = gc_lookup(object);
+  if (t == NULL || t->black || t->stamp == gc_stamp) return;
+  t->stamp = gc_stamp;
+  uint32_t ids[2];
+  size_t n = scr_ni_twin_exports(object, ids);
+  for (size_t i = 0; i < n; i++)
+    if (ids[i] != gc_exports_in[gc_walk_export - 1]) gc_reach_add(ids[i] | SCR_NODE_GC_EXPORT);
+}
+
 /* White objects were all walked: an unwalked one is black. */
 static void gc_reach_walk(void *start) {
   NiGcNode *s = gc_lookup(start);
@@ -393,6 +439,7 @@ static void gc_reach_walk(void *start) {
     void *obj = gc_work[--gc_nwork];
     gc_children(obj, gc_reach_visit);
     gc_refs_of(obj, gc_lookup(obj)->pin, gc_reach_ref);
+    gc_reach_twin(obj);
   }
 }
 
@@ -440,6 +487,7 @@ static void gc_reset(size_t expect) {
 static const void *gc_referent(uint32_t e) {
   const ScrDyn *v = scr_ni_export_value(e);
   if (v != NULL && v->kind == SCR_DYN_PROMISE) return v->v.promise;
+  if (v != NULL && scr_ni_twin_box(v)) return NULL; /* counted through its boxes (twins, above) */
   return scr_ni_export_identity(e);
 }
 
@@ -497,6 +545,9 @@ int scr_ni_host_gc_analyze(const uint32_t *exports, size_t n, ScrNodeGcResult *o
       NiGcNode *in = gc_lookup(ident);
       if (in != NULL && in->black) gc_rooted[i] = 1;
     }
+    /* A twin's native object held by anything but the walked boxes. */
+    NiGcNode *twin = gc_lookup(gc_twin_object(scr_ni_export_value(exports[i])));
+    if (twin != NULL && twin->black) gc_rooted[i] = 1;
   }
   for (size_t i = 0; i < n; i++) {
     gc_rstart[i] = (uint32_t)gc_nreach;

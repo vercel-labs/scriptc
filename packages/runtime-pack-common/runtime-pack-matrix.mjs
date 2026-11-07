@@ -274,6 +274,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_node_island_export.c", "nodeIsland"],
   ["scr_node_island_boot.c", "nodeIsland"],
   ["scr_node_island_gc.c", "nodeIsland"],
+  // A native AbortSignal's twin in an island: programs with islands and
+  // native signals (the signal unit or the fetch unit).
+  ["scr_node_island_abort.c", { all: ["nodeIsland"], any: ["abortSignal", "nativeFetch"] }],
   // A child process an island made, in a native ChildProcess slot: named only
   // by the conversions of a program that has both islands and child_process,
   // so every other program with islands drops all of it at the link.

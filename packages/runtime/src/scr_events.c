@@ -1020,7 +1020,10 @@ static void scr_stdin_deliver(ScrBytes *chunk) {
      * nothing. */
     ScrStr *text = scr_strdec_write(scr_stdin_encoding, scr_stdin_dec_pending, chunk);
     scr_stdin_dec_pending = scr_strdec_next(scr_stdin_encoding, scr_stdin_dec_pending, chunk);
-    if (text->len > 0) scr_stdin_deliver_parts(chunk, text);
+    /* An empty text (the read held only part of a sequence) still goes
+     * down: the runtime's byte consumers take every raw chunk, or the
+     * bytes the decoder is holding would never reach them. */
+    scr_stdin_deliver_parts(chunk, text);
     scr_str_release(text);
     return;
   }
@@ -1040,6 +1043,16 @@ static void scr_stdin_deliver(ScrBytes *chunk) {
       scr_closure_retain(snap[i].cb);
     }
     for (size_t i = 0; i < nd; i++) {
+#ifdef SCR_STDIO_EXTENDED
+      /* A read that decoded to nothing is no 'data' event for a listener
+       * that takes the text (or would be refused for it): it stays
+       * registered, a once listener included. */
+      if (text != NULL && text->len == 0 &&
+          !(snap[i].kind == SCR_STDIN_DATA_BYTES && snap[i].fn != scr_stdin_data_thunk_bytes)) {
+        scr_closure_release(snap[i].cb);
+        continue;
+      }
+#endif
       if (snap[i].once) {
         for (size_t j = 0; j < scr_stdin_ndata; j++) {
           if (scr_stdin_data[j].cb == snap[i].cb) {

@@ -5,8 +5,10 @@
  * programs live in tests/fixtures/event-loop. */
 
 export interface StdinScript {
-  /** Writes performed in order; `delayMs` waits BEFORE the write. */
-  writes: { delayMs: number; data: string }[];
+  /** Writes performed in order; `delayMs` waits BEFORE the write. With
+   * `latin1` each character of `data` is one byte, so a write can end
+   * inside a UTF-8 sequence. */
+  writes: { delayMs: number; data: string; latin1?: true }[];
   /** Close the write end after the writes (false = hold the pipe open
    * until the child exits on its own — the timeout paths). */
   end: boolean;
@@ -225,6 +227,24 @@ export const eventLoopCases: EventLoopCase[] = [
       writes: [
         { delayMs: 0, data: "Say hello\n" },
         { delayMs: 40, data: "and more\n" },
+      ],
+      end: true,
+    },
+  },
+  {
+    title: "stdin as a Readable: with an encoding set, characters split across reads lose no byte",
+    fixture: "../node-types/stdin-readable-split-sequence.ts",
+    script: {
+      // "aéb€c😀\n" as UTF-8. Three of the reads hold only the first bytes
+      // of a character, so they decode to nothing.
+      writes: [
+        { delayMs: 0, data: "a\xc3", latin1: true },
+        { delayMs: 120, data: "\xa9b", latin1: true },
+        { delayMs: 120, data: "\xe2", latin1: true },
+        { delayMs: 120, data: "\x82", latin1: true },
+        { delayMs: 120, data: "\xacc\xf0", latin1: true },
+        { delayMs: 120, data: "\x9f\x98", latin1: true },
+        { delayMs: 120, data: "\x80\n", latin1: true },
       ],
       end: true,
     },

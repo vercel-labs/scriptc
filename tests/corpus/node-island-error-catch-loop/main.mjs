@@ -6,7 +6,7 @@
 import { requireModule } from "@scriptc/node";
 
 const lib = requireModule("./lib.cjs");
-const n = 10000;
+const n = 30000;
 let native = 0;
 let island = 0;
 let length = 0;

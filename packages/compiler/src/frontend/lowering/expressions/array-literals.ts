@@ -890,12 +890,26 @@ function lowerTupleSpreadLiteral(
     if (!ts.isSpreadElement(element)) {
       const expected = byName.get(String(fields.length));
       if (!expected) lowerer.badType(element, lowerer.typeOf(element));
-      append(
-        element,
-        ts.isOmittedExpression(element)
-          ? { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc: locOf(element) }
-          : lowerer.lowerExprExpecting(element, expected),
-      );
+      if (ts.isOmittedExpression(element)) {
+        // A HOLE beside a spread is still a hole: the field's absent state,
+        // as in a literal without a spread, so `in`, Object.keys and the
+        // own-key probes skip the index. The absent state is a constant
+        // and only legal as a direct field write, so it takes no temp. A
+        // position typed without undefined keeps the element's refusal.
+        const absent = lowerer.absentFieldValue(expected, locOf(element));
+        if (absent !== null) {
+          fields.push({ name: String(fields.length), value: absent });
+          continue;
+        }
+        append(element, {
+          kind: "unitLit",
+          unit: "undefined",
+          type: UNDEFINED_T,
+          loc: locOf(element),
+        });
+        continue;
+      }
+      append(element, lowerer.lowerExprExpecting(element, expected));
       continue;
     }
     const source = lowerer.lowerExpr(element.expression);

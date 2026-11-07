@@ -1202,9 +1202,14 @@ export function streamTypedRefMaterializeAdapter(
         const boxed = host.streamTypedRefBoxValue(B, field.type, fieldValue);
         B.line(`call void @scr_dyn_arr_push(ptr ${out}, ptr ${boxed})`);
         if (hole !== null) {
-          B.br(hole);
+          // A present element pushed its value and goes on to the next
+          // element; only the absent branch pushes the hole.
+          const next = B.newLabel("live.tuple.next");
+          B.br(next);
           B.startBlock(hole);
           B.line(`call void @scr_dyn_arr_push_hole(ptr ${out})`);
+          B.br(next);
+          B.startBlock(next);
         }
       }
       B.terminate(`ret ptr ${out}`);

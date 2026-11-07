@@ -3701,9 +3701,14 @@ export class LlDyn {
             B.line(`${conv} = call ptr @${this.toDynHelper(f.type)}(${this.valTy(f.type)} ${fv})`);
             B.line(`call void @scr_dyn_arr_push(ptr ${d}, ptr ${conv})`);
             if (lHole === null) continue;
-            B.br(lHole);
+            // A present element pushed its value and goes on to the next
+            // element; only the absent branch pushes the hole.
+            const lNext = B.newLabel("tdr.next");
+            B.br(lNext);
             B.startBlock(lHole);
             B.line(`call void @scr_dyn_arr_push_hole(ptr ${d})`);
+            B.br(lNext);
+            B.startBlock(lNext);
           }
           if (cyclicRec) B.line(`call void @scr_dyn_from_leave()`);
           host.declare(`declare ptr @scr_dyn_mark_snapshot(ptr)`);

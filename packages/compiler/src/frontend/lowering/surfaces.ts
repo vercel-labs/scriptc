@@ -580,6 +580,12 @@ export const SET_COMBINE_METHODS = new Set([
   "isDisjointFrom",
 ]);
 
+/** The keyed-collection classes whose `prototype` reads, members and
+ * constructors have a checked-dynamic form (scr_dyn_collections.c). */
+export const DYN_COLLECTION_CLASSES = ["Set", "Map", "WeakMap", "WeakSet"] as const;
+
+export type DynCollectionClass = (typeof DYN_COLLECTION_CLASSES)[number];
+
 export type CompoundOp = "+" | "-" | "*" | "/" | "%" | "**" | "&" | "|" | "^" | "<<" | ">>" | ">>>";
 
 export const COMPOUND_ASSIGN_OPS: Partial<Record<ts.SyntaxKind, CompoundOp>> = {
@@ -2249,6 +2255,51 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
   };
 }
 
+/** node:dns's DNS error-code constants: the `code` a resolver failure
+ * carries, exported by node:dns and node:dns/promises alike. */
+const DNS_ERROR_CODES: Record<string, string> = {
+  NODATA: "ENODATA",
+  FORMERR: "EFORMERR",
+  SERVFAIL: "ESERVFAIL",
+  NOTFOUND: "ENOTFOUND",
+  NOTIMP: "ENOTIMP",
+  REFUSED: "EREFUSED",
+  BADQUERY: "EBADQUERY",
+  BADNAME: "EBADNAME",
+  BADFAMILY: "EBADFAMILY",
+  BADRESP: "EBADRESP",
+  CONNREFUSED: "ECONNREFUSED",
+  TIMEOUT: "ETIMEOUT",
+  EOF: "EOF",
+  FILE: "EFILE",
+  NOMEM: "ENOMEM",
+  DESTRUCTION: "EDESTRUCTION",
+  BADSTR: "EBADSTR",
+  BADFLAGS: "EBADFLAGS",
+  NONAME: "ENONAME",
+  BADHINTS: "EBADHINTS",
+  NOTINITIALIZED: "ENOTINITIALIZED",
+  LOADIPHLPAPI: "ELOADIPHLPAPI",
+  ADDRGETNETWORKPARAMS: "EADDRGETNETWORKPARAMS",
+  CANCELLED: "ECANCELLED",
+};
+
+/** node:dns's getaddrinfo hint flags per TARGET libc. Node re-exports the
+ * three values its c-ares binding compiled against (src/cares_wrap.cc's
+ * NODE_DEFINE_CONSTANT of AI_ADDRCONFIG/AI_ALL/AI_V4MAPPED), so they are
+ * the target's <netdb.h> macros, not a portable libuv normalization:
+ * glibc and musl number them 0x20/0x10/0x8, while the BSD headers (macOS)
+ * and Windows' ws2tcpip.h use 0x400/0x100/0x800. Node:dns's own values
+ * follow the platform the program runs on, which is why the differential
+ * corpus sees 32 16 8 on Linux and 1024 256 2048 on macOS. */
+const DNS_HINT_CONSTS: Record<string, Record<string, number> | undefined> = {
+  // AI_ADDRCONFIG, AI_ALL, AI_V4MAPPED (glibc netdb.h; musl matches).
+  linux: { ADDRCONFIG: 0x0020, ALL: 0x0010, V4MAPPED: 0x0008 },
+  // BSD netdb.h (macOS/iOS) and ws2tcpip.h (win32) agree.
+  darwin: { ADDRCONFIG: 0x0400, ALL: 0x0100, V4MAPPED: 0x0800 },
+  win32: { ADDRCONFIG: 0x0400, ALL: 0x0100, V4MAPPED: 0x0800 },
+};
+
 /** Builtin-module CONSTANTS (value reads of named imports): each lowers to
  * a literal of its value's kind. The bare-module values are the TARGET
  * platform's (builtinModuleConstOf swaps the win32 values in under a win32
@@ -2283,6 +2334,14 @@ export const BUILTIN_MODULE_CONSTS: Record<
   zlib: Object.fromEntries(
     Object.entries(ZLIB_CONSTANTS).filter(([name]) => !name.startsWith("BROTLI")),
   ),
+  // node:dns's getaddrinfo hints are the target libc's AI_* values
+  // (builtinModuleConstOf selects them from DNS_HINT_CONSTS); the names
+  // live here so the inventory, fence and manifest walks see them, and
+  // the glibc numbers are the fallback for a target with no entry. The
+  // error codes are the module's exported strings; node:dns/promises
+  // exports the same ones.
+  dns: { ADDRCONFIG: 32, ALL: 16, V4MAPPED: 8, ...DNS_ERROR_CODES },
+  "dns/promises": { ...DNS_ERROR_CODES },
 };
 
 /** ALTERNATE libCall spellings of tabled builtin members: lowerings the
@@ -3187,6 +3246,7 @@ export const FS_CALLBACK_MEMBERS = new Set([
   "rmdir",
   "unlink",
   "open",
+  "opendir",
   "close",
   "fstat",
   "ftruncate",
@@ -3278,6 +3338,13 @@ export function builtinModuleConstOf(
   module: string,
   member: string,
 ): string | number | boolean | undefined {
+  // node:dns's hint flags are the TARGET's libc macros, so they are
+  // selected per platform rather than taken from the shared table.
+  if (module === "dns") {
+    const hints = ownEntry(DNS_HINT_CONSTS, lowerer.targetPlatform);
+    const hint = hints ? ownEntry(hints, member) : undefined;
+    if (hint !== undefined) return hint;
+  }
   if (lowerer.targetPlatform === "win32") {
     const mod = ownEntry(WIN32_TARGET_CONSTS, module);
     const w = mod ? ownEntry(mod, member) : undefined;

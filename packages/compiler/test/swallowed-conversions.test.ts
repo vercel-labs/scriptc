@@ -130,6 +130,23 @@ try { console.log(f("{}")); } catch (e) { log(e); }
 }`),
     ),
   ).toEqual(["7 catch@5"]);
+  // A handler that only rethrows is passed through the same way.
+  expect(
+    swallowed(
+      fn(`function f(text: string): Entry | null {
+  try {
+    try {
+      return JSON.parse(text) as Entry;
+    } catch (e) {
+      seen.length = 0;
+      throw e;
+    }
+  } catch {
+    return null;
+  }
+}`),
+    ),
+  ).toEqual(["7 catch@5"]);
   // A throw on one path only: the other path completes.
   expect(
     swallowed(

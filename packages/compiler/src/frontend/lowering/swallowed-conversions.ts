@@ -21,8 +21,9 @@
  *   failure is the program's from there, and the scan stops;
  * - a `catch` that never refers to it and can complete (fall out of its
  *   body, `return`, `break`, `continue`) swallows it;
- * - a `catch` that never refers to it and always throws replaces it with
- *   another error, which goes on outwards;
+ * - a `catch` that never refers to it and always throws, another error or
+ *   the same one (`throw e` is a statement of its own, not a reference),
+ *   hands the failure on outwards;
  * - a `finally` that leaves by `return`, `break` or `continue` discards
  *   whatever was thrown, and swallows it;
  * - past the outermost `try`, it leaves the function.

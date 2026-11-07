@@ -236,7 +236,7 @@ message 1 undefined
 skipped
 ```
 
-A handler reads the error when it refers to the caught value at all: logs it, passes it on, tests it, rethrows it, or creates a function that does. A `catch` without a binding, or with a binding nothing uses, does not. A handler that always throws another error replaces the failure, which then goes on to the next enclosing handler. A `finally` block that leaves with `return`, `break`, or `continue` discards the error. A promise's rejection handler counts like a `catch`: `.catch(() => fallback)` ignores the reason, and marks the conversions in the callbacks of the chain it is attached to and in an async function the chain starts with.
+A handler reads the error when it refers to the caught value at all: logs it, passes it to a function, tests it, or creates a function that does. A `catch` without a binding, or with a binding nothing uses, does not. A handler that only rethrows the error, or always throws another one, hands the failure to the next enclosing handler, which is judged the same way. A `finally` block that leaves with `return`, `break`, or `continue` discards the error. A promise's rejection handler counts like a `catch`: `.catch(() => fallback)` ignores the reason, and marks the conversions in the callbacks of the chain it is attached to and in an async function the chain starts with.
 
 A conversion is marked where it is written inside the guarded code, in a function literal called or awaited there, and in a function the guarded code calls directly, one call deep. It is not marked two calls away, behind a function held in a variable or a member, or behind a callback passed to other code. The mark says a failure can end in that handler, not that the data is wrong.
 

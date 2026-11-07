@@ -316,6 +316,7 @@ import { identifiersNamed } from "./identifier-uses.js";
 import { lowerShortCircuitAssignment } from "./expressions/nullish-assignment.js";
 import {
   dereferencedElementWrite,
+  dynMemberReference,
   jsHoldsDynObject,
   lowerEnvironmentKey,
   lowerNativeFunctionAssignment,
@@ -11665,6 +11666,24 @@ function lowerAssignTargetInto(
           return;
         }
       }
+    }
+  }
+  // A member of a checked-dynamic receiver (an untyped object or array of a
+  // JavaScript source: `[o.a, o.b] = [o.b, o.a]`, `[xs[i], xs[j]] = …`):
+  // the keyed write an assignment to that member makes. The reference is
+  // evaluated before the element's value is read, as for the typed targets
+  // above, and the key is coerced at the write.
+  if (
+    (ts.isElementAccessExpression(t) ||
+      (ts.isPropertyAccessExpression(t) && ts.isIdentifier(t.name))) &&
+    !t.questionDotToken
+  ) {
+    const recv = tryLowerExpression(lowerer, t.expression);
+    if (recv?.type.kind === "dyn") {
+      const reference = dynMemberReference(lowerer, t, recv, loc);
+      out.push(...reference.stmts);
+      out.push(reference.store(lowerer.coerceInto(blame, valueOf(DYN), DYN)));
+      return;
     }
   }
   lowerer.unsupported(

@@ -12,7 +12,7 @@ import {
   lowerNewTargetName,
 } from "./new-target.js";
 import { lowerWebAssemblyValue, refuseWebAssemblyUse } from "./builtins/webassembly.js";
-import { lowerIslandExpr } from "./lower-node-island.js";
+import { islandFunctionView, lowerIslandExpr } from "./lower-node-island.js";
 import { lowerAwaitedUniformPromiseAll, promiseAllValueUnread } from "./builtins/promises.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
@@ -27,6 +27,7 @@ import { checkedPrivateReceiver, localPrivateBrandClass } from "./private-brands
 import { staticCondition } from "./static-typeof.js";
 import { fenceBuiltinMemberWrite } from "./builtin-member-writes.js";
 import { constituentTypes } from "../ts7/checker.js";
+import { PoisonError } from "./lowerer.js";
 import type { Lowerer } from "./lowerer.js";
 import { recordMayKeepSource } from "./record-sources.js";
 import { recordStringCall } from "./record-links.js";
@@ -250,6 +251,94 @@ export function templateRawTextOf(
 const LOWER_EXPR_MAX_DEPTH = 200;
 let lowerExprDepth = 0;
 
+/** Lowering an expression probes its operands (tryLowerExpression) to pick
+ * a form, and a probe lowers the operand in full, so an operand can be
+ * lowered once per form its parent tries and a chain of calls multiplies
+ * that at every link: a chain of array methods taking arrow functions costs
+ * three times as much per link, which is 3 million lowerings (over a
+ * minute) at 12 links and the heap limit at 14. A refused probe is not
+ * repeated (Lowerer.refusedProbes); the rest are bounded here. One
+ * outermost statement (or expression, where no statement is being
+ * lowered) gets this many lowerings of its parts, or
+ * LOWER_EXPR_ATTEMPTS_PER_NODE for each of its nodes when that is more (a
+ * module wrapped in one call is one statement); past that the answer is a
+ * named fence rather than a build that does not end. */
+let lowerExprAttemptsFloor = 5_000_000;
+const LOWER_EXPR_ATTEMPTS_PER_NODE = 2_000;
+
+/** Sets the attempt floor and returns the one it replaced: a test reaches
+ * the fence without the minutes the shipped floor stands for. */
+export function setLowerExprAttemptsFloor(floor: number): number {
+  const previous = lowerExprAttemptsFloor;
+  lowerExprAttemptsFloor = floor;
+  return previous;
+}
+
+let loweringBudgetDepth = 0;
+let loweringBudgetRoot: ts.Node | null = null;
+let lowerExprAttempts = 0;
+let lowerExprAttemptLimit = lowerExprAttemptsFloor;
+let lowerExprAttemptLimitSized = false;
+let lowerExprAttemptsSpent = false;
+
+/** Enters a statement or an expression. The outermost one owns the attempt
+ * budget; answers whether this is it. Pair with closeLoweringBudget. */
+export function openLoweringBudget(node: ts.Node): boolean {
+  if (loweringBudgetDepth++ > 0) return false;
+  loweringBudgetRoot = node;
+  lowerExprAttempts = 0;
+  lowerExprAttemptLimit = lowerExprAttemptsFloor;
+  lowerExprAttemptLimitSized = false;
+  lowerExprAttemptsSpent = false;
+  return true;
+}
+
+export function closeLoweringBudget(): void {
+  if (--loweringBudgetDepth === 0 && lowerExprAttempts > lowerExprAttemptsPeak)
+    lowerExprAttemptsPeak = lowerExprAttempts;
+}
+
+let lowerExprAttemptsPeak = 0;
+
+/** The most lowerings one outermost statement has taken since the last
+ * call, which starts the count again. A count, not a time: the chain
+ * scaling test compares it across chain lengths to hold lowering linear. */
+export function takeLowerExprAttemptsPeak(): number {
+  const peak = lowerExprAttemptsPeak;
+  lowerExprAttemptsPeak = 0;
+  return peak;
+}
+
+/** Refuses the budget's owner when its lowering returned after the budget
+ * was spent: a form that could finish from operands it had already probed
+ * is not the form the full search would have picked. */
+export function refuseSpentLowering(lowerer: Lowerer): void {
+  if (!lowerExprAttemptsSpent) return;
+  lowerer.unsupported(
+    "SC1090",
+    loweringBudgetRoot!,
+    `statements that take more than ${lowerExprAttemptLimit} lowering attempts (each call in a chain is lowered once for every form its caller tries)`,
+    "assign parts of the chain to variables",
+  );
+}
+
+/** The attempt count passed its limit: size the limit to the budget's owner
+ * the first time, and fence once it is truly exceeded. From then on every
+ * lowering inside the owner is refused. */
+function lowerExprAttemptsExceeded(lowerer: Lowerer): void {
+  if (!lowerExprAttemptLimitSized) {
+    lowerExprAttemptLimitSized = true;
+    let nodes = 0;
+    ts.walkPreorder(loweringBudgetRoot!, () => {
+      nodes++;
+    });
+    lowerExprAttemptLimit = Math.max(lowerExprAttemptsFloor, nodes * LOWER_EXPR_ATTEMPTS_PER_NODE);
+    if (lowerExprAttempts <= lowerExprAttemptLimit) return;
+  }
+  lowerExprAttemptsSpent = true;
+  refuseSpentLowering(lowerer);
+}
+
 export function lowerExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   if (lowerExprDepth >= LOWER_EXPR_MAX_DEPTH) {
     lowerer.unsupported(
@@ -258,9 +347,30 @@ export function lowerExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       `expressions nested deeper than ${LOWER_EXPR_MAX_DEPTH} levels`,
     );
   }
+  // A probe of this operand was refused while an enclosing expression or
+  // statement was being lowered, and it is asked for again inside a probe
+  // with nothing around it changed: the refusal stands. Without this, a
+  // call chain whose innermost link cannot be lowered is lowered twice at
+  // every link (once to probe the receiver, once to use it), which doubles
+  // the work per link.
+  if (lowerer.diagSink !== null && lowerer.refusedProbes.size > 0) {
+    const refusal = lowerer.standingRefusal(expr);
+    if (refusal !== null) {
+      for (const diagnostic of refusal.diagnostics) lowerer.diagSink.push(diagnostic);
+      throw new PoisonError();
+    }
+  }
+  const outermost = openLoweringBudget(expr);
+  const frame = lowerer.openRefusedProbeFrame();
   lowerExprDepth++;
   try {
+    if (!outermost && ++lowerExprAttempts > lowerExprAttemptLimit)
+      lowerExprAttemptsExceeded(lowerer);
     let lowered = lowerExprInner(lowerer, expr);
+    // An island's function in a slot the program types as a function is its
+    // typed view there. Programs without islands skip it.
+    if (lowerer.nodeIslands !== null && lowered.type.kind === "dyn")
+      lowered = islandFunctionView(lowerer, lowered, expr) ?? lowered;
     const nanCoded = lowerer.nanCodedReads;
     if (nanCoded) {
       if (lowered.type.kind === "f64" && nanCoded.reboxes(expr))
@@ -271,9 +381,12 @@ export function lowerExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     if (lowered.type.kind === "void" && (lowerer.typeOf(expr).flags & ts.TypeFlags.Never) !== 0)
       lowerer.neverValued.add(lowered);
     if (ts.isAwaitExpression(expr)) lowered = markSuspension(lowerer, lowered, locOf(expr));
+    if (outermost) refuseSpentLowering(lowerer);
     return lowered;
   } finally {
     lowerExprDepth--;
+    lowerer.closeRefusedProbeFrame(frame);
+    closeLoweringBudget();
   }
 }
 

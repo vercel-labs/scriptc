@@ -9210,6 +9210,18 @@ function lowerCjsSingleValueExport(
     }
     const g = lowerer.globalsBySymbol.get(sym);
     if (g) {
+      // A source that is REASSIGNED in this module has a snapshot slot
+      // keyed by this statement (collectGlobals): Node stores the VALUE
+      // here, so the export keeps its own storage and requirers read it.
+      const slot = lowerer.globalsByDeclNode.get(expr);
+      if (slot !== undefined) {
+        return {
+          kind: "assign",
+          localId: slot.id,
+          value: lowerer.lowerExprExpecting(rhs, slot.type),
+          loc: locOf(rhs),
+        };
+      }
       if (g.mutable && !unchangedAfterExport(lowerer, rhs, expr)) {
         lowerer.unsupported(
           "SC1090",
@@ -9219,6 +9231,13 @@ function lowerCjsSingleValueExport(
       }
       return { kind: "block", body: [], loc };
     }
+    // A require binding of another module's whole export whose value lives
+    // in that module's snapshot global (`const snap = require("./w");
+    // module.exports = snap`, where w exports a reassigned binding): the
+    // binding already names that storage, so this statement exports the
+    // same value and requirer bindings reconnect to the same slot.
+    if (sym.declarations.some((d) => lowerer.globalsByDeclNode.has(d)))
+      return { kind: "block", body: [], loc };
     // A binding with no module storage and no alias target (an inferred
     // union or otherwise unmappable type): the export is the snapshot
     // global collectGlobals registered at this statement.

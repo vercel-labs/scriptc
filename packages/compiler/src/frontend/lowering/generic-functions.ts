@@ -149,6 +149,10 @@ export interface GenericFnInfo {
    * checker types key an instantiation, exactly the generic machinery —
    * the untyped params ARE the type parameters (see implicitCallInstance). */
   implicitParams?: (ts.Symbol | null)[];
+  /** Structural instances: parallel to decl.parameters, whether the body
+   * writes through the parameter or compares it by identity
+   * (usesParameterIdentity). Computed on first use. */
+  identityParams?: boolean[];
   /** Implicit-any monomorphization of destructured object parameters
    * (implicitPatternsOf): parallel to decl.parameters, the destructured
    * names where the slot binds the call site's object type. Computed on

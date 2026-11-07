@@ -31,7 +31,7 @@ declare module "node:fs" {
    * string data is written with, and/or the open(2) flag. */
   export function writeFileSync(
     path: string | URL,
-    data: string,
+    data: string | Uint8Array,
     /* The options-record stance (see http.RequestOptions): an unsupported
      * flag fences by name at the call site; undocumented keys drop like
      * Node. The flag names are Node's ("w", "wx", "a", "as+", ...). */
@@ -43,7 +43,11 @@ declare module "node:fs" {
     },
   ): void;
   /* The bare-encoding spelling — the options record's encoding key alone. */
-  export function writeFileSync(path: string | URL, data: string, encoding: BufferEncoding): void;
+  export function writeFileSync(
+    path: string | URL,
+    data: string | Uint8Array,
+    encoding: BufferEncoding,
+  ): void;
   export function writeFileSync(path: string | URL, data: string | Uint8Array): void;
   /* Buffer and TypedArray data with the mode and/or flag options; the
    * bytes are written as they are, and Node ignores an encoding key here. */
@@ -61,12 +65,25 @@ declare module "node:fs" {
    * and the bare encoding replace the encoding and can name another flag
    * (and the creation mode). */
   export function appendFileSync(path: string | URL, data: string | Uint8Array): void;
+  /* The bare-encoding spelling is the options record's encoding key alone. */
   export function appendFileSync(
     path: string | URL,
     data: string | Uint8Array,
-    options: { mode?: number; encoding?: BufferEncoding; flag?: string; [option: string]: unknown },
+    encoding: BufferEncoding,
   ): void;
-  export function appendFileSync(path: string | URL, data: string, encoding: BufferEncoding): void;
+  /* The options record: `encoding` names the encoding the string data is
+   * appended with; `mode` and `flag` change what an append creates (see the
+   * writeFileSync stance). */
+  export function appendFileSync(
+    path: string | URL,
+    data: string | Uint8Array,
+    options?: {
+      mode?: number;
+      encoding?: BufferEncoding;
+      flag?: string;
+      [option: string]: unknown;
+    },
+  ): void;
   export function existsSync(path: string | URL): boolean;
   export function mkdirSync(path: string | URL): void;
   export function mkdirSync(

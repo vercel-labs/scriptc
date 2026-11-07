@@ -85788,8 +85788,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-applicable",
-        "evidence": "derived:descendants"
+        "status": "partial",
+        "evidence": "derived:descendants",
+        "tests": [
+          "tests/corpus/8894-node-sea-outside-application/main.ts",
+          "tests/corpus/8895-node-sea-untyped.cjs"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -85995,8 +85999,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-applicable",
-        "evidence": "compiler-chapter-policy:single-executable-applications"
+        "status": "partial",
+        "evidence": "compiler-feature:single-executable-applications.sea.isSea",
+        "tests": [
+          "tests/corpus/8894-node-sea-outside-application/main.ts",
+          "tests/corpus/8895-node-sea-untyped.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -86110,8 +86118,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-applicable",
-        "evidence": "compiler-chapter-policy:single-executable-applications"
+        "status": "partial",
+        "evidence": "compiler-feature:single-executable-applications.sea.getAsset",
+        "tests": [
+          "tests/corpus/8894-node-sea-outside-application/main.ts",
+          "tests/corpus/8895-node-sea-untyped.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -86133,8 +86145,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-applicable",
-        "evidence": "compiler-chapter-policy:single-executable-applications"
+        "status": "partial",
+        "evidence": "compiler-feature:single-executable-applications.sea.getAssetAsBlob",
+        "tests": [
+          "tests/corpus/8894-node-sea-outside-application/main.ts",
+          "tests/corpus/8895-node-sea-untyped.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -86156,8 +86172,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-applicable",
-        "evidence": "compiler-chapter-policy:single-executable-applications"
+        "status": "partial",
+        "evidence": "compiler-feature:single-executable-applications.sea.getRawAsset",
+        "tests": [
+          "tests/corpus/8894-node-sea-outside-application/main.ts",
+          "tests/corpus/8895-node-sea-untyped.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -86179,8 +86199,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-applicable",
-        "evidence": "compiler-chapter-policy:single-executable-applications"
+        "status": "partial",
+        "evidence": "compiler-feature:single-executable-applications.sea.getAssetKeys",
+        "tests": [
+          "tests/corpus/8894-node-sea-outside-application/main.ts",
+          "tests/corpus/8895-node-sea-untyped.cjs"
+        ]
       },
       "anchorSource": "exact"
     },

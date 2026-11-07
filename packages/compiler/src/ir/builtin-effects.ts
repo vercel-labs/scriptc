@@ -92,6 +92,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "buffer.transcode",
   "buffer.slowBuffer",
   "cp.spawnDynamic",
+  "cp.checkArgs",
   "child.onDyn",
   "text.decoderEncoding",
   "strdec.encoding",
@@ -149,6 +150,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.realpathValue",
   "dyn.validateString",
   "dyn.validateStrings",
+  "dyn.validateFsPath",
   "path.resolveValue",
   "path.parseValue",
   "path.formatValue",
@@ -731,6 +733,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "punycode.toASCII",
   "punycode.toUnicode",
   "punycode.ucs2Encode",
+  // node:sea's asset readers always throw Node's coded error.
+  "sea.getAsset",
+  "sea.getRawAsset",
+  "sea.getAssetAsBlob",
+  "sea.getAssetKeys",
   // The base64 globals: atob/btoa throw the catchable DOMException
   // InvalidCharacterError on malformed input; the zero-argument form
   // always throws Node's TypeError [ERR_MISSING_ARGS].
@@ -821,6 +828,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.primitiveDelete",
   "dyn.reflectDeleteProperty",
   "dyn.reflectHasTarget",
+  "dyn.reflectGetPrototypeTarget",
   "dyn.hasKeyComputed",
   // `… in globalThis` over a name the runtime does not provide throws
   "dyn.globalHas",
@@ -844,6 +852,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "class.throwReadOnly",
   "class.throwNotExtensible",
   "record.throwFrozen",
+  // `delete r.k` of a key the record's kept source holds throws Node's
+  // TypeError on a frozen record in strict code.
+  "record.sourceDelete",
   "dyn.toString",
   "dyn.valueOf",
   // Primitive wrapper objects (scr_js_wrapper.c): the conversions run
@@ -1057,6 +1068,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "emitter.setDefaultMaxChk",
   "fs.readFileSyncBytes",
   "fs.writeFileSyncBytes",
+  "fs.writeFileSyncBytesFlags",
   "fs.writeFileSyncFd",
   "fs.appendFileSyncBytes",
   "zlib.inflateSync",
@@ -1284,4 +1296,8 @@ export const ALWAYS_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.streamOptsChk",
   "net.connectOptsChk",
   "tls.caCertsChk",
+  "sea.getAsset",
+  "sea.getRawAsset",
+  "sea.getAssetAsBlob",
+  "sea.getAssetKeys",
 ]);

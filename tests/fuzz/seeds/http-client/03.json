@@ -1,0 +1,1 @@
+["0","0","HTTP/1.1 302 Found\r\nLocation: /next\r\nContent-Length: 0\r\nSet-Cookie: a=b\r\nSet-Cookie: c=d\r\n\r\n"]

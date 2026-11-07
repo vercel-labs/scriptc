@@ -248,6 +248,53 @@ function evaluationOrder(): Promise<void> {
   return finished;
 }
 
+// The receiver and each argument are read where they are written: an
+// argument that assigns one of their bindings does not change the call.
+function operandsHeld(): Promise<void> {
+  let visit!: (n: number) => void;
+  let unset!: (text: string) => void;
+  let saw: (n: number) => void;
+  let heard: (text: string) => void;
+  let took: (n: number) => void;
+  let done: () => void;
+  const finished = new Promise<void>((resolve) => {
+    done = resolve;
+    saw = (n) => console.log("held list item", n);
+    heard = (text) => console.log("held emitter heard", text);
+    took = (n) => console.log("held argument", n);
+  });
+  const self = { tag: 1 };
+  const other = [7, 8, 9];
+  let list = [1, 2];
+  const swap = (): { tag: number } => {
+    list = other;
+    return self;
+  };
+  attempt("forEach receiver reassigned", () => list.forEach(visit, swap()));
+  console.log("list is now", list.join(","));
+  list = [1, 2];
+  const first = new EventEmitter();
+  const second = new EventEmitter();
+  let emitter = first;
+  attempt("emitter receiver reassigned", () => emitter.on(((emitter = second), "word"), unset));
+  console.log("emitter is now the second", emitter === second);
+  emitter = first;
+  let extra = 5;
+  const run = (): void => {
+    list.forEach(saw, swap());
+    list = [1, 2];
+    list.forEach(saw, ((list = other), self));
+    emitter.on(((emitter = second), "word"), heard);
+    setTimeout(took, 1, extra, trace("later argument", (extra = 9)));
+    process.nextTick(took, extra, trace("later argument", (extra = 11)));
+    setTimeout(done, 20);
+  };
+  run();
+  console.log("listeners", first.listenerCount("word"), second.listenerCount("word"));
+  first.emit("word", "on the first emitter");
+  return finished;
+}
+
 async function main(): Promise<void> {
   const bound = await bind();
   const address = bound.server.address();
@@ -281,6 +328,7 @@ async function main(): Promise<void> {
   unassignedRequired();
   await unassignedOptional();
   await evaluationOrder();
+  await operandsHeld();
 }
 
 void main();

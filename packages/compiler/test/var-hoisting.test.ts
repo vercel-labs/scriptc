@@ -419,7 +419,7 @@ function wire(): void {
 wire();
 `);
   expect(localType(mod, "wire", "fire")).toBe("union");
-  const arm = mod.functions.find((f) => f.locals.some((l) => l.name === "%laterArg"));
+  const arm = mod.functions.find((f) => f.locals.some((l) => l.name === "%callOperand"));
   expect(arm).toBeDefined();
   // The binding's value, the later argument, the check, then the call.
   const order = JSON.stringify(arm!.body);
@@ -429,4 +429,29 @@ wire();
   expect(held).toBeGreaterThan(-1);
   expect(later).toBeGreaterThan(held);
   expect(check).toBeGreaterThan(later);
+});
+
+test("a deferred callback check holds the receiver and the arguments in source order", async () => {
+  const mod = await lower(`
+function wire(): void {
+  let visit: (n: number) => void;
+  const install = (): void => { visit = (n) => console.log(n); };
+  let list = [1, 2];
+  const fixed = [3];
+  const swap = (): number => { list = [9]; return 1; };
+  const arm = (): void => {
+    list.forEach(visit, swap());
+    fixed.forEach(visit, swap());
+  };
+  if (process.argv.length > 5) install();
+  arm();
+}
+wire();
+`);
+  const arm = mod.functions.find((f) => f.locals.some((l) => l.name === "%callOperand"));
+  expect(arm).toBeDefined();
+  // `list` can be assigned by the later argument, so its value is held with
+  // the argument's; `fixed` is a const and stays in the call.
+  expect(arm!.locals.filter((l) => l.name === "%callOperand").length).toBe(3);
+  expect(arm!.locals.filter((l) => l.name === "%callbackArg").length).toBe(2);
 });

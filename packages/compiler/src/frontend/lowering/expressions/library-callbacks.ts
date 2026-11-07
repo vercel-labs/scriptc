@@ -15,8 +15,8 @@
  *   arguments before it are evaluated by then.
  * - When an argument after it can be observed (`setTimeout(fire, delay())`
  *   runs `delay()`, and an exception it throws wins), the call evaluates
- *   those arguments first, then checks, then runs with their values
- *   (lowerDeferredCallbackCall).
+ *   its receiver and arguments in source order, then checks, then runs with
+ *   their values (lowerDeferredCallbackCall).
  *
  * A parameter that admits `undefined` (an optional callback, `any`) keeps
  * the stored value, and so does a program function, whose parameter widens
@@ -25,7 +25,6 @@ import * as ts from "../../ts7/adapter.js";
 import { BOOL, type IrExpr, type IrStmt, type IrType, type SrcLoc, VOID } from "../../../ir/ir.js";
 import { nodeThrowExpr, varRef } from "../../../ir/build.js";
 import { locOf } from "../../program.js";
-import { isPureReference } from "../effect-free.js";
 import type { Lowerer } from "../lowerer.js";
 import { identifierReadSymbol, sideEffectFreeOptionValue } from "../surfaces.js";
 
@@ -189,20 +188,88 @@ export function requiredLibraryCallbackRead(
   };
 }
 
-/** The calls being lowered with their arguments already evaluated. */
+/** The calls being lowered with their operands already evaluated. */
 const deferring = new WeakSet<ts.Node>();
 
-/** Whether evaluating the call's callee leaves nothing to observe: a name,
- * or a member of an effect-free receiver. */
-function calleeIsEffectFree(lowerer: Lowerer, call: ts.CallExpression | ts.NewExpression): boolean {
-  if (ts.isCallExpression(call) && call.questionDotToken !== undefined) return false;
+/** Whether `node` has the same value wherever in the call it is evaluated,
+ * and evaluating it cannot be observed: a literal, a function expression,
+ * `this`, a name that is never assigned (a `const`, a function, a class, an
+ * import, a library global), or a literal built from these. A `let`, `var`
+ * or parameter is not one: an argument evaluated in between can assign it. */
+function isConstantOperand(lowerer: Lowerer, node: ts.Expression): boolean {
+  let e = node;
+  while (
+    ts.isParenthesizedExpression(e) ||
+    ts.isAssertionExpression(e) ||
+    ts.isSatisfiesExpression(e) ||
+    ts.isNonNullExpression(e)
+  )
+    e = e.expression;
+  if (
+    ts.isStringLiteralLike(e) ||
+    ts.isNumericLiteral(e) ||
+    ts.isBigIntLiteral(e) ||
+    ts.isArrowFunction(e) ||
+    ts.isFunctionExpression(e) ||
+    e.kind === ts.SyntaxKind.TrueKeyword ||
+    e.kind === ts.SyntaxKind.FalseKeyword ||
+    e.kind === ts.SyntaxKind.NullKeyword ||
+    e.kind === ts.SyntaxKind.ThisKeyword ||
+    e.kind === ts.SyntaxKind.SuperKeyword
+  )
+    return true;
+  if (ts.isIdentifier(e)) {
+    const declarations = identifierReadSymbol(lowerer, e)?.declarations ?? [];
+    return (
+      declarations.length > 0 &&
+      declarations.every(
+        (d) =>
+          ts.getSourceFileOfNode(d).isDeclarationFile ||
+          ts.isFunctionDeclaration(d) ||
+          ts.isClassDeclaration(d) ||
+          ts.isEnumDeclaration(d) ||
+          ts.isModuleDeclaration(d) ||
+          ts.isImportSpecifier(d) ||
+          ts.isImportClause(d) ||
+          ts.isNamespaceImport(d) ||
+          ts.isImportEqualsDeclaration(d) ||
+          (ts.isVariableDeclaration(d) &&
+            (ts.getCombinedNodeFlags(d) & (ts.NodeFlags.Const | ts.NodeFlags.Using)) !== 0),
+      )
+    );
+  }
+  if (ts.isPrefixUnaryExpression(e))
+    return (
+      (e.operator === ts.SyntaxKind.MinusToken ||
+        e.operator === ts.SyntaxKind.PlusToken ||
+        e.operator === ts.SyntaxKind.ExclamationToken) &&
+      (ts.isNumericLiteral(e.operand) || ts.isBigIntLiteral(e.operand))
+    );
+  if (ts.isArrayLiteralExpression(e))
+    return e.elements.nodes.every(
+      (element) => !ts.isSpreadElement(element) && isConstantOperand(lowerer, element),
+    );
+  if (ts.isObjectLiteralExpression(e))
+    return e.properties.nodes.every(
+      (property) =>
+        ts.isPropertyAssignment(property) &&
+        !ts.isComputedPropertyName(property.name) &&
+        isConstantOperand(lowerer, property.initializer),
+    );
+  return false;
+}
+
+/** The operand of the call's callee that is evaluated before the arguments:
+ * the receiver of a method call, the callee of a plain call or `new`. Null
+ * for a callee of another form, and inside an optional chain, whose
+ * receiver the chain has already evaluated. */
+function calleeOperand(call: ts.CallExpression | ts.NewExpression): ts.Expression | null {
+  if ((call.flags & ts.NodeFlags.OptionalChain) !== 0) return null;
   let callee: ts.Expression = call.expression;
   while (ts.isParenthesizedExpression(callee)) callee = callee.expression;
-  if (ts.isIdentifier(callee)) return true;
-  if (!ts.isPropertyAccessExpression(callee) || callee.questionDotToken !== undefined) return false;
-  return (
-    sideEffectFreeOptionValue(callee.expression) || isPureReference(lowerer, callee.expression)
-  );
+  if (ts.isIdentifier(callee)) return callee;
+  if (ts.isPropertyAccessExpression(callee)) return callee.expression;
+  return null;
 }
 
 /** Whether `value` reads the local `id`. */
@@ -219,14 +286,19 @@ function readsLocal(value: unknown, id: string): boolean {
 }
 
 /** A call that hands such a binding to a required library callback and has
- * an argument after it whose evaluation can be observed. JavaScript reads
- * the binding, evaluates the arguments after it, and only then does the
- * library refuse an undefined callback, so the call is lowered as: the
- * binding's stored value, those arguments in order, the check, then the
- * call itself over the values. That needs the callee and the arguments
- * before the callback to be effect-free, since they are now evaluated after
- * the ones behind it; a call where they are not is left alone (null), and
- * its callback keeps the stored value. Null for every other call. */
+ * an argument after it whose evaluation can be observed. JavaScript
+ * evaluates the receiver, then each argument in order (the read of the
+ * binding among them), and only then does the library refuse an undefined
+ * callback. So the call is lowered as its operands in that order, each into
+ * a hidden local, then the check, then the call itself over those values:
+ * `list.forEach(visit, (list = other, self))` iterates the array `list` held
+ * when the call began. An operand that is the same wherever it is evaluated
+ * (isConstantOperand) stays in the call. The call's lowering has to read
+ * every value it is handed; a call whose lowering does not (it takes an
+ * operand apart instead of evaluating it) is refused, since that operand
+ * would run twice. Null for every other call, and for a callee of a form
+ * this does not hold a value for: there the callback keeps the stored
+ * value. */
 export function lowerDeferredCallbackCall(
   lowerer: Lowerer,
   call: ts.CallExpression | ts.NewExpression,
@@ -245,37 +317,55 @@ export function lowerDeferredCallbackCall(
     if (!ts.isIdentifier(expr)) continue;
     const symbol = identifierReadSymbol(lowerer, expr);
     if (symbol === undefined || !lowerer.earlyReadVars.has(symbol)) continue;
-    if (
-      !calleeIsEffectFree(lowerer, call) ||
-      !args.slice(0, index).every((a) => !ts.isSpreadElement(a) && sideEffectFreeOptionValue(a))
-    )
-      return null;
+    const first = calleeOperand(call);
+    if (first === null || args.some(ts.isSpreadElement)) return null;
     const storage = lowerer.resolveLocal(expr) ?? lowerer.globalOf(expr);
     if (storage === null) return null;
     const callback = requiredLibraryCallback(lowerer, expr, storage.type);
-    if (callback === null) return null;
-    const later = observableAfter(callback);
-    if (later.length === 0 || later.some(ts.isSpreadElement)) return null;
+    if (callback === null || observableAfter(callback).length === 0) return null;
     const { unionId, fn, tag } = callback;
     const loc = locOf(expr);
-    const held = lowerer.declareHiddenLocal("%callbackArg", storage.type);
-    const heldRef = varRef(held.id, held.type, loc);
-    const stmts: IrStmt[] = [
-      { kind: "varDecl", localId: held.id, init: varRef(storage.id, storage.type, loc), loc },
-    ];
-    const overrides: { node: ts.Expression; value: IrExpr }[] = [
-      { node: expr, value: { kind: "unionNarrow", unionId, tag, value: heldRef, type: fn, loc } },
-    ];
+    const stmts: IrStmt[] = [];
+    const overrides: { node: ts.Expression; value: IrExpr }[] = [];
     const temps: { node: ts.Expression; id: string }[] = [];
-    for (const node of later) {
+    // An operand's value where the source evaluates it; false when it has
+    // none to hold.
+    const hold = (node: ts.Expression): boolean => {
+      if (isConstantOperand(lowerer, node)) return true;
       const value = lowerer.lowerExpr(node);
-      if (value.type.kind === "void") return null;
-      const temp = lowerer.declareHiddenLocal("%laterArg", value.type);
+      if (value.type.kind === "void") return false;
+      const temp = lowerer.declareHiddenLocal("%callOperand", value.type);
       const at = locOf(node);
       stmts.push({ kind: "varDecl", localId: temp.id, init: value, loc: at });
-      overrides.push({ node, value: varRef(temp.id, temp.type, at) });
+      // A lowering may look through parentheses and type wrappers before it
+      // evaluates the operand: each of those nodes stands for the value.
+      for (let inner: ts.Expression = node; ; inner = inner.expression) {
+        overrides.push({ node: inner, value: varRef(temp.id, temp.type, at) });
+        if (
+          !ts.isParenthesizedExpression(inner) &&
+          !ts.isAssertionExpression(inner) &&
+          !ts.isSatisfiesExpression(inner) &&
+          !ts.isNonNullExpression(inner)
+        )
+          break;
+      }
       temps.push({ node, id: temp.id });
-    }
+      return true;
+    };
+    if (!hold(first) || !args.slice(0, index).every(hold)) return null;
+    const held = lowerer.declareHiddenLocal("%callbackArg", storage.type);
+    const heldRef = varRef(held.id, held.type, loc);
+    stmts.push({
+      kind: "varDecl",
+      localId: held.id,
+      init: varRef(storage.id, storage.type, loc),
+      loc,
+    });
+    overrides.push({
+      node: expr,
+      value: { kind: "unionNarrow", unionId, tag, value: heldRef, type: fn, loc },
+    });
+    if (!args.slice(index + 1).every(hold)) return null;
     stmts.push({
       kind: "if",
       cond: { kind: "unionIsTag", unionId, tag, negated: true, value: heldRef, type: BOOL, loc },
@@ -290,14 +380,12 @@ export function lowerDeferredCallbackCall(
     } finally {
       deferring.delete(call);
     }
-    // The call's lowering has to take each argument's value from here. One
-    // it reads piece by piece (an options literal) would run again.
     for (const temp of temps) {
       if (!readsLocal(result, temp.id))
         lowerer.unsupported(
           "SC1090",
           temp.node,
-          "this argument after a callback that may be undefined (give the callback's binding its value where it is declared)",
+          "this operand of a call whose callback may be undefined (give the callback's binding its value where it is declared)",
         );
     }
     return { kind: "seqExpr", stmts, result, type: result.type, loc: locOf(call) };

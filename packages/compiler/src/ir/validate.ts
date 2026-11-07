@@ -4280,8 +4280,11 @@ function validateFunction(
     // `url` property (a string).
     const optionalUrl = e.fn === "error.nodeThrow" && e.args.length === 4;
     // fs.unwatchFile's listener is optional, so its last slot may be
-    // omitted (1 or 2 args) rather than extended.
-    const optionalTail = e.fn === "fs.unwatchFile" ? 1 : 0;
+    // omitted (1 or 2 args) rather than extended. So is the message of the
+    // typed error constructors: `new Error()` and `super()` leave the
+    // instance without an own message.
+    const optionalTail =
+      e.fn === "fs.unwatchFile" || e.fn === "error.new" || e.fn === "error.ctor" ? 1 : 0;
     const arityOk = variadic
       ? e.args.length >= sig.argTypes.length
       : e.args.length === sig.argTypes.length ||

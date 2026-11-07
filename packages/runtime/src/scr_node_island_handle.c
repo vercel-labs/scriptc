@@ -55,6 +55,13 @@ typedef struct ScrNodeRef {
   /* NI-5d: a native subclass of an island class not created yet: the
    * seven subclass arguments (retained), created on first need. */
   ScrDyn **lazy;
+  /* An island function's identity root (owned, made on first need): the
+   * closure every typed view of the function adopts as its identity. It is
+   * only ever compared, never called, retained or released, so it is a
+   * plain block this ref frees: `fn` marks it as such a root and the slot
+   * after the header names this ref (nh_function_of_identity). A view keeps
+   * the function's handle, and so this ref, alive through its capture. */
+  ScrClosure *identity;
 } ScrNodeRef;
 
 static ScrNodeRef **ni_refs = NULL; /* by bridge id */
@@ -194,6 +201,7 @@ static void nh_lazy_free(ScrNodeRef *ref) {
 
 static void nh_ref_release(ScrNodeRef *ref) {
   if (--ref->rc != 0) return;
+  free(ref->identity);
   if (ref->alias != NULL) {
     nh_ref_release(ref->alias);
     free(ref);
@@ -1200,6 +1208,30 @@ bool scr_ni_is_function(const ScrDyn *value) {
   return ref != NULL && (ref->flags & SCR_NVF_FUNCTION) != 0;
 }
 
+/* Its address in a closure's `fn` marks an island function's identity root. */
+static const char nh_identity_mark = 0;
+
+static ScrClosure *nh_function_identity(const ScrDyn *value) {
+  ScrNodeRef *ref = nh_ref_of(value);
+  if (ref == NULL || (ref->flags & SCR_NVF_FUNCTION) == 0) return NULL;
+  /* A deferred module's stub that already had a ref stands for it. */
+  while (ref->alias != NULL) ref = ref->alias;
+  if (ref->identity == NULL) {
+    ScrClosure *root = calloc(1, sizeof *root + sizeof(ScrBox *));
+    if (root == NULL) nh_oom();
+    root->rc = SIZE_MAX;
+    root->fn = (void *)&nh_identity_mark;
+    root->caps[0] = (ScrBox *)(void *)ref; /* not a capture: ncaps stays 0 */
+    ref->identity = root;
+  }
+  return ref->identity;
+}
+
+static ScrDyn *nh_function_of_identity(const ScrClosure *root) {
+  if (root->fn != (void *)&nh_identity_mark) return NULL;
+  return scr_dyn_new_handle((ScrNodeRef *)(void *)root->caps[0], SCR_DYNH_NODE_ISLAND); /* retains */
+}
+
 /* Node's util.inspect, loaded once and held for the program's life. */
 static ScrDyn *nh_inspect_fn = NULL;
 
@@ -1765,6 +1797,8 @@ static const ScrNiDynOps nh_dyn_ops = {
     .is_function = scr_ni_is_function,
     .error_constructor = nh_error_constructor,
     .object_tag = nh_object_tag,
+    .function_identity = nh_function_identity,
+    .function_of_identity = nh_function_of_identity,
 };
 
 __attribute__((constructor)) static void nh_install(void) { scr_ni_dyn_ops = &nh_dyn_ops; }

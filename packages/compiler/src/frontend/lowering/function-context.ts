@@ -79,6 +79,11 @@ export interface FnCtx {
    * and record themselves here; the post-pass unifies the types and wraps
    * each return onto the settled one. `returnType` holds the DYN pin. */
   inferReturn?: { entries: { stmt: IrStmt; node: ts.Expression | null }[] } | null;
+  /** Set on an async arrow that an enclosing field initializer calls on the
+   * spot: `in this` tests nested inside it may sit on either side of a
+   * suspension, so they answer from this flag, which every await in the
+   * arrow sets. */
+  suspendedFlag?: IrLocal;
   /** Enclosing jump targets, innermost last. `labels` carries the source
    * statement's JS label names so labeled break/continue resolve. Finally
    * regions do not appear here: the backends route every abrupt completion

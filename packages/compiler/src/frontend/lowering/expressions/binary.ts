@@ -1658,6 +1658,15 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
         )
           hold(target.argumentExpression, "%assignKey");
         const result = hold(expr.right, "%assignValue");
+        // A parenthesized RHS is the same expression: the chained
+        // whole-export lowering strips the parens to find the value it
+        // assigns, so the evaluated result stands for the inner node too —
+        // the value is evaluated once, as in Node.
+        {
+          let inner: ts.Expression = expr.right;
+          while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+          if (inner !== expr.right) overrides.push({ node: inner, value: result });
+        }
         stmts.push(
           lowerer.withExpressionOverrides(overrides, () => lowerer.lowerExprStatement(expr)),
         );

@@ -6,6 +6,8 @@
 // registration order. On the compatibility pair, the request's 'close'
 // precedes the response's, the response's 'finish' precedes its 'close',
 // and the stream's own 'close' listener, added by the handler, runs last.
+// A stream reset with an error code emits its 'error' before the pair
+// closes, and a destroyed session closes after its streams.
 import http2 from "node:http2";
 import fs from "node:fs";
 
@@ -106,5 +108,61 @@ await new Promise((resolve) => {
     request.resume();
     request.on("end", () => setTimeout(() => client.close(() => server.close(() => { console.log(lines.join(" | ")); resolve(undefined); })), 50));
     request.end();
+  });
+});
+
+// A reset with an error code: the stream's 'error' comes before the
+// pair's 'close' events.
+await new Promise((resolve) => {
+  const lines = [];
+  let client;
+  const server = http2.createServer((request, response) => {
+    request.on("aborted", () => lines.push("request aborted"));
+    request.on("close", () => lines.push("request close"));
+    response.on("close", () => {
+      lines.push("response close");
+      setTimeout(() => client.close(() => server.close(() => { console.log(lines.join(" | ")); resolve(undefined); })), 30);
+    });
+    request.stream.on("error", (error) => lines.push(`stream error ${error.message}`));
+    request.stream.on("close", () => lines.push("stream close"));
+    request.resume();
+    response.writeHead(200);
+    response.write("part");
+  });
+  server.listen(0, "127.0.0.1", () => {
+    client = http2.connect(`http://127.0.0.1:${server.address().port}`);
+    const request = client.request({ ":path": "/a" });
+    request.on("error", () => {});
+    request.on("data", () => request.close(http2.constants.NGHTTP2_INTERNAL_ERROR));
+  });
+});
+
+// A session destroyed with a request in flight: the pair and the stream
+// close before the session does.
+await new Promise((resolve) => {
+  const lines = [];
+  let serverSession;
+  const server = http2.createServer((request, response) => {
+    request.on("close", () => lines.push("request close"));
+    response.on("close", () => lines.push("response close"));
+    request.stream.on("close", () => lines.push("stream close"));
+    request.resume();
+    response.writeHead(200);
+    response.write("part");
+    setTimeout(() => serverSession.destroy(), 30);
+  });
+  server.on("session", (session) => {
+    serverSession = session;
+    session.on("close", () => {
+      lines.push("session close");
+      setTimeout(() => server.close(() => { console.log(lines.join(" | ")); resolve(undefined); }), 30);
+    });
+  });
+  server.listen(0, "127.0.0.1", () => {
+    const client = http2.connect(`http://127.0.0.1:${server.address().port}`);
+    client.on("error", () => {});
+    const request = client.request({ ":path": "/a" });
+    request.on("error", () => {});
+    request.resume();
   });
 });

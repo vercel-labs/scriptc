@@ -33,11 +33,13 @@ import {
   typeEquals,
 } from "../../../ir/ir.js";
 import { lowerNodeModuleIdentifier } from "../lower-node-module.js";
+import { createRequireLoaderValue } from "../builtins/module-resolution.js";
 import { lowerCjsExportsObjectValue } from "../cjs-exports-object.js";
 import {
   splitRequireBindingOfIdent,
   wholeExportSymbolOfModule,
   wholeExportValue,
+  wholeExportValueOfModuleBinding,
 } from "../cjs-inline-require.js";
 import { captureContextArguments } from "../function-context.js";
 import { argumentsOwner, typedArgumentsCandidate } from "../typed-arguments.js";
@@ -103,6 +105,7 @@ import { mixinFnOfCallee } from "../lower-mixins.js";
 import { isNavigatorGlobal, navigatorValue } from "../builtins/navigator.js";
 import { moduleFileName } from "../import-meta.js";
 import { envSnapshotHelper, heldEnvValueType } from "../builtins/environment.js";
+import { processDataMemberValue } from "../builtins/process.js";
 
 /** Whether this identifier is the RECEIVER of a member access — the dotted
  * or bracketed `held.X` / `held[k]`, read or written, through any erasure
@@ -143,6 +146,14 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   if (lowerer.isStdlibGlobal(expr, "console")) {
     return { kind: "libCall", fn: "console.native", args: [], type: DYN, loc };
   }
+
+  // A createRequire loader as a VALUE (not the callee of a lowered call or
+  // a resolve read, which their own lowerings own): a run-time require
+  // function over the runtime resolver. Checked before the node:module
+  // identifier fold, which would otherwise read the destructured factory
+  // binding as its identity token.
+  const createRequireValue = createRequireLoaderValue(lowerer, expr, loc);
+  if (createRequireValue !== null) return createRequireValue;
 
   const moduleValue = lowerNodeModuleIdentifier(lowerer, expr);
   if (moduleValue) return moduleValue;
@@ -728,6 +739,14 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       // node:crypto's webcrypto is the WebCrypto global's object.
       if (bi.module === "crypto" && bi.member === "webcrypto")
         return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
+      // `import { argv, execArgv } from "node:process"`: a data member of
+      // the process module reads what `process.<member>` reads. `env` stays
+      // out: the spelled read answers a snapshot record, and a write through
+      // the import (`env.NAME = value`) must reach the environment.
+      if (bi.module === "process" && bi.member !== "env") {
+        const value = processDataMemberValue(lowerer, bi.member, expr, loc);
+        if (value !== null) return value;
+      }
       // url.Url is Node's legacy Url constructor (JavaScript sources;
       // @types/node declares Url as a type only), the class of url.parse()
       // results.
@@ -746,6 +765,18 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         // A function member is a function value that fences when called.
         if (builtinModuleFnOf(lowerer, bi.module, bi.member))
           return builtinFunctionFenceValue(lowerer, bi, expr, loc);
+        // A member that holds data (a string, a number, an array) is not an
+        // identity. A token in its place would be read as that data: its
+        // text printed, its length taken, array operations validated against
+        // a string. The read is refused by name instead.
+        if (isDataValueType(lowerer, lowerer.typeOf(expr))) {
+          lowerer.noLowering(
+            `${bi.module}.${bi.member}`,
+            expr,
+            builtinFenceHintOf(bi.module, bi.member),
+            lowerer.resolveValueSymbol(expr),
+          );
+        }
         return {
           kind: "strLit",
           value: `[builtin ${bi.module}.${bi.member}]`,
@@ -777,6 +808,13 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   if (builtinNamespace !== null) {
     const type: IrType = { kind: "moduleNs", moduleId: `builtin:${builtinNamespace}` };
     return { kind: "moduleNsRef", moduleId: type.moduleId, type, loc };
+  }
+  // A binding of a SINGLE-VALUE module used as a bare value: Node's
+  // require answers module.exports, so the read IS that value (the same
+  // answer the split-binding path below gives).
+  {
+    const required = wholeExportValueOfModuleBinding(lowerer, expr);
+    if (required !== null) return required;
   }
   if (lowerer.cjsLocalModuleBindingOf(expr)) {
     lowerer.unsupported(
@@ -1383,4 +1421,29 @@ function closureDynRead(
     type: DYN,
     loc,
   };
+}
+
+/** A checker type whose values are data the program reads: primitives,
+ * arrays and tuples, and unions of those with the nullish units. */
+function isDataValueType(lowerer: Lowerer, type: ts.Type): boolean {
+  const data = (part: ts.Type): boolean =>
+    (part.flags &
+      (ts.TypeFlags.StringLike |
+        ts.TypeFlags.NumberLike |
+        ts.TypeFlags.BooleanLike |
+        ts.TypeFlags.BigIntLike)) !==
+      0 ||
+    lowerer.checker.isArrayType(part) ||
+    lowerer.checker.isTupleType(part);
+  const unit = (part: ts.Type): boolean =>
+    (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null)) !== 0;
+  if (!type.isUnionType()) return data(type);
+  try {
+    const parts = ts.constituentTypes(type);
+    return parts.some(data) && parts.every((part) => data(part) || unit(part));
+  } catch (e) {
+    // A union typescript-go cannot describe is not proven data.
+    if (ts.isUnreadableConstituentsPanic(e)) return false;
+    throw e;
+  }
 }

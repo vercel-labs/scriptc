@@ -42,6 +42,7 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `template-render` | cpu | template literals, escaping, `map`/`join` |
 | `throw-chains` | cpu | exceptions caught 2, 5 and 20 recursive calls above the throw, through direct calls and through a callback, and a backtracking parser that throws on a failed alternative |
 | `thread-slots`, `thread-slots-cache` | cpu | worker threads reading one published type graph from an `InternTable` and keeping per-thread state for each type they visit: a `ThreadSlots` family, or a direct-mapped cache by id in front of a `Map` by id (the `-cache` entry); under Node.js both are per thread |
+| `typed-array-convert` | cpu | copies from one typed view into another: construction from a view of the same kind, `set()` into a preallocated destination through the widening, narrowing and float conversions, and views that start at a non-zero byte offset |
 | `typed-array-kernels` | cpu | element-wise loops that run to one typed array's length and index others at the same position: `Float64Array` axpy, `Float32Array` blend, `Uint8Array` mask, wrapping `Int32Array` add, `Uint8ClampedArray` brighten, RGBA to gray, a row-major `Float32Array` matrix-vector product, and `reduce`/`some`/`map` callbacks |
 | `typed-array-scan`, `typed-array-scan-workers` | cpu | element-by-element scan loops over `Uint8Array`, `Uint16Array`, `Int32Array` and `Float64Array`; the second entry is a worker-enabled executable (it can start a worker), so each access also checks for shared storage |
 | `unicode-lexer` | cpu | a hand-written lexer over a 2.7M-unit bundled module whose comments and strings are in several languages: `charCodeAt` scans, line starts |
@@ -52,6 +53,7 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `word-graph` | cpu | string-keyed Map/Set, BFS |
 | `worker-messages` | cpu | message round trips between the main thread and one worker: each posts a number and the other answers it, so every round trip is two messages and two wakeups of a waiting thread |
 | `cli-config` | startup | a `deploy-plan` CLI: read a ~110 KB JSON manifest, validate, interpolate env values, order 80 services into dependency waves, print a summary |
+| `startup-islands-used`, `startup-islands-unused`, `startup-islands-cold` | startup | a command-line program with three dependencies in Node islands (`benchmarks/startup/islands`): an ES module package of about a hundred small modules, a CommonJS package whose load reads an environment variable that is normally unset, and a package it imports and does not use, which ships 1.3 MB of data files nothing loads (as most of a real package directory is). `-used` calls into the first two; `-unused` prints a version and uses none of them, so its time is what having islands costs a start that does not need them; `-cold` is `-used` on a first run, with an empty island module cache. All three need a libnode pack |
 | `http-api` | server | a `node:http` JSON API: routing, query parsing, a seeded catalog, per-cart state, typed JSON bodies, `ETag`/`If-None-Match`, auth and request-id headers |
 
 Compare two checkouts (each with a built CLI and native artifacts for the host):
@@ -67,6 +69,8 @@ Node is timed in the same interleaved loop and every row reports candidate/Node;
 ## Workload kinds
 
 Each workload is a JSON file in `workloads/`, named after the workload, that holds its `entry`, `args` and options; adding a workload adds its file and its row in the table above, kept in category and then name order. Workloads are process workloads unless they set `kind`.
+
+A workload that needs more than a built checkout says so in `requires`. The one value is `"libnode"`: the program has Node islands, so its executables load a libnode pack from `SCRIPTC_LIBNODE`. Without that variable the runner leaves the workload out and says so, and the zero-cost gate leaves it out on both sides. With it, the runner gives every launch an island module cache of its own run (`XDG_CACHE_HOME` in its work directory): each contender's first launch, the one compared with Node, installs the modules, and the timed launches find them installed. A workload with `"cache": "cold"` times the first launch instead: each of its launches gets an empty cache directory. The JSON report lists the workloads that were left out under `skipped`, with the reason.
 
 Process workloads time whole launches (wall time, startup included). An optional `launches` count makes each sample the median of that many sequential launches; `cli-config` uses 20 so that a startup-dominated command (a few milliseconds compiled, tens of milliseconds under Node) is measured with low noise. Its table row is labeled `(per launch)`. On a heavily loaded macOS host, whole batches of launches can run several times slower (samples become bimodal), so judge startup changes on the Linux lane or a quiet machine.
 

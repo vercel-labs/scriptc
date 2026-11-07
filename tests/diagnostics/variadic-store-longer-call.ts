@@ -7,6 +7,9 @@ import { EventEmitter } from "node:events";
 function counter(): (...args: unknown[]) => number {
   return (...args: unknown[]): number => args.length;
 }
+function spell(): (...args: unknown[]) => string {
+  return (...args: unknown[]): string => String(args.length);
+}
 function quiet(): (...args: unknown[]) => void {
   return (...args: unknown[]): void => {
     console.log(args.length);
@@ -23,7 +26,7 @@ const wider: (x: number) => void = none;
 wider(5);
 
 // (3) A replacer receives the match, its offset and the subject.
-const text: (s: string) => string = counter() as (...args: unknown[]) => string;
+const text: (s: string) => string = spell();
 console.log("a1".replace("1", text));
 
 // (4) An event listener receives the event's arguments.
@@ -49,5 +52,5 @@ const filled: (x: string) => number = empty;
 console.log(filled("x"));
 
 // (7) A typed rest function packed behind a fixed signature.
-const packed: (a: string, b: string) => number = (...parts: string[]): number => parts.length;
+const packed: (a: string) => number = (...parts: string[]): number => parts.length;
 console.log(["a"].map(packed).join(","));

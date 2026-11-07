@@ -27,22 +27,25 @@ import * as ts from "../ts7/adapter.js";
  * - no untyped value is converted into it: an `any` value written to a slot
  *   whose type holds the interface, an assertion that narrows to it, a type
  *   predicate that does, or a function with such a parameter handed to an
- *   untyped slot, whose callers pass untyped arguments;
+ *   untyped slot, whose callers pass untyped arguments. An untyped value
+ *   passed through an `any` callee, written through an `any` receiver or
+ *   by Object.assign can reach any typed slot, so it opens every one;
  * - its members are all required, methods are implemented as methods with
- *   the interface's parameter types and properties as fields, and no
- *   method is read as a value or destructured: the dispatch over classes
- *   answers calls and field reads and writes;
+ *   the interface's parameter types and properties as fields of the
+ *   interface's type, and no method is read as a value, no member is read
+ *   by bracket, updated in place or destructured: the dispatch over classes
+ *   answers calls and plain field reads and writes;
  * - no value of it is observed as a whole object (console, JSON, Object,
  *   Reflect, util, assert, structuredClone, a spread, `for…in`, `in`,
  *   `delete`, a template, a computed member, a member inherited from
  *   Object.prototype): those read an object's own properties, which the
  *   checked-dynamic view answers for every arm.
  *
- * Every test errs toward open, which keeps today's representation. A value
- * the analysis could not see (one a dynamic caller passes to a typed
- * callback) fails the checked conversion at the boundary by name, as it
- * does for a class type. The analysis runs only in programs with a
- * candidate, so a program without `implements` pays nothing. */
+ * Every test errs toward open, which keeps today's representation, and the
+ * lowering driver compares a failing program against a pass with every
+ * protocol open (lowerToIr), so a use the dispatch over classes does not
+ * answer costs no program an error. The analysis runs only in programs
+ * with a candidate, so a program without `implements` pays nothing. */
 export class ClosedProtocols {
   /** Each closed interface's classes: none extends another. */
   private readonly closed = new Map<ts.Symbol, readonly ts.Symbol[]>();
@@ -204,6 +207,12 @@ export class ClosedProtocols {
           )
         )
           return false;
+        // One read through the classes needs one field type: the
+        // interface's own (a field initialized with a literal has it).
+        const declared = this.checker.getTypeOfSymbol(member.signature);
+        const stored = this.checker.getTypeOfSymbol(implemented);
+        if (stored !== declared && this.checker.getBaseTypeOfLiteralType(stored) !== declared)
+          return false;
         continue;
       }
       if (!implemented.declarations.every((declaration) => ts.isMethodDeclaration(declaration)))
@@ -307,6 +316,12 @@ export class ClosedProtocols {
     const predicates: { parameter: ts.Node | undefined; type: ts.TypeNode }[] = [];
     /** Expressions observed as whole objects. */
     const observed: ts.Expression[] = [];
+    /** Calls with arguments: the callee, and its arguments' places among
+     * the origins. `writer`: an Object or Reflect function that writes
+     * properties of its target. */
+    const calls: { callee: ts.Expression; first: number; count: number; writer: boolean }[] = [];
+    /** Member writes: the receiver, and the value's place among the origins. */
+    const writes: { receiver: ts.Expression; value: number }[] = [];
     /** Object binding patterns, whose types are destructured. */
     const patterns: ts.Node[] = [];
     /** Assignment targets, whose types receive the assigned values. */
@@ -336,11 +351,22 @@ export class ClosedProtocols {
             ts.isIdentifier(callee.expression) &&
             OBSERVER_NAMESPACES.has(callee.expression.text)) ||
           (ts.isIdentifier(callee) && OBSERVER_FUNCTIONS.has(callee.text));
+        const first = origins.length;
         for (const argument of node.arguments?.nodes ?? []) {
           const value = ts.isSpreadElement(argument) ? argument.expression : argument;
           origin(value, undefined, true);
           if (observer) observed.push(value);
         }
+        if (origins.length > first)
+          calls.push({
+            callee,
+            first,
+            count: origins.length - first,
+            writer:
+              ts.isPropertyAccessExpression(callee) &&
+              ts.isIdentifier(callee.expression) &&
+              OBJECT_WRITERS.get(callee.expression.text)?.has(callee.name.text) === true,
+          });
       } else if (ts.isForInStatement(node)) observed.push(node.expression);
       else if (ts.isTemplateSpan(node)) observed.push(node.expression);
       else if (ts.isDeleteExpression(node)) {
@@ -368,8 +394,18 @@ export class ClosedProtocols {
         // Destructuring reads members off the object as values.
         patterns.push(node);
       } else if (ts.isElementAccessExpression(node)) {
-        const key = node.argumentExpression;
-        if (!ts.isStringLiteralLike(key) && !ts.isNumericLiteral(key)) keyed.push(node.expression);
+        // A bracket access reads the object by key, literal or computed.
+        keyed.push(node.expression);
+      } else if (
+        (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
+        (node.operator === ts.SyntaxKind.PlusPlusToken ||
+          node.operator === ts.SyntaxKind.MinusMinusToken)
+      ) {
+        // An update of a member reads and writes it in one operation.
+        let operand: ts.Expression = node.operand;
+        while (ts.isParenthesizedExpression(operand) || ts.isNonNullExpression(operand))
+          operand = operand.expression;
+        if (ts.isPropertyAccessExpression(operand)) keyed.push(operand.expression);
       } else if (ts.isVariableDeclaration(node) && node.type !== undefined) {
         const declared = node.type;
         origin(node.initializer, () => this.checker.getTypeFromTypeNode(declared));
@@ -402,6 +438,12 @@ export class ClosedProtocols {
       ) {
         const left = node.left;
         written.push(left);
+        if (ts.isPropertyAccessExpression(left) || ts.isElementAccessExpression(left)) {
+          writes.push({ receiver: left.expression, value: origins.length });
+          // A compound assignment reads and writes the member in one
+          // operation.
+          if (node.operatorToken.kind !== ts.SyntaxKind.EqualsToken) keyed.push(left.expression);
+        }
         origin(node.right, () => this.checker.getTypeAtLocation(left));
         // An assignment used as a value (`(current = next).run()`) is typed
         // by what was assigned while it holds the slot's representation.
@@ -510,6 +552,31 @@ export class ClosedProtocols {
       const type = attempt(() => typeOf(node));
       if (type !== undefined) this.openObserved(type, false);
     }
+    // An untyped value handed to untyped code can reach any typed slot that
+    // code holds: a call through an `any` callee can run any function the
+    // program ever converted, a write through an `any` receiver or by
+    // Object.assign lands in a typed field. Which slot is not known here,
+    // so every candidate stays open.
+    const untypedOrigin = (index: number): boolean => {
+      const type = types[index];
+      return type !== undefined && attempt(() => this.holdsUntyped(type, 0)) !== false;
+    };
+    for (const call of calls) {
+      if (this.candidates.size === 0) return;
+      let untyped = false;
+      for (let i = call.first; i < call.first + call.count && !untyped; i++)
+        untyped = untypedOrigin(i) || (call.writer && this.memberUntyped(types[i]));
+      if (!untyped) continue;
+      const callee = attempt(() => this.checker.getTypeAtLocation(call.callee));
+      if (call.writer || callee === undefined || (callee.flags & ts.TypeFlags.Any) !== 0)
+        this.openAll();
+    }
+    for (const write of writes) {
+      if (this.candidates.size === 0) return;
+      if (!untypedOrigin(write.value)) continue;
+      const receiver = attempt(() => this.checker.getTypeAtLocation(write.receiver));
+      if (receiver === undefined || (receiver.flags & ts.TypeFlags.Any) !== 0) this.openAll();
+    }
     for (const { parameter, type } of predicates) {
       if (this.candidates.size === 0) return;
       attempt(() => {
@@ -595,6 +662,29 @@ export class ClosedProtocols {
     this.candidates.delete(symbol);
     // The interfaces that took this one's values for instances.
     for (const dependent of candidate.into) this.open(dependent);
+  }
+
+  private openAll(): void {
+    for (const symbol of [...this.candidates.keys()]) this.open(symbol);
+  }
+
+  /** Whether a member of the object type `type` is untyped: the object
+   * carries an untyped value into whatever it is written to. */
+  private memberUntyped(type: ts.Type | undefined): boolean {
+    if (type === undefined) return true;
+    return (
+      attempt(() => {
+        const parts =
+          type.isUnionType() || type.isIntersectionType() ? ts.constituentTypes(type) : [type];
+        return parts.some(
+          (part) =>
+            (part.flags & ts.TypeFlags.Object) !== 0 &&
+            this.checker
+              .getPropertiesOfType(part)
+              .some((property) => this.holdsUntyped(this.checker.getTypeOfSymbol(property), 0)),
+        );
+      }) !== false
+    );
   }
 
   /** A function type, alone or as a union arm, with a parameter that holds
@@ -784,6 +874,12 @@ export const OBSERVER_FUNCTIONS = new Set([
   "equal",
   "notEqual",
 ]);
+/** The Object and Reflect functions that write properties of a target. */
+const OBJECT_WRITERS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ["Object", new Set(["assign", "defineProperty", "defineProperties", "setPrototypeOf"])],
+  ["Reflect", new Set(["set", "defineProperty", "setPrototypeOf", "apply", "construct"])],
+]);
+
 /** The members every object inherits from Object.prototype. */
 const INHERITED_MEMBERS = new Set([
   "constructor",

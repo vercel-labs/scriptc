@@ -1670,16 +1670,27 @@ export class ClassProtocols {
     if ((type.flags & ts.TypeFlags.Object) === 0) return null;
     const symbol = type.getSymbol();
     if (symbol === undefined || !this.implementers.has(symbol)) return null;
+    const classes = this.closedIndex().classesOf(symbol);
+    return classes === null
+      ? null
+      : classes.map((cls) => this.checker.getDeclaredTypeOfSymbol(cls));
+  }
+
+  private closedIndex(): ClosedProtocols {
     this.closedProtocols ??= new ClosedProtocols(
       this.checker,
       this.sources,
       this.implementers,
       (view) => this.literalMarks.has(view) || this.collectionViews.has(view),
     );
-    const classes = this.closedProtocols.classesOf(symbol);
-    return classes === null
-      ? null
-      : classes.map((cls) => this.checker.getDeclaredTypeOfSymbol(cls));
+    return this.closedProtocols;
+  }
+
+  /** Whether the program has a closed protocol. */
+  anyClosed(): boolean {
+    this.index();
+    if (this.implementers.size === 0) return false;
+    return this.closedIndex().size > 0;
   }
 
   /** Class-backed protocols require live receiver dispatch. Other interfaces,

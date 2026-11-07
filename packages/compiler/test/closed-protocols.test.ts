@@ -183,3 +183,47 @@ test("a method read as a value keeps the interface checked-dynamic", async () =>
     expect(type, tail).toBe("dyn");
   }
 });
+
+test("fields of different types, bracket reads and member updates keep the interface checked-dynamic", async () => {
+  for (const source of [
+    `interface Shape { area(): number; tag: number | string }
+class Sq implements Shape { tag = 1; area(): number { return 4; } }
+class Ci implements Shape { tag = "ci"; area(): number { return 3; } }
+function use(shape: Shape): number { return shape.area() + String(shape.tag).length; }
+console.log(use(new Sq()), use(new Ci()));`,
+    `${CLASSES}function read(shape: Shape): number { return shape["scale"] * shape["area"](); }
+console.log(use(new Sq(2)), read(new Ci(1)));`,
+    `${CLASSES}function bump(shape: Shape): number { shape.scale += 2; shape.scale++; return shape.scale; }
+console.log(use(new Sq(2)), bump(new Ci(1)));`,
+  ]) {
+    const { type } = await parameterOf(source);
+    expect(type, source).toBe("dyn");
+  }
+});
+
+test("an untyped value handed to untyped code keeps every interface checked-dynamic", async () => {
+  for (const tail of [
+    // A typed callback inside an object converted to any, called with a
+    // value built without a type.
+    `const holder: any = { use }; const built: any = {}; built.scale = 1; built.area = () => 2;
+console.log(holder.use(built));`,
+    // A write through an untyped view of an instance.
+    `class Frame { shape: Shape = new Sq(1); }
+const frame = new Frame(); const loose: any = frame; const built: any = {}; built.scale = 1; built.area = () => 2;
+loose.shape = built; console.log(use(frame.shape));`,
+  ]) {
+    const { type } = await parameterOf(`${CLASSES}console.log(use(new Sq(2)));\n${tail}`);
+    expect(type, tail).toBe("dyn");
+  }
+});
+
+test("a use the class dispatch refuses costs the program no error", async () => {
+  // The analysis does not see Array.prototype.join over the interface; the
+  // lowering refuses it for a union of classes, and the pass with every
+  // protocol open stands.
+  const { type } = await parameterOf(
+    `${CLASSES}const shapes: Shape[] = [new Sq(2), new Ci(1)];
+console.log(use(shapes[0]!), shapes.join("|"));`,
+  );
+  expect(type).toBe("dyn");
+});

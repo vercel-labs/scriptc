@@ -101,6 +101,7 @@ import { installBuiltinStatics } from "./builtin-statics.js";
 import type { BuiltinModuleNamespaceFlavor } from "./builtin-module-members.js";
 import { foldRecordSourceTests, programKeepsRecordSources } from "./record-sources.js";
 import { exprFunctionReference, withoutUnreachedFunctions } from "../../ir/function-references.js";
+import { FunctionViews } from "./function-views.js";
 import { everyStmtList, observeRecordLiteralRebuilds } from "../../ir/traverse.js";
 import { checkedClassAssertion } from "./class-assertions.js";
 import { narrowStoredClassValue, narrowGenericClassValue } from "./class-unions.js";
@@ -592,6 +593,7 @@ import {
 } from "./lower-functions.js";
 import { lowerArrayMethodCall } from "./containers/array-methods.js";
 import { type ArrayHofInfo, fuseArrayPipelines } from "./containers/array-pipelines.js";
+import type { ArrayHelperRecipe } from "./containers/array-callbacks.js";
 import {
   lowerMapMethodCall,
   lowerMapForEachCall,
@@ -4034,6 +4036,10 @@ export class Lowerer {
   /** What each array-HOF helper computes, keyed by helper name: the chain
    * fusion pass reads it to recognize pipelines of helper calls. */
   readonly arrHofInfo = new Map<string, ArrayHofInfo>();
+  /** What each shared array-method helper was built from, keyed by helper
+   * name: function-views.ts rebuilds the helper for a callback of more
+   * parameters from it. */
+  readonly arrHofRecipes = new Map<string, ArrayHelperRecipe>();
   /** Per-arm calls through union-typed class receivers, interned by the
    * receiver union, member, completed argument ABI, and result type. */
   readonly unionCallHelpers = new Map<string, string>();
@@ -5075,12 +5081,14 @@ export class Lowerer {
       mapTable("equalityHelpers", this.equalityHelpers),
       mapTable("arrHofHelpers", this.arrHofHelpers),
       irDataTable("arrHofInfo", this.arrHofInfo),
+      irDataTable("arrHofRecipes", this.arrHofRecipes),
       mapTable("unionCallHelpers", this.unionCallHelpers),
       mapTable("indexedUnionNumericTwins", this.indexedUnionNumericTwins),
       setTable("coercions.checkedNarrows", this.coercions.checkedNarrows),
       setTable("coercions.deferredRetags", this.coercions.deferredRetags),
       irDataTable("coercions.checkedNarrowArms", this.coercions.checkedNarrowArms),
       mapTable("coercions.retags", this.coercions.retags),
+      mapTable("coercions.signatureAdapters", this.coercions.signatureAdapters),
       mapTable("coercions.narrows", this.coercions.narrows),
       mapTable("coercions.widthNarrows", this.coercions.widthNarrows),
       setTable("coercions.widenedReturns", this.coercions.widenedReturns),
@@ -11760,6 +11768,7 @@ export class Lowerer {
       let es = 0;
       let rd = 0;
       const classDispatch = new ClassDynamicDispatch();
+      const functionViews = new FunctionViews();
       let dispatchChanged = !this.remainder;
       while (
         dispatchChanged ||
@@ -11828,8 +11837,17 @@ export class Lowerer {
         // bodies lowered since may have grown (class-instance-constructor.ts).
         if (settleClassIdentityHelpers(this, (fn) => classDispatch.sites.forget(fn)))
           dispatchChanged = true;
+        // Every signature adapter the waves above built is in liftedFns
+        // now; a widening adapter learns the views it must look through.
+        if (!this.remainder && functionViews.process(this)) dispatchChanged = true;
       }
       classDispatch.finalize(this);
+      // The adapters finalize built are looked through as well; this adds
+      // adapters and boxing helpers only, which no other worklist reads.
+      if (!this.remainder) {
+        functionViews.process(this);
+        functionViews.finish(this, [...functions, ...this.liftedFns, ...this.implicitFns]);
+      }
     }
     // Lambdas lifted while lowering any of the above (plus synthetic
     // array-HOF loop functions, which ride the same list), and the
@@ -12944,6 +12962,7 @@ export class Lowerer {
     // historical emit order.
     noteDateClassMethods(this);
     const classDispatch = new ClassDynamicDispatch(extraRoots !== undefined);
+    const functionViews = new FunctionViews();
     // Units in declaration order, so the passes below meet functions, and the
     // classes they collect, in an order that does not depend on lowering order.
     const unitsInOrder = (): IrFunction[] =>
@@ -12977,12 +12996,32 @@ export class Lowerer {
       const identityChanged = settleClassIdentityHelpers(this, (fn) =>
         classDispatch.sites.forget(fn),
       );
-      if (queue.length === 0 && !dispatchChanged && !initializerChanged && !identityChanged) break;
+      // Every signature adapter built so far is in liftedFns; a widening
+      // adapter learns the views it must look through (function-views.ts).
+      const viewsChanged = functionViews.process(this);
+      if (
+        queue.length === 0 &&
+        !dispatchChanged &&
+        !initializerChanged &&
+        !identityChanged &&
+        !viewsChanged
+      )
+        break;
       drainUnits();
       this.restoreGenericInstanceOrder(instLowered);
       this.restoreGenericClassInstanceOrder(clsInstLowered);
     }
     classDispatch.finalize(this);
+    // The adapters finalize built are looked through as well; this adds
+    // adapters and boxing helpers only, which no other worklist reads.
+    functionViews.process(this);
+    functionViews.finish(this, [
+      ...unitsInOrder(),
+      ...initFunctions,
+      ...instanceFunctions,
+      ...this.liftedFns,
+      ...this.implicitFns,
+    ]);
     if (dump !== null) writeRecords(dump, recordLines);
     if (reuse !== null) {
       reuse.finish();

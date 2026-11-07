@@ -1714,6 +1714,22 @@ export function lowerAsExpression(
       const asserted = checkedClassAssertion(lowerer, inner, target, locOf(expr));
       if (asserted) return asserted;
     }
+    // A function asserted to a function type with more parameters: Node
+    // erases the assertion, and a call through it hands the function every
+    // argument. An erased value keeps its narrower type here, so that call
+    // would have nowhere to put them and would drop them. Convert it as a
+    // slot of the asserted type does; the adapter keeps the function's
+    // identity and looks through a narrower view (function-views.ts).
+    if (
+      target?.kind === "func" &&
+      inner.type.kind === "func" &&
+      target.rest !== true &&
+      inner.type.rest !== true &&
+      target.params.length > inner.type.params.length
+    ) {
+      const widened = lowerer.coerceToExpected(inner, target);
+      if (typeEquals(widened.type, target)) return widened;
+    }
     // Unknown-only record views use the checked-dynamic representation.
     // A native record asserted to such a view still denotes the original
     // object. Box a live reference instead of erasing the assertion and

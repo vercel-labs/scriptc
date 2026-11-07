@@ -3388,6 +3388,22 @@ export type IrExpr =
       type: IrType;
       loc: SrcLoc;
     }
+  /** Whether the function value `value` is a view of another function
+   * value. With `adapter`, the view a signature adapter makes: `adapter`
+   * names that adapter's body, the code of an `adapts` closure, whose
+   * captures[0] is the function it forwards to. With `adapter` null, the
+   * view the checked-dynamic function boundary makes (a `dynCheck` of a
+   * callable into a function type), whose captures[0] is the checked-dynamic
+   * callable. Reads the closure's code pointer or its kind and nothing
+   * else. A consumer that hands a function more arguments than the value's
+   * type has asks this first, and starts from the function instead of from
+   * the view (function-views.ts). */
+  | { kind: "viewOf"; value: IrExpr; adapter: string | null; type: IrType; loc: SrcLoc }
+  /** What the view `value` forwards to (+1): captures[0] of the closure,
+   * the function of type `type` for a signature adapter's view and the
+   * checked-dynamic callable for the boundary's. Valid only where `viewOf`
+   * with the same operands answered true. */
+  | { kind: "viewSource"; value: IrExpr; adapter: string | null; type: IrType; loc: SrcLoc }
   /** The currently-executing closure, as a value (+1). Valid only inside a
    * lifted function. Exists so a named nested function can recurse on itself
    * WITHOUT capturing its own binding — a box holding its own closure would

@@ -54,6 +54,18 @@ const after = `mapped after ${process.platform === "linux" ? "true" : "unknown"}
 // The island module cache of these runs (scr_node_island.c).
 const cacheHome = join(outDir, "cache");
 
+/** How often a run hashed an island module tree's content (boot trace). */
+function treeHashes(result: Run): number {
+  return result.stderr.split("[node-islands] hashing the module tree").length - 1;
+}
+
+/** The file named `name` below `dir`. */
+function fileBelow(dir: string, name: string): string {
+  for (const entry of readdirSync(dir, { withFileTypes: true, recursive: true }))
+    if (entry.isFile() && entry.name === name) return join(entry.parentPath, name);
+  throw new Error(`no ${name} below ${dir}`);
+}
+
 async function run(
   path: string,
   args: string[],
@@ -146,22 +158,113 @@ describe.skipIf(skip)("Node islands in-process", () => {
   test("beside packaging carries its own pack and island modules", async () => {
     const beside = await build("beside", "beside");
     expect(existsSync(join(outDir, "beside/lifecycle.libnode/manifest.json"))).toBe(true);
-    const helper = join(outDir, "beside/lifecycle.libnode/modules/helper.cjs");
-    expect(readFileSync(helper, "utf8")).toBe(
-      readFileSync(join(repoRoot, "tests/fixtures/node-island/helper.cjs"), "utf8"),
-    );
-    const env = { ...process.env, XDG_CACHE_HOME: cacheHome };
+    const modules = join(outDir, "beside/lifecycle.libnode/modules");
+    const helper = join(modules, "helper.cjs");
+    const original = readFileSync(join(repoRoot, "tests/fixtures/node-island/helper.cjs"), "utf8");
+    expect(readFileSync(helper, "utf8")).toBe(original);
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      XDG_CACHE_HOME: cacheHome,
+      SCRIPTC_NODE_ISLANDS_TRACE: "boot",
+    };
     delete env["SCRIPTC_LIBNODE"];
+    const expected = `${before}\n42\n${after}\ndone\n`;
+    // The build wrote the tree's name next to the modules: a start compares
+    // it and does not hash the tree.
+    const name = readFileSync(`${modules}.tree`, "utf8");
+    expect(name).toMatch(/^[0-9a-f]{64}\n$/);
     const result = await run(beside, [], env);
-    expect(result.stdout).toBe(`${before}\n42\n${after}\ndone\n`);
+    expect(result.stdout).toBe(expected);
     expect(result.code).toBe(0);
-    // Modules that no longer match the executable are refused.
-    writeFileSync(helper, `${readFileSync(helper, "utf8")}\n// edited\n`);
+    expect(treeHashes(result)).toBe(0);
+    // Modules without that name (a directory left from another build, a
+    // deployment that dropped the file): the content decides, on every
+    // start, and the program writes nothing beside itself.
+    for (const other of [null, `${"0".repeat(64)}\n`]) {
+      if (other === null) rmSync(`${modules}.tree`);
+      else writeFileSync(`${modules}.tree`, other);
+      for (let i = 0; i < 2; i++) {
+        const hashed = await run(beside, [], env);
+        expect(hashed.stdout).toBe(expected);
+        expect(treeHashes(hashed)).toBe(1);
+      }
+    }
+    // ... and modules that do not match the executable are refused.
+    writeFileSync(helper, `${original}\n// edited\n`);
     const edited = await run(beside, [], env);
     expect(edited.code).toBe(1);
-    expect(edited.stderr).toBe(
-      `scriptc: the Node island modules at ${join(outDir, "beside/lifecycle.libnode/modules")} do not match this program\n`,
+    expect(edited.stderr).toContain(
+      `scriptc: the Node island modules at ${modules} do not match this program\n`,
     );
+    // Under the build's name the tree is used as it is, like any file the
+    // program was installed with.
+    writeFileSync(`${modules}.tree`, name);
+    const trusted = await run(beside, [], env);
+    expect(trusted.stdout).toBe(expected);
+    expect(treeHashes(trusted)).toBe(0);
+  }, 300_000);
+
+  test("an installed tree is used without a check, and lost files are put back", async () => {
+    const tree = await build(
+      "tree",
+      undefined,
+      join(repoRoot, "tests/fixtures/node-island/tree/main.ts"),
+    );
+    const cache = join(outDir, "tree-cache");
+    rmSync(cache, { recursive: true, force: true });
+    const env = { ...process.env, XDG_CACHE_HOME: cache, SCRIPTC_NODE_ISLANDS_TRACE: "boot" };
+    const installs = (r: Run): number =>
+      r.stderr.split("[node-islands] installing the module tree").length - 1;
+    const reinstalled = (r: Run): string[] =>
+      r.stderr.split("\n").filter((line) => line.startsWith("scriptc: reinstalled "));
+    // The first run installs the tree: extracted, flushed, moved into place
+    // under its name. Nothing is hashed: the bytes are the executable's.
+    const first = await run(tree, [], env);
+    expect(first.stdout).toBe("6\n");
+    expect([installs(first), treeHashes(first)]).toEqual([1, 0]);
+    const islands = join(cache, "scriptc/node-islands");
+    const entries = readdirSync(islands);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatch(/^[0-9a-f]{64}$/);
+    const root = join(islands, entries[0]!);
+    // Later runs open the directory and nothing else.
+    for (let i = 0; i < 2; i++) {
+      const again = await run(tree, [], env);
+      expect(again.stdout).toBe("6\n");
+      expect([installs(again), treeHashes(again), reinstalled(again)]).toEqual([0, 0, []]);
+    }
+    // A file a tool removed: Node does not find it, the runtime puts it
+    // back from the executable and loads the module again.
+    const three = fileBelow(root, "three.cjs");
+    const bytes = readFileSync(three, "utf8");
+    rmSync(three);
+    const thinned = await run(tree, [], env);
+    expect(thinned.stdout).toBe("6\n");
+    expect(thinned.code).toBe(0);
+    expect(reinstalled(thinned)).toEqual([
+      `scriptc: reinstalled 1 Node island module file missing from ${root}`,
+    ]);
+    expect(treeHashes(thinned)).toBe(0);
+    expect(readFileSync(three, "utf8")).toBe(bytes);
+    expect(reinstalled(await run(tree, [], env))).toEqual([]);
+    // A directory removed with what is below it.
+    rmSync(dirname(fileBelow(root, "one.cjs")), { recursive: true });
+    const halved = await run(tree, [], env);
+    expect(halved.stdout).toBe("6\n");
+    expect(reinstalled(halved)).toEqual([
+      `scriptc: reinstalled 2 Node island module files missing from ${root}`,
+    ]);
+    expect(readFileSync(fileBelow(root, "two.cjs"), "utf8")).toContain("exports.value = 2;");
+    // The whole tree removed: installed again.
+    rmSync(root, { recursive: true });
+    const absent = await run(tree, [], env);
+    expect(absent.stdout).toBe("6\n");
+    expect([installs(absent), treeHashes(absent), reinstalled(absent)]).toEqual([1, 0, []]);
+    // A file someone edited is the file Node loads, as under node_modules.
+    writeFileSync(fileBelow(root, "two.cjs"), bytes.replace("3", "9"));
+    const edited = await run(tree, [], env);
+    expect(edited.stdout).toBe("13\n");
+    expect([installs(edited), treeHashes(edited), reinstalled(edited)]).toEqual([0, 0, []]);
   }, 300_000);
 
   test("the executable carries its island modules and no path of the build machine", async () => {
@@ -192,9 +295,11 @@ describe.skipIf(skip)("Node islands in-process", () => {
     expect(digest).toMatch(/^[0-9a-f]{64}$/);
     expect(statSync(islands).mode & 0o777).toBe(0o700);
     expect(statSync(join(islands, digest!)).mode & 0o777).toBe(0o700);
-    // An entry that no longer matches is not used: the run extracts the
-    // modules into a directory of its own instead.
-    writeFileSync(join(islands, digest!, "helper.cjs"), "exports.answer = () => 0;\n");
+    // The installed modules are the ones Node loads from then on.
+    writeFileSync(join(islands, digest!, "helper.cjs"), "exports.answer = () => 7;\n");
+    expect((await run(join(moved, "app"), [], env)).stdout).toBe(`${before}\n7\n${after}\ndone\n`);
+    // Removed, they are installed again from the executable.
+    rmSync(join(islands, digest!), { recursive: true });
     expect((await run(join(moved, "app"), [], env)).stdout).toBe(`${before}\n42\n${after}\ndone\n`);
   });
 
@@ -219,6 +324,88 @@ describe.skipIf(skip)("Node islands in-process", () => {
       stderr: "",
       code: 0,
     });
+  }, 300_000);
+
+  test("an island package's import is repeated after its lost file is put back", async () => {
+    // The compiler's island imports load through the handle API, the other
+    // road by which Node's error reaches the program.
+    const order = await build(
+      "order-repair",
+      undefined,
+      join(repoRoot, "tests/fixtures/node-island/order/main.ts"),
+    );
+    const cache = join(outDir, "order-repair-cache");
+    rmSync(cache, { recursive: true, force: true });
+    const env = { ...process.env, XDG_CACHE_HOME: cache };
+    const intact = await run(order, [], env);
+    expect(intact).toMatchObject({ stderr: "", code: 0 });
+    const root = join(
+      cache,
+      "scriptc/node-islands",
+      readdirSync(join(cache, "scriptc/node-islands"))[0]!,
+    );
+    rmSync(fileBelow(root, "thing.js"));
+    const repaired = await run(order, [], env);
+    expect(repaired).toEqual({
+      stdout: intact.stdout,
+      stderr: `scriptc: reinstalled 1 Node island module file missing from ${root}\n`,
+      code: 0,
+    });
+    expect(await run(order, [], env)).toEqual(intact);
+  }, 300_000);
+
+  test("asynchronous calls are repeated after their modules' lost files are put back", async () => {
+    // Two calls pending together, each into a module whose file is gone:
+    // the first outcome repairs the tree, and both calls are made again.
+    const dir = join(outDir, "async-repair");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "later.cjs"), "exports.later = async (n) => n + 1;\n");
+    writeFileSync(join(dir, "twice.cjs"), "exports.twice = async (n) => n * 2;\n");
+    writeFileSync(
+      join(dir, "main.ts"),
+      [
+        'import { call } from "@scriptc/node";',
+        "const [a, b] = await Promise.all([",
+        '  call<number>("./later.cjs", "later", 41),',
+        '  call<number>("./twice.cjs", "twice", 21),',
+        "]);",
+        "console.log(a, b);",
+        "",
+      ].join("\n"),
+    );
+    const program = await build("async-repair-out", undefined, join(dir, "main.ts"));
+    const cache = join(outDir, "async-repair-cache");
+    rmSync(cache, { recursive: true, force: true });
+    const env = { ...process.env, XDG_CACHE_HOME: cache };
+    expect(await run(program, [], env)).toEqual({ stdout: "42 42\n", stderr: "", code: 0 });
+    const islands = join(cache, "scriptc/node-islands");
+    const root = join(islands, readdirSync(islands)[0]!);
+    rmSync(fileBelow(root, "later.cjs"));
+    rmSync(fileBelow(root, "twice.cjs"));
+    expect(await run(program, [], env)).toEqual({
+      stdout: "42 42\n",
+      stderr: `scriptc: reinstalled 2 Node island module files missing from ${root}\n`,
+      code: 0,
+    });
+  }, 300_000);
+
+  test("a module whose name needs a JSON escape ships and loads", async () => {
+    // The runtime reads the manifest the build writes in one pass, and
+    // leaves a manifest with an escaped string to the JSON parser.
+    const dir = join(outDir, "escaped-name");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'say "hi".cjs'), "exports.answer = () => 7;\n");
+    writeFileSync(
+      join(dir, "main.ts"),
+      `import { callSync } from "@scriptc/node";\nconsole.log(callSync<number>('./say "hi".cjs', "answer"));\n`,
+    );
+    const escaped = await build("escaped-name-out", undefined, join(dir, "main.ts"));
+    expect(readFileSync(escaped).includes('say \\"hi\\".cjs')).toBe(true);
+    const cache = join(outDir, "escaped-name-cache");
+    rmSync(cache, { recursive: true, force: true });
+    const env = { ...process.env, XDG_CACHE_HOME: cache };
+    for (let i = 0; i < 2; i++)
+      expect(await run(escaped, [], env)).toEqual({ stdout: "7\n", stderr: "", code: 0 });
   }, 300_000);
 
   test("a missing pack fails the first call", async () => {
@@ -268,6 +455,44 @@ describe.skipIf(skip)("Node islands in-process", () => {
       stderr: "",
       code: 0,
     });
+  }, 300_000);
+
+  test("a worker thread's call is repeated after its module's lost file is put back", async () => {
+    // The worker reads the outcome of its own call, and the tree and its
+    // manifest belong to the island's thread: the repair runs there, and the
+    // worker makes the call again.
+    const dir = join(outDir, "worker-repair");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "later.cjs"), "exports.later = (n) => n + 1;\n");
+    writeFileSync(
+      join(dir, "main.ts"),
+      [
+        'import { Worker, isMainThread, parentPort } from "node:worker_threads";',
+        'import { callSync } from "@scriptc/node";',
+        "if (isMainThread) {",
+        "  const worker = new Worker(new URL(import.meta.url));",
+        '  worker.on("message", (message: string) => console.log("worker", message));',
+        '  worker.on("exit", (code: number) => console.log("exit", code));',
+        "} else {",
+        '  parentPort!.postMessage("called " + callSync<number>("./later.cjs", "later", 41));',
+        "}",
+        "",
+      ].join("\n"),
+    );
+    const program = await build("worker-repair-out", undefined, join(dir, "main.ts"));
+    const cache = join(outDir, "worker-repair-cache");
+    rmSync(cache, { recursive: true, force: true });
+    const env = { ...process.env, XDG_CACHE_HOME: cache };
+    const intact = { stdout: "worker called 42\nexit 0\n", stderr: "", code: 0 };
+    expect(await run(program, [], env)).toEqual(intact);
+    const islands = join(cache, "scriptc/node-islands");
+    const root = join(islands, readdirSync(islands)[0]!);
+    rmSync(fileBelow(root, "later.cjs"));
+    expect(await run(program, [], env)).toEqual({
+      ...intact,
+      stderr: `scriptc: reinstalled 1 Node island module file missing from ${root}\n`,
+    });
+    expect(await run(program, [], env)).toEqual(intact);
   }, 300_000);
 
   test("full garbage collections during calls, at depth on both sides", async () => {

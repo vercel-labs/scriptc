@@ -682,6 +682,25 @@ export function nodeIslandBoundaryDiag(what: string, loc: SrcLoc): ScrDiagnostic
   };
 }
 
+/** SC8010 — a value a Node island made (a function it exports, an object of
+ * a type it declares) sits where the program needs a native value of that
+ * type, and the type has no native form. The package's implementation is
+ * not missing: it runs in the island, and the value is a handle. */
+export function nodeIslandNativeUseDiag(
+  what: string,
+  loc: SrcLoc,
+  callable: boolean,
+): ScrDiagnostic {
+  return {
+    code: "SC8010",
+    message: `${what} is used here as a native value, which a Node island's value of this type cannot become yet`,
+    loc,
+    hint: callable
+      ? "call it from a function of the program, such as `(a, b) => f(a, b)`, or give the slot a function type the program declares"
+      : "use the value through the island (read its members, call its methods, pass it back), or declare the slot `unknown`",
+  };
+}
+
 /** SC8023 — the build that ran fenced packages as Node islands failed, so
  * the program was built natively with those runtime fences (each throws
  * when reached). A warning on the native build, with the island build's

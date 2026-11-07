@@ -4997,6 +4997,11 @@ static void scr_micro_dyn_fire(ScrClosure *c) {
  * checked-dynamic entry points the loop owns. */
 void scr_timers_check_callback(const ScrDyn *cb) {
   if (cb->kind == SCR_DYN_FUNC) return;
+#ifdef SCR_NODE_ISLANDS
+  /* A function a Node island made is a function: the timer calls it
+   * through its typed view. */
+  if (scr_ni_dyn_handle(cb) && scr_ni_dyn_ops != NULL && scr_ni_dyn_ops->is_function(cb)) return;
+#endif
   scr_dyn_arg_type_fail("callback", "of type function", cb);
 }
 

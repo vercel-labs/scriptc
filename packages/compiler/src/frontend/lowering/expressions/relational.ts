@@ -175,6 +175,10 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   if (hostGlobalNameOfRead(lowerer, expr.right) !== null)
     return hostGlobalInstanceOfAnswer(lowerer, expr, false, loc);
   if (lowerer.isStdlibGlobal(expr.right, "Function")) {
+    // A function a Node island made is a Function instance, as it is in
+    // Node, where the package and the program share one realm.
+    if (lowerer.islandFunctionType(lowerer.typeOf(expr.left)))
+      return hostGlobalInstanceOfAnswer(lowerer, expr, true, loc);
     const value =
       hostGlobalNameOfRead(lowerer, expr.left) ??
       hostGlobalConstructorOfPrototype(lowerer, expr.left);

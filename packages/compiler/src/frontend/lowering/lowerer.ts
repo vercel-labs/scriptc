@@ -225,6 +225,7 @@ import {
 } from "./function-context.js";
 import type { FrontendServices } from "../services.js";
 import { InternalCompilerError } from "../../errors.js";
+import type { SlotSignature } from "./slot-signatures.js";
 import type { FsPathPlan } from "./builtins/fs-paths.js";
 import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "./optional-arguments.js";
 import { type ProtocolDispatch } from "./class-protocol-dispatch.js";
@@ -305,6 +306,7 @@ import {
   indexSignatureTypeDiag,
   intersectionTypeDiag,
   noLoweringDiag,
+  nodeIslandNativeUseDiag,
   nodeIslandWorkerThreadDiag,
   overloadedSignatureTypeDiag,
   recordShapeMismatchDiag,
@@ -3271,6 +3273,11 @@ export class Lowerer {
   /** Intrinsic callback slots can supply a destination for fresh return
    * literals, such as a reduce accumulator with recursive union fields. */
   readonly contextualFunctionReturns = new Map<ts.Node, IrType>();
+  /** The function type of the slot a function literal is being lowered
+   * into, for the duration of that lowering (lowerAtSlot). The literal
+   * takes the slot's parameter list as its own when it can
+   * (slotSignatureAdoption). */
+  readonly slotSignatures = new Map<ts.Node, SlotSignature>();
   /** Arithmetic over an unchecked string read can answer either NaN or a
    * string. Bindings and returns use this marker to retain that result union
    * through checker-bare string annotations. */
@@ -5007,6 +5014,7 @@ export class Lowerer {
         () => this.runtimeOptionalFunctionReturns.size,
       ),
       checkedTable("contextualFunctionReturns", () => this.contextualFunctionReturns.size),
+      checkedTable("slotSignatures", () => this.slotSignatures.size),
       checkedTable(
         "runtimeOptionalArithmeticTypes",
         () => this.runtimeOptionalArithmeticTypes.size,
@@ -13497,6 +13505,34 @@ export class Lowerer {
     // could produce.
     {
       const pkg = this.npmPackageOf(widened);
+      // A value a Node island made is a handle: the package's implementation
+      // runs, in the island, and what has no lowering is this native use of
+      // its value. Name that use, not a missing implementation.
+      if (pkg && this.nodeIslands !== null && this.foreignType(widened)) {
+        const nullish = ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void;
+        const arms = (widened.isUnionType() ? ts.constituentTypes(widened) : [widened]).filter(
+          (arm) => (arm.flags & nullish) === 0,
+        );
+        const callable =
+          arms.length > 0 && arms.every((arm) => this.checker.getCallSignatures(arm).length > 0);
+        const name = ts.isIdentifier(node) ? ` '${node.text}'` : "";
+        // `@types/<name>` declarations type the package `<name>`.
+        const bare = pkg.startsWith("@types/") ? pkg.slice("@types/".length) : null;
+        const island =
+          bare === null ? pkg : bare.includes("__") ? `@${bare.replace("__", "/")}` : bare;
+        this.typeFail(
+          node,
+          type,
+          "package",
+          nodeIslandNativeUseDiag(
+            callable
+              ? `the function${name} of Node island package '${island}' (type '${this.checker.typeToString(type)}')`
+              : `a value of type '${this.checker.typeToString(type)}' of Node island package '${island}'`,
+            locOf(node),
+            callable,
+          ),
+        );
+      }
       if (pkg) {
         this.typeFail(node, type, "package", unsupportedPackageValueDiag(pkg, locOf(node)));
       }
@@ -15750,6 +15786,13 @@ export class Lowerer {
       }
       asserted = asserted.expression;
     }
+    // A Node island's function in its typed view is that one function: the
+    // view adopts the function's identity, whatever signature it is viewed
+    // through, so the key is the view at the collection's own key type.
+    {
+      const view = this.islandFunctionViewAt(value, node, expected);
+      if (view !== null) return view;
+    }
     const source = (
       value.type.kind === "union" ? (this.unions.get(value.type.unionId)?.arms ?? []) : [value.type]
     ).filter((type) => !isUnitType(type));
@@ -15999,8 +16042,47 @@ export class Lowerer {
         }
       }
     }
-    const e = this.lowerExpr(node);
+    const e = this.lowerAtSlot(node, expected);
     return expected ? this.coerceExistingInto(node, e, expected) : e;
+  }
+
+  /** lowerExpr for a value whose destination has type `expected`, before
+   * any coercion into it. A function literal is used only at the slot it
+   * is written into, so its body can take the slot's parameter list
+   * directly (slotSignatureAdoption): the slot is `expected` when that is
+   * a function type, or the one function arm of a union (an optional
+   * callback). Every other expression and destination lowers as it is. */
+  lowerAtSlot(node: ts.Expression, expected: IrType | undefined): IrExpr {
+    let literal: ts.Expression = node;
+    while (ts.isParenthesizedExpression(literal) || ts.isSatisfiesExpression(literal))
+      literal = literal.expression;
+    let slot: IrType | undefined;
+    if (expected && (ts.isArrowFunction(literal) || ts.isFunctionExpression(literal))) {
+      if (expected.kind === "func") slot = expected;
+      else if (expected.kind === "union") {
+        const arms = this.unions.get(expected.unionId)?.arms.filter((arm) => arm.kind === "func");
+        if (arms?.length === 1) slot = arms[0];
+      }
+    }
+    if (slot?.kind !== "func" || slot.rest === true) return this.lowerExpr(node);
+    return this.lowerWithSlot(node, literal, {
+      params: slot.params,
+      ret: slot.ret,
+      passesAll: true,
+    });
+  }
+
+  /** lowerExpr for `node`, whose value is the function literal `literal`
+   * written into `slot`. */
+  lowerWithSlot(node: ts.Expression, literal: ts.Expression, slot: SlotSignature): IrExpr {
+    const previous = this.slotSignatures.get(literal);
+    this.slotSignatures.set(literal, slot);
+    try {
+      return this.lowerExpr(node);
+    } finally {
+      if (previous === undefined) this.slotSignatures.delete(literal);
+      else this.slotSignatures.set(literal, previous);
+    }
   }
 
   /** The conversion lowerExprExpecting applies to `e`, the lowered value
@@ -17973,8 +18055,24 @@ export class Lowerer {
         });
         return;
       }
+      // A literal lowered at its slot's signature receives the slot's
+      // value in a hidden ABI parameter and binds its own type from it:
+      // the conversion the slot's adapter would have applied per call.
+      const passed = shape.slotType ? this.declareHiddenLocal(name, shape.slotType) : null;
       const local = this.declareLocal(decl.name, name, shape.type, true);
-      params.push({ localId: local.id, name, type: local.type });
+      if (passed) {
+        const loc = locOf(decl);
+        params.push({ localId: passed.id, name, type: passed.type });
+        const converted = this.coerceToExpected(
+          { kind: "varRef", localId: passed.id, type: passed.type, loc },
+          local.type,
+        );
+        if (!typeEquals(converted.type, local.type))
+          throw new InternalCompilerError("lowerer bug: probed slot parameter stopped coercing");
+        prologue.push({ kind: "varDecl", localId: local.id, init: converted, loc });
+      } else {
+        params.push({ localId: local.id, name, type: local.type });
+      }
       if (
         shape.mode === "required" &&
         shape.type.kind === "union" &&
@@ -18514,6 +18612,38 @@ export class Lowerer {
    * memo hits included. */
   private foreignType(type: ts.Type): boolean {
     return this.facts.foreignType(type, this.nodeIslands, this.checker);
+  }
+
+  /** `view`, a Node island function's typed view (islandFunctionView), seen
+   * at the signature `want` instead: the same adapter over the same handle,
+   * so the same function. A consumer whose own calling convention differs
+   * from the slot the checker spelled (an array helper's element layout, a
+   * collection's key type) takes the view at its convention rather than
+   * stacking a second adapter on it. Null when `view` is not such a view of
+   * the expression `node`, or `want` is not a signature the boundary adapts. */
+  islandFunctionViewAt(view: IrExpr, node: ts.Expression, want: IrType): IrExpr | null {
+    if (view.kind !== "dynCheck" || view.type.kind !== "func" || view.value.type.kind !== "dyn")
+      return null;
+    if (want.kind !== "func" || !this.islandFunctionType(this.typeOf(node))) return null;
+    if (typeEquals(view.type, want)) return view;
+    const adapts = canAdaptDynFuncTo(
+      want,
+      (id) => this.shapes.get(id),
+      (id) => this.unions.get(id),
+    );
+    return adapts ? { ...view, type: want } : null;
+  }
+
+  /** Whether values of `type` are functions a Node island made: an object
+   * type an island declares, with a call signature. The memoized island
+   * test runs first; few types pass it. */
+  islandFunctionType(type: ts.Type): boolean {
+    return (
+      this.nodeIslands !== null &&
+      (type.flags & ts.TypeFlags.Object) !== 0 &&
+      this.foreignType(type) &&
+      this.checker.getCallSignatures(type).length > 0
+    );
   }
 
   nodeTypesOnlySymbol(sym: ts.Symbol | null | undefined): boolean {

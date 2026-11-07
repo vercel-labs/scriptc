@@ -84,6 +84,12 @@
 typedef struct {
   uint32_t id;
   ScrPromise *promise; /* owned */
+  /* The call, kept until it settles: it is made once more when its module
+   * did not load for a file the installed tree had lost (ni_settle). */
+  ScrStr *file, *specifier, *name; /* owned */
+  ScrDyn *json;                    /* owned */
+  size_t repairs; /* files the process had put back when the call was made */
+  bool repeated;
 } NiPending;
 
 #if defined(__has_feature)
@@ -153,6 +159,16 @@ SCR_COLD static void ni_fatal(const char *message) {
   _Exit(1);
 }
 
+/* SCRIPTC_NODE_ISLANDS_TRACE=boot: what starting Node does, on stderr. */
+static bool ni_tracing(void) {
+  static int tracing = -1;
+  if (tracing < 0) {
+    const char *trace = getenv("SCRIPTC_NODE_ISLANDS_TRACE");
+    tracing = trace != NULL && strstr(trace, "boot") != NULL;
+  }
+  return tracing == 1;
+}
+
 /* True when the process runs with elevated privileges (setuid, setgid or
  * file capabilities). The pack directory then comes only from an absolute
  * path recorded at build time, as the dynamic linker ignores
@@ -207,7 +223,8 @@ static const char *ni_pack_dir(void) {
 
 /* The JavaScript the program's calls load (node-islands/modules.ts), named
  * by a manifest of relative paths with their sizes and SHA-256 digests, plus
- * the links between package directories. Before Node loads anything, the
+ * the links between package directories, and the tree's name (the digest
+ * the build took of the files and links). Before Node loads anything, the
  * tree is made available at one directory, and every file is checked against
  * the manifest:
  * - beside the executable (`--libnode=beside`), at the recorded `$ORIGIN/`
@@ -219,7 +236,31 @@ static const char *ni_pack_dir(void) {
  * Directories are created 0700 and owned by the process's user; no link is
  * followed below the cache directory. A process with elevated privileges
  * refuses the tree, as it refuses SCRIPTC_LIBNODE. A call names its module
- * by its path relative to the tree. */
+ * by its path relative to the tree.
+ *
+ * What a start does. An installed tree is used as it is: the start reads
+ * the tree's name, which the build took and wrote first in the manifest
+ * (ni_read_tree_name), opens the directory of that name and checks that it
+ * is the user's own. No work grows with the number or size of the files a
+ * program ships, and the manifest is parsed only to install or repair.
+ * - Install: the tree is extracted into a staging directory beside its
+ *   place (every write checked), flushed to disk (ni_flush) and then
+ *   renamed to its name. A directory of that name therefore held every
+ *   byte when it appeared, also after a power loss. The bytes are the
+ *   executable's own, so they are not hashed again on their way out.
+ * - Repair: when Node fails to find a file of the tree (a tool removed it),
+ *   the error reaches the program through scr_node_island_handle.c, which
+ *   asks for scr_ni_tree_repair: every file the manifest lists and the
+ *   tree lacks is written back from the executable's bytes, one line on
+ *   stderr says so, and a module load is repeated once.
+ * - A file someone modified is used as it is, as a file under node_modules
+ *   is. Code running as the same user can replace the executable too, so
+ *   no check here would be a boundary against it.
+ * - Beside the executable the build writes the tree's name next to the
+ *   modules directory (`<modules>.tree`). A start compares it; when it is
+ *   absent or names another tree (a modules directory left from another
+ *   build), the content is hashed against the manifest and a tree that
+ *   differs is refused. */
 static const char *ni_manifest = NULL;
 static size_t ni_manifest_len = 0;
 static const unsigned char *ni_modules = NULL;
@@ -395,11 +436,178 @@ static int ni_hex(char c) {
   return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
 }
 
-static void ni_parse_manifest(void) {
+/* The tree's name: 64 hexadecimal digits, the SHA-256 the build took of
+ * the manifest's files and links (node-islands/modules.ts). Empty when the
+ * manifest carries none; the runtime then hashes the manifest itself. */
+static char ni_tree_name[65] = "";
+
+static bool ni_tree_name_set(const char *hex, size_t len) {
+  if (len != 64) return false;
+  for (size_t i = 0; i < 64; i++)
+    if (ni_hex(hex[i]) < 0) return false;
+  memcpy(ni_tree_name, hex, 64);
+  ni_tree_name[64] = '\0';
+  return true;
+}
+
+/* ── the manifest as the build writes it ──────────────────────────────────
+ * `{"tree":"<name>","files":[["<path>",<size>,"<sha256>"],...],"links":
+ * [["<path>","<target>"],...]}`, without white space, read in one pass
+ * straight into the file and link tables: a program ships thousands of
+ * files, and every start that loads Node reads this. Any other JSON text
+ * (white space, another key order, a string with an escape: a path with a
+ * quote, a backslash or a control character) is left to the JSON parser
+ * (ni_manifest_ready), which accepts the same documents. */
+typedef struct {
+  const char *p, *end;
+  char *names; /* where the next string is copied, NUL-terminated */
+} NiScan;
+
+static bool ni_scan_lit(NiScan *s, const char *lit) {
+  size_t n = strlen(lit);
+  if ((size_t)(s->end - s->p) < n || memcmp(s->p, lit, n) != 0) return false;
+  s->p += n;
+  return true;
+}
+
+/* A string without escapes: the copy, or NULL. */
+static char *ni_scan_str(NiScan *s, size_t *len) {
+  if (s->p >= s->end || *s->p != '"') return NULL;
+  const char *start = ++s->p;
+  while (s->p < s->end && *s->p != '"') {
+    unsigned char c = (unsigned char)*s->p;
+    if (c == '\\' || c < 0x20) return NULL;
+    s->p++;
+  }
+  if (s->p >= s->end) return NULL;
+  *len = (size_t)(s->p++ - start);
+  char *copy = s->names;
+  memcpy(copy, start, *len);
+  copy[*len] = '\0';
+  s->names += *len + 1;
+  return copy;
+}
+
+/* At most how many elements the array of arrays at the cursor has: its
+ * opening brackets up to the `]]` that ends it. */
+static size_t ni_scan_count(const NiScan *s) {
+  size_t n = 0;
+  bool in_string = false;
+  for (const char *p = s->p; p < s->end; p++) {
+    if (*p == '"') in_string = !in_string;
+    else if (!in_string && *p == '[') n++;
+    else if (!in_string && *p == ']' && p + 1 < s->end && p[1] == ']') break;
+  }
+  return n;
+}
+
+static bool ni_scan_manifest(void) {
+  char *names = malloc(ni_manifest_len + 1);
+  if (names == NULL) ni_oom();
+  NiScan s = {ni_manifest, ni_manifest + ni_manifest_len, names};
+  NiFile *files = NULL;
+  NiLink *links = NULL;
+  size_t nfiles = 0, nlinks = 0, offset = 0, len;
+  bool ok = ni_scan_lit(&s, "{\"tree\":");
+  char *tree = ok ? ni_scan_str(&s, &len) : NULL;
+  ok = tree != NULL && len == 64 && ni_scan_lit(&s, ",\"files\":[");
+  size_t capacity = ok ? ni_scan_count(&s) : 0;
+  if (ok) {
+    files = calloc(capacity + 1, sizeof *files);
+    if (files == NULL) ni_oom();
+  }
+  while (ok && s.p < s.end && *s.p == '[' && nfiles < capacity) {
+    NiFile *f = &files[nfiles];
+    s.p++;
+    f->path = ni_scan_str(&s, &len);
+    ok = f->path != NULL && ni_relative_inside(f->path) && ni_scan_lit(&s, ",");
+    size_t size = 0, digits = 0;
+    for (; ok && s.p < s.end && *s.p >= '0' && *s.p <= '9' && digits < 18; s.p++, digits++)
+      size = size * 10 + (size_t)(*s.p - '0');
+    char *digest = ok && digits > 0 && ni_scan_lit(&s, ",") ? ni_scan_str(&s, &len) : NULL;
+    ok = digest != NULL && len == 64 && ni_scan_lit(&s, "]");
+    for (int b = 0; ok && b < 32; b++) {
+      int hi = ni_hex(digest[b * 2]), lo = ni_hex(digest[b * 2 + 1]);
+      ok = hi >= 0 && lo >= 0;
+      f->sha256[b] = (unsigned char)(hi * 16 + lo);
+    }
+    if (!ok) break;
+    f->size = size;
+    f->offset = offset;
+    offset += size;
+    nfiles++;
+    if (s.p < s.end && *s.p == ',') s.p++;
+  }
+  ok = ok && ni_scan_lit(&s, "],\"links\":[");
+  capacity = ok ? ni_scan_count(&s) : 0;
+  if (ok) {
+    links = calloc(capacity + 1, sizeof *links);
+    if (links == NULL) ni_oom();
+  }
+  while (ok && s.p < s.end && *s.p == '[' && nlinks < capacity) {
+    NiLink *l = &links[nlinks];
+    s.p++;
+    l->path = ni_scan_str(&s, &len);
+    ok = l->path != NULL && ni_scan_lit(&s, ",");
+    l->target = ok ? ni_scan_str(&s, &len) : NULL;
+    ok = l->target != NULL && ni_scan_lit(&s, "]") && ni_relative_inside(l->path) &&
+         ni_link_inside(l->path, l->target);
+    if (!ok) break;
+    nlinks++;
+    if (s.p < s.end && *s.p == ',') s.p++;
+  }
+  ok = ok && ni_scan_lit(&s, "]}") && s.p == s.end &&
+       (ni_modules == NULL || offset == ni_modules_len) && ni_tree_name_set(tree, 64);
+  if (!ok) {
+    free(files);
+    free(links);
+    free(names);
+    return false;
+  }
+  ni_files = files;
+  ni_nfiles = nfiles;
+  ni_links = links;
+  ni_nlinks = nlinks;
+  return true;
+}
+
+/* The tree's name without reading the tables: the manifest's first field
+ * as the build writes it. A manifest in another form is parsed, and one
+ * without a name is hashed, as trees were named before the build took the
+ * digest. */
+static void ni_manifest_ready(void);
+static void ni_read_tree_name(void) {
+  static const char head[] = "{\"tree\":\"";
+  size_t n = sizeof head - 1;
+  if (ni_tree_name[0] != '\0') return;
+  if (ni_manifest_len > n + 65 && memcmp(ni_manifest, head, n) == 0 &&
+      ni_manifest[n + 64] == '"' && ni_tree_name_set(ni_manifest + n, 64))
+    return;
+  ni_manifest_ready();
+  if (ni_tree_name[0] != '\0') return;
+  NiSha256 s;
+  unsigned char digest[32];
+  ni_sha256_init(&s);
+  ni_sha256_update(&s, (const unsigned char *)ni_manifest, ni_manifest_len);
+  ni_sha256_final(&s, digest);
+  for (int i = 0; i < 32; i++) snprintf(ni_tree_name + i * 2, 3, "%02x", digest[i]);
+}
+
+/* The file and link tables, read from the manifest on first need: a start
+ * that finds the tree installed never needs them. */
+static void ni_manifest_ready(void) {
+  static bool ready = false;
+  if (ready) return;
+  ready = true;
+  if (ni_scan_manifest()) return;
   ScrStr *text = scr_str_new(ni_manifest, ni_manifest_len);
   ScrDyn *body = scr_json_parse(text);
   scr_str_release(text);
   if (body == NULL || body->kind != SCR_DYN_OBJ) ni_bad_manifest();
+  ScrDyn *tree = scr_dyn_obj_get(body, "tree", 4);
+  if (tree != NULL &&
+      (tree->kind != SCR_DYN_STR || !ni_tree_name_set(tree->v.str->data, tree->v.str->len)))
+    ni_bad_manifest();
   ScrDyn *files = scr_dyn_obj_get(body, "files", 5);
   ScrDyn *links = scr_dyn_obj_get(body, "links", 5);
   if (files == NULL || files->kind != SCR_DYN_ARR || links == NULL || links->kind != SCR_DYN_ARR)
@@ -488,30 +696,91 @@ static bool ni_private_dir(int fd) {
          (st.st_mode & 022) == 0;
 }
 
-static bool ni_digest_matches(const unsigned char *data, size_t len,
-                              const unsigned char expected[32]) {
-  NiSha256 s;
-  unsigned char got[32];
-  ni_sha256_init(&s);
-  ni_sha256_update(&s, data, len);
-  ni_sha256_final(&s, got);
-  return memcmp(got, expected, 32) == 0;
+/* The directories on the way to one file of the tree, kept open while the
+ * next file lies below them. The manifest lists files sorted by path, so a
+ * pass over it opens each directory once instead of once per file below
+ * it. No link is followed. */
+#define NI_WALK_DEPTH 64
+typedef struct {
+  int rootfd;
+  int fds[NI_WALK_DEPTH];
+  size_t ends[NI_WALK_DEPTH]; /* in `path`: the offset of the `/` after each open directory */
+  size_t depth;
+  const char *path; /* the file whose directories are open */
+} NiWalk;
+
+static void ni_walk_begin(NiWalk *w, int rootfd) {
+  w->rootfd = rootfd;
+  w->depth = 0;
+  w->path = NULL;
+}
+
+static void ni_walk_end(NiWalk *w) {
+  while (w->depth > 0) close(w->fds[--w->depth]);
+}
+
+/* The open parent directory of the relative `path` (its last component is
+ * left in *base), created when `create`; -1 when it cannot be opened. The
+ * descriptor stays the walk's. */
+static int ni_walk_parent(NiWalk *w, const char *path, bool create, const char **base) {
+  size_t keep = 0;
+  while (keep < w->depth && strncmp(path, w->path, w->ends[keep]) == 0 &&
+         path[w->ends[keep]] == '/')
+    keep++;
+  while (w->depth > keep) close(w->fds[--w->depth]);
+  w->path = path;
+  const char *p = path + (keep > 0 ? w->ends[keep - 1] + 1 : 0);
+  for (const char *slash; (slash = strchr(p, '/')) != NULL; p = slash + 1) {
+    char component[256];
+    size_t n = (size_t)(slash - p);
+    if (n >= sizeof component || w->depth == NI_WALK_DEPTH) return -1;
+    memcpy(component, p, n);
+    component[n] = '\0';
+    int fd = ni_dir_at(w->depth > 0 ? w->fds[w->depth - 1] : w->rootfd, component, create);
+    if (fd < 0) return -1;
+    w->fds[w->depth] = fd;
+    w->ends[w->depth] = (size_t)(slash - path);
+    w->depth++;
+  }
+  *base = p;
+  return w->depth > 0 ? w->fds[w->depth - 1] : w->rootfd;
+}
+
+/* Whether the tree below `rootfd` has the manifest's links. */
+static bool ni_links_match(int rootfd) {
+  for (size_t i = 0; i < ni_nlinks; i++) {
+    const char *base;
+    int dirfd = ni_parent_at(rootfd, ni_links[i].path, false, &base);
+    if (dirfd < 0) return false;
+    char target[4096];
+    ssize_t n = readlinkat(dirfd, base, target, sizeof target - 1);
+    close(dirfd);
+    if (n < 0) return false;
+    target[n] = '\0';
+    if (strcmp(target, ni_links[i].target) != 0) return false;
+  }
+  return true;
 }
 
 /* Whether the tree below `rootfd` holds exactly the manifest's files (by
- * size and digest) and links. */
+ * size and digest) and links: the check of a tree the build placed beside
+ * the executable when its name file does not vouch for it. */
 static bool ni_tree_matches(int rootfd) {
-  for (size_t i = 0; i < ni_nfiles; i++) {
+  if (ni_tracing())
+    fprintf(stderr, "[node-islands] hashing the module tree (%zu files)\n", ni_nfiles);
+  NiWalk walk;
+  ni_walk_begin(&walk, rootfd);
+  bool ok = true;
+  for (size_t i = 0; i < ni_nfiles && ok; i++) {
     const char *base;
-    int dirfd = ni_parent_at(rootfd, ni_files[i].path, false, &base);
-    if (dirfd < 0) return false;
-    int fd = openat(dirfd, base, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-    close(dirfd);
+    int dirfd = ni_walk_parent(&walk, ni_files[i].path, false, &base);
+    int fd = dirfd < 0 ? -1 : openat(dirfd, base, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
     struct stat st;
     if (fd < 0 || fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) ||
         (size_t)st.st_size != ni_files[i].size) {
       if (fd >= 0) close(fd);
-      return false;
+      ok = false;
+      break;
     }
     NiSha256 s;
     ni_sha256_init(&s);
@@ -527,33 +796,45 @@ static bool ni_tree_matches(int rootfd) {
     close(fd);
     unsigned char got[32];
     ni_sha256_final(&s, got);
-    if (total != ni_files[i].size || memcmp(got, ni_files[i].sha256, 32) != 0) return false;
+    ok = total == ni_files[i].size && memcmp(got, ni_files[i].sha256, 32) == 0;
   }
-  for (size_t i = 0; i < ni_nlinks; i++) {
-    const char *base;
-    int dirfd = ni_parent_at(rootfd, ni_links[i].path, false, &base);
-    if (dirfd < 0) return false;
-    char target[4096];
-    ssize_t n = readlinkat(dirfd, base, target, sizeof target - 1);
-    close(dirfd);
-    if (n < 0) return false;
-    target[n] = '\0';
-    if (strcmp(target, ni_links[i].target) != 0) return false;
-  }
-  return true;
+  ni_walk_end(&walk);
+  return ok && ni_links_match(rootfd);
 }
 
-/* Writes the executable's tree below `rootfd` (an empty directory). */
+/* Makes what was written below `fd`'s directory durable: the file system
+ * it is on where the platform can flush one (Linux), else every one. */
+#if defined(__linux__) && !defined(__ANDROID__)
+extern int syncfs(int fd);
+#endif
+static bool ni_flush(int fd) {
+#if defined(__linux__) && !defined(__ANDROID__)
+  return syncfs(fd) == 0;
+#else
+  (void)fd;
+  sync();
+  return true;
+#endif
+}
+
+/* Writes the executable's tree below `rootfd` (an empty directory); false
+ * when a directory, file or link could not be written in full. */
 static bool ni_extract(int rootfd) {
-  for (size_t i = 0; i < ni_nfiles; i++) {
+  if (ni_modules == NULL && ni_nfiles > 0) ni_bad_manifest();
+  NiWalk walk;
+  ni_walk_begin(&walk, rootfd);
+  bool ok = true;
+  for (size_t i = 0; i < ni_nfiles && ok; i++) {
     const unsigned char *data = ni_modules + ni_files[i].offset;
-    if (!ni_digest_matches(data, ni_files[i].size, ni_files[i].sha256)) return false;
     const char *base;
-    int dirfd = ni_parent_at(rootfd, ni_files[i].path, true, &base);
-    if (dirfd < 0) return false;
-    int fd = openat(dirfd, base, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
-    close(dirfd);
-    if (fd < 0) return false;
+    int dirfd = ni_walk_parent(&walk, ni_files[i].path, true, &base);
+    int fd = dirfd < 0
+                 ? -1
+                 : openat(dirfd, base, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd < 0) {
+      ok = false;
+      break;
+    }
     size_t done = 0;
     while (done < ni_files[i].size) {
       ssize_t n = write(fd, data + done, ni_files[i].size - done);
@@ -561,8 +842,10 @@ static bool ni_extract(int rootfd) {
       if (n <= 0) break;
       done += (size_t)n;
     }
-    if (close(fd) != 0 || done != ni_files[i].size) return false;
+    ok = close(fd) == 0 && done == ni_files[i].size;
   }
+  ni_walk_end(&walk);
+  if (!ok) return false;
   for (size_t i = 0; i < ni_nlinks; i++) {
     const char *base;
     int dirfd = ni_parent_at(rootfd, ni_links[i].path, true, &base);
@@ -608,6 +891,24 @@ static bool ni_set_root(const char *a, const char *b, const char *c) {
   return n > 0 && (size_t)n < sizeof ni_root;
 }
 
+/* Whether ni_root is the installed tree in the cache directory, which the
+ * runtime may repair (scr_ni_tree_repair). */
+static bool ni_root_installed = false;
+
+/* Whether the file the build wrote next to a beside tree (`<modules>.tree`)
+ * names this program's tree. */
+static bool ni_beside_named(void) {
+  char path[4200];
+  int n = snprintf(path, sizeof path, "%s.tree", ni_root);
+  if (n <= 0 || (size_t)n >= sizeof path) return false;
+  int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+  if (fd < 0) return false;
+  char name[66];
+  ssize_t got = read(fd, name, sizeof name);
+  close(fd);
+  return got >= 64 && memcmp(name, ni_tree_name, 64) == 0 && (got == 64 || name[64] == '\n');
+}
+
 /* The tree in the cache directory, extracted there when absent. */
 static bool ni_cached_root(const char *digest) {
   const char *xdg = getenv("XDG_CACHE_HOME");
@@ -635,11 +936,14 @@ static bool ni_cached_root(const char *digest) {
   bool ok = false;
   int tree = ni_dir_at(islands, digest, false);
   if (tree < 0 && errno == ENOENT) {
-    /* Extract into a fresh sibling, then move it into place. */
+    /* Install: extract into a fresh sibling, make it durable, then move it
+     * into place. */
+    if (ni_tracing()) fprintf(stderr, "[node-islands] installing the module tree\n");
+    ni_manifest_ready();
     char staging[128];
     snprintf(staging, sizeof staging, "%s.%ld.tmp", digest, (long)getpid());
     int fd = ni_dir_at(islands, staging, true);
-    if (ni_private_dir(fd) && ni_extract(fd) && ni_tree_matches(fd) &&
+    if (ni_private_dir(fd) && ni_extract(fd) && ni_flush(fd) &&
         renameat(islands, staging, islands, digest) == 0) {
       close(fd);
       tree = ni_dir_at(islands, digest, false);
@@ -649,11 +953,126 @@ static bool ni_cached_root(const char *digest) {
       tree = ni_dir_at(islands, digest, false); /* another process may have placed it */
     }
   }
-  if (ni_private_dir(tree) && ni_tree_matches(tree))
+  /* An installed tree is used as it is (see "What a start does" above). */
+  if (ni_private_dir(tree)) {
     ok = ni_set_root(base, "/scriptc/node-islands/", digest);
+    ni_root_installed = ok;
+  }
   if (tree >= 0) close(tree);
   close(islands);
   return ok;
+}
+
+/* ── repair ───────────────────────────────────────────────────────────── */
+
+/* Files put back so far. Written on the island's thread; a worker thread
+ * that repeats its own call reads it too, hence atomic. */
+static atomic_size_t ni_repaired;
+
+size_t scr_ni_tree_repairs(void) { return ni_repaired; }
+
+static bool ni_text_has(const char *text, size_t len, const char *part) {
+  size_t n = strlen(part);
+  for (size_t i = 0; n > 0 && i + n <= len; i++)
+    if (text[i] == part[0] && memcmp(text + i, part, n) == 0) return true;
+  return false;
+}
+
+/* Whether `text` (an error's message or stack) names the installed tree,
+ * by the path the runtime gave Node or by the path Node resolved it to
+ * (a cache directory reached through a link). */
+bool scr_ni_tree_named(const char *text, size_t len) {
+  static char resolved[4096] = "";
+  static bool looked = false;
+  /* Any thread that reads an island error asks: the path is resolved once. */
+  static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+  if (!ni_root_installed) return false;
+  if (ni_text_has(text, len, ni_root)) return true;
+  pthread_mutex_lock(&lock);
+  if (!looked) {
+    looked = true;
+    char *real = realpath(ni_root, NULL);
+    if (real != NULL && strlen(real) < sizeof resolved && strcmp(real, ni_root) != 0)
+      strcpy(resolved, real);
+    free(real);
+  }
+  pthread_mutex_unlock(&lock);
+  return ni_text_has(text, len, resolved);
+}
+
+/* Writes back every file and link the manifest lists and the installed
+ * tree lacks, from the executable's bytes, each through a temporary name
+ * and a rename so that no reader sees part of a file. Once per process:
+ * a tree that loses files while the program runs is repaired by the next
+ * one. A file that is present is left as it is. */
+static void ni_tree_repair_job(void *unused) {
+  (void)unused;
+  static bool done = false;
+  if (done || !ni_root_installed || ni_modules == NULL) return;
+  done = true;
+  ni_manifest_ready();
+  int rootfd = open(ni_root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  if (!ni_private_dir(rootfd)) {
+    if (rootfd >= 0) close(rootfd);
+    return;
+  }
+  size_t restored = 0;
+  NiWalk walk;
+  ni_walk_begin(&walk, rootfd);
+  char temporary[64];
+  snprintf(temporary, sizeof temporary, ".scriptc-repair.%ld.tmp", (long)getpid());
+  for (size_t i = 0; i < ni_nfiles; i++) {
+    const char *base;
+    int dirfd = ni_walk_parent(&walk, ni_files[i].path, true, &base);
+    struct stat st;
+    if (dirfd < 0 || fstatat(dirfd, base, &st, AT_SYMLINK_NOFOLLOW) == 0 || errno != ENOENT)
+      continue;
+    int fd = openat(dirfd, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd < 0) continue;
+    const unsigned char *data = ni_modules + ni_files[i].offset;
+    size_t written = 0;
+    while (written < ni_files[i].size) {
+      ssize_t n = write(fd, data + written, ni_files[i].size - written);
+      if (n < 0 && errno == EINTR) continue;
+      if (n <= 0) break;
+      written += (size_t)n;
+    }
+    if (close(fd) == 0 && written == ni_files[i].size &&
+        renameat(dirfd, temporary, dirfd, base) == 0)
+      restored++;
+    else
+      (void)unlinkat(dirfd, temporary, 0);
+  }
+  ni_walk_end(&walk);
+  for (size_t i = 0; i < ni_nlinks; i++) {
+    const char *base;
+    int dirfd = ni_parent_at(rootfd, ni_links[i].path, true, &base);
+    if (dirfd < 0) continue;
+    struct stat st;
+    if (fstatat(dirfd, base, &st, AT_SYMLINK_NOFOLLOW) != 0 && errno == ENOENT &&
+        symlinkat(ni_links[i].target, dirfd, base) == 0)
+      restored++;
+    close(dirfd);
+  }
+  close(rootfd);
+  if (restored == 0) return;
+  ni_repaired += restored;
+  scr_stdout_settle();
+  fflush(stdout);
+  fprintf(stderr, "scriptc: reinstalled %zu Node island module file%s missing from %s\n", restored,
+          restored == 1 ? "" : "s", ni_root);
+  fflush(stderr);
+}
+
+static void ni_route(void (*job)(void *), void *arg);
+
+/* The manifest and the tree's state belong to the island's thread. A worker
+ * thread reads the outcome of its own call, so the repair it asks for is
+ * posted to that thread like any other island operation, and has run when
+ * this returns. */
+void scr_ni_tree_repair(void) {
+  if (scr_context_is_main()) ni_tree_repair_job(NULL);
+  else ni_route(ni_tree_repair_job, NULL);
 }
 
 /* The tree in a private directory of this run, removed at exit. */
@@ -664,7 +1083,8 @@ static bool ni_temporary_root(void) {
   if (n <= 0 || (size_t)n >= sizeof ni_temp_root || mkdtemp(ni_temp_root) == NULL) return false;
   scr_atexit(ni_remove_temp_root);
   int fd = open(ni_temp_root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-  bool ok = ni_private_dir(fd) && ni_extract(fd) && ni_tree_matches(fd);
+  ni_manifest_ready();
+  bool ok = ni_private_dir(fd) && ni_extract(fd);
   if (fd >= 0) close(fd);
   return ok && ni_set_root(ni_temp_root, "", "");
 }
@@ -675,7 +1095,7 @@ static void ni_open_modules(void) {
   if (ni_secure())
     ni_fatal("scriptc: a program running with elevated privileges cannot load Node island "
              "modules\n");
-  ni_parse_manifest();
+  ni_read_tree_name();
   if (ni_modules_location != NULL && ni_modules_location[0] != '\0') {
     static const char origin[] = "$ORIGIN/";
     if (strncmp(ni_modules_location, origin, sizeof origin - 1) != 0) ni_bad_manifest();
@@ -690,7 +1110,12 @@ static void ni_open_modules(void) {
         !ni_set_root(dir, ni_modules_location + sizeof origin - 1, ""))
       ni_fatal("scriptc: cannot locate this program's Node island modules\n");
     int fd = open(ni_root, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    bool ok = fd >= 0 && ni_tree_matches(fd);
+    bool ok = fd >= 0 && ni_beside_named();
+    if (fd >= 0 && !ok) {
+      /* No name beside the modules, or another tree's: the content decides. */
+      ni_manifest_ready();
+      ok = ni_tree_matches(fd);
+    }
     if (fd >= 0) close(fd);
     if (!ok) {
       char message[8192];
@@ -700,15 +1125,7 @@ static void ni_open_modules(void) {
     }
     return;
   }
-  NiSha256 s;
-  unsigned char digest[32];
-  ni_sha256_init(&s);
-  ni_sha256_update(&s, (const unsigned char *)ni_manifest, ni_manifest_len);
-  ni_sha256_final(&s, digest);
-  char hex[65];
-  for (int i = 0; i < 32; i++) snprintf(hex + i * 2, 3, "%02x", digest[i]);
-  if (ni_modules == NULL && ni_nfiles > 0) ni_bad_manifest();
-  if (!ni_cached_root(hex) && !ni_temporary_root())
+  if (!ni_cached_root(ni_tree_name) && !ni_temporary_root())
     ni_fatal("scriptc: cannot write this program's Node island modules to a private directory\n");
 }
 
@@ -764,17 +1181,40 @@ static ScrDyn *ni_result(const char *json, size_t len) {
   return value;
 }
 
+/* Whether an island error's code says that Node did not find a file. */
+bool scr_ni_missing_file_code(const char *code, size_t len) {
+  return (len == 16 && memcmp(code, "MODULE_NOT_FOUND", 16) == 0) ||
+         (len == 20 && memcmp(code, "ERR_MODULE_NOT_FOUND", 20) == 0) ||
+         (len == 6 && memcmp(code, "ENOENT", 6) == 0);
+}
+
+/* The last "T" outcome was a call whose module failed to load (the host
+ * marks it: its function did not run). Per thread: each thread reads the
+ * outcomes of its own calls. */
+static SCR_TL bool ni_load_failed = false;
+
 /* Leaves the copied error of a "T" outcome pending. */
 static void ni_throw(const char *json, size_t len) {
   ScrStr *text = scr_str_new(json, len);
   ScrDyn *body = scr_json_parse(text);
   scr_str_release(text);
+  ni_load_failed = false;
   if (body == NULL) return; /* the parse error is pending */
   ScrDyn *error = scr_dyn_obj_get(body, "error", 5);
   if (error != NULL && error->kind == SCR_DYN_OBJ) {
     ScrDyn *kind = scr_dyn_obj_get(error, "kind", 4);
     ScrDyn *message = scr_dyn_obj_get(error, "message", 7);
     ScrDyn *code = scr_dyn_obj_get(error, "code", 4);
+    ScrDyn *load = scr_dyn_obj_get(error, "load", 4);
+    ni_load_failed = load != NULL && load->kind == SCR_DYN_BOOL && load->v.b;
+    /* Node did not find a file of the installed module tree: what the tree
+     * lost is put back, for a repeat of this call when its module had not
+     * loaded yet, and for every later one. */
+    if (code != NULL && code->kind == SCR_DYN_STR && message != NULL &&
+        message->kind == SCR_DYN_STR &&
+        scr_ni_missing_file_code(code->v.str->data, code->v.str->len) &&
+        scr_ni_tree_named(message->v.str->data, message->v.str->len))
+      scr_ni_tree_repair();
     ScrStr *empty = scr_str_new("", 0);
     scr_throw_node_coded(kind != NULL && kind->kind == SCR_DYN_NUM ? kind->v.num : 0,
                          code != NULL && code->kind == SCR_DYN_STR ? code->v.str : empty,
@@ -798,16 +1238,48 @@ static ScrDyn *ni_outcome(const char *outcome, size_t len) {
 
 /* ── the host side of the bridge ──────────────────────────────────────── */
 
+static char *ni_call(uint32_t id, bool sync, ScrStr *file, ScrStr *specifier, ScrStr *name,
+                     ScrDyn *json, size_t *len);
+
 static void ni_settle(uint32_t id, const char *outcome, size_t len) {
   for (size_t i = 0; i < ni_npending; i++) {
     if (ni_pending[i].id != id) continue;
-    ScrPromise *p = ni_pending[i].promise;
-    ni_pending[i] = ni_pending[--ni_npending];
+    ni_load_failed = false;
     ScrDyn *value = ni_outcome(outcome, len);
+    if (value == NULL && ni_load_failed && ni_repaired != ni_pending[i].repairs &&
+        !ni_pending[i].repeated) {
+      /* The module did not load because the installed tree had lost a
+       * file, and files were put back since the call was made (by this
+       * outcome, or by that of another call that was pending with it): the
+       * call once more, under the same id (its function never ran). */
+      scr_caught_release(scr_exc_take());
+      ni_pending[i].repeated = true;
+      /* The call may settle before it returns, which releases the entry:
+       * its strings are held here meanwhile. */
+      ScrStr *file = scr_str_retain(ni_pending[i].file);
+      ScrStr *specifier = scr_str_retain(ni_pending[i].specifier);
+      ScrStr *name = scr_str_retain(ni_pending[i].name);
+      ScrDyn *json = scr_dyn_retain(ni_pending[i].json);
+      size_t again_len = 0;
+      char *again = ni_call(id, false, file, specifier, name, json, &again_len);
+      if (again != NULL) ni_bridge->release(again);
+      scr_str_release(file);
+      scr_str_release(specifier);
+      scr_str_release(name);
+      scr_dyn_release(json);
+      return;
+    }
+    NiPending done = ni_pending[i];
+    ni_pending[i] = ni_pending[--ni_npending];
     if (value != NULL)
-      scr_promise_fulfill_ref(p, value, scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
-    scr_promise_reject_pending(p); /* no-op unless an error is pending */
-    scr_promise_release(p);
+      scr_promise_fulfill_ref(done.promise, value, scr_dyn_retain_v, scr_dyn_release_v,
+                              scr_dyn_trace_v);
+    scr_promise_reject_pending(done.promise); /* no-op unless an error is pending */
+    scr_promise_release(done.promise);
+    scr_str_release(done.file);
+    scr_str_release(done.specifier);
+    scr_str_release(done.name);
+    scr_dyn_release(done.json);
     return;
   }
 }
@@ -1548,8 +2020,7 @@ static void ni_start(void) {
   /* Timers pending now keep their deadlines relative to this moment: the
    * time Node takes to load is invisible to their order. */
   double since = scr_now_ms();
-  const char *trace = getenv("SCRIPTC_NODE_ISLANDS_TRACE");
-  if (trace != NULL && strstr(trace, "boot") != NULL) {
+  if (ni_tracing()) {
     scr_stdout_settle();
     fflush(stdout);
     fprintf(stderr, "[node-islands] starting Node\n");
@@ -1705,12 +2176,21 @@ ScrDyn *scr_node_island_call_sync(ScrStr *file, ScrStr *specifier, ScrStr *name,
   ScrDyn *json = ni_args_json(args);
   if (json == NULL) return NULL;
   ni_start();
-  size_t len = 0;
-  char *outcome = ni_call(0, true, file, specifier, name, json, &len);
+  ScrDyn *result;
+  for (int attempt = 0;; attempt++) {
+    size_t repairs = ni_repaired;
+    size_t len = 0;
+    char *outcome = ni_call(0, true, file, specifier, name, json, &len);
+    if (outcome == NULL) ni_fatal("scriptc: the libnode bridge answered no outcome\n");
+    ni_load_failed = false;
+    result = ni_outcome(outcome, len);
+    ni_bridge->release(outcome);
+    if (result != NULL || attempt > 0 || !ni_load_failed || ni_repaired == repairs) break;
+    /* The module did not load because the installed tree had lost a file,
+     * and the file is back: the call once more (its function never ran). */
+    scr_caught_release(scr_exc_take());
+  }
   scr_dyn_release(json);
-  if (outcome == NULL) ni_fatal("scriptc: the libnode bridge answered no outcome\n");
-  ScrDyn *result = ni_outcome(outcome, len);
-  ni_bridge->release(outcome);
   return result;
 }
 
@@ -1735,8 +2215,14 @@ ScrPromise *scr_node_island_call(ScrStr *file, ScrStr *specifier, ScrStr *name, 
   }
   uint32_t id = ni_next_id++;
   if (ni_next_id == 0) ni_next_id = 1;
-  ni_pending[ni_npending].id = id;
-  ni_pending[ni_npending].promise = scr_promise_retain(p);
+  ni_pending[ni_npending] = (NiPending){id,
+                                        scr_promise_retain(p),
+                                        scr_str_retain(file),
+                                        scr_str_retain(specifier),
+                                        scr_str_retain(name),
+                                        scr_dyn_retain(json),
+                                        ni_repaired,
+                                        false};
   ni_npending++;
   size_t len = 0;
   char *outcome = ni_call(id, false, file, specifier, name, json, &len);

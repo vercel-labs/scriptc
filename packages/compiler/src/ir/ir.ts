@@ -3356,12 +3356,17 @@ export type IrExpr =
    * case so `f === f` is true (JS function identity). `adapts` marks a
    * signature adapter: captures[0] holds the function it forwards to, and
    * the new closure takes that function's identity (JS sees one function,
-   * so `===`, SameValue and searches compare identity roots). */
+   * so `===`, SameValue and searches compare identity roots). `length` is
+   * the function's own `length` where the type's parameter list does not
+   * give it: a function literal lowered with the parameter list of the slot
+   * it is written into receives the slot's remaining arguments in
+   * parameters it never declared. */
   | {
       kind: "closure";
       fnName: string;
       captures: string[];
       adapts?: true;
+      length?: number;
       type: IrType;
       loc: SrcLoc;
     }

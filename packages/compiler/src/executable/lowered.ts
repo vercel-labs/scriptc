@@ -375,6 +375,14 @@ function describeProbe(probe: FrontendInputProbe): string {
       return `the entries of directory ${probe.path} changed`;
     case "realpath":
       return `${probe.path} resolves to another path`;
+    case "host":
+      // A host fact's name (hostFact): an environment variable, the working
+      // directory, or the compiler's installation prefix.
+      return probe.path.startsWith("env:")
+        ? `the environment variable ${probe.path.slice(4)} changed`
+        : probe.path === "cwd"
+          ? "the working directory changed"
+          : "the compiler's installation prefix changed";
   }
 }
 

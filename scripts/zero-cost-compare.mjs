@@ -461,7 +461,11 @@ export function nodeIslandSymbols(names) {
  * and results the checker types `any`. bench/record-untyped-writes, also
  * added later, writes typed records through `unknown` and `Object.assign`
  * views. bench/layered-errors, also added later, constructs and throws
- * Error subclass instances, as bench/validate-errors does.
+ * Error subclass instances, as bench/validate-errors does: the root in both
+ * is the dynamic view registered at start-up for every program class that
+ * extends Error (scr_error_register_dyn), whose snapshot reaches
+ * scr_error_dyn_fields. Their constructors are not a root: `super(message)`
+ * with a string message takes the typed entry.
  * bench/stream-buffered-drain, also added later, drains an object-mode
  * Readable, whose chunks are checked-dynamic values. Every other bench
  * workload is fully typed and must link none. The gate and

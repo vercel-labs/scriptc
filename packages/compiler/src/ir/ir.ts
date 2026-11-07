@@ -1944,6 +1944,18 @@ export interface IrRecordShape {
  * key order. */
 export const KEY_ORDER_FIELD = "%order";
 
+/** The fields a property key can name: every field but KEY_ORDER_FIELD,
+ * which is bookkeeping in the value's storage and no property of it. A
+ * keyed read or write (`r[k]`) dispatches over these, and a key spelled
+ * like the hidden field misses as any undeclared key does. The field
+ * joins a shape after the bodies lowered, so every stage that reasons
+ * about a keyed access goes through here. */
+export function keyedRecordFields(shape: IrRecordShape): readonly IrRecordField[] {
+  return shape.fields.some((f) => f.name === KEY_ORDER_FIELD)
+    ? shape.fields.filter((f) => f.name !== KEY_ORDER_FIELD)
+    : shape.fields;
+}
+
 /** The orders a record shape's values enumerate their keys in: each order
  * of a shape with orderVariants, or its one table. */
 export function shapeKeyOrders(shape: IrRecordShape): readonly (readonly string[])[] {
@@ -3180,6 +3192,22 @@ export type IrExpr =
   | { kind: "arrayHas"; arr: IrExpr; index: IrExpr; type: IrType; loc: SrcLoc }
   /** Array slot state as f64: HOLE=0, VALUE=1, UNDEFINED=2. */
   | { kind: "arrayState"; arr: IrExpr; index: IrExpr; type: IrType; loc: SrcLoc }
+  /** Row `index` of a column of constants the program image holds. The
+   * literal-table pass (ir/literal-tables.ts) builds the rows of a large
+   * literal in a counted loop and reads each constant that differs between
+   * rows with one of these. The column is `numbers` for an f64 cell and
+   * `strings` for a string cell; exactly one is present. `index` is an
+   * integer in [0, column length), which only that pass's loop counter
+   * guarantees, so nothing else may create the node. Reads only: allocates
+   * nothing and never throws, and a string is an immortal literal. */
+  | {
+      kind: "constCell";
+      numbers?: number[];
+      strings?: string[];
+      index: IrExpr;
+      type: IrType;
+      loc: SrcLoc;
+    }
   /** Array method/property on an array receiver: `length` (f64), `push`
    * (VARIADIC like JS — zero or more elem-typed args; every argument
    * evaluates before any appends, then each appends in order; returns the
@@ -4520,8 +4548,10 @@ function isJsonSafeAt(
  * Closures cross the checked-value boundary as a
  * callable dyn kind carrying the closure + a compiled per-signature call
  * thunk. Two directions, two predicates, mutually recursive with the
- * conversion domains (function types cannot ride records/unions — jsonSafe
- * excludes them — so the recursion terminates):
+ * conversion domains. A function type can sit in a record field or a union
+ * arm and name that record or union again in its parameters or result, so
+ * each domain marks the records and unions it is inside and answers a
+ * back-edge coinductively:
  *
  * IN (canBoxFuncIntoDyn, the dynFrom domain's function arm): calling the
  * box happens with DYN arguments, so every declared param must be
@@ -4674,28 +4704,34 @@ export function canConvertToDyn(
   }
   if (t.kind === "union") {
     const def = getUnion(t.unionId);
+    if (!def) return false;
+    // A function arm can return this union again (a step that answers the
+    // next step). The back-edge answers coinductively, as in the composite
+    // walk: the arms decide.
+    const key = `converting:${t.unionId}`;
+    if (visiting.has(key)) return true;
+    visiting.add(key);
     // JSON-safe arms box as before; BOXABLE FUNCTION and PROMISE arms join them (the
     // invalid-input probes iterate `[1, null, () => {}, true]` — the
     // union's func arm crosses through the checked-dynamic function
     // boundary exactly like a bare func dynFrom).
-    return (
-      !!def &&
-      def.arms.every(
-        (a) =>
-          a.kind === "undefinedT" ||
-          isJsonSafeType(a, getRecord, getUnion) ||
-          // Composite arms (records holding dyn, Map or Set members) box
-          // through the walker beside the promise arm: a method answering
-          // either its result or a promise of it.
-          canBoxDynComposite(a, getRecord, getUnion, visiting) ||
-          isDynTypedRefType(a) ||
-          textCodecRecordClass(a, getRecord) !== null ||
-          a.kind === "classval" ||
-          DYN_HANDLE_KINDS.has(a.kind) ||
-          (a.kind === "func" && canBoxFuncIntoDyn(a, getRecord, getUnion, visiting)) ||
-          (a.kind === "promise" && canConvertToDyn(a, getRecord, getUnion, visiting)),
-      )
+    const result = def.arms.every(
+      (a) =>
+        a.kind === "undefinedT" ||
+        isJsonSafeType(a, getRecord, getUnion) ||
+        // Composite arms (records holding dyn, Map or Set members) box
+        // through the walker beside the promise arm: a method answering
+        // either its result or a promise of it.
+        canBoxDynComposite(a, getRecord, getUnion, visiting) ||
+        isDynTypedRefType(a) ||
+        textCodecRecordClass(a, getRecord) !== null ||
+        a.kind === "classval" ||
+        DYN_HANDLE_KINDS.has(a.kind) ||
+        (a.kind === "func" && canBoxFuncIntoDyn(a, getRecord, getUnion, visiting)) ||
+        (a.kind === "promise" && canConvertToDyn(a, getRecord, getUnion, visiting)),
     );
+    visiting.delete(key);
+    return result;
   }
   return false;
 }
@@ -4837,15 +4873,17 @@ export function canDynCheckTo(
 }
 
 /** The in-progress key of a checked composite. Marking it for the duration of
- * the frame answers a recursion back-edge coinductively, and the wrapper
- * keeps it as the success memo once the frame returns true. */
+ * the frame answers a recursion back-edge coinductively. It is not the
+ * `checked:` success memo: a failed branch elsewhere clears every memo, and
+ * a frame that lost its mark that way would be entered again without end. */
 function checkedVisitKey(t: IrType): string {
-  return `checked:${typeKey(t)}`;
+  return `checking:${typeKey(t)}`;
 }
 
 /** Reuse completed subgraphs within one conversion query. A failed branch
  * invalidates successes that may depend on a coinductive back-edge to it;
- * active recursion keys remain until their owning calls unwind. */
+ * active recursion keys (`checking:`, `converting:`, and the composite
+ * walk's bare shape and union ids) remain until their owning calls unwind. */
 function clearDynConversionResults(visiting: Set<string>): void {
   for (const key of visiting) {
     if (key.startsWith("boxed:") || key.startsWith("checked:")) visiting.delete(key);
@@ -4913,16 +4951,21 @@ function canDynCheckToAt(
   if (DYN_HANDLE_KINDS.has(t.kind)) return true;
   if (t.kind === "union") {
     const def = getUnion(t.unionId);
+    if (!def) return false;
+    // A function arm can return this union again; the back-edge answers
+    // coinductively, like a recursive record.
+    const key = checkedVisitKey(t);
+    if (visiting.has(key)) return true;
+    visiting.add(key);
     // Optional native callbacks and handles retain the same checked
     // conversion as their bare value. The union matcher selects the arm
     // before its adapter/extractor runs.
-    return (
-      !!def &&
-      def.arms.every(
-        (a) =>
-          isUnitType(a) || (a.kind !== "union" && canDynCheckTo(a, getRecord, getUnion, visiting)),
-      )
+    const result = def.arms.every(
+      (a) =>
+        isUnitType(a) || (a.kind !== "union" && canDynCheckTo(a, getRecord, getUnion, visiting)),
     );
+    visiting.delete(key);
+    return result;
   }
   return false;
 }

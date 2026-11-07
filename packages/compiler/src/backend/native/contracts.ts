@@ -153,6 +153,8 @@ export interface CcOptions {
   /** The spawnSync and exec/execFile-callback `cwd`/`input`/`shell`
    * entries: the SCR_CHILD_CP_OPTIONS build of scr_child.c. */
   childOptionExt?: boolean;
+  /** A spawnSync capture read as a Buffer: compiles scr_child_capture.c. */
+  spawnCaptureBytes?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
   /** for await over checked-dynamic values: compiles scr_dyn_for_await.c. */
@@ -164,6 +166,9 @@ export interface CcOptions {
   /** Object.isExtensible and Object.isSealed of a value typed dynamically:
    * compiles scr_dyn_integrity.c. */
   dynIntegrityQueries?: boolean;
+  /** Reflect.getPrototypeOf's primitive-target check: compiles
+   * scr_dyn_reflect_proto.c. */
+  reflectProtoTarget?: boolean;
   /** A generator that binds its parameters at the call: compiles
    * scr_gen_bind.c. */
   genBind?: boolean;
@@ -243,6 +248,9 @@ export interface CcOptions {
   /** SCR_FS_FLAGS: writeFile's `flag` option and copyFile's mode argument
    * (scr_fs_flags.c and that build of scr_fs_cp.c). */
   fsFlags?: boolean;
+  /** The BYTE-data spellings of the options write and
+   * fs.promises.writeFile: compiles scr_fs_bytes_write.c. */
+  fsBytesWrites?: boolean;
   /** string_decoder's checked-dynamic chunk forms: compiles
    * scr_bytes_strdec_dyn.c. */
   strdecDyn?: boolean;

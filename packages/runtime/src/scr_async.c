@@ -6638,15 +6638,17 @@ SCR_TL bool (*scr_urj_deliver_fn)(ScrPromise *p) = NULL;
 
 #ifdef SCR_PROMISE_REJECT_DYN
 /* Prints a checked-dynamic rejection reason for the default unhandled-
- * rejection report: a boxed native Error as "name: message", a string as
- * its text, and a number, boolean, null or undefined by its name. Returns
- * false for any other value, which the report prints as "[object]". */
+ * rejection report: a boxed native Error as "name: message" and the frames
+ * it captured, a string as its text, and a number, boolean, null or
+ * undefined by its name. Returns false for any other value, which the
+ * report prints as "[object]". */
 static bool scr_unhandled_print_dyn(const ScrDyn *d) {
   ScrError *error = scr_errdyn_err_of(d);
   if (error != NULL) {
     ScrStr *s = scr_error_to_string(error);
     fwrite(s->data, 1, s->len, stderr);
     scr_str_release(s);
+    scr_error_report_frames(error);
     scr_error_release(error);
     return true;
   }
@@ -6720,11 +6722,13 @@ bool scr_report_unhandled_rejections(void) {
         case SCR_EXC_BOOL: fputs(p->b ? "true" : "false", stderr); break;
         case SCR_EXC_STR: fputs(((ScrStr *)p->payload)->data, stderr); break;
         case SCR_EXC_OBJ:
-          /* Error rejections render "name: message", like the uncaught path. */
+          /* Error rejections render "name: message" and the frames the
+           * error captured, like the uncaught path. */
           if (scr_error_is(p->payload)) {
             ScrStr *s = scr_error_to_string((ScrError *)p->payload);
             fwrite(s->data, 1, s->len, stderr);
             scr_str_release(s);
+            scr_error_report_frames((const ScrError *)p->payload);
             break;
           }
           /* fall through */

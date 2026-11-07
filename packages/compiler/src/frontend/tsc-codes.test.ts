@@ -1,13 +1,16 @@
-/* The triage table's guard: every TypeScript code the Test262 journals
- * recorded reaching SC0001 in a JavaScript source has exactly one decision
- * (tsc-codes.ts), so a new code cannot slip in untriaged. */
+/* The two tables' guard: every TypeScript code the Test262 journals recorded
+ * reaching SC0001 in a JavaScript source has exactly one decision — an
+ * admission row in JS_OPINIONS or a decision in JS_TSC_CODE_TRIAGE
+ * (tsc-codes.ts) — so a new code cannot slip in undecided. */
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
-import { JS_TSC_CODE_TRIAGE, jsTscCodeTriage } from "./tsc-codes.js";
+import { JS_OPINIONS, JS_TSC_CODE_TRIAGE, jsOpinion, jsTscCodeTriage } from "./tsc-codes.js";
 
 /** The distinct codes the 2026-10-31 journals recorded for in-scope
- * SC0001 variants in JavaScript, plus the eight the W1.1/W1.2 relaxations
- * own (2695, 7032, 18050, 2508, 7057, 2704, 2464, 2365), which the table
- * deliberately does not carry. */
+ * SC0001 variants in JavaScript. The W1.1/W1.2 codes (2695, 7032, 18050,
+ * 2508, 7057, 2704, 2464, 2365) appear in it too: they are decisions of
+ * JS_OPINIONS now, not exceptions to the tables. */
 const OBSERVED_SC0001_JS_CODES: readonly number[] = [
   1005,
   1010,
@@ -167,39 +170,68 @@ const OBSERVED_SC0001_JS_CODES: readonly number[] = [
   18050, // W1.1/W1.2
 ];
 
-/** The W1.1/W1.2 codes: admitted by their own relaxations, not triaged. */
-const W1_1_W1_2_CODES = new Set([2695, 7032, 18050, 2508, 7057, 2704, 2464, 2365]);
-
 const OBSERVED = [...new Set(OBSERVED_SC0001_JS_CODES)];
 
-describe("the SC0001 JavaScript triage table", () => {
+const CORPUS = fileURLToPath(new URL("../../../../tests/corpus/", import.meta.url));
+
+/** Codes the tables deliberately leave undecided, so the diagnostic stays
+ * SC0001: each is legal JavaScript whose construct the lowerer cannot build
+ * Node-exactly yet (TS2704's builtin-receiver delete, TS2464's class element
+ * name — see the "NOT relaxed" note in tsc-codes.ts).
+ * `inferred-js-diagnostics.test.ts` pins that they stay refused; nothing
+ * admits them. (TS2508 left this set when the heritage lowering learned the
+ * lib's generic abstract Iterator base; it is a `checker` row now.) */
+const ADMISSION_ONLY_REFUSALS = new Set([2464, 2704]);
+
+describe("the JavaScript checker decisions", () => {
   test("every observed code has exactly one decision", () => {
     const missing = OBSERVED.filter(
-      (code) => !W1_1_W1_2_CODES.has(code) && jsTscCodeTriage(code) === null,
+      (code) =>
+        !ADMISSION_ONLY_REFUSALS.has(code) &&
+        jsOpinion(code) === null &&
+        jsTscCodeTriage(code) === null,
     );
     expect(missing).toEqual([]);
-    expect(JS_TSC_CODE_TRIAGE.size).toBe(
-      OBSERVED.filter((code) => !W1_1_W1_2_CODES.has(code)).length,
-    );
   });
 
-  test("the table holds no code the journals never produced", () => {
+  test("the triage table holds no code the journals never produced", () => {
     const stray = [...JS_TSC_CODE_TRIAGE.keys()].filter((code) => !OBSERVED.includes(code));
     expect(stray).toEqual([]);
   });
 
-  test("every refusal names its construct and its next step", () => {
-    for (const [code, decision] of JS_TSC_CODE_TRIAGE) {
-      if (decision.action !== "refuse" && decision.action !== "rewrite") continue;
-      expect(decision.feature.length, `TS${code}`).toBeGreaterThan(0);
-      expect(decision.hint.length, `TS${code}`).toBeGreaterThan(0);
+  test("only a site guard's fallback puts a code in both tables", () => {
+    // An opinion row admits the construct; the triage row of the same code
+    // stays for the sites the row's guard excludes, where the user must keep
+    // the named SC1090 refusal instead of an unnamed passthrough.
+    for (const [code, opinion] of JS_OPINIONS) {
+      const decision = jsTscCodeTriage(code);
+      if (decision === null) continue;
+      expect(typeof opinion.site, `TS${code}`).toBe("function");
+      expect(decision.action, `TS${code}`).not.toBe("keep");
     }
   });
 
-  test("every admission says why it is safe", () => {
+  test("every admission and every refusal names its side of the boundary", () => {
     for (const [code, decision] of JS_TSC_CODE_TRIAGE) {
-      if (decision.action !== "relax" && decision.action !== "keep") continue;
-      expect(decision.why.length, `TS${code}`).toBeGreaterThan(0);
+      if (decision.action === "refuse" || decision.action === "rewrite") {
+        expect(decision.feature.length, `TS${code}`).toBeGreaterThan(0);
+        expect(decision.hint.length, `TS${code}`).toBeGreaterThan(0);
+      } else {
+        expect(decision.why.length, `TS${code}`).toBeGreaterThan(0);
+      }
     }
+    for (const [code, opinion] of JS_OPINIONS) {
+      expect(opinion.why.length, `TS${code}`).toBeGreaterThan(0);
+      expect(["checker", "widen", "throw", "island"], `TS${code}`).toContain(opinion.view);
+    }
+  });
+
+  test("every corpus program an opinion names exists", () => {
+    for (const [code, opinion] of JS_OPINIONS)
+      for (const program of opinion.corpus)
+        expect(
+          existsSync(CORPUS + program.slice("tests/corpus/".length)),
+          `TS${code} ${program}`,
+        ).toBe(true);
   });
 });

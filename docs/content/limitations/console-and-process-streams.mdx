@@ -5,20 +5,22 @@ Console output, `util.format`, and `util.formatWithOptions` with a format string
 There, `%s` of a function or of a class instance whose class defines `toString` throws `SC2020`.
 `util.inspect` with `colors`, with `showHidden`, with option values known only at run time, or in the `inspect(value, showHidden, depth, colors)` form renders the value's untyped view in the runtime with Node's styles.
 Colored output of errors, promises, regular expressions, `DataView`, `ArrayBuffer`, weak collections, iterators, and other native objects throws `SC2020`.
-Inspect options other than `depth`, `colors`, `customInspect`, `showHidden`, `compact` (a number or `false`), `breakLength`, `maxArrayLength` (a non-negative integer or `null`), `sorted` (a boolean), and `numericSeparator` (a boolean) throw `SC2020` when they are set to a value other than Node's default.
+Inspect options other than `depth`, `colors`, `customInspect`, `showHidden`, `compact` (a number or `false`), `breakLength`, `maxArrayLength` and `maxStringLength` (a non-negative integer or `null`), `getters` (a boolean, `'get'` or `'set'`), `sorted` (a boolean), and `numericSeparator` (a boolean) throw `SC2020` when they are set to a value other than Node's default.
 `util.inspect` calls `[util.inspect.custom]` methods of classes and objects with Node's depth, options, and `util.inspect` arguments, and `console.dir` and `customInspect: false` skip them.
 A class instance with such a method that is held as an untyped value throws `SC2020` when it is inspected, and a class whose subclasses declare the method without declaring it itself is refused.
 Under `showHidden` — the option, the boolean second argument, and `%o` — arrays print their hidden `[length]` entry, typed arrays their `[BYTES_PER_ELEMENT]`, `[length]`, `[byteLength]`, `[byteOffset]`, and `[buffer]` entries, `ArrayBuffer` and `DataView` their hidden byte fields, and objects their non-enumerable and symbol keys.
 Objects also list the properties they inherit from up to three user-defined prototype layers, nearest layer first.
-Values this runtime has no hidden view of — functions, errors, `RegExp`, weak collections, and `SharedArrayBuffer` (and views over one) — throw `SC2020` under `showHidden`, and `console.dir` refuses the option because its rendering has no `showHidden` form.
+Values this runtime has no hidden view of — functions, errors, `RegExp`, weak collections, and `SharedArrayBuffer` (and views over one) — throw `SC2020` under `showHidden`, and `console.dir` renders the option through the value's checked-dynamic view, refusing the types that have no conversion to it.
 Stored global console values and detached output methods retain identity and accept ordinary arguments.
 Stored methods do not support format specifiers with substitution arguments.
 Other stored console APIs, custom `Console` instances, and console mutation are unsupported.
 
 JavaScript and TypeScript can store `process.stdin`, `stdout`, and `stderr`, replace output `write` methods, and call saved methods with their stream receiver.
 A replaced `write` method does not receive console's error-callback argument.
-Input supports data/end/error listeners, pause/resume, buffered reads, and TTY raw mode.
+Input supports data/end/error/readable listeners, pause/resume, buffered reads with `read(size)` and `readableLength`, and TTY raw mode.
 Output writes are synchronous, with successful callbacks on the next-tick queue; queued backpressure is not modeled.
+An executable built with `--stdout-buffering` instead keeps stdout bytes in a 64 KiB buffer whenever stdout is not a terminal, so a pipe or file can receive a line later than the call that wrote it; the runtime settles the buffer when it fills, before a stderr write, when the event loop sleeps, before a blocking stdin read, before `process.kill`, on `process.exit`, on an uncaught error, and at exit, and output that a kill skips those paths for (such as `SIGKILL`) can be lost up to the buffer size.
+A terminal keeps one write per call.
 Because no write is ever queued, `writableLength` is 0, `writableNeedDrain` is false, `writableHighWaterMark` is 65536, and `'drain'` never fires, so drain listeners register silently and `events.once(process.stdout, "drain")` stays pending, as it does in Node when no write returned false.
 Stored streams do not support piping, encoding changes, arbitrary properties, or other events.
 A TypeScript `NodeJS.WritableStream` parameter that only receives `process.stdout` or `process.stderr` supports `write(string)`.

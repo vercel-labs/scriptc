@@ -486,6 +486,23 @@ export class CheckerFacade {
     distinctTypes.forEach((node, index) => this.cache.typeAtLocation.set(node, types[index]));
   }
 
+  /** Batches getTypeAtLocation for exactly `nodes`, for an analysis that
+   * knows the node list it is about to ask about (the declaration
+   * projection's walk). The answers land in the memo the direct query reads,
+   * so the analysis' own reads become hits. A node whose batch request
+   * panicked keeps no answer, so its direct query throws again where it is
+   * made — the batch never turns a throwing query into `any`. */
+  prefetchTypeQueries(nodes: readonly Node[]): void {
+    if (!NODE_BATCH_QUERIES) return;
+    this.ensureActive();
+    this.batchNodes(
+      "getTypeAtLocations",
+      [...new Set(nodes)].filter((node) => !this.cache.typeAtLocation.has(node)),
+      (chunk) => this.raw.getTypeAtLocation(chunk) as (Type | undefined)[],
+      (node, type) => this.cache.typeAtLocation.set(node, type),
+    );
+  }
+
   private markManaged(roots: readonly Node[]): void {
     for (const root of roots) {
       const sf = getSourceFileOfNode(root);

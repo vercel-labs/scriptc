@@ -1,7 +1,13 @@
 import { planRecordUnionLift, planRecordUnionWrap, planUnionRetag } from "../union-retag.js";
 import type { WidthLift } from "../width-lift.js";
 import type { IrRecordShape, IrType } from "../../../ir/ir.js";
-import { canDynCheckTo, isUnitType, typeEquals, UNDEFINED_T } from "../../../ir/ir.js";
+import {
+  canDynCheckTo,
+  isUnitType,
+  shapeHasAccessorSlots,
+  typeEquals,
+  UNDEFINED_T,
+} from "../../../ir/ir.js";
 import { type ClassInfo, findMethodOn, findGenericMethodOn } from "../lower-classes.js";
 import type { Lowerer } from "../lowerer.js";
 
@@ -209,6 +215,22 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
       if (exact.length === 1) selected = exact;
       else if (exact.length === 0 && lossless.length === 1) selected = lossless;
     }
+    // Arms no READ can tell apart for THIS value: each source field lands
+    // on a same-typed field of every arm, and everything the arms add is a
+    // field the source lacks that the completion rule already fills with
+    // the absent state. Pick the first arm instead of an ambiguity fence.
+    // The redundant-union shapes are ordinary declarations of a shared
+    // record whose arms differ only in an optional field the value does
+    // not carry (`{ boundaries: null | undefined }` beside `{ boundaries:
+    // number[] | undefined }` in a metric definition, `{ type: "string";
+    // values?: string[] }` beside five sibling attribute layouts), where
+    // every read answers the same value whichever tag the box carries.
+    if (
+      selected.length > 1 &&
+      src.kind === "record" &&
+      armsIndistinguishable(lowerer, src.shapeId, selected)
+    )
+      selected = [selected[0]!];
     // An 'unknown' (dyn) source whose union destination has no dyn arm of
     // its own (`details: any` into `Details | undefined`, a tool result's
     // `structuredContent: unknown` into the JSON-value union): the checked
@@ -312,7 +334,8 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
         ? { how: "ovf" }
         : null;
     }
-    return lowerer.recordWidthPlan(src.shapeId, dst.shapeId) !== null ? { how: "width" } : null;
+    if (lowerer.recordWidthPlan(src.shapeId, dst.shapeId) !== null) return { how: "width" };
+    return null;
   }
   if (dst.kind === "record" && src.kind === "union") {
     // A union of records can share a structural destination without
@@ -369,6 +392,55 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
   return null;
 }
 
+/** The checked widening's gates (see WidthLift's `checkedWiden`): every
+ * field the source declares is a destination field of the same type, the
+ * destination declares a REQUIRED member the source lacks (optional and
+ * `unknown` members are the field-copy plan's own absent completion, so a
+ * pair whose only missing members are those cannot reach here), the
+ * source crosses into a checked-dynamic value at all, and the destination
+ * is a shape dynCheck validates. */
+function checkedWidenPlan(lowerer: Lowerer, fromId: string, toId: string): boolean {
+  const from = lowerer.shapes.get(fromId);
+  const to = lowerer.shapes.get(toId);
+  if (!from || !to || from.tuple || to.tuple) return false;
+  if (from.indexValue !== undefined || to.indexValue !== undefined) return false;
+  for (const field of from.fields) {
+    const target = to.fields.find((tf) => tf.name === field.name);
+    if (!target || !typeEquals(target.type, field.type)) return false;
+  }
+  let missingRequired = false;
+  for (const field of to.fields) {
+    if (from.fields.some((ff) => ff.name === field.name)) continue;
+    if (field.type.kind === "dyn") continue;
+    if (field.type.kind === "union" && lowerer.armTag(field.type.unionId, UNDEFINED_T) >= 0)
+      continue;
+    missingRequired = true;
+  }
+  if (!missingRequired) return false;
+  const source: IrType = { kind: "record", shapeId: fromId };
+  return (
+    lowerer.dynConvertible(source) &&
+    canDynCheckTo(
+      { kind: "record", shapeId: toId },
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  );
+}
+
+/** The checked widening as its own conversion, for the sites that ask for
+ * it BY NAME: a written predicate narrowing an element to a record that
+ * declares required members the element's type lacks (filter-predicates.ts).
+ * It is deliberately not part of widthLiftPlan: that relation answers every
+ * speculative "could this pair convert?" question in the lowering, and a
+ * trapping answer there would change the code of programs that already
+ * compile. A caller that reaches this point has no field-copy plan, so only
+ * a program that refused before gains the conversion. */
+export function checkedWidthLift(lowerer: Lowerer, src: IrType, dst: IrType): WidthLift | null {
+  if (src.kind !== "record" || dst.kind !== "record" || typeEquals(src, dst)) return null;
+  return checkedWidenPlan(lowerer, src.shapeId, dst.shapeId) ? { how: "checkedWiden" } : null;
+}
+
 /** True when the record arm `arm` has a field of every name the record
  * `source` has. Tuples keep their own positional layouts. */
 function keepsEveryField(
@@ -384,6 +456,48 @@ function keepsEveryField(
     !target.tuple &&
     source.fields.every((field) => target.fields.some((kept) => kept.name === field.name))
   );
+}
+
+/** Whether width-lifting this source record into ANY of the candidate arms
+ * answers the same value on every read: each source field must land on a
+ * same-typed field of every arm, the source field order inside the arms
+ * must agree (a record's key order is its JSON and Object.keys order), and
+ * every arm must be a closed fixed shape without accessor slots so a read
+ * of a field the source lacks answers the absent state in each. The arms
+ * may still declare different fields of their own: those are all absent on
+ * the lifted value. */
+function armsIndistinguishable(
+  lowerer: Lowerer,
+  sourceId: string,
+  selected: { tag: number; arm: IrType }[],
+): boolean {
+  const source = lowerer.shapes.get(sourceId);
+  if (!source || source.tuple || source.indexValue) return false;
+  const shapes: IrRecordShape[] = [];
+  for (const { arm } of selected) {
+    if (arm.kind !== "record") return false;
+    const shape = lowerer.shapes.get(arm.shapeId);
+    if (!shape || shape.tuple || shape.indexValue !== undefined || shapeHasAccessorSlots(shape))
+      return false;
+    shapes.push(shape);
+  }
+  const names = source.fields.map((f) => f.name);
+  const placedOf = (shape: IrRecordShape): number[] =>
+    names.map((name) => shape.fields.findIndex((f) => f.name === name));
+  const first = placedOf(shapes[0]!);
+  // A source field the arm does not declare drops from the copy (width
+  // subtyping) — the arms would then disagree on it.
+  if (first.some((i) => i < 0)) return false;
+  for (const shape of shapes.slice(1)) {
+    const placed = placedOf(shape);
+    if (placed.some((i) => i < 0)) return false;
+    for (let k = 0; k < placed.length; k++) {
+      if (!typeEquals(shape.fields[placed[k]!]!.type, shapes[0]!.fields[first[k]!]!.type))
+        return false;
+      if (k > 0 && placed[k]! > placed[k - 1]! !== first[k]! > first[k - 1]!) return false;
+    }
+  }
+  return true;
 }
 
 /** Two record arms a source record fits, where one arm declares a field
@@ -524,6 +638,9 @@ export function describeRecordWidthBlocker(
         }
         return `field '${tf.name}': '${lowerer.fmt(sf.type)}' does not lift into '${lowerer.fmt(tf.type)}'`;
       }
+      // An optional checked-dynamic slot has an ABSENT state, so a source
+      // that never declares it still produces the right property surface.
+      if (tf.optional === true) continue;
       if (tf.type.kind !== "union" || lowerer.armTag(tf.type.unionId, UNDEFINED_T) < 0) {
         return `the expected field '${tf.name}' is required and the source has no field to copy into it`;
       }

@@ -60,6 +60,10 @@ ScrDyn *scr_url_to_http_options_dyn(const ScrDyn *value);
  * (ERR_MISSING_ARGS). All borrow; +1, or NULL with Node's error pending. */
 ScrDyn *scr_url_legacy_parse(const ScrDyn *url, const ScrDyn *parse_query, const ScrDyn *slashes,
                              bool warn);
+/* url.Url as a value: Node's legacy Url constructor, one per thread. Its
+ * prototype is the one url.parse() results carry. +1. */
+ScrDyn *scr_url_legacy_class(void);
+void scr_url_legacy_class_release(void); /* drops the cached Url class (process-lifetime state) */
 ScrStr *scr_url_legacy_format(const ScrDyn *object, const ScrDyn *options, bool warn);
 ScrStr *scr_url_legacy_resolve(const ScrDyn *from, const ScrDyn *to, bool warn);
 ScrStr *scr_url_domain_to_ascii(const ScrDyn *domain, bool missing);
@@ -86,6 +90,12 @@ ScrUrl *scr_url_from_path_platform(ScrStr *path, bool windows); /* +1; explicit 
  * like Node's { windows: true } options on fileURLToPath/pathToFileURL. */
 ScrStr *scr_url_to_path_w32(ScrUrl *u);      /* +1, or throws */
 ScrUrl *scr_url_from_path_w32(ScrStr *path); /* +1, or throws */
+
+/* URL.revokeObjectURL(id): the id is already coerced to a string. A
+ * compiled program registers no blob URLs, so Node's registry lookup
+ * always misses and the call answers undefined; the argument is borrowed
+ * (the caller releases it). */
+void scr_url_revoke_object_url(ScrStr *id);
 
 /* ── URLSearchParams (scr_url.c) ─────────────────────────────────────
  * A refcounted, MUTABLE ordered list of decoded (name, value) pairs —

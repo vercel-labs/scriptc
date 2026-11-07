@@ -15,15 +15,12 @@ import { executableOptimizationLinkerArgs, type NativeTargetSpec } from "./targe
 
 const run = promisify(execFile);
 
-/** Assemble a library from LLVM program objects and verified runtime objects.
- * The runtime's library and per-thread modes are compiled when packaging. */
-export async function compilePackedLibrary(
-  options: LibArchiveOptions,
-  target: NativeTargetSpec,
-  wasmExports?: readonly string[],
-): Promise<void> {
-  const optimization = options.optimization ?? "release";
-  const features: NativeLinkFeatures = {
+/** The runtime gates a library archive selects its pack objects with. The
+ * program's IR decides them: a unit the program names but this table leaves
+ * off is missing from the archive, and the embedder's link fails on the
+ * entry point the program calls. */
+export function libraryArchiveFeatures(options: LibArchiveOptions): NativeLinkFeatures {
+  return {
     regex: options.regex ?? false,
     copying: options.copying ?? false,
     textDecoderLegacy: options.textDecoderLegacy ?? false,
@@ -36,6 +33,10 @@ export async function compilePackedLibrary(
     dynInvoke: options.dynInvoke ?? false,
     ...(options.dynBuffer === true ? { dynBuffer: true } : {}),
     ...(options.dynTier === true ? { dynTier: true } : {}),
+    // A program that resizes, grows or detaches a buffer names the views
+    // registry's arming entry point, so the archive must carry the unit and
+    // the JavaScript object model build it belongs to.
+    ...(options.mutableBuffers === true ? { mutableBuffers: true } : {}),
     dc: false,
     dynAsync: false,
     events: false,
@@ -71,6 +72,17 @@ export async function compilePackedLibrary(
     perfLoop: false,
     tlsCa: false,
   };
+}
+
+/** Assemble a library from LLVM program objects and verified runtime objects.
+ * The runtime's library and per-thread modes are compiled when packaging. */
+export async function compilePackedLibrary(
+  options: LibArchiveOptions,
+  target: NativeTargetSpec,
+  wasmExports?: readonly string[],
+): Promise<void> {
+  const optimization = options.optimization ?? "release";
+  const features = libraryArchiveFeatures(options);
   const selection = await loadRuntimePack({
     target,
     features,

@@ -1,8 +1,8 @@
-host-global-declared-websocket.ts:8:20 - error SC2020: 'WebSocket' is a Node global that native code does not provide
+host-global-declared-websocket.ts:13:16 - error SC2020: 'WebSocket' is a Node global that native code does not provide
 
-  7 | declare var WebSocket: { new (url: string): HostSocket; readonly prototype: HostSocket };
-  8 | console.log(typeof WebSocket);
-    |                    ^~~~~~~~~
-  9 | 
+  12 | };
+  13 | const socket = WebSocket("ws://localhost:8080");
+     |                ^~~~~~~~~
+  14 | console.log(socket.readyState);
 
-  hint: the name exists at run time in Node 24, so a native program must not read it as undefined; run the module in a Node island (--node-islands=auto) or avoid the global
+  hint: the class exists at run time in Node 24, and native code cannot construct it or provide its members; run the module in a Node island (--node-islands=auto) or avoid the use

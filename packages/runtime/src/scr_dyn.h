@@ -484,6 +484,11 @@ void scr_dyn_adopt_shared(ScrDyn *source, ScrDyn *capsule);
  * TypeError's message gains the declaration and the type patch that would
  * admit the value. `origin` is the compiler's origin string. */
 void scr_type_origin_note(const char *origin);
+/* A checked conversion failed in a dev build (scr_conversion_trace.c,
+ * linked by executables built with debug sources): with
+ * SCRIPTC_CONVERSION_TRACE set, the pending TypeError and `where`, the
+ * conversion's position as a stack frame line, go to stderr. */
+void scr_conversion_trace(const char *where);
 
 /* Prototype members of a compiled class seen as `unknown`, emitted per
  * class by the compiler: the string names of methods, getters and setters
@@ -2834,5 +2839,27 @@ ScrDyn *scr_dyn_tier_unshaped_get(const ScrDyn *receiver, const ScrStr *key);
  * its layout, adds, taking ownership of `value`, exactly as an ordinary
  * insertion would. */
 void scr_dyn_tier_append(ScrDyn *obj, const ScrLayout *next, ScrDyn *value);
+
+/* Record views of record types whose values may also be frozen
+ * (scr_record_view_frozen.c; compiler record-views.ts). A view is marked by
+ * the frozen bit of its rc word, so a marked value of such a type is a view
+ * or a frozen record, and the record-source table tells which. */
+/* Whether a marked value is a view. */
+bool scr_record_marked_is_view(void *obj);
+/* The slot of field `position` of a marked value whose own slot is `own`:
+ * the viewed record's for a view (NULL for a field a partial view's record
+ * does not declare), `own` for a frozen record. */
+void *scr_record_marked_slot(void *obj, size_t position, void *own);
+/* scr_record_view_field for such a type: any value of it. */
+void *scr_record_marked_field(void *value, size_t offset, size_t position);
+/* Whether a marked value is frozen: a view answers for the record it views. */
+bool scr_record_marked_frozen(void *obj);
+/* Object.freeze of a value of such a type: a view freezes the record it
+ * views. */
+void scr_record_marked_freeze(void *record);
+/* scr_dyn_record_view that answers the view a capsule already has also once
+ * its record is frozen. */
+void *scr_dyn_record_view_kept(ScrDyn *d, const ScrRecordViewSource *sources, size_t count,
+                               const char *key, size_t key_len, void *(*alloc)(void));
 
 #endif /* SCR_DYN_H */

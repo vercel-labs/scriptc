@@ -100,11 +100,13 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   childErrorFields: boolean;
   declAdopt: boolean;
   typeOrigins: boolean;
+  conversionTrace: boolean;
   dynForAwait: boolean;
   dynCollections: boolean;
   dynIntegrityQueries: boolean;
   reflectProtoTarget: boolean;
   recordSourceDelete: boolean;
+  recordViewFrozen: boolean;
   genBind: boolean;
   genReceiver: boolean;
   eventsOnceSignal: boolean;
@@ -372,11 +374,13 @@ export function effectiveRuntimeFeatures(
     childErrorFields: features.childErrorFields === true,
     declAdopt: features.declAdopt === true,
     typeOrigins: features.typeOrigins === true,
+    conversionTrace: features.conversionTrace === true,
     dynForAwait: features.dynForAwait === true,
     dynCollections: features.dynCollections === true,
     dynIntegrityQueries: features.dynIntegrityQueries === true,
     reflectProtoTarget: features.reflectProtoTarget === true,
     recordSourceDelete: features.recordSourceDelete === true,
+    recordViewFrozen: features.recordViewFrozen === true,
     genBind: features.genBind === true,
     genReceiver: features.genReceiver === true,
     eventsOnceSignal: features.eventsOnceSignal === true,

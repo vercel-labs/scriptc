@@ -497,8 +497,10 @@ export function pointerRecordKeyGet(host: LlvmEmitterContext, e: IrExpr): boolea
       if (
         host.recordFieldInline(e.shapeId, f.name) ||
         !exact(f.type) ||
-        // A field a partial view may lack has no slot to lend.
-        host.partialFieldMissing(e.shapeId, f.name)
+        // A field a partial record assertion leaves unwritten has no slot
+        // to lend (asked of the module, so the analyses that run before the
+        // views are planned agree with the emission).
+        host.partialFieldUnwritten(e.shapeId, f.name)
       )
         return false;
   }

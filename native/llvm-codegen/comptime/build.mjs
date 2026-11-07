@@ -89,7 +89,8 @@ export function buildComptimeEvaluator({ compiler, platform, build, output }) {
   if (platform === "win32") rmSync(output.replace(/\.exe$/, ".pdb"), { force: true });
   const probe = join(build, "probe.js");
   writeFileSync(probe, "Math.hypot(3, 4) + [1, 2].length;\n");
+  // A Windows executable ends its line with a carriage return and a line feed.
   const answer = execFileSync(output, [probe, "2000", "64"], { encoding: "utf8" });
-  if (answer !== '["number","7"]\n')
+  if (answer.trim() !== '["number","7"]')
     throw new Error(`the built comptime evaluator answered ${JSON.stringify(answer)}`);
 }

@@ -133,7 +133,7 @@ try {
   const evaluatorProbe = join(work, "probe.js");
   writeFileSync(evaluatorProbe, "typeof process + String(6 * 7);\n");
   const evaluated = execFileSync(evaluator, [evaluatorProbe, "2000", "64"], { encoding: "utf8" });
-  if (evaluated !== '["string","undefined42"]\n') {
+  if (evaluated.trim() !== '["string","undefined42"]') {
     throw new Error(`packed comptime evaluator answered ${JSON.stringify(evaluated)}`);
   }
   const attributes = execFileSync("xattr", [binary], { encoding: "utf8" });

@@ -1,9 +1,11 @@
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { heritageElementTarget } from "../heritage-elements.js";
 import { InternalCompilerError } from "../../errors.js";
 import { typeEquals } from "../../ir/ir.js";
 import type { IrType } from "../../ir/ir.js";
 import type { Lowerer } from "./lowerer.js";
+import { isValueIdentifier } from "./binding-analysis.js";
 
 /** Whether TypeScript's control-flow narrowing of a mutable reference still
  * holds when the narrowed read executes.
@@ -193,10 +195,10 @@ export class NarrowingStability {
     const declaration = signature ? signature.declaration : undefined;
     if (!declaration || !this.lowerer.isStdlibFile(ts.getSourceFileOfNode(declaration)))
       return true;
-    const callee = skipOuter(call.expression);
+    const callee = withoutParenthesesTypeWrappers(call.expression);
     if (
       ts.isPropertyAccessExpression(callee) &&
-      this.lowerer.isStdlibGlobal(skipOuter(callee.expression), "console")
+      this.lowerer.isStdlibGlobal(withoutParenthesesTypeWrappers(callee.expression), "console")
     )
       return true;
     const index = call.arguments?.nodes.indexOf(argument) ?? -1;
@@ -697,7 +699,7 @@ export class NarrowingStability {
     if (call.expression.kind === ts.SyntaxKind.SuperKeyword) return false;
     if (call.expression.kind === ts.SyntaxKind.ImportKeyword) return false;
     if (!this.inertArguments(call.arguments.nodes)) return false;
-    const callee = skipOuter(call.expression);
+    const callee = withoutParenthesesTypeWrappers(call.expression);
     if (ts.isIdentifier(callee)) {
       if (!INERT_GLOBAL_FUNCTIONS.has(callee.text)) return false;
       if (!this.lowerer.isStdlibGlobal(callee, callee.text)) return false;
@@ -705,7 +707,7 @@ export class NarrowingStability {
     }
     if (!ts.isPropertyAccessExpression(callee)) return false;
     const method = callee.name.text;
-    const receiver = skipOuter(callee.expression);
+    const receiver = withoutParenthesesTypeWrappers(callee.expression);
     if (ts.isIdentifier(receiver)) {
       const members = INERT_NAMESPACE_MEMBERS.get(receiver.text);
       if (members !== undefined && this.lowerer.isStdlibGlobal(receiver, receiver.text))
@@ -725,7 +727,7 @@ export class NarrowingStability {
   }
 
   private isInertConstruction(node: ts.NewExpression): boolean {
-    const callee = skipOuter(node.expression);
+    const callee = withoutParenthesesTypeWrappers(node.expression);
     if (!ts.isIdentifier(callee) || !INERT_CONSTRUCTORS.has(callee.text)) return false;
     if (!this.lowerer.isStdlibGlobal(callee, callee.text)) return false;
     const args = node.arguments?.nodes ?? [];
@@ -737,7 +739,7 @@ export class NarrowingStability {
   private inertArguments(args: readonly ts.Expression[]): boolean {
     const checker = this.lowerer.checker;
     for (const arg of args) {
-      const e = skipOuter(arg);
+      const e = withoutParenthesesTypeWrappers(arg);
       if (ts.isArrowFunction(e) || ts.isFunctionExpression(e)) return false;
       if (ts.isSpreadElement(e)) continue;
       if (
@@ -1091,20 +1093,6 @@ function isFlowBoundary(node: ts.Node): boolean {
   );
 }
 
-function skipOuter(node: ts.Expression): ts.Expression {
-  let e = node;
-  while (
-    ts.isParenthesizedExpression(e) ||
-    ts.isNonNullExpression(e) ||
-    ts.isAsExpression(e) ||
-    ts.isTypeAssertion(e) ||
-    ts.isSatisfiesExpression(e)
-  ) {
-    e = e.expression;
-  }
-  return e;
-}
-
 /** A member access's name when it is static (`o.p`, `o["p"]`, `o[0]`). */
 function accessName(node: ts.Node): string | null {
   if (ts.isPropertyAccessExpression(node)) return node.name.text;
@@ -1119,7 +1107,7 @@ function accessName(node: ts.Node): string | null {
 /** The normalized spelling TypeScript's reference matching would equate:
  * parentheses, non-null and type assertions erased, `o["p"]` as `o.p`. */
 function referenceKey(node: ts.Node): string | null {
-  const e = skipOuter(node as ts.Expression);
+  const e = withoutParenthesesTypeWrappers(node as ts.Expression);
   if (ts.isIdentifier(e)) return e.text;
   if (e.kind === ts.SyntaxKind.ThisKeyword) return "this";
   if (ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
@@ -1135,10 +1123,10 @@ function referenceChain(node: ts.Expression): ReferenceChain | null {
   const key = referenceKey(node);
   if (key === null) return null;
   const links: ReferenceChain["links"] = [];
-  let e = skipOuter(node);
+  let e = withoutParenthesesTypeWrappers(node);
   while (ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
     links.unshift({ name: accessName(e)!, node: e });
-    e = skipOuter(e.expression);
+    e = withoutParenthesesTypeWrappers(e.expression);
   }
   return { key, root: e, links };
 }
@@ -1148,23 +1136,6 @@ function memberName(name: ts.Node): string | null {
   if (ts.isNumericLiteral(name)) return String(Number(name.text));
   if (ts.isPrivateIdentifier(name)) return name.text;
   return null;
-}
-
-/** An identifier that reads or declares a binding (not a member name). */
-function isValueIdentifier(node: ts.Identifier): boolean {
-  const parent = node.parent;
-  if (ts.isPropertyAccessExpression(parent) && parent.name === node) return false;
-  if (
-    (ts.isPropertyAssignment(parent) ||
-      ts.isPropertyDeclaration(parent) ||
-      ts.isMethodDeclaration(parent) ||
-      ts.isPropertySignature(parent) ||
-      ts.isGetAccessorDeclaration(parent) ||
-      ts.isSetAccessorDeclaration(parent)) &&
-    parent.name === node
-  )
-    return false;
-  return true;
 }
 
 /** The store target expression of an assignment-like node. */
@@ -1191,7 +1162,7 @@ function writeTargetOf(node: ts.Node): ts.Node | null {
 
 /** Each stored-to reference in a target, through destructuring patterns. */
 function forEachWriteTarget(target: ts.Node, visit: (target: ts.Expression) => void): void {
-  const e = skipOuter(target as ts.Expression);
+  const e = withoutParenthesesTypeWrappers(target as ts.Expression);
   if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
     visit(e);
     return;
@@ -1221,14 +1192,15 @@ function forEachWriteTarget(target: ts.Node, visit: (target: ts.Expression) => v
  * be observed by code that narrowed it. */
 function isConstructorThisStore(target: ts.Expression): boolean {
   if (!ts.isPropertyAccessExpression(target) && !ts.isElementAccessExpression(target)) return false;
-  if (skipOuter(target.expression).kind !== ts.SyntaxKind.ThisKeyword) return false;
+  if (withoutParenthesesTypeWrappers(target.expression).kind !== ts.SyntaxKind.ThisKeyword)
+    return false;
   return ts.isConstructorDeclaration(flowBoundary(target));
 }
 
 /** `Object.assign(target, ...)` and similar reflective stores into an
  * existing object. */
 function reflectiveStore(call: ts.CallExpression): boolean {
-  const callee = skipOuter(call.expression);
+  const callee = withoutParenthesesTypeWrappers(call.expression);
   if (!ts.isPropertyAccessExpression(callee) || !ts.isIdentifier(callee.expression)) return false;
   const owner = callee.expression.text;
   const method = callee.name.text;
@@ -1245,7 +1217,9 @@ function reflectiveStore(call: ts.CallExpression): boolean {
         method === "setPrototypeOf"));
   if (!reflective) return false;
   const target = call.arguments.nodes[0];
-  return target === undefined || !ts.isObjectLiteralExpression(skipOuter(target));
+  return (
+    target === undefined || !ts.isObjectLiteralExpression(withoutParenthesesTypeWrappers(target))
+  );
 }
 
 function isPlainContainerType(checker: ts.TypeChecker, type: ts.Type): boolean {

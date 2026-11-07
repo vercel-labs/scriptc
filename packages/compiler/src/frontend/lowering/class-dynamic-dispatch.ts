@@ -80,7 +80,7 @@ import { classStaticData } from "./class-static-data.js";
 import { isJsSourceFile } from "../program.js";
 import * as ts from "../ts7/adapter.js";
 import { SYMBOL_T, type IrLibFn } from "../../ir/ir.js";
-import { isClassCallback } from "./class-callbacks.js";
+import { METHODS_INTACT_PREFIX, isClassCallback, methodsIntactMember } from "./class-callbacks.js";
 import { CaughtValueDispatch } from "./caught-value-dispatch.js";
 import { refreshDescriptorGuards } from "./class-descriptors.js";
 import { ClassConstructionDispatch } from "./class-construction.js";
@@ -315,8 +315,8 @@ const TO_PRIMITIVE_PREFIX = "%dyn.class.toPrimitive.";
  * and `==` take the default hint, the arithmetic, bitwise, relational and
  * numeric conversions the number hint, and the string conversions the
  * string hint. */
-const DEFAULT_HINT_CALLS = new Set<string>(["dyn.abstractEq", "dyn.add"]);
-const NUMBER_HINT_CALLS = new Set<string>([
+const DEFAULT_HINT_CALLS = new Set<IrLibFn>(["dyn.abstractEq", "dyn.add"]);
+const NUMBER_HINT_CALLS = new Set<IrLibFn>([
   "dyn.arithmetic",
   "dyn.bigintConstructor",
   "dyn.bitwise",
@@ -325,12 +325,12 @@ const NUMBER_HINT_CALLS = new Set<string>([
   "dyn.toNumberCoerce",
   "dyn.toNumeric",
 ]);
-const STRING_HINT_CALLS = new Set<string>(["dyn.stringConstructor", "dyn.toStringCoerce"]);
+const STRING_HINT_CALLS = new Set<IrLibFn>(["dyn.stringConstructor", "dyn.toStringCoerce"]);
 /** Operations whose second operand is a property key, converted with the
  * string hint when the receiver admits a key: `in` needs an object,
  * propertyIsEnumerable converts before checking its receiver, and the
  * others need a receiver other than null and undefined. */
-const KEY_CALLS = new Map<string, "object" | "any" | "value">([
+const KEY_CALLS = new Map<IrLibFn, "object" | "any" | "value">([
   ["dyn.hasKeyComputed", "object"],
   ["dyn.propertyIsEnumerableComputed", "any"],
   ["dyn.hasOwnComputed", "value"],
@@ -1506,6 +1506,12 @@ export class ClassDynamicDispatch {
       dynamicKey: boolean;
       numericKey: boolean;
       probe: "in" | "own" | "enumerable" | undefined;
+      /** The helper's fallthrough applied to the value itself instead of its
+       * property bag: the access the runtime answers on the value's view,
+       * as it does for a key written as a literal. */
+      view: () => IrStmt[];
+      /** Whether the value's property bag has the key as an own property. */
+      bagHas: () => IrExpr;
     }
   >();
   private readonly computedClassHelpers = new Map<string, IrFunction>();
@@ -2845,15 +2851,17 @@ export class ClassDynamicDispatch {
               ...(reflect ? [{ localId: "p.reflectReceiver", name: "receiver", type: DYN }] : []),
             ];
             const keyLocal = dynamicKey ? "key.string" : "p.key";
-            const bag: IrExpr = computedWrite
-              ? {
-                  kind: "call",
-                  callee: this.propertyBag!.name,
-                  args: [varRef("p.0", DYN, loc)],
-                  type: DYN,
-                  loc,
-                }
-              : this.readPropertyBagOrEmpty(lowerer, varRef("p.0", DYN, loc), loc);
+            const makeBag = (): IrExpr =>
+              computedWrite
+                ? {
+                    kind: "call",
+                    callee: this.propertyBag!.name,
+                    args: [varRef("p.0", DYN, loc)],
+                    type: DYN,
+                    loc,
+                  }
+                : this.readPropertyBagOrEmpty(lowerer, varRef("p.0", DYN, loc), loc);
+            const bag = makeBag();
             const reflectionFallback = (target: IrExpr, property: IrExpr): IrExpr => ({
               kind: "libCall",
               fn: computedWrite ? "dyn.reflectSet" : "dyn.reflectGet",
@@ -2866,26 +2874,34 @@ export class ClassDynamicDispatch {
               type: computedWrite ? BOOL : DYN,
               loc,
             });
-            const fallback: IrExpr = reflect
-              ? reflectionFallback(bag, varRef(keyLocal, STRING, loc))
-              : computedProbe
-                ? {
-                    ...computedProbe,
-                    fn:
-                      probe === "in"
-                        ? "dyn.in"
-                        : probe === "own"
-                          ? "dyn.hasOwn"
-                          : "dyn.propertyIsEnumerable",
-                    args: [bag, varRef(keyLocal, STRING, loc)],
-                  }
-                : computedRead
-                  ? { ...computedRead, value: bag, key: varRef(keyLocal, STRING, loc) }
-                  : {
-                      ...computedWrite!,
-                      fn: "dyn.keySet",
-                      args: [bag, varRef(keyLocal, STRING, loc), varRef("p.1", DYN, loc)],
-                    };
+            const fallbackOn = (target: IrExpr): IrExpr =>
+              reflect
+                ? reflectionFallback(target, varRef(keyLocal, STRING, loc))
+                : computedProbe
+                  ? {
+                      ...computedProbe,
+                      fn:
+                        probe === "in"
+                          ? "dyn.in"
+                          : probe === "own"
+                            ? "dyn.hasOwn"
+                            : "dyn.propertyIsEnumerable",
+                      args: [target, varRef(keyLocal, STRING, loc)],
+                    }
+                  : computedRead
+                    ? { ...computedRead, value: target, key: varRef(keyLocal, STRING, loc) }
+                    : {
+                        ...computedWrite!,
+                        fn: "dyn.keySet",
+                        args: [target, varRef(keyLocal, STRING, loc), varRef("p.1", DYN, loc)],
+                      };
+            const fallthroughOn = (target: IrExpr): IrStmt[] =>
+              computedWrite && !reflect
+                ? [
+                    { kind: "exprStmt", expr: fallbackOn(target), loc },
+                    { kind: "return", value: null, loc },
+                  ]
+                : [{ kind: "return", value: fallbackOn(target), loc }];
             const helper: IrFunction = {
               name: `%dyn.class.computed.${this.computed.size}`,
               params,
@@ -2902,14 +2918,7 @@ export class ClassDynamicDispatch {
                   ? [{ id: keyLocal, name: "key", type: STRING, mutable: false }]
                   : []),
               ],
-              body: reflect
-                ? [{ kind: "return", value: fallback, loc }]
-                : computedWrite
-                  ? [
-                      { kind: "exprStmt", expr: fallback, loc },
-                      { kind: "return", value: null, loc },
-                    ]
-                  : [{ kind: "return", value: fallback, loc }],
+              body: fallthroughOn(bag),
               loc,
               ...(numericKey && computedRead && !reflect && !dynamicKey
                 ? { fastRead: "index" as const }
@@ -3122,6 +3131,14 @@ export class ClassDynamicDispatch {
               dynamicKey,
               numericKey,
               probe,
+              view: () => fallthroughOn(varRef("p.0", DYN, loc)),
+              bagHas: () => ({
+                kind: "libCall",
+                fn: "dyn.hasOwn",
+                args: [makeBag(), varRef(keyLocal, STRING, loc)],
+                type: BOOL,
+                loc,
+              }),
             };
             this.computed.set(key, dispatch);
             this.generated.add(helper);
@@ -4288,6 +4305,19 @@ export class ClassDynamicDispatch {
           continue;
         }
         const names = new Set([...info.fields.keys()].filter(isClassOwnEnumerableFieldName));
+        // A class rooted at Error also has the own properties its runtime
+        // base keeps in slots (`stack`, `cause`), which are neither declared
+        // fields nor bag entries. A read or a presence test of a name the
+        // class does not declare is therefore asked of the instance's view,
+        // where the runtime answers a key written as a literal. A write
+        // keeps the bag, as a literal key's does (the runtime copies a
+        // slot's property from it). A read of a key the bag holds (a
+        // property or accessor the program added) stays a bag read with the
+        // instance as receiver, so a getter sees the instance as `this`.
+        // `stack` is read and written through the native slot, as the
+        // by-name dispatch does.
+        const errorRooted = lowerer.isSubclassOf(info.def.name, "%Error");
+        if (errorRooted && !dispatch.probe && !dispatch.reflect) names.add("stack");
         if (info.builtinStream)
           for (const name of [...STREAM_BOOL_PROPERTIES, ...STREAM_NUM_PROPERTIES]) names.add(name);
         const inherited = eventTargetApiMembers(info);
@@ -4333,6 +4363,32 @@ export class ClassDynamicDispatch {
             loc,
           });
         }
+        // The fallthrough on the property bag, with the instance as the
+        // receiver of a bag accessor or setter.
+        const bagFallthrough = (): IrStmt[] =>
+          transformStmtList(dispatch.fn.body.slice(dispatch.write ? -2 : -1), {
+            stmt: (statement) => statement,
+            expr: (expression) =>
+              expression.kind === "dynKeyGet" && expression.key.type.kind === "string"
+                ? {
+                    kind: "libCall",
+                    fn: "dyn.bagGet",
+                    args: [
+                      expression.value,
+                      expression.key,
+                      lowerer.coerceToExpected(receiver, DYN),
+                    ],
+                    type: DYN,
+                    loc,
+                  }
+                : expression.kind === "libCall" && expression.fn === "dyn.keySet"
+                  ? {
+                      ...expression,
+                      fn: "dyn.bagSet",
+                      args: [...expression.args, lowerer.coerceToExpected(receiver, DYN)],
+                    }
+                  : expression,
+          });
         // Keep each class's key table in a separate function. A single
         // function containing every boxed class grows quadratically during
         // LLVM's control-flow optimization for large library workloads.
@@ -4356,29 +4412,20 @@ export class ClassDynamicDispatch {
           })),
           body: [
             ...branch,
-            ...transformStmtList(dispatch.fn.body.slice(dispatch.write ? -2 : -1), {
-              stmt: (statement) => statement,
-              expr: (expression) =>
-                expression.kind === "dynKeyGet" && expression.key.type.kind === "string"
-                  ? {
-                      kind: "libCall",
-                      fn: "dyn.bagGet",
-                      args: [
-                        expression.value,
-                        expression.key,
-                        lowerer.coerceToExpected(receiver, DYN),
-                      ],
-                      type: DYN,
+            ...(errorRooted && !dispatch.write
+              ? dispatch.probe || dispatch.reflect
+                ? dispatch.view()
+                : [
+                    {
+                      kind: "if" as const,
+                      cond: dispatch.bagHas(),
+                      then: bagFallthrough(),
+                      else_: null,
                       loc,
-                    }
-                  : expression.kind === "libCall" && expression.fn === "dyn.keySet"
-                    ? {
-                        ...expression,
-                        fn: "dyn.bagSet",
-                        args: [...expression.args, lowerer.coerceToExpected(receiver, DYN)],
-                      }
-                    : expression,
-            }),
+                    },
+                    ...dispatch.view(),
+                  ]
+              : bagFallthrough()),
           ],
           loc,
         };
@@ -5639,6 +5686,67 @@ export class ClassDynamicDispatch {
     if (lowerer) this.guardClassTables(lowerer);
     if (lowerer) this.guardPropertyHelpers(lowerer);
     if (lowerer) this.indexClassBranches(lowerer);
+    if (lowerer) this.settleMethodsIntact(lowerer);
+  }
+
+  /** The families whose `%class.methodsIntact:<root>` body is written. */
+  private readonly intactFamilies = new Set<string>();
+
+  /** Writes the body of each `%class.methodsIntact:<root>` (class-callbacks.ts,
+   * methodsUnreplaced) now that the family below `<root>` is complete: the
+   * negation of a flag that every prototype data helper of the family sets
+   * whenever it answers, so the test holds exactly while no prototype object
+   * of the family has reached any code. A family with a member whose
+   * prototype is not such a helper's (a function-local class, a generic
+   * instantiation, a mixin, a class with a callable base) keeps the body that
+   * answers false, and its calls read the property table as before. The
+   * property table the test reads is part of every class of the family. */
+  private settleMethodsIntact(lowerer: Lowerer): void {
+    for (const fn of lowerer.liftedFns) {
+      if (!fn.name.startsWith(METHODS_INTACT_PREFIX) || this.intactFamilies.has(fn.name)) continue;
+      this.intactFamilies.add(fn.name);
+      const root = lowerer.classes.get(fn.name.slice(METHODS_INTACT_PREFIX.length));
+      if (!root) continue;
+      this.ensurePropertyBag(root);
+      const family: ClassInfo[] = [];
+      const collect = (info: ClassInfo): void => {
+        family.push(info);
+        info.subclasses.forEach(collect);
+      };
+      collect(root);
+      const helpers = family.flatMap((info) =>
+        info.def.prototypeDataHelper === undefined
+          ? []
+          : [lowerer.liftedFnNamed(info.def.prototypeDataHelper)],
+      );
+      if (
+        !family.every(methodsIntactMember) ||
+        !helpers.every((helper) => helper?.body.at(-1)?.kind === "return")
+      )
+        continue;
+      const loc = fn.loc;
+      const created = `%g.%prototype.created.${root.def.name}`;
+      lowerer.globalsList.push({
+        id: created,
+        name: `${root.def.jsName ?? root.def.name}.prototype.created`,
+        type: BOOL,
+        mutable: true,
+      });
+      for (const helper of helpers)
+        helper!.body.splice(-1, 0, {
+          kind: "assign",
+          localId: created,
+          value: { kind: "boolLit", value: true, type: BOOL, loc: helper!.loc },
+          loc: helper!.loc,
+        });
+      fn.body = [
+        {
+          kind: "return",
+          value: { kind: "unary", op: "!", operand: varRef(created, BOOL, loc), type: BOOL, loc },
+          loc,
+        },
+      ];
+    }
   }
 
   /** Each generated class table tests its classes in order, one exact type

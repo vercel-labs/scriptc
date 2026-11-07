@@ -27,6 +27,7 @@ import { keyedHelperName } from "./stable-names.js";
 import { lowerValueReturningConstructorNew } from "./js-dynamic-objects.js";
 import { adaptPromiseExecutor } from "./promise-executor-adapter.js";
 import { dynUndefinedExpr, nodeThrowExpr, strLit, varRef } from "../../ir/build.js";
+import { isDynUndefined } from "../../ir/runtime-features.js";
 import {
   isBuiltinIdentityToken,
   isPrimitiveValueType,
@@ -58,6 +59,7 @@ import { fsStreamClassOf, lowerFsStreamNew } from "./builtins/fs-streams.js";
 import { codeGenerationCalleeOf, lowerCodeGenerationCall } from "./code-generation.js";
 import { TEMPORAL_GLOBAL } from "../builtin-modules.js";
 import * as ts from "../ts7/adapter.js";
+import { withoutParentheses } from "../outer-expressions.js";
 import { lowerZlibStreamNew, zlibClassName, zlibStreamModeOf } from "./builtins/compression.js";
 import { everyStmtList } from "../../ir/traverse.js";
 import {
@@ -101,6 +103,7 @@ import {
 } from "../../ir/ir.js";
 import {
   genericCallInstance,
+  staticReceiverInstance,
   implicitAnyParamSymbolsOf,
   implicitCallInstance,
   implicitMonoFile,
@@ -152,6 +155,8 @@ import { isCjsRequireGlobal } from "./lower-node-module.js";
 import { lowerArrayConstructor } from "./containers/array-construction.js";
 import { initializedCollectionType } from "./js-collection-types.js";
 import {
+  jsSourcePatchesCollectionPrototype,
+  jsSourcePatchesSetPrototype,
   lowerMapSeedNew,
   lowerSetSeedNew,
   mapFromSeedValue,
@@ -217,7 +222,12 @@ import {
 } from "./lower-namespaces.js";
 import { hostGlobalNameOfRead } from "./host-globals.js";
 import { mixinResultBindingClassOf, type MixinInstanceInfo } from "./lower-mixins.js";
-import { hasLexicalPrivateReference, hasStaticThis, rejectStaticThis } from "./static-this.js";
+import {
+  hasLexicalPrivateReference,
+  hasStaticThis,
+  rejectStaticThis,
+  usesStaticReceiver,
+} from "./static-this.js";
 import { lowerUrlNew } from "./lower-url.js";
 import { isNativeProxyInitializer, lowerNativeProxy } from "./expressions/native-proxy.js";
 import { classStaticDataFor } from "./class-static-data.js";
@@ -614,6 +624,14 @@ export function storedClassValueType(
   return mapped;
 }
 
+/** The declaration behind a static method entry: a method, or a static
+ * accessor, which collects as the method `get:x` or `set:x` (the instance
+ * accessor spelling) and lowers as the same kind of module function. */
+export type StaticMethodDeclaration =
+  | ts.MethodDeclaration
+  | ts.GetAccessorDeclaration
+  | ts.SetAccessorDeclaration;
+
 export interface ClassMethodSignature {
   params: ParamShape[];
   ret: IrType;
@@ -656,6 +674,12 @@ export interface ClassInfo {
   /** ALL fields visible on instances — the inherited ones included — for
    * receiver-side lookup (def.fields carries the layout order). */
   fields: Map<string, IrType>;
+  /** `declare` fields of this class: erased at run time (no slot, no own
+   * property), so they take no part in the layout or the membership
+   * answers, and a read of the name asks the instance's property bag. A
+   * subclass answers for an inherited erased name through the base chain,
+   * the same way `fields` already carries inherited entries. */
+  erasedFields?: ReadonlySet<string>;
   /** OWN fields only (declaration order) with their initializers: the
    * class's constructor runs exactly these — inherited fields initialize in
    * the base constructor, before/via super(). */
@@ -845,7 +869,7 @@ export interface ClassInfo {
     {
       params: ParamShape[];
       ret: IrType;
-      member: ts.MethodDeclaration;
+      member: StaticMethodDeclaration;
       receiverInfo?: GenericFnInfo;
     }
   >;
@@ -1749,17 +1773,12 @@ export function guaranteedDecorationThrow(
   lowerer: Lowerer,
   decl: ts.ClassLikeDeclaration,
 ): { name: string; node: ts.Decorator } | null {
-  const stripParens = (e: ts.Expression): ts.Expression => {
-    let x = e;
-    while (ts.isParenthesizedExpression(x)) x = x.expression;
-    return x;
-  };
   const decoratorVerdict = (
     d: ts.Decorator,
   ): { name: string; node: ts.Decorator } | "effectFree" | "opaque" => {
     const name = ambientDecoratorThrowNameOf(lowerer, d.expression);
     if (name !== null) return { name, node: d };
-    const e = stripParens(d.expression);
+    const e = withoutParentheses(d.expression);
     // A bare identifier over a DEFINED value: a pure read.
     if (ts.isIdentifier(e)) return "effectFree";
     return "opaque";
@@ -1772,7 +1791,7 @@ export function guaranteedDecorationThrow(
   const heritage = decl.heritageClauses?.nodes.find((c) => c.token === ts.SyntaxKind.ExtendsKeyword)
     ?.types?.nodes[0];
   if (heritage) {
-    const h = stripParens(heritage.expression);
+    const h = withoutParentheses(heritage.expression);
     if (h.kind !== ts.SyntaxKind.NullKeyword && !ts.isIdentifier(h)) return null;
   }
   for (const member of decl.members.nodes) {
@@ -1783,7 +1802,7 @@ export function guaranteedDecorationThrow(
     }
     const name = (member as { name?: ts.PropertyName }).name;
     if (name && ts.isComputedPropertyName(name)) {
-      const k = stripParens(name.expression);
+      const k = withoutParentheses(name.expression);
       const literalKey = ts.isStringLiteralLike(k) || ts.isNumericLiteral(k) || ts.isIdentifier(k);
       if (!literalKey) return null;
     }
@@ -2556,6 +2575,7 @@ export function collectClassShapeInner(
     if (base?.symbolMethods)
       for (const [symbol, name] of base.symbolMethods) symbolMethods.set(symbol, name);
     const fieldOrder: ClassInfo["fieldOrder"] = [];
+    const erasedFields = new Set<string>();
     const methods = new Map<
       string,
       {
@@ -2771,8 +2791,15 @@ export function collectClassShapeInner(
           const initializerSymbol = ts.isIdentifier(member.initializer)
             ? lowerer.resolveValueSymbol(member.initializer)
             : null;
-          // Enum namespace aliases are erased; member reads fold through the checker.
-          if (initializerSymbol && (initializerSymbol.flags & ts.SymbolFlags.Enum) !== 0) continue;
+          // An alias of an enum that has no object is erased; member reads
+          // fold through the checker. An enum whose object is built
+          // (enum-objects.ts) is stored like any other value.
+          if (
+            initializerSymbol &&
+            (initializerSymbol.flags & ts.SymbolFlags.Enum) !== 0 &&
+            !lowerer.enumObjects.has(initializerSymbol)
+          )
+            continue;
           const type = lowerer.irTypeOf(member.name);
           if (type.kind === "void") lowerer.badType(member.name, lowerer.typeOf(member.name));
           if (
@@ -2826,6 +2853,41 @@ export function collectClassShapeInner(
                 instances: new Map(),
                 implicitParams: implicit,
               });
+          }
+        }
+        // A static ACCESSOR of a TypeScript class is a static method with
+        // property syntax: `static get x()` collects as the static method
+        // "get:x" and `static set x(v)` as "set:x", so each is an ordinary
+        // module function (`%C.static:get:x`) that a read or a write of
+        // `C.x` calls. An accessor whose type has no mapping is left out,
+        // and its uses keep their refusal. JavaScript classes keep their
+        // accessors in the constructor's property table (checkedStatics).
+        if (
+          (ts.isGetAccessorDeclaration(member) || ts.isSetAccessorDeclaration(member)) &&
+          ts.isIdentifier(member.name) &&
+          member.body &&
+          !isJsSourceFile(ts.getSourceFileOfNode(member))
+        ) {
+          const isGet = ts.isGetAccessorDeclaration(member);
+          const type = lowerer.mapTypeOf(lowerer.typeOf(member.name));
+          const twin = staticMethods.get(`${isGet ? "set" : "get"}:${member.name.text}`);
+          const twinType = twin ? (isGet ? twin.params[0]!.type : twin.ret) : null;
+          if (
+            type &&
+            type.kind !== "void" &&
+            (isGet || member.parameters.nodes.length === 1) &&
+            (twinType === null || typeEquals(twinType, type))
+          ) {
+            staticMethods.set(
+              `${isGet ? "get" : "set"}:${member.name.text}`,
+              isGet
+                ? { params: [], ret: type, member }
+                : { params: [{ type, mode: "required" }], ret: VOID, member },
+            );
+          } else if (twin && twinType !== null) {
+            // One property, one type: a pair whose halves disagree has no
+            // single storage type, so neither half lowers.
+            staticMethods.delete(`${isGet ? "set" : "get"}:${member.name.text}`);
           }
         }
         // GENERIC static methods monomorphize like top-level generic
@@ -3063,6 +3125,21 @@ export function collectClassShapeInner(
         // ABSTRACT-typed receivers resolve the concrete instance's
         // property through checked class dispatch.
         if (modifiers?.some((m) => m.kind === ts.SyntaxKind.AbstractKeyword)) continue;
+        // A DECLARE field is erased the same way: JavaScript emits no field
+        // for it (verified: `declare p: number` leaves the instance without
+        // an own property, so `'p' in instance` is false and an unassigned
+        // read is undefined), so it contributes nothing to the layout. Its
+        // type still answers the checker; a value under that name can only
+        // come from elsewhere (a base class, a decorator, an assignment
+        // through an untyped view or the constructor), so a read asks the
+        // instance rather than a slot (erasedFields, property-access.ts).
+        if (modifiers?.some((m) => m.kind === ts.SyntaxKind.DeclareKeyword)) {
+          if (ts.isIdentifier(member.name) || ts.isStringLiteralLike(member.name))
+            erasedFields.add(member.name.text);
+          else if (ts.isNumericLiteral(member.name))
+            erasedFields.add(String(Number(member.name.text)));
+          continue;
+        }
         if (modifiers?.some((m) => m.kind === ts.SyntaxKind.AccessorKeyword)) {
           // `accessor x = 1` desugars (in JS) to a private slot plus a
           // get/set pair — declare the field and accessors explicitly.
@@ -4760,6 +4837,7 @@ export function collectClassShapeInner(
       },
       fields,
       fieldOrder,
+      ...(erasedFields.size > 0 ? { erasedFields } : {}),
       methods,
       ...(methodEntryFences.size > 0 ? { methodEntryFences } : {}),
       ...(returnAdapters.size > 0 ? { returnAdapters } : {}),
@@ -5695,7 +5773,7 @@ export function findStaticOn(
       method: {
         params: ParamShape[];
         ret: IrType;
-        member: ts.MethodDeclaration;
+        member: StaticMethodDeclaration;
         receiverInfo?: GenericFnInfo;
       };
       field?: undefined;
@@ -5719,9 +5797,192 @@ export function staticShadowBelow(info: ClassInfo, name: string): boolean {
     (s) =>
       s.staticFields.some((f) => f.name === name) ||
       s.staticMethods?.has(name) === true ||
+      s.staticMethods?.has(`get:${name}`) === true ||
+      s.staticMethods?.has(`set:${name}`) === true ||
       s.genericStatics?.has(name) === true ||
       staticShadowBelow(s, name),
   );
+}
+
+/** The static accessor `info.name` resolves: the nearest class at or above
+ * `info` that declares a static property of that name, when the
+ * declaration is an accessor (collected as the static methods `get:name`
+ * and `set:name`). A getter without a setter, or a setter without a
+ * getter, is the whole property: it hides an inherited half. Null when a
+ * field or a method of the name is nearer, or nothing declares it. */
+export function findStaticAccessorOn(
+  info: ClassInfo | null,
+  name: string,
+): { declarer: ClassInfo; get: boolean; set: boolean } | null {
+  for (let c = info; c; c = c.base) {
+    if (
+      c.staticFields.some((f) => f.name === name) ||
+      c.staticMethods?.has(name) === true ||
+      c.genericStatics?.has(name) === true
+    )
+      return null;
+    const get = c.staticMethods?.has(`get:${name}`) === true;
+    const set = c.staticMethods?.has(`set:${name}`) === true;
+    if (get || set) return { declarer: c, get, set };
+  }
+  return null;
+}
+
+/** The classes a `super` member names inside a static member's body: the
+ * base of the class the body is declared in, where the lookup starts, and
+ * the receiver the body was specialized for, which stays `this` in the
+ * member it reaches. Null outside such a body. */
+function staticSuperContext(
+  lowerer: Lowerer,
+  node: ts.Node,
+): { base: ClassInfo; receiver: ClassInfo } | null {
+  // The member `super` belongs to: the nearest function that binds its own
+  // `this` (arrows inherit it). Only a static method or accessor qualifies.
+  let member: ts.Node | undefined = node.parent;
+  while (member && (!ts.isFunctionLike(member) || ts.isArrowFunction(member)))
+    member = member.parent;
+  if (
+    !member ||
+    !(ts.isMethodDeclaration(member) || ts.isAccessor(member)) ||
+    ts.getModifiers(member)?.some((m) => m.kind === ts.SyntaxKind.StaticKeyword) !== true
+  )
+    return null;
+  const self = lowerer.resolveThis();
+  if (self?.type.kind !== "classval") return null;
+  const receiver = lowerer.classes.get(self.type.className);
+  const owner = member.parent;
+  const declarer =
+    owner && (ts.isClassDeclaration(owner) || ts.isClassExpression(owner))
+      ? lowerer.classes.get(lowerer.classNamer(owner))
+      : undefined;
+  if (!receiver || !declarer?.base) return null;
+  return { base: declarer.base, receiver };
+}
+
+/** `super.x` in a static member: the base class's static `x`, read with the
+ * current receiver as `this`. Null outside a static member. */
+export function lowerStaticSuperRead(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+  loc: SrcLoc,
+): IrExpr | null {
+  const context = staticSuperContext(lowerer, expr);
+  if (!context) return null;
+  const name = expr.name.text;
+  const accessor = findStaticAccessorOn(context.base, name);
+  if (accessor?.get) {
+    const target = staticMethodFunctionFor(
+      lowerer,
+      expr,
+      context.receiver,
+      `get:${name}`,
+      context.base,
+    );
+    if (target) {
+      if (!target.receiverDependent) lowerer.noteEdge(target.fn);
+      return { kind: "call", callee: target.fn, args: [], type: target.ret, loc };
+    }
+  }
+  const found = accessor ? null : findStaticOn(lowerer, context.base, name);
+  if (found?.field !== undefined)
+    return { kind: "varRef", localId: found.field.globalId, type: found.field.type, loc };
+  lowerer.unsupported(
+    "SC1090",
+    expr,
+    `reading 'super.${name}' in a static member (static fields and getters of the base class compile)`,
+  );
+}
+
+/** `super.m(args)` in a static member: the base class's static method,
+ * called with the current receiver as `this`. Null outside a static
+ * member. */
+export function lowerStaticSuperCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  const context = staticSuperContext(lowerer, access);
+  if (!context) return null;
+  const loc = locOf(call);
+  const target = staticMethodFunctionFor(
+    lowerer,
+    call,
+    context.receiver,
+    access.name.text,
+    context.base,
+  );
+  if (!target) {
+    lowerer.unsupported(
+      "SC1090",
+      call,
+      `calling 'super.${access.name.text}' in a static member (plain static methods of the base class compile)`,
+    );
+  }
+  if (!target.receiverDependent) lowerer.noteEdge(target.fn);
+  return {
+    kind: "call",
+    callee: target.fn,
+    args: lowerer.completeArgs(call.arguments.nodes, target.params, loc, call),
+    type: target.ret,
+    loc,
+  };
+}
+
+/** A read of the static accessor `name` through the class `receiver`
+ * exactly: the getter's call, with `receiver` as its `this`. Null when the
+ * name is not an accessor there. */
+export function staticAccessorRead(
+  lowerer: Lowerer,
+  receiver: ClassInfo,
+  name: string,
+  site: ts.Node,
+  loc: SrcLoc,
+): IrExpr | null {
+  const accessor = findStaticAccessorOn(receiver, name);
+  if (!accessor) return null;
+  if (!accessor.get) {
+    lowerer.unsupported(
+      "SC1090",
+      site,
+      `reading the static '${name}' of class '${accessor.declarer.def.jsName ?? accessor.declarer.def.name}', which declares a setter and no getter (the read is undefined in JavaScript)`,
+    );
+  }
+  const target = staticMethodFunctionFor(lowerer, site, receiver, `get:${name}`);
+  if (!target) return null;
+  if (!target.receiverDependent) lowerer.noteEdge(target.fn);
+  return { kind: "call", callee: target.fn, args: [], type: target.ret, loc };
+}
+
+/** A write of the static accessor `name` through the class `receiver`
+ * exactly: the setter's call over `value`. Null when the name is not an
+ * accessor there. */
+export function staticAccessorWrite(
+  lowerer: Lowerer,
+  receiver: ClassInfo,
+  name: string,
+  value: ts.Expression,
+  site: ts.Node,
+  loc: SrcLoc,
+): IrExpr | null {
+  const accessor = findStaticAccessorOn(receiver, name);
+  if (!accessor) return null;
+  if (!accessor.set) {
+    lowerer.unsupported(
+      "SC1090",
+      site,
+      `assigning the static '${name}' of class '${accessor.declarer.def.jsName ?? accessor.declarer.def.name}', which declares a getter and no setter (a TypeError in JavaScript)`,
+    );
+  }
+  const target = staticMethodFunctionFor(lowerer, site, receiver, `set:${name}`);
+  if (!target) return null;
+  if (!target.receiverDependent) lowerer.noteEdge(target.fn);
+  return {
+    kind: "call",
+    callee: target.fn,
+    args: [lowerer.lowerExprExpecting(value, target.params[0]!.type)],
+    type: target.ret,
+    loc,
+  };
 }
 
 /** The `this` members read by the methods and accessors a constructor
@@ -5980,6 +6241,28 @@ export function ctorAbiEquals(lowerer: Lowerer, sub: ClassInfo, sup: ClassInfo):
   );
 }
 
+/** `C.x += v`, `C.x++` and `C.x ??= v` on a static accessor: the property
+ * has no storage to update in place, and the read-then-write through its
+ * getter and setter has no lowering yet. */
+export function fenceStaticAccessorUpdate(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+): void {
+  if (
+    access.questionDotToken ||
+    (!ts.isIdentifier(access.expression) && access.expression.kind !== ts.SyntaxKind.ThisKeyword)
+  )
+    return;
+  const info = lowerer.exactClassOfReceiver(access.expression);
+  if (info && findStaticAccessorOn(info, access.name.text)) {
+    lowerer.unsupported(
+      "SC1090",
+      access,
+      `updating the static accessor '${access.name.text}' in place (read it and assign the result)`,
+    );
+  }
+}
+
 /** Writable storage for an own static field named through its exact class.
  * Inherited writes create a new subclass property in JS, so they must not
  * update the declaring class's global. */
@@ -5994,6 +6277,7 @@ export function staticFieldWriteTarget(
     return null;
   const info = lowerer.exactClassOfReceiver(access.expression);
   if (!info) return null;
+  fenceStaticAccessorUpdate(lowerer, access);
   const found = lowerer.findStaticOn(info, access.name.text);
   if (!found?.field) return null;
   if (found.declarer !== info) {
@@ -6104,6 +6388,11 @@ export function lowerClassStaticRead(
       site,
       `reading the private static '${name}' through the subclass '${info.def.name.replace(/^%|^%m\d+\./, "")}' (JS brands the declaring class object alone — Node throws a TypeError here; spell the declaring class's name)`,
     );
+  }
+  // A static accessor: the getter runs with this class as its `this`.
+  {
+    const viaGetter = staticAccessorRead(lowerer, info, name, site, loc);
+    if (viaGetter) return viaGetter;
   }
   if (found?.field !== undefined) {
     const value: IrExpr = {
@@ -7119,7 +7408,7 @@ function staticCallOn(
       loc,
     };
   }
-  if (found.method.member.body && hasStaticThis(found.method.member)) {
+  if (found.method.member.body && usesStaticReceiver(found.method.member)) {
     const generic = (found.method.receiverInfo ??= {
       decl: found.method.member,
       baseName: access.name.text,
@@ -7377,7 +7666,7 @@ function memberAssigned(lowerer: Lowerer, member: ts.MethodDeclaration, name: st
   let found = false;
   for (const sf of lowerer.program.getImplementationSourceFiles()) {
     if (found) continue;
-    if (!sf.text.includes(name)) continue;
+    if (!ts.sourceTextIncludes(sf, name)) continue;
     ts.walkPreorder(sf, (node) => {
       if (found) return "skip";
       if (ts.isPropertyAccessExpression(node) && node.name.text === name) {
@@ -7410,22 +7699,34 @@ function staticMethodForReceiver(
   receiver: ClassInfo,
   throughValue: boolean,
 ): GenericFnInfo {
-  if (!hasStaticThis(method.decl)) return method;
+  if (!usesStaticReceiver(method.decl)) return method;
+  if (throughValue && !classValueIsExactlyOwn(lowerer, access.expression, receiver)) {
+    lowerer.unsupported(
+      "SC1090",
+      access,
+      "receiver-dependent static methods through a polymorphic class value",
+    );
+  }
+  return staticMethodOnReceiver(lowerer, access, method, receiver);
+}
+
+/** The specialization of a static method whose body reads `this` for a
+ * receiver the caller has proven to be exactly `receiver`: `this` is that
+ * class in the specialized body. */
+function staticMethodOnReceiver(
+  lowerer: Lowerer,
+  blame: ts.Node,
+  method: GenericFnInfo,
+  receiver: ClassInfo,
+): GenericFnInfo {
   // A private name in the inherited body belongs to the declaring class,
   // even when the receiver declares a different private with that spelling.
   // Do not resolve it by receiver name until the static ABI tracks the brand.
   if (method.member && method.member.cls !== receiver && hasLexicalPrivateReference(method.decl)) {
     lowerer.unsupported(
       "SC1090",
-      access,
+      blame,
       "private member references in an inherited receiver-dependent static method",
-    );
-  }
-  if (throughValue && !classValueIsExactlyOwn(lowerer, access.expression, receiver)) {
-    lowerer.unsupported(
-      "SC1090",
-      access,
-      "receiver-dependent static methods through a polymorphic class value",
     );
   }
   const instances = (method.receiverSpecializations ??= new Map());
@@ -7441,6 +7742,55 @@ function staticMethodForReceiver(
     instances.set(receiver.def.name, specialized);
   }
   return specialized;
+}
+
+/** The module function the static method `name` runs as for a receiver
+ * that is exactly `receiver`, with no call expression at hand: the nearest
+ * declaration at or above the receiver, specialized for it when the body
+ * reads `this` or `super`. `from` is where the lookup starts: the receiver,
+ * or the base of the class a `super` member is read in. Null when no plain
+ * static method of that name resolves (a field, a generic method, a class
+ * that keeps its statics in a run-time table). */
+export function staticMethodFunctionFor(
+  lowerer: Lowerer,
+  blame: ts.Node,
+  receiver: ClassInfo,
+  name: string,
+  from: ClassInfo = receiver,
+): { fn: string; params: ParamShape[]; ret: IrType; receiverDependent: boolean } | null {
+  if (hasRuntimeStatics(receiver) || receiver.callableBase) return null;
+  const found = findStaticOn(lowerer, from, name);
+  if (!found || found.method === undefined || !found.method.member.body) return null;
+  if (findGenericStaticOn(lowerer, from, name)) return null;
+  if (!usesStaticReceiver(found.method.member)) {
+    return {
+      fn: `%${found.declarer.def.name}.static:${name}`,
+      params: found.method.params,
+      ret: found.method.ret,
+      receiverDependent: false,
+    };
+  }
+  const generic = (found.method.receiverInfo ??= {
+    decl: found.method.member,
+    baseName: name,
+    qualifiedName: `%${found.declarer.def.name}.static:${name}`,
+    typeParams: [],
+    instances: new Map(),
+    member: { cls: found.declarer, kind: "static" },
+  });
+  const instance = staticReceiverInstance(
+    lowerer,
+    blame,
+    staticMethodOnReceiver(lowerer, blame, generic, receiver),
+    found.method.params,
+    found.method.ret,
+  );
+  return {
+    fn: instance.name,
+    params: instance.params,
+    ret: instance.returnType,
+    receiverDependent: true,
+  };
 }
 
 /** Static member access through a class VALUE (`X.m` where X is
@@ -7510,6 +7860,32 @@ export function lowerClassValueProperty(
       expr,
       "static member access through a computed class-value expression (bind the class value to a variable first)",
     );
+  }
+  // A static accessor through a class value: the getter the static class
+  // resolves, exact when no subclass redeclares the property and the
+  // getter does not read `this` (or the value can only be this class).
+  if (findStaticAccessorOn(info, member)) {
+    if (staticShadowBelow(info, member)) {
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        `reading the static member '${member}' through a class value (a subclass of '${info.def.name.replace(/^%|^%m\d+\./, "")}' redeclares it, so the runtime class decides which declaration answers)`,
+      );
+    }
+    const getter = findStaticOn(lowerer, info, `get:${member}`);
+    if (
+      getter?.method &&
+      usesStaticReceiver(getter.method.member) &&
+      !classValueIsExactlyOwn(lowerer, expr.expression, info)
+    ) {
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        "receiver-dependent static accessors through a polymorphic class value",
+      );
+    }
+    const read = staticAccessorRead(lowerer, info, member, expr, loc);
+    if (read) return read;
   }
   // The direct class-name spelling resolved in lowerStaticFieldRead;
   // reaching here means the receiver is a classval-typed BINDING.
@@ -7738,7 +8114,7 @@ function localSubclassesOf(lowerer: Lowerer, base: ts.Node): readonly ts.ClassLi
     index = new Map();
     const files = lowerer.moduleOrder.length > 0 ? lowerer.moduleOrder : [lowerer.entry];
     for (const sf of files) {
-      if (!sf.text.includes("extends")) continue;
+      if (!ts.sourceTextIncludes(sf, "extends")) continue;
       ts.walkPreorder(sf, (node) => {
         if (
           (ts.isClassDeclaration(node) || ts.isClassExpression(node)) &&
@@ -9411,7 +9787,7 @@ function superBaseOf(info: ClassInfo): ClassInfo | null {
 export function fieldInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrLocal): IrStmt[] {
   const out: IrStmt[] = [];
   const thisType: IrType = { kind: "object", className: info.def.name };
-  for (const f of info.fieldOrder) {
+  for (const [index, f] of info.fieldOrder.entries()) {
     if (f.errorCause) {
       const loc = f.initializer ? locOf(f.initializer) : f.undefinedInitializer!;
       const value = f.initializer
@@ -9446,6 +9822,11 @@ export function fieldInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrL
     lowerer.countStatement(f.initializer, locOf(f.initializer).file);
     const diagsBefore = lowerer.diags.length;
     const sinkMark = lowerer.diagSinkMark();
+    // `'k' in this` inside the initializer answers from the fields defined
+    // SO FAR (Node defines each field as its own initializer finishes), so
+    // the lowering needs this field's position in the order.
+    const previousInitializer = lowerer.fieldInitializer;
+    lowerer.fieldInitializer = { info, index, initializer: f.initializer };
     try {
       const value = lowerer.lowerExprExpecting(f.initializer, f.type);
       out.push({
@@ -9467,6 +9848,8 @@ export function fieldInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrL
             : lowerer.capturedRuntimeFence(sinkMark, f.initializer);
         if (fence) out.push(fence);
       }
+    } finally {
+      lowerer.fieldInitializer = previousInitializer;
     }
   }
   return out;
@@ -9834,13 +10217,15 @@ export function superCallStmt(
     // super(message) into the runtime-provided Error constructor: stamps
     // name/message on the (already-allocated) object. Receiver + message
     // are BORROWED by the libCall — no ownership transfer, unlike the
-    // call form below.
+    // call form below. A native string message, or none, takes the typed
+    // constructor; a ctor-less chain's forwarded pair stays checked-dynamic.
+    const typed = typedErrorConstructorArgs(args);
     return {
       kind: "exprStmt",
       expr: {
         kind: "libCall",
-        fn: "error.ctorOptions",
-        args: [lowerer.upcastTo(thisRef, base.def.name), ...args],
+        fn: typed ? "error.ctor" : "error.ctorOptions",
+        args: [lowerer.upcastTo(thisRef, base.def.name), ...(typed ?? args)],
         type: VOID,
         loc,
       },
@@ -10352,6 +10737,35 @@ export function errorConstructorArgs(
     if (!arg) return dynUndefinedExpr(loc);
     return lowerer.lowerExprExpecting(arg, DYN);
   });
+}
+
+/** The typed form of a builtin error constructor's argument pair
+ * (errorConstructorArgs): the message alone when it is a native string, and
+ * no argument for an absent or `undefined` one. Null when the construction
+ * needs the checked-dynamic constructor: an options argument, whose `cause`
+ * is read at run time, or a message JavaScript's ToString converts. The
+ * typed constructors leave the error in the state the checked-dynamic ones
+ * do for the same pair, without boxing the message. */
+export function typedErrorConstructorArgs(args: readonly IrExpr[]): IrExpr[] | null {
+  const [message, options] = args;
+  if (args.length !== 2 || !isDynUndefined(options!)) return null;
+  if (isDynUndefined(message!)) return [];
+  return message!.kind === "dynFrom" && message.value.type.kind === "string"
+    ? [message.value]
+    : null;
+}
+
+/** `new Error(message, options)` of a runtime error class with the argument
+ * pair errorConstructorArgs lowered. */
+export function builtinErrorNew(className: string, args: readonly IrExpr[], loc: SrcLoc): IrExpr {
+  const typed = typedErrorConstructorArgs(args);
+  return {
+    kind: "libCall",
+    fn: typed ? "error.new" : "error.newOptions",
+    args: typed ?? [...args],
+    type: { kind: "object", className },
+    loc,
+  };
 }
 
 /** `new C(...)` of a registered PROGRAM class — the shared tail of the
@@ -11013,7 +11427,9 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
             expr.expression.expression.text === "exports" &&
             !lowerer.peekLocal(expr.expression.expression) &&
             !lowerer.globalOf(expr.expression.expression)))) ||
-        lowerer.cjsLocalModuleBindingOf(expr.expression.expression))
+        lowerer.cjsLocalModuleBindingOf(expr.expression.expression) ||
+        (ts.isIdentifier(expr.expression.name) &&
+          lowerer.cjsWholeExportMemberOf(expr.expression.expression, expr.expression.name.text)))
     ) {
       // Candidate symbols for the export global: the member symbol as
       // spelled, its alias-chased resolution (resolveValueSymbol carries
@@ -11252,13 +11668,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     }
     if (errInfo) {
       const args = lowerer.errorConstructorArgs(expr.arguments?.nodes ?? [], loc, expr);
-      return {
-        kind: "libCall",
-        fn: "error.newOptions",
-        args,
-        type: { kind: "object", className: errInfo.def.name },
-        loc,
-      };
+      return builtinErrorNew(errInfo.def.name, args, loc);
     }
     // `new EventEmitter()`: the runtime-provided emitter constructs
     // through one libCall. Zero arguments — the options bag
@@ -11669,6 +12079,29 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
           "a source whose map layouts differ (give the empty `new Map()` its type arguments)",
         );
       }
+      // A JavaScript source that patches Map.prototype makes the
+      // constructor's `set` lookup observable, for a pair-literal seed too
+      // (which otherwise takes the destination's bulk layout). A
+      // statically typed destination lowers the seed in lowerMapSeedNew;
+      // with no static map type build the checked-dynamic map directly.
+      if (
+        seedArg &&
+        isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+        jsSourcePatchesCollectionPrototype(lowerer, expr, "Map")
+      ) {
+        if (mapped?.kind === "map") {
+          const patched = lowerMapSeedNew(lowerer, seedArg, mapped);
+          if (patched) return patched;
+        } else if (mapped === null) {
+          return {
+            kind: "libCall",
+            fn: "dyn.collectionConstruct",
+            args: [strLit("Map", loc), lowerer.lowerExprExpecting(seedArg, DYN)],
+            type: DYN,
+            loc,
+          };
+        }
+      }
       if (seedArg && !entriesLit && mapped?.kind === "map") {
         const seeded = lowerMapSeedNew(lowerer, seedArg, mapped);
         if (seeded) return seeded;
@@ -11816,14 +12249,18 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         (expr.arguments?.nodes.length ?? 0) <= 1 &&
         !expr.arguments?.nodes.some(ts.isSpreadElement)
       ) {
+        // With a seed the constructor reads `add` off the new set and steps
+        // the iterable, so a program's own Set.prototype.add runs per
+        // element and a throwing one closes the iterator. The no-argument
+        // form reads nothing, and a program that never patches the
+        // prototype cannot observe the bulk native path.
+        const seed = expr.arguments?.nodes[0];
+        const patched = !!seed && jsSourcePatchesSetPrototype(lowerer, expr);
+        const seedIr = seed ? lowerer.lowerExprExpecting(seed, DYN) : dynUndefinedExpr(loc);
         return {
           kind: "libCall",
-          fn: "dyn.nativeSetNew",
-          args: [
-            expr.arguments?.nodes[0]
-              ? lowerer.lowerExprExpecting(expr.arguments.nodes[0], DYN)
-              : dynUndefinedExpr(loc),
-          ],
+          fn: patched ? "dyn.collectionConstruct" : "dyn.nativeSetNew",
+          args: patched ? [strLit("Set", loc), seedIr] : [seedIr],
           type: DYN,
           loc,
         };
@@ -12647,7 +13084,7 @@ function definedThroughReflection(lowerer: Lowerer, decl: ts.ClassLikeDeclaratio
   const sf = ts.getSourceFileOfNode(decl);
   if (
     name === undefined ||
-    (!sf.text.includes("definePropert") && !sf.text.includes("deleteProperty"))
+    (!ts.sourceTextIncludes(sf, "definePropert") && !ts.sourceTextIncludes(sf, "deleteProperty"))
   )
     return false;
   const symbol = lowerer.checker.getSymbolAtLocation(name);

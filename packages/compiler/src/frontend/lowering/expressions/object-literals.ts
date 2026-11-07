@@ -4,6 +4,7 @@ import { dynUndefinedExpr, numLit, strLit, varRef } from "../../../ir/build.js";
 import { pathModuleSpreadSource } from "../lower-builtin-values.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
+import { withoutParentheses } from "../../outer-expressions.js";
 import {
   BOOL,
   DYN,
@@ -27,9 +28,11 @@ import {
 } from "../../../diagnostics/diagnostic.js";
 import { PoisonError, jsFuncNameOf, neverTaintedJsType } from "../lowerer.js";
 import type { Lowerer } from "../lowerer.js";
+import { lowerDeclaredMemberLiteral, viewLiteralStorage, viewTargetOf } from "../view-literals.js";
 import { lowerIndexMergeHelper } from "../containers/indexed-objects.js";
 import type { IndexMergeContributor } from "../containers/indexed-objects.js";
 import type { KeyOrderSegment, WidthSegment } from "../key-order-witness.js";
+import { lowerEnumObjectValue } from "../enum-objects.js";
 import { recordMayKeepSource } from "../record-sources.js";
 import {
   PERF_ENTRY_MARKER,
@@ -47,10 +50,12 @@ import {
 import { planUnionRetag } from "../union-retag.js";
 import { literalValues } from "../../literal-values.js";
 import { jsHoldsDynObject, runtimeOptionalStorageOperand } from "../lower-exprs.js";
+import { isIslandImportBinding } from "../lower-node-island.js";
 import { builtinGlobalValue } from "./property-access.js";
 import { holdsEvolvingArray } from "../lower-stmts.js";
 import { builtinNamespaceValue } from "../builtin-namespaces.js";
 import { tsUntypedGlobalValue } from "../global-values.js";
+import { consoleOwnKeysObject, isConsoleObjectRead } from "../coercions/console-records.js";
 
 /** `{ a: 1, b: "x" }` → recordLit. The record type comes from the
  * contextual type when tsc has one (annotated declarations, arguments,
@@ -376,6 +381,10 @@ export function lowerDynObjectLiteral(
   expr: ts.ObjectLiteralExpression,
   boxValue?: (node: ts.Expression, value: IrExpr) => IrExpr,
   conditionalArms = false,
+  /** The literal is the dynamic object of a checked-identity view: its
+   * array and object members are built at their declared types and held by
+   * reference (view-literals.ts). */
+  declaredMembers = false,
 ): IrExpr {
   const loc = locOf(expr);
   let fields: { key: IrExpr; value: IrExpr }[] = [];
@@ -451,7 +460,14 @@ export function lowerDynObjectLiteral(
               ? lowerer.lowerExprExpecting(prop.expression, DYN)
               : lowerer.lowerExpr(prop.expression);
       fenceSymbolFieldCopy(lowerer, prop.expression, raw.type);
-      const source = boxValue ? boxValue(prop.expression, raw) : lowerer.coerceToExpected(raw, DYN);
+      // `{ ...console }` copies console's own keys. Console is a native
+      // handle, which holds no data properties for the copy below to read,
+      // so the spread names the keys (console-records.ts).
+      const source = isConsoleObjectRead(raw)
+        ? consoleOwnKeysObject(raw, locOf(prop))
+        : boxValue
+          ? boxValue(prop.expression, raw)
+          : lowerer.coerceToExpected(raw, DYN);
       if (source.type.kind !== "dyn") {
         lowerer.unsupported(
           "SC1101",
@@ -551,22 +567,28 @@ export function lowerDynObjectLiteral(
     let raw: IrExpr;
     const propDiagsBefore = lowerer.diags.length;
     try {
+      const declared =
+        declaredMembers && ts.isPropertyAssignment(prop)
+          ? lowerDeclaredMemberLiteral(lowerer, prop.initializer)
+          : null;
       const lowerValue = (): IrExpr =>
-        ts.isMethodDeclaration(prop)
-          ? lowerer.lowerLambda(prop, true)
-          : ts.isShorthandPropertyAssignment(prop) && shorthandBuiltinValue(lowerer, prop)
-            ? shorthandBuiltinValue(lowerer, prop)!
-            : !boxValue &&
-                (ts.isObjectLiteralExpression(valueExpr) ||
-                  (ts.isArrayLiteralExpression(valueExpr) &&
-                    // An empty literal takes whatever the object's users
-                    // store into it (`{ [kChildren]: [] }`), so it is a
-                    // checked-dynamic array rather than its `never[]` layout.
-                    (valueExpr.elements.nodes.length === 0 ||
-                      holdsEvolvingArray(lowerer, valueExpr) ||
-                      lowerer.untypedLiteralContext(valueExpr))))
-              ? lowerer.lowerExprExpecting(valueExpr, DYN)
-              : lowerer.lowerExpr(valueExpr as ts.Expression);
+        declared !== null
+          ? declared
+          : ts.isMethodDeclaration(prop)
+            ? lowerer.lowerLambda(prop, true)
+            : ts.isShorthandPropertyAssignment(prop) && shorthandBuiltinValue(lowerer, prop)
+              ? shorthandBuiltinValue(lowerer, prop)!
+              : !boxValue &&
+                  (ts.isObjectLiteralExpression(valueExpr) ||
+                    (ts.isArrayLiteralExpression(valueExpr) &&
+                      // An empty literal takes whatever the object's users
+                      // store into it (`{ [kChildren]: [] }`), so it is a
+                      // checked-dynamic array rather than its `never[]` layout.
+                      (valueExpr.elements.nodes.length === 0 ||
+                        holdsEvolvingArray(lowerer, valueExpr) ||
+                        lowerer.untypedLiteralContext(valueExpr))))
+                ? lowerer.lowerExprExpecting(valueExpr, DYN)
+                : lowerer.lowerExpr(valueExpr as ts.Expression);
       raw = fenceClosureProbe(lowerer, valueExpr, undefined, lowerValue) ?? lowerValue();
     } catch (err) {
       // A PURE member read a JS file cannot lower (a namespace object
@@ -970,6 +992,21 @@ function lowerOptionalIndexSpreadSource(
     : { kind: "seqExpr", stmts: prefix, result: selected, type: recordType, loc };
 }
 
+/** The declared type a literal flows into: its contextual type, or for
+ * `lit satisfies T` (where the literal is typed by itself) the contextual
+ * type of the whole `satisfies` expression. */
+function viewContextOf(
+  lowerer: Lowerer,
+  expr: ts.ObjectLiteralExpression,
+  contextual: ts.Type,
+): ts.Type {
+  let outer: ts.Expression = expr;
+  while (ts.isParenthesizedExpression(outer.parent) || ts.isSatisfiesExpression(outer.parent))
+    outer = outer.parent;
+  if (outer === expr) return contextual;
+  return lowerer.checker.getContextualType(outer) ?? contextual;
+}
+
 export function lowerObjectLiteral(
   lowerer: Lowerer,
   expr: ts.ObjectLiteralExpression,
@@ -1141,6 +1178,8 @@ export function lowerObjectLiteral(
   // copyDataProperties of whichever arm runs) may still lower the whole
   // literal, and the fence's message fires where that declines.
   let deferredConditionalSpread: ts.SpreadAssignment | null = null;
+  /** The first `this` a method body reads (see the method fence below). */
+  let deferredThis: ts.Node | null = null;
   for (const prop of expr.properties.nodes) {
     if (ts.isSpreadAssignment(prop)) {
       // Supported shapes: FULL spreads of known record shapes read as
@@ -1201,8 +1240,14 @@ export function lowerObjectLiteral(
     // is dynamically bound (typed as the literal by tsc, so noImplicitThis
     // lets it through) and records don't model it; the generic
     // lexical-this walk would incorrectly capture an ENCLOSING method's
-    // `this`, so any `this` in the body is rejected up front.
-    if (ts.isMethodDeclaration(prop)) lowerer.rejectThisInObjectMethod(prop.body ?? prop);
+    // `this`. The refusal is DEFERRED to the checked-dynamic route below: a
+    // literal a receiver-dependent member made a checked-identity view
+    // builds there with the call's receiver as `this` (JavaScript's own
+    // rule), and only a literal that still builds as a record refuses.
+    if (ts.isMethodDeclaration(prop)) {
+      const receiver = thisInObjectMethod(prop.body ?? prop);
+      if (receiver !== null) deferredThis ??= receiver;
+    }
   }
 
   let tsType = lowerer.checker.getContextualType(expr) ?? lowerer.typeOf(expr);
@@ -1394,6 +1439,19 @@ export function lowerObjectLiteral(
       }
     }
   }
+  // A literal that flows into a checked-identity view holds what the
+  // declared type says its members hold, not what its own initializers
+  // would give them (view-literals.ts).
+  if (!exact && mapped?.kind === "record" && !isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    const target = viewTargetOf(lowerer, viewContextOf(lowerer, expr, tsType));
+    if (target !== null) {
+      const own = lowerer.shapes.get(mapped.shapeId);
+      // An accessor is a property of the dynamic object the view is.
+      if (own && shapeHasAccessorSlots(own))
+        return lowerDynObjectLiteral(lowerer, expr, undefined, false, true);
+      mapped = viewLiteralStorage(lowerer, target, mapped) ?? mapped;
+    }
+  }
   // The CJS EXPORT-TABLE literal in VALUE position (JS): importers reach
   // every member through alias plumbing and accessor lifts — the record
   // VALUE exists for the module's own reads (Object.keys, internal
@@ -1448,6 +1506,13 @@ export function lowerObjectLiteral(
       jsOpenObjectType(expr, mapped, lowerer.shapes, lowerer.unions).kind === "dyn")
   ) {
     return lowerDynObjectLiteral(lowerer, expr);
+  }
+  // A record's function field has no receiver, so a method that reads its own
+  // `this` cannot build here: the literal would bind the receiver of an
+  // enclosing method, or none. The checked-dynamic route above is the one
+  // representation that gives it one (SPEC 3b).
+  if (deferredThis !== null) {
+    lowerer.unsupported("SC1090", deferredThis, "references to 'this' in object literal methods");
   }
   if (deferredConditionalSpread) {
     // The checked-dynamic build copies whichever arm the conditional picks,
@@ -1602,7 +1667,7 @@ export function lowerObjectLiteral(
     if (accessorNames.size > 0) {
       const narrowed = shape.fields.filter((f) => !accessorNames.has(f.name));
       const narrowedId = lowerer.shapes.intern(
-        narrowed.map((f) => ({ name: f.name, type: f.type })),
+        narrowed.map((f) => ({ ...f })),
         false,
         shape.indexValue,
       );
@@ -1611,6 +1676,13 @@ export function lowerObjectLiteral(
     }
   }
   const fieldTypes = new Map(shape.fields.map((f) => [f.name, f.type]));
+  // The destination slot for absence purposes: the target shape's matching
+  // field carries the optional-dyn flag even when a promotion changed the
+  // slot's type.
+  const targetSlot = (name: string, type: IrType): { type: IrType; optional?: true } => {
+    const field = shape.fields.find((candidate) => candidate.name === name);
+    return field?.optional === true ? { type, optional: true } : { type };
+  };
   // File-scope JavaScript object bindings live in the checked-dynamic tree
   // to preserve open writes and identity. The checker can infer fields
   // from later writes; those fields must remain absent when the literal
@@ -1974,7 +2046,12 @@ export function lowerObjectLiteral(
     const split = (v: IrExpr): { value: IrExpr; present: IrExpr } => {
       if (v.kind === "fieldAbsent") {
         return {
-          value: lowerer.wrappedUndefined(v.type, v.loc)!,
+          // An optional checked-dynamic slot's absent marker has no union
+          // wrapper: its ordinary value is the checked-dynamic undefined.
+          value:
+            v.type.kind === "dyn"
+              ? dynUndefinedExpr(v.loc)
+              : lowerer.wrappedUndefined(v.type, v.loc)!,
           present: { kind: "boolLit", value: false, type: BOOL, loc: v.loc },
         };
       }
@@ -2008,7 +2085,8 @@ export function lowerObjectLiteral(
       then: ref,
       else_: {
         kind: "fieldAbsent",
-        unionId: (value.type as IrType & { kind: "union" }).unionId,
+        // An optional checked-dynamic slot's state carries no union.
+        ...(value.type.kind === "union" ? { unionId: value.type.unionId } : {}),
         type: value.type,
         loc: value.loc,
       },
@@ -2079,7 +2157,7 @@ export function lowerObjectLiteral(
           // An 'unknown' slot holds the checked-dynamic undefined for the
           // empty arm, the absent-property read the width copy uses too.
           const absent =
-            lowerer.absentFieldValue(fieldType, locOf(prop)) ??
+            lowerer.absentFieldValue(targetSlot(name, fieldType), locOf(prop)) ??
             (fieldType.kind === "dyn" ? dynUndefinedExpr(locOf(prop)) : null);
           if (!absent) {
             const conditionalDyn = conditionalFallback();
@@ -2324,7 +2402,8 @@ export function lowerObjectLiteral(
               loc: locOf(prop),
             });
             const canBeAbsent =
-              f.type.kind === "union" && lowerer.armTag(f.type.unionId, UNDEFINED_T) >= 0;
+              (f.type.kind === "union" && lowerer.armTag(f.type.unionId, UNDEFINED_T) >= 0) ||
+              (f.optional === true && f.type.kind === "dyn");
             if (typeEquals(f.type, targetType)) {
               thenVal = fRead();
               if (canBeAbsent) cond = fieldPresent();
@@ -2425,7 +2504,9 @@ export function lowerObjectLiteral(
             }
             const at = fields.findIndex((x) => x.name === f.name);
             const elseVal =
-              at >= 0 ? fields[at]!.value : lowerer.absentFieldValue(targetType, locOf(prop));
+              at >= 0
+                ? fields[at]!.value
+                : lowerer.absentFieldValue(targetSlot(f.name, targetType), locOf(prop));
             if (!elseVal) {
               if (canBeAbsent) {
                 // The FIELD itself can be missing from a present source:
@@ -2646,7 +2727,8 @@ export function lowerObjectLiteral(
         // absent one keeps the earlier contributor's value, or leaves the
         // target field absent.
         const canBeAbsent =
-          f.type.kind === "union" && lowerer.armTag(f.type.unionId, UNDEFINED_T) >= 0;
+          (f.type.kind === "union" && lowerer.armTag(f.type.unionId, UNDEFINED_T) >= 0) ||
+          (f.optional === true && f.type.kind === "dyn");
         if (canBeAbsent) {
           const present: IrExpr =
             obj.type.kind === "dyn"
@@ -2659,7 +2741,9 @@ export function lowerObjectLiteral(
                 }
               : lowerer.recordFieldPresent(obj, srcType.shapeId, f.name, locOf(prop));
           const otherwise =
-            at >= 0 ? fields[at]!.value : lowerer.absentFieldValue(targetType, locOf(prop));
+            at >= 0
+              ? fields[at]!.value
+              : lowerer.absentFieldValue(targetSlot(f.name, targetType), locOf(prop));
           if (otherwise) {
             value = {
               kind: "ternary",
@@ -2779,7 +2863,7 @@ export function lowerObjectLiteral(
             ts.isObjectLiteralExpression(init) ||
             ts.isConditionalExpression(init))
             ? lowerer.lowerExprExpecting(prop.initializer, fieldType)
-            : lowerer.lowerExpr(prop.initializer));
+            : lowerer.lowerAtSlot(prop.initializer, fieldType ?? shape.indexValue));
       } else if (ts.isShorthandPropertyAssignment(prop)) {
         value = lowerer.lowerShorthandValue(prop);
       } else if (ts.isMethodDeclaration(prop)) {
@@ -2869,7 +2953,7 @@ export function lowerObjectLiteral(
   if (droppedNames.size > 0) {
     const narrowed = shape.fields.filter((f) => !droppedNames.has(f.name));
     const narrowedId = lowerer.shapes.intern(
-      narrowed.map((f) => ({ name: f.name, type: f.type })),
+      narrowed.map((f) => ({ ...f })),
       false,
       shape.indexValue,
     );
@@ -2882,7 +2966,7 @@ export function lowerObjectLiteral(
       if (provided.has(f.name)) continue;
       const absentHandle: IrExpr | null = null;
       const absent =
-        lowerer.absentFieldValue(f.type, loc) ??
+        lowerer.absentFieldValue(f, loc) ??
         (f.type.kind === "dyn" ? dynUndefinedExpr(loc) : null) ??
         absentHandle;
       if (!absent) shapeMismatch(expr); // only optional and 'unknown' fields may be omitted
@@ -3521,19 +3605,14 @@ export function conditionalRecordSpreadOf(
   let e: ts.Expression = expr;
   while (ts.isParenthesizedExpression(e)) e = e.expression;
   if (!ts.isConditionalExpression(e)) return null;
-  const unwrap = (a: ts.Expression): ts.Expression => {
-    let x = a;
-    while (ts.isParenthesizedExpression(x)) x = x.expression;
-    return x;
-  };
   const isEmpty = (x: ts.Expression): boolean =>
     (ts.isObjectLiteralExpression(x) && x.properties.nodes.length === 0) ||
     x.kind === ts.SyntaxKind.NullKeyword ||
     (ts.isIdentifier(x) &&
       x.text === "undefined" &&
       (lowerer.typeOf(x).flags & ts.TypeFlags.Undefined) !== 0);
-  const whenTrue = unwrap(e.whenTrue);
-  const whenFalse = unwrap(e.whenFalse);
+  const whenTrue = withoutParentheses(e.whenTrue);
+  const whenFalse = withoutParentheses(e.whenFalse);
   const sourceIsTrue = isEmpty(whenFalse) && !isEmpty(whenTrue);
   if (!sourceIsTrue && !(isEmpty(whenTrue) && !isEmpty(whenFalse))) return null;
   const source = sourceIsTrue ? whenTrue : whenFalse;
@@ -3802,13 +3881,8 @@ export function conditionalSpreadOf(
   let e: ts.Expression = expr;
   while (ts.isParenthesizedExpression(e)) e = e.expression;
   if (!ts.isConditionalExpression(e)) return null;
-  const unwrap = (a: ts.Expression): ts.Expression => {
-    let x = a;
-    while (ts.isParenthesizedExpression(x)) x = x.expression;
-    return x;
-  };
-  const whenTrue = unwrap(e.whenTrue);
-  const whenFalse = unwrap(e.whenFalse);
+  const whenTrue = withoutParentheses(e.whenTrue);
+  const whenFalse = withoutParentheses(e.whenFalse);
   if (!ts.isObjectLiteralExpression(whenTrue) || !ts.isObjectLiteralExpression(whenFalse)) {
     return "unsupported";
   }
@@ -4052,7 +4126,7 @@ function lowerDeclaredSpreadMerge(
         kind: "recordLit",
         fields: shape.fields.map((f) => ({
           name: f.name,
-          value: lowerer.absentFieldValue(f.type, loc)!,
+          value: lowerer.absentFieldValue(f, loc)!,
         })),
         type,
         loc,
@@ -4353,6 +4427,9 @@ export function lowerShorthandValue(
   }
   const builtinValue = shorthandBuiltinValue(lowerer, prop);
   if (builtinValue) return builtinValue;
+  // A Node island's export (`{ compare }`): the value the long form
+  // `{ compare: compare }` reads.
+  if (isIslandImportBinding(lowerer, propName)) return lowerer.lowerExpr(propName);
   if (symbol) {
     if (lowerer.ctx.selfSymbol === symbol) {
       return { kind: "selfRef", type: lowerer.ctx.selfType!, loc };
@@ -4399,14 +4476,7 @@ export function lowerShorthandValue(
       return { kind: "closure", fnName: sig.name, captures: [], type: funcType, loc };
     }
     const generic = lowerer.genericFnsBySymbol.get(resolved);
-    if (generic?.implicitParams) return lowerer.lowerGenericFnValue(propName, generic);
-    if (generic) {
-      lowerer.unsupported(
-        "SC1090",
-        prop,
-        `generic functions as values (call '${propName.text}' directly)`,
-      );
-    }
+    if (generic) return lowerer.lowerGenericFnValue(propName, generic);
     // A program class name (`{ parse, TomlError }`, an imported class
     // included): the class object, exactly the long form `{ C: C }`.
     // Generic classes keep the identifier path's contextual pinning.
@@ -4426,6 +4496,9 @@ export function lowerShorthandValue(
     // A standard-library global (`{ Date }`): the value the long form
     // `{ Date: Date }` reads.
     if (lowerer.isStdlibSymbol(resolved)) return lowerer.lowerExpr(propName);
+    // An enum (`{ Level }`): its object, as the long form reads it.
+    const enumObject = lowerEnumObjectValue(lowerer, propName, resolved);
+    if (enumObject) return enumObject;
   }
   lowerer.rejectUnresolvedSymbol(
     symbol
@@ -4442,17 +4515,29 @@ export function lowerShorthandValue(
 /** Rejects the method's own receiver, including lexical captures in
  * arrows. Nested ordinary functions bind their own ambient receiver. */
 export function rejectThisInObjectMethod(lowerer: Lowerer, node: ts.Node): void {
+  const at = thisInObjectMethod(node);
+  if (at !== null) {
+    lowerer.unsupported("SC1090", at, "references to 'this' in object literal methods");
+  }
+}
+
+/** The first `this` a method body reads — its own receiver, including a
+ * lexical capture in an arrow, but not a nested ordinary function's, which
+ * binds its own ambient receiver. */
+export function thisInObjectMethod(node: ts.Node): ts.Node | null {
   if (
     ts.isFunctionExpression(node) ||
     ts.isFunctionDeclaration(node) ||
     ts.isMethodDeclaration(node) ||
     ts.isAccessor(node)
   )
-    return;
-  if (node.kind === ts.SyntaxKind.ThisKeyword) {
-    lowerer.unsupported("SC1090", node, "references to 'this' in object literal methods");
-  }
-  ts.forEachChild(node, (child) => lowerer.rejectThisInObjectMethod(child));
+    return null;
+  if (node.kind === ts.SyntaxKind.ThisKeyword) return node;
+  let found: ts.Node | null = null;
+  ts.forEachChild(node, (child) => {
+    if (found === null) found = thisInObjectMethod(child);
+  });
+  return found;
 }
 
 /** The accessor twin of rejectThisInObjectMethod: a get/set accessor body

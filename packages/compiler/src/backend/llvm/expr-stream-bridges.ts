@@ -625,6 +625,16 @@ export function streamTypedRefCommitAdapter(
   return `@${commit}`;
 }
 
+/** Whether `t` is a class rooted at Error. Such an instance has one
+ * checked-dynamic value, the one its to-dyn helper answers from the error
+ * identity cache (scr_dyn_from_error), wherever the instance is boxed: alone,
+ * as a union arm or as an element. A second capsule built around it would not
+ * be in that cache, and the `Error` check of a value would then rebuild a new
+ * error from the capsule's snapshot instead of answering the instance. */
+function errorClassType(host: LlvmEmitterContext, t: IrType): boolean {
+  return t.kind === "object" && host.shapeHost.isErrorClass(t.className);
+}
+
 export function liveDynUnionRefAdapter(
   host: LlvmEmitterContext,
   t: IrType & { kind: "union" },
@@ -636,21 +646,18 @@ export function liveDynUnionRefAdapter(
   if (!union) {
     throw new InternalCompilerError(`llvm emitter bug: live dyn ref of unknown union ${t.unionId}`);
   }
-  // Codec records box as their own handles, by reference, through toDynHelper.
-  const codecArm = (arm: IrType): boolean =>
-    textCodecRecordClass(arm, (id) => host.recordsById.get(id)) !== null;
+  // Codec records box as their own handles, by reference, through toDynHelper,
+  // and an Error-rooted class as its one checked-dynamic value.
+  const selfBoxedArm = (arm: IrType): boolean =>
+    arm.kind === "bytes" ||
+    textCodecRecordClass(arm, (id) => host.recordsById.get(id)) !== null ||
+    errorClassType(host, arm);
   const mutableArms = union.arms
     .map((arm, tag) => ({ arm, tag }))
     .filter(
-      ({ arm }) =>
-        arm.kind !== "bytes" &&
-        !codecArm(arm) &&
-        (streamTypedRefEligible(arm) || isDynTypedRefType(arm)),
+      ({ arm }) => !selfBoxedArm(arm) && (streamTypedRefEligible(arm) || isDynTypedRefType(arm)),
     );
-  if (
-    mutableArms.length === 0 &&
-    !union.arms.some((arm) => arm.kind === "bytes" || codecArm(arm))
-  ) {
+  if (mutableArms.length === 0 && !union.arms.some(selfBoxedArm)) {
     throw new InternalCompilerError(`llvm emitter bug: live dyn ref of immutable union ${key}`);
   }
 
@@ -826,10 +833,12 @@ export function streamTypedRefBoxValue(
     return boxed;
   }
   // A codec record boxes as its own handle, by reference (toDynHelper), as
-  // it does outside a live view.
+  // it does outside a live view, and an Error-rooted class as its one
+  // checked-dynamic value.
   if (
     t.kind === "bytes" ||
     textCodecRecordClass(t, (id) => host.recordsById.get(id)) !== null ||
+    errorClassType(host, t) ||
     (!streamTypedRefEligible(t) && !isDynTypedRefType(t))
   ) {
     const valueTy = host.llType(t);
@@ -1270,6 +1279,14 @@ export function streamTypedRefMaterializeAdapter(
             const set = B.newLabel("live.record.set");
             B.condBr(absent, skip, set);
             B.startBlock(set);
+          } else if (field.optional === true && field.type.kind === "dyn") {
+            // An absent optional checked-dynamic slot contributes no key.
+            const absent = B.tmp();
+            B.line(`${absent} = icmp eq ptr ${fieldValue}, ${host.dynAbsentRef()}`);
+            skip = B.newLabel("live.record.absent");
+            const set = B.newLabel("live.record.set");
+            B.condBr(absent, skip, set);
+            B.startBlock(set);
           }
           const boxed = host.streamTypedRefBoxValue(B, field.type, fieldValue);
           B.line(
@@ -1526,7 +1543,8 @@ function liveRecordOps(
     .map((field, position) => ({ field, position }))
     .filter(
       ({ field }) =>
-        field.type.kind === "union" && undefinedArmTag(field.type, host.unionsById) >= 0,
+        (field.type.kind === "union" && undefinedArmTag(field.type, host.unionsById) >= 0) ||
+        (field.optional === true && field.type.kind === "dyn"),
     );
   const hasLabels = optional.map(() => H.newLabel("live.record.has"));
   const always = H.newLabel("live.record.always");
@@ -1538,11 +1556,13 @@ function liveRecordOps(
   optional.forEach(({ field }, k) => {
     H.startBlock(hasLabels[k]!);
     const value = loadField(H, field);
-    const absent = host.fieldAbsentTestIn(
-      H,
-      value,
-      (field.type as IrType & { kind: "union" }).unionId,
-    );
+    let absent: string;
+    if (field.type.kind === "union") {
+      absent = host.fieldAbsentTestIn(H, value, field.type.unionId);
+    } else {
+      absent = H.tmp();
+      H.line(`${absent} = icmp eq ptr ${value}, ${host.dynAbsentRef()}`);
+    }
     const present = H.tmp();
     H.line(`${present} = xor i1 ${absent}, true`);
     H.terminate(`ret i1 ${present}`);
@@ -2032,9 +2052,19 @@ export function streamFromArrayAdapter(
   const unionRefArms =
     unionDef?.arms
       .map((arm, tag) => ({ arm, tag }))
-      .filter(({ arm }) => isRefCounted(arm) && arm.kind !== "dyn" && arm.kind !== "string") ?? [];
+      .filter(
+        ({ arm }) =>
+          isRefCounted(arm) &&
+          arm.kind !== "dyn" &&
+          arm.kind !== "string" &&
+          !errorClassType(host, arm),
+      ) ?? [];
   const typedRef =
-    isRefCounted(elem) && elem.kind !== "dyn" && elem.kind !== "string" && elem.kind !== "union";
+    isRefCounted(elem) &&
+    elem.kind !== "dyn" &&
+    elem.kind !== "string" &&
+    elem.kind !== "union" &&
+    !errorClassType(host, elem);
   let snapshot = `${sym}_materialize`;
   let value: string;
   if (elem.kind === "f64") {

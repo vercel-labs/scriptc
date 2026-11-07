@@ -103,7 +103,7 @@ const IMPLEMENTATION_SHIMS: ReadonlyMap<string, ImplementationShim> = new Map<
       mainFile: "source/index.js",
       typesFile: "source/index.d.ts",
       versions: new Map([[5, "chalk/v5.ts"]]),
-      sourceVersions: new Set([6]),
+      sourceVersions: new Set([4, 6]),
     },
   ],
   [

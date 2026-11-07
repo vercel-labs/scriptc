@@ -624,11 +624,16 @@ export function finalizeClassMethodValues(lowerer: Lowerer, functions: IrFunctio
     // drops the (empty) capture list, which requires a receiver.
     const name = `%method.receiverless:${target.name}`;
     const { classCaptures: _classCaptures, ...detached } = target;
+    // The copy owns its parameter and local records: later passes retype a
+    // function's locals in place (the jsval promotion), one function at a
+    // time.
     functions.push({
       ...detached,
       name,
-      params: target.params.slice(1),
-      locals: target.locals.filter((local) => local.id !== thisParam.localId),
+      params: target.params.slice(1).map((param) => ({ ...param })),
+      locals: target.locals
+        .filter((local) => local.id !== thisParam.localId)
+        .map((local) => ({ ...local })),
     });
     fn.body = transformStmtList(fn.body, {
       stmt: (stmt) => stmt,

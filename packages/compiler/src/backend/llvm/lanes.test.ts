@@ -148,14 +148,19 @@ test("a count's limit must be an exact integer in the element range", async () =
   expect(fn).toMatch(/fcmp oeq double [^,]+, %[A-Za-z_.][\w.]*/);
 });
 
-test("the target's vector width decides the lane count", async () => {
-  const v3 = await emittedLlvm("v3", SOURCE, { plan: "sum", targetCpu: "x86-64-v3" });
-  expect(body(v3, "sc_bf_sum")).toMatch(/load <8 x i16>, ptr [^,]+, align 1/);
-  const v4 = await emittedLlvm("v4", SOURCE, { plan: "sum", targetCpu: "x86-64-v4" });
-  expect(body(v4, "sc_bf_sum")).toMatch(/load <16 x i16>, ptr [^,]+, align 1/);
-  const v2 = await emittedLlvm("v2", SOURCE, { plan: "sum", targetCpu: "x86-64-v2" });
-  expect(body(v2, "sc_bf_sum")).toMatch(/load <4 x i16>, ptr [^,]+, align 1/);
-});
+// The frontend refuses an x86-64 target-cpu on a non-x86-64 target (SC3002),
+// so these level names only compile where the host is the target.
+test.skipIf(process.arch !== "x64")(
+  "the target's vector width decides the lane count",
+  async () => {
+    const v3 = await emittedLlvm("v3", SOURCE, { plan: "sum", targetCpu: "x86-64-v3" });
+    expect(body(v3, "sc_bf_sum")).toMatch(/load <8 x i16>, ptr [^,]+, align 1/);
+    const v4 = await emittedLlvm("v4", SOURCE, { plan: "sum", targetCpu: "x86-64-v4" });
+    expect(body(v4, "sc_bf_sum")).toMatch(/load <16 x i16>, ptr [^,]+, align 1/);
+    const v2 = await emittedLlvm("v2", SOURCE, { plan: "sum", targetCpu: "x86-64-v2" });
+    expect(body(v2, "sc_bf_sum")).toMatch(/load <4 x i16>, ptr [^,]+, align 1/);
+  },
+);
 
 test("a build without the plan flag emits no lane code and no toggle", async () => {
   const llvm = await emittedLlvm("plain", SOURCE);

@@ -169,8 +169,10 @@ export function objectIterOverIndexShape(
   let ivNarrows = false;
   // An index value into an `any` element (`Object.entries` of a union with
   // an array arm, which the checker types `[string, any][]`): each overflow
-  // value is handed back as the untyped value it is, by reference, so a
-  // write through an array or record read this way reaches the object's own.
+  // value takes the conversion any value takes into an untyped position
+  // (coerceToExpected), which hands a record or an array back by reference,
+  // also when it arrives through a union, so a write through one read this
+  // way reaches the object's own.
   let ivBoxes = false;
   // `T | undefined` values into a `(T | undefined)[]`, which stores T
   // elements (primitiveElement): each value is stored with its present
@@ -459,9 +461,8 @@ export function objectIterOverIndexShape(
               loc,
             }
           : ivBoxes
-            ? {
-                kind: "dynFrom",
-                value: {
+            ? lowerer.coerceToExpected(
+                {
                   kind: "recordKeyGet",
                   obj: rRef,
                   shapeId: argIr.shapeId,
@@ -470,10 +471,8 @@ export function objectIterOverIndexShape(
                   type: iv,
                   loc,
                 },
-                liveRef: true,
-                type: DYN,
-                loc,
-              }
+                DYN,
+              )
             : {
                 kind: "recordKeyGet",
                 obj: rRef,

@@ -53,3 +53,19 @@ function either(value: string[] | { a: number; b: string }): string {
   return Object.keys(value).join(",") + ":" + JSON.stringify(Object.entries(value));
 }
 console.log(either(["p", "q"]), either({ a: 1, b: "two" }));
+
+// Index signatures of primitives beside an array arm.
+function ent(value: string[] | { [key: string]: number }): [string, unknown][] {
+  return Object.entries(value);
+}
+function names(value: boolean[] | { [key: string]: string }): string[] {
+  return Object.keys(value);
+}
+function flags(value: number[] | { [key: string]: boolean | string }): string {
+  return Object.entries(value)
+    .map(([k, v]) => `${k}=${String(v)}`)
+    .join(",");
+}
+console.log(JSON.stringify(ent({ a: 1, b: 2 })), JSON.stringify(ent(["x", "y"])));
+console.log(JSON.stringify(names({ k: "v" })), JSON.stringify(names([true])));
+console.log(flags({ on: true, name: "n" }), flags([1, 2]));

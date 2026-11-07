@@ -2823,6 +2823,7 @@ export class LlEmitter {
       liveDynRefAdapter: (type) => this.liveDynRefAdapter(type),
       usesDynBuiltinStream: () => this.usesDynBuiltinStream,
       jsObjectModel: () => jsObjectModelFact(this.runtimeFeatures),
+      nodeIslands: () => this.runtimeFeatures.nodeIsland,
       liveDynUnionRefAdapter: (type) => this.liveDynUnionRefAdapter(type),
       declBoundary: () => this.mod.declBoundary === true,
       dynPromiseAdapter: (type) => this.dynPromiseAdapter(type),

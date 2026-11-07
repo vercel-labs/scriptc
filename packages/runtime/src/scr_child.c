@@ -24,6 +24,22 @@
 #include <math.h>
 #include <stdio.h>
 
+/* The Node island build (scr_child.h, "a child process a Node island
+ * made"): an entry point hands a handle whose `island` member is set to the
+ * island's table before it reads a native field. Every other build, and the
+ * Windows arm (islands are POSIX), compiles the guards away. */
+#if defined(SCR_NODE_ISLANDS) && !defined(_WIN32)
+#define SCR_CHILD_FOREIGN 1
+#define SCR_IF_ISLAND(handle, ...) \
+  do { \
+    if ((handle)->island != NULL) { __VA_ARGS__; } \
+  } while (0)
+#else
+#define SCR_IF_ISLAND(handle, ...) \
+  do { \
+  } while (0)
+#endif
+
 typedef struct ScrIpc ScrIpc;
 static ScrIpc *scr_ipc_new(ScrChildStream *reader, ScrChildWriter *writer);
 static ScrIpc *scr_ipc_retain(ScrIpc *ipc);
@@ -4331,6 +4347,9 @@ struct ScrChildStream {
    * pipe handles run theirs. */
   ScrAlsCtx *als;
   struct ScrChildStream *next; /* the service registry (+1) */
+#ifdef SCR_CHILD_FOREIGN
+  void *island; /* a Node island's stream: every entry point goes to scr_child_island_ops */
+#endif
 };
 
 struct ScrChildWriter {
@@ -4362,6 +4381,9 @@ struct ScrChildWriter {
   ScrAlsCtx *als;
   ScrAlsCtx *end_als;
   struct ScrChildWriter *next; /* the service registry (+1) */
+#ifdef SCR_CHILD_FOREIGN
+  void *island; /* a Node island's stream: every entry point goes to scr_child_island_ops */
+#endif
 };
 
 static SCR_TL ScrChildStream *scr_child_streams = NULL;
@@ -4420,7 +4442,42 @@ struct ScrChild {
    * a store): 'spawn', 'error', 'exit' and 'close' run in it. */
   ScrAlsCtx *als;
   struct ScrChild *next; /* the pending registry */
+#ifdef SCR_CHILD_FOREIGN
+  void *island; /* a Node island's child: every entry point goes to scr_child_island_ops */
+#endif
 };
+
+#ifdef SCR_CHILD_FOREIGN
+/* The handles of a child a Node island made: no pipe, no pid, in no
+ * registry. scr_node_island_child.c makes them and sets the table. */
+const ScrChildIslandOps *scr_child_island_ops = NULL;
+
+ScrChild *scr_child_island_new(void *island) {
+  ScrChild *c = calloc(1, sizeof *c);
+  if (!c) scr_trap("scriptc: out of memory\n");
+  c->rc = 1;
+  c->island = island;
+  return c;
+}
+
+ScrChildStream *scr_child_stream_island_new(void *island) {
+  ScrChildStream *s = calloc(1, sizeof *s);
+  if (!s) scr_trap("scriptc: out of memory\n");
+  s->rc = 1;
+  s->fd = -1;
+  s->island = island;
+  return s;
+}
+
+ScrChildWriter *scr_child_writer_island_new(void *island) {
+  ScrChildWriter *w = calloc(1, sizeof *w);
+  if (!w) scr_trap("scriptc: out of memory\n");
+  w->rc = 1;
+  w->fd = -1;
+  w->island = island;
+  return w;
+}
+#endif
 
 static SCR_TL ScrChild *scr_children = NULL; /* unsettled children (registry +1) */
 static SCR_TL ScrChild *scr_children_closing = NULL; /* exited, waiting for stdio EOF */
@@ -4605,6 +4662,7 @@ ScrChild *scr_child_retain(ScrChild *c) {
 void scr_child_release(ScrChild *c) {
   if (!c || c->rc == SIZE_MAX) return;
   if (--c->rc == 0) {
+    SCR_IF_ISLAND(c, scr_child_island_ops->drop(c->island));
     scr_child_drop_listeners(c); /* only reachable pre-settle via leaks */
     scr_str_release(c->err_msg);
     scr_str_release(c->exec_display);
@@ -4668,6 +4726,7 @@ static void scr_child_stream_drop_listeners(ScrChildStream *s) {
 void scr_child_stream_release(ScrChildStream *s) {
   if (!s || s->rc == SIZE_MAX) return;
   if (--s->rc == 0) {
+    SCR_IF_ISLAND(s, scr_child_island_ops->drop(s->island));
     scr_child_stream_drop_listeners(s); /* only reachable pre-'end' via leaks */
     if (s->fd >= 0) close(s->fd);
     scr_str_release(s->encoding);
@@ -4995,6 +5054,7 @@ static void scr_child_stream_arm(ScrChildStream *s) {
  * and never fire, the stdin rule. */
 void scr_child_stream_on_data(ScrChildStream *s, ScrClosure *cb /*moves*/,
                                ScrChildStreamDataFn fn, bool once) {
+  SCR_IF_ISLAND(s, scr_child_island_ops->on(s->island, SCR_CHILD_EV_DATA, cb, (void *)fn, once); return);
   if (s->eof || s->fd < 0) {
     scr_closure_release(cb);
     return;
@@ -5021,6 +5081,7 @@ void scr_child_stream_on_data(ScrChildStream *s, ScrClosure *cb /*moves*/,
 
 void scr_child_stream_on_data_str(ScrChildStream *s, ScrClosure *cb /*moves*/,
                                   ScrChildStreamDataStrFn fn, bool once) {
+  SCR_IF_ISLAND(s, scr_child_island_ops->on(s->island, SCR_CHILD_EV_DATA_STR, cb, (void *)fn, once); return);
   if (s->eof || s->fd < 0) {
     scr_closure_release(cb);
     return;
@@ -5042,6 +5103,7 @@ void scr_child_stream_on_data_str(ScrChildStream *s, ScrClosure *cb /*moves*/,
 }
 
 ScrChildStream *scr_child_stream_set_encoding(ScrChildStream *s, ScrStr *enc) {
+  SCR_IF_ISLAND(s, scr_child_island_ops->set_encoding(s->island, enc); return scr_child_stream_retain(s));
   scr_str_release(s->encoding);
   s->encoding = scr_str_retain(enc);
   s->dec_pending = 0;
@@ -5051,6 +5113,7 @@ ScrChildStream *scr_child_stream_set_encoding(ScrChildStream *s, ScrStr *enc) {
 /* stream.on/once("end", cb): fires once at EOF; alone it neither reads
  * nor keeps the loop alive (the stdin rule). */
 void scr_child_stream_on_end(ScrChildStream *s, ScrClosure *cb /*moves*/, bool once) {
+  SCR_IF_ISLAND(s, scr_child_island_ops->on(s->island, SCR_CHILD_EV_END, cb, NULL, once); return);
   (void)once; /* 'end' fires at most once; the flag changes nothing */
   if (s->eof || s->fd < 0) {
     scr_closure_release(cb);
@@ -5069,9 +5132,11 @@ void scr_child_stream_on_end(ScrChildStream *s, ScrClosure *cb /*moves*/, bool o
 /* child.stdout / child.stderr — +1 handle, or NULL when the slot was not
  * piped (Node's null there). */
 ScrChildStream *scr_child_stdout(ScrChild *c) {
+  SCR_IF_ISLAND(c, scr_child_island_ops->stdio(c));
   return c->out_stream ? scr_child_stream_retain(c->out_stream) : NULL;
 }
 ScrChildStream *scr_child_stderr(ScrChild *c) {
+  SCR_IF_ISLAND(c, scr_child_island_ops->stdio(c));
   return c->err_stream ? scr_child_stream_retain(c->err_stream) : NULL;
 }
 
@@ -5122,6 +5187,7 @@ ScrChildWriter *scr_child_writer_retain(ScrChildWriter *w) {
 void scr_child_writer_release(ScrChildWriter *w) {
   if (!w || w->rc == SIZE_MAX) return;
   if (--w->rc == 0) {
+    SCR_IF_ISLAND(w, scr_child_island_ops->drop(w->island));
     scr_child_writer_dearm(w);
     if (w->fd >= 0) close(w->fd);
     free(w->buf);
@@ -5375,6 +5441,7 @@ static bool scr_child_writer_write(ScrChildWriter *w, const void *data,
 }
 
 bool scr_child_writer_write_string(ScrChildWriter *w, const ScrStr *data) {
+  SCR_IF_ISLAND(w, return scr_child_island_ops->write(w->island, data, NULL));
   char *owned;
   const char *bytes = scr_str_utf8(data, &owned);
   bool r = scr_child_writer_write(w, bytes, data->len);
@@ -5383,11 +5450,13 @@ bool scr_child_writer_write_string(ScrChildWriter *w, const ScrStr *data) {
 }
 
 bool scr_child_writer_write_bytes(ScrChildWriter *w, const ScrBytes *data) {
+  SCR_IF_ISLAND(w, return scr_child_island_ops->write(w->island, NULL, data));
   SCR_BYTES_SNAPSHOT(data);
   return scr_child_writer_write(w, data->data, data->len);
 }
 
 void scr_child_writer_end(ScrChildWriter *w) {
+  SCR_IF_ISLAND(w, scr_child_island_ops->call(w->island, "end"); return);
   if (w->ending || w->finish_pending || w->finished || w->destroyed) return;
   scr_als_ctx_release(w->end_als);
   w->end_als = scr_als_capture();
@@ -5397,6 +5466,7 @@ void scr_child_writer_end(ScrChildWriter *w) {
 }
 
 void scr_child_writer_destroy(ScrChildWriter *w) {
+  SCR_IF_ISLAND(w, scr_child_island_ops->call(w->island, "destroy"); return);
   if (w->finished || (w->destroyed && !w->error_pending)) return;
   scr_child_writer_close(w);
   scr_child_writer_clear_queue(w);
@@ -5411,7 +5481,10 @@ void scr_child_writer_destroy(ScrChildWriter *w) {
   scr_child_writer_drop_listeners(w);
 }
 
-bool scr_child_writer_writable(ScrChildWriter *w) { return w->writable; }
+bool scr_child_writer_writable(ScrChildWriter *w) {
+  SCR_IF_ISLAND(w, return scr_child_island_ops->boolean(w->island, SCR_CHILD_PROP_WRITABLE));
+  return w->writable;
+}
 
 static void scr_child_writer_add_zero(ScrChildStreamEndL **ls, size_t *n,
                                       size_t *cap, ScrClosure *cb, bool once) {
@@ -5426,6 +5499,7 @@ static void scr_child_writer_add_zero(ScrChildStreamEndL **ls, size_t *n,
 
 void scr_child_writer_on_drain(ScrChildWriter *w, ScrClosure *cb /*moves*/,
                                bool once) {
+  SCR_IF_ISLAND(w, scr_child_island_ops->on(w->island, SCR_CHILD_EV_DRAIN, cb, NULL, once); return);
   if (w->finished || (w->destroyed && !w->drain_pending)) {
     scr_closure_release(cb);
     return;
@@ -5435,6 +5509,7 @@ void scr_child_writer_on_drain(ScrChildWriter *w, ScrClosure *cb /*moves*/,
 
 void scr_child_writer_on_finish(ScrChildWriter *w, ScrClosure *cb /*moves*/,
                                 bool once) {
+  SCR_IF_ISLAND(w, scr_child_island_ops->on(w->island, SCR_CHILD_EV_FINISH, cb, NULL, once); return);
   if (w->finished || (w->destroyed && !w->finish_pending)) {
     scr_closure_release(cb);
     return;
@@ -5444,6 +5519,7 @@ void scr_child_writer_on_finish(ScrChildWriter *w, ScrClosure *cb /*moves*/,
 
 void scr_child_writer_on_error(ScrChildWriter *w, ScrClosure *cb /*moves*/,
                                ScrChildErrFn fn, bool once) {
+  SCR_IF_ISLAND(w, scr_child_island_ops->on(w->island, SCR_CHILD_EV_WRITE_ERROR, cb, (void *)fn, once); return);
   (void)once; /* a writer emits at most one terminal error */
   if ((w->destroyed && !w->finished && !w->error_pending) ||
       (w->err_msg != NULL && !w->error_pending)) {
@@ -5625,6 +5701,7 @@ static void scr_child_writer_child_settled(ScrChildWriter *w) {
 }
 
 ScrChildWriter *scr_child_stdin(ScrChild *c) {
+  SCR_IF_ISLAND(c, scr_child_island_ops->stdio(c));
   return c->in_stream ? scr_child_writer_retain(c->in_stream) : NULL;
 }
 
@@ -5919,27 +5996,42 @@ ScrChild *scr_exec_file(ScrStr *cmd, ScrArr *args, ScrClosure *cb,
 /* ── the lifecycle members (child.pid/exitCode/killed/kill/unref) ──────── */
 
 /* child.pid — undefined exactly when the spawn failed (Node's shape). */
-bool scr_child_has_pid(ScrChild *c) { return c->state != SCR_CHILD_SPAWN_FAILED; }
-double scr_child_pid(ScrChild *c) { return (double)c->pid; }
+bool scr_child_has_pid(ScrChild *c) {
+  SCR_IF_ISLAND(c, double pid; return scr_child_island_ops->number(c->island, SCR_CHILD_PROP_PID, &pid));
+  return c->state != SCR_CHILD_SPAWN_FAILED;
+}
+double scr_child_pid(ScrChild *c) {
+  SCR_IF_ISLAND(c, double pid = 0; scr_child_island_ops->number(c->island, SCR_CHILD_PROP_PID, &pid); return pid);
+  return (double)c->pid;
+}
 
 /* child.exitCode — null while running and for a signal death; the exit
  * code after a normal exit; -errno once a spawn failure SETTLED (Node
  * flips it when the "error" event fires — before that it reads null). */
 bool scr_child_has_exit_code(ScrChild *c) {
+  SCR_IF_ISLAND(c, double code; return scr_child_island_ops->number(c->island, SCR_CHILD_PROP_EXIT_CODE, &code));
   if (c->state == SCR_CHILD_EXITED) return c->has_code;
   return c->state == SCR_CHILD_SPAWN_FAILED && c->settled;
 }
 double scr_child_exit_code(ScrChild *c) {
+  SCR_IF_ISLAND(c, double code = 0; scr_child_island_ops->number(c->island, SCR_CHILD_PROP_EXIT_CODE, &code);
+                return code);
   if (c->state == SCR_CHILD_SPAWN_FAILED) return -(double)c->spawn_errno;
   return c->code;
 }
 
-bool scr_child_killed(ScrChild *c) { return c->killed; }
+bool scr_child_killed(ScrChild *c) {
+  SCR_IF_ISLAND(c, return scr_child_island_ops->boolean(c->island, SCR_CHILD_PROP_KILLED));
+  return c->killed;
+}
 
 ScrStr *scr_child_spawnfile(ScrChild *c) {
+  SCR_IF_ISLAND(c, ScrStr *file = scr_child_island_ops->string(c->island, SCR_CHILD_PROP_SPAWNFILE);
+                return file ? file : scr_str_new("", 0));
   return c->spawnfile ? scr_str_retain(c->spawnfile) : scr_str_new("", 0);
 }
 ScrArr *scr_child_spawnargs(ScrChild *c) {
+  SCR_IF_ISLAND(c, return scr_child_island_ops->spawnargs(c->island));
   return c->spawnargs ? scr_arr_retain(c->spawnargs) : scr_arr_new(SCR_ELEM_STR, 0);
 }
 
@@ -5962,6 +6054,7 @@ static bool scr_child_kill_signo(ScrChild *c, int signo) {
  * (scr_signal_from_name; unknown names throw the ERR_UNKNOWN_SIGNAL
  * TypeError BEFORE the handle check, like Node). */
 bool scr_child_kill(ScrChild *c, const ScrStr *signal) {
+  SCR_IF_ISLAND(c, return scr_child_island_ops->kill(c->island, signal, 0));
   int signo = scr_signal_from_name(signal);
   if (signo < 0) {
     size_t cap = 16 + signal->len + 1;
@@ -5977,6 +6070,7 @@ bool scr_child_kill(ScrChild *c, const ScrStr *signal) {
 
 /* child.kill(number) — the numeric form passes through (0 probes). */
 bool scr_child_kill_num(ScrChild *c, double signum) {
+  SCR_IF_ISLAND(c, return scr_child_island_ops->kill(c->island, NULL, signum));
   return scr_child_kill_signo(c, (int)signum);
 }
 
@@ -5986,6 +6080,7 @@ bool scr_child_kill_num(ScrChild *c, double signum) {
  * never reaps is left to the OS at process exit (init reparents it — no
  * zombie outlives the parent). */
 void scr_child_unref(ScrChild *c) {
+  SCR_IF_ISLAND(c, scr_child_island_ops->call(c->island, "unref"); return);
   if (c->reffed) {
     c->reffed = false;
     scr_children_reffed_n--; /* settle/teardown clear reffed first */
@@ -6067,6 +6162,7 @@ void scr_children_teardown(void) {
 }
 
 void scr_child_on_exit(ScrChild *c, ScrClosure *cb /*moves*/, ScrChildExitFn fn) {
+  SCR_IF_ISLAND(c, scr_child_island_ops->on(c->island, SCR_CHILD_EV_EXIT, cb, (void *)fn, false); return);
   if (c->settled) {
     scr_closure_release(cb); /* after the terminal event: never fires */
     return;
@@ -6082,6 +6178,7 @@ void scr_child_on_exit(ScrChild *c, ScrClosure *cb /*moves*/, ScrChildExitFn fn)
 }
 
 void scr_child_on_close(ScrChild *c, ScrClosure *cb /*moves*/, ScrChildExitFn fn) {
+  SCR_IF_ISLAND(c, scr_child_island_ops->on(c->island, SCR_CHILD_EV_CLOSE, cb, (void *)fn, false); return);
   if (c->close_done) {
     scr_closure_release(cb);
     return;
@@ -6130,6 +6227,7 @@ static ScrError *scr_child_spawn_error(ScrChild *c) {
 void scr_child_error_event_install(void) { scr_child_spawn_error_hook = &scr_child_spawn_error; }
 
 void scr_child_on_error(ScrChild *c, ScrClosure *cb /*moves*/, ScrChildErrFn fn) {
+  SCR_IF_ISLAND(c, scr_child_island_ops->on(c->island, SCR_CHILD_EV_ERROR, cb, (void *)fn, false); return);
   if (c->settled) {
     scr_closure_release(cb);
     return;
@@ -6778,6 +6876,7 @@ static void scr_child_drop_spawn_listeners(ScrChild *c) {
 }
 
 void scr_child_ref(ScrChild *c) {
+  SCR_IF_ISLAND(c, scr_child_island_ops->call(c->island, "ref"); return);
   if (!c->settled && !c->reffed) {
     c->reffed = true;
     scr_children_reffed_n++;
@@ -6785,6 +6884,7 @@ void scr_child_ref(ScrChild *c) {
 }
 
 void scr_child_on_spawn(ScrChild *c, ScrClosure *cb) {
+  SCR_IF_ISLAND(c, scr_child_island_ops->on(c->island, SCR_CHILD_EV_SPAWN, cb, NULL, false); return);
   if (c->spawn_done || c->settled) { scr_closure_release(cb); return; }
   if (c->n_spawn == c->cap_spawn) {
     c->cap_spawn = c->cap_spawn ? c->cap_spawn * 2 : 2;
@@ -7691,24 +7791,35 @@ double scr_process_fork_target(double target_count) {
 }
 
 /* The child was created with an IPC channel; it keeps it until it is freed. */
-bool scr_child_ipc_present(ScrChild *c) { return c->ipc != NULL; }
+bool scr_child_ipc_present(ScrChild *c) {
+  SCR_IF_ISLAND(c, return scr_child_island_ops->boolean(c->island, SCR_CHILD_PROP_CHANNEL));
+  return c->ipc != NULL;
+}
 
 bool scr_child_ipc_connected(ScrChild *c) {
+  SCR_IF_ISLAND(c, return scr_child_island_ops->boolean(c->island, SCR_CHILD_PROP_CONNECTED));
   return c->ipc != NULL && c->ipc->connected;
 }
 bool scr_child_ipc_send(ScrChild *c, ScrStr *json) {
+  SCR_IF_ISLAND(c, return scr_child_island_ops->send(c->island, json, NULL, NULL));
   return scr_ipc_send(c->ipc, json, NULL, NULL);
 }
 bool scr_child_ipc_send_cb(ScrChild *c, ScrStr *json, ScrClosure *cb,
                            ScrIpcSendFn fn) {
+  SCR_IF_ISLAND(c, return scr_child_island_ops->send(c->island, json, cb, fn));
   return scr_ipc_send(c->ipc, json, cb, fn);
 }
-void scr_child_ipc_disconnect(ScrChild *c) { scr_ipc_disconnect(c->ipc); }
+void scr_child_ipc_disconnect(ScrChild *c) {
+  SCR_IF_ISLAND(c, scr_child_island_ops->call(c->island, "disconnect"); return);
+  scr_ipc_disconnect(c->ipc);
+}
 void scr_child_ipc_on_message(ScrChild *c, ScrClosure *cb,
                               ScrIpcMessageFn fn, bool once) {
+  SCR_IF_ISLAND(c, scr_child_island_ops->on(c->island, SCR_CHILD_EV_MESSAGE, cb, (void *)fn, once); return);
   scr_ipc_add_message(c->ipc, cb, fn, once);
 }
 void scr_child_ipc_on_disconnect(ScrChild *c, ScrClosure *cb, bool once) {
+  SCR_IF_ISLAND(c, scr_child_island_ops->on(c->island, SCR_CHILD_EV_DISCONNECT, cb, NULL, once); return);
   scr_ipc_add_disconnect(c->ipc, cb, once);
 }
 
@@ -7868,6 +7979,9 @@ static void scr_child_bridge_write_taken(ScrClosure *cb, ScrStr *message) {
 
 static void scr_child_bridge_write(ScrClosure *cb, ScrStream *stream, ScrBytes *chunk) {
   ScrChildWriter *writer = scr_box_get_ref(cb->caps[0]);
+  SCR_IF_ISLAND(writer,
+                scr_child_island_ops->bridge_write(writer->island, stream, chunk, scr_child_stream_ops);
+                scr_child_writer_release(writer); return);
   scr_child_writer_write_bytes(writer, chunk);
   bool pending = scr_child_writer_queued(writer) > 0;
 #ifdef _WIN32
@@ -7895,6 +8009,8 @@ static void scr_child_bridge_write(ScrClosure *cb, ScrStream *stream, ScrBytes *
 }
 static void scr_child_bridge_final(ScrClosure *cb, ScrStream *stream) {
   ScrChildWriter *writer = scr_box_get_ref(cb->caps[0]);
+  SCR_IF_ISLAND(writer, scr_child_island_ops->bridge_final(writer->island, stream, scr_child_stream_ops);
+                scr_child_writer_release(writer); return);
   scr_child_writer_on_error(writer,
       scr_child_bridge_operation(stream, writer, (void *)scr_child_bridge_final_error),
       scr_child_bridge_final_error, true);
@@ -8058,6 +8174,7 @@ static ScrDyn *scr_child_dyn_invoke(
 
 static ScrDyn *scr_child_dyn_get(void *h, const char *key, size_t key_len) {
   ScrChild *child = (ScrChild *)h;
+  SCR_IF_ISLAND(child, scr_child_island_ops->stdio(child));
   if (key_len == 6 && !memcmp(key, "stdout", 6)) return scr_child_bridge_readable(child->out_stream, &child->out_dyn);
   if (key_len == 6 && !memcmp(key, "stderr", 6)) return scr_child_bridge_readable(child->err_stream, &child->err_dyn);
   if (key_len == 5 && !memcmp(key, "stdin", 5)) return scr_child_bridge_writable(child->in_stream, &child->in_dyn);
@@ -8121,6 +8238,7 @@ static void scr_child_loop_install(void) {
 }
 
 void scr_child_on_dyn(ScrChild *child, ScrStr *event, ScrDyn *listener) {
+  SCR_IF_ISLAND(child, scr_child_island_ops->on_dyn(child->island, event, listener); return);
   scr_child_dyn_install();
   ScrDyn *self = scr_dyn_new_handle(child, SCR_DYNH_CHILD);
   ScrDyn *name = scr_dyn_new_str(event);

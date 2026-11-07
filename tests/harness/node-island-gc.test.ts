@@ -127,6 +127,60 @@ describe.skipIf(skip)("Node island cross-heap cycles", () => {
     expect(major).toBeLessThanOrEqual(3);
   }, 300_000);
 
+  test("child processes an island started and typed code used are collected with their listeners", async () => {
+    // Each child is adopted into a ChildProcess slot and its listeners
+    // capture it (tests/fixtures/node-island/gc-children.ts): the island's
+    // ChildProcess, the listener functions and the native child of every
+    // child that closed are freed, so what stays alive does not depend on
+    // how many came and went.
+    const dir = join(outDir, "gc-children");
+    mkdirSync(dir, { recursive: true });
+    const result = await compile(join(fixtures, "gc-children.ts"), {
+      outPath: join(dir, "gc-children"),
+      outDir: dir,
+      sanitize,
+    });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const children = async (n: number): Promise<Run> => {
+      const { stdout, stderr } = await execFileAsync(result.binaryPath, [String(n)], {
+        cwd: fixtures,
+        env: { ...process.env, SCRIPTC_NODE_ISLANDS_TRACE: "gc" },
+        encoding: "utf8",
+        maxBuffer: 64 * 1024 * 1024,
+      });
+      expect(stderr).not.toMatch(/used after V8 collected|AddressSanitizer|LeakSanitizer/);
+      const totals: Record<string, number> = {};
+      const line = /\[node-islands\] gc totals: (.*)/.exec(stderr);
+      expect(line).not.toBeNull();
+      for (const m of line![1]!.matchAll(/([a-z ]+?) (\d+(?:\.\d+)?)(?: ms)?(?:,|$)/g))
+        totals[m[1]!.trim()] = Number(m[2]);
+      return { stdout, stderr, totals, rss: Number(/peak rss (\d+) KiB/.exec(stderr)?.[1]) };
+    };
+    const [few, many] = sanitize ? [200, 1200] : [400, 4000];
+    const small = await children(few);
+    const large = await children(many);
+    const expected = (n: number): string => {
+      let bytes = 0;
+      let codes = 0;
+      for (let i = 0; i < n; i++) {
+        bytes += String(i).length + 1;
+        codes += 2 * (i % 3);
+      }
+      return `closed ${n} bytes ${bytes} codes ${codes} kept 0\n`;
+    };
+    expect(small.stdout).toBe(expected(few));
+    expect(large.stdout).toBe(expected(many));
+    // What the last collection left alive is bounded by what one batch of
+    // children holds, not by the number of children.
+    for (const key of ["held exports", "held handles", "representatives", "import entries"]) {
+      expect(large.totals[key], key).toBeLessThan(small.totals[key]! + 400);
+      expect(large.totals[key], key).toBeLessThan(2000);
+    }
+    expect(large.totals["freed imports"]).toBeGreaterThan(many);
+    if (!sanitize) expect(large.rss).toBeLessThan(small.rss * 1.5 + 32 * 1024);
+  }, 900_000);
+
   test("a native object the program keeps keeps its identity in island weak maps", async () => {
     // A typed object crosses in a capsule the export table alone holds;
     // the program holds the object itself.

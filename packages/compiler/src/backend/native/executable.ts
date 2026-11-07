@@ -483,6 +483,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     "scr_node_island_export.c",
     "scr_node_island_boot.c",
     "scr_node_island_gc.c",
+    // A child process an island made, in a native ChildProcess slot: named
+    // only by the conversions of a program that also uses child_process.
+    "scr_node_island_child.c",
   ),
   // Readable.fromWeb reads a web ReadableStream through its reader.
   unit((u) => u.nativeFetch && u.opts.stream, "scr_stream_from_web.c"),

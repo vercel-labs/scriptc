@@ -17,8 +17,14 @@
  * null for a normal exit, while the child runs, and after a spawn
  * failure). The name is the runtime's static signal spelling retained
  * into a fresh +1 ScrStr. */
-bool scr_child_has_signal_code(ScrChild *c) { return c->exit_signal != NULL; }
+bool scr_child_has_signal_code(ScrChild *c) {
+  SCR_IF_ISLAND(c, ScrStr *name = scr_child_island_ops->string(c->island, SCR_CHILD_PROP_SIGNAL_CODE);
+                bool has = name != NULL; scr_str_release(name); return has);
+  return c->exit_signal != NULL;
+}
 ScrStr *scr_child_signal_code(ScrChild *c) {
+  SCR_IF_ISLAND(c, ScrStr *name = scr_child_island_ops->string(c->island, SCR_CHILD_PROP_SIGNAL_CODE);
+                return name ? name : scr_str_new("", 0));
   return scr_str_new(c->exit_signal, strlen(c->exit_signal));
 }
 
@@ -47,6 +53,7 @@ ScrStr *scr_child_signal_code(ScrChild *c) {
  * and Node-exact. The 'spawn' emit detaches its array before invoking its
  * listeners, so removal during it already finds an empty registry. */
 void scr_child_off_spawn(ScrChild *c, ScrClosure *cb) {
+  SCR_IF_ISLAND(c, scr_child_island_ops->off(c->island, SCR_CHILD_EV_SPAWN, cb); return);
   for (size_t i = c->n_spawn; i > 0; i--) {
     if (!scr_closure_identity_equal(c->spawn_cbs[i - 1], cb)) continue;
     scr_closure_release(c->spawn_cbs[i - 1]);
@@ -57,6 +64,7 @@ void scr_child_off_spawn(ScrChild *c, ScrClosure *cb) {
 }
 
 void scr_child_off_exit(ScrChild *c, ScrClosure *cb) {
+  SCR_IF_ISLAND(c, scr_child_island_ops->off(c->island, SCR_CHILD_EV_EXIT, cb); return);
   if (c->settled) return; /* the 'exit' emit is in flight (or done) */
   for (size_t i = c->n_exit; i > 0; i--) {
     if (!scr_closure_identity_equal(c->exit_cbs[i - 1].cb, cb)) continue;
@@ -68,6 +76,7 @@ void scr_child_off_exit(ScrChild *c, ScrClosure *cb) {
 }
 
 void scr_child_off_close(ScrChild *c, ScrClosure *cb) {
+  SCR_IF_ISLAND(c, scr_child_island_ops->off(c->island, SCR_CHILD_EV_CLOSE, cb); return);
   if (c->close_done) return; /* the 'close' emit is in flight (or done) */
   for (size_t i = c->n_close; i > 0; i--) {
     if (!scr_closure_identity_equal(c->close_cbs[i - 1].cb, cb)) continue;
@@ -79,6 +88,7 @@ void scr_child_off_close(ScrChild *c, ScrClosure *cb) {
 }
 
 void scr_child_off_error(ScrChild *c, ScrClosure *cb) {
+  SCR_IF_ISLAND(c, scr_child_island_ops->off(c->island, SCR_CHILD_EV_ERROR, cb); return);
   if (c->settled) return; /* the 'error' emit is in flight (or done) */
   for (size_t i = c->n_err; i > 0; i--) {
     if (!scr_closure_identity_equal(c->err_cbs[i - 1].cb, cb)) continue;

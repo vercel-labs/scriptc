@@ -274,6 +274,10 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_node_island_export.c", "nodeIsland"],
   ["scr_node_island_boot.c", "nodeIsland"],
   ["scr_node_island_gc.c", "nodeIsland"],
+  // A child process an island made, in a native ChildProcess slot: named only
+  // by the conversions of a program that has both islands and child_process,
+  // so every other program with islands drops all of it at the link.
+  ["scr_node_island_child.c", "nodeIsland"],
   ["scr_stream_from_web.c", all("stream", "nativeFetch")],
   // The dynamic global object's answer for the Node globals the native runtime
   // does not implement (host-globals.ts): the compiler hands over its derived
@@ -658,6 +662,27 @@ export function variantsFor(source) {
       id: "cp-options-err-fields",
       when: { childOptionExt: true, childErrorFields: true },
       defines: ["SCR_CHILD_CP_OPTIONS", "SCR_CHILD_ERR_FIELDS"],
+    });
+    // A program with Node islands can hold a child process an island made in
+    // a ChildProcess slot (scr_node_island_child.c): in the SCR_NODE_ISLANDS
+    // build every entry point hands such a child to the island's object.
+    // Every other program keeps the builds above, byte for byte. The selector
+    // takes the variant with the most conditions, so each build above has its
+    // counterpart.
+    for (const { id, when, defines } of variants.slice()) {
+      variants.push({
+        id: id === "default" ? "node-island" : `${id}-node-island`,
+        when: { ...when, nodeIsland: true },
+        defines: [...defines, "SCR_NODE_ISLANDS"],
+      });
+    }
+  }
+  // The listener removal and signalCode entries of the same children.
+  if (source === "scr_child_lifecycle.c") {
+    variants.push({
+      id: "node-island",
+      when: { nodeIsland: true },
+      defines: ["SCR_NODE_ISLANDS"],
     });
   }
   // A static executable cannot load NSS modules, so the os unit's passwd

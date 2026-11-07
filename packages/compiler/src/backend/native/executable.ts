@@ -8,6 +8,7 @@ import { chmod, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promise
 import { availableParallelism, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import {
+  executableHardeningLinkerArgs,
   executableOptimizationLinkerArgs,
   executableStripLinkerArgs,
   windowsSubsystemLinkerArgs,
@@ -629,7 +630,8 @@ export async function compileCInternal(
   );
   const executableLinkFlags = [
     ...executableSectionFlags.link,
-    ...executableOptimizationLinkerArgs(targetPlatform(driver), optimization),
+    ...executableHardeningLinkerArgs(targetPlatform(driver), isMuslTarget(driver)),
+    ...executableOptimizationLinkerArgs(targetPlatform(driver), optimization, isMuslTarget(driver)),
     ...executableStripLinkerArgs(targetPlatform(driver), opts.strip ?? false),
     ...windowsSubsystemArgs,
   ];

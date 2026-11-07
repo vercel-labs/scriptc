@@ -18,6 +18,15 @@ function sliced<T>(xs: readonly T[]): T[] {
   return xs.slice();
 }
 
+// The array sits in a field of the argument and of the result.
+function idsOf<T, U>(box: { items: T[] }, f: (v: T) => U): U[] {
+  return box.items.map(f);
+}
+
+function split<T>(xs: readonly T[]): { head: T[]; tail: T[] } {
+  return { head: xs.slice(0, 1), tail: [...xs.slice(1)] };
+}
+
 function gather<T>(xs: readonly T[], into: T[]): T[] {
   into.push(...xs);
   const [, ...rest] = xs;
@@ -88,7 +97,16 @@ const listed: string[] = [];
 for (const id of ids) listed.push(id === undefined ? "-" : id);
 console.log(ids.length, listed.join(","));
 
+const boxed: string[] = idsOf({ items: parts }, (p) => p.id);
+const fromBox: string[] = [];
+for (const id of boxed) fromBox.push(id === undefined ? "-" : id);
+console.log(boxed.length, 0 in boxed, fromBox.join(","));
+const halves = split(parts);
+console.log(halves.head.length, 0 in halves.head, loop(halves.head), visit(halves.head));
+console.log(halves.tail.length, 0 in halves.tail, loop(halves.tail), visit(halves.tail));
+
 // Dense arrays through the same functions.
 const dense: Part[] = [{ id: "x" }, { id: "y" }];
 console.log(loop(clone(dense)), visit(sliced(dense)), mapAll(dense, show).join(","));
 console.log(visit(new Bin(dense).copy()), new Bin(dense).mapped(show).join(","));
+console.log(idsOf({ items: dense }, show).join(","), visit(split(dense).tail));

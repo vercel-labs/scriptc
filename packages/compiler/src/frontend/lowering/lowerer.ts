@@ -9211,28 +9211,53 @@ export class Lowerer {
       }
       return keys;
     };
-    // Calls by whether their callee is generic: a function, method or
-    // constructor whose declaration, or a declaration around it (a function,
-    // a class, an interface, a type alias), has type parameters. Such a body
-    // is judged without its instances' element keys.
-    const genericCallees = new Map<ts.CallExpression | ts.NewExpression, boolean>();
-    const declaresTypeParameters = (declaration: ts.Node): boolean => {
-      const own = (node: ts.Node): boolean =>
-        (ts.isFunctionLike(node) ||
-          ts.isClassDeclaration(node) ||
-          ts.isClassExpression(node) ||
-          ts.isInterfaceDeclaration(node) ||
-          ts.isTypeAliasDeclaration(node)) &&
-        (node.typeParameters?.nodes.length ?? 0) > 0;
-      if (
-        ts.isVariableDeclaration(declaration) &&
-        declaration.initializer &&
-        own(peel(declaration.initializer))
-      )
-        return true;
-      for (let node: ts.Node | undefined = declaration; node; node = node.parent)
-        if (own(node)) return true;
-      return false;
+    // A generic callee: a function, method or constructor whose declaration,
+    // or a declaration around it (a function, a class, an interface, a type
+    // alias), has type parameters. Such a body is judged without its
+    // instances' element keys. The slots say which declared parameter types,
+    // and whether the declared result, mention a type parameter: a record or
+    // class instance passed or returned there can hold generic arrays.
+    type GenericSlots = { params: readonly boolean[] | null; result: boolean };
+    const genericCallees = new Map<ts.CallExpression | ts.NewExpression, GenericSlots | null>();
+    const genericSlots = (symbol: ts.Symbol): GenericSlots | null => {
+      for (const declaration of symbol.declarations ?? []) {
+        // The standard library's generic methods are judged by what they do
+        // (ArrayElementStates), not by this rule.
+        if (this.isStdlibFile(ts.getSourceFileOfNode(declaration))) continue;
+        const value =
+          ts.isVariableDeclaration(declaration) && declaration.initializer
+            ? peel(declaration.initializer)
+            : declaration;
+        const names = new Set<string>();
+        for (let node: ts.Node | undefined = value; node; node = node.parent) {
+          if (
+            ts.isFunctionLike(node) ||
+            ts.isClassDeclaration(node) ||
+            ts.isClassExpression(node) ||
+            ts.isInterfaceDeclaration(node) ||
+            ts.isTypeAliasDeclaration(node)
+          )
+            for (const parameter of node.typeParameters?.nodes ?? [])
+              names.add(parameter.name.text);
+        }
+        if (names.size === 0) continue;
+        const mentions = (type: ts.Node | undefined): boolean => {
+          if (type === undefined) return true;
+          let found = false;
+          ts.walkPreorder(type, (node) => {
+            if (ts.isIdentifier(node) && names.has(node.text)) found = true;
+            return undefined;
+          });
+          return found;
+        };
+        return ts.isFunctionLike(value)
+          ? {
+              params: value.parameters.nodes.map((parameter) => mentions(parameter.type)),
+              result: mentions(value.type),
+            }
+          : { params: null, result: true };
+      }
+      return null;
     };
     const mappedArrayHolder = (node: ts.Node): IrType | null =>
       panicSafe(() => {
@@ -9244,25 +9269,41 @@ export class Lowerer {
         }
       }, null);
     // Element keys of the native arrays a value of `type` is or directly
-    // holds: through arrays, unions, promises, tuples, and the parameters
-    // and result of a function value. Records and class instances are not
-    // entered: a generic body reads their fields by their declared types.
-    const reachableElementKeys = (type: IrType | null, keys: Set<string>, depth = 0): void => {
+    // holds: through arrays, unions, promises, tuples, maps, sets, and the
+    // parameters and result of a function value. The fields of a record or
+    // a class instance are entered `fields` levels deep: a generic body
+    // reads them by their declared types, which are generic only where the
+    // callee's own declaration says so.
+    const reachableElementKeys = (
+      type: IrType | null,
+      keys: Set<string>,
+      fields: number,
+      depth = 0,
+    ): void => {
       if (!type || depth > 4) return;
+      const enter = (inner: IrType | null, levels = fields): void =>
+        reachableElementKeys(inner, keys, levels, depth + 1);
       if (type.kind === "array") {
         if (type.elem.kind !== "dyn") keys.add(typeKey(type.elem));
-        reachableElementKeys(type.elem, keys, depth + 1);
+        enter(type.elem);
       } else if (type.kind === "union") {
-        for (const arm of this.unions.get(type.unionId)?.arms ?? [])
-          reachableElementKeys(arm, keys, depth + 1);
-      } else if (type.kind === "promise") reachableElementKeys(type.inner, keys, depth + 1);
-      else if (type.kind === "record") {
+        for (const arm of this.unions.get(type.unionId)?.arms ?? []) enter(arm);
+      } else if (type.kind === "promise") enter(type.inner);
+      else if (type.kind === "set") enter(type.elem);
+      else if (type.kind === "map") {
+        enter(type.key);
+        enter(type.value);
+      } else if (type.kind === "record") {
         const shape = this.shapes.get(type.shapeId);
-        if (shape?.tuple === true)
-          for (const field of shape.fields) reachableElementKeys(field.type, keys, depth + 1);
+        if (shape?.tuple === true) for (const field of shape.fields) enter(field.type);
+        else if (fields > 0) for (const field of shape?.fields ?? []) enter(field.type, fields - 1);
+      } else if (type.kind === "object") {
+        if (fields > 0)
+          for (const field of this.classes.get(type.className)?.fields.values() ?? [])
+            enter(field, fields - 1);
       } else if (type.kind === "func") {
-        for (const param of type.params) reachableElementKeys(param, keys, depth + 1);
-        reachableElementKeys(type.ret, keys, depth + 1);
+        for (const param of type.params) enter(param);
+        enter(type.ret);
       }
     };
     const ownership = new ArrayOwnership(sourceFiles, {
@@ -9664,39 +9705,34 @@ export class Lowerer {
       genericCallKeys: (call) => {
         const callee = peel(call.expression);
         if (!ts.isIdentifier(callee) && !ts.isPropertyAccessExpression(callee)) return null;
-        let generic = genericCallees.get(call);
-        if (generic === undefined) {
-          // The standard library's generic methods are judged by what they
-          // do (ArrayElementStates), not by this rule.
+        let slots = genericCallees.get(call);
+        if (slots === undefined) {
           const symbol = callableSymbolOf(callee);
-          generic =
-            symbol !== null &&
-            (symbol.declarations ?? []).some(
-              (declaration) =>
-                !this.isStdlibFile(ts.getSourceFileOfNode(declaration)) &&
-                declaresTypeParameters(declaration),
-            );
-          genericCallees.set(call, generic);
+          slots = symbol === null ? null : genericSlots(symbol);
+          genericCallees.set(call, slots);
         }
-        if (!generic) return null;
+        if (slots === null) return null;
         const keys = new Set<string>();
-        for (const arg of call.arguments?.nodes ?? [])
+        const declared = slots.params;
+        (call.arguments?.nodes ?? []).forEach((arg, index) => {
+          // Arguments past the declared ones fill a rest parameter.
+          const generic =
+            declared === null || (declared[Math.min(index, declared.length - 1)] ?? true);
           reachableElementKeys(
             mappedArrayHolder(ts.isSpreadElement(arg) ? arg.expression : arg),
             keys,
+            generic ? 1 : 0,
           );
+        });
         // A method's receiver and a constructor's instance hold the arrays
-        // their class's type parameters type, one field deep.
+        // their class's type parameters type.
         const instance = ts.isNewExpression(call)
-          ? mappedArrayHolder(call)
+          ? call
           : ts.isPropertyAccessExpression(callee)
-            ? mappedArrayHolder(callee.expression)
+            ? callee.expression
             : null;
-        if (instance?.kind === "object")
-          for (const field of this.classes.get(instance.className)?.fields.values() ?? [])
-            reachableElementKeys(field, keys);
-        else reachableElementKeys(instance, keys);
-        reachableElementKeys(mappedArrayHolder(call), keys);
+        if (instance !== null) reachableElementKeys(mappedArrayHolder(instance), keys, 1);
+        reachableElementKeys(mappedArrayHolder(call), keys, slots.result ? 1 : 0);
         return [...keys];
       },
       mayBeUndefined: (node) => {

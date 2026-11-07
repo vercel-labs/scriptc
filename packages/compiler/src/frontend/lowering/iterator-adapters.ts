@@ -2,6 +2,7 @@ import { appendElement, optionalElementValue, primitiveElement } from "./array-v
 import { keyedHelperName } from "./stable-names.js";
 import { dynUndefinedExpr, varRef } from "../../ir/build.js";
 import {
+  canConvertToDyn,
   BOOL,
   DYN,
   F64,
@@ -20,6 +21,14 @@ import { typeKey, genResultRecord } from "../type-mapper.js";
 import type { Lowerer } from "./lowerer.js";
 import { extractIteratorValue, genStep, genValue, stepDrivable } from "./lower-generators.js";
 import { lowerSafeIndexRead } from "./array-values.js";
+
+/** How an adapter opens its source: the checked-dynamic tree's own
+ * `dyn.iterator` / `dyn.asyncIteratorOpen`, or the island unit's
+ * `nodeIsland.openIterator` / `openAsyncIterator` when the source crossed an
+ * island boundary. An island opens the value's own protocol method in V8, so
+ * iteration stays lazy and IteratorClose reaches the island generator; the
+ * island unit is the only gated code such a program links. */
+export type IteratorOpen = "dyn" | "island";
 
 /** The conversion into an iterator-typed slot (a generator type): a
  * checked-dynamic iterator or a generator with other channel types steps
@@ -244,6 +253,23 @@ function resumeType(nextT: IrType): IrType {
   return nextT.kind === "undefinedT" ? VOID : nextT;
 }
 
+/** Whether the adapter passes the value a consumer sends with `next(value)`
+ * on to the source's next(). An adapter over an island iterator forwards
+ * every typed resume channel (an island generator declared
+ * `Generator<T, R, number>` receives the number), and answers null when the
+ * channel's values have no checked-dynamic form to cross in; the
+ * checked-dynamic adapter forwards an untyped channel. */
+function forwardsResume(lowerer: Lowerer, nextT: IrType, open: IteratorOpen): boolean | null {
+  if (nextT.kind === "dyn") return true;
+  if (open !== "island" || nextT.kind === "undefinedT" || nextT.kind === "void") return false;
+  const convertible = canConvertToDyn(
+    nextT,
+    (id) => lowerer.shapes.get(id),
+    (id) => lowerer.unions.get(id),
+  );
+  return convertible ? true : null;
+}
+
 /** Convert a stepped value into a channel type. Records and arrays box into
  * checked values by reference, so consumers observe the same objects. */
 function intoChannel(lowerer: Lowerer, value: IrExpr, target: IrType): IrExpr | null {
@@ -266,10 +292,11 @@ function intoChannel(lowerer: Lowerer, value: IrExpr, target: IrType): IrExpr | 
  * collection live, exactly like the source iterator. Values convert into
  * the slot's channel types with the usual checked extraction. Null when
  * the slot is not a synchronous generator with a yielding channel. */
-function dynIteratorAdapter(
+export function dynIteratorAdapter(
   lowerer: Lowerer,
   expr: IrExpr,
   expected: IrType & { kind: "generator" },
+  open: IteratorOpen = "dyn",
 ): IrExpr | null {
   if (expected.async || expected.yieldT.kind === "void") return null;
   const resultType = genResultRecord(
@@ -280,7 +307,7 @@ function dynIteratorAdapter(
   );
   if (!resultType) return null;
   const loc = expr.loc;
-  const key = `iterAdapt:${typeKey(expected)}`;
+  const key = `${open === "island" ? "islandIterAdapt" : "iterAdapt"}:${typeKey(expected)}`;
   let name = lowerer.valueHelpers.get(key);
   if (!name) {
     name = keyedHelperName(lowerer, "%iter.adapt", key);
@@ -294,7 +321,11 @@ function dynIteratorAdapter(
     const iterator = local("iterator.0", DYN);
     const next = local("next.0", DYN);
     const step = local("step.0", DYN, true);
-    const forwards = expected.nextT.kind === "dyn";
+    const forwards = forwardsResume(lowerer, expected.nextT, open);
+    if (forwards === null) {
+      lowerer.valueHelpers.delete(key);
+      return null;
+    }
     const sent = forwards ? local("sent.0", DYN, true) : null;
     const get = (value: IrExpr, field: string): IrExpr => ({
       kind: "dynKeyGet",
@@ -339,7 +370,12 @@ function dynIteratorAdapter(
         loc,
       };
       return sent
-        ? { kind: "assign", localId: "sent.0", value: resumed, loc }
+        ? {
+            kind: "assign",
+            localId: "sent.0",
+            value: resumed.type.kind === "dyn" ? resumed : lowerer.coerceToExpected(resumed, DYN),
+            loc,
+          }
         : { kind: "exprStmt", expr: resumed, loc };
     };
     const resumedFlag = local("resumed.0", BOOL, true);
@@ -402,8 +438,11 @@ function dynIteratorAdapter(
           args: [
             {
               kind: "libCall",
-              fn: "dyn.iterator",
-              args: [source, { kind: "strLit", value: "value is not iterable", type: STRING, loc }],
+              fn: open === "island" ? "nodeIsland.openIterator" : "dyn.iterator",
+              args:
+                open === "island"
+                  ? [source]
+                  : [source, { kind: "strLit", value: "value is not iterable", type: STRING, loc }],
               type: DYN,
               loc,
             },
@@ -453,6 +492,300 @@ function dynIteratorAdapter(
       name,
       params: [{ localId: "source.0", name: "source", type: DYN }],
       returnType: expected.retT,
+      locals,
+      body,
+      generator: { yieldT: expected.yieldT, nextT: expected.nextT, resultType, tag: "!" },
+      loc,
+    });
+  }
+  return { kind: "call", callee: name, args: [expr], type: expected, loc };
+}
+
+/** A checked-dynamic async iterator (an async iterable, a native async
+ * generator or an island's async generator, whose next() answers promises)
+ * flowing into an async-generator-typed slot (`AsyncIterableIterator<T>`,
+ * `AsyncGenerator<T>`). The interned adapter is an async generator over the
+ * source: each step awaits the source's next() and forwards its value, so
+ * iteration stays lazy; a synchronous source has each value awaited too, as
+ * the async-from-sync iterator does. Null when the slot is not an async
+ * generator with a yielding channel. */
+export function dynAsyncIteratorAdapter(
+  lowerer: Lowerer,
+  expr: IrExpr,
+  expected: IrType & { kind: "generator" },
+  open: IteratorOpen = "dyn",
+): IrExpr | null {
+  if (!expected.async || expected.yieldT.kind === "void") return null;
+  const resultType = genResultRecord(
+    expected.yieldT,
+    expected.retT,
+    lowerer.shapes,
+    lowerer.unions,
+  );
+  if (!resultType) return null;
+  const loc = expr.loc;
+  const key = `${open === "island" ? "islandAsyncIterAdapt" : "asyncIterAdapt"}:${typeKey(expected)}`;
+  let name = lowerer.valueHelpers.get(key);
+  if (!name) {
+    name = keyedHelperName(lowerer, "%aiter.adapt", key);
+    lowerer.valueHelpers.set(key, name);
+    const locals: IrLocal[] = [];
+    const local = (id: string, type: IrType, mutable = false): IrExpr => {
+      locals.push({ id, name: id.slice(0, id.indexOf(".")), type, mutable });
+      return varRef(id, type, loc);
+    };
+    const source = local("source.0", DYN);
+    const iterator = local("iterator.0", DYN);
+    const next = local("next.0", DYN);
+    // Whether the opened iterator follows the synchronous protocol (each of
+    // its values is awaited). An island open answers this too: its host
+    // normalizes a sync source to V8's async-from-sync wrapper, itself an
+    // async iterator, so only a native value that came back through the
+    // island can be sync.
+    const sync = local("sync.0", BOOL);
+    const step = local("step.0", DYN, true);
+    const forwards = forwardsResume(lowerer, expected.nextT, open);
+    if (forwards === null) {
+      lowerer.valueHelpers.delete(key);
+      return null;
+    }
+    const sent = forwards ? local("sent.0", DYN, true) : null;
+    const get = (value: IrExpr, field: string): IrExpr => ({
+      kind: "dynKeyGet",
+      value,
+      key: { kind: "strLit", value: field, type: STRING, loc },
+      type: DYN,
+      loc,
+    });
+    const awaitDyn = (value: IrExpr): IrExpr => ({
+      kind: "libCall",
+      fn: "async.awaitDyn",
+      args: [value],
+      type: DYN,
+      loc,
+    });
+    // next()'s answer is a promise of the result record; the record is read
+    // only once it settles, and a source that answers a non-object rejects
+    // as the protocol requires.
+    const advance = (args: IrExpr[]): IrExpr => ({
+      kind: "libCall",
+      fn: "dyn.iteratorResult",
+      args: [
+        awaitDyn({
+          kind: "dynCall",
+          callee: next,
+          receiver: iterator,
+          calleeName: "iterator.next",
+          args,
+          type: DYN,
+          loc,
+        }),
+      ],
+      type: DYN,
+      loc,
+    });
+    // A synchronous source's value is a promise for the value itself, which
+    // the async-from-sync iterator awaits, completion included.
+    const stepValue = (): IrExpr => ({
+      kind: "ternary",
+      cond: sync,
+      then: awaitDyn(get(step, "value")),
+      else_: get(step, "value"),
+      type: DYN,
+      loc,
+    });
+    const returned =
+      expected.retT.kind === "void" ? null : intoChannel(lowerer, stepValue(), expected.retT);
+    const yielded = intoChannel(lowerer, stepValue(), expected.yieldT);
+    if ((expected.retT.kind !== "void" && !returned) || !yielded) {
+      lowerer.valueHelpers.delete(key);
+      return null;
+    }
+    const finish: IrStmt = { kind: "return", value: returned, loc };
+    const suspend = (): IrStmt => {
+      const resumed: IrExpr = {
+        kind: "yieldExpr",
+        value: yielded,
+        type: resumeType(expected.nextT),
+        loc,
+      };
+      return sent
+        ? {
+            kind: "assign",
+            localId: "sent.0",
+            value: resumed.type.kind === "dyn" ? resumed : lowerer.coerceToExpected(resumed, DYN),
+            loc,
+          }
+        : { kind: "exprStmt", expr: resumed, loc };
+    };
+    const resumedFlag = local("resumed.0", BOOL, true);
+    const closer = local("closer.0", DYN);
+    const closed = local("closed.0", DYN);
+    // An early exit from a consumer's loop closes the adapter and the source
+    // with it: the source's return(), awaited like next(). A source without
+    // one (a native async generator the wrapper answered for) has nothing to
+    // close.
+    const closeSource: IrStmt[] = [
+      { kind: "varDecl", localId: "closer.0", init: get(iterator, "return"), loc },
+      {
+        kind: "if",
+        cond: {
+          kind: "unary",
+          op: "!",
+          operand: {
+            kind: "dynTest",
+            test: "nullish",
+            value: closer,
+            type: BOOL,
+            loc,
+          },
+          type: BOOL,
+          loc,
+        },
+        then: [
+          {
+            kind: "varDecl",
+            localId: "closed.0",
+            init: {
+              kind: "libCall",
+              fn: "dyn.iteratorResult",
+              args: [
+                awaitDyn({
+                  kind: "dynCall",
+                  callee: closer,
+                  receiver: iterator,
+                  calleeName: "iterator method",
+                  args: [],
+                  type: DYN,
+                  loc,
+                }),
+              ],
+              type: DYN,
+              loc,
+            },
+            loc,
+          },
+          // A synchronous source's return() result is read as the
+          // async-from-sync iterator reads it: done, then the value, which
+          // is awaited, so a rejected promise there rejects the close.
+          {
+            kind: "if",
+            cond: sync,
+            then: [
+              { kind: "exprStmt", expr: get(closed, "done"), loc },
+              { kind: "exprStmt", expr: awaitDyn(get(closed, "value")), loc },
+            ],
+            else_: null,
+            loc,
+          },
+        ],
+        else_: null,
+        loc,
+      },
+    ];
+    const advanceStmt: IrStmt = {
+      kind: "assign",
+      localId: "step.0",
+      value: advance(sent ? [sent] : []),
+      loc,
+    };
+    const body: IrStmt[] = [
+      {
+        kind: "varDecl",
+        localId: "iterator.0",
+        init: {
+          kind: "libCall",
+          fn: "dyn.iteratorResult",
+          args: [
+            {
+              kind: "libCall",
+              fn: open === "island" ? "nodeIsland.openAsyncIterator" : "dyn.asyncIteratorOpen",
+              args:
+                open === "island"
+                  ? [source]
+                  : [source, { kind: "strLit", value: "", type: STRING, loc }],
+              type: DYN,
+              loc,
+            },
+          ],
+          type: DYN,
+          loc,
+        },
+        loc,
+      },
+      {
+        kind: "varDecl",
+        localId: "sync.0",
+        init: {
+          kind: "libCall",
+          fn: open === "island" ? "nodeIsland.asyncIteratorWasSync" : "dyn.asyncIteratorWasSync",
+          args: [],
+          type: BOOL,
+          loc,
+        },
+        loc,
+      },
+      { kind: "varDecl", localId: "next.0", init: get(iterator, "next"), loc },
+      {
+        kind: "varDecl",
+        localId: "step.0",
+        init: advance([]),
+        loc,
+      },
+      ...(sent
+        ? [{ kind: "varDecl" as const, localId: "sent.0", init: dynUndefinedExpr(loc), loc }]
+        : []),
+      {
+        kind: "varDecl",
+        localId: "resumed.0",
+        init: { kind: "boolLit", value: false, type: BOOL, loc },
+        loc,
+      },
+      {
+        kind: "while",
+        cond: { kind: "boolLit", value: true, type: BOOL, loc },
+        body: [
+          {
+            kind: "if",
+            cond: { kind: "dynTest", test: "truthy", value: get(step, "done"), type: BOOL, loc },
+            then: [finish],
+            else_: null,
+            loc,
+          },
+          setResumed(false, loc),
+          {
+            kind: "tryCatch",
+            tryBody: [suspend(), setResumed(true, loc)],
+            catchBody: null,
+            catchLocalId: null,
+            dropFinallyErrors: true,
+            finallyBody: [
+              {
+                kind: "if",
+                cond: {
+                  kind: "unary",
+                  op: "!",
+                  operand: resumedFlag,
+                  type: BOOL,
+                  loc,
+                },
+                then: closeSource,
+                else_: null,
+                loc,
+              },
+            ],
+            loc,
+          },
+          advanceStmt,
+        ],
+        loc,
+      },
+    ];
+    lowerer.liftedFns.push({
+      name,
+      params: [{ localId: "source.0", name: "source", type: DYN }],
+      returnType: expected.retT,
+      async: true,
       locals,
       body,
       generator: { yieldT: expected.yieldT, nextT: expected.nextT, resultType, tag: "!" },

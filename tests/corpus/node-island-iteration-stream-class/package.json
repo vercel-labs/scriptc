@@ -1,0 +1,1 @@
+{ "name": "node-island-iteration-stream-class", "private": true, "type": "module", "scriptc": { "packages": { "stream-pkg": "node" } } }

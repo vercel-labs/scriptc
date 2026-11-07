@@ -305,7 +305,19 @@ const INTRINSIC_CLASSES = {
   AggregateError,
 };
 const collectionSyncs = new WeakMap();
+// What a native generator inherits in Node (the bridge sets it as the
+// prototype of the generator's representative): %GeneratorPrototype% and
+// %AsyncGeneratorPrototype%, whose Symbol.iterator and Symbol.asyncIterator
+// methods answer the generator itself. The native next, return and throw
+// are the representative's own.
+const generatorPrototypes = [
+  Object.getPrototypeOf(function* () {}).prototype,
+  Object.getPrototypeOf(async function* () {}).prototype,
+];
 const islandHelpers = {
+  generatorPrototype(isAsync) {
+    return generatorPrototypes[isAsync ? 1 : 0];
+  },
   isInstance(value, name) {
     // The error classes by their intrinsics; any other standard class by
     // the global of that name (Array, Map, Date, …).
@@ -468,6 +480,33 @@ function load(path, esm) {
   if (path === "scriptc:spread") return (value) => [...value];
   if (path === "scriptc:clone") return (value) => structuredClone(value);
   if (path === "scriptc:objectTag") return (value) => Object.prototype.toString.call(value);
+  // The island value's own iterator (`for…of`, `for await` over a value the
+  // runtime holds as a handle): V8 opens it, and the runtime steps it one
+  // value at a time. Mode 2 is the async protocol: [Symbol.asyncIterator](),
+  // or a sync iterator behind V8's async-from-sync wrapper (an async
+  // generator's `yield*`), so every step answers a promise and each value is
+  // awaited. Undefined when the value has neither method.
+  if (path === "scriptc:iter")
+    return (value, mode) => {
+      if (value === null || value === undefined) return undefined;
+      if (mode === 2) {
+        const asyncMethod = value[Symbol.asyncIterator];
+        if (typeof asyncMethod === "function") return asyncMethod.call(value);
+      }
+      const method = value[Symbol.iterator];
+      if (typeof method !== "function") return undefined;
+      const iterator = method.call(value);
+      if (mode !== 2) return iterator;
+      return (async function* () {
+        yield* iterator;
+      })();
+    };
+  // An island value's protocol method, for the runtime's iterator protocol
+  // over a value it holds as a handle: `value[Symbol.iterator]`, or
+  // `value[Symbol.asyncIterator]` when `async` is 1. The loop calls it with
+  // the value as `this` and then steps and closes the iterator it answers.
+  if (path === "scriptc:iterMethod")
+    return (value, async) => value[async === 1 ? Symbol.asyncIterator : Symbol.iterator];
   if (path === "scriptc:island-helpers") return islandHelpers;
   // A built-in module's name, with or without the node: prefix.
   if (isBuiltin(path)) return require(path);

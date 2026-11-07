@@ -1572,6 +1572,144 @@ static ScrStr *nh_object_tag(const ScrDyn *value) {
   return out;
 }
 
+/* ── lazy iteration over island values (SPEC 1c option A) ───────────────
+ * `for…of`, `for await` and destructuring over an island value run the
+ * iterator protocol on the island's own iterator, one step at a time, so the
+ * island generator's body runs only when the loop asks for the next value:
+ * side effects keep their order, an endless generator ends with the loop,
+ * and leaving the loop early calls the island iterator's return().
+ *
+ * A checked-dynamic loop reaches the island's protocol method through
+ * nh_iterator_method (scr_json.c's scr_iterator_method asks it for an
+ * island handle) and then holds the island iterator like any other iterator
+ * object. A statically generator-typed island value crosses into the
+ * compiled adapter generator (iterator-adapters.ts), which opens the value's
+ * own iterator through scr_island_open_iterator, steps it through the
+ * ordinary next() protocol and calls its return() when a consumer leaves the
+ * loop early. scr_island_open_async_iterator is the `for await` sibling: it
+ * opens [Symbol.asyncIterator](), or wraps a sync iterator in V8's
+ * async-from-sync protocol. All of it lives in this gated unit, so a
+ * program without islands links none of it. */
+
+/* The host's reader of a protocol method: `value[Symbol.iterator]`, or
+ * `value[Symbol.asyncIterator]` for mode 1. */
+static ScrDyn *nh_iter_method_fn = NULL;
+
+static ScrDyn *nh_iterator_method(const ScrDyn *value, int async) {
+  if (nh_iter_method_fn == NULL) {
+    ScrStr *name = scr_str_new("scriptc:iterMethod", 18);
+    nh_iter_method_fn = nh_load(name, 0);
+    scr_str_release(name);
+    if (nh_iter_method_fn == NULL) return NULL;
+  }
+  ScrDyn *args[2] = {(ScrDyn *)value, scr_dyn_new_num((double)async)};
+  ScrDyn *result = scr_ni_call(nh_iter_method_fn, scr_dyn_undefined(), args, 2);
+  scr_dyn_release(args[1]);
+  return result;
+}
+
+/* The host's iterator opener (`value[Symbol.iterator]()` for mode 1;
+ * `[Symbol.asyncIterator]()`, or the async-from-sync wrapper over a sync
+ * iterator, for mode 2; undefined when the value has none). */
+static ScrDyn *nh_iter_fn = NULL;
+
+static ScrDyn *nh_open_iterator(ScrDyn *value, int mode) {
+  if (nh_iter_fn == NULL) {
+    ScrStr *name = scr_str_new("scriptc:iter", 13);
+    nh_iter_fn = nh_load(name, 0);
+    scr_str_release(name);
+    if (nh_iter_fn == NULL) return NULL;
+  }
+  ScrDyn *args[2] = {value, scr_dyn_new_num((double)mode)};
+  ScrDyn *result = scr_ni_call(nh_iter_fn, scr_dyn_undefined(), args, 2);
+  scr_dyn_release(args[1]);
+  return result;
+}
+
+/* The island value boxed as its own dyn value. */
+static ScrDyn *nh_value_box(const ScrDyn *value) {
+  return scr_dyn_new_handle(value->v.handle.ptr, SCR_DYNH_NODE_ISLAND);
+}
+
+/* The TypeError for a value whose protocol method is missing, worded as the
+ * checked-dynamic tree words it for the same source. */
+static ScrDyn *nh_not_iterable(void) {
+  static const char message[] = "value is not iterable";
+  scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+  return NULL;
+}
+
+static ScrDyn *nh_not_async_iterable(void) {
+  static const char message[] = "object is not async iterable";
+  scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+  return NULL;
+}
+
+/* Whether the iterator the last scr_island_open_async_iterator returned is a
+ * synchronous one (a native value that came back through the island). Read
+ * immediately after the open, like scr_dyn_async_iterator_was_sync. */
+static SCR_TL bool nh_open_async_sync;
+
+bool scr_island_async_iterator_was_sync(void) {
+  bool sync = nh_open_async_sync;
+  nh_open_async_sync = false;
+  return sync;
+}
+
+/* Whether the value is this unit's island handle (a native value the
+ * program passed into the island comes back as itself, NI-5). */
+static bool nh_island_value(const ScrDyn *value) {
+  return value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_NODE_ISLAND;
+}
+
+/* The value's own iterator, opened by V8 (+1), for the compiled adapter
+ * generators a generator-typed island value crosses into. A native value
+ * that came back through the island takes the checked-dynamic protocol
+ * instead. NULL with the exception pending. */
+ScrDyn *scr_island_open_iterator(const ScrDyn *value) {
+  if (!nh_island_value(value)) {
+    static const char spell[] = "value is not iterable";
+    ScrStr *message = scr_str_new(spell, sizeof spell - 1);
+    ScrDyn *iterator = scr_dyn_iterator(value, message);
+    scr_str_release(message);
+    return iterator;
+  }
+  ScrDyn *box = nh_value_box(value);
+  ScrDyn *iterator = nh_open_iterator(box, 1);
+  scr_dyn_release(box);
+  if (iterator == NULL) return NULL;
+  if (iterator->kind == SCR_DYN_UNDEF) {
+    scr_dyn_release(iterator);
+    return nh_not_iterable();
+  }
+  return iterator;
+}
+
+/* The value's async iterator for `for await`: [Symbol.asyncIterator](), or
+ * a sync iterator behind V8's async-from-sync protocol, whose steps answer
+ * promises and await each value. A native value that came back through the
+ * island takes the checked-dynamic protocol instead. */
+ScrDyn *scr_island_open_async_iterator(const ScrDyn *value) {
+  if (!nh_island_value(value)) {
+    int kind = 0;
+    ScrDyn *native = scr_dyn_open_iterator(value, &kind, true);
+    nh_open_async_sync = kind == 1;
+    if (kind < 0) return NULL;
+    if (native == NULL) return nh_not_async_iterable();
+    return native;
+  }
+  nh_open_async_sync = false;
+  ScrDyn *box = nh_value_box(value);
+  ScrDyn *iterator = nh_open_iterator(box, 2);
+  scr_dyn_release(box);
+  if (iterator == NULL) return NULL;
+  if (iterator->kind == SCR_DYN_UNDEF) {
+    scr_dyn_release(iterator);
+    return nh_not_iterable();
+  }
+  return iterator;
+}
+
 static const ScrDynHandleOps nh_ops = {
     .cls = "Object",
     .retain = nh_ref_retain_v,
@@ -1612,6 +1750,14 @@ static void nh_cleanup(void) {
   if (nh_spread_fn != NULL) {
     scr_dyn_release(nh_spread_fn);
     nh_spread_fn = NULL;
+  }
+  if (nh_iter_fn != NULL) {
+    scr_dyn_release(nh_iter_fn);
+    nh_iter_fn = NULL;
+  }
+  if (nh_iter_method_fn != NULL) {
+    scr_dyn_release(nh_iter_method_fn);
+    nh_iter_method_fn = NULL;
   }
   while (nh_npins > 0) {
     NhPin pin = nh_pins[--nh_npins];
@@ -1799,6 +1945,7 @@ static const ScrNiDynOps nh_dyn_ops = {
     .object_tag = nh_object_tag,
     .function_identity = nh_function_identity,
     .function_of_identity = nh_function_of_identity,
+    .iterator_method = nh_iterator_method,
 };
 
 __attribute__((constructor)) static void nh_install(void) { scr_ni_dyn_ops = &nh_dyn_ops; }

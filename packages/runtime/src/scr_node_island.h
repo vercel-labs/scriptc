@@ -124,6 +124,17 @@ ScrPromise *scr_ni_await(ScrDyn *value);
 ScrDyn *scr_node_island_copy_arrays(ScrDyn *value);
 ScrPromise *scr_node_island_await_copy(ScrDyn *value);
 uint32_t scr_ni_live_handles(void); /* live import-table entries (leak tests) */
+/* The checked adapter generators a generator- or Iterable-typed island value
+ * crosses into open it through these: the value's own iterator (+1, or NULL
+ * with the exception pending), its `for await` sibling, and whether the last
+ * async open was a synchronous iterator (a native value that came back
+ * through the island), read immediately after the open. */
+/* The program's getters for a compiled generator's next, return and throw
+ * methods, which island code holding the generator reaches through them. */
+void scr_node_island_set_generator_members(ScrDyn *next, ScrDyn *ret, ScrDyn *thrw);
+ScrDyn *scr_island_open_iterator(const ScrDyn *value);
+ScrDyn *scr_island_open_async_iterator(const ScrDyn *value);
+bool scr_island_async_iterator_was_sync(void);
 
 /* The operations scr_json.c's dynamic paths route to an island handle
  * (typeof, calls, ToPrimitive, `in`, delete, Object.keys and the rest).
@@ -160,6 +171,12 @@ typedef struct ScrNiDynOps {
    * NULL when `root` is not such a root. A signature adapter over a view of
    * an island function boxes as the function itself through this. */
   ScrDyn *(*function_of_identity)(const struct ScrClosure *root);
+  /* `value[Symbol.iterator]` (async 0) or `value[Symbol.asyncIterator]`
+   * (async 1) of an island value, read by V8: +1, the island function or
+   * undefined or null for a value that has none; NULL with the error
+   * pending. The iterator protocol of scr_json.c then runs on the island's
+   * own iterator, so a loop steps it lazily and closes it. */
+  ScrDyn *(*iterator_method)(const ScrDyn *value, int async);
 } ScrNiDynOps;
 extern const ScrNiDynOps *scr_ni_dyn_ops;
 

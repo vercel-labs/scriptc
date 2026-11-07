@@ -10424,7 +10424,22 @@ static ScrDyn *scr_iterator_call(const ScrDyn *method, const ScrDyn *receiver, c
   return result;
 }
 
+#ifdef SCR_NODE_ISLANDS
+/* An island value's own protocol method (`value[Symbol.iterator]`, or
+ * `value[Symbol.asyncIterator]` for `async`), read by V8: the loop, the
+ * destructuring walk and `for await` then run on the island's own iterator,
+ * one step at a time, and close it. NULL (no error pending) for any other
+ * value. */
+static bool scr_island_iterable(const ScrDyn *source) {
+  return scr_ni_dyn_handle(source) && scr_ni_dyn_ops != NULL &&
+         scr_ni_dyn_ops->iterator_method != NULL;
+}
+#endif
+
 static ScrDyn *scr_iterator_method(const ScrDyn *source) {
+#ifdef SCR_NODE_ISLANDS
+  if (scr_island_iterable(source)) return scr_ni_dyn_ops->iterator_method(source, 0);
+#endif
   if (source->kind == SCR_DYN_NULL || source->kind == SCR_DYN_UNDEF) {
     const char *message = source->kind == SCR_DYN_NULL
       ? "object null is not iterable (cannot read property Symbol(Symbol.iterator))"
@@ -10439,6 +10454,15 @@ static ScrDyn *scr_iterator_method(const ScrDyn *source) {
 int scr_dyn_iterable_kind(const ScrDyn *value) {
   if (value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_UNDEF) return 0;
   if (scr_dyn_generator(value)) return value->v.typed_ref.type_key[0] == 'a' ? 2 : 1;
+#ifdef SCR_NODE_ISLANDS
+  if (scr_island_iterable(value)) {
+    ScrDyn *method = scr_ni_dyn_ops->iterator_method(value, 1);
+    if (!method) return -1;
+    bool set = method->kind != SCR_DYN_UNDEF && method->kind != SCR_DYN_NULL;
+    scr_dyn_release(method);
+    if (set) return 2;
+  } else
+#endif
   if (scr_async_iterator_symbol) {
     ScrDyn *method = scr_dyn_symbol_key_get(value, scr_async_iterator_symbol, false);
     if (!method) return -1;
@@ -10461,6 +10485,21 @@ ScrDyn *scr_dyn_open_iterator(const ScrDyn *value, int *kind, bool generators) {
   *kind = 0;
   if (value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_UNDEF) return NULL;
   ScrDyn *method = NULL;
+#ifdef SCR_NODE_ISLANDS
+  if (scr_island_iterable(value)) {
+    method = scr_ni_dyn_ops->iterator_method(value, 1);
+    if (!method) {
+      *kind = -1;
+      return NULL;
+    }
+    if (method->kind != SCR_DYN_UNDEF && method->kind != SCR_DYN_NULL) {
+      *kind = 2;
+    } else {
+      scr_dyn_release(method);
+      method = NULL;
+    }
+  } else
+#endif
   if (scr_async_iterator_symbol) {
     method = scr_dyn_symbol_key_get(value, scr_async_iterator_symbol, false);
     if (!method) {
@@ -10526,7 +10565,13 @@ ScrDyn *scr_dyn_iterator(const ScrDyn *source, const ScrStr *spell) {
   if (source->kind == SCR_DYN_NULL || source->kind == SCR_DYN_UNDEF) return scr_dyn_not_iterable(source, spell);
   ScrDyn *method = scr_iterator_method(source);
   if (!method) return NULL;
+#ifdef SCR_NODE_ISLANDS
+  /* An island value's method is an island function. */
+  if (method->kind != SCR_DYN_FUNC &&
+      !(scr_ni_dyn_handle(method) && scr_ni_dyn_ops->is_function(method))) {
+#else
   if (method->kind != SCR_DYN_FUNC) {
+#endif
     scr_dyn_release(method);
     return scr_dyn_not_iterable(source, spell);
   }

@@ -1215,8 +1215,16 @@ export function lowerFieldCompoundValue(
         rhs.type.kind === "dyn"
           ? { kind: "dynCheck", value: rhs, type: F64, loc: rhs.loc }
           : lowerOperatorNumber(lowerer, rhs, loc);
-      if (numericRhs.type.kind !== "f64")
-        compoundUnsupported(lowerer, access, op, F64, numericRhs.type);
+      if (numericRhs.type.kind !== "f64") {
+        // Name the member as the checker types it: this path reads it as a
+        // number, which is its own assumption, not the member's type.
+        const memberTs = lowerer.typeOf(access);
+        const member =
+          (memberTs.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0
+            ? DYN
+            : (lowerer.mapTypeOf(memberTs) ?? F64);
+        compoundUnsupported(lowerer, access, op, member, numericRhs.type);
+      }
       const value = save(
         { kind: "bin", op, left: cur, right: numericRhs, type: F64, loc },
         "%compoundResult",

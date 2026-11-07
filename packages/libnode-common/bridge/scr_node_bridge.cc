@@ -2446,14 +2446,39 @@ void OnSettled(const FunctionCallbackInfo<Value> &info, int rejected) {
 void OnFulfilled(const FunctionCallbackInfo<Value> &info) { OnSettled(info, 0); }
 void OnRejected(const FunctionCallbackInfo<Value> &info) { OnSettled(info, 1); }
 
-// await of a value: PromiseResolve (a native promise is itself) and one
-// reaction, as `await` does in JavaScript.
+// Whether `await` takes promise `v` as itself: PromiseResolve does when its
+// `constructor` is the intrinsic Promise. An instance of a Promise subclass
+// (an SDK's request promise, whose constructor takes something other than
+// an executor and whose `then` starts the request) is resolved like any
+// thenable instead: its own `then` runs, from a promise job. Reading
+// `constructor` can throw; the caller reports that as the await's rejection.
+bool AwaitsAsItself(Op &op, Local<v8::Promise> v, bool *threw) {
+  Local<Value> ctor, intrinsic;
+  Local<v8::Promise::Resolver> plain;
+  if (!v->Get(op.e.context, Utf8(op.e.isolate, "constructor")).ToLocal(&ctor)) {
+    *threw = true;
+    return false;
+  }
+  // The intrinsic: what a promise V8 makes itself answers.
+  if (!v8::Promise::Resolver::New(op.e.context).ToLocal(&plain) ||
+      !plain->GetPromise()->Get(op.e.context, Utf8(op.e.isolate, "constructor")).ToLocal(&intrinsic))
+    return true;
+  return ctor->StrictEquals(intrinsic);
+}
+
+// await of a value: PromiseResolve (a promise whose constructor is the
+// intrinsic Promise is itself; anything else, a Promise subclass instance
+// included, is resolved through its `then`) and one reaction, as `await`
+// does in JavaScript.
 int Then(const ScrNodeValue *value, uint32_t token, ScrNodeValue *out) {
   Op op;
   Local<Value> v = op.V(value);
   Local<v8::Promise> promise;
-  if (v->IsPromise()) {
+  bool threw = false;
+  if (v->IsPromise() && AwaitsAsItself(op, v.As<v8::Promise>(), &threw)) {
     promise = v.As<v8::Promise>();
+  } else if (threw) {
+    return op.Finish(Local<Value>(), false, out);
   } else {
     Local<v8::Promise::Resolver> resolver;
     if (!v8::Promise::Resolver::New(op.e.context).ToLocal(&resolver) ||

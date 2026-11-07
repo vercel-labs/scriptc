@@ -155,6 +155,15 @@ typedef struct ScrNiDynOps {
   /* Object.prototype.toString.call(value), answered by Node (+1; NULL with
    * the exception pending). */
   ScrStr *(*object_tag)(const ScrDyn *value);
+  /* The identity root of an island function (borrowed, owned by the
+   * function's handle): every typed view of the function adopts it, so the
+   * views are one function to `===`, searches and collection keys. NULL for
+   * a value that is not a function. */
+  struct ScrClosure *(*function_identity)(const ScrDyn *fn);
+  /* The island function whose identity root is `root`, as its handle (+1);
+   * NULL when `root` is not such a root. A signature adapter over a view of
+   * an island function boxes as the function itself through this. */
+  ScrDyn *(*function_of_identity)(const struct ScrClosure *root);
   /* util.inspect of an island value (scr_ni_inspect). */
   ScrStr *(*inspect)(const ScrDyn *value, double recurse, double depth);
   /* Node's uncaught-exception report for an error island code threw
@@ -177,6 +186,14 @@ const struct ScrNodeBridge *scr_ni_bridge_loaded(void); /* NULL until loaded */
  * program's module tree, under its root once Node is loaded; anything else
  * (a built-in module) as it is. */
 char *scr_ni_module_path(const ScrStr *path);
+/* The installed island module tree (scr_node_island.c, "What a start
+ * does"): whether an island error's code says Node did not find a file,
+ * whether an error's text names the tree, the repair of the files it lacks
+ * (once per process), and how many files this process put back. */
+bool scr_ni_missing_file_code(const char *code, size_t len);
+bool scr_ni_tree_named(const char *text, size_t len);
+void scr_ni_tree_repair(void);
+size_t scr_ni_tree_repairs(void);
 void scr_ni_on_node_stack(void (*job)(void *), void *arg);
 void scr_ni_settle_value(uint32_t token, int rejected, const struct ScrNodeValue *value);
 void scr_ni_bytes_free(void *owner);

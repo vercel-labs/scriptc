@@ -56,7 +56,7 @@ export function collectJsonRequires(lowerer: Lowerer, parts: FileParts[]): void 
   for (const fp of parts) {
     const sf = fp.sf;
     if (sf.isDeclarationFile || !isCjsJsFile(sf, lowerer.program)) continue;
-    if (!sf.text.includes(".json")) continue;
+    if (!ts.sourceTextIncludes(sf, ".json")) continue;
     const calls: ts.CallExpression[] = [];
     ts.walkPreorder(sf, (node) => {
       if (ts.isCallExpression(node) && requireSpecOf(node) !== null) calls.push(node);

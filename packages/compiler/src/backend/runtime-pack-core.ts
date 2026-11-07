@@ -106,6 +106,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   reflectProtoTarget: boolean;
   recordSourceDelete: boolean;
   genBind: boolean;
+  genReceiver: boolean;
   eventsOnceSignal: boolean;
   mime: boolean;
   largePages: boolean;
@@ -114,6 +115,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   abortSignal: boolean;
   utilTiming: boolean;
   dynBuffer: boolean;
+  fsPathValue: boolean;
   builtinValues: boolean;
   /** A standard library prototype object read as a value in a JavaScript
    * source (scr_dyn_stdlib_prototype.c). */
@@ -370,6 +372,7 @@ export function effectiveRuntimeFeatures(
     reflectProtoTarget: features.reflectProtoTarget === true,
     recordSourceDelete: features.recordSourceDelete === true,
     genBind: features.genBind === true,
+    genReceiver: features.genReceiver === true,
     eventsOnceSignal: features.eventsOnceSignal === true,
     mime: features.mime === true,
     largePages: features.largePages === true,
@@ -378,6 +381,7 @@ export function effectiveRuntimeFeatures(
     abortSignal: features.abortSignal === true,
     utilTiming: features.utilTiming === true,
     dynBuffer: features.dynBuffer === true,
+    fsPathValue: features.fsPathValue === true,
     builtinValues: features.builtinValues === true,
     stdlibPrototypeValue: features.stdlibPrototypeValue === true,
     dataViewPrototypeValue: features.dataViewPrototypeValue === true,

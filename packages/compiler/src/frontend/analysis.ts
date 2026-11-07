@@ -47,7 +47,7 @@ export function analyzeWithFrontend(
   // The first load keeps the whole program, as a build's first load does: the
   // island report classifies every package from it (executable/prepare.ts's
   // decideNodeIslands), including a package the policy forces into Node.
-  const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands);
+  const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands, entryPath);
   const fe = createFrontend(entryPath, opts.npmStatic, opts.externalTypes, undefined, {
     nodeIslands: true,
   });

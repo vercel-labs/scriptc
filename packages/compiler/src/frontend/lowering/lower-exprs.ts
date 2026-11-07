@@ -362,6 +362,7 @@ export function lowerExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   }
   const outermost = openLoweringBudget(expr);
   const frame = lowerer.openRefusedProbeFrame();
+  const operands = lowerer.openOperandFrame();
   lowerExprDepth++;
   try {
     if (!outermost && ++lowerExprAttempts > lowerExprAttemptLimit)
@@ -385,6 +386,7 @@ export function lowerExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     return lowered;
   } finally {
     lowerExprDepth--;
+    lowerer.closeOperandFrame(operands);
     lowerer.closeRefusedProbeFrame(frame);
     closeLoweringBudget();
   }

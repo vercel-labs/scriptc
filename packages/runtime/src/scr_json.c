@@ -5050,14 +5050,16 @@ void *scr_record_view_slot(void *view, size_t position) {
 static ScrDyn *scr_record_view_extras(void *view, bool create) {
   ScrRecordSource *entry = scr_record_source_slot(view);
   if (!entry || !entry->capsule) return NULL;
-  ScrRecordSource *source = scr_record_source_find(entry->viewed);
+  /* The insertion below can move the table, and `entry` with it. */
+  void *viewed = entry->viewed;
+  ScrRecordSource *source = scr_record_source_find(viewed);
   if (!source) {
     if (!create || !entry->names) return NULL;
-    ScrRecordSource probe = { .rec = entry->viewed, .names = entry->names,
+    ScrRecordSource probe = { .rec = viewed, .names = entry->names,
                               .lens = entry->lens, .name_stride = entry->name_stride,
                               .len_stride = entry->len_stride, .count = entry->count };
     scr_record_source_put(&probe);
-    source = scr_record_source_find(entry->viewed);
+    source = scr_record_source_find(viewed);
     if (!source) return NULL;
   }
   if (!source->view) {

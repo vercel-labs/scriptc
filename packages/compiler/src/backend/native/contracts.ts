@@ -172,6 +172,9 @@ export interface CcOptions {
   /** `delete` of a key a record's type does not declare: compiles
    * scr_record_source_delete.c. */
   recordSourceDelete?: boolean;
+  /** A partial record assertion to a type whose values may be frozen:
+   * compiles scr_record_view_frozen.c. */
+  recordViewFrozen?: boolean;
   /** A generator that binds its parameters at the call: compiles
    * scr_gen_bind.c. */
   genBind?: boolean;
@@ -344,8 +347,9 @@ export interface CcOptions {
    * moduleUsesNet answers true for whenever this does. */
   http?: boolean;
   /** The program uses the REAL node:http2 surface (moduleUsesHttp2 on
-   * the IR): compiles scr_http2.c — always alongside scr_net.c, which
-   * moduleUsesNet answers true for whenever this does. */
+   * the IR): compiles scr_http2.c — always alongside scr_net.c and
+   * scr_http.c, which the link features turn on with it
+   * (LINK_FEATURE_REQUIREMENTS). */
   http2?: boolean;
   /** The program uses the node:dgram or node:dns surface (moduleUsesDgram
    * on the IR): compiles scr_dgram.c into the binary — the net gating

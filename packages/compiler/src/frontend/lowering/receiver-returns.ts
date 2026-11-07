@@ -62,6 +62,9 @@ export function returnDispatchReceivers(
         },
         { kind: "return", value: varRef(receiver, only.value.type, only.loc), loc: only.loc },
       ];
+      // The branch changed inside the helper's unchanged statement list
+      // and gained a statement kind the helper may not have held.
+      census.forget(helper);
     }
   }
   // A direct call whose result nothing reads (`builder.set(1);` in typed

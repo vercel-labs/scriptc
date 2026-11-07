@@ -181,17 +181,20 @@ describe(`SCRIPTC_CONVERSION_TRACE (scriptc-only${sanitize ? ", sanitized" : ""}
     expect(r.exitCode).toBe(0);
     // The program runs as it does without the report.
     expect(r.stdout).toBe("workers undefined undefined\n");
-    // Each thread reports its own failure. One report is several writes to
-    // stderr, so the two may interleave at any byte, not only between lines:
-    // what is pinned is that both messages and both frames are there, and
-    // nothing else.
-    const message =
-      "scriptc: checked conversion failed: TypeError: expected number at $.total, got undefined";
-    const frame = "    at totalOf (workers.ts:7:20)";
+    // Each thread reports its own failure. A report is written in separate
+    // pieces (the prefix, then the error text, then the frame, with the
+    // newlines written on their own), so two threads can interleave at any
+    // of those boundaries, inside a line as well as between lines. Each
+    // piece is counted on its own, after the newlines are dropped: every one
+    // must be there twice, and nothing else may be.
+    const pieces = [
+      "scriptc: checked conversion failed: ",
+      "TypeError: expected number at $.total, got undefined",
+      "    at totalOf (workers.ts:7:20)",
+    ];
     const joined = r.stderr.replace(/\n/g, "");
-    expect(joined.split(message).length - 1).toBe(2);
-    expect(joined.split(frame).length - 1).toBe(2);
-    expect(joined.length).toBe(2 * (message.length + frame.length));
+    for (const piece of pieces) expect(joined.split(piece).length - 1).toBe(2);
+    expect(joined.length).toBe(2 * pieces.reduce((n, piece) => n + piece.length, 0));
     // The same failures with the variable unset write nothing, and leave
     // the program's output as it is.
     const off = await run(binary, undefined);

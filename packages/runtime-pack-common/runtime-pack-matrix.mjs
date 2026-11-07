@@ -377,6 +377,20 @@ export function variantsFor(source) {
   // sharing the build adds code to these objects and no variants. Every
   // other program keeps the default object, byte for byte.
   if (source === "scr_lib.c") {
+    // A static executable cannot load NSS modules, so the os unit's passwd
+    // fallback (os.homedir() with HOME unset, and os.userInfo()) reads
+    // /etc/passwd directly in that build; every dynamically linked build
+    // keeps the unchanged getpwuid_r object. staticLink is the link
+    // plan's fact (link-plan.ts), not a program fact. It is pushed before
+    // the object model twins, so a static executable whose program selects
+    // the object model build links one object that carries both defines:
+    // with two one-condition builds the selection would take the object
+    // model one and lose SCR_STATIC_PASSWD.
+    variants.push({
+      id: "static-passwd",
+      when: { staticLink: true },
+      defines: ["SCR_STATIC_PASSWD"],
+    });
     withJsObjectModel(variants);
   }
   // Programs that assign process.emitWarning link the replacement-aware
@@ -650,18 +664,6 @@ export function variantsFor(source) {
       id: "cp-options-err-fields",
       when: { childOptionExt: true, childErrorFields: true },
       defines: ["SCR_CHILD_CP_OPTIONS", "SCR_CHILD_ERR_FIELDS"],
-    });
-  }
-  // A static executable cannot load NSS modules, so the os unit's passwd
-  // fallback (os.homedir() with HOME unset, and os.userInfo()) reads
-  // /etc/passwd directly in that build; every dynamically linked build
-  // keeps the unchanged getpwuid_r object. staticLink is the link
-  // plan's fact (link-plan.ts), not a program fact.
-  if (source === "scr_lib.c") {
-    variants.push({
-      id: "static-passwd",
-      when: { staticLink: true },
-      defines: ["SCR_STATIC_PASSWD"],
     });
   }
   return variants;

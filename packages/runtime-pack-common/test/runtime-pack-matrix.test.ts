@@ -82,14 +82,18 @@ test("scr_lib.c builds once per flavor for a dynamic link, plus the static link'
   // The unit's other object is the JavaScript object model twin (t262-da
   // §J), which answers the checked-dynamic Date annexB accessors.
   const unit = matrix.runtime_units.find((u: { source: string }) => u.source === "scr_lib.c");
-  expect(unit.variants.map((v: { id: string }) => v.id)).toEqual([
-    "default",
-    "default-workers",
-    "js-om",
-    "js-om-workers",
-    "static-passwd",
-    "static-passwd-workers",
-  ]);
+  expect(new Set(unit.variants.map((v: { id: string }) => v.id))).toEqual(
+    new Set([
+      "default",
+      "default-workers",
+      "static-passwd",
+      "static-passwd-workers",
+      "js-om",
+      "js-om-workers",
+      "js-om-static-passwd",
+      "js-om-static-passwd-workers",
+    ]),
+  );
   const plain = { workers: false, watchFile: false };
   expect(selected("scr_lib.c", plain).defines).toEqual([]);
   expect(selected("scr_lib.c", { ...plain, watchFile: true }).defines).toEqual([]);
@@ -103,6 +107,20 @@ test("scr_lib.c builds once per flavor for a dynamic link, plus the static link'
   expect(selected("scr_lib.c", { ...plain, workers: true, staticLink: true }).defines).toEqual([
     "SCR_STATIC_PASSWD",
     "SCR_WORKERS",
+  ]);
+  // A static executable whose program selects the object model build keeps
+  // the passwd reader: one build carries both defines.
+  expect(
+    new Set(selected("scr_lib.c", { ...plain, staticLink: true, jsObjectModel: true }).defines),
+  ).toEqual(new Set(["SCR_STATIC_PASSWD", "SCR_JS_OBJECT_MODEL"]));
+  expect(
+    new Set(
+      selected("scr_lib.c", { ...plain, workers: true, staticLink: true, jsObjectModel: true })
+        .defines,
+    ),
+  ).toEqual(new Set(["SCR_STATIC_PASSWD", "SCR_JS_OBJECT_MODEL", "SCR_WORKERS"]));
+  expect(selected("scr_lib.c", { ...plain, jsObjectModel: true }).defines).toEqual([
+    "SCR_JS_OBJECT_MODEL",
   ]);
 });
 

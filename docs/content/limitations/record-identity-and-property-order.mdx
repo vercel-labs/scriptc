@@ -11,6 +11,11 @@ Every dictionary type with the same value type then uses checked dynamic storage
 Class instances retain identity at their exact type or a base class, and at any interface or object type that a class instance is passed, stored, returned, or asserted as when the program could tell a copy from the instance: values of such a type are checked views of the original object, so writes, identity comparisons, Set and Map keys, `util.inspect`, and `JSON.stringify` through them reach the instance, as in Node.js.
 These types use checked dynamic storage, which is slower than native record fields, for all of their values, including plain objects.
 A type whose values are only read field by field, from fields the class does not write after construction and does not implement as accessors, stays a native record and holds a copy.
+A class instance also reaches such a type as the result of a function stored in a slot of another function type, as the value a promise settles with, as an element of an array of either, and as a member of an object written as a literal and read back or spread; the two arms of a `Promise<T> | T` type are views together.
+An `fs.Stats` held at an object type that names some of its members, or stored in an `unknown` slot, stays the `Stats` itself: its methods and members answer from the snapshot, and its identity is kept.
+`scriptc build` reports `SC2002` for such an object type when the program writes through its values, lists or copies their properties, prints them, or passes them where any value is accepted, because a `Stats` held by reference lists no properties of its own.
+In an `unknown` slot, `Object.keys`, `Object.values`, `Object.entries`, and object spread of a `Stats` answer as for an empty object, and `JSON.stringify`, `for...in`, and member writes throw, where Node.js lists, serializes, and writes its numeric properties.
+Each read of a `Stats` date member (`atime`, `mtime`, `ctime`, `birthtime`) answers a new `Date`, where Node.js answers the same object.
 Object spread of a class instance is refused.
 Dense array literals created directly in checked storage preserve identity, and supported native handles pass by reference.
 

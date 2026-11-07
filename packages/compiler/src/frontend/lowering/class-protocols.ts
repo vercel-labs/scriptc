@@ -475,6 +475,10 @@ export class ClassProtocols {
     };
     /** Expressions whose values are observed as whole objects. */
     const observed: ts.Expression[] = [];
+    /** The observed expressions whose own properties are listed, copied or
+     * printed (spreads, for-in, templates, console, JSON, Object, util and
+     * assert calls), as opposed to compared by identity. */
+    const enumerated: ts.Expression[] = [];
     /** Receivers whose type arguments or elements are observed (Set and Map
      * keys, array search haystacks). */
     const observedContainers: ts.Expression[] = [];
@@ -542,8 +546,10 @@ export class ClassProtocols {
         write(node.expression);
       } else if (ts.isSpreadAssignment(node) || ts.isTemplateSpan(node)) {
         observed.push(node.expression);
+        enumerated.push(node.expression);
       } else if (ts.isForInStatement(node)) {
         observed.push(node.expression);
+        enumerated.push(node.expression);
       } else if (ts.isSwitchStatement(node)) {
         // `switch` matches its cases with ===.
         const cases = node.caseBlock.clauses.nodes
@@ -566,6 +572,8 @@ export class ClassProtocols {
               (ts.isNewExpression(node) && IDENTITY_CONSTRUCTORS.has(callee.text))))
         ) {
           observed.push(...args.filter((arg) => !ts.isSpreadElement(arg)));
+          if (!ts.isNewExpression(node))
+            enumerated.push(...args.filter((arg) => !ts.isSpreadElement(arg)));
           // Object.assign(target, ...) and Object.defineProperty write the target.
           if (owner === "Object" && args[0] !== undefined && OBJECT_WRITERS.has(member ?? ""))
             writes.push({ receiver: args[0], name: null });
@@ -654,6 +662,7 @@ export class ClassProtocols {
     const marked = protocols;
     const facts: FlowFacts = {
       observed: new Set(),
+      enumerated: new Set(),
       written: new Map(),
       loose: [],
       bases: new Map(),
@@ -680,6 +689,10 @@ export class ClassProtocols {
           if (ts.isTypeParameterDeclaration(declaration) && declaration.parent !== undefined)
             facts.genericObservers.add(declaration.parent);
       }
+    }
+    for (const expr of enumerated) {
+      const type = typeOf(this.flowSourceNode(expr));
+      if (type !== undefined) this.collectSymbols(type, facts.enumerated, 0);
     }
     for (let i = 0; i < writes.length; i++) {
       const symbols = new Set<ts.Symbol>();
@@ -1016,6 +1029,14 @@ export class ClassProtocols {
     }
     // An argument holding the type, passed where any value is accepted or
     // to a generic function or class that observes its type parameter.
+    return this.reachesAnyValue(symbol, facts);
+  }
+
+  /** Whether a value of the marked type `symbol` is passed where any value
+   * is accepted (`unknown`, `any`, `object`, `{}`, an unresolved type
+   * parameter) or to a generic function or class that observes its type
+   * parameter: code that can do with it what it could do with any object. */
+  private reachesAnyValue(symbol: ts.Symbol, facts: FlowFacts): boolean {
     return facts.loose.some(
       (arg) =>
         arg.symbols.has(symbol) &&
@@ -1712,7 +1733,10 @@ export class ClassProtocols {
       attempt(() =>
         this.checker
           .getPropertiesOfType(type)
-          .map((property) => [ts.symbolName(property), this.checker.getTypeOfSymbol(property)] as const),
+          .map(
+            (property) =>
+              [ts.symbolName(property), this.checker.getTypeOfSymbol(property)] as const,
+          ),
       ) ?? NO_MEMBERS;
     this.members.set(type, members);
     return members;
@@ -1906,6 +1930,20 @@ export class ClassProtocols {
     const from = source.getSymbol();
     if (from === symbol) return false;
     const facts = this.facts;
+    // A platform object answers the members its handle models: a read or a
+    // call. A view whose values the program writes through, lists the
+    // properties of, copies, prints or hands to code that accepts any value
+    // would need the object's whole property table, which a handle does not
+    // carry (it lists none). Such a type stays a record, and the flow into it
+    // keeps the refusal a record has for a value it cannot be built from.
+    if (
+      facts !== null &&
+      this.isPlatformObject(source) &&
+      (facts.written.has(symbol) ||
+        facts.enumerated.has(symbol) ||
+        this.reachesAnyValue(symbol, facts))
+    )
+      return false;
     let collectionGrew = false;
     if (facts !== null) {
       // A Map or Set that reaches the view, which answers one of its
@@ -2077,6 +2115,9 @@ export class ClassProtocols {
 }
 
 interface FlowFacts {
+  /** Types whose values are read as whole objects: their own properties
+   * listed, copied or printed (a subset of `observed`). */
+  enumerated: Set<ts.Symbol>;
   /** Types whose values reach identity comparisons, Set/Map keys, array
    * searches or whole-object observers. */
   observed: Set<ts.Symbol>;

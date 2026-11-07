@@ -9217,8 +9217,14 @@ export class Lowerer {
     // instances' element keys. The slots say which declared parameter types,
     // and whether the declared result, give the body a generic view of a
     // record's or a class instance's fields (`box: { items: T[] }`, `Box<T>`,
-    // `v: B` with `B extends Box<T>`); a bare `v: T` is opaque to it.
-    type GenericSlots = { params: readonly boolean[] | null; result: boolean };
+    // `v: B` with `B extends Box<T>`); a bare `v: T` is opaque to it. A
+    // method of a generic class or interface also has that view of its
+    // receiver.
+    type GenericSlots = {
+      params: readonly boolean[] | null;
+      result: boolean;
+      receiver: boolean;
+    };
     const genericCallees = new Map<ts.CallExpression | ts.NewExpression, GenericSlots | null>();
     const genericSlots = (symbol: ts.Symbol): GenericSlots | null => {
       for (const declaration of symbol.declarations ?? []) {
@@ -9230,16 +9236,20 @@ export class Lowerer {
             ? peel(declaration.initializer)
             : declaration;
         const declared = new Map<string, ts.TypeParameterDeclaration>();
+        let receiver = false;
         for (let node: ts.Node | undefined = value; node; node = node.parent) {
           if (
-            ts.isFunctionLike(node) ||
-            ts.isClassDeclaration(node) ||
-            ts.isClassExpression(node) ||
-            ts.isInterfaceDeclaration(node) ||
-            ts.isTypeAliasDeclaration(node)
+            !ts.isFunctionLike(node) &&
+            !ts.isClassDeclaration(node) &&
+            !ts.isClassExpression(node) &&
+            !ts.isInterfaceDeclaration(node) &&
+            !ts.isTypeAliasDeclaration(node)
           )
-            for (const parameter of node.typeParameters?.nodes ?? [])
-              if (!declared.has(parameter.name.text)) declared.set(parameter.name.text, parameter);
+            continue;
+          const parameters = node.typeParameters?.nodes ?? [];
+          if (parameters.length > 0 && !ts.isFunctionLike(node)) receiver = true;
+          for (const parameter of parameters)
+            if (!declared.has(parameter.name.text)) declared.set(parameter.name.text, parameter);
         }
         if (declared.size === 0) continue;
         const mentions = (type: ts.Node): boolean => {
@@ -9268,8 +9278,9 @@ export class Lowerer {
           ? {
               params: value.parameters.nodes.map((parameter) => viewsFields(parameter.type)),
               result: viewsFields(value.type),
+              receiver,
             }
-          : { params: null, result: true };
+          : { params: null, result: true, receiver };
       }
       return null;
     };
@@ -9713,7 +9724,7 @@ export class Lowerer {
       allocationOwner: (node) => ownership.allocationOwner(node),
       arrayKeys: arrayKeysOf,
       instanceTyped: (node) => {
-        const type = typeOrNull(node);
+        const type = checkerTypes.get(node) ?? typeOrNull(node);
         return type !== null && (type.flags & ts.TypeFlags.Instantiable) !== 0;
       },
       genericCallKeys: (call) => {
@@ -9726,28 +9737,32 @@ export class Lowerer {
           genericCallees.set(call, slots);
         }
         if (slots === null) return null;
-        const keys = new Set<string>();
-        const declared = slots.params;
-        (call.arguments?.nodes ?? []).forEach((arg, index) => {
-          // Arguments past the declared ones fill a rest parameter.
-          const generic =
-            declared === null || (declared[Math.min(index, declared.length - 1)] ?? true);
-          reachableElementKeys(
-            mappedArrayHolder(ts.isSpreadElement(arg) ? arg.expression : arg),
-            keys,
-            generic ? 1 : 0,
-          );
-        });
-        // A method's receiver and a constructor's instance hold the arrays
-        // their class's type parameters type.
-        const instance = ts.isNewExpression(call)
-          ? call
-          : ts.isPropertyAccessExpression(callee)
-            ? callee.expression
-            : null;
-        if (instance !== null) reachableElementKeys(mappedArrayHolder(instance), keys, 1);
-        reachableElementKeys(mappedArrayHolder(call), keys, slots.result ? 1 : 0);
-        return [...keys];
+        const { params: declared, result, receiver } = slots;
+        return () => {
+          const keys = new Set<string>();
+          (call.arguments?.nodes ?? []).forEach((arg, index) => {
+            // Arguments past the declared ones fill a rest parameter.
+            const generic =
+              declared === null || (declared[Math.min(index, declared.length - 1)] ?? true);
+            reachableElementKeys(
+              mappedArrayHolder(ts.isSpreadElement(arg) ? arg.expression : arg),
+              keys,
+              generic ? 1 : 0,
+            );
+          });
+          // A method's receiver and a constructor's instance hold the arrays
+          // their class's type parameters type.
+          const instance = !receiver
+            ? null
+            : ts.isNewExpression(call)
+              ? call
+              : ts.isPropertyAccessExpression(callee)
+                ? callee.expression
+                : null;
+          if (instance !== null) reachableElementKeys(mappedArrayHolder(instance), keys, 1);
+          reachableElementKeys(mappedArrayHolder(call), keys, result ? 1 : 0);
+          return [...keys];
+        };
       },
       mayBeUndefined: (node) => {
         if (explicitlyNonNull(node)) return assertedReadMayBeUndefined(node);

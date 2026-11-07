@@ -55,10 +55,11 @@ export interface ElementStateHost {
    * an instance (`xs: A` with `A extends readonly T[]`). */
   instanceTyped?(node: ts.Expression): boolean;
   /** For a call of a generic function, method or constructor (its
-   * declaration, or one enclosing it, has type parameters): the element
-   * keys of every native array reachable from the types of its arguments,
-   * its receiver and its result. Null for any other call. */
-  genericCallKeys?(call: ts.CallExpression | ts.NewExpression): readonly string[] | null;
+   * declaration, or one enclosing it, has type parameters): a function that
+   * answers the element keys of every native array reachable from the
+   * types of its arguments, its receiver and its result. Null for any
+   * other call. */
+  genericCallKeys?(call: ts.CallExpression | ts.NewExpression): (() => readonly string[]) | null;
   /** Debug provenance for a new fact. */
   note:
     | ((fact: "undefined" | "holes" | "foreign", key: string, site: ts.Node | undefined) => void)
@@ -94,6 +95,7 @@ interface Contents {
 }
 
 const NOTHING: Contents = { undefined: false, holes: false };
+const NO_SOURCES: readonly ts.Expression[] = [];
 
 /** Methods whose callbacks also visit holes, as `undefined`. */
 const HOLE_VISITING = new Set(["find", "findIndex", "findLast", "findLastIndex"]);
@@ -145,6 +147,10 @@ export class ArrayElementStates {
    * expressions with no element key outside an instance, whose facts are
    * those of each instance's key (sourcesMayHoldMissing). */
   private sources: Set<ts.Expression> | null = null;
+  /** Counts the generic arrays judgements have read, collected or not. */
+  private genericReads = 0;
+  /** The collector of scan(), reused between sites. */
+  private readonly siteSources = new Set<ts.Expression>();
   /** How a generic array is judged: its contents are unknown, or, to find
    * what an array built from it takes from it, it holds nothing missing or
    * both a hole and undefined. */
@@ -160,9 +166,11 @@ export class ArrayElementStates {
   /** Every element a callback of `method` receives from `receiver` is a
    * present value. */
   elementsPresent(receiver: ts.Expression, method: string): boolean {
+    const reads = this.genericReads;
     const contents = this.contents(receiver);
     if (contents === null || contents.undefined || (HOLE_VISITING.has(method) && contents.holes))
       return false;
+    if (this.genericReads === reads) return true;
     // An array built from generic arrays (a slot that owns a copy of one, a
     // literal that spreads one) holds in an instance what they hold there.
     // No instance is known here, so that counts as soon as any array of the
@@ -203,11 +211,14 @@ export class ArrayElementStates {
    * `undefined` in an instance where one of them holds a hole or undefined
    * (sourcesMayHoldMissing). Empty for a loop that reads no generic array. */
   loopSources(node: ts.ForOfStatement): readonly ts.Expression[] | null {
+    const reads = this.genericReads;
+    if (this.loopMayYieldUndefined(node)) return null;
+    if (this.genericReads === reads) return NO_SOURCES;
     const sources = new Set<ts.Expression>();
     const outer = this.sources;
     this.sources = sources;
     try {
-      if (this.loopMayYieldUndefined(node)) return null;
+      this.loopMayYieldUndefined(node);
     } finally {
       this.sources = outer;
     }
@@ -237,7 +248,8 @@ export class ArrayElementStates {
 
   /** Scans one syntax node; true when a fact was added. */
   scan(node: ts.Node): boolean {
-    const sources = new Set<ts.Expression>();
+    const sources = this.siteSources;
+    if (sources.size > 0) sources.clear();
     this.sources = sources;
     let changed: boolean;
     try {
@@ -394,6 +406,7 @@ export class ArrayElementStates {
       // they hold in an instance.
       const built = this.ownerSources.get(owner);
       if (built === undefined) return own;
+      this.genericReads++;
       if (this.sources !== null) {
         for (const source of built.undefined) this.sources.add(source);
         for (const source of built.holes) this.sources.add(source);
@@ -412,6 +425,7 @@ export class ArrayElementStates {
   private storedIn(node: ts.Expression): Contents | null {
     const keys = this.host.arrayKeys(node);
     if (keys === null || (keys.length === 0 && (this.host.instanceTyped?.(node) ?? false))) {
+      this.genericReads++;
       this.sources?.add(node);
       if (this.genericArrays === "missing") return { undefined: true, holes: true };
     }
@@ -624,6 +638,7 @@ export class ArrayElementStates {
     if (keys !== null && keys.length === 0) {
       // A value typed by a type parameter is an array in some instances.
       if (!(this.host.instanceTyped?.(node) ?? false)) return false;
+      this.genericReads++;
       this.sources?.add(node);
       return this.genericArrays === "missing";
     }
@@ -775,11 +790,13 @@ export class ArrayElementStates {
    * element types only through typed callbacks, judged where they are
    * written. */
   private scanGenericCall(node: ts.CallExpression | ts.NewExpression): boolean {
+    const reachable = this.host.genericCallKeys?.(node) ?? null;
+    if (reachable === null) return false;
     this.host.read?.(HOLEY_KEYS);
     this.host.read?.(VIEW_HOLES);
     if (this.holeyKeys.size === 0 && !this.viewHoles) return false;
-    const keys = this.host.genericCallKeys?.(node) ?? null;
-    if (keys === null || keys.length === 0) return false;
+    const keys = reachable();
+    if (keys.length === 0) return false;
     for (const key of keys) this.host.read?.(key);
     if (!keys.some((key) => this.holeyKeys.has(key) || this.viewed(key))) return false;
     const holes = this.addHoles(keys);

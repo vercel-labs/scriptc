@@ -550,6 +550,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "a split require binding's own file has to spell `require`",
   ),
   scan(
+    "frontend/lowering/construction-reads.ts#classHierarchyOf",
+    1,
+    "prefilter",
+    "a file that never spells `extends` declares no derived class",
+  ),
+  scan(
     "frontend/lowering/cycle-initialization.ts#earlyHeritageReference",
     1,
     "closed-world",

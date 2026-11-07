@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9241-node-island-weak-import/main.ts"
+ ],
+ "diags": []
+}

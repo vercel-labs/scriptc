@@ -1,6 +1,7 @@
 import { keyedHelperName } from "./stable-names.js";
 import { dynUndefinedExpr, numLit, varRef } from "../../ir/build.js";
 import * as ts from "../ts7/adapter.js";
+import { withoutParentheses } from "../outer-expressions.js";
 import { isJsSourceFile } from "../program.js";
 import {
   BOOL,
@@ -16,6 +17,7 @@ import {
   type SrcLoc,
   typeKey,
 } from "../../ir/ir.js";
+import type { IrLibFn } from "../../ir/builtin-signatures.js";
 import { buildFunctionAdapter } from "./coercions/builders.js";
 import { lowerOptionalNumber } from "./lower-exprs.js";
 import type { Lowerer } from "./lowerer.js";
@@ -395,7 +397,7 @@ function optionalTimerHandle(lowerer: Lowerer, handle: IrExpr, loc: SrcLoc): IrE
   return { kind: "nullish", left: handle, right: numLit(0, loc), type: F64, loc };
 }
 
-const MOCKABLE_TIMER_FNS: ReadonlySet<string> = new Set([
+const MOCKABLE_TIMER_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "timers.setTimeout",
   "timers.setTimeoutHandle",
   "timers.setInterval",
@@ -790,7 +792,7 @@ function withTimerThis(lowerer: Lowerer, node: ts.Expression, cb: IrExpr, loc: S
 }
 
 function callbackMayReadThis(lowerer: Lowerer, node: ts.Expression): boolean {
-  let callback = unparenthesized(node);
+  let callback = withoutParentheses(node);
   const seen = new Set<ts.Node>();
   for (;;) {
     if (ts.isArrowFunction(callback)) return false;
@@ -811,14 +813,8 @@ function callbackMayReadThis(lowerer: Lowerer, node: ts.Expression): boolean {
     )
       return true;
     seen.add(declaration);
-    callback = unparenthesized(declaration.initializer);
+    callback = withoutParentheses(declaration.initializer);
   }
-}
-
-function unparenthesized(node: ts.Expression): ts.Expression {
-  let expression = node;
-  while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
-  return expression;
 }
 
 /** Whether a function reads its own `this`: in its body, or in the

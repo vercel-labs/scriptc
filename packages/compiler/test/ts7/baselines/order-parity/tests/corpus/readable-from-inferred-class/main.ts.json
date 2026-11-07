@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/readable-from-inferred-class/frames.cjs",
+  "<repo>/tests/corpus/readable-from-inferred-class/main.ts"
+ ],
+ "diags": []
+}

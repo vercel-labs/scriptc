@@ -20,19 +20,19 @@
  * declared in the file). Other shapes answer
  * null and keep their existing treatment. */
 import * as ts from "./ts7/syntax.js";
+import { withoutParentheses } from "./outer-expressions.js";
 import {
   applyEdits,
   countDeclarations,
   declaredNames,
   isWritten,
   references,
-  unparen,
   type Edit,
 } from "./npm-static-bundled-chunks.js";
 import { tokenStartOfNode } from "./ts7/node-functions.js";
 
 function isModuleExports(e: ts.Expression): e is ts.PropertyAccessExpression {
-  const x = unparen(e);
+  const x = withoutParentheses(e);
   return (
     ts.isPropertyAccessExpression(x) &&
     !x.questionDotToken &&
@@ -49,7 +49,7 @@ function inert(stmt: ts.Statement): boolean {
   if (ts.isFunctionDeclaration(stmt) || ts.isEmptyStatement(stmt)) return true;
   if (ts.isExpressionStatement(stmt) && ts.isStringLiteral(stmt.expression)) return true;
   if (ts.isExpressionStatement(stmt)) {
-    const e = unparen(stmt.expression);
+    const e = withoutParentheses(stmt.expression);
     if (
       !ts.isBinaryExpression(e) ||
       e.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
@@ -85,20 +85,20 @@ export function normalizeCjsFunctionExports(sf: ts.SourceFile): string | null {
   for (let i = 0; i < stmts.length; i++) {
     const stmt = stmts[i]!;
     if (!ts.isExpressionStatement(stmt)) continue;
-    const top = unparen(stmt.expression);
+    const top = withoutParentheses(stmt.expression);
     if (!ts.isBinaryExpression(top) || top.operatorToken.kind !== ts.SyntaxKind.EqualsToken)
       continue;
     let e: ts.BinaryExpression = top;
     let rebinds = false;
     if (ts.isIdentifier(top.left) && top.left.text === "exports") {
-      const inner = unparen(top.right);
+      const inner = withoutParentheses(top.right);
       if (!ts.isBinaryExpression(inner) || inner.operatorToken.kind !== ts.SyntaxKind.EqualsToken)
         continue;
       rebinds = true;
       e = inner;
     }
     if (!isModuleExports(e.left)) continue;
-    const value = unparen(e.right);
+    const value = withoutParentheses(e.right);
     if (!ts.isIdentifier(value)) return null;
     if (whole !== null || !stmts.slice(0, i).every(inert)) return null;
     whole = { stmt, fn: value.text, rebinds };
@@ -177,8 +177,12 @@ export function normalizeCjsFunctionExports(sf: ts.SourceFile): string | null {
   if (unsafe) return null;
   if (whole.rebinds) {
     // `exports = module.exports = W` → `module.exports = W`.
-    const e = unparen(whole.stmt.expression) as ts.BinaryExpression;
-    edits.push({ start: tokenStartOfNode(e), end: tokenStartOfNode(unparen(e.right)), text: "" });
+    const e = withoutParentheses(whole.stmt.expression) as ts.BinaryExpression;
+    edits.push({
+      start: tokenStartOfNode(e),
+      end: tokenStartOfNode(withoutParentheses(e.right)),
+      text: "",
+    });
   }
   if (edits.length === 0) return null;
   return applyEdits(source, 0, source.length, edits);

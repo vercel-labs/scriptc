@@ -41,8 +41,10 @@ import {
   globMatch,
   isMarkedUserModule,
   nodeIslandPolicy,
+  type NodeIslandPathMark,
   type NodeIslandPolicy,
 } from "../node-islands/policy.js";
+import { checkPackageMarks, commandLinePackageMarks } from "../node-islands/package-marks.js";
 import { buildNodeIslandReport } from "../node-islands/report.js";
 import { nodeIslandSet } from "../node-islands/boundary.js";
 import type { IslandModule, IslandPackage, NodeIslandSet } from "../node-islands/boundary.js";
@@ -89,11 +91,34 @@ export function prepareExecutableModule(
   unitStore: UnitStore | null = null,
   lowerModules: ReadonlyMap<string, IslandModule> = new Map(),
 ): PreparedExecutableModule | CompileFailure {
-  // The island decision reads the detector's scan unless islands are off.
-  const islandScan =
-    nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands).mode !== "off";
+  // The island decision reads the detector's scan unless islands are off,
+  // and so does the check of the command line's --native and --npm-static
+  // marks (node-islands/package-marks.ts).
+  const loadPolicy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands, entryPath);
+  const packageMarks = commandLinePackageMarks(loadPolicy, opts.npmStatic);
+  const islandScan = loadPolicy.mode !== "off" || packageMarks.length > 0;
   let fe = createFrontend(entryPath, opts.npmStatic, undefined, undefined, { islandScan });
   timing("frontend-load");
+  // A mark that names nothing the build could act on is refused instead of
+  // compiling as if the flag were not there. The program is the same on
+  // every retry, so the first load answers for all of them.
+  if (
+    packageMarks.length > 0 &&
+    fe.nodeIslandScan !== undefined &&
+    lowerIslands.size === 0 &&
+    lowerModules.size === 0
+  ) {
+    const diagnostics = checkPackageMarks(
+      entryPath,
+      packageMarks,
+      fe.nodeIslandScan({ userJs: false }),
+    ).problems;
+    if (diagnostics.length > 0) {
+      const sourceTexts = fe.sourceTexts();
+      fe.dispose();
+      return { ok: false, diagnostics, sourceTexts };
+    }
+  }
   // Node islands (scope-B NI-4): packages refused natively run in Node,
   // unless the policy says otherwise. The frontend reloads without them,
   // so their declarations type the program.
@@ -481,14 +506,15 @@ function moduleIslands(
   const stripProblems: ModuleIslandDecision["stripProblems"] = [];
   const markProblems: ScrDiagnostic[] = [];
   const start = (file: string): SrcLoc => ({ file, start: 0, end: 0 });
-  // The command-line marks no user module of the program matches.
-  const unmatched = new Set(
-    policy.userModules.filter((entry) => entry.source === "cli").map((entry) => entry.pattern),
-  );
+  // The command-line marks no user module of the program matches, by
+  // pattern.
+  const unmatched = new Map<string, NodeIslandPathMark>();
+  for (const entry of policy.userModules)
+    if (entry.mark !== undefined) unmatched.set(entry.pattern, entry.mark);
   for (const m of scan.modules) {
     if (m.origin !== "user") continue;
     const path = m.file.replaceAll("\\", "/");
-    for (const pattern of unmatched)
+    for (const pattern of unmatched.keys())
       if (globMatch(pattern.replaceAll("\\", "/"), path)) unmatched.delete(pattern);
     const marked = isMarkedUserModule(policy, m.file);
     const patches = m.markers.filter((marker) => PATCH_REASONS.has(marker.reason));
@@ -529,8 +555,8 @@ function moduleIslands(
       decision: marked === null ? "auto" : "marked",
     });
   }
-  for (const pattern of unmatched)
-    markProblems.push(nodeIslandUnmatchedMarkDiag(pattern, start(entryPath)));
+  for (const mark of unmatched.values())
+    markProblems.push(nodeIslandUnmatchedMarkDiag(mark, start(entryPath)));
   return { modules, markProblems, entryPatch, stripProblems };
 }
 
@@ -547,7 +573,7 @@ function decideNodeIslands(
   lowerIslands: ReadonlyMap<string, IslandPackage>,
   lowerModules: ReadonlyMap<string, IslandModule>,
 ): (NodeIslandSet & { notes: ScrDiagnostic[]; errors: ScrDiagnostic[] }) | null {
-  const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands);
+  const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands, entryPath);
   if (policy.mode === "off" || fe.nodeIslandScan === undefined) return null;
   // A package marked native stays refused: the build reports it rather
   // than running it in Node.
@@ -747,6 +773,7 @@ function decideNodeIslands(
   if (
     refused.size === 0 &&
     policy.forcedNode.size === 0 &&
+    policy.packageMarks.size === 0 &&
     modules.size === 0 &&
     readerPackages.size === 0 &&
     readerGlobals.size === 0
@@ -881,27 +908,28 @@ function decideNodeIslands(
       }),
     );
   // A package named with --node-island that is not in the island set has
-  // nothing the build runs in Node: scriptc compiles it from its own
-  // implementation, it is a Node builtin under another name, or the program
-  // loads no module of it from node_modules. The build names why instead of
-  // compiling as if the flag were not there.
-  const unhonored = [...policy.forcedNode]
-    .filter(([name, source]) => source === "cli" && !packages.has(name))
-    .map(([name]) => name)
-    .sort();
+  // nothing the build runs in Node: --native names it too, scriptc compiles
+  // it from its own implementation, it is a Node builtin under another name,
+  // or the program loads no module of it from node_modules. The build names
+  // why instead of compiling as if the flag were not there.
+  const unhonored = [...policy.packageMarks.values()]
+    .filter((mark) => !packages.has(mark.name))
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   if (unhonored.length > 0) {
     return {
       ...nodeIslandSet(new Map(), new Map()),
       notes: [],
-      errors: unhonored.map((name) =>
+      errors: unhonored.map((mark) =>
         nodeIslandUnmatchedPackageDiag(
-          name,
-          packageShimFor(entryPath, name) !== null
-            ? "shim"
-            : builtinPackageAliasFor(entryPath, name) !== null
-              ? "builtin"
-              : "absent",
-          fe.npmImportSites.get(name) ?? { file: entryPath, start: 0, end: 0 },
+          mark,
+          policy.forcedNative.has(mark.name)
+            ? "native"
+            : packageShimFor(entryPath, mark.name) !== null
+              ? "shim"
+              : builtinPackageAliasFor(entryPath, mark.name) !== null
+                ? "builtin"
+                : "absent",
+          fe.npmImportSites.get(mark.name) ?? { file: entryPath, start: 0, end: 0 },
         ),
       ),
     };
@@ -953,7 +981,7 @@ function refusalIslands(
   refused: readonly NpmStaticStatus[],
   known: ReadonlyMap<string, IslandPackage>,
 ): Map<string, IslandPackage> | null {
-  const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands);
+  const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands, entryPath);
   if (policy.mode !== "auto") return null;
   const grown = new Map(known);
   for (const entry of refused) {
@@ -1036,7 +1064,7 @@ function islandGrowth(
   if (scan === undefined) return null;
   return {
     entry: entryPath,
-    policy: nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands),
+    policy: nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands, entryPath),
     scan,
     npm: fe.npmStatic,
     npmImportSites: fe.npmImportSites,
@@ -1056,7 +1084,7 @@ function loweringModules(
   diagnostics: readonly ScrDiagnostic[],
   known: ReadonlyMap<string, IslandModule>,
 ): Map<string, IslandModule> | null {
-  const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands);
+  const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands, entryPath);
   if (policy.mode !== "auto" || known.size > 16) return null;
   const grown = new Map(known);
   for (const d of diagnostics) {

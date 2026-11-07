@@ -1680,7 +1680,44 @@ static void check_chunk_map(void) {
 }
 #endif
 
-int main(void) {
+#if SCR_SMALL_ALLOC && (defined(__linux__) || defined(__APPLE__))
+/* The lowest address the window starts at: 4 GiB on Linux, one chunk past
+ * SCR_WINDOW_BASE on macOS. */
+#ifdef __linux__
+#define WINDOW_LOW ((uintptr_t)4 << 30)
+#else
+#define WINDOW_LOW ((uintptr_t)SCR_WINDOW_BASE + SCR_SA_CHUNK)
+#endif
+/* The window starts a whole number of chunks past its lowest start, fewer
+ * than 1024, and all of it lies where a 32-bit reference reaches, whatever
+ * this run drew. A program without workers has its classes' slices, which
+ * need a window of a fixed size. */
+static uintptr_t check_window_start(void) {
+  void *p = scr_mem_alloc(24);
+  assert(p && owned(p));
+  uintptr_t slide = scr_sa.base - WINDOW_LOW;
+  assert(scr_sa.base >= WINDOW_LOW && slide < (uintptr_t)1024 << SCR_SA_CHUNK_SHIFT);
+  assert((slide & (SCR_SA_CHUNK - 1)) == 0);
+  assert(scr_sa.base + scr_sa.span <= (uintptr_t)SCR_WINDOW_BASE + ((uintptr_t)32 << 30));
+#if defined(__linux__) && !defined(SCR_WORKERS) && !defined(SCR_SA_WINDOW_TEST_CHUNKS)
+  assert(scr_sa.span == (uintptr_t)24 << 30 && scr_sa_slice_span != 0);
+#endif
+  scr_mem_free(p);
+  return scr_sa.base;
+}
+#endif
+
+/* With the argument `window-start`, prints where this run's window starts
+ * (scr_alloc.test.ts compares runs); otherwise runs the checks. */
+int main(int argc, char **argv) {
+#if SCR_SMALL_ALLOC && (defined(__linux__) || defined(__APPLE__))
+  if (argc > 1 && strcmp(argv[1], "window-start") == 0) {
+    printf("%llx\n", (unsigned long long)check_window_start());
+    return 0;
+  }
+#endif
+  (void)argc;
+  (void)argv;
 #if defined(SCR_SA_WINDOW_TEST_CHUNKS) && SCR_SMALL_ALLOC
   check_window_exhaustion();
   check_window_ref_fallback();
@@ -1700,6 +1737,9 @@ int main(void) {
 #endif
 #if SCR_SMALL_ALLOC && defined(__linux__)
   check_chunk_map();
+#endif
+#if SCR_SMALL_ALLOC && (defined(__linux__) || defined(__APPLE__))
+  (void)check_window_start();
 #endif
 #if SCR_SMALL_ALLOC && defined(__linux__) && !defined(SCR_WORKERS) && !defined(SCR_SA_WINDOW_TEST_CHUNKS)
   check_slices();

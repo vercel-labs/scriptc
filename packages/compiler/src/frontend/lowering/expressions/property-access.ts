@@ -143,7 +143,7 @@ import {
   lowerStaticSuperRead,
 } from "../lower-classes.js";
 import { isErrorPrototypeValue, lowerClassPrototypeData } from "../class-prototypes.js";
-import { lowerEnumAccess } from "../lower-enums.js";
+import { isEnumMemberRead, lowerEnumAccess } from "../lower-enums.js";
 import {
   hasOptionalChainGuard,
   isOptionalChainTail,
@@ -5276,6 +5276,8 @@ export function fieldTarget(
   access: ts.PropertyAccessExpression,
 ): FieldTarget | null {
   if (lowerer.cjsLocalModuleBindingOf(access.expression)) return null;
+  // `E.A` of an enum whose object is built: the member's constant.
+  if (isEnumMemberRead(lowerer, access)) return null;
   // `module.exports` / `module.id`: CommonJS module surface, never a field.
   if (isCjsModuleGlobal(lowerer, access.expression)) return null;
   if (isCjsExportsIdentifier(lowerer, access.expression)) return null;
@@ -6538,7 +6540,7 @@ function globalThisWrittenNames(lowerer: Lowerer, globalType: ts.Type): Set<stri
   const names = new Set<string>();
   lowerer.globalThisWrittenNames = names;
   for (const sf of lowerer.program.getImplementationSourceFiles()) {
-    if (sf.isDeclarationFile || !sf.text.includes("globalThis")) continue;
+    if (sf.isDeclarationFile || !ts.sourceTextIncludes(sf, "globalThis")) continue;
     ts.walkPreorder(sf, (node) => {
       if (
         ts.isBinaryExpression(node) &&

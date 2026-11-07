@@ -15,7 +15,7 @@
 import * as ts from "../ts7/adapter.js";
 import { BOOL, DYN, F64, type IrExpr, type IrStmt, type SrcLoc } from "../../ir/ir.js";
 import { boolLit, dynUndefinedExpr, numLit, strLit, varRef } from "../../ir/build.js";
-import { nodeValueDiag } from "../../diagnostics/diagnostic.js";
+import { nodeObjectMemberWriteDiag, nodeValueDiag } from "../../diagnostics/diagnostic.js";
 import { isJsSourceFile, isNodeEsmFile, locOf } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
 import {
@@ -26,7 +26,12 @@ import {
   refusingFunctionRef,
 } from "./builtin-function-fences.js";
 import { builtinModuleHasMember, builtinModuleMemberCensus } from "./builtin-module-members.js";
-import { isTruthinessOnlyRead, processDataMemberValue, processHasIpc } from "./builtins/process.js";
+import {
+  isTruthinessOnlyRead,
+  processDataMemberValue,
+  processFunctionMemberValue,
+  processHasIpc,
+} from "./builtins/process.js";
 import { NODE_GLOBALS_WITHOUT_NATIVE } from "./host-globals.js";
 import { hostGlobalValue } from "./host-global-values.js";
 import {
@@ -40,14 +45,6 @@ import {
 } from "./node-values.js";
 import { builtinFenceHintOf, stdlibGlobalNameOf } from "./surfaces.js";
 import { isGlobalMember, jsGlobalValueByName } from "./global-values.js";
-
-/** Whether Node's value under the name is `undefined`: an own property
- * that holds nothing (`process._maxListeners`). A member whose value depends
- * on the operating system is recorded as "platform" and is refused by name
- * like any other value native code does not have. */
-function isUndefinedValue(kind: NodeValueKind): boolean {
-  return kind.kind === "value" && kind.type === "undefined";
-}
 
 /** A bare read of the global `name`, or `globalThis.name`. `property` is
  * the second spelling: a name Node does not define reads undefined there
@@ -174,14 +171,19 @@ function programReadsGlobalValue(lowerer: Lowerer, name: string): boolean {
 /** The value of a Node global object native code has no object for
  * (`process`, `performance`): one object per program, built on first read,
  * that has every member Node's object has. A function member is its real
- * function value where one exists and the refusing function value
- * otherwise; a data member the runtime answers exactly is a getter over the
- * same read the spelled member performs; every other member is a getter
- * that throws the refusal naming it. So `typeof`, identity (`perf ===
- * performance`, membership in the harness's known-globals Set), `in` and
- * the `typeof` of each function member are Node's, a name Node's object
- * does not have reads undefined, and nothing the object cannot answer is
- * answered wrongly. The spelled members (`process.argv`, `performance.now()`)
+ * function value where the spelled member has one and the refusing function
+ * value otherwise, the same function either way; a data member the runtime
+ * answers exactly is a getter over the same read the spelled member
+ * performs, so it is as live as that read; every other member is a getter
+ * that throws the refusal naming it, including one whose value in a fresh
+ * Node process is undefined (`exitCode`): the program can assign it, and a
+ * value fixed when the object was built would go stale. A write to a data
+ * member through the object is refused by name too: the state is the
+ * runtime's, written where the member is spelled. So `typeof`, identity
+ * (`perf === performance`, membership in the harness's known-globals Set),
+ * `in` and the `typeof` of each function member are Node's, a name Node's
+ * object does not have reads undefined, and nothing the object cannot
+ * answer is answered wrongly. The spelled members (`process.argv`, `performance.now()`)
  * never come here: they are lowered where they are written. */
 function nodeObjectValue(lowerer: Lowerer, name: string, node: ts.Node, loc: SrcLoc): IrExpr {
   const helper = `%builtin.object.${name}`;
@@ -228,6 +230,13 @@ function defineNodeObject(lowerer: Lowerer, name: string, helper: string, node: 
       loc,
     },
   ];
+  // One setter for every accessor member: a write through the held object
+  // is refused by name. Without it the write would be dropped in a sloppy
+  // source and `process.exitCode` would keep its value, silently.
+  const assign = `%builtin.assign.${name}`;
+  const assignDiag = nodeObjectMemberWriteDiag(name, loc);
+  defineRefusingFunction(lowerer, assign, assignDiag, locatedFenceMessage(assignDiag, node), loc);
+  const setter = field("set", refusingFunctionRef(assign, "set", 1, loc));
   for (const [member, kind] of members) {
     const display = `${name}.${member}`;
     const enumerable = field(
@@ -239,10 +248,11 @@ function defineNodeObject(lowerer: Lowerer, name: string, helper: string, node: 
     const exact =
       kind.kind === "value" ? exactObjectMember(lowerer, name, member, node, loc) : null;
     if (kind.kind === "function") {
+      // The function the spelled member reads (`held.nextTick ===
+      // process.nextTick`, and a call through the stored object runs it);
+      // the refusing function the spelled read answers otherwise.
       const real =
-        name === "process"
-          ? lowerer.lowerBuiltinCallableValue({ module: name, member }, loc)
-          : null;
+        name === "process" ? processFunctionMemberValue(lowerer, member, loc, true) : null;
       descriptor = [
         field("value", dyn(real ?? memberFunctionFence(lowerer, display, member, kind, node, loc))),
         field("writable", dyn(boolLit(true, loc))),
@@ -261,13 +271,7 @@ function defineNodeObject(lowerer: Lowerer, name: string, helper: string, node: 
       });
       descriptor = [
         field("get", refusingFunctionRef(getter, member, 0, loc)),
-        enumerable,
-        configurable,
-      ];
-    } else if (kind.type === "undefined") {
-      descriptor = [
-        field("value", dynUndefinedExpr(loc)),
-        field("writable", dyn(boolLit(true, loc))),
+        setter,
         enumerable,
         configurable,
       ];
@@ -277,6 +281,7 @@ function defineNodeObject(lowerer: Lowerer, name: string, helper: string, node: 
       defineRefusingFunction(lowerer, lifted, diag, locatedFenceMessage(diag, node), loc);
       descriptor = [
         field("get", refusingFunctionRef(lifted, member, 0, loc)),
+        setter,
         enumerable,
         configurable,
       ];
@@ -358,7 +363,6 @@ export function unloweredModuleMemberValue(
     refuseUnmodeledMember(lowerer, display, node);
     return builtinFunctionFenceValue(lowerer, bi, node, loc);
   }
-  if (isUndefinedValue(kind)) return dynUndefinedExpr(loc);
   lowerer.nodeValueFence(display, node, hint);
 }
 
@@ -493,7 +497,6 @@ export function unloweredGlobalObjectMember(
     refuseUnmodeledMember(lowerer, display, node);
     return memberFunctionFence(lowerer, display, member, kind, node, loc);
   }
-  if (isUndefinedValue(kind)) return dynUndefinedExpr(loc);
   lowerer.nodeValueFence(display, node);
 }
 
@@ -656,11 +659,12 @@ export function nodeValueTypeof(lowerer: Lowerer, expr: ts.Expression): string |
   return TYPEOF_ANSWERS.has(kind.type) ? kind.type : null;
 }
 
-/** The `typeof` answers a census value can have ("throws" marks a getter
+/** The `typeof` answers a census value can have. "throws" marks a getter
  * that throws and "platform" a value that depends on the operating system,
- * neither of which is an answer). */
+ * neither of which is an answer; a member that is undefined in a fresh
+ * Node process (`process.exitCode`, an emitter's `_maxListeners`) is state
+ * the program can set, so its type is not a fact about the name either. */
 const TYPEOF_ANSWERS: ReadonlySet<string> = new Set([
-  "undefined",
   "object",
   "number",
   "string",

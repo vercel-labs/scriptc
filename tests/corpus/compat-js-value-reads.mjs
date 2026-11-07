@@ -19,6 +19,10 @@ const pass = (value) => value;
 console.log("storage", typeof localStorage, typeof sessionStorage);
 console.log("storage global", typeof globalThis.localStorage, globalThis.sessionStorage);
 console.log("storage in", "localStorage" in globalThis, "sessionStorage" in globalThis);
+// The CommonJS bindings are not properties of the global object, and an ES
+// module has none of them.
+console.log("commonjs", typeof require, typeof module, typeof exports, typeof __dirname);
+console.log("commonjs global", typeof globalThis.require, typeof globalThis.module, globalThis.exports);
 console.log("storage branch", typeof localStorage !== "undefined" ? "has storage" : "no storage");
 try {
   console.log(localStorage);
@@ -74,6 +78,13 @@ console.log("process value", typeof held, held === process, pass(globalThis.proc
 console.log("process value members", typeof held.cwd, typeof held.exit, typeof held.nextTick, typeof held.on);
 console.log("process value data", held.pid === process.pid, held.platform === process.platform, held.debugPort);
 console.log("process value in", "argv" in held, "versions" in held, "browser" in held, held.browser);
+// A function member of the held object is the function the spelled member
+// reads, and a call through the held object runs it.
+console.log("process value identity", held.hrtime === process.hrtime, held.nextTick === process.nextTick);
+console.log("process value identity", held.getBuiltinModule === process.getBuiltinModule, held.cwd === process.cwd);
+console.log("process value calls", held.hrtime().length, typeof held.hrtime.bigint(), held.cwd() === process.cwd());
+console.log("process value calls", held.getBuiltinModule("node:path").sep, held.getBuiltinModule("node:path") === process.getBuiltinModule("path"));
+held.nextTick(() => console.log("process value tick"));
 const clock = pass(performance);
 console.log("performance value", typeof clock, clock === performance, clock === importedPerformance);
 console.log("performance value members", typeof clock.now, typeof clock.mark, "timeOrigin" in clock, clock.timeOrigin === origin);

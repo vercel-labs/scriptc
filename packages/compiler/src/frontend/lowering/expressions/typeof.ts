@@ -90,6 +90,21 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
     return { kind: "strLit", value: "object", type: STRING, loc };
   const performance = lowerPerfHooksTypeof(lowerer, expr.expression);
   if (performance) return performance;
+  // `typeof globalThis.module`, `typeof global.require`: the CommonJS module
+  // bindings are not properties of the global object in any module, so the
+  // answer is "undefined" (asked before the module-object rule below, which
+  // goes by the declared type of `module`).
+  {
+    let operand = expr.expression;
+    while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
+    if (
+      ts.isPropertyAccessExpression(operand) &&
+      !operand.questionDotToken &&
+      COMMONJS_MODULE_BINDINGS.has(operand.name.text) &&
+      stdlibGlobalNameOf(lowerer, operand.expression) === "globalThis"
+    )
+      return { kind: "strLit", value: "undefined", type: STRING, loc };
+  }
   if (isNodeModuleValue(lowerer, expr.expression)) {
     return { kind: "strLit", value: "object", type: STRING, loc };
   }

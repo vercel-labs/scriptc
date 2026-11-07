@@ -48,6 +48,8 @@ console.log("process", typeof process.abort, typeof process.finalization, typeof
 const held = pass(process);
 console.log("process value", typeof held, held === process, held === pass(global.process));
 console.log("process value", typeof held.cwd, held.pid === process.pid, held.arch === process.arch);
+console.log("process value", held.hrtime === process.hrtime, held.nextTick === process.nextTick, held.cwd === process.cwd);
+console.log("commonjs global", typeof globalThis.require, typeof global.module, typeof globalThis.__filename);
 
 // performance.
 const clock = pass(performance);

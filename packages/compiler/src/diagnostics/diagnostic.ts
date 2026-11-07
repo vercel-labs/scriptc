@@ -1311,6 +1311,21 @@ export function nodeValueDiag(surface: string, loc: SrcLoc, hint?: string): ScrD
   };
 }
 
+/** A JavaScript source assigned a member of a Node global object through
+ * the object held as a value (`const held = process; held.exitCode = 1`).
+ * The held object answers reads (node-value-reads.ts); the state behind the
+ * member lives in the runtime and is written where the member is spelled,
+ * so a write accepted here would leave `process.exitCode` unchanged. */
+export function nodeObjectMemberWriteDiag(object: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC2020",
+    message: `assigning a member of '${object}' through a stored value is not supported yet`,
+    loc,
+    milestone: "later",
+    hint: `Assign the member where it is spelled (\`${object}.<member> = value\`): the stored object has Node's members to read, and a write through it would not reach the runtime's state`,
+  };
+}
+
 /** A stdlib-global snapshot reached a site that needs its VALUE (an
  * argument, a return, a stored field). The declaration emitted no storage
  * — alias plumbing only serves member and call reads — and the global's

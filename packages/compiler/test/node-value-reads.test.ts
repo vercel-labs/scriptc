@@ -230,6 +230,32 @@ console.log(typeof process.abort, typeof process.finalization);
     expect(refusals("main-module.mjs", `console.log(process.mainModule);\n`)).toEqual([]);
   });
 
+  test("a held process object refuses the members whose value the program can change", async () => {
+    // `process.exitCode` is undefined in a fresh Node process and whatever
+    // the program assigned afterwards. A value fixed when the object was
+    // built would go stale, so the member of the held object is a getter
+    // that refuses by name; the spelled `process.exitCode` reads the code.
+    const ir = await irOf(
+      "held-exit-code.mjs",
+      `const pass = (value) => value;\nconst held = pass(process);\nprocess.exitCode = 3;\ntry { console.log(held.exitCode); } catch (error) { console.log(error.code); }\nprocess.exitCode = 0;\n`,
+    );
+    expect(ir).toContain("'process.exitCode' is a Node value that native code does not provide");
+    expect(ir).toContain(
+      "'process._maxListeners' is a Node value that native code does not provide",
+    );
+  });
+
+  test("a held process object refuses a write to a data member", async () => {
+    // Node's write reaches the process (`held.exitCode = 4` exits 4). The
+    // held object has no state of its own to write, and dropping the write
+    // would exit 0, so the setter refuses by name.
+    const ir = await irOf(
+      "held-write.cjs",
+      `const pass = (value) => value;\nconst held = pass(process);\ntry { held.exitCode = 4; } catch (error) { console.log(error.code); }\n`,
+    );
+    expect(ir).toContain("assigning a member of 'process' through a stored value");
+  });
+
   test("names the member when a function value is called", async () => {
     const ir = await irOf(
       "called.mjs",

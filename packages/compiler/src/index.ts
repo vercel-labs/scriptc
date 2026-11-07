@@ -17,6 +17,11 @@ import { optimizationField, type NativeOptimization } from "./backend/optimizati
 import { targetCpuField, targetCpuTargetRefusal } from "./backend/target-cpu.js";
 import { compilationTiming, type CompilationTiming, type TimingClock } from "./timing.js";
 import { prepareExecutableModule, type PreparedExecutableModule } from "./executable/prepare.js";
+import {
+  loweringOptions,
+  prepareLoweredProgram,
+  usesLoweredProgram,
+} from "./executable/lowered.js";
 import type { LowerStats } from "./frontend/lowering/lowerer.js";
 import { nodeIslandOptionsKey } from "./node-islands/policy.js";
 import { setIslandResolver } from "./node-islands/resolve.js";
@@ -1143,13 +1148,12 @@ async function nodeUnitStore(
   const directory = join(root, "units-v1");
   const implementation = await coverageCompilerIdentity(directory);
   if (implementation === null) return null;
-  const { outPath: _outPath, outDir: _outDir, ...lowering } = opts;
   const key = createHash("sha256")
     .update(
       JSON.stringify({
         schema: 1,
         entry: resolve(entryPath),
-        options: lowering,
+        options: loweringOptions(opts),
         ffi,
         platform: buildPlatform,
         compiler: implementation.digest,
@@ -1157,6 +1161,18 @@ async function nodeUnitStore(
     )
     .digest("hex");
   return directoryUnitStore(directory, key);
+}
+
+/** The paths an executable build writes, which the frontend's probes do not
+ * observe (as the executable cache's exclusions name them). */
+function loweredBuildOutputs(entryPath: string, opts: CompileRequestOptions): string[] {
+  const stem = basename(entryPath).replace(/\.(ts|mts|cts|js|mjs|cjs)$/, "");
+  return [
+    opts.outPath,
+    `${opts.outPath}.dSYM`,
+    join(opts.outDir, `${stem}.ll`),
+    join(opts.outDir, `${stem}.ir.json`),
+  ];
 }
 
 interface PreparedExecutable {
@@ -1194,23 +1210,54 @@ async function prepareExecutableInput(
   // starting a cold one. The scope ends with the last load: LLVM emission and
   // native code generation run after it, and no idle checker process holds
   // its heap through them.
-  const services = beginCompileServices();
-  let prepared: PreparedExecutableModule | CompileFailure;
-  try {
-    prepared = prepareExecutableModule(
-      entryPath,
-      opts,
-      ffi,
-      buildPlatform,
-      nodeFrontend,
-      timing,
-      new Map(),
-      true,
-      await nodeUnitStore(entryPath, opts, ffi, buildPlatform),
-    );
-  } finally {
-    endCompileServices(services);
-  }
+  const unitStore =
+    opts.fromLowered === undefined
+      ? await nodeUnitStore(entryPath, opts, ffi, buildPlatform)
+      : null;
+  const frontend = (): PreparedExecutableModule | CompileFailure => {
+    const services = beginCompileServices();
+    try {
+      return prepareExecutableModule(
+        entryPath,
+        opts,
+        ffi,
+        buildPlatform,
+        nodeFrontend,
+        timing,
+        new Map(),
+        true,
+        unitStore,
+      );
+    } finally {
+      endCompileServices(services);
+    }
+  };
+  // A lowered program (executable/lowered.ts) is written from, or read in
+  // place of, what the frontend prepares. Its compiler is what the
+  // executable cache keys a build of the compiler by: the package's content,
+  // the checker and the Node release that runs them.
+  const compilerIdentity = usesLoweredProgram(opts)
+    ? createHash("sha256")
+        .update(
+          JSON.stringify({
+            implementation: (await compilerImplementationIdentity(false)).digest,
+            node: process.version,
+            ...checkerField(),
+          }),
+        )
+        .digest("hex")
+    : "";
+  const prepared = prepareLoweredProgram(
+    entryPath,
+    opts,
+    buildPlatform,
+    timing,
+    {
+      compiler: () => compilerIdentity,
+      outputs: loweredBuildOutputs(entryPath, opts),
+    },
+    frontend,
+  );
   if (!prepared.ok) return prepared;
   const { mod, sourceTexts } = prepared;
   // Calls into Node record the libnode pack an executable loads at run
@@ -2191,9 +2238,10 @@ async function compileTracked(
     shapeOverlayMemo = shapeOverlayMemoDir(cacheRoot, implementation.digest);
     setShapeOverlayMemoDir(shapeOverlayMemo);
   }
-  // A cache hit emits no module, so it would write no representation report.
+  // A cache hit emits no module, so it would write no representation report,
+  // and it runs no frontend, so it would write or read no lowered program.
   const cachedHit =
-    earlyCacheOptions === null || representationReportPath() !== null
+    earlyCacheOptions === null || representationReportPath() !== null || usesLoweredProgram(opts)
       ? null
       : await readEarlyExecutableCache(cacheRoot, earlyCacheOptions);
   // A --libnode=beside build that calls into Node places its island modules

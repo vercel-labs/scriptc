@@ -16,7 +16,19 @@ import * as ts from "../../ts7/adapter.js";
 import type { IrExpr, IrType, SrcLoc } from "../../../ir/ir.js";
 import { BOOL, F64, isUnitType, STRING, typeEquals } from "../../../ir/ir.js";
 import { typeKey } from "../../type-mapper.js";
+import { widthFromOverflow } from "./structural-plans.js";
 import type { Lowerer } from "../lowerer.js";
+import type { WidthLift } from "../width-lift.js";
+
+/** An arm conversion reaches for the width plan of its record pair. A source
+ * with an index signature can now supply a missing field from its overflow
+ * map, so pairs that had no plan have one; a retag keeps the conversion it
+ * took before that rule (reading the overflow across a retag would also link
+ * the dynamic tier into a program that never reads one). */
+function armWidthLift(lowerer: Lowerer, src: IrType, dst: IrType): WidthLift | null {
+  if (widthFromOverflow(lowerer, src, dst)) return null;
+  return lowerer.widthLiftPlan(src, dst);
+}
 
 /** Validate the complete union conversion before interning helpers.
  * Recursive width plans close through the same in-progress pair guard;
@@ -34,7 +46,7 @@ export function unionRetagMappable(lowerer: Lowerer, fromId: string, toId: strin
         from,
         to,
         (id) => lowerer.shapes.get(id),
-        (src, dst) => lowerer.widthLiftPlan(src, dst),
+        (src, dst) => armWidthLift(lowerer, src, dst),
       ) !== null
     );
   } finally {
@@ -342,7 +354,7 @@ export function recordUnionRouteHelper(
     shape,
     to,
     (id) => lowerer.shapes.get(id),
-    (from, dst) => lowerer.widthLiftPlan(from, dst),
+    (from, dst) => armWidthLift(lowerer, from, dst),
   );
   if (!plan) return null;
   const name = keyedHelperName(lowerer, "%record.route", key);
@@ -390,7 +402,7 @@ export function unionRetagHelper(
     from,
     to,
     (id) => lowerer.shapes.get(id),
-    (src, dst) => lowerer.widthLiftPlan(src, dst),
+    (src, dst) => armWidthLift(lowerer, src, dst),
     trappable,
     classRoutes,
     checked ? (src, dst) => lowerer.checkedWidthLift(src, dst) : undefined,

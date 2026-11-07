@@ -172,6 +172,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // writeFile's `flag` option and the fs/promises twins; the copyFile mode
   // argument is the SCR_FS_FLAGS build of scr_fs_cp.c.
   unit((u) => u.opts.fsFlags === true, "scr_fs_flags.c"),
+  // existsSync over a path value that may not be a string (scr_fs_exists_dyn.c).
+  unit((u) => u.opts.fsExistsValue === true, "scr_fs_exists_dyn.c"),
   // The BYTE-data spellings of the options write and fs.promises.writeFile
   // (scr_fs_bytes_write.c), gated apart from the string forms' unit so a
   // program that writes no byte payload keeps both objects unchanged.

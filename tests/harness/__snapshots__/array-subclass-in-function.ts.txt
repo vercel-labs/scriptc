@@ -1,0 +1,15 @@
+array-subclass-in-function.ts:6:3 - error SC1090: Array subclasses declared inside functions are not supported yet
+
+  5 | function total(values: number[]): number {
+  6 |   class Row extends Array<number> {
+    |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  7 |     sum(): number {
+
+  hint: declare the class at module level
+
+array-subclass-in-function.ts:15:10 - error SC1090: method calls like 'row.sum' is not supported yet
+
+  14 |   for (const v of values) row.push(v);
+  15 |   return row.sum();
+     |          ^~~~~~~~~
+  16 | }

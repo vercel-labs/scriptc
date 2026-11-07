@@ -1,0 +1,6 @@
+{
+  "name": "node-island-weak-collection",
+  "private": true,
+  "type": "module",
+  "scriptc": { "packages": { "take-pkg": "node" } }
+}

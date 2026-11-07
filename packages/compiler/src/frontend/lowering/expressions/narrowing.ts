@@ -1915,8 +1915,8 @@ function checkedDynCast(
   inner: IrExpr,
   target: IrType,
 ): IrExpr {
-  const proxy = nativeProxyEntering(lowerer, expr.expression, inner);
-  if (proxy) refuseProxyInTypedSlot(lowerer, locOf(expr.expression), target, proxy.trapless);
+  const proxy = nativeProxyEntering(lowerer, inner);
+  if (proxy) refuseProxyInTypedSlot(lowerer, inner.loc, target, proxy.trapless);
   if (
     holdsReference(lowerer, target) &&
     !freshDynSource(lowerer, expr, inner) &&

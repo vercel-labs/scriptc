@@ -62,6 +62,18 @@ function typedSlotOfProxy(
   return slot;
 }
 
+/** True for a function-local binding a Proxy initializes whose declared
+ * type is a slot that would refuse or copy the Proxy: the binding takes
+ * checked-dynamic storage and holds the Proxy itself, as a module binding
+ * and a `var` do. Other declared types (a function type, whose slot wraps
+ * a callable Proxy) keep their storage. */
+export function proxyBindingHoldsProxy(lowerer: Lowerer, decl: ts.VariableDeclaration): boolean {
+  if (!ts.isIdentifier(decl.name) || !isNativeProxyInitializer(lowerer, decl.initializer))
+    return false;
+  const type = lowerer.mapTypeOf(lowerer.typeOf(decl.name));
+  return type !== null && typedSlotOfProxy(lowerer, type) !== null;
+}
+
 /** Refuses a Proxy the build can see entering a class or record slot: at
  * run time the first throws when the statement executes and the second
  * silently replaces the Proxy with a copy. `trapless` is a Proxy whose
@@ -94,24 +106,13 @@ export function refuseProxyInTypedSlot(
   throw new PoisonError();
 }
 
-/** The Proxy a value is known to be where it is about to enter a typed
- * slot, or null: the `new Proxy` expression itself (`value`), or a read by
- * name (`node`) of the `const` binding one initializes. A binding typed as
- * a class is not reported at its reads: its declaration is the error
- * (refuseProxyClassBinding), and they inherit that. */
-export function nativeProxyEntering(
-  lowerer: Lowerer,
-  node: ts.Node | null,
-  value: IrExpr,
-): { trapless: boolean } | null {
-  if (value.kind === "libCall" && value.fn === "dyn.proxyNew") {
-    const handler = value.args[1];
-    return { trapless: handler?.kind === "dynObjLit" && !handler.fields?.length };
-  }
-  if (node === null || value.type.kind !== "dyn") return null;
-  while (ts.isParenthesizedExpression(node) || ts.isSatisfiesExpression(node))
-    node = node.expression;
-  if (!ts.isIdentifier(node)) return null;
+/** Records a read by name of the `const` binding a Proxy initializes: the
+ * value read is that Proxy wherever the read then goes (an argument, a
+ * shorthand property, a default). A binding typed as a class is not
+ * recorded: its declaration is the error (refuseProxyClassBinding), and its
+ * reads inherit that. */
+export function noteNativeProxyRead(lowerer: Lowerer, node: ts.Identifier, read: IrExpr): void {
+  if (read.type.kind !== "dyn") return;
   const declaration = lowerer.resolveValueSymbol(node)?.valueDeclaration;
   if (
     declaration === undefined ||
@@ -120,18 +121,29 @@ export function nativeProxyEntering(
     (declaration.parent.flags & ts.NodeFlags.Const) === 0 ||
     !isNativeProxyInitializer(lowerer, declaration.initializer)
   )
-    return null;
+    return;
   const type = lowerer.mapTypeOf(lowerer.typeOf(declaration.name));
-  if (type !== null && typedSlotOfProxy(lowerer, type)?.kind === "class") return null;
+  if (type !== null && typedSlotOfProxy(lowerer, type)?.kind === "class") return;
   let initializer = declaration.initializer!;
   while (ts.isParenthesizedExpression(initializer)) initializer = initializer.expression;
   const handler = (initializer as ts.NewExpression).arguments?.nodes[1];
-  return {
+  lowerer.nativeProxyReads.set(read, {
     trapless:
       handler !== undefined &&
       ts.isObjectLiteralExpression(handler) &&
       handler.properties.nodes.length === 0,
-  };
+  });
+}
+
+/** The Proxy a value is known to be where it is about to enter a typed
+ * slot, or null: the `new Proxy` expression itself, or a recorded read of
+ * the `const` binding one initializes. */
+export function nativeProxyEntering(lowerer: Lowerer, value: IrExpr): { trapless: boolean } | null {
+  if (value.kind === "libCall" && value.fn === "dyn.proxyNew") {
+    const handler = value.args[1];
+    return { trapless: handler?.kind === "dynObjLit" && !handler.fields?.length };
+  }
+  return lowerer.nativeProxyReads.get(value) ?? null;
 }
 
 /** The binding a `new Proxy` expression initializes takes checked-dynamic

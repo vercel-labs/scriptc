@@ -34,3 +34,18 @@ const asserted = new Proxy(store, handler) as Config;
 store.depth = 5;
 console.log(view.depth, show(view));
 console.log(make().label, holder.config.depth, asserted.depth);
+// A shorthand property, an element, a default and a `??` arm read the binding too.
+const wrapped: { view: Config } = { view };
+const inferred = { view };
+function boxed(): { view: Config } {
+  return { view };
+}
+const listed: Config[] = [view];
+function pick(config?: Config): Config {
+  return config ?? view;
+}
+function fallback(config: Config = view): string {
+  return config.label;
+}
+console.log(wrapped.view.depth, inferred.view.depth, boxed().view.depth);
+console.log(listed.length, pick().depth, fallback());

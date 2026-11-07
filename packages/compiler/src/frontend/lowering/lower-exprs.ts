@@ -104,6 +104,7 @@ import {
 import { classSymbolKeyOf } from "./symbol-fields.js";
 import { lowerTypeofExpr } from "./expressions/typeof.js";
 import { lowerIdentifierExpr } from "./expressions/identifiers.js";
+import { noteNativeProxyRead } from "./expressions/native-proxy.js";
 import { lowerFieldCompoundValue, lowerIncDec } from "./expressions/updates.js";
 import { lowerTernary, staleReadMessage } from "./expressions/narrowing.js";
 import { checkedArmExtraction } from "./coercions/unions.js";
@@ -551,7 +552,11 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     );
   }
   if (ts.isTypeOfExpression(expr)) return lowerTypeofExpr(lowerer, expr, loc);
-  if (ts.isIdentifier(expr)) return lowerIdentifierExpr(lowerer, expr, loc);
+  if (ts.isIdentifier(expr)) {
+    const read = lowerIdentifierExpr(lowerer, expr, loc);
+    noteNativeProxyRead(lowerer, expr, read);
+    return read;
+  }
   if (ts.isArrowFunction(expr) || ts.isFunctionExpression(expr)) {
     return lowerer.lowerLambda(expr);
   }

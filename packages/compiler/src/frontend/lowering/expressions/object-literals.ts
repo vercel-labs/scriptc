@@ -38,6 +38,7 @@ import {
   jsOpenObjectType,
 } from "../../type-mapper.js";
 import { isSafeToRepeat } from "./evaluation-safety.js";
+import { nativeProxyEntering, refuseProxyInTypedSlot } from "./native-proxy.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
 import {
   classSymbolKeyOf,
@@ -3958,6 +3959,8 @@ function lowerDeclaredSpreadMerge(
   ): { value: IrExpr } | { stmts: (write: (value: IrExpr) => IrStmt) => IrStmt[] } => {
     if (typeEquals(iv, f.type)) return { value: v };
     if (iv.kind === "dyn") {
+      const proxy = nativeProxyEntering(lowerer, v);
+      if (proxy) refuseProxyInTypedSlot(lowerer, v.loc, f.type, proxy.trapless);
       return { value: { kind: "dynCheck", value: v, type: f.type, loc } };
     }
     if (iv.kind === "union" && f.type.kind === "union") {

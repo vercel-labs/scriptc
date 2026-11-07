@@ -65,6 +65,24 @@ function local(source: any): string {
 }
 console.log(local({ depth: 1, label: "z" }));
 
+// A binding a closure captures before its declaration, and one its own
+// handler captures, hold the Proxy as well.
+function captured(): string {
+  const early = (): number => before.depth;
+  const before: Config = new Proxy({ depth: 1, label: "b" } as Config, {
+    get(target: any, key: string | symbol): any {
+      return key === "depth" ? target.depth + 10 : target[key];
+    },
+  });
+  const self: Config = new Proxy({ depth: 1, label: "s" } as Config, {
+    get(target: any, key: string | symbol, receiver: any): any {
+      return key === "label" ? (receiver === self ? "self" : "other") : target[key];
+    },
+  });
+  return [early(), before.label, self.label, self.depth].join(" ");
+}
+console.log(captured());
+
 // A trap that throws, and a Proxy that is passed on untyped.
 const guarded: Config = new Proxy({} as Config, {
   get(_target: any, key: string | symbol): any {

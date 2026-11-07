@@ -8314,6 +8314,14 @@ SCR_TL ScrDyn *(*scr_dyn_promise_member_fn)(const char *key, size_t len) = NULL;
 ScrDyn *scr_dyn_promise_key_get(const ScrDyn *d, const ScrStr *k) {
   (void)d;
   ScrDyn *method = scr_dyn_promise_member_fn ? scr_dyn_promise_member_fn(k->data, k->len) : NULL;
+#ifdef SCR_NODE_ISLANDS
+  /* An island promise is an island object too: an island class that
+   * extends Promise has members of its own, which V8 answers. */
+  if (!method && scr_ni_dyn_ops != NULL && scr_ni_dyn_ops->promise_get != NULL) {
+    ScrDyn *island = NULL;
+    if (scr_ni_dyn_ops->promise_get(d, k->data, k->len, &island)) return island;
+  }
+#endif
   return method ? method : scr_dyn_retain(scr_dyn_undefined());
 }
 
@@ -13863,6 +13871,13 @@ bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
     static const char *const names[] = {"then", "catch", "finally"};
     for (size_t i = 0; i < 3; i++)
       if (strlen(names[i]) == key->len && memcmp(names[i], key->data, key->len) == 0) return true;
+#ifdef SCR_NODE_ISLANDS
+    /* An island promise is an island object too (scr_dyn_promise_key_get). */
+    if (scr_ni_dyn_ops != NULL && scr_ni_dyn_ops->promise_has != NULL) {
+      int has = scr_ni_dyn_ops->promise_has(v, key->data, key->len);
+      if (has >= 0) return has == 1;
+    }
+#endif
     return scr_dyn_object_proto_name(key);
   }
   return false;
@@ -14333,6 +14348,15 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
     scr_dyn_object_key_set(scr_bytes_properties(recv), key, value, recv);
     return;
   }
+
+#ifdef SCR_NODE_ISLANDS
+  /* An island promise is an island object too (scr_dyn_promise_key_get):
+   * a member an island Promise subclass has is written there. */
+  if (recv->kind == SCR_DYN_PROMISE && scr_ni_dyn_ops != NULL &&
+      scr_ni_dyn_ops->promise_set != NULL &&
+      scr_ni_dyn_ops->promise_set(recv, key->data, key->len, (ScrDyn *)value))
+    return;
+#endif
 
   ScrJsonBuf b;
   scr_jb_init(&b);

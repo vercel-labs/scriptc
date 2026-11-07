@@ -1231,6 +1231,15 @@ static void ni_host_io(void) {
   NI_MARK_END;
 }
 
+/* V8's reaction job for a promise native code reacted to: the native
+ * reactions run inside it (scr_ni_settle_value). */
+static void ni_host_settle_value(uint32_t token, int rejected, const ScrNodeValue *value) {
+  NI_MARK_BEGIN;
+  scr_ni_settle_value(token, rejected, value);
+  scr_ni_shared_refresh();
+  NI_MARK_END;
+}
+
 static void ni_host_microtasks_done(void) {
   NI_MARK_BEGIN;
   scr_loop_hosted_microtasks_done();
@@ -1254,7 +1263,7 @@ static const ScrNodeBridgeHost ni_host = {
     &ni_host_listen,
     &ni_stack_limit,
     &ni_stack_start,
-    &scr_ni_settle_value,
+    &ni_host_settle_value,
     &scr_ni_bytes_free,
     &scr_ni_host_export_call,
     &scr_ni_host_export_construct,

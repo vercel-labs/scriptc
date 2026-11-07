@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8773-no-warnings-env-unset.mjs"
+ ],
+ "diags": []
+}

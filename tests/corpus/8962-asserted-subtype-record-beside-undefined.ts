@@ -102,3 +102,23 @@ function batch(n: number): Reply[] | undefined {
 }
 const tags = batch(3) as Tagged[];
 console.log(tags.map((tagged) => `${tagged.tag.label}:${tagged.tag.weight}`).join(","), tags.length);
+
+// A write through a member the asserted view shares with the value reaches
+// the value, also when the source is a record beside undefined.
+interface Meter {
+  count: number;
+}
+interface Gauge {
+  meter: Meter;
+  label: string;
+}
+interface NotedGauge extends Gauge {
+  note?: string;
+}
+function bump(source: Gauge | undefined): number {
+  const view = source as NotedGauge;
+  view.meter.count += 1;
+  return view.meter.count;
+}
+const gauge: Gauge = { meter: { count: 1 }, label: "g" };
+console.log(bump(gauge), gauge.meter.count, bump(gauge), gauge.meter.count);

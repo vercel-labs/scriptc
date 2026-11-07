@@ -538,7 +538,9 @@ function sharesMember(
   member: string,
 ): boolean {
   const checker = lowerer.checker;
-  const source = checker.getTypeAtLocation(cast.source);
+  // The value the copy was made from, as widthCopyBetween sees it: beside
+  // `undefined` the record itself, whose members the copy shares.
+  const source = copiedValueType(checker, checker.getTypeAtLocation(cast.source));
   const target = checker.getTypeFromTypeNode(cast.type);
   const from = checker.getPropertyOfType(source, member);
   const to = checker.getPropertyOfType(target, member);

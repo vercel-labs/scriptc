@@ -17,6 +17,7 @@ import { buildNodeIslandReport } from "../node-islands/report.js";
 import { hasNodeIslandFindings } from "../node-islands/summary.js";
 import {
   decideNodeIslands,
+  explicitNpmStatic,
   islandGrowth,
   islandedPackages,
   loweringModules,
@@ -173,7 +174,7 @@ export function analyzeWithFrontend(
     // island report's (the same reasons a build's SC8001 note keeps).
     const growthReasons: ScrDiagnostic[] = [];
     const growthFences: ScrDiagnostic[] = [];
-    const explicitStatic = Array.isArray(opts.npmStatic) ? opts.npmStatic : undefined;
+    const explicitStatic = explicitNpmStatic(opts);
     let decision: ReturnType<typeof decideNodeIslands> = null;
     let front: Frontend = fe;
     let preflight: ScrDiagnostic[] = [];
@@ -254,14 +255,18 @@ export function analyzeWithFrontend(
     }
     // What fails a build beyond the lowering's own diagnostics: the policy
     // violations, and after a round that moved packages into islands for
-    // their fences, the note that names them (SC8023).
+    // their fences, the error that names them (SC8023).
     const buildFails = preflight.length > 0 || lowered.diagnostics.length > 0;
     const trailing: ScrDiagnostic[] = [...violations];
     if ((buildFails || violations.length > 0) && fenced.size > 0)
       trailing.push(
         nodeIslandBuildFailedDiag(
           [...fenced].map(([name, entry]) => ({ name, count: entry.count, first: entry.first })),
-          { file: entryPath, start: 0, end: 0 },
+          front.npmImportSites.get([...fenced.keys()][0]!) ?? {
+            file: entryPath,
+            start: 0,
+            end: 0,
+          },
         ),
       );
     // The packages a build keeps native with fences the program can reach

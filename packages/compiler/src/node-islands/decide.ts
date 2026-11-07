@@ -45,6 +45,14 @@ export interface IslandDecisionOptions {
   npmStatic?: readonly string[] | "auto";
 }
 
+/** The packages an explicit `--npm-static` list names: the ones the user
+ * asked to keep native. Undefined for the automatic selection. */
+export function explicitNpmStatic(opts: IslandDecisionOptions): readonly string[] | undefined {
+  const requested = opts.npmStatic;
+  if (requested === undefined || typeof requested === "string") return undefined;
+  return requested;
+}
+
 /** Whether two spellings name the same file (the checker resolves through
  * symlinks; a CLI argument may not). */
 function sameFile(a: string, b: string): boolean {

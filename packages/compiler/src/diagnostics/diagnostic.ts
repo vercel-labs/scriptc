@@ -610,13 +610,15 @@ export function deferredOperationsDivergenceDiag(
 
 /** SC8023 — the build moved packages into Node islands for the runtime
  * fences the program reaches in them, and the build with them there
- * failed. A note that follows that build's errors and names each package,
- * how many such operations it has and the first, so the choice is visible:
- * fix the errors, or keep a package native with its deferred refusals. */
+ * failed. Reported with that build's errors, at the first package's import:
+ * it names each package, how many such operations it has and the first, so
+ * the choice is visible: fix the other errors, or keep a package native
+ * with its deferred refusals. */
 export function nodeIslandBuildFailedDiag(
   packages: readonly { name: string; count: number; first: ScrDiagnostic }[],
   loc: SrcLoc,
 ): ScrDiagnostic {
+  const one = packages.length === 1;
   const listed = packages
     .map(
       (p) =>
@@ -626,9 +628,9 @@ export function nodeIslandBuildFailedDiag(
   const names = packages.map((p) => p.name).join(",");
   return {
     code: "SC8023",
-    message: `the errors above are from building with ${listed} in ${packages.length === 1 ? "a Node island" : "Node islands"}: the program reaches operations in ${packages.length === 1 ? "that package" : "those packages"} that do not compile and would throw as soon as ${packages.length === 1 ? "it loads" : "they load"} or need the JavaScript runtime, so ${packages.length === 1 ? "it runs" : "they run"} in Node`,
+    message: `the build runs ${listed} in ${one ? "a Node island" : "Node islands"}, because the program reaches operations in ${one ? "that package" : "those packages"} that do not compile and would throw as soon as ${one ? "it loads" : "they load"} or need the JavaScript runtime; the other errors are from the build with ${one ? "it" : "them"} there`,
     loc,
-    hint: `fix the errors, or keep ${packages.length === 1 ? "the package" : "the packages"} native with --npm-static=${names}: those operations then throw when the program reaches them (scriptc coverage lists them)`,
+    hint: `fix the other errors, or keep ${one ? "the package" : "the packages"} native with --npm-static=${names}: those operations then throw when the program reaches them (scriptc coverage lists them)`,
   };
 }
 

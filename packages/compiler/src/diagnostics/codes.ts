@@ -134,8 +134,7 @@ export const DIAGNOSTIC_CODES = {
   SC8020: "stateful module duplicated across the Node island boundary",
   SC8021: "Node island evaluation notes (deferred or at startup)",
   SC8022: "island code extends a class of a compiled module",
-  SC8023:
-    "build failed with packages moved to Node islands for operations that do not compile (note)",
+  SC8023: "build failed with packages moved to Node islands for their runtime fences",
   SC8030: "type patch: no range covers the installed copy",
   SC8031: "type patch: selector matches nothing",
   SC8032: "type patch: declaration already has the type",

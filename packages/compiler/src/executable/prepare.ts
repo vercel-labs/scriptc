@@ -27,6 +27,7 @@ import { nodeIslandPolicy } from "../node-islands/policy.js";
 import type { IslandModule, IslandPackage } from "../node-islands/boundary.js";
 import {
   decideNodeIslands,
+  explicitNpmStatic,
   islandGrowth,
   islandedPackages,
   loweringModules,
@@ -133,8 +134,9 @@ export function prepareExecutableModule(
   // ends — clang and the link never hold it open.
   try {
     // A failure of a build that moved packages into islands for their
-    // runtime fences names them last (SC8023): the errors above it are the
-    // island build's, and the note says how to keep the packages native.
+    // runtime fences names them too (SC8023, at the first one's import): the
+    // other errors are the island build's, and it says how to keep the
+    // packages native.
     const fail = (diagnostics: ScrDiagnostic[]): CompileFailure => ({
       ok: false,
       diagnostics:
@@ -148,7 +150,11 @@ export function prepareExecutableModule(
                   count: entry.count,
                   first: entry.first,
                 })),
-                { file: entryPath, start: 0, end: 0 },
+                fe.npmImportSites.get([...fenced.keys()][0]!) ?? {
+                  file: entryPath,
+                  start: 0,
+                  end: 0,
+                },
               ),
             ],
       sourceTexts: fe.sourceTexts(),
@@ -246,7 +252,7 @@ export function prepareExecutableModule(
       entryPath,
       policy,
       fe.npmStatic,
-      Array.isArray(opts.npmStatic) ? opts.npmStatic : undefined,
+      explicitNpmStatic(opts),
       fe.npmImportSites,
       lowered.runtimeFences,
     );
@@ -303,7 +309,7 @@ export function prepareExecutableModule(
       entryPath,
       policy,
       fe.npmStatic,
-      Array.isArray(opts.npmStatic) ? opts.npmStatic : undefined,
+      explicitNpmStatic(opts),
       fe.npmImportSites,
       lowered.runtimeFences,
       islandedPackages(lowerIslands, islandDecision),

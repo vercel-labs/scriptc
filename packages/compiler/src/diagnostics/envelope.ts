@@ -255,19 +255,17 @@ export interface NodeIslandsEnvelope {
   unknownPackages: string[];
 }
 
-/** Node island notices (scope-B): the SC8001 and SC8021 notes of a build
- * that succeeds (a package runs in a Node island, an island evaluates at
- * boot), its SC8020 warning (a stateful module duplicated across the
- * boundary), and the SC8023 note that follows the errors of a build that
- * failed with packages moved into islands. The envelope reports all of
- * them as warnings. */
+/** Node island notices of a build that succeeds (scope-B): SC8001 and
+ * SC8021 notes (a package runs in a Node island, an island evaluates at
+ * boot) and the SC8020 warning (a stateful module duplicated across the
+ * boundary). The envelope reports all three as warnings. */
 export function isNodeIslandNoticeCode(code: string): boolean {
-  return code === "SC8001" || code === "SC8020" || code === "SC8021" || code === "SC8023";
+  return code === "SC8001" || code === "SC8020" || code === "SC8021";
 }
 
-/** SC8001, SC8021 and SC8023 are notes, not warnings or errors. */
+/** SC8001 and SC8021 are notes, not warnings. */
 export function isNodeIslandNoteCode(code: string): boolean {
-  return code === "SC8001" || code === "SC8021" || code === "SC8023";
+  return code === "SC8001" || code === "SC8021";
 }
 
 /** The divergence band: compiles, but the program can behave differently

@@ -442,6 +442,8 @@ export function genericCallInstance(
   if (!rsig || rsig.getParameters().length !== info.decl.parameters.nodes.length) {
     lowerer.unsupported("SC1090", expr, "this call form");
   }
+  const optional = missingArgumentInstance(lowerer, expr, info, rsig);
+  if (optional) return optional;
   // Per-param shapes from the RESOLVED signature (types substituted) plus
   // the declaration's modes: rest stays the resolved array, a default's
   // ABI union is synthesized over the resolved body type — exactly the
@@ -499,6 +501,87 @@ export function genericCallInstance(
     returnType,
     (tsBindings) => lowerer.inferTypeParamBindings(expr, info, rsig, tsBindings),
     named ? { extraKey: named.key, staticFnNames: named.names } : undefined,
+  );
+}
+
+/** The instance of a call whose argument at a bare type-parameter slot
+ * can be a missing element (`id(values[20])` into `v: T`; the analysis in
+ * analyzeRuntimeOptionalArrayReads names the type parameters). The checker
+ * binds T to the element type, which has no value for the `undefined`
+ * Node passes there, so the instance binds T to that type with undefined:
+ * the parameter holds what the caller passes and a result declared `T`
+ * answers it, as a declared function's widened parameter and result do.
+ * Null when the call has no such argument or no binding changes. */
+function missingArgumentInstance(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  info: GenericFnInfo,
+  rsig: ts.Signature,
+): GenericInstance | null {
+  const missing = lowerer.runtimeOptionalGenericArguments.get(expr);
+  if (!missing || returnedLocalClass(lowerer, info)) return null;
+  const declSig = lowerer.checker.getSignatureFromDeclaration(info.decl);
+  if (!declSig) return null;
+  const tsBindings = new Map<ts.Symbol, ts.Type>();
+  const bindings = inferTypeParamBindings(lowerer, expr, info, rsig, tsBindings);
+  let changed = false;
+  for (const tp of missing) {
+    const bound = bindings.get(tp);
+    if (!bound) continue;
+    const widened = lowerer.runtimeOptionalType(bound);
+    if (typeEquals(widened, bound)) continue;
+    bindings.set(tp, widened);
+    changed = true;
+  }
+  if (!changed) return null;
+  return instanceForBindings(lowerer, expr, info, declSig, bindings, tsBindings);
+}
+
+/** The instance of `info` a call names under `bindings` the caller chose
+ * over the resolved signature's: its parameters and result are the
+ * DECLARATION's, mapped under those bindings (as overloadCallInstance maps
+ * an implementation's). Null when the result has no mapping there. */
+function instanceForBindings(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  info: GenericFnInfo,
+  declSig: ts.Signature,
+  bindings: Map<ts.Symbol, IrType>,
+  tsBindings: Map<ts.Symbol, ts.Type>,
+): GenericInstance | null {
+  const previous = lowerer.typeParamBindings;
+  const previousTs = lowerer.typeParamTsBindings;
+  lowerer.typeParamBindings = bindings;
+  lowerer.typeParamTsBindings = tsBindings;
+  let params: ParamShape[];
+  let returnType: IrType | null;
+  try {
+    params = paramShapes(
+      lowerer,
+      info.decl.parameters.nodes,
+      declSig,
+      (_param, i) => expr.arguments.nodes[i] ?? expr,
+    );
+    returnType = lowerer.mapTypeOf(lowerer.checker.getReturnTypeOfSignature(declSig));
+  } finally {
+    lowerer.typeParamBindings = previous;
+    lowerer.typeParamTsBindings = previousTs;
+  }
+  if (!returnType) return null;
+  const named = staticNameBindings(lowerer, expr, info);
+  const keyed = keyofConstrainedTypeParams(info).size > 0 ? keyofLiteralKey(info, tsBindings) : "";
+  return internGenericInstance(
+    lowerer,
+    expr,
+    info,
+    params,
+    runtimeReturnType(lowerer, info, returnType),
+    () => bindings,
+    {
+      extraKey: `${keyed}${named?.key ?? ""}`,
+      tsBindings,
+      ...(named ? { staticFnNames: named.names } : {}),
+    },
   );
 }
 

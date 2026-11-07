@@ -257,6 +257,9 @@ function programInputs(entry) {
   return [...files];
 }
 
+/** Whether a bench workload is a program with Node islands. */
+const islandWorkload = (w) => (w?.requires ?? []).includes("libnode");
+
 /** Every program of the good-code set: all three sets, and every corpus
  * entry whatever its language. `--set`, `--corpus`, `--only` and `--shard`
  * select from it (`selectedPrograms`); --allow-programs may name any of it.
@@ -304,10 +307,14 @@ function goodCodeSet() {
   return programs;
 }
 
-/** The programs this run compares. */
+/** The programs this run compares. A workload with Node islands builds only
+ * where a libnode pack is (benchmarks/runtime/README.md, "requires"); without
+ * one it is left out on both sides, as the island programs of the corpus
+ * are. */
 function selectedPrograms(all) {
   const selected = all
     .filter((p) => sets.has(p.set))
+    .filter((p) => !islandWorkload(p.workload) || Boolean(process.env.SCRIPTC_LIBNODE))
     .filter((p) => p.set !== "corpus" || values.corpus === "all" || p.entry.endsWith(".ts"))
     .filter((p) => only === null || only.test(p.id));
   for (const program of selected) {
@@ -423,16 +430,20 @@ const definedFunctions = (binary) => definedFunctionNames(nm(binary));
 /** The symbol check (two-tier invariant I3, the Node island runtime and the
  * ICU archive). No executable may gain dynamic-tier, Node island or ICU
  * symbols over the baseline (unless the program is allowed); a fully typed
- * bench workload may contain no dynamic-tier symbol at all. An identical
- * executable gained nothing, so only a typed one is read. */
+ * bench workload may contain no dynamic-tier symbol at all. The island
+ * workloads are the programs that call into Node.js, so the Node island rule
+ * does not apply to them. An identical executable gained nothing, so only a
+ * typed one is read. */
 function dynamicTierCheck(program, baseline, candidate, artifacts, allowed) {
   if (!baseline.exe || !artifacts.exe) return null;
-  const typed = program.id.startsWith("bench/") && !DYNAMIC_WORKLOADS.has(program.id);
+  const island = islandWorkload(program.workload);
+  const typed = program.id.startsWith("bench/") && !DYNAMIC_WORKLOADS.has(program.id) && !island;
   if (artifacts.exe.identical && !typed) return null;
   const after = definedFunctions(candidate.exe);
   return symbolCheck({
     typed,
     allowed,
+    island,
     baseline: artifacts.exe.identical ? after : definedFunctions(baseline.exe),
     candidate: after,
   });

@@ -457,8 +457,9 @@ const someNames = (names) =>
  * define before, unless it is `allowed`. A program that links ICU or the
  * Node island runtime on both sides gained nothing, whatever else made its
  * executable differ. A fully typed program (`typed`) may define no
- * dynamic-tier symbol at all. */
-export function symbolCheck({ typed, allowed, baseline, candidate }) {
+ * dynamic-tier symbol at all. A program with Node islands (`island`) calls
+ * into Node.js, so the Node island rule does not apply to it. */
+export function symbolCheck({ typed, allowed, island = false, baseline, candidate }) {
   const gained = (classify) => {
     const before = new Set(classify(baseline));
     return classify(candidate).filter((name) => !before.has(name));
@@ -469,8 +470,8 @@ export function symbolCheck({ typed, allowed, baseline, candidate }) {
   const icu = gained(icuSymbols);
   const failures = [];
   // No good-code program calls into Node.js, so none may start linking its
-  // runtime.
-  if (nodeIsland.length > 0 && !allowed)
+  // runtime; the island workloads are the programs that do.
+  if (nodeIsland.length > 0 && !allowed && !island)
     failures.push(`gained Node island symbols: ${someNames(nodeIsland)}`);
   // Intl over ICU is linked only into programs whose IR lowers to it. A
   // change that makes a program call it names the program in --allow or

@@ -233,6 +233,16 @@ test("the zero-cost gate judges ICU and Node island symbols against the baseline
     "gained Node island symbols: scr_loop_set_node_island_wake, scr_node_island_call",
   ]);
   expect(check(own, [...own, ...island], true).failures).toEqual([]);
+  // A workload with Node islands is a program that calls into Node.js.
+  expect(
+    symbolCheck({
+      typed: false,
+      allowed: false,
+      island: true,
+      baseline: own,
+      candidate: [...own, ...island],
+    }).failures,
+  ).toEqual([]);
 
   // The dynamic-tier rules are as they were: no program gains such symbols,
   // and a fully typed one defines none, whatever the baseline did.

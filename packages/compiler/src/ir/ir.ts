@@ -2430,7 +2430,11 @@ export type IrStmt =
    * TypeScript sources produce it only as the tsc-unreachable fallthrough
    * trap (appendImplicitUndefinedReturn's SC9002) and for a typed-array
    * store through an element index that is undefined at run time
-   * (undefined-index.ts); their construct fences stay compile errors. */
+   * (undefined-index.ts); their construct fences stay compile errors.
+   * In a JavaScript source, a message that ends with its diagnostic's tag
+   * ("[SC2020 at file:line]") marks a diagnostic deferred from a
+   * statement, which the program reports on stderr the first time the site
+   * fires (deferred-fence.ts). */
   | { kind: "runtimeFence"; code: string; message: string; loc: SrcLoc }
   /** Rethrow of a catch binding (`throw e` where e is the binding):
    * re-raises the SAVED exception exactly — kind and payload preserved,

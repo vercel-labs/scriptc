@@ -138,6 +138,9 @@ export interface EarlyExecutableNativeFeatures {
   /** A computed read of the global object, or `… in globalThis`:
    * scr_global_host_absent.c. */
   hostAbsentGlobals?: boolean;
+  /** A runtimeFence that stands for a deferred diagnostic:
+   * scr_deferred_fence.c. */
+  deferredFence?: boolean;
   searchParams: boolean;
   qs: boolean;
   utilPromisify: boolean;

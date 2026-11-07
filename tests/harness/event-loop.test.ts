@@ -90,3 +90,26 @@ describe("event loop: piped stdin (differential)", () => {
     await differential(c.fixture, c.script);
   });
 });
+
+// Not differential: Node hands the listener a string, and a listener compiled
+// for bytes cannot take one. The compiled program refuses the delivery by
+// name; before, it handed the listener the raw bytes and the program printed
+// their decimal values.
+test("stdin: a bytes 'data' listener under setEncoding is refused by name", async () => {
+  const binary = await compileFixture("stdin-set-encoding-bytes.ts");
+  const result = await new Promise<{ stdout: string; stderr: string; code: number | null }>(
+    (resolve) => {
+      const child = execFile(binary, [], { encoding: "utf8" }, (err, stdout, stderr) => {
+        const e = err as { code?: unknown } | null;
+        resolve({ stdout, stderr, code: e && typeof e.code === "number" ? e.code : 0 });
+      });
+      child.stdin?.end("Say hello\n");
+    },
+  );
+  expect(result.stdout).toBe("");
+  expect(result.stderr).toContain(
+    "process.stdin 'data' listener takes a Buffer, but setEncoding makes the chunks strings",
+  );
+  expect(result.stderr).toContain("SC2020");
+  expect(result.code).toBe(1);
+});

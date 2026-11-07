@@ -218,4 +218,15 @@ export const eventLoopCases: EventLoopCase[] = [
     fixture: "../node-types/stdin-readable-readline.ts",
     script: { writes: [{ delayMs: 0, data: "first\nsecond\nlast" }], end: true },
   },
+  {
+    title: "typed stdio: setEncoding with a string 'data' listener delivers the decoded text",
+    fixture: "stdin-set-encoding-string.ts",
+    script: {
+      writes: [
+        { delayMs: 0, data: "Say hello\n" },
+        { delayMs: 40, data: "and more\n" },
+      ],
+      end: true,
+    },
+  },
 ];

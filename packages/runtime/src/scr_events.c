@@ -1054,7 +1054,21 @@ static void scr_stdin_deliver(ScrBytes *chunk) {
 #ifdef SCR_STDIO_EXTENDED
       if (!scr_exc_pending()) {
         if (snap[i].kind == SCR_STDIN_DATA_BYTES) {
-          if (chunk != NULL) snap[i].fn(snap[i].cb, chunk);
+          if (text != NULL && snap[i].fn == scr_stdin_data_thunk_bytes) {
+            /* A program listener compiled for Buffer chunks (its parameter
+             * is declared, or left to the declaration, as bytes) while an
+             * encoding is set: Node delivers the decoded string here. The
+             * listener cannot take a string, and handing it the bytes would
+             * be a value Node never delivers, so the delivery is refused by
+             * name. The runtime's own byte consumers (readline, the stdin
+             * stream) register other adapters and keep the raw chunk. */
+            static const char msg[] =
+                "process.stdin 'data' listener takes a Buffer, but setEncoding makes the chunks "
+                "strings (declare the listener's parameter as string) [SC2020]";
+            scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "SC2020");
+          } else if (chunk != NULL) {
+            snap[i].fn(snap[i].cb, chunk);
+          }
         } else if (text != NULL) {
           snap[i].str_fn(snap[i].cb, text);
         } else if (snap[i].kind == SCR_STDIN_DATA_DYN) {

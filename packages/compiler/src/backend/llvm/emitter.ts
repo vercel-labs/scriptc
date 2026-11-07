@@ -584,6 +584,10 @@ export interface LlvmTargetOptions {
   /** Linux (glibc and musl) executables: functions reached only by direct
    * calls propagate exceptions by unwinding the native stack (unwind-abi.ts). */
   unwindAbi?: boolean;
+  /** ELF targets whose linker places a named code section before the rest of
+   * the text: a function the layout's start-up tier lists goes in
+   * STARTUP_SECTION (function-layout.ts). */
+  startupSection?: boolean;
   /** Functions kept on the pending-flag ABI under `unwindAbi`: the ones an
    * earlier emission found breaking its rules (UnwindAbiViolation). */
   unwindExcluded?: ReadonlySet<string>;

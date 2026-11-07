@@ -154,6 +154,9 @@ typedef struct ScrNiDynOps {
    * 0, or -1 for an error the runtime made itself. */
   int (*error_get)(const struct ScrError *err, const char *key, size_t len, ScrDyn **out);
   int (*error_has)(const struct ScrError *err, const char *key, size_t len);
+  /* Object.prototype.toString.call(value), answered by Node (+1; NULL with
+   * the exception pending). */
+  ScrStr *(*object_tag)(const ScrDyn *value);
 } ScrNiDynOps;
 extern const ScrNiDynOps *scr_ni_dyn_ops;
 

@@ -297,8 +297,10 @@ const INTRINSIC_CLASSES = {
 const collectionSyncs = new WeakMap();
 const islandHelpers = {
   isInstance(value, name) {
-    const C = INTRINSIC_CLASSES[name];
-    return C !== undefined && value instanceof C;
+    // The error classes by their intrinsics; any other standard class by
+    // the global of that name (Array, Map, Date, …).
+    const C = INTRINSIC_CLASSES[name] ?? globalThis[name];
+    return typeof C === "function" && value instanceof C;
   },
   subclass(Base, name, ctor, fields, methods, getters, setters) {
     const C = {
@@ -454,6 +456,8 @@ let sharedModules = null;
 function load(path, esm) {
   if (path === "scriptc:toPrimitive") return toPrimitive;
   if (path === "scriptc:spread") return (value) => [...value];
+  if (path === "scriptc:clone") return (value) => structuredClone(value);
+  if (path === "scriptc:objectTag") return (value) => Object.prototype.toString.call(value);
   if (path === "scriptc:island-helpers") return islandHelpers;
   // A built-in module's name, with or without the node: prefix.
   if (isBuiltin(path)) return require(path);

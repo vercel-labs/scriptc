@@ -15336,11 +15336,14 @@ export class Lowerer {
     return this.coerceInto(node, e, expected);
   }
 
-  /** An unannotated empty collection has no existing elements or aliases
-   * that constrain its layout. An explicit type argument still wins. */
-  emptyCollectionFor(node: ts.Expression, expected: IrType): IrExpr | null {
+  /** What `node` builds when it is a fresh empty container with no type of
+   * its own: `[]`, or `new Map()` / `new Set()` with no arguments and no
+   * type arguments. Null for every other expression. */
+  freshEmptyContainer(node: ts.Expression): "array" | "map" | "set" | null {
     let value = node;
     while (ts.isParenthesizedExpression(value)) value = value.expression;
+    if (ts.isArrayLiteralExpression(value))
+      return value.elements.nodes.length === 0 ? "array" : null;
     if (
       !ts.isNewExpression(value) ||
       !ts.isIdentifier(value.expression) ||
@@ -15350,9 +15353,16 @@ export class Lowerer {
       return null;
     const symbol = this.resolveValueSymbol(value.expression);
     if (!symbol || !this.isStdlibSymbol(symbol)) return null;
-    const kind =
-      ts.symbolName(symbol) === "Map" ? "map" : ts.symbolName(symbol) === "Set" ? "set" : null;
-    if (!kind) return null;
+    return ts.symbolName(symbol) === "Map" ? "map" : ts.symbolName(symbol) === "Set" ? "set" : null;
+  }
+
+  /** An unannotated empty collection has no existing elements or aliases
+   * that constrain its layout. An explicit type argument still wins. */
+  emptyCollectionFor(node: ts.Expression, expected: IrType): IrExpr | null {
+    let value = node;
+    while (ts.isParenthesizedExpression(value)) value = value.expression;
+    const kind = this.freshEmptyContainer(value);
+    if (kind !== "map" && kind !== "set") return null;
     const arms =
       expected.kind === "union" ? (this.unions.get(expected.unionId)?.arms ?? []) : [expected];
     const candidates = arms.filter((arm) => arm.kind === kind);

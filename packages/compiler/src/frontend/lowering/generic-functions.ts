@@ -438,6 +438,8 @@ export function genericCallInstance(
   if (!rsig || rsig.getParameters().length !== info.decl.parameters.nodes.length) {
     lowerer.unsupported("SC1090", expr, "this call form");
   }
+  const contextual = emptyArgumentInstance(lowerer, expr, info, rsig);
+  if (contextual) return contextual;
   // Per-param shapes from the RESOLVED signature (types substituted) plus
   // the declaration's modes: rest stays the resolved array, a default's
   // ABI union is synthesized over the resolved body type — exactly the
@@ -495,6 +497,152 @@ export function genericCallInstance(
     returnType,
     (tsBindings) => lowerer.inferTypeParamBindings(expr, info, rsig, tsBindings),
     named ? { extraKey: named.key, staticFnNames: named.names } : undefined,
+  );
+}
+
+/** The instance of a call that passes a FRESH EMPTY container (`[]`,
+ * `new Map()`, `new Set()`) where the call itself has a destination
+ * (`const out: string[] = id([])`, a typed argument, a return). The
+ * checker infers a type argument from the argument before it consults the
+ * destination, and an empty container says nothing about its elements:
+ * `[]` is `never[]` and `new Map()` selects `Map<any, any>`, so the
+ * resolved signature is `id<never[]>` and its result is refused by the
+ * `string[]` slot. A fresh empty container has no element and no alias
+ * yet, so it can be built for any element type (emptyArrayLiteralArm,
+ * emptyCollectionFor): a type parameter the checker bound to such a
+ * type takes the binding the destination gives the declared result
+ * instead. The instance is the one `id<string[]>([])` names, its
+ * parameters and result are the declaration's under those bindings, and
+ * each argument is built for its parameter. Null when no binding changes,
+ * which leaves the resolved signature's instance. */
+function emptyArgumentInstance(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  info: GenericFnInfo,
+  rsig: ts.Signature,
+): GenericInstance | null {
+  if ((expr.typeArguments?.nodes.length ?? 0) > 0) return null;
+  if (!expr.arguments.nodes.some((arg) => lowerer.freshEmptyContainer(arg) !== null)) return null;
+  if (keyofConstrainedTypeParams(info).size > 0 || returnedLocalClass(lowerer, info)) return null;
+  const destination = lowerer.checker.getContextualType(expr);
+  if (!destination) return null;
+  const declSig = lowerer.checker.getSignatureFromDeclaration(info.decl);
+  if (!declSig) return null;
+  const tsBindings = new Map<ts.Symbol, ts.Type>();
+  const bindings = inferTypeParamBindings(lowerer, expr, info, rsig, tsBindings);
+  const wanted = new Map<ts.Symbol, ts.Type>();
+  typeParamUnifier(
+    lowerer,
+    info,
+    new Map<ts.Symbol, IrType>(),
+    wanted,
+  )(
+    lowerer.checker.getReturnTypeOfSignature(declSig),
+    lowerer.checker.getNonNullableType(destination),
+  );
+  let changed = false;
+  for (const tp of info.typeParams) {
+    const inferred = tsBindings.get(tp);
+    const target = wanted.get(tp);
+    if (!inferred || !target) continue;
+    const filled = filledContainerType(lowerer, inferred, target);
+    const mapped = filled ? lowerer.mapTypeOf(filled) : null;
+    if (!filled || !mapped) continue;
+    const current = bindings.get(tp);
+    if (current && typeEquals(current, mapped)) continue;
+    bindings.set(tp, mapped);
+    tsBindings.set(tp, filled);
+    changed = true;
+  }
+  if (!changed) return null;
+  return instanceForBindings(lowerer, expr, info, declSig, bindings, tsBindings);
+}
+
+/** The part of `target` that says what an empty container of the
+ * information-free type `inferred` holds: an array type for `never[]`,
+ * the same collection with real type arguments for a `Map` or `Set` whose
+ * arguments are all `any`. `target` may be a union with one such part
+ * (`string[] | PromiseLike<string[]>`, an async function's return). Null
+ * when `inferred` is not information-free or `target` has no single
+ * answer. */
+function filledContainerType(lowerer: Lowerer, inferred: ts.Type, target: ts.Type): ts.Type | null {
+  const checker = lowerer.checker;
+  const anyFlag = ts.TypeFlags.Any;
+  let fills: (part: ts.Type) => boolean;
+  if (checker.isArrayType(inferred) && !checker.isTupleType(inferred)) {
+    const element = checker.getTypeArguments(inferred as ts.TypeReference)[0];
+    if (!element || (element.flags & ts.TypeFlags.Never) === 0) return null;
+    fills = (part) => {
+      if (!checker.isArrayType(part) || checker.isTupleType(part)) return false;
+      const held = checker.getTypeArguments(part as ts.TypeReference)[0];
+      return held !== undefined && (held.flags & ts.TypeFlags.Never) === 0;
+    };
+  } else {
+    const symbol = inferred.getSymbol();
+    const name = symbol ? ts.symbolName(symbol) : "";
+    if ((name !== "Map" && name !== "Set") || !lowerer.isStdlibSymbol(symbol)) return null;
+    if ((inferred.flags & ts.TypeFlags.Object) === 0) return null;
+    if (((inferred as ts.ObjectType).objectFlags & ts.ObjectFlags.Reference) === 0) return null;
+    const args = checker.getTypeArguments(inferred as ts.TypeReference);
+    if (args.length === 0 || !args.every((arg) => (arg.flags & anyFlag) !== 0)) return null;
+    fills = (part) =>
+      (part.flags & ts.TypeFlags.Object) !== 0 &&
+      ((part as ts.ObjectType).objectFlags & ts.ObjectFlags.Reference) !== 0 &&
+      part.getSymbol() === symbol &&
+      !checker
+        .getTypeArguments(part as ts.TypeReference)
+        .every((arg) => (arg.flags & anyFlag) !== 0);
+  }
+  const parts = target.isUnionType() ? ts.constituentTypes(target) : [target];
+  const filled = parts.filter(fills);
+  return filled.length === 1 ? filled[0]! : null;
+}
+
+/** The instance of `info` a call names under `bindings` the caller chose
+ * over the resolved signature's: its parameters and result are the
+ * DECLARATION's, mapped under those bindings (as overloadCallInstance maps
+ * an implementation's). Null when the result has no mapping there. */
+function instanceForBindings(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  info: GenericFnInfo,
+  declSig: ts.Signature,
+  bindings: Map<ts.Symbol, IrType>,
+  tsBindings: Map<ts.Symbol, ts.Type>,
+): GenericInstance | null {
+  const previous = lowerer.typeParamBindings;
+  const previousTs = lowerer.typeParamTsBindings;
+  lowerer.typeParamBindings = bindings;
+  lowerer.typeParamTsBindings = tsBindings;
+  let params: ParamShape[];
+  let returnType: IrType | null;
+  try {
+    params = paramShapes(
+      lowerer,
+      info.decl.parameters.nodes,
+      declSig,
+      (_param, i) => expr.arguments.nodes[i] ?? expr,
+    );
+    returnType = lowerer.mapTypeOf(lowerer.checker.getReturnTypeOfSignature(declSig));
+  } finally {
+    lowerer.typeParamBindings = previous;
+    lowerer.typeParamTsBindings = previousTs;
+  }
+  if (!returnType) return null;
+  const named = staticNameBindings(lowerer, expr, info);
+  const keyed = keyofConstrainedTypeParams(info).size > 0 ? keyofLiteralKey(info, tsBindings) : "";
+  return internGenericInstance(
+    lowerer,
+    expr,
+    info,
+    params,
+    runtimeReturnType(lowerer, info, returnType),
+    () => bindings,
+    {
+      extraKey: `${keyed}${named?.key ?? ""}`,
+      tsBindings,
+      ...(named ? { staticFnNames: named.names } : {}),
+    },
   );
 }
 
@@ -1045,6 +1193,30 @@ function unifySignatureBindings(
   bindings: Map<ts.Symbol, IrType>,
   tsBindings?: Map<ts.Symbol, ts.Type>,
 ): void {
+  const unify = typeParamUnifier(lowerer, info, bindings, tsBindings);
+  const declSig = lowerer.checker.getSignatureFromDeclaration(info.decl);
+  if (declSig) {
+    const instanceParams = rsig.getParameters();
+    declSig.getParameters().forEach((dp, i) => {
+      const ip = instanceParams[i];
+      if (ip) unify(lowerer.checker.getTypeOfSymbol(dp), lowerer.checker.getTypeOfSymbol(ip));
+    });
+    unify(
+      lowerer.checker.getReturnTypeOfSignature(declSig),
+      lowerer.checker.getReturnTypeOfSignature(rsig),
+    );
+  }
+}
+
+/** The unification step of unifySignatureBindings: matches one DECLARED
+ * type against the type that stands in its place, binding each type
+ * parameter of `info` the first time it is met. */
+function typeParamUnifier(
+  lowerer: Lowerer,
+  info: GenericFnInfo,
+  bindings: Map<ts.Symbol, IrType>,
+  tsBindings?: Map<ts.Symbol, ts.Type>,
+): (declared: ts.Type, inst: ts.Type) => void {
   const tpSet = new Set(info.typeParams);
 
   const seen = new Set<ts.Type>(); // recursive declared types must not loop
@@ -1227,19 +1399,7 @@ function unifySignatureBindings(
       }
     }
   };
-
-  const declSig = lowerer.checker.getSignatureFromDeclaration(info.decl);
-  if (declSig) {
-    const instanceParams = rsig.getParameters();
-    declSig.getParameters().forEach((dp, i) => {
-      const ip = instanceParams[i];
-      if (ip) unify(lowerer.checker.getTypeOfSymbol(dp), lowerer.checker.getTypeOfSymbol(ip));
-    });
-    unify(
-      lowerer.checker.getReturnTypeOfSignature(declSig),
-      lowerer.checker.getReturnTypeOfSignature(rsig),
-    );
-  }
+  return unify;
 }
 
 /** Lowers ONE monomorphic instance of a generic function: the same body

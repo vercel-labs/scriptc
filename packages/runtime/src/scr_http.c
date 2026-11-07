@@ -1323,12 +1323,19 @@ static bool scr_http_res_headers_unsent(ScrHttpRes *r, const char *op) {
   return scr_http_headers_unsent(r->head_sent, op);
 }
 
-/* setHeader's checks on an HTTP/1 response, in Node's order: the name is
+/* setHeader's checks, in Node's order. On an HTTP/1 response the name is
  * a token (ERR_INVALID_HTTP_TOKEN), then the value holds only header
- * content characters (ERR_INVALID_CHAR). */
+ * content characters (ERR_INVALID_CHAR). An http2 compatibility response
+ * checks the name only, and less strictly. */
 static bool scr_http_res_header_valid(ScrHttpRes *r, ScrStr *name /*borrowed*/,
                                       const ScrStr *text /*borrowed, nullable*/) {
-  if (r->h2_stream != NULL) return true;
+  if (r->h2_stream != NULL) {
+    /* Http2ServerResponse's own check (assertValidHeader): an empty name
+     * or one that holds a space is ERR_INVALID_HTTP_TOKEN */
+    if (name->len > 0 && memchr(name->data, ' ', name->len) == NULL) return true;
+    scr_http_throw_invalid_header_name(name, NULL);
+    return false;
+  }
   if (!scr_http_header_name_valid(name)) return false;
   if (text == NULL || scr_http_header_text_valid(text)) return true;
   scr_http_throw_invalid_header_char(name);
@@ -3763,16 +3770,11 @@ static bool scr_http_conn_parse_head(ScrHttpConn *conn, size_t head_len, bool *o
    * 'upgrade' listeners take the socket RAW — the parser steps aside
    * (fn pointers clear; the conn ctx stays until the socket dies), bytes
    * already read past the head travel as `head`, and no 'request' fires.
-   * With no listener Node destroys the socket; so does this slice. */
-  if (has_upgrade_hdr && conn_upgrade_token) {
+   * With no listener the request is an ordinary one, as in Node: a client
+   * cannot insist on a protocol change. */
+  if (takes_upgrade) {
     memmove(conn->buf, conn->buf + head_len, conn->len - head_len);
     conn->len -= head_len;
-    if (conn->srv->upgrade_ls.n == 0) {
-      scr_http_req_release(req);
-      conn->len = 0;
-      scr_net_sock_destroy(conn->sock);
-      return true;
-    }
     ScrBytes *head = scr_bytes_new(SCR_BYTES_U8, (double)conn->len);
     head->is_buffer = true; /* the upgrade head is a Buffer */
     if (conn->len > 0) memcpy(head->data, conn->buf, conn->len);
@@ -4067,6 +4069,29 @@ static void scr_http_conn_pump(ScrHttpConn *conn) {
       if (!valid) {
         if (conn->client_mode) scr_http_client_head_overflow(conn);
         else scr_http_conn_bad_request(conn);
+        return;
+      }
+      /* A framing header in the trailer section is a parse error, as in
+       * llhttp, whose header checks run on trailer fields too:
+       * Content-Length after a chunked body on either side, and
+       * Transfer-Encoding in a request. */
+      size_t name_len = (size_t)(colon - conn->buf);
+      bool length_field = name_len == 14, coding_field = name_len == 17 && !conn->client_mode;
+      for (size_t k = 0; k < name_len && (length_field || coding_field); k++) {
+        char lower = (char)tolower((unsigned char)conn->buf[k]);
+        if (length_field) length_field = lower == "content-length"[k];
+        if (coding_field) coding_field = lower == "transfer-encoding"[k];
+      }
+      if (length_field || coding_field) {
+        ScrHttpParseError framing = {NULL, NULL};
+        if (length_field) {
+          scr_http_scan_fail(&framing, "HPE_INVALID_CONTENT_LENGTH",
+                             "Content-Length can't be present with Transfer-Encoding");
+        } else {
+          scr_http_scan_fail(&framing, "HPE_INVALID_TRANSFER_ENCODING",
+                             "Invalid `Transfer-Encoding` header value");
+        }
+        scr_http_conn_parse_failed(conn, &framing);
         return;
       }
       char *value = colon + 1;

@@ -116,7 +116,7 @@ describe.skipIf(skip)("island-closed module-level constants", () => {
     // their place. The third names the second and stays with it: a module
     // is not deferred when a load it shares a file with has effects.
     for (const module of modules) expect(module).toMatch(/^\[node-islands\] eager /);
-    const printing = modules.filter((l) => l.includes(": its load has effects: process.stdout"));
+    const printing = modules.filter((l) => /: its evaluation has effects.*process\.stdout/.test(l));
     expect(printing).toHaveLength(2);
     expect(modules.filter((l) => l.includes(": it shares "))).toHaveLength(1);
     const { stdout } = await run(binary);

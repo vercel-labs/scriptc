@@ -131,11 +131,14 @@ test("a refused read that the package catches stays in the generated module's re
       `export const text = read(${JSON.stringify(join(root, "data.txt"))});\n`,
   );
   // The evaluation completes with the package's fallback, which is not what
-  // the program computes: the record names the read, so the build does not
-  // take the module's value from this evaluation.
+  // the program computes: the record names the read and says why the build
+  // does not take the module's value from this evaluation.
   const [result] = probe(root, [generatedFile], [generatedFile]);
   expect(result!.throws).toBeUndefined();
-  expect(result!.reason).toBeUndefined();
+  expect(result!.root).toBeUndefined();
+  expect(result!.reason).toBe(
+    "its evaluation has effects or reads inputs: fs.readFileSync(), which the build does not perform",
+  );
   expect(result!.inputs.some((input) => input.startsWith("fs.readFileSync() "))).toBe(true);
 });
 
@@ -200,6 +203,32 @@ test("a shared dependency's environment reads reach every load that gets its exp
   expect(decisions[1]!.reason).toContain("PROBE_DB_URL");
   expect(JSON.stringify(mod)).not.toContain("hunter2");
   expect(calls.map((c) => c.fn)).toEqual(["nodeIsland.require", "nodeIsland.require"]);
+});
+
+test("a generated module that catches the withheld call does not defer", () => {
+  const root = project({
+    "node_modules/writer/package.json": '{ "name": "writer" }',
+    "node_modules/writer/index.js":
+      'const fs = require("fs");\nmodule.exports = (p) => { try { fs.openSync(p, "w"); return "made"; } catch { return "caught"; } };\n',
+  });
+  const made = join(root, "caught.txt");
+  // The island function catches what the build withheld, so the load
+  // succeeds with the fallback its catch block returns; that value, and
+  // whatever the module would do after it, is not the real call's.
+  const generatedFile = join(root, ".scriptc/closed/writer.0.mjs");
+  mkdirSync(dirname(generatedFile), { recursive: true });
+  writeFileSync(
+    generatedFile,
+    `import write from ${JSON.stringify(join(root, "node_modules/writer/index.js"))};\n` +
+      `export const mode = write(${JSON.stringify(made)});\n`,
+  );
+  const [result] = probe(root, [generatedFile], [generatedFile]);
+  expect(result!.throws).toBeUndefined();
+  expect(result!.root).toBeUndefined();
+  expect(result!.reason).toBe(
+    "its evaluation has effects or reads inputs: fs.openSync(), which the build does not perform",
+  );
+  expect(existsSync(made)).toBe(false);
 });
 
 test("a package that catches the refusal does not defer, nor does one that loads it later", () => {

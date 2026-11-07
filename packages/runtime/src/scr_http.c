@@ -4918,6 +4918,11 @@ static void scr_http_client_settle(struct ScrHttpClientReq *c) {
   scr_net_ls_drop(&c->finish_ls);
   scr_net_ls_drop(&c->continue_ls);
   scr_net_ls_drop(&c->info_ls);
+  /* 'upgrade' and 'connect' fire only before the exchange settles, so their
+   * listeners cannot fire after this point, and a listener that reads its
+   * request holds the handle through the list. The lists must go too. */
+  scr_net_ls_drop(&c->upgrade_ls);
+  scr_net_ls_drop(&c->connect_ls);
   scr_http_client_unregister(c);
 }
 

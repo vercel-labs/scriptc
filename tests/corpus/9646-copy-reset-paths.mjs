@@ -318,6 +318,43 @@ function otherValues(kind) {
   return holder.show(c) + " / " + "abcd".slice(n);
 }
 
+function same(value) {
+  return value;
+}
+function throughItself(form, flag) {
+  var text, size;
+  function fill() {
+    text = "filled";
+    size = 2;
+  }
+  if (form !== "??" || flag) fill();
+  var c = text;
+  var n = size;
+  var otherText = "other";
+  var otherSize = 1;
+  if (form === "?:") {
+    c = flag ? c : undefined;
+    n = flag ? n : undefined;
+  } else if (form === "??") {
+    c = c ?? otherText;
+    n = n ?? otherSize;
+  } else if (form === "||=") {
+    c ||= otherText;
+    n ||= otherSize;
+  } else if (form === "call") {
+    c = same(c);
+    n = flag ? same(n) : same(undefined);
+  } else if (form === "self") {
+    c = c;
+    n = flag && n;
+  } else {
+    var held = c;
+    c = n;
+    n = held;
+  }
+  return holder.show(c) + " / " + "abcd".slice(n);
+}
+
 function returned(reset) {
   var text;
   function fill() {
@@ -357,4 +394,7 @@ console.log("reset in a labeled block:", labeled(true), "|", labeled(false));
 console.log("reset by a closure:", byClosure(true), "|", byClosure(false));
 console.log("destructuring:", destructured(true), "|", destructured(false));
 console.log("null, another value, the read again:", otherValues("null"), "|", otherValues("other"), "|", otherValues("again"));
+for (const form of ["?:", "??", "||=", "call", "self", "swap"]) {
+  console.log("assigned from itself, " + form + ":", throughItself(form, true), "|", throughItself(form, false));
+}
 console.log("returned:", result(returned(true), 1), "|", result(returned(false), 1), "|", result(returnedAfterReset(), 1));

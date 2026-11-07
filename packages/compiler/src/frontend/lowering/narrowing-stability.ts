@@ -52,6 +52,12 @@ export class NarrowingStability {
   private readonly staleBindings = new Map<ts.Symbol, boolean>();
   private readonly inherited = new Map<ts.Symbol, ts.Type | null>();
   private readonly writes = new Map<ts.Symbol, BindingWrite[] | null>();
+  /** Bindings whose writes or inherited type are being computed, and how
+   * often a computation asked for one of them: an answer that depends on
+   * itself (`copy = keep ? copy : undefined`) is not an answer, so
+   * nothing derived from it is kept and the write counts as stale. */
+  private readonly resolving = new Set<ts.Symbol>();
+  private selfReferences = 0;
   private readonly identifierWrites = new Map<ts.SourceFile, Map<string, ts.Identifier[]>>();
   private readonly widened = new Map<ts.Node, ts.Type | null>();
   private readonly plainContainers = new Map<ts.Node, boolean>();
@@ -74,11 +80,12 @@ export class NarrowingStability {
     const cached = this.widened.get(node);
     if (cached !== undefined) return cached;
     const position = widePosition(node);
+    const selfReferences = this.selfReferences;
     let result: ts.Type | null = null;
     try {
       result = this.computeWidened(node, position);
     } finally {
-      this.widened.set(node, result);
+      if (this.selfReferences === selfReferences) this.widened.set(node, result);
     }
     return result;
   }
@@ -252,13 +259,18 @@ export class NarrowingStability {
   private inheritedType(symbol: ts.Symbol): ts.Type | null {
     const cached = this.inherited.get(symbol);
     if (cached !== undefined) return cached;
-    // A cycle of bindings assigned from each other contributes nothing.
-    this.inherited.set(symbol, null);
+    if (this.resolving.has(symbol)) {
+      this.selfReferences++;
+      return null;
+    }
+    const selfReferences = this.selfReferences;
+    const writes = this.writesOf(symbol);
+    this.resolving.add(symbol);
     let result: ts.Type | null = null;
     try {
       const decl = symbol.valueDeclaration;
       if (decl !== undefined && ts.isVariableDeclaration(decl) && decl.type === undefined) {
-        for (const write of this.writesOf(symbol) ?? []) {
+        for (const write of writes ?? []) {
           if (write.value === null) continue;
           const read = this.restoredNothingRead(write.value);
           const restored = read === null ? null : this.widenedType(read);
@@ -268,7 +280,8 @@ export class NarrowingStability {
         }
       }
     } finally {
-      this.inherited.set(symbol, result);
+      this.resolving.delete(symbol);
+      if (this.selfReferences === selfReferences) this.inherited.set(symbol, result);
     }
     return result;
   }
@@ -284,8 +297,11 @@ export class NarrowingStability {
   private writesOf(symbol: ts.Symbol): BindingWrite[] | null {
     const cached = this.writes.get(symbol);
     if (cached !== undefined) return cached;
-    // A cycle of bindings assigned from each other sees no writes.
-    this.writes.set(symbol, null);
+    if (this.resolving.has(symbol)) {
+      this.selfReferences++;
+      return null;
+    }
+    this.resolving.add(symbol);
     let result: BindingWrite[] | null = null;
     try {
       const decl = symbol.valueDeclaration;
@@ -301,8 +317,14 @@ export class NarrowingStability {
         ts.isVariableStatement(list.parent)
       ) {
         const found: BindingWrite[] = [];
-        const stale = (value: ts.Expression): boolean =>
-          this.mayBeStale(value) || this.restoredNothingRead(value) !== null;
+        // A value whose judgement asked for this binding's own writes
+        // (it reads the binding, directly or through another copy) is
+        // taken to be stale.
+        const stale = (value: ts.Expression): boolean => {
+          const selfReferences = this.selfReferences;
+          const found = this.mayBeStale(value) || this.restoredNothingRead(value) !== null;
+          return found || this.selfReferences !== selfReferences;
+        };
         found.push(
           decl.initializer === undefined
             ? { at: decl, value: null, kind: "declared", stale: false }
@@ -334,6 +356,7 @@ export class NarrowingStability {
         result = found;
       }
     } finally {
+      this.resolving.delete(symbol);
       this.writes.set(symbol, result);
     }
     return result;
@@ -341,8 +364,9 @@ export class NarrowingStability {
 
   /** Whether the binding certainly holds, at `read`, the nothing the
    * checker types the read as: every write that can reach the read along
-   * the function's control flow stores that nothing from a value that is
-   * not stale. A forward pass over the statements on the way to the read
+   * the function's control flow stores that nothing, spelled as such
+   * (`undefined`, `null`, `void e`, or a declaration without a value). A
+   * forward pass over the statements on the way to the read
    * with one fact, "the binding may hold something else". A statement
    * that is the declaration or an assignment of the binding sets the fact
    * from what it stores; a block passes it through its statements; an
@@ -372,6 +396,12 @@ export class NarrowingStability {
     const settles = (write: BindingWrite): boolean => {
       if (write.kind === "declared") return (undefinedFlag & ~expected) === 0;
       if (write.kind === "unknown" || write.stale || write.value === null) return false;
+      // Only a value that is nothing by its own spelling: any other
+      // expression the checker types as nothing (a call, a conditional, a
+      // read of another binding) may carry a value its type was inferred
+      // without, the copy's own included (`y = keep ? y : undefined`,
+      // `y = same(y)`).
+      if (!spellsNothing(write.value)) return false;
       const stored = checker.getTypeAtLocation(write.value);
       return isNothing(stored) && (nothingFlags(stored) & ~expected) === 0;
     };
@@ -1205,6 +1235,16 @@ interface BindingWrite {
   value: ts.Expression | null;
   kind: "declared" | "assigned" | "unknown";
   stale: boolean;
+}
+
+/** `undefined`, `null` or `void e`, through parentheses and assertions. */
+function spellsNothing(value: ts.Expression): boolean {
+  const e = skipOuter(value);
+  return (
+    e.kind === ts.SyntaxKind.NullKeyword ||
+    ts.isVoidExpression(e) ||
+    (ts.isIdentifier(e) && e.text === "undefined")
+  );
 }
 
 /** Whether `node` is `inner` or contains it. */

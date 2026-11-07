@@ -5348,6 +5348,7 @@ export class Lowerer {
     "narrowing.staleBindings",
     "narrowing.inherited",
     "narrowing.writes",
+    "narrowing.resolving",
     "narrowing.identifierWrites",
     "narrowing.widened",
     "narrowing.plainContainers",

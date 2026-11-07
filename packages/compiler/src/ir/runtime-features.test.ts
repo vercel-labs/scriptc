@@ -507,6 +507,16 @@ describe("runtime feature snapshots", () => {
     // A TypeScript source's fences keep the plain throw.
     expect(fenced("an undefined index [SC2020 at /app/a.ts:4]", "/app/a.ts")).toBe(false);
     expect(moduleRuntimeFeatures(module()).deferredFence).toBe(false);
+    // So do a library's: its archive carries no reporter.
+    const library = module();
+    library.lib = { profileName: "p" } as IrModule["lib"];
+    library.functions[0]!.body.push({
+      kind: "runtimeFence",
+      code: "SC2020",
+      message: "'unescape' has no scriptc lowering yet [SC2020 at /app/a.js:4]",
+      loc: { ...loc, file: "/app/a.js" },
+    });
+    expect(moduleRuntimeFeatures(library).deferredFence).toBe(false);
   });
 
   test("gates the BigInt typed-array element kinds on the constructor name", () => {

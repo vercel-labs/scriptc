@@ -148,7 +148,7 @@ scriptc: this program reached code that scriptc could not compile; each such ope
 scriptc: not compiled: 'unescape' is part of the standard library types but has no scriptc lowering yet [SC2020]
 ```
 
-Set `SCRIPTC_DEFERRED_REPORT=0` in the program's environment to silence these lines. A program with no deferred operations never prints them.
+Set `SCRIPTC_DEFERRED_REPORT=0` in the program's environment to silence these lines. A program with no deferred operations never prints them. A library built with `scriptc build --lib` doesn't print them either: a deferred operation in a library throws its error, and nothing is written to the host process's stderr.
 
 ## Fix a package's types
 

@@ -878,8 +878,11 @@ interface RuntimeFeatureRule {
 const rule = (r: RuntimeFeatureRule): RuntimeFeatureRule => r;
 
 /** Whether the module holds a runtimeFence that stands for a deferred
- * diagnostic: the statement the backend throws through the reporter. */
+ * diagnostic: the statement the backend throws through the reporter. A
+ * library's fences keep the plain throw (emit-statements.ts), so a library
+ * never asks for the reporter. */
 function moduleHasDeferredFence(mod: IrModule): boolean {
+  if (mod.lib !== undefined) return false;
   let found = false;
   everyModuleNode(mod, {
     expr: () => !found,

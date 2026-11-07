@@ -1986,9 +1986,15 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       // compiler deferred (ir/deferred-fence.ts) throws through the
       // runtime's reporter, which names the site on stderr the first time
       // it fires, keyed by the interned message constant: a handler that
-      // catches the Error cannot hide the refusal.
+      // catches the Error cannot hide the refusal. A library keeps the
+      // plain throw: its archive carries no reporter, and what a library
+      // tells its host goes through the host's sink, not the process's
+      // stderr.
       const bytes = Buffer.byteLength(s.message, "utf8");
-      if (isDeferredDiagnosticFence(s.code, s.message, s.loc.file)) {
+      if (
+        emitter.mod.lib === undefined &&
+        isDeferredDiagnosticFence(s.code, s.message, s.loc.file)
+      ) {
         emitter.declare(`declare void @scr_deferred_fence(ptr, ${emitter.sizeType}, ptr)`);
         B.line(
           `call void @scr_deferred_fence(ptr ${emitter.cstr(s.message)}, ${emitter.sizeType} ${bytes}, ptr ${emitter.cstr(s.code)})`,

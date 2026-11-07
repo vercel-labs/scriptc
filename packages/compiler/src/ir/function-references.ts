@@ -16,23 +16,29 @@ export function exprFunctionReference(expr: IrExpr): string | undefined {
 export const FUNCTION_REFERENCE_KINDS = ["closure", "orDefault"] as const;
 
 /** Functions the module's metadata names: the entry, library exports,
- * closures' jsval entries, the class prototype helpers the runtime calls
- * and the record links' compose helpers the record walkers call. Class
- * methods and constructors follow the `%<class>.<method>` convention
- * instead of being named here; callers that need them derive them from
- * `mod.classes`. */
+ * closures' jsval entries, generic identity roots (an adopting instance's
+ * interned closure points at the root's, so the root is a value the module
+ * materializes), the class prototype helpers the runtime calls and the
+ * record links' compose helpers the record walkers call. Class methods and
+ * constructors follow the `%<class>.<method>` convention instead of being
+ * named here; callers that need them derive them from `mod.classes`. */
 export function moduleFunctionReferences(mod: IrModule): string[] {
   return metadataReferences(mod, true);
 }
 
-/** moduleFunctionReferences, with or without the closures' jsval entries.
- * A function names its entry for itself, so a walk that follows functions
- * (withoutUnreachedFunctions) reaches an entry when it reaches its closure. */
-function metadataReferences(mod: IrModule, jsEntries: boolean): string[] {
+/** moduleFunctionReferences, with or without the functions that functions
+ * name for themselves: a closure's jsval entry and an instance's identity
+ * root. A walk that follows functions (withoutUnreachedFunctions) reaches
+ * an entry when it reaches its closure, and a root when it reaches an
+ * instance that adopts it. */
+function metadataReferences(mod: IrModule, ownNames: boolean): string[] {
   const names = [mod.entry];
   for (const entry of mod.lib?.exports ?? []) names.push(entry.fnName);
-  if (jsEntries)
-    for (const fn of mod.functions) if (fn.jsEntry !== undefined) names.push(fn.jsEntry);
+  if (ownNames)
+    for (const fn of mod.functions) {
+      if (fn.jsEntry !== undefined) names.push(fn.jsEntry);
+      if (fn.identityRoot !== undefined) names.push(fn.identityRoot);
+    }
   for (const cls of mod.classes ?? []) {
     if (cls.prototypeDataHelper !== undefined) names.push(cls.prototypeDataHelper);
     if (cls.instancePrototypeHelper !== undefined) names.push(cls.instancePrototypeHelper);
@@ -72,7 +78,8 @@ export function isClassMemberName(name: string, classNames: ReadonlySet<string>)
 
 /** `mod` without the functions of `removable` that nothing reaches. A
  * function is reached through a call, a function reference
- * (exprFunctionReference), a closure's jsval entry, the module's metadata
+ * (exprFunctionReference), a closure's jsval entry, an instance's identity
+ * root, the module's metadata
  * (moduleFunctionReferences), the names the emitter looks up
  * (errorReaderName, CLASS_NORMALIZER), or a string literal that spells its
  * name (`Error.captureStackTrace` names the function whose frames it skips
@@ -100,6 +107,7 @@ export function withoutUnreachedFunctions(mod: IrModule, removable: ReadonlySet<
   };
   const scan = (fn: IrFunction): void => {
     if (fn.jsEntry !== undefined) reach(fn.jsEntry);
+    if (fn.identityRoot !== undefined) reach(fn.identityRoot);
     everyStmtList(fn.body, {
       expr: (expr) => {
         if (expr.kind === "call") reach(expr.callee);

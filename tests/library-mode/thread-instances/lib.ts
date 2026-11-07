@@ -47,3 +47,27 @@ export function indexedUnicode(): number {
   return s.length + s.charCodeAt(mid + 2) + s.slice(mid + 1, mid + 4).length +
     s.substring(mid + 2, mid + 4).length + s.indexOf("é😀", mid) + s.lastIndexOf("😀");
 }
+
+// One generic declaration held at two signatures is one function object in
+// each thread's instance. The instances' interned closures are thread-local
+// here, so no initializer can name the declaration's identity root: each
+// thread's init entry stores it. 31 when identity, set membership and both
+// instances' calls all answer as JavaScript does.
+function pick<T>(box: { v: T }): T {
+  return box.v;
+}
+const pickNumber: (box: { v: number }) => number = pick;
+const pickString: (box: { v: string }) => string = pick;
+
+export function genericIdentity(): number {
+  const a: unknown = pickNumber;
+  const b: unknown = pickString;
+  const members = new Set<unknown>([a, b]);
+  return (
+    (a === b ? 1 : 0) +
+    (Object.is(a, b) ? 2 : 0) +
+    (members.size === 1 ? 4 : 0) +
+    pickNumber({ v: 8 }) +
+    pickString({ v: "x" }).length * 16
+  );
+}

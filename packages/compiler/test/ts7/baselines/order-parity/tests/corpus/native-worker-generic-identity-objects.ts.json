@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/native-worker-generic-identity-objects.ts"
+ ],
+ "diags": []
+}

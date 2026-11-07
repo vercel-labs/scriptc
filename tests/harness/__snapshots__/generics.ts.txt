@@ -1,10 +1,3 @@
-generics.ts:23:3 - error SC1090: generic nested functions (only top-level generic function declarations are supported) are not supported yet
-
-  22 | function outer(): void {
-  23 |   function nested<T>(x: T): T {
-     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  24 |     return x;
-
 generics.ts:30:10 - error SC1090: '.join()' on arrays of this element type (number, string, boolean and Date arrays join — unions of those with undefined/null arms too, the units printing empty like JS) is not supported yet (instantiating 'joinAll' with <number[]>)
 
   29 | function joinAll<T>(a: T[]): string {

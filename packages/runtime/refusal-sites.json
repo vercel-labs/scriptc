@@ -620,7 +620,7 @@
  {
   "file": "scr_events_emitter.c",
   "function": "scr_emitter_retain_v",
-  "message": "%s with an events.errorMonitor listener is not supported yet",
+  "message": "%s with a symbol event name is not supported yet",
   "code": "SC2020"
  },
  {

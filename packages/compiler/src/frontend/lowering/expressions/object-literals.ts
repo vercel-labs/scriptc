@@ -3086,6 +3086,18 @@ function lowerDistributedUnionSpread(
   const target = lowerer.unions.get(mapped.unionId);
   if (!target) return null;
   const props = expr.properties.nodes;
+  // The plan below names every key the literal writes, per arm. A key
+  // decided at run time is in no arm's field list.
+  if (
+    props.some(
+      (prop) =>
+        !ts.isSpreadAssignment(prop) &&
+        prop.name !== undefined &&
+        ts.isComputedPropertyName(prop.name) &&
+        literalComputedKey(lowerer, prop.name) === null,
+    )
+  )
+    return null;
   // Exactly one distributed source: a plain spread whose checker type maps
   // to a union of records and unit arms. Several would be a product.
   let spreadIndex = -1;

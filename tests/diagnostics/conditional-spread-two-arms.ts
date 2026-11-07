@@ -20,4 +20,9 @@ function nested(flag: boolean, other: boolean) {
   return { id: 1, ...(flag ? { a: 1 } : other ? { b: "2" } : { c: true }) };
 }
 
-console.log(effectBefore(true), product(true, false), nested(false, true));
+// A key decided at run time beside the spread.
+function runtimeKey(flag: boolean, key: string) {
+  return { [key]: 1, ...(flag ? { a: 1 } : { b: "2" }) };
+}
+
+console.log(effectBefore(true), product(true, false), nested(false, true), runtimeKey(true, "k"));

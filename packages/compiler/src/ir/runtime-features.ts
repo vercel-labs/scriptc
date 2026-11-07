@@ -324,6 +324,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.dynTransformResult",
   "stream.unboxDynStage",
   "stream.handleStream",
+  "stream.handleWritable",
   "stream.unpipeDyn",
   "stream.workerStdio",
 ]);

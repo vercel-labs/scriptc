@@ -994,6 +994,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "stream.unboxDynStage": "scr_stream_unbox_dyn_stage",
   "stream.dynTransformResult": "scr_stream_dyn_transform_result",
   "stream.handleStream": "scr_stream_handle",
+  "stream.handleWritable": "scr_stream_handle",
   "stream.pipeDyn": "scr_stream_pipe_dyn",
   "stream.unpipeDyn": "scr_stream_unpipe_dyn",
   "process.kill": "scr_process_kill_named",

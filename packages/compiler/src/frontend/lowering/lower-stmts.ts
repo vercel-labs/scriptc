@@ -205,7 +205,7 @@ import {
   bufferNamespaceMember,
   stdlibGlobalNameOf,
 } from "./surfaces.js";
-import { isNativeBuiltinValueInitializer } from "./lower-builtin-values.js";
+import { isNativeBuiltinValueInitializer, reflectMemberValueRead } from "./lower-builtin-values.js";
 import {
   fenceConsoleMemberValue,
   fenceConsoleMutation,
@@ -1547,6 +1547,18 @@ function varBindingType(lowerer: Lowerer, nameNode: ts.Identifier): IrType | nul
     isNativeProxyInitializer(lowerer, nameNode.parent.initializer)
   )
     return DYN;
+  // A Reflect member read as a value is a checked-dynamic closure that sees
+  // the arity of its call, exactly like Node's own member: `Reflect.get(t,
+  // k)` defaults the receiver to the target only when the receiver argument
+  // is ABSENT. Narrowing the binding to the lib signature's fixed parameters
+  // would pad that omitted optional receiver with undefined, erasing the
+  // distinction, so the binding keeps the value the namespace answers.
+  if (
+    ts.isVariableDeclaration(nameNode.parent) &&
+    nameNode.parent.name === nameNode &&
+    reflectMemberValueRead(lowerer, nameNode.parent.initializer)
+  )
+    return DYN;
   if (
     isJsSourceFile(ts.getSourceFileOfNode(nameNode)) &&
     ts.isVariableDeclaration(nameNode.parent) &&
@@ -1731,8 +1743,9 @@ export function predeclareForwardVar(lowerer: Lowerer, symbol: ts.Symbol): boole
   return true;
 }
 
-/** A var readable before its first store (the runtime-optional analysis
- * widened it): reads keep the undefined-armed value. */
+/** A `var`, or a `let` declared without an initializer, readable before its
+ * first store (the runtime-optional analysis widened it): reads keep the
+ * undefined-armed value. */
 function noteEarlyReadVar(lowerer: Lowerer, symbol: ts.Symbol, local: IrLocal): void {
   if (!lowerer.earlyReadVars.has(symbol)) return;
   const root = lowerer.runtimeOptionalRootOf(local);
@@ -6941,8 +6954,10 @@ export function lowerVarDecl(
       // `let x: string | undefined;` at file scope: READABLE before any
       // assignment — JS gives undefined, so the slot must hold the
       // interned undefined arm, not stay NULL (a tag test on NULL would
-      // fault). Other uninitialized globals need no statement (tsc's
-      // definite-assignment analysis guards their reads).
+      // fault). A `let x: string;` that code can read before its first
+      // store was widened to that union (var-hoisting.ts) and takes the
+      // same statement. Other uninitialized globals need none: every read
+      // of them runs after a store.
       // `var x: string | undefined;` emits nothing HERE: its undefined
       // arm was assigned at the file init's entry (lowerFileInit's var
       // hoisting), and re-running the statement — a declaration inside
@@ -7094,8 +7109,12 @@ export function lowerVarDecl(
   }
 
   if (!decl.initializer) {
-    // `let x: number;` — declared, uninitialized. tsc guarantees no read
-    // before assignment (TS2454) and rejects uninitialized const (TS1155).
+    // `let x: number;` — declared, uninitialized. tsc rejects a read before
+    // assignment in the declaring function's own code (TS2454) and an
+    // uninitialized const (TS1155). It checks no read inside a nested
+    // function and none behind `let x!: number`: a binding such a read can
+    // reach before its first store was widened to hold undefined
+    // (var-hoisting.ts), and reads keep that value (noteEarlyReadVar).
     // Unannotated `let x;` is an evolving `any` — the checked-dynamic
     // binding fallback (irTypeOf → dynFallbackType) unless its writes agree
     // on a type.
@@ -7103,6 +7122,8 @@ export function lowerVarDecl(
     // immediately (the type covers the unassigned state), so they
     // initialize to the interned undefined arm like an omitted optional.
     let type = lowerer.irTypeOf(decl.name);
+    const earlyRead = declSymbol !== undefined && lowerer.earlyReadVars.has(declSymbol);
+    if (earlyRead) type = lowerer.runtimeOptionalBindingType(decl.name, type);
     if (type.kind === "dyn" && isLet && decl.type === undefined) {
       type = inferredEvolvingLetType(lowerer, decl) ?? type;
     }
@@ -7117,6 +7138,7 @@ export function lowerVarDecl(
     }
     if (type.kind === "void") lowerer.badType(decl.name, lowerer.typeOf(decl.name));
     const local = lowerer.declareLocal(decl.name, decl.name.text, type, isLet);
+    if (earlyRead) noteEarlyReadVar(lowerer, declSymbol, local);
     // tsc's definite-assignment analysis never guards `any` reads, so
     // uninitialized checked-value bindings must hold native undefined.
     const init =
@@ -7213,6 +7235,14 @@ export function lowerVarDecl(
     !hasJsTypeAnnotation(decl) &&
     isDataViewPrototypeRead(lowerer, decl.initializer)
   )
+    type = DYN;
+  // A Reflect member read as a value is a checked-dynamic closure that sees
+  // the arity of its call, exactly like Node's own member: `Reflect.get(t,
+  // k)` defaults the receiver to the target only when the receiver argument
+  // is ABSENT. Narrowing the binding to the lib signature's fixed parameters
+  // would pad that omitted optional receiver with undefined, erasing the
+  // distinction, so the binding keeps the value the namespace answers.
+  if (!decl.type && !hasJsTypeAnnotation(decl) && reflectMemberValueRead(lowerer, decl.initializer))
     type = DYN;
   // A web stream value in JavaScript keeps its checked-dynamic identity.
   if (

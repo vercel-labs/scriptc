@@ -19771,6 +19771,10 @@
           "tests/corpus/compat-crypto-catalogs.ts",
           "tests/corpus/compat-x509-keyobject.mjs",
           "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
           "tests/corpus/node24-crypto-kdf.ts",
@@ -20478,6 +20482,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -20531,6 +20539,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -20588,6 +20600,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -20618,6 +20634,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -20755,6 +20775,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -20785,6 +20809,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -21696,6 +21724,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -21753,6 +21785,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -23767,6 +23803,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -23797,6 +23837,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -23950,6 +23994,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -23980,6 +24028,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -24010,6 +24062,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -24040,6 +24096,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -24070,6 +24130,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -24100,6 +24164,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },

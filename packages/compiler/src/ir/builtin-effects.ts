@@ -137,6 +137,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.unboxDynStage",
   "stream.dynTransformResult",
   "stream.handleStream",
+  "stream.handleWritable",
   "stream.pipeDyn",
   "stream.unpipeDyn",
   "weakMap.new",

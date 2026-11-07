@@ -60,6 +60,7 @@ import {
   runtimeOptionalUseOf,
 } from "../lower-exprs.js";
 import { runtimeOptionalReceiverRead } from "./narrowing.js";
+import { requiredLibraryCallbackRead } from "./library-callbacks.js";
 import { iterableUnionOf } from "../iterable-values.js";
 import { builtinGlobalValueAt } from "./property-access.js";
 import { varRef } from "../../../ir/build.js";
@@ -384,6 +385,8 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         }
         return runtimeOptionalReceiverRead(lowerer, expr, local, null, loc);
       }
+      const callback = requiredLibraryCallbackRead(lowerer, expr, local, loc);
+      if (callback) return callback;
       if (runtimeOptionalObjectWalkerArg(lowerer, expr)) {
         const narrowed = lowerer.mapTypeOf(lowerer.typeOf(expr));
         if (local.type.kind === "union" && narrowed) {
@@ -500,6 +503,8 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         const helper = lowerer.narrowedArmHelper(g.type.unionId, narrowed, loc);
         if (helper) return lowerer.checkedNarrowCall(helper, ref, narrowed, loc);
       }
+      const callback = requiredLibraryCallbackRead(lowerer, expr, g, loc);
+      if (callback) return callback;
       const use = runtimeOptionalUseOf(expr);
       // The enclosing logical/conditional expression consumes the union
       // before any member operation runs (`(value ?? fallback).length`).

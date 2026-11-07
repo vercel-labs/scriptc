@@ -1019,6 +1019,17 @@ int32_t scr_dyn_discriminant_case(const ScrDyn *d, const ScrStr *key, ScrStr *co
  * member nodes. null/undefined receivers throw Node's catchable
  * TypeError. */
 ScrDyn *scr_dyn_obj_keys(const ScrDyn *v);
+/* A checked conversion's view of a value an island made (scr_json.c): the
+ * array's elements read through the handle into a native array, holes left
+ * absent; the object's own enumerable string keys read into a native object,
+ * leaving out the record's declared fields (`names`, `lens`, `count`) because
+ * the conversion reads those as ordinary property reads, so a getter runs
+ * once. Both answer +1, or NULL with an exception pending from a getter or a
+ * proxy trap. An array view of a value that is not an array answers NULL with
+ * nothing pending. */
+ScrDyn *scr_dyn_island_array(ScrDyn *value);
+ScrDyn *scr_dyn_island_object(ScrDyn *value, const char *const *names, const size_t *lens,
+                              size_t count);
 ScrDyn *scr_dyn_for_in_keys(const ScrDyn *v);
 /* for-in keys as a native string[] (+1); NULL with an exception pending. */
 ScrArr *scr_dyn_for_in_key_strs(const ScrDyn *v);

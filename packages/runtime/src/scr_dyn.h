@@ -2447,6 +2447,10 @@ typedef struct ScrDynHandleOps {
    * stream unit builds the handle's Transform from these operations on its
    * first stream use. NULL = the class is not a stream. */
   const struct ScrDynHandleTransform *transform;
+  /* A handle that is also a Node Writable (Sign, Verify): the stream unit
+   * builds the handle's Writable from these operations on its first stream
+   * use. NULL = the class is not a stream. */
+  const struct ScrDynHandleWritable *writable;
   /* The class's methods as values, terminated by a NULL name; NULL = a
    * property read answers no methods (member calls still reach invoke).
    * See ScrDynHandleMethod. */
@@ -2597,6 +2601,20 @@ typedef struct ScrDynHandleTransform {
   struct ScrBytes *(*final)(void *h);
   ScrTraceFn trace;
 } ScrDynHandleTransform;
+
+/* A handle that is a Node Writable (Sign, Verify): the stream unit builds
+ * the handle's Writable from these operations on its first stream use, and
+ * each write() hands update() the chunk's bytes exactly as Node's _write
+ * does. There is no _final: Node's Sign and Verify finish as soon as their
+ * last write completes. The steps hold the handle, so the handle is a
+ * collector-headered object whose trace visits its stream (the pair is
+ * reclaimed as a cycle). */
+typedef struct ScrDynHandleWritable {
+  void *(*stream)(void *h);
+  void (*set_stream)(void *h, void *stream, void (*release)(void *));
+  void (*write)(void *h, struct ScrBytes *chunk);
+  ScrTraceFn trace;
+} ScrDynHandleWritable;
 
 /* Checked-dynamic member calls and property reads on a Transform handle,
  * installed by the stream unit (scr_stream_install); NULL in a program

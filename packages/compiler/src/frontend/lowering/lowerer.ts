@@ -128,7 +128,7 @@ import { lowerX509Call, refuseX509DynValues } from "./builtins/x509.js";
 import { isEcdhType, lowerEcdhCall } from "./builtins/ecdh.js";
 import { isDiffieHellmanType, lowerDiffieHellmanCall } from "./builtins/dh.js";
 import { fenceWebCryptoMember, lowerWebCryptoCall } from "./builtins/webcrypto.js";
-import { valueStreamOf } from "./builtins/hash-stream.js";
+import { valueStreamOf, writableStreamOf } from "./builtins/hash-stream.js";
 import { lowerNetAddressCall, lowerNetAddressNew } from "./builtins/net-address.js";
 import { lowerMimeCall, lowerMimeNew } from "./builtins/mime.js";
 import {
@@ -4422,10 +4422,14 @@ export class Lowerer {
   /** Inline Promise.then parameters whose contextual type is a builtin
    * module namespace anonymous object. The settled native token is the
    * ABI truth even when the checker type has no stable module symbol. */
-  /** Receivers of a stream call on a Hash, Hmac, Cipheriv or Decipheriv
-   * (lowerHashStreamCall): for the duration of that call, the receiver
-   * lowers to the Transform of the value held in the named local. */
-  readonly valueStreamReceivers = new Map<ts.Expression, { localId: string; type: IrType }>();
+  /** Receivers of a stream call on a Hash, Hmac, Cipheriv, Decipheriv,
+   * Sign or Verify (lowerHashStreamCall): for the duration of that call,
+   * the receiver lowers to the native stream of the value held in the
+   * named local — its Transform, or for a signer its Writable. */
+  readonly valueStreamReceivers = new Map<
+    ts.Expression,
+    { localId: string; type: IrType; writable: boolean }
+  >();
   /** fs call arguments evaluated ahead of a URL path's conversion
    * (builtins/fs-paths.ts): each lowers to the hidden local that holds its
    * value, which is null until the path's lowering has saved it. */
@@ -17137,6 +17141,48 @@ export class Lowerer {
     return stmt;
   }
 
+  /** `return v` where the checker types v as checked-dynamic and the async
+   * result is a concrete type: the run-time value decides. A promise adopts
+   * into the result the way a statically typed one does (JS's async
+   * resolution adopts a returned thenable): the function's promise settles
+   * where that one does, one turn later, and its rejection never reaches
+   * the function's own catch clauses. Any other value converts now, as the
+   * ordinary return does. The operand binds to a hidden local because the
+   * branch tests it and then returns it. Null when the return is not that
+   * shape, or when the result holds the value as it is (dyn, promise) or
+   * discards it (void). */
+  dynamicReturnStmt(node: ts.Expression, e: IrExpr, expected: IrType, loc: SrcLoc): IrStmt | null {
+    if (!this.adoptsReturnedPromise()) return null;
+    if (e.type.kind !== "dyn") return null;
+    if (expected.kind === "dyn" || expected.kind === "promise" || expected.kind === "void")
+      return null;
+    const local = this.declareHiddenLocal("%returned", DYN);
+    const read = (): IrExpr => varRef(local.id, DYN, loc);
+    // The test and the cast agree — both look for a native promise — so the
+    // cast cannot fail. A thenable object is a value here, not a promise: it
+    // converts (or fails to convert) like any other.
+    const awaited = this.returnedPromiseAwait({
+      kind: "dynCheck",
+      value: read(),
+      type: { kind: "promise", inner: DYN },
+      loc,
+    });
+    return {
+      kind: "block",
+      body: [
+        { kind: "varDecl", localId: local.id, init: e, loc },
+        {
+          kind: "if",
+          cond: { kind: "dynTest", test: "promise", value: read(), type: BOOL, loc },
+          then: [{ kind: "return", value: this.coerceInto(node, awaited, expected), loc }],
+          else_: [{ kind: "return", value: this.coerceInto(node, read(), expected), loc }],
+          loc,
+        },
+      ],
+      loc,
+    };
+  }
+
   private lowerReturnOf(node: ts.Expression, loc: SrcLoc): IrStmt {
     const expected = this.ctx.returnType;
     if (expected.kind === "void") {
@@ -17176,10 +17222,14 @@ export class Lowerer {
     ) {
       // The async return lowers its operand untyped first (a promise
       // adopts before its payload converts); a maybe-promise union needs
-      // the statement form, which branches between adoption and fulfillment.
+      // the statement form, which branches between adoption and fulfillment,
+      // and so does a checked-dynamic operand, whose run-time promise the
+      // branch adopts.
       const e = this.lowerExpr(node);
       const flattened = this.maybePromiseReturn(node, e, expected);
       if (flattened) return flattened;
+      const dynamic = this.dynamicReturnStmt(node, e, expected, loc);
+      if (dynamic) return dynamic;
       return { kind: "return", value: this.asyncReturnValueOf(node, e, expected), loc };
     }
     return { kind: "return", value: this.lowerReturnValue(node), loc };
@@ -19102,8 +19152,10 @@ export class Lowerer {
       }
     }
     const streamValue = this.valueStreamReceivers.get(expr);
-    if (streamValue)
-      return valueStreamOf(varRef(streamValue.localId, streamValue.type, locOf(expr)));
+    if (streamValue) {
+      const value = varRef(streamValue.localId, streamValue.type, locOf(expr));
+      return streamValue.writable ? writableStreamOf(value) : valueStreamOf(value);
+    }
     const staged = this.stagedArgument(expr);
     if (staged !== null) return staged;
     const dispatched = this.dispatchedReceiver;

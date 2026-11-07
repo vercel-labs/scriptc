@@ -1,0 +1,6 @@
+{
+  "name": "node-island-weak-import",
+  "private": true,
+  "type": "module",
+  "scriptc": { "packages": { "weak-pkg": "node" } }
+}

@@ -21324,14 +21324,14 @@ static int scr_weak_key(const ScrDyn *key, void **ptr, unsigned *kind) {
  * island objects"), in the collection `island` names. This unit builds one
  * object whether or not a program links the island units, so every island
  * path below calls through the table they install (ScrNiDynOps): a value
- * with the island tag exists only in a program that installed it. */
-static inline bool scr_weak_island_key(const ScrDyn *key) { return scr_ni_dyn_handle(key); }
+ * with the island tag (scr_ni_dyn_handle) exists only in a program that
+ * installed it. */
 /* The kind a FinalizationRegistry reads for an island target or token: no
  * entry of the native table has it. */
 #define SCR_WEAK_ISLAND_KIND (~0u)
 
 static bool scr_weak_set(ScrWeakMap *map, ScrDyn *key, ScrDyn *value) {
-  if (scr_weak_island_key(key)) return scr_ni_dyn_ops->weak_set(&map->island, map->is_set, key, value);
+  if (scr_ni_dyn_handle(key)) return scr_ni_dyn_ops->weak_set(&map->island, map->is_set, key, value);
   void *ptr = NULL;
   unsigned kind = 0;
   int supported = scr_weak_key(key, &ptr, &kind);
@@ -21375,7 +21375,7 @@ static ScrDyn *scr_weak_map_invoke(void *ptr, ScrDyn *self, const char *method,
     return scr_dyn_retain(self);
   }
   if ((!map->is_set && strcmp(method, "get") == 0) || strcmp(method, "has") == 0 || strcmp(method, "delete") == 0) {
-    if (scr_weak_island_key(key)) {
+    if (scr_ni_dyn_handle(key)) {
       if (strcmp(method, "get") == 0) return scr_ni_dyn_ops->weak_get(map->island, key);
       int found = scr_ni_dyn_ops->weak_test(map->island, map->is_set, key, strcmp(method, "delete") == 0);
       return found < 0 ? NULL : scr_dyn_new_bool(found);
@@ -21537,7 +21537,7 @@ static bool scr_finalization_key(const ScrDyn *value, void **ptr, unsigned *kind
   /* An island object is a target or a token the way it is a weak key (kind
    * SCR_WEAK_ISLAND_KIND: the island keeps the entry). An island symbol is
    * refused as a native one is. */
-  if (scr_weak_island_key(value)) {
+  if (scr_ni_dyn_handle(value)) {
     ScrStr *type = scr_ni_dyn_ops->type_of((ScrDyn *)value);
     bool symbol = type->len == 6 && memcmp(type->data, "symbol", 6) == 0;
     scr_str_release(type);

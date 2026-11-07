@@ -10518,6 +10518,14 @@ function lowerObjectStaticCall(
   if (argIr?.kind === "union") {
     return lowerObjectEnumerationOverRecordUnion(lowerer, call, member, locOf(call));
   }
+  // An enum that has no object (enum-object-layout.ts): its own fence names
+  // the reason, where the builtin's would name `Object.${member}`.
+  if (argIr === null) {
+    const argType = lowerer.typeOf(argNode);
+    const argSymbol = argType.getSymbol();
+    if (argSymbol !== undefined && (argSymbol.flags & ts.SymbolFlags.Enum) !== 0)
+      lowerer.badType(argNode, argType);
+  }
   if (argIr?.kind !== "record") return null; // Maps, classes, arrays → the SC2020 fence
   const shape = lowerer.shapes.get(argIr.shapeId);
   if (!shape || shape.tuple) return null; // tuple → the fence

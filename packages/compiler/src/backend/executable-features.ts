@@ -3,11 +3,14 @@ import { type IrModule } from "../ir/ir.js";
 import { jsObjectModelFact, moduleRuntimeFeatures } from "../ir/runtime-features.js";
 import { hasForeignFfiCallback } from "./ffi-callbacks.js";
 import type { NativeLinkFeatures } from "./native-link-info.js";
+import { withRequiredLinkFeatures } from "./native-link-info-core.js";
 import { youngNurseryRequested } from "./young-nursery.js";
 
 export function executableLinkFeatures(mod: IrModule, largePages = false): NativeLinkFeatures {
   const features = moduleRuntimeFeatures(mod);
-  return {
+  // A feature that calls into another feature's units links those too
+  // (LINK_FEATURE_REQUIREMENTS), whichever fact selected it.
+  return withRequiredLinkFeatures({
     ...(mod.workers ? { workers: true } : {}),
     ...(largePages ? { largePages: true } : {}),
     ...(youngNurseryRequested() && mod.lib === undefined ? { youngNursery: true } : {}),
@@ -119,5 +122,5 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     webcrypto: features.webcrypto,
     perfLoop: features.perfLoop,
     ...(features.icu ? { intl: true } : {}),
-  };
+  });
 }

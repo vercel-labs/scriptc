@@ -11,4 +11,9 @@ import type { IrLibFn } from "./builtin-signatures.js";
  * packages/compiler/test/builtin-attributes.test.ts holds every builtin to
  * the rule, and builtin-throw-undecided.txt lists the builtins that
  * predate it. */
-export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([]);
+export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  // scr_closure_adopt_identity writes two fields of the adapter.
+  "closure.shareIdentity",
+  // Emitted as the constant false; there is no runtime call.
+  "sea.isSea",
+]);

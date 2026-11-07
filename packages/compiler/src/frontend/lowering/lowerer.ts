@@ -3398,6 +3398,10 @@ export class Lowerer {
    * takes the slot's parameter list as its own when it can
    * (slotSignatureAdoption). */
   readonly slotSignatures = new Map<ts.Node, SlotSignature>();
+  /** The resolve parameters of the typed promise executors being lowered
+   * that are given a value with a promise arm (adoptingResolveType), each
+   * with the type it reads as at such a use. */
+  readonly adoptingResolves = new Map<ts.Symbol, IrType & { kind: "func" }>();
   /** Arithmetic over an unchecked string read can answer either NaN or a
    * string. Bindings and returns use this marker to retain that result union
    * through checker-bare string annotations. */
@@ -5189,6 +5193,7 @@ export class Lowerer {
       ),
       checkedTable("contextualFunctionReturns", () => this.contextualFunctionReturns.size),
       checkedTable("slotSignatures", () => this.slotSignatures.size),
+      checkedTable("adoptingResolves", () => this.adoptingResolves.size),
       checkedTable(
         "runtimeOptionalArithmeticTypes",
         () => this.runtimeOptionalArithmeticTypes.size,

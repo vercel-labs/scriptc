@@ -246,10 +246,11 @@ export function funcSlotAdaptable(
  * argument-array ABI) cannot serve a slot of another signature, or null
  * when it can. Such a value has no native call form: every call of it, a
  * direct one included, boxes the function and applies it to a runtime
- * argument list. A slot of another signature therefore holds the same
- * boxed function behind the checked function boundary's adapter, which
- * passes the slot's arguments as that list and converts the result:
- * dropped for a `void` slot, checked into any other result type.
+ * argument list. A slot of another signature therefore holds an adapter
+ * that makes that same boxed call with the slot's arguments
+ * (variadicBoundaryAdapter), under the checked function boundary's domain:
+ * the function boxes, the slot's parameters convert to untyped values, and
+ * its result is `void`, untyped, or checked from an untyped value.
  *
  * "count": the adapter passes one argument per fixed parameter of the slot,
  * and a variadic function observes how many it receives. A call through a
@@ -286,9 +287,18 @@ export function variadicBoundaryFits(
   return variadicBoundaryBlocker(lowerer, fromT, toT) === null;
 }
 
-/** The conversion for variadicBoundaryFits: box the function, then adapt
- * the boxed value to the slot. The adapter closure takes the function's
- * identity, so `===` and searches still see the one function. */
+/** The adapter for variadicBoundaryFits: box the function and call it with
+ * the slot's arguments as its argument list, under the receiver the slot
+ * was called with. Each argument becomes an untyped value through the
+ * slot conversion (coerceToExpected), which keeps an array's or a record's
+ * identity, so a write the function makes reaches the caller's object as
+ * it does in a direct call; the backend's own adapter from an untyped
+ * function to a typed signature copies them instead. A rest slot's array
+ * spreads into the list, so the function sees every argument the caller
+ * passed. The result is dropped for a `void` slot and checked into any
+ * other result type; a promise keeps its identity. The adapter closure
+ * takes the function's identity, so `===` and searches still see the one
+ * function. */
 function variadicBoundaryAdapter(
   lowerer: Lowerer,
   fromT: IrType & { kind: "func" },
@@ -301,30 +311,65 @@ function variadicBoundaryAdapter(
   const name = keyedHelperName(lowerer, "%fn.adapt", key);
   lowerer.coercions.retags.set(key, name);
   lowerer.freshClosureAdapters.add(name);
-  lowerer.liftedFns.push({
-    name,
-    params: [{ localId: "f.0", name: "f", type: fromT }],
-    returnType: toT,
-    locals: [{ id: "f.0", name: "f", type: fromT, mutable: false }],
-    body: [
-      {
-        kind: "return",
-        value: {
-          kind: "dynCheck",
-          value: {
-            kind: "dynFrom",
-            value: { kind: "varRef", localId: "f.0", type: fromT, loc },
-            type: DYN,
-            loc,
-          },
-          type: toT,
-          loc,
-        },
+  const params: IrParam[] = toT.params.map((type, i) => ({
+    localId: `a.${i}`,
+    name: `a${i}`,
+    type,
+  }));
+  // A checked-dynamic variadic slot hides one trailing argument array; an
+  // all-arguments slot keeps every argument there, the named ones included.
+  const hiddenRest = toT.rest === true && toT.restAbi === undefined;
+  if (hiddenRest) params.push({ localId: "rest.0", name: "args", type: DYN });
+  const passed = hiddenRest && toT.argumentsAll === true ? params.slice(-1) : params;
+  const context = newFnCtx(false, null, null, toT.ret);
+  let body: IrStmt[];
+  lowerer.fnStack.push(context);
+  try {
+    const args = passed.map((param) => {
+      const converted = lowerer.coerceToExpected(
+        { kind: "varRef", localId: param.localId, type: param.type, loc },
+        DYN,
+      );
+      if (converted.type.kind !== "dyn")
+        throw new InternalCompilerError(
+          "lowerer bug: probed variadic adapter argument stopped boxing",
+        );
+      return converted;
+    });
+    const call: IrExpr = {
+      kind: "dynCall",
+      callee: {
+        kind: "dynFrom",
+        value: { kind: "varRef", localId: "f.0", type: fromT, loc },
+        type: DYN,
         loc,
       },
-    ],
-    loc,
-  });
+      receiver: { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
+      calleeName: "value",
+      args,
+      ...(toT.rest === true ? { spreads: [{ arg: args.length - 1, what: "arguments" }] } : {}),
+      type: DYN,
+      loc,
+    };
+    if (toT.ret.kind === "void") {
+      body = [
+        { kind: "exprStmt", expr: call, loc },
+        { kind: "return", value: null, loc },
+      ];
+    } else {
+      const result = lowerer.coerceToExpected(call, toT.ret);
+      if (!typeEquals(result.type, toT.ret))
+        throw new InternalCompilerError(
+          "lowerer bug: probed variadic adapter result stopped checking",
+        );
+      body = [{ kind: "return", value: result, loc }];
+    }
+  } finally {
+    lowerer.fnStack.pop();
+  }
+  lowerer.liftedFns.push(
+    ...buildFunctionAdapter(name, fromT, toT, params, context.locals, body, loc),
+  );
   return name;
 }
 
@@ -518,8 +563,8 @@ export function sortComparatorResultAdapter(
  * converting its arguments and result. Unsupported parameter/result pairs
  * produce checked traps when called. Rest signatures are refused, except a
  * typed-rest source in a slot with fixed parameters, which the rest
- * packing adapter serves, a checked-dynamic variadic source, which crosses
- * the checked function boundary (variadicBoundaryAdapter), and a
+ * packing adapter serves, a checked-dynamic variadic source, which is
+ * called boxed with the slot's arguments (variadicBoundaryAdapter), and a
  * fixed-parameter function into a checked-dynamic rest signature without
  * fixed parameters (funcIntoDynRestAdapter). */
 export function funcCoerceAdapter(

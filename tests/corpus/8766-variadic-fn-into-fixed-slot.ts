@@ -107,6 +107,52 @@ mixed(1, "a", "b");
 const sum: (...xs: number[]) => string = counting("sum");
 console.log("rest", sum(1, 2, 3), log.slice(-7).join(" "));
 
+// Arguments are the caller's own objects: a write the function makes is
+// seen by the caller, and a returned argument is the object that went in.
+function writing(): (...args: any[]) => any {
+  return (...args: any[]): any => {
+    for (const arg of args) {
+      if (Array.isArray(arg)) arg.push(args.length);
+      else if (arg instanceof Map) arg.set("seen", args.length);
+      else arg.count = arg.count + 10;
+    }
+    return args[0];
+  };
+}
+class Tally {
+  count = 0;
+}
+const touch: (items: number[], box: { count: number }, seen: Map<string, number>) => void =
+  writing();
+const items = [1];
+const box = { count: 1 };
+const seen = new Map<string, number>();
+touch(items, box, seen);
+const tally = new Tally();
+const touchTally: (tally: Tally) => void = writing();
+touchTally(tally);
+console.log("written", items.join(","), box.count, seen.get("seen"), tally.count);
+const touchAll: (...boxes: { count: number }[]) => void = writing();
+const first = { count: 1 };
+const second = { count: 2 };
+touchAll(first, second);
+const nested: (outer: { inner: { count: number }; rows: number[][] }) => void = ((): ((
+  ...args: any[]
+) => any) => {
+  return (...args: any[]): any => {
+    args[0].inner.count = 5;
+    args[0].rows[0].push(7);
+  };
+})();
+const outer = { inner: { count: 0 }, rows: [[1]] };
+nested(outer);
+console.log("written", first.count, second.count, outer.inner.count, outer.rows[0]!.join(","));
+const giveBack: (items: number[]) => number[] = writing();
+const back = giveBack(items);
+back.push(100);
+const giveBox: (box: { count: number }) => { count: number } = writing();
+console.log("returned", back === items, giveBox(box) === box, items.join(","), box.count);
+
 // Results the slot keeps: a promise, and a typed value that is checked.
 const settle: () => Promise<void> = resolving("settle");
 const settleWith: (how: string) => Promise<void> = resolving("with");

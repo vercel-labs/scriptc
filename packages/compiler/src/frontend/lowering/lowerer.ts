@@ -313,6 +313,7 @@ import {
   unsupportedDiag,
   unsupportedTypeDiag,
 } from "../../diagnostics/diagnostic.js";
+import type { UnionWidthAmbiguity } from "../../diagnostics/diagnostic.js";
 import type {
   IrClassDef,
   IrExpr,
@@ -14029,7 +14030,14 @@ export class Lowerer {
     // diagnostic, not the record one. Arm-into-union coercions were already
     // wrapped by coerceToExpected before this check runs.
     if (containsUnion(actual) || containsUnion(expected)) {
-      this.pushDiag(unionMismatchDiag(this.fmt(expected), this.fmt(actual), locOf(node)));
+      this.pushDiag(
+        unionMismatchDiag(
+          this.fmt(expected),
+          this.fmt(actual),
+          locOf(node),
+          this.unionWidthAmbiguity(actual, expected) ?? undefined,
+        ),
+      );
       throw new PoisonError();
     }
     if (containsRecord(actual) || containsRecord(expected)) {
@@ -14917,6 +14925,41 @@ export class Lowerer {
 
   widthCoerce(expr: IrExpr, expected: IrType): IrExpr | null {
     return widthCoerce(this, expr, expected);
+  }
+
+  /** Why a record (alone or beside unit arms) has no place in a union of
+   * records: it converts by width into several arms and the union has no
+   * discriminant to pick one. Null for every other refused conversion.
+   * Diagnostic text only: nothing lowers by it. */
+  private unionWidthAmbiguity(actual: IrType, expected: IrType): UnionWidthAmbiguity | null {
+    if (expected.kind !== "union") return null;
+    const to = this.unions.get(expected.unionId);
+    if (!to || to.discriminant) return null;
+    const sources =
+      actual.kind === "union"
+        ? (this.unions.get(actual.unionId)?.arms ?? []).filter((arm) => !isUnitType(arm))
+        : [actual];
+    const source = sources.length === 1 ? sources[0]! : null;
+    if (source?.kind !== "record") return null;
+    const shape = this.shapes.get(source.shapeId);
+    if (!shape || shape.tuple || shape.indexValue) return null;
+    const fitting: IrRecordShape[] = [];
+    for (const arm of to.arms) {
+      if (arm.kind !== "record") continue;
+      const armShape = this.shapes.get(arm.shapeId);
+      if (armShape && this.widthLiftPlan(source, arm) !== null) fitting.push(armShape);
+    }
+    if (fitting.length < 2) return null;
+    const declares = (arm: IrRecordShape, name: string): boolean =>
+      arm.fields.some((field) => field.name === name);
+    const split: string[] = [];
+    const homeless: string[] = [];
+    for (const field of shape.fields) {
+      const owners = fitting.filter((arm) => declares(arm, field.name)).length;
+      if (owners === 0) homeless.push(field.name);
+      else if (owners < fitting.length) split.push(field.name);
+    }
+    return { arms: fitting.length, split, homeless };
   }
 
   widthLiftPlan(src: IrType, dst: IrType): WidthLift | null {
@@ -18399,8 +18442,8 @@ export class Lowerer {
     return lowerLiveWebValue(this, node);
   }
 
-  ensureString(e: IrExpr, node: ts.Node): IrExpr {
-    return ensureString(this, e, node);
+  ensureString(e: IrExpr, node: ts.Node, hint: "string" | "default" = "string"): IrExpr {
+    return ensureString(this, e, node, hint);
   }
 
   lowerTemplate(expr: ts.TemplateExpression): IrExpr {

@@ -142,17 +142,24 @@ test.runIf(linux)(
   "the small-object heap starts at a different address from run to run",
   async () => {
     const program = await build("mappings", MAPPINGS);
-    // The window is the one mapping of 24 GiB; it starts a whole number of
-    // 4 MiB chunks into [4 GiB, 8 GiB).
+    // The window is the one run of 24 GiB of anonymous read-write memory; it
+    // starts a whole number of 4 MiB chunks into [4 GiB, 8 GiB). Where the
+    // kernel writes cores (RLIMIT_CORE above 0, or a core_pattern piping to a
+    // handler), the allocator makes each chunk it carves dumpable again with
+    // madvise, which splits the window into adjacent mappings: a run is the
+    // mappings that follow each other with no gap.
     const windowStart = async (command: string, args: string[]): Promise<bigint> => {
       const { stdout } = await execFileAsync(command, args, { maxBuffer: 1 << 24 });
-      const starts: bigint[] = [];
+      const runs: { lo: bigint; hi: bigint }[] = [];
       for (const line of stdout.split("\n")) {
-        const range = /^([0-9a-f]+)-([0-9a-f]+) /.exec(line);
-        if (range === null) continue;
-        const [lo, hi] = [BigInt(`0x${range[1]}`), BigInt(`0x${range[2]}`)];
-        if (hi - lo === 24n << 30n) starts.push(lo);
+        const mapping = /^([0-9a-f]+)-([0-9a-f]+) rw-p 0+ 00:00 0\s*$/.exec(line);
+        if (mapping === null) continue;
+        const [lo, hi] = [BigInt(`0x${mapping[1]}`), BigInt(`0x${mapping[2]}`)];
+        const last = runs.at(-1);
+        if (last !== undefined && last.hi === lo) last.hi = hi;
+        else runs.push({ lo, hi });
       }
+      const starts = runs.filter((run) => run.hi - run.lo === 24n << 30n).map((run) => run.lo);
       expect(starts, "one window").toHaveLength(1);
       return starts[0]!;
     };

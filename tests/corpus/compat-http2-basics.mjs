@@ -35,7 +35,7 @@ await new Promise((resolve) => {
         lines.push(`closed ${client.closed} ${client.destroyed}`);
         server.close(() => {
           for (const line of lines.sort()) console.log(line);
-          resolve();
+          resolve(undefined);
         });
       }),
     );
@@ -49,7 +49,7 @@ await new Promise((resolve) => {
   client.on("error", (error) => console.log("error", error.code));
   client.on("close", () => {
     console.log("close after error");
-    resolve();
+    resolve(undefined);
   });
 });
 
@@ -81,7 +81,7 @@ await new Promise((resolve) => {
       client.close(() =>
         server.close(() => {
           for (const line of lines.sort()) console.log(line);
-          resolve();
+          resolve(undefined);
         }),
       );
     });

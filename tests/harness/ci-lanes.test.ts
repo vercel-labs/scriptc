@@ -198,9 +198,9 @@ function runLanes(event: string) {
   }
 }
 
-test("pushes to main run every lane except macos; the nightly sweep and manual runs run every lane", () => {
+test("pushes to main run every lane except macos and islands; the nightly sweep and manual runs run every lane", () => {
   expect(runLanes("push")).toBe(
-    "linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=true\n",
+    "linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=false\n",
   );
   for (const event of ["schedule", "workflow_dispatch"])
     expect(runLanes(event), event).toBe(

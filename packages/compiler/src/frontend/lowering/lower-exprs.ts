@@ -58,6 +58,7 @@ import {
   arrayOf,
   funcOf,
   isUnitType,
+  keyedRecordFields,
   typeEquals,
   sortArms,
 } from "../../ir/ir.js";
@@ -2710,7 +2711,7 @@ export function recordKeyResultOk(lowerer: Lowerer, shape: IrRecordShape, type: 
     (type.kind === "union" && lowerer.armTag(type.unionId, t) >= 0) ||
     exactUnionWidening(lowerer, t, type) ||
     (type.kind === "dyn" && lowerer.dynConvertible(t));
-  if (!shape.fields.every((f) => surfaces(f.type))) return false;
+  if (!keyedRecordFields(shape).every((f) => surfaces(f.type))) return false;
   if (shape.indexValue) {
     if (type.kind === "dyn") return shape.indexValue.kind === "dyn";
     if (!surfaces(shape.indexValue)) return false;

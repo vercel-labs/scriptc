@@ -62,6 +62,7 @@ import {
 } from "./ir.js";
 import {
   DYN_CLASS_PROPERTIES,
+  keyedRecordFields,
   callSiteReturnType,
   classValueAbiEquals,
   classValueConstructor,
@@ -3464,7 +3465,7 @@ function validateFunction(
             e.loc,
           );
         }
-        if (!e.overflowOnly && !shape.fields.every((f) => surfaces(f.type))) {
+        if (!e.overflowOnly && !keyedRecordFields(shape).every((f) => surfaces(f.type))) {
           err(
             `recordKeyGet on ${e.shapeId}: a declared field cannot surface as the result type`,
             e.loc,
@@ -7044,8 +7045,9 @@ function validateFunction(
           // Signature-free dispatch: every declared field shares ONE type
           // (the frontend's gate), the value IS that type, and a key miss
           // traps at runtime — so overflowOnly writes cannot exist here.
-          const common = shape.fields[0]?.type;
-          if (!common || !shape.fields.every((f) => typeEquals(f.type, common))) {
+          const keyed = keyedRecordFields(shape);
+          const common = keyed[0]?.type;
+          if (!common || !keyed.every((f) => typeEquals(f.type, common))) {
             err(
               `recordKeySet on non-index-signature shape ${s.shapeId} without one shared field type`,
               s.loc,
@@ -7070,7 +7072,7 @@ function validateFunction(
         if (
           !s.overflowOnly &&
           shape.indexValue.kind !== "dyn" &&
-          !shape.fields.every((f) => typeEquals(f.type, shape.indexValue!))
+          !keyedRecordFields(shape).every((f) => typeEquals(f.type, shape.indexValue!))
         ) {
           err(
             `recordKeySet on ${s.shapeId}: declared fields differ from the index-value type`,

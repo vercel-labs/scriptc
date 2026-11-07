@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8861-child-process-nul-async.ts"
+ ],
+ "diags": []
+}

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/extract-member-pattern-unkeyed.ts"
+ ],
+ "diags": []
+}

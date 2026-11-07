@@ -1,0 +1,17 @@
+extract-member-pattern-unkeyed.ts:13:33 - error SC2003: union conversion has no unambiguous layout mapping: expected '{ kind: string; meta: { tag: string }; radius: number } | undefined', got '{ kind: string; meta: { tag: string }; radius: number } | { kind: string; meta: { tag: string }; side: number }' (each source arm needs an identical destination arm, a unique compatible record/array layout, or a shared literal discriminant selecting compatible layouts) (instantiating 'viaAlias' with <string>)
+
+  12 | function viaAlias<K extends Shape["kind"]>(shape: Shape, kind: K): ByKind<K> | undefined {
+  13 |   return shape.kind === kind ? (shape as ByKind<K>) : undefined;
+     |                                 ^~~~~~~~~~~~~~~~~~
+  14 | }
+
+  hint: narrow the value to a SINGLE arm first (a discriminant check, or '!== undefined'/'!== null' for unit arms); a plain arm value widens into any union that contains it, and a whole union widens into any union whose arms include the source's
+
+extract-member-pattern-unkeyed.ts:21:36 - error SC2003: union conversion has no unambiguous layout mapping: expected '{ kind: string; meta: { tag: string }; side: number } | undefined', got '{ kind: string; meta: { tag: string }; radius: number } | { kind: string; meta: { tag: string }; side: number }' (each source arm needs an identical destination arm, a unique compatible record/array layout, or a shared literal discriminant selecting compatible layouts) (instantiating 'nested' with <string>)
+
+  20 | ): Extract<Shape, { meta: { tag: T } }> | undefined {
+  21 |   return shape.meta.tag === tag ? (shape as Extract<Shape, { meta: { tag: T } }>) : undefined;
+     |                                    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  22 | }
+
+  hint: narrow the value to a SINGLE arm first (a discriminant check, or '!== undefined'/'!== null' for unit arms); a plain arm value widens into any union that contains it, and a whole union widens into any union whose arms include the source's

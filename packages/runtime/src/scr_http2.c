@@ -738,6 +738,17 @@ typedef struct {
   ScrH2SettingsFn fn;
 } ScrH2PendingSettings;
 
+/* A PING this side sent and the peer has not answered: its eight bytes,
+ * when it left, and ping()'s callback. `cancelled` pings answer with
+ * ERR_HTTP2_PING_CANCEL from the sweep (one sent while connecting or after
+ * close(), and every open one when the session goes away). */
+typedef struct {
+  uint8_t payload[8];
+  double sent;
+  bool cancelled;
+  ScrClosure *cb; /* owned */
+} ScrH2Ping;
+
 struct ScrH2Session {
   size_t rc;
   bool client;
@@ -776,9 +787,13 @@ struct ScrH2Session {
   ScrH2Settings local_settings, remote_settings;
   ScrH2PendingSettings *pending;
   size_t npending, pending_cap;
+  ScrH2Ping *pings;
+  size_t npings, pings_cap;
+  bool pings_queued; /* a sweep visit for cancelled pings is queued */
+  bool connected;    /* client: the transport is established */
   bool error_emitted;
   ScrNetLs stream_ls, close_ls, err_ls, connect_ls, goaway_ls,
-      remote_settings_ls, local_settings_ls;
+      remote_settings_ls, local_settings_ls, ping_ls;
   /* The stream the last lookup by id found (borrowed from `streams`):
    * the frames of one stream arrive together, and a frame's context
    * lookup and its handling ask for the same stream. */
@@ -887,6 +902,7 @@ static void scr_h2_session_drop_lists(ScrH2Session *s) {
   scr_net_ls_drop(&s->goaway_ls);
   scr_net_ls_drop(&s->remote_settings_ls);
   scr_net_ls_drop(&s->local_settings_ls);
+  scr_net_ls_drop(&s->ping_ls);
 }
 
 static void scr_h2_session_free(ScrH2Session *s) {
@@ -894,6 +910,8 @@ static void scr_h2_session_free(ScrH2Session *s) {
   for (size_t i = 0; i < s->nstreams; i++) scr_http2_stream_release(s->streams[i]);
   free(s->streams);
   free(s->pending);
+  for (size_t i = 0; i < s->npings; i++) scr_closure_release(s->pings[i].cb);
+  free(s->pings);
   free(s->rbuf);
   free(s->hblock.data);
   free(s->authority);
@@ -914,6 +932,7 @@ enum {
   SCR_H2_EMIT_STREAM_CLOSED,   /* 'error' (nonzero code) then 'close' */
   SCR_H2_EMIT_SESSION_CLOSE,   /* session 'close' */
   SCR_H2_EMIT_SESSION_CONNECT, /* client 'connect' */
+  SCR_H2_EMIT_SESSION_PINGS,   /* cancelled ping() callbacks */
   SCR_H2_EMIT_STREAM_DRAIN,    /* deliver buffered data (+ maybe 'end') */
 };
 
@@ -927,6 +946,7 @@ static SCR_TL size_t scr_h2_emits_head = 0, scr_h2_emits_len = 0, scr_h2_emits_c
 static SCR_TL bool scr_h2_exiting = false;
 
 static void scr_h2_stream_close_compat(ScrH2Stream *st, bool emit);
+static void scr_h2_session_cancel_pings(ScrH2Session *s);
 
 static void scr_h2_emit_release(ScrH2Emit *e) {
   switch (e->kind) {
@@ -1215,6 +1235,59 @@ static void scr_h2_stream_queue_drain(ScrH2Stream *st) {
 
 /* ── the sweep (deferred emits) ──────────────────────────────────────── */
 
+/* ping()'s callback: (null, duration, payload) for an answered ping, the
+ * ERR_HTTP2_PING_CANCEL error alone for a cancelled one. */
+static void scr_h2_dyn_fire_ping(ScrClosure *cb, bool acked, double duration, const uint8_t *payload) {
+  ScrDyn *fn = scr_dyn_listener_fn(cb);
+  if (!acked) {
+    ScrStr *msg = scr_str_new("HTTP2 ping cancelled", 20);
+    ScrError *e = scr_error_new(0, msg);
+    scr_error_set_code(e, "ERR_HTTP2_PING_CANCEL");
+    ScrDyn *err = scr_dyn_from_error(e);
+    scr_error_release(e);
+    scr_str_release(msg);
+    ScrDyn *args[1] = { err };
+    ScrDyn *r = scr_dyn_call(fn, args, 1, "callback");
+    scr_dyn_release(r);
+    scr_dyn_release(err);
+    scr_dyn_release(fn);
+    return;
+  }
+  ScrDyn *err = scr_dyn_new_null();
+  ScrBytes *bytes = scr_bytes_new(SCR_BYTES_U8, 8);
+  bytes->is_buffer = true;
+  memcpy(bytes->data, payload, 8);
+  ScrDyn *dur = scr_dyn_new_num(duration);
+  ScrDyn *buf = scr_dyn_new_bytes(bytes);
+  ScrDyn *args[3] = { err, dur, buf };
+  ScrDyn *r = scr_dyn_call(fn, args, 3, "callback");
+  scr_dyn_release(r);
+  scr_dyn_release(buf);
+  scr_dyn_release(dur);
+  scr_dyn_release(err);
+  scr_dyn_release(fn);
+  scr_bytes_release(bytes);
+}
+
+/* Answer every cancelled ping, oldest first. */
+static void scr_h2_session_cancel_pings(ScrH2Session *s) {
+  s->pings_queued = false;
+  size_t i = 0;
+  while (i < s->npings && !scr_exc_pending()) {
+    if (!s->pings[i].cancelled) {
+      i++;
+      continue;
+    }
+    ScrH2Ping ping = s->pings[i];
+    memmove(s->pings + i, s->pings + i + 1, (s->npings - i - 1) * sizeof *s->pings);
+    s->npings--;
+    scr_dyn_this_push(s, SCR_DYNH_H2_SESSION);
+    scr_h2_dyn_fire_ping(ping.cb, false, 0, ping.payload);
+    scr_dyn_this_pop();
+    scr_closure_release(ping.cb);
+  }
+}
+
 /* A stream that closed with a nonzero code errors before anything hears
  * of the close — except NO_ERROR and CANCEL (Node's rule on both the
  * closing and the receiving side). */
@@ -1278,6 +1351,9 @@ static void scr_h2_proto_sweep(void) {
       break;
     case SCR_H2_EMIT_STREAM_DRAIN:
       scr_h2_stream_drain((ScrH2Stream *)e.h);
+      break;
+    case SCR_H2_EMIT_SESSION_PINGS:
+      scr_h2_session_cancel_pings((ScrH2Session *)e.h);
       break;
     case SCR_H2_EMIT_SESSION_CLOSE: {
       ScrH2Session *s = (ScrH2Session *)e.h;
@@ -1349,9 +1425,21 @@ static void scr_http2_install(void) {
 
 /* ── session lifecycle ───────────────────────────────────────────────── */
 
+/* Queue a sweep visit that answers the cancelled pings. */
+static void scr_h2_session_queue_pings(ScrH2Session *s) {
+  if (s->pings_queued) return;
+  s->pings_queued = true;
+  scr_h2_emit_push(SCR_H2_EMIT_SESSION_PINGS, scr_http2_session_retain(s));
+}
+
 static void scr_h2_session_queue_close(ScrH2Session *s) {
   if (s->close_queued || s->close_emitted) return;
   s->close_queued = true;
+  /* pings the peer will never answer are cancelled before 'close' */
+  if (s->npings > 0) {
+    for (size_t i = 0; i < s->npings; i++) s->pings[i].cancelled = true;
+    scr_h2_session_queue_pings(s);
+  }
   scr_h2_emit_push(SCR_H2_EMIT_SESSION_CLOSE, scr_http2_session_retain(s));
 }
 
@@ -1667,8 +1755,40 @@ static bool scr_h2_on_frame_in(ScrH2Session *s, uint8_t type, uint8_t flags, int
     break;
   }
   case SCR_H2_F_PING: {
-    if (!(flags & SCR_H2_FLAG_ACK) && n == 8) {
+    if (n != 8) break;
+    if (!(flags & SCR_H2_FLAG_ACK)) {
+      /* answered at once, then 'ping' with the eight bytes */
       scr_h2_send_frame(s, SCR_H2_F_PING, SCR_H2_FLAG_ACK, 0, p, 8);
+      if (s->ping_ls.n > 0) {
+        ScrBytes *bytes = scr_bytes_new(SCR_BYTES_U8, 8);
+        bytes->is_buffer = true;
+        memcpy(bytes->data, p, 8);
+        ScrNetL *snap;
+        size_t nl = scr_net_ls_snapshot(&s->ping_ls, &snap);
+        scr_dyn_this_push(s, SCR_DYNH_H2_SESSION);
+        for (size_t i = 0; i < nl; i++) {
+          if (!scr_exc_pending()) ((ScrNetDataFn)snap[i].fn)(snap[i].cb, bytes);
+          scr_closure_release(snap[i].cb);
+        }
+        scr_dyn_this_pop();
+        free(snap);
+        scr_bytes_release(bytes);
+        if (scr_exc_pending()) return false;
+      }
+      break;
+    }
+    /* the answer to the oldest ping that carried these bytes */
+    for (size_t i = 0; i < s->npings; i++) {
+      if (s->pings[i].cancelled || memcmp(s->pings[i].payload, p, 8) != 0) continue;
+      ScrH2Ping ping = s->pings[i];
+      memmove(s->pings + i, s->pings + i + 1, (s->npings - i - 1) * sizeof *s->pings);
+      s->npings--;
+      scr_dyn_this_push(s, SCR_DYNH_H2_SESSION);
+      scr_h2_dyn_fire_ping(ping.cb, true, scr_perf_now() - ping.sent, ping.payload);
+      scr_dyn_this_pop();
+      scr_closure_release(ping.cb);
+      if (scr_exc_pending()) return false;
+      break;
     }
     break;
   }
@@ -1714,15 +1834,24 @@ static bool scr_h2_on_frame_in(ScrH2Session *s, uint8_t type, uint8_t flags, int
       ScrNetL *snap;
       size_t nl = scr_net_ls_snapshot(&s->goaway_ls, &snap);
       int32_t last = (int32_t)((((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3]) & 0x7fffffff);
+      /* the opaque data, when the frame carries any (a Buffer; Node passes
+       * undefined otherwise) */
+      ScrBytes *opaque = NULL;
+      if (n > 8 && nl > 0) {
+        opaque = scr_bytes_new(SCR_BYTES_U8, (double)(n - 8));
+        opaque->is_buffer = true;
+        memcpy(opaque->data, p + 8, n - 8);
+      }
       scr_dyn_this_push(s, SCR_DYNH_H2_SESSION);
       for (size_t i = 0; i < nl; i++) {
         if (!scr_exc_pending()) {
-          ((void (*)(ScrClosure *, double, double))snap[i].fn)(snap[i].cb, (double)code, (double)last);
+          ((ScrH2GoawayFn)snap[i].fn)(snap[i].cb, (double)code, (double)last, opaque);
         }
         scr_closure_release(snap[i].cb);
       }
       scr_dyn_this_pop();
       free(snap);
+      if (opaque != NULL) scr_bytes_release(opaque);
       if (scr_exc_pending()) return false;
     }
     if (code != 0) {
@@ -2890,6 +3019,7 @@ void scr_http2_server_on_session(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrH
 
 static void scr_h2_on_established(void *ctx) {
   ScrH2Session *s = ctx;
+  s->connected = true;
   if (!s->destroyed && !s->connect_queued) {
     s->connect_queued = true;
     scr_h2_emit_push(SCR_H2_EMIT_SESSION_CONNECT, scr_http2_session_retain(s));
@@ -3098,58 +3228,216 @@ void scr_http2_session_on_goaway(ScrH2Session *s, ScrClosure *cb /*moves*/, ScrH
 
 /* ── the settings surface ────────────────────────────────────────────── */
 
-/* session.settings(settings[, cb]): the recognized keys update the local
- * record and go on a SETTINGS frame NOW; the callback (if any) fires on
- * the peer's ACK alongside the 'localSettings' listeners. Values are
- * applied as given (Node's ERR_HTTP2_INVALID_SETTING_VALUE validation is
- * not modeled — SEMANTICS.md). */
-void scr_http2_session_settings(ScrH2Session *s, const ScrDyn *settings /*borrowed, nullable*/,
-                                 ScrClosure *cb /*moves, nullable*/, ScrH2SettingsFn cbfn) {
-  /* each frame changes the record the previous unacknowledged one leaves */
-  ScrH2Settings after = s->npending > 0 ? s->pending[s->npending - 1].after : s->local_settings;
-  uint8_t payload[7 * 6];
-  size_t n = 0;
-  if (settings != NULL && settings->kind == SCR_DYN_OBJ) {
-    static const struct { const char *key; uint16_t id; bool boolean; } keys[] = {
-      { "headerTableSize", 0x1, false },
-      { "enablePush", 0x2, true },
-      { "maxConcurrentStreams", 0x3, false },
-      { "initialWindowSize", 0x4, false },
-      { "maxFrameSize", 0x5, false },
-      { "maxHeaderListSize", 0x6, false },
-      { "enableConnectProtocol", 0x8, true },
-    };
-    for (size_t k = 0; k < sizeof keys / sizeof *keys; k++) {
-      const ScrDyn *v = scr_dyn_obj_get(settings, keys[k].key, strlen(keys[k].key));
-      if (v == NULL) continue;
-      uint32_t value;
-      if (keys[k].boolean) {
-        value = scr_dyn_truthy(v) ? 1 : 0;
-      } else if (v->kind == SCR_DYN_NUM) {
-        value = v->v.num < 0 ? 0 : v->v.num > 4294967295.0 ? 0xffffffffu : (uint32_t)v->v.num;
-      } else {
-        continue;
-      }
-      switch (keys[k].id) {
-      case 0x1: after.header_table_size = value; break;
-      case 0x2: after.enable_push = value != 0; break;
-      case 0x3: after.max_concurrent_streams = value; break;
-      case 0x4: after.initial_window_size = value; break;
-      case 0x5: after.max_frame_size = value; break;
-      case 0x6: after.max_header_list_size = value; break;
-      case 0x8: after.enable_connect_protocol = value != 0; break;
-      }
-      payload[n] = (uint8_t)(keys[k].id >> 8);
-      payload[n + 1] = (uint8_t)keys[k].id;
-      payload[n + 2] = (uint8_t)(value >> 24);
-      payload[n + 3] = (uint8_t)(value >> 16);
-      payload[n + 4] = (uint8_t)(value >> 8);
-      payload[n + 5] = (uint8_t)value;
-      n += 6;
+/* The settings a record may name, in the order Node packs them. */
+static const struct {
+  const char *key;
+  uint16_t id;
+  bool boolean;
+  double max;
+} SCR_H2_SETTING_KEYS[] = {
+  { "headerTableSize", 0x1, false, 4294967295.0 },
+  { "enablePush", 0x2, true, 0 },
+  { "maxConcurrentStreams", 0x3, false, 4294967295.0 },
+  { "initialWindowSize", 0x4, false, 2147483647.0 },
+  { "maxFrameSize", 0x5, false, 16777215.0 },
+  { "maxHeaderListSize", 0x6, false, 4294967295.0 },
+  { "enableConnectProtocol", 0x8, true, 0 },
+};
+enum { SCR_H2_NSETTINGS = sizeof SCR_H2_SETTING_KEYS / sizeof *SCR_H2_SETTING_KEYS };
+
+/* A settings record as a plain dynamic object: a typed record arrives as a
+ * typed reference. +1 (NULL stays NULL). */
+static ScrDyn *scr_h2_settings_plain(const ScrDyn *settings) {
+  if (settings == NULL) return NULL;
+  if (settings->kind == SCR_DYN_TYPED_REF) return scr_dyn_typed_ref_materialize((ScrDyn *)settings);
+  return scr_dyn_retain((ScrDyn *)settings);
+}
+
+static void scr_h2_setting_invalid(int kind, const char *key, const ScrDyn *value) {
+  ScrStr *text = value->kind == SCR_DYN_NUM ? scr_f64_to_scrstr(value->v.num) : scr_dyn_string_coerce_js(value);
+  if (text == NULL) return; /* the coercion threw */
+  ScrH2Buf msg = {0};
+  scr_h2_buf_put(&msg, "Invalid value for setting \"", 27);
+  scr_h2_buf_put(&msg, key, strlen(key));
+  scr_h2_buf_put(&msg, "\": ", 3);
+  scr_h2_buf_put(&msg, text->data, text->len);
+  scr_throw_error_msg_code(kind, msg.data, msg.len, "ERR_HTTP2_INVALID_SETTING_VALUE");
+  free(msg.data);
+  scr_str_release(text);
+}
+
+/* Node's validateSettings: a number outside its range is a RangeError, a
+ * flag that is not a boolean a TypeError, both
+ * ERR_HTTP2_INVALID_SETTING_VALUE. False with the exception pending. */
+static bool scr_h2_settings_validate(const ScrDyn *settings) {
+  if (settings == NULL || settings->kind != SCR_DYN_OBJ) return true;
+  /* Extension settings are not packed or sent here: a record that names
+   * any is refused rather than losing them. */
+  const ScrDyn *custom = scr_dyn_obj_get(settings, "customSettings", 14);
+  if (custom != NULL && custom->kind != SCR_DYN_UNDEF) {
+    static const char text[] = "HTTP/2 customSettings are not supported yet";
+    scr_throw_error_msg(SCR_ERR_ERROR, text, sizeof text - 1);
+    return false;
+  }
+  for (size_t k = 0; k < SCR_H2_NSETTINGS; k++) {
+    if (SCR_H2_SETTING_KEYS[k].boolean) continue;
+    const char *key = SCR_H2_SETTING_KEYS[k].key;
+    const ScrDyn *v = scr_dyn_obj_get(settings, key, strlen(key));
+    if (v == NULL || v->kind == SCR_DYN_UNDEF) continue;
+    double min = SCR_H2_SETTING_KEYS[k].id == 0x5 ? 16384 : 0;
+    if (v->kind != SCR_DYN_NUM || !(v->v.num >= min) || v->v.num > SCR_H2_SETTING_KEYS[k].max) {
+      scr_h2_setting_invalid(SCR_ERR_RANGE, key, v);
+      return false;
     }
   }
+  const ScrDyn *alias = scr_dyn_obj_get(settings, "maxHeaderSize", 13);
+  if (alias != NULL && alias->kind != SCR_DYN_UNDEF &&
+      (alias->kind != SCR_DYN_NUM || !(alias->v.num >= 0) || alias->v.num > 4294967295.0)) {
+    scr_h2_setting_invalid(SCR_ERR_RANGE, "maxHeaderSize", alias);
+    return false;
+  }
+  for (size_t k = 0; k < SCR_H2_NSETTINGS; k++) {
+    if (!SCR_H2_SETTING_KEYS[k].boolean) continue;
+    const char *key = SCR_H2_SETTING_KEYS[k].key;
+    const ScrDyn *v = scr_dyn_obj_get(settings, key, strlen(key));
+    if (v == NULL || v->kind == SCR_DYN_UNDEF || v->kind == SCR_DYN_BOOL) continue;
+    scr_h2_setting_invalid(SCR_ERR_TYPE, key, v);
+    return false;
+  }
+  return true;
+}
+
+/* The six-byte entries of a validated settings record, in Node's order;
+ * `after`, when given, takes the same values. Answers the byte count. */
+static size_t scr_h2_settings_pack(const ScrDyn *settings, ScrH2Settings *after, uint8_t *payload) {
+  size_t n = 0;
+  if (settings == NULL || settings->kind != SCR_DYN_OBJ) return 0;
+  for (size_t k = 0; k < SCR_H2_NSETTINGS; k++) {
+    const char *key = SCR_H2_SETTING_KEYS[k].key;
+    const ScrDyn *v = scr_dyn_obj_get(settings, key, strlen(key));
+    if (SCR_H2_SETTING_KEYS[k].id == 0x6) {
+      /* maxHeaderSize is the same setting and, when both are given, wins */
+      const ScrDyn *alias = scr_dyn_obj_get(settings, "maxHeaderSize", 13);
+      if (alias != NULL && alias->kind == SCR_DYN_NUM) v = alias;
+    }
+    if (v == NULL) continue;
+    uint32_t value;
+    if (SCR_H2_SETTING_KEYS[k].boolean) {
+      if (v->kind != SCR_DYN_BOOL) continue;
+      value = v->v.b ? 1 : 0;
+    } else if (v->kind == SCR_DYN_NUM) {
+      value = (uint32_t)v->v.num;
+    } else {
+      continue;
+    }
+    if (after != NULL) {
+      switch (SCR_H2_SETTING_KEYS[k].id) {
+      case 0x1: after->header_table_size = value; break;
+      case 0x2: after->enable_push = value != 0; break;
+      case 0x3: after->max_concurrent_streams = value; break;
+      case 0x4: after->initial_window_size = value; break;
+      case 0x5: after->max_frame_size = value; break;
+      case 0x6: after->max_header_list_size = value; break;
+      case 0x8: after->enable_connect_protocol = value != 0; break;
+      }
+    }
+    payload[n] = (uint8_t)(SCR_H2_SETTING_KEYS[k].id >> 8);
+    payload[n + 1] = (uint8_t)SCR_H2_SETTING_KEYS[k].id;
+    payload[n + 2] = (uint8_t)(value >> 24);
+    payload[n + 3] = (uint8_t)(value >> 16);
+    payload[n + 4] = (uint8_t)(value >> 8);
+    payload[n + 5] = (uint8_t)value;
+    n += 6;
+  }
+  return n;
+}
+
+/* session.settings(settings[, cb]): the validated keys go on a SETTINGS
+ * frame now; the local record takes them, and the callback (if any) runs,
+ * when the peer acknowledges that frame. */
+void scr_http2_session_settings(ScrH2Session *s, const ScrDyn *record /*borrowed, nullable*/,
+                                 ScrClosure *cb /*moves, nullable*/, ScrH2SettingsFn cbfn) {
+  ScrDyn *settings = scr_h2_settings_plain(record);
+  if (!scr_h2_settings_validate(settings)) {
+    if (cb != NULL) scr_closure_release(cb);
+    if (settings != NULL) scr_dyn_release(settings);
+    return;
+  }
+  /* each frame changes the record the previous unacknowledged one leaves */
+  ScrH2Settings after = s->npending > 0 ? s->pending[s->npending - 1].after : s->local_settings;
+  uint8_t payload[SCR_H2_NSETTINGS * 6];
+  size_t n = scr_h2_settings_pack(settings, &after, payload);
+  if (settings != NULL) scr_dyn_release(settings);
   scr_h2_settings_pending_push(s, &after, cb, cbfn);
   scr_h2_send_frame(s, SCR_H2_F_SETTINGS, 0, 0, payload, n);
+}
+
+/* http2.getPackedSettings([settings]): the SETTINGS payload of a record, a
+ * Buffer. +1, or NULL with the exception pending. */
+ScrBytes *scr_http2_get_packed_settings(const ScrDyn *record /*borrowed, nullable*/) {
+  ScrDyn *settings = scr_h2_settings_plain(record);
+  if (settings != NULL && settings->kind != SCR_DYN_OBJ && settings->kind != SCR_DYN_UNDEF) {
+    static const char text[] = "The \"settings\" argument must be of type object.";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, text, sizeof text - 1, "ERR_INVALID_ARG_TYPE");
+    scr_dyn_release(settings);
+    return NULL;
+  }
+  if (!scr_h2_settings_validate(settings)) {
+    if (settings != NULL) scr_dyn_release(settings);
+    return NULL;
+  }
+  uint8_t payload[SCR_H2_NSETTINGS * 6];
+  size_t n = scr_h2_settings_pack(settings, NULL, payload);
+  if (settings != NULL) scr_dyn_release(settings);
+  ScrBytes *out = scr_bytes_new(SCR_BYTES_U8, (double)n);
+  out->is_buffer = true;
+  memcpy(out->data, payload, n);
+  return out;
+}
+
+/* http2.getUnpackedSettings(buf): the record a SETTINGS payload names, in
+ * the payload's order; an unknown id lands in customSettings. +1, or NULL
+ * with the exception pending. */
+ScrDyn *scr_http2_get_unpacked_settings(ScrBytes *buf /*borrowed*/) {
+  SCR_BYTES_SNAPSHOT(buf);
+  size_t n = (size_t)(buf->len * scr_bytes_elem_size(buf->elem));
+  if (n % 6 != 0) {
+    static const char text[] = "Packed settings length must be a multiple of six";
+    scr_throw_error_msg_code(SCR_ERR_RANGE, text, sizeof text - 1,
+                             "ERR_HTTP2_INVALID_PACKED_SETTINGS_LENGTH");
+    return NULL;
+  }
+  const uint8_t *p = (const uint8_t *)buf->data;
+  ScrDyn *obj = scr_dyn_new_obj();
+  ScrDyn *custom = NULL;
+  for (size_t off = 0; off < n; off += 6) {
+    uint16_t id = (uint16_t)((p[off] << 8) | p[off + 1]);
+    double value = (double)(((uint32_t)p[off + 2] << 24) | ((uint32_t)p[off + 3] << 16) |
+                            ((uint32_t)p[off + 4] << 8) | p[off + 5]);
+    switch (id) {
+    case 0x1: scr_dyn_obj_set(obj, "headerTableSize", 15, scr_dyn_new_num(value)); break;
+    case 0x2: scr_dyn_obj_set(obj, "enablePush", 10, scr_dyn_new_bool(value != 0)); break;
+    case 0x3: scr_dyn_obj_set(obj, "maxConcurrentStreams", 20, scr_dyn_new_num(value)); break;
+    case 0x4: scr_dyn_obj_set(obj, "initialWindowSize", 17, scr_dyn_new_num(value)); break;
+    case 0x5: scr_dyn_obj_set(obj, "maxFrameSize", 12, scr_dyn_new_num(value)); break;
+    case 0x6:
+      scr_dyn_obj_set(obj, "maxHeaderSize", 13, scr_dyn_new_num(value));
+      scr_dyn_obj_set(obj, "maxHeaderListSize", 17, scr_dyn_new_num(value));
+      break;
+    case 0x8: scr_dyn_obj_set(obj, "enableConnectProtocol", 21, scr_dyn_new_bool(value != 0)); break;
+    default: {
+      if (custom == NULL) {
+        custom = scr_dyn_new_obj();
+        scr_dyn_obj_set(obj, "customSettings", 14, custom);
+      }
+      char key[8];
+      int kn = snprintf(key, sizeof key, "%u", (unsigned)id);
+      scr_dyn_obj_set(custom, key, (size_t)kn, scr_dyn_new_num(value));
+      break;
+    }
+    }
+  }
+  return obj;
 }
 
 void scr_http2_session_on_settings(ScrH2Session *s, ScrClosure *cb /*moves*/, ScrH2SettingsFn fn,
@@ -3209,6 +3497,71 @@ void scr_http2_session_on_settings_dyn(ScrH2Session *s, const ScrDyn *cb /*borro
                                  (ScrH2SettingsFn)&scr_h2_dyn_fire_settings, once, local);
 }
 
+/* session.ping([payload, ]callback): a PING with the given eight bytes, or
+ * with the time it left. The callback gets (null, duration, payload) at the
+ * peer's answer, or ERR_HTTP2_PING_CANCEL when none can come. */
+void scr_http2_session_ping(ScrH2Session *s, ScrBytes *payload /*borrowed, nullable*/,
+                            const ScrDyn *cb /*borrowed*/) {
+  if (s->destroyed) {
+    scr_throw_error_msg_code(SCR_ERR_ERROR, "The session has been destroyed", 30,
+                             "ERR_HTTP2_INVALID_SESSION");
+    return;
+  }
+  if (payload != NULL && (size_t)(payload->len * scr_bytes_elem_size(payload->elem)) != 8) {
+    scr_throw_error_msg_code(SCR_ERR_RANGE, "HTTP2 ping payload must be 8 bytes", 34,
+                             "ERR_HTTP2_PING_LENGTH");
+    return;
+  }
+  scr_dyn_check_listener(cb, "callback");
+  if (scr_exc_pending()) return;
+  /* Node keeps at most ten pings unanswered (maxOutstandingPings): one
+   * more is not sent, and its callback gets the cancel error at once. */
+  size_t open = 0;
+  for (size_t i = 0; i < s->npings; i++) open += s->pings[i].cancelled ? 0 : 1;
+  if (open >= 10) {
+    static const uint8_t none[8] = { 0 };
+    ScrClosure *closure = scr_dyn_listener_closure_fn(cb, (void *)&scr_h2_dyn_fire_ping);
+    scr_dyn_this_push(s, SCR_DYNH_H2_SESSION);
+    scr_h2_dyn_fire_ping(closure, false, 0, none);
+    scr_dyn_this_pop();
+    scr_closure_release(closure);
+    return;
+  }
+  if (s->npings == s->pings_cap) {
+    s->pings_cap = s->pings_cap ? s->pings_cap * 2 : 2;
+    s->pings = realloc(s->pings, s->pings_cap * sizeof *s->pings);
+    if (!s->pings) scr_h2_oom();
+  }
+  ScrH2Ping *ping = &s->pings[s->npings++];
+  ping->sent = scr_perf_now();
+  ping->cancelled = (s->client && !s->connected) || s->closed;
+  ping->cb = scr_dyn_listener_closure_fn(cb, (void *)&scr_h2_dyn_fire_ping);
+  if (payload != NULL) {
+    SCR_BYTES_SNAPSHOT(payload);
+    memcpy(ping->payload, payload->data, 8);
+  } else {
+    uint64_t stamp = (uint64_t)(ping->sent * 1000.0);
+    for (int i = 0; i < 8; i++) ping->payload[i] = (uint8_t)(stamp >> (8 * i));
+  }
+  if (ping->cancelled) {
+    scr_h2_session_queue_pings(s);
+    return;
+  }
+  scr_h2_send_frame(s, SCR_H2_F_PING, 0, 0, ping->payload, 8);
+}
+
+void scr_http2_session_on_ping(ScrH2Session *s, ScrClosure *cb /*moves*/, ScrNetDataFn fn, bool once) {
+  if (s->close_emitted) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_net_ls_add(&s->ping_ls, cb, (void *)fn, once);
+}
+
+/* True until a client session's transport is up; a server session starts
+ * connected. */
+bool scr_http2_session_connecting(ScrH2Session *s) { return s->client && !s->connected; }
+
 bool scr_http2_session_closed(ScrH2Session *s) { return s->closed; }
 bool scr_http2_session_destroyed(ScrH2Session *s) { return s->destroyed; }
 bool scr_http2_session_encrypted(ScrH2Session *s) {
@@ -3265,18 +3618,21 @@ void scr_http2_connect_thunk0(ScrClosure *cb, ScrH2Session *sess, ScrNetSocket *
   ((void (*)(ScrClosure *))cb->fn)(cb);
 }
 
-void scr_http2_goaway_thunk2(ScrClosure *cb, double code, double last) {
+void scr_http2_goaway_thunk2(ScrClosure *cb, double code, double last, ScrBytes *opaque) {
+  (void)opaque;
   ((void (*)(ScrClosure *, double, double))cb->fn)(cb, code, last);
 }
 
-void scr_http2_goaway_thunk1(ScrClosure *cb, double code, double last) {
+void scr_http2_goaway_thunk1(ScrClosure *cb, double code, double last, ScrBytes *opaque) {
   (void)last;
+  (void)opaque;
   ((void (*)(ScrClosure *, double))cb->fn)(cb, code);
 }
 
-void scr_http2_goaway_thunk0(ScrClosure *cb, double code, double last) {
+void scr_http2_goaway_thunk0(ScrClosure *cb, double code, double last, ScrBytes *opaque) {
   (void)code;
   (void)last;
+  (void)opaque;
   ((void (*)(ScrClosure *))cb->fn)(cb);
 }
 
@@ -3384,13 +3740,15 @@ static void scr_h2_dyn_fire_settings_cb(ScrClosure *cb, ScrDyn *settings /*+1*/)
   scr_dyn_release(settings);
 }
 
-static void scr_h2_dyn_fire_goaway(ScrClosure *cb, double code, double last) {
+static void scr_h2_dyn_fire_goaway(ScrClosure *cb, double code, double last, ScrBytes *opaque) {
   ScrDyn *fn = scr_dyn_listener_fn(cb);
   ScrDyn *a0 = scr_dyn_new_num(code);
   ScrDyn *a1 = scr_dyn_new_num(last);
-  ScrDyn *args[2] = { a0, a1 };
-  ScrDyn *r = scr_dyn_call(fn, args, 2, "listener");
+  ScrDyn *a2 = opaque != NULL ? scr_dyn_new_bytes(opaque) : scr_dyn_retain(scr_dyn_undefined());
+  ScrDyn *args[3] = { a0, a1, a2 };
+  ScrDyn *r = scr_dyn_call(fn, args, 3, "listener");
   scr_dyn_release(r);
+  scr_dyn_release(a2);
   scr_dyn_release(a1);
   scr_dyn_release(a0);
   scr_dyn_release(fn);
@@ -3592,6 +3950,8 @@ static ScrDyn *scr_h2_dynh_session_invoke(void *h, ScrDyn *self, const char *met
       scr_http2_session_on_goaway(s, scr_dyn_listener_closure_fn(args[1], (void *)&scr_h2_dyn_fire_goaway), (ScrH2GoawayFn)&scr_h2_dyn_fire_goaway, once);
     } else if (strcmp(ev, "localSettings") == 0 || strcmp(ev, "remoteSettings") == 0) {
       scr_http2_session_on_settings(s, scr_dyn_listener_closure_fn(args[1], (void *)&scr_h2_dyn_fire_settings), (ScrH2SettingsFn)&scr_h2_dyn_fire_settings, once, ev[0] == 'l');
+    } else if (strcmp(ev, "ping") == 0) {
+      scr_http2_session_on_ping(s, scr_dyn_listener_closure_data(args[1]), (ScrNetDataFn)&scr_dyn_listener_fire_data, once);
     } else if (strcmp(ev, "frameError") == 0 || strcmp(ev, "timeout") == 0) {
       /* never raised here (no frame fails to send, and setTimeout is
        * refused): accept the registration */
@@ -3612,8 +3972,22 @@ static ScrDyn *scr_h2_dynh_session_invoke(void *h, ScrDyn *self, const char *met
     return scr_dyn_retain(self);
   }
   if (strcmp(method, "ref") == 0) return scr_dyn_retain(self); /* a session holds the loop already */
+  if (strcmp(method, "ping") == 0) {
+    bool has_payload = argc > 1 || (argc == 1 && args[0]->kind != SCR_DYN_FUNC);
+    const ScrDyn *payload = has_payload ? args[0] : NULL;
+    const ScrDyn *cb = argc > (has_payload ? 1u : 0u) ? args[has_payload ? 1 : 0] : scr_dyn_undefined();
+    if (payload != NULL && payload->kind != SCR_DYN_BYTES && payload->kind != SCR_DYN_UNDEF) {
+      static const char text[] =
+          "The \"payload\" argument must be an instance of Buffer, TypedArray, or DataView.";
+      scr_throw_error_msg_code(SCR_ERR_TYPE, text, sizeof text - 1, "ERR_INVALID_ARG_TYPE");
+      return NULL;
+    }
+    scr_http2_session_ping(s, payload != NULL && payload->kind == SCR_DYN_BYTES ? payload->v.bytes : NULL, cb);
+    if (scr_exc_pending()) return NULL;
+    return scr_dyn_new_bool(true);
+  }
   if (strcmp(method, "setTimeout") == 0 || strcmp(method, "unref") == 0 || strcmp(method, "goaway") == 0 ||
-      strcmp(method, "ping") == 0 || strcmp(method, "setLocalWindowSize") == 0 ||
+      strcmp(method, "setLocalWindowSize") == 0 ||
       strcmp(method, "altsvc") == 0 || strcmp(method, "origin") == 0) {
     scr_h2_dyn_refuse_call(method, "Http2Session");
     return NULL;
@@ -3647,7 +4021,8 @@ static ScrDyn *scr_h2_dynh_session_get(void *h, const char *key, size_t key_len)
     scr_net_sock_release(sock);
     return d;
   }
-  static const char *const unmodeled[] = { "connecting", "originSet", "state", NULL };
+  if (strcmp(key, "connecting") == 0) return scr_dyn_new_bool(scr_http2_session_connecting(s));
+  static const char *const unmodeled[] = { "originSet", "state", NULL };
   scr_h2_dyn_refuse_read(key, unmodeled, "Http2Session");
   return NULL;
 }

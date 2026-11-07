@@ -3561,6 +3561,38 @@ function lowerH2SessionMethodCall(
     requireStatementPosition(lowerer, call, "session.destroy(...)");
     return { kind: "libCall", fn: "http2.sessionDestroy", args: [receiver()], type: VOID, loc };
   }
+  if (name === "ping") {
+    // session.ping([payload, ]callback): the (err, duration, payload)
+    // callback crosses the checked-dynamic boundary. Node answers a
+    // boolean; the call is a statement here.
+    requireStatementPosition(lowerer, call, "session.ping(...)");
+    if (args.length < 1 || args.length > 2) {
+      lowerer.noLowering(
+        `session.ping with ${args.length} arguments`,
+        call,
+        "use ping(callback) or ping(payload, callback)",
+      );
+    }
+    const cb = lowerSocketDynListener(lowerer, args[args.length - 1]!, "ping callbacks");
+    if (args.length === 2) {
+      const payload = lowerer.lowerExpr(args[0]!);
+      if (payload.type.kind !== "bytes") {
+        lowerer.noLowering(
+          `session.ping with a '${lowerer.fmt(payload.type)}' payload`,
+          args[0]!,
+          "the payload is a Buffer or Uint8Array of eight bytes",
+        );
+      }
+      return {
+        kind: "libCall",
+        fn: "http2.sessionPingPayload",
+        args: [receiver(), payload, cb],
+        type: VOID,
+        loc,
+      };
+    }
+    return { kind: "libCall", fn: "http2.sessionPing", args: [receiver(), cb], type: VOID, loc };
+  }
   if (name === "settings") {
     // session.settings(obj[, cb]): the settings record crosses as a dyn
     // value (the checked-dynamic boundary — object literals box); the
@@ -3745,16 +3777,34 @@ function lowerH2SessionMethodCall(
         loc,
       };
     }
+    if (event === "ping") {
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        "ping listeners",
+        1,
+        (p) => (p.kind === "bytes" && p.elem === "u8") || p.kind === "dyn",
+        "use (payload) or ()",
+        [BYTES_U8],
+      );
+      return {
+        kind: "libCall",
+        fn: "http2.sessionOnPing",
+        args: [receiver(), cb, once],
+        type: VOID,
+        loc,
+      };
+    }
     lowerer.noLowering(
       `session.${name}("${event ?? "?"}", ...)`,
       args[0]!,
-      '"close", "error", "connect", "stream", and "goaway" are the supported session events',
+      '"close", "error", "connect", "stream", "goaway", "ping", "localSettings", and "remoteSettings" are the supported session events',
     );
   }
   lowerer.noLowering(
     `session.${name}`,
     call,
-    'close/destroy/request and on("close"|"error"|"connect"|"stream"|"goaway") are the lowered session members',
+    "close/destroy/request/settings/ping and on(...) are the lowered session members",
   );
 }
 
@@ -4531,6 +4581,8 @@ export function lowerServerProperty(
       return { kind: "libCall", fn: "http2.sessionClosed", args: [recv()], type: BOOL, loc };
     if (m === "destroyed")
       return { kind: "libCall", fn: "http2.sessionDestroyed", args: [recv()], type: BOOL, loc };
+    if (m === "connecting")
+      return { kind: "libCall", fn: "http2.sessionConnecting", args: [recv()], type: BOOL, loc };
     if (m === "encrypted")
       return { kind: "libCall", fn: "http2.sessionEncrypted", args: [recv()], type: BOOL, loc };
     if (m === "type")
@@ -6561,6 +6613,41 @@ function lowerHttp2ModuleCall(
     // The constant defaults record, as a dyn value (the d.ts types it
     // `any` — reads ride the checked-dynamic keyed read).
     return { kind: "libCall", fn: "http2.getDefaultSettings", args: [], type: DYN, loc };
+  }
+  if (bi.member === "getPackedSettings") {
+    // The SETTINGS payload of a settings record, a Buffer; the record
+    // crosses as a dyn value, as it does for session.settings().
+    if (args.length === 0) {
+      return { kind: "libCall", fn: "http2.getPackedSettings0", args: [], type: BYTES_U8, loc };
+    }
+    const v = lowerer.lowerExpr(args[0]!);
+    const settings: IrExpr =
+      v.type.kind === "dyn" ? v : { kind: "dynFrom", value: v, type: DYN, loc };
+    return {
+      kind: "libCall",
+      fn: "http2.getPackedSettings",
+      args: [settings],
+      type: BYTES_U8,
+      loc,
+    };
+  }
+  if (bi.member === "getUnpackedSettings") {
+    if (args.length !== 1) {
+      lowerer.noLowering(
+        `http2.getUnpackedSettings with ${args.length} arguments`,
+        expr,
+        "pass the packed settings buffer (the validate option is not lowered)",
+      );
+    }
+    const buf = lowerer.lowerExpr(args[0]!);
+    if (buf.type.kind !== "bytes") {
+      lowerer.noLowering(
+        `http2.getUnpackedSettings with a '${lowerer.fmt(buf.type)}' argument`,
+        args[0]!,
+        "pass a Buffer or Uint8Array",
+      );
+    }
+    return { kind: "libCall", fn: "http2.getUnpackedSettings", args: [buf], type: DYN, loc };
   }
   if (bi.member === "createSecureServer") {
     if (args.length < 1 || args.length > 2) {

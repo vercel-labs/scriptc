@@ -25,7 +25,8 @@ typedef void (*ScrH2StreamFn)(ScrClosure *cb, ScrH2Stream *st, ScrArr *pairs, do
 typedef void (*ScrH2RespFn)(ScrClosure *cb, ScrArr *pairs, double status, double flags);     /* pairs +1 */
 typedef void (*ScrH2SessionFn)(ScrClosure *cb, ScrH2Session *sess);                          /* sess +1 */
 typedef void (*ScrH2ConnectFn)(ScrClosure *cb, ScrH2Session *sess, ScrNetSocket *sock);      /* both +1; sock nullable */
-typedef void (*ScrH2GoawayFn)(ScrClosure *cb, double code, double last);
+typedef void (*ScrH2GoawayFn)(ScrClosure *cb, double code, double last,
+                              ScrBytes *opaque /*borrowed, NULL = none*/);
 typedef void (*ScrH2SettingsFn)(ScrClosure *cb, ScrDyn *settings /*+1*/);
 
 ScrH2Session *scr_http2_session_retain(ScrH2Session *s);
@@ -99,12 +100,20 @@ void scr_http2_session_on_settings(ScrH2Session *s, ScrClosure *cb /*moves*/, Sc
 ScrDyn *scr_http2_session_settings_get(ScrH2Session *s, bool local); /* +1 */
 bool scr_http2_session_pending_settings_ack(ScrH2Session *s);
 ScrDyn *scr_http2_get_default_settings(void); /* +1 */
+ScrBytes *scr_http2_get_packed_settings(const ScrDyn *settings /*borrowed, nullable*/); /* +1; may throw */
+ScrDyn *scr_http2_get_unpacked_settings(ScrBytes *buf /*borrowed*/); /* +1; may throw */
 void scr_http2_settings_thunk(ScrClosure *cb, ScrDyn *settings);
 void scr_http2_settings_thunk0(ScrClosure *cb, ScrDyn *settings);
 void scr_http2_session_settings_dyncb(ScrH2Session *s, const ScrDyn *settings /*borrowed*/,
                                        const ScrDyn *cb /*borrowed*/);
 void scr_http2_session_on_settings_dyn(ScrH2Session *s, const ScrDyn *cb /*borrowed*/,
                                         bool once, bool local);
+/* ping([payload, ]callback) with a dynamic (err, duration, payload)
+ * callback; 'ping' listeners receive the peer's eight bytes. May throw. */
+void scr_http2_session_ping(ScrH2Session *s, ScrBytes *payload /*borrowed, nullable*/,
+                            const ScrDyn *cb /*borrowed*/);
+void scr_http2_session_on_ping(ScrH2Session *s, ScrClosure *cb /*moves*/, ScrNetDataFn fn, bool once);
+bool scr_http2_session_connecting(ScrH2Session *s);
 bool scr_http2_session_closed(ScrH2Session *s);
 bool scr_http2_session_destroyed(ScrH2Session *s);
 bool scr_http2_session_encrypted(ScrH2Session *s);
@@ -152,9 +161,9 @@ void scr_http2_session_thunk0(ScrClosure *cb, ScrH2Session *sess);
 void scr_http2_connect_thunk2(ScrClosure *cb, ScrH2Session *sess, ScrNetSocket *sock);
 void scr_http2_connect_thunk1(ScrClosure *cb, ScrH2Session *sess, ScrNetSocket *sock);
 void scr_http2_connect_thunk0(ScrClosure *cb, ScrH2Session *sess, ScrNetSocket *sock);
-void scr_http2_goaway_thunk2(ScrClosure *cb, double code, double last);
-void scr_http2_goaway_thunk1(ScrClosure *cb, double code, double last);
-void scr_http2_goaway_thunk0(ScrClosure *cb, double code, double last);
+void scr_http2_goaway_thunk2(ScrClosure *cb, double code, double last, ScrBytes *opaque);
+void scr_http2_goaway_thunk1(ScrClosure *cb, double code, double last, ScrBytes *opaque);
+void scr_http2_goaway_thunk0(ScrClosure *cb, double code, double last, ScrBytes *opaque);
 
 void scr_net_sock_set_native_established(ScrNetSocket *s, ScrNetNativeEventFn fn);
 

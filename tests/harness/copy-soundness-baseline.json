@@ -4,12 +4,13 @@
     "objWidth": 5,
     "ovf": 2,
     "tupleArr": 4,
-    "width": 364
+    "width": 363
   },
   "warnedIdentical": 21,
   "refused": [
     "empty/declaration/push",
-    "instance/declaration/write"
+    "instance/declaration/write",
+    "partial/declaration/increment"
   ],
   "silent": [
     "promise/declaration/write"

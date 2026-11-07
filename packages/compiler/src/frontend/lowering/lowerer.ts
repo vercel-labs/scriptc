@@ -90,6 +90,7 @@ import {
   type RequireInitFlag,
 } from "./require-initialization.js";
 import { identityPreservingWidening } from "./coercions/identity.js";
+import { consoleInto, isConsoleObjectRead, isConsoleTyped } from "./coercions/console-records.js";
 import { scanDivergences } from "./divergences.js";
 import { applyKeyOrderWitnesses, KeyOrderNotes } from "./key-order-witness.js";
 import { installBuiltinStatics } from "./builtin-statics.js";
@@ -14078,6 +14079,13 @@ export class Lowerer {
         );
         throw new PoisonError();
       }
+      // The console object into a record of its members: the members are
+      // read off console by name (console-records.ts). The checked
+      // conversion below reads a property bag, which console is not.
+      if (isConsoleObjectRead(expr)) {
+        const projected = consoleInto(this, expr, expected, expr.loc);
+        if (projected) return projected;
+      }
       if (
         canDynCheckTo(
           expected,
@@ -14748,6 +14756,20 @@ export class Lowerer {
 
   private coerceIntoSlot(node: ts.Node, expr: IrExpr, expected: IrType): IrExpr {
     refuseInferredCallbackDrops(this, node, expr.type, expected);
+    // A binding the checker types as the console object (`const c =
+    // console`, a `Console` parameter) into a record of its members: the
+    // same member-by-name copy the direct `console` spelling takes
+    // (console-records.ts), decided here because only the site knows the
+    // checked-dynamic value is console.
+    if (
+      expr.type.kind === "dyn" &&
+      (expected.kind === "record" || expected.kind === "union") &&
+      !isConsoleObjectRead(expr) &&
+      isConsoleTyped(this, node)
+    ) {
+      const projected = consoleInto(this, expr, expected, expr.loc);
+      if (projected) return projected;
+    }
     // A union into one of its record arms extracts that arm, trusting the
     // checker to have excluded the others. A built-in object arm the checker
     // still types the site with (`c ?? new Map()` into an interface the

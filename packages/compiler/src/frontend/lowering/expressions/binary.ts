@@ -1,4 +1,8 @@
 /* Binary operators: arithmetic, comparisons and equality, logical and nullish pairs, and string conversion for concatenation. */
+import {
+  fenceConsoleMutation,
+  refuseConsoleRecordComparison,
+} from "../coercions/console-records.js";
 import { lowerStaticPrivateAssignment } from "../private-statics.js";
 import { keyedHelperName } from "../stable-names.js";
 import * as ts from "../../ts7/adapter.js";
@@ -1291,6 +1295,7 @@ function lowerBigIntOperandOperator(
 }
 
 export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr {
+  fenceConsoleMutation(lowerer, expr);
   const loc = locOf(expr);
   const op = expr.operatorToken.kind;
 
@@ -1690,10 +1695,14 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
   if (op === ts.SyntaxKind.EqualsEqualsToken || op === ts.SyntaxKind.ExclamationEqualsToken) {
     const nullTest = lowerLooseNullCompare(lowerer, expr, loc);
     if (nullTest) return nullTest;
+    const looseLeft = deferredSlotOr(lowerer, lowerer.lowerExpr(expr.left));
+    const looseRight = deferredSlotOr(lowerer, lowerer.lowerExpr(expr.right));
+    // console against a record it could have flowed into, as for `===`.
+    refuseConsoleRecordComparison(lowerer, expr, expr.left, expr.right, looseLeft, looseRight);
     const loose = lowerAbstractEquality(
       lowerer,
-      deferredSlotOr(lowerer, lowerer.lowerExpr(expr.left)),
-      deferredSlotOr(lowerer, lowerer.lowerExpr(expr.right)),
+      looseLeft,
+      looseRight,
       op === ts.SyntaxKind.ExclamationEqualsToken,
       loc,
       expr,
@@ -1824,6 +1833,13 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
   const bigintOperand = lowerBigIntOperandOperator(lowerer, expr, op, left, right);
   if (bigintOperand) return bigintOperand;
   if (left.type.kind === "dyn" || right.type.kind === "dyn") {
+    // console against a record it could have flowed into (`logger ===
+    // console`): refused by name (console-records.ts).
+    if (
+      op === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+      op === ts.SyntaxKind.ExclamationEqualsEqualsToken
+    )
+      refuseConsoleRecordComparison(lowerer, expr, expr.left, expr.right, left, right);
     // The narrowing unit comparisons ARE answerable on unknown: `v ===
     // undefined` / `v !== null` test the dyn node's kind directly, and
     // tsc's control flow narrows the branches (reads then bridge through

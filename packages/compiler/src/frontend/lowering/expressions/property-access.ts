@@ -15,6 +15,7 @@ import {
   hostGlobalPrototypeOf,
 } from "../host-globals.js";
 import { hostGlobalValue } from "../host-global-values.js";
+import { fenceConsoleMemberValue } from "../coercions/console-records.js";
 import { globalFunctionValue } from "../global-function-values.js";
 import {
   arrayClassMemberOwner,
@@ -696,7 +697,9 @@ export function lowerPropertyAccessExpr(
     const webStream = lowerWebStreamClassRead(lowerer, expr);
     if (webStream) return webStream;
   }
-  if (lowerer.stdlibGlobalMember(expr, "console") !== null) {
+  const consoleMember = lowerer.stdlibGlobalMember(expr, "console");
+  if (consoleMember !== null) {
+    fenceConsoleMemberValue(lowerer, consoleMember, expr);
     return {
       kind: "dynKeyGet",
       value: { kind: "libCall", fn: "console.native", args: [], type: DYN, loc },

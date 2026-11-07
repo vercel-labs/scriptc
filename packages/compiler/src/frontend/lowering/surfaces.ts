@@ -1,4 +1,5 @@
 import { isWebStreamMemberInJavaScript } from "./builtins/web-streams-dyn.js";
+import { isLoweredConsoleMember } from "./builtins/console.js";
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { staticCondition, staticallySelected } from "./static-typeof.js";
@@ -3570,7 +3571,14 @@ export function stdlibMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExp
   // at runtime through the dyn/handle machinery — the keyed-read claim
   // below this fence answers, member-or-refusal ladder, so no compile
   // fence belongs here.
-  if (lowerer.mapTypeOf(lowerer.typeOf(recv))?.kind === "dyn") return;
+  // The global console is such a receiver too, but a direct call of a
+  // member with no lowering (`console.trace()`) has nothing to dispatch
+  // to: it keeps this fence and its hint in both type worlds.
+  if (
+    lowerer.mapTypeOf(lowerer.typeOf(recv))?.kind === "dyn" &&
+    !(lowerer.isStdlibGlobal(recv, "console") && !isLoweredConsoleMember(member))
+  )
+    return;
   // JavaScript reads web stream values (read results, sources, strategies)
   // as checked-dynamic objects (web-streams-dyn.ts).
   if (isWebStreamMemberInJavaScript(lowerer, access)) return;

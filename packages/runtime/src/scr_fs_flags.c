@@ -220,13 +220,16 @@ static void scr_fs_write_string(ScrStr *path, ScrStr *data, ScrStr *encoding, do
 
 /* The Buffer data of an options-form write: the bytes are already what
  * Node writes, so only the mode and flags matter — the encoding is
- * validated and otherwise ignored, exactly Node. */
+ * validated and otherwise ignored, exactly Node. The bytes are snapshotted
+ * like the plain byte write's, so a shared payload reaches write() as a
+ * local copy rather than as storage another thread may change. */
 static void scr_fs_write_blob(ScrStr *path, const ScrBytes *data, ScrStr *encoding, double mode,
                               const ScrStr *flags, const char *defaultFlag) {
   if (!scr_fs_write_encoding_ok(encoding)) return;
   int bits = 0;
   if (!scr_fs_write_flags_ok(flags, defaultFlag, &bits)) return;
   if (!scr_fs_write_mode_ok(mode)) return;
+  SCR_BYTES_SNAPSHOT(data);
   scr_fs_write_bytes_at(path, data->data, data->len * scr_bytes_elem_size(data->elem), (mode_t)mode,
                         bits);
 }

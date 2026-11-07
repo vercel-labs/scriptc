@@ -142,6 +142,9 @@ export interface NativeLinkFeatures {
   /** `delete` of a key a record's type does not declare:
    * scr_record_source_delete.c. Absent (false) for programs without one. */
   recordSourceDelete?: boolean;
+  /** A partial record assertion to a type whose values may be frozen
+   * compiles scr_record_view_frozen.c; absent (false) otherwise. */
+  recordViewFrozen?: boolean;
   /** A generator that binds its parameters at the call: scr_gen_bind.c.
    * Absent (false) for programs without one. */
   genBind?: boolean;

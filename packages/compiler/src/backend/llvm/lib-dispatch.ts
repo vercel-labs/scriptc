@@ -342,6 +342,20 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     B.line(`call void @scr_record_source_share(ptr ${built.name}, ptr ${value.name})`);
     return { name: "", type: e.type };
   }
+  if (e.fn === "closure.shareIdentity") {
+    const adapter = host.emitReadReceiver(e.args[0]!);
+    const root = host.emitReadReceiver(e.args[1]!);
+    const length = e.args[2]!;
+    if (length.kind !== "numLit")
+      throw new InternalCompilerError(
+        "llvm emitter bug: closure.shareIdentity length is not a literal",
+      );
+    host.declare(`declare void @scr_closure_adopt_identity(ptr, ptr, i32)`);
+    B.line(
+      `call void @scr_closure_adopt_identity(ptr ${adapter.name}, ptr ${root.name}, i32 ${length.value})`,
+    );
+    return { name: "", type: e.type };
+  }
   if (e.fn === "record.link") {
     // The link owns a reference to the source, released with the copy.
     const copy = host.emitReadReceiver(e.args[0]!);
@@ -1304,18 +1318,55 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     const receiver = e.args[0]!;
     const value = host.emitReadReceiver(receiver);
     const S = host.sizeType;
+    const views = host.shapeHost.recordViews;
+    const viewTarget =
+      receiver.type.kind === "record" && views?.targets.has(receiver.type.shapeId) === true;
+    // The bit is also a record view's mark (record-views.ts), and a view has
+    // no frozen state of its own. Where no value of the type can be frozen,
+    // a value with the bit is a view of a record that is not frozen either.
+    if (viewTarget && receiver.type.kind === "record" && !views!.marked.has(receiver.type.shapeId))
+      return { name: "false", type: e.type };
     const rc = host.B.tmp(),
       top = host.B.tmp();
     let t = host.B.tmp();
     host.B.line(`${rc} = load ${S}, ptr ${value.name}`);
     host.B.line(`${top} = lshr ${S} ${rc}, ${S === "i64" ? 62 : 30}`);
     host.B.line(`${t} = icmp eq ${S} ${top}, 1`);
+    if (viewTarget) {
+      // Otherwise the record-source table answers for the record a view
+      // views, and a frozen record answers true (scr_record_view_frozen.c).
+      host.declare(`declare zeroext i1 @scr_record_marked_frozen(ptr)`);
+      const B = host.B;
+      const from = B.currentLabel();
+      const ask = B.newLabel("rf.marked");
+      const join = B.newLabel("rf.join");
+      B.condBr(t, ask, join, `, !prof !{!"branch_weights", i32 1, i32 1000}`);
+      B.startBlock(ask);
+      const frozen = B.tmp();
+      B.line(`${frozen} = call zeroext i1 @scr_record_marked_frozen(ptr ${value.name})`);
+      B.br(join);
+      B.startBlock(join);
+      const answer = B.tmp();
+      B.line(`${answer} = phi i1 [ false, %${from} ], [ ${frozen}, %${ask} ]`);
+      return { name: answer, type: e.type };
+    }
     if (
       receiver.type.kind === "record" &&
       host.publishedTypes?.recordGuarded(receiver.type.shapeId) === true
     )
       t = orPublished(host, t, rc);
     return { name: t, type: e.type };
+  }
+  if (
+    e.fn === "record.freeze" &&
+    e.args[0]?.type.kind === "record" &&
+    host.shapeHost.recordViews?.marked.has(e.args[0].type.shapeId) === true
+  ) {
+    // Freezing a view freezes the record it views (scr_record_view_frozen.c).
+    const value = host.emitReadReceiver(e.args[0]);
+    host.declare(`declare void @scr_record_marked_freeze(ptr)`);
+    host.B.line(`call void @scr_record_marked_freeze(ptr ${value.name})`);
+    return { name: "", type: e.type };
   }
   if (
     (e.fn === "array.isFrozen" || e.fn === "collection.isExtensible") &&
@@ -1458,6 +1509,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
       return emitSeaLibCall(host, e);
     case "collection":
     case "record":
+    case "closure":
     case "disposable":
     case "punycode":
     case "constants":

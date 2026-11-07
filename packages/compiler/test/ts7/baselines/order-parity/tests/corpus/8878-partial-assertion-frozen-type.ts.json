@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8878-partial-assertion-frozen-type.ts"
+ ],
+ "diags": []
+}

@@ -1908,6 +1908,9 @@ static ScrDyn *scr_dyn_discriminant(const ScrDyn *d, const ScrStr *key) {
     scr_dyn_release(view);
     return out;
   }
+  /* An island object keeps its members in Node: the literal test reads the
+   * discriminant there, as every other member read of it does. */
+  if (scr_ni_dyn_handle(d)) return scr_dyn_obj_read(d, key->data, key->len);
   if (!d || d->kind != SCR_DYN_OBJ) return NULL;
   return scr_dyn_property_owner(d, key->data, key->len)
     ? scr_dyn_obj_read(d, key->data, key->len) : NULL;
@@ -1931,6 +1934,9 @@ int32_t scr_dyn_discriminant_case(const ScrDyn *d, const ScrStr *key, ScrStr *co
                                   size_t count) {
   if (!d) return -1;
   if (d->kind == SCR_DYN_TYPED_REF) return -2;
+  /* An island object's members live in Node, where this table cannot look:
+   * the arm-by-arm tests read the discriminant through the handle instead. */
+  if (scr_ni_dyn_handle(d)) return -2;
   if (d->kind != SCR_DYN_OBJ) return -1;
   if (d->v.obj.layout) {
     ScrDyn **slot = scr_dyn_layout_slot(d, key->data, key->len);

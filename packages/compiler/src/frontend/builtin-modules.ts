@@ -47,6 +47,7 @@ export const SUPPORTED_BUILTIN_MODULES = [
   "dns/promises",
   "punycode",
   "constants",
+  "sea",
 ] as const;
 
 /** Builtins Node itself serves ONLY under the node: prefix —
@@ -56,7 +57,7 @@ export const SUPPORTED_BUILTIN_MODULES = [
  * (a builtin always wins over a same-named npm package for the bare
  * specifier — the npm package named "module" is unreachable in Node too),
  * so both spellings key the same lowering tables here. */
-const PREFIX_ONLY_BUILTIN_MODULES: ReadonlySet<string> = new Set(["test"]);
+const PREFIX_ONLY_BUILTIN_MODULES: ReadonlySet<string> = new Set(["test", "sea"]);
 
 /** The builtin modules whose DEFAULT import binding lowers: node:assert's
  * module object IS a callable function (`import assert from "node:assert";

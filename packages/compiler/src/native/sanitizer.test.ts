@@ -39,6 +39,7 @@ const features = {
   abortSignal: false,
   utilTiming: false,
   dynBuffer: false,
+  fsPathValue: false,
   builtinValues: false,
   computedRequire: false,
   warningReplace: false,

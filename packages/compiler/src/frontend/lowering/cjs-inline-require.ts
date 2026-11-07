@@ -35,9 +35,11 @@ import {
 } from "../program.js";
 import { createRequireCalleeFileOf } from "./builtins/module-bindings.js";
 import { isCjsRequireGlobal } from "./lower-node-module.js";
-import { DYN, type IrExpr } from "../../ir/ir.js";
+import { DYN, type IrExpr, type IrType } from "../../ir/ir.js";
 import { nodeThrowExpr } from "../../ir/build.js";
 import { probeNodeRequireRefusal } from "../npm.js";
+import { resolveCjsRuntime } from "../cjs-resolve.js";
+import { isRelativeSpecifier } from "../workspace-registry.js";
 import { lowerIslandRequireCall } from "./lower-node-island.js";
 
 export interface InlineRequire {
@@ -142,7 +144,7 @@ function computeSplitRequireBinding(
 ): SplitRequireBinding | null {
   const sf = ts.getSourceFileOfNode(decl);
   if (!isCjsJsFile(sf, lowerer.program)) return null;
-  if (!sf.text.includes("require")) return null;
+  if (!ts.sourceTextIncludes(sf, "require")) return null;
   const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
   if (symbol === undefined) return null;
   // Merged declarations make the binding's initialization order ambiguous;
@@ -577,11 +579,40 @@ export function lowerWithInlineRequireInit(
   }
 }
 
+/** A `require()` of a relative specifier that names no module: Node's
+ * catchable MODULE_NOT_FOUND, thrown where the call sits. The module graph
+ * is fixed at build time, so a file that Node's CommonJS resolution does not
+ * find then (the exact file, its `.js`, `.json` and `.node` spellings, a
+ * directory's `main` or index) can never load, and the compiled call is
+ * Node's throw, as it already is for a package nothing installed resolves.
+ * Null when the program resolves the specifier or Node would find a file:
+ * those keep their own lowering or refusal. `node` is the call or the
+ * statement that holds it. */
+export function unresolvedRequireThrow(
+  lowerer: Lowerer,
+  node: ts.Node,
+  spec: string,
+  type: IrType,
+): IrExpr | null {
+  if (!isRelativeSpecifier(spec)) return null;
+  const sf = ts.getSourceFileOfNode(node);
+  if (!isCjsJsFile(sf, lowerer.program)) return null;
+  if (
+    resolveImport(lowerer.program, sf, spec, "require") ??
+    npmStaticDepSf7(lowerer.program, sf, spec, "require")
+  )
+    return null;
+  const resolved = resolveCjsRuntime(sf.fileName, spec);
+  if (resolved.ok || resolved.error.code !== "MODULE_NOT_FOUND") return null;
+  return nodeThrowExpr(0, "MODULE_NOT_FOUND", resolved.error.message, type, locOf(node));
+}
+
 /** A `require(...)` call of the CommonJS global in a CommonJS file that no
  * other lowering claimed (not a builtin, JSON document, program module or
- * createRequire binding): a package nothing installed resolves throws
- * Node's catchable MODULE_NOT_FOUND at the call, and every other form is
- * refused by name instead of as an unlowerable `require` value. */
+ * createRequire binding): a package nothing installed resolves, or a
+ * relative path that names no file, throws Node's catchable
+ * MODULE_NOT_FOUND at the call, and every other form is refused by name
+ * instead of as an unlowerable `require` value. */
 export function lowerUncompiledRequireCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -616,6 +647,8 @@ export function lowerUncompiledRequireCall(
       `require() of the package '${spec}' in an expression (the package is not compiled into this program)`,
     );
   }
+  const missing = unresolvedRequireThrow(lowerer, call, spec, DYN);
+  if (missing !== null) return missing;
   lowerer.unsupported(
     "SC1090",
     call,

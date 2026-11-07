@@ -169,4 +169,54 @@ attempt("element undefined", () => {
   const empty: Opt[] = [];
   delete (empty[0] as View).a;
 });
+// A key the operand's type does not declare lives in the kept source a
+// checked record notes from the value it was converted from
+// (tests/corpus/8998-delete-undeclared-record-key.ts). The wrappers address
+// that same record, so the delete removes the key there through each of them.
+interface Kept {
+  model: string;
+}
+type KeptWide = { model: string; max_tokens?: number };
+function parseKept(): Kept {
+  return JSON.parse('{"model":"m","max_tokens":5,"z":1}') as Kept;
+}
+function showKept(label: string, value: Kept): void {
+  console.log(label, "max_tokens" in value, Object.keys(value).join(","), JSON.stringify(value));
+}
+const keptNonNull = parseKept();
+delete (keptNonNull as KeptWide)!.max_tokens;
+showKept("kept nonnull outer", keptNonNull);
+const keptSatisfies = parseKept();
+console.log(delete ((keptSatisfies as KeptWide) satisfies KeptWide).max_tokens);
+showKept("kept satisfies outer", keptSatisfies);
+const keptAny = parseKept();
+delete (keptAny as any).max_tokens;
+showKept("kept any", keptAny);
+const keptBracket = parseKept();
+console.log(delete (keptBracket as unknown as KeptWide)["max_tokens"]);
+showKept("kept unknown chain bracket", keptBracket);
+// A key the record never held: `true`, and nothing changes.
+const keptMissing = parseKept();
+console.log(delete (keptMissing as { model: string; nope?: number })!.nope);
+showKept("kept missing key", keptMissing);
+// An operand that may be undefined is narrowed to its record first.
+function maybeKept(present: boolean): Kept | undefined {
+  return present ? parseKept() : undefined;
+}
+const keptOptional = maybeKept(true);
+delete (keptOptional as KeptWide).max_tokens;
+if (keptOptional !== undefined) showKept("kept optional", keptOptional);
+const keptOptionalValue = maybeKept(true);
+const keptGone = delete (keptOptionalValue as KeptWide)!.max_tokens;
+if (keptOptionalValue !== undefined) showKept(`kept optional value ${keptGone}`, keptOptionalValue);
+attempt("kept undefined", () => {
+  delete (maybeKept(false) as KeptWide).max_tokens;
+});
+// The operand is evaluated once.
+let keptCalls = 0;
+function keptOnce(): Kept {
+  keptCalls++;
+  return parseKept();
+}
+console.log(delete (keptOnce() as KeptWide)!.max_tokens, keptCalls);
 export {};

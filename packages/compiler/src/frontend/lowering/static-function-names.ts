@@ -1,8 +1,8 @@
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { isJsSourceFile } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
 import type { GenericFnInfo } from "./generic-functions.js";
-import { stripTypeWrappers } from "./typed-arguments.js";
 
 /** `fn.name` inside generic higher-order functions.
  *
@@ -104,7 +104,7 @@ export function staticFunctionName(lowerer: Lowerer, expr: ts.Expression): strin
 }
 
 function staticNameOf(lowerer: Lowerer, expr: ts.Expression, seen: Set<ts.Node>): string | null {
-  const e = stripTypeWrappers(expr);
+  const e = withoutParenthesesTypeWrappers(expr);
   if (seen.has(e)) return null;
   seen.add(e);
   // An anonymous function as a call argument gets no inferred name.
@@ -125,7 +125,7 @@ function staticNameOf(lowerer: Lowerer, expr: ts.Expression, seen: Set<ts.Node>)
       decl.initializer !== undefined &&
       (ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) !== 0
     ) {
-      const init = stripTypeWrappers(decl.initializer);
+      const init = withoutParenthesesTypeWrappers(decl.initializer);
       // `const f = () => …` / `const f = function () {}`: the binding names
       // an anonymous function definition.
       if (ts.isArrowFunction(init)) return decl.name.text;
@@ -181,7 +181,7 @@ function functionValueName(
   expr: ts.Expression,
   seen: Set<ts.Node>,
 ): string | null {
-  const e = stripTypeWrappers(expr);
+  const e = withoutParenthesesTypeWrappers(expr);
   if (ts.isFunctionExpression(e) || ts.isArrowFunction(e)) {
     return !ts.isArrowFunction(e) && e.name ? e.name.text : "";
   }

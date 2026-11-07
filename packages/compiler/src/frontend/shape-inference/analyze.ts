@@ -22,6 +22,7 @@
  *   escaped atom (§5.4); the report uses them to decide which allocation
  *   sites could become native records (§5.5). */
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesAsSatisfiesNonNull } from "../outer-expressions.js";
 import { isJsSourceFile } from "../program.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
 import {
@@ -321,22 +322,12 @@ function isStatic(node: Node): boolean {
   return list(mods).some((m) => m.kind === ts.SyntaxKind.StaticKeyword);
 }
 
-function unparen(node: ts.Expression): ts.Expression {
-  let n = node;
-  for (;;) {
-    if (ts.isParenthesizedExpression(n)) n = n.expression;
-    else if (ts.isNonNullExpression(n)) n = n.expression;
-    else if (ts.isAsExpression(n) || ts.isSatisfiesExpression(n)) n = n.expression;
-    else return n;
-  }
-}
-
 function propertyNameText(name: Node): string | null {
   if (ts.isIdentifier(name) || ts.isPrivateIdentifier(name)) return name.text;
   if (ts.isStringLiteral(name) || ts.isNoSubstitutionTemplateLiteral(name)) return name.text;
   if (ts.isNumericLiteral(name)) return String(Number(name.text));
   if (ts.isComputedPropertyName(name)) {
-    const e = unparen(name.expression);
+    const e = withoutParenthesesAsSatisfiesNonNull(name.expression);
     if (ts.isStringLiteral(e) || ts.isNoSubstitutionTemplateLiteral(e)) return e.text;
     if (ts.isNumericLiteral(e)) return String(Number(e.text));
   }
@@ -1039,7 +1030,7 @@ class Analyzer {
       (c) => c.token === ts.SyntaxKind.ExtendsKeyword,
     )?.types?.nodes[0];
     if (heritage === undefined) return null;
-    const e = unparen(heritage.expression);
+    const e = withoutParenthesesAsSatisfiesNonNull(heritage.expression);
     if (!ts.isIdentifier(e) && !ts.isPropertyAccessExpression(e)) return undefined;
     let d = this.resolve(ts.isIdentifier(e) ? e : e.name);
     // `var C = class C { … }` (bundler output)
@@ -1047,9 +1038,9 @@ class Analyzer {
       d !== undefined &&
       ts.isVariableDeclaration(d) &&
       d.initializer !== undefined &&
-      ts.isClassExpression(unparen(d.initializer))
+      ts.isClassExpression(withoutParenthesesAsSatisfiesNonNull(d.initializer))
     )
-      d = unparen(d.initializer);
+      d = withoutParenthesesAsSatisfiesNonNull(d.initializer);
     if (d !== undefined && ts.isClassLikeDeclaration(d)) return d;
     if (d !== undefined && d.getSourceFile().isDeclarationFile) return null;
     return undefined;
@@ -1078,7 +1069,7 @@ class Analyzer {
         )
           out.push(m);
         else if (ts.isPropertyDeclaration(m) && m.initializer !== undefined) {
-          const init = unparen(m.initializer);
+          const init = withoutParenthesesAsSatisfiesNonNull(m.initializer);
           if (ts.isArrowFunction(init) || ts.isFunctionExpression(init)) out.push(init);
         }
       }
@@ -1480,7 +1471,7 @@ class Analyzer {
   /** An initializer expression: arrow functions in field initializers take
    * the instance as `this` and belong to the class. */
   exprIn(e: ts.Expression, ownerClass: Node): number {
-    const u = unparen(e);
+    const u = withoutParenthesesAsSatisfiesNonNull(e);
     if (ts.isArrowFunction(u) || ts.isFunctionExpression(u)) {
       const n = this.newNode();
       this.add(n, this.fnAtom(u, ts.isArrowFunction(u) ? null : ownerClass));
@@ -1687,7 +1678,7 @@ class Analyzer {
         e = st.length === 1 && ts.isReturnStatement(st[0]!) ? st[0]!.expression : undefined;
       }
       if (e !== undefined && !ts.isSourceFile(node)) {
-        const u = unparen(e as ts.Expression);
+        const u = withoutParenthesesAsSatisfiesNonNull(e as ts.Expression);
         r =
           ts.isCallExpression(u) &&
           u.expression.getText() === "Object.create" &&
@@ -1948,7 +1939,7 @@ class Analyzer {
   }
 
   private exprUncached(e: ts.Expression): number {
-    const u = unparen(e);
+    const u = withoutParenthesesAsSatisfiesNonNull(e);
     if (u !== e) return this.expr(u);
     switch (e.kind) {
       case ts.SyntaxKind.StringLiteral:
@@ -1994,7 +1985,7 @@ class Analyzer {
     if (ts.isPropertyAccessExpression(e)) {
       this.noteSite(e);
       // `globalThis.Proxy` and the like are the modeled globals.
-      const object = unparen(e.expression);
+      const object = withoutParenthesesAsSatisfiesNonNull(e.expression);
       if (
         ts.isIdentifier(object) &&
         object.text === "globalThis" &&
@@ -2013,7 +2004,7 @@ class Analyzer {
     }
     if (ts.isElementAccessExpression(e)) {
       const recv = this.expr(e.expression);
-      const key = unparen(e.argumentExpression);
+      const key = withoutParenthesesAsSatisfiesNonNull(e.argumentExpression);
       const dst = this.newNode();
       const name =
         ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key) ? key.text : null;
@@ -2051,7 +2042,7 @@ class Analyzer {
       return this.constNode(this.prim("undefined"));
     }
     if (ts.isDeleteExpression(e)) {
-      const target = unparen(e.expression);
+      const target = withoutParenthesesAsSatisfiesNonNull(e.expression);
       if (ts.isPropertyAccessExpression(target) || ts.isElementAccessExpression(target)) {
         const recv = this.expr(target.expression);
         const name = ts.isPropertyAccessExpression(target) ? target.name.text : null;
@@ -2188,26 +2179,26 @@ class Analyzer {
 
   /** The class a condition proves `decl`'s value an instance of, if any. */
   guardClass(cond: ts.Expression, decl: Node): Node | "Promise" | null {
-    const e = unparen(cond);
+    const e = withoutParenthesesAsSatisfiesNonNull(cond);
     if (ts.isBinaryExpression(e)) {
       if (e.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken)
         return this.guardClass(e.left, decl) ?? this.guardClass(e.right, decl);
       if (e.operatorToken.kind !== ts.SyntaxKind.InstanceOfKeyword) return null;
-      const l = unparen(e.left);
+      const l = withoutParenthesesAsSatisfiesNonNull(e.left);
       if (!ts.isIdentifier(l) || this.resolve(l) !== decl) return null;
       return this.instanceofTarget(e.right);
     }
     if (
       ts.isCallExpression(e) &&
-      ts.isIdentifier(unparen(e.expression)) &&
+      ts.isIdentifier(withoutParenthesesAsSatisfiesNonNull(e.expression)) &&
       e.arguments.nodes.length === 1
     ) {
-      const arg = unparen(e.arguments.nodes[0]!);
+      const arg = withoutParenthesesAsSatisfiesNonNull(e.arguments.nodes[0]!);
       if (!ts.isIdentifier(arg) || this.resolve(arg) !== decl) return null;
-      const fnDecl = this.resolve(unparen(e.expression));
+      const fnDecl = this.resolve(withoutParenthesesAsSatisfiesNonNull(e.expression));
       let fn: Node | undefined = fnDecl;
       if (fn !== undefined && ts.isVariableDeclaration(fn) && fn.initializer !== undefined)
-        fn = unparen(fn.initializer);
+        fn = withoutParenthesesAsSatisfiesNonNull(fn.initializer);
       if (
         fn === undefined ||
         !(ts.isArrowFunction(fn) || ts.isFunctionDeclaration(fn) || ts.isFunctionExpression(fn))
@@ -2229,18 +2220,18 @@ class Analyzer {
 
   /** `… && p instanceof C` in a predicate body over parameter `p`. */
   predicateClass(e: ts.Expression, param: Node): Node | "Promise" | null {
-    const u = unparen(e);
+    const u = withoutParenthesesAsSatisfiesNonNull(e);
     if (!ts.isBinaryExpression(u)) return null;
     if (u.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken)
       return this.predicateClass(u.right, param) ?? this.predicateClass(u.left, param);
     if (u.operatorToken.kind !== ts.SyntaxKind.InstanceOfKeyword) return null;
-    const l = unparen(u.left);
+    const l = withoutParenthesesAsSatisfiesNonNull(u.left);
     if (!ts.isIdentifier(l) || this.resolve(l) !== param) return null;
     return this.instanceofTarget(u.right);
   }
 
   instanceofTarget(right: ts.Expression): Node | "Promise" | null {
-    const r = unparen(right);
+    const r = withoutParenthesesAsSatisfiesNonNull(right);
     if (!ts.isIdentifier(r)) return null;
     const d = this.resolve(r);
     if (d === undefined || d.getSourceFile().isDeclarationFile)
@@ -2672,7 +2663,7 @@ class Analyzer {
   }
 
   assignTo(target: ts.Expression, value: number): void {
-    const t = unparen(target);
+    const t = withoutParenthesesAsSatisfiesNonNull(target);
     if (ts.isIdentifier(t)) {
       const decl = this.resolve(t);
       if (decl === undefined || decl.getSourceFile().isDeclarationFile) {
@@ -2695,7 +2686,7 @@ class Analyzer {
     }
     if (ts.isElementAccessExpression(t)) {
       const recv = this.expr(t.expression);
-      const key = unparen(t.argumentExpression);
+      const key = withoutParenthesesAsSatisfiesNonNull(t.argumentExpression);
       if (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)) {
         this.storeConstraint(recv, key.text, value, t);
         this.ops.push({ kind: "write", recv, name: key.text, node: t });
@@ -3100,7 +3091,7 @@ class Analyzer {
    * array of strings with a `raw` array of strings) and each substitution. */
   taggedTemplate(e: ts.TaggedTemplateExpression): number {
     this.noteSite(e);
-    const tag = unparen(e.tag);
+    const tag = withoutParenthesesAsSatisfiesNonNull(e.tag);
     const recv =
       ts.isPropertyAccessExpression(tag) && tag.expression.kind !== ts.SyntaxKind.SuperKeyword
         ? this.expr(tag.expression)
@@ -3132,7 +3123,7 @@ class Analyzer {
     let spread = false;
     for (const a of list(e.arguments)) {
       if (ts.isSpreadElement(a)) {
-        const inner = unparen(a.expression);
+        const inner = withoutParenthesesAsSatisfiesNonNull(a.expression);
         if (ts.isIdentifier(inner) && inner.text === "arguments") {
           // `f(...arguments)`: forward the enclosing function's parameters.
           const fn = this.enclosingNonArrow();
@@ -3165,7 +3156,7 @@ class Analyzer {
 
   call(e: ts.CallExpression): number {
     this.noteSite(e);
-    const callee = unparen(e.expression);
+    const callee = withoutParenthesesAsSatisfiesNonNull(e.expression);
     const dst = this.newNode();
     if (callee.kind === ts.SyntaxKind.SuperKeyword) {
       const { args, spread } = this.args(e);
@@ -3202,7 +3193,7 @@ class Analyzer {
       }
     }
     if (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee)) {
-      const recvExpr = unparen(callee.expression);
+      const recvExpr = withoutParenthesesAsSatisfiesNonNull(callee.expression);
       const { args, spread } = this.args(e);
       if (recvExpr.kind === ts.SyntaxKind.SuperKeyword && ts.isPropertyAccessExpression(callee)) {
         // super.m(...): the base class member with the current receiver.
@@ -3228,7 +3219,7 @@ class Analyzer {
       let name: string | null = null;
       if (ts.isPropertyAccessExpression(callee)) name = callee.name.text;
       else {
-        const k = unparen(callee.argumentExpression);
+        const k = withoutParenthesesAsSatisfiesNonNull(callee.argumentExpression);
         if (ts.isStringLiteral(k) || ts.isNoSubstitutionTemplateLiteral(k)) name = k.text;
         else this.expr(callee.argumentExpression);
       }
@@ -3983,8 +3974,8 @@ class Analyzer {
   }
 
   private indexInBoundsUncached(site: ts.ElementAccessExpression): boolean {
-    const obj = unparen(site.expression);
-    const key = unparen(site.argumentExpression);
+    const obj = withoutParenthesesAsSatisfiesNonNull(site.expression);
+    const key = withoutParenthesesAsSatisfiesNonNull(site.argumentExpression);
     if (!ts.isIdentifier(obj) || !ts.isIdentifier(key)) return false;
     const objDecl = this.resolve(obj);
     const keyDecl = this.resolve(key);
@@ -3995,19 +3986,20 @@ class Analyzer {
       if (ts.isFunctionLike(n) || ts.isSourceFile(n)) return false;
       if (!ts.isForStatement(n) || n.statement === undefined) continue;
       if (!(site.pos >= n.statement.pos && site.end <= n.statement.end)) continue;
-      const cond = n.condition !== undefined ? unparen(n.condition) : undefined;
+      const cond =
+        n.condition !== undefined ? withoutParenthesesAsSatisfiesNonNull(n.condition) : undefined;
       if (
         cond === undefined ||
         !ts.isBinaryExpression(cond) ||
         cond.operatorToken.kind !== ts.SyntaxKind.LessThanToken ||
-        !names(unparen(cond.left), keyDecl)
+        !names(withoutParenthesesAsSatisfiesNonNull(cond.left), keyDecl)
       )
         continue;
-      const bound = unparen(cond.right);
+      const bound = withoutParenthesesAsSatisfiesNonNull(cond.right);
       if (
         !ts.isPropertyAccessExpression(bound) ||
         bound.name.text !== "length" ||
-        !names(unparen(bound.expression), objDecl)
+        !names(withoutParenthesesAsSatisfiesNonNull(bound.expression), objDecl)
       )
         continue;
       // The index starts at a non-negative integer literal ...
@@ -4025,15 +4017,18 @@ class Analyzer {
       if (start === undefined || !nonNegativeIntegerLiteral(start)) continue;
       if (!this.neverReassigned(objDecl)) continue;
       // ... and only grows by integers,
-      const inc = n.incrementor !== undefined ? unparen(n.incrementor) : undefined;
+      const inc =
+        n.incrementor !== undefined
+          ? withoutParenthesesAsSatisfiesNonNull(n.incrementor)
+          : undefined;
       const grows =
         inc !== undefined &&
         (((ts.isPostfixUnaryExpression(inc) || ts.isPrefixUnaryExpression(inc)) &&
           inc.operator === ts.SyntaxKind.PlusPlusToken &&
-          names(unparen(inc.operand), keyDecl)) ||
+          names(withoutParenthesesAsSatisfiesNonNull(inc.operand), keyDecl)) ||
           (ts.isBinaryExpression(inc) &&
             inc.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken &&
-            names(unparen(inc.left), keyDecl) &&
+            names(withoutParenthesesAsSatisfiesNonNull(inc.left), keyDecl) &&
             positiveIntegerLiteral(inc.right)));
       if (!grows) continue;
       // ... and the body writes neither the index nor the array binding.
@@ -4044,14 +4039,16 @@ class Analyzer {
           ts.isBinaryExpression(m) &&
           m.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
           m.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
-          (names(unparen(m.left), keyDecl) || names(unparen(m.left), objDecl))
+          (names(withoutParenthesesAsSatisfiesNonNull(m.left), keyDecl) ||
+            names(withoutParenthesesAsSatisfiesNonNull(m.left), objDecl))
         )
           written = true;
         else if (
           (ts.isPostfixUnaryExpression(m) || ts.isPrefixUnaryExpression(m)) &&
           (m.operator === ts.SyntaxKind.PlusPlusToken ||
             m.operator === ts.SyntaxKind.MinusMinusToken) &&
-          (names(unparen(m.operand), keyDecl) || names(unparen(m.operand), objDecl))
+          (names(withoutParenthesesAsSatisfiesNonNull(m.operand), keyDecl) ||
+            names(withoutParenthesesAsSatisfiesNonNull(m.operand), objDecl))
         )
           written = true;
         ts.forEachChild(m, (c) => {
@@ -4089,7 +4086,7 @@ class Analyzer {
           const text = ((decl as ts.VariableDeclaration).name as ts.Identifier).text;
           let written = false;
           const target = (e: ts.Expression): boolean => {
-            const u = unparen(e);
+            const u = withoutParenthesesAsSatisfiesNonNull(e);
             return ts.isIdentifier(u) && u.text === text && this.resolve(u) === decl;
           };
           const visit = (m: Node): void => {
@@ -4169,26 +4166,26 @@ class Analyzer {
 }
 
 function nonNegativeIntegerLiteral(e: ts.Expression): boolean {
-  const u = unparen(e);
+  const u = withoutParenthesesAsSatisfiesNonNull(e);
   return ts.isNumericLiteral(u) && Number.isInteger(Number(u.text)) && Number(u.text) >= 0;
 }
 
 function positiveIntegerLiteral(e: ts.Expression): boolean {
-  const u = unparen(e);
+  const u = withoutParenthesesAsSatisfiesNonNull(e);
   return ts.isNumericLiteral(u) && Number.isInteger(Number(u.text)) && Number(u.text) > 0;
 }
 
 /** `x[x.length] = v`: a store at the end, which appends without a hole. */
 function isAppendIndex(site: Node): boolean {
   if (!ts.isElementAccessExpression(site)) return false;
-  const obj = unparen(site.expression);
-  const key = unparen(site.argumentExpression);
+  const obj = withoutParenthesesAsSatisfiesNonNull(site.expression);
+  const key = withoutParenthesesAsSatisfiesNonNull(site.argumentExpression);
   return (
     ts.isIdentifier(obj) &&
     ts.isPropertyAccessExpression(key) &&
     key.name.text === "length" &&
-    ts.isIdentifier(unparen(key.expression)) &&
-    (unparen(key.expression) as ts.Identifier).text === obj.text
+    ts.isIdentifier(withoutParenthesesAsSatisfiesNonNull(key.expression)) &&
+    (withoutParenthesesAsSatisfiesNonNull(key.expression) as ts.Identifier).text === obj.text
   );
 }
 
@@ -4232,7 +4229,7 @@ function literalKey(
 ): string | null {
   const key = ts.isCallExpression(site) ? list(site.arguments)[i] : undefined;
   if (key === undefined) return null;
-  const k = unparen(key);
+  const k = withoutParenthesesAsSatisfiesNonNull(key);
   return ts.isStringLiteral(k) || ts.isNoSubstitutionTemplateLiteral(k) ? k.text : null;
 }
 

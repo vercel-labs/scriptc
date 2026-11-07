@@ -14,6 +14,7 @@ import {
   type SrcLoc,
 } from "../../../ir/ir.js";
 import * as ts from "../../ts7/adapter.js";
+import { withoutParentheses } from "../../outer-expressions.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { constituentTypes } from "../../ts7/checker.js";
 import { ENTRY_NAME, type Lowerer } from "../lowerer.js";
@@ -46,17 +47,11 @@ export const WEB_STREAM_CLASSES = [
 
 const CLASS_NAMES: readonly string[] = WEB_STREAM_CLASSES;
 
-function unparenthesized(node: ts.Expression): ts.Expression {
-  let current = node;
-  while (ts.isParenthesizedExpression(current)) current = current.expression;
-  return current;
-}
-
 /** The class a JavaScript expression names (an identifier bound to the
  * global or to a node:stream/web import, or a member of the global
  * object), as its index in WEB_STREAM_CLASSES; null otherwise. */
 export function webStreamClassKindOf(lowerer: Lowerer, node: ts.Expression): number | null {
-  const expr = unparenthesized(node);
+  const expr = withoutParentheses(node);
   if (!ts.isIdentifier(expr) && !ts.isPropertyAccessExpression(expr)) return null;
   if (!isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;
   const member = ts.isPropertyAccessExpression(expr) ? lowerer.builtinMemberOf(expr) : null;
@@ -123,7 +118,7 @@ export function programUsesTypedWebStreams(lowerer: Lowerer): boolean {
       if (member !== null && WEB_VIEW_CALLS.has(member) && isReadableStreamMember(lowerer, node))
         found = true;
       else if (ts.isNewExpression(node)) {
-        const name = stdlibGlobalNameOf(lowerer, unparenthesized(node.expression));
+        const name = stdlibGlobalNameOf(lowerer, withoutParentheses(node.expression));
         if (
           name === "WritableStream" ||
           (name === "TransformStream" && (node.arguments?.nodes.length ?? 0) > 0)
@@ -142,7 +137,7 @@ export function programUsesTypedWebStreams(lowerer: Lowerer): boolean {
  * stream classes (programUsesTypedWebStreams), as its index in
  * WEB_STREAM_CLASSES; null otherwise. */
 function typedWebStreamClassKindOf(lowerer: Lowerer, node: ts.Expression): number | null {
-  const expr = unparenthesized(node);
+  const expr = withoutParentheses(node);
   if (!ts.isIdentifier(expr) || isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;
   const name = streamWebImportOf(lowerer, expr) ?? stdlibGlobalNameOf(lowerer, expr);
   if (name === null || !TYPED_CLASSES.has(name) || !programUsesTypedWebStreams(lowerer))
@@ -293,9 +288,9 @@ export function typeInvolvesWebStream(lowerer: Lowerer, type: ts.Type, depth = 0
  * an await of either, or a value whose type involves one. */
 export function isWebStreamValueInJavaScript(lowerer: Lowerer, node: ts.Expression): boolean {
   if (!isJsSourceFile(ts.getSourceFileOfNode(node))) return false;
-  let expr = unparenthesized(node);
-  if (ts.isAwaitExpression(expr)) expr = unparenthesized(expr.expression);
-  if (ts.isCallExpression(expr)) expr = unparenthesized(expr.expression);
+  let expr = withoutParentheses(node);
+  if (ts.isAwaitExpression(expr)) expr = withoutParentheses(expr.expression);
+  if (ts.isCallExpression(expr)) expr = withoutParentheses(expr.expression);
   if (ts.isPropertyAccessExpression(expr) && isWebStreamMemberInJavaScript(lowerer, expr))
     return true;
   return typeInvolvesWebStream(lowerer, lowerer.typeOf(node));

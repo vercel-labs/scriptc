@@ -861,6 +861,18 @@ const OPTION_KEY_RULES: Record<string, KeyRule> = {
       "the command removes the kept LLVM text after the build, cached or not; the build is the same",
   },
   "emit-ir": { keyed: (o) => ({ ...o, emitIr: !o.emitIr }) },
+  "emit-lowered": {
+    unkeyed:
+      "the build is the one without the option and also writes the lowered program: it reads no entry (compileTracked's usesLoweredProgram), since a hit runs no frontend and would write no file, and the entry it leaves is the plain build's",
+  },
+  "from-lowered": {
+    unkeyed:
+      "a build from a lowered program reads no entry (usesLoweredProgram) and marks its frontend inputs unstable (executable/lowered.ts), and an unstable build publishes no entry",
+  },
+  "from-lowered-accept": {
+    unkeyed:
+      "it only goes with --from-lowered, whose build neither reads nor leaves an entry; given alone the build is refused (executable/lowered.ts)",
+  },
   sanitize: { keyed: (o) => ({ ...o, sanitize: !o.sanitize }) },
   ffi: {
     keyed: (o) => ({
@@ -872,6 +884,18 @@ const OPTION_KEY_RULES: Record<string, KeyRule> = {
   "shape-overlay": { keyed: (o) => ({ ...o, shapeOverlay: true }) },
   "provenance-sources": {
     unkeyed: "a build that rewrites its sources for provenance uses no cache (cacheRoot is null)",
+  },
+  "emit-lowered": {
+    unkeyed:
+      "a build that writes a lowered program reads no entry (usesLoweredProgram), so it always runs the frontend and writes the file, and it builds the executable the same build without the option builds",
+  },
+  "from-lowered": {
+    unkeyed:
+      "a build from a lowered program reads no entry (usesLoweredProgram) and marks its frontend inputs unstable, so it publishes none (fromLoweredProgram)",
+  },
+  "from-lowered-accept": {
+    unkeyed:
+      "the option is refused without --from-lowered, whose builds neither read nor write an entry",
   },
   tier: { keyed: (o) => ({ ...o, tier: "static-only" }) },
   "dynamic-tier-warning": {

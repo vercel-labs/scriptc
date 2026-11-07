@@ -17,6 +17,7 @@ import {
   RUNTIME_STREAM_CLASSES,
   DYN,
   STRING,
+  typeKey,
 } from "../../ir/ir.js";
 import {
   mangleClassRelease,
@@ -317,7 +318,11 @@ export function vAdapters(host: ShapeHost, t: IrType): { retain: string; release
       };
     }
     default:
-      throw new LlvmUnsupportedError(`rc:${t.kind}`);
+      throw new LlvmUnsupportedError(
+        `rc:${t.kind}`,
+        undefined,
+        `a counted reference of type ${typeKey(t)}`,
+      );
   }
 }
 
@@ -593,7 +598,11 @@ export function releaseSym(host: ShapeHost, t: IrType): string {
     case "object":
       return `@${mangleClassRelease(t.className)}`;
     default:
-      throw new LlvmUnsupportedError(`rc:${t.kind}`);
+      throw new LlvmUnsupportedError(
+        `rc:${t.kind}`,
+        undefined,
+        `a counted reference of type ${typeKey(t)}`,
+      );
   }
 }
 
@@ -1253,7 +1262,11 @@ function elemKindNum(elem: IrType): number {
     case "bytes":
       return 4; // SCR_ELEM_BYTES
     default:
-      throw new LlvmUnsupportedError(`arrayElem:${elem.kind}`);
+      throw new LlvmUnsupportedError(
+        `arrayElem:${elem.kind}`,
+        undefined,
+        `an array of ${typeKey(elem)} elements`,
+      );
   }
 }
 
@@ -1386,7 +1399,7 @@ export function boxNewCall(host: ShapeHost, t: IrType): string {
     host.declare(`declare ptr @scr_box_new_obj(ptr, ptr, ptr)`);
     return `call ptr @scr_box_new_obj(ptr ${v.retain}, ptr ${v.release}, ptr ${traceArg(host, t)})`;
   }
-  throw new LlvmUnsupportedError(`box:${t.kind}`);
+  throw new LlvmUnsupportedError(`box:${t.kind}`, undefined, `a boxed value of type ${typeKey(t)}`);
 }
 
 /** Box accessor suffix (boxAccess): scalars unboxed, ref kinds pointers. */
@@ -1412,7 +1425,7 @@ export function llFieldType(
     case "bool":
       return "i8";
     default:
-      throw new LlvmUnsupportedError(`type:${t.kind}`);
+      throw new LlvmUnsupportedError(`type:${t.kind}`, undefined, `type ${typeKey(t)}`);
   }
 }
 
@@ -1456,7 +1469,11 @@ export function mapKeyAccess(key: IrType): MapKeyAccess {
     key.kind === "dyn"
   )
     return "ref";
-  throw new LlvmUnsupportedError(`mapKey:${key.kind}`);
+  throw new LlvmUnsupportedError(
+    `mapKey:${key.kind}`,
+    undefined,
+    `a Map or Set keyed by ${typeKey(key)}`,
+  );
 }
 
 export function mapKeyLlType(access: MapKeyAccess): "double" | "i1" | "ptr" {

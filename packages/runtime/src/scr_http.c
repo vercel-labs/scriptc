@@ -983,24 +983,23 @@ static bool scr_http_trailers_replace(ScrHttpTrailers *t, ScrArr *pairs /*borrow
   for (size_t i = 0; i < n; i += 2) {
     ScrStr *name = (ScrStr *)scr_arr_get_ref(pairs, (double)i);
     ScrStr *value = (ScrStr *)scr_arr_get_ref(pairs, (double)(i + 1));
-    bool valid = name->len > 0;
-    for (size_t j = 0; j < name->len; j++) valid &= scr_http_token_char((unsigned char)name->data[j]);
+    /* addTrailers' checks, in Node's order: the name is a token, then the
+     * value holds only header content characters */
+    bool valid = name->len > 0 && scr_http_token_span(name->data, name->len);
     if (!valid) {
-      char msg[256];
-      int len = snprintf(msg, sizeof msg, "Trailer name must be a valid HTTP token [\"%.*s\"]",
-                         (int)(name->len < 160 ? name->len : 160), name->data);
-      scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_INVALID_HTTP_TOKEN");
-    } else {
-      for (size_t j = 0; j < value->len; j++) {
-        unsigned char ch = (unsigned char)value->data[j];
-        if ((ch < 32 && ch != '\t') || ch == 127) { valid = false; break; }
-      }
-      if (!valid) {
-        char msg[256];
-        int len = snprintf(msg, sizeof msg, "Invalid character in trailer content [\"%.*s\"]",
-                           (int)(name->len < 160 ? name->len : 160), name->data);
-        scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_INVALID_CHAR");
-      }
+      ScrStr *label = scr_str_new("Trailer name", 12);
+      scr_http_throw_invalid_header_name(name, label);
+      scr_str_release(label);
+    } else if (!scr_http_header_text_valid(value)) {
+      valid = false;
+      ScrJsonBuf b;
+      scr_jb_init(&b);
+      scr_jb_puts(&b, "Invalid character in trailer content [\"");
+      scr_jb_write(&b, name->data, name->len);
+      scr_jb_puts(&b, "\"]");
+      ScrStr *msg = scr_jb_finish(&b);
+      scr_throw_error_msg_code(SCR_ERR_TYPE, msg->data, msg->len, "ERR_INVALID_CHAR");
+      scr_str_release(msg);
     }
     if (!valid) {
       scr_str_release(name);
@@ -1324,12 +1323,19 @@ static bool scr_http_res_headers_unsent(ScrHttpRes *r, const char *op) {
   return scr_http_headers_unsent(r->head_sent, op);
 }
 
-/* setHeader's checks on an HTTP/1 response, in Node's order: the name is
+/* setHeader's checks, in Node's order. On an HTTP/1 response the name is
  * a token (ERR_INVALID_HTTP_TOKEN), then the value holds only header
- * content characters (ERR_INVALID_CHAR). */
+ * content characters (ERR_INVALID_CHAR). An http2 compatibility response
+ * checks the name only, and less strictly. */
 static bool scr_http_res_header_valid(ScrHttpRes *r, ScrStr *name /*borrowed*/,
                                       const ScrStr *text /*borrowed, nullable*/) {
-  if (r->h2_stream != NULL) return true;
+  if (r->h2_stream != NULL) {
+    /* Http2ServerResponse's own check (assertValidHeader): an empty name
+     * or one that holds a space is ERR_INVALID_HTTP_TOKEN */
+    if (name->len > 0 && memchr(name->data, ' ', name->len) == NULL) return true;
+    scr_http_throw_invalid_header_name(name, NULL);
+    return false;
+  }
   if (!scr_http_header_name_valid(name)) return false;
   if (text == NULL || scr_http_header_text_valid(text)) return true;
   scr_http_throw_invalid_header_char(name);
@@ -3764,16 +3770,11 @@ static bool scr_http_conn_parse_head(ScrHttpConn *conn, size_t head_len, bool *o
    * 'upgrade' listeners take the socket RAW — the parser steps aside
    * (fn pointers clear; the conn ctx stays until the socket dies), bytes
    * already read past the head travel as `head`, and no 'request' fires.
-   * With no listener Node destroys the socket; so does this slice. */
-  if (has_upgrade_hdr && conn_upgrade_token) {
+   * With no listener the request is an ordinary one, as in Node: a client
+   * cannot insist on a protocol change. */
+  if (takes_upgrade) {
     memmove(conn->buf, conn->buf + head_len, conn->len - head_len);
     conn->len -= head_len;
-    if (conn->srv->upgrade_ls.n == 0) {
-      scr_http_req_release(req);
-      conn->len = 0;
-      scr_net_sock_destroy(conn->sock);
-      return true;
-    }
     ScrBytes *head = scr_bytes_new(SCR_BYTES_U8, (double)conn->len);
     head->is_buffer = true; /* the upgrade head is a Buffer */
     if (conn->len > 0) memcpy(head->data, conn->buf, conn->len);
@@ -4068,6 +4069,29 @@ static void scr_http_conn_pump(ScrHttpConn *conn) {
       if (!valid) {
         if (conn->client_mode) scr_http_client_head_overflow(conn);
         else scr_http_conn_bad_request(conn);
+        return;
+      }
+      /* A framing header in the trailer section is a parse error, as in
+       * llhttp, whose header checks run on trailer fields too:
+       * Content-Length after a chunked body on either side, and
+       * Transfer-Encoding in a request. */
+      size_t name_len = (size_t)(colon - conn->buf);
+      bool length_field = name_len == 14, coding_field = name_len == 17 && !conn->client_mode;
+      for (size_t k = 0; k < name_len && (length_field || coding_field); k++) {
+        char lower = (char)tolower((unsigned char)conn->buf[k]);
+        if (length_field) length_field = lower == "content-length"[k];
+        if (coding_field) coding_field = lower == "transfer-encoding"[k];
+      }
+      if (length_field || coding_field) {
+        ScrHttpParseError framing = {NULL, NULL};
+        if (length_field) {
+          scr_http_scan_fail(&framing, "HPE_INVALID_CONTENT_LENGTH",
+                             "Content-Length can't be present with Transfer-Encoding");
+        } else {
+          scr_http_scan_fail(&framing, "HPE_INVALID_TRANSFER_ENCODING",
+                             "Invalid `Transfer-Encoding` header value");
+        }
+        scr_http_conn_parse_failed(conn, &framing);
         return;
       }
       char *value = colon + 1;
@@ -5977,9 +6001,18 @@ static bool scr_http_request_path_valid(const ScrStr *path /*borrowed*/) {
 /* The ClientRequest constructor's checks that come before any socket
  * exists, in Node's order: the path (ERR_UNESCAPED_CHARACTERS), then the
  * method token (RFC 9110 tchar, at least one; ERR_INVALID_HTTP_TOKEN with
- * the raw method text inside the quotes). False with the exception
- * pending. */
-static bool scr_http_request_checks(const ScrStr *path /*borrowed*/, const ScrStr *method /*borrowed*/) {
+ * the raw method text inside the quotes), then setHeader's checks on each
+ * header of the options (a name that is not a token is
+ * ERR_INVALID_HTTP_TOKEN, a value outside header content is
+ * ERR_INVALID_CHAR), then the same value check on the Host header Node
+ * derives from the host option when the options name none. `header_pairs`
+ * is NULL when the headers are not an options record to check: fetch()
+ * validates its own header list, whose values are byte strings; `host` is
+ * NULL when no Host header derives from an option. False with the
+ * exception pending. */
+static bool scr_http_request_checks(const ScrStr *host /*borrowed, nullable*/,
+                                    const ScrStr *path /*borrowed*/, const ScrStr *method /*borrowed*/,
+                                    ScrArr *header_pairs /*borrowed, nullable*/) {
   if (!scr_http_request_path_valid(path)) return false;
   bool method_ok = method->len > 0;
   for (size_t i = 0; i < method->len && method_ok; i++) {
@@ -5988,16 +6021,39 @@ static bool scr_http_request_checks(const ScrStr *path /*borrowed*/, const ScrSt
                 (ch >= '0' && ch <= '9') ||
                 (ch != 0 && strchr("!#$%&'*+-.^_`|~", ch) != NULL);
   }
-  if (method_ok) return true;
-  ScrJsonBuf b;
-  scr_jb_init(&b);
-  scr_jb_puts(&b, "Method must be a valid HTTP token [\"");
-  scr_jb_write(&b, method->data, method->len);
-  scr_jb_puts(&b, "\"]");
-  ScrStr *msg = scr_jb_finish(&b);
-  scr_throw_error_msg_code(SCR_ERR_TYPE, msg->data, msg->len, "ERR_INVALID_HTTP_TOKEN");
-  scr_str_release(msg);
-  return false;
+  if (!method_ok) {
+    ScrJsonBuf b;
+    scr_jb_init(&b);
+    scr_jb_puts(&b, "Method must be a valid HTTP token [\"");
+    scr_jb_write(&b, method->data, method->len);
+    scr_jb_puts(&b, "\"]");
+    ScrStr *msg = scr_jb_finish(&b);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg->data, msg->len, "ERR_INVALID_HTTP_TOKEN");
+    scr_str_release(msg);
+    return false;
+  }
+  bool names_host = false;
+  size_t npairs = header_pairs != NULL ? (size_t)scr_arr_len(header_pairs) : 0;
+  for (size_t i = 0; i + 1 < npairs; i += 2) {
+    ScrStr *name = (ScrStr *)scr_arr_get_ref(header_pairs, (double)i);
+    ScrStr *value = (ScrStr *)scr_arr_get_ref(header_pairs, (double)(i + 1));
+    bool valid = scr_http_header_name_valid(name);
+    if (valid && !scr_http_header_text_valid(value)) {
+      scr_http_throw_invalid_header_char(name);
+      valid = false;
+    }
+    names_host = names_host || scr_http_name_is(name, "host");
+    scr_str_release(name);
+    scr_str_release(value);
+    if (!valid) return false;
+  }
+  if (host != NULL && !names_host && !scr_http_header_text_valid(host)) {
+    ScrStr *name = scr_str_new("Host", 4);
+    scr_http_throw_invalid_header_char(name);
+    scr_str_release(name);
+    return false;
+  }
+  return true;
 }
 
 static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double port,
@@ -6008,8 +6064,9 @@ static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double
                                                 void (*wrap)(ScrNetSocket *, void *), void *wrap_ctx,
                                                 ScrNetSocket *presock /*moves, nullable*/) {
   /* Node's ClientRequest constructor checks; moved-in arguments release
-   * when they fail — the request never exists. */
-  if (!scr_http_request_checks(path, method)) {
+   * when they fail — the request never exists. The entry points that take
+   * an options record check its headers before they take a socket. */
+  if (!scr_http_request_checks(NULL, path, method, NULL)) {
     if (cb) scr_closure_release(cb);
     if (presock) scr_net_sock_release(presock);
     return NULL;
@@ -6112,8 +6169,9 @@ ScrHttpClientReq *scr_http_request_conn(ScrClosure *conn_cb /*moves*/, ScrStr *p
                                          ScrStr *method /*borrowed*/, double timeout_ms,
                                          ScrArr *header_pairs /*borrowed*/, bool auto_end,
                                          ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn) {
-  /* Node checks the path and method before it calls createConnection */
-  if (!scr_http_request_checks(path, method)) {
+  /* Node checks the path, the method and the headers before it calls
+   * createConnection; the Host header is the fixed "localhost" */
+  if (!scr_http_request_checks(NULL, path, method, header_pairs)) {
     scr_closure_release(conn_cb);
     if (cb != NULL) scr_closure_release(cb);
     return NULL;
@@ -6638,9 +6696,12 @@ static ScrHttpClientReq *scr_http_request_pooled(ScrHttpAgent *ag, ScrStr *host 
                                                  ScrHttpRespFn fn, int default_port,
                                                  void (*wrap)(ScrNetSocket *, void *),
                                                  void *wrap_ctx, ScrStr *pool_key /*borrowed*/,
-                                                 ScrStr *socket_path /*borrowed*/) {
-  /* the constructor's checks come before the agent takes or dials a socket */
-  if (!scr_http_request_checks(path, method)) {
+                                                 ScrStr *socket_path /*borrowed*/,
+                                                 bool option_headers) {
+  /* the constructor's checks come before the agent takes or dials a socket;
+   * option_headers says the pairs are an options record's, not fetch()'s */
+  if (!scr_http_request_checks(option_headers ? host : NULL, path, method,
+                               option_headers ? header_pairs : NULL)) {
     if (cb) scr_closure_release(cb);
     return NULL;
   }
@@ -6661,7 +6722,7 @@ static ScrHttpClientReq *scr_http_request_pooled(ScrHttpAgent *ag, ScrStr *host 
   ScrHttpClientReq *c = scr_http_request_impl(host, p, path, method, timeout_ms, header_pairs,
                                                auto_end, cb, fn, default_port, wrap, wrap_ctx,
                                                presock);
-  if (c == NULL) { /* the method-token throw: nothing registered */
+  if (c == NULL) { /* a constructor check threw: nothing registered */
     if (reuse != NULL) scr_http_agent_free_untake(ag, reuse); /* back to the list it came from */
     scr_str_release(name);
     return NULL;
@@ -6705,7 +6766,7 @@ ScrHttpClientReq *scr_http_request_agent_ex(ScrStr *host /*borrowed*/, double po
    * plus its Connection: close request header (unless the caller set one) */
   if (agent->kind == SCR_DYN_BOOL && !agent->v.b) {
     /* the constructor's checks come before a Unix socket is dialed */
-    if (!scr_http_request_checks(path, method)) {
+    if (!scr_http_request_checks(host, path, method, header_pairs)) {
       if (cb) scr_closure_release(cb);
       return NULL;
     }
@@ -6746,7 +6807,7 @@ ScrHttpClientReq *scr_http_request_agent_ex(ScrStr *host /*borrowed*/, double po
   }
   return scr_http_request_pooled((ScrHttpAgent *)agent->v.handle.ptr, host, port, path, method,
                                  timeout_ms, header_pairs, auto_end, cb, fn, default_port, wrap,
-                                 wrap_ctx, pool_key, socket_path);
+                                 wrap_ctx, pool_key, socket_path, true);
 }
 
 /* http.request's `protocol` option before the request is built: Node's
@@ -6801,7 +6862,7 @@ ScrHttpClientReq *scr_http_fetch_request(bool secure, ScrStr *host /*borrowed*/,
     (*slot)->idle_ms = 4000;
   }
   return scr_http_request_pooled(*slot, host, port, path, method, 0, header_pairs, false, NULL, NULL,
-                                 default_port, wrap, wrap_ctx, pool_key, NULL);
+                                 default_port, wrap, wrap_ctx, pool_key, NULL, false);
 }
 
 ScrHttpClientReq *scr_http_request_agent(ScrStr *host /*borrowed*/, double port,

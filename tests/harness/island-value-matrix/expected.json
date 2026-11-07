@@ -1280,9 +1280,7 @@
   "clo-i2n/I.taker": "cause=wrong,causeIsR=wrong,own=wrong"
  },
  "error-class.control.-": {
-  "N.read.ctor": "refused:SC2020",
-  "U.clone": "wrong",
-  "N.cast.read.ctor": "refused:SC2020"
+  "U.clone": "wrong"
  },
  "error-class.p": {
   "n2i/I.inspect": "ctor=wrong,forin=wrong,json=wrong,keys=wrong,own=wrong,proto=wrong",

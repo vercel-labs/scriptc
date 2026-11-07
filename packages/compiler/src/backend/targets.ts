@@ -77,11 +77,13 @@ export function windowsSubsystemLinkerArgs(
  * the whole pack; dev keeps its debug info and the option to debug a build.
  *
  * musl executables link zig's own build of musl statically, and its objects
- * carry DWARF that names the build host's zig installation and cache
- * directories. None of it describes the program: the runtime pack has no
- * debug info, and a release program object has none either. Dropping it
- * takes a release hello from 1.8 MB to 87 KB; dev keeps it beside the
- * program's own line tables. */
+ * carry DWARF that names the build host's zig installation and the link's
+ * temporary directory. None of it describes the program: the runtime pack
+ * has no debug info, and a release program object has none either. Dropping
+ * it takes a release hello from 1.8 MB to 87 KB; dev keeps it beside the
+ * program's own line tables. zig has one strip setting and passes lld
+ * `--strip-all` for it, so the executable's symbol table goes with the
+ * debug sections. */
 export function executableOptimizationLinkerArgs(
   platform: string,
   optimization: NativeOptimization,
@@ -97,11 +99,13 @@ export function executableOptimizationLinkerArgs(
  * (`-z now`), after which the loader makes the tables that hold their
  * addresses read-only (`-z relro`): a stray write can then no longer redirect
  * a later libc call. Lazy binding would resolve each import on its first
- * call instead, which saves 3 to 7 microseconds of start-up in a program
- * with a hundred imports and leaves the table writable for the life of the
- * process. Zig asks its linker for both by default, so glibc targets that
- * zig links (cross-compiled ones) already have them; the host's clang does
- * not. musl executables are static and import nothing. */
+ * call instead, and leave the table writable for the life of the process.
+ * Resolving the imports a run never calls is the whole cost: nothing
+ * measurable in hello, and at most 18 microseconds of start-up (1%) in
+ * programs with 70 to 130 imports. Zig asks its linker for both by default,
+ * so glibc targets that zig links (cross-compiled ones) already have them;
+ * the host's clang does not. musl executables are static and import
+ * nothing. */
 export function executableHardeningLinkerArgs(platform: string, musl: boolean): string[] {
   return platform === "linux" && !musl ? ["-Wl,-z,relro,-z,now"] : [];
 }

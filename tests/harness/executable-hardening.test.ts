@@ -196,6 +196,10 @@ const muslBuilds = linux && existsSync(muslPack) && zigOnPath();
 
 test.runIf(muslBuilds)(
   "a musl release executable carries no debug payload of the build host",
+  // A zig link now and then exits with success and no output file (3 of 35
+  // musl links in one Sandbox session, the base compiler's among them); the
+  // build then fails with SC3004, which is not what this test is about.
+  { retry: 2 },
   async () => {
     const target = `${muslArch}-linux-musl`;
     const hello = await build("hello-musl", HELLO, { target });

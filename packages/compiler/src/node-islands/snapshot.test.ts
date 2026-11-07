@@ -224,7 +224,8 @@ function sharingProject(reads: Partial<ProbeOutput["results"][number]>) {
     },
   };
   const decisions = finalizeDeferredIslands(mod, join(root, "main.ts"), root, () => probe);
-  const snapshots = calls.map((call) => (call.args[1] as { value: string }).value);
+  // A load that stays eager loses its snapshot argument.
+  const snapshots = calls.map((call) => (call.args[1] as { value: string } | undefined)?.value);
   return { decisions, calls, snapshots };
 }
 
@@ -236,6 +237,7 @@ describe("modules that share a file", () => {
     });
     expect(decisions.map((d) => d.deferred)).toEqual([true, true]);
     for (const text of snapshots) {
+      expect(text).toMatch(/K \d 5:level s4:info/);
       expect(text).toContain("E 9:LOG_LEVEL 0 0:");
       expect(text).toContain("T 1 0");
     }

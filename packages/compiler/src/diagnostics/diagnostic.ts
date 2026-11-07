@@ -73,7 +73,9 @@
  *            order that differs from insertion order where the program
  *            observes it (SC6002), localeCompare over text the built-in
  *            collation does not cover (SC6003), a call feeding an instance
- *            to a cast to an unrelated class (SC6004); SC6005 (Date strings
+ *            to a cast to an unrelated class (SC6004), a checked conversion
+ *            of unverified data whose failure ends in a handler that
+ *            ignores it (SC6009); SC6005 (Date strings
  *            outside the native parser's grammar) is retired — the runtime
  *            parses date strings with V8's grammar. SC61xx are performance
  *            notes, also warnings (coverage --fail-on=dynamic opts in):
@@ -339,6 +341,36 @@ export function unrelatedClassCastDivergenceDiag(
     message: `this '${source}' reaches a cast to the unrelated class '${target}' in the callee: natively the checked cast throws a TypeError when it executes, while Node reads the members structurally`,
     loc,
     hint: `narrow with 'instanceof ${target}' before casting, or cast to a base class or interface both classes share`,
+  };
+}
+
+/** SC6009 — a checked conversion of a value no build can verify (parsed
+ * data, a Node island's value, a value typed by a package declaration, an
+ * `any`) sits where its failure ends in a handler that neither reads the
+ * error nor throws. Natively a value that contradicts the claimed type
+ * throws a TypeError there and the handler's path runs with nothing said;
+ * Node.js checks nothing and continues with the value. `handler` is the
+ * `try` statement (or the `.catch(…)` call of a promise's rejection
+ * handler) and where it is; `through` is the call the failure travels
+ * through when the conversion is in a function the guarded code calls. */
+export function swallowedConversionDivergenceDiag(
+  claimed: string,
+  handler: { kind: "catch" | "finally" | "rejection"; where: string },
+  through: string | undefined,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  const route = through === undefined ? "" : `, reached through the call at ${through},`;
+  const ends =
+    handler.kind === "catch"
+      ? `is caught by the handler of the 'try' at ${handler.where}, which neither reads the error nor throws`
+      : handler.kind === "rejection"
+        ? `rejects a promise whose handler at ${handler.where} neither reads the reason nor throws`
+        : `is discarded by the 'finally' of the 'try' at ${handler.where}, which leaves with 'return', 'break' or 'continue'`;
+  return {
+    code: "SC6009",
+    message: `a value that is not '${claimed}' throws a TypeError at this checked conversion, and that error${route} ${ends}: the program takes the handler's path with no sign of why, while Node.js checks nothing here and continues with the value`,
+    loc,
+    hint: `check the value before giving it this type (a schema, or tests on an 'unknown' value), declare the type the data really has, or let the handler tell failures apart: read the caught error, or rethrow what it does not expect`,
   };
 }
 

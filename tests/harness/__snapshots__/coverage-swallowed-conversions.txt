@@ -1,0 +1,27 @@
+scriptc coverage tests/coverage-fixtures/swallowed-conversions.ts
+
+  statements analyzed   39
+  compile statically    39  (100%)
+    in dynamic tier     1  (operate on values typed only at runtime; --explain-dynamic lists them)
+
+  fully static — all analyzed statements compile to native code.
+
+  differs from Node   4 sites (compiles; the native program can behave differently)
+      ×1  SC6009  a value that is not '{ id: number; name: string }' throws a TypeError at this checked conversion, and that error is caught by the handler of the 'try' at swallowed-conversions.ts:18, which neither re…
+          at tests/coverage-fixtures/swallowed-conversions.ts:19:12
+          hint: check the value before giving it this type (a schema, or tests on an 'unknown' value), declare the type the data really has, or let the handler tell failures apart: read the caught error, or rethrow what it does not expect
+      ×1  SC6009  a value that is not '{ id: number; name: string }' throws a TypeError at this checked conversion, and that error is discarded by the 'finally' of the 'try' at swallowed-conversions.ts:48, which leave…
+          at tests/coverage-fixtures/swallowed-conversions.ts:49:13
+          hint: check the value before giving it this type (a schema, or tests on an 'unknown' value), declare the type the data really has, or let the handler tell failures apart: read the caught error, or rethrow what it does not expect
+      ×1  SC6009  a value that is not '{ id: number; name: string }' throws a TypeError at this checked conversion, and that error, reached through the call at swallowed-conversions.ts:61, is caught by the handler of …
+          at tests/coverage-fixtures/swallowed-conversions.ts:57:10
+          hint: check the value before giving it this type (a schema, or tests on an 'unknown' value), declare the type the data really has, or let the handler tell failures apart: read the caught error, or rethrow what it does not expect
+      ×1  SC6009  a value that is not '{ id: number; name: string }' throws a TypeError at this checked conversion, and that error rejects a promise whose handler at swallowed-conversions.ts:69 neither reads the reaso…
+          at tests/coverage-fixtures/swallowed-conversions.ts:70:18
+          hint: check the value before giving it this type (a schema, or tests on an 'unknown' value), declare the type the data really has, or let the handler tell failures apart: read the caught error, or rethrow what it does not expect
+
+  trusts unverified types   7 checked conversions on 1 claim (compiles; a value that contradicts its claimed type throws a TypeError at the conversion)
+      ×7  parsed data the program reads as { id: number; name: string }
+          at tests/coverage-fixtures/swallowed-conversions.ts:19:12, tests/coverage-fixtures/swallowed-conversions.ts:28:12, tests/coverage-fixtures/swallowed-conversions.ts:38:12 (+4 more)
+          unseen if it fails: tests/coverage-fixtures/swallowed-conversions.ts:19:12, tests/coverage-fixtures/swallowed-conversions.ts:49:13, tests/coverage-fixtures/swallowed-conversions.ts:57:10 (+1 more) fail into a handler that ignores the error, where Node.js keeps the value (SC6009)
+          fix: validate the parsed data before giving it this type (a schema, or checks on an unknown value), or declare the type the data really has

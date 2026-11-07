@@ -39,6 +39,7 @@ export const CLI_OPTIONS = {
   "explain-dynamic": { type: "string" },
   "dynamic-tier-warning": { type: "boolean", default: true },
   "copy-warning": { type: "boolean", default: true },
+  "ignored-failure-warning": { type: "boolean", default: true },
   wasm: { type: "string", multiple: true },
   "node-islands": { type: "string" },
   "node-island": { type: "string", multiple: true },
@@ -473,6 +474,17 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
       },
     ],
   },
+  "ignored-failure-warning": {
+    entries: [
+      {
+        term: "--no-ignored-failure-warning",
+        help: [
+          "build and coverage: leave out SC6009, the warning at checked",
+          "conversions whose failure a handler would ignore",
+        ],
+      },
+    ],
+  },
   "node-islands": {
     entries: [
       {
@@ -636,6 +648,7 @@ const EXECUTABLE_OPTIONS: readonly CliOptionName[] = [
   "tier",
   "dynamic-tier-warning",
   "copy-warning",
+  "ignored-failure-warning",
   ...NODE_ISLAND_OPTIONS,
 ];
 
@@ -697,6 +710,7 @@ export const CLI_COMMANDS: readonly CliCommand[] = [
       "explain-dynamic",
       "dynamic-tier-warning",
       "copy-warning",
+      "ignored-failure-warning",
       ...NODE_ISLAND_OPTIONS,
       "explain-island",
       "strict-user-js",

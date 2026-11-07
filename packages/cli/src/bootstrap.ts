@@ -259,7 +259,8 @@ async function coverageFastPath(
     (failOn !== undefined && failOn !== "blockers" && failOn !== "divergences") ||
     // --fail-on=divergences checks the warning --no-copy-warning leaves out:
     // the full CLI refuses the pair, and a replayed verdict must not pass it.
-    (failOn === "divergences" && values["copy-warning"] === false) ||
+    (failOn === "divergences" &&
+      (values["copy-warning"] === false || values["ignored-failure-warning"] === false)) ||
     values.emit !== undefined ||
     values.strip ||
     values.static ||
@@ -299,6 +300,8 @@ async function coverageFastPath(
   if (values["dynamic-tier-warning"] === false) delete coverage.performance;
   if (values["copy-warning"] === false && coverage.divergences !== undefined)
     coverage.divergences = coverage.divergences.filter((d) => d.code !== "SC6001");
+  if (values["ignored-failure-warning"] === false && coverage.divergences !== undefined)
+    coverage.divergences = coverage.divergences.filter((d) => d.code !== "SC6009");
   if (print === "diagnostics") {
     const envelope = startup.coverageEnvelope(coverage, {
       compilerVersion: packageVersion(),

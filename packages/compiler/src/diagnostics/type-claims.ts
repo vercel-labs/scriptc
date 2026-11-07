@@ -54,9 +54,18 @@ export interface TypeClaimSite {
   /** The conversion is a type assertion's (`x as T`) over a value the
    * program holds dynamically; `binding` names what it is read from. */
   asserted?: true;
-  /** The conversion is inside a `try` whose handler neither reads the
-   * error nor throws: a failed claim leaves no trace there. */
-  swallowed?: true;
+  /** The conversion's failure ends in a handler that neither reads the
+   * error nor throws, so a failed claim leaves no trace
+   * (lowering/swallowed-conversions.ts): the `try` statement of that
+   * handler (the `.catch(…)` call of a promise's rejection handler),
+   * whether its `catch` ignores the error or its `finally` leaves, and,
+   * when the conversion is in a function the guarded code calls, that
+   * call and how many such calls lie between. */
+  swallowed?: {
+    handler: { kind: "catch" | "finally" | "rejection"; loc: SrcLoc };
+    through?: SrcLoc;
+    level: number;
+  };
   /** The origin is the declaration of the island value this one was
    * reached through (a member the lowering names no declaration for). */
   reached?: true;
@@ -112,8 +121,9 @@ export interface TypeClaimGroup {
   /** `island`: how many of the sites convert a value reached through the
    * declared one (a member of it, the result of a call on it). */
   reached?: number;
-  /** The sites inside a `try` whose handler neither reads the error nor
-   * throws: there a failed claim is invisible, where Node keeps the value. */
+  /** The sites whose failure ends in a handler that neither reads the
+   * error nor throws: there a failed claim is invisible, where Node keeps
+   * the value. Each is an SC6009 warning. */
   swallowed?: SrcLoc[];
   /** The types the conversions check for, most frequent first. */
   claimed: string[];
@@ -232,7 +242,7 @@ interface Pending {
 /** The sites grouped by what makes their claim and ranked: first the
  * claims that throw whenever they run (an island's own object read as a
  * native-only type), then the claims with a conversion whose failure the
- * program would not see (inside a `try` that ignores the error), then the
+ * program would not see (it ends in a handler that ignores the error), then the
  * claims in the program's code by reach, most conversions first (islands
  * before package declarations before the program's own, then by name),
  * then the packages compiled from their JavaScript, whose counts are of
@@ -300,7 +310,7 @@ export function groupTypeClaims(sites: readonly TypeClaimSite[]): TypeClaimGroup
     if (site.asserted === true) group.asserted++;
     if (site.reached === true) group.reached++;
     if (site.nativeOnly === true) group.nativeOnly++;
-    if (site.swallowed === true) group.swallowed.push(site.loc);
+    if (site.swallowed !== undefined) group.swallowed.push(site.loc);
     group.claimed.set(site.claimed, (group.claimed.get(site.claimed) ?? 0) + 1);
     group.sites.push(site.loc);
   }

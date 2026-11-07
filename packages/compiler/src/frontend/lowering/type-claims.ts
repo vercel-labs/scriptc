@@ -36,20 +36,30 @@
  * the same value guards (`typeof v === "string" ? v : ""`, or the code
  * after `if (typeof v !== "string") return`), which cannot fail.
  *
- * A claim inside a `try` whose handler neither reads the error nor throws
- * is marked: there a failed conversion is invisible. `try { return
- * JSON.parse(line) as Entry } catch { return null }` means "skip a
- * malformed line", and natively it also skips every well-formed line that
- * lacks a field the type declares, where Node keeps the value.
+ * A claim whose failure ends in a handler that neither reads the error nor
+ * throws is marked (swallowed-conversions.ts decides that): there a failed
+ * conversion is invisible. `try { return JSON.parse(line) as Entry } catch
+ * { return null }` means "skip a malformed line", and natively it also
+ * skips every well-formed line that lacks a field the type declares, where
+ * Node keeps the value. Those claims are SC6009 in a build.
  *
- * Runs over the final function bodies in coverage analyses only, so it
- * costs builds nothing and reads exactly the conversions a build emits. */
+ * Runs over the final function bodies and reads exactly the conversions a
+ * build emits. A coverage analysis lists every claim. A build asks only
+ * about the conversions whose failure a handler swallows (`only`), and
+ * only when it has one, so a program without such a handler pays the scan
+ * that looks for them and nothing else. */
 import type { IrExpr, IrFunction, IrGlobal, IrLocal, IrStmt, IrType, SrcLoc } from "../../ir/ir.js";
 import { everyExprChild, everyStmtChild, everyStmtList } from "../../ir/traverse.js";
+import {
+  swallowedConversionDivergenceDiag,
+  type ScrDiagnostic,
+} from "../../diagnostics/diagnostic.js";
 import type { TypeClaimKind, TypeClaimSite } from "../../diagnostics/type-claims.js";
+import { isDeclBoundaryTypeNode } from "../decl-projection.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import * as ts from "../ts7/adapter.js";
 import { packageOfFile } from "./decl-origin.js";
+import type { SwallowedConversion } from "./swallowed-conversions.js";
 
 /** Library functions that answer data read at run time as an untyped
  * value: what the program then claims about it is checked. */
@@ -86,15 +96,19 @@ export interface TypeClaimInputs {
   /** Island values and island-called functions by position, with the
    * declaration that types each ("" when none can be named). */
   islandOrigins: ReadonlyMap<string, string>;
-  /** The positions of the conversions an assertion (`x as T`) asked for. */
-  asserted: ReadonlySet<string>;
-  /** The positions of the declaration-typed boundary's casts
-   * (decl-projection.ts): a package's value, typed by its declarations
-   * where the program receives it. */
-  boundary: ReadonlySet<string>;
+  /** Whether the conversion at `loc` is the one a type assertion (`x as
+   * T`) asked for, and whether that assertion is a cast of the
+   * declaration-typed boundary (decl-projection.ts): a package's value,
+   * typed by its declarations where the program receives it. */
+  assertion: (loc: SrcLoc) => "assertion" | "boundary" | undefined;
   /** Whether the source declares the binding at `loc`, or the result of
    * the function at `loc`, `any` or `unknown` (true when it cannot say). */
   declaredUntyped: (loc: SrcLoc, what: "binding" | "result") => boolean;
+  /** The conversions whose failure ends in a handler that ignores it
+   * (swallowed-conversions.ts). */
+  swallowed: ReadonlyMap<IrExpr, SwallowedConversion>;
+  /** Ask only about the conversions in `swallowed`. */
+  only?: true;
   unionArms: (unionId: string) => readonly IrType[] | undefined;
   fmt: (type: IrType) => string;
 }
@@ -151,19 +165,26 @@ function provingTest(type: IrType): string | null {
   }
 }
 
-/** Answers TypeClaimInputs.declaredUntyped from the checker: the type the
- * source gives the binding whose name starts at a position, or the return
- * type of the function that starts there. A file's names and functions are
- * indexed on first use. A JavaScript file, and a position the index does
- * not hold (a destructuring pattern, a generated function), answer true:
- * their claims are kept. */
-export function declaredUntypedIn(
+/** Answers TypeClaimInputs.declaredUntyped and TypeClaimInputs.assertion
+ * from the source. `declaredUntyped`: the type the checker gives the
+ * binding whose name starts at a position, or the return type of the
+ * function that starts there; a JavaScript file, and a position the index
+ * does not hold (a destructuring pattern, a generated function), answer
+ * true: their claims are kept. `assertion`: whether a position is a type
+ * assertion's, or its operand's, which is where the lowering puts the
+ * conversion the assertion asks for. Both are read from the source and
+ * not recorded while lowering, so a build that applies stored units
+ * (unit-reuse.ts) answers as one that lowers them. A file's names,
+ * functions and assertions are indexed on first use. */
+export function sourceFactsIn(
   program: ts.Program,
   checker: ts.TypeChecker,
-): TypeClaimInputs["declaredUntyped"] {
+): Pick<TypeClaimInputs, "declaredUntyped" | "assertion"> {
   interface FileIndex {
     names: Map<number, ts.Node>;
     functions: Map<number, ts.Node>;
+    /** By start and end. */
+    assertions: Map<string, "assertion" | "boundary">;
   }
   const files = new Map<string, FileIndex | null>();
   const indexOf = (file: string): FileIndex | null => {
@@ -174,10 +195,24 @@ export function declaredUntypedIn(
     // there is itself unverified.
     if (sf === undefined || isJsSourceFile(sf)) index = null;
     else {
-      const built: FileIndex = { names: new Map(), functions: new Map() };
+      const built: FileIndex = { names: new Map(), functions: new Map(), assertions: new Map() };
       ts.walkPreorder(sf, (node: ts.Node): void => {
         if (ts.isIdentifier(node)) built.names.set(locOf(node).start, node);
         else if (ts.isFunctionLike(node)) built.functions.set(locOf(node).start, node);
+        else if (ts.isAssertionExpression(node)) {
+          const what = isDeclBoundaryTypeNode(node.type) ? "boundary" : "assertion";
+          // The conversion is at the assertion or at its operand, with or
+          // without the parentheses and non-null marks around the operand.
+          let at: ts.Node = node;
+          for (;;) {
+            const loc = locOf(at);
+            built.assertions.set(`${loc.start}\u0000${loc.end}`, what);
+            if (at === node) at = node.expression;
+            else if (ts.isParenthesizedExpression(at) || ts.isNonNullExpression(at))
+              at = at.expression;
+            else break;
+          }
+        }
       });
       index = built;
     }
@@ -186,7 +221,9 @@ export function declaredUntypedIn(
   };
   const untyped = (type: ts.Type | undefined): boolean =>
     type === undefined || (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0;
-  return (loc, what) => {
+  const assertion: TypeClaimInputs["assertion"] = (loc) =>
+    indexOf(loc.file)?.assertions.get(`${loc.start}\u0000${loc.end}`);
+  const declaredUntyped: TypeClaimInputs["declaredUntyped"] = (loc, what) => {
     const index = indexOf(loc.file);
     if (index === null) return true;
     try {
@@ -205,6 +242,7 @@ export function declaredUntypedIn(
       return true;
     }
   };
+  return { declaredUntyped, assertion };
 }
 
 /** One function's bindings, the values its statements store in them, and
@@ -218,17 +256,8 @@ interface Scope {
   /** The locals stored to after their declaration: a kind test of one
    * says nothing about what it holds later. */
   reassigned: Set<string>;
-  /** The conversions inside a `try` whose handler ignores the error. */
-  swallowed: Set<IrExpr>;
-}
-
-/** True when a handler neither reads the caught error nor throws: what
- * the guarded body threw leaves no trace. */
-function ignoresError(catchBody: IrStmt[], catchLocalId: string | null): boolean {
-  return everyStmtList(catchBody, {
-    expr: (e) => !(e.kind === "varRef" && e.localId === catchLocalId),
-    stmt: (s) => s.kind !== "throw" && s.kind !== "rethrow",
-  });
+  /** Whether the function holds a conversion the pass is asked about. */
+  asked: boolean;
 }
 
 /** A stable name for the place a value is read from, or null. */
@@ -250,7 +279,7 @@ function pathOf(scope: Scope, e: IrExpr, depth = 0): string | null {
 /** Every claim site of the program, in function and source order. */
 export function collectTypeClaims(input: TypeClaimInputs): TypeClaimSite[] {
   const sites: TypeClaimSite[] = [];
-  const seen = new Set<string>();
+  const seen = new Map<string, number>();
   const byName = new Map<string, IrFunction>();
   for (const fn of input.functions) byName.set(fn.name, fn);
   // A class is named as the source names it, without its module's prefix.
@@ -268,8 +297,16 @@ export function collectTypeClaims(input: TypeClaimInputs): TypeClaimSite[] {
   // type arguments converts at the same place to each of them.
   const add = (site: TypeClaimSite): void => {
     const key = `${claimKey(site.loc)}\u0000${site.kind}`;
-    if (seen.has(key)) return;
-    seen.add(key);
+    const known = seen.get(key);
+    if (known !== undefined) {
+      // One instance's failure is swallowed: the position's can be. The
+      // handler with the fewest calls on the way names it.
+      const held = sites[known]!.swallowed;
+      if (site.swallowed !== undefined && (held === undefined || site.swallowed.level < held.level))
+        sites[known] = { ...sites[known]!, swallowed: site.swallowed };
+      return;
+    }
+    seen.set(key, sites.length);
     const inPackage = packageOf(site.loc.file);
     sites.push(inPackage === null ? site : { ...site, inPackage });
   };
@@ -294,7 +331,7 @@ export function collectTypeClaims(input: TypeClaimInputs): TypeClaimSite[] {
       stored: new Map(),
       chains: new Map(),
       reassigned: new Set(),
-      swallowed: new Set(),
+      asked: input.only !== true,
     };
     for (const local of fn.locals) scope.locals.set(local.id, local);
     const store = (id: string, value: IrExpr): void => {
@@ -308,7 +345,9 @@ export function collectTypeClaims(input: TypeClaimInputs): TypeClaimSite[] {
     };
     everyStmtList(fn.body as IrStmt[], {
       expr: (e) => {
-        if (e.kind === "optChain") scope.chains.set(e.id, e.receiver);
+        if (e.kind === "dynCheck") {
+          if (input.swallowed.has(e)) scope.asked = true;
+        } else if (e.kind === "optChain") scope.chains.set(e.id, e.receiver);
         else if (e.kind === "assignExpr") {
           store(e.localId, e.value);
           scope.reassigned.add(e.localId);
@@ -327,19 +366,6 @@ export function collectTypeClaims(input: TypeClaimInputs): TypeClaimSite[] {
           if (s.initializes !== true) scope.reassigned.add(s.localId);
         } else if (s.kind === "return" && s.value !== null)
           push(returnStores, fn.name, { scope, value: s.value });
-        else if (
-          s.kind === "tryCatch" &&
-          s.catchBody !== null &&
-          ignoresError(s.catchBody, s.catchLocalId)
-        ) {
-          everyStmtList(s.tryBody, {
-            expr: (e) => {
-              if (e.kind === "dynCheck") scope.swallowed.add(e);
-              return true;
-            },
-            stmt: () => true,
-          });
-        }
         return true;
       },
     });
@@ -522,6 +548,7 @@ export function collectTypeClaims(input: TypeClaimInputs): TypeClaimSite[] {
   };
 
   for (const scope of scopes) {
+    if (!scope.asked) continue;
     /** A typed function among the values an island call hands over. */
     const islandCallbacks = (e: IrExpr, depth: number): void => {
       if (depth > 8) return;
@@ -546,13 +573,16 @@ export function collectTypeClaims(input: TypeClaimInputs): TypeClaimSite[] {
     };
     /** The claim of one conversion, unless a kind test in `facts` guards it. */
     const claimAt = (e: IrExpr & { kind: "dynCheck" }, facts: ReadonlySet<string>): void => {
+      const swallowed = input.swallowed.get(e);
+      if (input.only === true && swallowed === undefined) return;
       const declared = e.origin === undefined ? undefined : input.declOrigins[e.origin];
       const source = sourceOf(scope, e.value, 0);
       const root = source === "own" ? null : source;
       // An assertion over a value the program holds dynamically is a
       // claim whatever the value's source.
-      const asserted = root === null && input.asserted.has(claimKey(e.loc));
-      const boundary = root === null && input.boundary.has(claimKey(e.loc));
+      const assertion = root === null ? input.assertion(e.loc) : undefined;
+      const asserted = assertion === "assertion";
+      const boundary = assertion === "boundary";
       if (root === null && declared === undefined && !asserted && !boundary) return;
       const proof = provingTest(e.type);
       if (proof !== null) {
@@ -582,7 +612,7 @@ export function collectTypeClaims(input: TypeClaimInputs): TypeClaimSite[] {
           : {}),
         ...(binding !== undefined ? { binding } : {}),
         ...(asserted ? { asserted: true as const } : {}),
-        ...(scope.swallowed.has(e) ? { swallowed: true as const } : {}),
+        ...(swallowed !== undefined ? { swallowed } : {}),
         ...(from !== null && from !== undefined ? { from } : {}),
         ...(root?.kind === "island" && islandNativeOnly(e.type, input.unionArms)
           ? { nativeOnly: true as const }
@@ -646,9 +676,9 @@ export function collectTypeClaims(input: TypeClaimInputs): TypeClaimSite[] {
         visitExpr(e.right, withFacts(facts, e.left, e.op === "&&"));
         return;
       }
-      if (e.kind === "libCall" && e.fn.startsWith("nodeIsland."))
-        for (const arg of e.args) islandCallbacks(arg, 0);
-      else if (e.kind === "dynCheck" && e.exact !== true && e.inferredSite === undefined)
+      if (e.kind === "libCall" && e.fn.startsWith("nodeIsland.")) {
+        if (input.only !== true) for (const arg of e.args) islandCallbacks(arg, 0);
+      } else if (e.kind === "dynCheck" && e.exact !== true && e.inferredSite === undefined)
         claimAt(e, facts);
       everyExprChild(
         e,
@@ -685,4 +715,55 @@ export function collectTypeClaims(input: TypeClaimInputs): TypeClaimSite[] {
     visitStmts(scope.fn.body, new Set());
   }
   return sites;
+}
+
+/** SC6009: one warning per claim whose failure ends in a handler that
+ * ignores it. `where` renders a position as a message names it. */
+export function swallowedClaimDivergences(
+  sites: readonly TypeClaimSite[],
+  where: (loc: SrcLoc) => string,
+  typeText: (text: string) => string,
+): ScrDiagnostic[] {
+  const out: ScrDiagnostic[] = [];
+  for (const site of sites) {
+    const swallowed = site.swallowed;
+    if (swallowed === undefined) continue;
+    out.push(
+      swallowedConversionDivergenceDiag(
+        typeText(site.claimed),
+        { kind: swallowed.handler.kind, where: where(swallowed.handler.loc) },
+        swallowed.through === undefined ? undefined : where(swallowed.through),
+        site.loc,
+      ),
+    );
+  }
+  return out;
+}
+
+/** One line per claim a handler can swallow, for
+ * `SCRIPTC_TRACE_SWALLOWED=<levels>`: the census the call-level cut
+ * (SWALLOW_CALL_LEVELS) is measured with. */
+export function traceSwallowedClaims(
+  sites: readonly TypeClaimSite[],
+  where: (loc: SrcLoc) => string,
+): string[] {
+  const out: string[] = [];
+  for (const site of sites) {
+    const swallowed = site.swallowed;
+    if (swallowed === undefined) continue;
+    out.push(
+      [
+        "swallowed-claim",
+        swallowed.level,
+        swallowed.handler.kind,
+        site.kind,
+        site.inPackage?.name ?? "-",
+        `${site.loc.file}:${site.loc.start}`,
+        where(site.loc),
+        where(swallowed.handler.loc),
+        swallowed.through === undefined ? "-" : where(swallowed.through),
+      ].join("\t"),
+    );
+  }
+  return out;
 }

@@ -878,6 +878,10 @@ const OPTION_KEY_RULES: Record<string, KeyRule> = {
     unkeyed:
       "the command leaves SC6101 out when it prints; the build, and the warnings its entry stores, are the same",
   },
+  "ignored-failure-warning": {
+    unkeyed:
+      "the command leaves SC6009 out when it prints; the build, and the warnings its entry stores, are the same",
+  },
   "node-islands": { keyed: (o) => ({ ...o, nodeIslands: "auto" }) },
   "node-island": { keyed: (o) => ({ ...o, nodeIslands: "node:a-package" }) },
   native: { keyed: (o) => ({ ...o, nodeIslands: "native:a-package" }) },

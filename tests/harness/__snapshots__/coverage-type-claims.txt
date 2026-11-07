@@ -15,13 +15,18 @@ scriptc coverage tests/coverage-fixtures/node-islands-type-claims/main.ts
 
   fully static — all analyzed statements compile to native code.
 
+  differs from Node   1 site (compiles; the native program can behave differently)
+      ×1  SC6009  a value that is not '{ name: string; retries: number }' throws a TypeError at this checked conversion, and that error is caught by the handler of the 'try' at main.ts:51, which neither reads the erro…
+          at tests/coverage-fixtures/node-islands-type-claims/main.ts:52:12
+          hint: check the value before giving it this type (a schema, or tests on an 'unknown' value), declare the type the data really has, or let the handler tell failures apart: read the caught error, or rethrow what it does not expect
+
   trusts unverified types   14 checked conversions on 10 claims (compiles; a value that contradicts its claimed type throws a TypeError at the conversion)
       ×1  tc-island@3.1.0 declares started() as Date (index.d.ts:8): a Node island value the program reads as Date, which throws for every object the island made
           at tests/coverage-fixtures/node-islands-type-claims/main.ts:32:20
           fix: a Node island's own object never converts to this type: keep the value as the island's by giving it a type the island package declares, or read what the program needs from it through the island's own members
       ×3  parsed data the program reads as { name: string; retries: number }
           at tests/coverage-fixtures/node-islands-type-claims/main.ts:52:12, tests/coverage-fixtures/node-islands-type-claims/main.ts:14:16, tests/coverage-fixtures/node-islands-type-claims/main.ts:15:15
-          unseen if it fails: tests/coverage-fixtures/node-islands-type-claims/main.ts:52:12 is in a try whose handler ignores the error, where Node.js keeps the value
+          unseen if it fails: tests/coverage-fixtures/node-islands-type-claims/main.ts:52:12 fails into a handler that ignores the error, where Node.js keeps the value (SC6009)
           fix: validate the parsed data before giving it this type (a schema, or checks on an unknown value), or declare the type the data really has
       ×2  tc-island@3.1.0 declares Session.ttl as number (index.d.ts:3): a Node island value
           at tests/coverage-fixtures/node-islands-type-claims/main.ts:26:21, tests/coverage-fixtures/node-islands-type-claims/main.ts:27:17

@@ -140,7 +140,12 @@ test("a claim whose failure the program would not see ranks above wider claims",
   const groups = groupTypeClaims([
     { kind: "island", loc: at(1), claimed: "boolean", origin: ENABLED },
     { kind: "island", loc: at(2), claimed: "boolean", origin: ENABLED },
-    { kind: "parsed", loc: at(3), claimed: "Entry", swallowed: true },
+    {
+      kind: "parsed",
+      loc: at(3),
+      claimed: "Entry",
+      swallowed: { handler: { kind: "catch", loc: at(2) }, level: 0 },
+    },
   ]);
   expect(groups.map((g) => [g.kind, g.sites.length, g.swallowed?.length])).toEqual([
     ["parsed", 1, 1],

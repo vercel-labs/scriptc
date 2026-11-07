@@ -1127,7 +1127,11 @@ export function refuseObservedClassCopies(lowerer: Lowerer, functions: IrFunctio
  * record or union would otherwise fill the line. A program can carry
  * thousands of these warnings, and each names up to three types. */
 function typeText(lowerer: Lowerer, type: IrType): string {
-  const text = lowerer.fmt(type);
+  return cutTypeText(lowerer.fmt(type));
+}
+
+/** A type's text as a warning names it (typeText). */
+export function cutTypeText(text: string): string {
   return text.length <= TYPE_TEXT ? text : `${text.slice(0, TYPE_TEXT - 4)} ...`;
 }
 
@@ -1161,7 +1165,7 @@ export function widthCopyDivergences(
 /** `<file name>:<line>` of a place in the program. Sites that convert the
  * same pair share one observation and so one message, which lets the
  * coverage report count them as one group. */
-function whereOf(lowerer: Lowerer, loc: SrcLoc): string {
+export function whereOf(lowerer: Lowerer, loc: SrcLoc): string {
   const slash = Math.max(loc.file.lastIndexOf("/"), loc.file.lastIndexOf("\\"));
   const name = loc.file.slice(slash + 1);
   const source = lowerer.program.getSourceFile(loc.file);

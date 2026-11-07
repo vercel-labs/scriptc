@@ -176,7 +176,7 @@ Rows are ordered by the number of conversions, after two kinds of rows that come
 
 A Node island copies data to your program and adapts functions, but an object the island made never converts to a type only compiled code can make, such as a `Date`, a `RegExp`, or an `http.Server`. A conversion like that throws every time it runs, unless the value is one your program passed into the island, so those rows come first and say so.
 
-Next come the rows with a conversion whose failure your program would not see: one inside a `try` whose `catch` neither reads the error nor throws. This function is meant to skip malformed lines. Compiled, it also skips every well-formed line that lacks a field `Entry` declares, where Node.js keeps the entry, and nothing reports it:
+Next come the rows with a conversion whose failure your program would not see: one whose `TypeError` ends in a handler that neither reads the error nor throws. Each such conversion is also the Node divergence `SC6009`, which `scriptc build` prints. This function is meant to skip malformed lines. Compiled, it also skips every well-formed line that lacks a field `Entry` declares, where Node.js keeps the entry, and nothing reports it at run time:
 
 ```console
 $ cat entries.ts
@@ -211,10 +211,21 @@ $ scriptc coverage entries.ts | tail -n 5
   trusts unverified types   1 checked conversion on 1 claim (compiles; a value that contradicts its claimed type throws a TypeError at the conversion)
       ×1  parsed data the program reads as { type: string; usage: { input: number; total: number } }
           at entries.ts:12:12
-          unseen if it fails: entries.ts:12:12 is in a try whose handler ignores the error, where Node.js keeps the value
+          unseen if it fails: entries.ts:12:12 fails into a handler that ignores the error, where Node.js keeps the value (SC6009)
           fix: validate the parsed data before giving it this type (a schema, or checks on an unknown value), or declare the type the data really has
 
-$ scriptc build entries.ts -o entries >/dev/null
+$ scriptc build entries.ts -o entries
+/app/entries.ts:12:12 - warning SC6009: a value that is not '{ type: string; usage: { input: number; total: number } }' throws a TypeError at this checked conversion, and that error is caught by the handler of the 'try' at entries.ts:11, which neither reads the error nor throws: the program takes the handler's path with no sign of why, while Node.js checks nothing here and continues with the value
+
+  11 |   try {
+  12 |     return JSON.parse(line) as Entry;
+     |            ^~~~~~~~~~~~~~~~~~~~~~~~~
+  13 |   } catch {
+
+  hint: check the value before giving it this type (a schema, or tests on an 'unknown' value), declare the type the data really has, or let the handler tell failures apart: read the caught error, or rethrow what it does not expect
+
+1 warning: the program compiled, but this site can behave differently from Node.
+/app/entries
 $ ./entries
 message 1 2
 skipped
@@ -225,7 +236,9 @@ message 1 undefined
 skipped
 ```
 
-Only a conversion written inside the `try` block is marked, not one in a function the block calls.
+A handler reads the error when it refers to the caught value at all: logs it, passes it on, tests it, rethrows it, or creates a function that does. A `catch` without a binding, or with a binding nothing uses, does not. A handler that always throws another error replaces the failure, which then goes on to the next enclosing handler. A `finally` block that leaves with `return`, `break`, or `continue` discards the error. A promise's rejection handler counts like a `catch`: `.catch(() => fallback)` ignores the reason, and marks the conversions in the callbacks of the chain it is attached to and in an async function the chain starts with.
+
+A conversion is marked where it is written inside the guarded code, in a function literal called or awaited there, and in a function the guarded code calls directly, one call deep. It is not marked two calls away, behind a function held in a variable or a member, or behind a callback passed to other code. The mark says a failure can end in that handler, not that the data is wrong.
 
 A conversion that a kind test of the same value guards is not a claim and is not listed: a read inside `if (typeof value === "string")`, in the matching arm of a conditional, or after `if (typeof value !== "string") return`. A test elsewhere in the function guards nothing, and neither does a test of a variable the function assigns again. Neither is reading back a value that your TypeScript source declares with a type and scriptc holds dynamically, such as a `Response` from `fetch`. In JavaScript files nothing declares a type, so every such read is listed.
 
@@ -289,6 +302,7 @@ Some code compiles but can behave differently than under Node.js. Coverage repor
 - `SC6002`: values of one record type are built in key orders scriptc cannot track per value, so the type keeps its declaration order, an object literal's key order differs from it, and the program observes the order through `JSON.stringify`, `Object.keys`, `Object.values`, `Object.entries`, `for...in`, or console output.
 - `SC6003`: `localeCompare` compares a string literal outside the built-in Latin-script collation.
 - `SC6004`: a call passes a class instance to a function that casts it to an unrelated class.
+- `SC6009`: a runtime type check of unverified data, such as `JSON.parse(text) as Entry`, sits where its failure ends in a handler that neither reads the error nor throws, so the compiled program silently takes the handler's path for data that Node.js accepts. See [Type claims](#type-claims) for what counts as unverified data and as such a handler. `--no-ignored-failure-warning` leaves the warning out.
 
 ## Gating builds and CI
 
@@ -404,7 +418,7 @@ For editors, CI annotations, and other tools, `scriptc coverage --print=diagnost
     </tr>
     <tr>
       <td><code>typeClaims</code></td>
-      <td>Coverage only, present when the program has <a href="#type-claims">type claims</a>: one object per row of the report, in the report's order. <code>kind</code> is <code>island</code>, <code>declared</code>, <code>package</code>, <code>parsed</code> or <code>untyped</code>; <code>count</code> and <code>sites</code> give the conversions; <code>claimed</code> lists the types they check for; <code>fix</code> is the report's fix line. A row about a package declaration has <code>declaration</code> with its <code>package</code>, <code>version</code>, <code>name</code>, file and line (<code>at</code>), <code>declaredType</code>, and the <code>selector</code> to pass to <code>scriptc types patch</code> when it has one. A <code>package</code> row lists those for each of the package's own declarations under <code>declarations</code>. <code>nativeOnly</code> counts the conversions that throw whenever they run, <code>swallowed</code> lists the sites inside a <code>try</code> that ignores the error, <code>callbacks</code> the functions a Node island calls, and <code>asserted</code> the type assertions.</td>
+      <td>Coverage only, present when the program has <a href="#type-claims">type claims</a>: one object per row of the report, in the report's order. <code>kind</code> is <code>island</code>, <code>declared</code>, <code>package</code>, <code>parsed</code> or <code>untyped</code>; <code>count</code> and <code>sites</code> give the conversions; <code>claimed</code> lists the types they check for; <code>fix</code> is the report's fix line. A row about a package declaration has <code>declaration</code> with its <code>package</code>, <code>version</code>, <code>name</code>, file and line (<code>at</code>), <code>declaredType</code>, and the <code>selector</code> to pass to <code>scriptc types patch</code> when it has one. A <code>package</code> row lists those for each of the package's own declarations under <code>declarations</code>. <code>nativeOnly</code> counts the conversions that throw whenever they run, <code>swallowed</code> lists the sites whose failure ends in a handler that ignores the error (each is also an <code>SC6009</code> diagnostic), <code>callbacks</code> the functions a Node island calls, and <code>asserted</code> the type assertions.</td>
     </tr>
     <tr>
       <td><code>startup</code></td>

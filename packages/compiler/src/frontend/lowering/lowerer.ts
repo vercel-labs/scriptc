@@ -15,8 +15,18 @@ import { canonShadowHook, mapCanonical, type CanonMapNotes } from "../canon-map.
 import { Normalizer } from "../canon.js";
 import { resolveEntryExportSymbol } from "../lib-exports.js";
 import { compactDeclOrigins, recordOrigin, slotOrigin, type RecordOrigin } from "./decl-origin.js";
-import { claimKey, collectTypeClaims, declaredUntypedIn } from "./type-claims.js";
-import { isDeclBoundaryTypeNode } from "../decl-projection.js";
+import {
+  collectTypeClaims,
+  sourceFactsIn,
+  swallowedClaimDivergences,
+  traceSwallowedClaims,
+  type TypeClaimInputs,
+} from "./type-claims.js";
+import {
+  SWALLOW_CALL_LEVELS,
+  swallowedConversions,
+  type SwallowedConversion,
+} from "./swallowed-conversions.js";
 import type { TypeClaimSite } from "../../diagnostics/type-claims.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
 import { LiteralTexts } from "./literal-texts.js";
@@ -97,7 +107,9 @@ import { scanDivergences } from "./divergences.js";
 import {
   collectWidthCopies,
   refuseObservedClassCopies,
+  cutTypeText,
   traceWidthCopies,
+  whereOf,
   widthCopyDivergences,
   type WidthCopyFact,
 } from "./width-copies.js";
@@ -1051,6 +1063,10 @@ export interface LowerResult {
    * one), also when diagnostics leave no module: what the scans that run
    * once lowering has settled read. */
   loweredFunctions?: IrFunction[];
+  /** The bodies of `loweredFunctions`, in the same order, before the
+   * dynamic tier's jsval rewrite replaced some of them (ir/jsval.ts);
+   * present when the rewrite ran. */
+  loweredBodiesBeforeJsvals?: IrStmt[][];
   /** Performance warnings (SC61xx): the likely-hot functions the source
    * leaves untyped (lowering/dynamic-tier.ts). Never failures. */
   performance?: ScrDiagnostic[];
@@ -1879,8 +1895,52 @@ function lowerToIrWithIslands(
     for (const line of traceWidthCopies(resultLowerer, widthCopies))
       process.stderr.write(line + "\n");
   if (widthCopies.length > 0) result = { ...result, widthCopies };
+  // The claims whose failure a handler ignores (SC6009), read off the same
+  // functions. The scan for such handlers runs in every build; the claims
+  // pass only when it found one. A build and a coverage analysis ask the
+  // same question of the same inputs, so they warn about the same sites.
+  // Read as the lowering left them, before the jsval rewrite: that is where
+  // every checked conversion is still one kind of node, and what a coverage
+  // analysis lists its claims from.
+  const before = result.loweredBodiesBeforeJsvals;
+  const scanned =
+    before === undefined
+      ? (result.loweredFunctions ?? [])
+      : (result.loweredFunctions ?? []).map((fn, i) =>
+          fn.body === before[i] ? fn : { ...fn, body: before[i]! },
+        );
+  const sharedHelpers = resultLowerer.sharedHelperFunctionNames();
+  const swallowedClaimsWithin = (levels: number): TypeClaimSite[] => {
+    const swallowed = swallowedConversions(scanned, sharedHelpers, levels);
+    timing("swallowed-conversions", { found: swallowed.size });
+    if (swallowed.size === 0) return [];
+    const claims = collectTypeClaims({
+      ...resultLowerer.typeClaimInputs(
+        scanned,
+        // A module's conversions index its compacted table.
+        result.module === null ? resultLowerer.declOrigins : (result.module.declOrigins ?? []),
+        swallowed,
+        new Map(),
+      ),
+      only: true,
+    });
+    timing("swallowed-claims", { found: claims.length });
+    return claims;
+  };
+  const swallowedClaims = swallowedClaimsWithin(SWALLOW_CALL_LEVELS);
+  const traceSwallowed = Number(process.env["SCRIPTC_TRACE_SWALLOWED"] ?? "0");
+  if (traceSwallowed > 0)
+    for (const line of traceSwallowedClaims(swallowedClaimsWithin(traceSwallowed), (loc) =>
+      whereOf(resultLowerer, loc),
+    ))
+      process.stderr.write(line + "\n");
   const divergences = [
     ...widthCopyDivergences(resultLowerer, widthCopies),
+    ...swallowedClaimDivergences(
+      swallowedClaims,
+      (loc) => whereOf(resultLowerer, loc),
+      cutTypeText,
+    ),
     ...scanDivergences(resultLowerer, moduleOrder),
     ...resultLowerer.sharedModuleWarnings,
   ];
@@ -4799,6 +4859,14 @@ export class Lowerer {
     if (typeof helper === "string") this.sharedHelperNames.add(helper);
     else this.sharedHelpers.add(helper);
   }
+  /** The names of the shared helpers, once their locations are settled
+   * (settleSharedHelperLocations): functions whose nodes carry the earliest
+   * caller's position, not their own. */
+  sharedHelperFunctionNames(): Set<string> {
+    const names = new Set<string>();
+    for (const fn of this.sharedHelpers) names.add(fn.name);
+    return names;
+  }
   /** Gives each shared helper (those marked by shareHelper, and those
    * interned by key in the helper tables) one location for all its nodes:
    * the earliest site in `functions` that uses it, by file and position, so
@@ -5319,8 +5387,6 @@ export class Lowerer {
     // side table, which no lowering decision reads.
     "typeClaimSites",
     "islandClaimOrigins",
-    "assertedClaims",
-    "boundaryClaims",
     "cjsSplitRequireBindings",
     "cjsWholeExportSymbols",
     "cjsLiveMemberExports",
@@ -5606,12 +5672,6 @@ export class Lowerer {
    * island calls, by source position (type-claims.ts's claimKey), with the
    * origin of the declaration that types it ("" when none can be named). */
   readonly islandClaimOrigins = new Map<string, string>();
-  /** Coverage (typeClaims): the positions of the checked conversions a
-   * type assertion asked for. */
-  readonly assertedClaims = new Set<string>();
-  /** Coverage (typeClaims): the positions of the declaration-typed
-   * boundary's casts. */
-  readonly boundaryClaims = new Set<string>();
   readonly generalNodeStreams: boolean;
   readonly dynNodeStreams: boolean;
   readonly dynAsyncProtocol: boolean;
@@ -11696,21 +11756,15 @@ export class Lowerer {
     }
     if (module) sanitizeUnregisteredClassTypes(module, (name) => this.classes.has(name));
     // Before the origin table is compacted: the claims index the lowering's.
-    if (this.typeClaims) {
-      const globals = new Map<string, IrGlobal>();
-      for (const global of this.globalsInTableOrder()) globals.set(global.id, global);
-      this.typeClaimSites = collectTypeClaims({
-        functions,
-        globals,
-        declOrigins: this.declOrigins,
-        islandOrigins: this.islandClaimOrigins,
-        asserted: this.assertedClaims,
-        boundary: this.boundaryClaims,
-        declaredUntyped: declaredUntypedIn(this.program, this.checker),
-        unionArms: (id) => this.unions.get(id)?.arms,
-        fmt: (type) => this.fmt(type),
-      });
-    }
+    if (this.typeClaims)
+      this.typeClaimSites = collectTypeClaims(
+        this.typeClaimInputs(
+          functions,
+          this.declOrigins,
+          swallowedConversions(functions, this.sharedHelperFunctionNames()),
+          this.islandClaimOrigins,
+        ),
+      );
     if (module?.declOrigins !== undefined) compactDeclOrigins(module);
     if (module) checkCycleBindingAccesses(this, module);
     if (module) bindCompletionCallbacks(module);
@@ -11723,6 +11777,11 @@ export class Lowerer {
     // Dynamic-tier functions compute with jsval values (ir/jsval.ts). The
     // rewrite keeps every dynamic operation dynamic (each dyn operator
     // becomes its js twin), so coverage's dynamic statements are unchanged.
+    // The rewrite replaces bodies, and turns a checked conversion to a
+    // number into a jsval operation. The scan for conversions a handler
+    // swallows (swallowed-conversions.ts) reads the bodies as they were.
+    const bodiesBeforeJsvals =
+      module && this.dynamicFunctions.length > 0 ? functions.map((fn) => fn.body) : undefined;
     if (module && this.dynamicFunctions.length > 0) promoteJsvals(module);
     // A program that replaces a process output stream's write method beside
     // Node islands is refused by the executable planner (SC8006): an
@@ -11739,6 +11798,9 @@ export class Lowerer {
       stats: this.stats,
       ...(stdioPatches !== undefined && stdioPatches.length > 0 ? { stdioPatches } : {}),
       loweredFunctions: functions,
+      ...(bodiesBeforeJsvals !== undefined
+        ? { loweredBodiesBeforeJsvals: bodiesBeforeJsvals }
+        : {}),
       ...(this.dynamicFunctions.length > 0 ? { dynamicFunctions: this.dynamicFunctions } : {}),
       ...(this.statsByFile.size > 0 ? { statsByFile: this.statsByFile } : {}),
       ...(this.provenanceElided.length > 0 ? { provenanceElided: this.provenanceElided } : {}),
@@ -18857,23 +18919,33 @@ export class Lowerer {
     return lowerTemplate(this, expr);
   }
 
+  /** The inputs of the type-claims pass (type-claims.ts) over `functions`,
+   * whose conversions index `declOrigins`. `islandOrigins` are the
+   * declarations of Node island values a coverage analysis recorded for
+   * its report; without them the pass finds an island's values by the
+   * calls that produce them, which is all a warning needs. */
+  typeClaimInputs(
+    functions: readonly IrFunction[],
+    declOrigins: readonly string[],
+    swallowed: ReadonlyMap<IrExpr, SwallowedConversion>,
+    islandOrigins: ReadonlyMap<string, string>,
+  ): TypeClaimInputs {
+    const globals = new Map<string, IrGlobal>();
+    for (const global of this.globalsInTableOrder()) globals.set(global.id, global);
+    return {
+      functions,
+      globals,
+      declOrigins,
+      islandOrigins,
+      ...sourceFactsIn(this.program, this.checker),
+      swallowed,
+      unionArms: (id) => this.unions.get(id)?.arms,
+      fmt: (type) => this.fmt(type),
+    };
+  }
+
   lowerAsExpression(expr: ts.AsExpression | ts.TypeAssertion): IrExpr {
-    const out = lowerAsExpression(this, expr);
-    // Coverage's type claims: the conversion is what the assertion claims.
-    // A cast that adopts its value converts it in a statement sequence.
-    if (this.typeClaims) {
-      const claims = isDeclBoundaryTypeNode(expr.type) ? this.boundaryClaims : this.assertedClaims;
-      const note = (e: IrExpr): void => {
-        if (e.kind === "dynCheck") claims.add(claimKey(e.loc));
-        else if (e.kind === "seqExpr") {
-          for (const stmt of e.stmts)
-            if (stmt.kind === "varDecl" && stmt.init !== null) note(stmt.init);
-          note(e.result);
-        }
-      };
-      note(out);
-    }
-    return out;
+    return lowerAsExpression(this, expr);
   }
 
   lowerPrefixUnary(expr: ts.PrefixUnaryExpression): IrExpr {

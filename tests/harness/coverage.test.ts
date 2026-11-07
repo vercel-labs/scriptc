@@ -94,6 +94,40 @@ test("divergences report as warnings, never as blockers", async () => {
   );
 });
 
+test("a checked conversion whose failure a handler ignores is a divergence", async () => {
+  const entry = fixture("swallowed-conversions.ts");
+  const { coverage } = analyze(entry);
+  expect(coverage.diagnostics).toEqual([]);
+  // Four conversions fail into a handler that ignores the error: in a try
+  // whose catch has no binding, under a finally that returns, in a function
+  // such a try calls, and in a callback of a promise chain whose rejection
+  // handler takes no argument. The three whose handler reads the error, or
+  // rethrows it, are claims and not warnings.
+  expect((coverage.divergences ?? []).map((d) => d.code)).toEqual([
+    "SC6009",
+    "SC6009",
+    "SC6009",
+    "SC6009",
+  ]);
+  // The warnings are the claims the report marks.
+  const marked = (coverage.typeClaims ?? []).filter((site) => site.swallowed !== undefined);
+  expect(marked.map((site) => site.loc.start).sort((a, b) => a - b)).toEqual(
+    (coverage.divergences ?? []).map((d) => d.loc.start).sort((a, b) => a - b),
+  );
+  expect(marked.map((site) => site.swallowed!.handler.kind).sort()).toEqual([
+    "catch",
+    "catch",
+    "finally",
+    "rejection",
+  ]);
+  expect(coverage.typeClaims?.length).toBe(7);
+  expect(coveragePasses(coverage, "blockers")).toBe(true);
+  expect(coveragePasses(coverage, "divergences")).toBe(false);
+  await expect(report(entry)).toMatchFileSnapshot(
+    "__snapshots__/coverage-swallowed-conversions.txt",
+  );
+});
+
 test("record width copies report at every storing site", async () => {
   const { coverage } = analyze(fixture("width-copies.ts"));
   expect(coverage.diagnostics).toEqual([]);
@@ -1325,15 +1359,21 @@ test(`every corpus program is 100% static (corpus and coverage agree${shardSuffi
     const { coverage } = analyze(file, {});
     expect.soft(coverage.diagnostics, file).toEqual([]);
     // Corpus programs match Node on the path the corpus runs: a divergence
-    // warning on one is a false positive, except SC6001. That warning is
-    // sound rather than exact: it names every conversion that copies a value
-    // the program could tell from the original (lowering/width-copies.ts),
-    // and a corpus program can hold one on a path it does not take. What
-    // keeps it honest is tests/harness/copy-soundness.test.ts, which counts
-    // the conversions that copy and the warnings that were not needed.
+    // warning on one is a false positive, except SC6001 and SC6009. Those
+    // two are sound rather than exact. SC6001 names every conversion that
+    // copies a value the program could tell from the original
+    // (lowering/width-copies.ts), and a corpus program can hold one on a
+    // path it does not take. What keeps it honest is
+    // tests/harness/copy-soundness.test.ts, which counts the conversions
+    // that copy and the warnings that were not needed. SC6009 names a
+    // checked conversion whose failure a handler would ignore
+    // (lowering/swallowed-conversions.ts): a corpus program's data fits its
+    // types, so the conversion does not fail there, and the warning is about
+    // data that does not. packages/compiler/test/swallowed-conversions.test.ts
+    // pins which handlers count.
     expect
       .soft(
-        (coverage.divergences ?? []).filter((d) => d.code !== "SC6001"),
+        (coverage.divergences ?? []).filter((d) => d.code !== "SC6001" && d.code !== "SC6009"),
         file,
       )
       .toEqual([]);

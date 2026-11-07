@@ -865,7 +865,7 @@ function renderTypeClaims(
       const first = hidden.slice(0, SITES_SHOWN).map(where).join(", ");
       const rest = hidden.length > SITES_SHOWN ? ` (+${hidden.length - SITES_SHOWN} more)` : "";
       out.push(
-        `          ${c(YELLOW, "unseen if it fails")}${c(DIM, `: ${first}${rest} ${hidden.length === 1 ? "is" : "are"} in a try whose handler ignores the error, where Node.js keeps the value`)}`,
+        `          ${c(YELLOW, "unseen if it fails")}${c(DIM, `: ${first}${rest} ${hidden.length === 1 ? "fails" : "fail"} into a handler that ignores the error, where Node.js keeps the value (SC6009)`)}`,
       );
     }
     out.push(`          ${c(DIM, `fix: ${g.fix}`)}`);

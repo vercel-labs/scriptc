@@ -1,3 +1,8 @@
+import * as ts from "../../ts7/adapter.js";
+import { constituentTypes } from "../../ts7/checker.js";
+import { isJsSourceFile } from "../../program.js";
+import { isThisParameter } from "../call-signatures.js";
+import type { Lowerer } from "../lowerer.js";
 import { exactValueParams, type BuiltinModuleFn } from "../surfaces.js";
 
 /** Modules whose call lowering is this file's table tail plus the
@@ -122,4 +127,73 @@ export function derivedBuiltinValueFn(
   if (fn.params.some((param) => param.kind === "dyn" || param.kind === "func")) return null;
   if (fn.result.kind === "dyn") return null;
   return { ...fn, valueParams: exactValueParams(...fn.params) };
+}
+
+/** How the read `site` uses a derived value. The derived closure accepts the
+ * row's own parameters and nothing else, while Node's function may read
+ * arguments past them (`realpath(path, options)`, `mkdtemp(prefix,
+ * options)`). A slot converts a function with fewer parameters by dropping
+ * the extra arguments, which is exact for a program function and silently
+ * wrong here: Node honours the option the native call never sees. So the
+ * value exists only where no call through the read can pass an argument the
+ * direct call does not lower:
+ *
+ * - "admits": a typed slot whose every call signature passes at most the
+ *   row's parameters, or a read that never calls the value (an equality
+ *   operand, `typeof`, `.name`);
+ * - a number: a typed slot with a call signature that passes that many
+ *   arguments (Infinity for a rest parameter) — more than the row lowers;
+ * - "untyped": everything else — an `any`/`unknown` slot, a slot with no call
+ *   signature (`Function`, a type parameter), an inferred slot (the value's
+ *   own overloaded type), or a JavaScript source, where the checker does not
+ *   bound the arguments a call passes.
+ *
+ * The last two keep the by-name refusal. */
+export function derivedValueSiteUse(
+  lowerer: Lowerer,
+  site: ts.Expression,
+  fn: BuiltinModuleFn,
+): "admits" | "untyped" | number {
+  if (isJsSourceFile(ts.getSourceFileOfNode(site))) return "untyped";
+  let value: ts.Expression = site;
+  while (ts.isParenthesizedExpression(value.parent)) value = value.parent;
+  const slot = lowerer.checker.getContextualType(value);
+  if (slot === undefined) return neverCallsOperand(value) ? "admits" : "untyped";
+  const nullish = ts.TypeFlags.Undefined | ts.TypeFlags.Null | ts.TypeFlags.Void;
+  let callable = false;
+  for (const arm of slot.flags & ts.TypeFlags.Union ? constituentTypes(slot) : [slot]) {
+    if (arm.flags & nullish) continue;
+    const signatures = lowerer.checker.getCallSignatures(arm);
+    if (signatures.length === 0) return "untyped";
+    for (const signature of signatures) {
+      const declaration = signature.declaration;
+      if (declaration === undefined) return "untyped";
+      let passed = 0;
+      for (const parameter of (declaration.parameters?.nodes ?? []) as ts.ParameterDeclaration[]) {
+        if (isThisParameter(parameter)) continue;
+        if (parameter.dotDotDotToken) return Infinity;
+        passed++;
+      }
+      if (passed > fn.params.length) return passed;
+    }
+    callable = true;
+  }
+  return callable ? "admits" : "untyped";
+}
+
+/** Whether `value` is the operand of an expression that reads the function's
+ * identity, type or name and never calls it. */
+function neverCallsOperand(value: ts.Expression): boolean {
+  const parent = value.parent;
+  if (ts.isTypeOfExpression(parent)) return true;
+  if (ts.isPropertyAccessExpression(parent))
+    return parent.expression === value && parent.name.text === "name";
+  if (!ts.isBinaryExpression(parent)) return false;
+  const operator = parent.operatorToken.kind;
+  return (
+    operator === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+    operator === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
+    operator === ts.SyntaxKind.EqualsEqualsToken ||
+    operator === ts.SyntaxKind.ExclamationEqualsToken
+  );
 }

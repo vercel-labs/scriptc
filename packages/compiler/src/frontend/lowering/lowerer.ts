@@ -600,7 +600,7 @@ import {
   esmImportBindingKind,
 } from "./builtins/module-bindings.js";
 import { stripTypeCasts } from "./builtins/arguments.js";
-import { derivedBuiltinValueFn } from "./builtins/module-call-values.js";
+import { derivedBuiltinValueFn, derivedValueSiteUse } from "./builtins/module-call-values.js";
 import { lowerBuiltinModuleCall } from "./builtins/module-calls.js";
 import { lowerTimersPromisesSetInterval, lowerTimeoutMethodCall } from "./builtins/timers.js";
 import {
@@ -18820,7 +18820,7 @@ export class Lowerer {
     // Builtin values admitted by an explicit surface-table contract use
     // the same interned native closures in TypeScript and JavaScript.
     {
-      const callable = this.lowerBuiltinCallableValue(bi, loc);
+      const callable = this.lowerBuiltinCallableValue(bi, loc, expr);
       if (callable) return callable;
     }
     // node:crypto's webcrypto is the WebCrypto global's object.
@@ -18870,8 +18870,18 @@ export class Lowerer {
    * synthetic module function. Direct calls never use this path: they keep
    * their existing validated libCall lowering. The value descriptor is
    * deliberately narrower than table membership because many table rows
-   * are only dispatch sentinels for call-site-specific lowering. */
-  lowerBuiltinCallableValue(bi: { module: string; member: string }, loc: SrcLoc): IrExpr | null {
+   * are only dispatch sentinels for call-site-specific lowering.
+   *
+   * `site` is the TypeScript read the value is for. A row without an explicit
+   * contract derives its value only there, and only where the read's slot
+   * bounds the arguments a call passes (derivedValueSiteUse); callers that
+   * build a value for no particular read (the module object) pass none and
+   * keep the explicit contracts only. */
+  lowerBuiltinCallableValue(
+    bi: { module: string; member: string },
+    loc: SrcLoc,
+    site?: ts.Expression,
+  ): IrExpr | null {
     const assertion = assertFunctionValue(bi, loc);
     if (assertion) return assertion;
     if (bi.module === "util" && bi.member === "types") return utilTypesModuleValue(this, loc);
@@ -18900,14 +18910,28 @@ export class Lowerer {
     }
     const fn = builtinModuleFnOf(this, bi.module, bi.member);
     if (!fn) return null;
+    if (fn.valueParams) return this.lowerNativeCallableValue(fn, `${bi.module}.${bi.member}`, loc);
     // A row without an explicit contract still answers a value when its own
     // direct-call ABI is the whole story (derivedBuiltinValueFn): the value's
     // body is the row's libCall at the row's parameter types, one interned
-    // closure per member, so identity through a slot holds.
-    const callable = fn.valueParams ? fn : derivedBuiltinValueFn(bi, fn);
-    return callable
-      ? this.lowerNativeCallableValue(callable, `${bi.module}.${bi.member}`, loc)
-      : null;
+    // closure per member, so identity through a slot holds. The closure
+    // takes the row's parameters only, so it exists where no call through
+    // the read passes more: a slot that does is the direct call with those
+    // arguments, which the row does not lower, and refuses by name.
+    const derived = site ? derivedBuiltinValueFn(bi, fn) : null;
+    if (!derived || !site) return null;
+    const use = derivedValueSiteUse(this, site, derived);
+    if (use === "untyped") return null;
+    if (use !== "admits") {
+      const passes = use === Infinity ? "a rest of arguments" : `${use} arguments`;
+      const takes = `${derived.params.length} argument${derived.params.length === 1 ? "" : "s"}`;
+      this.unsupported(
+        "SC1090",
+        site,
+        `library functions as values in a slot that passes more arguments than their lowering takes ('${ts.getTextOfNode(site)}' enters a slot passing ${passes}; the supported form takes ${takes} — call it directly)`,
+      );
+    }
+    return this.lowerNativeCallableValue(derived, `${bi.module}.${bi.member}`, loc);
   }
 
   /** An error-first filesystem function as a value: the checked-dynamic

@@ -217,7 +217,7 @@ import {
   nsMemberIdentOf,
   nsUndefRead,
 } from "./lower-namespaces.js";
-import { hostGlobalNameOfRead } from "./host-globals.js";
+import { HOST_GLOBAL_VALUE_MEMBERS, hostGlobalNameOfRead } from "./host-globals.js";
 import { mixinResultBindingClassOf, type MixinInstanceInfo } from "./lower-mixins.js";
 import { hasLexicalPrivateReference, hasStaticThis, rejectStaticThis } from "./static-this.js";
 import { lowerUrlNew } from "./lower-url.js";
@@ -5735,6 +5735,60 @@ function lowerClassDecoration(lowerer: Lowerer, info: ClassInfo): IrStmt[] {
   }
 }
 
+/** The Node 24 global native code does not provide that `info`'s base chain
+ * reaches (`class Sock extends WebSocket`, and every class extending Sock),
+ * or undefined. */
+export function hostGlobalBaseOf(info: ClassInfo): string | undefined {
+  for (let current: ClassInfo | null = info; current; current = current.base) {
+    const hostGlobal = current.callableBase?.hostGlobal;
+    if (hostGlobal !== undefined) return hostGlobal;
+  }
+  return undefined;
+}
+
+/** A static member the class inherits from such a global (`Sock.OPEN` after
+ * `class Sock extends WebSocket`): no class of the program's chain declares
+ * it, so the read reaches the global's own static surface, which native code
+ * does not provide. It refuses exactly as the same read off the global does
+ * (`WebSocket.OPEN`, SC2020 host-global) instead of answering undefined. The
+ * function intrinsics (HOST_GLOBAL_VALUE_MEMBERS) are the class value's own. */
+function fenceInheritedHostGlobalStatic(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  name: string,
+  site: ts.Node,
+): void {
+  if (HOST_GLOBAL_VALUE_MEMBERS.has(name)) return;
+  const hostGlobal = hostGlobalBaseOf(info);
+  if (hostGlobal === undefined) return;
+  if (
+    findStaticOn(lowerer, info, name) ||
+    findGenericStaticOn(lowerer, info, name) ||
+    runtimeStaticDefines(lowerer, info, name)
+  )
+    return;
+  // A static the program declares in a form with no lowering (an accessor,
+  // a field without an initializer) is not the global's either: the class
+  // value carries no such property, so the read names the member instead of
+  // answering undefined.
+  for (let current: ClassInfo | null = info; current; current = current.base) {
+    for (const member of current.decl?.members.nodes ?? []) {
+      const memberName = (member as { name?: ts.PropertyName }).name;
+      if (
+        memberName !== undefined &&
+        ts.getModifiers(member)?.some((m) => m.kind === ts.SyntaxKind.StaticKeyword) &&
+        classMemberNameOf(lowerer, memberName) === name
+      )
+        lowerer.unsupported(
+          "SC1090",
+          site,
+          `the static member '${name}' of class '${current.def.name.replace(/^%|^%m\d+\./, "")}', which extends the Node global '${hostGlobal}' (static accessors and initializer-less static fields have no lowering there)`,
+        );
+    }
+  }
+  lowerer.hostGlobalFence(hostGlobal, site);
+}
+
 /** The nearest declaration of static member `name` at or above `info` —
  * the compile-time prototype-chain walk (`D.x` reads C's global when C
  * declared x and nothing between redeclares it; a redeclaration shadows
@@ -6133,6 +6187,7 @@ export function lowerClassStaticRead(
     !(ts.isCallExpression(site.parent) && site.parent.expression === site)
   )
     lowerer.noLowering(`Date.${name} read through a class that extends Date`, site);
+  fenceInheritedHostGlobalStatic(lowerer, info, name, site);
   // A statically known member that the class value's table does not carry
   // (a class whose only runtime static is its `Symbol.hasInstance` hook)
   // reads its own storage, as it would without the hook.
@@ -7060,6 +7115,7 @@ function staticCallOn(
     if (date) return date;
   }
   const staticMember = findStaticOn(lowerer, info, access.name.text);
+  fenceInheritedHostGlobalStatic(lowerer, info, access.name.text, access);
   // A statically known member that the class value's table does not carry
   // (a class whose only runtime static is its `Symbol.hasInstance` hook)
   // calls its own function, as it would without the hook.
@@ -7519,6 +7575,7 @@ export function lowerClassValueProperty(
   // its other statics (`Error.stackTraceLimit`) keep their own lowerings.
   if (info?.def.runtime && member !== "name") return null;
   const storedMember = info ? findStaticOn(lowerer, info, member) : undefined;
+  if (info) fenceInheritedHostGlobalStatic(lowerer, info, member, expr);
   // A statically known member that the class value's table does not carry
   // (a class whose only runtime static is its `Symbol.hasInstance` hook)
   // reads its own storage, as it would without the hook.
@@ -10459,8 +10516,8 @@ function lowerProgramClassNew(
   // instances: its constructor's super() throws the SC2020 host-global fence
   // (host-global-values.ts), so the construction is that fence. Report it
   // here, where the TypeScript source writes the `new`.
-  for (let current: ClassInfo | null = info; current; current = current.base) {
-    const hostGlobal = current.callableBase?.hostGlobal;
+  {
+    const hostGlobal = hostGlobalBaseOf(info);
     if (hostGlobal !== undefined) lowerer.hostGlobalFence(hostGlobal, expr);
   }
   if (info.localClass)

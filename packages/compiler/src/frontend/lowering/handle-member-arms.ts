@@ -56,10 +56,24 @@ function parameterTest(type: IrType): "number" | "string" | "boolean" | null {
   return null;
 }
 
+/** Whether every argument is a dyn value, which a helper's parameters are.
+ * A call may also pass an untyped JavaScript value in its own
+ * representation; such a call keeps its own dispatch. */
+function dynArguments(args: readonly IrExpr[]): boolean {
+  return args.every((arg) => arg.type.kind === "dyn");
+}
+
+/** The member a JavaScript method call names, when a helper can take it. */
+function invokedMember(invoke: Invoke): string | null {
+  return dynArguments(invoke.args) ? invoke.method : null;
+}
+
 /** The member a "read the member, call it" call names: the callee text is
- * the receiver's text, a dot and the member name. */
+ * the receiver's text, a dot and the member name. A call whose callee text
+ * is computed at run time names none. */
 function calledMember(call: Call): string | null {
   if (call.receiver === undefined || call.spreads !== undefined) return null;
+  if (call.calleeNameValue !== undefined || !dynArguments(call.args)) return null;
   const dot = call.calleeName.lastIndexOf(".");
   return dot < 0 ? null : call.calleeName.slice(dot + 1);
 }
@@ -137,8 +151,10 @@ export function applyHandleMemberArms(lowerer: Lowerer, functions: IrFunction[])
       expr: (e) => {
         if (HANDLE_MEMBER_CLASSES.some((cls) => cls.type.kind === e.type.kind))
           present.add(e.type.kind);
-        if (e.kind === "dynInvoke" && named(e.method)) sites.add(fn);
-        else if (e.kind === "dynCall") {
+        if (e.kind === "dynInvoke") {
+          const member = invokedMember(e);
+          if (member !== null && named(member)) sites.add(fn);
+        } else if (e.kind === "dynCall") {
           const member = calledMember(e);
           if (member !== null && named(member)) sites.add(fn);
         }
@@ -216,9 +232,11 @@ export function applyHandleMemberArms(lowerer: Lowerer, functions: IrFunction[])
   };
 
   const rewrite = (e: IrExpr): IrExpr => {
-    if (e.kind === "dynInvoke" && named(e.method)) {
+    if (e.kind === "dynInvoke") {
       const invoke: Invoke = e;
-      const helper = helperFor("invoke", invoke.method, invoke.args.length, invoke.loc);
+      const member = invokedMember(invoke);
+      if (member === null || !named(member)) return e;
+      const helper = helperFor("invoke", member, invoke.args.length, invoke.loc);
       if (helper === null) return e;
       return {
         kind: "call",
@@ -237,8 +255,7 @@ export function applyHandleMemberArms(lowerer: Lowerer, functions: IrFunction[])
         loc: invoke.loc,
       };
     }
-    if (e.kind === "dynCall" && e.calleeNameValue === undefined) {
-      // A call whose callee text is computed names no member statically.
+    if (e.kind === "dynCall") {
       const member = calledMember(e);
       if (member === null || !named(member)) return e;
       const helper = helperFor("call", member, e.args.length, e.loc);

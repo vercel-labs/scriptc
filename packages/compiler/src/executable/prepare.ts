@@ -249,6 +249,8 @@ interface FenceRetry {
   islands: ReadonlyMap<string, IslandPackage>;
   modules: ReadonlyMap<string, IslandModule>;
   unitStore: UnitStore | null;
+  /** Every island the asking build ran (RoundOutcome's `islands`). */
+  ran: IslandRoundState | null;
 }
 
 /** One island round's result: a finished build (with the fence retry it
@@ -256,9 +258,16 @@ interface FenceRetry {
  * instead of recursing, so its frontend, lowering result and growth inputs
  * are unreachable before the next round loads. */
 type RoundOutcome =
-  | { kind: "prepared"; prepared: PreparedExecutableModule; fence: FenceRetry | null }
+  /** `islands`: every island the round ran, the ones its first decision
+   * made from the load included; null when it ran none. */
+  | {
+      kind: "prepared";
+      prepared: PreparedExecutableModule;
+      fence: FenceRetry | null;
+      islands: IslandRoundState | null;
+    }
   /** `lowered`: whether the round reached its lowering before it failed. */
-  | { kind: "failed"; failure: CompileFailure; lowered: boolean }
+  | { kind: "failed"; failure: CompileFailure; lowered: boolean; islands: IslandRoundState | null }
   | { kind: "retry"; request: RoundRequest };
 
 /** What the island rounds ask and tell a recorded decision
@@ -268,10 +277,12 @@ export interface IslandRounds {
    * islands the round starts from that the program still has a use for, or
    * null when all of them stand. Null for a build that replays nothing. */
   admit: ((scan: NodeIslandScan) => IslandRoundState | null) | null;
-  /** Told the islands of the round whose result the call returns, and
-   * whether that round reached its lowering: a round that stopped before it
-   * (a type error, a refused package) decided nothing about them. */
-  decided: (state: IslandRoundState, lowered: boolean) => void;
+  /** Told the islands the round whose result the call returns started
+   * from, whether that round reached its lowering (a round that stopped
+   * before it, at a type error or a refused package, decided nothing about
+   * them), and every island that round ran: the ones it started from and
+   * the ones its first decision made from the load. */
+  decided: (state: IslandRoundState, lowered: boolean, all: IslandRoundState | null) => void;
 }
 
 /** The outcome of one run of the island rounds for a recorded decision. */
@@ -281,6 +292,8 @@ interface DecidedBuild {
    * reported (the rounds threw). */
   state: IslandRoundState | null;
   lowered: boolean;
+  /** Every island that round ran. */
+  all: IslandRoundState | null;
 }
 
 /** Runs the island rounds from `start` and keeps what the returned round
@@ -296,10 +309,11 @@ function decideBuild(
   start: IslandRoundState,
   admit: IslandRounds["admit"],
 ): DecidedBuild {
-  const decided: { state: IslandRoundState | null; lowered: boolean } = {
-    state: null,
-    lowered: false,
-  };
+  const decided: {
+    state: IslandRoundState | null;
+    lowered: boolean;
+    all: IslandRoundState | null;
+  } = { state: null, lowered: false, all: null };
   const result = prepareExecutableModule(
     entryPath,
     opts,
@@ -314,13 +328,14 @@ function decideBuild(
     {},
     {
       admit,
-      decided: (state, lowered) => {
+      decided: (state, lowered, all) => {
         decided.state = state;
         decided.lowered = lowered;
+        decided.all = all;
       },
     },
   );
-  return { result, state: decided.state, lowered: decided.lowered };
+  return { result, state: decided.state, lowered: decided.lowered, all: decided.all };
 }
 
 /** `prepareExecutableModule` for a build. With a decision file
@@ -440,6 +455,7 @@ export function prepareExecutableBuild(
       policy,
       build.state,
       build.result.ok ? "compiles" : "fails",
+      build.all,
       gone,
     );
     if (change !== null) process.stderr.write(describeIslandDecisionChange(change, process.cwd()));
@@ -515,9 +531,15 @@ export function checkIslandDecision(
     differences:
       policy.mode !== "auto"
         ? []
-        : compareIslandDecision(file, key, build.state, build.result.ok ? "compiles" : "fails"),
-    packages: build.state.packages.size,
-    modules: build.state.modules.size,
+        : compareIslandDecision(
+            file,
+            key,
+            build.state,
+            build.result.ok ? "compiles" : "fails",
+            build.all,
+          ),
+    packages: (build.all ?? build.state).packages.size,
+    modules: (build.all ?? build.state).modules.size,
     undecided: null,
   };
 }
@@ -552,8 +574,9 @@ export function prepareExecutableModule(
     packages: ReadonlyMap<string, IslandPackage>,
     modules: ReadonlyMap<string, IslandModule>,
     lowered: boolean,
+    all: IslandRoundState | null,
   ): void => {
-    if (rounds !== null) rounds.decided({ packages, modules }, lowered);
+    if (rounds !== null) rounds.decided({ packages, modules }, lowered, all);
   };
   const state: RoundState = {
     firstLoad: null,
@@ -614,7 +637,7 @@ export function prepareExecutableModule(
       // Only a fence retry consumes a failure; otherwise it is the build's.
       const retry = fence;
       if (retry === null) {
-        decided(request.islands, request.modules, outcome.lowered);
+        decided(request.islands, request.modules, outcome.lowered, outcome.islands);
         return outcome.failure;
       }
       retry.firstError ??= outcome.failure.diagnostics[0] ?? null;
@@ -633,13 +656,13 @@ export function prepareExecutableModule(
           nodeIslandRetryFailedDiag(added, retry.firstError, { file: entryPath, start: 0, end: 0 }),
         );
       }
-      decided(retry.retry.islands, retry.retry.modules, true);
+      decided(retry.retry.islands, retry.retry.modules, true, retry.retry.ran);
       return retry.retry.prepared;
     }
     // An attempt that compiles replaces the build that asked for it; the
     // outermost build is the result.
     if (fence !== null || outcome.fence === null) {
-      decided(request.islands, request.modules, true);
+      decided(request.islands, request.modules, true, outcome.islands);
       return outcome.prepared;
     }
     fence = { retry: outcome.fence, next: 1, firstError: null };
@@ -731,8 +754,18 @@ function prepareRound(
     const diagnostics = islandDecision.errors;
     const sourceTexts = first!.sourceTexts();
     first!.dispose();
-    return { kind: "failed", failure: { ok: false, diagnostics, sourceTexts }, lowered: false };
+    return {
+      kind: "failed",
+      failure: { ok: false, diagnostics, sourceTexts },
+      lowered: false,
+      islands: null,
+    };
   }
+  // Every island this round runs, for a recorded decision.
+  const ran: IslandRoundState | null =
+    islandDecision === null
+      ? null
+      : { packages: islandDecision.packages, modules: islandDecision.modules };
   let fe: Frontend;
   if (islandDecision !== null) {
     first?.dispose();
@@ -834,6 +867,7 @@ function prepareRound(
         sourceTexts: fe.sourceTexts(),
       },
       lowered: loweredRan,
+      islands: ran,
     });
 
     // A package already bound to a Node island is never compiled statically,
@@ -1083,7 +1117,7 @@ function prepareRound(
   // build carries an SC8023 warning with the island build's first error,
   // never a silent fallback. The attempts run in the round driver, after
   // this round's state is released (see prepareExecutableModule).
-  if (fenceGrown === null) return { kind: "prepared", prepared, fence: null };
+  if (fenceGrown === null) return { kind: "prepared", prepared, fence: null, islands: ran };
   const attempts = [fenceGrown];
   const sure = new Map(
     [...fenceGrown].filter(([name]) => lowerIslands.has(name) || fenceSure.has(name)),
@@ -1099,7 +1133,9 @@ function prepareRound(
       islands: lowerIslands,
       modules: lowerModules,
       unitStore,
+      ran,
     },
+    islands: ran,
   };
 }
 

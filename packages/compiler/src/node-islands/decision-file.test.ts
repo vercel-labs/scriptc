@@ -176,6 +176,7 @@ test("a decision is written with paths relative to the file and read back", () =
   expect(section.modules).toEqual([
     {
       file: "src/legacy.js",
+      rule: "lowering",
       class: "object-model",
       reason: "R2.4 sloppy-mode semantics: a 'with' statement",
       decision: "auto",
@@ -389,7 +390,7 @@ test("a comparison names each kind of difference", () => {
   const plugin: IslandModule = { ...p.legacy, file: join(p.dir, "src", "plugin.js") };
   expect(
     compareIslandDecision(p.file, key, state([sdk, cfg], [p.legacy, plugin]), "fails"),
-  ).toEqual(["+ module src/plugin.js: R2.4 sloppy-mode semantics: a 'with' statement"]);
+  ).toEqual(["+ module src/plugin.js (lowering): R2.4 sloppy-mode semantics: a 'with' statement"]);
   // Another compiler release.
   expect(compareIslandDecision(p.file, { ...key, compiler: "9.9.9" }, decided, "fails")).toEqual([
     `~ compiler: ${key.compiler} -> 9.9.9`,
@@ -408,7 +409,7 @@ test("a build says what it changed in the file", () => {
       "  + sdk@1.2.3 (lowering): SC1090: sdk refused\n",
   );
   const gone = new Map([["cfg", "the program no longer imports it"]]);
-  const second = writeIslandDecision(p.file, key, auto, state([sdk]), "compiles", gone)!;
+  const second = writeIslandDecision(p.file, key, auto, state([sdk]), "compiles", null, gone)!;
   expect(describeIslandDecisionChange(second, p.dir)).toBe(
     "scriptc: updated the Node island decision in scriptc-islands.json (1 package)\n" +
       "  - cfg@0.1.0: the program no longer imports it\n",
@@ -501,4 +502,61 @@ test("the project's key names the file unless the options name one or turn it of
   expect(bad.nodeIslands.decision).toBeNull();
   expect(bad.diagnostics.map((d) => d.code)).toEqual(["SC8004"]);
   expect(bad.diagnostics[0]!.message).toContain("scriptc.nodeIslands.decision");
+});
+
+test("the islands the first decision makes from the load are listed and never replayed", () => {
+  const p = project();
+  const grown = p.install("grown", "1.0.0", "lowering");
+  // A package the load refused and a marked module: no rule grew them.
+  const { rule: _rule, ...refused } = p.install("refused", "2.0.0");
+  const marked: IslandModule = {
+    file: join(p.dir, "src", "plugin.js").split("\\").join("/"),
+    class: "marked",
+    reason: "marked with --node-island",
+    decision: "marked",
+  };
+  const key = keyOf(p);
+  const all = state([grown, refused], [p.legacy, marked]);
+  const change = writeIslandDecision(
+    p.file,
+    key,
+    auto,
+    state([grown], [p.legacy]),
+    "compiles",
+    all,
+  )!;
+  expect(change.packages).toBe(2);
+  expect(change.modules).toBe(2);
+  expect(change.lines).toEqual([
+    "+ grown@1.0.0 (lowering): SC1090: grown refused",
+    "+ refused@2.0.0 (load): SC1090: refused refused",
+    "+ module src/legacy.js (lowering): R2.4 sloppy-mode semantics: a 'with' statement",
+    "+ module src/plugin.js (load): marked with --node-island",
+  ]);
+  const section = fileJson(p.file).decisions[0]!;
+  expect(section.packages.map((entry) => [entry["name"], entry["rule"]])).toEqual([
+    ["grown", "lowering"],
+    ["refused", "load"],
+  ]);
+  expect(section.modules.map((entry) => [entry["file"], entry["rule"]])).toEqual([
+    ["src/legacy.js", "lowering"],
+    ["src/plugin.js", "load"],
+  ]);
+  // A replay starts from what a rule grew; the load decides the rest again.
+  const read = readIslandDecision(p.file, key, auto)!;
+  expect([...read.packages.keys()]).toEqual(["grown"]);
+  expect([...read.modules.keys()]).toEqual([p.legacy.file]);
+  expect(read.gone.size).toBe(0);
+  // The check compares them all.
+  expect(compareIslandDecision(p.file, key, state([grown], [p.legacy]), "compiles", all)).toEqual(
+    [],
+  );
+  expect(compareIslandDecision(p.file, key, state([grown], [p.legacy]), "compiles", null)).toEqual([
+    "- refused@2.0.0",
+    "- module src/plugin.js",
+  ]);
+  // A package a rule grows in one build and the load decides in another.
+  expect(compareIslandDecision(p.file, key, state([], [p.legacy]), "compiles", all)).toEqual([
+    "~ grown: rule lowering -> load",
+  ]);
 });

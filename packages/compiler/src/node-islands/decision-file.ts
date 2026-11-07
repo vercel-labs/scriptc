@@ -11,7 +11,10 @@
  * The file keeps that answer, one section per entry and set of options: the
  * islands the last round started from — the island packages with the rule
  * that grew each, its class and first reason, and the island modules. A
- * build that finds its section starts its first round there. Nothing else
+ * build that finds its section starts its first round there. The section
+ * also lists, under the rule `load`, the islands that round's first decision
+ * made from the load, so the file names every island of the program; a
+ * replay does not start from those. Nothing else
  * about the round changes: the first decision (refused, marked and patched
  * packages) is made from the load as always, and the lowering's refusals and
  * the fence rules judge the program as it is now, so a dependency added
@@ -236,6 +239,13 @@ function samePlace(a: string, b: string): boolean {
   }
 }
 
+/** The rule a section names for an island the first decision makes from the
+ * load: a package the load refused, one the policy marks, one that reads
+ * what an island module patches. Such an island is decided again from every
+ * load, so a replay never starts from it; the section lists it so that the
+ * file names every island of the program and the check compares them all. */
+const LOAD = "load";
+
 /** One package as a section lists it. `rule` and `follows` are "" when the
  * package has none. */
 interface SectionPackage {
@@ -250,6 +260,10 @@ interface SectionPackage {
 
 interface SectionModule {
   file: string;
+  /** `load` for a module the first decision islands (marked, or a sloppy or
+   * patching module the scan finds), `lowering` for one the lowering
+   * refused. */
+  rule: string;
   class: string;
   reason: string;
   decision: string;
@@ -274,20 +288,22 @@ function byText(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
-/** The section a build under `key` writes for the islands its returned
- * round started from. The outcome is kept only while an island depends on
- * it, so a program without such islands has the same section whether it
- * compiles or not. */
+/** The section a build under `key` writes: the islands its returned round
+ * started from (`state`), each with the rule that grew it, and the other
+ * islands that round ran (`all`), which its first decision made from the
+ * load. The outcome is kept only while an island depends on it, so a program
+ * without such islands has the same section whether it compiles or not. */
 function sectionOf(
   file: string,
   key: IslandDecisionKey,
   state: IslandRoundState,
   outcome: IslandOutcome,
+  all: IslandRoundState | null,
 ): Section {
   const base = dirname(resolve(file));
-  const packages = [...state.packages.values()]
-    .sort((a, b) => byText(a.name, b.name))
-    .map((p): SectionPackage => ({
+  const listed = new Map<string, SectionPackage>();
+  for (const p of state.packages.values())
+    listed.set(p.name, {
       name: p.name,
       version: p.version,
       dir: recorded(base, p.dir),
@@ -295,15 +311,44 @@ function sectionOf(
       follows: p.follows ?? "",
       class: p.class,
       reason: p.reason,
-    }));
-  const modules = [...state.modules.values()]
-    .sort((a, b) => byText(a.file, b.file))
-    .map((m): SectionModule => ({
+    });
+  if (all !== null) {
+    for (const p of all.packages.values()) {
+      if (listed.has(p.name)) continue;
+      listed.set(p.name, {
+        name: p.name,
+        version: p.version,
+        dir: recorded(base, p.dir),
+        rule: LOAD,
+        follows: "",
+        class: p.class,
+        reason: p.reason,
+      });
+    }
+  }
+  const packages = [...listed.values()].sort((a, b) => byText(a.name, b.name));
+  const listedModules = new Map<string, SectionModule>();
+  for (const m of state.modules.values())
+    listedModules.set(m.file, {
       file: recorded(base, m.file),
+      rule: "lowering",
       class: m.class,
       reason: m.reason,
       decision: m.decision,
-    }));
+    });
+  if (all !== null) {
+    for (const m of all.modules.values()) {
+      if (listedModules.has(m.file)) continue;
+      listedModules.set(m.file, {
+        file: recorded(base, m.file),
+        rule: LOAD,
+        class: m.class,
+        reason: m.reason,
+        decision: m.decision,
+      });
+    }
+  }
+  const modules = [...listedModules.values()].sort((a, b) => byText(a.file, b.file));
   let dependsOnOutcome = false;
   for (const p of state.packages.values()) if (holdsWhile(p.rule) !== null) dependsOnOutcome = true;
   return {
@@ -350,6 +395,7 @@ function sectionJson(section: Section): Record<string, unknown> {
     })),
     modules: section.modules.map((m) => ({
       file: m.file,
+      rule: m.rule,
       class: m.class,
       reason: m.reason,
       decision: m.decision,
@@ -415,24 +461,26 @@ function parseSection(value: unknown): Section | null {
       typeof reason !== "string"
     )
       return null;
-    if (rule !== "" && ruleOf(rule) === undefined) return null;
+    if (rule !== "" && rule !== LOAD && ruleOf(rule) === undefined) return null;
     packages.push({ name, version, dir, rule, follows, class: cls, reason });
   }
   const modules: SectionModule[] = [];
   for (const listed of listedModules as unknown[]) {
     if (!isRecord(listed)) return null;
     const path = listed["file"];
+    const rule = listed["rule"];
     const cls = listed["class"];
     const reason = listed["reason"];
     const decision = listed["decision"];
     if (
       typeof path !== "string" ||
+      (rule !== LOAD && rule !== "lowering") ||
       typeof cls !== "string" ||
       typeof reason !== "string" ||
       (decision !== "marked" && decision !== "auto")
     )
       return null;
-    modules.push({ file: path, class: cls, reason, decision });
+    modules.push({ file: path, rule, class: cls, reason, decision });
   }
   return {
     entry,
@@ -495,7 +543,13 @@ function sectionText(section: Section): string {
 function findSection(file: string, key: IslandDecisionKey): Section | null {
   const sections = readSections(file);
   if (sections === null) return null;
-  const wanted = sectionOf(file, key, { packages: new Map(), modules: new Map() }, "compiles");
+  const wanted = sectionOf(
+    file,
+    key,
+    { packages: new Map(), modules: new Map() },
+    "compiles",
+    null,
+  );
   for (const section of sections) if (sameBuild(section, wanted)) return section;
   return null;
 }
@@ -556,6 +610,8 @@ export function readIslandDecision(
   const packages = new Map<string, IslandPackage>();
   const leaving = new Map<string, string>();
   for (const entry of section.packages) {
+    // The first decision makes this island again from the load.
+    if (entry.rule === LOAD) continue;
     const at = slashed(resolve(base, entry.dir));
     const rule = ruleOf(entry.rule);
     packages.set(entry.name, {
@@ -580,6 +636,7 @@ export function readIslandDecision(
   const kept = withoutPackages(packages, leaving, gone);
   const modules = new Map<string, IslandModule>();
   for (const entry of section.modules) {
+    if (entry.rule === LOAD) continue;
     const at = slashed(resolve(base, entry.file));
     if (!existsSync(at)) {
       gone.set(at, "the file is gone");
@@ -715,7 +772,8 @@ function describeDifference(
   for (const m of next.modules) {
     modulesAfter.add(m.file);
     const was = modulesBefore.get(m.file);
-    if (was === undefined) lines.push(`+ module ${m.file}: ${m.reason}`);
+    if (was === undefined) lines.push(`+ module ${m.file} (${m.rule}): ${m.reason}`);
+    else if (was.rule !== m.rule) lines.push(`~ module ${m.file}: rule ${was.rule} -> ${m.rule}`);
     else if (was.class !== m.class || was.reason !== m.reason || was.decision !== m.decision)
       lines.push(`~ module ${m.file}: reason: ${m.reason}`);
   }
@@ -736,10 +794,11 @@ export function writeIslandDecision(
   policy: NodeIslandPolicy,
   state: IslandRoundState,
   outcome: IslandOutcome,
+  all: IslandRoundState | null = null,
   gone: ReadonlyMap<string, string> = new Map(),
 ): IslandDecisionChange | null {
   if (policy.mode !== "auto") return null;
-  const section = sectionOf(file, key, state, outcome);
+  const section = sectionOf(file, key, state, outcome, all);
   // Read at the moment of writing: another entry's build may have written
   // its own section since this build read the file.
   const sections = readSections(file) ?? [];
@@ -750,13 +809,13 @@ export function writeIslandDecision(
     else others.push(other);
   }
   if (previous !== null && sectionText(previous) === sectionText(section)) return null;
-  const all = [...others, section].sort(
+  const written = [...others, section].sort(
     (a, b) =>
       byText(a.entry, b.entry) ||
       byText(a.target, b.target) ||
       byText(sectionText(a), sectionText(b)),
   );
-  const text = `${JSON.stringify({ format: FORMAT, decisions: all.map(sectionJson) }, null, 2)}\n`;
+  const text = `${JSON.stringify({ format: FORMAT, decisions: written.map(sectionJson) }, null, 2)}\n`;
   mkdirSync(dirname(resolve(file)), { recursive: true });
   // A reader never sees half a file: the text lands under another name in
   // the same directory and is renamed over the old one.
@@ -799,8 +858,9 @@ export function compareIslandDecision(
   key: IslandDecisionKey,
   state: IslandRoundState,
   outcome: IslandOutcome,
+  all: IslandRoundState | null = null,
 ): string[] {
-  const section = sectionOf(file, key, state, outcome);
+  const section = sectionOf(file, key, state, outcome, all);
   const previous = findSection(file, key);
   if (previous === null)
     return [

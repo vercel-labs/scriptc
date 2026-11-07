@@ -445,6 +445,41 @@ test("a recorded package the program no longer imports leaves the set", () => {
   expect(check(dir, file)).toEqual([]);
 }, 600_000);
 
+test("an island the load decides is listed in the file and decided from the load again", () => {
+  // A package the project marks to run in Node: the first decision islands
+  // it from the load in every build, replayed or not, and no rule grows it.
+  const dir = counterProgram("");
+  writeFileSync(
+    join(dir, "package.json"),
+    '{ "name": "app", "scriptc": { "packages": { "counter": "node" } } }\n',
+  );
+  const file = join(dir, "islands.json");
+  const scratchBuild = build(dir, null);
+  expect(scratchBuild.ok).toBe(true);
+  expect(scratchBuild.rounds).toBe(1);
+  expect(scratchBuild.result).toContain('"packages":["counter"]');
+  const recording = build(dir, file);
+  expect(recording.result).toBe(scratchBuild.result);
+  // The file names every island of the program, with `load` for one no
+  // rule had to grow.
+  expect(recorded(file).packages.map((p) => [p.name, p.rule])).toEqual([["counter", "load"]]);
+  expect(recorded(file).outcome).toBeUndefined();
+  const text = readFileSync(file, "utf8");
+  const replay = build(dir, file);
+  expect(replay.rounds).toBe(1);
+  expect(replay.result).toBe(scratchBuild.result);
+  expect(readFileSync(file, "utf8")).toBe(text);
+  expect(check(dir, file)).toEqual([]);
+  // The mark goes: the next build's load no longer decides the island, the
+  // check says so, and the file follows the build.
+  writeFileSync(join(dir, "package.json"), '{ "name": "app" }\n');
+  expect(check(dir, file)).toEqual(["- counter@1.0.0"]);
+  const unmarked = build(dir, file);
+  expect(unmarked.result).toContain('"islands":null');
+  expect(recorded(file).packages).toEqual([]);
+  expect(check(dir, file)).toEqual([]);
+}, 600_000);
+
 test("a build that stops before its lowering leaves the record as it is", () => {
   const dir = fixture("tests/corpus/8809-node-island-asserted-receivers");
   const file = join(dir, "islands.json");

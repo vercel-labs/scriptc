@@ -54,6 +54,10 @@ typedef struct {
   void *attachment;           /* what the twin class's attach answered */
   uint32_t adopts;            /* the import this export is adopting (while it does) */
   bool adopted;               /* its representative is an island object it adopted */
+  /* A class instance's method table (+1), or NULL: asked of the program's
+   * resolver once, when the island first reads a prototype method. */
+  bool methods_known;
+  ScrDyn *methods;
 } NiExport;
 
 static NiExport *ni_exports = NULL; /* index = id; id 0 unused */
@@ -305,6 +309,8 @@ uint32_t scr_ni_export_id(ScrDyn *v) {
   }
   ni_exports[id].value = scr_dyn_retain(v);
   ni_exports[id].identity = identity;
+  ni_exports[id].methods_known = false;
+  ni_exports[id].methods = NULL;
   /* The table keeps a promise's identity cell while the export lives: a
    * freed cell's address could come back as another promise's. */
   if (v->kind == SCR_DYN_PROMISE) scr_promise_identity_hold(identity);
@@ -548,51 +554,52 @@ int scr_ni_host_export_construct(uint32_t id, const ScrNodeValue *args, size_t a
 
 /* ── class method tables ──────────────────────────────────────────────
  * A class instance's capsule holds its fields; its prototype methods come
- * from a table the compiler's builder makes once per class (name -> the
- * unbound method value, a dyn function whose thunk checks the receiver),
- * keyed by the capsule's type key. */
-typedef struct {
-  const char *key;
-  size_t key_len;
-  ScrDyn *table; /* +1 dyn object */
-  ScrDyn *ctor;  /* +1 dyn function constructing an instance (NI-6), or NULL */
-} NiMethods;
-static NiMethods *ni_methods = NULL;
-static size_t ni_nmethods = 0, ni_methods_cap = 0;
+ * from the table of the class the object was constructed as (name -> the
+ * unbound method value, a dyn function whose thunk checks the receiver).
+ * The program registers one resolver, from a capsule to that table
+ * (compiler: island-class-tables.ts), and the export keeps the answer: the
+ * table does not depend on the static type the object first crossed under,
+ * nor on what crossed before it. */
+static ScrDyn *ni_class_tables = NULL; /* +1 dyn function, or NULL */
 
-static ScrDyn *ni_methods_of(const ScrDyn *v) {
-  if (v->kind != SCR_DYN_TYPED_REF || v->v.typed_ref.type_key == NULL) return NULL;
-  const char *key = v->v.typed_ref.type_key;
-  size_t len = v->v.typed_ref.type_key_len;
-  for (size_t i = 0; i < ni_nmethods; i++)
-    if (ni_methods[i].key_len == len && memcmp(ni_methods[i].key, key, len) == 0)
-      return ni_methods[i].table;
-  return NULL;
+void scr_node_island_class_tables(ScrDyn *resolver) {
+  if (ni_class_tables != NULL || resolver->kind != SCR_DYN_FUNC) return;
+  ni_class_tables = scr_dyn_retain(resolver);
 }
 
-ScrDyn *scr_node_island_class_methods(ScrDyn *value, ScrDyn *builder) {
-  if (value->kind == SCR_DYN_TYPED_REF && value->v.typed_ref.type_key != NULL &&
-      ni_methods_of(value) == NULL) {
-    ScrDyn *table = scr_dyn_call(builder, NULL, 0, "class methods");
-    if (table == NULL) return NULL;
-    if (ni_nmethods == ni_methods_cap) {
-      ni_methods_cap = ni_methods_cap ? ni_methods_cap * 2 : 8;
-      NiMethods *grown = realloc(ni_methods, ni_methods_cap * sizeof *grown);
-      if (grown == NULL) ni_export_oom();
-      ni_methods = grown;
-    }
-    ni_methods[ni_nmethods].key = value->v.typed_ref.type_key; /* static */
-    ni_methods[ni_nmethods].key_len = value->v.typed_ref.type_key_len;
-    ni_methods[ni_nmethods].table = table;
-    ni_methods[ni_nmethods].ctor = NULL;
-    ni_nmethods++;
+/* The method table of export `id`, a class capsule (borrowed), or NULL. */
+static ScrDyn *ni_methods_of(uint32_t id) {
+  NiExport *e = &ni_exports[id];
+  if (e->methods_known) return e->methods;
+  ScrDyn *v = e->value;
+  /* Class capsules carry the key "object:<class>". */
+  if (v->kind != SCR_DYN_TYPED_REF || v->v.typed_ref.type_key == NULL ||
+      v->v.typed_ref.type_key_len < 7 || memcmp(v->v.typed_ref.type_key, "object:", 7) != 0 ||
+      ni_class_tables == NULL)
+    return NULL;
+  ScrDyn *args[1] = {v};
+  ScrDyn *table = scr_dyn_call(ni_class_tables, args, 1, "class methods");
+  if (table == NULL || scr_exc_pending()) {
+    scr_dyn_release(table);
+    return NULL; /* the exception is the read's */
   }
-  return scr_dyn_retain(value);
+  /* The call can export values and grow the table. */
+  e = &ni_exports[id];
+  e->methods_known = true;
+  if (table->kind == SCR_DYN_OBJ) e->methods = table;
+  else scr_dyn_release(table);
+  return e->methods;
 }
 
-/* NI-6: the method table of a class registered through its class value
- * (a shared module's exported class), keyed by the same type key its
- * instances carry. Answers the class value. */
+/* NI-6: the constructor helper of a class a shared module exports,
+ * registered through its class value and found by the class's signature. */
+typedef struct {
+  const char *sig; /* "classval:C", static */
+  ScrDyn *ctor;    /* +1 dyn function constructing an instance */
+} NiClassCtor;
+static NiClassCtor *ni_ctors = NULL;
+static size_t ni_nctors = 0, ni_ctors_cap = 0;
+
 /* The type key a class value's instances carry: "classval:C" -> "object:C".
  * Answers whether `key`/`len` is it. */
 static bool ni_instance_key_is(const char *sig, const char *key, size_t len) {
@@ -601,57 +608,39 @@ static bool ni_instance_key_is(const char *sig, const char *key, size_t len) {
   return len == 7 + rest && memcmp(key, "object:", 7) == 0 && memcmp(key + 7, sig + 9, rest) == 0;
 }
 
-static NiMethods *ni_methods_of_class(const ScrDyn *cls) {
-  if (cls->kind != SCR_DYN_FUNC || cls->v.fn.class_obj == NULL) return NULL;
-  for (size_t i = 0; i < ni_nmethods; i++)
-    if (ni_instance_key_is(cls->v.fn.sig, ni_methods[i].key, ni_methods[i].key_len))
-      return &ni_methods[i];
+/* The constructor helper of a native class value (borrowed), or NULL. */
+static ScrDyn *ni_class_ctor(const ScrDyn *cls) {
+  if (cls->kind != SCR_DYN_FUNC || cls->v.fn.class_obj == NULL || cls->v.fn.sig == NULL)
+    return NULL;
+  for (size_t i = 0; i < ni_nctors; i++)
+    if (strcmp(ni_ctors[i].sig, cls->v.fn.sig) == 0) return ni_ctors[i].ctor;
   return NULL;
 }
 
-ScrDyn *scr_node_island_class_methods_of(ScrDyn *cls, ScrDyn *builder, ScrDyn *ctor) {
+/* Answers the class value. */
+ScrDyn *scr_node_island_class_constructor(ScrDyn *cls, ScrDyn *ctor) {
   if (cls->kind != SCR_DYN_FUNC || cls->v.fn.class_obj == NULL || cls->v.fn.sig == NULL ||
-      strncmp(cls->v.fn.sig, "classval:", 9) != 0)
+      strncmp(cls->v.fn.sig, "classval:", 9) != 0 || ctor->kind != SCR_DYN_FUNC ||
+      ni_class_ctor(cls) != NULL)
     return scr_dyn_retain(cls);
-  NiMethods *known = ni_methods_of_class(cls);
-  if (known != NULL) {
-    if (known->ctor == NULL && ctor->kind == SCR_DYN_FUNC) known->ctor = scr_dyn_retain(ctor);
-    return scr_dyn_retain(cls);
-  }
-  ScrDyn *table = builder->kind == SCR_DYN_FUNC ? scr_dyn_call(builder, NULL, 0, "class methods")
-                                                : scr_dyn_new_obj();
-  if (table == NULL) return NULL;
-  if (ni_nmethods == ni_methods_cap) {
-    ni_methods_cap = ni_methods_cap ? ni_methods_cap * 2 : 8;
-    NiMethods *grown = realloc(ni_methods, ni_methods_cap * sizeof *grown);
+  if (ni_nctors == ni_ctors_cap) {
+    ni_ctors_cap = ni_ctors_cap ? ni_ctors_cap * 2 : 8;
+    NiClassCtor *grown = realloc(ni_ctors, ni_ctors_cap * sizeof *grown);
     if (grown == NULL) ni_export_oom();
-    ni_methods = grown;
+    ni_ctors = grown;
   }
-  size_t rest = strlen(cls->v.fn.sig + 9);
-  char *key = malloc(7 + rest + 1); /* lives as long as the program */
-  if (key == NULL) ni_export_oom();
-  memcpy(key, "object:", 7);
-  memcpy(key + 7, cls->v.fn.sig + 9, rest + 1);
-  ni_methods[ni_nmethods].key = key;
-  ni_methods[ni_nmethods].key_len = 7 + rest;
-  ni_methods[ni_nmethods].table = table;
-  ni_methods[ni_nmethods].ctor = ctor->kind == SCR_DYN_FUNC ? scr_dyn_retain(ctor) : NULL;
-  ni_nmethods++;
+  ni_ctors[ni_nctors].sig = cls->v.fn.sig;
+  ni_ctors[ni_nctors].ctor = scr_dyn_retain(ctor);
+  ni_nctors++;
   return scr_dyn_retain(cls);
-}
-
-/* The constructor helper of a native class value (borrowed), or NULL. */
-static ScrDyn *ni_class_ctor(const ScrDyn *cls) {
-  NiMethods *m = ni_methods_of_class(cls);
-  return m != NULL ? m->ctor : NULL;
 }
 
 /* A prototype method of a class capsule (+1), or NULL. An own property the
  * island wrote under the method's name (kept in the capsule's materialized
  * view) hides the method, as an own property hides a prototype's in Node. */
-static ScrDyn *ni_class_method(const ScrDyn *target, const ScrDyn *key) {
-  if (key->kind != SCR_DYN_STR) return NULL;
-  ScrDyn *table = ni_methods_of(target);
+static ScrDyn *ni_class_method(uint32_t id, const ScrDyn *target, const ScrDyn *key) {
+  if (key->kind != SCR_DYN_STR || target->kind != SCR_DYN_TYPED_REF) return NULL;
+  ScrDyn *table = ni_methods_of(id);
   if (table == NULL) return NULL;
   const ScrDyn *view = target->v.typed_ref.materialized;
   if (view != NULL && view->kind == SCR_DYN_OBJ &&
@@ -725,15 +714,16 @@ int scr_ni_host_export_get(uint32_t id, const ScrNodeValue *key, ScrNodeValue *o
   if (pk->kind == SCR_DYN_STR) present = scr_dyn_in(target, pk->v.str);
   if (!present && !scr_exc_pending()) {
     /* A prototype method of a class instance (its table). */
-    ScrDyn *method = ni_class_method(target, pk);
+    ScrDyn *method = ni_class_method(id, target, pk);
     scr_dyn_release(pk);
     scr_dyn_release(k);
     if (method != NULL) return ni_returned(method, out);
+    if (scr_exc_pending()) return ni_threw(out);
     return 2;
   }
   ScrDyn *result = scr_exc_pending() ? NULL : scr_dyn_reflect_get(target, pk, target);
   if (result != NULL && result->kind == SCR_DYN_UNDEF) {
-    ScrDyn *method = ni_class_method(target, pk);
+    ScrDyn *method = ni_class_method(id, target, pk);
     if (method != NULL) {
       scr_dyn_release(result);
       result = method;
@@ -793,15 +783,17 @@ int scr_ni_host_export_has(uint32_t id, const ScrNodeValue *key) {
   }
   if (scr_exc_pending()) scr_exc_clear();
   if (!present && pk != NULL) {
-    ScrDyn *method = ni_class_method(target, pk);
+    ScrDyn *method = ni_class_method(id, target, pk);
     present = method != NULL;
     scr_dyn_release(method);
+    if (scr_exc_pending()) scr_exc_clear();
   } else if (present && !ni_is_array(target) && ni_inherited_name(target, pk)) {
     /* Not an own property: V8 answers `in` from the prototype chain. A
      * class's own method of that name stays the capsule's. */
-    ScrDyn *method = ni_class_method(target, pk);
+    ScrDyn *method = ni_class_method(id, target, pk);
     present = method != NULL;
     scr_dyn_release(method);
+    if (scr_exc_pending()) scr_exc_clear();
   }
   scr_dyn_release(pk);
   scr_dyn_release(k);
@@ -954,6 +946,8 @@ void scr_ni_host_export_release(uint32_t id) {
   if (v->kind == SCR_DYN_PROMISE) scr_promise_identity_drop(ni_exports[id].identity);
   ni_exports[id].value = NULL;
   ni_exports[id].identity = NULL;
+  ScrDyn *methods = ni_exports[id].methods;
+  ni_exports[id].methods = NULL;
   if (ni_nfree == ni_free_cap) {
     uint32_t cap = ni_free_cap ? ni_free_cap * 2 : 64;
     uint32_t *grown = realloc(ni_free, cap * sizeof *grown);
@@ -962,6 +956,7 @@ void scr_ni_host_export_release(uint32_t id) {
     ni_free_cap = cap;
   }
   ni_free[ni_nfree++] = id;
+  scr_dyn_release(methods);
   scr_dyn_release(v);
 }
 
@@ -1302,6 +1297,8 @@ void scr_ni_exports_release_all(void) {
     ni_twin_detach(i);
     if (v->kind == SCR_DYN_PROMISE) scr_promise_identity_drop(ni_exports[i].identity);
     ni_exports[i].value = NULL;
+    scr_dyn_release(ni_exports[i].methods);
+    ni_exports[i].methods = NULL;
     scr_dyn_release(v);
   }
   ni_exports_len = 1;
@@ -1312,11 +1309,10 @@ void scr_ni_exports_release_all(void) {
   free(ni_ids);
   ni_ids = NULL;
   ni_ids_cap = ni_ids_len = ni_ids_dead = 0;
-  for (size_t i = 0; i < ni_nmethods; i++) {
-    scr_dyn_release(ni_methods[i].table);
-    scr_dyn_release(ni_methods[i].ctor);
-  }
-  ni_nmethods = 0;
+  for (size_t i = 0; i < ni_nctors; i++) scr_dyn_release(ni_ctors[i].ctor);
+  ni_nctors = 0;
+  scr_dyn_release(ni_class_tables);
+  ni_class_tables = NULL;
   for (uint32_t i = 0; i < ni_nshared; i++) {
     NiShared *m = &ni_shared[i];
     for (uint32_t j = 0; j < m->nslots; j++) scr_dyn_release(m->last[j]);

@@ -273,6 +273,37 @@ function toPrimitive(value, hint) {
   throw new TypeError("Cannot convert object to primitive value");
 }
 
+// What the runtime's JSON.stringify walk (scr_json.c) asks about an island
+// object it serializes member by member (scr_node_island_handle.c loads it
+// as "scriptc:json"). `what` is SCR_NI_JSON_*:
+//   0  the JSON text of an object whose value is in an internal slot:
+//      SerializeJSONProperty unwraps Number, String, Boolean and BigInt
+//      objects (ToNumber, ToString, the slot), and a raw JSON object writes
+//      its text. undefined for every other object.
+//   1  the constructor name V8's circular-structure TypeError prints.
+function jsonQuery(value, what) {
+  if (what === 1) {
+    try {
+      const constructor = value.constructor;
+      if (typeof constructor === "function" && typeof constructor.name === "string") {
+        if (constructor.name !== "") return constructor.name;
+      }
+    } catch {
+      // V8 reads the name without running code; a throwing getter names nothing.
+    }
+    return Array.isArray(value) ? "Array" : "Object";
+  }
+  const { types } = require("node:util");
+  if (typeof JSON.isRawJSON === "function" && JSON.isRawJSON(value)) return value.rawJSON;
+  if (types.isNumberObject(value)) return JSON.stringify(Number(value));
+  if (types.isStringObject(value)) return JSON.stringify(String(value));
+  if (types.isBooleanObject(value)) {
+    return JSON.stringify(Boolean.prototype.valueOf.call(value));
+  }
+  if (types.isBigIntObject(value)) return JSON.stringify(BigInt.prototype.valueOf.call(value));
+  return undefined;
+}
+
 // Helpers for native classes extending island classes (scope-B NI-5b),
 // reached by the runtime as the module "scriptc:island-helpers". A native
 // subclass is a JavaScript constructor whose instances Reflect.construct
@@ -603,6 +634,7 @@ function load(path, esm) {
   if (path === "scriptc:spread") return (value) => [...value];
   if (path === "scriptc:clone") return (value) => structuredClone(value);
   if (path === "scriptc:objectTag") return (value) => Object.prototype.toString.call(value);
+  if (path === "scriptc:json") return jsonQuery;
   if (path === "scriptc:island-helpers") return islandHelpers;
   // A built-in module's name, with or without the node: prefix.
   if (isBuiltin(path)) return require(path);

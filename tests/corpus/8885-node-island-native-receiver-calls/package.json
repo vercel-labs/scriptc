@@ -1,0 +1,6 @@
+{
+  "name": "island-native-receiver-calls",
+  "private": true,
+  "type": "module",
+  "scriptc": { "packages": { "recv-pkg": "node" } }
+}

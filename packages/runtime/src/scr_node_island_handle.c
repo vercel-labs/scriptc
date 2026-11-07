@@ -1449,6 +1449,17 @@ static ScrDyn *nh_call_native(ScrDyn *fn, ScrDyn *this_, ScrDyn *const *args, si
   return result;
 }
 
+/* A member read that answered something not callable, called: Node's
+ * TypeError names the call site's text as the compiler passes it. */
+static void nh_throw_not_fn(const char *name, size_t length) {
+  ScrStr *member = scr_str_new(name, length);
+  ScrStr *suffix = scr_str_new(" is not a function", 18);
+  ScrStr *message = scr_str_concat(member, suffix);
+  scr_str_release(member);
+  scr_str_release(suffix);
+  if (message != NULL) scr_throw_error(SCR_ERR_TYPE, message);
+}
+
 /* obj.m(...) from dynamic code: the member read, then the call with obj
  * as the receiver; a member that is not a function throws Node's TypeError
  * with the call site's text (`what`), as V8 words it. */
@@ -1464,9 +1475,8 @@ static ScrDyn *nh_op_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *c
   }
   if (!scr_ni_is_function(fn)) {
     scr_dyn_release(fn);
-    char message[512];
-    snprintf(message, sizeof message, "%s is not a function", what != NULL ? what : method);
-    scr_throw_error_msg(SCR_ERR_TYPE, message, strlen(message));
+    const char *shown = what != NULL ? what : method;
+    nh_throw_not_fn(shown, strlen(shown));
     return NULL;
   }
   ScrDyn *result = scr_ni_call(fn, self, args, argc);
@@ -1500,6 +1510,23 @@ ScrDyn *scr_ni_to_primitive(const ScrDyn *self, int hint) {
   ScrDyn *args[2] = {(ScrDyn *)self, scr_dyn_new_str(hs)};
   scr_str_release(hs);
   ScrDyn *result = scr_ni_call(nh_to_primitive_fn, scr_dyn_undefined(), args, 2);
+  scr_dyn_release(args[1]);
+  return result;
+}
+
+/* The host's JSON helper (scr_node_island_host.cjs), loaded once. */
+static ScrDyn *nh_json_fn = NULL;
+
+/* What JSON.stringify asks V8 about an island object (SCR_NI_JSON_*). */
+static ScrDyn *nh_json_query(ScrDyn *value, int what) {
+  if (nh_json_fn == NULL) {
+    ScrStr *name = scr_str_new("scriptc:json", 12);
+    nh_json_fn = nh_load(name, 0);
+    scr_str_release(name);
+    if (nh_json_fn == NULL) return NULL;
+  }
+  ScrDyn *args[2] = {value, scr_dyn_new_num((double)what)};
+  ScrDyn *result = scr_ni_call(nh_json_fn, scr_dyn_undefined(), args, 2);
   scr_dyn_release(args[1]);
   return result;
 }
@@ -1624,6 +1651,10 @@ static void nh_cleanup(void) {
   if (nh_spread_fn != NULL) {
     scr_dyn_release(nh_spread_fn);
     nh_spread_fn = NULL;
+  }
+  if (nh_json_fn != NULL) {
+    scr_dyn_release(nh_json_fn);
+    nh_json_fn = NULL;
   }
   while (nh_npins > 0) {
     NhPin pin = nh_pins[--nh_npins];
@@ -1771,11 +1802,63 @@ ScrDyn *scr_node_island_apply(ScrDyn *fn, ScrDyn *args) {
   return scr_dyn_call(fn, items, argc, "value");
 }
 
-ScrDyn *scr_node_island_apply_to(ScrDyn *fn, ScrDyn *this_, ScrDyn *args) {
+/* `this_.key(...)` with the member already read into `fn`, before the
+ * arguments ran. A native closure is called with the receiver, an island
+ * function through the bridge. Routing follows the value here too: a
+ * native receiver's builtin member (an array's push, a Map's set, a class
+ * method) has no function value, so its read answered something that is
+ * not callable, and the call is the ordinary checked-dynamic method call
+ * by name, as scr_node_island_invoke makes it for the same receiver. That
+ * call throws Node's TypeError when the member is not a function.
+ *
+ * The by-name call reads the member again, so it answers the value the
+ * read held only while the member still is not callable: an argument that
+ * ran code may have stored a function there, and V8 calls the value read
+ * before the arguments — a non-callable one, Node's TypeError. */
+ScrDyn *scr_node_island_apply_to(ScrDyn *fn, ScrDyn *this_, ScrStr *key, ScrDyn *args) {
   ScrDyn *const *items;
   size_t argc = ni_libcall_args(args, &items);
   if (nh_is_native_function(fn)) return nh_call_native(fn, this_, items, argc, "value");
+  if (!ni_lc_island(fn) && !ni_lc_island(this_)) {
+    ScrDyn *member = scr_node_island_get(this_, key);
+    if (member == NULL) {
+      if (!scr_exc_pending()) nh_throw_not_fn(key->data, key->len);
+      return NULL;
+    }
+    bool callable = scr_dyn_is_callable(member);
+    scr_dyn_release(member);
+    if (callable) {
+      nh_throw_not_fn(key->data, key->len);
+      return NULL;
+    }
+    return ni_lc_native_invoke(this_, key, items, argc);
+  }
   return scr_ni_call(fn, this_, items, argc);
+}
+
+/* Whether `this_.m(...)`, with the member read into `fn`, is a call
+ * scr_node_island_apply_to makes: an island receiver's call is V8's,
+ * whatever the member is, and a member that is a function value (a native
+ * closure, or an island function a native object holds) is called as it
+ * was read. A native receiver's other members (a builtin, a class method,
+ * a generator step) have no function value: compiled code calls them
+ * through the ordinary checked-dynamic method call instead. That call
+ * reads the member `key` again, after the arguments ran, as the by-name
+ * call of scr_node_island_apply_to does: when they stored a function
+ * there, this answers false with Node's TypeError pending, for the value
+ * read before them (`what`, the callee as V8 words it, is not a
+ * function). */
+bool scr_node_island_calls(ScrDyn *fn, ScrDyn *this_, ScrStr *key, ScrStr *what) {
+  if (ni_lc_island(this_) || ni_lc_island(fn) || nh_is_native_function(fn)) return true;
+  ScrDyn *member = scr_node_island_get(this_, key);
+  bool callable = member != NULL && scr_dyn_is_callable(member);
+  scr_dyn_release(member);
+  if (callable) nh_throw_not_fn(what->data, what->len);
+  return false;
+}
+
+bool scr_node_island_is_capsule(ScrDyn *value) {
+  return value != NULL && value->kind == SCR_DYN_TYPED_REF;
 }
 
 ScrDyn *scr_node_island_construct(ScrDyn *ctor, ScrDyn *args) {
@@ -1794,12 +1877,15 @@ bool scr_node_island_instanceof(ScrDyn *value, ScrDyn *ctor) {
   return scr_ni_instanceof(value, ctor) == 1;
 }
 
+static bool nh_dyn_is_array(const ScrDyn *value) { return scr_ni_is_array((ScrDyn *)value); }
+
 static const ScrNiDynOps nh_dyn_ops = {
     .get = scr_ni_get,
     .get_str = scr_ni_get_str,
     .has = scr_ni_has,
     .delete_key = scr_ni_delete,
     .own_keys = scr_ni_own_keys,
+    .is_array = nh_dyn_is_array,
     .call = scr_ni_call,
     .construct = scr_ni_construct,
     .type_of = scr_ni_typeof,
@@ -1811,6 +1897,7 @@ static const ScrNiDynOps nh_dyn_ops = {
     .object_tag = nh_object_tag,
     .function_identity = nh_function_identity,
     .function_of_identity = nh_function_of_identity,
+    .json_query = nh_json_query,
 };
 
 __attribute__((constructor)) static void nh_install(void) { scr_ni_dyn_ops = &nh_dyn_ops; }

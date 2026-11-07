@@ -223,15 +223,29 @@ function buildLibFnSignatures() {
     "nodeIsland.setKey": { argTypes: [DYN, DYN, DYN], result: VOID },
     "nodeIsland.invoke": { argTypes: [DYN, STRING, DYN], result: DYN },
     "nodeIsland.apply": { argTypes: [DYN, DYN], result: DYN },
-    "nodeIsland.applyTo": { argTypes: [DYN, DYN, DYN], result: DYN },
+    "nodeIsland.applyTo": { argTypes: [DYN, DYN, STRING, DYN], result: DYN },
+    /** Whether `this.m(...)` with the member read into args[0] is a call
+     * nodeIsland.applyTo makes: an island receiver's, or one whose member is
+     * a function value. A native receiver's other members are called by the
+     * ordinary checked-dynamic method call, which reads the member args[2]
+     * again: when the arguments made it a function, this throws the
+     * TypeError JavaScript throws for the value it read before them, naming
+     * the callee args[3]. */
+    "nodeIsland.calls": { argTypes: [DYN, DYN, STRING, STRING], result: BOOL },
     "nodeIsland.construct": { argTypes: [DYN, DYN], result: DYN },
     "nodeIsland.instanceof": { argTypes: [DYN, DYN], result: BOOL },
     /** Array.isArray of a dyn value in a program with Node islands: island
      * arrays answer true too. */
     "nodeIsland.isArray": { argTypes: [DYN], result: BOOL },
-    /** NI-5: a class instance crossing into an island, with the builder of
-     * its class's method table (run once per class). Answers the value. */
-    "nodeIsland.classMethods": { argTypes: [DYN, DYN], result: DYN },
+    /** Whether a native value's members are dispatched by compiled code: a
+     * typed reference (a class instance, a generator). The runtime's
+     * by-name call has no table of their methods. */
+    "nodeIsland.isCapsule": { argTypes: [DYN], result: BOOL },
+    /** NI-5: the program's class method tables, registered once by %main:
+     * a function from a class instance's capsule to the method table of the
+     * instance's own class (or undefined). The runtime asks it when an
+     * island first reads a prototype method of an instance. */
+    "nodeIsland.classTables": { argTypes: [DYN], result: VOID },
     /** NI-5b: native classes extending island classes. subclass(base, name,
      * ctor, fields, methods, getters, setters) makes the JavaScript class;
      * superConstruct(box, args) is the native constructor's super(...);
@@ -244,12 +258,11 @@ function buildLibFnSignatures() {
     "nodeIsland.promisify": { argTypes: [DYN], result: DYN },
     /** NI-6 shared modules: registers a module the program shares with its
      * islands (real path, exports JSON, accessor); the TDZ sentinel an
-     * accessor answers; the method table and constructor helper of an
-     * exported class by its class value (either may be undefined; answers
-     * the class value). */
+     * accessor answers; the constructor helper of an exported class by its
+     * class value (it may be undefined; answers the class value). */
     "nodeIsland.share": { argTypes: [STRING, STRING, DYN], result: VOID },
     "nodeIsland.sharedTdz": { argTypes: [], result: DYN },
-    "nodeIsland.classMethodsOf": { argTypes: [DYN, DYN, DYN], result: DYN },
+    "nodeIsland.classConstructor": { argTypes: [DYN, DYN], result: DYN },
     /** `v instanceof Error` (or a builtin Error subclass) for an island value. */
     "nodeIsland.instanceofGlobal": { argTypes: [DYN, STRING], result: BOOL },
     /** Whether a dyn value is an island handle (never loads Node). */

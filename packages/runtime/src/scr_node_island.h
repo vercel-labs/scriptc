@@ -136,6 +136,9 @@ typedef struct ScrNiDynOps {
   int (*has)(ScrDyn *obj, ScrDyn *key);
   int (*delete_key)(ScrDyn *obj, ScrDyn *key);
   ScrDyn *(*own_keys)(ScrDyn *obj, int mode);
+  /* Array.isArray of the node: the JSON serializer and a checked array
+   * conversion take the array shape from it. */
+  bool (*is_array)(const ScrDyn *value);
   ScrDyn *(*call)(ScrDyn *fn, ScrDyn *this_, ScrDyn *const *args, size_t argc);
   ScrDyn *(*construct)(ScrDyn *ctor, ScrDyn *const *args, size_t argc);
   ScrStr *(*type_of)(ScrDyn *value);
@@ -160,7 +163,15 @@ typedef struct ScrNiDynOps {
    * NULL when `root` is not such a root. A signature adapter over a view of
    * an island function boxes as the function itself through this. */
   ScrDyn *(*function_of_identity)(const struct ScrClosure *root);
+  /* What V8 alone can answer about an island object JSON.stringify walks
+   * (SCR_NI_JSON_*; +1, NULL with the exception pending). */
+  ScrDyn *(*json_query)(ScrDyn *value, int what);
 } ScrNiDynOps;
+/* The JSON text of an object whose value is in an internal slot (a boxed
+ * primitive or a raw JSON object), undefined for any other object. */
+#define SCR_NI_JSON_LEAF 0
+/* The constructor name V8's circular-structure TypeError prints. */
+#define SCR_NI_JSON_CONSTRUCTOR 1
 extern const ScrNiDynOps *scr_ni_dyn_ops;
 
 /* scr_ni_is_handle for units that also build into programs without the
@@ -202,8 +213,9 @@ bool scr_ni_exportable(const ScrDyn *v);
 void scr_ni_export_out(ScrDyn *v, struct ScrNodeValue *out);
 ScrDyn *scr_ni_export_value(uint32_t id); /* borrowed, or NULL */
 uint32_t scr_ni_live_exports(void);
-/* nodeIsland.classMethods: registers the method table of a class capsule. */
-ScrDyn *scr_node_island_class_methods(ScrDyn *value, ScrDyn *builder);
+/* nodeIsland.classTables: registers the program's resolver, from a class
+ * instance's capsule to the method table of the instance's own class. */
+void scr_node_island_class_tables(ScrDyn *resolver);
 /* NI-5d: native subclasses of island classes created on first use. */
 ScrDyn *scr_ni_subclass_create(ScrDyn *const *args);
 ScrDyn *scr_ni_lazy_subclass_new(ScrDyn *const *args);
@@ -223,7 +235,7 @@ void scr_ni_host_export_release(uint32_t id);
 /* ── shared modules (scope-B NI-6, scr_node_island_export.c) ── */
 void scr_node_island_share(ScrStr *path, ScrStr *exports, ScrDyn *accessor);
 ScrDyn *scr_node_island_shared_tdz(void);
-ScrDyn *scr_node_island_class_methods_of(ScrDyn *cls, ScrDyn *builder, ScrDyn *ctor);
+ScrDyn *scr_node_island_class_constructor(ScrDyn *cls, ScrDyn *ctor);
 void scr_ni_shared_refresh(void);
 void scr_ni_exports_release_all(void); /* at exit, after Node stopped */
 void *scr_ni_value_out_begin(ScrDyn *v, struct ScrNodeValue *out, bool *ok);
@@ -318,8 +330,17 @@ extern void (*scr_ni_started_hook)(void);
 
 /* Island operations the compiler emits (lib-shared.ts adapters). */
 ScrDyn *scr_node_island_apply(ScrDyn *fn, ScrDyn *args);
-/* fn called with `this` (a method read before its arguments ran). */
-ScrDyn *scr_node_island_apply_to(ScrDyn *fn, ScrDyn *this_, ScrDyn *args);
+/* fn called with `this` (the member `key`, read before its arguments ran). */
+ScrDyn *scr_node_island_apply_to(ScrDyn *fn, ScrDyn *this_, ScrStr *key, ScrDyn *args);
+/* Whether scr_node_island_apply_to makes the call of the member `fn` read
+ * from `this_`; otherwise compiled code calls the native member `key` by
+ * name, unless the arguments made it a function (a TypeError naming `what`
+ * is pending then). */
+bool scr_node_island_calls(ScrDyn *fn, ScrDyn *this_, ScrStr *key, ScrStr *what);
+/* Whether a native value's members are dispatched by compiled code (a
+ * typed reference: a class instance, a generator), which the runtime's
+ * by-name call has no table for. */
+bool scr_node_island_is_capsule(ScrDyn *value);
 ScrDyn *scr_node_island_construct(ScrDyn *ctor, ScrDyn *args);
 void scr_node_island_define_field(ScrDyn *self, ScrStr *key, ScrDyn *value);
 ScrDyn *scr_node_island_get(ScrDyn *obj, ScrStr *key);

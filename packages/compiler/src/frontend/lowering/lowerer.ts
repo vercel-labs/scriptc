@@ -1,5 +1,4 @@
 import { programCreatesWrappers, routeWrapperConsumers } from "./primitive-wrappers.js";
-import { programNamesArrayBufferView } from "./array-buffer-view.js";
 import type { DiagnosticCode } from "../../diagnostics/codes.js";
 import { markInferredFactChecks, shapeOverlayFileNames } from "../shape-inference/index.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
@@ -17,6 +16,7 @@ import { Normalizer } from "../canon.js";
 import { resolveEntryExportSymbol } from "../lib-exports.js";
 import { compactDeclOrigins, recordOrigin, slotOrigin, type RecordOrigin } from "./decl-origin.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
+import { LiteralTexts } from "./literal-texts.js";
 import {
   checkedTable,
   countTable,
@@ -449,6 +449,7 @@ import {
 import { prepareCjsModuleGraph, usesCjsTopLevelThis } from "./lower-node-module.js";
 import {
   type SplitRequireBinding,
+  cjsHasLiveMemberExports,
   cjsNamespaceModule,
   cjsWholeExportValueOf,
   hasWholeExportValue,
@@ -4034,9 +4035,6 @@ export class Lowerer {
   /** Whether a compiled source creates primitive wrapper objects
    * (programCreatesWrappers), computed on first use. */
   createsWrappers: boolean | undefined = undefined;
-  /** Whether a compiled source names the lib `ArrayBufferView` interface
-   * (programNamesArrayBufferView), computed on first use. */
-  namesArrayBufferView: boolean | undefined = undefined;
   /** Builtin-module FUNCTIONS admitted as values by their surface-table
    * entries. The resolved runtime function plus ABI is the identity key,
    * so named imports, namespace reads, CommonJS bindings, and alias chains
@@ -5165,7 +5163,6 @@ export class Lowerer {
     "nanCodedReads",
     "mentionsProcessVersions",
     "createsWrappers",
-    "namesArrayBufferView",
     "stringIndexBoundsCache",
     "functionLocalSubclasses",
     "socketEncodingReachable",
@@ -5214,6 +5211,7 @@ export class Lowerer {
     "cjsSplitRequireBindings",
     "cjsWholeExportSymbols",
     "cjsLiveMemberExports",
+    "requireWholeExportSlots",
     "cjsNamespaces",
     "runtimeExports",
     "createRequireBindingTargets",
@@ -5911,7 +5909,6 @@ export class Lowerer {
       classImplementedProtocol: (type) => this.classImplementedProtocol(type),
       isStdlibFile: (sf) => this.isStdlibFile(sf),
       primitiveWrappers: () => (this.createsWrappers ??= programCreatesWrappers(this)),
-      arrayBufferViewReads: () => (this.namesArrayBufferView ??= programNamesArrayBufferView(this)),
       isNpmFile: (sf) => this.isNpmFile(sf),
       isExperimentalFile: (sf) => isExperimentalDeclarationFile(sf, this.experimentalFiles),
       // The declaration-typed boundary's generated types (decl-projection.ts)
@@ -6530,6 +6527,16 @@ export class Lowerer {
     if (createdWhole) symbol = createdWhole;
     const createdMember = this.createRequireDestructuredExportSymbolOf(ident);
     if (createdMember) symbol = createdMember;
+    // A `require("./g")` binding whose target module exports ONE value
+    // that lives in the module's snapshot global (`module.exports =
+    // Object.getOwnPropertyDescriptor` — gopd's whole module — or the
+    // snapshot of an exported reassigned binding): tsgo's alias resolves
+    // PAST the export statement to the expression's own symbol (a stdlib
+    // declaration, or the live source binding), neither of which is
+    // Node's answer. Reconnect to the export= symbol that keys the
+    // snapshot.
+    const wholeSlot = this.requireWholeExportSlotSymbolOf(ident);
+    if (wholeSlot) symbol = wholeSlot;
     // tsgo synthesizes no expando symbol at a CJS MEMBER-EXPORT use site
     // (`common.GREETING` where the exporter attached GREETING with
     // `module.exports.GREETING = ...` — 5.9.3 answered the expando
@@ -6565,6 +6572,15 @@ export class Lowerer {
     // transform throws ReferenceError where tsc's emit would qualify —
     // lower-namespaces.ts); a no-op for programs without namespaces.
     fenceCrossBlockNsRef(this, ident, symbol);
+    // The reconnected export= symbol IS the snapshot's key: its declaration
+    // is the export statement, which is where globalOf reads the value.
+    // Chasing its alias would land on the exported EXPRESSION's symbol
+    // (a stdlib declaration, or the live source binding), which owns no
+    // storage here — the value Node's requirer sees is the snapshot.
+    if (wholeSlot) {
+      this.flushDeferred(wholeSlot);
+      return wholeSlot;
+    }
     if (symbol.flags & ts.SymbolFlags.Alias) {
       // SNAPSHOT aliases own storage keyed by the PRE-alias symbol
       // (`import x = N.y` of a mutable target — collectGlobals): the
@@ -7082,19 +7098,20 @@ export class Lowerer {
     return found;
   }
 
-  /** The represented single value behind a createRequire binding, or null
-   * when the target is a namespace/table module. Collection has already
-   * registered executable exports before entry-module uses lower, so the
-   * registries are the authority for whether the export= value exists in
-   * static storage or callable/class metadata. */
-  private createRequireWholeExportSymbolOf(ident: ts.Identifier): ts.Symbol | null {
-    const binding = this.checker.getSymbolAtLocation(ident);
-    const target = binding ? this.createRequireBindingTarget(binding) : null;
-    if (target === null) return null;
-    const moduleSym = this.checker.getSymbolAtLocation(target.dep);
-    let symbol = moduleSym?.getExports().get("export=" as ts.__String);
+  /** The module's `export=` symbol together with the whole-export
+   * statement it declares at, or null when the module's exports are not
+   * one top-level `module.exports = <value>` replacement. The statement is
+   * the key for represented single-value exports (`%g.<tag>exports` —
+   * collectGlobals): requirer aliases resolve to this symbol, whose
+   * declaration IS the statement, and globalOf's declaration-node
+   * fallback reads the value there. */
+  private wholeExportAssignmentOf(
+    dep: ts.SourceFile,
+  ): { symbol: ts.Symbol; assignment: ts.BinaryExpression } | null {
+    const moduleSym = this.checker.getSymbolAtLocation(dep);
+    const symbol = moduleSym?.getExports().get("export=" as ts.__String);
     if (!symbol) return null;
-    const wholeAssignment = symbol.declarations.find((d): d is ts.BinaryExpression => {
+    const assignment = symbol.declarations.find((d): d is ts.BinaryExpression => {
       if (
         !ts.isBinaryExpression(d) ||
         !ts.isExpressionStatement(d.parent) ||
@@ -7108,13 +7125,115 @@ export class Lowerer {
         cjsExportDiscardReason(d.parent) === null
       );
     });
-    if (wholeAssignment === undefined) return null;
+    return assignment === undefined ? null : { symbol, assignment };
+  }
+
+  /** The module a wrapper's whole export re-exports: `module.exports =
+   * require("./y")`, or `= m` where `m` is a require binding. A wrapper
+   * with live members owns storage for them, so it is not followed. */
+  private wholeReexportDepOf(dep: ts.SourceFile): ts.SourceFile | null {
+    if (cjsHasLiveMemberExports(this, dep)) return null;
+    const whole = cjsWholeExportValueOf(dep);
+    if (whole === null) return null;
+    const inner = inlineProgramRequireOf(this, whole.rhs);
+    if (inner !== null) return inner.dep;
+    let rhs: ts.Expression = whole.rhs;
+    while (ts.isParenthesizedExpression(rhs)) rhs = rhs.expression;
+    if (!ts.isIdentifier(rhs)) return null;
+    return this.localModuleBindingDepOf(rhs);
+  }
+
+  /** The whole-export statement that owns the value's storage, following
+   * `module.exports = require("./y")` re-export chains: a wrapper stores
+   * whatever the module at the end of the chain stored. Null when the
+   * chain ends at a statement with no snapshot (a class, a builtin member,
+   * a table module). */
+  private wholeExportStorageOf(
+    dep: ts.SourceFile,
+  ): { symbol: ts.Symbol; assignment: ts.BinaryExpression } | null {
+    const seen = new Set<ts.SourceFile>();
+    let current: ts.SourceFile | null = dep;
+    for (let depth = 0; current !== null && depth < 32 && !seen.has(current); depth++) {
+      seen.add(current);
+      const whole = cjsWholeExportValueOf(current);
+      if (whole === null) return null;
+      if (this.globalsByDeclNode.has(whole.assign)) {
+        const owner = this.wholeExportAssignmentOf(current);
+        return owner === null ? null : owner;
+      }
+      current = this.wholeReexportDepOf(current);
+    }
+    return null;
+  }
+
+  /** The export symbol that keys a module's whole-export snapshot global,
+   * or null when the value has no storage of its own (a class, a builtin
+   * member, a table module). Reads of the symbol resolve to that storage. */
+  wholeExportStorageSymbolOf(dep: ts.SourceFile): ts.Symbol | null {
+    return this.wholeExportStorageOf(dep)?.symbol ?? null;
+  }
+
+  /** A require-like binding of a module whose whole export is a value
+   * stored in the module's snapshot global: `module.exports =
+   * Object.getOwnPropertyDescriptor` (gopd's whole module — a stdlib
+   * member), a factory call, or an exported binding that is reassigned
+   * before the export. tsgo types the binding as an alias that resolves
+   * PAST the export statement to the expression's own symbol (the stdlib
+   * declaration, or the live source binding), so the ordinary alias chase
+   * lands on a symbol with no storage here. The snapshot global is the
+   * value Node's requirer sees, so reconnect the binding to the export=
+   * symbol that owns it. Identifier and class exports with no snapshot
+   * keep resolving straight to their declaration. */
+  private requireWholeExportSlotSymbolOf(ident: ts.Identifier): ts.Symbol | null {
+    const binding = this.checker.getSymbolAtLocation(ident);
+    if (!binding || !(binding.flags & ts.SymbolFlags.Alias)) return null;
+    const cached = this.requireWholeExportSlots.get(binding);
+    if (cached !== undefined) return cached;
+    const decl =
+      binding.declarations.find(ts.isVariableDeclaration) ??
+      binding.declarations.find(ts.isImportClause);
+    // Split bindings (`var m; m = require("./m")`) keep their own
+    // statement-position plumbing (cjs-inline-require.ts); other alias
+    // forms (named imports, import equals) have no module value here.
+    if (decl === undefined) return null;
+    if (ts.isVariableDeclaration(decl) && decl.initializer === undefined) return null;
+    const dep = this.localModuleBindingDepOf(ident);
+    // A wrapper stores the value the module at the end of its re-export
+    // chain stored, so the snapshot that reconnects this binding may live
+    // in an inner module.
+    const stored = dep === null ? null : this.wholeExportStorageOf(dep);
+    const found: ts.Symbol | null = stored === null ? null : stored.symbol;
+    // Only the positive answer is cached: collection registers whole-export
+    // slots as it walks the exporting modules.
+    if (found !== null) this.requireWholeExportSlots.set(binding, found);
+    return found;
+  }
+
+  private readonly requireWholeExportSlots = new Map<ts.Symbol, ts.Symbol>();
+
+  /** The represented single value behind a createRequire binding, or null
+   * when the target is a namespace/table module. Collection has already
+   * registered executable exports before entry-module uses lower, so the
+   * registries are the authority for whether the export= value exists in
+   * static storage or callable/class metadata. */
+  private createRequireWholeExportSymbolOf(ident: ts.Identifier): ts.Symbol | null {
+    const binding = this.checker.getSymbolAtLocation(ident);
+    const target = binding ? this.createRequireBindingTarget(binding) : null;
+    if (target === null) return null;
+    const whole = this.wholeExportAssignmentOf(target.dep);
+    if (whole === null) return null;
+    let symbol = whole.symbol;
+    const wholeAssignment = whole.assignment;
     let rhs: ts.Expression = wholeAssignment.right;
     while (ts.isParenthesizedExpression(rhs)) rhs = rhs.expression;
     // A pure re-export (`module.exports = require("./core")`) is the inner
-    // module's export table, read like any namespace binding.
-    if (inlineProgramRequireOf(this, rhs) !== null && !this.globalsByDeclNode.has(wholeAssignment))
-      return null;
+    // module's export table, read like any namespace binding — unless the
+    // chain ends at a snapshot, whose stored value this binding is.
+    const inner = inlineProgramRequireOf(this, rhs);
+    if (inner !== null && !this.globalsByDeclNode.has(wholeAssignment)) {
+      const stored = this.wholeExportStorageOf(inner.dep);
+      return stored === null ? null : stored.symbol;
+    }
     if (ts.isIdentifier(rhs)) {
       const value = this.checker.getSymbolAtLocation(rhs);
       if (value) {
@@ -7192,12 +7311,13 @@ export class Lowerer {
       }
       // A represented whole export declares AT the `module.exports =`
       // statement itself. Scalar/function/factory-call roots register one
-      // snapshot global on that declaration; table/Proxy replacements do
-      // not. A binding whose declaration owns such storage is therefore a
-      // single VALUE, not a namespace whose members must appear in Node's
-      // CJS lexer export table.
+      // snapshot global on that declaration, and a `module.exports =
+      // require("./y")` wrapper stores the inner module's snapshot, so a
+      // binding whose declaration ends at such storage is a single VALUE,
+      // not a namespace whose members must appear in Node's CJS lexer
+      // export table. Table/Proxy replacements register no such storage.
       if (d && ts.isBinaryExpression(d)) {
-        if (this.globalsByDeclNode.has(d)) return false;
+        if (this.wholeExportStorageOf(ts.getSourceFileOfNode(d)) !== null) return false;
         let r: ts.Expression = d.right;
         while (ts.isParenthesizedExpression(r)) r = r.expression;
         const scalar =
@@ -11490,6 +11610,16 @@ export class Lowerer {
     const loweredUnits = new Map<string, IrFunction>();
     const initFunctions: IrFunction[] = [];
     const instanceFunctions: IrFunction[] = [];
+    // Each finished function's long string literals become the one string
+    // of their text (literal-texts.ts), with the functions it lifted.
+    const literalTexts = new LiteralTexts();
+    const internLiteralTexts = (fn: IrFunction | null): void => {
+      if (fn !== null) literalTexts.intern(fn);
+      literalTexts.internAdded(initFunctions);
+      literalTexts.internAdded(instanceFunctions);
+      literalTexts.internAdded(this.liftedFns);
+      literalTexts.internAdded(this.implicitFns);
+    };
     this.onEdge = (name: string): void => {
       if (!this.superConstructorEdge && name.endsWith(".constructor"))
         instantiated.add(name.slice(1, -".constructor".length));
@@ -11630,6 +11760,7 @@ export class Lowerer {
                 ),
               ),
             );
+            internLiteralTexts(null);
             relieveHeapPressure();
           }
         }
@@ -11660,6 +11791,7 @@ export class Lowerer {
             );
             if (fn !== null) {
               instanceFunctions.push(fn);
+              internLiteralTexts(null);
               relieveHeapPressure();
             }
           }
@@ -11695,6 +11827,7 @@ export class Lowerer {
                 );
               });
               if (fn) instanceFunctions.push(fn);
+              internLiteralTexts(null);
             } catch (e) {
               if (!(e instanceof PoisonError)) throw e;
             }
@@ -11745,11 +11878,13 @@ export class Lowerer {
       const unit = units.get(name)!;
       const priority = metadataPriority.get(name) ?? [3, expressionMetadataOrder++];
       const owner = demandOwner(priority);
-      return this.withGenericDemandOwner(owner, () =>
+      const fn = this.withGenericDemandOwner(owner, () =>
         this.shapes.withDeclaredOrderPriority(priority, () =>
           this.withClosureRoot(name, unit.lower),
         ),
       );
+      internLiteralTexts(fn);
+      return fn;
     };
     // With a unit store, every unit is recorded as in the serial mode, and
     // a unit applies the record an earlier build stored for it where that

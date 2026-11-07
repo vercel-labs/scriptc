@@ -55,7 +55,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { resolveBuildCacheRoot } from "../backend/cache-root.js";
-import type { IrExpr, IrModule } from "../ir/ir.js";
+import type { IrExpr, IrModule, IrStmt } from "../ir/ir.js";
 import { readProjectConfig } from "../project-config.js";
 import { effectGate } from "./effect-gate.js";
 import { packageDirOf } from "./origin.js";
@@ -80,6 +80,106 @@ function deferCalls(mod: IrModule): DeferCall[] {
   walk(mod.functions);
   walk(mod.globals);
   return found;
+}
+
+/** A module initializer (`%init.<n>`, lowerFileInit). */
+function isModuleInit(name: string): boolean {
+  return name.startsWith("%init");
+}
+
+/** A statement list as the statements control passes through in order:
+ * blocks and guarded bodies opened up. */
+function flatStatements(stmts: readonly IrStmt[], out: IrStmt[] = []): IrStmt[] {
+  for (const s of stmts) {
+    if (s.kind === "block") flatStatements(s.body, out);
+    else if (s.kind === "tryCatch") {
+      flatStatements(s.tryBody, out);
+      if (s.finallyBody !== null) flatStatements(s.finallyBody, out);
+    } else out.push(s);
+  }
+  return out;
+}
+
+/** The deferred loads in the order the program reaches them while its
+ * modules evaluate, then the rest in IR order.
+ *
+ * The probe loads every candidate in one process, so the order is part of
+ * what it records: a file two candidates share evaluates in the load of
+ * whichever comes first, with its effects, inputs and environment reads,
+ * and the other's record of it is empty; and "a later island module's load
+ * changes its exports" compares against the modules loaded before. Both
+ * are only true of the program when the probe loads the modules in the
+ * program's order. IR order is not that order: a module's initializer
+ * comes after those of the modules it imports, so an importer's first
+ * island import would be probed after the island imports of its later
+ * dependencies.
+ *
+ * The walk follows the entry: each initializer's statements in order, into
+ * another module's initializer where it is called (`%init.<n>`, once, as
+ * the run-once guard has it). An initializer that awaits is left there and
+ * taken up again after the code that called it, in the order of the
+ * awaits, as module evaluation continues with later siblings while one is
+ * suspended. Loads the walk does not reach (inside functions, dynamic
+ * imports, conditions other than the ones below) keep IR order after it. */
+export function evaluationOrder(mod: IrModule, calls: DeferCall[]): DeferCall[] {
+  const functions = new Map<string, IrModule["functions"][number]>();
+  for (const fn of mod.functions) if (typeof fn.name === "string") functions.set(fn.name, fn);
+  const entered = new Set<string>();
+  const reached = new Set<DeferCall>();
+  const ordered: DeferCall[] = [];
+  const suspended: { stmts: IrStmt[]; at: number }[] = [];
+  /** Evaluates what the walk follows of `e`; true when it awaits. */
+  function evaluate(e: IrExpr): boolean {
+    if (e.kind === "libCall" && e.fn === "nodeIsland.defer") {
+      if (!reached.has(e)) {
+        reached.add(e);
+        ordered.push(e);
+      }
+      return false;
+    }
+    if (e.kind === "call" && isModuleInit(e.callee)) {
+      enter(e.callee);
+      return false;
+    }
+    if (e.kind === "awaitExpr") {
+      evaluate(e.value);
+      return true;
+    }
+    if (e.kind === "intrinsic" && e.name === "module.await") {
+      for (const arg of e.args) evaluate(arg);
+      return true;
+    }
+    return false;
+  }
+  function run(stmts: IrStmt[], from: number): void {
+    for (let i = from; i < stmts.length; i++) {
+      const s = stmts[i]!;
+      let awaits = false;
+      if (s.kind === "exprStmt") awaits = evaluate(s.expr);
+      else if (s.kind === "assign") awaits = evaluate(s.value);
+      else if (s.kind === "varDecl") awaits = s.init !== null && evaluate(s.init);
+      else if (s.kind === "if") {
+        // The run-once guard returns on a revisit; a fork or worker root is
+        // one branch of a selection.
+        run(flatStatements(s.then), 0);
+        if (s.else_ !== null) run(flatStatements(s.else_), 0);
+      } else if (s.kind === "return") return;
+      if (awaits) {
+        suspended.push({ stmts, at: i + 1 });
+        return;
+      }
+    }
+  }
+  function enter(name: string): void {
+    if (entered.has(name)) return;
+    entered.add(name);
+    const fn = functions.get(name);
+    if (fn !== undefined) run(flatStatements(fn.body), 0);
+  }
+  if (typeof mod.entry === "string") enter(mod.entry);
+  for (let i = 0; i < suspended.length; i++) run(suspended[i]!.stmts, suspended[i]!.at);
+  if (ordered.length === 0) return calls;
+  return [...ordered, ...calls.filter((c) => !reached.has(c))];
 }
 
 function pathOf(call: DeferCall): string {
@@ -144,7 +244,7 @@ export function finalizeDeferredIslands(
   packDir: string | null,
   probeModules: (packDir: string, modules: string[]) => ProbeOutput | string = runProbe,
 ): DeferralDecision[] {
-  const calls = deferCalls(mod);
+  const calls = evaluationOrder(mod, deferCalls(mod));
   if (calls.length === 0) return [];
   const dynamicLoads = hasDynamicLoads(mod);
   const decisions: DeferralDecision[] = [];

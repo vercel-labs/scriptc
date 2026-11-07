@@ -11,7 +11,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import type { IrModule } from "../ir/ir.js";
-import { finalizeDeferredIslands, probeHostDirectory, type ProbeOutput } from "./snapshot.js";
+import {
+  evaluationOrder,
+  finalizeDeferredIslands,
+  probeHostDirectory,
+  type ProbeOutput,
+} from "./snapshot.js";
 
 const saved = { ...process.env };
 const made: string[] = [];
@@ -182,5 +187,105 @@ describe("environment boot guards", () => {
     expect(decisions[0]!.deferred).toBe(true);
     expect(call.fn).toBe("nodeIsland.defer");
     expect(text).toContain("E 8:NODE_ENV 1 10:production");
+  });
+});
+
+describe("the order deferred loads are probed in", () => {
+  const defer = (path: string) => ({
+    kind: "libCall",
+    fn: "nodeIsland.defer",
+    args: [
+      { kind: "strLit", value: path },
+      { kind: "strLit", value: "" },
+    ],
+  });
+  const load = (call: unknown) => ({ kind: "assign", localId: "%g.island.0", value: call });
+  const init = (callee: string) => ({
+    kind: "exprStmt",
+    expr: { kind: "call", callee, args: [] },
+  });
+  // The run-once guard of an initializer, `if (ran) return;` (parsed: an
+  // object literal with a `then` key reads as a thenable to the linter).
+  const guard: unknown = JSON.parse(
+    '{"kind":"if","cond":{},"then":[{"kind":"return","value":null}],"else_":null}',
+  );
+  const paths = (mod: unknown, calls: unknown[]): string[] =>
+    evaluationOrder(mod as IrModule, calls as Parameters<typeof evaluationOrder>[1]).map(
+      (c) => (c.args[0] as { value: string }).value,
+    );
+
+  test("is the program's evaluation order, not the order of the IR's functions", () => {
+    // main.ts: import "a"; import "./dep" (which imports "b"); then its body
+    // requires "c". The IR lists dep's initializer first.
+    const a = defer("a");
+    const b = defer("b");
+    const c = defer("c");
+    const mod = {
+      entry: "%main",
+      functions: [
+        { name: "%init.7", body: [guard, load(b)] },
+        { name: "%init.0", body: [load(a), init("%init.7"), { kind: "block", body: [load(c)] }] },
+        { name: "%main", body: [init("%init.0")] },
+      ],
+    };
+    expect(paths(mod, [b, a, c])).toEqual(["a", "b", "c"]);
+  });
+
+  test("an initializer that awaits continues after the code that called it", () => {
+    // dep awaits between its two loads; the importer starts its next
+    // dependency before waiting for either.
+    const first = defer("first");
+    const second = defer("second");
+    const sibling = defer("sibling");
+    const own = defer("own");
+    const pending = { kind: "awaitExpr", value: { kind: "varRef", localId: "p" } };
+    const mod = {
+      entry: "%main",
+      functions: [
+        {
+          name: "%init.1",
+          body: [load(first), { kind: "exprStmt", expr: pending }, load(second)],
+        },
+        { name: "%init.2", body: [load(sibling)] },
+        {
+          name: "%init.0",
+          body: [
+            { kind: "varDecl", localId: "d1", init: { kind: "call", callee: "%init.1", args: [] } },
+            init("%init.2"),
+            { kind: "exprStmt", expr: pending },
+            load(own),
+          ],
+        },
+        {
+          name: "%main",
+          body: [
+            {
+              kind: "exprStmt",
+              expr: { kind: "awaitExpr", value: { kind: "call", callee: "%init.0", args: [] } },
+            },
+          ],
+        },
+      ],
+    };
+    expect(paths(mod, [first, second, sibling, own])).toEqual([
+      "first",
+      "sibling",
+      "second",
+      "own",
+    ]);
+  });
+
+  test("loads the walk does not reach keep the IR's order, after the others", () => {
+    const reachedLoad = defer("reached");
+    const inFunction = defer("in-function");
+    const mod = {
+      entry: "%main",
+      functions: [
+        { name: "helper", body: [load(inFunction)] },
+        { name: "%init.0", body: [load(reachedLoad)] },
+        { name: "%main", body: [init("%init.0")] },
+      ],
+    };
+    expect(paths(mod, [inFunction, reachedLoad])).toEqual(["reached", "in-function"]);
   });
 });

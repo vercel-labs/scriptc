@@ -1,0 +1,8 @@
+width-layout-keyed-write.ts:19:5 - error SC2002: record shapes must match exactly or width-coerce: expected '{ id: string; [key: string]: string }', got '{ count: number; id: string; [key: string]: string }' — the source field 'count' ('number') cannot enter the expected '[key: string]: string' slot
+
+  18 | const counted = { id: "c", count: 1 } as Counted;
+  19 | put(counted, "extra", "e");
+     |     ^~~~~~~
+  20 | console.log(counted.id, counted.extra, counted.count);
+
+  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead

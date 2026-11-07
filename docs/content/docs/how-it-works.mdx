@@ -134,6 +134,45 @@ fib.s
 
 Without `-o`, artifacts are written to `.scriptc/` next to the input. Different output kinds accumulate in that directory; rebuilding a kind updates its file.
 
+### Lowered programs
+
+Work on the phases behind the frontend (IR validation, LLVM emission, native code generation, the link) does not need the frontend to run again for each attempt. `--emit-lowered` makes a build also write its lowered program to a file, and `--from-lowered` starts a build from that file:
+
+```console
+$ scriptc build fib.ts -o fib --emit-lowered fib.lowered >/dev/null
+$ scriptc build fib.ts -o fib --from-lowered fib.lowered >/dev/null
+$ ./fib
+832040
+```
+
+The second build runs no type checker and no lowering, and writes the same executable byte for byte. The file holds the validated IR, the source texts that code frames and debug information read, the warnings the build reported, and the program's Node islands. The build caches cannot do this, because the compiler is one of their keys and a changed compiler is the reason to build again.
+
+The file also records what the program was lowered from, and a build from it checks each kind and names the one that differs:
+
+- **compiler:** the build of the compiler that lowered the program.
+- **options:** the entry file, the target platform, the FFI manifest, every option except the output paths, and the `SCRIPTC_*` environment variables the frontend reads.
+- **inputs:** every file, directory listing, and path the frontend read, including `tsconfig.json`, `package.json`, and the declaration files of dependencies.
+
+```console
+$ echo "// a comment" >> fib.ts
+$ scriptc build fib.ts -o fib --from-lowered fib.lowered
+/tmp/demo/fib.ts:1:1 - error SC3002: --from-lowered: /tmp/demo/fib.lowered does not match this build's inputs: /tmp/demo/fib.ts changed since it was lowered
+
+  hint: lower the program again with --emit-lowered, or pass --from-lowered-accept=inputs to build from the file anyway
+
+1 error.
+```
+
+`--from-lowered-accept` builds from the file anyway and reports the difference on stderr. After a change to the compiler's backend, pass `--from-lowered-accept=compiler`: the sources and options are still checked, and the build uses the program as the earlier compiler lowered it, so a change to the frontend has no effect until the program is lowered again.
+
+```console
+$ scriptc build fib.ts -o fib --from-lowered fib.lowered --from-lowered-accept=inputs
+scriptc: warning: --from-lowered: building from /tmp/demo/fib.lowered although its inputs differ: /tmp/demo/fib.ts changed since it was lowered
+/tmp/demo/fib
+```
+
+A build from a file validates the IR again before it emits. An IR artifact written by `--emit=ir` is also accepted as the file; it records none of the three kinds, so the build needs all of them accepted.
+
 ### External linking
 
 Program objects define `main` and leave selected `scr_*` runtime functions undefined. A strong reference to `scr_runtime_abi_v21` checks runtime compatibility at link time.

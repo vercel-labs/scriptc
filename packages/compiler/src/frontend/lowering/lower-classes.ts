@@ -27,6 +27,7 @@ import { keyedHelperName } from "./stable-names.js";
 import { lowerValueReturningConstructorNew } from "./js-dynamic-objects.js";
 import { adaptPromiseExecutor } from "./promise-executor-adapter.js";
 import { dynUndefinedExpr, nodeThrowExpr, strLit, varRef } from "../../ir/build.js";
+import { isDynUndefined } from "../../ir/runtime-features.js";
 import {
   isBuiltinIdentityToken,
   isPrimitiveValueType,
@@ -9886,13 +9887,15 @@ export function superCallStmt(
     // super(message) into the runtime-provided Error constructor: stamps
     // name/message on the (already-allocated) object. Receiver + message
     // are BORROWED by the libCall — no ownership transfer, unlike the
-    // call form below.
+    // call form below. A native string message, or none, takes the typed
+    // constructor; a ctor-less chain's forwarded pair stays checked-dynamic.
+    const typed = typedErrorConstructorArgs(args);
     return {
       kind: "exprStmt",
       expr: {
         kind: "libCall",
-        fn: "error.ctorOptions",
-        args: [lowerer.upcastTo(thisRef, base.def.name), ...args],
+        fn: typed ? "error.ctor" : "error.ctorOptions",
+        args: [lowerer.upcastTo(thisRef, base.def.name), ...(typed ?? args)],
         type: VOID,
         loc,
       },
@@ -10404,6 +10407,35 @@ export function errorConstructorArgs(
     if (!arg) return dynUndefinedExpr(loc);
     return lowerer.lowerExprExpecting(arg, DYN);
   });
+}
+
+/** The typed form of a builtin error constructor's argument pair
+ * (errorConstructorArgs): the message alone when it is a native string, and
+ * no argument for an absent or `undefined` one. Null when the construction
+ * needs the checked-dynamic constructor: an options argument, whose `cause`
+ * is read at run time, or a message JavaScript's ToString converts. The
+ * typed constructors leave the error in the state the checked-dynamic ones
+ * do for the same pair, without boxing the message. */
+export function typedErrorConstructorArgs(args: readonly IrExpr[]): IrExpr[] | null {
+  const [message, options] = args;
+  if (args.length !== 2 || !isDynUndefined(options!)) return null;
+  if (isDynUndefined(message!)) return [];
+  return message!.kind === "dynFrom" && message.value.type.kind === "string"
+    ? [message.value]
+    : null;
+}
+
+/** `new Error(message, options)` of a runtime error class with the argument
+ * pair errorConstructorArgs lowered. */
+export function builtinErrorNew(className: string, args: readonly IrExpr[], loc: SrcLoc): IrExpr {
+  const typed = typedErrorConstructorArgs(args);
+  return {
+    kind: "libCall",
+    fn: typed ? "error.new" : "error.newOptions",
+    args: typed ?? [...args],
+    type: { kind: "object", className },
+    loc,
+  };
 }
 
 /** `new C(...)` of a registered PROGRAM class — the shared tail of the
@@ -11306,13 +11338,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     }
     if (errInfo) {
       const args = lowerer.errorConstructorArgs(expr.arguments?.nodes ?? [], loc, expr);
-      return {
-        kind: "libCall",
-        fn: "error.newOptions",
-        args,
-        type: { kind: "object", className: errInfo.def.name },
-        loc,
-      };
+      return builtinErrorNew(errInfo.def.name, args, loc);
     }
     // `new EventEmitter()`: the runtime-provided emitter constructs
     // through one libCall. Zero arguments — the options bag

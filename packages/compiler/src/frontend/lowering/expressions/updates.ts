@@ -1181,12 +1181,58 @@ export function lowerFieldCompoundValue(
         });
         return { kind: "seqExpr", stmts: body, result: value, type: DYN, loc };
       }
+      // TypeScript's `v.text += s` where the checker types the member
+      // `string` (a value a predicate narrowed, a slot held whole as the
+      // checked dynamic): the expanded `v.text = v.text + s`, which
+      // validates the member as the string its type claims (a member holding
+      // anything else throws the catchable TypeError, as the number form
+      // below does), appends and writes the result back. JavaScript sources
+      // keep the runtime operator above, whose types claim nothing.
+      if (
+        op === "+" &&
+        rhsNode !== null &&
+        rawRhs.kind !== "unitLit" &&
+        !isJsSourceFile(ts.getSourceFileOfNode(access)) &&
+        (lowerer.typeOf(access).flags & ts.TypeFlags.String) !== 0
+      ) {
+        const old: IrExpr = { kind: "dynCheck", value: read, type: STRING, loc };
+        const value = save(
+          {
+            kind: "strConcat",
+            left: old,
+            right: concatOperand(lowerer, rhs, rhsNode),
+            type: STRING,
+            loc,
+          },
+          "%compoundResult",
+        );
+        body.push({
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "dyn.keySet",
+            args: [receiver, { ...key }, { kind: "dynFrom", value, type: DYN, loc }],
+            type: VOID,
+            loc,
+          },
+          loc,
+        });
+        return { kind: "seqExpr", stmts: body, result: value, type: STRING, loc };
+      }
       const numericRhs: IrExpr =
         rhs.type.kind === "dyn"
           ? { kind: "dynCheck", value: rhs, type: F64, loc: rhs.loc }
           : lowerOperatorNumber(lowerer, rhs, loc);
-      if (numericRhs.type.kind !== "f64")
-        compoundUnsupported(lowerer, access, op, F64, numericRhs.type);
+      if (numericRhs.type.kind !== "f64") {
+        // Name the member as the checker types it: this path reads it as a
+        // number, which is its own assumption, not the member's type.
+        const memberTs = lowerer.typeOf(access);
+        const member =
+          (memberTs.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0
+            ? DYN
+            : (lowerer.mapTypeOf(memberTs) ?? F64);
+        compoundUnsupported(lowerer, access, op, member, numericRhs.type);
+      }
       const value = save(
         { kind: "bin", op, left: cur, right: numericRhs, type: F64, loc },
         "%compoundResult",

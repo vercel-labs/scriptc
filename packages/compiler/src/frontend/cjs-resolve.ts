@@ -119,6 +119,16 @@ function globalPaths(): string[] {
   return initialPaths;
 }
 
+/** Record the process's working directory when a resolution can depend on
+ * it: a caller's lookup path that is not absolute is resolved from there
+ * (cjsNodeModulePaths), and so is the request under it. The directory is an
+ * input like any other, so a cache entry recorded under one directory is not
+ * reused for a build started in another. */
+function trackRelativeLookupPaths(request: string, paths: readonly string[] | undefined): void {
+  if (paths === undefined || isAbsolute(request)) return;
+  if (paths.some((path) => !isAbsolute(path))) trackedHostFact("cwd");
+}
+
 function parentFile(fromFile: string): string {
   return resolve(
     fromFile.endsWith(sep) || fromFile.endsWith("/") ? join(fromFile, "noop.js") : fromFile,
@@ -508,6 +518,7 @@ class CjsResolver {
         );
       }
     }
+    trackRelativeLookupPaths(request, paths);
     let lookup: string[];
     if (isAbsolute(request)) lookup = [""];
     else if (paths === undefined) lookup = cjsResolvePaths(fromFile, request) ?? [];

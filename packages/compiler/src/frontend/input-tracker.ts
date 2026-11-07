@@ -123,11 +123,12 @@ interface CachedListing {
 }
 
 /** The value of a host fact by name: `env:<NAME>` is that environment
- * variable, and `prefix` is the installation prefix Node's legacy module
- * lookup uses (the directory of the compiler's executable on Windows, the
- * one above it elsewhere). Null when the fact has no value or the name is
- * not one of these. */
+ * variable, `prefix` is the installation prefix Node's legacy module lookup
+ * uses (the directory of the compiler's executable on Windows, the one above
+ * it elsewhere), and `cwd` is the process's working directory. Null when the
+ * fact has no value or the name is not one of these. */
 export function hostFact(name: string): string | null {
+  if (name === "cwd") return process.cwd();
   if (name === "prefix") {
     const directory = dirname(process.execPath);
     return process.platform === "win32" ? directory : dirname(directory);

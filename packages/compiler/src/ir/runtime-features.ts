@@ -1611,11 +1611,19 @@ const RUNTIME_FEATURE_RULES = {
   /** events.once(emitter, name, { signal }) (scr_events_once_signal.c). */
   eventsOnceSignal: rule({ fns: ["events.onceSignal"] }),
   fetch: rule({ prefixes: ["fetch."] }),
+  /** A typed `for..of` walks a static Headers' entries/keys/values:
+   * scr_fetch_headers_walk.c, a unit of its own so a program that never
+   * iterates a Headers keeps scr_fetch.c's layout. */
+  headersWalk: rule({ fns: ["fetch.headersCount", "fetch.headersEntry"] }),
   fileHandle: rule({ types: ["fileHandle"] }),
   fsWatch: rule({ prefixes: ["fs.watch", "watcher."], types: ["fsWatcher"] }),
   /** fs.watchFile / fs.unwatchFile (scr_watch_file.c): the stat-polling
    * half of the watching surface, gated on its own unit. */
   fsWatchFile: rule({ fns: ["fs.watchFile", "fs.unwatchFile"] }),
+  /** appendFileSync passes a creation `mode`: scr_fs_append_mode.c, a unit
+   * of its own so a program that never passes one keeps scr_lib.c's
+   * layout. */
+  fsAppendMode: rule({ fns: ["fs.appendFileModeSync"] }),
   /** A socket 'lookup' listener: the C main installs the net unit's
    * lookup records (scr_net_lookup_install). */
   netLookup: rule({ fns: ["net.sockOnLookup"] }),
@@ -2018,11 +2026,13 @@ function noRuntimeFeatures(): RuntimeFeatures {
     eventTarget: false,
     eventsOnceSignal: false,
     fetch: false,
+    headersWalk: false,
     fileHandle: false,
     fsFlags: false,
     fsBytesWrites: false,
     fsWatch: false,
     fsWatchFile: false,
+    fsAppendMode: false,
     genBind: false,
     http2: false,
     http: false,

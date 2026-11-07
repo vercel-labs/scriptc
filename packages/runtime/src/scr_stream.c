@@ -6124,12 +6124,14 @@ static void scr_stream_rl_drop_data(void *s, double id) {
   }
 }
 
+static double scr_stream_rl_columns(void *s);
+
 static const ScrRlIo scr_stream_rl_io = {
     &scr_stream_rl_pause,          &scr_stream_rl_resume,   &scr_stream_rl_detach,
     &scr_stream_rl_write,          &scr_stream_rl_write_cb, &scr_stream_rl_on_event,
     &scr_stream_rl_off_event,      &scr_stream_rl_listener_count,
     &scr_stream_rl_emit2,          &scr_stream_rl_retain,   &scr_stream_rl_drop_data,
-    &scr_stream_rl_release,
+    &scr_stream_rl_release,        &scr_stream_rl_columns,
 };
 
 /* readline.emitKeypressEvents(stream, interface) */
@@ -9069,6 +9071,15 @@ ScrStream *scr_stream_stdio_writable(double fd) {
         scr_stream_stdio_write, NULL, NULL, NULL, NULL);
   }
   return scr_stream_retain(scr_stream_stdio_writables[i]);
+}
+
+/* readline's columns query for its output stream. A converted process
+ * stream answers the width of the descriptor it writes to, as Node reads
+ * the output's own columns; any other stream is unbounded. */
+static double scr_stream_rl_columns(void *s) {
+  if (s == scr_stream_stdio_writables[0]) return scr_process_columns(1);
+  if (s == scr_stream_stdio_writables[1]) return scr_process_columns(2);
+  return 0;
 }
 
 /* readable.pipe() into a Writable slot under the general representation

@@ -44,6 +44,7 @@ import {
   F64,
   type IrExpr,
   type IrLibFn,
+  type IrType,
   STRING,
   type SrcLoc,
   arrayOf,
@@ -394,6 +395,27 @@ export function lowerBuiltinModuleCall(
   ) {
     const lowered = lowerFsWriteBytesCall(lowerer, expr, bi, loc);
     if (lowered) return lowered;
+  }
+  // writeFile(path, data) over a `string | Uint8Array` payload: the live
+  // tag picks the string or the byte write, as the three-argument form
+  // does. Without this the data is converted to a string, which throws at
+  // run time when the value is bytes.
+  if (
+    bi.module === "fs/promises" &&
+    bi.member === "writeFile" &&
+    expr.arguments.nodes.length === 2
+  ) {
+    const dataIr = lowerer.mapTypeOf(lowerer.typeOf(expr.arguments.nodes[1]!));
+    const arms =
+      dataIr?.kind === "union" ? (lowerer.unions.get(dataIr.unionId)?.arms ?? null) : null;
+    const isBytes = (arm: IrType): boolean => arm.kind === "bytes" && arm.elem === "u8";
+    if (
+      arms !== null &&
+      arms.some((arm) => arm.kind === "string") &&
+      arms.some(isBytes) &&
+      arms.every((arm) => arm.kind === "string" || isBytes(arm))
+    )
+      return lowerFsWriteOptionsCall(lowerer, expr, loc, true);
   }
   // writeFileSync(fd, data): Node accepts an open descriptor where it
   // accepts a path. Routed by the FIRST ARGUMENT's static type, like

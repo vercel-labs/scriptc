@@ -99,6 +99,8 @@ export interface EarlyExecutableNativeFeatures {
   streamDyn?: boolean;
   handleProps?: boolean;
   childLifecycle?: boolean;
+  fsAppendMode?: boolean;
+  headersWalk?: boolean;
   childOptionExt?: boolean;
   spawnCaptureBytes?: boolean;
   declAdopt?: boolean;

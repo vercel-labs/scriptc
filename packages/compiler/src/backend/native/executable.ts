@@ -418,6 +418,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   ),
   // FileHandle streams reference both the stream unit and FileHandle.
   unit((u) => u.opts.stream && u.opts.fileHandle, "scr_fs_stream_fh.c"),
+  // appendFileSync with a creation mode.
+  unit((u) => u.opts.fsAppendMode === true, "scr_fs_append_mode.c"),
   // The readiness-poller backends (scr_platform.h): kqueue on macOS/BSD,
   // epoll on Linux, WSAPoll on Windows — each TU is empty off its
   // platform, so all three link whenever a poller-using unit does and
@@ -474,6 +476,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unitArgs((u) => (u.tlsCa && targetPlatform(u.driver) === "win32" ? ["-lcrypt32"] : [])),
   // Fetch uses the native network, TLS, and HTTP runtime.
   unit((u) => u.nativeFetch, "scr_fetch.c"),
+  // A typed `for..of` over a static Headers walks the fetch unit's iterator.
+  unit((u) => u.opts.headersWalk === true && u.nativeFetch, "scr_fetch_headers_walk.c"),
   unit(
     (u) => u.opts.nodeIsland === true,
     "scr_node_island.c",

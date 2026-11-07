@@ -1294,6 +1294,10 @@ export function lowerFsWriteOptionsCall(
     );
     return { kind: "seqExpr", stmts, result, type: resultType, loc };
   };
+  // fs.promises.writeFile(path, data) over a `string | Uint8Array` payload
+  // (module-calls.ts routes only that two-argument form here): the staged
+  // operands and the tag dispatch, with no option to evaluate.
+  if (expr.arguments.nodes.length === 2 && dataKind === "union") return finishWrite([]);
   // The bare-encoding spelling — writeFileSync(p, data, "utf-8") — is
   // the options record's encoding key alone: utf8 is what the runtime
   // writes anyway, so the data takes the plain write of its own shape. Any
@@ -1376,17 +1380,18 @@ export function lowerFsWriteOptionsCall(
 }
 
 /** fs.appendFileSync(p, data, options): Node's append with an options
- * record. Only the encoding lowers — the runtime appends the same utf8
- * bytes Node does — and only over string data; `mode` (creation only) and
- * the disposition flags (`"a"` is the default, anything else appends
- * differently) keep their fence. */
+ * record. The encoding may only spell the utf8 the runtime appends anyway,
+ * `flag` only the "a" an append already is (any other disposition appends
+ * differently and keeps its fence), and `mode` is the creation mode of a
+ * file the append creates (string data; fs.appendFileModeSync). */
 export function lowerFsAppendOptionsCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr {
   const optsNode = expr.arguments.nodes[2]!;
-  const supported = 'the supported options are { encoding: "utf8" } over string or Uint8Array data';
+  const supported =
+    'the supported options are { encoding: "utf8", flag: "a" } over string or Uint8Array data, and { mode: <number> } over string data';
   // A Buffer carries its own bytes, so the encoding name says nothing about
   // them (Node never looks it up); a `string | Uint8Array` payload takes the
   // same tag dispatch the two-argument forms use.
@@ -1432,10 +1437,13 @@ export function lowerFsAppendOptionsCall(
   // The bare encoding spelling names an ordinary expression, not just a
   // literal: Node evaluates it — side effects and exceptions included —
   // after the path and the data and before the write, even though the value
-  // only has to be utf8. Stage the two operands so the encoding expression
-  // lands in that order; otherwise a call statically typed as "utf8" fails
-  // to run, or fails to throw.
-  const appendAfterEncoding = (encoding: ts.Expression): IrExpr => {
+  // only has to be utf8. Stage the two operands so the option expressions
+  // land in that order, each in its own; otherwise a call statically typed
+  // as "utf8" fails to run, or fails to throw. A `mode` member's value is
+  // the creation mode the append opens with.
+  const appendAfterOptions = (
+    options: readonly { value: ts.Expression; mode: boolean }[],
+  ): IrExpr => {
     const dataType: IrType =
       unionArms !== null
         ? (dataIr as Extract<IrType, { kind: "union" }>)
@@ -1446,79 +1454,123 @@ export function lowerFsAppendOptionsCall(
     const dataLocal = lowerer.declareHiddenLocal("%appendData", dataType);
     const path = varRef(pathLocal.id, STRING, loc);
     const data = varRef(dataLocal.id, dataType, loc);
+    const stmts: IrStmt[] = [
+      {
+        kind: "varDecl",
+        localId: pathLocal.id,
+        init: lowerFsPath(lowerer, expr.arguments.nodes[0]!),
+        loc,
+      },
+      {
+        kind: "varDecl",
+        localId: dataLocal.id,
+        init: lowerer.lowerExprExpecting(dataNode, dataType),
+        loc: locOf(dataNode),
+      },
+    ];
+    let mode: IrExpr | null = null;
+    for (const option of options) {
+      if (!option.mode) {
+        stmts.push({
+          kind: "exprStmt",
+          expr: lowerer.lowerExprExpecting(option.value, STRING),
+          loc: locOf(option.value),
+        });
+        continue;
+      }
+      const modeLocal = lowerer.declareHiddenLocal("%appendMode", F64);
+      stmts.push({
+        kind: "varDecl",
+        localId: modeLocal.id,
+        init: lowerer.lowerExprExpecting(option.value, F64),
+        loc: locOf(option.value),
+      });
+      mode = varRef(modeLocal.id, F64, loc);
+    }
     return {
       kind: "seqExpr",
-      stmts: [
-        {
-          kind: "varDecl",
-          localId: pathLocal.id,
-          init: lowerFsPath(lowerer, expr.arguments.nodes[0]!),
-          loc,
-        },
-        {
-          kind: "varDecl",
-          localId: dataLocal.id,
-          init: lowerer.lowerExprExpecting(dataNode, dataType),
-          loc: locOf(dataNode),
-        },
-        {
-          kind: "exprStmt",
-          expr: lowerer.lowerExprExpecting(encoding, STRING),
-          loc: locOf(encoding),
-        },
-      ],
+      stmts,
       result:
-        unionArms !== null
-          ? lowerStringOrBytesWrite(
-              lowerer,
-              expr,
-              dataIr as Extract<IrType, { kind: "union" }>,
-              unionArms,
-              true,
-              { path, data },
-            )
-          : {
+        mode !== null
+          ? {
               kind: "libCall",
-              fn: bytesData ? "fs.appendFileSyncBytes" : "fs.appendFileSync",
-              args: [path, data],
+              fn: "fs.appendFileModeSync",
+              args: [path, data, mode],
               type: VOID,
               loc,
-            },
+            }
+          : unionArms !== null
+            ? lowerStringOrBytesWrite(
+                lowerer,
+                expr,
+                dataIr as Extract<IrType, { kind: "union" }>,
+                unionArms,
+                true,
+                { path, data },
+              )
+            : {
+                kind: "libCall",
+                fn: bytesData ? "fs.appendFileSyncBytes" : "fs.appendFileSync",
+                args: [path, data],
+                type: VOID,
+                loc,
+              },
       type: VOID,
       loc,
     };
   };
   const t = lowerer.typeOf(optsNode);
   if (t.isStringLiteralType() && (t.value === "utf8" || t.value === "utf-8"))
-    return appendAfterEncoding(optsNode);
+    return appendAfterOptions([{ value: optsNode, mode: false }]);
   const literal = optionsLiteralOf(lowerer, optsNode);
   if (literal !== null) {
-    let encodingOnly = true;
-    let encoding: ts.Expression | null = null;
+    let supportedOnly = true;
+    let hasMode = false;
+    const options: { value: ts.Expression; mode: boolean }[] = [];
     for (const property of literal.properties.nodes) {
       const member = optionMember(property);
-      if (!member || member.name !== "encoding") {
+      if (
+        !member ||
+        (member.name !== "encoding" && member.name !== "flag" && member.name !== "mode")
+      ) {
         lowerer.noLowering(
           `fs.appendFileSync with the ${member ? `'${member.name}'` : "spread"} option`,
           property,
           supported,
         );
-        encodingOnly = false;
+        supportedOnly = false;
         break;
       }
+      if (member.name === "mode") {
+        hasMode = true;
+        options.push({ value: member.value, mode: true });
+        continue;
+      }
+      // The encoding may only spell utf8, and the flag only the "a" the
+      // append already is: any other disposition appends differently.
       const value = lowerer.typeOf(member.value);
-      if (!value.isStringLiteralType() || (value.value !== "utf8" && value.value !== "utf-8")) {
-        encodingOnly = false;
+      const spelled = member.name === "encoding" ? ["utf8", "utf-8"] : ["a"];
+      if (!value.isStringLiteralType() || !spelled.includes(value.value)) {
+        supportedOnly = false;
         break;
       }
-      encoding = member.value;
+      options.push({ value: member.value, mode: false });
+    }
+    if (supportedOnly && hasMode && (bytesData || unionArms !== null)) {
+      lowerer.noLowering(
+        "fs.appendFileSync of non-string data with the 'mode' option",
+        dataNode,
+        "the append with a creation mode takes string data; byte appends take the 2-argument form",
+      );
+      supportedOnly = false;
     }
     // The options record is evaluated at the write site, as Node evaluates it:
-    // the encoding member's expression runs after the path and the data, so a
-    // call or getter behind a statically "utf8" value has its effects and
-    // exceptions, rather than being read for its type and dropped.
-    // A record with no member has no expression to evaluate.
-    if (encodingOnly) return encoding === null ? plainAppend() : appendAfterEncoding(encoding);
+    // each member's expression runs after the path and the data, in the
+    // record's own order, so a call or getter behind a statically "utf8"
+    // value has its effects and exceptions, rather than being read for its
+    // type and dropped. A record with no member has no expression to
+    // evaluate.
+    if (supportedOnly) return options.length === 0 ? plainAppend() : appendAfterOptions(options);
   }
   lowerer.noLowering("fs.appendFileSync with 3 arguments", optsNode, supported);
   return plainAppend();

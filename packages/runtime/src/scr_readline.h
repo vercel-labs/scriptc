@@ -34,6 +34,10 @@ typedef struct ScrRlIo {
   void *(*retain)(void *s);
   void (*drop_data)(void *s, double id); /* a terminal interface's own 'data' listener leaves */
   void (*release)(void *s);
+  /* The output stream's columns (Node's this.output.columns): the width of
+   * the descriptor behind a stream.stdioWritable stream, or a value <= 0
+   * for any other stream (Infinity). */
+  double (*columns)(void *s);
 } ScrRlIo;
 double scr_rl_open(const ScrRlIo *io, void *in /*+1 or NULL: stdin*/, void *out /*+1 or NULL*/,
                    bool out_stdout, double crlf_delay, ScrStr *prompt, ScrDyn *signal,

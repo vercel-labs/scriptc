@@ -550,7 +550,10 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
       loc,
     };
   }
-  if (extOptions) {
+  // A stdio slot that resolves at the call is a read, and the direct call's
+  // argument list would evaluate it after `timeout` wherever the member
+  // sits: it takes the prelude too, so the options run in source order.
+  if (extOptions || optionOrder.includes("stdio")) {
     // Node ignores `input` when stdio[0] takes the child's fd 0 away
     // ("ignore" is /dev/null, "inherit" the parent's): the option is dead
     // there, not a pipe. Its expression still runs — Node evaluates the
@@ -625,26 +628,43 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
       : ignoreInput
         ? boolLit(false, loc)
         : hasInput;
-    const call: IrExpr = {
-      kind: "libCall",
-      fn: envPairs !== null ? "cp.spawnSyncExtEnv" : "cp.spawnSyncExt",
-      args: [
-        cmdArg,
-        argvArg,
-        timeoutArg,
-        killSignal,
-        stdinModeArg,
-        outModeArg,
-        errModeArg,
-        cwdArg,
-        inputArg,
-        hasInputArg,
-        shell,
-        ...(envArg !== null ? [envArg] : []),
-      ],
-      type: SPAWNRES_T,
-      loc,
-    };
+    const call: IrExpr = extOptions
+      ? {
+          kind: "libCall",
+          fn: envPairs !== null ? "cp.spawnSyncExtEnv" : "cp.spawnSyncExt",
+          args: [
+            cmdArg,
+            argvArg,
+            timeoutArg,
+            killSignal,
+            stdinModeArg,
+            outModeArg,
+            errModeArg,
+            cwdArg,
+            inputArg,
+            hasInputArg,
+            shell,
+            ...(envArg !== null ? [envArg] : []),
+          ],
+          type: SPAWNRES_T,
+          loc,
+        }
+      : {
+          kind: "libCall",
+          fn: envPairs !== null ? "cp.spawnSyncEnv" : "cp.spawnSyncOpts",
+          args: [
+            cmdArg,
+            argvArg,
+            timeoutArg,
+            killSignal,
+            stdinModeArg,
+            outModeArg,
+            errModeArg,
+            ...(envArg !== null ? [envArg] : []),
+          ],
+          type: SPAWNRES_T,
+          loc,
+        };
     return prelude.length === 0
       ? call
       : { kind: "seqExpr", stmts: prelude, result: call, type: SPAWNRES_T, loc };
@@ -1119,9 +1139,14 @@ function stdioModeExpr(
  * by the conditional spread `...(c ? { detached: true } : {})` in either
  * orientation — POSIX_SPAWN_SETSID, the child gets its own session and
  * process group like Node's), `env` (a REPLACEMENT environment, the
- * exec-core pairs machinery), `cwd`, and `windowsHide` (a POSIX no-op).
- * The bare `{ stdio: "ignore" }` shape keeps its historical cp.spawn
- * lowering. */
+ * exec-core pairs machinery), `cwd`, `shell` (a boolean literal, or a
+ * runtime boolean: the spawn becomes a ternary on the flag, its shell arm
+ * running Node's `[file, ...args].join(" ")` through /bin/sh -c — the
+ * portable idiom cannot be fenced on one platform, so the runtime arm
+ * implements Node's exact command building, while the literal `true` keeps
+ * its "put the complete command in the first argument" fence), and
+ * `windowsHide` (a POSIX no-op). The bare `{ stdio: "ignore" }` shape keeps
+ * its historical cp.spawn lowering. */
 export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
   if (expr.arguments.nodes.length > 3 || expr.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.noLowering(
@@ -1179,6 +1204,11 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
   let detached: IrExpr = boolLit(false, loc);
   let shell: IrExpr = boolLit(false, loc);
   let shellEnabled = false;
+  // A runtime `shell` boolean (the `shell: process.platform === "win32"`
+  // idiom): the flag decides at the call, so the spawn becomes a ternary
+  // of the two command lines (Node's [file, ...args].join(" ") in the
+  // shell arm, run by /bin/sh -c).
+  let shellRuntime: IrExpr | null = null;
   let hasEnv: IrExpr = boolLit(false, loc);
   let envPairs: IrExpr = { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc };
   let cwd: IrExpr = emptyStr;
@@ -1367,21 +1397,27 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
         case "windowsHide":
           lowerer.lowerExpr(m.value); // Node no-op on POSIX
           break;
-        case "shell":
-          if (m.value.kind === ts.SyntaxKind.TrueKeyword) {
+        case "shell": {
+          // `(true)` and `true as boolean` are the literal too.
+          const spelled = stripTypeCasts(m.value);
+          if (spelled.kind === ts.SyntaxKind.TrueKeyword) {
             shell = boolLit(true, loc);
             shellEnabled = true;
             plain = false;
-          } else if (m.value.kind === ts.SyntaxKind.FalseKeyword) {
+          } else if (spelled.kind === ts.SyntaxKind.FalseKeyword) {
             shell = boolLit(false, loc);
           } else {
-            lowerer.noLowering(
-              "spawn with a non-literal shell option",
-              m.value,
-              "shell must be a boolean literal",
-            );
+            // A RUNTIME boolean (the `shell: process.platform ===
+            // "win32"` idiom): which command line runs resolves at the
+            // call, so the spawn becomes a ternary and BOTH arms must
+            // exist — the shell arm therefore implements Node's
+            // [file, ...args].join(" ") instead of the literal true
+            // form's "one command string" fence (see the tail).
+            shellRuntime = bind("%spawnShell", lowerer.lowerExprExpecting(m.value, BOOL));
+            plain = false;
           }
           break;
+        }
         default:
           lowerer.noLowering(
             `spawn option '${m.name}'`,
@@ -1411,7 +1447,7 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
   if (plain) {
     return { kind: "libCall", fn: "cp.spawn", args: [cmd, argv], type: CHILD_T, loc };
   }
-  const callOf = (callCmd: IrExpr, callArgs: IrExpr): IrExpr => ({
+  const callOf = (callCmd: IrExpr, callArgs: IrExpr, shellFlag: IrExpr = shell): IrExpr => ({
     kind: "libCall",
     fn: "cp.spawnOpts",
     args: [
@@ -1423,7 +1459,7 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
       outFd,
       errFd,
       detached,
-      shell,
+      shellFlag,
       hasEnv,
       envPairs,
       cwd,
@@ -1431,7 +1467,10 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
     type: CHILD_T,
     loc,
   });
-  if (valuePrelude.length === 0) return callOf(cmd, argv);
+  // A runtime `shell` takes the tail below even when its value folded to a
+  // constant and bound nothing: `shell` here is still the default, and
+  // returning with it would run the command line as a file name.
+  if (valuePrelude.length === 0 && shellRuntime === null) return callOf(cmd, argv);
   // The bound member values were collected in source order; the command and
   // the arguments precede them, so an earlier value that changes a later
   // one's input is seen as in Node.
@@ -1439,6 +1478,45 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
   const callCmd = bindInto(stmts, "%spawnCmd", cmd);
   const callArgs = bindInto(stmts, "%spawnArgs", argv);
   stmts.push(...valuePrelude);
+  if (shellRuntime !== null) {
+    // A runtime `shell`: the flag decides at the call, so the command is a
+    // ternary of the file and Node's `[file, ...args].join(" ")`, and the
+    // shell arm passes no args. The runtime runs the joined line through the
+    // platform's shell (/bin/sh -c, or ComSpec's /d /s /c on Windows), as it
+    // does for a literal `shell: true`.
+    const joined: IrExpr = {
+      kind: "arrIntrinsic",
+      method: "join",
+      receiver: {
+        kind: "arrayLit",
+        elems: [callCmd, callArgs],
+        spreads: [1],
+        type: arrayOf(STRING),
+        loc,
+      },
+      args: [{ kind: "strLit", value: " ", type: STRING, loc }],
+      type: STRING,
+      loc,
+    };
+    return {
+      kind: "seqExpr",
+      stmts,
+      result: callOf(
+        { kind: "ternary", cond: shellRuntime, then: joined, else_: callCmd, type: STRING, loc },
+        {
+          kind: "ternary",
+          cond: shellRuntime,
+          then: { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc },
+          else_: callArgs,
+          type: arrayOf(STRING),
+          loc,
+        },
+        shellRuntime,
+      ),
+      type: CHILD_T,
+      loc,
+    };
+  }
   return { kind: "seqExpr", stmts, result: callOf(callCmd, callArgs), type: CHILD_T, loc };
 }
 

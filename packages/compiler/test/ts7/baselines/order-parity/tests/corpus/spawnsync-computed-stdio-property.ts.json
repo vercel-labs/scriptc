@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/spawnsync-computed-stdio-property.ts"
+ ],
+ "diags": []
+}

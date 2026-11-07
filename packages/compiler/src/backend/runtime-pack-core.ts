@@ -95,6 +95,8 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   streamDyn: boolean;
   handleProps: boolean;
   childLifecycle: boolean;
+  fsAppendMode: boolean;
+  headersWalk: boolean;
   childOptionExt: boolean;
   spawnCaptureBytes: boolean;
   childErrorFields: boolean;
@@ -360,6 +362,8 @@ export function effectiveRuntimeFeatures(
     streamDyn: features.streamDyn === true,
     handleProps: features.handleProps === true,
     childLifecycle: features.childLifecycle === true,
+    fsAppendMode: features.fsAppendMode === true,
+    headersWalk: features.headersWalk === true,
     childOptionExt: features.childOptionExt === true,
     spawnCaptureBytes: features.spawnCaptureBytes === true,
     childErrorFields: features.childErrorFields === true,

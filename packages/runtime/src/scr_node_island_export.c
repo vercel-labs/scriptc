@@ -244,6 +244,16 @@ static ScrDyn *ni_collection(const ScrDyn *v, bool *set) {
 }
 
 uint32_t scr_ni_export_flags(const ScrDyn *v) {
+  /* A native error's node, whatever its form (a plain view, or the capsule
+   * of an instance of a program class): scr_node_island_handle.c exports
+   * it with the error's own value form. */
+  if (v->kind == SCR_DYN_OBJ || v->kind == SCR_DYN_TYPED_REF) {
+    ScrError *e = scr_errdyn_err_of(v);
+    if (e != NULL) {
+      scr_error_release(e);
+      return SCR_NVF_ERROR;
+    }
+  }
   switch (v->kind) {
   case SCR_DYN_FUNC:
     return v->v.fn.class_obj != NULL ? SCR_NVF_FUNCTION | SCR_NVF_CONSTRUCTOR : SCR_NVF_FUNCTION;
@@ -264,6 +274,114 @@ uint32_t scr_ni_export_flags(const ScrDyn *v) {
   default:
     return 0;
   }
+}
+
+/* The representative of a native error is a V8 Error of its intrinsic
+ * class whose own properties are the native error's: the bridge installs
+ * one per name SCR_NODE_EXPORT_OWN lists, and each read or write of one
+ * comes back here (export_get, export_set), so there is one set of values.
+ * For an instance of a program class the export also answers, from behind
+ * the V8 Error and in front of its intrinsic prototype, what the class
+ * holds. It answers only what the native error or its class holds, and
+ * leaves what an error inherits (`toString`, a plain TypeError's
+ * `constructor`) to V8's own. */
+static bool ni_export_is_error(uint32_t id) { return (ni_exports[id].flags & SCR_NVF_ERROR) != 0; }
+
+static ScrDyn *ni_class_method(const ScrDyn *target, const ScrDyn *key);
+
+/* The properties every error keeps in slots of its own, which typed code
+ * reads and writes: message, name and cause. An error's view holds them as
+ * of the last time it was built or written through, so the export answers
+ * them, and whether they are own properties, from the error itself. */
+enum { NI_SLOT_NONE, NI_SLOT_MESSAGE, NI_SLOT_NAME, NI_SLOT_CAUSE };
+
+static int ni_error_slot(const ScrStr *name) {
+  if (name->len == 7 && memcmp(name->data, "message", 7) == 0) return NI_SLOT_MESSAGE;
+  if (name->len == 4 && memcmp(name->data, "name", 4) == 0) return NI_SLOT_NAME;
+  if (name->len == 5 && memcmp(name->data, "cause", 5) == 0) return NI_SLOT_CAUSE;
+  return NI_SLOT_NONE;
+}
+
+/* Whether slot `slot` of `e` is an own property, and its attribute bits
+ * (SCR_NODE_EXPORT_OWN's): writable and configurable, enumerable when an
+ * assignment made it. */
+static bool ni_error_slot_own(const ScrError *e, int slot, int *bits) {
+  bool own = slot == NI_SLOT_MESSAGE ? e->message_present
+             : slot == NI_SLOT_NAME  ? e->name_present
+                                     : e->error_cause != NULL;
+  bool enumerable = slot == NI_SLOT_MESSAGE ? e->message_enumerable
+                    : slot == NI_SLOT_NAME  ? e->name_enumerable
+                                            : e->cause_enumerable;
+  *bits = 1 | 4 | (enumerable ? 2 : 0);
+  return own;
+}
+
+/* Whether the view itself holds `name` as an accessor (an error whose
+ * message is computed on demand): the slot has no value then, and the
+ * view's getter answers. */
+static bool ni_view_accessor(const ScrDyn *target, const ScrStr *name) {
+  if (target->kind != SCR_DYN_OBJ) return false;
+  ScrDyn *getter = scr_dyn_obj_accessor_fn(target, name->data, name->len, false);
+  bool accessor = getter != NULL && getter->kind == SCR_DYN_FUNC;
+  scr_dyn_release(getter);
+  return accessor;
+}
+
+/* Member `key` of native error `target` as its export answers it (+1), or
+ * NULL when V8's own Error answers (or an exception is pending): a field,
+ * an accessor or a method of the error's class, and its class as
+ * `constructor`. The names every object inherits and the constructor of an
+ * intrinsic error class are V8's, so `e.constructor === TypeError` holds
+ * in island code for a native TypeError. */
+static ScrDyn *ni_error_member(ScrDyn *target, ScrDyn *key) {
+  if (key->kind != SCR_DYN_STR) return NULL;
+  const ScrStr *name = key->v.str;
+  int slot = ni_error_slot(name);
+  if (slot != NI_SLOT_NONE && !ni_view_accessor(target, name)) {
+    ScrError *e = scr_errdyn_err_of(target);
+    if (e != NULL) {
+      int bits;
+      ScrDyn *value = NULL;
+      if (ni_error_slot_own(e, slot, &bits)) {
+        value = slot == NI_SLOT_MESSAGE ? scr_dyn_new_str(e->message)
+                : slot == NI_SLOT_NAME  ? scr_dyn_new_str(e->name)
+                                        : scr_dyn_retain(e->error_cause);
+      }
+      scr_error_release(e);
+      if (value != NULL) return value;
+      /* Not in the slot: the view answers (a DOMException's name and
+       * message are its view's own). */
+    }
+  }
+  bool own = scr_dyn_has_key(target, name);
+  if (scr_exc_pending()) return NULL;
+  bool ctor = name->len == 11 && memcmp(name->data, "constructor", 11) == 0;
+  if (!own && !ctor && scr_dyn_in(target, name)) return NULL;
+  if (scr_exc_pending()) return NULL;
+  ScrDyn *value = scr_dyn_reflect_get(target, key, target);
+  if (value == NULL || scr_exc_pending()) {
+    scr_dyn_release(value);
+    return NULL;
+  }
+  if (ctor) {
+    static const char *const intrinsic[] = {"Error",          "TypeError", "RangeError",
+                                            "SyntaxError",    "ReferenceError", "EvalError",
+                                            "URIError",       "AggregateError"};
+    for (size_t i = 0; i < sizeof intrinsic / sizeof intrinsic[0]; i++) {
+      ScrDyn *builtin = scr_dyn_error_constructor(intrinsic[i]);
+      bool same = builtin == value;
+      scr_dyn_release(builtin);
+      if (same) {
+        scr_dyn_release(value);
+        return NULL;
+      }
+    }
+  }
+  if (value->kind == SCR_DYN_UNDEF && !own) {
+    scr_dyn_release(value);
+    return ni_class_method(target, key);
+  }
+  return value;
 }
 
 /* Whether `v` crosses into Node as an export (by reference). */
@@ -456,6 +574,105 @@ static ScrDyn *ni_repeated_arg(const ScrNodeValue *args, ScrDyn *const *done, si
     if (args[j].tag == SCR_NV_HANDLE && args[j].u.handle == args[i].u.handle && done[j] != NULL)
       return scr_dyn_retain(done[j]);
   return NULL;
+}
+
+/* SCR_NODE_EXPORT_OWN: the own string-keyed properties of native error
+ * `target`, in order, each followed by its attribute bits (1 writable, 2
+ * enumerable, 4 configurable), then the state word (1: not extensible), as
+ * a JSON copy. The bridge installs each as a property whose value lives
+ * here, so an accessor of the view (a message computed on demand) is listed
+ * like a data property. Not listed: `stack`, every error's accessor, which
+ * V8 has too; and the accessors of a class instance's view, which are its
+ * class's (Node keeps them on the prototype, and the export answers them
+ * from behind the error). message, name and cause are listed from the
+ * error's own slots. */
+static int ni_export_own(ScrDyn *target, ScrNodeValue *out) {
+  ScrDyn *names = scr_dyn_get_own_property_names(target);
+  if (names == NULL || scr_exc_pending()) {
+    scr_dyn_release(names);
+    return ni_threw(out);
+  }
+  ScrError *e = scr_errdyn_err_of(target);
+  bool listed[NI_SLOT_CAUSE + 1] = {false};
+  ScrDyn *list = scr_dyn_new_arr();
+  for (size_t i = 0; i < names->v.arr.len; i++) {
+    ScrDyn *key = names->v.arr.items[i];
+    if (key->kind != SCR_DYN_STR) continue;
+    if (key->v.str->len == 5 && memcmp(key->v.str->data, "stack", 5) == 0) continue;
+    int slot = ni_error_slot(key->v.str);
+    int slot_bits;
+    if (e != NULL && slot != NI_SLOT_NONE && !ni_view_accessor(target, key->v.str) &&
+        ni_error_slot_own(e, slot, &slot_bits)) {
+      listed[slot] = true;
+      scr_dyn_arr_push(list, scr_dyn_retain(key));
+      scr_dyn_arr_push(list, scr_dyn_new_num(slot_bits));
+      continue;
+    }
+    ScrDyn *descriptor = scr_dyn_get_own_property_descriptor(target, key);
+    if (descriptor == NULL || scr_exc_pending()) {
+      scr_dyn_release(descriptor);
+      scr_dyn_release(list);
+      scr_dyn_release(names);
+      if (e != NULL) scr_error_release(e);
+      return ni_threw(out);
+    }
+    if (descriptor->kind == SCR_DYN_OBJ) {
+      bool data = scr_dyn_obj_get(descriptor, "value", 5) != NULL;
+      const ScrDyn *setter = scr_dyn_obj_get(descriptor, "set", 3);
+      if (data || target->kind == SCR_DYN_OBJ) {
+        static const struct {
+          const char *name;
+          size_t len;
+          int bit;
+        } attributes[] = {{"writable", 8, 1}, {"enumerable", 10, 2}, {"configurable", 12, 4}};
+        int bits = !data && setter != NULL && setter->kind == SCR_DYN_FUNC ? 1 : 0;
+        for (size_t a = 0; a < 3; a++) {
+          const ScrDyn *flag = scr_dyn_obj_get(descriptor, attributes[a].name, attributes[a].len);
+          if (flag != NULL && flag->kind == SCR_DYN_BOOL && flag->v.b) bits |= attributes[a].bit;
+        }
+        if (slot != NI_SLOT_NONE) listed[slot] = true;
+        scr_dyn_arr_push(list, scr_dyn_retain(key));
+        scr_dyn_arr_push(list, scr_dyn_new_num(bits));
+      }
+    }
+    scr_dyn_release(descriptor);
+  }
+  /* A slot typed code filled after the view was built. */
+  static const struct {
+    int slot;
+    const char *name;
+    size_t len;
+  } slots[] = {{NI_SLOT_MESSAGE, "message", 7}, {NI_SLOT_NAME, "name", 4}, {NI_SLOT_CAUSE, "cause", 5}};
+  for (size_t i = 0; e != NULL && i < 3; i++) {
+    int bits;
+    if (listed[slots[i].slot] || !ni_error_slot_own(e, slots[i].slot, &bits)) continue;
+    ScrStr *name = scr_str_new(slots[i].name, slots[i].len);
+    scr_dyn_arr_push(list, scr_dyn_new_str(name));
+    scr_str_release(name);
+    scr_dyn_arr_push(list, scr_dyn_new_num(bits));
+  }
+  if (e != NULL) scr_error_release(e);
+  scr_dyn_release(names);
+  bool extensible = scr_dyn_is_extensible(target);
+  if (scr_exc_pending()) {
+    scr_exc_clear();
+    extensible = true;
+  }
+  scr_dyn_arr_push(list, scr_dyn_new_num(extensible ? 0 : 1));
+  ScrStr *gap = scr_str_new("", 0);
+  ScrDyn *json = scr_json_stringify_replacer(list, scr_dyn_undefined(), gap);
+  scr_str_release(gap);
+  scr_dyn_release(list);
+  if (json == NULL || json->kind != SCR_DYN_STR || scr_exc_pending()) {
+    scr_dyn_release(json);
+    return ni_threw(out);
+  }
+  memset(out, 0, sizeof *out);
+  out->tag = SCR_NV_JSON;
+  out->u.str.data = json->v.str->data;
+  out->u.str.len = json->v.str->len;
+  ni_keep_set(json);
+  return 0;
 }
 
 /* Arguments as runtime values (+1 each). */
@@ -721,6 +938,16 @@ int scr_ni_host_export_get(uint32_t id, const ScrNodeValue *key, ScrNodeValue *o
     }
     return ni_returned(element, out);
   }
+  if (ni_export_is_error(id)) {
+    ScrDyn *member = ni_error_member(target, pk);
+    scr_dyn_release(pk);
+    scr_dyn_release(k);
+    if (scr_exc_pending()) {
+      scr_dyn_release(member);
+      return ni_threw(out);
+    }
+    return member != NULL ? ni_returned(member, out) : 2;
+  }
   int present = 0;
   if (pk->kind == SCR_DYN_STR) present = scr_dyn_in(target, pk->v.str);
   if (!present && !scr_exc_pending()) {
@@ -760,7 +987,14 @@ int scr_ni_host_export_set(uint32_t id, const ScrNodeValue *key, const ScrNodeVa
   if (target == NULL) return 2;
   ScrDyn *k = scr_ni_value_in(key);
   ScrDyn *v = scr_ni_value_in(value);
-  bool ok = scr_dyn_reflect_set(target, k, v, target);
+  bool ok = true;
+  if (ni_export_is_error(id) && k->kind == SCR_DYN_STR) {
+    /* A native error: the dynamic write, which also stores name, message,
+     * stack, cause and code in the slots typed code reads. */
+    scr_dyn_key_set(target, k->v.str, v);
+  } else {
+    ok = scr_dyn_reflect_set(target, k, v, target);
+  }
   scr_dyn_release(v);
   scr_dyn_release(k);
   scr_ni_shared_refresh();
@@ -788,6 +1022,10 @@ int scr_ni_host_export_has(uint32_t id, const ScrNodeValue *key) {
       present = len != NULL && len->kind == SCR_DYN_NUM && index < len->v.num;
       scr_dyn_release(len);
     }
+  } else if (pk != NULL && pk->kind == SCR_DYN_STR && ni_export_is_error(id)) {
+    ScrDyn *member = ni_error_member(target, pk);
+    present = member != NULL;
+    scr_dyn_release(member);
   } else if (pk != NULL && pk->kind == SCR_DYN_STR) {
     present = scr_dyn_in(target, pk->v.str);
   }
@@ -895,6 +1133,13 @@ int scr_ni_host_export_op(uint32_t id, uint32_t op, const ScrNodeValue *args, si
                           ScrNodeValue *out) {
   ni_keep_set(NULL);
   ScrDyn *target = scr_ni_export_value(id);
+  if (op == SCR_NODE_EXPORT_OWN) {
+    if (target == NULL || !ni_export_is_error(id)) {
+      scr_throw_error_msg(SCR_ERR_TYPE, "native error is gone", 20);
+      return ni_threw(out);
+    }
+    return ni_export_own(target, out);
+  }
   if (target != NULL && ni_exports[id].twin != NULL)
     return ni_twin_op(ni_exports[id].twin, target, op, args, argc, out);
   bool set = false;
@@ -967,13 +1212,23 @@ void scr_ni_host_export_release(uint32_t id) {
 
 /* `value instanceof C` for the representative of native class C: the
  * value is an instance of C's own type key (NI-6 shortcut: instances of
- * native subclasses of C answer false; NOTES.md). */
+ * native subclasses of C answer false; NOTES.md). A native error answers
+ * by its class's place in the compiled hierarchy, as a catch clause does,
+ * so an instance of a subclass of C is an instance of C. */
 int scr_ni_host_export_instance_of(uint32_t id, const ScrNodeValue *value) {
   ScrDyn *ctor = scr_ni_export_value(id);
   if (ctor == NULL || ctor->kind != SCR_DYN_FUNC || ctor->v.fn.class_obj == NULL) return 0;
   ScrDyn *v = scr_ni_value_in(value);
   int is = v->kind == SCR_DYN_TYPED_REF &&
            ni_instance_key_is(ctor->v.fn.sig, v->v.typed_ref.type_key, v->v.typed_ref.type_key_len);
+  if (!is && v->kind == SCR_DYN_TYPED_REF) {
+    ScrError *e = scr_errdyn_err_of(v);
+    if (e != NULL) {
+      const ScrClassObj *cls = ctor->v.fn.class_obj;
+      is = cls->pre <= e->vt->pre && e->vt->pre <= cls->post;
+      scr_error_release(e);
+    }
+  }
   scr_dyn_release(v);
   return is;
 }
@@ -1010,6 +1265,9 @@ static void ni_settle_export(uint32_t id, ScrPromise *p) {
     payload = NULL; /* a void fulfillment */
   }
   if (payload == NULL) payload = scr_dyn_retain(scr_dyn_undefined());
+  /* Node raises `unhandledRejection` with this reason if nobody handles the
+   * V8 promise: a native listener receives the native error itself. */
+  if (rejected) scr_ni_error_link(payload);
   if (!scr_ni_value_out(payload, &value)) {
     /* The payload cannot cross: the promise rejects with that error. */
     scr_dyn_release(payload);
@@ -1040,12 +1298,12 @@ void scr_ni_host_export_watch(uint32_t id) {
   ScrDyn *v = scr_ni_export_value(id);
   if (v == NULL || v->kind != SCR_DYN_PROMISE) return;
   ScrPromise *p = v->v.promise;
-  scr_promise_mark_handled(p);
-  if (!scr_promise_is_pending(p)) {
-    ni_settle_export(id, p);
-    return;
-  }
-  scr_promise_on_settle_sync(p, ni_promise_settled);
+  bool handled = scr_promise_tracked_by_node(p);
+  if (!scr_promise_is_pending(p)) ni_settle_export(id, p);
+  else scr_promise_on_settle_sync(p, ni_promise_settled);
+  /* Native code already reacts to the promise: its V8 promise is handled
+   * too, so island code that only holds it sees no unhandled rejection. */
+  if (handled) scr_ni_promise_handled(p);
 }
 
 /* ── shared modules (scope-B NI-6) ────────────────────────────────────
@@ -1350,7 +1608,7 @@ static void ni_helpers_cleanup(void) {
   ni_helpers = NULL;
 }
 
-static ScrDyn *ni_helper(const char *name, ScrDyn *const *args, size_t argc) {
+ScrDyn *scr_ni_helper(const char *name, ScrDyn *const *args, size_t argc) {
   if (ni_helpers == NULL) {
     ScrStr *path = scr_str_new("scriptc:island-helpers", 22);
     ni_helpers = scr_ni_require(path);
@@ -1378,14 +1636,14 @@ void scr_ni_twin_tell(uint32_t id, const char *event, ScrDyn *value) {
                      value != NULL ? value : scr_dyn_undefined()};
   scr_str_release(cs);
   scr_str_release(es);
-  ScrDyn *answer = ni_helper("tellTwin", args, 4);
+  ScrDyn *answer = scr_ni_helper("tellTwin", args, 4);
   if (answer == NULL && scr_exc_pending()) {
     ScrCaught *caught = scr_exc_take();
     ScrDyn *thrown = scr_caught_to_dyn(caught);
     scr_caught_release(caught);
     if (thrown != NULL) {
       args[3] = thrown;
-      answer = ni_helper("tellTwin", args, 4);
+      answer = scr_ni_helper("tellTwin", args, 4);
       scr_dyn_release(thrown);
     }
     if (scr_exc_pending()) scr_exc_clear();
@@ -1411,7 +1669,7 @@ ScrDyn *scr_ni_twin_adopt(ScrDyn *island, uint32_t handle) {
   if (!adopting) return NULL;
   ScrCaught *saved = scr_exc_pending() ? scr_exc_take() : NULL;
   ScrDyn *native = NULL;
-  ScrDyn *name = ni_helper("twinClassOf", &island, 1);
+  ScrDyn *name = scr_ni_helper("twinClassOf", &island, 1);
   const ScrNiTwinClass *cls = NULL;
   /* Adopted since this handle was made: the native object that did. */
   if (name != NULL && ni_twin_class(name) != NULL) {
@@ -1433,7 +1691,7 @@ ScrDyn *scr_ni_twin_adopt(ScrDyn *island, uint32_t handle) {
     uint32_t id = scr_ni_export_id(native);
     ni_exports[id].adopts = handle;
     ni_exports[id].adopted = true;
-    ScrDyn *ready = ni_helper("twinReady", &native, 1);
+    ScrDyn *ready = scr_ni_helper("twinReady", &native, 1);
     bool ok = ready != NULL && ready->kind == SCR_DYN_BOOL && ready->v.b;
     scr_dyn_release(ready);
     if (ni_exports[id].value == native) ni_exports[id].adopts = 0;
@@ -1461,7 +1719,7 @@ static ScrDyn *ni_helper_spread(const char *name, ScrDyn **lead, size_t nlead, S
   if (all == NULL) ni_export_oom();
   for (size_t i = 0; i < nlead; i++) all[i] = lead[i];
   for (size_t i = 0; i < n; i++) all[nlead + i] = args->v.arr.items[i];
-  ScrDyn *r = ni_helper(name, all, nlead + n);
+  ScrDyn *r = scr_ni_helper(name, all, nlead + n);
   if (all != small) free(all);
   return r;
 }
@@ -1469,7 +1727,7 @@ static ScrDyn *ni_helper_spread(const char *name, ScrDyn **lead, size_t nlead, S
 /* Creates the JavaScript class (base, name, ctor, fields, methods, getters,
  * setters): +1 island handle, or NULL with the error pending. */
 ScrDyn *scr_ni_subclass_create(ScrDyn *const *args) {
-  return ni_helper("subclass", args, 7);
+  return scr_ni_helper("subclass", args, 7);
 }
 
 /* NI-5d: before Node has started (the base is a deferred island class's
@@ -1502,7 +1760,7 @@ ScrDyn *scr_node_island_super_method(ScrDyn *base, ScrDyn *self, ScrStr *name, S
 void scr_node_island_define_field(ScrDyn *self, ScrStr *key, ScrDyn *value) {
   ScrDyn *k = scr_dyn_new_str(key);
   ScrDyn *args[] = {self, k, value};
-  ScrDyn *r = ni_helper("defineField", args, 3);
+  ScrDyn *r = scr_ni_helper("defineField", args, 3);
   scr_dyn_release(k);
   scr_dyn_release(r);
 }
@@ -1514,7 +1772,7 @@ bool scr_node_island_instanceof_global(ScrDyn *value, ScrStr *name) {
   if (value == NULL || !scr_ni_is_handle(value)) return false;
   ScrDyn *n = scr_dyn_new_str(name);
   ScrDyn *args[] = {value, n};
-  ScrDyn *r = ni_helper("isInstance", args, 2);
+  ScrDyn *r = scr_ni_helper("isInstance", args, 2);
   scr_dyn_release(n);
   bool yes = r != NULL && r->kind == SCR_DYN_BOOL && r->v.b;
   scr_dyn_release(r);
@@ -1525,6 +1783,6 @@ bool scr_node_island_instanceof_global(ScrDyn *value, ScrStr *name) {
 /* util.promisify of an island function: Node's own, in the island. */
 ScrDyn *scr_node_island_promisify(ScrDyn *fn) {
   ScrDyn *args[] = {fn};
-  return ni_helper("promisify", args, 1);
+  return scr_ni_helper("promisify", args, 1);
 }
 #endif

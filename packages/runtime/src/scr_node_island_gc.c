@@ -525,9 +525,31 @@ int scr_ni_host_gc_analyze(const uint32_t *exports, size_t n, ScrNodeGcResult *o
       continue;
     }
     const void *ident = gc_referent(exports[i]);
+    /* A native error's view: the error-view cache (scr_json.c) holds the
+     * view and the error until nothing else does, so it is not a holder.
+     * An error the program still holds keeps its export a root; otherwise
+     * the cache's two references are explained like the table's. */
+    ScrDyn *v = scr_ni_export_value(exports[i]);
+    ScrError *error = v->kind == SCR_DYN_OBJ || v->kind == SCR_DYN_TYPED_REF ? scr_errdyn_err_of(v) : NULL;
+    bool cached = false;
+    if (error != NULL) {
+      cached = scr_errdyn_view_of(error) == v;
+      size_t boxed = v->kind == SCR_DYN_TYPED_REF && v->v.typed_ref.ptr == (void *)error;
+      /* This call's reference, the cache's and the capsule's. */
+      bool held = SCR_RC_COUNT(error) > 2 + boxed;
+      scr_error_release(error);
+      if (cached && held) {
+        gc_rooted[i] = 1;
+        continue;
+      }
+    }
     if (ident != NULL && !gc_skip(ident)) gc_obj_node((void *)ident)->ident = (uint32_t)i + 1;
-    gc_obj(scr_ni_export_value(exports[i]))->count--;
+    gc_obj(v)->count -= cached ? 2 : 1;
     gc_count();
+    if (cached) {
+      NiGcNode *held_error = gc_lookup(error);
+      if (held_error != NULL && held_error->kind == NI_OBJ) held_error->count--;
+    }
   }
   if (!gc_failed) gc_blacken();
   last_len = gc_len;

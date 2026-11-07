@@ -58,7 +58,6 @@ function project(): { dir: string; entry: string; file: string; state: IslandRou
         [cfg.name, cfg],
       ]),
       modules: new Map([[module.file, module]]),
-      retryFences: false,
     },
   };
 }
@@ -76,7 +75,6 @@ test("a recorded decision reads back as the round state it was written from", ()
   expect(read).not.toBeNull();
   expect([...read!.packages.values()]).toEqual([...p.state.packages.values()].reverse());
   expect([...read!.modules.values()]).toEqual([...p.state.modules.values()]);
-  expect(read!.retryFences).toBe(false);
   // The same decision is the same bytes, so a second write leaves the file.
   expect(writeIslandDecision(p.file, p.entry, KEY, policyOf(), read!)).toBe(false);
 });
@@ -122,7 +120,7 @@ test("only the automatic policy keeps or replays a decision", () => {
   expect(readIslandDecision(p.file, p.entry, KEY, policyOf({ mode: "off" }))).toBeNull();
 });
 
-test("an entry that no longer holds is dropped and the fence rules run again", () => {
+test("an entry that no longer holds is dropped", () => {
   const p = project();
   writeIslandDecision(p.file, p.entry, KEY, policyOf(), p.state);
   // A new version of one package: that package is decided again.
@@ -133,7 +131,6 @@ test("an entry that no longer holds is dropped and the fence rules run again", (
   const bumped = readIslandDecision(p.file, p.entry, KEY, policyOf());
   expect([...bumped!.packages.keys()]).toEqual(["@scope/cfg"]);
   expect(bumped!.modules.size).toBe(1);
-  expect(bumped!.retryFences).toBe(true);
   // A package the policy now keeps native, and a module that is gone.
   rmSync(join(p.dir, "src", "legacy.js"));
   const native = readIslandDecision(
@@ -148,7 +145,6 @@ test("an entry that no longer holds is dropped and the fence rules run again", (
   rmSync(join(p.dir, "node_modules", "@scope"), { recursive: true });
   const removed = readIslandDecision(p.file, p.entry, KEY, policyOf());
   expect(removed!.packages.size).toBe(0);
-  expect(removed!.retryFences).toBe(true);
 });
 
 test("a file this compiler does not read is ignored, not an error", () => {
@@ -173,6 +169,6 @@ test("the cache key follows the file's bytes", () => {
   writeIslandDecision(p.file, p.entry, KEY, policyOf(), p.state);
   const first = islandDecisionDigest(p.file);
   expect(first).toMatch(/^#[0-9a-f]{64}$/);
-  writeIslandDecision(p.file, p.entry, KEY, policyOf(), { ...p.state, retryFences: true });
+  writeIslandDecision(p.file, p.entry, KEY, policyOf(), { ...p.state, modules: new Map() });
   expect(islandDecisionDigest(p.file)).not.toBe(first);
 });

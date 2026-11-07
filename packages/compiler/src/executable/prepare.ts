@@ -75,11 +75,14 @@ export interface PreparedExecutableModule {
 }
 
 /** `prepareExecutableModule` for a build: with `--node-island-decision` the
- * first island round starts from the decision the file records, and the
- * state the build's last round started from is written back for the next
- * build (node-islands/decision-file.ts). A failed build records its
- * decision too, so the next one reports the same failure from one round.
- * Without the option this is `prepareExecutableModule` from scratch. */
+ * first island round starts from the islands the file records, and the
+ * islands the build's last round started from are written back for the next
+ * build (node-islands/decision-file.ts). The replayed round runs with the
+ * fence rules on, as a first round does: they judge the program as it is
+ * now, so a dependency added since the record is not left to a rule that
+ * ran before it existed. A failed build records its decision too, so the
+ * next one reports the same failure from one round. Without the option this
+ * is `prepareExecutableModule` from scratch. */
 export function prepareExecutableBuild(
   entryPath: string,
   opts: CompileRequestOptions,
@@ -119,7 +122,7 @@ export function prepareExecutableBuild(
     createFrontend,
     timing,
     replayed === null ? new Map() : replayed.packages,
-    replayed === null ? true : replayed.retryFences,
+    true,
     unitStore,
     replayed === null ? new Map() : replayed.modules,
     (state) => {
@@ -134,10 +137,10 @@ export function prepareExecutableBuild(
  * `unitStore` keeps the lowered units of this build for the next one
  * (unit-reuse.ts).
  *
- * `lowerIslands`, `lowerModules` and `retryFences` are the state an island
- * round starts from: empty for a build that decides from scratch, the grown
- * set for a retry, and a recorded decision for a build that replays one
- * (node-islands/decision-file.ts). `onDecided` receives the state of the
+ * `lowerIslands` and `lowerModules` are the islands an island round starts
+ * from: empty for a build that decides from scratch, the grown set for a
+ * retry, and a recorded decision for a build that replays one
+ * (node-islands/decision-file.ts). `onDecided` receives the islands of the
  * round whose result this call returns, which is what such a recording
  * keeps. */
 export function prepareExecutableModule(
@@ -153,13 +156,12 @@ export function prepareExecutableModule(
   lowerModules: ReadonlyMap<string, IslandModule> = new Map(),
   onDecided: ((state: IslandRoundState) => void) | null = null,
 ): PreparedExecutableModule | CompileFailure {
-  // A round that returns a result of its own reports the state it started
+  // A round that returns a result of its own reports the islands it started
   // from. A round that retries returns the retry's result, and the retry
   // reports; a build that keeps its own result after its fence attempts
   // failed reports last, so the last report is always the returned round's.
   const decided = (): void => {
-    if (onDecided !== null)
-      onDecided({ packages: lowerIslands, modules: lowerModules, retryFences });
+    if (onDecided !== null) onDecided({ packages: lowerIslands, modules: lowerModules });
   };
   // The island decision reads the detector's scan unless islands are off.
   const islandScan =

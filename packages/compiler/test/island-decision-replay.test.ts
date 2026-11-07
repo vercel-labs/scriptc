@@ -1,7 +1,7 @@
 // A build decides its Node islands in rounds: it lowers the program, islands
-// what refused, loads and lowers again. With --node-island-decision the state
-// its last round started from is kept in a file, and the next build's first
-// round starts there (node-islands/decision-file.ts).
+// what refused, loads and lowers again. With --node-island-decision the
+// islands its last round started from are kept in a file, and the next
+// build's first round starts there (node-islands/decision-file.ts).
 //
 // These compile real island fixtures twice through prepareExecutableBuild,
 // once deciding from scratch and once from the recorded file, and require the
@@ -79,7 +79,6 @@ function build(dir: string, decision: string | null): Built {
 
 interface Recorded {
   format: number;
-  retryFences: boolean;
   packages: { name: string; dir: string; version: string | null; class: string; reason: string }[];
   modules: unknown[];
 }
@@ -122,8 +121,6 @@ test("a failing build's fence-report island is replayed in one round", () => {
   expect(file.packages.map((p) => [p.name, p.dir])).toEqual([
     ["schemakit", "node_modules/schemakit"],
   ]);
-  // The recorded round ran after the fence report, which runs once.
-  expect(file.retryFences).toBe(false);
 }, 600_000);
 
 test("a lowering refusal's island is replayed in one round", () => {
@@ -133,8 +130,6 @@ test("a lowering refusal's island is replayed in one round", () => {
   expect(r.replay.rounds).toBe(1);
   expect(r.replay.result).toBe(r.scratchBuild.result);
   expect(recorded(r.file).packages.map((p) => p.name)).toEqual(["sdk-pkg"]);
-  // The lowering's own retry leaves the fence rules on.
-  expect(recorded(r.file).retryFences).toBe(true);
 }, 600_000);
 
 test("a compiling build's sure-fence island is replayed without the native build", () => {
@@ -145,6 +140,38 @@ test("a compiling build's sure-fence island is replayed without the native build
   expect(r.replay.rounds).toBe(1);
   expect(r.replay.result).toBe(r.scratchBuild.result);
   expect(recorded(r.file).packages.map((p) => p.name)).toEqual(["esmisland"]);
+}, 600_000);
+
+test("a dependency added after the record gets the island a build from scratch gives it", () => {
+  // The record holds one sure-fence island, decided by a fence attempt.
+  const dir = fixture("tests/corpus/6817-node-island-esm");
+  const file = join(dir, "islands.json");
+  build(dir, file);
+  expect(recorded(file).packages.map((p) => p.name)).toEqual(["esmisland"]);
+  // The program then imports a second package of the same kind: it compiles
+  // natively with a fence that surely fires, which only a fence rule sees.
+  cpSync(
+    join(repoRoot, "tests/corpus/6826-node-island-undefined-args/node_modules/argprobe"),
+    join(dir, "node_modules/argprobe"),
+    { recursive: true },
+  );
+  const main = join(dir, "main.ts");
+  writeFileSync(
+    main,
+    `${readFileSync(main, "utf8")}
+import { probe as addedProbe } from "argprobe";
+console.log(addedProbe());
+`,
+  );
+  const scratchBuild = build(dir, null);
+  expect(scratchBuild.ok).toBe(true);
+  const replay = build(dir, file);
+  expect(replay.result).toBe(scratchBuild.result);
+  expect(recorded(file).packages.map((p) => p.name)).toEqual(["argprobe", "esmisland"]);
+  // And from then on one round.
+  const settled = build(dir, file);
+  expect(settled.rounds).toBe(1);
+  expect(settled.result).toBe(scratchBuild.result);
 }, 600_000);
 
 test("a failing build records its decision, and the replay reports the same failure", () => {

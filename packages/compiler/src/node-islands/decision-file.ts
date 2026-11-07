@@ -7,16 +7,17 @@
  * rounds are most of the build, and between two builds of the same program
  * their answer rarely changes.
  *
- * The file keeps that answer: the state the last round started from — the
- * island packages with their class and first reason, the island modules, and
- * whether a fence rule may still run. A build that finds the file starts its
- * first round there, so it is that last round run directly. Nothing else
- * about the round changes: the first decision (refused, marked and patched
- * packages) is made from the load as always, and the lowering's own
- * refusals still grow the set and start another round, after which the file
- * holds the grown set. An entry whose package directory or module file is
- * gone, whose version changed, or that the policy now keeps native or
- * unloaded is dropped and decided again by the rounds.
+ * The file keeps that answer: the islands the last round started from — the
+ * island packages with their class and first reason, and the island
+ * modules. A build that finds the file starts its first round there.
+ * Nothing else about the round changes: the first decision (refused, marked
+ * and patched packages) is made from the load as always, and the lowering's
+ * refusals and the fence rules judge the program as it is now, so a
+ * dependency added since the record gets the island a build from scratch
+ * gives it, by one more round, after which the file holds the grown set. An
+ * entry whose package directory or module file is gone, whose version
+ * changed, or that the policy now keeps native or unloaded is dropped and
+ * decided again by the rounds.
  *
  * What a replay cannot notice is an island the program no longer needs: the
  * package would have to be lowered natively to find out, which is the round
@@ -29,14 +30,13 @@ import type { IslandModule, IslandPackage } from "./boundary.js";
 import { packageVersionOf } from "./origin.js";
 import { nodeIslandOptionsKey, type NodeIslandOptions, type NodeIslandPolicy } from "./policy.js";
 
-/** What one island round starts from, and so what a build's last round
- * leaves for the next build. */
+/** The islands one island round starts from, and so what a build's last
+ * round leaves for the next build. Whether that round could still run a
+ * fence rule is not part of it: the rule had run for the program as it was,
+ * and a replay asks it again for the program as it is. */
 export interface IslandRoundState {
   packages: ReadonlyMap<string, IslandPackage>;
   modules: ReadonlyMap<string, IslandModule>;
-  /** Whether the round may still run a fence rule (false after a
-   * fence-report retry and inside a fence attempt). */
-  retryFences: boolean;
 }
 
 const FORMAT = 1;
@@ -119,7 +119,6 @@ export function serializeIslandDecision(
       format: FORMAT,
       entry: recorded(base, entryPath),
       policy: key,
-      retryFences: state.retryFences,
       packages,
       modules,
     },
@@ -128,12 +127,10 @@ export function serializeIslandDecision(
   )}\n`;
 }
 
-/** The round state `file` records for this entry under this policy, or null
+/** The islands `file` records for this entry under this policy, or null
  * when there is nothing to replay: no file, a file this compiler does not
  * read, or one recorded for another entry or policy. The automatic policy
- * alone grows islands from a lowering, so only it replays. A dropped entry
- * turns the fence rules back on: the recorded round no longer stands as the
- * last one. */
+ * alone grows islands from a lowering, so only it replays. */
 export function readIslandDecision(
   file: string,
   entryPath: string,
@@ -160,7 +157,6 @@ export function readIslandDecision(
   const listedPackages = parsed["packages"];
   const listedModules = parsed["modules"];
   if (!Array.isArray(listedPackages) || !Array.isArray(listedModules)) return null;
-  let complete = true;
   const packages = new Map<string, IslandPackage>();
   for (const entry of listedPackages) {
     if (!isRecord(entry)) return null;
@@ -183,10 +179,8 @@ export function readIslandDecision(
       policy.unloaded.has(name) ||
       !existsSync(at) ||
       packageVersionOf(at) !== version
-    ) {
-      complete = false;
+    )
       continue;
-    }
     packages.set(name, { name, version, dir: at, class: cls, reason });
   }
   const modules = new Map<string, IslandModule>();
@@ -204,17 +198,10 @@ export function readIslandDecision(
     )
       return null;
     const at = slashed(resolve(base, path));
-    if (!existsSync(at)) {
-      complete = false;
-      continue;
-    }
+    if (!existsSync(at)) continue;
     modules.set(at, { file: at, class: cls, reason, decision });
   }
-  return {
-    packages,
-    modules,
-    retryFences: complete ? parsed["retryFences"] !== false : true,
-  };
+  return { packages, modules };
 }
 
 /** Writes the decision a build reached, unless the file already says so.

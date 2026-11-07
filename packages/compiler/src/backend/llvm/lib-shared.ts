@@ -1408,6 +1408,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "worker.root": "scr_worker_root",
   "worker.data": "scr_worker_data",
   "worker.parentPort": "scr_worker_parent_port",
+  "worker.shareEnv": "scr_worker_share_env",
   "worker.resourceLimits": "scr_worker_resource_limits",
   "worker.threadName": "scr_worker_thread_name_current",
   "worker.channel": "scr_worker_message_channel",

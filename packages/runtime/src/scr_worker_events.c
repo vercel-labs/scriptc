@@ -1383,6 +1383,98 @@ static bool scr_worker_stack_size(ScrDyn *limits, size_t *stack_size) {
   return true;
 }
 
+/* worker_threads.SHARE_ENV: the unique symbol the env option compares
+ * against. It stays per thread, like every other symbol identity (nothing
+ * compares a symbol across threads); the thread record's own reference
+ * keeps it for the thread's lifetime. */
+static SCR_TL ScrSym *scr_worker_share_env_symbol;
+
+static void scr_worker_share_env_cleanup(void) {
+  scr_sym_release(scr_worker_share_env_symbol);
+  scr_worker_share_env_symbol = NULL;
+}
+
+ScrSym *scr_worker_share_env(void) {
+  if (!scr_worker_share_env_symbol) {
+    static const char text[] = "nodejs.worker_threads.SHARE_ENV";
+    ScrStr *description = scr_str_new(text, sizeof text - 1);
+    scr_worker_share_env_symbol = scr_sym_new(description);
+    scr_str_release(description);
+    if (scr_atexit(scr_worker_share_env_cleanup)) scr_trap("scriptc: out of memory\n");
+  }
+  return scr_sym_retain(scr_worker_share_env_symbol);
+}
+
+/* The option value's own enumerable entries as the environment's variables:
+ * each value converts with ToString, so an object's Symbol.toPrimitive runs
+ * first (with the "string" hint, as String() does) and a getter or either
+ * hook can throw, the throw propagating out of the Worker constructor. The
+ * text is stored as UTF-8, lone surrogates replaced as the process
+ * environment stores them. */
+static bool scr_worker_env_entries(ScrContextEnv *environment, ScrDyn *value) {
+  ScrDynEntryPairs *pairs = scr_dyn_obj_entry_pairs(value);
+  if (!pairs) return false;
+  bool ok = true;
+  for (size_t i = 0; i < pairs->count; i++) {
+    ScrDynEntryPair *pair = &pairs->pairs[i];
+    ScrStr *text = scr_util_to_string(pair->value);
+    if (!text) { ok = false; break; }
+    char *name_owned, *value_owned;
+    const char *name = scr_str_utf8(pair->key, &name_owned);
+    const char *entry = scr_str_utf8(text, &value_owned);
+    scr_context_env_assign(environment, name, entry);
+    scr_str_utf8_end(value_owned);
+    scr_str_utf8_end(name_owned);
+    scr_str_release(text);
+  }
+  for (size_t i = 0; i < pairs->count; i++) {
+    scr_str_release(pairs->pairs[i].key);
+    scr_dyn_release(pairs->pairs[i].value);
+  }
+  scr_dyn_entry_pairs_free(pairs);
+  return ok;
+}
+
+/* Node's env option (lib/internal/worker.js): an object's own enumerable
+ * entries become the thread's process.env, null and undefined copy the
+ * creating thread's environment, SHARE_ENV shares that environment, and
+ * every other value is ERR_INVALID_ARG_TYPE. */
+static bool scr_worker_env_option(ScrDyn *value, ScrContextEnv **environment, bool *share) {
+  static const char expected[] =
+      "of type object or one of undefined, null, or worker_threads.SHARE_ENV";
+  *environment = NULL;
+  *share = false;
+  if (value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL) {
+    *environment = scr_context_env_capture();
+    return true;
+  }
+  if (value->kind == SCR_DYN_SYMBOL) {
+    ScrSym *shared = scr_worker_share_env();
+    bool is_shared = value->v.symbol.value == shared;
+    scr_sym_release(shared);
+    if (is_shared) {
+      *share = true;
+      return true;
+    }
+    scr_dyn_prop_type_fail("options.env", expected, value);
+    return false;
+  }
+  if (
+      value->kind != SCR_DYN_ARR && value->kind != SCR_DYN_OBJ && value->kind != SCR_DYN_BYTES &&
+      value->kind != SCR_DYN_HANDLE && value->kind != SCR_DYN_PROMISE &&
+      value->kind != SCR_DYN_TYPED_REF && value->kind != SCR_DYN_PROXY) {
+    scr_dyn_prop_type_fail("options.env", expected, value);
+    return false;
+  }
+  ScrContextEnv *entries = scr_context_env_new();
+  if (!scr_worker_env_entries(entries, value)) {
+    scr_context_env_release(entries);
+    return false;
+  }
+  *environment = entries;
+  return true;
+}
+
 static ScrDyn *scr_worker_new_options(double root, ScrStr *filename, ScrDyn *options) {
   if (!scr_worker_events_install()) return NULL;
   ScrDyn *data = scr_dyn_undefined();
@@ -1390,6 +1482,7 @@ static ScrDyn *scr_worker_new_options(double root, ScrStr *filename, ScrDyn *opt
   ScrDyn *transfer_list = scr_dyn_undefined();
   ScrDyn *limits = scr_dyn_undefined();
   ScrDyn *name = scr_dyn_undefined();
+  ScrDyn *env = scr_dyn_undefined();
   unsigned capture = 0;
   if (options->kind != SCR_DYN_UNDEF) {
     if (options->kind != SCR_DYN_OBJ) {
@@ -1404,6 +1497,7 @@ static ScrDyn *scr_worker_new_options(double root, ScrStr *filename, ScrDyn *opt
       else if (entry.key_len == 12 && !memcmp(entry.key, "transferList", 12)) transfer_list = entry.value;
       else if (entry.key_len == 14 && !memcmp(entry.key, "resourceLimits", 14)) limits = entry.value;
       else if (entry.key_len == 4 && !memcmp(entry.key, "name", 4)) name = entry.value;
+      else if (entry.key_len == 3 && !memcmp(entry.key, "env", 3)) env = entry.value;
       else if (entry.key_len == 6 && !memcmp(entry.key, "stdout", 6)) capture |= scr_dyn_truthy(entry.value) ? 1 : 0;
       else if (entry.key_len == 6 && !memcmp(entry.key, "stderr", 6)) capture |= scr_dyn_truthy(entry.value) ? 2 : 0;
       else if (entry.key_len == 5 && !memcmp(entry.key, "stdin", 5)) capture |= scr_dyn_truthy(entry.value) ? 4 : 0;
@@ -1414,11 +1508,18 @@ static ScrDyn *scr_worker_new_options(double root, ScrStr *filename, ScrDyn *opt
   if (!scr_worker_stack_size(limits, &stack_size)) return NULL;
   ScrArr *arguments = scr_worker_arguments(filename, argv);
   if (!arguments) return NULL;
+  ScrContextEnv *environment;
+  bool share_environment;
+  if (!scr_worker_env_option(env, &environment, &share_environment)) {
+    scr_arr_release(arguments);
+    return NULL;
+  }
   /* Node: a truthy name must be a string, trimmed; otherwise WorkerThread */
   ScrStr *thread_name;
   if (scr_dyn_truthy(name)) {
     if (name->kind != SCR_DYN_STR) {
       scr_arr_release(arguments);
+      scr_context_env_release(environment);
       scr_dyn_prop_type_fail("options.name", "of type string", name);
       return NULL;
     }
@@ -1427,15 +1528,27 @@ static ScrDyn *scr_worker_new_options(double root, ScrStr *filename, ScrDyn *opt
     thread_name = scr_str_new("WorkerThread", 12);
   }
   ScrDyn *transfer = scr_worker_transfer_list(transfer_list);
-  if (scr_exc_pending()) { scr_arr_release(arguments); scr_str_release(thread_name); return NULL; }
+  if (scr_exc_pending()) {
+    scr_arr_release(arguments);
+    scr_str_release(thread_name);
+    scr_context_env_release(environment);
+    return NULL;
+  }
   bool environment_data;
   ScrMessage *wire = scr_worker_start_message(data, transfer, &environment_data);
   if (capture & 4) scr_worker_set_stdin_attach(scr_worker_stdin_attach);
   scr_dyn_release(transfer);
-  if (!wire) { scr_arr_release(arguments); scr_str_release(thread_name); return NULL; }
+  if (!wire) {
+    scr_arr_release(arguments);
+    scr_str_release(thread_name);
+    scr_context_env_release(environment);
+    return NULL;
+  }
+  /* The thread record owns the environment; a shared one is the retained
+   * reference to the creating thread's environment. */
   ScrWorkerThread *thread = scr_worker_thread_start(sc_worker_entry, (uint32_t)root, wire, environment_data,
                                                     scr_worker_events, arguments, stack_size, thread_name,
-                                                    capture);
+                                                    capture, environment, share_environment);
   scr_str_release(thread_name);
   scr_arr_release(arguments);
   if (!thread) return NULL;

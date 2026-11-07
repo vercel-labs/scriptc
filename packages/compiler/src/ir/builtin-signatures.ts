@@ -1658,6 +1658,9 @@ function buildLibFnSignatures() {
     "worker.root": { argTypes: [], result: F64 },
     "worker.data": { argTypes: [], result: DYN },
     "worker.parentPort": { argTypes: [], result: DYN },
+    /** worker_threads.SHARE_ENV: the env option's share marker symbol
+     * (scr_worker_events.c). */
+    "worker.shareEnv": { argTypes: [], result: SYMBOL_T },
     /** worker_threads.resourceLimits: {} in the main thread; a refusal in a
      * worker (scr_worker_events.c). */
     "worker.resourceLimits": { argTypes: [], result: DYN },

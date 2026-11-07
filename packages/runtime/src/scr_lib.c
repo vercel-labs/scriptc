@@ -1273,6 +1273,7 @@ void scr_env_set(const ScrStr *name, const ScrStr *value) {
   const char *k = scr_str_utf8(name, &name_owned), *v = scr_str_utf8(value, &value_owned);
 #ifdef SCR_WORKERS
   if (scr_context_env_set(k, v)) goto done;
+  scr_context_env_process_lock();
 #endif
 #ifdef _WIN32
   /* The WIN32 environment (see scr_env_get): an empty value stays a
@@ -1286,6 +1287,9 @@ void scr_env_set(const ScrStr *name, const ScrStr *value) {
   free(wvalue);
 #else
   setenv(k, v, 1);
+#endif
+#ifdef SCR_WORKERS
+  scr_context_env_process_unlock();
 #endif
   scr_env_tz_changed(name);
 #ifdef SCR_WORKERS
@@ -1301,6 +1305,7 @@ void scr_env_unset(const ScrStr *name) {
   scr_node_debug_capture(name);
 #ifdef SCR_WORKERS
   if (scr_context_env_set(name->data, NULL)) return;
+  scr_context_env_process_lock();
 #endif
 #ifdef _WIN32
   char *owned;
@@ -1311,6 +1316,9 @@ void scr_env_unset(const ScrStr *name) {
   scr_str_utf8_end(owned);
 #else
   unsetenv(name->data);
+#endif
+#ifdef SCR_WORKERS
+  scr_context_env_process_unlock();
 #endif
   scr_env_tz_changed(name);
 }
@@ -1564,6 +1572,10 @@ ScrArr *scr_env_pairs(void) {
   if (local) return local;
 #endif
   ScrArr *out = scr_arr_new(SCR_ELEM_STR, 0);
+#ifdef SCR_WORKERS
+  /* The walk reads the environ array another thread's write can reallocate. */
+  scr_context_env_process_lock();
+#endif
 #ifdef _WIN32
   /* The WIN32 environment block (see scr_env_get): NUL-separated "K=V"
    * entries, double-NUL terminated, read as UTF-16 and converted to the
@@ -1594,6 +1606,9 @@ ScrArr *scr_env_pairs(void) {
     scr_arr_push_ref(out, scr_str_new(*e, (size_t)(eq - *e)));
     scr_arr_push_ref(out, scr_str_new(eq + 1, strlen(eq + 1)));
   }
+#endif
+#ifdef SCR_WORKERS
+  scr_context_env_process_unlock();
 #endif
   return out;
 }

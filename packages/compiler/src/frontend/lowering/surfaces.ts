@@ -2319,7 +2319,9 @@ export const BUILTIN_MODULE_CONSTS: Record<
   "path/posix": { sep: "/", delimiter: ":" },
   "path/win32": { sep: "\\", delimiter: ";" },
   os: { EOL: "\n", devNull: "/dev/null" },
-  worker_threads: { isMainThread: true, threadId: 0 },
+  // SHARE_ENV is a symbol, not a constant value: its entry keeps the member
+  // in the namespace inventory, and the worker lowering supplies the value.
+  worker_threads: { isMainThread: true, threadId: 0, SHARE_ENV: undefined },
   cluster: { isPrimary: true, isMaster: true, isWorker: false },
   punycode: { version: "2.1.0" },
   // The largest Buffer length, the bound the allocation checks use; V8's

@@ -31,6 +31,7 @@
  * The scan runs when the mapper first meets one of the three interfaces, so
  * a program that names none of them never pays for it. */
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesNonNull } from "../outer-expressions.js";
 
 const PROTOCOL_NAMES: ReadonlySet<string> = new Set([
   "AsyncIterable",
@@ -126,7 +127,9 @@ export class AsyncProtocolHolders {
     const sites = this.collect();
     this.sites = sites.length;
     if (sites.length === 0) return;
-    const sourceNodes = sites.map((site) => flowSourceNode(site.source));
+    // The expression a flow's value comes from, inside parentheses and
+    // non-null assertions.
+    const sourceNodes = sites.map((site) => withoutParenthesesNonNull(site.source));
     // One batched round trip for the sources: most sit in bodies whose
     // reachability is not known yet, so nothing has prefetched them.
     attempt(() => this.checker.prefetchClassCollection(sourceNodes, []));
@@ -360,13 +363,4 @@ export class AsyncProtocolHolders {
     for (const source of this.sources) if (!source.isDeclarationFile) visit(source);
     return sites;
   }
-}
-
-/** The expression a flow's value comes from: inside parentheses and
- * non-null assertions. */
-function flowSourceNode(expr: ts.Expression): ts.Expression {
-  let inner = expr;
-  while (ts.isParenthesizedExpression(inner) || ts.isNonNullExpression(inner))
-    inner = inner.expression;
-  return inner;
 }

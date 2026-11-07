@@ -1281,7 +1281,18 @@ export function lowerPropertyAccessExpr(
         DYN,
         loc,
       );
-      return lowerer.maybeNarrow(thrown, expr);
+      // The receiver is evaluated before the property is read: its effects
+      // and its own exception come first (`(step(), f).caller`).
+      const read: IrExpr = isSafeToDiscard(restricted)
+        ? thrown
+        : {
+            kind: "seqExpr",
+            stmts: [{ kind: "exprStmt", expr: restricted, loc: restricted.loc }],
+            result: thrown,
+            type: DYN,
+            loc,
+          };
+      return lowerer.maybeNarrow(read, expr);
     }
   }
   // A client function chosen at run time (`const requestFn = c ?

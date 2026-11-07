@@ -11414,6 +11414,13 @@ int scr_dyn_function_kind(const ScrDyn *value) {
 void scr_dyn_adopt_identity(ScrClosure *adapter, const ScrDyn *value) {
   if (value->kind == SCR_DYN_FUNC && value->v.fn.class_obj == NULL)
     scr_closure_adopt_identity(adapter, value->v.fn.clo, value->v.fn.arity);
+#ifdef SCR_NODE_ISLANDS
+  /* A Node island's function is one function however many typed views the
+   * program holds of it: each view adopts the handle's identity root. */
+  else if (scr_ni_dyn_handle(value) && scr_ni_dyn_ops != NULL &&
+           scr_ni_dyn_ops->function_identity != NULL)
+    scr_closure_adopt_identity(adapter, scr_ni_dyn_ops->function_identity(value), 0);
+#endif
 }
 
 bool scr_dyn_is_object(const ScrDyn *d) {
@@ -16640,7 +16647,14 @@ static ScrDyn *scr_json_revive(ScrDyn *holder, const ScrStr *key,
 ScrDyn *scr_json_parse_reviver(ScrStr *text, const ScrDyn *reviver) {
   ScrDyn *parsed = scr_json_parse(text);
   if (!parsed) return NULL; /* No callback runs on invalid input. */
+#ifdef SCR_NODE_ISLANDS
+  /* A function a Node island made is a reviver function. */
+  if (reviver->kind != SCR_DYN_FUNC &&
+      !(scr_ni_dyn_handle(reviver) && scr_ni_dyn_ops != NULL && scr_ni_dyn_ops->is_function(reviver)))
+    return parsed;
+#else
   if (reviver->kind != SCR_DYN_FUNC) return parsed;
+#endif
   ScrDyn *holder = scr_dyn_new_obj();
   scr_dyn_obj_set(holder, "", 0, parsed);
   ScrStr *key = scr_str_new("", 0);
@@ -17088,6 +17102,14 @@ ScrDyn *scr_json_stringify_value(const ScrDyn *value, const ScrDyn *replacer, co
     size_t length = isnan(count) || count <= 0 ? 0 : count >= 10 ? 10 : (size_t)count;
     gap = scr_str_new("          ", length);
   } else gap = scr_str_new("", 0);
+#ifdef SCR_NODE_ISLANDS
+  /* A function a Node island made is a replacer function. */
+  if (scr_ni_dyn_handle(replacer) && scr_ni_dyn_ops != NULL && scr_ni_dyn_ops->is_function(replacer)) {
+    ScrDyn *replaced = scr_json_stringify_replacer(value, replacer, gap);
+    scr_str_release(gap);
+    return replaced;
+  }
+#endif
   bool list = replacer->kind == SCR_DYN_ARR || (replacer->kind == SCR_DYN_TYPED_REF && scr_dyn_ref_is_array(replacer));
   ScrDyn *result = scr_json_stringify_replacer(value, replacer->kind == SCR_DYN_FUNC || list ? replacer : scr_dyn_undefined(), gap);
   scr_str_release(gap);

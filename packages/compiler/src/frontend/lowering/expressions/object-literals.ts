@@ -47,6 +47,7 @@ import {
 import { planUnionRetag } from "../union-retag.js";
 import { literalValues } from "../../literal-values.js";
 import { jsHoldsDynObject, runtimeOptionalStorageOperand } from "../lower-exprs.js";
+import { isIslandImportBinding } from "../lower-node-island.js";
 import { builtinGlobalValue } from "./property-access.js";
 import { holdsEvolvingArray } from "../lower-stmts.js";
 import { builtinNamespaceValue } from "../builtin-namespaces.js";
@@ -4383,6 +4384,9 @@ export function lowerShorthandValue(
   }
   const builtinValue = shorthandBuiltinValue(lowerer, prop);
   if (builtinValue) return builtinValue;
+  // A Node island's export (`{ compare }`): the value the long form
+  // `{ compare: compare }` reads.
+  if (isIslandImportBinding(lowerer, propName)) return lowerer.lowerExpr(propName);
   if (symbol) {
     if (lowerer.ctx.selfSymbol === symbol) {
       return { kind: "selfRef", type: lowerer.ctx.selfType!, loc };

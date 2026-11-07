@@ -12,7 +12,7 @@ import {
   lowerNewTargetName,
 } from "./new-target.js";
 import { lowerWebAssemblyValue, refuseWebAssemblyUse } from "./builtins/webassembly.js";
-import { lowerIslandExpr } from "./lower-node-island.js";
+import { islandFunctionView, lowerIslandExpr } from "./lower-node-island.js";
 import { lowerAwaitedUniformPromiseAll, promiseAllValueUnread } from "./builtins/promises.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
@@ -260,6 +260,10 @@ export function lowerExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   lowerExprDepth++;
   try {
     let lowered = lowerExprInner(lowerer, expr);
+    // An island's function in a slot the program types as a function is its
+    // typed view there. Programs without islands skip it.
+    if (lowerer.nodeIslands !== null && lowered.type.kind === "dyn")
+      lowered = islandFunctionView(lowerer, lowered, expr) ?? lowered;
     const nanCoded = lowerer.nanCodedReads;
     if (nanCoded) {
       if (lowered.type.kind === "f64" && nanCoded.reboxes(expr))

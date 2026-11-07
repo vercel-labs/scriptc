@@ -275,10 +275,10 @@ export type RequiredLinkFeatureName = {
 type EveryRequiredLinkFeatureOff = { readonly [Name in RequiredLinkFeatureName]: false };
 
 /** Every required key, off, in the interface's order. This is the one list
- * of those keys: the cache validators, the warm-cache profiles and the
- * library archive's gates read it, so a required key is added by declaring
- * it in the interface and adding its line here, and removed by deleting
- * both. An optional key has no line anywhere but the interface. */
+ * of those keys: the cache validators and the warm-cache profiles read it,
+ * so a required key is added by declaring it in the interface and adding
+ * its line here, and removed by deleting both. An optional key has no line
+ * anywhere but the interface. */
 const NO_LINK_FEATURES: EveryRequiredLinkFeatureOff = {
   regex: false,
   copying: false,

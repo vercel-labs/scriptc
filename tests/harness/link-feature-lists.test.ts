@@ -67,7 +67,7 @@ const LISTS: Readonly<Record<string, string>> = {
   "backend/library-pack.ts#libraryArchiveFeatures":
     "the library archive's gates, written over every required key; open changes append to this literal, so it starts from noLinkFeatures() once they have landed (library-pack.test.ts holds it to the list until then)",
   "backend/executable-features.ts#executableLinkFeatures":
-    "maps each IR fact to its link feature: three names differ, two features are computed, and its key order is the one cache keys carry",
+    "maps each IR fact to its link feature: five names differ, some features are computed from several facts or from the module, and its key order is the one cache keys carry",
   "index.ts#compileExecutableNative":
     "copies the link features onto the options of the build that compiles the runtime from source",
   "backend/runtime-pack-core.ts#effectiveRuntimeFeatures":

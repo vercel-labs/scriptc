@@ -1002,6 +1002,10 @@ export const FENCE_CODES: Record<string, { name: string; status: "unsupported" }
     name: "writes through a value held from process.env (a snapshot, not the live table)",
     status: "unsupported",
   },
+  SC2015: {
+    name: "an empty array literal used at an element type that was not decided where it is written",
+    status: "unsupported",
+  },
   SC2020: {
     name: "standard-library or @types/node surface with no lowering",
     status: "unsupported",
@@ -1378,6 +1382,26 @@ export function heldEnvWriteDiag(loc: SrcLoc): ScrDiagnostic {
     loc,
     milestone: "later",
     hint: "read and write the live variable directly (process.env.NAME or process.env[key]), or write into a fresh copy: const env = { ...process.env, NAME: value }",
+  };
+}
+
+/** An empty array literal the checker leaves untyped (`{ files: [] }` is
+ * `{ files: never[] }`) is one array under every name, so its element type
+ * is decided once, where it is written: by its contextual type, or by the
+ * typed slots its value reaches (empty-array-places.ts). A typed array slot
+ * that receives it where that did not decide the slot's type would need a
+ * copy of the array, and a write through either name would then be
+ * invisible through the other. Refused instead. */
+export function emptyArrayDiag(expectedText: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC2015",
+    message:
+      `an empty array written with no element type ('[]', which the checker types 'never[]') cannot be used as '${expectedText}' here: ` +
+      "it is one array under every name, so its element type is decided where it is written, and this use did not decide it " +
+      "(the same array is also used with another element type, or it reaches this use through a path the compiler does not follow)",
+    loc,
+    milestone: "later",
+    hint: `give the literal its type where it is written, for example \`[] as ${expectedText.includes(" ") ? "ElementType[]" : expectedText}\`, or annotate the object or binding that holds it`,
   };
 }
 

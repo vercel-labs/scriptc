@@ -535,6 +535,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "references to one class of an import cycle",
   ),
   scan(
+    "frontend/lowering/empty-array-places.ts#Search",
+    2,
+    "inference",
+    "the element type of one untyped empty array literal, from the reads of its property or binding; a file that never spells the name does not read it by that name",
+  ),
+  scan(
     "frontend/lowering/expressions/property-access.ts#globalThisWrittenNames",
     2,
     "closed-world",

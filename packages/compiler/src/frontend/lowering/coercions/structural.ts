@@ -57,18 +57,24 @@ export function widthCoerce(lowerer: Lowerer, expr: IrExpr, expected: IrType): I
     return lowerer.classStaticsProjection(expr.type.className, expected.shapeId, expr.loc);
   }
   if (expected.kind === "array" && expr.type.kind === "array") {
+    // The empty literal itself, built with no element type (`never[]`):
+    // no other name holds it yet, so it is the destination's empty array.
+    // Any other array of the unit-only element keeps its identity and has
+    // no conversion to a data element (requireExactShape names the refusal).
+    if (
+      expr.kind === "arrayLit" &&
+      expr.elems.length === 0 &&
+      lowerer.unitOnlyElem(expr.type.elem) &&
+      !lowerer.unitOnlyElem(expected.elem)
+    )
+      return { ...expr, type: expected };
     const optional = optionalArrayHelper(lowerer, expr.type, expected, expr.loc);
     if (optional)
       return { kind: "call", callee: optional, args: [expr], type: expected, loc: expr.loc };
     const helper = lowerer.arrayWidthHelper(expr.type, expected, expr.loc);
     if (helper)
       return { kind: "call", callee: helper, args: [expr], type: expected, loc: expr.loc };
-    // The EMPTY-array lift (widthLiftPlan's emptyArr rule), top-level:
-    // `cmd.aliases` typed `(null | undefined)[]` (an `aliases: []`
-    // table) flowing into a `string[]` slot.
-    const lift = lowerer.widthLiftPlan(expr.type, expected);
-    if (lift?.how !== "emptyArr") return null;
-    return lowerer.applyWidthLift(lift, expr, expected, expr.loc);
+    return null;
   }
   // A TUPLE flowing into an array slot (`const NAMES = [...] as const`
   // assigned to a `readonly T[]` — the const-table pattern): TS erases
@@ -301,12 +307,6 @@ export function applyWidthLift(
       const helper = lowerer.tupleArrayWidthHelper(value.type.shapeId, dst, loc);
       if (!helper)
         throw new InternalCompilerError("lowerer bug: planned tupleArr lift failed to intern");
-      return { kind: "call", callee: helper, args: [value], type: dst, loc };
-    }
-    case "emptyArr": {
-      if (dst.kind !== "array" || value.type.kind !== "array")
-        throw new InternalCompilerError("lowerer bug: emptyArr lift shape");
-      const helper = lowerer.emptyArrayLiftHelper(value.type, dst, loc);
       return { kind: "call", callee: helper, args: [value], type: dst, loc };
     }
     case "objWidth": {
@@ -635,69 +635,6 @@ export function tupleArrayWidthHelper(
         },
         loc,
       },
-    ],
-    loc,
-  });
-  return name;
-}
-
-/** Interned `%arr.empty.<n>(a)` — the EMPTY-array lift's build side: a
- * unit-only-element array reshapes into any data-element array by
- * answering a FRESH empty array, after a runtime non-empty trap (a
- * genuinely inhabited `(null | undefined)[]` cannot reshape — the
- * catchable-TypeError stance every checked extraction takes). */
-export function emptyArrayLiftHelper(
-  lowerer: Lowerer,
-  fromT: IrType & { kind: "array" },
-  toT: IrType & { kind: "array" },
-  loc: SrcLoc,
-): string {
-  const key = `emptyarr:${typeKey(fromT.elem)}:${typeKey(toT.elem)}`;
-  const existing = lowerer.valueHelpers.get(key);
-  if (existing) return existing;
-  const name = keyedHelperName(lowerer, "%arr.empty", key);
-  lowerer.valueHelpers.set(key, name);
-  const a: IrExpr = { kind: "varRef", localId: "a.0", type: fromT, loc };
-  lowerer.liftedFns.push({
-    name,
-    params: [{ localId: "a.0", name: "a", type: fromT }],
-    returnType: toT,
-    locals: [{ id: "a.0", name: "a", type: fromT, mutable: true }],
-    body: [
-      {
-        kind: "if",
-        cond: {
-          kind: "bin",
-          op: "!==",
-          left: { kind: "arrIntrinsic", method: "length", receiver: a, args: [], type: F64, loc },
-          right: { kind: "numLit", value: 0, type: F64, loc },
-          type: BOOL,
-          loc,
-        },
-        then: [
-          {
-            kind: "throw",
-            value: {
-              kind: "libCall",
-              fn: "error.new",
-              args: [
-                {
-                  kind: "strLit",
-                  value: `expected ${lowerer.fmt(toT)} (a non-empty ${lowerer.fmt(fromT)} has no elements the target can hold)`,
-                  type: STRING,
-                  loc,
-                },
-              ],
-              type: { kind: "object", className: "%TypeError" },
-              loc,
-            },
-            loc,
-          },
-        ],
-        else_: [],
-        loc,
-      },
-      { kind: "return", value: { kind: "arrayLit", elems: [], type: toT, loc }, loc },
     ],
     loc,
   });

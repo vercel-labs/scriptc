@@ -153,7 +153,6 @@ import {
   unionArrayWidthHelper,
   recordWidthHelper,
   tupleArrayWidthHelper,
-  emptyArrayLiftHelper,
   arrayWidthHelper,
   objRecordWidthHelper,
   recordClassWidthHelper,
@@ -309,6 +308,7 @@ import {
   unsupportedNativeApiDiag,
   unsupportedPackageValueDiag,
   unionMismatchDiag,
+  emptyArrayDiag,
   UNSUPPORTED,
   unsupportedDiag,
   unsupportedTypeDiag,
@@ -812,6 +812,12 @@ import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
 import { partialAssertionFields } from "./partial-assertions.js";
 import { deletedPropertyNames, fixedFieldFamily } from "./js-class-fields.js";
 import { emptyArrayLiteralArm } from "./expressions/array-literals.js";
+import {
+  type EmptyArrayOrigin,
+  untypedArrayBindingType,
+  untypedArrayPropertyType,
+  untypedEmptyArraySlot,
+} from "./empty-array-places.js";
 import { lowerTernary } from "./lower-exprs.js";
 import {
   maybePromiseReturnStmt,
@@ -4093,6 +4099,15 @@ export class Lowerer {
    * walk falls back to the plain array walk and the fence). */
   readonly matchAllDrainIndexes = new Map<ts.Symbol, { idxsLocalId: string; ctx: FnCtx }>();
   readonly splitIdentifierUses = new Map<ts.SourceFile, Map<string, ts.Identifier[]>>();
+  /** The array type decided for each untyped empty array property
+   * (empty-array-places.ts): a function of the program's declared types,
+   * computed on first use. `active` and `reentered` guard a search whose
+   * own type mapping asks for the property being searched. */
+  readonly emptyArrayPlaces = {
+    decided: new Map<EmptyArrayOrigin, IrType | null>(),
+    active: new Set<EmptyArrayOrigin>(),
+    reentered: new Set<EmptyArrayOrigin>(),
+  };
   /** STORED numeric value iterators: `const it = numbers.values()` (and
    * the equivalent `[Symbol.iterator]()` spelling) over number[] or a
    * represented typed array has no first-class IR value, so its statically
@@ -5320,6 +5335,9 @@ export class Lowerer {
     "chainHandled",
     "spreadArmOverrides",
     "splitIdentifierUses",
+    "emptyArrayPlaces.decided",
+    "emptyArrayPlaces.active",
+    "emptyArrayPlaces.reentered",
     "typeMemo",
     "sharedTypeMemo",
     "scopedTypeMemos",
@@ -5812,6 +5830,7 @@ export class Lowerer {
     this.typeCtx = {
       ...(islands !== null ? { foreignType: (t: ts.Type) => this.foreignType(t) } : {}),
       checker: this.checker,
+      untypedArrayPropertyType: (decl) => untypedArrayPropertyType(this, decl),
       positionOf: (node) => this.positions.of(node),
       shapes: this.shapes,
       unions: this.unions,
@@ -13892,6 +13911,13 @@ export class Lowerer {
 
   irTypeOf(node: ts.Node): IrType {
     const t = this.typeOf(node);
+    // A binding of an untyped empty array (`const mid = o.files` over
+    // `{ files: [] }`) is that array, at the type it was given where it
+    // was written (empty-array-places.ts), not never's f64 element array.
+    {
+      const alias = untypedArrayBindingType(this, node, t);
+      if (alias !== null) return alias;
+    }
     // JS inference can leave mutable fields, accessor parameters and
     // locals at null/undefined despite later writes. Keep mutable native
     // storage instead of a slot restricted to the initializer's unit value.
@@ -14003,6 +14029,16 @@ export class Lowerer {
       this.unsupported("SC1101", node);
     }
 
+    // An empty array written with no element type, reaching a typed array
+    // slot that did not decide its type (empty-array-places.ts): it keeps
+    // its identity, so it has no conversion.
+    {
+      const slot = untypedEmptyArraySlot(this, actual, expected, 0);
+      if (slot !== null) {
+        this.pushDiag(emptyArrayDiag(this.fmt(slot), locOf(node)));
+        throw new PoisonError();
+      }
+    }
     // Class-value mismatches: the pointed stories — a widening whose
     // constructor ABIs differ (construction through the slot would
     // dispatch a mismatched signature), or a structural flow between
@@ -14968,14 +15004,6 @@ export class Lowerer {
     loc: SrcLoc,
   ): string | null {
     return tupleArrayWidthHelper(this, fromId, toT, loc);
-  }
-
-  emptyArrayLiftHelper(
-    fromT: IrType & { kind: "array" },
-    toT: IrType & { kind: "array" },
-    loc: SrcLoc,
-  ): string {
-    return emptyArrayLiftHelper(this, fromT, toT, loc);
   }
 
   arrayWidthHelper(

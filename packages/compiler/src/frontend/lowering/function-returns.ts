@@ -1,3 +1,4 @@
+import { untypedArrayResultType } from "./empty-array-places.js";
 import { iterableGeneratorArm } from "./iterable-values.js";
 import { mapAsyncGeneratorAnnotation } from "../type-mapper.js";
 import { dynUndefinedExpr } from "../../ir/build.js";
@@ -222,6 +223,13 @@ export function declaredReturnType(
     (retTsType.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !== 0
   )
     return DYN;
+  // A function that returns an untyped empty array (`return o.files` over
+  // `{ files: [] }`) returns that array, at the type it was given where
+  // it was written (empty-array-places.ts).
+  {
+    const untyped = untypedArrayResultType(lowerer, decl, retTsType);
+    if (untyped !== null) return untyped;
+  }
   // A body that always throws infers `never` — as a RETURN type that is
   // void with a stronger guarantee (`() => never` is assignable to
   // `() => void`), and throw-only callbacks are ordinary code

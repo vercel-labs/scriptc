@@ -301,6 +301,13 @@
       "code": "SC2014"
     },
     {
+      "id": "diagnostic.sc2015",
+      "kind": "diagnostic-fence",
+      "name": "an empty array literal used at an element type that was not decided where it is written",
+      "status": "unsupported",
+      "code": "SC2015"
+    },
+    {
       "id": "diagnostic.sc2020",
       "kind": "diagnostic-fence",
       "name": "standard-library or @types/node surface with no lowering",

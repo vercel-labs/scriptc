@@ -70,6 +70,7 @@ export const DIAGNOSTIC_CODES = {
   SC2012: "standard-library form without native lowering",
   SC2013: "npm package import or value without native lowering",
   SC2014: "write through a value held from process.env",
+  SC2015: "empty array literal whose element type is not decided where it is written",
   SC2020: "standard-library or @types/node surface with no lowering",
   SC3001: "LLVM IR tier refusal",
   SC3002: "target or capability refusal",

@@ -20821,6 +20821,12 @@ ScrDyn *scr_dyn_mark_snapshot(ScrDyn *value) {
   return value;
 }
 
+/* Island objects as weak keys: wherever a program can hold one (the island
+ * handle unit builds empty on the other targets). */
+#if defined(SCR_NODE_ISLANDS) && !defined(_WIN32) && !defined(__wasi__)
+#define SCR_WEAK_ISLAND_KEYS 1
+#endif
+
 typedef struct ScrWeakMap ScrWeakMap;
 typedef struct ScrWeakEntry {
   void *key; /* borrowed native identity, never retained */
@@ -20833,7 +20839,15 @@ typedef struct ScrWeakEntry {
   struct ScrWeakEntry *next, *prev, *key_next, *key_prev;
 } ScrWeakEntry;
 
-struct ScrWeakMap { size_t rc; ScrWeakEntry *entries; bool is_set; };
+struct ScrWeakMap {
+  size_t rc; ScrWeakEntry *entries; bool is_set;
+#ifdef SCR_WEAK_ISLAND_KEYS
+  /* The WeakMap or WeakSet inside the Node island that holds this
+   * collection's entries keyed by island objects (+1; NULL until the first
+   * such entry): scr_node_island_gc.c. */
+  ScrDyn *island;
+#endif
+};
 /* Weak observers borrow key identities. Values are traced strong edges;
  * value-to-key cycles require explicit deletion or container disposal.
  *
@@ -21013,6 +21027,9 @@ static void scr_weak_remove(ScrWeakEntry *entry) {
 static void scr_weak_map_trace(void *ptr, ScrTraceVisit visit, void *ctx) {
   for (ScrWeakEntry *entry = ((ScrWeakMap *)ptr)->entries; entry; entry = entry->next)
     visit(entry->value, ctx);
+#ifdef SCR_WEAK_ISLAND_KEYS
+  if (((ScrWeakMap *)ptr)->island) visit(((ScrWeakMap *)ptr)->island, ctx);
+#endif
 }
 
 static void scr_weak_map_gcfree(void *ptr) {
@@ -21040,6 +21057,11 @@ static void scr_weak_map_release(void *ptr) {
   scr_cyc_dead(map);
   scr_weak_dispose(map);
   while (map->entries) scr_weak_remove(map->entries);
+#ifdef SCR_WEAK_ISLAND_KEYS
+  /* The island collection goes with this one: V8 then frees its entries,
+   * and with them the cells of their native values. */
+  scr_dyn_release(map->island);
+#endif
   scr_cyc_free(map);
 }
 
@@ -21083,7 +21105,22 @@ static int scr_weak_key(const ScrDyn *key, void **ptr, unsigned *kind) {
   }
 }
 
+#ifdef SCR_WEAK_ISLAND_KEYS
+/* An object a Node island made is no key of the table above: the program
+ * holds it through a handle that goes when the program drops it, while the
+ * object lives on for as long as island code reaches it. Its entries are
+ * kept inside the island (scr_node_island_gc.c, "weak collections keyed by
+ * island objects"), in the collection `island` names. */
+static inline bool scr_weak_island_key(const ScrDyn *key) { return scr_ni_dyn_handle(key); }
+/* The kind a FinalizationRegistry reads for an island target or token: no
+ * entry of the native table has it. */
+#define SCR_WEAK_ISLAND_KIND (~0u)
+#endif
+
 static bool scr_weak_set(ScrWeakMap *map, ScrDyn *key, ScrDyn *value) {
+#ifdef SCR_WEAK_ISLAND_KEYS
+  if (scr_weak_island_key(key)) return scr_ni_weak_set(&map->island, map->is_set, key, value);
+#endif
   void *ptr = NULL;
   unsigned kind = 0;
   int supported = scr_weak_key(key, &ptr, &kind);
@@ -21127,6 +21164,13 @@ static ScrDyn *scr_weak_map_invoke(void *ptr, ScrDyn *self, const char *method,
     return scr_dyn_retain(self);
   }
   if ((!map->is_set && strcmp(method, "get") == 0) || strcmp(method, "has") == 0 || strcmp(method, "delete") == 0) {
+#ifdef SCR_WEAK_ISLAND_KEYS
+    if (scr_weak_island_key(key)) {
+      if (strcmp(method, "get") == 0) return scr_ni_weak_get(map->island, key);
+      int found = scr_ni_weak_test(map->island, map->is_set, key, strcmp(method, "delete") == 0);
+      return found < 0 ? NULL : scr_dyn_new_bool(found);
+    }
+#endif
     void *identity = NULL;
     unsigned kind = 0;
     int supported = scr_weak_key(key, &identity, &kind);
@@ -21281,6 +21325,24 @@ static void scr_finalization_type_error(const char *message) {
  * the TypeError (or the SC2020 refusal) pending. */
 static bool scr_finalization_key(const ScrDyn *value, void **ptr, unsigned *kind,
                                  const char *invalid) {
+#ifdef SCR_WEAK_ISLAND_KEYS
+  /* An island object is a target or a token the way it is a weak key (kind
+   * SCR_WEAK_ISLAND_KIND: the island keeps the entry). An island symbol is
+   * refused as a native one is. */
+  if (scr_weak_island_key(value)) {
+    ScrStr *type = scr_ni_dyn_ops->type_of((ScrDyn *)value);
+    bool symbol = type->len == 6 && memcmp(type->data, "symbol", 6) == 0;
+    scr_str_release(type);
+    if (!symbol) {
+      *ptr = NULL;
+      *kind = SCR_WEAK_ISLAND_KIND;
+      return true;
+    }
+    static const char message[] = "FinalizationRegistry with symbol targets or tokens is not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return false;
+  }
+#endif
   if (value->kind == SCR_DYN_SYMBOL) {
     static const char message[] = "FinalizationRegistry with symbol targets or tokens is not supported yet";
     scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
@@ -21332,6 +21394,16 @@ static ScrDyn *scr_finalization_registry_invoke(void *ptr, ScrDyn *self, const c
     }
     if (token->kind != SCR_DYN_UNDEF) {
       if (!scr_finalization_key(token, &identity, &kind, NULL)) return NULL;
+#ifdef SCR_WEAK_ISLAND_KEYS
+      if (kind == SCR_WEAK_ISLAND_KIND) {
+        /* Nothing reads a token's count but the next registration, so an
+         * island token's entry is not read back to be counted. */
+        ScrDyn *registered = scr_dyn_new_num(1);
+        bool ok = scr_ni_weak_set(&tokens->island, false, token, registered);
+        scr_dyn_release(registered);
+        return ok ? scr_dyn_retain(scr_dyn_undefined()) : NULL;
+      }
+#endif
       ScrWeakEntry *entry = scr_weak_find(tokens, identity, kind);
       double count = entry && entry->value->kind == SCR_DYN_NUM ? entry->value->v.num : 0;
       ScrDyn *next = scr_dyn_new_num(count + 1);
@@ -21343,6 +21415,12 @@ static ScrDyn *scr_finalization_registry_invoke(void *ptr, ScrDyn *self, const c
   }
   if (strcmp(method, "unregister") == 0) {
     if (!scr_finalization_key(first, &identity, &kind, NULL)) return NULL;
+#ifdef SCR_WEAK_ISLAND_KEYS
+    if (kind == SCR_WEAK_ISLAND_KIND) {
+      int found = scr_ni_weak_test(tokens->island, false, first, true);
+      return found < 0 ? NULL : scr_dyn_new_bool(found);
+    }
+#endif
     ScrWeakEntry *entry = scr_weak_find(tokens, identity, kind);
     if (entry) scr_weak_remove(entry);
     return scr_dyn_new_bool(entry != NULL);

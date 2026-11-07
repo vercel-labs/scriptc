@@ -59,11 +59,13 @@ test("a build keeps its island decision and the next build replays it in one rou
     const text = await readFile(decision, "utf8");
     const replay = split((await build("replay.ll", true)).stderr);
 
-    const loads = (phases: string[]) => phases.filter((p) => p === "frontend-load").length;
-    expect(loads(scratch.phases)).toBe(2);
-    expect(loads(recording.phases)).toBe(2);
+    // Each island round lowers the program once (the rounds of one build
+    // share the load of the program without islands).
+    const rounds = (phases: string[]) => phases.filter((p) => p === "lower").length;
+    expect(rounds(scratch.phases)).toBe(2);
+    expect(rounds(recording.phases)).toBe(2);
     expect(recording.phases).not.toContain("island-decision-replay");
-    expect(loads(replay.phases)).toBe(1);
+    expect(rounds(replay.phases)).toBe(1);
     expect(replay.phases).toContain("island-decision-replay");
 
     // The same notes, with the package's own reason, and the same program.

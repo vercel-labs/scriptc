@@ -35,8 +35,9 @@ function fixture(relative: string): string {
 }
 
 interface Built {
-  /** Island rounds: each starts with one load of the program without
-   * islands. */
+  /** Island rounds that reached their lowering: each lowers the program
+   * once. (The rounds of one build share the load of the program without
+   * islands, so loads do not count them.) */
   rounds: number;
   ok: boolean;
   /** The IR, warnings and island list of a compiling build, or the
@@ -47,8 +48,14 @@ interface Built {
 function build(dir: string, decision: string | null): Built {
   let rounds = 0;
   const factory: FrontendFactory = (entry, npmStatic, externalTypes, libraryNpmStatic, options) => {
-    if (options?.islandPackages === undefined && options?.islandModules === undefined) rounds++;
-    return runFrontend(entry, loadProgram, npmStatic, externalTypes, libraryNpmStatic, options);
+    const fe = runFrontend(entry, loadProgram, npmStatic, externalTypes, libraryNpmStatic, options);
+    return {
+      ...fe,
+      lower: (...args: Parameters<typeof fe.lower>) => {
+        rounds++;
+        return fe.lower(...args);
+      },
+    };
   };
   const prepared: PreparedExecutableModule | CompileFailure = prepareExecutableBuild(
     join(dir, "main.ts"),

@@ -8,6 +8,7 @@ import {
   heapLimitMb,
   HEAP_LIMIT_SHARE,
   HEAP_PROBE_FLAGS,
+  judgesSelfCompile,
   readBudget,
   selfCompileTrace,
   sourceCostAllowance,
@@ -272,4 +273,18 @@ test("every self-compile entry point runs with the budget's heap limit", () => {
   // builds and the platform packages.
   expect(literals.length).toBeGreaterThanOrEqual(7);
   expect(literals.filter((entry) => entry.limit !== limit)).toEqual([]);
+});
+
+test("every gate run that holds the self program judges the self-compile", () => {
+  const self = { id: "self/cli", kind: "source" };
+  const exe = { id: "bench/n-body", kind: "exe" };
+  // Which checkout the programs come from is not asked: a run with
+  // --programs=candidate budgets the candidate's compile like any other.
+  expect(judgesSelfCompile(new Set(["bench", "self", "corpus"]), [exe, self])).toBe(true);
+  // A shard without the self program, and a run without the self set.
+  expect(judgesSelfCompile(new Set(["bench", "self", "corpus"]), [exe])).toBe(false);
+  expect(judgesSelfCompile(new Set(["bench"]), [exe, self])).toBe(false);
+  // The gate takes the decision from here, with no condition of its own.
+  const gate = readFileSync(join(root, "scripts/zero-cost-gate.mjs"), "utf8");
+  expect(gate).toContain("const checkCandidateSelf = judgesSelfCompile(sets, programs);");
 });

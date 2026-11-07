@@ -255,6 +255,14 @@ export function sourceCostAllowance(budget, previous) {
   return typeof entry.value === "number" && entry.value > 0 ? entry.value / 100 : 0;
 }
 
+/** Whether a gate run holds the candidate's own compile to the budget: every run whose set has
+ * the self program, whichever checkout its programs come from. A run with --programs=candidate
+ * already compiles the candidate's source in its compared builds, but those are neither traced
+ * nor judged, so the budgeted build is made there too. */
+export function judgesSelfCompile(sets, programs) {
+  return sets.has("self") && programs.some((program) => program.kind === "source");
+}
+
 /** Judge what a change's own source costs to compile. `ratios` are compile times of the
  * candidate's compiler source over the baseline's, both with the candidate compiler in one run;
  * `sourceRatio` is the candidate's source bytes over the baseline's. The smallest ratio is judged:

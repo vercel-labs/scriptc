@@ -64,6 +64,7 @@ import {
   budgetVerdict,
   HEAP_PROBE_FLAGS,
   heapLimitMb,
+  judgesSelfCompile,
   programInputs,
   readBudget,
   SELF_ENTRY,
@@ -790,8 +791,7 @@ if (recordPath !== undefined) {
 /** The candidate's own compiler source must still build with the candidate
  * (see below). On a host with room for a third self-hosted build it runs
  * alongside the comparison builds instead of after them. */
-const checkCandidateSelf =
-  sets.has("self") && programsRoot !== trees.candidate && programs.some((p) => p.kind === "source");
+const checkCandidateSelf = judgesSelfCompile(sets, programs);
 const candidateSelfProgram = {
   id: "self/candidate-source",
   entry: join(trees.candidate, SELF_ENTRY),
@@ -999,7 +999,10 @@ if (timingRuns > 0) {
 // from one checkout), so a change that adds compiler code the self-hosted
 // frontend cannot lower would pass unnoticed. The candidate's own compiler
 // source must still build with the candidate (LLVM only; its artifacts are
-// not compared, its cost is: the self-compile budget below).
+// not compared, its cost is: the self-compile budget below). With
+// --programs=candidate the compared builds compile that source already;
+// this build is still made, because it is the one that is traced and held
+// to the budget.
 if (checkCandidateSelf) {
   const result = await (earlyCandidateSelf ?? buildCandidateSelf());
   report.candidateSelf = result.ok
@@ -1048,6 +1051,16 @@ async function selfCompileBudget(build) {
     lines: verdict.lines,
     failures: verdict.failures,
   };
+  // The compile-time comparison pairs this build with the same compiler's
+  // build of the baseline's source. A run whose programs come from the
+  // candidate checkout never builds that source: it judges the passes and
+  // the heap, and says that the time was not compared.
+  if (programsRoot === trees.candidate) {
+    result.lines.push(
+      "compile time against the baseline's source: not compared (--programs=candidate builds only the candidate's source)",
+    );
+    return result;
+  }
   const baselineSource = programs.find((p) => p.id === "self/cli");
   const paired = report.programs.find((p) => p.id === "self/cli")?.buildMs.candidate;
   if (budget === null || baselineSource === undefined || !paired) return result;

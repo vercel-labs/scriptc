@@ -73,9 +73,11 @@
  *            order that differs from insertion order where the program
  *            observes it (SC6002), localeCompare over text the built-in
  *            collation does not cover (SC6003), a call feeding an instance
- *            to a cast to an unrelated class (SC6004); SC6005 (Date strings
- *            outside the native parser's grammar) is retired — the runtime
- *            parses date strings with V8's grammar. SC61xx are performance
+ *            to a cast to an unrelated class (SC6004), a package compiled
+ *            with operations the program can reach that throw (SC6006);
+ *            SC6005 (Date strings outside the native parser's grammar) is
+ *            retired — the runtime parses date strings with V8's grammar.
+ *            SC61xx are performance
  *            notes, also warnings (coverage --fail-on=dynamic opts in):
  *            likely-hot functions that use untyped values (SC6101,
  *            diagnostics/dynamic-tier.ts), package files whose projected
@@ -526,7 +528,7 @@ export function nodeIslandsOffDiag(pkg: string, why: string, loc: SrcLoc): ScrDi
     code: "SC8002",
     message: `npm package '${pkg}' is outside the native subset (${why}) and Node islands are off`,
     loc,
-    hint: `allow Node islands (--node-islands=auto), mark it with --node-island=${pkg}, or replace the dependency`,
+    hint: `allow Node islands (--node-islands=auto), mark it with --node-island=${pkg}, replace the dependency, or keep it native with --npm-static=${pkg} (the operations it cannot compile then throw when reached)`,
   };
 }
 
@@ -589,20 +591,44 @@ export function nodeIslandBoundaryDiag(what: string, loc: SrcLoc): ScrDiagnostic
   };
 }
 
-/** SC8023 — the build that ran fenced packages as Node islands failed, so
- * the program was built natively with those runtime fences (each throws
- * when reached). A warning on the native build, with the island build's
- * first error. */
-export function nodeIslandRetryFailedDiag(
-  packages: readonly string[],
+/** SC6006 — a package compiles natively with operations the program can
+ * reach that do not compile (runtime fences): each throws when it runs,
+ * where Node runs it. One warning per package, at its import. */
+export function deferredOperationsDivergenceDiag(
+  pkg: string,
+  count: number,
   first: ScrDiagnostic,
   loc: SrcLoc,
 ): ScrDiagnostic {
   return {
-    code: "SC8023",
-    message: `running ${packages.map((p) => `'${p}'`).join(", ")} in Node islands failed to compile (${first.code} at ${first.loc.file}:${first.loc.start}: ${first.message}); built natively instead, where their runtime fences throw when reached`,
+    code: "SC6006",
+    message: `npm package '${pkg}' compiles with ${count === 1 ? "an operation" : `${count} operations`} the program can reach that ${count === 1 ? "does" : "do"} not compile: ${count === 1 ? "it throws" : "each throws"} when the program reaches it (first ${first.code}: ${first.message})`,
     loc,
-    hint: "fix the island build's error, or mark the packages with --node-island=<pkg> to see every error",
+    hint: `scriptc coverage lists them; --node-island=${pkg} runs the package in Node.js instead, and --npm-static=${pkg} accepts the throws and drops this warning`,
+  };
+}
+
+/** SC8023 — the build moved packages into Node islands for the runtime
+ * fences the program reaches in them, and the build with them there
+ * failed. A note that follows that build's errors and names each package,
+ * how many such operations it has and the first, so the choice is visible:
+ * fix the errors, or keep a package native with its deferred refusals. */
+export function nodeIslandBuildFailedDiag(
+  packages: readonly { name: string; count: number; first: ScrDiagnostic }[],
+  loc: SrcLoc,
+): ScrDiagnostic {
+  const listed = packages
+    .map(
+      (p) =>
+        `'${p.name}' (${p.count === 1 ? "1 operation" : `${p.count} operations`}, first ${p.first.code}: ${p.first.message})`,
+    )
+    .join(", ");
+  const names = packages.map((p) => p.name).join(",");
+  return {
+    code: "SC8023",
+    message: `the errors above are from building with ${listed} in ${packages.length === 1 ? "a Node island" : "Node islands"}: the program reaches operations in ${packages.length === 1 ? "that package" : "those packages"} that do not compile and would throw as soon as ${packages.length === 1 ? "it loads" : "they load"} or need the JavaScript runtime, so ${packages.length === 1 ? "it runs" : "they run"} in Node`,
+    loc,
+    hint: `fix the errors, or keep ${packages.length === 1 ? "the package" : "the packages"} native with --npm-static=${names}: those operations then throw when the program reaches them (scriptc coverage lists them)`,
   };
 }
 
@@ -631,7 +657,7 @@ export function nativePackageDiag(pkg: string, why: string, loc: SrcLoc): ScrDia
     code: "SC8003",
     message: `npm package '${pkg}' is marked native but is outside the native subset: ${why}`,
     loc,
-    hint: `remove the "native" marking to let it run in a Node island, or replace the construct the reason names`,
+    hint: `remove the "native" marking to let it run in a Node island, replace the construct the reason names, or name it in --npm-static=${pkg} to keep it native with that operation throwing when reached`,
   };
 }
 

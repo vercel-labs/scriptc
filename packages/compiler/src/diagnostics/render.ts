@@ -111,10 +111,9 @@ export function renderDiagnostic(
     emitLine(lineNum + 1);
   }
 
-  // Node island notices of a successful build: SC8020 warns, SC8001 and
-  // SC8021 are notes.
+  // Node island notices: SC8020 warns; SC8001, SC8021 and SC8023 are notes.
   const note = isNodeIslandNoteCode(diag.code);
-  const warning = isWarningCode(diag.code) || diag.code === "SC8020" || diag.code === "SC8023";
+  const warning = isWarningCode(diag.code) || diag.code === "SC8020";
   const severity = note ? c(CYAN, "note") : warning ? c(YELLOW, "warning") : c(RED, "error");
   out.push(
     `${c(BOLD, `${diag.loc.file}:${lineNum}:${colNum}`)} - ${severity} ${c(BOLD, diag.code)}: ${diag.message}`,

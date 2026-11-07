@@ -1122,15 +1122,17 @@ test("a program module that runs in an island is never a deferral candidate", as
   }
 }, 300_000);
 
-// A use of a Node 24 global native code does not provide is the one runtime
-// refusal JavaScript defers honestly: the statement throws where it is
-// reached (SC2020, host-global), so a package that keeps such a path inside
-// a function body keeps compiling natively (jose's CompressionStream). Only
-// a use in module code, which throws before the module finishes evaluating,
-// makes the package a Node island. Needs no libnode pack: the native build
-// links without one, and the island build stops before linking without one.
-test("a host-global fence inside a function body keeps its package native", async () => {
-  const dir = join(outDir, "host-global-fence");
+// A JavaScript statement that does not compile defers its refusal to the
+// operation that reaches it (a runtime fence). A fence in a package's module
+// code throws before the module finishes evaluating, so that package runs in
+// a Node island; where the policy forbids the island the build fails by
+// name. A fence inside a function body (a use of a Node 24 global native code
+// does not provide, here: jose's CompressionStream shape) stays the deferred
+// refusal it is, and the build says so with SC6006 unless the package is
+// named in `--npm-static`. Needs no libnode pack: the native builds link
+// without one, and an island build stops before linking without one.
+test("a reached runtime fence islands its package or is reported", async () => {
+  const dir = join(outDir, "reached-fence");
   rmSync(dir, { recursive: true, force: true });
   const writePackage = (name: string, body: string): void => {
     const at = join(dir, "node_modules", name);
@@ -1179,26 +1181,63 @@ test("a host-global fence inside a function body keeps its package native", asyn
       "",
     ].join("\n"),
   );
-  const native = await compile(entry("fenced-body"), {
-    outPath: join(dir, "fenced-body"),
-    outDir: dir,
-    sanitize,
-  });
-  expect(native.ok ? [] : native.diagnostics.map((d) => `${d.code}: ${d.message}`)).toEqual([]);
+  type Options = NonNullable<Parameters<typeof compile>[1]>;
+  const build = (name: string, out: string, options: Partial<Options> = {}) =>
+    compile(entry(name), { outPath: join(dir, out), outDir: dir, sanitize, ...options });
+  const messages = (result: Awaited<ReturnType<typeof compile>>): string[] =>
+    result.ok ? [] : result.diagnostics.map((d) => `${d.code}: ${d.message}`);
+
+  // A build that reuses a cached executable does not lower the program and
+  // so repeats none of its warnings: this one has to lower.
+  const cache = process.env["SCRIPTC_NO_CACHE"];
+  process.env["SCRIPTC_NO_CACHE"] = "1";
+  let native: Awaited<ReturnType<typeof compile>>;
+  try {
+    native = await build("fenced-body", "fenced-body");
+  } finally {
+    if (cache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+    else process.env["SCRIPTC_NO_CACHE"] = cache;
+  }
+  expect(messages(native)).toEqual([]);
   if (!native.ok) return;
   expect((native.warnings ?? []).map((d) => d.code)).not.toContain("SC8001");
+  expect((native.warnings ?? []).filter((d) => d.code === "SC6006").map((d) => d.message)).toEqual([
+    expect.stringMatching(
+      /^npm package 'fenced-body' compiles with an operation the program can reach that does not compile: it throws when the program reaches it \(first SC2020: /,
+    ),
+  ]);
   expect(await run(native.binaryPath, [])).toEqual({ stdout: "native\n", stderr: "", code: 0 });
+  // Named in --npm-static, the package's fences are the user's choice.
+  const named = await build("fenced-body", "fenced-body-named", { npmStatic: ["fenced-body"] });
+  expect(messages(named)).toEqual([]);
+  if (named.ok) expect((named.warnings ?? []).map((d) => d.code)).not.toContain("SC6006");
 
-  const islanded = await compile(entry("fenced-module"), {
-    outPath: join(dir, "fenced-module"),
-    outDir: dir,
-    sanitize,
-  });
-  if (islanded.ok)
-    expect(
-      (islanded.warnings ?? []).filter((d) => d.code === "SC8001").map((d) => d.message),
-    ).toEqual([expect.stringContaining("'fenced-module@1.0.0' runs in a Node island")]);
+  // The island list survives an executable cache hit; the notes do not.
+  const islanded = await build("fenced-module", "fenced-module");
+  if (islanded.ok) expect(islanded.islands?.packages).toEqual(["fenced-module"]);
   else expect(islanded.diagnostics.map((d) => d.code)).toContain("SC8005");
+  // Where the package may not run in Node, the fence that islands it fails
+  // the build instead.
+  for (const nodeIslands of [{ mode: "off" }, { mode: "explicit" }] as const) {
+    expect(
+      messages(await build("fenced-module", "fenced-module-refused", { nodeIslands })),
+    ).toEqual([
+      expect.stringMatching(
+        /^SC8002: npm package 'fenced-module' is outside the native subset \(2 operations the program can reach do not compile, first R1\.6 SC2020: 'FormData' is a Node global that native code does not provide\) and Node islands are off$/,
+      ),
+    ]);
+  }
+  expect(
+    messages(
+      await build("fenced-module", "fenced-module-refused", {
+        nodeIslands: { native: ["fenced-module"] },
+      }),
+    ),
+  ).toEqual([
+    expect.stringMatching(
+      /^SC8003: npm package 'fenced-module' is marked native but is outside the native subset: 2 operations the program can reach do not compile, first R1\.6 SC2020: /,
+    ),
+  ]);
 }, 300_000);
 
 // Lowering checks every argument and result type for JSON data; IR output

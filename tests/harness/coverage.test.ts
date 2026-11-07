@@ -1030,44 +1030,46 @@ test("a cycle whose top level calls a builtin with a builtin function value is a
   expect(out).toContain("statements analyzed");
 });
 
-test("Node islands (report-only): one package per class, gap islands first", async () => {
-  // ni-gap (a fence inside the native subset), ni-eval (new Function),
-  // ni-ctor (a constructor function, carrying ni-dep), ni-bundled (not
-  // compilable as shipped), ni-typed (native, also reached from ni-ctor).
+test("Node islands: the report names the islands a build runs", async () => {
+  // ni-bundled is not compilable as shipped, so a build runs it in a Node
+  // island: the one island. The others compile natively and the report says
+  // with what: ni-gap (a refusal deferred to the operation that reaches it,
+  // also an SC6006 warning), ni-eval (new Function), ni-ctor (a constructor
+  // function), and ni-dep and ni-typed with nothing to say.
   const entry = fixture("node-islands/main.ts");
   await expect(report(entry)).toMatchFileSnapshot("__snapshots__/coverage-node-islands.txt");
   const { coverage, sourceTexts } = analyze(entry);
   const islands = coverage.nodeIslands!;
-  expect(islands.islands.map((i) => [i.package, i.class])).toEqual([
-    ["ni-gap", "gap"],
-    ["ni-eval", "runtime"],
-    ["ni-ctor", "object-model"],
-    ["ni-bundled", "packaging"],
-  ]);
-  expect(islands.packages.map((p) => [p.package, p.status, p.islands])).toEqual([
-    ["ni-dep", "inside", ["ni-ctor"]],
-    ["ni-typed", "shared", ["ni-ctor"]],
+  expect(islands.mode).toBe("build");
+  expect(islands.islands.map((i) => [i.package, i.class])).toEqual([["ni-bundled", "packaging"]]);
+  expect(islands.packages.map((p) => [p.package, p.status, p.outside?.class])).toEqual([
+    ["ni-ctor", "native", "object-model"],
+    ["ni-dep", "native", undefined],
+    ["ni-eval", "native", "runtime"],
+    ["ni-gap", "native", "gap"],
+    ["ni-typed", "native", undefined],
   ]);
   await expect(
-    renderExplainIsland(coverage.nodeIslands, "ni-ctor", { sourceTexts, root: repoRoot }),
+    renderExplainIsland(coverage.nodeIslands, "ni-bundled", { sourceTexts, root: repoRoot }),
   ).toMatchFileSnapshot("__snapshots__/coverage-node-islands-explain.txt");
-  expect(renderExplainIsland(coverage.nodeIslands, "ni-dep", { root: repoRoot })).toContain(
-    "only ni-ctor imports it",
+  expect(renderExplainIsland(coverage.nodeIslands, "ni-ctor", { root: repoRoot })).toContain(
+    "'ni-ctor' is not a Node island: it compiles natively",
   );
   // The machine-readable form carries the same decisions.
   const envelope = coverageEnvelope(coverage, { compilerVersion: "test", sourceTexts });
-  expect(envelope.nodeIslands?.mode).toBe("would-be");
-  expect(envelope.nodeIslands?.islands.map((i) => [i.package, i.class, i.at?.line])).toEqual([
-    ["ni-gap", "gap", 7],
-    ["ni-eval", "runtime", 4],
-    ["ni-ctor", "object-model", 9],
-    ["ni-bundled", "packaging", undefined],
+  expect(envelope.nodeIslands?.mode).toBe("build");
+  expect(envelope.nodeIslands?.islands.map((i) => [i.package, i.class])).toEqual([
+    ["ni-bundled", "packaging"],
   ]);
-  // The gates: the blocker gate is today's build (which refuses
-  // ni-bundled with SC2013, and nothing else); the island gates fail on
-  // the would-be islands.
-  expect(coverage.diagnostics.every((d) => d.code === "SC2013")).toBe(true);
-  expect(coveragePasses(coverage, "island-gaps")).toBe(false);
+  // The gates follow the build: it succeeds (the island answers ni-bundled's
+  // refusal), with one package compiled around a reachable refusal.
+  expect(coverage.diagnostics).toEqual([]);
+  expect(
+    (coverage.divergences ?? []).map((d) => [d.code, /'([^']+)'/.exec(d.message)![1]]),
+  ).toEqual([["SC6006", "ni-gap"]]);
+  expect(coveragePasses(coverage, "blockers")).toBe(true);
+  expect(coveragePasses(coverage, "divergences")).toBe(false);
+  expect(coveragePasses(coverage, "island-gaps")).toBe(true);
   expect(coveragePasses(coverage, "node-islands")).toBe(false);
 });
 
@@ -1084,7 +1086,9 @@ test("a package the policy islands types its values as island handles", async ()
   );
   const { coverage } = analyze(entry);
   expect(coverage.stats.statementsFailed).toBe(0);
-  expect(coverage.diagnostics.filter((d) => d.code !== "SC2013")).toEqual([]);
+  // The island answers the package's refusal: a build of this program
+  // succeeds, and the analysis reports no blocker.
+  expect(coverage.diagnostics).toEqual([]);
   expect(coverage.nodeIslands?.islands.map((i) => [i.package, i.class])).toEqual([
     ["ni-config", "packaging"],
   ]);
@@ -1163,8 +1167,6 @@ test("Node island policy from the command line: native, forced, off", () => {
   // compiles: its class is the CLI mark, and its own module body contributes
   // no coverage failures, exactly as a build's SC8001 note reports it.
   expect(forced.islands.map((i) => [i.package, i.class, i.decision])).toEqual([
-    ["ni-gap", "gap", "auto"],
-    ["ni-ctor", "object-model", "auto"],
     ["ni-bundled", "packaging", "auto"],
     ["ni-typed", "marked", "cli"],
   ]);
@@ -1177,17 +1179,16 @@ test("Node island policy from the command line: native, forced, off", () => {
       d.loc.file.includes("ni-typed"),
     ),
   ).toEqual([]);
-  expect(forced.violations.map((v) => v.code)).toEqual(["SC8003"]);
+  // ni-eval compiles natively, so marking it native refuses nothing.
+  expect(forcedCoverage.diagnostics).toEqual([]);
+  expect(forced.violations).toEqual([]);
   expect(forced.unknownPackages).toEqual(["not-a-dependency"]);
+  // With islands off the refused package is the build's error, and no
+  // island is left to report.
   const off = analyze(entry, { nodeIslands: { mode: "off" } }).coverage;
-  expect(off.nodeIslands!.islands).toEqual([]);
-  expect(off.nodeIslands!.violations.map((v) => v.code)).toEqual([
-    "SC8002",
-    "SC8002",
-    "SC8002",
-    "SC8002",
-  ]);
-  expect(coveragePasses(off, "island-gaps")).toBe(false);
+  expect(off.nodeIslands).toBeUndefined();
+  expect([...new Set(off.diagnostics.map((d) => d.code))]).toEqual(["SC2013"]);
+  expect(coveragePasses(off, "blockers")).toBe(false);
 });
 
 test("--strict-user-js reports R2 constructs in user JavaScript as SC8101–SC8105", async () => {

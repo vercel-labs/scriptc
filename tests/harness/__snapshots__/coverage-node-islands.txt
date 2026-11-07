@@ -12,17 +12,13 @@ scriptc coverage tests/coverage-fixtures/node-islands/main.ts
     ni-typed    static
     ni-dep      static
 
-  Node islands   (would-be, report-only: the build is unchanged; --node-islands=auto)
-    gap           ni-gap@1.0.0
-          tests/coverage-fixtures/node-islands/node_modules/ni-gap/index.js:7:17: SC1090: a builtin function alias as an escaping value (call 'ext' directly) is not supported yet
-    runtime       ni-eval@1.0.0
-          tests/coverage-fixtures/node-islands/node_modules/ni-eval/index.js:4:10: R1.1 code from strings: new Function()
-    object-model  ni-ctor@1.0.0
-          tests/coverage-fixtures/node-islands/node_modules/ni-ctor/index.js:9:1: R2.1 constructor functions: a write of 'Counter.prototype.add'
-          +1 more reason in 1 module; carries ni-dep
-    packaging     ni-bundled@1.0.0
+  Node islands   (what a build runs in Node.js; --node-islands=auto)
+    packaging  ni-bundled@1.0.0
           SC2013: its shipped JS carries build-transform markers (bundled/transpiled dist)
-    reached from native code and from an island: ni-typed
+    5 packages stay native: ni-ctor, ni-dep, ni-eval, ni-gap, ni-typed
+          ni-ctor compiles with object-model: R2.1 constructor functions: a write of 'Counter.prototype.add' (+1 more)
+          ni-eval compiles with runtime: R1.1 code from strings: new Function()
+          ni-gap compiles with gap: SC1090: a builtin function alias as an escaping value (call 'ext' directly) is not supported yet
     hint: scriptc coverage --explain-island=<package> lists every reason
 
   deferred to runtime   1 site (JS statements that throw their fence if executed)
@@ -30,7 +26,8 @@ scriptc coverage tests/coverage-fixtures/node-islands/main.ts
           at tests/coverage-fixtures/node-islands/node_modules/ni-gap/index.js:7:17
           hint: this form is valid TypeScript but does not compile yet — rewrite it with a supported equivalent of the construct the message names (https://scriptc.dev/limitations lists the boundary)
 
-  blockers:
-      ×1  SC2013  cannot compile npm package 'ni-bundled' statically: its shipped JS carries build-transform markers (bundled/transpiled dist)
-          at tests/coverage-fixtures/node-islands/main.ts:8:1
-          hint: to compile it anyway, name it with --npm-static=ni-bundled (or --npm-static=ni-bundled... to include its dependencies)
+
+  differs from Node   1 site (compiles; the native program can behave differently)
+      ×1  SC6006  npm package 'ni-gap' compiles with an operation the program can reach that does not compile: it throws when the program reaches it (first SC1090: a builtin function alias as an escaping value (call '…
+          at tests/coverage-fixtures/node-islands/main.ts:5:1
+          hint: scriptc coverage lists them; --node-island=ni-gap runs the package in Node.js instead, and --npm-static=ni-gap accepts the throws and drops this warning

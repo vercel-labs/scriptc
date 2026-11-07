@@ -49,7 +49,11 @@ export interface NodeIslandEntry {
 
 export interface UserModuleIsland {
   file: string;
-  source: DecisionSource;
+  /** Who decided: the user's marking, or the automatic policy (a sloppy
+   * construct, a builtin patch, a refusal of its lowering). */
+  source: DecisionSource | "auto";
+  /** The automatic decision's reason. */
+  reason?: string;
 }
 
 export interface NativePackage {
@@ -61,15 +65,25 @@ export interface NativePackage {
   status: "native" | "inside" | "shared";
   /** For inside and shared: the islands that reach it. */
   islands: string[];
+  /** The first reason the package could need Node (decisive class first)
+   * and how many there are, for a package a build compiles natively all the
+   * same: a construct the pre-scan marks whose lowering holds, or a
+   * refusal deferred to the operation that reaches it. */
+  outside?: { class: NodeIslandClass; reason: string; reasons: number };
 }
 
 export interface NodeIslandReport {
-  mode: "would-be";
+  /** "build": the islands a build of the program runs (a coverage
+   * analysis). "would-be": every package with a reason to run in Node (the
+   * growth rules read a package's class from it). */
+  mode: "would-be" | "build";
   policy: NodeIslandPolicy["mode"];
   islands: NodeIslandEntry[];
   packages: NativePackage[];
   userModules: UserModuleIsland[];
-  /** Would-be errors: SC8002 (islands off) and SC8003 (marked native). */
+  /** Policy errors of a would-be report: SC8002 (islands off) and SC8003
+   * (marked native). A build's report has none: what the policy refuses is
+   * in the diagnostics the build fails with. */
   violations: ScrDiagnostic[];
   /** SC8101–SC8105 for user JavaScript (only with --strict-user-js). */
   userJs: ScrDiagnostic[];

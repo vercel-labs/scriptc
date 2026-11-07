@@ -46,7 +46,7 @@ When a program has unsupported operations, the report adds a group for each root
   </tbody>
 </table>
 
-Blockers in unreached code and deferred operations in JavaScript packages are listed separately because they don't fail a build. A deferred operation throws a runtime error if it runs, so a successful build doesn't mean every API of a package works; see [unsupported code inside a package](/docs/dependencies#unsupported-code-inside-a-package).
+Blockers in unreached code and deferred operations in JavaScript packages are listed separately because they don't fail a build. A deferred operation throws a runtime error if it runs, so a successful build doesn't mean every API of a package works; see [unsupported code inside a package](/docs/dependencies#unsupported-code-inside-a-package). A program with deferred operations it can reach isn't reported as fully static, and each package that has them gets an `SC6006` [divergence warning](#node-divergences).
 
 If a function's signature can't compile, the statements in its body count as not compiling, so the percentage reflects how much of the program compiles. The report still lists the diagnostics of those statements; a use of a parameter whose type can't compile reports `SC2004` back to the signature.
 
@@ -135,6 +135,7 @@ Some code compiles but can behave differently than under Node.js. Coverage repor
 - `SC6002`: values of one record type are built in key orders scriptc cannot track per value, so the type keeps its declaration order, an object literal's key order differs from it, and the program observes the order through `JSON.stringify`, `Object.keys`, `Object.values`, `Object.entries`, `for...in`, or console output.
 - `SC6003`: `localeCompare` compares a string literal outside the built-in Latin-script collation.
 - `SC6004`: a call passes a class instance to a function that casts it to an unrelated class.
+- `SC6006`: an npm package compiles with operations your program can reach that scriptc can't compile. Each throws a runtime error when it runs, where Node.js runs it; see [unsupported code inside a package](/docs/dependencies#unsupported-code-inside-a-package).
 
 ## Gating builds and CI
 

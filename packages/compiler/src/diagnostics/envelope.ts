@@ -217,11 +217,11 @@ export interface NodeIslandReasonEnvelope {
   at?: SourcePosition;
 }
 
-/** `scriptc coverage --print=diagnostics`: the Node island decisions. In
- * this version they are would-be decisions (mode "would-be"): the build
- * does not change. */
+/** `scriptc coverage --print=diagnostics`: the Node island decisions, the
+ * ones a build of the same program with the same options makes (mode
+ * "build"). */
 export interface NodeIslandsEnvelope {
-  mode: "would-be";
+  mode: "would-be" | "build";
   policy: "auto" | "explicit" | "off";
   /** Gap islands first, then by class and name. */
   islands: {
@@ -247,22 +247,27 @@ export interface NodeIslandsEnvelope {
     path: string | null;
     status: string;
     islands: string[];
+    /** A native package's first reason it could need Node, and how many
+     * it has: a build compiles it all the same. */
+    outside?: { class: string; reason: string; reasons: number };
   }[];
   violations: (SourcePosition & { code: string; message: string })[];
   unknownPackages: string[];
 }
 
-/** Node island notices of a build that succeeds (scope-B): SC8001 and
- * SC8021 notes (a package runs in a Node island, an island evaluates at
- * boot) and the SC8020 warning (a stateful module duplicated across the
- * boundary). The envelope reports all three as warnings. */
+/** Node island notices (scope-B): the SC8001 and SC8021 notes of a build
+ * that succeeds (a package runs in a Node island, an island evaluates at
+ * boot), its SC8020 warning (a stateful module duplicated across the
+ * boundary), and the SC8023 note that follows the errors of a build that
+ * failed with packages moved into islands. The envelope reports all of
+ * them as warnings. */
 export function isNodeIslandNoticeCode(code: string): boolean {
   return code === "SC8001" || code === "SC8020" || code === "SC8021" || code === "SC8023";
 }
 
-/** SC8001 and SC8021 are notes, not warnings. */
+/** SC8001, SC8021 and SC8023 are notes, not warnings or errors. */
 export function isNodeIslandNoteCode(code: string): boolean {
-  return code === "SC8001" || code === "SC8021";
+  return code === "SC8001" || code === "SC8021" || code === "SC8023";
 }
 
 /** The divergence band: compiles, but the program can behave differently

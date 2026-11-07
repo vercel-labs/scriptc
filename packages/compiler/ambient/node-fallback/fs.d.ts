@@ -84,7 +84,7 @@ declare module "node:fs" {
       [option: string]: unknown;
     },
   ): void;
-  export function existsSync(path: string | URL): boolean;
+  export function existsSync(path: string | Uint8Array | URL): boolean;
   export function mkdirSync(path: string | URL): void;
   export function mkdirSync(
     path: string | URL,

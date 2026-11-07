@@ -13,6 +13,7 @@ import { nodeThrowExpr } from "../../ir/build.js";
 
 import { MAY_THROW_LIB_FNS } from "../../ir/builtin-effects.js";
 import { BYTES_ELEMENT_SIZE, F64, type IrExpr, type IrType } from "../../ir/ir.js";
+import type { IrLibFn } from "../../ir/builtin-signatures.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { emitJsLibCall } from "./jsval.js";
 import type { LlvmEmitterContext, LibCallExpr, LibCallPrefix, LlValue } from "./expr-context.js";
@@ -24,6 +25,7 @@ import {
   USES_TIMERS_LIB_FNS,
 } from "./lib-shared.js";
 import { isDynUndefined } from "../../ir/runtime-features.js";
+import { everyStmtList } from "../../ir/traverse.js";
 import { DYN_KIND } from "./dyn.js";
 import { CLASS_KEY_LEN_MIX } from "../../ir/class-key-index.js";
 import { caBytes, callRuntime, ptr } from "./lib-abi.js";
@@ -315,6 +317,7 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
         "llvm emitter bug: record.sourceDelete strictness is not a literal",
       );
     host.dyn.keepsRecordSources = true;
+    if (e.args[0]!.type.kind === "record") host.dyn.keptSourceShapes.add(e.args[0]!.type.shapeId);
     host.declare(`declare zeroext i1 @scr_record_source_delete(ptr, ptr, ${host.sizeType}, i1)`);
     const keyLen = Buffer.byteLength(key.value, "utf8");
     const t = B.tmp();
@@ -337,6 +340,7 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     const built = host.emitReadReceiver(e.args[0]!);
     const value = host.emitReadReceiver(e.args[1]!);
     host.dyn.keepsRecordSources = true;
+    if (e.args[0]!.type.kind === "record") host.dyn.keptSourceShapes.add(e.args[0]!.type.shapeId);
     host.declare(`declare void @scr_record_source_share(ptr, ptr)`);
     B.line(`call void @scr_record_source_share(ptr ${built.name}, ptr ${value.name})`);
     return { name: "", type: e.type };
@@ -1096,7 +1100,7 @@ function emitSameValueF64(host: LlvmEmitterContext, a: string, b: string): strin
  * runtime's test: SameValue (equal bits, or both NaN) and `==`. */
 function emitAssertFailing(
   host: LlvmEmitterContext,
-  fn: string,
+  fn: IrLibFn,
   args: readonly LlValue[],
 ): string | null {
   const B = host.B;
@@ -1125,7 +1129,7 @@ function emitAssertFailing(
 /** Runtime string functions that only read their string arguments and keep
  * no reference to them: their operands are lent (a comparator's
  * `a.name.localeCompare(b.name)` reads both fields without retaining). */
-const READ_ONLY_STRING_LIB_FNS: ReadonlySet<string> = new Set(["str.localeCompare"]);
+const READ_ONLY_STRING_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>(["str.localeCompare"]);
 
 /** The most parameters scr_regex_replace_fn calls a replacer with
  * (SCR_REPLACER_MAX_ARITY), the first bit of its string-or-undefined
@@ -1317,18 +1321,55 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     const receiver = e.args[0]!;
     const value = host.emitReadReceiver(receiver);
     const S = host.sizeType;
+    const views = host.shapeHost.recordViews;
+    const viewTarget =
+      receiver.type.kind === "record" && views?.targets.has(receiver.type.shapeId) === true;
+    // The bit is also a record view's mark (record-views.ts), and a view has
+    // no frozen state of its own. Where no value of the type can be frozen,
+    // a value with the bit is a view of a record that is not frozen either.
+    if (viewTarget && receiver.type.kind === "record" && !views!.marked.has(receiver.type.shapeId))
+      return { name: "false", type: e.type };
     const rc = host.B.tmp(),
       top = host.B.tmp();
     let t = host.B.tmp();
     host.B.line(`${rc} = load ${S}, ptr ${value.name}`);
     host.B.line(`${top} = lshr ${S} ${rc}, ${S === "i64" ? 62 : 30}`);
     host.B.line(`${t} = icmp eq ${S} ${top}, 1`);
+    if (viewTarget) {
+      // Otherwise the record-source table answers for the record a view
+      // views, and a frozen record answers true (scr_record_view_frozen.c).
+      host.declare(`declare zeroext i1 @scr_record_marked_frozen(ptr)`);
+      const B = host.B;
+      const from = B.currentLabel();
+      const ask = B.newLabel("rf.marked");
+      const join = B.newLabel("rf.join");
+      B.condBr(t, ask, join, `, !prof !{!"branch_weights", i32 1, i32 1000}`);
+      B.startBlock(ask);
+      const frozen = B.tmp();
+      B.line(`${frozen} = call zeroext i1 @scr_record_marked_frozen(ptr ${value.name})`);
+      B.br(join);
+      B.startBlock(join);
+      const answer = B.tmp();
+      B.line(`${answer} = phi i1 [ false, %${from} ], [ ${frozen}, %${ask} ]`);
+      return { name: answer, type: e.type };
+    }
     if (
       receiver.type.kind === "record" &&
       host.publishedTypes?.recordGuarded(receiver.type.shapeId) === true
     )
       t = orPublished(host, t, rc);
     return { name: t, type: e.type };
+  }
+  if (
+    e.fn === "record.freeze" &&
+    e.args[0]?.type.kind === "record" &&
+    host.shapeHost.recordViews?.marked.has(e.args[0].type.shapeId) === true
+  ) {
+    // Freezing a view freezes the record it views (scr_record_view_frozen.c).
+    const value = host.emitReadReceiver(e.args[0]);
+    host.declare(`declare void @scr_record_marked_freeze(ptr)`);
+    host.B.line(`call void @scr_record_marked_freeze(ptr ${value.name})`);
+    return { name: "", type: e.type };
   }
   if (
     (e.fn === "array.isFrozen" || e.fn === "collection.isExtensible") &&
@@ -1539,6 +1580,8 @@ function emitArrayForeignThrow(host: LlvmEmitterContext, e: LibCallExpr): LlValu
   B.line(
     `call void @scr_arr_foreign_throw(ptr ${arr.name}, double ${index.name}, ptr ${want.name})`,
   );
+  // The element's deferred checked conversion: a dev build reports it.
+  host.conversionTraceAt(e.loc)?.();
   const ty = host.llType(e.type);
   if (ty === "void") {
     host.emitAlwaysPendingUnwind();
@@ -1562,11 +1605,35 @@ function allTupleAdapterFor(host: LlvmEmitterContext, fnName: string, tuple: IrT
   const rc = vAdapters(host.shapeHost, tuple);
   host.declare(`declare ptr @scr_promise_payload_ref(ptr)`);
   host.declare(`declare void @scr_promise_fulfill_ref(ptr, ptr, ptr, ptr, ptr)`);
+  // A builder that checks a checked-dynamic entry into its tuple position
+  // can throw: the result rejects with that error, and there is no tuple.
+  // Every other builder only reads fulfilled values and keeps its adapter.
+  const builder = host.fnByName.get(fnName);
+  const throws =
+    builder !== undefined &&
+    !everyStmtList(builder.body, {
+      expr: (e) => e.kind !== "dynCheck",
+      stmt: () => true,
+    });
+  if (throws) {
+    host.declare(`declare zeroext i1 @scr_exc_pending()`);
+    host.declare(`declare void @scr_promise_reject_pending(ptr)`);
+  }
   host.resolveThunkDefs.push(
     `define internal void @${adapter}(ptr %dst, ptr %src) ${FN_ATTRS} { ; Promise.all tuple`,
     `entry:`,
     `  %entries = call ptr @scr_promise_payload_ref(ptr %src) ; +1, moves into the builder`,
     `  %tuple = call ptr @${host.callTarget(fnName)}(ptr %entries)`,
+    ...(throws
+      ? [
+          `  %failed = call zeroext i1 @scr_exc_pending()`,
+          `  br i1 %failed, label %reject, label %fulfill`,
+          `reject:`,
+          `  call void @scr_promise_reject_pending(ptr %dst)`,
+          `  ret void`,
+          `fulfill:`,
+        ]
+      : []),
     `  call void @scr_promise_fulfill_ref(ptr %dst, ptr %tuple, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host.shapeHost, tuple)})`,
     `  ret void`,
     `}`,

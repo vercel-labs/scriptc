@@ -413,12 +413,12 @@ test("global string ownership cannot be inferred from an immutable-looking refer
 test("boxed string lengths borrow initialized payloads and keep checked TDZ reads", () => {
   const inspect = fn("inspect", ["value"], intrinsic(ref("value"), "length", [], F64));
   inspect.locals[0]!.boxed = true;
-  // A never-rebound boxed parameter is borrowed; its box is created only
-  // for an environment, so the body releases it only when one was built.
+  // A never-rebound boxed parameter is borrowed, and one whose every
+  // environment copies its value (here there is none) has no box.
   expect(facts(inspect).borrowed.get("inspect")).toEqual(new Set([0]));
   const ir = body(mod(inspect), "sc_bf_inspect");
-  expect(ir).toMatch(/br i1 %t\d+, label %lazy\.release\d+/);
-  expect(ir).toContain("@scr_box_release");
+  expect(ir).not.toContain("lazy.release");
+  expect(ir).not.toContain("@scr_box_release");
   expect(ir).not.toContain("@scr_box_get_ref");
   expect(ir).toContain("@sc_str_utf16_len");
   inspect.locals[0]!.tdz = true;

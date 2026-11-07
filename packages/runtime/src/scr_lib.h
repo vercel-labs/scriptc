@@ -310,6 +310,9 @@ void scr_fs_write_file(ScrStr *path, ScrStr *data);
 void scr_fs_write_file_fd(double fd, ScrStr *data);
 void scr_fs_append_file(ScrStr *path, ScrStr *data);
 bool scr_fs_exists(ScrStr *path);
+/* existsSync over a statically typed byte path: the bytes decode as a string
+ * and the probe runs on it, the conversion the value form also does. */
+bool scr_fs_exists_bytes(ScrBytes *path);
 void scr_fs_mkdir(ScrStr *path);
 /* Files only, like Node's rmSync without `recursive` (a directory throws an
  * EISDIR-coded error; use scr_fs_rmdir for empty directories). */

@@ -1,0 +1,23 @@
+import type { IrLibFn } from "./builtin-signatures.js";
+
+/** Builtins decided never to throw: the runtime function behind the call
+ * cannot raise an error and cannot run program code (a getter, `toJSON`,
+ * `valueOf`, `toString`, a proxy trap or a callback), under any argument.
+ *
+ * Every builtin states its answer once: a row in MAY_THROW_LIB_FNS
+ * (builtin-effects.ts) or a row here. A builtin in neither is compiled
+ * without the check that delivers its error, so the error is lost and the
+ * caller reads a placeholder result. The compiler does not read this set;
+ * packages/compiler/test/builtin-attributes.test.ts holds every builtin to
+ * the rule, and builtin-throw-undecided.txt lists the builtins that
+ * predate it. */
+export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  // scr_closure_adopt_identity writes two fields of the adapter.
+  "closure.shareIdentity",
+  // Emitted as the constant false; there is no runtime call.
+  "sea.isSea",
+  // scr_fs_exists_bytes turns the path bytes into a string and probes it; a
+  // path that is not there is the answer false, and the probe reports no
+  // error.
+  "fs.existsSyncBytes",
+]);

@@ -3,13 +3,34 @@ import { type IrModule } from "../ir/ir.js";
 import { jsObjectModelFact, moduleRuntimeFeatures } from "../ir/runtime-features.js";
 import { hasForeignFfiCallback } from "./ffi-callbacks.js";
 import type { NativeLinkFeatures } from "./native-link-info.js";
+import { withRequiredLinkFeatures } from "./native-link-info-core.js";
 import { youngNurseryRequested } from "./young-nursery.js";
 
-export function executableLinkFeatures(mod: IrModule, largePages = false): NativeLinkFeatures {
+/** Whether a build hands the program's sources to the emitter
+ * (LlvmTargetOptions.debugSources): `--optimization dev` without
+ * `--strip`. Such a build keeps positions in its stack frames and passes
+ * each checked conversion's position to its failure path. */
+export function carriesDebugSources(
+  optimization: "release" | "dev" | "speed" | undefined,
+  strip: boolean | undefined,
+): boolean {
+  return optimization === "dev" && strip !== true;
+}
+
+/** `debugSources`: the build carries debug sources (carriesDebugSources),
+ * so its checked conversions call the report of their failures. */
+export function executableLinkFeatures(
+  mod: IrModule,
+  largePages = false,
+  debugSources = false,
+): NativeLinkFeatures {
   const features = moduleRuntimeFeatures(mod);
-  return {
+  // A feature that calls into another feature's units links those too
+  // (LINK_FEATURE_REQUIREMENTS), whichever fact selected it.
+  return withRequiredLinkFeatures({
     ...(mod.workers ? { workers: true } : {}),
     ...(largePages ? { largePages: true } : {}),
+    ...(debugSources && mod.lib === undefined ? { conversionTrace: true } : {}),
     ...(youngNurseryRequested() && mod.lib === undefined ? { youngNursery: true } : {}),
     regex: features.regex,
     copying: features.copying,
@@ -25,6 +46,7 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     mutableBuffers: features.mutableBuffers,
     ...(features.stdioExtended ? { stdioExtended: true } : {}),
     ...(features.fsFlags ? { fsFlags: true } : {}),
+    ...(features.fsExistsValue ? { fsExistsValue: true } : {}),
     ...(features.fsBytesWrites ? { fsBytesWrites: true } : {}),
     ...(features.strdecDyn ? { strdecDyn: true } : {}),
     ...(features.processExtras ? { processExtras: true } : {}),
@@ -58,6 +80,7 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     ...(features.dynIntegrityQueries ? { dynIntegrityQueries: true } : {}),
     ...(features.reflectProtoTarget ? { reflectProtoTarget: true } : {}),
     ...(features.recordSourceDelete ? { recordSourceDelete: true } : {}),
+    ...(features.recordViewFrozen ? { recordViewFrozen: true } : {}),
     ...(features.genBind ? { genBind: true } : {}),
     ...(features.genReceiver ? { genReceiver: true } : {}),
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
@@ -116,5 +139,5 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     webcrypto: features.webcrypto,
     perfLoop: features.perfLoop,
     ...(features.icu ? { intl: true } : {}),
-  };
+  });
 }

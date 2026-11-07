@@ -1,6 +1,7 @@
 /* Shared tables and emission shapes for LLVM standard-library dispatch. */
 import type { LibCallExpr, LlValue, LlvmEmitterContext } from "./expr-context.js";
 import { f64Lit } from "./common.js";
+import type { IrLibFn } from "../../ir/builtin-signatures.js";
 
 /** Emit a validation-ladder call that always throws, preserving the typed
  * dummy-result ownership shape until the pending check unwinds it. */
@@ -27,7 +28,7 @@ export function emitAlwaysThrowLibCall(
  * (scr_assert.c). The first argument is the verdict; the value is the index
  * of the `negated` flag, or null when the call fails exactly when the
  * verdict is false. A passing assertion branches around the call. */
-export const ASSERT_VERDICT_LIB_FNS: ReadonlyMap<string, number | null> = new Map([
+export const ASSERT_VERDICT_LIB_FNS: ReadonlyMap<IrLibFn, number | null> = new Map([
   ["assert.ok", null],
   ["assert.looseResult", 1],
   ["assert.deepResult", 1],
@@ -37,7 +38,7 @@ export const ASSERT_VERDICT_LIB_FNS: ReadonlyMap<string, number | null> = new Ma
 
 /** The Math functions that call scr_ieee754.c. They read and write no
  * memory, so calls with the same argument fold and loops may hoist them. */
-export const PURE_MATH_LIB_FNS: ReadonlySet<string> = new Set([
+export const PURE_MATH_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "math.sin",
   "math.sinh",
   "math.cos",
@@ -128,6 +129,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "util.debounce": "scr_util_debounce",
   "util.throttle": "scr_util_throttle",
   "webstream.class": "scr_webstream_class",
+  "webstream.from": "scr_webstream_from",
   "webstream.instanceOf": "scr_webstream_instanceof",
   "webstream.install": "scr_webstream_install",
   "mime.typeNew": "scr_mime_type_new",
@@ -460,6 +462,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "date.toDateString": "scr_date_to_date_string",
   "date.toTimeString": "scr_date_to_time_string",
   "fs.existsSync": "scr_fs_exists",
+  "fs.existsSyncValue": "scr_fs_exists_value",
+  "fs.existsSyncBytes": "scr_fs_exists_bytes",
   // ── the throwing slice (MAY_THROW_LIB_FNS members): the generic path
   // emits the standard pending check after each — exprs.ts's finish.
   "process.cpuPrevValidate": "scr_cpu_prev_validate",
@@ -991,6 +995,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "stream.unboxDynStage": "scr_stream_unbox_dyn_stage",
   "stream.dynTransformResult": "scr_stream_dyn_transform_result",
   "stream.handleStream": "scr_stream_handle",
+  "stream.handleWritable": "scr_stream_handle",
   "stream.pipeDyn": "scr_stream_pipe_dyn",
   "stream.unpipeDyn": "scr_stream_unpipe_dyn",
   "process.kill": "scr_process_kill_named",
@@ -1279,7 +1284,6 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "handle.propsCheck": "scr_dyn_handle_props_check",
   // Promise statics with a foreign `this` (scr_js_promise_generic.c).
   "promise.genericStatic": "scr_js_promise_generic_call",
-  "child.propsInstall": "scr_dyn_handle_props_install",
   "child.propsDefine": "scr_dyn_define_property_hp",
   "child.propsDescriptor": "scr_dyn_get_own_property_descriptor_hp",
   "child.propsResolve": "scr_dyn_promise_resolve_hp",
@@ -2015,7 +2019,7 @@ export function mockTimerSym(
   return host.mockTimers && !e.realTimer ? MOCK_TIMER_SYMS[e.fn] : undefined;
 }
 
-export const USES_TIMERS_LIB_FNS = new Set<string>([
+export const USES_TIMERS_LIB_FNS = new Set<IrLibFn>([
   "crypto.generateKeyPairCb",
   "crypto.diffieHellman",
   "crypto.checkPrimeCb",

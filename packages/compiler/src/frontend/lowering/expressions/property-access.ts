@@ -143,7 +143,7 @@ import {
   lowerStaticSuperRead,
 } from "../lower-classes.js";
 import { isErrorPrototypeValue, lowerClassPrototypeData } from "../class-prototypes.js";
-import { lowerEnumAccess } from "../lower-enums.js";
+import { isEnumMemberRead, lowerEnumAccess } from "../lower-enums.js";
 import {
   hasOptionalChainGuard,
   isOptionalChainTail,
@@ -162,8 +162,12 @@ import {
   applyDeferredAssertion,
   assertedOptionalMemberRead,
   assertedReceiverNode,
+  assertionOperandOf,
   deferredMemberReadTarget,
   deferredProbeReadAccess,
+  erasedRecordOperand,
+  lowerErasedRecordOperand,
+  nullishMutationMessage,
 } from "./asserted-receiver.js";
 import { lowerRecordInheritedMember } from "../record-inherited.js";
 import { MUTABLE_BUFFER_MEMBERS } from "../buffers.js";
@@ -2423,8 +2427,16 @@ export function lowerIntrinsicProperty(
       );
     }
   }
-  if (lowerer.stdlibGlobalMember(expr, "Reflect") === "ownKeys")
-    return reflectMemberValue(lowerer, "ownKeys", locOf(expr));
+  // A Reflect member read as a value (a callback table's `Reflect.has`): the
+  // same closure a JavaScript namespace read answers, with Node's name and
+  // length. Members without a faithful value keep the standard-library fence
+  // below.
+  {
+    const reflectMember = lowerer.stdlibGlobalMember(expr, "Reflect");
+    const value =
+      reflectMember === null ? null : reflectMemberValue(lowerer, reflectMember, locOf(expr));
+    if (value !== null) return value;
+  }
   // A write, `delete` or defineProperty through `Date.prototype` keeps its
   // fence: the value below is a read surface, and a typed Date never observes
   // a dynamic write to it. This runs before the chainBlocked early return
@@ -2617,7 +2629,7 @@ export function lowerIntrinsicProperty(
   if (lowerer.stdlibGlobalMember(expr, "Function") === "prototype") {
     const loc = locOf(expr);
     const name = "%dyn.functionPrototype";
-    if (!lowerer.liftedFns.some((fn) => fn.name === name))
+    if (lowerer.liftedFnNamed(name) === undefined)
       lowerer.liftedFns.push({
         name,
         params: [],
@@ -5207,56 +5219,53 @@ function erasedDeclareField(lowerer: Lowerer, className: string, field: string):
   return false;
 }
 
-/** The operand a member WRITE addresses through a chain of type assertions:
- * `(p as View).x = v` names `p`. Node erases a type assertion, so a write
- * mutates the very object the operand names; the assertion only decides what
- * the checker accepts. Null when no `as`/`<T>` wraps the receiver (a write
- * there keeps the ordinary lowering). */
-function assertionOperand(access: ts.PropertyAccessExpression): ts.Expression | null {
-  let node: ts.Expression = access.expression;
-  let asserted = false;
-  for (;;) {
-    if (ts.isParenthesizedExpression(node)) {
-      node = node.expression;
-      continue;
-    }
-    if (ts.isAsExpression(node) || ts.isTypeAssertion(node)) {
-      node = node.expression;
-      asserted = true;
-      continue;
-    }
-    break;
-  }
-  return asserted ? node : null;
-}
-
 /** The unasserted value a member write addresses, when its OWN stored
- * layout holds the member at the asserted type — the erased write of Node.
- * The asserted view's conversion may instead build a fresh width record
- * (`%rec.width`), and a write into that temporary is dropped, so a view
- * that adds a member to a record has nothing to write and the caller
- * refuses. Only a RECORD operand converts like that: a dyn value's cast is
- * a checked, identity-preserving view (`dyn-literal-identity.ts`), and the
- * ordinary lowering already writes through it. The static type decides, so
- * the operand is lowered exactly once even when it has side effects. */
+ * layout holds the member at the asserted type — the erased write of Node
+ * (asserted-receiver.ts). The asserted view's conversion may instead build
+ * a fresh width record (`%rec.width`), and a write into that temporary is
+ * dropped, so a view that adds a member to a record has nothing to write
+ * and the caller refuses. Only a RECORD operand converts like that: a dyn
+ * value's cast is a checked, identity-preserving view
+ * (`dyn-literal-identity.ts`), and the ordinary lowering already writes
+ * through it. The static type decides, so the operand is lowered exactly
+ * once even when it has side effects. An operand that may be `undefined`
+ * or `null` is narrowed to its record first, and a nullish value throws
+ * Node's TypeError for the write. */
 function assertedWrite(
   lowerer: Lowerer,
   access: ts.PropertyAccessExpression,
-  operand: ts.Expression,
   fieldType: IrType,
   assertedType: IrType & { kind: "record" },
 ): { receiver: IrExpr | null; refuse: boolean } {
-  if (lowerer.mapTypeOf(lowerer.typeOf(operand))?.kind !== "record") {
+  const erased = erasedRecordOperand(lowerer, access.expression);
+  if (erased === null) return { receiver: null, refuse: false };
+  // An assertion that only drops `undefined` or `null` from the operand's
+  // own layout converts nothing: the ordinary lowering extracts the record
+  // in place.
+  if (
+    erased.layout.shapeId === assertedType.shapeId &&
+    lowerer.mapTypeOf(lowerer.typeOf(erased.operand))?.kind !== "record"
+  )
     return { receiver: null, refuse: false };
-  }
-  const value = lowerer.lowerExpr(operand);
+  const value = lowerErasedRecordOperand(
+    lowerer,
+    erased,
+    nullishMutationMessage(access, access.name.text),
+  );
+  if (value === null) return { receiver: null, refuse: true };
   if (value.type.kind === "record") {
-    const field = lowerer.shapes
-      .get(value.type.shapeId)
-      ?.fields.find((f) => f.name === access.name.text);
-    return field && typeEquals(field.type, fieldType)
-      ? { receiver: value, refuse: false }
-      : { receiver: null, refuse: true };
+    const shape = lowerer.shapes.get(value.type.shapeId);
+    const field = shape?.fields.find((f) => f.name === access.name.text);
+    if (field)
+      return typeEquals(field.type, fieldType)
+        ? { receiver: value, refuse: false }
+        : { receiver: null, refuse: true };
+    // An index-signature record holds the property as an entry of its
+    // signature (an asserted `Record<string, V>`): the write lands on the
+    // value itself through the keyed store.
+    if (shape?.indexValue !== undefined && !shape.tuple && typeEquals(shape.indexValue, fieldType))
+      return { receiver: value, refuse: false };
+    return { receiver: null, refuse: true };
   }
   // The value stayed non-record (a generic body, an aliased layout): keep
   // the assertion's conversion over the value already lowered.
@@ -5268,6 +5277,8 @@ export function fieldTarget(
   access: ts.PropertyAccessExpression,
 ): FieldTarget | null {
   if (lowerer.cjsLocalModuleBindingOf(access.expression)) return null;
+  // `E.A` of an enum whose object is built: the member's constant.
+  if (isEnumMemberRead(lowerer, access)) return null;
   // `module.exports` / `module.id`: CommonJS module surface, never a field.
   if (isCjsModuleGlobal(lowerer, access.expression)) return null;
   if (isCjsExportsIdentifier(lowerer, access.expression)) return null;
@@ -5389,6 +5400,34 @@ export function fieldTarget(
       lowerer.lowerExpr(access.expression),
     );
   }
+  // `(p as any).k = v` on a record: `any` has no static layout, and Node
+  // erases the assertion, so the write reaches the object `p` names. A
+  // member the record's own layout declares is that slot (the value
+  // converts into the slot's type like any other write); a member it does
+  // not declare has no slot, and the statement refuses it by name
+  // (anyAssertedUndeclaredWrite).
+  if (!receiverIr && !readOnlyAccess(access)) {
+    const erased = anyAssertedRecordOperand(lowerer, access.expression);
+    const field = erased
+      ? lowerer.shapes.get(erased.layout.shapeId)?.fields.find((f) => f.name === access.name.text)
+      : undefined;
+    if (erased && field) {
+      const obj = lowerErasedRecordOperand(
+        lowerer,
+        erased,
+        nullishMutationMessage(access, access.name.text),
+      );
+      if (obj?.type.kind === "record" && obj.type.shapeId === erased.layout.shapeId) {
+        return {
+          container: "record",
+          obj,
+          shapeId: obj.type.shapeId,
+          field: access.name.text,
+          fieldType: field.type,
+        };
+      }
+    }
+  }
   // A member the checker ADMITS on a receiver that has no static layout: a
   // write through an assertion on a checked-dynamic value (a caught binding
   // — `(error as { headers?: Headers }).headers = undefined`). Node erases
@@ -5398,7 +5437,7 @@ export function fieldTarget(
   if (receiverIr?.kind === "dyn" && !readOnlyAccess(access)) {
     // The assertion itself may be unrepresentable (a class member on a
     // structural view); it is erased at runtime, so address the operand.
-    const writeOperand = assertionOperand(access);
+    const writeOperand = assertionOperandOf(access.expression);
     const admitted = lowerer.mapTypeOf(lowerer.typeOf(access));
     if (writeOperand && admitted && admitted.kind !== "void")
       return {
@@ -5480,11 +5519,9 @@ export function fieldTarget(
     const shape = lowerer.shapes.get(receiverIr.shapeId);
     const fieldType = shape?.fields.find((f) => f.name === access.name.text)?.type;
     if (fieldType) {
-      const writeOperand = readOnlyAccess(access) ? null : assertionOperand(access);
-      const write =
-        writeOperand === null
-          ? null
-          : assertedWrite(lowerer, access, writeOperand, fieldType, receiverIr);
+      const write = readOnlyAccess(access)
+        ? null
+        : assertedWrite(lowerer, access, fieldType, receiverIr);
       let obj = write?.receiver ?? lowerer.lowerExpr(access.expression);
       const nominal = representedClassFieldTarget(
         lowerer,
@@ -5528,6 +5565,25 @@ export function fieldTarget(
             : lowerer.maybeNarrow(obj, access.expression));
       }
       if (obj.type.kind !== "record") return null;
+      const actualShape = lowerer.shapes.get(obj.type.shapeId);
+      const actualField = actualShape?.fields.find((f) => f.name === access.name.text);
+      // The value's stored layout is an index-signature record that does not
+      // declare the field (an asserted `Record<string, V>` whose declared
+      // type names the key): the property is an entry of the signature, so
+      // the read and write are the keyed ones the bracket spelling takes.
+      if (
+        actualField === undefined &&
+        actualShape?.indexValue !== undefined &&
+        !actualShape.tuple
+      ) {
+        return {
+          container: "recordOvf",
+          obj,
+          shapeId: obj.type.shapeId,
+          field: access.name.text,
+          fieldType: actualShape.indexValue,
+        };
+      }
       // A write through a type assertion that the value's own layout cannot
       // host would land on the assertion's converted copy (`%rec.width.<id>`)
       // and be dropped. Node erases the assertion and mutates the object the
@@ -5539,8 +5595,6 @@ export function fieldTarget(
           `writing '${access.name.text}' through a type assertion to a member the value's own layout does not hold (the write would land on a converted copy; declare the member on the value's type)`,
         );
       }
-      const actualShape = lowerer.shapes.get(obj.type.shapeId);
-      const actualField = actualShape?.fields.find((f) => f.name === access.name.text);
       return {
         container: "record",
         obj,
@@ -5876,6 +5930,15 @@ export function fieldGetExpr(
           type: inner,
           loc,
         };
+      }
+      // A field declared with a union type reads as that union: the
+      // unassigned arm traps like the checked extraction of a single arm.
+      if (inner.kind === "union" && undefTag >= 0) {
+        const retag = lowerer.unionRetagHelper(unionId, inner.unionId, loc, new Set([undefTag]));
+        if (retag) {
+          lowerer.coercions.deferredRetags.add(retag);
+          return { kind: "call", callee: retag, args: [read], type: inner, loc };
+        }
       }
       const helper = lowerer.deferredReadHelper(target.fieldType.unionId, inner, loc);
       if (helper) return { kind: "call", callee: helper, args: [read], type: inner, loc };
@@ -6632,4 +6695,33 @@ function primitivePrototypeKind(
   if (lowerer.stdlibGlobalMember(expr, "Number") === "prototype") return "Number";
   if (lowerer.stdlibGlobalMember(expr, "Boolean") === "prototype") return "Boolean";
   return null;
+}
+
+/** The record a member write through an assertion to `any` addresses:
+ * `(p as any).k = v` names `p`. Null when the receiver is not asserted to
+ * `any`, or the operand is not a record (a class instance, an array and a
+ * function keep their own dynamic member writes). */
+function anyAssertedRecordOperand(
+  lowerer: Lowerer,
+  receiver: ts.Expression,
+): ReturnType<typeof erasedRecordOperand> {
+  if ((lowerer.typeOf(receiver).flags & ts.TypeFlags.Any) === 0) return null;
+  const erased = erasedRecordOperand(lowerer, receiver);
+  if (erased === null) return null;
+  const shape = lowerer.shapes.get(erased.layout.shapeId);
+  return shape && !shape.tuple ? erased : null;
+}
+
+/** The reason `(p as any).k = v` is refused when the record `p` names does
+ * not declare `k`: Node adds the property to the object, and a native
+ * record has no slot for it. Null for every other write. */
+export function anyAssertedUndeclaredWrite(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+): string | null {
+  const erased = anyAssertedRecordOperand(lowerer, access.expression);
+  if (erased === null) return null;
+  const shape = lowerer.shapes.get(erased.layout.shapeId);
+  if (!shape || shape.fields.some((f) => f.name === access.name.text)) return null;
+  return `writing '${access.name.text}' through an assertion to 'any' on a '${lowerer.fmt(erased.layout)}' value, whose layout does not declare it (Node adds the property to the object; a native record has no slot for an undeclared member — declare '${access.name.text}' on the value's type)`;
 }

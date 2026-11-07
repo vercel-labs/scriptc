@@ -26,6 +26,7 @@ import { lowerDateStaticCall } from "./builtins/dates.js";
 import { keyedHelperName } from "./stable-names.js";
 import { lowerValueReturningConstructorNew } from "./js-dynamic-objects.js";
 import { adaptPromiseExecutor } from "./promise-executor-adapter.js";
+import { executorResolvesPlainly } from "./promise-resolution.js";
 import { dynUndefinedExpr, nodeThrowExpr, strLit, varRef } from "../../ir/build.js";
 import { isDynUndefined } from "../../ir/runtime-features.js";
 import {
@@ -242,6 +243,7 @@ import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { lowerInstanceConstructorNew } from "./class-instance-constructor.js";
 import { classPrototypeData, reflectClassPrototype } from "./class-prototypes.js";
 import { constructionEscape } from "./construction-escapes.js";
+import { type ConstructionReads, constructionReads } from "./construction-reads.js";
 import {
   checkedClassConstruction,
   checkedClassConstructionPacked,
@@ -855,6 +857,14 @@ export interface ClassInfo {
     globalId: string;
     readonly: boolean;
   }[];
+  /** The names of the static members this class declares in its own body,
+   * whether or not they collect below (an accessor whose type has no
+   * mapping, a field without an initializer and a member named by a string
+   * do not). A declaration is the class's own property in JavaScript, so a
+   * lookup of the name stops here (staticDeclarerOf) instead of answering
+   * with the member of a base class. Absent on a class that keeps its
+   * statics in the constructor's property table (runtimeStatics). */
+  declaredStatics?: ReadonlySet<string>;
   /** Shared expando data added after a JS class declaration. */
   staticDataHelper?: string;
   /** STATIC methods — ordinary module functions named `%C.static:m` (the
@@ -2612,6 +2622,7 @@ export function collectClassShapeInner(
 
     const staticFields: ClassInfo["staticFields"] = [];
     const staticMethods: NonNullable<ClassInfo["staticMethods"]> = new Map();
+    const declaredStatics = new Set<string>();
     const staticBlocks: ts.ClassStaticBlockDeclaration[] = [];
     const runtimeStatics: ts.ClassElement[] = [];
     const runtimePrototypeMembers: ts.ClassElement[] = [];
@@ -2765,6 +2776,17 @@ export function collectClassShapeInner(
         // instantiation — JS's one class); instantiations skip them and
         // reach them through the base chain (findStaticOn).
         if (inst) continue;
+        // The class declares this name, whatever the member collects as
+        // below. A `declare` field is erased: it declares nothing at run
+        // time, and the name stays the base class's.
+        {
+          const name = (member as { name?: ts.PropertyName }).name;
+          const declared =
+            name !== undefined && !modifiers.some((m) => m.kind === ts.SyntaxKind.DeclareKeyword)
+              ? classMemberNameOf(lowerer, name)
+              : null;
+          if (declared !== null) declaredStatics.add(declared);
+        }
         // The honest static subset: a field WITH an initializer is a
         // module global (mutable when not readonly) assigned once at
         // the class statement's position in module init and read as
@@ -2791,8 +2813,15 @@ export function collectClassShapeInner(
           const initializerSymbol = ts.isIdentifier(member.initializer)
             ? lowerer.resolveValueSymbol(member.initializer)
             : null;
-          // Enum namespace aliases are erased; member reads fold through the checker.
-          if (initializerSymbol && (initializerSymbol.flags & ts.SymbolFlags.Enum) !== 0) continue;
+          // An alias of an enum that has no object is erased; member reads
+          // fold through the checker. An enum whose object is built
+          // (enum-objects.ts) is stored like any other value.
+          if (
+            initializerSymbol &&
+            (initializerSymbol.flags & ts.SymbolFlags.Enum) !== 0 &&
+            !lowerer.enumObjects.has(initializerSymbol)
+          )
+            continue;
           const type = lowerer.irTypeOf(member.name);
           if (type.kind === "void") lowerer.badType(member.name, lowerer.typeOf(member.name));
           if (
@@ -3413,6 +3442,14 @@ export function collectClassShapeInner(
         if (lowerer.findMethodOn(base, member.name.text)) {
           lowerer.unsupported("SC1090", member.name, "fields shadowing inherited methods");
         }
+        // A JavaScript field over an inherited accessor has its own
+        // lowering; in TypeScript it is a suppressed error.
+        if (
+          !isJsSourceFile(ts.getSourceFileOfNode(member)) &&
+          redeclaresInheritedMember(lowerer, base, member.name.text, true)
+        ) {
+          lowerer.unsupported("SC1090", member.name, "fields shadowing inherited accessors");
+        }
         // Initializer-less fields whose type ADMITS undefined start as
         // JS's undefined (the allocation writes the interned undefined
         // arm — see the backend's undefFieldInitLineC), exactly Node's
@@ -3526,6 +3563,9 @@ export function collectClassShapeInner(
           if (lowerer.findMethodOn(base, name)) {
             lowerer.unsupported("SC1090", p.name, "fields shadowing inherited methods");
           }
+          if (redeclaresInheritedMember(lowerer, base, name, true)) {
+            lowerer.unsupported("SC1090", p.name, "fields shadowing inherited accessors");
+          }
           paramProps.push({ name, type, param: p });
         }
         ctor = member;
@@ -3619,6 +3659,9 @@ export function collectClassShapeInner(
         if (member.typeParameters !== undefined) {
           if (fields.has(mName)) {
             lowerer.unsupported("SC1090", member.name, "methods shadowing inherited fields");
+          }
+          if (redeclaresInheritedMember(lowerer, base, mName, true)) {
+            lowerer.unsupported("SC1090", member.name, "methods shadowing inherited accessors");
           }
           if (lowerer.findMethodOn(base, mName)) {
             lowerer.unsupported(
@@ -3727,6 +3770,9 @@ export function collectClassShapeInner(
         }
         if (fields.has(mName)) {
           lowerer.unsupported("SC1090", member.name, "methods shadowing inherited fields");
+        }
+        if (redeclaresInheritedMember(lowerer, base, mName, true)) {
+          lowerer.unsupported("SC1090", member.name, "methods shadowing inherited accessors");
         }
         if (findGenericMethodOn(lowerer, base, mName)) {
           lowerer.unsupported(
@@ -4141,6 +4187,16 @@ export function collectClassShapeInner(
           // tsc rejects field/accessor mixing (TS2610/2611); defensive.
           lowerer.unsupported("SC1090", member.name, "accessors sharing a name with a field");
         }
+        // tsc rejects an accessor over an inherited method too (TS2423),
+        // and a suppressed error still compiles: a call through the base
+        // class would run the inherited method where Node reads the
+        // accessor (redeclaresInheritedMember).
+        if (
+          redeclaresInheritedMember(lowerer, base, prop, false) ||
+          findGenericMethodOn(lowerer, base, prop)
+        ) {
+          lowerer.unsupported("SC1090", member.name, "accessors shadowing inherited methods");
+        }
         let sig: { params: ParamShape[]; ret: IrType };
         if (isGet) {
           let ret = lowerer.declaredReturnType(member, member.name);
@@ -4222,18 +4278,23 @@ export function collectClassShapeInner(
       );
     }
 
-    // Fields read before their first assignment. Construction that hands
-    // the instance to other code (a method call, an argument, a callback,
-    // a base constructor that does either) before assigning a class-typed
-    // field lets that code read the field while Node still holds
-    // undefined. Such fields take the deferred-init representation, whose
-    // slot (a nullable instance pointer) starts empty and whose reads check
-    // it. Fields assigned before any exposure keep their plain reads.
+    // Fields read before their first assignment. Construction that exposes
+    // the instance (a method call, an argument, a callback, a base
+    // constructor that does either) before assigning a field lets other
+    // code read the field while Node still holds undefined. A class-typed
+    // field in that position, and any other field that the code
+    // construction runs through `this` reads (construction-reads.ts), takes
+    // the deferred-init representation, whose slot starts as undefined and
+    // whose reads check it. Fields assigned before any exposure keep their
+    // plain reads.
     const derived =
       decl.heritageClauses?.nodes.some((clause) => clause.token === ts.SyntaxKind.ExtendsKeyword) ??
       false;
-    // Generic instances and mixins share layouts across declarations, so
-    // they only report whether construction exposes the instance.
+    // A generic family is not emitted, and a mixin's class is collected per
+    // call site over another base: they only report whether construction
+    // exposes the instance. A generic instance is analyzed like any class;
+    // the answer depends on the declaration alone, so every instance of a
+    // family takes the same slots.
     const escape: { escapes: boolean; assigned: Set<string> | null } =
       familyMode || mixin
         ? { escapes: derived, assigned: null }
@@ -4345,33 +4406,44 @@ export function collectClassShapeInner(
       }
     }
 
-    if (escape.assigned && !inst) {
-      let earlyReads: Set<string> | null = null;
+    if (escape.assigned) {
+      let earlyReads: ConstructionReads | null = null;
       for (const f of fieldOrder) {
         if (f.redeclared || escape.assigned.has(f.name) || deferredInitFields.has(f.name)) continue;
         if (paramProps.some((pp) => pp.name === f.name)) continue;
         const declared = fields.get(f.name);
-        // Records, arrays and strings are pointer slots that start empty
-        // too, but only take the checked slot when a method the
-        // constructor calls actually reads them: their other early
-        // exposures keep the plain slot.
-        if (
-          declared?.kind === "record" ||
-          declared?.kind === "array" ||
-          declared?.kind === "string"
-        ) {
-          earlyReads ??= constructorMethodReads(decl, base, ctor ?? undefined);
-          if (!earlyReads.has(f.name)) continue;
-        } else if (
-          declared?.kind !== "object" ||
-          lowerer.classes.get(declared.className)?.def.runtime
-        )
-          continue;
-        const armed = lowerer.withUndefinedArm(declared);
-        if (armed === null || armed.kind !== "union") continue;
+        if (declared === undefined) continue;
+        // A class-typed field takes the checked slot on any early exposure:
+        // its slot is the nullable instance pointer either way. Every other
+        // field takes it only when code that construction runs through
+        // `this` reads it before the field's assignment (a method the
+        // constructor calls, or the override a derived class gives a method
+        // its base constructor calls): their other early exposures keep the
+        // plain slot.
+        if (declared.kind !== "object" || lowerer.classes.get(declared.className)?.def.runtime) {
+          if (earlyReads === null) {
+            const bases: ts.ClassLikeDeclaration[] = [];
+            for (let b = base; b; b = b.base) if (b.decl) bases.push(b.decl);
+            earlyReads = constructionReads(decl, bases, lowerer.classHierarchy());
+          }
+          if (!earlyReads.early(f.name)) continue;
+        }
+        const armed = deferredSlotType(lowerer, declared);
+        if (armed === null) continue;
         fields.set(f.name, armed);
         f.type = armed;
         deferredInitFields.add(f.name);
+        lowerer.runtimeOptionalProvenance?.note(
+          "unassigned-field-read",
+          decl.members.nodes.find(
+            (member) =>
+              ts.isPropertyDeclaration(member) &&
+              (ts.isIdentifier(member.name) || ts.isPrivateIdentifier(member.name)) &&
+              member.name.text === f.name,
+          ) ?? decl,
+          undefined,
+          lowerer.fmt(declared),
+        );
       }
     }
 
@@ -4849,6 +4921,7 @@ export function collectClassShapeInner(
       throwingSetters,
       staticFields,
       ...(staticMethods.size > 0 ? { staticMethods } : {}),
+      ...(declaredStatics.size > 0 ? { declaredStatics } : {}),
       ...(staticBlocks.length > 0 ? { staticBlocks } : {}),
       ...(symbolFields.size > 0 ? { symbolFields } : {}),
       ...(symbolMethods.size > 0 ? { symbolMethods } : {}),
@@ -5751,10 +5824,40 @@ function lowerClassDecoration(lowerer: Lowerer, info: ClassInfo): IrStmt[] {
   }
 }
 
-/** The nearest declaration of static member `name` at or above `info` —
- * the compile-time prototype-chain walk (`D.x` reads C's global when C
- * declared x and nothing between redeclares it; a redeclaration shadows
- * with its OWN storage, exactly JS). */
+/** Whether `c` itself declares the static property `name`: a member its
+ * body declares (declaredStatics), or one in its collected tables (which
+ * also hold the statics of classes that have no body to read). An accessor
+ * collects as the static methods `get:name` and `set:name`. */
+function hasOwnStatic(c: ClassInfo, name: string): boolean {
+  return (
+    c.declaredStatics?.has(name) === true ||
+    c.staticFields.some((f) => f.name === name) ||
+    c.staticMethods?.has(name) === true ||
+    c.staticMethods?.has(`get:${name}`) === true ||
+    c.staticMethods?.has(`set:${name}`) === true ||
+    c.genericStatics?.has(name) === true
+  );
+}
+
+/** The class that answers for the static property `name` read through
+ * `info`: the nearest class at or above `info` that declares it, the
+ * compile-time prototype-chain walk. A declaration shadows every
+ * declaration above it whatever its kind, as an own property does in
+ * JavaScript: a getter over an inherited method, a field without an
+ * initializer over an initialized one, a method named by a string. A
+ * `get:name`/`set:name` lookup asks for the property `name`. Null when no
+ * class declares it. */
+export function staticDeclarerOf(info: ClassInfo | null, name: string): ClassInfo | null {
+  const property = name.startsWith("get:") || name.startsWith("set:") ? name.slice(4) : name;
+  for (let c = info; c; c = c.base) if (hasOwnStatic(c, property)) return c;
+  return null;
+}
+
+/** The static field or method `name` as `info` resolves it: the one its
+ * nearest declarer (staticDeclarerOf) collected (`D.x` reads C's global
+ * when C declared x and nothing between redeclares it; a redeclaration
+ * shadows with its OWN storage, exactly JS). Null when the nearest
+ * declaration is of another kind, has no lowering, or does not exist. */
 export function findStaticOn(
   lowerer: Lowerer,
   info: ClassInfo | null,
@@ -5772,12 +5875,12 @@ export function findStaticOn(
       field?: undefined;
     }
   | null {
-  for (let c = info; c; c = c.base) {
-    const field = c.staticFields.find((s) => s.name === name);
-    if (field) return { declarer: c, field };
-    const method = c.staticMethods?.get(name);
-    if (method) return { declarer: c, method };
-  }
+  const c = staticDeclarerOf(info, name);
+  if (!c) return null;
+  const field = c.staticFields.find((s) => s.name === name);
+  if (field) return { declarer: c, field };
+  const method = c.staticMethods?.get(name);
+  if (method) return { declarer: c, method };
   return null;
 }
 
@@ -5786,15 +5889,29 @@ export function findStaticOn(
  * hold any descendant, and a shadowing redeclaration means the runtime
  * class decides which storage answers. */
 export function staticShadowBelow(info: ClassInfo, name: string): boolean {
-  return info.subclasses.some(
-    (s) =>
-      s.staticFields.some((f) => f.name === name) ||
-      s.staticMethods?.has(name) === true ||
-      s.staticMethods?.has(`get:${name}`) === true ||
-      s.staticMethods?.has(`set:${name}`) === true ||
-      s.genericStatics?.has(name) === true ||
-      staticShadowBelow(s, name),
-  );
+  return info.subclasses.some((s) => hasOwnStatic(s, name) || staticShadowBelow(s, name));
+}
+
+/** The undefined-armed slot of a field that can be read before its
+ * assignment, or null for a type with no such slot: a checked-dynamic slot
+ * holds undefined as it is, and a unit, generator or caught value has no
+ * union arm. */
+function deferredSlotType(lowerer: Lowerer, declared: IrType): IrType | null {
+  if (
+    isUnitType(declared) ||
+    declared.kind === "dyn" ||
+    declared.kind === "generator" ||
+    declared.kind === "void" ||
+    declared.kind === "caught"
+  )
+    return null;
+  if (declared.kind === "union") {
+    if (lowerer.armTag(declared.unionId, UNDEFINED_T) >= 0) return null;
+    const widened = lowerer.withUndefinedArmOf(declared);
+    return widened !== null && widened.kind === "union" ? widened : null;
+  }
+  const armed = lowerer.withUndefinedArm(declared);
+  return armed.kind === "union" ? armed : null;
 }
 
 /** The static accessor `info.name` resolves: the nearest class at or above
@@ -5802,23 +5919,17 @@ export function staticShadowBelow(info: ClassInfo, name: string): boolean {
  * declaration is an accessor (collected as the static methods `get:name`
  * and `set:name`). A getter without a setter, or a setter without a
  * getter, is the whole property: it hides an inherited half. Null when a
- * field or a method of the name is nearer, or nothing declares it. */
+ * declaration of another kind is nearer, the accessor did not collect, or
+ * nothing declares the name. */
 export function findStaticAccessorOn(
   info: ClassInfo | null,
   name: string,
 ): { declarer: ClassInfo; get: boolean; set: boolean } | null {
-  for (let c = info; c; c = c.base) {
-    if (
-      c.staticFields.some((f) => f.name === name) ||
-      c.staticMethods?.has(name) === true ||
-      c.genericStatics?.has(name) === true
-    )
-      return null;
-    const get = c.staticMethods?.has(`get:${name}`) === true;
-    const set = c.staticMethods?.has(`set:${name}`) === true;
-    if (get || set) return { declarer: c, get, set };
-  }
-  return null;
+  const c = staticDeclarerOf(info, name);
+  if (!c) return null;
+  const get = c.staticMethods?.has(`get:${name}`) === true;
+  const set = c.staticMethods?.has(`set:${name}`) === true;
+  return get || set ? { declarer: c, get, set } : null;
 }
 
 /** The classes a `super` member names inside a static member's body: the
@@ -5978,58 +6089,6 @@ export function staticAccessorWrite(
   };
 }
 
-/** The `this` members read by the methods and accessors a constructor
- * calls through `this` (transitively, over the class and its bases),
- * outside nested functions. The constructor's own reads are not included:
- * they run where the constructor's statements put them. */
-function constructorMethodReads(
-  decl: ts.ClassLikeDeclaration,
-  base: ClassInfo | null,
-  ctor: ts.ConstructorDeclaration | undefined,
-): Set<string> {
-  const reads = new Set<string>();
-  const visited = new Set<string>();
-  const bodies = (name: string): ts.Node[] => {
-    const out: ts.Node[] = [];
-    let owner: ts.ClassLikeDeclaration | undefined = decl;
-    for (let next = base; owner; owner = next?.decl ?? undefined, next = next?.base ?? null) {
-      for (const member of owner.members.nodes) {
-        if (
-          (ts.isMethodDeclaration(member) || ts.isAccessor(member)) &&
-          member.body &&
-          (ts.isIdentifier(member.name) || ts.isPrivateIdentifier(member.name)) &&
-          member.name.text === name
-        )
-          out.push(member.body);
-      }
-    }
-    return out;
-  };
-  const enter = (name: string): void => {
-    if (visited.has(name)) return;
-    visited.add(name);
-    for (const body of bodies(name)) scan(body, true);
-  };
-  // Nested functions (callbacks handed elsewhere) are not followed: only
-  // the straight-line code of the constructor and the methods it calls.
-  const scan = (node: ts.Node, inMethod: boolean): void => {
-    ts.walkPreorder(node, (n) => {
-      if (n !== node && ts.isFunctionLike(n)) return "skip";
-      if (
-        ts.isPropertyAccessExpression(n) &&
-        n.expression.kind === ts.SyntaxKind.ThisKeyword &&
-        (ts.isIdentifier(n.name) || ts.isPrivateIdentifier(n.name))
-      ) {
-        if (inMethod) reads.add(n.name.text);
-        enter(n.name.text);
-      }
-      return undefined;
-    });
-  };
-  if (ctor?.body) scan(ctor.body, false);
-  return reads;
-}
-
 /** The nearest GENERIC static declaration of `name` at/above `info` —
  * findStaticOn's twin over the genericStatics tables. */
 export function findGenericStaticOn(
@@ -6037,11 +6096,9 @@ export function findGenericStaticOn(
   info: ClassInfo | null,
   name: string,
 ): { declarer: ClassInfo; info: GenericFnInfo } | null {
-  for (let c = info; c; c = c.base) {
-    const gs = c.genericStatics?.get(name);
-    if (gs) return { declarer: c, info: gs };
-  }
-  return null;
+  const c = staticDeclarerOf(info, name);
+  const gs = c?.genericStatics?.get(name);
+  return c && gs ? { declarer: c, info: gs } : null;
 }
 
 /** A static METHOD taken as a value: the zero-capture closure over its
@@ -6619,6 +6676,27 @@ export function lowerClassExpressionInfo(
       "SC1090",
       expr,
       "function-local classes with statics, decorators, or generic members",
+    );
+  }
+  // An Array subclass's methods build their results through the class's
+  // species helper, which constructs the class by name; a function-local
+  // class is constructed from the class value of its evaluation.
+  if (
+    local &&
+    expr.heritageClauses?.nodes.some(
+      (clause) =>
+        clause.token === ts.SyntaxKind.ExtendsKeyword &&
+        clause.types.nodes.some(
+          (base) =>
+            ts.isIdentifier(base.expression) && lowerer.isStdlibGlobal(base.expression, "Array"),
+        ),
+    )
+  ) {
+    lowerer.unsupported(
+      "SC1090",
+      expr,
+      "Array subclasses declared inside functions",
+      "declare the class at module level",
     );
   }
   lowerer.collectingExprClasses.add(expr);
@@ -7282,7 +7360,7 @@ function staticCallOn(
   if (runtimeStatic) return runtimeStatic;
   // Date's statics through a class declared `extends Date`
   // (`Moment.UTC(...)`), which inherits them.
-  if (dateRootOf(info) && !findStaticOn(lowerer, info, access.name.text)) {
+  if (dateRootOf(info) && !staticDeclarerOf(info, access.name.text)) {
     const date = lowerDateStaticCall(lowerer, call, access.name.text);
     if (date) return date;
   }
@@ -7331,6 +7409,14 @@ function staticCallOn(
       `calling the private static '${access.name.text}' through the subclass '${info.def.name.replace(/^%|^%m\d+\./, "")}' (JS brands the declaring class object alone — Node throws a TypeError here; spell the declaring class's name)`,
     );
   }
+  // A static accessor in call position (`C.make()` where `make` is a
+  // getter, the class's own or one that redeclares an inherited method):
+  // the call is a call of what the member read answers, as for a
+  // func-typed static field. The read is the ordinary static read, with
+  // its rules for a class-value receiver and a receiver-dependent getter.
+  if (!found && findStaticAccessorOn(info, access.name.text)) {
+    return staticValueCall(lowerer, call, access, lowerer.lowerExpr(access), throughValue);
+  }
   if (!found) {
     // GENERIC static methods: monomorphized like top-level generic
     // functions, called directly as `%C.static:m%n` — with the same
@@ -7372,34 +7458,13 @@ function staticCallOn(
   if (found.field !== undefined) {
     // A func-typed static field in call position: read the global,
     // call through the value (the ctor-assigned-callback pattern).
-    if (found.field.type.kind !== "func") return null;
-    const callee: IrExpr = {
-      kind: "varRef",
-      localId: found.field.globalId,
-      type: found.field.type,
-      loc,
-    };
-    const params = found.field.type.params;
-    const args = call.arguments.nodes.map((a, i) => lowerer.lowerExprExpecting(a, params[i]));
-    for (let i = args.length; i < params.length; i++) {
-      const absent = omittedArgFor(lowerer, params[i]!, loc);
-      if (!absent) {
-        lowerer.unsupported(
-          "SC1090",
-          call,
-          "calls omitting a non-optional parameter of the callee's type",
-        );
-      }
-      args.push(absent);
-    }
-    return {
-      kind: "callValue",
-      callee,
-      receiver: lowerer.lowerExprExpecting(access.expression, DYN),
-      args,
-      type: found.field.type.ret,
-      loc,
-    };
+    return staticValueCall(
+      lowerer,
+      call,
+      access,
+      { kind: "varRef", localId: found.field.globalId, type: found.field.type, loc },
+      false,
+    );
   }
   if (found.method.member.body && usesStaticReceiver(found.method.member)) {
     const generic = (found.method.receiverInfo ??= {
@@ -7427,6 +7492,50 @@ function staticCallOn(
   lowerer.noteEdge(fnName);
   const args = lowerer.completeArgs(call.arguments.nodes, found.method.params, loc, call);
   return { kind: "call", callee: fnName, args, type: found.method.ret, loc };
+}
+
+/** `C.x(args)` where the static `x` holds a function (a func-typed field,
+ * or an accessor whose getter answers one): the call goes through the
+ * value `callee`, with the class as its `this`. JavaScript evaluates the
+ * receiver once, before it reads the member, and calls the function on
+ * that value. A getter is code: it can rebind the variable a class-value
+ * receiver is read from (`holder.make()` where the getter assigns
+ * `holder`), so with `receiverMayChange` the receiver is held before the
+ * read; a class name and `this` cannot be rebound, and reading a field
+ * runs nothing. Null when the value is not a function the call can name. */
+function staticValueCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  callee: IrExpr,
+  receiverMayChange: boolean,
+): IrExpr | null {
+  if (callee.type.kind !== "func") return null;
+  const loc = locOf(call);
+  const params = callee.type.params;
+  const args = call.arguments.nodes.map((a, i) => lowerer.lowerExprExpecting(a, params[i]));
+  for (let i = args.length; i < params.length; i++) {
+    const absent = omittedArgFor(lowerer, params[i]!, loc);
+    if (!absent) {
+      lowerer.unsupported(
+        "SC1090",
+        call,
+        "calls omitting a non-optional parameter of the callee's type",
+      );
+    }
+    args.push(absent);
+  }
+  const receiver = lowerer.lowerExprExpecting(access.expression, DYN);
+  const type = callee.type.ret;
+  if (!receiverMayChange) return { kind: "callValue", callee, receiver, args, type, loc };
+  const held = lowerer.declareHiddenLocal("%staticReceiver", DYN);
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: held.id, init: receiver, loc }],
+    result: { kind: "callValue", callee, receiver: varRef(held.id, DYN, loc), args, type, loc },
+    type,
+    loc,
+  };
 }
 
 /** `C.call(thisArg, ...)` / `C.apply(thisArg, args)` on a program class that
@@ -7533,12 +7642,7 @@ function directRuntimeStaticCall(
   let declarer: ClassInfo | null = null;
   let member: ts.MethodDeclaration | null = null;
   for (let c: ClassInfo | null = info; c; c = c.base) {
-    if (
-      c.staticFields.some((field) => field.name === name) ||
-      c.staticMethods?.has(name) === true ||
-      c.genericStatics?.has(name) === true
-    )
-      return null;
+    if (hasOwnStatic(c, name)) return null;
     // A computed name defines the key it folds to, so `static ['m']` in
     // this class answers for `m` and hides the inherited method.
     const runtime = c.runtimeStatics?.find((element) => {
@@ -8163,6 +8267,28 @@ function localOverrideBelow(
           !ts.getModifiers(m)?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword),
       ) || localOverrideBelow(lowerer, sub, name, visited),
   );
+}
+
+/** Whether a class member named `name` redeclares, as another kind of
+ * member, something a class of the program above it declares with a body:
+ * an accessor (`accessor` true) or a method. An abstract declaration is
+ * erased, and whatever implements it is the only member. The checker
+ * rejects a method or a field over an inherited accessor and an accessor
+ * over an inherited method (TS2423, TS2611), but a suppressed error still
+ * compiles, and the members of the base class would keep reaching the
+ * inherited declaration where Node finds the redeclaration. A runtime
+ * class's members are not declarations of the program. */
+function redeclaresInheritedMember(
+  lowerer: Lowerer,
+  base: ClassInfo | null,
+  name: string,
+  accessor: boolean,
+): boolean {
+  const declared = (key: string): boolean => {
+    const found = lowerer.findMethodOn(base, key);
+    return found !== null && !found.sig.abstract && found.declarer.decl !== null;
+  };
+  return accessor ? declared(`get:${name}`) || declared(`set:${name}`) : declared(name);
 }
 
 /** The nearest GENERIC-method declaration of `name` at/above `info` —
@@ -10662,7 +10788,7 @@ function refuseInheritedBuiltinCtorArgs(
  * non-iterable throws out of the constructor). */
 function aggregateErrorConstructor(lowerer: Lowerer, loc: SrcLoc): string {
   const name = "%aggregate.new";
-  if (lowerer.liftedFns.some((fn) => fn.name === name)) return name;
+  if (lowerer.liftedFnNamed(name) !== undefined) return name;
   const type: IrType = { kind: "object", className: "%AggregateError" };
   const context = newFnCtx(false, null, null, type);
   lowerer.fnStack.push(context);
@@ -12395,6 +12521,15 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
           );
         }
       }
+      // The resolve function of a promise of a checked-dynamic value runs
+      // the promise resolution procedure unless the static types prove
+      // that every value it is given fulfils plainly.
+      if (
+        type.inner.kind === "dyn" &&
+        executor.type.params.length > 0 &&
+        !executorResolvesPlainly(lowerer, args[0]!)
+      )
+        return { kind: "newPromise", executor, resolves: true, type, loc };
       return { kind: "newPromise", executor, type, loc };
     }
     // The lib fence's CONSTRUCTOR chokepoint: `new` of any other
@@ -12515,7 +12650,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
           if (helper) {
             const loc = callee.loc;
             const name = `%new.callee:${unionT.unionId}`;
-            if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+            if (lowerer.liftedFnNamed(name) === undefined) {
               const undefinedTag = lowerer.armTag(unionT.unionId, UNDEFINED_T);
               const value: IrExpr = { kind: "varRef", localId: "value", type: unionT, loc };
               lowerer.liftedFns.push({

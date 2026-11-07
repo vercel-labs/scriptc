@@ -69,6 +69,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // writeFile's `flag` disposition and the fs/promises twins; the copyFile
   // mode form is the SCR_FS_FLAGS build of scr_fs_cp.c.
   ["scr_fs_flags.c", "fsFlags"],
+  // existsSync over a path value that may not be a string (the DEP0187
+  // fallback), apart from scr_lib.c's typed form.
+  ["scr_fs_exists_dyn.c", "fsExistsValue"],
   // The BYTE-data spellings of the option write and fs.promises.writeFile.
   ["scr_fs_bytes_write.c", "fsBytesWrites"],
   // string_decoder's checked-dynamic chunk forms, apart from scr_bytes.c's
@@ -216,6 +219,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // record's kept source; a unit of its own so scr_json.c keeps its layout
   // for every other program.
   ["scr_record_source_delete.c", "recordSourceDelete"],
+  // Record views of types whose values may also be frozen; a unit of its own
+  // so scr_json.c keeps its layout for every program without one.
+  ["scr_record_view_frozen.c", "recordViewFrozen"],
   // ChildProcess listener removal (off/removeListener) and signalCode; a
   // unit of its own so scr_child.c's layout stays put for every program.
   ["scr_child_lifecycle.c", "childLifecycle"],
@@ -223,6 +229,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_child_capture.c", "spawnCaptureBytes"],
   ["scr_decl_adopt.c", "declAdopt"],
   ["scr_type_origin.c", "typeOrigins"],
+  // The report of failed checked conversions; dev executables link it.
+  ["scr_conversion_trace.c", "conversionTrace"],
   // for await over checked-dynamic values.
   ["scr_dyn_for_await.c", "dynForAwait"],
   // Set.prototype method values, the ES2025 Set compositions and
@@ -312,16 +320,6 @@ export function variantsFor(source) {
   // A full view holds an offset for every target field, so the NULL case is
   // unreachable in a program without a partial assertion.
   if (source === "scr_json.c") {
-    // An error thrown by island code answers `constructor` from V8 (NI-4),
-    // so `e.constructor === TypeError` holds with the island's TypeError.
-    // Pushed before the object model twins below, so a program that has both
-    // selects one build that carries both defines. Every other program keeps
-    // the default object, byte for byte.
-    variants.push({
-      id: "node-island",
-      when: { nodeIsland: true },
-      defines: ["SCR_NODE_ISLANDS"],
-    });
     // The JavaScript object model build (t262-da §J): every runtime feature
     // reached only from JavaScript-source facts — builtin intrinsics, array
     // attributes, BigInt views, handle property tables, buffer views —
@@ -334,19 +332,12 @@ export function variantsFor(source) {
     // program keeps the default object, byte for byte.
     withJsObjectModel(variants);
   }
-  // util.inspect and instanceof of Node island handles; Node's report for
-  // an uncaught island error.
-  if (
-    source === "scr_inspect.c" ||
-    source === "scr_dyn_builtin_class.c" ||
-    source === "scr_exception.c"
-  ) {
-    variants.push({
-      id: "node-island",
-      when: { nodeIsland: true },
-      defines: ["SCR_NODE_ISLANDS"],
-    });
-  }
+  // util.inspect and instanceof of Node island handles, Node's report for
+  // an uncaught island error and an island error's constructor need no
+  // build of their own: scr_inspect.c, scr_dyn_builtin_class.c,
+  // scr_exception.c and scr_json.c reach the island units through the
+  // table scr_node_island_handle.c installs (ScrNiDynOps), which is NULL in
+  // a program without them.
   if (source === "scr_bytes.c") {
     variants.push({
       id: "text-decoder-legacy",
@@ -372,9 +363,7 @@ export function variantsFor(source) {
   // accessor: every other program keeps the default object, byte for byte.
   if (source === "scr_js_object.c") withJsObjectModel(variants);
   // util.inspect prints a BigInt typed array by reading its elements as
-  // BigInts, whichever build of the unit the program selects. Its Node island
-  // build is not the one these variants name: island output keeps its own
-  // object.
+  // BigInts, whichever build of the unit the program selects.
   if (source === "scr_inspect.c" || source === "scr_assert.c" || source === "scr_dyn_invoke.c") {
     withJsObjectModel(variants);
   }
@@ -480,14 +469,6 @@ export function variantsFor(source) {
       id: "handle-classes-web-bodies",
       when: { webStreams: true, webBodies: true },
       defines: ["SCR_HANDLE_CLASSES", "SCR_WEB_BODIES"],
-    });
-  }
-  // instanceof over both web stream and Node island handles.
-  if (source === "scr_dyn_builtin_class.c") {
-    variants.push({
-      id: "handle-classes-node-island",
-      when: { webStreams: true, nodeIsland: true },
-      defines: ["SCR_HANDLE_CLASSES", "SCR_NODE_ISLANDS"],
     });
   }
   // stdin setEncoding, string data listeners and stdio 'resize' events.

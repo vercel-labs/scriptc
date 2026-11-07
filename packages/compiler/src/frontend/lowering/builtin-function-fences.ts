@@ -18,7 +18,7 @@ export function builtinFunctionFenceValue(
 ): IrExpr {
   const display = `${bi.module}.${bi.member}`;
   const name = `%builtin.fence.${display}`;
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const diag = unsupportedDiag(
       "SC1090",
       loc,

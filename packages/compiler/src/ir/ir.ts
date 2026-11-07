@@ -4350,25 +4350,7 @@ export function isJsonStringifySafeType(
   getUnion: (unionId: string) => IrUnionDef | undefined,
   linkSources?: (shapeId: string) => readonly string[] | undefined,
 ): boolean {
-  return isJsonSafeAt(
-    t,
-    getRecord,
-    getUnion,
-    true,
-    false,
-    new Set(),
-    false,
-    linkSources === undefined ? undefined : { sources: linkSources, within: false },
-  );
-}
-
-/** The record links a stringified type is checked under: a copy linked to
- * its source (IrModule.recordLinks) serializes as the composed record, a
- * record of the source's type. `within` is true below such a source, where
- * the type-directed writer writes a checked-dynamic member itself. */
-interface JsonLinks {
-  sources: (shapeId: string) => readonly string[] | undefined;
-  within: boolean;
+  return isJsonSafeAt(t, getRecord, getUnion, true, false, new Set(), false, linkSources);
 }
 
 /** True when a record's `toJSON` member can hold a function: JSON.stringify
@@ -4403,10 +4385,9 @@ export function isJsonStringifyDynamicType(
   getUnion: (unionId: string) => IrUnionDef | undefined,
   linkSources?: (shapeId: string) => readonly string[] | undefined,
 ): boolean {
-  const links = linkSources === undefined ? undefined : { sources: linkSources, within: false };
   return (
     (t.kind === "record" || t.kind === "array" || t.kind === "union" || isDynTypedRefType(t)) &&
-    isJsonSafeAt(t, getRecord, getUnion, true, false, new Set(), true, links) &&
+    isJsonSafeAt(t, getRecord, getUnion, true, false, new Set(), true, linkSources) &&
     !isJsonStringifySafeType(t, getRecord, getUnion, linkSources)
   );
 }
@@ -4423,12 +4404,12 @@ function isJsonSafeAt(
   undefinedAllowed: boolean,
   visiting: Set<string>,
   nativeFields = false,
-  links?: JsonLinks,
+  linkSources?: (shapeId: string) => readonly string[] | undefined,
 ): boolean {
   if (HANDLE_KINDS.has(t.kind)) return false;
   switch (t.kind) {
     case "dyn":
-      return nativeFields || links?.within === true;
+      return nativeFields;
     case "f64":
     case "string":
     case "bool":
@@ -4445,7 +4426,7 @@ function isJsonSafeAt(
         stringify,
         visiting,
         nativeFields,
-        links,
+        linkSources,
       );
     case "record": {
       const shape = getRecord(t.shapeId);
@@ -4473,32 +4454,27 @@ function isJsonSafeAt(
             !shape.tuple || stringify,
             visiting,
             nativeFields,
-            links,
+            linkSources,
           )
         )
           return false;
       }
-      // A linked copy serializes as a record of its source's type.
-      if (links !== undefined) {
-        const sources = links.sources(t.shapeId);
-        if (sources !== undefined && sources.length > 0) {
-          const within: JsonLinks = links.within ? links : { sources: links.sources, within: true };
-          for (const from of sources) {
-            if (
-              !isJsonSafeAt(
-                { kind: "record", shapeId: from },
-                getRecord,
-                getUnion,
-                stringify,
-                true,
-                visiting,
-                nativeFields,
-                within,
-              )
-            )
-              return false;
-          }
-        }
+      // A copy linked to its source (IrModule.recordLinks) serializes as
+      // the composed record, a record of the source's type.
+      for (const from of linkSources?.(t.shapeId) ?? []) {
+        if (
+          !isJsonSafeAt(
+            { kind: "record", shapeId: from },
+            getRecord,
+            getUnion,
+            stringify,
+            true,
+            visiting,
+            nativeFields,
+            linkSources,
+          )
+        )
+          return false;
       }
       // Overflow values sit in record-key position too: dyn is JSON-safe
       // HERE (the checked-dynamic tree serializes itself; undefined-valued entries drop
@@ -4513,7 +4489,7 @@ function isJsonSafeAt(
           true,
           visiting,
           nativeFields,
-          links,
+          linkSources,
         );
       }
       return true;
@@ -4536,7 +4512,7 @@ function isJsonSafeAt(
                 undefinedAllowed,
                 visiting,
                 nativeFields,
-                links,
+                linkSources,
               ))
         )
           return false;

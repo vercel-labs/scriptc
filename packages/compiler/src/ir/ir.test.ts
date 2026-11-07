@@ -318,11 +318,11 @@ describe("functions under JSON.stringify", () => {
     expect(isJsonStringifySafeType(shape("wide"), record, union, sources("wideMap"))).toBe(true);
   });
 
-  test("the writer serializes a checked-dynamic member of a link source itself", () => {
+  test("a link source with an unknown member takes the runtime traversal", () => {
     const sources = (id: string) => (id === "narrow" ? ["wideUnknown"] : undefined);
     expect(safe(shape("wideUnknown"))).toBe(false);
-    expect(isJsonStringifySafeType(shape("narrow"), record, union, sources)).toBe(true);
-    expect(isJsonStringifyDynamicType(shape("narrow"), record, union, sources)).toBe(false);
+    expect(isJsonStringifySafeType(shape("narrow"), record, union, sources)).toBe(false);
+    expect(isJsonStringifyDynamicType(shape("narrow"), record, union, sources)).toBe(true);
   });
 });
 

@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { describe, expect, test } from "vitest";
-import { abnormalExitMessage, runStep } from "./step-timeout.js";
+import { runStep } from "./step-timeout.js";
 
 /** Whether `pid` has ended, allowing a moment for a just-killed process to be
  * reaped. */
@@ -77,30 +77,5 @@ describe("step deadlines", () => {
 
   test("a step that finishes returns its result and leaves no deadline behind", async () => {
     await expect(runStep("case.ts: run (release)", async () => 7, 50)).resolves.toBe(7);
-  });
-});
-
-describe("abnormal exits", () => {
-  test("a signal death names the signal and quotes both streams", () => {
-    const failure = Object.assign(new Error("Command failed: ./program\n"), {
-      code: null,
-      signal: "SIGSEGV",
-      stdout: Buffer.from("a\nb\n"),
-      stderr: Buffer.from(""),
-    });
-    const message = abnormalExitMessage("./program", failure);
-    expect(message).toContain("./program did not exit normally (signal SIGSEGV, code none)");
-    expect(message).toContain('stdout "a\\nb\\n"');
-    expect(message).toContain('stderr ""');
-  });
-
-  test("a long stream is cut to its head and names its full size", () => {
-    const message = abnormalExitMessage("x", { stdout: Buffer.alloc(9000, 0x61) });
-    expect(message).toContain("… (9000 bytes)");
-    expect(message.split("\n")[1]!.length).toBeLessThan(4200);
-  });
-
-  test("an abnormal exit without captured streams says so", () => {
-    expect(abnormalExitMessage("x", {})).toContain("stdout <none>\n  stderr <none>");
   });
 });

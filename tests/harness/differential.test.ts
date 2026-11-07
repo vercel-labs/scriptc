@@ -23,7 +23,8 @@ import ts5 from "typescript";
 import { compile } from "@scriptc/compiler";
 import { corpusSelect, shardSuffix } from "./shard.js";
 import { recentCrashReport } from "./crash-report.js";
-import { abnormalExitMessage, runStep, type Track } from "./step-timeout.js";
+import { spawnFailure } from "./spawn-failure.js";
+import { runStep, type Track } from "./step-timeout.js";
 import { oracleEnvKey } from "./oracle-env.js";
 import { libnodePack, requiresLibnode } from "./libnode.js";
 import { tscJsxOracleEntry, wantsTscJsx } from "./jsx-oracle.js";
@@ -267,11 +268,9 @@ async function runBinary(
         continue;
       }
       if (typeof e.code !== "number" || !Buffer.isBuffer(e.stdout) || !Buffer.isBuffer(e.stderr)) {
-        // A signal death has no exit code and no message tail: report the
-        // signal, both streams, and the darwin crash report instead of the
-        // bare command line.
-        const crash = await recentCrashReport(cmd, startedAt);
-        throw new Error(abnormalExitMessage(cmd, err, crash), { cause: err });
+        // Darwin leaves a crash report for a signal death: it names the
+        // exception and the crashing stack, which the child's error cannot.
+        throw spawnFailure(err, await recentCrashReport(cmd, startedAt));
       }
       return { stdout: e.stdout, stderr: e.stderr, exitCode: e.code };
     }

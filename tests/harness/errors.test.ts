@@ -6,7 +6,9 @@
  * lives here is the uncaught STDERR contract: Node prints a source excerpt
  * and a stack trace (and its display shows the CONSTRUCTOR's name where it
  * differs from .name); scriptc prints one `Uncaught <toString>` line —
- * SEMANTICS.md divergence 11. These pins keep that line's shape exact.
+ * SEMANTICS.md divergence 11 — and under it the frames the Error captured,
+ * which only programs that read a stack trace keep. These pins keep that
+ * report's shape exact.
  *
  * SCRIPTC_SAN=1 builds these with ASan + the RC audit like every harness lane.
  */
@@ -225,6 +227,101 @@ console.log("sync done");
     expect(r.exitCode).toBe(1);
     expect(r.stdout).toBe("sync done\n");
     expect(r.stderr).toBe("Unhandled promise rejection: TypeError: from resolvers\n");
+  });
+
+  // A program that reads a stack trace keeps source frames in every
+  // function that can throw (the compiler's observesStacks), and each Error
+  // captures them when it is created. The reports print them under the
+  // heading, as Node prints its stack trace; the programs above read no
+  // stack, capture nothing and print the heading alone.
+  test("an uncaught error prints the frames it captured", async () => {
+    const r = await compileAndRun(
+      "uncaught-frames",
+      `function helper(n: number): number {
+  if (n < 0) throw new RangeError("negative input: " + n);
+  return n;
+}
+function level2(n: number): number {
+  return helper(n) + 1;
+}
+try {
+  level2(-1);
+} catch (e) {
+  console.log((e as Error).stack?.split("\\n").length);
+}
+level2(-2);
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("3\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught RangeError: negative input: -2\n    at helper \(.*uncaught-frames\.ts\)\n    at level2 \(.*uncaught-frames\.ts\)\n$/,
+    );
+  });
+
+  test("an error escaping a timer callback prints the frames it captured", async () => {
+    const r = await compileAndRun(
+      "uncaught-timer-frames",
+      `function fail(where: string): never {
+  throw new Error("callback failed in " + where);
+}
+console.log((new Error("probe").stack ?? "").split("\\n").length);
+setTimeout(() => {
+  fail("timer");
+}, 1);
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("1\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: callback failed in timer\n    at fail \(.*uncaught-timer-frames\.ts\)\n/,
+    );
+  });
+
+  test("an unhandled rejection prints the frames its Error captured", async () => {
+    const r = await compileAndRun(
+      "unhandled-rejection-frames",
+      `function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+async function load(n: number): Promise<number> {
+  await sleep(1);
+  if (n > 1) throw new TypeError("bad n " + n);
+  return n;
+}
+async function main(): Promise<void> {
+  try {
+    await load(2);
+  } catch (e) {
+    console.log((e as Error).stack?.split("\\n").length);
+  }
+  await load(5);
+}
+main();
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("2\n");
+    expect(r.stderr).toMatch(
+      /^Unhandled promise rejection: TypeError: bad n 5\n    at load \(.*unhandled-rejection-frames\.ts\)\n$/,
+    );
+  });
+
+  test("an unhandled checked-dynamic rejection prints the frames its Error captured", async () => {
+    const r = await compileAndRun(
+      "unhandled-dyn-rejection-frames",
+      `function make(): Error {
+  return new Error("boom");
+}
+console.log(make().stack?.split("\\n").length);
+new Promise((resolve, reject) => reject(make()));
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("2\n");
+    expect(r.stderr).toMatch(
+      /^Unhandled promise rejection: Error: boom\n    at make \(.*unhandled-dyn-rejection-frames\.ts\)\n    at <anonymous> \(.*unhandled-dyn-rejection-frames\.ts\)\n$/,
+    );
   });
 });
 
@@ -914,6 +1011,43 @@ console.log(\`\${register(7)}\`);
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe("caught: Cannot read properties of undefined (reading 'registry')\n");
     expect(r.stderr).toBe("");
+  });
+
+  test("a tuple-typed receiver keeps the fence on an added property write (JS lane)", async () => {
+    // A tuple is a record layout whose checked view is an array rebuilt
+    // from the tuple's fields, so the view cannot hold a property the
+    // tuple does not declare: the write stays fenced instead of landing in
+    // a view whose next refresh drops it.
+    const r = await compileAndRun(
+      "tuple-added-property-write",
+      `/** @type {[number, number]} */
+const pair = [1, 2];
+pair.extra = "x";
+console.log(pair[0], pair[1]);
+`,
+      "js",
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: assignment to non-variables are not supported yet \[SC1090 at .*tuple-added-property-write\.js:3\]\n$/,
+    );
+  });
+
+  test("a tuple-typed receiver keeps the fence on an undeclared member read (JS lane)", async () => {
+    const r = await compileAndRun(
+      "tuple-added-property-read",
+      `/** @type {[number, number]} */
+const pair = [1, 2];
+console.log(pair.extra);
+`,
+      "js",
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: reading 'extra' from a value of type '\[number, number\]' is not supported yet \[SC1090 at .*tuple-added-property-read\.js:3\]\n$/,
+    );
   });
 });
 
@@ -2044,9 +2178,13 @@ try { console.log("delete index", "value", String(delete (s as any)[0])); } catc
     // read (direct, bracketed, through an alias or globalThis), and
     // reflection on or redefinition of their members, must stay a located
     // SC2020/SC1090 refusal, never an undefined or otherwise wrong value.
-    // Date.prototype is the one value: it reads as the prototype object, so
-    // a direct read, a member read through it and reflection on it answer as
-    // Node does. `key in Ctor` answers from the constructor's fixed keys.
+    // Date.prototype and the four keyed collections' prototypes are the
+    // values: Date.prototype reads as the prototype object, so a direct read, a
+    // member read through it and reflection on it answer as Node does; the
+    // Set/Map/WeakMap/WeakSet prototypes read as the objects the JavaScript
+    // lane provides (%Set.prototype% and friends), with their `constructor`
+    // member answering the interned constructor. `key in Ctor` answers from the
+    // constructor's fixed keys.
     // Test262 lost 769 refusals to undefined reads before this was pinned.
     const reads = [
       ["Map.prototype", "Map.prototype"],
@@ -2073,11 +2211,19 @@ try { console.log("delete index", "value", String(delete (s as any)[0])); } catc
       ["defineProperty(Promise)", 'Object.defineProperty(Promise, "resolve", { value: 1 })'],
       ["hasOwnProperty.call(Map)", 'Object.prototype.hasOwnProperty.call(Map, "groupBy")'],
     ] as const;
-    // The reads that answer from Date.prototype's object rather than refusing.
+    // The reads that answer from a prototype object rather than refusing.
     const readsAsValue = new Map<string, string>([
+      ["Map.prototype", "read object"],
       ["Date.prototype", "read object"],
       ["Date.prototype.getYear", "read function"],
+      ["Set.prototype", "read object"],
+      ["WeakMap.prototype", "read object"],
+      ["WeakSet.prototype", "read object"],
+      ["Map.prototype.constructor", "read function"],
+      ["getOwnPropertyDescriptor(Map.prototype)", "read object"],
       ["isExtensible(Date.prototype)", "read boolean"],
+      ["globalThis.Map.prototype", "read object"],
+      ["Map alias prototype", "read object"],
     ]);
     const source = `"use strict";
 const MapAlias = Map;
@@ -2110,8 +2256,8 @@ console.log("prototype" in Map, "groupBy" in Map, "captureStackTrace" in Error, 
           : `${label} ${read}`;
       }),
     );
-    // Promise.prototype reads as an object holding the runtime's methods,
-    // and `in` on a builtin constructor answers from its fixed keys.
+    // Promise.prototype reads as an object holding the runtime's methods, and
+    // `in` on a builtin constructor answers from its fixed keys.
     expect(lines.slice(reads.length)).toEqual([
       "7 2 1 1 0 0",
       "Date Map true true",

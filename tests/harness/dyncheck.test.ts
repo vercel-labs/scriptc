@@ -169,6 +169,30 @@ describe(`dynamic-boundary checks (scriptc-only${sanitize ? ", sanitized" : ""})
     expect(r.stderr).toBe("");
   });
 
+  test("a record beside undefined asserted to a subtype checks the value", async () => {
+    const r = await compileAndRun(
+      "asserted-subtype-beside-undefined",
+      `
+      interface Reply { handled?: boolean }
+      interface Routed extends Reply { handled: true; origin: { x: number } }
+      function produce(n: number): Reply | undefined { return n === 0 ? undefined : { handled: n > 1 }; }
+      function read(n: number): string {
+        const result = produce(n);
+        try { const routed = result as Routed; return "routed " + routed.origin.x; }
+        catch (error) { return (error instanceof TypeError) + " " + (error as Error).message; }
+      }
+      console.log(read(0));
+      console.log(read(2));
+    `,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      "true undefined is not representable in the target union (a value narrowed or asserted past it still held it)\n" +
+        "true expected object at $.origin, got undefined\n",
+    );
+    expect(r.stderr).toBe("");
+  });
+
   test("assertions narrowing record members or union arms check the value", async () => {
     const r = await compileAndRun(
       "narrowing-record-assertions",

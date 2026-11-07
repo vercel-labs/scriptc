@@ -556,14 +556,12 @@ export class LlDyn {
    * copy. Without this, each literal guard tested first copied the record
    * into its dyn view to read one member, and a wider record arm tried
    * first accepted a copy of it. Every other value, and a capsule of no
-   * arm's type, continues after the test. With `build`, the hit blocks are
-   * emitted here and `build(tag)` ends each. */
+   * arm's type, continues after the test. */
   private capsuleArmFirst(
     B: BlockBuilder,
     def: IrUnionDef,
     arms: readonly number[],
     hits: readonly string[],
-    build?: (tag: number) => void,
   ): void {
     if (arms.length === 0) return;
     const capsule = B.tmp();
@@ -578,12 +576,6 @@ export class LlDyn {
       B.startBlock(next);
     }
     B.br(other);
-    if (build) {
-      for (const tag of arms) {
-        B.startBlock(hits[tag]!);
-        build(tag);
-      }
-    }
     B.startBlock(other);
   }
 
@@ -3267,17 +3259,14 @@ export class LlDyn {
           }
         };
         const order = this.unionArmOrder(def);
+        // With the capsule test, an arm's hit block has two ways in: its
+        // label exists before the arms are tested.
         const own = this.capsuleArms(def, order);
-        this.capsuleArmFirst(
-          B,
-          def,
-          own,
-          def.arms.map((_, tag) => (own.includes(tag) ? B.newLabel("dcu.own") : "")),
-          build,
-        );
+        const shared = own.length > 0 ? def.arms.map(() => B.newLabel("dcu.h")) : null;
+        if (shared) this.capsuleArmFirst(B, def, own, shared);
         const values = this.dispatchValues(def);
         if (values !== null) {
-          const hits = def.arms.map(() => B.newLabel("dcu.h"));
+          const hits = shared ?? def.arms.map(() => B.newLabel("dcu.h"));
           const unmatched = B.newLabel("dcu.n");
           this.unionArmsByDiscriminant(
             B,
@@ -3297,7 +3286,7 @@ export class LlDyn {
           B.startBlock(unmatched);
         } else
           for (const i of order) {
-            const lHit = B.newLabel("dcu.h");
+            const lHit = shared?.[i] ?? B.newLabel("dcu.h");
             const lNext = B.newLabel("dcu.n");
             this.unionArmMatch(B, def, i, lHit, lNext, preserveRefs, trustedKinds[i]!);
             B.startBlock(lHit);

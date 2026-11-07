@@ -612,9 +612,9 @@ export function lowerCreateRequireCall(
       // Only refine the existing refusal path: Node resolution detects
       // extensionless addons and directory entries without executing
       // them, and avoids mistaking a .node-named JS directory for one.
-      // This probe marks frontend inputs unstable, but every branch
-      // here refuses compilation, so successful-build caches keep their
-      // existing dependency proofs.
+      // Under a host resolver this probe marks frontend inputs unstable,
+      // but every branch here refuses compilation, so successful-build
+      // caches keep their existing dependency proofs.
       const resolved = resolveRequireRuntime(
         cr.baseFile.fileName,
         spec,

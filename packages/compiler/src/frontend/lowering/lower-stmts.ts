@@ -207,6 +207,11 @@ import {
   stdlibGlobalNameOf,
 } from "./surfaces.js";
 import { isNativeBuiltinValueInitializer } from "./lower-builtin-values.js";
+import {
+  fenceConsoleMemberValue,
+  fenceConsoleMutation,
+  isConsoleObjectRead,
+} from "./coercions/console-records.js";
 import { isProvenanceSourceFile } from "../provenance-registry.js";
 import {
   ambientUndefVarRootOf,
@@ -2759,6 +2764,15 @@ export function lowerDestructuringDecl(
     importMetaBindingSource(lowerer, decl.name, decl.initializer) ??
     nullishEmptyPatternSource(lowerer, decl.name, decl.initializer) ??
     lowerer.lowerExpr(decl.initializer);
+  // `const { table } = console`: each element names a console key as a
+  // value, which only the output members are (console-records.ts).
+  if (isConsoleObjectRead(init) && ts.isObjectBindingPattern(decl.name)) {
+    for (const element of decl.name.elements.nodes) {
+      const key = element.propertyName ?? element.name;
+      if (ts.isIdentifier(key) || ts.isStringLiteral(key))
+        fenceConsoleMemberValue(lowerer, key.text, element);
+    }
+  }
   const parseArgsDynObject =
     init.type.kind === "dyn" &&
     isParseArgsDynCheckerType(lowerer, lowerer.typeOf(decl.initializer));
@@ -7982,8 +7996,12 @@ export function hasJsTypeAnnotation(decl: ts.VariableDeclaration): boolean {
   const statement = decl.parent?.parent;
   return (
     !!statement &&
-    /@type\b/.test(
-      ts.getSourceFileOfNode(decl).text.slice(statement.pos, ts.tokenStartOfNode(decl)),
+    ts.sourceTextRangeMatches(
+      ts.getSourceFileOfNode(decl),
+      statement.pos,
+      ts.tokenStartOfNode(decl),
+      /@type\b/,
+      ts.LEADING_SPAN,
     )
   );
 }
@@ -9348,6 +9366,7 @@ function lowerDereferencedElementWrite(lowerer: Lowerer, expr: ts.BinaryExpressi
 export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStmt {
   const stmtNode = expr.parent;
   while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  fenceConsoleMutation(lowerer, expr);
   // Node islands (scope-B NI-4): writes and calls on island values.
   if (lowerer.nodeIslands !== null) {
     const island = lowerIslandExpr(lowerer, expr);

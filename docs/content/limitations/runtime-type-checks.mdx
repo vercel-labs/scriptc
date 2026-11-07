@@ -3,6 +3,7 @@ For example, `JSON.parse(s) as Config` throws a catchable error if the data does
 A TypeScript assertion alone does not perform this validation when run under Node.js.
 A record or class instance cast from `unknown` to a dictionary type such as `Record<string, number>` keeps its identity, and the cast does not validate it.
 Reading a value that does not match the dictionary's value type throws a `TypeError`, such as `expected number at $, got string`, where Node.js returns the value.
+`SC6009` reports such a check of unverified data where a handler would ignore its error, as in `try { return JSON.parse(s) as Config } catch { return null }`: the compiled program then takes the handler's path for data that Node.js accepts.
 
 Casts between program classes are checked too: casting an instance to a class it does not extend throws a `TypeError`, where Node.js reads the members structurally.
 `SC6004` reports calls that pass such an instance to a function that casts it.

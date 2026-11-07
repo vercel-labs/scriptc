@@ -849,14 +849,16 @@ test("indexes a table of class values on the constructor's key from eight classe
   if (dispatchSwitch?.kind !== "switch") throw new Error("expected a dispatch switch");
   // Every branch is in a case, as it was built, with its own key test, in a
   // slot the key folds to; branches that share a slot keep their order.
-  const moved = dispatchSwitch.cases.flatMap(({ body }) => body);
+  const moved = dispatchSwitch.cases.flatMap(({ body }) => body.slice(0, -1));
   expect(moved).toHaveLength(keys.length);
   for (const { test, body } of dispatchSwitch.cases) {
     expect(test).toMatchObject({ kind: "numLit" });
     if (test?.kind !== "numLit") throw new Error("expected a slot");
     expect(test.value).toBeGreaterThanOrEqual(0);
     expect(test.value).toBeLessThan(16);
-    for (const branch of body) {
+    // A value the slot's guards reject leaves the table there.
+    expect(body[body.length - 1]).toMatchObject({ kind: "break" });
+    for (const branch of body.slice(0, -1)) {
       expect(branch).toMatchObject({ kind: "if", cond: { kind: "libCall", fn: "dyn.classIs" } });
       if (branch.kind !== "if" || branch.cond.kind !== "libCall") throw new Error("a branch");
       const key = branch.cond.args[1];

@@ -741,14 +741,16 @@ const CLASS_DISPATCH_HEAD = 2;
  * run in order before it, and a class they select returns as it always did,
  * so the switch only sees the receiver once those tests have failed.
  *
- * Two kinds of run have no such head and are indexed whole. A run of
- * class-value branches (`dyn.classIs`) is reached mostly by values that are
- * no compiled class, which the index sends past every branch at once. A run
- * of branches that can complete is one whose selected class continues
- * after the run: there each case ends with a `break`, because no later case
- * can hold a branch of the same class (equal keys share a case), so the
- * guards the chain would still walk are all false. Runs of returning
- * branches keep the fallthrough they were built with. */
+ * Two kinds of run have no such head and are indexed whole, and each of
+ * their cases ends with a `break`: no later case can hold a branch of the
+ * same class (equal keys share a case), so the guards the chain would
+ * still walk are all false. A run of class-value branches (`dyn.classIs`)
+ * is reached mostly by values that are no compiled class: the index sends
+ * them past every branch at once, or, when such a value's key folds to an
+ * occupied slot, past the table after that slot's guards. A run of
+ * branches that can complete is one whose selected class continues after
+ * the run. Runs of returning capsule branches keep the fallthrough they
+ * were built with. */
 function indexBranchRuns(body: IrStmt[]): IrStmt[] {
   let rebuilt: IrStmt[] | null = null;
   let i = 0;
@@ -814,9 +816,15 @@ function classDispatch(run: readonly ClassRunBranch[]): IrStmt {
       type: F64,
       loc,
     },
+    // A case of returning capsule branches falls through to the cases
+    // after it, as those tables were built; every other case ends with a
+    // `break`. No later case holds a branch of the same class (equal keys
+    // share a case), so a value the case's own guards reject, such as a
+    // builtin constructor whose key folds to an occupied slot, is done with
+    // the table there instead of walking the guards behind it.
     cases: [...branches].map(([hash, body]) => ({
       test: numLit(hash, loc),
-      body: first.returns ? body : [...body, { kind: "break", loc }],
+      body: first.returns && !values ? body : [...body, { kind: "break", loc }],
     })),
     loc,
   };

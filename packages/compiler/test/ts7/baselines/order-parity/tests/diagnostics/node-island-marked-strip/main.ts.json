@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/node-island-marked-strip/levels.ts",
+  "<repo>/tests/diagnostics/node-island-marked-strip/main.ts"
+ ],
+ "diags": []
+}

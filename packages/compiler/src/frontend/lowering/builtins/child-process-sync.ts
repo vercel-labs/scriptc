@@ -1,6 +1,6 @@
 import { keyedHelperName } from "../stable-names.js";
 import { recordToEnvPairs } from "./environment.js";
-import { lowerChildArgsArg, withMaxBuffer } from "./child-process.js";
+import { armedMaxBuffer, lowerChildArgsArg, withChildArgsCheck } from "./child-process.js";
 import { boolLit, numLit, strLit, varRef } from "../../../ir/build.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
@@ -112,7 +112,7 @@ export function lowerExecSyncCall(
       // captured utf8, and mislabeling them without an error would be worse).
       const runtime = lowerExecSyncRuntimeOptions(lowerer, expr, shell, optsNode, loc);
       if (runtime) {
-        return withMaxBuffer(
+        return withChildArgsCheck(
           lowerer,
           {
             kind: "libCall",
@@ -135,7 +135,12 @@ export function lowerExecSyncCall(
             type: STRING,
             loc,
           },
-          runtime.maxBuffer,
+          shell ? 1 : 0,
+          (a) => ({
+            cwd: a[5],
+            envPairs: a[7],
+            maxBuffer: armedMaxBuffer(runtime.maxBuffer, true),
+          }),
           loc,
         );
       }
@@ -380,7 +385,7 @@ export function lowerExecSyncCall(
   }
 
   const execCall = (hasE: IrExpr, pairs: IrExpr): IrExpr =>
-    withMaxBuffer(
+    withChildArgsCheck(
       lowerer,
       {
         kind: "libCall",
@@ -402,7 +407,8 @@ export function lowerExecSyncCall(
         type: STRING,
         loc,
       },
-      maxBuffer,
+      shell ? 1 : 0,
+      (a) => ({ cwd: a[5], envPairs: a[7], maxBuffer: armedMaxBuffer(maxBuffer, true) }),
       loc,
     );
   if (condEnvSpread !== null) {

@@ -1,6 +1,6 @@
 import { keyedHelperName } from "../stable-names.js";
 import { recordToEnvPairs } from "./environment.js";
-import { lowerChildArgsArg } from "./child-process.js";
+import { lowerChildArgsArg, withChildArgsCheck } from "./child-process.js";
 import { boolLit, numLit, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
@@ -191,39 +191,41 @@ export function lowerExecFileAsyncCall(
       }
     }
   }
-  const resultT: IrType = { kind: "promise", inner: { kind: "record", shapeId: helper.shapeId } };
-  const args = [cmd, argv, cwd, env, timeout, maxBuffer];
-  if (maxBuffer.kind === "numLit" && maxBuffer.value >= 0) {
-    return { kind: "call", callee: helper.name, args, type: resultT, loc };
-  }
-  // Node's promisified forms call execFile where they are called, so an
-  // invalid maxBuffer throws before the promise exists: the arguments are
-  // evaluated in order, the limit is checked, then the helper runs.
-  const types = [STRING, arrayOf(STRING), STRING, envRecT, F64, F64];
-  const stmts: IrStmt[] = [];
-  const saved = args.map((init, i) => {
-    const local = lowerer.declareHiddenLocal("%execArg", types[i]!);
-    stmts.push({ kind: "varDecl", localId: local.id, init, loc });
-    return varRef(local.id, types[i]!, loc);
-  });
-  stmts.push({
-    kind: "exprStmt",
-    expr: {
-      kind: "libCall",
-      fn: "cp.maxBuffer",
-      args: [saved[5]!, boolLit(false, loc)],
-      type: VOID,
+  // Node's promisified function calls execFile before it returns its
+  // promise, so an argument execFile refuses, or an invalid maxBuffer,
+  // throws from the call itself; the checks therefore sit at the call,
+  // outside the async helper, which arms the limit for its capture.
+  return withChildArgsCheck(
+    lowerer,
+    {
+      kind: "call",
+      callee: helper.name,
+      args: [cmd, argv, cwd, env, timeout, maxBuffer],
+      type: { kind: "promise", inner: { kind: "record", shapeId: helper.shapeId } },
       loc,
     },
+    shell ? 1 : 0,
+    (a) => {
+      const envArg = a[3]!;
+      const pairs =
+        envArg.kind === "recordLit"
+          ? envArg.fields.find((field) => field.name === "pairs")?.value
+          : undefined;
+      return {
+        cwd: a[2],
+        envPairs: pairs ?? {
+          kind: "recordGet",
+          obj: envArg,
+          shapeId: helper.envShapeId,
+          field: "pairs",
+          type: arrayOf(STRING),
+          loc,
+        },
+        maxBuffer: { value: a[5]!, arm: false, sync: false },
+      };
+    },
     loc,
-  });
-  return {
-    kind: "seqExpr",
-    stmts,
-    result: { kind: "call", callee: helper.name, args: saved, type: resultT, loc },
-    type: resultT,
-    loc,
-  };
+  );
 }
 
 /** The interned `%execFileAsync` helper behind promisified-execFile

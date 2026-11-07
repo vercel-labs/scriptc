@@ -107,6 +107,10 @@ jobs:
           branch=refresh-native-profile
           profile=packages/compiler/native/cli.profdata.gz
           refs="repos/$GITHUB_REPOSITORY/git/refs"
+          # One branch by its exact name. A read of "$refs/heads/<name>"
+          # answers with every branch that starts with the name when none
+          # has it, and the scratch branch starts with the branch's name.
+          ref="repos/$GITHUB_REPOSITORY/git/ref"
           head=$(git rev-parse HEAD)
           # The commit: the checked-out commit of main plus the profile, made
           # by GitHub on a scratch branch that this step removes again.
@@ -130,7 +134,7 @@ jobs:
           commit=
           for attempt in 1 2 3; do
             gh api graphql --input "$RUNNER_TEMP/commit.json" > /dev/null || true
-            commit=$(gh api "$refs/heads/$scratch" --jq .object.sha)
+            commit=$(gh api "$ref/heads/$scratch" --jq .object.sha)
             if [ "$commit" != "$head" ]; then break; fi
             commit=
             sleep 10
@@ -140,7 +144,7 @@ jobs:
           test "$verified" = true || { echo "commit $commit is not signed"; exit 1; }
           # Point the pull request's branch at it. An open pull request keeps
           # its number and shows the new profile on the new commit of main.
-          if gh api "$refs/heads/$branch" > /dev/null 2>&1; then
+          if gh api "$ref/heads/$branch" > /dev/null 2>&1; then
             gh api --method PATCH "$refs/heads/$branch" -f sha="$commit" -F force=true > /dev/null
           else
             gh api --method POST "$refs" -f ref="refs/heads/$branch" -f sha="$commit" > /dev/null

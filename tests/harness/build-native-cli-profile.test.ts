@@ -109,4 +109,11 @@ test("the nightly profile refresh collects a profile on main and opens a pull re
   expect(open.run!.indexOf(".commit.verification.verified")).toBeLessThan(
     open.run!.indexOf("--method PATCH"),
   );
+  // Whether the branch exists is asked by its exact name. The plural
+  // endpoint answers a name no branch has with the branches that start with
+  // it, which the scratch branch does: the first run would then try to move
+  // a branch that is not there.
+  expect(open.run).toContain('if gh api "$ref/heads/$branch"');
+  expect(open.run).toContain('ref="repos/$GITHUB_REPOSITORY/git/ref"');
+  expect(open.run).not.toMatch(/gh api "\$refs\/heads\//);
 });

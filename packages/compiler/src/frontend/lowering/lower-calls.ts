@@ -150,6 +150,7 @@ import {
   lowerObjectConstructor,
   lowerObjectFromEntriesCall,
   lowerObjectIterOverIndexShape,
+  objectIterOverIndexShape,
 } from "./containers/indexed-objects.js";
 import { lowerTupleReadMethodCall } from "./containers/array-methods.js";
 import { tryFuseIndexRead } from "./array-values.js";
@@ -217,7 +218,7 @@ import {
   recordStringCall,
   registerLinkedHelper,
 } from "./record-links.js";
-import { lowerReflectCall } from "./builtins/reflection.js";
+import { lowerPrototypeReflectionCall, lowerReflectCall } from "./builtins/reflection.js";
 import {
   lowerAbsenceProbe,
   v8CalleeText,
@@ -8823,80 +8824,9 @@ function lowerObjectStaticCall(
     call.arguments.nodes.length === (member === "getPrototypeOf" ? 1 : 2) &&
     !call.arguments.nodes.some(ts.isSpreadElement)
   ) {
-    let object = lowerer.lowerExpr(call.arguments.nodes[0]!);
-    if (object.type.kind === "func") {
-      const fnName = jsFuncNameOf(call.arguments.nodes[0]!, lowerer);
-      object = {
-        kind: "dynFrom",
-        value: object,
-        type: DYN,
-        loc: locOf(call),
-        ...(fnName !== null ? { fnName } : {}),
-      };
-    }
-    // A JavaScript source asks about a native Set, Map, WeakMap or WeakSet:
-    // the runtime answers %<Class>.prototype% so Symbol.toStringTag and the
-    // prototype's methods are reachable (a typed source keeps the refusal
-    // below). The weak collections live in checked-dynamic storage, so their
-    // argument is already a dynamic handle; the runtime dispatches on it.
-    if (
-      member === "getPrototypeOf" &&
-      isJsSourceFile(ts.getSourceFileOfNode(call)) &&
-      (object.type.kind === "set" ||
-        object.type.kind === "map" ||
-        (object.type.kind === "dyn" &&
-          lowerer.weakCollectionNamesOf(lowerer.typeOf(call.arguments.nodes[0]!)) !== null))
-    ) {
-      const boxed = lowerer.coerceInto(call.arguments.nodes[0]!, object, DYN);
-      if (boxed.type.kind === "dyn")
-        return {
-          kind: "libCall",
-          fn: "dyn.collectionGetPrototype",
-          args: [boxed],
-          type: DYN,
-          loc: locOf(call),
-        };
-    }
-    if (
-      object.type.kind !== "dyn" &&
-      canConvertToDyn(
-        object.type,
-        (id) => lowerer.shapes.get(id),
-        (id) => lowerer.unions.get(id),
-      )
-    )
-      object = lowerer.coerceInto(call.arguments.nodes[0]!, object, DYN);
-    if (object.type.kind === "dyn") {
-      const loc = locOf(call);
-      if (member === "getPrototypeOf") {
-        let parent: ts.Node | undefined = call.parent;
-        while (parent && ts.isParenthesizedExpression(parent)) parent = parent.parent;
-        const identityOnly =
-          !!parent &&
-          ts.isBinaryExpression(parent) &&
-          [
-            ts.SyntaxKind.EqualsEqualsEqualsToken,
-            ts.SyntaxKind.ExclamationEqualsEqualsToken,
-          ].includes(parent.operatorToken.kind);
-        return {
-          kind: "libCall",
-          fn: "dyn.getPrototype",
-          args: [object],
-          type: DYN,
-          loc,
-          ...(identityOnly ? { prototypeIdentityOnly: true as const } : {}),
-        };
-      }
-      const prototype = lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN);
-      if (prototype.type.kind === "dyn")
-        return {
-          kind: "libCall",
-          fn: "dyn.setPrototype",
-          args: [object, prototype],
-          type: DYN,
-          loc,
-        };
-    }
+    // The shared prototype edge (also Reflect.getPrototypeOf's answer).
+    const answer = lowerPrototypeReflectionCall(lowerer, call, member, locOf(call));
+    if (answer !== null) return answer;
   }
   if (member === "getOwnPropertyDescriptor" && call.arguments.nodes.length === 2) {
     const [receiver, key] = call.arguments.nodes;
@@ -10310,6 +10240,13 @@ function lowerObjectStaticCall(
   // checker omits (named regex captures). Enumerate the represented shape.
   const represented = tryLowerExpression(lowerer, argNode);
   if (represented?.type.kind === "record") argIr = represented.type;
+  // A UNION of records (the `cond ? recA : recB` shape): every arm is
+  // enumerated by its own fixed shape, dispatched on the value's runtime
+  // tag — Node reads whichever record the value is. The checker's call
+  // type is ONE entries/values array type, so the arms' answers unify.
+  if (argIr?.kind === "union") {
+    return lowerObjectEnumerationOverRecordUnion(lowerer, call, member, locOf(call));
+  }
   if (argIr?.kind !== "record") return null; // Maps, classes, arrays → the SC2020 fence
   const shape = lowerer.shapes.get(argIr.shapeId);
   if (!shape || shape.tuple) return null; // tuple → the fence
@@ -10361,8 +10298,130 @@ function lowerObjectStaticCall(
       ? runtimeOptionalEntriesType(lowerer, argIr, checkedT)
       : checkedT;
   const enumerated = objectEnumerationReceiver(lowerer, lowerer.lowerExpr(argNode), argIr, loc);
-  // A record that kept undeclared properties of its checked source answers
-  // from its live checked view (values checked into the static result).
+  return lowerObjectEnumerationOverRecord(
+    lowerer,
+    call,
+    member,
+    argIr,
+    shape,
+    enumerated,
+    resultT,
+    loc,
+  );
+}
+
+/** Object.keys/values/entries over a UNION of records: per-arm dispatch.
+ * The value is bound to one hidden local, then each arm's own static walk
+ * reads it under the arm's runtime tag (`unionNarrow`); the arms' answers
+ * are ternaries over the tag (the first arm is the fallthrough). The result
+ * type is the checker's call type, shared by every arm. Null when an arm
+ * is not a fixed record shape or a unit (the caller's fence then applies).
+ *
+ * The checker's type for an indexed read under noUncheckedIndexedAccess
+ * drops the undefined the storage can hold, so the local takes the lowered
+ * value's union, not the checker's call-site union. Its unit arms are
+ * exactly the receivers Node refuses ("Cannot convert undefined or null to
+ * object") and throw before the per-arm dispatch. */
+function lowerObjectEnumerationOverRecordUnion(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  member: "keys" | "values" | "entries",
+  loc: SrcLoc,
+): IrExpr | null {
+  const receiver = lowerer.lowerExpr(call.arguments.nodes[0]!);
+  if (receiver.type.kind !== "union") return null;
+  const source = receiver.type;
+  const arms = lowerer.unions.get(source.unionId)?.arms ?? [];
+  if (arms.length === 0) return null;
+  const records: { tag: number; arm: IrType & { kind: "record" }; shape: IrRecordShape }[] = [];
+  const units: number[] = [];
+  for (let tag = 0; tag < arms.length; tag++) {
+    const arm = arms[tag]!;
+    if (isUnitType(arm)) {
+      units.push(tag);
+      continue;
+    }
+    if (arm.kind !== "record") return null;
+    const shape = lowerer.shapes.get(arm.shapeId);
+    if (!shape || shape.tuple) return null;
+    records.push({ tag, arm, shape });
+  }
+  if (records.length === 0) return null;
+  const checkedT = lowerer.irTypeOf(call);
+  if (checkedT.kind !== "array") lowerer.badType(call, lowerer.typeOf(call)); // defensive
+  const resultT = checkedT;
+  const local = lowerer.declareHiddenLocal("%objUnion", source);
+  const ref = (): IrExpr => ({ kind: "varRef", localId: local.id, type: source, loc });
+  const isTag = (tag: number): IrExpr => ({
+    kind: "unionIsTag",
+    unionId: source.unionId,
+    tag,
+    negated: false,
+    value: ref(),
+    type: BOOL,
+    loc,
+  });
+  let answer: IrExpr | null = null;
+  for (const { tag, arm, shape } of records) {
+    // The per-arm fences the record path applies to a single receiver.
+    fencePerfEntryKeyWalk(lowerer, arm, call, `Object.${member}`);
+    fenceX509KeyWalk(lowerer, arm, call, `Object.${member}`);
+    if (shapeHasAccessorSlots(shape)) {
+      lowerer.unsupported(
+        "SC1090",
+        call,
+        `Object.${member} over '${lowerer.fmt(arm)}' (a shape carrying get/set accessor properties — the static key walk cannot list them${member === "keys" ? "" : " or invoke the getters"}; read the properties explicitly)`,
+      );
+    }
+    const armValue: IrExpr = {
+      kind: "unionNarrow",
+      unionId: source.unionId,
+      tag,
+      value: ref(),
+      type: arm,
+      loc,
+    };
+    const armAnswer = shape.indexValue
+      ? objectIterOverIndexShape(lowerer, call, member, arm, shape, armValue, resultT, loc)
+      : lowerObjectEnumerationOverRecord(lowerer, call, member, arm, shape, armValue, resultT, loc);
+    answer =
+      answer === null
+        ? armAnswer
+        : { kind: "ternary", cond: isTag(tag), then: armAnswer, else_: answer, type: resultT, loc };
+  }
+  for (const tag of units) {
+    answer = {
+      kind: "ternary",
+      cond: isTag(tag),
+      then: nodeThrowExpr(1, "", "Cannot convert undefined or null to object", resultT, loc),
+      else_: answer!,
+      type: resultT,
+      loc,
+    };
+  }
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: local.id, init: receiver, loc }],
+    result: answer!,
+    type: resultT,
+    loc,
+  };
+}
+
+/** The static enumeration of one FIXED record shape: the field walk helper
+ * keyed by the shape and the checker's result type. `enumerated` is the
+ * receiver to read (the argument itself, or a union arm's narrowed value),
+ * already passed through objectEnumerationReceiver. */
+function lowerObjectEnumerationOverRecord(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  member: "keys" | "values" | "entries",
+  argIr: IrType & { kind: "record" },
+  shape: IrRecordShape,
+  enumerated: IrExpr,
+  resultT: IrType & { kind: "array" },
+  loc: SrcLoc,
+): IrExpr {
   const recordT = argIr;
   const sourced = (staticAnswer: (record: IrExpr) => IrExpr): IrExpr =>
     recordMayKeepSource(lowerer, recordT)

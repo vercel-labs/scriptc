@@ -94,6 +94,16 @@ bool scr_spawn_res_has_status(ScrSpawnRes *r);
 double scr_spawn_res_status(ScrSpawnRes *r);
 ScrStr *scr_spawn_res_stdout(ScrSpawnRes *r); /* +1 */
 ScrStr *scr_spawn_res_stderr(ScrSpawnRes *r); /* +1 */
+/* The Buffer captures (spawnSync without an encoding option): the same
+ * bytes as a bytes<u8> value, carrying the Buffer brand Node's capture has
+ * (+1). All three entries live in scr_child_capture.c, a unit linked only
+ * by programs that read a capture, so scr_child.c keeps its layout and no
+ * always-linked unit names an optional one. */
+ScrBytes *scr_spawn_res_stdout_bytes(ScrSpawnRes *r);
+ScrBytes *scr_spawn_res_stderr_bytes(ScrSpawnRes *r);
+/* The Buffer behind one capture (NULL = the stream was not piped): the
+ * one-Buffer-per-capture memo the accessors above answer from. +1. */
+ScrBytes *scr_spawn_res_capture_bytes(ScrStr *capture);
 /* result.signal — the termination signal's name when a signal killed the
  * child (a timeout's killSignal included), the null arm otherwise; the
  * emitter wraps type-directedly over the has/get pair like status. */

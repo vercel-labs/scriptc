@@ -415,6 +415,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // The declaration-typed boundary's adoption.
   unit((u) => u.opts.declAdopt === true, "scr_decl_adopt.c"),
   unit((u) => u.opts.typeOrigins === true, "scr_type_origin.c"),
+  // A dev executable's report of failed checked conversions.
+  unit((u) => u.opts.conversionTrace === true, "scr_conversion_trace.c"),
   // for await over checked-dynamic values.
   unit((u) => u.opts.dynForAwait === true, "scr_dyn_for_await.c"),
   // The keyed collections' prototype objects, member values, their

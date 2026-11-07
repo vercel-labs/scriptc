@@ -25,6 +25,7 @@ const features = {
   childErrorFields: false,
   declAdopt: false,
   typeOrigins: false,
+  conversionTrace: false,
   dynForAwait: false,
   dynCollections: false,
   dynIntegrityQueries: false,

@@ -920,6 +920,16 @@ function buildLibFnSignatures() {
     // name, and node:path's value adapters (scr_builtin_values.c).
     "dyn.validateString": { argTypes: [DYN, STRING], result: STRING },
     "dyn.validateStrings": { argTypes: [DYN, STRING], result: arrayOf(STRING) },
+    /** getValidatedPath over an untyped path of a synchronous fs function
+     * (JavaScript sources): [value, Node's parameter name, whether Node
+     * first asks for a file descriptor]. A string, a URL or a Uint8Array
+     * answers its path; anything else throws Node's ERR_INVALID_ARG_TYPE.
+     * In a descriptor position the value first converts to a number, as
+     * Node's test does, and a number throws the named refusal. May-throw.
+     * Named in the dyn family, not fs: it converts an argument and reads
+     * no file system state, so it is not an ambient operation (the fs call
+     * that takes the path is). */
+    "dyn.validateFsPath": { argTypes: [DYN, STRING, BOOL], result: STRING },
     "path.resolveValue": { argTypes: [DYN, BOOL], result: STRING },
     "path.parseValue": { argTypes: [DYN, BOOL], result: DYN },
     "path.formatValue": { argTypes: [DYN, BOOL], result: DYN },

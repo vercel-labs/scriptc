@@ -177,11 +177,31 @@ export function lowerClassDataDescriptor(
   return { kind: "seqExpr", stmts, result: value, type: value.type, loc };
 }
 
+/** Whether a `get` or `set` member is statically one ToPropertyDescriptor
+ * accepts: a function, which it never calls, or `undefined`. False for a
+ * value whose type leaves a non-callable one possible, since converting it
+ * would throw. */
+function staticAccessorValue(lowerer: Lowerer, node: ts.Expression): boolean {
+  let expr = node;
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  if (ts.isFunctionExpression(expr) || ts.isArrowFunction(expr)) return true;
+  const type = lowerer.typeOf(expr);
+  const parts = type.isUnionType() ? ts.constituentTypes(type) : [type];
+  return parts.every((part) => {
+    if ((part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void | ts.TypeFlags.Never)) !== 0)
+      return true;
+    if ((part.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.Null)) !== 0)
+      return false;
+    return lowerer.mapTypeOf(part)?.kind === "func";
+  });
+}
+
 /** The fields of a descriptor written as an object literal whose conversion
  * (ToPropertyDescriptor) can neither fail nor run code: plain members named
- * after descriptor fields, and no accessor beside a value or `writable`.
+ * after descriptor fields, a `get` or `set` member whose value is statically
+ * a function or `undefined`, and no accessor beside a value or `writable`.
  * Null for any other expression. */
-function staticDescriptorFields(node: ts.Expression): string[] | null {
+function staticDescriptorFields(lowerer: Lowerer, node: ts.Expression): string[] | null {
   while (ts.isParenthesizedExpression(node)) node = node.expression;
   if (!ts.isObjectLiteralExpression(node)) return null;
   const fields: string[] = [];
@@ -194,6 +214,15 @@ function staticDescriptorFields(node: ts.Expression): string[] | null {
       return null;
     const name = literalName(property.name);
     if (name === null || !DESCRIPTOR_FIELDS.includes(name) || fields.includes(name)) return null;
+    if (
+      (name === "get" || name === "set") &&
+      !ts.isMethodDeclaration(property) &&
+      !staticAccessorValue(
+        lowerer,
+        ts.isShorthandPropertyAssignment(property) ? property.name : property.initializer,
+      )
+    )
+      return null;
     fields.push(name);
   }
   const accessor = fields.includes("get") || fields.includes("set");
@@ -233,7 +262,7 @@ export function lowerClassDescriptorMap(
       name === "__proto__" ||
       /^(0|[1-9][0-9]*)$/.test(name) ||
       entries.some((entry) => entry.name === name) ||
-      staticDescriptorFields(property.initializer) === null
+      staticDescriptorFields(lowerer, property.initializer) === null
     )
       return null;
     const field = isDefinableClassField(lowerer, target, name);

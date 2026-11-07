@@ -2765,25 +2765,30 @@ static bool dyn_define_props_primitive(const ScrDyn *value) {
  * `read_any` (scr_dyn_descriptor_snapshot) admits a descriptor built by an
  * expression; NULL keeps the plain-object rule and its TypeError, where a
  * typed record held by reference is read through its view as
- * scr_dyn_define_property reads it. Returns an array of [key, descriptor]
- * pairs (+1), or NULL with the exception pending. */
-ScrDyn *scr_dyn_define_props_pending(ScrDyn *descs, ScrDyn *(*read_any)(const ScrDyn *descriptor)) {
+ * scr_dyn_define_property reads it. `read_this` is the `this` value of the
+ * map's [[Get]]: the map itself, except that a function's table is only the
+ * enumeration source, so its getters still observe the function. Returns an
+ * array of [key, descriptor] pairs (+1), or NULL with the exception
+ * pending. */
+static ScrDyn *dyn_define_props_pending(ScrDyn *descs, ScrDyn *read_this,
+                                        ScrDyn *(*read_any)(const ScrDyn *descriptor)) {
   if (descs->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(descs);
     if (scr_exc_pending()) {
       scr_dyn_release(view);
       return NULL;
     }
-    ScrDyn *pending = scr_dyn_define_props_pending(view, read_any);
+    ScrDyn *pending = dyn_define_props_pending(view, view, read_any);
     scr_dyn_release(view);
     return pending;
   }
   if (descs->kind == SCR_DYN_FUNC) {
     /* A function's own enumerable properties are those of its table; its
-     * name, length and prototype are not enumerable. */
+     * name, length and prototype are not enumerable. The function, not the
+     * table, is the map a getter on it observes. */
     ScrDyn *table = scr_dyn_function_properties_existing(descs);
     if (!table) return scr_exc_pending() ? NULL : scr_dyn_new_arr();
-    ScrDyn *pending = scr_dyn_define_props_pending(table, read_any);
+    ScrDyn *pending = dyn_define_props_pending(table, descs, read_any);
     scr_dyn_release(table);
     return pending;
   }
@@ -2823,7 +2828,7 @@ ScrDyn *scr_dyn_define_props_pending(ScrDyn *descs, ScrDyn *(*read_any)(const Sc
         if (scr_exc_pending()) goto fail;
         continue;
       }
-      descriptor = scr_dyn_reflect_get(descs, key, descs);
+      descriptor = scr_dyn_reflect_get(descs, key, read_this);
     }
     if (!descriptor) goto fail;
     if (read_any) {
@@ -2888,6 +2893,10 @@ fail:
   scr_dyn_release(keys);
   scr_dyn_release(pending);
   return NULL;
+}
+
+ScrDyn *scr_dyn_define_props_pending(ScrDyn *descs, ScrDyn *(*read_any)(const ScrDyn *descriptor)) {
+  return dyn_define_props_pending(descs, descs, read_any);
 }
 
 /* Object.defineProperties over dyn values (see scr_runtime.h): the

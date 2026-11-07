@@ -9,6 +9,7 @@ import "./computed-keys.ts";
 import "./map-variable.ts";
 import "./map-getter.ts";
 import "./map-getter-variable.ts";
+import "./map-function.ts";
 import "./map-skips-non-enumerable-and-inherited.ts";
 import "./invalid-mixed-descriptor.ts";
 import "./descriptor-not-object.ts";

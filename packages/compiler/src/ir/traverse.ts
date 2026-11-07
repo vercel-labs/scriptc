@@ -31,11 +31,156 @@ function everyEntry(
   return true;
 }
 
+/** Whether a rewrite may share what it did not change with its input tree.
+ * The module finish turns it on; lowering keeps it off (see
+ * withStructureSharing). */
+let shareUnchanged = false;
+
+/** Runs `body` with structure sharing on: a rewrite that leaves a node's
+ * children unchanged then returns the node itself instead of a copy. The
+ * module finish runs this way — its passes read the tree the lowering left,
+ * so a subtree they keep belongs to the one function that holds it, and the
+ * whole-program walks they run allocate nothing for it. Lowering keeps the
+ * copy: a pass that shares a node of one function into another would let
+ * that function's location reach this one, and settleSharedHelperLocations
+ * rewrites locations in place. */
+export function withStructureSharing<T>(body: () => T): T {
+  const previous = shareUnchanged;
+  shareUnchanged = true;
+  try {
+    return body();
+  } finally {
+    shareUnchanged = previous;
+  }
+}
+
+/** Whether a rewrite hands its node back instead of a copy: sharing is on and
+ * the child came back as it went in. Outside the shared windows the answer
+ * is no, so every rewrite rebuilds the nodes it visits and its output never
+ * holds a node of its input tree. kept2 to kept4 ask about that many
+ * children. They are calls, and not comparisons in the caller, to keep the
+ * caller's frame small; see mapExprChildren. */
+function kept<A>(a: A, wasA: A): boolean {
+  return shareUnchanged && a === wasA;
+}
+
+function kept2<A, B>(a: A, wasA: A, b: B, wasB: B): boolean {
+  return shareUnchanged && a === wasA && b === wasB;
+}
+
+function kept3<A, B, C>(a: A, wasA: A, b: B, wasB: B, c: C, wasC: C): boolean {
+  return shareUnchanged && a === wasA && b === wasB && c === wasC;
+}
+
+function kept4<A, B, C, D>(a: A, wasA: A, b: B, wasB: B, c: C, wasC: C, d: D, wasD: D): boolean {
+  return shareUnchanged && a === wasA && b === wasB && c === wasC && d === wasD;
+}
+
+/** Maps a child list, returning `children` itself when no child changed. The
+ * list a node already holds is then the answer, which lets a rewrite that
+ * touches nothing leave the tree alone. */
 function mapOf<T>(children: readonly T[], map: (child: T) => T): T[] {
   const length = children.length;
-  const result: T[] = [];
-  for (let i = 0; i < length; i++) result.push(map(children[i]!));
-  return result;
+  if (!shareUnchanged) {
+    const copy: T[] = [];
+    for (let i = 0; i < length; i++) copy.push(map(children[i]!));
+    return copy;
+  }
+  let result: T[] | null = null;
+  for (let i = 0; i < length; i++) {
+    const child = children[i]!;
+    const mapped = map(child);
+    if (mapped === child) continue;
+    if (result === null) result = children.slice();
+    result[i] = mapped;
+  }
+  return result ?? (children as unknown as T[]);
+}
+
+/** mapOf over entries that hold one expression each (record fields, override
+ * tables). */
+function mapValues<T extends { value: IrExpr }>(
+  entries: readonly T[],
+  expr: (expr: IrExpr) => IrExpr,
+): T[] {
+  const length = entries.length;
+  if (!shareUnchanged) {
+    const copy: T[] = [];
+    for (let i = 0; i < length; i++) {
+      const entry = entries[i]!;
+      copy.push({ ...entry, value: expr(entry.value) });
+    }
+    return copy;
+  }
+  let result: T[] | null = null;
+  for (let i = 0; i < length; i++) {
+    const entry = entries[i]!;
+    const value = expr(entry.value);
+    if (value === entry.value) continue;
+    if (result === null) result = entries.slice();
+    result[i] = { ...entry, value };
+  }
+  return result ?? (entries as unknown as T[]);
+}
+
+/** mapOf over entries that hold a key and a value expression. */
+function mapKeyValues<T extends { key: IrExpr; value: IrExpr }>(
+  entries: readonly T[],
+  expr: (expr: IrExpr) => IrExpr,
+): T[] {
+  const length = entries.length;
+  if (!shareUnchanged) {
+    const copy: T[] = [];
+    for (let i = 0; i < length; i++) {
+      const entry = entries[i]!;
+      copy.push({ ...entry, key: expr(entry.key), value: expr(entry.value) });
+    }
+    return copy;
+  }
+  let result: T[] | null = null;
+  for (let i = 0; i < length; i++) {
+    const entry = entries[i]!;
+    const key = expr(entry.key);
+    const value = expr(entry.value);
+    if (key === entry.key && value === entry.value) continue;
+    if (result === null) result = entries.slice();
+    result[i] = { ...entry, key, value };
+  }
+  return result ?? (entries as unknown as T[]);
+}
+
+type SwitchCase = Extract<IrStmt, { kind: "switch" }>["cases"][number];
+
+/** mapOf over the cases of a switch: a test, when the case has one, and a
+ * body. */
+function mapCases(
+  cases: readonly SwitchCase[],
+  expr: (expr: IrExpr) => IrExpr,
+  stmt: (stmt: IrStmt) => IrStmt,
+): SwitchCase[] {
+  const length = cases.length;
+  if (!shareUnchanged) {
+    const copy: SwitchCase[] = [];
+    for (let i = 0; i < length; i++) {
+      const entry = cases[i]!;
+      copy.push({
+        ...entry,
+        test: entry.test === null ? null : expr(entry.test),
+        body: mapOf(entry.body, stmt),
+      });
+    }
+    return copy;
+  }
+  let result: SwitchCase[] | null = null;
+  for (let i = 0; i < length; i++) {
+    const entry = cases[i]!;
+    const test = entry.test === null ? null : expr(entry.test);
+    const body = mapOf(entry.body, stmt);
+    if (test === entry.test && body === entry.body) continue;
+    if (result === null) result = cases.slice();
+    result[i] = { ...entry, test, body };
+  }
+  return result ?? (cases as SwitchCase[]);
 }
 
 /** The type tree contains structural children; named shapes are references.
@@ -492,36 +637,79 @@ export function observeRecordLiteralRebuilds(
   recordLiteralRebuilt = observer;
 }
 
-/** Copy a node with transformed immediate children; preserve all metadata. */
+/** Copy a node with transformed immediate children, returning `node` itself
+ * when no child changed. A whole-program rewrite that leaves a subtree alone
+ * then shares it with the input tree instead of copying every node: the
+ * later walks a module finish runs stay allocation-free, and a caller can
+ * tell "not touched" by identity. Nodes are never mutated in place, so the
+ * sharing is invisible. */
 export function mapExprChildren(
   node: IrExpr,
   expr: (expr: IrExpr) => IrExpr,
   stmt: (stmt: IrStmt) => IrStmt,
 ): IrExpr {
+  // Each case computes its children into these slots and asks kept() about
+  // them, instead of naming them and comparing them itself. This function is
+  // on the stack once per nesting level of every recursive rewrite, and in a
+  // build that does not optimize, every local and every `===`, `&&` and
+  // conditional result is a stack slot of its own. Spelled out per case they
+  // took this frame from 265 slots to 680, and the sanitized emitter then
+  // ran out of native stack emitting the compiler's own IR.
+  let a: IrExpr;
+  let b: IrExpr;
+  let c: IrExpr;
+  let orNull: IrExpr | null;
+  let optional: IrExpr | undefined;
+  let optional2: IrExpr | undefined;
+  let list: IrExpr[];
+  let block: IrStmt[];
   // The most common node kinds come first: the engine tests string cases
   // one after another, in source order.
   switch (node.kind) {
     case "varRef":
       return node;
-    case "call":
-      return { ...node, args: mapOf(node.args, expr) };
-    case "dynFrom":
-      return { ...node, value: expr(node.value) };
+    case "call": {
+      list = mapOf(node.args, expr);
+      if (kept(list, node.args)) return node;
+      return { ...node, args: list };
+    }
+    case "dynFrom": {
+      a = expr(node.value);
+      if (kept(a, node.value)) return node;
+      return { ...node, value: a };
+    }
     case "strLit":
       return node;
-    case "libCall":
-      return { ...node, args: mapOf(node.args, expr) };
+    case "libCall": {
+      list = mapOf(node.args, expr);
+      if (kept(list, node.args)) return node;
+      return { ...node, args: list };
+    }
     case "dynCheck": {
-      const rebuilt: IrExpr = { ...node, value: expr(node.value) };
+      a = expr(node.value);
+      if (kept(a, node.value)) return node;
+      const rebuilt: IrExpr = { ...node, value: a };
       if (recordLiteralRebuilt !== null) recordLiteralRebuilt(node, rebuilt);
       return rebuilt;
     }
-    case "strEq":
-      return { ...node, left: expr(node.left), right: expr(node.right) };
-    case "fieldGet":
-      return { ...node, obj: expr(node.obj) };
-    case "ternary":
-      return { ...node, cond: expr(node.cond), then: expr(node.then), else_: expr(node.else_) };
+    case "strEq": {
+      a = expr(node.left);
+      b = expr(node.right);
+      if (kept2(a, node.left, b, node.right)) return node;
+      return { ...node, left: a, right: b };
+    }
+    case "fieldGet": {
+      a = expr(node.obj);
+      if (kept(a, node.obj)) return node;
+      return { ...node, obj: a };
+    }
+    case "ternary": {
+      a = expr(node.cond);
+      b = expr(node.then);
+      c = expr(node.else_);
+      if (kept3(a, node.cond, b, node.then, c, node.else_)) return node;
+      return { ...node, cond: a, then: b, else_: c };
+    }
     case "closure":
       return node;
     case "boolLit":
@@ -530,339 +718,632 @@ export function mapExprChildren(
       return node;
     case "unitLit":
       return node;
-    case "seqExpr":
-      return { ...node, stmts: mapOf(node.stmts, stmt), result: expr(node.result) };
+    case "seqExpr": {
+      block = mapOf(node.stmts, stmt);
+      a = expr(node.result);
+      if (kept2(block, node.stmts, a, node.result)) return node;
+      return { ...node, stmts: block, result: a };
+    }
     case "dynCall": {
-      const result: Extract<IrExpr, { kind: "dynCall" }> = { ...node, callee: expr(node.callee) };
-      if (node.receiver !== undefined) result.receiver = expr(node.receiver);
-      if (node.calleeNameValue !== undefined) result.calleeNameValue = expr(node.calleeNameValue);
-      result.args = mapOf(node.args, expr);
+      a = expr(node.callee);
+      optional = node.receiver === undefined ? undefined : expr(node.receiver);
+      optional2 = node.calleeNameValue === undefined ? undefined : expr(node.calleeNameValue);
+      list = mapOf(node.args, expr);
+      if (
+        kept4(
+          a,
+          node.callee,
+          optional,
+          node.receiver,
+          optional2,
+          node.calleeNameValue,
+          list,
+          node.args,
+        )
+      )
+        return node;
+      const result: Extract<IrExpr, { kind: "dynCall" }> = { ...node, callee: a };
+      if (node.receiver !== undefined) result.receiver = optional!;
+      if (node.calleeNameValue !== undefined) result.calleeNameValue = optional2!;
+      result.args = list;
       return result;
     }
-    case "dynTest":
-      return { ...node, value: expr(node.value) };
-    case "dynScalarEq":
-      return { ...node, left: expr(node.left), right: expr(node.right) };
-    case "upcast":
-      return { ...node, value: expr(node.value) };
-    case "bin":
-      return { ...node, left: expr(node.left), right: expr(node.right) };
+    case "dynTest": {
+      a = expr(node.value);
+      if (kept(a, node.value)) return node;
+      return { ...node, value: a };
+    }
+    case "dynScalarEq": {
+      a = expr(node.left);
+      b = expr(node.right);
+      if (kept2(a, node.left, b, node.right)) return node;
+      return { ...node, left: a, right: b };
+    }
+    case "upcast": {
+      a = expr(node.value);
+      if (kept(a, node.value)) return node;
+      return { ...node, value: a };
+    }
+    case "bin": {
+      a = expr(node.left);
+      b = expr(node.right);
+      if (kept2(a, node.left, b, node.right)) return node;
+      return { ...node, left: a, right: b };
+    }
     case "moduleNsRef":
       return node;
-    case "unary":
-      return { ...node, operand: expr(node.operand) };
+    case "unary": {
+      a = expr(node.operand);
+      if (kept(a, node.operand)) return node;
+      return { ...node, operand: a };
+    }
     case "incDec":
       return node;
-    case "fieldIncDec":
-      return { ...node, obj: expr(node.obj) };
-    case "assignExpr":
-      return { ...node, value: expr(node.value) };
-    case "toBool":
-      return { ...node, operand: expr(node.operand) };
-    case "logical":
-      return { ...node, left: expr(node.left), right: expr(node.right) };
-    case "strConcat":
-      return { ...node, left: expr(node.left), right: expr(node.right) };
-    case "strCmp":
-      return { ...node, left: expr(node.left), right: expr(node.right) };
-    case "toString":
-      return { ...node, operand: expr(node.operand) };
-    case "nullish":
-      return { ...node, left: expr(node.left), right: expr(node.right) };
-    case "orDefault":
-      return { ...node, left: expr(node.left), right: expr(node.right) };
-    case "optChain":
-      return { ...node, receiver: expr(node.receiver), body: expr(node.body) };
+    case "fieldIncDec": {
+      a = expr(node.obj);
+      if (kept(a, node.obj)) return node;
+      return { ...node, obj: a };
+    }
+    case "assignExpr": {
+      a = expr(node.value);
+      if (kept(a, node.value)) return node;
+      return { ...node, value: a };
+    }
+    case "toBool": {
+      a = expr(node.operand);
+      if (kept(a, node.operand)) return node;
+      return { ...node, operand: a };
+    }
+    case "logical": {
+      a = expr(node.left);
+      b = expr(node.right);
+      if (kept2(a, node.left, b, node.right)) return node;
+      return { ...node, left: a, right: b };
+    }
+    case "strConcat": {
+      a = expr(node.left);
+      b = expr(node.right);
+      if (kept2(a, node.left, b, node.right)) return node;
+      return { ...node, left: a, right: b };
+    }
+    case "strCmp": {
+      a = expr(node.left);
+      b = expr(node.right);
+      if (kept2(a, node.left, b, node.right)) return node;
+      return { ...node, left: a, right: b };
+    }
+    case "toString": {
+      a = expr(node.operand);
+      if (kept(a, node.operand)) return node;
+      return { ...node, operand: a };
+    }
+    case "nullish": {
+      a = expr(node.left);
+      b = expr(node.right);
+      if (kept2(a, node.left, b, node.right)) return node;
+      return { ...node, left: a, right: b };
+    }
+    case "orDefault": {
+      a = expr(node.left);
+      b = expr(node.right);
+      if (kept2(a, node.left, b, node.right)) return node;
+      return { ...node, left: a, right: b };
+    }
+    case "optChain": {
+      a = expr(node.receiver);
+      b = expr(node.body);
+      if (kept2(a, node.receiver, b, node.body)) return node;
+      return { ...node, receiver: a, body: b };
+    }
     case "chainRecv":
       return node;
-    case "strIntrinsic":
-      return {
-        ...node,
-        receiver: expr(node.receiver),
-        args: mapOf(node.args, expr),
-      };
+    case "strIntrinsic": {
+      a = expr(node.receiver);
+      list = mapOf(node.args, expr);
+      if (kept2(a, node.receiver, list, node.args)) return node;
+      return { ...node, receiver: a, args: list };
+    }
     case "regexLit":
       return node;
     case "templateStrings":
       return node;
-    case "regexIntrinsic":
-      return {
-        ...node,
-        receiver: expr(node.receiver),
-        args: mapOf(node.args, expr),
-      };
-    case "arrayLit":
-      return { ...node, elems: mapOf(node.elems, expr) };
-    case "arrayNewLen":
-      return { ...node, length: expr(node.length) };
-    case "arrayGet":
-      return { ...node, arr: expr(node.arr), index: expr(node.index) };
-    case "arrayHas":
-      return { ...node, arr: expr(node.arr), index: expr(node.index) };
-    case "arrayState":
-      return { ...node, arr: expr(node.arr), index: expr(node.index) };
-    case "constCell":
-      return { ...node, index: expr(node.index) };
-    case "arrIntrinsic":
-      return {
-        ...node,
-        receiver: expr(node.receiver),
-        args: mapOf(node.args, expr),
-      };
-    case "bytesNew":
-      return { ...node, source: node.source === null ? null : expr(node.source) };
-    case "bytesIntrinsic":
-      return {
-        ...node,
-        receiver: expr(node.receiver),
-        args: mapOf(node.args, expr),
-      };
-    case "mapNew":
-      return node.seed === undefined
-        ? node
-        : {
-            ...node,
-            seed: node.seed.map((child) => ({
-              ...child,
-              key: expr(child.key),
-              value: expr(child.value),
-            })),
-          };
-    case "mapIntrinsic":
-      return {
-        ...node,
-        receiver: expr(node.receiver),
-        args: mapOf(node.args, expr),
-      };
-    case "setNew":
-      return node.seed === undefined ? node : { ...node, seed: expr(node.seed) };
-    case "setIntrinsic":
-      return {
-        ...node,
-        receiver: expr(node.receiver),
-        args: mapOf(node.args, expr),
-      };
-    case "ffiCall":
-      return { ...node, args: mapOf(node.args, expr) };
+    case "regexIntrinsic": {
+      a = expr(node.receiver);
+      list = mapOf(node.args, expr);
+      if (kept2(a, node.receiver, list, node.args)) return node;
+      return { ...node, receiver: a, args: list };
+    }
+    case "arrayLit": {
+      list = mapOf(node.elems, expr);
+      if (kept(list, node.elems)) return node;
+      return { ...node, elems: list };
+    }
+    case "arrayNewLen": {
+      a = expr(node.length);
+      if (kept(a, node.length)) return node;
+      return { ...node, length: a };
+    }
+    case "arrayGet": {
+      a = expr(node.arr);
+      b = expr(node.index);
+      if (kept2(a, node.arr, b, node.index)) return node;
+      return { ...node, arr: a, index: b };
+    }
+    case "arrayHas": {
+      a = expr(node.arr);
+      b = expr(node.index);
+      if (kept2(a, node.arr, b, node.index)) return node;
+      return { ...node, arr: a, index: b };
+    }
+    case "arrayState": {
+      a = expr(node.arr);
+      b = expr(node.index);
+      if (kept2(a, node.arr, b, node.index)) return node;
+      return { ...node, arr: a, index: b };
+    }
+    case "constCell": {
+      a = expr(node.index);
+      if (kept(a, node.index)) return node;
+      return { ...node, index: a };
+    }
+    case "arrIntrinsic": {
+      a = expr(node.receiver);
+      list = mapOf(node.args, expr);
+      if (kept2(a, node.receiver, list, node.args)) return node;
+      return { ...node, receiver: a, args: list };
+    }
+    case "bytesNew": {
+      orNull = node.source === null ? null : expr(node.source);
+      if (kept(orNull, node.source)) return node;
+      return { ...node, source: orNull };
+    }
+    case "bytesIntrinsic": {
+      a = expr(node.receiver);
+      list = mapOf(node.args, expr);
+      if (kept2(a, node.receiver, list, node.args)) return node;
+      return { ...node, receiver: a, args: list };
+    }
+    case "mapNew": {
+      if (node.seed === undefined) return node;
+      const seed = mapKeyValues(node.seed, expr);
+      if (kept(seed, node.seed)) return node;
+      return { ...node, seed };
+    }
+    case "mapIntrinsic": {
+      a = expr(node.receiver);
+      list = mapOf(node.args, expr);
+      if (kept2(a, node.receiver, list, node.args)) return node;
+      return { ...node, receiver: a, args: list };
+    }
+    case "setNew": {
+      if (node.seed === undefined) return node;
+      a = expr(node.seed);
+      if (kept(a, node.seed)) return node;
+      return { ...node, seed: a };
+    }
+    case "setIntrinsic": {
+      a = expr(node.receiver);
+      list = mapOf(node.args, expr);
+      if (kept2(a, node.receiver, list, node.args)) return node;
+      return { ...node, receiver: a, args: list };
+    }
+    case "ffiCall": {
+      list = mapOf(node.args, expr);
+      if (kept(list, node.args)) return node;
+      return { ...node, args: list };
+    }
     case "callValue": {
-      const callee = expr(node.callee);
-      if (node.receiver === undefined) return { ...node, callee, args: mapOf(node.args, expr) };
-      return {
-        ...node,
-        callee,
-        receiver: expr(node.receiver),
-        args: mapOf(node.args, expr),
-      };
+      a = expr(node.callee);
+      if (node.receiver === undefined) {
+        list = mapOf(node.args, expr);
+        if (kept2(a, node.callee, list, node.args)) return node;
+        return { ...node, callee: a, args: list };
+      }
+      b = expr(node.receiver);
+      list = mapOf(node.args, expr);
+      if (kept3(a, node.callee, b, node.receiver, list, node.args)) return node;
+      return { ...node, callee: a, receiver: b, args: list };
     }
     case "selfRef":
       return node;
-    case "yieldExpr":
-      return { ...node, value: node.value === null ? null : expr(node.value) };
-    case "genResume":
-      return { ...node, gen: expr(node.gen), arg: node.arg === null ? null : expr(node.arg) };
-    case "awaitExpr":
-      return { ...node, value: expr(node.value) };
-    case "awaitUnionExpr":
-      return { ...node, value: expr(node.value) };
-    case "newPromise":
-      return { ...node, executor: expr(node.executor) };
+    case "yieldExpr": {
+      orNull = node.value === null ? null : expr(node.value);
+      if (kept(orNull, node.value)) return node;
+      return { ...node, value: orNull };
+    }
+    case "genResume": {
+      a = expr(node.gen);
+      orNull = node.arg === null ? null : expr(node.arg);
+      if (kept2(a, node.gen, orNull, node.arg)) return node;
+      return { ...node, gen: a, arg: orNull };
+    }
+    case "awaitExpr": {
+      a = expr(node.value);
+      if (kept(a, node.value)) return node;
+      return { ...node, value: a };
+    }
+    case "awaitUnionExpr": {
+      a = expr(node.value);
+      if (kept(a, node.value)) return node;
+      return { ...node, value: a };
+    }
+    case "newPromise": {
+      a = expr(node.executor);
+      if (kept(a, node.executor)) return node;
+      return { ...node, executor: a };
+    }
     case "promiseWithResolvers":
       return node;
-    case "new":
-      return { ...node, args: mapOf(node.args, expr) };
+    case "new": {
+      list = mapOf(node.args, expr);
+      if (kept(list, node.args)) return node;
+      return { ...node, args: list };
+    }
     case "classRef":
       return node;
-    case "newValue":
-      return { ...node, callee: expr(node.callee), args: mapOf(node.args, expr) };
-    case "instanceOfValue":
-      return { ...node, value: expr(node.value), classValue: expr(node.classValue) };
-    case "promiseVoidWiden":
-      return { ...node, value: expr(node.value) };
-    case "downcast":
-      return { ...node, value: expr(node.value) };
-    case "instanceOf":
-      return { ...node, value: expr(node.value) };
-    case "virtualCall":
-      return { ...node, args: mapOf(node.args, expr) };
+    case "newValue": {
+      a = expr(node.callee);
+      list = mapOf(node.args, expr);
+      if (kept2(a, node.callee, list, node.args)) return node;
+      return { ...node, callee: a, args: list };
+    }
+    case "instanceOfValue": {
+      a = expr(node.value);
+      b = expr(node.classValue);
+      if (kept2(a, node.value, b, node.classValue)) return node;
+      return { ...node, value: a, classValue: b };
+    }
+    case "promiseVoidWiden": {
+      a = expr(node.value);
+      if (kept(a, node.value)) return node;
+      return { ...node, value: a };
+    }
+    case "downcast": {
+      a = expr(node.value);
+      if (kept(a, node.value)) return node;
+      return { ...node, value: a };
+    }
+    case "instanceOf": {
+      a = expr(node.value);
+      if (kept(a, node.value)) return node;
+      return { ...node, value: a };
+    }
+    case "virtualCall": {
+      list = mapOf(node.args, expr);
+      if (kept(list, node.args)) return node;
+      return { ...node, args: list };
+    }
     case "recordLit": {
-      const rebuilt: IrExpr = {
-        ...node,
-        fields: node.fields.map((child) => ({ ...child!, value: expr(child.value) })),
-      };
+      const fields = mapValues(node.fields, expr);
+      if (kept(fields, node.fields)) return node;
+      const rebuilt: IrExpr = { ...node, fields };
       if (recordLiteralRebuilt !== null) recordLiteralRebuilt(node, rebuilt);
       return rebuilt;
     }
-    case "recordClone":
-      return {
-        ...node,
-        source: expr(node.source),
-        overrides: node.overrides.map((child) => ({ ...child!, value: expr(child.value) })),
-      };
-    case "recordGet":
-      return { ...node, obj: expr(node.obj) };
-    case "recordKeyGet":
-      return { ...node, obj: expr(node.obj), key: expr(node.key) };
+    case "recordClone": {
+      a = expr(node.source);
+      const overrides = mapValues(node.overrides, expr);
+      if (kept2(a, node.source, overrides, node.overrides)) return node;
+      return { ...node, source: a, overrides };
+    }
+    case "recordGet": {
+      a = expr(node.obj);
+      if (kept(a, node.obj)) return node;
+      return { ...node, obj: a };
+    }
+    case "recordKeyGet": {
+      a = expr(node.obj);
+      b = expr(node.key);
+      if (kept2(a, node.obj, b, node.key)) return node;
+      return { ...node, obj: a, key: b };
+    }
     case "dynInvoke": {
-      const result: Extract<IrExpr, { kind: "dynInvoke" }> = { ...node, recv: expr(node.recv) };
-      if (node.calleeNameValue !== undefined) result.calleeNameValue = expr(node.calleeNameValue);
-      result.args = mapOf(node.args, expr);
+      a = expr(node.recv);
+      optional = node.calleeNameValue === undefined ? undefined : expr(node.calleeNameValue);
+      list = mapOf(node.args, expr);
+      if (kept3(a, node.recv, optional, node.calleeNameValue, list, node.args)) return node;
+      const result: Extract<IrExpr, { kind: "dynInvoke" }> = { ...node, recv: a };
+      if (node.calleeNameValue !== undefined) result.calleeNameValue = optional!;
+      result.args = list;
       return result;
     }
-    case "dynArrLit":
-      return { ...node, elems: mapOf(node.elems, expr) };
-    case "dynObjLit":
-      return node.fields === undefined
-        ? node
-        : {
-            ...node,
-            fields: node.fields.map((child) => ({
-              ...child,
-              key: expr(child.key),
-              value: expr(child.value),
-            })),
-          };
-    case "dynKeyGet":
-      return { ...node, key: expr(node.key), value: expr(node.value) };
-    case "dynHasKey":
-      return { ...node, value: expr(node.value) };
-    case "dynDestrCheck":
-      return { ...node, value: expr(node.value) };
-    case "dynIterN":
-      return { ...node, value: expr(node.value) };
-    case "recordOvfKeys":
-      return { ...node, obj: expr(node.obj) };
-    case "recordOvfHas":
-      return { ...node, obj: expr(node.obj), key: expr(node.key) };
-    case "recordNullProto":
-      return { ...node, obj: expr(node.obj) };
-    case "recordHas":
-      return { ...node, obj: expr(node.obj) };
+    case "dynArrLit": {
+      list = mapOf(node.elems, expr);
+      if (kept(list, node.elems)) return node;
+      return { ...node, elems: list };
+    }
+    case "dynObjLit": {
+      if (node.fields === undefined) return node;
+      const fields = mapKeyValues(node.fields, expr);
+      if (kept(fields, node.fields)) return node;
+      return { ...node, fields };
+    }
+    case "dynKeyGet": {
+      a = expr(node.key);
+      b = expr(node.value);
+      if (kept2(a, node.key, b, node.value)) return node;
+      return { ...node, key: a, value: b };
+    }
+    case "dynHasKey": {
+      a = expr(node.value);
+      if (kept(a, node.value)) return node;
+      return { ...node, value: a };
+    }
+    case "dynDestrCheck": {
+      a = expr(node.value);
+      if (kept(a, node.value)) return node;
+      return { ...node, value: a };
+    }
+    case "dynIterN": {
+      a = expr(node.value);
+      if (kept(a, node.value)) return node;
+      return { ...node, value: a };
+    }
+    case "recordOvfKeys": {
+      a = expr(node.obj);
+      if (kept(a, node.obj)) return node;
+      return { ...node, obj: a };
+    }
+    case "recordOvfHas": {
+      a = expr(node.obj);
+      b = expr(node.key);
+      if (kept2(a, node.obj, b, node.key)) return node;
+      return { ...node, obj: a, key: b };
+    }
+    case "recordNullProto": {
+      a = expr(node.obj);
+      if (kept(a, node.obj)) return node;
+      return { ...node, obj: a };
+    }
+    case "recordHas": {
+      a = expr(node.obj);
+      if (kept(a, node.obj)) return node;
+      return { ...node, obj: a };
+    }
     case "fieldAbsent":
       return node;
-    case "unionWrap":
-      return { ...node, value: expr(node.value) };
-    case "unionRetype":
-      return { ...node, value: expr(node.value) };
-    case "unionFuncEq":
-      return { ...node, union: expr(node.union), func: expr(node.func) };
-    case "caughtTest":
-      return { ...node, value: expr(node.value) };
-    case "caughtNarrow":
-      return { ...node, value: expr(node.value) };
-    case "caughtCheck":
-      return { ...node, value: expr(node.value) };
-    case "caughtToDyn":
-      return { ...node, value: expr(node.value) };
-    case "unionNarrow":
-      return { ...node, value: expr(node.value) };
-    case "unionDisc":
-      return { ...node, value: expr(node.value) };
-    case "unionKeyGet":
-      return { ...node, key: expr(node.key), value: expr(node.value) };
-    case "unionIsTag":
-      return { ...node, value: expr(node.value) };
-    case "unionEq":
-      return { ...node, left: expr(node.left), right: expr(node.right) };
-    case "intrinsic":
-      return { ...node, args: mapOf(node.args, expr) };
-    case "jsonStringify":
-      return { ...node, value: expr(node.value) };
+    case "unionWrap": {
+      a = expr(node.value);
+      if (kept(a, node.value)) return node;
+      return { ...node, value: a };
+    }
+    case "unionRetype": {
+      a = expr(node.value);
+      if (kept(a, node.value)) return node;
+      return { ...node, value: a };
+    }
+    case "unionFuncEq": {
+      a = expr(node.union);
+      b = expr(node.func);
+      if (kept2(a, node.union, b, node.func)) return node;
+      return { ...node, union: a, func: b };
+    }
+    case "caughtTest": {
+      a = expr(node.value);
+      if (kept(a, node.value)) return node;
+      return { ...node, value: a };
+    }
+    case "caughtNarrow": {
+      a = expr(node.value);
+      if (kept(a, node.value)) return node;
+      return { ...node, value: a };
+    }
+    case "caughtCheck": {
+      a = expr(node.value);
+      if (kept(a, node.value)) return node;
+      return { ...node, value: a };
+    }
+    case "caughtToDyn": {
+      a = expr(node.value);
+      if (kept(a, node.value)) return node;
+      return { ...node, value: a };
+    }
+    case "unionNarrow": {
+      a = expr(node.value);
+      if (kept(a, node.value)) return node;
+      return { ...node, value: a };
+    }
+    case "unionDisc": {
+      a = expr(node.value);
+      if (kept(a, node.value)) return node;
+      return { ...node, value: a };
+    }
+    case "unionKeyGet": {
+      a = expr(node.key);
+      b = expr(node.value);
+      if (kept2(a, node.key, b, node.value)) return node;
+      return { ...node, key: a, value: b };
+    }
+    case "unionIsTag": {
+      a = expr(node.value);
+      if (kept(a, node.value)) return node;
+      return { ...node, value: a };
+    }
+    case "unionEq": {
+      a = expr(node.left);
+      b = expr(node.right);
+      if (kept2(a, node.left, b, node.right)) return node;
+      return { ...node, left: a, right: b };
+    }
+    case "intrinsic": {
+      list = mapOf(node.args, expr);
+      if (kept(list, node.args)) return node;
+      return { ...node, args: list };
+    }
+    case "jsonStringify": {
+      a = expr(node.value);
+      if (kept(a, node.value)) return node;
+      return { ...node, value: a };
+    }
   }
   node satisfies never;
   throw new Error("unhandled IR node");
 }
 
-/** Copy a node with transformed immediate children; preserve all metadata. */
+/** Copy a node with transformed immediate children, returning `node` itself
+ * when no child changed; see mapExprChildren. */
 export function mapStmtChildren(
   node: IrStmt,
   expr: (expr: IrExpr) => IrExpr,
   stmt: (stmt: IrStmt) => IrStmt,
 ): IrStmt {
+  // One set of slots for every case; see mapExprChildren.
+  let a: IrExpr;
+  let b: IrExpr;
+  let c: IrExpr;
+  let orNull: IrExpr | null;
+  let block: IrStmt[];
+  let block2: IrStmt[] | null;
+  let block3: IrStmt[] | null;
+  let first: IrStmt | null;
+  let last: IrStmt | null;
   // The most common node kinds come first: the engine tests string cases
   // one after another, in source order.
   switch (node.kind) {
-    case "return":
-      return { ...node, value: node.value === null ? null : expr(node.value) };
-    case "if":
-      return {
-        ...node,
-        cond: expr(node.cond),
-        then: mapOf(node.then, stmt),
-        else_: node.else_ === null ? null : mapOf(node.else_, stmt),
-      };
-    case "varDecl":
-      return { ...node, init: node.init === null ? null : expr(node.init) };
-    case "exprStmt":
-      return { ...node, expr: expr(node.expr) };
-    case "assign":
-      return { ...node, value: expr(node.value) };
-    case "block":
-      return { ...node, body: mapOf(node.body, stmt) };
-    case "fieldSet":
-      return { ...node, obj: expr(node.obj), value: expr(node.value) };
-    case "while":
-      return { ...node, cond: expr(node.cond), body: mapOf(node.body, stmt) };
-    case "doWhile":
-      return { ...node, body: mapOf(node.body, stmt), cond: expr(node.cond) };
-    case "switch":
-      return {
-        ...node,
-        disc: expr(node.disc),
-        cases: node.cases.map((child) => ({
-          ...child,
-          test: child.test === null ? null : expr(child.test),
-          body: mapOf(child.body, stmt),
-        })),
-      };
-    case "for":
-      return {
-        ...node,
-        init: node.init === null ? null : stmt(node.init),
-        cond: node.cond === null ? null : expr(node.cond),
-        update: node.update === null ? null : stmt(node.update),
-        body: mapOf(node.body, stmt),
-      };
-    case "arraySet":
-      return { ...node, arr: expr(node.arr), index: expr(node.index), value: expr(node.value) };
-    case "arraySetLength":
-      return { ...node, arr: expr(node.arr), length: expr(node.length) };
-    case "arraySetUndefined":
-      return { ...node, arr: expr(node.arr), index: expr(node.index) };
-    case "arrayDelete":
-      return { ...node, arr: expr(node.arr), index: expr(node.index) };
-    case "bytesSet":
-      return { ...node, arr: expr(node.arr), index: expr(node.index), value: expr(node.value) };
-    case "forOf":
-      return {
-        ...node,
-        iterable: expr(node.iterable),
-        body: mapOf(node.body, stmt),
-      };
-    case "recordSet":
-      return { ...node, obj: expr(node.obj), value: expr(node.value) };
-    case "recordKeySet":
-      return { ...node, obj: expr(node.obj), key: expr(node.key), value: expr(node.value) };
-    case "recordKeyDelete":
-      return { ...node, obj: expr(node.obj), key: expr(node.key) };
+    case "return": {
+      orNull = node.value === null ? null : expr(node.value);
+      if (kept(orNull, node.value)) return node;
+      return { ...node, value: orNull };
+    }
+    case "if": {
+      a = expr(node.cond);
+      block = mapOf(node.then, stmt);
+      block2 = node.else_ === null ? null : mapOf(node.else_, stmt);
+      if (kept3(a, node.cond, block, node.then, block2, node.else_)) return node;
+      return { ...node, cond: a, then: block, else_: block2 };
+    }
+    case "varDecl": {
+      orNull = node.init === null ? null : expr(node.init);
+      if (kept(orNull, node.init)) return node;
+      return { ...node, init: orNull };
+    }
+    case "exprStmt": {
+      a = expr(node.expr);
+      if (kept(a, node.expr)) return node;
+      return { ...node, expr: a };
+    }
+    case "assign": {
+      a = expr(node.value);
+      if (kept(a, node.value)) return node;
+      return { ...node, value: a };
+    }
+    case "block": {
+      block = mapOf(node.body, stmt);
+      if (kept(block, node.body)) return node;
+      return { ...node, body: block };
+    }
+    case "fieldSet": {
+      a = expr(node.obj);
+      b = expr(node.value);
+      if (kept2(a, node.obj, b, node.value)) return node;
+      return { ...node, obj: a, value: b };
+    }
+    case "while": {
+      a = expr(node.cond);
+      block = mapOf(node.body, stmt);
+      if (kept2(a, node.cond, block, node.body)) return node;
+      return { ...node, cond: a, body: block };
+    }
+    case "doWhile": {
+      block = mapOf(node.body, stmt);
+      a = expr(node.cond);
+      if (kept2(block, node.body, a, node.cond)) return node;
+      return { ...node, body: block, cond: a };
+    }
+    case "switch": {
+      a = expr(node.disc);
+      const cases = mapCases(node.cases, expr, stmt);
+      if (kept2(a, node.disc, cases, node.cases)) return node;
+      return { ...node, disc: a, cases };
+    }
+    case "for": {
+      first = node.init === null ? null : stmt(node.init);
+      orNull = node.cond === null ? null : expr(node.cond);
+      last = node.update === null ? null : stmt(node.update);
+      block = mapOf(node.body, stmt);
+      if (kept4(first, node.init, orNull, node.cond, last, node.update, block, node.body))
+        return node;
+      return { ...node, init: first, cond: orNull, update: last, body: block };
+    }
+    case "arraySet": {
+      a = expr(node.arr);
+      b = expr(node.index);
+      c = expr(node.value);
+      if (kept3(a, node.arr, b, node.index, c, node.value)) return node;
+      return { ...node, arr: a, index: b, value: c };
+    }
+    case "arraySetLength": {
+      a = expr(node.arr);
+      b = expr(node.length);
+      if (kept2(a, node.arr, b, node.length)) return node;
+      return { ...node, arr: a, length: b };
+    }
+    case "arraySetUndefined": {
+      a = expr(node.arr);
+      b = expr(node.index);
+      if (kept2(a, node.arr, b, node.index)) return node;
+      return { ...node, arr: a, index: b };
+    }
+    case "arrayDelete": {
+      a = expr(node.arr);
+      b = expr(node.index);
+      if (kept2(a, node.arr, b, node.index)) return node;
+      return { ...node, arr: a, index: b };
+    }
+    case "bytesSet": {
+      a = expr(node.arr);
+      b = expr(node.index);
+      c = expr(node.value);
+      if (kept3(a, node.arr, b, node.index, c, node.value)) return node;
+      return { ...node, arr: a, index: b, value: c };
+    }
+    case "forOf": {
+      a = expr(node.iterable);
+      block = mapOf(node.body, stmt);
+      if (kept2(a, node.iterable, block, node.body)) return node;
+      return { ...node, iterable: a, body: block };
+    }
+    case "recordSet": {
+      a = expr(node.obj);
+      b = expr(node.value);
+      if (kept2(a, node.obj, b, node.value)) return node;
+      return { ...node, obj: a, value: b };
+    }
+    case "recordKeySet": {
+      a = expr(node.obj);
+      b = expr(node.key);
+      c = expr(node.value);
+      if (kept3(a, node.obj, b, node.key, c, node.value)) return node;
+      return { ...node, obj: a, key: b, value: c };
+    }
+    case "recordKeyDelete": {
+      a = expr(node.obj);
+      b = expr(node.key);
+      if (kept2(a, node.obj, b, node.key)) return node;
+      return { ...node, obj: a, key: b };
+    }
     case "break":
       return node;
     case "continue":
       return node;
-    case "throw":
-      return { ...node, value: expr(node.value) };
+    case "throw": {
+      a = expr(node.value);
+      if (kept(a, node.value)) return node;
+      return { ...node, value: a };
+    }
     case "runtimeFence":
       return node;
     case "genBindBarrier":
       return node;
     case "rethrow":
       return node;
-    case "tryCatch":
-      return {
-        ...node,
-        tryBody: mapOf(node.tryBody, stmt),
-        catchBody: node.catchBody === null ? null : mapOf(node.catchBody, stmt),
-        finallyBody: node.finallyBody === null ? null : mapOf(node.finallyBody, stmt),
-      };
+    case "tryCatch": {
+      block = mapOf(node.tryBody, stmt);
+      block2 = node.catchBody === null ? null : mapOf(node.catchBody, stmt);
+      block3 = node.finallyBody === null ? null : mapOf(node.finallyBody, stmt);
+      if (kept3(block, node.tryBody, block2, node.catchBody, block3, node.finallyBody)) return node;
+      return { ...node, tryBody: block, catchBody: block2, finallyBody: block3 };
+    }
   }
   node satisfies never;
   throw new Error("unhandled IR node");
@@ -907,5 +1388,7 @@ export function transformStmt(node: IrStmt, transform: IrTransform): IrStmt {
 }
 
 export function transformStmtList(body: IrStmt[], transform: IrTransform): IrStmt[] {
-  return body.map(transformation(transform).stmt);
+  // A rewrite that touches nothing returns the list itself, so the caller's
+  // body (and any summary validated against its identity) stays as it was.
+  return mapOf(body, transformation(transform).stmt);
 }

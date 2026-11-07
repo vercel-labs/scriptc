@@ -35,6 +35,7 @@ import {
 } from "./surfaces.js";
 import { CRYPTO_CONSTANTS } from "./crypto-tables.js";
 import { isDynIteratorValue } from "./iterator-prototype.js";
+import type { FunctionCensus } from "./function-census.js";
 
 const PROTOTYPE_METHODS: Record<string, readonly string[]> = {
   Date: ["getTime", "valueOf", "toISOString", "toJSON"],
@@ -991,7 +992,11 @@ export function checkedNativeCallableValue(
  * An untyped caller then holds the value that validates its arguments as
  * Node does, and it compares equal to the same builtin read anywhere else.
  * A binding read keeps its own evaluation, so its TDZ check still runs. */
-export function boxBuiltinValuesChecked(lowerer: Lowerer, functions: IrFunction[]): void {
+export function boxBuiltinValuesChecked(
+  lowerer: Lowerer,
+  functions: IrFunction[],
+  census: FunctionCensus,
+): void {
   const names = lowerer.builtinCallableValueNames;
   if (names.size === 0) return;
   const lengths = lowerer.builtinCallableValueLengths;
@@ -1046,6 +1051,8 @@ export function boxBuiltinValuesChecked(lowerer: Lowerer, functions: IrFunction[
   }
   const lifted = lowerer.liftedFns.length;
   for (const fn of functions) {
+    // The rewrite only changes a `dynFrom` boxing a builtin value.
+    if (!census.hasExpr(fn, "dynFrom")) continue;
     fn.body = transformStmtList(fn.body, {
       stmt: (stmt) => stmt,
       expr: (expr) => {

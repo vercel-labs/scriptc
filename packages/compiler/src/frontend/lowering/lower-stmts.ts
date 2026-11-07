@@ -358,6 +358,7 @@ import { fencePerfEntryKeyWalk } from "./builtins/performance.js";
 import { fenceX509KeyWalk } from "./builtins/x509.js";
 import { classGeneratorIterable } from "./class-iterables.js";
 import { iterableUnionOf, lowerForOfIterable } from "./iterable-values.js";
+import { refuseDefinedEnvWrite } from "./builtins/environment.js";
 
 interface UsingRegistration {
   acquire: IrStmt[];
@@ -8694,9 +8695,11 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
     lowerer.isProcessEnv(target.expression) ||
     heldEnvValueType(lowerer, target.expression) !== null
   ) {
+    const key = lowerKey();
+    refuseDefinedEnvWrite(lowerer, key, target);
     return {
       kind: "exprStmt",
-      expr: { kind: "libCall", fn: "process.envUnset", args: [lowerKey()], type: VOID, loc },
+      expr: { kind: "libCall", fn: "process.envUnset", args: [key], type: VOID, loc },
       loc,
     };
   }
@@ -9766,6 +9769,7 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
             type: STRING,
             loc: locOf(expr.left.name),
           };
+          refuseDefinedEnvWrite(lowerer, key, expr.left);
           const value = lowerer.lowerExpr(expr.right);
           if (value.type.kind !== "string") {
             lowerer.unsupported(

@@ -12,6 +12,7 @@ import {
 import { bindingNeverReassigned } from "../binding-analysis.js";
 import { constituentTypes } from "../../ts7/checker.js";
 import { pairsSnapshotHelper } from "../pairs-snapshot.js";
+import { definedEnvValue } from "../../defines.js";
 import {
   BOOL,
   DYN,
@@ -319,6 +320,20 @@ export function lowerProcessEnvGet(
     loc: locOf(expr.name),
   };
   return { kind: "libCall", fn: "process.envGet", args: [key], type: lowerer.envValueType(), loc };
+}
+
+/** Refuses a write or delete of a defined environment variable: the `if`
+ * statements its value decides were resolved at build time, so they could
+ * not follow the change. */
+export function refuseDefinedEnvWrite(lowerer: Lowerer, key: IrExpr, node: ts.Node): void {
+  if (key.kind === "strLit" && definedEnvValue(lowerer.define, key.value) !== undefined) {
+    lowerer.unsupported(
+      "SC1090",
+      node,
+      `changing process.env.${key.value} when --define fixes its value`,
+      "the if statements it decides were resolved at build time, so they would not follow the change",
+    );
+  }
 }
 
 export function lowerProcessLoadEnvFile(lowerer: Lowerer, call: ts.CallExpression): IrExpr {

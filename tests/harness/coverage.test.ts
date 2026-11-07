@@ -1198,6 +1198,25 @@ test("a package a build islands by its module-init fence is the same island here
   }
 });
 
+test("the island reload keeps the define values the analysis started with", () => {
+  // ni-sdk fences at module initialization, so lowering grows it into the
+  // island set and the analysis reloads the program to lower it as a build
+  // does. The reload carries the --define values along: the untaken branch
+  // is resolved away in what the report counts, exactly as in the build.
+  const entry = fixture("node-islands-fenced-sdk-values/define.js");
+  const define = { "process.env.SCRIPTC_COVERAGE_DEFINE": "on" };
+  const withDefine = analyze(entry, { define });
+  const plain = analyze(entry).coverage;
+  expect(withDefine.coverage.nodeIslands?.islands.map((i) => [i.package, i.class])).toEqual([
+    ["ni-sdk", "gap"],
+  ]);
+  const text = [...withDefine.sourceTexts].find(([file]) => file.endsWith("define.js"))?.[1];
+  expect(text).not.toContain("untaken");
+  expect(withDefine.coverage.stats.statementsTotal).toBeLessThan(plain.stats.statementsTotal);
+  expect(withDefine.coverage.stats.statementsFailed).toBe(0);
+  expect(withDefine.coverage.diagnostics).toEqual([]);
+});
+
 test("unknown scriptc settings warn in a build and make the island report unavailable", async () => {
   const entry = fixture("node-islands-config/main.ts");
   const outDir = mkdtempSync(join(tmpdir(), "scriptc-island-config-"));

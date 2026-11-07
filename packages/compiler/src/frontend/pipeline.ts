@@ -68,6 +68,7 @@ import { readProjectConfig } from "../project-config.js";
 import { recordFrontendIslandReads, setFrontendIslands } from "../node-islands/boundary.js";
 import { typePatchDiagnostics } from "./type-patches/layer.js";
 import { packageDirOf } from "../node-islands/origin.js";
+import type { Defines } from "./defines.js";
 import {
   scanFiles,
   type NodeIslandScan,
@@ -93,6 +94,7 @@ function packageDiagWhere(load: LoadResult, loc: SrcLoc): string {
 export interface ProgramLoadOptions {
   npmStatic?: readonly string[];
   externalTypes?: Readonly<Record<string, string>> | undefined;
+  define?: Defines | undefined;
 }
 
 /** A load owns its program resources until LoadResult.dispose(). Host
@@ -163,6 +165,9 @@ export interface FrontendOptions {
    * the detector's scan of the program and its npm packages. Builds do not
    * read either. */
   nodeIslands?: boolean;
+  /** `--define` values: every program load resolves the JavaScript `if`
+   * statements they decide, and lowering sets the variables at startup. */
+  define?: Defines;
   /** The detector's scan alone, for a build that may run packages in Node
    * islands (executable/prepare.ts decides which). */
   islandScan?: boolean;
@@ -601,8 +606,8 @@ export function runFrontend(
   // only live loads, releasing each immediately on normal fallback; this
   // also closes both the current program and a failed temporary probe.
   const active: ReturnType<ProgramLoader>[] = [];
-  const trackedLoader: ProgramLoader = (path, options) => {
-    const load = loadProgram(path, options);
+  const trackedLoader: ProgramLoader = (path, loadOptions) => {
+    const load = loadProgram(path, { ...loadOptions, define: options.define });
     active.push(load);
     return {
       ...load,
@@ -1213,6 +1218,7 @@ function loadFrontend(
         if (l.shapeOverlayState !== undefined) restoreShapeOverlayState(l.shapeOverlayState);
         return lowerToIr(l.program, l.entry, lowerOrder(l), {
           ...opts,
+          define: options.define,
           frontendServices: l.services,
           startupCrash: l.startupCrash ?? null,
           admittedOpinions: l.admittedOpinions,

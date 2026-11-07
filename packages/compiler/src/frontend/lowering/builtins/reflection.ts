@@ -132,7 +132,7 @@ function reflectMemberFunction(
   build: (args: IrExpr, locals: IrLocal[]) => IrStmt[],
 ): IrExpr {
   const name = `%builtin.Reflect.${member}`;
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const locals: IrLocal[] = [{ id: "args", name: "args", type: DYN, mutable: false }];
     const body = build(varRef("args", DYN, loc), locals);
     lowerer.liftedFns.push({

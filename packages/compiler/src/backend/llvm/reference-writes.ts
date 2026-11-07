@@ -554,6 +554,7 @@ export class ReferenceWrites {
       case "boolLit":
       case "strLit":
       case "unitLit":
+      case "constCell":
       case "varRef":
       case "bin":
       case "unary":

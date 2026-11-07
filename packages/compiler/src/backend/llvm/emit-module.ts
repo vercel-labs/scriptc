@@ -1181,6 +1181,8 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     );
   }
   if (emitter.arrayConstData.size > 0) out.push(``);
+  for (const [definition, sym] of emitter.imageDataSyms) out.push(`@${sym} = ${definition}`);
+  if (emitter.imageDataSyms.size > 0) out.push(``);
   for (const sym of emitter.methodIdSlots.values()) out.push(`@${sym} = internal global i32 -1`);
   if (emitter.methodIdSlots.size > 0) out.push(``);
 

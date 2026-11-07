@@ -8,8 +8,8 @@ import { serializeModule } from "../src/ir/serialize.js";
 
 // Which async-iteration protocol types hold a checked-dynamic value is a
 // fact of the program (async-protocol-holders.ts), not of a lowering pass.
-// A stream program's push-down pass can end at its last stream flag
-// (stream-flags-abort.test.ts) before it has seen the protocol spellings
+// A stream program's push-down pass can end where it asks for a stream mode
+// (stream-flags-abort.test.ts), before it has seen the protocol spellings
 // that follow; these fixtures pin that the stream pass maps them the same
 // way whether or not the push-down pass ran to its end, and that no pass
 // exists only to find out.

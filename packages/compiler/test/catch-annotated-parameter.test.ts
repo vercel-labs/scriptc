@@ -1,10 +1,12 @@
 // `.catch((error: Error) => ...)`: the parameter annotation is a claim
 // tsc cannot verify — the reject payload is whatever was thrown. It is
-// accepted only as the checked extraction `caughtCheck`: the snapshot is
-// verified against the class at handler entry, a match extracts the
-// payload for ordinary typed reads, and anything else raises the catchable
-// TypeError ("types don't lie"). An unannotated (or `: any`/`: unknown`)
-// handler keeps today's typed-catch binding, so its IR is unchanged.
+// accepted only as a checked conversion. A class claim is the checked
+// extraction `caughtCheck`: the snapshot is verified against the class at
+// handler entry, a match extracts the payload for ordinary typed reads, and
+// anything else raises the catchable TypeError ("types don't lie"). Any
+// other claim is checked by calling the handler as a function value. An
+// unannotated (or `: any`/`: unknown`) handler keeps today's typed-catch
+// binding, so its IR is unchanged.
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -69,7 +71,7 @@ test("an annotated catch parameter converts through the checked extraction", asy
   expect(ir).toContain('"%catch"');
 });
 
-test("a non-class catch parameter annotation keeps its refusal", async () => {
+test("a non-class catch parameter annotation is checked by the handler's own call", async () => {
   const compiled = await compileToIr([
     ...FAIL,
     "async function main(): Promise<void> {",
@@ -81,9 +83,14 @@ test("a non-class catch parameter annotation keeps its refusal", async () => {
     "}",
     "main();",
   ]);
-  expect(compiled.ok).toBe(false);
-  expect(compiled.diagnostics).toContain("SC1090");
-  expect(compiled.diagnostics).toContain("annotated with a type other than a class");
+  expect(compiled.ok, compiled.diagnostics).toBe(true);
+  const ir = functions(compiled.module!);
+  // A catch binding verifies classes only. Any other claim makes the
+  // handler a function value: the reason reaches it as a checked-dynamic
+  // value, and its call thunk converts that into the declared `string`.
+  expect(ir).not.toContain('"caughtCheck"');
+  expect(ir).not.toContain('"%catch"');
+  expect(ir).toContain('"dynCall"');
 });
 
 test("an unannotated catch handler keeps the plain typed-catch binding", async () => {

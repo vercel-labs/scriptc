@@ -3,13 +3,28 @@
  * the host and the bootstrap requires it), loads every candidate island
  * module once and records, for each:
  *
- *   - inputs: reads of values that can differ between the build and a run,
- *     or between the import position and a later evaluation: process.env
- *     keys (guarded at boot), process.env enumeration, stdio TTY state
- *     (`isTTY` is guarded at boot; window size and colour depth are not),
- *     argv, execPath, cwd, uid/gid, the file system, os information, and
- *     the clock and random numbers (volatile: allowed, but then no
- *     constants are snapshotted);
+ *   - what the load read of the machine and the moment. The recorder is a
+ *     list of what it knows to be safe, not of what it knows to be dangerous:
+ *     everything a load can reach besides the language itself and the
+ *     package's own files is in one of four classes, and what is in none of
+ *     them keeps the load eager, named in the build trace with the place
+ *     that read it.
+ *       deterministic: the pure built-ins (the allowlists below), what is
+ *         fixed by the libnode pack (process.version, platform, arch), and
+ *         the package's own files (boot guards, by size and mtime);
+ *       guarded: a value the executable can compare at the import without
+ *         starting Node: an environment variable (also behind os.homedir(),
+ *         os.tmpdir(), util.debuglog(), the default locale and a TZ that is
+ *         set), and whether a standard stream is a terminal (isTTY,
+ *         tty.isatty(), and the members only a terminal's stream has);
+ *       inputs: a setting of the machine no guard covers (the arguments,
+ *         the working directory, the user, the host, the file system, the
+ *         time zone of a machine whose TZ is unset, a terminal's size);
+ *       volatile: a reading no run repeats, or one whose order against the
+ *         program's own readings is observable: the clocks, random numbers,
+ *         the process id, resource meters;
+ *     a load that read an input or a volatile value evaluates where it is
+ *     imported (snapshot.ts);
  *   - effects: output, warnings, process listeners and exits, timers,
  *     immediates, ticks, microtasks and any other async resource created
  *     during the load (promises included), a promise the load leaves
@@ -30,13 +45,23 @@
  * for instance) are not the module's: a record is kept only when the
  * nearest caller outside this file is not `node:internal/`.
  *
- * Determinism argument: a load that read no input runs the same way at
- * any time in any run (with the same pack and the same files, which the
- * boot guards check), so one recorded run is the whole truth about its
- * effects, and evaluating it later is unobservable when that run had
- * none. Volatile values (pid, clock, random) do not change between the
- * import position and a later evaluation in the same process except the
- * clock and random numbers, which no run of Node reproduces either. */
+ * Determinism argument: a load that read nothing but guarded values runs
+ * the same way in any run whose guards hold (with the same pack and the
+ * same files, which the boot guards check, after the same island loads), so
+ * one recorded run is the whole truth about its value and its effects, and
+ * evaluating it later is unobservable when that run had none. A load that
+ * read anything else has no such argument: its value may be another one,
+ * the build's reading may be in the shape of what it exports (which members
+ * are objects) or in what a later load computed from state it left behind,
+ * and for a clock the order against the program's own readings is lost when
+ * the load evaluates late. It stays where it is imported.
+ *
+ * What the lists rest on, and cannot see: a package that reads memory it
+ * allocated without initializing it (Buffer.allocUnsafe) or measures how
+ * deep the stack is by overflowing it; a value derived from the module's
+ * own path that no longer contains the path (the path itself keeps the
+ * module eager, snapshot.ts); state behind underscore-prefixed members of
+ * Node's own objects. */
 export const PROBE_RECORDER = String.raw`"use strict";
 const types = require("node:util").types;
 const Module = require("node:module");
@@ -55,6 +80,9 @@ let lastFiles = [];
 // wrapped a builtin, as graceful-fs wraps fs.closeSync) acts for its caller.
 let currentFiles = null;
 let currentPackageDir = null;
+// The file whose import of a builtin's member by name is being recorded:
+// the read is that file's, whatever the stack says.
+let forcedCaller = null;
 function frameFile(line) {
   const m = /\(([^()]+):\d+:\d+\)\s*$/.exec(line) || /at ([^ ()]+):\d+:\d+\s*$/.exec(line);
   if (m === null) return null;
@@ -76,6 +104,11 @@ function parentFile(context) {
 // for their caller. Once the call is the module's, the frames below it,
 // past the loader frames between them, are the modules that required it.
 function internalCaller() {
+  if (forcedCaller !== null) {
+    lastCaller = "an import by name in " + forcedCaller;
+    lastFiles = [forcedCaller];
+    return false;
+  }
   const limit = Error.stackTraceLimit;
   Error.stackTraceLimit = 64;
   const lines = new Error().stack.split("\n");
@@ -89,6 +122,11 @@ function internalCaller() {
       if (line.includes("node:internal/modules/")) return true;
       if (/[( ]node:/.test(line)) continue;
       const file = frameFile(line);
+      // A frame of the engine itself (a native accessor call, Array.map,
+      // Promise.then) acts for whoever called it. With no caller below it,
+      // the engine made the call on its own: Node filling the namespace of
+      // a builtin for an ES module reads every member of the builtin.
+      if (file === null && /\(<anonymous>\)\s*$/.test(line)) continue;
       if (currentFiles !== null && file !== null && !currentFiles.has(file)) continue;
       lastCaller = line.trim().replace(/^at /, "");
       mine = true;
@@ -101,6 +139,23 @@ function internalCaller() {
       lastFiles.push(file);
   }
   return !mine;
+}
+
+// Whether the nearest caller outside this file is the module's own code,
+// not a builtin acting for it.
+function directCaller() {
+  const limit = Error.stackTraceLimit;
+  Error.stackTraceLimit = 16;
+  const lines = new Error().stack.split("\n");
+  Error.stackTraceLimit = limit;
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.includes(SELF)) continue;
+    if (/[( ]node:/.test(line)) return false;
+    if (frameFile(line) === null && /\(<anonymous>\)\s*$/.test(line)) continue;
+    return !internalCaller();
+  }
+  return false;
 }
 
 const fnToString = Function.prototype.toString;
@@ -228,35 +283,77 @@ exports.probe = function probe(input) {
   // The first effect or input ends the evaluation instead (withheld).
   let withholding = false;
   let withheld = null;
-  const note = (list, what) => {
-    if (!recording || internalCaller()) return;
-    list.push(list === volatile ? what : what + " (" + lastCaller + ")");
+  // What the module's own code read or did (not Node's internals): note
+  // checks the caller; a caller that has checked it calls add.
+  const add = (list, what) => {
+    list.push(what + " (" + lastCaller + ")");
     if (withholding && list !== volatile) {
       if (withheld === null) withheld = what;
       throw new Error("the build does not perform " + what + " for the program");
     }
   };
+  const note = (list, what) => {
+    if (!recording || internalCaller()) return;
+    add(list, what);
+  };
   const undo = [];
-  const wrapFn = (owner, key, list, label) => {
-    let original;
-    try { original = owner[key]; } catch { return; }
-    if (typeof original !== "function") return;
+  // The members the recorder has a rule for, by object: what is left of an
+  // object's members after its rules is on its allowlist or not classified.
+  const claimed = new Map();
+  const claim = (owner, key) => {
+    let keys = claimed.get(owner);
+    if (keys === undefined) claimed.set(owner, (keys = new Set()));
+    keys.add(key);
+  };
+  const isClaimed = (owner, key) => claimed.has(owner) && claimed.get(owner).has(key);
+  // The members read through an accessor of the recorder's, by object: an
+  // ES module that imports one by name gets a copy no accessor sees.
+  const trapped = new Map();
+  // Members the recorder has a rule for and cannot observe (Node makes them
+  // not configurable). A load whose files name one is taken to have read it.
+  const untrappable = [];
+  // Rules that need to fire once per load (a sort comparator calls
+  // localeCompare for every pair), by name.
+  const fired = new Set();
+  // A function in the place of the original that reports the module's calls:
+  // to a list under a label, or to list(args, isNew, self) when that is a
+  // function (the caller is the module's then, and it calls add).
+  const wrapperOf = (original, list, label, once) => {
     const wrapped = function (...a) {
-      note(list, label);
+      if (typeof list !== "function") note(list, label);
+      else if (recording && !(once !== undefined && fired.has(once)) && !internalCaller()) list(a, new.target !== undefined, this);
       return new.target ? Reflect.construct(original, a, new.target) : original.apply(this, a);
     };
+    Object.defineProperty(wrapped, "name", { value: original.name });
+    Object.defineProperty(wrapped, "length", { value: original.length });
+    // Its statics, own and inherited, and its prototype: what it constructs
+    // is an instance of the original.
+    for (const k of Reflect.ownKeys(original))
+      if (k === "prototype" || !hasOwn.call(wrapped, k)) Object.defineProperty(wrapped, k, Object.getOwnPropertyDescriptor(original, k));
+    Object.setPrototypeOf(wrapped, Object.getPrototypeOf(original));
+    return wrapped;
+  };
+  const wrapFn = (owner, key, list, label, once) => {
+    claim(owner, key);
+    let original;
+    try { original = owner[key]; } catch { return undefined; }
+    if (typeof original !== "function") return undefined;
+    const had = hasOwn.call(owner, key);
+    let wrapped;
     try {
-      Object.defineProperty(wrapped, "name", { value: original.name });
-      Object.defineProperty(wrapped, "length", { value: original.length });
-      for (const k of Reflect.ownKeys(original))
-        if (!hasOwn.call(wrapped, k)) Object.defineProperty(wrapped, k, Object.getOwnPropertyDescriptor(original, k));
+      wrapped = wrapperOf(original, list, label, once);
       owner[key] = wrapped;
-    } catch { return; }
-    undo.push(() => { try { owner[key] = original; } catch {} });
+    } catch { return undefined; }
+    undo.push(() => { try { if (had) owner[key] = original; else delete owner[key]; } catch {} });
+    return wrapped;
   };
   const wrapGetter = (owner, key, label, onRead) => {
+    claim(owner, key);
     const d = Object.getOwnPropertyDescriptor(owner, key);
-    if (d !== undefined && !d.configurable) return;
+    if (d !== undefined && !d.configurable) { untrappable.push({ label, key }); return; }
+    let keys = trapped.get(owner);
+    if (keys === undefined) trapped.set(owner, (keys = new Set()));
+    keys.add(key);
     // Without an own property (a pipe's isTTY), reads go to the prototype.
     const own = d !== undefined;
     let shadow;
@@ -282,6 +379,22 @@ exports.probe = function probe(input) {
       else delete owner[key];
     });
   };
+  // A member no rule lists: the module's call of it (a function) or read of
+  // it (anything else) is a source the recorder cannot classify.
+  const NOT = ", which the recorder does not classify";
+  const unclassified = (owner, key, label) => {
+    let d;
+    try { d = Object.getOwnPropertyDescriptor(owner, key); } catch { return; }
+    if (d !== undefined && "value" in d && typeof d.value === "function") wrapFn(owner, key, inputs, label + "()" + NOT);
+    else wrapGetter(owner, key, label, () => add(inputs, label + NOT));
+  };
+  // Every name an object answers to, its own and its prototypes'.
+  const members = (o, stop) => {
+    const names = new Set();
+    for (let p = o; p !== null && p !== undefined && p !== stop && p !== Object.prototype; p = Object.getPrototypeOf(p))
+      for (const k of Object.getOwnPropertyNames(p)) if (k !== "constructor") names.add(k);
+    return names;
+  };
   const realEnv = process.env;
   // The environment keys each file's code read, kept across the probe's
   // loads. A file the module cache hands to a later load was evaluated in
@@ -298,6 +411,7 @@ exports.probe = function probe(input) {
     if (!envKeys.has(k)) envKeys.set(k, v);
     for (const f of lastFiles) saveEnvFile(f, k);
   };
+  const envValue = (k) => (realEnv[k] === undefined ? null : String(realEnv[k]));
   const readKey = (t, k) => {
     if (recording && typeof k === "string" && !internalCaller())
       noteEnv(k, t[k] === undefined ? null : String(t[k]));
@@ -311,35 +425,165 @@ exports.probe = function probe(input) {
     defineProperty(t, k, d) { note(effects, "a write of process.env." + String(k)); return Reflect.defineProperty(t, k, d); },
     deleteProperty(t, k) { note(effects, "a delete of process.env." + String(k)); delete t[k]; return true; },
   });
+  claim(process, "env");
   undo.push(() => { process.env = realEnv; });
-  for (const k of ["argv", "execArgv", "execPath", "title", "argv0", "debugPort", "exitCode"])
+  // The default locale and the time zone. Both are the module's reads when
+  // these are called (the caller is checked by the wrapper that calls them).
+  // ICU takes the default locale from LC_ALL, LC_MESSAGES and LANG, in that
+  // order (measured on Linux); elsewhere no guard is known to cover it.
+  const locale = () => {
+    fired.add("locale");
+    if (process.platform === "linux") for (const k of ["LC_ALL", "LC_MESSAGES", "LANG"]) noteEnv(k, envValue(k));
+    else add(inputs, "the default locale");
+  };
+  // The time zone is TZ where it is set. Unset, it is the machine's (a link
+  // in /etc), which no boot guard covers.
+  const zone = () => {
+    fired.add("zone");
+    if (realEnv.TZ !== undefined) noteEnv("TZ", String(realEnv.TZ));
+    else add(inputs, "the time zone of the machine (TZ is unset)");
+  };
+  // Whether a locales argument leaves the choice to the default locale:
+  // none, an empty list, or tags of which ICU supports none.
+  const defaultLocale = (service, locales) => {
+    if (locales === undefined) return true;
+    try { return service.supportedLocalesOf(locales).length === 0; } catch { return false; }
+  };
+  const zoneOption = (options) => {
+    try { return options !== null && (typeof options === "object" || typeof options === "function") && options.timeZone !== undefined; } catch { return false; }
+  };
+
+  // ── process ──
+  // Node makes this set on first use and replaces the property with it:
+  // made here, it is no load's change of process.
+  void process.allowedNodeEnvironmentFlags;
+  for (const k of ["argv", "execArgv", "execPath", "title", "argv0", "debugPort"])
     wrapGetter(process, k, "process." + k, () => note(inputs, "process." + k));
   for (const k of ["pid", "ppid"]) wrapGetter(process, k, "process." + k, () => note(volatile, "process." + k));
   for (const k of ["cwd", "getuid", "getgid", "geteuid", "getegid", "getgroups", "umask", "getActiveResourcesInfo", "resourceUsage", "availableMemory", "constrainedMemory"])
     wrapFn(process, k, inputs, "process." + k + "()");
-  for (const k of ["uptime", "hrtime", "memoryUsage", "cpuUsage"]) wrapFn(process, k, volatile, "process." + k + "()");
+  for (const k of ["uptime", "hrtime", "memoryUsage", "cpuUsage", "threadCpuUsage"]) wrapFn(process, k, volatile, "process." + k + "()");
   if (process.hrtime) wrapFn(process.hrtime, "bigint", volatile, "process.hrtime.bigint()");
-  for (const k of ["exit", "reallyExit", "abort", "kill", "chdir", "setuid", "setgid", "seteuid", "setegid", "setgroups", "dlopen", "binding", "_linkedBinding", "emitWarning", "on", "addListener", "once", "prependListener", "prependOnceListener", "removeListener", "off", "removeAllListeners", "setMaxListeners", "nextTick", "setUncaughtExceptionCaptureCallback", "setSourceMapsEnabled", "send", "disconnect"])
+  if (process.memoryUsage) wrapFn(process.memoryUsage, "rss", volatile, "process.memoryUsage.rss()");
+  for (const k of ["exit", "reallyExit", "abort", "kill", "chdir", "setuid", "setgid", "seteuid", "setegid", "setgroups", "initgroups", "dlopen", "binding", "_linkedBinding", "emitWarning", "on", "addListener", "once", "prependListener", "prependOnceListener", "removeListener", "off", "removeAllListeners", "setMaxListeners", "nextTick", "setUncaughtExceptionCaptureCallback", "setSourceMapsEnabled", "send", "disconnect", "execve", "ref", "unref", "loadEnvFile", "openStdin"])
     wrapFn(process, k, effects, "process." + k + "()");
+  if (typeof process.getBuiltinModule === "function") {
+    const original = process.getBuiltinModule;
+    claim(process, "getBuiltinModule");
+    process.getBuiltinModule = function (id) {
+      if (recording && !internalCaller()) builtinLoaded(String(id).replace(/^node:/, ""), lastCaller);
+      return original.apply(this, arguments);
+    };
+    undo.push(() => { process.getBuiltinModule = original; });
+  }
+  // The standard streams. Node's own code acting for the module (console.log,
+  // util.styleText) uses the stream itself, whose listed members report in
+  // place. The module's own code gets a proxy that also sees the members no
+  // rule lists and the questions asked of the object itself (its prototype,
+  // its keys): a stream is a terminal's, a pipe's or a file's, with different
+  // members each, and only whether it is a terminal has a boot guard.
+  const ttyModule = require("node:tty");
+  const ttyOnly = new Set(["columns", "rows", "isRaw"]);
+  for (const proto of [ttyModule.WriteStream.prototype, ttyModule.ReadStream.prototype])
+    for (const k of Object.getOwnPropertyNames(proto)) if (k !== "constructor" && k !== "isTTY") ttyOnly.add(k);
+  const streamEffects = ["write", "on", "once", "addListener", "prependListener", "end", "setRawMode", "resume", "pause", "read", "cork", "uncork", "destroy", "pipe"];
+  // Effects only when the module itself calls them: Node's own code calls
+  // these while it acts for a module (console.log removes its error listener
+  // in a finally block), where a withheld call would escape as a throw.
+  const moduleEffects = new Set(["prependOnceListener", "unpipe", "removeListener", "off", "removeAllListeners", "setMaxListeners", "setEncoding", "setDefaultEncoding", "ref", "unref", "emit", "cursorTo", "moveCursor", "clearLine", "clearScreenDown"]);
+  // Answered from the stream's listeners, which only island code adds.
+  const streamPure = ["fd", "listenerCount", "listeners", "rawListeners", "eventNames", "getMaxListeners"];
   for (const [fd, s] of [[0, "stdin"], [1, "stdout"], [2, "stderr"]]) {
     let stream;
     try { stream = process[s]; } catch { continue; }
-    for (const k of ["write", "on", "once", "addListener", "prependListener", "end", "setRawMode", "resume", "pause", "read", "cork", "uncork", "destroy", "pipe"])
-      wrapFn(stream, k, effects, "process." + s + "." + k + "()");
-    wrapGetter(stream, "isTTY", "process." + s + ".isTTY", (v) => { if (!tty.has(fd)) tty.set(fd, v === true); });
-    for (const k of ["columns", "rows"]) wrapGetter(stream, k, "process." + s + "." + k, () => note(inputs, "process." + s + "." + k));
-    for (const k of ["getColorDepth", "hasColors", "getWindowSize"]) wrapFn(stream, k, inputs, "process." + s + "." + k + "()");
+    const name = "process." + s;
+    const isTty = stream.isTTY === true;
+    const terminal = () => { if (!tty.has(fd)) tty.set(fd, isTty); };
+    for (const k of streamEffects) wrapFn(stream, k, effects, name + "." + k + "()");
+    wrapGetter(stream, "isTTY", name + ".isTTY", (v) => { if (!tty.has(fd)) tty.set(fd, v === true); });
+    // Only a terminal's stream has a size, and the size has no guard.
+    for (const k of ["columns", "rows"]) wrapGetter(stream, k, name + "." + k, () => { terminal(); if (isTty) add(inputs, name + "." + k); });
+    for (const k of ["getColorDepth", "hasColors", "getWindowSize"]) wrapFn(stream, k, inputs, name + "." + k + "()");
+    const listed = new Set(["isTTY", "columns", "rows", "getColorDepth", "hasColors", "getWindowSize", ...streamEffects, ...moduleEffects, ...streamPure]);
+    const kind = "what kind of stream " + name + " is";
+    const seen = (k) => {
+      if (typeof k !== "string") { add(inputs, kind + NOT); return; }
+      // A member only a terminal's stream has: reading it is asking whether
+      // the stream is one.
+      if (ttyOnly.has(k)) { terminal(); if (isTty && k === "isRaw") add(inputs, name + "." + k); return; }
+      if (!listed.has(k)) add(inputs, name + "." + k + NOT);
+    };
+    const bound = new Map();
+    const proxy = new Proxy(stream, {
+      get(t, k) {
+        if (recording && !internalCaller()) seen(k);
+        const v = Reflect.get(t, k, t);
+        if (typeof v !== "function") return v;
+        // Called on the stream itself, so that Node's code inside the call
+        // sees the stream; a method that answers the stream answers the proxy.
+        let f = bound.get(v);
+        if (f === undefined) {
+          const effect = typeof k === "string" && moduleEffects.has(k) ? name + "." + k + "()" : null;
+          f = function (...a) {
+            if (effect !== null) note(effects, effect);
+            const r = v.apply(this === proxy ? t : this, a);
+            return r === t ? proxy : r;
+          };
+          Object.defineProperty(f, "name", { value: v.name });
+          Object.defineProperty(f, "length", { value: v.length });
+          bound.set(v, f);
+        }
+        return f;
+      },
+      has(t, k) { if (recording && !internalCaller()) seen(k); return Reflect.has(t, k); },
+      set(t, k, v) { note(effects, "a write of " + name + "." + String(k)); return Reflect.set(t, k, v, t); },
+      defineProperty(t, k, d) { note(effects, "a write of " + name + "." + String(k)); return Reflect.defineProperty(t, k, d); },
+      deleteProperty(t, k) { note(effects, "a delete of " + name + "." + String(k)); return Reflect.deleteProperty(t, k); },
+      getPrototypeOf(t) { note(inputs, kind + NOT); return Reflect.getPrototypeOf(t); },
+      ownKeys(t) { note(inputs, kind + NOT); return Reflect.ownKeys(t); },
+      getOwnPropertyDescriptor(t, k) { note(inputs, kind + NOT); return Reflect.getOwnPropertyDescriptor(t, k); },
+    });
+    const d = Object.getOwnPropertyDescriptor(process, s);
+    claim(process, s);
+    if (d === undefined || !d.configurable) { untrappable.push({ label: name, key: s }); continue; }
+    let keys = trapped.get(process);
+    if (keys === undefined) trapped.set(process, (keys = new Set()));
+    keys.add(s);
+    Object.defineProperty(process, s, {
+      configurable: true,
+      enumerable: d.enumerable,
+      get() { return recording && directCaller() ? proxy : stream; },
+      set(v) {
+        note(effects, "a write of " + name);
+        Object.defineProperty(process, s, { configurable: true, enumerable: d.enumerable, writable: true, value: v });
+      },
+    });
+    undo.push(() => Object.defineProperty(process, s, d));
   }
+  // What is fixed by the libnode pack, and what only island code changes
+  // (the listeners, the island's exit code, Node's own bookkeeping).
+  const processPure = new Set(["version", "versions", "arch", "platform", "release", "config", "features", "exitCode",
+    "allowedNodeEnvironmentFlags", "moduleLoadList", "domain", "emit", "listeners", "listenerCount", "eventNames",
+    "getMaxListeners", "rawListeners", "hasUncaughtExceptionCaptureCallback", "assert", "_events", "_eventsCount",
+    "_maxListeners", "_exiting", "_preload_modules", "_eval", "_tickCallback", "_fatalException"]);
+  for (const k of Object.getOwnPropertyNames(process))
+    if (!isClaimed(process, k) && !processPure.has(k)) unclassified(process, k, "process." + k);
+
   for (const k of ["queueMicrotask", "fetch"]) wrapFn(globalThis, k, effects, k + "()");
   // Timers: one the load sets and clears again, and a clear of nothing
   // (undefined, null), leave nothing behind (NI-7d).
   const pendingTimers = new Map();
+  // Inside one of the wrappers below: the timer is theirs to account for.
+  let ownTimer = 0;
   for (const k of ["setTimeout", "setInterval", "setImmediate"]) {
     const original = globalThis[k];
+    claim(globalThis, k);
     const wrapped = function (...a) {
       // The program's own code sets no timer in the build (note throws).
       if (withholding) note(effects, k + "()");
-      const handle = original.apply(this, a);
+      ownTimer++;
+      let handle;
+      try { handle = original.apply(this, a); } finally { ownTimer--; }
       if (recording && !internalCaller()) {
         effects.push(k + "() (" + lastCaller + ")");
         pendingTimers.set(handle, effects.length - 1);
@@ -352,6 +596,7 @@ exports.probe = function probe(input) {
   }
   for (const k of ["clearTimeout", "clearInterval", "clearImmediate"]) {
     const original = globalThis[k];
+    claim(globalThis, k);
     const wrapped = function (handle) {
       if (recording && !internalCaller()) {
         if (pendingTimers.has(handle)) {
@@ -367,16 +612,200 @@ exports.probe = function probe(input) {
     globalThis[k] = wrapped;
     undo.push(() => { globalThis[k] = original; });
   }
-  wrapFn(Date, "now", volatile, "Date.now()");
+
+  // ── the clock, the time zone and the locale ──
+  // What a Date is made from decides what it read: nothing at all is the
+  // clock; year, month and so on are local time; a string is local time
+  // unless it says otherwise, which is asked of the parser itself, in two
+  // zones a day apart (Node follows a change of TZ).
+  const RealDate = Date;
+  const realParse = Date.parse;
+  const parsedIn = (tz, text) => {
+    const had = realEnv.TZ;
+    realEnv.TZ = tz;
+    try { return realParse(text); } finally { if (had === undefined) delete realEnv.TZ; else realEnv.TZ = had; }
+  };
+  const localText = (text) => {
+    let west, east;
+    try { west = parsedIn("Etc/GMT+12", text); east = parsedIn("Etc/GMT-14", text); } catch { return true; }
+    return !Object.is(west, east);
+  };
+  wrapFn(RealDate, "now", volatile, "Date.now()");
+  wrapFn(RealDate, "parse", (a) => { if (typeof a[0] !== "string" || localText(a[0])) zone(); }, "");
+  {
+    const wrapped = wrapFn(globalThis, "Date", (a, isNew) => {
+      if (!isNew) add(volatile, "Date()");
+      else if (a.length === 0) add(volatile, "new Date()");
+      else if (a.length > 1) zone();
+      else if (typeof a[0] === "string" ? localText(a[0]) : a[0] !== null && typeof a[0] === "object" && !(a[0] instanceof RealDate)) zone();
+    }, "");
+    // new date.constructor(...) is the same question.
+    if (wrapped !== undefined) {
+      const d = Object.getOwnPropertyDescriptor(RealDate.prototype, "constructor");
+      RealDate.prototype.constructor = wrapped;
+      undo.push(() => Object.defineProperty(RealDate.prototype, "constructor", d));
+    }
+  }
+  for (const k of ["getDate", "getDay", "getFullYear", "getHours", "getMinutes", "getMonth", "getSeconds", "getTimezoneOffset", "getYear", "setDate", "setFullYear", "setHours", "setMilliseconds", "setMinutes", "setMonth", "setSeconds", "setYear", "toString", "toDateString", "toTimeString"])
+    wrapFn(RealDate.prototype, k, zone, "", "zone");
+  for (const k of ["toLocaleString", "toLocaleDateString", "toLocaleTimeString"])
+    wrapFn(RealDate.prototype, k, (a) => {
+      if (defaultLocale(Intl.DateTimeFormat, a[0])) locale();
+      if (!zoneOption(a[1])) zone();
+    }, "");
+  wrapFn(Number.prototype, "toLocaleString", (a) => { if (defaultLocale(Intl.NumberFormat, a[0])) locale(); }, "", "locale");
+  wrapFn(BigInt.prototype, "toLocaleString", (a) => { if (defaultLocale(Intl.NumberFormat, a[0])) locale(); }, "", "locale");
+  wrapFn(String.prototype, "localeCompare", (a) => { if (defaultLocale(Intl.Collator, a[1])) locale(); }, "", "locale");
+  for (const k of ["toLocaleUpperCase", "toLocaleLowerCase"])
+    wrapFn(String.prototype, k, (a) => { if (defaultLocale(Intl.Collator, a[0])) locale(); }, "", "locale");
+  // Every Intl service that takes locales (Intl.Locale and the functions
+  // take a tag and answer from ICU's data, which is the pack's).
+  for (const k of Object.getOwnPropertyNames(Intl)) {
+    const service = Intl[k];
+    if (typeof service !== "function" || typeof service.supportedLocalesOf !== "function") continue;
+    const wrapped = wrapFn(Intl, k, (a) => {
+      if (defaultLocale(service, a[0])) locale();
+      if (k === "DateTimeFormat" && !zoneOption(a[1])) zone();
+    }, "");
+    if (wrapped === undefined) continue;
+    const d = Object.getOwnPropertyDescriptor(service.prototype, "constructor");
+    service.prototype.constructor = wrapped;
+    undo.push(() => Object.defineProperty(service.prototype, "constructor", d));
+  }
+  // A format of no date is a format of now.
+  {
+    const proto = Intl.DateTimeFormat.prototype;
+    const d = Object.getOwnPropertyDescriptor(proto, "format");
+    const made = new WeakMap();
+    if (d !== undefined && d.configurable && typeof d.get === "function") {
+      Object.defineProperty(proto, "format", {
+        configurable: true,
+        enumerable: d.enumerable,
+        get() {
+          const format = d.get.call(this);
+          let wrapped = made.get(format);
+          if (wrapped === undefined) {
+            wrapped = function (date) {
+              if (date === undefined) note(volatile, "Intl.DateTimeFormat#format() of the current time");
+              return format(date);
+            };
+            made.set(format, wrapped);
+          }
+          return wrapped;
+        },
+      });
+      undo.push(() => Object.defineProperty(proto, "format", d));
+    }
+    wrapFn(proto, "formatToParts", (a) => { if (a[0] === undefined) add(volatile, "Intl.DateTimeFormat#formatToParts() of the current time"); }, "");
+  }
   wrapFn(Math, "random", volatile, "Math.random()");
-  wrapFn(globalThis, "Date", volatile, "new Date()");
+  // performance: every member is a clock or a meter.
+  const perf = globalThis.performance;
+  if (perf !== undefined && perf !== null) {
+    for (const k of members(perf, EventTarget.prototype)) {
+      let v;
+      try { v = perf[k]; } catch { continue; }
+      if (typeof v === "function") wrapFn(perf, k, volatile, "performance." + k + "()");
+      else wrapGetter(perf, k, "performance." + k, () => add(volatile, "performance." + k));
+    }
+  }
+  for (const k of ["time", "timeEnd", "timeLog", "timeStamp"]) wrapFn(console, k, volatile, "console." + k + "()");
+  // console's own streams are the standard streams themselves.
+  for (const k of ["_stdout", "_stderr"])
+    wrapGetter(console, k, "console." + k, () => { if (directCaller()) add(inputs, "console." + k + NOT); });
+  // The web crypto object: random numbers, and digests and keys behind promises.
+  const webcrypto = globalThis.crypto;
+  if (webcrypto !== undefined && webcrypto !== null)
+    for (const k of members(webcrypto)) {
+      if (k === "subtle") continue;
+      if (k === "getRandomValues" || k === "randomUUID") wrapFn(webcrypto, k, volatile, "crypto." + k + "()");
+      else unclassified(webcrypto, k, "crypto." + k);
+    }
+  const nav = globalThis.navigator;
+  if (nav !== undefined && nav !== null)
+    for (const k of members(nav)) {
+      if (k === "userAgent" || k === "platform") continue;
+      if (k === "language" || k === "languages") wrapGetter(nav, k, "navigator." + k, locale);
+      else if (k === "hardwareConcurrency") wrapGetter(nav, k, "navigator." + k, () => add(inputs, "navigator." + k));
+      else unclassified(nav, k, "navigator." + k);
+    }
+  // Constructors that read the clock for what they make (Node defines some
+  // of them on first use, and replaces the property when it does).
+  const wrapGlobalClass = (key, classify) => {
+    const d = Object.getOwnPropertyDescriptor(globalThis, key);
+    claim(globalThis, key);
+    if (d === undefined) return;
+    if (!d.configurable) { untrappable.push({ label: "globalThis." + key, key }); return; }
+    let original, wrapped;
+    const mine = {
+      configurable: true,
+      enumerable: d.enumerable,
+      get() {
+        if (original === undefined) {
+          original = d.get ? d.get.call(globalThis) : d.value;
+          if (d.get) Object.defineProperty(globalThis, key, mine);
+        }
+        if (typeof original !== "function") return original;
+        if (wrapped === undefined) wrapped = wrapperOf(original, classify, "");
+        return wrapped;
+      },
+      set(v) {
+        note(effects, "a write of globalThis." + key);
+        Object.defineProperty(globalThis, key, { configurable: true, enumerable: d.enumerable, writable: true, value: v });
+      },
+    };
+    Object.defineProperty(globalThis, key, mine);
+    undo.push(() => Object.defineProperty(globalThis, key, d));
+  };
+  const fileMade = (a) => {
+    let given = false;
+    try { given = a[2] !== null && typeof a[2] === "object" && a[2].lastModified !== undefined; } catch {}
+    if (!given) add(volatile, "new File() (its lastModified)");
+  };
+  wrapGlobalClass("File", fileMade);
+  try { wrapFn(require("node:buffer"), "File", fileMade, ""); } catch {}
+  for (const k of ["Event", "CustomEvent", "MessageEvent", "CloseEvent"])
+    wrapGlobalClass(k, () => add(volatile, "new " + k + "() (its timeStamp)"));
+  if (typeof URL.createObjectURL === "function") wrapFn(URL, "createObjectURL", volatile, "URL.createObjectURL()");
+  // ── the globals ──
+  // The language, and the web interfaces that compute from their arguments
+  // or whose work the async hook below sees (a channel's ports, a socket).
+  const pureGlobals = new Set(("AbortController AbortSignal AggregateError Array ArrayBuffer AsyncDisposableStack Atomics " +
+    "BigInt BigInt64Array BigUint64Array Blob Boolean BroadcastChannel Buffer ByteLengthQueuingStrategy CompressionStream " +
+    "CountQueuingStrategy Crypto CryptoKey DOMException DataView DecompressionStream DisposableStack Error EvalError " +
+    "EventTarget FinalizationRegistry Float16Array Float32Array Float64Array FormData Function Headers Infinity Int16Array " +
+    "Int32Array Int8Array Intl Iterator JSON Map Math MessageChannel MessagePort NaN Navigator Number Object Performance " +
+    "PerformanceEntry PerformanceMark PerformanceMeasure PerformanceObserver PerformanceObserverEntryList " +
+    "PerformanceResourceTiming Promise Proxy RangeError ReadableByteStreamController ReadableStream " +
+    "ReadableStreamBYOBReader ReadableStreamBYOBRequest ReadableStreamDefaultController ReadableStreamDefaultReader " +
+    "ReferenceError Reflect RegExp Request Response Set SharedArrayBuffer String SubtleCrypto SuppressedError Symbol " +
+    "SyntaxError TextDecoder TextDecoderStream TextEncoder TextEncoderStream TransformStream " +
+    "TransformStreamDefaultController TypeError URIError URL URLPattern URLSearchParams Uint16Array Uint32Array " +
+    "Uint8Array Uint8ClampedArray WeakMap WeakRef WeakSet WebAssembly WebSocket WritableStream " +
+    "WritableStreamDefaultController WritableStreamDefaultWriter atob btoa console crypto decodeURI decodeURIComponent " +
+    "encodeURI encodeURIComponent escape eval global globalThis isFinite isNaN navigator parseFloat parseInt performance " +
+    "process structuredClone undefined unescape").split(" "));
+  for (const k of Object.getOwnPropertyNames(globalThis))
+    if (!isClaimed(globalThis, k) && !pureGlobals.has(k)) unclassified(globalThis, k, "globalThis." + k);
+
+  // ── the builtin modules ──
+  // A module is on one of three lists. whole: its functions are one kind of
+  // source by default, with the exceptions below. pureModules: it computes
+  // from its arguments, or reaches the machine only through what is wrapped
+  // here (path.resolve() through process.cwd()). Any other builtin, known or
+  // new, is not classified, and loading it keeps the load eager.
   const whole = {
     fs: inputs, os: inputs, child_process: effects, net: effects, dgram: effects, dns: effects,
     http: effects, https: effects, http2: effects, tls: effects, worker_threads: effects,
     cluster: effects, vm: effects, inspector: effects, tty: inputs, readline: effects, timers: effects,
     perf_hooks: volatile, crypto: volatile, v8: effects, repl: effects, trace_events: effects,
-    async_hooks: effects, diagnostics_channel: effects,
+    async_hooks: effects, diagnostics_channel: effects, "dns/promises": effects, "readline/promises": effects,
+    "inspector/promises": effects, "timers/promises": effects,
   };
+  const pureModules = new Set(["assert", "assert/strict", "buffer", "console", "constants", "events", "module", "path",
+    "path/posix", "path/win32", "process", "punycode", "querystring", "stream", "stream/consumers", "stream/promises",
+    "stream/web", "string_decoder", "sys", "url", "util", "util/types", "zlib", "_stream_duplex", "_stream_passthrough",
+    "_stream_readable", "_stream_transform", "_stream_wrap", "_stream_writable"]);
   // os.homedir() and os.tmpdir() are functions of the environment on POSIX:
   // HOME (when set), and TMPDIR, TMP, TEMP. Their keys become env guards.
   const osModule = require("node:os");
@@ -387,17 +816,66 @@ exports.probe = function probe(input) {
       if (recording && !internalCaller()) {
         if (process.platform === "win32" || (k === "homedir" && realEnv.HOME === undefined))
           inputs.push("os." + k + "()");
-        else for (const key of keys) noteEnv(key, realEnv[key] === undefined ? null : String(realEnv[key]));
+        else for (const key of keys) noteEnv(key, envValue(key));
       }
       return result;
     };
     undo.push(() => { osModule[k] = original; });
   }
+  // tty.isatty() of a standard stream is the question its isTTY answers.
+  {
+    const original = ttyModule.isatty;
+    ttyModule.isatty = function (fd) {
+      const result = original.apply(this, arguments);
+      if (recording && !internalCaller()) {
+        if (fd === 0 || fd === 1 || fd === 2) { if (!tty.has(fd)) tty.set(fd, result === true); }
+        else add(inputs, "tty.isatty()");
+      }
+      return result;
+    };
+    undo.push(() => { ttyModule.isatty = original; });
+  }
+  // util.debuglog() answers from NODE_DEBUG, which Node read when it started.
+  {
+    const utilModule = require("node:util");
+    for (const k of ["debuglog", "debug"]) {
+      const original = utilModule[k];
+      if (typeof original !== "function") continue;
+      utilModule[k] = function () {
+        if (recording && !internalCaller()) noteEnv("NODE_DEBUG", envValue("NODE_DEBUG"));
+        return original.apply(this, arguments);
+      };
+      undo.push(() => { utilModule[k] = original; });
+    }
+  }
+  // What the module loader does for a program besides loading.
+  for (const k of ["register", "registerHooks", "enableCompileCache", "flushCompileCache", "syncBuiltinESMExports", "setSourceMapsSupport", "runMain", "findPackageJSON", "findSourceMap"])
+    wrapFn(Module, k, effects, "module." + k + "()");
   const pureFns = new Set(["os.platform", "os.homedir", "os.tmpdir", "os.type", "os.arch", "os.machine", "os.endianness",
+    "tty.isatty", "net.isIP", "net.isIPv4", "net.isIPv6", "tls.getCiphers", "tls.checkServerIdentity",
     "crypto.createHash", "crypto.createHmac", "crypto.getHashes", "crypto.getCiphers", "crypto.getCurves",
-    "crypto.createCipheriv", "crypto.createDecipheriv", "vm.isContext", "fs.existsSync__never",
-    "async_hooks.AsyncLocalStorage", "async_hooks.AsyncResource", "diagnostics_channel.channel",
-    "diagnostics_channel.tracingChannel", "diagnostics_channel.hasSubscribers"]);
+    "crypto.createCipheriv", "crypto.createDecipheriv", "crypto.hash", "crypto.createSecretKey", "crypto.createPublicKey",
+    "crypto.createPrivateKey", "crypto.pbkdf2Sync", "crypto.scryptSync", "crypto.hkdfSync", "crypto.timingSafeEqual",
+    "crypto.createSign", "crypto.createVerify", "crypto.verify", "crypto.getCipherInfo", "crypto.createECDH",
+    "crypto.getDiffieHellman", "crypto.privateDecrypt", "crypto.publicDecrypt", "vm.isContext", "fs.existsSync__never",
+    "async_hooks.AsyncLocalStorage", "async_hooks.AsyncResource", "async_hooks.executionAsyncId",
+    "async_hooks.triggerAsyncId", "async_hooks.executionAsyncResource", "diagnostics_channel.channel",
+    "diagnostics_channel.tracingChannel", "diagnostics_channel.hasSubscribers", "perf_hooks.createHistogram"]);
+  // The members of a module on the first list that are not functions and are the same
+  // in every run: constants, and objects whose own members have their rules.
+  const pureData = {
+    fs: "constants promises", os: "EOL devNull constants",
+    // crypto.getRandomValues is an accessor here; what it answers draws
+    // through a request the async hook below sees.
+    crypto: "constants webcrypto subtle getRandomValues",
+    perf_hooks: "performance constants", http: "METHODS STATUS_CODES globalAgent maxHeaderSize", https: "globalAgent",
+    http2: "constants sensitiveHeaders", dns: "promises", vm: "constants", timers: "promises", readline: "promises",
+    tls: "rootCertificates", async_hooks: "asyncWrapProviders",
+    worker_threads: "isMainThread isInternalThread threadId workerData parentPort resourceLimits SHARE_ENV",
+  };
+  // The modules whose classes are sources themselves: a context of its own
+  // globals, a stream on a descriptor, a thread, a debugger.
+  const sourceClasses = new Set(["vm", "tty", "worker_threads", "child_process", "inspector", "inspector/promises", "repl", "cluster", "trace_events", "v8", "readline", "readline/promises"]);
   // Synchronous reads of the module's own package (its files are boot
   // guards, by size and mtime) are guarded inputs, not inputs.
   const fsModule = require("node:fs");
@@ -472,17 +950,76 @@ exports.probe = function probe(input) {
     undo.push(() => { fsModule[key] = original; });
   }
   const guardedFsFns = new Set(["readFileSync", "existsSync", "statSync", "lstatSync", "readdirSync", "realpathSync", "accessSync", "readlinkSync", "openSync", "readSync", "fstatSync", "closeSync"]);
+  // The builtins by name, for a load that asks for one.
+  const builtinById = new Map([["process", process]]);
   for (const [name, list] of Object.entries(whole)) {
     let m;
     try { m = require(name); } catch { continue; }
-    for (const key of Object.keys(m)) {
+    builtinById.set(name, m);
+    const data = new Set((pureData[name] || "").split(" "));
+    for (const key of Object.getOwnPropertyNames(m)) {
       if (name === "fs" && guardedFsFns.has(key)) continue;
-      if (pureFns.has(name + "." + key) || key === "promises" || /^[A-Z]/.test(key) && name !== "worker_threads" && name !== "child_process") continue;
-      wrapFn(m, key, list, name + "." + key + "()");
+      if (pureFns.has(name + "." + key)) continue;
+      let d;
+      try { d = Object.getOwnPropertyDescriptor(m, key); } catch { continue; }
+      if (d === undefined) continue;
+      const constant = /^[A-Z][A-Z0-9_]*$/.test(key);
+      const fn = "value" in d && typeof d.value === "function";
+      // A class (Node makes some on first use, behind an accessor) is a
+      // source where what it makes is one; elsewhere it computes, or the
+      // async hook below sees the handle it opens.
+      if (/^[A-Z]/.test(key) && !constant && (fn || !("value" in d)) && !sourceClasses.has(name)) continue;
+      if (fn) wrapFn(m, key, list, name + "." + key + "()");
+      // A member this platform does not have (fs.lchmod) is absent in every run.
+      else if ("value" in d && d.value === undefined) continue;
+      else if (!data.has(key) && !constant) unclassified(m, key, name + "." + key);
     }
     if (name === "fs" && m.promises)
       for (const key of Object.keys(m.promises)) wrapFn(m.promises, key, inputs, "fs.promises." + key + "()");
   }
+  const knownModules = new Set([...Object.keys(whole), ...pureModules, "fs/promises"]);
+  function builtinLoaded(id, where) {
+    if (!knownModules.has(id)) inputs.push("the builtin module " + id + NOT + " (" + where + ")");
+  }
+  // The names an ES module imports from a specifier ("*": its namespace).
+  const importedNames = (source, specifier) => {
+    const names = new Set();
+    const quoted = specifier.replace(/[^A-Za-z0-9_:\/-]/g, "\\$&");
+    const statement = new RegExp("\\b(?:import|export)\\b([^;\"']*?)\\bfrom\\s*[\"']" + quoted + "[\"']", "g");
+    for (let m = statement.exec(source); m !== null; m = statement.exec(source)) {
+      if (m[1].includes("*")) names.add("*");
+      const braces = /\{([^}]*)\}/.exec(m[1]);
+      if (braces === null) continue;
+      for (const part of braces[1].split(",")) {
+        const name = part.trim().split(/\s+as\s+/)[0].trim();
+        if (name !== "") names.add(name);
+      }
+    }
+    return names;
+  };
+  // An ES module that imports a builtin's member by name gets a copy of its
+  // value, which no accessor here sees being read: the import is the read.
+  const builtinImported = (id, specifier, parent) => {
+    builtinLoaded(id, parent === null ? "its load" : parent);
+    const target = builtinById.get(id);
+    const keys = target === undefined ? undefined : trapped.get(target);
+    if (parent === null || keys === undefined) return;
+    let source = "";
+    try { source = rawReadFile(parent, "utf8"); } catch {}
+    const names = importedNames(source, specifier);
+    if (names.size === 0) return;
+    forcedCaller = parent;
+    try {
+      internalCaller();
+      for (const k of names.has("*") ? keys : names) {
+        if (!keys.has(k)) continue;
+        // The streams' accessor answers Node's own code with the stream itself.
+        if (target === process && (k === "stdin" || k === "stdout" || k === "stderr"))
+          add(inputs, "process." + k + " imported by name" + NOT);
+        else void target[k];
+      }
+    } finally { forcedCaller = null; }
+  };
   wrapFn(require("worker_threads"), "Worker", effects, "new Worker()");
   // Async resources the load creates. A promise alone is no work (an async
   // function that returns at once creates one); a reaction to a promise
@@ -496,8 +1033,14 @@ exports.probe = function probe(input) {
   };
   const hook = asyncHooks.createHook({
     init(id, type, trigger, resource) {
-      // Timers and immediates are the timer wrappers' to account for.
-      if (type === "Timeout" || type === "Immediate" || !recording) return;
+      if (!recording) return;
+      // Timers and immediates are the timer wrappers' to account for, except
+      // one Node set for the module by another way (AbortSignal.timeout(),
+      // timers/promises).
+      if (type === "Timeout" || type === "Immediate") {
+        if (ownTimer === 0 && !internalCaller()) effects.push("a timer (" + lastCaller + ")");
+        return;
+      }
       if (type === "PROMISE") {
         if (loadPromises.has(trigger)) {
           internalCaller();
@@ -526,6 +1069,8 @@ exports.probe = function probe(input) {
   const hooks = Module.registerHooks({
     resolve(specifier, context, nextResolve) {
       const result = nextResolve(specifier, context);
+      if (recording && typeof result.url === "string" && result.url.startsWith("node:"))
+        builtinImported(result.url.slice(5), specifier, parentFile(context));
       if (recording && typeof result.url === "string" && result.url.startsWith("file:")) {
         const file = require("node:url").fileURLToPath(result.url);
         if (!/[\\/]node_modules[\\/]/.test(file) && !own.has(file)) {
@@ -552,6 +1097,10 @@ exports.probe = function probe(input) {
     },
   });
   undo.push(() => hooks.deregister());
+  // The ES module namespaces of the builtins copy their members: from here
+  // on, the functions as wrapped above.
+  try { Module.syncBuiltinESMExports(); } catch {}
+  undo.push(() => { try { Module.syncBuiltinESMExports(); } catch {} });
   const watched = [
     ["globalThis", globalThis], ["Object", Object], ["Object.prototype", Object.prototype],
     ["Function.prototype", Function.prototype], ["Array", Array], ["Array.prototype", Array.prototype],
@@ -629,7 +1178,7 @@ exports.probe = function probe(input) {
     pendingTimers.clear();
     loadPromises.clear();
     madePromises.length = 0;
-    tty.clear(); envKeys.clear(); files.clear();
+    tty.clear(); envKeys.clear(); files.clear(); fired.clear();
     refused = null;
     withholding = own.has(path);
     withheld = null;
@@ -703,6 +1252,18 @@ exports.probe = function probe(input) {
       const m = /^globalThis\.Symbol\((undici\.globalDispatcher\.\d+)\)$/.exec(mutations[i]);
       if (m !== null && !names("undici.globalDispatcher")) mutations.splice(i, 1);
     }
+    // A member the recorder cannot observe: read, if a file of the load
+    // names it as a member or takes it out of an object.
+    if (untrappable.length > 0) {
+      const member = untrappable.map((u) => new RegExp("(?:[.]\\s*|[{,]\\s*)" + u.key + "\\s*(?:[,}=;)\\]\\s]|$)"));
+      const named = new Set();
+      for (const f of files) {
+        let text;
+        try { text = rawReadFile(f, "utf8"); } catch { continue; }
+        untrappable.forEach((u, i) => { if (member[i].test(text)) named.add(u.label); });
+      }
+      for (const label of named) inputs.push(label + ", which the recorder cannot observe and the load's files name");
+    }
     const record = {
       path,
       inputs: [...new Set(inputs)],
@@ -741,6 +1302,6 @@ exports.probe = function probe(input) {
     results.push(record);
   }
   for (const u of undo.reverse()) u();
-  return { results, objects };
+  return { results, objects, untrappable: untrappable.map((u) => u.label) };
 };
 `;

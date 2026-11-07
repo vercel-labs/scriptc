@@ -293,17 +293,22 @@ describe("modules that share a file", () => {
     expect(decisions[1]!.reason).toContain("process.cwd()");
   });
 
-  test("only the load that read the clock snapshots, and without constants", () => {
-    // The load whose own record names the clock defers with no constants.
-    // The other stays eager: a snapshot without constants still keeps the
-    // build's object flags and object links ("the effects of a file that
-    // modules share", below).
-    const { decisions, calls, snapshots } = sharingProject({ volatile: ["Date.now()"] });
-    expect(calls.map((c) => c.fn)).toEqual(["nodeIsland.defer", "nodeIsland.require"]);
-    expect(decisions.find((d) => !d.deferred)!.reason).toContain(
-      "a load it shares a file with reads Date.now()",
-    );
-    expect(snapshots[0]).not.toContain("4:info");
+  test("neither snapshots when the shared file read the clock", () => {
+    // Until the recorder's rule for ambient reads, the load whose own record
+    // named the clock deferred with no constants and only the other stayed
+    // eager. That was wrong for the first as well, for three reasons. A load
+    // evaluated when Node starts reads the clock after the program's own
+    // readings that followed its import, where Node read it before them. A
+    // snapshot without constants still keeps the build's object flags and
+    // object links, which answer `typeof` and hand out members from the
+    // build's reading ("the effects of a file that modules share", below,
+    // said so of the other load). And what the load left in shared state is
+    // in the constants of the loads probed after it.
+    const { decisions, calls, text } = sharingProject({ volatile: ["Date.now()"] });
+    expect(calls.map((c) => c.fn)).toEqual(["nodeIsland.require", "nodeIsland.require"]);
+    expect(decisions[0]!.reason).toContain("its load reads Date.now()");
+    expect(decisions[1]!.reason).toContain("a load it shares a file with reads Date.now()");
+    expect(text).not.toContain("4:info");
   });
 });
 
@@ -392,22 +397,32 @@ describe("the effects of a file that modules share", () => {
     expect(decisions[1]!.reason).toContain("a load it shares a file with reads process.argv");
   });
 
-  test("a module that shares a file whose load read the clock does not defer", () => {
+  test("a load that read the clock does not defer, nor does a module that shares its file", () => {
     // A snapshot written without constants still keeps the object's flags and
     // its object links, and those answer `typeof` without evaluating the
-    // module: an export's type can come from the read as its value can.
+    // module: an export's type can come from the read as its value can. That
+    // holds for the load that read the clock as it does for the one that
+    // shares its file, and the reader has one more reason: evaluated when
+    // Node starts, it would read the clock after the program's own readings
+    // that followed its import.
     const { decisions, calls } = sharing({ volatile: ["Date.now()"] });
-    expect(decisions.map((d) => d.deferred)).toEqual([false, true]);
-    expect(decisions[0]!.reason).toContain("a load it shares a file with reads Date.now()");
-    // The module whose own load read the clock keeps its rule: no constants.
-    expect(decisions[1]!.reason).toContain("volatile Date.now(): no constants");
-    expect(calls.map((c) => c.fn)).toEqual(["nodeIsland.defer", "nodeIsland.require"]);
+    expect(decisions.map((d) => d.deferred)).toEqual([false, false]);
+    expect(decisions[0]!.reason).toContain("its load reads Date.now()");
+    expect(decisions[0]!.reason).toContain("no run repeats the reading");
+    expect(decisions[1]!.reason).toContain("a load it shares a file with reads Date.now()");
+    expect(calls.map((c) => c.fn)).toEqual(["nodeIsland.require", "nodeIsland.require"]);
 
     // The same when the probe reached the other module first.
     const other = sharing({ volatile: ["Date.now()"] }, true, "second");
-    expect(other.decisions.map((d) => d.deferred)).toEqual([false, true]);
+    expect(other.decisions.map((d) => d.deferred)).toEqual([false, false]);
     expect(other.decisions[0]!.reason).toContain("a load it shares a file with reads Date.now()");
-    expect(other.calls.map((c) => c.fn)).toEqual(["nodeIsland.require", "nodeIsland.defer"]);
+    expect(other.decisions[1]!.reason).toContain("its load reads Date.now()");
+    expect(other.calls.map((c) => c.fn)).toEqual(["nodeIsland.require", "nodeIsland.require"]);
+
+    // A module that shares nothing with it still defers, with its constants.
+    const apart = sharing({ volatile: ["Math.random()"] }, false);
+    expect(apart.decisions.map((d) => d.deferred)).toEqual([false, true]);
+    expect(apart.snapshots[1]).toContain("5:three");
   });
 
   test("a module that shares nothing with such a load still defers", () => {
@@ -1200,17 +1215,17 @@ describe("generated island modules (closed-island-init.ts)", () => {
     expect(snapshot(second)).toMatch(/^P 2 \d+$/m);
   });
 
-  test("a statement that read the clock stays where it stands; a constant that did still waits", () => {
-    // A constant that fails when it finally evaluates raises its error
-    // where its value is used. A statement has no value: its evaluation
-    // must be the probe's, and one that read the clock is not.
+  test("a statement that read the clock stays where it stands, and so does a constant that did", () => {
+    // A statement has no value at whose use a late failure could be raised,
+    // and a constant's value read late is read after the program's own
+    // readings: neither evaluation is the probe's.
     const { decisions } = generatedProject({ statement: true, volatile: ["Date.now()"] });
     const constant = decisions.find((d) => d.path.endsWith("main.0000000000.0.mjs"))!;
     const statement = decisions.find((d) => d.path.endsWith("main.0000000000.1.mjs"))!;
-    expect(constant.deferred).toBe(true);
-    expect(constant.reason).toContain("volatile Date.now(): no constants");
+    expect(constant.deferred).toBe(false);
+    expect(constant.reason).toContain("its load reads Date.now()");
     expect(statement.deferred).toBe(false);
-    expect(statement.reason).toContain("its evaluation reads Date.now()");
+    expect(statement.reason).toContain("its load reads Date.now()");
     // The package they both name read nothing: its import still waits.
     expect(decisions.find((d) => d.path.endsWith("dep/index.js"))!.deferred).toBe(true);
   });

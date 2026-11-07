@@ -8,7 +8,8 @@
  *
  *   - the package's `evaluate` setting (`scriptc.packages.<name>`):
  *     "eager" keeps the module eager; "lazy" defers it whatever else its
- *     load does (the user judged the effects benign);
+ *     load does (the user judged the effects benign, and what the load read
+ *     of the machine: its snapshot then holds no constants);
  *   - environment reads: the boot guards record every environment
  *     variable the load read. One that was unset at build time is recorded
  *     as unset (`E <key> 0`): the executable learns that the variable was
@@ -25,11 +26,16 @@
  *     from the same pack, which loads every candidate module under the
  *     load recorder (probe-recorder.ts) and takes the interface snapshot of
  *     each module's value. "auto" (the default) defers a module whose
- *     recorded load threw nothing, had no effects and read no run-time
- *     input other than public env keys and stdio TTY state, which become
- *     boot guards (the determinism argument in probe-recorder.ts). The static
- *     effect gate (effect-gate.ts) is reported alongside, as the tier that
- *     needs no recording;
+ *     recorded load threw nothing, had no effects and read nothing of the
+ *     machine or the moment other than public env keys and stdio TTY state,
+ *     which become boot guards (the determinism argument in
+ *     probe-recorder.ts). A load that read anything else stays eager: an
+ *     input no guard covers (the arguments, the working directory, a time
+ *     zone not named by TZ), a reading no run repeats (a clock, a random
+ *     number, the process id), or a source the recorder does not classify,
+ *     which the trace names with the place that read it. The static effect
+ *     gate (effect-gate.ts) is reported alongside, as the tier that needs no
+ *     recording;
  *   - when it evaluates: every deferred module evaluates when Node
  *     starts, in import order, before the operation that needed Node. No
  *     island code other than deferred loads runs before a deferred load,
@@ -503,15 +509,11 @@ export function finalizeDeferredIslands(
   const tree = mod.nodeIsland?.modules;
   // Modules the build wrote (generated.ts), by their place under the tree
   // root: the constants of the program whose initializers the island
-  // evaluates, and its statements the island evaluates. A statement's
-  // module exports nothing.
+  // evaluates, and its statements the island evaluates.
   const generated = new Set<string>();
-  const statements = new Set<string>();
   for (const file of tree?.files ?? []) {
     if (file.generated === undefined) continue;
-    const place = join(tree!.root, ...file.path.split("/"));
-    generated.add(place);
-    if (!/^export /m.test(file.generated)) statements.add(place);
+    generated.add(join(tree!.root, ...file.path.split("/")));
   }
   // Modules of the program the static gate admits (below).
   const program = new Set<string>();
@@ -661,19 +663,18 @@ export function finalizeDeferredIslands(
         own.length > 0 ? "its load" : "a load it shares a file with";
       if (effects.length > 0) return `${whose(result.effects)} has effects: ${effects.join(", ")}`;
       if (inputs.length > 0) return `${whose(result.inputs)} reads ${inputs.join(", ")}`;
-      // A statement evaluated when Node starts has to end as the probe's
-      // evaluation did: a constant that fails then raises its error where
-      // its value is used, and a statement has no value to be used. One
-      // that read the clock or random numbers can end differently.
-      if (statements.has(c.path) && result.volatile.length > 0)
-        return `its evaluation reads ${result.volatile.join(", ")}: a statement evaluated later could end differently, and nothing reads how it ended`;
-      // A snapshot written without constants keeps an object's flags and its
-      // object links, and those answer `typeof` without evaluating a module.
-      // An export's type can come from the read as its value can, so a load
-      // that read the clock or a random source does not let the other loads
-      // of its files keep theirs.
-      if (volatile.length > 0 && result.volatile.length === 0)
-        return `${whose(result.volatile)} reads ${volatile.join(", ")}: its snapshot would keep the build's object flags and object links`;
+      // A reading no run repeats (a clock, a random number, the process id)
+      // has no boot guard, and leaving the constants out of the snapshot is
+      // not enough to wait with the load. A clock read late comes after the
+      // program's own readings that followed the import. A snapshot without
+      // constants still keeps an object's flags and its object links, which
+      // answer `typeof` and hand out members without evaluating a module, and
+      // which members are objects can come from the reading as a value can.
+      // And what the load left in shared state from the build's reading is in
+      // the constants of the loads probed after it. So the load, and every
+      // load that shares a file with it, evaluates where it is imported.
+      if (volatile.length > 0)
+        return `${whose(result.volatile)} reads ${volatile.join(", ")}: no run repeats the reading, and a load evaluated later would take it after the program's own`;
       return null;
     })();
     if (why !== null || result === undefined) {
@@ -691,7 +692,7 @@ export function finalizeDeferredIslands(
   }
   for (const d of deferred) {
     const r = d.result;
-    const { env, tty, volatile } = reads.get(r)!;
+    const { env, tty, volatile, inputs } = reads.get(r)!;
     const guards = [
       ...packGuards,
       ...fileGuardLines(r.files.filter((f) => !shipped.has(f))),
@@ -704,7 +705,14 @@ export function finalizeDeferredIslands(
       // at its position.
       ...(own(fileOf(mod, pathOf(d.call))) ? [before.get(pathOf(d.call))!] : []),
     ];
-    const text = encodeSnapshot(probe, r.root!, guards, volatile.length === 0);
+    // Only "lazy" defers a load that read something no guard covers: the
+    // build's reading stays out of the executable.
+    const text = encodeSnapshot(
+      probe,
+      r.root!,
+      guards,
+      volatile.length === 0 && inputs.length === 0,
+    );
     const arg = d.call.args[1];
     if (arg !== undefined && arg.kind === "strLit") (arg as { value: string }).value = text;
     const notes = [
@@ -713,6 +721,7 @@ export function finalizeDeferredIslands(
         ? [`env guards ${env.map(([k, v]) => (v === null ? `${k} (unset)` : k)).join(",")}`]
         : []),
       ...(volatile.length > 0 ? [`volatile ${volatile.join(",")}: no constants`] : []),
+      ...(inputs.length > 0 ? [`reads ${inputs.join(",")}: no constants`] : []),
       ...(r.mutations.length > 0 ? [`mutates ${r.mutations.join(",")}`] : []),
       "evaluated when Node starts",
     ];
@@ -807,6 +816,10 @@ export interface ProbeResult {
 export interface ProbeOutput {
   results: ProbeResult[];
   objects: Record<string, ProbeObject>;
+  /** Sources the recorder has a rule for and cannot observe in this Node
+   * (members Node makes not configurable). A load whose files name one is
+   * recorded as having read it. */
+  untrappable?: string[];
 }
 
 function encodeValue(v: ProbeValue): string | null {
@@ -819,17 +832,28 @@ function encodeValue(v: ProbeValue): string | null {
   return null;
 }
 
-/** Whether a string the snapshot holds names a path under `dir`. The
- * probe loads the modules from the build machine, and the program from the
- * module tree it ships, so such a value would not be the one the program
- * sees (a module's own `__dirname`, say). */
+/** Whether a string the snapshot holds names a path of the build machine:
+ * one under `dir`, or one of the directories above it. The probe loads the
+ * modules from the build machine, and the program from the module tree it
+ * ships, so such a value would not be the one the program sees (a module's
+ * own `__dirname`, say). The directories above come to a module as the
+ * loader's lookup paths (`module.paths`, `require.resolve.paths()`:
+ * `<above>/node_modules`), and from its own path arithmetic; a string that
+ * only mentions a top-level directory (`/tmp/...`) is not taken for one. */
 function snapshotNames(probe: ProbeOutput, root: number, dir: string): boolean {
+  const above: string[] = [];
+  for (let d = dirname(dir); d !== dirname(d); d = dirname(d)) above.push(d);
+  const deep = above.filter((d) => d.split(/[\\/]/).filter((part) => part !== "").length >= 2);
+  const names = (s: string): boolean =>
+    s.includes(dir) ||
+    above.some((d) => s.includes(join(d, "node_modules"))) ||
+    deep.some((d) => s === d || s.startsWith(join(d, "x").slice(0, -1)));
   const seen = new Set<number>();
   const visit = (oid: number): boolean => {
     if (seen.has(oid) || probe.objects[oid] === undefined) return false;
     seen.add(oid);
     for (const [, v] of probe.objects[oid]!.m) {
-      if ("s" in v && v.s.includes(dir)) return true;
+      if ("s" in v && names(v.s)) return true;
       if ("o" in v && visit(v.o)) return true;
     }
     return false;

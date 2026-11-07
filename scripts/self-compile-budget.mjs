@@ -29,6 +29,14 @@
  *                               share of source bytes, for the change that sets it (the gate's
  *                               paired check; seconds are not budgeted, since the same build
  *                               differs by a third between two hosts of one machine type).
+ *   outputGrowthAllowance       Percent the compiler's own LLVM may grow beyond its share of
+ *                               source bytes, for the change that sets it: the gate compares the
+ *                               candidate's compiler source with the baseline's, both built by
+ *                               the candidate, by LLVM bytes, by functions and by the functions
+ *                               of the dynamic tier. The three are exact for a source, so the
+ *                               bound is tight. One untyped view of a compiler type is enough
+ *                               to move them: #2878 added 6.4% of the compiler's functions with
+ *                               0.2% more source, and nothing reported it for five days.
  *
  * Why the live heap is the number to watch: lowering holds the whole lowered program, so the heap
  * follows the program's size (about 5 MB live per MB of LLVM emitted), and the compiler is the
@@ -37,7 +45,17 @@
  * Every entry is { value, reason }. A change that moves a value states why in its reason: the gate
  * fails a value that differs from the baseline checkout's with an unchanged reason. */
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  readSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -68,6 +86,22 @@ export const HEAP_PROBE_FLAGS = [
  * other 22; in the 678, one pair in 700 read above 1.10, which is what the repeat is for. The
  * same build's seconds, by contrast, differed by a median 35% between the four hosts of a round. */
 export const SOURCE_COST_TOLERANCE = 0.1;
+
+/** How far the compiler's own LLVM may grow beyond the growth of its source in one change: its
+ * bytes and its functions. Both are exact for a source and a compiler. Between 102 pairs of
+ * commits of main from 2026-10-26 to 2026-11-07 (ten commits apart, 36 of them adjacent), the
+ * functions grew beyond the source by -0.02% at the median, 0.51% at the 95th percentile and
+ * 0.79% at most, and the bytes by 0.54% at the 95th percentile, except for #2878 (6.36% and
+ * 2.49% in one commit, an untyped view that made the Lowerer a dynamic value) and #3190 (the
+ * LLVM doubled, the same way). */
+export const OUTPUT_GROWTH_TOLERANCE = 0.01;
+/** How far the dynamic tier's functions in the compiler's own LLVM may grow in one change, and
+ * the count below which a change in them is not judged. The compiler is typed code: these are
+ * the converters, matchers, function boxes and keyed class helpers of the places where it
+ * handles untyped data (JSON, a package manifest), and they move when a compiler type becomes
+ * reachable from one. #2878 added 52% of them. */
+export const DYNAMIC_TIER_GROWTH_TOLERANCE = 0.05;
+export const DYNAMIC_TIER_GROWTH_FLOOR = 100;
 
 /** The budget of the checkout at `root`, or null when it has none. */
 export function readBudget(root) {
@@ -185,6 +219,15 @@ export function budgetVerdict({ budget, previous = null, trace, bytes }) {
   )
     failures.push(`self-compile budget: sourceCostAllowance needs a reason (${BUDGET_FILE})`);
 
+  const growth = budget.outputGrowthAllowance;
+  if (
+    growth !== undefined &&
+    growth.value > 0 &&
+    !same(growth, previous?.outputGrowthAllowance) &&
+    (typeof growth.reason !== "string" || growth.reason.trim() === "")
+  )
+    failures.push(`self-compile budget: outputGrowthAllowance needs a reason (${BUDGET_FILE})`);
+
   const budgetPasses = budget.loweringPasses?.value;
   if (trace.passes.length === 0)
     lines.push("lowering passes: none reported (the build printed no SCRIPTC_TIMING lines)");
@@ -253,6 +296,112 @@ export function sourceCostAllowance(budget, previous) {
   const entry = budget?.sourceCostAllowance;
   if (entry === undefined || same(entry, previous?.sourceCostAllowance)) return 0;
   return typeof entry.value === "number" && entry.value > 0 ? entry.value / 100 : 0;
+}
+
+/** The output-growth allowance a change grants itself, as sourceCostAllowance does for time. */
+export function outputGrowthAllowance(budget, previous) {
+  const entry = budget?.outputGrowthAllowance;
+  if (entry === undefined || same(entry, previous?.outputGrowthAllowance)) return 0;
+  return typeof entry.value === "number" && entry.value > 0 ? entry.value / 100 : 0;
+}
+
+/** A function of the dynamic tier, by the name the emitter gives it: a converter between a typed
+ * value and a dynamic one (sc_dc_, sc_dm_, sc_td_), a function box or thunk (sc_dfb_, sc_dfk_,
+ * sc_dfa_, sc_dfu_), a live reference adapter (sc_ldr_, sc_ldu_), or a lifted `%dyn.` helper
+ * such as the keyed tables of a class whose instances can be dynamic values. */
+const DYNAMIC_TIER_FUNCTION = /^"?(?:sc_(?:dc|dm|td|dfb|dfk|dfa|dfu|ldr|ldu)_\d|sc_b?f__x25_dyn_)/;
+
+/** What an LLVM text says about its size: its bytes, the functions it defines, and how many of
+ * them belong to the dynamic tier. Reads the file in pieces: the compiler's own is a gigabyte. */
+export function llvmFacts(file) {
+  const fd = openSync(file, "r");
+  const buffer = Buffer.allocUnsafe(1 << 22);
+  let bytes = 0;
+  let functions = 0;
+  let dynamicTier = 0;
+  let rest = "";
+  const line = (text) => {
+    if (!text.startsWith("define ")) return;
+    functions++;
+    const at = text.indexOf("@");
+    if (at >= 0 && DYNAMIC_TIER_FUNCTION.test(text.slice(at + 1, at + 64))) dynamicTier++;
+  };
+  try {
+    for (;;) {
+      const read = readSync(fd, buffer, 0, buffer.length, null);
+      if (read === 0) break;
+      bytes += read;
+      // Function names are ASCII, and a multi-byte character cut by a piece's end can only
+      // sit inside a line that is not a definition's first 64 characters.
+      const text = rest + buffer.latin1Slice(0, read);
+      let from = 0;
+      for (;;) {
+        const end = text.indexOf("\n", from);
+        if (end < 0) break;
+        line(text.slice(from, Math.min(end, from + 512)));
+        from = end + 1;
+      }
+      rest = text.slice(from);
+    }
+    if (rest !== "") line(rest);
+  } finally {
+    closeSync(fd);
+  }
+  return { bytes, functions, dynamicTier };
+}
+
+/** Judge how the compiler's own LLVM grew with a change. `candidate` and `baseline` are
+ * llvmFacts of the candidate's and the baseline's compiler source, both built by the candidate
+ * compiler; `sourceRatio` is the candidate's source bytes over the baseline's. */
+export function outputGrowthVerdict({ candidate, baseline, sourceRatio, allowance = 0 }) {
+  const lines = [];
+  const failures = [];
+  const allowed = 1 + OUTPUT_GROWTH_TOLERANCE + allowance;
+  const measures = [
+    ["LLVM bytes", candidate.bytes, baseline.bytes],
+    ["functions", candidate.functions, baseline.functions],
+  ];
+  let worst = 1;
+  for (const [what, now, before] of measures) {
+    const excess = now / before / sourceRatio;
+    worst = Math.max(worst, excess);
+    lines.push(
+      `its own source compiles to ${now} ${what}, ${percent(now / before)} over the baseline's source ` +
+        `(${percent(sourceRatio)} source bytes): ${excess > allowed ? "OVER" : "within"} the ` +
+        `${((allowed - 1) * 100).toFixed(0)}% tolerance`,
+    );
+    if (excess > allowed)
+      failures.push(
+        `self-compile budget: the candidate's compiler source compiles to ${percent(now / before)} more ${what} than ` +
+          `the baseline's (${before} to ${now}) for ${percent(sourceRatio)} more source. A change this size adds its ` +
+          `share; several times that usually means a compiler type became a dynamic value (an \`any\` or ` +
+          `Record<string, unknown> view of it, a class instance passed where a record type with other members ` +
+          `is expected). \`scriptc coverage ${SELF_ENTRY} --explain-dynamic\` on both checkouts lists the ` +
+          `functions that became dynamic. To accept it, set outputGrowthAllowance to ` +
+          `{ "value": ${Math.ceil((excess - 1 - OUTPUT_GROWTH_TOLERANCE) * 100) + 1}, "reason": "<why>" } in ${BUDGET_FILE}`,
+      );
+  }
+  const grown = candidate.dynamicTier - baseline.dynamicTier;
+  const dynamicAllowed = 1 + DYNAMIC_TIER_GROWTH_TOLERANCE + allowance;
+  const dynamicOver =
+    grown > DYNAMIC_TIER_GROWTH_FLOOR &&
+    candidate.dynamicTier / Math.max(1, baseline.dynamicTier) > dynamicAllowed;
+  lines.push(
+    `${candidate.dynamicTier} of its functions belong to the dynamic tier (${grown >= 0 ? "+" : ""}${grown} against the ` +
+      `baseline's source): ${dynamicOver ? "OVER" : "within"} the ${((dynamicAllowed - 1) * 100).toFixed(0)}% tolerance`,
+  );
+  if (dynamicOver) {
+    const ratio = candidate.dynamicTier / Math.max(1, baseline.dynamicTier);
+    worst = Math.max(worst, ratio);
+    failures.push(
+      `self-compile budget: the dynamic tier of the compiler's own build grew from ${baseline.dynamicTier} to ` +
+        `${candidate.dynamicTier} functions (${percent(ratio)}). The compiler handles untyped data in a few places; ` +
+        `this many new converters and keyed helpers mean one of its own types now reaches them. ` +
+        `\`scriptc coverage ${SELF_ENTRY} --explain-dynamic\` on both checkouts lists what became dynamic. ` +
+        `To accept it, set outputGrowthAllowance to { "value": ${Math.ceil((ratio - 1 - DYNAMIC_TIER_GROWTH_TOLERANCE) * 100) + 1}, "reason": "<why>" } in ${BUDGET_FILE}`,
+    );
+  }
+  return { lines, failures, worst };
 }
 
 /** Whether a gate run holds the candidate's own compile to the budget: every run whose set has

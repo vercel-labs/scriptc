@@ -23,6 +23,7 @@
  */
 #include "scr_runtime.h"
 #include "scr_key.h"
+#include "scr_record_source_private.h"
 
 /* The JavaScript object model build asks scr_dyn_handle_props.c about a
  * runtime handle's own properties (a Date, RegExp, Map, Set, buffer or
@@ -4166,29 +4167,6 @@ ScrDyn *scr_dyn_new_buffer(const ScrBytes *b) {
  * view: every capsule for the record adopts it, so properties written
  * through untyped references persist after the capsule is gone, and the
  * typed serializers of such a record go through its capsule. */
-typedef struct {
-  void *rec;
-  ScrDyn *view;
-  /* The shape's declared names in declaration order, as static strided
-   * tables: the compiler's name/length arrays, or a JSON schema's fields. */
-  const char *names;
-  const char *lens;
-  size_t name_stride, len_stride, count;
-  /* A record view (scr_dyn_record_view) has an entry with no view and
-   * this: the capsule of the record it views (+1). Boxing the view answers
-   * that capsule (scr_dyn_typed_ref_new), and the view type's reflective
-   * surfaces go through it (scr_record_source_has). NULL for an ordinary
-   * source. */
-  ScrDyn *capsule;
-  /* A view's record (borrowed: the capsule holds it) and its byte offsets
-   * for the view type's fields. */
-  void *viewed;
-  const size_t *offsets;
-  /* The view holds properties a partial view's writes added, in the order
-   * the writes happened; reflection and serialization answer them after the
-   * record's own keys. */
-  bool extras;
-} ScrRecordSource;
 static SCR_TL ScrRecordSource *scr_record_sources;
 static SCR_TL size_t scr_record_source_capacity, scr_record_source_count;
 /* Deleted slots keep this marker so probe runs stay intact without moving
@@ -4240,6 +4218,12 @@ static ScrDyn *scr_record_view_capsule(const void *rec) {
   ScrRecordSource *entry = scr_record_source_slot(rec);
   return entry ? entry->capsule : NULL;
 }
+
+/* The table entry of `rec`, a record view's entry included, or NULL: the
+ * way in for the gated units that add table operations
+ * (scr_record_source_private.h). This file's own lookups keep the static
+ * one. */
+ScrRecordSource *scr_record_source_entry(const void *rec) { return scr_record_source_slot(rec); }
 
 static void scr_record_view_forget(ScrDyn *capsule, const void *view);
 
@@ -4330,25 +4314,6 @@ static void scr_record_source_reserve(void) {
   }
   scr_record_source_deleted = 0;
   free(old);
-}
-
-/* The key's position in the shape's declaration order, or count. */
-static size_t scr_record_source_index(const ScrRecordSource *source, const char *key,
-                                      size_t key_len) {
-  for (size_t i = 0; i < source->count; i++) {
-    size_t len;
-    memcpy(&len, source->lens + i * source->len_stride, sizeof len);
-    if (len != key_len) continue;
-    const char *name;
-    memcpy(&name, source->names + i * source->name_stride, sizeof name);
-    if (memcmp(name, key, key_len) == 0) return i;
-  }
-  return source->count;
-}
-
-static bool scr_record_source_declared(const ScrRecordSource *source, const char *key,
-                                       size_t key_len) {
-  return scr_record_source_index(source, key, key_len) < source->count;
 }
 
 /* The source an entry keeps its properties in: its own for a record, the

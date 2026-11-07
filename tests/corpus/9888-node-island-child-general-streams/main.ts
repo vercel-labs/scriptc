@@ -17,7 +17,8 @@ async function main(): Promise<void> {
   const echo: ChildProcess = lib.start("while read line; do echo \"got $line\"; done; echo eof >&2");
   const replies: string[] = [];
   let buffered = "";
-  echo.stdin?.on("error", (error) => console.log("stdin error", error.message));
+  const input = echo.stdin!;
+  input.on("error", (error) => console.log("stdin error", error.message));
   echo.stdout?.on("error", (error) => console.log("stdout error", error.message));
   echo.stdout?.on("data", (chunk: Buffer) => {
     buffered += chunk.toString();
@@ -27,8 +28,8 @@ async function main(): Promise<void> {
       buffered = buffered.slice(at + 1);
       at = buffered.indexOf("\n");
     }
-    if (replies.length === 1) echo.stdin?.write("two\n", (error) => console.log("second write done", error == null));
-    if (replies.length === 2) echo.stdin?.end("three\n");
+    if (replies.length === 1) input.write("two\n", (error) => console.log("second write done", error == null));
+    if (replies.length === 2) input.end("three\n");
   });
   const errors = new PassThrough();
   let stderrText = "";
@@ -36,7 +37,7 @@ async function main(): Promise<void> {
     stderrText += chunk.toString();
   });
   echo.stderr?.pipe(errors);
-  echo.stdin?.write("one\n");
+  input.write("one\n");
   console.log("close", await closed(echo), JSON.stringify(replies), JSON.stringify(stderrText));
 
   // Async iteration over stdout.

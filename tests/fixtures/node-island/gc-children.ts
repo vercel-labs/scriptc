@@ -38,6 +38,14 @@ async function main(): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 10));
   kept.stdin?.end();
   await new Promise<void>((resolve) => kept.on("close", () => resolve()));
+  // Full collections with turns between them: Node lets go of a child a few turns after its
+  // 'close', a collection then frees the island's child object with its listener functions, and
+  // the next one what those held.
+  for (let pass = 0; pass < 3; pass++) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    lib.collect();
+  }
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
   console.log("closed", closed, "bytes", bytes, "codes", codes, "kept", kept.exitCode);
 }
 main();

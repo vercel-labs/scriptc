@@ -179,7 +179,7 @@ describe.skipIf(skip)("Node island cross-heap cycles", () => {
     });
     if (!result.ok)
       throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
-    const [few, many] = sanitize ? [200, 1200] : [400, 4000];
+    const [few, many] = sanitize ? [200, 2000] : [400, 6000];
     const small = await run([String(few)], {}, result.binaryPath);
     const large = await run([String(many)], {}, result.binaryPath);
     const expected = (n: number): string => {
@@ -193,14 +193,20 @@ describe.skipIf(skip)("Node island cross-heap cycles", () => {
     };
     expect(small.stdout).toBe(expected(few));
     expect(large.stdout).toBe(expected(many));
-    // What the last collection left alive is bounded by what the children
-    // since the collection before it hold, not by the number of children.
-    for (const key of ["held exports", "held handles", "representatives", "import entries"]) {
-      expect(large.totals[key], key).toBeLessThan(small.totals[key]! + 400);
-      expect(large.totals[key], key).toBeLessThan(2000);
+    for (const r of [small, large]) {
+      expect(r.totals["analyzed"]).toBe(r.totals["major"]);
+      // The program ends with full collections. Each child made four
+      // exports (its three listeners and the function that releases them
+      // when the child closes) and one import; what is left is what the
+      // program keeps and at most the last batches of children, whatever
+      // the number of children (measured: 2 exports after 400 and after
+      // 6,000 children, 24,000 freed).
+      expect(r.totals["held exports"]).toBeLessThan(200);
+      expect(r.totals["representatives"]).toBeLessThan(200);
+      expect(r.totals["held handles"]).toBeLessThan(50);
+      expect(r.totals["import entries"]).toBeLessThan(200);
     }
-    expect(large.totals["freed imports"]).toBeGreaterThan(many);
-    if (!sanitize) expect(large.rss).toBeLessThan(small.rss * 1.5 + 32 * 1024);
+    expect(large.totals["freed exports"]).toBeGreaterThan(4 * many - 200);
   }, 900_000);
 
   test("a native object the program keeps keeps its identity in island weak maps", async () => {

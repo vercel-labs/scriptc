@@ -98,6 +98,15 @@ test("the nightly profile refresh collects a profile on main and opens a pull re
   const pipefail = build.run!.indexOf("set -o pipefail");
   expect(pipefail).toBeGreaterThanOrEqual(0);
   expect(pipefail).toBeLessThan(build.run!.indexOf("pnpm build:native-compiler"));
-  expect(steps.some((step) => step.run?.includes("git push"))).toBe(true);
-  expect(steps.some((step) => step.run?.includes("gh pr create"))).toBe(true);
+  // The repository refuses unsigned commits on every branch, and a commit
+  // made with git on the runner is unsigned: the job's push failed on each
+  // of its first five nights. GitHub signs a commit made through its API,
+  // and the step checks that it did before it moves the branch.
+  const open = steps.find((step) => step.run?.includes("gh pr create"))!;
+  expect(open.run).toContain("createCommitOnBranch");
+  expect(open.run).toContain(".commit.verification.verified");
+  expect(open.run).not.toMatch(/\bgit (commit|push)\b/);
+  expect(open.run!.indexOf(".commit.verification.verified")).toBeLessThan(
+    open.run!.indexOf("--method PATCH"),
+  );
 });

@@ -17157,6 +17157,32 @@ static bool scr_json_island_plain(ScrJsonBuf *b, const ScrDyn *d) {
   return present;
 }
 
+/* One item of an island array replacer as the PropertyList reads it: a
+ * boxed String or Number is a key, which Node names with its ToString.
+ * Handed on as a handle, scr_json_property_list would drop it, losing a
+ * key Node keeps. Any other item is returned as it is. */
+static ScrDyn *scr_json_island_key(ScrDyn *item) {
+  if (!scr_ni_dyn_handle(item)) return item;
+  ScrStr *probe = scr_str_new("isStringObject", 14);
+  bool boxed = scr_ni_util_type_is(item, probe);
+  scr_str_release(probe);
+  if (!boxed) {
+    probe = scr_str_new("isNumberObject", 14);
+    boxed = scr_ni_util_type_is(item, probe);
+    scr_str_release(probe);
+  }
+  if (!boxed) return item;
+  ScrDyn *primitive = scr_ni_to_primitive(item, SCR_DYN_HINT_STRING);
+  scr_dyn_release(item);
+  if (!primitive) return NULL;
+  ScrStr *name = scr_dyn_string_coerce(primitive);
+  scr_dyn_release(primitive);
+  if (!name) return NULL;
+  ScrDyn *key = scr_dyn_new_str(name);
+  scr_str_release(name);
+  return key;
+}
+
 /* An array replacer that is a Node island array, as the native array the
  * PropertyList is read from (+1), or NULL with the exception pending. */
 static ScrDyn *scr_json_island_list(const ScrDyn *replacer) {
@@ -17168,6 +17194,7 @@ static ScrDyn *scr_json_island_list(const ScrDyn *replacer) {
     ScrStr *index = scr_json_index_key(i);
     ScrDyn *item = scr_ni_dyn_ops->get_str((ScrDyn *)replacer, index->data, index->len);
     scr_str_release(index);
+    if (item) item = scr_json_island_key(item);
     if (item) scr_dyn_arr_push(list, item);
   }
   if (!scr_exc_pending()) return list;

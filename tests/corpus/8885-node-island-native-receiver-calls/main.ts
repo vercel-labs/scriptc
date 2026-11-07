@@ -101,3 +101,16 @@ try {
 } catch (e) {
   console.log(e instanceof TypeError, calls);
 }
+
+// 7. An argument that runs code replaces the member: the call is the one
+// the read before the arguments answered, so the replacement never runs.
+const blank: { name: string; take?: unknown } = { name: "k" };
+function replaceTake(target: { take?: unknown }): [number] {
+  target.take = (n: number) => n * 100;
+  return [2];
+}
+try {
+  (blank as unknown as Sink).take(...replaceTake(blank));
+} catch (e) {
+  console.log(e instanceof TypeError, typeof blank.take);
+}

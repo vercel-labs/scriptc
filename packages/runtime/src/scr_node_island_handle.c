@@ -1390,6 +1390,17 @@ static ScrDyn *nh_call_native(ScrDyn *fn, ScrDyn *this_, ScrDyn *const *args, si
   return result;
 }
 
+/* A member read that answered something not callable, called: Node's
+ * TypeError names the call site's text as the compiler passes it. */
+static void nh_throw_not_fn(const char *name, size_t length) {
+  ScrStr *member = scr_str_new(name, length);
+  ScrStr *suffix = scr_str_new(" is not a function", 18);
+  ScrStr *message = scr_str_concat(member, suffix);
+  scr_str_release(member);
+  scr_str_release(suffix);
+  if (message != NULL) scr_throw_error(SCR_ERR_TYPE, message);
+}
+
 /* obj.m(...) from dynamic code: the member read, then the call with obj
  * as the receiver; a member that is not a function throws Node's TypeError
  * with the call site's text (`what`), as V8 words it. */
@@ -1405,9 +1416,8 @@ static ScrDyn *nh_op_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *c
   }
   if (!scr_ni_is_function(fn)) {
     scr_dyn_release(fn);
-    char message[512];
-    snprintf(message, sizeof message, "%s is not a function", what != NULL ? what : method);
-    scr_throw_error_msg(SCR_ERR_TYPE, message, strlen(message));
+    const char *shown = what != NULL ? what : method;
+    nh_throw_not_fn(shown, strlen(shown));
     return NULL;
   }
   ScrDyn *result = scr_ni_call(fn, self, args, argc);
@@ -1691,12 +1701,30 @@ ScrDyn *scr_node_island_apply(ScrDyn *fn, ScrDyn *args) {
  * method) has no function value, so its read answered something that is
  * not callable, and the call is the ordinary checked-dynamic method call
  * by name, as scr_node_island_invoke makes it for the same receiver. That
- * call throws Node's TypeError when the member is not a function. */
+ * call throws Node's TypeError when the member is not a function.
+ *
+ * The by-name call reads the member again, so it answers the value the
+ * read held only while the member still is not callable: an argument that
+ * ran code may have stored a function there, and V8 calls the value read
+ * before the arguments — a non-callable one, Node's TypeError. */
 ScrDyn *scr_node_island_apply_to(ScrDyn *fn, ScrDyn *this_, ScrStr *key, ScrDyn *args) {
   ScrDyn *const *items;
   size_t argc = ni_libcall_args(args, &items);
   if (nh_is_native_function(fn)) return nh_call_native(fn, this_, items, argc, "value");
-  if (!ni_lc_island(fn) && !ni_lc_island(this_)) return ni_lc_native_invoke(this_, key, items, argc);
+  if (!ni_lc_island(fn) && !ni_lc_island(this_)) {
+    ScrDyn *member = scr_node_island_get(this_, key);
+    if (member == NULL) {
+      if (!scr_exc_pending()) nh_throw_not_fn(key->data, key->len);
+      return NULL;
+    }
+    bool callable = scr_dyn_is_callable(member);
+    scr_dyn_release(member);
+    if (callable) {
+      nh_throw_not_fn(key->data, key->len);
+      return NULL;
+    }
+    return ni_lc_native_invoke(this_, key, items, argc);
+  }
   return scr_ni_call(fn, this_, items, argc);
 }
 

@@ -12,6 +12,7 @@ import {
   makeBoxed,
   makeCycle,
   makeDoc,
+  makeKeyList,
   makeKeys,
   makeList,
   makeOrdered,
@@ -88,3 +89,10 @@ circular(() => {
 // 8. util.format's %j.
 console.log("%j", box);
 console.log("%j", { native: box });
+
+// 9. A boxed String or Number key in an island replacer array names a
+// property, as Node's PropertyList converts it with ToString; the boolean
+// and the repeated key contribute nothing.
+const listed = { a: "x", n: 1, label: "l" };
+console.log(JSON.stringify(listed, makeKeyList()));
+console.log(JSON.stringify(box, makeKeyList()));

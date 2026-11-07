@@ -38,7 +38,7 @@ export function checkedClassInstanceOf(
   refusal: string,
   loc: SrcLoc,
 ): IrExpr {
-  if (!lowerer.liftedFns.some((fn) => fn.name === INSTANCEOF)) {
+  if (lowerer.liftedFnNamed(INSTANCEOF) === undefined) {
     const params = [
       { localId: "value", name: "value", type: DYN },
       { localId: "callee", name: "callee", type: DYN },
@@ -91,7 +91,7 @@ export function checkedClassConstruction(
 ): IrExpr {
   const name =
     calleeText === undefined ? `${PREFIX}${args.length}` : `${PREFIX}${args.length}:${calleeText}`;
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const params = [callee, ...args].map((_, index) => ({
       localId: `p.${index}`,
       name: `p${index}`,
@@ -156,7 +156,7 @@ export function primitiveCheckedConstruction(
   packed?: IrExpr,
 ): IrExpr {
   const name = `${PRIMITIVE}:${packed === undefined ? args.length : "spread"}`;
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const params = [
       { localId: "p.0", name: "callee", type: DYN },
       { localId: "p.1", name: "message", type: STRING },
@@ -241,7 +241,7 @@ export function checkedClassConstructionPacked(
   packed: IrExpr,
   loc: SrcLoc,
 ): IrExpr {
-  if (!lowerer.liftedFns.some((fn) => fn.name === PACKED)) {
+  if (lowerer.liftedFnNamed(PACKED) === undefined) {
     const params = [
       { localId: "p.0", name: "callee", type: DYN },
       { localId: "p.1", name: "arguments", type: DYN },

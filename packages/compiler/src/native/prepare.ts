@@ -15,7 +15,7 @@ import {
   lowRegionTarget,
 } from "../backend/llvm/emitter.js";
 import { inlineRcOption } from "../backend/llvm/shapes.js";
-import { executableLinkFeatures } from "../backend/executable-features.js";
+import { carriesDebugSources, executableLinkFeatures } from "../backend/executable-features.js";
 import { REQUIRED_LINK_FEATURES } from "../backend/native-link-info-core.js";
 import type { NativeLinkFeatures } from "../backend/native-link-info-core.js";
 import {
@@ -540,6 +540,12 @@ export function prepareNativeExecutable(
       ? batchTextParts(serializeModuleParts(prepared.mod, compilerOwnedFileRoots()))
       : null;
   timing("ir-serialize");
+  // As in the Node-hosted build: the emitter calls the report of failed
+  // conversions exactly where the link features below name its unit, in an
+  // executable and in a program object that carries its link information.
+  const conversionTrace =
+    carriesDebugSources(options.optimization, options.strip) &&
+    (outputKind === "exe" || (outputKind === "obj" && options.nativeLinkInfo === true));
   const llvm =
     outputKind === "ir"
       ? []
@@ -567,9 +573,10 @@ export function prepareNativeExecutable(
           ...(options.exceptions === "rare" ? { rareExceptions: true } : {}),
           ...targetCpuField(options.targetCpu),
           ...(options.cpuDispatch === true && outputKind === "exe" ? { cpuDispatch: true } : {}),
-          ...(options.optimization === "dev" && !options.strip
+          ...(carriesDebugSources(options.optimization, options.strip)
             ? { debugSources: prepared.sourceTexts }
             : {}),
+          ...(conversionTrace ? { conversionTrace: true } : {}),
         });
   timing("llvm-emit");
   const input: NativeExecutableInput = {
@@ -580,6 +587,7 @@ export function prepareNativeExecutable(
     features: executableLinkFeatures(
       prepared.mod,
       options.largePages === true && outputKind === "exe",
+      conversionTrace,
     ),
     sources: [...prepared.sourceTexts],
     ...(prepared.warnings.length > 0 ? { warnings: prepared.warnings } : {}),

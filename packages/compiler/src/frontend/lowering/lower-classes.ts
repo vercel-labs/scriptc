@@ -26,6 +26,7 @@ import { lowerDateStaticCall } from "./builtins/dates.js";
 import { keyedHelperName } from "./stable-names.js";
 import { lowerValueReturningConstructorNew } from "./js-dynamic-objects.js";
 import { adaptPromiseExecutor } from "./promise-executor-adapter.js";
+import { executorResolvesPlainly } from "./promise-resolution.js";
 import { dynUndefinedExpr, nodeThrowExpr, strLit, varRef } from "../../ir/build.js";
 import { isDynUndefined } from "../../ir/runtime-features.js";
 import {
@@ -242,6 +243,7 @@ import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { lowerInstanceConstructorNew } from "./class-instance-constructor.js";
 import { classPrototypeData, reflectClassPrototype } from "./class-prototypes.js";
 import { constructionEscape } from "./construction-escapes.js";
+import { type ConstructionReads, constructionReads } from "./construction-reads.js";
 import {
   checkedClassConstruction,
   checkedClassConstructionPacked,
@@ -4276,18 +4278,23 @@ export function collectClassShapeInner(
       );
     }
 
-    // Fields read before their first assignment. Construction that hands
-    // the instance to other code (a method call, an argument, a callback,
-    // a base constructor that does either) before assigning a class-typed
-    // field lets that code read the field while Node still holds
-    // undefined. Such fields take the deferred-init representation, whose
-    // slot (a nullable instance pointer) starts empty and whose reads check
-    // it. Fields assigned before any exposure keep their plain reads.
+    // Fields read before their first assignment. Construction that exposes
+    // the instance (a method call, an argument, a callback, a base
+    // constructor that does either) before assigning a field lets other
+    // code read the field while Node still holds undefined. A class-typed
+    // field in that position, and any other field that the code
+    // construction runs through `this` reads (construction-reads.ts), takes
+    // the deferred-init representation, whose slot starts as undefined and
+    // whose reads check it. Fields assigned before any exposure keep their
+    // plain reads.
     const derived =
       decl.heritageClauses?.nodes.some((clause) => clause.token === ts.SyntaxKind.ExtendsKeyword) ??
       false;
-    // Generic instances and mixins share layouts across declarations, so
-    // they only report whether construction exposes the instance.
+    // A generic family is not emitted, and a mixin's class is collected per
+    // call site over another base: they only report whether construction
+    // exposes the instance. A generic instance is analyzed like any class;
+    // the answer depends on the declaration alone, so every instance of a
+    // family takes the same slots.
     const escape: { escapes: boolean; assigned: Set<string> | null } =
       familyMode || mixin
         ? { escapes: derived, assigned: null }
@@ -4399,33 +4406,44 @@ export function collectClassShapeInner(
       }
     }
 
-    if (escape.assigned && !inst) {
-      let earlyReads: Set<string> | null = null;
+    if (escape.assigned) {
+      let earlyReads: ConstructionReads | null = null;
       for (const f of fieldOrder) {
         if (f.redeclared || escape.assigned.has(f.name) || deferredInitFields.has(f.name)) continue;
         if (paramProps.some((pp) => pp.name === f.name)) continue;
         const declared = fields.get(f.name);
-        // Records, arrays and strings are pointer slots that start empty
-        // too, but only take the checked slot when a method the
-        // constructor calls actually reads them: their other early
-        // exposures keep the plain slot.
-        if (
-          declared?.kind === "record" ||
-          declared?.kind === "array" ||
-          declared?.kind === "string"
-        ) {
-          earlyReads ??= constructorMethodReads(decl, base, ctor ?? undefined);
-          if (!earlyReads.has(f.name)) continue;
-        } else if (
-          declared?.kind !== "object" ||
-          lowerer.classes.get(declared.className)?.def.runtime
-        )
-          continue;
-        const armed = lowerer.withUndefinedArm(declared);
-        if (armed === null || armed.kind !== "union") continue;
+        if (declared === undefined) continue;
+        // A class-typed field takes the checked slot on any early exposure:
+        // its slot is the nullable instance pointer either way. Every other
+        // field takes it only when code that construction runs through
+        // `this` reads it before the field's assignment (a method the
+        // constructor calls, or the override a derived class gives a method
+        // its base constructor calls): their other early exposures keep the
+        // plain slot.
+        if (declared.kind !== "object" || lowerer.classes.get(declared.className)?.def.runtime) {
+          if (earlyReads === null) {
+            const bases: ts.ClassLikeDeclaration[] = [];
+            for (let b = base; b; b = b.base) if (b.decl) bases.push(b.decl);
+            earlyReads = constructionReads(decl, bases, lowerer.classHierarchy());
+          }
+          if (!earlyReads.early(f.name)) continue;
+        }
+        const armed = deferredSlotType(lowerer, declared);
+        if (armed === null) continue;
         fields.set(f.name, armed);
         f.type = armed;
         deferredInitFields.add(f.name);
+        lowerer.runtimeOptionalProvenance?.note(
+          "unassigned-field-read",
+          decl.members.nodes.find(
+            (member) =>
+              ts.isPropertyDeclaration(member) &&
+              (ts.isIdentifier(member.name) || ts.isPrivateIdentifier(member.name)) &&
+              member.name.text === f.name,
+          ) ?? decl,
+          undefined,
+          lowerer.fmt(declared),
+        );
       }
     }
 
@@ -5874,6 +5892,28 @@ export function staticShadowBelow(info: ClassInfo, name: string): boolean {
   return info.subclasses.some((s) => hasOwnStatic(s, name) || staticShadowBelow(s, name));
 }
 
+/** The undefined-armed slot of a field that can be read before its
+ * assignment, or null for a type with no such slot: a checked-dynamic slot
+ * holds undefined as it is, and a unit, generator or caught value has no
+ * union arm. */
+function deferredSlotType(lowerer: Lowerer, declared: IrType): IrType | null {
+  if (
+    isUnitType(declared) ||
+    declared.kind === "dyn" ||
+    declared.kind === "generator" ||
+    declared.kind === "void" ||
+    declared.kind === "caught"
+  )
+    return null;
+  if (declared.kind === "union") {
+    if (lowerer.armTag(declared.unionId, UNDEFINED_T) >= 0) return null;
+    const widened = lowerer.withUndefinedArmOf(declared);
+    return widened !== null && widened.kind === "union" ? widened : null;
+  }
+  const armed = lowerer.withUndefinedArm(declared);
+  return armed.kind === "union" ? armed : null;
+}
+
 /** The static accessor `info.name` resolves: the nearest class at or above
  * `info` that declares a static property of that name, when the
  * declaration is an accessor (collected as the static methods `get:name`
@@ -6047,58 +6087,6 @@ export function staticAccessorWrite(
     type: target.ret,
     loc,
   };
-}
-
-/** The `this` members read by the methods and accessors a constructor
- * calls through `this` (transitively, over the class and its bases),
- * outside nested functions. The constructor's own reads are not included:
- * they run where the constructor's statements put them. */
-function constructorMethodReads(
-  decl: ts.ClassLikeDeclaration,
-  base: ClassInfo | null,
-  ctor: ts.ConstructorDeclaration | undefined,
-): Set<string> {
-  const reads = new Set<string>();
-  const visited = new Set<string>();
-  const bodies = (name: string): ts.Node[] => {
-    const out: ts.Node[] = [];
-    let owner: ts.ClassLikeDeclaration | undefined = decl;
-    for (let next = base; owner; owner = next?.decl ?? undefined, next = next?.base ?? null) {
-      for (const member of owner.members.nodes) {
-        if (
-          (ts.isMethodDeclaration(member) || ts.isAccessor(member)) &&
-          member.body &&
-          (ts.isIdentifier(member.name) || ts.isPrivateIdentifier(member.name)) &&
-          member.name.text === name
-        )
-          out.push(member.body);
-      }
-    }
-    return out;
-  };
-  const enter = (name: string): void => {
-    if (visited.has(name)) return;
-    visited.add(name);
-    for (const body of bodies(name)) scan(body, true);
-  };
-  // Nested functions (callbacks handed elsewhere) are not followed: only
-  // the straight-line code of the constructor and the methods it calls.
-  const scan = (node: ts.Node, inMethod: boolean): void => {
-    ts.walkPreorder(node, (n) => {
-      if (n !== node && ts.isFunctionLike(n)) return "skip";
-      if (
-        ts.isPropertyAccessExpression(n) &&
-        n.expression.kind === ts.SyntaxKind.ThisKeyword &&
-        (ts.isIdentifier(n.name) || ts.isPrivateIdentifier(n.name))
-      ) {
-        if (inMethod) reads.add(n.name.text);
-        enter(n.name.text);
-      }
-      return undefined;
-    });
-  };
-  if (ctor?.body) scan(ctor.body, false);
-  return reads;
 }
 
 /** The nearest GENERIC static declaration of `name` at/above `info` —
@@ -6688,6 +6676,27 @@ export function lowerClassExpressionInfo(
       "SC1090",
       expr,
       "function-local classes with statics, decorators, or generic members",
+    );
+  }
+  // An Array subclass's methods build their results through the class's
+  // species helper, which constructs the class by name; a function-local
+  // class is constructed from the class value of its evaluation.
+  if (
+    local &&
+    expr.heritageClauses?.nodes.some(
+      (clause) =>
+        clause.token === ts.SyntaxKind.ExtendsKeyword &&
+        clause.types.nodes.some(
+          (base) =>
+            ts.isIdentifier(base.expression) && lowerer.isStdlibGlobal(base.expression, "Array"),
+        ),
+    )
+  ) {
+    lowerer.unsupported(
+      "SC1090",
+      expr,
+      "Array subclasses declared inside functions",
+      "declare the class at module level",
     );
   }
   lowerer.collectingExprClasses.add(expr);
@@ -10779,7 +10788,7 @@ function refuseInheritedBuiltinCtorArgs(
  * non-iterable throws out of the constructor). */
 function aggregateErrorConstructor(lowerer: Lowerer, loc: SrcLoc): string {
   const name = "%aggregate.new";
-  if (lowerer.liftedFns.some((fn) => fn.name === name)) return name;
+  if (lowerer.liftedFnNamed(name) !== undefined) return name;
   const type: IrType = { kind: "object", className: "%AggregateError" };
   const context = newFnCtx(false, null, null, type);
   lowerer.fnStack.push(context);
@@ -12512,6 +12521,15 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
           );
         }
       }
+      // The resolve function of a promise of a checked-dynamic value runs
+      // the promise resolution procedure unless the static types prove
+      // that every value it is given fulfils plainly.
+      if (
+        type.inner.kind === "dyn" &&
+        executor.type.params.length > 0 &&
+        !executorResolvesPlainly(lowerer, args[0]!)
+      )
+        return { kind: "newPromise", executor, resolves: true, type, loc };
       return { kind: "newPromise", executor, type, loc };
     }
     // The lib fence's CONSTRUCTOR chokepoint: `new` of any other
@@ -12632,7 +12650,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
           if (helper) {
             const loc = callee.loc;
             const name = `%new.callee:${unionT.unionId}`;
-            if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+            if (lowerer.liftedFnNamed(name) === undefined) {
               const undefinedTag = lowerer.armTag(unionT.unionId, UNDEFINED_T);
               const value: IrExpr = { kind: "varRef", localId: "value", type: unionT, loc };
               lowerer.liftedFns.push({

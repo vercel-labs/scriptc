@@ -820,13 +820,14 @@ function recognizeKeyTerm(fn: IrFunction, value: IrExpr): SortKeyOrder | null {
 }
 
 /** The keys of a comparator closure: a zero-capture closure (not a
- * signature adapter) over a lifted function recognizeKeyComparator accepts. */
+ * signature adapter) over a lifted function recognizeKeyComparator accepts.
+ * `lowerer` finds the lifted function by name (Lowerer.liftedFnNamed). */
 export function closureKeyOrder(
-  liftedFns: readonly IrFunction[],
+  lowerer: { liftedFnNamed(name: string | undefined): IrFunction | undefined },
   closure: IrExpr,
 ): readonly SortKeyOrder[] | null {
   if (closure.kind !== "closure" || closure.captures.length > 0 || closure.adapts) return null;
-  const fn = liftedFns.find((lifted) => lifted.name === closure.fnName);
+  const fn = lowerer.liftedFnNamed(closure.fnName);
   return fn ? recognizeKeyComparator(fn) : null;
 }
 

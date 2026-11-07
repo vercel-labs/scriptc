@@ -36,6 +36,9 @@ export class CoercionState {
   readonly copyRetags = new Map<string, { name: string; shapes: number; unions: number }>();
   // Provenance for checked extraction; consumers must not infer it from names.
   readonly checkedNarrows = new Set<string>();
+  // The re-tags that read a union-typed deferred-init field as its declared
+  // union, throwing for an unassigned slot (Lowerer.deferredFieldSlot).
+  readonly deferredRetags = new Set<string>();
   // The extracted arm of each checked (non-defaulting) extraction helper.
   readonly checkedNarrowArms = new Map<
     string,

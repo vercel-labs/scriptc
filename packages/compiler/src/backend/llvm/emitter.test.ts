@@ -129,8 +129,9 @@ test("the shared indexed-read helpers carry an inline hint", () => {
 test("bodies holding thousands of capture boxes compile unoptimized with boxes in memory", () => {
   const number = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
   const read = (localId: string): IrExpr => ({ kind: "varRef", localId, type: F64, loc });
-  // A declaring body with `count` boxed bindings, and a closure body that
-  // receives `count` of them through its environment.
+  // A declaring body with `count` boxed bindings, each rebound so that it
+  // keeps its box, and a closure body that receives `count` of them
+  // through its environment.
   const declaring = (name: string, count: number): IrFunction => {
     const ids = Array.from({ length: count }, (_, i) => `${name}${i}`);
     return {
@@ -140,6 +141,7 @@ test("bodies holding thousands of capture boxes compile unoptimized with boxes i
       locals: ids.map((id) => ({ id, name: id, type: F64, mutable: true, boxed: true as const })),
       body: [
         ...ids.map((id, i): IrStmt => ({ kind: "varDecl", localId: id, init: number(i), loc })),
+        ...ids.map((id, i): IrStmt => ({ kind: "assign", localId: id, value: number(i), loc })),
         { kind: "return", value: read(ids[count - 1]!), loc },
       ],
       loc,

@@ -45,6 +45,7 @@ import {
   type StartupCrash,
 } from "../program.js";
 import { foldedStringKeyOf, lowerDynObjectLiteral } from "./expressions/object-literals.js";
+import { builtinConstantsEsmNamespace } from "./lower-builtin-values.js";
 import { noteEventListeners } from "./lower-event-target.js";
 import { PoisonError, newFnCtx, own } from "./lowerer.js";
 import { node24FetchCompatProfile, staticFetchMembers } from "../../compat/fetch-profile.js";
@@ -1629,13 +1630,22 @@ export function lowerStaticFetchCompanionCall(
           source.type.elem,
           (id) => lowerer.shapes.get(id),
           (id) => lowerer.unions.get(id),
-        )) ||
-      source.type.kind === "dyn";
+        ));
     if (!preserve) {
-      lowerer.noLowering(
-        `ReadableStream.from() over ${lowerer.checker.typeToString(lowerer.typeOf(call.arguments.nodes[0]!))} iterables`,
-        call.arguments.nodes[0]!,
-        "arrays, Uint8Array, and strings are supported — spread other synchronous iterables into an array first: [...iterable]",
+      // Any other iterable, a compiled generator among them, steps through
+      // the web stream classes' own from (scr_webstreams.c), which reads
+      // the iterator protocol rather than the native streams' index walk.
+      return staticCallWithSurplusArgs(
+        lowerer,
+        call,
+        lowerer.lowerExprExpecting(call.arguments.nodes[0]!, DYN),
+        (first) => ({
+          kind: "libCall",
+          fn: "webstream.from",
+          args: [first],
+          type: DYN,
+          loc,
+        }),
       );
     }
     return staticCallWithSurplusArgs(lowerer, call, source, (first) => ({
@@ -1643,8 +1653,7 @@ export function lowerStaticFetchCompanionCall(
       fn: "fetch.streamFrom",
       // Arrays and bytes must cross by reference: their iterators read each
       // entry at pull time, so mutations after ReadableStream.from() remain
-      // observable just as they are in Node. Other supported iterable
-      // shapes retain the checked-dynamic fallback.
+      // observable just as they are in Node.
       args: [first],
       type: DYN,
       loc,
@@ -2275,6 +2284,14 @@ export function lowerDynamicImportCall(lowerer: Lowerer, call: ts.CallExpression
   if (res.kind === "program-module") {
     return lowerOwnStaticModuleImport(lowerer, call, specifier);
   }
+  // node:constants resolves the one checked-dynamic namespace object its
+  // `import * as` binding gets: the merged CommonJS object's names plus
+  // "default", sorted, on a null-prototype object (builtinConstantsEsmNamespace).
+  // Its names come from the platform, so a static census cannot list them.
+  if (res.module === "constants")
+    return lowerStaticNamespaceImport(lowerer, call, DYN, null, undefined, () =>
+      builtinConstantsEsmNamespace(lowerer, locOf(call)),
+    );
   return lowerStaticNamespaceImport(
     lowerer,
     call,
@@ -2412,14 +2429,18 @@ function lowerOwnStaticModuleImport(
 
 /** Builds a fresh native promise for a static module namespace. Source
  * modules run/await their guarded initializer after the mandatory hop;
- * builtins only take the hop and resolve their immortal token. */
+ * builtins only take the hop and resolve their immortal token. A target
+ * that has a checked-dynamic value instead of a namespace token passes it
+ * as `resolveValue`. */
 function lowerStaticNamespaceImport(
   lowerer: Lowerer,
   call: ts.CallExpression,
-  ns: IrType & { kind: "moduleNs" },
+  ns: IrType,
   dep: ts.SourceFile | null = null,
   /** Statements the module's own load runs, after the import's hop. */
   loaded?: readonly IrStmt[],
+  /** A checked-dynamic value to resolve instead of a namespace token. */
+  resolveValue?: () => IrExpr,
 ): IrExpr {
   const loc = locOf(call);
   const resultT: IrType & { kind: "promise" } = { kind: "promise", inner: ns };
@@ -2444,11 +2465,15 @@ function lowerStaticNamespaceImport(
     const body: IrStmt[] = [{ kind: "exprStmt", expr: hop, loc }];
     if (dep !== null) appendStaticModuleInit(lowerer, dep, body, loc);
     if (loaded !== undefined) body.push(...loaded);
-    body.push({
-      kind: "return",
-      value: { kind: "moduleNsRef", moduleId: ns.moduleId, type: ns, loc },
-      loc,
-    });
+    let resolved: IrExpr;
+    if (resolveValue !== undefined) resolved = resolveValue();
+    else if (ns.kind === "moduleNs")
+      resolved = { kind: "moduleNsRef", moduleId: ns.moduleId, type: ns, loc };
+    else
+      throw new InternalCompilerError(
+        "lowerer bug: static import target has no namespace or value",
+      );
+    body.push({ kind: "return", value: resolved, loc });
     const ctx = lowerer.ctx;
     lowerer.liftedFns.push({
       name: fnName,

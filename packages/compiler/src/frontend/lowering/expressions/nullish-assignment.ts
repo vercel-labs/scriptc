@@ -22,6 +22,7 @@ import {
 } from "../array-values.js";
 import { fenceNodeModuleMutation } from "../lower-node-module.js";
 import { staticFieldWriteTarget } from "../lower-classes.js";
+import { fenceCopiedKeyedWrite } from "./asserted-receiver.js";
 import { globalSymbolKey } from "./global-symbols.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
 import {
@@ -78,6 +79,7 @@ export function lowerShortCircuitAssignment(lowerer: Lowerer, expr: ts.BinaryExp
     write = (value) => ({ kind: "assign", localId: binding.id, value, loc });
   } else if (ts.isPropertyAccessExpression(target) || ts.isElementAccessExpression(target)) {
     fenceNodeModuleMutation(lowerer, target, "assignment");
+    if (ts.isElementAccessExpression(target)) fenceCopiedKeyedWrite(lowerer, target);
     if (target.questionDotToken || target.expression.kind === ts.SyntaxKind.SuperKeyword) {
       lowerer.unsupported(
         "SC1090",

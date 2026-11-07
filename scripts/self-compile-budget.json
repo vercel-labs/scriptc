@@ -5,12 +5,15 @@
     "reason": "The limit every self-compile has run with. At 618fdb8eb a 12288 MB limit builds in the same time (740 s against 744 s) and takes 2.1 GB more memory (10.3 GB peak RSS), so the limit stays. 12288 fits the 16 GB Linux runners; the macOS runners have less memory, so measure there before raising it."
   },
   "loweringPasses": {
-    "value": ["reachable-emit", "general-streams-relower"],
-    "reason": "cli/mcp.ts pauses a finished child's pipes, which the child-pipe handle cannot do, so the program lowers again under the general stream representation (#2918). One pass is the goal."
+    "value": [
+      "reachable-emit(aborted)",
+      "general-streams-relower"
+    ],
+    "reason": "cli/mcp.ts pauses a finished child's pipes, which the child-pipe handle cannot do, so the first pass ends where it asks for the general stream representation (#3147) and the program lowers again under it (#2918). One pass that runs to its end is the goal (#3174)."
   },
   "liveHeapBytesPerSourceByte": {
-    "value": 212,
-    "reason": "Measured at 618fdb8eb: 4596 MB reachable at the end of the second lowering pass, 1431 MB of it the first pass's program, for 22.8 MB of source."
+    "value": 146,
+    "reason": "Measured with --check on this branch merged with main e8c933e5d: 3205 MB reachable at the end of the second lowering pass for 23.0 MB of source. --native-build, which CI runs, read 3249 MB (148) at c8767817e. It was 212 at 618fdb8eb, where the first pass ran to its end and its program stayed reachable through the second; #3147 ends that pass early and #3149 interns the failure-message texts."
   },
   "sourceCostAllowance": {
     "value": 0,

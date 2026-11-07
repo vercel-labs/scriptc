@@ -62,6 +62,7 @@ import {
   arrNewCall,
   elemAccess,
   llFieldType,
+  loadStructField,
   mapFlagsOffset,
   releaseSym,
   traceAdapter,
@@ -532,6 +533,133 @@ export class LlDyn {
     });
   }
 
+  /** The arms of `def`, in the match order `order`, that a typed capsule of
+   * the arm's own type takes before any arm is tested (capsuleArmFirst):
+   * those whose values box as capsules. Empty when that test would repeat
+   * the first arm's own: the union's only such arm is tested first and has
+   * no literal guard to read before it (`R | undefined`). */
+  private capsuleArms(def: IrUnionDef, order: readonly number[]): number[] {
+    const arms = order.filter((tag) => {
+      const arm = def.arms[tag]!;
+      return arm.kind === "record" || arm.kind === "array" || isDynTypedRefType(arm);
+    });
+    const first = order[0];
+    const guarded = def.discriminant?.cases.some((candidate) => candidate.tag === first) === true;
+    return arms.length === 1 && arms[0] === first && !guarded ? [] : arms;
+  }
+
+  /** A typed capsule whose type is one of `arms` is that arm: branch to
+   * `hits[tag]` for the first arm whose own capsule test `%d` passes
+   * (typedRefMatches, the test the arm's matcher and builder start with),
+   * before any arm reads a member through a view. The capsule holds a
+   * native value of the arm's type, and the arm's builder unboxes it: one
+   * object, no copy. An arm with a literal guard is taken only when the
+   * record holds one of the arm's literals (capsuleLiteralGuard): record
+   * types that differ only in their literals share one layout and one type
+   * key, so the type alone does not say which literal the record carries.
+   * Without this, each literal guard tested first copied the record into
+   * its dyn view to read one member, and a wider record arm tried first
+   * accepted a copy of it. Every other value, a capsule of no arm's type,
+   * and a capsule of an arm's type that holds another literal continue
+   * after the test, where the arms' own tests decide. */
+  private capsuleArmFirst(
+    B: BlockBuilder,
+    def: IrUnionDef,
+    arms: readonly number[],
+    hits: readonly string[],
+  ): void {
+    if (arms.length === 0) return;
+    const capsule = B.tmp();
+    B.line(`${capsule} = icmp eq i32 ${this.kindOf(B, "%d")}, ${DYN_KIND.TYPED_REF}`);
+    const own = B.newLabel("du.own");
+    const other = B.newLabel("du.other");
+    B.condBr(capsule, own, other);
+    B.startBlock(own);
+    for (const tag of arms) {
+      const arm = def.arms[tag]!;
+      const next = B.newLabel("du.own.n");
+      const guard = def.discriminant?.cases.find((candidate) => candidate.tag === tag);
+      if (guard && def.discriminant && arm.kind === "record") {
+        const typed = B.newLabel("du.own.g");
+        B.condBr(this.typedRefMatches(B, arm), typed, next);
+        B.startBlock(typed);
+        // A capsule has one type: when its record holds another literal,
+        // no later arm's capsule test passes either.
+        this.capsuleLiteralGuard(
+          B,
+          arm.shapeId,
+          def.discriminant.field,
+          guard.values,
+          hits[tag]!,
+          other,
+        );
+      } else B.condBr(this.typedRefMatches(B, arm), hits[tag]!, next);
+      B.startBlock(next);
+    }
+    B.br(other);
+    B.startBlock(other);
+  }
+
+  /** In a block where `%d` is a capsule of the record type `shapeId`:
+   * branch to `yes` when the record's member `field` holds one of
+   * `values`, the literals of a union arm of that type, and to `no`
+   * otherwise. The member is an ordinary string, number or boolean slot
+   * (discriminantField) and is read from the record itself, as typed code
+   * reads it: nothing is copied and no view is built. */
+  private capsuleLiteralGuard(
+    B: BlockBuilder,
+    shapeId: string,
+    field: string,
+    values: readonly (string | number | boolean)[],
+    yes: string,
+    no: string,
+  ): void {
+    const host = this.host;
+    const shape = host.recordsById.get(shapeId);
+    const index = shape?.fields.findIndex((entry) => entry.name === field) ?? -1;
+    const type = index < 0 ? undefined : shape!.fields[index]!.type;
+    const literals = values.filter((value) =>
+      type?.kind === "string"
+        ? typeof value === "string"
+        : type?.kind === "f64"
+          ? typeof value === "number"
+          : type?.kind === "bool" && typeof value === "boolean",
+    );
+    // A slot no literal comparison reads (none of the arm's literals has
+    // the slot's type): the arms' own tests decide.
+    if (type === undefined || literals.length === 0) {
+      B.br(no);
+      return;
+    }
+    const record = this.payloadOf(B, "%d", "ptr");
+    const slot = B.tmp();
+    B.line(
+      `${slot} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${record}, i64 0, i32 ${index + host.nullableUnions.fieldBase(shapeId)} ; .${llvmCommentText(field)}`,
+    );
+    const held = loadStructField(B, host.sizeType, slot, type, false);
+    if (type.kind === "string") {
+      host.declare(`declare zeroext i1 @scr_str_eq(ptr, ptr)`);
+      const present = B.tmp();
+      const compare = B.newLabel("du.own.s");
+      B.line(`${present} = icmp ne ptr ${held}, null`);
+      B.condBr(present, compare, no);
+      B.startBlock(compare);
+    }
+    literals.forEach((value, k) => {
+      const matches = B.tmp();
+      if (typeof value === "string")
+        B.line(
+          `${matches} = call zeroext i1 @sc_str_eq(ptr ${held}, ptr ${host.internLiteral(value)})`,
+        );
+      else if (typeof value === "number")
+        B.line(`${matches} = fcmp oeq double ${held}, ${f64Lit(value)}`);
+      else B.line(`${matches} = icmp eq i1 ${held}, ${String(value)}`);
+      const next = k === literals.length - 1 ? no : B.newLabel("du.own.l");
+      B.condBr(matches, yes, next);
+      if (next !== no) B.startBlock(next);
+    });
+  }
+
   /** The order a dyn value tries a union's arms in: the canonical order,
    * except that among the record arms, those with more required fields go
    * first, then those with more fields. Records are width-tolerant, so an
@@ -588,8 +716,8 @@ export class LlDyn {
    * discriminant, so it is read again after each one; when its case
    * changed, the tests continue arm by arm after the failed arm, as they
    * would have run from the first arm. A value the runtime cannot classify
-   * that way (a typed capsule, an accessor, an inherited discriminant) takes
-   * the tests arm by arm. */
+   * that way (an accessor, an inherited discriminant) takes the tests arm by
+   * arm. */
   private unionArmsByDiscriminant(
     B: BlockBuilder,
     def: IrUnionDef,
@@ -1717,6 +1845,13 @@ export class LlDyn {
           );
         // Arms in canonical order; any full match answers true.
         const yes = B.newLabel("dm.y");
+        const canonical = def.arms.map((_, tag) => tag);
+        this.capsuleArmFirst(
+          B,
+          def,
+          this.capsuleArms(def, canonical),
+          def.arms.map(() => yes),
+        );
         const values = this.dispatchValues(def);
         if (values !== null) {
           const no = B.newLabel("dm.n");
@@ -1724,7 +1859,7 @@ export class LlDyn {
             B,
             def,
             values,
-            def.arms.map((_, tag) => tag),
+            canonical,
             def.arms.map(() => yes),
             no,
             preserveRefs,
@@ -3225,9 +3360,14 @@ export class LlDyn {
           }
         };
         const order = this.unionArmOrder(def);
+        // With the capsule test, an arm's hit block has two ways in: its
+        // label exists before the arms are tested.
+        const own = this.capsuleArms(def, order);
+        const shared = own.length > 0 ? def.arms.map(() => B.newLabel("dcu.h")) : null;
+        if (shared) this.capsuleArmFirst(B, def, own, shared);
         const values = this.dispatchValues(def);
         if (values !== null) {
-          const hits = def.arms.map(() => B.newLabel("dcu.h"));
+          const hits = shared ?? def.arms.map(() => B.newLabel("dcu.h"));
           const unmatched = B.newLabel("dcu.n");
           this.unionArmsByDiscriminant(
             B,
@@ -3247,7 +3387,7 @@ export class LlDyn {
           B.startBlock(unmatched);
         } else
           for (const i of order) {
-            const lHit = B.newLabel("dcu.h");
+            const lHit = shared?.[i] ?? B.newLabel("dcu.h");
             const lNext = B.newLabel("dcu.n");
             this.unionArmMatch(B, def, i, lHit, lNext, preserveRefs, trustedKinds[i]!);
             B.startBlock(lHit);

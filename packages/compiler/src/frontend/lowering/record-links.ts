@@ -14,7 +14,7 @@
  * for the composed record, and for any other value as before. Only
  * conversions into a type such a surface can observe link their copies
  * (finalizeRecordLinks); programs without them are unchanged. */
-import { varRef } from "../../ir/build.js";
+import { dynUndefinedExpr, varRef } from "../../ir/build.js";
 import {
   BOOL,
   DYN,
@@ -22,6 +22,7 @@ import {
   KEY_ORDER_FIELD,
   STRING,
   arrayOf,
+  isJsonStringifyDynamicType,
   isJsonStringifySafeType,
   type IrExpr,
   type IrFunction,
@@ -40,6 +41,7 @@ import { recordHasOwnHelper, recordKeysArrayCall } from "./lower-calls.js";
 import { callOwn, callOwnOrBuiltin } from "./record-inherited.js";
 import { recordMayKeepSource } from "./record-sources.js";
 import { inspectHelperCall } from "./lower-inspect.js";
+import { classFieldWithoutJsonView } from "./builtins/json.js";
 import { InternalCompilerError } from "../../errors.js";
 import { unsupportedDiag } from "../../diagnostics/diagnostic.js";
 
@@ -242,7 +244,7 @@ export function finalizeRecordLinks(lowerer: Lowerer, functions: IrFunction[]): 
   const scan = scanModule(lowerer, [...functions, ...lowerer.liftedFns]);
   const sourced = scan.sourced;
   keepObservedLinks(lowerer, scan.exposed);
-  refuseUnserializableSources(lowerer, scan.stringified);
+  routeLinkedStringify(lowerer, scan.stringified);
   for (const site of lowerer.recordLinkSites)
     if (lowerer.recordLinks.has(`${site.link.from}:${site.link.to}`))
       linkCopies(site.projection, site.link);
@@ -275,13 +277,12 @@ export function finalizeRecordLinks(lowerer: Lowerer, functions: IrFunction[]): 
 
 /** JSON.stringify writes a linked copy as its composed record, a record of
  * the source's type, so a serialized type that reaches the target of a kept
- * link is as serializable as that link's source type. A call whose source
- * holds something the JSON writer has no case for is refused and names
- * both types. */
-function refuseUnserializableSources(
-  lowerer: Lowerer,
-  stringified: readonly (IrExpr & { kind: "jsonStringify" })[],
-): void {
+ * link is as serializable as that link's source type. When the source needs
+ * the runtime JSON traversal (an `unknown` member, a class instance, a
+ * toJSON method), the call takes it, as a call on a value of the source
+ * type does. When the source holds something no JSON writer handles, the
+ * call is refused and names both types. */
+function routeLinkedStringify(lowerer: Lowerer, stringified: readonly StringifySite[]): void {
   if (lowerer.recordLinks.size === 0 || stringified.length === 0) return;
   const sourcesOf = new Map<string, string[]>();
   for (const link of lowerer.recordLinks.values()) {
@@ -291,10 +292,13 @@ function refuseUnserializableSources(
   }
   const getRecord = (id: string) => lowerer.shapes.get(id);
   const getUnion = (id: string) => lowerer.unions.get(id);
+  const linkSources = (id: string) => sourcesOf.get(id);
+  const rerouted = new Set<IrExpr>();
+  const owners = new Set<IrFunction>();
   const refused = new Set<string>();
-  for (const site of stringified) {
+  for (const { site, fn } of stringified) {
     const t = site.value.type;
-    if (t.kind === "dyn") continue;
+    if (t.kind === "dyn" || rerouted.has(site)) continue;
     // The targets of kept links the serialized type reaches.
     const targets: string[] = [];
     const safe = isJsonStringifySafeType(t, getRecord, getUnion, (id) => {
@@ -303,9 +307,6 @@ function refuseUnserializableSources(
       return sources;
     });
     if (safe) continue;
-    const key = `${site.loc.file}:${site.loc.start}:${typeKey(t)}`;
-    if (refused.has(key)) continue;
-    refused.add(key);
     let pair: { to: string; from: string } | null = null;
     for (const to of targets) {
       const from = sourcesOf
@@ -313,10 +314,10 @@ function refuseUnserializableSources(
         .find(
           (id) =>
             !isJsonStringifySafeType(
-              { kind: "record", shapeId: to },
+              { kind: "record", shapeId: id },
               getRecord,
               getUnion,
-              (target) => (target === to ? [id] : sourcesOf.get(target)),
+              linkSources,
             ),
         );
       if (from !== undefined) {
@@ -326,18 +327,65 @@ function refuseUnserializableSources(
     }
     // The type itself was serializable when its call was lowered.
     if (pair === null) continue;
+    const sourceT: IrType = { kind: "record", shapeId: pair.from };
+    if (
+      isJsonStringifyDynamicType(t, getRecord, getUnion, linkSources) &&
+      classFieldWithoutJsonView(lowerer, sourceT, new Set()) === null
+    ) {
+      rerouted.add(site);
+      owners.add(fn);
+      continue;
+    }
+    const key = `${site.loc.file}:${site.loc.start}:${typeKey(t)}`;
+    if (refused.has(key)) continue;
+    refused.add(key);
     const surface = site.circular === true ? "util.format %j" : "JSON.stringify";
     lowerer.pushDiag(
       unsupportedDiag(
         "SC1090",
         site.loc,
         `${surface} of '${lowerer.fmt({ kind: "record", shapeId: pair.to })}' values converted from ` +
-          `'${lowerer.fmt({ kind: "record", shapeId: pair.from })}' (the value keeps its source object's ` +
-          `other properties, and that type has members the JSON writer cannot serialize)`,
+          `'${lowerer.fmt(sourceT)}' (the value keeps its source object's other properties, and that ` +
+          `type has members the JSON writer cannot serialize)`,
         "serialize an object literal that names the properties to write",
       ),
     );
   }
+  for (const fn of owners) {
+    fn.body = transformStmtList(fn.body, {
+      stmt: (s) => s,
+      expr: (e) => (e.kind === "jsonStringify" && rerouted.has(e) ? runtimeStringify(e) : e),
+    });
+  }
+}
+
+/** The runtime JSON traversal of a typed serialization's value: the boxed
+ * value keeps its identity, so a linked copy is walked as its source
+ * object. A root the traversal omits (its toJSON answered undefined) fails
+ * the checked string result. */
+function runtimeStringify(site: IrExpr & { kind: "jsonStringify" }): IrExpr {
+  const loc = site.loc;
+  const boxed: IrExpr = { kind: "dynFrom", value: site.value, liveRef: true, type: DYN, loc };
+  if (site.circular === true)
+    return { kind: "libCall", fn: "insp.jsonDyn", args: [boxed], type: STRING, loc };
+  const raw: IrExpr = {
+    kind: "libCall",
+    fn: "json.stringifyReplacer",
+    args: [
+      boxed,
+      dynUndefinedExpr(loc),
+      { kind: "strLit", value: site.indent ?? "", type: STRING, loc },
+    ],
+    type: DYN,
+    loc,
+  };
+  return { kind: "dynCheck", value: raw, type: STRING, loc };
+}
+
+/** One JSON serialization (scanModule) and the function that holds it. */
+interface StringifySite {
+  site: IrExpr & { kind: "jsonStringify" };
+  fn: IrFunction;
 }
 
 /** A call of an Object.prototype method by name on a record type runs
@@ -589,9 +637,9 @@ function scanModule(
 ): {
   sourced: Set<string>;
   exposed: IrType[];
-  stringified: (IrExpr & { kind: "jsonStringify" })[];
+  stringified: StringifySite[];
 } {
-  const stringified: (IrExpr & { kind: "jsonStringify" })[] = [];
+  const stringified: StringifySite[] = [];
   const sourced = new Set<string>();
   const seen = new Set<string>();
   const exposed = new Map<string, IrType>();
@@ -619,7 +667,7 @@ function scanModule(
         if (e.kind === "dynFrom") expose(e.value.type);
         if (e.kind === "jsonStringify") {
           expose(e.value.type);
-          stringified.push(e);
+          stringified.push({ site: e, fn });
         }
         if (e.kind === "libCall" && EXPOSING_LIB_CALLS.test(e.fn))
           for (const arg of e.args) expose(arg.type);

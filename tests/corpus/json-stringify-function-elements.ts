@@ -37,6 +37,19 @@ registry["upper"] = (input) => input.toUpperCase();
 registry["count"] = 2;
 console.log(JSON.stringify(registry));
 
+// A function stored under the key toJSON is the hook, whatever the type
+// calls the key: JSON.stringify calls it with the property's key.
+handlers["toJSON"] = () => {};
+console.log(JSON.stringify(handlers), JSON.stringify([handlers]), JSON.stringify({ handlers }));
+const named: Record<string, () => string> = { first: () => "f" };
+console.log(JSON.stringify(named));
+named["toJSON"] = () => "hooked";
+console.log(JSON.stringify(named), JSON.stringify([named]), JSON.stringify({ wrap: named }, null, 1));
+table["toJSON"] = () => 42;
+console.log(JSON.stringify(table), JSON.stringify({ table }));
+registry["toJSON"] = (key) => `key:${key}`;
+console.log(JSON.stringify(registry), JSON.stringify({ registry }), JSON.stringify([registry]));
+
 const grid: Array<Array<(() => void) | number>> = [[1, () => {}], [], [() => {}]];
 console.log(JSON.stringify(grid));
 

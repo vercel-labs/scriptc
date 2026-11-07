@@ -262,11 +262,6 @@ export class LlWalkers {
       case "union":
         this.emitUnionWriter(B, t.unionId);
         break;
-      case "func":
-        // An array or tuple slot holding a function writes null. Record
-        // fields and index-signature entries drop it before this writer.
-        this.puts(B, "%b", "null");
-        break;
       default:
         throw new LlvmUnsupportedError(`jsonStringify:${t.kind}`);
     }
@@ -279,35 +274,6 @@ export class LlWalkers {
     );
     this.host.journalBuilt?.();
     return name;
-  }
-
-  /** The arm tags of a union a property drops instead of writing: its
-   * undefined arm and its function arms, as JSON.stringify omits both. */
-  private droppedTags(t: IrType): number[] {
-    if (t.kind !== "union") return [];
-    const tags: number[] = [];
-    (this.host.unionsById.get(t.unionId)?.arms ?? []).forEach((arm, tag) => {
-      if (arm.kind === "undefinedT" || arm.kind === "func") tags.push(tag);
-    });
-    return tags;
-  }
-
-  /** An i1 that is true when the union value `v` holds one of `tags`. */
-  private holdsDroppedTag(B: BlockBuilder, v: string, unionId: string, tags: number[]): string {
-    const tag = this.unionTag(B, v, unionId);
-    let dropped = "";
-    for (const candidate of tags) {
-      const is = B.tmp();
-      B.line(`${is} = icmp eq i32 ${tag}, ${candidate}`);
-      if (dropped === "") {
-        dropped = is;
-        continue;
-      }
-      const either = B.tmp();
-      B.line(`${either} = or i1 ${dropped}, ${is}`);
-      dropped = either;
-    }
-    return dropped;
   }
 
   /** Loads a record field slot (i8-stored bools trunc to i1). */
@@ -410,7 +376,8 @@ export class LlWalkers {
       const droppable =
         emitFields.some(
           (f) =>
-            this.droppedTags(f.type).length > 0 || (f.optional === true && f.type.kind === "dyn"),
+            undefinedArmTag(f.type, this.host.unionsById) >= 0 ||
+            (f.optional === true && f.type.kind === "dyn"),
         ) || !!shape.indexValue;
       this.putc(B, "%b", "123"); // '{'
       if (!droppable) {
@@ -437,12 +404,14 @@ export class LlWalkers {
           B.line(`store i1 false, ptr ${first}`);
         };
         for (const f of emitFields) {
-          const drops = this.droppedTags(f.type);
+          const utag = undefinedArmTag(f.type, this.host.unionsById);
           const v = this.loadField(B, "%v", shapeId, fieldIndex.get(f.name)!, f.type);
           let skip: string | null = null;
-          if (drops.length > 0 && f.type.kind === "union") {
-            // A field holding undefined or a function: dropped, like Node.
-            const isu = this.holdsDroppedTag(B, v, f.type.unionId, drops);
+          if (utag >= 0 && f.type.kind === "union") {
+            // Undefined-valued field: dropped, like Node.
+            const tag = this.unionTag(B, v, f.type.unionId);
+            const isu = B.tmp();
+            B.line(`${isu} = icmp eq i32 ${tag}, ${utag}`);
             const lw = B.newLabel("jwf.w");
             skip = B.newLabel("jwf.s");
             B.condBr(isu, skip, lw);
@@ -574,9 +543,11 @@ export class LlWalkers {
         return;
       }
       const v = this.loadField(B, "%v", shapeId, fieldIndex.get(fieldName)!, f.type);
-      const drops = this.droppedTags(f.type);
-      if (drops.length > 0 && f.type.kind === "union") {
-        const isUndefined = this.holdsDroppedTag(B, v, f.type.unionId, drops);
+      const utag = undefinedArmTag(f.type, this.host.unionsById);
+      if (utag >= 0 && f.type.kind === "union") {
+        const tag = this.unionTag(B, v, f.type.unionId);
+        const isUndefined = B.tmp();
+        B.line(`${isUndefined} = icmp eq i32 ${tag}, ${utag}`);
         const lWrite = B.newLabel("jwf.write");
         B.condBr(isUndefined, lSkip, lWrite);
         B.startBlock(lWrite);
@@ -654,8 +625,6 @@ export class LlWalkers {
   ): void {
     const iv = shape.indexValue!;
     const host = this.host;
-    // Every entry of an index signature of functions is omitted.
-    if (iv.kind === "func") return;
     const ovfp = B.tmp();
     const ovf = B.tmp();
     B.line(
@@ -709,12 +678,15 @@ export class LlWalkers {
         val = B.tmp();
         B.line(`${val} = call ptr @scr_map_get_str_ref(ptr ${ovf}, ptr ${k}) ; value (+1)`);
       }
-      // Entries holding undefined or a function drop, exactly the
-      // optional-field rule.
+      // Undefined-valued entries drop, exactly the optional-field rule: a
+      // union holding its undefined arm.
       let skipUndef: string | null = null;
-      const drops = this.droppedTags(iv);
-      if (iv.kind === "union" && drops.length > 0)
-        skipUndef = this.holdsDroppedTag(B, val, iv.unionId, drops);
+      if (iv.kind === "union" && undefinedArmTag(iv, this.host.unionsById) >= 0) {
+        const tag = this.unionTag(B, val, iv.unionId);
+        const isu = B.tmp();
+        B.line(`${isu} = icmp eq i32 ${tag}, ${undefinedArmTag(iv, this.host.unionsById)}`);
+        skipUndef = isu;
+      }
       if (skipUndef !== null) {
         const ld = B.newLabel("ovf.d");
         const write = B.newLabel("ovf.w");
@@ -969,10 +941,9 @@ export class LlWalkers {
         B.br(done);
         return;
       }
-      if (arm.kind === "undefinedT" || arm.kind === "func") {
-        // Array and tuple slots stringify undefined and functions as
-        // null. Ordinary record fields drop the key before invoking this
-        // writer.
+      if (arm.kind === "undefinedT") {
+        // Array and tuple slots stringify undefined as null. Ordinary
+        // record fields drop the key before invoking this writer.
         this.puts(B, "%b", "null");
         B.br(done);
         return;

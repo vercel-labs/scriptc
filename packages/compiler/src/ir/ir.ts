@@ -4401,11 +4401,13 @@ export function isJsonStringifyDynamicType(
   t: IrType,
   getRecord: (shapeId: string) => IrRecordShape | undefined,
   getUnion: (unionId: string) => IrUnionDef | undefined,
+  linkSources?: (shapeId: string) => readonly string[] | undefined,
 ): boolean {
+  const links = linkSources === undefined ? undefined : { sources: linkSources, within: false };
   return (
     (t.kind === "record" || t.kind === "array" || t.kind === "union" || isDynTypedRefType(t)) &&
-    isJsonSafeAt(t, getRecord, getUnion, true, false, new Set(), true) &&
-    !isJsonStringifySafeType(t, getRecord, getUnion)
+    isJsonSafeAt(t, getRecord, getUnion, true, false, new Set(), true, links) &&
+    !isJsonStringifySafeType(t, getRecord, getUnion, linkSources)
   );
 }
 
@@ -4460,6 +4462,8 @@ function isJsonSafeAt(
       if (visiting.has(t.shapeId)) return true;
       visiting.add(t.shapeId);
       for (const field of shape.fields) {
+        // Stringification omits a function-valued property of an object.
+        if (stringify && !shape.tuple && field.type.kind === "func") continue;
         if (
           !isJsonSafeAt(
             field.type,
@@ -4554,9 +4558,11 @@ function isJsonSafeAt(
       return false;
     // JSON.stringify drops a function exactly where it drops undefined: a
     // property holding one is omitted and an array or tuple slot writes
-    // null. A function root answers undefined, which is no string.
+    // null, unless the function carries a toJSON property of its own,
+    // which is called. The runtime JSON traversal does all of it; the
+    // type-directed writer only omits a required function member.
     case "func":
-      return stringify && undefinedAllowed;
+      return stringify && undefinedAllowed && nativeFields;
     // Class values stringify as "{}" husks in Node (own enumerable statics
     // aside — not representable type-directedly); rejected like Maps.
     case "classval":

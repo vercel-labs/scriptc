@@ -21,7 +21,6 @@ import {
   isUnitType,
 } from "../../../ir/ir.js";
 import { optionalStringTags } from "./arguments.js";
-import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
 import { constituentTypes } from "../../ts7/checker.js";
 
 /** JSON parse produces checked-dynamic data; a native reviver walks it
@@ -163,21 +162,6 @@ export function lowerJsonMethodCall(
     }
     const optionalString = lowerOptionalStringifyRoot(lowerer, value, indent, loc);
     if (optionalString) return optionalString;
-    // A function root is not serialized: once its argument has run,
-    // JSON.stringify answers undefined.
-    if (value.type.kind === "func") {
-      const missing = lowerer.wrappedUndefined(lowerer.withUndefinedArm(STRING), loc);
-      if (!missing)
-        throw new InternalCompilerError("JSON.stringify of a function needs an undefined arm");
-      if (isSafeToDiscard(value)) return missing;
-      return {
-        kind: "seqExpr",
-        stmts: [{ kind: "exprStmt", expr: value, loc }],
-        result: missing,
-        type: missing.type,
-        loc,
-      };
-    }
     // A program class instance whose class (or a base) declares toJSON:
     // JSON.stringify serializes whatever toJSON(key) returns, so the
     // instance crosses into the runtime walker, which calls the hook
@@ -189,11 +173,21 @@ export function lowerJsonMethodCall(
     // A Buffer serializes through its toJSON ({ type: "Buffer", data }), and
     // another typed array as an object keyed by index: the runtime walker
     // tells them apart by the box.
+    // A function root answers undefined, or what its own toJSON property
+    // returns: the runtime walker decides, on the boxed function.
+    const functionRoot =
+      value.type.kind === "func" &&
+      canBoxFuncIntoDyn(
+        value.type,
+        (id) => lowerer.shapes.get(id),
+        (id) => lowerer.unions.get(id),
+      );
     if (
       value.type.kind === "url" ||
       value.type.kind === "dyn" ||
       value.type.kind === "bytes" ||
       toJsonClass ||
+      functionRoot ||
       isJsonStringifyDynamicType(
         value.type,
         (id) => lowerer.shapes.get(id),
@@ -219,7 +213,7 @@ export function lowerJsonMethodCall(
           : {
               kind: "dynFrom",
               value,
-              ...(value.type.kind === "url" ? {} : { liveRef: true }),
+              ...(value.type.kind === "url" || functionRoot ? {} : { liveRef: true }),
               type: DYN,
               loc,
             };
@@ -482,7 +476,7 @@ function holdsUnwritable(lowerer: Lowerer, t: IrType, visiting: Set<string>): bo
  * a Promise, which the runtime JSON traversal cannot write. The traversal
  * reads class instances through that view, so such a class is refused at
  * compile time instead of throwing when the view is built or written. */
-function classFieldWithoutJsonView(
+export function classFieldWithoutJsonView(
   lowerer: Lowerer,
   t: IrType,
   visiting: Set<string>,

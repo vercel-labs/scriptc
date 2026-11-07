@@ -227,6 +227,15 @@ Each command is one tool: `scriptc_build`, `scriptc_run`, `scriptc_coverage`, `s
   <dt><code>--emit-ir</code></dt>
   <dd>Additive IR side artifact. It is deprecated for executable builds for one release cycle; prefer <code>--emit=ir</code> when IR is the primary output. Library mode retains <code>--emit-ir</code> because <code>--emit</code> does not select library artifacts.</dd>
 
+  <dt><code>--emit-lowered &lt;file&gt;</code></dt>
+  <dd>For work on the compiler itself. Also write the <a href="/docs/how-it-works#lowered-programs">lowered program</a> to the file: the IR the frontend hands the backend, with the sources, the warnings, and a record of the compiler build, the options, and the inputs it was lowered from. The build is otherwise unchanged. Works only with <code>build</code>.</dd>
+
+  <dt><code>--from-lowered &lt;file&gt;</code></dt>
+  <dd>For work on the compiler itself. Build from a file that <code>--emit-lowered</code> wrote instead of type-checking and lowering the sources. The build is refused when the compiler build, an option other than the output paths, a <code>SCRIPTC_*</code> variable the frontend reads, or a file or directory the frontend read differs from what the file records. Such a build takes nothing from the build cache and adds nothing to it. Works only with <code>build</code>.</dd>
+
+  <dt><code>--from-lowered-accept &lt;kind[,kind…]&gt;</code></dt>
+  <dd>Build from the file although the named kinds differ: <code>compiler</code>, <code>options</code>, or <code>inputs</code>. Each accepted difference is reported on stderr. A file written with another IR version is never accepted. Repeatable.</dd>
+
   <dt><code>--keep-llvm</code> / <code>--no-keep-llvm</code></dt>
   <dd>Keep (default) or delete the generated <code>.ll</code> file next to the executable.</dd>
 

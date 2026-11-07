@@ -66,6 +66,21 @@ const SRC = "packages/compiler/src";
 
 export const PROGRAM_FACTS: readonly ProgramFact[] = [
   {
+    name: "member-call-receivers",
+    file: `${SRC}/frontend/lowering/member-call-receivers.ts`,
+    symbol: "memberCallReceivers",
+    source: "symbols",
+    scope: "program",
+    setBy:
+      "a store of a function that reads the receiver of its call (a function with its own `this`, outside classes) into a member, by the member's name; and, once such a function reaches a place the census does not follow, any store of a value it cannot classify",
+    gates:
+      "a member call on a record whose member has that name passes the record as the call's receiver, boxed only if the callee reads it",
+    narrower:
+      "the member's declaring symbol instead of its name, and the function values that can reach the store, by type flow",
+    tracked: "pi-decisions DECISIONS.md 2026-11-07, unbound-method-this slice 2",
+    lowererFields: ["memberReceivers"],
+  },
+  {
     name: "thenables-may-be-defined",
     file: `${SRC}/frontend/lowering/thenables.ts`,
     symbol: "programMayDefineThenables",
@@ -423,18 +438,6 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     tracked: "designs/t262-dc",
     lowererFields: [],
   },
-  {
-    name: "npm-static-js-depth",
-    file: `${SRC}/frontend/program.ts`,
-    symbol: "maxNodeModuleJsDepth",
-    source: "option",
-    scope: "program",
-    setBy: "the `--npm-static` flag, with any package listed",
-    gates: "the checker reads the JavaScript of every package, island packages included",
-    narrower: "the listed packages",
-    tracked: "FOLLOWUPS 2026-10-30",
-    lowererFields: [],
-  },
 ];
 
 /** Why a whole-program scan decides no registered fact.
@@ -660,6 +663,7 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     1,
     "partial-assertion-targets",
   ),
+  decides("frontend/lowering/member-call-receivers.ts#takeCensus", 1, "member-call-receivers"),
   decides("frontend/lowering/primitive-wrappers.ts#programCreatesWrappers", 1, "creates-wrappers"),
   scan(
     "frontend/lowering/symbol-fields.ts#tablePropertyWritten",

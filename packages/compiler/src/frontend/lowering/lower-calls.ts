@@ -1,4 +1,9 @@
 import { lowerIteratorFromDyn } from "./iterator-prototype.js";
+import {
+  memberCallHolder,
+  stableBinding,
+  withMemberCallReceiver,
+} from "./member-call-receivers.js";
 import { programCreatesWrappers } from "./primitive-wrappers.js";
 import {
   arrayClassMemberOwner,
@@ -2264,19 +2269,23 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     );
     if (prim) return prim;
   }
-  // Everything else: evaluate the callee as a value and call through it
-  // (func-typed locals/params/captures, self-recursion, IIFEs, results of
-  // calls). tsc guarantees the callee is callable; anything that lowers to
-  // a non-func IR type was already rejected while lowering the callee.
-  // HYBRID (function-with-properties) values call through their %call slot.
-  let callee = lowerer.lowerExpr(expr.expression);
+  // A member of a record, a tuple or an array called through its value
+  // (`x["f"]()`, `x[i]()`, `x.f!()`, `(x.f)()`): JavaScript passes `x` as
+  // the receiver, and so does this call when the member can hold a function
+  // that reads it (member-call-receivers.ts).
   {
-    const direct = callableInstanceStringCall(lowerer, expr, callee, loc);
-    if (direct) return direct;
+    const holder = memberCallHolder(lowerer, expr);
+    if (holder !== null)
+      return withMemberCallReceiver(lowerer, expr, holder, (receiver) => {
+        const result = lowerCalleeValueCall(lowerer, expr, loc);
+        return receiver !== undefined &&
+          (result.kind === "callValue" || result.kind === "dynCall") &&
+          result.receiver === undefined
+          ? { ...result, receiver }
+          : result;
+      });
   }
-  if (callee.type.kind === "record" || callee.type.kind === "object")
-    callee = lowerer.hybridCallUnwrap(callee);
-  return lowerCallThroughValue(lowerer, expr, callee, loc);
+  return lowerCalleeValueCall(lowerer, expr, loc);
 }
 
 /** A call whose callee chooses between a function value and a library
@@ -2506,6 +2515,22 @@ function structuredResultHoldsCopy(lowerer: Lowerer, t: IrType): boolean {
   if (t.kind !== "union") return false;
   const def = lowerer.unions.get(t.unionId);
   return def !== undefined && def.arms.some((arm) => structuredResultHoldsCopy(lowerer, arm));
+}
+
+/** Everything else: evaluate the callee as a value and call through it
+ * (func-typed locals/params/captures, self-recursion, IIFEs, results of
+ * calls). tsc guarantees the callee is callable; anything that lowers to
+ * a non-func IR type was already rejected while lowering the callee.
+ * HYBRID (function-with-properties) values call through their %call slot. */
+function lowerCalleeValueCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
+  let callee = lowerer.lowerExpr(expr.expression);
+  {
+    const direct = callableInstanceStringCall(lowerer, expr, callee, loc);
+    if (direct) return direct;
+  }
+  if (callee.type.kind === "record" || callee.type.kind === "object")
+    callee = lowerer.hybridCallUnwrap(callee);
+  return lowerCallThroughValue(lowerer, expr, callee, loc);
 }
 
 /** A call through an evaluated callee value: checked-dynamic callees,
@@ -11206,26 +11231,50 @@ export function lowerRecordFieldCall(
       )
     )
       return null;
-    const callee = lowerer.lowerUnionProperty(access);
-    if (callee?.type.kind !== "func") return null;
-    const args = completeFuncValueArgs(lowerer, call, callee.type, locOf(call));
-    const value: IrExpr = {
-      kind: "callValue",
-      callee,
-      args,
-      type: callee.type.ret,
-      loc: locOf(call),
+    const unionCall = (receiver: IrExpr | undefined): IrExpr | null => {
+      const callee = lowerer.lowerUnionProperty(access);
+      if (callee?.type.kind !== "func") return null;
+      const args = completeFuncValueArgs(lowerer, call, callee.type, locOf(call));
+      const value: IrExpr = {
+        kind: "callValue",
+        callee,
+        ...(receiver ? { receiver } : {}),
+        args,
+        type: callee.type.ret,
+        loc: locOf(call),
+      };
+      // An overloaded member's erased result converts to the resolved
+      // overload's type, as on a single record receiver below.
+      return isOverloadedMemberAccess(lowerer, access)
+        ? lowerer.coerceInto(call, value, resolvedOverloadResultType(lowerer, call))
+        : value;
     };
-    // An overloaded member's erased result converts to the resolved
-    // overload's type, as on a single record receiver below.
-    return isOverloadedMemberAccess(lowerer, access)
-      ? lowerer.coerceInto(call, value, resolvedOverloadResultType(lowerer, call))
-      : value;
+    // A TypeScript call whose member can hold a function that reads its
+    // receiver passes the holder, whichever arm it is.
+    if (
+      isJsSourceFile(ts.getSourceFileOfNode(call)) ||
+      !lowerer.memberCallCarriesReceiver(access.name.text)
+    )
+      return unionCall(undefined);
+    if (lowerer.mapTypeOf(lowerer.typeOf(access))?.kind !== "func") return unionCall(undefined);
+    return withMemberCallReceiver(lowerer, call, access.expression, (receiver) => {
+      const carried = unionCall(receiver);
+      if (carried === null)
+        lowerer.unsupported("SC1090", call, "calls of this member through a union of records");
+      return carried;
+    });
   }
   const target = lowerer.fieldTarget(access);
   const loc = locOf(call);
+  // JavaScript passes the record as `this`. A JavaScript source always
+  // does; a TypeScript source does where the member can hold a function
+  // that reads the receiver of its call (member-call-receivers.ts), and
+  // reads a holder nothing can reassign in place.
+  const jsCall = isJsSourceFile(ts.getSourceFileOfNode(call));
+  const passesReceiver =
+    target !== null && (jsCall || lowerer.memberCallCarriesReceiver(access.name.text));
   const receiverLocal =
-    target && isJsSourceFile(ts.getSourceFileOfNode(call))
+    target && passesReceiver && (jsCall || !stableBinding(lowerer, target.obj, access.expression))
       ? lowerer.declareHiddenLocal("%callReceiver", target.obj.type)
       : null;
   const init: IrStmt | null =
@@ -11258,7 +11307,9 @@ export function lowerRecordFieldCall(
       lowerer.checker.getCallSignatures(lowerer.typeOf(access)).length > 0)
   ) {
     const receiver =
-      target && receiverLocal ? lowerer.coerceToExpected(target.obj, DYN) : undefined;
+      target && passesReceiver && (jsCall || lowerer.dynConvertible(target.obj.type))
+        ? lowerer.coerceToExpected(target.obj, DYN)
+        : undefined;
     const spread = call.arguments.nodes.some(ts.isSpreadElement)
       ? lowerSpreadArgsCall(lowerer, call, callee, loc)
       : null;
@@ -11313,10 +11364,10 @@ export function lowerRecordFieldCall(
   // cannot be that receiver; the library's own function fields (the
   // resolve/reject of Promise.withResolvers) never read it.
   let receiver: IrExpr | undefined;
-  if (target && receiverLocal) {
+  if (target && passesReceiver) {
     if (lowerer.dynConvertible(target.obj.type)) {
       receiver = lowerer.coerceToExpected(target.obj, DYN);
-    } else if (!lowerer.isStdlibMember(access)) {
+    } else if (!lowerer.isStdlibMember(access) && isJsSourceFile(ts.getSourceFileOfNode(call))) {
       lowerer.unsupported(
         "SC1090",
         call,
@@ -11339,9 +11390,14 @@ export function lowerRecordFieldCall(
   // back; the boxed thunk would copy it and break identity and mutation
   // sharing. A call that leaves an omitted parameter without an absent
   // spelling still rides the thunk (JavaScript's own arity).
+  // A TypeScript call that carries its holder takes the same lane, with
+  // the receiver attached; a JavaScript call with one keeps the thunk below.
+  const restReceiver = jsCall ? undefined : receiver;
+  const restInit = jsCall ? null : init;
+  const withRestInit = (result: IrExpr): IrExpr =>
+    restInit ? { kind: "seqExpr", stmts: [restInit], result, type: result.type, loc } : result;
   if (
-    init === null &&
-    receiver === undefined &&
+    (jsCall ? init === null && receiver === undefined : true) &&
     callee.type.rest === true &&
     callee.type.restAbi === undefined &&
     !call.arguments.nodes.some(ts.isSpreadElement) &&
@@ -11359,6 +11415,7 @@ export function lowerRecordFieldCall(
       let nativeResult: IrExpr = {
         kind: "callValue",
         callee,
+        ...(restReceiver ? { receiver: restReceiver } : {}),
         args: nativeArgs,
         type: callee.type.ret,
         loc,
@@ -11369,12 +11426,13 @@ export function lowerRecordFieldCall(
         isGenericCallableMemberType(lowerer.typeOf(access), lowerer.checker)
       )
         nativeResult = lowerer.coerceInto(call, nativeResult, resolved);
-      return nativeResult;
+      return withRestInit(nativeResult);
     }
     const boxed: IrExpr = { kind: "dynFrom", value: callee, type: DYN, loc };
     let boxedResult: IrExpr = {
       kind: "dynCall",
       callee: boxed,
+      ...(restReceiver ? { receiver: restReceiver } : {}),
       calleeName: v8CalleeText(call.expression),
       args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
       type: DYN,
@@ -11386,7 +11444,7 @@ export function lowerRecordFieldCall(
       isGenericCallableMemberType(lowerer.typeOf(access), lowerer.checker)
     )
       boxedResult = lowerer.coerceInto(call, boxedResult, resolved);
-    return boxedResult;
+    return withRestInit(boxedResult);
   }
   const args = completeFuncValueArgs(lowerer, call, callee.type, locOf(call));
   let result: IrExpr = {

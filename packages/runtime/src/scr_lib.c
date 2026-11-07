@@ -7974,7 +7974,10 @@ void scr_dir_close_callback(ScrDir *d, ScrDyn *callback) {
 #endif
 
 /* ── node:crypto ─────────────────────────────────────────────────────
- * Randomness comes from arc4random_buf. Hash/Hmac/PBKDF2 follow below;
+ * Randomness comes from arc4random_buf, the system's secure source, on
+ * every call: never from the generator behind Math.random, which is fast
+ * and predictable (tests/harness/math-random-boundary.test.ts holds that
+ * line). Hash/Hmac/PBKDF2 follow below;
  * Buffer allocation itself lives in scr_bytes_io.c, while this unit owns
  * the shared digest implementation and utility validation ladders. */
 
@@ -7982,10 +7985,10 @@ void scr_dir_close_callback(ScrDir *d, ScrDyn *callback) {
  * Math.min/max at two arguments: the ECMA folds — C's fmin/fmax are NOT
  * these (they return the non-NaN operand where JS lets NaN poison, and
  * leave the ±0 order unspecified). Math.random(): a uniform double in
- * [0,1) at the spec's 53-bit granularity, drawn from arc4random_buf —
- * the same CSPRNG behind the crypto lowerings. Same distribution as
- * Node's, necessarily a different sequence (SEMANTICS.md 62); range and
- * granularity are pinned differentially by invariant, not by bytes. */
+ * [0,1) at the spec's 53-bit granularity, from a per-thread xorshift128+
+ * generator (scr_math_random below). Same distribution as Node's,
+ * necessarily a different sequence; range and granularity are pinned
+ * differentially by invariant, not by bytes. */
 
 double scr_math_min(double a, double b) {
   if (isnan(a) || isnan(b)) return (double)NAN;
@@ -8061,12 +8064,39 @@ double scr_math_imul(double a, double b) {
              : (double)bits;
 }
 
+/* Math.random's generator: xorshift128+ with the shifts V8 and
+ * JavaScriptCore use (23, 17, 26), one state per thread, seeded once per
+ * thread with 128 bits from the system's secure source. ECMA-262 asks only
+ * for an implementation-defined, approximately uniform distribution, and
+ * the engines' Math.random is not cryptographically secure either; a
+ * secure draw per number is a kernel call on glibc. The crypto functions
+ * (randomBytes, randomFill, randomInt, randomUUID, getRandomValues, key
+ * generation) never read this state: they call arc4random_buf themselves.
+ *
+ * The state is never zero once seeded: the step is an invertible linear map,
+ * so it takes nonzero states to nonzero states, and zero doubles as "not
+ * seeded yet". A worker thread has its own state (SCR_TL) and seeds it on
+ * its first call, so no two threads share a stream. */
+static SCR_TL uint64_t scr_math_random_state[2];
+
+static SCR_COLD void scr_math_random_seed(void) {
+  do arc4random_buf(scr_math_random_state, sizeof scr_math_random_state);
+  while ((scr_math_random_state[0] | scr_math_random_state[1]) == 0);
+}
+
 double scr_math_random(void) {
-  uint64_t r;
-  arc4random_buf(&r, sizeof r);
-  /* The top 53 bits scaled by 2^-53: every representable k/2^53 in [0,1)
-   * is equally likely — V8's own construction. */
-  return (double)(r >> 11) * 0x1.0p-53;
+  if ((scr_math_random_state[0] | scr_math_random_state[1]) == 0) scr_math_random_seed();
+  uint64_t s1 = scr_math_random_state[0];
+  uint64_t s0 = scr_math_random_state[1];
+  scr_math_random_state[0] = s0;
+  s1 ^= s1 << 23;
+  s1 ^= s1 >> 17;
+  s1 ^= s0 ^ (s0 >> 26);
+  scr_math_random_state[1] = s1;
+  /* The top 53 bits of the sum scaled by 2^-53: every representable k/2^53
+   * in [0,1) is equally likely. The sum's low bits are its weakest, and
+   * the shift drops them. */
+  return (double)((s0 + s1) >> 11) * 0x1.0p-53;
 }
 
 

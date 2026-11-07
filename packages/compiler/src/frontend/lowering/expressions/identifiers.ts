@@ -1332,7 +1332,7 @@ function cjsExportAccessorRead(lowerer: Lowerer, ident: ts.Identifier): IrExpr |
 export function uriFunctionValue(lowerer: Lowerer, which: string, loc: SrcLoc): IrExpr {
   const name = `%builtin.${which}`;
   const type = funcOf([DYN], STRING);
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const value: IrExpr = {
       kind: "libCall",
       fn: "dyn.toStringCoerce",

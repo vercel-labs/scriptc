@@ -413,7 +413,7 @@ export function classInstanceOf(
     { localId: "value", name: "value", type: DYN },
     ...(classValue ? [{ localId: "class", name: "class", type: classValue.type }] : []),
   ];
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const candidate = varRef("candidate", DYN, loc);
     const prototype = classPrototypeData(
       lowerer,
@@ -947,7 +947,7 @@ export function classForInHasKey(
   const name = "%dyn.class.forInHasKey";
   lowerer.shareHelper(name);
   lowerer.shareHelper("%dyn.class.forInBagHas");
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     // The read-only table: a recheck never creates an instance's table, which
     // is undefined while the instance has no own dynamic properties.
     const bagHas = "%dyn.class.forInBagHas";

@@ -16,7 +16,6 @@ import {
 } from "../../ir/ir.js";
 import { mangleRecordClone, mangleRecordNew } from "../mangle.js";
 import { arrNewCall, elemAccess } from "./shapes.js";
-import { recordViewTestLines } from "./record-views.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { offsetIndex } from "./expr-bytes.js";
 import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
@@ -1637,12 +1636,10 @@ export function emitRecordExpr(
       const position = host.recordsById.get(e.shapeId)!.fields.findIndex((f) => f.name === e.field);
       host.declare(`declare ptr @scr_record_view_slot(ptr, ${host.sizeType})`);
       host.declare(`declare ptr @scr_record_view_extra(ptr, ptr, ${host.sizeType})`);
-      const isView = B.tmp();
+      const isView = host.recordIsView(obj.name, e.shapeId);
       const rhFrom = B.currentLabel();
       const view = B.newLabel("rh.view");
       const done = B.newLabel("rh.done");
-      for (const line of recordViewTestLines(host.sizeType, obj.name, isView))
-        B.line(line.trimStart());
       // Not a view: every field of the target has its slot.
       B.condBr(isView, view, done, `, !prof !{!"branch_weights", i32 1, i32 1000}`);
       B.startBlock(view);

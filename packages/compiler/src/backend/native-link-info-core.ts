@@ -139,6 +139,9 @@ export interface NativeLinkFeatures {
   /** Reflect.getPrototypeOf's primitive-target check compiles
    * scr_dyn_reflect_proto.c; absent (false) otherwise. */
   reflectProtoTarget?: boolean;
+  /** A partial record assertion to a type whose values may be frozen
+   * compiles scr_record_view_frozen.c; absent (false) otherwise. */
+  recordViewFrozen?: boolean;
   /** A generator that binds its parameters at the call: scr_gen_bind.c.
    * Absent (false) for programs without one. */
   genBind?: boolean;

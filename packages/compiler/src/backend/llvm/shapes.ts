@@ -2488,8 +2488,14 @@ export function emitRecordShapes(
         refMembers.map((m) => m.type),
         directTargets,
       );
-    // Closed layouts can carry a kept record source (record-sources.ts).
-    const observers = recordMayKeepSource(shape) ? "weak-or-source" : "weak";
+    // Closed layouts can carry a kept record source (record-sources.ts), and
+    // so can the record a partial view views, also one without fields (an
+    // empty literal asserted to a wider type): the properties its views add
+    // are kept by its address, and must go when it is freed.
+    const observers =
+      recordMayKeepSource(shape) || host.recordViews?.partialSources.has(shape.id) === true
+        ? "weak-or-source"
+        : "weak";
     // A segmented teardown loads its fields, releases its own block, and
     // then releases the fields (segmentTeardownLines).
     const loads: string[] = [];
@@ -2665,7 +2671,14 @@ export function emitRecordShapes(
           // viewed record lacks, so the copy stops with the program's own
           // message (a source-level read threw first).
           const partial = host.recordViews.partialTargets.has(shape.id);
-          host.declare(`declare ptr @scr_record_view_slot(ptr, ${host.sizeType})`);
+          // A type whose values may be frozen asks about a marked source: a
+          // frozen record answers its own slot.
+          const marked = host.recordViews.marked.has(shape.id);
+          host.declare(
+            marked
+              ? `declare ptr @scr_record_marked_slot(ptr, ${host.sizeType}, ptr)`
+              : `declare ptr @scr_record_view_slot(ptr, ${host.sizeType})`,
+          );
           const fromView = partial
             ? [
                 `  %sn${i} = icmp eq ptr %sw${i}, null`,
@@ -2681,7 +2694,9 @@ export function emitRecordShapes(
             ...recordViewTestLines(host.sizeType, "%src", `%sr${i}v`),
             `  br i1 %sr${i}v, label %sv${i}.view, label %sv${i}.join`,
             `sv${i}.view:`,
-            `  %sw${i} = call ptr @scr_record_view_slot(ptr %src, ${host.sizeType} ${i})`,
+            marked
+              ? `  %sw${i} = call ptr @scr_record_marked_slot(ptr %src, ${host.sizeType} ${i}, ptr %so${i})`
+              : `  %sw${i} = call ptr @scr_record_view_slot(ptr %src, ${host.sizeType} ${i})`,
             ...fromView,
             `sv${i}.join:`,
             `  %sp${i} = phi ptr [ %so${i}, %${i === 0 ? "entry" : `sv${i - 1}.join`} ], [ %sw${i}, %sv${i}.view ]`,

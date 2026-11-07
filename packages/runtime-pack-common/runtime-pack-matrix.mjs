@@ -207,6 +207,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // Reflect.getPrototypeOf's primitive-target check; a unit of its own so
   // scr_json.c keeps its layout for every program that never reflects.
   ["scr_dyn_reflect_proto.c", "reflectProtoTarget"],
+  // Record views of types whose values may also be frozen; a unit of its own
+  // so scr_json.c keeps its layout for every program without one.
+  ["scr_record_view_frozen.c", "recordViewFrozen"],
   // ChildProcess listener removal (off/removeListener) and signalCode; a
   // unit of its own so scr_child.c's layout stays put for every program.
   ["scr_child_lifecycle.c", "childLifecycle"],

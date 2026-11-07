@@ -298,6 +298,7 @@ export class LlWalkers {
         this.host.rcMode === undefined,
         (text) => this.host.cstr(text),
         this.host.recordViews?.partialTargets.has(shapeId) === true,
+        this.host.recordViews?.marked.has(shapeId) === true,
       );
     } else {
       p = B.tmp();

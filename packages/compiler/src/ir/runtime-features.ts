@@ -1476,6 +1476,18 @@ const RUNTIME_FEATURE_RULES = {
   /** Reflect.getPrototypeOf's primitive-target check (scr_dyn_reflect_proto.c,
    * a unit of its own so scr_json.c keeps its layout). */
   reflectProtoTarget: rule({ fns: ["dyn.reflectGetPrototypeTarget"] }),
+  /** A partial record assertion to a type whose values may be frozen
+   * (scr_record_view_frozen.c): a view of such a type shares the frozen bit
+   * with frozen records, and the unit tells the two apart. The frontend
+   * keeps the asserted type and the literal's own type freezable together
+   * (frozen-records.ts), so the asserted type decides. */
+  recordViewFrozen: rule({
+    expr: (node, tables) =>
+      node.kind === "dynCheck" &&
+      node.partialView === true &&
+      node.type.kind === "record" &&
+      tables().records.get(node.type.shapeId)?.freezable === true,
+  }),
   /** A generator that binds its parameters at the call (scr_gen_bind.c):
    * the spawn wrapper's eager step imports the bind helper, and every other
    * program links the default runtime objects. */
@@ -2038,6 +2050,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynCollections: false,
     dynIntegrityQueries: false,
     reflectProtoTarget: false,
+    recordViewFrozen: false,
     dynBuffer: false,
     dynBufferMembers: false,
     bufferPrototypeObject: false,

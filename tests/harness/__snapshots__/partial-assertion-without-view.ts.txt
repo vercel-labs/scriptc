@@ -1,35 +1,35 @@
-partial-assertion-without-view.ts:10:18 - error SC3001: the LLVM backend does not support this construct yet (partialRecordAssertion:frozen)
+partial-assertion-without-view.ts:12:13 - error SC3001: the LLVM backend does not support this construct yet (partialRecordAssertion:cyclic)
 
-   9 | function build(scale: number): Record<Token, string | number> {
-  10 |   const colors = {} as Record<Token, string | number>;
-     |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  11 |   for (const [token, slot] of Object.entries(SLOTS) as [Token, number][]) {
-
-  hint: this object literal leaves required properties of the asserted type unwritten, and values of the asserted type may be frozen in this program, so the object cannot be completed in place: write every required property in the literal, or collect the properties in a Record<string, T> or Partial<T> value and assert that once it is complete
-
-partial-assertion-without-view.ts:28:13 - error SC3001: the LLVM backend does not support this construct yet (partialRecordAssertion:cyclic)
-
-  27 | function handler(): Handler {
-  28 |   const h = { run: () => 41 } as Handler;
+  11 | function handler(): Handler {
+  12 |   const h = { run: () => 41 } as Handler;
      |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  29 |   h.label = "h";
+  13 |   h.label = "h";
 
   hint: this object literal leaves required properties of the asserted type unwritten, and values of the asserted type may be part of a reference cycle, so the object cannot be completed in place: write every required property in the literal, or collect the properties in a Record<string, T> or Partial<T> value and assert that once it is complete
 
-partial-assertion-without-view.ts:43:13 - error SC3001: the LLVM backend does not support this construct yet (partialRecordAssertion:shared)
+partial-assertion-without-view.ts:27:13 - error SC3001: the LLVM backend does not support this construct yet (partialRecordAssertion:shared)
 
-  42 | function circle(radius: number): Circle | Square {
-  43 |   const c = { kind: "circle" } as Circle;
+  26 | function circle(radius: number): Circle | Square {
+  27 |   const c = { kind: "circle" } as Circle;
      |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  44 |   c.radius = radius;
+  28 |   c.radius = radius;
 
   hint: this object literal leaves required properties of the asserted type unwritten, and the asserted type is one arm of a union of object types, is published to another unit, or the program starts worker threads, so the object cannot be completed in place: write every required property in the literal, or collect the properties in a Record<string, T> or Partial<T> value and assert that once it is complete
 
-partial-assertion-without-view.ts:54:16 - error SC3001: the LLVM backend does not support this construct yet (partialRecordAssertion:cyclic)
+partial-assertion-without-view.ts:38:16 - error SC3001: the LLVM backend does not support this construct yet (partialRecordAssertion:cyclic)
 
-  53 | function item(name: string, next: Item | undefined): Item {
-  54 |   const made = {} as Item;
+  37 | function item(name: string, next: Item | undefined): Item {
+  38 |   const made = {} as Item;
      |                ^~~~~~~~~~
-  55 |   made.name = name;
+  39 |   made.name = name;
 
   hint: this object literal leaves required properties of the asserted type unwritten, and values of the asserted type may be part of a reference cycle, so the object cannot be completed in place: write every required property in the literal, or collect the properties in a Record<string, T> or Partial<T> value and assert that once it is complete
+
+partial-assertion-without-view.ts:49:18 - error SC3001: the LLVM backend does not support this construct yet (partialRecordAssertion:layout)
+
+  48 |   const backward: Span = { to: 3, from: 4 };
+  49 |   const filled = {} as Span;
+     |                  ^~~~~~~~~~
+  50 |   filled.to = 5;
+
+  hint: this object literal leaves required properties of the asserted type unwritten, and the asserted type is a tuple, has an index signature or accessors, or its values keep more than one property order, so the object cannot be completed in place: write every required property in the literal, or collect the properties in a Record<string, T> or Partial<T> value and assert that once it is complete

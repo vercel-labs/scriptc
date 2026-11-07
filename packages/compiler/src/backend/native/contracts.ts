@@ -169,6 +169,9 @@ export interface CcOptions {
   /** Reflect.getPrototypeOf's primitive-target check: compiles
    * scr_dyn_reflect_proto.c. */
   reflectProtoTarget?: boolean;
+  /** A partial record assertion to a type whose values may be frozen:
+   * compiles scr_record_view_frozen.c. */
+  recordViewFrozen?: boolean;
   /** A generator that binds its parameters at the call: compiles
    * scr_gen_bind.c. */
   genBind?: boolean;

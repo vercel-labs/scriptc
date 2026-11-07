@@ -26,7 +26,17 @@
  * A write to such a field lands in that store (scr_record_view_extra_set),
  * and a read converts it back to the field type, so a view grows the
  * properties a program writes; the frontend's checked read of a field
- * nothing wrote throws its TypeError first. */
+ * nothing wrote throws its TypeError first.
+ *
+ * A partial assertion may name a type whose values the program also
+ * freezes. The frozen bit of such a type's values is then shared: a MARKED
+ * value (the bit, a count, no program-lifetime bit) is a view or a frozen
+ * record, and the record-source table tells which
+ * (scr_record_view_frozen.c). The inline test is the same; a marked value
+ * asks the table out of line, so an unfrozen record that is no view pays
+ * what any view target's value pays. A view has no frozen state of its
+ * own: freezing it freezes the record it views, and its frozen answer is
+ * that record's (`marked` below). */
 import {
   isDirentShape,
   KEY_ORDER_FIELD,
@@ -36,6 +46,7 @@ import {
   type IrModule,
   type IrRecordShape,
   type IrType,
+  type IrUnionDef,
   type SrcLoc,
 } from "../../ir/ir.js";
 import { everyStmtList } from "../../ir/traverse.js";
@@ -54,6 +65,13 @@ export interface RecordViews {
   readonly partialTargets: ReadonlySet<string>;
   /** Whether some partial source of view target `target` lacks `field`. */
   partialMissing(target: string, field: string): boolean;
+  /** The record shapes partial views view: a viewed record keeps the
+   * properties its views add beside itself (scr_record_view_extra_set), so
+   * its free reports to the record-source table whatever its layout. */
+  readonly partialSources: ReadonlySet<string>;
+  /** View targets whose values may also be frozen records: a marked value
+   * of one asks the record-source table whether it is a view. */
+  readonly marked: ReadonlySet<string>;
   /** The partial record assertions that get no view and whose checked
    * conversion therefore cannot succeed: the literal leaves a field
    * unwritten that cannot hold `undefined`. In source order. */
@@ -72,7 +90,8 @@ export interface DeclinedPartial {
 export const PARTIAL_DECLINE_TEXT: Record<PartialDeclineReason, string> = {
   layout:
     "the asserted type is a tuple, has an index signature or accessors, or its values keep more than one property order",
-  frozen: "values of the asserted type may be frozen in this program",
+  frozen:
+    "values of only one of the asserted type and the literal's own type may be frozen in this program",
   cyclic: "values of the asserted type may be part of a reference cycle",
   shared:
     "the asserted type is one arm of a union of object types, is published to another unit, or the program starts worker threads",
@@ -91,6 +110,8 @@ export const NO_RECORD_VIEWS: RecordViews = {
   partial: () => false,
   partialTargets: new Set(),
   partialMissing: () => false,
+  partialSources: new Set(),
+  marked: new Set(),
   declinedPartials: [],
 };
 
@@ -288,7 +309,10 @@ export function planRecordViews(mod: IrModule, options: ViewOptions): RecordView
       decline("layout");
       continue;
     }
-    if (target.freezable === true || source.freezable === true) {
+    // A view writes its record's slots through the target type and is frozen
+    // through either name, so both types guard their writes or neither does
+    // (frozen-records.ts keeps the two in step).
+    if ((target.freezable === true) !== (source.freezable === true)) {
       decline("frozen");
       continue;
     }
@@ -365,21 +389,24 @@ export function planRecordViews(mod: IrModule, options: ViewOptions): RecordView
     }
     missing.set(id, absent);
   }
+  const marked = new Set<string>();
+  for (const id of targets) if (shapes.get(id)?.freezable === true) marked.add(id);
+  const partialSources = new Set<string>();
+  for (const list of partials.values()) for (const source of list) partialSources.add(source);
   return {
     targets,
     sources: (target) => sources.get(target) ?? [],
     partial: (target, source) => partials.get(target)?.has(source) === true,
     partialTargets: new Set(partials.keys()),
     partialMissing: (target, field) => missing.get(target)?.has(field) === true,
+    partialSources,
+    marked,
     declinedPartials,
   };
 }
 
 /** Whether a checked conversion into `type` accepts `undefined`. */
-function admitsUndefined(
-  type: IrType,
-  unions: ReadonlyMap<string, { arms: readonly IrType[] }>,
-): boolean {
+function admitsUndefined(type: IrType, unions: ReadonlyMap<string, IrUnionDef>): boolean {
   switch (type.kind) {
     case "dyn":
     case "jsval":
@@ -394,12 +421,11 @@ function admitsUndefined(
 }
 
 /** Lines setting `dest` (i1) to whether the record `obj` of a view target
- * type is a view. A view's rc word carries the frozen bit (scr_rc.h
- * SCR_RC_FROZEN), which no other value of such a type has: view targets
- * are never freezable, and a word with the program-lifetime bit (an
- * immortal one included) is no view, so a view's word is the frozen bit
- * plus a count. The
- */
+ * type is MARKED: its rc word carries the frozen bit (scr_rc.h
+ * SCR_RC_FROZEN) beside a count, with no program-lifetime bit (an immortal
+ * word included). Every view is marked. Where no value of the type can be
+ * frozen, a marked value is a view; where one can (RecordViews.marked), it
+ * is a view or a frozen record, and recordViewTest asks which. */
 export function recordViewTestLines(sizeType: "i32" | "i64", obj: string, dest: string): string[] {
   // The frozen bit with a count and no program-lifetime bit: one range.
   const [bit, span] =
@@ -411,6 +437,34 @@ export function recordViewTestLines(sizeType: "i32" | "i64", obj: string, dest: 
   ];
 }
 
+/** Whether the record `obj` of view target shape is a view (an i1). A type
+ * whose values may be frozen (`marked`) asks the record-source table about
+ * a marked value (scr_record_marked_is_view), out of line. */
+export function recordViewTest(
+  B: BlockBuilder,
+  sizeType: "i32" | "i64",
+  obj: string,
+  declare: (decl: string) => void,
+  marked: boolean,
+): string {
+  const bit = B.tmp();
+  for (const line of recordViewTestLines(sizeType, obj, bit)) B.line(line.trimStart());
+  if (!marked) return bit;
+  declare(`declare zeroext i1 @scr_record_marked_is_view(ptr)`);
+  const from = B.currentLabel();
+  const ask = B.newLabel("rv.marked");
+  const join = B.newLabel("rv.tested");
+  B.condBr(bit, ask, join, `, !prof !{!"branch_weights", i32 1, i32 1000}`);
+  B.startBlock(ask);
+  const view = B.tmp();
+  B.line(`${view} = call zeroext i1 @scr_record_marked_is_view(ptr ${obj})`);
+  B.br(join);
+  B.startBlock(join);
+  const answer = B.tmp();
+  B.line(`${answer} = phi i1 [ false, %${from} ], [ ${view}, %${ask} ]`);
+  return answer;
+}
+
 /** The address of field `position` (declaration index) of the record
  * `obj` of view-target shape `struct`: the slot itself, or the viewed
  * record's slot when `obj` is a view. Optimized builds test the mark
@@ -420,7 +474,11 @@ export function recordViewTestLines(sizeType: "i32" | "i64", obj: string, dest: 
  * `partial` names a shape a PARTIAL view may present: its viewed record can
  * lack the field, and the slot lookup answers NULL there (scr_record_view_slot),
  * so the address stops with `scr_trap` and `cstr(PARTIAL_VIEW_ABSENT)`. The
- * message is the program's own constant; the runtime carries none. */
+ * message is the program's own constant; the runtime carries none.
+ *
+ * `marked` names a shape whose values may also be frozen: a marked value's
+ * lookup answers the viewed record's slot for a view and the value's own
+ * slot for a frozen record (scr_record_marked_slot). */
 export function recordViewFieldPtr(
   B: BlockBuilder,
   sizeType: "i32" | "i64",
@@ -432,9 +490,10 @@ export function recordViewFieldPtr(
   outOfLine: boolean,
   cstr: (text: string) => string,
   partial = false,
+  marked = false,
 ): string {
   if (outOfLine) {
-    const field = "scr_record_view_field";
+    const field = marked ? "scr_record_marked_field" : "scr_record_view_field";
     declare(`declare ptr @${field}(ptr, ${sizeType}, ${sizeType})`);
     const ptr = B.tmp();
     B.line(
@@ -461,9 +520,16 @@ export function recordViewFieldPtr(
   // Views are rare: the slot lookup stays out of line.
   B.condBr(isView, view, join, `, !prof !{!"branch_weights", i32 1, i32 1000}`);
   B.startBlock(view);
-  declare(`declare ptr @scr_record_view_slot(ptr, ${sizeType})`);
   const viewed = B.tmp();
-  B.line(`${viewed} = call ptr @scr_record_view_slot(ptr ${obj}, ${sizeType} ${position})`);
+  if (marked) {
+    declare(`declare ptr @scr_record_marked_slot(ptr, ${sizeType}, ptr)`);
+    B.line(
+      `${viewed} = call ptr @scr_record_marked_slot(ptr ${obj}, ${sizeType} ${position}, ptr ${own})`,
+    );
+  } else {
+    declare(`declare ptr @scr_record_view_slot(ptr, ${sizeType})`);
+    B.line(`${viewed} = call ptr @scr_record_view_slot(ptr ${obj}, ${sizeType} ${position})`);
+  }
   let viewFrom = view;
   if (partial) {
     const absent = B.tmp();

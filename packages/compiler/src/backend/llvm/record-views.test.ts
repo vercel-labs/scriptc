@@ -259,17 +259,75 @@ console.log(p.x + p.y);
   ).toEqual([]);
 });
 
-test("a partial assertion to a type the program freezes is declined as frozen", async () => {
-  expect(
-    await declinedReasons(`
+test("a partial assertion to a type the program freezes gets a view whose mark the table reads", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-record-views-"));
+  try {
+    const entry = join(dir, "main.ts"),
+      outPath = join(dir, "main.ir.json");
+    await writeFile(
+      entry,
+      `
 type Point = { x: number; y: number };
 const p = {} as Point;
 p.x = 1;
 p.y = 2;
 const fixed: Point = { x: 0, y: 0 };
 console.log(p.x + p.y, Object.isFrozen(Object.freeze(fixed)));
-`),
-  ).toEqual(["frozen"]);
+`,
+    );
+    const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
+    const mod: IrModule = deserializeModule(await readFile(outPath, "utf8"));
+    const point = (mod.records ?? []).find(
+      (shape) => shape.fields.map((f) => f.name).join(",") === "x,y",
+    )!;
+    const literal = (mod.records ?? []).find((shape) => shape.fields.length === 0)!;
+    // The asserted type and the literal's own type are freezable together:
+    // the object is frozen through either name.
+    expect(point.freezable).toBe(true);
+    expect(literal.freezable).toBe(true);
+    const views = planRecordViews(mod, { traced: () => false, excluded: () => false });
+    expect(views.declinedPartials).toEqual([]);
+    expect(views.partial(point.id, literal.id)).toBe(true);
+    expect([...views.marked]).toEqual([point.id]);
+    // A marked value asks the record-source table whether it is a view, and
+    // the unit that answers is linked for this program only.
+    const llvm = emitLlvmModule(mod);
+    // (Optimized builds test the mark inline and ask for the slot; this
+    // emission makes the field address one call.)
+    expect(llvm).toMatch(/@scr_record_marked_(slot|field)\(/);
+    expect(llvm).toContain("@scr_record_marked_frozen(");
+    expect(llvm).toContain("@scr_dyn_record_view_kept(");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a view target no value of which is frozen keeps the unmarked test", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-record-views-"));
+  try {
+    const entry = join(dir, "main.ts"),
+      outPath = join(dir, "main.ir.json");
+    await writeFile(
+      entry,
+      `
+type Point = { x: number; y: number };
+const p = {} as Point;
+p.x = 1;
+p.y = 2;
+console.log(p.x + p.y, Object.isFrozen(p));
+`,
+    );
+    const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
+    const mod: IrModule = deserializeModule(await readFile(outPath, "utf8"));
+    const views = planRecordViews(mod, { traced: () => false, excluded: () => false });
+    expect(views.partialTargets.size).toBe(1);
+    expect(views.marked.size).toBe(0);
+    expect(emitLlvmModule(mod)).not.toContain("@scr_record_marked_");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("a partial literal that holds a function is declined as possibly cyclic", async () => {
@@ -287,10 +345,9 @@ test("a declined partial assertion whose missing fields all admit undefined is n
   // The ordinary checked conversion reads undefined into an untyped field.
   expect(
     await declinedReasons(`
-type Loose = { tag: string; payload: unknown };
-const made = { tag: "t" } as Loose;
-const fixed: Loose = { tag: "f", payload: 1 };
-console.log(made.tag, Object.isFrozen(Object.freeze(fixed)));
+type Loose = { run: () => string; payload: unknown };
+const made = { run: () => "t" } as Loose;
+console.log(made.run());
 `),
   ).toEqual([]);
 });

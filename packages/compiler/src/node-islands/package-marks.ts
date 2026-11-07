@@ -102,11 +102,20 @@ export function checkPackageMarks(
   const unloaded = new Set<string>();
   if (marks.length === 0) return { problems, unloaded };
   const loaded = new Set<string>();
+  // Every directory a package of the program is installed in: one package
+  // name can be loaded from several installations, each with dependencies
+  // of its own.
   const dirs = [dirname(entryPath)];
+  const known = new Set(dirs);
+  const lookFrom = (dir: string): void => {
+    if (known.has(dir)) return;
+    known.add(dir);
+    dirs.push(dir);
+  };
   for (const module of scan.modules) {
     if (module.origin !== "npm" || module.packageName === null) continue;
-    if (!loaded.has(module.packageName) && module.packageDir !== null) dirs.push(module.packageDir);
     loaded.add(module.packageName);
+    if (module.packageDir !== null) lookFrom(module.packageDir);
   }
   for (const edge of scan.edges) loaded.add(edge.to);
   for (const refusal of scan.refusals) loaded.add(refusal.package);
@@ -131,7 +140,7 @@ export function checkPackageMarks(
         if (dir === null) continue;
         pending.delete(name);
         unloaded.add(name);
-        if (!dirs.includes(dir)) dirs.push(dir);
+        lookFrom(dir);
         found = true;
         break;
       }
@@ -139,7 +148,10 @@ export function checkPackageMarks(
   }
   const loc: SrcLoc = { file: entryPath, start: 0, end: 0 };
   for (const mark of unmatched) {
-    if (unloaded.has(mark.name)) continue;
+    // An installed name is an empty selection for --npm-static only: a
+    // --native mark of the same name is still a mark on a package the
+    // program does not load.
+    if (mark.flag === "--npm-static" && unloaded.has(mark.name)) continue;
     // A path inside a package the program loads: the package is the unit.
     const owner = packageNameOfSpecifier(mark.name);
     const inside = owner !== mark.name && loaded.has(owner);

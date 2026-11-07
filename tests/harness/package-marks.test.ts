@@ -129,6 +129,115 @@ describe("--native and --npm-static marks", () => {
     expect(await build(dir, { npmStatic: ["deep-dep"] })).toEqual([notInstalled("deep-dep")]);
   });
 
+  test("a name both flags carry is refused for --native and an empty selection for --npm-static", async () => {
+    const dir = program();
+    expect(await build(dir, { native: ["unused-pkg"], npmStatic: ["unused-pkg"] })).toEqual([
+      notLoaded("unused-pkg"),
+    ]);
+    expect(await build(dir, { native: ["absent"], npmStatic: ["absent"] })).toEqual([
+      notLoaded("absent"),
+      notInstalled("absent"),
+    ]);
+  });
+
+  test("a dependency installed inside a second installation of a loaded package is found", async () => {
+    // host-pkg brings its own copy of plain-pkg, and only that copy
+    // installs inner-dep: the program loads both installations of
+    // plain-pkg, and each is a place a named dependency may live.
+    const dir = program();
+    const at = (path: string, files: Record<string, string>): void => {
+      mkdirSync(join(dir, path), { recursive: true });
+      for (const [file, text] of Object.entries(files)) writeFileSync(join(dir, path, file), text);
+    };
+    at("node_modules/host-pkg", {
+      "package.json":
+        '{ "name": "host-pkg", "version": "1.0.0", "main": "index.js", "types": "index.d.ts" }\n',
+      "index.js":
+        '"use strict";\nconst { twice } = require("plain-pkg");\nexports.quad = function quad(n) {\n  return twice(twice(n));\n};\n',
+      "index.d.ts": "export declare function quad(n: number): number;\n",
+    });
+    at("node_modules/host-pkg/node_modules/plain-pkg", {
+      "package.json":
+        '{ "name": "plain-pkg", "version": "2.0.0", "main": "index.js", "types": "index.d.ts" }\n',
+      "index.js": '"use strict";\nexports.twice = function twice(n) {\n  return n + n;\n};\n',
+      "index.d.ts": "export declare function twice(n: number): number;\n",
+    });
+    at("node_modules/host-pkg/node_modules/plain-pkg/node_modules/inner-dep", {
+      "package.json": '{ "name": "inner-dep", "version": "1.0.0", "main": "index.js" }\n',
+      "index.js": "exports.x = 1;\n",
+    });
+    writeFileSync(
+      join(dir, "both.ts"),
+      'import { twice } from "plain-pkg";\nimport { quad } from "host-pkg";\nconsole.log(twice(4), quad(1));\n',
+    );
+    expect(await build(dir, {}, "both.ts")).toEqual(["ok"]);
+    expect(await build(dir, { npmStatic: ["inner-dep"] }, "both.ts")).toEqual(["ok"]);
+    // The entry that loads only the first installation has nowhere to
+    // find it.
+    expect(await build(dir, { npmStatic: ["inner-dep"] })).toEqual([notInstalled("inner-dep")]);
+  });
+
+  test("a mark given twice is judged once", async () => {
+    const dir = program();
+    expect(await build(dir, { native: ["absent", "absent"] })).toEqual([notLoaded("absent")]);
+    expect(await build(dir, { npmStatic: ["absent", "absent", "absent..."] })).toEqual([
+      notInstalled("absent"),
+    ]);
+    expect(await build(dir, { native: ["plain-pkg", "plain-pkg"] })).toEqual(["ok"]);
+  });
+
+  test("the project's configuration is not held to the entry; the flag is", async () => {
+    // A project's scriptc.packages may list packages for other entries, so
+    // a setting for a package this entry does not load is not refused. The
+    // same name on the command line is a mark on this build.
+    const dir = program();
+    writeFileSync(
+      join(dir, "package.json"),
+      '{ "type": "module", "scriptc": { "packages": { "unused-pkg": "native", "absent": "native" } } }\n',
+    );
+    expect(await build(dir, {})).toEqual(["ok"]);
+    expect(await build(dir, { native: ["unused-pkg"] })).toEqual([notLoaded("unused-pkg")]);
+    expect(await build(dir, { npmStatic: ["unused-pkg"] })).toEqual(["ok"]);
+    expect(await build(dir, { npmStatic: ["absent"] })).toEqual([notInstalled("absent")]);
+  });
+
+  test("a package named like a file is a package, whatever file has its name", async () => {
+    // --node-island reads `widget.js` as the package when the entry
+    // resolves one of that name (policy.ts readNodeIslandMark). These two
+    // flags name packages only, so the file beside the entry never counts.
+    const dir = program();
+    mkdirSync(join(dir, "node_modules/widget.js"), { recursive: true });
+    writeFileSync(
+      join(dir, "node_modules/widget.js/package.json"),
+      '{ "name": "widget.js", "version": "1.0.0", "main": "index.js", "types": "index.d.ts" }\n',
+    );
+    writeFileSync(
+      join(dir, "node_modules/widget.js/index.js"),
+      '"use strict";\nexports.widget = function widget() {\n  return "package";\n};\n',
+    );
+    writeFileSync(
+      join(dir, "node_modules/widget.js/index.d.ts"),
+      "export declare function widget(): string;\n",
+    );
+    writeFileSync(join(dir, "widget.js"), "export const unrelated = 1;\n");
+    writeFileSync(join(dir, "notes.js"), "export const unrelated = 2;\n");
+    writeFileSync(
+      join(dir, "named.ts"),
+      'import { widget } from "widget.js";\nconsole.log(widget());\n',
+    );
+    expect(await build(dir, { native: ["widget.js"] }, "named.ts")).toEqual(["ok"]);
+    expect(await build(dir, { npmStatic: ["widget.js"] }, "named.ts")).toEqual(["ok"]);
+    // A file of the program's directory is not a package.
+    expect(await build(dir, { native: ["notes.js"] }, "named.ts")).toEqual([notLoaded("notes.js")]);
+    expect(await build(dir, { npmStatic: ["notes.js"] }, "named.ts")).toEqual([
+      notInstalled("notes.js"),
+    ]);
+    // The entry that does not import the package: the mark is refused, the
+    // selection is empty.
+    expect(await build(dir, { native: ["widget.js"] })).toEqual([notLoaded("widget.js")]);
+    expect(await build(dir, { npmStatic: ["widget.js"] })).toEqual(["ok"]);
+  });
+
   test("each refused mark is named, the others are not", async () => {
     const dir = program();
     expect(

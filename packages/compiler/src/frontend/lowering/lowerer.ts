@@ -588,7 +588,13 @@ import { isMessageListenerCall } from "./expressions/message-listeners.js";
 import type { InstantiationPath } from "./instantiation-path.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
 import { completeArgs, wrappedUndefined, undefinedArgFor } from "./call-arguments.js";
-import { bodyReturnType, declaredReturnType, widensReducedRecords } from "./function-returns.js";
+import {
+  bodyReturnType,
+  declaredReturnType,
+  checkedUndefinedResult,
+  returnsDeclaredUndefined,
+  widensReducedRecords,
+} from "./function-returns.js";
 import { lowerCall, lowerPromiseMethodCall, lowerFilterNarrowCall } from "./lower-calls.js";
 import { lowerFfiCall, validateFfiImports } from "./native-ffi.js";
 import {
@@ -17294,6 +17300,18 @@ export class Lowerer {
     if (expected.kind === "void") {
       this.refuseDroppedStaleReturn(node);
       let e = this.lowerExpr(node);
+      // A result declared `undefined` has the void representation: an
+      // untyped value returned into it is checked, as it is in a binding
+      // declared `undefined`, instead of being dropped unseen.
+      if (
+        !this.ctx.isAsync &&
+        (e.type.kind === "dyn" || (this.typeOf(node).flags & ts.TypeFlags.Any) !== 0) &&
+        returnsDeclaredUndefined(this, node)
+      ) {
+        const check = checkedUndefinedResult(this, e, loc);
+        if (check !== null)
+          return { kind: "block", body: [...check, { kind: "return", value: null, loc }], loc };
+      }
       const flattened = this.maybePromiseReturn(node, e, expected);
       if (flattened) return flattened;
       if (this.ctx.isAsync && e.type.kind === "promise") {
@@ -19207,8 +19225,8 @@ export class Lowerer {
     return lowerTry(this, stmt);
   }
 
-  lowerExprStatement(expr: ts.Expression): IrStmt {
-    return lowerExprStatement(this, expr);
+  lowerExprStatement(expr: ts.Expression, leaf?: (expr: ts.Expression) => IrStmt | null): IrStmt {
+    return lowerExprStatement(this, expr, leaf);
   }
 
   lowerForOf(stmt: ts.ForOfStatement): IrStmt {
@@ -20328,7 +20346,7 @@ export class Lowerer {
       if (ts.isVariableDeclaration(decl) && ts.isIdentifier(decl.name) && decl.initializer) {
         const spec = requireSpecOf(decl.initializer);
         if (spec !== null) return canonicalBuiltinModule(spec);
-        const init = withoutParenthesesAssertionsNonNull(decl.initializer);
+        const init = withoutParenthesesTypeWrappers(decl.initializer);
         if (ts.isCallExpression(init)) {
           const cr = createRequireSpecOf(this, init);
           if (cr !== null && cr.spec !== null) return canonicalBuiltinModule(cr.spec);
@@ -20375,7 +20393,7 @@ export class Lowerer {
     // `require("node:path").join(...)` through a createRequire binding
     // (the fallback-typed cast idiom strips: `(require("x") as T).m`).
     {
-      const inner = withoutParenthesesAssertionsNonNull(expr);
+      const inner = withoutParenthesesTypeWrappers(expr);
       if (ts.isCallExpression(inner)) {
         const cr = createRequireSpecOf(this, inner);
         if (cr !== null && cr.spec !== null) return canonicalBuiltinModule(cr.spec);
@@ -20439,7 +20457,7 @@ export class Lowerer {
     expr: ts.Expression,
     seen = new Set<ts.Node>(),
   ): BuiltinModuleNamespaceFlavor {
-    const e = withoutParenthesesAssertionsNonNull(expr);
+    const e = withoutParenthesesTypeWrappers(expr);
     // Awaiting a value answers that value unless it is a promise, so the
     // shape is the shape of the awaited expression. The traced promise is
     // the dynamic import call, whose resolved value is an ES module

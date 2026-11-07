@@ -6,7 +6,10 @@ import { mapStmtChildren } from "../../ir/traverse.js";
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import {
+  BOOL,
   DYN,
+  STRING,
+  type IrExpr,
   type IrStmt,
   type IrType,
   type SrcLoc,
@@ -35,6 +38,83 @@ function bodyMayFallThrough(body: readonly IrStmt[]): boolean {
       last.kind !== "rethrow" &&
       last.kind !== "runtimeFence")
   );
+}
+
+/** Whether the function `node` returns from declares the result `undefined`
+ * (not `void`). Both map to the void representation, which holds no value,
+ * so the caller of such a function reads undefined whatever the body
+ * returned: a returned value the checker could not see (`any`) has to be
+ * checked where it is dropped. An async function settles its promise with
+ * the returned value and is not answered here. */
+export function returnsDeclaredUndefined(lowerer: Lowerer, node: ts.Node): boolean {
+  if (isJsSourceFile(ts.getSourceFileOfNode(node))) return false;
+  let fn: ts.Node | undefined = node.parent;
+  while (fn !== undefined && !ts.isFunctionLike(fn)) fn = fn.parent;
+  if (fn === undefined || (fn as ts.SignatureDeclaration).type === undefined) return false;
+  const signature = lowerer.checker.getSignatureFromDeclaration(fn as ts.SignatureDeclaration);
+  if (signature === undefined) return false;
+  const result = lowerer.checker.getReturnTypeOfSignature(signature);
+  return (result.flags & ts.TypeFlags.Undefined) !== 0;
+}
+
+/** The check of `value`, which the checker types `any`, where it is the
+ * result of a function declared `undefined` (returnsDeclaredUndefined);
+ * null when the value needs none and lowers as it always has: the literal
+ * `undefined` behind a cast (`undefined as any`), and a value with no
+ * checked-dynamic form (a void call behind a cast). A typed value behind a
+ * cast (`5 as any`) is boxed and checked like an untyped one. */
+export function checkedUndefinedResult(
+  lowerer: Lowerer,
+  value: IrExpr,
+  loc: SrcLoc,
+): IrStmt[] | null {
+  if (value.kind === "unitLit" && value.unit === "undefined") return null;
+  if (value.type.kind === "dyn") return undefinedResultCheck(lowerer, value, loc);
+  if (value.type.kind === "void" || !lowerer.dynConvertible(value.type)) return null;
+  return undefinedResultCheck(lowerer, lowerer.coerceToExpected(value, DYN), loc);
+}
+
+/** The statements that evaluate `value`, an untyped value returned where
+ * the result is declared `undefined`, and throw a TypeError unless it is
+ * undefined (returnsDeclaredUndefined). */
+function undefinedResultCheck(lowerer: Lowerer, value: IrExpr, loc: SrcLoc): IrStmt[] {
+  const held = lowerer.declareHiddenLocal("%undefinedResult", DYN);
+  return [
+    { kind: "varDecl", localId: held.id, init: value, loc },
+    {
+      kind: "if",
+      cond: {
+        kind: "dynTest",
+        test: "undefined",
+        value: { kind: "varRef", localId: held.id, type: DYN, loc },
+        type: BOOL,
+        loc,
+      },
+      then: [],
+      else_: [
+        {
+          kind: "throw",
+          value: {
+            kind: "libCall",
+            fn: "error.new",
+            args: [
+              {
+                kind: "strLit",
+                value:
+                  "a value other than undefined is not representable in a result declared 'undefined' (an untyped value returned it)",
+                type: STRING,
+                loc,
+              },
+            ],
+            type: { kind: "object", className: "%TypeError" },
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    },
+  ];
 }
 
 /** The BODY-facing return type of a (possibly async) function: an async

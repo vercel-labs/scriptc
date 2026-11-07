@@ -48,10 +48,7 @@
 import { keyedHelperName } from "./stable-names.js";
 import { checkKeypressListener } from "./builtins/readline.js";
 import * as ts from "../ts7/adapter.js";
-import {
-  withoutParenthesesAssertionsNonNull,
-  withoutParenthesesTypeWrappers,
-} from "../outer-expressions.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import type { Lowerer } from "./lowerer.js";
 import { dynFallbackType, newFnCtx } from "./lowerer.js";
 import type { ClassInfo } from "./lower-classes.js";
@@ -442,7 +439,7 @@ function emitterEvents(lowerer: Lowerer): Map<string, EventSig> {
           const cbT = lowerer.mapTypeOf(cbCt) ?? dynFallbackType(lowerer, cbNode, cbCt);
           typed =
             cbT?.kind === "func" &&
-            !ts.isCallExpression(withoutParenthesesAssertionsNonNull(cbNode)) &&
+            !ts.isCallExpression(withoutParenthesesTypeWrappers(cbNode)) &&
             !(cbT.params.length === 0 && isJsSourceFile(sf)) &&
             !cbT.params.some((p) => p.kind === "dyn") &&
             !readsArgumentsPack(lowerer, cbNode);

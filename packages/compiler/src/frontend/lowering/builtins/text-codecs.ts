@@ -3,7 +3,7 @@ import { isBuiltinClassInstance } from "./receiver-types.js";
 import { strLit, varRef, dynUndefinedExpr } from "../../../ir/build.js";
 import { staticTextDecoderEncoding } from "../text-decoder-encoding.js";
 import * as ts from "../../ts7/adapter.js";
-import { withoutParenthesesAssertionsNonNull } from "../../outer-expressions.js";
+import { withoutParenthesesTypeWrappers } from "../../outer-expressions.js";
 import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import { InternalCompilerError } from "../../../errors.js";
@@ -464,7 +464,7 @@ export function lowerTextCodecNew(
       label = lowerer.lowerExprExpecting(args[0]!, STRING);
     }
   }
-  const options = args[1] ? withoutParenthesesAssertionsNonNull(args[1]) : null;
+  const options = args[1] ? withoutParenthesesTypeWrappers(args[1]) : null;
   const flags = new Map<string, IrExpr>();
   for (const name of ["fatal", "ignoreBOM"])
     flags.set(name, { kind: "boolLit", value: false, type: BOOL, loc });
@@ -564,7 +564,7 @@ function lowerStoredTextCodecCall(
   let stream: IrExpr = { kind: "boolLit", value: false, type: BOOL, loc };
   let optionsNode: ts.Expression | null = null;
   if (cls === "TextDecoder" && call.arguments.nodes[1]) {
-    const options = withoutParenthesesAssertionsNonNull(call.arguments.nodes[1]);
+    const options = withoutParenthesesTypeWrappers(call.arguments.nodes[1]);
     // Options outside an object literal are checked and read after the
     // input evaluates (below).
     if (!ts.isObjectLiteralExpression(options)) optionsNode = options;
@@ -686,9 +686,9 @@ function lowerStoredTextCodecCall(
  * type-only wrappers. Name alone is never enough: a user class with the
  * same spelling keeps the ordinary class lowering. */
 function directTextCodecCtorOf(lowerer: Lowerer, expr: ts.Expression): TextCodecCtor | null {
-  const ctor = withoutParenthesesAssertionsNonNull(expr);
+  const ctor = withoutParenthesesTypeWrappers(expr);
   if (!ts.isNewExpression(ctor)) return null;
-  const callee = withoutParenthesesAssertionsNonNull(ctor.expression);
+  const callee = withoutParenthesesTypeWrappers(ctor.expression);
   if (!ts.isIdentifier(callee)) return null;
   if (callee.text !== "TextDecoder" && callee.text !== "TextEncoder") return null;
   const sym = lowerer.resolveValueSymbol(callee);
@@ -725,7 +725,7 @@ export function lowerTextCodecCall(
       kind: "libCall",
       fn: "text.encodeInto",
       args: call.arguments.nodes.map((arg) =>
-        lowerer.lowerExprExpecting(withoutParenthesesAssertionsNonNull(arg), DYN),
+        lowerer.lowerExprExpecting(withoutParenthesesTypeWrappers(arg), DYN),
       ),
       type: DYN,
       loc,
@@ -852,7 +852,7 @@ export function lowerBufferEncodingCall(
   const args = Array.from({ length: arity }, (_, index) =>
     expr.arguments.nodes[index]
       ? lowerer.lowerExprExpecting(
-          withoutParenthesesAssertionsNonNull(expr.arguments.nodes[index]!),
+          withoutParenthesesTypeWrappers(expr.arguments.nodes[index]!),
           DYN,
         )
       : dynUndefinedExpr(loc),

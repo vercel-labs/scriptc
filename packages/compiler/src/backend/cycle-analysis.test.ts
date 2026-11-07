@@ -16,6 +16,7 @@ import {
   type IrType,
 } from "../ir/ir.js";
 import { computeTraced, explainCycle } from "./cycle-analysis.js";
+import { computeImmutableFields } from "./immutability.js";
 import { computeTraced as llvmTraced } from "./llvm/shapes.js";
 import { addRecordResultEntries } from "./llvm/record-results.js";
 
@@ -752,6 +753,49 @@ test("types that can become checked-dynamic capsules are mutable", () => {
     loc,
   });
   checkExact(logged, ["object:Tree"], ["link"]);
+});
+
+test("a checked conversion makes recursive shapes mutable only when its value can be cyclic", () => {
+  // type Node = { next: Node | undefined; tag: Leaf }; type Leaf = { name: string }
+  const converting = (operand: IrExpr): IrModule => {
+    const mod = module();
+    mod.records = [
+      { id: "node", fields: [{ name: "next", type: { kind: "union", unionId: "next" } }] },
+      shape("leaf", [STRING]),
+      shape("holder", [ref("node"), ref("leaf")]),
+    ];
+    mod.unions = [{ id: "next", arms: [ref("node"), { kind: "undefinedT" }] }];
+    mod.functions[0]!.body.push({
+      kind: "exprStmt",
+      expr: { kind: "dynCheck", value: operand, type: ref("holder"), loc },
+      loc,
+    });
+    return mod;
+  };
+  // A dynamic value from anywhere can refer back to itself (`raw.next = raw`): the builder
+  // then stores a record into itself, so the shape that reaches itself is collected.
+  const anywhere = converting(value(DYN));
+  checkExact(anywhere, ["record:node"], ["next"]);
+  expect(computeImmutableFields(anywhere)!.recordField("node", "next")).toBe(false);
+  expect(computeImmutableFields(anywhere)!.recordField("holder", "field0")).toBe(true);
+  // JSON.parse builds a tree, and the conversion reads it before anything else can.
+  const text: IrExpr = { kind: "strLit", value: "{}", type: STRING, loc };
+  const parsed = converting({ kind: "libCall", fn: "json.parse", args: [text], type: DYN, loc });
+  checkExact(parsed, []);
+  expect(computeImmutableFields(parsed)!.recordField("node", "next")).toBe(true);
+  // A reviver can hand back any value, and a parsed value read from a binding can have been
+  // stored into since.
+  const revived = converting({
+    kind: "libCall",
+    fn: "json.parseReviver",
+    args: [text, value(DYN)],
+    type: DYN,
+    loc,
+  });
+  checkExact(revived, ["record:node"], ["next"]);
+  // One conversion that can be cyclic decides for the shape.
+  parsed.functions[0]!.body.push(...anywhere.functions[0]!.body);
+  checkExact(parsed, ["record:node"], ["next"]);
 });
 
 test("library builds keep the mutable-graph analysis", () => {

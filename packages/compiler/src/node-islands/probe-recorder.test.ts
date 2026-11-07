@@ -213,6 +213,50 @@ test("a module that shares a file another load evaluated answers for what the fi
   expect(bLoad.fn).toBe("nodeIsland.require");
 });
 
+test("a global an earlier load wrote from the environment does not reach a later snapshot", () => {
+  // `ga` publishes an environment-derived global and exports only a function;
+  // `gb` shares no file with it and exports the global's value, so the probe
+  // hands the value to `gb`'s load through shared state alone.
+  const secret = "sk-live-0123456789";
+  const root = project({
+    "package.json": '{ "name": "app" }',
+    "node_modules/ga/package.json": '{ "name": "ga" }',
+    "node_modules/ga/index.js":
+      "globalThis.token = process.env.PROBE_TOKEN;\nmodule.exports = { ready() {} };\n",
+    "node_modules/gb/package.json": '{ "name": "gb" }',
+    "node_modules/gb/index.js": "module.exports = { token: globalThis.token };\n",
+  });
+  const ga = join(root, "node_modules/ga/index.js");
+  const gb = join(root, "node_modules/gb/index.js");
+  const out = probeOutput(root, [ga, gb], { PROBE_TOKEN: secret });
+  expect(out.results[0]!.env).toEqual([["PROBE_TOKEN", secret]]);
+  expect(out.results[0]!.mutations).toContain("globalThis.token");
+  // The second load read no variable of its own, and its value is the one the
+  // first wrote there.
+  expect(out.results[1]!.env).toEqual([]);
+  expect(JSON.stringify(out.objects[out.results[1]!.root!])).toContain(secret);
+
+  const call = (path: string) => ({
+    kind: "libCall",
+    fn: "nodeIsland.defer",
+    args: [
+      { kind: "strLit", value: path },
+      { kind: "strLit", value: "" },
+    ],
+  });
+  const calls = [call(ga), call(gb)];
+  const mod = {
+    entry: "%main",
+    functions: [{ name: "%main", body: calls }],
+    globals: [],
+  } as unknown as IrModule;
+  const decisions = finalizeDeferredIslands(mod, join(root, "main.ts"), root, () => out);
+  expect(decisions.map((d) => d.deferred)).toEqual([false, false]);
+  expect(decisions[1]!.reason).toContain("PROBE_TOKEN");
+  expect(calls.map((c) => c.fn)).toEqual(["nodeIsland.require", "nodeIsland.require"]);
+  expect(JSON.stringify(mod)).not.toContain(secret);
+});
+
 test("a package that catches the refusal does not defer, nor does one that loads it later", () => {
   const root = project({
     "src/config.js": marker("config"),

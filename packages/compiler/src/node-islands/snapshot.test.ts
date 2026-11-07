@@ -16,6 +16,7 @@ import {
   finalizeDeferredIslands,
   probeHostDirectory,
   type ProbeOutput,
+  type ProbeValue,
 } from "./snapshot.js";
 
 const saved = { ...process.env };
@@ -253,6 +254,98 @@ describe("modules that share a file", () => {
 
   test("modules that share a file whose loads read nothing and do nothing both defer", () => {
     expect(sharing({}).decisions.map((d) => d.deferred)).toEqual([true, true]);
+  });
+});
+
+describe("state an earlier load wrote", () => {
+  /** Two island modules that share no file, probed in that order, and the
+   * probe's records of their loads. `ga` reads a private environment value
+   * and writes it to a global; `gb` exports the global's value, so the
+   * probe recorded that value in `gb`'s load too. */
+  function handoff(
+    first: Partial<ProbeOutput["results"][number]>,
+    second: Partial<ProbeOutput["results"][number]> = {},
+    scriptc: unknown = {},
+    secondMembers: [string, ProbeValue][] = [["token", { s: "sk-live-0123456789" }]],
+  ) {
+    const root = scratch();
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "app", scriptc }));
+    const file = (name: string): string => {
+      const dir = join(root, "node_modules", name);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "package.json"), JSON.stringify({ name }));
+      writeFileSync(
+        join(dir, "index.js"),
+        name === "ga"
+          ? "globalThis.token = process.env.TOKEN;\nmodule.exports = { ready() {} };\n"
+          : "module.exports = { token: globalThis.token };\n",
+      );
+      return join(dir, "index.js");
+    };
+    const [ga, gb] = [file("ga"), file("gb")];
+    const load = (path: string) => ({
+      kind: "libCall",
+      fn: "nodeIsland.defer",
+      args: [
+        { kind: "strLit", value: path },
+        { kind: "strLit", value: "" },
+      ],
+    });
+    const calls = [load(ga), load(gb)];
+    const mod = { functions: [{ body: calls }], globals: [] } as unknown as IrModule;
+    const secret = "sk-live-0123456789";
+    const empty = { inputs: [], volatile: [], effects: [], mutations: [], env: [], tty: [] };
+    const probe: ProbeOutput = {
+      results: [
+        { ...empty, path: ga, root: 1, files: [ga], ...first },
+        { ...empty, path: gb, root: 2, files: [gb], ...second },
+      ],
+      objects: {
+        "1": { f: 0, p: false, m: [["ready", { o: 3 }]] },
+        "2": { f: 0, p: false, m: secondMembers },
+        "3": { f: 1, p: false, m: [] },
+      },
+    };
+    const decisions = finalizeDeferredIslands(mod, join(root, "main.ts"), root, () => probe);
+    const snapshots = calls.map((c) => c.args[1]?.value ?? "");
+    return { decisions, calls, snapshots, text: JSON.stringify(mod), secret };
+  }
+  const toGlobal = { env: [["TOKEN", "sk-live-0123456789"]] as [string, string | null][] };
+
+  test("a later snapshot does not carry what an earlier load read and wrote", () => {
+    const { decisions, calls, snapshots, text, secret } = handoff({
+      ...toGlobal,
+      mutations: ["globalThis.token"],
+    });
+    expect(decisions.map((d) => d.deferred)).toEqual([false, false]);
+    // The reader keeps its own reason; the module after it names the read.
+    expect(decisions[0]!.reason).toContain("TOKEN");
+    expect(decisions[1]!.reason).toContain("TOKEN");
+    expect(calls.map((c) => c.fn)).toEqual(["nodeIsland.require", "nodeIsland.require"]);
+    expect(snapshots.join("")).not.toContain(secret);
+    expect(text).not.toContain(secret);
+  });
+
+  test("a later module still defers when the earlier load wrote nothing", () => {
+    const { decisions, calls } = handoff(toGlobal);
+    expect(decisions.map((d) => d.deferred)).toEqual([false, true]);
+    expect(calls.map((c) => c.fn)).toEqual(["nodeIsland.require", "nodeIsland.defer"]);
+  });
+
+  test("a variable the earlier load wrote does not reach a later guard", () => {
+    // `ga` reads a private variable and writes the value into a variable the
+    // project lists as public; `gb` reads that one, so its boot guard would
+    // record the private value.
+    const { decisions, calls, snapshots, secret } = handoff(
+      { ...toGlobal, effects: ["a write of process.env.NODE_ENV"] },
+      { env: [["NODE_ENV", "sk-live-0123456789"]] },
+      { nodeIslands: { publicEnv: ["NODE_ENV"] } },
+      [],
+    );
+    expect(decisions.map((d) => d.deferred)).toEqual([false, false]);
+    expect(decisions[1]!.reason).toContain("TOKEN");
+    expect(calls.map((c) => c.fn)).toEqual(["nodeIsland.require", "nodeIsland.require"]);
+    expect(snapshots.join("")).not.toContain(secret);
   });
 });
 

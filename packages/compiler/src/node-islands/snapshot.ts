@@ -14,7 +14,11 @@
  *   - environment reads: the boot guards record the build-time value of
  *     every environment variable the load read, so a load that read one
  *     not listed in `scriptc.nodeIslands.publicEnv` stays eager, "lazy"
- *     included, and no value of it reaches the executable;
+ *     included, and no value of it reaches the executable. A load that read
+ *     such a value and left it in shared state (a global, a builtin, the
+ *     environment) is where a later load of the same probe can pick it up
+ *     and export it, so every candidate the probe reached after such a load
+ *     stays eager too;
  *   - the probe: one run of the build-time probe host
  *     (runtime src/tools/scr_node_island_probe.c) in a libnode environment
  *     from the same pack, which loads every candidate module under the
@@ -259,6 +263,10 @@ function makeEager(call: DeferCall): void {
   call.args.length = 1;
 }
 
+/** The label the load recorder gives a load's write to an environment
+ * variable (probe-recorder.ts), in its effects. */
+const ENV_WRITE = "a write of process.env.";
+
 export interface DeferralDecision {
   path: string;
   deferred: boolean;
@@ -403,6 +411,35 @@ export function finalizeDeferredIslands(
   const tree = mod.nodeIsland?.modules;
   const shipped = new Set(tree?.files.map((f) => join(tree.root, f.path)) ?? []);
   const reads = loadReads(probe.results);
+  // The probe loads every candidate in one process, in the order the program
+  // evaluates them, so shared state one load writes (a global, a builtin, a
+  // prototype, the environment) is there for every load after it. A load
+  // that read a private environment value and wrote shared state can leave
+  // that value in what a later load exported, in a form the build cannot
+  // recognize; the later load's snapshot would then carry it into the
+  // executable. The writer is eager with its own reason, and so is every
+  // candidate the probe reached after it. A load's own effects that write
+  // `process.env` count: a later load reading a public key of it would record
+  // the written value.
+  const privateKeys = (r: ProbeResult): string[] =>
+    reads
+      .get(r)!
+      .env.map(([k]) => k)
+      .filter((k) => !publicEnv.has(k));
+  const inherits = new Map<ProbeResult, string[]>();
+  let wrote: string[] | undefined;
+  for (const r of probe.results) {
+    if (wrote !== undefined) {
+      inherits.set(r, wrote);
+      continue;
+    }
+    const keys = privateKeys(r);
+    if (
+      keys.length > 0 &&
+      (r.mutations.length > 0 || r.effects.some((e) => e.startsWith(ENV_WRITE)))
+    )
+      wrote = keys;
+  }
   const deferred: { call: DeferCall; result: ProbeResult; why: string }[] = [];
   for (const c of candidates) {
     const result = probe.results.find((r) => r.path === c.path);
@@ -420,6 +457,9 @@ export function finalizeDeferredIslands(
       const privateEnv = env.map(([k]) => k).filter((k) => !publicEnv.has(k));
       if (privateEnv.length > 0)
         return `its load reads the environment variable${privateEnv.length === 1 ? "" : "s"} ${privateEnv.join(", ")}, whose build-time values its boot guards would record (scriptc.nodeIslands.publicEnv lists the ones that may be recorded)`;
+      const inherited = inherits.get(result);
+      if (inherited !== undefined)
+        return `an earlier load read the environment variable${inherited.length === 1 ? "" : "s"} ${inherited.join(", ")} and wrote shared state, so a load probed after it can export ${inherited.length === 1 ? "its build-time value" : "their build-time values"}`;
       if (c.lazy) return null;
       // Its own, or those of a load it shares a file with.
       const whose = (own: string[]): string =>

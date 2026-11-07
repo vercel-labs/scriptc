@@ -190,6 +190,17 @@ export class ClassProtocols {
     }
     if ((type.flags & ts.TypeFlags.Object) === 0) return;
     if (islands !== null && isForeignType(islands, type, this.checker)) return;
+    // A promise the island returns is adopted, never converted: it is the
+    // same promise on both sides, and the value that crosses is the one it
+    // settles with, where the program awaits it or a reaction receives it.
+    // That value's declared type is the promise's type argument, so the
+    // argument is the type that receives the island value
+    // (`await later<Rec>()` reads an island object as a `Rec`).
+    const settled = attempt(() => this.checker.getAwaitedType(type));
+    if (settled !== undefined && settled !== type) {
+      this.markReceivedView(settled, islands, add, depth + 1);
+      return;
+    }
     // A mapped type's symbol is the shared `__type` every mapped type in the
     // program uses, so it can never carry the marking: a homomorphic view
     // marks what it maps (as a literal view does), and any other mapped type

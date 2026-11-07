@@ -1936,12 +1936,14 @@ function lowerToIrWithIslands(
     ))
       process.stderr.write(line + "\n");
   const divergences = [
-    ...widthCopyDivergences(resultLowerer, widthCopies),
+    // First: a build renders its first warnings and counts the rest
+    // (render.ts), and a large program copies at a thousand conversions.
     ...swallowedClaimDivergences(
       swallowedClaims,
       (loc) => whereOf(resultLowerer, loc),
       cutTypeText,
     ),
+    ...widthCopyDivergences(resultLowerer, widthCopies),
     ...scanDivergences(resultLowerer, moduleOrder),
     ...resultLowerer.sharedModuleWarnings,
   ];

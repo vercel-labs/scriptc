@@ -286,6 +286,44 @@ test(
         await checkProgram(probe, join(root, "tests/corpus/4591-weak-keys-union-records.ts"));
         await checkProgram(probe, join(root, "tests/corpus/4593-weak-keys-empty-objects.ts"));
 
+        // A build from a lowered program (executable/lowered.ts) writes the
+        // executable a build from the sources writes, and refuses the file
+        // once a source changed.
+        const loweredSource = join(directory, "lowered-probe.ts");
+        writeFileSync(
+          loweredSource,
+          'const parts: string[] = ["lowered", "program"];\nconsole.log(parts.join(" "));\n',
+        );
+        const loweredFile = join(directory, "lowered-probe.lowered");
+        const loweredOutput = executable("lowered-probe");
+        const loweredArgs = [
+          "build",
+          loweredSource,
+          "-o",
+          loweredOutput,
+          "--optimization=dev",
+          "--strip",
+        ];
+        await invoke(probe, [...loweredArgs, "--emit-lowered", loweredFile]);
+        const fromSources = readFileSync(loweredOutput);
+        const loweredLlvm = readFileSync(join(directory, "lowered-probe.ll"));
+        await invoke(probe, [...loweredArgs, "--from-lowered", loweredFile]);
+        expect(readFileSync(join(directory, "lowered-probe.ll")).equals(loweredLlvm)).toBe(true);
+        expect(readFileSync(loweredOutput).equals(fromSources)).toBe(true);
+        expect(spawnSync(loweredOutput, [], nativeOptions).stdout.toString()).toBe(
+          "lowered program\n",
+        );
+        writeFileSync(loweredSource, readFileSync(loweredSource, "utf8") + "// edited\n");
+        const stale = spawnSync(
+          probe,
+          [...loweredArgs, "--from-lowered", loweredFile],
+          nativeOptions,
+        );
+        expect(stale.status).toBe(1);
+        expect(stale.stderr.toString()).toContain(
+          `--from-lowered: ${loweredFile} does not match this build's inputs: ${loweredSource} changed since it was lowered`,
+        );
+
         const fetchOptions = join(directory, "fetch-options.ts");
         writeFileSync(
           fetchOptions,
@@ -687,10 +725,24 @@ console.log(reached, table[0] === Math.sin(0.5), table[1] === Math.cbrt(2), tabl
               ffi,
               "--sanitize",
               "--optimization=dev",
+              // The seed's IR, lowered by the JavaScript compiler with the
+              // seed build's options: an IR artifact records none of what a
+              // lowered program depends on, so each kind is accepted here,
+              // and the two comparisons around this build stand in for them.
+              "--from-lowered",
+              seedIr,
+              "--from-lowered-accept=compiler,options,inputs",
               quiet,
             ],
-            "",
-            { SCRIPTC_BOOTSTRAP_IR_INPUT: seedIr },
+            "scriptc: warning: --from-lowered: building from " +
+              seedIr +
+              " although its compiler differs: the file holds only an IR module, which does not record its compiler\n" +
+              "scriptc: warning: --from-lowered: building from " +
+              seedIr +
+              " although its options differ: the file holds only an IR module, which does not record its options\n" +
+              "scriptc: warning: --from-lowered: building from " +
+              seedIr +
+              " although its inputs differ: the file holds only an IR module, which does not record its inputs\n",
           ),
         );
         expect(self.trim()).toBe(rebuilt);

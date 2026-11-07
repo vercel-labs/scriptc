@@ -32,7 +32,9 @@ V8's adaptation of fdlibm, the code behind Node's Math.sin, Math.exp, Math.cbrt 
 
 The QuickJS-ng engine is used only by the compiler's `comptime` evaluator (`native/llvm-codegen/comptime`), which each LLVM helper package builds from this tree. Compiled user programs never link it. The standalone regex and Unicode libraries from this tree still support native RegExp and string operations.
 
-The tree is a plain snapshot of the upstream commit with directories the library build does not need removed (tests/, docs/, examples/, test262 fixtures, CI config, generator scripts). No vendored file is modified; to update, re-clone upstream at the new commit, delete its .git directory, apply the same trim, and update this file.
+The tree is a snapshot of the upstream commit with directories the library build does not need removed (tests/, docs/, examples/, test262 fixtures, CI config, generator scripts), and one modification, marked `scriptc:` in the source. To update, re-clone upstream at the new commit, delete its .git directory, apply the same trim, re-apply the modification unless upstream has an equivalent, and update this file.
+
+The modification is in `libregexp.c`, `re_parse_nested_class`: the single characters and ranges of a character class are collected and united with the class once (`re_class_add_intervals`), where upstream rebuilds the whole class for each of them. Upstream's cost for a class is its member count times its size, which is what a class such as `[\p{P}\p{S}\u3000-\u303f…]` with a few dozen ranges after a Unicode property pays every time a pattern names it. The class is the same set and the compiled bytecode is byte-identical.
 
 ## zlib/
 

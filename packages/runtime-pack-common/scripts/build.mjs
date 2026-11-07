@@ -22,6 +22,7 @@ import { parallelMap } from "./parallel-map.mjs";
 import { zlibInputs } from "./zlib-inputs.mjs";
 import { zstdInputs } from "./zstd-inputs.mjs";
 import { ICU_DATA_FILE, ensurePackIcuData, ensureIcuSources, icuSourceList } from "./icu-data.mjs";
+import { assertUnwindTails, moveUnwindTailLast, unwindTailCompileFlags } from "./unwind-tail.mjs";
 
 const run = promisify(execFile);
 
@@ -126,6 +127,16 @@ async function build() {
     createHash("sha256")
       .update(await readFile(path))
       .digest("hex");
+  // Every ELF object of the pack ends its unwind table with the entry of a
+  // function no executable links (unwind-tail.mjs), so that an edit to one
+  // function of a unit leaves the unwind entries of the unit's other
+  // functions, and every executable that links only those, byte-identical.
+  const unwindTailFlags = unwindTailCompileFlags(matrix.target.object_format);
+  const endUnwindTable = async (object) => {
+    if (unwindTailFlags.length === 0) return;
+    const bytes = await readFile(object);
+    if (moveUnwindTailLast(bytes)) await writeFile(object, bytes);
+  };
   const compile = async (source, output, flags) => {
     await mkdir(dirname(output), { recursive: true });
     // Zig emits DWARF by default even for optimized C. Packaged runtime
@@ -134,6 +145,7 @@ async function build() {
     await run(compiler, [
       ...compilerArgs,
       ...sourcePathFlags,
+      ...unwindTailFlags,
       ...flags,
       "-g0",
       "-c",
@@ -141,6 +153,7 @@ async function build() {
       "-o",
       output,
     ]);
+    await endUnwindTable(output);
   };
   // Speed-flavor executable units are emitted through the host LLVM helper
   // (runtime-unit.mjs), which promotes their local symbols and applies the
@@ -336,6 +349,7 @@ async function build() {
       await run(cxx[0], [
         ...cxx.slice(1),
         ...sourcePathFlags,
+        ...unwindTailFlags,
         ...unit.flags,
         ...(unit.define === undefined ? [] : [`-D${unit.define}`]),
         "-g0",
@@ -344,6 +358,7 @@ async function build() {
         "-o",
         output,
       ]);
+      await endUnwindTable(output);
       return output;
     });
     const output = join(root, "libscriptc-icu.a");
@@ -476,6 +491,7 @@ async function build() {
                   run(compiler, [
                     ...compilerArgs,
                     ...sourcePathFlags,
+                    ...unwindTailFlags,
                     ...unitFlags,
                     "-g0",
                     ...(speedProfile === null ? [] : ["-Xclang", "-disable-llvm-passes"]),
@@ -498,6 +514,7 @@ async function build() {
                   ),
               }))
             ) {
+              await endUnwindTable(output);
               if (unitBuild.profile !== undefined) profileMatches.push(unitBuild.profile);
               for (const name of unitBuild.functions ?? []) profiledFunctions.add(name);
             } else {
@@ -693,6 +710,7 @@ async function build() {
       stagedOutputRoot,
       runtimeForbiddenStrings(config.forbiddenArtifactStrings),
     );
+    if (unwindTailFlags.length > 0) await assertUnwindTails(stagedOutputRoot);
     const archiveSpecs = new Map(matrix.archives.map((entry) => [entry.id, entry]));
     const licensed = [
       [join(runtimeRoot, "LICENSE"), "artifacts/licenses/scriptc-runtime.txt", "Apache-2.0"],

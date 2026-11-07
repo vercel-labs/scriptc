@@ -1,8 +1,8 @@
 {
   "corpus/6120-type-only-import-graph": {
     "island:types-only-pkg": {
-      "category": "not-islanded",
-      "signature": "islands: none"
+      "category": "build",
+      "signature": "SC8006"
     }
   },
   "corpus/6126-punycode-dependency": {
@@ -31,8 +31,8 @@
   },
   "corpus/6413-sdk-declared-data-class": {
     "island:upload-sdk": {
-      "category": "not-islanded",
-      "signature": "islands: none"
+      "category": "build",
+      "signature": "SC8006"
     }
   },
   "corpus/6590-npm-promise-mixin": {
@@ -113,26 +113,26 @@
   },
   "corpus/8720-npm-typed-callback-config": {
     "island:typed-sdk": {
-      "category": "not-islanded",
-      "signature": "islands: none"
+      "category": "build",
+      "signature": "SC8006"
     }
   },
   "corpus/8756-types-only-package-data-shape": {
     "island:doc-types-pkg": {
-      "category": "not-islanded",
-      "signature": "islands: none"
+      "category": "build",
+      "signature": "SC8006"
     }
   },
   "corpus/fs-extra-package": {
     "island:fs-extra": {
-      "category": "not-islanded",
-      "signature": "islands: none"
+      "category": "build",
+      "signature": "SC8006"
     }
   },
   "corpus/graceful-fs-alias": {
     "island:graceful-fs": {
-      "category": "not-islanded",
-      "signature": "islands: none"
+      "category": "build",
+      "signature": "SC8006"
     }
   },
   "corpus/npm-record-union-returns": {
@@ -143,14 +143,14 @@
   },
   "corpus/readable-stream-3": {
     "island:readable-stream": {
-      "category": "not-islanded",
-      "signature": "islands: none"
+      "category": "build",
+      "signature": "SC8006"
     }
   },
   "corpus/readable-stream-disable": {
     "island:readable-stream": {
-      "category": "not-islanded",
-      "signature": "islands: none"
+      "category": "build",
+      "signature": "SC8006"
     }
   },
   "corpus/undeclared-key-optional-chain": {
@@ -161,14 +161,14 @@
   },
   "corpus/workspace-shipped-package-js": {
     "island:wsshipped": {
-      "category": "not-islanded",
-      "signature": "islands: none"
+      "category": "build",
+      "signature": "SC8006"
     }
   },
   "corpus/workspace-source-package-js": {
     "island:wsjs": {
-      "category": "not-islanded",
-      "signature": "islands: none"
+      "category": "build",
+      "signature": "SC8006"
     }
   },
   "npm/any-chaining": {
@@ -179,14 +179,14 @@
   },
   "npm/chalk5": {
     "island:chalk": {
-      "category": "not-islanded",
-      "signature": "islands: none"
+      "category": "build",
+      "signature": "SC8006"
     }
   },
   "npm/chalk5-builder": {
     "island:chalk": {
-      "category": "not-islanded",
-      "signature": "islands: none"
+      "category": "build",
+      "signature": "SC8006"
     }
   },
   "npm/commander-calc": {
@@ -234,8 +234,8 @@
   },
   "npm/hono-node-server": {
     "island:@hono/node-server": {
-      "category": "not-islanded",
-      "signature": "islands: none"
+      "category": "build",
+      "signature": "SC8006"
     }
   },
   "npm/hono-zod-default-hook": {
@@ -268,26 +268,32 @@
   },
   "npm/hot-shots-buffered": {
     "island:hot-shots": {
-      "category": "not-islanded",
-      "signature": "islands: none"
+      "category": "build",
+      "signature": "SC8006"
     }
   },
   "npm/hot-shots-send-error": {
     "island:hot-shots": {
-      "category": "not-islanded",
-      "signature": "islands: none"
+      "category": "build",
+      "signature": "SC8006"
     }
   },
   "npm/hot-shots-tcp": {
     "island:hot-shots": {
-      "category": "not-islanded",
-      "signature": "islands: none"
+      "category": "build",
+      "signature": "SC8006"
     }
   },
   "npm/hot-shots-udp": {
     "island:hot-shots": {
-      "category": "not-islanded",
-      "signature": "islands: none"
+      "category": "build",
+      "signature": "SC8006"
+    }
+  },
+  "npm/import-refusal": {
+    "island:brokenrt": {
+      "category": "build",
+      "signature": "SC8006"
     }
   },
   "npm/island-instanceof-regexp": {
@@ -407,26 +413,26 @@
   },
   "npm/undici5": {
     "island:undici": {
-      "category": "not-islanded",
-      "signature": "islands: none"
+      "category": "build",
+      "signature": "SC8006"
     }
   },
   "npm/undici7": {
     "island:undici": {
-      "category": "not-islanded",
-      "signature": "islands: none"
+      "category": "build",
+      "signature": "SC8006"
     }
   },
   "npm/workspace-dynamic-import-deps": {
     "island:wsdynamicdeps": {
-      "category": "not-islanded",
-      "signature": "islands: none"
+      "category": "build",
+      "signature": "SC8006"
     }
   },
   "npm/workspace-linked": {
     "island:wslinked": {
-      "category": "not-islanded",
-      "signature": "islands: none"
+      "category": "build",
+      "signature": "SC8006"
     }
   },
   "npm/zod3": {

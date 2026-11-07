@@ -390,9 +390,10 @@ test("a list of builtins is typed by the builtin table", () => {
   expect(
     [...untypedLists.keys()].sort(),
     [
-      "The lists of builtins that IrLibFn does not type differ from the registered ones (UNTYPED_LISTS).",
+      "The lists of builtins that IrLibFn does not type differ from the registered ones (UNTYPED_LISTS), named file#declaration.",
       "A new list: declare it ReadonlySet<IrLibFn> or ReadonlyMap<IrLibFn, …> (new Set<IrLibFn>([…])), so a name",
-      "without a signature fails the build. A registered list that is gone or typed now: delete its entry.",
+      "without a signature fails the build. If it lists prefixes, or is not about builtins and only spells a name like one,",
+      "register it in UNTYPED_LISTS with the reason. A registered list that is gone, renamed or typed now: update its entry.",
     ].join("\n"),
   ).toEqual(Object.keys(UNTYPED_LISTS).sort());
 });

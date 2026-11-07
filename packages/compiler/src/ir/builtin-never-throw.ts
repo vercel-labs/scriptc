@@ -23,4 +23,7 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_insp_numeric_separator stores one flag and answers its previous
   // value.
   "insp.numericSeparator",
+  // Emitted inline: the value's tag, its signature literal's length and
+  // the literal's last four bytes. No runtime call but strlen.
+  "dyn.classValueHash",
 ]);

@@ -1,0 +1,6 @@
+{
+  "entry": "workloads/dynamic-class-tests.mjs",
+  "args": [
+    "400000"
+  ]
+}

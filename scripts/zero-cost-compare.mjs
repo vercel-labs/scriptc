@@ -526,6 +526,7 @@ export const DYNAMIC_WORKLOADS = new Set([
   "bench/intern-table",
   "bench/thread-slots",
   "bench/channel-messages",
+  "bench/dynamic-class-tests",
   "bench/dynamic-methods",
   "bench/dynamic-properties",
   "bench/dynamic-properties-json",

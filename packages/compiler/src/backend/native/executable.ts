@@ -393,6 +393,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // Checked-dynamic stream slots test values and call JavaScript stream
   // members through the dyn-invoke unit.
   unit((u) => u.opts.streamDyn === true, "scr_stream_dyn.c"),
+  // process.stdin as a Readable: a consumer of the stdin unit.
+  unit((u) => u.opts.streamStdin === true, "scr_stream_stdin.c"),
   // Own properties JavaScript adds to children.
   unit((u) => u.opts.handleProps === true, "scr_dyn_handle_props.c"),
   // ChildProcess listener removal (off/removeListener) and signalCode.

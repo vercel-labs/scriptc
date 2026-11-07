@@ -16,6 +16,7 @@ const features = {
   wasm: false,
   dynTier: false,
   streamDyn: false,
+  streamStdin: false,
   handleProps: false,
   childLifecycle: false,
   childShellLine: false,

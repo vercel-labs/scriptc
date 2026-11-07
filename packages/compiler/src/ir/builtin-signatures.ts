@@ -3378,6 +3378,12 @@ function buildLibFnSignatures() {
       argTypes: [PROCSTREAM_T],
       result: { kind: "object", className: "%Writable" },
     },
+    /** process.stdin as a Readable: the thread's one stream for descriptor
+     * 0 (+1), fed by the stdin unit (scr_stream_stdin.c). */
+    "stream.stdioReadable": {
+      argTypes: [],
+      result: { kind: "object", className: "%Readable" },
+    },
     "child.killed": { argTypes: [CHILD_T], result: BOOL },
     /** spawnfile and spawnargs: the file the child was started from, and
      * that file followed by its arguments (Node's own reporting: a shell

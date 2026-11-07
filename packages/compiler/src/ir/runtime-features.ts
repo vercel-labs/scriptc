@@ -313,6 +313,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.errored",
   "stream.pipeDyn",
   "stream.prop",
+  "stream.stdioReadable",
   "stream.stdioWritable",
   "stream.unboxDyn",
   "stream.dynIterableSource",
@@ -786,6 +787,7 @@ const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.stdioWriteDyn",
   "process.stdioWriteStr",
   "stdin.nextChunk",
+  "stream.stdioReadable",
   "stdin.onData",
   "stdin.onEnd",
   "stdin.onError",
@@ -1480,6 +1482,8 @@ const RUNTIME_FEATURE_RULES = {
   streamDyn: rule({
     fns: ["stream.dynNative", "stream.dynNativePipe", "stream.pipeDyn", "stream.unpipeDyn"],
   }),
+  /** process.stdin converted into a Readable (scr_stream_stdin.c). */
+  streamStdin: rule({ fns: ["stream.stdioReadable"] }),
   /** Own properties JavaScript adds to runtime handles (scr_dyn_handle_props.c):
    * a Date, RegExp, Map, Set, weak collection, buffer or child. */
   handleProps: rule({ fns: ["handle.propsInstall", "handle.propsGrant"] }),
@@ -2073,6 +2077,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     stream: false,
     strdecDyn: false,
     streamDyn: false,
+    streamStdin: false,
     handleProps: false,
     childLifecycle: false,
     childShellLine: false,

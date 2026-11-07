@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/node-types/stdout-writable-parameter.ts"
+ ],
+ "diags": []
+}

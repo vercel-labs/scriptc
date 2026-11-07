@@ -187,4 +187,74 @@ export const eventLoopCases: EventLoopCase[] = [
     fixture: "rl-lines.ts",
     script: { writes: [], end: true },
   },
+  // process.stdin received where a node:stream Readable is declared. These
+  // fixtures live in the node-types project: with @types/node,
+  // process.stdin is assignable to Readable (the bundled declarations list
+  // only the members the direct calls compile).
+  {
+    title: "stdin as a Readable: a parameter, a class field and an options member share one stream",
+    fixture: "../node-types/stdin-readable-parameter.ts",
+    script: { writes: [{ delayMs: 0, data: "alpha\nbeta\ngamma" }], end: true },
+  },
+  {
+    title: "stdin as a Readable: setEncoding, pause, 'readable' with read(), async iteration",
+    fixture: "../node-types/stdin-readable-surface.ts",
+    script: {
+      writes: [
+        { delayMs: 0, data: "one\n" },
+        { delayMs: 150, data: "two\n" },
+        { delayMs: 150, data: "three\n" },
+      ],
+      end: true,
+    },
+  },
+  {
+    title: "stdin as a Readable: pipe into process.stdout as a Writable",
+    fixture: "../node-types/stdin-readable-pipe.ts",
+    script: { writes: [{ delayMs: 0, data: "piped through\ntwo slots\n" }], end: true },
+  },
+  {
+    title: "stdin as a Readable: readline over the parameter",
+    fixture: "../node-types/stdin-readable-readline.ts",
+    script: { writes: [{ delayMs: 0, data: "first\nsecond\nlast" }], end: true },
+  },
+  {
+    title: "typed stdio: setEncoding with a string 'data' listener delivers the decoded text",
+    fixture: "stdin-set-encoding-string.ts",
+    script: {
+      writes: [
+        { delayMs: 0, data: "Say hello\n" },
+        { delayMs: 40, data: "and more\n" },
+      ],
+      end: true,
+    },
+  },
+  {
+    title: "stdin as a Readable: read() and async iteration yield Buffers",
+    fixture: "../node-types/stdin-readable-iteration.ts",
+    script: {
+      writes: [
+        { delayMs: 0, data: "first\n" },
+        { delayMs: 150, data: "second\n" },
+        { delayMs: 150, data: "third\n" },
+      ],
+      end: true,
+    },
+  },
+  {
+    title: "typed stdio: after setEncoding, read(0) and a read() with nothing held answer null",
+    fixture: "stdin-set-encoding-no-chunk.ts",
+    script: {
+      writes: [
+        { delayMs: 20, data: "Say hello\n" },
+        { delayMs: 40, data: "and more\n" },
+      ],
+      end: true,
+    },
+  },
+  {
+    title: "typed stdio: after setEncoding, an iteration that gets no chunk ends",
+    fixture: "stdin-set-encoding-empty-iteration.ts",
+    script: { writes: [], end: true },
+  },
 ];

@@ -18,18 +18,23 @@ import { dynUndefinedExpr, strLit, varRef } from "../../ir/build.js";
 import {
   arrayOf,
   funcOf,
+  BOOL,
   DYN,
   STRING,
   type IrExpr,
   type IrStmt,
+  type IrType,
   type SrcLoc,
 } from "../../ir/ir.js";
 import {
   cjsExportAssignmentOf,
   cjsExportDiscardReason,
+  isCjsJsFile,
+  isEsModuleStamp,
   isModuleExportsAccess,
   locOf,
 } from "../program.js";
+import { withoutParentheses } from "../outer-expressions.js";
 import { newFnCtx, PoisonError, type Lowerer } from "./lowerer.js";
 import {
   cjsExportValueByName,
@@ -46,9 +51,8 @@ import {
  * when a link's name is not a plain identifier. */
 function cjsExportChainNames(e: ts.BinaryExpression): string[] | null {
   const names: string[] = [];
-  let cur: ts.Expression = e;
+  let cur: ts.Expression = withoutParentheses(e);
   for (;;) {
-    while (ts.isParenthesizedExpression(cur)) cur = cur.expression;
     if (!ts.isBinaryExpression(cur) || cur.operatorToken.kind !== ts.SyntaxKind.EqualsToken) break;
     const left = cur.left;
     if (!ts.isPropertyAccessExpression(left) || left.questionDotToken) break;
@@ -74,16 +78,35 @@ function cjsExportChainNames(e: ts.BinaryExpression): string[] | null {
  * member sets the exports object's prototype as the literal is built (B.3.1)
  * instead of naming an export.
  *
+ * `esModule` is the module's `Object.defineProperty(exports, "__esModule",
+ * { value: true })` stamp (tsc's transpiled-ES-module marker): a
+ * non-enumerable own property of the exports object that consumers of the
+ * interop check, so the published object carries it too.
+ *
+ * A `require()` of an ES module is not a table at all: Node answers that
+ * module's namespace object, which the caller publishes in place of one.
+ *
  * Null when the table is not statically known: a computed name, a spread or
  * accessor in the table, or a replaced value that is not another program
  * module's exports — the caller keeps its refusal rather than publishing an
  * object with the wrong properties. */
+type CjsExportsValue =
+  | {
+      kind: "table";
+      owner: ts.SourceFile;
+      names: string[];
+      proto: ts.Expression | null;
+      esModule: boolean;
+    }
+  | { kind: "namespace"; owner: ts.SourceFile };
+
 function cjsExportsTableNames(
   lowerer: Lowerer,
   dep: ts.SourceFile,
   depth = 0,
-): { owner: ts.SourceFile; names: string[]; proto: ts.Expression | null } | null {
+): CjsExportsValue | null {
   if (depth > 32 || !lowerer.moduleOrder.includes(dep)) return null;
+  if (!isCjsJsFile(dep, lowerer.program)) return { kind: "namespace", owner: dep };
   const stmts = dep.statements.nodes;
   // The kept whole replacement, if the module has one: its names are the
   // value's own properties.
@@ -97,8 +120,7 @@ function cjsExportsTableNames(
     // Members attached to the replacement value (`module.exports.f = …`
     // after the assignment) extend the object this module exposes.
     if (cjsHasLiveMemberExports(lowerer, dep)) return null;
-    let rhs: ts.Expression = kept.expr.right;
-    while (ts.isParenthesizedExpression(rhs)) rhs = rhs.expression;
+    const rhs = withoutParentheses(kept.expr.right);
     const require = inlineProgramRequireOf(lowerer, rhs);
     const split =
       require === null && ts.isIdentifier(rhs) ? splitRequireBindingOfIdent(lowerer, rhs) : null;
@@ -165,7 +187,25 @@ function cjsExportsTableNames(
   // builds the exports object's prototype. A table whose statement did not
   // store one is not the statically known table this lowering can publish.
   if (proto !== null && !lowerer.cjsProtoGlobals.has(lowerer.pathOf(dep))) return null;
-  return { owner: dep, names, proto };
+  return { kind: "table", owner: dep, names, proto, esModule: hasEsModuleStamp(dep) };
+}
+
+/** Whether `dep` stamps its exports object with tsc's non-enumerable
+ * `__esModule` marker. A plain `exports.__esModule = true` needs no
+ * detection: it is an ordinary enumerable member and already a name in the
+ * export table.
+ *
+ * A `module.exports = …` statement replaces the object the stamp was defined
+ * on, and the discarded table's object is not the one this module publishes,
+ * so a replacing module never reports the stamp here. tsc's transpiled output
+ * keeps its original exports object, which a stamp statement always targets. */
+function hasEsModuleStamp(dep: ts.SourceFile): boolean {
+  if (dep.statements.nodes.some((stmt) => cjsExportAssignmentOf(stmt)?.kind === "table")) {
+    return false;
+  }
+  return dep.statements.nodes.some(
+    (stmt) => ts.isExpressionStatement(stmt) && isEsModuleStamp(stmt.expression),
+  );
 }
 
 /** The compiled getter behind an exports object: one lifted function per
@@ -261,6 +301,21 @@ export function lowerCjsExportsValue(
   if (namespace.assignedLater === "all") return null;
   const table = cjsExportsTableNames(lowerer, dep);
   if (table === null) return null;
+  // A required ES module has no CommonJS table: Node's require of it
+  // answers the module's namespace object, so a re-export of that require
+  // publishes that namespace, the same object an `import * as` binding
+  // boxes, not an empty exports object.
+  if (table.kind === "namespace") {
+    const moduleId = `file:${lowerer.pathOf(table.owner)}`;
+    const type: IrType & { kind: "moduleNs" } = { kind: "moduleNs", moduleId };
+    const ns: IrExpr & { type: IrType & { kind: "moduleNs" } } = {
+      kind: "moduleNsRef",
+      moduleId,
+      type,
+      loc,
+    };
+    return lowerer.moduleNamespaceDyn(ns);
+  }
   // A module that re-exports another program module's exports as its whole
   // value exposes that module's object: one object per export table, the
   // same one a direct requirer of the dependency holds.
@@ -301,6 +356,7 @@ export function lowerCjsExportsValue(
         loc,
       },
       proto,
+      { kind: "boolLit", value: table.esModule, type: BOOL, loc },
     ],
     type: DYN,
     loc,

@@ -93,9 +93,22 @@ static ScrDyn *scr_cjs_exports_fn(ScrDynThunk thunk, ScrDyn *first, ScrDyn *seco
 }
 
 /* The exports object: one own enumerable accessor per export, in `keys`
- * order, over a plain extensible object. */
-static ScrDyn *scr_cjs_exports_build(ScrArr *keys, ScrDyn *getter) {
+ * order, over a plain extensible object. A transpiled module's `__esModule`
+ * stamp goes on first, non-enumerable as tsc's defineProperty leaves it and
+ * with the property order its position gives it in Node. */
+static ScrDyn *scr_cjs_exports_build(ScrArr *keys, ScrDyn *getter, bool es_module) {
   ScrDyn *object = scr_dyn_new_obj();
+  if (es_module) {
+    ScrDyn *descriptor = scr_dyn_new_obj();
+    scr_dyn_obj_set(descriptor, "value", 5, scr_dyn_new_bool(true));
+    ScrStr *stamp = scr_str_new("__esModule", sizeof "__esModule" - 1);
+    ScrDyn *key = scr_dyn_new_str(stamp); /* retains */
+    ScrDyn *defined = scr_dyn_define_property(object, key, descriptor);
+    scr_dyn_release(defined);
+    scr_dyn_release(key);
+    scr_str_release(stamp);
+    scr_dyn_release(descriptor);
+  }
   for (size_t i = 0; i < keys->len; i++) {
     ScrStr *key = scr_arr_get_ref(keys, (double)i); /* +1 */
     ScrDyn *name = scr_dyn_new_str(key);
@@ -136,7 +149,8 @@ static bool scr_cjs_exports_apply_proto(ScrDyn *object, ScrDyn *value) {
   return true;
 }
 
-ScrDyn *scr_cjs_exports_value(ScrStr *id, ScrArr *keys, ScrDyn *getter, ScrDyn *proto) {
+ScrDyn *scr_cjs_exports_value(ScrStr *id, ScrArr *keys, ScrDyn *getter, ScrDyn *proto,
+                              bool es_module) {
   for (ScrCjsExports *exports = scr_cjs_exports; exports; exports = exports->next) {
     if (exports->id->len == id->len && memcmp(exports->id->data, id->data, id->len) == 0)
       return scr_dyn_retain(exports->object);
@@ -145,7 +159,7 @@ ScrDyn *scr_cjs_exports_value(ScrStr *id, ScrArr *keys, ScrDyn *getter, ScrDyn *
     scr_atexit(scr_cjs_exports_cleanup);
     scr_cjs_exports_cleanup_registered = true;
   }
-  ScrDyn *object = scr_cjs_exports_build(keys, getter);
+  ScrDyn *object = scr_cjs_exports_build(keys, getter, es_module);
   if (!scr_cjs_exports_apply_proto(object, proto)) {
     scr_dyn_release(object);
     return NULL;

@@ -292,7 +292,19 @@ export function openLoweringBudget(node: ts.Node): boolean {
 }
 
 export function closeLoweringBudget(): void {
-  loweringBudgetDepth--;
+  if (--loweringBudgetDepth === 0 && lowerExprAttempts > lowerExprAttemptsPeak)
+    lowerExprAttemptsPeak = lowerExprAttempts;
+}
+
+let lowerExprAttemptsPeak = 0;
+
+/** The most lowerings one outermost statement has taken since the last
+ * call, which starts the count again. A count, not a time: the chain
+ * scaling test compares it across chain lengths to hold lowering linear. */
+export function takeLowerExprAttemptsPeak(): number {
+  const peak = lowerExprAttemptsPeak;
+  lowerExprAttemptsPeak = 0;
+  return peak;
 }
 
 /** Refuses the budget's owner when its lowering returned after the budget

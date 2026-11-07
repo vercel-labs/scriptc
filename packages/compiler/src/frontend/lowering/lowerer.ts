@@ -872,6 +872,21 @@ interface RefusedProbe {
   diagnostics: ScrDiagnostic[];
 }
 
+/** The receiver of the call being dispatched (Lowerer.dispatchedReceiver)
+ * and, once a lowering produced one that may be handed out again, its
+ * value with what that lowering ran under. */
+interface DispatchedReceiver {
+  node: ts.Expression;
+  value: IrExpr | null;
+  ctx: FnCtx | null;
+  bindings: Map<ts.Symbol, IrType> | null;
+  /** Lowerer.probeSurroundings when the value was lowered. */
+  surroundings: number;
+  /** The expression overrides in force then, in the table's order (null
+   * for none): replacing one leaves the table's size as it was. */
+  overrides: IrExpr[] | null;
+}
+
 export class PoisonError extends Error {
   /** Set when a type with no static lowering poisoned a slot (badType and
    * the dyn class field policy): what failed, for the localized-failure
@@ -5322,6 +5337,9 @@ export class Lowerer {
     "refusedProbeFrame",
     "refusedProbeFrames",
     "closureNamesIssued",
+    // Set and restored around one call's dispatch (lowerCall), so a unit
+    // begins and ends with none.
+    "dispatchedReceiver",
     "spreadArmOverrides",
     "splitIdentifierUses",
     "typeMemo",
@@ -5700,6 +5718,74 @@ export class Lowerer {
       ? refusal
       : null;
   }
+  /** The receiver of the method call being dispatched, from lowerCall's
+   * entry to its return. A call is claimed by one of about a hundred
+   * forms, and the forms that have to see the receiver's value to decide
+   * (lowerDynReceiverMethodCall asks whether a typed receiver lowered to a
+   * checked-dynamic value, the array methods ask for its kind) lower it,
+   * as does the form that finally claims the call. Lowering it once per
+   * form made a chain of calls cost that factor at every link: two to the
+   * power of the chain's length through classes and records, three for
+   * array methods. The first lowering's value is kept here and handed to
+   * every later request for the same node (lowerDispatchedReceiver). */
+  private dispatchedReceiver: DispatchedReceiver | null = null;
+
+  /** The lowering of the dispatched call's receiver: the value an earlier
+   * form's lowering produced when a new lowering would produce it again,
+   * and a lowering that is kept for the next form otherwise.
+   *
+   * A value is kept only when its lowering left nothing behind
+   * (probeEffects, and nothing in the capture buffer): a lowering that
+   * declares a local, lifts a function or takes a closure name numbers
+   * what it declares by how often it ran, so running it once instead of
+   * twice would rename them. It is handed out only in the function context
+   * and under the type bindings it was lowered in, with the surroundings
+   * that decide how an expression lowers unchanged (probeSurroundings) and
+   * the same expression overrides in force, and never for a receiver that
+   * is itself overridden (an optional chain's guarded receiver is its bind
+   * temp). */
+  private lowerDispatchedReceiver(receiver: DispatchedReceiver): IrExpr {
+    const node = receiver.node;
+    if (this.chainRecvByNode.has(node)) return lowerExpr(this, node);
+    const surroundings = this.probeSurroundings();
+    if (
+      receiver.value !== null &&
+      receiver.ctx === this.ctx &&
+      receiver.bindings === this.typeParamBindings &&
+      receiver.surroundings === surroundings &&
+      this.expressionOverridesAre(receiver.overrides)
+    ) {
+      return receiver.value;
+    }
+    const effects = this.probeEffects();
+    const sinkMark = this.diagSinkMark();
+    const value = lowerExpr(this, node);
+    if (
+      this.probeEffects() === effects &&
+      this.diagSinkMark() === sinkMark &&
+      this.probeSurroundings() === surroundings
+    ) {
+      receiver.value = value;
+      receiver.ctx = this.ctx;
+      receiver.bindings = this.typeParamBindings;
+      receiver.surroundings = surroundings;
+      receiver.overrides =
+        this.chainRecvByNode.size === 0 ? null : [...this.chainRecvByNode.values()];
+    }
+    return value;
+  }
+
+  /** Whether the expression overrides in force are exactly `overrides`. */
+  private expressionOverridesAre(overrides: IrExpr[] | null): boolean {
+    if (overrides === null) return this.chainRecvByNode.size === 0;
+    if (overrides.length !== this.chainRecvByNode.size) return false;
+    let index = 0;
+    for (const value of this.chainRecvByNode.values()) {
+      if (overrides[index++] !== value) return false;
+    }
+    return true;
+  }
+
   /** Diagnostics converted into runtimeFence statements (JS sources —
    * see lowerStmts): off the build, preserved here so coverage reporting
    * can still name every deferred fence. */
@@ -18000,7 +18086,12 @@ export class Lowerer {
     const streamValue = this.valueStreamReceivers.get(expr);
     if (streamValue)
       return valueStreamOf(varRef(streamValue.localId, streamValue.type, locOf(expr)));
-    return this.stagedArgument(expr) ?? lowerExpr(this, expr);
+    const staged = this.stagedArgument(expr);
+    if (staged !== null) return staged;
+    const dispatched = this.dispatchedReceiver;
+    if (dispatched !== null && dispatched.node === expr)
+      return this.lowerDispatchedReceiver(dispatched);
+    return lowerExpr(this, expr);
   }
 
   /** The value storedImplicitArgumentType lowered for `expr` in the active
@@ -18444,6 +18535,29 @@ export class Lowerer {
     const webAssembly = lowerWebAssemblyCall(this, expr);
     if (webAssembly !== null) return webAssembly;
     refuseWebAssemblyUse(this, expr.expression);
+    // The forms below lower a method call's receiver once between them
+    // (dispatchedReceiver).
+    const callee = expr.expression;
+    const outerReceiver = this.dispatchedReceiver;
+    this.dispatchedReceiver =
+      ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee)
+        ? {
+            node: callee.expression,
+            value: null,
+            ctx: null,
+            bindings: null,
+            surroundings: 0,
+            overrides: null,
+          }
+        : null;
+    try {
+      return this.dispatchCall(expr);
+    } finally {
+      this.dispatchedReceiver = outerReceiver;
+    }
+  }
+
+  private dispatchCall(expr: ts.CallExpression): IrExpr {
     return (
       lowerErrorFunctionCall(this, expr) ??
       lowerLifetimeRegionCall(this, expr) ??

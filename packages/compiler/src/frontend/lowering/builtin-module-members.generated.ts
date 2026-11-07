@@ -399,6 +399,8 @@ export const BUILTIN_MODULE_MEMBERS: Readonly<Record<string, BuiltinModuleMember
     keys: ["isSea", "getAsset", "getRawAsset", "getAssetAsBlob", "getAssetKeys"],
     ownNames: ["isSea", "getAsset", "getRawAsset", "getAssetAsBlob", "getAssetKeys"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "isSea=0 getAsset=2 getRawAsset=1 getAssetAsBlob=2 getAssetKeys=0",
+    values: "",
   },
 };
 

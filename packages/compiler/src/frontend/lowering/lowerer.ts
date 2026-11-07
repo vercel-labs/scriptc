@@ -14437,7 +14437,7 @@ export class Lowerer {
    * arm's canonical tag. Same-union values pass through untouched; anything
    * else (including a DIFFERENT union) is left for requireExactShape, which
    * rejects union mismatches with SC2003. */
-  coerceToExpected(expr: IrExpr, expected: IrType): IrExpr {
+  coerceToExpected(expr: IrExpr, expected: IrType, siteNarrowed = false): IrExpr {
     // A comma expression ending in a unit literal (`return log(), null`):
     // its effects run first, unchanged, and the unit value takes the
     // destination's representation (a bare unit literal has none).
@@ -14938,7 +14938,17 @@ export class Lowerer {
       ) {
         // A function's widened inferred return (widenReducedReturn) also
         // holds records with more fields; those convert instead of throwing.
-        const helper = widensReducedRecords(this, expected, expr.type)
+        const widened = widensReducedRecords(this, expected, expr.type);
+        // The union flowing WHOLE into its record arm (the checker did not
+        // type this site as the arm): every arm is a value of the slot's
+        // type, so each converts on its own tag (widthLiftPlan's own-arm
+        // rule) instead of every arm but the slot's own throwing.
+        if (!widened && !siteNarrowed && expected.kind === "record") {
+          const lift = this.widthLiftPlan(expr.type, expected);
+          if (lift?.how === "unionWidth")
+            return this.applyWidthLift(lift, expr, expected, expr.loc);
+        }
+        const helper = widened
           ? widthNarrowHelper(this, expr.type.unionId, expected, expr.loc)
           : this.narrowedArmHelper(expr.type.unionId, expected, expr.loc);
         if (helper) {
@@ -15424,12 +15434,18 @@ export class Lowerer {
     // untyped Map satisfies only through `any`) holds a value at run time,
     // and no conversion makes a record of it, so the flow is refused like
     // the arm's value would be.
+    // Whether the checker typed this site as the arm itself: then the
+    // value was narrowed to it (control flow, a predicate) and any other
+    // arm is a lie, which the checked extraction reports. A site the
+    // checker types wider hands the slot every arm (coerceToExpected).
+    let siteNarrowed = false;
     if (
       expr.type.kind === "union" &&
       expected.kind === "record" &&
       this.armTag(expr.type.unionId, expected) >= 0
     ) {
       const site = this.mapTypeOf(this.typeOf(node));
+      siteNarrowed = !!site && typeEquals(site, expected);
       const siteArms =
         site?.kind === "union" ? (this.unions.get(site.unionId)?.arms ?? []) : site ? [site] : [];
       for (const arm of this.unions.get(expr.type.unionId)?.arms ?? []) {
@@ -15527,7 +15543,7 @@ export class Lowerer {
         }
       }
     }
-    let e = this.coerceToExpected(expr, expected);
+    let e = this.coerceToExpected(expr, expected, siteNarrowed);
     // Keep storage intact when ordinary widening already accepts it. Only
     // a destination needing a more specific class layout uses the site's
     // refinement and checked extraction.
@@ -16456,9 +16472,42 @@ export class Lowerer {
         this.promisePayloadIsNever(node)
       )
         return this.divergentValue(awaited, expected);
+      this.requireConvertiblePayload(node, awaited.type, expected);
       return this.coerceInto(node, awaited, expected);
     }
+    if (this.ctx.isAsync) this.refuseReturnedThenable(node, e);
     return this.coerceInto(node, e, expected);
+  }
+
+  /** A returned promise's payload union against a record result that is
+   * one of its arms: the whole union settles the function, so every arm
+   * holding a value must be the result or convert into it. One that does
+   * neither is reported like the plain flow of that arm into the result,
+   * instead of compiling to a conversion that throws when it arrives. */
+  private requireConvertiblePayload(node: ts.Expression, payload: IrType, expected: IrType): void {
+    if (payload.kind !== "union" || expected.kind !== "record") return;
+    if (this.armTag(payload.unionId, expected) < 0) return;
+    for (const arm of this.unions.get(payload.unionId)?.arms ?? []) {
+      if (isUnitType(arm) || typeEquals(arm, expected)) continue;
+      if (this.widthLiftPlan(arm, expected) === null) this.requireExactShape(node, arm, expected);
+    }
+  }
+
+  /** `return v` in an async function where `v` is a typed object with a
+   * callable `then` that is not a promise: Node resolves the function's
+   * promise by calling that `then`. Converting `v` into the result as a
+   * plain object would settle with the object itself, so the return is
+   * refused by name. */
+  private refuseReturnedThenable(node: ts.Expression, e: IrExpr): void {
+    if (e.type.kind !== "object" && e.type.kind !== "record") return;
+    const then = this.checker.getPropertyOfType(this.typeOf(node), "then");
+    if (then === undefined) return;
+    if (this.checker.getCallSignatures(this.checker.getTypeOfSymbol(then)).length === 0) return;
+    this.unsupported(
+      "SC1090",
+      node,
+      `returning a thenable '${this.fmt(e.type)}' from an async function (Node settles the function's promise through the value's then method, which has no lowering here — return a promise instead, e.g. \`new Promise((resolve, reject) => value.then(resolve, reject))\`)`,
+    );
   }
 
   /** Whether a promise returned here resolves the function's own promise

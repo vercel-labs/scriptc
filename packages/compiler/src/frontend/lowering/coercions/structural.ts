@@ -415,13 +415,54 @@ export function unionRecordWidthHelper(
   if (!from) throw new InternalCompilerError("lowerer bug: missing record union");
   const body: IrStmt[] = [];
   from.arms.forEach((arm, tag) => {
+    const cond: IrExpr = {
+      kind: "unionIsTag",
+      unionId: fromId,
+      tag,
+      negated: false,
+      value,
+      type: BOOL,
+      loc,
+    };
+    // A unit arm beside the destination's own arm (widthLiftPlan's own-arm
+    // rule): the slot holds no unit, the checker excluded that arm, and
+    // only a value narrowed or asserted past it still carries it.
+    if (isUnitType(arm)) {
+      const what = arm.kind === "nullT" ? "null" : "undefined";
+      body.push({
+        kind: "if",
+        cond,
+        then: [
+          {
+            kind: "throw",
+            value: {
+              kind: "libCall",
+              fn: "error.new",
+              args: [
+                {
+                  kind: "strLit",
+                  value: `${what} is not representable in a '${lowerer.fmt(target)}' slot (a value narrowed or asserted past the type still held it)`,
+                  type: STRING,
+                  loc,
+                },
+              ],
+              type: { kind: "object", className: "%TypeError" },
+              loc,
+            },
+            loc,
+          },
+        ],
+        else_: null,
+        loc,
+      });
+      return;
+    }
     const lift = lowerer.widthLiftPlan(arm, target);
-    if (!lift || arm.kind !== "record")
-      throw new InternalCompilerError("lowerer bug: invalid union record plan");
+    if (!lift) throw new InternalCompilerError("lowerer bug: invalid union record plan");
     const narrowed: IrExpr = { kind: "unionNarrow", unionId: fromId, tag, value, type: arm, loc };
     body.push({
       kind: "if",
-      cond: { kind: "unionIsTag", unionId: fromId, tag, negated: false, value, type: BOOL, loc },
+      cond,
       then: [{ kind: "return", value: lowerer.applyWidthLift(lift, narrowed, target, loc), loc }],
       else_: null,
       loc,

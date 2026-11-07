@@ -274,6 +274,19 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
     )
       return { how: "unionArr" };
   }
+  // A UNION flowing whole into a RECORD slot that is one of its arms, where
+  // every other arm holding a value converts into that record too (`S | T`
+  // into `T` with `S` assignable to `T`: what the checker infers for
+  // `p.then((r) => ({ ...r, extra }))` returned from an async function
+  // declared `Promise<T>`, whose second type parameter takes `T` from the
+  // return context): Node has one object either way, so each arm converts
+  // on its own tag instead of the checked extraction below throwing for
+  // the arm that is actually there. The record twin of unionArr; a union
+  // whose only arm with a value is the destination (`T | undefined`) has
+  // nothing to convert and keeps the narrow it always took.
+  if (dst.kind === "record" && src.kind === "union" && lowerer.armTag(src.unionId, dst) >= 0) {
+    if (ownArmUnionConverts(lowerer, src.unionId, dst)) return { how: "unionWidth" };
+  }
   // A UNION source into a slot that is ONE of its arms (a width copy
   // whose target field narrowed — the option-table choices shape:
   // `value: boolean | string` copying into a `value: string` slot the
@@ -399,6 +412,30 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
  * pair whose only missing members are those cannot reach here), the
  * source crosses into a checked-dynamic value at all, and the destination
  * is a shape dynCheck validates. */
+/** Whether a union that holds the record `dst` as one of its arms converts
+ * into it arm by arm: every other arm that holds a value lifts into `dst`,
+ * and there is at least one. Unit arms do not count: the slot holds no
+ * unit, so only a value narrowed or asserted past them still carries one,
+ * and the conversion throws for it (unionRecordWidthHelper). */
+function ownArmUnionConverts(
+  lowerer: Lowerer,
+  fromId: string,
+  dst: IrType & { kind: "record" },
+): boolean {
+  const from = lowerer.unions.get(fromId);
+  if (!from) return false;
+  const others = from.arms.filter((arm) => !isUnitType(arm) && !typeEquals(arm, dst));
+  if (others.length === 0) return false;
+  const key = `unionWidth:${fromId}:${dst.shapeId}`;
+  if (lowerer.coercions.planning.has(key)) return true;
+  lowerer.coercions.planning.add(key);
+  try {
+    return others.every((arm) => lowerer.widthLiftPlan(arm, dst) !== null);
+  } finally {
+    lowerer.coercions.planning.delete(key);
+  }
+}
+
 function checkedWidenPlan(lowerer: Lowerer, fromId: string, toId: string): boolean {
   const from = lowerer.shapes.get(fromId);
   const to = lowerer.shapes.get(toId);

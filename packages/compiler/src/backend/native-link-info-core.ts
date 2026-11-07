@@ -166,6 +166,9 @@ export interface NativeLinkFeatures {
   /** Buffer.prototype methods called on checked-dynamic values link
    * scr_bytes_dyn.c; absent (false) for programs without them. */
   dynBuffer?: boolean;
+  /** An untyped path of a synchronous fs function in a JavaScript source
+   * (dyn.validateFsPath) links scr_fs_path_value.c; absent (false) otherwise. */
+  fsPathValue?: boolean;
   /** Builtin functions read as values (Buffer.byteLength, Buffer.alloc,
    * fs.realpathSync) link scr_builtin_values.c; absent (false) otherwise. */
   builtinValues?: boolean;

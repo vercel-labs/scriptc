@@ -149,6 +149,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.realpathValue",
   "dyn.validateString",
   "dyn.validateStrings",
+  "dyn.validateFsPath",
   "path.resolveValue",
   "path.parseValue",
   "path.formatValue",

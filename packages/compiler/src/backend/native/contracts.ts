@@ -196,6 +196,9 @@ export interface CcOptions {
   /** createRequire's computed require and require.resolve: compiles
    * scr_require.c. */
   computedRequire?: boolean;
+  /** An untyped path of a synchronous fs function: compiles
+   * scr_fs_path_value.c. */
+  fsPathValue?: boolean;
   /** Builtin functions read as values: compiles scr_builtin_values.c. */
   builtinValues?: boolean;
   /** A standard library prototype object read as a value in a JavaScript

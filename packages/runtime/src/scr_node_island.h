@@ -213,8 +213,9 @@ bool scr_ni_exportable(const ScrDyn *v);
 void scr_ni_export_out(ScrDyn *v, struct ScrNodeValue *out);
 ScrDyn *scr_ni_export_value(uint32_t id); /* borrowed, or NULL */
 uint32_t scr_ni_live_exports(void);
-/* nodeIsland.classMethods: registers the method table of a class capsule. */
-ScrDyn *scr_node_island_class_methods(ScrDyn *value, ScrDyn *builder);
+/* nodeIsland.classTables: registers the program's resolver, from a class
+ * instance's capsule to the method table of the instance's own class. */
+void scr_node_island_class_tables(ScrDyn *resolver);
 /* NI-5d: native subclasses of island classes created on first use. */
 ScrDyn *scr_ni_subclass_create(ScrDyn *const *args);
 ScrDyn *scr_ni_lazy_subclass_new(ScrDyn *const *args);
@@ -234,7 +235,7 @@ void scr_ni_host_export_release(uint32_t id);
 /* ── shared modules (scope-B NI-6, scr_node_island_export.c) ── */
 void scr_node_island_share(ScrStr *path, ScrStr *exports, ScrDyn *accessor);
 ScrDyn *scr_node_island_shared_tdz(void);
-ScrDyn *scr_node_island_class_methods_of(ScrDyn *cls, ScrDyn *builder, ScrDyn *ctor);
+ScrDyn *scr_node_island_class_constructor(ScrDyn *cls, ScrDyn *ctor);
 void scr_ni_shared_refresh(void);
 void scr_ni_exports_release_all(void); /* at exit, after Node stopped */
 void *scr_ni_value_out_begin(ScrDyn *v, struct ScrNodeValue *out, bool *ok);
@@ -294,6 +295,10 @@ ScrDyn *scr_node_island_apply_to(ScrDyn *fn, ScrDyn *this_, ScrStr *key, ScrDyn 
  * name, unless the arguments made it a function (a TypeError naming `what`
  * is pending then). */
 bool scr_node_island_calls(ScrDyn *fn, ScrDyn *this_, ScrStr *key, ScrStr *what);
+/* Whether a native value's members are dispatched by compiled code (a
+ * typed reference: a class instance, a generator), which the runtime's
+ * by-name call has no table for. */
+bool scr_node_island_is_capsule(ScrDyn *value);
 ScrDyn *scr_node_island_construct(ScrDyn *ctor, ScrDyn *args);
 void scr_node_island_define_field(ScrDyn *self, ScrStr *key, ScrDyn *value);
 ScrDyn *scr_node_island_get(ScrDyn *obj, ScrStr *key);

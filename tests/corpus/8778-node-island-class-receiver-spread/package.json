@@ -1,0 +1,6 @@
+{
+  "name": "island-class-receiver-spread",
+  "private": true,
+  "type": "module",
+  "scriptc": { "packages": { "spread-pkg": "node" } }
+}

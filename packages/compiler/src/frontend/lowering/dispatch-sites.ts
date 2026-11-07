@@ -67,6 +67,9 @@ export interface FunctionSites {
   thrown: string[];
   /** `caughtToDyn` conversions. */
   caughtValues: boolean;
+  /** Operations on Node island values, which cross by reference: every
+   * `nodeIsland.*` call except the calls that copy JSON data both ways. */
+  islandValues: boolean;
 }
 
 /** The `libCall`s the class dispatch rewrite can change. */
@@ -156,6 +159,7 @@ function scanSites(statements: IrStmt[]): FunctionSites {
     basePrototypes: false,
     thrown: [],
     caughtValues: false,
+    islandValues: false,
   };
   const valueKeys = new Set<string>();
   const boxingKeys = new Set<string>();
@@ -260,6 +264,12 @@ function scanSites(statements: IrStmt[]): FunctionSites {
         case "libCall":
           if (expr.fn === "dyn.classBasePrototype") sites.basePrototypes = true;
           if (DISPATCH_LIB_CALLS.has(expr.fn)) sites.dispatches = true;
+          if (
+            expr.fn.startsWith("nodeIsland.") &&
+            expr.fn !== "nodeIsland.callSync" &&
+            expr.fn !== "nodeIsland.call"
+          )
+            sites.islandValues = true;
           break;
       }
       return true;
@@ -287,6 +297,7 @@ function sameSites(left: FunctionSites, right: FunctionSites): boolean {
     left.generatorSteps === right.generatorSteps &&
     left.runtimeSteps === right.runtimeSteps &&
     left.basePrototypes === right.basePrototypes &&
-    left.caughtValues === right.caughtValues
+    left.caughtValues === right.caughtValues &&
+    left.islandValues === right.islandValues
   );
 }

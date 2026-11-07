@@ -94,6 +94,7 @@ import {
 import { protocolArm, protocolFieldArm } from "./class-protocol-dispatch.js";
 import { STREAM_OPERATORS, operatorSignalOptions, reduceSignalSetup } from "./lower-stream.js";
 import { deletedPropertyNames, fixedFieldFamily } from "./js-class-fields.js";
+import { IslandClassTables } from "./island-class-tables.js";
 
 /** The receiver local of a call rewritten for a getter-only name. */
 const GETTER_RECEIVER = "%dispatch.getter.receiver.";
@@ -1481,6 +1482,10 @@ export class ClassDynamicDispatch {
   private readonly generatorDispatch = new GeneratorDynamicDispatch();
   private readonly caughtDispatch = new CaughtValueDispatch();
   private readonly constructionDispatch = new ClassConstructionDispatch();
+  /** The method tables a Node island reads class instances' methods from,
+   * and whether the program holds island values at all. */
+  private readonly islandTables = new IslandClassTables();
+  private islandValues = false;
   /** What each function's body holds for this pass and its sub-passes. */
   readonly sites = new DispatchSites();
   /** Property names a delete can remove (null: any name), for the field
@@ -1629,6 +1634,7 @@ export class ClassDynamicDispatch {
         if (fieldClass === undefined || lowerer.classes.get(fieldClass)?.def.tracksOwnFields)
           discover(type);
       if (found.serializes) this.serializesClasses = true;
+      if (found.islandValues) this.islandValues = true;
       if (found.conversions) toPrimitiveSites.add(fn);
       if (found.dispatches) rewrite.add(fn);
       if (found.keyTests) hasKeySites.add(fn);
@@ -1638,6 +1644,8 @@ export class ClassDynamicDispatch {
     // the order the scan met them.
     sortAdded(lowerer, this.boxed, boxedBefore);
     sortAdded(lowerer, this.boxedConstructors, boxedConstructorsBefore);
+    if (this.islandValues)
+      changed = this.islandTables.process(lowerer, this.boxed, functions[0]!.loc) || changed;
     changed = this.caughtDispatch.dynamicPayloads(lowerer, caughtSites, this.boxed) || changed;
     if (this.boxed.size === 0 && rewrite.size === 0) return changed;
     const converting = this.convertingHints(lowerer);

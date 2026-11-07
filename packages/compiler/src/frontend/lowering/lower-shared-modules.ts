@@ -40,11 +40,7 @@ import {
   sharedClassExtendedDiag,
   sharedModuleDuplicatedDiag,
 } from "../../diagnostics/diagnostic.js";
-import {
-  classConstructHelper,
-  classMethodsBuilder,
-  islandSharedPath,
-} from "./lower-node-island.js";
+import { classConstructHelper, islandSharedPath } from "./lower-node-island.js";
 import { dynUndefinedExpr } from "../../ir/build.js";
 import { funcTypeFromParamShapes } from "./call-signatures.js";
 import { stripTypeWrappers } from "./typed-arguments.js";
@@ -554,12 +550,11 @@ export function sharedModuleRegistrations(lowerer: Lowerer): IrStmt[] {
           continue;
         }
         if (e.kind === "class") {
-          const builder = classMethodsBuilder(lowerer, e.ident, loc) ?? dynUndefinedExpr(loc);
           const construct = classConstructHelper(lowerer, e.ident, loc) ?? dynUndefinedExpr(loc);
           value = {
             kind: "libCall",
-            fn: "nodeIsland.classMethodsOf",
-            args: [value, builder, construct],
+            fn: "nodeIsland.classConstructor",
+            args: [value, construct],
             type: DYN,
             loc,
           };

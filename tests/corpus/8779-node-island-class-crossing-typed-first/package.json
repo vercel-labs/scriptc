@@ -1,0 +1,6 @@
+{
+  "name": "island-class-crossing-typed-first",
+  "private": true,
+  "type": "module",
+  "scriptc": { "packages": { "sink-pkg": "node" } }
+}

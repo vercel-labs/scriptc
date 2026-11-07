@@ -1845,6 +1845,10 @@ bool scr_node_island_calls(ScrDyn *fn, ScrDyn *this_, ScrStr *key, ScrStr *what)
   return false;
 }
 
+bool scr_node_island_is_capsule(ScrDyn *value) {
+  return value != NULL && value->kind == SCR_DYN_TYPED_REF;
+}
+
 ScrDyn *scr_node_island_construct(ScrDyn *ctor, ScrDyn *args) {
   if (!ni_lc_island(ctor)) {
     ScrStr *what = scr_str_new("value", 5);

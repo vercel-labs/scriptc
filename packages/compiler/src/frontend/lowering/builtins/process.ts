@@ -835,6 +835,10 @@ export function lowerProcessProperty(
     return { kind: "libCall", fn: "process.argv", args: [], type: arrayOf(STRING), loc };
   }
   if (member === "connected") {
+    // The channel's state, false without a channel. A JavaScript source
+    // reads undefined there, as Node does (node-value-reads.ts
+    // untypedNodeMemberRead); a TypeScript read is typed boolean by its
+    // declaration.
     return { kind: "libCall", fn: "process.connected", args: [], type: BOOL, loc };
   }
   // process.execArgv: the Node runtime flags kept out of process.argv —

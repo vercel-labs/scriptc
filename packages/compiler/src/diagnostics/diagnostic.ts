@@ -1293,6 +1293,24 @@ export function hostGlobalDiag(name: string, loc: SrcLoc): ScrDiagnostic {
   };
 }
 
+/** A JavaScript source used a Node value native code has no value for
+ * (node-values.ts): it read a value that is not a function, or it called or
+ * constructed the function value such a read answers. Node defines the
+ * value, so answering undefined or a stand-in would diverge silently.
+ * `surface` names it as the program does (`worker_threads.SHARE_ENV`,
+ * `process.finalization`, `URL`). */
+export function nodeValueDiag(surface: string, loc: SrcLoc, hint?: string): ScrDiagnostic {
+  return {
+    code: "SC2020",
+    message: `'${surface}' is a Node value that native code does not provide as a value`,
+    loc,
+    milestone: "later",
+    hint:
+      hint ??
+      "Node defines this value, and native code has no value to answer with: a function reads as a function that refuses when it is called or constructed, and any other value is refused where it is read. Uses the compiler lowers where they are spelled (a direct call, `new`, a member read) are not affected",
+  };
+}
+
 /** A stdlib-global snapshot reached a site that needs its VALUE (an
  * argument, a return, a stored field). The declaration emitted no storage
  * — alias plumbing only serves member and call reads — and the global's

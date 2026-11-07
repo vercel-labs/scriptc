@@ -56,12 +56,7 @@ import { fenceEarlyNsMemberRef, nsMemberIdentOf } from "../lower-namespaces.js";
 import { maybePromiseInstanceOf } from "../maybe-promise.js";
 import { lowerGlobalObjectValue } from "../lower-global-value.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
-import {
-  inOperatorTypeError,
-  isBuiltinIdentityToken,
-  isPrimitiveValueType,
-  throwAfterEach,
-} from "../primitive-throws.js";
+import { inOperatorTypeError, isPrimitiveValueType, throwAfterEach } from "../primitive-throws.js";
 import { partialFieldPresence } from "../partial-assertions.js";
 import {
   classDeclaresHasInstanceHook,
@@ -802,8 +797,7 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     }
     // A builtin global function value read off the global (`parseInt`,
     // `Symbol`, `WeakRef`, ...) is not a class value: the boxed value has
-    // no prototype to test against, so the test keeps the refusal the
-    // global's identity token answered.
+    // no prototype to test against, so the test is refused.
     if (
       isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
       hasGlobalFunctionValue(stdlibGlobalNameOf(lowerer, expr.right) ?? "")
@@ -2456,7 +2450,7 @@ export function lowerInExpression(
   // that reaches here, so only the receiver's own evaluation remains. The
   // message spells the receiver's value, so a receiver the IR cannot
   // re-evaluate (`receiver()`) evaluates once into a hidden local.
-  if (isPrimitiveValueType(recv.type) && !isBuiltinIdentityToken(lowerer, expr.right, recv)) {
+  if (isPrimitiveValueType(recv.type)) {
     if (isUnitType(recv.type) || isSafeToRepeat(recv)) {
       return throwAfterEach([recv], inOperatorTypeError(lowerer, key, recv, BOOL, loc), loc);
     }

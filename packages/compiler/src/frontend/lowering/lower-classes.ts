@@ -29,7 +29,6 @@ import { adaptPromiseExecutor } from "./promise-executor-adapter.js";
 import { dynUndefinedExpr, nodeThrowExpr, strLit, varRef } from "../../ir/build.js";
 import { isDynUndefined } from "../../ir/runtime-features.js";
 import {
-  isBuiltinIdentityToken,
   isPrimitiveValueType,
   staticallyPrimitive,
   throwAfterEach,
@@ -57,7 +56,6 @@ import { InternalCompilerError } from "../../errors.js";
  * hierarchy registration. */
 import { fsStreamClassOf, lowerFsStreamNew } from "./builtins/fs-streams.js";
 import { codeGenerationCalleeOf, lowerCodeGenerationCall } from "./code-generation.js";
-import { TEMPORAL_GLOBAL } from "../builtin-modules.js";
 import * as ts from "../ts7/adapter.js";
 import { lowerZlibStreamNew, zlibClassName, zlibStreamModeOf } from "./builtins/compression.js";
 import { everyStmtList } from "../../ir/traverse.js";
@@ -217,7 +215,9 @@ import {
   fenceEarlyNsMemberRef,
   nsMemberIdentOf,
   nsUndefRead,
+  isNodeUndefinedGlobalRoot,
 } from "./lower-namespaces.js";
+import { refusingFunctionNameOf } from "./builtin-function-fences.js";
 import { hostGlobalNameOfRead } from "./host-globals.js";
 import { mixinResultBindingClassOf, type MixinInstanceInfo } from "./lower-mixins.js";
 import { hasLexicalPrivateReference, hasStaticThis, rejectStaticThis } from "./static-this.js";
@@ -10753,11 +10753,15 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   // --disallow-code-generation-from-strings (code-generation.ts).
   if (codeGenerationCalleeOf(lowerer, expr.expression) === "Function")
     return lowerCodeGenerationCall(lowerer, expr, "Function");
-  // `new <temporal>.X(...)`: Node 24 has no such global, so the callee's
-  // root read throws the ReferenceError before any argument evaluates.
+  // `new <temporal>.X(...)`: Node 24 has no such global (node-values.ts),
+  // so the callee's root read throws the ReferenceError before any argument
+  // evaluates.
   {
     const root = ambientUndefVarRootOf(lowerer, expr.expression);
-    if (root !== null && root.text === TEMPORAL_GLOBAL) {
+    if (
+      root !== null &&
+      isNodeUndefinedGlobalRoot(lowerer, root, lowerer.checker.getSymbolAtLocation(root))
+    ) {
       const t =
         ambientUndefReadType(lowerer, expr) ?? contextualUndefReadType(lowerer, expr) ?? F64;
       return nsUndefRead(lowerer, root.text, expr, t);
@@ -11915,33 +11919,6 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
           loc,
         };
       }
-      // JavaScript's identity-Set idiom: `new Set([setTimeout, atob,
-      // ...])` — the element TYPE (a union of stdlib signatures) has no
-      // mapping, but the element VALUES all lower to identity tokens
-      // (interned strings — see the JS token stance in lower-exprs), so
-      // the honest construction is a Set of those scalars.
-      if (
-        !mapped &&
-        isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
-        (expr.arguments?.nodes.length ?? 0) === 1 &&
-        ts.isArrayLiteralExpression(expr.arguments!.nodes[0]!) &&
-        !(expr.arguments!.nodes[0] as ts.ArrayLiteralExpression).elements.nodes.some(
-          ts.isSpreadElement,
-        )
-      ) {
-        const lit = expr.arguments!.nodes[0] as ts.ArrayLiteralExpression;
-        const elems = lit.elements.nodes.map((el) => lowerer.lowerExpr(el));
-        const first = elems[0];
-        if (
-          first !== undefined &&
-          (first.type.kind === "string" || first.type.kind === "f64") &&
-          elems.every((e) => e.type.kind === first.type.kind)
-        ) {
-          const setT: IrType = { kind: "set", elem: first.type };
-          const seed: IrExpr = { kind: "arrayLit", elems, type: arrayOf(first.type), loc };
-          return { kind: "setNew", seed, type: setT, loc };
-        }
-      }
       if ((expr.arguments?.nodes.length ?? 0) > 0) {
         lowerer.noLowering(
           "new Set(values)",
@@ -12368,12 +12345,16 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   // throws Node's TypeError, which names the constructed expression. V8
   // evaluates the callee, then every argument, and only then checks, so the
   // arguments lower for their effects ahead of the throw.
-  if (
-    callee &&
-    isPrimitiveValueType(callee.type) &&
-    !isBuiltinIdentityToken(lowerer, expr.expression, callee)
-  ) {
+  if (callee && isPrimitiveValueType(callee.type)) {
     return primitiveCalleeThrow(lowerer, expr, callee, loc);
+  }
+  // `new AsyncResource(...)` on a Node class native code has no value for:
+  // the callee reads as a function that refuses when it is used
+  // (builtin-function-fences.ts), which `new` cannot construct. Node
+  // constructs the class, so the construction is refused by name here.
+  {
+    const refused = callee ? refusingFunctionNameOf(callee) : null;
+    if (refused !== null) lowerer.noLowering(`new ${refused}`, expr);
   }
   if (callee && callee.type.kind === "union") {
     const arms = lowerer.unions.get(callee.type.unionId)?.arms ?? [];

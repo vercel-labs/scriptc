@@ -703,9 +703,9 @@ export function lowerSetMethodCall(
   let receiverIr = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
   let probedUntyped = false;
   // The identity-Set idiom (JS): the CHECKER type is an unmappable
-  // Set<union-of-signatures>, but the VALUE lowered as a real Set of
-  // identity tokens (the new-Set probe) — the lowered receiver's type
-  // is the honest dispatch key.
+  // Set<union-of-signatures>, but the VALUE lowered as a real Set (the
+  // new-Set probe) — the lowered receiver's type is the honest dispatch
+  // key.
   if (receiverIr?.kind !== "set" && isJsSourceFile(ts.getSourceFileOfNode(access))) {
     const probed = tryLowerExpression(lowerer, access.expression);
     if (probed?.type.kind === "set") {

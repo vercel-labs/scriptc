@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9770-promisify-value-promise-js.mjs"
+ ],
+ "diags": []
+}

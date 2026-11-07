@@ -39,3 +39,8 @@ console.log(CodexSocket.prototype.constructor === CodexSocket);
 console.log(CodexSocket.OPEN_CODE, CodexSocket.describe("ws://localhost:1"));
 console.log(typeof RetryingSocket, RetryingSocket.name);
 console.log(RetryingSocket !== CodexSocket, typeof CodexSocket === typeof RetryingSocket);
+console.log(
+  CodexSocket instanceof Function,
+  RetryingSocket instanceof Function,
+  Alias instanceof Function,
+);

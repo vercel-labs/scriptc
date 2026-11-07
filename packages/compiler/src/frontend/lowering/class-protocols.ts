@@ -461,18 +461,12 @@ export class ClassProtocols {
       /** The call the expression is an argument of, and its position. */
       call: { node: ts.CallExpression | ts.NewExpression; index: number } | undefined;
     }[] = [];
-    /** A spread hands each member of its operand to the member of the same
-     * name in the literal's type (`{ ...base }` typed `Ops`). */
-    const spread = (node: ts.SpreadAssignment): void => {
-      const literal = node.parent;
-      if (literal !== undefined && ts.isObjectLiteralExpression(literal))
-        sites.push({
-          source: node.expression,
-          target: contextual(literal),
-          contextual: literal,
-          call: undefined,
-        });
-    };
+    /** Object spreads: the operand and the literal it is spread into. A
+     * spread copies, so the operand itself goes nowhere, but each member it
+     * holds lands in the member of the same name in the literal's type
+     * (`{ ...base }` typed `Ops`). Kept apart from `sites`, whose sources
+     * flow as themselves. */
+    const spreads: { source: ts.Expression; literal: ts.ObjectLiteralExpression }[] = [];
     /** Expressions whose values are observed as whole objects. */
     const observed: ts.Expression[] = [];
     /** The observed expressions whose own properties are listed, copied or
@@ -606,7 +600,8 @@ export class ClassProtocols {
       else if (ts.isPropertyAssignment(node)) flow(node.initializer);
       else if (ts.isShorthandPropertyAssignment(node) && ts.isIdentifier(node.name))
         flow(node.name);
-      else if (ts.isSpreadAssignment(node)) spread(node);
+      else if (ts.isSpreadAssignment(node) && ts.isObjectLiteralExpression(node.parent))
+        spreads.push({ source: node.expression, literal: node.parent });
       else if (
         ts.isBinaryExpression(node) &&
         node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
@@ -635,7 +630,7 @@ export class ClassProtocols {
       ts.forEachChild(node, visit);
     };
     for (const source of this.sources) if (!source.isDeclarationFile) visit(source);
-    if (sites.length === 0 && callbackParams.length === 0) return;
+    if (sites.length === 0 && callbackParams.length === 0 && spreads.length === 0) return;
 
     // One batched checker round trip for every node the scan reads: flow
     // sites sit in bodies whose reachability is not known yet, so the
@@ -734,6 +729,8 @@ export class ClassProtocols {
       /** The source is an object literal written at the site: its members
        * are sites of their own. */
       written?: true;
+      /** The source is spread into the target: only its members flow. */
+      spread?: true;
     }[] = [];
     /** Views a value of unknown origin is asserted to and that expose a
      * method of a class the view accepts (see methodViewSources). */
@@ -765,6 +762,19 @@ export class ClassProtocols {
         ...(ts.isObjectLiteralExpression(source) ? { written: true as const } : {}),
       });
     }
+    // A spread operand is an observed expression, so its type is already
+    // fetched. Only the type of an object literal has members to follow.
+    for (const { source, literal } of spreads) {
+      const sourceType = typeOf(this.flowSourceNode(source));
+      if (sourceType !== undefined && this.literalMembers(sourceType).length > 0)
+        pending.push({
+          sourceType,
+          target: contextual(literal),
+          contextual: literal,
+          call: undefined,
+          spread: true,
+        });
+    }
     for (const { fn, index, name } of callbackParams) {
       attempt(() => {
         // Only structural declared types can lose identity; the contextual
@@ -787,6 +797,12 @@ export class ClassProtocols {
     }
     // Every site is revisited until nothing new is marked, so each mark's
     // flows and origins are complete.
+    const handsOn = (entry: (typeof pending)[number]): boolean =>
+      entry.spread
+        ? this.literalMembers(entry.sourceType).some(([, member]) =>
+            this.handsOnIdentity(member, marked),
+          )
+        : this.handsOnIdentity(entry.sourceType, marked, entry.written);
     const before = new Set(marked);
     const targets = new Map<number, ts.Type | undefined>();
     // The fixpoint asks the target of each site whose source carries
@@ -795,8 +811,7 @@ export class ClassProtocols {
     attempt(() =>
       this.checker.prefetchContextualTypes(
         pending.flatMap((entry) =>
-          entry.contextual !== undefined &&
-          attempt(() => this.handsOnIdentity(entry.sourceType, marked, entry.written)) === true
+          entry.contextual !== undefined && attempt(() => handsOn(entry)) === true
             ? [entry.contextual]
             : [],
         ),
@@ -807,14 +822,15 @@ export class ClassProtocols {
       changed = false;
       for (let i = pending.length - 1; i >= 0; i--) {
         const entry = pending[i]!;
-        if (attempt(() => this.handsOnIdentity(entry.sourceType, marked, entry.written)) !== true)
-          continue;
+        if (attempt(() => handsOn(entry)) !== true) continue;
         if (!targets.has(i)) targets.set(i, attempt(entry.target));
         const target = targets.get(i);
         if (
           target !== undefined &&
           attempt(() =>
-            this.markTarget(entry.sourceType, target, marked, entry.call ?? null, true),
+            entry.spread
+              ? this.markLiteralMembers(entry.sourceType, target, marked, null)
+              : this.markTarget(entry.sourceType, target, marked, entry.call ?? null, true),
           ) === true
         )
           changed = true;
@@ -1909,20 +1925,8 @@ export class ClassProtocols {
     // = { run }`) has no identity a copy would lose here, but each member
     // keeps its own: it flows into the member of the same name.
     const carried = this.carriesIdentity(source, marked);
-    const members = carried ? NO_MEMBERS : this.literalMembers(source);
-    if (members.length > 0) {
-      let changed = false;
-      for (const [name, member] of members) {
-        if (!this.handsOnIdentity(member, marked)) continue;
-        const into = this.checker.getPropertyOfType(target, name);
-        if (
-          into !== undefined &&
-          this.markTarget(member, this.checker.getTypeOfSymbol(into), marked, site, false)
-        )
-          changed = true;
-      }
-      return changed;
-    }
+    if (!carried && this.literalMembers(source).length > 0)
+      return this.markLiteralMembers(source, target, marked, site);
     // Only a value with identity makes the type that receives it a view.
     if (!carried) return false;
     const symbol = target.getSymbol();
@@ -1994,6 +1998,33 @@ export class ClassProtocols {
     if (marked.has(symbol)) return collectionGrew;
     marked.add(symbol);
     return true;
+  }
+
+  /** The members of an object written as a literal (`base` after `const base
+   * = { run }`, or the operand of a spread) flow into the members of the
+   * same name in each structural part of `target`. The object has no
+   * identity a copy would lose here, but each member keeps its own. Answers
+   * whether anything new was marked. */
+  private markLiteralMembers(
+    source: ts.Type,
+    target: ts.Type,
+    marked: Set<ts.Symbol>,
+    site: { node: ts.CallExpression | ts.NewExpression; index: number } | null,
+  ): boolean {
+    let changed = false;
+    for (const part of target.isUnionType() ? ts.constituentTypes(target) : [target]) {
+      if (!this.isStructuralTarget(part)) continue;
+      for (const [name, member] of this.literalMembers(source)) {
+        if (!this.handsOnIdentity(member, marked)) continue;
+        const into = this.checker.getPropertyOfType(part, name);
+        if (
+          into !== undefined &&
+          this.markTarget(member, this.checker.getTypeOfSymbol(into), marked, site, false)
+        )
+          changed = true;
+      }
+    }
+    return changed;
   }
 
   /** A promise-or-value type (`Promise<Entry> | Entry`) is read with one

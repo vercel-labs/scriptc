@@ -124,7 +124,12 @@ describe.skipIf(skip)("island-closed module-level constants", () => {
   test.each([
     ["effects", "scriptc-closed-init-effects.stamp", "fs\\.writeFileSync\\(\\)", "stamped true\n"],
     // Opening a file for writing creates it before anything is written.
-    ["effects-open", "scriptc-closed-init-effects-open.stamp", "fs\\.openSync\\(\\)", "touched true\n"],
+    [
+      "effects-open",
+      "scriptc-closed-init-effects-open.stamp",
+      "fs\\.openSync\\(\\)",
+      "touched true\n",
+    ],
   ])(
     "the build does not perform an initializer's effects (%s)",
     async (fixture, file, operation, output) => {
@@ -154,13 +159,14 @@ describe.skipIf(skip)("island-closed module-level constants", () => {
   );
 
   test("a refusal the island package catches does not make its fallback the constant", async () => {
-    const { binary, trace } = await build("8736-node-island-closed-const-caught-refusal");
+    const { binary, trace } = await build("8932-node-island-closed-const-caught-refusal");
     const modules = trace.filter(generated);
     expect(modules).toHaveLength(2);
     // The first initializer's package catches the refused read and returns
     // a fallback; the second's lets it through. Both records name the read,
     // and both constants evaluate in the run.
-    for (const module of modules) expect(module).toMatch(/^\[node-islands\] eager .*fs\.readFileSync\(\)/);
+    for (const module of modules)
+      expect(module).toMatch(/^\[node-islands\] eager .*fs\.readFileSync\(\)/);
     const { stdout } = await run(binary);
     expect(stdout).toBe("measure twice 14\n");
   }, 300_000);

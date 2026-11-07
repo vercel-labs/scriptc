@@ -222,7 +222,8 @@ function evaluationWalk(mod: IrModule): {
       const value = fields[key];
       for (const part of Array.isArray(value) ? value : [value]) {
         if (part === null || typeof part !== "object") continue;
-        if (typeof (part as { kind?: unknown }).kind === "string") awaits = evaluate(part as IrExpr) || awaits;
+        if (typeof (part as { kind?: unknown }).kind === "string")
+          awaits = evaluate(part as IrExpr) || awaits;
         else awaits = inside(part) || awaits;
       }
     }

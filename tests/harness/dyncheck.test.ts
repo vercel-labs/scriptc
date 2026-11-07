@@ -165,6 +165,42 @@ describe(`dynamic-boundary checks (scriptc-only${sanitize ? ", sanitized" : ""})
     expect(r.stderr).toBe("");
   });
 
+  test("an untyped RegExp with properties of its own keeps the inspector's refusal", async () => {
+    // Node prints the added properties after the pattern (`/b+/i { extra: 1 }`).
+    // The untyped inspector prints a RegExp's pattern and flags only, so one
+    // the program gave properties of its own is refused by name instead of
+    // printed without them; a RegExp without any prints.
+    const r = await compileAndRun(
+      "untyped-regexp-own-properties",
+      `
+      const attempt = (label, go) => {
+        try { go(); } catch (e) { console.log(label, "threw", e.message); }
+      };
+      const withProps = /b+/i;
+      withProps.extra = 1;
+      class Box { constructor(v) { this.v = v; } }
+      const plain = JSON.parse("[]");
+      plain.push(/a+/g, [/c/]);
+      attempt("plain", () => console.log(plain));
+      attempt("set", () => console.log(new Set([withProps])));
+      attempt("class field", () => console.log(new Box(withProps)));
+      attempt("plain set", () => console.log(new Set([/d/])));
+    `,
+      "cjs",
+    );
+    expect(r.stdout).toBe(
+      [
+        "[ /a+/g, [ /c/ ] ]",
+        "set threw util.inspect of a dynamic RegExp is not supported yet",
+        "class field threw util.inspect of a dynamic RegExp is not supported yet",
+        "Set(1) { /d/ }",
+        "",
+      ].join("\n"),
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).toBe("");
+  });
+
   test("assertions narrowing record members or union arms check the value", async () => {
     const r = await compileAndRun(
       "narrowing-record-assertions",

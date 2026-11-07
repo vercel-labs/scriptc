@@ -344,6 +344,44 @@ declare module "crypto" {
   export function getRandomValues<T extends RandomValuesArray>(typedArray: T): T;
   /* The WebCrypto global's object and its SubtleCrypto. */
   export const webcrypto: Crypto;
+  /* The WebCrypto type names under the spelling @types/node gives them
+   * (`webcrypto.CryptoKey`, `webcrypto.AesKeyAlgorithm`): each is the
+   * global interface of the same name, so a program typed either way
+   * names the same type. */
+  export namespace webcrypto {
+    type Algorithm = globalThis.Algorithm;
+    type AlgorithmIdentifier = globalThis.AlgorithmIdentifier;
+    type HashAlgorithmIdentifier = globalThis.HashAlgorithmIdentifier;
+    type KeyUsage = globalThis.KeyUsage;
+    type KeyType = globalThis.KeyType;
+    type KeyFormat = globalThis.KeyFormat;
+    type KeyAlgorithm = globalThis.KeyAlgorithm;
+    type AesKeyAlgorithm = globalThis.AesKeyAlgorithm;
+    type HmacKeyAlgorithm = globalThis.HmacKeyAlgorithm;
+    type EcKeyAlgorithm = globalThis.EcKeyAlgorithm;
+    type RsaHashedKeyAlgorithm = globalThis.RsaHashedKeyAlgorithm;
+    type HmacImportParams = globalThis.HmacImportParams;
+    type HmacKeyGenParams = globalThis.HmacKeyGenParams;
+    type AesKeyGenParams = globalThis.AesKeyGenParams;
+    type AesGcmParams = globalThis.AesGcmParams;
+    type AesCbcParams = globalThis.AesCbcParams;
+    type AesCtrParams = globalThis.AesCtrParams;
+    type AesDerivedKeyParams = globalThis.AesDerivedKeyParams;
+    type Pbkdf2Params = globalThis.Pbkdf2Params;
+    type HkdfParams = globalThis.HkdfParams;
+    type EcKeyGenParams = globalThis.EcKeyGenParams;
+    type EcKeyImportParams = globalThis.EcKeyImportParams;
+    type EcdsaParams = globalThis.EcdsaParams;
+    type RsaHashedKeyGenParams = globalThis.RsaHashedKeyGenParams;
+    type RsaHashedImportParams = globalThis.RsaHashedImportParams;
+    type RsaPssParams = globalThis.RsaPssParams;
+    type JsonWebKey = globalThis.JsonWebKey;
+    type CryptoKey = globalThis.CryptoKey;
+    type CryptoKeyPair = globalThis.CryptoKeyPair;
+    type SubtleCrypto = globalThis.SubtleCrypto;
+    type Crypto = globalThis.Crypto;
+    type BufferSource = globalThis.BufferSource;
+  }
   export const subtle: SubtleCrypto;
   export function randomFillSync<T extends ArrayBufferView | ArrayBufferLike>(
     buffer: T,

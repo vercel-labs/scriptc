@@ -25,6 +25,7 @@ import {
   runNativeBootstrapChecks,
 } from "../../scripts/ci-native-bootstrap.mjs";
 import { withoutFirstLine } from "./large-artifacts.js";
+import { checkBuildCacheContracts } from "./native-build-cache-contracts.js";
 import { bootstrapStep } from "./self-hosting-timing.js";
 import { unbundlePlatformPackages } from "../../scripts/native-cli-bundle.mjs";
 
@@ -354,6 +355,14 @@ test(
         expect(
           await invoke(probe, ["run", comptime, "-o", executable("comptime"), "--strip"]),
         ).toBe("42\n");
+
+        // A rebuild answers as a cold build does, whatever was edited.
+        await checkBuildCacheContracts({
+          compiler: probe,
+          directory: join(directory, "build-cache"),
+          env: nativeOptions.env,
+          run: (file, args, env) => exec(file, args, { ...nativeOptions, env }),
+        });
 
         const object = join(directory, "program.obj");
         const linkInfo = JSON.parse(

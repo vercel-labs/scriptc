@@ -274,6 +274,7 @@ import {
 } from "./lower-classes.js";
 import {
   lowerStreamUnderscoreAssign,
+  streamAsyncDisposeExpr,
   streamClassAliasDecl,
   streamSidesOf,
 } from "./lower-stream.js";
@@ -508,7 +509,15 @@ function cleanupCall(
     const syncFound = info ? lowerer.findMethodOn(info, "sym:dispose") : null;
     const member = asyncFound ? "sym:asyncDispose" : syncFound ? "sym:dispose" : null;
     const found = asyncFound ?? syncFound;
-    if (!info || !member || !found) return null;
+    if (!info || !member || !found) {
+      // The runtime stream classes: Readable.prototype and
+      // Writable.prototype define [Symbol.asyncDispose] and nothing
+      // synchronous.
+      if (awaited && info && streamSidesOf(lowerer, info)) {
+        return { call: streamAsyncDisposeExpr(lowerer, info, value, loc, node), async: true };
+      }
+      return null;
+    }
     if (found.sig.params.length !== 0) {
       lowerer.unsupported(
         "SC1090",

@@ -327,7 +327,10 @@ export class NarrowingStability {
     // `y = "text"`, which the checker does not report there.
     const checker = this.lowerer.checker;
     const stored = checker.getTypeAtLocation(last.value);
-    if (!isNothing(stored) || nothingFlags(stored) !== nothingFlags(checker.getTypeAtLocation(read)))
+    if (
+      !isNothing(stored) ||
+      nothingFlags(stored) !== nothingFlags(checker.getTypeAtLocation(read))
+    )
       return false;
     if (flowBoundary(last.at) !== flowBoundary(read)) return false;
     if (!runsBefore(last.at, read)) return false;

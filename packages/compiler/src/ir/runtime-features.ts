@@ -1482,6 +1482,12 @@ const RUNTIME_FEATURE_RULES = {
   genBind: rule({
     initial: (mod) => mod.functions.some((fn) => fn.generator?.bindAtCall === true),
   }),
+  /** A generator function reads `this` (dyn.generatorThis): its body runs
+   * on the generator's fiber after the call returned, so the program's
+   * spawn wrappers record the call's receiver (scr_gen_capture_receiver).
+   * A program without the read records none: its generators take no
+   * dynamic value. */
+  genReceiver: rule({ fns: ["dyn.generatorThis"] }),
   /** Buffer.prototype methods called on checked-dynamic values
    * (scr_bytes_dyn.c). */
   dynBuffer: rule({
@@ -2040,6 +2046,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     reflectProtoTarget: false,
     dynBuffer: false,
     dynBufferMembers: false,
+    genReceiver: false,
     bufferPrototypeObject: false,
     builtinValues: false,
     computedRequire: false,

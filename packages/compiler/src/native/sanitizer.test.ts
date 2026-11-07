@@ -28,6 +28,7 @@ const features = {
   dynIntegrityQueries: false,
   reflectProtoTarget: false,
   genBind: false,
+  genReceiver: false,
   eventsOnceSignal: false,
   mime: false,
   largePages: false,

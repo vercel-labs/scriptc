@@ -142,6 +142,9 @@ export interface NativeLinkFeatures {
   /** A generator that binds its parameters at the call: scr_gen_bind.c.
    * Absent (false) for programs without one. */
   genBind?: boolean;
+  /** A generator function that reads `this`: scr_gen_receiver.c. Absent
+   * (false) for programs without one. */
+  genReceiver?: boolean;
   /** events.once with options: scr_events_once_signal.c. Absent (not
    * false) for programs without it. */
   eventsOnceSignal?: boolean;

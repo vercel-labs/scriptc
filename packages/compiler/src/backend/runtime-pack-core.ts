@@ -105,6 +105,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   dynIntegrityQueries: boolean;
   reflectProtoTarget: boolean;
   genBind: boolean;
+  genReceiver: boolean;
   eventsOnceSignal: boolean;
   mime: boolean;
   largePages: boolean;
@@ -368,6 +369,7 @@ export function effectiveRuntimeFeatures(
     dynIntegrityQueries: features.dynIntegrityQueries === true,
     reflectProtoTarget: features.reflectProtoTarget === true,
     genBind: features.genBind === true,
+    genReceiver: features.genReceiver === true,
     eventsOnceSignal: features.eventsOnceSignal === true,
     mime: features.mime === true,
     largePages: features.largePages === true,

@@ -108,6 +108,7 @@ export interface EarlyExecutableNativeFeatures {
   dynIntegrityQueries?: boolean;
   reflectProtoTarget?: boolean;
   genBind?: boolean;
+  genReceiver?: boolean;
   eventsOnceSignal?: boolean;
   mime?: boolean;
   webStreams?: boolean;

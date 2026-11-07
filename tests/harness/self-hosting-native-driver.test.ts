@@ -211,6 +211,10 @@ test(
       // (diagnostics/dynamic-tier.ts). The contracts compare stderr exactly,
       // so its self-builds leave that performance note out.
       const quiet = "--no-dynamic-tier-warning";
+      // It also converts values between layouts at several thousand places
+      // SC6001 reports (frontend/lowering/width-copies.ts): its IR nodes
+      // are records of many shapes. The self-builds leave that out too.
+      const copies = "--no-copy-warning";
       const ffi = join(directory, ".scriptc/distribution-seed/compiler.ffi.json");
       const rebuilt = executable("scriptc-rebuilt");
       const checkProgram = async (compiler: string, source: string, extra: string[] = []) => {
@@ -616,6 +620,7 @@ test(
               "--ffi",
               ffi,
               quiet,
+              copies,
             ],
             "scriptc: warning: --emit-ir is deprecated; use --emit=ir for IR as the primary output\n",
           ),
@@ -634,7 +639,7 @@ test(
           await bootstrapStep("rebuilt compiler emits itself", () =>
             invoke(
               rebuilt,
-              ["build", entry, "--emit=llvm", "-o", rebuiltLlvm, "--ffi", ffi, quiet],
+              ["build", entry, "--emit=llvm", "-o", rebuiltLlvm, "--ffi", ffi, quiet, copies],
               "",
               { SCRIPTC_EMIT_WORKER_FAIL: "all" },
             ),
@@ -668,7 +673,7 @@ test(
       const rebuildFrontend = async () => {
         const lowered = join(directory, "cli.ir.json");
         const output = await bootstrapStep("sanitized native frontend lowers the compiler", () =>
-          invoke(seed, ["build", entry, "--emit=ir", "-o", lowered, "--ffi", ffi, quiet]),
+          invoke(seed, ["build", entry, "--emit=ir", "-o", lowered, "--ffi", ffi, quiet, copies]),
         );
         expect(output.trim()).toBe(lowered);
         await compareArtifacts({ ir: true, llvm: false });
@@ -696,6 +701,7 @@ test(
               seedIr,
               "--from-lowered-accept=compiler,options,inputs",
               quiet,
+              copies,
             ],
             "scriptc: warning: --from-lowered: building from " +
               seedIr +

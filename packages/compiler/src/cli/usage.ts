@@ -38,6 +38,7 @@ export const CLI_OPTIONS = {
   tier: { type: "string" },
   "explain-dynamic": { type: "string" },
   "dynamic-tier-warning": { type: "boolean", default: true },
+  "copy-warning": { type: "boolean", default: true },
   wasm: { type: "string", multiple: true },
   "node-islands": { type: "string" },
   "node-island": { type: "string", multiple: true },
@@ -460,6 +461,18 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
       },
     ],
   },
+  "copy-warning": {
+    entries: [
+      {
+        term: "--no-copy-warning",
+        help: [
+          "build and coverage: leave out SC6001, the warning at",
+          "conversions that copy a value the program can tell from",
+          "the original",
+        ],
+      },
+    ],
+  },
   "node-islands": {
     entries: [
       {
@@ -622,6 +635,7 @@ const EXECUTABLE_OPTIONS: readonly CliOptionName[] = [
   "provenance-sources",
   "tier",
   "dynamic-tier-warning",
+  "copy-warning",
   ...NODE_ISLAND_OPTIONS,
 ];
 
@@ -682,6 +696,7 @@ export const CLI_COMMANDS: readonly CliCommand[] = [
       "tier",
       "explain-dynamic",
       "dynamic-tier-warning",
+      "copy-warning",
       ...NODE_ISLAND_OPTIONS,
       "explain-island",
       "strict-user-js",

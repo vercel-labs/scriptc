@@ -335,6 +335,21 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: [],
   },
   {
+    name: "width-copy-observation",
+    file: `${SRC}/frontend/lowering/width-copies.ts`,
+    symbol: "Observations",
+    source: "ir",
+    scope: "type",
+    setBy:
+      "one write to a field or element of a record, array or class layout, one identity comparison of its values, or one value of it that reaches untyped code or the runtime",
+    gates:
+      "SC6001 at every conversion that copies an aliasable value into or out of that layout, and the SC1090 refusal of an aliasable record converted to a class instance; no emitted code",
+    narrower:
+      "the copied value's own path: a copy nothing writes, compares or lets out, whose source is not written while it lives; conversions that keep the object need no report",
+    tracked: "pi-decisions DECISIONS.md 2026-11-07 (divergence-soundness); object-model S1 D1",
+    lowererFields: [],
+  },
+  {
     name: "key-order-variants",
     file: `${SRC}/ir/ir.ts`,
     symbol: "orderVariants",

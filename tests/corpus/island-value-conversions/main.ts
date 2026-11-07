@@ -3,7 +3,7 @@
 // checked conversion (`as Item`, `as { label: string }`, `as number[]`)
 // reads the members through the handle, and JSON.stringify, Object.keys
 // and object spread read the island object's own properties.
-import { makeBody, makeHooks, makeList, makeWithMembers } from "value-pkg";
+import { makeBody, makeCycle, makeHidden, makeHooks, makeInherited, makeList, makeProxyList, makeSymbols, makeWithMembers } from "value-pkg";
 
 interface Item {
   label: string;
@@ -50,3 +50,51 @@ console.log("members", JSON.stringify(members));
 console.log("accessor", (members as { size: number }).size, Object.keys(members).join(","));
 const copiedMembers = { ...members };
 console.log("copied", copiedMembers.size, typeof copiedMembers.run, "missing" in copiedMembers);
+
+// An index-signature record captures the object's own keys, and its declared
+// fields are ordinary property reads: a member the object inherits or
+// defines as non-enumerable still answers.
+const inherited = makeInherited() as { [k: string]: string | number; label: string };
+console.log("inherited", inherited.label, inherited.count);
+
+const hidden = makeHidden() as { [k: string]: number; hidden: number };
+console.log("hidden", hidden.hidden, hidden["visible"]);
+
+// Passing the island object where a parameter declares an index-signature
+// record builds the record at the call, so its declared fields read the
+// object the same way.
+function describeIndexed(r: { [k: string]: string | number; label: string }): string {
+  return `${r.label}:${r.count}`;
+}
+console.log("parameter", describeIndexed(makeInherited()));
+
+function sumNumbered(r: { [k: string]: number; hidden: number }): number {
+  return r.hidden + r["visible"];
+}
+console.log("parameter numbered", sumNumbered(makeHidden()));
+
+// A cyclic island object converts once: a member read that answers the same
+// object again keeps the record already built for it.
+interface Link {
+  name: string;
+  next?: Link;
+}
+const link = makeCycle() as Link;
+console.log("cycle", link.name, link.next!.name, link.next!.next!.name);
+
+// A spread copies the island function onto a native object: JSON.stringify
+// runs that copy's toJSON, as it would for any callable member.
+const hookCopy = { ...makeHooks() };
+console.log("spread toJSON", JSON.stringify(hookCopy));
+
+// A symbol has no JSON text: an object member is omitted and an array
+// element is null, and typeof still answers symbol.
+const symbols = makeSymbols();
+console.log("symbol", typeof symbols.tag, JSON.stringify(symbols), JSON.stringify(symbols.list));
+console.log("symbol top", JSON.stringify(symbols.tag));
+
+// Array.isArray follows a proxy to its target, so a proxied array converts
+// and serializes as the array it is.
+const proxied = makeProxyList();
+const proxiedNums = proxied as number[];
+console.log("proxy array", Array.isArray(proxied), proxiedNums.length, JSON.stringify(proxied));

@@ -787,7 +787,13 @@
  "cycle-record.u": {
   "n2i/P.read@isl.clone": "unsupported",
   "i2n/U.forin": "unsupported",
-  "i2n/N.cast": "crash",
+  "i2n/N.cast.read.clone": "unsupported",
+  "i2n/I.same@cast": "wrong",
+  "i2n/N.cast.read@isl.name": "wrong",
+  "i2n/N.cast.read@isl.selfId": "wrong",
+  "i2n/N.cast.read@isl.deep": "wrong",
+  "i2n/N.cast.read@isl.clone": "unsupported",
+  "i2n/I.read@nat": "kl=wrong,name=wrong",
   "n2i2n/U.clone": "unsupported",
   "clo-n2i/N.callback": "forin=unsupported",
   "clo-i2n/U.forin": "unsupported"

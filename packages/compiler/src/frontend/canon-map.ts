@@ -103,11 +103,15 @@ function mapCanonicalAt(
       return viaChecker();
     case "array": {
       const elem = mapCanonicalAt(c.elem, ctx, depth + 1, notes, walk);
-      // An array of checked-dynamic elements is the checked-dynamic value,
-      // as mapType maps `unknown[]`: an `any[]` value is held that way
-      // wherever it comes from, so a native array of untyped elements here
-      // would make every slot of the type a copy of the value it receives.
-      if (elem?.kind === "dyn") {
+      // A type that is itself an array of checked-dynamic elements is the
+      // checked-dynamic value, as mapType maps `unknown[]`: an `any[]` value
+      // is held that way wherever it comes from, so a native array of
+      // untyped elements here would make every slot of the type a copy of
+      // the value it receives. Only the type itself: an `any[]` inside a
+      // shape (a record's field) keeps its array of untyped elements, the
+      // layout the record has without this rule, which a declaration that
+      // keeps an existing record's layout shares with it.
+      if (elem?.kind === "dyn" && depth === 0) {
         if (notes !== undefined) notes.collapsedToDynamic = true;
         return DYN;
       }

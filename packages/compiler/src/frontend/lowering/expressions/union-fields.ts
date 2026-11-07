@@ -18,14 +18,19 @@ import { locOf, isJsSourceFile } from "../../program.js";
 interface UnionFieldArm {
   receiver: IrType & { kind: "record" | "object" };
   type: IrType;
+  /** A record field declared `?:` on a checked-dynamic slot: it has the
+   * ABSENT marker state, so a delete can write it. */
+  optional?: true;
 }
 
 /** The declared data field `name` of a class or record arm, or null when the
  * arm has none (accessors, index signatures and other kinds included). */
 function unionFieldArm(lowerer: Lowerer, arm: IrType, name: string): UnionFieldArm | null {
   if (arm.kind === "record") {
-    const type = lowerer.shapes.get(arm.shapeId)?.fields.find((f) => f.name === name)?.type;
-    return type ? { receiver: arm, type } : null;
+    const field = lowerer.shapes.get(arm.shapeId)?.fields.find((f) => f.name === name);
+    return field
+      ? { receiver: arm, type: field.type, ...(field.optional === true ? { optional: true } : {}) }
+      : null;
   }
   if (arm.kind === "object") {
     const type = lowerer.classes.get(arm.className)?.fields.get(name);
@@ -444,18 +449,22 @@ export function lowerUnionFieldDelete(
   if (!arms || arms.length < 2) return null;
   const name = access.name.text;
   const loc = locOf(access);
-  const fields: { arm: IrType & { kind: "record" }; type: IrType }[] = [];
+  const fields: { arm: IrType & { kind: "record" }; type: IrType; optional?: true }[] = [];
   for (const arm of arms) {
     if (arm.kind !== "record" || lowerer.shapes.get(arm.shapeId)?.tuple) return null;
     const field = unionFieldArm(lowerer, arm, name);
-    if (!field || lowerer.absentFieldValue(field.type, loc) === null) return null;
-    fields.push({ arm, type: field.type });
+    if (!field || lowerer.absentFieldValue(field, loc) === null) return null;
+    fields.push({
+      arm,
+      type: field.type,
+      ...(field.optional === true ? { optional: true as const } : {}),
+    });
   }
   const object = lowerer.declareHiddenLocal("%unionDeleteObject", receiver.type);
   const objectRef = varRef(object.id, object.type, loc);
   const branch = (tag: number): IrStmt[] => {
     const field = fields[tag]!;
-    const absent = lowerer.absentFieldValue(field.type, loc);
+    const absent = lowerer.absentFieldValue(field, loc);
     if (absent === null) return [];
     const write: IrStmt = {
       kind: "recordSet",

@@ -15,6 +15,7 @@ import {
   privateInMessage,
 } from "../private-brands.js";
 import type { Lowerer } from "../lowerer.js";
+import { isCallableValue } from "../callable-properties.js";
 import {
   BOOL,
   BYTES_ELEMENT_NAME,
@@ -37,6 +38,11 @@ import { lowerWebAssemblyInstanceof, refuseWebAssemblyUse } from "../builtins/we
 import { lowerSocketInstanceOf } from "../lower-server.js";
 import { builtinClassRefOf } from "../builtins/class-values.js";
 import { lowerZlibInstanceOf } from "../builtins/compression.js";
+import { builtinModuleHasMember } from "../builtin-module-members.js";
+import {
+  builtinNamespaceMemberTest,
+  reflectOverNamespaceExpr,
+} from "../builtin-namespace-probe.js";
 import { nodeThrowExpr, numLit, strLit, varRef } from "../../../ir/build.js";
 import { lowerDisposableStackInstanceOf } from "../builtins/disposable-stack.js";
 import { lowerBlobInstanceof } from "../builtins/blob.js";
@@ -1849,6 +1855,52 @@ export function lowerInExpression(
     // runtime key table to ask.
     const rIn = lowerRuntimeKeyIn(lowerer, expr, loc);
     if (rIn) return rIn;
+    // A RUNTIME string key over a supported builtin module namespace: the
+    // interned census-name comparison helper, so a feature probe in a loop
+    // (`names.filter((k) => k in zlib)`) answers Node's member surface.
+    if (lowerer.mapTypeOf(lowerer.typeOf(expr.left))?.kind === "string") {
+      const shape = lowerer.builtinNamespaceShapeOf(expr.right);
+      if (shape !== null) {
+        if (shape.flavor === "unknown") {
+          lowerer.unsupported(
+            "SC1090",
+            expr.right,
+            "'in' over a builtin module namespace whose runtime shape is not known statically (an ES module namespace and the CommonJS exports object answer different member sets; bind the namespace where it is imported or required)",
+          );
+        }
+        const keyExpr = lowerer.lowerExprExpecting(expr.left, STRING);
+        const member = builtinNamespaceMemberTest(lowerer, shape, false, keyExpr, loc);
+        if (member !== null) {
+          // Node evaluates the key, then the receiver. The census answers
+          // without reading the receiver, so a spelling the lowerers can
+          // evaluate still runs for its effects. The key is stabilized
+          // before that evaluation whatever spelling it has: a read of a
+          // mutable binding has no effects of its own, but it must not see
+          // writes the receiver makes, so it cannot be left inside the test
+          // the receiver now precedes.
+          if (sideEffectFreeOptionValue(expr.right)) return member;
+          const evaluated = tryLowerExpression(lowerer, expr.right);
+          if (evaluated === null) return member;
+          const keyLocal = lowerer.declareHiddenLocal("%inKey", STRING);
+          return {
+            kind: "seqExpr",
+            stmts: [
+              { kind: "varDecl", localId: keyLocal.id, init: keyExpr, loc },
+              { kind: "exprStmt", expr: evaluated, loc },
+            ],
+            result: builtinNamespaceMemberTest(
+              lowerer,
+              shape,
+              false,
+              varRef(keyLocal.id, STRING, loc),
+              loc,
+            )!,
+            type: BOOL,
+            loc,
+          };
+        }
+      }
+    }
     // A runtime key over a CHECKED-DYNAMIC receiver (`name in
     // agent.sockets` — both sides computed; the checker may type the
     // receiver as a Dict while the VALUE lives in the checked-dynamic tree, so the
@@ -1886,6 +1938,33 @@ export function lowerInExpression(
       expr.left,
       "'in' with computed (non-literal) keys (a const whose type is one string literal folds; a string-typed key answers over index-signature record receivers)",
     );
+  }
+  // A supported builtin module namespace (`"BROTLI_PARAM_QUALITY" in
+  // zlib` — a feature probe): Node's member census answers, so the member
+  // surface is the module's real one, not the lowerings' subset. A
+  // CommonJS exports object also answers its prototype chain
+  // (`"toString" in zlib`); an ESM namespace answers its export names
+  // only. A receiver the census cannot place by shape (a parameter, an
+  // untraced call result) has no answer.
+  {
+    const shape = lowerer.builtinNamespaceShapeOf(expr.right);
+    if (shape !== null) {
+      if (shape.flavor === "unknown") {
+        lowerer.unsupported(
+          "SC1090",
+          expr.right,
+          "'in' over a builtin module namespace whose runtime shape is not known statically (an ES module namespace and the CommonJS exports object answer different member sets; bind the namespace where it is imported or required)",
+        );
+      }
+      const has = builtinModuleHasMember(shape.module, shape.flavor, key);
+      if (has !== null)
+        return reflectOverNamespaceExpr(
+          lowerer,
+          expr.right,
+          { kind: "boolLit", value: has, type: BOOL, loc },
+          loc,
+        );
+    }
   }
   // A feature probe on a builtin constructor global (`"captureStackTrace"
   // in Error`): the global is a fixed object, so the answer is static.
@@ -1974,9 +2053,9 @@ export function lowerInExpression(
     recv.type.kind === "classval" ? lowerer.classes.get(recv.type.className) : undefined;
   if (
     (classInfo && (classInfo.callableBase || hasRuntimeStatics(classInfo))) ||
-    (isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
-      recv.type.kind === "func" &&
-      lowerer.dynConvertible(recv.type))
+    (recv.type.kind === "func" &&
+      lowerer.dynConvertible(recv.type) &&
+      (isJsSourceFile(ts.getSourceFileOfNode(expr)) || isCallableValue(lowerer, expr.right)))
   ) {
     recv = lowerer.coerceToExpected(recv, DYN);
   }
@@ -2168,8 +2247,8 @@ export function lowerInExpression(
       if (
         f &&
         !inherited &&
-        f.type.kind === "union" &&
-        lowerer.armTag(f.type.unionId, UNDEFINED_T) >= 0
+        ((f.type.kind === "union" && lowerer.armTag(f.type.unionId, UNDEFINED_T) >= 0) ||
+          (f.optional === true && f.type.kind === "dyn"))
       ) {
         answers.push({ tag, has: "slot", arm }); // presence is per-value
         continue;
@@ -2324,8 +2403,8 @@ export function lowerInExpression(
     }
     if (
       !OBJECT_PROTOTYPE_KEYS.has(key) &&
-      field.type.kind === "union" &&
-      lowerer.armTag(field.type.unionId, UNDEFINED_T) >= 0
+      ((field.type.kind === "union" && lowerer.armTag(field.type.unionId, UNDEFINED_T) >= 0) ||
+        (field.optional === true && field.type.kind === "dyn"))
     ) {
       // Optional slot: the key is present unless the field is absent
       // (omitted or deleted); an explicit undefined is present.

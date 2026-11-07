@@ -11598,6 +11598,23 @@ function lowerInlineArrowBind(
       type: DYN,
       loc,
     });
+    // One definition per property: a bound arrow does not link the reader of
+    // Object.defineProperties' descriptor map.
+    const defineBound = (property: string, value: IrExpr): IrStmt => ({
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "dyn.defineProperty",
+        args: [
+          { kind: "dynFrom", value: bound, type: DYN, loc },
+          { kind: "dynFrom", value: str(property), type: DYN, loc },
+          descriptor(value),
+        ],
+        type: DYN,
+        loc,
+      },
+      loc,
+    });
     lowerer.liftedFns.push({
       name,
       params: [{ localId: captured.id, name: captured.name, type }],
@@ -11612,31 +11629,8 @@ function lowerInlineArrowBind(
         },
         // Store metadata on the closure so aliases and repeated dyn boxes
         // observe the bound name and source arity, including defaults.
-        {
-          kind: "exprStmt",
-          expr: {
-            kind: "libCall",
-            fn: "dyn.defineProps",
-            args: [
-              { kind: "dynFrom", value: bound, type: DYN, loc },
-              {
-                kind: "dynObjLit",
-                fields: [
-                  { key: str("name"), value: descriptor(str("bound ")) },
-                  {
-                    key: str("length"),
-                    value: descriptor({ kind: "numLit", value: length, type: F64, loc }),
-                  },
-                ],
-                type: DYN,
-                loc,
-              },
-            ],
-            type: DYN,
-            loc,
-          },
-          loc,
-        },
+        defineBound("name", str("bound ")),
+        defineBound("length", { kind: "numLit", value: length, type: F64, loc }),
         { kind: "return", value: bound, loc },
       ],
       loc,

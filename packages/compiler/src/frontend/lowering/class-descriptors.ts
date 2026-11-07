@@ -10,6 +10,7 @@ import {
   isDynTypedRefType,
 } from "../../ir/ir.js";
 import { varRef } from "../../ir/build.js";
+import { InternalCompilerError } from "../../errors.js";
 import { locOf } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
 import type { ClassInfo } from "./lower-classes.js";
@@ -274,7 +275,10 @@ export function lowerClassDescriptorMap(
           type: DYN,
           loc,
         };
-    if (defined === null) throw new Error("a definable class field has a definition");
+    if (defined === null)
+      throw new InternalCompilerError(
+        `lowerer bug: no definition for the class field ${entry.name}`,
+      );
     stmts.push({ kind: "exprStmt", expr: defined, loc });
   });
   return { kind: "seqExpr", stmts, result: value, type: value.type, loc };

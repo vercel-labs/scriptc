@@ -277,6 +277,10 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // A native AbortSignal's twin in an island: programs with islands and
   // native signals (the signal unit or the fetch unit).
   ["scr_node_island_abort.c", { all: ["nodeIsland"], any: ["abortSignal", "nativeFetch"] }],
+  // A child process an island made, in a native ChildProcess slot: programs
+  // with both islands and child_process. An object on the link line leaves
+  // its file symbol in the executable, so no other program gets it.
+  ["scr_node_island_child.c", "islandChild"],
   ["scr_stream_from_web.c", all("stream", "nativeFetch")],
   // The dynamic global object's answer for the Node globals the native runtime
   // does not implement (host-globals.ts): the compiler hands over its derived
@@ -663,11 +667,8 @@ export function variantsFor(source) {
       defines: ["SCR_CHILD_CP_OPTIONS", "SCR_CHILD_ERR_FIELDS"],
     });
     // A program with Node islands can hold a child process an island made in
-    // a ChildProcess slot: the SCR_NODE_ISLANDS build includes
-    // scr_node_island_child.c, and every entry point hands such a child to
-    // the island's object. Only the conversions of a program that has both
-    // islands and child_process name that code, so every other program with
-    // islands drops all of it at the link.
+    // a ChildProcess slot (scr_node_island_child.c): in the SCR_NODE_ISLANDS
+    // build every entry point hands such a child to the island's object.
     // Every other program keeps the builds above, byte for byte. The selector
     // takes the variant with the most conditions, so each build above has its
     // counterpart.

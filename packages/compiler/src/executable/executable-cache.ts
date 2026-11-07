@@ -100,6 +100,7 @@ export interface EarlyExecutableNativeFeatures {
   streamDyn?: boolean;
   handleProps?: boolean;
   childLifecycle?: boolean;
+  islandChild?: boolean;
   childOptionExt?: boolean;
   spawnCaptureBytes?: boolean;
   declAdopt?: boolean;

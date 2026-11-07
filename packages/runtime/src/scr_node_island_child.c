@@ -1,20 +1,18 @@
 /* Node islands: a child process an island made, in a native ChildProcess
- * slot. Not a unit of its own: the SCR_NODE_ISLANDS build of scr_child.c
- * includes this file at its end, so the code shares that unit's layouts and
- * a program with islands that never uses child_process links none of it
- * (only the conversions below name it, and a separate object would leave
- * its file symbol in every executable with islands).
+ * slot. Linked only into programs with both Node islands and child_process
+ * (the `islandChild` link feature), with the SCR_NODE_ISLANDS build of
+ * scr_child.c.
  *
  * A ChildProcess slot holds a ScrChild that compiled code calls scr_child_*
  * on, so an island's ChildProcess cannot sit in it as it is. It is adopted
  * where it enters the slot, the checked conversion (scr_ni_child_unbox): the
  * slot gets a ScrChild that has no state of its own and names the island's
  * object. Every entry point that takes it hands it to the table at the end
- * of this file (scr_child.h, ScrChildIslandOps), which calls the island
+ * of this unit (scr_child.h, ScrChildIslandOps), which calls the island
  * object's own member:
  *
  *  - a listener is registered on the island's emitter, as a function of
- *    this file that calls the program's listener through the adapter the
+ *    this unit that calls the program's listener through the adapter the
  *    entry point was given. So the order of 'spawn', 'data', 'exit',
  *    'close' and 'error', also relative to listeners the island's own code
  *    registered, is whatever Node's ChildProcess emits, and `once` and
@@ -43,15 +41,21 @@
  * registered through a ScrChild of that island child, or through its stdio
  * handles, are released when it has been delivered. The listener functions
  * themselves stay on the island's emitter, as Node keeps them. */
+#define _XOPEN_SOURCE 700
+#define _DARWIN_C_SOURCE 1
+#ifndef SCR_NODE_ISLANDS
+#define SCR_NODE_ISLANDS 1 /* the ScrChild layout of scr_child.c's SCR_NODE_ISLANDS build */
+#endif
+#include "scr_runtime.h"
+#include "scr_child_private.h"
 #include "scr_node_island.h"
 
-/* The checked conversions of a ChildProcess slot in a program with Node
- * islands, which the compiler names (ir.ts ISLAND_ADOPTED_KINDS, dyn.ts). */
-ScrChild *scr_ni_child_unbox(const ScrDyn *d, const ScrDynPath *path, const char *want);
-bool scr_ni_child_is(const ScrDyn *d);
-ScrDyn *scr_ni_child_box(ScrChild *child);
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
-#ifdef SCR_CHILD_FOREIGN
+#if !defined(_WIN32) && !defined(__wasi__)
 
 SCR_COLD static void nc_oom(void) { scr_trap("scriptc: out of memory\n"); }
 
@@ -767,7 +771,7 @@ ScrDyn *scr_ni_child_box(ScrChild *child) {
   return scr_dyn_new_handle(child, SCR_DYNH_CHILD);
 }
 
-#else /* Windows: no islands, so no island's child */
+#else /* _WIN32 || __wasi__: no islands */
 
 ScrChild *scr_ni_child_unbox(const ScrDyn *d, const ScrDynPath *path, const char *want) {
   return scr_dyn_handle_unbox(d, SCR_DYNH_CHILD, path, want);

@@ -1,0 +1,8 @@
+{
+  "entry": "workloads/island-start/main.ts",
+  "launches": 20,
+  "requires": ["libnode"],
+  "args": [
+    "version"
+  ]
+}

@@ -106,7 +106,6 @@ assert.ok(
 
 const allWorkloads = readWorkloads(suiteRoot);
 const selected = values.workloads ? new Set(values.workloads.split(",")) : null;
-const workloads = allWorkloads.filter((w) => selected === null || selected.has(w.name));
 if (selected) {
   for (const name of selected)
     assert.ok(
@@ -114,10 +113,34 @@ if (selected) {
       `unknown workload ${name}`,
     );
 }
+/* What a workload needs beyond a built checkout and is missing here.
+ * "libnode": the program has Node islands, whose executables load a libnode
+ * pack from SCRIPTC_LIBNODE. Such a workload is left out of the run, with a
+ * line that says so (also when it was named: runners that split the set
+ * name every workload). */
+function missingRequirement(w) {
+  for (const need of w.requires ?? []) {
+    assert.equal(need, "libnode", `${w.name}: unknown requirement ${need}`);
+    if (!process.env.SCRIPTC_LIBNODE) return "a libnode pack in SCRIPTC_LIBNODE";
+  }
+  return null;
+}
+const workloads = allWorkloads.filter((w) => {
+  if (selected !== null && !selected.has(w.name)) return false;
+  const missing = missingRequirement(w);
+  if (missing === null) return true;
+  console.error(`skipping ${w.name}: needs ${missing}`);
+  return false;
+});
 
 const work = mkdtempSync(
   join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-bench-runtime-"),
 );
+// Programs with Node islands install their island modules below the cache
+// directory on their first launch: this run's own, so every contender starts
+// from an empty cache and the timed launches find the modules installed.
+if (workloads.some((w) => (w.requires ?? []).includes("libnode")))
+  process.env.XDG_CACHE_HOME = join(work, "cache");
 
 /* ── code-layout perturbation ──────────────────────────────────────────── */
 // Layout k > 0 links a retained k*16-byte padding object before every other

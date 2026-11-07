@@ -345,6 +345,15 @@ function valueDeclaration(
     const decl = checker.getResolvedSignature(inner)?.declaration;
     return decl === undefined ? null : { decl, call: true };
   }
+  // `value["member"]` reads the member `value.member` reads.
+  if (ts.isElementAccessExpression(inner) && ts.isStringLiteral(inner.argumentExpression)) {
+    const member = checker.getPropertyOfType(
+      checker.getTypeAtLocation(inner.expression),
+      inner.argumentExpression.text,
+    );
+    const decl = member?.declarations[0];
+    return decl === undefined ? null : { decl, call: false };
+  }
   const name = ts.isPropertyAccessExpression(inner)
     ? inner.name
     : ts.isIdentifier(inner)
@@ -359,9 +368,13 @@ function valueDeclaration(
 }
 
 /** The receiver of a member read, an element read or a method call, or
- * null. `element` is true for an element read (`values()[0]`): the value is
- * an element of what the receiver's declaration types. */
-function receiverOf(node: ts.Node): { receiver: ts.Expression; element: boolean } | null {
+ * null. `element` is true for a read by a number (`values()[0]`): the value
+ * is an element of what the receiver's declaration types. A read by any
+ * other key (`record[name]`) is a member's. */
+function receiverOf(
+  checker: ts.TypeChecker,
+  node: ts.Node,
+): { receiver: ts.Expression; element: boolean } | null {
   let inner = node as ts.Expression;
   while (
     ts.isParenthesizedExpression(inner) ||
@@ -369,7 +382,13 @@ function receiverOf(node: ts.Node): { receiver: ts.Expression; element: boolean 
     ts.isNonNullExpression(inner)
   )
     inner = inner.expression;
-  if (ts.isElementAccessExpression(inner)) return { receiver: inner.expression, element: true };
+  if (ts.isElementAccessExpression(inner)) {
+    const key = checker.getTypeAtLocation(inner.argumentExpression);
+    return {
+      receiver: inner.expression,
+      element: (key.flags & ts.TypeFlags.NumberLike) !== 0,
+    };
+  }
   if (ts.isCallExpression(inner)) inner = inner.expression;
   return ts.isPropertyAccessExpression(inner) || ts.isElementAccessExpression(inner)
     ? { receiver: inner.expression, element: false }
@@ -394,8 +413,12 @@ function islandTypeOrigin(
   node: ts.Node,
   isLibraryFile: (file: ts.SourceFile) => boolean,
 ): string | null {
-  let at = receiverOf(node)?.receiver ?? null;
-  for (let depth = 0; at !== null && depth < 32; depth++, at = receiverOf(at)?.receiver ?? null) {
+  let at = receiverOf(checker, node)?.receiver ?? null;
+  for (
+    let depth = 0;
+    at !== null && depth < 32;
+    depth++, at = receiverOf(checker, at)?.receiver ?? null
+  ) {
     const type = checker.getTypeAtLocation(at);
     const symbol = type.getAliasSymbol() ?? type.getSymbol();
     const decl = symbol?.declarations[0];
@@ -472,7 +495,7 @@ export function islandValueOrigin(
     // its receiver types it, and an argument of the member is no parameter
     // of that.
     found = null;
-    const hop = receiverOf(at);
+    const hop = receiverOf(checker, at);
     at = hop === null ? null : hop.receiver;
     hopped = true;
     if (hop !== null && hop.element) elements++;

@@ -309,6 +309,49 @@ export function make(): Point {
   expect(ir.functions.filter((f) => f.name.startsWith("%new.")).map((f) => f.name)).toEqual([]);
 });
 
+test("a spread whose type is a union overrides the keys of each arm", async () => {
+  const dir = project({
+    "shapes.js": `// @flow
+type B = {a: string} | {b: boolean};
+type C = {a: number, ...B};
+export function describe(c: C): string {
+  return typeof c.a === "string" ? "string " + c.a : "number " + String(c.a);
+}
+`,
+    "main.mjs": 'import { describe } from "./shapes.js";\nconsole.log(describe({a: "x"}));\n',
+  });
+  const ir = await lowered(join(dir, "main.mjs"));
+  const shape = (shapeId: string): string =>
+    (ir.records ?? [])
+      .find((r) => r.id === shapeId)!
+      .fields.map((f) => `${f.name}:${f.type.kind}`)
+      .join(",");
+  // The arm that carries `a` takes the spread's type, and the arm that does
+  // not keeps the earlier one. Omitting the keys the whole union shares
+  // instead leaves `a` both `number` and `string` in the first arm, and the
+  // value lowers to a throw at the conversion.
+  const arms = (ir.unions ?? [])
+    .filter((u) => u.arms.every((a) => a.kind === "record"))
+    .map((u) => u.arms.map((a) => (a.kind === "record" ? shape(a.shapeId) : "")).sort());
+  expect(arms).toContainEqual(["a:f64,b:bool", "a:string"]);
+});
+
+test("an array elision in a Flow module translates", async () => {
+  const dir = project({
+    "shapes.js": `// @flow
+export const xs = [1, , 3];
+export const holes = [, ,];
+export function pick([a, , b]: Array<number>): number {
+  return a + b;
+}
+`,
+    "main.mjs":
+      'import { xs, holes, pick } from "./shapes.js";\nconsole.log(xs.length, holes.length, pick([1, 2, 3]));\n',
+  });
+  const ir = await lowered(join(dir, "main.mjs"));
+  expect(ir.functions.some((f) => f.sourceName === "pick")).toBe(true);
+});
+
 test("a function with a typed `this` takes it as its first parameter when every use binds the receiver", async () => {
   const ir = await lowered(join(flowRoot, "receivers", "main.mjs"));
   const params = (name: string): string[] =>

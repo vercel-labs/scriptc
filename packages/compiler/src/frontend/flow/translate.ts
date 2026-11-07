@@ -84,7 +84,10 @@ const node = (value: unknown): FlowNode | null =>
   value !== null && typeof value === "object" && typeof (value as FlowNode).type === "string"
     ? (value as FlowNode)
     : null;
-const nodes = (value: unknown): FlowNode[] => (Array.isArray(value) ? (value as FlowNode[]) : []);
+/** The nodes of a list. An array literal or pattern elision (`[a, , b]`)
+ * arrives as a null element, which is not a node. */
+const nodes = (value: unknown): FlowNode[] =>
+  Array.isArray(value) ? value.filter((v): v is FlowNode => node(v) !== null) : [];
 
 /** Type nodes the printer handles (a node of one of these kinds is printed
  * whole; its children are not visited separately). */
@@ -175,6 +178,16 @@ export function translateFlow(
   return applySourceEdits(source, t.edits);
 }
 
+/** A part of an object type: a run of members with the keys it overrides,
+ * a spread (whose type can be a union, so it overrides per arm), or a tail
+ * of indexers, records and call signatures, which overrides nothing. */
+interface ObjectPart {
+  text: string;
+  /** The keys a run of members overrides; null for a spread or a tail. */
+  keys: string | null;
+  spread: boolean;
+}
+
 /** Sets each node's `parent` (hermes-parser leaves it unset), which scope
  * lookups and a function's `export` wrapper are found through. */
 function linkParents(n: FlowNode): void {
@@ -221,14 +234,15 @@ class FlowTranslator {
   private readonly arrowTypeParameters = new Set<FlowNode>();
   private readonly jsx: boolean;
   /** The type variable a distributive spread binds: a name the module
-   * never spells, so it captures none of the module's own types. */
-  private get binder(): string {
+   * never spells, so it captures none of the module's own types. Each
+   * nesting level takes its own. */
+  private binder(level: number): string {
     if (this.binderName === undefined) {
       let name = "Spread_";
       while (this.source.includes(name)) name += "_";
       this.binderName = name;
     }
-    return this.binderName;
+    return this.binderName + "_".repeat(level);
   }
   private binderName: string | undefined;
 
@@ -810,6 +824,7 @@ class FlowTranslator {
     )
       return null;
     const elements = nodes(init.elements);
+    // A hole has no element to name, so the literal is an array, not a tuple.
     if (elements.length === 0 || elements.length !== (init.elements as unknown[]).length)
       return null;
     const reference = (e: FlowNode): string | null =>
@@ -1314,27 +1329,40 @@ class FlowTranslator {
    * overrides an earlier one with the same key, as in Flow, so each part
    * after the first omits the keys of what follows it from what precedes
    * it, in each member of a union (`{...B, a: T}` is `Omit<B, "a"> & { a:
-   * T }` for each B; an intersection would make an overridden `a` never). */
+   * T }` for each B; an intersection would make an overridden `a` never).
+   * A spread's type can itself be a union, whose arms carry different
+   * keys, so a spread omits per arm: the keys of the whole union are only
+   * the keys every arm has, and a key only some arms carry would keep the
+   * earlier part's type and turn the arm that overrides it into `never`. */
   private object(n: FlowNode, parts = this.objectParts(n)): string {
     if (parts.length === 0) return "{}";
     let text = parts[0]!.text;
-    for (const part of parts.slice(1))
-      text =
-        part.keys === null
-          ? `${text} & ${part.text}`
-          : `(${text} extends infer ${this.binder} ? (${this.binder} extends unknown ? Omit<${this.binder}, ${part.keys}> : never) : never) & ${part.text}`;
+    let level = 0;
+    for (const part of parts.slice(1)) {
+      if (part.spread) {
+        const member = this.binder(level);
+        const arm = this.binder(level + 1);
+        text = `(${part.text} extends infer ${arm} ? (${arm} extends unknown ? (${text} extends infer ${member} ? (${member} extends unknown ? Omit<${member}, keyof ${arm}> : never) : never) & ${arm} : never) : never)`;
+        level += 2;
+      } else if (part.keys === null) text = `${text} & ${part.text}`;
+      else {
+        const member = this.binder(level);
+        text = `(${text} extends infer ${member} ? (${member} extends unknown ? Omit<${member}, ${part.keys}> : never) : never) & ${part.text}`;
+        level++;
+      }
+    }
     return text;
   }
 
   /** An object type's parts: runs of members, spreads, then indexers and
    * call signatures. */
-  private objectParts(n: FlowNode): { text: string; keys: string | null }[] {
+  private objectParts(n: FlowNode): ObjectPart[] {
     for (const slot of nodes(n.internalSlots))
       throw new FlowTranslateError(
         "Flow internal slot properties are not supported yet",
         slot.range[0],
       );
-    const parts: { text: string; keys: string | null }[] = [];
+    const parts: ObjectPart[] = [];
     let group: FlowNode[] = [];
     const flush = (): void => {
       if (group.length > 0) parts.push(this.members(group));
@@ -1346,7 +1374,7 @@ class FlowTranslator {
         flush();
         // Spreading null or undefined adds nothing.
         const text = `NonNullable<${this.type(node(p.argument)!)}>`;
-        parts.push({ text, keys: `keyof ${text}` });
+        parts.push({ text, keys: null, spread: true });
       } else if (p.type === "ObjectTypeMappedTypeProperty")
         throw new FlowTranslateError("Flow mapped types are not supported yet", p.range[0]);
       else
@@ -1373,14 +1401,14 @@ class FlowTranslator {
       }
     }
     for (const c of nodes(n.callProperties)) extra.push(`${this.signature(node(c.value)!, ": ")};`);
-    if (extra.length > 0) parts.push({ text: `{ ${extra.join(" ")} }`, keys: null });
-    for (const record of records) parts.push({ text: record, keys: null });
+    if (extra.length > 0) parts.push({ text: `{ ${extra.join(" ")} }`, keys: null, spread: false });
+    for (const record of records) parts.push({ text: record, keys: null, spread: false });
     return parts;
   }
 
   /** A run of an object type's own properties, and their keys as a union
    * of literal types. */
-  private members(properties: FlowNode[]): { text: string; keys: string | null } {
+  private members(properties: FlowNode[]): ObjectPart {
     const members: string[] = [];
     const keys: string[] = [];
     for (const p of properties) {
@@ -1402,7 +1430,7 @@ class FlowTranslator {
         members.push(`set ${key}${this.signature(value, ": ").replace(/: [^:]*$/, "")};`);
       else members.push(`${readonly}${key}${p.optional ? "?" : ""}: ${this.type(value)};`);
     }
-    return { text: `{ ${members.join(" ")} }`, keys: keys.join(" | ") };
+    return { text: `{ ${members.join(" ")} }`, keys: keys.join(" | "), spread: false };
   }
 
   /** `<T>(a: A, ...r: R) => Ret` (arrow `sep`) or `(a: A): Ret` (`: `). */

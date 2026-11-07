@@ -35,6 +35,14 @@ test("an array literal of references is the tuple Flow infers", () => {
   expect(translate("function f(a: number) { const list = [a, 1]; g(list); }")).toContain(
     "const list = [a, 1];",
   );
+  // A hole is no element to name, so the literal stays an array. It arrives
+  // as a null element, which the list walks must not treat as a node.
+  expect(translate("function f(a: number) { const list = [a, , a]; g(list); }")).toContain(
+    "const list = [a, , a];",
+  );
+  expect(translate("function f([a, , b]: Array<number>) { return a + b; }")).toContain(
+    "function f([a, , b]: Array<number>) {",
+  );
 });
 
 test("a binding initialized with a silenced null holds null", () => {
@@ -214,14 +222,27 @@ test("object types keep Flow's override order for spreads", () => {
     'type C = (NonNullable<B> extends infer Spread_ ? (Spread_ extends unknown ? Omit<Spread_, "a"> : never) : never) & { a: string; };',
   );
   expect(out).toContain(
-    "type D = ({ a: number; } extends infer Spread_ ? (Spread_ extends unknown ? Omit<Spread_, keyof NonNullable<B>> : never) : never) & NonNullable<B>;",
+    "type D = (NonNullable<B> extends infer Spread__ ? (Spread__ extends unknown ? ({ a: number; } extends infer Spread_ ? (Spread_ extends unknown ? Omit<Spread_, keyof Spread__> : never) : never) & Spread__ : never) : never);",
   );
   // The bound variable is no name of the module's own.
   expect(translate("type Spread_ = {};\ntype X = {a: number, ...Spread_};")).toContain(
     "extends infer Spread__ ?",
   );
   expect(translate("type WithA<S> = {a: number, ...S};")).toContain(
-    "type WithA<S> = ({ a: number; } extends infer Spread_ ? (Spread_ extends unknown ? Omit<Spread_, keyof NonNullable<S>> : never) : never) & NonNullable<S>;",
+    "type WithA<S> = (NonNullable<S> extends infer Spread__ ? (Spread__ extends unknown ? ({ a: number; } extends infer Spread_ ? (Spread_ extends unknown ? Omit<Spread_, keyof Spread__> : never) : never) & Spread__ : never) : never);",
+  );
+  // A spread that is a union overrides each arm's own keys, not the keys
+  // every arm shares: the arm that carries `a` takes the spread's type,
+  // and the arm that does not keeps the earlier one.
+  const union = translate(
+    "type B = {a: string} | {b: boolean};\ntype U = {a: number, ...B};\ntype V = {...B, q: string};",
+  );
+  expect(union).toContain(
+    "type U = (NonNullable<B> extends infer Spread__ ? (Spread__ extends unknown ? ({ a: number; } extends infer Spread_ ? (Spread_ extends unknown ? Omit<Spread_, keyof Spread__> : never) : never) & Spread__ : never) : never);",
+  );
+  // A member after such a spread overrides that member in each arm.
+  expect(union).toContain(
+    'type V = (NonNullable<B> extends infer Spread_ ? (Spread_ extends unknown ? Omit<Spread_, "q"> : never) : never) & { q: string; };',
   );
   expect(out).toContain(
     'type M = (NonNullable<B | null | undefined> extends infer Spread_ ? (Spread_ extends unknown ? Omit<Spread_, "q"> : never) : never) & { q: string; };',

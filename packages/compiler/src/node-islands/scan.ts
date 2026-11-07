@@ -206,6 +206,9 @@ export function scanFiles(
     dropped: boolean;
     edges: boolean;
     stripFor?: ReadonlySet<string> | undefined;
+    /** Whether the policy marks a user module to run in a Node island
+     * (`--node-island=<path>`, `scriptc.nodeIslands.modules`). */
+    marked?: (file: string) => boolean;
   },
 ): { modules: ScannedModule[]; edges: PackageEdge[] } {
   const modules: ScannedModule[] = [];
@@ -226,6 +229,10 @@ export function scanFiles(
     // decides): the cost stays with the modules under consideration.
     const forRun =
       !js && origin === "user" && !sf.isDeclarationFile && opts.stripFor?.has(sf.fileName) === true;
+    // A TypeScript module the policy marks runs in Node with its types
+    // stripped, like one that islands for a builtin patch.
+    const markedTs =
+      !js && origin === "user" && !sf.isDeclarationFile && opts.marked?.(sf.fileName) === true;
     let facts: ReturnType<typeof scanModuleFacts> = { markers: [], cjsReads: [], globalReads: [] };
     if ((js && (origin === "npm" || opts.userJs)) || userTs) facts = scanModuleFacts(sf);
     let markers = userTs
@@ -245,7 +252,7 @@ export function scanFiles(
       // Node to run the file with type stripping only. A module a build is
       // considering for an island (H3.5) needs the answer before it decides.
       stripProblem:
-        forRun || (userTs && (markers.length > 0 || facts.cjsReads.length > 0))
+        forRun || (userTs && (markers.length > 0 || facts.cjsReads.length > 0)) || markedTs
           ? stripProblem(program, sf)
           : null,
       dropped: opts.dropped,

@@ -4,14 +4,18 @@ import type { FfiProfile } from "../ffi/ffi-manifest.js";
 import { frontendDisposed } from "../frontend/dispose-hook.js";
 import {
   checkerPanicDiag,
+  nodeIslandEntryMarkDiag,
   nodeIslandEntryPatchDiag,
   nodeIslandEntryReadDiag,
   nodeIslandImplicitGlobalReadDiag,
+  nodeIslandMarkStripDiag,
   nodeIslandModuleNoteDiag,
   nodeIslandNoteDiag,
   nodeIslandReaderStripDiag,
   nodeIslandStripDiag,
   nodeIslandRetryFailedDiag,
+  nodeIslandUnmatchedMarkDiag,
+  nodeIslandUnmatchedPackageDiag,
   npmStaticRefusalDiag,
   nativePackageDiag,
   iceDiag,
@@ -34,6 +38,7 @@ import type { UnitStore } from "../frontend/lowering/unit-reuse.js";
 import type { CompilationTiming } from "../timing.js";
 import { readProjectConfig } from "../project-config.js";
 import {
+  globMatch,
   isMarkedUserModule,
   nodeIslandPolicy,
   type NodeIslandPolicy,
@@ -53,6 +58,7 @@ import type { NodeIslandScan } from "../node-islands/scan.js";
 import { growIslandSet, type IslandGrowthContext } from "../node-islands/growth.js";
 import type { NodeIslandMarker } from "../node-islands/detect.js";
 import { isJsSourceFileName } from "../frontend/tsc-codes.js";
+import { builtinPackageAliasFor, packageShimFor } from "../frontend/package-shims.js";
 
 export interface PreparedExecutableModule {
   ok: true;
@@ -465,6 +471,11 @@ const ISLAND_RUN_REASONS: ReadonlySet<string> = new Set(["host-class-base"]);
  * is an island runs the whole file in Node, which is a different feature. */
 interface ModuleIslandDecision {
   modules: Map<string, IslandModule>;
+  /** A mark the build cannot honor (SC8006): one that names the entry
+   * module, a TypeScript module Node cannot run by stripping its types, or
+   * (from the command line) no module of the program. An ignored mark would
+   * leave the module native without a word. */
+  markProblems: ScrDiagnostic[];
   /** The entry module's own `builtin-patch` marker: the entry stays native
    * (a whole-file island is a different feature), so the build refuses it
    * with SC8006. */
@@ -482,21 +493,36 @@ function moduleIslands(
   const modules = new Map<string, IslandModule>();
   let entryPatch: ModuleIslandDecision["entryPatch"] = null;
   const stripProblems: ModuleIslandDecision["stripProblems"] = [];
+  const markProblems: ScrDiagnostic[] = [];
+  const start = (file: string): SrcLoc => ({ file, start: 0, end: 0 });
+  // The command-line marks no user module of the program matches.
+  const unmatched = new Set(
+    policy.userModules.filter((entry) => entry.source === "cli").map((entry) => entry.pattern),
+  );
   for (const m of scan.modules) {
     if (m.origin !== "user") continue;
+    const path = m.file.replaceAll("\\", "/");
+    for (const pattern of unmatched)
+      if (globMatch(pattern.replaceAll("\\", "/"), path)) unmatched.delete(pattern);
+    const marked = isMarkedUserModule(policy, m.file);
     const patches = m.markers.filter((marker) => PATCH_REASONS.has(marker.reason));
-    // A TypeScript module islands only for a builtin patch (H3.2).
-    if (!isJsSourceFileName(m.file) && patches.length === 0) continue;
+    // A TypeScript module islands for a builtin patch (H3.2) or a mark.
+    if (!isJsSourceFileName(m.file) && patches.length === 0 && marked === null) continue;
     if (sameFile(m.file, entryPath)) {
       if (patches.length > 0 && entryPatch === null)
         entryPatch = { file: m.file, marker: patches[0]! };
+      if (marked !== null)
+        markProblems.push(nodeIslandEntryMarkDiag(m.file, marked, start(m.file)));
       continue;
     }
     if (m.stripProblem !== null) {
-      stripProblems.push({ file: m.file, ...m.stripProblem });
+      if (patches.length > 0) stripProblems.push({ file: m.file, ...m.stripProblem });
+      else
+        markProblems.push(
+          nodeIslandMarkStripDiag(m.file, marked!, m.stripProblem.construct, m.stripProblem.loc),
+        );
       continue;
     }
-    const marked = isMarkedUserModule(policy, m.file);
     const sloppy = m.markers.filter((marker) => SLOPPY_REASONS.has(marker.reason));
     if (
       marked === null &&
@@ -517,7 +543,9 @@ function moduleIslands(
       decision: marked === null ? "auto" : "marked",
     });
   }
-  return { modules, entryPatch, stripProblems };
+  for (const pattern of unmatched)
+    markProblems.push(nodeIslandUnmatchedMarkDiag(pattern, start(entryPath)));
+  return { modules, markProblems, entryPatch, stripProblems };
 }
 
 /** The packages and modules a build runs in Node islands, or null for none:
@@ -547,7 +575,12 @@ function decideNodeIslands(
   for (const name of lowerIslands.keys()) refused.add(name);
   // The pre-scan's user-JavaScript markers exist only where a build may act
   // on them.
-  const scan = fe.nodeIslandScan({ userJs: policy.mode === "auto" });
+  const scan = fe.nodeIslandScan({
+    userJs: policy.mode === "auto",
+    ...(policy.userModules.length > 0
+      ? { marked: (file: string) => isMarkedUserModule(policy, file) !== null }
+      : {}),
+  });
   const moduleDecision = moduleIslands(entryPath, policy, scan);
   const modules = moduleDecision.modules;
   // A sloppy write to an undeclared name creates a global — a sloppy-only
@@ -576,7 +609,7 @@ function decideNodeIslands(
   // Modules the lowering refused keep their first reason (the reload no
   // longer compiles them).
   for (const [file, island] of lowerModules) if (!modules.has(file)) modules.set(file, island);
-  const errors: ScrDiagnostic[] = [];
+  const errors: ScrDiagnostic[] = [...moduleDecision.markProblems];
   if (moduleDecision.entryPatch !== null) {
     const { file, marker } = moduleDecision.entryPatch;
     errors.push(
@@ -861,6 +894,32 @@ function decideNodeIslands(
         end: 0,
       }),
     );
+  // A package named with --node-island that is not in the island set has
+  // nothing the build runs in Node: scriptc compiles it from its own
+  // implementation, it is a Node builtin under another name, or the program
+  // loads no module of it from node_modules. The build names why instead of
+  // compiling as if the flag were not there.
+  const unhonored = [...policy.forcedNode]
+    .filter(([name, source]) => source === "cli" && !packages.has(name))
+    .map(([name]) => name)
+    .sort();
+  if (unhonored.length > 0) {
+    return {
+      ...nodeIslandSet(new Map(), new Map()),
+      notes: [],
+      errors: unhonored.map((name) =>
+        nodeIslandUnmatchedPackageDiag(
+          name,
+          packageShimFor(entryPath, name) !== null
+            ? "shim"
+            : builtinPackageAliasFor(entryPath, name) !== null
+              ? "builtin"
+              : "absent",
+          fe.npmImportSites.get(name) ?? { file: entryPath, start: 0, end: 0 },
+        ),
+      ),
+    };
+  }
   return packages.size === 0 && modules.size === 0
     ? null
     : { ...nodeIslandSet(packages, modules), notes, errors };

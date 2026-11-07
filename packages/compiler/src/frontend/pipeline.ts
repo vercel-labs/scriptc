@@ -136,7 +136,11 @@ export interface Frontend {
    * modules with their pre-scan markers, package import edges, and how
    * each refused package was refused. Call before dispose. */
   nodeIslandScan?:
-    | ((opts: { userJs: boolean; stripFor?: readonly string[] | undefined }) => NodeIslandScan)
+    | ((opts: {
+        userJs: boolean;
+        stripFor?: readonly string[] | undefined;
+        marked?: (file: string) => boolean;
+      }) => NodeIslandScan)
     | undefined;
   /** Diagnostics that do not fail a build: unknown settings in the
    * project's scriptc configuration (SC8004), which builds do not use. */
@@ -1394,7 +1398,7 @@ function loadFrontend(
     npmImportSites: npmSites,
     nodeIslandScan: !scanIslands
       ? undefined
-      : ({ userJs, stripFor }) => {
+      : ({ userJs, stripFor, marked }) => {
           const files = new Set<SourceFile>([finalLoad.entry, ...finalLoad.moduleOrder]);
           addDynamicImportGraph(finalLoad, files);
           // Package edges matter only when the program has npm packages: one
@@ -1410,6 +1414,7 @@ function loadFrontend(
             ...(stripFor !== undefined && stripFor.length > 0
               ? { stripFor: new Set(stripFor) }
               : {}),
+            ...(marked === undefined ? {} : { marked }),
           });
           return {
             modules: [...droppedScan.modules, ...scanned.modules],

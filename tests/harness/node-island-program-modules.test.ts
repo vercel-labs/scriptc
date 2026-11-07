@@ -71,6 +71,21 @@ describe.skipIf(skip)("program modules that run in a Node island", () => {
     expect(boot.some((l) => l.includes("starting Node"))).toBe(false);
   }, 300_000);
 
+  test("wait at every import when two modules of the program import one", async () => {
+    const { binary, trace } = await build("9355-node-island-program-module-two-importers");
+    const decisions = trace.filter((l) => l.includes("/patch.ts:"));
+    expect(decisions).toHaveLength(2);
+    for (const decision of decisions)
+      expect(decision).toMatch(/^\[node-islands\] defer .*guarded by the loads before it/);
+    const { stdout, boot } = await run(binary);
+    expect(stdout).toBe("start function function installPatch\nlibnode mapped: false\n");
+    // The second import registers the load the first one did: its guard is
+    // the first one's, and nothing has been loaded in between.
+    expect(boot.filter((l) => l.includes("] deferred ./patch.ts"))).toHaveLength(2);
+    expect(boot.some((l) => l.includes("boot guard failed"))).toBe(false);
+    expect(boot.some((l) => l.includes("starting Node"))).toBe(false);
+  }, 300_000);
+
   test("stay where they are imported when their top level has effects", async () => {
     const { binary, trace } = await build("8722-node-island-program-module-effectful");
     expect(trace.find((l) => l.includes("/read.ts:"))).toMatch(

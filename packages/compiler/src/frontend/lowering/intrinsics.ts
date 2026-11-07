@@ -19,7 +19,7 @@ import * as ts from "../ts7/adapter.js";
 import { DYN, STRING, type IrExpr, type SrcLoc } from "../../ir/ir.js";
 import { INTRINSIC_IDS, INTRINSIC_PROTOTYPE_MEMBERS } from "./intrinsic-ids.generated.js";
 import { isJsSourceFile, locOf } from "../program.js";
-import { stdlibGlobalNameOf } from "./surfaces.js";
+import { DYN_COLLECTION_CLASSES, stdlibGlobalNameOf } from "./surfaces.js";
 import type { Lowerer } from "./lowerer.js";
 // The module graph already cycles here (lower-exprs imports the expression
 // modules, which import this one); the reference is used inside a function
@@ -169,8 +169,21 @@ const INSTALLED_CONSTRUCTOR_OWNERS: ReadonlySet<string> = new Set([
  * graph's METHOD rows go through the runtime's builtin-method provider
  * instead, which has no DataView receiver, so a value read out of the graph
  * would refuse a real view where the language reads its bytes. The read
- * keeps that lowering; every other owner the table names is the graph's. */
-const DEDICATED_PROTOTYPE_OWNERS: ReadonlySet<string> = new Set(["DataView"]);
+ * keeps that lowering.
+ *
+ * `Set.prototype`, `Map.prototype`, `WeakMap.prototype` and
+ * `WeakSet.prototype` are the objects `dyn.collectionPrototype` answers
+ * (scr_dyn_collections.c): the bare read lowers there before this module is
+ * asked, and it is the object a collection's `getPrototypeOf` returns. A
+ * member read through the graph's twin would be a second object, so a
+ * property written through `const p = Map.prototype` would be missing from
+ * `Map.prototype.added`. Their member reads keep that lowering too.
+ *
+ * Every other owner the table names is the graph's. (A function, not a
+ * set built at load: surfaces.ts is part of this module's import cycle.) */
+function isDedicatedPrototypeOwner(owner: string): boolean {
+  return owner === "DataView" || (DYN_COLLECTION_CLASSES as readonly string[]).includes(owner);
+}
 
 /** `X.prototype` for one of those owners (scr_js_wrapper.c): the intrinsic
  * prototype object with the program's own `X` closure installed as its
@@ -226,7 +239,7 @@ export function lowerIntrinsicMember(
   // `X.prototype`.
   const owner = stdlibGlobalNameOf(lowerer, expr.expression);
   if (owner !== null && lowerer.stdlibGlobalMember(expr, owner) === "prototype") {
-    if (DEDICATED_PROTOTYPE_OWNERS.has(owner)) return null;
+    if (isDedicatedPrototypeOwner(owner)) return null;
     const id = prototypeId(owner);
     return id === null ? null : prototypeObject(lowerer, owner, id, loc);
   }
@@ -240,7 +253,7 @@ export function lowerIntrinsicMember(
     return null;
   const id = prototypeId(innerOwner);
   if (id === null) return null;
-  if (DEDICATED_PROTOTYPE_OWNERS.has(innerOwner)) return null;
+  if (isDedicatedPrototypeOwner(innerOwner)) return null;
   // `Function.prototype.apply` keeps `dyn.functionApply`, the runtime's
   // singleton that `f.apply` also answers; the table's Function.prototype
   // holds the same function, so both reads agree.
@@ -267,7 +280,7 @@ export function lowerIntrinsicElement(
   if (!ts.isPropertyAccessExpression(inner)) return null;
   const owner = stdlibGlobalNameOf(lowerer, inner.expression);
   if (owner === null || lowerer.stdlibGlobalMember(inner, owner) !== "prototype") return null;
-  if (DEDICATED_PROTOTYPE_OWNERS.has(owner)) return null;
+  if (isDedicatedPrototypeOwner(owner)) return null;
   const id = prototypeId(owner);
   if (id === null) return null;
   return {

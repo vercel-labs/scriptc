@@ -11,29 +11,18 @@ import {
   type IrStmt,
   type SrcLoc,
 } from "../../ir/ir.js";
-import { sourceTextMatches } from "../ts7/adapter.js";
+import * as ts from "../ts7/adapter.js";
+import { arrayClassOfType } from "./builtins/array-classes.js";
 import { thenReader } from "./checked-promise-all.js";
 import { builtinGlobalValue } from "./expressions/property-access.js";
 import type { Lowerer } from "./lowerer.js";
 
-/** Whether any program source can define a thenable: a `then` method or
- * function (generic ones too), a `then:` key, a quoted `'then'` key, or an
- * assignment to `then` (a class field such as `then = (resolve) => ...` or
- * a `.then` property). `.then(` calls alone do not count. Programs without
- * one keep the plain checked-dynamic await. */
-export function programMayDefineThenables(lowerer: Lowerer): boolean {
-  if (lowerer.thenablesMayBeDefined === null) {
-    const pattern = /(^|[^.\w$])then\s*[(<]|\bthen\s*:|['"`]then['"`]|(^|[^\w$])then\s*=(?![=>])/m;
-    lowerer.thenablesMayBeDefined = lowerer.program
-      .getImplementationSourceFiles()
-      .some((sf) => !sf.isDeclarationFile && sourceTextMatches(sf, pattern));
-  }
-  return lowerer.thenablesMayBeDefined;
-}
-
 /** `await v` over a checked-dynamic value: PromiseResolve(v), then the await
  * of that promise, as JavaScript defines it. A promise is itself, a plain
- * value takes one tick, and an object with a callable `then` is adopted. */
+ * value takes one tick, and an object with a callable `then` is adopted.
+ * Whether a value is a thenable is a fact about that value when the await
+ * runs, however its `then` got there (a literal key, a computed one, a class
+ * method, a proxy trap), so every such await asks the value. */
 export function awaitDynThenable(lowerer: Lowerer, value: IrExpr, loc: SrcLoc): IrExpr {
   return {
     kind: "awaitExpr",
@@ -47,6 +36,98 @@ export function awaitDynThenable(lowerer: Lowerer, value: IrExpr, loc: SrcLoc): 
     type: DYN,
     loc,
   };
+}
+
+/** Whether the static type of a checked-dynamic value already rules a
+ * thenable out: every arm is the standard library's Promise (which the
+ * dynamic await awaits), a primitive, null or undefined. `any`, `unknown`,
+ * a type parameter and an object type rule nothing out, since a dynamic
+ * object can carry more than its type says: there the value answers at run
+ * time. */
+export function neverThenable(lowerer: Lowerer, type: ts.Type): boolean {
+  const plain =
+    ts.TypeFlags.StringLike |
+    ts.TypeFlags.NumberLike |
+    ts.TypeFlags.BigIntLike |
+    ts.TypeFlags.BooleanLike |
+    ts.TypeFlags.ESSymbolLike |
+    ts.TypeFlags.Undefined |
+    ts.TypeFlags.Void |
+    ts.TypeFlags.Null;
+  for (const part of type.isUnionType() ? ts.constituentTypes(type) : [type]) {
+    if (part.flags & plain) continue;
+    const symbol = part.getSymbol();
+    if (
+      symbol !== undefined &&
+      ts.symbolName(symbol) === "Promise" &&
+      lowerer.isStdlibSymbol(symbol)
+    )
+      continue;
+    return false;
+  }
+  return true;
+}
+
+/** The arms of the static type `type` whose values may be thenables: each
+ * has a `then` member that can be called. Arms that map to a promise are the
+ * promise lowering's own, and a `then` that cannot be called (`{ then: 5 }`)
+ * makes no thenable. A type with no such arm answers none, and its await
+ * stays the one-turn hop. */
+function thenableArms(lowerer: Lowerer, type: ts.Type, at: ts.Node): ts.Type[] {
+  const { checker } = lowerer;
+  const skip = ts.TypeFlags.Undefined | ts.TypeFlags.Void | ts.TypeFlags.Null;
+  const arms: ts.Type[] = [];
+  for (const part of type.isUnionType() ? ts.constituentTypes(type) : [type]) {
+    if (part.flags & skip) continue;
+    const then = checker.getPropertyOfType(part, "then");
+    if (then === undefined) continue;
+    if (lowerer.mapTypeOf(part)?.kind === "promise") continue;
+    const member = checker.getTypeOfSymbolAtLocation(then, at);
+    for (const arm of member.isUnionType() ? ts.constituentTypes(member) : [member]) {
+      if (
+        arm.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown) ||
+        checker.getCallSignatures(arm).length > 0
+      ) {
+        arms.push(part);
+        break;
+      }
+    }
+  }
+  return arms;
+}
+
+/** `await v` over a typed value whose static type has a callable `then`:
+ * JavaScript calls it, so the value takes the same PromiseResolve as a
+ * checked-dynamic one, and what the thenable resolves with is checked into
+ * the awaited type where it is used. The call goes through the value's
+ * checked-dynamic form, so the form has to carry the member: a record and a
+ * class instance do; an instance of a class that extends Array is boxed as
+ * the array, without its class's methods, and is refused. Null for a type
+ * with no thenable arm. */
+export function awaitTypedThenable(
+  lowerer: Lowerer,
+  node: ts.AwaitExpression,
+  value: IrExpr,
+  loc: SrcLoc,
+): IrExpr | null {
+  const arms = thenableArms(lowerer, lowerer.typeOf(node.expression), node.expression);
+  if (arms.length === 0) return null;
+  const carried = arms.every((arm) => {
+    const mapped = lowerer.mapTypeOf(arm);
+    return (
+      mapped !== null &&
+      (mapped.kind === "record" || mapped.kind === "object") &&
+      arrayClassOfType(lowerer, arm) === null
+    );
+  });
+  if (!carried || !lowerer.dynConvertible(value.type)) {
+    lowerer.unsupported(
+      "SC1090",
+      node,
+      `awaiting '${lowerer.fmt(value.type)}' (its type has a 'then' method, so the await calls it, and this value has no checked-dynamic form that carries the method)`,
+    );
+  }
+  return awaitDynThenable(lowerer, lowerer.coerceToExpected(value, DYN), loc);
 }
 
 const PROTOTYPE_GLOBAL = "%g.%promise.prototype";

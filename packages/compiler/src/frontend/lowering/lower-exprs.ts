@@ -169,7 +169,7 @@ export {
   lowerPrefixUnary,
 } from "./expressions/updates.js";
 import { lowerDeleteExpression } from "./primitive-throws.js";
-import { awaitDynThenable, programMayDefineThenables } from "./thenables.js";
+import { awaitDynThenable, awaitTypedThenable, neverThenable } from "./thenables.js";
 import { awaitsChildThenable } from "./handle-properties.js";
 export { lowerInstanceOf } from "./expressions/relational.js";
 
@@ -897,18 +897,26 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     if (value.type.kind !== "promise") {
       // A CHECKED-DYNAMIC operand (`await v` where v rode an untyped
       // binding — a destructured helper's return, a dyn call result):
-      // the runtime decides — a dyn promise adopts (rejections
-      // re-throw), anything else takes JS's one-hop non-thenable await
-      // and answers itself. Thenable adoption stays unmodeled
-      // (SEMANTICS.md).
+      // the value decides at run time, as JavaScript's PromiseResolve
+      // does — a dyn promise is awaited (rejections re-throw), an object
+      // with a callable `then` is adopted, and anything else takes the
+      // one-hop non-thenable await and answers itself (thenables.ts).
+      // A static type that already rules a thenable out (promises and
+      // primitives) keeps the await that asks only for a promise.
       if (value.type.kind === "dyn") {
-        // A program that can define thenables adopts them (thenables.ts).
-        if (programMayDefineThenables(lowerer)) return awaitDynThenable(lowerer, value, loc);
-        return { kind: "libCall", fn: "async.awaitDyn", args: [value], type: DYN, loc };
+        if (neverThenable(lowerer, lowerer.typeOf(expr.expression)))
+          return { kind: "libCall", fn: "async.awaitDyn", args: [value], type: DYN, loc };
+        return awaitDynThenable(lowerer, value, loc);
       }
 
       if (awaitsChildThenable(lowerer, expr, value)) {
         return awaitDynThenable(lowerer, lowerer.coerceToExpected(value, DYN), loc);
+      }
+      // A TYPED operand whose static type has a callable `then`: the
+      // await calls it, as it does for a checked-dynamic thenable.
+      {
+        const adopted = awaitTypedThenable(lowerer, expr, value, loc);
+        if (adopted !== null) return adopted;
       }
       // A TYPED non-promise operand (`await 42`, an awaited record):
       // JS awaits non-thenables through exactly one microtask turn and

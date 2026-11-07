@@ -1,0 +1,13 @@
+await-thenable-fences.ts:20:3 - error SC1090: awaiting 'number[]' (its type has a 'then' method, so the await calls it, and this value has no checked-dynamic form that carries the method) is not supported yet
+
+  19 |   const lazy = new Lazy();
+  20 |   await lazy;
+     |   ^~~~~~~~~~
+  21 |   const text = await callable;
+
+await-thenable-fences.ts:21:16 - error SC1090: awaiting '(number) => number' (its type has a 'then' method, so the await calls it, and this value has no checked-dynamic form that carries the method) is not supported yet
+
+  20 |   await lazy;
+  21 |   const text = await callable;
+     |                ^~~~~~~~~~~~~~
+  22 |   console.log(text);

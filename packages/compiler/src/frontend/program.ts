@@ -445,8 +445,10 @@ export interface LoadResult {
    * errors are the program's, and its project world when it has errors. */
   tscWorld?: {
     program: ts.Program;
-    /** The program's pre-emit diagnostics, computed once. */
-    diagnostics: readonly ts.Diagnostic[];
+    /** The program's pre-emit diagnostics, computed once. The tsc gate is
+     * their one reader, so a load whose report nobody asks for (a rung of the
+     * npm-static fixpoint) never asks the checker for them. */
+    diagnostics: () => readonly ts.Diagnostic[];
     projectWorld: ts.Program | null;
     /** The declaration-typed boundary rewrote user files: errors fall
      * back to the declaration world (load.projectWorld()), as without it. */
@@ -1045,7 +1047,7 @@ function loadProgram7(
       const errors = diagnostics.some((d) => d.category === ts.DiagnosticCategory.Error);
       tscWorld = {
         program: original,
-        diagnostics,
+        diagnostics: () => diagnostics,
         projectWorld: errors ? host.createProgram(programRoots, options, false, lineage) : null,
       };
       for (const [file, lowered] of jsx.sources) host.addVirtualFile(file, lowered.text);
@@ -1099,9 +1101,11 @@ function loadProgram7(
           programRoots.pop();
           program = original;
         } else {
+          let diagnostics: readonly ts.Diagnostic[] | null = null;
           tscWorld = {
             program: original,
-            diagnostics: ts.getPreEmitDiagnostics(original, tscGateFileKept),
+            diagnostics: () =>
+              (diagnostics ??= ts.getPreEmitDiagnostics(original, tscGateFileKept)),
             projectWorld: null,
             declWorldFallback: true,
           };
@@ -1130,13 +1134,19 @@ function loadProgram7(
         // taken before the overlay's files replace them on the host, and
         // its project world (load.projectWorld()) is built over the files
         // as written.
-        if (tscWorld === undefined)
+        if (tscWorld === undefined) {
+          const diagnostics = ts.getPreEmitDiagnostics(before);
           tscWorld = {
             program: before,
-            diagnostics: ts.getPreEmitDiagnostics(before),
+            diagnostics: () => diagnostics,
             projectWorld: null,
             declWorldFallback: true,
           };
+        } else {
+          // The gate's diagnostics are taken before the overlay's files
+          // replace the files as written on the host.
+          tscWorld.diagnostics();
+        }
         for (const file of overlay.keys())
           if (!overlayOriginals.has(file))
             overlayOriginals.set(file, before.getSourceFile(file)?.text ?? null);
@@ -7404,7 +7414,9 @@ function preflightGate7(load: LoadResult): PreflightGate {
   // to (a factory whose signature does not accept them).
   const tscWorld = load.tscWorld;
   const tscErrors =
-    tscWorld === undefined ? errorsOf(program) : keptErrors(tscWorld.program, tscWorld.diagnostics);
+    tscWorld === undefined
+      ? errorsOf(program)
+      : keptErrors(tscWorld.program, tscWorld.diagnostics());
   if (tscErrors.length > 0) {
     const world =
       tscWorld === undefined || tscWorld.declWorldFallback === true

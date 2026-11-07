@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
 import { EXECUTABLE_RUNTIME_SOURCES } from "../../compiler/src/backend/native-toolchain.js";
+import { buildCFixture } from "../test/build-c.js";
 
 const exec = promisify(execFile);
 
@@ -82,20 +83,21 @@ function attempts(stderr: string): {
 describe.skipIf(process.platform === "win32")("counted lifetime regions", () => {
   const build = async (dir: string, name: string, flags: string[]): Promise<string> => {
     const bin = join(dir, name);
-    await exec("clang", [
-      "-std=c11",
-      "-O1",
-      "-pthread",
-      "-Wno-deprecated-declarations",
-      ...(process.platform === "linux" ? ["-D_GNU_SOURCE"] : []),
-      ...flags,
-      ...["scr_region.test.c", ...EXECUTABLE_RUNTIME_SOURCES].map((source) =>
+    await buildCFixture({
+      output: bin,
+      flags: [
+        "-std=c11",
+        "-O1",
+        "-pthread",
+        "-Wno-deprecated-declarations",
+        ...(process.platform === "linux" ? ["-D_GNU_SOURCE"] : []),
+        ...flags,
+      ],
+      sources: ["scr_region.test.c", ...EXECUTABLE_RUNTIME_SOURCES].map((source) =>
         join(import.meta.dirname, source),
       ),
-      ...(process.platform === "linux" ? ["-lm"] : []),
-      "-o",
-      bin,
-    ]);
+      libraries: process.platform === "linux" ? ["-lm"] : [],
+    });
     return bin;
   };
   const run = async (bin: string, mode: string, extra: Record<string, string> = {}) =>

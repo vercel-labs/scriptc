@@ -102,6 +102,34 @@ console.log(copy.map((item) => weigh(item)).join(","));
   expect(signature(spread, "weigh")).toBe("weigh(Item|undefined): f64");
 });
 
+test("Promise.all results hold undefined only where an entry can be a hole or undefined", async () => {
+  const LOAD = `${ITEM}
+async function load(item: Item, skip: boolean): Promise<Item> {
+  if (skip) return item;
+  return new Item(item.weight + (await Promise.resolve(1)));
+}
+`;
+  const settled = await lower(`${LOAD}
+async function main(): Promise<void> {
+  let items: Item[] = [new Item(1), new Item(2)];
+  items = await Promise.all(items.map((item) => load(item, item.weight > 1)));
+  console.log(items.map((item) => weigh(item)).join(","));
+}
+void main();
+`);
+  expect(signature(settled, "weigh")).toBe("weigh(Item): f64");
+  const missing = await lower(`${LOAD}
+async function main(): Promise<void> {
+  const pending: Promise<Item>[] = [];
+  pending[2] = load(new Item(1), false);
+  const items = await Promise.all(pending);
+  console.log(items.map((item) => weigh(item)).join(","));
+}
+void main();
+`);
+  expect(signature(missing, "weigh")).toBe("weigh(Item|undefined): f64");
+});
+
 test("holes stored through a dynamic view widen callbacks over the arrays it views", async () => {
   const viewed = await lower(`${ITEM}
 const items: Item[] = [new Item(1)];
@@ -230,7 +258,7 @@ console.log(later(0));
   expect(signature(module, "weigh")).toBe("weigh(Item|undefined): f64");
 });
 
-test("an unchanged captured parameter is borrowed and boxed only where a closure is built", async () => {
+test("an unchanged captured parameter is borrowed and copied where a closure is built", async () => {
   const module = await lower(`${ITEM}
 function heavier(item: Item, limits: number[]): boolean {
   if (limits.length === 0) return false;
@@ -248,10 +276,14 @@ console.log(heavier(new Item(3), []), heavier(new Item(3), [1]), replaced(new It
   const facts = analyzeCallLifetimes(new Map(module.functions.map((fn) => [fn.name, fn])));
   expect(facts.borrowed.get("heavier")?.has(0)).toBe(true);
   expect(facts.borrowed.get("replaced")?.has(0) ?? false).toBe(false);
-  const heavier = body(emitLlvmModule(module), "heavier");
-  expect(heavier.slice(0, heavier.indexOf("scr_closure_new"))).not.toContain("@scr_box_new");
-  // A path that built no environment skips the box release.
-  expect(heavier).toMatch(/icmp ne ptr %t\d+, null\n\s+br i1 %t\d+, label %lazy\.release/);
+  const llvm = emitLlvmModule(module);
+  // The closure holds its own reference to the item: no box on any path.
+  const heavier = body(llvm, "heavier");
+  expect(heavier).toContain("scr_closure_new_values");
+  expect(heavier).not.toContain("@scr_box_new");
+  expect(heavier).not.toContain("lazy.release");
+  // A rebound parameter keeps its box.
+  expect(body(llvm, "replaced")).toContain("@scr_box_new");
 });
 
 test("pop truncates union arrays and boxes nothing when its result is unused", async () => {

@@ -1,0 +1,7 @@
+{
+  "entry": "workloads/typed-array-convert.ts",
+  "args": [
+    "200"
+  ],
+  "scaleArg": 0
+}

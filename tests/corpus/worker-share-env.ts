@@ -5,12 +5,20 @@
 // environment its own parent reads. The symbol is a stable identity with
 // Node's description, and any other symbol is ERR_INVALID_ARG_TYPE like every
 // other non-object env value.
+//
+// A worker reports its line to the parent, which prints it: both threads
+// write the one stdout, so a line the worker printed itself could reach it
+// before or after the parent's next line.
 import { SHARE_ENV, Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
 
 if (isMainThread) {
   process.env.BEFORE = "parent-value";
   const worker = new Worker(new URL(import.meta.url), { env: SHARE_ENV });
   worker.on("message", (message: unknown) => {
+    if (typeof message === "string" && message !== "done") {
+      console.log(message);
+      return;
+    }
     console.log("message:", message, "main sees:", process.env.FROM_WORKER);
     if (message === "done") {
       process.env.AFTER = "parent-later";
@@ -29,7 +37,13 @@ if (isMainThread) {
     console.log("description:", SHARE_ENV.description, SHARE_ENV.description?.length, String(SHARE_ENV));
     // A worker with a private environment, sharing it with its own children.
     const nested = new Worker(new URL(import.meta.url), { workerData: "nested", env: { MID_ONLY: "mid" } });
-    nested.on("message", (message: unknown) => console.log("nested:", JSON.stringify(message)));
+    nested.on("message", (message: unknown) => {
+      if (typeof message === "string") {
+        console.log(message);
+        return;
+      }
+      console.log("nested:", JSON.stringify(message));
+    });
     nested.on("exit", (code2: number) => {
       console.log(
         "nested exit:",
@@ -57,14 +71,16 @@ if (isMainThread) {
     });
   });
 } else if (workerData === "nested") {
-  console.log("nested worker env:", process.env.MID_ONLY, "before absent:", process.env.BEFORE === undefined);
+  parentPort!.postMessage(
+    `nested worker env: ${process.env.MID_ONLY} before absent: ${process.env.BEFORE === undefined}`,
+  );
   const copy = new Worker(new URL(import.meta.url), { workerData: "copy-child" });
   copy.on("message", (message: unknown) => {
-    console.log("copy child:", JSON.stringify(message));
+    parentPort!.postMessage(`copy child: ${JSON.stringify(message)}`);
     copy.terminate();
     const shared = new Worker(new URL(import.meta.url), { workerData: "shared-child", env: SHARE_ENV });
     shared.on("message", (message: unknown) => {
-      console.log("shared child:", JSON.stringify(message));
+      parentPort!.postMessage(`shared child: ${JSON.stringify(message)}`);
       shared.terminate();
       parentPort!.postMessage(["mid after:", process.env.MID_ONLY, "mid new:", process.env.CHILD_NEW]);
       parentPort!.close();
@@ -90,11 +106,11 @@ if (isMainThread) {
     if (Object.keys(process.env).length < 2) throw new Error("lost entries");
   }
 } else {
-  console.log("worker sees:", process.env.BEFORE);
+  parentPort!.postMessage(`worker sees: ${process.env.BEFORE}`);
   process.env.FROM_WORKER = "worker-value";
   parentPort!.postMessage("done");
   parentPort!.once("message", () => {
-    console.log("worker later sees:", process.env.AFTER);
+    parentPort!.postMessage(`worker later sees: ${process.env.AFTER}`);
     parentPort!.close();
   });
 }

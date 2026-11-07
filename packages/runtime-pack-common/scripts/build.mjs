@@ -15,13 +15,14 @@ import {
   runtimeForbiddenStrings,
 } from "./artifact-policy.mjs";
 import { createDeterministicArchive } from "./archive.mjs";
-import { buildRuntimeUnit, resolveRuntimeUnitHelper } from "./runtime-unit.mjs";
+import { buildRuntimeUnit, hostHelperPath, resolveRuntimeUnitHelper } from "./runtime-unit.mjs";
 import { installRuntimePack, withBuildLock } from "./build-state.mjs";
 import { shareIdenticalArtifacts } from "./share-artifacts.mjs";
 import { parallelMap } from "./parallel-map.mjs";
 import { zlibInputs } from "./zlib-inputs.mjs";
 import { zstdInputs } from "./zstd-inputs.mjs";
 import { ICU_DATA_FILE, ensurePackIcuData, ensureIcuSources, icuSourceList } from "./icu-data.mjs";
+import { assertUnwindTails, moveUnwindTailLast, unwindTailCompileFlags } from "./unwind-tail.mjs";
 
 const run = promisify(execFile);
 
@@ -127,6 +128,16 @@ async function build() {
     createHash("sha256")
       .update(await readFile(path))
       .digest("hex");
+  // Every ELF object of the pack ends its unwind table with the entry of a
+  // function no executable links (unwind-tail.mjs), so that an edit to one
+  // function of a unit leaves the unwind entries of the unit's other
+  // functions, and every executable that links only those, byte-identical.
+  const unwindTailFlags = unwindTailCompileFlags(matrix.target.object_format);
+  const endUnwindTable = async (object) => {
+    if (unwindTailFlags.length === 0) return;
+    const bytes = await readFile(object);
+    if (moveUnwindTailLast(bytes)) await writeFile(object, bytes);
+  };
   const compile = async (source, output, flags) => {
     await mkdir(dirname(output), { recursive: true });
     // Zig emits DWARF by default even for optimized C. Packaged runtime
@@ -135,6 +146,7 @@ async function build() {
     await run(compiler, [
       ...compilerArgs,
       ...sourcePathFlags,
+      ...unwindTailFlags,
       ...flags,
       "-g0",
       "-c",
@@ -142,6 +154,7 @@ async function build() {
       "-o",
       output,
     ]);
+    await endUnwindTable(output);
   };
   // Speed-flavor executable units are emitted through the host LLVM helper
   // (runtime-unit.mjs), which promotes their local symbols and applies the
@@ -337,6 +350,7 @@ async function build() {
       await run(cxx[0], [
         ...cxx.slice(1),
         ...sourcePathFlags,
+        ...unwindTailFlags,
         ...unit.flags,
         ...(unit.define === undefined ? [] : [`-D${unit.define}`]),
         "-g0",
@@ -345,6 +359,7 @@ async function build() {
         "-o",
         output,
       ]);
+      await endUnwindTable(output);
       return output;
     });
     const output = join(root, "libscriptc-icu.a");
@@ -383,6 +398,28 @@ async function build() {
     // The executable `speed` flavor (--optimization=speed) exists only when
     // it differs from release: its static units are emitted through the host
     // LLVM helper.
+    // Without that helper no build of the pack can link the flavor, and every
+    // --optimization=speed build of the pack silently links its release
+    // runtime units instead, which is slower at run time. Say why it is
+    // missing here, where the pack is made.
+    if ("release" in matrix.flavors && unitHelper === null) {
+      // The reason mirrors resolveRuntimeUnitHelper's own refusals, in its
+      // order.
+      const helper = process.env.SCRIPTC_LLVM_CODEGEN ?? hostHelperPath(repoRoot);
+      const reason =
+        process.env.SCRIPTC_RUNTIME_BITCODE === "0"
+          ? "runtime bitcode output is disabled (SCRIPTC_RUNTIME_BITCODE=0)"
+          : config.bitcode === false
+            ? "the pack's build configuration disables runtime bitcode"
+            : helper === null
+              ? "this host has no LLVM codegen helper package"
+              : `the LLVM codegen helper at ${helper} is not usable for ${matrix.target.llvm_triple}`;
+      process.stdout.write(
+        `skipping the speed runtime flavor of ${packageManifest.name}: ${reason}; ` +
+          "build the helper with scripts/build-llvm-dist.mjs, then rebuild the pack to include it. " +
+          "--optimization=speed builds of this pack will link the release runtime units\n",
+      );
+    }
     const flavorPlan = [
       ...Object.entries(matrix.flavors),
       ...("release" in matrix.flavors && unitHelper !== null
@@ -477,6 +514,7 @@ async function build() {
                   run(compiler, [
                     ...compilerArgs,
                     ...sourcePathFlags,
+                    ...unwindTailFlags,
                     ...unitFlags,
                     "-g0",
                     ...(speedProfile === null ? [] : ["-Xclang", "-disable-llvm-passes"]),
@@ -499,6 +537,7 @@ async function build() {
                   ),
               }))
             ) {
+              await endUnwindTable(output);
               if (unitBuild.profile !== undefined) profileMatches.push(unitBuild.profile);
               for (const name of unitBuild.functions ?? []) profiledFunctions.add(name);
             } else {
@@ -710,6 +749,7 @@ async function build() {
       stagedOutputRoot,
       runtimeForbiddenStrings(config.forbiddenArtifactStrings),
     );
+    if (unwindTailFlags.length > 0) await assertUnwindTails(stagedOutputRoot);
     const archiveSpecs = new Map(matrix.archives.map((entry) => [entry.id, entry]));
     const licensed = [
       [join(runtimeRoot, "LICENSE"), "artifacts/licenses/scriptc-runtime.txt", "Apache-2.0"],

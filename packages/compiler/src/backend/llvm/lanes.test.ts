@@ -3,13 +3,22 @@
  * guard and a lane loop ahead of the scalar loop, the vector width comes from
  * the target, and a build without the plan flag emits neither. */
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
 import { compile } from "@scriptc/compiler";
 import type { TargetCpu } from "../target-cpu.js";
 
-const repoRoot = join(import.meta.dirname, "../../../..");
+// The repository root is five directories up. Four is `packages/`: the
+// outputs then went to `packages/node_modules/.cache`, and the first run in a
+// checkout created `packages/node_modules`, a directory every build's module
+// resolution probes on its way up from the compiler's ambient declarations.
+// A build running beside that first run saw an input appear and did not
+// publish its cache entry, which failed the cache tests that then expected a
+// hit (prepare.test.ts, executable-cache.test.ts).
+const repoRoot = join(import.meta.dirname, "../../../../..");
+if (!existsSync(join(repoRoot, "pnpm-workspace.yaml")))
+  throw new Error(`${repoRoot} is not the repository root`);
 const cacheDir = join(repoRoot, "node_modules/.cache/scriptc-tests");
 const saved = { plan: process.env["SCRIPTC_LANES_PLAN"], cache: process.env["SCRIPTC_NO_CACHE"] };
 
@@ -148,14 +157,19 @@ test("a count's limit must be an exact integer in the element range", async () =
   expect(fn).toMatch(/fcmp oeq double [^,]+, %[A-Za-z_.][\w.]*/);
 });
 
-test("the target's vector width decides the lane count", async () => {
-  const v3 = await emittedLlvm("v3", SOURCE, { plan: "sum", targetCpu: "x86-64-v3" });
-  expect(body(v3, "sc_bf_sum")).toMatch(/load <8 x i16>, ptr [^,]+, align 1/);
-  const v4 = await emittedLlvm("v4", SOURCE, { plan: "sum", targetCpu: "x86-64-v4" });
-  expect(body(v4, "sc_bf_sum")).toMatch(/load <16 x i16>, ptr [^,]+, align 1/);
-  const v2 = await emittedLlvm("v2", SOURCE, { plan: "sum", targetCpu: "x86-64-v2" });
-  expect(body(v2, "sc_bf_sum")).toMatch(/load <4 x i16>, ptr [^,]+, align 1/);
-});
+// The frontend refuses an x86-64 target-cpu on a non-x86-64 target (SC3002),
+// so these level names only compile where the host is the target.
+test.skipIf(process.arch !== "x64")(
+  "the target's vector width decides the lane count",
+  async () => {
+    const v3 = await emittedLlvm("v3", SOURCE, { plan: "sum", targetCpu: "x86-64-v3" });
+    expect(body(v3, "sc_bf_sum")).toMatch(/load <8 x i16>, ptr [^,]+, align 1/);
+    const v4 = await emittedLlvm("v4", SOURCE, { plan: "sum", targetCpu: "x86-64-v4" });
+    expect(body(v4, "sc_bf_sum")).toMatch(/load <16 x i16>, ptr [^,]+, align 1/);
+    const v2 = await emittedLlvm("v2", SOURCE, { plan: "sum", targetCpu: "x86-64-v2" });
+    expect(body(v2, "sc_bf_sum")).toMatch(/load <4 x i16>, ptr [^,]+, align 1/);
+  },
+);
 
 test("a build without the plan flag emits no lane code and no toggle", async () => {
   const llvm = await emittedLlvm("plain", SOURCE);

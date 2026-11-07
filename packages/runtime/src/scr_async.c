@@ -26,6 +26,7 @@
 #define _DEFAULT_SOURCE 1
 #endif
 #include "scr_runtime.h"
+#include "scr_dir_private.h"
 #ifdef SCR_NODE_ISLANDS
 #include "scr_node_bridge.h"
 #include "scr_node_island.h"
@@ -3631,10 +3632,295 @@ ScrPromise *scr_fsp_opendir(ScrStr *path, double buffer_size) {
   return scr_promise_settled_ref(d, &scr_dir_retain_v, &scr_dir_release_v, NULL);
 }
 
-/* dir.close(): a closed Dir rejects with ERR_DIR_CLOSED. */
+/* ── asynchronous Dir operations ────────────────────────────────────
+ * The call's work runs immediately (a batch read or the close); the
+ * result is delivered in Node's phase: a read served from an earlier
+ * batch answers on a next tick, anything that filled a batch answers on
+ * the loop's deferred queue. Until the next tick after a batch read or a
+ * close, the handle counts as busy, like Node's operation queue.
+ *
+ * The handle, its entry batch and the synchronous operations live in
+ * scr_lib.c, and the Dirent a callback read receives lives in
+ * scr_symbol.c with the Dirent prototype; scr_dir_private.h holds the
+ * layout the units share. */
+
+static void scr_dir_op_destroy(ScrDirOp *op) {
+  scr_dyn_release(op->callback);
+  scr_dyn_release(op->argument);
+  scr_dyn_release(op->error);
+  scr_promise_release(op->promise);
+  if (op->release) op->release(op->value);
+  scr_dir_release(op->dir);
+  free(op);
+}
+
+void *scr_dir_op_retain_v(void *p) {
+  ScrDirOp *op = p;
+  op->rc++;
+  return op;
+}
+
+void scr_dir_op_release_v(void *p) {
+  ScrDirOp *op = p;
+  if (--op->rc) return;
+  scr_dir_op_destroy(op);
+}
+
+ScrDirOp *scr_dir_op_new(ScrDir *d, bool is_close) {
+  ScrDirOp *op = calloc(1, sizeof *op);
+  if (!op) scr_trap("scriptc: out of memory\n");
+  op->rc = 1;
+  op->dir = scr_dir_retain(d);
+  op->is_close = is_close;
+  return op;
+}
+
+ScrDyn *scr_dir_error_dyn(void) {
+  ScrCaught *caught = scr_exc_take();
+  ScrDyn *error = scr_caught_to_dyn(caught);
+  scr_caught_release(caught);
+  return error;
+}
+
+/* The delayed callback frame: scr_dir_deliver_op borrows the operation
+ * from the closure's box. */
+static void scr_dir_deliver_op(ScrDirOp *op);
+
+static void scr_dir_op_thunk(ScrClosure *closure) {
+  ScrDirOp *op = scr_box_get_ref(closure->caps[0]);
+  scr_dir_deliver_op(op);
+  scr_dir_op_release_v(op);
+}
+
+static void scr_dir_clear_thunk(ScrClosure *closure);
+
+static ScrClosure *scr_dir_op_closure(ScrDirOp *op) {
+  ScrClosure *closure = scr_closure_new((void *)scr_dir_op_thunk, 1);
+  closure->caps[0] = scr_box_new_obj(scr_dir_op_retain_v, scr_dir_op_release_v, NULL);
+  scr_box_set_ref(closure->caps[0], scr_dir_op_retain_v(op));
+  return closure;
+}
+
+static void scr_dir_throw_thunk(ScrClosure *closure) {
+  ScrDyn *error = scr_box_get_ref(closure->caps[0]);
+  scr_dyn_throw(error); /* moves */
+}
+
+/* Throws `error` from a later next tick, as Node's queued continuation
+ * does when the Dir closed before it ran. */
+static void scr_dir_defer_throw(ScrDyn *error) {
+  ScrClosure *closure = scr_closure_new((void *)scr_dir_throw_thunk, 1);
+  closure->caps[0] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+  scr_box_set_ref(closure->caps[0], error);
+  scr_next_tick(closure);
+}
+
+/* The next tick after a delivered batch read or close: the handle is no
+ * longer busy, and the operations that waited start in order. */
+static void scr_dir_clear_thunk(ScrClosure *closure) {
+  ScrDir *d = scr_box_get_ref(closure->caps[0]);
+  d->inflight = false;
+  while (d->ops_head) {
+    ScrDirOp *op = d->ops_head;
+    d->ops_head = op->next;
+    if (!d->ops_head) d->ops_tail = NULL;
+    op->next = NULL;
+    if (op->is_close) {
+      if (d->closed) {
+        op->error = (scr_dir_closed(), scr_dir_error_dyn());
+        op->buffered = true;
+        scr_next_tick(scr_dir_op_closure(op));
+        scr_dir_op_release_v(op);
+        continue;
+      }
+      d->closed = true;
+      scr_dir_batch_clear(d);
+      scr_dir_close_stream(d);
+      d->inflight = true;
+      scr_loop_defer(scr_dir_op_closure(op));
+      scr_dir_op_release_v(op);
+      break;
+    }
+    if (d->closed) {
+      /* Node's queued read continuation re-enters readImpl, which throws
+       * ERR_DIR_CLOSED from the next tick. */
+      scr_dir_closed();
+      scr_dir_defer_throw(scr_dir_error_dyn());
+      scr_dir_op_release_v(op);
+      continue;
+    }
+    if (op->promise) {
+      if (op->error) {
+        scr_dyn_throw(op->error);
+        op->error = NULL;
+        scr_promise_reject_pending(op->promise);
+        scr_dir_op_release_v(op);
+        continue;
+      }
+      if (op->buffered) {
+        scr_promise_fulfill_ref(op->promise, op->value, op->retain, op->release, op->trace);
+        op->value = NULL;
+        scr_dir_op_release_v(op);
+        continue;
+      }
+      d->inflight = true;
+      scr_loop_defer(scr_dir_op_closure(op));
+      scr_dir_op_release_v(op);
+      break;
+    }
+    /* A callback read that waited delivers the entry it took when it was
+     * called. */
+    if (op->buffered && !op->error) {
+      scr_next_tick(scr_dir_op_closure(op));
+      scr_dir_op_release_v(op);
+      continue;
+    }
+    d->inflight = true;
+    scr_loop_defer(scr_dir_op_closure(op));
+    scr_dir_op_release_v(op);
+    break;
+  }
+  scr_dir_release(d);
+}
+
+static void scr_dir_schedule_clear(ScrDir *d) {
+  ScrClosure *closure = scr_closure_new((void *)scr_dir_clear_thunk, 1);
+  closure->caps[0] = scr_box_new_obj(scr_dir_retain_v, scr_dir_release_v, NULL);
+  scr_box_set_ref(closure->caps[0], scr_dir_retain(d));
+  scr_next_tick(closure);
+}
+
+/* Queues the operation: one runs at a time, the rest wait in call order. */
+void scr_dir_push(ScrDirOp *op) {
+  ScrDir *d = op->dir;
+  if (d->inflight || d->ops_head) {
+    if (d->ops_tail) d->ops_tail->next = op;
+    else d->ops_head = op;
+    d->ops_tail = op;
+    return;
+  }
+  if (op->is_close) {
+    d->closed = true;
+    scr_dir_batch_clear(d);
+    scr_dir_close_stream(d);
+    d->inflight = true;
+    scr_loop_defer(scr_dir_op_closure(op));
+    scr_dir_op_release_v(op);
+    return;
+  }
+  if (op->promise) {
+    if (op->buffered) {
+      scr_promise_fulfill_ref(op->promise, op->value, op->retain, op->release, op->trace);
+      op->value = NULL;
+      scr_dir_op_release_v(op);
+      return;
+    }
+    d->inflight = true;
+    scr_loop_defer(scr_dir_op_closure(op));
+    scr_dir_op_release_v(op);
+    return;
+  }
+  if (op->buffered) {
+    scr_next_tick(scr_dir_op_closure(op));
+    scr_dir_op_release_v(op);
+    return;
+  }
+  d->inflight = true;
+  scr_loop_defer(scr_dir_op_closure(op));
+  scr_dir_op_release_v(op);
+}
+
+static void scr_dir_deliver_op(ScrDirOp *op) {
+  ScrDir *d = op->dir;
+  if (!op->buffered) scr_dir_schedule_clear(d); /* before the callback, as Node does */
+  if (op->promise) {
+    if (op->error) {
+      /* An operation that finds the Dir closed rejects: the second close
+       * of a Dir answers ERR_DIR_CLOSED, not a second fulfillment. */
+      scr_dyn_throw(op->error);
+      op->error = NULL;
+      scr_promise_reject_pending(op->promise);
+    } else if (op->is_close) {
+      scr_promise_fulfill_void(op->promise);
+    } else {
+      scr_promise_fulfill_ref(op->promise, op->value, op->retain, op->release, op->trace);
+      op->value = NULL;
+    }
+    return;
+  }
+  ScrDyn *arguments = scr_dyn_new_arr();
+  if (op->error) {
+    scr_dyn_arr_push(arguments, scr_dyn_retain(op->error));
+  } else {
+    scr_dyn_arr_push(arguments, scr_dyn_new_null());
+    if (!op->is_close) {
+      scr_dyn_arr_push(arguments, op->argument ? scr_dyn_retain(op->argument) : scr_dyn_new_null());
+    }
+  }
+  ScrDyn *result = scr_dyn_apply(op->callback, arguments, "the filesystem callback");
+  if (result) scr_dyn_release(result);
+  scr_dyn_release(arguments);
+}
+
+/* dir.close(callback): a closed Dir reports ERR_DIR_CLOSED on a next tick;
+ * otherwise the handle closes now and the callback follows on the loop. */
+void scr_dir_close_callback(ScrDir *d, ScrDyn *callback) {
+  ScrDirOp *op = scr_dir_op_new(d, true);
+  op->callback = scr_dyn_retain(callback);
+  if (d->closed) {
+    scr_dir_closed();
+    op->error = scr_dir_error_dyn();
+    op->buffered = true;
+    scr_next_tick(scr_dir_op_closure(op));
+    scr_dir_op_release_v(op);
+    return;
+  }
+  scr_dir_push(op);
+}
+
+/* dir.read() promise form: the emitter consumed the entry when the call
+ * ran and passes the built Dirent | null union; a closed Dir (or a failed
+ * read) answers a rejected promise through the pending exception. */
+ScrPromise *scr_dir_read_promise(ScrDir *d, void *value, bool buffered, void *(*retain)(void *),
+                                 void (*release)(void *), ScrTraceFn trace) {
+  if (scr_exc_pending()) return scr_promise_settled_ref(value, retain, release, trace);
+  ScrDirOp *op = scr_dir_op_new(d, false);
+  op->promise = scr_promise_new();
+  op->value = value;
+  op->retain = retain;
+  op->release = release;
+  op->trace = trace;
+  op->buffered = buffered;
+  ScrPromise *promise = scr_promise_retain(op->promise);
+  scr_dir_push(op);
+  return promise;
+}
+
+/* dir.close(): a closed Dir rejects with ERR_DIR_CLOSED; otherwise the
+ * handle closes now and the promise settles after the loop's turn. */
 ScrPromise *scr_dir_close_promise(ScrDir *d) {
-  scr_dir_close(d);
-  return scr_promise_settled_void();
+  if (d->closed) {
+    scr_dir_closed();
+    return scr_promise_settled_void();
+  }
+  ScrDirOp *op = scr_dir_op_new(d, true);
+  op->promise = scr_promise_new();
+  ScrPromise *promise = scr_promise_retain(op->promise);
+  scr_dir_push(op);
+  return promise;
+}
+
+/* dir[Symbol.asyncDispose](): close() when the Dir is still open. */
+ScrPromise *scr_dir_async_dispose(ScrDir *d) {
+  if (d->closed) return scr_promise_settled_void();
+  return scr_dir_close_promise(d);
+}
+
+/* Throws the pending exception from a later next tick (a completion
+ * callback that finds invalid options after the open). */
+void scr_defer_pending_throw(void) {
+  ScrDyn *error = scr_dir_error_dyn();
+  scr_dir_defer_throw(error);
 }
 
 ScrPromise *scr_fsp_rename(ScrStr *oldpath, ScrStr *newpath) {
@@ -4700,6 +4986,23 @@ static void scr_micro_dyn_fire(ScrClosure *c) {
   ScrDyn *r = scr_dyn_call(fn, NULL, 0, "queueMicrotask callback");
   if (r != NULL) scr_dyn_release(r);
   scr_dyn_release(fn);
+}
+
+/* Node's ERR_INVALID_ARG_TYPE gate over a checked-dynamic timer callback
+ * (its "Received ..." rendering): raised after every argument expression
+ * evaluates, before the delay converts and before anything schedules.
+ * scr_dyn_check_listener carries the identical gate, but scr_dyn_handle.c
+ * compiles only for the emitter/net families — a timer-only program must
+ * not link that unit, so the gate is inlined here beside the other
+ * checked-dynamic entry points the loop owns. */
+void scr_timers_check_callback(const ScrDyn *cb) {
+  if (cb->kind == SCR_DYN_FUNC) return;
+#ifdef SCR_NODE_ISLANDS
+  /* A function a Node island made is a function: the timer calls it
+   * through its typed view. */
+  if (scr_ni_dyn_handle(cb) && scr_ni_dyn_ops != NULL && scr_ni_dyn_ops->is_function(cb)) return;
+#endif
+  scr_dyn_arg_type_fail("callback", "of type function", cb);
 }
 
 /* The closure that calls a dyn function value, or NULL with Node's
@@ -6340,15 +6643,17 @@ SCR_TL bool (*scr_urj_deliver_fn)(ScrPromise *p) = NULL;
 
 #ifdef SCR_PROMISE_REJECT_DYN
 /* Prints a checked-dynamic rejection reason for the default unhandled-
- * rejection report: a boxed native Error as "name: message", a string as
- * its text, and a number, boolean, null or undefined by its name. Returns
- * false for any other value, which the report prints as "[object]". */
+ * rejection report: a boxed native Error as "name: message" and the frames
+ * it captured, a string as its text, and a number, boolean, null or
+ * undefined by its name. Returns false for any other value, which the
+ * report prints as "[object]". */
 static bool scr_unhandled_print_dyn(const ScrDyn *d) {
   ScrError *error = scr_errdyn_err_of(d);
   if (error != NULL) {
     ScrStr *s = scr_error_to_string(error);
     fwrite(s->data, 1, s->len, stderr);
     scr_str_release(s);
+    scr_error_report_frames(error);
     scr_error_release(error);
     return true;
   }
@@ -6422,11 +6727,13 @@ bool scr_report_unhandled_rejections(void) {
         case SCR_EXC_BOOL: fputs(p->b ? "true" : "false", stderr); break;
         case SCR_EXC_STR: fputs(((ScrStr *)p->payload)->data, stderr); break;
         case SCR_EXC_OBJ:
-          /* Error rejections render "name: message", like the uncaught path. */
+          /* Error rejections render "name: message" and the frames the
+           * error captured, like the uncaught path. */
           if (scr_error_is(p->payload)) {
             ScrStr *s = scr_error_to_string((ScrError *)p->payload);
             fwrite(s->data, 1, s->len, stderr);
             scr_str_release(s);
+            scr_error_report_frames((const ScrError *)p->payload);
             break;
           }
           /* fall through */
@@ -6720,7 +7027,6 @@ static ScrGen *scr_gen_new_common(void (*entry)(ScrFiber *, void *), void *argpa
    * store the same value, relaxed. */
   __atomic_store_n(&scr_gen_tag_reader, scr_gen_tag, __ATOMIC_RELAXED);
   g->rc = 1;
-  g->receiver = scr_dyn_this_get();
   g->state = SCR_GEN_UNSTARTED;
   g->drop_args = drop_args;
   g->is_async = settle_async != NULL;
@@ -6831,7 +7137,8 @@ void scr_gen_release_v(void *g) { scr_gen_release((ScrGen *)g); }
 bool scr_gen_done(ScrGen *g) { return g->state == SCR_GEN_DONE; }
 ScrGen *scr_gen_of_fiber(ScrFiber *f) { return f->gen; }
 ScrDyn *scr_gen_receiver(void) {
-  return scr_dyn_retain(scr_current && scr_current->gen ? scr_current->gen->receiver : scr_dyn_undefined());
+  ScrDyn *receiver = scr_current && scr_current->gen ? scr_current->gen->receiver : NULL;
+  return scr_dyn_retain(receiver != NULL ? receiver : scr_dyn_undefined());
 }
 
 /* Slot setters (release the previous occupant; payloads MOVE in). */

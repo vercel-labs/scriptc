@@ -155,6 +155,11 @@ ScrDyn *scr_await_dyn_value_settled(ScrDyn *value);
  * until the value's promise settled, or taken the non-promise hop. */
 ScrDyn *scr_coro_await_dyn_value(ScrDyn *value);
 void scr_promise_resolve_dyn(ScrPromise *destination, ScrDyn *value);
+/* `new Promise(executor)` of a checked-dynamic value whose resolve function
+ * adopts a promise it is given (scr_async_dyn.c). */
+ScrClosure *scr_make_resolve_dyn(ScrPromise *p, ScrClosure *reject);
+void scr_promise_run_executor_dyn(ScrPromise *p, ScrClosure *exec, ScrClosure *resolve,
+                                  ScrClosure *reject);
 /* `await v` over a checked-dynamic VALUE: dyn promises adopt, everything
  * else takes JS's one-hop non-thenable await and answers itself (+1). */
 ScrDyn *scr_await_dyn_value(ScrDyn *v);
@@ -516,6 +521,11 @@ double scr_set_immediate(ScrClosure *cb); /* cb ownership moves in */
 void scr_queue_microtask(ScrClosure *cb);
 void scr_queue_microtask_dyn(const ScrDyn *cb);
 void scr_queue_microtask_dyn_als(const ScrDyn *cb);
+/* Node's timer callback gate, raised where the callback is not statically
+ * a function: a non-function throws ERR_INVALID_ARG_TYPE synchronously,
+ * with the "Received ..." rendering, before anything schedules and before
+ * the delay converts. Borrowed. */
+void scr_timers_check_callback(const ScrDyn *cb);
 /* setImmediate AS A dyn VALUE (the traceCallback shape): a minted dyn
  * callable that schedules args[0](args[1..]) on the immediate queue and
  * answers undefined; a non-function first argument throws Node's

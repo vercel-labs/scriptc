@@ -4,6 +4,10 @@
 // an object's Symbol.toPrimitive with the string hint, at construction, and
 // its throw leaves the constructor. The copy belongs to the worker, so its
 // writes do not reach the parent.
+//
+// A worker reports its line to the parent, which prints it: both threads
+// write the one stdout, so a line the worker printed itself could reach it
+// before or after the parent's next line.
 import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
 
 type Env = { [key: string]: string | number | boolean | undefined } | null;
@@ -71,8 +75,8 @@ function coercions(): void {
 
 if (isMainThread) {
   process.env.PARENT_ONLY = "parent";
-  // The rejections report before any worker starts: a started worker writes
-  // to the same stdout, so its output could interleave.
+  // The rejections report before any worker starts, so their lines lead the
+  // output.
   const reject = (env: any): void => {
     try {
       new Worker(new URL(import.meta.url), { env });
@@ -86,19 +90,31 @@ if (isMainThread) {
   reject(true);
   const copy = { A: "1", B: 2, C: true, D: undefined };
   const first = phase("object", copy);
-  first.on("message", (message: unknown) => console.log("object:", message));
+  first.on("message", (line: unknown) => {
+    console.log(line);
+    console.log("object: done");
+  });
   first.on("exit", (code: number) => {
     console.log("object exit:", code, "parent A:", process.env.A, "parent WSET:", process.env.WSET);
     const second = phase("null", null);
-    second.on("message", (message: unknown) => console.log("null:", message));
+    second.on("message", (line: unknown) => {
+      console.log(line);
+      console.log("null: done");
+    });
     second.on("exit", (code2: number) => {
       console.log("null exit:", code2, "parent WSET:", process.env.WSET);
       const third = phase("empty", {});
-      third.on("message", (message: unknown) => console.log("empty:", message));
+      third.on("message", (line: unknown) => {
+        console.log(line);
+        console.log("empty: done");
+      });
       third.on("exit", (code3: number) => {
         console.log("empty exit:", code3);
         const fourth = phase("omitted");
-        fourth.on("message", (message: unknown) => console.log("omitted:", message));
+        fourth.on("message", (line: unknown) => {
+          console.log(line);
+          console.log("omitted: done");
+        });
         fourth.on("exit", (code4: number) => {
           console.log("omitted exit:", code4);
           coercions();
@@ -109,37 +125,25 @@ if (isMainThread) {
 } else {
   const mode = workerData as string;
   if (mode === "object") {
-    console.log(
-      "worker entries:",
-      process.env.A,
-      process.env.B,
-      process.env.C,
-      process.env.D,
-      "PATH absent:",
-      process.env.PATH === undefined,
-    );
     process.env.WSET = "worker";
-    parentPort!.postMessage("done");
+    parentPort!.postMessage(
+      `worker entries: ${process.env.A} ${process.env.B} ${process.env.C} ${process.env.D} ` +
+        `PATH absent: ${process.env.PATH === undefined}`,
+    );
   } else if (mode === "null") {
-    console.log(
-      "worker copy:",
-      process.env.PARENT_ONLY,
-      "A absent:",
-      process.env.A === undefined,
-    );
     process.env.WSET = "null-worker";
-    parentPort!.postMessage("done");
-  } else if (mode === "empty") {
-    console.log(
-      "worker empty:",
-      process.env.PARENT_ONLY === undefined,
-      process.env.PATH === undefined,
+    parentPort!.postMessage(
+      `worker copy: ${process.env.PARENT_ONLY} A absent: ${process.env.A === undefined}`,
     );
-    parentPort!.postMessage("done");
+  } else if (mode === "empty") {
+    parentPort!.postMessage(
+      `worker empty: ${process.env.PARENT_ONLY === undefined} ${process.env.PATH === undefined}`,
+    );
   } else if (mode === "coerced") {
     parentPort!.postMessage(process.env.PRIM);
   } else {
-    console.log("worker omitted:", process.env.PARENT_ONLY, process.env.A === undefined);
-    parentPort!.postMessage("done");
+    parentPort!.postMessage(
+      `worker omitted: ${process.env.PARENT_ONLY} ${process.env.A === undefined}`,
+    );
   }
 }

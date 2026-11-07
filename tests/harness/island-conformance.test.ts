@@ -28,7 +28,9 @@
  * list does not have, on a listed failure that changed, and on a listed
  * failure that no longer occurs, so the list only shrinks when a fix removes
  * its entry and only grows by a deliberate edit. Its size by category is the
- * scoreboard for island robustness (island-conformance/scoreboard.mjs).
+ * scoreboard for island robustness (island-conformance/scoreboard.mjs). An
+ * entry marked `unstable` is a race: it may match Node in one run and fail
+ * in the next, so it is pinned by category when it fails and kept by hand.
  *
  * The lane is opt-in: SCRIPTC_ISLAND_CONFORMANCE=1 runs it, =update rewrites
  * the entries of the programs it ran. It needs a libnode pack
@@ -72,8 +74,9 @@ interface Failure {
   /** The packages the default build ran in Node islands by itself: a
    * default-build failure with any is an island failure too. */
   autoIslands?: string[];
-  /** The failure is a race: the line it stops at varies from run to run, so
-   * only its category is pinned. Set by hand; an update keeps it. */
+  /** The failure is a race: some runs match Node, and the line a failing
+   * run stops at varies, so the entry only pins the category of a failure
+   * when there is one. Set and removed by hand; an update keeps it. */
   unstable?: true;
 }
 
@@ -331,6 +334,13 @@ function check(program: string, way: string, failure: Failure | null): void {
   record(program, way, failure);
   if (update) return;
   const listed = known[program]?.[way] ?? null;
+  if (listed?.unstable === true) {
+    if (failure !== null)
+      expect(failure.category, `${program} (${way}) fails in another way now`).toBe(
+        listed.category,
+      );
+    return;
+  }
   if (listed === null && failure !== null)
     expect.fail(
       `${program} (${way}) does not match Node and known-failures.json does not list it:\n${JSON.stringify(failure, null, 2)}`,
@@ -339,10 +349,6 @@ function check(program: string, way: string, failure: Failure | null): void {
     expect.fail(
       `${program} (${way}) matches Node now: remove its entry from known-failures.json (SCRIPTC_ISLAND_CONFORMANCE=update)`,
     );
-  if (listed?.unstable === true) {
-    expect(failure?.category, `${program} (${way}) fails in another way now`).toBe(listed.category);
-    return;
-  }
   expect(
     failure,
     `${program} (${way}) fails differently from its known-failures.json entry`,
@@ -413,8 +419,10 @@ describe.skipIf(!enabled || !pinned || libnodePack() === null)(
       for (const [program, ways] of observed) {
         const entries: Record<string, Failure> = { ...next[program] };
         for (const [way, failure] of ways) {
-          if (failure === null) delete entries[way];
-          else if (entries[way]?.unstable !== true || entries[way]!.category !== failure.category)
+          const unstable = entries[way]?.unstable === true;
+          if (failure === null) {
+            if (!unstable) delete entries[way];
+          } else if (!unstable || entries[way]!.category !== failure.category)
             entries[way] = failure;
         }
         const sortedWays: Record<string, Failure> = {};

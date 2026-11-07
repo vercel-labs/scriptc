@@ -329,7 +329,7 @@
   "npm/node24-promise-timers": {
     "island:node24-promise-timers-fixture": {
       "category": "exit",
-      "signature": "exit 13, Node 0: the output stops at a different line from run to run",
+      "signature": "exit 13, Node 0: a race; a failing run stops at a different line each time and some runs match Node",
       "unstable": true
     }
   },

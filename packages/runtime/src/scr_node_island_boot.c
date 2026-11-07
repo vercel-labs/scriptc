@@ -447,6 +447,16 @@ static NbStub *nb_new_stub(uint32_t oid, uint32_t flags, bool plain, NbModule *m
 }
 
 ScrDyn *scr_node_island_defer(ScrStr *path, ScrStr *snapshot) {
+  /* The stubs, the modules and their reconciliation are the island
+   * thread's: its %init made the stub boxes (one per probed object, whoever
+   * imports it), and they become real on that thread when Node starts. A
+   * worker thread runs the same %init for its own instance of the importing
+   * module; it takes the module's real value, through the route like every
+   * load, which starts Node first when it has not started. A second set of
+   * stubs for the same objects would not reconcile ("no longer matches its
+   * build-time interface snapshot"), and the first set's boxes belong to
+   * another thread's heap. */
+  if (!scr_context_is_main()) return nb_eager(path, "a worker thread imports it");
   /* Pass 1: the guards, and the mode. */
   NbCursor c = {snapshot->data, snapshot->data + snapshot->len, false};
   bool lazy = false;

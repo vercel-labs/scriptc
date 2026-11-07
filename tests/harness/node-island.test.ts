@@ -425,11 +425,39 @@ describe.skipIf(skip)("Node islands in-process", () => {
       undefined,
       join(repoRoot, "tests/fixtures/node-island/worker.ts"),
     );
+    const refusal = (what: string, value: string, where: string): string =>
+      `worker ${what} ERR_SCRIPTC_ISLAND_WORKER_VALUE\n` +
+      `worker   scriptc: ${value} cannot cross between a worker thread and its Node island (${where})\n`;
     expect(await run(worker, [])).toEqual({
       stdout:
-        "main 42\nworker called 42\nworker get ERR_SCRIPTC_ISLAND_WORKER_VALUE\n" +
+        // One instance of the island module for both threads: the worker's
+        // count continues the main thread's (Node: a worker counts from 1).
+        "main 42\nmain count 1\nworker called 42\nworker get ERR_SCRIPTC_ISLAND_WORKER_VALUE\n" +
+        "worker count 2\n" +
+        refusal(
+          "callback",
+          "a native function (a callback)",
+          "argument 1 of the call to 'callBack'",
+        ) +
+        refusal(
+          "bytes out",
+          "native bytes (a typed array or Buffer)",
+          "argument 1 of the call to 'byteLength'",
+        ) +
+        refusal(
+          "bytes in",
+          "island bytes (a typed array or Buffer)",
+          "the result of the call to 'bytes'",
+        ) +
+        refusal(
+          "error out",
+          "a native error passed by reference",
+          "argument 1 of the call to 'errorName'",
+        ) +
+        "worker plain 42\n" +
         "worker async ERR_SCRIPTC_ISLAND_WORKER_ASYNC\n" +
-        "worker await ERR_SCRIPTC_ISLAND_WORKER_ASYNC\nexit 0\n",
+        "worker await ERR_SCRIPTC_ISLAND_WORKER_ASYNC\n" +
+        "worker thenable ERR_SCRIPTC_ISLAND_WORKER_VALUE\nexit 0\n",
       stderr: "",
       code: 0,
     });

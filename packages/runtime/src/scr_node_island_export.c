@@ -1665,10 +1665,14 @@ void scr_ni_exports_release_all(void) {
  * (scr_node_island_host.cjs, module "scriptc:island-helpers"); its
  * constructor, field initializers, methods and accessors are native
  * closures exported into Node, and its instances are island objects. */
-static ScrDyn *ni_helpers = NULL;
+/* One handle box of the helpers module per thread: a box belongs to the
+ * heap of the thread that made it, and a worker thread reaches the helpers
+ * too (instanceof against a global class, promisify, a subclass). */
+static SCR_TL ScrDyn *ni_helpers = NULL;
 
-/* At exit the helpers module is the unit's own reference, not the
- * program's: release it so the reference audit sees only program objects. */
+/* At the thread's exit the helpers module is the unit's own reference, not
+ * the program's: release it so the reference audit sees only program
+ * objects. */
 static void ni_helpers_cleanup(void) {
   if (ni_helpers == NULL) return;
   scr_dyn_release(ni_helpers);

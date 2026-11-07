@@ -171,11 +171,26 @@ typedef struct {
   void *obj; /* retained; its reference count is the first word */
   ScrNodeRef *ref; /* retained */
   int kind;
+  /* The thread whose object `obj` is (nh_self). A runtime object has a
+   * plain reference count and lives in one thread's heap, so it is only
+   * ever found, retained and released by the thread that pinned it: two
+   * threads that hold the same island value each pin an object of their
+   * own for it (the island's ref is what they share), and each thread
+   * sweeps its own pins. */
+  const void *owner;
 } NhPin;
 
 static NhPin *nh_pins = NULL;
-static size_t nh_npins = 0, nh_pins_cap = 0, nh_sweep_at = 64;
+static size_t nh_npins = 0, nh_pins_cap = 0;
 static pthread_mutex_t nh_pins_lock = PTHREAD_MUTEX_INITIALIZER;
+/* This thread's pins, and the count at which it sweeps them next. */
+static SCR_TL size_t nh_own_pins = 0, nh_sweep_at = 64;
+
+/* This thread, as a pin's owner: the address of one of its thread-local
+ * bytes. A thread releases every pin it owns before it ends
+ * (nh_thread_exit), so a later thread at the same address finds none. */
+static SCR_TL char nh_self_mark;
+static inline const void *nh_self(void) { return &nh_self_mark; }
 
 static void nh_ref_free(ScrNodeRef *ref);
 static void nh_drop_drain(void);
@@ -210,21 +225,24 @@ static void nh_pin(void *obj, int kind, ScrNodeRef *ref) {
   case NH_PIN_BYTES: scr_bytes_retain((ScrBytes *)obj); break;
   }
   nh_rc_inc(ref);
-  nh_pins[nh_npins++] = (NhPin){obj, ref, kind};
+  nh_pins[nh_npins++] = (NhPin){obj, ref, kind, nh_self()};
+  nh_own_pins++;
   nh_unlock(&nh_pins_lock, held);
 }
 
-/* The ref a pinned runtime object represents (+1), or NULL. The count is
- * taken under the lock: the sweep runs on another thread too, and a ref the
- * table alone held may be freed as soon as the lock is dropped. */
+/* The ref a pinned runtime object of this thread represents (+1), or NULL.
+ * The count is taken under the lock: another thread may drop its own pin of
+ * the same ref meanwhile, and a ref the table alone held may be freed as
+ * soon as the lock is dropped. */
 static ScrNodeRef *nh_pinned(const void *obj, int kind) {
   /* A thread that never used the island holds no island value (and must
    * not read the table the island's thread is changing unlocked). */
   if (nh_thread == NH_THREAD_UNSEEN && !scr_context_is_main()) return NULL;
   ScrNodeRef *ref = NULL;
   bool held = nh_lock(&nh_pins_lock);
+  const void *self = nh_self();
   for (size_t i = 0; i < nh_npins; i++)
-    if (nh_pins[i].obj == obj && nh_pins[i].kind == kind) {
+    if (nh_pins[i].obj == obj && nh_pins[i].kind == kind && nh_pins[i].owner == self) {
       ref = nh_pins[i].ref;
       nh_rc_inc(ref);
       break;
@@ -233,14 +251,14 @@ static ScrNodeRef *nh_pinned(const void *obj, int kind) {
   return ref;
 }
 
-/* The pinned object of a ref (+1, by its kind's retain), or NULL. Retained
- * under the lock for the same reason as nh_pinned: after the unlock the
- * sweep on the island's thread may free an object only the table held. */
+/* The object this thread pinned to a ref (+1, by its kind's retain), or
+ * NULL: never another thread's object for the same island value (NhPin). */
 static void *nh_pinned_obj(const ScrNodeRef *ref, int kind) {
   void *obj = NULL;
   bool held = nh_lock(&nh_pins_lock);
+  const void *self = nh_self();
   for (size_t i = 0; i < nh_npins; i++)
-    if (nh_pins[i].ref == ref && nh_pins[i].kind == kind) {
+    if (nh_pins[i].ref == ref && nh_pins[i].kind == kind && nh_pins[i].owner == self) {
       obj = nh_pins[i].obj;
       break;
     }
@@ -273,18 +291,22 @@ static bool nh_pin_unheld(const NhPin *pin) {
   return SCR_RC_COUNT(view) == 1 + self;
 }
 
-/* Releases every pin whose object only the table still holds. Releasing a
- * pin can free objects that held other pinned objects, so it repeats until
- * a pass frees nothing. */
-static void nh_sweep(void) {
+/* Releases every pin of this thread whose object only the table still
+ * holds (`all`: every pin of this thread, at its end). Releasing a pin can
+ * free objects that held other pinned objects, so it repeats until a pass
+ * frees nothing. Another thread's pins are left alone: their objects'
+ * counts are that thread's to read and to change. */
+static void nh_sweep_own(bool all) {
   bool freed = true;
   bool held = nh_lock(&nh_pins_lock);
+  const void *self = nh_self();
   while (freed) {
     freed = false;
     for (size_t i = 0; i < nh_npins;) {
-      if (nh_pin_unheld(&nh_pins[i])) {
+      if (nh_pins[i].owner == self && (all || nh_pin_unheld(&nh_pins[i]))) {
         NhPin pin = nh_pins[i];
         nh_pins[i] = nh_pins[--nh_npins];
+        nh_own_pins--;
         nh_pin_release_obj(&pin);
         nh_ref_release(pin.ref);
         freed = true;
@@ -293,9 +315,11 @@ static void nh_sweep(void) {
       }
     }
   }
-  nh_sweep_at = nh_npins * 2 > 64 ? nh_npins * 2 : 64;
+  nh_sweep_at = nh_own_pins * 2 > 64 ? nh_own_pins * 2 : 64;
   nh_unlock(&nh_pins_lock, held);
 }
+
+static void nh_sweep(void) { nh_sweep_own(false); }
 
 /* ── runtime bytes V8 freed (any thread) ─────────────────────────────── */
 
@@ -331,12 +355,16 @@ static void nh_drain_freed(void) {
 static void nh_enter(void) {
   if (nh_thread != NH_THREAD_ISLAND) {
     nh_share();
-    /* The island's thread does the housekeeping, for every thread. */
-    if (!nh_on_island()) return;
+    /* The island's thread does the bridge's housekeeping, for every
+     * thread; a thread's pins are its own to sweep. */
+    if (!nh_on_island()) {
+      if (nh_own_pins >= nh_sweep_at) nh_sweep();
+      return;
+    }
   }
   if (nh_shared()) nh_drop_drain();
   if (nh_nfreed > 0) nh_drain_freed();
-  if (nh_npins >= nh_sweep_at) nh_sweep();
+  if (nh_own_pins >= nh_sweep_at) nh_sweep();
 }
 
 /* ── refs ─────────────────────────────────────────────────────────────── */
@@ -764,15 +792,82 @@ static void nh_error_info_free(NhErrorInfo *e) {
   free(e->arrow);
 }
 
+/* The operation a thread other than the island's is making, for the
+ * message of a refusal: which call, read or write, and which of its values
+ * (`arg`: the 1-based argument being converted; 0 with `receiver`: the
+ * call's `this`; else the operation's own value: a call's result, the
+ * value read or written). Set only on such a thread (nh_site_set). */
+enum { NH_SITE_NONE, NH_SITE_CALL, NH_SITE_NEW, NH_SITE_READ, NH_SITE_WRITE };
+static SCR_TL struct {
+  int op;
+  const char *name; /* the member, or NULL */
+  size_t name_len;
+  unsigned arg;
+  bool receiver;
+} nh_site;
+
+/* The member a dynamic method call read its function from (nh_op_invoke),
+ * for the call that follows on the same thread: it has the function, not
+ * the name. */
+static SCR_TL const char *nh_site_member = NULL;
+
+static inline void nh_site_set(int op, const char *name, size_t name_len) {
+  if (nh_on_island()) return;
+  if (name == NULL && op == NH_SITE_CALL && nh_site_member != NULL) {
+    name = nh_site_member;
+    name_len = strlen(name);
+  }
+  nh_site.op = op;
+  nh_site.name = name;
+  nh_site.name_len = name_len;
+  nh_site.arg = 0;
+  nh_site.receiver = false;
+}
+
+static inline void nh_site_clear(void) {
+  if (!nh_on_island()) nh_site.op = NH_SITE_NONE;
+}
+
+/* " (argument 2 of the call to 'resize')", or "" when no operation is
+ * recorded. */
+SCR_COLD static void nh_site_text(char *out, size_t cap) {
+  out[0] = '\0';
+  if (nh_site.op == NH_SITE_NONE) return;
+  char name[112] = "";
+  if (nh_site.name != NULL)
+    snprintf(name, sizeof name, " '%.*s'", (int)(nh_site.name_len < 96 ? nh_site.name_len : 96),
+             nh_site.name);
+  const char *to = nh_site.name != NULL ? " to" : "";
+  switch (nh_site.op) {
+  case NH_SITE_CALL:
+  case NH_SITE_NEW: {
+    const char *call = nh_site.op == NH_SITE_NEW ? "the construction" : "the call";
+    if (nh_site.op == NH_SITE_NEW) to = nh_site.name != NULL ? " of" : "";
+    if (nh_site.arg != 0)
+      snprintf(out, cap, " (argument %u of %s%s%s)", nh_site.arg, call, to, name);
+    else if (nh_site.receiver)
+      snprintf(out, cap, " (the receiver of %s%s%s)", call, to, name);
+    else
+      snprintf(out, cap, " (the result of %s%s%s)", call, to, name);
+    break;
+  }
+  case NH_SITE_READ: snprintf(out, cap, " (the value of property%s)", name); break;
+  case NH_SITE_WRITE: snprintf(out, cap, " (the value written to property%s)", name); break;
+  }
+}
+
 /* Island values whose runtime object is settled or owned by the island's
- * thread. Refusing keeps a worker honest instead of sharing one object
- * between two threads. */
+ * thread, and a thread's own objects the island would keep by reference.
+ * Refusing keeps a worker honest instead of sharing one object between two
+ * threads. The message names the kind of value and the operation. */
 SCR_COLD static void nh_worker_refusal(const char *what) {
-  char message[320];
+  char site[192];
+  nh_site_text(site, sizeof site);
+  char message[512];
   int n = snprintf(message, sizeof message,
-                   "scriptc: %s cannot cross between a worker thread and its Node island; "
+                   "scriptc: %s cannot cross between a worker thread and its Node island%s; "
                    "the island belongs to the thread that started it (the main thread)",
-                   what);
+                   what, site);
   scr_throw_error_msg_code(SCR_ERR_TYPE, message, n > 0 ? (size_t)n : 0,
                            "ERR_SCRIPTC_ISLAND_WORKER_VALUE");
 }
@@ -949,7 +1044,7 @@ static ScrDyn *nh_from_node(const ScrNodeValue *v) {
      * worker gets a refusal and not the island's object, matching the
      * refusal on the way out (nh_export_value). */
     if (!nh_on_island()) {
-      nh_worker_refusal("a native function or object passed by reference");
+      nh_worker_refusal("a native function or object the island holds by reference");
       return NULL;
     }
     ScrDyn *d = scr_ni_export_value(v->u.exp.id);
@@ -1128,7 +1223,9 @@ static bool nh_export_value(ScrDyn *v, ScrNodeValue *out, NhKeep *keep) {
      * this thread's heap object on the island's thread, and the export
      * table is the island's. */
     if (!nh_on_island()) {
-      nh_worker_refusal("a native function or object passed by reference");
+      nh_worker_refusal(v->kind == SCR_DYN_FUNC      ? "a native function (a callback)"
+                        : v->kind == SCR_DYN_PROMISE ? "a native promise"
+                                                     : "a native object passed by reference");
       return false;
     }
     scr_ni_export_out(v, out);
@@ -1552,7 +1649,10 @@ ScrDyn *scr_ni_get_str(ScrDyn *obj, const char *key, size_t len) {
   k.u.str.len = len;
   NhCall c = {.op = NH_GET, .h = id, .a = &k, .out = &out};
   nh_run(&c);
-  return nh_outcome(&c);
+  nh_site_set(NH_SITE_READ, key, len);
+  ScrDyn *value = nh_outcome(&c);
+  nh_site_clear();
+  return value;
 }
 
 static bool nh_set(uint32_t id, const ScrNodeValue *k, ScrDyn *value) {
@@ -1594,7 +1694,10 @@ bool scr_ni_set_str(ScrDyn *obj, const char *key, size_t len, ScrDyn *value) {
   ScrNodeValue k = {.tag = SCR_NV_STRING};
   k.u.str.data = key;
   k.u.str.len = len;
-  return nh_set(id, &k, value);
+  nh_site_set(NH_SITE_WRITE, key, len);
+  bool ok = nh_set(id, &k, value);
+  nh_site_clear();
+  return ok;
 }
 
 static int nh_bool_op(int op, ScrDyn *obj, ScrDyn *key, const char *what) {
@@ -1625,39 +1728,50 @@ int scr_ni_delete(ScrDyn *obj, ScrDyn *key) { return nh_bool_op(NH_DEL, obj, key
 static ScrNodeValue *nh_args(ScrDyn *const *args, size_t argc, ScrNodeValue *small, NhKeep *keep) {
   ScrNodeValue *values = argc <= 8 ? small : malloc(argc * sizeof *values);
   if (values == NULL) nh_oom();
+  bool island = nh_on_island();
   for (size_t i = 0; i < argc; i++) {
+    if (!island) nh_site.arg = (unsigned)i + 1;
     if (!nh_to_node(args[i], &values[i], keep)) {
       if (values != small) free(values);
       return NULL;
     }
   }
+  if (!island) nh_site.arg = 0;
   return values;
 }
 
 static ScrDyn *nh_call(int op, uint32_t id, ScrDyn *this_, const ScrNodeValue *key,
                        ScrDyn *const *args, size_t argc) {
   nh_enter();
+  nh_site_set(op == NH_CONSTRUCT ? NH_SITE_NEW : NH_SITE_CALL, key != NULL ? key->u.str.data : NULL,
+              key != NULL ? key->u.str.len : 0);
   NhKeep keep = {0};
   ScrNodeValue small[8], recv, out;
   ScrNodeValue *values = nh_args(args, argc, small, &keep);
   if (values == NULL) {
     nh_keep_done(&keep);
+    nh_site_clear();
     return NULL;
   }
   const ScrNodeValue *a = key;
   if (op == NH_INVOKE) {
+    if (!nh_on_island()) nh_site.receiver = true;
     if (!nh_to_node(this_, &recv, &keep)) {
       if (values != small) free(values);
       nh_keep_done(&keep);
+      nh_site_clear();
       return NULL;
     }
+    if (!nh_on_island()) nh_site.receiver = false;
     a = &recv;
   }
   NhCall c = {.op = op, .h = id, .a = a, .args = values, .argc = argc, .out = &out};
   nh_run(&c);
   if (values != small) free(values);
   nh_keep_done(&keep);
-  return nh_outcome(&c);
+  ScrDyn *result = nh_outcome(&c);
+  nh_site_clear();
+  return result;
 }
 
 ScrDyn *scr_ni_call(ScrDyn *fn, ScrDyn *this_, ScrDyn *const *args, size_t argc) {
@@ -1885,8 +1999,12 @@ static ScrDyn *nh_function_of_identity(const ScrClosure *root) {
   return scr_dyn_new_handle((ScrNodeRef *)(void *)root->caps[0], SCR_DYNH_NODE_ISLAND); /* retains */
 }
 
-/* Node's util.inspect, loaded once and held for the program's life. */
-static ScrDyn *nh_inspect_fn = NULL;
+/* Node's util.inspect, loaded once per thread and held for its life. Like
+ * the host functions below (ToPrimitive, spread, structuredClone, the
+ * object tag) and util.types, it is a handle box, and a box belongs to the
+ * heap of the thread that made it: each thread keeps its own box of the one
+ * island function (nh_caches_release lets them go). */
+static SCR_TL ScrDyn *nh_inspect_fn = NULL;
 
 ScrStr *scr_ni_inspect(const ScrDyn *value, double recurse, double depth) {
   ScrNodeRef *ref = nh_ref_of(value);
@@ -1972,11 +2090,17 @@ size_t scr_ni_gc_pins(void ***objs, void ***refs) {
     if (gr == NULL) nh_oom();
     r = gr;
   }
+  /* The analysis runs on the island's thread and walks the objects it is
+   * given: only that thread's. Another thread's pinned object is its own
+   * to read, and the count its pin holds on the ref stays unexplained, so
+   * the island value it stands for stays held. */
+  const void *self = nh_self();
+  size_t n = 0;
   for (size_t i = 0; i < nh_npins; i++) {
-    o[i] = nh_pins[i].obj;
-    r[i] = nh_pins[i].ref;
+    if (nh_pins[i].owner != self) continue;
+    o[n] = nh_pins[i].obj;
+    r[n++] = nh_pins[i].ref;
   }
-  size_t n = nh_npins;
   nh_unlock(&nh_pins_lock, held);
   *objs = o;
   *refs = r;
@@ -2126,7 +2250,9 @@ static ScrDyn *nh_op_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *c
     scr_throw_error_msg(SCR_ERR_TYPE, message, strlen(message));
     return NULL;
   }
+  if (!nh_on_island()) nh_site_member = method;
   ScrDyn *result = scr_ni_call(fn, self, args, argc);
+  if (!nh_on_island()) nh_site_member = NULL;
   scr_dyn_release(fn);
   return result;
 }
@@ -2139,8 +2265,8 @@ static ScrDyn *nh_op_symbol_get(void *h, const ScrDyn *key) {
   return result;
 }
 
-/* The host's ToPrimitive (scr_node_island_host.cjs), loaded once. */
-static ScrDyn *nh_to_primitive_fn = NULL;
+/* The host's ToPrimitive (scr_node_island_host.cjs), loaded once per thread. */
+static SCR_TL ScrDyn *nh_to_primitive_fn = NULL;
 
 /* ToPrimitive of an island object, run by V8: Symbol.toPrimitive, then
  * toString/valueOf in the hint's order, with V8's TypeErrors. */
@@ -2161,8 +2287,8 @@ ScrDyn *scr_ni_to_primitive(const ScrDyn *self, int hint) {
   return result;
 }
 
-/* The host's spread helper (`[...value]`), loaded once. */
-static ScrDyn *nh_spread_fn = NULL;
+/* The host's spread helper (`[...value]`), loaded once per thread. */
+static SCR_TL ScrDyn *nh_spread_fn = NULL;
 
 /* Spread of an island value (`[...x]`, `f(...x)`): V8 drives the
  * iterator protocol, and the elements cross one by one into a fresh dyn
@@ -2201,8 +2327,8 @@ static ScrDyn *nh_op_iter_pack(void *h) {
   return out;
 }
 
-/* The host's structuredClone, loaded once. */
-static ScrDyn *nh_clone_fn = NULL;
+/* The host's structuredClone, loaded once per thread. */
+static SCR_TL ScrDyn *nh_clone_fn = NULL;
 
 /* structuredClone of an island object: Node's own, so the copy is the
  * fresh island object Node makes (a handle of it), and a value Node cannot
@@ -2221,8 +2347,8 @@ static ScrDyn *nh_op_clone(void *h) {
   return copy;
 }
 
-/* The host's Object.prototype.toString, loaded once. */
-static ScrDyn *nh_object_tag_fn = NULL;
+/* The host's Object.prototype.toString, loaded once per thread. */
+static SCR_TL ScrDyn *nh_object_tag_fn = NULL;
 
 /* Object.prototype.toString.call of an island object, by Node. +1, or NULL
  * with the exception pending. */
@@ -2256,13 +2382,8 @@ static const ScrDynHandleOps nh_ops = {
 /* At exit: what the unit itself still holds (pins, unsettled waiters,
  * util.inspect), so the runtime's reference audit sees only the program's
  * own objects. */
-static void nh_cleanup(void) {
-  nh_drop_drain();
-  nh_drain_freed();
-  /* What the last conversion for the export unit kept alive. */
-  NhKeep last = nh_out_keep;
-  memset(&nh_out_keep, 0, sizeof nh_out_keep);
-  nh_keep_done(&last);
+/* The island functions this thread loaded for itself. */
+static void nh_caches_release(void) {
   if (nh_inspect_fn != NULL) {
     scr_dyn_release(nh_inspect_fn);
     nh_inspect_fn = NULL;
@@ -2283,23 +2404,44 @@ static void nh_cleanup(void) {
     scr_dyn_release(nh_spread_fn);
     nh_spread_fn = NULL;
   }
-  while (nh_npins > 0) {
-    NhPin pin = nh_pins[--nh_npins];
-    nh_pin_release_obj(&pin);
-    nh_ref_release(pin.ref);
-  }
+}
+
+/* The end of a thread other than the island's that used the island: what
+ * the unit holds for it. Its boxes and its pinned objects are in its heap,
+ * so it lets them go itself, before the heap does; the refs they held are
+ * released as any ref is (a last release queues the island's drop). */
+static void nh_thread_exit(void) {
+  nh_routed_done();
+  nh_caches_release();
+  nh_sweep_own(true);
+}
+
+static void nh_cleanup(void) {
+  nh_drop_drain();
+  nh_drain_freed();
+  /* What the last conversion for the export unit kept alive. */
+  NhKeep last = nh_out_keep;
+  memset(&nh_out_keep, 0, sizeof nh_out_keep);
+  nh_keep_done(&last);
+  nh_caches_release();
+  nh_sweep_own(true);
   while (nh_nwaiters > 0) scr_promise_release(nh_waiters[--nh_nwaiters].promise);
-  free(nh_pins);
   free(nh_waiters);
   free(nh_dropq);
-  free(nh_routed_copy);
-  nh_routed_copy = NULL;
   nh_dropq = NULL;
   nh_ndropq = nh_dropq_cap = 0;
   atomic_store_explicit(&nh_dropq_len, 0, memory_order_relaxed);
-  nh_pins = NULL;
   nh_waiters = NULL;
-  nh_pins_cap = nh_waiters_cap = 0;
+  nh_waiters_cap = 0;
+  /* A thread that is still running keeps its pins (and the table) until
+   * its own end. */
+  bool held = nh_lock(&nh_pins_lock);
+  if (nh_npins == 0) {
+    free(nh_pins);
+    nh_pins = NULL;
+    nh_pins_cap = 0;
+  }
+  nh_unlock(&nh_pins_lock, held);
 }
 
 void scr_ni_handles_install(void) {
@@ -2311,12 +2453,12 @@ void scr_ni_handles_install(void) {
   if (installed) return;
   installed = true;
   scr_dyn_handle_install(SCR_DYNH_NODE_ISLAND, &nh_ops);
-  if (scr_context_is_main()) scr_atexit(nh_cleanup);
+  scr_atexit(scr_context_is_main() ? nh_cleanup : nh_thread_exit);
 }
 
 /* ── NI-4d: util.types, Array.isArray and uncaught reports ─────────────── */
 
-static ScrDyn *nh_util_types = NULL; /* Node's util.types (held to exit) */
+static SCR_TL ScrDyn *nh_util_types = NULL; /* Node's util.types (held to the thread's exit) */
 
 static void nh_util_types_cleanup(void) {
   scr_dyn_release(nh_util_types);

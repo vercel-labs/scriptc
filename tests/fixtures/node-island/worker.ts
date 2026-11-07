@@ -10,6 +10,10 @@ import { parts } from "thenable-pkg";
 
 if (isMainThread) {
   console.log("main", callSync<number>("./helper.cjs", "answer"));
+  // The island module has one instance for the whole program: the worker's
+  // count continues this one (under Node a worker has an instance of its
+  // own and counts from 1).
+  console.log("main count", requireModule("./helper.cjs").count());
   // The island keeps a native object by reference: the export is the island
   // thread's object, so a worker asking for it back is refused by code.
   requireModule("./helper.cjs").keep({ tag: "kept" });
@@ -26,6 +30,39 @@ if (isMainThread) {
   } catch (error) {
     parentPort!.postMessage("get " + (error as { code?: string }).code);
   }
+  const helper = requireModule("./helper.cjs");
+  parentPort!.postMessage("count " + helper.count());
+  // What belongs to this thread's heap cannot cross: a function the island
+  // would call back, bytes in either direction, and a native error (it
+  // crosses by reference, like every native object). Each is refused by
+  // code instead of being shared between two threads.
+  const refused = (what: string, cross: () => unknown): void => {
+    try {
+      cross();
+      parentPort!.postMessage(what + " crossed");
+    } catch (error) {
+      const refusal = error as { code?: string; message: string };
+      parentPort!.postMessage(what + " " + refusal.code);
+      // The message names the kind of value and the operation.
+      parentPort!.postMessage("  " + refusal.message.slice(0, refusal.message.indexOf(";")));
+    }
+  };
+  refused("callback", () => helper.callBack((n: number) => n + 1));
+  refused("bytes out", () => helper.byteLength(new Uint8Array(4)));
+  refused("bytes in", () => helper.bytes());
+  refused("error out", () => helper.errorName(new RangeError("native")));
+  // A resolution with an island value reads its `then` on the island's
+  // thread: an object without one fulfils the promise as itself, and a
+  // thenable rejects by code (its job would pass this thread's resolving
+  // functions to the island).
+  Promise.resolve(helper.plain()).then(
+    (value: { answer: number }) => parentPort!.postMessage("plain " + value.answer),
+    (error: unknown) => parentPort!.postMessage("plain " + (error as { code?: string }).code),
+  );
+  Promise.resolve(helper.thenable()).then(
+    (value: unknown) => parentPort!.postMessage("thenable " + String(value)),
+    (error: unknown) => parentPort!.postMessage("thenable " + (error as { code?: string }).code),
+  );
   call("./helper.cjs", "answer").then(
     () => parentPort!.postMessage("async called"),
     (error: unknown) => parentPort!.postMessage("async " + (error as { code?: string }).code),

@@ -148,9 +148,16 @@ export function planRecordUnionLift(
  * properties no single arm declares has no arm and throws the catchable
  * TypeError where the conversion runs.
  *
+ * The properties can only choose among arms that keep each of them as it
+ * is. An arm that declares a source property at another type (required
+ * where the source has it optional, a narrower union) copies it through a
+ * checked conversion, which throws for a value a later arm would take, and
+ * telling such arms apart needs the property's value, not its presence.
+ *
  * Null when the source or a destination arm is not a closed fixed record
  * (a tuple, an index signature, accessor slots), when an arm of another
- * kind accepts the source, or when fewer than two arms hold it by width
+ * kind accepts the source, when an arm that holds it declares one of its
+ * properties at another type, or when fewer than two arms hold it by width
  * (the unique-width-arm rule covers one). */
 export function planPresenceRoutes(
   source: IrType,
@@ -178,7 +185,12 @@ export function planPresenceRoutes(
     const names = new Set(target.fields.map((field) => field.name));
     for (const name of names) if (own.has(name)) declared.add(name);
     const lift = widthLift(source, arm);
-    if (lift !== null) candidates.push({ tag, lift, names });
+    if (lift === null) continue;
+    for (const kept of target.fields) {
+      const field = shape.fields.find((candidate) => candidate.name === kept.name);
+      if (field && !typeEquals(field.type, kept.type)) return null;
+    }
+    candidates.push({ tag, lift, names });
   }
   if (candidates.length < 2) return null;
   // Source field order, so the tests read the record front to back.

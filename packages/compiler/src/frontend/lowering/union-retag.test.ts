@@ -972,6 +972,26 @@ describe("an arm several destination arms hold, routed by the value's properties
     expect(planPresenceRoutes(record("c"), mixed, shapeOf, intoDyn)).toBeNull();
   });
 
+  test("declines when an arm that holds it declares one of its properties at another type", () => {
+    // `strict` requires `shared`: its copy of an optional `shared` is a
+    // checked extraction, which throws for a value `b` would take.
+    const typed = new Map(shapes).set("strict", {
+      id: "strict",
+      fields: [{ name: "shared", type: STRING }, field("first")],
+    });
+    const lookup = (id: string): IrRecordShape | undefined => typed.get(id);
+    const apart: IrUnionDef = { id: "apart", arms: [record("strict"), record("b")] };
+    expect(planPresenceRoutes(record("c"), apart, lookup, widthLift)).toBeNull();
+    // An arm that does not hold the source may declare what it likes.
+    const holds = (src: IrType, dst: IrType): WidthLift | null =>
+      dst.kind === "record" && dst.shapeId === "strict" ? null : widthLift(src, dst);
+    const beside: IrUnionDef = { id: "beside", arms: [record("a"), record("strict"), record("b")] };
+    expect(planPresenceRoutes(record("c"), beside, lookup, holds)).toEqual([
+      { tag: 0, lift: { how: "width" }, absent: ["both"] },
+      { tag: 2, lift: { how: "width" }, absent: ["a"] },
+    ]);
+  });
+
   test("the retag plan takes the routes only when asked, and only for the arm no rule places", () => {
     const plan = (byPresence: boolean): UnionRetagArm[] | null =>
       planUnionRetag(

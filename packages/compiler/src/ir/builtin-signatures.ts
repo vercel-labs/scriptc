@@ -920,6 +920,16 @@ function buildLibFnSignatures() {
     // name, and node:path's value adapters (scr_builtin_values.c).
     "dyn.validateString": { argTypes: [DYN, STRING], result: STRING },
     "dyn.validateStrings": { argTypes: [DYN, STRING], result: arrayOf(STRING) },
+    /** getValidatedPath over an untyped path of a synchronous fs function
+     * (JavaScript sources): [value, Node's parameter name, whether Node
+     * first asks for a file descriptor]. A string, a URL or a Uint8Array
+     * answers its path; anything else throws Node's ERR_INVALID_ARG_TYPE.
+     * In a descriptor position the value first converts to a number, as
+     * Node's test does, and a number throws the named refusal. May-throw.
+     * Named in the dyn family, not fs: it converts an argument and reads
+     * no file system state, so it is not an ambient operation (the fs call
+     * that takes the path is). */
+    "dyn.validateFsPath": { argTypes: [DYN, STRING, BOOL], result: STRING },
     "path.resolveValue": { argTypes: [DYN, BOOL], result: STRING },
     "path.parseValue": { argTypes: [DYN, BOOL], result: DYN },
     "path.formatValue": { argTypes: [DYN, BOOL], result: DYN },
@@ -1277,6 +1287,15 @@ function buildLibFnSignatures() {
     "punycode.ucs2Decode": { argTypes: [STRING], result: arrayOf(F64) },
     "punycode.ucs2Encode": { argTypes: [arrayOf(F64)], result: STRING },
     "punycode.warn": { argTypes: [BOOL, BOOL], result: VOID },
+    /** node:sea in a program that is not a Node single-executable
+     * application (every compiled program): isSea is false, and each asset
+     * reader throws ERR_NOT_IN_SINGLE_EXECUTABLE_APPLICATION once its
+     * arguments are evaluated. Emitted in place; no runtime entry. */
+    "sea.isSea": { argTypes: [], result: BOOL },
+    "sea.getAsset": { argTypes: [STRING, STRING], result: DYN },
+    "sea.getRawAsset": { argTypes: [STRING], result: DYN },
+    "sea.getAssetAsBlob": { argTypes: [STRING, DYN], result: DYN },
+    "sea.getAssetKeys": { argTypes: [], result: DYN },
     "url.fileURLToPathBuffer": { argTypes: [DYN, DYN], result: BYTES_U8 },
     "url.pathToFileURLChecked": { argTypes: [DYN, DYN], result: URL_T },
     "url.fileURLToPathStr": { argTypes: [STRING], result: STRING },

@@ -471,7 +471,8 @@
     { "chapter": "webstreams", "symbols": ["ReadableStream"], "status": "partial", "evidence": ["tests/corpus/stream-web-readable.ts", "tests/corpus/web-stream-readable-untyped.mjs", "tests/corpus/stream-web-require.cjs", "tests/corpus/2862-web-readable-async-iteration.ts"] },
     { "chapter": "webstreams", "symbols": ["TransformStream"], "status": "partial", "evidence": ["tests/corpus/7743-transform-stream-identity.ts", "tests/corpus/web-stream-transform-pipes-untyped.mjs"] },
     { "chapter": "webstreams", "symbols": ["WritableStream"], "status": "partial", "evidence": ["tests/corpus/web-stream-writable-untyped.mjs"] },
-    { "chapter": "globals", "signatures": ["Class: `TransformStream`"], "status": "partial", "evidence": ["tests/corpus/7743-transform-stream-identity.ts"] }
+    { "chapter": "globals", "signatures": ["Class: `TransformStream`"], "status": "partial", "evidence": ["tests/corpus/7743-transform-stream-identity.ts"] },
+    { "chapter": "single-executable-applications", "signatures": ["`sea.isSea()`", "`sea.getAsset(key[, encoding])`", "`sea.getAssetAsBlob(key[, options])`", "`sea.getRawAsset(key)`", "`sea.getAssetKeys()`"], "status": "partial", "evidence": ["tests/corpus/8894-node-sea-outside-application/main.ts", "tests/corpus/8895-node-sea-untyped.cjs"] }
   ],
   "dedicated": [
     { "symbols": ["assert.doesNotThrow", "assert.doesNotReject"], "status": "partial", "evidence": ["tests/corpus/node24-no-error-assertions.ts", "tests/corpus/node24-no-error-assertions.cjs", "tests/corpus/node24-no-error-assertions-coercion.js", "tests/fixtures/node-types/no-error-assertions.ts", "tests/harness/project-config.test.ts"] },

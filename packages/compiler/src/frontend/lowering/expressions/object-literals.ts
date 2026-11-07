@@ -48,10 +48,12 @@ import {
 import { planUnionRetag } from "../union-retag.js";
 import { literalValues } from "../../literal-values.js";
 import { jsHoldsDynObject, runtimeOptionalStorageOperand } from "../lower-exprs.js";
+import { isIslandImportBinding } from "../lower-node-island.js";
 import { builtinGlobalValue } from "./property-access.js";
 import { holdsEvolvingArray } from "../lower-stmts.js";
 import { builtinNamespaceValue } from "../builtin-namespaces.js";
 import { tsUntypedGlobalValue } from "../global-values.js";
+import { consoleOwnKeysObject, isConsoleObjectRead } from "../coercions/console-records.js";
 
 /** `{ a: 1, b: "x" }` → recordLit. The record type comes from the
  * contextual type when tsc has one (annotated declarations, arguments,
@@ -452,7 +454,14 @@ export function lowerDynObjectLiteral(
               ? lowerer.lowerExprExpecting(prop.expression, DYN)
               : lowerer.lowerExpr(prop.expression);
       fenceSymbolFieldCopy(lowerer, prop.expression, raw.type);
-      const source = boxValue ? boxValue(prop.expression, raw) : lowerer.coerceToExpected(raw, DYN);
+      // `{ ...console }` copies console's own keys. Console is a native
+      // handle, which holds no data properties for the copy below to read,
+      // so the spread names the keys (console-records.ts).
+      const source = isConsoleObjectRead(raw)
+        ? consoleOwnKeysObject(raw, locOf(prop))
+        : boxValue
+          ? boxValue(prop.expression, raw)
+          : lowerer.coerceToExpected(raw, DYN);
       if (source.type.kind !== "dyn") {
         lowerer.unsupported(
           "SC1101",
@@ -2848,7 +2857,7 @@ export function lowerObjectLiteral(
             ts.isObjectLiteralExpression(init) ||
             ts.isConditionalExpression(init))
             ? lowerer.lowerExprExpecting(prop.initializer, fieldType)
-            : lowerer.lowerExpr(prop.initializer));
+            : lowerer.lowerAtSlot(prop.initializer, fieldType ?? shape.indexValue));
       } else if (ts.isShorthandPropertyAssignment(prop)) {
         value = lowerer.lowerShorthandValue(prop);
       } else if (ts.isMethodDeclaration(prop)) {
@@ -4422,6 +4431,9 @@ export function lowerShorthandValue(
   }
   const builtinValue = shorthandBuiltinValue(lowerer, prop);
   if (builtinValue) return builtinValue;
+  // A Node island's export (`{ compare }`): the value the long form
+  // `{ compare: compare }` reads.
+  if (isIslandImportBinding(lowerer, propName)) return lowerer.lowerExpr(propName);
   if (symbol) {
     if (lowerer.ctx.selfSymbol === symbol) {
       return { kind: "selfRef", type: lowerer.ctx.selfType!, loc };

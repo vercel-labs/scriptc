@@ -6530,7 +6530,7 @@ function globalThisWrittenNames(lowerer: Lowerer, globalType: ts.Type): Set<stri
   const names = new Set<string>();
   lowerer.globalThisWrittenNames = names;
   for (const sf of lowerer.program.getImplementationSourceFiles()) {
-    if (sf.isDeclarationFile || !sf.text.includes("globalThis")) continue;
+    if (sf.isDeclarationFile || !ts.sourceTextIncludes(sf, "globalThis")) continue;
     ts.walkPreorder(sf, (node) => {
       if (
         ts.isBinaryExpression(node) &&

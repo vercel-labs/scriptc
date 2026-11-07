@@ -208,10 +208,12 @@ function namespaceExportValue(lowerer: Lowerer, target: ts.Symbol, loc: SrcLoc):
   return lowerer.moduleNamespaceDyn({ kind: "moduleNsRef", moduleId: type.moduleId, type, loc });
 }
 
-/** The getters under construction: a module whose namespace reaches itself
- * through namespace exports (`a` exports `* as b`, `b` exports `* as a`)
- * names the getter being built instead of building it again. */
-const gettersInProgress = new WeakMap<Lowerer, Set<string>>();
+/** The getters under construction, by name: a module whose namespace
+ * reaches itself through namespace exports (`a` exports `* as b`, `b`
+ * exports `* as a`) names the getter being built instead of building it
+ * again. Lowering is synchronous, so an entry lives only while its getter's
+ * body is being lowered. */
+const gettersInProgress = new Set<string>();
 
 /** The compiled getter behind a namespace object: one lifted function per
  * module that answers an export's current value by name, plus the module's
@@ -242,14 +244,12 @@ function moduleNamespaceGetter(
   exports.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
   const name = `%module.namespace:${ns.type.moduleId}`;
   const loc = ns.loc;
-  let building = gettersInProgress.get(lowerer);
-  if (!building) gettersInProgress.set(lowerer, (building = new Set()));
-  if (!building.has(name) && !lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (!gettersInProgress.has(name) && !lowerer.liftedFns.some((fn) => fn.name === name)) {
     const context = newFnCtx(false, null, null, DYN);
     const previousClass = lowerer.currentClass;
     lowerer.currentClass = null;
     lowerer.fnStack.push(context);
-    building.add(name);
+    gettersInProgress.add(name);
     try {
       const body: IrStmt[] = [];
       for (const { key, declaration, symbol: exportSymbol } of exports) {
@@ -322,7 +322,7 @@ function moduleNamespaceGetter(
         loc,
       });
     } finally {
-      building.delete(name);
+      gettersInProgress.delete(name);
       lowerer.fnStack.pop();
       lowerer.currentClass = previousClass;
     }

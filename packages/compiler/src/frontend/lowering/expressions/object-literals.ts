@@ -2996,7 +2996,7 @@ function narrowedRecordSpreadSource(
   if (
     record === undefined ||
     !siteArms.every(
-      (arm) => (arm === record || isUnitType(arm)) && lowerer.armTag(fromId, arm) >= 0,
+      (arm) => (isUnitType(arm) || typeEquals(arm, record)) && lowerer.armTag(fromId, arm) >= 0,
     )
   )
     return null;

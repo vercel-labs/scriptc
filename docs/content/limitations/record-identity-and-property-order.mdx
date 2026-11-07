@@ -35,6 +35,8 @@ A rest binding over an index-signature source copies its source's key order, so 
 
 Optional fields and properties added through a record's `unknown` view can be deleted.
 A required field has no absent state, so deleting it through the view throws `TypeError: Cannot delete property 'x' of #<Object>` and leaves the record unchanged, where Node.js removes the property.
+A property that a record keeps but its type does not declare can be deleted through an `as` assertion that adds it as an optional member, such as `delete (entry as Entry & { legacy?: number }).legacy`.
+`scriptc build` reports `SC1090` for such a delete when a record of a type that declares the property can be converted to the operand's type, because the property is then that record's field, which the delete cannot remove.
 
 Records inherit `toString`, `toLocaleString`, `valueOf`, `hasOwnProperty`, `isPrototypeOf` and `propertyIsEnumerable` from `Object.prototype`.
 A call of one of these methods by name runs the built-in with the record as its receiver, unless the record holds an own function under that name.

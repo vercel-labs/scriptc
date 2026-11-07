@@ -308,6 +308,7 @@ export function analyzeWithFrontend(
         lowerLoad.fe === null
           ? fe.sourceTexts()
           : new Map([...fe.sourceTexts(), ...lowerLoad.fe.sourceTexts()]),
+      ...(lowered.widthCopies !== undefined ? { widthCopies: lowered.widthCopies } : {}),
     };
   } finally {
     lowerLoad.fe?.dispose();

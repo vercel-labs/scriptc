@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { globSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { globSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
@@ -97,18 +97,15 @@ test("divergences report as warnings, never as blockers", async () => {
 test("record width copies report at every storing site", async () => {
   const { coverage } = analyze(fixture("width-copies.ts"));
   expect(coverage.diagnostics).toEqual([]);
-  // Four sites copy: a narrower parameter, the empty record, a later
-  // assignment, and an array element. The assertions report nothing: `tagged
-  // as Labeled` and the union arm `blocks[0] as { text: string }` name only
-  // members the value itself stores, so the binding keeps the value's storage
-  // and its writes reach that object (as do the unknown-only views at the end
-  // of the fixture, which have no field to copy into).
-  expect((coverage.divergences ?? []).map((d) => d.code)).toEqual([
-    "SC6001",
-    "SC6001",
-    "SC6001",
-    "SC6001",
-  ]);
+  // Three sites copy: a parameter that adds an optional property, a later
+  // assignment, and an array element. The empty record type has no field to
+  // copy into, so its binding holds the object itself and `===` is true, as
+  // under Node. The assertions report nothing either: `tagged as Labeled`
+  // and the union arm `blocks[0] as { text: string }` name only members the
+  // value itself stores, so the binding keeps the value's storage and its
+  // writes reach that object (as do the unknown-only views at the end of the
+  // fixture).
+  expect((coverage.divergences ?? []).map((d) => d.code)).toEqual(["SC6001", "SC6001", "SC6001"]);
   await expect(report(fixture("width-copies.ts"))).toMatchFileSnapshot(
     "__snapshots__/coverage-width-copies.txt",
   );
@@ -1232,6 +1229,15 @@ test("island packages: package data types and callable handles cross the boundar
   }
 });
 
+/** The corpus programs that carry SC6001 warnings, with how many. */
+const corpusWidthCopiesPath = join(import.meta.dirname, "corpus-width-copies.json");
+const corpusWidthCopies = JSON.parse(readFileSync(corpusWidthCopiesPath, "utf8")) as Record<
+  string,
+  number
+>;
+const updateCopyBaseline = process.env["SCRIPTC_UPDATE_COPY_BASELINE"] === "1";
+const measuredCopies = new Map<string, number>();
+
 test(`every corpus program is 100% static (corpus and coverage agree${shardSuffix()})`, async () => {
   // The differential corpus compiles by definition; coverage must agree.
 
@@ -1255,10 +1261,40 @@ test(`every corpus program is 100% static (corpus and coverage agree${shardSuffi
     const deferred = /^\/\/ @deferred-fences:\s*(\d+)\s*$/.exec(firstLine);
     const { coverage } = analyze(file, {});
     expect.soft(coverage.diagnostics, file).toEqual([]);
-    // Corpus programs match Node by definition: a divergence warning on one
-    // is a false positive.
-    expect.soft(coverage.divergences ?? [], file).toEqual([]);
+    // Corpus programs match Node on the path the corpus runs: a divergence
+    // warning on one is a false positive, except SC6001. That warning is
+    // sound rather than exact: it names every conversion that copies a value
+    // the program could tell from the original (lowering/width-copies.ts),
+    // and a corpus program can hold one on a path it does not take.
+    // corpus-width-copies.json lists those programs with their SC6001
+    // counts. A program not listed must have none, so a new entry is a new
+    // copy or lost precision; an entry leaves when its conversion keeps the
+    // object. SCRIPTC_UPDATE_COPY_BASELINE=1 rewrites the entries of the
+    // programs this run covers.
+    const divergences = coverage.divergences ?? [];
+    expect
+      .soft(
+        divergences.filter((d) => d.code !== "SC6001"),
+        file,
+      )
+      .toEqual([]);
+    const name = file.slice(repoRoot.length + 1);
+    const copies = divergences.filter((d) => d.code === "SC6001").length;
+    if (updateCopyBaseline) measuredCopies.set(name, copies);
+    else
+      expect
+        .soft(copies, `${name}: SC6001 warnings (tests/harness/corpus-width-copies.json)`)
+        .toBe(corpusWidthCopies[name] ?? 0);
     expect.soft(coverage.stats.statementsFailed, file).toBe(deferred ? Number(deferred[1]) : 0);
     if (++n % 10 === 0) await new Promise((r) => setImmediate(r));
+  }
+  if (updateCopyBaseline) {
+    const next: Record<string, number> = { ...corpusWidthCopies };
+    for (const [name, copies] of measuredCopies) {
+      if (copies > 0) next[name] = copies;
+      else delete next[name];
+    }
+    const sorted = Object.fromEntries(Object.entries(next).sort(([a], [b]) => (a < b ? -1 : 1)));
+    writeFileSync(corpusWidthCopiesPath, JSON.stringify(sorted, null, 2) + "\n");
   }
 }, 600_000);

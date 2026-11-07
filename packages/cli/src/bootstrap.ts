@@ -287,6 +287,8 @@ async function coverageFastPath(
   if (hit === null) return null;
   const { coverage, sourceTexts } = hit;
   if (values["dynamic-tier-warning"] === false) delete coverage.performance;
+  if (values["copy-warning"] === false && coverage.divergences !== undefined)
+    coverage.divergences = coverage.divergences.filter((d) => d.code !== "SC6001");
   if (print === "diagnostics") {
     const envelope = startup.coverageEnvelope(coverage, {
       compilerVersion: packageVersion(),

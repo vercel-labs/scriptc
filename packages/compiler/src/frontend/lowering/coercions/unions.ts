@@ -1,5 +1,6 @@
 import { renderOriginNote } from "../decl-origin.js";
 import { keyedHelperName } from "../stable-names.js";
+import { ARM_EXTRACTION_HELPER, ROUTING_HELPERS } from "../width-lift.js";
 import { buildUnionNarrow, unionNarrowFailureMessage } from "../union-narrow.js";
 import { isSafeToRepeat } from "../expressions/evaluation-safety.js";
 import { nodeThrowExpr } from "../../../ir/build.js";
@@ -313,7 +314,7 @@ export function recordUnionWrapHelper(
   const key = `recordWrap:${source.shapeId}:${toId}`;
   const existing = lowerer.coercions.retags.get(key);
   if (existing) return existing;
-  const name = keyedHelperName(lowerer, "%record.wrap", key);
+  const name = keyedHelperName(lowerer, ROUTING_HELPERS.recordWrap, key);
   lowerer.coercions.retags.set(key, name);
   lowerer.liftedFns.push(
     buildRecordUnionWrap(name, source, to, plan, loc, (lift, value, dst) =>
@@ -345,7 +346,7 @@ export function recordUnionRouteHelper(
     (from, dst) => lowerer.widthLiftPlan(from, dst),
   );
   if (!plan) return null;
-  const name = keyedHelperName(lowerer, "%record.route", key);
+  const name = keyedHelperName(lowerer, ROUTING_HELPERS.recordRoute, key);
   lowerer.coercions.retags.set(key, name);
   lowerer.liftedFns.push(
     buildRecordUnionWrap(name, source, to, plan, loc, (lift, value, dst) =>
@@ -405,7 +406,7 @@ export function unionRetagHelper(
   });
   const key = `${fromId}:${toId}:${stranded.join(".")}:${routeKey}${checked ? ":checked" : ""}`;
   const existing = lowerer.coercions.retags.get(key);
-  const name = existing ?? keyedHelperName(lowerer, "%union.retag", key);
+  const name = existing ?? keyedHelperName(lowerer, ROUTING_HELPERS.retag, key);
   if (!existing) {
     lowerer.coercions.retags.set(key, name);
     lowerer.liftedFns.push(
@@ -484,7 +485,7 @@ export function narrowedArmHelper(
     lowerer.coercions.checkedNarrows.add(existing);
     return existing;
   }
-  const name = keyedHelperName(lowerer, "%union.narrow", key);
+  const name = keyedHelperName(lowerer, ARM_EXTRACTION_HELPER, key);
   lowerer.coercions.narrows.set(key, name);
   lowerer.coercions.checkedNarrows.add(name);
   const fn = buildUnionNarrow(
@@ -529,7 +530,7 @@ export function widthNarrowHelper(
   const key = `${fromId}:${tag}`;
   const existing = lowerer.coercions.widthNarrows.get(key);
   if (existing) return existing;
-  const name = keyedHelperName(lowerer, "%union.narrow.width", key);
+  const name = keyedHelperName(lowerer, ROUTING_HELPERS.narrowWidth, key);
   lowerer.coercions.widthNarrows.set(key, name);
   const fn = buildUnionNarrow(
     name,

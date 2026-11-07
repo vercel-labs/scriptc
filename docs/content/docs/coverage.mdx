@@ -131,7 +131,7 @@ Coverage and `scriptc build` report the same diagnostic codes. Common ones inclu
 
 Some code compiles but can behave differently than under Node.js. Coverage reports the cases it can detect as `SC6xxx` warnings, and `scriptc build` prints the same warnings after a successful build. They never fail a build, but `--fail-on=divergences` can fail a CI job on them.
 
-- `SC6001`: a record passed to, stored as, asserted as, or stored as an array element of a record type with different properties is copied, and the program then writes through the copy or compares it by identity.
+- `SC6001`: a conversion to a record, array, or class type with another layout copies a value something else can still reach, and the program writes a field or element of either type, compares values of the converted type by identity, or passes either to code scriptc cannot follow.
 - `SC6002`: values of one record type are built in key orders scriptc cannot track per value, so the type keeps its declaration order, an object literal's key order differs from it, and the program observes the order through `JSON.stringify`, `Object.keys`, `Object.values`, `Object.entries`, `for...in`, or console output.
 - `SC6003`: `localeCompare` compares a string literal outside the built-in Latin-script collation.
 - `SC6004`: a call passes a class instance to a function that casts it to an unrelated class.

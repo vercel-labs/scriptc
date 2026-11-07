@@ -91,6 +91,13 @@ import {
 } from "./require-initialization.js";
 import { identityPreservingWidening } from "./coercions/identity.js";
 import { scanDivergences } from "./divergences.js";
+import {
+  collectWidthCopies,
+  refuseObservedClassCopies,
+  traceWidthCopies,
+  widthCopyDivergences,
+  type WidthCopyFact,
+} from "./width-copies.js";
 import { applyKeyOrderWitnesses, KeyOrderNotes } from "./key-order-witness.js";
 import { installBuiltinStatics } from "./builtin-statics.js";
 import type { BuiltinModuleNamespaceFlavor } from "./builtin-module-members.js";
@@ -1004,6 +1011,13 @@ export interface LowerResult {
   /** Compile-time-detectable behavior differences from Node (SC6xxx
    * divergence warnings) in the program's own modules. Never failures. */
   divergences?: ScrDiagnostic[];
+  /** The conversions of the lowered program that build a new object
+   * (lowering/width-copies.ts), present when it has any. */
+  widthCopies?: WidthCopyFact[];
+  /** The functions the lowering assembled (the module's, when there is
+   * one), also when diagnostics leave no module: what the scans that run
+   * once lowering has settled read. */
+  loweredFunctions?: IrFunction[];
   /** Performance warnings (SC61xx): the likely-hot functions the source
    * leaves untyped (lowering/dynamic-tier.ts). Never failures. */
   performance?: ScrDiagnostic[];
@@ -1806,7 +1820,17 @@ function lowerToIrWithIslands(
   }
   // Divergence warnings over the program's own modules: computed once,
   // after lowering, from the same checker (never part of a failure).
+  // Width copies are read off the functions of the pass whose result
+  // stands, once.
+  const traceCopies = process.env["SCRIPTC_TRACE_WIDTH_COPIES"] === "1";
+  const widthCopies = collectWidthCopies(resultLowerer, result.loweredFunctions ?? [], traceCopies);
+  timing("width-copies", { found: widthCopies.length });
+  if (traceCopies)
+    for (const line of traceWidthCopies(resultLowerer, widthCopies))
+      process.stderr.write(line + "\n");
+  if (widthCopies.length > 0) result = { ...result, widthCopies };
   const divergences = [
+    ...widthCopyDivergences(resultLowerer, widthCopies),
     ...scanDivergences(resultLowerer, moduleOrder),
     ...resultLowerer.sharedModuleWarnings,
   ];
@@ -11228,6 +11252,9 @@ export class Lowerer {
     // monomorphization worklists drained): an identity comparison against
     // one is exact only if the declaration is held at a single signature.
     checkGenericIdentityPins(this);
+    // A record built into a class instance where the program can tell the
+    // instance from the record is refused while a module can still fail.
+    refuseObservedClassCopies(this, functions);
     finalizeRecordLinks(this, functions);
     // The statics lookup installs before value boxing, so the function
     // values it adds to the entry module are boxed with the rest.
@@ -11420,6 +11447,7 @@ export class Lowerer {
       runtimeFences: this.runtimeFences,
       stats: this.stats,
       ...(stdioPatches !== undefined && stdioPatches.length > 0 ? { stdioPatches } : {}),
+      loweredFunctions: functions,
       ...(this.dynamicFunctions.length > 0 ? { dynamicFunctions: this.dynamicFunctions } : {}),
       ...(this.statsByFile.size > 0 ? { statsByFile: this.statsByFile } : {}),
       ...(this.provenanceElided.length > 0 ? { provenanceElided: this.provenanceElided } : {}),

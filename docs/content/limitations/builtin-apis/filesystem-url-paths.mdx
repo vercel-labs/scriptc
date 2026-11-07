@@ -3,4 +3,5 @@
   `fs.promises` functions also refuse a string path before a URL path; pass `fileURLToPath(url)` instead.
   In JavaScript, an untyped path of a synchronous `fs` function is checked as Node.js checks it: a string, a `file:` URL or a `Uint8Array` is the path, and any other value throws Node's `ERR_INVALID_ARG_TYPE`.
   `readFileSync`, `writeFileSync` and `appendFileSync` take a file descriptor only as a statically typed number; a number passed through an untyped value throws `SC2020`.
+  A `Uint8Array` path must hold UTF-8 text; other bytes, which Node.js hands to the system unchanged, throw `SC2020`.
   `existsSync`, `realpathSync`, `truncateSync`, the callback functions and `fs.promises` report an untyped path that is not a string with a `TypeError` that has no `code`.

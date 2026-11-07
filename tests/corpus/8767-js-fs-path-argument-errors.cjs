@@ -24,6 +24,7 @@ fs.writeFileSync(file, "text");
 shape("string", () => fs.readFileSync(untyped(file), "utf8"));
 shape("url", () => fs.readFileSync(untyped(pathToFileURL(file)), "utf8"));
 shape("bytes", () => fs.readFileSync(untyped(Buffer.from(file)), "utf8"));
+shape("typed array", () => fs.readFileSync(untyped(new Uint8Array(Buffer.from(file))), "utf8"));
 shape("stat string", () => fs.statSync(untyped(file)).size);
 shape("stat url", () => fs.statSync(untyped(pathToFileURL(file))).size);
 
@@ -86,6 +87,12 @@ const counting = {
 };
 shape("read converting object", () => fs.readFileSync(untyped(counting), "utf8"));
 console.log("conversions", conversions);
+// A DataView is not a Uint8Array to Node's check.
+shape("stat DataView", () => {
+  fs.statSync(untyped(new DataView(new ArrayBuffer(4))));
+  return "no throw";
+});
+shape("read DataView", () => fs.readFileSync(untyped(new DataView(new ArrayBuffer(4))), "utf8"));
 shape("stat symbol", () => {
   fs.statSync(untyped(Symbol("p")));
   return "no throw";
@@ -104,5 +111,17 @@ try {
 }
 console.log("untyped descriptor", outcome === (native ? "SC2020" : ""));
 fs.closeSync(fd);
+
+// Node hands a Uint8Array's bytes to the system as they are. A path here is
+// UTF-8 text, so bytes that are not are refused by name instead of naming
+// another file.
+let bytesOutcome;
+try {
+  fs.statSync(untyped(Buffer.from([0x66, 0xff, 0x6f])));
+  bytesOutcome = "found";
+} catch (e) {
+  bytesOutcome = e.code;
+}
+console.log("bytes that are not UTF-8", bytesOutcome === (native ? "SC2020" : "ENOENT"));
 
 fs.rmSync(dir, { recursive: true, force: true });

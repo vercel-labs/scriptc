@@ -54,11 +54,13 @@ declare module "http2" {
      * response IS this parser's response handle. */
     statusCode: number;
     statusMessage: string;
-    setHeader(name: string, value: string | number): void;
+    setHeader(name: string, value: number | string | readonly string[]): void;
     getHeader(name: string): string | undefined;
     getHeaderNames(): string[];
     getRawHeaderNames(): string[];
     getHeaders(): import("http").OutgoingHttpHeaders;
+    /* the stream's idle timeout; the callback is a 'timeout' listener */
+    setTimeout(msecs: number, callback?: () => void): void;
     hasHeader(name: string): boolean;
     removeHeader(name: string): void;
     writeHead(

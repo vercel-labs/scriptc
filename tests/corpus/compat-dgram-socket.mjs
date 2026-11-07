@@ -13,14 +13,14 @@ await new Promise((resolve) => {
   });
   socket.on("close", () => {
     console.log("close");
-    resolve();
+    resolve(undefined);
   });
   socket.bind(0, "127.0.0.1");
 });
 
 await new Promise((resolve) => {
   const socket = dgram.createSocket("udp4");
-  socket.on("close", () => resolve());
+  socket.on("close", () => resolve(undefined));
   socket.on("message", (message, remote) => {
     console.log("message", String(message), remote.address, remote.family, remote.size);
     socket.close();
@@ -30,7 +30,7 @@ await new Promise((resolve) => {
 
 await new Promise((resolve) => {
   const socket = dgram.createSocket("udp4");
-  socket.on("close", () => resolve());
+  socket.on("close", () => resolve(undefined));
   socket.bind(0, "127.0.0.1", () => {
     socket.setRecvBufferSize(8192);
     socket.setSendBufferSize(8192);
@@ -46,7 +46,7 @@ await new Promise((resolve) => {
 
 await new Promise((resolve) => {
   const socket = dgram.createSocket({ type: "udp4", reuseAddr: true });
-  socket.on("close", () => resolve());
+  socket.on("close", () => resolve(undefined));
   socket.bind(0, () => {
     socket.addMembership("224.0.0.114", "127.0.0.1");
     socket.dropMembership("224.0.0.114", "127.0.0.1");

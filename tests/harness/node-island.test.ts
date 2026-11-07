@@ -1569,3 +1569,34 @@ test("a star re-export of a path-mapped island package reports the island bounda
     "SC8010 main.ts",
   ]);
 }, 300_000);
+
+// An array that holds generators is a checked-dynamic value in a program
+// without an island. A generator that crosses into an island is not the same
+// value on the other side yet, so a program that loads a module into one is
+// refused by name. Needs no libnode pack: the build fails before linking.
+test("an array of generators beside requireModule is refused by name", async () => {
+  // A program of its own, outside every node_modules directory.
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-island-generator-array-"));
+  mkdirSync(join(dir, "node_modules/@scriptc"), { recursive: true });
+  symlinkSync(join(repoRoot, "packages/node"), join(dir, "node_modules/@scriptc/node"));
+  writeFileSync(
+    join(dir, "main.ts"),
+    `import { requireModule } from "@scriptc/node";
+const os = requireModule("node:os");
+function* count(from: number): Generator<number> {
+  yield from;
+  yield from + 1;
+}
+const list = [count(1), count(5)];
+console.log(list.length, typeof os.EOL);
+`,
+  );
+  const result = await compile(join(dir, "main.ts"), { outPath: join(dir, "main"), outDir: dir });
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expect(result.diagnostics.map((d) => `${d.code} ${d.loc.file.slice(dir.length + 1)}`)).toEqual([
+    "SC8010 main.ts",
+  ]);
+  expect(result.diagnostics[0]!.message).toContain("an array that holds generators");
+  rmSync(dir, { recursive: true, force: true });
+}, 300_000);

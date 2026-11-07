@@ -1106,7 +1106,10 @@ if (checkCandidateSelf) {
 async function selfCompileBudget(build) {
   const budget = readBudget(trees.candidate);
   const previous = readBudget(trees.baseline);
-  const bytes = sourceBytes(candidateSelfProgram.entry);
+  // A candidate without a budget file has nothing judged, so its source is
+  // not measured either: the gate also runs over checkouts that hold a
+  // compiler and no source (tests/harness/zero-cost-gate.test.ts).
+  const bytes = budget === null ? null : sourceBytes(candidateSelfProgram.entry);
   const verdict = budgetVerdict({ budget, previous, trace: build.trace, bytes });
   const result = {
     passes: build.trace.passes,

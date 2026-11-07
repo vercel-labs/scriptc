@@ -83,6 +83,7 @@ import {
 } from "./cpu-dispatch.js";
 import { LANE_INIT_CALL, lanePlansEnabled, laneToggleDefs } from "./lanes.js";
 import type { IrFunction } from "../../ir/ir.js";
+import { ERROR_READER_PROPERTIES, errorReaderName } from "../../ir/function-references.js";
 import { type FunctionLayout, layoutTierOf } from "./function-layout.js";
 
 /** The function bodies emitted in `chunks` contiguous ranges, each by its
@@ -407,13 +408,15 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     }
   emitter.selectStacklessAsync(fnDefs);
   const errorViews: string[] = [];
-  for (const property of ["name", "message"])
-    if (emitter.mod.functions.some((fn) => fn.name === `%error.${property}.read`)) {
+  for (const property of ERROR_READER_PROPERTIES) {
+    const reader = errorReaderName(property);
+    if (emitter.mod.functions.some((fn) => fn.name === reader)) {
       emitter.declare(`declare void @scr_error_install_${property}_reader(ptr)`);
       errorViews.push(
-        `  call void @scr_error_install_${property}_reader(ptr @${mangleFunction(`%error.${property}.read`)})`,
+        `  call void @scr_error_install_${property}_reader(ptr @${mangleFunction(reader)})`,
       );
     }
+  }
   for (const meta of emitter.classMeta.values()) {
     if (meta.def.runtime || meta.root.def.name !== "%Error") continue;
     const type: IrType = { kind: "object", className: meta.def.name };
@@ -1187,6 +1190,8 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     );
   }
   if (emitter.arrayConstData.size > 0) out.push(``);
+  for (const [definition, sym] of emitter.imageDataSyms) out.push(`@${sym} = ${definition}`);
+  if (emitter.imageDataSyms.size > 0) out.push(``);
   for (const sym of emitter.methodIdSlots.values()) out.push(`@${sym} = internal global i32 -1`);
   if (emitter.methodIdSlots.size > 0) out.push(``);
 

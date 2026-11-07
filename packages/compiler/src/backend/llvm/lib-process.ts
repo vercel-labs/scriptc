@@ -1261,13 +1261,15 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
       throw new InternalCompilerError("llvm emitter bug: error.new result is not a class");
     const rec = RUNTIME_ERROR_CLASSES.get(e.type.className);
     if (!rec) throw new InternalCompilerError(`llvm emitter bug: error.new of ${e.type.className}`);
-    const msg = host.emitExpr(e.args[0]!);
+    // The typed constructor's message is optional: a null message leaves
+    // the instance without an own message property.
+    const msg = e.args[0] ? host.emitExpr(e.args[0]).name : "null";
     const options = e.fn === "error.newOptions" ? host.emitExpr(e.args[1]!) : null;
     const sym = options ? "scr_error_new_options" : "scr_error_new";
     host.declare(`declare ptr @${sym}(i32, ptr${options ? ", ptr" : ""})`);
     const t = B.tmp();
     B.line(
-      `${t} = call ptr @${sym}(i32 ${rec.kind}, ptr ${msg.name}${options ? `, ptr ${options.name}` : ""})`,
+      `${t} = call ptr @${sym}(i32 ${rec.kind}, ptr ${msg}${options ? `, ptr ${options.name}` : ""})`,
     );
     const out = host.own({ name: t, type: e.type });
     if (options) host.emitPendingCheck();
@@ -1286,8 +1288,9 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
     const options = e.fn === "error.ctorOptions" ? args[2]! : null;
     const sym = options ? "scr_error_init_options" : "scr_error_init";
     host.declare(`declare void @${sym}(ptr, i32, ptr${options ? ", ptr" : ""})`);
+    // As in error.new, an omitted message is a null one.
     B.line(
-      `call void @${sym}(ptr ${args[0]!.name}, i32 ${rec.kind}, ptr ${args[1]!.name}${options ? `, ptr ${options.name}` : ""})`,
+      `call void @${sym}(ptr ${args[0]!.name}, i32 ${rec.kind}, ptr ${args[1]?.name ?? "null"}${options ? `, ptr ${options.name}` : ""})`,
     );
     if (options) host.emitPendingCheck();
     return { name: "", type: e.type };

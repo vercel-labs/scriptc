@@ -73,8 +73,9 @@ function recursiveFunctions(edges: ReadonlyMap<string, readonly string[]>): Set<
  * async or a generator, not a constructor, not a method a virtual call can
  * reach or one a vtable holds (an overridden method), not a closure
  * target or a closure's jsval body, not the entry or a library export,
- * not named by any node other than a `call`'s callee, and not called from
- * an async or generator body (coroutine bodies keep plain calls).
+ * not a function a class's descriptor holds, not named by any node other
+ * than a `call`'s callee, and not called from an async or generator body
+ * (coroutine bodies keep plain calls).
  *
  * A native unwind costs about 0.05 µs a raise and 10 to 25 ns a frame on
  * x86-64 (scr_unwind.c's cached plans) and about 2 µs a raise and 0.1 µs a
@@ -141,6 +142,10 @@ export function unwindAbiFunctions(
   for (const cls of mod.classes ?? []) {
     blocked.add(`%${cls.name}.constructor`);
     blocked.add(`%${cls.name}.construct`);
+    // An Array subclass's descriptor holds its field lister and its species
+    // constructor (classes.ts): the runtime calls them through it.
+    if (cls.arrayFields !== undefined) blocked.add(cls.arrayFields);
+    if (cls.arraySpecies !== undefined) blocked.add(cls.arraySpecies);
     const root = rootOf(cls.name);
     for (const m of cls.methods ?? [])
       if (anyClass.has(m) || declarers.get(`${root}\0${m}`)! > 1) blocked.add(`%${cls.name}.${m}`);

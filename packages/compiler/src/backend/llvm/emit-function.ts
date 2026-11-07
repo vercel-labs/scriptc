@@ -948,6 +948,10 @@ export function emitGenScaffolding(emitter: LlEmitter): string[] {
       ...argPackLines,
     ];
     if (fn.generator.bindAtCall === true) emitter.declare(`declare void @scr_gen_bind(ptr)`);
+    // A generator body that reads `this` runs after the call returned: the
+    // spawn records the call's receiver for it (RuntimeFeatures.genReceiver).
+    const capturesReceiver = emitter.runtimeFeatures.genReceiver;
+    if (capturesReceiver) emitter.declare(`declare void @scr_gen_capture_receiver(ptr)`);
     const genNew = coroBody && !emitter.wasi ? "scr_gen_new_stackless" : "scr_gen_new";
     if (genNew !== "scr_gen_new") emitter.declare(`declare ptr @${genNew}(ptr, ptr, ptr)`);
     const asyncGenNew =
@@ -958,6 +962,7 @@ export function emitGenScaffolding(emitter: LlEmitter): string[] {
       settleAsync === null
         ? `  %gg = call ptr @${genNew}(ptr @${mangleTrampoline(fn.name)}, ptr %ap, ptr @${mangleGenDrop(fn.name)})`
         : `  %gg = call ptr @${asyncGenNew}(ptr @${mangleTrampoline(fn.name)}, ptr %ap, ptr @${mangleGenDrop(fn.name)}, ptr @${settleAsync})`,
+      ...(capturesReceiver ? [`  call void @scr_gen_capture_receiver(ptr %gg)`] : []),
       ...(fn.generator.tag !== undefined
         ? [`  call void @scr_gen_set_tag(ptr %gg, ptr ${emitter.cstr(fn.generator.tag)})`]
         : []),

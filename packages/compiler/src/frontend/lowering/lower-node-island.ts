@@ -982,7 +982,10 @@ function copiedType(lowerer: Lowerer, t: IrType): boolean {
     case "bigint":
     case "nullT":
     case "undefinedT":
-    // Buffers and typed arrays share their memory with the V8 view.
+    // A symbol is the symbol the runtime pairs with the island's.
+    case "symbol":
+    // Buffers and typed arrays share their memory with the V8 view, and
+    // the runtime keeps one view object per island view.
     case "bytes":
       return true;
     case "union": {

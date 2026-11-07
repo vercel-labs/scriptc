@@ -80,7 +80,9 @@ void scr_process_off_exit_island(uint32_t listener);
  * Island values the program holds are SCR_DYN_HANDLE boxes with tag
  * SCR_DYNH_NODE_ISLAND: one handle per V8 value, so `===` is identity.
  * Primitives, strings and BigInt are copies; island promises are scriptc
- * promises; typed arrays and Buffers are ScrBytes over the same memory.
+ * promises; typed arrays, Buffers, DataViews and ArrayBuffers are ScrBytes
+ * over the same memory, one per island object; island symbols are native
+ * symbols paired with them.
  * All arguments are borrowed; ScrDyn results are +1, NULL (or false, or
  * -1 for the int forms) with the exception pending. The first call loads
  * Node. See scriptc-perf/results/ni-4/ABI.md. */
@@ -151,6 +153,10 @@ typedef struct ScrNiDynOps {
   /* Object.prototype.toString.call(value), answered by Node (+1; NULL with
    * the exception pending). */
   ScrStr *(*object_tag)(const ScrDyn *value);
+  /* obj[key] = value for any property key (a symbol crosses as the symbol
+   * paired with it), and obj[key](...args). */
+  bool (*set)(ScrDyn *obj, ScrDyn *key, ScrDyn *value);
+  ScrDyn *(*call_method)(ScrDyn *obj, const char *key, size_t len, ScrDyn *const *args, size_t argc);
 } ScrNiDynOps;
 extern const ScrNiDynOps *scr_ni_dyn_ops;
 
@@ -171,6 +177,12 @@ char *scr_ni_module_path(const ScrStr *path);
 void scr_ni_on_node_stack(void (*job)(void *), void *arg);
 void scr_ni_settle_value(uint32_t token, int rejected, const struct ScrNodeValue *value);
 void scr_ni_bytes_free(void *owner);
+/* One V8 value per byte view, ArrayBuffer storage and symbol (the bridge's
+ * `bound`, `bind` and `holds` host callbacks). */
+uint32_t scr_ni_host_bound(uint32_t kind, void *owner);
+void scr_ni_host_bind(uint32_t kind, void *owner, uint32_t handle, int store);
+int scr_ni_host_holds(uint32_t handle);
+void scr_ni_called_in(void); /* island code called a native function: its arguments are converted */
 void scr_ni_handles_install(void);
 void scr_ni_stop(void);
 
@@ -201,6 +213,7 @@ int scr_ni_host_export_set(uint32_t id, const struct ScrNodeValue *key,
 int scr_ni_host_export_has(uint32_t id, const struct ScrNodeValue *key);
 int scr_ni_host_export_delete(uint32_t id, const struct ScrNodeValue *key, struct ScrNodeValue *out);
 int scr_ni_host_export_keys(uint32_t id, struct ScrNodeValue *out);
+int scr_ni_host_export_symbol(uint32_t id, uint32_t index, struct ScrNodeValue *out);
 void scr_ni_host_export_watch(uint32_t id);
 void scr_ni_host_export_release(uint32_t id);
 /* ── shared modules (scope-B NI-6, scr_node_island_export.c) ── */

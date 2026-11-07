@@ -283,7 +283,33 @@ const INTRINSIC_CLASSES = {
   AggregateError,
 };
 const collectionSyncs = new WeakMap();
+// Values the bridge pairs one to one with runtime objects (byte views and
+// symbols), answered by intrinsics captured before island code runs. A
+// symbol is [kind, text]: 0 unique (its description), 1 unique without a
+// description, 2 registered (its Symbol.for key), 3 well-known (its name on
+// Symbol), the numbering of SCR_NODE_SYMBOL_*.
+const symbolFor = Symbol.for;
+const symbolKeyFor = Symbol.keyFor;
+const wellKnownNames = new Map();
+const wellKnownSymbols = new Map();
+for (const name of Object.getOwnPropertyNames(Symbol)) {
+  if (typeof Symbol[name] !== "symbol") continue;
+  wellKnownNames.set(Symbol[name], name);
+  wellKnownSymbols.set(name, Symbol[name]);
+}
 const islandHelpers = {
+  bufferPrototype: Buffer.prototype,
+  symbolInfo(symbol) {
+    const key = symbolKeyFor(symbol);
+    if (key !== undefined) return [2, key];
+    const name = wellKnownNames.get(symbol);
+    if (name !== undefined) return [3, name];
+    const description = symbol.description;
+    return description === undefined ? [1, ""] : [0, description];
+  },
+  symbolOf(kind, text) {
+    return kind === 2 ? symbolFor(text) : wellKnownSymbols.get(text);
+  },
   isInstance(value, name) {
     // The error classes by their intrinsics; any other standard class by
     // the global of that name (Array, Map, Date, …).

@@ -360,6 +360,7 @@ int scr_ni_host_export_call(uint32_t id, const ScrNodeValue *this_, const ScrNod
   ScrDyn *small[8];
   ScrDyn **in = ni_args_in(args, argc, small, 8);
   ScrDyn *self = this_ != NULL ? scr_ni_value_in(this_) : scr_dyn_retain(scr_dyn_undefined());
+  scr_ni_called_in();
   scr_dyn_this_push_dyn(self);
   ScrDyn *result = scr_dyn_call(fn, in, argc, "callback");
   scr_dyn_this_pop();
@@ -546,6 +547,43 @@ static bool ni_inherited_name(const ScrDyn *target, const ScrDyn *key) {
   return false;
 }
 
+/* ── symbol keys ──────────────────────────────────────────────────────
+ * The bridge sends a symbol key only for a symbol the program holds (the
+ * native symbol paired with it is pinned): no program code can name any
+ * other symbol, so a property under one of those is island code's own and
+ * stays on the representative. For a symbol the program holds, the
+ * program's object answers what it has under it; anything else is left to
+ * the representative, where island code that tags the objects it is given
+ * finds its own writes again. */
+
+/* The value of the symbol-keyed property `key` of an exported value (+1),
+ * NULL when the program's object has none (*threw: an exception is
+ * pending). */
+static ScrDyn *ni_symbol_get(ScrDyn *target, ScrDyn *key, bool *threw) {
+  *threw = false;
+  /* A checked-dynamic object, or the view of a record or class instance
+   * (generators, arrays and collections have other representatives). */
+  if (target->kind != SCR_DYN_OBJ &&
+      !(target->kind == SCR_DYN_TYPED_REF && (target->v.typed_ref.record || target->v.typed_ref.klass)))
+    return NULL;
+  ScrDyn *value = scr_dyn_symbol_key_get(target, key, true);
+  if (value == NULL || scr_exc_pending()) {
+    scr_dyn_release(value);
+    *threw = true;
+    return NULL;
+  }
+  if (value->kind == SCR_DYN_UNDEF) {
+    scr_dyn_release(value);
+    return NULL;
+  }
+  return value;
+}
+
+/* Whether a checked-dynamic object has the own property `key`. */
+static bool ni_symbol_own(const ScrDyn *target, const ScrDyn *key) {
+  return target->kind == SCR_DYN_OBJ && scr_dyn_own_symbol_entry(target, key) != NULL;
+}
+
 int scr_ni_host_export_get(uint32_t id, const ScrNodeValue *key, ScrNodeValue *out) {
   ni_keep_set(NULL);
   ScrDyn *target = scr_ni_export_value(id);
@@ -555,6 +593,14 @@ int scr_ni_host_export_get(uint32_t id, const ScrNodeValue *key, ScrNodeValue *o
   if (pk == NULL) {
     scr_dyn_release(k);
     return ni_threw(out);
+  }
+  if (pk->kind == SCR_DYN_SYMBOL) {
+    bool threw = false;
+    ScrDyn *value = ni_symbol_get(target, pk, &threw);
+    scr_dyn_release(pk);
+    scr_dyn_release(k);
+    if (threw) return ni_threw(out);
+    return value != NULL ? ni_returned(value, out) : 2;
   }
   if (ni_is_array(target) && pk->kind == SCR_DYN_STR) {
     /* length and elements straight from the native array: a live array
@@ -624,8 +670,15 @@ int scr_ni_host_export_set(uint32_t id, const ScrNodeValue *key, const ScrNodeVa
   ScrDyn *target = scr_ni_export_value(id);
   if (target == NULL) return 2;
   ScrDyn *k = scr_ni_value_in(key);
+  if (k->kind == SCR_DYN_SYMBOL && target->kind != SCR_DYN_OBJ) {
+    /* Only a checked-dynamic object stores a property under a symbol. */
+    scr_dyn_release(k);
+    return 2;
+  }
   ScrDyn *v = scr_ni_value_in(value);
-  bool ok = scr_dyn_reflect_set(target, k, v, target);
+  bool ok = true;
+  if (k->kind == SCR_DYN_SYMBOL) scr_dyn_symbol_key_set(target, k, v);
+  else ok = scr_dyn_reflect_set(target, k, v, target);
   scr_dyn_release(v);
   scr_dyn_release(k);
   scr_ni_shared_refresh();
@@ -640,6 +693,11 @@ int scr_ni_host_export_has(uint32_t id, const ScrNodeValue *key) {
   ScrDyn *target = scr_ni_export_value(id);
   if (target == NULL) return 0;
   ScrDyn *k = scr_ni_value_in(key);
+  if (k->kind == SCR_DYN_SYMBOL) {
+    int own = ni_symbol_own(target, k) ? 1 : 0;
+    scr_dyn_release(k);
+    return own;
+  }
   ScrDyn *pk = scr_dyn_property_key_value(k);
   int present = 0;
   if (pk != NULL && pk->kind == SCR_DYN_STR && ni_is_array(target)) {
@@ -678,11 +736,30 @@ int scr_ni_host_export_delete(uint32_t id, const ScrNodeValue *key, ScrNodeValue
   ScrDyn *target = scr_ni_export_value(id);
   if (target == NULL) return 2;
   ScrDyn *k = scr_ni_value_in(key);
-  scr_dyn_key_delete_computed(target, k, false);
+  if (k->kind == SCR_DYN_SYMBOL) {
+    if (!ni_symbol_own(target, k)) {
+      scr_dyn_release(k);
+      return 2;
+    }
+    scr_dyn_obj_delete_symbol_field(target, k);
+  } else {
+    scr_dyn_key_delete_computed(target, k, false);
+  }
   scr_dyn_release(k);
   if (scr_exc_pending()) return ni_threw(out);
   memset(out, 0, sizeof *out);
   return 0;
+}
+
+/* The own symbol keys of a checked-dynamic object, one per call, in the
+ * order they were added. */
+int scr_ni_host_export_symbol(uint32_t id, uint32_t index, ScrNodeValue *out) {
+  ni_keep_set(NULL);
+  ScrDyn *target = scr_ni_export_value(id);
+  if (target == NULL || target->kind != SCR_DYN_OBJ || target->symbol_keys == NULL ||
+      target->symbol_keys->kind != SCR_DYN_ARR || index >= target->symbol_keys->v.arr.len)
+    return 2;
+  return ni_returned(scr_dyn_retain(target->symbol_keys->v.arr.items[index]), out) == 0 ? 0 : 2;
 }
 
 /* Own enumerable string keys, in JS order, as an array value. */

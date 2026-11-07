@@ -271,6 +271,24 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_weakref.c", "weakRef"],
 ];
 
+/** One more build column for a unit: a twin, with `define`, of every build
+ * the unit has so far, selected by `feature`. A program links one build per
+ * unit, so a unit whose builds are keyed on several features needs a build
+ * for every combination of them; listing a column's builds by hand names
+ * only the columns its author knew, and a program with a combination nobody
+ * listed would link a build without one of its defines. Doubling what is
+ * there keeps every combination, whichever order the columns were added. */
+function withBuildColumn(variants, id, feature, define) {
+  for (const { id: other, when, defines } of variants.slice()) {
+    variants.push({
+      id: other === "default" ? id : `${id}-${other}`,
+      when: { ...when, [feature]: true },
+      defines: [...defines, define],
+    });
+  }
+  return variants;
+}
+
 /** One SCR_JS_OBJECT_MODEL twin of each variant of a unit the JavaScript
  * object model features reach (t262-da §J). Every such feature is inert
  * until its own runtime state exists, so one build carries all of them. */
@@ -309,20 +327,12 @@ export function variantsFor(source) {
       defines: ["SCR_NODE_ISLANDS"],
     });
     // A program that constructs a WeakRef carries the dispose-observer arm
-    // that clears its cells (SCR_WEAK_REF, scr_weakref.h). Pushed before
-    // the object model twins, so a program with both selects one build
-    // that carries both defines; every other program keeps the default
-    // object, byte for byte.
-    variants.push({
-      id: "weak-ref",
-      when: { weakRef: true },
-      defines: ["SCR_WEAK_REF"],
-    });
-    variants.push({
-      id: "weak-ref-node-island",
-      when: { weakRef: true, nodeIsland: true },
-      defines: ["SCR_WEAK_REF", "SCR_NODE_ISLANDS"],
-    });
+    // that clears its cells (SCR_WEAK_REF, scr_weakref.h): a twin of every
+    // build above, so a program with the arm and any of their features
+    // links one build that carries each define. Added before the object
+    // model twins, which double it in turn; every other program keeps the
+    // default object, byte for byte.
+    withBuildColumn(variants, "weak-ref", "weakRef", "SCR_WEAK_REF");
     // The JavaScript object model build (t262-da §J): every runtime feature
     // reached only from JavaScript-source facts — builtin intrinsics, array
     // attributes, BigInt views, handle property tables, buffer views —

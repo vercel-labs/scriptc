@@ -124,7 +124,13 @@ function flatStatements(stmts: readonly IrStmt[], out: IrStmt[] = []): IrStmt[] 
  * initializer that awaits is left there and taken up again after the code
  * that called it, in the order of the awaits, as module evaluation continues
  * with later siblings while one is suspended. Loads the walk does not reach
- * (inside functions, dynamic imports, loops) keep IR order after it. */
+ * (inside functions, dynamic imports, loops) keep IR order after it.
+ *
+ * The walk is the order of a run in which every condition holds: both
+ * branches of a selection and both operands of `&&` are followed, where
+ * they are written. A run that skips one of those loads evaluates what it
+ * shares with later ones in a later load; the decisions do not rest on the
+ * order for that (sharedEffects). */
 export function evaluationOrder(mod: IrModule, calls: DeferCall[]): DeferCall[] {
   const { ordered } = evaluationWalk(mod);
   if (ordered.length === 0) return calls;
@@ -377,6 +383,29 @@ function traceDecision(d: DeferralDecision): void {
     );
 }
 
+/** A probed module with effects that `result` shares a file with, and the
+ * file. A file that two modules load evaluates once, in the load of
+ * whichever the run reaches first, and the probe recorded what that
+ * evaluation did in the load it reached first. The two are not always the
+ * same load: one written under a condition (`flag && require("a")`, an arm
+ * of `?:`, a branch, after an early `return`) is probed where it is written
+ * and skipped in a run where the condition fails, and then the shared file
+ * evaluates, with its effects, in the other module's load. So a module is
+ * not deferred when a load it shares a file with has effects, whichever of
+ * the two the probe reached first. */
+function sharedEffects(
+  result: ProbeResult,
+  results: ProbeResult[],
+): { with: ProbeResult; file: string } | null {
+  const files = new Set(result.files);
+  for (const other of results) {
+    if (other === result || other.effects.length === 0) continue;
+    const file = other.files.find((f) => files.has(f));
+    if (file !== undefined) return { with: other, file };
+  }
+  return null;
+}
+
 /** What a module's load depends on from outside the island: its own reads
  * and those of every probed module it shares a file with. */
 interface LoadReads {
@@ -567,6 +596,9 @@ export function finalizeDeferredIslands(
       if (result.effects.length > 0) return `its load has effects: ${result.effects.join(", ")}`;
       const inputs = reads.get(result)!.inputs;
       if (inputs.length > 0) return `its load reads ${inputs.join(", ")}`;
+      const shared = sharedEffects(result, probe.results);
+      if (shared !== null)
+        return `it shares ${shared.file} with ${shared.with.path}, whose load has effects (${shared.with.effects.join(", ")}): the file evaluates in whichever of the two the program reaches first`;
       return null;
     })();
     if (why !== null || result === undefined) {

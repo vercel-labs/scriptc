@@ -72,7 +72,9 @@ async function run(binary: string): Promise<{ stdout: string; boot: string[]; co
   }
 }
 
-const generated = (line: string): boolean => line.includes(".scriptc/closed/");
+/** A decision about a generated module (not one whose reason names one). */
+const generated = (line: string): boolean =>
+  /^\[node-islands\] \w+ [^:]*\.scriptc\/closed\//.test(line);
 const startsNode = (boot: string[]): boolean => boot.some((l) => l.includes("starting Node"));
 
 describe.skipIf(skip)("island-closed module-level constants", () => {
@@ -111,10 +113,12 @@ describe.skipIf(skip)("island-closed module-level constants", () => {
     // The build does not print for the program: the probe withholds the
     // write (console.log swallows the refusal, so the evaluation goes on and
     // the record names the effect), and the two modules that print keep
-    // their place. The third only names the second.
-    const printing = modules.filter((l) => l.startsWith("[node-islands] eager "));
+    // their place. The third names the second and stays with it: a module
+    // is not deferred when a load it shares a file with has effects.
+    for (const module of modules) expect(module).toMatch(/^\[node-islands\] eager /);
+    const printing = modules.filter((l) => l.includes(": its load has effects: process.stdout"));
     expect(printing).toHaveLength(2);
-    for (const module of printing) expect(module).toMatch(/effects.*: process\.stdout/);
+    expect(modules.filter((l) => l.includes(": it shares "))).toHaveLength(1);
     const { stdout } = await run(binary);
     expect(stdout).toBe(
       "before\nshape-kit: making first\nbetween\nshape-kit: making second\nafter 1 2 3\n",

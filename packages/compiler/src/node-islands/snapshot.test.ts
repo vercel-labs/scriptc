@@ -265,6 +265,74 @@ describe("modules that share a file", () => {
   });
 });
 
+describe("the effects of a file that modules share", () => {
+  /** Two island modules, `first` and `second`, probed in that order; the
+   * probe evaluated `common`, a file both load, in `first`'s load, with
+   * `effects`. */
+  function sharing(effects: string[], shared: boolean) {
+    const root = scratch();
+    writeFileSync(join(root, "package.json"), '{ "name": "app" }');
+    const file = (name: string): string => {
+      const dir = join(root, "node_modules", name);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "package.json"), JSON.stringify({ name }));
+      writeFileSync(join(dir, "index.js"), "module.exports = {};\n");
+      return join(dir, "index.js");
+    };
+    const [first, second, common] = [file("first"), file("second"), file("common")];
+    const load = (path: string) => ({
+      kind: "libCall",
+      fn: "nodeIsland.defer",
+      args: [
+        { kind: "strLit", value: path },
+        { kind: "strLit", value: "" },
+      ],
+    });
+    const calls = [load(first), load(second)];
+    const mod = { functions: [{ body: calls }], globals: [] } as unknown as IrModule;
+    const result = (path: string, root: number, files: string[], effects: string[]) => ({
+      path,
+      root,
+      inputs: [],
+      volatile: [],
+      effects,
+      mutations: [],
+      env: [],
+      tty: [],
+      files,
+    });
+    const probe: ProbeOutput = {
+      results: [
+        result(first, 1, [first, common], effects),
+        result(second, 2, shared ? [second, common] : [second], []),
+      ],
+      objects: { "1": { f: 0, p: false, m: [] }, "2": { f: 0, p: false, m: [] } },
+    };
+    const decisions = finalizeDeferredIslands(mod, join(root, "main.ts"), root, () => probe);
+    return { decisions, calls, common };
+  }
+
+  test("neither defers when the load that evaluated the file has effects", () => {
+    // The probe reached `first` first, so the shared file's output is in
+    // its record and `second`'s is empty. A run that skips `first` (it is
+    // written under a condition) evaluates the file in `second`'s load.
+    const { decisions, calls, common } = sharing(["process.stdout.write()"], true);
+    expect(decisions.map((d) => d.deferred)).toEqual([false, false]);
+    expect(decisions[1]!.reason).toContain(`it shares ${common} with`);
+    expect(calls.map((c) => c.fn)).toEqual(["nodeIsland.require", "nodeIsland.require"]);
+  });
+
+  test("a module that shares nothing with a load that has effects still defers", () => {
+    const { decisions } = sharing(["process.stdout.write()"], false);
+    expect(decisions.map((d) => d.deferred)).toEqual([false, true]);
+  });
+
+  test("modules that share a file whose loads have no effects both defer", () => {
+    const { decisions } = sharing([], true);
+    expect(decisions.map((d) => d.deferred)).toEqual([true, true]);
+  });
+});
+
 describe("the order deferred loads are probed in", () => {
   const defer = (path: string) => ({
     kind: "libCall",

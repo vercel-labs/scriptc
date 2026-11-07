@@ -28,6 +28,7 @@ interface ProbeResult {
   reason?: string;
   root?: number;
   inputs: string[];
+  files: string[];
 }
 
 /** Runs the recorder in a Node process of its own, as the probe host runs
@@ -136,6 +137,25 @@ test("a refused read that the package catches stays in the generated module's re
   expect(result!.throws).toBeUndefined();
   expect(result!.reason).toBeUndefined();
   expect(result!.inputs.some((input) => input.startsWith("fs.readFileSync() "))).toBe(true);
+});
+
+test("a load's files include the ones Node hands it without resolving", () => {
+  // Two entry points of one directory that make the same relative request:
+  // Node answers the second from its own cache, past the resolve hook, and
+  // the shared file's own require does not run again.
+  const root = project({
+    "node_modules/kit/package.json": '{ "name": "kit" }',
+    "node_modules/kit/deep.js": "module.exports = { n: 1 };\n",
+    "node_modules/kit/common.js": 'module.exports = require("./deep.js");\n',
+    "node_modules/kit/a.js": 'module.exports = require("./common.js");\n',
+    "node_modules/kit/b.js": 'module.exports = require("./common.js");\n',
+  });
+  const kit = (name: string): string => join(root, "node_modules/kit", name);
+  const results = probe(root, [kit("a.js"), kit("b.js")]);
+  for (const result of results) {
+    expect(result.throws).toBeUndefined();
+    expect(result.files).toEqual(expect.arrayContaining([kit("common.js"), kit("deep.js")]));
+  }
 });
 
 test("a shared dependency's environment reads reach every load that gets its exports", () => {

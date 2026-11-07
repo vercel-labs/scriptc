@@ -284,7 +284,10 @@ export function lowerArrayCallback(
       (signatures[0]
         ? lowerer.mapTypeOf(lowerer.checker.getReturnTypeOfSignature(signatures[0]))
         : null);
-    if (ret && ret.kind !== "void") fnArg = lowerer.coerceToExpected(fnArg, funcOf(full, ret));
+    // A checked-dynamic function whose signature answers nothing
+    // (`names.forEach(console.log)`) takes every position the helper
+    // passes, as the JavaScript function does: value, index and array.
+    if (ret) fnArg = lowerer.coerceToExpected(fnArg, funcOf(full, ret));
   }
   if (
     fnArg.type.kind === "func" &&

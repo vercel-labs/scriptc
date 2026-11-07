@@ -17,7 +17,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SCR_NODE_BRIDGE_ABI 13u
+#define SCR_NODE_BRIDGE_ABI 15u
 /* The symbol a bridge library exports: `const ScrNodeBridge *(void)`. */
 #define SCR_NODE_BRIDGE_ENTRY "scr_node_bridge_v1"
 

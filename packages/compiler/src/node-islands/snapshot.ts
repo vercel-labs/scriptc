@@ -1,20 +1,22 @@
 /* Deferred island modules: the decision, the build-time probe and the
  * interface snapshot (scope-B NI-7, DESIGN.md §2.7, §5.4).
  *
- * Lowering emits `nodeIsland.defer(path, "")` for every static import of a
- * module of an island package (lower-node-island.ts); a program module that
- * runs in an island loads eagerly, so the probe never evaluates the
- * program's own source. After lowering, once the build
+ * Lowering emits `nodeIsland.defer(path, "")` for every static import of an
+ * island module (lower-node-island.ts). After lowering, once the build
  * knows the libnode pack the executable will load, finalizeDeferredIslands
  * decides each one:
  *
  *   - the package's `evaluate` setting (`scriptc.packages.<name>`):
  *     "eager" keeps the module eager; "lazy" defers it whatever else its
  *     load does (the user judged the effects benign);
- *   - environment reads: the boot guards record the build-time value of
- *     every environment variable the load read, so a load that read one
- *     not listed in `scriptc.nodeIslands.publicEnv` stays eager, "lazy"
- *     included, and no value of it reaches the executable;
+ *   - environment reads: the boot guards record every environment
+ *     variable the load read. One that was unset at build time is recorded
+ *     as unset (`E <key> 0`): the executable learns that the variable was
+ *     absent, never a value, and a run that sets it loads the module at
+ *     its import. One that had a value is recorded with it, which only
+ *     `scriptc.nodeIslands.publicEnv` allows: a load that read a set
+ *     variable not listed there stays eager, "lazy" included, and no value
+ *     of it reaches the executable;
  *   - the probe: one run of the build-time probe host
  *     (runtime src/tools/scr_node_island_probe.c) in a libnode environment
  *     from the same pack, which loads every candidate module under the
@@ -25,11 +27,13 @@
  *     boot guards (the determinism argument in probe-recorder.ts). The static
  *     effect gate (effect-gate.ts) is reported alongside, as the tier that
  *     needs no recording;
- *   - per-module mode (NI-7b): when every static island import defers,
- *     none mutates builtin state and no island module loads at a call site,
- *     Node starting evaluates nothing by itself; components of deferred
- *     modules that share files evaluate on first use. Otherwise every
- *     deferred module evaluates when Node starts (in import order);
+ *   - when it evaluates: every deferred module evaluates when Node
+ *     starts, in import order, before the operation that needed Node. No
+ *     island code other than deferred loads runs before a deferred load,
+ *     so the island sees the loads in Node's order. A module does not
+ *     wait for its own first use: a call into a module that evaluated
+ *     can write island state (a global, a builtin) that a later load
+ *     reads, and Node ran that load at its import, before any call;
  *
  * and rewrites the call: a deferred module keeps `nodeIsland.defer` with
  * its snapshot text (format: runtime scr_node_island_boot.c), any other
@@ -49,11 +53,12 @@ import {
 } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { resolveBuildCacheRoot } from "../backend/cache-root.js";
 import type { IrExpr, IrModule, IrStmt } from "../ir/ir.js";
 import { readProjectConfig } from "../project-config.js";
 import { effectGate } from "./effect-gate.js";
+import { probeCopy } from "./generated.js";
 import { packageDirOf } from "./origin.js";
 import { PROBE_RECORDER } from "./probe-recorder.js";
 
@@ -327,39 +332,45 @@ function loadReads(results: ProbeResult[]): Map<ProbeResult, LoadReads> {
   return reads;
 }
 
-/** Island loads lowering emitted at call sites (`require()`, `import()`). */
-function hasDynamicLoads(mod: IrModule): boolean {
-  let found = false;
-  const seen = new Set<object>();
-  const walk = (v: unknown): void => {
-    if (found || v === null || typeof v !== "object" || seen.has(v)) return;
-    seen.add(v);
-    if (Array.isArray(v)) {
-      for (const x of v) walk(x);
-      return;
-    }
-    const o = v as Record<string, unknown>;
-    if (
-      o["kind"] === "libCall" &&
-      (o["fn"] === "nodeIsland.require" || o["fn"] === "nodeIsland.import")
-    )
-      found = true;
-    for (const k in o) if (k !== "loc" && k !== "type") walk(o[k]);
-  };
-  walk(mod.functions);
-  walk(mod.globals);
-  return found;
+/** The probe's copies of the tree's generated modules (generated.ts), in a
+ * fresh private directory: the modules sit nowhere on the build machine,
+ * and never in the user's source tree. By the module's place under the
+ * tree root. */
+function writeProbeCopies(tree: NonNullable<NonNullable<IrModule["nodeIsland"]>["modules"]>): {
+  dir: string;
+  copies: Map<string, string>;
+} {
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-closed-"));
+  const copies = new Map<string, string>();
+  const texts = new Map<string, string>();
+  for (const file of tree.files) {
+    if (file.generated === undefined) continue;
+    const place = join(tree.root, ...file.path.split("/"));
+    copies.set(place, join(dir, basename(file.path)));
+    texts.set(place, file.generated);
+  }
+  for (const [place, text] of texts)
+    writeFileSync(
+      copies.get(place)!,
+      probeCopy(text, place, (other) => copies.get(other)),
+      { mode: 0o600 },
+    );
+  return { dir, copies };
 }
 
 export function finalizeDeferredIslands(
   mod: IrModule,
   entryPath: string,
   packDir: string | null,
-  probeModules: (packDir: string, modules: string[]) => ProbeOutput | string = runProbe,
+  probeModules: (
+    packDir: string,
+    modules: string[],
+    /** The modules among them whose code is the program's own. */
+    own: string[],
+  ) => ProbeOutput | string = runProbe,
 ): DeferralDecision[] {
   const calls = evaluationOrder(mod, deferCalls(mod));
   if (calls.length === 0) return [];
-  const dynamicLoads = hasDynamicLoads(mod);
   const decisions: DeferralDecision[] = [];
   const decide = (call: DeferCall, deferred: boolean, reason: string): void => {
     const d = { path: fileOf(mod, pathOf(call)), deferred, reason };
@@ -373,10 +384,51 @@ export function finalizeDeferredIslands(
   }
   const config = readProjectConfig(entryPath);
   const publicEnv = new Set(config.nodeIslands.publicEnv);
+  const tree = mod.nodeIsland?.modules;
+  // Modules the build wrote (generated.ts), by their place under the tree
+  // root: the constants of the program whose initializers the island
+  // evaluates.
+  const generated = new Set<string>();
+  for (const file of tree?.files ?? [])
+    if (file.generated !== undefined) generated.add(join(tree!.root, ...file.path.split("/")));
+  // Modules of the program the static gate admits (below).
+  const program = new Set<string>();
+  /** A module whose code is the program's own: the probe withholds what it
+   * would do to the machine, and its snapshot is guarded by the loads the
+   * probe evaluated before it. */
+  const own = (path: string): boolean => generated.has(path) || program.has(path);
   const candidates: { call: DeferCall; path: string; lazy: boolean; gate: string }[] = [];
   for (const call of calls) {
     const path = fileOf(mod, pathOf(call));
+    if (generated.has(path)) {
+      candidates.push({ call, path, lazy: false, gate: "" });
+      continue;
+    }
     const pkg = packageDirOf(path);
+    if (pkg === null) {
+      // A module of the program that runs in an island. The build evaluates
+      // the program's own source only when it can do nothing: the static
+      // gate admits the module's top level (declarations and pure
+      // expressions), and it loads no other file of the program, whose
+      // module the compiled program provides at run time.
+      const gate = effectGate(path);
+      const others = gate.ok
+        ? gate.files.filter((f) => f !== path && packageDirOf(f) === null)
+        : [];
+      if (!gate.ok)
+        decide(
+          call,
+          false,
+          `a module of the program, and its top level is not provably free of effects: ${gate.reason} in ${gate.file}`,
+        );
+      else if (others.length > 0)
+        decide(call, false, `a module of the program that loads another one (${others[0]})`);
+      else {
+        program.add(path);
+        candidates.push({ call, path, lazy: false, gate: "" });
+      }
+      continue;
+    }
     const evaluate = pkg === null ? "auto" : (config.packages.get(pkg.name)?.evaluate ?? "auto");
     if (evaluate === "eager") {
       decide(call, false, `"evaluate": "eager"`);
@@ -390,9 +442,34 @@ export function finalizeDeferredIslands(
       gate: gate.ok ? "" : `${gate.reason} in ${gate.file}`,
     });
   }
-  let allDeferred = candidates.length === calls.length;
   if (candidates.length === 0) return decisions;
-  const probe = probeModules(packDir, [...new Set(candidates.map((c) => c.path))]);
+  // The probe loads a generated module from a copy (writeProbeCopies).
+  const scratch = generated.size > 0 && tree !== undefined ? writeProbeCopies(tree) : null;
+  const probed = (path: string): string => scratch?.copies.get(path) ?? path;
+  // The loads the probe evaluates before each one, as the runtime will
+  // count them: the distinct load paths, in the probe's order.
+  const before = new Map<string, string>();
+  {
+    let count = 0;
+    let hash = LOADS_HASH_START;
+    for (const c of candidates) {
+      const load = pathOf(c.call);
+      if (before.has(load)) continue;
+      before.set(load, `P ${count} ${hash}`);
+      count++;
+      hash = loadsHash(hash, load);
+    }
+  }
+  let probe: ProbeOutput | string;
+  try {
+    probe = probeModules(
+      packDir,
+      [...new Set(candidates.map((c) => probed(c.path)))],
+      [...(scratch?.copies.values() ?? []), ...program],
+    );
+  } finally {
+    if (scratch !== null) rmSync(scratch.dir, { recursive: true, force: true });
+  }
   if (typeof probe === "string") {
     for (const c of candidates) decide(c.call, false, probe);
     return decisions;
@@ -400,12 +477,13 @@ export function finalizeDeferredIslands(
   const packGuards = packGuardLines(packDir);
   // The shipped tree's files are the executable's own (the tree is checked
   // against its digests when it opens): only files outside it need guards.
-  const tree = mod.nodeIsland?.modules;
+  // The probe's copy of a generated module stands for the tree's file.
   const shipped = new Set(tree?.files.map((f) => join(tree.root, f.path)) ?? []);
+  for (const copy of scratch?.copies.values() ?? []) shipped.add(copy);
   const reads = loadReads(probe.results);
   const deferred: { call: DeferCall; result: ProbeResult; why: string }[] = [];
   for (const c of candidates) {
-    const result = probe.results.find((r) => r.path === c.path);
+    const result = probe.results.find((r) => r.path === probed(c.path));
     const why = (() => {
       if (result === undefined) return "the probe did not load it";
       if (result.throws !== undefined) return `its evaluation throws: ${result.throws}`;
@@ -416,10 +494,11 @@ export function finalizeDeferredIslands(
         snapshotNames(probe, result.root, tree.root)
       )
         return "its exports hold a path of the build machine";
+      // A variable that was unset is guarded as unset: no value to record.
       const { env, inputs, volatile, effects } = reads.get(result)!;
-      const privateEnv = env.map(([k]) => k).filter((k) => !publicEnv.has(k));
+      const privateEnv = env.filter(([k, v]) => v !== null && !publicEnv.has(k)).map(([k]) => k);
       if (privateEnv.length > 0)
-        return `its load reads the environment variable${privateEnv.length === 1 ? "" : "s"} ${privateEnv.join(", ")}, whose build-time values its boot guards would record (scriptc.nodeIslands.publicEnv lists the ones that may be recorded)`;
+        return `its load reads the environment variable${privateEnv.length === 1 ? "" : "s"} ${privateEnv.join(", ")}, set at build time, whose value${privateEnv.length === 1 ? "" : "s"} its boot guards would record (scriptc.nodeIslands.publicEnv lists the ones that may be recorded)`;
       if (c.lazy) return null;
       // Its own, or those of a load it shares a file with.
       const whose = (own: string[]): string =>
@@ -436,37 +515,17 @@ export function finalizeDeferredIslands(
       return null;
     })();
     if (why !== null || result === undefined) {
-      allDeferred = false;
       decide(c.call, false, why ?? "");
       continue;
     }
     const how = c.lazy
       ? `"evaluate": "lazy"`
-      : c.gate === ""
-        ? "static gate"
-        : `recorded load is deterministic (static gate: ${c.gate})`;
+      : own(c.path)
+        ? "recorded evaluation is deterministic; guarded by the loads before it"
+        : c.gate === ""
+          ? "static gate"
+          : `recorded load is deterministic (static gate: ${c.gate})`;
     deferred.push({ call: c.call, result, why: how });
-  }
-  // Per-module evaluation once Node runs (no materialize-all at start):
-  // every static island import is deferred, none mutates builtin state,
-  // and the program loads no island module at a call site. Deferred
-  // modules whose closures share files form one component, evaluated
-  // together in import order.
-  const lazyMode =
-    allDeferred && !dynamicLoads && deferred.every((d) => d.result.mutations.length === 0);
-  const component = new Map<string, number>();
-  if (lazyMode) {
-    const parent = deferred.map((_, i) => i);
-    const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i]!)));
-    const owner = new Map<string, number>();
-    deferred.forEach((d, i) => {
-      for (const f of d.result.files) {
-        const j = owner.get(f);
-        if (j === undefined) owner.set(f, i);
-        else parent[find(i)] = find(j);
-      }
-    });
-    deferred.forEach((d, i) => component.set(d.result.path, find(i) + 1));
   }
   for (const d of deferred) {
     const r = d.result;
@@ -476,17 +535,24 @@ export function finalizeDeferredIslands(
       ...fileGuardLines(r.files.filter((f) => !shipped.has(f))),
       ...env.map(([k, v]) => `E ${lstr(k)} ${v === null ? "0 0:" : `1 ${lstr(v)}`}`),
       ...tty.map(([fd, isTty]) => `T ${fd} ${isTty ? 1 : 0}`),
-      ...(lazyMode ? [`M ${component.get(r.path)}`] : []),
+      // The program's own code computes from what earlier island code left
+      // behind, so its snapshot holds only in a run that registered, before
+      // it, exactly the loads the probe evaluated before it. The runtime
+      // compares (scr_node_island_boot.c); otherwise the module evaluates
+      // at its position.
+      ...(own(fileOf(mod, pathOf(d.call))) ? [before.get(pathOf(d.call))!] : []),
     ];
     const text = encodeSnapshot(probe, r.root!, guards, volatile.length === 0);
     const arg = d.call.args[1];
     if (arg !== undefined && arg.kind === "strLit") (arg as { value: string }).value = text;
     const notes = [
       d.why,
-      ...(env.length > 0 ? [`env guards ${env.map(([k]) => k).join(",")}`] : []),
+      ...(env.length > 0
+        ? [`env guards ${env.map(([k, v]) => (v === null ? `${k} (unset)` : k)).join(",")}`]
+        : []),
       ...(volatile.length > 0 ? [`volatile ${volatile.join(",")}: no constants`] : []),
       ...(r.mutations.length > 0 ? [`mutates ${r.mutations.join(",")}`] : []),
-      lazyMode ? `per-module (component ${component.get(r.path)})` : "evaluated when Node starts",
+      "evaluated when Node starts",
     ];
     decide(d.call, true, notes.join("; "));
   }
@@ -494,6 +560,18 @@ export function finalizeDeferredIslands(
 }
 
 /* ── the snapshot text (scr_node_island_boot.c) ───────────────────────── */
+
+/** The hash of the `P` record (FNV-1a, 32 bits) over the load paths
+ * registered so far, each followed by a line feed; the runtime keeps the
+ * same one (nb_loads_add). */
+const LOADS_HASH_START = 2166136261;
+
+function loadsHash(hash: number, load: string): number {
+  let h = hash;
+  const bytes = Buffer.from(`${load}\n`, "utf8");
+  for (let i = 0; i < bytes.length; i++) h = Math.imul(h ^ bytes[i]!, 16777619) >>> 0;
+  return h;
+}
 
 function lstr(s: string): string {
   return `${Buffer.byteLength(s, "utf8")}:${s}`;
@@ -727,14 +805,14 @@ function probeHost(): { exe: string; bootstrap: string; kept: boolean } | string
   return `cannot build the probe host (${errors.join("; ")})`;
 }
 
-function runProbe(packDir: string, modules: string[]): ProbeOutput | string {
+function runProbe(packDir: string, modules: string[], own: string[]): ProbeOutput | string {
   const host = probeHost();
   if (typeof host === "string") return host;
   const { exe, bootstrap, kept } = host;
   const stem = join(dirname(exe), `run.${process.pid}.${Date.now()}`);
   const input = `${stem}.in.json`;
   const output = `${stem}.out.json`;
-  writeFileSync(input, JSON.stringify({ modules }), { mode: 0o600 });
+  writeFileSync(input, JSON.stringify({ modules, own }), { mode: 0o600 });
   let out: string;
   try {
     execFileSync(exe, [packDir, bootstrap, input, output], {

@@ -4421,6 +4421,17 @@ export class Lowerer {
   readonly islandReexports = new Map<ts.Symbol, IslandBinding>();
   /** `instanceof` expressions the island lowering already handles. */
   readonly islandInstanceofHandled = new Set<ts.Node>();
+  /** Module-level constants the island evaluates (closed-island-init.ts):
+   * what each top-level `const` statement declares (null: not closed), and
+   * each file's constants. */
+  readonly closedIslandStatements = new Map<
+    ts.Statement,
+    import("./closed-island-init.js").ClosedConstant | null
+  >();
+  readonly closedIslandFiles = new Map<
+    ts.SourceFile,
+    import("./closed-island-init.js").ClosedFile
+  >();
   /** NI-6: the modules shared with Node islands (lower-shared-modules.ts),
    * their SC8020 warnings, and the TDZ flags their declarations set. */
   sharedModules: import("./lower-shared-modules.js").SharedModulePlan[] | null = null;
@@ -5379,6 +5390,11 @@ export class Lowerer {
     // The island names native modules re-export: a pure function of the
     // program's modules, collected before lowering begins.
     "islandReexports",
+    // Which module-level constants the island evaluates: decided from the
+    // program's syntax, types and the facts collection settled (island
+    // bindings, initialization flags), so every pass decides the same.
+    "closedIslandStatements",
+    "closedIslandFiles",
     // The modules shared with the islands (NI-6): a pure function of the
     // program's modules, computed once, and the TDZ flags its plan gives a
     // statement.
@@ -13154,7 +13170,9 @@ export class Lowerer {
     for (const { literal, caller, target } of this.nodeIslandSpecifiers)
       literal.value = NodeIslandModuleCollector.relativeSpecifier(caller, target);
     for (const { literal, path } of this.nodeIslandLoads)
-      literal.value = NodeIslandModuleCollector.loadPath(modules, path);
+      literal.value =
+        this.nodeIslandModules.generatedLoadPath(path) ??
+        NodeIslandModuleCollector.loadPath(modules, path);
     return { libnode: "", nodeVersion: "", ...(modules === null ? {} : { modules }) };
   }
 

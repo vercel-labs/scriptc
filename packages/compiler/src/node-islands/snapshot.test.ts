@@ -1,7 +1,9 @@
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   statSync,
@@ -131,6 +133,53 @@ describe("environment boot guards", () => {
     expect(text).not.toContain(secret);
   });
 
+  test("a load that read only variables unset at build time defers, guarded as unset", () => {
+    const { decisions, call, text } = deferredProject(
+      {},
+      [
+        ["NODE_DEBUG", null],
+        ["FORCE_COLOR", null],
+      ],
+      "https://example.com",
+    );
+    expect(decisions[0]!.deferred).toBe(true);
+    expect(decisions[0]!.reason).toContain("env guards NODE_DEBUG (unset),FORCE_COLOR (unset)");
+    expect(call.fn).toBe("nodeIsland.defer");
+    expect(text).toContain("E 10:NODE_DEBUG 0 0:");
+    expect(text).toContain("E 11:FORCE_COLOR 0 0:");
+  });
+
+  test("an unset variable does not admit a set one outside publicEnv", () => {
+    const secret = "sk-live-0123456789";
+    const { decisions, call, text } = deferredProject(
+      {},
+      [
+        ["NODE_DEBUG", null],
+        ["API_KEY", secret],
+      ],
+      "https://api.example.com",
+    );
+    expect(decisions[0]!.deferred).toBe(false);
+    expect(decisions[0]!.reason).toContain("API_KEY");
+    expect(decisions[0]!.reason).not.toContain("NODE_DEBUG");
+    expect(call.fn).toBe("nodeIsland.require");
+    expect(text).not.toContain(secret);
+  });
+
+  test("unset and publicEnv variables guard one load together", () => {
+    const { decisions, text } = deferredProject(
+      { nodeIslands: { publicEnv: ["NODE_ENV"] } },
+      [
+        ["NODE_ENV", "production"],
+        ["NODE_DEBUG", null],
+      ],
+      "https://example.com",
+    );
+    expect(decisions[0]!.deferred).toBe(true);
+    expect(text).toContain("E 8:NODE_ENV 1 10:production");
+    expect(text).toContain("E 10:NODE_DEBUG 0 0:");
+  });
+
   test("a load that read only publicEnv variables defers, guarded by their values", () => {
     const { decisions, call, text } = deferredProject(
       { nodeIslands: { publicEnv: ["NODE_ENV"] } },
@@ -143,7 +192,80 @@ describe("environment boot guards", () => {
   });
 });
 
+/** A project whose entry imports the island modules `first` and `second`,
+ * which both load `shared/index.js`. The probe loaded `first` first, so
+ * what the shared file read is in `first`'s record (`reads`) and `second`'s
+ * is empty, though its export `level` was computed from the shared file. */
+function sharingProject(reads: Partial<ProbeOutput["results"][number]>) {
+  const root = scratch();
+  writeFileSync(join(root, "package.json"), JSON.stringify({ name: "app" }));
+  const shared = join(root, "node_modules", "shared", "index.js");
+  const paths = ["first", "second"].map((name) => join(root, "node_modules", name, "index.js"));
+  for (const file of [shared, ...paths]) {
+    mkdirSync(join(file, ".."), { recursive: true });
+    writeFileSync(file, "");
+  }
+  const calls = paths.map((file) => ({
+    kind: "libCall",
+    fn: "nodeIsland.defer",
+    args: [
+      { kind: "strLit", value: file },
+      { kind: "strLit", value: "" },
+    ],
+  }));
+  const mod = { functions: [{ body: calls }], globals: [] } as unknown as IrModule;
+  const record = { inputs: [], volatile: [], effects: [], mutations: [], env: [], tty: [] };
+  const probe: ProbeOutput = {
+    results: [
+      { ...record, ...reads, path: paths[0]!, root: 1, files: [paths[0]!, shared] },
+      { ...record, path: paths[1]!, root: 2, files: [paths[1]!, shared] },
+    ],
+    objects: {
+      "1": { f: 0, p: false, m: [["level", { s: "info" }]] },
+      "2": { f: 0, p: false, m: [["level", { s: "info" }]] },
+    },
+  };
+  const decisions = finalizeDeferredIslands(mod, join(root, "main.ts"), root, () => probe);
+  // A load that stays eager loses its snapshot argument.
+  const snapshots = calls.map((call) => (call.args[1] as { value: string } | undefined)?.value);
+  return { decisions, calls, snapshots };
+}
+
 describe("modules that share a file", () => {
+  test("carry the guards of what the shared file read", () => {
+    const { decisions, snapshots } = sharingProject({
+      env: [["LOG_LEVEL", null]],
+      tty: [[1, false]],
+    });
+    expect(decisions.map((d) => d.deferred)).toEqual([true, true]);
+    for (const text of snapshots) {
+      expect(text).toMatch(/K \d 5:level s4:info/);
+      expect(text).toContain("E 9:LOG_LEVEL 0 0:");
+      expect(text).toContain("T 1 0");
+    }
+  });
+
+  test("stay eager together for a set variable outside publicEnv", () => {
+    const { decisions, calls } = sharingProject({ env: [["LOG_LEVEL", "debug"]] });
+    expect(decisions.map((d) => d.deferred)).toEqual([false, false]);
+    expect(decisions[1]!.reason).toContain("LOG_LEVEL");
+    expect(calls.map((c) => c.fn)).toEqual(["nodeIsland.require", "nodeIsland.require"]);
+  });
+
+  test("stay eager together for an input no guard covers", () => {
+    const { decisions } = sharingProject({ inputs: ["process.cwd() (shared/index.js:1:1)"] });
+    expect(decisions.map((d) => d.deferred)).toEqual([false, false]);
+    expect(decisions[1]!.reason).toContain("process.cwd()");
+  });
+
+  test("snapshot no constants when the shared file read the clock", () => {
+    const { decisions, snapshots } = sharingProject({ volatile: ["Date.now()"] });
+    expect(decisions.map((d) => d.deferred)).toEqual([true, true]);
+    for (const text of snapshots) expect(text).not.toContain("4:info");
+  });
+});
+
+describe("the effects of a file that modules share", () => {
   /** Two island modules, `first` and `second`, probed in that order; the
    * probe evaluated `common`, a file both load, in `first`'s load, and
    * what that evaluation did and read is in `first`'s record (`record`). */
@@ -506,5 +628,144 @@ describe("the order deferred loads are probed in", () => {
       ],
     };
     expect(paths(mod, [inFunction, reachedLoad])).toEqual(["reached", "in-function"]);
+  });
+});
+
+describe("generated island modules (closed-island-init.ts)", () => {
+  /** The `P` record's hash over `loads` (snapshot.ts loadsHash). */
+  function loadsHash(loads: string[]): number {
+    let h = 2166136261;
+    for (const load of loads)
+      for (const byte of Buffer.from(`${load}\n`, "utf8")) h = Math.imul(h ^ byte, 16777619) >>> 0;
+    return h;
+  }
+
+  /** A project whose entry imports the package `dep` and then loads two
+   * generated modules: one where the entry's own statements reach it, one
+   * inside a function. The probe's stand-in records what it was given and
+   * answers a deterministic load for every module. */
+  function generatedProject() {
+    const root = scratch();
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "app" }));
+    mkdirSync(join(root, "node_modules", "dep"), { recursive: true });
+    writeFileSync(join(root, "node_modules", "dep", "package.json"), '{ "name": "dep" }');
+    writeFileSync(join(root, "node_modules", "dep", "index.js"), "exports.make = () => ({});\n");
+    const text = (name: string) =>
+      `import dep from "../../node_modules/dep/index.js";\nexport const ${name} = dep.make();\n`;
+    const defer = (path: string) => ({
+      kind: "libCall",
+      fn: "nodeIsland.defer",
+      args: [
+        { kind: "strLit", value: path },
+        { kind: "strLit", value: "" },
+      ],
+    });
+    const load = (call: unknown) => ({ kind: "assign", localId: "%g.island.0", value: call });
+    const loads = {
+      dep: "./node_modules/dep/index.js",
+      first: "./.scriptc/closed/main.0000000000.0.mjs",
+      second: "./.scriptc/closed/main.0000000000.1.mjs",
+    };
+    const dep = defer(loads.dep);
+    const first = defer(loads.first);
+    const second = defer(loads.second);
+    const mod = {
+      entry: "%main",
+      functions: [
+        { name: "helper", body: [load(second)] },
+        { name: "%init.0", body: [load(dep), load(first)] },
+        {
+          name: "%main",
+          body: [{ kind: "exprStmt", expr: { kind: "call", callee: "%init.0", args: [] } }],
+        },
+      ],
+      globals: [],
+      nodeIsland: {
+        libnode: "",
+        nodeVersion: "",
+        modules: {
+          root,
+          files: [
+            { path: loads.first.slice(2), size: 0, sha256: "", generated: text("a") },
+            { path: loads.second.slice(2), size: 0, sha256: "", generated: text("b") },
+            { path: "node_modules/dep/index.js", size: 0, sha256: "" },
+          ],
+          links: [],
+        },
+      },
+    } as unknown as IrModule;
+    const seen: { modules: string[]; generated: string[]; copy: string } = {
+      modules: [],
+      generated: [],
+      copy: "",
+    };
+    const decisions = finalizeDeferredIslands(
+      mod,
+      join(root, "main.ts"),
+      root,
+      (_pack, modules, generated) => {
+        seen.modules = modules;
+        seen.generated = generated;
+        seen.copy = readFileSync(modules[1]!, "utf8");
+        return {
+          results: modules.map((path, i) => ({
+            path,
+            root: i + 1,
+            inputs: [],
+            volatile: [],
+            effects: [],
+            mutations: [],
+            env: [],
+            tty: [],
+            files: [path, join(root, "node_modules", "dep", "index.js")],
+          })),
+          objects: {
+            "1": { f: 0, p: false, m: [] },
+            "2": { f: 0, p: false, m: [["a", { n: "7" }]] },
+            "3": { f: 0, p: false, m: [["b", { n: "8" }]] },
+          },
+        };
+      },
+    );
+    const snapshot = (call: { args: unknown[] }): string =>
+      (call.args[1] as { value: string }).value;
+    return { root, decisions, seen, loads, dep, first, second, snapshot };
+  }
+
+  test("are probed from copies outside the tree, in the program's order", () => {
+    const { root, seen } = generatedProject();
+    expect(seen.modules).toHaveLength(3);
+    expect(seen.modules[0]).toBe(join(root, "node_modules", "dep", "index.js"));
+    expect(seen.modules[1]!.startsWith(root)).toBe(false);
+    expect(seen.modules[1]!.endsWith("main.0000000000.0.mjs")).toBe(true);
+    expect(seen.modules[2]!.endsWith("main.0000000000.1.mjs")).toBe(true);
+    expect(seen.generated).toEqual([seen.modules[1], seen.modules[2]]);
+    expect(seen.copy).toBe(
+      `import dep from ${JSON.stringify(join(root, "node_modules", "dep", "index.js"))};\n` +
+        "export const a = dep.make();\n",
+    );
+    expect(existsSync(seen.modules[1]!)).toBe(false);
+  });
+
+  test("defer with their constants, and with no guard for the probe's copy", () => {
+    const { decisions, first, seen, snapshot } = generatedProject();
+    const decision = decisions.find((d) => d.path.endsWith("main.0000000000.0.mjs"))!;
+    expect(decision.deferred).toBe(true);
+    expect(decision.reason).toContain("recorded evaluation is deterministic");
+    expect(snapshot(first)).toContain("K 2 1:a n7");
+    expect(snapshot(first)).not.toContain(seen.modules[1]!);
+  });
+
+  test("are guarded by the loads the probe evaluated before them", () => {
+    const { loads, dep, first, second, snapshot } = generatedProject();
+    // The runtime uses a generated module's snapshot only in a run that
+    // registered exactly these loads before it, in this order.
+    expect(snapshot(first)).toMatch(new RegExp(`^P 1 ${loadsHash([loads.dep])}$`, "m"));
+    expect(snapshot(second)).toMatch(
+      new RegExp(`^P 2 ${loadsHash([loads.dep, loads.first])}$`, "m"),
+    );
+    // A package's entry point is not: its load does not compute from what
+    // other modules left behind.
+    expect(snapshot(dep)).not.toMatch(/^P /m);
   });
 });

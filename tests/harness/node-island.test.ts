@@ -1053,10 +1053,11 @@ export function patchAndBump(): number {
     }, 300_000);
   });
 
-  // The build-time probe evaluates modules to decide their deferral. A
-  // program module that runs in an island loads eagerly, so the build never
-  // evaluates the program's own source; the executable evaluates it when
-  // the entry requires it.
+  // The build-time probe evaluates modules to decide their deferral. It
+  // evaluates a program module that runs in an island only when the static
+  // gate proves its top level free of effects; this one writes a file, so
+  // it loads eagerly and the build never evaluates it: the executable does,
+  // when the entry requires it.
   test("the build does not evaluate a program module that runs in an island", async () => {
     const dir = sloppyModuleProject("probe");
     const cache = mkdtempSync(join(tmpdir(), "scriptc-sloppy-probe-cache-"));
@@ -1278,11 +1279,11 @@ function sloppyModuleProject(name: string): string {
   return dir;
 }
 
-// A program module that runs in an island never reaches the deferral
-// decision, whose probe evaluates the modules it decides: lowering loads it
-// eagerly. SCRIPTC_NODE_ISLANDS_TRACE=defer prints every decision; IR
-// output needs no libnode pack.
-test("a program module that runs in an island is never a deferral candidate", async () => {
+// A program module that runs in an island and whose top level has effects
+// is never evaluated by the build: the decision keeps it eager.
+// SCRIPTC_NODE_ISLANDS_TRACE=defer prints every decision; IR output needs
+// no libnode pack, and without one every island module is eager.
+test("a program module with top-level effects that runs in an island stays eager", async () => {
   const dir = sloppyModuleProject("defer");
   const previous = process.env["SCRIPTC_NODE_ISLANDS_TRACE"];
   process.env["SCRIPTC_NODE_ISLANDS_TRACE"] = "defer";
@@ -1296,7 +1297,9 @@ test("a program module that runs in an island is never a deferral candidate", as
     const result = await compile(join(dir, "main.js"), { outPath, outDir: dir, outputKind: "ir" });
     if (!result.ok)
       throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
-    expect(written.filter((line) => line.includes("sloppy.js"))).toEqual([]);
+    const decisions = written.filter((line) => line.includes("sloppy.js"));
+    expect(decisions.length).toBeGreaterThan(0);
+    expect(decisions.every((line) => line.startsWith("[node-islands] eager "))).toBe(true);
     const ir = JSON.stringify(deserializeModule(readFileSync(outPath, "utf8")));
     expect(ir).toContain("nodeIsland.require");
     expect(ir).not.toContain("nodeIsland.defer");

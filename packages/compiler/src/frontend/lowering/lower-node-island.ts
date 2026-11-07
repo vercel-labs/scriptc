@@ -54,7 +54,6 @@ import {
   crossingOf,
   isCopiedTsType,
   isForeignType,
-  isIslandProgramModule,
   isIslandSubclassDecl,
   markIslandSubclass,
   islandOwnerOfFile,
@@ -63,6 +62,7 @@ import {
 import { thenReader } from "./checked-promise-all.js";
 import { dynCompoundValue } from "./lower-exprs.js";
 import { COMPOUND_ASSIGN_OPS } from "./surfaces.js";
+import { lowerClosedIslandInit } from "./closed-island-init.js";
 
 const JSON_HINT =
   "only JSON data (numbers, strings, booleans, null, arrays, plain objects of those, and unknown) crosses into Node.js in this version";
@@ -350,7 +350,7 @@ export function islandModuleFile(
 }
 
 /** The module global of the island module at `path`, created on first use. */
-function islandModuleGlobal(lowerer: Lowerer, path: string): IslandModuleBinding {
+export function islandModuleGlobal(lowerer: Lowerer, path: string): IslandModuleBinding {
   let binding = lowerer.islandModules.get(path);
   if (binding === undefined) {
     const global: IrGlobal = {
@@ -416,14 +416,10 @@ function loadIslandModule(lowerer: Lowerer, path: string, loc: SrcLoc): IrExpr {
  * a module proved effect-free at load keeps it with its interface snapshot
  * and evaluates on first use; any other becomes nodeIsland.require.
  *
- * A program module that runs in an island loads eagerly
- * (`nodeIsland.require`): deciding a deferral means evaluating the module
- * in the build-time probe, and the build never runs the program's own
- * source. */
+ * A program module that runs in an island is decided there too, under a
+ * stricter rule: the build evaluates the program's own source only when
+ * the static gate proves its top level free of effects. */
 function deferIslandModule(lowerer: Lowerer, path: string, loc: SrcLoc): IrExpr {
-  const islands = lowerer.nodeIslands;
-  if (islands !== null && isIslandProgramModule(islands, path))
-    return loadIslandModule(lowerer, path, loc);
   return {
     kind: "libCall",
     fn: "nodeIsland.defer",
@@ -581,7 +577,7 @@ function islandSnapshotAssign(
   };
 }
 
-function islandGet(target: IrExpr, key: string, loc: SrcLoc): IrExpr {
+export function islandGet(target: IrExpr, key: string, loc: SrcLoc): IrExpr {
   return {
     kind: "libCall",
     fn: "nodeIsland.get",
@@ -653,7 +649,7 @@ export function isIslandImportBinding(lowerer: Lowerer, ident: ts.Identifier): b
   return islandBindingOf(lowerer, ident) !== null;
 }
 
-function islandBindingOf(lowerer: Lowerer, ident: ts.Identifier): IslandBinding | null {
+export function islandBindingOf(lowerer: Lowerer, ident: ts.Identifier): IslandBinding | null {
   const islands = lowerer.nodeIslands;
   if (islands === null) return null;
   // A shorthand property's name (`{ compare }`) reads the binding of that
@@ -844,7 +840,7 @@ function islandUnitComparison(
 /** An island value (dyn) at the declared type of `node`: island handles
  * stay dyn (FOREIGN), primitives and strings meet their declared type
  * through the checked conversion. */
-function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr {
+export function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr {
   if (node === rawIslandRead) return raw;
   const tsType = lowerer.typeOf(node);
   const islands = lowerer.nodeIslands!;
@@ -1167,7 +1163,7 @@ function callableType(lowerer: Lowerer, type: ts.Type): boolean {
 
 /** A member read, call, index or `new` whose receiver or callee is an
  * island value. */
-function islandRooted(lowerer: Lowerer, node: ts.Expression): boolean {
+export function islandRooted(lowerer: Lowerer, node: ts.Expression): boolean {
   const e = withoutParenthesesTypeWrappers(node);
   if (ts.isCallExpression(e)) {
     if (e.expression.kind === ts.SyntaxKind.ImportKeyword) return false;
@@ -1929,6 +1925,9 @@ function islandHandleLocal(lowerer: Lowerer, ident: ts.Identifier): IrLocal | nu
  * expression, the ordinary lowering applies). */
 export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr | null {
   if (lowerer.nodeIslands === null) return null;
+  // A module-level constant the island evaluates (closed-island-init.ts).
+  const closed = lowerClosedIslandInit(lowerer, expr);
+  if (closed !== null) return closed;
   const loc = locOf(expr);
   if (ts.isIdentifier(expr)) {
     const subclass = islandSubclassGlobal(lowerer, expr);

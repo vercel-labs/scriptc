@@ -209,6 +209,10 @@ exports.probe = function probe(input) {
     return { o: id };
   };
 
+  // The modules whose code is the program's own: the ones the build wrote
+  // for its island-closed constants, and its modules that run in an island
+  // and whose top level the static gate admitted.
+  const own = new Set(input.own || []);
   // ── the recorder ──
   const inputs = [], volatile = [], effects = [], tty = new Map(), envKeys = new Map();
   const files = new Set();
@@ -218,8 +222,18 @@ exports.probe = function probe(input) {
   // the module cache keeps what such a file exported without it.
   let refused = null;
   const refusedBy = new Map();
+  // Evaluating one of the program's own modules (own): the build does not
+  // perform what its code would do to the machine.
+  // The first effect or input ends the evaluation instead (withheld).
+  let withholding = false;
+  let withheld = null;
   const note = (list, what) => {
-    if (recording && !internalCaller()) list.push(list === volatile ? what : what + " (" + lastCaller + ")");
+    if (!recording || internalCaller()) return;
+    list.push(list === volatile ? what : what + " (" + lastCaller + ")");
+    if (withholding && list !== volatile) {
+      if (withheld === null) withheld = what;
+      throw new Error("the build does not perform " + what + " for the program");
+    }
   };
   const undo = [];
   const wrapFn = (owner, key, list, label) => {
@@ -322,6 +336,8 @@ exports.probe = function probe(input) {
   for (const k of ["setTimeout", "setInterval", "setImmediate"]) {
     const original = globalThis[k];
     const wrapped = function (...a) {
+      // The program's own code sets no timer in the build (note throws).
+      if (withholding) note(effects, k + "()");
       const handle = original.apply(this, a);
       if (recording && !internalCaller()) {
         effects.push(k + "() (" + lastCaller + ")");
@@ -384,6 +400,8 @@ exports.probe = function probe(input) {
   // Synchronous reads of the module's own package (its files are boot
   // guards, by size and mtime) are guarded inputs, not inputs.
   const fsModule = require("node:fs");
+  const rawExists = fsModule.existsSync;
+  const rawReadFile = fsModule.readFileSync;
   const guardedFds = new Set();
   const ownPath = (p) => {
     if (currentPackageDir === null) return null;
@@ -399,6 +417,17 @@ exports.probe = function probe(input) {
     const original = fsModule[key];
     if (typeof original !== "function") continue;
     const wrapped = function (target, flags) {
+      // A guarded call reads the module's own package, which is boot state
+      // the build may take. Any other call is the program's input, and an
+      // open for writing is an effect: a generated module's evaluation
+      // withholds it before the call, so the build never reads a file the
+      // program would read nor truncates one it would write. The refusal
+      // goes through note, which records the call before it throws: a
+      // package that catches the refusal and goes on with a fallback has
+      // the call in its record, and its module is not deferred with the
+      // fallback's value.
+      if (withholding && (ownPath(target) === null || (key === "openSync" && !readOnlyFlags(flags))))
+        note(inputs, "fs." + key + "()");
       let result;
       try {
         result = original.apply(this, arguments);
@@ -427,6 +456,10 @@ exports.probe = function probe(input) {
   for (const key of ["readSync", "fstatSync", "closeSync"]) {
     const original = fsModule[key];
     const wrapped = function (fd) {
+      // Only a guarded read's descriptor is the build's own; any other is
+      // the program's, which a generated module's evaluation withholds
+      // (recorded before the refusal, as above).
+      if (withholding && !guardedFds.has(fd)) note(inputs, "fs." + key + "()");
       const result = original.apply(this, arguments);
       if (recording && !internalCaller()) {
         if (!guardedFds.has(fd)) inputs.push("fs." + key + "() (" + lastCaller + ")");
@@ -477,13 +510,15 @@ exports.probe = function probe(input) {
   // The probe evaluates installed packages only: a file outside every
   // node_modules directory is the program's own source (a program module,
   // or a project file a package requires), and its load throws before the
-  // file evaluates, so the module that asked for it stays eager.
+  // file evaluates, so the module that asked for it stays eager. The
+  // program's own modules the build admits (own) are the exception: what
+  // their code would do to the machine is withheld (note).
   const hooks = Module.registerHooks({
     resolve(specifier, context, nextResolve) {
       const result = nextResolve(specifier, context);
       if (recording && typeof result.url === "string" && result.url.startsWith("file:")) {
         const file = require("node:url").fileURLToPath(result.url);
-        if (!/[\\/]node_modules[\\/]/.test(file)) {
+        if (!/[\\/]node_modules[\\/]/.test(file) && !own.has(file)) {
           if (refused === null) refused = file;
           throw new Error("the build does not evaluate " + file + ", a file of the program");
         }
@@ -571,11 +606,13 @@ exports.probe = function probe(input) {
     loadPromises.clear();
     tty.clear(); envKeys.clear(); files.clear();
     refused = null;
+    withholding = own.has(path);
+    withheld = null;
     files.add(path);
     currentFiles = files;
     currentPackageDir = null;
     for (let d = require("node:path").dirname(path); d !== require("node:path").dirname(d); d = require("node:path").dirname(d)) {
-      if (require("node:fs").existsSync(d + "/package.json")) { currentPackageDir = d; break; }
+      if (rawExists(d + "/package.json")) { currentPackageDir = d; break; }
     }
     const before = shot();
     let exportsValue, threw;
@@ -629,7 +666,7 @@ exports.probe = function probe(input) {
     // times unrelated to the module; only code that names it can set it.
     const names = (key) => {
       for (const f of files) {
-        try { if (require("node:fs").readFileSync(f, "utf8").includes(key)) return true; } catch {}
+        try { if (rawReadFile(f, "utf8").includes(key)) return true; } catch {}
       }
       return false;
     };
@@ -647,6 +684,15 @@ exports.probe = function probe(input) {
       tty: [...tty],
       files: [...files],
     };
+    // A generated module that catches a withheld call goes on with the
+    // fallback its catch block produces, and its export shape, which the
+    // executable never runs: neither the value nor what it does next is the
+    // module's, so it does not defer.
+    if (withheld !== null) {
+      record.reason = "its evaluation has effects or reads inputs: " + withheld + ", which the build does not perform";
+      results.push(record);
+      continue;
+    }
     if (threw !== undefined) { record.throws = threw; results.push(record); continue; }
     if (!("o" in root)) { record.reason = "its value is not an object"; results.push(record); continue; }
     record.root = root.o;

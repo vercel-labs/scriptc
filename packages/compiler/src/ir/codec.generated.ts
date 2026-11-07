@@ -5,7 +5,7 @@ import type { IrReader, IrWriter } from "./codec.js";
 
 /** A digest of the coders below: an encoding written with other coders is
  * refused instead of misread, also after a change that keeps IR_VERSION. */
-export const IR_CODEC_LAYOUT = "ee8738f289e521b4";
+export const IR_CODEC_LAYOUT = "b88851d095774bb9";
 
 /** Writes `mod` field by field (codec.ts describes the bytes). */
 export function encodeIrModule(w: IrWriter, mod: IrModule): void {
@@ -85,7 +85,7 @@ const KEYS57: readonly string[] = ["id","name","type","mutable","tdz","initFlag"
 const KEYS58: readonly string[] = ["id","fields","tuple","indexValue","freezable","declaredOrder","accessorOrder","orderVariants"];
 const KEYS59: readonly string[] = ["id","arms","discriminant"];
 const KEYS60: readonly string[] = ["file","pkg"];
-const KEYS61: readonly string[] = ["pair","from","to","compose"];
+const KEYS61: readonly string[] = ["pair","from","to","compose","composed"];
 const KEYS62: readonly string[] = ["root","files","links","location"];
 const KEYS63: readonly string[] = ["name","symbol","library","callbackOperation","callbackTarget","params","returns"];
 const KEYS64: readonly string[] = ["buildIdSymbol","abiVersionSymbol","buildId","abiVersion"];
@@ -1692,13 +1692,19 @@ function encIrRecordLink(w: IrWriter, v: IrRecordLink): void {
   w.str(v.from);
   w.str(v.to);
   w.str(v.compose);
+  if (v.composed === undefined) w.byte(0);
+  else {
+    w.byte(1);
+    w.str(v.composed);
+  }
 }
 function decIrRecordLink(r: IrReader): IrRecordLink {
   const f0 = r.num();
   const f1 = r.str();
   const f2 = r.str();
   const f3 = r.str();
-  const o: IrRecordLink = { pair: f0, from: f1, to: f2, compose: f3 };
+  const f4 = r.tag(2, "IrModule.recordLinks[].composed") === 0 ? undefined : r.str();
+  const o: IrRecordLink = { pair: f0, from: f1, to: f2, compose: f3, ...(f4 !== undefined ? { composed: f4 } : {}) };
   return o;
 }
 

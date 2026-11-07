@@ -25,6 +25,7 @@ import {
   type IrExpr,
   type IrFunction,
   type IrRecordLink,
+  type IrRecordShape,
   type IrStmt,
   type IrType,
   type SrcLoc,
@@ -123,8 +124,15 @@ export function recordLinkTest(copy: IrExpr, link: IrRecordLink, loc: SrcLoc): I
   };
 }
 
-/** The record of the pair's source type composed from a copy that links
- * through it (record.linkIs held). */
+/** The type of a link's composed record: the pair's source type, or that
+ * type with the copy's type for each field the two declare differently
+ * (IrRecordLink.composed). */
+export function composedRecordType(link: IrRecordLink): IrType & { kind: "record" } {
+  return { kind: "record", shapeId: link.composed ?? link.from };
+}
+
+/** The record composed from a copy that links through the pair
+ * (record.linkIs held). */
 export function composedRecord(copy: IrExpr, link: IrRecordLink, loc: SrcLoc): IrExpr {
   const fromT: IrType = { kind: "record", shapeId: link.from };
   return {
@@ -140,7 +148,7 @@ export function composedRecord(copy: IrExpr, link: IrRecordLink, loc: SrcLoc): I
         loc,
       },
     ],
-    type: fromT,
+    type: composedRecordType(link),
     loc,
   };
 }
@@ -204,7 +212,7 @@ export function linkedCopyBranches(
   const loc = fn.loc;
   const branches: IrStmt[] = [];
   for (const link of recordLinksInto(lowerer, shapeId)) {
-    const fromT: IrType & { kind: "record" } = { kind: "record", shapeId: link.from };
+    const fromT = composedRecordType(link);
     // A chain of links can reach a pair again inside another branch.
     let local = `linked.${link.pair}`;
     if (fn.locals.some((l) => l.id === local)) local = `${local}.${fn.locals.length}`;
@@ -241,6 +249,7 @@ export function finalizeRecordLinks(lowerer: Lowerer, functions: IrFunction[]): 
   const scan = scanModule(lowerer, [...functions, ...lowerer.liftedFns]);
   const sourced = scan.sourced;
   keepObservedLinks(lowerer, scan.exposed, [...functions, ...lowerer.liftedFns]);
+  for (const link of lowerer.recordLinks.values()) composeRetypedFields(lowerer, link, sourced);
   for (const site of lowerer.recordLinkSites)
     if (lowerer.recordLinks.has(`${site.link.from}:${site.link.to}`))
       linkCopies(site.projection, site.link);
@@ -429,30 +438,100 @@ function keepObservedLinks(
     if (!observed.has(link.to)) lowerer.recordLinks.delete(key);
 }
 
+/** Gives a link whose two types declare a field at different types its
+ * composed record type (IrRecordLink.composed): the source type with the
+ * copy's type for each such field. The copy holds the live value of a field
+ * both declare (a write through the copy's type lands there, and a
+ * conversion that changed the field's type built a new value for it), so
+ * the composed record must be able to hold it. Such a conversion from a
+ * source that carries properties of its own (a kept checked source, a link
+ * of its own, or a per-value key order) is refused: the composed type has
+ * no helpers that answer for them. */
+function composeRetypedFields(
+  lowerer: Lowerer,
+  link: IrRecordLink,
+  sourced: ReadonlySet<string>,
+): void {
+  const sourceShape = lowerer.shapes.get(link.from)!;
+  const targetShape = lowerer.shapes.get(link.to)!;
+  const retyped = new Map<string, IrRecordShape["fields"][number]>();
+  for (const field of sourceShape.fields) {
+    const own = targetShape.fields.find((f) => f.name === field.name);
+    if (own !== undefined && !typeEquals(own.type, field.type)) retyped.set(field.name, own);
+  }
+  if (retyped.size === 0) return;
+  if (
+    sourced.has(link.from) ||
+    recordLinksInto(lowerer, link.from).length > 0 ||
+    sourceShape.orderVariants !== undefined
+  ) {
+    const [name] = [...retyped.keys()];
+    lowerer.pushDiag(
+      unsupportedDiag(
+        "SC1090",
+        lowerer.recordLinkLocs.get(link.compose)!,
+        `converting an object that carries other properties to a type that declares '${name}' differently`,
+        "build the value with the target type's own literal",
+      ),
+    );
+    return;
+  }
+  // The composed record enumerates as its source does. A shape interned
+  // here takes the source's key order; one the program already has keeps
+  // its own (its values enumerate in it), so it serves only when that is
+  // the same order.
+  const order = [...shapeKeyOrders(sourceShape)[0]!];
+  const known = lowerer.shapes.shapes.length;
+  const composed = lowerer.shapes.intern(
+    sourceShape.fields.map((field) => retyped.get(field.name) ?? field),
+    false,
+    undefined,
+  );
+  const shape = lowerer.shapes.get(composed)!;
+  if (lowerer.shapes.shapes.length > known) shape.declaredOrder = order;
+  const orders = shapeKeyOrders(shape);
+  if (orders.length !== 1 || orders[0]!.join("\0") !== order.join("\0")) {
+    const [name] = [...retyped.keys()];
+    lowerer.pushDiag(
+      unsupportedDiag(
+        "SC1090",
+        lowerer.recordLinkLocs.get(link.compose)!,
+        `converting an object to a type that declares '${name}' differently, when the program has another type with the object's properties in another order`,
+        "build the value with the target type's own literal",
+      ),
+    );
+    return;
+  }
+  link.composed = composed;
+}
+
 /** Builds a link's compose helper once every link is known: a record of
- * the source type with the copy's values for the fields both types declare
- * and the source's for the others, created in the source type's first key
- * order. The source can itself carry other properties: a kept checked
- * source when its type is in `sourced` (record.sourceShare), and a
- * link of its own when the source type is the target of other links (a
- * copy converted again). The composed record keeps both. */
+ * the composed type (composedRecordType) with the copy's values for the
+ * fields both types declare and the source's for the others, created in
+ * the source type's first key order. The source can itself carry other
+ * properties: a kept checked source when its type is in `sourced`
+ * (record.sourceShare), and a link of its own when the source type is the
+ * target of other links (a copy converted again). The composed record
+ * keeps both. */
 function addComposer(lowerer: Lowerer, link: IrRecordLink, sourced: ReadonlySet<string>): void {
   const loc = lowerer.recordLinkLocs.get(link.compose)!;
   const fromT: IrType & { kind: "record" } = { kind: "record", shapeId: link.from };
   const toT: IrType & { kind: "record" } = { kind: "record", shapeId: link.to };
+  const composedT = composedRecordType(link);
   const sourceShape = lowerer.shapes.get(link.from)!;
   const targetShape = lowerer.shapes.get(link.to)!;
+  const composedShape = lowerer.shapes.get(composedT.shapeId)!;
   const copy = varRef("copy.0", toT, loc);
   const source = varRef("source.0", fromT, loc);
-  const composed = varRef("composed.0", fromT, loc);
+  const composed = varRef("composed.0", composedT, loc);
   const fields = shapeKeyOrders(sourceShape)[0]!.map((name) => {
-    const field = sourceShape.fields.find((f) => f.name === name)!;
+    const field = composedShape.fields.find((f) => f.name === name)!;
     const own = targetShape.fields.find((f) => f.name === name);
     const [obj, shapeId] =
       own !== undefined && typeEquals(own.type, field.type) ? [copy, link.to] : [source, link.from];
     const read: IrExpr = { kind: "recordGet", obj, shapeId, field: name, type: field.type, loc };
-    // The composed record has the SOURCE type, so its slot's absence state is
-    // the source field's, even when the value is read from the copy.
+    // The slot's absence state is the composed type's field's, even when the
+    // value is read from the copy.
     return {
       name,
       value: lowerer.presenceKeepingCopy(obj, shapeId, name, read, loc, field),
@@ -476,7 +555,7 @@ function addComposer(lowerer: Lowerer, link: IrRecordLink, sourced: ReadonlySet<
     {
       kind: "varDecl",
       localId: "composed.0",
-      init: { kind: "recordLit", fields, type: fromT, loc },
+      init: { kind: "recordLit", fields, type: composedT, loc },
       loc,
     },
   ];
@@ -515,11 +594,11 @@ function addComposer(lowerer: Lowerer, link: IrRecordLink, sourced: ReadonlySet<
       { localId: "copy.0", name: "copy", type: toT },
       { localId: "source.0", name: "source", type: fromT },
     ],
-    returnType: fromT,
+    returnType: composedT,
     locals: [
       { id: "copy.0", name: "copy", type: toT, mutable: false },
       { id: "source.0", name: "source", type: fromT, mutable: false },
-      { id: "composed.0", name: "composed", type: fromT, mutable: false },
+      { id: "composed.0", name: "composed", type: composedT, mutable: false },
     ],
     body,
     loc,

@@ -43,6 +43,7 @@ import {
   isThisParameter,
   type ParamShape,
 } from "./call-signatures.js";
+import { slotSignatureAdoption } from "./slot-signatures.js";
 import { isStrictCode } from "./strict-mode.js";
 import { lowerSloppyGlobalReceiver } from "./lower-global-value.js";
 import { noteObjectMethodName } from "./function-names.js";
@@ -410,6 +411,10 @@ export function lowerLambda(
     shapes,
     lowerer.errorFirstLiterals.has(node),
   );
+  // A literal written into a slot of another signature takes that
+  // signature as its ABI, so the value needs no adapter.
+  const adoption = slotSignatureAdoption(lowerer, node, shapes, funcType);
+  if (adoption) funcType = adoption.funcType;
   const nameIdent =
     !ts.isArrowFunction(node) && node.name && ts.isIdentifier(node.name) ? node.name : null;
   const baseName = nameIdent ? nameIdent.text : "";
@@ -511,7 +516,15 @@ export function lowerLambda(
       !ts.isArrowFunction(node)
         ? declareCallReceiver(lowerer, node, isGenerator)
         : null;
-    const { params, prologue } = lowerer.declareParams(node.parameters.nodes, shapes);
+    const { params, prologue } = lowerer.declareParams(
+      node.parameters.nodes,
+      adoption?.shapes ?? shapes,
+    );
+    adoption?.extras.forEach((type, i) => {
+      // The slot's remaining arguments: received and ignored.
+      const unused = lowerer.declareHiddenLocal("%slot", type);
+      params.push({ localId: unused.id, name: `%slot${i}`, type });
+    });
     if (receiver) prologue.unshift(receiver);
     if (ts.isFunctionExpression(node) && lowerer.typedArgumentsLambdas.has(node))
       declareTypedArguments(lowerer, node, shapes, params, prologue);
@@ -602,9 +615,9 @@ export function lowerLambda(
           // (`async () => p`): the async machinery RESOLVES the returned
           // thenable into the function's own promise — lowerReturnValue's
           // await-through, applied to the implicit return.
-          if (isAsync && value.type.kind === "promise" && bodyReturn.kind !== "promise") {
-            value = lowerer.returnedPromiseAwait(value);
-          }
+          const settles = isAsync && value.type.kind === "promise" && bodyReturn.kind !== "promise";
+          if (settles) value = lowerer.returnedPromiseAwait(value);
+          else if (isAsync && !fnCtx.inferReturn) lowerer.refuseReturnedThenable(bodyExpr, value);
           const flattened =
             isAsync && !fnCtx.inferReturn
               ? lowerer.maybePromiseReturn(bodyExpr, value, bodyReturn)
@@ -624,7 +637,11 @@ export function lowerLambda(
             body = [
               {
                 kind: "return",
-                value: fnCtx.inferReturn ? value : lowerer.coerceInto(bodyExpr, value, bodyReturn),
+                value: fnCtx.inferReturn
+                  ? value
+                  : settles
+                    ? lowerer.returnedPayloadInto(bodyExpr, value, bodyReturn)
+                    : lowerer.coerceInto(bodyExpr, value, bodyReturn),
                 loc: bodyLoc,
               },
             ];
@@ -690,7 +707,14 @@ export function lowerLambda(
     }
     lowerer.liftedFns.push(lifted);
     noteObjectMethodName(lowerer, node, fnName);
-    return { kind: "closure", fnName, captures: ctx.captureSources, type: funcType, loc };
+    return {
+      kind: "closure",
+      fnName,
+      captures: ctx.captureSources,
+      ...(adoption?.length !== undefined ? { length: adoption.length } : {}),
+      type: funcType,
+      loc,
+    };
   } catch (e) {
     // JS sources defer LAMBDA poisons like function declarations
     // (lowerFunction's catch, lambda form — entry the function-level

@@ -148,6 +148,18 @@ typedef struct ScrNiDynOps {
    * `e.constructor === TypeError` holds with the island's TypeError. 1 for
    * an island error, 0 for any other. */
   int (*error_constructor)(const struct ScrError *err, ScrDyn **out);
+  /* Object.prototype.toString.call(value), answered by Node (+1; NULL with
+   * the exception pending). */
+  ScrStr *(*object_tag)(const ScrDyn *value);
+  /* The identity root of an island function (borrowed, owned by the
+   * function's handle): every typed view of the function adopts it, so the
+   * views are one function to `===`, searches and collection keys. NULL for
+   * a value that is not a function. */
+  struct ScrClosure *(*function_identity)(const ScrDyn *fn);
+  /* The island function whose identity root is `root`, as its handle (+1);
+   * NULL when `root` is not such a root. A signature adapter over a view of
+   * an island function boxes as the function itself through this. */
+  ScrDyn *(*function_of_identity)(const struct ScrClosure *root);
 } ScrNiDynOps;
 extern const ScrNiDynOps *scr_ni_dyn_ops;
 
@@ -165,6 +177,14 @@ const struct ScrNodeBridge *scr_ni_bridge_loaded(void); /* NULL until loaded */
  * program's module tree, under its root once Node is loaded; anything else
  * (a built-in module) as it is. */
 char *scr_ni_module_path(const ScrStr *path);
+/* The installed island module tree (scr_node_island.c, "What a start
+ * does"): whether an island error's code says Node did not find a file,
+ * whether an error's text names the tree, the repair of the files it lacks
+ * (once per process), and how many files this process put back. */
+bool scr_ni_missing_file_code(const char *code, size_t len);
+bool scr_ni_tree_named(const char *text, size_t len);
+void scr_ni_tree_repair(void);
+size_t scr_ni_tree_repairs(void);
 void scr_ni_on_node_stack(void (*job)(void *), void *arg);
 void scr_ni_settle_value(uint32_t token, int rejected, const struct ScrNodeValue *value);
 void scr_ni_bytes_free(void *owner);
@@ -214,6 +234,48 @@ int scr_ni_host_shared_get(uint32_t mod, uint32_t slot, int mode, struct ScrNode
 void scr_ni_host_shared_tdz(struct ScrNodeValue *out);
 int scr_ni_host_export_op(uint32_t id, uint32_t op, const struct ScrNodeValue *args, size_t argc,
                           struct ScrNodeValue *out);
+/* ── twins (scr_node_island_export.c) ─────────────────────────────────────
+ * A native object of a platform class whose island receivers test its brand
+ * crosses as an export whose representative is a real object of the
+ * island's own class (scr_node_bridge.h SCR_NVF_TWIN). The other way, an
+ * island object of such a class that reaches native code is adopted: a new
+ * native object stands for it natively, as an export whose representative
+ * is that island object. A class joins by registering from a unit of its
+ * own, which links only into programs that have both Node islands and the
+ * class's native objects. The native object's reference count is its first
+ * word (NI-8 reads it). */
+typedef struct ScrNiTwinClass {
+  int tag;          /* the native objects' handle tag (SCR_DYNH_*) */
+  const char *name; /* the island class: a twin maker of scr_node_island_host.cjs */
+  /* The class shares its native object with another twin class (an
+   * AbortController and its signal are one object natively): the two are
+   * separate exports. At most one class per object says so. */
+  bool shares_object;
+  /* Export `id` of `object` was made: the object starts telling its twin
+   * what changes (scr_ni_twin_tell). The answer, when not NULL, goes to
+   * `detach` before the export table lets go of the object, unless the
+   * class reported it gone (scr_ni_twin_detached). NULL: nothing to tell. */
+  void *(*attach)(uint32_t id, void *object);
+  void (*detach)(void *attachment);
+  /* A new native object (+1) to stand for an island object of the class
+   * that reached native code. NULL: island objects of the class stay
+   * handles. */
+  ScrDyn *(*adopt)(void);
+  /* The island object told its native object that `event` happened, with
+   * `value` (borrowed): SCR_NODE_TWIN_TELL. NULL: nothing to hear. */
+  void (*hear)(void *object, const char *event, ScrDyn *value);
+  struct ScrNiTwinClass *next;
+} ScrNiTwinClass;
+void scr_ni_twin_register(ScrNiTwinClass *cls);
+bool scr_ni_twin_box(const ScrDyn *v); /* a native object of a twin class */
+/* The native object of export `id` tells its twin that `event` happened,
+ * with `value` (borrowed). */
+void scr_ni_twin_tell(uint32_t id, const char *event, ScrDyn *value);
+void scr_ni_twin_detached(uint32_t id); /* the attachment freed itself */
+/* The native object (+1) that adopts island object `island` (its handle
+ * box, import `handle`), or NULL when no class adopts it: it stays a handle. */
+ScrDyn *scr_ni_twin_adopt(ScrDyn *island, uint32_t handle);
+size_t scr_ni_twin_exports(const void *object, uint32_t ids[2]); /* NI-8 */
 /* Promise settlement callback (SCR_NODE_ISLANDS build of scr_async.c). */
 void scr_promise_on_settle_sync(ScrPromise *in, void (*cb)(ScrPromise *dst, ScrPromise *src));
 void *scr_promise_untraced_dyn_payload(const ScrPromise *p);

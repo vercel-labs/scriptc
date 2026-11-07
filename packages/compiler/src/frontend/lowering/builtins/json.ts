@@ -4,6 +4,7 @@ import { isDateJsonSource } from "./dates.js";
 import { dynUndefinedExpr, varRef } from "../../../ir/build.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
+import { withoutParentheses } from "../../outer-expressions.js";
 import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import {
@@ -585,11 +586,9 @@ function stringifySpaceIndent(lowerer: Lowerer, call: ts.CallExpression): string
       "the serializer is type-directed — shape the value before stringifying",
     );
   if (call.arguments.nodes.length <= 1) return "";
-  const unwrap = (e: ts.Expression): ts.Expression =>
-    ts.isParenthesizedExpression(e) ? unwrap(e.expression) : e;
   const isUndefined = (e: ts.Expression): boolean => jsonNullishArgument(lowerer, e);
   if (call.arguments.nodes.length === 2) return "";
-  const space = unwrap(call.arguments.nodes[2]!);
+  const space = withoutParentheses(call.arguments.nodes[2]!);
   if (space.kind === ts.SyntaxKind.NullKeyword || isUndefined(space)) return "";
   if (ts.isNumericLiteral(space)) {
     const n = Number(space.text.replace(/_/g, ""));
@@ -599,7 +598,7 @@ function stringifySpaceIndent(lowerer: Lowerer, call: ts.CallExpression): string
   if (
     ts.isPrefixUnaryExpression(space) &&
     space.operator === ts.SyntaxKind.MinusToken &&
-    ts.isNumericLiteral(unwrap(space.operand))
+    ts.isNumericLiteral(withoutParentheses(space.operand))
   ) {
     return "";
   }

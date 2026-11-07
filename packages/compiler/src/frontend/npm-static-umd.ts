@@ -31,6 +31,7 @@
  * probes (`this && this.__importDefault`), which find no helper on either
  * receiver. Any other shape keeps the original text. */
 import * as ts from "./ts7/syntax.js";
+import { withoutParentheses } from "./outer-expressions.js";
 import { tokenStartOfNode } from "./ts7/node-functions.js";
 import { applyEdits } from "./npm-static-bundled-chunks.js";
 
@@ -48,7 +49,7 @@ export function unwrapUmdFactory(sf: ts.SourceFile): string | null {
   if (!ts.isExpressionStatement(stmt) || !ts.isCallExpression(stmt.expression)) return null;
   const call = stmt.expression;
   if (call.arguments.nodes.length !== 1) return null;
-  const wrapper = unparenthesized(call.expression);
+  const wrapper = withoutParentheses(call.expression);
   const factory = call.arguments.nodes[0]!;
   if (!ts.isFunctionExpression(wrapper) || !ts.isFunctionExpression(factory)) return null;
   const wrapperParams = wrapper.parameters.nodes;
@@ -71,11 +72,6 @@ export function unwrapUmdFactory(sf: ts.SourceFile): string | null {
     { start: tokenStartOfNode(stmt), end: open, text: "" },
     { start: close, end: stmt.end, text: "" },
   ]);
-}
-
-function unparenthesized(e: ts.Expression): ts.Expression {
-  while (ts.isParenthesizedExpression(e)) e = e.expression;
-  return e;
 }
 
 /** A parameter that is a bare identifier: no default, rest or pattern. */

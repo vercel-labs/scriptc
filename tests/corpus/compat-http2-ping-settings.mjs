@@ -2,9 +2,11 @@
 // (err, duration, payload) callback, the 'ping' event on the peer, a ping
 // sent before the session connected (cancelled: the callback gets the
 // error alone), the limit of ten unanswered pings (the eleventh is
-// cancelled at once), connecting, and getPackedSettings() and
-// getUnpackedSettings() with their errors. The two ends race, so each
-// records its own lines.
+// cancelled at once), what ping() answers through a session held without
+// its type (nothing while connecting or after close(), true for a PING
+// that left, false for one over the limit), connecting, and
+// getPackedSettings() and getUnpackedSettings() with their errors. The two
+// ends race, so each records its own lines.
 import http2 from "node:http2";
 
 const packed = http2.getPackedSettings({
@@ -91,6 +93,36 @@ await new Promise((resolve) => {
       setTimeout(() => {
         console.log(lines.join(" "));
         client.close(() => server.close(() => resolve(undefined)));
+      }, 200);
+    });
+  });
+});
+
+// What ping() answers. The session arrives through an untyped parameter,
+// so the call is made on the value at run time.
+function pingAnswer(session, payload) {
+  return payload === undefined ? session.ping(() => {}) : session.ping(payload, () => {});
+}
+await new Promise((resolve) => {
+  const server = http2.createServer();
+  server.listen(0, "127.0.0.1", () => {
+    const client = http2.connect(`http://127.0.0.1:${server.address().port}`);
+    const answers = [`connecting ${pingAnswer(client)}`];
+    client.on("connect", () => {
+      const open = [];
+      for (let i = 0; i < 9; i++) open.push(pingAnswer(client));
+      open.push(pingAnswer(client, Buffer.from("abcdefgh")));
+      open.push(pingAnswer(client), pingAnswer(client, Buffer.from("12345678")));
+      answers.push(`open ${open.join(",")}`);
+      setTimeout(() => {
+        answers.push(`answered ${pingAnswer(client)}`);
+        client.close(() =>
+          server.close(() => {
+            console.log(answers.join(" | "));
+            resolve(undefined);
+          }),
+        );
+        answers.push(`closed ${pingAnswer(client)} ${pingAnswer(client, Buffer.from("abcdefgh"))}`);
       }, 200);
     });
   });

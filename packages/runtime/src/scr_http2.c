@@ -3541,23 +3541,34 @@ void scr_http2_session_on_settings_dyn(ScrH2Session *s, const ScrDyn *cb /*borro
                                  (ScrH2SettingsFn)&scr_h2_dyn_fire_settings, once, local);
 }
 
+/* What ping() answers. Node returns nothing for a session that is still
+ * connecting or already closed (the callback is cancelled on a later
+ * tick), and its binding's boolean otherwise: true for a PING that left,
+ * false for one over the limit of unanswered pings. */
+typedef enum {
+  SCR_H2_PING_THREW,      /* an exception is pending */
+  SCR_H2_PING_SENT,       /* true */
+  SCR_H2_PING_OVER_LIMIT, /* false: not sent, the callback was cancelled */
+  SCR_H2_PING_NOT_OPEN,   /* undefined: connecting or closed */
+} ScrH2PingAnswer;
+
 /* session.ping([payload, ]callback): a PING with the given eight bytes, or
  * with the time it left. The callback gets (null, duration, payload) at the
  * peer's answer, or ERR_HTTP2_PING_CANCEL when none can come. */
-void scr_http2_session_ping(ScrH2Session *s, ScrBytes *payload /*borrowed, nullable*/,
-                            const ScrDyn *cb /*borrowed*/) {
+static ScrH2PingAnswer scr_h2_session_ping(ScrH2Session *s, ScrBytes *payload /*borrowed, nullable*/,
+                                           const ScrDyn *cb /*borrowed*/) {
   if (s->destroyed) {
     scr_throw_error_msg_code(SCR_ERR_ERROR, "The session has been destroyed", 30,
                              "ERR_HTTP2_INVALID_SESSION");
-    return;
+    return SCR_H2_PING_THREW;
   }
   if (payload != NULL && (size_t)(payload->len * scr_bytes_elem_size(payload->elem)) != 8) {
     scr_throw_error_msg_code(SCR_ERR_RANGE, "HTTP2 ping payload must be 8 bytes", 34,
                              "ERR_HTTP2_PING_LENGTH");
-    return;
+    return SCR_H2_PING_THREW;
   }
   scr_dyn_check_listener(cb, "callback");
-  if (scr_exc_pending()) return;
+  if (scr_exc_pending()) return SCR_H2_PING_THREW;
   /* Node keeps at most ten pings unanswered (maxOutstandingPings): one
    * more is not sent, and its callback gets the cancel error at once. */
   size_t open = 0;
@@ -3569,7 +3580,7 @@ void scr_http2_session_ping(ScrH2Session *s, ScrBytes *payload /*borrowed, nulla
     scr_h2_dyn_fire_ping(closure, false, 0, none);
     scr_dyn_this_pop();
     scr_closure_release(closure);
-    return;
+    return scr_exc_pending() ? SCR_H2_PING_THREW : SCR_H2_PING_OVER_LIMIT;
   }
   if (s->npings == s->pings_cap) {
     s->pings_cap = s->pings_cap ? s->pings_cap * 2 : 2;
@@ -3589,9 +3600,17 @@ void scr_http2_session_ping(ScrH2Session *s, ScrBytes *payload /*borrowed, nulla
   }
   if (ping->cancelled) {
     scr_h2_session_queue_pings(s);
-    return;
+    return SCR_H2_PING_NOT_OPEN;
   }
   scr_h2_send_frame(s, SCR_H2_F_PING, 0, 0, ping->payload, 8);
+  return SCR_H2_PING_SENT;
+}
+
+/* The compiled call: a statement, so the answer is not read (the lowering
+ * refuses a use of the result). */
+void scr_http2_session_ping(ScrH2Session *s, ScrBytes *payload /*borrowed, nullable*/,
+                            const ScrDyn *cb /*borrowed*/) {
+  (void)scr_h2_session_ping(s, payload, cb);
 }
 
 void scr_http2_session_on_ping(ScrH2Session *s, ScrClosure *cb /*moves*/, ScrNetDataFn fn, bool once) {
@@ -4026,9 +4045,11 @@ static ScrDyn *scr_h2_dynh_session_invoke(void *h, ScrDyn *self, const char *met
       scr_throw_error_msg_code(SCR_ERR_TYPE, text, sizeof text - 1, "ERR_INVALID_ARG_TYPE");
       return NULL;
     }
-    scr_http2_session_ping(s, payload != NULL && payload->kind == SCR_DYN_BYTES ? payload->v.bytes : NULL, cb);
-    if (scr_exc_pending()) return NULL;
-    return scr_dyn_new_bool(true);
+    ScrH2PingAnswer answer =
+        scr_h2_session_ping(s, payload != NULL && payload->kind == SCR_DYN_BYTES ? payload->v.bytes : NULL, cb);
+    if (answer == SCR_H2_PING_THREW || scr_exc_pending()) return NULL;
+    if (answer == SCR_H2_PING_NOT_OPEN) return scr_dyn_undefined();
+    return scr_dyn_new_bool(answer == SCR_H2_PING_SENT);
   }
   if (strcmp(method, "setTimeout") == 0 || strcmp(method, "unref") == 0 || strcmp(method, "goaway") == 0 ||
       strcmp(method, "setLocalWindowSize") == 0 ||

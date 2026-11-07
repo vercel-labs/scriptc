@@ -65,9 +65,12 @@ static bool scr_decl_adopt_plain(const ScrDyn *n, const ScrDynPath *path, bool l
     else {
       for (size_t i = 0; i < scr_dyn_obj_count(n) && !want; i++) {
         ScrDynProp e = scr_dyn_obj_prop_at(n, i);
+        /* A non-enumerable data property stays one: the built record's
+         * kept source holds that attribute (scr_record_source_note). A
+         * read-only or non-configurable one has no native form yet. */
         if (e.accessor) want = "a plain object (this value has accessor properties)";
-        else if (!e.writable || !e.enumerable || !e.configurable)
-          want = "a plain object (this value has non-default property attributes)";
+        else if (!e.writable || !e.configurable)
+          want = "a plain object (this value has read-only or non-configurable properties)";
       }
     }
   } else if (n->kind == SCR_DYN_ARR) {

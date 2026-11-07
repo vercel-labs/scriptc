@@ -641,7 +641,7 @@
   "i2n/U.json": "unsupported",
   "i2n/U.forin": "unsupported",
   "i2n/U.clone": "unsupported",
-  "i2n/N.cast": "exit",
+  "i2n/N.cast.read.sum": "throws",
   "clo-n2i/N.callback": "clone=unsupported,forin=unsupported,json=unsupported",
   "clo-i2n/U.json": "unsupported",
   "clo-i2n/U.forin": "unsupported",

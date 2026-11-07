@@ -864,7 +864,10 @@ function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr 
       node,
     );
   }
-  if (mapped.kind === "dyn") return raw;
+  if (mapped.kind === "dyn") {
+    refuseUnreceivableMember(lowerer, tsType, node);
+    return raw;
+  }
   if (mapped.kind === "void") return raw;
   // An island promise is the same promise on both sides (the runtime keeps
   // one ScrPromise per V8 promise): PromiseResolve of the dyn value, whose
@@ -873,6 +876,9 @@ function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr 
     mapped.kind === "promise" &&
     (mapped.inner.kind === "dyn" || copiedType(lowerer, mapped.inner))
   ) {
+    // The value that crosses is the one the promise settles with.
+    if (mapped.inner.kind === "dyn")
+      refuseUnreceivableMember(lowerer, lowerer.checker.getAwaitedType(tsType) ?? tsType, node);
     const promise: IrExpr = {
       kind: "libCall",
       fn: "dyn.promiseResolve",
@@ -939,6 +945,118 @@ function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr 
       node,
     );
   return lowerer.coerceToExpected(raw, mapped);
+}
+
+/** Refuses (SC8010) an island object received by the live view `type`
+ * when a member it can be read through cannot hold what the island put
+ * there. A program type that receives island values is a checked-identity
+ * view (wave-2 6 = C): the value stays the island's object, and every member
+ * read is a checked conversion into the member's native type. Primitives,
+ * byte views, functions, promises and other views meet that conversion; an
+ * island array, tuple, Map, Set or library object (a Date, a RegExp, an
+ * Error) never does, because its native counterpart is a different object,
+ * so the read would throw a TypeError in a program whose types are true.
+ * The crossing is where the island value takes the program's type, so that
+ * is where the member is named. */
+function refuseUnreceivableMember(lowerer: Lowerer, type: ts.Type, node: ts.Expression): void {
+  const found = unreceivableMember(lowerer, type, "", new Set());
+  if (found === null) return;
+  boundaryFail(
+    lowerer,
+    `an island object typed as the program record '${lowerer.checker.typeToString(type)}', whose member '${found.path}' is declared '${lowerer.checker.typeToString(found.type)}' (an island array, tuple, Map, Set or library object has no native counterpart yet; declare the member with the island's type or 'unknown')`,
+    node,
+  );
+}
+
+/** The first member of the live view `type`, or of a view one of its
+ * members is declared with, that an island value cannot be read into
+ * (refuseUnreceivableMember); null when there is none, and for a type that
+ * is not such a view (`object`, an island-declared type). `seen` ends a
+ * type that names itself. */
+function unreceivableMember(
+  lowerer: Lowerer,
+  type: ts.Type,
+  path: string,
+  seen: Set<ts.Type>,
+): { path: string; type: ts.Type } | null {
+  if (type.isUnionType()) {
+    for (const part of ts.constituentTypes(type)) {
+      const found = unreceivableMember(lowerer, part, path, seen);
+      if (found !== null) return found;
+    }
+    return null;
+  }
+  if ((type.flags & (ts.TypeFlags.Object | ts.TypeFlags.Intersection)) === 0) return null;
+  if (isForeignType(lowerer.nodeIslands!, type, lowerer.checker)) return null;
+  if (!lowerer.classImplementedProtocol(type)) return null;
+  if (seen.has(type)) return null;
+  seen.add(type);
+  const member = (name: string, declared: ts.Type): { path: string; type: ts.Type } | null =>
+    unreceivableValue(lowerer, declared, path === "" ? name : `${path}.${name}`, seen);
+  for (const property of lowerer.checker.getPropertiesOfType(type)) {
+    const name = ts.symbolName(property);
+    // A symbol-keyed member is read through the object's own descriptor.
+    if (name.startsWith("__@")) continue;
+    const found = member(name, lowerer.checker.getTypeOfSymbol(property));
+    if (found !== null) return found;
+  }
+  for (const index of lowerer.checker.getIndexInfosOfType(type)) {
+    const found = member("[key]", index.type);
+    if (found !== null) return found;
+  }
+  return null;
+}
+
+/** unreceivableMember for the value a member (or a promise) holds: the
+ * part of `declared` whose native representation an island value never
+ * meets, at `path`. */
+function unreceivableValue(
+  lowerer: Lowerer,
+  declared: ts.Type,
+  path: string,
+  seen: Set<ts.Type>,
+): { path: string; type: ts.Type } | null {
+  if (declared.isUnionType()) {
+    for (const part of ts.constituentTypes(declared)) {
+      const found = unreceivableValue(lowerer, part, path, seen);
+      if (found !== null) return found;
+    }
+    return null;
+  }
+  // Primitives are copied; `any`, `unknown` and `object` hold the handle.
+  if ((declared.flags & (ts.TypeFlags.Object | ts.TypeFlags.Intersection)) === 0) return null;
+  if (isForeignType(lowerer.nodeIslands!, declared, lowerer.checker)) return null;
+  const mapped = lowerer.mapTypeOf(declared);
+  // A member with no native representation is refused where it is read.
+  if (mapped === null || mapped.kind === "void") return null;
+  // Another view (the marking follows members), or a value that stays
+  // checked-dynamic for a reason of its own.
+  if (mapped.kind === "dyn") return unreceivableMember(lowerer, declared, path, seen);
+  // Byte views share their memory, and an island function is called through
+  // the bridge behind a native closure.
+  if (copiedType(lowerer, mapped) || mapped.kind === "func") return null;
+  // An island promise is adopted; what it settles with is received in turn.
+  if (mapped.kind === "promise") {
+    const settled = lowerer.checker.getAwaitedType(declared);
+    if (settled === undefined || settled === declared) return null;
+    return unreceivableValue(lowerer, settled, path, seen) === null
+      ? null
+      : { path, type: declared };
+  }
+  // A program class instance is the program's own object: an island can
+  // only hand back one it was given, which the checked conversion unboxes.
+  if (mapped.kind === "object" && programClassInstance(declared)) return null;
+  return { path, type: declared };
+}
+
+/** An instance of a class the program declares. */
+function programClassInstance(type: ts.Type): boolean {
+  const symbol = type.getSymbol();
+  return (
+    symbol !== undefined &&
+    (symbol.flags & ts.SymbolFlags.Class) !== 0 &&
+    symbol.declarations.some((d) => !ts.getSourceFileOfNode(d).isDeclarationFile)
+  );
 }
 
 /** An array whose elements are copied values or such arrays. */

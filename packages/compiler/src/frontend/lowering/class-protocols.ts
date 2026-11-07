@@ -33,6 +33,9 @@ export class ClassProtocols {
   private readonly islandViews = new Set<ts.Type>();
   /** islandValue's answers: which expressions read an island handle. */
   private readonly islandValues = new Map<ts.Node, boolean>();
+  /** The object types markReceivedView has answered for, so a type that
+   * names itself in a member (`interface Node { next?: Node }`) ends. */
+  private readonly receivedTypes = new Set<ts.Type>();
 
   constructor(
     private readonly checker: ts.TypeChecker,
@@ -166,7 +169,12 @@ export class ClassProtocols {
    * set `fromIsland` answers for. An intersection or union marks its object
    * parts; an island-declared part is a handle already and is skipped. A
    * type that cannot carry the marking on its symbol — a mapped type, whose
-   * symbol is the shared `__type` — is recorded by instance instead. */
+   * symbol is the shared `__type` — is recorded by instance instead.
+   *
+   * A member read from a live island object is an island value too, received
+   * by the member's declared type (`const i = o.inner` holds the island's
+   * own inner object), so the types a marked type's members are declared
+   * with are marked with it, to any depth (markReceivedMembers). */
   private markIslandView(
     crossing: ts.Expression,
     islands: NodeIslandSet | null,
@@ -182,7 +190,7 @@ export class ClassProtocols {
     add: (type: ts.Type) => void,
     depth: number,
   ): void {
-    if (depth > 6) return;
+    if (depth > RECEIVED_VIEW_DEPTH) return;
     if (type.isUnionType() || type.isIntersectionType()) {
       for (const part of ts.constituentTypes(type))
         this.markReceivedView(part, islands, add, depth + 1);
@@ -190,6 +198,8 @@ export class ClassProtocols {
     }
     if ((type.flags & ts.TypeFlags.Object) === 0) return;
     if (islands !== null && isForeignType(islands, type, this.checker)) return;
+    if (this.receivedTypes.has(type)) return;
+    this.receivedTypes.add(type);
     // A promise the island returns is adopted, never converted: it is the
     // same promise on both sides, and the value that crosses is the one it
     // settles with, where the program awaits it or a reaction receives it.
@@ -211,14 +221,17 @@ export class ClassProtocols {
     if (source !== null) {
       if (this.isStructuralTarget(source)) add(source);
       else this.islandViews.add(type);
+      this.markReceivedMembers(type, islands, add, depth);
       return;
     }
     if (((type as ts.ObjectType).objectFlags & ts.ObjectFlags.Mapped) !== 0) {
       this.islandViews.add(type);
+      this.markReceivedMembers(type, islands, add, depth);
       return;
     }
     if (this.isStructuralTarget(type)) {
       add(type);
+      this.markReceivedMembers(type, islands, add, depth);
       return;
     }
     // A class instance keeps its own native value (fromIsland unboxes it, it
@@ -227,7 +240,40 @@ export class ClassProtocols {
     if (this.isProgramClassInstance(type) || this.checker.isArrayType(type)) return;
     if (this.checker.isTupleType(type)) return;
     if (this.checker.getCallSignatures(type).length > 0) return;
+    // A library class (Date, Map, Error, URL, a typed array) has a native
+    // representation of its own and never becomes a record, so there is no
+    // view to mark; its instance type is also one type for the whole
+    // program, native uses included.
+    if (this.isLibraryClassInstance(type)) return;
     this.islandViews.add(type);
+    this.markReceivedMembers(type, islands, add, depth);
+  }
+
+  /** Marks the types the members of a marked type are declared with: the
+   * island object behind a view holds island objects in its members, and a
+   * read hands one to the member's type. Property types and index signature
+   * values are followed through unions, intersections and optional members
+   * (markReceivedView), so `inner: Inner`, `opt?: Inner`, `Inner | string`,
+   * `Record<string, Inner>` and `Box<Inner>` all reach `Inner`.
+   *
+   * A promise-typed member reaches the type it settles with the same way
+   * (`Promise<Inner>`). Arrays, tuples, Maps, Sets and other library classes
+   * are not records and stay what they are: an island array has no native
+   * counterpart, so a marked type with such a member is refused by name
+   * where the island value crosses (fromIsland's unreceivableMember), not
+   * marked here. */
+  private markReceivedMembers(
+    type: ts.Type,
+    islands: NodeIslandSet | null,
+    add: (type: ts.Type) => void,
+    depth: number,
+  ): void {
+    for (const property of this.checker.getPropertiesOfType(type)) {
+      const member = attempt(() => this.checker.getTypeOfSymbol(property));
+      if (member !== undefined) this.markReceivedView(member, islands, add, depth + 1);
+    }
+    for (const index of this.checker.getIndexInfosOfType(type))
+      this.markReceivedView(index.type, islands, add, depth + 1);
   }
 
   /** Whether `expr` reads a value out of an island handle: its receiver
@@ -1589,6 +1635,28 @@ export class ClassProtocols {
     );
   }
 
+  /** An instance of a class the standard library or a declaration package
+   * provides: a type whose symbol is also a value (`class URL`, or the lib's
+   * `interface Date` with `declare var Date`) and is declared only in
+   * declaration files. A pure library interface (a data shape such as
+   * `PropertyDescriptor`) has no value side and is not one. */
+  private isLibraryClassInstance(type: ts.Type): boolean {
+    const symbol = type.getSymbol();
+    if (symbol === undefined) return false;
+    if (
+      (symbol.flags &
+        (ts.SymbolFlags.Class | ts.SymbolFlags.Variable | ts.SymbolFlags.Function)) ===
+      0
+    )
+      return false;
+    return (
+      symbol.declarations.length > 0 &&
+      symbol.declarations.every(
+        (declaration) => ts.getSourceFileOfNode(declaration).isDeclarationFile,
+      )
+    );
+  }
+
   private isProgramClassInstance(type: ts.Type): boolean {
     const symbol = type.getSymbol();
     return (
@@ -1840,6 +1908,13 @@ export class ClassProtocols {
     return false;
   }
 }
+
+/** How deep markReceivedView follows composites and members. The set of
+ * answered types ends every finite cycle; the bound ends a generic that
+ * names a larger instance of itself in a member (`next: List<T[]>`), and
+ * what lies beyond it stays a native record, which the crossing refuses by
+ * name. */
+const RECEIVED_VIEW_DEPTH = 32;
 
 interface FlowFacts {
   /** Types whose values reach identity comparisons, Set/Map keys, array

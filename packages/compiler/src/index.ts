@@ -1727,7 +1727,7 @@ async function prepareExecutableInputInChild(
     return prepareExecutableInput(entryPath, opts, ffi, buildPlatform, timing, warningSink);
   timing("frontend-process");
   for (const probe of result.frontend.probes) frontendInputs.record(probe);
-  if (!result.frontend.stable) frontendInputs.markUnstable();
+  if (!result.frontend.stable) frontendInputs.markUnstable(result.frontend.unstable);
   const sourceTexts = new Map(result.sourceTexts);
   if (warningSink !== undefined && result.warnings.length > 0) {
     warningSink.warnings = result.warnings;

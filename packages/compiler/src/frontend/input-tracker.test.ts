@@ -17,6 +17,7 @@ import {
   trackedAccessibleEntries,
   trackedDirectoryExists,
   trackedFileExists,
+  trackedHostFact,
   markFrontendInputsUnstable,
   observeFrontendInputs,
   trackedReadFile,
@@ -164,6 +165,82 @@ test("an opaque host query can decline frontend cache publication", () => {
   const snapshot = tracker.snapshot();
   expect(snapshot.stable).toBe(false);
   expect(validFrontendInputSnapshot(snapshot)).toBe(false);
+});
+
+test("a host fact is an input: the entry matches only while it has its value", () => {
+  vi.stubEnv("SCRIPTC_TEST_HOST_FACT", "first");
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => {
+    expect(trackedHostFact("env:SCRIPTC_TEST_HOST_FACT")).toBe("first");
+    expect(trackedHostFact("env:SCRIPTC_TEST_HOST_FACT_UNSET")).toBeNull();
+  });
+  const snapshot = tracker.snapshot();
+  expect(snapshot.stable).toBe(true);
+  expect(validFrontendInputSnapshot(snapshot)).toBe(true);
+  expect(snapshot.probes).toEqual([
+    { op: "host", path: "env:SCRIPTC_TEST_HOST_FACT", value: "first" },
+    { op: "host", path: "env:SCRIPTC_TEST_HOST_FACT_UNSET", value: null },
+  ]);
+  expect(changedFrontendInput(snapshot)).toBeNull();
+  vi.stubEnv("SCRIPTC_TEST_HOST_FACT", "second");
+  expect(frontendInputsStillMatch(snapshot)).toBe(false);
+  expect(changedFrontendInput(snapshot)).toEqual(snapshot.probes[0]);
+  vi.stubEnv("SCRIPTC_TEST_HOST_FACT", "first");
+  vi.stubEnv("SCRIPTC_TEST_HOST_FACT_UNSET", "");
+  expect(changedFrontendInput(snapshot)).toEqual(snapshot.probes[1]);
+  vi.unstubAllEnvs();
+});
+
+test("a host fact named like an output path is still checked", () => {
+  vi.stubEnv("SCRIPTC_TEST_HOST_FACT", "first");
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => trackedHostFact("env:SCRIPTC_TEST_HOST_FACT"));
+  const snapshot = tracker.snapshot();
+  vi.stubEnv("SCRIPTC_TEST_HOST_FACT", "second");
+  expect(frontendInputsStillMatch(snapshot, { outputPaths: ["env:SCRIPTC_TEST_HOST_FACT"] })).toBe(
+    false,
+  );
+  vi.unstubAllEnvs();
+});
+
+test("a host fact read with two values prevents cache publication", () => {
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => {
+    trackedHostFact("env:SCRIPTC_TEST_HOST_FACT", "first");
+    trackedHostFact("env:SCRIPTC_TEST_HOST_FACT", "second");
+  });
+  expect(tracker.snapshot().stable).toBe(false);
+});
+
+test("an unstable snapshot carries its first cause", async () => {
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => {
+    markFrontendInputsUnstable("the host answered without saying what it read");
+    markFrontendInputsUnstable("a later cause");
+  });
+  expect(tracker.snapshot()).toEqual({
+    version: 1,
+    probes: [],
+    stable: false,
+    unstable: "the host answered without saying what it read",
+  });
+  expect(new FrontendInputTracker().snapshot()).toEqual({ version: 1, probes: [], stable: true });
+  const outer = new FrontendInputTracker();
+  outer.runSynchronous(() => {
+    new FrontendInputTracker().runSynchronous(() => markFrontendInputsUnstable("inner cause"));
+  });
+  expect(outer.snapshot().unstable).toBe("inner cause");
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
+  scratch.push(dir);
+  const file = join(dir, "late.ts");
+  const changed = new FrontendInputTracker();
+  await changed.run(async () => {
+    trackedFileExists(file);
+    await writeFile(file, "export {};\n");
+    invalidateTrackedPath(file);
+    trackedReadFile(file);
+  });
+  expect(changed.snapshot().unstable).toBe(`${file} appeared while the frontend ran`);
 });
 
 test("directory enumeration invalidates workspace discovery", async () => {

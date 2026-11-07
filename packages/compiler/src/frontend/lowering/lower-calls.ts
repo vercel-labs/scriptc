@@ -11117,7 +11117,7 @@ function flattensIntoValueList(callback: ts.ArrowFunction): boolean {
  * array methods below builds from one. Only a prediction of how the
  * expression lowers (a link can still fall back to the checked-dynamic
  * array); its callers stay correct either way. */
-function isValueListChain(expr: ts.Expression): boolean {
+export function isValueListChain(expr: ts.Expression): boolean {
   while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
   if (!ts.isCallExpression(expr) || !ts.isPropertyAccessExpression(expr.expression)) return false;
   const access = expr.expression;

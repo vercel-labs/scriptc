@@ -27,7 +27,7 @@ import { ARRAY_METHODS } from "../surfaces.js";
 import { tryLowerExpression } from "../expressions/try-lower-expression.js";
 import { isSafeToRepeat } from "../expressions/evaluation-safety.js";
 import { isJsSourceFile, locOf } from "../../program.js";
-import { lowerDynDispatchMethodCall } from "../lower-calls.js";
+import { isValueListChain, lowerDynDispatchMethodCall } from "../lower-calls.js";
 import {
   arrayIndexPresent,
   arrayValueRead,
@@ -65,7 +65,7 @@ import {
 import { arrayLengthDeclaration } from "./array-iteration.js";
 import {
   lowerArrayCallback,
-  arrayCallbackDeclaresRest,
+  arrayCallbackNeedsDynamicView,
   callbackArrayElement,
   requireProducedArrayElement,
 } from "./callback-arguments.js";
@@ -444,29 +444,30 @@ function orderedSeparatorJoin(
 
 /** A rest-parameter callback cannot ride a native array helper: the helper
  * passes only the parameters the callback declares, while the callback
- * expects every argument the method passes. A list a method is handed runs
- * on the list's checked-dynamic view instead, where the method calls the
- * callback the way Node does. Undefined when the callback takes a fixed
- * parameter list, which keeps the native list; null when no
- * checked-dynamic path answers the call. */
+ * expects every argument the method passes. Nor can the other callbacks
+ * arrayCallbackNeedsDynamicView names. A list a method is handed runs on
+ * the list's checked-dynamic view instead, where the method calls the
+ * callback the way Node does, and answers what the method made there: a
+ * checked-dynamic value, checked where it is used, as these lists answered
+ * before they stayed native. Undefined when the callback is one the native
+ * loop calls, which keeps the native list, and when the view has no
+ * dispatch for the method (flatMap, findLastIndex, reduce, reduceRight and
+ * toSorted in TypeScript sources): the native lowering then serves the
+ * callback (a flatMap whose callback returns checked-dynamic values boxes
+ * it) or refuses it by name (requireFixedArityCallback). */
 function lowerRestCallbackOverProbedList(
   lowerer: Lowerer,
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
   probe: IrExpr,
-): IrExpr | null | undefined {
+): IrExpr | undefined {
   if (
-    !arrayCallbackDeclaresRest(lowerer, call) ||
+    !arrayCallbackNeedsDynamicView(lowerer, call) ||
     (!isJsSourceFile(ts.getSourceFileOfNode(access)) && !lowerer.isStdlibMember(access))
   )
     return undefined;
   const view = lowerer.coerceInto(access.expression, probe, DYN);
-  const dispatched = lowerDynDispatchMethodCall(lowerer, call, access, view, true);
-  if (!dispatched) return null;
-  const result = lowerer.mapTypeOf(lowerer.typeOf(call));
-  return result && result.kind !== "void" && result.kind !== "dyn"
-    ? lowerer.coerceInto(call, dispatched, result)
-    : dispatched;
+  return lowerDynDispatchMethodCall(lowerer, call, access, view, true) ?? undefined;
 }
 
 /** Ambient array method calls. `push`/`unshift`/`pop`/`reverse`/
@@ -606,6 +607,22 @@ export function lowerArrayMethodCall(
       const checkedDynamic = lowerRestCallbackOverProbedList(lowerer, call, access, probe);
       if (checkedDynamic !== undefined) return checkedDynamic;
       receiverIr = probe.type;
+    }
+  }
+  // A list a chain of these methods made from Object.values is native
+  // whatever its element type (`Object.values(o).map((v) => v.n)` is a
+  // number[], which no probe above looks at), and it was a checked-dynamic
+  // array before the chain stayed native: it hands the same callbacks to
+  // its view.
+  if (
+    receiverIr?.kind === "array" &&
+    isValueListChain(access.expression) &&
+    arrayCallbackNeedsDynamicView(lowerer, call)
+  ) {
+    const probe = lowerer.lowerExpr(access.expression);
+    if (probe.type.kind === "array") {
+      const checkedDynamic = lowerRestCallbackOverProbedList(lowerer, call, access, probe);
+      if (checkedDynamic !== undefined) return checkedDynamic;
     }
   }
   if (receiverIr?.kind === "union") {

@@ -56,6 +56,7 @@ import {
 import { typeKey } from "../../type-mapper.js";
 import {
   lowerArrayCallback,
+  requireFixedArityCallback,
   requireProducedArrayElement,
   unitOnlyArrayElement,
   callbackArrayElement,
@@ -1852,6 +1853,7 @@ export function lowerArrayFlatMapCall(
     // A callback that returns the values of a checked-dynamic object
     // returns the native list of them, which the flatten below reads.
     valueListCallbackReturn(lowerer, argNode),
+    true,
   );
   const { fnArg, arity } = lowered;
   // Only an array that can hold elements outside its element type needs to
@@ -1872,6 +1874,8 @@ export function lowerArrayFlatMapCall(
       loc,
     };
   }
+  // Every path below calls the callback from a helper's loop.
+  requireFixedArityCallback(lowerer, argNode, fnArg.type);
   if (fnRet.kind === "union") {
     const def = lowerer.unions.get(fnRet.unionId);
     const plan = def?.arms.some((a) => a.kind === "array")
@@ -2972,6 +2976,7 @@ export function lowerArraySortCall(
   ) {
     lowerer.badType(argNode, lowerer.typeOf(argNode));
   }
+  requireFixedArityCallback(lowerer, argNode, fnArg.type);
   const arity = fnArg.type.params.length;
   // The runtime sorts raw slots without per-move reference counting; this
   // beats the IR merge sort even when its comparator call becomes direct.
@@ -3126,8 +3131,11 @@ export function lowerDynArrayFlatMapCall(
   if (call.arguments.nodes.length !== 1) return null;
   const argNode = call.arguments.nodes[0]!;
   const loc = locOf(call);
-  const { fnArg, arity } = lowerArrayCallback(lowerer, argNode, [DYN], DYN);
+  const { fnArg, arity } = lowerArrayCallback(lowerer, argNode, [DYN], DYN, false, undefined, true);
   const ret = fnArg.type.ret;
+  // Only the dynamic-returning path boxes the callback; the helper below
+  // calls it from its loop.
+  if (ret.kind !== "dyn") requireFixedArityCallback(lowerer, argNode, fnArg.type);
   if (ret.kind !== "array") {
     // A DYNAMIC-returning callback (`plugins.flatMap((plugin) =>
     // plugin.languages ?? [])` — the getSupportInfo shape, where the

@@ -1328,6 +1328,45 @@ export function lowerPropertyAccessExpr(
       };
     }
   }
+  // `f.caller` / `f.arguments` on a FUNCTION-typed JavaScript value: the
+  // spec's restricted function properties. Compiled functions are
+  // strict-mode function objects, so the own-property lookup misses and
+  // Function.prototype's %ThrowTypeError% accessor answers, exactly as in
+  // Node. (V8 additionally gives a SLOPPY function own caller/arguments
+  // data properties with the value null; that reflection belongs to the
+  // engine, not to the strict function objects a compiled function is.)
+  if (
+    (expr.name.text === "caller" || expr.name.text === "arguments") &&
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    expr.questionDotToken === undefined
+  ) {
+    const restricted = tryLowerExpression(lowerer, expr.expression);
+    // Every compiled function is a strict-mode function object, so the
+    // answer does not depend on whether its value boxes into the dynamic
+    // tier: a shape method, a class method, or a generator function throws
+    // here exactly like a declared function.
+    if (restricted?.type.kind === "func") {
+      const thrown = nodeThrowExpr(
+        1,
+        "",
+        "'caller', 'callee', and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them",
+        DYN,
+        loc,
+      );
+      // The receiver is evaluated before the property is read: its effects
+      // and its own exception come first (`(step(), f).caller`).
+      const read: IrExpr = isSafeToDiscard(restricted)
+        ? thrown
+        : {
+            kind: "seqExpr",
+            stmts: [{ kind: "exprStmt", expr: restricted, loc: restricted.loc }],
+            result: thrown,
+            type: DYN,
+            loc,
+          };
+      return lowerer.maybeNarrow(read, expr);
+    }
+  }
   // A client function chosen at run time (`const requestFn = c ?
   // https.request : http.request`): both arms are Node's `request` (the
   // .get pair both are `get`), and the length follows the arm the program
@@ -6180,7 +6219,7 @@ export function builtinGlobalValueAt(
           ),
         ) &&
         !faithfulOwnKeyQuery(lowerer, callee, canonical));
-    if (reflects) {
+    if (reflects && !answersOwnKeyProbe(lowerer, callee, call, node, expr)) {
       const name =
         owner !== null
           ? `${owner}.${callee.name.text}`
@@ -6193,6 +6232,81 @@ export function builtinGlobalValueAt(
     }
   }
   return value;
+}
+
+/** The `Object.prototype` methods whose answer for a builtin function value
+ * follows from the own keys the interned value models: the two own-key
+ * probes, and the tag `toString` answers. */
+const BUILTIN_VALUE_OWN_KEY_PROBES: ReadonlySet<string> = new Set([
+  "hasOwnProperty",
+  "propertyIsEnumerable",
+  "toString",
+]);
+
+/** The globals Node implements as ECMAScript intrinsic functions. Each value
+ * owns exactly `length` and `name`, the two properties the interned function
+ * value models, and no `prototype`. */
+const INTRINSIC_FUNCTION_GLOBALS: ReadonlySet<string> = new Set([
+  "eval",
+  "parseInt",
+  "parseFloat",
+  "isNaN",
+  "isFinite",
+  "decodeURI",
+  "decodeURIComponent",
+  "encodeURI",
+  "encodeURIComponent",
+  "escape",
+  "unescape",
+]);
+
+/** Whether `callee` is `Object.prototype.<probe>.call` (`probe` one of
+ * BUILTIN_VALUE_OWN_KEY_PROBES) handing the builtin global `expr` to a probe
+ * the value answers exactly. The interned function value models a function's
+ * own `length` and `name` and nothing else, so:
+ *
+ * - the tag `toString` answers for every function value;
+ * - an intrinsic function global owns exactly those two keys, so any key
+ *   answers Node's question;
+ * - an ordinary lib-declared function (`setTimeout`, `atob`) also owns
+ *   `prototype`, which the interned value does not describe, so a probe that
+ *   could name it keeps the fence — a computed key could always be
+ *   `"prototype"`;
+ * - every other builtin global read as a value (a constructor or namespace
+ *   interface) owns `prototype` and its statics, which the interned value
+ *   does not describe either, so those keep the fence too. */
+function answersOwnKeyProbe(
+  lowerer: Lowerer,
+  callee: ts.PropertyAccessExpression,
+  call: ts.CallExpression,
+  value: ts.Node,
+  expr: ts.Expression,
+): boolean {
+  if (callee.name.text !== "call" || call.arguments.nodes[0] !== value) return false;
+  const method = callee.expression;
+  if (!ts.isPropertyAccessExpression(method) || !BUILTIN_VALUE_OWN_KEY_PROBES.has(method.name.text))
+    return false;
+  const prototype = method.expression;
+  if (
+    !ts.isPropertyAccessExpression(prototype) ||
+    prototype.name.text !== "prototype" ||
+    !lowerer.isStdlibGlobal(prototype.expression, "Object") ||
+    !lowerer.isStdlibMember(method)
+  )
+    return false;
+  const name = stdlibGlobalNameOf(lowerer, expr);
+  if (name === null) return false;
+  const symbol = lowerer.typeOf(expr).getSymbol();
+  if (
+    symbol === undefined ||
+    !lowerer.isStdlibSymbol(symbol) ||
+    !symbol.declarations.some((d) => ts.isFunctionDeclaration(d))
+  )
+    return false;
+  if (method.name.text === "toString") return true;
+  if (INTRINSIC_FUNCTION_GLOBALS.has(name)) return true;
+  const key = call.arguments.nodes[1];
+  return key !== undefined && ts.isStringLiteral(key) && key.text !== "prototype";
 }
 
 /** Whether the stdlib global `expr` is read for its members (`Map.prototype`,

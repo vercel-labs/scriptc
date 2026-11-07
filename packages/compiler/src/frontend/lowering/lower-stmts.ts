@@ -296,6 +296,7 @@ import { isFspGlobCall, lowerFspGlobForAwait } from "./builtins/fs-glob.js";
 import { isTimersPromisesIntervalCall } from "./builtins/timers.js";
 import {
   isNativeFfiRequire,
+  awaitedBuiltinDynamicImportOf,
   builtinMemberRequireDecl,
   builtinNamespaceDestructureModuleOf,
   createRequireBindingDecl,
@@ -2512,12 +2513,30 @@ function lowerVarDeclarator(
   // `const { NGHTTP2_CANCEL } = http2.constants` — a destructure over
   // the baked constants table: alias plumbing, no storage (uses read
   // their literals via builtinConstantBindingOf; collectGlobals skipped
-  // the globals by the same test).
-  if (lowerer.builtinConstantsDestructureDecl(decl.name, decl.initializer)) return [];
+  // the globals by the same test). The initializer still evaluates where
+  // the declaration sits when it is an awaited literal import
+  // (`(await import("node:crypto")).constants`), so the await and its
+  // microtask hop happen here.
+  if (
+    decl.initializer !== undefined &&
+    lowerer.builtinConstantsDestructureDecl(decl.name, decl.initializer)
+  ) {
+    const load = lowerer.builtinReceiverLoad(decl.initializer, locOf(decl));
+    return load === null ? [] : [load];
+  }
   if (ts.isArrayBindingPattern(decl.name) || ts.isObjectBindingPattern(decl.name)) {
     // `const { createSign } = crypto` over a builtin NAMESPACE binding:
     // alias plumbing (builtinImportOf routes the reads) — no statement.
-    if (builtinNamespaceDestructureModuleOf(lowerer, decl) !== null) return [];
+    // `await import("node:crypto")` sources the same namespace, but the
+    // await is an observable step: the import evaluates where the
+    // declaration sits and its namespace is dropped, leaving the bindings
+    // pure aliases.
+    if (builtinNamespaceDestructureModuleOf(lowerer, decl) !== null) {
+      const awaited = awaitedBuiltinDynamicImportOf(lowerer, decl.initializer!);
+      return awaited === null
+        ? []
+        : [{ kind: "exprStmt", expr: lowerer.lowerExpr(awaited.awaited), loc: locOf(decl) }];
+    }
     // `const { A, B } = ns` over a CommonJS module binding: each name
     // snapshots the named export's value here (cjs-inline-require.ts).
     {
@@ -6844,8 +6863,15 @@ export function lowerVarDecl(
   // `const { NGHTTP2_CANCEL } = http2.constants` — a destructure over
   // the baked constants table: alias plumbing, no storage (uses read
   // their literals via builtinConstantBindingOf; collectGlobals skipped
-  // the globals by the same test).
-  if (lowerer.builtinConstantsDestructureDecl(decl.name, decl.initializer)) return null;
+  // the globals by the same test). The initializer still evaluates where
+  // the declaration sits when it is an awaited literal import
+  // (`(await import("node:crypto")).constants`), so the await and its
+  // microtask hop happen here.
+  if (
+    decl.initializer !== undefined &&
+    lowerer.builtinConstantsDestructureDecl(decl.name, decl.initializer)
+  )
+    return lowerer.builtinReceiverLoad(decl.initializer, locOf(decl));
 
   // `const Writable = stream.Writable` — a stream class through the
   // namespace binding: alias plumbing, no storage (uses resolve through

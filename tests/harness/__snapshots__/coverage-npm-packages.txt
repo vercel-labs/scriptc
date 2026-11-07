@@ -9,3 +9,8 @@ scriptc coverage tests/corpus/native-npm-imports/main.ts
     @acme/units  static
 
   fully static — all analyzed statements compile to native code.
+
+  trusts unverified types   1 checked conversion on 1 claim (compiles; a value that contradicts its claimed type throws a TypeError at the conversion)
+      ×1  mathkit@1.0.0, compiled from its JavaScript: 1 conversion trusts 1 declaration of its own
+          at tests/corpus/native-npm-imports/node_modules/mathkit/index.js:14:13
+          fix: run the package in a Node island (--node-island=mathkit), or patch the declaration that is wrong: scriptc types patch mathkit <selector> '<type>' (--print=diagnostics lists each declaration's selector)

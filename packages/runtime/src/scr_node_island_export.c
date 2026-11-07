@@ -816,6 +816,9 @@ static void ni_settle_export(uint32_t id, ScrPromise *p) {
     payload = NULL; /* a void fulfillment */
   }
   if (payload == NULL) payload = scr_dyn_retain(scr_dyn_undefined());
+  /* Node raises `unhandledRejection` with this reason if nobody handles the
+   * V8 promise: a native listener receives the native error itself. */
+  if (rejected) scr_ni_error_link(payload);
   if (!scr_ni_value_out(payload, &value)) {
     /* The payload cannot cross: the promise rejects with that error. */
     scr_dyn_release(payload);
@@ -846,12 +849,12 @@ void scr_ni_host_export_watch(uint32_t id) {
   ScrDyn *v = scr_ni_export_value(id);
   if (v == NULL || v->kind != SCR_DYN_PROMISE) return;
   ScrPromise *p = v->v.promise;
-  scr_promise_mark_handled(p);
-  if (!scr_promise_is_pending(p)) {
-    ni_settle_export(id, p);
-    return;
-  }
-  scr_promise_on_settle_sync(p, ni_promise_settled);
+  bool handled = scr_promise_tracked_by_node(p);
+  if (!scr_promise_is_pending(p)) ni_settle_export(id, p);
+  else scr_promise_on_settle_sync(p, ni_promise_settled);
+  /* Native code already reacts to the promise: its V8 promise is handled
+   * too, so island code that only holds it sees no unhandled rejection. */
+  if (handled) scr_ni_promise_handled(p);
 }
 
 /* ── shared modules (scope-B NI-6) ────────────────────────────────────
@@ -1152,7 +1155,7 @@ static void ni_helpers_cleanup(void) {
   ni_helpers = NULL;
 }
 
-static ScrDyn *ni_helper(const char *name, ScrDyn *const *args, size_t argc) {
+ScrDyn *scr_ni_helper(const char *name, ScrDyn *const *args, size_t argc) {
   if (ni_helpers == NULL) {
     ScrStr *path = scr_str_new("scriptc:island-helpers", 22);
     ni_helpers = scr_ni_require(path);
@@ -1171,7 +1174,7 @@ static ScrDyn *ni_helper_spread(const char *name, ScrDyn **lead, size_t nlead, S
   if (all == NULL) ni_export_oom();
   for (size_t i = 0; i < nlead; i++) all[i] = lead[i];
   for (size_t i = 0; i < n; i++) all[nlead + i] = args->v.arr.items[i];
-  ScrDyn *r = ni_helper(name, all, nlead + n);
+  ScrDyn *r = scr_ni_helper(name, all, nlead + n);
   if (all != small) free(all);
   return r;
 }
@@ -1179,7 +1182,7 @@ static ScrDyn *ni_helper_spread(const char *name, ScrDyn **lead, size_t nlead, S
 /* Creates the JavaScript class (base, name, ctor, fields, methods, getters,
  * setters): +1 island handle, or NULL with the error pending. */
 ScrDyn *scr_ni_subclass_create(ScrDyn *const *args) {
-  return ni_helper("subclass", args, 7);
+  return scr_ni_helper("subclass", args, 7);
 }
 
 /* NI-5d: before Node has started (the base is a deferred island class's
@@ -1212,7 +1215,7 @@ ScrDyn *scr_node_island_super_method(ScrDyn *base, ScrDyn *self, ScrStr *name, S
 void scr_node_island_define_field(ScrDyn *self, ScrStr *key, ScrDyn *value) {
   ScrDyn *k = scr_dyn_new_str(key);
   ScrDyn *args[] = {self, k, value};
-  ScrDyn *r = ni_helper("defineField", args, 3);
+  ScrDyn *r = scr_ni_helper("defineField", args, 3);
   scr_dyn_release(k);
   scr_dyn_release(r);
 }
@@ -1224,7 +1227,7 @@ bool scr_node_island_instanceof_global(ScrDyn *value, ScrStr *name) {
   if (value == NULL || !scr_ni_is_handle(value)) return false;
   ScrDyn *n = scr_dyn_new_str(name);
   ScrDyn *args[] = {value, n};
-  ScrDyn *r = ni_helper("isInstance", args, 2);
+  ScrDyn *r = scr_ni_helper("isInstance", args, 2);
   scr_dyn_release(n);
   bool yes = r != NULL && r->kind == SCR_DYN_BOOL && r->v.b;
   scr_dyn_release(r);
@@ -1235,6 +1238,6 @@ bool scr_node_island_instanceof_global(ScrDyn *value, ScrStr *name) {
 /* util.promisify of an island function: Node's own, in the island. */
 ScrDyn *scr_node_island_promisify(ScrDyn *fn) {
   ScrDyn *args[] = {fn};
-  return ni_helper("promisify", args, 1);
+  return scr_ni_helper("promisify", args, 1);
 }
 #endif

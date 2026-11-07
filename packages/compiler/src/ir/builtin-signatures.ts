@@ -262,6 +262,12 @@ function buildLibFnSignatures() {
      * Node islands: an island thenable as the promise V8 adopts it into,
      * any other value as itself. */
     "nodeIsland.adoptThenable": { argTypes: [DYN], result: DYN },
+    /** process.exitCode in a program with Node islands: Node's property
+     * once Node is loaded, the runtime's own value before
+     * (island-process-state.ts). */
+    "nodeIsland.setExitCode": { argTypes: [F64], result: VOID },
+    "nodeIsland.exitCode": { argTypes: [], result: F64 },
+    "nodeIsland.hasExitCode": { argTypes: [], result: BOOL },
     /** Keyed WRITE on a dyn value — `h.onDone = cb` / `h["k"] = v` on a
      * checked-dynamic object (args: receiver, key string, value — all
      * borrowed; the runtime copies the key and retains the value in). An

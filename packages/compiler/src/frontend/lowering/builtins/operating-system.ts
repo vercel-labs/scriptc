@@ -1,11 +1,12 @@
 import { keyedHelperName } from "../stable-names.js";
-import { numLit, strLit, varRef } from "../../../ir/build.js";
+import { boolLit, numLit, strLit, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { knownBufEncoding } from "../containers/bytes.js";
 import { type Lowerer } from "../lowerer.js";
 import {
   BOOL,
   BYTES_U8,
+  DYN,
   F64,
   type IrExpr,
   type IrStmt,
@@ -421,9 +422,21 @@ export function lowerPathParseCall(
     lowerer.noLowering("path.parse without exactly one path", call, "parse(path) takes one string");
   }
   const result = lowerer.mapTypeOf(lowerer.typeOf(call));
-  const shape = result?.kind === "record" ? lowerer.shapes.get(result.shapeId) : undefined;
+  if (result === null || result.kind === "dyn") {
+    // The untyped lane (a require binding, or a call the checker types as
+    // `any`): Node's parse checks the path at runtime and answers the fresh
+    // object with root, dir, base, ext and name, which the runtime builds.
+    return {
+      kind: "libCall",
+      fn: "path.parseValue",
+      args: [lowerer.coerceInto(arg, lowerer.lowerExpr(arg), DYN), boolLit(win32, loc)],
+      type: DYN,
+      loc,
+    };
+  }
+  const shape = result.kind === "record" ? lowerer.shapes.get(result.shapeId) : undefined;
   if (
-    result?.kind !== "record" ||
+    result.kind !== "record" ||
     !shape ||
     shape.tuple ||
     shape.indexValue ||
@@ -521,6 +534,20 @@ export function lowerPathFormatCall(
       "an object whose root, dir, base, name and ext are strings or optional strings",
     );
   const value = lowerer.lowerExpr(arg);
+  const result = lowerer.mapTypeOf(lowerer.typeOf(call));
+  if ((result === null || result.kind === "dyn") && value.type.kind === "dyn") {
+    // The untyped lane: the runtime reads dir, root, base, name and ext off
+    // the object as Node's _format does, and answers base itself when there
+    // is no dir, which need not be a string. A statically typed record
+    // keeps the verified shape below.
+    return {
+      kind: "libCall",
+      fn: "path.formatValue",
+      args: [value, boolLit(win32, loc)],
+      type: DYN,
+      loc,
+    };
+  }
   if (value.type.kind !== "record") fence();
   const recordT = value.type;
   const shape = lowerer.shapes.get(recordT.shapeId);

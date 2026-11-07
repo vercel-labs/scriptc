@@ -3342,6 +3342,12 @@ function buildLibFnSignatures() {
       argTypes: [DYN],
       result: { kind: "object", className: "%Transform" },
     },
+    /** stream.handleWritable for a value typed as a Writable handle class
+     * (a Sign or Verify): the value's native Writable (+1). */
+    "stream.handleWritable": {
+      argTypes: [DYN],
+      result: { kind: "object", className: "%Writable" },
+    },
     /** Checked-dynamic stream slots (dyn-streams.ts): the native stream a
      * checked-dynamic value boxes (+1) — a runtime stream with the readable
      * (1) or writable (2) side — or null for any other value. Never throws;

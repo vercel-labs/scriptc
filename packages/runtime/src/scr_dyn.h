@@ -2168,12 +2168,12 @@ ScrDyn *scr_dyn_fn_get(const ScrDyn *d, const char *key, size_t key_len);
 ScrDyn *scr_dyn_function_properties(const ScrDyn *function);
 /* The table a function value already has. +1, or NULL. */
 ScrDyn *scr_dyn_function_properties_existing(const ScrDyn *function);
-/* Object.defineProperties over dyn values (targets: OBJ and FUNC): each
- * descriptor's `value` becomes an own data property. OBJ targets preserve
- * writable/enumerable/configurable; FUNC targets still use plain properties.
- * get/set throw the "not supported yet" Error.
+/* Object.defineProperties over dyn values: every descriptor of the map is
+ * read and converted (scr_dyn_define_props_pending), then each is defined
+ * through scr_dyn_define_property, which decides what a target accepts.
+ * The map and a descriptor may be typed records held by reference.
  * Returns the target (+1, JS's return), or NULL with a pending catchable
- * TypeError (non-object target/descriptor — Node's messages). */
+ * TypeError (primitive target, bad map or descriptor: Node's messages). */
 ScrDyn *scr_dyn_define_props(ScrDyn *target, ScrDyn *descs);
 /* The same, where each descriptor may be any object (scr_dyn_descriptor_snapshot). */
 ScrDyn *scr_dyn_define_props_shapes(ScrDyn *target, ScrDyn *descs);
@@ -2447,6 +2447,10 @@ typedef struct ScrDynHandleOps {
    * stream unit builds the handle's Transform from these operations on its
    * first stream use. NULL = the class is not a stream. */
   const struct ScrDynHandleTransform *transform;
+  /* A handle that is also a Node Writable (Sign, Verify): the stream unit
+   * builds the handle's Writable from these operations on its first stream
+   * use. NULL = the class is not a stream. */
+  const struct ScrDynHandleWritable *writable;
   /* The class's methods as values, terminated by a NULL name; NULL = a
    * property read answers no methods (member calls still reach invoke).
    * See ScrDynHandleMethod. */
@@ -2597,6 +2601,20 @@ typedef struct ScrDynHandleTransform {
   struct ScrBytes *(*final)(void *h);
   ScrTraceFn trace;
 } ScrDynHandleTransform;
+
+/* A handle that is a Node Writable (Sign, Verify): the stream unit builds
+ * the handle's Writable from these operations on its first stream use, and
+ * each write() hands update() the chunk's bytes exactly as Node's _write
+ * does. There is no _final: Node's Sign and Verify finish as soon as their
+ * last write completes. The steps hold the handle, so the handle is a
+ * collector-headered object whose trace visits its stream (the pair is
+ * reclaimed as a cycle). */
+typedef struct ScrDynHandleWritable {
+  void *(*stream)(void *h);
+  void (*set_stream)(void *h, void *stream, void (*release)(void *));
+  void (*write)(void *h, struct ScrBytes *chunk);
+  ScrTraceFn trace;
+} ScrDynHandleWritable;
 
 /* Checked-dynamic member calls and property reads on a Transform handle,
  * installed by the stream unit (scr_stream_install); NULL in a program

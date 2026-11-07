@@ -320,6 +320,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.dynTransformResult",
   "stream.unboxDynStage",
   "stream.handleStream",
+  "stream.handleWritable",
   "stream.unpipeDyn",
   "stream.workerStdio",
 ]);
@@ -581,6 +582,14 @@ interface TypeTables {
   textDecoderCarriers?: TypeCarriers;
   /** mentionsU8Bytes's carriers. */
   u8BytesCarriers?: TypeCarriers;
+}
+
+/** Whether `t`, the record of a `Promise.withResolvers()`, holds a promise
+ * of a checked-dynamic value. */
+function resolversOfDyn(t: IrType, tables: TypeTables): boolean {
+  if (t.kind !== "record") return false;
+  const promise = tables.records.get(t.shapeId)?.fields.find((f) => f.name === "promise")?.type;
+  return promise?.kind === "promise" && promise.inner.kind === "dyn";
 }
 
 /** Whether boxing a value of type `t` as dyn boxes a promise, which goes
@@ -1393,7 +1402,11 @@ const RUNTIME_FEATURE_RULES = {
       // AggregateError list).
       (node.kind === "intrinsic" &&
         (node.name === "promise.allSettled" || node.name === "promise.any")) ||
-      (node.kind === "dynFrom" && boxesPromise(node.value.type, tables(), new Set())),
+      (node.kind === "dynFrom" && boxesPromise(node.value.type, tables(), new Set())) ||
+      // The resolve function of a promise of a checked-dynamic value that
+      // may be given a promise adopts it (scr_make_resolve_dyn).
+      (node.kind === "newPromise" && node.resolves === true) ||
+      (node.kind === "promiseWithResolvers" && resolversOfDyn(node.type, tables())),
   }),
   /** The Promise statics through Function.prototype.call with a foreign
    * constructor (scr_js_promise_generic.c): NewPromiseCapability(C), the

@@ -314,7 +314,7 @@ import {
   isCjsRequireGlobal,
   lowerRequireCacheKeys,
 } from "./lower-node-module.js";
-import { pathModuleValue } from "./lower-builtin-values.js";
+import { builtinConstantsObject, pathModuleValue } from "./lower-builtin-values.js";
 import {
   defaultAfterUndefined,
   lowerOptionalArgument,
@@ -322,7 +322,11 @@ import {
   positionNumber,
 } from "./optional-arguments.js";
 import { fenceSymbolFieldCopy } from "./symbol-fields.js";
-import { lowerClassDataDescriptor, lowerClassDescriptorRead } from "./class-descriptors.js";
+import {
+  lowerClassDataDescriptor,
+  lowerClassDescriptorMap,
+  lowerClassDescriptorRead,
+} from "./class-descriptors.js";
 import { lowerClassFieldDefine, lowerClassIntegrity } from "./class-attributes.js";
 import { freezableRecordType, lowerNativeFreeze, noteUntypedIntegrity } from "./frozen-records.js";
 import { classStaticDataFor } from "./class-static-data.js";
@@ -627,7 +631,11 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     // The platform namespaces are the path module objects.
     if (module === "path/posix" || module === "path/win32")
       return pathModuleValue(lowerer, module, loc);
-    if (module !== null && module !== "constants") {
+    // node:constants is one checked-dynamic object (its members are the
+    // platform's C tables, merged by the runtime), so an inline require of
+    // it answers that object, the same value a namespace binding reads.
+    if (module === "constants") return builtinConstantsObject(lowerer, loc);
+    if (module !== null) {
       const moduleId = `builtin:${module}`;
       return { kind: "moduleNsRef", moduleId, type: { kind: "moduleNs", moduleId }, loc };
     }
@@ -8943,9 +8951,11 @@ export function lowerBytesIntegrity(
 
 /** True when the expression is statically a PLAIN OBJECT at runtime: a dyn
  *  object literal, or a record (a literal, a clone, or any expression of a
- *  record type, which dynFrom boxes field by field). Both build an ordinary
- *  object whose fields are own data properties, which the plain-object
- *  descriptor reader answers exactly. Every other expression (a variable of
+ *  record type). The first is an ordinary object; the second is held by
+ *  reference and read through its view, which is one. Either way its fields
+ *  are own properties, which the plain-object descriptor reader answers
+ *  exactly (scr_dyn_define_property and scr_dyn_define_props_pending read a
+ *  record held by reference through that view). Every other expression (a variable of
  *  any other type, a call, an array, a function) may be an object of any
  *  kind with inherited fields, so it takes the entry points whose
  *  ToPropertyDescriptor reads every object kind (dyn.definePropertyShapes
@@ -8961,8 +8971,8 @@ export function isPlainObjectLiteral(expr: IrExpr): boolean {
  *  Object.defineProperties or Object.create: a plain object
  *  (isPlainObjectLiteral) whose every field is a plain object too. A dyn
  *  literal's field values are checked with isPlainObjectLiteral and a
- *  record's fields by their types, since dynFrom boxes a record-typed field
- *  into an ordinary object. A map with any other field (`{ a: view }`, where
+ *  record's fields by their types, since a record-typed field reads as a
+ *  record held by reference. A map with any other field (`{ a: view }`, where
  *  `view` is a DataView or an array) takes the any-object entry points. */
 export function isPlainDescriptorMap(
   expr: IrExpr,
@@ -8980,6 +8990,125 @@ export function isPlainDescriptorMap(
     shape.indexValue === undefined &&
     shape.fields.every((field) => field.type.kind === "record")
   );
+}
+
+/** The receiver of Object.defineProperty, Object.defineProperties and
+ * Object.getOwnPropertyDescriptor, lowered. An untyped value whose declared
+ * type is a class instance is that instance, so the class lowerings see it. */
+function lowerDefineReceiver(lowerer: Lowerer, targetNode: ts.Expression): IrExpr | null {
+  const target = tryLowerExpression(lowerer, targetNode);
+  // The checker gives C.prototype the instance type, but its lowered
+  // value is the shared prototype table, not an instance to unbox.
+  const prototypeTarget =
+    ts.isPropertyAccessExpression(targetNode) &&
+    targetNode.name.text === "prototype" &&
+    (exactClassOfReceiver(lowerer, targetNode.expression) !== null ||
+      storedClassValueType(lowerer, targetNode.expression)?.kind === "classval");
+  const declaredTarget =
+    target?.type.kind === "dyn" &&
+    !prototypeTarget &&
+    !isJsSourceFile(ts.getSourceFileOfNode(targetNode))
+      ? lowerer.mapTypeOf(lowerer.typeOf(targetNode))
+      : null;
+  return target && declaredTarget && isDynTypedRefType(declaredTarget)
+    ? lowerer.coerceToExpected(target, declaredTarget)
+    : target;
+}
+
+/** A property key as a define call names it: a name known here (a string
+ * literal key, a member name of a literal descriptor map), or the expression
+ * that computes it. */
+type DefinedKey = { name: string } | { expression: ts.Expression };
+
+/** The keys a literal descriptor map names. Null when the map is not a
+ * literal of named members, so its keys are not known here. */
+function descriptorMapKeys(map: ts.Expression): DefinedKey[] | null {
+  while (ts.isParenthesizedExpression(map)) map = map.expression;
+  if (!ts.isObjectLiteralExpression(map)) return null;
+  const keys: DefinedKey[] = [];
+  for (const property of map.properties.nodes) {
+    if (ts.isSpreadAssignment(property) || !property.name) return null;
+    const name = property.name;
+    if (ts.isComputedPropertyName(name)) keys.push({ expression: name.expression });
+    else if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name))
+      keys.push({ name: name.text });
+    else return null;
+  }
+  return keys;
+}
+
+/** The receiver of Object.defineProperty, Object.defineProperties or
+ * Object.getOwnPropertyDescriptor as the checked-dynamic value whose
+ * property table the runtime reads and writes, or null when it has none (a
+ * typed record, a native array, a Map): the call is then refused by name.
+ * One rule for the three calls, so a receiver one of them serves is served
+ * by the others, with two exceptions the callers name. `keys` are the keys
+ * the call names, or null when it does not name them here (a descriptor map
+ * built elsewhere). `primitives` admits a boolean, number or string, whose
+ * own properties a descriptor read answers. `tablelessClasses` admits a
+ * class value whose constructor has no property table: the runtime refuses
+ * a definition on one when the call runs (scr_dyn_class_reflection_fence),
+ * which Object.defineProperty has always compiled; Object.defineProperties
+ * refuses that call here instead. */
+function defineReceiverAsDyn(
+  lowerer: Lowerer,
+  targetNode: ts.Expression,
+  receiver: IrExpr,
+  keys: readonly DefinedKey[] | null,
+  primitives: boolean,
+  tablelessClasses: boolean,
+): IrExpr | null {
+  let target = receiver;
+  // Error instances share a live property table with their checked view.
+  const errorViewKey = (key: DefinedKey): boolean =>
+    "name" in key
+      ? key.name === "cause" || key.name === "message"
+      : lowerer.mapTypeOf(lowerer.typeOf(key.expression))?.kind === "symbol";
+  if (
+    target.type.kind === "object" &&
+    target.type.className !== "%DOMException" &&
+    lowerer.errorHierarchyClassOf(target.type.className) &&
+    keys !== null &&
+    keys.length > 0 &&
+    keys.every(errorViewKey)
+  ) {
+    target = lowerer.coerceToExpected(target, DYN);
+  }
+  if (target.type.kind === "func" && lowerer.dynConvertible(target.type)) {
+    const fnName = jsFuncNameOf(targetNode, lowerer);
+    target = {
+      kind: "dynFrom",
+      value: target,
+      type: DYN,
+      loc: locOf(targetNode),
+      ...(fnName !== null ? { fnName } : {}),
+    };
+  }
+  // A class value (`Object.defineProperty(Definition, "name", { value })`)
+  // boxes to its constructor function, whose own-property table holds the
+  // definition for every alias of the class.
+  const classInfo =
+    target.type.kind === "classval" ? lowerer.classes.get(target.type.className) : undefined;
+  if (
+    target.type.kind === "classval" &&
+    (tablelessClasses || (classInfo !== undefined && hasRuntimeStatics(classInfo))) &&
+    lowerer.dynConvertible(target.type)
+  ) {
+    target = { kind: "dynFrom", value: target, type: DYN, loc: locOf(targetNode) };
+  }
+  const primitive =
+    primitives &&
+    (target.type.kind === "bool" || target.type.kind === "f64" || target.type.kind === "string");
+  // A typed handle target in a program that adds properties to handles:
+  // its property table answers (scr_dyn_handle_props.c).
+  if (target.type.kind !== "dyn") {
+    const boxed = boxedHandleReceiver(lowerer, target);
+    if (boxed) target = boxed;
+  }
+  if (target.type.kind !== "dyn" && !isUnitType(target.type) && !primitive) return null;
+  if (target.type.kind !== "dyn")
+    target = { kind: "dynFrom", value: target, type: DYN, loc: locOf(targetNode) };
+  return target;
 }
 
 function lowerObjectStaticCall(
@@ -9671,22 +9800,7 @@ function lowerObjectStaticCall(
     // write keeps the fence it reached before the value existed. The
     // descriptor READ below is not a write and stays open.
     if (member === "defineProperty") fenceDatePrototypeWriteCall(lowerer, targetNode);
-    let target = tryLowerExpression(lowerer, targetNode);
-    // The checker gives C.prototype the instance type, but its lowered
-    // value is the shared prototype table, not an instance to unbox.
-    const prototypeTarget =
-      ts.isPropertyAccessExpression(targetNode) &&
-      targetNode.name.text === "prototype" &&
-      (exactClassOfReceiver(lowerer, targetNode.expression) !== null ||
-        storedClassValueType(lowerer, targetNode.expression)?.kind === "classval");
-    const declaredTarget =
-      target?.type.kind === "dyn" &&
-      !prototypeTarget &&
-      !isJsSourceFile(ts.getSourceFileOfNode(targetNode))
-        ? lowerer.mapTypeOf(lowerer.typeOf(targetNode))
-        : null;
-    if (target && declaredTarget && isDynTypedRefType(declaredTarget))
-      target = lowerer.coerceToExpected(target, declaredTarget);
+    let target = lowerDefineReceiver(lowerer, targetNode);
     if (target && member === "defineProperty") {
       const field = lowerClassFieldDefine(lowerer, call, target);
       if (field) return field;
@@ -9698,47 +9812,18 @@ function lowerObjectStaticCall(
       if (descriptor) return descriptor;
       target = lowerer.coerceToExpected(target, DYN);
     }
-    // Error instances share a live property table with their checked view.
+    if (!target) return null;
     const keyNode = call.arguments.nodes[1]!;
-    if (
-      target?.type.kind === "object" &&
-      target.type.className !== "%DOMException" &&
-      lowerer.errorHierarchyClassOf(target.type.className) &&
-      ((ts.isStringLiteral(keyNode) && (keyNode.text === "cause" || keyNode.text === "message")) ||
-        lowerer.mapTypeOf(lowerer.typeOf(keyNode))?.kind === "symbol")
-    ) {
-      target = lowerer.coerceToExpected(target, DYN);
-    }
-    if (target?.type.kind === "func" && lowerer.dynConvertible(target.type)) {
-      const fnName = jsFuncNameOf(call.arguments.nodes[0]!, lowerer);
-      target = {
-        kind: "dynFrom",
-        value: target,
-        type: DYN,
-        loc: locOf(call.arguments.nodes[0]!),
-        ...(fnName !== null ? { fnName } : {}),
-      };
-    }
-    // A class value (`Object.defineProperty(Definition, "name", { value })`)
-    // boxes to its constructor function, whose own-property table holds the
-    // definition for every alias of the class.
-    if (target?.type.kind === "classval" && lowerer.dynConvertible(target.type)) {
-      target = { kind: "dynFrom", value: target, type: DYN, loc: locOf(call.arguments.nodes[0]!) };
-    }
-    const descriptorPrimitive =
-      member === "getOwnPropertyDescriptor" &&
-      target &&
-      (target.type.kind === "bool" || target.type.kind === "f64" || target.type.kind === "string");
-    // A typed handle target in a program that adds properties to handles:
-    // its property table answers (scr_dyn_handle_props.c).
-    if (target && target.type.kind !== "dyn") {
-      const boxed = boxedHandleReceiver(lowerer, target);
-      if (boxed) target = boxed;
-    }
-    if (!target || (target.type.kind !== "dyn" && !isUnitType(target.type) && !descriptorPrimitive))
-      return null;
-    if (target.type.kind !== "dyn")
-      target = { kind: "dynFrom", value: target, type: DYN, loc: locOf(call.arguments.nodes[0]!) };
+    const boxedTarget = defineReceiverAsDyn(
+      lowerer,
+      targetNode,
+      target,
+      [ts.isStringLiteral(keyNode) ? { name: keyNode.text } : { expression: keyNode }],
+      member === "getOwnPropertyDescriptor",
+      true,
+    );
+    if (!boxedTarget) return null;
+    target = boxedTarget;
     const key = lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN);
     if (key.type.kind !== "dyn") return null;
     if (member === "getOwnPropertyDescriptor") {
@@ -9763,13 +9848,11 @@ function lowerObjectStaticCall(
       loc: locOf(call),
     };
   }
-  // Object.defineProperties over a CHECKED-DYNAMIC target (test/common's
-  // _mustCallInner copying name/length onto the mustCall wrapper): the
-  // runtime turns each descriptor's `value` into an own property on
-  // the dyn node (OBJ members preserve attributes; FUNC nodes carry an
-  // own-property table). Accessors use the target as their receiver.
-  // The result is the target, like JS. Typed targets keep the fence:
-  // static shapes have no property table to extend.
+  // Object.defineProperties: the runtime reads and converts every descriptor
+  // of the map, then defines each key on the target through the function
+  // Object.defineProperty uses (scr_dyn_define_props). The result is the
+  // target, like JS. Typed targets keep the fence: static shapes have no
+  // property table to extend.
   if (
     member === "defineProperties" &&
     call.arguments.nodes.length === 2 &&
@@ -9781,51 +9864,23 @@ function lowerObjectStaticCall(
     fenceDatePrototypeWriteCall(lowerer, call.arguments.nodes[0]!);
     const prototype = lowerClassPrototypeDescriptors(lowerer, call, member);
     if (prototype) return prototype;
-    let target = tryLowerExpression(lowerer, call.arguments.nodes[0]!);
+    // The receiver is Object.defineProperty's: the same values take a
+    // definition, and the runtime defines each key through the function
+    // Object.defineProperty uses.
+    let target = lowerDefineReceiver(lowerer, call.arguments.nodes[0]!);
     if (target) {
-      const native = lowerClassDataDescriptor(lowerer, call, member, target);
+      const native =
+        lowerClassDataDescriptor(lowerer, call, member, target) ??
+        lowerClassDescriptorMap(lowerer, call, target);
       if (native) return native;
-    }
-    // A FUNCTION-typed target boxes through the dyn boundary: the
-    // property table lives on the CLOSURE (shared by every box of this
-    // function value), so defining through a fresh box sticks — the
-    // wrapper returned later reads the same table.
-    if (
-      target &&
-      target.type.kind === "func" &&
-      canBoxFuncIntoDyn(
-        target.type,
-        (id) => lowerer.shapes.get(id),
-        (id) => lowerer.unions.get(id),
-      )
-    ) {
-      const fnName = jsFuncNameOf(call.arguments.nodes[0]!, lowerer);
-      target = {
-        kind: "dynFrom",
-        value: target,
-        type: DYN,
-        loc: locOf(call.arguments.nodes[0]!),
-        ...(fnName !== null ? { fnName } : {}),
-      };
-    }
-    // A class value whose statics are runtime properties of its constructor
-    // boxes to that constructor function, as for Object.defineProperty above.
-    const runtimeStaticClass =
-      target?.type.kind === "classval" ? lowerer.classes.get(target.type.className) : undefined;
-    if (
-      target &&
-      (isUnitType(target.type) ||
-        (runtimeStaticClass !== undefined &&
-          hasRuntimeStatics(runtimeStaticClass) &&
-          lowerer.dynConvertible(target.type)))
-    ) {
-      target = { kind: "dynFrom", value: target, type: DYN, loc: locOf(call.arguments.nodes[0]!) };
-    }
-    // A typed handle target in a program that adds properties to handles:
-    // its property table answers (scr_dyn_handle_props.c).
-    if (target && target.type.kind !== "dyn") {
-      const boxed = boxedHandleReceiver(lowerer, target);
-      if (boxed) target = boxed;
+      target = defineReceiverAsDyn(
+        lowerer,
+        call.arguments.nodes[0]!,
+        target,
+        descriptorMapKeys(call.arguments.nodes[1]!),
+        false,
+        false,
+      );
     }
     if (target?.type.kind === "dyn") {
       const descs = lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN);
@@ -10281,13 +10336,6 @@ function lowerObjectStaticCall(
   // whose shape the type system does not fix (a parameter, an untraced
   // call result) has no answer here.
   if (namespaceShape !== null) {
-    if (member !== "keys") {
-      lowerer.noLowering(
-        `Object.${member} over a builtin module namespace`,
-        call,
-        "access the builtin's named exports directly",
-      );
-    }
     if (namespaceShape.flavor === "unknown") {
       lowerer.noLowering(
         "Object.keys over a builtin module namespace whose runtime shape is not known statically",
@@ -10296,25 +10344,30 @@ function lowerObjectStaticCall(
       );
     }
     const names = builtinModuleKeys(namespaceShape.module, namespaceShape.flavor);
-    if (names === null) {
-      lowerer.noLowering(
-        "Object.keys over a builtin module namespace",
-        call,
-        "access the builtin's named exports directly",
+    // A namespace the census does not answer for (its members come from the
+    // platform) has no static key list, so the arms below answer from the
+    // namespace value's own keyed surface.
+    if (names !== null) {
+      if (member !== "keys") {
+        lowerer.noLowering(
+          `Object.${member} over a builtin module namespace`,
+          call,
+          "access the builtin's named exports directly",
+        );
+      }
+      const loc = locOf(call);
+      return reflectOverNamespaceExpr(
+        lowerer,
+        argNode,
+        {
+          kind: "arrayLit",
+          elems: names.map((name) => ({ kind: "strLit", value: name, type: STRING, loc })),
+          type: arrayOf(STRING),
+          loc,
+        },
+        loc,
       );
     }
-    const loc = locOf(call);
-    return reflectOverNamespaceExpr(
-      lowerer,
-      argNode,
-      {
-        kind: "arrayLit",
-        elems: names.map((name) => ({ kind: "strLit", value: name, type: STRING, loc })),
-        type: arrayOf(STRING),
-        loc,
-      },
-      loc,
-    );
   }
   // A compiled PROGRAM module namespace is a nominal token whose members
   // remain live bindings, but its enumerable key set is static and Node
@@ -11710,6 +11763,23 @@ function lowerInlineArrowBind(
       type: DYN,
       loc,
     });
+    // One definition per property: a bound arrow does not link the reader of
+    // Object.defineProperties' descriptor map.
+    const defineBound = (property: string, value: IrExpr): IrStmt => ({
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "dyn.defineProperty",
+        args: [
+          { kind: "dynFrom", value: bound, type: DYN, loc },
+          { kind: "dynFrom", value: str(property), type: DYN, loc },
+          descriptor(value),
+        ],
+        type: DYN,
+        loc,
+      },
+      loc,
+    });
     lowerer.liftedFns.push({
       name,
       params: [{ localId: captured.id, name: captured.name, type }],
@@ -11724,31 +11794,8 @@ function lowerInlineArrowBind(
         },
         // Store metadata on the closure so aliases and repeated dyn boxes
         // observe the bound name and source arity, including defaults.
-        {
-          kind: "exprStmt",
-          expr: {
-            kind: "libCall",
-            fn: "dyn.defineProps",
-            args: [
-              { kind: "dynFrom", value: bound, type: DYN, loc },
-              {
-                kind: "dynObjLit",
-                fields: [
-                  { key: str("name"), value: descriptor(str("bound ")) },
-                  {
-                    key: str("length"),
-                    value: descriptor({ kind: "numLit", value: length, type: F64, loc }),
-                  },
-                ],
-                type: DYN,
-                loc,
-              },
-            ],
-            type: DYN,
-            loc,
-          },
-          loc,
-        },
+        defineBound("name", str("bound ")),
+        defineBound("length", { kind: "numLit", value: length, type: F64, loc }),
         { kind: "return", value: bound, loc },
       ],
       loc,

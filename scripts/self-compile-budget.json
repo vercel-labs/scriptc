@@ -18,5 +18,9 @@
   "sourceCostAllowance": {
     "value": 0,
     "reason": ""
+  },
+  "outputGrowthAllowance": {
+    "value": 0,
+    "reason": ""
   }
 }

@@ -232,6 +232,7 @@ import {
   boxClassInstancesExactly,
   trackClassFieldCreation,
 } from "./class-dynamic-dispatch.js";
+import { settleClassIdentityHelpers } from "./class-instance-constructor.js";
 import { addUntypedIntegrityWords, guardClassAttributeWrites } from "./class-attributes.js";
 import { inferredCollectionType } from "./js-collection-types.js";
 import { sloppyDynamicWrites } from "./frozen-records.js";
@@ -7871,6 +7872,8 @@ export class Lowerer {
       // Static methods never share a dispatch slot: each is its own family.
       if (info.staticMethods) {
         for (const sig of info.staticMethods.values()) {
+          // A static accessor's two halves share the property's symbol.
+          if (!ts.isMethodDeclaration(sig.member)) continue;
           const name = sig.member.name;
           if (!(ts.isIdentifier(name) || ts.isStringLiteral(name))) continue;
           const symbol = symbolOf(name);
@@ -10815,6 +10818,10 @@ export class Lowerer {
         dispatchChanged =
           !this.remainder &&
           classDispatch.process(this, [...functions, ...this.liftedFns, ...this.implicitFns]);
+        // `x.constructor` helpers answer from the class graph, which the
+        // bodies lowered since may have grown (class-instance-constructor.ts).
+        if (settleClassIdentityHelpers(this, (fn) => classDispatch.sites.forget(fn)))
+          dispatchChanged = true;
       }
       classDispatch.finalize(this);
     }
@@ -11896,7 +11903,12 @@ export class Lowerer {
         ...byName(this.liftedFns),
         ...byName(this.implicitFns),
       ]);
-      if (queue.length === 0 && !dispatchChanged && !initializerChanged) break;
+      // `x.constructor` helpers answer from the class graph, which the
+      // bodies lowered since may have grown (class-instance-constructor.ts).
+      const identityChanged = settleClassIdentityHelpers(this, (fn) =>
+        classDispatch.sites.forget(fn),
+      );
+      if (queue.length === 0 && !dispatchChanged && !initializerChanged && !identityChanged) break;
       drainUnits();
       this.restoreGenericInstanceOrder(instLowered);
       this.restoreGenericClassInstanceOrder(clsInstLowered);

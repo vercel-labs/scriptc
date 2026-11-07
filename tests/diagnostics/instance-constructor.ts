@@ -1,0 +1,55 @@
+// Classes read as values through an instance or a static accessor: the
+// forms that still refuse, each by name (tsc-clean, outside the subset).
+
+// The constructor of a generic class's instance as a value: two
+// instantiations are one class in JavaScript and two class objects here.
+// Its name compiles.
+class Box<T> {
+  value: T | undefined = undefined;
+}
+const constructors: unknown[] = [new Box<number>().constructor];
+console.log(constructors.length, new Box<number>().constructor.name);
+
+// Binding the constructor as a class value when a subclass takes other
+// constructor arguments: the bound value could not construct through the
+// asserted type. Reading the static through the assertion compiles.
+class Model {
+  static table = "models";
+  where(): string {
+    const ctor = this.constructor as typeof Model;
+    return ctor.table;
+  }
+  direct(): string {
+    return (this.constructor as typeof Model).table;
+  }
+}
+class Session extends Model {
+  id: number;
+  constructor(id: number) {
+    super();
+    this.id = id;
+  }
+}
+console.log(new Session(1).where(), new Session(1).direct());
+
+// A static setter with no getter reads undefined in JavaScript.
+class Sink {
+  static last = "";
+  static set value(text: string) {
+    Sink.last = text;
+  }
+}
+console.log(Sink.value);
+
+// A static accessor has no storage to update in place.
+class Settings {
+  static stored = 1;
+  static get level(): number {
+    return Settings.stored;
+  }
+  static set level(value: number) {
+    Settings.stored = value;
+  }
+}
+Settings.level += 1;
+Settings.level++;

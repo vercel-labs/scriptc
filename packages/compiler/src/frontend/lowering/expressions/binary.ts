@@ -1,4 +1,11 @@
 /* Binary operators: arithmetic, comparisons and equality, logical and nullish pairs, and string conversion for concatenation. */
+import {
+  fenceConsoleMutation,
+  isConsoleExpression,
+  isConsoleObjectRead,
+  refuseConsoleRecordComparison,
+  soleRecordArm,
+} from "../coercions/console-records.js";
 import { lowerStaticPrivateAssignment } from "../private-statics.js";
 import { keyedHelperName } from "../stable-names.js";
 import * as ts from "../../ts7/adapter.js";
@@ -90,6 +97,7 @@ import {
   lowerRuntimeConstructorIs,
   runtimeConstructorReceiver,
 } from "../builtins/runtime-constructor.js";
+import { lowerInstanceConstructorIs } from "../class-instance-constructor.js";
 import { refuseShadowedImplicitReader } from "../handle-properties.js";
 import { tryLowerIndexedComparison } from "../indexed-comparison.js";
 import { lowerUnionEquality, sameNamespace, tagEqualityMayMissAlias } from "../strict-equality.js";
@@ -454,6 +462,13 @@ export function lowerNullishPair(
   // arm that has no first-class union representation.
   const fresh = rest.length === 1 ? lowerer.emptyCollectionFor(expr.right, rest[0]!) : null;
   if (fresh) return { kind: "nullish", left, right: fresh, type: fresh.type, loc };
+  // `logger ?? console` over an optional record: console flows into that
+  // record (console-records.ts), so the result keeps the record's layout.
+  if (rest.length === 1 && rest[0]!.kind === "record" && isConsoleExpression(lowerer, expr.right)) {
+    const right = lowerer.lowerExprExpecting(expr.right, rest[0]!);
+    if (typeEquals(right.type, rest[0]!))
+      return { kind: "nullish", left, right, type: rest[0]!, loc };
+  }
   // `optionalRecord ?? { a: 1, items: new Map() }`: a fresh fallback literal
   // whose untyped empty collections (`new Map()`, `new Set()` without type
   // arguments, which the checker types `Map<any, any>`) leave the checker's
@@ -1319,6 +1334,7 @@ function lowerBigIntOperandOperator(
 }
 
 export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr {
+  fenceConsoleMutation(lowerer, expr);
   const loc = locOf(expr);
   const op = expr.operatorToken.kind;
 
@@ -1718,10 +1734,14 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
   if (op === ts.SyntaxKind.EqualsEqualsToken || op === ts.SyntaxKind.ExclamationEqualsToken) {
     const nullTest = lowerLooseNullCompare(lowerer, expr, loc);
     if (nullTest) return nullTest;
+    const looseLeft = deferredSlotOr(lowerer, lowerer.lowerExpr(expr.left));
+    const looseRight = deferredSlotOr(lowerer, lowerer.lowerExpr(expr.right));
+    // console against a record it could have flowed into, as for `===`.
+    refuseConsoleRecordComparison(lowerer, expr, expr.left, expr.right, looseLeft, looseRight);
     const loose = lowerAbstractEquality(
       lowerer,
-      deferredSlotOr(lowerer, lowerer.lowerExpr(expr.left)),
-      deferredSlotOr(lowerer, lowerer.lowerExpr(expr.right)),
+      looseLeft,
+      looseRight,
       op === ts.SyntaxKind.ExclamationEqualsToken,
       loc,
       expr,
@@ -1797,6 +1817,16 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
         const negated = op === ts.SyntaxKind.ExclamationEqualsEqualsToken;
         return lowerRuntimeConstructorIs(lowerer, ctor.receiver, target.info, negated, loc);
       }
+      // `x.constructor === K` for an instance of a program class: whether
+      // the instance's own class is K (class-instance-constructor.ts).
+      const programClass = lowerInstanceConstructorIs(
+        lowerer,
+        side,
+        other,
+        op === ts.SyntaxKind.ExclamationEqualsEqualsToken,
+        loc,
+      );
+      if (programClass !== null) return programClass;
     }
   }
   // `C === EventEmitter` between two builtin class references: the
@@ -1852,6 +1882,13 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
   const bigintOperand = lowerBigIntOperandOperator(lowerer, expr, op, left, right);
   if (bigintOperand) return bigintOperand;
   if (left.type.kind === "dyn" || right.type.kind === "dyn") {
+    // console against a record it could have flowed into (`logger ===
+    // console`): refused by name (console-records.ts).
+    if (
+      op === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+      op === ts.SyntaxKind.ExclamationEqualsEqualsToken
+    )
+      refuseConsoleRecordComparison(lowerer, expr, expr.left, expr.right, left, right);
     // The narrowing unit comparisons ARE answerable on unknown: `v ===
     // undefined` / `v !== null` test the dyn node's kind directly, and
     // tsc's control flow narrows the branches (reads then bridge through
@@ -3050,7 +3087,14 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
   }
   if (left.kind === "unitLit" && op === ts.SyntaxKind.AmpersandAmpersandToken) return left;
   if (op === ts.SyntaxKind.BarBarToken && REF_TRUTHY_KINDS.has(left.type.kind)) return left;
-  const right = lowerer.lowerExpr(expr.right);
+  let right = lowerer.lowerExpr(expr.right);
+  // `logger || console` over an optional record: console flows into the
+  // record the left operand holds (console-records.ts), so the pair stays
+  // typed, as the checker's own result type is.
+  if (op === ts.SyntaxKind.BarBarToken && isConsoleObjectRead(right)) {
+    const record = soleRecordArm(lowerer, left.type);
+    if (record) right = lowerer.coerceToExpected(right, record);
+  }
   // A LITERAL-unit left operand (a compile-time undefined/null — the
   // capability-probe members: `process.features.inspector ||
   // !flag.startsWith('--inspect')` reads undefined in a compiled

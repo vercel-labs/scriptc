@@ -80,7 +80,7 @@ import { classStaticData } from "./class-static-data.js";
 import { isJsSourceFile } from "../program.js";
 import * as ts from "../ts7/adapter.js";
 import { SYMBOL_T, type IrLibFn } from "../../ir/ir.js";
-import { isClassCallback } from "./class-callbacks.js";
+import { METHODS_INTACT_PREFIX, isClassCallback, methodsIntactMember } from "./class-callbacks.js";
 import { CaughtValueDispatch } from "./caught-value-dispatch.js";
 import { refreshDescriptorGuards } from "./class-descriptors.js";
 import { ClassConstructionDispatch } from "./class-construction.js";
@@ -315,8 +315,8 @@ const TO_PRIMITIVE_PREFIX = "%dyn.class.toPrimitive.";
  * and `==` take the default hint, the arithmetic, bitwise, relational and
  * numeric conversions the number hint, and the string conversions the
  * string hint. */
-const DEFAULT_HINT_CALLS = new Set<string>(["dyn.abstractEq", "dyn.add"]);
-const NUMBER_HINT_CALLS = new Set<string>([
+const DEFAULT_HINT_CALLS = new Set<IrLibFn>(["dyn.abstractEq", "dyn.add"]);
+const NUMBER_HINT_CALLS = new Set<IrLibFn>([
   "dyn.arithmetic",
   "dyn.bigintConstructor",
   "dyn.bitwise",
@@ -325,12 +325,12 @@ const NUMBER_HINT_CALLS = new Set<string>([
   "dyn.toNumberCoerce",
   "dyn.toNumeric",
 ]);
-const STRING_HINT_CALLS = new Set<string>(["dyn.stringConstructor", "dyn.toStringCoerce"]);
+const STRING_HINT_CALLS = new Set<IrLibFn>(["dyn.stringConstructor", "dyn.toStringCoerce"]);
 /** Operations whose second operand is a property key, converted with the
  * string hint when the receiver admits a key: `in` needs an object,
  * propertyIsEnumerable converts before checking its receiver, and the
  * others need a receiver other than null and undefined. */
-const KEY_CALLS = new Map<string, "object" | "any" | "value">([
+const KEY_CALLS = new Map<IrLibFn, "object" | "any" | "value">([
   ["dyn.hasKeyComputed", "object"],
   ["dyn.propertyIsEnumerableComputed", "any"],
   ["dyn.hasOwnComputed", "value"],
@@ -5686,6 +5686,67 @@ export class ClassDynamicDispatch {
     if (lowerer) this.guardClassTables(lowerer);
     if (lowerer) this.guardPropertyHelpers(lowerer);
     if (lowerer) this.indexClassBranches(lowerer);
+    if (lowerer) this.settleMethodsIntact(lowerer);
+  }
+
+  /** The families whose `%class.methodsIntact:<root>` body is written. */
+  private readonly intactFamilies = new Set<string>();
+
+  /** Writes the body of each `%class.methodsIntact:<root>` (class-callbacks.ts,
+   * methodsUnreplaced) now that the family below `<root>` is complete: the
+   * negation of a flag that every prototype data helper of the family sets
+   * whenever it answers, so the test holds exactly while no prototype object
+   * of the family has reached any code. A family with a member whose
+   * prototype is not such a helper's (a function-local class, a generic
+   * instantiation, a mixin, a class with a callable base) keeps the body that
+   * answers false, and its calls read the property table as before. The
+   * property table the test reads is part of every class of the family. */
+  private settleMethodsIntact(lowerer: Lowerer): void {
+    for (const fn of lowerer.liftedFns) {
+      if (!fn.name.startsWith(METHODS_INTACT_PREFIX) || this.intactFamilies.has(fn.name)) continue;
+      this.intactFamilies.add(fn.name);
+      const root = lowerer.classes.get(fn.name.slice(METHODS_INTACT_PREFIX.length));
+      if (!root) continue;
+      this.ensurePropertyBag(root);
+      const family: ClassInfo[] = [];
+      const collect = (info: ClassInfo): void => {
+        family.push(info);
+        info.subclasses.forEach(collect);
+      };
+      collect(root);
+      const helpers = family.flatMap((info) =>
+        info.def.prototypeDataHelper === undefined
+          ? []
+          : [lowerer.liftedFnNamed(info.def.prototypeDataHelper)],
+      );
+      if (
+        !family.every(methodsIntactMember) ||
+        !helpers.every((helper) => helper?.body.at(-1)?.kind === "return")
+      )
+        continue;
+      const loc = fn.loc;
+      const created = `%g.%prototype.created.${root.def.name}`;
+      lowerer.globalsList.push({
+        id: created,
+        name: `${root.def.jsName ?? root.def.name}.prototype.created`,
+        type: BOOL,
+        mutable: true,
+      });
+      for (const helper of helpers)
+        helper!.body.splice(-1, 0, {
+          kind: "assign",
+          localId: created,
+          value: { kind: "boolLit", value: true, type: BOOL, loc: helper!.loc },
+          loc: helper!.loc,
+        });
+      fn.body = [
+        {
+          kind: "return",
+          value: { kind: "unary", op: "!", operand: varRef(created, BOOL, loc), type: BOOL, loc },
+          loc,
+        },
+      ];
+    }
   }
 
   /** Each generated class table tests its classes in order, one exact type

@@ -1161,6 +1161,13 @@ export interface IrModule {
    * others: what the copy's reflective surfaces answer from. `pair` is
    * the nonzero number the link stores. Absent when there are none. */
   recordLinks?: IrRecordLink[];
+  /** Shape ids of the record types whose `record.sourceHas` tests the
+   * frontend removed, with the branches they guarded, because no function
+   * of the program can give a record a kept source (frontend
+   * record-sources.ts). The backend stops when it emits a conversion or a
+   * library call that keeps a source for one of them. Sorted; absent when
+   * no test was removed. */
+  recordSourcesFolded?: string[];
   /** Classes used as ThreadSlots keys (@scriptc/experimental): the root of
    * each one's hierarchy carries a slot word (the slots.* intrinsics;
    * backend/llvm/thread-slots.ts). */

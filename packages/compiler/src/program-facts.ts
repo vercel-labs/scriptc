@@ -323,6 +323,21 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: [],
   },
   {
+    name: "function-views",
+    file: `${SRC}/frontend/lowering/function-views.ts`,
+    symbol: "FunctionViews",
+    source: "ir",
+    scope: "type",
+    setBy:
+      "one signature adapter that holds a function with more parameters, or a rest parameter, at a function type",
+    gates:
+      "every conversion of that function type to one with more parameters, and every boxing of it, tests whether the value is such a view and starts from the function it forwards to",
+    narrower:
+      "the value, at run time: an entry on the closure that takes an argument count, which needs a closure field and dynamic arguments",
+    tracked: "pi-decisions DECISIONS.md 2026-11-07 (fn-slot-widening)",
+    lowererFields: [],
+  },
+  {
     name: "record-view-targets",
     file: `${SRC}/backend/llvm/record-views.ts`,
     symbol: "planRecordViews",

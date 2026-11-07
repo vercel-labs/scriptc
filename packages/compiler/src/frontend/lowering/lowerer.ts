@@ -96,6 +96,7 @@ import { installBuiltinStatics } from "./builtin-statics.js";
 import type { BuiltinModuleNamespaceFlavor } from "./builtin-module-members.js";
 import { functionKeepsRecordSources } from "./record-sources.js";
 import { exprFunctionReference, withoutUnreachedFunctions } from "../../ir/function-references.js";
+import { FunctionViews } from "./function-views.js";
 import { everyStmtList, observeRecordLiteralRebuilds } from "../../ir/traverse.js";
 import { checkedClassAssertion } from "./class-assertions.js";
 import { narrowStoredClassValue, narrowGenericClassValue } from "./class-unions.js";
@@ -4849,6 +4850,7 @@ export class Lowerer {
       setTable("coercions.checkedNarrows", this.coercions.checkedNarrows),
       irDataTable("coercions.checkedNarrowArms", this.coercions.checkedNarrowArms),
       mapTable("coercions.retags", this.coercions.retags),
+      mapTable("coercions.signatureAdapters", this.coercions.signatureAdapters),
       mapTable("coercions.narrows", this.coercions.narrows),
       mapTable("coercions.widthNarrows", this.coercions.widthNarrows),
       setTable("coercions.widenedReturns", this.coercions.widenedReturns),
@@ -11127,6 +11129,7 @@ export class Lowerer {
       let es = 0;
       let rd = 0;
       const classDispatch = new ClassDynamicDispatch();
+      const functionViews = new FunctionViews();
       let dispatchChanged = !this.remainder;
       while (
         dispatchChanged ||
@@ -11191,8 +11194,17 @@ export class Lowerer {
         dispatchChanged =
           !this.remainder &&
           classDispatch.process(this, [...functions, ...this.liftedFns, ...this.implicitFns]);
+        // Every signature adapter the waves above built is in liftedFns
+        // now; a widening adapter learns the views it must look through.
+        if (!this.remainder && functionViews.process(this)) dispatchChanged = true;
       }
       classDispatch.finalize(this);
+      // The adapters finalize built are looked through as well; this adds
+      // adapters and boxing helpers only, which no other worklist reads.
+      if (!this.remainder) {
+        functionViews.process(this);
+        functionViews.finish(this, [...functions, ...this.liftedFns, ...this.implicitFns]);
+      }
     }
     // Lambdas lifted while lowering any of the above (plus synthetic
     // array-HOF loop functions, which ride the same list), and the
@@ -12273,6 +12285,7 @@ export class Lowerer {
     // historical emit order.
     noteDateClassMethods(this);
     const classDispatch = new ClassDynamicDispatch(extraRoots !== undefined);
+    const functionViews = new FunctionViews();
     // Units in declaration order, so the passes below meet functions, and the
     // classes they collect, in an order that does not depend on lowering order.
     const unitsInOrder = (): IrFunction[] =>
@@ -12301,12 +12314,25 @@ export class Lowerer {
         ...byName(this.liftedFns),
         ...byName(this.implicitFns),
       ]);
-      if (queue.length === 0 && !dispatchChanged && !initializerChanged) break;
+      // Every signature adapter built so far is in liftedFns; a widening
+      // adapter learns the views it must look through (function-views.ts).
+      const viewsChanged = functionViews.process(this);
+      if (queue.length === 0 && !dispatchChanged && !initializerChanged && !viewsChanged) break;
       drainUnits();
       this.restoreGenericInstanceOrder(instLowered);
       this.restoreGenericClassInstanceOrder(clsInstLowered);
     }
     classDispatch.finalize(this);
+    // The adapters finalize built are looked through as well; this adds
+    // adapters and boxing helpers only, which no other worklist reads.
+    functionViews.process(this);
+    functionViews.finish(this, [
+      ...unitsInOrder(),
+      ...initFunctions,
+      ...instanceFunctions,
+      ...this.liftedFns,
+      ...this.implicitFns,
+    ]);
     if (dump !== null) writeRecords(dump, recordLines);
     if (reuse !== null) {
       reuse.finish();

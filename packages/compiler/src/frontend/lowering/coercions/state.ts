@@ -49,6 +49,12 @@ export class CoercionState {
     }
   >();
   readonly retags = new Map<string, string>();
+  /** The factories of the general signature adapters (funcCoerceAdapter
+   * and its rest-packing form), each with the mode it was built in
+   * ("checked" or ""). Provenance for function-views.ts, which builds
+   * the same conversions with more parameters; it must not be inferred
+   * from the helper's name. */
+  readonly signatureAdapters = new Map<string, string>();
   readonly narrows = new Map<string, string>();
   readonly widthNarrows = new Map<string, string>();
   /** Unions widenReducedReturn produced: only these read through the

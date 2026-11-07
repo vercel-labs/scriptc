@@ -7829,6 +7829,8 @@ export class LlEmitter {
       | "newValue"
       | "instanceOfValue"
       | "promiseVoidWiden"
+      | "viewOf"
+      | "viewSource"
       | "upcast"
       | "downcast"
       | "instanceOf"

@@ -476,12 +476,33 @@ function composeRetypedFields(
     );
     return;
   }
-  link.composed = lowerer.shapes.intern(
+  // The composed record enumerates as its source does. A shape interned
+  // here takes the source's key order; one the program already has keeps
+  // its own (its values enumerate in it), so it serves only when that is
+  // the same order.
+  const order = [...shapeKeyOrders(sourceShape)[0]!];
+  const known = lowerer.shapes.shapes.length;
+  const composed = lowerer.shapes.intern(
     sourceShape.fields.map((field) => retyped.get(field.name) ?? field),
     false,
     undefined,
-    [...shapeKeyOrders(sourceShape)[0]!],
   );
+  const shape = lowerer.shapes.get(composed)!;
+  if (lowerer.shapes.shapes.length > known) shape.declaredOrder = order;
+  const orders = shapeKeyOrders(shape);
+  if (orders.length !== 1 || orders[0]!.join("\0") !== order.join("\0")) {
+    const [name] = [...retyped.keys()];
+    lowerer.pushDiag(
+      unsupportedDiag(
+        "SC1090",
+        lowerer.recordLinkLocs.get(link.compose)!,
+        `converting an object to a type that declares '${name}' differently, when the program has another type with the object's properties in another order`,
+        "build the value with the target type's own literal",
+      ),
+    );
+    return;
+  }
+  link.composed = composed;
 }
 
 /** Builds a link's compose helper once every link is known: a record of

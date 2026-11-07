@@ -804,6 +804,18 @@ export function emitCallExpr(
         B.line(`${entry} = getelementptr inbounds %ScrClosure, ptr ${c}, i64 0, i32 7`);
         B.line(`store ptr @${mangleBorrowedFunction(e.fnName)}, ptr ${entry}`);
       }
+      if (e.length !== undefined) {
+        // The function's own length, where its type carries parameters it
+        // does not declare: a closure that names itself as its identity
+        // root reports the recorded length from every box, as an adapter
+        // reports the length of the function it stands for.
+        const lengthPtr = B.tmp();
+        const identityPtr = B.tmp();
+        B.line(`${lengthPtr} = getelementptr inbounds %ScrClosure, ptr ${c}, i64 0, i32 5`);
+        B.line(`store i32 ${e.length}, ptr ${lengthPtr}`);
+        B.line(`${identityPtr} = getelementptr inbounds %ScrClosure, ptr ${c}, i64 0, i32 6`);
+        B.line(`store ptr ${c}, ptr ${identityPtr}`);
+      }
       e.captures.forEach((localId, i) => {
         const box = host.captureBox(localId);
         const retained = host.retainBox(box);
@@ -880,18 +892,33 @@ export function emitCallExpr(
       // only if the callee reads it: the receiver window records the
       // instance (owned by this frame for the whole call) with its typed-ref
       // recipe, and dyn.this builds the box on first read.
-      const lazyReceiver =
+      // A record or an array bound as `this` (`holder.f(x)`) is recorded the
+      // same way. The frontend holds it in a binding that lives through the
+      // call (a hidden local, or a binding nothing can reassign), so it is
+      // read where the receiver is pushed, without a reference of its own:
+      // a callee that cannot read the receiver costs the call nothing.
+      const lazyValue =
         e.receiver?.kind === "dynFrom" &&
-        e.receiver.value.type.kind === "object" &&
-        isDynTypedRefType(e.receiver.value.type) &&
-        !host.shapeHost.isErrorClass(e.receiver.value.type.className)
-          ? host.emitExpr(e.receiver.value)
+        ((e.receiver.value.type.kind === "object" &&
+          isDynTypedRefType(e.receiver.value.type) &&
+          !host.shapeHost.isErrorClass(e.receiver.value.type.className)) ||
+          e.receiver.value.type.kind === "record" ||
+          e.receiver.value.type.kind === "array")
+          ? e.receiver.value
           : null;
+      const borrowedValue =
+        lazyValue !== null && lazyValue.type.kind !== "object" && lazyValue.kind === "varRef"
+          ? lazyValue
+          : null;
+      const ownedReceiver =
+        lazyValue !== null && borrowedValue === null ? host.emitExpr(lazyValue) : null;
       const receiver =
-        e.receiver === undefined || lazyReceiver || forwardsReceiver
+        e.receiver === undefined || lazyValue !== null || forwardsReceiver
           ? null
           : host.emitExpr(e.receiver);
       const pushReceiver = (): void => {
+        const lazyReceiver =
+          ownedReceiver ?? (borrowedValue !== null ? host.emitReadReceiver(borrowedValue) : null);
         if (lazyReceiver) {
           const t = lazyReceiver.type;
           const recipe = typedRefRecipe(host, t);

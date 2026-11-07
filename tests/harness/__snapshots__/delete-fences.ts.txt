@@ -12,16 +12,23 @@ delete-fences.ts:20:3 - error SC1090: 'delete' through keys of 2 literals ('a', 
      |   ^~~~~~~~~~~~~~~~~
   21 | }
 
-delete-fences.ts:34:1 - error SC1090: 'delete' of required record fields (the shape's slot cannot be removed — only an optional field (`f?: T`) has an absent state, which Object.keys, 'in', and JSON.stringify follow; make the field optional if the program must remove it) are not supported yet
+delete-fences.ts:34:1 - error SC1090: 'delete' of 'b': the operand's type '{ a: string; b: number }' declares 'b' required, so it cannot be absent (only an optional field, 'f?: T', has an absent state that Object.keys, 'in' and JSON.stringify follow; make 'b' optional if the program must remove it) is not supported yet
 
   33 | // @ts-expect-error -- a required field cannot be removed; the fence says why
   34 | delete required.b;
      | ^~~~~~~~~~~~~~~~~
   35 | console.log(required.a);
 
-delete-fences.ts:46:1 - error SC1090: 'delete' of class fields (an instance's fields are its fixed layout — there is no per-field presence state, so Object.keys, 'in', and JSON.stringify would still report a deleted field; only optional record fields (`f?: T`) and Record<string, T> keys delete) are not supported yet
+delete-fences.ts:47:1 - error SC1090: 'delete' of a key 'extra' the record's layout does not declare (only an optional declared field, an index-signature key, or an undeclared key a checked record keeps from its source can be removed) is not supported yet
 
-  45 | // @ts-expect-error -- a class field cannot be removed; the fence says why
-  46 | delete pt.x;
+  46 | // @ts-expect-error -- `extra` is not a member of the literal's type
+  47 | delete theme.extra;
+     | ^~~~~~~~~~~~~~~~~~
+  48 | console.log(theme.color);
+
+delete-fences.ts:59:1 - error SC1090: 'delete' of class fields (an instance's fields are its fixed layout — there is no per-field presence state, so Object.keys, 'in', and JSON.stringify would still report a deleted field; only optional record fields (`f?: T`) and Record<string, T> keys delete) are not supported yet
+
+  58 | // @ts-expect-error -- a class field cannot be removed; the fence says why
+  59 | delete pt.x;
      | ^~~~~~~~~~~
-  47 | console.log(pt.y);
+  60 | console.log(pt.y);

@@ -113,6 +113,12 @@ interface Run {
   frontend: Frontend;
   /** The npm-static list of every program load, in load order. */
   loaded: string[][];
+  /** How often each load's program was asked for its diagnostics. */
+  checked: number[];
+  /** The same count for the program the tsc gate reads when the load
+   * rewrote user files (the declaration-typed boundary), or null when the
+   * load has no such program. */
+  gateChecked: (number | null)[];
 }
 
 function compile(
@@ -122,17 +128,40 @@ function compile(
   optIn: readonly string[] = ["outerpkg"],
 ): Run {
   const loaded: string[][] = [];
+  const checked: number[] = [];
+  const gateChecked: (number | null)[] = [];
   const loader: ProgramLoader = (path, options) => {
+    const index = loaded.length;
     loaded.push([...(options.npmStatic ?? [])]);
-    return loadProgramWithServices(path, shared, {
+    checked.push(0);
+    gateChecked.push(null);
+    const load = loadProgramWithServices(path, shared, {
       npmStatic: options.npmStatic ?? [],
       externalTypes: options.externalTypes,
     });
+    // Every diagnostics request of the tsc gate starts with the program's
+    // own diagnostics.
+    const program = load.program;
+    const programDiagnostics = program.getProgramDiagnostics.bind(program);
+    program.getProgramDiagnostics = () => {
+      checked[index] = checked[index]! + 1;
+      return programDiagnostics();
+    };
+    const gate = load.tscWorld?.program;
+    if (gate !== undefined) {
+      gateChecked[index] = 0;
+      const gateDiagnostics = gate.getProgramDiagnostics.bind(gate);
+      gate.getProgramDiagnostics = () => {
+        gateChecked[index] = gateChecked[index]! + 1;
+        return gateDiagnostics();
+      };
+    }
+    return load;
   };
   const frontend = runFrontend(join(dir, "main.ts"), loader, "lib", undefined, optIn, {
     islandPackages,
   });
-  return { frontend, loaded };
+  return { frontend, loaded, checked, gateChecked };
 }
 
 function statuses(run: Run): string[] {
@@ -200,4 +229,67 @@ test("a build without a reload walks every rung once", () => {
   const only = compile(dir, shared, new Set());
   expect(only.loaded).toEqual([[], ["outerpkg"], ["outerpkg", "innerpkg"]]);
   only.frontend.dispose();
+});
+
+test("a scout that selects packages is walked for its order and never checked", () => {
+  const dir = fixture();
+  const shared = createNodeFrontendServices();
+  services.push(shared);
+  // The scout's program is replaced by the opted-in set's: nothing reads its
+  // diagnostics, so nothing asks the checker for them.
+  const selecting = compile(dir, shared, new Set());
+  expect(selecting.loaded[0]).toEqual([]);
+  expect(selecting.checked[0]).toBe(0);
+  expect(selecting.frontend.preflight).toEqual([]);
+  selecting.frontend.dispose();
+});
+
+test("a scout that selects nothing is the frontend's program, diagnostics included", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-npm-ladder-"));
+  scratch.push(dir);
+  writeFileSync(join(dir, "main.ts"), 'const n: number = "one";\nconsole.log(n);\n');
+  const shared = createNodeFrontendServices();
+  services.push(shared);
+  const plain = compile(dir, shared, new Set(), []);
+  // One load: the scout is retained, and its type error is reported.
+  expect(plain.loaded).toEqual([[]]);
+  expect(plain.checked[0]).toBeGreaterThan(0);
+  expect(plain.frontend.preflight.map((d) => d.code)).toEqual(["SC0001"]);
+  plain.frontend.dispose();
+});
+
+test("a rung nobody reports on never asks the tsc gate's program for diagnostics", () => {
+  // `outerpkg` declares a data shape its JavaScript only produces through
+  // JSON.parse, so every load that compiles it rewrites main.ts at the
+  // declaration-typed boundary and keeps the program as written for the tsc
+  // gate. The first rung selects `innerpkg` and is replaced; only the
+  // converged rung's report is read.
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-npm-ladder-"));
+  scratch.push(dir);
+  writePackage(
+    dir,
+    "outerpkg",
+    'const { half } = require("innerpkg");\nmodule.exports.read = function () { return JSON.parse(\'{"n":\' + half(4) + "}"); };\n',
+    "export declare function read(): { n: number };\n",
+  );
+  writePackage(
+    dir,
+    "innerpkg",
+    "module.exports.half = function (n) { return n / 2; };\n",
+    "export declare function half(n: number): number;\n",
+  );
+  writeFileSync(
+    join(dir, "main.ts"),
+    'import { read } from "outerpkg";\nconst shape = read();\nconsole.log(shape.n + 1);\n',
+  );
+  const shared = createNodeFrontendServices();
+  services.push(shared);
+  const run = compile(dir, shared, new Set());
+  expect(run.loaded).toEqual([[], ["outerpkg"], ["outerpkg", "innerpkg"]]);
+  // The scout compiles no package, so it rewrites nothing.
+  expect(run.gateChecked[0]).toBeNull();
+  expect(run.gateChecked[1]).toBe(0);
+  expect(run.gateChecked[2]).toBeGreaterThan(0);
+  expect(run.frontend.preflight).toEqual([]);
+  run.frontend.dispose();
 });

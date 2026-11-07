@@ -1,4 +1,5 @@
 /* Type narrowing of lowered values, conditional and as-expressions, and runtime-optional receiver reads. */
+import { consoleInto, isConsoleObjectRead, isConsoleTyped } from "../coercions/console-records.js";
 import { declBoundaryOrigin } from "../../decl-projection.js";
 import {
   isWebStreamMemberInJavaScript,
@@ -709,14 +710,14 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
       lowerer.isStdlibMember(node)
     )
       return expr;
-    // A null-initialized JS field can later receive an object even when
-    // checker flow calls its non-null branch never. The live checked
-    // value remains authoritative; never is not a numeric guard.
-    if (
-      isJsSourceFile(ts.getSourceFileOfNode(node)) &&
-      (lowerer.typeOf(node).flags & ts.TypeFlags.Never) !== 0
-    )
-      return expr;
+    // The live value is authoritative even when checker flow calls it
+    // never. Two flows reach here: a null-initialized JS field that later
+    // receives an object, and a failed type predicate whose type is
+    // `unknown` (`Check(value: unknown): value is Encode` with an
+    // unconstrained `Encode`), which subtracts every member of the value
+    // and so narrows it to never. Never is not a numeric guard, and no
+    // check can produce an uninhabited value.
+    if ((lowerer.typeOf(node).flags & ts.TypeFlags.Never) !== 0) return expr;
     const narrowed = lowerer.mapTypeOf(lowerer.typeOf(node));
     if (
       narrowed &&
@@ -1879,6 +1880,17 @@ export function lowerAsExpression(
   // reach it (assertion-identity.ts).
   if (extractionCopiesReference(lowerer, target) && assertsGlobalObject(lowerer, expr))
     return inner;
+  // console asserted to a record of its members (`console as unknown as
+  // Logger`): the member-by-name copy its plain flow takes
+  // (console-records.ts). The checked conversion reads a property bag,
+  // which console is not.
+  if (
+    isConsoleObjectRead(inner) ||
+    (inner.type.kind === "dyn" && isConsoleTyped(lowerer, expr.expression))
+  ) {
+    const projected = consoleInto(lowerer, inner, target, locOf(expr));
+    if (projected) return projected;
+  }
   // `value as Iterable<T>`: the value's own iterator, stepped lazily with
   // each element checked against T (the generator arm's adapter).
   const iterable = iterableSlotValue(lowerer, inner, target);

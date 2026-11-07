@@ -6,6 +6,7 @@ import {
   type IrType,
   isRefCounted,
   isUnitType,
+  keyedRecordFields,
   type SrcLoc,
   typeEquals,
 } from "../../ir/ir.js";
@@ -492,12 +493,14 @@ export function pointerRecordKeyGet(host: LlvmEmitterContext, e: IrExpr): boolea
   const exact = (t: IrType): boolean => typeEquals(t, resultType) || typeEquals(t, nullable.arm);
   const shape = host.recordShape(e.shapeId);
   if (e.overflowOnly !== true) {
-    for (const f of shape.fields)
+    for (const f of keyedRecordFields(shape))
       if (
         host.recordFieldInline(e.shapeId, f.name) ||
         !exact(f.type) ||
-        // A field a partial view may lack has no slot to lend.
-        host.partialFieldMissing(e.shapeId, f.name)
+        // A field a partial record assertion leaves unwritten has no slot
+        // to lend (asked of the module, so the analyses that run before the
+        // views are planned agree with the emission).
+        host.partialFieldUnwritten(e.shapeId, f.name)
       )
         return false;
   }
@@ -532,7 +535,7 @@ export function emitBorrowedRecordKeyGet(
   }
   const join = B.newLabel("rkb.j");
   const shape = host.recordShape(e.shapeId);
-  for (const f of e.overflowOnly === true ? [] : shape.fields) {
+  for (const f of e.overflowOnly === true ? [] : keyedRecordFields(shape)) {
     const hit = B.tmp();
     B.line(
       `${hit} = call zeroext i1 ${host.literalEquals(f.name)}(ptr ${key.name}) ; ${llvmCommentText(f.name)}`,
@@ -599,7 +602,8 @@ export function borrowedRecordKeyGetOr(
     t.kind === "dyn" ||
     (t.kind === "union" && (host.unionsById.get(t.unionId)?.arms ?? []).some(isUnitType));
   if (shape.indexValue !== undefined && holdsUnit(shape.indexValue)) return null;
-  if (e.left.overflowOnly !== true && shape.fields.some((f) => holdsUnit(f.type))) return null;
+  if (e.left.overflowOnly !== true && keyedRecordFields(shape).some((f) => holdsUnit(f.type)))
+    return null;
   return e.left;
 }
 
@@ -645,7 +649,7 @@ export function scalarRecordKeyGet(host: LlvmEmitterContext, e: IrExpr): boolean
     (t.kind === "f64" || t.kind === "bool") && def!.arms.some((a) => typeEquals(a, t));
   const shape = host.recordShape(e.shapeId);
   if (e.overflowOnly !== true) {
-    for (const f of shape.fields) {
+    for (const f of keyedRecordFields(shape)) {
       const inline = host.recordFieldInline(e.shapeId, f.name);
       // A field a partial view may lack has no slot to read.
       if (host.partialFieldMissing(e.shapeId, f.name)) return false;
@@ -686,7 +690,7 @@ export function emitStackRecordKeyGet(
     B.line(`store i64 ${bits}, ptr ${bitsPtr}`);
   };
   const shape = host.recordShape(e.shapeId);
-  for (const f of e.overflowOnly === true ? [] : shape.fields) {
+  for (const f of e.overflowOnly === true ? [] : keyedRecordFields(shape)) {
     const hit = B.tmp();
     B.line(
       `${hit} = call zeroext i1 ${host.literalEquals(f.name)}(ptr ${key.name}) ; ${llvmCommentText(f.name)}`,
@@ -781,7 +785,7 @@ export function keyedRecordReadInto(
     // other hit converts through the per-type toDyn walker, a dyn-valued
     // overflow hit passes through (+1 from the map get), and a miss is
     // JS's undefined — the dyn singleton.
-    for (const f of overflowOnly ? [] : shape.fields) {
+    for (const f of overflowOnly ? [] : keyedRecordFields(shape)) {
       const hit = B.tmp();
       B.line(
         `${hit} = call zeroext i1 ${host.literalEquals(f.name)}(ptr ${keyName}) ; ${llvmCommentText(f.name)}`,
@@ -926,7 +930,7 @@ export function keyedRecordReadInto(
     const payload = owned ? expr : host.retainHeap(expr, vt);
     return host.unionNewOwned(def.id, tag, { name: payload, type: vt });
   };
-  for (const f of overflowOnly ? [] : shape.fields) {
+  for (const f of overflowOnly ? [] : keyedRecordFields(shape)) {
     const hit = B.tmp();
     B.line(
       `${hit} = call zeroext i1 ${host.literalEquals(f.name)}(ptr ${keyName}) ; ${llvmCommentText(f.name)}`,

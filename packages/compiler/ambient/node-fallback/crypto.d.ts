@@ -211,20 +211,20 @@ declare module "crypto" {
   ): void;
   export function sign(
     algorithm: string | null | undefined,
-    data: ArrayBufferView,
+    data: ScriptcBufferView,
     key: KeyObject | string | Buffer | SignKeyObjectInput | SignPrivateKeyInput,
   ): Buffer;
   export function verify(
     algorithm: string | null | undefined,
-    data: ArrayBufferView,
+    data: ScriptcBufferView,
     key: KeyObject | string | Buffer | VerifyKeyObjectInput | VerifyPublicKeyInput,
-    signature: ArrayBufferView,
+    signature: ScriptcBufferView,
   ): boolean;
   /* Sign and Verify are Writables: each write goes through update(), and
    * ending finishes them. */
   export class Sign extends Writable {
     private constructor();
-    update(data: string | ArrayBufferView): this;
+    update(data: string | ScriptcBufferView): this;
     update(data: string, inputEncoding: Encoding): this;
     sign(
       privateKey: KeyObject | string | Buffer | SignKeyObjectInput | SignPrivateKeyInput,
@@ -236,11 +236,11 @@ declare module "crypto" {
   }
   export class Verify extends Writable {
     private constructor();
-    update(data: string | ArrayBufferView): this;
+    update(data: string | ScriptcBufferView): this;
     update(data: string, inputEncoding: Encoding): this;
     verify(
       object: KeyObject | string | Buffer | VerifyKeyObjectInput | VerifyPublicKeyInput,
-      signature: ArrayBufferView,
+      signature: ScriptcBufferView,
     ): boolean;
     verify(
       object: KeyObject | string | Buffer | VerifyKeyObjectInput | VerifyPublicKeyInput,
@@ -250,7 +250,7 @@ declare module "crypto" {
   }
   export function createSign(algorithm: string): Sign;
   export function createVerify(algorithm: string): Verify;
-  export function createSecretKey(key: ArrayBufferView | ArrayBufferLike): KeyObject;
+  export function createSecretKey(key: ScriptcBufferView | ArrayBufferLike): KeyObject;
   export function createSecretKey(key: string, encoding: BufferEncoding): KeyObject;
   export function generateKeySync(type: "hmac" | "aes", options: { length: number }): KeyObject;
   export function generateKey(
@@ -275,7 +275,7 @@ declare module "crypto" {
    * the readable side delivers once the writable side ends. */
   export interface Hash extends Transform {
     copy(options?: HashOptions): Hash;
-    update(data: string | ArrayBufferView): Hash;
+    update(data: string | ScriptcBufferView): Hash;
     update(data: string, inputEncoding: Encoding): Hash;
     /* A digest is Buffer.toString(encoding): Node answers every Buffer
      * encoding, the character and legacy ones included (a hash's bytes are
@@ -287,7 +287,7 @@ declare module "crypto" {
     digest(encoding: Encoding): string;
   }
   export interface Hmac extends Transform {
-    update(data: string | ArrayBufferView): Hmac;
+    update(data: string | ScriptcBufferView): Hmac;
     update(data: string, inputEncoding: Encoding): Hmac;
     digest(): Buffer;
     digest(encoding: Encoding): string;
@@ -312,22 +312,22 @@ declare module "crypto" {
   }
   export function hash(
     algorithm: string,
-    data: string | ArrayBufferView,
+    data: string | ScriptcBufferView,
     options?: OneShotDigestOptionsWithStringEncoding | Encoding,
   ): string;
   export function hash(
     algorithm: string,
-    data: string | ArrayBufferView,
+    data: string | ScriptcBufferView,
     options: OneShotDigestOptionsWithBufferEncoding | "buffer",
   ): Buffer;
   export function hash(
     algorithm: string,
-    data: string | ArrayBufferView,
+    data: string | ScriptcBufferView,
     options: OneShotDigestOptions | Encoding | "buffer",
   ): string | Buffer;
   export function timingSafeEqual(
-    a: ArrayBufferView | ArrayBufferLike,
-    b: ArrayBufferView | ArrayBufferLike,
+    a: ScriptcBufferView | ArrayBufferLike,
+    b: ScriptcBufferView | ArrayBufferLike,
   ): boolean;
   /* WebCrypto's getRandomValues (also the webcrypto object's): integer
    * typed arrays, filled in place and returned. */
@@ -345,21 +345,21 @@ declare module "crypto" {
   /* The WebCrypto global's object and its SubtleCrypto. */
   export const webcrypto: Crypto;
   export const subtle: SubtleCrypto;
-  export function randomFillSync<T extends ArrayBufferView | ArrayBufferLike>(
+  export function randomFillSync<T extends ScriptcBufferView | ArrayBufferLike>(
     buffer: T,
     offset?: number,
     size?: number,
   ): T;
-  export function randomFill<T extends ArrayBufferView | ArrayBufferLike>(
+  export function randomFill<T extends ScriptcBufferView | ArrayBufferLike>(
     buffer: T,
     callback: (err: Error | null, buf: T) => void,
   ): void;
-  export function randomFill<T extends ArrayBufferView | ArrayBufferLike>(
+  export function randomFill<T extends ScriptcBufferView | ArrayBufferLike>(
     buffer: T,
     offset: number,
     callback: (err: Error | null, buf: T) => void,
   ): void;
-  export function randomFill<T extends ArrayBufferView | ArrayBufferLike>(
+  export function randomFill<T extends ScriptcBufferView | ArrayBufferLike>(
     buffer: T,
     offset: number,
     size: number,
@@ -395,7 +395,7 @@ declare module "crypto" {
     size: number,
     callback: (error: Error | null, buffer: Buffer) => void,
   ): void;
-  export type BinaryLike = string | ArrayBuffer | ArrayBufferView;
+  export type BinaryLike = string | ArrayBuffer | ScriptcBufferView;
   /* Cipheriv/Decipheriv: aes-128/192/256 in cbc, ctr, gcm, ccm, ecb, cfb,
    * cfb8, cfb1, and ofb modes and their key wraps, des-ede3 and des-ede,
    * chacha20, and chacha20-poly1305. Both are Transforms: written chunks go
@@ -414,9 +414,13 @@ declare module "crypto" {
     authTagLength?: number;
   }
   export interface Cipheriv extends Transform {
-    update(data: string | ArrayBufferView): Buffer;
+    update(data: string | ScriptcBufferView): Buffer;
     update(data: string, inputEncoding: BufferEncoding): Buffer;
-    update(data: ArrayBufferView, inputEncoding: undefined, outputEncoding: BufferEncoding): string;
+    update(
+      data: ScriptcBufferView,
+      inputEncoding: undefined,
+      outputEncoding: BufferEncoding,
+    ): string;
     update(
       data: string,
       inputEncoding: BufferEncoding | undefined,
@@ -427,21 +431,25 @@ declare module "crypto" {
     setAutoPadding(autoPadding?: boolean): this;
   }
   export interface CipherCCM extends Cipheriv {
-    setAAD(buffer: ArrayBufferView, options: { plaintextLength: number }): this;
+    setAAD(buffer: ScriptcBufferView, options: { plaintextLength: number }): this;
     getAuthTag(): Buffer;
   }
   export interface CipherGCM extends Cipheriv {
-    setAAD(buffer: ArrayBufferView, options?: { plaintextLength: number }): this;
+    setAAD(buffer: ScriptcBufferView, options?: { plaintextLength: number }): this;
     getAuthTag(): Buffer;
   }
   export interface CipherChaCha20Poly1305 extends Cipheriv {
-    setAAD(buffer: ArrayBufferView, options?: { plaintextLength: number }): this;
+    setAAD(buffer: ScriptcBufferView, options?: { plaintextLength: number }): this;
     getAuthTag(): Buffer;
   }
   export interface Decipheriv extends Transform {
-    update(data: ArrayBufferView): Buffer;
+    update(data: ScriptcBufferView): Buffer;
     update(data: string, inputEncoding: BufferEncoding): Buffer;
-    update(data: ArrayBufferView, inputEncoding: undefined, outputEncoding: BufferEncoding): string;
+    update(
+      data: ScriptcBufferView,
+      inputEncoding: undefined,
+      outputEncoding: BufferEncoding,
+    ): string;
     update(
       data: string,
       inputEncoding: BufferEncoding | undefined,
@@ -452,16 +460,16 @@ declare module "crypto" {
     setAutoPadding(autoPadding?: boolean): this;
   }
   export interface DecipherCCM extends Decipheriv {
-    setAuthTag(buffer: ArrayBufferView): this;
-    setAAD(buffer: ArrayBufferView, options: { plaintextLength: number }): this;
+    setAuthTag(buffer: ScriptcBufferView): this;
+    setAAD(buffer: ScriptcBufferView, options: { plaintextLength: number }): this;
   }
   export interface DecipherGCM extends Decipheriv {
-    setAuthTag(buffer: ArrayBufferView): this;
-    setAAD(buffer: ArrayBufferView, options?: { plaintextLength: number }): this;
+    setAuthTag(buffer: ScriptcBufferView): this;
+    setAAD(buffer: ScriptcBufferView, options?: { plaintextLength: number }): this;
   }
   export interface DecipherChaCha20Poly1305 extends Decipheriv {
-    setAuthTag(buffer: ArrayBufferView): this;
-    setAAD(buffer: ArrayBufferView, options?: { plaintextLength: number }): this;
+    setAuthTag(buffer: ScriptcBufferView): this;
+    setAAD(buffer: ScriptcBufferView, options?: { plaintextLength: number }): this;
   }
   export function createCipheriv(
     algorithm: CipherCCMTypes,
@@ -523,9 +531,9 @@ declare module "crypto" {
     ): Buffer | string;
     generateKeys(): Buffer;
     generateKeys(encoding: BinaryToTextEncoding, format?: ECDHKeyFormat): string;
-    computeSecret(otherPublicKey: ArrayBufferView): Buffer;
+    computeSecret(otherPublicKey: ScriptcBufferView): Buffer;
     computeSecret(otherPublicKey: string, inputEncoding: BinaryToTextEncoding): Buffer;
-    computeSecret(otherPublicKey: ArrayBufferView, outputEncoding: BinaryToTextEncoding): string;
+    computeSecret(otherPublicKey: ScriptcBufferView, outputEncoding: BinaryToTextEncoding): string;
     computeSecret(
       otherPublicKey: string,
       inputEncoding: BinaryToTextEncoding,
@@ -535,7 +543,7 @@ declare module "crypto" {
     getPrivateKey(encoding: BinaryToTextEncoding): string;
     getPublicKey(encoding?: null, format?: ECDHKeyFormat): Buffer;
     getPublicKey(encoding: BinaryToTextEncoding, format?: ECDHKeyFormat): string;
-    setPrivateKey(privateKey: ArrayBufferView): void;
+    setPrivateKey(privateKey: ScriptcBufferView): void;
     setPrivateKey(privateKey: string, encoding: BinaryToTextEncoding): void;
   }
   export function createECDH(curveName: string): ECDH;
@@ -544,7 +552,7 @@ declare module "crypto" {
     generateKeys(): Buffer;
     generateKeys(encoding: BinaryToTextEncoding): string;
     computeSecret(
-      otherPublicKey: ArrayBufferView,
+      otherPublicKey: ScriptcBufferView,
       inputEncoding?: null,
       outputEncoding?: null,
     ): Buffer;
@@ -554,7 +562,7 @@ declare module "crypto" {
       outputEncoding?: null,
     ): Buffer;
     computeSecret(
-      otherPublicKey: ArrayBufferView,
+      otherPublicKey: ScriptcBufferView,
       inputEncoding: null,
       outputEncoding: BinaryToTextEncoding,
     ): string;
@@ -571,27 +579,27 @@ declare module "crypto" {
     getPublicKey(encoding: BinaryToTextEncoding): string;
     getPrivateKey(): Buffer;
     getPrivateKey(encoding: BinaryToTextEncoding): string;
-    setPublicKey(publicKey: ArrayBufferView): void;
+    setPublicKey(publicKey: ScriptcBufferView): void;
     setPublicKey(publicKey: string, encoding: BufferEncoding): void;
-    setPrivateKey(privateKey: ArrayBufferView): void;
+    setPrivateKey(privateKey: ScriptcBufferView): void;
     setPrivateKey(privateKey: string, encoding: BufferEncoding): void;
     verifyError: number;
   }
   export type DiffieHellmanGroup = Omit<DiffieHellman, "setPublicKey" | "setPrivateKey">;
   export function createDiffieHellman(primeLength: number, generator?: number): DiffieHellman;
   export function createDiffieHellman(
-    prime: ArrayBuffer | ArrayBufferView,
-    generator?: number | ArrayBuffer | ArrayBufferView,
+    prime: ArrayBuffer | ScriptcBufferView,
+    generator?: number | ArrayBuffer | ScriptcBufferView,
   ): DiffieHellman;
   export function createDiffieHellman(
-    prime: ArrayBuffer | ArrayBufferView,
+    prime: ArrayBuffer | ScriptcBufferView,
     generator: string,
     generatorEncoding: BinaryToTextEncoding,
   ): DiffieHellman;
   export function createDiffieHellman(
     prime: string,
     primeEncoding: BinaryToTextEncoding,
-    generator?: number | ArrayBuffer | ArrayBufferView,
+    generator?: number | ArrayBuffer | ScriptcBufferView,
   ): DiffieHellman;
   export function createDiffieHellman(
     prime: string,
@@ -601,7 +609,7 @@ declare module "crypto" {
   ): DiffieHellman;
   export function getDiffieHellman(groupName: string): DiffieHellmanGroup;
   export function createDiffieHellmanGroup(name: string): DiffieHellmanGroup;
-  export type LargeNumberLike = ArrayBufferView | SharedArrayBuffer | ArrayBuffer | bigint;
+  export type LargeNumberLike = ScriptcBufferView | SharedArrayBuffer | ArrayBuffer | bigint;
   export interface GeneratePrimeOptions {
     add?: LargeNumberLike | undefined;
     rem?: LargeNumberLike | undefined;

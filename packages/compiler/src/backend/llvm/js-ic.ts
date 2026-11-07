@@ -8,7 +8,8 @@
  *          read slot `slot` inline; otherwise scr_js_get_probe
  *          (polymorphic, prototype hits, absent keys, misses)
  *   store  ordinary object whose layout is entry 0's replace layout,
- *          outside an intact parse region: replace inline; otherwise
+ *          outside an intact parse region (or storing an inert value,
+ *          which leaves a region intact): replace inline; otherwise
  *          scr_js_store_probe (adds, polymorphic, misses)
  *   keyed  dense array element at an integral number key: inline;
  *          otherwise scr_js_keyed_probe (string keys of ordinary objects)
@@ -33,14 +34,18 @@
  *   ScrJsIc      entries of 40 bytes {layout, target, holder,
  *                holder_layout, slot}; 168 bytes in all */
 import { BOOL, DYN, F64, STRING, type IrExpr, type IrFunction, type IrStmt } from "../../ir/ir.js";
-import { jsIcMethodSites, type JsIcSite } from "../../ir/js-ic.js";
+import { inertValue } from "../../ir/js-groups.js";
+import { jsIcMethodSites, DYN_INDEX_FASTPATH, type JsIcSite } from "../../ir/js-ic.js";
+import { jsObjectModelFact } from "../../ir/runtime-features.js";
 import { mangleBorrowedFunction } from "../mangle.js";
 import { emitBorrowedInput } from "./borrowed-inputs.js";
 import { classFieldBase, classFieldIndex } from "./classes.js";
+import { DYN_INDEX_SET } from "./common.js";
 import { DYN_KIND } from "./dyn.js";
 import { dispatchesCall } from "./integer-clones.js";
 import type { ExprOf, LlValue, LlvmEmitterContext } from "./expr-context.js";
 import { JS_BITS } from "./jsval-encoding.js";
+import { emitGroupedGet, emitGroupedSet } from "./js-groups.js";
 import { jsImmediates } from "./jsval.js";
 
 type Host = LlvmEmitterContext;
@@ -65,20 +70,29 @@ export function jsIcMethods(host: Host): boolean {
   );
 }
 
-function gep(host: Host, base: string, offset: number): string {
+export function gep(host: Host, base: string, offset: number): string {
   const p = host.B.tmp();
   host.B.line(`${p} = getelementptr inbounds i8, ptr ${base}, i64 ${offset}`);
   return p;
 }
 
-function load(host: Host, type: string, base: string, offset: number): string {
+export function load(host: Host, type: string, base: string, offset: number): string {
   const v = host.B.tmp();
   host.B.line(`${v} = load ${type}, ptr ${offset === 0 ? base : gep(host, base, offset)}`);
   return v;
 }
 
+/** The offset of an array's own length in its ScrDyn payload: the
+ * JavaScript object model build keeps `v.arr.length` one field past
+ * `v.arr.region` (+72), because a far element write or a length assignment
+ * can move it past the dense prefix `v.arr.len` (+16). A program that does
+ * not link that build reads the prefix field, which is then the length. */
+function arrLengthOffset(host: Host): number {
+  return jsObjectModelFact(host.runtimeFeatures) ? 72 : 16;
+}
+
 /** Branches to `yes` when the dyn cell `d` has kind `kind`. */
-function kindIs(host: Host, d: string, kind: number, yes: string, no: string): void {
+export function kindIs(host: Host, d: string, kind: number, yes: string, no: string): void {
   const k = load(host, "i32", d, 8);
   const is = host.B.tmp();
   host.B.line(`${is} = icmp eq i32 ${k}, ${kind}`);
@@ -95,8 +109,31 @@ function kindIs(host: Host, d: string, kind: number, yes: string, no: string): v
  * they made the run 13% faster than one entry, and 26% faster without its
  * class instances; four were no faster than two. So a site tests entries
  * 0 and 1, own or prototype, and its probe does the rest. (0 makes every access probe: with a runtime
- * built with SCR_JS_VERIFY, that probes every access.) */
-const INLINE_WAYS: number = 2;
+ * built with SCR_JS_VERIFY, that probes every access.)
+ *
+ * SCRIPTC_DEBUG_JS_IC_WAYS=0|1|2 overrides the count for an attribution run,
+ * where every access should reach the probe so that the runtime entry points
+ * can count it; the value is read once, so one build is one way count. */
+/** The attribution way count `SCRIPTC_DEBUG_JS_IC_WAYS` asks for, or null
+ * when the variable is unset. The value changes emitted code, so the build
+ * cache keys on it (executable/executable-cache.ts). */
+export function debugJsIcWays(env: NodeJS.ProcessEnv = process.env): 0 | 1 | 2 | null {
+  const raw = env["SCRIPTC_DEBUG_JS_IC_WAYS"];
+  if (raw === undefined || raw === "") return null;
+  const ways = Number(raw);
+  if (ways !== 0 && ways !== 1 && ways !== 2)
+    throw new Error(`SCRIPTC_DEBUG_JS_IC_WAYS must be 0, 1 or 2, got ${raw}`);
+  return ways;
+}
+
+const IC_WAYS_DEBUG: 0 | 1 | 2 | null = debugJsIcWays();
+const INLINE_WAYS: number = IC_WAYS_DEBUG ?? 2;
+
+/* An attribution run gives an object literal's member stores their own probe
+ * entry point, so a profile can split them from other stores. With the
+ * variable unset the emitted code calls scr_js_store_probe as before. */
+const LITERAL_PROBE: string =
+  IC_WAYS_DEBUG === null ? "scr_js_store_probe" : "scr_js_literal_probe";
 const INLINE_PROTO = true;
 
 /** The address of slot `slot` of layout-mode object `d`. */
@@ -229,7 +266,7 @@ function inlineReplace(
  * immediate, so arithmetic on it takes no reference and a later store can
  * update an unshared number cell in place; any other cell is carried under
  * the cell tag. */
-function asResult(host: Host, cell: string, e: IrExpr, owned: boolean | string): string {
+export function asResult(host: Host, cell: string, e: IrExpr, owned: boolean | string): string {
   const B = host.B;
   /** Retains the cell unless the caller owns it. */
   const hold = (): string => {
@@ -295,7 +332,12 @@ function asResult(host: Host, cell: string, e: IrExpr, owned: boolean | string):
 /** The helper call of a site's slow path, with the site's evaluated
  * (borrowed) arguments. Ordinary parameters take a reference; borrowed
  * ones lend it. Returns the owned result, or "" for a void helper. */
-function helperCall(host: Host, e: ExprOf<"call">, callee: IrFunction, args: LlValue[]): string {
+export function helperCall(
+  host: Host,
+  e: ExprOf<"call">,
+  callee: IrFunction,
+  args: LlValue[],
+): string {
   const B = host.B;
   const borrowed = host.callLifetimes.borrowed.get(e.callee);
   const argList = args
@@ -347,7 +389,7 @@ function capsuleReads(host: Host, helper: IrFunction): CapsuleRead[] {
   const receiver = helper.params[0]?.localId;
   if (receiver === undefined || helper.params.length !== 1) return [];
   const reads = new Map<string, CapsuleRead | null>();
-  for (const stmt of helper.body) {
+  for (const stmt of tableBranches(helper.body)) {
     if (normalizes(stmt, receiver)) continue;
     if (stmt.kind !== "if" || stmt.else_ !== null) break;
     if (notCapsule(stmt.cond, receiver)) continue;
@@ -373,6 +415,28 @@ function capsuleReads(host: Host, helper: IrFunction): CapsuleRead[] {
     if (same) out.push(read);
   }
   return out;
+}
+
+/** A class table's branches in the order a receiver that matches none of
+ * them reaches their guards: the statements of the body, with a
+ * `dyn.classHash` switch replaced by its cases' branches. A capsule whose
+ * key is a branch's selects that case, whose guard is then true, so the
+ * site can treat the branches as the chain they were lowered from. */
+function tableBranches(body: readonly IrStmt[]): readonly IrStmt[] {
+  if (!body.some(isClassHashSwitch)) return body;
+  const branches: IrStmt[] = [];
+  for (const stmt of body) {
+    if (isClassHashSwitch(stmt))
+      for (const { body: caseBody } of stmt.cases) branches.push(...caseBody);
+    else branches.push(stmt);
+  }
+  return branches;
+}
+
+/** The switch the compiler builds over a generated class table's branches
+ * (frontend/lowering/class-dynamic-dispatch.ts). */
+function isClassHashSwitch(stmt: IrStmt): stmt is IrStmt & { kind: "switch" } {
+  return stmt.kind === "switch" && stmt.disc.kind === "libCall" && stmt.disc.fn === "dyn.classHash";
 }
 
 /** `p = %dyn.class.normalize(p)`. */
@@ -437,7 +501,7 @@ function normalizationTargets(host: Host): Map<string, string[]> | null {
   if (normalize === undefined) return targets;
   const value = normalize.params[0]?.localId;
   if (value === undefined) return null;
-  for (const stmt of normalize.body) {
+  for (const stmt of tableBranches(normalize.body)) {
     if (stmt.kind === "return") {
       if (stmt.value !== null && isLocal(stmt.value, value)) continue;
       return null;
@@ -603,7 +667,7 @@ export function capsuleCallSite(
   if (resolved === null) return null;
   const branches = new Map<string, CapsuleCall | null>();
   const self = params[0]!.localId;
-  for (const stmt of helper.body) {
+  for (const stmt of tableBranches(helper.body)) {
     if (normalizes(stmt, self)) continue;
     if (stmt.kind !== "if" || stmt.else_ !== null) break;
     if (notCapsule(stmt.cond, self) || classObjectTest(stmt.cond, self)) continue;
@@ -637,7 +701,7 @@ export function capsuleCallSite(
 function callbackKeys(callback: IrFunction): Set<string> | null {
   const value = callback.params[0]!.localId;
   const keys = new Set<string>();
-  const body = callback.body;
+  const body = tableBranches(callback.body);
   for (let i = 0; i < body.length; i++) {
     const stmt = body[i]!;
     if (normalizes(stmt, value)) continue;
@@ -867,10 +931,16 @@ export function emitJsIcCall(
       return emitSet(host, e, callee, site.key);
     case "keyed":
       return emitKeyed(host, e, callee);
+    case "keyedSet":
+      return emitKeyedSet(host, e, callee);
   }
 }
 
 function emitGet(host: Host, e: ExprOf<"call">, callee: IrFunction, key: string): LlValue {
+  // A member of a guard group reads through the group's entry (js-groups.ts)
+  // unless its guard is not in effect here.
+  const grouped = emitGroupedGet(host, e, callee);
+  if (grouped !== null) return grouped;
   const B = host.B;
   const receiver = emitBorrowedInput(host, e.args[0]!);
   const name = keyString(host, key, e);
@@ -887,7 +957,7 @@ function emitGet(host: Host, e: ExprOf<"call">, callee: IrFunction, key: string)
     const other = B.newLabel("icg.other");
     kindIs(host, receiver.name, DYN_KIND.ARR, array, other);
     B.startBlock(array);
-    const len = load(host, "i64", receiver.name, 16);
+    const len = load(host, "i64", receiver.name, arrLengthOffset(host));
     const count = B.tmp();
     B.line(`${count} = uitofp i64 ${len} to double`);
     incoming.push(`[ ${numberResult(host, count, e)}, %${B.currentLabel()} ]`);
@@ -968,18 +1038,31 @@ function numberResult(host: Host, d: string, e: IrExpr): string {
   return cell;
 }
 
+/** The jsval word of a store's value when the jsval pass left one: the
+ * operand of `js.toDyn`. The word of a double is its bits with NaN
+ * canonicalized, the same word the pass carries for it. */
+function storeWord(host: Host, value: IrExpr): string | null {
+  if (value.kind === "libCall" && value.fn === "js.toDyn")
+    return host.emitExpr(value.args[0]!).name;
+  return null;
+}
+
 function emitSet(host: Host, e: ExprOf<"call">, callee: IrFunction, key: string): LlValue {
   const B = host.B;
   const receiver = emitBorrowedInput(host, e.args[0]!);
   // A value the jsval pass left as `js.toDyn(x)` is stored from the jsval
-  // itself: a number replaces the value of an unshared number cell in
-  // place instead of boxing a new one.
+  // itself: a number replaces the value of an unshared number cell in place
+  // instead of boxing a new one, and the generic path boxes it only where it
+  // must store a cell.
   const stored = e.args[1]!;
-  const word =
-    stored.kind === "libCall" && stored.fn === "js.toDyn"
-      ? host.emitExpr(stored.args[0]!).name
-      : null;
+  const word = storeWord(host, stored);
   const value = word === null ? emitBorrowedInput(host, stored) : null;
+  // A member of a guard group stores through the group's entry
+  // (js-groups.ts) unless its guard is not in effect here. Its operands are
+  // already evaluated: a member read inside the stored value comes first in
+  // the group's order.
+  const grouped = emitGroupedSet(host, e, callee, receiver, word, value);
+  if (grouped !== null) return grouped;
   const name = keyString(host, key, e);
   const ic = host.jsIcSite();
   const object = B.newLabel("ics.obj");
@@ -997,11 +1080,17 @@ function emitSet(host: Host, e: ExprOf<"call">, callee: IrFunction, key: string)
   }
   kindIs(host, receiver.name, DYN_KIND.OBJ, object, probe);
   B.startBlock(object);
-  const region = load(host, "ptr", receiver.name, 72);
-  const outside = B.tmp();
-  B.line(`${outside} = icmp eq ptr ${region}, null`);
   const unshared = B.newLabel("ics.r");
-  B.condBr(outside, unshared, probe);
+  if (inertValue(stored)) {
+    // An inert value leaves a parse region intact, so the barrier the probe
+    // applies behind the region test cannot fire: the replace stays inline.
+    B.br(unshared);
+  } else {
+    const region = load(host, "ptr", receiver.name, 72);
+    const outside = B.tmp();
+    B.line(`${outside} = icmp eq ptr ${region}, null`);
+    B.condBr(outside, unshared, probe);
+  }
   B.startBlock(unshared);
   host.declare(`declare ptr @scr_js_to_dyn_borrow(ptr)`);
   inlineReplace(
@@ -1244,6 +1333,35 @@ function emitNativeNumberElement(
   B.br(join);
 }
 
+/** `xs[i]` on a receiver whose runtime keeps its own indexes (a typed array
+ * or a string): the helper answers the element at an integral index below
+ * the length (+1) and NULL for every other key or index, which the probe
+ * and the helper answer as before. The result joins `incoming` at `join`. */
+function emitIndexRead(
+  host: Host,
+  receiver: string,
+  helper: "scr_dyn_bytes_index_get" | "scr_dyn_string_index_get",
+  e: IrExpr,
+  indexIn: (next: string) => string,
+  miss: string,
+  join: string,
+  incoming: string[],
+): void {
+  const B = host.B;
+  const index = indexIn(B.newLabel("ick.idx"));
+  host.declare(`declare ptr @${helper}(ptr, double)`);
+  const cell = B.tmp();
+  B.line(`${cell} = call ptr @${helper}(ptr ${receiver}, double ${index})`);
+  const found = B.tmp();
+  B.line(`${found} = icmp ne ptr ${cell}, null`);
+  const hit = B.newLabel("ick.hit");
+  B.condBr(found, hit, miss);
+  B.startBlock(hit);
+  const out = asResult(host, cell, e, true);
+  incoming.push(`[ ${out}, %${B.currentLabel()} ]`);
+  B.br(join);
+}
+
 function emitKeyed(host: Host, e: ExprOf<"call">, callee: IrFunction): LlValue {
   const B = host.B;
   const receiver = emitBorrowedInput(host, e.args[0]!);
@@ -1280,6 +1398,41 @@ function emitKeyed(host: Host, e: ExprOf<"call">, callee: IrFunction): LlValue {
   const other = B.newLabel("ick.other");
   kindIs(host, receiver.name, DYN_KIND.ARR, array, other);
   B.startBlock(other);
+  if (DYN_INDEX_FASTPATH) {
+    // A typed array and a string keep their own indexes, so an integral
+    // number below their length reads the element without forming the key
+    // string. Everything else keeps the keyed path.
+    const bytes = B.newLabel("ick.bytes");
+    const notBytes = B.newLabel("ick.nbytes");
+    kindIs(host, receiver.name, DYN_KIND.BYTES, bytes, notBytes);
+    B.startBlock(bytes);
+    emitIndexRead(
+      host,
+      receiver.name,
+      "scr_dyn_bytes_index_get",
+      e,
+      indexIn,
+      probe,
+      join,
+      incoming,
+    );
+    B.startBlock(notBytes);
+    const text = B.newLabel("ick.str");
+    const notText = B.newLabel("ick.nstr");
+    kindIs(host, receiver.name, DYN_KIND.STR, text, notText);
+    B.startBlock(text);
+    emitIndexRead(
+      host,
+      receiver.name,
+      "scr_dyn_string_index_get",
+      e,
+      indexIn,
+      probe,
+      join,
+      incoming,
+    );
+    B.startBlock(notText);
+  }
   emitNativeNumberElement(host, receiver.name, e, indexIn, probe, join, incoming);
   B.startBlock(array);
   const index = indexIn(number);
@@ -1356,16 +1509,94 @@ function emitKeyed(host: Host, e: ExprOf<"call">, callee: IrFunction): LlValue {
   return host.own({ name: out, type: e.type });
 }
 
+/** A computed write whose receiver and key the shortcut stores an element
+ * of: a Number key on a dense array or a typed array. The runtime helper
+ * borrows both operands and answers whether it stored the element,
+ * raised while coercing the value or fencing the receiver, or left the
+ * write to the site's own helper, which every other receiver, key and
+ * rejected store reaches unchanged (so its mode decides assignment
+ * failures). */
+function emitKeyedSet(host: Host, e: ExprOf<"call">, callee: IrFunction): LlValue {
+  const B = host.B;
+  const receiver = emitBorrowedInput(host, e.args[0]!);
+  const keyExpr = e.args[1]!;
+  const numeric = numberKey(host, keyExpr);
+  const key = numeric === null ? emitBorrowedInput(host, keyExpr) : null;
+  const value = emitBorrowedInput(host, e.args[2]!);
+  const array = B.newLabel("iks.arr");
+  const bytes = B.newLabel("iks.bytes");
+  const slow = B.newLabel("iks.slow");
+  const join = B.newLabel("iks.j");
+  // The boxed key of the slow path when the site stores through a double;
+  // the statement's frame releases it.
+  let keySlot: string | null = null;
+  if (numeric !== null) {
+    keySlot = B.slot();
+    B.entryAllocas.push(`${keySlot} = alloca ptr`);
+    B.line(`store ptr null, ptr ${keySlot}`);
+    host.ownSlot(keySlot, DYN);
+  }
+  /** The key as a double in block `next`; other keys are the helper's. */
+  const indexIn = (next: string): string => {
+    if (numeric === null) {
+      kindIs(host, key!.name, DYN_KIND.NUM, next, slow);
+      B.startBlock(next);
+      return load(host, "double", key!.name, 16);
+    }
+    B.condBr(numeric.present, next, slow);
+    B.startBlock(next);
+    return numeric.value;
+  };
+  /** One arm of the receiver's kind: the element store, or the helper. */
+  const store = (): void => {
+    const index = indexIn(B.newLabel("iks.idx"));
+    host.declare(`declare i32 @scr_dyn_index_set(ptr, double, ptr)`);
+    const status = B.tmp();
+    B.line(
+      `${status} = call i32 @scr_dyn_index_set(ptr ${receiver.name}, double ${index}, ptr ${value.name})`,
+    );
+    const unhandled = B.tmp();
+    const failed = B.tmp();
+    B.line(`${unhandled} = icmp eq i32 ${status}, ${DYN_INDEX_SET.NOT_HANDLED}`);
+    B.line(`${failed} = icmp eq i32 ${status}, ${DYN_INDEX_SET.THREW}`);
+    const done = B.newLabel("iks.done");
+    B.condBr(unhandled, slow, done);
+    B.startBlock(done);
+    host.emitPendingCheck(undefined, false, failed);
+    B.br(join);
+  };
+  const other = B.newLabel("iks.other");
+  kindIs(host, receiver.name, DYN_KIND.ARR, array, other);
+  B.startBlock(other);
+  kindIs(host, receiver.name, DYN_KIND.BYTES, bytes, slow);
+  B.startBlock(bytes);
+  store();
+  B.startBlock(array);
+  store();
+  B.startBlock(slow);
+  let keyCell: string;
+  if (numeric === null) {
+    keyCell = key!.name;
+  } else {
+    keyCell = numeric.box();
+    B.line(`store ptr ${keyCell}, ptr ${keySlot}`);
+  }
+  helperCall(host, e, callee, [receiver, { name: keyCell, type: DYN }, value]);
+  B.br(join);
+  B.startBlock(join);
+  return { name: "", type: e.type };
+}
+
 /** One member of an object literal (ir/js-ic.ts jsIcLiteralKey) added to
  * the fresh object `obj` through the site's store cache, else with
  * scr_dyn_key_set. The key and value are borrowed. */
 export function emitJsIcLiteralMember(host: Host, obj: string, key: string, value: string): void {
   const B = host.B;
   const ic = host.jsIcSite();
-  host.declare(`declare zeroext i1 @scr_js_store_probe(ptr, ptr, ptr, ptr)`);
+  host.declare(`declare zeroext i1 @${LITERAL_PROBE}(ptr, ptr, ptr, ptr)`);
   const done = B.tmp();
   B.line(
-    `${done} = call zeroext i1 @scr_js_store_probe(ptr ${obj}, ptr ${key}, ptr ${value}, ptr ${ic})`,
+    `${done} = call zeroext i1 @${LITERAL_PROBE}(ptr ${obj}, ptr ${key}, ptr ${value}, ptr ${ic})`,
   );
   const slow = B.newLabel("icl.slow");
   const join = B.newLabel("icl.j");

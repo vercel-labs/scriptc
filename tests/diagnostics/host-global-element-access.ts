@@ -1,5 +1,7 @@
-// A string-keyed read off a cast of the global object is the same read as
-// `globalThis.WebSocket` (Node answers "function"), so it refuses instead of
-// answering undefined through the dynamic global path. SC2020, host-global.
-const pattern = (globalThis as unknown as Record<string, unknown>)["URLPattern"];
-console.log(typeof pattern);
+// A string-keyed read off the global object answers the constructor value
+// (`globalThis["URLPattern"]` is `globalThis.URLPattern`), so calling it is
+// the same refusal a direct call is (SC2020, host-global) rather than the
+// dynamic global path's undefined.
+const scope = globalThis as unknown as Record<string, any>;
+const url = scope["URLPattern"]("https://example.com");
+console.log(url);

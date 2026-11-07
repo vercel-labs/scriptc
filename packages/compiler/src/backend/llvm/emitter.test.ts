@@ -205,9 +205,11 @@ test("a target CPU level reaches every function attribute group and nothing else
   const module = moduleFor([call()]);
   const plain = emitLlvmModule(module);
   expect(plain).not.toContain("target-cpu");
-  const v3 = emitLlvmModule(module, { targetCpu: "x86-64-v3" });
-  expect(v3).toMatch(/^attributes #0 = \{ sanitize_address uwtable "target-cpu"="x86-64-v3" \}$/m);
-  expect(v3.replaceAll(' "target-cpu"="x86-64-v3"', "")).toBe(plain);
+  // x86-64-v3 also gives the program's functions baseline copies
+  // (cpu-dispatch-emission.test.ts); x86-64-v4 changes only the groups.
+  const v4 = emitLlvmModule(module, { targetCpu: "x86-64-v4" });
+  expect(v4).toMatch(/^attributes #0 = \{ sanitize_address uwtable "target-cpu"="x86-64-v4" \}$/m);
+  expect(v4.replaceAll(' "target-cpu"="x86-64-v4"', "")).toBe(plain);
   expect(emitLlvmModule(module, { targetCpu: "baseline" })).toBe(plain);
 });
 
@@ -370,6 +372,33 @@ const text = (obj: IrExpr): IrExpr => ({
   field: "text",
   type: STRING,
   loc: receiverLoc,
+});
+
+test("class dispatch indexes on the key's last four bytes inline", () => {
+  const dyn: IrType = { kind: "dyn" };
+  const hash: IrExpr = {
+    kind: "libCall",
+    fn: "dyn.classHash",
+    args: [ref(dyn)],
+    type: F64,
+    loc: receiverLoc,
+  };
+  const llvm = work(hash, dyn);
+  // The selector is the word at the end of the key plus the key's length
+  // times an odd constant: the two fields a class branch's guards read, one
+  // subtract, one load, one multiply, no runtime call.
+  expect(llvm).toContain("; ->v.typed_ref.type_key");
+  expect(llvm).toContain("; ->v.typed_ref.type_key_len");
+  expect(llvm).toMatch(/load i32, ptr %t\d+, align 1/);
+  expect(llvm).toContain("mul i32 %t");
+  expect(llvm).toContain(", -1640531535");
+  expect(llvm).toContain("and i32 %t");
+  expect(llvm).toContain(", 2147483647");
+  // A value that is not a capsule answers the -1 sentinel, which no case
+  // matches.
+  expect(llvm).toContain("store i32 -1, ptr");
+  expect(llvm).not.toContain("@scr_dyn_class_hash");
+  expect(llvm).not.toContain("call ptr @scr_dyn_retain_v(");
 });
 
 function work(expr: IrExpr, parameter: IrType, boxed = false, tdz = false): string {

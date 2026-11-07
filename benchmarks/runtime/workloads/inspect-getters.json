@@ -1,0 +1,6 @@
+{
+  "entry": "workloads/inspect-getters.ts",
+  "args": [
+    "1"
+  ]
+}

@@ -10,8 +10,8 @@
  *
  * One code per construct, so C1's checker relaxation stays safe: relaxing a
  * tsc code that doubles as an early error removes the ONLY rejection some
- * parse-negative test had, which is why these codes live beside
- * JS_RELAXED_TSC_CODES in tsc-codes.ts and never depend on it.
+ * parse-negative test had, which is why these codes live beside the
+ * JS_OPINIONS table in tsc-codes.ts and never depend on it.
  *
  * Scope: JavaScript sources only. A TypeScript source is type-checked, and
  * its checker diagnostics (TS2451 and friends) are the gate; re-reporting
@@ -34,8 +34,12 @@ import { isJsSourceFileName } from "./tsc-codes.js";
  * `import.defer` and friends take exactly one); SC0009 is
  * AllPrivateNamesValid (a `#name` may only be read where an enclosing class
  * declares it); SC0010 is AssignmentTargetType (an assignment target must be
- * a variable reference or a property access); SC0011 is ContainsArguments
- * over a class field initializer or a static block. */
+ * a variable reference or a property access); SC0011 is the reserved-word
+ * rule for `await` in the positions a keyword-`await` context owns; SC0012 is
+ * ContainsArguments, the ban on `arguments` in a class field initializer or
+ * a class static block; SC0013 is the Script-goal rule for `using`; SC0014 is
+ * the strict-mode ban on `eval` and `arguments` as assignment targets;
+ * SC0015 is the CatchParameter/LexicallyDeclaredNames collision. */
 export const EARLY_ERROR_CODES = [
   "SC0005",
   "SC0006",
@@ -44,6 +48,10 @@ export const EARLY_ERROR_CODES = [
   "SC0009",
   "SC0010",
   "SC0011",
+  "SC0012",
+  "SC0013",
+  "SC0014",
+  "SC0015",
 ] as const;
 
 const NO_DUPLICATE_LEXICAL = "SC0005";
@@ -52,7 +60,11 @@ const NOT_A_STATEMENT = "SC0007";
 const IMPORT_CALL_FORM = "SC0008";
 const UNBOUND_PRIVATE_NAME = "SC0009";
 const INVALID_ASSIGNMENT_TARGET = "SC0010";
-const CONTAINS_ARGUMENTS = "SC0011";
+const AWAIT_IS_RESERVED = "SC0011";
+const ARGUMENTS_IN_CLASS_INITIALIZER = "SC0012";
+const USING_IN_SCRIPT_TOP_LEVEL = "SC0013";
+const STRICT_EVAL_BINDING = "SC0014";
+const CATCH_PARAMETER_COLLISION = "SC0015";
 
 /** Whether the code around a node is strict — the one input this pass needs
  * from outside: Node's own module classification (program.ts's
@@ -80,8 +92,11 @@ export function earlyErrorDiagnostics7(
       checkStatementSlot(node, diags, isStrict);
       checkImportCallForm(node, diags);
       checkPrivateNameUse(node, diags, privateNames);
-      checkAssignmentTarget(node, diags);
-      checkContainsArguments(node, diags);
+      checkAssignmentTarget(node, diags, isStrict);
+      checkAwaitIdentifier(node, diags, isModuleCode);
+      checkClassInitializerArguments(node, diags);
+      checkScriptTopLevelUsing(node, diags, isModuleCode);
+      checkCatchParameterCollision(node, diags);
       ts.forEachChild(node, (child) => {
         stack.push(child);
         return undefined;
@@ -517,32 +532,59 @@ function privateBoundNamesOf(
  * every 2362 whose message names 'any'. Every other invalid target
  * (`f() = 1`, `f() += 1`, `[a] = b = c`) is the same static semantics;
  * reporting it here costs nothing, since an accepted program never reaches
- * this check as a failure. */
-function checkAssignmentTarget(node: ts.Node, diags: ScrDiagnostic[]): void {
+ * this check as a failure.
+ *
+ * SC0014 rides the same walk: in strict mode code an ASSIGNMENT to `eval` or
+ * `arguments` is a Syntax Error (AssignmentTargetType is not simple for those
+ * two names in strict code), not the caught TypeError a writable binding
+ * would throw. The declarations the checker already refuses (`let eval`,
+ * `arguments` as a parameter of strict code, a sloppy-only `with`) are its
+ * own diagnostics; this is the reference side the checker types fine. */
+function checkAssignmentTarget(
+  node: ts.Node,
+  diags: ScrDiagnostic[],
+  isStrict: IsStrictCode,
+): void {
   if (ts.isBinaryExpression(node)) {
     const kind = node.operatorToken.kind;
     if (kind === ts.SyntaxKind.EqualsToken) {
-      checkTargetForm(node.left, true, node, diags);
+      checkTargetForm(node.left, true, node, diags, strictTargetCheck(node, isStrict));
       return;
     }
     if (assignmentOperatorTokens.has(kind)) {
-      checkTargetForm(node.left, false, node, diags);
+      checkTargetForm(node.left, false, node, diags, strictTargetCheck(node, isStrict));
       return;
     }
     return;
   }
   if (ts.isPrefixUnaryExpression(node) && isUpdateToken(node.operator)) {
-    checkTargetForm(node.operand, false, node, diags);
+    checkTargetForm(node.operand, false, node, diags, strictTargetCheck(node, isStrict));
     return;
   }
   if (ts.isPostfixUnaryExpression(node) && isUpdateToken(node.operator)) {
-    checkTargetForm(node.operand, false, node, diags);
+    checkTargetForm(node.operand, false, node, diags, strictTargetCheck(node, isStrict));
     return;
   }
   if (ts.isForInStatement(node) || ts.isForOfStatement(node)) {
     const initializer = node.initializer;
-    if (!ts.isVariableDeclarationList(initializer)) checkTargetForm(initializer, true, node, diags);
+    if (!ts.isVariableDeclarationList(initializer))
+      checkTargetForm(initializer, true, node, diags, strictTargetCheck(node, isStrict));
   }
+}
+
+/** Answers whether a target identifier is in strict mode code, for SC0014;
+ * a lazy answer keeps the (parent-walking) strictness computation off the
+ * targets that never need it. */
+function strictTargetCheck(
+  node: ts.Node,
+  isStrict: IsStrictCode,
+): ((identifier: ts.Identifier) => boolean) | null {
+  const sf = ts.getSourceFileOfNode(node);
+  let answer: boolean | undefined;
+  return (identifier) => {
+    if (answer === undefined) answer = isStrict(sf, identifier);
+    return answer;
+  };
 }
 
 const assignmentOperatorTokens: ReadonlySet<ts.SyntaxKind> = new Set([
@@ -570,22 +612,28 @@ function isUpdateToken(token: ts.SyntaxKind): boolean {
 /** Reports `target` when it is not an assignment target of the given kind.
  * `pattern` admits a destructuring pattern (a plain `=` and a for-in/of
  * head) around simple targets; a compound assignment and an update take a
- * simple target only. */
+ * simple target only. `strict` answers, per identifier, whether SC0014
+ * applies. */
 function checkTargetForm(
   target: ts.Node,
   pattern: boolean,
   at: ts.Node,
   diags: ScrDiagnostic[],
+  strict: ((identifier: ts.Identifier) => boolean) | null,
 ): void {
   // Parentheses are transparent around a simple target only: a pattern is
   // not a LeftHandSideExpression, so `([a]) = rows` is a Syntax Error and
   // `((a)) = 1` is not.
   if (ts.isParenthesizedExpression(target)) {
-    checkTargetForm(target.expression, false, at, diags);
+    checkTargetForm(target.expression, false, at, diags, strict);
     return;
   }
   const node = target;
-  if (ts.isIdentifier(node)) return;
+  if (ts.isIdentifier(node)) {
+    if (strict !== null && (node.text === "eval" || node.text === "arguments") && strict(node))
+      report(diags, STRICT_EVAL_BINDING, at, `strict mode code may not assign to '${node.text}'`);
+    return;
+  }
   if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) return;
   // `new.target = 1` is caught by the checker; a meta property is never a
   // reference and never a pattern, so it falls through.
@@ -595,37 +643,38 @@ function checkTargetForm(
       // A rest target and the target of a default admit a nested pattern
       // (`[...[a]] = rows`, `[[a] = [1]] = rows`).
       if (ts.isSpreadElement(element)) {
-        checkTargetForm(element.expression, true, at, diags);
+        checkTargetForm(element.expression, true, at, diags, strict);
         continue;
       }
       if (
         ts.isBinaryExpression(element) &&
         element.operatorToken.kind === ts.SyntaxKind.EqualsToken
       ) {
-        checkTargetForm(element.left, true, at, diags);
+        checkTargetForm(element.left, true, at, diags, strict);
         continue;
       }
-      checkTargetForm(element, true, at, diags);
+      checkTargetForm(element, true, at, diags, strict);
     }
     return;
   }
   if (pattern && ts.isObjectLiteralExpression(node)) {
     for (const property of node.properties.nodes) {
       if (ts.isSpreadAssignment(property)) {
-        checkTargetForm(property.expression, false, at, diags);
+        checkTargetForm(property.expression, false, at, diags, strict);
         continue;
       }
       if (ts.isShorthandPropertyAssignment(property)) {
-        if (property.objectAssignmentInitializer !== undefined) continue;
+        // The shorthand's own name is the target.
+        checkTargetForm(property.name, false, at, diags, strict);
         continue;
       }
       if (!ts.isPropertyAssignment(property)) continue;
       const value = property.initializer;
       if (ts.isBinaryExpression(value) && value.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
-        checkTargetForm(value.left, true, at, diags);
+        checkTargetForm(value.left, true, at, diags, strict);
         continue;
       }
-      checkTargetForm(value, true, at, diags);
+      checkTargetForm(value, true, at, diags, strict);
     }
     return;
   }
@@ -676,48 +725,173 @@ function hasUseStrictPrologue(statements: readonly ts.Statement[]): boolean {
   return false;
 }
 
-/* ── SC0011: ContainsArguments over a class field initializer ────────────
+/* ── SC0011: `await` where the grammar makes it an operator ─────────────
  *
- *   ClassElement : FieldDefinition ;
+ *   Identifier : IdentifierName but not ReservedWord
+ *
+ * The grammar passes an [Await] parameter down to every production whose
+ * tokens are parsed in an async context, and there `await` is the
+ * AwaitExpression keyword rather than an Identifier: an async function's
+ * FormalParameters and FunctionBody, a class static block's body (its
+ * ClassStaticBlockStatementList is parsed with Await=true), and a module's
+ * ModuleItemList (top-level await). What resets [Await] to false is a
+ * syntactic scope of its own: a non-async function's parameters and body, a
+ * class field initializer, and — the one that reads as a surprise — an
+ * arrow function's BODY (ConciseBody is [~Await] by production, whatever
+ * the arrow's own async-ness), while the arrow's PARAMETERS keep the
+ * context's [Await].
+ *
+ * tsc accepts every one of these positions, so nothing in the checker's
+ * gate rejects them; Node's parser does (`var await = 1` in an async
+ * function is "Unexpected reserved word"), and the position a negative
+ * parse test pins is exactly this one. The IdentifierName positions stay
+ * open — `o.await`, `{ await: 1 }`, `class C { await() {} }` are ordinary
+ * JavaScript — as do the labels' identifier slots only where [Await] is
+ * false (`await: for (;;) break await;` is legal in sloppy script code and
+ * a Syntax Error inside an async function). */
+function checkAwaitIdentifier(
+  node: ts.Node,
+  diags: ScrDiagnostic[],
+  isModuleCode: (sf: ts.SourceFile) => boolean,
+): void {
+  if (!ts.isIdentifier(node) || node.text !== "await") return;
+  if (isIdentifierNamePosition(node)) return;
+  if (!awaitIsReservedAt(node, isModuleCode)) return;
+  report(
+    diags,
+    AWAIT_IS_RESERVED,
+    node,
+    "'await' is an operator in this context, not an identifier: an async function body or parameter list, a class static block, and a module's top level parse it as the await keyword",
+  );
+}
+
+/** The [Await] parameter of the context `node` sits in. */
+function awaitIsReservedAt(node: ts.Node, isModuleCode: (sf: ts.SourceFile) => boolean): boolean {
+  let child: ts.Node = node;
+  for (let n: ts.Node | undefined = node.parent; n !== undefined; child = n, n = n.parent) {
+    if (ts.isSourceFile(n)) return isModuleCode(n);
+    if (ts.isClassStaticBlockDeclaration(n)) return true;
+    if (ts.isPropertyDeclaration(n)) {
+      // A field initializer is its own function-like scope with Await=false;
+      // the element's computed name is evaluated in the enclosing one.
+      if (n.initializer !== undefined && isWithin(n.initializer, child)) return false;
+      continue;
+    }
+    if (ts.isArrowFunction(n)) {
+      // The body resets [Await] to the arrow's own async-ness; the parameters
+      // inherit the enclosing context.
+      if (isWithin(n.body, child)) return isAsyncFunction(n);
+      if (isAsyncFunction(n)) return true;
+      continue;
+    }
+    if (ts.isFunctionLike(n)) {
+      // A computed member name is evaluated in the enclosing context: the
+      // method's own [Await] applies to its parameter list and its body, not
+      // to the name that puts the member on the object or class.
+      const name = (n as { name?: ts.PropertyName }).name;
+      if (name !== undefined && ts.isComputedPropertyName(name) && isWithin(name, child)) continue;
+      return isAsyncFunction(n);
+    }
+    if (ts.isClassDeclaration(n) || ts.isClassExpression(n)) continue;
+  }
+  return false;
+}
+
+/** Whether `node` is at or below `container`. */
+function isWithin(container: ts.Node, node: ts.Node): boolean {
+  for (let n: ts.Node | undefined = node; n !== undefined; n = n.parent) {
+    if (n === container) return true;
+  }
+  return false;
+}
+
+function isAsyncFunction(node: ts.Node): boolean {
+  const modifiers = (node as { modifiers?: { nodes: readonly ts.Node[] } }).modifiers?.nodes;
+  if (modifiers !== undefined) {
+    for (const modifier of modifiers) if (modifier.kind === ts.SyntaxKind.AsyncKeyword) return true;
+  }
+  return (ts.getCombinedModifierFlags(node) & ts.ModifierFlags.Async) !== 0;
+}
+
+/** The positions whose identifier slot is an IdentifierName or a keyword the
+ * grammar spells out, never a ReservedWord-checked Identifier: property
+ * names, member names, labels, specifier names, and type references. */
+function isIdentifierNamePosition(node: ts.Identifier): boolean {
+  const parent = node.parent;
+  if (parent === undefined) return false;
+  if (ts.isPropertyAccessExpression(parent) && parent.name === node) return true;
+  if (ts.isQualifiedName(parent) && parent.right === node) return true;
+  if (ts.isImportSpecifier(parent) || ts.isExportSpecifier(parent)) return true;
+  // A destructuring rename's property name is an IdentifierName; its binding
+  // name (`{ await: x }` vs `{ await }`) is a BindingIdentifier and is not.
+  if (ts.isBindingElement(parent) && parent.propertyName === node) return true;
+  if (ts.isTypeReferenceNode(parent) || ts.isExpressionWithTypeArguments(parent)) return true;
+  const named = parent as { name?: ts.Node };
+  if (named.name === node) {
+    if (
+      ts.isPropertyAssignment(parent) ||
+      ts.isPropertyDeclaration(parent) ||
+      ts.isPropertySignatureDeclaration(parent) ||
+      ts.isMethodDeclaration(parent) ||
+      ts.isMethodSignatureDeclaration(parent) ||
+      ts.isGetAccessorDeclaration(parent) ||
+      ts.isSetAccessorDeclaration(parent) ||
+      ts.isEnumMember(parent) ||
+      ts.isModuleDeclaration(parent) ||
+      ts.isClassDeclaration(parent) ||
+      ts.isClassExpression(parent) ||
+      ts.isFunctionDeclaration(parent) ||
+      ts.isFunctionExpression(parent)
+    )
+      return true;
+  }
+  return false;
+}
+
+/* ── SC0012: ContainsArguments in a class field initializer ─────────────
+ *
+ *   FieldDefinition : ClassElementName Initializer_opt
  *     It is a Syntax Error if ContainsArguments of Initializer is true.
  *   ClassStaticBlockBody : StatementList
- *     It is a Syntax Error if ContainsArguments of StatementList is true.
+ *     It is a Syntax Error if ContainsArguments of ClassStaticBlockBody is
+ *     true.
  *
- * ContainsArguments is a plain reference to `arguments` anywhere in the
- * initializer. An ARROW function has no `arguments` binding of its own, so
- * its body is searched too; every other function form (function expression,
- * method, accessor, constructor) binds its own and ends the search, which is
- * exactly Node's split:
+ * ContainsArguments walks the production tree for an IdentifierReference
+ * spelling `arguments` and stops at a function boundary — except an arrow
+ * function, whose body is part of the initializer's own evaluation. The
+ * computed ClassElementName is NOT part of the rule (`class C { [arguments]
+ * = 1 }` is legal: the name is evaluated in the enclosing scope), and a
+ * method's `arguments` is a method's own.
  *
- *   class C { x = () => arguments }              // SyntaxError
- *   class C { x = function () { return arguments } }  // legal
- *
- * A nested class is searched: its own fields and static block carry the same
- * rule, and its methods are function bodies. */
-function checkContainsArguments(node: ts.Node, diags: ScrDiagnostic[]): void {
+ * The checker reports the common spelling of this as TS2304 ("Cannot find
+ * name 'arguments'"), which JavaScript sources relax because an undeclared
+ * name is Node's catchable ReferenceError — but here the construct never
+ * runs at all: Node refuses the source. */
+function checkClassInitializerArguments(node: ts.Node, diags: ScrDiagnostic[]): void {
   let root: ts.Node | undefined;
   if (ts.isPropertyDeclaration(node)) root = node.initializer;
   else if (ts.isClassStaticBlockDeclaration(node)) root = node.body;
   if (root === undefined) return;
-  const reference = argumentsReferenceIn(root);
-  if (reference === null) return;
+  const hit = firstArgumentsReference(root);
+  if (hit === null) return;
   report(
     diags,
-    CONTAINS_ARGUMENTS,
-    reference,
-    "'arguments' cannot be referenced from a class field initializer or a static block",
+    ARGUMENTS_IN_CLASS_INITIALIZER,
+    hit,
+    "'arguments' is not allowed in a class field initializer or a class static block",
   );
 }
 
-/** The first `arguments` identifier reference below `root`, stopping at
- * every non-arrow function boundary (inclusive of a root that is one). */
-function argumentsReferenceIn(root: ts.Node): ts.Identifier | null {
+/** The first IdentifierReference to `arguments` below `root`, for
+ * ContainsArguments: arrows are transparent, every other function form stops
+ * the walk. */
+function firstArgumentsReference(root: ts.Node): ts.Identifier | null {
   const stack: ts.Node[] = [root];
   while (stack.length > 0) {
     const node = stack.pop()!;
-    if (ts.isIdentifier(node) && node.text === "arguments" && isArgumentsReference(node))
-      return node;
     if (ts.isFunctionLike(node) && !ts.isArrowFunction(node)) continue;
+    if (ts.isIdentifier(node) && node.text === "arguments" && !isIdentifierNamePosition(node))
+      return node;
     ts.forEachChild(node, (child) => {
       stack.push(child);
       return undefined;
@@ -726,34 +900,72 @@ function argumentsReferenceIn(root: ts.Node): ts.Identifier | null {
   return null;
 }
 
-/** Whether an identifier spelled `arguments` reads a binding rather than
- * naming something: property and member names, declarations and labels are
- * not references. */
-function isArgumentsReference(node: ts.Identifier): boolean {
-  const parent = node.parent;
-  if (parent === undefined) return true;
-  if (ts.isPropertyAccessExpression(parent) && parent.name === node) return false;
-  if (ts.isPropertyAssignment(parent) && parent.name === node) return false;
-  if (ts.isPropertyDeclaration(parent) && parent.name === node) return false;
-  if (ts.isMethodDeclaration(parent) && parent.name === node) return false;
-  if (ts.isVariableDeclaration(parent) && parent.name === node) return false;
-  if (ts.isParameter(parent) && parent.name === node) return false;
-  if (ts.isBindingElement(parent) && parent.name === node) return false;
-  // `const { arguments: a } = src` NAMES the property `arguments`; it reads
-  // no binding, so only a shorthand binding (`const { arguments } = src`)
-  // reaches the rule above.
-  if (ts.isBindingElement(parent) && parent.propertyName === node) return false;
-  // `get arguments() {}` and `set arguments(v) {}` name an accessor.
-  if (
-    (ts.isGetAccessorDeclaration(parent) || ts.isSetAccessorDeclaration(parent)) &&
-    parent.name === node
-  )
-    return false;
-  if (ts.isFunctionDeclaration(parent) && parent.name === node) return false;
-  if (ts.isFunctionExpression(parent) && parent.name === node) return false;
-  if (ts.isClassDeclaration(parent) && parent.name === node) return false;
-  if (ts.isClassExpression(parent) && parent.name === node) return false;
-  if (ts.isLabeledStatement(parent) && parent.label === node) return false;
-  if (ts.isBreakOrContinueStatement(parent) && parent.label === node) return false;
-  return true;
+/* ── SC0013: a `using` declaration at the top level of a Script ─────────
+ *
+ *   UsingDeclaration : using BindingList ;
+ *     It is a Syntax Error if the goal symbol is Script and the declaration
+ *     is not contained, directly or indirectly, within a Block, a
+ *     ForStatement, a ForInOfStatement, a FunctionBody, a GeneratorBody, an
+ *     AsyncGeneratorBody, an AsyncFunctionBody, a ClassStaticBlockBody, or a
+ *     ClassBody.
+ *
+ * A Module's top level is NOT in that list (a module's resources live until
+ * the module finishes evaluating), so the rule is the script goal's alone —
+ * which is why the check asks the program's own Node classification rather
+ * than the statement position. */
+function checkScriptTopLevelUsing(
+  node: ts.Node,
+  diags: ScrDiagnostic[],
+  isModuleCode: (sf: ts.SourceFile) => boolean,
+): void {
+  if (!ts.isSourceFile(node)) return;
+  if (isModuleCode(node)) return;
+  for (const stmt of node.statements.nodes) {
+    if (!ts.isVariableStatement(stmt)) continue;
+    // `using` is the Using bit; `await using` spells AwaitUsing (Const |
+    // Using), so the Using bit alone answers both — and only those.
+    if ((stmt.declarationList.flags & ts.NodeFlags.Using) === 0) continue;
+    report(
+      diags,
+      USING_IN_SCRIPT_TOP_LEVEL,
+      stmt.declarationList,
+      "a 'using' declaration is not allowed at the top level of a script: put it in a block, a function body, or a class static block",
+    );
+  }
+}
+
+/* ── SC0015: a catch parameter colliding with a block declaration ───────
+ *
+ *   Catch : catch ( CatchParameter ) Block
+ *     It is a Syntax Error if any element of the BoundNames of CatchParameter
+ *     also occurs in the LexicallyDeclaredNames of Block.
+ *
+ * A `var` in the block is Annex B's legacy and stays legal, and a nested
+ * block is a different Block (its declarations are not this list's).
+ * TypeScript reports the let/const/class spellings as TS2300, which the
+ * preflight gate keeps; a plain function declaration is the form it does
+ * not report (`try {} catch (e) { function e() {} }`), and Node refuses it
+ * in both modes. */
+function checkCatchParameterCollision(node: ts.Node, diags: ScrDiagnostic[]): void {
+  if (!ts.isTryStatement(node) || node.catchClause === undefined) return;
+  const clause = node.catchClause;
+  const parameter = clause.variableDeclaration;
+  const block = clause.block;
+  if (parameter === undefined || block === undefined) return;
+  const names = new Set<string>();
+  const entries: Array<[string, ts.Node]> = [];
+  collectBindingNames(parameter.name, entries);
+  for (const [name] of entries) names.add(name);
+  if (names.size === 0) return;
+  for (const stmt of block.statements.nodes) {
+    if (!ts.isFunctionDeclaration(stmt)) continue;
+    const name = stmt.name;
+    if (name === undefined || !ts.isIdentifier(name) || !names.has(name.text)) continue;
+    report(
+      diags,
+      CATCH_PARAMETER_COLLISION,
+      name,
+      `the catch parameter '${name.text}' is already declared in this catch block`,
+    );
+  }
 }

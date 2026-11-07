@@ -226,7 +226,7 @@ export function eachStringField(
     }
     case "fieldAbsent": {
       visit(node.kind, "kind");
-      visit(node.unionId, "unionId");
+      if (typeof node.unionId === "string") visit(node.unionId, "unionId");
       return;
     }
     case "fieldGet": {
@@ -994,7 +994,9 @@ export function walkExprFields(node: IrExpr, walker: IrFieldWalker, skipType: bo
     }
     case "fieldAbsent": {
       walker.string(node.kind);
-      walker.string(node.unionId);
+      if (node.unionId !== undefined && node.unionId !== null) {
+        walker.string(node.unionId);
+      }
       if (!skipType) {
         walkTypeFields(node.type, walker, skipType);
       }

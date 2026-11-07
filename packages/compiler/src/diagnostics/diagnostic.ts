@@ -14,10 +14,14 @@
  *            statement list (SC0005/SC0006), a declaration where the
  *            grammar admits only a Statement (SC0007), an ImportCall
  *            argument list the grammar does not allow (SC0008), a private
- *            name with no declaring enclosing class (SC0009), and an
+ *            name with no declaring enclosing class (SC0009), an
  *            assignment target that is not a variable or a property access
- *            (SC0010), and a reference to `arguments` from a class field
- *            initializer or a static block (SC0011)
+ *            (SC0010), `await` used as an identifier where the grammar
+ *            makes it an operator (SC0011), `arguments` in a class field
+ *            initializer or static block (SC0012), a script-top-level
+ *            `using` declaration (SC0013), assignment to `eval` or
+ *            `arguments` in strict code (SC0014), and a catch parameter
+ *            the catch block redeclares (SC0015)
  *   SC1xxx  supported-TypeScript-not-yet: valid TS outside the current subset
  *   SC2xxx  scriptc type rules (types we cannot compile yet)
  *   SC3xxx  backend/target coverage: the program is valid, but the selected
@@ -1196,17 +1200,19 @@ export function noLoweringDiag(
   };
 }
 
-/** A read of a Node 24 global the native runtime does not implement
- * (host-globals.ts). Node has the value, so the read has an exact answer
- * native code cannot give; answering `undefined` would silently diverge.
- * The reason id lets a Node island run the module instead. */
+/** A use of a Node 24 global the native runtime does not implement
+ * (host-globals.ts): constructing or calling its constructor value, or
+ * reading one of its members. A bare read compiles and answers the
+ * constructor (host-global-values.ts). Node has the class and its surface,
+ * so answering undefined or refusing to build the module would both
+ * diverge; the reason id lets a Node island run the module instead. */
 export function hostGlobalDiag(name: string, loc: SrcLoc): ScrDiagnostic {
   return {
     code: "SC2020",
     message: `'${name}' is a Node global that native code does not provide`,
     loc,
     milestone: "later",
-    hint: "the name exists at run time in Node 24, so a native program must not read it as undefined; run the module in a Node island (--node-islands=auto) or avoid the global",
+    hint: "the class exists at run time in Node 24, and native code cannot construct it or provide its members; run the module in a Node island (--node-islands=auto) or avoid the use",
     reason: "host-global",
   };
 }
@@ -1551,9 +1557,10 @@ export function libExportUnresolvedDiag(
     message: `library export '${exportName}' cannot be resolved: ${detail}`,
     loc,
     hint:
-      "the export map may only name function declarations exported directly by the profile's ONE entry module; " +
-      "when a function lives in another module, the entry module declares an exported wrapper function that " +
-      "forwards to it, such as export function handle(msg: string) { return realHandle(msg); }",
+      "the export map may only name exports of the profile's ONE entry module, and the entry module decides " +
+      'where the function lives: re-export it from another module (export { handle } from "./sdk/handler", ' +
+      'or export * from "./sdk/handler"), declare it there and export it through a list (export { handle }), ' +
+      "or declare a forwarding wrapper function",
   };
 }
 

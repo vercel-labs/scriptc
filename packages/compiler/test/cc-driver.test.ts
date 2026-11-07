@@ -338,8 +338,21 @@ const WINDOWS_CA_EKU_C = String.raw`
 #include <windows.h>
 #include <wincrypt.h>
 
+/* A Windows release link keeps only the runtime functions the program
+ * reaches (dead COMDATs drop), and store enumeration is reached only from
+ * the TLS client, so this probe references it behind a condition no test
+ * run meets: the assertion below then reads the store table a Windows TLS
+ * build carries. */
+static void probe_store_entry(void *ctx, const unsigned char *der, size_t len) {
+  (void)ctx;
+  (void)der;
+  (void)len;
+}
+
 int main(int argc, char **argv) {
   if (argc != 2) return 2;
+  if (getenv("SCRIPTC_CA_STORE_PROBE") != NULL)
+    scr_tls_ca_windows_certs(probe_store_entry, NULL);
   FILE *file = fopen(argv[1], "rb");
   if (file == NULL) return 3;
   if (fseek(file, 0, SEEK_END) != 0) return 4;
@@ -597,10 +610,15 @@ exit 99
       // getaddrinfo), tls (mbedTLS compiled for the triple, -lbcrypt for
       // its entropy poll and -lcrypt32 for the ROOT certificate store),
       // watch (ReadDirectoryChangesW), zlib
-      // (per-target vendored objects).
+      // (per-target vendored objects). A hello world reaches none of them,
+      // and a release Windows link now drops the runtime code a program
+      // does not reach, so this acceptance build keeps its debug info: the
+      // import check reads the units themselves, not what survived
+      // elimination.
       await compileC({
         cPath,
         outPath,
+        optimization: "dev",
         events: true,
         net: true,
         http: true,

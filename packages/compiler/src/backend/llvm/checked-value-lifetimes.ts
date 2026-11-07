@@ -34,6 +34,7 @@ export function borrowsJsonInputs(fn: string): boolean {
     case "json.stringifyValue":
     case "json.stringifyReplacer":
     case "insp.jsonDyn":
+    case "insp.jsonDynValue":
       return true;
     default:
       return false;

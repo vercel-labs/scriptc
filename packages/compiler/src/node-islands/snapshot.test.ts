@@ -449,6 +449,54 @@ describe("the order deferred loads are probed in", () => {
     expect(paths(mod, [later, requiredB, requiredA])).toEqual(["requiredA", "requiredB", "later"]);
   });
 
+  test("only the part of a conditional expression that always runs keeps its position", () => {
+    // main.js: `const v = require("a").name && require("b").name;`, then a
+    // load the initializer always reaches. Both inline require()s lower to
+    // sequences: the left operand is evaluated where it is written, while
+    // the right one runs only when the left is truthy. A load that may not
+    // happen cannot be ordered ahead of one that does: with a file shared
+    // between the two packages, the load that really evaluates it first has
+    // to keep its effects, or it is deferred past the native side effects
+    // that follow.
+    const left = defer("left");
+    const right = defer("right");
+    const later = defer("later");
+    const requireA = {
+      kind: "seqExpr",
+      stmts: [init("%init.1")],
+      result: { kind: "varRef", localId: "%g.island.0" },
+    };
+    const requireB = {
+      kind: "seqExpr",
+      stmts: [init("%init.2")],
+      result: { kind: "varRef", localId: "%g.island.1" },
+    };
+    const mod = {
+      entry: "%main",
+      functions: [
+        { name: "%init.1", body: [load(left)] },
+        { name: "%init.2", body: [load(right)] },
+        {
+          name: "%main",
+          body: [
+            {
+              kind: "varDecl",
+              localId: "v",
+              init: {
+                kind: "logical",
+                op: "&&",
+                left: requireA,
+                right: requireB,
+              },
+            },
+            load(later),
+          ],
+        },
+      ],
+    };
+    expect(paths(mod, [left, right, later])).toEqual(["left", "later", "right"]);
+  });
+
   test("an initializer that awaits continues after the code that called it", () => {
     // dep awaits between its two loads; the importer starts its next
     // dependency before waiting for either.

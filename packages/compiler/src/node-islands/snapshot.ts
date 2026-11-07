@@ -120,17 +120,22 @@ function flatStatements(stmts: readonly IrStmt[], out: IrStmt[] = []): IrStmt[] 
  * require() lowers to the required module's %init ahead of its export read,
  * both at the require's position. Any other expression is followed through
  * what it holds, in the order it is written, so a load is reached where its
- * expression is (`typeof require("pkg").name === "function"`). An
+ * expression is (`typeof require("pkg").name === "function"`). A part of an
+ * expression that runs only when a condition holds (the right operand of
+ * `&&`, `||` or `??`, an arm of a `?:`, the body of an optional chain) is
+ * followed after the loads the walk reaches, in the order it is written: the
+ * program may not evaluate it, and ordering it ahead of the loads that do
+ * happen would let it take a shared file's effects from them. An
  * initializer that awaits is left there and taken up again after the code
  * that called it, in the order of the awaits, as module evaluation continues
  * with later siblings while one is suspended. Loads the walk does not reach
  * (inside functions, dynamic imports, loops) keep IR order after it.
  *
- * The walk is the order of a run in which every condition holds: both
- * branches of a selection and both operands of `&&` are followed, where
- * they are written. A run that skips one of those loads evaluates what it
- * shares with later ones in a later load; the decisions do not rest on the
- * order for that (sharedEffects). */
+ * The order is a best guess wherever the program has a choice: the
+ * conditional part of an expression is placed last, both branches of a
+ * selection where they are written. A run that takes the other way
+ * evaluates a file two loads share in the other load, so the decisions do
+ * not rest on the order for that (sharedEffects). */
 export function evaluationOrder(mod: IrModule, calls: DeferCall[]): DeferCall[] {
   const { ordered } = evaluationWalk(mod);
   if (ordered.length === 0) return calls;
@@ -179,6 +184,12 @@ function evaluationWalk(mod: IrModule): {
   let inAsync = false;
   let conditions = 0;
   let awaited = false;
+  /** The conditional parts of expressions, kept for after the loads the
+   * walk reaches, with the initializer each is in. */
+  const conditional: { part: IrExpr; within: string; async: boolean }[] = [];
+  const later = (part: IrExpr): void => {
+    conditional.push({ part, within, async: inAsync });
+  };
   /** Evaluates what the walk follows of `e`; true when it awaits. */
   function evaluate(e: IrExpr): boolean {
     if (e.kind === "libCall" && e.fn === "nodeIsland.defer") {
@@ -207,6 +218,22 @@ function evaluationWalk(mod: IrModule): {
     if (e.kind === "intrinsic" && e.name === "module.await") {
       for (const arg of e.args) evaluate(arg);
       return true;
+    }
+    // A part that the program evaluates only when a condition holds is kept
+    // for after the loads the walk reaches: it may not run at all, and where
+    // it does it cannot be placed ahead of a load that always does.
+    if (e.kind === "logical" || e.kind === "nullish" || e.kind === "orDefault") {
+      later(e.right);
+      return evaluate(e.left);
+    }
+    if (e.kind === "ternary") {
+      later(e.then);
+      later(e.else_);
+      return evaluate(e.cond);
+    }
+    if (e.kind === "optChain") {
+      later(e.body);
+      return evaluate(e.receiver);
     }
     // Any other expression: what it holds, in the order it is written. A
     // comparison, a member read, a `typeof`, a call's arguments: an inline
@@ -290,11 +317,24 @@ function evaluationWalk(mod: IrModule): {
     inAsync = outerAsync;
   }
   if (typeof mod.entry === "string") enter(mod.entry);
-  for (let i = 0; i < suspended.length; i++) {
-    within = suspended[i]!.within;
-    inAsync = suspended[i]!.async;
-    run(suspended[i]!.stmts, suspended[i]!.at);
+  const resume = (from: number): number => {
+    for (let i = from; i < suspended.length; i++) {
+      within = suspended[i]!.within;
+      inAsync = suspended[i]!.async;
+      run(suspended[i]!.stmts, suspended[i]!.at);
+    }
+    return suspended.length;
+  };
+  const resumed = resume(0);
+  // A conditional part is reached under a condition, wherever it stands.
+  conditions++;
+  for (let i = 0; i < conditional.length; i++) {
+    within = conditional[i]!.within;
+    inAsync = conditional[i]!.async;
+    evaluate(conditional[i]!.part);
   }
+  conditions--;
+  resume(resumed);
   const fixed = new Set<DeferCall>();
   const moving = new Map<DeferCall, string>();
   if (ordered.length === 0) return { ordered, fixed, moving };

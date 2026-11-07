@@ -184,11 +184,20 @@ async function tryFastPath(): Promise<number | null> {
   // program reads at run time was not installed beside it; the full compiler
   // restores the same executable and installs that file.
   if (hit.native.intl === true) return null;
+  // A cached build repeats every warning it reported. This path renders the
+  // performance warning itself (SC6101 needs no source frames); a hit that
+  // holds any other warning — a divergence, a Node island note, a type patch —
+  // takes the full compiler, which renders it as the cold build does.
+  const cachedWarnings = hit.warnings ?? [];
+  if (command === "build" && cachedWarnings.some((d) => !startup.isPerformanceCode(d.code)))
+    return null;
   if (!values["keep-llvm"]) await rm(hit.llvmPath, { force: true });
   if (command === "build") {
-    // A cached build repeats its performance warning (SC6101).
-    const performance = hit.performance ?? [];
-    if (performance.length > 0 && values["dynamic-tier-warning"] !== false)
+    const performance =
+      values["dynamic-tier-warning"] === false
+        ? []
+        : cachedWarnings.filter((d) => startup.isPerformanceCode(d.code));
+    if (performance.length > 0)
       process.stderr.write(startup.renderPerformanceWarnings(performance) + "\n");
     process.stdout.write(`${outPath}\n`);
     return 0;

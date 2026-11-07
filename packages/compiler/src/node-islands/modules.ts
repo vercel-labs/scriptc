@@ -494,6 +494,9 @@ interface Token {
   kind: "name" | "string" | "punct" | "other";
   value: string;
   at: number;
+  /** A line break separates this token from the one before it, where a
+   * declaration ends without a `;` (automatic semicolon insertion). */
+  nl?: boolean;
 }
 
 /** Keywords after which a `/` starts a regular expression. */
@@ -532,6 +535,13 @@ export function moduleTokens(text: string): Token[] {
   let depth = 0;
   let i = 0;
   const n = text.length;
+  /** A line break was skipped since the last token. */
+  let newline = false;
+  /** Records a token with the line break that precedes it, if any. */
+  const push = (token: Token): void => {
+    tokens.push(newline ? { ...token, nl: true } : token);
+    newline = false;
+  };
   const regexAllowed = (): boolean => {
     const last = tokens[tokens.length - 1];
     if (last === undefined) return true;
@@ -551,22 +561,24 @@ export function moduleTokens(text: string): Token[] {
       }
       if (c === "`") {
         i++;
-        tokens.push({ kind: "other", value: "`", at: start });
+        push({ kind: "other", value: "`", at: start });
         return;
       }
       if (c === "$" && text[i + 1] === "{") {
         i += 2;
         templates.push(depth);
         depth++;
-        tokens.push({ kind: "punct", value: "${", at: start });
+        push({ kind: "punct", value: "${", at: start });
         return;
       }
+      if (c === "\n") newline = true;
       i++;
     }
   };
   while (i < n) {
     const c = text[i]!;
     if (c === " " || c === "\t" || c === "\n" || c === "\r" || c === "\f" || c === "\v") {
+      if (c === "\n" || c === "\r") newline = true;
       i++;
       continue;
     }
@@ -576,6 +588,7 @@ export function moduleTokens(text: string): Token[] {
     }
     if (c === "/" && text[i + 1] === "*") {
       const end = text.indexOf("*/", i + 2);
+      if (text.slice(i, end < 0 ? n : end).includes("\n")) newline = true;
       i = end < 0 ? n : end + 2;
       continue;
     }
@@ -598,7 +611,7 @@ export function moduleTokens(text: string): Token[] {
         i++;
       }
       i++;
-      tokens.push({ kind: "string", value, at: start });
+      push({ kind: "string", value, at: start });
       continue;
     }
     if (c === "`") {
@@ -624,19 +637,19 @@ export function moduleTokens(text: string): Token[] {
       }
       i++;
       while (i < n && isNamePart(text[i]!)) i++;
-      tokens.push({ kind: "other", value: "/re/", at: start });
+      push({ kind: "other", value: "/re/", at: start });
       continue;
     }
     if (isNameStart(c)) {
       const start = i;
       while (i < n && isNamePart(text[i]!)) i++;
-      tokens.push({ kind: "name", value: text.slice(start, i), at: start });
+      push({ kind: "name", value: text.slice(start, i), at: start });
       continue;
     }
     if (/[0-9]/.test(c) || (c === "." && /[0-9]/.test(text[i + 1] ?? ""))) {
       const start = i;
       while (i < n && /[0-9A-Za-z_.]/.test(text[i]!)) i++;
-      tokens.push({ kind: "other", value: text.slice(start, i), at: start });
+      push({ kind: "other", value: text.slice(start, i), at: start });
       continue;
     }
     if (c === "{") depth++;
@@ -646,23 +659,23 @@ export function moduleTokens(text: string): Token[] {
         depth--;
         const start = i;
         i++;
-        tokens.push({ kind: "punct", value: "}", at: start });
+        push({ kind: "punct", value: "}", at: start });
         template(start);
         continue;
       }
       depth--;
     }
     if (c === "." && text[i + 1] === "." && text[i + 2] === ".") {
-      tokens.push({ kind: "punct", value: "...", at: i });
+      push({ kind: "punct", value: "...", at: i });
       i += 3;
       continue;
     }
     if (c === "?" && text[i + 1] === ".") {
-      tokens.push({ kind: "punct", value: "?.", at: i });
+      push({ kind: "punct", value: "?.", at: i });
       i += 2;
       continue;
     }
-    tokens.push({ kind: "punct", value: c, at: i });
+    push({ kind: "punct", value: c, at: i });
     i++;
   }
   return tokens;
@@ -750,6 +763,72 @@ export function requireModuleSpecifiers(text: string): string[] {
   return out;
 }
 
+/** Tokens a type-only clause continues after across a line break: they open
+ * a type or carry it on (`=` before the type, `|`/`&` between arms, `(`
+ * and `[` before their contents, the `from` of an import), plus the names
+ * that are type operators. */
+const CLAUSE_CONTINUES_AFTER: ReadonlySet<string> = new Set([
+  "=",
+  ",",
+  ":",
+  "?",
+  "|",
+  "&",
+  ".",
+  "=>",
+  "<",
+  "(",
+  "[",
+  "{",
+  "...",
+  "as",
+  "extends",
+  "from",
+  "import",
+  "in",
+  "infer",
+  "is",
+  "keyof",
+  "new",
+  "of",
+  "readonly",
+  "typeof",
+]);
+
+/** Tokens that cannot begin a statement, so a line break before one leaves
+ * the clause open. `typeof` is not one of them: a type query only continues
+ * a clause after a token that opens a type (`=`, `|`, `keyof` and the like,
+ * which CLAUSE_CONTINUES_AFTER already covers), while a statement of its own
+ * can begin with it (`typeof require === "function"`). */
+const CLAUSE_CONTINUES_BEFORE: ReadonlySet<string> = new Set([
+  "|",
+  "&",
+  "?",
+  ":",
+  "=>",
+  ".",
+  ")",
+  "]",
+  "}",
+  ",",
+  ">",
+  "<",
+  "as",
+  "extends",
+  "in",
+  "is",
+  "of",
+]);
+
+/** Whether a line break between `prev` and `next` leaves a type-only clause
+ * open. */
+function clauseContinues(prev: Token | undefined, next: Token): boolean {
+  return (
+    (prev !== undefined && CLAUSE_CONTINUES_AFTER.has(prev.value)) ||
+    CLAUSE_CONTINUES_BEFORE.has(next.value)
+  );
+}
+
 export function scanModuleSpecifiers(text: string): ModuleSpecifierScan {
   const tokens = moduleTokens(text);
   const specifiers: string[] = [];
@@ -766,6 +845,33 @@ export function scanModuleSpecifiers(text: string): ModuleSpecifierScan {
     (is(k + 2, "punct", ")") || is(k + 2, "punct", ","))
       ? at(k + 1)!.value
       : null;
+  /** The last token of a type-only clause that starts at `k` (an `import`
+   * or `export` followed by `type`): the `from "..."` specifier it names,
+   * or the `;` that ends an import-equals. Type stripping erases such a
+   * clause, so the module loads nothing when it runs. A clause written
+   * without a `;` ends where automatic semicolon insertion does: at a line
+   * break outside its own nesting, unless the tokens around the break are
+   * one type (a union arm on the next line, a type that goes on after `=`).
+   * Skipping further would cross into the runtime code after the clause. */
+  const typeOnlyEnd = (k: number): number => {
+    let nesting = 0;
+    for (let j = k + 1; j < tokens.length && j < k + 400; j++) {
+      const t = at(j)!;
+      if (nesting === 0) {
+        if (t.kind === "punct" && t.value === ";") return j;
+        if (is(j, "name", "from") && is(j + 1, "string")) return j + 1;
+        // The first token after `type` may sit on its own line
+        // (`import type` followed by the bindings).
+        if (j > k + 1 && t.nl === true && !clauseContinues(at(j - 1), t)) return j - 1;
+      }
+      if (t.kind === "punct") {
+        if (t.value === "(" || t.value === "[" || t.value === "{") nesting++;
+        else if (t.value === ")" || t.value === "]" || t.value === "}")
+          nesting = Math.max(0, nesting - 1);
+      }
+    }
+    return k + 1;
+  };
   // `const r = createRequire(...)` declares a require function of the
   // module: calls of `r` load modules as require() calls do.
   const aliases = new Set<string>();
@@ -848,6 +954,14 @@ export function scanModuleSpecifiers(text: string): ModuleSpecifierScan {
         specifiers.push(at(k + 1)!.value);
         continue;
       }
+      // `import type ... from "..."` is a type-only clause: Node's type
+      // stripping erases it, so the module loads nothing when it runs. A
+      // default binding that is itself named `type` (`import type from
+      // "./mod"`, `import type, { a } from "./mod"`) is an ordinary import.
+      if (is(k + 1, "name", "type") && !is(k + 2, "name", "from") && !is(k + 2, "punct", ",")) {
+        k = typeOnlyEnd(k);
+        continue;
+      }
       for (let j = k + 1; j < tokens.length && j < k + 400; j++) {
         if (is(j, "punct", ";")) break;
         if (is(j, "name", "from") && is(j + 1, "string")) {
@@ -858,11 +972,12 @@ export function scanModuleSpecifiers(text: string): ModuleSpecifierScan {
       continue;
     }
     if (t.value === "export" && !member) {
+      // `export type ...` is erased by type stripping too.
+      if (is(k + 1, "name", "type")) {
+        k = typeOnlyEnd(k);
+        continue;
+      }
       let j = k + 1;
-      // `export type … from "x"` is erased whole, like `import type`: no
-      // runtime module. `export { type T } from "x"` keeps its statement and
-      // loads x.
-      if (is(j, "name", "type")) continue;
       if (is(j, "punct", "*")) {
         for (; j < tokens.length && j < k + 400; j++) {
           if (is(j, "punct", ";")) break;
@@ -893,13 +1008,27 @@ export function providedModulePlaceholder(path: string): Uint8Array {
 }
 
 /** The manifest the executable records (scr_node_island.c reads it):
- * `{"files":[[path,size,sha256],...],"links":[[path,target],...]}`. Its
- * SHA-256 names the tree. */
+ * `{"tree":name,"files":[[path,size,sha256],...],"links":[[path,target],...]}`.
+ * `tree` is the tree's name (nodeIslandTreeName), taken here and written
+ * first so that a start reads it without parsing or hashing the manifest.
+ * Programs that ship the same files share one installed tree. */
 export function nodeIslandManifest(modules: IrNodeIslandModules): string {
-  return JSON.stringify({
+  const { files, links } = manifestTables(modules);
+  return JSON.stringify({ tree: nodeIslandTreeName(modules), files, links });
+}
+
+function manifestTables(modules: IrNodeIslandModules): { files: unknown[]; links: unknown[] } {
+  return {
     files: modules.files.map((file) => [file.path, file.size, file.sha256]),
     links: modules.links.map((link) => [link.path, link.target]),
-  });
+  };
+}
+
+/** The tree's name: 64 hexadecimal digits, the SHA-256 of its files and
+ * links as JSON. It names the directory an executable installs its tree
+ * in, and the build writes it beside a tree it places itself. */
+export function nodeIslandTreeName(modules: IrNodeIslandModules): string {
+  return sha256(new TextEncoder().encode(JSON.stringify(manifestTables(modules))));
 }
 
 /** The tree's files concatenated in manifest order, each checked against
@@ -932,7 +1061,9 @@ export function readNodeIslandModules(modules: IrNodeIslandModules): Uint8Array 
 }
 
 /** Writes the tree to `target` (replacing it), for `--libnode=beside`, or
- * returns the reason it cannot. */
+ * returns the reason it cannot. The tree's name goes into `<target>.tree`:
+ * a start compares it with the name in the executable's manifest and uses
+ * the tree without hashing it when they agree (scr_node_island.c). */
 export function placeNodeIslandModules(
   modules: IrNodeIslandModules,
   target: string,
@@ -952,6 +1083,7 @@ export function placeNodeIslandModules(
       return `the island module tree links outside it ('${entry.path}' to '${entry.target}')`;
   }
   rmSync(target, { recursive: true, force: true });
+  rmSync(`${target}.tree`, { force: true });
   mkdirSync(target, { recursive: true });
   let offset = 0;
   for (const file of modules.files) {
@@ -965,5 +1097,7 @@ export function placeNodeIslandModules(
     mkdirSync(dirname(path), { recursive: true });
     symlinkSync(link.target, path);
   }
+  // Last: the name says that the tree beside it is complete.
+  writeFileSync(`${target}.tree`, `${nodeIslandTreeName(modules)}\n`);
   return null;
 }

@@ -1,4 +1,5 @@
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesNonNull } from "../outer-expressions.js";
 
 /** Proves that an indexed store `xs[i] = v` writes inside the array, so it
  * cannot leave holes before index `i`. A store at an index below the
@@ -13,10 +14,10 @@ import * as ts from "../ts7/adapter.js";
  * crossed on the way repeats its whole body between the two. */
 export function indexStoreInBounds(store: ts.BinaryExpression): boolean {
   if (store.operatorToken.kind !== ts.SyntaxKind.EqualsToken) return false;
-  const target = peel(store.left);
+  const target = withoutParenthesesNonNull(store.left);
   if (!ts.isElementAccessExpression(target)) return false;
-  const array = peel(target.expression);
-  const index = peel(target.argumentExpression);
+  const array = withoutParenthesesNonNull(target.expression);
+  const index = withoutParenthesesNonNull(target.argumentExpression);
   if (!isSimpleReference(array) || !(isSimpleReference(index) || ts.isNumericLiteral(index)))
     return false;
   const parent = store.parent;
@@ -51,8 +52,8 @@ export function indexReadInBounds(
   facts: BoundsFacts = {},
 ): boolean {
   if (read.questionDotToken) return false;
-  const array = peel(read.expression);
-  const index = peel(read.argumentExpression);
+  const array = withoutParenthesesNonNull(read.expression);
+  const index = withoutParenthesesNonNull(read.argumentExpression);
   if (!isSimpleReference(array) || !(isSimpleReference(index) || ts.isNumericLiteral(index)))
     return false;
   const before: ts.Node[] = [];
@@ -178,22 +179,16 @@ function isStatementList(node: ts.Node): boolean {
   return ts.isBlock(node) || ts.isCaseClause(node) || ts.isDefaultClause(node);
 }
 
-function peel(node: ts.Expression): ts.Expression {
-  let e = node;
-  while (ts.isParenthesizedExpression(e) || ts.isNonNullExpression(e)) e = e.expression;
-  return e;
-}
-
 /** An identifier, `this`, or a property chain over one. */
 function isSimpleReference(node: ts.Expression): boolean {
-  const e = peel(node);
+  const e = withoutParenthesesNonNull(node);
   if (ts.isIdentifier(e) || e.kind === ts.SyntaxKind.ThisKeyword) return true;
   return ts.isPropertyAccessExpression(e) && !e.questionDotToken && isSimpleReference(e.expression);
 }
 
 function sameReference(a: ts.Expression, b: ts.Expression): boolean {
-  const left = peel(a);
-  const right = peel(b);
+  const left = withoutParenthesesNonNull(a);
+  const right = withoutParenthesesNonNull(b);
   if (ts.isIdentifier(left) && ts.isIdentifier(right)) return left.text === right.text;
   if (ts.isNumericLiteral(left) && ts.isNumericLiteral(right))
     return Number(left.text) === Number(right.text);
@@ -205,7 +200,7 @@ function sameReference(a: ts.Expression, b: ts.Expression): boolean {
 }
 
 function isLengthOf(node: ts.Expression, array: ts.Expression, facts?: BoundsFacts): boolean {
-  const e = peel(node);
+  const e = withoutParenthesesNonNull(node);
   if (ts.isIdentifier(e)) return facts?.lengthAlias?.(e, array) === true;
   return (
     ts.isPropertyAccessExpression(e) &&
@@ -218,7 +213,7 @@ function isLengthOf(node: ts.Expression, array: ts.Expression, facts?: BoundsFac
 /** `condition` holding proves `index < array.length`. */
 function boundedBy(condition: ts.Expression, operands: Operands): boolean {
   const { array, index, facts } = operands;
-  const e = peel(condition);
+  const e = withoutParenthesesNonNull(condition);
   if (!ts.isBinaryExpression(e)) return false;
   const op = e.operatorToken.kind;
   if (op === ts.SyntaxKind.AmpersandAmpersandToken)
@@ -237,10 +232,10 @@ function assertsSlot(node: ts.Node, operands: Operands): boolean {
     if (found) return;
     if (
       ts.isNonNullExpression(n) &&
-      ts.isElementAccessExpression(peel(n.expression)) &&
-      !(peel(n.expression) as ts.ElementAccessExpression).questionDotToken
+      ts.isElementAccessExpression(withoutParenthesesNonNull(n.expression)) &&
+      !(withoutParenthesesNonNull(n.expression) as ts.ElementAccessExpression).questionDotToken
     ) {
-      const read = peel(n.expression) as ts.ElementAccessExpression;
+      const read = withoutParenthesesNonNull(n.expression) as ts.ElementAccessExpression;
       if (
         sameReference(read.expression, operands.array) &&
         sameReference(read.argumentExpression, operands.index)
@@ -309,12 +304,12 @@ function unchanged(nodes: readonly ts.Node[], { array, index }: Operands): boole
   const links = new Set(["length", ...linkNames(array), ...linkNames(index)]);
   let ok = true;
   const writes = (target: ts.Expression): boolean => {
-    const e = peel(target);
+    const e = withoutParenthesesNonNull(target);
     if (ts.isIdentifier(e)) return roots.includes(e.text);
     if (ts.isPropertyAccessExpression(e)) return links.has(e.name.text);
     if (ts.isElementAccessExpression(e)) {
       // A computed key could name `length` or a chain link.
-      const key = peel(e.argumentExpression);
+      const key = withoutParenthesesNonNull(e.argumentExpression);
       return !ts.isNumericLiteral(key) && !isSimpleReference(key)
         ? true
         : ts.isStringLiteral(key) && links.has(key.text);
@@ -380,16 +375,16 @@ function unchanged(nodes: readonly ts.Node[], { array, index }: Operands): boole
 
 function linkNames(node: ts.Expression): string[] {
   const names: string[] = [];
-  let e = peel(node);
+  let e = withoutParenthesesNonNull(node);
   while (ts.isPropertyAccessExpression(e)) {
     names.push(e.name.text);
-    e = peel(e.expression);
+    e = withoutParenthesesNonNull(e.expression);
   }
   return names;
 }
 
 function rootName(node: ts.Expression): string | null {
-  let e = peel(node);
-  while (ts.isPropertyAccessExpression(e)) e = peel(e.expression);
+  let e = withoutParenthesesNonNull(node);
+  while (ts.isPropertyAccessExpression(e)) e = withoutParenthesesNonNull(e.expression);
   return ts.isIdentifier(e) ? e.text : null;
 }

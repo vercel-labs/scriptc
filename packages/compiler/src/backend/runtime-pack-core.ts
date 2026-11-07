@@ -96,19 +96,27 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   handleProps: boolean;
   childLifecycle: boolean;
   childOptionExt: boolean;
+  spawnCaptureBytes: boolean;
   childErrorFields: boolean;
   declAdopt: boolean;
   typeOrigins: boolean;
   dynForAwait: boolean;
+  dynCollections: boolean;
   dynIntegrityQueries: boolean;
+  reflectProtoTarget: boolean;
+  recordSourceDelete: boolean;
+  recordViewFrozen: boolean;
   genBind: boolean;
+  genReceiver: boolean;
   eventsOnceSignal: boolean;
   mime: boolean;
   largePages: boolean;
   webStreams: boolean;
+  webBodies: boolean;
   abortSignal: boolean;
   utilTiming: boolean;
   dynBuffer: boolean;
+  fsPathValue: boolean;
   builtinValues: boolean;
   /** A standard library prototype object read as a value in a JavaScript
    * source (scr_dyn_stdlib_prototype.c). */
@@ -341,6 +349,12 @@ export function effectiveRuntimeFeatures(
   // their migrations share one build of each unit they touch instead of one
   // build column per feature.
   const jsObjectModel = jsObjectModelFact(features);
+  // A Node island can hand its own AbortSignal to any native receiver of
+  // one, and a native signal then stands for it (scr_node_island_abort.c):
+  // a program with islands and a receiver links the signal unit too.
+  const abortSignal =
+    features.abortSignal === true ||
+    (features.nodeIsland === true && features.eventTarget === true);
   return {
     ...features,
     workers: features.workers === true,
@@ -355,19 +369,27 @@ export function effectiveRuntimeFeatures(
     handleProps: features.handleProps === true,
     childLifecycle: features.childLifecycle === true,
     childOptionExt: features.childOptionExt === true,
+    spawnCaptureBytes: features.spawnCaptureBytes === true,
     childErrorFields: features.childErrorFields === true,
     declAdopt: features.declAdopt === true,
     typeOrigins: features.typeOrigins === true,
     dynForAwait: features.dynForAwait === true,
+    dynCollections: features.dynCollections === true,
     dynIntegrityQueries: features.dynIntegrityQueries === true,
+    reflectProtoTarget: features.reflectProtoTarget === true,
+    recordSourceDelete: features.recordSourceDelete === true,
+    recordViewFrozen: features.recordViewFrozen === true,
     genBind: features.genBind === true,
+    genReceiver: features.genReceiver === true,
     eventsOnceSignal: features.eventsOnceSignal === true,
     mime: features.mime === true,
     largePages: features.largePages === true,
     webStreams: features.webStreams === true,
-    abortSignal: features.abortSignal === true,
+    webBodies: features.webBodies === true,
+    abortSignal,
     utilTiming: features.utilTiming === true,
     dynBuffer: features.dynBuffer === true,
+    fsPathValue: features.fsPathValue === true,
     builtinValues: features.builtinValues === true,
     stdlibPrototypeValue: features.stdlibPrototypeValue === true,
     dataViewPrototypeValue: features.dataViewPrototypeValue === true,
@@ -393,7 +415,7 @@ export function effectiveRuntimeFeatures(
     nativeFetch,
     // The fetch unit has AbortController and AbortSignal; scr_abort.c is
     // the same implementation without the fetch transport.
-    abortSignalOnly: features.abortSignal === true && !nativeFetch,
+    abortSignalOnly: abortSignal && !nativeFetch,
     netEffective,
     httpEffective,
     tlsEffective,

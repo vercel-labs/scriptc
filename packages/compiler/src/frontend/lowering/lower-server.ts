@@ -10,6 +10,7 @@ import {
 } from "../../ir/build.js";
 
 import * as ts from "../ts7/adapter.js";
+import { withoutParentheses, withoutParenthesesAssertions } from "../outer-expressions.js";
 import type { Lowerer } from "./lowerer.js";
 import { ladderFenceExpr } from "./lowerer.js";
 import type { FnCtx } from "./function-context.js";
@@ -41,6 +42,7 @@ import {
   STRING,
   UNDEFINED_T,
   type SrcLoc,
+  sortArms,
   typeKey,
   VOID,
 } from "../../ir/ir.js";
@@ -556,7 +558,7 @@ function headerParamShapeId(cbT: IrType, idx: number): string | null {
  * with no static param type to read the shape from). */
 function canonicalHeaderRecord(lowerer: Lowerer): { type: IrType; shapeId: string } {
   const arms = [F64, STRING, arrayOf(STRING), UNDEFINED_T];
-  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  sortArms(arms);
   const slot: IrType = { kind: "union", unionId: lowerer.unions.intern(arms) };
   const shapeId = lowerer.shapes.intern([], false, slot, []);
   return { type: { kind: "record", shapeId }, shapeId };
@@ -2595,7 +2597,7 @@ function socketEncodingReachable(lowerer: Lowerer): boolean {
   if (lowerer.socketEncodingReachable !== null) return lowerer.socketEncodingReachable;
   let reachable = false;
   for (const file of lowerer.program.getImplementationSourceFiles()) {
-    if (!file.text.includes("setEncoding")) continue;
+    if (!ts.sourceTextIncludes(file, "setEncoding")) continue;
     ts.walkPreorder(file, (node) => {
       if (reachable) return "skip";
       if (!ts.isCallExpression(node)) return undefined;
@@ -2627,7 +2629,7 @@ function unixListenReachable(lowerer: Lowerer): boolean {
   if (lowerer.unixListenReachable !== null) return lowerer.unixListenReachable;
   let reachable = false;
   for (const file of lowerer.program.getImplementationSourceFiles()) {
-    if (!file.text.includes("listen")) continue;
+    if (!ts.sourceTextIncludes(file, "listen")) continue;
     ts.walkPreorder(file, (node) => {
       if (reachable) return "skip";
       if (!ts.isCallExpression(node) || node.arguments.nodes.length === 0) return undefined;
@@ -4967,7 +4969,7 @@ export function lowerHttpAgentNew(lowerer: Lowerer, expr: ts.NewExpression): IrE
     );
   }
   if (args.length === 1) {
-    const optsNode = stripParensAndCasts(args[0]!);
+    const optsNode = withoutParenthesesAssertions(args[0]!);
     if (!ts.isObjectLiteralExpression(optsNode)) {
       lowerer.noLowering(
         `${api} with a non-literal options value`,
@@ -5282,6 +5284,9 @@ function lowerHttpModuleCall(
  * Buffers (fs.readFileSync either way — portless reads Buffers) — a
  * runtime-valued (dyn) entry rides the tls.pemDyn extraction, throwing
  * the fence at runtime for non-PEM kinds (the divergence-66 stance).
+ * With an SNICallback the default pair may be absent (Node serves each
+ * handshake from the answered context), so a missing cert or key lowers
+ * to an empty value the runtime reads as "no default material".
  * Every other key fences by name; SNICallback gets the pointed hint. */
 function lowerTlsServerOptions(
   lowerer: Lowerer,
@@ -5354,7 +5359,7 @@ function lowerTlsServerOptions(
         "cert and key (PEM strings or Buffers) are the supported options",
         {
           SNICallback:
-            "SNICallback lowers on tls.createServer and http2.createSecureServer({ allowHTTP1: true, ... }) — serve one cert/key pair here",
+            "SNICallback lowers on tls.createServer (with or without a default cert/key pair) and on http2.createSecureServer({ allowHTTP1: true, ... })",
         },
       );
       continue; // an undocumented key, dropped like Node drops it
@@ -5397,11 +5402,26 @@ function lowerTlsServerOptions(
     else key = v;
   }
   if (cert === null || key === null) {
-    lowerer.noLowering(
-      `${what} without both cert and key`,
-      node,
-      "the supported options object is { cert, key } (PEM strings or Buffers)",
-    );
+    if (sni === undefined) {
+      lowerer.noLowering(
+        `${what} without both cert and key`,
+        node,
+        "the supported options object is { cert, key } (PEM strings or Buffers), or { SNICallback } to serve every handshake from the callback's context",
+      );
+    }
+    // Node accepts SNICallback without a default pair: the default context
+    // then serves no certificate and the answered context supplies the
+    // handshake's. An empty value carries "absent" to the runtime.
+    const absent = (): IrExpr => ({ kind: "strLit", value: "", type: STRING, loc });
+    if (cert === null) cert = absent();
+    if (key === null) key = absent();
+    // No cert/key entry followed the callback, so the saved read is
+    // attached to the callback argument: it then runs after the entries
+    // that did precede it, as the literal evaluated them.
+    if (pendingSni !== null) {
+      sni = { kind: "seqExpr", stmts: [pendingSni], result: sni, type: sni.type, loc };
+      pendingSni = null;
+    }
   }
   return sni === undefined ? { cert, key } : { cert, key, sni };
 }
@@ -6049,13 +6069,8 @@ function clientFnConditionalOf(
   let e: ts.Expression = init;
   while (ts.isParenthesizedExpression(e)) e = e.expression;
   if (!ts.isConditionalExpression(e)) return null;
-  const unwrap = (a: ts.Expression): ts.Expression => {
-    let x = a;
-    while (ts.isParenthesizedExpression(x)) x = x.expression;
-    return x;
-  };
-  const t = clientFnRefOf(lowerer, unwrap(e.whenTrue));
-  const f = clientFnRefOf(lowerer, unwrap(e.whenFalse));
+  const t = clientFnRefOf(lowerer, withoutParentheses(e.whenTrue));
+  const f = clientFnRefOf(lowerer, withoutParentheses(e.whenFalse));
   if (!t || !f) return null;
   if (t.member !== f.member || t.module === f.module) {
     lowerer.noLowering(
@@ -6064,7 +6079,11 @@ function clientFnConditionalOf(
       "the lowered shape is `cond ? https.request : http.request` (or the .get pair, either order) — the same member of both modules",
     );
   }
-  return { cond: unwrap(e.condition), trueSecure: t.module === "https", member: t.member };
+  return {
+    cond: withoutParentheses(e.condition),
+    trueSecure: t.module === "https",
+    member: t.member,
+  };
 }
 
 /** Whether a condition is a bare identifier over a never-reassigned
@@ -6334,17 +6353,6 @@ function checkSniCallbackValue(lowerer: Lowerer, v: IrExpr, blame: ts.Node, what
   return v;
 }
 
-/** Strips parentheses and type assertions: the portless spelling wraps
- * an options spread as `...({ ... } as Record<string, unknown>)`. */
-function stripParensAndCasts(node: ts.Expression): ts.Expression {
-  let e = node;
-  for (;;) {
-    if (ts.isParenthesizedExpression(e)) e = e.expression;
-    else if (ts.isAsExpression(e) || ts.isTypeAssertion(e)) e = e.expression;
-    else return e;
-  }
-}
-
 /** Module-function calls on http2 import bindings. createServer lowers h2c;
  * createSecureServer lowers h2 over TLS, with allowHTTP1 selecting one
  * dual-ALPN server whose request/connect listeners mirror across parsers. */
@@ -6602,10 +6610,10 @@ function lowerHttp2ModuleCall(
         // semantics — PROVIDED the included value IS the condition, which
         // the text check pins. Any other spread operand is opaque to the
         // static walk.
-        const inner = stripParensAndCasts(prop.expression);
+        const inner = withoutParenthesesAssertions(prop.expression);
         if (ts.isConditionalExpression(inner)) {
-          const whenTrue = stripParensAndCasts(inner.whenTrue);
-          const whenFalse = stripParensAndCasts(inner.whenFalse);
+          const whenTrue = withoutParenthesesAssertions(inner.whenTrue);
+          const whenFalse = withoutParenthesesAssertions(inner.whenFalse);
           const condText = ts.getTextOfNode(inner.condition);
           const ok =
             ts.isObjectLiteralExpression(whenTrue) &&
@@ -7564,7 +7572,7 @@ function lowerHttpClientCall(
         // through the requestAgent rows: getName-keyed maxSockets
         // accounting over one-dial-per-request connections; a runtime
         // non-Agent value is Node's ERR_INVALID_ARG_TYPE.
-        const e = initializer !== null ? stripParensAndCasts(initializer) : null;
+        const e = initializer !== null ? withoutParenthesesAssertions(initializer) : null;
         if (e !== null && e.kind === ts.SyntaxKind.FalseKeyword) {
           agentClose = prop;
           break;

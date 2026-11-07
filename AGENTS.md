@@ -54,9 +54,11 @@ Name a new corpus program after what it tests, without a number: lowercase words
 
 Record a new or remeasured program's CI cost (used to balance the test shards) in `tests/harness/corpus-costs/<program>.json`, not in `tests/harness/corpus-costs.json`; see the README there.
 
+Runtime code that parses bytes from outside the process (HTTP, URLs, JSON, regular expressions, text and binary decoders, decompression) has fuzz targets in `tests/fuzz`; see the README there. `node scripts/fuzz.mjs` builds them as one program with AddressSanitizer, the reference-count audit and UndefinedBehaviorSanitizer, replays the regression cases and fuzzes each target for a fixed time. `.github/workflows/fuzz.yml` runs it briefly on pull requests that change `packages/runtime` and for longer every night. A fix for a failure it finds lands with the failing case in `tests/fuzz/regressions/<target>/`, and a new parser of outside bytes lands with a target. The same workflow runs `node scripts/tsan-workers.mjs` every night: the corpus programs that use worker threads, built and run with ThreadSanitizer. A race it reports is fixed, not added to `tests/harness/tsan.supp`, unless the entry's comment can say why the race is tolerated and what removes it.
+
 Before opening a PR that adds or changes corpus, diagnostic, or frontend fixtures, run `pnpm test:ts7 --baselines-only`. This fast completeness check uses the same fixture discovery as the parity suite; it does not type-check or replace behavioral parity. Generate missing preflight/order baselines, review their diagnostics and module order, and run the affected `order-parity.test.ts` batches before pushing. Keep existing baseline entries unchanged unless the corresponding behavior intentionally changes. The full `pnpm test:ts7` command also checks completeness before starting its sweep.
 
-A change that must not cost good code anything, such as a compatibility fix that replaces a refusal, proves it with the zero-cost gate. The gate compiles the benchmark workloads, the self-hosted compiler, the self-hosting emitter fixtures, and the TypeScript corpus with two built checkouts. It requires byte-identical IR, LLVM, and release executables, and compile time within tolerance. `--allow=<regex>` names the change's pattern signature: programs whose sources match may differ, and the PR lists them. The gate classifies every other difference. A program is `runtime-only` when its IR and LLVM are identical and its executable differs only through runtime objects that differ between the two checkouts' runtime packs; the gate lists the changed runtime functions each such program links and the size change, and passes with a note, so a runtime C change does not fail the gate when no program's code changes. A program is `nondeterministic` when the baseline, building it again, differs from its own first build in the same artifacts; it also passes with a note. Any other difference is `differs` and fails the gate, which names the first differing function. `--strict` fails runtime-only and nondeterministic programs too, for a change that must leave every executable byte-identical. The gate also enforces the two-tier runtime separation: no executable may gain symbols from `DYNAMIC_TIER_PREFIXES` in `scripts/zero-cost-compare.mjs`, and fully typed benchmarks may link none; extend that list as dynamic-tier units land. `--quick` checks only the benchmarks; `--cachegrind` adds per-function instruction counts for executables that differ. Run it in a Sandbox with both checkouts prepared:
+A change that must not cost good code anything, such as a compatibility fix that replaces a refusal, proves it with the zero-cost gate. The gate compiles the benchmark workloads, the self-hosted compiler, the self-hosting emitter fixtures, and the TypeScript corpus with two built checkouts. It requires byte-identical IR, LLVM, and release executables, and compile time within tolerance. `--allow=<regex>` names the change's pattern signature: programs whose sources match may differ, and the PR lists them. `--allow-programs=<file>` names the programs that may differ by id instead, one per line as the gate prints them (`corpus/…`, `bench/…`, `self/cli`, `fixture/…`) with `#` comments: it combines with `--allow`, an id that names no program is an error, and the summary counts the listed programs that differ and names the ones that are identical. The gate classifies every other difference. A program is `runtime-only` when its IR and LLVM are identical and its executable differs only through runtime objects that differ between the two checkouts' runtime packs; the gate lists the changed runtime functions each such program links and the size change, and passes with a note, so a runtime C change does not fail the gate when no program's code changes. A program is `nondeterministic` when the baseline, building it again, differs from its own first build in the same artifacts; it also passes with a note. Any other difference is `differs` and fails the gate, which names the first differing function. `--strict` fails runtime-only and nondeterministic programs too, for a change that must leave every executable byte-identical. The gate also enforces the two-tier runtime separation: no executable may gain symbols from `DYNAMIC_TIER_PREFIXES` in `scripts/zero-cost-compare.mjs`, and fully typed benchmarks may link none; extend that list as dynamic-tier units land. `--quick` checks only the benchmarks; `--cachegrind` adds per-function instruction counts for executables that differ. Run it in a Sandbox with both checkouts prepared:
 
 ```bash
 node scripts/zero-cost-gate.mjs --baseline=/vercel/sandbox/prev --candidate=. --allow='\barguments\b'
@@ -84,6 +86,10 @@ Parallel changes must never pick the same number by hand. Each registry has one 
 
 Before taking a number in a pinned registry, run `node scripts/registry-claims.mjs`: it lists the diagnostic codes and pinned handle tags that open pull requests claim and reports collisions; `--check` reports only collisions with the current branch and exits 1 when there is one.
 
+## Whole-program facts
+
+A rule that turns on for a whole program, file or shape because of one occurrence somewhere in it is a cliff: an unrelated line changes how other code compiles. Decide a fact from the syntax, symbols or types of the value or site it concerns, never from a file's raw text or from an identifier's spelling. When a fact has to be program-wide, register it in `packages/compiler/src/program-facts.ts`, which lists every such fact and every scan over the program's source files; `program-facts.test.ts` fails on a scan that is not registered there.
+
 ## Where things live
 
 - `packages/compiler` — the frontend (tsc API to IR), typed IR, validator, serializer, and LLVM backend.
@@ -106,12 +112,13 @@ The Node.js compatibility system is an implementation inventory and planning too
 - Compiler source and `packages/compiler/surface-manifest.json`, augmented by `internal/compatibility/static-support.json`, define static-native support.
 - Test evidence determines positive behavioral claims. Source manifests alone do not prove Node-compatible behavior.
 
-Compatibility describes native compilation. There is no runtime JavaScript engine tier.
+Compatibility describes native compilation. There is no runtime JavaScript engine tier. `island-served` is the one explicit exception to "native compilation": it records that an island build answers an API through the Node island scriptc already embeds, and is never a native support claim.
 
 ### Status contract
 
 - `supported` — broadly implemented. This requires test evidence.
 - `partial` — a useful implemented subset. This requires test evidence, but evidence may cover an API family rather than every documented overload.
+- `island-served` — in an island build, a Node island answers this API; a build without islands keeps its refusal. This requires test evidence and is not native support. Do not infer it from an island being present: only an island-specific implementation path with differential tests earns it.
 - `refused` — a named compiler diagnostic exists. Never infer this status from absence.
 - `not-implemented` — no implementation claim. Its verification basis decides whether it is ready to implement or must first be investigated.
 - `by-design` — intentionally outside a scriptc execution model. This requires an explicit implementation-owned architectural policy.
@@ -125,6 +132,7 @@ Chapter rows are generated summaries of their descendants, never independent sup
 Read a row's verification basis before acting:
 
 - `test-backed` — mapped to implementation and relevant tests. Audit the exact overload or behavior before broadening a `partial` claim.
+- `island-test-backed` — mapped to an island-specific implementation path and differential tests that run under the pinned Node and as a compiled island binary; the evidence names the tests, and a build without islands keeps the refusal.
 - `explicit-refusal` — source-verified refusal boundary.
 - `verified-absence` — a runtime presence test confirms absence.
 - `declared-gap` — an implementation-owned manifest explicitly declares the gap; it is ready for implementation.
@@ -139,6 +147,8 @@ Read a row's verification basis before acting:
 - `replace-refusal` — add support where an explicit refusal currently exists.
 - `audit-partial` — identify and implement missing behavior in a tested subset, or tighten an overbroad mapping.
 - `classify` — establish ownership and evidence for an unreviewed row.
+
+`island-served` rows emit no action: the island already answers them, so they are neither native implementation work nor a refusal to replace. Native support for them would still be a separate, explicitly justified change.
 
 Backlog priority is a heuristic based on Node stability: stable APIs are raised, release-candidate or unrated APIs remain normal, and experimental, deprecated, and legacy APIs are lowered. It is not a product roadmap.
 

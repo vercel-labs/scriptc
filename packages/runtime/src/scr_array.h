@@ -382,7 +382,7 @@ static inline void scr_arr_need_states(ScrArr *a) {
 }
 /* A CREF slot's pointer, and the slot of a pointer (NULL or a compact
  * instance below 32 GiB). */
-static inline uint64_t scr_cref_decode(uint32_t ref) { return (uint64_t)ref << 3; }
+static inline uint64_t scr_cref_decode(uint32_t ref) { return scr_compact_ref_address(ref); }
 static inline uint32_t scr_cref_encode(uint64_t slot) { return (uint32_t)(slot >> 3); }
 
 /* The bits of `d` as a slot, and back. */
@@ -659,8 +659,9 @@ double scr_math_min_arr(ScrArr *a);
 double scr_math_hypot_arr(ScrArr *a);
 /* The scalar Math statics (scr_lib.c): min/max are the ECMA two-argument
  * folds (NaN poisons; max prefers +0, min prefers -0 — NOT C's fmin/fmax);
- * random is a uniform [0,1) double at 53-bit granularity from
- * arc4random_buf (SEMANTICS.md 62: Node's distribution, not its sequence). */
+ * random is a uniform [0,1) double at 53-bit granularity from a per-thread
+ * xorshift128+ seeded once from arc4random_buf (Node's distribution, not its
+ * sequence; not a cryptographic source, as in Node). */
 double scr_math_min(double a, double b);
 double scr_math_round(double x);
 double scr_math_pow(double base, double exponent);

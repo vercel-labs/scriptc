@@ -368,3 +368,103 @@ test("a union record arm routes into an index-signature arm by overflow capture"
   expect(lowerer.unionRetagHelper(from, to, loc)).toBe(helper);
   expect(lowerer.liftedFns.filter((fn) => fn.name === capture)).toHaveLength(1);
 });
+
+test("a destination declaring required members the source lacks takes the checked widening", () => {
+  const lowerer = context();
+  const source = record(
+    lowerer.shapes.intern([{ name: "role", type: STRING }], false, undefined, ["role"]),
+  );
+  const target = record(
+    lowerer.shapes.intern(
+      [
+        { name: "content", type: STRING },
+        { name: "role", type: STRING },
+        { name: "timestamp", type: F64 },
+      ],
+      false,
+      undefined,
+      ["role", "content", "timestamp"],
+    ),
+  );
+  // The relation the whole lowering asks speculatively keeps its base
+  // answer: no plan, so no existing conversion changes.
+  expect(lowerer.widthLiftPlan(source, target)).toBeNull();
+  expect(lowerer.checkedWidthLift(source, target)).toEqual({ how: "checkedWiden" });
+  // The apply half crosses the value as a live capsule and checks it
+  // against the destination.
+  const value: IrType = source;
+  const applied = lowerer.applyWidthLift(
+    { how: "checkedWiden" },
+    { kind: "varRef", localId: "v.0", type: value, loc },
+    target,
+    loc,
+  );
+  expect(applied).toEqual({
+    kind: "dynCheck",
+    value: {
+      kind: "dynFrom",
+      value: { kind: "varRef", localId: "v.0", type: value, loc },
+      liveRef: true,
+      type: DYN,
+      loc,
+    },
+    type: target,
+    loc,
+  });
+});
+
+test("the checked widening declines a destination field the source declares differently", () => {
+  const lowerer = context();
+  const source = record(lowerer.shapes.intern([{ name: "role", type: STRING }]));
+  const target = record(
+    lowerer.shapes.intern([
+      { name: "content", type: STRING },
+      { name: "role", type: F64 },
+    ]),
+  );
+  expect(lowerer.widthLiftPlan(source, target)).toBeNull();
+  // A destination member the source lacks that is optional stays the
+  // field-copy plan's own absent completion.
+  const completed = lowerer.shapes.intern(
+    [
+      {
+        name: "content",
+        type: { kind: "union", unionId: lowerer.unions.intern([STRING, UNDEFINED_T]) },
+      },
+      { name: "role", type: STRING },
+    ],
+    false,
+    undefined,
+    ["role", "content"],
+  );
+  expect(lowerer.widthLiftPlan(source, record(completed))).toEqual({ how: "width" });
+});
+
+test("the checked widening stays out of the union plan", () => {
+  const lowerer = context();
+  const source = record(lowerer.shapes.intern([{ name: "role", type: STRING }]));
+  const wider = record(
+    lowerer.shapes.intern([
+      { name: "content", type: STRING },
+      { name: "role", type: STRING },
+    ]),
+  );
+  const exact: IrType = {
+    kind: "union",
+    unionId: lowerer.unions.intern([source, UNDEFINED_T]),
+  };
+  const mixed: IrType = {
+    kind: "union",
+    unionId: lowerer.unions.intern([wider, UNDEFINED_T]),
+  };
+  expect(lowerer.widthLiftPlan(source, exact)).toEqual({
+    how: "wrap",
+    tag: lowerer.armTag(exact.unionId, source),
+  });
+  // A destination union whose arms only fit through the checked widening
+  // keeps the base answer: the widening is asked for by name at the
+  // conversion site that refused, never as a speculative plan a union
+  // conversion would build the code of a compiling program around.
+  expect(lowerer.widthLiftPlan(source, mixed)).toBeNull();
+  expect(lowerer.checkedWidthLift(source, wider)).toEqual({ how: "checkedWiden" });
+});

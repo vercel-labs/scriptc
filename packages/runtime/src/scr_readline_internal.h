@@ -73,6 +73,17 @@ typedef struct ScrRl {
    * Ctrl+C and Ctrl+D reject with an AbortError (+1, or NULL) */
   void *q_ask;
   RlList ev[RL_EV_COUNT];
+  /* The order each event's first listener arrived in (0 while the event
+   * has none): eventNames() reports the events in it. */
+  double ev_seq[RL_EV_COUNT];
+  double ev_seq_next;
+  /* Node's own close listeners, registered at construction: the terminal's
+   * onSelfCloseWithoutTerminal (or onSelfCloseWithTerminal) and, when the
+   * signal option is a live AbortSignal, the once('close') that disposes
+   * its abort listener. listenerCount('close') and eventNames() see them,
+   * a listener's removeListener never matches them, removeAllListeners
+   * drops them, and they leave when 'close' is emitted. */
+  int self_close;
   /* the line splitter */
   char *line_buf; /* the unfinished line (kLine_buffer), UTF-8 */
   size_t line_len, line_cap;

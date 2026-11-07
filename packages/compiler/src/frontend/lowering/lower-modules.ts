@@ -20,6 +20,7 @@ import { InternalCompilerError } from "../../errors.js";
  * seeds), npm/JSON import collection, per-file %init functions, %main, and
  * the module artifacts (globals, embedded npm tables) the IR module carries. */
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesAssertionsNonNull } from "../outer-expressions.js";
 import { collectRebindableFunctions, isRebindableFunction } from "./rebindable-functions.js";
 import { bindingSource } from "../binding-source.js";
 import type { Lowerer } from "./lowerer.js";
@@ -40,9 +41,11 @@ import { isJsSourceFileName } from "../tsc-codes.js";
 import { isRelativeSpecifier } from "../workspace-registry.js";
 import {
   canonicalBuiltinModule,
+  cjsChainedExportValueOf,
   cjsExportAssignmentOf,
   cjsExportChainOf,
   cjsVoidInitPreambleReals,
+  cjsExportDeclaratorOf,
   cjsExportDiscardReason,
   cjsExportTargetLiteral,
   entryPackageFilePredicate,
@@ -67,6 +70,7 @@ import {
 import { markRequireEarlyBindings } from "./require-initialization.js";
 import {
   cjsHasLiveMemberExports,
+  cjsNamespaceModule,
   cjsTableMethodEntry,
   inlineProgramRequireOf,
   nestedCjsExportAssignmentsOf,
@@ -116,13 +120,13 @@ import {
   builtinMemberRequireDecl,
   builtinNamespaceDestructureModuleOf,
   createRequireBindingDecl,
+  createRequireFactoryDecl,
   createRequireNamespaceDecl,
   createRequireProgramModuleDecl,
 } from "./builtins/module-bindings.js";
 import { isPromisifyCall, registerBuiltinCallableAlias } from "./builtins/callable-aliases.js";
 import { customInspectRegistrations } from "./lower-inspect.js";
 import { registerBuiltinClassAlias } from "./builtins/class-values.js";
-import { stripTypeCasts } from "./builtins/arguments.js";
 import { isWebCryptoMemberType } from "./builtins/webcrypto.js";
 import {
   bindingContextualGenericFnNodeOf,
@@ -159,6 +163,7 @@ import {
   nsPathPrefix,
   trapDeclRootOf,
 } from "./lower-namespaces.js";
+import { collectEnumObjects, registerEnumObjectGlobals } from "./enum-objects.js";
 import { collectExpandoMembers } from "./lower-expando.js";
 import { recordTextCodecClass } from "../../ir/ir.js";
 import { isUnitOnlyTsType, unitOnlyUnion } from "../type-mapper.js";
@@ -240,14 +245,24 @@ function appendedEdgesOf(
 }
 
 /** Lazy inline requires run after their module's top level: their modules
- * join the order afterwards, as in preflight's walk. */
+ * join the order afterwards, as in preflight's walk. `lazyBases` records the
+ * stack depth of each enclosing subtree being entered here; a back edge into
+ * a module below it is a cache hit at run time (preflight's walk admits the
+ * same edges). */
 function visitLazyEdges(
   sf: ts.SourceFile,
   edgesOf: (sf: ts.SourceFile) => CycleEdge[],
   state: ReadonlyMap<ts.SourceFile, "visiting" | "done">,
   visit: (sf: ts.SourceFile) => void,
+  lazyBases: number[],
+  stackDepth: number,
 ): void {
-  for (const e of edgesOf(sf)) if (e.lazy === true && state.get(e.dep) === undefined) visit(e.dep);
+  for (const e of edgesOf(sf))
+    if (e.lazy === true && state.get(e.dep) === undefined) {
+      lazyBases.push(stackDepth);
+      visit(e.dep);
+      lazyBases.pop();
+    }
 }
 
 /** Program modules selected by statically resolved child_process.fork()
@@ -291,6 +306,7 @@ function appendEntryModules(
   for (const sf of order) state.set(sf, "done");
   const added: ts.SourceFile[] = [];
   const stack: string[] = [];
+  const lazyBases: number[] = [];
   const staticEdgesOf = appendedEdgesOf(program, graph);
   const cycleAdmissionReason = makeCycleAdmission(program, (sf) =>
     staticEdgesOf(sf).filter((e) => e.call === undefined),
@@ -309,6 +325,10 @@ function appendEntryModules(
           graph?.inlineCycleCalls?.add(edge.call);
           continue;
         }
+        // A back edge below the enclosing lazily-loaded subtree is a cache
+        // hit at run time; preflight's walk admits the same edges.
+        const lazyBase = lazyBases[lazyBases.length - 1];
+        if (lazyBase !== undefined && stack.indexOf(edge.dep.fileName) < lazyBase) continue;
         const reason = cycleAdmissionReason(sf, edge);
         if (reason !== null) {
           const cycleStart = stack.indexOf(edge.dep.fileName);
@@ -321,7 +341,7 @@ function appendEntryModules(
     stack.pop();
     state.set(sf, "done");
     added.push(sf);
-    visitLazyEdges(sf, staticEdgesOf, state, visit);
+    visitLazyEdges(sf, staticEdgesOf, state, visit, lazyBases, stack.length);
   };
 
   const knownTargets = new Set(targets);
@@ -440,6 +460,7 @@ export function appendDynamicImportModules(
   for (const sf of order) state.set(sf, "done");
   const added: ts.SourceFile[] = [];
   const stack: string[] = [];
+  const lazyBases: number[] = [];
   const staticEdgesOf = appendedEdgesOf(program, graph);
   const cycleAdmissionReason = makeCycleAdmission(program, (sf) =>
     staticEdgesOf(sf).filter((e) => e.call === undefined),
@@ -457,6 +478,10 @@ export function appendDynamicImportModules(
           graph?.inlineCycleCalls?.add(e.call);
           continue;
         }
+        // A back edge below the enclosing lazily-loaded subtree is a cache
+        // hit at run time; preflight's walk admits the same edges.
+        const lazyBase = lazyBases[lazyBases.length - 1];
+        if (lazyBase !== undefined && stack.indexOf(e.dep.fileName) < lazyBase) continue;
         // A back edge: Node answers it from the cache. Same admission
         // question as preflight's static walk, same fence when refused.
         const reason = cycleAdmissionReason(sf, e);
@@ -471,7 +496,7 @@ export function appendDynamicImportModules(
     stack.pop();
     state.set(sf, "done");
     added.push(sf);
-    visitLazyEdges(sf, staticEdgesOf, state, visit);
+    visitLazyEdges(sf, staticEdgesOf, state, visit, lazyBases, stack.length);
   };
   const scanned = new Set<ts.SourceFile>();
   for (;;) {
@@ -526,6 +551,9 @@ export function collectProgram(lowerer: Lowerer, parts: FileParts[]): void {
         expanded = true;
       }
   }
+  // Enums some code uses as a value: their object's globals register with
+  // the others below, and a static field holding one keeps its storage.
+  collectEnumObjects(lowerer, parts);
   lowerer.collecting = true;
   try {
     collectVirtualJsMethods(
@@ -1065,8 +1093,10 @@ export function moduleArtifacts(
         case "unionKeyGet":
         case "unionIsTag":
         case "unionEq":
-        case "fieldAbsent":
           visitUnion(node.unionId);
+          break;
+        case "fieldAbsent":
+          if (node.unionId !== undefined) visitUnion(node.unionId);
           break;
         case "unionRetype":
           visitUnion(node.fromId);
@@ -1287,7 +1317,9 @@ function checkedGlobalReference(lowerer: Lowerer, expression: ts.Expression): bo
   const root = lowerer.checker.getSymbolAtLocation(expression.expression);
   const namespace = root && root.declarations.some(ts.isNamespaceImport);
   return (
-    (namespace || lowerer.cjsLocalModuleBindingOf(expression.expression)) &&
+    (namespace ||
+      lowerer.cjsLocalModuleBindingOf(expression.expression) ||
+      lowerer.cjsWholeExportMemberOf(expression.expression, expression.name.text)) &&
     lowerer.globalOf(expression.name)?.type.kind === "dyn"
   );
 }
@@ -1475,11 +1507,45 @@ function withoutRejectedClassMembers(
   if (!shape.fields.some((f) => rejected(f.type))) return type;
   const kept = shape.fields.filter((f) => !rejected(f.type));
   const shapeId = lowerer.shapes.intern(
-    kept.map((f) => ({ name: f.name, type: f.type })),
+    kept.map((f) => ({ ...f })),
     false,
     shape.indexValue,
   );
   return { kind: "record", shapeId };
+}
+
+/** The type of the snapshot `module.exports = <identifier>` stores, or
+ * null when the identifier needs no snapshot: a split require re-export,
+ * a class/function/builtin alias, or a binding with its own module
+ * storage all resolve through alias plumbing (lowerCjsSingleValueExport). */
+function cjsIdentExportSnapshotType(lowerer: Lowerer, id: ts.Identifier): IrType | null {
+  if (splitRequireBindingOfIdent(lowerer, id) !== null) return null;
+  // A require or import binding of a single-value module names that
+  // module's own export value, which the export statement neither
+  // evaluates nor stores (lowerCjsSingleValueExport): registering a slot
+  // here would leave requirers reading a global nothing ever writes.
+  const dep = lowerer.cjsModuleBindingDepOf(id);
+  if (dep !== null && !cjsNamespaceModule(lowerer, dep)) return null;
+  const sym = lowerer.resolveValueSymbol(id);
+  if (sym === null) return null;
+  if (
+    lowerer.classBySymbol.has(sym) ||
+    lowerer.fnSigsBySymbol.has(sym) ||
+    lowerer.genericFnsBySymbol.has(sym) ||
+    lowerer.globalsBySymbol.has(sym) ||
+    lowerer.isStdlibSymbol(sym)
+  )
+    return null;
+  // Hoisted declarations may not have registered yet when the export
+  // statement comes first; they are alias plumbing all the same.
+  if (
+    sym.declarations.some(
+      (d) => ts.isSourceFile(d) || ts.isFunctionDeclaration(d) || ts.isClassDeclaration(d),
+    )
+  )
+    return null;
+  const strict = lowerer.typeOf(id);
+  return lowerer.mapTypeOf(strict) ?? dynFallbackType(lowerer, id, strict);
 }
 
 export function collectGlobals(
@@ -1497,6 +1563,10 @@ export function collectGlobals(
   // collected earlier in this pass must resolve them (lower-expando.ts).
   collectExpandoMembers(lowerer, sf);
   for (const stmt of topStmts) {
+    if (ts.isEnumDeclaration(stmt)) {
+      registerEnumObjectGlobals(lowerer, stmt, tag);
+      continue;
+    }
     if (ts.isClassDeclaration(stmt) && stmt.name && isIslandSubclassDecl(stmt)) {
       const symbol = lowerer.checker.getSymbolAtLocation(stmt.name);
       const g: IrGlobal = {
@@ -1634,6 +1704,11 @@ export function collectGlobals(
       // Statements Node would DISCARD (a replaced export object) never
       // register storage — importer reads must not bind to values Node's
       // importers never see. The statement lowering owns the diagnostic.
+      // The chained declaration spelling (`var x = module.exports =
+      // <value>`) is a module-scope declaration AND an export statement:
+      // module.exports gets its own export slot here, while `x` keeps the
+      // ordinary declaration storage registered below. Reassigning `x`
+      // therefore leaves the exported value alone, as in Node.
       const cjs = cjsExportDiscardReason(stmt) === null ? cjsExportAssignmentOf(stmt) : null;
       const registerExport = (nameNode: ts.Node, name: string, typeNode: ts.Node): void => {
         const diagsBefore = lowerer.diags.length;
@@ -1785,11 +1860,46 @@ export function collectGlobals(
             !hasMemberExports
           ) &&
           cjsExportTargetLiteral(rhs, sf) === null;
-        if (cjsScalarLiteral(rhs) || fnValued || factoryValued) {
+        // A source binding that owns module storage and is REASSIGNED
+        // somewhere in its module (`var $gOPD = …; …; module.exports = $gOPD`
+        // — gopd's shape): Node copies the VALUE at this statement, so
+        // requirers must not read the live binding, which may change
+        // afterwards. Register one snapshot slot keyed by the statement,
+        // like the scalar and factory forms; the statement lowering assigns
+        // it and requirer aliases resolve to it
+        // (requireWholeExportSlotSymbolOf). A module that also attaches
+        // member exports to that object keeps the statement-level fence:
+        // those writes would have to reach the SAME object the snapshot
+        // holds.
+        if (ts.isIdentifier(rhs) && splitWholeBinding === null && !hasMemberExports) {
+          const vSym = lowerer.checker.getSymbolAtLocation(rhs);
+          const vDecl = vSym?.declarations.find(ts.isVariableDeclaration);
+          const vG = vSym ? lowerer.globalsBySymbol.get(vSym) : undefined;
+          if (vSym && vDecl && vG && vG.mutable && !bindingNeverReassigned(lowerer, vSym, vDecl)) {
+            const g: IrGlobal = {
+              id: `%g.${tag}exports`,
+              name: "exports",
+              type: vG.type,
+              mutable: false,
+            };
+            lowerer.globalsByDeclNode.set(cjs.expr, g);
+            lowerer.globalsList.push(g);
+          }
+        }
+        // An identifier whose binding owns no module storage and has no
+        // alias target (`var $defineProperty = Object.defineProperty ||
+        // false` — an inferred union the type mapping does not carry):
+        // Node copies that binding's VALUE at this statement, so the
+        // export is a snapshot slot keyed by the statement, exactly the
+        // computed-value shape.
+        const identSnapshot =
+          ts.isIdentifier(rhs) && !splitWhole ? cjsIdentExportSnapshotType(lowerer, rhs) : null;
+        if (cjsScalarLiteral(rhs) || fnValued || factoryValued || identSnapshot !== null) {
           const diagsBefore = lowerer.diags.length;
           try {
             const strict = lowerer.typeOf(rhs);
             let t =
+              identSnapshot ??
               lowerer.mapTypeOf(strict) ??
               (fnValued || factoryValued ? dynFallbackType(lowerer, rhs, strict) : null);
             // A returned object remains the live CommonJS root; later
@@ -1813,7 +1923,10 @@ export function collectGlobals(
             deferJsCollectionDiags(lowerer, sf, diagsBefore);
           }
         }
-        continue;
+        // A chained declaration also declares the module-scope binding it
+        // initializes from the same value: register that ordinary storage
+        // below, so a later reassignment of the binding stays local.
+        if (cjsExportDeclaratorOf(cjs.expr) === null) continue;
       }
       if (cjs?.kind === "table" && cjs.obj) {
         for (const prop of cjs.obj.properties.nodes) {
@@ -2153,6 +2266,9 @@ export function collectGlobals(
       // compile-time plumbing — no global storage; the statement
       // lowering skips it by the same test.
       if (createRequireBindingDecl(lowerer, decl.name, decl.initializer)) continue;
+      // `const { createRequire: cr } = require("node:module")` at file
+      // scope: the factory binding is the same compile-time plumbing.
+      if (createRequireFactoryDecl(lowerer, decl.name, decl.initializer)) continue;
       // `const fs = require("node:fs")` through that binding at file
       // scope — a namespace import in const clothing, same story.
       if (isConst && createRequireNamespaceDecl(lowerer, decl.name, decl.initializer)) continue;
@@ -2179,8 +2295,8 @@ export function collectGlobals(
       // other instance is refused where its declaration lowers.
       if (
         decl.initializer !== undefined &&
-        ts.isNewExpression(stripTypeCasts(decl.initializer)) &&
-        isAssertClassNew(lowerer, stripTypeCasts(decl.initializer))
+        ts.isNewExpression(withoutParenthesesAssertionsNonNull(decl.initializer)) &&
+        isAssertClassNew(lowerer, withoutParenthesesAssertionsNonNull(decl.initializer))
       )
         continue;
       // `const process = globalThis.process` at file scope: a stdlib-
@@ -2203,6 +2319,10 @@ export function collectGlobals(
       // desugar in the init function assigns the pre-registered globals,
       // exactly like plain declarations).
       const names = boundIdentifiersOf(decl.name);
+      // `var x = module.exports = <value>`: x and module.exports take the
+      // SAME value at this statement, so the declaration's storage is
+      // classified from the export value the chain assigns.
+      const declValue = cjsChainedExportValueOf(decl) ?? decl.initializer;
       // Localized failure: a degradable type failure at a module global
       // degrades that type and the same name registers again
       // (globalSlotRetry), at most MAX_GLOBAL_RETRIES times.
@@ -2246,7 +2366,9 @@ export function collectGlobals(
           // adapting the loader to (string) would replace its validation.
           // An inferred Promise.prototype binding holds an ordinary object
           // (isPromisePrototypeRead), in TypeScript as well.
-          const initializer = decl.initializer ? stripTypeCasts(decl.initializer) : undefined;
+          const initializer = decl.initializer
+            ? withoutParenthesesAssertionsNonNull(decl.initializer)
+            : undefined;
           if (
             (nameNode === decl.name &&
               !decl.type &&
@@ -2526,7 +2648,7 @@ export function collectGlobals(
             !lowerer.mapTypeOf(lowerer.typeOf(nameNode)) &&
             ts.isIdentifier(decl.name) &&
             nameNode === decl.name &&
-            jsDynHoldableInitializer(lowerer, decl.initializer) &&
+            jsDynHoldableInitializer(lowerer, declValue) &&
             dynFallbackType(lowerer, nameNode, lowerer.typeOf(nameNode))?.kind === "dyn"
           ) {
             const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
@@ -2564,10 +2686,10 @@ export function collectGlobals(
             !lowerer.mapTypeOf(lowerer.typeOf(nameNode)) &&
             ts.isIdentifier(decl.name) &&
             nameNode === decl.name &&
-            decl.initializer &&
-            jsDynHoldableInitializer(lowerer, decl.initializer)
+            declValue &&
+            jsDynHoldableInitializer(lowerer, declValue)
           ) {
-            const initializer = decl.initializer;
+            const initializer = declValue;
             const member = ts.isPropertyAccessExpression(initializer)
               ? nsMemberIdentOf(lowerer, initializer)
               : null;

@@ -466,10 +466,21 @@ static ScrTlsSrv *scr_tls_srv_new(const char *cert, size_t cert_len, const char 
   mbedtls_x509_crt_init(&s->ca);
   mbedtls_pk_init(&s->pk);
   mbedtls_ssl_config_init(&s->conf);
-  int r = scr_tls_parse_crt(&s->cert, cert, cert_len);
-  if (r != 0) scr_tls_bad_material("certificate", r);
-  r = scr_tls_parse_key(&s->pk, key, key_len);
-  if (r != 0) scr_tls_bad_material("private key", r);
+  /* Node accepts a server whose options carry neither key nor cert (or
+   * only one of them): the default context then has no pair, and an
+   * SNICallback answer supplies the handshake's certificate. Absent
+   * material is not parsed, and only a complete pair is configured as the
+   * default. */
+  const bool have_cert = cert != NULL && cert_len > 0;
+  const bool have_key = key != NULL && key_len > 0;
+  if (have_cert) {
+    int r = scr_tls_parse_crt(&s->cert, cert, cert_len);
+    if (r != 0) scr_tls_bad_material("certificate", r);
+  }
+  if (have_key) {
+    int r = scr_tls_parse_key(&s->pk, key, key_len);
+    if (r != 0) scr_tls_bad_material("private key", r);
+  }
   if (mbedtls_ssl_config_defaults(&s->conf, MBEDTLS_SSL_IS_SERVER,
                                   MBEDTLS_SSL_TRANSPORT_STREAM,
                                   MBEDTLS_SSL_PRESET_DEFAULT) != 0) {
@@ -478,8 +489,10 @@ static ScrTlsSrv *scr_tls_srv_new(const char *cert, size_t cert_len, const char 
   mbedtls_ssl_conf_rng(&s->conf, mbedtls_ctr_drbg_random, &scr_tls_drbg);
   /* no client certificate unless requestCert asks (scr_tls_srv_client_auth) */
   mbedtls_ssl_conf_authmode(&s->conf, MBEDTLS_SSL_VERIFY_NONE);
-  if (mbedtls_ssl_conf_own_cert(&s->conf, &s->cert, &s->pk) != 0) {
-    scr_tls_bad_material("certificate/key pair", 0);
+  if (have_cert && have_key) {
+    if (mbedtls_ssl_conf_own_cert(&s->conf, &s->cert, &s->pk) != 0) {
+      scr_tls_bad_material("certificate/key pair", 0);
+    }
   }
   if (alpn_http11) mbedtls_ssl_conf_alpn_protocols(&s->conf, SCR_TLS_ALPN_HTTP11);
   return s;
@@ -711,6 +724,11 @@ static ScrTlsCli *scr_tls_cli_new2(ScrStr *host, bool reject_unauthorized, const
     scr_tls_oom();
   }
   mbedtls_ssl_conf_rng(&c->conf, mbedtls_ctr_drbg_random, &scr_tls_drbg);
+  /* Node refuses a server's finite-field Diffie-Hellman group under 2048
+   * bits (OpenSSL's default security level: "dh key too small"); the
+   * mbedTLS default accepts 1024. Every client configuration is built
+   * here, so this is the one place the floor is set. */
+  mbedtls_ssl_conf_dhm_min_bitlen(&c->conf, 2048);
   c->verify_recorded = reject_unauthorized || verify_optional;
   c->reject = reject_unauthorized;
   c->has_ca = ca != NULL;
@@ -2346,6 +2364,8 @@ ScrHttpClientReq *scr_https_request_tls(ScrStr *host /*borrowed*/, double port,
                                                   auto_end, NULL, cb, fn, 443, &scr_tls_cli_wrap,
                                                   cli, key);
   scr_str_release(key);
+  /* a constructor check threw before any socket took the config */
+  if (c == NULL) scr_tls_cli_free(cli);
   return c;
 }
 
@@ -2422,6 +2442,8 @@ ScrHttpClientReq *scr_https_request_agent_tls(ScrStr *host /*borrowed*/, double 
                                                   auto_end, agent, cb, fn, 443, &scr_tls_cli_wrap,
                                                   cli, key);
   scr_str_release(key);
+  /* a constructor check threw before any socket took the config */
+  if (c == NULL) scr_tls_cli_free(cli);
   return c;
 }
 
@@ -2702,6 +2724,8 @@ ScrHttpClientReq *scr_https_request_dyn_impl(const ScrDyn *opts /*borrowed*/, bo
   ScrHttpClientReq *req = scr_http_req_opts_send(&o, auto_end, cb, fn, add_abort,
                                                  &scr_tls_cli_wrap, cli, key);
   scr_str_release(key);
+  /* a constructor check threw before any socket took the config */
+  if (req == NULL) scr_tls_cli_free(cli);
   if (ca) scr_bytes_release(ca);
   scr_http_req_opts_free(&o);
   return req;

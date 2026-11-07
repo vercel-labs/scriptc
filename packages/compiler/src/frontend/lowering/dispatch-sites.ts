@@ -7,6 +7,7 @@ import {
   type IrStmt,
   type IrType,
 } from "../../ir/ir.js";
+import type { IrLibFn } from "../../ir/builtin-signatures.js";
 import { everyStmtList } from "../../ir/traverse.js";
 import { toPrimitiveHint } from "./class-dynamic-dispatch.js";
 import { GENERATOR_STEP_METHODS, HELPER_METHODS } from "./generator-dynamic-dispatch.js";
@@ -14,13 +15,14 @@ import { GENERATOR_STEP_METHODS, HELPER_METHODS } from "./generator-dynamic-disp
 /** Runtime entry points that step a checked-dynamic iterable's iterator:
  * destructuring rest, the collection constructors' and Object.fromEntries'
  * seeds, and Math.min/Math.max over a spread. */
-const RUNTIME_STEP_LIB_FNS: ReadonlySet<string> = new Set([
+const RUNTIME_STEP_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // The Promise statics' generic algorithms walk the iterable in the
   // runtime, a compiled generator among the values they step.
   "promise.genericStatic",
   "dyn.destructureRest",
   "dyn.mathFold",
   "dyn.nativeSetNew",
+  "dyn.collectionConstruct",
   "dyn.mapSeedEntries",
   "dyn.fromEntries",
   "weakMap.new",
@@ -69,7 +71,7 @@ export interface FunctionSites {
 }
 
 /** The `libCall`s the class dispatch rewrite can change. */
-const DISPATCH_LIB_CALLS = new Set<string>([
+const DISPATCH_LIB_CALLS = new Set<IrLibFn>([
   "bytes.construct",
   "dyn.keySet",
   "dyn.keySetComputed",

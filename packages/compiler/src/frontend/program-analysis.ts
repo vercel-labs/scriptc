@@ -30,7 +30,8 @@ export class ProgramAnalysis {
   /** Which member names a typed member call passes its holder for
    * (member-call-receivers.ts): null until the census is taken; `any` is
    * false for a program with no function that reads its call's receiver. */
-  memberCallReceivers: { any: boolean; names: Set<string>; keyed: boolean } | null = null;
+  memberCallReceivers: { any: boolean; all: boolean; names: Set<string>; keyed: boolean } | null =
+    null;
   /** Directories whose `lib.*.d.ts` files the checker holds as default
    * libraries, and those already asked about (isBundledLibraryFile). */
   readonly bundledLibraryDirectories = new Set<string>();

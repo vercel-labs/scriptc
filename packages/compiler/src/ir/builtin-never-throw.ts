@@ -19,4 +19,8 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_resolve_adopt queues a job; a promise resolved with itself is
   // rejected, not thrown.
   "promise.adopt",
+  // scr_fs_exists_bytes turns the path bytes into a string and probes it; a
+  // path that is not there is the answer false, and the probe reports no
+  // error.
+  "fs.existsSyncBytes",
 ]);

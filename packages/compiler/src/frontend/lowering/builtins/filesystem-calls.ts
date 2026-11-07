@@ -1642,3 +1642,75 @@ function parseMkdirOptions(
   }
   return { recursive, modeNode };
 }
+
+/** fs.existsSync(path) where the path value is not statically a string: a
+ * Buffer path, an `any`-typed value, or a union of those with strings and the
+ * unit arms. A statically typed Buffer takes the typed entry point
+ * (scr_fs_exists_bytes); an `any`-typed value or a union takes the value
+ * form, which decides the arm at run time. Node answers false for any other
+ * value and reports DEP0187 once, which the value form (scr_fs_exists_dyn.c)
+ * does; a plain string argument keeps the typed call. Null for the URL type,
+ * which converts to a string path before the call, and for every union
+ * holding an arm the value form cannot answer. Node ignores arguments past
+ * the first but still evaluates them, so surplus arguments are lowered here
+ * rather than dropped.
+ */
+export function lowerFsExistsValueCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  loc: SrcLoc,
+): IrExpr | null {
+  // A spread would decide the path value at run time, which this form cannot
+  // stage; the ordinary call path rejects it.
+  if (expr.arguments.nodes.some(ts.isSpreadElement)) return null;
+  const arg = expr.arguments.nodes[0];
+  if (!arg) return null;
+  const type = lowerer.mapTypeOf(lowerer.typeOf(arg));
+  const ok = (arm: IrType | null) =>
+    arm?.kind === "string" || (arm !== null && typeEquals(arm, BYTES_U8));
+  const unit = (arm: IrType | null) =>
+    arm?.kind === "undefinedT" || arm?.kind === "nullT" || arm?.kind === "void";
+  // A null mapped type is `any`/`unknown`: the runtime decides.
+  let value = type === null || type.kind === "dyn" || (type.kind !== "string" && ok(type));
+  if (!value && type?.kind === "union") {
+    const arms = lowerer.unions.get(type.unionId)?.arms ?? [];
+    value = arms.some(ok) && arms.every((arm) => ok(arm) || unit(arm));
+  }
+  if (!value) return null;
+  // A statically typed Buffer path answers through its own entry point
+  // (scr_fs_exists_bytes): the value form would box it, and a fully typed
+  // program links no dynamic tier. A `dyn` or union path keeps the value
+  // form, which decides the arm at run time.
+  const bytesPath = type !== null && typeEquals(type, BYTES_U8);
+  const lowered = bytesPath
+    ? lowerer.lowerExprExpecting(arg, BYTES_U8)
+    : lowerer.lowerExprExpecting(arg, DYN);
+  const fn = bytesPath ? "fs.existsSyncBytes" : "fs.existsSyncValue";
+  const surplus = expr.arguments.nodes.slice(1);
+  if (surplus.length === 0) {
+    return { kind: "libCall", fn, args: [lowered], type: BOOL, loc };
+  }
+  // Stage the path, then evaluate the ignored arguments in source order, so
+  // their effects happen before the call and after the argument before them.
+  const pathLocal = lowerer.declareHiddenLocal("%existsPath", lowered.type);
+  const stmts: IrStmt[] = [
+    { kind: "varDecl", localId: pathLocal.id, init: lowered, loc: lowered.loc },
+  ];
+  for (const extra of surplus) {
+    const e = lowerer.lowerExpr(extra);
+    stmts.push({ kind: "exprStmt", expr: e, loc: e.loc });
+  }
+  return {
+    kind: "seqExpr",
+    stmts,
+    result: {
+      kind: "libCall",
+      fn,
+      args: [varRef(pathLocal.id, lowered.type, loc)],
+      type: BOOL,
+      loc,
+    },
+    type: BOOL,
+    loc,
+  };
+}

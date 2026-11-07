@@ -27,6 +27,9 @@ export const CLI_OPTIONS = {
   "dry-run": { type: "boolean", default: false },
   "keep-llvm": { type: "boolean", default: true },
   "emit-ir": { type: "boolean", default: false },
+  "emit-lowered": { type: "string" },
+  "from-lowered": { type: "string" },
+  "from-lowered-accept": { type: "string", multiple: true },
   sanitize: { type: "boolean", default: false },
   ffi: { type: "string" },
   "npm-static": { type: "string", multiple: true },
@@ -333,6 +336,44 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
       },
     ],
   },
+  "emit-lowered": {
+    entries: [
+      {
+        term: "--emit-lowered <file>",
+        help: [
+          "compiler development: also write the lowered program",
+          "(the IR the frontend hands the backend, with its",
+          "sources, warnings and the inputs it was lowered from)",
+          "to the file (build only)",
+        ],
+      },
+    ],
+  },
+  "from-lowered": {
+    entries: [
+      {
+        term: "--from-lowered <file>",
+        help: [
+          "compiler development: build from a file --emit-lowered",
+          "wrote instead of running the frontend. The build is",
+          "refused when the compiler, the options or an input",
+          "differ from the ones the file records (build only)",
+        ],
+      },
+    ],
+  },
+  "from-lowered-accept": {
+    entries: [
+      {
+        term: "--from-lowered-accept <kind[,kind…]>",
+        help: [
+          "build from the file although the named kinds differ",
+          "(compiler, options, inputs); each difference is",
+          "reported on stderr (repeatable)",
+        ],
+      },
+    ],
+  },
   sanitize: { entries: [{ term: "--sanitize", help: ["build with ASan + runtime RC audit"] }] },
   ffi: {
     entries: [
@@ -405,8 +446,8 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
         help: [
           "tier policy (default: auto). static-only keeps every",
           "construct without a static lowering a compile error, so",
-          "the program has no dynamic-tier demotions. Both modes",
-          "currently compile identically",
+          "the program has no dynamic-tier demotions; auto compiles",
+          "such a construct in the dynamic tier where it can",
         ],
       },
     ],
@@ -454,9 +495,10 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
       {
         term: "--node-island <pkg-or-path>",
         help: [
-          "mark an npm package or one of your modules (a path or",
-          "glob) to run in a Node island (repeatable, comma lists;",
-          "report-only)",
+          "mark an npm package (its name, whatever it looks like:",
+          "highlight.js is a package) or one of your modules (a",
+          "path or glob; ./file.js is always a file) to run in a",
+          "Node island (repeatable, comma lists; report-only)",
         ],
       },
     ],
@@ -612,7 +654,13 @@ export const CLI_COMMANDS: readonly CliCommand[] = [
       },
     ],
     positionals: [ENTRY],
-    options: [...EXECUTABLE_OPTIONS, "print"],
+    options: [
+      ...EXECUTABLE_OPTIONS,
+      "print",
+      "emit-lowered",
+      "from-lowered",
+      "from-lowered-accept",
+    ],
     requiredOptions: [],
     diagnostics: true,
     effect: "write",

@@ -43,6 +43,7 @@ import { isFrontendIsland } from "../node-islands/boundary.js";
 import { builtinModules } from "node:module";
 import { dirname, isAbsolute, resolve } from "node:path";
 import * as ts from "./ts7/adapter.js";
+import { withoutParenthesesAssertionsNonNull } from "./outer-expressions.js";
 import { isSourcePhaseImport } from "./ts7/ast-node.js";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import {
@@ -61,6 +62,7 @@ import {
   projectDtsRuntimeSibling,
   resolveBareModule,
   resolveProjectModule,
+  resolveWorkspaceSourceModule,
   resolveTypeDirective,
   setProjectPathMappings,
   setProjectRealm,
@@ -125,9 +127,11 @@ import {
   clearWorkspacePackages,
   isRelativeSpecifier,
   isWorkspacePackageName,
+  isWorkspaceSourcePath,
   npmPackageNameOf,
   packageNameOfSpecifier,
   registerWorkspacePackage,
+  registerWorkspaceSourcePackage,
   workspacePackageOfPath,
 } from "./workspace-registry.js";
 import {
@@ -445,8 +449,10 @@ export interface LoadResult {
    * errors are the program's, and its project world when it has errors. */
   tscWorld?: {
     program: ts.Program;
-    /** The program's pre-emit diagnostics, computed once. */
-    diagnostics: readonly ts.Diagnostic[];
+    /** The program's pre-emit diagnostics, computed once. The tsc gate is
+     * their one reader, so a load whose report nobody asks for (a rung of the
+     * npm-static fixpoint) never asks the checker for them. */
+    diagnostics: () => readonly ts.Diagnostic[];
     projectWorld: ts.Program | null;
     /** The declaration-typed boundary rewrote user files: errors fall
      * back to the declaration world (load.projectWorld()), as without it. */
@@ -838,31 +844,16 @@ const TEMPORAL_LIB = "lib.esnext.temporal.d.ts";
  * mention in a comment or string also counts, which only adds the lib
  * slice. */
 function programNamesTemporal7(program: ts.Program): boolean {
-  for (const sf of program.getImplementationSourceFiles()) {
-    const text = sf.text;
-    for (
-      let at = text.indexOf(TEMPORAL_GLOBAL);
-      at >= 0;
-      at = text.indexOf(TEMPORAL_GLOBAL, at + 8)
-    ) {
-      if (!isIdentifierCharAt(text, at - 1) && !isIdentifierCharAt(text, at + 8)) return true;
-    }
-  }
+  for (const sf of program.getImplementationSourceFiles())
+    if (ts.sourceTextMatches(sf, TEMPORAL_WORD)) return true;
   return false;
 }
 
-function isIdentifierCharAt(text: string, index: number): boolean {
-  if (index < 0 || index >= text.length) return false;
-  const c = text.charCodeAt(index);
-  return (
-    (c >= 48 && c <= 57) ||
-    (c >= 65 && c <= 90) ||
-    (c >= 97 && c <= 122) ||
-    c === 36 ||
-    c === 95 ||
-    c > 127
-  );
-}
+/** The temporal global's name with no identifier character on either side:
+ * an ASCII letter, digit, `$` or `_`, or any code unit outside ASCII. */
+const TEMPORAL_WORD = new RegExp(
+  `(?<![0-9A-Za-z$_\\u0080-\\uffff])${TEMPORAL_GLOBAL}(?![0-9A-Za-z$_\\u0080-\\uffff])`,
+);
 
 /** "require" for a CommonJS edge (`require("x")`, `import x = require("x")`),
  * "import" for every ESM form — the resolution kind preflight uses. */
@@ -1045,7 +1036,7 @@ function loadProgram7(
       const errors = diagnostics.some((d) => d.category === ts.DiagnosticCategory.Error);
       tscWorld = {
         program: original,
-        diagnostics,
+        diagnostics: () => diagnostics,
         projectWorld: errors ? host.createProgram(programRoots, options, false, lineage) : null,
       };
       for (const [file, lowered] of jsx.sources) host.addVirtualFile(file, lowered.text);
@@ -1099,9 +1090,11 @@ function loadProgram7(
           programRoots.pop();
           program = original;
         } else {
+          let diagnostics: readonly ts.Diagnostic[] | null = null;
           tscWorld = {
             program: original,
-            diagnostics: ts.getPreEmitDiagnostics(original, tscGateFileKept),
+            diagnostics: () =>
+              (diagnostics ??= ts.getPreEmitDiagnostics(original, tscGateFileKept)),
             projectWorld: null,
             declWorldFallback: true,
           };
@@ -1130,13 +1123,19 @@ function loadProgram7(
         // taken before the overlay's files replace them on the host, and
         // its project world (load.projectWorld()) is built over the files
         // as written.
-        if (tscWorld === undefined)
+        if (tscWorld === undefined) {
+          const diagnostics = ts.getPreEmitDiagnostics(before);
           tscWorld = {
             program: before,
-            diagnostics: ts.getPreEmitDiagnostics(before),
+            diagnostics: () => diagnostics,
             projectWorld: null,
             declWorldFallback: true,
           };
+        } else {
+          // The gate's diagnostics are taken before the overlay's files
+          // replace the files as written on the host.
+          tscWorld.diagnostics();
+        }
         for (const file of overlay.keys())
           if (!overlayOriginals.has(file))
             overlayOriginals.set(file, before.getSourceFile(file)?.text ?? null);
@@ -1507,14 +1506,13 @@ function declBoundaryUserFiles(program: ts.Program, packages: readonly string[])
     const name = sf.fileName.split("\\").join("/");
     if (name.includes("/node_modules/") || !/\.[mc]?tsx?$/.test(name)) continue;
     if (name.endsWith(".tsx")) continue; // JSX files: not projected yet
-    const text = sf.text;
     if (
       packages.some(
         (pkg) =>
-          text.includes(`"${pkg}"`) ||
-          text.includes(`'${pkg}'`) ||
-          text.includes(`"${pkg}/`) ||
-          text.includes(`'${pkg}/`),
+          ts.sourceTextIncludes(sf, `"${pkg}"`) ||
+          ts.sourceTextIncludes(sf, `'${pkg}'`) ||
+          ts.sourceTextIncludes(sf, `"${pkg}/`) ||
+          ts.sourceTextIncludes(sf, `'${pkg}/`),
       )
     )
       out.push(sf.fileName);
@@ -1738,7 +1736,7 @@ function splitRequireBindings7(
   if (cached !== undefined) return cached;
   const out = new Map<ts.VariableDeclaration, ts.CallExpression>();
   memo.set(sf, out);
-  if (sf.isDeclarationFile || !isCjsJsFile7(sf, program) || !sf.text.includes("require"))
+  if (sf.isDeclarationFile || !isCjsJsFile7(sf, program) || !ts.sourceTextIncludes(sf, "require"))
     return out;
   const checker = program.getTypeChecker();
   const stmts = sf.statements.nodes;
@@ -2714,19 +2712,6 @@ function inlineRequiresOf7(sf: ts.SourceFile): ts.CallExpression[] {
  * createRequire binding, or a binding the file declares itself. */
 export type RequireCallBindingKind7 = "ambient" | "createRequire" | "source";
 
-function stripRequireCasts7(expr: ts.Expression): ts.Expression {
-  let cur = expr;
-  while (
-    ts.isParenthesizedExpression(cur) ||
-    ts.isAsExpression(cur) ||
-    ts.isTypeAssertion(cur) ||
-    ts.isNonNullExpression(cur)
-  ) {
-    cur = cur.expression;
-  }
-  return cur;
-}
-
 /** The supported-builtin provenance of an imported identifier, narrowed to
  * the one member this preflight distinction needs. Mirrors the lowering's
  * builtinImportOf alias handling so a re-export facade remains supported. */
@@ -3130,14 +3115,14 @@ function exportedCreateRequireUseReason7(program: ts.Program, symbol: ts.Symbol)
 }
 
 function isCreateRequireBaseCall7(program: ts.Program, expr: ts.Expression): boolean {
-  const init = stripRequireCasts7(expr);
+  const init = withoutParenthesesAssertionsNonNull(expr);
   // `createRequire ? createRequire(import.meta.url) : undefined`: the
   // import binding is always a function, so the true arm is the value.
   // Only that polarity folds: with the arms swapped the binding is
   // undefined at run time.
   if (ts.isConditionalExpression(init)) {
-    const cond = stripRequireCasts7(init.condition);
-    const other = stripRequireCasts7(init.whenFalse);
+    const cond = withoutParenthesesAssertionsNonNull(init.condition);
+    const other = withoutParenthesesAssertionsNonNull(init.whenFalse);
     return (
       ts.isIdentifier(cond) &&
       isCreateRequireImport7(program, cond) &&
@@ -3154,7 +3139,7 @@ function isCreateRequireBaseCall7(program: ts.Program, expr: ts.Expression): boo
   ) {
     return false;
   }
-  const base = stripRequireCasts7(init.arguments.nodes[0]!);
+  const base = withoutParenthesesAssertionsNonNull(init.arguments.nodes[0]!);
   if (ts.isIdentifier(base) && base.text === "__filename") return !sourceBinding7(program, base);
   return (
     ts.isPropertyAccessExpression(base) &&
@@ -3300,7 +3285,7 @@ function npmStaticModuleImportReason7(
  * can mistake them for module syntax. */
 function requireCallBindingKind7(program: ts.Program, node: ts.Node): RequireCallBindingKind7 {
   const raw = ts.isVariableDeclaration(node) ? node.initializer : node;
-  const call = raw && ts.isExpression(raw) ? stripRequireCasts7(raw) : raw;
+  const call = raw && ts.isExpression(raw) ? withoutParenthesesAssertionsNonNull(raw) : raw;
   if (!call || !ts.isCallExpression(call) || !ts.isIdentifier(call.expression)) return "ambient";
   const checker = program.getTypeChecker();
   const symbol = checker.getSymbolAtLocation(call.expression);
@@ -5864,14 +5849,17 @@ function sameResolvedFile(a: string, b: string): boolean {
 /** A program file TypeScript's checker pulled in from a package the build
  * does not compile — unselected node_modules JavaScript, or an unselected
  * workspace package's shipped JavaScript at a realpath outside node_modules
- * (the symlinked-install shape): Node never loads it as program source. */
+ * (the symlinked-install shape): Node never loads it as program source. A
+ * workspace package whose bare import resolves to its TypeScript source
+ * compiles from source, and its JavaScript modules compile with it. */
 function unselectedPackageJsFilePredicate(entryFileName: string): (file: string) => boolean {
   const entryPackageFile = entryPackageFilePredicate(entryFileName);
   return (file) =>
     isJsSourceFileName(file) &&
     !entryPackageFile(file) &&
     npmStaticPackageOfPath(file) === null &&
-    (isNodeModulesPath(file) || workspacePackageOfPath(file) !== null);
+    (isNodeModulesPath(file) ||
+      (workspacePackageOfPath(file) !== null && !isWorkspaceSourcePath(file)));
 }
 
 /** Workspace-linked packages register before the tsc gate. Their files live
@@ -5905,8 +5893,11 @@ function registerWorkspaceEdges(load: LoadResult): void {
       if (probed.has(key)) return;
       probed.add(key);
       const r = resolveBareModule(fromFile, spec);
-      if (r !== null && r.workspaceDir !== undefined)
+      if (r !== null && r.workspaceDir !== undefined) {
         registerWorkspacePackage(r.packageName, r.workspaceDir);
+        if (resolveWorkspaceSourceModule(fromFile, spec) !== null)
+          registerWorkspaceSourcePackage(r.workspaceDir);
+      }
     };
     for (const sf of program.getImplementationSourceFiles()) {
       if (sf.isDeclarationFile || sf.fileName.endsWith(".json")) continue;
@@ -7001,7 +6992,7 @@ function preflightStructure7(load: LoadResult): PreflightStructure {
     reach(entry, startup);
     const covered = new Set<ts.SourceFile>();
     for (const sf of userFiles) {
-      if (!sf.text.includes("import")) continue;
+      if (!ts.sourceTextIncludes(sf, "import")) continue;
       for (const call of moduleSourceCandidates(program, sf).calls) {
         const arg = call.arguments.nodes[0];
         if (call.expression.kind !== ts.SyntaxKind.ImportKeyword || arg === undefined) continue;
@@ -7183,7 +7174,7 @@ function preflightGate7(load: LoadResult): PreflightGate {
     }
     if (names.size === 0) return false;
     const sf = p.getSourceFile(d.fileName);
-    return sf !== undefined && names.has(sf.text.slice(d.pos, d.end));
+    return sf !== undefined && names.has(ts.sourceTextRange(sf, d.pos, d.end));
   };
 
   const npmStaticFileSuppressed = (d: ts.Diagnostic): boolean =>
@@ -7218,26 +7209,9 @@ function preflightGate7(load: LoadResult): PreflightGate {
     const sf = p.getSourceFile(d.fileName);
     if (!sf) return false;
     if (insideBlockComment(sf.text, d.pos)) return true;
-    return d.code === 2300 && commentDup.has(`${d.fileName}:${sf.text.slice(d.pos, d.end)}`);
-  };
-
-  /* `typeof window` / `typeof self` in a JavaScript file: the operand of
-   * typeof may name a global nothing declares (Node answers "undefined"
-   * and never throws), the feature-detection idiom every isomorphic
-   * package uses, and the guarded uses of that name (`typeof window < "u"
-   * ? window : …`) are code Node never runs. A name the file feature-tests
-   * this way is therefore not a type error in JavaScript; a reached use
-   * still meets the lowering's located refusal. TypeScript files keep the
-   * error and its hint. */
-  const typeofTestedNameSuppressed = (p: ts.Program, d: ts.Diagnostic): boolean => {
-    if (d.code !== 2304 && d.code !== 2552 && d.code !== 2584) return false;
-    if (d.fileName === undefined || !isJsSourceFileName(d.fileName)) return false;
-    if (d.pos === undefined || d.end === undefined) return false;
-    const sf = p.getSourceFile(d.fileName);
-    if (!sf) return false;
-    const name = sf.text.slice(d.pos, d.end);
-    if (!/^[A-Za-z_$][\w$]*$/.test(name)) return false;
-    return new RegExp(`\\btypeof\\s*\\(?\\s*${name.replace(/\$/g, "\\$")}(?![\\w$])`).test(sf.text);
+    return (
+      d.code === 2300 && commentDup.has(`${d.fileName}:${ts.sourceTextRange(sf, d.pos, d.end)}`)
+    );
   };
 
   // A `return` at the top level of a CommonJS module (TS1108): Node runs
@@ -7255,7 +7229,7 @@ function preflightGate7(load: LoadResult): PreflightGate {
       return false;
     const sf = p.getSourceFile(d.fileName);
     if (!sf) return false;
-    const spec = sf.text.slice(d.pos, d.end).replace(/^['"]|['"]$/g, "");
+    const spec = ts.sourceTextRange(sf, d.pos, d.end).replace(/^['"]|['"]$/g, "");
     const prefix = spec.startsWith("@")
       ? spec.split("/").slice(0, 2).join("/")
       : spec.split("/")[0]!;
@@ -7341,7 +7315,6 @@ function preflightGate7(load: LoadResult): PreflightGate {
       (d.fileName === undefined || !isPackageShimFile(d.fileName)) &&
       !namespaceCalleeSuppressed(p, d) &&
       !workspaceImplicitAnySuppressed(p, d) &&
-      !typeofTestedNameSuppressed(p, d) &&
       !cjsTopLevelReturnSuppressed(p, d) &&
       !jsdocTypeSuppressed(p, d, commentDup);
     // Every filter except the opinion admission, in its historical order.
@@ -7404,7 +7377,9 @@ function preflightGate7(load: LoadResult): PreflightGate {
   // to (a factory whose signature does not accept them).
   const tscWorld = load.tscWorld;
   const tscErrors =
-    tscWorld === undefined ? errorsOf(program) : keptErrors(tscWorld.program, tscWorld.diagnostics);
+    tscWorld === undefined
+      ? errorsOf(program)
+      : keptErrors(tscWorld.program, tscWorld.diagnostics());
   if (tscErrors.length > 0) {
     const world =
       tscWorld === undefined || tscWorld.declWorldFallback === true

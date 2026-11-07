@@ -201,6 +201,7 @@ const ASYNC_CONTEXT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 const LEGACY_URL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "url.domainToASCII",
   "url.domainToUnicode",
+  "url.legacyClass",
   "url.legacyFormat",
   "url.legacyParse",
   "url.legacyResolve",
@@ -228,6 +229,9 @@ const REGEX_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fsp.globTypes",
   "path.matchesGlob",
   "path.win32MatchesGlob",
+  // `slice.index` / `slice.input` on a match-slice-typed value reads the
+  // match source through scr_regex_result_prop.
+  "regex.resultProp",
   "regexp.escape",
   "rl.cursorPos",
   "rl.keypressStdin",
@@ -357,6 +361,22 @@ const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 /** libCall name prefixes of the Readable entry points that await through the dyn-async unit. */
 const READABLE_DYN_ASYNC_PREFIXES: readonly string[] = ["readable.fromGen", "readable.op"];
 
+/** The keyed-collection entry points of scr_dyn_collections.c: the
+ * %Set.prototype%/%Map.prototype%/weak-collection prototypes, their member
+ * values, the constructors' adder lookup and the ES2025 Set compositions.
+ * The unit delegates prototype members through the dyn-invoke unit and
+ * interns Symbol.iterator/Symbol.toStringTag through the symbol unit, so
+ * every rule that selects this unit also selects those two. */
+const DYN_COLLECTION_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "dyn.collectionMethod",
+  "dyn.collectionPrototype",
+  "dyn.collectionGetPrototype",
+  "dyn.setCombine",
+  "dyn.collectionForEach",
+  "dyn.collectionConstruct",
+  "dyn.setValues",
+]);
+
 /** Entry points that link the dyn-invoke unit. */
 const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.arrayProtoCall",
@@ -389,6 +409,7 @@ const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.dynNativePipe",
   "stream.pipeDyn",
   "stream.unpipeDyn",
+  ...DYN_COLLECTION_LIB_FNS,
 ]);
 
 /** Member names whose constant-key dynamic reads answer the inherited Object.prototype member through the dyn-invoke unit. Mirrors expr-dynamic.ts INHERITED_OBJECT_MEMBERS (the IR layer does not import the backend). */
@@ -485,6 +506,7 @@ const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "buffer.constructor",
   "buffer.staticValue",
   "buffer.prototypeMember",
+  ...DYN_COLLECTION_LIB_FNS,
   "buffer.prototypeObject",
   // The array-like unit reads a receiver's @@isConcatSpreadable through
   // scr_sym_well_known before it spreads that receiver's elements.
@@ -1146,14 +1168,18 @@ function moduleWritesSparseIndex(mod: IrModule): boolean {
   return sparse;
 }
 
-/** The typed file reads that answer a ScrBytes: Node answers a Buffer, and
- * scr_lib.c's read entries brand it, so a typed read makes a Buffer value. */
+/** The typed reads that answer a ScrBytes: Node answers a Buffer, and
+ * scr_lib.c's read entries brand it, so a typed read makes a Buffer value.
+ * A spawnSync capture (spawnRes.stdoutBytes/stderrBytes) arrives from
+ * scr_child_capture.c, whose accessors stamp the same brand. */
 const FS_READ_BYTES_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "fs.readFileSyncBuf",
   "fs.readFileSyncBytes",
   "fs.readFdSyncBytes",
   "fsp.readFileBytes",
   "fileHandle.readFileBytes",
+  "spawnRes.stdoutBytes",
+  "spawnRes.stderrBytes",
 ]);
 
 /** The entries that need the JavaScript object model build (t262-da §J):
@@ -1170,6 +1196,21 @@ export const JS_OBJECT_MODEL_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "arrayBuffer.armMutable",
 ]);
 
+/** The member name Object.prototype answers as an accessor (protoAccessor):
+ * a dynamic read (`dynKeyGet`) or a dynamic key write names it. */
+export function isProtoKeyLiteral(node: IrExpr): boolean {
+  return node.kind === "strLit" && node.value === "__proto__";
+}
+
+/** The dynamic key operations whose member-name argument reaches the write
+ * path (dyn.keySet, and the bag entries a JavaScript source's object
+ * literals use). */
+const PROTO_KEY_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  "dyn.bagGet",
+  "dyn.bagSet",
+  "dyn.keySet",
+]);
+
 /** The JavaScript object model build's program facts (t262-da §J): every
  * runtime feature that shares the one SCR_JS_OBJECT_MODEL build ORs in here
  * (BigInt views today, array attributes and handle property tables next), so
@@ -1180,6 +1221,7 @@ export function jsObjectModelFact(features: {
   bigintBytes?: boolean;
   handleProps?: boolean;
   mutableBuffers?: boolean;
+  protoAccessor?: boolean;
   sparseArrays?: boolean;
 }): boolean {
   return (
@@ -1187,6 +1229,7 @@ export function jsObjectModelFact(features: {
     features.bigintBytes === true ||
     features.handleProps === true ||
     features.mutableBuffers === true ||
+    features.protoAccessor === true ||
     features.sparseArrays === true
   );
 }
@@ -1239,6 +1282,14 @@ const RUNTIME_FEATURE_RULES = {
    * object, byte for byte. */
   childOptionExt: rule({
     fns: ["cp.spawnSyncExt", "cp.spawnSyncExtEnv", "cp.execFileCwd"],
+  }),
+  /** A spawnSync capture read as a Buffer (spawnSync without an encoding
+   * option): scr_child_capture.c, a unit of its own so a program that never
+   * reads a capture keeps scr_child.c's layout — the memo's thread-local
+   * state and its functions would otherwise move every symbol the linker
+   * lays out after them. */
+  spawnCaptureBytes: rule({
+    fns: ["spawnRes.stdoutBytes", "spawnRes.stderrBytes"],
   }),
   /** The spawnSync result's `.error` property answers Node's
    * errnoException fields (errno, syscall, path, spawnargs). The fields
@@ -1412,15 +1463,35 @@ const RUNTIME_FEATURE_RULES = {
   typeOrigins: rule({ initial: (mod) => (mod.declOrigins?.length ?? 0) > 0 }),
   /** for await over checked-dynamic values (scr_dyn_for_await.c). */
   dynForAwait: rule({ fns: ["dyn.asyncIteratorOpen", "dyn.asyncIteratorWasSync"] }),
+  /** A keyed collection's prototype as a value, Map.prototype's members,
+   * the constructors' adder lookup and the ES2025 Set compositions over a
+   * set-like (scr_dyn_collections.c). The unit calls into the dyn-invoke
+   * unit for prototype members and the symbol unit for Symbol.iterator and
+   * Symbol.toStringTag, so each of those rules lists these entry points
+   * too. */
+  dynCollections: rule({ fns: [...DYN_COLLECTION_LIB_FNS] }),
   /** Object.isExtensible and Object.isSealed of a value typed dynamically
    * (scr_dyn_integrity.c, a unit of its own so scr_json.c keeps its layout). */
   dynIntegrityQueries: rule({ fns: ["dyn.isExtensibleQuery", "dyn.isSealedQuery"] }),
+  /** Reflect.getPrototypeOf's primitive-target check (scr_dyn_reflect_proto.c,
+   * a unit of its own so scr_json.c keeps its layout). */
+  reflectProtoTarget: rule({ fns: ["dyn.reflectGetPrototypeTarget"] }),
+  /** `delete` of a key a record's type does not declare, removed from the
+   * record's kept source (scr_record_source_delete.c, a unit of its own so
+   * scr_json.c keeps its layout). */
+  recordSourceDelete: rule({ fns: ["record.sourceDelete"] }),
   /** A generator that binds its parameters at the call (scr_gen_bind.c):
    * the spawn wrapper's eager step imports the bind helper, and every other
    * program links the default runtime objects. */
   genBind: rule({
     initial: (mod) => mod.functions.some((fn) => fn.generator?.bindAtCall === true),
   }),
+  /** A generator function reads `this` (dyn.generatorThis): its body runs
+   * on the generator's fiber after the call returned, so the program's
+   * spawn wrappers record the call's receiver (scr_gen_capture_receiver).
+   * A program without the read records none: its generators take no
+   * dynamic value. */
+  genReceiver: rule({ fns: ["dyn.generatorThis"] }),
   /** Buffer.prototype methods called on checked-dynamic values
    * (scr_bytes_dyn.c). */
   dynBuffer: rule({
@@ -1502,6 +1573,11 @@ const RUNTIME_FEATURE_RULES = {
   mime: rule({ prefixes: ["mime."] }),
   /** Web streams in checked-dynamic code (scr_webstreams.c). */
   webStreams: rule({ prefixes: ["webstream."] }),
+  /** A program that builds a Blob or File can hand one to fetch: selects
+   * scr_fetch.c's SCR_WEB_BODIES build, which sends the blob's bytes and
+   * type as Node does. Every other program keeps the default fetch unit,
+   * byte for byte. */
+  webBodies: rule({ prefixes: ["blob."] }),
   /** AbortController and AbortSignal (scr_abort.c, or the fetch unit).
    * A WritableStream controller's signal is one (scr_webstreams.c). */
   abortSignal: rule({ prefixes: ["abort.", "webstream."] }),
@@ -1675,10 +1751,11 @@ const RUNTIME_FEATURE_RULES = {
     prefixes: STREAM_LIB_PREFIXES,
   }),
   /** A Dirent row converted to dyn carries Node's Symbol(type) key
-   * (scr_dyn_dirent_finish, defined in scr_symbol.c). */
+   * (scr_dyn_dirent_finish, defined in scr_symbol.c), and a callback read
+   * builds its Dirent there. */
   symbol: rule({
     initial: (mod) => (mod.records ?? []).some(isDirentShape),
-    fns: [...SYMBOL_LIB_FNS],
+    fns: [...SYMBOL_LIB_FNS, "dir.readCb"],
     // %Iterator.prototype% (scr_js_iterator.c) defines its Symbol.iterator,
     // Symbol.toStringTag and Symbol.dispose members with the well-known
     // symbols scr_sym_well_known makes.
@@ -1782,6 +1859,22 @@ const RUNTIME_FEATURE_RULES = {
   primitiveWrapper: rule({ prefixes: ["wrapper."], fns: ["dyn.builtinPrototype"] }),
   /** %Iterator% and %Iterator.prototype% as values (scr_js_iterator.c). */
   iteratorProto: rule({ prefixes: ["iterator."] }),
+  /** A JavaScript source reads or writes the member named `__proto__` by
+   * that literal name on a dynamic value, or builds a literal member with
+   * that name: Object.prototype's accessor answers the read with the
+   * receiver's [[Prototype]] and the write by replacing it, while a literal
+   * member is a property definition, both of which the object model build
+   * models (scr_json.c, expr-dynamic.ts). The fact ORs into jsObjectModel
+   * (jsObjectModelFact), so a program that names the member links that one
+   * build; every other program keeps the default object, byte for byte. */
+  protoAccessor: rule({
+    expr: (node) =>
+      (node.kind === "dynKeyGet" && isProtoKeyLiteral(node.key)) ||
+      (node.kind === "dynObjLit" &&
+        (node.fields ?? []).some((field) => isProtoKeyLiteral(field.key))),
+    libCall: (node) =>
+      PROTO_KEY_LIB_FNS.has(node.fn) && node.args.some((arg) => isProtoKeyLiteral(arg)),
+  }),
   /** The WebAssembly API (scr_wasm.c). */
   wasm: rule({ prefixes: ["wasm."] }),
   /** crypto.subtle importKey/sign/verify/digest and CryptoKey:
@@ -1825,6 +1918,14 @@ const RUNTIME_FEATURE_RULES = {
       "fsp.copyFileFlags",
       "fsp.writeFileFlags",
     ],
+  }),
+  /** The BYTE-data spellings of the options write and of
+   * fs.promises.writeFile: scr_fs_bytes_write.c, so a program that writes no
+   * byte payload keeps scr_fs_flags.c's and scr_bytes_io.c's objects byte
+   * for byte. The unit carries its own static copy of scr_fs_flags.c's
+   * mode validation, so it links alone. */
+  fsBytesWrites: rule({
+    fns: ["fs.writeFileSyncBytesFlags", "fsp.writeFileBytes", "fsp.writeFileBytesFlags"],
   }),
   /** string_decoder's checked-dynamic chunk forms (a stream "data" payload):
    * scr_bytes_strdec_dyn.c. */
@@ -1894,6 +1995,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     fetch: false,
     fileHandle: false,
     fsFlags: false,
+    fsBytesWrites: false,
     fsWatch: false,
     fsWatchFile: false,
     genBind: false,
@@ -1905,6 +2007,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     mutableBuffers: false,
     legacyTextDecoder: false,
     mime: false,
+    webBodies: false,
     webStreams: false,
     abortSignal: false,
     utilTiming: false,
@@ -1930,19 +2033,25 @@ function noRuntimeFeatures(): RuntimeFeatures {
     moduleNamespaceDyn: false,
     primitiveWrapper: false,
     iteratorProto: false,
+    protoAccessor: false,
     stream: false,
     strdecDyn: false,
     streamDyn: false,
     handleProps: false,
     childLifecycle: false,
     childOptionExt: false,
+    spawnCaptureBytes: false,
     childErrorFields: false,
     declAdopt: false,
     typeOrigins: false,
     dynForAwait: false,
+    dynCollections: false,
     dynIntegrityQueries: false,
+    reflectProtoTarget: false,
+    recordSourceDelete: false,
     dynBuffer: false,
     dynBufferMembers: false,
+    genReceiver: false,
     bufferPrototypeObject: false,
     builtinValues: false,
     computedRequire: false,

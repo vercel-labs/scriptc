@@ -136,6 +136,7 @@ export const DYN_HANDLE_TAG_NUM: Record<string, number> = {
   child: 16,
   fileHandle: 17,
   dir: 44,
+  spawnRes: 99,
   dgramSocket: 62,
   cryptoHash: 52,
   cryptoHmac: 53,
@@ -161,6 +162,7 @@ const DYN_HANDLE_BOX_FN: Record<string, string> = {
   cryptoHash: "scr_crypto_hash_to_dyn",
   cryptoHmac: "scr_crypto_hash_to_dyn",
   dgramSocket: "scr_dgram_to_dyn",
+  spawnRes: "scr_spawn_res_to_dyn",
 };
 
 /** Handle kinds whose box holds a unit-owned wrapper rather than the
@@ -222,6 +224,8 @@ export interface DynHost extends WalkerHost {
   readonly programLifetime?: ReadonlySet<string>;
   /** The immortal ABSENT field-slot state of an undefined-armed union. */
   absentInstanceRef(unionId: string): string;
+  /** The optional checked-dynamic field slot's ABSENT marker. */
+  dynAbsentRef(): string;
   /** The shared adapter record: live array capsules read its `arrayOps`, so a
    * narrower return type would hand the native compiler a copy without it. */
   liveDynRefAdapter(t: IrType): LlStreamTypedRefAdapter;
@@ -249,6 +253,9 @@ export interface DynHost extends WalkerHost {
   /** The entry point and JavaScript name of each named function the module
    * makes closures of (LlEmitter.closureNames). */
   closureNames?(): readonly { entry: string; name: string }[];
+  /** The module's mutable globals are per thread (a Worker program or a
+   * thread-instanced library), so the state a helper keeps is too. */
+  threadLocalState?: boolean;
 }
 
 /** A closure with a jsval body (IrFunction.jsEntry), for the box builders. */
@@ -991,6 +998,66 @@ export class LlDyn {
     return lSkip;
   }
 
+  /** Branches past the caller's next emission when an optional
+   * checked-dynamic field value is the ABSENT marker. Returns the label
+   * the caller must branch to and start after its emission, or null when
+   * the field is not an absentable dyn slot. */
+  private skipIfDynAbsent(
+    B: BlockBuilder,
+    value: string,
+    optional: boolean | undefined,
+    t: IrType,
+  ): string | null {
+    if (optional !== true || t.kind !== "dyn") return null;
+    const absent = B.tmp();
+    B.line(`${absent} = icmp eq ptr ${value}, ${this.host.dynAbsentRef()}`);
+    const lSkip = B.newLabel("tdr.absent");
+    const lSet = B.newLabel("tdr.set");
+    B.condBr(absent, lSkip, lSet);
+    B.startBlock(lSet);
+    return lSkip;
+  }
+
+  /** A checked dyn field value, or the field's ABSENT marker when the
+   * source object has no own property of that name (a missing JSON key
+   * stays missing; an explicit undefined stays present). Proxy sources
+   * answer through their reads, so they count as present. The checked value
+   * arrives +1: the missing branch hands it back (the immortal marker takes
+   * its slot), the present branch leaves it to the field write. */
+  private dynPresenceOf(B: BlockBuilder, d: string, key: string, value: string): string {
+    // Only an undefined value can stand for a missing key: every other
+    // value is present, and probing for it would read as absent for an
+    // own accessor property (a getter has no data entry).
+    const isUndef = B.tmp();
+    B.line(`${isUndef} = icmp eq i32 ${this.kindOf(B, value)}, ${DYN_KIND.UNDEF}`);
+    const kind = this.kindOf(B, d);
+    const isObj = B.tmp();
+    B.line(`${isObj} = icmp eq i32 ${kind}, ${DYN_KIND.OBJ}`);
+    const probe = B.tmp();
+    B.line(`${probe} = and i1 ${isUndef}, ${isObj}`);
+    const slot = B.slot();
+    B.entryAllocas.push(`${slot} = alloca ptr`);
+    B.line(`store ptr ${value}, ptr ${slot}`);
+    const lProbe = B.newLabel("dcr.dhas");
+    const lJoin = B.newLabel("dcr.dhasj");
+    B.condBr(probe, lProbe, lJoin);
+    B.startBlock(lProbe);
+    const own = this.objGetLit(B, d, key);
+    const missing = B.tmp();
+    B.line(`${missing} = icmp eq ptr ${own}, null`);
+    const lMissing = B.newLabel("dcr.dmiss");
+    B.condBr(missing, lMissing, lJoin);
+    B.startBlock(lMissing);
+    this.host.declare(`declare void @scr_dyn_release(ptr)`);
+    B.line(`call void @scr_dyn_release(ptr ${value})`);
+    B.line(`store ptr ${this.host.dynAbsentRef()}, ptr ${slot}`);
+    B.br(lJoin);
+    B.startBlock(lJoin);
+    const out = B.tmp();
+    B.line(`${out} = load ptr, ptr ${slot}`);
+    return out;
+  }
+
   /** A checked undefined-armed field value, or the field's ABSENT state
    * when the value is undefined because the source object has no own
    * property of that name (a missing JSON key stays missing; an explicit
@@ -1672,7 +1739,12 @@ export class LlDyn {
       }
       default: {
         const h = DYN_HANDLE_KINDS.get(t.kind);
-        if (!h) throw new LlvmUnsupportedError(`dynMatch:${t.kind}`);
+        if (!h)
+          throw new LlvmUnsupportedError(
+            `dynMatch:${t.kind}`,
+            undefined,
+            `a checked-dynamic value tested against type ${typeKey(t)}`,
+          );
         const kd = this.kindOf(B, "%d");
         const isHandle = B.tmp();
         B.line(`${isHandle} = icmp eq i32 ${kd}, ${DYN_KIND.HANDLE}`);
@@ -2872,6 +2944,10 @@ export class LlDyn {
           if (f.type.kind === "union") {
             const stored = this.presenceOf(B, "%d", f.name, f.type, value);
             if (stored !== value) storeInto(f.name, f.type, stored);
+          } else if (f.optional === true && f.type.kind === "dyn") {
+            // A missing key stores the ABSENT marker; a present undefined
+            // keeps the dyn undefined the read produced.
+            storeInto(f.name, f.type, this.dynPresenceOf(B, "%d", f.name, value));
           }
           releaseInline(f.type, value);
         }
@@ -3374,7 +3450,7 @@ export class LlDyn {
           B.terminate(`ret ptr ${r}`);
           break;
         }
-        throw new LlvmUnsupportedError(`type:${t.kind}`);
+        throw new LlvmUnsupportedError(`type:${t.kind}`, undefined, `type ${typeKey(t)}`);
       }
     }
     this.defs.push(
@@ -3751,7 +3827,7 @@ export class LlDyn {
                   return slot === null ? [] : [slot.prop];
                 }),
           );
-          type DynField = { name: string; type: IrType } | { accessor: string };
+          type DynField = { name: string; type: IrType; optional?: true } | { accessor: string };
           const dynFields: DynField[] = [
             ...order.flatMap((n) => {
               if (accessors.has(n)) return [{ accessor: n } as DynField];
@@ -3791,7 +3867,10 @@ export class LlDyn {
             const klen = Buffer.byteLength(f.name, "utf8");
             const fv = loadFieldOf(f.name, f.type);
             // An ABSENT optional field contributes no key.
-            const lSkip = f.type.kind === "union" ? this.skipIfAbsent(B, fv, f.type) : null;
+            const lSkip =
+              f.type.kind === "union"
+                ? this.skipIfAbsent(B, fv, f.type)
+                : this.skipIfDynAbsent(B, fv, f.optional, f.type);
             const conv = B.tmp();
             B.line(`${conv} = call ptr @${this.toDynHelper(f.type)}(${this.valTy(f.type)} ${fv})`);
             B.line(
@@ -4092,7 +4171,7 @@ export class LlDyn {
           B.terminate(`ret ptr ${r}`);
           break;
         }
-        throw new LlvmUnsupportedError(`type:${t.kind}`);
+        throw new LlvmUnsupportedError(`type:${t.kind}`, undefined, `type ${typeKey(t)}`);
       }
     }
     this.defs.push(
@@ -5754,9 +5833,15 @@ export class LlDyn {
 
   private closureNames: { symbol: string; count: number } | null | undefined;
 
-  /** The module's closure-name lookup (`sc_closure_name(closure)`, over a
-   * table of `{ ptr entry, ptr name }` pairs), defined on first use; null
-   * when no named function becomes a closure. */
+  /** The module's closure-name lookup, `sc_closure_name(closure)`: a
+   * binary search of a table of `{ ptr entry, ptr name }` rows for the
+   * closure's entry point (an adapter's root's, ScrClosure.identity), null
+   * when it has no row. Entry addresses are link-time values, so the
+   * lookup's first call sorts the rows by address; every call then costs
+   * the same few compares whether or not the closure has a name, however
+   * many named functions the module has. The rows are distinct functions,
+   * so no two keys are equal. Defined on first use; null when no named
+   * function becomes a closure. */
   private closureNameTable(): { symbol: string; count: number } | null {
     if (this.closureNames !== undefined) return this.closureNames;
     const entries = this.host.closureNames?.() ?? [];
@@ -5764,13 +5849,38 @@ export class LlDyn {
     const host = this.host;
     const S = host.sizeType;
     const table = "sc_closure_names";
+    const sorted = "sc_closure_names_sorted";
     const symbol = "sc_closure_name";
-    // The closure's entry point (an adapter's root's, ScrClosure.identity)
-    // compared with each entry; null when none matches.
+    const count = entries.length;
+    const rows = `[${count} x { ptr, ptr }]`;
+    // The table and its run-once guard are module state: per thread where
+    // the module's globals are, so no thread reads rows another is sorting.
+    const storage = host.threadLocalState === true ? "thread_local " : "";
+    host.declare(`declare void @qsort(ptr, ${S}, ${S}, ptr)`);
     this.defs.push(
-      `@${table} = internal constant [${entries.length} x { ptr, ptr }] [${entries
+      `@${table} = internal ${storage}global ${rows} [${entries
         .map((e) => `{ ptr, ptr } { ptr @${e.entry}, ptr ${host.cstr(e.name)} }`)
         .join(", ")}]`,
+      `@${sorted} = internal ${storage}global i1 false`,
+      ``,
+      `define internal i32 @${symbol}_order(ptr %a, ptr %b) ${FN_ATTRS} { ; orders two closure-name rows by entry address`,
+      `entry:`,
+      `  %x = load ptr, ptr %a`,
+      `  %y = load ptr, ptr %b`,
+      `  %above = icmp ugt ptr %x, %y`,
+      `  %below = icmp ult ptr %x, %y`,
+      `  %up = zext i1 %above to i32`,
+      `  %down = zext i1 %below to i32`,
+      `  %order = sub i32 %up, %down`,
+      `  ret i32 %order`,
+      `}`,
+      ``,
+      `define internal void @${table}_sort() cold noinline ${FN_ATTRS} { ; sorts the closure-name rows by entry address, once`,
+      `entry:`,
+      `  call void @qsort(ptr @${table}, ${S} ${count}, ${S} ptrtoint (ptr getelementptr ({ ptr, ptr }, ptr null, i32 1) to ${S}), ptr @${symbol}_order)`,
+      `  store i1 true, ptr @${sorted}`,
+      `  ret void`,
+      `}`,
       ``,
       `define internal ptr @${symbol}(ptr %v) ${FN_ATTRS} { ; the JavaScript name of a closure's function`,
       `entry:`,
@@ -5780,21 +5890,31 @@ export class LlDyn {
       `  %root = select i1 %own, ptr %v, ptr %id`,
       `  %fnp = getelementptr inbounds %ScrClosure, ptr %root, i64 0, i32 1`,
       `  %fn = load ptr, ptr %fnp`,
+      `  %ready = load i1, ptr @${sorted}`,
+      `  br i1 %ready, label %loop, label %sort`,
+      `sort:`,
+      `  call void @${table}_sort()`,
       `  br label %loop`,
+      // The last row at or below the entry is in [%lo, %lo + %n).
       `loop:`,
-      `  %i = phi ${S} [ 0, %entry ], [ %next, %step ]`,
-      `  %done = icmp eq ${S} %i, ${entries.length}`,
-      `  br i1 %done, label %none, label %test`,
+      `  %lo = phi ${S} [ 0, %entry ], [ 0, %sort ], [ %at, %loop ]`,
+      `  %n = phi ${S} [ ${count}, %entry ], [ ${count}, %sort ], [ %rest, %loop ]`,
+      `  %half = lshr ${S} %n, 1`,
+      `  %mid = add ${S} %lo, %half`,
+      `  %mp = getelementptr inbounds ${rows}, ptr @${table}, i64 0, ${S} %mid, i32 0`,
+      `  %m = load ptr, ptr %mp`,
+      `  %le = icmp ule ptr %m, %fn`,
+      `  %at = select i1 %le, ${S} %mid, ${S} %lo`,
+      `  %rest = sub ${S} %n, %half`,
+      `  %more = icmp ugt ${S} %rest, 1`,
+      `  br i1 %more, label %loop, label %test`,
       `test:`,
-      `  %ep = getelementptr inbounds [${entries.length} x { ptr, ptr }], ptr @${table}, i64 0, ${S} %i, i32 0`,
+      `  %ep = getelementptr inbounds ${rows}, ptr @${table}, i64 0, ${S} %at, i32 0`,
       `  %e = load ptr, ptr %ep`,
       `  %hit = icmp eq ptr %e, %fn`,
-      `  br i1 %hit, label %found, label %step`,
-      `step:`,
-      `  %next = add ${S} %i, 1`,
-      `  br label %loop`,
+      `  br i1 %hit, label %found, label %none`,
       `found:`,
-      `  %np = getelementptr inbounds [${entries.length} x { ptr, ptr }], ptr @${table}, i64 0, ${S} %i, i32 1`,
+      `  %np = getelementptr inbounds ${rows}, ptr @${table}, i64 0, ${S} %at, i32 1`,
       `  %name = load ptr, ptr %np`,
       `  ret ptr %name`,
       `none:`,
@@ -5802,7 +5922,7 @@ export class LlDyn {
       `}`,
       ``,
     );
-    return (this.closureNames = { symbol, count: entries.length });
+    return (this.closureNames = { symbol, count });
   }
 
   private readonly unnamedFuncBoxes = new Map<string, string>();
@@ -6234,6 +6354,11 @@ export class LlDyn {
     let argsPtr = "null";
     const argVals: string[] = [];
     const checkedRest = t.rest === true && t.restAbi === undefined;
+    // Typed rest: one trailing native array in the closure ABI. The adapter
+    // packs the fixed arguments, then spreads the array's elements into the
+    // same dyn argument vector (each element converted), so the callee sees
+    // the ordinary variadic call.
+    const typedRest = t.rest === true && t.restAbi === "typed";
     let packed: string | null = null;
     if (checkedRest) {
       host.declare(`declare ptr @scr_dyn_apply(ptr, ptr, ptr)`);
@@ -6255,6 +6380,26 @@ export class LlDyn {
         );
         B.line(`call void @scr_dyn_release(ptr %rest)`);
       }
+    } else if (typedRest) {
+      host.declare(`declare ptr @scr_dyn_apply(ptr, ptr, ptr)`);
+      host.declare(`declare ptr @scr_dyn_new_arr()`);
+      host.declare(`declare void @scr_dyn_arr_push(ptr, ptr)`);
+      host.declare(`declare void @scr_dyn_arr_push_spread(ptr, ptr, ptr)`);
+      packed = B.tmp();
+      B.line(`${packed} = call ptr @scr_dyn_new_arr()`);
+      const restT = t.params.at(-1)!;
+      t.params.slice(0, -1).forEach((p, i) => {
+        const v = this.toDynExpr(B, p, `%a${i}`);
+        B.line(`call void @scr_dyn_arr_push(ptr ${packed}, ptr ${v})`);
+        if (isRefCounted(p)) B.line(`call void ${releaseSym(host, p)}(ptr %a${i})`);
+      });
+      const restIdx = t.params.length - 1;
+      const spread = this.toDynExpr(B, restT, `%a${restIdx}`);
+      B.line(
+        `call void @scr_dyn_arr_push_spread(ptr ${packed}, ptr ${spread}, ptr ${host.cstr("")})`,
+      );
+      B.line(`call void @scr_dyn_release(ptr ${spread})`);
+      if (isRefCounted(restT)) B.line(`call void ${releaseSym(host, restT)}(ptr %a${restIdx})`);
     } else if (t.params.length > 0) {
       const arr = B.slot();
       B.entryAllocas.push(`${arr} = alloca [${t.params.length} x ptr]`);

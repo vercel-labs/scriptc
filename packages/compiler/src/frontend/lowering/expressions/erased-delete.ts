@@ -17,18 +17,12 @@
  * (also exactly Node). The static type decides before lowering, so an
  * operand with side effects is lowered exactly once. */
 import * as ts from "../../ts7/adapter.js";
-import {
-  BOOL,
-  STRING,
-  type IrExpr,
-  type IrStmt,
-  type IrType,
-  type SrcLoc,
-} from "../../../ir/ir.js";
+import { BOOL, STRING, type IrExpr, type IrStmt, type SrcLoc } from "../../../ir/ir.js";
 import { locOf } from "../../program.js";
-import { constituentTypes } from "../../ts7/checker.js";
 import type { Lowerer } from "../lowerer.js";
 import { markSloppyRecordWrites } from "../frozen-records.js";
+import { recordMayKeepSource } from "../record-sources.js";
+import { isStrictCode } from "../strict-mode.js";
 import { isPureReference } from "../effect-free.js";
 import { isSafeToRepeat } from "./evaluation-safety.js";
 import { literalFieldKeys } from "./keyed-field-targets.js";
@@ -106,11 +100,6 @@ export function lowerDeleteComputedKey(lowerer: Lowerer, keyNode: ts.Expression)
   return key;
 }
 
-/** The refusal for `delete` of an optional `unknown`/`any` field, whose
- * slot is the checked-dynamic one and so has no ABSENT state to write. */
-export const OPTIONAL_CHECKED_DYN_DELETE =
-  "'delete' of optional 'unknown'/'any' fields (the checked-dynamic slot has no absent state yet — an omitted such field already reads as present)";
-
 /** The constant member a delete through an assertion names. */
 const MISSING_ASSERTED_MEMBER = (member: string): string =>
   `'delete' of '${member}' through a type assertion to a member the value's own layout does not hold (Node erases the assertion and deletes from the operand; the asserted view's conversion would build a copy, so the delete would land on the temporary and disappear — declare the member on the value's type instead)`;
@@ -149,7 +138,12 @@ export function erasedDeletePlan(
   const held =
     (shape.indexValue !== undefined && shape.fields.length === 0 && !shape.tuple) ||
     member === null ||
-    (!shape.tuple && shape.fields.some((field) => field.name === member));
+    (!shape.tuple && shape.fields.some((field) => field.name === member)) ||
+    // A checked record can hold a key its own type does not declare in the
+    // kept source it notes from the value it was converted from
+    // (record-sources.ts): the delete addresses the operand and removes the
+    // key there, exactly as Node deletes the property from the one object.
+    recordMayKeepSource(lowerer, staticType);
   return held ? { operand } : { refuse: MISSING_ASSERTED_MEMBER(member) };
 }
 
@@ -301,7 +295,7 @@ function recordDeletePlan(
       ? shape?.fields.find((f) => f.name === constantKey)
       : undefined;
   if (field) {
-    const absent = lowerer.absentFieldValue(field.type, loc);
+    const absent = lowerer.absentFieldValue(field, loc);
     if (absent) {
       const stmt = markSloppyRecordWrites(
         lowerer,
@@ -332,17 +326,6 @@ function recordDeletePlan(
       "'delete' of hybrid index-signature keys (declared struct slots and overflow entries answer differently — model deletable dynamic keys with a pure Record<string, T>)",
     );
   }
-  // An OPTIONAL `unknown`/`any` field rides the checked-dynamic slot,
-  // which has no ABSENT state yet (an omitted such field already reads as
-  // present), so it cannot delete. Name that reason instead of calling
-  // the field required or blaming the receiver.
-  if (
-    constantKey !== null &&
-    declaresCheckedDynField(lowerer, obj.type, constantKey) &&
-    declaredOptionalProperty(lowerer, target.expression, constantKey)
-  ) {
-    lowerer.unsupported("SC1090", expr, OPTIONAL_CHECKED_DYN_DELETE);
-  }
   // A key of SEVERAL literals names no single slot: say that instead of
   // blaming a field the caller never named.
   const keyNames =
@@ -356,42 +339,73 @@ function recordDeletePlan(
       `'delete' through keys of ${keyNames.length} literals (${keyNames.map((k) => `'${k}'`).join(", ")}; delete one constant key at a time, or switch over the key)`,
     );
   }
+  // A constant key the shape does not DECLARE lives in the record's kept
+  // source (the undeclared-keys table, record-sources.ts): Node's object
+  // still has that own property, so the delete removes it there, and every
+  // reflective surface — Object.keys, `in`, hasOwn, JSON, spread, inspect —
+  // already answers from that table. A key the table never held is already
+  // absent, so the delete answers true and changes nothing. A frozen record
+  // keeps the key (sloppy code answers false) or refuses the delete
+  // (strict code throws), which the runtime call decides from the delete's
+  // own mode.
+  if (
+    constantKey !== null &&
+    field === undefined &&
+    !shape?.indexValue &&
+    recordMayKeepSource(lowerer, obj.type)
+  ) {
+    const deleted: IrExpr = {
+      kind: "libCall",
+      fn: "record.sourceDelete",
+      args: [
+        obj,
+        { kind: "strLit", value: constantKey, type: STRING, loc },
+        { kind: "boolLit", value: isStrictCode(expr), type: BOOL, loc },
+      ],
+      type: BOOL,
+      loc,
+    };
+    lowerer.recordSourcesPossible = true;
+    // The key must live in this record's own kept source. A value that is a
+    // view or a copy of a record declaring the key holds it in that record's
+    // slot instead, which this delete cannot reach: refused once every
+    // conversion is known (refuseSourceFieldDeletes).
+    lowerer.recordSourceDeletes.push({ shapeId: obj.type.shapeId, key: constantKey, loc });
+    if (!withPresent) return { stmt: { kind: "exprStmt", expr: deleted, loc }, present: null };
+    // `delete` in value position: the call answers whether the property is
+    // gone, which IS the delete's value, so it is held once and the
+    // caller's `!present` reads it.
+    const slot = lowerer.declareHiddenLocal("%sourceDeleted", BOOL);
+    return {
+      stmt: { kind: "varDecl", localId: slot.id, init: deleted, loc },
+      present: {
+        kind: "unary",
+        op: "!",
+        operand: { kind: "varRef", localId: slot.id, type: BOOL, loc },
+        type: BOOL,
+        loc,
+      },
+    };
+  }
+  // A declared field with no absent state: the type says it is always
+  // there, so no delete can remove it without making the type lie.
+  if (field !== undefined) {
+    lowerer.unsupported(
+      "SC1090",
+      expr,
+      `'delete' of '${field.name}': the operand's type '${lowerer.fmt(obj.type)}' declares '${field.name}' required, so it cannot be absent (only an optional field, 'f?: T', has an absent state that Object.keys, 'in' and JSON.stringify follow; make '${field.name}' optional if the program must remove it)`,
+    );
+  }
+  if (constantKey !== null && !shape?.indexValue) {
+    lowerer.unsupported(
+      "SC1090",
+      expr,
+      `'delete' of a key '${constantKey}' the record's layout does not declare (only an optional declared field, an index-signature key, or an undeclared key a checked record keeps from its source can be removed)`,
+    );
+  }
   lowerer.unsupported(
     "SC1090",
     expr,
     "'delete' of required record fields (the shape's slot cannot be removed — only an optional field (`f?: T`) has an absent state, which Object.keys, 'in', and JSON.stringify follow; make the field optional if the program must remove it)",
   );
-}
-
-/** TypeScript's declaration marks property `name` of `receiver` optional
- * (`?:`), in every union constituent. A mapped IR type cannot tell an
- * optional `unknown`/`any` field from a required one — both ride the
- * checked-dynamic slot — so a refused `delete`'s real reason comes from
- * the declaration. */
-export function declaredOptionalProperty(
-  lowerer: Lowerer,
-  receiver: ts.Expression,
-  name: string,
-): boolean {
-  const receiverType = lowerer.typeOf(receiver);
-  const parts =
-    receiverType.flags & ts.TypeFlags.Union ? constituentTypes(receiverType) : [receiverType];
-  return parts.every((part) => {
-    const property = lowerer.checker.getPropertyOfType(part, name);
-    return property !== undefined && (property.flags & ts.SymbolFlags.Optional) !== 0;
-  });
-}
-
-/** `type` — a record or a union whose every arm is a non-tuple record —
- * declares `name` in the checked-dynamic slot, which has no ABSENT state:
- * an optional such field cannot be removed by a `delete`. */
-export function declaresCheckedDynField(lowerer: Lowerer, type: IrType, name: string): boolean {
-  if (type.kind === "record") {
-    const shape = lowerer.shapes.get(type.shapeId);
-    if (!shape || shape.tuple) return false;
-    return shape.fields.find((f) => f.name === name)?.type.kind === "dyn";
-  }
-  if (type.kind !== "union") return false;
-  const arms = lowerer.unions.get(type.unionId)?.arms ?? [];
-  return arms.length > 0 && arms.every((arm) => declaresCheckedDynField(lowerer, arm, name));
 }

@@ -190,7 +190,7 @@ static inline bool scr_map_entry_live(const ScrMap *m, size_t i) {
   return e->hash != 0;
 }
 static inline uint64_t scr_map_entry_val(const ScrMap *m, const ScrMapEntry *e) {
-  if (m->val_kind == SCR_MAP_VAL_CREF) return (uint64_t)((const ScrMapCEntry *)e)->val << 3;
+  if (m->val_kind == SCR_MAP_VAL_CREF) return scr_compact_ref_address(((const ScrMapCEntry *)e)->val);
   return e->val;
 }
 /* The LLVM backend reads the header through two types (emitter.ts). Its

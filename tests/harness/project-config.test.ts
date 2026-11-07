@@ -645,6 +645,23 @@ test("node-types: RequestInit-derived options carry BodyInit and HeadersInit int
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
+test("node-types: a FormData fetch body fences by name instead of stringifying", async () => {
+  const outDir = outDirFor("fetch-formdata-body-fences");
+  const result = await compile(join(nodeTypesDir, "fetch-formdata-body-fences.ts"), {
+    outPath: join(outDir, "fetch-formdata-body-fences"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  const rendered = renderDiagnostics(result.diagnostics, result.sourceTexts, {
+    color: false,
+  }).replaceAll(nodeTypesDir + "/", "");
+  await expect(rendered).toMatchFileSnapshot(
+    "__snapshots__/node-types-fetch-formdata-body-fences.txt",
+  );
+});
+
 test("node-types: stream subclasses extend the @types/node stream classes", async () => {
   const outDir = outDirFor("stream-subclass-hooks");
   const entry = join(nodeTypesDir, "stream-subclass-hooks.ts");

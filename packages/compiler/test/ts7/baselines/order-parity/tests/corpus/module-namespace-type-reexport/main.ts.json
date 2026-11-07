@@ -1,0 +1,11 @@
+{
+ "order": [
+  "<repo>/tests/corpus/module-namespace-type-reexport/types.ts",
+  "<repo>/tests/corpus/module-namespace-type-reexport/explicit.ts",
+  "<repo>/tests/corpus/module-namespace-type-reexport/mixed.ts",
+  "<repo>/tests/corpus/module-namespace-type-reexport/star.ts",
+  "<repo>/tests/corpus/module-namespace-type-reexport/nested.ts",
+  "<repo>/tests/corpus/module-namespace-type-reexport/main.ts"
+ ],
+ "diags": []
+}

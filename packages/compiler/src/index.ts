@@ -853,6 +853,7 @@ async function compileExecutableNative(
     ...(features.mutableBuffers === true ? { mutableBuffers: true } : {}),
     ...(features.stdioExtended ? { stdioExtended: true } : {}),
     ...(features.fsFlags ? { fsFlags: true } : {}),
+    ...(features.fsBytesWrites ? { fsBytesWrites: true } : {}),
     ...(features.strdecDyn ? { strdecDyn: true } : {}),
     ...(features.processExtras ? { processExtras: true } : {}),
     ...(features.streamWriteErrors ? { streamWriteErrors: true } : {}),
@@ -878,16 +879,24 @@ async function compileExecutableNative(
     ...(features.handleProps ? { handleProps: true } : {}),
     ...(features.childLifecycle ? { childLifecycle: true } : {}),
     ...(features.childOptionExt ? { childOptionExt: true } : {}),
+    ...(features.spawnCaptureBytes ? { spawnCaptureBytes: true } : {}),
     ...(features.childErrorFields ? { childErrorFields: true } : {}),
     ...(features.declAdopt ? { declAdopt: true } : {}),
     ...(features.typeOrigins ? { typeOrigins: true } : {}),
     ...(features.dynForAwait ? { dynForAwait: true } : {}),
+    ...(features.dynCollections ? { dynCollections: true } : {}),
     ...(features.dynIntegrityQueries ? { dynIntegrityQueries: true } : {}),
+    ...(features.reflectProtoTarget ? { reflectProtoTarget: true } : {}),
+    ...(features.recordSourceDelete ? { recordSourceDelete: true } : {}),
     ...(features.genBind ? { genBind: true } : {}),
+    ...(features.genReceiver ? { genReceiver: true } : {}),
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
     ...(features.mime ? { mime: true } : {}),
     ...(features.largePages ? { largePages: true } : {}),
     ...(features.webStreams ? { webStreams: true } : {}),
+    // The C-source link (a sanitized build) compiles the runtime itself, so it
+    // needs the same Blob/File body define the runtime pack selects.
+    ...(features.webBodies ? { webBodies: true } : {}),
     ...(features.abortSignal ? { abortSignal: true } : {}),
     ...(features.utilTiming ? { utilTiming: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
@@ -1288,6 +1297,7 @@ async function prepareExecutableInput(
         // Textual output shows the code an executable gets; objects keep
         // the pending flag, since their link may not add an unwinder.
         unwindAbi: buildPlatform === "linux" && outputKind !== "obj",
+        timing,
         ...(opts.exceptions === "rare" ? { rareExceptions: true } : {}),
         objectAudit: opts.sanitize === true,
         sanitizeAttributes: opts.sanitize === true,
@@ -1301,9 +1311,11 @@ async function prepareExecutableInput(
       if (!(err instanceof LlvmUnsupportedError)) throw err;
       return { ok: false, diagnostics: [llvmRefusalDiag(err, entryPath)], sourceTexts };
     }
+    timing("llvm-emit");
     if (outputKind === "llvm") {
       await mkdir(dirname(opts.outPath), { recursive: true });
       await writeTextParts(opts.outPath, llvm);
+      timing("llvm-write");
     } else {
       try {
         await emitNativeArtifact({

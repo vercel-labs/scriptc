@@ -2263,7 +2263,7 @@
  },
  {
   "file": "scr_json.c",
-  "function": "scr_weak_island_key",
+  "function": "scr_weak_set",
   "message": "Weak collection keys of this native reference type have no weak lifetime lowering",
   "code": "SC2020"
  },

@@ -5,7 +5,7 @@
  * there); this file reads the build's deferral trace and the run's boot
  * trace. Needs a libnode pack in SCRIPTC_LIBNODE (libnode.ts). */
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -28,6 +28,7 @@ const islandLines = (text: string): string[] =>
 async function build(
   name: string,
   entry = join(corpus, name, "main.ts"),
+  extraEnv: Record<string, string> = {},
 ): Promise<{ binary: string; trace: string[]; closed: string[] }> {
   const dir = join(outDir, name);
   rmSync(dir, { recursive: true, force: true });
@@ -37,6 +38,7 @@ async function build(
     ...process.env,
     SCRIPTC_NODE_ISLANDS_TRACE: "defer,closed",
     SCRIPTC_CACHE_DIR: join(dir, "build-cache"),
+    ...extraEnv,
   };
   const { stderr } = await execFileAsync(process.execPath, [cli, "build", entry, "-o", binary], {
     env,
@@ -78,6 +80,29 @@ const generated = (line: string): boolean =>
 const startsNode = (boot: string[]): boolean => boot.some((l) => l.includes("starting Node"));
 
 describe.skipIf(skip)("island-closed module-level constants", () => {
+  test("the probe finds its copies when the temporary directory is a link", async () => {
+    // The probe loads a generated module from a copy in the temporary
+    // directory and Node names a module by its real path. On macOS the
+    // temporary directory is under /var, a link to /private/var: a copy
+    // known by the linked path was taken for a file of the program, and
+    // every constant stayed eager.
+    // Outside every node_modules directory, as the system's temporary
+    // directory is: the probe never refuses a file under one.
+    const scratch = realpathSync(mkdtempSync(join(tmpdir(), "scriptc-closed-link-")));
+    const real = join(scratch, "real");
+    const link = join(scratch, "link");
+    mkdirSync(real);
+    symlinkSync(real, link);
+    const { trace } = await build("8910-node-island-closed-const-unused", undefined, {
+      TMPDIR: link,
+    });
+    rmSync(scratch, { recursive: true, force: true });
+    const modules = trace.filter(generated);
+    expect(modules).toHaveLength(3);
+    for (const module of modules)
+      expect(module).toMatch(/^\[node-islands\] defer .*recorded evaluation is deterministic/);
+  }, 300_000);
+
   test("unused constants are deferred island modules, and Node never starts", async () => {
     const { binary, trace } = await build("8910-node-island-closed-const-unused");
     const modules = trace.filter(generated);

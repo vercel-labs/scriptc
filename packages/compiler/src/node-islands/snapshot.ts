@@ -49,6 +49,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -368,7 +369,10 @@ function writeProbeCopies(tree: NonNullable<NonNullable<IrModule["nodeIsland"]>[
   dir: string;
   copies: Map<string, string>;
 } {
-  const dir = mkdtempSync(join(tmpdir(), "scriptc-closed-"));
+  // By its real path: the probe tells the build's own modules by the paths
+  // Node names them with, and Node resolves links (macOS's temporary
+  // directory is under /var, a link to /private/var).
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "scriptc-closed-")));
   const copies = new Map<string, string>();
   const texts = new Map<string, string>();
   for (const file of tree.files) {

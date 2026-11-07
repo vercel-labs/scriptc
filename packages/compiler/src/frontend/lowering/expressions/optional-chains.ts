@@ -1,5 +1,7 @@
 import { isNavigatorGlobal } from "../builtins/navigator.js";
+import { shadowedHandleMember } from "../handle-properties.js";
 import { SNAPSHOT_GLOBALS, stdlibGlobalNameOf } from "../surfaces.js";
+import { reflectOverNamespaceExpr } from "../builtin-namespace-probe.js";
 import { completeFuncValueArgs } from "../call-arguments.js";
 import { overloadValueResult } from "../lower-calls.js";
 import { dynUndefinedExpr } from "../../../ir/build.js";
@@ -261,6 +263,42 @@ export function lowerOptionalChain(
   // `navigator?.userAgent`: Node's navigator global is never nullish and
   // has no value form, so the guarded step is the plain member read.
   if (isNavigatorGlobal(lowerer, recvNode) || alwaysDefinedGlobal(lowerer, recvNode)) {
+    lowerer.chainHandled.add(dotNode);
+    try {
+      return lowerer.lowerExpr(expr);
+    } finally {
+      lowerer.chainHandled.delete(dotNode);
+    }
+  }
+  // `process.getBuiltinModule("node:os")?.arch()`, `ns?.member`: a builtin
+  // module's namespace object is never nullish, and its members lower at
+  // their access sites (the namespace has no value form to guard), so the
+  // guarded step is the plain member access. The member answers statically
+  // but the receiver still evaluates first: `loadOs()?.arch()` calls loadOs
+  // and keeps its side effects and exceptions, as Node does.
+  if (
+    ts.isPropertyAccessExpression(dotNode) &&
+    lowerer.builtinNamespaceModuleOf(recvNode) !== null
+  ) {
+    lowerer.chainHandled.add(dotNode);
+    try {
+      return reflectOverNamespaceExpr(lowerer, recvNode, lowerer.lowerExpr(expr), locOf(expr));
+    } finally {
+      lowerer.chainHandled.delete(dotNode);
+    }
+  }
+  // `d?.getTime()` on a handle whose JavaScript shadows `getTime`: the
+  // guard cannot short-circuit a receiver the checker types never nullish,
+  // so the step is the plain call, which reads the own property
+  // (handle-properties.ts) instead of the native member.
+  if (
+    dotNode === expr.expression &&
+    ts.isCallExpression(expr) &&
+    neverNullishCallee(lowerer, recvNode) &&
+    (ts.isPropertyAccessExpression(expr.expression) ||
+      ts.isElementAccessExpression(expr.expression)) &&
+    shadowedHandleMember(lowerer, expr.expression)
+  ) {
     lowerer.chainHandled.add(dotNode);
     try {
       return lowerer.lowerExpr(expr);
@@ -618,7 +656,16 @@ export function finishOptionalChain(
       `'?.' where the result '${lowerer.fmt(type)}' has no undefined arm (narrow the receiver with 'if (x !== undefined)' instead)`,
     );
   }
-  const wrapped = lowerer.coerceToExpected(body, type);
+  let wrapped = lowerer.coerceToExpected(body, type);
+  // The checker narrowed the CHAIN itself (`typeof j?.n === "string" ? … :
+  // j?.n` reads `number | undefined` in the false arm) while the guarded
+  // read still answers the member's stored union. The chain node's type
+  // names the arms still possible, so the stranded ones trap, as at every
+  // slot a narrowed union flows into (coerceIntoSlot's sub-union bridge).
+  if (wrapped.type.kind === "union" && type.kind === "union" && !typeEquals(wrapped.type, type)) {
+    const helper = lowerer.narrowedRetagHelper(expr, wrapped.type.unionId, type.unionId, loc);
+    if (helper) wrapped = { kind: "call", callee: helper, args: [wrapped], type, loc };
+  }
   if (!typeEquals(wrapped.type, type)) lowerer.badType(expr, lowerer.typeOf(expr));
   return { kind: "optChain", id, receiver, body: wrapped, type, loc };
 }

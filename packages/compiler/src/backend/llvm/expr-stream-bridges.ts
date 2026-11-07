@@ -359,7 +359,12 @@ export function streamTypedRefCommitAdapter(
         ...(compressed
           ? [
               `  %f${index}_oldidx = load i32, ptr %f${index}_ptr`,
-              ...compactRefLoadLines(`%f${index}_oldidx`, `%f${index}_old`, `%f${index}_od`),
+              ...compactRefLoadLines(
+                host.compactRefBase,
+                `%f${index}_oldidx`,
+                `%f${index}_old`,
+                `%f${index}_od`,
+              ),
             ]
           : [`  %f${index}_old = load ${fieldTy}, ptr %f${index}_ptr`]),
       );
@@ -620,6 +625,16 @@ export function streamTypedRefCommitAdapter(
   return `@${commit}`;
 }
 
+/** Whether `t` is a class rooted at Error. Such an instance has one
+ * checked-dynamic value, the one its to-dyn helper answers from the error
+ * identity cache (scr_dyn_from_error), wherever the instance is boxed: alone,
+ * as a union arm or as an element. A second capsule built around it would not
+ * be in that cache, and the `Error` check of a value would then rebuild a new
+ * error from the capsule's snapshot instead of answering the instance. */
+function errorClassType(host: LlvmEmitterContext, t: IrType): boolean {
+  return t.kind === "object" && host.shapeHost.isErrorClass(t.className);
+}
+
 export function liveDynUnionRefAdapter(
   host: LlvmEmitterContext,
   t: IrType & { kind: "union" },
@@ -631,21 +646,18 @@ export function liveDynUnionRefAdapter(
   if (!union) {
     throw new InternalCompilerError(`llvm emitter bug: live dyn ref of unknown union ${t.unionId}`);
   }
-  // Codec records box as their own handles, by reference, through toDynHelper.
-  const codecArm = (arm: IrType): boolean =>
-    textCodecRecordClass(arm, (id) => host.recordsById.get(id)) !== null;
+  // Codec records box as their own handles, by reference, through toDynHelper,
+  // and an Error-rooted class as its one checked-dynamic value.
+  const selfBoxedArm = (arm: IrType): boolean =>
+    arm.kind === "bytes" ||
+    textCodecRecordClass(arm, (id) => host.recordsById.get(id)) !== null ||
+    errorClassType(host, arm);
   const mutableArms = union.arms
     .map((arm, tag) => ({ arm, tag }))
     .filter(
-      ({ arm }) =>
-        arm.kind !== "bytes" &&
-        !codecArm(arm) &&
-        (streamTypedRefEligible(arm) || isDynTypedRefType(arm)),
+      ({ arm }) => !selfBoxedArm(arm) && (streamTypedRefEligible(arm) || isDynTypedRefType(arm)),
     );
-  if (
-    mutableArms.length === 0 &&
-    !union.arms.some((arm) => arm.kind === "bytes" || codecArm(arm))
-  ) {
+  if (mutableArms.length === 0 && !union.arms.some(selfBoxedArm)) {
     throw new InternalCompilerError(`llvm emitter bug: live dyn ref of immutable union ${key}`);
   }
 
@@ -821,10 +833,12 @@ export function streamTypedRefBoxValue(
     return boxed;
   }
   // A codec record boxes as its own handle, by reference (toDynHelper), as
-  // it does outside a live view.
+  // it does outside a live view, and an Error-rooted class as its one
+  // checked-dynamic value.
   if (
     t.kind === "bytes" ||
     textCodecRecordClass(t, (id) => host.recordsById.get(id)) !== null ||
+    errorClassType(host, t) ||
     (!streamTypedRefEligible(t) && !isDynTypedRefType(t))
   ) {
     const valueTy = host.llType(t);
@@ -1012,6 +1026,17 @@ export function streamTypedRefMaterializeAdapter(
         B.br(afterField);
         B.startBlock(afterField);
       }
+    }
+    // The instance's accessor-backed members answer through their getters.
+    // Own fields are set above, so a field that shadows a getter keeps its
+    // value.
+    if (adapter.classOps !== undefined && (meta.def.viewAccessors?.length ?? 0) > 0) {
+      host.declare(`declare void @scr_dyn_class_view_accessors(ptr, ptr, ptr, ptr, ptr, ptr)`);
+      const rc = vAdapters(host.shapeHost, t);
+      const trace = traceAdapter(host.shapeHost, t) ?? "null";
+      B.line(
+        `call void @scr_dyn_class_view_accessors(ptr ${out}, ptr ${adapter.classOps}, ptr %p, ptr ${rc.retain}, ptr ${rc.release}, ptr ${trace})`,
+      );
     }
     for (const symbol of meta.def.symbolFields ?? []) {
       const field = meta.def.fields.find((field) => field.name === symbol.field)!;
@@ -1250,6 +1275,14 @@ export function streamTypedRefMaterializeAdapter(
           let skip: string | null = null;
           if (undefinedTag >= 0 && field.type.kind === "union") {
             const absent = host.fieldAbsentTestIn(B, fieldValue, field.type.unionId);
+            skip = B.newLabel("live.record.absent");
+            const set = B.newLabel("live.record.set");
+            B.condBr(absent, skip, set);
+            B.startBlock(set);
+          } else if (field.optional === true && field.type.kind === "dyn") {
+            // An absent optional checked-dynamic slot contributes no key.
+            const absent = B.tmp();
+            B.line(`${absent} = icmp eq ptr ${fieldValue}, ${host.dynAbsentRef()}`);
             skip = B.newLabel("live.record.absent");
             const set = B.newLabel("live.record.set");
             B.condBr(absent, skip, set);
@@ -1510,7 +1543,8 @@ function liveRecordOps(
     .map((field, position) => ({ field, position }))
     .filter(
       ({ field }) =>
-        field.type.kind === "union" && undefinedArmTag(field.type, host.unionsById) >= 0,
+        (field.type.kind === "union" && undefinedArmTag(field.type, host.unionsById) >= 0) ||
+        (field.optional === true && field.type.kind === "dyn"),
     );
   const hasLabels = optional.map(() => H.newLabel("live.record.has"));
   const always = H.newLabel("live.record.always");
@@ -1522,11 +1556,13 @@ function liveRecordOps(
   optional.forEach(({ field }, k) => {
     H.startBlock(hasLabels[k]!);
     const value = loadField(H, field);
-    const absent = host.fieldAbsentTestIn(
-      H,
-      value,
-      (field.type as IrType & { kind: "union" }).unionId,
-    );
+    let absent: string;
+    if (field.type.kind === "union") {
+      absent = host.fieldAbsentTestIn(H, value, field.type.unionId);
+    } else {
+      absent = H.tmp();
+      H.line(`${absent} = icmp eq ptr ${value}, ${host.dynAbsentRef()}`);
+    }
     const present = H.tmp();
     H.line(`${present} = xor i1 ${absent}, true`);
     H.terminate(`ret i1 ${present}`);
@@ -1753,9 +1789,53 @@ function liveClassOps(host: LlvmEmitterContext, snapshot: string, meta: LlClassM
       ``,
     );
   }
+  // Accessor-backed members: the view installs each one's getter, so a
+  // field behind a getter copies the value the getter answers instead of
+  // reading undefined (scr_dyn_class_view_accessors).
+  const accessors = meta.def.viewAccessors ?? [];
+  let accessorNames = "null";
+  let accessorGet = "null";
+  if (accessors.length > 0) {
+    accessorNames = `@${snapshot}_anames`;
+    accessorGet = `@${snapshot}_aget`;
+    // Like the string tag: the runtime lends the instance, each thunk takes
+    // its own reference for the helper's owned receiver.
+    const retain = vAdapters(host.shapeHost, { kind: "object", className: meta.def.name }).retain;
+    const thunks: string[] = [];
+    const getters: string[] = [];
+    accessors.forEach((entry, index) => {
+      const thunk = `${snapshot}_aget${index}`;
+      getters.push(`ptr @${thunk}`);
+      thunks.push(
+        `define internal ptr @${thunk}(ptr %p) ${FN_ATTRS} { ; ${entry.member} of ${meta.def.name}`,
+        `entry:`,
+        `  %owned = call ptr ${retain}(ptr %p)`,
+        `  %value = call ptr @${mangleFunction(entry.helper)}(ptr %owned)`,
+        `  ret ptr %value`,
+        `}`,
+        ``,
+      );
+    });
+    const accessorLiterals = accessors.map(
+      (entry) => `ptr ${host.internLiteral(entry.member.slice("get:".length))}`,
+    );
+    host.resolveThunkDefs.push(
+      ...thunks,
+      `${accessorNames} = internal constant [${accessors.length} x ptr] [${accessorLiterals.join(", ")}]`,
+      `@${snapshot}_agetters = internal constant [${accessors.length} x ptr] [${getters.join(", ")}]`,
+      `define internal ptr ${accessorGet}(ptr %p, ${host.sizeType} %i) ${FN_ATTRS} { ; accessor-backed members of ${meta.def.name}`,
+      `entry:`,
+      `  %slot = getelementptr inbounds [${accessors.length} x ptr], ptr @${snapshot}_agetters, ${host.sizeType} 0, ${host.sizeType} %i`,
+      `  %getter = load ptr, ptr %slot`,
+      `  %value = call ptr %getter(ptr %p)`,
+      `  ret ptr %value`,
+      `}`,
+      ``,
+    );
+  }
   host.resolveThunkDefs.push(
     `@${names} = internal constant [${members.length} x ptr] [${literals.join(", ")}]`,
-    `@${ops} = internal constant { ptr, ${host.sizeType}, ptr, ptr, ptr } { ptr ${exact}, ${host.sizeType} ${members.length}, ptr @${names}, ptr ${className}, ptr ${stringTag} }`,
+    `@${ops} = internal constant { ptr, ${host.sizeType}, ptr, ptr, ptr, ${host.sizeType}, ptr, ptr } { ptr ${exact}, ${host.sizeType} ${members.length}, ptr @${names}, ptr ${className}, ptr ${stringTag}, ${host.sizeType} ${accessors.length}, ptr ${accessorNames}, ptr ${accessorGet} }`,
     ``,
   );
 }
@@ -1806,7 +1886,7 @@ function classFieldDynValue(
   else if (compressed) {
     const idx = B.tmp();
     B.line(`${idx} = load i32, ptr ${fieldPtr}`);
-    for (const line of compactRefLoadLines(idx, fieldValue, `${fieldValue}.r`))
+    for (const line of compactRefLoadLines(host.compactRefBase, idx, fieldValue, `${fieldValue}.r`))
       B.line(line.trimStart());
   } else B.line(`${fieldValue} = load ${llFieldType(field.type, false)}, ptr ${fieldPtr}`);
   if (llFieldType(field.type, false) === "i8") {
@@ -1972,9 +2052,19 @@ export function streamFromArrayAdapter(
   const unionRefArms =
     unionDef?.arms
       .map((arm, tag) => ({ arm, tag }))
-      .filter(({ arm }) => isRefCounted(arm) && arm.kind !== "dyn" && arm.kind !== "string") ?? [];
+      .filter(
+        ({ arm }) =>
+          isRefCounted(arm) &&
+          arm.kind !== "dyn" &&
+          arm.kind !== "string" &&
+          !errorClassType(host, arm),
+      ) ?? [];
   const typedRef =
-    isRefCounted(elem) && elem.kind !== "dyn" && elem.kind !== "string" && elem.kind !== "union";
+    isRefCounted(elem) &&
+    elem.kind !== "dyn" &&
+    elem.kind !== "string" &&
+    elem.kind !== "union" &&
+    !errorClassType(host, elem);
   let snapshot = `${sym}_materialize`;
   let value: string;
   if (elem.kind === "f64") {

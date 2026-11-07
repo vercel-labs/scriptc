@@ -58,6 +58,20 @@ test("a missing required parameter is not a variadic inference mismatch", () => 
   ).toBe(true);
 });
 
+test.for([
+  "class ComputedMethod { [new.target]() { return 1; } }",
+  "class ComputedGetter { get [new.target]() { return 1; } }",
+  "class ComputedSetter { set [new.target](next) { console.log(next); } }",
+  "class ComputedArrow { [(() => new.target)()]() { return 1; } }",
+  "class ComputedField { static [new.target] = 1; }",
+])("a computed class member name keeps the early 'new.target' SyntaxError: %s", (source) => {
+  expect(
+    diagnostics(source, 'import "./library.js";').some((diagnostic) =>
+      diagnostic.message.includes("new.target"),
+    ),
+  ).toBe(true);
+});
+
 test("bare JavaScript fields may read their initial undefined value", () => {
   expect(
     diagnostics(
@@ -212,4 +226,109 @@ test("a checked JavaScript file still takes the opinions its JSDoc never asked f
       'import { add } from "./library.js"; console.log(add(1, 2));',
     ),
   ).toEqual([]);
+});
+
+/* The S3/S4 checker-opinion rows (tsc-codes.ts, JS_OPINIONS). Every construct
+ * below is legal JavaScript with a defined runtime meaning, so the unchecked
+ * JavaScript twin compiles; a checked project keeps tsc's opinion of the same
+ * source (D3), and the TypeScript twin keeps it too. A `null` expectation says
+ * tsc itself raises nothing for that source in that mode, which is the honest
+ * record of where the opinion is JavaScript-only. The differential twin lives
+ * in tests/corpus. */
+interface CheckerOpinionTwin {
+  readonly name: string;
+  readonly source: string;
+  /** The diagnostic tsc keeps for a `// @ts-check` JavaScript file, or null. */
+  readonly checkJs: string | null;
+  /** The diagnostic tsc keeps for the same source in a `.ts` file, or null. */
+  readonly ts: string | null;
+}
+
+const CHECKER_OPINION_TWINS: readonly CheckerOpinionTwin[] = [
+  {
+    name: "TS2408",
+    source: `class Box {
+  constructor() { this.v = 0; }
+  set value(x) { this.v = x; return x * 2; }
+}
+console.log((new Box().value = 21));`,
+    checkJs: "Setters cannot return a value",
+    ts: "Setters cannot return a value",
+  },
+  {
+    name: "TS17013",
+    source: `const widget = { read() { return new.target; } };
+console.log(widget.read());`,
+    checkJs: "new.target",
+    ts: "new.target",
+  },
+  {
+    name: "TS2839",
+    source: `console.log({} === {});`,
+    checkJs: "compares objects by reference",
+    ts: "compares objects by reference",
+  },
+  {
+    name: "TS2845",
+    source: `console.log(0n === Infinity);`,
+    // tsc's checkJs does not compare a bigint with a number in JavaScript; the
+    // .ts twin keeps the overlap error, which the row admits only in JS.
+    checkJs: null,
+    ts: "have no overlap",
+  },
+  {
+    name: "TS4104",
+    source: `/** @type {readonly number[]} */
+const source = [1, 2, 3];
+let target = [0];
+target = source;
+console.log(target.length);`,
+    checkJs: "readonly",
+    // The annotation is a comment in TypeScript, so the .ts twin is clean.
+    ts: null,
+  },
+];
+
+for (const { name, source, checkJs, ts } of CHECKER_OPINION_TWINS) {
+  const library = 'import * as library from "./library.js"; console.log(library);';
+
+  test(`${name}: the unchecked JavaScript twin compiles`, () => {
+    expect(diagnostics(source, library)).toEqual([]);
+  });
+
+  test(`${name}: the TypeScript twin keeps tsc's opinion`, () => {
+    const kept = diagnostics(source, library, "ts").map((diagnostic) => diagnostic.message);
+    if (ts === null) expect(kept).toEqual([]);
+    else expect(kept.some((message) => message.includes(ts))).toBe(true);
+  });
+
+  test(`${name}: a checked JavaScript twin keeps tsc's opinion`, () => {
+    const kept = diagnostics(`// @ts-check\n${source}`, library).map(
+      (diagnostic) => diagnostic.message,
+    );
+    if (checkJs === null) expect(kept).toEqual([]);
+    else expect(kept.some((message) => message.includes(checkJs))).toBe(true);
+  });
+}
+
+test.for(["/\\1/", "/(a)\\2/", "/\\8/", "/(a)\\12/", "/[\\1]/"])(
+  "JavaScript admits a regex decimal escape without its group outside Unicode mode: %s",
+  (literal) => {
+    expect(diagnostics(`export const pattern = ${literal};`, 'import "./library.js";')).toEqual([]);
+  },
+);
+
+test.for(["/\\1/u", "/\\1/v", "/(a)\\2/u", "/(a)\\2/v", "/[\\1]/u"])(
+  "a Unicode-mode regex keeps the missing-group error: %s",
+  (literal) => {
+    const result = diagnostics(`export const pattern = ${literal};`, 'import "./library.js";');
+    expect(result.some((d) => d.code === "SC0001" && d.message.includes("backreference"))).toBe(
+      true,
+    );
+  },
+);
+
+test("TypeScript keeps the missing-group error of a non-Unicode regex", () => {
+  const result = diagnostics("export const pattern = /\\1/;", 'import "./library.js";', "ts");
+  expect(result.some((d) => d.message.includes("backreference"))).toBe(true);
 });

@@ -8,7 +8,15 @@ import {
   adoptingAwaitOf,
   MAX_BYTES_LOOP_VERSION_DEPTH,
 } from "./emitter.js";
-import { CAUGHT, F64, type IrExpr, type IrStmt, STRING, isRefCounted } from "../../ir/ir.js";
+import {
+  CAUGHT,
+  F64,
+  type IrExpr,
+  type IrStmt,
+  STRING,
+  isRefCounted,
+  keyedRecordFields,
+} from "../../ir/ir.js";
 import { emitStringSliceSnapshot } from "./string-slices.js";
 import {
   canDeferSplitPiece,
@@ -97,6 +105,7 @@ import {
 } from "./string-construction.js";
 import { emitStringInputs } from "./string-lifetimes.js";
 import { LOOPS } from "./loop-state.js";
+import { emitLaneLoop, laneLoopPlan } from "./lanes.js";
 import { loopUnrollAttachment, periodicGuardPeriod } from "./periodic-guards.js";
 import { containsLoop, loopAccessesTypedArrays } from "../loop-polls.js";
 import { emitConstantChoice, matchConstantChoice } from "./constant-choices.js";
@@ -814,11 +823,13 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         emitter.emitPublishedFieldGuard(obj.name, null, "[key]");
       if (isRefCounted(v.type)) emitter.toHeap(v);
       const shape = emitter.recordShape(s.shapeId);
+      // The fields a key can name (never the hidden key-order index).
+      const keyed = keyedRecordFields(shape);
       // Signature-free shapes dispatch over their (one-typed) declared
       // fields and TRAP on a miss (scr_record_key_miss — JS would add
       // the property, which a monomorphic struct cannot); overflow
       // shapes keep the map insert tail.
-      const iv = shape.indexValue ?? shape.fields[0]?.type;
+      const iv = shape.indexValue ?? keyed[0]?.type;
       if (!iv)
         throw new InternalCompilerError(
           `llvm emitter bug: keyed write on field-free non-overflow shape ${s.shapeId}`,
@@ -840,7 +851,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         // store anything, the documented divergence); undeclared keys
         // insert the dyn value into the overflow map as-is.
         emitter.declare(`declare void @scr_dyn_release(ptr)`);
-        for (const f of shape.fields) {
+        for (const f of keyed) {
           const hit = B.tmp();
           B.line(
             `${hit} = call zeroext i1 ${emitter.literalEquals(f.name)}(ptr ${key.name}) ; ${llvmCommentText(f.name)}`,
@@ -896,10 +907,10 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         B.startBlock(join);
         // MAY THROW exactly when a dyn value can validate against a
         // declared field (stmts.ts's condition).
-        if (shape.fields.length > 0) emitter.emitPendingCheck();
+        if (keyed.length > 0) emitter.emitPendingCheck();
         break;
       }
-      for (const f of shape.fields) {
+      for (const f of keyed) {
         // typeEquals(f.type, iv) — the frontend fences everything else.
         const hit = B.tmp();
         B.line(
@@ -1559,6 +1570,23 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           B.br(lc, backEdge);
         }
       };
+      // A planned loop runs whole vectors first and leaves the rest to its
+      // own copies, which start at the counter the lane loop leaves behind
+      // (lanes.ts). The plan is consulted here, before any copy is chosen:
+      // the speculative, int32 and strip-mined copies keep their values in
+      // layouts the lane body does not write.
+      const lane =
+        integerLoop !== null && integerSlot !== null && !stripMined && capturedLets.length === 0
+          ? laneLoopPlan(emitter, s)
+          : null;
+      if (lane !== null)
+        emitLaneLoop(
+          emitter,
+          lane,
+          integerLoop!.limitReceiver,
+          integerSlot!,
+          B.newLabel("lane.after"),
+        );
       emitter.emitLoopCopies(s, capturedLets.length === 0, le, (exit) => {
         // Speculative copies resume iterations inside the copy they enter,
         // which must keep its polls.
@@ -1812,7 +1840,10 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       if (!target || target.contLabel === null)
         throw new InternalCompilerError("llvm emitter bug: continue target not found");
       emitter.emitFinallysForJump(target.finallyDepth, target.frameDepth, target.scopeDepth);
-      if (!B.isTerminated()) B.terminate(`br label %${target.contLabel}`);
+      if (!B.isTerminated()) {
+        emitter.framePositions?.continueLoop(s.label);
+        B.terminate(`br label %${target.contLabel}`);
+      }
       break;
     }
     case "return": {

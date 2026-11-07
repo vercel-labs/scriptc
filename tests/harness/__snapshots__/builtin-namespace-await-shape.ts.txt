@@ -1,0 +1,15 @@
+builtin-namespace-await-shape.ts:9:13 - error SC2020: 'Object.keys over a builtin module namespace whose runtime shape is not known statically' is part of the standard library types but has no scriptc lowering yet
+
+   8 | declare const p: Promise<typeof NodeFs>;
+   9 | console.log(Object.keys(await p).length);
+     |             ^~~~~~~~~~~~~~~~~~~~
+  10 | console.log("readFileSync" in (await p));
+
+  hint: reflect on the namespace where it is bound (a namespace import, a require call or process.getBuiltinModule)
+
+builtin-namespace-await-shape.ts:10:31 - error SC1090: 'in' over a builtin module namespace whose runtime shape is not known statically (an ES module namespace and the CommonJS exports object answer different member sets; bind the namespace where it is imported or required) is not supported yet
+
+   9 | console.log(Object.keys(await p).length);
+  10 | console.log("readFileSync" in (await p));
+     |                               ^~~~~~~~~
+  11 | 

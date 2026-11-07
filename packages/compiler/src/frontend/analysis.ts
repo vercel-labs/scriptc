@@ -7,7 +7,7 @@ import type { Frontend, FrontendFactory } from "./pipeline.js";
 import type { LowerResult } from "./lowering/lowerer.js";
 import { resolveBareModule } from "./resolve.js";
 import { readProjectConfig } from "../project-config.js";
-import type { NodeIslandSet } from "../node-islands/boundary.js";
+import { type NodeIslandSet, nodeIslandSet } from "../node-islands/boundary.js";
 import { packageDirOf } from "../node-islands/origin.js";
 import { nodeIslandPolicy } from "../node-islands/policy.js";
 import { buildNodeIslandReport, reportIslandSet } from "../node-islands/report.js";
@@ -47,7 +47,7 @@ export function analyzeWithFrontend(
   // The first load keeps the whole program, as a build's first load does: the
   // island report classifies every package from it (executable/prepare.ts's
   // decideNodeIslands), including a package the policy forces into Node.
-  const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands);
+  const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands, entryPath);
   const fe = createFrontend(entryPath, opts.npmStatic, opts.externalTypes, undefined, {
     nodeIslands: true,
   });
@@ -208,7 +208,7 @@ export function analyzeWithFrontend(
     if (proven !== null) {
       const packages = new Map(lowerIslands?.packages ?? []);
       for (const [name, island] of proven) packages.set(name, island);
-      lowerIslandsLocal = { packages, modules: lowerIslands?.modules ?? new Map() };
+      lowerIslandsLocal = nodeIslandSet(packages, lowerIslands?.modules ?? new Map());
     }
     let lowered = lowerWith(lowerIslandsLocal);
     // A package whose own module refused or fenced runs in a Node island in
@@ -251,7 +251,7 @@ export function analyzeWithFrontend(
       if (grown === null) break;
       growthReasons.push(...lowered.diagnostics);
       growthFences.push(...lowered.runtimeFences);
-      lowerIslandsLocal = { packages: grown, modules: known.modules };
+      lowerIslandsLocal = nodeIslandSet(grown, known.modules);
       lowered = lowerWith(lowerIslandsLocal);
     }
     const provenance = provenanceSources();

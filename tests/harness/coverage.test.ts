@@ -714,14 +714,18 @@ test("settled generic rest-order fences count each source statement once", () =>
   expect(coverage.stats.statementsFailed).toBe(2);
 });
 
-test("CommonJS var and let exports that can change after the export keep their refusal", () => {
+test("CommonJS table exports of bindings that can change after the export keep their refusal", () => {
   // JavaScript refusals defer to run time: they are the runtime fences.
+  // `module.exports = counter` stores the value the binding held at that
+  // statement, as Node does, so the whole-export form compiles; a binding
+  // copied into a table has no storage of its own, so a later write would
+  // be invisible to importers and fences instead.
   const { coverage } = analyze(fixture("cjs-mutable-exports/main.js"));
   const refused = [...coverage.diagnostics, ...(coverage.runtimeFences ?? [])]
     .map((d) => /exporting the mutable 'let' binding '(\w+)'/.exec(d.message)?.[1])
     .filter((name) => name !== undefined)
     .sort();
-  expect(refused).toEqual(["counter", "tab", "twice"]);
+  expect(refused).toEqual(["tab", "twice"]);
 });
 
 test("CommonJS namespace reads of exports a re-exported module assigns later keep their refusal", () => {
@@ -1205,6 +1209,27 @@ test("--strict-user-js reports R2 constructs in user JavaScript as SC8101–SC81
       { root: repoRoot },
     ),
   ).toMatchFileSnapshot("__snapshots__/coverage-node-islands-user-js.txt");
+});
+
+test("island packages: package data types and callable handles cross the boundary", () => {
+  // The types-only twin of an island package declares shapes the type
+  // mapper must read as data the program receives, never as a value the
+  // package's implementation produces: a union alias over Node data types
+  // (`Buffer | ArrayBuffer | Buffer[]`, `@types/ws`'s RawData) becomes the
+  // checked dynamic value, and a callable type with no native
+  // representation (`express.json()`'s NextHandleFunction) stays the handle
+  // of the function the island made.
+  for (const [name, pkg] of [
+    ["island-package-type-alias", "frames"],
+    ["island-callable-handle", "bodyish"],
+  ] as const) {
+    const { coverage } = analyze(join(repoRoot, "tests/corpus", name, "main.ts"));
+    expect(coverage.diagnostics, name).toEqual([]);
+    expect(
+      coverage.nodeIslands?.islands.map((i) => i.package),
+      name,
+    ).toContain(pkg);
+  }
 });
 
 test(`every corpus program is 100% static (corpus and coverage agree${shardSuffix()})`, async () => {

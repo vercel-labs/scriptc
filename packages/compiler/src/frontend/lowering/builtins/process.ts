@@ -29,6 +29,7 @@ import {
   canBoxFuncIntoDyn,
   funcOf,
   isUnitType,
+  setOf,
   typeKey,
 } from "../../../ir/ir.js";
 import { lowerBuiltinLoaderValue } from "../lower-builtin-values.js";
@@ -379,7 +380,7 @@ export function isOptionalProcessVersionsRead(lowerer: Lowerer, node: ts.Node): 
 function programMentionsVersions(lowerer: Lowerer): boolean {
   lowerer.mentionsProcessVersions ??= lowerer.program
     .getImplementationSourceFiles()
-    .some((sf) => !sf.isDeclarationFile && sf.text.includes("versions"));
+    .some((sf) => !sf.isDeclarationFile && ts.sourceTextIncludes(sf, "versions"));
   return lowerer.mentionsProcessVersions;
 }
 
@@ -642,6 +643,10 @@ export function processDataMemberValue(
       return { kind: "libCall", fn: "process.pid", args: [], type: F64, loc };
     case "execPath":
       return { kind: "libCall", fn: "process.execPath", args: [], type: STRING, loc };
+    case "execArgv":
+      return { kind: "libCall", fn: "process.execArgv", args: [], type: arrayOf(STRING), loc };
+    case "allowedNodeEnvironmentFlags":
+      return { kind: "libCall", fn: "process.allowedEnvFlags", args: [], type: setOf(STRING), loc };
     case "versions":
       return { kind: "libCall", fn: "process.versions", args: [], type: DYN, loc };
     default:
@@ -837,6 +842,12 @@ export function lowerProcessProperty(
   if (member === "execArgv") {
     return { kind: "libCall", fn: "process.execArgv", args: [], type: arrayOf(STRING), loc };
   }
+  // process.allowedNodeEnvironmentFlags: one stable set of the option
+  // names the compatibility target's NODE_OPTIONS accepts (the same
+  // identity on every read, like Node's).
+  if (member === "allowedNodeEnvironmentFlags") {
+    return { kind: "libCall", fn: "process.allowedEnvFlags", args: [], type: setOf(STRING), loc };
+  }
   // process._exiting — the runtime's exit-sequence flag (true while
   // 'exit' listeners run), Node's own undocumented member.
   if (member === "_exiting") {
@@ -869,6 +880,15 @@ export function lowerProcessProperty(
   // stable object like Node's.
   if (member === "release") {
     return { kind: "libCall", fn: "process.release", args: [], type: DYN, loc };
+  }
+  // process.report: the diagnostic report is answered by the Node island,
+  // which is this same process — one bridge call, no native
+  // reimplementation, and sharedObjects lists the binary's real libraries.
+  // A build without islands keeps the member fence that names
+  // process.report (no report is fabricated here).
+  if (member === "report") {
+    if (lowerer.nodeIslands === null) return null;
+    return { kind: "libCall", fn: "nodeIsland.processReport", args: [], type: DYN, loc };
   }
   // process.execPath: the compiled binary's own resolved absolute path —
   // the honest answer where Node's is the node executable's (SEMANTICS.md
@@ -952,6 +972,28 @@ export function lowerProcessMethodCall(
     if (stream === "stdin" || stream === "stdout" || stream === "stderr") {
       if (call.arguments.nodes.some(ts.isSpreadElement))
         lowerer.noLowering("process stream spread arguments", call);
+      const loc = locOf(call);
+      // The one-argument string form of write: the runtime writes the text
+      // for an unreplaced write, and a replaced write still receives the
+      // call with the string as its only argument. Static for the handle
+      // receivers, which read their write slot when they are called, so
+      // reading it in the runtime keeps the order JavaScript has.
+      const only = call.arguments.nodes[0];
+      if (
+        stream !== "stdin" &&
+        access.name.text === "write" &&
+        call.arguments.nodes.length === 1 &&
+        only !== undefined &&
+        lowerer.mapTypeOf(lowerer.typeOf(only))?.kind === "string"
+      ) {
+        return {
+          kind: "libCall",
+          fn: "process.stdioWriteStr",
+          args: [numLit(stream === "stderr" ? 2 : 1, loc), lowerer.lowerExpr(only)],
+          type: DYN,
+          loc,
+        };
+      }
       return {
         kind: "dynInvoke",
         recv: lowerer.lowerExpr(access.expression),
@@ -959,7 +1001,7 @@ export function lowerProcessMethodCall(
         calleeName: ts.getTextOfNode(access),
         args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
         type: DYN,
-        loc: locOf(call),
+        loc,
       };
     }
   }

@@ -118,6 +118,7 @@ const INERT_LIB_CALLS = new Set([
   "process.cwd",
   "process.argv",
   "process.execArgv",
+  "process.allowedEnvFlags",
   "process.platform",
   "process.execPath",
   "process.isTTY",
@@ -553,6 +554,7 @@ export class ReferenceWrites {
       case "boolLit":
       case "strLit":
       case "unitLit":
+      case "constCell":
       case "varRef":
       case "bin":
       case "unary":

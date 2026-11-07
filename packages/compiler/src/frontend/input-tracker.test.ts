@@ -2,23 +2,31 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import {
+  type FrontendInputProbe,
   FrontendInputTracker,
+  changedFrontendInput,
   frontendInputsSemanticallyMatch,
   frontendInputsStillMatch,
   invalidateTrackedFilesystem,
   invalidateTrackedPath,
   setVirtualSource,
+  COMPILER_SCRATCH_PREFIX,
   clearVirtualSources,
   trackedAccessibleEntries,
   trackedDirectoryExists,
   trackedFileExists,
+  trackedHostFact,
   markFrontendInputsUnstable,
+  observeFrontendInputs,
   trackedReadFile,
+  trackedReadSource,
+  trackedWholeText,
   validFrontendInputSnapshot,
 } from "./input-tracker.js";
+import { observedSourceText, TOKEN_SPAN } from "./ts7/ast-node.js";
 
 const scratch: string[] = [];
 
@@ -43,7 +51,7 @@ test("semantic validation reads non-source dependencies once and still invalidat
   await writeFile(dependency, "export declare const value: number;\n");
   const tracker = new FrontendInputTracker();
   tracker.run(() => {
-    trackedReadFile(source);
+    trackedReadSource(source);
     trackedReadFile(dependency);
   });
   const snapshot = tracker.snapshot();
@@ -73,7 +81,7 @@ test("an equivalent edit of a file whose raw text the frontend read does not mat
   await writeFile(source, previous);
   const tracker = new FrontendInputTracker();
   tracker.run(() => {
-    trackedReadFile(source);
+    trackedReadSource(source);
     tracker.record({ op: "text", path: source });
   });
   const snapshot = tracker.snapshot();
@@ -85,6 +93,209 @@ test("an equivalent edit of a file whose raw text the frontend read does not mat
     frontendInputsSemanticallyMatch(snapshot, new Map([[source, previous]]), equivalent),
   ).toBeNull();
   expect(equivalent).not.toHaveBeenCalled();
+});
+
+test("a file read by anything but the parser admits no equivalent edit", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
+  scratch.push(dir);
+  const source = join(dir, "entry.ts");
+  const previous = "export const answer = 1;\n";
+  await writeFile(source, previous);
+  const tracker = new FrontendInputTracker();
+  const served = join(dir, "served.ts");
+  tracker.run(() => {
+    trackedReadSource(source);
+    // A reader that scans the content itself, after the parser's read.
+    trackedReadFile(source);
+    // Text a reader took from the program host instead of the file.
+    trackedWholeText(served);
+  });
+  const snapshot = tracker.snapshot();
+  expect(snapshot.probes).toContainEqual({ op: "text", path: source });
+  expect(snapshot.probes).toContainEqual({ op: "text", path: served });
+  await writeFile(source, `// comment\n${previous}`);
+  const equivalent = vi.fn(() => true);
+  expect(
+    frontendInputsSemanticallyMatch(snapshot, new Map([[source, previous]]), equivalent),
+  ).toBeNull();
+  expect(equivalent).not.toHaveBeenCalled();
+});
+
+test("precise text reads are recorded per file and handed to the equivalence check", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
+  scratch.push(dir);
+  const source = join(dir, "entry.ts");
+  const previous = "export const answer = 1;\n";
+  await writeFile(source, previous);
+  const tracker = new FrontendInputTracker();
+  const observer = observedSourceText()!;
+  tracker.run(() => {
+    const text = trackedReadSource(source)!;
+    observer.range(source, text, 7, 12, TOKEN_SPAN);
+    observer.range(source, text, 7, 12, TOKEN_SPAN);
+    observer.position(source, text, 13);
+    observer.fact(source, text, { kind: "includes", needle: "then" }, false, -1, -1, TOKEN_SPAN);
+    observer.fact(source, text, { kind: "matches", source: "^export ", flags: "" }, true, 0, 24, 1);
+  });
+  const snapshot = tracker.snapshot();
+  expect(validFrontendInputSnapshot(snapshot)).toBe(true);
+  const reads = {
+    // Offsets doubled, plus one at a token's start.
+    ranges: [15, 24],
+    positions: [13],
+    facts: [
+      { predicate: { kind: "includes", needle: "then" }, whole: false, yes: [], no: [] },
+      { predicate: { kind: "matches", source: "^export ", flags: "" }, yes: [1, 48], no: [] },
+    ],
+  };
+  expect(snapshot.probes).toContainEqual({ op: "text", path: source, reads });
+  // A comment after the last token: every read has the same answer, at the
+  // same offsets.
+  const current = `${previous}// comment\n`;
+  await writeFile(source, current);
+  const equivalent = vi.fn(() => true);
+  const kept = frontendInputsSemanticallyMatch(snapshot, new Map([[source, previous]]), equivalent);
+  expect(equivalent).toHaveBeenCalledExactlyOnceWith(source, previous, current);
+  expect(kept?.snapshot.probes).toContainEqual({ op: "text", path: source, reads });
+  // A comment at the top: the caller's check accepts it, and the replay of
+  // the recorded line read does not.
+  await writeFile(source, `// comment\n${previous}`);
+  const refused = vi.fn();
+  expect(
+    frontendInputsSemanticallyMatch(
+      snapshot,
+      new Map([[source, previous]]),
+      () => true,
+      {},
+      refused,
+    ),
+  ).toBeNull();
+  expect(refused).toHaveBeenCalledExactlyOnceWith(source, "edit");
+  // The same edit with the line read left out moves the other reads.
+  const moved = frontendInputsSemanticallyMatch(
+    {
+      ...snapshot,
+      probes: snapshot.probes.map((probe): FrontendInputProbe =>
+        probe.op === "text" && probe.reads !== undefined
+          ? { op: "text", path: probe.path, reads: { ...probe.reads, positions: [] } }
+          : probe,
+      ),
+    },
+    new Map([[source, previous]]),
+    () => true,
+  );
+  expect(moved?.snapshot.probes).toContainEqual({
+    op: "text",
+    path: source,
+    reads: {
+      ranges: [37, 46],
+      positions: [],
+      facts: [
+        { predicate: { kind: "includes", needle: "then" }, whole: false, yes: [], no: [] },
+        { predicate: { kind: "matches", source: "^export ", flags: "" }, yes: [23, 70], no: [] },
+      ],
+    },
+  });
+  expect(validFrontendInputSnapshot(moved!.snapshot)).toBe(true);
+});
+
+test("a read of text that is not the file's content counts as a read of all of it", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
+  scratch.push(dir);
+  const source = join(dir, "entry.ts");
+  const other = join(dir, "other.ts");
+  const parsedElsewhere = join(dir, "elsewhere.ts");
+  await writeFile(source, "export const answer = 1;\n");
+  await writeFile(parsedElsewhere, "export const elsewhere = 3;\n");
+  const tracker = new FrontendInputTracker();
+  const observer = observedSourceText()!;
+  tracker.run(() => {
+    trackedReadSource(source);
+    // A syntax tree of rewritten text: its offsets are not the file's.
+    observer.range(source, "export const answer = 1 as number;\n", 7, 12, TOKEN_SPAN);
+    // A synthesized source: no file holds its text.
+    observer.position(other, "export const other = 2;\n", 7);
+    // A file another process parsed: this tracker reads it to compare.
+    observer.position(parsedElsewhere, "export const elsewhere = 3;\n", 7);
+  });
+  const snapshot = tracker.snapshot();
+  expect(snapshot.probes).toContainEqual({ op: "text", path: source });
+  expect(snapshot.probes).toContainEqual({ op: "text", path: other });
+  expect(snapshot.probes).toContainEqual({
+    op: "text",
+    path: parsedElsewhere,
+    reads: { ranges: [], positions: [7], facts: [] },
+  });
+  expect(snapshot.probes).toContainEqual(
+    expect.objectContaining({ op: "file", path: parsedElsewhere }),
+  );
+});
+
+test("a predicate that answered both ways for one text counts as a read of all of it", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
+  scratch.push(dir);
+  const source = join(dir, "entry.ts");
+  await writeFile(source, "export const answer = 1;\n");
+  const tracker = new FrontendInputTracker();
+  const observer = observedSourceText()!;
+  tracker.run(() => {
+    const text = trackedReadSource(source)!;
+    observer.fact(source, text, { kind: "includes", needle: "x" }, false, -1, -1, TOKEN_SPAN);
+    observer.fact(source, text, { kind: "includes", needle: "x" }, true, -1, -1, TOKEN_SPAN);
+  });
+  expect(tracker.snapshot().probes).toContainEqual({ op: "text", path: source });
+});
+
+test("nested trackers join their text reads, and a whole read wins", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
+  scratch.push(dir);
+  const source = join(dir, "entry.ts");
+  const other = join(dir, "other.ts");
+  await writeFile(source, "export const answer = 1;\n");
+  await writeFile(other, "export const other = 2;\n");
+  const outer = new FrontendInputTracker();
+  const observer = observedSourceText()!;
+  outer.runSynchronous(() => {
+    const text = trackedReadSource(source)!;
+    const otherText = trackedReadSource(other)!;
+    observer.position(source, text, 7);
+    observer.position(other, otherText, 7);
+    new FrontendInputTracker().runSynchronous(() => {
+      const again = trackedReadSource(source)!;
+      observer.position(source, again, 13);
+      trackedReadFile(other);
+    });
+  });
+  const probes = outer.snapshot().probes;
+  expect(probes).toContainEqual({
+    op: "text",
+    path: source,
+    reads: { ranges: [], positions: [7, 13], facts: [] },
+  });
+  expect(probes).toContainEqual({ op: "text", path: other });
+});
+
+test("malformed text reads make a snapshot invalid", () => {
+  const snapshot = (reads: unknown) => ({
+    version: 1,
+    stable: true,
+    probes: [{ op: "text", path: "/a.ts", reads }],
+  });
+  expect(validFrontendInputSnapshot(snapshot({ ranges: [], positions: [], facts: [] }))).toBe(true);
+  expect(validFrontendInputSnapshot(snapshot({ ranges: [1], positions: [], facts: [] }))).toBe(
+    false,
+  );
+  expect(validFrontendInputSnapshot(snapshot({ ranges: [], positions: [-1], facts: [] }))).toBe(
+    false,
+  );
+  const fact = (predicate: unknown) =>
+    snapshot({ ranges: [], positions: [], facts: [{ predicate, yes: [], no: [] }] });
+  expect(validFrontendInputSnapshot(fact({ kind: "matches", source: "a", flags: "i" }))).toBe(true);
+  // A stateful pattern answers differently the second time it is asked.
+  expect(validFrontendInputSnapshot(fact({ kind: "matches", source: "a", flags: "g" }))).toBe(
+    false,
+  );
+  expect(validFrontendInputSnapshot(fact({ kind: "evaluates", source: "a" }))).toBe(false);
 });
 
 test("tracked frontend reads invalidate on byte edits", async () => {
@@ -163,6 +374,82 @@ test("an opaque host query can decline frontend cache publication", () => {
   expect(validFrontendInputSnapshot(snapshot)).toBe(false);
 });
 
+test("a host fact is an input: the entry matches only while it has its value", () => {
+  vi.stubEnv("SCRIPTC_TEST_HOST_FACT", "first");
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => {
+    expect(trackedHostFact("env:SCRIPTC_TEST_HOST_FACT")).toBe("first");
+    expect(trackedHostFact("env:SCRIPTC_TEST_HOST_FACT_UNSET")).toBeNull();
+  });
+  const snapshot = tracker.snapshot();
+  expect(snapshot.stable).toBe(true);
+  expect(validFrontendInputSnapshot(snapshot)).toBe(true);
+  expect(snapshot.probes).toEqual([
+    { op: "host", path: "env:SCRIPTC_TEST_HOST_FACT", value: "first" },
+    { op: "host", path: "env:SCRIPTC_TEST_HOST_FACT_UNSET", value: null },
+  ]);
+  expect(changedFrontendInput(snapshot)).toBeNull();
+  vi.stubEnv("SCRIPTC_TEST_HOST_FACT", "second");
+  expect(frontendInputsStillMatch(snapshot)).toBe(false);
+  expect(changedFrontendInput(snapshot)).toEqual(snapshot.probes[0]);
+  vi.stubEnv("SCRIPTC_TEST_HOST_FACT", "first");
+  vi.stubEnv("SCRIPTC_TEST_HOST_FACT_UNSET", "");
+  expect(changedFrontendInput(snapshot)).toEqual(snapshot.probes[1]);
+  vi.unstubAllEnvs();
+});
+
+test("a host fact named like an output path is still checked", () => {
+  vi.stubEnv("SCRIPTC_TEST_HOST_FACT", "first");
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => trackedHostFact("env:SCRIPTC_TEST_HOST_FACT"));
+  const snapshot = tracker.snapshot();
+  vi.stubEnv("SCRIPTC_TEST_HOST_FACT", "second");
+  expect(frontendInputsStillMatch(snapshot, { outputPaths: ["env:SCRIPTC_TEST_HOST_FACT"] })).toBe(
+    false,
+  );
+  vi.unstubAllEnvs();
+});
+
+test("a host fact read with two values prevents cache publication", () => {
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => {
+    trackedHostFact("env:SCRIPTC_TEST_HOST_FACT", "first");
+    trackedHostFact("env:SCRIPTC_TEST_HOST_FACT", "second");
+  });
+  expect(tracker.snapshot().stable).toBe(false);
+});
+
+test("an unstable snapshot carries its first cause", async () => {
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => {
+    markFrontendInputsUnstable("the host answered without saying what it read");
+    markFrontendInputsUnstable("a later cause");
+  });
+  expect(tracker.snapshot()).toEqual({
+    version: 1,
+    probes: [],
+    stable: false,
+    unstable: "the host answered without saying what it read",
+  });
+  expect(new FrontendInputTracker().snapshot()).toEqual({ version: 1, probes: [], stable: true });
+  const outer = new FrontendInputTracker();
+  outer.runSynchronous(() => {
+    new FrontendInputTracker().runSynchronous(() => markFrontendInputsUnstable("inner cause"));
+  });
+  expect(outer.snapshot().unstable).toBe("inner cause");
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
+  scratch.push(dir);
+  const file = join(dir, "late.ts");
+  const changed = new FrontendInputTracker();
+  await changed.run(async () => {
+    trackedFileExists(file);
+    await writeFile(file, "export {};\n");
+    invalidateTrackedPath(file);
+    trackedReadFile(file);
+  });
+  expect(changed.snapshot().unstable).toBe(`${file} appeared while the frontend ran`);
+});
+
 test("directory enumeration invalidates workspace discovery", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
   scratch.push(dir);
@@ -201,6 +488,60 @@ test("compiler outputs do not invalidate a fresh output directory", async () => 
   expect(frontendInputsStillMatch(snapshot, exclusions)).toBe(true);
 
   await writeFile(join(outDir, "new-source.ts"), "export const appeared = true;\n");
+  expect(frontendInputsStillMatch(snapshot, exclusions)).toBe(false);
+});
+
+test("the compiler's scratch entries beside an output do not invalidate a listing", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
+  scratch.push(dir);
+  const output = join(dir, "app");
+  await writeFile(join(dir, "main.ts"), "export {};\n");
+  // A build in progress: its private files sit beside the output it will
+  // write, named as privateSiblingPath names them.
+  const mine = join(dir, `${COMPILER_SCRATCH_PREFIX}frontend-4242-k3v9x1`);
+  await writeFile(mine, "{}");
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => trackedAccessibleEntries(dir));
+  const snapshot = tracker.snapshot();
+  expect(snapshot.probes).toContainEqual({
+    op: "entries",
+    path: dir,
+    files: [basename(mine), "main.ts"].sort(),
+    directories: [],
+  });
+  const exclusions = { outputPaths: [output], outputDirectories: [dir] };
+  // The build finished: its scratch file is gone and its output is there.
+  await rm(mine);
+  await writeFile(output, "binary");
+  expect(frontendInputsStillMatch(snapshot, exclusions)).toBe(true);
+  // The next build's scratch file and staging directory, while it checks.
+  await writeFile(join(dir, `${COMPILER_SCRATCH_PREFIX}llvm-4343-p0q8z2.ll`), "");
+  await mkdir(join(dir, ".scriptc-native-a1b2c3"));
+  expect(frontendInputsStillMatch(snapshot, exclusions)).toBe(true);
+  // Only beside an output, and only the compiler's names.
+  expect(frontendInputsStillMatch(snapshot)).toBe(false);
+  expect(frontendInputsStillMatch(snapshot, { outputPaths: [join(dir, "elsewhere", "app")] })).toBe(
+    false,
+  );
+  await writeFile(join(dir, ".hidden.ts"), "export {};\n");
+  expect(frontendInputsStillMatch(snapshot, exclusions)).toBe(false);
+});
+
+test("a fresh output directory may hold the compiler's scratch entries beside its outputs", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
+  scratch.push(dir);
+  const outDir = join(dir, "dist");
+  const output = join(outDir, "app");
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => trackedDirectoryExists(outDir));
+  const snapshot = tracker.snapshot();
+  const exclusions = { outputPaths: [output], outputDirectories: [outDir, dir] };
+  await mkdir(outDir);
+  await writeFile(output, "binary");
+  await writeFile(join(outDir, `${COMPILER_SCRATCH_PREFIX}native-exe-4444-a7b6c5`), "");
+  expect(frontendInputsStillMatch(snapshot, exclusions)).toBe(true);
+  // A file of the user's there is still a change.
+  await writeFile(join(outDir, "notes.ts"), "export {};\n");
   expect(frontendInputsStillMatch(snapshot, exclusions)).toBe(false);
 });
 
@@ -478,4 +819,68 @@ test("virtual sources drop the answers they replace", async () => {
   expect(read()).toBe("export const fromShadow = 2;\n");
   tracker.run(() => clearVirtualSources());
   expect(settledRead()).toBe("export const onDisk = 3;\n");
+});
+
+test("a nested observation reports its own inputs and passes them to the running tracker", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
+  scratch.push(dir);
+  const before = join(dir, "before.ts");
+  const inside = join(dir, "inside.ts");
+  await writeFile(before, "export const before = 1;\n");
+  await writeFile(inside, "export const inside = 2;\n");
+  const paths = (tracker: FrontendInputTracker): string[] =>
+    tracker.snapshot().probes.map((probe) => probe.path);
+
+  // Under the asynchronous tracker of a Node-hosted compile.
+  const asynchronous = new FrontendInputTracker();
+  const nested = asynchronous.run(() => {
+    trackedReadSource(before);
+    return observeFrontendInputs(() => {
+      markFrontendInputsUnstable();
+      return trackedReadSource(inside);
+    });
+  });
+  expect(nested.result).toBe("export const inside = 2;\n");
+  expect(nested.inputs.probes.map((probe) => probe.path)).toEqual([inside]);
+  expect(nested.inputs.stable).toBe(false);
+  expect(paths(asynchronous)).toEqual([before, inside]);
+  expect(asynchronous.snapshot().stable).toBe(false);
+
+  // Under the synchronous tracker of the native compiler.
+  const synchronous = new FrontendInputTracker();
+  const observed = synchronous.runSynchronous(() => {
+    trackedReadSource(before);
+    return observeFrontendInputs(() => trackedReadSource(inside));
+  });
+  expect(observed.inputs.probes.map((probe) => probe.path)).toEqual([inside]);
+  expect(observed.inputs.stable).toBe(true);
+  expect(paths(synchronous)).toEqual([before, inside]);
+
+  // With no tracker running.
+  const alone = observeFrontendInputs(() => trackedReadSource(inside));
+  expect(alone.inputs.probes.map((probe) => probe.path)).toEqual([inside]);
+});
+
+test("a replay names the first input that changed", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
+  scratch.push(dir);
+  const kept = join(dir, "a.ts");
+  const edited = join(dir, "b.ts");
+  await writeFile(kept, "export const a = 1;\n");
+  await writeFile(edited, "export const b = 1;\n");
+  const { inputs } = observeFrontendInputs(() => {
+    trackedReadFile(kept);
+    trackedReadFile(edited);
+    trackedFileExists(join(dir, "c.ts"));
+  });
+  expect(changedFrontendInput(inputs)).toBeNull();
+  await writeFile(join(dir, "c.ts"), "export const c = 1;\n");
+  expect(changedFrontendInput(inputs)).toMatchObject({ op: "kind", path: join(dir, "c.ts") });
+  // A path the build writes is not an input.
+  expect(changedFrontendInput(inputs, { outputPaths: [join(dir, "c.ts")] })).toBeNull();
+  await writeFile(edited, "export const b = 2;\n");
+  expect(changedFrontendInput(inputs)).toMatchObject({ op: "file", path: edited });
+  // An unstable snapshot is still replayed; whether it is trusted is the caller's question.
+  expect(changedFrontendInput({ ...inputs, stable: false })).toMatchObject({ path: edited });
+  expect(frontendInputsStillMatch({ ...inputs, stable: false })).toBe(false);
 });

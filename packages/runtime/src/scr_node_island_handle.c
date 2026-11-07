@@ -55,6 +55,13 @@ typedef struct ScrNodeRef {
   /* NI-5d: a native subclass of an island class not created yet: the
    * seven subclass arguments (retained), created on first need. */
   ScrDyn **lazy;
+  /* An island function's identity root (owned, made on first need): the
+   * closure every typed view of the function adopts as its identity. It is
+   * only ever compared, never called, retained or released, so it is a
+   * plain block this ref frees: `fn` marks it as such a root and the slot
+   * after the header names this ref (nh_function_of_identity). A view keeps
+   * the function's handle, and so this ref, alive through its capture. */
+  ScrClosure *identity;
 } ScrNodeRef;
 
 static ScrNodeRef **ni_refs = NULL; /* by bridge id */
@@ -194,6 +201,7 @@ static void nh_lazy_free(ScrNodeRef *ref) {
 
 static void nh_ref_release(ScrNodeRef *ref) {
   if (--ref->rc != 0) return;
+  free(ref->identity);
   if (ref->alias != NULL) {
     nh_ref_release(ref->alias);
     free(ref);
@@ -469,10 +477,22 @@ static ScrDyn *nh_from_node(const ScrNodeValue *v) {
     return d;
   }
   case SCR_NV_HANDLE: {
-    ScrNodeRef *ref = nh_ref(v->u.handle, v->flags);
+    /* `v` is the bridge's until the next entry, and an adoption enters. */
+    uint32_t handle = v->u.handle;
+    bool twin = (v->flags & SCR_NVF_TWIN) != 0;
+    ScrNodeRef *ref = nh_ref(handle, v->flags);
     ScrDyn *d = (ref->flags & SCR_NVF_PROMISE) ? nh_promise_box(ref)
                                                 : scr_dyn_new_handle(ref, SCR_DYNH_NODE_ISLAND);
     nh_ref_release(ref);
+    /* An island object of a twin class (an AbortSignal the island made):
+     * the native object that adopts it, when a class does. */
+    if (twin) {
+      ScrDyn *native = scr_ni_twin_adopt(d, handle);
+      if (native != NULL) {
+        scr_dyn_release(d);
+        return native;
+      }
+    }
     return d;
   }
   case SCR_NV_BYTES: return nh_bytes_box(v);
@@ -496,6 +516,14 @@ static ScrError *nh_error_of(const ScrNodeValue *v) {
   }
   ScrNodeErrorInfo info;
   nh_bridge()->error_info(ref->id, &info);
+  /* Node did not find a file, and the error names the installed module
+   * tree: a tool may have removed files from it. What is missing is put
+   * back (scr_ni_tree_repair), for nh_load's second attempt and for every
+   * later load. */
+  if (info.code != NULL && scr_ni_missing_file_code(info.code, info.code_len) &&
+      ((info.message != NULL && scr_ni_tree_named(info.message, info.message_len)) ||
+       (info.stack != NULL && scr_ni_tree_named(info.stack, info.stack_len))))
+    scr_ni_tree_repair();
   ScrStr *message = nh_str(info.message ? info.message : "", info.message_len);
   ScrError *e = scr_error_new((int)info.kind, message);
   scr_str_release(message);
@@ -859,16 +887,37 @@ static bool nh_receiver(ScrDyn *obj, uint32_t *id, const char *what) {
 
 static ScrDyn *nh_load(ScrStr *path, int esm) {
   nh_bridge();
-  nh_enter();
-  char *p = scr_ni_module_path(path);
-  ScrNodeValue out;
-  NhCall c = {.op = NH_LOAD, .path = p, .mode = esm, .out = &out};
-  nh_run(&c);
-  free(p);
-  return nh_outcome(&c);
+  for (int attempt = 0;; attempt++) {
+    size_t repairs = scr_ni_tree_repairs();
+    nh_enter();
+    char *p = scr_ni_module_path(path);
+    ScrNodeValue out;
+    NhCall c = {.op = NH_LOAD, .path = p, .mode = esm, .out = &out};
+    nh_run(&c);
+    free(p);
+    ScrDyn *loaded = nh_outcome(&c);
+    if (loaded != NULL || attempt > 0 || scr_ni_tree_repairs() == repairs) return loaded;
+    /* The load failed on a file the installed tree had lost, and the file
+     * is back: the load once more. */
+    scr_caught_release(scr_exc_take());
+  }
 }
 
 ScrDyn *scr_ni_require(ScrStr *path) { return nh_load(path, 0); }
+
+ScrDyn *scr_ni_process_report(void) {
+  ScrStr *specifier = scr_str_new("process", 7);
+  ScrDyn *process = nh_load(specifier, 0);
+  scr_str_release(specifier);
+  if (process == NULL) return NULL;
+  /* Node's process.report object: a stable object whose getReport() builds
+   * the diagnostic report of THIS process — the island and the compiled
+   * binary are one process, so sharedObjects lists the binary's own
+   * libraries. */
+  ScrDyn *report = scr_ni_get_str(process, "report", 6);
+  scr_dyn_release(process);
+  return report;
+}
 
 ScrPromise *scr_ni_import(ScrStr *path) {
   ScrDyn *d = nh_load(path, 1);
@@ -1171,6 +1220,30 @@ bool scr_ni_is_function(const ScrDyn *value) {
   return ref != NULL && (ref->flags & SCR_NVF_FUNCTION) != 0;
 }
 
+/* Its address in a closure's `fn` marks an island function's identity root. */
+static const char nh_identity_mark = 0;
+
+static ScrClosure *nh_function_identity(const ScrDyn *value) {
+  ScrNodeRef *ref = nh_ref_of(value);
+  if (ref == NULL || (ref->flags & SCR_NVF_FUNCTION) == 0) return NULL;
+  /* A deferred module's stub that already had a ref stands for it. */
+  while (ref->alias != NULL) ref = ref->alias;
+  if (ref->identity == NULL) {
+    ScrClosure *root = calloc(1, sizeof *root + sizeof(ScrBox *));
+    if (root == NULL) nh_oom();
+    root->rc = SIZE_MAX;
+    root->fn = (void *)&nh_identity_mark;
+    root->caps[0] = (ScrBox *)(void *)ref; /* not a capture: ncaps stays 0 */
+    ref->identity = root;
+  }
+  return ref->identity;
+}
+
+static ScrDyn *nh_function_of_identity(const ScrClosure *root) {
+  if (root->fn != (void *)&nh_identity_mark) return NULL;
+  return scr_dyn_new_handle((ScrNodeRef *)(void *)root->caps[0], SCR_DYNH_NODE_ISLAND); /* retains */
+}
+
 /* Node's util.inspect, loaded once and held for the program's life. */
 static ScrDyn *nh_inspect_fn = NULL;
 
@@ -1471,6 +1544,46 @@ static ScrDyn *nh_op_iter_pack(void *h) {
   return out;
 }
 
+/* The host's structuredClone, loaded once. */
+static ScrDyn *nh_clone_fn = NULL;
+
+/* structuredClone of an island object: Node's own, so the copy is the
+ * fresh island object Node makes (a handle of it), and a value Node cannot
+ * clone throws Node's DataCloneError. +1, or NULL with the exception
+ * pending. */
+static ScrDyn *nh_op_clone(void *h) {
+  if (nh_clone_fn == NULL) {
+    ScrStr *name = scr_str_new("scriptc:clone", 13);
+    nh_clone_fn = nh_load(name, 0);
+    scr_str_release(name);
+    if (nh_clone_fn == NULL) return NULL;
+  }
+  ScrDyn *box = scr_dyn_new_handle(h, SCR_DYNH_NODE_ISLAND);
+  ScrDyn *copy = scr_ni_call(nh_clone_fn, scr_dyn_undefined(), &box, 1);
+  scr_dyn_release(box);
+  return copy;
+}
+
+/* The host's Object.prototype.toString, loaded once. */
+static ScrDyn *nh_object_tag_fn = NULL;
+
+/* Object.prototype.toString.call of an island object, by Node. +1, or NULL
+ * with the exception pending. */
+static ScrStr *nh_object_tag(const ScrDyn *value) {
+  if (nh_object_tag_fn == NULL) {
+    ScrStr *name = scr_str_new("scriptc:objectTag", 17);
+    nh_object_tag_fn = nh_load(name, 0);
+    scr_str_release(name);
+    if (nh_object_tag_fn == NULL) return NULL;
+  }
+  ScrDyn *args[1] = {(ScrDyn *)value};
+  ScrDyn *tag = scr_ni_call(nh_object_tag_fn, scr_dyn_undefined(), args, 1);
+  if (tag == NULL) return NULL;
+  ScrStr *out = tag->kind == SCR_DYN_STR ? scr_str_retain(tag->v.str) : scr_str_new("[object Object]", 15);
+  scr_dyn_release(tag);
+  return out;
+}
+
 static const ScrDynHandleOps nh_ops = {
     .cls = "Object",
     .retain = nh_ref_retain_v,
@@ -1480,6 +1593,7 @@ static const ScrDynHandleOps nh_ops = {
     .set = nh_op_set,
     .symbol_get = nh_op_symbol_get,
     .iter_pack = nh_op_iter_pack,
+    .clone = nh_op_clone,
 };
 
 /* At exit: what the unit itself still holds (pins, unsettled waiters,
@@ -1498,6 +1612,14 @@ static void nh_cleanup(void) {
   if (nh_to_primitive_fn != NULL) {
     scr_dyn_release(nh_to_primitive_fn);
     nh_to_primitive_fn = NULL;
+  }
+  if (nh_clone_fn != NULL) {
+    scr_dyn_release(nh_clone_fn);
+    nh_clone_fn = NULL;
+  }
+  if (nh_object_tag_fn != NULL) {
+    scr_dyn_release(nh_object_tag_fn);
+    nh_object_tag_fn = NULL;
   }
   if (nh_spread_fn != NULL) {
     scr_dyn_release(nh_spread_fn);
@@ -1686,6 +1808,9 @@ static const ScrNiDynOps nh_dyn_ops = {
     .to_primitive = scr_ni_to_primitive,
     .is_function = scr_ni_is_function,
     .error_constructor = nh_error_constructor,
+    .object_tag = nh_object_tag,
+    .function_identity = nh_function_identity,
+    .function_of_identity = nh_function_of_identity,
 };
 
 __attribute__((constructor)) static void nh_install(void) { scr_ni_dyn_ops = &nh_dyn_ops; }

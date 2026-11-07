@@ -12,6 +12,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "nodeIsland.callSync",
   // Island module evaluation and member operations run JavaScript.
   "nodeIsland.require",
+  // process.report loads the process builtin and reads the report object.
+  "nodeIsland.processReport",
   "nodeIsland.defer",
   "nodeIsland.get",
   "nodeIsland.getKey",
@@ -90,6 +92,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "buffer.transcode",
   "buffer.slowBuffer",
   "cp.spawnDynamic",
+  "cp.checkArgs",
   "child.onDyn",
   "text.decoderEncoding",
   "strdec.encoding",
@@ -109,6 +112,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "text.decodeStream",
   "text.decodeLegacyOptions",
   "dyn.nativeSetNew",
+  // new Set(iterable)/new Map(iterable) run the program's own add/set and
+  // step the iterable
+  "dyn.collectionConstruct",
+  "dyn.setValues",
   "ffi.argument",
   "ffi.memoryModule",
   "process.stdoutWrite",
@@ -143,6 +150,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.realpathValue",
   "dyn.validateString",
   "dyn.validateStrings",
+  "dyn.validateFsPath",
   "path.resolveValue",
   "path.parseValue",
   "path.formatValue",
@@ -242,6 +250,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "num.toStringRadix",
   "num.toStringRadixF64",
   "insp.jsonDyn",
+  "insp.jsonDynValue",
   // The runtime formatter calls toString, valueOf and toJSON, and refuses
   // renderings it has no lowering for.
   "insp.format",
@@ -351,6 +360,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "emitter.emitAny",
   "emitter.emitErrorValue",
   "emitter.emitMixed",
+  "emitter.hasDyn",
   "emitter.listenersDyn",
   "emitter.emitError",
   "emitter.on",
@@ -408,6 +418,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.requestDynCb",
   "https.requestDyn",
   "https.requestDynCb",
+  "https.requestFnDyn",
+  "https.requestFnDynCb",
   // The URL+options form adds the URL parse's throws to that walk's.
   "http.requestUrlDyn",
   "http.requestUrlDynCb",
@@ -512,6 +524,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.requestConnCb",
   "process.kill",
   "process.killNum",
+  // A replaced process.stdout/stderr.write runs JavaScript: what it throws
+  // propagates from the call.
+  "process.stdioWriteStr",
   "process.setExitCode",
   "process.setExitCodeTracked",
   // Node's argument grammar throws ERR_INVALID_ARG_TYPE at the call.
@@ -718,6 +733,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "punycode.toASCII",
   "punycode.toUnicode",
   "punycode.ucs2Encode",
+  // node:sea's asset readers always throw Node's coded error.
+  "sea.getAsset",
+  "sea.getRawAsset",
+  "sea.getAssetAsBlob",
+  "sea.getAssetKeys",
   // The base64 globals: atob/btoa throw the catchable DOMException
   // InvalidCharacterError on malformed input; the zero-argument form
   // always throws Node's TypeError [ERR_MISSING_ARGS].
@@ -728,6 +748,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // synchronously on a non-function argument (the closure form never
   // throws — the callback's own throw surfaces at drain, uncaught).
   "timers.queueMicrotaskDyn",
+  // the timer callback gate: a non-function throws ERR_INVALID_ARG_TYPE
+  // synchronously (Node validates before anything schedules)
+  "timers.checkCallback",
   // structuredClone: option validation throws Node's TypeErrors,
   // functions/handles the spec's DataCloneError, cycles the scriptc
   // fence; the zero-argument form always throws ERR_MISSING_ARGS. The
@@ -758,6 +781,14 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.getPrototype",
   "dyn.getPrototypeForIdentity",
   "dyn.setPrototype",
+  // ES2025 Set compositions run the set-like protocol: reading and calling
+  // `size`/`has`/`keys` can throw, and so can a user `has` or iterator.
+  "dyn.setCombine",
+  // forEach with a callback that is not statically a function throws Node's
+  // `<value> is not a function`.
+  "dyn.collectionForEach",
+  // a proxy in the prototype chain can throw
+  "dyn.collectionGetPrototype",
   // a proxy in the prototype chain can throw
   "dyn.builtinInstanceOf",
   "dyn.functionInstanceOf",
@@ -797,6 +828,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.primitiveDelete",
   "dyn.reflectDeleteProperty",
   "dyn.reflectHasTarget",
+  "dyn.reflectGetPrototypeTarget",
   "dyn.hasKeyComputed",
   // `… in globalThis` over a name the runtime does not provide throws
   "dyn.globalHas",
@@ -820,6 +852,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "class.throwReadOnly",
   "class.throwNotExtensible",
   "record.throwFrozen",
+  // `delete r.k` of a key the record's kept source holds throws Node's
+  // TypeError on a frozen record in strict code.
+  "record.sourceDelete",
   "dyn.toString",
   "dyn.valueOf",
   // Primitive wrapper objects (scr_js_wrapper.c): the conversions run
@@ -850,11 +885,31 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "child.propsDefine",
   "child.propsDescriptor",
   "child.propsOnDyn",
+  // Handle own-property tables: the graph-walker refusals, a handle used as
+  // a descriptor, and Object.defineProperties throw.
+  "handle.propsDefineProps",
+  "handle.propsGuard",
+  "handle.propsGuardList",
+  "handle.propsCheck",
+  "handle.propsGrant",
   "dyn.arrayProtoCall",
   "dyn.arrayLikeProtoCall",
   "process.chdir",
   "os.getPriority",
   "os.setPriority",
+  // Node's SystemError when the passwd entry of the effective uid answers
+  // nothing: os.homedir() with HOME unset, and os.userInfo()'s fields, which
+  // take their own lookup when the record's begin call did not run.
+  "os.homedir",
+  "os.userInfoBegin",
+  "os.userName",
+  "os.userShell",
+  "os.userHomedir",
+  "os.userNameBuf",
+  "os.userShellBuf",
+  "os.userHomedirBuf",
+  "os.userUid",
+  "os.userGid",
   // Pattern length TypeError, brace-sequence RangeError, and the
   // SyntaxError of a segment regex invalid under the u flag.
   "path.matchesGlob",
@@ -1013,6 +1068,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "emitter.setDefaultMaxChk",
   "fs.readFileSyncBytes",
   "fs.writeFileSyncBytes",
+  "fs.writeFileSyncBytesFlags",
   "fs.writeFileSyncFd",
   "fs.appendFileSyncBytes",
   "zlib.inflateSync",
@@ -1143,7 +1199,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.fsStreamClose",
   "fs.fsStreamCloseCb",
   "dir.readSync",
+  "dir.readCb",
   "dir.closeSync",
+  // Symbol.dispose is closeSync on an open Dir: ERR_DIR_CONCURRENT_OPERATION
+  // while an operation is queued.
+  "dir.dispose",
   "fs.copyFileSync",
   "fs.copyFileFlagsSync",
   "fs.renameSync",
@@ -1232,4 +1292,8 @@ export const ALWAYS_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.streamOptsChk",
   "net.connectOptsChk",
   "tls.caCertsChk",
+  "sea.getAsset",
+  "sea.getRawAsset",
+  "sea.getAssetAsBlob",
+  "sea.getAssetKeys",
 ]);

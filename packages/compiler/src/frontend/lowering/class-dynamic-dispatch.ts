@@ -198,6 +198,71 @@ function stringTagHelper(lowerer: Lowerer, info: ClassInfo, loc: SrcLoc): IrFunc
   };
 }
 
+/** The accessor members a checked view of `info` answers, nearest
+ * declaration first: the names some `get` accessor at or above the class
+ * declares, with the type its getter answers. A name whose nearest
+ * declaration is a setter alone has no getter to run (a read of it answers
+ * undefined, exactly as on the instance), and symbol-keyed and #private
+ * members never cross a conversion, so both are left out. */
+function viewAccessorsOf(lowerer: Lowerer, info: ClassInfo): { member: string; ret: IrType }[] {
+  const out: { member: string; ret: IrType }[] = [];
+  const declared = new Set<string>();
+  for (let current: ClassInfo | null = info; current; current = current.base) {
+    // A `get`/`set` pair is one accessor: within a class the getter decides.
+    const getters = new Set<string>();
+    const setters = new Set<string>();
+    for (const member of current.methods.keys()) {
+      if (member.startsWith("get:")) getters.add(member.slice("get:".length));
+      else if (member.startsWith("set:")) setters.add(member.slice("set:".length));
+    }
+    for (const name of [...getters, ...setters]) {
+      if (declared.has(name)) continue;
+      declared.add(name);
+      if (name.startsWith("sym:") || name.startsWith("#") || !getters.has(name)) continue;
+      const member = `get:${name}`;
+      // The abstract direct-call fence, as accessorCall applies it: a getter
+      // with no implementation at or below the receiver has no value.
+      const found = findMethodOn(lowerer, info, member);
+      if (!found) continue;
+      if (found.sig.abstract === true && !lowerer.overrideBelow(info, member)) continue;
+      out.push({ member, ret: found.sig.ret });
+    }
+  }
+  return out;
+}
+
+/** `(instance) => dyn`, the value one of an instance's accessor-backed
+ * members answers. A checked view holds an instance's own data fields, so a
+ * field that exists only behind a getter reads as undefined there; the
+ * materializer installs this helper as the member's getter and a read of the
+ * copied field runs it on the native instance. */
+function viewAccessorHelper(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  member: string,
+  ret: IrType,
+  loc: SrcLoc,
+): IrFunction {
+  const type: IrType = { kind: "object", className: info.def.name };
+  return {
+    name: `%class.view:${info.def.name}:${member}`,
+    params: [{ localId: "this", name: "this", type }],
+    locals: [{ id: "this", name: "this", type, mutable: false }],
+    returnType: DYN,
+    body: [
+      {
+        kind: "return",
+        value: lowerer.coerceToExpected(
+          accessorCall(lowerer, info.def.name, member, varRef("this", type, loc), [], ret, loc),
+          DYN,
+        ),
+        loc,
+      },
+    ],
+    loc,
+  };
+}
+
 function symbolMemberKey(
   lowerer: Lowerer,
   info: ClassInfo,
@@ -1441,6 +1506,12 @@ export class ClassDynamicDispatch {
       dynamicKey: boolean;
       numericKey: boolean;
       probe: "in" | "own" | "enumerable" | undefined;
+      /** The helper's fallthrough applied to the value itself instead of its
+       * property bag: the access the runtime answers on the value's view,
+       * as it does for a key written as a literal. */
+      view: () => IrStmt[];
+      /** Whether the value's property bag has the key as an own property. */
+      bagHas: () => IrExpr;
     }
   >();
   private readonly computedClassHelpers = new Map<string, IrFunction>();
@@ -1658,6 +1729,18 @@ export class ClassDynamicDispatch {
         this.generated.add(fn);
         lowerer.liftedFns.push(fn);
         changed = true;
+      }
+      for (const current of tagged(info)) {
+        if (current.def.viewAccessors !== undefined) continue;
+        const entries: NonNullable<IrClassDef["viewAccessors"]> = [];
+        for (const { member, ret } of viewAccessorsOf(lowerer, current)) {
+          const fn = viewAccessorHelper(lowerer, current, member, ret, functions[0]!.loc);
+          entries.push({ member, helper: fn.name });
+          this.generated.add(fn);
+          lowerer.liftedFns.push(fn);
+          changed = true;
+        }
+        if (entries.length > 0) current.def.viewAccessors = entries;
       }
       if (this.prototypeHelper && !this.prototypeClasses.has(className)) {
         this.prototypeClasses.add(className);
@@ -2768,15 +2851,17 @@ export class ClassDynamicDispatch {
               ...(reflect ? [{ localId: "p.reflectReceiver", name: "receiver", type: DYN }] : []),
             ];
             const keyLocal = dynamicKey ? "key.string" : "p.key";
-            const bag: IrExpr = computedWrite
-              ? {
-                  kind: "call",
-                  callee: this.propertyBag!.name,
-                  args: [varRef("p.0", DYN, loc)],
-                  type: DYN,
-                  loc,
-                }
-              : this.readPropertyBagOrEmpty(lowerer, varRef("p.0", DYN, loc), loc);
+            const makeBag = (): IrExpr =>
+              computedWrite
+                ? {
+                    kind: "call",
+                    callee: this.propertyBag!.name,
+                    args: [varRef("p.0", DYN, loc)],
+                    type: DYN,
+                    loc,
+                  }
+                : this.readPropertyBagOrEmpty(lowerer, varRef("p.0", DYN, loc), loc);
+            const bag = makeBag();
             const reflectionFallback = (target: IrExpr, property: IrExpr): IrExpr => ({
               kind: "libCall",
               fn: computedWrite ? "dyn.reflectSet" : "dyn.reflectGet",
@@ -2789,26 +2874,34 @@ export class ClassDynamicDispatch {
               type: computedWrite ? BOOL : DYN,
               loc,
             });
-            const fallback: IrExpr = reflect
-              ? reflectionFallback(bag, varRef(keyLocal, STRING, loc))
-              : computedProbe
-                ? {
-                    ...computedProbe,
-                    fn:
-                      probe === "in"
-                        ? "dyn.in"
-                        : probe === "own"
-                          ? "dyn.hasOwn"
-                          : "dyn.propertyIsEnumerable",
-                    args: [bag, varRef(keyLocal, STRING, loc)],
-                  }
-                : computedRead
-                  ? { ...computedRead, value: bag, key: varRef(keyLocal, STRING, loc) }
-                  : {
-                      ...computedWrite!,
-                      fn: "dyn.keySet",
-                      args: [bag, varRef(keyLocal, STRING, loc), varRef("p.1", DYN, loc)],
-                    };
+            const fallbackOn = (target: IrExpr): IrExpr =>
+              reflect
+                ? reflectionFallback(target, varRef(keyLocal, STRING, loc))
+                : computedProbe
+                  ? {
+                      ...computedProbe,
+                      fn:
+                        probe === "in"
+                          ? "dyn.in"
+                          : probe === "own"
+                            ? "dyn.hasOwn"
+                            : "dyn.propertyIsEnumerable",
+                      args: [target, varRef(keyLocal, STRING, loc)],
+                    }
+                  : computedRead
+                    ? { ...computedRead, value: target, key: varRef(keyLocal, STRING, loc) }
+                    : {
+                        ...computedWrite!,
+                        fn: "dyn.keySet",
+                        args: [target, varRef(keyLocal, STRING, loc), varRef("p.1", DYN, loc)],
+                      };
+            const fallthroughOn = (target: IrExpr): IrStmt[] =>
+              computedWrite && !reflect
+                ? [
+                    { kind: "exprStmt", expr: fallbackOn(target), loc },
+                    { kind: "return", value: null, loc },
+                  ]
+                : [{ kind: "return", value: fallbackOn(target), loc }];
             const helper: IrFunction = {
               name: `%dyn.class.computed.${this.computed.size}`,
               params,
@@ -2825,14 +2918,7 @@ export class ClassDynamicDispatch {
                   ? [{ id: keyLocal, name: "key", type: STRING, mutable: false }]
                   : []),
               ],
-              body: reflect
-                ? [{ kind: "return", value: fallback, loc }]
-                : computedWrite
-                  ? [
-                      { kind: "exprStmt", expr: fallback, loc },
-                      { kind: "return", value: null, loc },
-                    ]
-                  : [{ kind: "return", value: fallback, loc }],
+              body: fallthroughOn(bag),
               loc,
               ...(numericKey && computedRead && !reflect && !dynamicKey
                 ? { fastRead: "index" as const }
@@ -3045,6 +3131,14 @@ export class ClassDynamicDispatch {
               dynamicKey,
               numericKey,
               probe,
+              view: () => fallthroughOn(varRef("p.0", DYN, loc)),
+              bagHas: () => ({
+                kind: "libCall",
+                fn: "dyn.hasOwn",
+                args: [makeBag(), varRef(keyLocal, STRING, loc)],
+                type: BOOL,
+                loc,
+              }),
             };
             this.computed.set(key, dispatch);
             this.generated.add(helper);
@@ -4211,6 +4305,19 @@ export class ClassDynamicDispatch {
           continue;
         }
         const names = new Set([...info.fields.keys()].filter(isClassOwnEnumerableFieldName));
+        // A class rooted at Error also has the own properties its runtime
+        // base keeps in slots (`stack`, `cause`), which are neither declared
+        // fields nor bag entries. A read or a presence test of a name the
+        // class does not declare is therefore asked of the instance's view,
+        // where the runtime answers a key written as a literal. A write
+        // keeps the bag, as a literal key's does (the runtime copies a
+        // slot's property from it). A read of a key the bag holds (a
+        // property or accessor the program added) stays a bag read with the
+        // instance as receiver, so a getter sees the instance as `this`.
+        // `stack` is read and written through the native slot, as the
+        // by-name dispatch does.
+        const errorRooted = lowerer.isSubclassOf(info.def.name, "%Error");
+        if (errorRooted && !dispatch.probe && !dispatch.reflect) names.add("stack");
         if (info.builtinStream)
           for (const name of [...STREAM_BOOL_PROPERTIES, ...STREAM_NUM_PROPERTIES]) names.add(name);
         const inherited = eventTargetApiMembers(info);
@@ -4256,6 +4363,32 @@ export class ClassDynamicDispatch {
             loc,
           });
         }
+        // The fallthrough on the property bag, with the instance as the
+        // receiver of a bag accessor or setter.
+        const bagFallthrough = (): IrStmt[] =>
+          transformStmtList(dispatch.fn.body.slice(dispatch.write ? -2 : -1), {
+            stmt: (statement) => statement,
+            expr: (expression) =>
+              expression.kind === "dynKeyGet" && expression.key.type.kind === "string"
+                ? {
+                    kind: "libCall",
+                    fn: "dyn.bagGet",
+                    args: [
+                      expression.value,
+                      expression.key,
+                      lowerer.coerceToExpected(receiver, DYN),
+                    ],
+                    type: DYN,
+                    loc,
+                  }
+                : expression.kind === "libCall" && expression.fn === "dyn.keySet"
+                  ? {
+                      ...expression,
+                      fn: "dyn.bagSet",
+                      args: [...expression.args, lowerer.coerceToExpected(receiver, DYN)],
+                    }
+                  : expression,
+          });
         // Keep each class's key table in a separate function. A single
         // function containing every boxed class grows quadratically during
         // LLVM's control-flow optimization for large library workloads.
@@ -4279,29 +4412,20 @@ export class ClassDynamicDispatch {
           })),
           body: [
             ...branch,
-            ...transformStmtList(dispatch.fn.body.slice(dispatch.write ? -2 : -1), {
-              stmt: (statement) => statement,
-              expr: (expression) =>
-                expression.kind === "dynKeyGet" && expression.key.type.kind === "string"
-                  ? {
-                      kind: "libCall",
-                      fn: "dyn.bagGet",
-                      args: [
-                        expression.value,
-                        expression.key,
-                        lowerer.coerceToExpected(receiver, DYN),
-                      ],
-                      type: DYN,
+            ...(errorRooted && !dispatch.write
+              ? dispatch.probe || dispatch.reflect
+                ? dispatch.view()
+                : [
+                    {
+                      kind: "if" as const,
+                      cond: dispatch.bagHas(),
+                      then: bagFallthrough(),
+                      else_: null,
                       loc,
-                    }
-                  : expression.kind === "libCall" && expression.fn === "dyn.keySet"
-                    ? {
-                        ...expression,
-                        fn: "dyn.bagSet",
-                        args: [...expression.args, lowerer.coerceToExpected(receiver, DYN)],
-                      }
-                    : expression,
-            }),
+                    },
+                    ...dispatch.view(),
+                  ]
+              : bagFallthrough()),
           ],
           loc,
         };
@@ -7055,11 +7179,17 @@ export class ClassDynamicDispatch {
       params = methodInfo.sig.params;
       // An untyped async method's `dyn` result is its promise's payload; the
       // call answers the promise. An async generator method answers its
-      // generator object, which its signature already returns.
+      // generator object, which its signature already returns. A method
+      // whose declaration is a runtime fence (an async override of a sync
+      // method in an untyped module, say) has no async body behind it: the
+      // function stands for the refused construct and answers the slot's
+      // type, so the arm calls that and asks for no promise.
+      const fenced = owner.methodEntryFences?.has(method) === true;
       result =
         methodInfo.sig.async === true &&
         !methodInfo.sig.gen &&
-        methodInfo.sig.ret.kind !== "promise"
+        methodInfo.sig.ret.kind !== "promise" &&
+        !fenced
           ? { kind: "promise", inner: methodInfo.sig.ret }
           : methodInfo.sig.ret;
       callee = `%${owner.def.name}.${method}`;

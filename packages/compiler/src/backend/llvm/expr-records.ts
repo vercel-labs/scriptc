@@ -6,6 +6,7 @@ import {
   type IrType,
   isRefCounted,
   isUnitType,
+  keyedRecordFields,
   type SrcLoc,
   typeEquals,
 } from "../../ir/ir.js";
@@ -492,7 +493,7 @@ export function pointerRecordKeyGet(host: LlvmEmitterContext, e: IrExpr): boolea
   const exact = (t: IrType): boolean => typeEquals(t, resultType) || typeEquals(t, nullable.arm);
   const shape = host.recordShape(e.shapeId);
   if (e.overflowOnly !== true) {
-    for (const f of shape.fields)
+    for (const f of keyedRecordFields(shape))
       if (
         host.recordFieldInline(e.shapeId, f.name) ||
         !exact(f.type) ||
@@ -532,7 +533,7 @@ export function emitBorrowedRecordKeyGet(
   }
   const join = B.newLabel("rkb.j");
   const shape = host.recordShape(e.shapeId);
-  for (const f of e.overflowOnly === true ? [] : shape.fields) {
+  for (const f of e.overflowOnly === true ? [] : keyedRecordFields(shape)) {
     const hit = B.tmp();
     B.line(
       `${hit} = call zeroext i1 ${host.literalEquals(f.name)}(ptr ${key.name}) ; ${llvmCommentText(f.name)}`,
@@ -599,7 +600,8 @@ export function borrowedRecordKeyGetOr(
     t.kind === "dyn" ||
     (t.kind === "union" && (host.unionsById.get(t.unionId)?.arms ?? []).some(isUnitType));
   if (shape.indexValue !== undefined && holdsUnit(shape.indexValue)) return null;
-  if (e.left.overflowOnly !== true && shape.fields.some((f) => holdsUnit(f.type))) return null;
+  if (e.left.overflowOnly !== true && keyedRecordFields(shape).some((f) => holdsUnit(f.type)))
+    return null;
   return e.left;
 }
 
@@ -645,7 +647,7 @@ export function scalarRecordKeyGet(host: LlvmEmitterContext, e: IrExpr): boolean
     (t.kind === "f64" || t.kind === "bool") && def!.arms.some((a) => typeEquals(a, t));
   const shape = host.recordShape(e.shapeId);
   if (e.overflowOnly !== true) {
-    for (const f of shape.fields) {
+    for (const f of keyedRecordFields(shape)) {
       const inline = host.recordFieldInline(e.shapeId, f.name);
       // A field a partial view may lack has no slot to read.
       if (host.partialFieldMissing(e.shapeId, f.name)) return false;
@@ -686,7 +688,7 @@ export function emitStackRecordKeyGet(
     B.line(`store i64 ${bits}, ptr ${bitsPtr}`);
   };
   const shape = host.recordShape(e.shapeId);
-  for (const f of e.overflowOnly === true ? [] : shape.fields) {
+  for (const f of e.overflowOnly === true ? [] : keyedRecordFields(shape)) {
     const hit = B.tmp();
     B.line(
       `${hit} = call zeroext i1 ${host.literalEquals(f.name)}(ptr ${key.name}) ; ${llvmCommentText(f.name)}`,
@@ -781,7 +783,7 @@ export function keyedRecordReadInto(
     // other hit converts through the per-type toDyn walker, a dyn-valued
     // overflow hit passes through (+1 from the map get), and a miss is
     // JS's undefined — the dyn singleton.
-    for (const f of overflowOnly ? [] : shape.fields) {
+    for (const f of overflowOnly ? [] : keyedRecordFields(shape)) {
       const hit = B.tmp();
       B.line(
         `${hit} = call zeroext i1 ${host.literalEquals(f.name)}(ptr ${keyName}) ; ${llvmCommentText(f.name)}`,
@@ -811,7 +813,20 @@ export function keyedRecordReadInto(
           host.declare(`declare ptr @scr_dyn_retain_v(ptr)`);
           const r = B.tmp();
           B.line(`${r} = call ptr @scr_dyn_retain_v(ptr ${v})`);
-          B.line(`store ptr ${r}, ptr ${slot}`);
+          // An ABSENT optional dyn slot reads as the dyn undefined, so the
+          // marker never escapes through a keyed read either.
+          if (f.optional === true) {
+            host.declare(`declare ptr @scr_dyn_undefined()`);
+            const absent = B.tmp();
+            const undef = B.tmp();
+            const value = B.tmp();
+            B.line(`${absent} = icmp eq ptr ${v}, ${host.dynAbsentRef()}`);
+            B.line(`${undef} = call ptr @scr_dyn_undefined()`);
+            B.line(`${value} = select i1 ${absent}, ptr ${undef}, ptr ${r}`);
+            B.line(`store ptr ${value}, ptr ${slot}`);
+          } else {
+            B.line(`store ptr ${r}, ptr ${slot}`);
+          }
         } else {
           const r = host.dyn.liveReadToDyn(B, type, v);
           B.line(`store ptr ${r}, ptr ${slot}`);
@@ -913,7 +928,7 @@ export function keyedRecordReadInto(
     const payload = owned ? expr : host.retainHeap(expr, vt);
     return host.unionNewOwned(def.id, tag, { name: payload, type: vt });
   };
-  for (const f of overflowOnly ? [] : shape.fields) {
+  for (const f of overflowOnly ? [] : keyedRecordFields(shape)) {
     const hit = B.tmp();
     B.line(
       `${hit} = call zeroext i1 ${host.literalEquals(f.name)}(ptr ${keyName}) ; ${llvmCommentText(f.name)}`,

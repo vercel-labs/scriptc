@@ -23,6 +23,7 @@ ScrPromise *scr_tp_set_immediate(void);
 ScrPromise *scr_promise_new(void);
 void scr_promise_share_identity(ScrPromise *dst, ScrPromise *src);
 bool scr_promise_identity_equal(ScrPromise *a, ScrPromise *b);
+void *scr_promise_map_identity(void *promise);
 /* A key every promise sharing `p`'s identity answers (each adapter box of
  * a typed promise), creating the shared cell when `p` has none. */
 const void *scr_promise_identity_key(ScrPromise *p);
@@ -515,6 +516,11 @@ double scr_set_immediate(ScrClosure *cb); /* cb ownership moves in */
 void scr_queue_microtask(ScrClosure *cb);
 void scr_queue_microtask_dyn(const ScrDyn *cb);
 void scr_queue_microtask_dyn_als(const ScrDyn *cb);
+/* Node's timer callback gate, raised where the callback is not statically
+ * a function: a non-function throws ERR_INVALID_ARG_TYPE synchronously,
+ * with the "Received ..." rendering, before anything schedules and before
+ * the delay converts. Borrowed. */
+void scr_timers_check_callback(const ScrDyn *cb);
 /* setImmediate AS A dyn VALUE (the traceCallback shape): a minted dyn
  * callable that schedules args[0](args[1..]) on the immediate queue and
  * answers undefined; a non-function first argument throws Node's

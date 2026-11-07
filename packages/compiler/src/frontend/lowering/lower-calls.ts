@@ -52,11 +52,13 @@ import {
   lowerFsStreamMethodCall,
 } from "./builtins/fs-streams.js";
 import * as ts from "../ts7/adapter.js";
+import { withoutParentheses } from "../outer-expressions.js";
 import {
   isZlibStreamMember,
   lowerPromisifiedZlibCall,
   lowerZlibStreamMethodCall,
 } from "./builtins/compression.js";
+import { callableMemberFieldTarget, lowerCallableAssign } from "./callable-properties.js";
 import type { Lowerer } from "./lowerer.js";
 import {
   inlineNamespaceRequireOf,
@@ -127,6 +129,8 @@ import {
   stdlibGlobalNameOf,
 } from "./surfaces.js";
 import { dynStringReceiver } from "./containers/dynamic-receivers.js";
+import { builtinModuleKeys } from "./builtin-module-members.js";
+import { reflectOverNamespaceExpr } from "./builtin-namespace-probe.js";
 import {
   lowerArrayConstructor,
   lowerArrayFromCall,
@@ -147,6 +151,7 @@ import {
   lowerObjectConstructor,
   lowerObjectFromEntriesCall,
   lowerObjectIterOverIndexShape,
+  objectIterOverIndexShape,
 } from "./containers/indexed-objects.js";
 import { lowerTupleReadMethodCall } from "./containers/array-methods.js";
 import { tryFuseIndexRead } from "./array-values.js";
@@ -174,6 +179,7 @@ import {
   lowerChildWriterMethodCall,
 } from "./builtins/child-process-methods.js";
 import {
+  isDirectOnlyResolveCallee,
   lowerCreateRequireCall,
   lowerImportMetaResolveCall,
   lowerRequireResolveCall,
@@ -189,6 +195,7 @@ import { lowerErrorCaptureStackTraceCall, lowerErrorIsErrorCall } from "./builti
 import { lowerPromisifiedDnsCall } from "./lower-dgram.js";
 import { lowerDisposableStackUseCall } from "./builtins/disposable-stack.js";
 import {
+  lowerDirDisposeCall,
   lowerDirentMethodCall,
   lowerFileHandleMethodCall,
   lowerDirMethodCall,
@@ -213,9 +220,10 @@ import {
   recordStringCall,
   registerLinkedHelper,
 } from "./record-links.js";
-import { lowerReflectCall } from "./builtins/reflection.js";
+import { lowerPrototypeReflectionCall, lowerReflectCall } from "./builtins/reflection.js";
 import {
   lowerAbsenceProbe,
+  nullishBranches,
   v8CalleeText,
   lowerPromiseAllTupleCall,
   lowerPromiseRejectCall,
@@ -228,14 +236,22 @@ import {
 import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
 import { nullishLiteral, nullishReadTypeError, throwAfterEach } from "./primitive-throws.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
-import { lowerChildMethodValue, lowerChildPropertyCall } from "./handle-properties.js";
+import {
+  boxedHandleReceiver,
+  lowerChildMethodValue,
+  lowerChildPropertyCall,
+  lowerHandleMemberCall,
+  refuseShadowedImplicitReader,
+} from "./handle-properties.js";
 import { classObjectTag, classToNumberConversion } from "./class-to-primitive.js";
 import { hasRuntimeStatics } from "./class-runtime-statics.js";
 import { structuralReadType } from "./class-unions.js";
 import {
   httpClientFnBindingOf,
+  httpClientFnRefOf,
   lowerCompatReqStreamOptionalCall,
   lowerHttpClientFnCall,
+  lowerHttpClientFnRefCall,
 } from "./lower-server.js";
 import {
   EMITTER_API_MEMBERS,
@@ -244,12 +260,14 @@ import {
   findGenericMethodOn,
   lowerClassGenericMethodCall,
   lowerStaticMethodCall,
+  lowerStaticSuperCall,
   lowerStaticFieldRead,
   returnsOnlyThis,
   storedClassValueType,
   type ClassInfo,
 } from "./lower-classes.js";
 import { classCallbackCall, isClassCallback } from "./class-callbacks.js";
+import { lowerInstanceConstructorStaticCall } from "./class-instance-constructor.js";
 import {
   emitOverrideAtOrAbove,
   emitterRooted,
@@ -285,7 +303,7 @@ import {
   nsUndefRead,
 } from "./lower-namespaces.js";
 import { hostGlobalNameOfRead, hostGlobalPrototypeMemberOf } from "./host-globals.js";
-import { expandoMemberRead } from "./lower-expando.js";
+import { fenceExpandoRead } from "./lower-expando.js";
 import {
   fenceNodeModuleMutationCall,
   isCjsRequireGlobal,
@@ -410,6 +428,25 @@ function receiverlessCalleeOf(callee: ts.Expression): ts.Expression | null {
   return right;
 }
 
+/** `fn.member(args)` where `member` is a key of the callable's own-property
+ * table: the member read through the table (checked back into the declared
+ * member type, like every other table read) yields the function value, and
+ * the call goes through that value. A function's own data property shadows
+ * an inherited `Function.prototype` member (`fn.toString` above all), so
+ * this is the call form of that shadowing. */
+function lowerCallableMemberCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
+  const access = call.expression;
+  if (!ts.isPropertyAccessExpression(access)) return null;
+  if (access.questionDotToken || call.questionDotToken) return null;
+  const receiverIr = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
+  if (receiverIr?.kind !== "func") return null;
+  const target = callableMemberFieldTarget(lowerer, access, receiverIr);
+  if (!target || target.fieldType.kind !== "func") return null;
+  const callee = lowerer.fieldGetExpr(target, locOf(access), access);
+  if (callee.type.kind !== "func") return null;
+  return lowerCallThroughValue(lowerer, call, callee, locOf(call));
+}
+
 export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   const loc = locOf(expr);
   // A JavaScript source calling a member that resizes, grows or detaches a
@@ -448,6 +485,13 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     }
   }
   if (lowerer.errorAccessorReflection === null) noteErrorAccessorReflection(lowerer, expr);
+  // `(x.constructor as typeof K).m(args)` on an instance of a program
+  // class: the static the instance's own class resolves
+  // (class-instance-constructor.ts).
+  {
+    const viaInstance = lowerInstanceConstructorStaticCall(lowerer, expr);
+    if (viaInstance !== null) return viaInstance;
+  }
   // Calling a Node 24 global the native runtime does not provide (WebSocket,
   // FormData, …): the value a read answers refuses the call
   // (host-global-values.ts), so the call is that refusal — SC2020, which a
@@ -660,6 +704,10 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerImportMetaResolveCall(lowerer, expr) ?? lowerRequireResolveCall(lowerer, expr);
     if (resolved) return resolved;
   }
+  {
+    const chosen = lowerDirectOnlyChoiceCall(lowerer, expr, loc);
+    if (chosen) return chosen;
+  }
   // Any other require() call of the CommonJS global: MODULE_NOT_FOUND for
   // packages nothing installed resolves, a named refusal otherwise.
   {
@@ -772,6 +820,10 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     ts.isPropertyAccessExpression(expr.expression) &&
     expr.expression.expression.kind === ts.SyntaxKind.SuperKeyword
   ) {
+    // In a static member: the base class's static method, called with
+    // the current receiver class as `this`.
+    const viaStatic = lowerStaticSuperCall(lowerer, expr, expr.expression);
+    if (viaStatic) return viaStatic;
     const island = lowerIslandSuperMethodCall(lowerer, expr, expr.expression);
     if (island) return island;
     return lowerer.lowerSuperMethodCall(expr, expr.expression);
@@ -1124,6 +1176,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     if (
       name === "String" &&
       (arg.type.kind === "dyn" ||
+        arg.type.kind === "symbol" ||
         (arg.type.kind === "union" &&
           lowerer.unions.get(arg.type.unionId)?.arms.some((arm) => arm.kind === "symbol") &&
           lowerer.dynConvertible(arg.type)))
@@ -1182,7 +1235,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
           kind: "dynCall",
           callee,
           receiver,
-          calleeName: ts.getTextOfNode(access),
+          calleeName: v8CalleeText(access),
           args,
           ...(spreads.length > 0 ? { spreads } : {}),
           type: DYN,
@@ -1243,6 +1296,16 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
           loc,
         );
       }
+      // A call through an immutable alias of an http/https client
+      // function (`const httpsRequest = https.request`).
+      if (projection?.kind === "client-function") {
+        return lowerHttpClientFnRefCall(
+          lowerer,
+          expr,
+          { module: projection.module, member: projection.member },
+          loc,
+        );
+      }
       // A call through a `const requestFn = tls ? https.request :
       // http.request` binding (the client-function ternary): the http
       // client lowering with the RUNTIME-secure dial.
@@ -1259,6 +1322,12 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     }
     const bi = lowerer.builtinImportOf(expr.expression);
     if (bi) return lowerBuiltinCall(lowerer, expr, bi, loc);
+    // A call through an alias of an http/https client function whose
+    // declaration is another module's (`import { request } from "./net"`).
+    {
+      const ref = httpClientFnRefOf(lowerer, expr.expression);
+      if (ref) return lowerHttpClientFnRefCall(lowerer, expr, ref, loc);
+    }
     // A constant bound to an assert method (`const ok = assert.ok`) called
     // directly is that assertion, with the message Node quotes the call for.
     {
@@ -1552,20 +1621,15 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     }
   }
   // Expando member calls (`example.isFoo('test')` after `example.isFoo
-  // = fn`): read the member's global and call through the value —
-  // lower-expando.ts owns the member storage.
+  // = fn`): the member read goes through the closure's own-property table
+  // like any other member (lowering/callable-properties.ts); only the
+  // source-order fence lives here (lower-expando.ts).
   if (
     (ts.isPropertyAccessExpression(expr.expression) ||
       ts.isElementAccessExpression(expr.expression)) &&
     !expr.expression.questionDotToken
   ) {
-    const callee = expandoMemberRead(lowerer, expr.expression);
-    if (callee) {
-      if (callee.type.kind !== "func")
-        lowerer.badType(expr.expression, lowerer.typeOf(expr.expression));
-      const args = completeFuncValueArgs(lowerer, expr, callee.type, loc);
-      return { kind: "callValue", callee, args, type: callee.type.ret, loc };
-    }
+    fenceExpandoRead(lowerer, expr.expression);
   }
   // Namespace-qualified calls (`N.f(1)`, `A.B.g()`, calls through
   // import= alias chains): the member resolves like a bare identifier —
@@ -1640,7 +1704,9 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   if (
     ts.isPropertyAccessExpression(expr.expression) &&
     !expr.expression.questionDotToken &&
-    lowerer.cjsLocalModuleBindingOf(expr.expression.expression)
+    (lowerer.cjsLocalModuleBindingOf(expr.expression.expression) ||
+      (ts.isIdentifier(expr.expression.name) &&
+        lowerer.cjsWholeExportMemberOf(expr.expression.expression, expr.expression.name.text)))
   ) {
     // A binding whose dep is a class-expression WHOLE export
     // (`module.exports = class {…}`): `C.describe()` is a STATIC call
@@ -1707,6 +1773,11 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     const intrinsic =
       // Checked-dynamic stream slots dispatch per value (dyn-streams.ts).
       lowerDynStreamMemberCall(lowerer, expr, expr.expression) ??
+      // A class member the program's JavaScript shadows on a typed handle
+      // (`d.getTime = () => 42; d.getTime()`): the own property's call on
+      // the handle's checked-dynamic box, before the typed method lowerings
+      // below claim the name (handle-properties.ts).
+      lowerHandleMemberCall(lowerer, expr, expr.expression) ??
       fenceNodeModuleMutationCall(lowerer, expr, expr.expression) ??
       // `f.apply(thisArg, args)` forwarding a fixed argument tuple (typed
       // `arguments`, a tuple rest parameter): a direct call.
@@ -1963,6 +2034,10 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       const childCall = lowerChildPropertyCall(lowerer, expr, expr.expression, true);
       if (childCall) return childCall;
     }
+    {
+      const tableCall = lowerCallableMemberCall(lowerer, expr);
+      if (tableCall) return tableCall;
+    }
     // The lib fence's METHOD-CALL chokepoint: a stdlib-declared member
     // that every lowering above declined — an unlowered member
     // (m.keys(), p.then(f), Object.keys(o)) or an unlowered call FORM of
@@ -2037,6 +2112,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     if (symbolMethod) return symbolMethod;
     const readlineDispose = lowerReadlineDisposeCall(lowerer, expr);
     if (readlineDispose) return readlineDispose;
+    const dirDispose = lowerDirDisposeCall(lowerer, expr);
+    if (dirDispose) return dirDispose;
     lowerer.fenceUnsupportedFetchConstructorMember(expr.expression);
     lowerer.fenceStaticResponseMember(expr.expression, "call");
     lowerer.fenceStaticHeadersMember(expr.expression, "call");
@@ -2088,7 +2165,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
               kind: "dynCall",
               callee,
               receiver,
-              calleeName: ts.getTextOfNode(access),
+              calleeName: v8CalleeText(access),
               args: expr.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
               type: DYN,
               loc,
@@ -2117,6 +2194,11 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     const memberName = ts.isNumericLiteral(expr.expression.argumentExpression)
       ? String(Number(expr.expression.argumentExpression.text))
       : expr.expression.argumentExpression.text;
+    // `d["getTime"]()` over a typed handle whose member the program shadows:
+    // the own property's call on the checked-dynamic box, before the typed
+    // member lowering below claims the name (handle-properties.ts).
+    const shadowed = lowerHandleMemberCall(lowerer, expr, expr.expression, memberName);
+    if (shadowed) return shadowed;
     const receiverType = lowerer.mapTypeOf(lowerer.typeOf(expr.expression.expression));
     if (receiverType?.kind === "object") {
       const info = lowerer.classes.get(receiverType.className);
@@ -2192,6 +2274,74 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   if (callee.type.kind === "record" || callee.type.kind === "object")
     callee = lowerer.hybridCallUnwrap(callee);
   return lowerCallThroughValue(lowerer, expr, callee, loc);
+}
+
+/** A call whose callee chooses between a function value and a library
+ * function only its direct call lowers: `(options.resolve ??
+ * loader.resolve)("pkg")`, or the same choice spelled `||`. JavaScript
+ * evaluates the choice, then the arguments, and calls the chosen function
+ * with an undefined `this`. The call is therefore the choice between two
+ * calls: through the value when the left operand holds one, and the library
+ * function's own direct call when it does not. The direct call passes a
+ * receiver where the chosen value has none, so the library function must not
+ * read `this` (isDirectOnlyResolveCallee names the ones that qualify).
+ *
+ * Null when the callee is not such a choice. A choice between two function
+ * values keeps its one union value and the call through it, and the library
+ * function read into a binding first keeps its refusal: only here is the
+ * call's own argument list at hand for the direct call to lower. */
+function lowerDirectOnlyChoiceCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (call.questionDotToken) return null;
+  let choice: ts.Expression = call.expression;
+  while (ts.isParenthesizedExpression(choice)) choice = choice.expression;
+  if (!ts.isBinaryExpression(choice)) return null;
+  const op = choice.operatorToken.kind;
+  if (op !== ts.SyntaxKind.QuestionQuestionToken && op !== ts.SyntaxKind.BarBarToken) return null;
+  let library: ts.Expression = choice.right;
+  while (ts.isParenthesizedExpression(library)) library = library.expression;
+  if (!isDirectOnlyResolveCallee(lowerer, library)) return null;
+  // The left operand: one function value, or nothing. A function is truthy,
+  // so `||` and `??` choose alike over these arms.
+  const chosen = lowerer.lowerExpr(choice.left);
+  if (chosen.type.kind !== "union") return null;
+  const chosenT = chosen.type;
+  const arms = lowerer.unions.get(chosenT.unionId)?.arms ?? [];
+  const present = arms.filter((arm) => !isUnitType(arm));
+  const fn = present[0];
+  if (present.length !== 1 || fn === undefined || fn.kind !== "func" || arms.length === 1)
+    return null;
+  const type = lowerer.irTypeOf(call);
+  return nullishBranches(
+    lowerer,
+    chosen,
+    chosenT,
+    arms,
+    type,
+    loc,
+    () => lowerer.coerceInto(call, lowerRequireResolveCall(lowerer, call, library)!, type),
+    (held) =>
+      lowerer.coerceInto(
+        call,
+        lowerCallThroughValue(
+          lowerer,
+          call,
+          {
+            kind: "unionNarrow",
+            unionId: chosenT.unionId,
+            tag: arms.indexOf(fn),
+            value: held,
+            type: fn,
+            loc,
+          },
+          loc,
+        ),
+        type,
+      ),
+  );
 }
 
 /** A callable class instance called with one string: its `%call1` method
@@ -2424,13 +2574,9 @@ function lowerCallThroughValueRaw(
       lowerer.unsupported("SC1090", expr, "spread arguments in calls through 'unknown' values");
     }
     const args = expr.arguments.nodes.map((a) => lowerer.lowerExprExpecting(a, DYN));
-    const calleeName =
-      ts.isPropertyAccessExpression(expr.expression) ||
-      ts.isElementAccessExpression(expr.expression)
-        ? ts.getTextOfNode(expr.expression)
-        : ts.isIdentifier(expr.expression)
-          ? expr.expression.text
-          : "value";
+    // V8 names the callee it could not call with the source spelling minus
+    // the type-only syntax the running JavaScript never had.
+    const calleeName = v8CalleeText(expr.expression);
     return { kind: "dynCall", callee, calleeName, args, type: DYN, loc };
   }
   if (
@@ -2499,7 +2645,7 @@ function lowerCallThroughValueRaw(
     )
   ) {
     const args = expr.arguments.nodes.map((a) => lowerer.lowerExprExpecting(a, DYN));
-    const calleeName = ts.isIdentifier(expr.expression) ? expr.expression.text : "value";
+    const calleeName = v8CalleeText(expr.expression);
     const boxed: IrExpr = { kind: "dynFrom", value: callee, type: DYN, loc };
     return { kind: "dynCall", callee: boxed, calleeName, args, type: DYN, loc };
   }
@@ -2843,9 +2989,13 @@ function lowerNumberConstructorValue(
     };
   const optionalNumber = lowerOptionalStringNumber(lowerer, arg, loc);
   if (optionalNumber) return optionalNumber;
-  // A Date's number hint answers its time value.
-  if (arg.type.kind === "date")
+  // A Date's number hint answers its time value. The number hint reads
+  // valueOf, which the program may have replaced with an own property this
+  // typed path cannot see.
+  if (arg.type.kind === "date") {
+    refuseShadowedImplicitReader(lowerer, argNode, arg.type, "valueOf", "number conversion");
     return { kind: "libCall", fn: "date.valueOf", args: [arg], type: F64, loc };
+  }
   // A program class instance converts through its own methods.
   const classNumber = classToNumberConversion(lowerer, arg, argNode);
   if (classNumber) return classNumber;
@@ -3290,7 +3440,9 @@ function lowerObjectOwnMethodCall(
     return null;
   if (!lowerer.isStdlibMember(access)) {
     const receiver = tryLowerExpression(lowerer, access.expression);
-    if (receiver?.type.kind !== "dyn") return null;
+    // A typed handle in a program that adds properties to handles answers
+    // from its own property table (scr_dyn_handle_props.c).
+    if (receiver?.type.kind !== "dyn" && !boxedHandleReceiver(lowerer, receiver)) return null;
   }
   return lowerObjectOwnCall(
     lowerer,
@@ -3355,6 +3507,9 @@ function lowerObjectOwnCall(
     stmts.push({ kind: "varDecl", localId: local.id, init: receiver, loc });
     receiverRef = varRef(local.id, receiver.type, loc);
   }
+  // A typed handle in a program that adds properties to handles answers
+  // from its own property table (scr_dyn_handle_props.c).
+  const handleBox = boxedHandleReceiver(lowerer, receiverRef);
   const rawKey = keyNode ? lowerer.lowerExpr(keyNode) : null;
   let keyRef: IrExpr | null = rawKey;
   if (rawKey && (isUnitType(rawKey.type) || rawKey.type.kind === "void")) {
@@ -3522,6 +3677,16 @@ function lowerObjectOwnCall(
         }
       : no;
     result = { kind: "logical", op: "||", left: lengthOwn, right: indexOwn, type: BOOL, loc };
+  } else if (handleBox) {
+    if (enumerable)
+      result = {
+        kind: "libCall",
+        fn: "dyn.propertyIsEnumerable",
+        args: [handleBox, key],
+        type: BOOL,
+        loc,
+      };
+    else result = { kind: "libCall", fn: "dyn.hasOwn", args: [handleBox, key], type: BOOL, loc };
   } else if (
     type.kind === "f64" ||
     type.kind === "bool" ||
@@ -3748,6 +3913,20 @@ function lowerStringPrototypeCall(
   }
   if (receiverType.kind === "dyn") {
     return lowerDynamicStringPrototypeCall(lowerer, call, methodAccess, receiverValue, method);
+  }
+  // A symbol receiver is no String wrapper, and every method admitted above
+  // begins with ToString(this): Node throws
+  // "TypeError: Cannot convert a Symbol value to a string" after evaluating
+  // the arguments. The dynamic string-method lowering performs exactly that
+  // conversion, in that order.
+  if (receiverType.kind === "symbol") {
+    return lowerDynamicStringPrototypeCall(
+      lowerer,
+      call,
+      methodAccess,
+      lowerer.coerceToExpected(receiverValue, DYN),
+      method,
+    );
   }
   const padding = entry?.method === "padStart" || entry?.method === "padEnd";
   const scalar =
@@ -4053,9 +4232,15 @@ function isFreshCallResult(node: ts.Expression): boolean {
  * and calls it. Box the receiver into the checked-dynamic value and lower
  * the read and the call dynamically, so the member lookup and the call stay
  * checked (a missing member throws V8's own TypeError) and the result
- * crosses back through the expected type's checked conversion. Null when
- * the receiver is not a union of object/record arms with a dyn-safe layout,
- * leaving the method-call fence in place. */
+ * crosses back through the expected type's checked conversion.
+ *
+ * A non-object arm joins the union when it does not declare the member at
+ * all (commander's `string | Command` from `name()`, whose JSDoc returns
+ * both): calling the member there is the same "is not a function" TypeError
+ * the dynamic call throws, so the result is Node-exact. An arm that DOES
+ * declare it (a string's toUpperCase) stays fenced: the dynamic tier cannot
+ * run a primitive's own methods, and calling through would throw where Node
+ * succeeds. Null for anything else, leaving the method-call fence in place. */
 function lowerUnionReceiverMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -4066,9 +4251,7 @@ function lowerUnionReceiverMethodCall(
   const value = tryLowerExpression(lowerer, access.expression);
   if (value?.type.kind !== "union") return null;
   const union = lowerer.unions.get(value.type.unionId);
-  if (!union || !union.arms.every((arm) => arm.kind === "object" || arm.kind === "record")) {
-    return null;
-  }
+  if (!union || !unionArmsDispatchMember(lowerer, union.arms, access)) return null;
   if (!lowerer.dynConvertible(value.type)) return null;
   const loc = locOf(call);
   const boxed = lowerer.coerceToExpected(value, DYN);
@@ -4088,7 +4271,7 @@ function lowerUnionReceiverMethodCall(
       kind: "dynCall",
       callee: member,
       receiver,
-      calleeName: ts.getTextOfNode(access),
+      calleeName: v8CalleeText(access),
       args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
       type: DYN,
       loc,
@@ -4096,6 +4279,48 @@ function lowerUnionReceiverMethodCall(
     type: DYN,
     loc,
   };
+}
+
+/** Primitive arms a union receiver may carry next to its object/record
+ * arms (commander's `string | Command`): the dynamic value holds each one
+ * as its own kind, so a member the arm does not have reads as undefined. */
+const UNION_RECEIVER_PRIMITIVE_ARMS = new Set([
+  "string",
+  "f64",
+  "bool",
+  "bigint",
+  "undefinedT",
+  "nullT",
+]);
+
+/** True when every arm of the receiver union can ride the dynamic call:
+ * object and record arms always (the lookup and the call stay checked), and
+ * a primitive arm only when its static type does not declare the member at
+ * all — the call there is V8's "is not a function" TypeError, which the
+ * dynamic call reproduces. An arm with the member (a string's toUpperCase)
+ * keeps the fence: the dynamic tier cannot run a primitive's own methods. */
+function unionArmsDispatchMember(
+  lowerer: Lowerer,
+  arms: readonly IrType[],
+  access: ts.PropertyAccessExpression,
+): boolean {
+  if (arms.every((arm) => arm.kind === "object" || arm.kind === "record")) return true;
+  if (
+    !arms.every(
+      (arm) =>
+        arm.kind === "object" ||
+        arm.kind === "record" ||
+        UNION_RECEIVER_PRIMITIVE_ARMS.has(arm.kind),
+    )
+  )
+    return false;
+  const receiver = lowerer.typeOf(access.expression);
+  const parts = receiver.isUnionType() ? ts.constituentTypes(receiver) : [receiver];
+  for (const part of parts) {
+    if ((part.flags & ts.TypeFlags.Object) !== 0) continue;
+    if (lowerer.checker.getPropertyOfType(part, access.name.text) !== undefined) return false;
+  }
+  return true;
 }
 
 /** METHOD calls on dyn receivers (`pkg.name.replace(...)`, `rawName.split`,
@@ -4186,6 +4411,23 @@ function lowerDynReceiverMethodCall(
   let recv: IrExpr;
   if (checkerUntyped) {
     recv = lowerer.lowerExpr(access.expression);
+    // A checker-untyped receiver that still lowered to a compiled FUNCTION
+    // (a JavaScript parameter instantiated with a callable at the call
+    // site, so the binding carries the call-site type while the checker
+    // says `any`/`unknown`): box it and dispatch the member on the
+    // runtime kind, so `f.apply(...)`/`f.call(...)`/`f.bind(...)` reach
+    // Function.prototype exactly as they do for a stored dynamic callback.
+    if (
+      recv.type.kind === "func" &&
+      !call.arguments.nodes.some(ts.isSpreadElement) &&
+      canBoxFuncIntoDyn(
+        recv.type,
+        (id) => lowerer.shapes.get(id),
+        (id) => lowerer.unions.get(id),
+      )
+    ) {
+      recv = { kind: "dynFrom", value: recv, type: DYN, loc: locOf(call) };
+    }
   } else {
     // A checker-TYPED spelling whose VALUE is still checked-dynamic (an
     // evolving `let h = {}` object flowing back out of a JS helper —
@@ -4230,7 +4472,7 @@ function lowerDynReceiverMethodCall(
           kind: "dynCall",
           callee: member,
           receiver,
-          calleeName: ts.getTextOfNode(access),
+          calleeName: v8CalleeText(access),
           args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
           type: DYN,
           loc,
@@ -4402,7 +4644,7 @@ function lowerDynReceiverMethodCall(
               kind: "dynInvoke",
               recv: value,
               method: "normalize",
-              calleeName: ts.getTextOfNode(access),
+              calleeName: v8CalleeText(access),
               args: hasArgument ? [argument] : [],
               type: DYN,
               loc,
@@ -4695,7 +4937,7 @@ function lowerDynReceiverMethodCall(
       kind: "dynCall",
       callee,
       receiver,
-      calleeName: ts.getTextOfNode(access),
+      calleeName: v8CalleeText(access),
       args,
       type: DYN,
       loc,
@@ -4822,7 +5064,7 @@ function lowerStringOrMemberCall(
     kind: "dynCall",
     callee,
     receiver,
-    calleeName: ts.getTextOfNode(access),
+    calleeName: v8CalleeText(access),
     args: args.map((arg) => lowerer.coerceToExpected(arg.value, DYN)),
     type: DYN,
     loc,
@@ -5293,7 +5535,7 @@ export function lowerDynDispatchMethodCall(
             kind: "dynInvoke",
             recv: { kind: "varRef", localId: saved.id, type: DYN, loc: locOf(access.expression) },
             method,
-            calleeName: ts.getTextOfNode(access),
+            calleeName: v8CalleeText(access),
             args: [dynUndefinedExpr(locOf(call.arguments.nodes[0]!))],
             type: DYN,
             loc: locOf(call),
@@ -5333,7 +5575,7 @@ export function lowerDynDispatchMethodCall(
     kind: "dynInvoke",
     recv,
     method,
-    calleeName: ts.getTextOfNode(access),
+    calleeName: v8CalleeText(access),
     args,
     type: DYN,
     loc: locOf(call),
@@ -5931,7 +6173,7 @@ function lowerPrimitiveProtoCall(
         kind: "dynInvoke",
         recv: lowerer.coerceToExpected(operand, DYN),
         method: name,
-        calleeName: `${ts.getTextOfNode(recv)}.${name}`,
+        calleeName: `${v8CalleeText(recv)}.${name}`,
         args: call.arguments.nodes.map((argument) => lowerer.lowerExprExpecting(argument, DYN)),
         type: DYN,
         loc: locOf(call),
@@ -6408,12 +6650,7 @@ export function lowerTaggedTemplate(lowerer: Lowerer, expr: ts.TaggedTemplateExp
       ),
       ...values.map((a) => lowerer.lowerExprExpecting(a, DYN)),
     ];
-    const calleeName =
-      ts.isPropertyAccessExpression(expr.tag) || ts.isElementAccessExpression(expr.tag)
-        ? ts.getTextOfNode(expr.tag)
-        : ts.isIdentifier(expr.tag)
-          ? expr.tag.text
-          : "value";
+    const calleeName = v8CalleeText(expr.tag);
     return { kind: "dynCall", callee, calleeName, args, type: DYN, loc };
   }
   lowerer.unsupported(
@@ -6543,27 +6780,29 @@ function loweredTemplateStrings(
  * await path:
  *
  *   p.then(f)    ≡ (async (pp, f) => { return f(await pp); })(p, f)
- *   p.catch(h)   ≡ (async (pp) => { try { return await pp; } catch (e) { <h's body> } })(p)
+ *   p.then(f, h) ≡ (async (pp, f, h) => { let v; try { v = await pp; } catch (e) { return h(e); } return f(v); })(p, f, h)
+ *   p.catch(h)   ≡ (async (pp) => { try { return await pp; } catch (e) { <h's body> } })(p)   — inline h
+ *                ≡ p.then(undefined, h)                                                       — any other h
  *   p.finally(f) ≡ (async (pp, f) => { try { const v = await pp; f(); return v; } catch (e) { f(); throw e; } })(p, f)
  *
  * Node-exact by construction: the wrapper's await parks on pending
- * receivers and takes the settled-await microtask hop otherwise; the
- * catch handler's parameter binds the rejection reason as a CAUGHT
- * local — the typed-catch machinery (instanceof/typeof narrowing,
+ * receivers and takes the settled-await microtask hop otherwise; an
+ * inline catch handler's parameter binds the rejection reason as a
+ * CAUGHT local — the typed-catch machinery (instanceof/typeof narrowing,
  * rethrow) IS the handler's surface; a handler throw rejects the
  * result; a handler falling off its end resolves with undefined
  * (checker-typed — the result union carries the arm); an unawaited
- * rejected result enters the unhandled-rejection ledger. The catch
- * HANDLER must be an inline arrow/function expression: its parameter
- * becomes the catch binding, and a handler VALUE would need a
- * caught-typed closure parameter, which cannot exist. finally takes
- * any () => void closure (its callback sees no arguments). then takes
- * a fulfillment handler and optionally a rejection handler; a
- * promise-returning handler flattens through the async
- * return path, a receiver rejection passes through untouched (the
- * wrapper's await re-throws it), and a handler throw rejects the
- * result — the spec's onFulfilled rules by construction. Null for
- * non-promise receivers and other members. */
+ * rejected result enters the unhandled-rejection ledger. A rejection
+ * handler VALUE (`main().catch(die)`, `p.then(ok, bad)`) has no
+ * caught-typed parameter to bind, so it receives the reason as a
+ * checked-dynamic value through its boxed call, and one that is not
+ * callable at run time is ignored as JavaScript ignores it. finally
+ * takes any () => void closure (its callback sees no arguments). A
+ * promise-returning handler flattens through the async return path, a
+ * receiver rejection passes through untouched (the wrapper's await
+ * re-throws it), and a handler throw rejects the result — the spec's
+ * onFulfilled rules by construction. Null for non-promise receivers and
+ * other members. */
 
 function modulePromiseStorageTypeOf(lowerer: Lowerer, e: ts.Expression): IrType | null {
   const direct = staticImportNamespaceType(lowerer, e);
@@ -6579,17 +6818,27 @@ function modulePromiseStorageTypeOf(lowerer: Lowerer, e: ts.Expression): IrType 
   return null;
 }
 
-function markModuleNsHandlerParams(
+/** A handler parameter the checker typed as a module namespace, on a promise
+ * settling `settled`. One namespace arm settles the namespace itself (its
+ * type has no mapping, so the handle is the parameter's only story); the
+ * merge of several arms settles that namespace OBJECT as one
+ * checked-dynamic value (`c ? import("./a.ts") : import("./b.ts")` — the two
+ * namespaces have no joint union tag), and the handler reads the same
+ * object's exports through the dynamic value. */
+function markNamespaceHandlerParams(
   lowerer: Lowerer,
   handler: ts.Expression,
-  type: IrType & { kind: "moduleNs" },
+  settled: IrType,
 ): void {
   let e = handler;
   while (ts.isParenthesizedExpression(e)) e = e.expression;
   if (!ts.isArrowFunction(e) && !ts.isFunctionExpression(e)) return;
   for (const p of e.parameters.nodes) {
-    if (ts.isIdentifier(p.name) && !p.dotDotDotToken && !p.initializer) {
-      lowerer.moduleNsParamOverrides.set(p, type);
+    if (!ts.isIdentifier(p.name) || p.dotDotDotToken || p.initializer) continue;
+    if (settled.kind === "moduleNs") {
+      lowerer.namespaceHandlerParamOverrides.set(p, settled);
+    } else if (settled.kind === "dyn" && lowerer.irTypeOf(p.name)?.kind === "moduleNs") {
+      lowerer.namespaceHandlerParamOverrides.set(p, DYN);
     }
   }
 }
@@ -6652,7 +6901,7 @@ export function lowerPromiseMethodCall(
       call,
       member === "then"
         ? "the supported form takes a fulfillment handler and an optional rejection handler"
-        : `the supported form takes exactly one ${member === "catch" ? "inline handler" : "callback"}`,
+        : `the supported form takes exactly one ${member === "catch" ? "handler" : "callback"}`,
     );
   }
   // The receiver evaluates FIRST, in the enclosing function, like JS.
@@ -6722,276 +6971,409 @@ export function lowerPromiseMethodCall(
     }
   }
 
-  if (member === "then") {
-    if (call.arguments.nodes.length === 2) {
-      const fulfilledNode = call.arguments.nodes[0]!;
-      const rejectedNode = call.arguments.nodes[1]!;
-      const fulfilledAbsent = isAbsentHandler(fulfilledNode);
-      const rejectedAbsent = isAbsentHandler(rejectedNode);
-      const resultT = callResultType();
-      // An untyped call in JavaScript whose receiver arrived as a typed
-      // promise (a function instantiated with one): Promise.prototype.then
-      // over the promise as a checked-dynamic value, which shares its
-      // identity.
-      if (resultT?.kind !== "promise" && isJsSourceFile(ts.getSourceFileOfNode(call))) {
+  // Handler VALUES: `p.then(onFulfilled, onRejected)`, and `p.catch(h)`,
+  // which the language defines as `p.then(undefined, h)`. A null node is
+  // the absent handler (the spec's identity / thrower). The lifted async
+  // wrapper awaits the receiver inside a try: a rejection reaches
+  // onRejected as caughtToDyn's identity-preserving snapshot through the
+  // checked-dynamic call (the handler's own thunk converts it into the
+  // declared parameter type — a claim the reason does not meet raises the
+  // catchable TypeError there), a fulfillment reaches onFulfilled after
+  // the catch, so a throw from it rejects the result instead of reaching
+  // onRejected. `loweredFulfilled` is the fulfillment handler when the
+  // caller has already evaluated it.
+  const lowerHandlerPair = (
+    fulfilledNode: ts.Expression | null,
+    rejectedNode: ts.Expression | null,
+    loweredFulfilled: IrExpr | null = null,
+  ): IrExpr => {
+    const resultT = callResultType();
+    // An untyped call in JavaScript whose receiver arrived as a typed
+    // promise (a function instantiated with one): Promise.prototype.then
+    // (or catch) over the promise as a checked-dynamic value, which shares
+    // its identity.
+    if (
+      resultT?.kind !== "promise" &&
+      loweredFulfilled === null &&
+      isJsSourceFile(ts.getSourceFileOfNode(call))
+    ) {
+      return {
+        kind: "dynInvoke",
+        recv: lowerer.coerceToExpected(receiver, DYN),
+        method: member,
+        calleeName: v8CalleeText(access),
+        args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+        type: DYN,
+        loc,
+      };
+    }
+    if (resultT?.kind !== "promise") {
+      if (member === "catch") {
+        lowerer.noLowering(
+          "catch with this handler's result type",
+          call,
+          "the combined result must be representable — a handler with no return value over a " +
+            "non-void promise makes the result 'T | void': return a fallback of the promise's " +
+            "own type, or declare the handler's return type as `undefined` for the " +
+            "T | undefined result",
+        );
+      }
+      lowerer.noLowering(
+        "then with these handlers",
+        call,
+        "the result must be a representable promise",
+      );
+    }
+    const R = resultT.inner;
+    if (
+      fulfilledNode !== null &&
+      loweredFulfilled === null &&
+      (inner.kind === "moduleNs" || inner.kind === "dyn")
+    )
+      markNamespaceHandlerParams(lowerer, fulfilledNode, inner);
+    // `callable` is false for a handler whose value is only known at run
+    // time to be a function: JavaScript ignores a non-callable handler, so
+    // the wrapper tests it and otherwise settles as the absent handler does.
+    // `promise` says whether a boxed handler's result is a promise the
+    // result adopts: statically for a declared return type, at run time
+    // ("maybe") for a result typed `unknown` or `T | Promise<T>`.
+    type Adoption = "always" | "never" | "maybe";
+    const adoptionOf = (ret: IrType): Adoption =>
+      ret.kind === "promise"
+        ? "always"
+        : ret.kind === "dyn" ||
+            (ret.kind === "union" &&
+              (lowerer.unions.get(ret.unionId)?.arms ?? []).some((arm) => arm.kind === "promise"))
+          ? "maybe"
+          : "never";
+    const boxHandler = (
+      node: ts.Expression,
+      lowered: IrExpr | null,
+      allowDirect: boolean,
+    ): { value: IrExpr; direct: boolean; promise: Adoption; callable: boolean } => {
+      const value =
+        lowered ??
+        (allowDirect ? primitiveConversionHandler(lowerer, node, inner) : null) ??
+        lowerer.lowerExpr(node);
+      if (
+        allowDirect &&
+        value.type.kind === "func" &&
+        value.type.params.length <= 1 &&
+        (value.type.params.length === 0 ||
+          (inner.kind !== "void" && typeEquals(value.type.params[0]!, inner)))
+      ) {
+        return { value, direct: true, promise: adoptionOf(value.type.ret), callable: true };
+      }
+      if (value.type.kind === "dyn")
+        return { value, direct: false, promise: "maybe", callable: false };
+      // The boxed function's call thunk supplies `undefined` for the
+      // parameters past the settled value (`(e, context?) => ...`).
+      if (
+        value.type.kind === "func" &&
+        canBoxFuncIntoDyn(
+          value.type,
+          (id) => lowerer.shapes.get(id),
+          (id) => lowerer.unions.get(id),
+        )
+      ) {
         return {
-          kind: "dynInvoke",
-          recv: lowerer.coerceToExpected(receiver, DYN),
-          method: "then",
-          calleeName: ts.getTextOfNode(access),
-          args: [
-            lowerer.lowerExprExpecting(fulfilledNode, DYN),
-            lowerer.lowerExprExpecting(rejectedNode, DYN),
-          ],
+          value: { kind: "dynFrom", value, type: DYN, loc },
+          direct: false,
+          promise: adoptionOf(value.type.ret),
+          callable: true,
+        };
+      }
+      // A handler that may be absent (`options.onError`, typed
+      // `((e: unknown) => void) | undefined`), or any other value that is
+      // not statically a function.
+      if (lowerer.dynConvertible(value.type)) {
+        const arms =
+          value.type.kind === "union" ? (lowerer.unions.get(value.type.unionId)?.arms ?? []) : [];
+        const results = arms.flatMap((arm) => (arm.kind === "func" ? [adoptionOf(arm.ret)] : []));
+        return {
+          value: lowerer.coerceToExpected(value, DYN),
+          direct: false,
+          promise: results.every((r) => r === "never")
+            ? "never"
+            : results.every((r) => r === "always")
+              ? "always"
+              : "maybe",
+          callable: false,
+        };
+      }
+      lowerer.unsupported(
+        "SC1090",
+        node,
+        `a ${member} handler of type '${lowerer.fmt(value.type)}'`,
+        `pass a function that calls it: ${
+          member === "then" ? "`(value) => handler(value)`" : "`(error) => handler(error)`"
+        }`,
+      );
+    };
+    // Evaluate both callback expressions before the wrapper runs, in source order.
+    const fulfilled =
+      fulfilledNode === null ? null : boxHandler(fulfilledNode, loweredFulfilled, true);
+    const rejected = rejectedNode === null ? null : boxHandler(rejectedNode, null, false);
+    const fnName = lowerer.closureName(loc, member === "catch" ? "_catch" : "_then2");
+    const paramTypes: IrType[] = [
+      promT,
+      ...(fulfilled ? [fulfilled.value.type] : []),
+      ...(rejected ? [DYN] : []),
+    ];
+    const funcType: IrType & { kind: "func" } = {
+      kind: "func",
+      params: paramTypes,
+      ret: resultT,
+    };
+    const fnCtx = newFnCtx(true, null, funcType, R);
+    fnCtx.isAsync = true;
+    lowerer.fnStack.push(fnCtx);
+    try {
+      const pLocal = lowerer.declareHiddenLocal("p", promT);
+      const fLocal = fulfilled ? lowerer.declareHiddenLocal("f", fulfilled.value.type) : null;
+      const rLocal = rejected ? lowerer.declareHiddenLocal("r", DYN) : null;
+      const eLocal = lowerer.declareHiddenLocal("e", CAUGHT);
+      const vLocal = inner.kind === "void" ? null : lowerer.declareHiddenLocal("v", inner);
+      const awaitE: IrExpr = {
+        kind: "awaitExpr",
+        value: { kind: "varRef", localId: pLocal.id, type: promT, loc },
+        type: inner,
+        loc,
+      };
+      const tryBody: IrStmt[] = vLocal
+        ? [{ kind: "varDecl", localId: vLocal.id, init: awaitE, loc }]
+        : [{ kind: "exprStmt", expr: awaitE, loc }];
+      const resultOf = (value: IrExpr, promise: Adoption = "never"): IrStmt[] => {
+        if (value.type.kind === "promise")
+          return [lowerer.adoptingReturn(value, R, (e) => lowerer.coerceInto(call, e, R))];
+        const flattened = maybePromiseHandlerResult(lowerer, call, value, R);
+        if (flattened) return [flattened];
+        const plain = (result: IrExpr): IrStmt[] =>
+          R.kind === "void"
+            ? [
+                { kind: "exprStmt", expr: result, loc },
+                { kind: "return", value: null, loc },
+              ]
+            : [{ kind: "return", value: lowerer.coerceInto(call, result, R), loc }];
+        // A checked-dynamic result returned as is adopts a promise it
+        // holds, so only a typed result needs the test.
+        if (promise === "never" || (promise === "maybe" && R.kind === "dyn")) return plain(value);
+        // A boxed handler's promise result adopts too: the then job's
+        // turn after the call, then the await of the returned value.
+        const hLocal = lowerer.declareHiddenLocal("h", DYN);
+        const settledDyn: IrExpr = {
+          kind: "libCall",
+          fn: "async.awaitDyn",
+          args: [{ kind: "varRef", localId: hLocal.id, type: DYN, loc }],
           type: DYN,
           loc,
         };
-      }
-      if (resultT?.kind !== "promise") {
-        lowerer.noLowering(
-          "then with these handlers",
-          call,
-          "the result must be a representable promise",
-        );
-      }
-      const R = resultT.inner;
-      if (!fulfilledAbsent && inner.kind === "moduleNs")
-        markModuleNsHandlerParams(lowerer, fulfilledNode, inner);
-      const boxHandler = (
-        node: ts.Expression,
-        allowDirect: boolean,
-      ): { value: IrExpr; direct: boolean; returnsPromise: boolean } => {
-        const value = lowerer.lowerExpr(node);
-        if (
-          allowDirect &&
-          value.type.kind === "func" &&
-          value.type.params.length <= 1 &&
-          (value.type.params.length === 0 ||
-            (inner.kind !== "void" && typeEquals(value.type.params[0]!, inner)))
-        ) {
-          return { value, direct: true, returnsPromise: value.type.ret.kind === "promise" };
-        }
-        if (value.type.kind === "dyn") return { value, direct: false, returnsPromise: false };
-        if (
-          value.type.kind === "func" &&
-          value.type.params.length <= 1 &&
-          canBoxFuncIntoDyn(
-            value.type,
-            (id) => lowerer.shapes.get(id),
-            (id) => lowerer.unions.get(id),
-          )
-        ) {
-          return {
-            value: { kind: "dynFrom", value, type: DYN, loc },
-            direct: false,
-            returnsPromise: value.type.ret.kind === "promise",
-          };
-        }
-        lowerer.unsupported("SC1090", node, "then handlers that cannot be called with one value");
-      };
-      // Evaluate both callback expressions before the wrapper runs, in source order.
-      const fulfilled = fulfilledAbsent ? null : boxHandler(fulfilledNode, true);
-      const rejected = rejectedAbsent ? null : boxHandler(rejectedNode, false);
-      const fnName = lowerer.closureName(loc, "_then2");
-      const paramTypes: IrType[] = [
-        promT,
-        ...(fulfilled ? [fulfilled.value.type] : []),
-        ...(rejected ? [DYN] : []),
-      ];
-      const funcType: IrType & { kind: "func" } = {
-        kind: "func",
-        params: paramTypes,
-        ret: resultT,
-      };
-      const fnCtx = newFnCtx(true, null, funcType, R);
-      fnCtx.isAsync = true;
-      lowerer.fnStack.push(fnCtx);
-      try {
-        const pLocal = lowerer.declareHiddenLocal("p", promT);
-        const fLocal = fulfilled ? lowerer.declareHiddenLocal("f", fulfilled.value.type) : null;
-        const rLocal = rejected ? lowerer.declareHiddenLocal("r", DYN) : null;
-        const eLocal = lowerer.declareHiddenLocal("e", CAUGHT);
-        const vLocal = inner.kind === "void" ? null : lowerer.declareHiddenLocal("v", inner);
-        const awaitE: IrExpr = {
-          kind: "awaitExpr",
-          value: { kind: "varRef", localId: pLocal.id, type: promT, loc },
-          type: inner,
-          loc,
-        };
-        const tryBody: IrStmt[] = vLocal
-          ? [{ kind: "varDecl", localId: vLocal.id, init: awaitE, loc }]
-          : [{ kind: "exprStmt", expr: awaitE, loc }];
-        const resultOf = (value: IrExpr, returnsPromise = false): IrStmt[] => {
-          if (value.type.kind === "promise")
-            return [lowerer.adoptingReturn(value, R, (e) => lowerer.coerceInto(call, e, R))];
-          const flattened = maybePromiseHandlerResult(lowerer, call, value, R);
-          if (flattened) return [flattened];
-          if (returnsPromise) {
-            // A boxed handler's promise result adopts too: the then job's
-            // turn after the call, then the await of the returned value.
-            const hLocal = lowerer.declareHiddenLocal("h", DYN);
-            const settledDyn: IrExpr = {
-              kind: "libCall",
-              fn: "async.awaitDyn",
-              args: [{ kind: "varRef", localId: hLocal.id, type: DYN, loc }],
-              type: DYN,
+        const adopted: IrStmt[] = [
+          {
+            kind: "exprStmt",
+            expr: { kind: "libCall", fn: "async.hop", args: [], type: VOID, loc },
+            loc,
+          },
+          ...(R.kind === "void"
+            ? [
+                { kind: "exprStmt" as const, expr: settledDyn, loc },
+                { kind: "return" as const, value: null, loc },
+              ]
+            : [
+                {
+                  kind: "return" as const,
+                  value: lowerer.coerceInto(call, settledDyn, R),
+                  loc,
+                },
+              ]),
+        ];
+        const declared: IrStmt = { kind: "varDecl", localId: hLocal.id, init: value, loc };
+        if (promise === "always") return [declared, ...adopted];
+        return [
+          declared,
+          {
+            kind: "if",
+            cond: {
+              kind: "dynTest",
+              test: "promise",
+              value: varRef(hLocal.id, DYN, loc),
+              type: BOOL,
               loc,
-            };
-            return [
-              { kind: "varDecl", localId: hLocal.id, init: value, loc },
+            },
+            then: adopted,
+            else_: plain(varRef(hLocal.id, DYN, loc)),
+            loc,
+          },
+        ];
+      };
+      // `typeof h === "function"` for a handler known only at run time.
+      const isCallable = (handler: IrLocal): IrExpr => ({
+        kind: "dynTest",
+        test: "function",
+        value: varRef(handler.id, DYN, loc),
+        type: BOOL,
+        loc,
+      });
+      const rejectedCall: IrExpr | null = rLocal
+        ? {
+            kind: "dynCall",
+            callee: { kind: "varRef", localId: rLocal.id, type: DYN, loc },
+            calleeName: jsFuncNameOf(rejectedNode!) ?? "onRejected",
+            args: [
               {
-                kind: "exprStmt",
-                expr: { kind: "libCall", fn: "async.hop", args: [], type: VOID, loc },
+                kind: "caughtToDyn",
+                value: { kind: "varRef", localId: eLocal.id, type: CAUGHT, loc },
+                type: DYN,
                 loc,
               },
-              ...(R.kind === "void"
-                ? [
-                    { kind: "exprStmt" as const, expr: settledDyn, loc },
-                    { kind: "return" as const, value: null, loc },
-                  ]
-                : [
-                    {
-                      kind: "return" as const,
-                      value: lowerer.coerceInto(call, settledDyn, R),
-                      loc,
-                    },
-                  ]),
-            ];
+            ],
+            type: DYN,
+            loc,
           }
-          return R.kind === "void"
-            ? [
-                { kind: "exprStmt", expr: value, loc },
-                { kind: "return", value: null, loc },
-              ]
-            : [{ kind: "return", value: lowerer.coerceInto(call, value, R), loc }];
-        };
-        const rejectedCall: IrExpr | null = rLocal
-          ? {
-              kind: "dynCall",
-              callee: { kind: "varRef", localId: rLocal.id, type: DYN, loc },
-              calleeName: jsFuncNameOf(rejectedNode) ?? "onRejected",
-              args: [
+        : null;
+      const rethrow: IrStmt = { kind: "rethrow", localId: eLocal.id, loc };
+      const catchBody: IrStmt[] =
+        rejectedCall === null
+          ? [rethrow]
+          : rejected!.callable
+            ? resultOf(rejectedCall, rejected!.promise)
+            : [
                 {
-                  kind: "caughtToDyn",
-                  value: { kind: "varRef", localId: eLocal.id, type: CAUGHT, loc },
-                  type: DYN,
+                  kind: "if",
+                  cond: isCallable(rLocal!),
+                  then: resultOf(rejectedCall, rejected!.promise),
+                  else_: [rethrow],
                   loc,
                 },
-              ],
+              ];
+      const body: IrStmt[] = [
+        { kind: "tryCatch", tryBody, catchBody, catchLocalId: eLocal.id, finallyBody: null, loc },
+      ];
+      // The fulfillment callback sits after the catch so a throw from it
+      // rejects the result instead of reaching onRejected.
+      if (fLocal) {
+        const settled: IrExpr = vLocal
+          ? { kind: "varRef", localId: vLocal.id, type: inner, loc }
+          : dynUndefinedExpr(loc);
+        if (fulfilled!.direct && fLocal.type.kind === "func") {
+          body.push(
+            ...resultOf({
+              kind: "callValue",
+              callee: { kind: "varRef", localId: fLocal.id, type: fLocal.type, loc },
+              args: fLocal.type.params.length === 0 ? [] : [settled],
+              type: fLocal.type.ret,
+              loc,
+            }),
+          );
+        } else {
+          if (
+            settled.type.kind !== "dyn" &&
+            !canConvertToDyn(
+              settled.type,
+              (id) => lowerer.shapes.get(id),
+              (id) => lowerer.unions.get(id),
+            )
+          ) {
+            lowerer.unsupported(
+              "SC1090",
+              fulfilledNode!,
+              "then fulfillment values that cannot cross the checked-dynamic boundary",
+            );
+          }
+          const arg: IrExpr =
+            settled.type.kind === "dyn"
+              ? settled
+              : { kind: "dynFrom", value: settled, type: DYN, loc };
+          const called = resultOf(
+            {
+              kind: "dynCall",
+              callee: { kind: "varRef", localId: fLocal.id, type: DYN, loc },
+              calleeName: jsFuncNameOf(fulfilledNode!) ?? "onFulfilled",
+              args: [arg],
               type: DYN,
               loc,
-            }
-          : null;
-        const catchBody: IrStmt[] = rejectedCall
-          ? resultOf(rejectedCall, rejected?.returnsPromise)
-          : [{ kind: "rethrow", localId: eLocal.id, loc }];
-        const body: IrStmt[] = [
-          { kind: "tryCatch", tryBody, catchBody, catchLocalId: eLocal.id, finallyBody: null, loc },
-        ];
-        // The fulfillment callback sits after the catch so a throw from it
-        // rejects the result instead of reaching onRejected.
-        if (fLocal) {
-          const settled: IrExpr = vLocal
-            ? { kind: "varRef", localId: vLocal.id, type: inner, loc }
-            : dynUndefinedExpr(loc);
-          if (fulfilled!.direct && fLocal.type.kind === "func") {
-            body.push(
-              ...resultOf({
-                kind: "callValue",
-                callee: { kind: "varRef", localId: fLocal.id, type: fLocal.type, loc },
-                args: fLocal.type.params.length === 0 ? [] : [settled],
-                type: fLocal.type.ret,
-                loc,
-              }),
-            );
+            },
+            fulfilled!.promise,
+          );
+          if (fulfilled!.callable) {
+            body.push(...called);
           } else {
-            if (
-              settled.type.kind !== "dyn" &&
-              !canConvertToDyn(
-                settled.type,
-                (id) => lowerer.shapes.get(id),
-                (id) => lowerer.unions.get(id),
-              )
-            ) {
-              lowerer.unsupported(
-                "SC1090",
-                fulfilledNode,
-                "then fulfillment values that cannot cross the checked-dynamic boundary",
-              );
-            }
-            const arg: IrExpr =
-              settled.type.kind === "dyn"
-                ? settled
-                : { kind: "dynFrom", value: settled, type: DYN, loc };
-            body.push(
-              ...resultOf(
-                {
-                  kind: "dynCall",
-                  callee: { kind: "varRef", localId: fLocal.id, type: DYN, loc },
-                  calleeName: jsFuncNameOf(fulfilledNode) ?? "onFulfilled",
-                  args: [arg],
-                  type: DYN,
-                  loc,
-                },
-                fulfilled?.returnsPromise,
-              ),
-            );
+            // A non-callable handler passes the settled value on. The
+            // checker typed the result from the handler's return, so the
+            // value takes the checked conversion into it.
+            body.push({
+              kind: "if",
+              cond: isCallable(fLocal),
+              then: called,
+              else_: resultOf(arg),
+              loc,
+            });
           }
-        } else if (vLocal) {
-          body.push(...resultOf({ kind: "varRef", localId: vLocal.id, type: inner, loc }));
-        } else if (R.kind === "void") {
-          body.push({ kind: "return", value: null, loc });
-        } else {
-          body.push({
-            kind: "return",
-            value: lowerer.coerceInto(call, dynUndefinedExpr(loc), R),
-            loc,
-          });
         }
-        const ctx = lowerer.ctx;
-        const lifted: IrFunction = {
-          name: fnName,
-          params: [
-            { localId: pLocal.id, name: pLocal.name, type: promT },
-            ...(fLocal ? [{ localId: fLocal.id, name: fLocal.name, type: fLocal.type }] : []),
-            ...(rLocal ? [{ localId: rLocal.id, name: rLocal.name, type: DYN }] : []),
-          ],
-          returnType: R,
-          locals: ctx.locals,
-          captures: ctx.captures!,
-          body,
+      } else if (vLocal) {
+        body.push(...resultOf({ kind: "varRef", localId: vLocal.id, type: inner, loc }));
+      } else if (R.kind === "void") {
+        body.push({ kind: "return", value: null, loc });
+      } else {
+        body.push({
+          kind: "return",
+          value: lowerer.coerceInto(call, dynUndefinedExpr(loc), R),
           loc,
-          async: true,
-        };
-        lowerer.liftedFns.push(lifted);
-        const closure: IrExpr = {
-          kind: "closure",
-          fnName,
-          captures: ctx.captureSources,
-          type: funcType,
-          loc,
-        };
-        return {
-          kind: "callValue",
-          callee: closure,
-          args: [
-            receiver,
-            ...(fulfilled ? [fulfilled.value] : []),
-            ...(rejected ? [rejected.value] : []),
-          ],
-          type: resultT,
-          loc,
-        };
-      } finally {
-        lowerer.fnStack.pop();
+        });
       }
+      const ctx = lowerer.ctx;
+      const lifted: IrFunction = {
+        name: fnName,
+        params: [
+          { localId: pLocal.id, name: pLocal.name, type: promT },
+          ...(fLocal ? [{ localId: fLocal.id, name: fLocal.name, type: fLocal.type }] : []),
+          ...(rLocal ? [{ localId: rLocal.id, name: rLocal.name, type: DYN }] : []),
+        ],
+        returnType: R,
+        locals: ctx.locals,
+        captures: ctx.captures!,
+        body,
+        loc,
+        async: true,
+      };
+      lowerer.liftedFns.push(lifted);
+      const closure: IrExpr = {
+        kind: "closure",
+        fnName,
+        captures: ctx.captureSources,
+        type: funcType,
+        loc,
+      };
+      return {
+        kind: "callValue",
+        callee: closure,
+        args: [
+          receiver,
+          ...(fulfilled ? [fulfilled.value] : []),
+          ...(rejected ? [rejected.value] : []),
+        ],
+        type: resultT,
+        loc,
+      };
+    } finally {
+      lowerer.fnStack.pop();
+    }
+  };
+
+  if (member === "then") {
+    if (call.arguments.nodes.length === 2) {
+      const [onFulfilled, onRejected] = call.arguments.nodes;
+      return lowerHandlerPair(
+        isAbsentHandler(onFulfilled) ? null : onFulfilled!,
+        isAbsentHandler(onRejected) ? null : onRejected!,
+      );
     }
 
     // contextual type spelled (a module-namespace type has no mapping —
     // the handle is the value's only story, isIslandExpr's local rule).
 
-    if (inner.kind === "moduleNs")
-      markModuleNsHandlerParams(lowerer, call.arguments.nodes[0]!, inner);
+    if (inner.kind === "moduleNs" || inner.kind === "dyn")
+      markNamespaceHandlerParams(lowerer, call.arguments.nodes[0]!, inner);
     let cb =
       primitiveConversionHandler(lowerer, call.arguments.nodes[0]!, inner) ??
       lowerer.lowerExpr(call.arguments.nodes[0]!);
@@ -7108,24 +7490,19 @@ export function lowerPromiseMethodCall(
         lowerer.fnStack.pop();
       }
     }
-    if (cb.type.kind !== "func" || cb.type.params.length > 1) {
-      lowerer.unsupported(
-        "SC1090",
-        call.arguments.nodes[0]!,
-        "then handlers with more than one parameter (the two-argument onRejected form has no lowering — chain .catch(...) instead)",
-      );
-    }
-    const param = cb.type.params[0];
+    // A handler value this typed call cannot make directly — one that may
+    // be absent (`options.onDone`), takes further optional parameters, or
+    // declares a wider parameter than the settled value — is called as a
+    // handler value with no rejection handler.
+    const param = cb.type.kind === "func" ? cb.type.params[0] : undefined;
     if (
-      param !== undefined &&
-      !typeEquals(param, inner) &&
-      !(param.kind === "dyn" && (inner.kind === "void" || lowerer.dynConvertible(inner)))
+      cb.type.kind !== "func" ||
+      cb.type.params.length > 1 ||
+      (param !== undefined &&
+        !typeEquals(param, inner) &&
+        !(param.kind === "dyn" && (inner.kind === "void" || lowerer.dynConvertible(inner))))
     ) {
-      lowerer.unsupported(
-        "SC1090",
-        call.arguments.nodes[0]!,
-        `then handlers whose parameter is not the settled value's type (expected '${lowerer.fmt(inner)}', got '${lowerer.fmt(param)}')`,
-      );
+      return lowerHandlerPair(call.arguments.nodes[0]!, null, cb);
     }
     let resultT = callResultType();
     // JavaScript whose declared result type has no mapping (zod's
@@ -7239,7 +7616,7 @@ export function lowerPromiseMethodCall(
         kind: "dynInvoke",
         recv: lowerer.coerceToExpected(receiver, DYN),
         method: "finally",
-        calleeName: ts.getTextOfNode(access),
+        calleeName: v8CalleeText(access),
         args: [lowerer.coerceToExpected(cb, DYN)],
         type: DYN,
         loc,
@@ -7441,39 +7818,23 @@ export function lowerPromiseMethodCall(
     }
   }
 
-  // .catch: the handler must be INLINE — its parameter becomes the
-  // catch binding.
+  // .catch with an INLINE handler whose parameter can be a catch binding:
+  // the handler's body lowers as the catch clause itself. Every other
+  // handler — a function value (`main().catch(die)`), or an inline one the
+  // binding cannot express (async, further parameters, a destructuring or
+  // defaulted parameter) — is `p.then(undefined, handler)`.
   let handlerNode: ts.Expression = call.arguments.nodes[0]!;
   while (ts.isParenthesizedExpression(handlerNode)) handlerNode = handlerNode.expression;
-  if (!ts.isArrowFunction(handlerNode) && !ts.isFunctionExpression(handlerNode)) {
-    lowerer.unsupported(
-      "SC1090",
-      call.arguments.nodes[0]!,
-      "catch handlers that are not inline function literals (the handler's parameter " +
-        "becomes a typed-catch binding, which only an inline `(e) => ...` can receive)",
-    );
-  }
-  if (handlerNode.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) {
-    lowerer.unsupported("SC1090", handlerNode, "async catch handlers");
-  }
-  if (handlerNode.parameters.nodes.length > 1) {
-    lowerer.unsupported("SC1090", handlerNode, "catch handlers with more than one parameter");
-  }
+  if (!ts.isArrowFunction(handlerNode) && !ts.isFunctionExpression(handlerNode))
+    return lowerHandlerPair(null, call.arguments.nodes[0]!);
   const param = handlerNode.parameters.nodes[0];
-  if (param && (!ts.isIdentifier(param.name) || param.dotDotDotToken || param.initializer)) {
-    lowerer.unsupported("SC1062", param);
-  }
   if (
-    param?.type &&
-    param.type.kind !== ts.SyntaxKind.AnyKeyword &&
-    param.type.kind !== ts.SyntaxKind.UnknownKeyword
+    handlerNode.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) ||
+    handlerNode.asteriskToken !== undefined ||
+    handlerNode.parameters.nodes.length > 1 ||
+    (param && (!ts.isIdentifier(param.name) || param.dotDotDotToken || param.initializer))
   ) {
-    lowerer.unsupported(
-      "SC1090",
-      param,
-      "catch handlers with a typed parameter (the reject payload can be any thrown " +
-        "value — take `(e)` or `(e: unknown)` and narrow with instanceof)",
-    );
+    return lowerHandlerPair(null, call.arguments.nodes[0]!);
   }
   const resultT = callResultType();
   if (resultT?.kind !== "promise") {
@@ -7484,6 +7845,25 @@ export function lowerPromiseMethodCall(
         "non-void promise makes the result 'T | void': return a fallback of the promise's " +
         "own type, or annotate the handler `(): undefined =>` for the T | undefined result",
     );
+  }
+  // An ANNOTATED parameter (`.catch((error: Error) => ...)`) is a claim the
+  // checker cannot verify — the reject payload is whatever was thrown — so
+  // it is never trusted. A class claim is verified by the catch binding
+  // below; any other claim by the handler value's call, whose thunk
+  // converts the reason into the declared parameter type.
+  const claimNode =
+    param?.type !== undefined &&
+    param.type.kind !== ts.SyntaxKind.AnyKeyword &&
+    param.type.kind !== ts.SyntaxKind.UnknownKeyword
+      ? param.type
+      : null;
+  let claim: { target: IrType & { kind: "object" }; info: ClassInfo } | null = null;
+  if (claimNode !== null) {
+    const target = lowerer.mapTypeOf(lowerer.checker.getTypeFromTypeNode(claimNode));
+    const info = target?.kind === "object" ? lowerer.classes.get(target.className) : undefined;
+    if (target?.kind !== "object" || info === undefined)
+      return lowerHandlerPair(null, call.arguments.nodes[0]!);
+    claim = { target, info };
   }
   const R = resultT.inner;
   const fnName = lowerer.closureName(loc, "_catch");
@@ -7507,13 +7887,50 @@ export function lowerPromiseMethodCall(
           ]
         : [{ kind: "return", value: lowerer.coerceInto(call, awaitE, R), loc }];
     // The handler body lowers as the catch clause, its parameter bound
-    // as the CAUGHT local — exactly `catch (e) { ... }`.
+    // as the CAUGHT local — exactly `catch (e) { ... }`. Under a class
+    // claim the snapshot binds as a hidden CAUGHT local and the parameter
+    // as an ordinary local of the claimed class, converted by the checked
+    // extraction (`caughtCheck`: an instanceof match extracts the payload,
+    // anything else raises the catchable TypeError at handler entry).
+    // Reads inside the handler are then plain typed reads of a verified
+    // value.
     let catchLocalId: string | null = null;
+    let claimInit: IrStmt | null = null;
     let catchBody: IrStmt[];
     lowerer.scopes.push(new Map());
     try {
       if (param && ts.isIdentifier(param.name)) {
-        catchLocalId = lowerer.declareLocal(param.name, param.name.text, CAUGHT, false).id;
+        if (claim !== null) {
+          const { target, info } = claim;
+          const snapshot = lowerer.declareHiddenLocal("%catch", CAUGHT);
+          catchLocalId = snapshot.id;
+          const local = lowerer.declareLocal(param.name, param.name.text, target, false);
+          const caught: IrExpr = { kind: "varRef", localId: snapshot.id, type: CAUGHT, loc };
+          // caughtCheck tests the class's preorder interval, which only
+          // classes in an inheritance relation have; a standalone class
+          // converts the payload as an untyped value, whose checked
+          // conversion recovers a thrown instance and raises a catchable
+          // TypeError for anything else.
+          claimInit = {
+            kind: "varDecl",
+            localId: local.id,
+            init: lowerer.inHierarchy(info)
+              ? {
+                  kind: "caughtCheck",
+                  value: caught,
+                  className: target.className,
+                  type: target,
+                  loc,
+                }
+              : lowerer.coerceToExpected(
+                  { kind: "caughtToDyn", value: caught, type: DYN, loc },
+                  target,
+                ),
+            loc,
+          };
+        } else {
+          catchLocalId = lowerer.declareLocal(param.name, param.name.text, CAUGHT, false).id;
+        }
       }
       const hb = handlerNode.body;
       if (ts.isBlock(hb)) {
@@ -7531,6 +7948,7 @@ export function lowerPromiseMethodCall(
     } finally {
       lowerer.scopes.pop();
     }
+    if (claimInit !== null) catchBody.unshift(claimInit);
     // A handler falling off its end resolves with undefined — the
     // checker already typed R with the undefined arm; the appended wrap
     // also satisfies the validator's always-returns analysis.
@@ -8620,57 +9038,9 @@ function lowerObjectStaticCall(
     call.arguments.nodes.length === (member === "getPrototypeOf" ? 1 : 2) &&
     !call.arguments.nodes.some(ts.isSpreadElement)
   ) {
-    let object = lowerer.lowerExpr(call.arguments.nodes[0]!);
-    if (object.type.kind === "func") {
-      const fnName = jsFuncNameOf(call.arguments.nodes[0]!, lowerer);
-      object = {
-        kind: "dynFrom",
-        value: object,
-        type: DYN,
-        loc: locOf(call),
-        ...(fnName !== null ? { fnName } : {}),
-      };
-    }
-    if (
-      object.type.kind !== "dyn" &&
-      canConvertToDyn(
-        object.type,
-        (id) => lowerer.shapes.get(id),
-        (id) => lowerer.unions.get(id),
-      )
-    )
-      object = lowerer.coerceInto(call.arguments.nodes[0]!, object, DYN);
-    if (object.type.kind === "dyn") {
-      const loc = locOf(call);
-      if (member === "getPrototypeOf") {
-        let parent: ts.Node | undefined = call.parent;
-        while (parent && ts.isParenthesizedExpression(parent)) parent = parent.parent;
-        const identityOnly =
-          !!parent &&
-          ts.isBinaryExpression(parent) &&
-          [
-            ts.SyntaxKind.EqualsEqualsEqualsToken,
-            ts.SyntaxKind.ExclamationEqualsEqualsToken,
-          ].includes(parent.operatorToken.kind);
-        return {
-          kind: "libCall",
-          fn: "dyn.getPrototype",
-          args: [object],
-          type: DYN,
-          loc,
-          ...(identityOnly ? { prototypeIdentityOnly: true as const } : {}),
-        };
-      }
-      const prototype = lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN);
-      if (prototype.type.kind === "dyn")
-        return {
-          kind: "libCall",
-          fn: "dyn.setPrototype",
-          args: [object, prototype],
-          type: DYN,
-          loc,
-        };
-    }
+    // The shared prototype edge (also Reflect.getPrototypeOf's answer).
+    const answer = lowerPrototypeReflectionCall(lowerer, call, member, locOf(call));
+    if (answer !== null) return answer;
   }
   if (member === "getOwnPropertyDescriptor" && call.arguments.nodes.length === 2) {
     const [receiver, key] = call.arguments.nodes;
@@ -8955,8 +9325,11 @@ function lowerObjectStaticCall(
     }
     const onError = lowerObjectAssignOntoError(lowerer, call);
     if (onError) return onError;
-    const hybrid = lowerObjectAssignHybrid(lowerer, call);
-    if (hybrid) return hybrid;
+    // `Object.assign(fn, ...)` on a TYPED callable: the source keys land on
+    // the closure's own-property table and the expression is that function
+    // (one representation — no record stands for it).
+    const callableAssign = lowerCallableAssign(lowerer, call);
+    if (callableAssign) return callableAssign;
     // `Object.assign({}, lit)` — an EMPTY fresh-literal target and one
     // object-literal source: the result is a fresh object carrying
     // exactly the source literal's properties, which IS the source
@@ -9331,6 +9704,12 @@ function lowerObjectStaticCall(
       member === "getOwnPropertyDescriptor" &&
       target &&
       (target.type.kind === "bool" || target.type.kind === "f64" || target.type.kind === "string");
+    // A typed handle target in a program that adds properties to handles:
+    // its property table answers (scr_dyn_handle_props.c).
+    if (target && target.type.kind !== "dyn") {
+      const boxed = boxedHandleReceiver(lowerer, target);
+      if (boxed) target = boxed;
+    }
     if (!target || (target.type.kind !== "dyn" && !isUnitType(target.type) && !descriptorPrimitive))
       return null;
     if (target.type.kind !== "dyn")
@@ -9417,6 +9796,12 @@ function lowerObjectStaticCall(
     ) {
       target = { kind: "dynFrom", value: target, type: DYN, loc: locOf(call.arguments.nodes[0]!) };
     }
+    // A typed handle target in a program that adds properties to handles:
+    // its property table answers (scr_dyn_handle_props.c).
+    if (target && target.type.kind !== "dyn") {
+      const boxed = boxedHandleReceiver(lowerer, target);
+      if (boxed) target = boxed;
+    }
     if (target?.type.kind === "dyn") {
       const descs = lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN);
       if (descs.type.kind === "dyn") {
@@ -9470,6 +9855,29 @@ function lowerObjectStaticCall(
       locOf(call),
     );
     if (fnIntegrity) return fnIntegrity;
+    // A typed handle in a program that adds properties to handles: the
+    // table holds the integrity state, so the checked-dynamic entries
+    // answer (scr_dyn_handle_props.c). The queries are the hook-carrying
+    // entries; with the table installed they answer from it.
+    {
+      const boxed = boxedHandleReceiver(lowerer, value);
+      if (boxed) {
+        const operation = {
+          preventExtensions: "dyn.preventExtensions",
+          isExtensible: "dyn.isExtensibleQuery",
+          seal: "dyn.seal",
+          isSealed: "dyn.isSealedQuery",
+        } as const;
+        const query = member.startsWith("is");
+        return {
+          kind: "libCall",
+          fn: operation[member as keyof typeof operation],
+          args: [boxed],
+          type: query ? BOOL : DYN,
+          loc: locOf(call),
+        };
+      }
+    }
     // A Map or Set has no own properties: freeze, seal and preventExtensions
     // all only make it not extensible.
     if (value.type.kind === "map" || value.type.kind === "set") {
@@ -9547,7 +9955,15 @@ function lowerObjectStaticCall(
   // reference would need a runtime frozen bit (strict mode throws).
   if (member === "isFrozen" && call.arguments.nodes.length === 1) {
     const argNode = call.arguments.nodes[0]!;
-    const probedKind = tryLowerExpression(lowerer, argNode)?.type.kind;
+    const probed = tryLowerExpression(lowerer, argNode);
+    // A typed handle in a program that adds properties to handles: the
+    // table holds the integrity state (scr_dyn_handle_props.c).
+    {
+      const boxed = boxedHandleReceiver(lowerer, probed);
+      if (boxed)
+        return { kind: "libCall", fn: "dyn.isFrozen", args: [boxed], type: BOOL, loc: locOf(call) };
+    }
+    const probedKind = probed?.type.kind;
     if (
       probedKind === "record" ||
       probedKind === "array" ||
@@ -9600,6 +10016,13 @@ function lowerObjectStaticCall(
     if (value.type.kind === "dyn") {
       noteUntypedIntegrity(lowerer, argNode);
       return { kind: "libCall", fn: "dyn.freeze", args: [value], type: DYN, loc: locOf(call) };
+    }
+    // A typed handle in a program that adds properties to handles freezes
+    // its own property table (scr_dyn_handle_props.c).
+    {
+      const boxed = boxedHandleReceiver(lowerer, value);
+      if (boxed)
+        return { kind: "libCall", fn: "dyn.freeze", args: [boxed], type: DYN, loc: locOf(call) };
     }
     if (ts.isObjectLiteralExpression(inner) || ts.isArrayLiteralExpression(inner)) {
       // A fresh literal can still reach untyped code, which observes and
@@ -9788,8 +10211,9 @@ function lowerObjectStaticCall(
   // namespace's export names sorted with "default". values/entries would
   // include members that do not compile yet.
   const probedModule = tryLowerExpression(lowerer, argNode);
+  const namespaceShape = lowerer.builtinNamespaceShapeOf(argNode);
   if (
-    lowerer.builtinNamespaceModuleOf(argNode) === "util/types" ||
+    namespaceShape?.module === "util/types" ||
     (probedModule?.type.kind === "moduleNs" && probedModule.type.moduleId === "builtin:util/types")
   ) {
     if (member !== "keys") {
@@ -9799,27 +10223,79 @@ function lowerObjectStaticCall(
         "call the util.types predicates by name",
       );
     }
-    const symbol = ts.isIdentifier(argNode)
-      ? lowerer.checker.getSymbolAtLocation(argNode)
-      : undefined;
-    const namespace = symbol
-      ? symbol.declarations.some((decl) => ts.isNamespaceImport(decl))
-      : false;
-    const names = namespace ? [...UTIL_TYPES_KEYS, "default"].sort() : UTIL_TYPES_KEYS;
+    // The two shapes list the same names in the same order except for the
+    // "default" entry an ES module namespace adds; a value whose shape the
+    // type system does not fix cannot be answered either way.
+    const flavor = namespaceShape?.flavor ?? "unknown";
+    if (flavor === "unknown") {
+      lowerer.noLowering(
+        "Object.keys over a util.types namespace whose runtime shape is not known statically",
+        call,
+        "reflect on the namespace where it is bound (a namespace import, a require call or process.getBuiltinModule)",
+      );
+    }
+    const names = flavor === "esm" ? [...UTIL_TYPES_KEYS, "default"].sort() : UTIL_TYPES_KEYS;
     const loc = locOf(call);
-    return {
-      kind: "arrayLit",
-      elems: names.map((name) => ({ kind: "strLit", value: name, type: STRING, loc })),
-      type: arrayOf(STRING),
+    return reflectOverNamespaceExpr(
+      lowerer,
+      argNode,
+      {
+        kind: "arrayLit",
+        elems: names.map((name) => ({ kind: "strLit", value: name, type: STRING, loc })),
+        type: arrayOf(STRING),
+        loc,
+      },
       loc,
-    };
+    );
+  }
+  // A builtin module namespace (`Object.keys(zlib)` — also a callable
+  // module such as node:events, whose type maps to its exported function
+  // rather than to a module namespace): Node's member census answers, in
+  // the flavor's order — the CommonJS exports object's insertion order, or
+  // an ESM namespace's export names sorted with "default". A namespace
+  // whose shape the type system does not fix (a parameter, an untraced
+  // call result) has no answer here.
+  if (namespaceShape !== null) {
+    if (member !== "keys") {
+      lowerer.noLowering(
+        `Object.${member} over a builtin module namespace`,
+        call,
+        "access the builtin's named exports directly",
+      );
+    }
+    if (namespaceShape.flavor === "unknown") {
+      lowerer.noLowering(
+        "Object.keys over a builtin module namespace whose runtime shape is not known statically",
+        call,
+        "reflect on the namespace where it is bound (a namespace import, a require call or process.getBuiltinModule)",
+      );
+    }
+    const names = builtinModuleKeys(namespaceShape.module, namespaceShape.flavor);
+    if (names === null) {
+      lowerer.noLowering(
+        "Object.keys over a builtin module namespace",
+        call,
+        "access the builtin's named exports directly",
+      );
+    }
+    const loc = locOf(call);
+    return reflectOverNamespaceExpr(
+      lowerer,
+      argNode,
+      {
+        kind: "arrayLit",
+        elems: names.map((name) => ({ kind: "strLit", value: name, type: STRING, loc })),
+        type: arrayOf(STRING),
+        loc,
+      },
+      loc,
+    );
   }
   // A compiled PROGRAM module namespace is a nominal token whose members
   // remain live bindings, but its enumerable key set is static and Node
   // sorts it in code-unit order. Materialize exactly those value-export
   // names for Object.keys; values/entries would need a heterogeneous live
-  // view and stay explicitly fenced. Builtin namespaces also stay fenced:
-  // their exact runtime export set is Node-owned, not the ambient subset.
+  // view and stay explicitly fenced.
   {
     const probed = tryLowerExpression(lowerer, argNode);
     if (probed?.type.kind === "moduleNs") {
@@ -9835,20 +10311,29 @@ function lowerObjectStaticCall(
         lowerer.noLowering(
           "Object.keys over a builtin module namespace",
           call,
-          "access the builtin's named exports directly (the exact runtime key census is Node-owned)",
+          "access the builtin's named exports directly",
         );
       }
       const moduleSymbol = source ? lowerer.checker.getSymbolAtLocation(source) : undefined;
+      const runtimeNames = source === null ? new Set<string>() : lowerer.runtimeExportNames(source);
       const names: string[] = [];
-      moduleSymbol?.getExports().forEach((symbol, key) => {
+      // The resolved export set, so an `export * from` re-export lists the
+      // names it forwards — the same set the namespace object carries. A
+      // name a type-only export declaration forwards has no runtime
+      // binding, so the runtime export names decide that part of the set.
+      for (const symbol of moduleSymbol ? lowerer.checker.getExportsOfModule(moduleSymbol) : []) {
         // Internal names (`__export`) start with `__`; an exported name that
-        // does is keyed with an extra `_` (escapedSymbolName).
-        const name = String(key);
-        if ((name.startsWith("__") && !name.startsWith("___")) || name === "export=") return;
+        // does is keyed with an extra `_` (escapedSymbolName), so the escaped
+        // name is what tells the two apart. The name pushed is the export's
+        // own spelling, without that extra `_`.
+        const key = String(symbol.escapedName);
+        if ((key.startsWith("__") && !key.startsWith("___")) || key === "export=") continue;
+        const name = ts.symbolName(symbol);
+        if (!runtimeNames.has(name)) continue;
         const target =
           symbol.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(symbol) : symbol;
-        if (target.flags & ts.SymbolFlags.Value) names.push(ts.symbolName(symbol));
-      });
+        if (target.flags & ts.SymbolFlags.Value) names.push(name);
+      }
       names.sort();
       const loc = locOf(call);
       const result: IrExpr = {
@@ -9894,12 +10379,16 @@ function lowerObjectStaticCall(
     // An array walks its live view: the present indices, then its numeric
     // and named properties.
     const isArray = probed?.type.kind === "array" && lowerer.dynConvertible(probed.type);
+    // A typed handle in a program that adds properties to handles reads its
+    // own property table through the checked-dynamic walk.
+    const isHandle = probed ? boxedHandleReceiver(lowerer, probed) : null;
     if (
       isDyn ||
       isPrimitive ||
       isFunction ||
       isJsUnion ||
       isArray ||
+      isHandle !== null ||
       (probed && isDynTypedRefType(probed.type))
     ) {
       const fn =
@@ -9908,7 +10397,7 @@ function lowerObjectStaticCall(
           : member === "values"
             ? "dyn.objValues"
             : "dyn.objEntries";
-      let v = lowerer.lowerExpr(argNode);
+      let v = isHandle ?? lowerer.lowerExpr(argNode);
       if (v.type.kind !== "dyn")
         v = {
           kind: "dynFrom",
@@ -9965,6 +10454,13 @@ function lowerObjectStaticCall(
   // checker omits (named regex captures). Enumerate the represented shape.
   const represented = tryLowerExpression(lowerer, argNode);
   if (represented?.type.kind === "record") argIr = represented.type;
+  // A UNION of records (the `cond ? recA : recB` shape): every arm is
+  // enumerated by its own fixed shape, dispatched on the value's runtime
+  // tag — Node reads whichever record the value is. The checker's call
+  // type is ONE entries/values array type, so the arms' answers unify.
+  if (argIr?.kind === "union") {
+    return lowerObjectEnumerationOverRecordUnion(lowerer, call, member, locOf(call));
+  }
   if (argIr?.kind !== "record") return null; // Maps, classes, arrays → the SC2020 fence
   const shape = lowerer.shapes.get(argIr.shapeId);
   if (!shape || shape.tuple) return null; // tuple → the fence
@@ -10016,8 +10512,130 @@ function lowerObjectStaticCall(
       ? runtimeOptionalEntriesType(lowerer, argIr, checkedT)
       : checkedT;
   const enumerated = objectEnumerationReceiver(lowerer, lowerer.lowerExpr(argNode), argIr, loc);
-  // A record that kept undeclared properties of its checked source answers
-  // from its live checked view (values checked into the static result).
+  return lowerObjectEnumerationOverRecord(
+    lowerer,
+    call,
+    member,
+    argIr,
+    shape,
+    enumerated,
+    resultT,
+    loc,
+  );
+}
+
+/** Object.keys/values/entries over a UNION of records: per-arm dispatch.
+ * The value is bound to one hidden local, then each arm's own static walk
+ * reads it under the arm's runtime tag (`unionNarrow`); the arms' answers
+ * are ternaries over the tag (the first arm is the fallthrough). The result
+ * type is the checker's call type, shared by every arm. Null when an arm
+ * is not a fixed record shape or a unit (the caller's fence then applies).
+ *
+ * The checker's type for an indexed read under noUncheckedIndexedAccess
+ * drops the undefined the storage can hold, so the local takes the lowered
+ * value's union, not the checker's call-site union. Its unit arms are
+ * exactly the receivers Node refuses ("Cannot convert undefined or null to
+ * object") and throw before the per-arm dispatch. */
+function lowerObjectEnumerationOverRecordUnion(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  member: "keys" | "values" | "entries",
+  loc: SrcLoc,
+): IrExpr | null {
+  const receiver = lowerer.lowerExpr(call.arguments.nodes[0]!);
+  if (receiver.type.kind !== "union") return null;
+  const source = receiver.type;
+  const arms = lowerer.unions.get(source.unionId)?.arms ?? [];
+  if (arms.length === 0) return null;
+  const records: { tag: number; arm: IrType & { kind: "record" }; shape: IrRecordShape }[] = [];
+  const units: number[] = [];
+  for (let tag = 0; tag < arms.length; tag++) {
+    const arm = arms[tag]!;
+    if (isUnitType(arm)) {
+      units.push(tag);
+      continue;
+    }
+    if (arm.kind !== "record") return null;
+    const shape = lowerer.shapes.get(arm.shapeId);
+    if (!shape || shape.tuple) return null;
+    records.push({ tag, arm, shape });
+  }
+  if (records.length === 0) return null;
+  const checkedT = lowerer.irTypeOf(call);
+  if (checkedT.kind !== "array") lowerer.badType(call, lowerer.typeOf(call)); // defensive
+  const resultT = checkedT;
+  const local = lowerer.declareHiddenLocal("%objUnion", source);
+  const ref = (): IrExpr => ({ kind: "varRef", localId: local.id, type: source, loc });
+  const isTag = (tag: number): IrExpr => ({
+    kind: "unionIsTag",
+    unionId: source.unionId,
+    tag,
+    negated: false,
+    value: ref(),
+    type: BOOL,
+    loc,
+  });
+  let answer: IrExpr | null = null;
+  for (const { tag, arm, shape } of records) {
+    // The per-arm fences the record path applies to a single receiver.
+    fencePerfEntryKeyWalk(lowerer, arm, call, `Object.${member}`);
+    fenceX509KeyWalk(lowerer, arm, call, `Object.${member}`);
+    if (shapeHasAccessorSlots(shape)) {
+      lowerer.unsupported(
+        "SC1090",
+        call,
+        `Object.${member} over '${lowerer.fmt(arm)}' (a shape carrying get/set accessor properties — the static key walk cannot list them${member === "keys" ? "" : " or invoke the getters"}; read the properties explicitly)`,
+      );
+    }
+    const armValue: IrExpr = {
+      kind: "unionNarrow",
+      unionId: source.unionId,
+      tag,
+      value: ref(),
+      type: arm,
+      loc,
+    };
+    const armAnswer = shape.indexValue
+      ? objectIterOverIndexShape(lowerer, call, member, arm, shape, armValue, resultT, loc)
+      : lowerObjectEnumerationOverRecord(lowerer, call, member, arm, shape, armValue, resultT, loc);
+    answer =
+      answer === null
+        ? armAnswer
+        : { kind: "ternary", cond: isTag(tag), then: armAnswer, else_: answer, type: resultT, loc };
+  }
+  for (const tag of units) {
+    answer = {
+      kind: "ternary",
+      cond: isTag(tag),
+      then: nodeThrowExpr(1, "", "Cannot convert undefined or null to object", resultT, loc),
+      else_: answer!,
+      type: resultT,
+      loc,
+    };
+  }
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: local.id, init: receiver, loc }],
+    result: answer!,
+    type: resultT,
+    loc,
+  };
+}
+
+/** The static enumeration of one FIXED record shape: the field walk helper
+ * keyed by the shape and the checker's result type. `enumerated` is the
+ * receiver to read (the argument itself, or a union arm's narrowed value),
+ * already passed through objectEnumerationReceiver. */
+function lowerObjectEnumerationOverRecord(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  member: "keys" | "values" | "entries",
+  argIr: IrType & { kind: "record" },
+  shape: IrRecordShape,
+  enumerated: IrExpr,
+  resultT: IrType & { kind: "array" },
+  loc: SrcLoc,
+): IrExpr {
   const recordT = argIr;
   const sourced = (staticAnswer: (record: IrExpr) => IrExpr): IrExpr =>
     recordMayKeepSource(lowerer, recordT)
@@ -10116,8 +10734,30 @@ function lowerObjectStaticCall(
           if (tag >= 0) {
             return { kind: "unionWrap", unionId: valueT.unionId, tag, value, type: valueT, loc };
           }
+          // A field value the element union has no arm for, but which
+          // WIDTH-LIFTS into one: a concrete record field enumerated
+          // against a checker-typed element that is a shared record's
+          // union of layouts (a table of metric definitions whose value
+          // type is the declared `counter | histogram` shape, a settings
+          // map whose declared value type is the option record). The
+          // lift picks the arm and copies the value into it — the same
+          // conversion coerceToExpected applies at a union slot.
+          const lift = lowerer.widthLiftPlan(vt, valueT);
+          if (lift) return lowerer.applyWidthLift(lift, value, valueT, loc);
         }
         return null;
+      };
+      // A field whose own type is a union (`ColorValue` = `string | number`)
+      // flows into a result element union that may be wider: `Object.entries`
+      // over a record with optional fields yields `string | number |
+      // undefined` for every key. That is the same conversion an assignment
+      // of the value to such a slot performs, so it re-tags at runtime
+      // through the interned helper; an arm the destination cannot take
+      // still refuses with the flat story.
+      const retagInto = (from: IrType & { kind: "union" }): IrExpr | null => {
+        if (!valueT || valueT.kind !== "union") return null;
+        const helper = lowerer.unionRetagHelper(from.unionId, valueT.unionId, loc);
+        return helper ? { kind: "call", callee: helper, args: [raw], type: valueT, loc } : null;
       };
       // Undefined-armed fields: the push is guarded by the field's
       // presence; a narrowed push re-tags the non-undefined arm.
@@ -10155,14 +10795,24 @@ function lowerObjectStaticCall(
                   loc,
                 };
           } else {
-            return `field '${f.name}' is a multi-arm union that cannot re-tag into the result element type`;
+            const retagged = retagInto(f.type);
+            if (!retagged)
+              return `field '${f.name}' is a multi-arm union that cannot re-tag into the result element type`;
+            value = retagged;
+            vt = valueT!;
           }
-        } else if (
-          valueT?.kind !== "dyn" &&
-          !typeEquals(f.type, valueT ?? f.type) &&
-          !(valueT?.kind === "union" && lowerer.unionRetagMappable(f.type.unionId, valueT.unionId))
-        ) {
-          return `field '${f.name}' is a union that cannot re-tag into the result element type`;
+        } else if (valueT?.kind !== "dyn" && !typeEquals(f.type, valueT ?? f.type)) {
+          const retagged = retagInto(f.type);
+          if (retagged) {
+            value = retagged;
+            vt = valueT!;
+          } else if (
+            !(
+              valueT?.kind === "union" && lowerer.unionRetagMappable(f.type.unionId, valueT.unionId)
+            )
+          ) {
+            return `field '${f.name}' is a union that cannot re-tag into the result element type`;
+          }
         }
       }
       const coerced = elemOf(value, vt);
@@ -10240,6 +10890,16 @@ function lowerObjectStaticCall(
         }
         // Absent fields contribute nothing; present ones push their
         // value, undefined included.
+        stmt = {
+          kind: "if",
+          cond: lowerer.recordFieldPresent(obj, shapeId, f.name, loc),
+          then: [stmt],
+          else_: null,
+          loc,
+        };
+      } else if (f.optional === true && f.type.kind === "dyn") {
+        // An optional checked-dynamic field with the ABSENT marker
+        // contributes no key either.
         stmt = {
           kind: "if",
           cond: lowerer.recordFieldPresent(obj, shapeId, f.name, loc),
@@ -10483,90 +11143,6 @@ function runtimeOptionalEntriesType(
  * ordinary indirect call through the field's closure value. Deliberately
  * record-only — calling a func-typed CLASS field stays rejected (the
  * generic method-call rejection in lowerCall). */
-/** `Object.assign(fn, { bold, ... })` → a HYBRID record literal: the
- * reserved %call field takes the function, each source object literal's
- * properties fill their declared fields (later sources override, JS's
- * last-write-wins — one entry per name, source values still evaluate in
- * order through the literal lowering's shared rules). Bounded to the
- * chalk shape on purpose: the RESULT type must map to a %call-carrying
- * record, sources must be plain object literals (an `as` cast unwraps),
- * and every declared field must be filled. REPRESENTATION NOTE
- * (SEMANTICS.md): the result is a FRESH record, not the mutated `fn` —
- * `assigned === fn` is false here where JS answers true, and `typeof`
- * would answer object; portless's colors.ts never observes either.
- * Null (→ the stdlib fence) for every other Object.assign form. */
-function lowerObjectAssignHybrid(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
-  const mapped = lowerer.mapTypeOf(lowerer.typeOf(call));
-  if (mapped?.kind !== "record") return null;
-  const shape = lowerer.shapes.get(mapped.shapeId);
-  const callField = shape?.fields.find((f) => f.name === "%call");
-  if (!shape || !callField || callField.type.kind !== "func") return null;
-  if (call.arguments.nodes.length < 2 || call.arguments.nodes.some((a) => ts.isSpreadElement(a)))
-    return null;
-  const loc = locOf(call);
-  const values = new Map<string, IrExpr>();
-  values.set("%call", lowerer.lowerExprExpecting(call.arguments.nodes[0]!, callField.type));
-  for (const argNode of call.arguments.nodes.slice(1)) {
-    let src: ts.Expression = argNode;
-    while (ts.isParenthesizedExpression(src) || ts.isAsExpression(src) || ts.isTypeAssertion(src))
-      src = src.expression;
-    if (!ts.isObjectLiteralExpression(src)) {
-      lowerer.unsupported(
-        "SC1090",
-        argNode,
-        "Object.assign sources other than plain object literals when building a function-with-properties value",
-      );
-    }
-    for (const prop of src.properties.nodes) {
-      const nameOk =
-        (ts.isPropertyAssignment(prop) || ts.isShorthandPropertyAssignment(prop)) &&
-        (ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name));
-      if (!nameOk) {
-        lowerer.unsupported(
-          "SC1090",
-          prop,
-          "this property form in an Object.assign source building a function-with-properties value",
-        );
-      }
-      const name = (prop.name as ts.Identifier | ts.StringLiteral).text;
-      const fieldType = shape.fields.find((f) => f.name === name)?.type;
-      if (!fieldType) {
-        lowerer.unsupported(
-          "SC1090",
-          prop,
-          `the property '${name}' missing from the assigned result type '${lowerer.fmt(mapped)}'`,
-        );
-      }
-      const value = ts.isPropertyAssignment(prop)
-        ? lowerer.lowerExprExpecting(prop.initializer, fieldType)
-        : lowerer.coerceInto(
-            prop,
-            lowerer.lowerShorthandValue(prop as ts.ShorthandPropertyAssignment),
-            fieldType,
-          );
-      values.set(name, value);
-    }
-  }
-  const fields: { name: string; value: IrExpr }[] = [];
-  for (const f of shape.fields) {
-    const v = values.get(f.name);
-    if (!v) {
-      const absent = lowerer.absentFieldValue(f.type, loc);
-      if (!absent) {
-        lowerer.unsupported(
-          "SC1090",
-          call,
-          `Object.assign leaving the required field '${f.name}' of '${lowerer.fmt(mapped)}' unfilled`,
-        );
-      }
-      fields.push({ name: f.name, value: absent });
-      continue;
-    }
-    fields.push({ name: f.name, value: v });
-  }
-  return { kind: "recordLit", fields, type: mapped, loc };
-}
-
 /** The accessed member is an overload set (isOverloadedCallableMemberType),
  * also under an optional chain whose access still spells `| undefined`. */
 function isOverloadedMemberAccess(lowerer: Lowerer, access: ts.PropertyAccessExpression): boolean {
@@ -10685,7 +11261,7 @@ export function lowerRecordFieldCall(
           kind: "dynCall",
           callee,
           ...(receiver ? { receiver } : {}),
-          calleeName: ts.getTextOfNode(access),
+          calleeName: v8CalleeText(access),
           args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
           type: DYN,
           loc,
@@ -10695,6 +11271,32 @@ export function lowerRecordFieldCall(
   // An optional callback field the checker narrowed at this call
   // (`o.cb ? o.cb(x) : …`, `if (o.cb) o.cb(x)`): extract the func arm.
   if (callee.type.kind === "union") callee = lowerer.maybeNarrow(callee, access);
+  // A GENERIC instantiation narrows the member to the CONSTRAINT's declared
+  // signature (`TOptions["transformHeaders"]` describes `(h) => H | Promise<H>`
+  // on `ModelsRequestTransforms`, while the instance stores `(h) => H`), so
+  // the narrowed type names a DIFFERENT func than the stored arm and no arm
+  // tag matches — maybeNarrow keeps the union. The checker proved the value
+  // is not the empty arm, and the slot holds exactly one callable arm beside
+  // it, so the call goes through that arm: the signature the instantiated
+  // field was stored with (the constraint's is a static upper bound, not the
+  // value's own contract).
+  if (callee.type.kind === "union" && lowerer.mapTypeOf(lowerer.typeOf(access))?.kind === "func") {
+    const arms = lowerer.unions.get(callee.type.unionId)?.arms ?? [];
+    const callables = arms.filter((arm) => arm.kind === "func").length;
+    const index = arms.findIndex((arm) => arm.kind === "func");
+    if (
+      callables === 1 &&
+      arms.every((arm, i) => i === index || arm.kind === "undefinedT" || arm.kind === "nullT")
+    )
+      callee = {
+        kind: "unionNarrow",
+        unionId: callee.type.unionId,
+        tag: index,
+        value: callee,
+        type: arms[index]!,
+        loc: locOf(access),
+      };
+  }
   if (callee.type.kind !== "func") lowerer.badType(access, lowerer.typeOf(access));
   // JavaScript passes the record as `this`. A record with no dynamic form
   // cannot be that receiver; the library's own function fields (the
@@ -11272,7 +11874,7 @@ function lowerObjLitGenericMethodCall(
           kind: "dynInvoke",
           recv: value.type.kind === "dyn" ? value : { kind: "dynFrom", value, type: DYN, loc },
           method: name,
-          calleeName: ts.getTextOfNode(access),
+          calleeName: v8CalleeText(access),
           args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
           type: DYN,
           loc,
@@ -11285,7 +11887,7 @@ function lowerObjLitGenericMethodCall(
           kind: "dynInvoke",
           recv: childMethod,
           method: name,
-          calleeName: ts.getTextOfNode(access),
+          calleeName: v8CalleeText(access),
           args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
           type: DYN,
           loc,
@@ -11322,7 +11924,7 @@ function lowerObjLitGenericMethodCall(
           kind: "dynInvoke",
           recv: receiver,
           method: name,
-          calleeName: ts.getTextOfNode(access),
+          calleeName: v8CalleeText(access),
           args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
           type: DYN,
           loc,
@@ -11606,7 +12208,7 @@ export function lowerObjectMethodCall(
             kind: "dynCall",
             callee: boxed,
             ...receiver,
-            calleeName: ts.getTextOfNode(access),
+            calleeName: v8CalleeText(access),
             args,
             type: DYN,
             loc,
@@ -11624,7 +12226,7 @@ export function lowerObjectMethodCall(
           kind: "dynCall",
           callee,
           ...receiver,
-          calleeName: ts.getTextOfNode(access),
+          calleeName: v8CalleeText(access),
           args,
           type: DYN,
           loc,
@@ -11663,7 +12265,7 @@ export function lowerObjectMethodCall(
               kind: "dynCall",
               callee,
               receiver,
-              calleeName: ts.getTextOfNode(access),
+              calleeName: v8CalleeText(access),
               args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
               type: DYN,
               loc,
@@ -11853,7 +12455,7 @@ function lowerUnionObjectMethodCall(
             kind: "dynCall",
             callee,
             receiver,
-            calleeName: ts.getTextOfNode(access),
+            calleeName: v8CalleeText(access),
             args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
             type: DYN,
             loc,
@@ -12015,7 +12617,7 @@ function lowerUnionObjectDynFieldCall(
       kind: "dynCall",
       callee,
       receiver: lowerer.coerceToExpected(receiverRef, DYN),
-      calleeName: ts.getTextOfNode(access),
+      calleeName: v8CalleeText(access),
       args,
       type: DYN,
       loc,
@@ -12625,12 +13227,6 @@ function jsAssignsOwnToString(lowerer: Lowerer, receiver: ts.Expression): boolea
   return targets.has(decl);
 }
 
-const unparenthesized = (e: ts.Expression): ts.Expression => {
-  let out = e;
-  while (ts.isParenthesizedExpression(out)) out = out.expression;
-  return out;
-};
-
 /** The declaration of the binding an identifier names, through imports. */
 function bindingDeclaration(lowerer: Lowerer, id: ts.Identifier): ts.Node | undefined {
   let sym = lowerer.checker.getSymbolAtLocation(id);
@@ -12647,14 +13243,14 @@ function ownToStringTargets(lowerer: Lowerer, sf: ts.SourceFile): Set<ts.Node> {
   const targets = new Set<ts.Node>();
   const visit = (node: ts.Node): void => {
     if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
-      const left = unparenthesized(node.left);
+      const left = withoutParentheses(node.left);
       const named =
         (ts.isPropertyAccessExpression(left) && left.name.text === "toString") ||
         (ts.isElementAccessExpression(left) &&
           ts.isStringLiteralLike(left.argumentExpression) &&
           left.argumentExpression.text === "toString");
       const target = named
-        ? unparenthesized(
+        ? withoutParentheses(
             (left as ts.PropertyAccessExpression | ts.ElementAccessExpression).expression,
           )
         : undefined;
@@ -12686,11 +13282,11 @@ function iifeArgumentDeclaration(lowerer: Lowerer, param: ts.Node): ts.Node | un
   const index = fn.parameters.nodes.indexOf(param);
   let arg = index < 0 ? undefined : call.arguments.nodes[index];
   if (arg === undefined) return undefined;
-  arg = unparenthesized(arg);
+  arg = withoutParentheses(arg);
   if (ts.isBinaryExpression(arg) && arg.operatorToken.kind === ts.SyntaxKind.BarBarToken)
-    arg = unparenthesized(arg.left);
+    arg = withoutParentheses(arg.left);
   if (ts.isBinaryExpression(arg) && arg.operatorToken.kind === ts.SyntaxKind.EqualsToken)
-    arg = unparenthesized(arg.left);
+    arg = withoutParentheses(arg.left);
   return ts.isIdentifier(arg) ? bindingDeclaration(lowerer, arg) : undefined;
 }
 
@@ -12868,7 +13464,7 @@ function lowerEmitterMethodValueCall(
       loc,
     },
     method: "call",
-    calleeName: ts.getTextOfNode(access),
+    calleeName: v8CalleeText(access),
     args: args.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
     type: DYN,
     loc,

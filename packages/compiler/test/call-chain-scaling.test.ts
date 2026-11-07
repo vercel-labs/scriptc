@@ -72,6 +72,59 @@ console.log(${chain("new Counter()", links, (i) => `.step(${i})`)}
 console.log(${chain("new Money(1)", links, (i) => `.plus(${i})`)}
   .cents);
 `,
+  "a receiver whose type is a union of classes": (links) =>
+    `class Even {
+  constructor(readonly n: number) {}
+  next(by: number): Even | Odd {
+    return (this.n + by) % 2 === 0 ? new Even(this.n + by) : new Odd(this.n + by);
+  }
+}
+class Odd {
+  constructor(readonly n: number) {}
+  next(by: number): Even | Odd {
+    return (this.n + by) % 2 === 0 ? new Even(this.n + by) : new Odd(this.n + by);
+  }
+}
+const start: Even | Odd = new Even(0);
+console.log(${chain("start", links, (i) => `.next(${i})`)}
+  .n);
+`,
+  "Map methods": (links) =>
+    `console.log(${chain("new Map<string, number>()", links, (i) => `.set("k${i}", ${i})`)}
+  .size);
+`,
+  "calls taking arrow functions": (links) =>
+    `interface Later { then(f: (n: number) => number): Later; done(): number }
+function later(total: number): Later {
+  return { then: (f) => later(f(total)), done: () => total };
+}
+console.log(${chain("later(0)", links, (i) => `.then((n) => n + ${i})`)}
+  .done());
+`,
+  "array methods taking arrow functions": (links) =>
+    `const values = [1, 2, 3];
+console.log(${chain("values", links, (i) =>
+      i % 2 === 0 ? `.map((n) => n + ${i})` : `.filter((n) => n !== ${i})`,
+    )}
+  .length);
+`,
+  "array methods without functions": (links) =>
+    `const values = [3, 1, 2];
+console.log(${chain("values", links, (i) =>
+      i % 3 === 0 ? ".slice(0)" : i % 3 === 1 ? `.concat([${i}])` : ".reverse()",
+    )}
+  .length);
+`,
+  "generic methods taking arrow functions": (links) =>
+    `class Box<T> {
+  constructor(readonly value: T) {}
+  map<U>(f: (value: T) => U): Box<U> {
+    return new Box(f(this.value));
+  }
+}
+console.log(${chain("new Box(1)", links, (i) => `.map((n) => n + ${i})`)}
+  .value);
+`,
   "a chain inside a generic function": (links) =>
     `${BUILDER}function run<T extends Builder>(root: T): number {
   return ${chain("root", links, (i) => `.step(${i})`)}

@@ -885,6 +885,9 @@ interface DispatchedReceiver {
   /** The expression overrides in force then, in the table's order (null
    * for none): replacing one leaves the table's size as it was. */
   overrides: IrExpr[] | null;
+  /** The declaration slots the lowering would have reported as dynamic had
+   * it not run inside a probe (noteDegradedSlot), or null for none. */
+  slotNotes: { node: ts.Node; type: ts.Type }[] | null;
 }
 
 export class PoisonError extends Error {
@@ -5340,6 +5343,7 @@ export class Lowerer {
     // Set and restored around one call's dispatch (lowerCall), so a unit
     // begins and ends with none.
     "dispatchedReceiver",
+    "probedSlotNotes",
     "spreadArmOverrides",
     "splitIdentifierUses",
     "typeMemo",
@@ -5734,16 +5738,22 @@ export class Lowerer {
    * form's lowering produced when a new lowering would produce it again,
    * and a lowering that is kept for the next form otherwise.
    *
-   * A value is kept only when its lowering left nothing behind
-   * (probeEffects, and nothing in the capture buffer): a lowering that
-   * declares a local, lifts a function or takes a closure name numbers
-   * what it declares by how often it ran, so running it once instead of
-   * twice would rename them. It is handed out only in the function context
-   * and under the type bindings it was lowered in, with the surroundings
-   * that decide how an expression lowers unchanged (probeSurroundings) and
-   * the same expression overrides in force, and never for a receiver that
-   * is itself overridden (an optional chain's guarded receiver is its bind
-   * temp). */
+   * What the kept lowering declared (a local, a lifted function, a closure
+   * name) is declared once, by it, and the forms that follow use those
+   * declarations: lowering the receiver again would declare all of it a
+   * second time under later names and leave the first set behind unused.
+   * A lowering that recorded a diagnostic or a deferred fence is not kept:
+   * the next form's lowering reports it again, as before.
+   *
+   * A value is handed out only in the function context and under the type
+   * bindings it was lowered in, with the surroundings that decide how an
+   * expression lowers unchanged (probeSurroundings) and the same expression
+   * overrides in force, and never for a receiver that is itself overridden
+   * (an optional chain's guarded receiver is its bind temp).
+   *
+   * A lowering inside a probe does not report the declaration slots whose
+   * type is degraded (noteDegradedSlot); the kept value carries them, and
+   * the first request outside a probe reports them. */
   private lowerDispatchedReceiver(receiver: DispatchedReceiver): IrExpr {
     const node = receiver.node;
     if (this.chainRecvByNode.has(node)) return lowerExpr(this, node);
@@ -5755,13 +5765,30 @@ export class Lowerer {
       receiver.surroundings === surroundings &&
       this.expressionOverridesAre(receiver.overrides)
     ) {
+      const notes = receiver.slotNotes;
+      if (notes !== null) {
+        if (this.diagSink === null) receiver.slotNotes = null;
+        for (const note of notes) this.noteDegradedSlot(note.node, note.type);
+      }
       return receiver.value;
     }
-    const effects = this.probeEffects();
+    const diagsBefore = this.diags.length;
+    const fencesBefore = this.runtimeFences.length;
     const sinkMark = this.diagSinkMark();
-    const value = lowerExpr(this, node);
+    const outerNotes = this.probedSlotNotes;
+    const notes: { node: ts.Node; type: ts.Type }[] = [];
+    this.probedSlotNotes = notes;
+    let value: IrExpr;
+    try {
+      value = lowerExpr(this, node);
+    } finally {
+      this.probedSlotNotes = outerNotes;
+      // An enclosing receiver's lowering skipped them too.
+      if (outerNotes !== null) for (const note of notes) outerNotes.push(note);
+    }
     if (
-      this.probeEffects() === effects &&
+      this.diags.length === diagsBefore &&
+      this.runtimeFences.length === fencesBefore &&
       this.diagSinkMark() === sinkMark &&
       this.probeSurroundings() === surroundings
     ) {
@@ -5771,9 +5798,15 @@ export class Lowerer {
       receiver.surroundings = surroundings;
       receiver.overrides =
         this.chainRecvByNode.size === 0 ? null : [...this.chainRecvByNode.values()];
+      receiver.slotNotes = notes.length > 0 ? notes : null;
     }
     return value;
   }
+
+  /** The degraded declaration slots a probe did not report while a
+   * dispatched receiver is being lowered (null otherwise): its kept value
+   * reports them when it is used outside a probe. */
+  private probedSlotNotes: { node: ts.Node; type: ts.Type }[] | null = null;
 
   /** Whether the expression overrides in force are exactly `overrides`. */
   private expressionOverridesAre(overrides: IrExpr[] | null): boolean {
@@ -12823,7 +12856,10 @@ export class Lowerer {
    * dynamic slot too, though only the first such slot failed: record it
    * (outside probes; the lookup is skipped while nothing is degraded). */
   noteDegradedSlot(node: ts.Node, type: ts.Type): void {
-    if (this.diagSink !== null) return;
+    if (this.diagSink !== null) {
+      if (this.probedSlotNotes !== null) this.probedSlotNotes.push({ node, type });
+      return;
+    }
     const degraded = this.degradedTypes.get((type as { id?: number }).id ?? -1);
     // A pushed-down type is one slot, reported where it degraded; only
     // whole-slot dynamic declarations are reported one by one.
@@ -18548,6 +18584,7 @@ export class Lowerer {
             bindings: null,
             surroundings: 0,
             overrides: null,
+            slotNotes: null,
           }
         : null;
     try {

@@ -30,8 +30,17 @@ Copies of such a record made by object spread, `Object.assign` or rest destructu
 Index-signature records list declared fields before the other keys.
 A rest binding over an index-signature source copies its source's key order, so it lists the remaining declared fields before the other keys even when the source object created the other keys first.
 
+An object literal asserted with `as` to a record type whose required properties it does not write, such as `const point = {} as Point`, keeps its identity, and the properties the program assigns afterwards complete it.
+Reading a required property that nothing wrote throws a `TypeError`, where Node.js answers `undefined`.
+The same holds for a read through a computed key, the read of a compound assignment such as `row[key] ??= value`, and an object spread of the value, which reads every property.
+Freezing such an object freezes it for every reference, whether or not it is complete.
+`scriptc build` reports `SC3001` at such an assertion when the object cannot be completed in place: when values of the asserted type may be part of a reference cycle, are one arm of a union of object types, are published or keep more than one property order, or when the literal holds a function.
+Write every required property in the literal instead, or collect the properties in a `Record<string, T>` or `Partial<T>` value and assert that value once it is complete.
+
 Optional fields and properties added through a record's `unknown` view can be deleted.
 A required field has no absent state, so deleting it through the view throws `TypeError: Cannot delete property 'x' of #<Object>` and leaves the record unchanged, where Node.js removes the property.
+A property that a record keeps but its type does not declare can be deleted through an `as` assertion that adds it as an optional member, such as `delete (entry as Entry & { legacy?: number }).legacy`.
+`scriptc build` reports `SC1090` for such a delete when a record of a type that declares the property can be converted to the operand's type, because the property is then that record's field, which the delete cannot remove.
 
 Records inherit `toString`, `toLocaleString`, `valueOf`, `hasOwnProperty`, `isPrototypeOf` and `propertyIsEnumerable` from `Object.prototype`.
 A call of one of these methods by name runs the built-in with the record as its receiver, unless the record holds an own function under that name.

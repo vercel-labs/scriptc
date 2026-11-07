@@ -133,41 +133,44 @@ export function arrayValueRead(
   };
 }
 
-/** Read one position of a stabilized union of native arrays and tuples
- * (`const [a, b] = re.exec(s) || ["", ""]`) without copying the receiver
- * or its elements. Every array arm contributes its missing-value case; a
- * tuple arm answers its field, or undefined past its end. Tuple arms need
- * a constant position. With `stringChars` (the string iterator's code
- * points as a fresh string[]), a string arm (`re.exec(s) || ""`) answers
- * its code point at the position, or undefined past its end. */
-export function unionArrayValueRead(
+/** A tuple arm's answer at a constant position: its field, or "past" its
+ * end. Null when the arm is not a tuple or the position is not constant. */
+function tupleArmField(
   lowerer: Lowerer,
-  value: IrExpr,
-  index: IrExpr,
-  loc: SrcLoc,
-  stringChars?: (text: IrExpr) => IrExpr,
-): IrExpr | null {
-  if (value.type.kind !== "union") return null;
-  const unionId = value.type.unionId;
-  const arms = lowerer.unions.get(unionId)?.arms;
+  arm: IrType,
+  position: string | null,
+): { name: string; type: IrType } | "past" | null {
+  if (arm.kind !== "record" || position === null) return null;
+  const shape = lowerer.shapes.get(arm.shapeId);
+  if (!shape?.tuple) return null;
+  return shape.fields.find((f) => f.name === position) ?? "past";
+}
+
+/** The type one position of a union of native arrays and tuples reads as
+ * (unionArrayValueRead): the join of every arm's answer — an array arm's
+ * element value with its missing-value case, a tuple arm's field at the
+ * constant `position` or undefined past its end, and with `strings` a
+ * string arm's code point. Null when an arm answers no position, or the
+ * answers have no common native representation. */
+export function unionArrayValueType(
+  lowerer: Lowerer,
+  union: IrType,
+  position: string | null = null,
+  strings = false,
+): IrType | null {
+  if (union.kind !== "union") return null;
+  const arms = lowerer.unions.get(union.unionId)?.arms;
   if (!arms?.length) return null;
-  const position = index.kind === "numLit" ? String(index.value) : null;
-  // A tuple arm's answer at the position: its field, or undefined past
-  // its end. Null when the arm is neither an array nor a tuple.
-  const tupleField = (arm: IrType): { name: string; type: IrType } | "past" | null => {
-    if (arm.kind !== "record" || position === null) return null;
-    const shape = lowerer.shapes.get(arm.shapeId);
-    if (!shape?.tuple) return null;
-    return shape.fields.find((f) => f.name === position) ?? "past";
-  };
   // Keep the collection's IrType union layout and narrow each element at
   // its use; an inferred array predicate changes the collection's ABI.
-  const stringArm = (arm: IrType): boolean => arm.kind === "string" && stringChars !== undefined;
+  const stringArm = (arm: IrType): boolean => arm.kind === "string" && strings;
   for (const arm of arms)
-    if (arm.kind !== "array" && !stringArm(arm) && tupleField(arm) === null) return null;
+    if (arm.kind !== "array" && !stringArm(arm) && tupleArmField(lowerer, arm, position) === null)
+      return null;
   const answers = new Map<string, IrType>();
   for (const arm of arms) {
-    const field = arm.kind === "array" || stringArm(arm) ? null : tupleField(arm);
+    const field =
+      arm.kind === "array" || stringArm(arm) ? null : tupleArmField(lowerer, arm, position);
     const answer =
       arm.kind === "array"
         ? arrayValueType(lowerer, arm.elem)
@@ -187,8 +190,35 @@ export function unionArrayValueRead(
       joined.some((arm) => arm.kind === "dyn" || arm.kind === "generator" || arm.kind === "caught"))
   )
     return null;
-  const type: IrType =
-    joined.length === 1 ? joined[0]! : { kind: "union", unionId: lowerer.unions.intern(joined) };
+  return joined.length === 1
+    ? joined[0]!
+    : { kind: "union", unionId: lowerer.unions.intern(joined) };
+}
+
+/** Read one position of a stabilized union of native arrays and tuples
+ * (`const [a, b] = re.exec(s) || ["", ""]`) without copying the receiver
+ * or its elements. Every array arm contributes its missing-value case; a
+ * tuple arm answers its field, or undefined past its end. Tuple arms need
+ * a constant position. With `stringChars` (the string iterator's code
+ * points as a fresh string[]), a string arm (`re.exec(s) || ""`) answers
+ * its code point at the position, or undefined past its end. */
+export function unionArrayValueRead(
+  lowerer: Lowerer,
+  value: IrExpr,
+  index: IrExpr,
+  loc: SrcLoc,
+  stringChars?: (text: IrExpr) => IrExpr,
+): IrExpr | null {
+  if (value.type.kind !== "union") return null;
+  const unionId = value.type.unionId;
+  const arms = lowerer.unions.get(unionId)?.arms;
+  if (!arms?.length) return null;
+  const position = index.kind === "numLit" ? String(index.value) : null;
+  const tupleField = (arm: IrType): { name: string; type: IrType } | "past" | null =>
+    tupleArmField(lowerer, arm, position);
+  const stringArm = (arm: IrType): boolean => arm.kind === "string" && stringChars !== undefined;
+  const type = unionArrayValueType(lowerer, value.type, position, stringChars !== undefined);
+  if (type === null) return null;
   let result: IrExpr | null = null;
   for (let tag = arms.length - 1; tag >= 0; tag--) {
     const arm = arms[tag]!;

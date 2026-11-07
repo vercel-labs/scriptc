@@ -106,7 +106,13 @@ export function appendImplicitUndefinedReturn(
 /** Whether the source explicitly documents a return contract. */
 export function hasExplicitJsDocReturn(decl: ts.SignatureDeclaration): boolean {
   const sourceFile = ts.getSourceFileOfNode(decl);
-  return /@returns?\b/.test(sourceFile.text.slice(decl.pos, ts.tokenStartOfNode(decl)));
+  return ts.sourceTextRangeMatches(
+    sourceFile,
+    decl.pos,
+    ts.tokenStartOfNode(decl),
+    /@returns?\b/,
+    ts.LEADING_SPAN,
+  );
 }
 
 export function promiseCarriesDyn(lowerer: Lowerer, type: IrType): boolean {
@@ -242,17 +248,28 @@ export function declaredReturnType(
       retT: DYN,
       nextT: DYN,
     };
-  let mappedReturn = lowerer.mapTypeOf(retTsType);
+  // An `async *` declaration spelled with one of the protocol interfaces
+  // (`AsyncIterator<T>`, `AsyncIterableIterator<T>`, `AsyncIterable<T>`)
+  // builds an async generator. Under checked-dynamic protocol slots
+  // (TypeMapperCtx.dynAsyncProtocol) the value rule maps those annotations
+  // to the checked-dynamic value they hold, so the declared return ask
+  // comes first; with the flag off the value rule already answers with the
+  // generator and the fallback below only fires for an annotation it does
+  // not map.
+  const asyncStar =
+    decl.asteriskToken !== undefined &&
+    decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true;
+  let mappedReturn =
+    lowerer.typeCtx.dynAsyncProtocol === true && asyncStar
+      ? mapAsyncGeneratorAnnotation(retTsType, lowerer.typeCtx)
+      : null;
+  if (mappedReturn === null) mappedReturn = lowerer.mapTypeOf(retTsType);
   if (mappedReturn !== null)
     mappedReturn = widenReducedReturn(lowerer, decl, retTsType, mappedReturn);
   // A generator declared to return Iterable<T> returns a generator over T.
   if (mappedReturn && decl.asteriskToken)
     mappedReturn = iterableGeneratorArm(lowerer, mappedReturn);
-  if (
-    mappedReturn === null &&
-    decl.asteriskToken &&
-    decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
-  )
+  if (mappedReturn === null && asyncStar)
     mappedReturn = mapAsyncGeneratorAnnotation(retTsType, lowerer.typeCtx);
   if (
     isJsSourceFile(ts.getSourceFileOfNode(decl)) &&

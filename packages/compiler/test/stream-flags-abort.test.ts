@@ -11,11 +11,12 @@ import type { UnitStore } from "../src/frontend/lowering/unit-reuse.js";
 import { loadProgram } from "../src/frontend/program-node.js";
 import { serializeModule } from "../src/ir/serialize.js";
 
-// WP2-2: a stream program's push-down pass exists only to learn its two
-// stream flags — the stream pass replaces its reachable set, result,
-// diagnostics, fences and Lowerer outright. These fixtures end that pass at
-// its last flag and pin that the reported result is the one the full pass
-// would produce.
+// A stream program's push-down pass exists only to learn the stream mode it
+// asks for, and the general stream pass of a program that needs
+// checked-dynamic stream slots only to ask for them — the pass that follows
+// replaces the reachable set, result, diagnostics, fences and Lowerer
+// outright. These fixtures end each such pass where it asks and pin that the
+// reported result is the one the full passes produce.
 //
 // Lowering reports its refusals as runtime fences (a program that uses them
 // keeps compiling and throws where it runs), so a refusing fixture is one
@@ -51,13 +52,55 @@ const read = stats.isFile;
 void read;
 `;
 
-// Only the general stream flag: a stream value reaching a slot the stdio
-// handles represent, with no untyped pipeline stage. This pass must run to
-// the end, because the abort is only exact once BOTH flags are set.
+// A Writable in a slot the stdio handles represent, written with types so
+// that nothing is untyped.
+const WRITABLE_IN_STDIO_SLOT = `
+import { PassThrough, Readable, Writable, pipeline } from "node:stream";
+function drain(source: Readable, sink: NodeJS.WritableStream): void {
+  source.pipe(sink);
+}
+const sink = new Writable({
+  write(chunk, _encoding, callback) {
+    console.log("chunk", String(chunk));
+    callback();
+  },
+});
+drain(Readable.from(["a", "b"]), sink);
+`;
+
+// Only the general stream flag, with no untyped stream flow. The push-down
+// pass ends at that flag and the general pass's result stands.
 const GENERAL_ONLY = `
-const { Readable } = require("node:stream");
-declare const sink: NodeJS.WritableStream;
-Readable.from(["a"]).pipe(sink);
+${WRITABLE_IN_STDIO_SLOT}
+void PassThrough;
+void pipeline;
+`;
+
+// The push-down pass asks for the general representation only, and the
+// general pass asks for checked-dynamic slots: an untyped value reaches a
+// slot that is a runtime stream class in both representations, which only
+// the general pass counts.
+const GENERAL_THEN_DYN = `
+${WRITABLE_IN_STDIO_SLOT}
+const loose: any = new PassThrough();
+const through: PassThrough = loose;
+through.end();
+void pipeline;
+`;
+
+// The general flag in the module's own statements and an untyped pipeline
+// stage in a function lowered after them: the push-down pass asks at the
+// first, before it meets the second, and the general pass meets the
+// untyped stage itself.
+const GENERAL_BEFORE_UNTYPED = `
+${WRITABLE_IN_STDIO_SLOT}
+function relay(source: any, destination: any): void {
+  pipeline(source, destination, (err: unknown) => {
+    console.log(err ? "error" : "done");
+  });
+}
+relay(Readable.from(["c"]), sink);
+void PassThrough;
 `;
 
 interface Phase {
@@ -79,6 +122,8 @@ beforeAll(() => {
   writeFileSync(join(directory, "stream.cjs"), STREAM);
   writeFileSync(join(directory, "stream-refused.cjs"), STREAM_REFUSED);
   writeFileSync(join(directory, "general-only.ts"), GENERAL_ONLY);
+  writeFileSync(join(directory, "general-then-dyn.ts"), GENERAL_THEN_DYN);
+  writeFileSync(join(directory, "general-before-untyped.ts"), GENERAL_BEFORE_UNTYPED);
   writeFileSync(join(directory, "plain.cjs"), `console.log("plain");\n`);
   compiling = loadProgram(join(directory, "stream.cjs"));
   refusing = loadProgram(join(directory, "stream-refused.cjs"));
@@ -90,8 +135,8 @@ afterAll(() => {
   rmSync(directory, { recursive: true, force: true });
 });
 
-/** Lower one loaded program with the push-down abort on or off, collecting
- * the lowering's phase records (SCRIPTC_TIMING). */
+/** Lower one loaded program with the aborts on or off, collecting the
+ * lowering's phase records (SCRIPTC_TIMING). */
 function lower(
   load: ReturnType<typeof loadProgram>,
   abortOnStreamFlags: boolean,
@@ -145,6 +190,23 @@ function outcome({ result, phases }: Lowering): unknown {
 const pushDown = ({ phases }: Lowering): Phase | undefined =>
   phases.find((phase) => phase.phase === "reachable-emit");
 
+/** The passes of a lowering, an aborted one marked. */
+const passes = ({ phases }: Lowering): string[] =>
+  phases
+    .filter((phase) => phase.phase === "reachable-emit" || phase.phase.endsWith("-relower"))
+    .map((phase) => (phase.aborted === undefined ? phase.phase : `${phase.phase} (aborted)`));
+
+/** Both pipelines over one source file: every pass lowered to its end, and
+ * each replaced pass ended where it asks for the next. */
+function bothPipelines(file: string): { full: Lowering; aborted: Lowering } {
+  const load = loadProgram(join(directory, file));
+  try {
+    return { full: lower(load, false), aborted: lower(load, true) };
+  } finally {
+    load.dispose();
+  }
+}
+
 /** An in-memory unit store: opening one is what makes the push-down pass the
  * pass that records a build's units, so the abandon rule must leave it
  * alone. A first build into an empty store records no unit, which keeps the
@@ -162,8 +224,8 @@ function memoryStore(): UnitStore {
 test("aborting a stream program's push-down pass leaves the result identical", () => {
   const full = lower(compiling, false);
   const aborted = lower(compiling, true);
-  // Both stream flags are set, so the pass ends at the last of them and the
-  // stream pass replaces its result.
+  // Both stream flags are set at one site, so the pass ends there and asks
+  // for the checked-dynamic stream pass at once.
   expect(pushDown(full)?.aborted).toBeUndefined();
   expect(pushDown(aborted)?.aborted).toBe("stream-flags");
   expect(aborted.phases.map((phase) => phase.phase)).toContain("dyn-streams-relower");
@@ -180,16 +242,46 @@ test("aborting leaves a refusing stream program's fences and diagnostics identic
   expect(outcome(aborted)).toEqual(outcome(full));
 });
 
-test("only the general stream flag keeps the full push-down pass", () => {
-  const generalOnly = loadProgram(join(directory, "general-only.ts"));
-  try {
-    expect(pushDown(lower(generalOnly, true))?.aborted).toBeUndefined();
-  } finally {
-    generalOnly.dispose();
-  }
+test("the push-down pass ends at the general stream flag alone", () => {
+  const { full, aborted } = bothPipelines("general-only.ts");
+  expect(passes(full)).toEqual(["reachable-emit", "general-streams-relower"]);
+  expect(passes(aborted)).toEqual(["reachable-emit (aborted)", "general-streams-relower"]);
+  expect(outcome(aborted)).toEqual(outcome(full));
 });
 
-test("a program without both stream flags keeps its full push-down pass", () => {
+test("the general pass ends where it asks for checked-dynamic stream slots", () => {
+  const { full, aborted } = bothPipelines("general-then-dyn.ts");
+  expect(passes(full)).toEqual([
+    "reachable-emit",
+    "general-streams-relower",
+    "dyn-streams-relower",
+  ]);
+  expect(passes(aborted)).toEqual([
+    "reachable-emit (aborted)",
+    "general-streams-relower (aborted)",
+    "dyn-streams-relower",
+  ]);
+  expect(outcome(aborted)).toEqual(outcome(full));
+});
+
+test("an untyped stream flow after the general flag is the general pass's to find", () => {
+  const { full, aborted } = bothPipelines("general-before-untyped.ts");
+  // The push-down pass asks before it reaches the untyped stage, with the
+  // aborts on or off, so both pipelines take the same three passes.
+  expect(passes(full)).toEqual([
+    "reachable-emit",
+    "general-streams-relower",
+    "dyn-streams-relower",
+  ]);
+  expect(passes(aborted)).toEqual([
+    "reachable-emit (aborted)",
+    "general-streams-relower (aborted)",
+    "dyn-streams-relower",
+  ]);
+  expect(outcome(aborted)).toEqual(outcome(full));
+});
+
+test("a program without a stream flag keeps its full push-down pass", () => {
   const plain = loadProgram(join(directory, "plain.cjs"));
   try {
     expect(pushDown(lower(plain, true))?.aborted).toBeUndefined();

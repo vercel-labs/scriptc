@@ -50,3 +50,19 @@ function quiet(): (...args: unknown[]) => unknown {
 const none: () => void = quiet();
 none();
 console.log(callWithThree(none));
+
+// A list Object.values makes is native, and its methods call a callback
+// with the parameters it declares. A constant that holds a variadic
+// function under a shorter type goes to the list's untyped view instead,
+// which calls the original with the element, the index and the list.
+const table: Record<string, object> = { a: { n: 3 }, b: { n: 1 } };
+const counted = (...args: unknown[]): number => args.length;
+const first: (v: object) => number = counted;
+console.log(Object.values(table).map(first).join(","));
+const threeSeen = (...args: unknown[]): boolean => args.length === 3 && typeof args[1] === "number";
+const keep: (v: object) => boolean = threeSeen;
+console.log(Object.values(table).filter(keep).length);
+const shown = (...args: unknown[]): void => console.log("each", args.length, typeof args[1]);
+const each: (v: object) => void = shown;
+Object.values(table).forEach(each);
+console.log(Object.values(table).some(keep), Object.values(table).every(keep));

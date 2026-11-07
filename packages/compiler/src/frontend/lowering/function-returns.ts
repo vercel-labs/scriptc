@@ -1,4 +1,3 @@
-import { staysBuildError } from "../../diagnostics/diagnostic.js";
 import { iterableGeneratorArm } from "./iterable-values.js";
 import { mapAsyncGeneratorAnnotation } from "../type-mapper.js";
 import { dynUndefinedExpr } from "../../ir/build.js";
@@ -596,10 +595,10 @@ export function resolveInferredReturn(
       // executing THIS return throws the recorded reason (the JS
       // per-statement deferral, applied to one return of an instance).
       const captured = lowerer.diags.splice(diagsBefore);
-      const ice = captured.filter((d) => staysBuildError(d));
+      const ice = captured.filter((d) => d.code === "SC9001");
       for (const d of ice) lowerer.diags.push(d);
-      for (const d of captured) if (!staysBuildError(d)) lowerer.runtimeFences.push(d);
-      const first = captured.find((d) => !staysBuildError(d));
+      for (const d of captured) if (d.code !== "SC9001") lowerer.runtimeFences.push(d);
+      const first = captured.find((d) => d.code !== "SC9001");
       // The fence is a NEW statement. A node's kind is a union arm, and in a
       // native build the tag cannot be reassigned through a dynamic view of
       // the node (the `return` node keeps its fields: `delete` of a required

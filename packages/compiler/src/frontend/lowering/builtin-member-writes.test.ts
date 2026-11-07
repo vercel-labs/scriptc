@@ -22,8 +22,9 @@ describe("built-in object member census", () => {
   test("names every member once, behind a kind letter", () => {
     for (const [owner, row] of Object.entries(BUILTIN_OBJECT_MEMBERS)) {
       const names = row.split(" ").filter((item) => item !== "");
-      for (const item of names) expect(item, owner).toMatch(/^[fatz]./);
-      expect(new Set(names.map((item) => item.slice(1))).size, owner).toBe(names.length);
+      for (const item of names) expect(item, owner).toMatch(/^[fatz]-?=?[^-=]/);
+      const bare = names.map((item) => item.replace(/^.-?=?/, ""));
+      expect(new Set(bare).size, owner).toBe(names.length);
     }
   });
 

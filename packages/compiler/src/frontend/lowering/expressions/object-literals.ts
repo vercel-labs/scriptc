@@ -25,7 +25,6 @@ import {
   recordShapeMismatchDiag,
   unionLiteralMismatchDiag,
 } from "../../../diagnostics/diagnostic.js";
-import { staysBuildError } from "../../../diagnostics/diagnostic.js";
 import { PoisonError, jsFuncNameOf, neverTaintedJsType } from "../lowerer.js";
 import type { Lowerer } from "../lowerer.js";
 import { lowerDeclaredMemberLiteral, viewLiteralStorage, viewTargetOf } from "../view-literals.js";
@@ -2889,7 +2888,7 @@ export function lowerObjectLiteral(
         !isJsSourceFile(ts.getSourceFileOfNode(expr)) ||
         lowerer.diagSink !== null ||
         lowerer.diags.length <= propDiagsBefore ||
-        lowerer.diags.slice(propDiagsBefore).some((d) => staysBuildError(d))
+        lowerer.diags.slice(propDiagsBefore).some((d) => d.code === "SC9001")
       ) {
         throw err;
       }

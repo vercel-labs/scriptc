@@ -69,9 +69,9 @@ import {
 import { declaresHoistedBinding, staticCondition } from "./static-typeof.js";
 import {
   builtinPolyfillGuard,
-  fenceBuiltinMemberWrite,
   isBuiltinPolyfillEarlyExit,
   isDeadBuiltinPolyfill,
+  noteBuiltinMemberWrite,
 } from "./builtin-member-writes.js";
 import { lowerCollectionSpread } from "./containers/collection-methods.js";
 import { lowerEventObjectPropertyWrite } from "./lower-event-target.js";
@@ -347,7 +347,6 @@ import {
   isCheckerPanic,
   unsupportedNativeExecutionDiag,
 } from "../../diagnostics/diagnostic.js";
-import { staysBuildError } from "../../diagnostics/diagnostic.js";
 import {
   isParseArgsDynTypeName,
   isUnitOnlyTsType,
@@ -1064,9 +1063,9 @@ function lowerOneStatement(
   // meet their own per-site fences.
   if (deferFences && lowerer.diagSink === null && lowerer.diags.length > diagsBefore) {
     const flushed = lowerer.diags.splice(diagsBefore);
-    const ice = flushed.filter((d) => staysBuildError(d));
+    const ice = flushed.filter((d) => d.code === "SC9001");
     for (const d of ice) lowerer.diags.push(d);
-    for (const d of flushed) if (!staysBuildError(d)) lowerer.runtimeFences.push(d);
+    for (const d of flushed) if (d.code !== "SC9001") lowerer.runtimeFences.push(d);
   }
 }
 
@@ -9393,10 +9392,10 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
   const stmtNode = expr.parent;
   while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
   // A polyfill of a built-in member Node 24 has never runs and lowers to
-  // nothing; any other write that replaces or deletes a built-in member is
-  // refused by name (builtin-member-writes.ts).
+  // nothing; any other write to a built-in member is recorded for the check
+  // at the end of lowering (builtin-member-writes.ts) and lowers as usual.
   if (isDeadBuiltinPolyfill(lowerer, expr)) return { kind: "block", body: [], loc: locOf(expr) };
-  fenceBuiltinMemberWrite(lowerer, expr);
+  noteBuiltinMemberWrite(lowerer, expr);
   fenceConsoleMutation(lowerer, expr);
   // Node islands (scope-B NI-4): writes and calls on island values.
   if (lowerer.nodeIslands !== null) {
@@ -10600,7 +10599,7 @@ function lowerDiscardedLogical(lowerer: Lowerer, expr: ts.BinaryExpression): IrS
       added.length > 0 &&
       added.every(
         (d) =>
-          !staysBuildError(d) &&
+          d.code !== "SC9001" &&
           d.loc.file === file &&
           d.loc.start >= start &&
           d.loc.end <= expr.end,

@@ -1,26 +1,35 @@
-/* Existing members of built-in objects are read-only in a compiled
- * executable. Compiled code calls a built-in member's native entry point and
+/* The writes to members of built-in objects that a program spells out.
+ *
+ * Compiled code reaches a built-in member through its native entry point and
  * never reads the member from its object, so a program that replaces or
  * deletes one (`Array.prototype.push = f`, `Math.random = f`, `delete
- * JSON.parse`) would keep running the built-in: the build refuses every such
- * write it can see (SC1092). A write it cannot see, where the object or the
- * key arrives as a value, keeps what the runtime does with it today. Adding
- * a member the object does not have is not a replacement and keeps its
- * existing lowering.
+ * JSON.parse`) and then uses it natively would keep running the built-in.
+ * This module finds the write: the object, the key and the node. Lowering
+ * records each one it meets and lowers it as before; when the program is
+ * lowered, builtin-member-readers.ts refuses the writes whose member the
+ * program also uses through code that does not look at the object (SC1092).
+ * A write the build cannot see, where the object or the key arrives as a
+ * value, is not recorded.
  *
- * "Existing" is a fact of the pinned Node release (builtin-object-members
- * .generated.ts): an own member of the object, or one it inherits from
- * another built-in object, which the write would shadow. Because existing
- * members cannot change, a feature test of one (`if (!Array.prototype.at)`)
- * has one answer, and the polyfill it guards is code Node 24 never runs. */
+ * A write counts when the member exists, which is a fact of the pinned Node
+ * release (builtin-object-members.generated.ts): an own member of the
+ * object, or one it inherits from another built-in object, which the write
+ * would shadow. Adding a member the object does not have is not a
+ * replacement, except for the names built-in operations ask every object
+ * for (`then`, `toJSON`, `Symbol.iterator`, `Symbol.toPrimitive`): added to
+ * a built-in prototype, such a member changes what those operations do.
+ *
+ * A feature test of an existing member (`if (!Array.prototype.at)`) in
+ * front of such a write has one answer in a program that does not change
+ * the member elsewhere, and the polyfill it guards is code Node 24 never
+ * runs: lowering decides the test, records that it did, and a program that
+ * also writes the tested member where the test would see it is refused. */
 import * as ts from "../ts7/adapter.js";
-import { builtinMemberWriteDiag } from "../../diagnostics/diagnostic.js";
-import { locOf } from "../program.js";
 import {
   BUILTIN_OBJECT_INHERITS,
   BUILTIN_OBJECT_MEMBERS,
 } from "./builtin-object-members.generated.js";
-import { type Lowerer, PoisonError } from "./lowerer.js";
+import type { Lowerer } from "./lowerer.js";
 import { stdlibGlobalNameOf, withoutTypeCasts } from "./surfaces.js";
 
 /** f: a function; a: an accessor; t: other data that is truthy; z: other
@@ -29,21 +38,55 @@ export type BuiltinMemberKind = "f" | "a" | "t" | "z";
 
 let rows: Map<string, Map<string, BuiltinMemberKind>> | null = null;
 let memberNames: Set<string> | null = null;
+/** The members ("Owner name") an assignment cannot change, and the ones
+ * that are not configurable. */
+let unassignable: Set<string> | null = null;
+let unconfigurable: Set<string> | null = null;
 
 function table(): Map<string, Map<string, BuiltinMemberKind>> {
   if (rows !== null) return rows;
   rows = new Map();
   memberNames = new Set();
+  unassignable = new Set();
+  unconfigurable = new Set();
   for (const [owner, row] of Object.entries(BUILTIN_OBJECT_MEMBERS)) {
     const members = new Map<string, BuiltinMemberKind>();
     for (const item of row.split(" ")) {
       if (item === "") continue;
-      members.set(item.slice(1), item[0] as BuiltinMemberKind);
-      memberNames.add(item.slice(1));
+      let at = 1;
+      const fixed = item[at] === "-";
+      if (fixed) at++;
+      const sealed = item[at] === "=";
+      if (sealed) at++;
+      const name = item.slice(at);
+      members.set(name, item[0] as BuiltinMemberKind);
+      memberNames.add(name);
+      if (fixed) unassignable.add(`${owner} ${name}`);
+      if (sealed) unconfigurable.add(`${owner} ${name}`);
     }
     rows.set(owner, members);
   }
   return rows;
+}
+
+/** How a write reaches a member: an assignment (`=`, `Reflect.set`,
+ * `Object.assign`), a definition (`Object.defineProperty`) or a deletion. */
+type WriteForm = "assign" | "define" | "delete";
+
+/** Whether Node lets the write change what a read of `owner.member` finds.
+ * An assignment to data that is not writable, or to an accessor without a
+ * setter, changes nothing (and throws in strict code), also when the member
+ * is inherited; a definition over, or a deletion of, an own member that is
+ * not configurable is refused; deleting a member the object only inherits
+ * deletes nothing. */
+function writeTakesEffect(owner: string, member: string, form: WriteForm): boolean {
+  table();
+  const own = builtinOwnMemberKind(owner, member) !== null;
+  if (form === "delete") return own && !unconfigurable!.has(`${owner} ${member}`);
+  if (form === "define") return !own || !unconfigurable!.has(`${owner} ${member}`);
+  for (let at: string | undefined = owner; at !== undefined; at = BUILTIN_OBJECT_INHERITS[at])
+    if (builtinOwnMemberKind(at, member) !== null) return !unassignable!.has(`${at} ${member}`);
+  return true;
 }
 
 /** The kind of `owner`'s own member `member`, or null when the built-in
@@ -72,9 +115,35 @@ export interface BuiltinMember {
   kind: BuiltinMemberKind;
 }
 
-function displayName(owner: string, member: string): string {
+/** A built-in member as a program names it: `Array.prototype.push`,
+ * `Array.prototype[Symbol.iterator]`. */
+export function builtinMemberName(owner: string, member: string): string {
   return member.startsWith("@@") ? `${owner}[Symbol.${member.slice(2)}]` : `${owner}.${member}`;
 }
+
+/** The built-in objects a read of a member through `start` passes, nearest
+ * first: the object, then each built-in it inherits from. */
+export function builtinObjectChain(start: string): string[] {
+  const chain: string[] = [];
+  for (let at: string | undefined = start; at !== undefined; at = BUILTIN_OBJECT_INHERITS[at])
+    chain.push(at);
+  return chain;
+}
+
+/** Whether `name` is a built-in object of the census. */
+export function isBuiltinObjectName(name: string): boolean {
+  return table().has(name);
+}
+
+/** The names built-in operations ask every object for, whether or not a
+ * built-in defines them: adding one to a built-in prototype changes what
+ * awaiting, serializing, iterating or converting its values does. */
+const PROTOCOL_MEMBERS: ReadonlySet<string> = new Set([
+  "then",
+  "toJSON",
+  "@@iterator",
+  "@@toPrimitive",
+]);
 
 /** The `const` initializer an identifier is bound to, for an alias of a
  * built-in object (`const proto = Array.prototype`). A `let` or `var` can be
@@ -144,7 +213,7 @@ function literalPrototype(lowerer: Lowerer, value: ts.Expression): string | null
 
 /** The key a member access names without evaluating anything: a property
  * name, a string or number literal, or a well-known symbol. */
-function staticKey(lowerer: Lowerer, access: ts.Expression): string | null {
+export function staticMemberKey(lowerer: Lowerer, access: ts.Expression): string | null {
   if (ts.isPropertyAccessExpression(access))
     return ts.isIdentifier(access.name) ? access.name.text : null;
   if (!ts.isElementAccessExpression(access)) return null;
@@ -259,7 +328,7 @@ export function builtinMemberOf(lowerer: Lowerer, expr: ts.Expression): BuiltinM
   }
   if (!ts.isPropertyAccessExpression(e) && !ts.isElementAccessExpression(e)) return null;
   if (e.questionDotToken !== undefined) return null;
-  const member = staticKey(lowerer, e);
+  const member = staticMemberKey(lowerer, e);
   if (member === null || !memberNames!.has(member) || !mayNameBuiltin(e.expression)) return null;
   const owner = builtinObjectOf(lowerer, e.expression);
   if (owner === null) return null;
@@ -267,9 +336,49 @@ export function builtinMemberOf(lowerer: Lowerer, expr: ts.Expression): BuiltinM
   return kind === null ? null : { owner, member, kind };
 }
 
+/** Whether `expr` may name a built-in object by its syntax alone
+ * (mayNameBuiltin), for callers that resolve it with builtinObjectOf. */
+export function mayNameBuiltinObject(expr: ts.Expression): boolean {
+  return mayNameBuiltin(expr);
+}
+
+/** A member a write would give a built-in object: an existing member it
+ * replaces, deletes or shadows, or a protocol member it adds to a
+ * prototype. */
+interface WriteTarget {
+  owner: string;
+  member: string;
+  /** Null when the object has no such member and the write adds it. */
+  kind: BuiltinMemberKind | null;
+}
+
+function writeTargetIn(owner: string, member: string): WriteTarget | null {
+  const kind = builtinMemberKind(owner, member);
+  if (kind !== null) return { owner, member, kind };
+  return owner.endsWith(".prototype") && PROTOCOL_MEMBERS.has(member)
+    ? { owner, member, kind: null }
+    : null;
+}
+
+/** The member the target of an assignment, update or `delete` names
+ * (builtinMemberOf), or the protocol member it would add. */
+function writeTargetOf(lowerer: Lowerer, expr: ts.Expression): WriteTarget | null {
+  const e = withoutTypeCasts(expr);
+  if (ts.isIdentifier(e)) return builtinMemberOf(lowerer, e);
+  if (!ts.isPropertyAccessExpression(e) && !ts.isElementAccessExpression(e)) return null;
+  if (e.questionDotToken !== undefined) return null;
+  const member = staticMemberKey(lowerer, e);
+  table();
+  // Every protocol member is some built-in's member, so one name test
+  // serves both kinds of write.
+  if (member === null || !memberNames!.has(member) || !mayNameBuiltin(e.expression)) return null;
+  const owner = builtinObjectOf(lowerer, e.expression);
+  return owner === null ? null : writeTargetIn(owner, member);
+}
+
 /** A built-in member the runtime models as program state: assigning it is
  * what the member is for, and compiled code reads the assigned value. */
-function isAssignableState(target: BuiltinMember): boolean {
+function isAssignableState(target: { owner: string; member: string }): boolean {
   return target.owner === "Error" && target.member === "stackTraceLimit";
 }
 
@@ -280,7 +389,7 @@ function alwaysTruthy(member: BuiltinMember): boolean {
   return member.kind === "f" || member.kind === "t";
 }
 
-function isAssignmentOperator(kind: ts.SyntaxKind): boolean {
+export function isAssignmentOperator(kind: ts.SyntaxKind): boolean {
   return (
     kind === ts.SyntaxKind.EqualsToken ||
     (kind >= ts.SyntaxKind.FirstCompoundAssignment && kind <= ts.SyntaxKind.LastCompoundAssignment)
@@ -290,12 +399,8 @@ function isAssignmentOperator(kind: ts.SyntaxKind): boolean {
 /** `X.m ||= v` and `X.m ??= v` over a member that is always truthy never
  * assign, and `X.m = X.m || v` / `X.m = X.m ?? v` assign the member's own
  * value: the polyfill spellings that have no guard statement. */
-function keepsOwnValue(
-  lowerer: Lowerer,
-  write: ts.BinaryExpression,
-  target: BuiltinMember,
-): boolean {
-  if (!alwaysTruthy(target)) return false;
+function keepsOwnValue(lowerer: Lowerer, write: ts.BinaryExpression, target: WriteTarget): boolean {
+  if (target.kind === null || !alwaysTruthy({ ...target, kind: target.kind })) return false;
   const op = write.operatorToken.kind;
   if (op === ts.SyntaxKind.BarBarEqualsToken || op === ts.SyntaxKind.QuestionQuestionEqualsToken)
     return true;
@@ -309,42 +414,62 @@ function keepsOwnValue(
   return read !== null && read.owner === target.owner && read.member === target.member;
 }
 
-/** A refused write: the member, whether the write deletes it, and the node
- * to report. */
-interface RefusedWrite {
-  target: BuiltinMember;
-  deletes: boolean;
+/** A write to a member of a built-in object that the program spells out. */
+export interface BuiltinMemberWrite {
+  /** The object: "Array.prototype", "Math", "globalThis". */
+  owner: string;
+  /** The key; a well-known symbol is "@@iterator". */
+  member: string;
+  /** What the write does to the member: replace an existing one (or shadow
+   * an inherited one), delete it, or add a protocol member the object does
+   * not have. */
+  action: "replace" | "delete" | "add";
+  /** The assignment, update, `delete` or call. */
+  node: ts.Node;
+  /** The node to report: the member access, the call, or the literal member
+   * of an `Object.assign` source. */
   at: ts.Node;
 }
 
-/** The built-in member a write expression replaces or deletes, with the
- * node to report: an assignment, a compound assignment, `++`/`--` or
- * `delete` whose target is an existing member, or a call that defines,
- * assigns or deletes one (`Object.defineProperty(Array.prototype, "push",
- * …)`). Null for every other node, for a write that keeps the member's own
- * value, and for a member the runtime models as assignable state. */
-function refusedWriteOf(lowerer: Lowerer, node: ts.Node): RefusedWrite | null {
+function writeOf(
+  target: WriteTarget,
+  form: WriteForm,
+  node: ts.Node,
+  at: ts.Node,
+): BuiltinMemberWrite | null {
+  if (!writeTakesEffect(target.owner, target.member, form)) return null;
+  const action = form === "delete" ? "delete" : target.kind === null ? "add" : "replace";
+  return { owner: target.owner, member: target.member, action, node, at };
+}
+
+/** The write to a built-in member that `node` is: an assignment, a compound
+ * assignment, `++`/`--` or `delete` whose target is a member of a built-in
+ * object, or a call that defines, assigns or deletes one
+ * (`Object.defineProperty(Array.prototype, "push", …)`). Null for every
+ * other node, for a write that keeps the member's own value, and for a
+ * member the runtime models as assignable state. */
+export function builtinMemberWriteOf(lowerer: Lowerer, node: ts.Node): BuiltinMemberWrite | null {
   if (ts.isBinaryExpression(node) && isAssignmentOperator(node.operatorToken.kind)) {
-    const target = builtinMemberOf(lowerer, node.left);
+    const target = writeTargetOf(lowerer, node.left);
     if (target === null || isAssignableState(target)) return null;
     if (keepsOwnValue(lowerer, node, target)) return null;
-    return { target, deletes: false, at: node.left };
+    return writeOf(target, "assign", node, node.left);
   }
   if (
     (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
     (node.operator === ts.SyntaxKind.PlusPlusToken ||
       node.operator === ts.SyntaxKind.MinusMinusToken)
   ) {
-    const target = builtinMemberOf(lowerer, node.operand);
+    const target = writeTargetOf(lowerer, node.operand);
     return target === null || isAssignableState(target)
       ? null
-      : { target, deletes: false, at: node.operand };
+      : writeOf(target, "assign", node, node.operand);
   }
   if (ts.isDeleteExpression(node)) {
-    const target = builtinMemberOf(lowerer, node.expression);
-    return target === null ? null : { target, deletes: true, at: node.expression };
+    const target = writeTargetOf(lowerer, node.expression);
+    return target === null ? null : writeOf(target, "delete", node, node.expression);
   }
-  if (ts.isCallExpression(node)) return refusedWriteCall(lowerer, node);
+  if (ts.isCallExpression(node)) return builtinMemberWriteCall(lowerer, node);
   return null;
 }
 
@@ -366,7 +491,10 @@ function isWriteCall(holder: string, method: string): boolean {
   return false;
 }
 
-function refusedWriteCall(lowerer: Lowerer, call: ts.CallExpression): RefusedWrite | null {
+function builtinMemberWriteCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+): BuiltinMemberWrite | null {
   const callee = withoutTypeCasts(call.expression);
   if (!ts.isPropertyAccessExpression(callee) || !ts.isIdentifier(callee.expression)) return null;
   const holder = callee.expression.text;
@@ -378,12 +506,10 @@ function refusedWriteCall(lowerer: Lowerer, call: ts.CallExpression): RefusedWri
   if (stdlibGlobalNameOf(lowerer, callee.expression) !== holder) return null;
   const owner = builtinObjectOf(lowerer, first);
   if (owner === null) return null;
-  const hit = (member: string | null): BuiltinMember | null => {
+  const hit = (member: string | null): WriteTarget | null => {
     if (member === null) return null;
-    const kind = builtinMemberKind(owner, member);
-    if (kind === null) return null;
-    const target = { owner, member, kind };
-    return isAssignableState(target) ? null : target;
+    const target = writeTargetIn(owner, member);
+    return target === null || isAssignableState(target) ? null : target;
   };
   if (method === "defineProperties" || method === "assign") {
     for (const source of args.slice(1)) {
@@ -391,7 +517,9 @@ function refusedWriteCall(lowerer: Lowerer, call: ts.CallExpression): RefusedWri
       if (!ts.isObjectLiteralExpression(literal)) continue;
       for (const member of literal.properties.nodes) {
         const target = hit(literalMemberName(member));
-        if (target !== null) return { target, deletes: false, at: member };
+        if (target === null) continue;
+        const write = writeOf(target, method === "assign" ? "assign" : "define", call, member);
+        if (write !== null) return write;
       }
     }
     return null;
@@ -410,7 +538,8 @@ function refusedWriteCall(lowerer: Lowerer, call: ts.CallExpression): RefusedWri
   const target = hit(member);
   if (target === null) return null;
   if (method === "defineProperty" && keepsMemberValue(lowerer, args[2], target)) return null;
-  return { target, deletes: method === "deleteProperty", at: call };
+  const form = method === "deleteProperty" ? "delete" : method === "set" ? "assign" : "define";
+  return writeOf(target, form, call, call);
 }
 
 /** Whether a property descriptor changes only the member's attributes: an
@@ -421,8 +550,9 @@ function refusedWriteCall(lowerer: Lowerer, call: ts.CallExpression): RefusedWri
 function keepsMemberValue(
   lowerer: Lowerer,
   descriptor: ts.Expression | undefined,
-  target: BuiltinMember,
+  target: WriteTarget,
 ): boolean {
+  if (target.kind === null) return false;
   const literal = descriptor === undefined ? undefined : withoutTypeCasts(descriptor);
   if (literal === undefined || !ts.isObjectLiteralExpression(literal)) return false;
   for (const member of literal.properties.nodes) {
@@ -436,30 +566,53 @@ function keepsMemberValue(
   return true;
 }
 
-/** The SC1092 refusal of a write that replaces or deletes an existing
- * built-in member; `node` is the assignment, update, `delete` or call. A
- * build error in every source: a deferred fence would let a `catch` swallow
- * it, and the program would go on calling the built-in. */
-export function fenceBuiltinMemberWrite(lowerer: Lowerer, node: ts.Node): void {
-  const write = refusedWriteOf(lowerer, node);
-  if (write === null) return;
-  lowerer.pushDiag(
-    builtinMemberWriteDiag(
-      displayName(write.target.owner, write.target.member),
-      write.deletes,
-      locOf(write.at),
-    ),
-  );
-  throw new PoisonError();
+/** Records the write to a built-in member that `node` is, if it is one, for
+ * the check at the end of lowering (builtin-member-readers.ts). The write
+ * itself lowers as it always did. */
+export function noteBuiltinMemberWrite(lowerer: Lowerer, node: ts.Node): void {
+  const write = builtinMemberWriteOf(lowerer, node);
+  if (write !== null) lowerer.builtinMemberWrites.set(node, write);
 }
 
-/** Whether `node` contains a write the fence refuses, at any depth. */
+/** The built-in members a feature test reads: each member access, `"m" in
+ * X` and `X.hasOwnProperty("m")` in it. */
+export function builtinMembersTested(lowerer: Lowerer, test: ts.Expression): BuiltinMember[] {
+  const found: BuiltinMember[] = [];
+  ts.walkPreorder(test, (n) => {
+    if (ts.isPropertyAccessExpression(n) || ts.isElementAccessExpression(n)) {
+      const member = builtinMemberOf(lowerer, n);
+      if (member !== null) found.push(member);
+      return undefined;
+    }
+    let owner: ts.Expression | undefined;
+    let key: ts.Expression | undefined;
+    if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.InKeyword) {
+      owner = n.right;
+      key = unparenthesized(n.left);
+    } else if (ts.isCallExpression(n) && n.arguments.nodes.length === 1) {
+      const callee = unparenthesized(n.expression);
+      if (ts.isPropertyAccessExpression(callee) && callee.name.text === "hasOwnProperty") {
+        owner = callee.expression;
+        key = n.arguments.nodes[0];
+      }
+    }
+    if (owner === undefined || key === undefined || !ts.isStringLiteral(key)) return undefined;
+    if (!mayNameBuiltin(owner)) return undefined;
+    const object = builtinObjectOf(lowerer, owner);
+    const kind = object === null ? null : builtinMemberKind(object, key.text);
+    if (object !== null && kind !== null) found.push({ owner: object, member: key.text, kind });
+    return undefined;
+  });
+  return found;
+}
+
+/** Whether `node` contains a write to a built-in member, at any depth. */
 export function containsBuiltinMemberWrite(lowerer: Lowerer, node: ts.Node): boolean {
   let found = false;
   ts.walkPreorder(
     node,
     (n) => {
-      if (refusedWriteOf(lowerer, n) === null) return undefined;
+      if (builtinMemberWriteOf(lowerer, n) === null) return undefined;
       found = true;
       return "stop";
     },
@@ -468,7 +621,7 @@ export function containsBuiltinMemberWrite(lowerer: Lowerer, node: ts.Node): boo
   return found;
 }
 
-/** The node kinds a refused write can be (refusedWriteOf). */
+/** The node kinds a write to a built-in member can be (builtinMemberWriteOf). */
 const WRITE_KINDS: ReadonlySet<ts.SyntaxKind> = new Set([
   ts.SyntaxKind.BinaryExpression,
   ts.SyntaxKind.PrefixUnaryExpression,
@@ -505,8 +658,9 @@ function typeofComparison(lowerer: Lowerer, operand: ts.Expression, text: string
 /** The value of a feature test of existing built-in members, or null when
  * any part of it needs evaluation: `X.m`, `typeof X.m === "function"`,
  * `X.m === undefined`, `X.m == null`, `"m" in X`, `X.hasOwnProperty("m")`,
- * and `!`, `&&`, `||` over them. Existing members cannot be replaced or
- * deleted, so the answer at startup is the answer everywhere. Without
+ * and `!`, `&&`, `||` over them: the answer at startup, which is the answer
+ * everywhere in a program that does not change the member (a caller that
+ * uses the answer records the test with noteBuiltinFeatureTest). Without
  * `skipped` the answer is one that needs no evaluation at all: every operand
  * that would run is such a test. With it, the answer may also be one that an
  * operand with effects cannot change, and `skipped.operand` says so: the
@@ -609,7 +763,16 @@ export function builtinPolyfillGuard(
   if (value === null) return null;
   const dead = value ? whenFalse : whenTrue;
   if (dead === undefined || mustLower(dead)) return null;
-  return containsBuiltinMemberWrite(lowerer, dead) ? { value, pure: !skipped.operand } : null;
+  if (!containsBuiltinMemberWrite(lowerer, dead)) return null;
+  noteBuiltinFeatureTest(lowerer, test);
+  return { value, pure: !skipped.operand };
+}
+
+/** Records a feature test lowering decided from the census, for the check
+ * at the end of lowering: a program that changes a member the test reads,
+ * where the test would see the change, is refused. */
+function noteBuiltinFeatureTest(lowerer: Lowerer, test: ts.Expression): void {
+  lowerer.builtinFeatureTests.add(test);
 }
 
 /** Whether an expression statement is a polyfill that never runs: a logical
@@ -625,7 +788,10 @@ export function isDeadBuiltinPolyfill(lowerer: Lowerer, expr: ts.Expression): bo
   const op = e.operatorToken.kind;
   if (isAssignmentOperator(op)) {
     const target = builtinMemberOf(lowerer, e.left);
-    return target !== null && !isAssignableState(target) && keepsOwnValue(lowerer, e, target);
+    if (target === null || isAssignableState(target) || !keepsOwnValue(lowerer, e, target))
+      return false;
+    noteBuiltinFeatureTest(lowerer, e.left);
+    return true;
   }
   let skipsRight: boolean;
   if (op === ts.SyntaxKind.QuestionQuestionToken) {
@@ -635,7 +801,9 @@ export function isDeadBuiltinPolyfill(lowerer: Lowerer, expr: ts.Expression): bo
     const left = builtinPresenceTest(lowerer, e.left);
     skipsRight = left !== null && left === (op === ts.SyntaxKind.BarBarToken);
   } else return false;
-  return skipsRight && containsBuiltinMemberWrite(lowerer, e.right);
+  if (!skipsRight || !containsBuiltinMemberWrite(lowerer, e.right)) return false;
+  noteBuiltinFeatureTest(lowerer, e.left);
+  return true;
 }
 
 function endsAbruptly(stmt: ts.Statement): boolean {
@@ -664,6 +832,9 @@ export function isBuiltinPolyfillEarlyExit(
   if (!endsAbruptly(stmt.thenStatement)) return false;
   if (builtinPresenceTest(lowerer, stmt.expression) !== true) return false;
   for (let i = index + 1; i < stmts.length; i++)
-    if (containsBuiltinMemberWrite(lowerer, stmts[i]!)) return true;
+    if (containsBuiltinMemberWrite(lowerer, stmts[i]!)) {
+      noteBuiltinFeatureTest(lowerer, stmt.expression);
+      return true;
+    }
   return false;
 }

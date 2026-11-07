@@ -8,11 +8,12 @@ import { compile } from "../src/index.js";
 const sanitize = process.env["SCRIPTC_SAN"] === "1";
 
 // Static member calls (`Math.abs(x)`) do not read the namespace objects, so
-// a change to a function member's value that the build cannot see (the
-// object and the key arrive as values) fences at run time (SC1090) instead
-// of leaving those calls with the original; the spellings the build can see
-// are refused there (SC1092, tests/diagnostics/builtin-member-write*). New
-// properties and attribute-only changes behave as in Node (corpus 7188).
+// a change to a function member's value fences at run time (SC1090) instead
+// of leaving those calls with the original. The writes here reach the object
+// and the key as values, so the build does not see them: a write it does see
+// is refused there when the program also calls the member, as this one does
+// (SC1092, tests/diagnostics/builtin-member-write*). New properties and
+// attribute-only changes behave as in Node (corpus 7188).
 test("replacing or deleting a namespace member fences", async () => {
   const dir = mkdtempSync(join(tmpdir(), "scriptc-namespace-fences-"));
   try {

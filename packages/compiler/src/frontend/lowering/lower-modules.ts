@@ -80,7 +80,6 @@ import {
   invalidJsonModuleDiag,
   unsupportedPackageImportDiag,
 } from "../../diagnostics/diagnostic.js";
-import { staysBuildError } from "../../diagnostics/diagnostic.js";
 import {
   BOOL,
   CAUGHT,
@@ -1272,9 +1271,9 @@ export function moduleArtifacts(
 function deferJsCollectionDiags(lowerer: Lowerer, sf: ts.SourceFile, diagsBefore: number): void {
   if (!isJsSourceFile(sf)) return;
   const captured = lowerer.diags.splice(diagsBefore);
-  const ice = captured.filter((d) => staysBuildError(d));
+  const ice = captured.filter((d) => d.code === "SC9001");
   for (const d of ice) lowerer.diags.push(d);
-  for (const d of captured) if (!staysBuildError(d)) lowerer.runtimeFences.push(d);
+  for (const d of captured) if (d.code !== "SC9001") lowerer.runtimeFences.push(d);
 }
 
 /** A scalar-literal expression a single-value `module.exports =` can carry

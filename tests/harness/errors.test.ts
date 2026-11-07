@@ -2862,6 +2862,7 @@ try { console.log("delete index", "value", String(delete (s as any)[0])); } catc
       ["Object alias isFrozen", "ObjectAlias.isFrozen"],
       ["Object.hasOwn(Object)", 'Object.hasOwn(Object, "hasOwn")'],
       ["getOwnPropertyNames(Date)", "Object.getOwnPropertyNames(Date)"],
+      ["defineProperty(Promise)", 'Object.defineProperty(Promise, "resolve", { value: 1 })'],
       ["hasOwnProperty.call(Map)", 'Object.prototype.hasOwnProperty.call(Map, "groupBy")'],
     ] as const;
     // The reads that answer from a prototype object rather than refusing.
@@ -2917,6 +2918,39 @@ console.log("prototype" in Map, "groupBy" in Map, "captureStackTrace" in Error, 
       "object function true",
       "true true true false",
     ]);
+  });
+});
+
+// `Date.prototype` reads as the prototype object; a WRITE into it cannot be
+// observed by a typed Date, so every writer keeps the SC1090 fence it had
+// before the prototype had a value — including the plural defineProperties,
+// which the dynamic path would otherwise apply to the prototype object. A
+// program that also calls the written member natively (`new
+// Date(0).getTime()`) is refused when it is built (SC1092,
+// tests/diagnostics/builtin-member-write-js.cjs).
+describe("standard library prototype writes (JS lane)", () => {
+  test("defineProperties keeps the fence, like defineProperty", async () => {
+    const r = await compileAndRun(
+      "date-prototype-write",
+      `"use strict";
+function refuse(label, run) {
+  try {
+    run();
+    console.log(label, "wrote");
+  } catch (e) {
+    console.log(label, /\\[(SC\\d{4}) at/.exec(e.message)[1]);
+  }
+}
+refuse("defineProperties", () =>
+  Object.defineProperties(Date.prototype, { getTime: { value: () => 42 } }),
+);
+refuse("defineProperty", () => Object.defineProperty(Date.prototype, "getTime", { value: () => 42 }));
+refuse("assign", () => Object.assign(Date.prototype, { getTime: () => 42 }));
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("defineProperties SC1090\ndefineProperty SC1090\nassign SC1090\n");
   });
 });
 

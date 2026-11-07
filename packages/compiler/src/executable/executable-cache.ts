@@ -74,6 +74,7 @@ export interface EarlyExecutableNativeFeatures {
   mutableBuffers: boolean;
   stdioExtended?: boolean;
   fsFlags?: boolean;
+  fsExistsValue?: boolean;
   fsBytesWrites?: boolean;
   strdecDyn?: boolean;
   processExtras?: boolean;

@@ -24,4 +24,8 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // it on first use; nothing is read and no listener runs until the
   // stream flows.
   "stream.stdioReadable",
+  // scr_fs_exists_bytes turns the path bytes into a string and probes it; a
+  // path that is not there is the answer false, and the probe reports no
+  // error.
+  "fs.existsSyncBytes",
 ]);

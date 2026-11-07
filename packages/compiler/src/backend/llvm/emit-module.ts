@@ -84,7 +84,17 @@ import {
 import { LANE_INIT_CALL, lanePlansEnabled, laneToggleDefs } from "./lanes.js";
 import type { IrFunction } from "../../ir/ir.js";
 import { ERROR_READER_PROPERTIES, errorReaderName } from "../../ir/function-references.js";
-import { type FunctionLayout, layoutTierOf } from "./function-layout.js";
+import {
+  type FunctionLayout,
+  STARTUP_ORDER_MARKER,
+  STARTUP_SECTION,
+  STARTUP_TIER,
+  definedSymbol,
+  firstReachRanks,
+  hasStartupTier,
+  isStartupFunction,
+  layoutTierOf,
+} from "./function-layout.js";
 
 /** The function bodies emitted in `chunks` contiguous ranges, each by its
  * own emitter (LlEmitter.chunkEmitter), then merged in function order: the
@@ -333,6 +343,52 @@ function partitionEntries(functions: readonly IrFunction[], sourceFile: string):
   return functions.map((fn) => fn.name.startsWith("%init.") && fn.loc.file === sourceFile);
 }
 
+/** The section attribute of a definition, which a definition's text gets when
+ * it is the start-up tier's. */
+const STARTUP_ATTRIBUTE = `section "${STARTUP_SECTION}"`;
+
+/** `text` with each of its definitions that is a start-up function moved into
+ * STARTUP_SECTION: the attribute goes on the definition's header line, before
+ * the body's brace. Every definition passes through here, the generated
+ * helpers too, so a thunk the start-up path reaches keeps its code with the
+ * rest of the start-up code. */
+function startupSectioned(text: string, layout: FunctionLayout): string {
+  return text
+    .split("\n")
+    .map((line) => {
+      if (!line.startsWith("define ") || line.includes(STARTUP_ATTRIBUTE)) return line;
+      const symbol = definedSymbol(line);
+      if (symbol === undefined || !isStartupFunction(layout, symbol)) return line;
+      const brace = line.lastIndexOf("{");
+      if (brace < 0) return line;
+      // The section goes after the function's attribute group and before the
+      // trailing clauses LLVM orders after it (partition, comdat, align, gc,
+      // prefix, prologue, personality), which the emitter writes as a group.
+      const group = / #\d+(?= |$)/.exec(line);
+      let at: number;
+      if (group !== null) at = group.index + group[0].length;
+      else {
+        const clause = / (?:partition|comdat|align|gc|prefix|prologue|personality)\b/.exec(line);
+        at = clause !== null && clause.index < brace ? clause.index : brace;
+      }
+      const before = line.slice(0, at).trimEnd();
+      const after = line.slice(at).trimStart();
+      return `${before} ${STARTUP_ATTRIBUTE}${after === "" ? "" : ` ${after}`}`;
+    })
+    .join("\n");
+}
+
+/** The symbols of `text`'s definitions that STARTUP_SECTION holds. */
+function sectionedSymbols(text: string): string[] {
+  const symbols: string[] = [];
+  for (const line of text.split("\n")) {
+    if (!line.startsWith("define ") || !line.includes(STARTUP_ATTRIBUTE)) continue;
+    const symbol = definedSymbol(line);
+    if (symbol !== undefined) symbols.push(symbol);
+  }
+  return symbols;
+}
+
 /** Writes the generated helpers, then the function definitions with their
  * group lines, and the entry line before the entry module's top-level code.
  * With a layout, the definitions it lists, helpers included, move after the
@@ -340,7 +396,11 @@ function partitionEntries(functions: readonly IrFunction[], sourceFile: string):
  * tier's group (`layout-<tier>`). The helper compiles each
  * partition's definitions in text order, so listed ones come first in their
  * partitions, and it places a group's definitions in the same partitions.
- * Everything else keeps its order and its source-file group. */
+ * Everything else keeps its order and its source-file group.
+ *
+ * The start-up tier comes out in first-reach order. On a target whose linker
+ * places STARTUP_SECTION first, its definitions move into that section, and the
+ * symbols come back in that order: the link plan hands them to the linker. */
 function writeDefinitions(
   out: string[],
   layout: FunctionLayout | undefined,
@@ -348,7 +408,9 @@ function writeDefinitions(
   fnDefs: readonly string[],
   groups: readonly string[],
   entries: readonly boolean[],
-): void {
+  roots: readonly string[] = [],
+  startupSection = false,
+): string[] {
   const tierLine = (tier: number) => `${PARTITION_GROUP_END} layout-${tier}`;
   const listed = new Map<number, string[]>();
   const listIn = (tier: number, lines: readonly string[]) => {
@@ -356,6 +418,20 @@ function writeDefinitions(
     if (!listed.has(tier)) listed.set(tier, list);
     for (const line of lines) list.push(line);
   };
+  /** The start-up tier's whole definitions, ordered first-reach below. */
+  const startup: { lines: readonly string[]; text: string }[] = [];
+  /** Lists a whole definition in its tier, in the start-up tier's list when it
+   * is that tier's. */
+  const listDefinition = (tier: number, lines: readonly string[], text: string) => {
+    if (tier === STARTUP_TIER) startup.push({ lines, text });
+    else listIn(tier, lines);
+  };
+  /** A definition's text, put in STARTUP_SECTION when it is the start-up
+   * tier's and the target's linker places that section first. */
+  const definitionText = (tier: number, text: string) =>
+    startupSection && tier === STARTUP_TIER && layout !== undefined
+      ? startupSectioned(text, layout)
+      : text;
   if (layout === undefined || layout.size === 0) {
     for (const texts of helperTexts) for (const text of texts) out.push(text);
   } else {
@@ -371,7 +447,8 @@ function writeDefinitions(
         out.push(part);
         continue;
       }
-      listIn(tier, [tierLine(tier), part.slice(0, close + 2)]);
+      const body = definitionText(tier, part.slice(0, close + 2));
+      listDefinition(tier, [tierLine(tier), body], body);
       const rest = part.slice(close + 3);
       if (rest !== "") out.push(rest);
     }
@@ -380,8 +457,35 @@ function writeDefinitions(
   fnDefs.forEach((text, i) => {
     const tier = layout === undefined || layout.size === 0 ? undefined : layoutTierOf(layout, text);
     if (tier === undefined) unlisted.push(i);
-    else listIn(tier, ["", ...(entries[i] ? [PARTITION_ENTRY_LINE] : []), tierLine(tier), text]);
+    else {
+      const body = definitionText(tier, text);
+      listDefinition(
+        tier,
+        ["", ...(entries[i] ? [PARTITION_ENTRY_LINE] : []), tierLine(tier), body],
+        body,
+      );
+    }
   });
+  const startupSymbols: string[] = [];
+  if (startup.length > 0) {
+    const ranks = firstReachRanks(
+      startup.map((item) => item.text),
+      roots,
+    );
+    // A walk that reaches none of them leaves their order as it was.
+    const order = startup
+      .map((_, i) => i)
+      .sort((a, b) => {
+        const rankA = ranks[a]!;
+        const rankB = ranks[b]!;
+        return rankA === rankB ? a - b : rankA < rankB ? -1 : 1;
+      });
+    for (const i of order) {
+      const item = startup[i]!;
+      listIn(STARTUP_TIER, item.lines);
+      for (const symbol of sectionedSymbols(item.text)) startupSymbols.push(symbol);
+    }
+  }
   for (const tier of [...listed.keys()].sort((a, b) => a - b))
     for (const line of listed.get(tier)!) out.push(line);
   for (const [k, i] of unlisted.entries()) {
@@ -389,6 +493,7 @@ function writeDefinitions(
     if (entries[i]) out.push(PARTITION_ENTRY_LINE);
     out.push(groups[i] ?? PARTITION_GROUP_END, fnDefs[i]!);
   }
+  return startupSymbols;
 }
 
 export function emitModuleParts(emitter: LlEmitter): string[] {
@@ -1210,7 +1315,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     );
   }
   if (globals.length > 0) out.push(``);
-  writeDefinitions(
+  const startupSymbols = writeDefinitions(
     out,
     emitter.targetOptions.functionLayout,
     [
@@ -1228,7 +1333,15 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     fnDefs,
     partitionGroupLines(emitter.mod.functions),
     partitionEntries(emitter.mod.functions, emitter.mod.sourceFile),
+    // The entry and the initialisers start the start-up walk, whether or not
+    // the layout lists them.
+    emitter.mod.functions.flatMap((fn, i) =>
+      fn.name === "%main" || fn.name.startsWith("%init.") ? [fnDefs[i] ?? ""] : [],
+    ),
+    emitter.targetOptions.startupSection === true,
   );
+  if (startupSymbols.length > 0)
+    out.push("", `${STARTUP_ORDER_MARKER} ${startupSymbols.join(" ")}`);
   if (fnDefs.length === 0) out.push("");
   out.push(PARTITION_GROUP_END, "");
   // WebAssembly modules translated into this program, and the registry.
@@ -1323,6 +1436,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     return out;
   }
   if (emitter.abortFrames) out.push(...abortFramesDefinition(FN_ATTRS));
+  const entryStart = out.length;
   out.push(
     `define i32 @${emitter.mod.workers ? "sc_context_entry" : emitter.wasi ? "__main_argc_argv" : "main"}(i32 %argc, ptr %argv) ${FN_ATTRS} {`,
     `entry:`,
@@ -1482,6 +1596,9 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     `}`,
     ``,
   );
+  // Inline RC helpers are emitted here rather than with the other helpers;
+  // the start-up section claims them with the rest of the text appended after
+  // the listed definitions (below).
   for (const line of emitter.inlineRcTail(flushedDecls)) out.push(line);
   // The sanitized lane's -fsanitize=address link instruments the functions
   // marked sanitize_address (the runtime TUs get theirs from clang).
@@ -1512,6 +1629,26 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   for (const line of emitter.fieldAliasMetadata()) out.push(line);
   for (const line of loopUnrollMetadata(out)) out.push(line);
   if (emitter.debug !== null) out.push(emitter.debug.render());
+  // The definitions written after the listed ones (the inline RC helpers, the
+  // entry wrapper, worker and runtime glue) meet the start-up section here:
+  // the ones the layout's start-up tier names go in it, and the marker's
+  // second line hands their symbols to the linker.
+  const layout = emitter.targetOptions.functionLayout;
+  const lateStartup: string[] = [];
+  if (
+    emitter.targetOptions.startupSection === true &&
+    hasStartupTier(layout) &&
+    layout !== undefined
+  )
+    for (let i = entryStart; i < out.length; i++) {
+      const text = out[i]!;
+      if (!text.includes("define ")) continue;
+      const sectioned = startupSectioned(text, layout);
+      if (sectioned === text) continue;
+      out[i] = sectioned;
+      for (const symbol of sectionedSymbols(sectioned)) lateStartup.push(symbol);
+    }
+  if (lateStartup.length > 0) out.push("", `${STARTUP_ORDER_MARKER} ${lateStartup.join(" ")}`);
   return out;
 }
 

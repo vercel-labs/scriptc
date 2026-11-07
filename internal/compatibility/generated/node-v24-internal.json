@@ -25384,7 +25384,8 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
       "anchorSource": "exact"
@@ -28537,10 +28538,7 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.fs.existsSync",
         "tests": [
-          "tests/corpus/1403-buffer-fs.ts",
-          "tests/corpus/2595-fs-arg-ladders.cjs",
-          "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
       "anchorSource": "exact"
@@ -44578,6 +44576,7 @@
           "tests/corpus/6208-fs-constants-require.cjs",
           "tests/corpus/8427-fs-copyfile-writefile-flags.ts",
           "tests/corpus/fs-dir-dispose.ts",
+          "tests/corpus/fs-exists-optional-path.ts",
           "tests/corpus/fs-native-realpath.ts",
           "tests/corpus/fs-opendir-buffer-size-uncaught.cjs",
           "tests/corpus/fs-opendir-callbacks.ts",
@@ -45551,7 +45550,8 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
       "anchorSource": "exact"
@@ -45826,7 +45826,8 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
       "anchorSource": "exact"
@@ -45905,7 +45906,8 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
       "anchorSource": "exact"
@@ -45986,7 +45988,8 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46070,7 +46073,8 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46126,7 +46130,8 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46155,7 +46160,8 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46269,7 +46275,8 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47479,7 +47486,8 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47752,7 +47760,8 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48080,7 +48089,8 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48109,7 +48119,8 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48138,7 +48149,8 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48167,7 +48179,8 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48196,7 +48209,8 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48281,10 +48295,7 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.fs.existsSync",
         "tests": [
-          "tests/corpus/1403-buffer-fs.ts",
-          "tests/corpus/2595-fs-arg-ladders.cjs",
-          "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48635,7 +48646,8 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48664,7 +48676,8 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48768,7 +48781,8 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48797,7 +48811,8 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48881,7 +48896,8 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48910,7 +48926,8 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48965,7 +48982,8 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49020,7 +49038,8 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49049,7 +49068,8 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49078,7 +49098,8 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49107,7 +49128,8 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49221,7 +49243,8 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49308,7 +49331,8 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49337,7 +49361,8 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49366,7 +49391,8 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
       "anchorSource": "exact"

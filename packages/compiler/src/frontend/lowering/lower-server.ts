@@ -175,6 +175,180 @@ function lowerExactReusePort(lowerer: Lowerer, value: IrExpr, node: ts.Node): Ir
   };
 }
 
+const isUnitType = (t: IrType): boolean =>
+  t.kind === "undefinedT" || t.kind === "nullT" || t.kind === "void";
+
+/** What a listen argument can be, read from its static type as Node's
+ * normalizeArgs reads the value: a host (`typeof === 'string'`), the
+ * callback (`typeof === 'function'`), a backlog (a number after the
+ * port), or nothing (undefined and null). A union whose other arms are
+ * undefined or null takes the role of its one value arm, decided at run
+ * time. */
+type ListenArgRole = "string" | "func" | "number" | "unit" | "other";
+
+function listenArgRole(lowerer: Lowerer, node: ts.Expression): ListenArgRole {
+  const t = lowerer.mapTypeOf(lowerer.typeOf(node));
+  if (t === null) return "other";
+  const roleOfValue = (v: IrType): ListenArgRole =>
+    v.kind === "string"
+      ? "string"
+      : v.kind === "func"
+        ? "func"
+        : v.kind === "f64"
+          ? "number"
+          : isUnitType(v)
+            ? "unit"
+            : "other";
+  if (t.kind !== "union") return roleOfValue(t);
+  const roles = new Set(
+    (lowerer.unions.get(t.unionId)?.arms ?? []).map(roleOfValue).filter((r) => r !== "unit"),
+  );
+  if (roles.size === 0) return "unit";
+  return roles.size === 1 ? [...roles][0]! : "other";
+}
+
+/** `result` after `value`, an argument Node reads nothing from, has been
+ * evaluated. */
+function afterIgnoredListenArg(lowerer: Lowerer, value: IrExpr, result: IrExpr): IrExpr {
+  if (value.kind === "unitLit" || value.kind === "varRef") return result;
+  const loc = value.loc;
+  if (value.type.kind === "void") {
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: value, loc }],
+      result,
+      type: result.type,
+      loc,
+    };
+  }
+  const local = lowerer.declareHiddenLocal("%listenArg", value.type);
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: local.id, init: value, loc }],
+    result,
+    type: result.type,
+    loc,
+  };
+}
+
+/** `value ?? absent` for a union-typed listen argument whose one value
+ * arm is `arm` (the other arms are undefined and null), or null for a
+ * union of another shape. */
+function listenUnionArmOr(
+  lowerer: Lowerer,
+  value: IrExpr,
+  arm: IrType,
+  absent: IrExpr,
+): IrExpr | null {
+  if (value.type.kind !== "union") return null;
+  const valueArms = (lowerer.unions.get(value.type.unionId)?.arms ?? []).filter(
+    (a) => !isUnitType(a),
+  );
+  if (valueArms.length === 0) return afterIgnoredListenArg(lowerer, value, absent);
+  if (valueArms.length !== 1 || valueArms[0]!.kind !== arm.kind) return null;
+  return { kind: "nullish", left: value, right: absent, type: arm, loc: value.loc };
+}
+
+const LISTEN_BACKLOG_HINT =
+  "the listen queue length is fixed at Node's default (511) — leave the backlog out";
+
+/** The host of listen(port, host, ...) and of the options form's `host`.
+ * Node binds the host when the value is a string (`typeof args[1] ===
+ * 'string'`) and non-empty (`if (options.host)`), and every interface for
+ * any other value: this answers the string, or "" (the runtime's spelling
+ * of every interface) for a value that is not one. */
+function listenHostOf(lowerer: Lowerer, value: IrExpr, node: ts.Node): IrExpr {
+  const loc = value.loc;
+  const any = (): IrExpr => strLit("", loc);
+  if (value.type.kind === "string") return value;
+  if (isUnitType(value.type)) return afterIgnoredListenArg(lowerer, value, any());
+  const picked = listenUnionArmOr(lowerer, value, STRING, any());
+  if (picked !== null) return picked;
+  if (value.type.kind === "dyn" || value.type.kind === "jsval") {
+    const local = lowerer.declareHiddenLocal("%listenArg", DYN);
+    const ref = (): IrExpr => varRef(local.id, DYN, loc);
+    return {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: local.id, init: lowerer.coerceToExpected(value, DYN), loc },
+      ],
+      result: {
+        kind: "ternary",
+        cond: { kind: "dynTest", test: "string", value: ref(), type: BOOL, loc },
+        then: { kind: "dynCheck", value: ref(), type: STRING, loc },
+        else_: any(),
+        type: STRING,
+        loc,
+      },
+      type: STRING,
+      loc,
+    };
+  }
+  if (value.type.kind === "f64") {
+    lowerer.noLowering("listen with a backlog", node, LISTEN_BACKLOG_HINT);
+  }
+  lowerer.noLowering(
+    `a listen host of '${lowerer.fmt(value.type)}' values`,
+    node,
+    "the host is a string; undefined, or no host, binds every interface",
+  );
+}
+
+/** The port of a listen call: a number; undefined and null bind an unused
+ * port (Node sets `options.port = 0`); a value that may also be a string
+ * takes Node's validatePort at run time through `untypedPort`. Null for a
+ * value that is none of these. */
+function listenPortOf(
+  lowerer: Lowerer,
+  value: IrExpr,
+  untypedPort: (value: IrExpr) => IrExpr,
+): IrExpr | null {
+  const loc = value.loc;
+  if (value.type.kind === "f64") return value;
+  if (isUnitType(value.type)) return afterIgnoredListenArg(lowerer, value, numLit(0, loc));
+  if (value.type.kind === "dyn") return untypedPort(value);
+  const picked = listenUnionArmOr(lowerer, value, F64, numLit(0, loc));
+  if (picked !== null) return picked;
+  if (value.type.kind === "union" && lowerer.dynConvertible(value.type)) {
+    return untypedPort(lowerer.coerceToExpected(value, DYN));
+  }
+  return null;
+}
+
+/** A listen callback that may be an OPTIONAL binding — `(() => void) |
+ * undefined`, portless's listenOnProxyInterface pass-through: the emitter
+ * unwraps the union (the SNICallback conditional-spread pattern) and the
+ * runtime takes NULL for the undefined arm. A checked-dynamic callback (a
+ * JS wrapper value) adapts through the dynCheck function boundary. */
+function lowerOptionalListenCallback(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): IrExpr {
+  let cbV = lowerer.lowerExpr(node);
+  if (cbV.type.kind === "dyn") {
+    cbV = { kind: "dynCheck", value: cbV, type: funcOf([], VOID), loc };
+  }
+  const cbFuncOk = (t: IrType): boolean =>
+    t.kind === "func" && t.params.length === 0 && t.ret.kind === "void";
+  const cbOk =
+    cbFuncOk(cbV.type) ||
+    (cbV.type.kind === "union" &&
+      (() => {
+        const def = lowerer.unions.get((cbV.type as IrType & { kind: "union" }).unionId);
+        return (
+          !!def &&
+          def.arms.length === 2 &&
+          def.arms.some(cbFuncOk) &&
+          def.arms.some((a) => a.kind === "undefinedT")
+        );
+      })());
+  if (!cbOk) {
+    lowerer.unsupported(
+      "SC1090",
+      node,
+      `listen callbacks of type '${lowerer.fmt(cbV.type)}' (use () — an optional \`(() => void) | undefined\` binding also flows)`,
+    );
+  }
+  return cbV;
+}
+
 /** The %Error param shape the error-listener slots carry. */
 const ERROR_T: IrType = { kind: "object", className: "%Error" };
 
@@ -1534,7 +1708,7 @@ function lowerNetServerMethodCall(
     return { kind: "libCall", fn, args: [receiver], type: VOID, loc };
   }
   if (name === "listen") {
-    if (args.length > 3) {
+    if (args.length > 4) {
       lowerer.noLowering(
         `listen with ${args.length} arguments`,
         call,
@@ -1668,29 +1842,29 @@ function lowerNetServerMethodCall(
         }
         const key = (prop.name as ts.Identifier | ts.StringLiteral).text;
         if (key === "port") {
-          port =
+          const portValue =
             initializer !== null
               ? lowerer.lowerExpr(initializer)
               : lowerer.lowerShorthandValue(prop as ts.ShorthandPropertyAssignment);
-          if (port.type.kind !== "f64") {
+          // `port: undefined` and `port: null` bind an unused port, as the
+          // positional form does.
+          port = listenPortOf(lowerer, portValue, portOfUntyped);
+          if (port === null) {
             lowerer.noLowering(
-              `a listen 'port' option of '${lowerer.fmt(port.type)}' values`,
+              `a listen 'port' option of '${lowerer.fmt(portValue.type)}' values`,
               prop,
               "the port is a number here",
             );
           }
         } else if (key === "host") {
-          host =
+          // `host: undefined` binds every interface, as an absent host does.
+          host = listenHostOf(
+            lowerer,
             initializer !== null
               ? lowerer.lowerExpr(initializer)
-              : lowerer.lowerShorthandValue(prop as ts.ShorthandPropertyAssignment);
-          if (host.type.kind !== "string") {
-            lowerer.noLowering(
-              `a listen 'host' option of '${lowerer.fmt(host.type)}' values`,
-              prop,
-              "the host is an IP string here",
-            );
-          }
+              : lowerer.lowerShorthandValue(prop as ts.ShorthandPropertyAssignment),
+            prop,
+          );
         } else if (key === "ipv6Only") {
           if (initializer !== null) {
             v6only =
@@ -1788,37 +1962,7 @@ function lowerNetServerMethodCall(
             : [receiver, port, host, v6only, reusePort],
         );
       }
-      // The callback may be an OPTIONAL binding — `(() => void) |
-      // undefined`, portless's listenOnProxyInterface pass-through: the
-      // emitter unwraps the union (the SNICallback conditional-spread
-      // pattern) and the runtime takes NULL for the undefined arm. A
-      // checked-dynamic callback (a JS wrapper value) adapts through the
-      // dynCheck function boundary.
-      let cbV = lowerer.lowerExpr(args[1]!);
-      if (cbV.type.kind === "dyn") {
-        cbV = { kind: "dynCheck", value: cbV, type: funcOf([], VOID), loc };
-      }
-      const cbFuncOk = (t: IrType): boolean =>
-        t.kind === "func" && t.params.length === 0 && t.ret.kind === "void";
-      const cbOk =
-        cbFuncOk(cbV.type) ||
-        (cbV.type.kind === "union" &&
-          (() => {
-            const def = lowerer.unions.get((cbV.type as IrType & { kind: "union" }).unionId);
-            return (
-              !!def &&
-              def.arms.length === 2 &&
-              def.arms.some(cbFuncOk) &&
-              def.arms.some((a) => a.kind === "undefinedT")
-            );
-          })());
-      if (!cbOk) {
-        lowerer.unsupported(
-          "SC1090",
-          args[1]!,
-          `listen callbacks of type '${lowerer.fmt(cbV.type)}' (use () — an optional \`(() => void) | undefined\` binding also flows)`,
-        );
-      }
+      const cbV = lowerOptionalListenCallback(lowerer, args[1]!, loc);
       return listenResult(
         listenOptsCbFn,
         reusePort === null
@@ -1849,49 +1993,86 @@ function lowerNetServerMethodCall(
       );
       return listenResult("net.listenPathCb", [receiver, path, cb]);
     }
+    const lowerListenPort = (node: ts.Expression): IrExpr => {
+      const value = lowerer.lowerExpr(node);
+      return listenPortOf(lowerer, value, portOfUntyped) ?? lowerer.coerceToExpected(value, F64);
+    };
+    // ([port][, host][, backlog][, cb]), as Node's normalizeArgs and
+    // Server.prototype.listen read the arguments: the port is the first, a
+    // string second argument is the host, a function last argument is the
+    // callback, and undefined or null in any of the three is the absent
+    // argument (an unused port, every interface, no callback).
     const port = untyped
       ? portOfUntyped(lowerer.coerceToExpected(lowerer.lowerExpr(args[0]!), DYN))
-      : lowerer.lowerExprExpecting(args[0]!, F64);
-    // The optional middle host — listen(port, '127.0.0.1'[, cb]): a
-    // string-typed second argument is the bind address (the net.connect
-    // disambiguation), routed through the options-form entry.
-    let hostNode: ts.Expression | undefined;
+      : first?.kind === "f64"
+        ? lowerer.lowerExprExpecting(args[0]!, F64)
+        : lowerListenPort(args[0]!);
+    const rest = args.slice(1);
+    const refuseBacklog = (node: ts.Expression): never =>
+      lowerer.noLowering("listen with a backlog", node, LISTEN_BACKLOG_HINT);
+    // The last argument is the callback unless its type says it is the
+    // host; a two-argument call has one slot for both readings.
     let cbNode: ts.Expression | undefined;
-    if (args.length === 2) {
-      if (lowerer.mapTypeOf(lowerer.typeOf(args[1]!))?.kind === "string") hostNode = args[1];
-      else cbNode = args[1];
-    } else if (args.length === 3) {
-      hostNode = args[1];
-      cbNode = args[2];
+    if (rest.length > 0) {
+      const lastRole = listenArgRole(lowerer, rest[rest.length - 1]!);
+      if (lastRole === "number") refuseBacklog(rest[rest.length - 1]!);
+      if (rest.length > 1 || lastRole !== "string") cbNode = rest.pop();
     }
-    if (hostNode !== undefined) {
-      const host = lowerer.lowerExprExpecting(hostNode, STRING);
+    // The host is the second argument; a third before the callback is the
+    // backlog, which only its absent spelling reaches here.
+    let host: IrExpr | null = null;
+    if (rest.length > 0) {
+      const hostRole = listenArgRole(lowerer, rest[0]!);
+      if (hostRole === "number") refuseBacklog(rest[0]!);
+      if (hostRole === "func") {
+        lowerer.noLowering(
+          "a listen callback that is not the last argument",
+          rest[0]!,
+          "the supported form is listen([port][, host][, callback])",
+        );
+      }
+      host =
+        lowerer.mapTypeOf(lowerer.typeOf(rest[0]!))?.kind === "string"
+          ? lowerer.lowerExprExpecting(rest[0]!, STRING)
+          : listenHostOf(lowerer, lowerer.lowerExpr(rest[0]!), rest[0]!);
+    }
+    if (rest.length > 1) {
+      if (listenArgRole(lowerer, rest[1]!) !== "unit") refuseBacklog(rest[1]!);
+      const backlog = lowerer.lowerExpr(rest[1]!);
+      if (backlog.kind !== "unitLit" && backlog.kind !== "varRef") refuseBacklog(rest[1]!);
+    }
+    // The callback: a function, an optional `(() => void) | undefined`
+    // binding (the opts entry takes its nullable closure), or the absent
+    // argument.
+    let cb: IrExpr | null = null;
+    if (cbNode !== undefined) {
+      const cbRole = listenArgRole(lowerer, cbNode);
+      const cbT = lowerer.mapTypeOf(lowerer.typeOf(cbNode));
+      if (cbRole === "unit") {
+        const ignored = lowerer.lowerExpr(cbNode);
+        if (ignored.kind !== "unitLit" && ignored.kind !== "varRef") {
+          lowerer.noLowering(
+            "a listen argument that is always undefined or null",
+            cbNode,
+            "pass the literal, or leave the argument out",
+          );
+        }
+      } else if (cbRole === "func" && cbT?.kind === "union") {
+        cb = lowerOptionalListenCallback(lowerer, cbNode, loc);
+        host ??= strLit("", loc); /* "" = every interface */
+      } else {
+        cb = lowerCallbackArg(lowerer, cbNode, "listen callbacks", 0, () => false, "use ()", []).cb;
+      }
+    }
+    if (host !== null) {
       const v6only = boolLit(false, loc);
-      if (!cbNode) return listenResult("net.listenOpts", [receiver, port, host, v6only]);
-      const { cb } = lowerCallbackArg(
-        lowerer,
-        cbNode,
-        "listen callbacks",
-        0,
-        () => false,
-        "use ()",
-        [],
-      );
-      return listenResult("net.listenOptsCb", [receiver, port, host, v6only, cb]);
+      return cb === null
+        ? listenResult("net.listenOpts", [receiver, port, host, v6only])
+        : listenResult("net.listenOptsCb", [receiver, port, host, v6only, cb]);
     }
-    if (!cbNode) {
-      return listenResult("net.listen", [receiver, port]);
-    }
-    const { cb } = lowerCallbackArg(
-      lowerer,
-      cbNode,
-      "listen callbacks",
-      0,
-      () => false,
-      "use ()",
-      [],
-    );
-    return listenResult("net.listenCb", [receiver, port, cb]);
+    return cb === null
+      ? listenResult("net.listen", [receiver, port])
+      : listenResult("net.listenCb", [receiver, port, cb]);
   }
   if (name === "close") {
     requireStatementPosition(lowerer, call, "server.close(...)");
@@ -9073,7 +9254,12 @@ function lowerHttpResMethodCall(
     }
     // end(payload ? text : undefined): an absent chunk ends without data,
     // as end() does. The checked-dynamic end takes each arm at run time.
-    if (name === "end" && data.type.kind === "union" && lowerer.dynConvertible(data.type)) {
+    // write(chunk!) where the declared parameter accepts undefined
+    // (`chunk: any` under @types/node, which leaves the assertion's union
+    // in place): the checked-dynamic write takes the string or bytes arm
+    // and throws Node's ERR_INVALID_ARG_TYPE for undefined. A null chunk
+    // is an 'error' event in Node, not a throw, and stays refused.
+    if (data.type.kind === "union" && lowerer.dynConvertible(data.type)) {
       const arms = lowerer.unions.get(data.type.unionId)?.arms ?? [];
       if (
         arms.every(
@@ -9081,18 +9267,13 @@ function lowerHttpResMethodCall(
             arm.kind === "string" ||
             (arm.kind === "bytes" && arm.elem === "u8") ||
             arm.kind === "undefinedT" ||
-            arm.kind === "nullT",
+            (name === "end" && arm.kind === "nullT"),
         )
       ) {
         const dynData: IrExpr = { kind: "dynFrom", value: data, type: DYN, loc: locOf(dataNode) };
-        if (cbArg !== null) return endWithCb("http.resEndDyn", [receiver, dynData], cbArg);
-        return {
-          kind: "libCall",
-          fn: "http.resEndDyn",
-          args: [receiver, dynData],
-          type: VOID,
-          loc,
-        };
+        const fn: IrLibFn = name === "write" ? "http.resWriteDyn" : "http.resEndDyn";
+        if (cbArg !== null) return endWithCb(fn, [receiver, dynData], cbArg);
+        return { kind: "libCall", fn, args: [receiver, dynData], type: VOID, loc };
       }
     }
     lowerer.noLowering(

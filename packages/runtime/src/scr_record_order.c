@@ -36,10 +36,10 @@ static void scr_record_order_placeholder(ScrDyn *keys, const char *key, size_t k
  * source moves it to the end of the source's key list. One that keeps none
  * enumerated in the table's order until now, and the caller calls only
  * when a key the table lists after this one is present: the record then
- * keeps the table's order with the key moved last. The keys it lacks hold
- * their places until a write creates them, which moves each in turn. A
- * record view's keys belong to the record it views, and are left as they
- * are.
+ * keeps the keys it has in the table's order with this key moved last. A
+ * key it lacks is not listed, and takes its place when a write creates it,
+ * which calls here again. A record view's keys belong to the record it
+ * views, and are left as they are.
  *
  * `capsule` is the record's checked view (borrowed). A view boxed before the
  * record kept a source did not adopt one: it answers from the record's
@@ -56,10 +56,21 @@ void scr_record_order_append(void *rec, ScrDyn *capsule, const char *const *name
     scr_record_order_placeholder(view, key, key_len);
   } else if (!scr_record_source_has(rec)) {
     ScrDyn *keys = scr_dyn_new_obj();
+    /* The record's checked view answers which declared keys it has, from
+     * the record's own fields. */
+    bool live = capsule && capsule->kind == SCR_DYN_TYPED_REF;
     for (size_t i = 0; i < count; i++) {
       /* Internal '%'-fields are no keys of the object. */
       if (lens[i] && names[i][0] == '%') continue;
       if (lens[i] == key_len && !memcmp(names[i], key, key_len)) continue;
+      /* A name the record lacks is no key of it, and is not listed: a
+       * record with few of its type's keys keeps a short list. */
+      if (live) {
+        ScrStr *field = scr_str_new(names[i], lens[i]);
+        bool has = scr_dyn_has_own(capsule, field);
+        scr_str_release(field);
+        if (!has) continue;
+      }
       scr_record_order_placeholder(keys, names[i], lens[i]);
     }
     scr_record_order_placeholder(keys, key, key_len);

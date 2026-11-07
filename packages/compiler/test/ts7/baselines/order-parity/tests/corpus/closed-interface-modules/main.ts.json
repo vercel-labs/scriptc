@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/closed-interface-modules/square.ts",
+  "<repo>/tests/corpus/closed-interface-modules/circle.ts",
+  "<repo>/tests/corpus/closed-interface-modules/main.ts"
+ ],
+ "diags": []
+}

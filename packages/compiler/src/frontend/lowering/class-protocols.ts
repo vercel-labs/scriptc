@@ -1,4 +1,5 @@
 import * as ts from "../ts7/adapter.js";
+import { ClosedProtocols, OBSERVER_FUNCTIONS, OBSERVER_NAMESPACES } from "./closed-protocols.js";
 
 /** Index only program classes. Ambient declarations describe APIs, not
  * compiled implementations, and must not change a protocol's storage. */
@@ -23,6 +24,14 @@ export class ClassProtocols {
   /** The mapped views a receiver-dependent literal is used as, whose source
    * cannot carry the marking (see index). */
   private readonly literalViews = new Set<ts.Type>();
+  /** The classes that declare each interface (`implements`), directly or
+   * through an interface that extends it. */
+  private readonly implementers = new Map<ts.Symbol, Set<ts.ClassLikeDeclaration>>();
+  /** The types a literal marked (a receiver-dependent method, a member
+   * kind its target disagrees with): their values are not all instances. */
+  private readonly literalMarks = new Set<ts.Symbol>();
+  /** The closed protocols (closed-protocols.ts), built on first use. */
+  private closedProtocols: ClosedProtocols | null = null;
 
   constructor(
     private readonly checker: ts.TypeChecker,
@@ -33,7 +42,7 @@ export class ClassProtocols {
     if (this.implemented !== null) return this.implemented;
     const protocols = new Set<ts.Symbol>();
     this.implemented = protocols;
-    const add = (type: ts.Type): void => {
+    const add = (type: ts.Type, implementer?: ts.ClassLikeDeclaration): void => {
       // A homomorphic mapped view's own symbol is the shared mapped
       // `__type` that every mapped type in the program uses: marking it
       // would make every Pick, Omit, Partial and Readonly a view. Mark the
@@ -52,10 +61,23 @@ export class ClassProtocols {
         type = mapped;
       }
       const symbol = type.getSymbol();
-      if (!symbol || protocols.has(symbol)) return;
+      if (!symbol) return;
+      // Who marked the type decides whether its values can all be
+      // instances (closedClasses): a class that declares it, or a literal.
+      let recorded = false;
+      if (implementer === undefined) this.literalMarks.add(symbol);
+      else {
+        let declared = this.implementers.get(symbol);
+        if (declared === undefined) this.implementers.set(symbol, (declared = new Set()));
+        recorded = !declared.has(implementer);
+        declared.add(implementer);
+      }
+      const marked = protocols.has(symbol);
+      if (marked && !recorded) return;
       protocols.add(symbol);
       const target = type.isTypeReference() ? type.getTarget() : type;
-      if (target?.isClassOrInterface()) this.checker.getBaseTypes(target).forEach(add);
+      if (target?.isClassOrInterface())
+        for (const base of this.checker.getBaseTypes(target)) add(base, implementer);
     };
     const usesReceiver = (node: ts.Node): boolean =>
       node.kind === ts.SyntaxKind.ThisKeyword || ts.forEachChild(node, usesReceiver) === true;
@@ -76,7 +98,7 @@ export class ClassProtocols {
         for (const clause of node.heritageClauses?.nodes ?? [])
           if (clause.token === ts.SyntaxKind.ImplementsKeyword)
             for (const protocol of clause.types.nodes)
-              add(this.checker.getTypeAtLocation(protocol));
+              add(this.checker.getTypeAtLocation(protocol), node);
         const symbol = node.name ? this.checker.getSymbolAtLocation(node.name) : undefined;
         const instance = symbol ? this.checker.getDeclaredTypeOfSymbol(symbol) : undefined;
         for (const property of instance ? this.checker.getPropertiesOfType(instance) : []) {
@@ -121,7 +143,8 @@ export class ClassProtocols {
       ts.forEachChild(node, visit);
     };
     for (const source of this.sources) if (!source.isDeclarationFile) visit(source);
-    for (const literal of literals) this.markMemberKindViews(literal, accessorNames, add);
+    for (const literal of literals)
+      this.markMemberKindViews(literal, accessorNames, (type) => add(type));
     this.markIdentityFlows(protocols);
     return protocols;
   }
@@ -1635,6 +1658,30 @@ export class ClassProtocols {
     return symbol !== undefined && this.collectionViews.has(symbol);
   }
 
+  /** The instance types of the classes whose instances are the only values
+   * of the interface `type`, none extending another, or null when the
+   * interface is not closed over classes (closed-protocols.ts). A closed
+   * interface still answers usesCheckedIdentity: its values carry identity,
+   * as the instance pointers they are. */
+  closedClasses(type: ts.Type): readonly ts.Type[] | null {
+    this.index();
+    if (this.implementers.size === 0) return null;
+    if (type.isUnionType() || type.isIntersectionType()) return null;
+    if ((type.flags & ts.TypeFlags.Object) === 0) return null;
+    const symbol = type.getSymbol();
+    if (symbol === undefined || !this.implementers.has(symbol)) return null;
+    this.closedProtocols ??= new ClosedProtocols(
+      this.checker,
+      this.sources,
+      this.implementers,
+      (view) => this.literalMarks.has(view) || this.collectionViews.has(view),
+    );
+    const classes = this.closedProtocols.classesOf(symbol);
+    return classes === null
+      ? null
+      : classes.map((cls) => this.checker.getDeclaredTypeOfSymbol(cls));
+  }
+
   /** Class-backed protocols require live receiver dispatch. Other interfaces,
    * including factories backed by static methods and ordinary records of
    * closures, retain their fixed native layouts. */
@@ -1758,24 +1805,6 @@ const ERROR_LIB_NAMES = new Set([
   "SuppressedError",
 ]);
 
-/** Calls of these namespaces and functions observe whole objects. */
-const OBSERVER_NAMESPACES = new Set(["console", "JSON", "Object", "Reflect", "util", "assert"]);
-const OBSERVER_FUNCTIONS = new Set([
-  "structuredClone",
-  "String",
-  "inspect",
-  "format",
-  "isDeepStrictEqual",
-  // node:assert's named exports.
-  "strictEqual",
-  "notStrictEqual",
-  "deepStrictEqual",
-  "notDeepStrictEqual",
-  "deepEqual",
-  "notDeepEqual",
-  "equal",
-  "notEqual",
-]);
 /** Constructors that key their arguments' values by identity. */
 const IDENTITY_CONSTRUCTORS = new Set(["Set", "Map", "WeakSet", "WeakMap", "WeakRef"]);
 /** Object statics that write their first argument. */

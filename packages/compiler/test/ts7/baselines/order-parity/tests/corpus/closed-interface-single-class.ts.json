@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/closed-interface-single-class.ts"
+ ],
+ "diags": []
+}

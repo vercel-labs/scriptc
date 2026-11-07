@@ -5909,6 +5909,7 @@ export class Lowerer {
       },
       mixinIntersectionInstance: (widened) => mixinIntersectionInstanceType(this, widened),
       classImplementedProtocol: (type) => this.classImplementedProtocol(type),
+      closedProtocolClasses: (type) => this.facts.classProtocols().closedClasses(type),
       isStdlibFile: (sf) => this.isStdlibFile(sf),
       primitiveWrappers: () => (this.createsWrappers ??= programCreatesWrappers(this)),
       arrayBufferViewReads: () => (this.namesArrayBufferView ??= programNamesArrayBufferView(this)),

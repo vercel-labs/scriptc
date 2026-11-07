@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/interface-literal-implementor.ts"
+ ],
+ "diags": []
+}

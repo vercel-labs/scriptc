@@ -412,7 +412,7 @@ const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   ...DYN_COLLECTION_LIB_FNS,
 ]);
 
-/** Member names whose constant-key dynamic reads answer the inherited Object.prototype member through the dyn-invoke unit. Mirrors expr-dynamic.ts INHERITED_OBJECT_MEMBERS (the IR layer does not import the backend). */
+/** Member names whose constant-key dynamic reads answer the inherited Object.prototype member through scr_dyn_inherited.c. Mirrors expr-dynamic.ts INHERITED_OBJECT_MEMBERS (the IR layer does not import the backend). */
 const INHERITED_MEMBER_NAMES: ReadonlySet<string> = new Set([
   "constructor",
   "hasOwnProperty",
@@ -1432,7 +1432,8 @@ const RUNTIME_FEATURE_RULES = {
     ],
     // Constant-key reads of Object.prototype member names, and of
     // Array.prototype method names on arrays, answer the inherited member
-    // through scr_dyn_invoke.c.
+    // through scr_dyn_inherited.c, which calls into scr_dyn_invoke.c for the
+    // member it answers.
     expr: (node, _tables) =>
       node.kind === "dynInvoke" ||
       (node.kind === "dynKeyGet" &&
@@ -1440,6 +1441,22 @@ const RUNTIME_FEATURE_RULES = {
         (INHERITED_MEMBER_NAMES.has(node.key.value) ||
           ARRAY_PROTOTYPE_MEMBER_NAMES.has(node.key.value))),
   }),
+  /** Dynamic reads whose key may name an Object.prototype member or an
+   * Array.prototype method: constant keys naming one, and every computed key
+   * (built at run time, so it may name one). An undefined read answers the
+   * inherited member through scr_dyn_inherited.c, which references only the
+   * base units. */
+  dynInherited: rule({
+    expr: (node, _tables) =>
+      node.kind === "dynKeyGet" &&
+      (node.key.kind !== "strLit" ||
+        INHERITED_MEMBER_NAMES.has(node.key.value) ||
+        ARRAY_PROTOTYPE_MEMBER_NAMES.has(node.key.value)),
+  }),
+  /** `new` through the builtin constructors those reads answer
+   * (scr_dyn_global_construct.c), installed at start by programs that also
+   * construct dynamic values. */
+  dynGlobalConstruct: rule({ fns: ["dyn.globalConstructInstall"] }),
   /** The program has dynamic-tier jsval operations (js.* builtins, the
    * jsval pass): links the scr_js_* units (two-tier design I3). */
   dynTier: rule({ prefixes: ["js."] }),
@@ -1973,6 +1990,8 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dataViewPrototypeValue: false,
     hostAbsentGlobals: false,
     dynInvoke: false,
+    dynInherited: false,
+    dynGlobalConstruct: false,
     arrayLikeDispatch: false,
     builtinMethodValue: false,
     dynTier: false,

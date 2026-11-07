@@ -238,6 +238,7 @@ import { sloppyDynamicWrites } from "./frozen-records.js";
 import { guardFrozenWrites, markSloppyRecordWrites } from "./frozen-records.js";
 import { applyHandleProperties, handlePropertyScanRoots } from "./handle-properties.js";
 import { installBufferValue } from "./containers/bytes.js";
+import { installGlobalConstruct } from "./class-construction.js";
 import { installMutableBuffersArm } from "./buffers.js";
 import { ClassProtocols } from "./class-protocols.js";
 import { earlyReadVarSymbols } from "./var-hoisting.js";
@@ -10870,6 +10871,7 @@ export class Lowerer {
     guardFrozenWrites(this, functions);
     applyHandleProperties(this, functions);
     installBufferValue(functions);
+    installGlobalConstruct(functions);
     // A mutable-buffers program arms the views registry before any buffer
     // exists, so every buffer in it is detachable from the start.
     const buffersMutable = this.buffersMutable && installMutableBuffersArm(functions);

@@ -94,6 +94,8 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   dynTier: boolean;
   streamDyn: boolean;
   handleProps: boolean;
+  dynInherited: boolean;
+  dynGlobalConstruct: boolean;
   childLifecycle: boolean;
   childOptionExt: boolean;
   spawnCaptureBytes: boolean;
@@ -357,6 +359,8 @@ export function effectiveRuntimeFeatures(
     dynTier: features.dynTier === true || jsObjectModel,
     streamDyn: features.streamDyn === true,
     handleProps: features.handleProps === true,
+    dynInherited: features.dynInherited === true,
+    dynGlobalConstruct: features.dynGlobalConstruct === true,
     childLifecycle: features.childLifecycle === true,
     childOptionExt: features.childOptionExt === true,
     spawnCaptureBytes: features.spawnCaptureBytes === true,

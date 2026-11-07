@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8114-computed-inherited-member-unknown.ts"
+ ],
+ "diags": []
+}

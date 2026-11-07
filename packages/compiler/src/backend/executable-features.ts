@@ -41,6 +41,8 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     assert: features.assert,
     inspect: features.inspect,
     dynInvoke: features.dynInvoke,
+    ...(features.dynInherited ? { dynInherited: true } : {}),
+    ...(features.dynGlobalConstruct ? { dynGlobalConstruct: true } : {}),
     dc: features.dc,
     dynAsync: features.dynAsync,
     ...(features.promiseGeneric ? { promiseGeneric: true } : {}),

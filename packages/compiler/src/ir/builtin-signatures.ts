@@ -3610,6 +3610,9 @@ function buildLibFnSignatures() {
     "buffer.deprecationCount": { argTypes: [], result: VOID },
     "buffer.constructor": { argTypes: [], result: DYN },
     "buffer.installValue": { argTypes: [], result: VOID },
+    /** `new` through the builtin constructors inherited reads answer
+     * (class-construction.ts installs it). */
+    "dyn.globalConstructInstall": { argTypes: [], result: VOID },
     "buffer.staticValue": { argTypes: [STRING], result: DYN },
     "buffer.prototypeMember": { argTypes: [DYN], result: DYN },
     "buffer.prototypeObject": { argTypes: [], result: DYN },

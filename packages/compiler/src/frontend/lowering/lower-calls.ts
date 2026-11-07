@@ -8993,18 +8993,35 @@ export function isPlainDescriptorMap(
  * holds the literal, so its own identity is unobservable); each member, a
  * descriptor, is boxed as any other typed value is, so the `value`, `get`
  * and `set` it carries stay the program's own objects. Null when the
- * expression is anything else, or a literal with an accessor member of its
- * own, which the caller passes as it is. */
-function descriptorMapLiteral(lowerer: Lowerer, descriptors: IrExpr): IrExpr | null {
+ * expression is anything else, which the caller passes as it is. */
+function descriptorMapLiteral(
+  lowerer: Lowerer,
+  source: ts.Expression,
+  descriptors: IrExpr,
+): IrExpr | null {
   if (descriptors.kind !== "dynFrom" || descriptors.liveRef !== true) return null;
   const literal = descriptors.value;
   if (literal.kind !== "recordLit") return null;
-  // An accessor on the map itself is stored in a reserved slot, not under
-  // its property name; such a map is passed as written.
-  if (
-    literal.fields.some((field) => field.name.startsWith("%") || field.value.kind === "fieldAbsent")
-  )
-    return null;
+  // An accessor member is a reserved `%get:`/`%set:` slot holding a closure,
+  // not a property name. The rebuilt object has no accessor form, and
+  // calling the getter while building it would run it before the later
+  // members evaluate, so the form is refused.
+  if (literal.fields.some((field) => field.name.startsWith("%"))) {
+    let node: ts.Expression = source;
+    while (ts.isParenthesizedExpression(node)) node = node.expression;
+    const accessor = ts.isObjectLiteralExpression(node)
+      ? node.properties.nodes.find(
+          (member) => ts.isGetAccessorDeclaration(member) || ts.isSetAccessorDeclaration(member),
+        )
+      : undefined;
+    lowerer.unsupported(
+      "SC1090",
+      accessor ?? node,
+      "a get or set accessor in a property descriptor map literal",
+      "write the descriptor as the member's value ('name: { get() { ... }, enumerable: true }' defines an accessor property)",
+    );
+  }
+  if (literal.fields.some((field) => field.value.kind === "fieldAbsent")) return null;
   const loc = descriptors.loc;
   const fields = literal.fields.map((field) => ({
     key: { kind: "strLit", value: field.name, type: STRING, loc } as IrExpr,
@@ -9326,7 +9343,7 @@ function lowerObjectStaticCall(
       if (call.arguments.nodes.length === 1)
         return { kind: "libCall", fn: "dyn.objCreate", args: [proto], type: DYN, loc };
       const written = lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN);
-      const rebuilt = descriptorMapLiteral(lowerer, written);
+      const rebuilt = descriptorMapLiteral(lowerer, call.arguments.nodes[1]!, written);
       const descriptors = rebuilt ?? written;
       if (descriptors.type.kind === "dyn")
         return {
@@ -9866,7 +9883,7 @@ function lowerObjectStaticCall(
     }
     if (target?.type.kind === "dyn") {
       const written = lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN);
-      const rebuilt = descriptorMapLiteral(lowerer, written);
+      const rebuilt = descriptorMapLiteral(lowerer, call.arguments.nodes[1]!, written);
       const descs = rebuilt ?? written;
       if (descs.type.kind === "dyn") {
         return {

@@ -19,6 +19,7 @@ import {
   NULL_T,
   STRING,
   UNDEFINED_T,
+  isSupportedArrayElem,
   sortArms,
   typeKey,
   type IrType,
@@ -110,7 +111,11 @@ function mapCanonicalAt(
         if (notes !== undefined) notes.collapsedToDynamic = true;
         return DYN;
       }
-      return elem === null ? null : { kind: "array", elem };
+      // The storage contract mapType's array rule applies: an element kind
+      // without array storage (a generator, an opaque handle) has no array.
+      return elem === null || elem.kind === "void" || !isSupportedArrayElem(elem)
+        ? null
+        : { kind: "array", elem };
     }
     case "union": {
       const byKey = new Map<string, IrType>();

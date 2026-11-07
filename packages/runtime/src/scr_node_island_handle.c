@@ -126,6 +126,23 @@ static void *nh_pinned_obj(const ScrNodeRef *ref, int kind) {
   return NULL;
 }
 
+/* Whether nothing but the pin table holds the object of `pin`. A pinned
+ * error the program read as a dynamic value also has a view, and the
+ * error-view cache (scr_json.c) holds the error and the view until nothing
+ * else does. That pair is not a holder: counted as one, the table and the
+ * cache keep each other's entry for the rest of the run. */
+static bool nh_pin_unheld(const NhPin *pin) {
+  size_t rc = *(size_t *)pin->obj;
+  if (rc == 1) return true;
+  if (pin->kind != NH_PIN_ERROR || rc != 2) return false;
+  const ScrDyn *view = scr_errdyn_view_of(pin->obj);
+  if (view == NULL || view->kind != SCR_DYN_OBJ) return false;
+  /* The view's own entries may hold the view itself. */
+  size_t self = 0;
+  for (size_t i = 0; i < scr_dyn_obj_count(view); i++) self += scr_dyn_obj_value_at(view, i) == view;
+  return SCR_RC_COUNT(view) == 1 + self;
+}
+
 /* Releases every pin whose object only the table still holds. Releasing a
  * pin can free objects that held other pinned objects, so it repeats until
  * a pass frees nothing. */
@@ -134,8 +151,7 @@ static void nh_sweep(void) {
   while (freed) {
     freed = false;
     for (size_t i = 0; i < nh_npins;) {
-      size_t rc = *(size_t *)nh_pins[i].obj;
-      if (rc == 1) {
+      if (nh_pin_unheld(&nh_pins[i])) {
         NhPin pin = nh_pins[i];
         nh_pins[i] = nh_pins[--nh_npins];
         nh_pin_release_obj(&pin);
@@ -501,6 +517,27 @@ static ScrDyn *nh_from_node(const ScrNodeValue *v) {
   }
 }
 
+typedef struct {
+  uint32_t h;
+  ScrNodeErrorInfo *out;
+} NhErrorInfo;
+
+static void nh_error_info_job(void *p) {
+  NhErrorInfo *a = p;
+  scr_ni_bridge_loaded()->error_info(a->h, a->out);
+}
+
+/* The own name, message, stack and string code of island error `h`.
+ * Reading them runs JavaScript (any of them may be an accessor), so it
+ * runs on Node's stack like every operation. A thrown error is read after
+ * the operation that threw it returned to the program's stack, and V8 scans
+ * the stack it was entered on: a collection that started while it ran on
+ * the program's stack failed that scan's check. */
+static void nh_error_info(uint32_t h, ScrNodeErrorInfo *out) {
+  NhErrorInfo read = {h, out};
+  scr_ni_on_node_stack(nh_error_info_job, &read);
+}
+
 /* The ScrError of an island Error handle (+1): the one already pinned to
  * it, else a new one of the nearest intrinsic class, pinned. */
 static ScrError *nh_error_of(const ScrNodeValue *v) {
@@ -511,7 +548,7 @@ static ScrError *nh_error_of(const ScrNodeValue *v) {
     return scr_error_retain(pinned);
   }
   ScrNodeErrorInfo info;
-  nh_bridge()->error_info(ref->id, &info);
+  nh_error_info(ref->id, &info);
   /* Node did not find a file, and the error names the installed module
    * tree: a tool may have removed files from it. What is missing is put
    * back (scr_ni_tree_repair), for nh_load's second attempt and for every
@@ -1682,7 +1719,7 @@ bool scr_ni_report_uncaught(ScrError *error) {
   const ScrNodeBridge *bridge = scr_ni_bridge_loaded();
   if (ref == NULL || ref->id == 0 || bridge == NULL) return false;
   ScrNodeErrorInfo info;
-  bridge->error_info(ref->id, &info);
+  nh_error_info(ref->id, &info);
   if (info.stack == NULL) return false;
   if (info.arrow != NULL && info.arrow_len > 0) {
     fwrite(info.arrow, 1, info.arrow_len, stderr);

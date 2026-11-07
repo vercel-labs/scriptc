@@ -847,6 +847,12 @@ static void scr_rgn_walk_box(ScrRgnWalk *w, ScrBox *b) {
 
 static void scr_rgn_walk_closure(ScrRgnWalk *w, ScrClosure *c) {
   for (size_t i = 0; i < c->ncaps; i++) scr_rgn_enter(w, c->caps[i], SCR_RGN_W_BOX, NULL);
+  /* Captured values, each with the release entry point its box would have. */
+  const ScrClosureValues *values = scr_closure_values(c);
+  if (values) {
+    void **slots = scr_closure_value_slots(c);
+    for (size_t i = 0; i < values->count; i++) scr_region_slot(w, slots[i], values->refs[i].release);
+  }
   scr_rgn_enter(w, c->props, SCR_RGN_W_BOX, NULL);
 }
 

@@ -374,6 +374,7 @@ export function unionRetagHelper(
   loc: SrcLoc,
   trappable?: ReadonlySet<number>,
   classRoutes?: ReadonlyMap<number, readonly UnionClassRoute[]>,
+  checked = false,
 ): string | null {
   const from = lowerer.unions.get(fromId);
   const to = lowerer.unions.get(toId);
@@ -385,7 +386,7 @@ export function unionRetagHelper(
           .sort((a, b) => a[0] - b[0])
           .map(([tag, routes]) => `${tag}>${routes.map((route) => route.tag).join(".")}`)
           .join(";");
-  const request = `${fromId}:${toId}:${trappable === undefined ? "" : [...trappable].sort((a, b) => a - b).join(".")}|${routeKey}`;
+  const request = `${fromId}:${toId}:${trappable === undefined ? "" : [...trappable].sort((a, b) => a - b).join(".")}|${routeKey}${checked ? ":checked" : ""}`;
   const cached = lowerer.coercions.copyRetags.get(request);
   if (
     cached &&
@@ -393,6 +394,10 @@ export function unionRetagHelper(
     cached.unions === lowerer.unions.revision
   )
     return cached.name;
+  // The checked mode is the conversion's own second question, asked only
+  // after the ordinary plan declined: a source arm the destination cannot
+  // copy can still enter the one arm it checked-widens into (a narrowed
+  // `{ role: string }` claimed as the wider record its predicate named).
   const plan = planUnionRetag(
     from,
     to,
@@ -400,6 +405,7 @@ export function unionRetagHelper(
     (src, dst) => armWidthLift(lowerer, src, dst),
     trappable,
     classRoutes,
+    checked ? (src, dst) => lowerer.checkedWidthLift(src, dst) : undefined,
   );
   if (plan === null) return null;
   // The registry pair determines every route; only checker-proven
@@ -409,7 +415,7 @@ export function unionRetagHelper(
   plan.forEach((arm, tag) => {
     if (arm.kind === "trap") stranded.push(tag);
   });
-  const key = `${fromId}:${toId}:${stranded.join(".")}:${routeKey}`;
+  const key = `${fromId}:${toId}:${stranded.join(".")}:${routeKey}${checked ? ":checked" : ""}`;
   const existing = lowerer.coercions.retags.get(key);
   const name = existing ?? keyedHelperName(lowerer, "%union.retag", key);
   if (!existing) {

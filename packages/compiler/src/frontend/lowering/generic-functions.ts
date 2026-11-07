@@ -48,7 +48,11 @@ import {
   hasExplicitJsDocReturn,
   promiseCarriesDyn,
 } from "./function-returns.js";
-import { bindingNeverReassigned, stripValueWrappers } from "./binding-analysis.js";
+import {
+  bindingNeverReassigned,
+  isValueIdentifier,
+  stripValueWrappers,
+} from "./binding-analysis.js";
 import { declareContextLocal } from "./function-context.js";
 import {
   extendInstantiationPath,
@@ -3369,7 +3373,12 @@ function enclosingFrameCaptures(
       // dynamism either way. Reject both, cheaply and soundly.
       frameFence();
     }
-    if (ts.isIdentifier(n)) {
+    // A MEMBER name (`options.servers()`, `{ key: v }`) resolves to the
+    // member's symbol, whose declaration lives on a type or a property —
+    // never a frame value this binding could capture. Reading it as one
+    // would hand the instance a type node to lower (`the reference to
+    // 'servers' (a binding form with no lowering)`).
+    if (ts.isIdentifier(n) && isValueIdentifier(n)) {
       const s = lowerer.checker.getSymbolAtLocation(n);
       if (s === undefined) {
         if (n.text === "arguments") frameFence();

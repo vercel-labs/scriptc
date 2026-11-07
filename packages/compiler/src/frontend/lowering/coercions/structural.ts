@@ -348,6 +348,21 @@ export function applyWidthLift(
     }
     case "dynOut":
       return { kind: "dynCheck", value, type: dst, loc };
+    case "checkedWiden": {
+      if (dst.kind !== "record" || value.type.kind !== "record")
+        throw new InternalCompilerError("lowerer bug: checkedWiden lift shape");
+      // The value's own properties cross as a live capsule (dynFrom
+      // liveRef), so the check reads what the record kept beside its
+      // declared fields — a width copy's source, a checked record's
+      // source note — and throws only when the value genuinely lacks a
+      // required destination member.
+      return {
+        kind: "dynCheck",
+        value: { kind: "dynFrom", value, liveRef: true, type: DYN, loc },
+        type: dst,
+        loc,
+      };
+    }
     case "upcast": {
       if (dst.kind !== "object" || value.type.kind !== "object")
         throw new InternalCompilerError("lowerer bug: upcast lift shape");
@@ -924,7 +939,7 @@ export function classStaticsProjection(
     const found = findStaticOn(lowerer, info, tf.name);
     if (!found) {
       if (tf.type.kind !== "union") return null;
-      const u = lowerer.absentFieldValue(tf.type, loc);
+      const u = lowerer.absentFieldValue(tf, loc);
       if (!u) return null;
       fields.push({ name: tf.name, value: u });
       continue;
@@ -1018,8 +1033,13 @@ function buildRecordProjection(
                 value: atMember ? read : lowerer.coerceToExpected(read, field.type),
               };
             }
-            if ("absentDyn" in conversion)
-              return { name: field.name, value: dynUndefinedExpr(loc) };
+            if ("absentDyn" in conversion) {
+              // The source has no such property: an optional target field
+              // keeps the absent marker, a required one holds the dyn
+              // undefined (the options-record call shape's old behaviour).
+              const absent = lowerer.absentFieldValue(field, loc);
+              return { name: field.name, value: absent ?? dynUndefinedExpr(loc) };
+            }
             if ("absent" in conversion) {
               if (field.type.kind !== "union")
                 throw new InternalCompilerError(
@@ -1063,7 +1083,14 @@ function buildRecordProjection(
               name: field.name,
               value:
                 source.kind === "record"
-                  ? lowerer.presenceKeepingCopy(receiver, source.shapeId, field.name, lifted, loc)
+                  ? lowerer.presenceKeepingCopy(
+                      receiver,
+                      source.shapeId,
+                      field.name,
+                      lifted,
+                      loc,
+                      field,
+                    )
                   : lifted,
             };
           }),

@@ -224,6 +224,7 @@ import {
 } from "./function-context.js";
 import type { FrontendServices } from "../services.js";
 import { InternalCompilerError } from "../../errors.js";
+import type { SlotSignature } from "./slot-signatures.js";
 import type { FsPathPlan } from "./builtins/fs-paths.js";
 import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "./optional-arguments.js";
 import { type ProtocolDispatch } from "./class-protocol-dispatch.js";
@@ -232,6 +233,7 @@ import {
   boxClassInstancesExactly,
   trackClassFieldCreation,
 } from "./class-dynamic-dispatch.js";
+import { settleClassIdentityHelpers } from "./class-instance-constructor.js";
 import { addUntypedIntegrityWords, guardClassAttributeWrites } from "./class-attributes.js";
 import { inferredCollectionType } from "./js-collection-types.js";
 import { sloppyDynamicWrites } from "./frozen-records.js";
@@ -255,6 +257,7 @@ import {
 import { DeferredModuleInitializers } from "./deferred-module-initializers.js";
 import { finalizeClassMethodValues } from "./class-method-values.js";
 import { finalizeRecordLinks, type LinkedHelper, type StringFallback } from "./record-links.js";
+import { refuseSourceFieldDeletes } from "./record-source-deletes.js";
 import { finalizePrivateBrands } from "./private-brands.js";
 import { finalizeFunctionNames } from "./function-names.js";
 import { type ClassSymbolKey, INSPECT_CUSTOM_MEMBER, tableKeyFieldType } from "./symbol-fields.js";
@@ -302,6 +305,7 @@ import {
   indexSignatureTypeDiag,
   intersectionTypeDiag,
   noLoweringDiag,
+  nodeIslandNativeUseDiag,
   overloadedSignatureTypeDiag,
   recordShapeMismatchDiag,
   stdlibSnapshotValueUseDiag,
@@ -812,6 +816,7 @@ import { partialAssertionFields } from "./partial-assertions.js";
 import { deletedPropertyNames, fixedFieldFamily } from "./js-class-fields.js";
 import { emptyArrayLiteralArm } from "./expressions/array-literals.js";
 import { lowerTernary } from "./lower-exprs.js";
+import { closeLoweringBudget, openLoweringBudget, refuseSpentLowering } from "./lower-exprs.js";
 import {
   maybePromiseReturnStmt,
   maybePromiseUnionOf,
@@ -860,6 +865,31 @@ const DECLARATION_SLOTS: ReadonlySet<TypeFailureSlot> = new Set<TypeFailureSlot>
   "global",
   "loop",
 ]);
+
+/** A refused probe of an operand (Lowerer.refusedProbes). */
+interface RefusedProbe {
+  node: ts.Expression;
+  ctx: FnCtx;
+  bindings: Map<ts.Symbol, IrType> | null;
+  /** Lowerer.probeSurroundings when the probe was refused. */
+  surroundings: number;
+  diagnostics: ScrDiagnostic[];
+}
+
+/** The receiver of the call being dispatched (Lowerer.dispatchedReceiver)
+ * and, once a lowering produced one that may be handed out again, its
+ * value with what that lowering ran under. */
+interface DispatchedReceiver {
+  node: ts.Expression;
+  value: IrExpr | null;
+  ctx: FnCtx | null;
+  bindings: Map<ts.Symbol, IrType> | null;
+  /** Lowerer.probeSurroundings when the value was lowered. */
+  surroundings: number;
+  /** The expression overrides in force then, in the table's order (null
+   * for none): replacing one leaves the table's size as it was. */
+  overrides: IrExpr[] | null;
+}
 
 export class PoisonError extends Error {
   /** Set when a type with no static lowering poisoned a slot (badType and
@@ -3230,12 +3260,22 @@ export class Lowerer {
    * that misses.
    * Each instance's result admits undefined (generic-functions.ts). */
   readonly runtimeOptionalGenericReturns = new Set<ts.Node>();
+  /** Generic calls whose argument at a bare type-parameter slot (`id(xs[i])`
+   * into `v: T`) can be a missing element, with the type parameters bound
+   * there. The call's instance binds each to its type with undefined
+   * (generic-functions.ts), as a declared function's parameter widens. */
+  readonly runtimeOptionalGenericArguments = new Map<ts.CallExpression, Set<ts.Symbol>>();
   /** Concise callback/lambda returns promoted by the HOF callback prepass;
    * arrows have no declaration symbol to key in fnSigsBySymbol. */
   readonly runtimeOptionalFunctionReturns = new Map<ts.Node, IrType>();
   /** Intrinsic callback slots can supply a destination for fresh return
    * literals, such as a reduce accumulator with recursive union fields. */
   readonly contextualFunctionReturns = new Map<ts.Node, IrType>();
+  /** The function type of the slot a function literal is being lowered
+   * into, for the duration of that lowering (lowerAtSlot). The literal
+   * takes the slot's parameter list as its own when it can
+   * (slotSignatureAdoption). */
+  readonly slotSignatures = new Map<ts.Node, SlotSignature>();
   /** Arithmetic over an unchecked string read can answer either NaN or a
    * string. Bindings and returns use this marker to retain that result union
    * through checker-bare string annotations. */
@@ -4334,6 +4374,10 @@ export class Lowerer {
   /** Object.prototype methods other than toString called by name on
    * record types (finalizeRecordLinks checks them against link sources). */
   readonly recordMethodCalls: { shapeId: string; method: string; loc: SrcLoc }[] = [];
+  /** `delete` of a key its operand's record type does not declare
+   * (record.sourceDelete), checked once the conversions are known
+   * (refuseSourceFieldDeletes). */
+  readonly recordSourceDeletes: { shapeId: string; key: string; loc: SrcLoc }[] = [];
   /** Completions of "custom" linked helpers (record-links.ts), which
    * finalizeRecordLinks runs once the links are known, with the record
    * shapes a checked conversion can leave holding a kept source. */
@@ -4495,6 +4539,11 @@ export class Lowerer {
    * the scr_js_buffers views registry in %main. */
   buffersMutable = false;
   readonly liftedFns: IrFunction[] = [];
+  /** Each `x.constructor` helper's body as it was last built from the class
+   * graph, by helper name (class-instance-constructor.ts): later passes
+   * rewrite a helper in place, so the settle step compares what it builds
+   * with this. A cache: a helper it lacks is built again once. */
+  readonly classIdentityBuilt = new Map<string, string>();
   /** `for … of` and `for await` loops over untyped iterables, by their
    * generator-kind local (generator-dynamic-dispatch.ts steps the program's
    * own generators there on the typed path). Local ids repeat across
@@ -4586,6 +4635,7 @@ export class Lowerer {
     const first = keyedHelperName(this, prefix, key);
     const seen = this.closureNameCounts.get(first) ?? 0;
     this.closureNameCounts.set(first, seen + 1);
+    this.closureNamesIssued++;
     return (seen === 0 ? first : keyedHelperName(this, prefix, `${key}|${seen}`)) + suffix;
   }
 
@@ -4945,12 +4995,17 @@ export class Lowerer {
         "runtimeOptionalAssignedSymbols",
         () => this.runtimeOptionalAssignedSymbols.size,
       ),
+      checkedTable(
+        "runtimeOptionalGenericArguments",
+        () => this.runtimeOptionalGenericArguments.size,
+      ),
       checkedTable("runtimeOptionalGenericReturns", () => this.runtimeOptionalGenericReturns.size),
       checkedTable(
         "runtimeOptionalFunctionReturns",
         () => this.runtimeOptionalFunctionReturns.size,
       ),
       checkedTable("contextualFunctionReturns", () => this.contextualFunctionReturns.size),
+      checkedTable("slotSignatures", () => this.slotSignatures.size),
       checkedTable(
         "runtimeOptionalArithmeticTypes",
         () => this.runtimeOptionalArithmeticTypes.size,
@@ -5037,6 +5092,7 @@ export class Lowerer {
       checkedTable("linkedHelpers", () => this.linkedHelpers.length),
       checkedTable("linkedHelperFinalizers", () => this.linkedHelperFinalizers.length),
       checkedTable("recordMethodCalls", () => this.recordMethodCalls.length),
+      checkedTable("recordSourceDeletes", () => this.recordSourceDeletes.length),
       checkedTable("objectMethodNames", () => this.objectMethodNames.size),
       checkedTable("forkTargetIdByPath", () => this.forkTargetIdByPath.size),
       checkedTable("nsBlocks", () => this.nsBlocks.size),
@@ -5136,6 +5192,9 @@ export class Lowerer {
    * unwinds before the unit ends, and state that applying the unit's events
    * rebuilds. */
   static readonly unjournaled: readonly string[] = [
+    // What the class-identity helpers were last built as: rebuilt from the
+    // class graph whenever an entry is missing.
+    "classIdentityBuilt",
     // settings
     "frontendServices",
     "nodeIslands",
@@ -5303,6 +5362,16 @@ export class Lowerer {
     "neverValued",
     "chainNarrowedType",
     "chainHandled",
+    // Refused probes are held only while the expression or statement that
+    // probed is being lowered, so a unit begins and ends with none; the
+    // closure-name count is only compared across one probe.
+    "refusedProbes",
+    "refusedProbeFrame",
+    "refusedProbeFrames",
+    "closureNamesIssued",
+    // Set and restored around one call's dispatch (lowerCall), so a unit
+    // begins and ends with none.
+    "dispatchedReceiver",
     "spreadArmOverrides",
     "splitIdentifierUses",
     "typeMemo",
@@ -5589,6 +5658,166 @@ export class Lowerer {
   /** Non-null redirects pushDiag into a capture buffer (the deferred
    * collection wrapper). */
   diagSink: ScrDiagnostic[] | null = null;
+  /** Operands whose probe (tryLowerExpression) was refused, for as long as
+   * the expression or statement that probed them is still being lowered:
+   * the function context, type bindings and ambient lowering state the
+   * probe ran under, and the diagnostics it captured. lowerExpr answers a
+   * later request for the same operand from here while a probe is active,
+   * in place of lowering it again to the same refusal. */
+  readonly refusedProbes = new Map<ts.Expression, RefusedProbe>();
+  /** The refusals the expression or statement on top recorded (null until
+   * its first), and how many expressions and statements are open. */
+  private refusedProbeFrame: RefusedProbe[] | null = null;
+  private refusedProbeFrames = 0;
+  /** Closure names handed out so far (closureName counts every request). */
+  private closureNamesIssued = 0;
+
+  /** Starts the expression or statement that owns the refusals recorded
+   * until closeRefusedProbeFrame; returns the enclosing owner's. */
+  openRefusedProbeFrame(): RefusedProbe[] | null {
+    const outer = this.refusedProbeFrame;
+    this.refusedProbeFrame = null;
+    this.refusedProbeFrames++;
+    return outer;
+  }
+
+  /** Forgets the refusals recorded since the matching open. */
+  closeRefusedProbeFrame(outer: RefusedProbe[] | null): void {
+    const own = this.refusedProbeFrame;
+    if (own !== null) {
+      for (const refusal of own) {
+        if (this.refusedProbes.get(refusal.node) === refusal)
+          this.refusedProbes.delete(refusal.node);
+      }
+    }
+    this.refusedProbeFrame = outer;
+    this.refusedProbeFrames--;
+  }
+
+  /** A number that changes when lowering leaves something behind besides
+   * its result: a local or a lifted function declared, a closure name
+   * taken, a diagnostic or a deferred fence recorded. A refused probe that
+   * leaves it unchanged can be refused again without being run again. */
+  probeEffects(): number {
+    return (
+      this.ctx.locals.length +
+      this.liftedFns.length +
+      this.implicitFns.length +
+      this.closureNamesIssued +
+      this.diags.length +
+      this.runtimeFences.length
+    );
+  }
+
+  /** A number that changes when a lowering in progress installs or removes
+   * what makes an expression lower differently: an expression override, an
+   * optional chain taken in hand, a narrowed type, a staged argument, a
+   * scope. A recorded refusal stands only while it is unchanged. */
+  private probeSurroundings(): number {
+    return (
+      this.chainRecvByNode.size +
+      this.chainHandled.size +
+      this.chainNarrowedType.size +
+      this.runtimeOptionalBindingTypes.size +
+      this.stagedArguments.size +
+      this.receiverTypeOverrides.size +
+      this.ctx.scopes.length
+    );
+  }
+
+  /** A probe of `node` was refused with these captured diagnostics and
+   * left nothing else behind. */
+  noteRefusedProbe(node: ts.Expression, diagnostics: ScrDiagnostic[]): void {
+    if (this.refusedProbeFrames === 0) return;
+    const refusal: RefusedProbe = {
+      node,
+      ctx: this.ctx,
+      bindings: this.typeParamBindings,
+      surroundings: this.probeSurroundings(),
+      diagnostics,
+    };
+    this.refusedProbes.set(node, refusal);
+    (this.refusedProbeFrame ??= []).push(refusal);
+  }
+
+  /** The recorded refusal of `node` that still stands here, or null. */
+  standingRefusal(node: ts.Expression): RefusedProbe | null {
+    const refusal = this.refusedProbes.get(node);
+    return refusal !== undefined &&
+      refusal.ctx === this.ctx &&
+      refusal.bindings === this.typeParamBindings &&
+      refusal.surroundings === this.probeSurroundings()
+      ? refusal
+      : null;
+  }
+  /** The receiver of the method call being dispatched, from lowerCall's
+   * entry to its return. A call is claimed by one of about a hundred
+   * forms, and the forms that have to see the receiver's value to decide
+   * (lowerDynReceiverMethodCall asks whether a typed receiver lowered to a
+   * checked-dynamic value, the array methods ask for its kind) lower it,
+   * as does the form that finally claims the call. Lowering it once per
+   * form made a chain of calls cost that factor at every link: two to the
+   * power of the chain's length through classes and records, three for
+   * array methods. The first lowering's value is kept here and handed to
+   * every later request for the same node (lowerDispatchedReceiver). */
+  private dispatchedReceiver: DispatchedReceiver | null = null;
+
+  /** The lowering of the dispatched call's receiver: the value an earlier
+   * form's lowering produced when a new lowering would produce it again,
+   * and a lowering that is kept for the next form otherwise.
+   *
+   * A value is kept only when its lowering left nothing behind
+   * (probeEffects, and nothing in the capture buffer): a lowering that
+   * declares a local, lifts a function or takes a closure name numbers
+   * what it declares by how often it ran, so running it once instead of
+   * twice would rename them. It is handed out only in the function context
+   * and under the type bindings it was lowered in, with the surroundings
+   * that decide how an expression lowers unchanged (probeSurroundings) and
+   * the same expression overrides in force, and never for a receiver that
+   * is itself overridden (an optional chain's guarded receiver is its bind
+   * temp). */
+  private lowerDispatchedReceiver(receiver: DispatchedReceiver): IrExpr {
+    const node = receiver.node;
+    if (this.chainRecvByNode.has(node)) return lowerExpr(this, node);
+    const surroundings = this.probeSurroundings();
+    if (
+      receiver.value !== null &&
+      receiver.ctx === this.ctx &&
+      receiver.bindings === this.typeParamBindings &&
+      receiver.surroundings === surroundings &&
+      this.expressionOverridesAre(receiver.overrides)
+    ) {
+      return receiver.value;
+    }
+    const effects = this.probeEffects();
+    const sinkMark = this.diagSinkMark();
+    const value = lowerExpr(this, node);
+    if (
+      this.probeEffects() === effects &&
+      this.diagSinkMark() === sinkMark &&
+      this.probeSurroundings() === surroundings
+    ) {
+      receiver.value = value;
+      receiver.ctx = this.ctx;
+      receiver.bindings = this.typeParamBindings;
+      receiver.surroundings = surroundings;
+      receiver.overrides =
+        this.chainRecvByNode.size === 0 ? null : [...this.chainRecvByNode.values()];
+    }
+    return value;
+  }
+
+  /** Whether the expression overrides in force are exactly `overrides`. */
+  private expressionOverridesAre(overrides: IrExpr[] | null): boolean {
+    if (overrides === null) return this.chainRecvByNode.size === 0;
+    if (overrides.length !== this.chainRecvByNode.size) return false;
+    let index = 0;
+    for (const value of this.chainRecvByNode.values()) {
+      if (overrides[index++] !== value) return false;
+    }
+    return true;
+  }
+
   /** Diagnostics converted into runtimeFence statements (JS sources —
    * see lowerStmts): off the build, preserved here so coverage reporting
    * can still name every deferred fence. */
@@ -7991,6 +8220,8 @@ export class Lowerer {
       // Static methods never share a dispatch slot: each is its own family.
       if (info.staticMethods) {
         for (const sig of info.staticMethods.values()) {
+          // A static accessor's two halves share the property's symbol.
+          if (!ts.isMethodDeclaration(sig.member)) continue;
           const name = sig.member.name;
           if (!(ts.isIdentifier(name) || ts.isStringLiteral(name))) continue;
           const symbol = symbolOf(name);
@@ -8141,6 +8372,116 @@ export class Lowerer {
         e = e.expression;
       }
       return false;
+    };
+    // A function declared inside another function or a block. Lowering
+    // gives it a lambda's signature (lowerNestedFunctionDecl), so its
+    // parameters and result widen the way a function-valued const's do,
+    // and a call of it behaves as a call of the same declaration at module
+    // level. Generic and JavaScript declarations keep their own paths.
+    const nestedFunctionDeclaration = (symbol: ts.Symbol): ts.FunctionDeclaration | null => {
+      const declaration = symbol.valueDeclaration;
+      return declaration !== undefined &&
+        ts.isFunctionDeclaration(declaration) &&
+        declaration.body !== undefined &&
+        declaration.name !== undefined &&
+        symbol.declarations.length === 1 &&
+        (declaration.typeParameters?.nodes.length ?? 0) === 0 &&
+        !signatureBySymbol.has(symbol) &&
+        !this.genericFnsBySymbol.has(symbol) &&
+        !isJsSourceFile(ts.getSourceFileOfNode(declaration))
+        ? declaration
+        : null;
+    };
+    // A generic function's parameter slots and result that are declared as
+    // one of its type parameters and nothing else (`v: T`, `): T`), for the
+    // type parameters the signature uses only that way. An argument that
+    // can be a missing element then binds the type parameter with
+    // undefined for that call's instance: the parameter holds the value
+    // Node passes, and no other slot of the signature changes its layout.
+    // A constrained type parameter keeps the checker's binding, since the
+    // body may use what the constraint promises.
+    type BareSlots = { params: (ts.Symbol | null)[]; result: ts.Symbol | null };
+    const bareSlots = new Map<ts.Node, BareSlots | null>();
+    const bareTypeParameterSlots = (info: GenericFnInfo): BareSlots | null => {
+      const decl = info.decl;
+      const cached = bareSlots.get(decl);
+      if (cached !== undefined) return cached;
+      const compute = (): BareSlots | null => {
+        if (info.implicitParams || isJsSourceFile(ts.getSourceFileOfNode(decl))) return null;
+        const declarations = decl.typeParameters?.nodes ?? [];
+        // Every mention of a type parameter in the signature, by its place.
+        const elsewhere = new Set<ts.Symbol>();
+        const named = (node: ts.Node | undefined): ts.Symbol | null => {
+          if (!node || !ts.isTypeReferenceNode(node) || !ts.isIdentifier(node.typeName))
+            return null;
+          if ((node.typeArguments?.nodes.length ?? 0) > 0) return null;
+          const symbol = symbolOf(node.typeName);
+          return symbol && info.typeParams.includes(symbol) ? symbol : null;
+        };
+        const mentions = (root: ts.Node | undefined): void => {
+          if (!root) return;
+          ts.walkPreorder(root, (node) => {
+            const symbol = named(node);
+            if (symbol) elsewhere.add(symbol);
+          });
+        };
+        declarations.forEach((declaration, i) => {
+          const symbol = info.typeParams[i];
+          if (symbol && declaration.constraint) elsewhere.add(symbol);
+          mentions(declaration.constraint);
+          mentions(declaration.defaultType);
+        });
+        const params = decl.parameters.nodes.map((parameter) => {
+          const plain =
+            !parameter.dotDotDotToken && !parameter.questionToken && !parameter.initializer;
+          const symbol = plain && ts.isIdentifier(parameter.name) ? named(parameter.type) : null;
+          if (!symbol) mentions(parameter.type);
+          return symbol;
+        });
+        let result = named(decl.type);
+        if (!result && decl.type) mentions(decl.type);
+        if (!decl.type) {
+          // An inferred result is the type parameter itself, or a type
+          // that cannot mention one.
+          const signature = this.checker.getSignatureFromDeclaration(decl);
+          const returned = signature ? this.checker.getReturnTypeOfSignature(signature) : null;
+          if (!returned) return null;
+          if ((returned.flags & ts.TypeFlags.TypeParameter) !== 0) {
+            const symbol = returned.getSymbol();
+            result = symbol && info.typeParams.includes(symbol) ? symbol : null;
+            if (!result) return null;
+          } else if (
+            (returned.flags &
+              (ts.TypeFlags.Void |
+                ts.TypeFlags.Undefined |
+                ts.TypeFlags.Null |
+                ts.TypeFlags.BooleanLike |
+                ts.TypeFlags.NumberLike |
+                ts.TypeFlags.StringLike |
+                ts.TypeFlags.BigIntLike)) ===
+            0
+          )
+            return null;
+        }
+        const bare = params.map((symbol) => (symbol && !elsewhere.has(symbol) ? symbol : null));
+        if (!bare.some((symbol) => symbol !== null)) return null;
+        return { params: bare, result: result && !elsewhere.has(result) ? result : null };
+      };
+      const slots = panicSafe(compute, null);
+      bareSlots.set(decl, slots);
+      return slots;
+    };
+    /** A generic call whose result is the type parameter a possibly missing
+     * argument bound: the call answers that argument's value. */
+    const genericResultMayBeMissing = (call: ts.CallExpression): boolean => {
+      const bound = this.runtimeOptionalGenericArguments.get(call);
+      if (!bound) return false;
+      if (!ts.isIdentifier(call.expression) && !ts.isPropertyAccessExpression(call.expression))
+        return false;
+      const symbol = callableSymbolOf(call.expression);
+      const info = symbol ? this.genericFnsBySymbol.get(symbol) : undefined;
+      const result = info ? bareTypeParameterSlots(info)?.result : null;
+      return !!result && bound.has(result);
     };
     // `parent!` passed to a call or bound to a name forwards the value
     // without reading it: a callee that never dereferences it observes
@@ -8415,6 +8756,7 @@ export class Lowerer {
       if (ts.isCallExpression(e)) {
         siteDependencies?.read(e);
         if (this.runtimeOptionalReduceTypes.has(e)) return true;
+        if (genericResultMayBeMissing(e)) return true;
       }
       if (
         ts.isCallExpression(e) &&
@@ -8470,6 +8812,10 @@ export class Lowerer {
       if (ts.isConditionalExpression(e)) {
         return mayBeOptional(e.whenTrue) || mayBeOptional(e.whenFalse);
       }
+      // Awaiting a call of an async function whose promise settles with a
+      // missing element answers that element.
+      if (ts.isAwaitExpression(e) && ts.isCallExpression(peel(e.expression)))
+        return mayBeOptional(e.expression);
       if (ts.isBinaryExpression(e)) {
         const op = e.operatorToken.kind;
         // Nullish/falsy left values select the fallback, so only that
@@ -8843,6 +9189,10 @@ export class Lowerer {
       ts.walkPreorder(sf, (node) => {
         if (ts.isArrowFunction(node) || ts.isFunctionExpression(node))
           (js ? jsLambdas : tsLambdas).push(node);
+        else if (!js && ts.isFunctionDeclaration(node) && node.name) {
+          const symbol = symbolOf(node.name);
+          if (symbol && nestedFunctionDeclaration(symbol) === node) tsLambdas.push(node);
+        }
       });
     }
     /** The primitive result union of a lambda's returns (see
@@ -8882,6 +9232,9 @@ export class Lowerer {
       callback: ts.Expression,
       parameterIndices: readonly number[],
       seen = new Set<ts.Symbol>(),
+      // The nested function declaration a direct call names. As an array
+      // method's callback such a declaration keeps its declared parameters.
+      called: ts.FunctionDeclaration | null = null,
     ): boolean => {
       let changed = false;
       const checkerTypeContainsTypeParameter = (type: ts.Type): boolean => {
@@ -8981,7 +9334,7 @@ export class Lowerer {
           if (!typeEquals(before, sig.params[parameterIndex]!.type)) changed = true;
         }
       }
-      const fn = functionDeclBySymbol.get(symbol);
+      const fn = functionDeclBySymbol.get(symbol) ?? called;
       if (fn) promoteNode(fn);
       const valueType =
         this.runtimeOptionalBindingTypes.get(symbol) ?? this.mapTypeOf(this.typeOf(callback));
@@ -10060,37 +10413,114 @@ export class Lowerer {
           const symbol = callableSymbolOf(node.expression);
           if (!symbol) return;
           const sig = signatureBySymbol.get(symbol);
+          // A read a dominating bound proves in range, of an array that
+          // never holds undefined or holes, is a present element: the slots
+          // widened below keep their declared type for it.
+          const provenPresentRead = (arg: ts.Expression): boolean => {
+            const read = peel(arg);
+            return (
+              ts.isElementAccessExpression(read) &&
+              mappedOrNull(read.expression)?.kind === "array" &&
+              indexReadInBounds(read) &&
+              elementStates.elementsPresent(read.expression, "find")
+            );
+          };
+          // An inline callback's parameter and a loop variable over an array
+          // the analysis could not prove free of holes hold `T | undefined`
+          // as a precaution about the array, not because a read missed. A
+          // slot widened below keeps its declared type for one: the call
+          // checks the value, as it did before, and the functions it reaches
+          // keep their layouts.
+          const precautionary = (arg: ts.Expression): boolean => {
+            const e = peel(arg);
+            if (!ts.isIdentifier(e)) return false;
+            const bound = symbolOf(e);
+            if (!bound) return false;
+            if (holeyIterationSymbols.has(bound) || iterationSymbols.has(bound)) return true;
+            const declaration = bound.valueDeclaration;
+            if (!declaration || !ts.isParameter(declaration)) return false;
+            const owner = declaration.parent;
+            if (!ts.isArrowFunction(owner) && !ts.isFunctionExpression(owner)) return false;
+            let use: ts.Node = owner;
+            while (ts.isParenthesizedExpression(use.parent)) use = use.parent;
+            return ts.isCallExpression(use.parent) && use.parent.expression !== use;
+          };
           if (!sig) {
+            // A generic function has one signature per instance. A possibly
+            // missing argument at a slot declared as a bare type parameter
+            // binds that parameter with undefined for this call's instance.
+            const generic = this.genericFnsBySymbol.get(symbol);
+            if (generic) {
+              const slots = bareTypeParameterSlots(generic);
+              if (!slots || node.arguments.nodes.some(ts.isSpreadElement)) return;
+              node.arguments.nodes.forEach((arg, i) => {
+                const parameter = slots.params[i];
+                if (!parameter || !mayBeOptional(arg)) return;
+                if (provenPresentRead(arg) || precautionary(arg)) return;
+                let bound = this.runtimeOptionalGenericArguments.get(node);
+                if (!bound) this.runtimeOptionalGenericArguments.set(node, (bound = new Set()));
+                if (bound.has(parameter)) return;
+                bound.add(parameter);
+                siteDependencies?.changed(node);
+                provenance?.note("generic-argument", node, arg);
+                changed = true;
+              });
+              return;
+            }
             // A direct call of a function-valued const (`const show = (n:
-            // number) => ...`): a possibly missing argument widens that
-            // parameter, as for a callback the same value is passed as.
+            // number) => ...`) or of a function declared inside another
+            // function: a possibly missing argument widens that parameter,
+            // as for a callback the same value is passed as.
             if (!ts.isIdentifier(node.expression) || reassigned.has(symbol)) return;
             const declaration = symbol.valueDeclaration;
             const value =
-              declaration && ts.isVariableDeclaration(declaration) && declaration.initializer
+              nestedFunctionDeclaration(symbol) ??
+              (declaration && ts.isVariableDeclaration(declaration) && declaration.initializer
                 ? peel(declaration.initializer)
-                : null;
-            if (!value || !(ts.isArrowFunction(value) || ts.isFunctionExpression(value))) return;
-            // Optional, defaulted and rest parameters keep their own ABI.
+                : null);
             if (
-              value.parameters.nodes.some(
-                (parameter) =>
-                  parameter.questionToken !== undefined ||
-                  parameter.initializer !== undefined ||
-                  parameter.dotDotDotToken !== undefined,
+              !value ||
+              !(
+                ts.isArrowFunction(value) ||
+                ts.isFunctionExpression(value) ||
+                ts.isFunctionDeclaration(value)
               )
+            )
+              return;
+            // Optional, defaulted and rest parameters keep their own ABI.
+            // A declaration's signature is its own (lambdaSignature), so
+            // its plain parameters widen beside them; a function-valued
+            // const's binding type is not rebuilt around such a slot.
+            const ownAbi = (parameter: ts.ParameterDeclaration): boolean =>
+              parameter.questionToken !== undefined ||
+              parameter.initializer !== undefined ||
+              parameter.dotDotDotToken !== undefined;
+            if (
+              ts.isFunctionDeclaration(value)
+                ? node.arguments.nodes.some(ts.isSpreadElement)
+                : value.parameters.nodes.some(ownAbi)
             )
               return;
             const indices = node.arguments.nodes.flatMap((arg, i) =>
               !ts.isSpreadElement(arg) &&
               value.parameters.nodes[i] !== undefined &&
-              !value.parameters.nodes[i]!.dotDotDotToken &&
-              mayBeOptional(arg)
+              !ownAbi(value.parameters.nodes[i]!) &&
+              mayBeOptional(arg) &&
+              !(ts.isFunctionDeclaration(value) && (provenPresentRead(arg) || precautionary(arg)))
                 ? [i]
                 : [],
             );
             provenanceSite = node;
-            if (indices.length > 0 && promoteHofCallback(node.expression, indices)) changed = true;
+            if (
+              indices.length > 0 &&
+              promoteHofCallback(
+                node.expression,
+                indices,
+                undefined,
+                ts.isFunctionDeclaration(value) ? value : null,
+              )
+            )
+              changed = true;
             return;
           }
           // JSDoc describes the usual value, not a runtime arity check.
@@ -10375,12 +10805,48 @@ export class Lowerer {
       for (const fn of tsLambdas) {
         // An annotated return is the author's contract, as for parameters,
         // except that a var read before its first store is undefined
-        // whatever the annotation says.
-        if (fn.type && !returnsEarlyVar(fn)) continue;
-        const mapped = this.mapTypeOf(this.typeOf(fn));
+        // whatever the annotation says. A nested function declaration
+        // widens an annotated result too, as the same declaration does at
+        // module level (scanReturns).
+        const declared = ts.isFunctionDeclaration(fn);
+        if (fn.type && !declared && !returnsEarlyVar(fn)) continue;
+        const mapped = panicSafe(() => this.mapTypeOf(this.typeOf(fn)), null);
         if (mapped?.kind !== "func") continue;
         const previous = this.runtimeOptionalFunctionReturnType(fn, mapped.ret);
-        // Async, generator and void bodies keep their own result shapes.
+        // The name calls of this function go through: a declaration's own,
+        // or the unannotated binding a lambda initializes.
+        const binding = fn.parent;
+        const bindingName = declared
+          ? fn.name
+          : ts.isVariableDeclaration(binding) &&
+              binding.initializer === fn &&
+              !binding.type &&
+              ts.isIdentifier(binding.name)
+            ? binding.name
+            : undefined;
+        // Async, generator and void bodies keep their own result shapes. An
+        // async function called through its name settles its promise with
+        // the missing element, as an async declaration at module level does;
+        // an inline async callback keeps the slot's promise type.
+        if (previous.kind === "promise" && bindingName && bodyReturnsOptional(fn)) {
+          const settled: IrType = {
+            kind: "promise",
+            inner: this.runtimeOptionalType(previous.inner),
+          };
+          if (!typeEquals(previous, settled)) {
+            this.runtimeOptionalFunctionReturns.set(fn, settled);
+            siteDependencies.changed(fn);
+            provenance?.note("lambda-return", fn, fn.body);
+            changed = true;
+          }
+          const symbol = ts.isIdentifier(bindingName) ? symbolOf(bindingName) : null;
+          if (symbol && !optionalReturns.has(symbol)) {
+            optionalReturns.add(symbol);
+            siteDependencies.changed(symbol);
+            changed = true;
+          }
+          continue;
+        }
         if (
           previous.kind === "promise" ||
           previous.kind === "generator" ||
@@ -10403,15 +10869,11 @@ export class Lowerer {
         }
         // Calls through the lambda's own binding (`const get = () => xs[i];
         // get()`) produce the same result as calls of a declared function.
-        const binding = fn.parent;
-        if (
-          next !== previous &&
-          ts.isVariableDeclaration(binding) &&
-          binding.initializer === fn &&
-          !binding.type &&
-          ts.isIdentifier(binding.name)
-        ) {
-          const symbol = symbolOf(binding.name);
+        // The result may have been widened before this pass, with the
+        // function's parameter (promoteHofCallback): the binding answers
+        // the widened result either way.
+        if (!typeEquals(next, mapped.ret) && bindingName && ts.isIdentifier(bindingName)) {
+          const symbol = symbolOf(bindingName);
           if (symbol && next.kind === "union" && this.armTag(next.unionId, UNDEFINED_T) >= 0) {
             if (!optionalReturns.has(symbol)) {
               optionalReturns.add(symbol);
@@ -10673,6 +11135,16 @@ export class Lowerer {
               ...global.type,
               ret: this.runtimeOptionalFunctionReturnType(node.initializer, global.type.ret),
             };
+          // A binding whose parameter a possibly missing argument widened
+          // (promoteHofCallback) carries its own function type, built from
+          // the checker's result: it takes the widened result as well, so a
+          // call through the binding is typed as the closure it calls.
+          const promoted = this.runtimeOptionalBindingTypes.get(symbol);
+          if (promoted?.kind === "func")
+            this.runtimeOptionalBindingTypes.set(symbol, {
+              ...promoted,
+              ret: this.runtimeOptionalFunctionReturnType(node.initializer, promoted.ret),
+            });
         }
         if (
           !node.type &&
@@ -10935,6 +11407,10 @@ export class Lowerer {
         dispatchChanged =
           !this.remainder &&
           classDispatch.process(this, [...functions, ...this.liftedFns, ...this.implicitFns]);
+        // `x.constructor` helpers answer from the class graph, which the
+        // bodies lowered since may have grown (class-instance-constructor.ts).
+        if (settleClassIdentityHelpers(this, (fn) => classDispatch.sites.forget(fn)))
+          dispatchChanged = true;
       }
       classDispatch.finalize(this);
     }
@@ -10957,6 +11433,7 @@ export class Lowerer {
       // Coverage visits more bodies; more value instances can only add
       // refusals to the identity comparison check.
       checkGenericIdentityPins(this);
+      refuseSourceFieldDeletes(this, functions);
       return {
         module: null,
         diagnostics: this.diags,
@@ -10978,6 +11455,9 @@ export class Lowerer {
     // monomorphization worklists drained): an identity comparison against
     // one is exact only if the declaration is held at a single signature.
     checkGenericIdentityPins(this);
+    // Before the links are pruned to the observed ones: an unlinked copy
+    // is a copy all the same.
+    refuseSourceFieldDeletes(this, functions);
     finalizeRecordLinks(this, functions);
     // The statics lookup installs before value boxing, so the function
     // values it adds to the entry module are boxed with the rest.
@@ -12041,7 +12521,12 @@ export class Lowerer {
         ...byName(this.liftedFns),
         ...byName(this.implicitFns),
       ]);
-      if (queue.length === 0 && !dispatchChanged && !initializerChanged) break;
+      // `x.constructor` helpers answer from the class graph, which the
+      // bodies lowered since may have grown (class-instance-constructor.ts).
+      const identityChanged = settleClassIdentityHelpers(this, (fn) =>
+        classDispatch.sites.forget(fn),
+      );
+      if (queue.length === 0 && !dispatchChanged && !initializerChanged && !identityChanged) break;
       drainUnits();
       this.restoreGenericInstanceOrder(instLowered);
       this.restoreGenericClassInstanceOrder(clsInstLowered);
@@ -12977,6 +13462,34 @@ export class Lowerer {
     // could produce.
     {
       const pkg = this.npmPackageOf(widened);
+      // A value a Node island made is a handle: the package's implementation
+      // runs, in the island, and what has no lowering is this native use of
+      // its value. Name that use, not a missing implementation.
+      if (pkg && this.nodeIslands !== null && this.foreignType(widened)) {
+        const nullish = ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void;
+        const arms = (widened.isUnionType() ? ts.constituentTypes(widened) : [widened]).filter(
+          (arm) => (arm.flags & nullish) === 0,
+        );
+        const callable =
+          arms.length > 0 && arms.every((arm) => this.checker.getCallSignatures(arm).length > 0);
+        const name = ts.isIdentifier(node) ? ` '${node.text}'` : "";
+        // `@types/<name>` declarations type the package `<name>`.
+        const bare = pkg.startsWith("@types/") ? pkg.slice("@types/".length) : null;
+        const island =
+          bare === null ? pkg : bare.includes("__") ? `@${bare.replace("__", "/")}` : bare;
+        this.typeFail(
+          node,
+          type,
+          "package",
+          nodeIslandNativeUseDiag(
+            callable
+              ? `the function${name} of Node island package '${island}' (type '${this.checker.typeToString(type)}')`
+              : `a value of type '${this.checker.typeToString(type)}' of Node island package '${island}'`,
+            locOf(node),
+            callable,
+          ),
+        );
+      }
       if (pkg) {
         this.typeFail(node, type, "package", unsupportedPackageValueDiag(pkg, locOf(node)));
       }
@@ -15229,6 +15742,13 @@ export class Lowerer {
       }
       asserted = asserted.expression;
     }
+    // A Node island's function in its typed view is that one function: the
+    // view adopts the function's identity, whatever signature it is viewed
+    // through, so the key is the view at the collection's own key type.
+    {
+      const view = this.islandFunctionViewAt(value, node, expected);
+      if (view !== null) return view;
+    }
     const source = (
       value.type.kind === "union" ? (this.unions.get(value.type.unionId)?.arms ?? []) : [value.type]
     ).filter((type) => !isUnitType(type));
@@ -15478,8 +15998,47 @@ export class Lowerer {
         }
       }
     }
-    const e = this.lowerExpr(node);
+    const e = this.lowerAtSlot(node, expected);
     return expected ? this.coerceExistingInto(node, e, expected) : e;
+  }
+
+  /** lowerExpr for a value whose destination has type `expected`, before
+   * any coercion into it. A function literal is used only at the slot it
+   * is written into, so its body can take the slot's parameter list
+   * directly (slotSignatureAdoption): the slot is `expected` when that is
+   * a function type, or the one function arm of a union (an optional
+   * callback). Every other expression and destination lowers as it is. */
+  lowerAtSlot(node: ts.Expression, expected: IrType | undefined): IrExpr {
+    let literal: ts.Expression = node;
+    while (ts.isParenthesizedExpression(literal) || ts.isSatisfiesExpression(literal))
+      literal = literal.expression;
+    let slot: IrType | undefined;
+    if (expected && (ts.isArrowFunction(literal) || ts.isFunctionExpression(literal))) {
+      if (expected.kind === "func") slot = expected;
+      else if (expected.kind === "union") {
+        const arms = this.unions.get(expected.unionId)?.arms.filter((arm) => arm.kind === "func");
+        if (arms?.length === 1) slot = arms[0];
+      }
+    }
+    if (slot?.kind !== "func" || slot.rest === true) return this.lowerExpr(node);
+    return this.lowerWithSlot(node, literal, {
+      params: slot.params,
+      ret: slot.ret,
+      passesAll: true,
+    });
+  }
+
+  /** lowerExpr for `node`, whose value is the function literal `literal`
+   * written into `slot`. */
+  lowerWithSlot(node: ts.Expression, literal: ts.Expression, slot: SlotSignature): IrExpr {
+    const previous = this.slotSignatures.get(literal);
+    this.slotSignatures.set(literal, slot);
+    try {
+      return this.lowerExpr(node);
+    } finally {
+      if (previous === undefined) this.slotSignatures.delete(literal);
+      else this.slotSignatures.set(literal, previous);
+    }
   }
 
   /** The conversion lowerExprExpecting applies to `e`, the lowered value
@@ -17452,8 +18011,24 @@ export class Lowerer {
         });
         return;
       }
+      // A literal lowered at its slot's signature receives the slot's
+      // value in a hidden ABI parameter and binds its own type from it:
+      // the conversion the slot's adapter would have applied per call.
+      const passed = shape.slotType ? this.declareHiddenLocal(name, shape.slotType) : null;
       const local = this.declareLocal(decl.name, name, shape.type, true);
-      params.push({ localId: local.id, name, type: local.type });
+      if (passed) {
+        const loc = locOf(decl);
+        params.push({ localId: passed.id, name, type: passed.type });
+        const converted = this.coerceToExpected(
+          { kind: "varRef", localId: passed.id, type: passed.type, loc },
+          local.type,
+        );
+        if (!typeEquals(converted.type, local.type))
+          throw new InternalCompilerError("lowerer bug: probed slot parameter stopped coercing");
+        prologue.push({ kind: "varDecl", localId: local.id, init: converted, loc });
+      } else {
+        params.push({ localId: local.id, name, type: local.type });
+      }
       if (
         shape.mode === "required" &&
         shape.type.kind === "union" &&
@@ -17735,7 +18310,16 @@ export class Lowerer {
   }
 
   lowerStmt(stmt: ts.Statement): IrStmt | IrStmt[] | null {
-    return lowerStmt(this, stmt);
+    const outermost = openLoweringBudget(stmt);
+    const frame = this.openRefusedProbeFrame();
+    try {
+      const lowered = lowerStmt(this, stmt);
+      if (outermost) refuseSpentLowering(this);
+      return lowered;
+    } finally {
+      this.closeRefusedProbeFrame(frame);
+      closeLoweringBudget();
+    }
   }
 
   lowerVarStatement(stmt: ts.VariableStatement): IrStmt[] {
@@ -17880,7 +18464,12 @@ export class Lowerer {
     const streamValue = this.valueStreamReceivers.get(expr);
     if (streamValue)
       return valueStreamOf(varRef(streamValue.localId, streamValue.type, locOf(expr)));
-    return this.stagedArgument(expr) ?? lowerExpr(this, expr);
+    const staged = this.stagedArgument(expr);
+    if (staged !== null) return staged;
+    const dispatched = this.dispatchedReceiver;
+    if (dispatched !== null && dispatched.node === expr)
+      return this.lowerDispatchedReceiver(dispatched);
+    return lowerExpr(this, expr);
   }
 
   /** The value storedImplicitArgumentType lowered for `expr` in the active
@@ -17979,6 +18568,38 @@ export class Lowerer {
    * memo hits included. */
   private foreignType(type: ts.Type): boolean {
     return this.facts.foreignType(type, this.nodeIslands, this.checker);
+  }
+
+  /** `view`, a Node island function's typed view (islandFunctionView), seen
+   * at the signature `want` instead: the same adapter over the same handle,
+   * so the same function. A consumer whose own calling convention differs
+   * from the slot the checker spelled (an array helper's element layout, a
+   * collection's key type) takes the view at its convention rather than
+   * stacking a second adapter on it. Null when `view` is not such a view of
+   * the expression `node`, or `want` is not a signature the boundary adapts. */
+  islandFunctionViewAt(view: IrExpr, node: ts.Expression, want: IrType): IrExpr | null {
+    if (view.kind !== "dynCheck" || view.type.kind !== "func" || view.value.type.kind !== "dyn")
+      return null;
+    if (want.kind !== "func" || !this.islandFunctionType(this.typeOf(node))) return null;
+    if (typeEquals(view.type, want)) return view;
+    const adapts = canAdaptDynFuncTo(
+      want,
+      (id) => this.shapes.get(id),
+      (id) => this.unions.get(id),
+    );
+    return adapts ? { ...view, type: want } : null;
+  }
+
+  /** Whether values of `type` are functions a Node island made: an object
+   * type an island declares, with a call signature. The memoized island
+   * test runs first; few types pass it. */
+  islandFunctionType(type: ts.Type): boolean {
+    return (
+      this.nodeIslands !== null &&
+      (type.flags & ts.TypeFlags.Object) !== 0 &&
+      this.foreignType(type) &&
+      this.checker.getCallSignatures(type).length > 0
+    );
   }
 
   nodeTypesOnlySymbol(sym: ts.Symbol | null | undefined): boolean {
@@ -18324,6 +18945,29 @@ export class Lowerer {
     const webAssembly = lowerWebAssemblyCall(this, expr);
     if (webAssembly !== null) return webAssembly;
     refuseWebAssemblyUse(this, expr.expression);
+    // The forms below lower a method call's receiver once between them
+    // (dispatchedReceiver).
+    const callee = expr.expression;
+    const outerReceiver = this.dispatchedReceiver;
+    this.dispatchedReceiver =
+      ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee)
+        ? {
+            node: callee.expression,
+            value: null,
+            ctx: null,
+            bindings: null,
+            surroundings: 0,
+            overrides: null,
+          }
+        : null;
+    try {
+      return this.dispatchCall(expr);
+    } finally {
+      this.dispatchedReceiver = outerReceiver;
+    }
+  }
+
+  private dispatchCall(expr: ts.CallExpression): IrExpr {
     return (
       lowerErrorFunctionCall(this, expr) ??
       lowerLifetimeRegionCall(this, expr) ??

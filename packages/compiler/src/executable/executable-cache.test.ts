@@ -43,6 +43,7 @@ const native: EarlyExecutableNativeFeatures = {
   textDecoderLegacy: false,
   bigintBytes: false,
   mutableBuffers: false,
+  asyncDisposableStack: false,
   fileHandle: false,
   fetch: true,
   zlib: false,

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/boolean-method-foreign-wrapper-receivers.js"
+ ],
+ "diags": []
+}

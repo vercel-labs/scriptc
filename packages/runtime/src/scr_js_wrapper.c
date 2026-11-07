@@ -41,6 +41,23 @@ static SCR_TL bool scr_js_wrapper_cleanup_registered;
 /* The interned Boolean.prototype.valueOf (0) and toString (1) values read
  * as functions in a JavaScript source. */
 static SCR_TL ScrDyn *scr_js_wrapper_boolean_methods[2];
+/* The interned member values, by kind and by position in the kind's member
+ * table (the String table is the largest). One value per kind and member:
+ * the prototype object's member, a primitive's member read and a wrapper
+ * instance's member read are the same function object. */
+#define SCR_JS_WRAPPER_MEMBER_SLOTS 64
+static SCR_TL ScrDyn *scr_js_wrapper_member_values[3][SCR_JS_WRAPPER_MEMBER_SLOTS];
+/* The prototypes on which this thread has installed the program's own `X`
+ * closure as `constructor` (t262-da A2). The frontend emits the install at
+ * every `X.prototype` read, so the mark, not the member's current value,
+ * decides whether a read writes: a program that replaces the property
+ * through an alias of the prototype (`const p = String.prototype;
+ * p.constructor = 7;`) keeps its value across a later read, as it does in
+ * Node. The slots are the prototypes the frontend installs on — one each
+ * for String, Number, Boolean and BigInt — and the mark holds a reference
+ * because the object is what a repeat read compares. */
+#define SCR_JS_WRAPPER_INSTALL_SLOTS 4
+static SCR_TL ScrDyn *scr_js_wrapper_installed[SCR_JS_WRAPPER_INSTALL_SLOTS];
 
 static void *scr_js_wrapper_slot_retain(void *p) {
   ((ScrJsWrapperSlot *)p)->rc++;
@@ -80,6 +97,17 @@ static void scr_js_wrapper_cleanup(void) {
     ScrDyn *method = scr_js_wrapper_boolean_methods[i];
     scr_js_wrapper_boolean_methods[i] = NULL;
     scr_dyn_release(method);
+  }
+  for (int kind = 0; kind < 3; kind++)
+    for (int slot = 0; slot < SCR_JS_WRAPPER_MEMBER_SLOTS; slot++) {
+      ScrDyn *member = scr_js_wrapper_member_values[kind][slot];
+      scr_js_wrapper_member_values[kind][slot] = NULL;
+      scr_dyn_release(member);
+    }
+  for (size_t i = 0; i < SCR_JS_WRAPPER_INSTALL_SLOTS; i++) {
+    ScrDyn *installed = scr_js_wrapper_installed[i];
+    scr_js_wrapper_installed[i] = NULL;
+    scr_dyn_release(installed);
   }
 }
 
@@ -141,7 +169,8 @@ static ScrDyn *scr_js_wrapper_string_result(ScrStr *text) {
  * valueOf and String's toString answer the primitive; Number's methods
  * format through the runtime's number formatters; Boolean's toString
  * spells the value. The String methods the dynamic dispatch implements
- * (at, slice, indexOf, lastIndexOf, includes) run there; any other String
+ * (at, slice, indexOf, lastIndexOf, includes, and replace in the
+ * object-model build) run there; any other String
  * method called through its function value (`String.prototype.trim.call`,
  * a method value stored and called later) refuses, because the compiler
  * lowers those calls itself at their call sites. */
@@ -178,7 +207,7 @@ static ScrDyn *scr_js_wrapper_apply(int kind, const char *method, ScrDyn *primit
     return scr_dyn_retain(primitive);
   } else if (strcmp(method, "at") == 0 || strcmp(method, "slice") == 0 ||
              strcmp(method, "indexOf") == 0 || strcmp(method, "lastIndexOf") == 0 ||
-             strcmp(method, "includes") == 0) {
+             strcmp(method, "includes") == 0 || strcmp(method, "replace") == 0) {
     return scr_dyn_invoke(primitive, method, args, argc, method);
   }
   ScrJsonBuf text;
@@ -280,11 +309,24 @@ static ScrDyn *scr_js_wrapper_boolean_method_value(const char *name) {
 }
 
 /* Defines `key` on `object` as a non-enumerable, writable, configurable
- * data property, the attributes of a builtin prototype member. */
-static void scr_js_wrapper_define_hidden(ScrDyn *object, const char *key, ScrDyn *value) {
+ * data property, the attributes of a builtin prototype member, and answers
+ * whether the definition landed. A program can reach a wrapper prototype
+ * through an alias, delete a member and prevent extensions before the first
+ * ordinary read, so the insertion may be refused; a refused insertion has
+ * no property to take attributes (scr_dyn_obj_index_of answers SIZE_MAX),
+ * and the prototype stays as the program left it. */
+static bool scr_js_wrapper_define_hidden(ScrDyn *object, const char *key, ScrDyn *value) {
   size_t len = strlen(key);
+  bool present = scr_dyn_obj_index_of(object, key, len) != SIZE_MAX;
+  if (!present && !scr_dyn_is_extensible(object)) {
+    scr_dyn_release(value);
+    return false;
+  }
   scr_dyn_obj_set(object, key, len, value);
-  scr_dyn_obj_set_attrs_at(object, scr_dyn_obj_index_of(object, key, len), true, false, true);
+  size_t index = scr_dyn_obj_index_of(object, key, len);
+  if (index == SIZE_MAX) return false;
+  scr_dyn_obj_set_attrs_at(object, index, true, false, true);
+  return true;
 }
 
 static ScrDyn *scr_js_wrapper_method_value(const char *name, int kind, uint32_t length) {
@@ -325,6 +367,67 @@ static const ScrJsWrapperMember scr_js_wrapper_number_members[] = {
 static const ScrJsWrapperMember scr_js_wrapper_boolean_members[] = {
   {"toString", 0}, {"valueOf", 0}, {NULL, 0},
 };
+/* The member cache is indexed by position in a kind's table, and the String
+ * table is the largest. */
+_Static_assert(sizeof scr_js_wrapper_string_members / sizeof *scr_js_wrapper_string_members <=
+                   SCR_JS_WRAPPER_MEMBER_SLOTS,
+               "a wrapper member table must fit the member cache");
+
+static const ScrJsWrapperMember *scr_js_wrapper_member_table(int kind) {
+  return kind == SCR_JS_WRAPPER_STRING ? scr_js_wrapper_string_members
+         : kind == SCR_JS_WRAPPER_NUMBER ? scr_js_wrapper_number_members
+                                         : scr_js_wrapper_boolean_members;
+}
+
+/* The member a name answers: the Annex B trim aliases are the methods they
+ * alias, so `trimLeft` is `trimStart` and `trimRight` is `trimEnd` (Node's
+ * `String.prototype.trimLeft === String.prototype.trimStart`). Both spellings
+ * reach one interned value, which carries the canonical name, so the
+ * frontend's wrapper.isStringMethod recognizes either spelling's read. */
+static const char *scr_js_wrapper_canonical_member(const char *name, size_t name_length,
+                                                   size_t *canonical_length) {
+  if (name_length == 8 && memcmp(name, "trimLeft", 8) == 0) {
+    *canonical_length = 9;
+    return "trimStart";
+  }
+  if (name_length == 9 && memcmp(name, "trimRight", 9) == 0) {
+    *canonical_length = 7;
+    return "trimEnd";
+  }
+  *canonical_length = name_length;
+  return name;
+}
+
+/* The interned member value of `kind` for `name` (+1), or NULL when the
+ * kind's prototype has no member of that name. The prototype object's
+ * members, and every member read a primitive or a wrapper instance answers
+ * through the graph, are these values: one member is one function object,
+ * whichever way the program reached it, and it is the function the
+ * frontend's wrapper.isStringMethod recognizes. */
+static ScrDyn *scr_js_wrapper_member_lookup(int kind, const char *name, size_t name_length) {
+  const ScrJsWrapperMember *members = scr_js_wrapper_member_table(kind);
+  size_t index = 0;
+  name = scr_js_wrapper_canonical_member(name, name_length, &name_length);
+#ifdef SCR_JS_OBJECT_MODEL
+  /* The members the builtin-method unit implements (String's trim family)
+   * are that unit's interned values, so `String.prototype.trim` and
+   * `''.trim` are one function object and a call through either runs the
+   * method the language defines. This unit's own closure answers the member
+   * only when the program links no builtin-method unit. */
+  if (kind == SCR_JS_WRAPPER_STRING && scr_dyn_builtin_method_slot) {
+    ScrDyn *value = scr_dyn_builtin_method_slot("String", name, name_length);
+    if (value) return value;
+  }
+#endif
+  for (const ScrJsWrapperMember *m = members; m->name; m++, index++) {
+    if (strlen(m->name) != name_length || memcmp(m->name, name, name_length) != 0) continue;
+    scr_js_wrapper_register_cleanup();
+    if (!scr_js_wrapper_member_values[kind][index])
+      scr_js_wrapper_member_values[kind][index] = scr_js_wrapper_method_value(m->name, kind, m->length);
+    return scr_dyn_retain(scr_js_wrapper_member_values[kind][index]);
+  }
+  return NULL;
+}
 
 /* An object with the [[PrimitiveValue]] slot of kind `kind` over
  * `primitive` (borrowed; already the converted primitive) and, for a
@@ -356,6 +459,18 @@ static ScrDyn *scr_js_wrapper_object(int kind, ScrDyn *primitive) {
   return object;
 }
 
+/* Seeds `constructor`'s own `prototype` with `prototype`, once. A program can
+ * read `X.prototype` any number of times, and the wrapper unit seeds the same
+ * closure when it builds this same object, so a repeated seeding has to be a
+ * no-op: the row is read-only, and assigning it again would throw the
+ * "Cannot assign to read only property" TypeError. */
+static void scr_js_wrapper_seed_prototype(ScrDyn *constructor, ScrDyn *prototype) {
+  ScrDyn *table = scr_dyn_function_properties_existing(constructor);
+  bool seeded = table && scr_dyn_obj_get(table, "prototype", 9);
+  scr_dyn_release(table);
+  if (!seeded) scr_dyn_fn_seed_prototype(constructor, scr_dyn_retain(prototype));
+}
+
 /* The kind's prototype object (borrowed), built on first use with
  * `constructor` (the compiled constructor value) and the members above.
  * As in Node, it is itself a wrapper of "", 0 or false, so its valueOf
@@ -375,16 +490,18 @@ static ScrDyn *scr_js_wrapper_prototype(int kind, ScrDyn *constructor) {
   ScrDyn *prototype = scr_js_wrapper_object(kind, primitive);
   scr_dyn_release(primitive);
   scr_js_wrapper_define_hidden(prototype, "constructor", scr_dyn_retain(constructor));
-  const ScrJsWrapperMember *members = kind == SCR_JS_WRAPPER_STRING ? scr_js_wrapper_string_members
-                                    : kind == SCR_JS_WRAPPER_NUMBER ? scr_js_wrapper_number_members
-                                    : scr_js_wrapper_boolean_members;
-  for (const ScrJsWrapperMember *m = members; m->name; m++)
-    scr_js_wrapper_define_hidden(prototype, m->name, scr_js_wrapper_method_value(m->name, kind, m->length));
-  /* The constructor's own `prototype` member is this object, as in Node:
-   * `Boolean.prototype === Object(true).constructor.prototype`, and every
-   * wrapper's chain ends here. It is non-writable, non-enumerable and
-   * non-configurable, like a builtin constructor's. */
-  scr_dyn_fn_seed_prototype(constructor, scr_dyn_retain(prototype));
+  // The compiled constructor's `prototype` is this same object, as Node's
+  // is, so `Object("x").constructor.prototype` is the prototype the boxed
+  // value inherits from rather than undefined.
+  scr_js_wrapper_seed_prototype(constructor, prototype);
+  const ScrJsWrapperMember *members = scr_js_wrapper_member_table(kind);
+  for (const ScrJsWrapperMember *m = members; m->name; m++) {
+    /* The lookup's reference is the entry's: scr_dyn_obj_set takes
+     * ownership of the value it is given, and the interned member keeps the
+     * cache's own reference for the next read. */
+    ScrDyn *member = scr_js_wrapper_member_lookup(kind, m->name, strlen(m->name));
+    if (member) scr_js_wrapper_define_hidden(prototype, m->name, member);
+  }
   scr_js_wrapper_prototypes[kind] = prototype;
   return prototype;
 }
@@ -411,6 +528,96 @@ ScrDyn *scr_dyn_builtin_prototype(const ScrStr *kind, ScrDyn *constructor) {
  * a primitive boolean or a Boolean wrapper receiver. */
 ScrDyn *scr_js_wrapper_boolean_prototype(ScrDyn *constructor) {
   return scr_dyn_retain(scr_js_wrapper_prototype(SCR_JS_WRAPPER_BOOLEAN, constructor));
+}
+
+/* Whether this thread has already installed a `constructor` on `prototype`. */
+static bool scr_js_wrapper_install_seen(const ScrDyn *prototype) {
+  for (size_t i = 0; i < SCR_JS_WRAPPER_INSTALL_SLOTS; i++)
+    if (scr_js_wrapper_installed[i] == prototype) return true;
+  return false;
+}
+
+/* Records the install on `prototype`. A repeat call with the same object is
+ * the common case (every `X.prototype` read after the first), so it returns
+ * before taking a reference; the list only grows once per prototype. */
+static void scr_js_wrapper_install_mark(ScrDyn *prototype) {
+  if (scr_js_wrapper_install_seen(prototype)) return;
+  for (size_t i = 0; i < SCR_JS_WRAPPER_INSTALL_SLOTS; i++)
+    if (!scr_js_wrapper_installed[i]) {
+      scr_js_wrapper_installed[i] = scr_dyn_retain(prototype);
+      return;
+    }
+  /* The frontend installs on four prototypes (INSTALLED_CONSTRUCTOR_OWNERS
+   * in intrinsics.ts); a fifth needs a slot here rather than a silent
+   * second install on the same object. */
+  scr_trap("scriptc: wrapper prototype install list is full\n");
+}
+
+/* Installs `constructor` — the program's own String, Number, Boolean or
+ * BigInt conversion closure, the value a read of that global answers — as the
+ * `constructor` of the intrinsic prototype `prototype`, with the attributes
+ * the table's row has (writable, non-enumerable, configurable), and seeds
+ * the closure's `prototype` with the object. A program that reads
+ * `X.prototype` therefore finds its own `X` at `X.prototype.constructor` and
+ * in that property's descriptor, and a boxed value's `.constructor.prototype`
+ * is the prototype it inherits from (t262-da A2). Returns `prototype`. +1. */
+ScrDyn *scr_js_wrapper_install_constructor(ScrDyn *prototype, ScrDyn *constructor) {
+  if (!prototype || !constructor || constructor->kind != SCR_DYN_FUNC)
+    return scr_dyn_retain(prototype);
+  /* Every `X.prototype` read emits this install, so the first one replaces
+   * the table's `constructor` with the program's own `X` and marks the
+   * object, and the seeding below is a no-op once the closure's `prototype`
+   * exists. A later read leaves the member alone rather than re-installing:
+   * the syntactic writes to these prototypes are refused by name
+   * (fenceIntrinsicPrototypeWrite), but a program can reach the same object
+   * through an alias and write it — `const p = String.prototype;
+   * p.constructor = 7;` — and reading the prototype again must not undo
+   * that, which it would if the decision compared the member against
+   * `constructor` instead of asking whether the install already ran. */
+  if (!scr_js_wrapper_install_seen(prototype)) {
+    scr_js_wrapper_register_cleanup();
+    if (scr_js_wrapper_define_hidden(prototype, "constructor", scr_dyn_retain(constructor)))
+      scr_js_wrapper_install_mark(prototype);
+  }
+  scr_js_wrapper_seed_prototype(constructor, prototype);
+  return scr_dyn_retain(prototype);
+}
+
+/* The prototype object the intrinsic table answers for `id` (+1), without
+ * members: the table's fill defines them. Built on first use and shared with
+ * `new String/Number/Boolean(v)`, so one intrinsic has one object, and the
+ * object is a wrapper of "", 0 or false, which its members read as the
+ * receiver's [[PrimitiveValue]] (t262-da A2). */
+ScrDyn *scr_js_wrapper_intrinsic_prototype(const char *id) {
+  int kind = SCR_JS_WRAPPER_BOOLEAN;
+  if (strcmp(id, "String.prototype") == 0) kind = SCR_JS_WRAPPER_STRING;
+  if (strcmp(id, "Number.prototype") == 0) kind = SCR_JS_WRAPPER_NUMBER;
+  if (scr_js_wrapper_prototypes[kind]) return scr_dyn_retain(scr_js_wrapper_prototypes[kind]);
+  scr_js_wrapper_register_cleanup();
+  ScrDyn *primitive;
+  if (kind == SCR_JS_WRAPPER_STRING) {
+    ScrStr *empty = scr_str_new("", 0);
+    primitive = scr_dyn_new_str(empty);
+    scr_str_release(empty);
+  } else {
+    primitive = kind == SCR_JS_WRAPPER_NUMBER ? scr_dyn_new_num(0) : scr_dyn_new_bool(false);
+  }
+  ScrDyn *prototype = scr_js_wrapper_object(kind, primitive);
+  scr_dyn_release(primitive);
+  scr_js_wrapper_prototypes[kind] = prototype;
+  return scr_dyn_retain(prototype);
+}
+
+/* The interned member value of `kind` for `name` (+1), the answer the graph's
+ * member provider gives for a wrapper prototype's member, or NULL when the
+ * kind's prototype has no member of that name (String's `[Symbol.iterator]`).
+ * The graph reaches it through a slot (scr_js_wrapper_member_slot), so a
+ * program links this unit only when it names a wrapper. */
+ScrDyn *scr_js_wrapper_member_for(double kind_number, const char *name, size_t name_length) {
+  int kind = (int)kind_number;
+  if (kind != SCR_JS_WRAPPER_STRING && kind != SCR_JS_WRAPPER_NUMBER && kind != SCR_JS_WRAPPER_BOOLEAN)
+    return NULL;
+  return scr_js_wrapper_member_lookup(kind, name, name_length);
 }
 
 /* The wrapper of kind `kind` over `primitive` (borrowed; already the
@@ -642,13 +849,17 @@ ScrArr *scr_js_wrapper_guard_list(ScrArr *values, ScrStr *consumer) {
 /* Whether `member`, the value a call read as the callee's member `name`,
  * is this unit's String.prototype method of that name: the compiler then
  * runs its own lowering of the method on ToString of the receiver
- * (scr_js_wrapper_this_string), which is what the builtin does. */
+ * (scr_js_wrapper_this_string), which is what the builtin does. The member
+ * carries its canonical name, so the alias spellings ask for theirs. */
 bool scr_js_wrapper_is_string_method(ScrDyn *member, ScrStr *name) {
   if (member->kind != SCR_DYN_FUNC || member->v.fn.thunk != scr_js_wrapper_method) return false;
   ScrDyn *member_name = scr_box_get_ref(member->v.fn.clo->caps[0]);
   ScrDyn *kind = scr_box_get_ref(member->v.fn.clo->caps[1]);
-  bool builtin = (int)kind->v.num == SCR_JS_WRAPPER_STRING && member_name->v.str->len == name->len &&
-                 memcmp(member_name->v.str->data, name->data, name->len) == 0;
+  size_t name_length = name->len;
+  const char *canonical = scr_js_wrapper_canonical_member(name->data, name->len, &name_length);
+  bool builtin = (int)kind->v.num == SCR_JS_WRAPPER_STRING &&
+                 member_name->v.str->len == name_length &&
+                 memcmp(member_name->v.str->data, canonical, name_length) == 0;
   scr_dyn_release(kind);
   scr_dyn_release(member_name);
   return builtin;
@@ -675,3 +886,21 @@ ScrDyn *scr_js_wrapper_this_string(ScrDyn *value, ScrStr *name) {
   scr_str_release(text);
   return out;
 }
+
+#ifdef SCR_JS_OBJECT_MODEL
+/* The intrinsic graph reaches these two functions through slots (scr_dyn.h),
+ * never by name, so a program links this unit only when it names a wrapper
+ * prototype or creates a wrapper (t262-da A2). The initializer is the whole
+ * of the wiring: it is data, so linking this unit adds nothing that runs at
+ * load — a constructor would be a link root and would pull this unit's call
+ * graph, and with it the dynamic tier, into every program that links the
+ * first unit (t262-da W4). The graph's own zero fallback answers programs
+ * that do not link this unit. */
+ScrJsWrapperPrototypeSlot scr_js_wrapper_intrinsic_prototype_slot =
+    scr_js_wrapper_intrinsic_prototype;
+ScrJsWrapperMemberSlot scr_js_wrapper_member_slot = scr_js_wrapper_member_for;
+/* The builtin-method unit's slot, which this unit reads for the String
+ * members that unit implements. A program that names a wrapper without
+ * linking that unit gets this zero fallback and answers its own closures. */
+SCR_JS_SLOT_FALLBACK(ScrDynBuiltinMethodSlot, scr_dyn_builtin_method_slot);
+#endif

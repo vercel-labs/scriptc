@@ -242,6 +242,12 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.computedRequire === true, "scr_require.c"),
   unit((u) => u.opts.dc, "scr_dc.c"),
   unit((u) => u.opts.dynTier, "scr_js_value.c", "scr_js_object.c"),
+  // Every builtin prototype and constructor object as an ordinary checked
+  // object, built from the pinned Node release's table (t262-da A1). The
+  // object model's programs always carry the unit: the graph for a program
+  // that reads one of those objects from a JavaScript source, the fill stub
+  // for the others, whose scr_json.c build asks the graph what it filled.
+  unit((u) => u.opts.jsObjectModel === true, "scr_js_intrinsics.c"),
   // The buffer views registry (resizable/growable buffers): the program's
   // %main installs its ops table, and its bytes headers stop being
   // invariant. Every other program keeps the default bytes objects and
@@ -257,6 +263,10 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // A module namespace as the frozen null-prototype object typed code sees.
   unit((u) => u.opts.moduleNamespaceDyn === true, "scr_module_namespace_dyn.c"),
   // Primitive wrapper objects (new String/Number/Boolean, Object(primitive)).
+  // The intrinsic graph's String, Number and Boolean prototypes ARE this
+  // unit's objects (t262-da A2), and the graph reaches them through slots, so
+  // the unit links for the program's own wrapper use alone: a read of
+  // `X.prototype` emits wrapper.installConstructor, which carries the fact.
   unit((u) => u.opts.primitiveWrapper === true, "scr_js_wrapper.c"),
   // %Iterator% and %Iterator.prototype% as values (ES2025 iterator helpers).
   unit((u) => u.opts.iteratorProto === true, "scr_js_iterator.c"),
@@ -275,6 +285,10 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
       u.opts.nodeTest,
     "scr_async_dyn.c",
   ),
+  // AsyncDisposableStack (t262 W4): the `await using` stack whose
+  // disposeAsync awaits each resource. The fact selects dynAsync and symbol
+  // as well, whose units it awaits through and reads disposal methods with.
+  unit((u) => u.opts.asyncDisposableStack === true, "scr_async_disposable_stack.c"),
   // Promise statics with a foreign constructor (`Promise.all.call(C, …)`):
   // the specification's algorithms over the checked-dynamic tier. Their
   // values adopt through scr_async_dyn.c's thenable path, so the call
@@ -519,6 +533,14 @@ const RUNTIME_DEFINES: readonly {
   // builds selected by runtime-pack-matrix.mjs, so the source build must name
   // the same builds.
   { define: "SCR_JS_OBJECT_MODEL", when: (opts) => opts.jsObjectModel },
+  // The builtin intrinsic graph (scr_js_intrinsics.c, t262-da A1): only a
+  // program that reads one of those objects from a JavaScript source builds
+  // the table; the object model's other programs build the fill stub.
+  { define: "SCR_JS_INTRINSICS", when: (opts) => opts.intrinsicObjects },
+  // The intrinsic graph's arm for AsyncDisposableStack's prototype members
+  // (scr_async_disposable_stack.c): only a program that constructs the class
+  // selects the graph variant that carries it.
+  { define: "SCR_ASYNC_DISPOSABLE_STACK", when: (opts) => opts.asyncDisposableStack },
   { define: "SCR_STDIO_EXTENDED", when: (opts) => opts.stdioExtended },
   // The wave's prepend registrations and stdin.isRaw (scr_events.c,
   // scr_async_dyn.c), server.off (scr_net.c) and copyFile's mode form

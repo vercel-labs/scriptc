@@ -638,6 +638,7 @@ import {
   lowerTracingChannelMethodCall,
   lowerTracingChannelProperty,
 } from "./builtins/async-context.js";
+import { lowerAsyncDisposableStackNew } from "./builtins/async-disposable-stack.js";
 import { lowerDisposableStackNew } from "./builtins/disposable-stack.js";
 import { lowerErrorCodeProperty, lowerErrorFunctionCall } from "./builtins/errors.js";
 import { noteDateClassMethods } from "./builtins/date-classes.js";
@@ -4041,6 +4042,10 @@ export class Lowerer {
   /** Whether a compiled source creates primitive wrapper objects
    * (programCreatesWrappers), computed on first use. */
   createsWrappers: boolean | undefined = undefined;
+  /** Whether any compiled JavaScript source reads a builtin intrinsic the
+   * intrinsic table names (programUsesIntrinsicObjects, t262-da A1),
+   * computed on first use. */
+  usesIntrinsicObjects: boolean | undefined = undefined;
   /** Builtin-module FUNCTIONS admitted as values by their surface-table
    * entries. The resolved runtime function plus ABI is the identity key,
    * so named imports, namespace reads, CommonJS bindings, and alias chains
@@ -5178,6 +5183,7 @@ export class Lowerer {
     "nanCodedReads",
     "mentionsProcessVersions",
     "createsWrappers",
+    "usesIntrinsicObjects",
     "stringIndexBoundsCache",
     "functionLocalSubclasses",
     "socketEncodingReachable",
@@ -18842,6 +18848,7 @@ export class Lowerer {
       lowerThreadSlotsNew(this, expr) ??
       lowerAbortControllerNew(this, expr) ??
       lowerDisposableStackNew(this, expr) ??
+      lowerAsyncDisposableStackNew(this, expr) ??
       lowerEventTargetNew(this, expr) ??
       lowerFetchWebNew(this, expr) ??
       lowerResponseNew(this, expr) ??

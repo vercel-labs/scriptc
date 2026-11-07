@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8893-async-disposable-stack-errors.js"
+ ],
+ "diags": []
+}

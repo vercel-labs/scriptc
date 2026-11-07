@@ -241,6 +241,16 @@ export interface CcOptions {
    * %main emits. The fact ORs into jsObjectModel, so the unit's definition
    * of the JavaScript object model build is already on. */
   mutableBuffers?: boolean;
+  /** The program constructs an AsyncDisposableStack: compiles
+   * scr_async_disposable_stack.c and, in the intrinsic graph, the
+   * SCR_ASYNC_DISPOSABLE_STACK arm that answers the class's prototype member
+   * values. */
+  asyncDisposableStack?: boolean;
+  /** A builtin intrinsic object read from a JavaScript source: compiles
+   * scr_js_intrinsics.c (t262-da A1). Separate from `jsObjectModel`, which
+   * bigintBytes also selects, so a typed program that only constructs a
+   * BigInt typed array compiles none of the intrinsic graph. */
+  intrinsicObjects?: boolean;
   /** SCR_STDIO_EXTENDED: stdin encoding, string data listeners, resize. */
   stdioExtended?: boolean;
   /** SCR_FS_FLAGS: writeFile's `flag` option and copyFile's mode argument
@@ -510,6 +520,9 @@ export interface LibArchiveOptions {
   /** See CcOptions.mutableBuffers: the archive carries the buffer views
    * registry, scr_js_buffers.c. */
   mutableBuffers?: boolean;
+  /** See CcOptions.asyncDisposableStack: the archive carries the
+   * AsyncDisposableStack unit. */
+  asyncDisposableStack?: boolean;
 }
 
 export interface NativeArtifactDependency {

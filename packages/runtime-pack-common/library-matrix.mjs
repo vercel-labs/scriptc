@@ -24,6 +24,13 @@ export function withLibraryRuntimeFlavors(matrix) {
     // detaches a buffer names scr_js_buffers_arm from its own object, so the
     // library flavors must carry the unit the executable flavors compile.
     "scr_js_buffers.c",
+    "scr_js_intrinsics.c",
+    // Primitive wrapper objects (t262-da A2): every executable flavor that
+    // creates a wrapper or reads `X.prototype` links scr_js_wrapper.c, so the
+    // library flavors must carry the unit for the programs that select it. The
+    // graph reaches the unit through slots, not by name, so a library that
+    // reads an intrinsic links it only when the program itself uses a wrapper.
+    "scr_js_wrapper.c",
   ]);
   const libraryUnits = [
     ...matrix.runtime_units.filter(

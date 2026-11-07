@@ -43,6 +43,8 @@ const features = {
   warningReplace: false,
   promiseRejectDyn: false,
   jsObjectModel: false,
+  intrinsicObjects: false,
+  asyncDisposableStack: false,
   stdioExtended: false,
   streamWriteErrors: false,
   stdioWriteSlot: false,

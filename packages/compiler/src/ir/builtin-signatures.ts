@@ -4065,6 +4065,12 @@ function buildLibFnSignatures() {
      * a Boolean wrapper receiver and throw Node's brand-check TypeError for
      * a foreign one. `constructor` is the compiled Boolean constructor. */
     "wrapper.booleanPrototype": { argTypes: [DYN], result: DYN },
+    /** Installs the program's own `String`/`Number`/`Boolean`/`BigInt`
+     * conversion closure as the `constructor` of the intrinsic prototype
+     * object and seeds the closure's `prototype` with that object, so the
+     * prototype's `constructor` read, its descriptor value and the global
+     * `X` are one value. Returns the prototype object. */
+    "wrapper.installConstructor": { argTypes: [DYN, DYN], result: DYN },
     "fs.callbackValue": { argTypes: [STRING, F64], result: DYN },
     "fs.callbackCall": { argTypes: [STRING, DYN], result: DYN },
     "process.hrtimeValue": { argTypes: [], result: DYN },
@@ -4474,6 +4480,12 @@ function buildLibFnSignatures() {
     "disposable.stackNew": { argTypes: [], result: DYN },
     "disposable.stackIs": { argTypes: [DYN], result: BOOL },
     "disposable.stackUseCallback": { argTypes: [DYN, DYN, DYN], result: BOOL },
+    /** AsyncDisposableStack (scr_async_disposable_stack.c): a new stack
+     * handle, and whether a value is one. Its members, disposeAsync
+     * included, are function values and getters of the handle. */
+    "disposable.asyncStackNew": { argTypes: [], result: DYN },
+    "disposable.asyncStackIs": { argTypes: [DYN], result: BOOL },
+    "disposable.asyncStackUseCallback": { argTypes: [DYN, DYN, DYN], result: BOOL },
     "dyn.reflectSet": { argTypes: [DYN, DYN, DYN, DYN], result: BOOL },
     "dyn.reflectDefine": { argTypes: [DYN, DYN, DYN], result: BOOL },
     "dyn.abstractEq": { argTypes: [DYN, DYN], result: BOOL },
@@ -4517,6 +4529,11 @@ function buildLibFnSignatures() {
      * JavaScript source): the getter/setter family's prototype object, the
      * unit in scr_data_view_proto.c. */
     "dyn.dataViewPrototype": { argTypes: [DYN], result: DYN },
+    /** A builtin prototype or constructor object as an ordinary checked
+     * object (`Date.prototype`, `Array.prototype.push` read in a JavaScript
+     * source), named by the intrinsic table's id: the unit in
+     * scr_js_intrinsics.c (t262-da A1). */
+    "dyn.intrinsic": { argTypes: [STRING], result: DYN },
     "dyn.classPrototype": { argTypes: [DYN, DYN], result: DYN },
     "dyn.classBasePrototype": { argTypes: [DYN], result: DYN },
     "dyn.classInherit": { argTypes: [DYN, DYN], result: DYN },

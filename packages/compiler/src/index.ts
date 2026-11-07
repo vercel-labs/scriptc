@@ -707,7 +707,11 @@ function executableNativeFeatures(
   // The executable cache record spells every boolean key (BOOLEAN_NATIVE_KEYS
   // in executable-cache.ts), and mutableBuffers is optional in the link
   // features so that a program without the fact keeps its link identity.
-  return { ...features, mutableBuffers: features.mutableBuffers === true };
+  return {
+    ...features,
+    mutableBuffers: features.mutableBuffers === true,
+    asyncDisposableStack: features.asyncDisposableStack === true,
+  };
 }
 
 /** Install the run-time data files of the selected runtime pack beside an
@@ -851,6 +855,13 @@ async function compileExecutableNative(
     ...(features.promiseRejectDyn ? { promiseRejectDyn: true } : {}),
     ...(jsObjectModelFact(features) ? { jsObjectModel: true } : {}),
     ...(features.mutableBuffers === true ? { mutableBuffers: true } : {}),
+    ...(features.asyncDisposableStack === true ? { asyncDisposableStack: true } : {}),
+    // The raw program fact, already derived from the scan by
+    // executableLinkFeatures: `features.jsObjectModel` here is the merged
+    // link feature, which is also true for a program that only carries the
+    // object model's union (a BigInt typed array), and those programs build
+    // the fill stub, not the graph.
+    ...(features.intrinsicObjects === true ? { intrinsicObjects: true } : {}),
     ...(features.stdioExtended ? { stdioExtended: true } : {}),
     ...(features.fsFlags ? { fsFlags: true } : {}),
     ...(features.fsBytesWrites ? { fsBytesWrites: true } : {}),
@@ -2575,6 +2586,7 @@ function libraryNativeFeatures(mod: IrModule, backend: "llvm"): EarlyLibraryNati
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
     ...(features.dynTier ? { dynTier: true } : {}),
     mutableBuffers: features.mutableBuffers,
+    asyncDisposableStack: features.asyncDisposableStack,
     ...(mod.lib?.identity !== undefined ? { buildId: mod.lib.identity.buildId } : {}),
   };
 }
@@ -2673,6 +2685,7 @@ async function compileLibraryNative(
     ...(features.dynBuffer === true ? { dynBuffer: true } : {}),
     ...(features.dynTier === true ? { dynTier: true } : {}),
     ...(features.mutableBuffers === true ? { mutableBuffers: true } : {}),
+    ...(features.asyncDisposableStack === true ? { asyncDisposableStack: true } : {}),
   };
   if (packTarget !== null) await compilePackedLibrary(archiveOptions, packTarget);
   else await compileExternalCLibrary(archiveOptions);

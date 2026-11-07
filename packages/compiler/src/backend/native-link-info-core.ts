@@ -43,7 +43,8 @@ export interface NativeLinkFeatures {
   /** The program uses a runtime feature only a JavaScript source reaches:
    * links the SCR_JS_OBJECT_MODEL build of every unit those features touch
    * (t262-da §J). Absent for every other program, so their objects stay
-   * identical. */
+   * identical. `bigintBytes` ORs into it (jsObjectModelFact), so a typed
+   * program that constructs a BigInt typed array selects it too. */
   jsObjectModel?: boolean;
   /** A JavaScript source resizes, grows or detaches an ArrayBuffer
    * (frontend/lowering/buffers.ts): compiles scr_js_buffers.c, the views
@@ -51,6 +52,18 @@ export interface NativeLinkFeatures {
    * (jsObjectModelFact), so it selects no build column of its own. Absent
    * for every other program, so their objects stay identical. */
   mutableBuffers?: boolean;
+  /** A JavaScript source constructs an AsyncDisposableStack
+   * (frontend/lowering/builtins/async-disposable-stack.ts): compiles
+   * scr_async_disposable_stack.c, the `await using` stack whose disposeAsync
+   * awaits each resource. Absent for every other program, so their objects
+   * stay identical. */
+  asyncDisposableStack?: boolean;
+  /** The program reads a builtin intrinsic object (`X.prototype`, a builtin
+   * constructor as a value) from a JavaScript source: links
+   * scr_js_intrinsics.c, the whole intrinsic graph (t262-da A1). Split from
+   * jsObjectModel, which bigintBytes also selects, so a typed program that
+   * only constructs a BigInt typed array links none of the graph. */
+  intrinsicObjects?: boolean;
   /** The program uses process.stdin.setEncoding, string 'data' listeners
    * or stdio 'resize' events: links the SCR_STDIO_EXTENDED events unit. */
   stdioExtended?: boolean;
@@ -82,7 +95,10 @@ export interface NativeLinkFeatures {
    * scr_module_namespace_dyn.c; absent (false) otherwise. */
   moduleNamespaceDyn?: boolean;
   /** Primitive wrapper objects link scr_js_wrapper.c; absent (false)
-   * otherwise. */
+   * otherwise. The intrinsic graph answers String.prototype, Number.prototype
+   * and Boolean.prototype with that unit's objects, but reaches them through
+   * slots rather than by name, so only the program's own wrapper use — a read
+   * of `X.prototype`, a wrapper creation — carries the fact (t262-da A2). */
   primitiveWrapper?: boolean;
   /** The Promise statics through Function.prototype.call with a foreign
    * constructor link scr_js_promise_generic.c; absent (false) otherwise. */

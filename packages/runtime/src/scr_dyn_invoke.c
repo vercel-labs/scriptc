@@ -1382,6 +1382,59 @@ static ScrDyn *scr_dyn_invoke_impl(
 
   if (recv->kind == SCR_DYN_STR) {
     ScrStr *s = recv->v.str;
+#ifdef SCR_JS_OBJECT_MODEL
+    if (!strcmp(method, "replace")) {
+      /* String.prototype.replace: searchValue is a RegExp or coerced with
+       * ToString, and a replaceValue that is not callable coerces with
+       * ToString before any matching, so an object converting to another
+       * object raises Node's ToPrimitive TypeError here (a replacement whose
+       * toString answers a function is the Sputnik example, test262's
+       * S15.5.4.11_A1_T16). A function replacement has no lowering in this
+       * unit, and the match loop over a native RegExp lives in the regex
+       * unit, which a program without a regex does not link: both keep the
+       * tier's loud refusal, after the conversions Node performs. `rep` and
+       * the coerced search value are +1; the result is +1. Only the object
+       * model build answers: it is the build that carries the folded
+       * prototypes a program assigns this member from, and a program
+       * without the fact keeps the build byte for byte. */
+      ScrDyn *search = argc ? args[0] : scr_dyn_undefined();
+      ScrDyn *replace = argc > 1 ? args[1] : scr_dyn_undefined();
+      /* Node converts the search value before it looks at the replacement:
+       * for a searchValue that is not a RegExp, ToString(searchValue) runs
+       * first, so a search object whose conversion throws wins over any
+       * replacement (and over the callable-replacement refusal below).
+       * `needle` is +1, and NULL when the conversion threw. */
+      bool search_is_regexp =
+          search->kind == SCR_DYN_HANDLE && search->v.handle.tag == SCR_DYNH_REGEXP;
+      ScrStr *needle = NULL;
+      if (!search_is_regexp) {
+        needle = scr_dyn_string_coerce_js(search);
+        if (!needle) return NULL;
+      }
+      if (replace->kind == SCR_DYN_FUNC) {
+        if (needle) scr_str_release(needle);
+        dyn_throw_unsupported("String", method);
+        return NULL;
+      }
+      ScrStr *rep = scr_dyn_string_coerce_js(replace);
+      if (!rep) {
+        if (needle) scr_str_release(needle);
+        return NULL;
+      }
+      ScrStr *out = NULL;
+      if (search_is_regexp) {
+        dyn_throw_unsupported("String", method);
+      } else {
+        out = scr_str_replace_literal(s, needle, rep, false);
+      }
+      if (needle) scr_str_release(needle);
+      scr_str_release(rep);
+      if (!out) return NULL;
+      ScrDyn *result = scr_dyn_new_str(out); /* retains */
+      scr_str_release(out);
+      return result;
+    }
+#endif
     if ((mid == DYN_M_slice)) {
       double start = dyn_index_arg(args, argc, 0, 0, what);
       if (scr_exc_pending()) return NULL;
@@ -2102,11 +2155,19 @@ static ScrDyn *dyn_builtin_method_call(ScrClosure *closure, ScrDyn *const *args,
         scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
       } else if (strict) result = scr_dyn_retain(receiver);
       else {
+        /* String's generic members coerce the receiver with ToString, then
+         * run on the string. The dispatch answers the ones this build
+         * implements (slice, and replace in the object-model build); the
+         * rest keep the tier's refusal. */
         ScrStr *text = scr_dyn_string_coerce_js(receiver);
         if (text) {
           ScrDyn *string = scr_dyn_new_str(text);
           scr_str_release(text);
-          if (!strcmp(method->data, "slice")) result = scr_dyn_invoke(string, method->data, args, argc, method->data);
+          bool forwards = !strcmp(method->data, "slice");
+#ifdef SCR_JS_OBJECT_MODEL
+          if (!strcmp(method->data, "replace")) forwards = true;
+#endif
+          if (forwards) result = scr_dyn_invoke(string, method->data, args, argc, method->data);
           else dyn_throw_unsupported("String", method->data);
           scr_dyn_release(string);
         }
@@ -2119,7 +2180,144 @@ static ScrDyn *dyn_builtin_method_call(ScrClosure *closure, ScrDyn *const *args,
   return result;
 }
 
+#ifdef SCR_JS_OBJECT_MODEL
+/* The Date's member table, in the unit that always links and that already
+ * carries the Date implementation (scr_lib.c). */
+extern ScrDyn *scr_native_date_member_value(const char *key, size_t key_len);
+
+static ScrDyn *scr_dyn_date_member(const char *cls, const char *key, size_t key_len) {
+  (void)cls;
+  return scr_native_date_member_value(key, key_len);
+}
+
+/* The stack's member table stays in scr_symbol.c, and this unit must not name
+ * it: a reference from here keeps the whole stack unit, and everything it
+ * drags, in every JavaScript program with no symbols at all that interns a
+ * builtin method. The unit fills this slot when it loads, so
+ * `DisposableStack.prototype.use` answers the function `stack.use` is even
+ * when the prototype is read before the first stack exists. Where the unit
+ * is not linked the slot stays NULL, and the read answers the interned
+ * function. */
+ScrDyn *(*scr_dyn_disposable_stack_member)(const char *key, size_t len);
+
+static ScrDyn *scr_dyn_disposable_stack_member_value(const char *cls, const char *key, size_t len) {
+  ScrDyn *(*member)(const char *, size_t) = scr_dyn_disposable_stack_member;
+  (void)cls;
+  return member ? member(key, len) : NULL;
+}
+
+/* The intrinsic graph registers the primitive wrappers' providers
+ * (scr_js_intrinsics.c: a primitive's member read answers the value its
+ * prototype object holds, wrapped so the brand checks run on the primitive).
+ * This unit asks for that here, through a slot (scr_dyn.h), because it cannot
+ * name the graph: a program links this unit with no intrinsic graph at all.
+ * The ask is the first thing every builtin member read does and it happens
+ * once, so even the first read of a wrapper member is the prototype's value;
+ * a program without the graph registers nothing and keeps the interned
+ * functions it answered before the fold. */
+SCR_JS_SLOT_FALLBACK(ScrJsWrapperProvidersSlot, scr_js_wrapper_member_providers_slot);
+static bool scr_dyn_wrapper_providers_asked;
+
+static void scr_dyn_wrapper_providers_ask(void) {
+  if (scr_dyn_wrapper_providers_asked) return;
+  scr_dyn_wrapper_providers_asked = true;
+  if (scr_js_wrapper_member_providers_slot) scr_js_wrapper_member_providers_slot();
+}
+
+#ifdef SCR_ASYNC_DISPOSABLE_STACK
+/* The AsyncDisposableStack answers its members through the table its own unit
+ * builds (scr_async_disposable_stack.c), which this build names directly:
+ * this entry exists in a column only a program with that unit's fact selects,
+ * so the call always resolves, and a program without the class compiles
+ * neither the call nor the row. The column also keeps this unit's object
+ * identical for every other program, byte for byte — a static function and
+ * one more table row would change it. */
+static ScrDyn *scr_dyn_async_disposable_stack_member_value(const char *cls, const char *key, size_t len) {
+  (void)cls;
+  return scr_async_disposable_stack_member_value(key, len);
+}
+#endif
+
+/* The builtins that answer a member from a table of their own unit instead of
+ * from the interner below, and the function that answers one. A Date's
+ * methods run the Date receiver checks and a DisposableStack's carry the
+ * interface's brand errors, so neither can be this unit's dispatch function;
+ * the unit that builds the prototype answers its members from the same table
+ * the instances use, so `Date.prototype.getTime === date.getTime` and
+ * `DisposableStack.prototype.use === stack.use`. The AsyncDisposableStack's
+ * unit fills a slot on the same terms, in the build that carries its entry.
+ * The three primitive wrapper prototypes answer through the intrinsic graph,
+ * which answers the wrapper unit's own interned member for the prototype, so
+ * the brand checks and the String lowering run on the primitive the prototype
+ * wraps and a member read off a primitive, off a wrapper instance and off the
+ * prototype object is one function; a builtin whose instances already answer
+ * the interned values — Map, Set, WeakMap, WeakSet, String, Object — needs no
+ * entry: `map.get` and `Map.prototype.get` are one interned function.
+ *
+ * A unit that answers a class this table does not name registers its provider
+ * with scr_dyn_member_provider_register, and the class then answers through it
+ * as a Date does. The intrinsic graph registers String, Number and Boolean
+ * that way, through the slot above: this unit cannot name the graph, and the
+ * graph is the only unit that may name the wrapper unit (t262-da A2).
+ *
+ * Identity is a JavaScript object-model behavior, so the partition lives in
+ * the object-model build: a typed program's interner is the same object it
+ * was, and never links a provider. */
+#define SCR_DYN_MEMBER_PROVIDERS_MAX 8
+
+static struct {
+  const char *cls;
+  ScrDynMemberProvider member;
+} scr_dyn_member_providers[SCR_DYN_MEMBER_PROVIDERS_MAX] = {
+  { "Date", scr_dyn_date_member },
+  { "DisposableStack", scr_dyn_disposable_stack_member_value },
+#ifdef SCR_ASYNC_DISPOSABLE_STACK
+  { "AsyncDisposableStack", scr_dyn_async_disposable_stack_member_value },
+#endif
+};
+/* The rows above are the providers this unit carries; a unit that answers its
+ * own class's members registers beside them. */
+static size_t scr_dyn_member_provider_count = 2
+#ifdef SCR_ASYNC_DISPOSABLE_STACK
+    + 1
+#endif
+    ;
+
+void scr_dyn_member_provider_register(const char *cls, ScrDynMemberProvider member) {
+  if (!cls || !member || scr_dyn_member_provider_count == SCR_DYN_MEMBER_PROVIDERS_MAX) return;
+  for (size_t i = 0; i < scr_dyn_member_provider_count; i++) {
+    if (strcmp(scr_dyn_member_providers[i].cls, cls) == 0) return;
+  }
+  scr_dyn_member_providers[scr_dyn_member_provider_count].cls = cls;
+  scr_dyn_member_providers[scr_dyn_member_provider_count].member = member;
+  scr_dyn_member_provider_count++;
+}
+
+/* The member value the builtin named `prototype` answers for `method` from
+ * its own unit (+1), or NULL when it answers through this unit's interner. */
+static ScrDyn *scr_dyn_native_member(const ScrStr *prototype, const ScrStr *method) {
+  for (size_t i = 0; i < scr_dyn_member_provider_count; i++) {
+    if (strcmp(scr_dyn_member_providers[i].cls, prototype->data) != 0) continue;
+    return scr_dyn_member_providers[i].member(scr_dyn_member_providers[i].cls, method->data, method->len);
+  }
+  return NULL;
+}
+#else
+/* Identity is an object-model behavior: a build without the object model has
+ * no table to record into, and answers every member through its interner. A
+ * unit that registers a provider still builds here, and registers nothing. */
+void scr_dyn_member_provider_register(const char *cls, ScrDynMemberProvider member) {
+  (void)cls;
+  (void)member;
+}
+#endif
+
 ScrDyn *scr_dyn_builtin_method(const ScrStr *prototype, const ScrStr *method) {
+#ifdef SCR_JS_OBJECT_MODEL
+  scr_dyn_wrapper_providers_ask();
+  ScrDyn *native = scr_dyn_native_member(prototype, method);
+  if (native) return native;
+#endif
   if (!dyn_builtin_methods) {
     dyn_builtin_methods = scr_dyn_new_obj_null_proto();
     scr_atexit(dyn_builtin_methods_cleanup);
@@ -2350,6 +2548,25 @@ ScrDyn *scr_dyn_global_constructor(const ScrStr *name) {
  * does not link this unit, and the read keeps its named refusal there. */
 __attribute__((constructor)) static void dyn_global_constructor_hook_install(void) {
   scr_dyn_global_constructor_hook = scr_dyn_global_constructor;
+}
+
+/* Whether scr_dyn_global_constructor answers a value for `name` (it traps on
+ * the names it does not intern). The intrinsics unit builds every constructor
+ * as the same value a JavaScript source reads, and creates a fenced function
+ * for the names the runtime does not intern. This unit is always linked, so
+ * the query lives in the object-model build only. */
+bool scr_dyn_global_constructor_known(const ScrStr *name) {
+  if (strcmp(name->data, dyn_s20) == 0) return true;
+  ScrDyn *error = scr_dyn_error_constructor(name->data);
+  if (error) {
+    scr_dyn_release(error);
+    return true;
+  }
+  for (size_t i = 0; i < DYN_GLOBAL_CTORS; i++)
+    if (dyn_global_ctor_names[i][0] == name->data[0] &&
+        strcmp(dyn_global_ctor_names[i], name->data) == 0)
+      return true;
+  return false;
 }
 #endif
 

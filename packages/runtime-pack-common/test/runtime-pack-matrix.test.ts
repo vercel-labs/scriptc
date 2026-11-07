@@ -115,8 +115,23 @@ test("scr_json builds one object per flavor, plus its object model twin", () => 
     "node-island",
     "js-om",
     "js-om-node-island",
+    "async-disposable-stack",
+    "async-disposable-stack-node-island",
+    "async-disposable-stack-js-om",
+    "async-disposable-stack-js-om-node-island",
   ]);
   for (const variant of variants) {
+    if (variant.id.startsWith("async-disposable-stack")) {
+      // The AsyncDisposableStack's handle tag exists only in a program that
+      // constructs one, so its tag clauses are a column copied from every
+      // earlier build: each twin carries that build's defines and adds its own.
+      expect(variant.when.asyncDisposableStack).toBe(true);
+      expect(variant.defines).toContain("SCR_ASYNC_DISPOSABLE_STACK");
+      expect(variant.id.endsWith("js-om") || variant.id.endsWith("js-om-node-island")).toBe(
+        variant.defines.includes("SCR_JS_OBJECT_MODEL"),
+      );
+      continue;
+    }
     if (!variant.id.startsWith("js-om")) continue;
     expect(variant.when.jsObjectModel).toBe(true);
     expect(variant.defines).toContain("SCR_JS_OBJECT_MODEL");
@@ -157,6 +172,26 @@ test("scr_json builds one object per flavor, plus its object model twin", () => 
   // A program that reaches none of the features keeps the default object.
   expect(selected("scr_json.c", { workers: false }).id).toBe("default");
   expect(selected("scr_json.c", { workers: false }).defines).toEqual([]);
+});
+
+test("the AsyncDisposableStack member provider is a build of the invoke unit", () => {
+  // The object model's provider table names an entry per builtin whose
+  // members come from its own unit. The AsyncDisposableStack's row and slot
+  // exist only in a program that constructs the class, so its column adds the
+  // row to the build the program would otherwise select; every other program
+  // keeps the object it had, byte for byte.
+  const plain = { jsObjectModel: false, asyncDisposableStack: false, workers: false };
+  expect(selected("scr_dyn_invoke.c", { ...plain, jsObjectModel: true }).defines).toEqual([
+    "SCR_JS_OBJECT_MODEL",
+  ]);
+  expect(selected("scr_dyn_invoke.c", { ...plain, asyncDisposableStack: true }).defines).toEqual([
+    "SCR_ASYNC_DISPOSABLE_STACK",
+  ]);
+  expect(
+    selected("scr_dyn_invoke.c", { ...plain, jsObjectModel: true, asyncDisposableStack: true })
+      .defines,
+  ).toEqual(["SCR_JS_OBJECT_MODEL", "SCR_ASYNC_DISPOSABLE_STACK"]);
+  expect(selected("scr_dyn_invoke.c", plain).defines).toEqual([]);
 });
 
 test("the BigIntStats unit follows its own member-read gate, not bigint", () => {
@@ -208,6 +243,55 @@ test("the BigInt element kinds ride the JavaScript object model build", () => {
   ]) {
     expect(selected(source, plain).defines).toEqual([]);
   }
+});
+
+test("the wrapper unit carries the object-model build a wrapper prototype selects", () => {
+  // The intrinsic graph reaches the wrapper unit's prototype builder through
+  // a slot the unit defines with a static initializer, and the definition is
+  // the unit's object-model code (scr_dyn.h, t262-da A2). A program that
+  // reads `Boolean.prototype` therefore needs the object-model build of the
+  // unit: its default build defines no slot, and the graph would answer an
+  // ordinary object with the interner's members. Every other program keeps
+  // the default object, byte for byte.
+  const plain = { primitiveWrapper: false, jsObjectModel: false, workers: false };
+  expect(selected("scr_js_wrapper.c", plain).defines).toEqual([]);
+  expect(selected("scr_js_wrapper.c", { ...plain, primitiveWrapper: true }).defines).toEqual([]);
+  expect(
+    selected("scr_js_wrapper.c", { ...plain, primitiveWrapper: true, jsObjectModel: true }).defines,
+  ).toEqual(["SCR_JS_OBJECT_MODEL"]);
+  // A worker program keeps its thread build beside it, so the unit's TLS
+  // agrees with the rest of the runtime.
+  expect(
+    selected("scr_js_wrapper.c", {
+      primitiveWrapper: true,
+      jsObjectModel: true,
+      workers: true,
+    }).defines,
+  ).toEqual(["SCR_JS_OBJECT_MODEL", "SCR_WORKERS"]);
+});
+
+test("the builtin intrinsic graph is one object-model unit", () => {
+  const plain = { jsObjectModel: false, intrinsicObjects: false, workers: false };
+  const unit = matrix.runtime_units.find(
+    (u: { source: string }) => u.source === "scr_js_intrinsics.c",
+  );
+  // Every program with the JavaScript object model links the unit: the graph
+  // when its source reads a builtin intrinsic object, the fill stub that
+  // scr_json.c's object-model build asks otherwise.
+  expect(unit.predicate).toBe("jsObjectModel");
+  expect(selected("scr_js_intrinsics.c", plain).defines).toEqual([]);
+  // The object model build alone (a typed program's BigInt view) carries
+  // none of the graph: it builds the stub, which names neither guard.
+  expect(selected("scr_js_intrinsics.c", { ...plain, jsObjectModel: true }).defines).toEqual([]);
+  expect(
+    selected("scr_js_intrinsics.c", { ...plain, jsObjectModel: true, intrinsicObjects: true })
+      .defines,
+  ).toEqual(["SCR_JS_OBJECT_MODEL", "SCR_JS_INTRINSICS"]);
+  // Worker executables get the same object model build with their own flag,
+  // so the unit's TLS agrees with the rest of the runtime.
+  expect(
+    selected("scr_js_intrinsics.c", { intrinsicObjects: true, workers: true }).defines,
+  ).toEqual(["SCR_JS_OBJECT_MODEL", "SCR_JS_INTRINSICS", "SCR_WORKERS"]);
 });
 
 test("the shape store probe declines __proto__ in the object model build", () => {

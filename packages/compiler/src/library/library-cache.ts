@@ -83,6 +83,8 @@ export interface EarlyLibraryNativeFeatures {
   /** The buffer views registry (scr_js_buffers.c) and the archive's
    * JavaScript object model build of its bytes and json units. */
   mutableBuffers: boolean;
+  /** The AsyncDisposableStack unit (scr_async_disposable_stack.c). */
+  asyncDisposableStack?: boolean;
   /** Volatile exact-source build identity emitted from the tiny identity TU. */
   buildId?: string;
 }
@@ -144,6 +146,7 @@ const BOOLEAN_NATIVE_KEYS = [
   "textDecoderLegacy",
   "bigintBytes",
   "mutableBuffers",
+  "asyncDisposableStack",
 ] as const satisfies readonly (keyof EarlyLibraryNativeFeatures)[];
 
 function validNativeFeatures(value: unknown): value is EarlyLibraryNativeFeatures {

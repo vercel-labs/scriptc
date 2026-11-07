@@ -3820,13 +3820,15 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // representation and consumed by the console method lowerings. The
   // stdlib Disposable (events.addAbortListener's result) and
   // AsyncDisposable are checked objects carrying their Symbol.dispose or
-  // Symbol.asyncDispose method. A DisposableStack is a native handle whose
-  // methods are function values of its checked-dynamic view.
+  // Symbol.asyncDispose method. A DisposableStack and an
+  // AsyncDisposableStack are native handles whose methods are function
+  // values of their checked-dynamic views.
   if (
     ((psym !== undefined && psymName === "Console") ||
       (psym !== undefined && psymName === "Disposable") ||
       (psym !== undefined && psymName === "AsyncDisposable") ||
-      (psym !== undefined && psymName === "DisposableStack")) &&
+      (psym !== undefined && psymName === "DisposableStack") ||
+      (psym !== undefined && psymName === "AsyncDisposableStack")) &&
     psym.declarations.some(
       (d) => ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(ts.getSourceFileOfNode(d)),
     )

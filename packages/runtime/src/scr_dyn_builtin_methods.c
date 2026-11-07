@@ -291,3 +291,42 @@ ScrDyn *scr_dyn_builtin_method_value(const ScrStr *owner, const ScrStr *member) 
   scr_atexit(bm_values_cleanup);
   return scr_dyn_retain(value);
 }
+
+/** The canonical spelling of `member`: trimLeft is trimStart and trimRight
+ * is trimEnd (Annex B.2.3.14-15), so both names answer one function. */
+static const char *bm_canonical_member(const char *member, size_t member_length,
+                                       size_t *canonical_length) {
+  if (member_length == 8 && memcmp(member, "trimLeft", 8) == 0) {
+    *canonical_length = 9;
+    return "trimStart";
+  }
+  if (member_length == 9 && memcmp(member, "trimRight", 9) == 0) {
+    *canonical_length = 7;
+    return "trimEnd";
+  }
+  *canonical_length = member_length;
+  return member;
+}
+
+/** The member this unit implements as (owner, member), +1, or NULL for a
+ * pair it does not own: the answer the intrinsic graph and the wrapper unit
+ * read out of scr_dyn_builtin_method_slot, so the prototype's member is the
+ * function `''.trim` and `/a/.exec` answer. */
+static ScrDyn *bm_member_for(const char *owner, const char *member, size_t member_length) {
+  size_t canonical_length;
+  member = bm_canonical_member(member, member_length, &canonical_length);
+  for (size_t i = 0; i < BM_COUNT; i++) {
+    if (strcmp(bm_methods[i].owner, owner) != 0) continue;
+    if (strlen(bm_methods[i].member) != canonical_length) continue;
+    if (memcmp(bm_methods[i].member, member, canonical_length) != 0) continue;
+    ScrStr *owner_name = scr_str_new(owner, strlen(owner));
+    ScrStr *member_name = scr_str_new(bm_methods[i].member, strlen(bm_methods[i].member));
+    ScrDyn *value = scr_dyn_builtin_method_value(owner_name, member_name);
+    scr_str_release(owner_name);
+    scr_str_release(member_name);
+    return value;
+  }
+  return NULL;
+}
+
+ScrDynBuiltinMethodSlot scr_dyn_builtin_method_slot = bm_member_for;

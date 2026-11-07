@@ -762,6 +762,7 @@ enum { SCR_DS_M_USE, SCR_DS_M_ADOPT, SCR_DS_M_DEFER, SCR_DS_M_MOVE, SCR_DS_M_DIS
 
 static ScrDisposableStack *scr_ds_alloc(void);
 static ScrDyn *scr_ds_box(ScrDisposableStack *s);
+static void scr_ds_teardown(void);
 
 static ScrDyn *scr_ds_method_call(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
   unsigned index = (unsigned)scr_box_get_f64(clo->caps[0]);
@@ -816,14 +817,50 @@ static ScrDyn *scr_ds_method_value(unsigned index) {
   return scr_dyn_retain(scr_ds_method_values[index]);
 }
 
-static ScrDyn *scr_ds_get(void *ptr, const char *key, size_t len) {
-  ScrDisposableStack *s = ptr;
-  if (len == 8 && memcmp(key, "disposed", 8) == 0) return scr_dyn_new_bool(s->disposed);
+/* The slot the invoke unit's object-model build asks before it interns a
+ * builtin method. This unit points it here when it installs its handle ops,
+ * which happens before any stack exists, so `DisposableStack.prototype.use`
+ * and `stack.use` are one function. The declaration is weak because the object
+ * model is one runtime build among several and this unit is compiled for all
+ * of them; where the slot does not exist, the interner answers the read by
+ * itself. The pointer, rather than a symbol, is what keeps this unit — the
+ * stack, its methods and everything they call — out of a program that interns
+ * a builtin method but never holds a stack.
+ *
+ * Darwin does not bind a weak declaration of a data symbol to zero: the
+ * reference stays an ordinary undefined symbol and a program that links this
+ * unit without the object-model build fails to link. The unit therefore
+ * defines the slot there, weakly, and the object-model build's definition
+ * replaces it when it links. ELF binds the declaration itself to zero, and a
+ * definition beside it would put the pointer in every ELF program that links
+ * this unit and move the code that writes it, so ELF keeps the declaration. */
+#if defined(__APPLE__)
+ScrDyn *(*scr_dyn_disposable_stack_member)(const char *key, size_t len) __attribute__((weak)) = 0;
+#else
+extern ScrDyn *(*scr_dyn_disposable_stack_member)(const char *key, size_t len) __attribute__((weak));
+#endif
+
+/* The function value a DisposableStack answers for the method named `key`
+ * (+1), or NULL: the value `stack.use` is, which is what makes
+ * `DisposableStack.prototype.use === stack.use`. A stack method runs the
+ * interface's own brand errors, so it cannot be the interner's dispatch
+ * function.
+ *
+ * This is a second name for the read scr_ds_get answers, not a move of its
+ * body: a rewritten body reorders this unit's undefined-symbol table and so
+ * changes the build-id of every executable that links it. */
+static ScrDyn *scr_disposable_stack_member_value(const char *key, size_t len) {
   for (unsigned i = 0; i < SCR_DS_M_DISPOSED; i++) {
     if (strlen(scr_ds_method_names[i]) == len && memcmp(key, scr_ds_method_names[i], len) == 0)
       return scr_ds_method_value(i);
   }
   return NULL;
+}
+
+static ScrDyn *scr_ds_get(void *ptr, const char *key, size_t len) {
+  ScrDisposableStack *s = ptr;
+  if (len == 8 && memcmp(key, "disposed", 8) == 0) return scr_dyn_new_bool(s->disposed);
+  return scr_disposable_stack_member_value(key, len);
 }
 
 static bool scr_ds_set(void *ptr, const char *key, size_t len, const ScrDyn *value) {
@@ -876,6 +913,7 @@ static ScrDisposableStack *scr_ds_alloc(void) {
     installed = true;
     scr_dyn_handle_install(SCR_DYNH_DISPOSABLE_STACK, &scr_ds_ops);
     scr_atexit(scr_ds_teardown);
+    if (&scr_dyn_disposable_stack_member) scr_dyn_disposable_stack_member = scr_disposable_stack_member_value;
   }
   static ScrCycType cyc_type = {&scr_ds_trace, &scr_ds_gcfree, SCR_CYC_KIND_NONE, 0};
   ScrDisposableStack *s = scr_cyc_alloc(sizeof *s, &cyc_type);

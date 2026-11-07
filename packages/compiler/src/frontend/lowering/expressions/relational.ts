@@ -44,6 +44,7 @@ import {
   reflectOverNamespaceExpr,
 } from "../builtin-namespace-probe.js";
 import { nodeThrowExpr, numLit, strLit, varRef } from "../../../ir/build.js";
+import { lowerAsyncDisposableStackInstanceOf } from "../builtins/async-disposable-stack.js";
 import { lowerDisposableStackInstanceOf } from "../builtins/disposable-stack.js";
 import { lowerBlobInstanceof } from "../builtins/blob.js";
 import { lowerReadlineInstanceof } from "../builtins/readline.js";
@@ -312,6 +313,10 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   }
   {
     const stack = lowerDisposableStackInstanceOf(lowerer, expr);
+    if (stack) return stack;
+  }
+  {
+    const stack = lowerAsyncDisposableStackInstanceOf(lowerer, expr);
     if (stack) return stack;
   }
   if (lowerer.isStdlibGlobal(expr.right, "DataView")) {

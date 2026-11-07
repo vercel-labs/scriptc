@@ -105,6 +105,15 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // its getter/setter family, its see-through accessors and its
   // [[@@toStringTag]]); it builds that object on the dynamic object model.
   ["scr_data_view_proto.c", all("dataViewPrototypeValue", "dynInvoke")],
+  // Every builtin prototype and constructor object as an ordinary checked
+  // object, built from the pinned Node release's own table (t262-da A1).
+  // One build carries the whole graph, so the unit links into any program
+  // with the JavaScript object model: the graph for a program that reads a
+  // builtin intrinsic object from a JavaScript source, and the fill stub for
+  // the object model's other programs, whose scr_json.c build asks the graph
+  // what it filled. Fill-in place keeps the runtime's singletons the same
+  // objects.
+  ["scr_js_intrinsics.c", "jsObjectModel"],
   // createRequire's computed require and require.resolve.
   ["scr_require.c", "computedRequire"],
   ["scr_dc.c", "dc"],
@@ -123,6 +132,11 @@ export const OPTIONAL_RUNTIME_SOURCES = [
     "scr_async_dyn.c",
     any("dynAsync", "dynInvoke", "dc", "fileHandle", "nativeFetch", "nodeIsland", "nodeTest"),
   ],
+  // AsyncDisposableStack (t262 W4): the `await using` stack, whose
+  // disposeAsync awaits each resource. It awaits through the dyn-async unit
+  // and reads its resources' disposal methods through the symbol unit, both
+  // of which the fact selects, and no program without the class links it.
+  ["scr_async_disposable_stack.c", "asyncDisposableStack"],
   // Promise statics with a foreign constructor (Promise.all.call(C, ...)):
   // the specification's algorithms over the checked-dynamic tier. Its
   // feature also selects dynInvoke and dynAsync, whose units it calls.
@@ -294,6 +308,24 @@ function withJsObjectModel(variants) {
   return variants;
 }
 
+/** One SCR_ASYNC_DISPOSABLE_STACK twin of each variant of a unit the
+ * AsyncDisposableStack reaches (t262 W4). The class's handle tag exists only
+ * in a program that constructs one, so the unit's clauses for it are built
+ * only in the twins, each a superset of the variant it copies: a program
+ * selects the twin of the build it would otherwise have, with that build's
+ * defines intact, and every other program keeps its object byte for byte. */
+function withAsyncDisposableStack(variants) {
+  for (const { id, when, defines } of variants.slice()) {
+    const suffix = id === "default" ? "" : `-${id}`;
+    variants.push({
+      id: `async-disposable-stack${suffix}`,
+      when: { ...when, asyncDisposableStack: true },
+      defines: [...defines, "SCR_ASYNC_DISPOSABLE_STACK"],
+    });
+  }
+  return variants;
+}
+
 export function variantsFor(source) {
   const variants = [{ id: "default", when: {}, defines: [] }];
   // scr_json.c builds one object per flavor (and workers mode): its paths
@@ -327,6 +359,38 @@ export function variantsFor(source) {
     // tier's primitives and each one gets its object model twin. Every other
     // program keeps the default object, byte for byte.
     withJsObjectModel(variants);
+    // `Object.prototype.toString.call(stack)` and String() read the class's
+    // tag from the handle tag (scr_dyn_object_tag), and the
+    // AsyncDisposableStack tag exists only in a program that constructs the
+    // class, so that clause is a column of its own: these twins are the only
+    // builds carrying SCR_ASYNC_DISPOSABLE_STACK, and every other program —
+    // the object model's included — keeps the object it had, byte for byte.
+    withAsyncDisposableStack(variants);
+  }
+  // The builtin intrinsic graph (t262-da A1) is one unit written entirely
+  // for the JavaScript object model build. Its default object is the fill
+  // stub, so a program that holds the object model for another reason (a
+  // BigInt typed array selects it for bytes and json) carries no graph. Its
+  // own column (intrinsicObjects) is the raw program fact, deliberately not
+  // jsObjectModel: only a program whose JavaScript source reads an intrinsic
+  // links the table.
+  if (source === "scr_js_intrinsics.c") {
+    variants.push({
+      id: "js-om",
+      when: { intrinsicObjects: true },
+      defines: ["SCR_JS_OBJECT_MODEL", "SCR_JS_INTRINSICS"],
+    });
+    // A program that also constructs an AsyncDisposableStack links that
+    // class's own unit, whose prototype member values the graph defines
+    // (disposeAsync is the same function off the prototype and off a
+    // stack). The class unit is gated on its own fact, so the arm is a
+    // third build: the two facts together select it, and every other
+    // object-model program keeps the earlier object byte for byte.
+    variants.push({
+      id: "js-om-async-disposable-stack",
+      when: { intrinsicObjects: true, asyncDisposableStack: true },
+      defines: ["SCR_JS_OBJECT_MODEL", "SCR_JS_INTRINSICS", "SCR_ASYNC_DISPOSABLE_STACK"],
+    });
   }
   // util.inspect and instanceof of Node island handles; Node's report for
   // an uncaught island error.
@@ -360,6 +424,14 @@ export function variantsFor(source) {
   // and its default object compiles empty. A program with the fact links
   // the unit at all (OPTIONAL_RUNTIME_SOURCES).
   if (source === "scr_js_buffers.c") withJsObjectModel(variants);
+  // The primitive wrapper unit defines the intrinsic graph's two slots, and
+  // the definition is the unit's object-model code (t262-da A2): the pack
+  // carries the twin a program that reads `X.prototype` in the object model
+  // selects. Without it the unit's default build defines no slot, and that
+  // program's `String.prototype` is the graph's ordinary object whose members
+  // are the interner's rather than the wrapper's. A program that never reads
+  // an intrinsic keeps the default build, byte for byte.
+  if (source === "scr_js_wrapper.c") withJsObjectModel(variants);
   // A dynamic store to the `__proto__` member is Object.prototype's setter,
   // never a field the receiver's shape grows (scr_json.c answers it), so the
   // shape store probe declines it. Only the object model build models that
@@ -372,6 +444,12 @@ export function variantsFor(source) {
   if (source === "scr_inspect.c" || source === "scr_assert.c" || source === "scr_dyn_invoke.c") {
     withJsObjectModel(variants);
   }
+  // The member provider table above names an entry per builtin class whose
+  // members come from its own unit. The AsyncDisposableStack's row (and the
+  // slot it reads) exist only in a program that constructs the class, so that
+  // build is a column of its own: every other object model program keeps the
+  // object it had, byte for byte.
+  if (source === "scr_dyn_invoke.c") withAsyncDisposableStack(variants);
   // console.table reads the cells of a row's typed array, so a BigInt view
   // needs the element accessor that answers BigInts. The default object keeps
   // the numeric read, byte for byte.

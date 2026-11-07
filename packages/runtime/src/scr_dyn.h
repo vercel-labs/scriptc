@@ -142,10 +142,14 @@ typedef enum {
  *
  * Pin a new tag (move it to SCR_DYNH_TAGS with the value it has now: the
  * largest pinned value + 1 for the first row of SCR_DYNH_NEW_TAGS, + 2 for
- * the second, and so on) only when the LLVM backend needs its number: DYN_HANDLE_TAG_NUM and
+ * the second, and so on) when the LLVM backend needs its number — DYN_HANDLE_TAG_NUM and
  * TEXT_CODEC_TAG_NUM in packages/compiler/src/backend/llvm/dyn.ts may only
- * name pinned tags. Pin the new tags in name order, oldest first, in a change
- * of its own, so their values do not move.
+ * name pinned tags — and when a later tag sorting ahead of it in the list
+ * would otherwise renumber it: the word Segmenter's tags are pinned because
+ * scr_intl.c embeds their numbers in its code, so a new tag ahead of them
+ * would compile that unit differently for every program that links it. Pin
+ * the new tags in name order, oldest first, in a change of its own, so their
+ * values do not move.
  *
  * Checks: a pinned value at or above SCR_DYNH_CAPACITY fails its
  * _Static_assert, two tags with one value are a duplicate case label in
@@ -254,9 +258,11 @@ typedef enum {
   X(WS_WRITABLE, 95) /* WritableStream for checked-dynamic code (scr_webstreams.c) */ \
   X(WS_WRITER, 96) /* WritableStreamDefaultWriter (scr_webstreams.c) */
 
-/* Tags added since the last pin, by name only (see above). Every tag is
- * pinned for now: the LLVM backend names each of them. */
-#define SCR_DYNH_NEW_TAGS(Y)
+/* Tags added since the last pin, by name only (see above). Every pinned
+ * tag is named by the LLVM backend; the AsyncDisposableStack tag is the one
+ * this tree still numbers from the pinned span. */
+#define SCR_DYNH_NEW_TAGS(Y) \
+  Y(ASYNC_DISPOSABLE_STACK) /* AsyncDisposableStack (scr_async_disposable_stack.c) */
 
 /* Values below the largest pinned one that no tag holds, each with the
  * reason. Never reuse one without removing it here. */
@@ -870,6 +876,10 @@ static inline size_t scr_dyn_obj_index_of(const ScrDyn *o, const char *key, size
  * members this way right after adding them. */
 static inline void scr_dyn_obj_set_attrs_at(ScrDyn *o, size_t i, bool writable, bool enumerable,
                                             bool configurable) {
+  /* A refused insertion removes the property the caller meant to describe,
+   * so the index can name no entry; the layout branch would form a pointer
+   * past the slots array and the dictionary branch past the entries. */
+  if (i >= scr_dyn_obj_count(o)) return;
   if (o->v.obj.layout && writable && enumerable && configurable) return;
   ScrDynEntry *e = &scr_dyn_obj_dict_entries(o)[i];
   if (!e->accessor) e->writable = writable;
@@ -1246,6 +1256,29 @@ bool scr_disposable_stack_is(const ScrDyn *value);
 bool scr_disposable_stack_use(const ScrDyn *stack, const ScrDyn *value);
 bool scr_disposable_stack_use_callback(const ScrDyn *stack, const ScrDyn *value, const ScrDyn *dispose);
 bool scr_disposable_stack_adopt(const ScrDyn *stack, const ScrDyn *value, const ScrDyn *on_dispose);
+/* AsyncDisposableStack (scr_async_disposable_stack.c), the `await using`
+ * counterpart: the same stack shape whose disposal awaits each resource.
+ * scr_async_disposable_stack_new answers a new stack (+1). use reads the
+ * resource's disposal method with the async hint (@@asyncDispose, then
+ * @@dispose) and registers a resource even for null and undefined; adopt and
+ * defer check their callback. All three throw Node's ReferenceError on a
+ * disposed stack and Node's TypeError on an invalid resource or callback, and
+ * return false with the exception pending. The stack's other members —
+ * disposeAsync included — are function values and getters of its dyn
+ * handle. */
+ScrDyn *scr_async_disposable_stack_new(void);
+/* The member value an AsyncDisposableStack answers for the method named `key`
+ * (+1), or NULL: the value AsyncDisposableStack.prototype holds as its
+ * member. */
+ScrDyn *scr_async_disposable_stack_member_value(const char *key, size_t len);
+bool scr_async_disposable_stack_is(const ScrDyn *value);
+bool scr_async_disposable_stack_use(const ScrDyn *stack, const ScrDyn *value);
+/* use(value) for a typed class instance: `dispose` is the compiler's
+ * function, called with the value at disposal, whose result DisposeResources
+ * awaits like any other resource's. */
+bool scr_async_disposable_stack_use_callback(const ScrDyn *stack, const ScrDyn *value,
+                                             const ScrDyn *dispose);
+bool scr_async_disposable_stack_adopt(const ScrDyn *stack, const ScrDyn *value, const ScrDyn *on_dispose);
 void scr_dyn_symbol_key_set(ScrDyn *value, ScrDyn *key, ScrDyn *stored);
 /* scr_dyn_obj_set_field for a symbol-keyed field of a class instance's
  * view: replaces the value whatever the attributes copied into the view.
@@ -1283,9 +1316,65 @@ ScrDyn *scr_dyn_global_constructor(const ScrStr *name);
  * refusal where it is NULL. */
 extern ScrDyn *(*scr_dyn_global_constructor_hook)(const ScrStr *name);
 #endif
+/* The builtin-method unit's interned function value for one of the members
+ * it implements — String's trim family, RegExp's exec, test and toString —
+ * +1, and NULL for every other pair and for a build without that unit
+ * (scr_dyn_builtin_methods.c). It is the value `''.trim` and `/a/.exec`
+ * answer, so the intrinsic graph's prototype member and the wrapper
+ * prototype's member are that same function object. The unit fills the slot
+ * with a static initializer; the readers carry the fallback below. */
+typedef ScrDyn *(*ScrDynBuiltinMethodSlot)(const char *owner, const char *member,
+                                           size_t member_length);
+extern ScrDynBuiltinMethodSlot scr_dyn_builtin_method_slot;
+#ifdef SCR_JS_OBJECT_MODEL
+/* String.prototype, Number.prototype and Boolean.prototype are the wrapper
+ * unit's objects — only it builds one with the [[PrimitiveValue]] slot their
+ * instances inherit — and their members are the intrinsic graph's, which
+ * wraps each member so the brand checks run on the primitive the prototype
+ * wraps (t262-da A2). A program links the graph when it reads an intrinsic,
+ * and the wrapper unit only when it names a wrapper, so neither unit may name
+ * the other: a reference from either side would drag the other into every
+ * program that links the first. Each edge is a slot instead, filled by the
+ * defining unit with a static initializer, which is data and not a
+ * constructor — a constructor is a link root that pulls its unit's whole call
+ * graph, the dynamic tier included (t262-da W4).
+ *
+ * The reading unit carries the fallback so a program that links it alone
+ * still links: where no unit provides the slot, the fallback leaves it at
+ * NULL, and the reader then answers what it answered before the fold. The
+ * fallback is a weak definition of the slot, which the providing unit's
+ * strong one overrides. A weak reference would not do on either format:
+ * Darwin's linker refuses one to a symbol the link lacks, and on ELF it
+ * leaves the symbol's address at zero rather than the slot at NULL, so the
+ * reader's test of the slot would load it from address zero and fault. */
+/* The wrapper unit's prototype object for `id` ("String.prototype",
+ * "Number.prototype" or "Boolean.prototype"), +1, without members: the
+ * graph's fill defines them, from the interned member values below. */
+typedef ScrDyn *(*ScrJsWrapperPrototypeSlot)(const char *id);
+/* The wrapper unit's interned member value of `kind` for `name` (+1): the
+ * value its prototype object holds and a primitive's or a wrapper instance's
+ * member read answers, so one prototype member is one function object. NULL
+ * when the kind's prototype has no such member (String's `[Symbol.iterator]`,
+ * or a name this build does not implement). */
+typedef ScrDyn *(*ScrJsWrapperMemberSlot)(double kind, const char *name, size_t name_length);
+/* The graph's registration of the three wrapper providers in the invoke
+ * unit's member table. The invoke unit asks once, before it answers the first
+ * builtin member read, so that even the first read of a wrapper member is the
+ * value the prototype object holds. */
+typedef void (*ScrJsWrapperProvidersSlot)(void);
+extern ScrJsWrapperPrototypeSlot scr_js_wrapper_intrinsic_prototype_slot;
+extern ScrJsWrapperMemberSlot scr_js_wrapper_member_slot;
+extern ScrJsWrapperProvidersSlot scr_js_wrapper_member_providers_slot;
+#define SCR_JS_SLOT_FALLBACK(type, name) __attribute__((weak)) type name
+#endif
 /* The interned function value of an error constructor ("TypeError"), or
  * NULL for other names. */
 ScrDyn *scr_dyn_error_constructor(const char *name);
+#ifdef SCR_JS_OBJECT_MODEL
+/* Whether scr_dyn_global_constructor answers a value for `name` (it traps on
+ * the names it does not intern). */
+bool scr_dyn_global_constructor_known(const ScrStr *name);
+#endif
 /* A builtin global function (setTimeout, setImmediate, process.nextTick, ...)
  * as an interned dynamic function value: +1. */
 ScrDyn *scr_dyn_builtin_function(const ScrStr *name);
@@ -1708,6 +1797,42 @@ ScrDyn *scr_js_wrapper_this_string(ScrDyn *value, ScrStr *name);
  * constructor value. */
 ScrDyn *scr_js_wrapper_boolean_prototype(ScrDyn *constructor);
 
+/* The wrapper unit's prototype object for `id` ("String.prototype",
+ * "Number.prototype" or "Boolean.prototype"), which the intrinsic table
+ * answers for that id (t262-da A2): only this unit can build an object with
+ * the [[PrimitiveValue]] slot, and it is the object `new String/Number/
+ * Boolean(v)` instances inherit from, so one intrinsic has one builder and a
+ * member the program writes through the prototype object is the member an
+ * instance walks to (§4.4). Returned without members: the table's fill
+ * defines them, and each is this unit's interned member value — the same
+ * function a primitive's member read answers through
+ * scr_js_wrapper_member_slot — so a call through the member runs this unit's
+ * method for the prototype the frontend recognizes (wrapper.isStringMethod).
+ * +1.
+ *
+ * The graph, not every program that links this unit, is the only caller: a
+ * program links this unit when it names a wrapper, and the graph when it
+ * reads an intrinsic, so the graph reaches this function through a slot
+ * (scr_js_wrapper_intrinsic_prototype_slot) this unit fills with a static
+ * initializer, and the graph's own weak fallback leaves the slot at zero when
+ * this unit is absent — the graph then answers an ordinary object instead.
+ * The pointer, not a call, is what crosses, so the column that decides
+ * linking stays the program's own wrapper use. */
+ScrDyn *scr_js_wrapper_intrinsic_prototype(const char *id);
+/* Installs the program's own conversion closure as the `constructor` of the
+ * intrinsic prototype `prototype` and seeds the closure's `prototype` with
+ * it, so `X.prototype.constructor` (and its descriptor value) is the value a
+ * read of `X` answers (t262-da A2). +1 (prototype). */
+ScrDyn *scr_js_wrapper_install_constructor(ScrDyn *prototype, ScrDyn *constructor);
+/* The interned member value of the wrapper prototype `kind` for `name`
+ * (+1) — the value the prototype object holds and a primitive's or a
+ * wrapper instance's member read answers, so a call through it runs this
+ * unit's method for that prototype and the frontend recognizes it as the
+ * builtin member — or NULL when the prototype has no member of that name.
+ * The graph reaches it through scr_js_wrapper_member_slot, for the reason
+ * above. */
+ScrDyn *scr_js_wrapper_member_for(double kind, const char *name, size_t name_length);
+
 /* Promise statics called with a foreign constructor (`Promise.all.call(C, …)`,
  * scr_js_promise_generic.c, linked only into programs that make the call):
  * the specification's algorithms over NewPromiseCapability(C) and
@@ -1956,6 +2081,54 @@ ScrDyn *scr_dyn_reflect_apply(ScrDyn *target, ScrDyn *receiver, ScrDyn *argument
 ScrDyn *scr_dyn_apply_array_like(const ScrDyn *target, const ScrDyn *receiver, const ScrDyn *arguments, const char *what);
 bool scr_dyn_same_value(const ScrDyn *left, const ScrDyn *right);
 ScrDyn *scr_dyn_builtin_method(const ScrStr *prototype, const ScrStr *method);
+/* A builtin that answers its instances' member values from a table of its own
+ * unit — a Date (scr_lib.c), the DisposableStack (scr_symbol.c), a wrapper
+ * prototype (String, Number, Boolean, BigInt, Symbol) — instead of by
+ * interning a function of the member's name: given the class and the member
+ * name, the member value (+1), or NULL for a name the builtin does not
+ * answer. A member read off an instance and off its prototype both pass
+ * through scr_dyn_builtin_method, so both answer this one value, as in Node
+ * (`stack.use === DisposableStack.prototype.use`,
+ * `"abc".slice === String.prototype.slice`). */
+typedef ScrDyn *(*ScrDynMemberProvider)(const char *cls, const char *key, size_t key_len);
+/* Answer `cls`'s member reads through `member`, beside the providers this unit
+ * already carries (Date, DisposableStack). One provider serves any number of
+ * classes, and one class keeps the first provider registered for it. A
+ * provider a program never reads costs it nothing: the unit that carries one
+ * is linked only when the program itself pays for it. Identity is an
+ * object-model behavior, so a build without the object model records and
+ * consults nothing. */
+void scr_dyn_member_provider_register(const char *cls, ScrDynMemberProvider member);
+/* ── the builtin intrinsics (scr_js_intrinsics.c) ──────────────────────
+ * The standard library's prototype and constructor objects as ordinary
+ * checked-dynamic values, built from the table the pinned Node release
+ * generated (scr_js_intrinsics_table.h): one object per intrinsic, whose
+ * members are the runtime's interned functions, and whose [[Prototype]]
+ * links are the standard's. `id` is one of the table's names
+ * ("Date.prototype", "Object.keys", "%TypedArray%"), which the frontend
+ * compiles against, so an unknown one traps. The unit links only into
+ * programs built with SCR_JS_OBJECT_MODEL. */
+ScrDyn *scr_js_intrinsic(const ScrStr *id); /* +1 */
+/* Fills the intrinsic `object` stands for in place. It answers the runtime's
+ * existing singletons (Object.prototype, Array.prototype, Error.prototype),
+ * so every reference the program already holds sees the members; an object
+ * the table does not name is left alone. Idempotent. */
+void scr_js_intrinsics_fill(ScrDyn *object);
+/* Whether the runtime has filled `object` with its intrinsic members. */
+bool scr_js_intrinsic_filled(const ScrDyn *object);
+/* Whether a fill is running: the fences that keep a program from replacing
+ * a builtin member stay off while the runtime builds them. */
+bool scr_js_intrinsic_filling(void);
+/* Whether the table names `key` as a member of the intrinsic `object` stands
+ * for. The member-replacement fence (scr_json.c) refuses a program's write,
+ * delete or redefinition of one: the member is the runtime's interned
+ * function and the typed call sites call the native entry point, so the
+ * replacement would never be observed. Keys the table does not name are
+ * ordinary. */
+bool scr_js_intrinsic_has_builtin_member(const ScrDyn *object, const ScrDyn *key);
+/* The [[Prototype]] the intrinsic graph gives `value` (+1), or NULL when the
+ * value is not one the graph describes. */
+ScrDyn *scr_js_intrinsic_prototype_of(const ScrDyn *value);
 /* A standard library prototype object as a value — `Date.prototype` read in
  * a JavaScript source (+1, one object per thread; the constructor's
  * `prototype` is the same object). Named by the constructor whose interface

@@ -2,6 +2,7 @@ import {
   BIGINT_BYTES_NAMES,
   type IrClassDef,
   type IrExpr,
+  type IrFunction,
   type IrModule,
   type IrRecordShape,
   type IrType,
@@ -388,6 +389,7 @@ const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.builtinMethodValue",
   "dyn.stdlibPrototype",
   "dyn.dataViewPrototype",
+  "dyn.intrinsic",
   "dyn.defineProperty",
   "dyn.definePropertyShapes",
   "handle.propsDefineProps",
@@ -501,6 +503,7 @@ const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   ...BUILTIN_CLASS_LIB_FNS,
   "dyn.usingDispose",
   "dyn.usingMethod",
+  "dyn.intrinsic",
   "util.isDeepStrictEqual",
   // The Buffer function value's Symbol(kIsEncodingSymbol) member
   "buffer.constructor",
@@ -1185,10 +1188,13 @@ const FS_READ_BYTES_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
 /** The entries that need the JavaScript object model build (t262-da §J):
  * the runtime code a JavaScript source reaches for builtin intrinsics,
  * array attributes, BigInt views, handle property tables and buffer views
- * that no typed program can observe. Empty until the first slice lands
- * (A1 adds dyn.intrinsic); the slices share one SCR_JS_OBJECT_MODEL build
- * of every unit they touch instead of one build column per feature. */
+ * that no typed program can observe. The slices share one
+ * SCR_JS_OBJECT_MODEL build of every unit they touch instead of one build
+ * column per feature. */
 export const JS_OBJECT_MODEL_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  // A builtin prototype or constructor object read as an ordinary checked
+  // object, built from the table of the pinned Node release (A1).
+  "dyn.intrinsic",
   // Resizable ArrayBuffers and growable SharedArrayBuffers (t262-dc C2), and
   // the arming call that turns on the buffer views registry.
   "arrayBuffer.newResizable",
@@ -1234,6 +1240,86 @@ export function jsObjectModelFact(features: {
   );
 }
 
+/** The prototype members the builtin-method unit implements, by the
+ * intrinsic object the read starts from: String's trim family and RegExp's
+ * exec, test and toString. The graph's fill asks that unit's slot for a row
+ * here, so a keyed read of one of them links the unit. */
+const BUILTIN_METHOD_VALUE_READS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ["String.prototype", new Set(["trim", "trimStart", "trimEnd", "trimLeft", "trimRight"])],
+  ["RegExp.prototype", new Set(["exec", "test", "toString"])],
+]);
+
+/** The intrinsic id a `dyn.intrinsic` read names, through the
+ * `wrapper.installConstructor` call the primitive owners wrap it in. */
+function intrinsicIdOf(expr: IrExpr): string | null {
+  if (expr.kind !== "libCall") return null;
+  const inner = expr.args[0];
+  if (inner === undefined) return null;
+  if (expr.fn === "wrapper.installConstructor") return intrinsicIdOf(inner);
+  if (expr.fn !== "dyn.intrinsic") return null;
+  return inner.kind === "strLit" ? inner.value : null;
+}
+
+/** Whether `node` is a keyed read of a prototype member the builtin-method
+ * unit implements: `String.prototype.trim` or `RegExp.prototype.exec` read
+ * as a value in a JavaScript source. */
+function isPrototypeMemberValueRead(node: IrExpr): boolean {
+  if (node.kind !== "dynKeyGet" || node.key.kind !== "strLit") return false;
+  const members = BUILTIN_METHOD_VALUE_READS.get(intrinsicIdOf(node.value) ?? "");
+  return members !== undefined && members.has(node.key.value);
+}
+
+/** The member name of a constant-key property helper: the frontend builds
+ * one `%dyn.class.property.N` function per source-level member name
+ * (class-dynamic-dispatch.ts), and the helper's own body names that member
+ * as the string literal key of its generic read. A helper whose body reads
+ * more than one constant key has no single member to report. */
+function classPropertyHelperKey(fn: IrFunction): string | null {
+  if (!fn.name.startsWith("%dyn.class.property.")) return null;
+  let key: string | null = null;
+  let mixed = false;
+  const nodeKey = (node: IrExpr): IrExpr | null => {
+    if (node.kind === "dynKeyGet") return node.key;
+    if (node.kind === "libCall" && node.fn === "dyn.bagGet") return node.args[1] ?? null;
+    return null;
+  };
+  everyStmtList(fn.body, {
+    expr: (node) => {
+      const named = nodeKey(node);
+      if (named === null || named.kind !== "strLit") return true;
+      if (key === null) key = named.value;
+      else if (key !== named.value) mixed = true;
+      return !mixed;
+    },
+    stmt: () => !mixed,
+  });
+  return mixed ? null : key;
+}
+
+/** Whether a property helper is called on a prototype object whose member
+ * the builtin-method unit implements. The read of `String.prototype.trim`
+ * or `RegExp.prototype.exec` in a JavaScript source is a call to that
+ * member's helper with the intrinsic object as its receiver, so the helper
+ * names the member and the call names the owner. */
+function builtinMethodValueScan(mod: IrModule): RuleScan {
+  const keys = new Map<string, string | null>();
+  for (const fn of mod.functions) {
+    if (fn.name.startsWith("%dyn.class.property.")) keys.set(fn.name, classPropertyHelperKey(fn));
+  }
+  let found = false;
+  return {
+    expr: (node) => {
+      if (found || node.kind !== "call") return;
+      const key = keys.get(node.callee);
+      const receiver = node.args[0];
+      if (key === undefined || key === null || receiver === undefined) return;
+      const members = BUILTIN_METHOD_VALUE_READS.get(intrinsicIdOf(receiver) ?? "");
+      if (members !== undefined && members.has(key)) found = true;
+    },
+    result: () => found,
+  };
+}
+
 /** One rule per runtime feature, sorted by name. A new feature is an
  * entry here and its line in noRuntimeFeatures; RuntimeFeatures, the scan
  * and its early exit derive from this table. The lists above keep one
@@ -1247,6 +1333,11 @@ const RUNTIME_FEATURE_RULES = {
    * queueMicrotask scheduling goes through the runtime's *_als entry
    * points, which carry the active stores into each callback. */
   asyncContext: rule({ fns: [...ASYNC_CONTEXT_LIB_FNS] }),
+  /** scr_async_disposable_stack.c, the `await using` stack: a program that
+   * constructs an AsyncDisposableStack. Its disposal awaits through the
+   * dyn-async unit and reads each resource's disposal method through the
+   * symbol unit, which the fact selects too (see the end of the scan). */
+  asyncDisposableStack: rule({ prefixes: ["disposable.async"] }),
   /** scr_wasm.c converts i64 values through BigInt, and BigIntStats reads
    * produce bigint values. */
   bigint: rule({
@@ -1402,8 +1493,15 @@ const RUNTIME_FEATURE_RULES = {
    * dyn-invoke unit's array dispatch. */
   arrayLikeDispatch: rule({ fns: ["dyn.arrayLikeProtoCall"] }),
   /** A builtin prototype method as a function value (String's trim family,
-   * RegExp's exec/test/toString; scr_dyn_builtin_methods.c). */
-  builtinMethodValue: rule({ fns: ["dyn.builtinMethodValue"] }),
+   * RegExp's exec/test/toString; scr_dyn_builtin_methods.c). The members
+   * read through their prototype object are that unit's values too — the
+   * graph's fill asks its slot — so the keyed read of `String.prototype
+   * .trim` or `RegExp.prototype.exec` marks the same fact. */
+  builtinMethodValue: rule({
+    fns: ["dyn.builtinMethodValue"],
+    scan: builtinMethodValueScan,
+    expr: (node) => isPrototypeMemberValueRead(node),
+  }),
   dynInvoke: rule({
     initial: (mod) => mod.workers === true,
     scan: computedBufferMemberScan,
@@ -1755,7 +1853,13 @@ const RUNTIME_FEATURE_RULES = {
    * builds its Dirent there. */
   symbol: rule({
     initial: (mod) => (mod.records ?? []).some(isDirentShape),
-    fns: [...SYMBOL_LIB_FNS, "dir.readCb"],
+    // Every object-model program links the intrinsic graph, which defines its
+    // symbol-keyed members through scr_symbol.c (scr_js_intrinsics.c calls
+    // scr_sym_well_known, scr_dyn_new_symbol and scr_sym_release). The fact is
+    // the whole JS_OBJECT_MODEL_LIB_FNS set, not just dyn.intrinsic: a program
+    // whose JavaScript source only calls Object.getPrototypeOf on a value
+    // carries it too and would otherwise fail to link (t262-da A1).
+    fns: [...SYMBOL_LIB_FNS, "dir.readCb", ...JS_OBJECT_MODEL_LIB_FNS],
     // %Iterator.prototype% (scr_js_iterator.c) defines its Symbol.iterator,
     // Symbol.toStringTag and Symbol.dispose members with the well-known
     // symbols scr_sym_well_known makes.
@@ -1965,6 +2069,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
   return {
     assert: false,
     asyncContext: false,
+    asyncDisposableStack: false,
     bigint: false,
     bigstats: false,
     childProcess: false,
@@ -2163,6 +2268,27 @@ function scanRuntimeFeatures(
     features.dynTier = mod.functions.some(
       (fn) => fn.returnType.kind === "jsval" || fn.params.some((p) => p.type.kind === "jsval"),
     );
+  // The object-model build's intrinsic graph builds its members through the
+  // invoke unit (scr_dyn_global_constructor, scr_dyn_builtin_method,
+  // scr_dyn_function_apply), so the fact links it: a JavaScript source can
+  // read an intrinsic without dispatching anything of its own (t262-da A1).
+  if (!features.dynInvoke && features.jsObjectModel) features.dynInvoke = true;
+  // The intrinsic graph answers String.prototype, Number.prototype and
+  // Boolean.prototype with the wrapper unit's objects: only that unit builds
+  // the [[PrimitiveValue]] slot, and they are the prototypes
+  // `new String/Number/Boolean(v)` instances inherit from, so one intrinsic
+  // has one object (t262-da A2). The graph reaches the unit through slots
+  // (scr_dyn.h) rather than by name, so the unit rides the program's own
+  // wrapper use alone — the `wrapper.*` operations above, which is what a
+  // read of `X.prototype` emits — and a JavaScript program that never names
+  // a wrapper prototype links exactly what it did before the fold.
+  // AsyncDisposableStack's unit awaits through the dyn-async helpers
+  // (scr_async_dyn.c) and reads each resource's [Symbol.asyncDispose] and
+  // [Symbol.dispose] through scr_symbol.c, so its fact links both.
+  if (features.asyncDisposableStack) {
+    features.dynAsync = true;
+    features.symbol = true;
+  }
   return features;
 }
 

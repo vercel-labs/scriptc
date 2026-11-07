@@ -769,9 +769,10 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
   // behavior) and refuses the write with SC1091, which names the Node-island
   // route the sloppy semantics need. TypeScript input keeps the compile
   // error: an undeclared name there is a bug, not a runtime path. 2552 is
-  // 2304's did-you-mean spelling, and 18004 is the same unresolved name in
-  // SHORTHAND position (`{ x }`), which the checker reports against the
-  // property instead of the reference.
+  // 2304's did-you-mean spelling, 2584 its spelling for a name another
+  // library declares (`document`, `window`: Node defines neither), and
+  // 18004 is the same unresolved name in SHORTHAND position (`{ x }`), which
+  // the checker reports against the property instead of the reference.
   [
     2304,
     THROW(
@@ -783,6 +784,13 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
     2552,
     THROW(
       "a read of an undeclared name throws Node's ReferenceError at the access (typeof answers 'undefined'); a sloppy write is SC1091",
+    ),
+  ],
+  [
+    2584,
+    THROW(
+      "a read of an undeclared name throws Node's ReferenceError at the access (typeof answers 'undefined'); a sloppy write is SC1091",
+      ["tests/corpus/8941-js-host-name-read.js", "tests/corpus/global-detection-typeof.cjs"],
     ),
   ],
   [

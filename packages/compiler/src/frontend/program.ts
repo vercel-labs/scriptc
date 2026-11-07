@@ -7230,25 +7230,6 @@ function preflightGate7(load: LoadResult): PreflightGate {
     return d.code === 2300 && commentDup.has(`${d.fileName}:${sf.text.slice(d.pos, d.end)}`);
   };
 
-  /* `typeof window` / `typeof self` in a JavaScript file: the operand of
-   * typeof may name a global nothing declares (Node answers "undefined"
-   * and never throws), the feature-detection idiom every isomorphic
-   * package uses, and the guarded uses of that name (`typeof window < "u"
-   * ? window : …`) are code Node never runs. A name the file feature-tests
-   * this way is therefore not a type error in JavaScript; a reached use
-   * still meets the lowering's located refusal. TypeScript files keep the
-   * error and its hint. */
-  const typeofTestedNameSuppressed = (p: ts.Program, d: ts.Diagnostic): boolean => {
-    if (d.code !== 2304 && d.code !== 2552 && d.code !== 2584) return false;
-    if (d.fileName === undefined || !isJsSourceFileName(d.fileName)) return false;
-    if (d.pos === undefined || d.end === undefined) return false;
-    const sf = p.getSourceFile(d.fileName);
-    if (!sf) return false;
-    const name = sf.text.slice(d.pos, d.end);
-    if (!/^[A-Za-z_$][\w$]*$/.test(name)) return false;
-    return new RegExp(`\\btypeof\\s*\\(?\\s*${name.replace(/\$/g, "\\$")}(?![\\w$])`).test(sf.text);
-  };
-
   // A `return` at the top level of a CommonJS module (TS1108): Node runs
   // the module as a function body, so the return ends the module's
   // evaluation. ES modules and TypeScript keep the error.
@@ -7350,7 +7331,6 @@ function preflightGate7(load: LoadResult): PreflightGate {
       (d.fileName === undefined || !isPackageShimFile(d.fileName)) &&
       !namespaceCalleeSuppressed(p, d) &&
       !workspaceImplicitAnySuppressed(p, d) &&
-      !typeofTestedNameSuppressed(p, d) &&
       !cjsTopLevelReturnSuppressed(p, d) &&
       !jsdocTypeSuppressed(p, d, commentDup);
     // Every filter except the opinion admission, in its historical order.

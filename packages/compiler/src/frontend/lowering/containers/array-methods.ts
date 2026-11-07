@@ -558,6 +558,18 @@ export function lowerArrayMethodCall(
     const probe = lowerer.lowerExpr(access.expression);
     if (probe.type.kind === "array") receiverIr = probe.type;
   }
+  // A checker array of checked-dynamic elements (`object[]`) maps to the
+  // checked-dynamic array, but a list nothing else can observe is a native
+  // vector of its values: Object.values over a checked-dynamic object whose
+  // result goes straight to an array method (consumesValueList), and the
+  // lists the methods below build from one. Ride the ordinary tables on the
+  // lowered element type, as the two probes above do. A value that lowers
+  // to the checked-dynamic array was claimed by the dyn receiver path
+  // before this one.
+  if (receiverIr?.kind === "dyn" && lowerer.checker.isArrayType(checkerReceiver)) {
+    const probe = lowerer.lowerExpr(access.expression);
+    if (probe.type.kind === "array") receiverIr = probe.type;
+  }
   if (receiverIr?.kind === "union") {
     const unionHof = lowerArrayUnionHofCall(lowerer, call, access, receiverIr);
     if (unionHof) return unionHof;

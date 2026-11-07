@@ -6,6 +6,7 @@ import { InternalCompilerError } from "../../../errors.js";
 import { canAssertClassValue, checkedClassAssertion } from "../class-assertions.js";
 import * as ts from "../../ts7/adapter.js";
 import { PoisonError, type Lowerer } from "../lowerer.js";
+import { valueListCallbackReturn } from "../lower-calls.js";
 import {
   BOOL,
   DYN,
@@ -1847,6 +1848,10 @@ export function lowerArrayFlatMapCall(
     argNode,
     [callbackValueType(lowerer, elem, present)],
     arrT,
+    false,
+    // A callback that returns the values of a checked-dynamic object
+    // returns the native list of them, which the flatten below reads.
+    valueListCallbackReturn(lowerer, argNode),
   );
   const { fnArg, arity } = lowered;
   // Only an array that can hold elements outside its element type needs to

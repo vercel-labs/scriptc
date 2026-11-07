@@ -467,8 +467,9 @@ export function nodeIslandSymbols(names) {
  * scr_error_dyn_fields. Their constructors are not a root: `super(message)`
  * with a string message takes the typed entry.
  * bench/stream-buffered-drain, also added later, drains an object-mode
- * Readable, whose chunks are checked-dynamic values. Every other bench
- * workload is fully typed and must link none. The gate and
+ * Readable, whose chunks are checked-dynamic values. bench/catalog-tables,
+ * also added later, walks dictionaries of `object` values from JSON.parse.
+ * Every other bench workload is fully typed and must link none. The gate and
  * tests/harness/bench-dynamic-tier.test.ts enforce that, and the test also
  * fails when a listed workload stops linking them, so remove a workload here
  * when a leak fix makes its binary clean. */
@@ -497,6 +498,7 @@ export const DYNAMIC_WORKLOADS = new Set([
   "bench/layered-errors",
   "bench/stream-buffered-drain",
   "bench/untyped-validate",
+  "bench/catalog-tables",
 ]);
 
 /** Names of the functions (text and weak symbols) in `nm` output. Mach-O

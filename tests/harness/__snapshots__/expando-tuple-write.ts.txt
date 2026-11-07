@@ -1,0 +1,13 @@
+expando-tuple-write.ts:6:1 - error SC1090: assignment to non-variables are not supported yet
+
+  5 | const tuple: [string, number] = ["a", 1];
+  6 | (tuple as any).extra = "e";
+    | ^~~~~~~~~~~~~~~~~~~~
+  7 | console.log((tuple as any).extra);
+
+expando-tuple-write.ts:7:13 - error SC1090: reading 'extra' from a value of type 'any' is not supported yet
+
+  6 | (tuple as any).extra = "e";
+  7 | console.log((tuple as any).extra);
+    |             ^~~~~~~~~~~~~~~~~~~~
+  8 | // End of the tuple expando write diagnostic fixture.

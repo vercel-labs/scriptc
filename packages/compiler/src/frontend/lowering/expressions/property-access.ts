@@ -46,6 +46,7 @@ import {
   neverTaintedJsType,
   own,
 } from "../lowerer.js";
+import { keepsLivePropertyTable, registryExpandoName } from "../live-property-table.js";
 import { httpClientFnBindingOf, httpClientSecureRef } from "../lower-server.js";
 import {
   ARRAY_METHODS,
@@ -1956,18 +1957,24 @@ export function lowerPropertyAccessExpr(
     const read = narrowedUnionValueRead(lowerer, expr, recvLowered);
     if (read) return read;
   }
-  // A member the static type does not declare, read in a JavaScript source
-  // file (`__expected.input`, a record's added `note`): JavaScript's [[Get]]
-  // answers the own property the program added, then the prototype chain,
-  // then undefined. The checked-dynamic view is where such properties live
-  // (the `.x = v` statement routes the write there), and only the
-  // identity-preserving conversions qualify, so the read sees a write made
-  // through any other view of the same object.
+  // An own property the static shape does not carry: the read side of an
+  // expando write (`__expected.index = 0` then `__expected.index`), a member
+  // the representation has no slot for while Node's object does
+  // (`RegExpMatchArray.index` once the checker's type lowers to the array),
+  // or a member the static type does not declare read in a JavaScript source
+  // file. Node answers the own property the program added, then the
+  // prototype chain, then undefined; the live checked-dynamic capsule and
+  // the JavaScript object's own live view hold exactly those properties, and
+  // a declared field or represented member answers above, so this arm only
+  // replaces the fence.
   if (
-    !expr.questionDotToken &&
-    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
-    lowerer.jsDynamicMemberTarget(recvLowered.type) &&
-    !declaredMemberOf(lowerer, expr.expression, expr.name.text)
+    (lowerer.dynConvertible(recvLowered.type) &&
+      keepsLivePropertyTable(lowerer, recvLowered.type) &&
+      !registryExpandoName(lowerer, expr.name.text)) ||
+    (!expr.questionDotToken &&
+      isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+      lowerer.jsDynamicMemberTarget(recvLowered.type) &&
+      !declaredMemberOf(lowerer, expr.expression, expr.name.text))
   ) {
     return lowerer.maybeNarrow(
       {

@@ -293,6 +293,18 @@ function withJsObjectModel(variants) {
   return variants;
 }
 
+/** Features a program never has without another: the compiler's rule for
+ * the second fires wherever the rule for the first does
+ * (packages/compiler/src/ir/runtime-features.ts). A unit therefore has no
+ * build for the first feature without the second; every other combination
+ * of the features its builds name has exactly one.
+ *
+ * `formData` without `webBodies` does not exist: every `formdata.` call
+ * sets both, so scr_fetch.c's FormData builds all carry SCR_WEB_BODIES. */
+export const RUNTIME_FEATURE_IMPLIES = {
+  formData: ["webBodies"],
+};
+
 export function variantsFor(source) {
   const variants = [{ id: "default", when: {}, defines: [] }];
   // scr_json.c builds one object per flavor (and workers mode): its paths

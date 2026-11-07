@@ -1,5 +1,9 @@
 import { expect, test } from "vitest";
-import { createRuntimePackMatrix, variantsFor } from "../runtime-pack-matrix.mjs";
+import {
+  createRuntimePackMatrix,
+  RUNTIME_FEATURE_IMPLIES,
+  variantsFor,
+} from "../runtime-pack-matrix.mjs";
 
 const matrix = createRuntimePackMatrix({
   target: { object_format: "elf" },
@@ -288,4 +292,31 @@ test("Blob, File and FormData bodies select the fetch build that extracts them",
     selected("scr_fetch.c", { ...plain, webStreams: true, webBodies: true, formData: true })
       .defines,
   ).toEqual(["SCR_HANDLE_CLASSES", "SCR_WEB_BODIES", "SCR_FORMDATA_BODY"]);
+});
+
+test("the fetch unit has one build for every combination of its features a program can have", () => {
+  // A selection that takes only the build naming exactly a program's
+  // features needs one for each combination. A combination the compiler
+  // rules out has none: no program has FormData without web bodies.
+  const variants: { id: string; when: Record<string, boolean> }[] = variantsFor("scr_fetch.c");
+  const named = (when: Record<string, boolean>): string =>
+    Object.keys(when)
+      .filter((name) => when[name])
+      .sort()
+      .join("+");
+  const implies: Record<string, string[]> = RUNTIME_FEATURE_IMPLIES;
+  const features = [...new Set(variants.flatMap((variant) => Object.keys(variant.when)))].sort();
+  expect(features).toEqual(["formData", "webBodies", "webStreams"]);
+  const impossible: string[] = [];
+  for (let mask = 0; mask < 1 << features.length; mask++) {
+    const on = features.filter((_, index) => (mask & (1 << index)) !== 0);
+    const possible = on.every((name) => (implies[name] ?? []).every((need) => on.includes(need)));
+    const builds = variants.filter((variant) => named(variant.when) === on.join("+"));
+    expect(
+      builds.map((variant) => variant.id),
+      `scr_fetch.c with ${on.join("+") || "no feature"}`,
+    ).toHaveLength(possible ? 1 : 0);
+    if (!possible) impossible.push(on.join("+"));
+  }
+  expect(impossible).toEqual(["formData", "formData+webStreams"]);
 });

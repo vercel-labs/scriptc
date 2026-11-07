@@ -559,10 +559,11 @@ function nextTick(token) {
 // A timer or immediate the program created is a number in island code, as
 // it is in the program: its id, which starts at 2^52 in a program with
 // islands, a range Node's own timer ids (async ids) do not reach. Node's
-// clear functions accept such a number and clear the program's timer through
-// the runtime's own clear (scr_loop_hosted_run in scr_async.c, whose job
-// kinds these are), so the runtime releases its callback and its count of
-// live timers stays right. Every other value is Node's to clear.
+// clear functions accept such a number and clear the program's handle of that
+// kind through the runtime's own clear (scr_loop_hosted_run in scr_async.c,
+// whose job kinds these are), so the runtime releases its callback and its
+// count of live timers stays right; a clear of the other kind's number finds
+// nothing to clear, as in Node. Every other value is Node's to clear.
 const TIMER_ID_BASE = 2 ** 52;
 const JOB_CLEAR_TIMER = 16;
 const JOB_CLEAR_IMMEDIATE = 16 | 8;

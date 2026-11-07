@@ -667,8 +667,9 @@ function lowerTimerCall(
     return { kind: "libCall", fn: "timers.clearInterval", args: [handle], type: VOID, loc };
   }
   // setImmediate/clearImmediate: Node's check-phase pair. The handle is
-  // the f64 immediate id (its own space — clearTimeout of an Immediate
-  // no-ops, like Node); the callback adapts like setTimeout's.
+  // the f64 immediate id, drawn from the timer sequence so its number
+  // never names a timeout (clearTimeout of an Immediate no-ops, like
+  // Node); the callback adapts like setTimeout's.
   if (member === "setImmediate") {
     if (expr.arguments.nodes.length === 0) {
       lowerer.noLowering(

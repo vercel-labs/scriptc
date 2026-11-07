@@ -16,6 +16,8 @@ import type { ClassInfo } from "./lower-classes.js";
 import { classPropertiesHelper } from "./class-dynamic-dispatch.js";
 import { classFieldDefine, isDefinableClassField } from "./class-attributes.js";
 
+const DESCRIPTOR_FIELDS = ["value", "writable", "enumerable", "configurable", "get", "set"];
+
 function literalName(name: ts.PropertyName): string | null {
   return ts.isIdentifier(name) || ts.isStringLiteral(name) ? name.text : null;
 }
@@ -85,9 +87,7 @@ export function lowerClassDataDescriptor(
         (ts.isPropertyAssignment(p) ||
           ts.isShorthandPropertyAssignment(p) ||
           ts.isMethodDeclaration(p)) &&
-        ["value", "writable", "enumerable", "configurable", "get", "set"].includes(
-          literalName(p.name) ?? "",
-        ),
+        DESCRIPTOR_FIELDS.includes(literalName(p.name) ?? ""),
     );
   const descriptors = call.arguments.nodes[member === "defineProperty" ? 2 : 1]!;
   if (member === "defineProperty") {
@@ -175,8 +175,6 @@ export function lowerClassDataDescriptor(
   ];
   return { kind: "seqExpr", stmts, result: value, type: value.type, loc };
 }
-
-const DESCRIPTOR_FIELDS = ["value", "writable", "enumerable", "configurable", "get", "set"];
 
 /** The fields of a descriptor written as an object literal whose conversion
  * (ToPropertyDescriptor) can neither fail nor run code: plain members named

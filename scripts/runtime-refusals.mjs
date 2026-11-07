@@ -9,16 +9,25 @@
 //   node scripts/runtime-refusals.mjs --json     the site list as JSON
 //   node scripts/runtime-refusals.mjs --write    rewrite the baseline
 //   node scripts/runtime-refusals.mjs --strict   exit 1 on a finding
+//   node scripts/runtime-refusals.mjs --source=<dir>   scan another directory
+//                                                of C sources, without a baseline
 //
 // A finding is a site that has no code, or a site the baseline
 // (packages/runtime/refusal-sites.json) does not list.
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const sourceDir = join(root, "packages/runtime/src");
-const baselinePath = join(root, "packages/runtime/refusal-sites.json");
+const SOURCE_FLAG = "--source=";
+const sourceFlag = process.argv.slice(2).find((arg) => arg.startsWith(SOURCE_FLAG));
+const sourceDir =
+  sourceFlag === undefined
+    ? join(root, "packages/runtime/src")
+    : resolve(sourceFlag.slice(SOURCE_FLAG.length));
+/** The runtime's own baseline; another directory has none. */
+const baselinePath =
+  sourceFlag === undefined ? join(root, "packages/runtime/refusal-sites.json") : null;
 
 /** Wording that marks a message as scriptc's refusal, not Node's error. */
 const REFUSAL =
@@ -130,8 +139,9 @@ function lineOf(text, index) {
   return line;
 }
 
-/** The innermost call whose argument list holds `index`. */
-function enclosingCall(text, from, index) {
+/** The innermost call whose argument list holds `index`: its name and the
+ * position of its opening parenthesis. */
+function enclosingCallSite(text, from, index) {
   let depth = 0;
   for (let i = index - 1; i >= from; i--) {
     const c = text[i];
@@ -140,11 +150,16 @@ function enclosingCall(text, from, index) {
       if (depth > 0) depth--;
       else {
         const name = /([A-Za-z_][A-Za-z0-9_]*)\s*$/.exec(text.slice(Math.max(from, i - 80), i));
-        return name === null ? null : name[1];
+        return name === null ? null : { name: name[1], open: i };
       }
     } else if (c === ";" || c === "{" || c === "}") return null;
   }
   return null;
+}
+
+/** The name of the innermost call whose argument list holds `index`. */
+function enclosingCall(text, from, index) {
+  return enclosingCallSite(text, from, index)?.name ?? null;
 }
 
 function callEnd(text, open) {
@@ -210,26 +225,47 @@ function scan() {
   }
   const helperCode = (file, name) =>
     helperCodes.get(`${file}:${name}`) ?? helperCodes.get(name) ?? null;
+  /** The code the raising call `name`, whose argument list opens at `open`,
+   * stamps. */
+  const sinkAt = (file, text, name, open) => {
+    const stamped = stampedCode(text.slice(open, callEnd(text, open)), sources.get(file).constants);
+    if (stamped !== null) return { name, code: stamped };
+    return { name, code: name.startsWith("scr_throw_error") ? null : helperCode(file, name) };
+  };
   /** The raising call that follows `from` (before `to`) and its code. */
   const sinkAfter = (file, text, from, to) => {
     SINK.lastIndex = 0;
     const next = SINK.exec(text.slice(from, to));
     if (next === null) return null;
-    const open = from + next.index + next[0].length - 1;
-    const stamped = stampedCode(text.slice(open, callEnd(text, open)), sources.get(file).constants);
-    const name = next[1];
-    if (stamped !== null) return { name, code: stamped };
-    return { name, code: name.startsWith("scr_throw_error") ? null : helperCode(file, name) };
+    return sinkAt(file, text, next[1], from + next.index + next[0].length - 1);
   };
-  /** Where a message that leaves its function by name is raised: the first
-   * raising call after a use of `name` elsewhere in the file. */
+  /** The raising call a use at `index` is an argument of, directly or
+   * through calls that only carry the message (`raise(format(NAME))`). */
+  const sinkAround = (file, text, from, index) => {
+    for (let at = index; ;) {
+      const call = enclosingCallSite(text, from, at);
+      if (call === null) return null;
+      SINK.lastIndex = 0;
+      if (SINK.test(`${call.name}(`)) return sinkAt(file, text, call.name, call.open);
+      if (!CARRIERS.test(call.name)) return null;
+      at = call.open;
+    }
+  };
+  /** Where a message that leaves its function by name is raised: the
+   * raising call a use of `name` elsewhere in the file is handed to, or
+   * else the first one after that use (the message went into a local). The
+   * call around the use comes first: scanning from the use onward starts
+   * inside that call's argument list, so it would pass over the raise that
+   * holds the name and answer with a later one and that one's code. */
   const sinkOfUses = (file, source, name, skip) => {
     const use = new RegExp(`\\b${name}\\b`, "g");
     for (let m; (m = use.exec(source.text));) {
       if (skip !== undefined && m.index >= skip.start && m.index < skip.end) continue;
       const fn = source.functions.find((f) => f.start <= m.index && m.index < f.end);
       if (fn === undefined) continue;
-      const found = sinkAfter(file, source.text, m.index, Math.min(fn.end, m.index + 1500));
+      const found =
+        sinkAround(file, source.text, fn.start, m.index) ??
+        sinkAfter(file, source.text, m.index, Math.min(fn.end, m.index + 1500));
       if (found !== null) return found;
     }
     return null;
@@ -356,7 +392,7 @@ if (args.has("--json")) {
   process.exit(0);
 }
 
-if (args.has("--write")) {
+if (args.has("--write") && baselinePath !== null) {
   const entries = sites.map((site) => ({
     file: site.file,
     function: site.function,
@@ -369,11 +405,12 @@ if (args.has("--write")) {
 }
 
 let baseline = null;
-try {
-  baseline = new Set(JSON.parse(readFileSync(baselinePath, "utf8")).map(keyOf));
-} catch {
-  baseline = null;
-}
+if (baselinePath !== null)
+  try {
+    baseline = new Set(JSON.parse(readFileSync(baselinePath, "utf8")).map(keyOf));
+  } catch {
+    baseline = null;
+  }
 
 const uncoded = sites.filter((site) => site.code === null);
 const unlisted = baseline === null ? [] : sites.filter((site) => !baseline.has(keyOf(site)));

@@ -259,6 +259,18 @@ export function lowerArrayCallback(
     if (previousReturn === undefined) lowerer.contextualFunctionReturns.delete(argNode);
     else lowerer.contextualFunctionReturns.set(argNode, previousReturn);
   }
+  // A Node island's function arrives as its typed view at the slot the
+  // checker spelled, which names the arguments JavaScript passes this
+  // callback. The helper passes them in its own layout of (value, index,
+  // array), so the view is taken at that layout, argument for argument.
+  if (fnArg.type.kind === "func" && fnArg.type.params.length <= full.length) {
+    const view = lowerer.islandFunctionViewAt(
+      fnArg,
+      argNode,
+      funcOf(full.slice(0, fnArg.type.params.length), expectedReturn ?? fnArg.type.ret),
+    );
+    if (view !== null) fnArg = view;
+  }
   const rawType = fnArg.type;
   // A callback can accept a wider parameter type than the array supplies
   // (a reusable predicate over a union is common). Its closure still has

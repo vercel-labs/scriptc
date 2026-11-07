@@ -305,6 +305,7 @@ import {
   indexSignatureTypeDiag,
   intersectionTypeDiag,
   noLoweringDiag,
+  nodeIslandNativeUseDiag,
   overloadedSignatureTypeDiag,
   recordShapeMismatchDiag,
   stdlibSnapshotValueUseDiag,
@@ -13461,6 +13462,34 @@ export class Lowerer {
     // could produce.
     {
       const pkg = this.npmPackageOf(widened);
+      // A value a Node island made is a handle: the package's implementation
+      // runs, in the island, and what has no lowering is this native use of
+      // its value. Name that use, not a missing implementation.
+      if (pkg && this.nodeIslands !== null && this.foreignType(widened)) {
+        const nullish = ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void;
+        const arms = (widened.isUnionType() ? ts.constituentTypes(widened) : [widened]).filter(
+          (arm) => (arm.flags & nullish) === 0,
+        );
+        const callable =
+          arms.length > 0 && arms.every((arm) => this.checker.getCallSignatures(arm).length > 0);
+        const name = ts.isIdentifier(node) ? ` '${node.text}'` : "";
+        // `@types/<name>` declarations type the package `<name>`.
+        const bare = pkg.startsWith("@types/") ? pkg.slice("@types/".length) : null;
+        const island =
+          bare === null ? pkg : bare.includes("__") ? `@${bare.replace("__", "/")}` : bare;
+        this.typeFail(
+          node,
+          type,
+          "package",
+          nodeIslandNativeUseDiag(
+            callable
+              ? `the function${name} of Node island package '${island}' (type '${this.checker.typeToString(type)}')`
+              : `a value of type '${this.checker.typeToString(type)}' of Node island package '${island}'`,
+            locOf(node),
+            callable,
+          ),
+        );
+      }
       if (pkg) {
         this.typeFail(node, type, "package", unsupportedPackageValueDiag(pkg, locOf(node)));
       }
@@ -15712,6 +15741,13 @@ export class Lowerer {
         }
       }
       asserted = asserted.expression;
+    }
+    // A Node island's function in its typed view is that one function: the
+    // view adopts the function's identity, whatever signature it is viewed
+    // through, so the key is the view at the collection's own key type.
+    {
+      const view = this.islandFunctionViewAt(value, node, expected);
+      if (view !== null) return view;
     }
     const source = (
       value.type.kind === "union" ? (this.unions.get(value.type.unionId)?.arms ?? []) : [value.type]
@@ -18532,6 +18568,38 @@ export class Lowerer {
    * memo hits included. */
   private foreignType(type: ts.Type): boolean {
     return this.facts.foreignType(type, this.nodeIslands, this.checker);
+  }
+
+  /** `view`, a Node island function's typed view (islandFunctionView), seen
+   * at the signature `want` instead: the same adapter over the same handle,
+   * so the same function. A consumer whose own calling convention differs
+   * from the slot the checker spelled (an array helper's element layout, a
+   * collection's key type) takes the view at its convention rather than
+   * stacking a second adapter on it. Null when `view` is not such a view of
+   * the expression `node`, or `want` is not a signature the boundary adapts. */
+  islandFunctionViewAt(view: IrExpr, node: ts.Expression, want: IrType): IrExpr | null {
+    if (view.kind !== "dynCheck" || view.type.kind !== "func" || view.value.type.kind !== "dyn")
+      return null;
+    if (want.kind !== "func" || !this.islandFunctionType(this.typeOf(node))) return null;
+    if (typeEquals(view.type, want)) return view;
+    const adapts = canAdaptDynFuncTo(
+      want,
+      (id) => this.shapes.get(id),
+      (id) => this.unions.get(id),
+    );
+    return adapts ? { ...view, type: want } : null;
+  }
+
+  /** Whether values of `type` are functions a Node island made: an object
+   * type an island declares, with a call signature. The memoized island
+   * test runs first; few types pass it. */
+  islandFunctionType(type: ts.Type): boolean {
+    return (
+      this.nodeIslands !== null &&
+      (type.flags & ts.TypeFlags.Object) !== 0 &&
+      this.foreignType(type) &&
+      this.checker.getCallSignatures(type).length > 0
+    );
   }
 
   nodeTypesOnlySymbol(sym: ts.Symbol | null | undefined): boolean {

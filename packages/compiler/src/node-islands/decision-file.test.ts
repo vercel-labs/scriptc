@@ -1,4 +1,12 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
@@ -515,6 +523,7 @@ test("the islands the first decision makes from the load are listed and never re
     reason: "marked with --node-island",
     decision: "marked",
   };
+  writeFileSync(marked.file, "module.exports = {};\n");
   const key = keyOf(p);
   const all = state([grown, refused], [p.legacy, marked]);
   const change = writeIslandDecision(
@@ -559,4 +568,33 @@ test("the islands the first decision makes from the load are listed and never re
   expect(compareIslandDecision(p.file, key, state([], [p.legacy]), "compiles", all)).toEqual([
     "~ grown: rule lowering -> load",
   ]);
+});
+
+test("a write holds the file's lock, and takes over one a killed build left", () => {
+  const p = project();
+  const sdk = p.install("sdk", "1.2.3");
+  const key = keyOf(p);
+  const lock = `${p.file}.lock`;
+  // No lock is left behind by a write, or by a write that changes nothing.
+  writeIslandDecision(p.file, key, auto, state([sdk]), "compiles");
+  expect(existsSync(lock)).toBe(false);
+  expect(writeIslandDecision(p.file, key, auto, state([sdk]), "compiles")).toBeNull();
+  expect(existsSync(lock)).toBe(false);
+  // A lock from long ago belongs to a build that was killed: taken over.
+  mkdirSync(lock);
+  const longAgo = new Date(Date.now() - 60_000);
+  utimesSync(lock, longAgo, longAgo);
+  const started = Date.now();
+  expect(writeIslandDecision(p.file, key, auto, state([]), "compiles")).not.toBeNull();
+  expect(Date.now() - started).toBeLessThan(1500);
+  expect(existsSync(lock)).toBe(false);
+  expect(readIslandDecision(p.file, key, auto)!.packages.size).toBe(0);
+  // A lock another build holds right now: this one waits for it, then writes
+  // its decision anyway and leaves the other build's lock alone.
+  mkdirSync(lock);
+  const waited = Date.now();
+  expect(writeIslandDecision(p.file, key, auto, state([sdk]), "compiles")).not.toBeNull();
+  expect(Date.now() - waited).toBeGreaterThanOrEqual(1900);
+  expect(existsSync(lock)).toBe(true);
+  expect(readIslandDecision(p.file, key, auto)!.packages.size).toBe(1);
 });

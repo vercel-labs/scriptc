@@ -548,7 +548,7 @@ test("a recorded package whose version changed is decided again", () => {
 }, 600_000);
 
 /** A coverage analysis of the fixture, with the lowerings it took. */
-function analyze(dir: string, decision: string | null) {
+function analyze(dir: string, decision: string | null, entry = "main.ts") {
   let lowerings = 0;
   const factory: FrontendFactory = (entry, npmStatic, externalTypes, libraryNpmStatic, options) => {
     const fe = runFrontend(entry, loadProgram, npmStatic, externalTypes, libraryNpmStatic, options);
@@ -561,7 +561,7 @@ function analyze(dir: string, decision: string | null) {
     };
   };
   const { coverage } = analyzeWithFrontend(
-    join(dir, "main.ts"),
+    join(dir, entry),
     decision === null ? {} : { nodeIslands: { decision } },
     process.platform,
     factory,
@@ -624,4 +624,43 @@ test("an analysis decides a failing build's fence-report islands again when the 
   expect(replayed.stats).toEqual(from.stats);
   expect(replayed.diagnostics).toBe(from.diagnostics);
   expect(replayed.islands).toEqual(from.islands);
+}, 600_000);
+
+/** A build of `entry` in `dir` that keeps its decision in `file`. */
+function buildEntry(dir: string, entry: string, file: string): boolean {
+  const factory: FrontendFactory = (path, npmStatic, externalTypes, libraryNpmStatic, options) =>
+    runFrontend(path, loadProgram, npmStatic, externalTypes, libraryNpmStatic, options);
+  return prepareExecutableBuild(
+    join(dir, entry),
+    { outPath: join(dir, "main"), outDir: dir, nodeIslands: { decision: file } },
+    null,
+    process.platform,
+    factory,
+    () => {},
+    null,
+  ).ok;
+}
+
+function recordedModules(file: string): { file: string; rule: string }[] {
+  return (
+    JSON.parse(readFileSync(file, "utf8")) as {
+      decisions: { modules: { file: string; rule: string }[] }[];
+    }
+  ).decisions[0]!.modules;
+}
+
+test("an analysis of a program whose island module fails the type check stops there, record or not", () => {
+  // A sloppy CommonJS module with a `with` statement. A build checks the
+  // program it reloads without the module; this analysis checks its first
+  // load, which still holds the module, and stops at the checker's error
+  // before it lowers anything. It never islands a program module either, so
+  // a recorded island module is not replayed by it: the record changes
+  // nothing here.
+  const dir = fixture("tests/corpus/8427-sloppy-with-island");
+  const file = join(dir, "islands.json");
+  const from = analyze(dir, null, "main.js");
+  expect(from.diagnostics).toContain("<dir>/lookup.js");
+  expect(buildEntry(dir, "main.js", file)).toBe(true);
+  expect(recordedModules(file)).toMatchObject([{ file: "lookup.js", rule: "load" }]);
+  expect(analyze(dir, file, "main.js")).toEqual(from);
 }, 600_000);

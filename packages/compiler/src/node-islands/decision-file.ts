@@ -50,6 +50,8 @@ import {
   readFileSync,
   realpathSync,
   renameSync,
+  rmdirSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
@@ -799,36 +801,100 @@ export function writeIslandDecision(
 ): IslandDecisionChange | null {
   if (policy.mode !== "auto") return null;
   const section = sectionOf(file, key, state, outcome, all);
-  // Read at the moment of writing: another entry's build may have written
-  // its own section since this build read the file.
-  const sections = readSections(file) ?? [];
-  let previous: Section | null = null;
-  const others: Section[] = [];
-  for (const other of sections) {
-    if (sameBuild(other, section)) previous = other;
-    else others.push(other);
-  }
-  if (previous !== null && sectionText(previous) === sectionText(section)) return null;
-  const written = [...others, section].sort(
-    (a, b) =>
-      byText(a.entry, b.entry) ||
-      byText(a.target, b.target) ||
-      byText(sectionText(a), sectionText(b)),
-  );
-  const text = `${JSON.stringify({ format: FORMAT, decisions: written.map(sectionJson) }, null, 2)}\n`;
   mkdirSync(dirname(resolve(file)), { recursive: true });
-  // A reader never sees half a file: the text lands under another name in
-  // the same directory and is renamed over the old one.
-  const pending = `${file}.${process.pid}.tmp`;
-  writeFileSync(pending, text);
-  renameSync(pending, file);
-  return {
-    file,
-    first: previous === null,
-    lines: describeDifference(previous, section, gone, dirname(resolve(file))),
-    packages: section.packages.length,
-    modules: section.modules.length,
-  };
+  return withFileLock(file, () => {
+    // Read at the moment of writing, and under the lock: another entry's
+    // build may have written its own section since this build read the
+    // file, and none may write between this read and the rename below.
+    const sections = readSections(file) ?? [];
+    let previous: Section | null = null;
+    const others: Section[] = [];
+    for (const other of sections) {
+      if (sameBuild(other, section)) previous = other;
+      else others.push(other);
+    }
+    if (previous !== null && sectionText(previous) === sectionText(section)) return null;
+    const written = [...others, section].sort(
+      (a, b) =>
+        byText(a.entry, b.entry) ||
+        byText(a.target, b.target) ||
+        byText(sectionText(a), sectionText(b)),
+    );
+    const text = `${JSON.stringify({ format: FORMAT, decisions: written.map(sectionJson) }, null, 2)}\n`;
+    // A reader never sees half a file: the text lands under another name in
+    // the same directory and is renamed over the old one.
+    const pending = `${file}.${process.pid}.tmp`;
+    writeFileSync(pending, text);
+    renameSync(pending, file);
+    return {
+      file,
+      first: previous === null,
+      lines: describeDifference(previous, section, gone, dirname(resolve(file))),
+      packages: section.packages.length,
+      modules: section.modules.length,
+    };
+  });
+}
+
+/** How long a build waits for another build's write of the same file, and
+ * how old a lock must be to be one a killed build left behind. A write is a
+ * read, a merge and a rename: milliseconds. */
+const LOCK_WAIT_MS = 2000;
+const LOCK_STALE_MS = 10000;
+
+/** Runs `update` while this process holds the file's lock, so two builds
+ * that finish at the same moment (two entries of one project built side by
+ * side) each merge their section into a file the other is not writing. The
+ * lock is a directory beside the file: creating it is atomic, and only one
+ * process succeeds. A lock a killed build left is taken over once it is old.
+ * A build that still cannot take the lock writes without it rather than
+ * lose its decision; the worst outcome is then the lost section the lock
+ * exists to prevent, which the next build of that entry decides again. */
+function withFileLock<T>(file: string, update: () => T): T {
+  const lock = `${file}.lock`;
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  let held = false;
+  while (!held) {
+    try {
+      mkdirSync(lock);
+      held = true;
+      break;
+    } catch {
+      // Another build holds it (or the lock cannot be created here at all).
+    }
+    let age = -1;
+    try {
+      age = Date.now() - statSync(lock).mtimeMs;
+    } catch {
+      // Released between the two calls: try again at once.
+      age = -1;
+    }
+    if (age > LOCK_STALE_MS) {
+      try {
+        rmdirSync(lock);
+      } catch {
+        // Another build took it over first.
+      }
+      continue;
+    }
+    if (Date.now() >= deadline) break;
+    // No synchronous sleep is shared by both compilers' hosts: wait out a
+    // couple of milliseconds, the length of the other build's write.
+    const until = Date.now() + 2;
+    while (Date.now() < until);
+  }
+  try {
+    return update();
+  } finally {
+    if (held) {
+      try {
+        rmdirSync(lock);
+      } catch {
+        // Taken over as stale by a build that waited ten seconds: nothing to
+        // release.
+      }
+    }
+  }
 }
 
 /** The line a build prints when it wrote the file. */

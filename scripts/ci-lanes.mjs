@@ -20,7 +20,8 @@
 // - profile: the native compiler profile check. On when the change touches the compiler's sources or its committed
 //   layout and profile, the native code generation it is compiled with, the LLVM helper package, or the native CLI
 //   build, any of which can leave the committed profile describing functions that no longer match. Compiler tests are
-//   not part of the compiler it builds, so they do not turn it on.
+//   not part of the compiler it builds, so they do not turn it on. The same job holds that build to the self-compile
+//   budget, so a change to the budget or its script turns it on too.
 // Every lane is on when the change touches CI configuration, the workspace manifests or lockfile, vitest
 // configuration, the shared test harness modules or this script, or when the diff cannot be computed. Pushes to main,
 // the nightly sweep and manual runs do not use this script: pushes to main run every lane except macos, and the others
@@ -80,7 +81,7 @@ const bootstrapPath =
 // The native compiler's own functions: its sources, the code generation they
 // are compiled with, and the build that compiles them.
 const profilePath =
-  /^packages\/compiler\/(src|native)\/|^native\/|^packages\/llvm-[^/]+\/|^scripts\/build-native-cli/;
+  /^packages\/compiler\/(src|native)\/|^native\/|^packages\/llvm-[^/]+\/|^scripts\/(build-native-cli|self-compile-budget)/;
 
 function git(...args) {
   return execFileSync("git", args, { encoding: "utf8", maxBuffer: 1 << 28 });

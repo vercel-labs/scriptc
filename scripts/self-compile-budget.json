@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "heapLimitMb": {
+    "value": 8192,
+    "reason": "The limit every self-compile has run with. At 618fdb8eb a 12288 MB limit builds in the same time (740 s against 744 s) and takes 2.1 GB more memory (10.3 GB peak RSS), so the limit stays. 12288 fits the 16 GB Linux runners; the macOS runners have less memory, so measure there before raising it."
+  },
+  "loweringPasses": {
+    "value": ["reachable-emit", "general-streams-relower"],
+    "reason": "cli/mcp.ts pauses a finished child's pipes, which the child-pipe handle cannot do, so the program lowers again under the general stream representation (#2918). One pass is the goal."
+  },
+  "liveHeapBytesPerSourceByte": {
+    "value": 212,
+    "reason": "Measured at 618fdb8eb: 4596 MB reachable at the end of the second lowering pass, 1431 MB of it the first pass's program, for 22.8 MB of source."
+  },
+  "sourceCostAllowance": {
+    "value": 0,
+    "reason": ""
+  }
+}

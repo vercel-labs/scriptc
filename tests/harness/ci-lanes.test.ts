@@ -39,6 +39,11 @@ test.each([
     { linux: true, macos: false, effects: false, bootstrap: false, profile: true },
   ],
   [
+    "a raised self-compile budget",
+    ["scripts/self-compile-budget.json"],
+    { linux: true, macos: false, effects: false, bootstrap: false, profile: true },
+  ],
+  [
     "a runtime C change",
     ["packages/runtime/src/scr_array.c"],
     { linux: true, macos: false, effects: false, bootstrap: false, profile: false },

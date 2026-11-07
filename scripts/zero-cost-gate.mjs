@@ -60,6 +60,18 @@ import {
   timingGroups,
   timingVerdict,
 } from "./zero-cost-compare.mjs";
+import {
+  budgetVerdict,
+  HEAP_PROBE_FLAGS,
+  heapLimitMb,
+  programInputs,
+  readBudget,
+  SELF_ENTRY,
+  selfCompileTrace,
+  sourceBytes,
+  sourceCostAllowance,
+  sourceCostVerdict,
+} from "./self-compile-budget.mjs";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 const { values } = parseArgs({
@@ -140,6 +152,17 @@ A pass whose cost follows the module's node count rather than the program's
 own work shows up there at a size the bench and corpus programs never reach.
 --max-size-growth bounds executable growth (percent) of allowed programs.
 
+The self-compile budget: the compared builds compile the baseline's compiler
+source, so they cannot see what a change's own source costs. The candidate's
+source built with the candidate is judged against the candidate's
+scripts/self-compile-budget.json: the whole-program lowering passes it takes
+(exact), the heap it holds at the end of a pass per source byte and the share
+of the heap limit that fills, and its compile time against the same
+compiler's build of the baseline's source in this run, beyond the growth of
+the source. A change that means to move one of them edits the budget file
+and states the reason there (scripts/self-compile-budget.mjs describes each
+entry).
+
 Dynamic-tier symbols (two-tier invariant I3): no executable may gain
 symbols under DYNAMIC_TIER_PREFIXES (scripts/zero-cost-compare.mjs) unless
 it matches --allow, and fully typed bench workloads (all but
@@ -206,34 +229,6 @@ const work = mkdtempSync("/tmp/scriptc-zero-cost-");
  * the gate times its comparison build plus --fixture-timing-runs more pairs. */
 const FIXTURE_PROGRAMS = ["llvm-emitter", "llvm-layouts"];
 
-/** Every file a program reads: the entry and its relative imports. */
-function programInputs(entry) {
-  const files = new Set();
-  const pending = [entry];
-  while (pending.length > 0) {
-    const file = pending.pop();
-    if (files.has(file)) continue;
-    files.add(file);
-    const text = readFileSync(file, "utf8");
-    for (const match of text.matchAll(
-      /(?:from|import|require)\s*\(?\s*["'](\.{1,2}\/[^"']+)["']/g,
-    )) {
-      const base = resolve(dirname(file), match[1]);
-      const stem = base.replace(/\.(m|c)?js$/, "");
-      const found = [
-        base,
-        `${stem}.ts`,
-        `${stem}.mts`,
-        `${stem}.cts`,
-        `${base}.ts`,
-        join(base, "index.ts"),
-      ].find((candidate) => existsSync(candidate) && statSync(candidate).isFile());
-      if (found !== undefined) pending.push(found);
-    }
-  }
-  return [...files];
-}
-
 function goodCodeSet() {
   const programs = [];
   if (sets.has("bench")) {
@@ -249,7 +244,7 @@ function goodCodeSet() {
   if (sets.has("self")) {
     programs.push({
       id: "self/cli",
-      entry: join(programsRoot, "packages/compiler/src/native/cli.ts"),
+      entry: join(programsRoot, SELF_ENTRY),
       kind: "source",
     });
     // The self-hosting emitter fixtures lower the whole emitter over the
@@ -328,11 +323,20 @@ function buildEnv() {
   return env;
 }
 
-function compile(tree, args) {
+/** Every build runs with the heap limit of the gate's own checkout (the self-compile budget's).
+ * `trace` adds what the budget reads: the phase timing lines and the heap at each pass's end. */
+const heapLimit = heapLimitMb(readBudget(repoRoot));
+function compile(tree, args, trace = false) {
   return exec(
     process.execPath,
-    ["--max-old-space-size=8192", join(tree, "packages/cli/dist/bootstrap.js"), "build", ...args],
-    { cwd: programsRoot, env: buildEnv() },
+    [
+      `--max-old-space-size=${heapLimit}`,
+      ...(trace ? HEAP_PROBE_FLAGS : []),
+      join(tree, "packages/cli/dist/bootstrap.js"),
+      "build",
+      ...args,
+    ],
+    { cwd: programsRoot, env: trace ? { ...buildEnv(), SCRIPTC_TIMING: "1" } : buildEnv() },
   );
 }
 
@@ -341,7 +345,7 @@ function compile(tree, args) {
  * compiler and the self-hosting fixtures emit LLVM only: each of their
  * frontend runs takes minutes, and their LLVM names the first differing
  * function as well as their IR would. */
-async function buildProgram(program, label, tree = trees[label]) {
+async function buildProgram(program, label, tree = trees[label], trace = false) {
   const dir = join(work, label, program.id.replace(/[^\w.-]+/g, "_"));
   mkdirSync(dir, { recursive: true });
   const failure = (result) => ({
@@ -353,9 +357,15 @@ async function buildProgram(program, label, tree = trees[label]) {
   });
   if (program.kind === "source" || program.kind === "fixture") {
     const llvm = join(dir, "program.ll");
-    const result = await compile(tree, [program.entry, "--emit=llvm", "-o", llvm]);
+    const result = await compile(tree, [program.entry, "--emit=llvm", "-o", llvm], trace);
     if (result.status !== 0) return failure(result);
-    return { ok: true, dir, llvm, ms: result.ms };
+    return {
+      ok: true,
+      dir,
+      llvm,
+      ms: result.ms,
+      ...(trace ? { trace: selfCompileTrace(result.stderr) } : {}),
+    };
   }
   const exe = join(dir, "program");
   const result = await compile(tree, [
@@ -782,15 +792,13 @@ if (recordPath !== undefined) {
  * alongside the comparison builds instead of after them. */
 const checkCandidateSelf =
   sets.has("self") && programsRoot !== trees.candidate && programs.some((p) => p.kind === "source");
+const candidateSelfProgram = {
+  id: "self/candidate-source",
+  entry: join(trees.candidate, SELF_ENTRY),
+  kind: "source",
+};
 const buildCandidateSelf = () =>
-  buildProgram(
-    {
-      id: "self/candidate-source",
-      entry: join(trees.candidate, "packages/compiler/src/native/cli.ts"),
-      kind: "source",
-    },
-    "candidate",
-  );
+  buildProgram(candidateSelfProgram, "candidate", trees.candidate, true);
 const earlyCandidateSelf =
   checkCandidateSelf && totalmem() >= 40 * 1024 ** 3 ? buildCandidateSelf() : null;
 
@@ -990,7 +998,8 @@ if (timingRuns > 0) {
 // The self program is the baseline's compiler source (the programs come
 // from one checkout), so a change that adds compiler code the self-hosted
 // frontend cannot lower would pass unnoticed. The candidate's own compiler
-// source must still build with the candidate (LLVM only, not compared).
+// source must still build with the candidate (LLVM only; its artifacts are
+// not compared, its cost is: the self-compile budget below).
 if (checkCandidateSelf) {
   const result = await (earlyCandidateSelf ?? buildCandidateSelf());
   report.candidateSelf = result.ok
@@ -1004,7 +1013,72 @@ if (checkCandidateSelf) {
   if (!result.ok) {
     failed = true;
     report.failures.push(`self/candidate-source: ${result.error.split("\n")[0]}`);
+  } else {
+    const budget = await selfCompileBudget(result);
+    report.candidateSelf.budget = budget;
+    for (const line of budget.lines) console.log(`self       ${line}`);
+    if (budget.failures.length > 0) {
+      failed = true;
+      report.failures.push(...budget.failures);
+    }
   }
+}
+
+/* The self-compile budget (scripts/self-compile-budget.mjs). The compared
+ * builds above compile the baseline's compiler source with both compilers,
+ * so they show what a change does to the compiler and are blind to what its
+ * own source costs to compile. This judges the third build, the candidate's
+ * source with the candidate:
+ *   - the whole-program lowering passes it took and its live heap, against
+ *     the candidate's scripts/self-compile-budget.json;
+ *   - its compile time against the same compiler's build of the baseline's
+ *     source in this run, beyond the growth of the source itself. Both ran
+ *     on this host, so the host's speed cancels. When the first pair is over
+ *     the tolerance the two sources build once more, side by side with
+ *     nothing else running, and the smaller ratio is judged. */
+async function selfCompileBudget(build) {
+  const budget = readBudget(trees.candidate);
+  const previous = readBudget(trees.baseline);
+  const bytes = sourceBytes(candidateSelfProgram.entry);
+  const verdict = budgetVerdict({ budget, previous, trace: build.trace, bytes });
+  const result = {
+    passes: build.trace.passes,
+    liveHeapMb: build.trace.liveHeapMb,
+    sourceBytes: bytes,
+    lines: verdict.lines,
+    failures: verdict.failures,
+  };
+  const baselineSource = programs.find((p) => p.id === "self/cli");
+  const paired = report.programs.find((p) => p.id === "self/cli")?.buildMs.candidate;
+  if (budget === null || baselineSource === undefined || !paired) return result;
+  const sourceRatio = bytes / sourceBytes(baselineSource.entry);
+  const allowance = sourceCostAllowance(budget, previous);
+  const ratios = [build.ms / paired];
+  let cost = sourceCostVerdict({ ratios, sourceRatio, allowance });
+  if (cost.fails) {
+    const again = await Promise.all([
+      compile(trees.candidate, [
+        baselineSource.entry,
+        "--emit=llvm",
+        "-o",
+        join(work, "source-cost-baseline.ll"),
+      ]),
+      compile(trees.candidate, [
+        candidateSelfProgram.entry,
+        "--emit=llvm",
+        "-o",
+        join(work, "source-cost-candidate.ll"),
+      ]),
+    ]);
+    if (again.every((run) => run.status === 0)) {
+      ratios.push(again[1].ms / again[0].ms);
+      cost = sourceCostVerdict({ ratios, sourceRatio, allowance });
+    }
+  }
+  result.sourceCost = { ratios, sourceRatio, allowance, ratio: cost.ratio };
+  result.lines.push(cost.line);
+  if (cost.failure !== null) result.failures.push(cost.failure);
+  return result;
 }
 
 const counts = {};

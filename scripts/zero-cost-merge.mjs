@@ -40,6 +40,7 @@ if (report.candidateSelf)
       ? `self       candidate compiler source builds with the candidate (${(report.candidateSelf.buildMs / 1000).toFixed(2)}s)`
       : "self       candidate compiler source FAILS to build with the candidate",
   );
+for (const line of report.candidateSelf?.budget?.lines ?? []) console.log(`self       ${line}`);
 const cached = report.programs.filter((p) => p.cachedBaseline).length;
 console.log(
   `zero-cost gate: ${report.verdict === "pass" ? "PASS" : "FAIL"} — ${Object.entries(report.counts)

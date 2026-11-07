@@ -247,6 +247,13 @@ struct ScrNodeGcResult;
 int scr_ni_host_gc_analyze(const uint32_t *exports, size_t nexports,
                            struct ScrNodeGcResult *out);
 void scr_ni_gc_cleanup(void); /* at exit */
+/* Weak collections keyed by island objects (scr_node_island_gc.c): the
+ * entries of a native WeakMap, WeakSet or FinalizationRegistry whose key
+ * is an island object live in a WeakMap or WeakSet inside the island,
+ * `collection` (NULL until the first such entry; `set`: a WeakSet). */
+ScrDyn *scr_ni_weak_get(ScrDyn *collection, ScrDyn *key); /* +1; undefined: no entry */
+int scr_ni_weak_test(ScrDyn *collection, bool set, ScrDyn *key, bool remove); /* 1, 0; -1: threw */
+bool scr_ni_weak_set(ScrDyn **collection, bool set, ScrDyn *key, ScrDyn *value);
 
 /* ── deferred island modules (scope-B NI-7, scr_node_island_boot.c) ─────
  * nodeIsland.defer(path, snapshot): a statically imported island module the

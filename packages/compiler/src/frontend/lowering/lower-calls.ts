@@ -2629,6 +2629,14 @@ export function overloadValueResult(
   return lowerer.coerceInto(expr, result, resolvedOverloadResultType(lowerer, expr));
 }
 
+/** Whether the checker gives the callee no call signature: `any`, or the
+ * `Function` an `unknown` narrows to. */
+function writtenWithoutSignature(lowerer: Lowerer, callee: ts.Expression): boolean {
+  const type = lowerer.typeOf(callee);
+  if ((type.flags & ts.TypeFlags.Any) !== 0) return true;
+  return lowerer.checker.getCallSignatures(lowerer.checker.getNonNullableType(type)).length === 0;
+}
+
 function lowerCallThroughValueRaw(
   lowerer: Lowerer,
   expr: ts.CallExpression,
@@ -2737,7 +2745,22 @@ function lowerCallThroughValueRaw(
     return { kind: "dynCall", callee: boxed, calleeName, args, type: DYN, loc };
   }
   const args = completeFuncValueArgs(lowerer, expr, callee.type, loc);
-  return { kind: "callValue", callee, args, type: callee.type.ret, loc };
+  // A callee the program holds at `any`, or at `unknown` behind a `typeof`
+  // test, whose function type the lowering knows: an untyped argument
+  // checked against that type's parameter is a check the source did not
+  // ask for (function-views.ts, untypedCalls).
+  const untyped =
+    args.some((arg) => arg.kind === "dynCheck" && arg.value.type.kind === "dyn") &&
+    !isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    writtenWithoutSignature(lowerer, expr.expression);
+  return {
+    kind: "callValue",
+    callee,
+    args,
+    ...(untyped ? { untyped: true as const } : {}),
+    type: callee.type.ret,
+    loc,
+  };
 }
 
 /** Exported checked and variadic callables use the same runtime-arity ABI

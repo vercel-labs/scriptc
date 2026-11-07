@@ -97,6 +97,16 @@ export interface CompileBaseOptions {
    * merge-profiles`). Code the profile does not describe, or describes
    * from an older version of the program, is optimized as without one. */
   profileUse?: string;
+  /** Compiler development: also write the lowered program, what the frontend
+   * hands the backend, to this file (executable/lowered.ts). */
+  emitLowered?: string;
+  /** Compiler development: build from the lowered program in this file
+   * instead of running the frontend. The build refuses a file whose
+   * compiler, options or inputs differ from its own. */
+  fromLowered?: string;
+  /** The differences a `fromLowered` build accepts: "compiler", "options",
+   * "inputs". */
+  fromLoweredAccept?: readonly string[];
   /** A function layout (scripts/refresh-cli-layout.mjs; gzip-compressed when
    * the name ends in .gz): the listed functions are written first, by tier,
    * so the code that runs together sits together in the executable. The

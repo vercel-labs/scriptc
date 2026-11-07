@@ -822,6 +822,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.primitiveDelete",
   "dyn.reflectDeleteProperty",
   "dyn.reflectHasTarget",
+  "dyn.reflectGetPrototypeTarget",
   "dyn.hasKeyComputed",
   // `… in globalThis` over a name the runtime does not provide throws
   "dyn.globalHas",

@@ -8791,7 +8791,15 @@ export class Lowerer {
           }
         }
         const fnType = this.mapTypeOf(this.typeOf(fn));
-        if (fnType?.kind === "func" && bodyReturnsOptional(fn)) {
+        // An async function's result is the promise it creates: a missing
+        // value its body returns settles that promise and never stands in
+        // for it, so the promise is not what widens. Its payload belongs to
+        // the lambda passes below, which keep a TypeScript lambda's and
+        // widen a JavaScript one's.
+        const returnsOwnPromise =
+          fn.asteriskToken === undefined &&
+          fn.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) === true;
+        if (fnType?.kind === "func" && !returnsOwnPromise && bodyReturnsOptional(fn)) {
           const widenedReturn = this.runtimeOptionalType(fnType.ret);
           provenance?.note("callback-return", fn, provenanceSite);
           siteDependencies?.read(fn);

@@ -489,7 +489,10 @@ describe("runtime feature snapshots", () => {
     // SCR_FN_MEMBER_PROPS builds of scr_json.c and scr_dyn_invoke.c, so the
     // fact follows the member name a keyed write, definition or delete
     // spells; an ordinary expando write and a plain definition of a name
-    // every object literal defines select the default objects.
+    // every object literal defines select the default objects. A definition
+    // also follows the receiver: a typed callable, a class value or a
+    // checked-dynamic value (which may hold an any-typed function) can reach
+    // the function path, a boxed non-callable cannot.
     const boxed = (value: IrExpr): IrExpr => ({ kind: "dynFrom", value, type: DYN, loc });
     const str = (value: string): IrExpr => ({ kind: "strLit", value, type: STRING, loc });
     const receiver: IrExpr = { kind: "varRef", localId: "o", type: DYN, loc };
@@ -535,6 +538,71 @@ describe("runtime feature snapshots", () => {
     expect(selects("dyn.defineProperty", receiver, boxed(str("toString")))).toBe(false);
     // A definition on a boxed callable creates the own property Node does.
     expect(selects("dyn.defineProperty", boxed(fnValue), boxed(str("bind")))).toBe(true);
+    // A class value's own protocol member is an own property too: its
+    // runtime node is the constructor function.
+    const classValue: IrExpr = {
+      kind: "varRef",
+      localId: "C",
+      type: { kind: "classval", className: "C" },
+      loc,
+    };
+    expect(selects("dyn.defineProperty", boxed(classValue), boxed(str("call")))).toBe(true);
+    // A checked-dynamic receiver names no kind at all, so an any-typed
+    // function among its values reaches the definition as one: the build
+    // that admits the own property must be selected, not whichever unrelated
+    // statement happens to select it.
+    expect(selects("dyn.defineProperty", receiver, boxed(str("call")))).toBe(true);
+    expect(selects("dyn.definePropertyShapes", receiver, boxed(str("apply")))).toBe(true);
+    expect(
+      selects(
+        "dyn.defineProperty",
+        { kind: "dynFrom", value: receiver, type: DYN, loc },
+        boxed(str("bind")),
+      ),
+    ).toBe(true);
+    // A boxed receiver of a non-callable type is an object at run time, so
+    // its definition keeps the default objects.
+    const recordValue: IrExpr = {
+      kind: "varRef",
+      localId: "o",
+      type: { kind: "record", shapeId: "r0" },
+      loc,
+    };
+    expect(selects("dyn.defineProperty", boxed(recordValue), boxed(str("constructor")))).toBe(
+      false,
+    );
+    expect(
+      selects(
+        "dyn.defineProperty",
+        { kind: "varRef", localId: "b", type: { kind: "bytes", elem: "u8" }, loc },
+        boxed(str("valueOf")),
+      ),
+    ).toBe(false);
+    // Every `Object.defineProperty` on a dynamic target is lifted into the
+    // class-dispatch helper, whose own `dyn.defineProperty` call sees only
+    // parameters. The call site still spells the key, so the definition is
+    // read from the call into the helper.
+    const lifted = (target: IrExpr, key: IrExpr): boolean => {
+      const mod = module();
+      mod.functions[0]!.body.push({
+        kind: "exprStmt",
+        loc,
+        expr: {
+          kind: "call",
+          callee: "%dyn.class.defineProperty",
+          args: [target, key, boxed(str("v"))],
+          type: DYN,
+          loc,
+        },
+      });
+      return moduleRuntimeFeatures(mod).fnMemberProps;
+    };
+    expect(lifted(receiver, boxed(str("call")))).toBe(true);
+    expect(lifted(boxed(fnValue), boxed(str("apply")))).toBe(true);
+    expect(lifted(boxed(classValue), boxed(str("bind")))).toBe(true);
+    expect(lifted(boxed(recordValue), boxed(str("constructor")))).toBe(false);
+    expect(lifted(receiver, boxed(str("toString")))).toBe(false);
+    expect(lifted(receiver, { kind: "varRef", localId: "k", type: DYN, loc })).toBe(false);
     // A key computed at run time cannot be proven a protocol member.
     expect(
       selects("dyn.keySetComputed", receiver, { kind: "varRef", localId: "k", type: DYN, loc }),

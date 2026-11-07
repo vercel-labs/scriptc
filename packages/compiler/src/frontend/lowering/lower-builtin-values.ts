@@ -161,6 +161,28 @@ export function isNativeBuiltinValueInitializer(
       isNativeBuiltinValueInitializer(lowerer, expr.whenFalse, new Set(seen))
     );
   }
+  // A capability probe picks the builtin value or a fallback
+  // (`Object.defineProperty || false`): whichever operand supplies it,
+  // the stored value is that checked native callable. A bare standard
+  // global is not a probe the same way — `x ?? Object` keeps the global's
+  // class or namespace value, and the checked representation would carry
+  // that class value through an untyped path a class heritage cannot take.
+  if (ts.isBinaryExpression(expr)) {
+    const op = expr.operatorToken.kind;
+    const probesBuiltin = (operand: ts.Expression): boolean => {
+      let value = operand;
+      while (ts.isParenthesizedExpression(value)) value = value.expression;
+      if (ts.isIdentifier(value) && stdlibGlobalNameOf(lowerer, value) !== null) return false;
+      return isNativeBuiltinValueInitializer(lowerer, value, new Set(seen));
+    };
+    if (
+      (op === ts.SyntaxKind.BarBarToken ||
+        op === ts.SyntaxKind.QuestionQuestionToken ||
+        op === ts.SyntaxKind.AmpersandAmpersandToken) &&
+      (probesBuiltin(expr.left) || probesBuiltin(expr.right))
+    )
+      return true;
+  }
   if (ts.isPropertyAccessExpression(expr)) {
     return (
       builtinPrototypeMethod(lowerer, expr) !== null ||

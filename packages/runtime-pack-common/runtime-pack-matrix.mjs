@@ -67,6 +67,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // writeFile's `flag` disposition and the fs/promises twins; the copyFile
   // mode form is the SCR_FS_FLAGS build of scr_fs_cp.c.
   ["scr_fs_flags.c", "fsFlags"],
+  // The BYTE-data spellings of the option write and fs.promises.writeFile.
+  ["scr_fs_bytes_write.c", "fsBytesWrites"],
   // string_decoder's checked-dynamic chunk forms, apart from scr_bytes.c's
   // typed twins so a typed program keeps that object byte for byte.
   ["scr_bytes_strdec_dyn.c", "strdecDyn"],
@@ -202,13 +204,21 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // Object.isExtensible and Object.isSealed of a value typed dynamically; a
   // unit of its own so scr_json.c keeps its layout for every other program.
   ["scr_dyn_integrity.c", "dynIntegrityQueries"],
+  // Reflect.getPrototypeOf's primitive-target check; a unit of its own so
+  // scr_json.c keeps its layout for every program that never reflects.
+  ["scr_dyn_reflect_proto.c", "reflectProtoTarget"],
   // ChildProcess listener removal (off/removeListener) and signalCode; a
   // unit of its own so scr_child.c's layout stays put for every program.
   ["scr_child_lifecycle.c", "childLifecycle"],
+  // The spawnSync capture Buffers; a unit of its own for the same reason.
+  ["scr_child_capture.c", "spawnCaptureBytes"],
   ["scr_decl_adopt.c", "declAdopt"],
   ["scr_type_origin.c", "typeOrigins"],
   // for await over checked-dynamic values.
   ["scr_dyn_for_await.c", "dynForAwait"],
+  // Set.prototype method values, the ES2025 Set compositions and
+  // Object.getPrototypeOf of a Set.
+  ["scr_dyn_collections.c", "dynCollections"],
   ["scr_dyn_for_await_stream.c", all("dynForAwait", "stream", "dynAsync")],
   // fs.ReadStream / fs.WriteStream reference only the stream unit and base units.
   ["scr_fs_stream.c", "stream"],
@@ -263,6 +273,24 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_global_host_absent.c", "hostAbsentGlobals"],
 ];
 
+/** One more build column for a unit: a twin, with `define`, of every build
+ * the unit has so far, selected by `feature`. A program links one build per
+ * unit, so a unit whose builds are keyed on several features needs a build
+ * for every combination of them; listing a column's builds by hand names
+ * only the columns its author knew, and a program with a combination nobody
+ * listed would link a build without one of its defines. Doubling what is
+ * there keeps every combination, whichever order the columns were added. */
+function withBuildColumn(variants, id, feature, define) {
+  for (const { id: other, when, defines } of variants.slice()) {
+    variants.push({
+      id: other === "default" ? id : `${id}-${other}`,
+      when: { ...when, [feature]: true },
+      defines: [...defines, define],
+    });
+  }
+  return variants;
+}
+
 /** One SCR_JS_OBJECT_MODEL twin of each variant of a unit the JavaScript
  * object model features reach (t262-da §J). Every such feature is inert
  * until its own runtime state exists, so one build carries all of them. */
@@ -305,19 +333,11 @@ export function variantsFor(source) {
     // "bind", …)`, `delete fn.apply`) keeps the own data property JS
     // creates: scr_json.c's member write/define/delete and own-valueOf
     // paths answer it, and scr_dyn_invoke.c's own call/apply/bind dispatch
-    // reads it first. The second build pairs this one with the node-island
-    // build above, so a program with both keeps one object.
+    // reads it first. The column is a twin of every build above, so a
+    // program with it and any of their features links one build that
+    // carries each define; the object model twins below double it in turn.
     // Every other program keeps the default object, byte for byte.
-    variants.push({
-      id: "fn-member-props",
-      when: { fnMemberProps: true },
-      defines: ["SCR_FN_MEMBER_PROPS"],
-    });
-    variants.push({
-      id: "node-island-fn-member-props",
-      when: { nodeIsland: true, fnMemberProps: true },
-      defines: ["SCR_NODE_ISLANDS", "SCR_FN_MEMBER_PROPS"],
-    });
+    withBuildColumn(variants, "fn-member-props", "fnMemberProps", "SCR_FN_MEMBER_PROPS");
     // The JavaScript object model build (t262-da §J): every runtime feature
     // reached only from JavaScript-source facts — builtin intrinsics, array
     // attributes, BigInt views, handle property tables, buffer views —
@@ -336,11 +356,7 @@ export function variantsFor(source) {
   // the same variant). Every other program keeps the default object, byte
   // for byte.
   if (source === "scr_dyn_invoke.c") {
-    variants.push({
-      id: "fn-member-props",
-      when: { fnMemberProps: true },
-      defines: ["SCR_FN_MEMBER_PROPS"],
-    });
+    withBuildColumn(variants, "fn-member-props", "fnMemberProps", "SCR_FN_MEMBER_PROPS");
   }
   // util.inspect and instanceof of Node island handles; Node's report for
   // an uncaught island error.

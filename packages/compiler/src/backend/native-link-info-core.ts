@@ -62,6 +62,9 @@ export interface NativeLinkFeatures {
    * and scr_dyn_invoke.c. Absent for every other program, so their objects
    * stay identical. */
   fnMemberProps?: boolean;
+  /** The BYTE-data spellings of the options write and
+   * fs.promises.writeFile: scr_fs_bytes_write.c. */
+  fsBytesWrites?: boolean;
   /** string_decoder's checked-dynamic chunk forms: scr_bytes_strdec_dyn.c. */
   strdecDyn?: boolean;
   /** process.prependListener, stdin.isRaw or server.off: the
@@ -118,6 +121,9 @@ export interface NativeLinkFeatures {
    * entries: selects the SCR_CHILD_CP_OPTIONS build of scr_child.c.
    * Absent (false) otherwise. */
   childOptionExt?: boolean;
+  /** A spawnSync capture read as a Buffer links scr_child_capture.c;
+   * absent (false) otherwise. */
+  spawnCaptureBytes?: boolean;
   /** The spawnSync result's `.error` errnoException fields (errno, syscall,
    * path, spawnargs) select scr_child.c's SCR_CHILD_ERR_FIELDS build; absent
    * (false) otherwise. */
@@ -127,9 +133,17 @@ export interface NativeLinkFeatures {
   /** for await over checked-dynamic values: scr_dyn_for_await.c. Absent
    * (false) for programs without it. */
   dynForAwait?: boolean;
+  /** The keyed collections' prototype objects and member values, their
+   * constructors' adder lookup, Map.prototype's dynamic forEach and the
+   * ES2025 Set compositions: scr_dyn_collections.c. Absent (false)
+   * otherwise. */
+  dynCollections?: boolean;
   /** Object.isExtensible and Object.isSealed of a value typed dynamically:
    * scr_dyn_integrity.c. Absent (false) for programs without it. */
   dynIntegrityQueries?: boolean;
+  /** Reflect.getPrototypeOf's primitive-target check compiles
+   * scr_dyn_reflect_proto.c; absent (false) otherwise. */
+  reflectProtoTarget?: boolean;
   /** A generator that binds its parameters at the call: scr_gen_bind.c.
    * Absent (false) for programs without one. */
   genBind?: boolean;

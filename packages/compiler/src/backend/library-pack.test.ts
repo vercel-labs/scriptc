@@ -27,4 +27,15 @@ describe("library archive runtime gates", () => {
       dynTier: false,
     });
   });
+
+  // An exported function that defines one of a function's own protocol
+  // members runs that write inside the archive. The archive must carry the
+  // SCR_FN_MEMBER_PROPS builds the executable lane links, or the write keeps
+  // the default build's SC2020 refusal at run time.
+  test("a program that defines a function's own member selects its builds", () => {
+    const features = libraryArchiveFeatures({ ...base, fnMemberProps: true });
+    expect(features.fnMemberProps).toBe(true);
+    const constant = libraryArchiveFeatures(base).fnMemberProps;
+    expect(constant === undefined || constant === false).toBe(true);
+  });
 });

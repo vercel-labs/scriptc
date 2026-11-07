@@ -2228,7 +2228,8 @@ static bool dyn_bytes_element_set(ScrDyn *target, double index, const ScrDyn *va
 
 /* Spread completion for a runtime-arity argument list (`f(...xs)` in the
  * checked-dynamic tier): JS's spread over the checked-dynamic tree's iterable kinds —
- * arrays element-by-element (retained), strings by code POINT (the string
+ * arrays element-by-element (retained; a hole reads through the prototype
+ * chain, as the array iterator does), strings by code POINT (the string
  * iterator; astral chars arrive unsplit), bytes by byte; every other kind
  * throws V8's exact SPREAD-CALL TypeError (catchable, pending — callers
  * check): nullish sources spell the spread expression (`what`) — "v is
@@ -2250,8 +2251,19 @@ void scr_dyn_arr_push_spread(ScrDyn *arr, const ScrDyn *src, const char *what) {
     return;
   }
   if (src->kind == SCR_DYN_ARR) {
+    if (!src->v.arr.presence) {
+      for (size_t i = 0; i < src->v.arr.len; i++) {
+        scr_dyn_arr_push(arr, scr_dyn_retain(src->v.arr.items[i]));
+      }
+      return;
+    }
+    /* A hole has no element of its own: JS reads it through the prototype
+     * chain, where an inherited indexed getter the program installed runs,
+     * exactly as the array iterator does (scr_dyn_arr_at). */
     for (size_t i = 0; i < src->v.arr.len; i++) {
-      scr_dyn_arr_push(arr, scr_dyn_retain(src->v.arr.items[i]));
+      ScrDyn *value = scr_dyn_arr_at(src, (double)i);
+      if (!value) return; /* an inherited getter threw: the exception is pending */
+      scr_dyn_arr_push(arr, value);
     }
     return;
   }
@@ -18256,6 +18268,11 @@ ScrDyn *scr_dyn_obj_read(const ScrDyn *d, const char *key, size_t key_len) {
   return scr_dyn_obj_read_receiver(d, key, key_len, d);
 }
 
+ScrDyn *scr_dyn_obj_read_with_receiver(const ScrDyn *d, const char *key, size_t key_len,
+                                       const ScrDyn *receiver) {
+  return scr_dyn_obj_read_receiver(d, key, key_len, receiver);
+}
+
 /* Read-site caches (ScrDynReadIc). A hit is exactly the first step of
  * scr_dyn_obj_read_receiver: the receiver's own data property. The builtin
  * Object.prototype answers through its reflection fence instead, so it
@@ -21339,11 +21356,19 @@ static ScrDyn *scr_weak_collection_new(ScrDyn *seed, bool is_set) {
   ScrDyn *entries = scr_dyn_map_seed_entries(seed);
   if (!entries) { scr_weak_map_release(map); return NULL; }
   for (size_t i = 0; i < entries->v.arr.len; i++) {
+    /* An array seed answers a hole through the prototype chain, where an
+     * inherited indexed getter runs (scr_dyn_arr_at). */
+    ScrDyn *raw = entries->v.arr.presence ? scr_dyn_arr_at(entries, (double)i)
+                                          : scr_dyn_retain(entries->v.arr.items[i]);
+    if (!raw) break;
     if (is_set) {
-      if (!scr_weak_set(map, entries->v.arr.items[i], scr_dyn_undefined())) break;
+      bool added = scr_weak_set(map, raw, scr_dyn_undefined());
+      scr_dyn_release(raw);
+      if (!added) break;
       continue;
     }
-    ScrDyn *entry = scr_dyn_map_seed_entry(entries->v.arr.items[i]);
+    ScrDyn *entry = scr_dyn_map_seed_entry(raw);
+    scr_dyn_release(raw);
     if (!entry) break;
     ScrDyn *key = scr_dyn_entry_read(entry, 0);
     ScrDyn *value = scr_exc_pending() ? NULL : scr_dyn_entry_read(entry, 1);
@@ -21770,18 +21795,69 @@ ScrDyn *scr_dyn_native_set(ScrMap *value) {
   return scr_dyn_new_handle(value, SCR_DYNH_SET);
 }
 
-ScrDyn *scr_dyn_native_set_new(const ScrDyn *seed) {
-  ScrDyn *items = NULL;
-  if (seed->kind != SCR_DYN_NULL && seed->kind != SCR_DYN_UNDEF) {
-    items = scr_dyn_seed_values(seed);
-    if (!items) return NULL;
+/* Insert a constructor seed into a native Set or Map handle with the bulk
+ * insert, without running program code. The checked-dynamic collection
+ * constructor creates its collection before it reads the adder (an accessor
+ * getter runs with the collection as `this`), so an adder that turns out to
+ * be the builtin fills this already-created collection. False with the
+ * exception pending. */
+bool scr_dyn_native_collection_insert_seed(ScrDyn *collection, const ScrDyn *seed) {
+  if (scr_dyn_native_set_is(collection)) {
+    ScrDyn *items = NULL;
+    if (seed->kind != SCR_DYN_NULL && seed->kind != SCR_DYN_UNDEF) {
+      items = scr_dyn_seed_values(seed);
+      if (!items) return false;
+    }
+    ScrMap *set = scr_map_retain(collection->v.handle.ptr);
+    if (items)
+      for (size_t i = 0; i < items->v.arr.len; i++)
+        scr_map_set_ref_f64(set, items->v.arr.items[i], 0);
+    scr_map_release(set);
+    scr_dyn_release(items);
+    return true;
   }
+  if (scr_dyn_native_map_is(collection)) {
+    ScrDyn *entries = scr_dyn_map_seed_entries(seed);
+    if (!entries) return false;
+    ScrMap *map = scr_map_retain(collection->v.handle.ptr);
+    bool ok = true;
+    for (size_t i = 0; i < entries->v.arr.len; i++) {
+      /* An array seed answers a hole through the prototype chain, where an
+       * inherited indexed getter runs (scr_dyn_arr_at). */
+      ScrDyn *raw = entries->v.arr.presence ? scr_dyn_arr_at(entries, (double)i)
+                                            : scr_dyn_retain(entries->v.arr.items[i]);
+      ScrDyn *entry = raw ? scr_dyn_map_seed_entry(raw) : NULL;
+      scr_dyn_release(raw);
+      if (!entry) {
+        ok = false;
+        break;
+      }
+      ScrDyn *key = scr_dyn_entry_read(entry, 0);
+      ScrDyn *value = scr_exc_pending() ? NULL : scr_dyn_entry_read(entry, 1);
+      scr_dyn_release(entry);
+      if (value) scr_map_dyn_set(map, key, value, false);
+      scr_dyn_release(key);
+      scr_dyn_release(value);
+      if (scr_exc_pending()) {
+        ok = false;
+        break;
+      }
+    }
+    scr_map_release(map);
+    scr_dyn_release(entries);
+    return ok;
+  }
+  return false;
+}
+
+ScrDyn *scr_dyn_native_set_new(const ScrDyn *seed) {
   ScrMap *set = scr_map_new(SCR_MAP_KEY_DYN, SCR_MAP_VAL_F64, &scr_map_dyn_set_ops);
-  if (items) for (size_t i = 0; i < items->v.arr.len; i++) scr_map_set_ref_f64(set, items->v.arr.items[i], 0);
   ScrDyn *result = scr_dyn_native_set(set);
   scr_map_release(set);
-  scr_dyn_release(items);
-  return result;
+  if (!result) return NULL;
+  if (scr_dyn_native_collection_insert_seed(result, seed)) return result;
+  scr_dyn_release(result);
+  return NULL;
 }
 
 bool scr_dyn_native_set_is(const ScrDyn *value) {
@@ -21889,24 +21965,13 @@ ScrDyn *scr_dyn_native_map(ScrMap *value) {
 }
 
 ScrDyn *scr_dyn_native_map_new(const ScrDyn *seed) {
-  ScrDyn *entries = scr_dyn_map_seed_entries(seed);
-  if (!entries) return NULL;
   ScrMap *map = scr_map_new(SCR_MAP_KEY_DYN, SCR_MAP_VAL_REF, &scr_map_dyn_map_ops);
-  for (size_t i = 0; i < entries->v.arr.len; i++) {
-    ScrDyn *entry = scr_dyn_map_seed_entry(entries->v.arr.items[i]);
-    if (!entry) break;
-    ScrDyn *key = scr_dyn_entry_read(entry, 0);
-    ScrDyn *value = scr_exc_pending() ? NULL : scr_dyn_entry_read(entry, 1);
-    scr_dyn_release(entry);
-    if (value) scr_map_dyn_set(map, key, value, false);
-    scr_dyn_release(key);
-    scr_dyn_release(value);
-    if (scr_exc_pending()) break;
-  }
-  scr_dyn_release(entries);
-  ScrDyn *result = scr_exc_pending() ? NULL : scr_dyn_native_map(map);
+  ScrDyn *result = scr_dyn_native_map(map);
   scr_map_release(map);
-  return result;
+  if (!result) return NULL;
+  if (scr_dyn_native_collection_insert_seed(result, seed)) return result;
+  scr_dyn_release(result);
+  return NULL;
 }
 
 bool scr_dyn_native_map_is(const ScrDyn *value) {
@@ -22383,6 +22448,55 @@ ScrDyn *scr_dyn_iter_take(const ScrDyn *src, size_t n, const char *spell) {
 
 bool scr_dyn_iterates_by_protocol(const ScrDyn *value) {
   return scr_dyn_sync_generator(value);
+}
+
+/* Whether a native iterator seed reads its values from internal slots. A
+ * string, Map, Set or stepping-handle iterator (any kind but the array one)
+ * answers from its source's own records. An array iterator answers its
+ * source's own elements too, but a hole reads through the prototype chain,
+ * where an inherited indexed getter the program installed runs: the
+ * collection constructor has to step such a seed so each read sees the
+ * entries the earlier steps inserted. An array-like iterator reads
+ * properties of an arbitrary object, which also runs program code. A keys()
+ * iterator only forms index numbers. */
+static bool scr_native_iterator_packs(const ScrDyn *seed) {
+  const ScrNativeIterator *iterator = seed->v.handle.ptr;
+  if (iterator->kind != 0) return true;
+  const ScrDyn *source = iterator->source;
+  if (!source) return true;
+  if (iterator->array_like) return false;
+  if (iterator->selection == 1) return true;
+  if (source->kind == SCR_DYN_ARR) return !source->v.arr.presence;
+  /* A live compiled array answers its own elements; a hole sends the read
+   * to the materialized view's prototype chain. */
+  if (source->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(source))
+    return !scr_arr_has_states(source->v.typed_ref.ptr);
+  return false;
+}
+
+/* Whether a collection constructor's seed gives its values without running
+ * program code: dense arrays, strings, bytes and collections pack, a native
+ * iterator over internal slots drains (scr_native_iterator_packs). Any other
+ * iterable walks the iterator protocol, whose steps run the program. An
+ * array seed answers its holes through the prototype chain, where an
+ * inherited indexed getter the program installed runs, so only a dense array
+ * packs — the same rule scr_native_iterator_packs applies to an array
+ * iterator's source. */
+bool scr_dyn_seed_packs_natively(const ScrDyn *seed) {
+  if (seed->kind == SCR_DYN_STR || seed->kind == SCR_DYN_BYTES) return true;
+  if (seed->kind == SCR_DYN_ARR) return !seed->v.arr.presence;
+  if (seed->kind == SCR_DYN_TYPED_REF) {
+    if (scr_dyn_iterates_by_protocol(seed)) return false;
+    /* A live compiled array reads a hole through the materialized view's
+     * prototype chain, as an array iterator over it does. */
+    if (scr_dyn_typed_ref_array_ops(seed)) return !scr_arr_has_states(seed->v.typed_ref.ptr);
+    return true;
+  }
+  if (seed->kind != SCR_DYN_HANDLE) return false;
+  if (seed->v.handle.tag == SCR_DYNH_ITERATOR) return scr_native_iterator_packs(seed);
+  if (seed->v.handle.tag == SCR_DYNH_MAP) return true;
+  const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(seed);
+  return ops->iter_step || ops->iter_pack;
 }
 
 /* ── dynamic-tier primitives (scr_dyn.h) ─────────────────── */

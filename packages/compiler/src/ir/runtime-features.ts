@@ -230,6 +230,9 @@ const REGEX_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fsp.globTypes",
   "path.matchesGlob",
   "path.win32MatchesGlob",
+  // `slice.index` / `slice.input` on a match-slice-typed value reads the
+  // match source through scr_regex_result_prop.
+  "regex.resultProp",
   "regexp.escape",
   "rl.cursorPos",
   "rl.keypressStdin",
@@ -359,6 +362,22 @@ const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 /** libCall name prefixes of the Readable entry points that await through the dyn-async unit. */
 const READABLE_DYN_ASYNC_PREFIXES: readonly string[] = ["readable.fromGen", "readable.op"];
 
+/** The keyed-collection entry points of scr_dyn_collections.c: the
+ * %Set.prototype%/%Map.prototype%/weak-collection prototypes, their member
+ * values, the constructors' adder lookup and the ES2025 Set compositions.
+ * The unit delegates prototype members through the dyn-invoke unit and
+ * interns Symbol.iterator/Symbol.toStringTag through the symbol unit, so
+ * every rule that selects this unit also selects those two. */
+const DYN_COLLECTION_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "dyn.collectionMethod",
+  "dyn.collectionPrototype",
+  "dyn.collectionGetPrototype",
+  "dyn.setCombine",
+  "dyn.collectionForEach",
+  "dyn.collectionConstruct",
+  "dyn.setValues",
+]);
+
 /** Entry points that link the dyn-invoke unit. */
 const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.arrayProtoCall",
@@ -391,6 +410,7 @@ const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.dynNativePipe",
   "stream.pipeDyn",
   "stream.unpipeDyn",
+  ...DYN_COLLECTION_LIB_FNS,
 ]);
 
 /** Member names whose constant-key dynamic reads answer the inherited Object.prototype member through the dyn-invoke unit. Mirrors expr-dynamic.ts INHERITED_OBJECT_MEMBERS (the IR layer does not import the backend). */
@@ -487,6 +507,7 @@ const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "buffer.constructor",
   "buffer.staticValue",
   "buffer.prototypeMember",
+  ...DYN_COLLECTION_LIB_FNS,
   "buffer.prototypeObject",
   // The array-like unit reads a receiver's @@isConcatSpreadable through
   // scr_sym_well_known before it spreads that receiver's elements.
@@ -1148,14 +1169,18 @@ function moduleWritesSparseIndex(mod: IrModule): boolean {
   return sparse;
 }
 
-/** The typed file reads that answer a ScrBytes: Node answers a Buffer, and
- * scr_lib.c's read entries brand it, so a typed read makes a Buffer value. */
+/** The typed reads that answer a ScrBytes: Node answers a Buffer, and
+ * scr_lib.c's read entries brand it, so a typed read makes a Buffer value.
+ * A spawnSync capture (spawnRes.stdoutBytes/stderrBytes) arrives from
+ * scr_child_capture.c, whose accessors stamp the same brand. */
 const FS_READ_BYTES_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "fs.readFileSyncBuf",
   "fs.readFileSyncBytes",
   "fs.readFdSyncBytes",
   "fsp.readFileBytes",
   "fileHandle.readFileBytes",
+  "spawnRes.stdoutBytes",
+  "spawnRes.stderrBytes",
 ]);
 
 /** The entries that need the JavaScript object model build (t262-da §J):
@@ -1238,6 +1263,33 @@ const FN_MEMBER_KEY_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "dyn.keySetComputed",
 ]);
 
+/** The lifted helper every `Object.defineProperty` on a dynamic target
+ * becomes (class-dynamic-dispatch.ts). Its body forwards to
+ * dyn.defineProperty through parameters, so the key a call site spells is
+ * visible only at the call into it, not at the library call inside. */
+const FN_OWN_DEFINE_HELPER = "%dyn.class.defineProperty";
+
+/** The target and key of a node that creates or removes an own property:
+ * the keyed library calls, or a call into the lifted define helper. Whether
+ * the node is a definition (whose receiver must be able to be a function) or
+ * a keyed write or delete (which names the shadow itself once its key
+ * spells it). */
+function ownMemberOp(
+  node: IrExpr,
+): { target: IrExpr | undefined; key: IrExpr | undefined; definition: boolean } | undefined {
+  if (node.kind === "libCall") {
+    if (!FN_MEMBER_KEY_LIB_FNS.has(node.fn)) return undefined;
+    return {
+      target: node.args[0],
+      key: node.args[1],
+      definition: node.fn.startsWith("dyn.define"),
+    };
+  }
+  if (node.kind === "call" && node.callee === FN_OWN_DEFINE_HELPER)
+    return { target: node.args[0], key: node.args[1], definition: true };
+  return undefined;
+}
+
 /** The name a key expression spells, followed through the hidden local a
  * keyed operation evaluates it into (lower-exprs.ts lowerDynMemberAssignment
  * and the definition paths store the member name in a local first) and the
@@ -1254,11 +1306,25 @@ function spelledMemberName(expr: IrExpr, definitions: Map<string, IrExpr>): stri
   return undefined;
 }
 
-/** Whether the operand is the identity-preserving box a TYPED callable
- * takes (callable-properties.ts callableBox): a func-typed value boxed into
- * the checked-dynamic tier. Its property table is the closure's. */
-function isBoxedCallable(expr: IrExpr | undefined): boolean {
-  return expr !== undefined && expr.kind === "dynFrom" && expr.value.type.kind === "func";
+/** Whether a value of this type can reach the write path as a function: the
+ * typed callables (`func`, and a class value, whose runtime node is its
+ * constructor function) and the unchecked dynamic tiers, where the program
+ * stores whatever it likes. Every other type boxes to an object or a
+ * primitive, whose property table is the ordinary one. */
+function typeHoldsCallable(type: IrType): boolean {
+  return (
+    type.kind === "func" || type.kind === "classval" || type.kind === "dyn" || type.kind === "jsval"
+  );
+}
+
+/** Whether the receiver of a definition can be a function at run time. A
+ * TYPED operand names its own kind (callable-properties.ts callableBox keeps
+ * the boxed value's type); a checked-dynamic operand names nothing, so an
+ * any-typed function among the values it holds reaches the write as one and
+ * the definition must select the build that admits the own property. */
+function mayHoldCallable(expr: IrExpr | undefined): boolean {
+  if (expr === undefined) return false;
+  return typeHoldsCallable(expr.kind === "dynFrom" ? expr.value.type : expr.type);
 }
 
 /** The inherited members only the SCR_FN_MEMBER_PROPS build of scr_json.c
@@ -1315,9 +1381,11 @@ function functionReadsInheritedMember(fn: IrFunction): boolean {
  * every other program keeps those units' default objects, byte for byte. A
  * keyed write whose key spells one of the names counts even on a
  * checked-dynamic receiver, because the closure's table is the only object
- * kind those names shadow. A definition counts only on a boxed callable:
- * class and object lowering define `constructor` and `toString` on ordinary
- * objects, which the function-property path never sees. */
+ * kind those names shadow. A definition counts on a receiver that can be a
+ * function: a typed callable, a class value, or a checked-dynamic value,
+ * which may hold an any-typed function. Only a boxed non-callable (a record,
+ * bytes, a handle) proves the definition never reaches the function path, so
+ * a definition on one of those selects the default objects. */
 function moduleShadowsFunctionMember(mod: IrModule): boolean {
   return mod.functions.some((fn) => functionShadowsMember(fn) || functionReadsInheritedMember(fn));
 }
@@ -1349,20 +1417,25 @@ function functionShadowsMember(fn: IrFunction): boolean {
   let found = false;
   everyStmtList(fn.body, {
     expr: (node) => {
-      if (found || node.kind !== "libCall" || !FN_MEMBER_KEY_LIB_FNS.has(node.fn)) return !found;
-      const target = node.args[0];
-      const key = node.args[1];
-      const name = key === undefined ? undefined : spelledMemberName(key, definitions);
+      if (found) return false;
+      const op = ownMemberOp(node);
+      if (op === undefined) return true;
+      const name = op.key === undefined ? undefined : spelledMemberName(op.key, definitions);
       if (name !== undefined && FN_REVEALED_BY_DELETE.has(name)) {
-        found = node.fn === "dyn.keyDelete" || node.fn === "dyn.keyDeleteComputed";
+        found =
+          node.kind === "libCall" &&
+          (node.fn === "dyn.keyDelete" || node.fn === "dyn.keyDeleteComputed");
         return !found;
       }
-      if (name === undefined || !FN_OWN_MEMBER_NAMES.has(name)) return !found;
-      // A definition also has to name a callable receiver: class and object
-      // lowering define `constructor` and `toString` on ordinary objects,
-      // which the function-property path never sees. A keyed write is the
-      // shadow itself once it spells the name.
-      found = node.fn.startsWith("dyn.define") ? isBoxedCallable(target) : true;
+      if (name === undefined || !FN_OWN_MEMBER_NAMES.has(name)) return true;
+      // A definition also has to name a receiver that can be a function. A
+      // typed record, bytes value, handle or collection boxes to an object,
+      // but class and object lowering also define `constructor` on plain
+      // objects, so a boxed non-callable proves the function-property path
+      // never sees it. A checked-dynamic receiver proves nothing: an
+      // any-typed function is one of the values it holds. A keyed write is
+      // the shadow itself once it spells the name.
+      found = op.definition ? mayHoldCallable(op.target) : true;
       return !found;
     },
     stmt: () => !found,
@@ -1418,6 +1491,14 @@ const RUNTIME_FEATURE_RULES = {
    * object, byte for byte. */
   childOptionExt: rule({
     fns: ["cp.spawnSyncExt", "cp.spawnSyncExtEnv", "cp.execFileCwd"],
+  }),
+  /** A spawnSync capture read as a Buffer (spawnSync without an encoding
+   * option): scr_child_capture.c, a unit of its own so a program that never
+   * reads a capture keeps scr_child.c's layout — the memo's thread-local
+   * state and its functions would otherwise move every symbol the linker
+   * lays out after them. */
+  spawnCaptureBytes: rule({
+    fns: ["spawnRes.stdoutBytes", "spawnRes.stderrBytes"],
   }),
   /** The spawnSync result's `.error` property answers Node's
    * errnoException fields (errno, syscall, path, spawnargs). The fields
@@ -1591,9 +1672,19 @@ const RUNTIME_FEATURE_RULES = {
   typeOrigins: rule({ initial: (mod) => (mod.declOrigins?.length ?? 0) > 0 }),
   /** for await over checked-dynamic values (scr_dyn_for_await.c). */
   dynForAwait: rule({ fns: ["dyn.asyncIteratorOpen", "dyn.asyncIteratorWasSync"] }),
+  /** A keyed collection's prototype as a value, Map.prototype's members,
+   * the constructors' adder lookup and the ES2025 Set compositions over a
+   * set-like (scr_dyn_collections.c). The unit calls into the dyn-invoke
+   * unit for prototype members and the symbol unit for Symbol.iterator and
+   * Symbol.toStringTag, so each of those rules lists these entry points
+   * too. */
+  dynCollections: rule({ fns: [...DYN_COLLECTION_LIB_FNS] }),
   /** Object.isExtensible and Object.isSealed of a value typed dynamically
    * (scr_dyn_integrity.c, a unit of its own so scr_json.c keeps its layout). */
   dynIntegrityQueries: rule({ fns: ["dyn.isExtensibleQuery", "dyn.isSealedQuery"] }),
+  /** Reflect.getPrototypeOf's primitive-target check (scr_dyn_reflect_proto.c,
+   * a unit of its own so scr_json.c keeps its layout). */
+  reflectProtoTarget: rule({ fns: ["dyn.reflectGetPrototypeTarget"] }),
   /** A generator that binds its parameters at the call (scr_gen_bind.c):
    * the spawn wrapper's eager step imports the bind helper, and every other
    * program links the default runtime objects. */
@@ -1859,10 +1950,11 @@ const RUNTIME_FEATURE_RULES = {
     prefixes: STREAM_LIB_PREFIXES,
   }),
   /** A Dirent row converted to dyn carries Node's Symbol(type) key
-   * (scr_dyn_dirent_finish, defined in scr_symbol.c). */
+   * (scr_dyn_dirent_finish, defined in scr_symbol.c), and a callback read
+   * builds its Dirent there. */
   symbol: rule({
     initial: (mod) => (mod.records ?? []).some(isDirentShape),
-    fns: [...SYMBOL_LIB_FNS],
+    fns: [...SYMBOL_LIB_FNS, "dir.readCb"],
     // %Iterator.prototype% (scr_js_iterator.c) defines its Symbol.iterator,
     // Symbol.toStringTag and Symbol.dispose members with the well-known
     // symbols scr_sym_well_known makes.
@@ -2037,6 +2129,14 @@ const RUNTIME_FEATURE_RULES = {
       "fsp.writeFileFlags",
     ],
   }),
+  /** The BYTE-data spellings of the options write and of
+   * fs.promises.writeFile: scr_fs_bytes_write.c, so a program that writes no
+   * byte payload keeps scr_fs_flags.c's and scr_bytes_io.c's objects byte
+   * for byte. The unit carries its own static copy of scr_fs_flags.c's
+   * mode validation, so it links alone. */
+  fsBytesWrites: rule({
+    fns: ["fs.writeFileSyncBytesFlags", "fsp.writeFileBytes", "fsp.writeFileBytesFlags"],
+  }),
   /** string_decoder's checked-dynamic chunk forms (a stream "data" payload):
    * scr_bytes_strdec_dyn.c. */
   strdecDyn: rule({ fns: ["strdec.nextDyn", "strdec.writeDyn"] }),
@@ -2106,6 +2206,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     fileHandle: false,
     fnMemberProps: false,
     fsFlags: false,
+    fsBytesWrites: false,
     fsWatch: false,
     fsWatchFile: false,
     genBind: false,
@@ -2150,11 +2251,14 @@ function noRuntimeFeatures(): RuntimeFeatures {
     handleProps: false,
     childLifecycle: false,
     childOptionExt: false,
+    spawnCaptureBytes: false,
     childErrorFields: false,
     declAdopt: false,
     typeOrigins: false,
     dynForAwait: false,
+    dynCollections: false,
     dynIntegrityQueries: false,
+    reflectProtoTarget: false,
     dynBuffer: false,
     dynBufferMembers: false,
     bufferPrototypeObject: false,

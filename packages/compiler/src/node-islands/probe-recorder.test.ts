@@ -23,16 +23,18 @@ function project(files: Record<string, string>): string {
 interface ProbeResult {
   path: string;
   throws?: string;
+  reason?: string;
   root?: number;
 }
 
 /** Runs the recorder in a Node process of its own, as the probe host runs
- * it in libnode, over `modules`. */
-function probe(root: string, modules: string[]): ProbeResult[] {
+ * it in libnode, over `modules`, with `generated` evaluated under the
+ * withholding a build's generated module gets. */
+function probe(root: string, modules: string[], generated: string[] = []): ProbeResult[] {
   writeFileSync(join(root, "recorder.cjs"), PROBE_RECORDER);
   writeFileSync(
     join(root, "run.cjs"),
-    `const out = require("./recorder.cjs").probe({ modules: ${JSON.stringify(modules)} });\n` +
+    `const out = require("./recorder.cjs").probe({ modules: ${JSON.stringify(modules)}, generated: ${JSON.stringify(generated)} });\n` +
       `process.stdout.write(JSON.stringify(out.results));\n`,
   );
   const run = spawnSync(process.execPath, [join(root, "run.cjs")], { cwd: root, encoding: "utf8" });
@@ -71,6 +73,30 @@ test("the probe never evaluates the program's own source", () => {
   ]);
   expect(existsSync(join(root, "src/evaluated-program"))).toBe(false);
   expect(existsSync(join(root, "src/evaluated-shared"))).toBe(false);
+});
+
+test("a generated module's open for writing is withheld, not performed", () => {
+  const root = project({
+    "node_modules/writer/package.json": '{ "name": "writer" }',
+    "node_modules/writer/index.js":
+      'const fs = require("fs");\nmodule.exports = (p) => { fs.openSync(p, "w"); return "made"; };\n',
+  });
+  const made = join(root, "made.txt");
+  // What the build writes for a closed constant that opens a file through an
+  // island package: the call would truncate the file during compilation.
+  const generatedFile = join(root, ".scriptc/closed/writer.0.mjs");
+  mkdirSync(dirname(generatedFile), { recursive: true });
+  writeFileSync(
+    generatedFile,
+    `import write from ${JSON.stringify(join(root, "node_modules/writer/index.js"))};\n` +
+      `export const made = write(${JSON.stringify(made)});\n`,
+  );
+  const [result] = probe(root, [generatedFile], [generatedFile]);
+  expect(result!.throws).toBeUndefined();
+  expect(result!.reason).toBe(
+    "its evaluation has effects or reads inputs: fs.openSync(), which the build does not perform",
+  );
+  expect(existsSync(made)).toBe(false);
 });
 
 test("a package that catches the refusal does not defer, nor does one that loads it later", () => {

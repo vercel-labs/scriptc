@@ -10,24 +10,32 @@
  * initializer that is built only from literals, island imports, other such
  * constants and member reads, calls and `new` on those holds no native
  * value, so the island can evaluate it itself: the build writes the
- * initializers of each run of consecutive such constants into an island
- * module (node-islands/generated.ts),
+ * initializers of each closed constant into an island module of its own
+ * (node-islands/generated.ts),
  *
  *   import { Type } from "../../node_modules/schema-pkg/index.mjs";
  *   export const item = Type.Object({ id: Type.String() });
+ *
+ *   import { item } from ".../main.ts.closed.0.mjs";
  *   export const list = Type.Array(item);
  *
- * loads it where the run's first constant is initialized, and each
- * constant's initializer becomes a read of the module's export, met with
- * the conversion the original expression's value met (fromIsland). The
- * load is the deferred load of a static island import (`nodeIsland.defer`,
+ * loads it where the constant is initialized, and each constant's
+ * initializer becomes a read of the module's export, met with the
+ * conversion the original expression's value met (fromIsland). The load
+ * is the deferred load of a static island import (`nodeIsland.defer`,
  * node-islands/snapshot.ts): the build-time probe decides whether the
  * module evaluates there or on first use, with its interface snapshot
  * standing in until then. The native constant itself is unchanged: the
  * same global, type, exports and initialization flag.
  *
- * One module per run, not per source module: a native statement between
- * two closed constants still runs between them when the loads are eager.
+ * One module per constant, not per run of them: under Node a statement's
+ * constants are assigned in source order, so an initializer that invokes a
+ * callback an island package kept from an earlier constant reads that
+ * constant's value. A module holding several initializers would evaluate
+ * them all where the first is declared, before any of their native
+ * assignments, and the callback would read the earlier constant early; a
+ * statement that declares more than one constant therefore stays native
+ * (closedDeclaration).
  *
  * Same program: under Node these expressions run in the same order against
  * the same island objects. Only the literal arguments differ from the
@@ -69,7 +77,8 @@ export interface ClosedConstant {
   run: ClosedRun | null;
 }
 
-/** Consecutive closed constants of one module: one generated module. */
+/** One closed constant's generated module: the constant evaluates where it
+ * is declared, after the constant before it was assigned natively. */
 export interface ClosedRun {
   /** The generated module's key (NodeIslandModuleCollector.addGenerated):
    * the name its loads carry until lowering ends. */
@@ -433,6 +442,13 @@ function closedDeclaration(
   // Without a call there is nothing to move: member reads of an import are
   // answered by the island module's own snapshot.
   if (scan.calls === 0) return null;
+  // One generated module holds one constant: a statement's constants are
+  // assigned in source order, and a module evaluated at the first of them
+  // would run every initializer before the others' native assignments.
+  if (statement.declarationList.declarations.nodes.length > 1) {
+    traceClosed(declaration, "a statement that declares more than one constant");
+    return null;
+  }
   traceClosed(declaration, null);
   return {
     name: declaration.name.text,
@@ -482,31 +498,31 @@ function evaluatesNothing(statement: ts.Statement): boolean {
   );
 }
 
-/** The closed constants of `file`, in runs. */
+/** The closed constants of `file`, each in a run of its own. */
 export function closedFile(lowerer: Lowerer, file: ts.SourceFile): ClosedFile {
   const known = lowerer.closedIslandFiles.get(file);
   if (known !== undefined) return known;
   const result: ClosedFile = { runs: [], initializers: new Map() };
   lowerer.closedIslandFiles.set(file, result);
   if (lowerer.nodeIslands === null || !movable(lowerer, file)) return result;
-  let run: ClosedRun | null = null;
   for (const statement of file.statements.nodes) {
     if (evaluatesNothing(statement)) continue;
     const constants = ts.isVariableStatement(statement)
       ? closedStatement(lowerer, statement)
       : null;
-    if (constants === null || constants.length === 0) {
-      run = null;
-      continue;
-    }
-    if (run === null) {
-      const index = result.runs.length;
-      run = { key: `${file.fileName}.closed.${index}.mjs`, file, index, constants: [] };
-      result.runs.push(run);
-    }
+    if (constants === null) continue;
     for (const constant of constants) {
+      // The load of one constant's module runs where that constant is
+      // declared, so its initializer sees every earlier constant assigned.
+      const index = result.runs.length;
+      const run: ClosedRun = {
+        key: `${file.fileName}.closed.${index}.mjs`,
+        file,
+        index,
+        constants: [constant],
+      };
+      result.runs.push(run);
       constant.run = run;
-      run.constants.push(constant);
       result.initializers.set(constant.initializer, constant);
     }
   }

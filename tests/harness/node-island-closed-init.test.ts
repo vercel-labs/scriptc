@@ -76,15 +76,17 @@ const generated = (line: string): boolean => line.includes(".scriptc/closed/");
 const startsNode = (boot: string[]): boolean => boot.some((l) => l.includes("starting Node"));
 
 describe.skipIf(skip)("island-closed module-level constants", () => {
-  test("unused constants are one deferred island module, and Node never starts", async () => {
+  test("unused constants are deferred island modules, and Node never starts", async () => {
     const { binary, trace } = await build("8910-node-island-closed-const-unused");
     const modules = trace.filter(generated);
-    // The three constants are consecutive: one generated module.
-    expect(modules).toHaveLength(1);
-    expect(modules[0]).toMatch(/^\[node-islands\] defer .*recorded evaluation is deterministic/);
+    // One module per constant: each initializer evaluates where its
+    // constant is declared.
+    expect(modules).toHaveLength(3);
+    for (const line of modules)
+      expect(line).toMatch(/^\[node-islands\] defer .*recorded evaluation is deterministic/);
     const { boot, code } = await run(binary);
     expect(code).toBe(0);
-    expect(boot.filter((l) => l.includes("deferred ./.scriptc/closed/"))).toHaveLength(1);
+    expect(boot.filter((l) => l.includes("deferred ./.scriptc/closed/"))).toHaveLength(3);
     expect(startsNode(boot)).toBe(false);
   }, 300_000);
 

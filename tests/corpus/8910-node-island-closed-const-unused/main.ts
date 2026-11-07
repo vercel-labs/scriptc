@@ -1,8 +1,8 @@
 // @requires-libnode
 // Module-level constants whose initializers only call into a Node island
 // package with literal arguments and each other. The island evaluates such
-// initializers itself (a generated island module per run of them), and the
-// build defers that module like the package's own: the program never uses
+// initializers itself (a generated island module per constant), and each
+// module is deferred like the package's own: the program never uses
 // the constants' values, so Node never starts and libnode is never mapped.
 // What it reads of them before that (their kind, their identity) comes from
 // the build-time interface snapshot.

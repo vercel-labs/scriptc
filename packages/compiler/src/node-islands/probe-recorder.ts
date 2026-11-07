@@ -360,6 +360,8 @@ exports.probe = function probe(input) {
   // Synchronous reads of the module's own package (its files are boot
   // guards, by size and mtime) are guarded inputs, not inputs.
   const fsModule = require("node:fs");
+  const rawExists = fsModule.existsSync;
+  const rawReadFile = fsModule.readFileSync;
   const guardedFds = new Set();
   const ownPath = (p) => {
     if (currentPackageDir === null) return null;
@@ -375,6 +377,21 @@ exports.probe = function probe(input) {
     const original = fsModule[key];
     if (typeof original !== "function") continue;
     const wrapped = function (target, flags) {
+      // A guarded call reads the module's own package, which is boot state
+      // the build may take. Any other call is the program's input, and an
+      // open for writing is an effect: a generated module's evaluation
+      // withholds it before the call, so the build never reads a file the
+      // program would read nor truncates one it would write.
+      if (recording && !internalCaller()) {
+        const own = ownPath(target);
+        if (!(own !== null && (key !== "openSync" || readOnlyFlags(flags)))) {
+          const what = "fs." + key + "()";
+          if (withholding) {
+            if (withheld === null) withheld = what;
+            throw new Error("the build does not perform " + what + " (" + lastCaller + ") for the program");
+          }
+        }
+      }
       let result;
       try {
         result = original.apply(this, arguments);
@@ -403,6 +420,13 @@ exports.probe = function probe(input) {
   for (const key of ["readSync", "fstatSync", "closeSync"]) {
     const original = fsModule[key];
     const wrapped = function (fd) {
+      // Only a guarded read's descriptor is the build's own; any other is
+      // the program's, which a generated module's evaluation withholds.
+      if (recording && !internalCaller() && !guardedFds.has(fd) && withholding) {
+        const what = "fs." + key + "()";
+        if (withheld === null) withheld = what;
+        throw new Error("the build does not perform " + what + " (" + lastCaller + ") for the program");
+      }
       const result = original.apply(this, arguments);
       if (recording && !internalCaller()) {
         if (!guardedFds.has(fd)) inputs.push("fs." + key + "() (" + lastCaller + ")");
@@ -543,7 +567,7 @@ exports.probe = function probe(input) {
     currentFiles = files;
     currentPackageDir = null;
     for (let d = require("node:path").dirname(path); d !== require("node:path").dirname(d); d = require("node:path").dirname(d)) {
-      if (require("node:fs").existsSync(d + "/package.json")) { currentPackageDir = d; break; }
+      if (rawExists(d + "/package.json")) { currentPackageDir = d; break; }
     }
     const before = shot();
     let exportsValue, threw;
@@ -572,7 +596,7 @@ exports.probe = function probe(input) {
     // times unrelated to the module; only code that names it can set it.
     const names = (key) => {
       for (const f of files) {
-        try { if (require("node:fs").readFileSync(f, "utf8").includes(key)) return true; } catch {}
+        try { if (rawReadFile(f, "utf8").includes(key)) return true; } catch {}
       }
       return false;
     };

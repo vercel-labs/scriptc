@@ -5,9 +5,11 @@ import {
   DYN,
   F64,
   STRING,
+  SYMBOL_T,
   UNDEFINED_T,
   VOID,
   arrayOf,
+  funcOf,
   type IrExpr,
   type IrFunction,
   type IrLibFn,
@@ -877,6 +879,138 @@ export function builtinConstantsObject(lowerer: Lowerer, loc: SrcLoc): IrExpr {
     loc,
   };
   return { kind: "libCall", fn: "constants.object", args: [box(table)], type: DYN, loc };
+}
+
+/** The ES module namespace of the deprecated node:constants module: its
+ * export names are the CommonJS object's own enumerable keys plus "default",
+ * sorted by code unit, with a null prototype and no hasOwnProperty. The names
+ * come from the platform's C library, so neither the compiler nor a census
+ * can list them: the runtime sorts the keys of the merged constants object,
+ * and a getter answers each read — "default" is the CommonJS object itself,
+ * every other name a member of it. */
+export function builtinConstantsEsmNamespace(lowerer: Lowerer, loc: SrcLoc): IrExpr {
+  const name = "%builtin.constants.esm";
+  if (!lowerer.builtinCallableValueFns.has(name)) {
+    lowerer.builtinCallableValueFns.set(name, name);
+    const member = (): IrExpr => varRef("constants", DYN, loc);
+    lowerer.liftedFns.push({
+      name,
+      params: [{ localId: "key.0", name: "key", type: STRING }],
+      returnType: DYN,
+      locals: [
+        { id: "key.0", name: "key", type: STRING, mutable: false },
+        { id: "constants", name: "constants", type: DYN, mutable: false },
+      ],
+      body: [
+        {
+          kind: "varDecl",
+          localId: "constants",
+          init: builtinConstantsObject(lowerer, loc),
+          loc,
+        },
+        {
+          kind: "if",
+          cond: {
+            kind: "strEq",
+            negated: false,
+            left: varRef("key.0", STRING, loc),
+            right: strLit("default", loc),
+            type: BOOL,
+            loc,
+          },
+          then: [{ kind: "return", value: member(), loc }],
+          else_: null,
+          loc,
+        },
+        {
+          kind: "return",
+          value: {
+            kind: "dynKeyGet",
+            value: member(),
+            key: varRef("key.0", STRING, loc),
+            type: DYN,
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    });
+  }
+  const keys = lowerer.declareHiddenLocal("%constantsKeys", arrayOf(STRING));
+  const keyRef = (): IrExpr => varRef(keys.id, arrayOf(STRING), loc);
+  return {
+    kind: "seqExpr",
+    stmts: [
+      {
+        kind: "varDecl",
+        localId: keys.id,
+        init: {
+          kind: "libCall",
+          fn: "dyn.objKeyStrings",
+          args: [builtinConstantsObject(lowerer, loc)],
+          type: arrayOf(STRING),
+          loc,
+        },
+        loc,
+      },
+      {
+        kind: "exprStmt",
+        expr: {
+          kind: "arrIntrinsic",
+          method: "push",
+          receiver: keyRef(),
+          args: [strLit("default", loc)],
+          type: F64,
+          loc,
+        },
+        loc,
+      },
+    ],
+    result: {
+      kind: "libCall",
+      fn: "module.namespaceDyn",
+      args: [
+        strLit("builtin:constants", loc),
+        {
+          kind: "arrIntrinsic",
+          method: "sortPrimitive",
+          receiver: keyRef(),
+          args: [],
+          type: arrayOf(STRING),
+          loc,
+        },
+        {
+          kind: "dynFrom",
+          value: {
+            kind: "closure",
+            fnName: name,
+            captures: [],
+            type: funcOf([STRING], DYN),
+            loc,
+          },
+          type: DYN,
+          loc,
+        },
+        {
+          kind: "dynFrom",
+          value: {
+            kind: "libCall",
+            fn: "sym.wellKnown",
+            args: [strLit("toStringTag", loc)],
+            type: SYMBOL_T,
+            loc,
+          },
+          type: DYN,
+          loc,
+        },
+      ],
+      type: DYN,
+      loc,
+    },
+    type: DYN,
+    loc,
+  };
 }
 
 /** The untyped-caller twin of a builtin function value whose parameters

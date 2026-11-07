@@ -1,5 +1,6 @@
 import { keyedHelperName } from "../stable-names.js";
 import { checkedPromiseAll, thenReader } from "../checked-promise-all.js";
+import { mayResolveThroughThen } from "../promise-resolution.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
 import type { Lowerer } from "../lowerer.js";
@@ -1115,14 +1116,16 @@ export function lowerPromiseStaticCall(
       lowerer.noLowering("Promise.resolve at a unit-typed promise", call);
     }
     const value = lowerer.lowerExprExpecting(argNode, resultT.inner);
-    // In JavaScript, a checked-dynamic argument may itself hold a promise
-    // (a TypeScript async callback's result: `Promise.resolve(fn())`):
-    // Promise.resolve answers THAT promise — the same object, adopted —
-    // and wraps every other value.
+    // A checked-dynamic argument may itself hold a promise (a TypeScript
+    // async callback's result: `Promise.resolve(fn())`): Promise.resolve
+    // answers THAT promise — the same object, adopted — and wraps every
+    // other value. A TypeScript argument whose static type proves it plain
+    // (a string passed where `unknown` is expected) needs no test.
     if (
-      isJsSourceFile(ts.getSourceFileOfNode(call)) &&
       value.type.kind === "dyn" &&
-      resultT.inner.kind === "dyn"
+      resultT.inner.kind === "dyn" &&
+      (isJsSourceFile(ts.getSourceFileOfNode(call)) ||
+        mayResolveThroughThen(lowerer, lowerer.typeOf(argNode)))
     ) {
       const local = lowerer.declareHiddenLocal("%resolveValue", DYN);
       const ref: IrExpr = { kind: "varRef", localId: local.id, type: DYN, loc };

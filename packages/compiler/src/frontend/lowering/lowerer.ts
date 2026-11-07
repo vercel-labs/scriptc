@@ -842,6 +842,7 @@ import {
   maybePromiseUnionOf,
   promiseArmedUnionOf,
 } from "./maybe-promise.js";
+import { mayResolveThroughThen } from "./promise-resolution.js";
 import { NodeIslandModuleCollector } from "../../node-islands/modules.js";
 
 /** Entry function name. '%' cannot appear in a TS identifier, so a user
@@ -2188,7 +2189,10 @@ export function staticImportNamespaceType(
     }
   }
   if (moduleId === null) return null;
-  const ns: IrType = { kind: "moduleNs", moduleId };
+  // node:constants has no census and its ESM namespace is a checked-dynamic
+  // object (sorted runtime names plus "default"), so the import's value is
+  // typed dynamically rather than as a module namespace token.
+  const ns: IrType = moduleId === "builtin:constants" ? DYN : { kind: "moduleNs", moduleId };
   return awaited ? ns : { kind: "promise", inner: ns };
 }
 
@@ -16964,11 +16968,26 @@ export class Lowerer {
     const s = this.lowerReturnOf(node, loc);
     const awaited = this.returnAwaitedPromise;
     this.returnAwaitedPromise = saved;
-    if (!awaited) return s;
-    if (s.kind === "return") return { ...s, awaited: true };
+    // A checked-dynamic operand may hold a promise: the same await settles
+    // it, and takes its one turn for any other value.
+    const settled = (ret: IrStmt & { kind: "return" }): IrStmt & { kind: "return" } => {
+      if (awaited) return { ...ret, awaited: true };
+      if (ret.value?.type.kind !== "dyn" || !mayResolveThroughThen(this, this.typeOf(node)))
+        return ret;
+      const value: IrExpr = {
+        kind: "libCall",
+        fn: "async.awaitDyn",
+        args: [ret.value],
+        type: DYN,
+        loc: ret.value.loc,
+      };
+      return { ...ret, value, awaited: true };
+    };
+    if (s.kind === "return") return settled(s);
     if (s.kind === "block" && s.body.at(-1)?.kind === "return") {
       const last = s.body.at(-1) as IrStmt & { kind: "return" };
-      return { ...s, body: [...s.body.slice(0, -1), { ...last, awaited: true }] };
+      const ret = settled(last);
+      return ret === last ? s : { ...s, body: [...s.body.slice(0, -1), ret] };
     }
     return s;
   }

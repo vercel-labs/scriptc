@@ -45,6 +45,7 @@ import {
   type StartupCrash,
 } from "../program.js";
 import { foldedStringKeyOf, lowerDynObjectLiteral } from "./expressions/object-literals.js";
+import { builtinConstantsEsmNamespace } from "./lower-builtin-values.js";
 import { noteEventListeners } from "./lower-event-target.js";
 import { PoisonError, newFnCtx, own } from "./lowerer.js";
 import { node24FetchCompatProfile, staticFetchMembers } from "../../compat/fetch-profile.js";
@@ -2253,6 +2254,14 @@ export function lowerDynamicImportCall(lowerer: Lowerer, call: ts.CallExpression
   if (res.kind === "program-module") {
     return lowerOwnStaticModuleImport(lowerer, call, specifier);
   }
+  // node:constants resolves the one checked-dynamic namespace object its
+  // `import * as` binding gets: the merged CommonJS object's names plus
+  // "default", sorted, on a null-prototype object (builtinConstantsEsmNamespace).
+  // Its names come from the platform, so a static census cannot list them.
+  if (res.module === "constants")
+    return lowerStaticNamespaceImport(lowerer, call, DYN, null, () =>
+      builtinConstantsEsmNamespace(lowerer, locOf(call)),
+    );
   return lowerStaticNamespaceImport(lowerer, call, {
     kind: "moduleNs",
     moduleId: `builtin:${res.module}`,
@@ -2383,12 +2392,15 @@ function lowerOwnStaticModuleImport(
 
 /** Builds a fresh native promise for a static module namespace. Source
  * modules run/await their guarded initializer after the mandatory hop;
- * builtins only take the hop and resolve their immortal token. */
+ * builtins only take the hop and resolve their immortal token. A target
+ * that has a checked-dynamic value instead of a namespace token passes it
+ * as `resolveValue`. */
 function lowerStaticNamespaceImport(
   lowerer: Lowerer,
   call: ts.CallExpression,
-  ns: IrType & { kind: "moduleNs" },
+  ns: IrType,
   dep: ts.SourceFile | null = null,
+  resolveValue?: () => IrExpr,
 ): IrExpr {
   const loc = locOf(call);
   const resultT: IrType & { kind: "promise" } = { kind: "promise", inner: ns };
@@ -2412,11 +2424,15 @@ function lowerStaticNamespaceImport(
     };
     const body: IrStmt[] = [{ kind: "exprStmt", expr: hop, loc }];
     if (dep !== null) appendStaticModuleInit(lowerer, dep, body, loc);
-    body.push({
-      kind: "return",
-      value: { kind: "moduleNsRef", moduleId: ns.moduleId, type: ns, loc },
-      loc,
-    });
+    let resolved: IrExpr;
+    if (resolveValue !== undefined) resolved = resolveValue();
+    else if (ns.kind === "moduleNs")
+      resolved = { kind: "moduleNsRef", moduleId: ns.moduleId, type: ns, loc };
+    else
+      throw new InternalCompilerError(
+        "lowerer bug: static import target has no namespace or value",
+      );
+    body.push({ kind: "return", value: resolved, loc });
     const ctx = lowerer.ctx;
     lowerer.liftedFns.push({
       name: fnName,

@@ -314,7 +314,7 @@ import {
   isCjsRequireGlobal,
   lowerRequireCacheKeys,
 } from "./lower-node-module.js";
-import { pathModuleValue } from "./lower-builtin-values.js";
+import { builtinConstantsObject, pathModuleValue } from "./lower-builtin-values.js";
 import {
   defaultAfterUndefined,
   lowerOptionalArgument,
@@ -631,7 +631,11 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     // The platform namespaces are the path module objects.
     if (module === "path/posix" || module === "path/win32")
       return pathModuleValue(lowerer, module, loc);
-    if (module !== null && module !== "constants") {
+    // node:constants is one checked-dynamic object (its members are the
+    // platform's C tables, merged by the runtime), so an inline require of
+    // it answers that object, the same value a namespace binding reads.
+    if (module === "constants") return builtinConstantsObject(lowerer, loc);
+    if (module !== null) {
       const moduleId = `builtin:${module}`;
       return { kind: "moduleNsRef", moduleId, type: { kind: "moduleNs", moduleId }, loc };
     }
@@ -10389,13 +10393,6 @@ function lowerObjectStaticCall(
   // whose shape the type system does not fix (a parameter, an untraced
   // call result) has no answer here.
   if (namespaceShape !== null) {
-    if (member !== "keys") {
-      lowerer.noLowering(
-        `Object.${member} over a builtin module namespace`,
-        call,
-        "access the builtin's named exports directly",
-      );
-    }
     if (namespaceShape.flavor === "unknown") {
       lowerer.noLowering(
         "Object.keys over a builtin module namespace whose runtime shape is not known statically",
@@ -10404,25 +10401,30 @@ function lowerObjectStaticCall(
       );
     }
     const names = builtinModuleKeys(namespaceShape.module, namespaceShape.flavor);
-    if (names === null) {
-      lowerer.noLowering(
-        "Object.keys over a builtin module namespace",
-        call,
-        "access the builtin's named exports directly",
+    // A namespace the census does not answer for (its members come from the
+    // platform) has no static key list, so the arms below answer from the
+    // namespace value's own keyed surface.
+    if (names !== null) {
+      if (member !== "keys") {
+        lowerer.noLowering(
+          `Object.${member} over a builtin module namespace`,
+          call,
+          "access the builtin's named exports directly",
+        );
+      }
+      const loc = locOf(call);
+      return reflectOverNamespaceExpr(
+        lowerer,
+        argNode,
+        {
+          kind: "arrayLit",
+          elems: names.map((name) => ({ kind: "strLit", value: name, type: STRING, loc })),
+          type: arrayOf(STRING),
+          loc,
+        },
+        loc,
       );
     }
-    const loc = locOf(call);
-    return reflectOverNamespaceExpr(
-      lowerer,
-      argNode,
-      {
-        kind: "arrayLit",
-        elems: names.map((name) => ({ kind: "strLit", value: name, type: STRING, loc })),
-        type: arrayOf(STRING),
-        loc,
-      },
-      loc,
-    );
   }
   // A compiled PROGRAM module namespace is a nominal token whose members
   // remain live bindings, but its enumerable key set is static and Node

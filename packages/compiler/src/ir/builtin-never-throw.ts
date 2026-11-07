@@ -42,4 +42,8 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "process.features",
   // Stores the encoding's spelling beside the decoder setEncoding installed.
   "readable.encodingName",
+  // scr_fs_exists_bytes turns the path bytes into a string and probes it; a
+  // path that is not there is the answer false, and the probe reports no
+  // error.
+  "fs.existsSyncBytes",
 ]);

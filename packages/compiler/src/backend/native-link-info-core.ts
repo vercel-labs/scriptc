@@ -51,19 +51,19 @@ export interface NativeLinkFeatures {
    * (jsObjectModelFact), so it selects no build column of its own. Absent
    * for every other program, so their objects stay identical. */
   mutableBuffers?: boolean;
-  /** The program uses process.stdin.setEncoding, string 'data' listeners
-   * or stdio 'resize' events: links the SCR_STDIO_EXTENDED events unit. */
-  stdioExtended?: boolean;
   /** writeFile's `flag` disposition or copyFile's mode argument:
    * scr_fs_flags.c and the SCR_FS_FLAGS build of scr_fs_cp.c. */
   fsFlags?: boolean;
+  /** existsSync over a path value that is not statically a string:
+   * scr_fs_exists_dyn.c. */
+  fsExistsValue?: boolean;
   /** The BYTE-data spellings of the options write and
    * fs.promises.writeFile: scr_fs_bytes_write.c. */
   fsBytesWrites?: boolean;
   /** string_decoder's checked-dynamic chunk forms: scr_bytes_strdec_dyn.c. */
   strdecDyn?: boolean;
   /** process.prependListener, stdin.isRaw or server.off: the
-   * SCR_PROCESS_EXTRAS builds of scr_events.c and scr_async_dyn.c and the
+   * SCR_PROCESS_EXTRAS build of scr_async_dyn.c and the
    * SCR_NET_SERVER_OFF build of scr_net.c. */
   processExtras?: boolean;
   /** A write completion callback takes the error argument: links the
@@ -72,9 +72,6 @@ export interface NativeLinkFeatures {
   /** The program pipes or unpipes a stream: links scr_stream_pipe_events.c,
    * which installs Node's pipe lifecycle into the stream unit. */
   streamPipeEvents?: boolean;
-  /** The program reaches the process output streams' write slot: links the
-   * SCR_STDIO_WRITE_SLOT build of the events unit. */
-  stdioWriteSlot?: boolean;
   /** Calls into Node.js (@scriptc/node): scr_node_island.c and the
    * SCR_NODE_ISLANDS variant of the event loop unit. */
   nodeIsland?: boolean;

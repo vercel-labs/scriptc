@@ -172,6 +172,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // writeFile's `flag` option and the fs/promises twins; the copyFile mode
   // argument is the SCR_FS_FLAGS build of scr_fs_cp.c.
   unit((u) => u.opts.fsFlags === true, "scr_fs_flags.c"),
+  // existsSync over a path value that may not be a string (scr_fs_exists_dyn.c).
+  unit((u) => u.opts.fsExistsValue === true, "scr_fs_exists_dyn.c"),
   // The BYTE-data spellings of the options write and fs.promises.writeFile
   // (scr_fs_bytes_write.c), gated apart from the string forms' unit so a
   // program that writes no byte payload keeps both objects unchanged.
@@ -537,11 +539,10 @@ const RUNTIME_DEFINES: readonly {
   // builds selected by runtime-pack-matrix.mjs, so the source build must name
   // the same builds.
   { define: "SCR_JS_OBJECT_MODEL", when: (opts) => opts.jsObjectModel },
-  { define: "SCR_STDIO_EXTENDED", when: (opts) => opts.stdioExtended },
-  // The wave's prepend registrations and stdin.isRaw (scr_events.c,
-  // scr_async_dyn.c), server.off (scr_net.c) and copyFile's mode form
-  // (scr_fs_cp.c). The source build compiles these units from source, so the
-  // defines must name the same builds runtime-pack-matrix.mjs selects.
+  // The wave's prepend registrations and stdin.isRaw (scr_async_dyn.c),
+  // server.off (scr_net.c) and copyFile's mode form (scr_fs_cp.c). The source
+  // build compiles these units from source, so the defines must name the same
+  // builds runtime-pack-matrix.mjs selects.
   { define: "SCR_PROCESS_EXTRAS", when: (opts) => opts.processExtras },
   { define: "SCR_NET_SERVER_OFF", when: (opts) => opts.processExtras },
   { define: "SCR_FS_FLAGS", when: (opts) => opts.fsFlags },
@@ -551,8 +552,6 @@ const RUNTIME_DEFINES: readonly {
   // scr_stream.c's write-callback error publication, which the compiler's
   // error-first write adapter reads.
   { define: "SCR_STREAM_WRITE_ERRORS", when: (opts) => opts.streamWriteErrors },
-  // scr_events.c's typed process output write slot.
-  { define: "SCR_STDIO_WRITE_SLOT", when: (opts) => opts.stdioWriteSlot },
   // scr_async.c's native promise reactions, which the web streams unit uses,
   // scr_dyn_builtin_class.c's instanceof over its classes, and scr_fetch.c's
   // bodies of its streams.

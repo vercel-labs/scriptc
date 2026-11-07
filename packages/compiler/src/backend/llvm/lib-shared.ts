@@ -463,6 +463,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "date.toDateString": "scr_date_to_date_string",
   "date.toTimeString": "scr_date_to_time_string",
   "fs.existsSync": "scr_fs_exists",
+  "fs.existsSyncValue": "scr_fs_exists_value",
+  "fs.existsSyncBytes": "scr_fs_exists_bytes",
   // ── the throwing slice (MAY_THROW_LIB_FNS members): the generic path
   // emits the standard pending check after each — exprs.ts's finish.
   "process.cpuPrevValidate": "scr_cpu_prev_validate",

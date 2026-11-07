@@ -360,6 +360,7 @@ import {
   canDynCheckTo,
   canConvertToDyn,
   DYN,
+  DYN_HANDLE_KINDS,
   F64,
   isDynTypedRefType,
   isJsonSafeType,
@@ -1140,6 +1141,10 @@ export interface LowerResult {
   dynamicFunctions?: DynamicFunction[];
   /** LowerOptions.tierReport: the report-only tier assignment. */
   tiers?: TierReport;
+  /** The first place the program reaches into Node: the module that does and
+   * what it uses there (Lowerer.nodeIslandUse). The executable build's SC8005
+   * hint names it. */
+  nodeIslandUse?: { file: string; api: string };
   /** The program replaces a process output stream's write method, with the
    * site: the executable planner refuses the combination with Node islands
    * (SC8006), whose process objects would not see the patch. Present only
@@ -4406,6 +4411,18 @@ export class Lowerer {
   /** The program calls into Node.js (@scriptc/node): the module carries
    * the nodeIsland record, which the executable build fills in. */
   usesNodeIsland = false;
+  /** The first place the program reaches into Node: the module that does and
+   * what it uses there (@scriptc/node surface, or the island import). The
+   * executable build's SC8005 hint names it, so a program that cannot install
+   * a pack can avoid the island instead. */
+  nodeIslandUse: { file: string; api: string } | undefined;
+
+  /** Records that `file` reaches into Node through `api`, and marks the
+   * program as an island user. */
+  noteNodeIslandUse(file: string, api: string): void {
+    this.usesNodeIsland = true;
+    this.nodeIslandUse ??= { file, api };
+  }
   /** The program's Node island packages (scope-B NI-4), or null. */
   readonly nodeIslands: NodeIslandSet | null = activeNodeIslands();
   /** Island module loads, by the importing file and specifier: the module
@@ -5525,6 +5542,11 @@ export class Lowerer {
     "activeStmtLists",
     "constructorReturnPlans",
     "mixinFnShapes",
+    // SC8005's hint names the first reach into Node (file and API). It is
+    // guidance for a build that cannot record a pack, not lowering state: a
+    // unit reused from a record does not lower, so the hint falls back to
+    // the generic install line.
+    "nodeIslandUse",
   ];
 
   /** The fields a unit must leave as they were, and the flags it may set
@@ -12034,6 +12056,7 @@ export class Lowerer {
       ...(this.dynamicFunctions.length > 0 ? { dynamicFunctions: this.dynamicFunctions } : {}),
       ...(this.statsByFile.size > 0 ? { statsByFile: this.statsByFile } : {}),
       ...(this.provenanceElided.length > 0 ? { provenanceElided: this.provenanceElided } : {}),
+      ...(this.nodeIslandUse !== undefined ? { nodeIslandUse: this.nodeIslandUse } : {}),
     };
   }
 
@@ -14383,6 +14406,47 @@ export class Lowerer {
   arrayValueTags(unionId: string): number[] {
     const def = this.unions.get(unionId);
     return def ? def.arms.flatMap((arm, tag) => (this.isArrayValueType(arm) ? [tag] : [])) : [];
+  }
+
+  /** Whether a checked-dynamic value can flow into a slot of type `t`: the
+   * dynCheck domain — JSON-representable types, undefined-armed unions of
+   * those, bytes<u8>, the %Error root, program classes through their
+   * typed-reference capsule, adaptable function targets, and the handle
+   * kinds. Everything else keeps the checked boundary's refusal. */
+  dynExtractableTo(t: IrType): boolean {
+    if (t.kind === "bytes" && t.elem === "u8") return true;
+    if (t.kind === "object" && t.className === "%Error") return true;
+    if (isDynTypedRefType(t) || DYN_HANDLE_KINDS.has(t.kind)) return true;
+    if (
+      t.kind === "func" &&
+      canAdaptDynFuncTo(
+        t,
+        (id) => this.shapes.get(id),
+        (id) => this.unions.get(id),
+      )
+    )
+      return true;
+    if (
+      canDynCheckTo(
+        t,
+        (id) => this.shapes.get(id),
+        (id) => this.unions.get(id),
+      )
+    )
+      return true;
+    return (
+      t.kind === "union" &&
+      (this.unions
+        .get(t.unionId)
+        ?.arms.every(
+          (a) =>
+            a.kind === "undefinedT" ||
+            this.jsonSafe(a) ||
+            isDynTypedRefType(a) ||
+            DYN_HANDLE_KINDS.has(a.kind),
+        ) ??
+        false)
+    );
   }
 
   /** Checked JSON conversion excludes undefined array slots because JSON

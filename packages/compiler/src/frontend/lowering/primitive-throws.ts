@@ -25,8 +25,10 @@ import { locOf } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
 import { denotesEnvironment } from "./builtins/environment.js";
 import {
+  DELETE_NULLISH_RECEIVER,
   erasedDeletePlan,
   lowerDeleteKey,
+  lowerErasedDeleteOperand,
   lowerRecordDeleteExpr,
 } from "./expressions/erased-delete.js";
 import { lowerEnvironmentKey } from "./expressions/element-access.js";
@@ -109,7 +111,7 @@ export function inOperatorTypeError(
 /** `delete`'s ToObject refusal: Node names neither the property nor the
  * receiver here (`delete (null).x` and `delete (null)[k]` both throw it). */
 export function deleteToObjectTypeError(type: IrType, loc: SrcLoc): IrExpr {
-  return throwTypeError(strLit("Cannot convert undefined or null to object", loc), type, loc);
+  return throwTypeError(strLit(DELETE_NULLISH_RECEIVER, loc), type, loc);
 }
 
 /** `null`/`undefined` when the expression IS one of them by construction —
@@ -253,7 +255,12 @@ export function lowerDeleteExpression(lowerer: Lowerer, expr: ts.DeleteExpressio
       if ("refuse" in erased) lowerer.unsupported("SC1090", expr, erased.refuse);
       if (isEnvironmentReceiver(lowerer, erased.operand))
         return lowerEnvironmentDeleteExpr(lowerer, expr, target);
-      return lowerRecordDeleteExpr(lowerer, expr, target, lowerer.lowerExpr(erased.operand));
+      return lowerRecordDeleteExpr(
+        lowerer,
+        expr,
+        target,
+        lowerErasedDeleteOperand(lowerer, erased, target),
+      );
     }
     // The environment is one live object in Node: the delete unsets the
     // variable rather than removing a member from a snapshot of it.

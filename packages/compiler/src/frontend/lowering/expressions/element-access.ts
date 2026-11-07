@@ -83,7 +83,7 @@ import {
   assertedReceiverNode,
   copiedKeyedWrite,
   fenceCopiedKeyedWrite,
-  lowerErasedRecordOperand,
+  narrowErasedRecordValue,
   nullishMutationMessage,
   probeMemberName,
 } from "./asserted-receiver.js";
@@ -2534,11 +2534,48 @@ function lowerErasedKeyedWrite(
   const field = stored.fields.find((f) => f.name === key);
   const assertedField = viewed.fields.find((f) => f.name === key);
   if (!field || !assertedField || !typeEquals(field.type, assertedField.type)) return null;
-  const obj = lowerErasedRecordOperand(lowerer, copied, nullishMutationMessage(target, key));
-  if (obj === null || obj.type.kind !== "record" || obj.type.shapeId !== copied.layout.shapeId)
-    return null;
+  const loc = locOf(expr);
+  const message = nullishMutationMessage(target, key);
+  const operand = lowerer.lowerExpr(copied.operand);
+  const inPlace = (obj: IrExpr | null): obj is IrExpr & { type: IrType & { kind: "record" } } =>
+    obj !== null && obj.type.kind === "record" && obj.type.shapeId === copied.layout.shapeId;
+  if (operand.type.kind !== "union") {
+    const obj = narrowErasedRecordValue(lowerer, operand, locOf(copied.operand), message);
+    if (!inPlace(obj)) return null;
+    const value = lowerer.lowerExprExpecting(expr.right, field.type);
+    return { kind: "recordSet", obj, shapeId: obj.type.shapeId, field: key, value, loc };
+  }
+  // An operand that may be undefined or null: Node evaluates the receiver,
+  // then the right-hand side, and only then needs an object to write to, so
+  // a nullish receiver throws after the value's side effects ran. The
+  // receiver and the value are held in that order, and the check that
+  // narrows the receiver to its record runs at the write.
+  const receiver = lowerer.declareHiddenLocal("%keyedReceiver", operand.type);
+  const obj = narrowErasedRecordValue(
+    lowerer,
+    varRef(receiver.id, operand.type, loc),
+    locOf(copied.operand),
+    message,
+  );
+  if (!inPlace(obj)) return null;
   const value = lowerer.lowerExprExpecting(expr.right, field.type);
-  return { kind: "recordSet", obj, shapeId: obj.type.shapeId, field: key, value, loc: locOf(expr) };
+  const held = lowerer.declareHiddenLocal("%keyedValue", value.type);
+  return {
+    kind: "block",
+    body: [
+      { kind: "varDecl", localId: receiver.id, init: operand, loc },
+      { kind: "varDecl", localId: held.id, init: value, loc },
+      {
+        kind: "recordSet",
+        obj,
+        shapeId: obj.type.shapeId,
+        field: key,
+        value: varRef(held.id, value.type, loc),
+        loc,
+      },
+    ],
+    loc,
+  };
 }
 
 export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): IrStmt {

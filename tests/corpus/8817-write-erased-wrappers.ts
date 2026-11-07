@@ -164,6 +164,50 @@ attempt("call undefined write", () => {
   (maybe(false) as View).a = 1;
 });
 
+// A plain keyed assignment evaluates its right-hand side before it needs an
+// object to write to: a nullish receiver throws after the value's side
+// effects ran, and a present one is written once. (A binding that may be
+// undefined still checks first, like `binding!.a = value()` does.)
+let evaluated = 0;
+function next(): number {
+  evaluated++;
+  return 7;
+}
+function ordered(label: string, run: () => void): void {
+  const before = evaluated;
+  try {
+    run();
+    console.log(label, "no throw", evaluated - before);
+  } catch (e) {
+    console.log(label, (e as Error).message, evaluated - before);
+  }
+}
+const holes: (Opt | undefined)[] = [undefined, { a: 1, b: 2 }];
+ordered("binding null bracket order", () => {
+  (missingNull as View)["a"] = next();
+});
+ordered("call undefined bracket order", () => {
+  (maybe(false) as View)["a"] = next();
+});
+ordered("element undefined bracket order", () => {
+  (holes[0] as View)["a"] = next();
+});
+ordered("nonnull outer call undefined bracket order", () => {
+  (maybe(false) as View)!["a"] = next();
+});
+ordered("call null bracket order", () => {
+  (nullable(false) as View)["a"] = next();
+});
+ordered("element present bracket order", () => {
+  (holes[1] as View)["a"] = next();
+});
+show("element present bracket", holes[1]!);
+const orderedPresent = maybe(true);
+ordered("binding present bracket order", () => {
+  (orderedPresent as View)["a"] = next();
+});
+show("binding present bracket", orderedPresent!);
+
 // An own property written through a compiled Error subclass keeps Node's
 // answers through the same wrappers
 // (tests/corpus/8843-error-subclass-own-property.ts pins the plain form).

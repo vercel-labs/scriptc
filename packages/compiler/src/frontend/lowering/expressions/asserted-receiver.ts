@@ -504,12 +504,28 @@ export function lowerErasedRecordOperand(
   erased: ErasedRecordOperand,
   message: (unit: "undefined" | "null") => string,
 ): IrExpr | null {
-  const value = lowerer.lowerExpr(erased.operand);
+  return narrowErasedRecordValue(
+    lowerer,
+    lowerer.lowerExpr(erased.operand),
+    locOf(erased.operand),
+    message,
+  );
+}
+
+/** lowerErasedRecordOperand's narrowing, over an operand already lowered:
+ * a caller that must evaluate something between the operand and the check
+ * (a plain assignment's right-hand side) holds the operand first and
+ * narrows the held value. */
+export function narrowErasedRecordValue(
+  lowerer: Lowerer,
+  value: IrExpr,
+  loc: SrcLoc,
+  message: (unit: "undefined" | "null") => string,
+): IrExpr | null {
   if (value.type.kind !== "union") return value;
   const stored = presentRecordLayout(lowerer, value.type);
   if (stored === null) return value;
   const unionId = value.type.unionId;
-  const loc = locOf(erased.operand);
   const unitOf = (arm: IrType): "undefined" | "null" =>
     arm.kind === "nullT" ? "null" : "undefined";
   const messages = new Set<string>();

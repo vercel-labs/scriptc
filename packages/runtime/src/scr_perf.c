@@ -225,7 +225,7 @@ static bool scr_perf_get_mark(const ScrDyn *value, double *out) {
     int n = snprintf(msg, sizeof msg,
                      "performance.measure with the '%.*s' Node timing milestone is not supported yet",
                      (int)name->len, name->data);
-    scr_throw_error_msg(SCR_ERR_ERROR, msg, (size_t)n);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)n, "SC2020");
   } else if (scr_perf_timings && scr_map_get_str_f64(scr_perf_timings, name, out)) {
     ok = true;
   } else {

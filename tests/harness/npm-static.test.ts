@@ -190,6 +190,83 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     }
   });
 
+  // A tsconfig path that maps a name onto an opted-in package's JavaScript
+  // is a project edge of whichever program file spells it. The package
+  // ships no declarations, so only its JavaScript types the import, and
+  // that file joins the program as a root: named from the entry and from a
+  // module the entry imports alike.
+  test.each(["direct", "through a helper module"])(
+    "a path alias into an opted-in package compiles (%s)",
+    async (shape) => {
+      const dir = mkdtempSync(join(tmpdir(), "scriptc-alias-root-"));
+      try {
+        const pkg = join(dir, "node_modules", "rawpad");
+        mkdirSync(pkg, { recursive: true });
+        writeFileSync(
+          join(pkg, "package.json"),
+          JSON.stringify({ name: "rawpad", version: "1.0.0", type: "module", main: "./index.js" }),
+        );
+        writeFileSync(
+          join(pkg, "index.js"),
+          [
+            "/**",
+            " * @param {string} text",
+            " * @param {number} width",
+            " * @returns {string}",
+            " */",
+            "export function pad(text, width) {",
+            '  return text.padStart(width, ".");',
+            "}",
+            "",
+          ].join("\n"),
+        );
+        writeFileSync(
+          join(dir, "tsconfig.json"),
+          JSON.stringify({
+            compilerOptions: {
+              strict: true,
+              module: "nodenext",
+              moduleResolution: "nodenext",
+              paths: { padding: ["./node_modules/rawpad/index.js"] },
+            },
+          }),
+        );
+        writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
+        writeFileSync(
+          join(dir, "helper.ts"),
+          'import { pad } from "padding";\nexport const padded = (text: string): string => pad(text, 4);\n',
+        );
+        const entry = join(dir, "main.ts");
+        writeFileSync(
+          entry,
+          shape === "direct"
+            ? 'import { pad } from "padding";\nconsole.log(pad("a", 4));\n'
+            : 'import { padded } from "./helper.ts";\nconsole.log(padded("a"));\n',
+        );
+        const npmStatic = ["rawpad"];
+        const { coverage } = analyze(entry, { npmStatic });
+        expect(coverage.diagnostics.map((d) => `${d.code}: ${d.message}`)).toEqual([]);
+        expect(coverage.npmStatic).toEqual([{ package: "rawpad", status: "static" }]);
+        const outDir = join(dir, "out");
+        const result = await compile(entry, {
+          backend: "llvm",
+          npmStatic,
+          sanitize,
+          outDir,
+          outPath: join(outDir, "program"),
+        });
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        const run = await runBinary(result.binaryPath, []);
+        expect(run.stdout.toString("utf8")).toBe("...a\n");
+        expect(run.exitCode).toBe(0);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+    120_000,
+  );
+
   // A bare string that merely names a package is not a load. The type-only
   // reachability pass and the reexport planner over-approximate calls (any
   // call with a leading string literal is an edge), so a package named only
@@ -1461,26 +1538,39 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
   }, 180_000);
 
-  // Ineligible packages remain declaration-only during analysis and receive
-  // a refusal, while eligible dependencies can still be analyzed natively.
-  test("an ineligible untyped package is refused alongside a compiled dependency", () => {
-    const { coverage } = analyze(join(pilotRoot, "typegap-mix.ts"), {
-      npmStatic: ["escape-string-regexp"],
-    });
-    expect(coverage.preflightFailed).toBe(false);
-    expect(coverage.npmStatic).toEqual([
-      {
-        package: "typegapped",
-        status: "refused",
-        detail: "it ships no own .d.ts declaration surface",
-        hint: "to compile it anyway, name it with --npm-static=typegapped (or --npm-static=typegapped... to include its dependencies)",
-      },
+  // A package that is not compiled is typed the same whether or not another
+  // package compiles beside it: typegapped ships no declarations, so its
+  // import is the implicit-any error and the package refusal in both
+  // programs, and its JavaScript (which does not typecheck) is in neither.
+  test("an untyped package is reported the same beside a compiled dependency", () => {
+    const refused = {
+      package: "typegapped",
+      status: "refused",
+      detail: "it ships no own .d.ts declaration surface",
+      hint: "to compile it anyway, name it with --npm-static=typegapped (or --npm-static=typegapped... to include its dependencies)",
+    };
+    const about = (entry: string, npmStatic: string[]) => {
+      const { coverage } = analyze(join(pilotRoot, entry), { npmStatic });
+      return {
+        preflightFailed: coverage.preflightFailed,
+        statuses: coverage.npmStatic,
+        diagnostics: coverage.diagnostics.map((d) => [
+          d.code,
+          d.message.replace(/'[^']*node_modules/, "'node_modules"),
+        ]),
+      };
+    };
+    const alone = about("typegap-only.ts", []);
+    const beside = about("typegap-mix.ts", ["escape-string-regexp"]);
+    expect(alone.statuses).toEqual([refused]);
+    expect(beside.statuses).toEqual([
+      refused,
       { package: "escape-string-regexp", status: "static" },
     ]);
-    // Report package eligibility rather than errors in unselected source.
-    expect(
-      coverage.diagnostics.some((d) => d.code === "SC2013" && d.message.includes("typegapped")),
-    ).toBe(true);
+    expect(alone.diagnostics.map(([code]) => code)).toEqual(["SC0001", "SC2013"]);
+    expect(alone.diagnostics[0]?.[1]).toContain("implicitly has an 'any' type");
+    expect(beside.diagnostics).toEqual(alone.diagnostics);
+    expect(beside.preflightFailed).toBe(alone.preflightFailed);
   }, 120_000);
 
   test("opted-in npm packages retain imports deeper than four JavaScript modules", async () => {
@@ -1504,8 +1594,7 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
   // "did not join the type-checked program"): uuid's node condition with
   // declarations in another tree, tldts's package-root TypeScript source
   // beside `main`, express's same-version copies of one package (tsgo's
-  // package-id redirect), and get-intrinsic's dependency chain deeper than
-  // maxNodeModuleJsDepth.
+  // package-id redirect), and get-intrinsic's long dependency chain.
   test.each([
     ["split-node-types-cli.ts", ["split-node-types"]],
     ["ts-root-source-cli.ts", ["ts-root-source"]],

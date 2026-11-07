@@ -1,3 +1,4 @@
+import { memberCallReceivers, type MemberCallReceivers } from "./member-call-receivers.js";
 import { programCreatesWrappers, routeWrapperConsumers } from "./primitive-wrappers.js";
 import type { DiagnosticCode } from "../../diagnostics/codes.js";
 import { markInferredFactChecks, shapeOverlayFileNames } from "../shape-inference/index.js";
@@ -95,7 +96,7 @@ import { scanDivergences } from "./divergences.js";
 import { applyKeyOrderWitnesses, KeyOrderNotes } from "./key-order-witness.js";
 import { installBuiltinStatics } from "./builtin-statics.js";
 import type { BuiltinModuleNamespaceFlavor } from "./builtin-module-members.js";
-import { functionKeepsRecordSources } from "./record-sources.js";
+import { foldRecordSourceTests, programKeepsRecordSources } from "./record-sources.js";
 import { exprFunctionReference, withoutUnreachedFunctions } from "../../ir/function-references.js";
 import { everyStmtList, observeRecordLiteralRebuilds } from "../../ir/traverse.js";
 import { checkedClassAssertion } from "./class-assertions.js";
@@ -183,6 +184,7 @@ import {
   checkedNarrowOperand,
   deferredReadHelper,
   widthNarrowHelper,
+  liftableBesideArm,
 } from "./coercions/unions.js";
 import { assertedConversion } from "./coercions/asserted.js";
 import { siteDiscriminantConversion } from "./coercions/site-discriminant.js";
@@ -246,6 +248,8 @@ import { installBufferValue } from "./containers/bytes.js";
 import { installMutableBuffersArm } from "./buffers.js";
 import { ClassProtocols } from "./class-protocols.js";
 import { earlyReadVarSymbols } from "./var-hoisting.js";
+import { enumObjectRefusal, type EnumObject } from "./enum-objects.js";
+import { enumNumberReadMayMiss } from "./lower-enums.js";
 import { recordTextCodecClass, sortArms } from "../../ir/ir.js";
 import { assignLegacyTiers, type DynamicFunction } from "../../ir/tiers.js";
 import { dynamicSlotOperationCounts, dynamicTierWarning } from "./dynamic-tier.js";
@@ -819,7 +823,7 @@ import type { ExpandoMembers } from "./lower-expando.js";
 import { lowerRecordFieldCall, lowerObjectMethodCall } from "./lower-calls.js";
 import { fenceCrossBlockNsRef, nsPathPrefix } from "./lower-namespaces.js";
 import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
-import { partialAssertionFields } from "./partial-assertions.js";
+import { guardPartialReads, partialAssertionFields } from "./partial-assertions.js";
 import { deletedPropertyNames, fixedFieldFamily } from "./js-class-fields.js";
 import { emptyArrayLiteralArm } from "./expressions/array-literals.js";
 import { lowerTernary } from "./lower-exprs.js";
@@ -3271,6 +3275,11 @@ export class Lowerer {
   /** `var` bindings code can read before their first store
    * (var-hoisting.ts): their storage holds undefined until then. */
   readonly earlyReadVars = new Set<ts.Symbol>();
+  /** Enums whose object some code uses as a value (enum-objects.ts), by
+   * symbol and by their first and last declarations. Filled before the
+   * globals are collected. */
+  readonly enumObjects = new Map<ts.Symbol, EnumObject>();
+  readonly enumObjectDecls = new Map<ts.EnumDeclaration, EnumObject>();
   /** Globals whose checker-bare type was widened because an indexed read can
    * carry undefined at runtime. Identifier reads keep the union tag so
    * typeof and later boundaries observe the real value. */
@@ -4159,6 +4168,9 @@ export class Lowerer {
   /** Whether a compiled source creates primitive wrapper objects
    * (programCreatesWrappers), computed on first use. */
   createsWrappers: boolean | undefined = undefined;
+  /** Which member calls on records pass the record as the receiver
+   * (memberCallReceivers), computed on first use. */
+  memberReceivers: MemberCallReceivers | undefined = undefined;
   /** Builtin-module FUNCTIONS admitted as values by their surface-table
    * entries. The resolved runtime function plus ABI is the identity key,
    * so named imports, namespace reads, CommonJS bindings, and alias chains
@@ -5077,6 +5089,8 @@ export class Lowerer {
       checkedTable("emitterComputedPatterns", () => this.emitterComputedPatterns.length),
       checkedTable("unstableSwitchBindings", () => this.unstableSwitchBindings.size),
       checkedTable("earlyReadVars", () => this.earlyReadVars.size),
+      checkedTable("enumObjects", () => this.enumObjects.size),
+      checkedTable("enumObjectDecls", () => this.enumObjectDecls.size),
       checkedTable("runtimeOptionalGlobals", () => this.runtimeOptionalGlobals.size),
       checkedTable("cjsExportsThis", () => this.cjsExportsThis.size),
       checkedTable("inlineRequireInitDone", () => this.inlineRequireInitDone.size),
@@ -5318,6 +5332,7 @@ export class Lowerer {
     "nanCodedReads",
     "mentionsProcessVersions",
     "createsWrappers",
+    "memberReceivers",
     "stringIndexBoundsCache",
     "functionLocalSubclasses",
     "socketEncodingReachable",
@@ -6285,6 +6300,7 @@ export class Lowerer {
       },
       mixinIntersectionInstance: (widened) => mixinIntersectionInstanceType(this, widened),
       classImplementedProtocol: (type) => this.classImplementedProtocol(type),
+      enumObjectEntries: (symbol) => this.enumObjects.get(symbol)?.entries ?? null,
       isStdlibFile: (sf) => this.isStdlibFile(sf),
       primitiveWrappers: () => (this.createsWrappers ??= programCreatesWrappers(this)),
       isNpmFile: (sf) => this.isNpmFile(sf),
@@ -8713,6 +8729,10 @@ export class Lowerer {
     const isIndexedRead = (node: ts.Expression): boolean => {
       const e = withoutParenthesesAssertionsNonNull(node);
       if (!ts.isElementAccessExpression(e)) return false;
+      // An enum's reverse lookup through a runtime number answers undefined
+      // for a value no member has. A member-only enum has no object and so
+      // no record type here, and the miss still has to reach the binding.
+      if (enumNumberReadMayMiss(this, e)) return true;
       const kind = this.mapTypeOf(this.typeOf(e.expression))?.kind;
       if (kind === "string") return !this.stringIndexBounds.inBounds(e);
       // Typed-array reads answer undefined for an invalid index too, unless
@@ -11668,6 +11688,7 @@ export class Lowerer {
     boxClassInstancesExactly(this, functions);
     addUntypedIntegrityWords(this);
     guardClassAttributeWrites(this, functions);
+    guardPartialReads(this, functions);
     guardFrozenWrites(this, functions);
     applyHandleProperties(this, functions);
     installBufferValue(functions);
@@ -11817,6 +11838,20 @@ export class Lowerer {
       const lifted = new Set<string>();
       for (const fn of this.liftedFns) lifted.add(fn.name);
       module.functions = withoutUnreachedFunctions(module, lifted).functions;
+      // A program none of whose functions can give a record a kept source
+      // loses its source tests, the checked views they guard, and the lifted
+      // functions only those views reached (record-sources.ts). The answer
+      // is read from the final bodies, since the steps above add conversions
+      // and boxes of their own. A library is not a whole program: its
+      // callers hand it records too.
+      const folded =
+        library || this.recordSourcesPossible
+          ? null
+          : foldRecordSourceTests(this, module.functions);
+      if (folded !== null) {
+        module.recordSourcesFolded = folded;
+        module.functions = withoutUnreachedFunctions(module, lifted).functions;
+      }
     }
     if (module) sanitizeUnregisteredClassTypes(module, (name) => this.classes.has(name));
     if (module?.declOrigins !== undefined) compactDeclOrigins(module);
@@ -12756,12 +12791,7 @@ export class Lowerer {
     // consult one keep their static copy (record-sources.ts). Decided before
     // the key-order pass, which reads the fact (a same-shape copy of a kept
     // record keeps its keys; the `"k" in r` sites answer through the view).
-    const sourceScan = { memo: new Map<string, boolean>(), visiting: new Set<string>() };
-    for (const fn of keyOrderFunctions) {
-      if (!functionKeepsRecordSources(this, fn, sourceScan)) continue;
-      this.recordSourcesPossible = true;
-      break;
-    }
+    if (programKeepsRecordSources(this, keyOrderFunctions)) this.recordSourcesPossible = true;
     applyKeyOrderWitnesses(this, keyOrderFunctions);
     // A kept width spread builds a record that holds undeclared keys, so the
     // captures that consult a kept source must be active for it too.
@@ -12840,6 +12870,26 @@ export class Lowerer {
       for (const decl of declaration.declarationList.declarations.nodes)
         globals.push(this.globalsByDeclNode.get(decl) ?? null);
       return JSON.stringify(globals, positionFree);
+    }
+    // An enum's fact is whether its object is built: a use elsewhere
+    // decides it, and the declaration's statement lowers differently. A
+    // namespace statement holds the facts of the enums declared in it.
+    if (
+      this.enumObjectDecls.size > 0 &&
+      (ts.isEnumDeclaration(declaration) || ts.isModuleDeclaration(declaration))
+    ) {
+      const built: IrGlobal[] = [];
+      for (const [decl, info] of this.enumObjectDecls) {
+        if (decl !== info.first || info.object === undefined) continue;
+        if (
+          decl === declaration ||
+          (ts.getSourceFileOfNode(decl) === ts.getSourceFileOfNode(declaration) &&
+            decl.pos >= declaration.pos &&
+            decl.end <= declaration.end)
+        )
+          built.push(info.object);
+      }
+      return built.length === 0 ? "" : JSON.stringify(built, positionFree);
     }
     return "";
   }
@@ -13599,13 +13649,12 @@ export class Lowerer {
         unsupportedNativeApiDiag(`a value of type '${ts.symbolName(typeSym)}'`, locOf(node)),
       );
     }
-    // ENUM OBJECTS (`typeof e` — a numeric enum's type carries the
-    // reverse-map index signature, a string enum's just its members):
-    // shaped like a hybrid record, but the enum identifier has no value
-    // lowering, so the honest fence names the construct in the same voice
-    // as the per-site identifier fence — never the index-signature
-    // recitation.
+    // ENUM OBJECTS (`typeof e`) whose type did not map: the enum has no
+    // closed layout (enum-object-layout.ts names why), so the honest fence
+    // names the construct in the same voice as the per-site identifier
+    // fence — never the index-signature recitation.
     if (typeSym && (typeSym.flags & ts.SymbolFlags.Enum) !== 0) {
+      const why = enumObjectRefusal(this, typeSym);
       this.typeFail(
         node,
         type,
@@ -13613,7 +13662,7 @@ export class Lowerer {
         unsupportedDiag(
           "SC1090",
           locOf(node),
-          `enum objects as values ('${ts.symbolName(typeSym)}' — member reads like '${ts.symbolName(typeSym)}.X' compile to constants; the object itself has no runtime representation)`,
+          `enum objects as values ('${ts.symbolName(typeSym)}': ${why}; member reads like '${ts.symbolName(typeSym)}.A' compile to constants)`,
         ),
       );
     }
@@ -14666,7 +14715,7 @@ export class Lowerer {
    * arm's canonical tag. Same-union values pass through untouched; anything
    * else (including a DIFFERENT union) is left for requireExactShape, which
    * rejects union mismatches with SC2003. */
-  coerceToExpected(expr: IrExpr, expected: IrType): IrExpr {
+  coerceToExpected(expr: IrExpr, expected: IrType, site?: IrType): IrExpr {
     // A comma expression ending in a unit literal (`return log(), null`):
     // its effects run first, unchanged, and the unit value takes the
     // destination's representation (a bare unit literal has none).
@@ -15167,9 +15216,21 @@ export class Lowerer {
       ) {
         // A function's widened inferred return (widenReducedReturn) also
         // holds records with more fields; those convert instead of throwing.
-        const helper = widensReducedRecords(this, expected, expr.type)
+        const widened = widensReducedRecords(this, expected, expr.type);
+        // The arms the checker still sees at this site (`site`, the site's
+        // own type) were not narrowed away: `S | T` flowing whole into `T`
+        // with `S` assignable to `T`. Each is a value of the slot's type
+        // and converts on its own tag; only an arm the checker excluded
+        // throws. A site the checker typed as the arm itself has none.
+        const converts =
+          widened || site === undefined
+            ? []
+            : liftableBesideArm(this, expr.type.unionId, expected, site);
+        const helper = widened
           ? widthNarrowHelper(this, expr.type.unionId, expected, expr.loc)
-          : this.narrowedArmHelper(expr.type.unionId, expected, expr.loc);
+          : converts.length > 0
+            ? widthNarrowHelper(this, expr.type.unionId, expected, expr.loc, converts)
+            : this.narrowedArmHelper(expr.type.unionId, expected, expr.loc);
         if (helper) {
           return this.checkedNarrowCall(helper, expr, expected, expr.loc);
         }
@@ -15646,15 +15707,15 @@ export class Lowerer {
    * directly when the expression was already lowered. In package files, a
    * check this coercion creates names the package declaration that types
    * the slot (decl-origin.ts). */
-  coerceInto(node: ts.Node, expr: IrExpr, expected: IrType): IrExpr {
-    if (!this.inPackageFileOf(node)) return this.coerceIntoSlot(node, expr, expected);
+  coerceInto(node: ts.Node, expr: IrExpr, expected: IrType, payloadSite?: IrType): IrExpr {
+    if (!this.inPackageFileOf(node)) return this.coerceIntoSlot(node, expr, expected, payloadSite);
     const outer = this.coercionOriginNode;
     const outerUnion = this.coercionOriginUnion;
     this.coercionOriginNode = node;
     this.coercionOriginUnion = expr.type.kind === "union" ? expr.type.unionId : null;
     let out: IrExpr;
     try {
-      out = this.coerceIntoSlot(node, expr, expected);
+      out = this.coerceIntoSlot(node, expr, expected, payloadSite);
     } finally {
       this.coercionOriginNode = outer;
       this.coercionOriginUnion = outerUnion;
@@ -15666,7 +15727,12 @@ export class Lowerer {
     return out;
   }
 
-  private coerceIntoSlot(node: ts.Node, expr: IrExpr, expected: IrType): IrExpr {
+  private coerceIntoSlot(
+    node: ts.Node,
+    expr: IrExpr,
+    expected: IrType,
+    payloadSite?: IrType,
+  ): IrExpr {
     refuseInferredCallbackDrops(this, node, expr.type, expected);
     // A binding the checker types as the console object (`const c =
     // console`, a `Console` parameter) into a record of its members: the
@@ -15682,18 +15748,29 @@ export class Lowerer {
       const projected = consoleInto(this, expr, expected, expr.loc);
       if (projected) return projected;
     }
-    // A union into one of its record arms extracts that arm, trusting the
-    // checker to have excluded the others. A built-in object arm the checker
-    // still types the site with (`c ?? new Map()` into an interface the
-    // untyped Map satisfies only through `any`) holds a value at run time,
-    // and no conversion makes a record of it, so the flow is refused like
-    // the arm's value would be.
+    // A union into one of its record arms: the checker's type of the value
+    // at this site says which other arms it still holds. Those convert into
+    // the slot instead of throwing (coerceToExpected); a site the checker
+    // narrowed to the arm itself holds none, and the checked extraction
+    // stays as it is, trusting the checker to have excluded the others.
+    let ownArmSite: IrType | undefined = payloadSite;
+    // A built-in object arm the checker still types the site with
+    // (`c ?? new Map()` into an interface the untyped Map satisfies only
+    // through `any`) holds a value at run time, and no conversion makes a
+    // record of it, so the flow is refused like the arm's value would be.
     if (
       expr.type.kind === "union" &&
       expected.kind === "record" &&
       this.armTag(expr.type.unionId, expected) >= 0
     ) {
       const site = this.mapTypeOf(this.typeOf(node));
+      if (ownArmSite === undefined && site) {
+        ownArmSite = site;
+        // In a slot the checker types as this record, an arm it still sees
+        // that has no conversion is refused like that arm's plain flow.
+        if (this.slotTypedAs(node, expected))
+          this.requireSeenArmsConvert(node, expr.type.unionId, site, expected);
+      }
       const siteArms =
         site?.kind === "union" ? (this.unions.get(site.unionId)?.arms ?? []) : site ? [site] : [];
       for (const arm of this.unions.get(expr.type.unionId)?.arms ?? []) {
@@ -15791,7 +15868,7 @@ export class Lowerer {
         }
       }
     }
-    let e = this.coerceToExpected(expr, expected);
+    let e = this.coerceToExpected(expr, expected, ownArmSite);
     // Keep storage intact when ordinary widening already accepts it. Only
     // a destination needing a more specific class layout uses the site's
     // refinement and checked extraction.
@@ -16728,9 +16805,81 @@ export class Lowerer {
         this.promisePayloadIsNever(node)
       )
         return this.divergentValue(awaited, expected);
-      return this.coerceInto(node, awaited, expected);
+      return this.returnedPayloadInto(node, awaited, expected);
     }
+    if (this.ctx.isAsync) this.refuseReturnedThenable(node, e);
     return this.coerceInto(node, e, expected);
+  }
+
+  /** The awaited value of a promise an async function returns, converted
+   * into the function's result by the slot conversion. The node is the
+   * promise, so the site's type is the payload's own: nothing narrows a
+   * promise's payload, and every arm of a payload union settles the
+   * function. An arm that is neither the result nor convertible into it
+   * is reported like the plain flow of that arm into the result, instead
+   * of compiling to a conversion that throws when the value arrives. */
+  returnedPayloadInto(node: ts.Expression, awaited: IrExpr, expected: IrType): IrExpr {
+    if (
+      awaited.type.kind === "union" &&
+      expected.kind === "record" &&
+      this.armTag(awaited.type.unionId, expected) >= 0
+    )
+      this.requireSeenArmsConvert(node, awaited.type.unionId, awaited.type, expected);
+    return this.coerceInto(node, awaited, expected, awaited.type);
+  }
+
+  /** Whether the checker types the slot `node` sits in as the record
+   * `expected`: its contextual type, with an async return's
+   * `T | PromiseLike<T>` read as `T`. */
+  private slotTypedAs(node: ts.Node, expected: IrType): boolean {
+    let context = this.checker.getContextualType(node);
+    if (context === undefined) return false;
+    if (
+      context.isUnionType() &&
+      ts.constituentTypes(context).some((t) => ts.symbolNameOf(t.getSymbol()) === "PromiseLike")
+    )
+      context = this.checker.getAwaitedType(context) ?? context;
+    const slot = this.mapTypeOf(context);
+    return !!slot && typeEquals(slot, expected);
+  }
+
+  /** A union flowing into a record slot that is one of its arms, where
+   * the checker types the value `site`: every record or class instance arm
+   * it still sees there is a value of the slot's type, so it is the slot's
+   * own arm or converts into it (coerceToExpected). One that does neither
+   * is reported like the plain flow of that arm into the slot. Arms of
+   * another kind are not this conversion's to judge (a promise beside the
+   * record it settles with is adopted where the slot takes one) and keep
+   * the checked extraction. */
+  private requireSeenArmsConvert(
+    node: ts.Node,
+    unionId: string,
+    site: IrType,
+    expected: IrType,
+  ): void {
+    const seen = site.kind === "union" ? (this.unions.get(site.unionId)?.arms ?? []) : [site];
+    for (const arm of seen) {
+      if (arm.kind !== "record" && arm.kind !== "object") continue;
+      if (typeEquals(arm, expected) || this.armTag(unionId, arm) < 0) continue;
+      if (this.widthLiftPlan(arm, expected) === null) this.requireExactShape(node, arm, expected);
+    }
+  }
+
+  /** `return v` in an async function where `v` is a typed object with a
+   * callable `then` that is not a promise: Node resolves the function's
+   * promise by calling that `then`. Converting `v` into the result as a
+   * plain object would settle with the object itself, so the return is
+   * refused by name. */
+  refuseReturnedThenable(node: ts.Expression, e: IrExpr): void {
+    if (e.type.kind !== "object" && e.type.kind !== "record") return;
+    const then = this.checker.getPropertyOfType(this.typeOf(node), "then");
+    if (then === undefined) return;
+    if (this.checker.getCallSignatures(this.checker.getTypeOfSymbol(then)).length === 0) return;
+    this.unsupported(
+      "SC1090",
+      node,
+      `returning a thenable '${this.fmt(e.type)}' from an async function (Node settles the function's promise through the value's then method, which has no lowering here — return a promise instead, e.g. \`new Promise((resolve, reject) => value.then(resolve, reject))\`)`,
+    );
   }
 
   /** Whether a promise returned here resolves the function's own promise
@@ -18862,6 +19011,17 @@ export class Lowerer {
       entry.bindings === this.typeParamBindings
       ? entry.value
       : null;
+  }
+
+  /** Whether a call of member `name` on a record passes the record as the
+   * call's receiver: a function that reads the receiver of its call can be
+   * the member's value (member-call-receivers.ts). */
+  memberCallCarriesReceiver(name: string): boolean {
+    return this.memberCallReceiverCensus().carries(name);
+  }
+
+  memberCallReceiverCensus(): MemberCallReceivers {
+    return (this.memberReceivers ??= memberCallReceivers(this));
   }
 
   /** The saved value of a staged fs argument (stagedArguments, keyed

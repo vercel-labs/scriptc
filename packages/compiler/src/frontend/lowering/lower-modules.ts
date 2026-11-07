@@ -160,6 +160,7 @@ import {
   nsPathPrefix,
   trapDeclRootOf,
 } from "./lower-namespaces.js";
+import { collectEnumObjects, registerEnumObjectGlobals } from "./enum-objects.js";
 import { collectExpandoMembers } from "./lower-expando.js";
 import { recordTextCodecClass } from "../../ir/ir.js";
 import { isUnitOnlyTsType, unitOnlyUnion } from "../type-mapper.js";
@@ -547,6 +548,9 @@ export function collectProgram(lowerer: Lowerer, parts: FileParts[]): void {
         expanded = true;
       }
   }
+  // Enums some code uses as a value: their object's globals register with
+  // the others below, and a static field holding one keeps its storage.
+  collectEnumObjects(lowerer, parts);
   lowerer.collecting = true;
   try {
     collectVirtualJsMethods(
@@ -1556,6 +1560,10 @@ export function collectGlobals(
   // collected earlier in this pass must resolve them (lower-expando.ts).
   collectExpandoMembers(lowerer, sf);
   for (const stmt of topStmts) {
+    if (ts.isEnumDeclaration(stmt)) {
+      registerEnumObjectGlobals(lowerer, stmt, tag);
+      continue;
+    }
     if (ts.isClassDeclaration(stmt) && stmt.name && isIslandSubclassDecl(stmt)) {
       const symbol = lowerer.checker.getSymbolAtLocation(stmt.name);
       const g: IrGlobal = {

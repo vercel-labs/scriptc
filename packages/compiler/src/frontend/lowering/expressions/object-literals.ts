@@ -33,6 +33,7 @@ import { lowerDeclaredMemberLiteral, viewLiteralStorage, viewTargetOf } from "..
 import { lowerIndexMergeHelper } from "../containers/indexed-objects.js";
 import type { IndexMergeContributor } from "../containers/indexed-objects.js";
 import type { KeyOrderSegment, WidthSegment } from "../key-order-witness.js";
+import { lowerEnumObjectValue } from "../enum-objects.js";
 import { recordMayKeepSource } from "../record-sources.js";
 import {
   PERF_ENTRY_MARKER,
@@ -4544,6 +4545,9 @@ export function lowerShorthandValue(
     // A standard-library global (`{ Date }`): the value the long form
     // `{ Date: Date }` reads.
     if (lowerer.isStdlibSymbol(resolved)) return lowerer.lowerExpr(propName);
+    // An enum (`{ Level }`): its object, as the long form reads it.
+    const enumObject = lowerEnumObjectValue(lowerer, propName, resolved);
+    if (enumObject) return enumObject;
   }
   lowerer.rejectUnresolvedSymbol(
     symbol

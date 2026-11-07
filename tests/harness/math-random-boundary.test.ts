@@ -130,7 +130,8 @@ console.log(sum > 0 && sum < 1000);
   expect(llvm).not.toMatch(/@scr_(crypto|webcrypto)_/);
   const table = sanitize ? null : symbols(binary);
   if (table === null) return;
-  expect(table).toMatch(/\bscr_math_random_state\b/);
+  // Mach-O names carry a leading underscore.
+  expect(table).toMatch(/\b_?scr_math_random_state\b/);
   // The generator's one secure draw is its seed.
   expect(table).toMatch(/\b_?(getrandom|arc4random_buf)\b/);
 });

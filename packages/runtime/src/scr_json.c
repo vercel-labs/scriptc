@@ -5958,6 +5958,10 @@ int scr_dyn_index_set(ScrDyn *recv, double index, ScrDyn *value) {
   if (idx < recv->v.arr.len && scr_dyn_arr_has_index(recv, idx) &&
       !scr_dyn_arr_index_writable(recv, idx))
     return SCR_DYN_INDEX_NOT_HANDLED;
+  /* Extending the store writes the length, which a non-writable length
+   * refuses; the string-key path answers that with the read-only TypeError
+   * as well (the write's mode decides). */
+  if (idx >= recv->v.arr.len && recv->v.arr.length_readonly) return SCR_DYN_INDEX_NOT_HANDLED;
   /* The element moves into the dense prefix; a sparse element under the
    * same index would be shadowed by it, so it goes. */
   if (idx >= recv->v.arr.len) dyn_arr_sparse_clear(recv, idx);

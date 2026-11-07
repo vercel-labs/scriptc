@@ -230,6 +230,34 @@ const kinds = [
       },
     ],
   },
+  {
+    // A member in no class whose layout is the layout one member of a class has on its own.
+    id: "k9-unmerged-same-layout",
+    keys: ["kind", "id", "parent"],
+    other: null,
+    sizes: [3],
+    arms: [
+      '{ kind: "t"; id: string }',
+      '{ kind: "t"; id: string; parent: string }',
+      '{ kind: "u"; id: string }',
+    ],
+    T: 2,
+    inKey: "id",
+    disc: 'v.kind === "u"',
+    read: (v) => `${v}.id`,
+    write: (v) => `${v}.id = "W"`,
+    vals: [
+      { id: "one", lit: '{ kind: "u", id: "i" }', vt: "C", isT: true, srcWrite: 'src.id = "Z"' },
+      { id: "other", lit: '{ kind: "t", id: "i" }', vt: "A", isT: false, srcWrite: 'src.id = "Z"' },
+      {
+        id: "both",
+        lit: '{ kind: "t", id: "i", parent: "p" }',
+        vt: "B",
+        isT: false,
+        srcWrite: 'src.id = "Z"',
+      },
+    ],
+  },
 ];
 
 const sources = ["lit", "widen", "fewer", "more", "unknown", "json", "rearm", "rearm-as"];

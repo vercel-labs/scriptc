@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/union-class-unmerged-member.ts"
+ ],
+ "diags": []
+}

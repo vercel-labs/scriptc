@@ -771,7 +771,10 @@ function loadFrontend(
     scoutServices = scout.services;
     let retained = false;
     try {
-      const scoutPreflight = checkPreflight(scout);
+      // The scout is a rung like the ones below: its one consumer is the
+      // package walk, which reads the module order and never a diagnostic.
+      // Its diagnostics are read only when it is retained.
+      checkModuleOrder(scout);
       requested =
         npmStatic === "lib"
           ? [
@@ -782,10 +785,11 @@ function loadFrontend(
       // With no package to opt in, the scout already IS the final frontend:
       // same roots, resolution posture, preflight, and module order. Retain it
       // instead of spawning a second tsgo server and checking the whole graph
-      // again — the common library-mode path has no bare npm imports.
+      // again — the common library-mode path has no bare npm imports. Its
+      // full preflight completes the walk above instead of repeating it.
       if (requested.length === 0) {
+        reusablePreflight = checkPreflight(scout);
         reusableScout = scout;
-        reusablePreflight = scoutPreflight;
         retained = true;
       }
     } finally {

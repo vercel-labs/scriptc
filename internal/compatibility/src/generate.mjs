@@ -43,6 +43,7 @@ const NON_FUNCTIONAL_CHAPTERS = new Set(["documentation", "synopsis"]);
 const STATUSES = [
   "supported",
   "partial",
+  "island-served",
   "refused",
   "not-implemented",
   "by-design",
@@ -52,6 +53,7 @@ const STATUSES = [
 const STATUS_SET = new Set(STATUSES);
 const VERIFICATION_BASES = new Set([
   "test-backed",
+  "island-test-backed",
   "explicit-refusal",
   "verified-absence",
   "declared-gap",
@@ -174,11 +176,17 @@ function validateStatus(status, label) {
   if (!STATUS_SET.has(status)) throw new Error(`${label} has unknown status '${status}'`);
 }
 
+/** The statuses that are positive behavioral claims, native or island, and
+ * therefore must name the tests that back them. */
+function requiresEvidence(status) {
+  return status === "supported" || status === "partial" || status === "island-served";
+}
+
 function dedicatedIndex(compat) {
   const out = new Map();
   for (const entry of compat.dedicated) {
     validateStatus(entry.status, `dedicated symbols ${entry.symbols.join(", ")}`);
-    if (entry.status === "supported" || entry.status === "partial") {
+    if (requiresEvidence(entry.status)) {
       validateEvidence(entry.evidence, `dedicated symbols ${entry.symbols.join(", ")}`);
     }
     for (const symbol of entry.symbols) {
@@ -192,7 +200,7 @@ function dedicatedIndex(compat) {
 function featureEntries(compat) {
   for (const entry of compat.features ?? []) {
     validateStatus(entry.status, `${entry.chapter} compatibility features`);
-    if (entry.status === "supported" || entry.status === "partial") {
+    if (requiresEvidence(entry.status)) {
       validateEvidence(entry.evidence, `${entry.chapter} compatibility features`);
     }
   }
@@ -449,6 +457,10 @@ function summarizeTier(rows, key, chapterPolicy) {
     return tier("not-implemented", "", { source: "derived:descendants" });
   if (statuses.has("refused")) return tier("refused", "", { source: "derived:descendants" });
   if (statuses.has("by-design")) return tier("by-design", "", { source: "derived:descendants" });
+  // A chapter with island-served descendants and no other claim still is not
+  // a native-support claim; keep the conservative statuses above it.
+  if (statuses.has("island-served"))
+    return tier("island-served", "", { source: "derived:descendants", tests });
   return tier("unreviewed", "", { source: "derived:descendants" });
 }
 
@@ -558,6 +570,8 @@ function render(snapshot) {
 function publicDetail(tier) {
   const source = tier.evidence ?? "";
   if (source === "derived:descendants") return "Derived from the exact API rows in this chapter.";
+  if (tier.status === "island-served")
+    return "Answered by a Node island in an island build, not by native code; a build without islands keeps the refusal. This is not native support.";
   if (tier.status === "unreviewed") return "Not yet classified; tracked as open parity work.";
   if (source.startsWith("surface-manifest:unsupported:"))
     return "Explicitly rejected by a named compiler diagnostic.";
@@ -807,6 +821,11 @@ const PUBLIC_VERIFICATION = {
     detail:
       "Mapped to implementation and relevant repository tests; evidence may cover an API family rather than every documented overload.",
   },
+  "island-test-backed": {
+    label: "Island test-backed mapping",
+    detail:
+      "In an island build, a Node island answers this API, and differential tests execute it under Node and as a compiled island binary; a build without islands keeps the refusal. This is not native support.",
+  },
   "explicit-refusal": {
     label: "Explicit refusal",
     detail: "Backed by a named compiler refusal.",
@@ -849,6 +868,7 @@ function verificationBasis(tier) {
   const source = tier.evidence ?? "";
   let basis;
   if (source === "derived:descendants") basis = "derived";
+  else if (tier.status === "island-served") basis = "island-test-backed";
   else if (tier.status === "supported" || tier.status === "partial") basis = "test-backed";
   else if (tier.status === "refused") basis = "explicit-refusal";
   else if (tier.status === "by-design") basis = "architectural-policy";
@@ -870,7 +890,13 @@ function verificationBasis(tier) {
 
 function classificationConfidence(basis) {
   if (
-    ["test-backed", "explicit-refusal", "verified-absence", "architectural-policy"].includes(basis)
+    [
+      "test-backed",
+      "island-test-backed",
+      "explicit-refusal",
+      "verified-absence",
+      "architectural-policy",
+    ].includes(basis)
   )
     return "high";
   if (["declared-gap", "not-applicable"].includes(basis)) return "medium";
@@ -891,6 +917,9 @@ function nodePriority(stability) {
 
 function backlogAction(tier) {
   if (tier.status === "partial") return "audit-partial";
+  // island-served is not native work: an island build already answers the
+  // API, so it is neither an implementation ticket nor a refusal to replace.
+  if (tier.status === "island-served") return null;
   if (tier.status === "refused") return "replace-refusal";
   if (tier.status === "unreviewed") return "classify";
   if (tier.status === "not-implemented") {
@@ -1128,10 +1157,7 @@ function checkLocal() {
   }
   for (const row of snapshot.rows) {
     for (const key of ["static"]) {
-      if (
-        (row[key].status === "supported" || row[key].status === "partial") &&
-        (row[key].tests?.length ?? 0) === 0
-      ) {
+      if (requiresEvidence(row[key].status) && (row[key].tests?.length ?? 0) === 0) {
         throw new Error(`${row.id} claims ${key} ${row[key].status} without test evidence`);
       }
       if (row[key].status === "refused") {

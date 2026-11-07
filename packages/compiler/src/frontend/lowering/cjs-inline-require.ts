@@ -241,10 +241,18 @@ function splitBindingOfSymbol(lowerer: Lowerer, symbol: ts.Symbol): SplitRequire
   return decl === undefined ? null : splitRequireBindingOf(lowerer, decl);
 }
 
-/** The target whole-export symbol behind a split-binding symbol. */
+/** The target whole-export symbol behind a split-binding symbol. When the
+ * target's value lives in a snapshot global (an exported binding the module
+ * reassigns before the export), the binding reads that storage: the alias
+ * chase would land on the live binding and answer a later value than Node's
+ * requirer sees. */
 function splitWholeExportSymbolOfSymbol(lowerer: Lowerer, symbol: ts.Symbol): ts.Symbol | null {
   const binding = splitBindingOfSymbol(lowerer, symbol);
-  return binding === null ? null : wholeExportSymbolOfModule(lowerer, binding.dep);
+  if (binding === null) return null;
+  return (
+    lowerer.wholeExportStorageSymbolOf(binding.dep) ??
+    wholeExportSymbolOfModule(lowerer, binding.dep)
+  );
 }
 
 /** True when a CommonJS module has a live member export (`exports.x` or
@@ -465,16 +473,72 @@ export function wholeExportValue(
   if (whole === null || depth > 32) return null;
   const inner = inlineProgramRequireOf(lowerer, whole.rhs);
   if (inner !== null) return wholeExportValue(lowerer, inner.dep, blame, depth + 1);
-  // An identifier names a declaration of the exporting module (or a
-  // builtin global): reading it IS the export, exactly what requirer
-  // bindings alias to.
-  if (ts.isIdentifier(whole.rhs)) return lowerer.lowerExpr(whole.rhs);
+  if (ts.isIdentifier(whole.rhs)) {
+    // A source binding that is REASSIGNED in its module stores its VALUE in
+    // the snapshot global keyed by this statement (collectGlobals): Node's
+    // export keeps that storage, so requiring the module answers the
+    // snapshot, not the later binding value the identifier resolves to.
+    const slot = lowerer.globalsByDeclNode.get(whole.assign);
+    if (slot !== undefined)
+      return { kind: "varRef", localId: slot.id, type: slot.type, loc: locOf(blame) };
+    // An identifier that is itself a required-module binding
+    // (`var $gOPD = require("./gOPD"); module.exports = $gOPD`)
+    // re-exports that module's whole-export value — its own binding is
+    // alias plumbing with no storage to read.
+    const rebound = wholeExportValueOfModuleBinding(lowerer, whole.rhs, depth + 1);
+    if (rebound !== null) return rebound;
+    // A split require binding (`var m; m = require("./y")`) re-exports the
+    // module it names; the value is that module's whole export.
+    const split = splitRequireBindingOfIdent(lowerer, whole.rhs);
+    if (split !== null && wholeExportSymbolOfModule(lowerer, split.dep) !== null)
+      return wholeExportValue(lowerer, split.dep, blame, depth + 1);
+    // Otherwise the identifier names a declaration of the exporting module
+    // (or a builtin global): reading it IS the export, exactly what
+    // requirer bindings alias to.
+    return lowerer.lowerExpr(whole.rhs);
+  }
   if (ts.isClassExpression(whole.rhs)) {
     return lowerer.classValueRef(lowerer.lowerClassExpressionInfo(whole.rhs), blame);
   }
+  // Every other value shape stores its snapshot on the export assignment
+  // itself (collectGlobals' export slot). The declaration spelling
+  // (`var x = module.exports = <value>`) registers that same slot: `x` is
+  // an ordinary binding initialized with the value, and REASSIGNING it
+  // leaves module.exports untouched, as in Node.
   const g = lowerer.globalsByDeclNode.get(whole.assign);
   if (g === undefined) return null;
   return { kind: "varRef", localId: g.id, type: g.type, loc: locOf(blame) };
+}
+
+/** True when wholeExportValue would answer a value for `dep` — the
+ * side-effect-free shape test used where lowering the value would be
+ * premature (binding classification, property-symbol resolution). */
+export function hasWholeExportValue(lowerer: Lowerer, dep: ts.SourceFile, depth = 0): boolean {
+  const whole = cjsWholeExportValueOf(dep);
+  if (whole === null || depth > 32) return false;
+  const inner = inlineProgramRequireOf(lowerer, whole.rhs);
+  if (inner !== null) return hasWholeExportValue(lowerer, inner.dep, depth + 1);
+  if (ts.isIdentifier(whole.rhs) || ts.isClassExpression(whole.rhs)) return true;
+  return lowerer.globalsByDeclNode.has(whole.assign);
+}
+
+/** The represented whole-export value behind a plain module binding
+ * (`const m = require("./x")`, `import d from "./x.cjs"`, a
+ * createRequire binding) of a single-value module: Node's require
+ * answers module.exports, so the binding IS that value. Null for table
+ * modules, for split bindings (`var m; m = require("./x")` — their own
+ * path owns the read), and for exports with no represented value. */
+export function wholeExportValueOfModuleBinding(
+  lowerer: Lowerer,
+  expr: ts.Identifier,
+  depth = 0,
+): IrExpr | null {
+  if (depth > 32) return null;
+  if (splitRequireBindingOfIdent(lowerer, expr) !== null) return null;
+  const dep = lowerer.cjsModuleBindingDepOf(expr);
+  if (dep === null || cjsNamespaceModule(lowerer, dep)) return null;
+  if (!hasWholeExportValue(lowerer, dep)) return null;
+  return wholeExportValue(lowerer, dep, expr, depth);
 }
 
 /** `require("./x")` as a value (`require("debug")("ns")`, `new

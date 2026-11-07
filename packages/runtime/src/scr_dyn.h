@@ -2730,6 +2730,8 @@ void scr_dyn_this_pop(void);
  * handle whose tag has no installed ops — a unit that fires without its
  * dyn half never binds). */
 ScrDyn *scr_dyn_this_get(void);
+/* The receiver the current generator's spawn recorded
+ * (scr_gen_capture_receiver), or undefined (+1). */
 ScrDyn *scr_gen_receiver(void);
 
 /* The data-chunk encoding window (setEncoding — scr_json.c's note): the
@@ -2774,6 +2776,13 @@ SCR_COLD void scr_dyn_arg_type_fail(const char *argname, const char *expected, c
  * in order and answers them as a string[]. Borrows both. */
 ScrStr *scr_value_string(const ScrDyn *value, ScrStr *name);
 ScrArr *scr_value_strings(const ScrDyn *args, ScrStr *name);
+/* getValidatedPath over an untyped path argument of a synchronous fs
+ * function: the path (+1) of a string, a URL or a Uint8Array, or NULL with
+ * Node's ERR_INVALID_ARG_TYPE pending under `name`. `descriptor` marks a
+ * parameter where Node first asks for a file descriptor: the value converts
+ * to a number as that test does (a symbol throws), and a number keeps a
+ * named refusal. Borrows both. */
+ScrStr *scr_value_fs_path(const ScrDyn *value, ScrStr *name, bool descriptor);
 /* The property flavor ("The \"options.x\" property must be ...") — the
  * option-bag validators' gate (error.propTypeThrow). Always throws. */
 SCR_COLD void scr_throw_prop_type(const ScrStr *name, const ScrStr *expected, const ScrDyn *got);

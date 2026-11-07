@@ -164,6 +164,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   ),
   // A generator that binds its parameters at the call (scr_gen_bind.c).
   unit((u) => u.opts.genBind === true, "scr_gen_bind.c"),
+  // A generator function that reads `this` (scr_gen_receiver.c).
+  unit((u) => u.opts.genReceiver === true, "scr_gen_receiver.c"),
   unit((u) => u.opts.copying, "scr_copying.c"),
   unit((u) => u.opts.fileHandle, "scr_file_handle.c"),
   // writeFile's `flag` option and the fs/promises twins; the copyFile mode
@@ -223,6 +225,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.dynBuffer === true && u.opts.dynInvoke, "scr_bytes_dyn.c"),
   // Builtin functions read as values in JavaScript dependencies.
   unit((u) => u.opts.builtinValues === true, "scr_builtin_values.c"),
+  // An untyped path of a synchronous fs function (dyn.validateFsPath).
+  unit((u) => u.opts.fsPathValue === true, "scr_fs_path_value.c"),
   // A standard library prototype object read as a value in a JavaScript
   // source: the dynamic tier's gated unit, whose work is JavaScript-only.
   unit(

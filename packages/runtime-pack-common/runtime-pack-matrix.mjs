@@ -62,6 +62,8 @@ export const BASE_RUNTIME_SOURCES = [
 export const OPTIONAL_RUNTIME_SOURCES = [
   // The call-time parameter bind of a generator (fn.generator.bindAtCall).
   ["scr_gen_bind.c", "genBind"],
+  // The receiver a generator function's body reads (dyn.generatorThis).
+  ["scr_gen_receiver.c", "genReceiver"],
   ["scr_copying.c", "copying"],
   ["scr_file_handle.c", "fileHandle"],
   // writeFile's `flag` disposition and the fs/promises twins; the copyFile
@@ -96,6 +98,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_bytes_dyn.c", all("dynBuffer", "dynInvoke")],
   // Builtin functions read as values in JavaScript dependencies.
   ["scr_builtin_values.c", "builtinValues"],
+  // An untyped path of a synchronous fs function in a JavaScript source; a
+  // unit of its own so no other executable changes.
+  ["scr_fs_path_value.c", "fsPathValue"],
   // A standard library prototype object read as a value in JavaScript
   // (`Date.prototype`); it calls the invoke unit's interned method table.
   ["scr_dyn_stdlib_prototype.c", all("stdlibPrototypeValue", "dynInvoke")],

@@ -190,7 +190,7 @@ export function esmImportBindingKind(
  * mutable properties, as `events.defaultMaxListeners` does. */
 export function isBuiltinEsmNamespaceOf(lowerer: Lowerer, expr: ts.Expression): boolean {
   if (awaitedBuiltinDynamicImportOf(lowerer, expr) !== null) return true;
-  const e = withoutParenthesesAssertionsNonNull(expr);
+  const e = withoutParenthesesTypeWrappers(expr);
   if (!ts.isIdentifier(e)) return false;
   if (esmImportBindingKind(lowerer, e) === "namespace") return true;
   const decl = lowerer.checker.getSymbolAtLocation(e)?.declarations[0];
@@ -323,9 +323,9 @@ export function awaitedBuiltinDynamicImportOf(
   lowerer: Lowerer,
   expr: ts.Expression,
 ): { module: string; awaited: ts.AwaitExpression } | null {
-  const awaited = withoutParenthesesAssertionsNonNull(expr);
+  const awaited = withoutParenthesesTypeWrappers(expr);
   if (!ts.isAwaitExpression(awaited)) return null;
-  const call = withoutParenthesesAssertionsNonNull(awaited.expression);
+  const call = withoutParenthesesTypeWrappers(awaited.expression);
   if (!ts.isCallExpression(call) || call.expression.kind !== ts.SyntaxKind.ImportKeyword)
     return null;
   if (call.arguments.nodes.length !== 1) return null;

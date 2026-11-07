@@ -1,0 +1,1 @@
+{ "name": "node-island-function-identity", "private": true, "type": "module", "scriptc": { "packages": { "ordkit": "node" } } }

@@ -869,6 +869,7 @@ static const char *const nh_well_known[] = {
 };
 
 static void nh_symbol_info(uint32_t id, ScrNodeSymbolInfo *info);
+static void nh_error_info(uint32_t id, ScrNodeErrorInfo *info);
 
 /* An island symbol as the native symbol paired with it (+1 box). */
 static ScrDyn *nh_symbol_box(ScrNodeRef *ref) {
@@ -942,7 +943,8 @@ static ScrError *nh_error_of(const ScrNodeValue *v) {
     return scr_error_retain(pinned);
   }
   ScrNodeErrorInfo info;
-  nh_bridge()->error_info(ref->id, &info);
+  nh_bridge();
+  nh_error_info(ref->id, &info);
   ScrStr *message = nh_str(info.message ? info.message : "", info.message_len);
   ScrError *e = scr_error_new((int)info.kind, message);
   scr_str_release(message);
@@ -1360,6 +1362,25 @@ static int nh_then(const ScrNodeValue *value, uint32_t token, ScrNodeValue *thro
 static void nh_symbol_info(uint32_t id, ScrNodeSymbolInfo *info) {
   NhCall c = {.op = NH_SYMBOL_INFO, .h = id, .info = info};
   scr_ni_on_node_stack(nh_call_job, &c);
+}
+
+typedef struct {
+  uint32_t id;
+  ScrNodeErrorInfo *info;
+} NhErrorInfo;
+
+static void nh_error_info_job(void *p) {
+  NhErrorInfo *a = p;
+  scr_ni_bridge_loaded()->error_info(a->id, a->info);
+}
+
+/* An island error's own properties. Reading them allocates in V8 and can
+ * run a collection, which scans the stack V8 believes it is on: like every
+ * operation it runs on Node's stack, not on the caller's (a fiber, when an
+ * island call throws inside an async function or after a top-level await). */
+static void nh_error_info(uint32_t id, ScrNodeErrorInfo *info) {
+  NhErrorInfo a = {id, info};
+  scr_ni_on_node_stack(nh_error_info_job, &a);
 }
 
 /* ── the bridge binds V8 values to runtime objects (host callbacks) ───── */
@@ -2250,7 +2271,7 @@ bool scr_ni_report_uncaught(ScrError *error) {
   const ScrNodeBridge *bridge = scr_ni_bridge_loaded();
   if (ref == NULL || ref->id == 0 || bridge == NULL) return false;
   ScrNodeErrorInfo info;
-  bridge->error_info(ref->id, &info);
+  nh_error_info(ref->id, &info);
   if (info.stack == NULL) return false;
   if (info.arrow != NULL && info.arrow_len > 0) {
     fwrite(info.arrow, 1, info.arrow_len, stderr);
@@ -2362,7 +2383,6 @@ static const ScrNiDynOps nh_dyn_ops = {
     .get = scr_ni_get,
     .get_str = scr_ni_get_str,
     .has = scr_ni_has,
-    .has_own = scr_ni_has_own,
     .delete_key = scr_ni_delete,
     .own_keys = scr_ni_own_keys,
     .call = scr_ni_call,
@@ -2375,7 +2395,7 @@ static const ScrNiDynOps nh_dyn_ops = {
     .error_constructor = nh_error_constructor,
     .object_tag = nh_object_tag,
     .set = scr_ni_set,
-    .call_method = scr_ni_call_method,
+    .has_own = scr_ni_has_own,
 };
 
 __attribute__((constructor)) static void nh_install(void) { scr_ni_dyn_ops = &nh_dyn_ops; }

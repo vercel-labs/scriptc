@@ -136,10 +136,6 @@ typedef struct ScrNiDynOps {
   ScrDyn *(*get)(ScrDyn *obj, ScrDyn *key);
   ScrDyn *(*get_str)(ScrDyn *obj, const char *key, size_t len);
   int (*has)(ScrDyn *obj, ScrDyn *key);
-  /* Object.hasOwn, and propertyIsEnumerable when `enumerable` is set, by
-   * Node's intrinsics: the object's own methods of those names may be
-   * shadowed or absent and decide nothing. */
-  int (*has_own)(ScrDyn *obj, ScrDyn *key, int enumerable);
   int (*delete_key)(ScrDyn *obj, ScrDyn *key);
   ScrDyn *(*own_keys)(ScrDyn *obj, int mode);
   ScrDyn *(*call)(ScrDyn *fn, ScrDyn *this_, ScrDyn *const *args, size_t argc);
@@ -158,9 +154,17 @@ typedef struct ScrNiDynOps {
    * the exception pending). */
   ScrStr *(*object_tag)(const ScrDyn *value);
   /* obj[key] = value for any property key (a symbol crosses as the symbol
-   * paired with it), and obj[key](...args). */
+   * paired with it). */
   bool (*set)(ScrDyn *obj, ScrDyn *key, ScrDyn *value);
-  ScrDyn *(*call_method)(ScrDyn *obj, const char *key, size_t len, ScrDyn *const *args, size_t argc);
+  /* Object.hasOwn, and propertyIsEnumerable when `enumerable` is set, by
+   * Node's intrinsics: the object's own methods of those names may be
+   * shadowed or absent and decide nothing.
+   *
+   * New entries go at the end. The runtime every program links reads the
+   * entries above by their offset (scr_dyn_call reads `call`, for one), so
+   * an entry added in the middle changes the bytes of programs that have
+   * no island at all. */
+  int (*has_own)(ScrDyn *obj, ScrDyn *key, int enumerable);
 } ScrNiDynOps;
 extern const ScrNiDynOps *scr_ni_dyn_ops;
 

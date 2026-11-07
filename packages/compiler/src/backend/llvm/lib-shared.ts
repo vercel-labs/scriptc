@@ -1207,6 +1207,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "nodeIsland.superMethod": "scr_node_island_super_method",
   "nodeIsland.defineField": "scr_node_island_define_field",
   "nodeIsland.promisify": "scr_node_island_promisify",
+  "nodeIsland.clearTimer": "scr_node_island_clear_timer",
   "nodeIsland.share": "scr_node_island_share",
   "nodeIsland.sharedTdz": "scr_node_island_shared_tdz",
   "nodeIsland.classMethodsOf": "scr_node_island_class_methods_of",

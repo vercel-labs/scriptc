@@ -1191,6 +1191,11 @@ static void scr_hosted_timer_push(ScrTimer t);
 /* The hosted timer, immediate and tick operations (defined with the
  * hosted loop below). Each answers false when the handle names nothing. */
 enum { SCR_HOSTED_CLEAR, SCR_HOSTED_REF, SCR_HOSTED_UNREF, SCR_HOSTED_REFRESH, SCR_HOSTED_HAS_REF };
+/* A scr_loop_hosted_run kind beyond the SCR_NODE_JOB_* jobs: island code
+ * cleared one of the program's timers, or immediates, by its number. Bits 8
+ * and up hold the bits of the id's offset above the token's 32. */
+#define SCR_HOSTED_ISLAND_CLEAR 16u
+#define SCR_HOSTED_ISLAND_IMMEDIATE 8u
 static bool scr_hosted_timer_op(unsigned long id, int op);
 static double scr_hosted_set_immediate(ScrClosure *cb);
 static bool scr_hosted_immediate_op(unsigned long id, int op);
@@ -1337,7 +1342,17 @@ void scr_set_timeout(ScrClosure *cb, double ms) {
  * its callback runs, so the run loop re-pushes it only if the callback
  * did not clear it. */
 
-static SCR_TL unsigned long scr_interval_next_id = 1;
+/* The first timer and immediate ids are 1 above this base. A program with
+ * Node islands starts them at 2^52, a range Node's own timer ids (async ids,
+ * counted from 1) do not reach, so a number names at most one timer whichever
+ * side created it: island code that clears a number clears the program's
+ * timer or one of its own, never the other side's. */
+#if defined(SCR_NODE_ISLANDS) && __SIZEOF_LONG__ >= 8
+#define SCR_TIMER_ID_BASE (1UL << 52)
+#else
+#define SCR_TIMER_ID_BASE 0UL
+#endif
+static SCR_TL unsigned long scr_interval_next_id = SCR_TIMER_ID_BASE + 1;
 static SCR_TL unsigned long scr_firing_id = 0; /* interval currently running */
 /* The immediate whose callback is running (0 outside one). */
 static SCR_TL unsigned long scr_immediate_firing = 0;
@@ -1688,7 +1703,7 @@ typedef struct {
 
 static SCR_TL ScrImmediate *scr_immediates = NULL;
 static SCR_TL size_t scr_nimmediates = 0, scr_immediates_head = 0, scr_immediates_cap = 0;
-static SCR_TL unsigned long scr_immediate_seq = 0;
+static SCR_TL unsigned long scr_immediate_seq = SCR_TIMER_ID_BASE;
 /* Pending (queued, uncleared) immediates and the reffed subset — the
  * loop's no-sleep signal and liveness count respectively. */
 static SCR_TL size_t scr_pending_immediates = 0;
@@ -5732,6 +5747,15 @@ void scr_loop_hosted_run(uint32_t kind, uint32_t token) {
     break;
   }
   default:
+    /* Island code cleared one of the program's timers by its number
+     * (scr_node_island_host.cjs): the runtime's own clear of that handle,
+     * as if the program had called it, so its callback is released and the
+     * count of live timers stays right. */
+    if ((kind & SCR_HOSTED_ISLAND_CLEAR) != 0) {
+      double id = (double)((uint64_t)SCR_TIMER_ID_BASE + (((uint64_t)(kind >> 8)) << 32) + token);
+      if ((kind & SCR_HOSTED_ISLAND_IMMEDIATE) != 0) scr_clear_immediate(id);
+      else scr_clear_interval(id);
+    }
     return;
   }
   scr_hosted_settle_exception();

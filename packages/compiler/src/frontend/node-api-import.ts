@@ -63,6 +63,26 @@ export function nodeApiCalleeOf(program: ts.Program, callee: ts.Expression): Nod
   return isNodeApiNamespace(program, callee.expression) ? member : null;
 }
 
+const importsNodeApi = new WeakMap<ts.Program, boolean>();
+
+/** Whether any source file of the program imports @scriptc/node, so its
+ * checked-dynamic values may be Node island values (a requireModule result
+ * or anything reached from one). */
+export function programImportsNodeApi(program: ts.Program): boolean {
+  let known = importsNodeApi.get(program);
+  if (known === undefined) {
+    known = program
+      .getSourceFiles()
+      .some(
+        (sf) =>
+          !sf.isDeclarationFile &&
+          sf.statements.nodes.some((stmt) => moduleSpecifierText(stmt) === NODE_API_MODULE),
+      );
+    importsNodeApi.set(program, known);
+  }
+  return known;
+}
+
 /** Whether an expression evaluates to a value owned by a Node island: a
  * requireModule(...) result or anything reached from one through member
  * reads, element reads, destructuring or a const alias (`const { Point } =

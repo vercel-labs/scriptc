@@ -444,8 +444,10 @@ function moduleSettingName(value: unknown): string {
     : String(value).toLowerCase();
 }
 
-/** A `types` entry found under one of the project's `typeRoots`: the
- * package directory's `types`/`typings` file, or its index.d.ts. */
+/** A `types` entry found under one of the project's `typeRoots`. tsc
+ * resolves the name under a configured root as a file or a directory, as it
+ * does a module: the declaration file `<root>/<name>.d.ts` first, then the
+ * package directory's `types`/`typings` file, then its index.d.ts. */
 function typeRootEntry(
   typeRoots: readonly unknown[],
   name: string,
@@ -454,6 +456,7 @@ function typeRootEntry(
   for (const root of typeRoots) {
     if (typeof root !== "string") continue;
     const base = resolve(isAbsolute(root) ? root : resolve(configDir, root), name);
+    if (trackedFileExists(`${base}.d.ts`)) return `${base}.d.ts`;
     const pkg = trackedReadFile(resolve(base, "package.json"));
     if (pkg !== null) {
       try {

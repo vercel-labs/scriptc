@@ -3611,6 +3611,10 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
                                         recurse, depth);
       if (d->v.handle.tag == SCR_DYNH_DATE)
         return insp_styled(scr_insp_date(scr_dyn_native_date_value(d)), INSP_DATE);
+      /* A RegExp prints its pattern and flags at any depth. showHidden adds
+       * `[lastIndex]`, which has no rendering here and keeps the refusal
+       * below. */
+      if (d->v.handle.tag == SCR_DYNH_REGEXP && !g_show_hidden) return scr_insp_regex(d->v.handle.ptr);
       if (d->v.handle.tag == SCR_DYNH_SEARCH_PARAMS)
         return scr_insp_search_params(d->v.handle.ptr, recurse, depth);
       if (d->v.handle.tag == SCR_DYNH_ITERATOR) {
@@ -3955,18 +3959,32 @@ static ScrStr *insp_fmt_inspect(ScrDyn *value, const ScrInspFormatOptions *o, do
  * class instance whose class defines toString as -2: its methods are
  * compiled for the class's own calls, which this runtime cannot make. */
 static int insp_fmt_custom_to_string(const ScrDyn *value) {
+  ScrDyn *view = NULL;
   if (value->kind == SCR_DYN_TYPED_REF) {
     ScrStr *to_string = scr_str_new("toString", 8);
     bool has = scr_dyn_typed_ref_class_has(value, to_string);
     scr_str_release(to_string);
-    return has ? -2 : 0;
+    if (has) return -2;
+    /* A record that typed code built, or an instance whose class defines
+     * no toString, answers from the object it shows untyped code: a record
+     * can hold a toString function of its own. */
+    view = scr_dyn_typed_ref_materialize(value);
+    value = view;
   }
+  int custom = 0;
   for (const ScrDyn *current = value; current && current->kind == SCR_DYN_OBJ; current = current->prototype) {
-    if (current->symbol_properties) return -1;
+    if (current->symbol_properties) {
+      custom = -1;
+      break;
+    }
     const ScrDyn *member = scr_dyn_obj_get(current, "toString", 8);
-    if (member) return member->kind == SCR_DYN_FUNC;
+    if (member) {
+      custom = member->kind == SCR_DYN_FUNC;
+      break;
+    }
   }
-  return 0;
+  scr_dyn_release(view);
+  return custom;
 }
 
 static ScrStr *insp_fmt_s(ScrDyn *value, const ScrInspFormatOptions *o) {

@@ -158,8 +158,12 @@ static void scr_dyn_display_buf(ScrJsonBuf *b, const ScrDyn *d, bool to_string) 
      * Object.prototype.toString shows its Symbol.toStringTag getter's
      * string. */
     if (to_string && scr_dyn_typed_ref_put_tag(b, d)) return;
-    ScrDyn *materialized = scr_dyn_typed_ref_materialize(d);
-    scr_dyn_display_buf(b, materialized, to_string);
+    /* ToString walks the view String() converts through (a Date
+     * subclass's text, the refusal for a class whose compiled toString the
+     * runtime cannot call: scr_dyn_typed_ref_string_view); a message shows
+     * the plain view. */
+    ScrDyn *materialized = to_string ? scr_dyn_typed_ref_string_view(d) : scr_dyn_typed_ref_materialize(d);
+    if (!scr_exc_pending()) scr_dyn_display_buf(b, materialized, to_string);
     scr_dyn_release(materialized);
     return;
   }

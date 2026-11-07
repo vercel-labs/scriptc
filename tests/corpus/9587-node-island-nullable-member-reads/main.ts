@@ -122,6 +122,15 @@ for (const which of ["absent", "null", "zero", "present"]) {
     show("function ?.()", x.fn?.());
     show("array test", x.list ? "array" : "none");
     show("array ?.", x.list?.length);
+    // An array that goes on from `??` or `||` is the copy it has always been.
+    show("array ??", (x.list ?? []).join("+"));
+    show("array ||", (x.list || [0]).length);
+    let sum = 0;
+    for (const n of x.list ?? []) sum += n;
+    show("array loop", sum);
+    const mine = [7, 8];
+    const picked = x.list ?? mine;
+    show("array default is the program's", picked === mine);
     show("date test", x.when ? "date" : "none");
     show("bytes test", x.bytes ? "bytes" : "none");
     // A member that is there still converts where a typed value is needed.

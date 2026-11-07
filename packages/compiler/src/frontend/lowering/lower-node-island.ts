@@ -59,7 +59,7 @@ import {
   type NodeIslandSet,
 } from "../../node-islands/boundary.js";
 import { stripTypeWrappers } from "./typed-arguments.js";
-import { comparedLiteral, totalUse } from "./total-uses.js";
+import { comparedLiteral, defaultedOnward, totalUse } from "./total-uses.js";
 import { hasOptionalChainGuard } from "./expressions/optional-chains.js";
 import { thenReader } from "./checked-promise-all.js";
 import { dynCompoundValue } from "./lower-exprs.js";
@@ -851,6 +851,22 @@ function viewMemberRead(
   return mapped === null || (mapped.kind !== "dyn" && mapped.kind !== "void");
 }
 
+/** Whether the conversion of an island value to `mapped` can be done on the
+ * result of `read || d` or `read ?? d` instead of on the read
+ * (convertedIslandValue): a copied value, a promise that is adopted, an
+ * array of copied values. A type whose crossing is a handle rule, a
+ * refusal or a cast that only the program's own object passes keeps its
+ * conversion at the read. */
+function deferredConversion(lowerer: Lowerer, mapped: IrType): boolean {
+  if (copiedType(lowerer, mapped) || copyableArrayType(lowerer, mapped)) return true;
+  return (
+    mapped.kind === "promise" &&
+    (mapped.inner.kind === "dyn" ||
+      copiedType(lowerer, mapped.inner) ||
+      copiedArrayType(lowerer, mapped.inner))
+  );
+}
+
 /** The member of a live island view where nothing needs it at its declared
  * type (total-uses.ts): the value the object behind the view answers,
  * unconverted. Every other read of the member converts to its type at that
@@ -859,6 +875,7 @@ function unconvertedViewRead(lowerer: Lowerer, expr: ts.Expression, loc: SrcLoc)
   // The position first: it is syntax, and it rules out most member reads
   // before any type is asked for.
   if (!totalUse(lowerer, expr) || !viewMemberRead(lowerer, expr)) return null;
+  if (defaultedOnward(lowerer, expr) && !deferredRead(lowerer, expr)) return null;
   const receiver = lowerer.lowerExpr(expr.expression);
   if (receiver.type.kind !== "dyn") return null;
   return {
@@ -871,10 +888,11 @@ function unconvertedViewRead(lowerer: Lowerer, expr: ts.Expression, loc: SrcLoc)
 }
 
 /** Whether `node` lowers to the island's own value where its use is total
- * (total-uses.ts) although its type has a native representation: a read
- * fromIsland would otherwise convert, a view member, or a `||`, `??` or
- * `&&` over one, whose operands share its use. Type-only wrappers hand the
- * value on (lowerIslandExpr). */
+ * (total-uses.ts) although its type has a native representation, and whose
+ * conversion can be made up for on the value it becomes
+ * (deferredConversion): a read fromIsland would otherwise convert, a view
+ * member, or a `||`, `??` or `&&` over one, whose operands share its use.
+ * Type-only wrappers hand the value on (lowerIslandExpr). */
 function yieldsUnconverted(lowerer: Lowerer, node: ts.Expression): boolean {
   const inner = stripTypeWrappers(node);
   if (ts.isBinaryExpression(inner)) {
@@ -886,13 +904,18 @@ function yieldsUnconverted(lowerer: Lowerer, node: ts.Expression): boolean {
       (yieldsUnconverted(lowerer, inner.left) || yieldsUnconverted(lowerer, inner.right))
     );
   }
-  if (viewMemberRead(lowerer, inner)) return true;
+  if (viewMemberRead(lowerer, inner)) return deferredRead(lowerer, inner);
   if (!islandRooted(lowerer, inner)) return false;
   const type = lowerer.typeOf(inner);
   if (isForeignType(lowerer.nodeIslands!, type, lowerer.checker)) return false;
   if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return false;
-  const mapped = lowerer.mapTypeOf(type);
-  return mapped === null || (mapped.kind !== "dyn" && mapped.kind !== "void");
+  return deferredRead(lowerer, inner);
+}
+
+/** deferredConversion for the type of the read `node`. */
+function deferredRead(lowerer: Lowerer, node: ts.Expression): boolean {
+  const mapped = lowerer.mapTypeOf(lowerer.typeOf(node));
+  return mapped !== null && deferredConversion(lowerer, mapped);
 }
 
 /** The `||` and `??` expressions being lowered by unconvertedDefault. */
@@ -921,6 +944,46 @@ function unconvertedDefault(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
   if (value.type.kind !== "dyn") return value;
   const mapped = lowerer.mapTypeOf(lowerer.typeOf(expr));
   if (mapped === null || mapped.kind === "dyn" || mapped.kind === "void") return value;
+  return convertedIslandValue(lowerer, value, mapped);
+}
+
+/** An island value, or the program's default that took its place, at the
+ * native type `mapped`: fromIsland's conversions without its refusals. A
+ * promise is adopted and an array of copied values is copied (both leave a
+ * native value as it is); everything else meets the checked conversion.
+ * The plain conversion alone would refuse the island's array, which
+ * `list() ?? []` has always received as a copy. */
+function convertedIslandValue(lowerer: Lowerer, value: IrExpr, mapped: IrType): IrExpr {
+  const loc = value.loc;
+  if (
+    mapped.kind === "promise" &&
+    (mapped.inner.kind === "dyn" || copiedType(lowerer, mapped.inner))
+  ) {
+    const promise: IrExpr = {
+      kind: "libCall",
+      fn: "dyn.promiseResolve",
+      args: [value, thenReader(lowerer, loc)],
+      type: { kind: "promise", inner: DYN },
+      loc,
+    };
+    return mapped.inner.kind === "dyn" ? promise : lowerer.coerceToExpected(promise, mapped);
+  }
+  if (mapped.kind === "promise" && copiedArrayType(lowerer, mapped.inner))
+    return lowerer.coerceToExpected(
+      {
+        kind: "libCall",
+        fn: "nodeIsland.awaitCopy",
+        args: [value],
+        type: { kind: "promise", inner: DYN },
+        loc,
+      },
+      mapped,
+    );
+  if (copyableArrayType(lowerer, mapped))
+    return lowerer.coerceToExpected(
+      { kind: "libCall", fn: "nodeIsland.copyArrays", args: [value], type: DYN, loc },
+      mapped,
+    );
   return lowerer.coerceToExpected(value, mapped);
 }
 
@@ -940,8 +1003,16 @@ function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr 
   // takes the island's value as it is: the island's answer decides, as in
   // Node, also when the member is absent although its declaration says
   // `T | null`. The read converts where a typed value is needed.
-  if (totalUse(lowerer, node)) return raw;
+  // Where the value can still go on as the result of `||` or `??`, that
+  // result has to become the typed value this read would have been, which
+  // only the conversions of convertedIslandValue can do after the fact;
+  // every other type is converted, or refused, here as before.
   const mapped = lowerer.mapTypeOf(tsType);
+  if (
+    totalUse(lowerer, node) &&
+    (!defaultedOnward(lowerer, node) || (mapped !== null && deferredConversion(lowerer, mapped)))
+  )
+    return raw;
   if (mapped === null) {
     // An intersection of containers (`Choice[] & GenChoice[]`: the
     // island's array extended by the caller's own type) has no native

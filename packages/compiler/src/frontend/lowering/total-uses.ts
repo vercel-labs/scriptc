@@ -106,6 +106,47 @@ export function totalUse(lowerer: Lowerer, node: ts.Expression): boolean {
   }
 }
 
+/** Whether the value of `node`, in a total use, can still go on to a use
+ * that needs a typed value: `node` is the left operand of a `||` or `??`
+ * (directly, or through positions that hand a value on) whose own result is
+ * not in a total use. A truthy or non-nullish value is then that
+ * expression's value, so only its test is free of the type; every other
+ * total use reads the value and drops it. */
+export function defaultedOnward(lowerer: Lowerer, node: ts.Expression): boolean {
+  let n: ts.Node = node;
+  for (;;) {
+    const p = n.parent;
+    if (p === undefined) return false;
+    if (
+      ts.isParenthesizedExpression(p) ||
+      ts.isAsExpression(p) ||
+      ts.isTypeAssertion(p) ||
+      ts.isSatisfiesExpression(p) ||
+      ts.isNonNullExpression(p)
+    ) {
+      n = p;
+      continue;
+    }
+    if (!ts.isBinaryExpression(p)) return false;
+    switch (p.operatorToken.kind) {
+      case ts.SyntaxKind.BarBarToken:
+      case ts.SyntaxKind.QuestionQuestionToken:
+        if (p.left === n && !totalUse(lowerer, p)) return true;
+        n = p;
+        continue;
+      case ts.SyntaxKind.AmpersandAmpersandToken:
+        n = p;
+        continue;
+      case ts.SyntaxKind.CommaToken:
+        if (p.left === n) return false;
+        n = p;
+        continue;
+      default:
+        return false;
+    }
+  }
+}
+
 /** What a comparison's other operand is, when it is a literal: `null`, the
  * global `undefined`, or a string, number or boolean literal ("scalar").
  * Null for anything else. */

@@ -35,6 +35,9 @@ static void scr_stream_stdin_data(ScrClosure *cb, ScrBytes *chunk) {
   (void)cb;
   ScrStream *s = scr_stream_stdin;
   if (s == NULL) return;
+  /* Node's stdin yields Buffers; the unit marks the chunks of its own
+   * iteration the same way. */
+  chunk->is_buffer = true;
   if (!scr_stream_push(s, chunk)) {
     scr_stream_stdin_held = true;
     scr_stdin_pause();

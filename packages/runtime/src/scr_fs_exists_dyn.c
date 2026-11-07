@@ -9,9 +9,11 @@
  * and warning queue. */
 #include "scr_runtime.h"
 
-/* The report is claimed on the first invalid value even while
- * process.noDeprecation suppresses it, exactly Node's deprecate() wrapper: a
- * later call with the flag cleared stays silent. */
+/* The report is claimed once the first invalid value's report returns, the
+ * order Node's existsSync uses: a report suppressed by process.noDeprecation
+ * still claims it, so a later call with the flag cleared stays silent, while
+ * a replaced process.emitWarning that throws leaves it unclaimed and the
+ * next invalid value reports again. */
 static SCR_TL bool scr_fs_exists_dyn_reported = false;
 
 static void scr_fs_exists_dyn_deprecate(void) {
@@ -27,6 +29,15 @@ static void scr_fs_exists_dyn_deprecate(void) {
 
 bool scr_fs_exists_value(ScrDyn *value) {
   if (value->kind == SCR_DYN_STR) return scr_fs_exists(value->v.str);
+  if (scr_dyn_native_url_is(value)) {
+    /* A URL converts to a file path inside a try: Node answers false when the
+     * conversion fails (an https: URL names no file), and a URL is not an
+     * invalid argument type, so it reports no DEP0187. */
+    ScrDyn *converted = scr_url_to_path_value(value->v.handle.ptr);
+    bool found = converted->kind == SCR_DYN_STR && scr_fs_exists(converted->v.str);
+    scr_dyn_release(converted);
+    return found;
+  }
   if (scr_dyn_bytes_is(value, SCR_BYTES_U8)) {
     ScrBytes *bytes = value->v.bytes;
     ScrStr *path = scr_bytes_string(bytes, 0, bytes->len);
@@ -35,8 +46,8 @@ bool scr_fs_exists_value(ScrDyn *value) {
     return found;
   }
   if (!scr_fs_exists_dyn_reported) {
-    scr_fs_exists_dyn_reported = true;
     scr_fs_exists_dyn_deprecate();
+    if (!scr_exc_pending()) scr_fs_exists_dyn_reported = true;
   }
   return false;
 }

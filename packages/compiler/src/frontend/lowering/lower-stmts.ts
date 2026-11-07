@@ -3158,7 +3158,6 @@ export function lowerBindingPattern(
     return;
   }
   if (ts.isArrayBindingPattern(pattern)) {
-    lowerer.fenceStaticHeadersIteration(pattern);
     if (
       srcType.kind === "union" &&
       lowerer.unions
@@ -10857,11 +10856,7 @@ export function lowerDestructuringAssignParts(
   rhs: ts.Expression,
   loc: SrcLoc,
 ): { stmts: IrStmt[]; value: IrExpr } {
-  if (ts.isArrayLiteralExpression(target)) {
-    lowerer.fenceStaticHeadersIteration(rhs);
-  } else {
-    lowerer.fenceFetchObjectAssignment(target, rhs);
-  }
+  if (!ts.isArrayLiteralExpression(target)) lowerer.fenceFetchObjectAssignment(target, rhs);
   return destructuringAssignInto(lowerer, target, lowerer.lowerExpr(rhs), rhs, rhs, loc);
 }
 
@@ -12268,7 +12263,6 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
   if (awaitArray && !lowerer.ctx.isAsync) {
     lowerer.unsupported("SC1090", stmt, "top-level 'for await' (await outside async functions)");
   }
-  lowerer.fenceStaticHeadersIteration(stmt.expression);
   // A stored numeric value iterator declared in this function keeps its
   // built-in protocol state in hidden locals (lowerVarStatement). The
   // iterator's own [Symbol.iterator]() returns itself, so for-of resumes

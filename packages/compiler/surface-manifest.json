@@ -4959,9 +4959,8 @@
       "id": "stdlib.headers.entries",
       "kind": "stdlib",
       "name": "Headers.entries",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.1 / Undici 7.30.1; native Headers iteration does not yet expose a static iterator handle"
+      "status": "static",
+      "note": "Node 24.22.1 / Undici 7.30.1; facets: liveness, mutation, state-machine; differential evidence: fixture:static"
     },
     {
       "id": "stdlib.headers.forEach",
@@ -4995,9 +4994,8 @@
       "id": "stdlib.headers.keys",
       "kind": "stdlib",
       "name": "Headers.keys",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.1 / Undici 7.30.1; native Headers iteration does not yet expose a static iterator handle"
+      "status": "static",
+      "note": "Node 24.22.1 / Undici 7.30.1; facets: liveness, mutation, state-machine; differential evidence: fixture:static"
     },
     {
       "id": "stdlib.headers.set",
@@ -5010,17 +5008,15 @@
       "id": "stdlib.headers.symbol.iterator",
       "kind": "stdlib",
       "name": "Headers.[Symbol.iterator]",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.1 / Undici 7.30.1; native Headers iteration does not expose an engine-free iterator handle"
+      "status": "static",
+      "note": "Node 24.22.1 / Undici 7.30.1; facets: liveness, mutation, state-machine; differential evidence: fixture:static"
     },
     {
       "id": "stdlib.headers.values",
       "kind": "stdlib",
       "name": "Headers.values",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.1 / Undici 7.30.1; native Headers iteration does not yet expose a static iterator handle"
+      "status": "static",
+      "note": "Node 24.22.1 / Undici 7.30.1; facets: liveness, mutation, state-machine; differential evidence: fixture:static"
     },
     {
       "id": "stdlib.map.clear",

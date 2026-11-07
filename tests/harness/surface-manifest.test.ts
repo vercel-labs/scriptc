@@ -299,7 +299,7 @@ test("RequestInit literals accept supported const-computed keys", () => {
   }
 });
 
-test("finite unions of unsupported Headers members retain the native fence", () => {
+test("finite unions of Headers iterator members dispatch through their fixed names", () => {
   const file = probeFile({
     id: "stdlib.headers.dynamic-member-union",
     source:
@@ -311,13 +311,12 @@ test("finite unions of unsupported Headers members retain the native fence", () 
       "}\n" +
       "void f;\n",
   });
-  const entry = entryById.get("stdlib.headers.keys");
-  expect(entry).toBeDefined();
-  const { coverage } = analyze(file);
+  expect(entryById.get("stdlib.headers.keys")?.status).toBe("static");
+  expect(entryById.get("stdlib.headers.values")?.status).toBe("static");
+  const coverage = analyze(file, {}).coverage;
   expect(coverage.preflightFailed).toBe(false);
-  expect([...new Set(coverage.diagnostics.map((d) => d.code))]).toEqual([entry!.code]);
-  expect(coverage.diagnostics).toHaveLength(1);
-  expect(coverage.diagnostics[0]!.message).toContain("Headers.keys");
+  expect(coverage.diagnostics.map((d) => `${d.code}: ${d.message}`)).toEqual([]);
+  expect(coverage.stats.statementsFailed).toBe(0);
 });
 
 test("fetch handle method calls retain their receiver through bracket spellings", () => {

@@ -671,7 +671,6 @@ import {
   fenceFetchObjectAssignment,
   fenceFetchObjectBinding,
   fenceStaticAbortControllerMemberRead,
-  fenceStaticHeadersIteration,
   fenceStaticHeadersMember,
   fenceStaticReadableStreamMember,
   fenceStaticResponseMember,
@@ -13465,10 +13464,6 @@ export class Lowerer {
     access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
   ): IrExpr | null {
     return fenceStaticAbortControllerMemberRead(this, access);
-  }
-
-  fenceStaticHeadersIteration(node: ts.Node): void {
-    return fenceStaticHeadersIteration(this, node);
   }
 
   fenceFetchObjectAssignment(target: ts.ObjectLiteralExpression, source: ts.Expression): void {

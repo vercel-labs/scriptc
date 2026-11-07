@@ -255,6 +255,7 @@ import {
 import { DeferredModuleInitializers } from "./deferred-module-initializers.js";
 import { finalizeClassMethodValues } from "./class-method-values.js";
 import { finalizeRecordLinks, type LinkedHelper, type StringFallback } from "./record-links.js";
+import { refuseSourceFieldDeletes } from "./record-source-deletes.js";
 import { finalizePrivateBrands } from "./private-brands.js";
 import { finalizeFunctionNames } from "./function-names.js";
 import { type ClassSymbolKey, INSPECT_CUSTOM_MEMBER, tableKeyFieldType } from "./symbol-fields.js";
@@ -4314,6 +4315,10 @@ export class Lowerer {
   /** Object.prototype methods other than toString called by name on
    * record types (finalizeRecordLinks checks them against link sources). */
   readonly recordMethodCalls: { shapeId: string; method: string; loc: SrcLoc }[] = [];
+  /** `delete` of a key its operand's record type does not declare
+   * (record.sourceDelete), checked once the conversions are known
+   * (refuseSourceFieldDeletes). */
+  readonly recordSourceDeletes: { shapeId: string; key: string; loc: SrcLoc }[] = [];
   /** Completions of "custom" linked helpers (record-links.ts), which
    * finalizeRecordLinks runs once the links are known, with the record
    * shapes a checked conversion can leave holding a kept source. */
@@ -5014,6 +5019,7 @@ export class Lowerer {
       checkedTable("linkedHelpers", () => this.linkedHelpers.length),
       checkedTable("linkedHelperFinalizers", () => this.linkedHelperFinalizers.length),
       checkedTable("recordMethodCalls", () => this.recordMethodCalls.length),
+      checkedTable("recordSourceDeletes", () => this.recordSourceDeletes.length),
       checkedTable("objectMethodNames", () => this.objectMethodNames.size),
       checkedTable("forkTargetIdByPath", () => this.forkTargetIdByPath.size),
       checkedTable("nsBlocks", () => this.nsBlocks.size),
@@ -11169,6 +11175,7 @@ export class Lowerer {
         if (this.alreadyFlushed.has(symbol)) continue;
         for (const d of [...diags]) this.pushDiag(d);
       }
+      refuseSourceFieldDeletes(this, functions);
       return {
         module: null,
         diagnostics: this.diags,
@@ -11186,6 +11193,9 @@ export class Lowerer {
    * and the retained reachability worklist. `library` is true for a native
    * library's emit, whose runtime has no builtin-statics unit. */
   finishModule(functions: IrFunction[], library = false): LowerResult {
+    // Before the links are pruned to the observed ones: an unlinked copy
+    // is a copy all the same.
+    refuseSourceFieldDeletes(this, functions);
     finalizeRecordLinks(this, functions);
     // The statics lookup installs before value boxing, so the function
     // values it adds to the entry module are boxed with the rest.

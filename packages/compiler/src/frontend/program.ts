@@ -67,7 +67,10 @@ import {
   resolveBareModule,
   resolveProjectModule,
   resolveWorkspaceSourceModule,
+  resolveInTypeRoots,
   resolveTypeDirective,
+  resolveTypesAsProject,
+  type ProjectTypeResolution,
   setProjectPathMappings,
   setProjectRealm,
 } from "./resolve.js";
@@ -146,7 +149,12 @@ import {
   jsTscCodeTriage,
   type Opinion,
 } from "./tsc-codes.js";
-import { trackedFileExists, trackedReadFile, trackedRealpath } from "./input-tracker.js";
+import {
+  trackedAccessibleEntries,
+  trackedFileExists,
+  trackedReadFile,
+  trackedRealpath,
+} from "./input-tracker.js";
 import { earlyErrorDiagnostics7 } from "./early-errors.js";
 import { isBundledLibraryFile } from "./default-library.js";
 import { forkTargetPaths } from "./fork-target.js";
@@ -340,6 +348,12 @@ function adoptProjectConfig7(
   declarations?: readonly string[];
   /** The project's `module` setting, as the tsconfig spells it. */
   module?: string;
+  /** How the project's tsc finds declarations where scriptc's own
+   * resolution finds none (typesAsProject7): its `typeRoots`, and whether
+   * it compiles under `moduleResolution: node10` (spelled `node` too, and
+   * tsc's choice through 5.9 for `module: commonjs` when the setting is
+   * absent). Absent when the tsconfig sets neither. */
+  typeResolution?: ProjectTypeResolution;
 } {
   const configFile = ts.findConfigFile(dirname(entryPath), ts.sys.fileExists) ?? null;
   if (!configFile) {
@@ -406,17 +420,49 @@ function adoptProjectConfig7(
   // `types`: the type packages whose globals the project asks for. "node"
   // is resolved on its own (resolveNodeTypes7); a name that resolves to
   // nothing is tsc's error to report, not a reason to stop here.
-  const typeRoots = parsed.options["typeRoots"];
+  const rawTypeRoots = parsed.options["typeRoots"];
+  const typeRoots = Array.isArray(rawTypeRoots)
+    ? rawTypeRoots
+        .filter((root): root is string => typeof root === "string")
+        .map((root) => (isAbsolute(root) ? root : resolve(dirname(configFile), root)))
+    : null;
+  // The checker resolves a `/// <reference types="…" />` directive through
+  // the project's type roots, as the project's tsc does. Which packages
+  // load without being named stays decided here (FORCED_OPTIONS.types).
+  if (typeRoots !== null) adopted["typeRoots"] = typeRoots;
   const types = parsed.options["types"];
+  const typeNames: string[] = [];
   if (Array.isArray(types)) {
-    for (const name of types) {
-      if (typeof name !== "string" || name === "node") continue;
-      const entry =
-        typeRootEntry(Array.isArray(typeRoots) ? typeRoots : [], name, dirname(configFile)) ??
-        resolveTypeDirective(name, configFile);
-      if (entry !== null && !declarations.includes(entry)) declarations.push(entry);
+    for (const name of types) if (typeof name === "string") typeNames.push(name);
+  } else if (typeRoots !== null) {
+    // Without `types`, tsc (through 5.9) loads every package directory of
+    // every type root. The directories the project keeps itself are its
+    // own declarations, like the files `include` names; a type root under
+    // node_modules holds installed packages, which load when a module or a
+    // directive names them.
+    for (const root of typeRoots) {
+      if (isNodeModulesPath(root)) continue;
+      for (const name of trackedAccessibleEntries(root)?.directories ?? []) {
+        if (name.startsWith(".") || typeNames.includes(name)) continue;
+        // `"typings": null` in the directory's package.json: tsc's mark of
+        // a package that needs no types.
+        const manifest = trackedReadFile(resolve(root, name, "package.json"));
+        if (manifest !== null && typingsDeclaredNull(manifest)) continue;
+        typeNames.push(name);
+      }
     }
   }
+  for (const name of typeNames) {
+    if (name === "node") continue;
+    const entry =
+      resolveInTypeRoots(typeRoots ?? [], name) ??
+      (Array.isArray(types) ? resolveTypeDirective(name, configFile) : null);
+    if (entry !== null && !declarations.includes(entry)) declarations.push(entry);
+  }
+  const byPath =
+    parsed.options["moduleResolution"] === ts.ModuleResolutionKind.Node10 ||
+    (parsed.options["moduleResolution"] === undefined &&
+      parsed.options["module"] === ts.ModuleKind.CommonJS);
   // The project's own library selection, kept only to explain errors: the
   // checker always uses scriptc's fixed library set (FORCED_OPTIONS).
   const rawLib = parsed.options["lib"];
@@ -434,6 +480,9 @@ function adoptProjectConfig7(
     ...(parsed.options["module"] === undefined
       ? {}
       : { module: moduleSettingName(parsed.options["module"]) }),
+    ...(typeRoots !== null || byPath
+      ? { typeResolution: { typeRoots: typeRoots ?? [], byPath } }
+      : {}),
   };
 }
 
@@ -445,34 +494,14 @@ function moduleSettingName(value: unknown): string {
     : String(value).toLowerCase();
 }
 
-/** A `types` entry found under one of the project's `typeRoots`. tsc
- * resolves the name under a configured root as a file or a directory, as it
- * does a module: the declaration file `<root>/<name>.d.ts` first, then the
- * package directory's `types`/`typings` file, then its index.d.ts. */
-function typeRootEntry(
-  typeRoots: readonly unknown[],
-  name: string,
-  configDir: string,
-): string | null {
-  for (const root of typeRoots) {
-    if (typeof root !== "string") continue;
-    const base = resolve(isAbsolute(root) ? root : resolve(configDir, root), name);
-    if (trackedFileExists(`${base}.d.ts`)) return `${base}.d.ts`;
-    const pkg = trackedReadFile(resolve(base, "package.json"));
-    if (pkg !== null) {
-      try {
-        const manifest = JSON.parse(pkg) as { types?: unknown; typings?: unknown };
-        for (const field of [manifest.types, manifest.typings]) {
-          if (typeof field === "string" && trackedFileExists(resolve(base, field)))
-            return resolve(base, field);
-        }
-      } catch {
-        // A malformed manifest names no entry; the index file may.
-      }
-    }
-    if (trackedFileExists(resolve(base, "index.d.ts"))) return resolve(base, "index.d.ts");
+/** Whether a package.json text sets `typings` to null. */
+function typingsDeclaredNull(manifest: string): boolean {
+  try {
+    const parsed = JSON.parse(manifest) as { typings?: unknown } | null;
+    return parsed !== null && typeof parsed === "object" && parsed.typings === null;
+  } catch {
+    return false;
   }
-  return null;
 }
 
 /** What the tsconfig that governs a TypeScript file says about how tsc
@@ -897,6 +926,54 @@ function fallbackModuleRoots7(program: ts.Program, host: ts.Ts7Host): string[] {
   return [...roots];
 }
 
+/** The specifiers the project's files name for which only the project's
+ * own resolution settings find declarations (resolveTypesAsProject), with
+ * the file each names, or null when the checker has them all. Read from
+ * each file's import list: the declarations a project writes (the body of
+ * a `declare module` block included) and its TypeScript files alike. */
+function typesAsProject7(
+  program: ts.Program,
+  project: ProjectTypeResolution,
+  mapped: Readonly<Record<string, readonly string[]>> | undefined,
+): Map<string, string> | null {
+  const held = new Set(mapped === undefined ? [] : Object.keys(mapped));
+  const found = new Map<string, string>();
+  const asked = new Set<string>();
+  const ambient = ambientDtsPath();
+  const overrides = overridesDtsPath();
+  for (const name of program.getSourceFileNames()) {
+    if (isNodeModulesPath(name) || isBundledLibraryFile(program, name)) continue;
+    const path = tsgoPath(name);
+    if (path === ambient || path === overrides || isFallbackDtsPath(name)) continue;
+    const sf = program.getSourceFile(name);
+    if (sf === undefined) continue;
+    const directory = dirname(name);
+    for (const node of sf.imports) {
+      if (!ts.isStringLiteralLike(node)) continue;
+      const specifier = node.text;
+      if (held.has(specifier) || found.has(specifier) || nodeBuiltinNames.has(specifier)) continue;
+      const erased = sf.isDeclarationFile || erasedSpecifier(node);
+      const key = `${directory}\0${erased ? "t" : "v"}\0${specifier}`;
+      if (asked.has(key)) continue;
+      asked.add(key);
+      const file = resolveTypesAsProject(name, specifier, project, erased);
+      if (file !== null) found.set(specifier, file);
+    }
+  }
+  return found.size === 0 ? null : found;
+}
+
+/** Whether Node erases the import or export that names this specifier
+ * (type-only-imports.ts), or the specifier stands in a type (`import("m")`
+ * in a type position). */
+function erasedSpecifier(specifier: ts.Node): boolean {
+  const parent = specifier.parent;
+  if (parent === undefined) return false;
+  if (ts.isImportDeclaration(parent)) return erasedTypeOnlyImport(parent);
+  if (ts.isExportDeclaration(parent)) return parent.isTypeOnly;
+  return ts.isLiteralTypeNode(parent);
+}
+
 /** Program roots hidden behind canonical createRequire bindings. tsgo
  * discovers ordinary import/require edges itself, but a source binding
  * returned by createRequire is intentionally just a function to the type
@@ -1276,8 +1353,22 @@ function loadProgram7(
       const extraRoots = candidates.filter(
         (root, index) => !programRoots.includes(root) && candidates.indexOf(root) === index,
       );
-      if (extraRoots.length === 0) break;
+      // The declarations only the project's own resolution settings find
+      // reach the checker as `paths` entries: it resolves as a bundler does,
+      // has no node10 mode, and finds a package's JavaScript before a type
+      // root. The project's own mappings and the entries above keep their
+      // keys.
+      const asProject =
+        config.typeResolution === undefined
+          ? null
+          : typesAsProject7(program, config.typeResolution, options.paths);
+      if (extraRoots.length === 0 && asProject === null) break;
       for (const root of extraRoots) programRoots.push(root);
+      if (asProject !== null) {
+        const paths: Record<string, string[]> = { ...options.paths };
+        for (const [specifier, file] of asProject) paths[specifier] = [file];
+        options = { ...options, paths };
+      }
       // Create before disposing: the session retains the unchanged files
       // from the snapshot the new program replaces, and the server's
       // change-tracking baseline for the shared project stays alive.

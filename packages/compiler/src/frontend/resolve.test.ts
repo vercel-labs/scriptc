@@ -6,7 +6,9 @@ import { expect, test } from "vitest";
 import {
   clearResolveCaches,
   projectDtsRuntimeSibling,
+  resolveInTypeRoots,
   resolveProjectModule,
+  resolveTypesAsProject,
   resolveWorkspaceSourceModule,
   setProjectPathMappings,
   setProjectRealm,
@@ -151,6 +153,139 @@ test("package imports inside a --npm-static package answer the shipped JavaScrip
     expect(resolveProjectModule(from, "#missing")).toBeNull();
   } finally {
     setNpmStaticPackages([]);
+    clearResolveCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+/** A project directory with the packages and typings the tests below name:
+ * `files` maps a path under it to the file's text. */
+async function projectTree(files: Record<string, string>): Promise<string> {
+  const dir = realpathSync(await mkdtemp(join(tmpdir(), "scriptc-resolve-project-types-")));
+  for (const [name, text] of Object.entries(files)) {
+    const path = join(dir, name);
+    await mkdir(join(path, ".."), { recursive: true });
+    await writeFile(path, text);
+  }
+  return dir;
+}
+
+const EXPORTS_ONLY_CLI = JSON.stringify({
+  name: "shapes-kit",
+  version: "1.0.0",
+  type: "module",
+  exports: { "./cli": { types: "./dist/cli.d.mts", default: "./dist/cli.mjs" } },
+});
+
+test("a node10 project reads a file the exports map does not list, for types only", async () => {
+  const dir = await projectTree({
+    "node_modules/shapes-kit/package.json": EXPORTS_ONLY_CLI,
+    "node_modules/shapes-kit/dist/cli.d.mts": "export declare const commands: string[];\n",
+    "node_modules/shapes-kit/dist/cli.mjs": "export const commands = [];\n",
+    "types/shapes-kit.d.ts": "",
+  });
+  try {
+    clearResolveCaches();
+    const shim = join(dir, "types/shapes-kit.d.ts");
+    const main = join(dir, "main.ts");
+    const declaration = join(dir, "node_modules/shapes-kit/dist/cli.d.mts");
+    const node10 = { typeRoots: [], byPath: true };
+    const bundler = { typeRoots: [], byPath: false };
+    // In the project's declaration file, and in an import Node erases.
+    expect(resolveTypesAsProject(shim, "shapes-kit/dist/cli.mjs", node10, true)).toBe(declaration);
+    expect(resolveTypesAsProject(main, "shapes-kit/dist/cli.mjs", node10, true)).toBe(declaration);
+    // An import Node resolves at run time, where the map refuses it, stays
+    // unresolved: preflight reports Node's refusal.
+    expect(resolveTypesAsProject(main, "shapes-kit/dist/cli.mjs", node10, false)).toBeNull();
+    // A project that resolves as a bundler does reads the map, as its tsc.
+    expect(resolveTypesAsProject(shim, "shapes-kit/dist/cli.mjs", bundler, true)).toBeNull();
+    // What the map lists resolves without help, and nothing is added.
+    expect(resolveTypesAsProject(main, "shapes-kit/cli", node10, false)).toBeNull();
+    // Relative, package-internal, URL-like and missing specifiers.
+    expect(resolveTypesAsProject(main, "./dist/cli.mjs", node10, true)).toBeNull();
+    expect(resolveTypesAsProject(main, "#cli", node10, true)).toBeNull();
+    expect(resolveTypesAsProject(main, "node:fs", node10, true)).toBeNull();
+    expect(resolveTypesAsProject(shim, "ghost-kit/dist/cli.mjs", node10, true)).toBeNull();
+  } finally {
+    clearResolveCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a node10 project finds declarations by path where the exports map names none", async () => {
+  const dir = await projectTree({
+    "node_modules/rule-kit/package.json": JSON.stringify({
+      name: "rule-kit",
+      version: "1.2.0",
+      type: "module",
+      exports: { "./cli": "./dist/cli.mjs" },
+    }),
+    "node_modules/rule-kit/dist/cli.mjs": "export function rule() {}\n",
+    "node_modules/rule-kit/cli.d.ts": "export declare function rule(): void;\n",
+  });
+  try {
+    clearResolveCaches();
+    const main = join(dir, "main.ts");
+    // Node loads the file the map names, so the import is not a refusal;
+    // its declarations are where a lookup by path finds them.
+    expect(resolveTypesAsProject(main, "rule-kit/cli", { typeRoots: [], byPath: true }, false)).toBe(
+      join(dir, "node_modules/rule-kit/cli.d.ts"),
+    );
+    expect(
+      resolveTypesAsProject(main, "rule-kit/cli", { typeRoots: [], byPath: false }, false),
+    ).toBeNull();
+  } finally {
+    clearResolveCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a module without declarations in node_modules is found under a type root", async () => {
+  const dir = await projectTree({
+    "node_modules/tiny-lines/package.json": '{ "name": "tiny-lines", "version": "0.1.1", "main": "index.js" }',
+    "node_modules/tiny-lines/index.js": "exports.parse = () => [];\n",
+    "node_modules/typed-kit/package.json":
+      '{ "name": "typed-kit", "version": "1.0.0", "main": "index.js", "types": "index.d.ts" }',
+    "node_modules/typed-kit/index.js": "exports.one = 1;\n",
+    "node_modules/typed-kit/index.d.ts": "export declare const one: number;\n",
+    "typings/tiny-lines/index.d.ts": 'declare module "tiny-lines";\n',
+    "typings/typed-kit/index.d.ts": 'declare module "typed-kit";\n',
+    "typings/count-kit.d.ts": "export declare function count(): number;\n",
+    "typings/field-kit/package.json": '{ "types": "lib/main.d.ts" }',
+    "typings/field-kit/lib/main.d.ts": "export {};\n",
+    "typings/field-kit/index.d.ts": "export {};\n",
+    "typings/empty-kit/readme.txt": "",
+  });
+  try {
+    clearResolveCaches();
+    const main = join(dir, "main.ts");
+    const typeRoots = [join(dir, "missing-root"), join(dir, "typings")];
+    const project = { typeRoots, byPath: false };
+    // A file, a package directory's `types` file, a directory's index.
+    expect(resolveInTypeRoots(typeRoots, "count-kit")).toBe(join(dir, "typings/count-kit.d.ts"));
+    expect(resolveInTypeRoots(typeRoots, "field-kit")).toBe(
+      join(dir, "typings/field-kit/lib/main.d.ts"),
+    );
+    expect(resolveInTypeRoots(typeRoots, "tiny-lines")).toBe(
+      join(dir, "typings/tiny-lines/index.d.ts"),
+    );
+    expect(resolveInTypeRoots(typeRoots, "empty-kit")).toBeNull();
+    expect(resolveInTypeRoots(typeRoots, "ghost-kit")).toBeNull();
+    expect(resolveInTypeRoots([], "count-kit")).toBeNull();
+    // The package's JavaScript loads at run time; its declarations are the
+    // type root's, before the JavaScript, as tsc orders them.
+    expect(resolveTypesAsProject(main, "tiny-lines", project, false)).toBe(
+      join(dir, "typings/tiny-lines/index.d.ts"),
+    );
+    // A package with declarations of its own keeps them.
+    expect(resolveTypesAsProject(main, "typed-kit", project, false)).toBeNull();
+    // A module nothing installed provides: only where Node never loads it.
+    expect(resolveTypesAsProject(main, "count-kit", project, false)).toBeNull();
+    expect(resolveTypesAsProject(main, "count-kit", project, true)).toBe(
+      join(dir, "typings/count-kit.d.ts"),
+    );
+    expect(resolveTypesAsProject(main, "tiny-lines", { typeRoots: [], byPath: false }, false)).toBeNull();
+  } finally {
     clearResolveCaches();
     await rm(dir, { recursive: true, force: true });
   }

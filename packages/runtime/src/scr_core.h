@@ -362,6 +362,11 @@ void scr_context_env_assign(ScrContextEnv *environment, const char *name, const 
 void scr_context_env_enter(ScrContextEnv *environment);
 bool scr_context_env_set(const char *name, const char *value);
 const char *scr_context_getenv(const char *name);
+/* The process environment, for the writers and walkers that reach it
+ * directly (a thread with no environment of its own): a write or a walk holds
+ * the lock across the environ access. */
+void scr_context_env_process_lock(void);
+void scr_context_env_process_unlock(void);
 struct ScrArr *scr_context_env_pairs(void);
 #define scr_atexit(fn) scr_context_atexit(fn)
 #else

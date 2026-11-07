@@ -38,6 +38,22 @@ if (isMainThread) {
         process.env.MID_ONLY === undefined,
         process.env.CHILD_NEW === undefined,
       );
+      // Both threads write and read the one shared environment at the same
+      // time: this loop runs while the worker loops.
+      const racer = new Worker(new URL(import.meta.url), { workerData: "race", env: SHARE_ENV });
+      let spin = 0;
+      while (process.env.RACE_WORK === undefined && spin < 50000) {
+        process.env.RACE_MAIN = `w${spin}`;
+        Object.keys(process.env);
+        spin += 1;
+      }
+      for (let i = 0; i < 4000; i++) {
+        process.env.RACE_MAIN = `m${i}`;
+        Object.keys(process.env);
+      }
+      process.env.RACE_DONE = "1";
+      console.log("race main sees:", process.env.RACE_WORK !== undefined);
+      racer.on("exit", (code3: number) => console.log("race exit:", code3));
     });
   });
 } else if (workerData === "nested") {
@@ -62,6 +78,17 @@ if (isMainThread) {
   process.env.MID_ONLY = "set-by-child";
   process.env.CHILD_NEW = "child-new";
   parentPort!.postMessage(["before:", before, "before absent:", beforeAbsent, "after:", process.env.MID_ONLY]);
+} else if (workerData === "race") {
+  // Every entry of the list is read and replaced while the other thread
+  // does the same.
+  for (let i = 0; i < 50000 && process.env.RACE_DONE === undefined; i++) {
+    process.env.RACE_WORK = `w${i}`;
+    const main = process.env.RACE_MAIN;
+    if (main !== undefined && !main.startsWith("m") && !main.startsWith("w")) {
+      throw new Error(`torn read ${main}`);
+    }
+    if (Object.keys(process.env).length < 2) throw new Error("lost entries");
+  }
 } else {
   console.log("worker sees:", process.env.BEFORE);
   process.env.FROM_WORKER = "worker-value";

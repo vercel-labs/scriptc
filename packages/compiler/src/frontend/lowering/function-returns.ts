@@ -106,7 +106,13 @@ export function appendImplicitUndefinedReturn(
 /** Whether the source explicitly documents a return contract. */
 export function hasExplicitJsDocReturn(decl: ts.SignatureDeclaration): boolean {
   const sourceFile = ts.getSourceFileOfNode(decl);
-  return /@returns?\b/.test(sourceFile.text.slice(decl.pos, ts.tokenStartOfNode(decl)));
+  return ts.sourceTextRangeMatches(
+    sourceFile,
+    decl.pos,
+    ts.tokenStartOfNode(decl),
+    /@returns?\b/,
+    ts.LEADING_SPAN,
+  );
 }
 
 export function promiseCarriesDyn(lowerer: Lowerer, type: IrType): boolean {

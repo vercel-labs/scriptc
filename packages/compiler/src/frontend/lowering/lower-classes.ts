@@ -7650,7 +7650,7 @@ function memberAssigned(lowerer: Lowerer, member: ts.MethodDeclaration, name: st
   let found = false;
   for (const sf of lowerer.program.getImplementationSourceFiles()) {
     if (found) continue;
-    if (!sf.text.includes(name)) continue;
+    if (!ts.sourceTextIncludes(sf, name)) continue;
     ts.walkPreorder(sf, (node) => {
       if (found) return "skip";
       if (ts.isPropertyAccessExpression(node) && node.name.text === name) {
@@ -8098,7 +8098,7 @@ function localSubclassesOf(lowerer: Lowerer, base: ts.Node): readonly ts.ClassLi
     index = new Map();
     const files = lowerer.moduleOrder.length > 0 ? lowerer.moduleOrder : [lowerer.entry];
     for (const sf of files) {
-      if (!sf.text.includes("extends")) continue;
+      if (!ts.sourceTextIncludes(sf, "extends")) continue;
       ts.walkPreorder(sf, (node) => {
         if (
           (ts.isClassDeclaration(node) || ts.isClassExpression(node)) &&
@@ -13068,7 +13068,7 @@ function definedThroughReflection(lowerer: Lowerer, decl: ts.ClassLikeDeclaratio
   const sf = ts.getSourceFileOfNode(decl);
   if (
     name === undefined ||
-    (!sf.text.includes("definePropert") && !sf.text.includes("deleteProperty"))
+    (!ts.sourceTextIncludes(sf, "definePropert") && !ts.sourceTextIncludes(sf, "deleteProperty"))
   )
     return false;
   const symbol = lowerer.checker.getSymbolAtLocation(name);

@@ -113,6 +113,8 @@ interface Run {
   frontend: Frontend;
   /** The npm-static list of every program load, in load order. */
   loaded: string[][];
+  /** How often each load's program was asked for its diagnostics. */
+  checked: number[];
 }
 
 function compile(
@@ -122,17 +124,29 @@ function compile(
   optIn: readonly string[] = ["outerpkg"],
 ): Run {
   const loaded: string[][] = [];
+  const checked: number[] = [];
   const loader: ProgramLoader = (path, options) => {
+    const index = loaded.length;
     loaded.push([...(options.npmStatic ?? [])]);
-    return loadProgramWithServices(path, shared, {
+    checked.push(0);
+    const load = loadProgramWithServices(path, shared, {
       npmStatic: options.npmStatic ?? [],
       externalTypes: options.externalTypes,
     });
+    // Every diagnostics request of the tsc gate starts with the program's
+    // own diagnostics.
+    const program = load.program;
+    const programDiagnostics = program.getProgramDiagnostics.bind(program);
+    program.getProgramDiagnostics = () => {
+      checked[index] = checked[index]! + 1;
+      return programDiagnostics();
+    };
+    return load;
   };
   const frontend = runFrontend(join(dir, "main.ts"), loader, "lib", undefined, optIn, {
     islandPackages,
   });
-  return { frontend, loaded };
+  return { frontend, loaded, checked };
 }
 
 function statuses(run: Run): string[] {
@@ -200,4 +214,31 @@ test("a build without a reload walks every rung once", () => {
   const only = compile(dir, shared, new Set());
   expect(only.loaded).toEqual([[], ["outerpkg"], ["outerpkg", "innerpkg"]]);
   only.frontend.dispose();
+});
+
+test("a scout that selects packages is walked for its order and never checked", () => {
+  const dir = fixture();
+  const shared = createNodeFrontendServices();
+  services.push(shared);
+  // The scout's program is replaced by the opted-in set's: nothing reads its
+  // diagnostics, so nothing asks the checker for them.
+  const selecting = compile(dir, shared, new Set());
+  expect(selecting.loaded[0]).toEqual([]);
+  expect(selecting.checked[0]).toBe(0);
+  expect(selecting.frontend.preflight).toEqual([]);
+  selecting.frontend.dispose();
+});
+
+test("a scout that selects nothing is the frontend's program, diagnostics included", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-npm-ladder-"));
+  scratch.push(dir);
+  writeFileSync(join(dir, "main.ts"), 'const n: number = "one";\nconsole.log(n);\n');
+  const shared = createNodeFrontendServices();
+  services.push(shared);
+  const plain = compile(dir, shared, new Set(), []);
+  // One load: the scout is retained, and its type error is reported.
+  expect(plain.loaded).toEqual([[]]);
+  expect(plain.checked[0]).toBeGreaterThan(0);
+  expect(plain.frontend.preflight.map((d) => d.code)).toEqual(["SC0001"]);
+  plain.frontend.dispose();
 });

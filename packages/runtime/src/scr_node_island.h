@@ -80,7 +80,9 @@ void scr_process_off_exit_island(uint32_t listener);
  * Island values the program holds are SCR_DYN_HANDLE boxes with tag
  * SCR_DYNH_NODE_ISLAND: one handle per V8 value, so `===` is identity.
  * Primitives, strings and BigInt are copies; island promises are scriptc
- * promises; typed arrays and Buffers are ScrBytes over the same memory.
+ * promises; typed arrays, Buffers, DataViews and ArrayBuffers are ScrBytes
+ * over the same memory, one per island object; island symbols are native
+ * symbols paired with them.
  * All arguments are borrowed; ScrDyn results are +1, NULL (or false, or
  * -1 for the int forms) with the exception pending. The first call loads
  * Node. See scriptc-perf/results/ni-4/ABI.md. */
@@ -160,6 +162,18 @@ typedef struct ScrNiDynOps {
    * NULL when `root` is not such a root. A signature adapter over a view of
    * an island function boxes as the function itself through this. */
   ScrDyn *(*function_of_identity)(const struct ScrClosure *root);
+  /* obj[key] = value for any property key (a symbol crosses as the symbol
+   * paired with it). */
+  bool (*set)(ScrDyn *obj, ScrDyn *key, ScrDyn *value);
+  /* Object.hasOwn, and propertyIsEnumerable when `enumerable` is set, by
+   * Node's intrinsics: the object's own methods of those names may be
+   * shadowed or absent and decide nothing.
+   *
+   * New entries go at the end. The runtime every program links reads the
+   * entries above by their offset (scr_dyn_call reads `call`, for one), so
+   * an entry added in the middle changes the bytes of programs that have
+   * no island at all. */
+  int (*has_own)(ScrDyn *obj, ScrDyn *key, int enumerable);
 } ScrNiDynOps;
 extern const ScrNiDynOps *scr_ni_dyn_ops;
 
@@ -188,6 +202,12 @@ size_t scr_ni_tree_repairs(void);
 void scr_ni_on_node_stack(void (*job)(void *), void *arg);
 void scr_ni_settle_value(uint32_t token, int rejected, const struct ScrNodeValue *value);
 void scr_ni_bytes_free(void *owner);
+/* One V8 value per byte view, ArrayBuffer storage and symbol (the bridge's
+ * `bound`, `bind` and `holds` host callbacks). */
+uint32_t scr_ni_host_bound(uint32_t kind, void *owner);
+void scr_ni_host_bind(uint32_t kind, void *owner, uint32_t handle, int store);
+int scr_ni_host_holds(uint32_t handle);
+void scr_ni_called_in(void); /* island code called a native function: its arguments are converted */
 void scr_ni_handles_install(void);
 void scr_ni_stop(void);
 
@@ -218,6 +238,7 @@ int scr_ni_host_export_set(uint32_t id, const struct ScrNodeValue *key,
 int scr_ni_host_export_has(uint32_t id, const struct ScrNodeValue *key);
 int scr_ni_host_export_delete(uint32_t id, const struct ScrNodeValue *key, struct ScrNodeValue *out);
 int scr_ni_host_export_keys(uint32_t id, struct ScrNodeValue *out);
+int scr_ni_host_export_symbol(uint32_t id, uint32_t index, struct ScrNodeValue *out);
 void scr_ni_host_export_watch(uint32_t id);
 void scr_ni_host_export_release(uint32_t id);
 /* ── shared modules (scope-B NI-6, scr_node_island_export.c) ── */

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/override-type-parameter-record-tail.ts"
+ ],
+ "diags": []
+}

@@ -661,7 +661,7 @@ export function paramShapes(
 
 /** A declared type that is (or is a union over) a bare type parameter
  * or an instantiation of a generic alias/interface over type arguments. */
-function mentionsTypeParameter(
+export function mentionsTypeParameter(
   lowerer: Lowerer,
   t: ts.Type,
   seen: Set<ts.Type> = new Set(),

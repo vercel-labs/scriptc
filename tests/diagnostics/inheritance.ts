@@ -58,10 +58,10 @@ class Bivariant extends Animal {
 }
 
 // An override may add TRAILING optional or defaulted parameters (corpus
-// 8540): the inherited slot keeps the base arity and fills the omitted
-// values. A call that supplies one of the extras still needs the override's
-// own body, which a virtual slot cannot carry — a subclass below makes this
-// receiver virtual, so the surplus argument fences instead of vanishing.
+// 8540): the family's virtual slot carries those extra slots, so a call on
+// the override's own type that supplies one of them reaches the override's
+// body and its defaults even when a subclass below makes this receiver
+// virtual.
 class TrailingOption extends Animal {
   feed(other: Animal, note: string = "n"): string {
     return other.name + note;

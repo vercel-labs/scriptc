@@ -56,7 +56,7 @@
   "corpus/7037-js-var-open-writes": {
     "island:scalar-marks": {
       "category": "exit",
-      "signature": "exit 1, Node 0: Uncaught TypeError: expected object at $, got Object"
+      "signature": "exit 1, Node 0: Uncaught TypeError: expected object at $, got Object from a Node island (an island object stays an island value: declare the island's type or 'unknown' for it, "
     }
   },
   "corpus/7132-jose-pbes2": {
@@ -174,7 +174,7 @@
   "npm/any-chaining": {
     "island:mediakit": {
       "category": "exit",
-      "signature": "exit 1, Node 0: Uncaught TypeError: expected object | undefined at $, got Object"
+      "signature": "exit 1, Node 0: TypeError: scriptc: this native object cannot cross into a Node island yet (scope-B NI-5 exports native values by reference)"
     }
   },
   "npm/chalk5": {
@@ -220,12 +220,6 @@
       "signature": "SC2004,SC2013"
     }
   },
-  "npm/decl-pass-through": {
-    "island:ref-marks": {
-      "category": "exit",
-      "signature": "exit 1, Node 0: Uncaught TypeError: expected object at $, got Object"
-    }
-  },
   "npm/dual-entry": {
     "island:dual": {
       "category": "exit",
@@ -249,7 +243,7 @@
     },
     "island:zod": {
       "category": "exit",
-      "signature": "exit 1, Node 0: [TypeError: expected object at $, got Object]"
+      "signature": "exit 1, Node 0: [TypeError: expected object at $, got Object from a Node island (an island object stays an island value: declare the island's type or 'unknown' for it, or copy "
     }
   },
   "npm/hono-zod-validator": {
@@ -304,8 +298,8 @@
   },
   "npm/island-json-stringify": {
     "island:arrpack": {
-      "category": "exit",
-      "signature": "exit 1, Node 0: Uncaught Error: JSON.stringify of a runtime handle is not supported yet"
+      "category": "build",
+      "signature": "SC8010"
     }
   },
   "npm/js-own-tostring": {
@@ -390,7 +384,7 @@
   "npm/typed-callbacks": {
     "island:typedcb": {
       "category": "exit",
-      "signature": "exit 1, Node 0: TypeError: expected object at $[0], got Object"
+      "signature": "exit 1, Node 0: TypeError: expected object at $[0], got Object from a Node island (an island object stays an island value: declare the island's type or 'unknown' for it, or cop"
     }
   },
   "npm/types-boundary": {
@@ -443,8 +437,8 @@
   },
   "npm/zod3-adoption": {
     "island:zod": {
-      "category": "stdout",
-      "signature": "kept {\"id\":0,\"name\":\"n0\",\"tags\":[\"a\",\"b\"],\"meta\":{\"deep\":[1,2,{\"x\":0}]}} false"
+      "category": "build",
+      "signature": "SC8010"
     }
   },
   "npm/zod3-boundary": {
@@ -456,13 +450,13 @@
   "npm/zod3-infer": {
     "island:zod": {
       "category": "exit",
-      "signature": "exit 1, Node 0: Uncaught TypeError: expected string at $.name, got undefined"
+      "signature": "exit 1, Node 0: Uncaught TypeError: expected array at $.tags, got Object from a Node island (an island object stays an island value: declare the island's type or 'unknown' for "
     }
   },
   "npm/zod4-boundary": {
     "island:zod": {
       "category": "build",
-      "signature": "SC1090"
+      "signature": "SC1090,SC8010"
     }
   },
   "npm/zod4-record": {
@@ -493,7 +487,7 @@
   "packages/lodash": {
     "default": {
       "category": "exit",
-      "signature": "exit 1, Node 0: TypeError: expected array at $[0], got Object",
+      "signature": "exit 1, Node 0: TypeError: expected array at $[0], got Object from a Node island (an island object stays an island value: declare the island's type or 'unknown' for it, or copy",
       "autoIslands": [
         "lodash"
       ]
@@ -530,7 +524,7 @@
   "packages/yaml": {
     "default": {
       "category": "exit",
-      "signature": "exit 1, Node 0: Uncaught TypeError: expected object at $, got Object",
+      "signature": "exit 1, Node 0: Uncaught TypeError: expected object at $, got Object from a Node island (an island object stays an island value: declare the island's type or 'unknown' for it, ",
       "autoIslands": [
         "yaml"
       ]

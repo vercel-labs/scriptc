@@ -22,14 +22,19 @@
 //   build, any of which can leave the committed profile describing functions that no longer match. Compiler tests are
 //   not part of the compiler it builds, so they do not turn it on. The same job holds that build to the self-compile
 //   budget, so a change to the budget or to one of its scripts (the judge, the heap probe) turns it on too.
+// - islands: the Node island conformance lane (tests/harness/island-conformance.test.ts), which builds every package
+//   program again with each package forced into a Node island. On when the change touches the island decision
+//   (packages/compiler/src/node-islands), the boundary lowering, the island runtime units and their host scripts, the
+//   libnode bridge, or the lane itself and the programs and packages it runs (the npm suite's fixtures, the pinned
+//   packages, and a corpus program's own node_modules).
 // Every lane is on when the change touches CI configuration, the workspace manifests or lockfile, vitest
 // configuration, the shared test harness modules or this script, or when the diff cannot be computed. Pushes to main,
-// the nightly sweep and manual runs do not use this script: pushes to main run every lane except macos, and the others
-// run every lane.
+// the nightly sweep and manual runs do not use this script: pushes to main run every lane except macos and islands, and
+// the others run every lane.
 import { execFileSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
 
-const lanes = ["linux", "macos", "effects", "bootstrap", "profile"];
+const lanes = ["linux", "macos", "effects", "bootstrap", "profile", "islands"];
 
 const everything = [
   /^\.github\//,
@@ -83,6 +88,10 @@ const bootstrapPath =
 const profilePath =
   /^packages\/compiler\/(src|native)\/|^native\/|^packages\/llvm-[^/]+\/|^scripts\/(build-native-cli|self-compile-)/;
 
+// Where a Node island is decided, lowered, run and tested package by package.
+const islandPath =
+  /^packages\/compiler\/src\/node-islands\/|^packages\/compiler\/src\/frontend\/lowering\/[^/]*node-island|^packages\/runtime\/src\/scr_node_|^packages\/libnode-[^/]+\/|^tests\/harness\/(island-conformance|npm-suite\.ts|npm-cases\.ts|libnode\.ts)|^tests\/fixtures\/(island-conformance|npm|commander-calc)\/|^tests\/corpus\/[^/]+\/node_modules\//;
+
 function git(...args) {
   return execFileSync("git", args, { encoding: "utf8", maxBuffer: 1 << 28 });
 }
@@ -117,6 +126,10 @@ export function select(files, changedLines) {
     if (profilePath.test(file)) {
       if (!on.profile) reasons.push(`${file}: profile`);
       on.profile = true;
+    }
+    if (islandPath.test(file)) {
+      if (!on.islands) reasons.push(`${file}: islands`);
+      on.islands = true;
     }
   }
   const line = changedLines.find((l) => darwinLine.test(l.text));

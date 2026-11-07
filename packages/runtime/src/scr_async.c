@@ -7022,7 +7022,6 @@ static ScrGen *scr_gen_new_common(void (*entry)(ScrFiber *, void *), void *argpa
    * store the same value, relaxed. */
   __atomic_store_n(&scr_gen_tag_reader, scr_gen_tag, __ATOMIC_RELAXED);
   g->rc = 1;
-  g->receiver = scr_dyn_this_get();
   g->state = SCR_GEN_UNSTARTED;
   g->drop_args = drop_args;
   g->is_async = settle_async != NULL;
@@ -7133,7 +7132,8 @@ void scr_gen_release_v(void *g) { scr_gen_release((ScrGen *)g); }
 bool scr_gen_done(ScrGen *g) { return g->state == SCR_GEN_DONE; }
 ScrGen *scr_gen_of_fiber(ScrFiber *f) { return f->gen; }
 ScrDyn *scr_gen_receiver(void) {
-  return scr_dyn_retain(scr_current && scr_current->gen ? scr_current->gen->receiver : scr_dyn_undefined());
+  ScrDyn *receiver = scr_current && scr_current->gen ? scr_current->gen->receiver : NULL;
+  return scr_dyn_retain(receiver != NULL ? receiver : scr_dyn_undefined());
 }
 
 /* Slot setters (release the previous occupant; payloads MOVE in). */

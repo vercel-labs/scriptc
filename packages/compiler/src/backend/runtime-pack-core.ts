@@ -106,6 +106,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   reflectProtoTarget: boolean;
   recordSourceDelete: boolean;
   genBind: boolean;
+  genReceiver: boolean;
   eventsOnceSignal: boolean;
   mime: boolean;
   largePages: boolean;
@@ -370,6 +371,7 @@ export function effectiveRuntimeFeatures(
     reflectProtoTarget: features.reflectProtoTarget === true,
     recordSourceDelete: features.recordSourceDelete === true,
     genBind: features.genBind === true,
+    genReceiver: features.genReceiver === true,
     eventsOnceSignal: features.eventsOnceSignal === true,
     mime: features.mime === true,
     largePages: features.largePages === true,

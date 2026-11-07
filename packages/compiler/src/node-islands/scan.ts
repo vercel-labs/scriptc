@@ -199,7 +199,14 @@ function sloppyParsable(program: ts.Program, sf: ts.SourceFile): boolean {
 export function scanFiles(
   program: ts.Program,
   files: readonly ts.SourceFile[],
-  opts: { userJs: boolean; dropped: boolean; edges: boolean },
+  opts: {
+    userJs: boolean;
+    dropped: boolean;
+    edges: boolean;
+    /** Whether the policy marks a user module to run in a Node island
+     * (`--node-island=<path>`, `scriptc.nodeIslands.modules`). */
+    marked?: (file: string) => boolean;
+  },
 ): { modules: ScannedModule[]; edges: PackageEdge[] } {
   const modules: ScannedModule[] = [];
   const edges: PackageEdge[] = [];
@@ -215,6 +222,10 @@ export function scanFiles(
     // (H3.2): its other markers are JavaScript semantics, and sloppy
     // parsing is never required of TypeScript.
     const userTs = !js && origin === "user" && !sf.isDeclarationFile && opts.userJs;
+    // A TypeScript module the policy marks runs in Node with its types
+    // stripped, like one that islands for a builtin patch.
+    const markedTs =
+      !js && origin === "user" && !sf.isDeclarationFile && opts.marked?.(sf.fileName) === true;
     let facts: ReturnType<typeof scanModuleFacts> = { markers: [], cjsReads: [], globalReads: [] };
     if ((js && (origin === "npm" || opts.userJs)) || userTs) facts = scanModuleFacts(sf);
     let markers = userTs
@@ -233,7 +244,7 @@ export function scanFiles(
       // read of a member another island's patch changes (H3.4): both need
       // Node to run the file with type stripping only.
       stripProblem:
-        userTs && (markers.length > 0 || facts.cjsReads.length > 0)
+        (userTs && (markers.length > 0 || facts.cjsReads.length > 0)) || markedTs
           ? stripProblem(program, sf)
           : null,
       dropped: opts.dropped,

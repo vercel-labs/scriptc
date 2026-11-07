@@ -505,6 +505,9 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // ordering — the atexit half becomes an idempotent no-op).
   const usesEvents = runtimeFeatures.processEvents;
   const usesChildProcess = runtimeFeatures.childProcess;
+  // A program that can register an 'error' listener on a child installs
+  // the builder of a failed spawn's error object (runtime-features.ts).
+  const usesChildErrorEvent = runtimeFeatures.childErrorEvent;
   const usesFsWatch = runtimeFeatures.fsWatch;
   // fs.watchFile programs register the poller unit's exit cleanup — the
   // same one-line gating (native/executable.ts links scr_watch_file.c on
@@ -550,6 +553,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // Declared NOW — the extern block flushes before main assembles.
   if (usesEvents) emitter.declare(`declare void @scr_events_install()`);
   if (usesChildProcess) emitter.declare(`declare void @scr_child_dyn_install()`);
+  if (usesChildErrorEvent) emitter.declare(`declare void @scr_child_error_event_install()`);
   const childStreamBoxes =
     usesChildProcess &&
     usesStream &&
@@ -1325,6 +1329,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // this line is emitted (native/executable.ts gates on the same predicate).
     ...(usesEvents ? [`  call void @scr_events_install()`] : []),
     ...(usesChildProcess ? [`  call void @scr_child_dyn_install()`] : []),
+    ...(usesChildErrorEvent ? [`  call void @scr_child_error_event_install()`] : []),
     ...(childStreamBoxes
       ? [
           `  call void @scr_child_dyn_streams_install(ptr @scr_stream_child_ops, ptr @${childStreamBoxes[0]}, ptr @${childStreamBoxes[1]})`,

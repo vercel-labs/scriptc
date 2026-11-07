@@ -1590,6 +1590,14 @@ function unexportedNative(lowerer: Lowerer, type: ts.Type): ts.Type | null {
     }
     return null;
   }
+  // A refined handle (`ServerResponse & { req: IncomingMessage }`,
+  // `ChildProcess & { label: string }`) is the native object of its handle
+  // part, so it has that part's missing export.
+  if (type.isIntersectionType()) {
+    for (const part of ts.constituentTypes(type))
+      if (unexportedNative(lowerer, part) !== null) return type;
+    return null;
+  }
   if ((type.flags & ts.TypeFlags.Object) === 0) return null;
   if (lowerer.weakCollectionNamesOf(type) !== null) return type;
   const handle = DYN_HANDLE_KINDS.get(lowerer.mapTypeOf(type)?.kind ?? "");

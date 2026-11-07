@@ -136,8 +136,10 @@ static ScrDyn *nis_call(ScrClosure *cb, ScrDyn *const *args, size_t argc) {
   return result;
 }
 
-/* At exit the helper is the unit's own reference, not the program's. */
-static void nis_cleanup(void) {
+/* At exit the helper is the unit's own reference, not the program's. The
+ * exit sequence releases it after the 'exit' listeners, whose writes still
+ * call island functions with the island's stream as `this`. */
+void scr_ni_stdio_stop(void) {
   scr_dyn_release(nis_invoke);
   nis_invoke = NULL;
 }
@@ -157,11 +159,11 @@ void scr_ni_stdio_started(void) {
   /* The accessor's closures hold the three natives from here on. */
   for (int i = 0; i < 3; i++) scr_dyn_release(natives[i]);
   scr_dyn_release(helpers);
-  scr_atexit(nis_cleanup);
 }
 
 #else
 
 void scr_ni_stdio_started(void) {}
+void scr_ni_stdio_stop(void) {}
 
 #endif /* !_WIN32 && !__wasi__ */

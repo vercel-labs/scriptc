@@ -263,6 +263,10 @@ extern void (*scr_ni_started_hook)(void);
  * stream as a value. It makes `write` on the island's process.stdout and
  * process.stderr an accessor over the program's write slots. */
 void scr_ni_stdio_started(void);
+/* Releases the helper scr_ni_stdio_started took. Called by the same build
+ * at process end after both sides' 'exit' listeners ran, while Node can
+ * still release it. */
+void scr_ni_stdio_stop(void);
 
 /* Island operations the compiler emits (lib-shared.ts adapters). */
 ScrDyn *scr_node_island_apply(ScrDyn *fn, ScrDyn *args);

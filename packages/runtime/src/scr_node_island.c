@@ -1282,6 +1282,10 @@ static void ni_stop_job(void *p) {
  * the events unit's own, which then finds them done), then Node stops. */
 static void ni_stop_atexit(void) {
   scr_run_exit_listeners((double)scr_exit_code_hint_get());
+#ifdef SCR_NODE_ISLAND_STDIO
+  /* The shared output streams' helper, after the listeners' writes. */
+  scr_ni_stdio_stop();
+#endif
   /* SCRIPTC_NODE_ISLANDS_TRACE=handles: the import table at exit (leak
    * tests: acyclic island objects the program dropped are released). */
   const char *trace = getenv("SCRIPTC_NODE_ISLANDS_TRACE");

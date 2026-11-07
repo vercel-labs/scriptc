@@ -34,6 +34,7 @@ import {
   type BuiltinValueParam,
 } from "./surfaces.js";
 import { CRYPTO_CONSTANTS } from "./crypto-tables.js";
+import { isDynIteratorValue } from "./iterator-prototype.js";
 
 const PROTOTYPE_METHODS: Record<string, readonly string[]> = {
   Date: ["getTime", "valueOf", "toISOString", "toJSON"],
@@ -56,10 +57,56 @@ const PROTOTYPE_METHODS: Record<string, readonly string[]> = {
     "replace",
     "toString",
     "valueOf",
+    "trim",
+    "trimStart",
+    "trimEnd",
+    "trimLeft",
+    "trimRight",
   ],
   Number: ["toString", "valueOf"],
   Object: ["hasOwnProperty", "propertyIsEnumerable", "toString", "valueOf"],
+  // Only the callable members: the flag getters and `source` read as values
+  // are data reads, and the RegExp.prototype object itself has no value yet.
+  RegExp: ["exec", "test", "toString"],
 };
+
+/** The canonical name of a string trim method read as a value, or null for
+ * every other member. Annex B's trimLeft/trimRight are the same function
+ * object as trimStart/trimEnd (B.2.3.14-15), so both spellings read the
+ * standard one. */
+export function stringTrimMethodName(name: string): string | null {
+  switch (name) {
+    case "trim":
+    case "trimStart":
+    case "trimEnd":
+      return name;
+    case "trimLeft":
+      return "trimStart";
+    case "trimRight":
+      return "trimEnd";
+    default:
+      return null;
+  }
+}
+
+/** A builtin prototype method as a function value: one interned function
+ * per (prototype, member) in scr_dyn_builtin_methods.c, so
+ * `String.prototype.trim`, `''.trim` and `s.trim` are the same object (and
+ * likewise `RegExp.prototype.exec`, `/a/.exec` and `re.exec`), and
+ * Function.prototype's call/apply run it on any receiver the way the
+ * specification defines the method. */
+export function builtinMethodValue(owner: string, member: string, loc: SrcLoc): IrExpr {
+  return {
+    kind: "libCall",
+    fn: "dyn.builtinMethodValue",
+    args: [
+      { kind: "strLit", value: owner, type: STRING, loc },
+      { kind: "strLit", value: member, type: STRING, loc },
+    ],
+    type: DYN,
+    loc,
+  };
+}
 
 export function builtinPrototypeMethod(
   lowerer: Lowerer,
@@ -107,11 +154,34 @@ export function isNativeBuiltinValueInitializer(
   if (global && !["undefined", "Infinity", "NaN"].includes(global)) return true;
   if (lowerer.isStdlibGlobal(expr, "console")) return true;
   if (ts.isNewExpression(expr) && lowerer.isStdlibGlobal(expr.expression, "Date")) return true;
+  if (isDynIteratorValue(lowerer, expr)) return true;
   if (ts.isConditionalExpression(expr)) {
     return (
       isNativeBuiltinValueInitializer(lowerer, expr.whenTrue, new Set(seen)) ||
       isNativeBuiltinValueInitializer(lowerer, expr.whenFalse, new Set(seen))
     );
+  }
+  // A capability probe picks the builtin value or a fallback
+  // (`Object.defineProperty || false`): whichever operand supplies it,
+  // the stored value is that checked native callable. A bare standard
+  // global is not a probe the same way — `x ?? Object` keeps the global's
+  // class or namespace value, and the checked representation would carry
+  // that class value through an untyped path a class heritage cannot take.
+  if (ts.isBinaryExpression(expr)) {
+    const op = expr.operatorToken.kind;
+    const probesBuiltin = (operand: ts.Expression): boolean => {
+      let value = operand;
+      while (ts.isParenthesizedExpression(value)) value = value.expression;
+      if (ts.isIdentifier(value) && stdlibGlobalNameOf(lowerer, value) !== null) return false;
+      return isNativeBuiltinValueInitializer(lowerer, value, new Set(seen));
+    };
+    if (
+      (op === ts.SyntaxKind.BarBarToken ||
+        op === ts.SyntaxKind.QuestionQuestionToken ||
+        op === ts.SyntaxKind.AmpersandAmpersandToken) &&
+      (probesBuiltin(expr.left) || probesBuiltin(expr.right))
+    )
+      return true;
   }
   if (ts.isPropertyAccessExpression(expr)) {
     return (

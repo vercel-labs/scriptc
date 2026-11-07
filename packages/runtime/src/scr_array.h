@@ -382,7 +382,7 @@ static inline void scr_arr_need_states(ScrArr *a) {
 }
 /* A CREF slot's pointer, and the slot of a pointer (NULL or a compact
  * instance below 32 GiB). */
-static inline uint64_t scr_cref_decode(uint32_t ref) { return (uint64_t)ref << 3; }
+static inline uint64_t scr_cref_decode(uint32_t ref) { return scr_compact_ref_address(ref); }
 static inline uint32_t scr_cref_encode(uint64_t slot) { return (uint32_t)(slot >> 3); }
 
 /* The bits of `d` as a slot, and back. */
@@ -504,6 +504,12 @@ ScrArr *scr_arr_new_ops_small_r(const ScrArrOps *ops);
  * the array's own block (one allocation). With `states`, the array starts
  * with states (for holes or present undefined). Returns +1. */
 ScrArr *scr_arr_new_inline(ScrElemKind elem, size_t cap, bool states);
+/* The heap header of the immortal array `image` (a header in the
+ * executable's image, such as a tagged template's strings), made once and
+ * kept in *slot: 32-bit references in class fields reach only the
+ * allocator's window, and the image lies outside it. The copy shares the
+ * image's slots, and every thread may read it. */
+ScrArr *scr_arr_window_header(const ScrArr *image, ScrArr **slot);
 
 static inline ScrArr *scr_arr_retain(ScrArr *a) {
   if (a->rc != SIZE_MAX) {

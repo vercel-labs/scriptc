@@ -136,6 +136,7 @@ export const DYN_HANDLE_TAG_NUM: Record<string, number> = {
   child: 16,
   fileHandle: 17,
   dir: 44,
+  spawnRes: 99,
   dgramSocket: 62,
   cryptoHash: 52,
   cryptoHmac: 53,
@@ -161,6 +162,7 @@ const DYN_HANDLE_BOX_FN: Record<string, string> = {
   cryptoHash: "scr_crypto_hash_to_dyn",
   cryptoHmac: "scr_crypto_hash_to_dyn",
   dgramSocket: "scr_dgram_to_dyn",
+  spawnRes: "scr_spawn_res_to_dyn",
 };
 
 /** Handle kinds whose box holds a unit-owned wrapper rather than the
@@ -222,11 +224,17 @@ export interface DynHost extends WalkerHost {
   readonly programLifetime?: ReadonlySet<string>;
   /** The immortal ABSENT field-slot state of an undefined-armed union. */
   absentInstanceRef(unionId: string): string;
+  /** The optional checked-dynamic field slot's ABSENT marker. */
+  dynAbsentRef(): string;
   /** The shared adapter record: live array capsules read its `arrayOps`, so a
    * narrower return type would hand the native compiler a copy without it. */
   liveDynRefAdapter(t: IrType): LlStreamTypedRefAdapter;
   /** See moduleUsesDynBuiltinStream. */
   usesDynBuiltinStream?(): boolean;
+  /** The JavaScript object model build is on: an array it holds may keep
+   * elements past its dense prefix, so the keyed read answers `length`
+   * from the array's own length rather than the prefix field. */
+  jsObjectModel?(): boolean;
   liveDynUnionRefAdapter(t: IrType & { kind: "union" }): string;
   /** The module has declaration-typed boundary casts (IrModule.declBoundary). */
   declBoundary?(): boolean;
@@ -873,6 +881,21 @@ export class LlDyn {
     return n;
   }
 
+  /** The object model build's v.arr.length, one field past region (see the
+   * arr payload's comment): the dense prefix unless a far write or a length
+   * assignment moved it. Its offset follows the payload's: 64-bit pointers
+   * put region at +64 and the length at +72, wasm32's 4-byte ones at +48 and
+   * +56 of the payload, +44 absolute. */
+  private arrLengthOf(B: BlockBuilder, d: string): string {
+    const p = B.tmp();
+    const n = B.tmp();
+    B.line(
+      `${p} = getelementptr inbounds i8, ptr ${d}, i64 ${this.abiOffset(72, 44)} ; ->v.arr.length`,
+    );
+    B.line(`${n} = load ${this.S}, ptr ${p}`);
+    return n;
+  }
+
   /** Loads v.arr.items / v.obj.entries after two size_t fields. */
   private itemsOf(B: BlockBuilder, d: string): string {
     const p = B.tmp();
@@ -970,6 +993,66 @@ export class LlDyn {
     B.condBr(absent, lSkip, lSet);
     B.startBlock(lSet);
     return lSkip;
+  }
+
+  /** Branches past the caller's next emission when an optional
+   * checked-dynamic field value is the ABSENT marker. Returns the label
+   * the caller must branch to and start after its emission, or null when
+   * the field is not an absentable dyn slot. */
+  private skipIfDynAbsent(
+    B: BlockBuilder,
+    value: string,
+    optional: boolean | undefined,
+    t: IrType,
+  ): string | null {
+    if (optional !== true || t.kind !== "dyn") return null;
+    const absent = B.tmp();
+    B.line(`${absent} = icmp eq ptr ${value}, ${this.host.dynAbsentRef()}`);
+    const lSkip = B.newLabel("tdr.absent");
+    const lSet = B.newLabel("tdr.set");
+    B.condBr(absent, lSkip, lSet);
+    B.startBlock(lSet);
+    return lSkip;
+  }
+
+  /** A checked dyn field value, or the field's ABSENT marker when the
+   * source object has no own property of that name (a missing JSON key
+   * stays missing; an explicit undefined stays present). Proxy sources
+   * answer through their reads, so they count as present. The checked value
+   * arrives +1: the missing branch hands it back (the immortal marker takes
+   * its slot), the present branch leaves it to the field write. */
+  private dynPresenceOf(B: BlockBuilder, d: string, key: string, value: string): string {
+    // Only an undefined value can stand for a missing key: every other
+    // value is present, and probing for it would read as absent for an
+    // own accessor property (a getter has no data entry).
+    const isUndef = B.tmp();
+    B.line(`${isUndef} = icmp eq i32 ${this.kindOf(B, value)}, ${DYN_KIND.UNDEF}`);
+    const kind = this.kindOf(B, d);
+    const isObj = B.tmp();
+    B.line(`${isObj} = icmp eq i32 ${kind}, ${DYN_KIND.OBJ}`);
+    const probe = B.tmp();
+    B.line(`${probe} = and i1 ${isUndef}, ${isObj}`);
+    const slot = B.slot();
+    B.entryAllocas.push(`${slot} = alloca ptr`);
+    B.line(`store ptr ${value}, ptr ${slot}`);
+    const lProbe = B.newLabel("dcr.dhas");
+    const lJoin = B.newLabel("dcr.dhasj");
+    B.condBr(probe, lProbe, lJoin);
+    B.startBlock(lProbe);
+    const own = this.objGetLit(B, d, key);
+    const missing = B.tmp();
+    B.line(`${missing} = icmp eq ptr ${own}, null`);
+    const lMissing = B.newLabel("dcr.dmiss");
+    B.condBr(missing, lMissing, lJoin);
+    B.startBlock(lMissing);
+    this.host.declare(`declare void @scr_dyn_release(ptr)`);
+    B.line(`call void @scr_dyn_release(ptr ${value})`);
+    B.line(`store ptr ${this.host.dynAbsentRef()}, ptr ${slot}`);
+    B.br(lJoin);
+    B.startBlock(lJoin);
+    const out = B.tmp();
+    B.line(`${out} = load ptr, ptr ${slot}`);
+    return out;
   }
 
   /** A checked undefined-armed field value, or the field's ABSENT state
@@ -1233,10 +1316,13 @@ export class LlDyn {
           `${offsetTable} = internal constant [${offsets.length} x ${S}] [${offsets.join(", ")}]`,
         );
         const key = typeKey({ kind: "record", shapeId: sourceId });
-        return `{ ptr, ${S}, ptr } { ptr ${host.cstr(key)}, ${S} ${Buffer.byteLength(key, "utf8")}, ptr ${offsetTable} }`;
+        // The source's declared names describe the record a partial view's
+        // writes add properties to (scr_record_view_extra).
+        const names = this.recordNameTable(sourceId, source);
+        return `{ ptr, ${S}, ptr, ptr, ptr, ${S}, ${S}, ${S} } { ptr ${host.cstr(key)}, ${S} ${Buffer.byteLength(key, "utf8")}, ptr ${offsetTable}, ptr ${names.names}, ptr ${names.lens}, ${S} ${S === "i64" ? 8 : 4}, ${S} ${S === "i64" ? 8 : 4}, ${S} ${source.fields.length} }`;
       });
       this.defs.push(
-        `${table} = internal constant [${entries.length} x { ptr, ${S}, ptr }] [${entries.join(", ")}]`,
+        `${table} = internal constant [${entries.length} x { ptr, ${S}, ptr, ptr, ptr, ${S}, ${S}, ${S} }] [${entries.join(", ")}]`,
         ``,
       );
     }
@@ -2850,6 +2936,10 @@ export class LlDyn {
           if (f.type.kind === "union") {
             const stored = this.presenceOf(B, "%d", f.name, f.type, value);
             if (stored !== value) storeInto(f.name, f.type, stored);
+          } else if (f.optional === true && f.type.kind === "dyn") {
+            // A missing key stores the ABSENT marker; a present undefined
+            // keeps the dyn undefined the read produced.
+            storeInto(f.name, f.type, this.dynPresenceOf(B, "%d", f.name, value));
           }
           releaseInline(f.type, value);
         }
@@ -3729,7 +3819,7 @@ export class LlDyn {
                   return slot === null ? [] : [slot.prop];
                 }),
           );
-          type DynField = { name: string; type: IrType } | { accessor: string };
+          type DynField = { name: string; type: IrType; optional?: true } | { accessor: string };
           const dynFields: DynField[] = [
             ...order.flatMap((n) => {
               if (accessors.has(n)) return [{ accessor: n } as DynField];
@@ -3769,7 +3859,10 @@ export class LlDyn {
             const klen = Buffer.byteLength(f.name, "utf8");
             const fv = loadFieldOf(f.name, f.type);
             // An ABSENT optional field contributes no key.
-            const lSkip = f.type.kind === "union" ? this.skipIfAbsent(B, fv, f.type) : null;
+            const lSkip =
+              f.type.kind === "union"
+                ? this.skipIfAbsent(B, fv, f.type)
+                : this.skipIfDynAbsent(B, fv, f.optional, f.type);
             const conv = B.tmp();
             B.line(`${conv} = call ptr @${this.toDynHelper(f.type)}(${this.valTy(f.type)} ${fv})`);
             B.line(
@@ -5014,7 +5107,12 @@ export class LlDyn {
         const lStr = B.newLabel("kg.asr");
         B.condBr(isA, lArr, lStr);
         B.startBlock(lArr);
-        const n = this.lenOf(B, "%d");
+        // The object model build keeps elements past the dense prefix in the
+        // array's own property table, so the prefix field is no longer the
+        // length. Every other program loads that field, byte for byte as
+        // before: the load comes first so the temps it takes keep their
+        // numbering.
+        const n = host.jsObjectModel?.() ? this.arrLengthOf(B, "%d") : this.lenOf(B, "%d");
         const nd = B.tmp();
         const r = B.tmp();
         B.line(`${nd} = ${sizeToDouble(host.sizeType)} ${host.sizeType} ${n} to double`);
@@ -5215,7 +5313,14 @@ export class LlDyn {
     const okB = B.tmp();
     const ok01 = B.tmp();
     const ok = B.tmp();
-    B.line(`${okA} = icmp eq i32 ${kd}, ${DYN_KIND.ARR}`);
+    if (host.jsObjectModel?.()) {
+      // An array may keep elements past its dense prefix; the runtime's
+      // array iterator reads those through the property table, so arrays
+      // take it instead of this helper's item walk.
+      B.line(`${okA} = icmp eq i32 0, 1 ; arrays iterate through the runtime`);
+    } else {
+      B.line(`${okA} = icmp eq i32 ${kd}, ${DYN_KIND.ARR}`);
+    }
     B.line(`${okS} = icmp eq i32 ${kd}, ${DYN_KIND.STR}`);
     B.line(`${okB} = icmp eq i32 ${kd}, ${DYN_KIND.BYTES}`);
     B.line(`${ok01} = or i1 ${okA}, ${okS}`);
@@ -5384,8 +5489,10 @@ export class LlDyn {
    * BORROWED in every arm. Emits into the given builder. */
   /** A live capsule of a record or array value (+1; the value is
    * borrowed), as `dynFrom` with `liveRef` builds it; null for other
-   * types. Closures boxed in a declaration-typed boundary program return
-   * their records and arrays this way. A TextEncoder, TextDecoder or
+   * types. Every typed value crossing into the dynamic tier this way keeps
+   * its identity — a boxed closure's result and a settled promise payload
+   * included, so `f()`/`await p` hand out the object the producer holds,
+   * as Node does, not a snapshot. A TextEncoder, TextDecoder or
    * StringDecoder record is null too: it boxes as its own handle, which
    * holds the record by reference (toDynHelper). */
   private liveToDyn(B: BlockBuilder, t: IrType, expr: string): string | null {
@@ -5408,6 +5515,16 @@ export class LlDyn {
     );
     for (const line of bindLiveArrayOps(host, adapter, boxed)) B.line(line);
     return boxed;
+  }
+
+  /** A static value handed OUT by a container read (a record field a runtime
+   * key selects) as a checked-dynamic value (+1; the value is BORROWED): a
+   * record, an array or a union holding one boxes as a LIVE capsule of the
+   * value itself, the way `dynFrom` with `liveRef` boxes it, so a write
+   * through the result reaches the field; every other type converts by
+   * value. Reading a keyed field is one object either way in JavaScript. */
+  liveReadToDyn(B: BlockBuilder, t: IrType, expr: string): string {
+    return this.liveToDyn(B, t, expr) ?? this.toDynExpr(B, t, expr);
   }
 
   private toDynExpr(B: BlockBuilder, t: IrType, expr: string): string {
@@ -5592,10 +5709,12 @@ export class LlDyn {
       const r = B.tmp();
       B.line(`${r} = call ${retTy} ${fn}(${callArgs})`);
       this.pendingBail(B, "dfkr", () => {}, "ptr null");
-      const out =
-        this.host.declBoundary?.() === true
-          ? (this.liveToDyn(B, t.ret, r) ?? this.toDynExpr(B, t.ret, r))
-          : this.toDynExpr(B, t.ret, r);
+      // A record or array result crosses the way `dynFrom liveRef` boxes
+      // one — a LIVE capsule of the closure's own object — so the caller's
+      // `() => shared` through an untyped slot still answers `shared`
+      // (`(r as Row) === shared`), as Node does. Everything else keeps the
+      // to-dyn spelling (handles box by reference there already).
+      const out = this.liveToDyn(B, t.ret, r) ?? this.toDynExpr(B, t.ret, r);
       if (isRefCounted(t.ret)) B.line(`call void ${releaseSym(host, t.ret)}(ptr ${r})`);
       B.terminate(`ret ptr ${out}`);
     }
@@ -6186,6 +6305,11 @@ export class LlDyn {
     let argsPtr = "null";
     const argVals: string[] = [];
     const checkedRest = t.rest === true && t.restAbi === undefined;
+    // Typed rest: one trailing native array in the closure ABI. The adapter
+    // packs the fixed arguments, then spreads the array's elements into the
+    // same dyn argument vector (each element converted), so the callee sees
+    // the ordinary variadic call.
+    const typedRest = t.rest === true && t.restAbi === "typed";
     let packed: string | null = null;
     if (checkedRest) {
       host.declare(`declare ptr @scr_dyn_apply(ptr, ptr, ptr)`);
@@ -6207,6 +6331,26 @@ export class LlDyn {
         );
         B.line(`call void @scr_dyn_release(ptr %rest)`);
       }
+    } else if (typedRest) {
+      host.declare(`declare ptr @scr_dyn_apply(ptr, ptr, ptr)`);
+      host.declare(`declare ptr @scr_dyn_new_arr()`);
+      host.declare(`declare void @scr_dyn_arr_push(ptr, ptr)`);
+      host.declare(`declare void @scr_dyn_arr_push_spread(ptr, ptr, ptr)`);
+      packed = B.tmp();
+      B.line(`${packed} = call ptr @scr_dyn_new_arr()`);
+      const restT = t.params.at(-1)!;
+      t.params.slice(0, -1).forEach((p, i) => {
+        const v = this.toDynExpr(B, p, `%a${i}`);
+        B.line(`call void @scr_dyn_arr_push(ptr ${packed}, ptr ${v})`);
+        if (isRefCounted(p)) B.line(`call void ${releaseSym(host, p)}(ptr %a${i})`);
+      });
+      const restIdx = t.params.length - 1;
+      const spread = this.toDynExpr(B, restT, `%a${restIdx}`);
+      B.line(
+        `call void @scr_dyn_arr_push_spread(ptr ${packed}, ptr ${spread}, ptr ${host.cstr("")})`,
+      );
+      B.line(`call void @scr_dyn_release(ptr ${spread})`);
+      if (isRefCounted(restT)) B.line(`call void ${releaseSym(host, restT)}(ptr %a${restIdx})`);
     } else if (t.params.length > 0) {
       const arr = B.slot();
       B.entryAllocas.push(`${arr} = alloca [${t.params.length} x ptr]`);

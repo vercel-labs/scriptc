@@ -87,12 +87,16 @@ add_executable(scriptc-llvm-codegen
   src/cpu-copies.cpp
   src/diagnostics.cpp
   src/emit.cpp
+  # LLVM 22.1.8's MemoryDependenceAnalysis with llvm/llvm-project#223456,
+  # linked in place of LLVMAnalysis's copy (see the file's header).
+  src/llvm/MemoryDependenceAnalysis.cpp
   src/main.cpp
   src/partition.cpp
   src/profile-blocks.cpp
   src/profile.cpp
   src/runtime-import.cpp
   src/runtime-unit.cpp
+  src/server.cpp
   src/target.cpp
 )
 

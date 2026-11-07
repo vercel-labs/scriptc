@@ -49,6 +49,7 @@ export const RUNTIME_PACK_MATRIX = withLibraryRuntimeFlavors(
       { id: "libregexp", predicate: "regex" },
       { id: "zlib", predicate: "zlibEffective" },
       { id: "brotli", predicate: all("zlib", "brotli") },
+      { id: "zstd", predicate: all("zlib", "zstd") },
       { id: "mbedtls", predicate: any("tlsEffective", "cipher", "ecdh", "dh", "pki") },
     ],
     system_libraries: [{ name: "System", predicate: true }],

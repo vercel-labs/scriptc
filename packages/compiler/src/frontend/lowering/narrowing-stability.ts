@@ -50,7 +50,9 @@ export class NarrowingStability {
   private readonly effects = new Map<ts.Node, boolean>();
   private readonly capturedMutable = new Map<ts.Symbol, boolean>();
   private readonly staleBindings = new Map<ts.Symbol, boolean>();
-  private readonly inherited = new Map<ts.Symbol, ts.Type | null>();
+  /** Bindings whose inherited type is being computed: a cycle of bindings
+   * assigned from each other contributes nothing. */
+  private readonly inherited = new Set<ts.Symbol>();
   private readonly identifierWrites = new Map<ts.SourceFile, Map<string, ts.Identifier[]>>();
   private readonly widened = new Map<ts.Node, ts.Type | null>();
   private readonly plainContainers = new Map<ts.Node, boolean>();
@@ -165,7 +167,7 @@ export class NarrowingStability {
         isNothing(checker.getTypeAtLocation(node)) &&
         isNothing(checker.getTypeOfSymbol(symbol))
       )
-        return this.inheritedType(symbol);
+        return this.inheritedType(symbol, node);
       declared =
         symbol && this.mayHoldStaleNarrowing(symbol) ? checker.getTypeOfSymbol(symbol) : null;
     }
@@ -243,44 +245,59 @@ export class NarrowingStability {
   }
 
   /** The type an untyped binding holds when the checker inferred "nothing"
-   * for it from reads widenedType restored: the declared type of those
-   * reads (`let y = x` after a call that may have assigned `x`), `any`
-   * when they disagree. Null when no such read initializes or assigns it. */
-  private inheritedType(symbol: ts.Symbol): ts.Type | null {
-    const cached = this.inherited.get(symbol);
-    if (cached !== undefined) return cached;
+   * for it from reads widenedType restored: the declared type of the write
+   * that reaches `node` (`let y = x` after a call that may have assigned
+   * `x`), `any` when the writes no position relates to the read disagree.
+   * Null when the write that reaches the read is not one of those reads:
+   * an explicit `y = undefined` after the initializer leaves nothing to
+   * inherit, and the read is genuinely absent. */
+  private inheritedType(symbol: ts.Symbol, node: ts.Identifier): ts.Type | null {
     // A cycle of bindings assigned from each other contributes nothing.
-    this.inherited.set(symbol, null);
-    let result: ts.Type | null = null;
+    if (this.inherited.has(symbol)) return null;
+    this.inherited.add(symbol);
     try {
       const decl = symbol.valueDeclaration;
-      if (decl !== undefined && ts.isVariableDeclaration(decl) && decl.type === undefined) {
-        const sources: ts.Expression[] = [];
-        if (decl.initializer !== undefined) sources.push(decl.initializer);
-        for (const write of this.writesIn(ts.getSourceFileOfNode(decl)).get(
-          ts.symbolName(symbol),
-        ) ?? []) {
-          const assignment = write.parent;
-          if (
-            ts.isBinaryExpression(assignment) &&
-            assignment.left === write &&
-            assignment.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-            this.lowerer.resolveValueSymbol(write) === symbol
-          )
-            sources.push(assignment.right);
-        }
-        for (const source of sources) {
-          const read = this.restoredNothingRead(source);
-          const restored = read === null ? null : this.widenedType(read);
-          if (restored === null) continue;
-          result =
-            result === null || result === restored ? restored : this.lowerer.checker.getAnyType();
-        }
+      if (decl === undefined || !ts.isVariableDeclaration(decl) || decl.type !== undefined)
+        return null;
+      const sources: { source: ts.Expression; definite: boolean }[] = [];
+      if (decl.initializer !== undefined)
+        sources.push({ source: decl.initializer, definite: runsBefore(decl, node) });
+      for (const write of this.writesIn(ts.getSourceFileOfNode(decl)).get(ts.symbolName(symbol)) ??
+        []) {
+        const assignment = write.parent;
+        if (
+          ts.isBinaryExpression(assignment) &&
+          assignment.left === write &&
+          assignment.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+          this.lowerer.resolveValueSymbol(write) === symbol
+        )
+          sources.push({ source: assignment.right, definite: runsBefore(write, node) });
       }
+      // The latest write that certainly runs before the read is the value
+      // it sees; when that write stores nothing, the binding holds nothing.
+      let latest: ts.Expression | null = null;
+      for (const { source, definite } of sources)
+        if (definite && (latest === null || source.pos > latest.pos)) latest = source;
+      let result: ts.Type | null = null;
+      if (latest !== null) {
+        const read = this.restoredNothingRead(latest);
+        result = read === null ? null : this.widenedType(read);
+      }
+      // A write in a branch, loop body or another function that the read
+      // does not share may still have run since a call: it widens the
+      // inherited type, but only a restored read gives it one.
+      for (const { source, definite } of sources) {
+        if (definite) continue;
+        const read = this.restoredNothingRead(source);
+        const restored = read === null ? null : this.widenedType(read);
+        if (restored === null) continue;
+        result =
+          result === null || result === restored ? restored : this.lowerer.checker.getAnyType();
+      }
+      return result;
     } finally {
-      this.inherited.set(symbol, result);
+      this.inherited.delete(symbol);
     }
-    return result;
   }
 
   /** A read in a call or construction argument (directly or inside a literal
@@ -1205,6 +1222,75 @@ function isFlowBoundary(node: ts.Node): boolean {
     ts.isPropertyDeclaration(node) ||
     ts.isSourceFile(node)
   );
+}
+
+/** Whether `node` is `inner` or contains it. */
+function holds(node: ts.Node | undefined, inner: ts.Node): boolean {
+  if (node === undefined) return false;
+  for (let n: ts.Node | undefined = inner; n !== undefined; n = n.parent)
+    if (n === node) return true;
+  return false;
+}
+
+/** Whether `write` certainly runs before `read` on every path that reaches
+ * it: both in one function, the write earlier in the text, and every
+ * conditional construct in between one the read is inside too. */
+function runsBefore(write: ts.Node, read: ts.Node): boolean {
+  if (flowBoundary(write) !== flowBoundary(read)) return false;
+  if (write.pos >= read.pos) return false;
+  for (
+    let n: ts.Node | undefined = write.parent;
+    n !== undefined && !isFlowBoundary(n);
+    n = n.parent
+  )
+    if (!sharesBranch(n, write, read)) return false;
+  return true;
+}
+
+/** Whether the branch or iteration of `node` that holds `write` also holds
+ * `read`, or `node` is not conditional. A write in a branch the read does
+ * not share may not run at all before it. */
+function sharesBranch(node: ts.Node, write: ts.Node, read: ts.Node): boolean {
+  const same = (part: ts.Node | undefined): boolean => holds(part, write) && holds(part, read);
+  if (ts.isIfStatement(node)) {
+    if (holds(node.thenStatement, write)) return holds(node.thenStatement, read);
+    if (holds(node.elseStatement, write)) return holds(node.elseStatement, read);
+    // The condition always evaluates before either arm.
+    return holds(node.thenStatement, read) || holds(node.elseStatement, read);
+  }
+  if (ts.isConditionalExpression(node)) {
+    if (holds(node.whenTrue, write)) return holds(node.whenTrue, read);
+    if (holds(node.whenFalse, write)) return holds(node.whenFalse, read);
+    return holds(node.whenTrue, read) || holds(node.whenFalse, read);
+  }
+  if (ts.isForStatement(node)) {
+    // The initializer and the condition run before the body is entered.
+    if (holds(node.initializer, write) || holds(node.condition, write)) return true;
+    return same(node.statement);
+  }
+  if (
+    ts.isForOfStatement(node) ||
+    ts.isForInStatement(node) ||
+    ts.isWhileStatement(node) ||
+    ts.isDoStatement(node)
+  )
+    return same(node.statement);
+  if (ts.isTryStatement(node)) {
+    // A finally block runs on every path out of the statement.
+    if (holds(node.finallyBlock, write)) return true;
+    if (holds(node.tryBlock, write)) return holds(node.tryBlock, read);
+    if (holds(node.catchClause, write)) return holds(node.catchClause, read);
+    return true;
+  }
+  if (ts.isSwitchStatement(node)) {
+    // The discriminant always evaluates; a clause runs only on its case.
+    if (holds(node.expression, write)) return true;
+    for (const clause of node.caseBlock.clauses.nodes)
+      if (holds(clause, write)) return holds(clause, read);
+    return false;
+  }
+  if (ts.isCaseClause(node) || ts.isDefaultClause(node)) return holds(node, read);
+  return true;
 }
 
 function skipOuter(node: ts.Expression): ts.Expression {

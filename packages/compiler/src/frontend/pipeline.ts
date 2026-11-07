@@ -12,6 +12,7 @@ import {
   shapeOverlayReport,
 } from "./shape-inference/index.js";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
+import { startupFailureDiag } from "../diagnostics/diagnostic.js";
 import type { IrModule } from "../ir/ir.js";
 import type { SrcLoc } from "../ir/ir.js";
 import type { NpmStaticStatus } from "./npm-static-status.js";
@@ -1139,7 +1140,19 @@ function loadFrontend(
   // Type patches that did not apply as written (SC8030–SC8033) warn; the
   // build goes on with the packages' own declarations there.
   const patchDiagnostics = typePatchDiagnostics()?.diagnostics ?? [];
-  const buildWarnings = [...(report ? [] : configDiagnostics), ...patchDiagnostics];
+  // A program Node refuses before any module runs compiles to that refusal
+  // (LoadResult.startupCrash); the build says so (SC6201).
+  const crash = load.startupCrash ?? null;
+  const startupWarnings =
+    crash === null
+      ? []
+      : [startupFailureDiag(crash.className, crash.message, crash.loc, crash.hint)];
+  const buildWarnings = [
+    ...(report ? [] : configDiagnostics),
+    ...patchDiagnostics,
+    ...startupWarnings,
+    ...(load.importWarnings ?? []),
+  ];
   return {
     preflight: withoutIslandModules(
       report && configDiagnostics.length > 0 ? [...configDiagnostics, ...preflight] : preflight,

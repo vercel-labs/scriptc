@@ -1,0 +1,807 @@
+/* TypeScript's import elision, as a source rewrite before lowering.
+ *
+ * Node runs TypeScript by erasing types in place: `import { A } from "./m"`
+ * stays an import of `A` whatever `A` is (type-only-imports.ts). tsc, for a
+ * project that does not set `verbatimModuleSyntax`, instead drops every import
+ * binding the file never uses as a value, drops the whole declaration when no
+ * binding is left, and drops export specifiers that name no value. A module
+ * imported only for its types is then never loaded.
+ *
+ * A file written for that dialect is rewritten here into the dialect the rest
+ * of the frontend already implements: each binding tsc would drop is blanked
+ * where it stands, and the same binding is declared again, type-only, after
+ * the last line of the file (`import type …`, `export type …`). Module order,
+ * cycle detection, the link check, island selection and the lowering then
+ * see one rule.
+ *
+ * The rewrite keeps every offset of the file as written: blanking replaces
+ * characters with spaces (line breaks stay) and the added declarations follow
+ * the original text. A diagnostic's position in the rewritten file is its
+ * position in the file on disk.
+ *
+ * The rules are tsc's own (checker.ts: markAliasReferenced,
+ * markPropertyAliasReferenced, isValueAliasDeclaration; transformers/ts.ts:
+ * visitImportDeclaration, visitExportDeclaration):
+ *
+ *   - an import binding is kept when an identifier in an expression position
+ *     resolves to it and what it names has a value meaning; a use in a type,
+ *     a `typeof` type query, an `implements` clause, an interface or an
+ *     ambient declaration does not count;
+ *   - `export { x }` and `export default x` keep `x` when it names a value;
+ *   - a const enum is inlined, so its uses keep nothing, unless
+ *     `isolatedModules` is set (or `preserveConstEnums`, for an export). The
+ *     use itself stays in the source, so such a binding cannot be spelled
+ *     type-only: it is kept, and a declaration that tsc drops for this
+ *     reason alone is reported (`inlinedOnly`) so the build can say that it
+ *     loads a module tsc's output does not;
+ *   - a name that does not resolve counts as a value;
+ *   - `export { T } from "./m"` loses the specifiers that name no value, and
+ *     the declaration with its last specifier; `export * from` always stays;
+ *   - JavaScript files are never elided. */
+
+import * as ts from "./ts7/adapter.js";
+
+/** The project settings that change what tsc elides. */
+export interface ImportElisionOptions {
+  /** `isolatedModules`: a const enum is not inlined across files, so a use
+   * of one keeps its import. */
+  isolatedModules: boolean;
+  /** `preserveConstEnums` (implied by `isolatedModules`): an exported const
+   * enum stays a value. */
+  preserveConstEnums: boolean;
+  /** `importsNotUsedAsValues` "preserve" or "error" (removed in TypeScript
+   * 5.5): a declaration that loses every binding stays as a side-effect
+   * import. */
+  preserveImportEdges: boolean;
+  /** `preserveValueImports` (removed in TypeScript 5.5): a binding that names
+   * a value stays whether or not the file uses it. */
+  preserveValueImports: boolean;
+}
+
+export interface ImportElision {
+  /** The rewritten text, or null when nothing is dropped. */
+  text: string | null;
+  /** Import and export declarations dropped as a whole. */
+  declarations: number;
+  /** Bindings dropped from declarations that stay. */
+  bindings: number;
+  /** Local names of bindings kept only for uses tsc does not count: a const
+   * enum member it inlines, an import alias used only in types. */
+  inlined: string[];
+  /** Import declarations kept although tsc drops them: every use of their
+   * bindings is one tsc does not count, and the use needs the binding as a
+   * value here. Spans in the file as written. */
+  inlinedOnly: { start: number; end: number; specifier: string }[];
+}
+
+type AliasNode =
+  | ts.ImportClause
+  | ts.NamespaceImport
+  | ts.ImportSpecifier
+  | ts.ImportEqualsDeclaration;
+
+interface Alias {
+  node: AliasNode;
+  name: ts.Identifier;
+  symbol: ts.Symbol | undefined;
+  referenced: boolean;
+  /** A use that needs the binding as a value here and that tsc does not
+   * count: a const enum member it inlines, or an import alias of the
+   * binding that the file uses only in types. */
+  inlined: boolean;
+}
+
+/** A use of a candidate name that may keep its import. */
+interface Use {
+  id: ts.Identifier;
+  kind: "plain" | "property" | "shorthand" | "exported";
+}
+
+const ALL_MEANINGS =
+  ts.SymbolFlags.Value | ts.SymbolFlags.Type | ts.SymbolFlags.Namespace | ts.SymbolFlags.Alias;
+
+function hasDeclareModifier(node: ts.Node): boolean {
+  if (!ts.canHaveModifiers(node)) return false;
+  return ts.getModifiers(node)?.some((m) => m.kind === ts.SyntaxKind.DeclareKeyword) === true;
+}
+
+function hasExportModifier(node: ts.Node): boolean {
+  if (!ts.canHaveModifiers(node)) return false;
+  return ts.getModifiers(node)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) === true;
+}
+
+/** The `extends` operand of a class: the one heritage position that is
+ * evaluated. */
+function isClassExtendsOperand(node: ts.Node): boolean {
+  if (node.kind !== ts.SyntaxKind.ExpressionWithTypeArguments) return false;
+  const heritage = node.parent;
+  return (
+    heritage !== undefined &&
+    ts.isHeritageClause(heritage) &&
+    heritage.token === ts.SyntaxKind.ExtendsKeyword &&
+    (ts.isClassDeclaration(heritage.parent) || ts.isClassExpression(heritage.parent))
+  );
+}
+
+/** Whether `id` reads a binding where it stands, and how. Null for a name
+ * that declares something or spells a property. */
+function useKindOf(id: ts.Identifier): Use["kind"] | null {
+  const parent = id.parent;
+  if (parent === undefined) return null;
+  if (ts.isPropertyAccessExpression(parent)) return parent.expression === id ? "property" : null;
+  if (ts.isShorthandPropertyAssignment(parent)) return parent.name === id ? "shorthand" : "plain";
+  if (ts.isQualifiedName(parent)) return null;
+  if (ts.isExportAssignment(parent)) return parent.expression === id ? "exported" : null;
+  if (ts.isBindingElement(parent) && parent.propertyName === id) return null;
+  if (ts.isLabeledStatement(parent) && parent.label === id) return null;
+  if ((ts.isBreakStatement(parent) || ts.isContinueStatement(parent)) && parent.label === id)
+    return null;
+  if (ts.isJsxAttribute(parent) && parent.name === id) return null;
+  if (ts.isMetaProperty(parent)) return null;
+  if ((parent as ts.Node & { name?: ts.Node }).name === id) return null;
+  return "plain";
+}
+
+const IDENTIFIERS: ReadonlySet<ts.SyntaxKind> = new Set([ts.SyntaxKind.Identifier]);
+
+/** Whether the expression `id` belongs to is evaluated. Nothing inside a
+ * type, an interface, a type alias or an ambient declaration is, with tsc's
+ * one exception: the expression of a computed member name counts as a use
+ * wherever the member is declared. Imports and export lists are read
+ * separately. */
+function emitsWhereItStands(id: ts.Identifier): boolean {
+  let computedName = false;
+  for (let p: ts.Node | undefined = id.parent; p !== undefined; p = p.parent) {
+    switch (p.kind) {
+      case ts.SyntaxKind.SourceFile:
+        return true;
+      case ts.SyntaxKind.ImportDeclaration:
+      case ts.SyntaxKind.ImportEqualsDeclaration:
+      case ts.SyntaxKind.ExportDeclaration:
+        return false;
+      case ts.SyntaxKind.ComputedPropertyName:
+        computedName = true;
+        continue;
+      case ts.SyntaxKind.InterfaceDeclaration:
+      case ts.SyntaxKind.TypeAliasDeclaration:
+        if (!computedName) return false;
+        continue;
+      default:
+        if (ts.isTypeNode(p)) {
+          if (!computedName && !isClassExtendsOperand(p)) return false;
+          continue;
+        }
+        if (hasDeclareModifier(p)) return false;
+    }
+  }
+  return true;
+}
+
+/** `export = a.b.c` and `export default a.b`: the access chain a property use
+ * heads is itself an export. */
+function headsExportedExpression(id: ts.Identifier): boolean {
+  let node: ts.Node = id;
+  while (
+    node.parent !== undefined &&
+    ts.isPropertyAccessExpression(node.parent) &&
+    node.parent.expression === node
+  )
+    node = node.parent;
+  return (
+    node.parent !== undefined &&
+    ts.isExportAssignment(node.parent) &&
+    node.parent.expression === node
+  );
+}
+
+/** tsc's module instance state, for the one question asked of it: does a
+ * namespace hold nothing but const enums (2), nothing at run time (0), or
+ * something else (1)? */
+function namespaceInstanceState(decl: ts.ModuleDeclaration): 0 | 1 | 2 {
+  const body = decl.body;
+  if (body === undefined) return 1;
+  if (ts.isModuleDeclaration(body)) return namespaceInstanceState(body);
+  if (!ts.isModuleBlock(body)) return 1;
+  let state: 0 | 1 | 2 = 0;
+  for (const stmt of body.statements.nodes) {
+    let own: 0 | 1 | 2;
+    if (ts.isInterfaceDeclaration(stmt) || ts.isTypeAliasDeclaration(stmt)) own = 0;
+    else if (ts.isEnumDeclaration(stmt))
+      own =
+        ts.getModifiers(stmt)?.some((m) => m.kind === ts.SyntaxKind.ConstKeyword) === true ? 2 : 1;
+    else if (ts.isModuleDeclaration(stmt)) own = namespaceInstanceState(stmt);
+    else if (ts.isImportEqualsDeclaration(stmt) && !hasExportModifier(stmt)) own = 0;
+    else own = 1;
+    if (own === 1) return 1;
+    if (own === 2) state = 2;
+  }
+  return state;
+}
+
+function blank(text: string): string {
+  let out = "";
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
+    out += ch === "\n" || ch === "\r" ? ch : " ";
+  }
+  return out;
+}
+
+/** The rewritten text of one TypeScript source file, or null when tsc keeps
+ * every import and export of it. */
+export function elideImports(
+  program: ts.Program,
+  sf: ts.SourceFile,
+  options: ImportElisionOptions,
+): ImportElision | null {
+  const checker = program.getTypeChecker();
+  const text = sf.text;
+  const startOf = (node: ts.Node): number => ts.tokenStartOfNode(node);
+  const sourceOf = (node: ts.Node): string => text.slice(startOf(node), node.end);
+
+  // ---- the candidates: every import binding that exists at run time ----
+  const aliases: Alias[] = [];
+  const byName = new Map<string, Alias[]>();
+  const addAlias = (node: AliasNode, name: ts.Identifier): void => {
+    const alias: Alias = { node, name, symbol: undefined, referenced: false, inlined: false };
+    aliases.push(alias);
+    const list = byName.get(name.text);
+    if (list === undefined) byName.set(name.text, [alias]);
+    else list.push(alias);
+  };
+  const addNamespaceAliases = (declaration: ts.ModuleDeclaration): void => {
+    const body = declaration.body;
+    if (body === undefined) return;
+    if (ts.isModuleDeclaration(body)) return addNamespaceAliases(body);
+    if (!ts.isModuleBlock(body)) return;
+    for (const stmt of body.statements.nodes) {
+      if (ts.isImportEqualsDeclaration(stmt)) {
+        if (!stmt.isTypeOnly && !ts.isExternalModuleReference(stmt.moduleReference))
+          addAlias(stmt, stmt.name);
+      } else if (ts.isModuleDeclaration(stmt)) {
+        addNamespaceAliases(stmt);
+      }
+    }
+  };
+  const imports: ts.ImportDeclaration[] = [];
+  const exportLists: ts.ExportDeclaration[] = [];
+  const defaultExports: ts.ExportAssignment[] = [];
+  for (const stmt of sf.statements.nodes) {
+    if (ts.isImportDeclaration(stmt)) {
+      const clause = stmt.importClause;
+      // A side-effect import and `import type` are already what they will
+      // be; `import defer` is left as written.
+      if (clause === undefined || clause.phaseModifier !== undefined) continue;
+      imports.push(stmt);
+      if (clause.name !== undefined) addAlias(clause, clause.name);
+      const bindings = clause.namedBindings;
+      if (bindings === undefined) continue;
+      if (ts.isNamedImports(bindings)) {
+        for (const element of bindings.elements.nodes)
+          if (!element.isTypeOnly) addAlias(element, element.name);
+      } else {
+        addAlias(bindings, bindings.name);
+      }
+    } else if (ts.isImportEqualsDeclaration(stmt)) {
+      if (!stmt.isTypeOnly) addAlias(stmt, stmt.name);
+    } else if (ts.isModuleDeclaration(stmt)) {
+      // `import x = ns.member` inside a namespace is an alias too: a use of
+      // `x` is a use of `ns`.
+      if (!hasDeclareModifier(stmt)) addNamespaceAliases(stmt);
+    } else if (ts.isExportDeclaration(stmt)) {
+      if (
+        !stmt.isTypeOnly &&
+        stmt.exportClause !== undefined &&
+        ts.isNamedExports(stmt.exportClause)
+      )
+        exportLists.push(stmt);
+    } else if (ts.isExportAssignment(stmt)) {
+      if (!stmt.isExportEquals && ts.isIdentifier(stmt.expression)) defaultExports.push(stmt);
+    }
+  }
+  // An import with no binding to keep (`import {} from`, a clause of `type`
+  // specifiers only) is still a declaration tsc drops.
+  if (
+    aliases.length === 0 &&
+    imports.length === 0 &&
+    exportLists.length === 0 &&
+    defaultExports.length === 0
+  )
+    return null;
+
+  // ---- what a symbol names ----
+  /** The symbol an alias resolves to, or null when it resolves to nothing
+   * (an unresolved module, an untyped one). */
+  const targetOf = (symbol: ts.Symbol): ts.Symbol | null => {
+    let current = symbol;
+    const seen = new Set<ts.Symbol>();
+    while ((current.flags & ts.SymbolFlags.Alias) !== 0) {
+      if (seen.has(current)) return null;
+      seen.add(current);
+      let next: ts.Symbol | undefined;
+      try {
+        next = checker.getAliasedSymbol(current);
+      } catch {
+        return null;
+      }
+      if (next === undefined || next === current) return null;
+      current = next;
+    }
+    // The checker's "unknown" symbol: no declaration stands behind it.
+    return current.declarations.length === 0 ? null : current;
+  };
+  const moduleExport = (specifier: ts.Node, name: string): ts.Symbol | undefined =>
+    checker.getSymbolAtLocation(specifier)?.getExports().get(ts.escapedSymbolName(name));
+  /** Whether a type-only import or export stands between an alias and what
+   * it names (`export type { C }` of a class): such a name has no value. */
+  const reachedThroughTypeOnly = (symbol: ts.Symbol): boolean => {
+    let current: ts.Symbol | undefined = symbol;
+    for (let hop = 0; hop < 32 && current !== undefined; hop++) {
+      if ((current.flags & ts.SymbolFlags.Alias) === 0) return false;
+      const decl: ts.Node | undefined = current.declarations[0];
+      if (decl === undefined) return false;
+      if (ts.isImportSpecifier(decl)) {
+        const clause = decl.parent!.parent as ts.ImportClause;
+        if (decl.isTypeOnly || clause.phaseModifier === ts.SyntaxKind.TypeKeyword) return true;
+        current = moduleExport(
+          (clause.parent as ts.ImportDeclaration).moduleSpecifier,
+          (decl.propertyName ?? decl.name).text,
+        );
+      } else if (ts.isImportClause(decl)) {
+        if (decl.phaseModifier === ts.SyntaxKind.TypeKeyword) return true;
+        current = moduleExport((decl.parent as ts.ImportDeclaration).moduleSpecifier, "default");
+      } else if (ts.isNamespaceImport(decl)) {
+        return (decl.parent as ts.ImportClause).phaseModifier === ts.SyntaxKind.TypeKeyword;
+      } else if (ts.isImportEqualsDeclaration(decl)) {
+        return decl.isTypeOnly;
+      } else if (ts.isExportSpecifier(decl)) {
+        const declaration = decl.parent!.parent as ts.ExportDeclaration;
+        if (decl.isTypeOnly || declaration.isTypeOnly) return true;
+        const name = (decl.propertyName ?? decl.name).text;
+        current =
+          declaration.moduleSpecifier !== undefined
+            ? moduleExport(declaration.moduleSpecifier, name)
+            : checker.resolveName(name, ALL_MEANINGS, decl, false);
+      } else if (ts.isNamespaceExport(decl)) {
+        return (decl.parent as ts.ExportDeclaration).isTypeOnly;
+      } else {
+        return false;
+      }
+    }
+    return false;
+  };
+  const constEnumOnly = (target: ts.Symbol): boolean => {
+    if ((target.flags & ts.SymbolFlags.ConstEnum) !== 0) return true;
+    if ((target.flags & (ts.SymbolFlags.ValueModule | ts.SymbolFlags.NamespaceModule)) === 0)
+      return false;
+    let state: 0 | 1 | 2 = 0;
+    for (const decl of target.declarations) {
+      if (!ts.isModuleDeclaration(decl)) return false;
+      const own = namespaceInstanceState(decl);
+      if (own === 1) return false;
+      if (own === 2) state = 2;
+    }
+    return state === 2;
+  };
+  /** tsc's getSymbolFlags(symbol, excludeTypeOnlyMeanings) & Value. */
+  const namesValue = (symbol: ts.Symbol): boolean => {
+    const target = targetOf(symbol);
+    if (target === null) return true;
+    return (target.flags & ts.SymbolFlags.Value) !== 0 && !reachedThroughTypeOnly(symbol);
+  };
+  /** tsc's isAliasResolvedToValue: a value the emit keeps. */
+  const emitsValue = (symbol: ts.Symbol): boolean => {
+    const target = targetOf(symbol);
+    if (target === null) return true;
+    if ((target.flags & ts.SymbolFlags.Value) === 0 || reachedThroughTypeOnly(symbol)) return false;
+    return options.preserveConstEnums || !constEnumOnly(target);
+  };
+
+  // ---- marking ----
+  const aliasOf = (symbol: ts.Symbol | undefined, name: string): Alias | undefined => {
+    if (symbol === undefined) return undefined;
+    return byName.get(name)?.find((alias) => alias.symbol === symbol);
+  };
+  /** tsc's markAliasReferenced. */
+  const mark = (alias: Alias, inExport: boolean): void => {
+    if (alias.referenced || alias.symbol === undefined) return;
+    if (!namesValue(alias.symbol)) return;
+    const target = targetOf(alias.symbol);
+    if (
+      !options.isolatedModules &&
+      !(options.preserveConstEnums && inExport) &&
+      target !== null &&
+      constEnumOnly(target)
+    ) {
+      alias.inlined = true;
+      return;
+    }
+    alias.referenced = true;
+    // `import a = b.c`: using `a` uses `b`.
+    const node = alias.node;
+    if (ts.isImportEqualsDeclaration(node) && !ts.isExternalModuleReference(node.moduleReference))
+      markEntityHead(node.moduleReference, false);
+  };
+  const markEntityHead = (entity: ts.Node, inExport: boolean): void => {
+    let head = entity;
+    while (ts.isQualifiedName(head)) head = head.left;
+    if (!ts.isIdentifier(head)) return;
+    const alias = aliasOf(checker.resolveName(head.text, ALL_MEANINGS, head, false), head.text);
+    if (alias !== undefined) mark(alias, inExport);
+  };
+
+  checker.prefetchSymbolNodesExact(aliases.map((alias) => alias.name));
+  for (const alias of aliases) alias.symbol = checker.getSymbolAtLocation(alias.name);
+  for (const alias of aliases) {
+    const node = alias.node;
+    if (!ts.isImportEqualsDeclaration(node)) continue;
+    // A name the checker cannot place is left as written.
+    if (alias.symbol === undefined) alias.referenced = true;
+    // `export import x = …` of a value is always kept. Any other alias,
+    // `import x = require("m")` and `import x = ns.member` alike, is emitted
+    // only when the file uses it as a value.
+    else if (hasExportModifier(node)) mark(alias, true);
+  }
+
+  // ---- the uses ----
+  const uses: Use[] = [];
+  /** The names that occur anywhere beyond the aliases' own declarations. */
+  const mentioned = new Set<string>();
+  const aliasNames = new Set<ts.Node>(aliases.map((alias) => alias.name));
+  if (byName.size > 0) {
+    ts.walkPreorder(
+      sf,
+      (node) => {
+        const id = node as ts.Identifier;
+        if (!byName.has(id.text)) return;
+        if (!aliasNames.has(id)) mentioned.add(id.text);
+        const kind = useKindOf(id);
+        if (kind !== null && emitsWhereItStands(id)) uses.push({ id, kind });
+      },
+      IDENTIFIERS,
+    );
+  }
+  checker.prefetchSymbolNodesExact(
+    uses.filter((use) => use.kind !== "shorthand" && use.kind !== "exported").map((u) => u.id),
+  );
+
+  for (const use of uses) {
+    const name = use.id.text;
+    if (byName.get(name)!.every((alias) => alias.referenced)) continue;
+    let symbol: ts.Symbol | undefined;
+    if (use.kind === "shorthand")
+      symbol = checker.getShorthandAssignmentValueSymbol(use.id.parent!);
+    else if (use.kind === "exported")
+      // The checker answers an exported name with what it resolves to; the
+      // binding itself is the question here.
+      symbol = checker.resolveName(name, ALL_MEANINGS, use.id, false);
+    else symbol = checker.getSymbolAtLocation(use.id);
+    const alias = aliasOf(symbol, name);
+    if (alias === undefined) continue;
+    if (use.kind !== "property") {
+      // `export default name` of a name with no value is dropped below, and
+      // the use with it.
+      const parent = use.id.parent!;
+      if (
+        use.kind === "exported" &&
+        ts.isExportAssignment(parent) &&
+        !parent.isExportEquals &&
+        alias.symbol !== undefined &&
+        !emitsValue(alias.symbol)
+      )
+        continue;
+      mark(alias, use.kind === "exported");
+      continue;
+    }
+    // tsc's markPropertyAliasReferenced: `ns.E.A` keeps `ns` unless `E` is a
+    // const enum, and an enum member initializer that is another enum's
+    // member is inlined.
+    const access = use.id.parent as ts.PropertyAccessExpression;
+    const inExport = headsExportedExpression(use.id);
+    if (!options.isolatedModules && !(options.preserveConstEnums && inExport)) {
+      const member = checker.getSymbolAtLocation(access.name);
+      const resolved = member === undefined ? null : (targetOf(member) ?? member);
+      if (
+        resolved !== null &&
+        (constEnumOnly(resolved) ||
+          ((resolved.flags & ts.SymbolFlags.EnumMember) !== 0 &&
+            access.parent !== undefined &&
+            ts.isEnumMember(access.parent)))
+      ) {
+        if (alias.symbol !== undefined && namesValue(alias.symbol)) alias.inlined = true;
+        continue;
+      }
+    }
+    mark(alias, inExport);
+  }
+
+  // ---- export lists and `export default name` ----
+  const droppedExports = new Set<ts.ExportSpecifier>();
+  for (const declaration of exportLists) {
+    const elements = (declaration.exportClause as ts.NamedExports).elements.nodes;
+    for (const element of elements) {
+      if (element.isTypeOnly) continue;
+      let value: boolean;
+      if (declaration.moduleSpecifier !== undefined) {
+        const symbol = checker.getSymbolAtLocation(element.name);
+        value = symbol === undefined || emitsValue(symbol);
+      } else {
+        const local = element.propertyName ?? element.name;
+        const symbol = checker.resolveName(local.text, ALL_MEANINGS, element, false);
+        value = symbol === undefined || emitsValue(symbol);
+        if (value) {
+          const alias = aliasOf(symbol, local.text);
+          if (alias !== undefined) mark(alias, true);
+        }
+      }
+      if (!value) droppedExports.add(element);
+    }
+  }
+  const droppedDefaults: ts.ExportAssignment[] = [];
+  for (const assignment of defaultExports) {
+    const id = assignment.expression as ts.Identifier;
+    const symbol = checker.resolveName(id.text, ALL_MEANINGS, id, false);
+    if (symbol !== undefined && !emitsValue(symbol)) droppedDefaults.push(assignment);
+  }
+
+  // `import x = ns.member` that no value use reached: tsc emits nothing for
+  // it. One that is never mentioned again goes; one that still names a type
+  // (`let v: x.T`) has to stay as written, and the `ns` it reads with it.
+  const droppedEntityAliases: ts.ImportEqualsDeclaration[] = [];
+  for (const alias of aliases) {
+    const node = alias.node;
+    if (!ts.isImportEqualsDeclaration(node) || alias.referenced) continue;
+    if (ts.isExternalModuleReference(node.moduleReference)) continue;
+    if (!mentioned.has(alias.name.text)) {
+      droppedEntityAliases.push(node);
+      continue;
+    }
+    alias.inlined = true;
+    let head: ts.Node = node.moduleReference;
+    while (ts.isQualifiedName(head)) head = head.left;
+    if (!ts.isIdentifier(head)) continue;
+    const target = aliasOf(checker.resolveName(head.text, ALL_MEANINGS, head, false), head.text);
+    if (target !== undefined && !target.referenced) target.inlined = true;
+  }
+
+  const kept = (alias: Alias): boolean => {
+    if (alias.referenced || alias.inlined) return true;
+    if (!options.preserveValueImports) return false;
+    return alias.symbol === undefined || emitsValue(alias.symbol);
+  };
+  const tscKeeps = (alias: Alias): boolean => kept(alias) && !(alias.inlined && !alias.referenced);
+  const keptNode = new Map<ts.Node, boolean>();
+  for (const alias of aliases) keptNode.set(alias.node, kept(alias));
+
+  // ---- the rewrite ----
+  const blanks: [number, number][] = [];
+  const added: string[] = [];
+  const inlinedOnly: ImportElision["inlinedOnly"] = [];
+  const inlined = aliases
+    .filter((alias) => alias.inlined && !alias.referenced)
+    .map((alias) => alias.name.text);
+  let declarations = 0;
+  let bindings = 0;
+  let lostModuleSyntax = false;
+  const specifierText = (element: ts.ImportSpecifier | ts.ExportSpecifier): string =>
+    element.propertyName === undefined
+      ? sourceOf(element.name)
+      : `${sourceOf(element.propertyName)} as ${sourceOf(element.name)}`;
+  /** Blanks the dropped elements of a brace list, each with the separator
+   * that follows it. */
+  const blankElements = (
+    elements: readonly (ts.ImportSpecifier | ts.ExportSpecifier)[],
+    dropped: (element: ts.ImportSpecifier | ts.ExportSpecifier) => boolean,
+  ): void => {
+    elements.forEach((element, index) => {
+      if (!dropped(element)) return;
+      const next = elements[index + 1];
+      blanks.push([startOf(element), next === undefined ? element.end : startOf(next)]);
+    });
+  };
+
+  for (const stmt of imports) {
+    const clause = stmt.importClause!;
+    const from = sourceOf(stmt.moduleSpecifier);
+    const named =
+      clause.namedBindings !== undefined && ts.isNamedImports(clause.namedBindings)
+        ? clause.namedBindings
+        : undefined;
+    const namespace =
+      clause.namedBindings !== undefined && !ts.isNamedImports(clause.namedBindings)
+        ? clause.namedBindings
+        : undefined;
+    const keepsDefault = clause.name !== undefined && keptNode.get(clause) === true;
+    const keepsNamespace = namespace !== undefined && keptNode.get(namespace) === true;
+    const elements = named?.elements.nodes ?? [];
+    const droppedElement = (element: ts.ImportSpecifier | ts.ExportSpecifier): boolean =>
+      !element.isTypeOnly && keptNode.get(element) !== true;
+    const keepsNamed = elements.some((element) => !element.isTypeOnly && !droppedElement(element));
+    const own = aliases.filter(
+      (alias) =>
+        alias.node === clause ||
+        alias.node === namespace ||
+        elements.includes(alias.node as ts.ImportSpecifier),
+    );
+    if (own.some(kept) && !own.some(tscKeeps) && !options.preserveImportEdges)
+      inlinedOnly.push({ start: startOf(stmt), end: stmt.end, specifier: from });
+    const typeNames: string[] = [];
+    if (!keepsDefault && !keepsNamespace && !keepsNamed) {
+      // The declaration goes. Its names stay declared for the types that use
+      // them.
+      if (clause.name !== undefined) added.push(`import type ${clause.name.text} from ${from};`);
+      if (namespace !== undefined)
+        added.push(`import type * as ${namespace.name.text} from ${from};`);
+      for (const element of elements) typeNames.push(specifierText(element));
+      if (options.preserveImportEdges) {
+        // The module is still loaded, where the declaration stands.
+        blanks.push([startOf(clause), startOf(stmt.moduleSpecifier)]);
+        bindings += aliases.filter(
+          (alias) => alias.node === clause || alias.node === namespace,
+        ).length;
+        bindings += elements.filter(droppedElement).length;
+      } else {
+        blanks.push([startOf(stmt), stmt.end]);
+        declarations++;
+        lostModuleSyntax = true;
+      }
+    } else {
+      if (clause.name !== undefined && !keepsDefault) {
+        added.push(`import type ${clause.name.text} from ${from};`);
+        blanks.push([startOf(clause.name), startOf(clause.namedBindings!)]);
+        bindings++;
+      }
+      if (namespace !== undefined && !keepsNamespace) {
+        added.push(`import type * as ${namespace.name.text} from ${from};`);
+        blanks.push([clause.name!.end, namespace.end]);
+        bindings++;
+      }
+      if (named !== undefined && !keepsNamed) {
+        // Only the default binding stays: `import d, { A } from` becomes
+        // `import d from`.
+        if (elements.some(droppedElement)) {
+          for (const element of elements) typeNames.push(specifierText(element));
+          blanks.push([clause.name!.end, named.end]);
+          bindings += elements.filter(droppedElement).length;
+        }
+      } else if (named !== undefined) {
+        for (const element of elements)
+          if (droppedElement(element)) {
+            typeNames.push(specifierText(element));
+            bindings++;
+          }
+        blankElements(elements, droppedElement);
+      }
+    }
+    if (typeNames.length > 0) added.push(`import type { ${typeNames.join(", ")} } from ${from};`);
+  }
+
+  for (const node of droppedEntityAliases) {
+    blanks.push([startOf(node), node.end]);
+    declarations++;
+  }
+  for (const alias of aliases) {
+    const node = alias.node;
+    if (!ts.isImportEqualsDeclaration(node) || keptNode.get(node) === true) continue;
+    if (!ts.isExternalModuleReference(node.moduleReference)) continue;
+    blanks.push([startOf(node), node.end]);
+    added.push(`import type ${node.name.text} = ${sourceOf(node.moduleReference)};`);
+    declarations++;
+  }
+
+  for (const declaration of exportLists) {
+    const elements = (declaration.exportClause as ts.NamedExports).elements.nodes;
+    const dropped = (element: ts.ImportSpecifier | ts.ExportSpecifier): boolean =>
+      droppedExports.has(element as ts.ExportSpecifier);
+    const keepsAny = elements.some((element) => !element.isTypeOnly && !dropped(element));
+    // A local list that names no value (`export {}`, `export { type T }`)
+    // is the same module with or without it.
+    if (declaration.moduleSpecifier === undefined && !elements.some(dropped)) continue;
+    const from =
+      declaration.moduleSpecifier === undefined
+        ? ""
+        : ` from ${sourceOf(declaration.moduleSpecifier)}`;
+    const typeNames: string[] = [];
+    if (keepsAny) {
+      for (const element of elements)
+        if (dropped(element)) {
+          typeNames.push(specifierText(element));
+          bindings++;
+        }
+      blankElements(elements, dropped);
+    } else if (options.preserveImportEdges && declaration.moduleSpecifier !== undefined) {
+      // `export {} from "./m"` still loads the module.
+      for (const element of elements) typeNames.push(specifierText(element));
+      if (elements.length > 0)
+        blanks.push([startOf(elements[0]!), elements[elements.length - 1]!.end]);
+      bindings += elements.filter(dropped).length;
+    } else {
+      for (const element of elements) typeNames.push(specifierText(element));
+      blanks.push([startOf(declaration), declaration.end]);
+      declarations++;
+      lostModuleSyntax = true;
+    }
+    if (typeNames.length > 0) added.push(`export type { ${typeNames.join(", ")} }${from};`);
+  }
+
+  for (const assignment of droppedDefaults) {
+    blanks.push([startOf(assignment), assignment.end]);
+    added.push(`export type { ${(assignment.expression as ts.Identifier).text} as default };`);
+    declarations++;
+    lostModuleSyntax = true;
+  }
+
+  if (blanks.length === 0)
+    return inlined.length === 0
+      ? null
+      : { text: null, declarations, bindings, inlined, inlinedOnly };
+  // tsc emits `export {}` for a module that loses its last import or export,
+  // so the file keeps its format. CommonJS TypeScript (.cts, `export =`) has
+  // no such marker to keep.
+  const exportEquals = sf.statements.nodes.some(
+    (stmt) => ts.isExportAssignment(stmt) && stmt.isExportEquals,
+  );
+  if (lostModuleSyntax && !exportEquals && !sf.fileName.endsWith(".cts")) added.push("export {};");
+  blanks.sort((a, b) => a[0] - b[0]);
+  let out = "";
+  let at = 0;
+  for (const [start, end] of blanks) {
+    if (start < at) continue;
+    out += text.slice(at, start) + blank(text.slice(start, end));
+    at = end;
+  }
+  out += text.slice(at);
+  if (added.length > 0) out += `${out.endsWith("\n") ? "" : "\n"}${added.join("\n")}\n`;
+  return { text: out, declarations, bindings, inlined, inlinedOnly };
+}
+
+/** What a parsed tsconfig's compiler options say about elision, or null when
+ * they select Node's rule (`verbatimModuleSyntax`), under which every import
+ * is kept as written. */
+export function importElisionOptions(
+  options: Readonly<Record<string, unknown>>,
+): ImportElisionOptions | null {
+  if (options["verbatimModuleSyntax"] === true) return null;
+  const isolatedModules = options["isolatedModules"] === true;
+  const unused = options["importsNotUsedAsValues"];
+  return {
+    isolatedModules,
+    preserveConstEnums: isolatedModules || options["preserveConstEnums"] === true,
+    // The parser answers the option's name or its enum value (remove = 0).
+    preserveImportEdges:
+      unused === 1 ||
+      unused === 2 ||
+      (typeof unused === "string" && /^(?:preserve|error)$/i.test(unused)),
+    preserveValueImports: options["preserveValueImports"] === true,
+  };
+}
+
+const TYPESCRIPT_SOURCE = /\.(?:[mc]?ts|tsx)$/;
+
+export interface ProgramImportElision {
+  /** The rewritten text of each file tsc would drop imports or exports of. */
+  texts: Map<string, string>;
+  /** The import declarations kept although tsc drops them
+   * (ImportElision.inlinedOnly), by file. */
+  inlinedOnly: { file: string; start: number; end: number; specifier: string }[];
+}
+
+/** tsc's elision for every TypeScript source of `program`. `optionsOf`
+ * answers the settings of the tsconfig that governs a file, or null for a
+ * file under Node's rule. */
+export function elideProgramImports(
+  program: ts.Program,
+  optionsOf: (fileName: string) => ImportElisionOptions | null,
+): ProgramImportElision {
+  const out: ProgramImportElision = { texts: new Map(), inlinedOnly: [] };
+  for (const sf of program.getImplementationSourceFiles()) {
+    if (sf.isDeclarationFile || !TYPESCRIPT_SOURCE.test(sf.fileName)) continue;
+    const options = optionsOf(sf.fileName);
+    if (options === null) continue;
+    const elision = elideImports(program, sf, options);
+    if (elision === null) continue;
+    if (elision.text !== null) out.texts.set(sf.fileName, elision.text);
+    for (const kept of elision.inlinedOnly) out.inlinedOnly.push({ file: sf.fileName, ...kept });
+  }
+  return out;
+}

@@ -26,6 +26,7 @@ import * as ts from "../ts7/adapter.js";
 import { checkedPrivateReceiver, localPrivateBrandClass } from "./private-brands.js";
 import { staticCondition } from "./static-typeof.js";
 import { constituentTypes } from "../ts7/checker.js";
+import { lowerDeferredCallbackCall } from "./expressions/library-callbacks.js";
 import { PoisonError } from "./lowerer.js";
 import type { Lowerer } from "./lowerer.js";
 import { recordMayKeepSource } from "./record-sources.js";
@@ -463,6 +464,15 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   const webAssemblyValue = lowerWebAssemblyValue(lowerer, expr);
   if (webAssemblyValue !== null) return webAssemblyValue;
   refuseWebAssemblyUse(lowerer, expr);
+
+  // A callback that may be unassigned, with observable arguments after it:
+  // the library checks it once they are evaluated
+  // (expressions/library-callbacks.ts). A program whose bindings are all
+  // stored before they are read skips it.
+  if (lowerer.earlyReadVars.size > 0 && (ts.isCallExpression(expr) || ts.isNewExpression(expr))) {
+    const deferred = lowerDeferredCallbackCall(lowerer, expr);
+    if (deferred !== null) return deferred;
+  }
 
   if (ts.isNumericLiteral(expr)) {
     const value = Number(expr.text.replace(/_/g, ""));

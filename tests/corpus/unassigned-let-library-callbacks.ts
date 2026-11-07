@@ -201,6 +201,53 @@ function unassignedOptional(): Promise<void> {
   return run();
 }
 
+function trace<T>(label: string, value: T): T {
+  console.log("evaluated", label);
+  return value;
+}
+
+function refuse(): number {
+  throw new RangeError("a later argument threw");
+}
+
+// The library looks at the callback once the receiver and every argument
+// are evaluated: their effects come first, and an exception one of them
+// throws wins.
+function evaluationOrder(): Promise<void> {
+  let fire!: () => void;
+  let take!: (n: number) => void;
+  let visit!: (n: number) => void;
+  let listener!: (text: string) => void;
+  const emitter = new EventEmitter();
+  attempt("timer delay", () => setTimeout(fire, trace("delay", 1)));
+  attempt("timer arguments", () => setTimeout(take, trace("delay", 1), trace("argument", 2)));
+  attempt("timer delay throws", () => setTimeout(fire, refuse()));
+  attempt("nextTick argument", () => process.nextTick(take, trace("argument", 3)));
+  attempt("nextTick argument throws", () => process.nextTick(take, refuse()));
+  attempt("forEach thisArg", () => [1, 2].forEach(visit, trace("thisArg", { tag: 1 })));
+  attempt("forEach thisArg throws", () => [1, 2].forEach(visit, refuse()));
+  attempt("emitter receiver", () => trace("receiver", emitter).on("word", listener));
+  attempt("emitter name", () => emitter.on(trace("name", "word"), listener));
+
+  // The same calls with the bindings assigned.
+  let took: (n: number) => void;
+  let saw: (n: number) => void;
+  let done: () => void;
+  const finished = new Promise<void>((resolve) => {
+    done = resolve;
+    took = (n) => console.log("took", n);
+    saw = (n) => console.log("saw", n);
+  });
+  const run = (): void => {
+    setTimeout(took, trace("delay", 1), trace("argument", 2));
+    process.nextTick(took, trace("argument", 3));
+    [1, 2].forEach(saw, trace("thisArg", { tag: 1 }));
+    setTimeout(done, 5);
+  };
+  run();
+  return finished;
+}
+
 async function main(): Promise<void> {
   const bound = await bind();
   const address = bound.server.address();
@@ -233,6 +280,7 @@ async function main(): Promise<void> {
 
   unassignedRequired();
   await unassignedOptional();
+  await evaluationOrder();
 }
 
 void main();

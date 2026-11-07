@@ -403,3 +403,30 @@ wire();
     nodeThrows(mod).filter((thrown) => /must be of type function|: undefined is not/.test(thrown)),
   ).toEqual([]);
 });
+
+test("observable arguments after a required library callback are evaluated before its check", async () => {
+  const mod = await lower(`
+function delay(): number { console.log("delay"); return 1; }
+function wire(): void {
+  let fire: () => void;
+  const install = (): void => { fire = () => console.log("fired"); };
+  const arm = (): void => {
+    setTimeout(fire, delay());
+  };
+  if (process.argv.length > 5) install();
+  arm();
+}
+wire();
+`);
+  expect(localType(mod, "wire", "fire")).toBe("union");
+  const arm = mod.functions.find((f) => f.locals.some((l) => l.name === "%laterArg"));
+  expect(arm).toBeDefined();
+  // The binding's value, the later argument, the check, then the call.
+  const order = JSON.stringify(arm!.body);
+  const held = order.indexOf("%callbackArg");
+  const later = order.indexOf('"callee":"delay"');
+  const check = order.indexOf("ERR_INVALID_ARG_TYPE");
+  expect(held).toBeGreaterThan(-1);
+  expect(later).toBeGreaterThan(held);
+  expect(check).toBeGreaterThan(later);
+});

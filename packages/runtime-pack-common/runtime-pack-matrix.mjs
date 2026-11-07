@@ -193,6 +193,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
     ),
   ],
   ["scr_stream.c", "stream"],
+  // Node's pipe lifecycle, installed into the stream unit for programs
+  // that pipe, unpipe or build a pipeline.
+  ["scr_stream_pipe_events.c", all("stream", "streamPipeEvents")],
   // The zlib stream classes reference both the zlib engine and the stream unit.
   ["scr_zlib_stream.c", all("zlib", "stream")],
   // The Readable operators await through the dyn-async unit.

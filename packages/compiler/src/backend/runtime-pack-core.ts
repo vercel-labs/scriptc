@@ -144,6 +144,8 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   /** The program's write completion callbacks take the error argument:
    * the SCR_STREAM_WRITE_ERRORS build of the stream unit. */
   streamWriteErrors: boolean;
+  /** The program pipes or unpipes a stream: scr_stream_pipe_events.c. */
+  streamPipeEvents: boolean;
   /** The program reaches the process output streams' write slot: the
    * SCR_STDIO_WRITE_SLOT build of the events unit. */
   stdioWriteSlot: boolean;
@@ -390,6 +392,7 @@ export function effectiveRuntimeFeatures(
     bigintBytes: features.bigintBytes === true,
     stdioExtended: features.stdioExtended === true,
     streamWriteErrors: features.streamWriteErrors === true,
+    streamPipeEvents: features.streamPipeEvents === true,
     stdioWriteSlot: features.stdioWriteSlot === true,
     nodeIsland: features.nodeIsland === true,
     brotli: features.brotli === true,

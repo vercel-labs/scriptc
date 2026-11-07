@@ -252,6 +252,9 @@ export interface CcOptions {
   /** SCR_STREAM_WRITE_ERRORS: the stream unit publishes the error each
    * write completion callback receives (error-taking write callbacks). */
   streamWriteErrors?: boolean;
+  /** The program pipes or unpipes a stream: compiles
+   * scr_stream_pipe_events.c (Node's pipe lifecycle). */
+  streamPipeEvents?: boolean;
   /** SCR_STDIO_WRITE_SLOT: the events unit carries the typed write slot
    * (the write method as a value, its replacement, run-time-typed chunks). */
   stdioWriteSlot?: boolean;

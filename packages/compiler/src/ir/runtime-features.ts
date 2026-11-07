@@ -1724,6 +1724,38 @@ const RUNTIME_FEATURE_RULES = {
    * through writable.writeEcb: the SCR_STREAM_WRITE_ERRORS stream unit
    * publishes the error the adapter delivers. */
   streamWriteErrors: rule({ fns: ["writable.writeEcb"] }),
+  /** The program can pipe or unpipe a stream: pipe(), unpipe(), pipeline()
+   * and compose() in every form, a call of a member named pipe or unpipe
+   * (or a computed member) on an untyped value, which can reach a native
+   * stream's own method, and either name as a string. It links
+   * scr_stream_pipe_events.c, which installs Node's pipe lifecycle into
+   * the stream unit: the destination hears 'unpipe' when it finishes,
+   * closes or errors, and unpipe pauses the source as Node's does. A
+   * program that never pipes links none of it. */
+  streamPipeEvents: rule({
+    fns: [
+      "readable.pipe",
+      "readable.pipeGeneral",
+      "readable.unpipe",
+      "stream.pipeline",
+      "stream.pipelineDyn",
+      "stream.pipelineStages",
+      "stream.pipelineStagesDyn",
+      "stream.compose",
+      "stream.composeStages",
+      "sp.pipeline",
+      "sp.pipelineOpts",
+      "sp.pipelineOptsSignal",
+      "sp.pipelineStages",
+      "sp.pipelineStagesOpts",
+    ],
+    expr: (node) =>
+      (node.kind === "dynInvoke" &&
+        (node.method === "pipe" ||
+          node.method === "unpipe" ||
+          node.calleeNameValue !== undefined)) ||
+      (node.kind === "strLit" && (node.value === "pipe" || node.value === "unpipe")),
+  }),
   /** The program reaches the process output streams' write slot — the
    * write method as a value (process.stdioSlot), its replacement, a patched
    * program's typed writes, a run-time-typed chunk
@@ -2019,6 +2051,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     stdioExtended: false,
     stdioWriteSlot: false,
     streamWriteErrors: false,
+    streamPipeEvents: false,
     moduleNamespace: false,
     moduleNamespaceDyn: false,
     primitiveWrapper: false,

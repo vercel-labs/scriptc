@@ -535,4 +535,36 @@ describe("runtime feature snapshots", () => {
       childErrorFields: false,
     });
   });
+
+  test("gates Node's pipe lifecycle on a pipe, an unpipe or a pipeline", () => {
+    // A stream program that never pipes links the stream unit alone.
+    const writer = module();
+    writer.functions[0]!.body.push(call("writable.write"));
+    expect(moduleRuntimeFeatures(writer)).toMatchObject({ stream: true, streamPipeEvents: false });
+
+    const piping = ["readable.pipe", "readable.unpipe", "stream.pipeline", "sp.pipeline"] as const;
+    for (const fn of piping) {
+      const mod = module();
+      mod.functions[0]!.body.push(call(fn));
+      expect(moduleRuntimeFeatures(mod).streamPipeEvents).toBe(true);
+    }
+
+    // A member named pipe called on an untyped value can reach a native
+    // stream's own method.
+    const untyped = module();
+    untyped.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: {
+        kind: "dynInvoke",
+        recv: { kind: "unitLit", unit: "undefined", type: DYN, loc },
+        method: "pipe",
+        calleeName: "source.pipe",
+        args: [],
+        type: DYN,
+        loc,
+      },
+    });
+    expect(moduleRuntimeFeatures(untyped).streamPipeEvents).toBe(true);
+  });
 });

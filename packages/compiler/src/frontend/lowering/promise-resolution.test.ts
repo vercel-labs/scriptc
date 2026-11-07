@@ -48,6 +48,8 @@ async function main(): Promise<void> {
   await new Promise((resolve) => { resolve({ ok: true }); });
   await new Promise((resolve) => { resolve([1, 2]); });
   await new Promise((resolve) => { resolve(new Plain()); });
+  // A \`then\` member that cannot be called makes no thenable.
+  await new Promise((resolve) => { resolve({ kind: "if", then: [1], else_: [2] }); });
   await new Promise((resolve) => { (resolve)(3); });
   await new Promise<void>((resolve) => setTimeout(resolve, 1));
   await new Promise<number>((resolve) => { resolve(4); });
@@ -63,6 +65,8 @@ test("every other executor of an untyped promise asks the value", async () => {
     // A value of unknown type, and a promise.
     "new Promise((resolve) => { resolve(untyped()); })",
     "new Promise((resolve) => { resolve(Promise.resolve(1)); })",
+    // A record with a callable `then`.
+    "new Promise((resolve) => { resolve({ then(done: (v: number) => void): void { done(1); } }); })",
     // An instance of a class with a subclass that declares `then`.
     "new Promise((resolve) => { resolve(new Box()); })",
     "new Promise((resolve) => { resolve(new Lazy()); })",

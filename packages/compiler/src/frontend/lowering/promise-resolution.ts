@@ -41,10 +41,26 @@ function declaresThenBelow(info: ClassInfo, seen: Set<ClassInfo>): boolean {
   return info.subclasses.some((s) => declaresThenBelow(s, seen));
 }
 
+/** Whether a `then` member of the lowered type `t` can hold a function. */
+function callableSlot(lowerer: Lowerer, t: IrType): boolean {
+  switch (t.kind) {
+    case "func":
+    case "dyn":
+    case "jsval":
+      return true;
+    case "union":
+      return (lowerer.unions.get(t.unionId)?.arms ?? []).some((arm) => callableSlot(lowerer, arm));
+    default:
+      return false;
+  }
+}
+
 /** Whether a value of the lowered type `t` can be a promise or carry a
- * `then` its static type does not show: a checked-dynamic value, a promise,
- * a module namespace, or an instance of a class with a subclass that
- * declares one. A record holds exactly its declared fields. */
+ * callable `then` its static type does not show: a checked-dynamic value, a
+ * promise, a module namespace, or an instance of a class with a subclass
+ * that declares one. A record holds exactly its declared fields, and a
+ * `then` field that cannot hold a function (an AST node's `then` branch)
+ * makes no thenable. */
 function mayHideThen(lowerer: Lowerer, t: IrType): boolean {
   switch (t.kind) {
     case "dyn":
@@ -55,8 +71,11 @@ function mayHideThen(lowerer: Lowerer, t: IrType): boolean {
       return true;
     case "union":
       return (lowerer.unions.get(t.unionId)?.arms ?? []).some((arm) => mayHideThen(lowerer, arm));
-    case "record":
-      return lowerer.shapes.get(t.shapeId)?.fields.some((f) => f.name === "then") ?? true;
+    case "record": {
+      const shape = lowerer.shapes.get(t.shapeId);
+      if (shape === undefined) return true;
+      return shape.fields.some((f) => f.name === "then" && callableSlot(lowerer, f.type));
+    }
     case "object": {
       const info = lowerer.classes.get(t.className);
       return info === undefined || declaresThenBelow(info, new Set());
@@ -66,12 +85,28 @@ function mayHideThen(lowerer: Lowerer, t: IrType): boolean {
   }
 }
 
+/** Whether a value of static type `type` (a `then` member's) can be called:
+ * it has a call signature, or its type does not say (`any`, `unknown`, a
+ * type parameter, `Function`). */
+function mayBeCallable(lowerer: Lowerer, type: ts.Type): boolean {
+  const { checker } = lowerer;
+  const open = ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.TypeParameter;
+  for (const part of type.isUnionType() ? ts.constituentTypes(type) : [type]) {
+    if (part.flags & PRIMITIVE) continue;
+    if (part.flags & open || checker.getCallSignatures(part).length > 0) return true;
+    if (ts.symbolNameOf(part.getSymbol()) === "Function") return true;
+  }
+  return false;
+}
+
 /** Whether resolving a promise with a value of static type `type` can do
  * anything but fulfil it with that value. */
 export function mayResolveThroughThen(lowerer: Lowerer, type: ts.Type): boolean {
+  const { checker } = lowerer;
   for (const part of type.isUnionType() ? ts.constituentTypes(type) : [type]) {
     if (part.flags & PRIMITIVE) continue;
-    if (lowerer.checker.getPropertyOfType(part, "then") !== undefined) return true;
+    const then = checker.getPropertyOfType(part, "then");
+    if (then !== undefined && mayBeCallable(lowerer, checker.getTypeOfSymbol(then))) return true;
     const mapped = lowerer.mapTypeOf(part);
     if (mapped === null || mayHideThen(lowerer, mapped)) return true;
   }
@@ -129,7 +164,7 @@ function scheduledArgumentsIndex(lowerer: Lowerer, call: ts.Expression): number 
   if (ts.isIdentifier(callee)) {
     const symbol = lowerer.checker.getSymbolAtLocation(callee);
     if (symbol === undefined || !lowerer.isStdlibSymbol(symbol)) return -1;
-    return callee.text === "nextTick" ? -1 : (SCHEDULERS.get(callee.text) ?? -1);
+    return SCHEDULERS.get(callee.text) ?? -1;
   }
   if (ts.isPropertyAccessExpression(callee) && lowerer.isStdlibMember(callee))
     return SCHEDULERS.get(callee.name.text) ?? -1;
@@ -180,8 +215,6 @@ export function executorResolvesPlainly(lowerer: Lowerer, executor: ts.Expressio
       return !mayResolveThroughThen(lowerer, lowerer.typeOf(first));
     }
     if ((ts.isCallExpression(parent) || ts.isNewExpression(parent)) && parent.expression !== node) {
-      // The parameter of the overload the call resolved to: the contextual
-      // type of an argument is the union over every overload.
       const index = parent.arguments?.nodes.indexOf(node) ?? -1;
       // `setTimeout(resolve, ms)`: the callback receives the first argument
       // the call passes after the delay.
@@ -192,6 +225,8 @@ export function executorResolvesPlainly(lowerer: Lowerer, executor: ts.Expressio
         if (ts.isSpreadElement(first)) return false;
         return !mayResolveThroughThen(lowerer, lowerer.typeOf(first));
       }
+      // The parameter of the overload the call resolved to: the contextual
+      // type of an argument is the union over every overload.
       const parameter = checker.getResolvedSignature(parent)?.getParameters()[index];
       const declaration = parameter?.valueDeclaration;
       if (

@@ -1506,6 +1506,12 @@ export class ClassDynamicDispatch {
       dynamicKey: boolean;
       numericKey: boolean;
       probe: "in" | "own" | "enumerable" | undefined;
+      /** The helper's fallthrough applied to the value itself instead of its
+       * property bag: the access the runtime answers on the value's view,
+       * as it does for a key written as a literal. */
+      view: () => IrStmt[];
+      /** Whether the value's property bag has the key as an own property. */
+      bagHas: () => IrExpr;
     }
   >();
   private readonly computedClassHelpers = new Map<string, IrFunction>();
@@ -2845,15 +2851,17 @@ export class ClassDynamicDispatch {
               ...(reflect ? [{ localId: "p.reflectReceiver", name: "receiver", type: DYN }] : []),
             ];
             const keyLocal = dynamicKey ? "key.string" : "p.key";
-            const bag: IrExpr = computedWrite
-              ? {
-                  kind: "call",
-                  callee: this.propertyBag!.name,
-                  args: [varRef("p.0", DYN, loc)],
-                  type: DYN,
-                  loc,
-                }
-              : this.readPropertyBagOrEmpty(lowerer, varRef("p.0", DYN, loc), loc);
+            const makeBag = (): IrExpr =>
+              computedWrite
+                ? {
+                    kind: "call",
+                    callee: this.propertyBag!.name,
+                    args: [varRef("p.0", DYN, loc)],
+                    type: DYN,
+                    loc,
+                  }
+                : this.readPropertyBagOrEmpty(lowerer, varRef("p.0", DYN, loc), loc);
+            const bag = makeBag();
             const reflectionFallback = (target: IrExpr, property: IrExpr): IrExpr => ({
               kind: "libCall",
               fn: computedWrite ? "dyn.reflectSet" : "dyn.reflectGet",
@@ -2866,26 +2874,34 @@ export class ClassDynamicDispatch {
               type: computedWrite ? BOOL : DYN,
               loc,
             });
-            const fallback: IrExpr = reflect
-              ? reflectionFallback(bag, varRef(keyLocal, STRING, loc))
-              : computedProbe
-                ? {
-                    ...computedProbe,
-                    fn:
-                      probe === "in"
-                        ? "dyn.in"
-                        : probe === "own"
-                          ? "dyn.hasOwn"
-                          : "dyn.propertyIsEnumerable",
-                    args: [bag, varRef(keyLocal, STRING, loc)],
-                  }
-                : computedRead
-                  ? { ...computedRead, value: bag, key: varRef(keyLocal, STRING, loc) }
-                  : {
-                      ...computedWrite!,
-                      fn: "dyn.keySet",
-                      args: [bag, varRef(keyLocal, STRING, loc), varRef("p.1", DYN, loc)],
-                    };
+            const fallbackOn = (target: IrExpr): IrExpr =>
+              reflect
+                ? reflectionFallback(target, varRef(keyLocal, STRING, loc))
+                : computedProbe
+                  ? {
+                      ...computedProbe,
+                      fn:
+                        probe === "in"
+                          ? "dyn.in"
+                          : probe === "own"
+                            ? "dyn.hasOwn"
+                            : "dyn.propertyIsEnumerable",
+                      args: [target, varRef(keyLocal, STRING, loc)],
+                    }
+                  : computedRead
+                    ? { ...computedRead, value: target, key: varRef(keyLocal, STRING, loc) }
+                    : {
+                        ...computedWrite!,
+                        fn: "dyn.keySet",
+                        args: [target, varRef(keyLocal, STRING, loc), varRef("p.1", DYN, loc)],
+                      };
+            const fallthroughOn = (target: IrExpr): IrStmt[] =>
+              computedWrite && !reflect
+                ? [
+                    { kind: "exprStmt", expr: fallbackOn(target), loc },
+                    { kind: "return", value: null, loc },
+                  ]
+                : [{ kind: "return", value: fallbackOn(target), loc }];
             const helper: IrFunction = {
               name: `%dyn.class.computed.${this.computed.size}`,
               params,
@@ -2902,14 +2918,7 @@ export class ClassDynamicDispatch {
                   ? [{ id: keyLocal, name: "key", type: STRING, mutable: false }]
                   : []),
               ],
-              body: reflect
-                ? [{ kind: "return", value: fallback, loc }]
-                : computedWrite
-                  ? [
-                      { kind: "exprStmt", expr: fallback, loc },
-                      { kind: "return", value: null, loc },
-                    ]
-                  : [{ kind: "return", value: fallback, loc }],
+              body: fallthroughOn(bag),
               loc,
               ...(numericKey && computedRead && !reflect && !dynamicKey
                 ? { fastRead: "index" as const }
@@ -3122,6 +3131,14 @@ export class ClassDynamicDispatch {
               dynamicKey,
               numericKey,
               probe,
+              view: () => fallthroughOn(varRef("p.0", DYN, loc)),
+              bagHas: () => ({
+                kind: "libCall",
+                fn: "dyn.hasOwn",
+                args: [makeBag(), varRef(keyLocal, STRING, loc)],
+                type: BOOL,
+                loc,
+              }),
             };
             this.computed.set(key, dispatch);
             this.generated.add(helper);
@@ -4288,6 +4305,19 @@ export class ClassDynamicDispatch {
           continue;
         }
         const names = new Set([...info.fields.keys()].filter(isClassOwnEnumerableFieldName));
+        // A class rooted at Error also has the own properties its runtime
+        // base keeps in slots (`stack`, `cause`), which are neither declared
+        // fields nor bag entries. A read or a presence test of a name the
+        // class does not declare is therefore asked of the instance's view,
+        // where the runtime answers a key written as a literal. A write
+        // keeps the bag, as a literal key's does (the runtime copies a
+        // slot's property from it). A read of a key the bag holds (a
+        // property or accessor the program added) stays a bag read with the
+        // instance as receiver, so a getter sees the instance as `this`.
+        // `stack` is read and written through the native slot, as the
+        // by-name dispatch does.
+        const errorRooted = lowerer.isSubclassOf(info.def.name, "%Error");
+        if (errorRooted && !dispatch.probe && !dispatch.reflect) names.add("stack");
         if (info.builtinStream)
           for (const name of [...STREAM_BOOL_PROPERTIES, ...STREAM_NUM_PROPERTIES]) names.add(name);
         const inherited = eventTargetApiMembers(info);
@@ -4333,6 +4363,32 @@ export class ClassDynamicDispatch {
             loc,
           });
         }
+        // The fallthrough on the property bag, with the instance as the
+        // receiver of a bag accessor or setter.
+        const bagFallthrough = (): IrStmt[] =>
+          transformStmtList(dispatch.fn.body.slice(dispatch.write ? -2 : -1), {
+            stmt: (statement) => statement,
+            expr: (expression) =>
+              expression.kind === "dynKeyGet" && expression.key.type.kind === "string"
+                ? {
+                    kind: "libCall",
+                    fn: "dyn.bagGet",
+                    args: [
+                      expression.value,
+                      expression.key,
+                      lowerer.coerceToExpected(receiver, DYN),
+                    ],
+                    type: DYN,
+                    loc,
+                  }
+                : expression.kind === "libCall" && expression.fn === "dyn.keySet"
+                  ? {
+                      ...expression,
+                      fn: "dyn.bagSet",
+                      args: [...expression.args, lowerer.coerceToExpected(receiver, DYN)],
+                    }
+                  : expression,
+          });
         // Keep each class's key table in a separate function. A single
         // function containing every boxed class grows quadratically during
         // LLVM's control-flow optimization for large library workloads.
@@ -4356,29 +4412,20 @@ export class ClassDynamicDispatch {
           })),
           body: [
             ...branch,
-            ...transformStmtList(dispatch.fn.body.slice(dispatch.write ? -2 : -1), {
-              stmt: (statement) => statement,
-              expr: (expression) =>
-                expression.kind === "dynKeyGet" && expression.key.type.kind === "string"
-                  ? {
-                      kind: "libCall",
-                      fn: "dyn.bagGet",
-                      args: [
-                        expression.value,
-                        expression.key,
-                        lowerer.coerceToExpected(receiver, DYN),
-                      ],
-                      type: DYN,
+            ...(errorRooted && !dispatch.write
+              ? dispatch.probe || dispatch.reflect
+                ? dispatch.view()
+                : [
+                    {
+                      kind: "if" as const,
+                      cond: dispatch.bagHas(),
+                      then: bagFallthrough(),
+                      else_: null,
                       loc,
-                    }
-                  : expression.kind === "libCall" && expression.fn === "dyn.keySet"
-                    ? {
-                        ...expression,
-                        fn: "dyn.bagSet",
-                        args: [...expression.args, lowerer.coerceToExpected(receiver, DYN)],
-                      }
-                    : expression,
-            }),
+                    },
+                    ...dispatch.view(),
+                  ]
+              : bagFallthrough()),
           ],
           loc,
         };

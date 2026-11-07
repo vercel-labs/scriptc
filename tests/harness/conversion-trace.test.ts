@@ -171,6 +171,33 @@ console.log(port);
     ]);
   });
 
+  test("a check deferred to the read of a dictionary view is reported at the read", async () => {
+    // A value cast from \`unknown\` to a dictionary type keeps its identity
+    // and is not validated by the cast: the read of a member is.
+    const binary = await build(
+      "view",
+      `const box = { value: JSON.parse('{"a":"x"}') as unknown };
+try {
+  const view = box.value as Record<string, number>;
+  console.log("view", view.a + 1);
+} catch {
+  console.log("view caught");
+}
+`,
+      { optimization: "dev" },
+    );
+    const r = await run(binary, "1");
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("view caught\n");
+    expect(r.stderr).toBe(
+      [
+        "scriptc: checked conversion failed: TypeError: expected number at $, got string",
+        "    at view.ts:4:23",
+        "",
+      ].join("\n"),
+    );
+  });
+
   test("methods, async functions and several conversions in one statement", async () => {
     const binary = await build(
       "places",

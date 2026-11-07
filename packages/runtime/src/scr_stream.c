@@ -9316,7 +9316,10 @@ static const char *const scr_pl_names[SCR_PL_CAPS] = {
 
 /* One 'unpipe' reaches every listener set pipe() left on the destination,
  * and only the first one whose source it names cleans up: Node's
- * unpipeInfo.hasUnpiped, for a source piped into one destination twice. */
+ * unpipeInfo.hasUnpiped, for a source piped into one destination twice.
+ * The flag belongs to the emit in progress: an 'unpipe' listener can
+ * unpipe another stream, so each emit keeps the outer one's value and puts
+ * it back (scr_stream_unpipe_events). */
 static SCR_TL bool scr_pl_unpiped;
 
 /* Removes one listener of the set (borrowed through any member `c`) from
@@ -9509,8 +9512,10 @@ static ScrStream *scr_stream_unpipe_events(ScrStream *src, ScrStream *dst) {
   if (st->pipes.n == 0) scr_stream_release(scr_stream_pause(src));
   for (size_t i = 0; i < count; i++) {
     if (!scr_exc_pending()) {
+      bool outer = scr_pl_unpiped;
       scr_pl_unpiped = false;
       scr_stream_emit_stream(gone[i], "unpipe", src);
+      scr_pl_unpiped = outer;
     }
     scr_stream_release(gone[i]);
   }

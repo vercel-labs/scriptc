@@ -236,6 +236,72 @@ async function main(): Promise<void> {
     await wait();
     report("piped twice", log);
   }
+  // An 'unpipe' listener that unpipes another stream: each emit has its own
+  // claim, so the outer pipe() still removes its listeners afterwards. The
+  // listener is registered before pipe(), so it runs ahead of pipe()'s own.
+  {
+    const log: string[] = [];
+    const s1 = mksrc("s1", log, ["a"]);
+    const s2 = mksrc("s2", log, ["b"]);
+    const d1 = new Writable({
+      write(_c, _e, cb) {
+        cb();
+      },
+    });
+    const d2 = new Writable({
+      write(_c, _e, cb) {
+        cb();
+      },
+    });
+    const counts = (d: Writable): string =>
+      `unpipe=${d.listenerCount("unpipe")} finish=${d.listenerCount("finish")} close=${d.listenerCount("close")} error=${d.listenerCount("error")}`;
+    d1.on("unpipe", () => {
+      log.push("d1 unpipe, unpiping s2");
+      s2.unpipe(d2);
+      log.push(`inside: d2 ${counts(d2)}`);
+    });
+    d2.on("unpipe", () => log.push("d2 unpipe"));
+    s1.pipe(d1);
+    s2.pipe(d2);
+    log.push(`piped: d1 ${counts(d1)}`);
+    log.push(`piped: d2 ${counts(d2)}`);
+    s1.unpipe(d1);
+    log.push(`after: d1 ${counts(d1)}`);
+    log.push(`after: d2 ${counts(d2)}`);
+    // Nothing of pipe()'s is left on d1: finishing it unpipes nothing.
+    d1.end();
+    await wait();
+    log.push(`d1 ended: flowing s1=${s1.readableFlowing} s2=${s2.readableFlowing}`);
+    s1.destroy();
+    s2.destroy();
+    d2.destroy();
+    await wait();
+    report("nested unpipe", log);
+  }
+  // The same, the other way round: the listener is added after pipe(), so
+  // pipe()'s own listener has already cleaned up when it unpipes the other.
+  {
+    const log: string[] = [];
+    const s1 = mksrc("s1", log, ["a"]);
+    const s2 = mksrc("s2", log, ["b"]);
+    const d1 = mkdst("d1", log);
+    const d2 = mkdst("d2", log);
+    s1.pipe(d1);
+    s2.pipe(d2);
+    d1.on("unpipe", () => {
+      s2.unpipe(d2);
+      log.push(`inside: d2 finish=${d2.listenerCount("finish")} d1 finish=${d1.listenerCount("finish")}`);
+    });
+    await wait();
+    s1.unpipe(d1);
+    log.push(`after: d1 finish=${d1.listenerCount("finish")} d2 finish=${d2.listenerCount("finish")}`);
+    s1.destroy();
+    s2.destroy();
+    d1.destroy();
+    d2.destroy();
+    await wait();
+    report("nested unpipe, late listener", log);
+  }
   // A source that already ended when it is piped with end: false unpipes
   // on the next tick.
   {

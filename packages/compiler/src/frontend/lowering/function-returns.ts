@@ -250,20 +250,18 @@ export function declaredReturnType(
     };
   // An `async *` declaration spelled with one of the protocol interfaces
   // (`AsyncIterator<T>`, `AsyncIterableIterator<T>`, `AsyncIterable<T>`)
-  // builds an async generator. Under checked-dynamic protocol slots
-  // (TypeMapperCtx.dynAsyncProtocol) the value rule maps those annotations
-  // to the checked-dynamic value they hold, so the declared return ask
-  // comes first; with the flag off the value rule already answers with the
-  // generator and the fallback below only fires for an annotation it does
+  // builds an async generator. Where the protocol type holds the
+  // checked-dynamic value (TypeMapperCtx.asyncProtocolHoldsImplementor) the
+  // value rule answers that, and the declaration takes the generator its
+  // annotation spells; elsewhere the value rule already answers with the
+  // generator, and the fallback below only fires for an annotation it does
   // not map.
   const asyncStar =
     decl.asteriskToken !== undefined &&
     decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true;
-  let mappedReturn =
-    lowerer.typeCtx.dynAsyncProtocol === true && asyncStar
-      ? mapAsyncGeneratorAnnotation(retTsType, lowerer.typeCtx)
-      : null;
-  if (mappedReturn === null) mappedReturn = lowerer.mapTypeOf(retTsType);
+  let mappedReturn = lowerer.mapTypeOf(retTsType);
+  if (asyncStar && mappedReturn?.kind === "dyn")
+    mappedReturn = mapAsyncGeneratorAnnotation(retTsType, lowerer.typeCtx) ?? mappedReturn;
   if (mappedReturn !== null)
     mappedReturn = widenReducedReturn(lowerer, decl, retTsType, mappedReturn);
   // A generator declared to return Iterable<T> returns a generator over T.

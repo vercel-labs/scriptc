@@ -182,4 +182,44 @@ describe.skipIf(skip)("Node island cross-heap cycles", () => {
     });
     expect(stdout).toBe("remembered\n");
   }, 300_000);
+
+  test("island errors the program caught are released", async () => {
+    // A caught island error has a native view pinned to its island handle,
+    // and the runtime's error-view cache holds the view once the program
+    // read it as a dynamic value. Neither may keep the other's entry: the
+    // resident memory of 300,000 caught errors stays within a factor of
+    // 1.5 (plus 32 MiB) of 100,000.
+    const dir = join(outDir, "gc-island-errors");
+    mkdirSync(dir, { recursive: true });
+    const result = await compile(join(fixtures, "gc-island-errors.mjs"), {
+      outPath: join(dir, "gc-island-errors"),
+      outDir: dir,
+      sanitize,
+    });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const caught = async (n: number): Promise<{ rss: number; imports: number }> => {
+      const { stdout, stderr } = await execFileAsync(result.binaryPath, [String(n)], {
+        cwd: fixtures,
+        env: { ...process.env, SCRIPTC_NODE_ISLANDS_TRACE: "gc" },
+        encoding: "utf8",
+        maxBuffer: 64 * 1024 * 1024,
+      });
+      expect(stderr).not.toMatch(/used after V8 collected|AddressSanitizer|LeakSanitizer/);
+      expect(stdout).toBe(`iterations ${n} checks ${n}\n`);
+      return {
+        rss: Number(/peak rss (\d+) KiB/.exec(stderr)?.[1]),
+        imports: Number(/import entries (\d+)/.exec(stderr)?.[1]),
+      };
+    };
+    const [few, many] = sanitize ? [5_000, 15_000] : [100_000, 300_000];
+    const small = await caught(few);
+    const large = await caught(many);
+    // The island objects still imported at exit do not grow with the errors
+    // caught (each unreleased error keeps its V8 error imported).
+    expect(small.imports).toBeLessThan(2_000);
+    expect(large.imports).toBeLessThan(2_000);
+    // ASan's quarantine makes the sanitized lane's resident set meaningless.
+    if (!sanitize) expect(large.rss).toBeLessThan(small.rss * 1.5 + 32 * 1024);
+  }, 600_000);
 });

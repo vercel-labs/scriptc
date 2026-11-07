@@ -100,6 +100,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   childErrorFields: boolean;
   declAdopt: boolean;
   typeOrigins: boolean;
+  conversionTrace: boolean;
   dynForAwait: boolean;
   dynCollections: boolean;
   dynIntegrityQueries: boolean;
@@ -373,6 +374,7 @@ export function effectiveRuntimeFeatures(
     childErrorFields: features.childErrorFields === true,
     declAdopt: features.declAdopt === true,
     typeOrigins: features.typeOrigins === true,
+    conversionTrace: features.conversionTrace === true,
     dynForAwait: features.dynForAwait === true,
     dynCollections: features.dynCollections === true,
     dynIntegrityQueries: features.dynIntegrityQueries === true,

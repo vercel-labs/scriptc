@@ -2,5 +2,6 @@
   "entry": "workloads/keyed-option-writes.ts",
   "args": [
     "4"
-  ]
+  ],
+  "scaleArg": 0
 }

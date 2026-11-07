@@ -16,6 +16,7 @@ import {
   undefinedTypedArrayKeyFence,
 } from "../undefined-index.js";
 import { cleanFuncAdaptable } from "../coercions/function-adapters.js";
+import { checkedNarrowOperand } from "../coercions/unions.js";
 import { type Lowerer, jsFuncNameOf } from "../lowerer.js";
 import { recordMayKeepSource } from "../record-sources.js";
 import { recordStringCall } from "../record-links.js";
@@ -113,10 +114,12 @@ import { lowerEnvironmentIdentity } from "../builtins/environment.js";
  * types the branches and reads bridge through maybeNarrow as usual. When
  * the checker already narrowed the non-literal side PAST the union
  * (`w = 5; if (w !== null)`), the comparison is statically decided and
- * folds to a bool literal — that drops only a side-effect-free read
- * (flow narrowing applies to references, never to calls), and soundness
- * rests on the same narrowing proof unionNarrow relies on. Null when
- * neither side is a unit literal (not a unit comparison). */
+ * folds to a bool literal, and soundness rests on the same narrowing
+ * proof unionNarrow relies on. The same holds for an operand whose type
+ * never held the unit (`count() === undefined` over a number result):
+ * the answer is decided, and the operand is still evaluated when that is
+ * observable (decidedAfter). Null when neither side is a unit literal
+ * (not a unit comparison). */
 export function lowerUnitComparison(
   lowerer: Lowerer,
   left: IrExpr,
@@ -143,6 +146,16 @@ export function lowerUnitComparison(
     lowerer.armTag(other.value.type.unionId, unit.type) >= 0
   )
     return lowerUnitComparison(lowerer, other.value, unit, negated, loc);
+  // The same for a narrowed value whose read has to be evaluated anyway
+  // (`decl.name === undefined` through a getter, where the slot holds
+  // `Name | undefined` and this declaration's type says `Name`): the value
+  // under the narrow is evaluated once and its tag answers. A read with
+  // nothing to evaluate folds with the narrowing, below.
+  {
+    const narrowed = narrowedUnion(lowerer, other);
+    if (narrowed !== null && !isSafeToDiscard(narrowed))
+      return lowerUnitComparison(lowerer, narrowed, unit, negated, loc);
+  }
   if (other.type.kind === "union") {
     const tag = lowerer.armTag(other.type.unionId, unit.type);
     if (tag < 0) {
@@ -214,8 +227,43 @@ export function lowerUnitComparison(
   if (other.type.kind === "void") return null;
   // Non-union operand: it can never hold undefined/null at runtime (the
   // checker narrowed it to a concrete arm), so `=== unit` is false and
-  // `!== unit` is true.
-  return { kind: "boolLit", value: negated, type: BOOL, loc };
+  // `!== unit` is true. JavaScript still evaluates the operand.
+  return decidedAfter(lowerer, other, negated, loc);
+}
+
+/** The union value under a narrow of `e`, checked or not: what a
+ * narrowed read actually reads. Null when `e` is not a narrow of a union. */
+function narrowedUnion(lowerer: Lowerer, e: IrExpr): IrExpr | null {
+  const under = e.kind === "unionNarrow" ? e.value : checkedNarrowOperand(lowerer, e);
+  return under !== null && under.type.kind === "union" ? under : null;
+}
+
+/** A comparison whose answer is decided statically, over an operand
+ * JavaScript still evaluates: `count() === undefined` calls `count`, and a
+ * checked conversion inside the operand throws as it would anywhere else.
+ * The bare literal when evaluating `other` is unobservable (a read of a
+ * binding, a field, a literal), else `other` for its effects and then the
+ * literal. A reference the checker narrowed past the unit reads through a
+ * narrow of its storage; the answer rests on that same narrowing, so the
+ * read is dropped with its narrow, as it always was. */
+function decidedAfter(lowerer: Lowerer, other: IrExpr, value: boolean, loc: SrcLoc): IrExpr {
+  const answer: IrExpr = { kind: "boolLit", value, type: BOOL, loc };
+  if (isSafeToDiscard(narrowedUnion(lowerer, other) ?? other)) return answer;
+  // A sequence keeps its own statements and the answer takes the result
+  // position. Its result runs only when that is observable: a unit result
+  // has no value to evaluate, so `(f(), undefined) === null` runs `f`, and
+  // `(first(), last()) !== null` runs both.
+  const stmts: IrStmt[] = [];
+  const run = (e: IrExpr): void => {
+    if (e.kind === "seqExpr") {
+      stmts.push(...e.stmts);
+      run(e.result);
+    } else if (!isSafeToDiscard(e)) {
+      stmts.push({ kind: "exprStmt", expr: e, loc });
+    }
+  };
+  run(other);
+  return { kind: "seqExpr", stmts, result: answer, type: BOOL, loc };
 }
 
 /** The union-typed process.envGet read inside a checker-narrowed operand,
@@ -239,10 +287,16 @@ function lowerLooseNullCompare(
   const leftIsNull = left.kind === ts.SyntaxKind.NullKeyword;
   if (!leftIsNull && right.kind !== ts.SyntaxKind.NullKeyword) return null;
   const otherNode = leftIsNull ? right : left;
-  const other = lowerPresenceOperand(lowerer, otherNode);
+  let other = lowerPresenceOperand(lowerer, otherNode);
+  // A narrowed value whose read has to be evaluated anyway answers by what
+  // it holds (lowerUnitComparison).
+  {
+    const narrowed = narrowedUnion(lowerer, other);
+    if (narrowed !== null && !isSafeToDiscard(narrowed)) other = narrowed;
+  }
   if (isUnitType(other.type)) {
     // `null == null`, `undefined == null`: units are mutually loose-equal.
-    return { kind: "boolLit", value: !negated, type: BOOL, loc };
+    return decidedAfter(lowerer, other, !negated, loc);
   }
   if (other.type.kind === "dyn") {
     // `v != null` on unknown: one dyn kind test covers both units.
@@ -262,7 +316,7 @@ function lowerLooseNullCompare(
     const tags = def.arms.flatMap((a, i) => (isUnitType(a) ? [i] : []));
     if (tags.length === 0) {
       // No unit arms: never null-ish (defensive — the fold below).
-      return { kind: "boolLit", value: negated, type: BOOL, loc };
+      return decidedAfter(lowerer, other, negated, loc);
     }
     const isTag = (tag: number, value: IrExpr): IrExpr => ({
       kind: "unionIsTag",
@@ -320,7 +374,7 @@ function lowerLooseNullCompare(
   }
   // A non-nullable operand (tsc allows the comparison as a guard):
   // `== null` is statically false, `!= null` statically true.
-  return { kind: "boolLit", value: negated, type: BOOL, loc };
+  return decidedAfter(lowerer, other, negated, loc);
 }
 
 /** A plain value read whose storage can carry undefined while the checker
@@ -824,6 +878,12 @@ function lowerConstructorGlobalTypeofTest(
 }
 
 export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr {
+  // A primitive deferred-init field converts its slot, so an unassigned one
+  // reads "undefined" as in Node instead of failing the checked read.
+  if (e.type.kind === "string" || e.type.kind === "f64" || e.type.kind === "bool") {
+    const slot = lowerer.deferredFieldSlot(e);
+    if (slot) return ensureString(lowerer, slot, node);
+  }
   if (e.type.kind === "string") return e;
   if (e.type.kind === "url")
     return { kind: "libCall", fn: "url.href", args: [e], type: STRING, loc: e.loc };

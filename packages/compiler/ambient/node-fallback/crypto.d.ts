@@ -3,7 +3,7 @@
 
 /* node:crypto: the static hashing/MAC/random/key-derivation utility slice. */
 declare module "crypto" {
-  import { Transform } from "stream";
+  import { Transform, Writable } from "stream";
   export type KeyObjectType = "secret" | "public" | "private";
   export interface JsonWebKey {
     crv?: string;
@@ -220,9 +220,9 @@ declare module "crypto" {
     key: KeyObject | string | Buffer | VerifyKeyObjectInput | VerifyPublicKeyInput,
     signature: ScriptcBufferView,
   ): boolean;
-  /* Sign and Verify accumulate update() data; they are not usable as
-   * writable streams. */
-  export class Sign {
+  /* Sign and Verify are Writables: each write goes through update(), and
+   * ending finishes them. */
+  export class Sign extends Writable {
     private constructor();
     update(data: string | ScriptcBufferView): this;
     update(data: string, inputEncoding: Encoding): this;
@@ -234,7 +234,7 @@ declare module "crypto" {
       outputFormat: BinaryToTextEncoding,
     ): string;
   }
-  export class Verify {
+  export class Verify extends Writable {
     private constructor();
     update(data: string | ScriptcBufferView): this;
     update(data: string, inputEncoding: Encoding): this;

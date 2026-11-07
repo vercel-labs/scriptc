@@ -14,11 +14,32 @@
  * them in-process under Node: both must produce the same results, errors
  * and messages. Outcomes are "R<json>" (returned; "R" alone is undefined)
  * or "T<json>" (threw), the encoding of scr_node_bridge.h. */
-const { createRequire, isBuiltin, registerHooks } = require("node:module");
+const {
+  createRequire,
+  enableCompileCache,
+  flushCompileCache,
+  getCompileCacheDir,
+  isBuiltin,
+  registerHooks,
+} = require("node:module");
 const { constants: osConstants } = require("node:os");
 const timers = require("node:timers");
 
 const nativeHost = globalThis.__scriptcNodeIslandHost;
+
+// Node's module compile cache, before any module of the program loads. The
+// directory is one the runtime made and vouches for (scr_node_island.c,
+// "Node's compile cache"); it passes none when NODE_COMPILE_CACHE names the
+// user's own, which Node has enabled by now, or when there is to be no
+// cache. Node writes the entries of the modules a run compiled when it
+// stops, and the runtime writes them when native code calls process.exit();
+// a program that is only ever ended by a signal reaches neither, so they are
+// also written once, a second after the start: late enough to delay no
+// program's first output, and by a timer that keeps no program alive.
+const compileCache = globalThis.__scriptcNodeIslandCompileCache;
+delete globalThis.__scriptcNodeIslandCompileCache;
+if (typeof compileCache === "string") enableCompileCache(compileCache);
+if (getCompileCacheDir() !== undefined) timers.setTimeout(() => flushCompileCache(), 1000).unref();
 
 // The program's island module tree (scr_node_island.c prefixes this script
 // with its root, then the bridge removes the global): modules resolve only
@@ -604,6 +625,8 @@ function load(path, esm) {
   if (path === "scriptc:clone") return (value) => structuredClone(value);
   if (path === "scriptc:objectTag") return (value) => Object.prototype.toString.call(value);
   if (path === "scriptc:island-helpers") return islandHelpers;
+  // The runtime's process.exit(): the compile cache's new entries.
+  if (path === "scriptc:flushCompileCache") return flushCompileCache();
   // A built-in module's name, with or without the node: prefix.
   if (isBuiltin(path)) return require(path);
   if (sharedModules === null) sharedModules = scriptcSharedModules(nativeHost);

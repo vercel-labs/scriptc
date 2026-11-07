@@ -51,6 +51,8 @@ const programs = [
   "inferred-partial-destructuring.mjs",
   // Module-level records and arrays typed by the overlay, shared by functions.
   "inferred-module-containers.mjs",
+  // A module-level object the program types by JSDoc, next to an inferred one.
+  "js-authored-type-module-object.mjs",
   // Bindings the overlay cannot type: their values stay dynamic.
   "5178-forin-keys-js.js",
   "inferred-record-return.mjs",

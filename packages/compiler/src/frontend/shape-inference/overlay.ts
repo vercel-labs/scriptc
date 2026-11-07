@@ -1016,7 +1016,16 @@ export function planShapeOverlay(
         !typedDecls.has(node)
       ) {
         const own = node.initializer;
-        holdUntyped([...analysis.declValues(node)].filter((a) => a.node !== own));
+        // A module-level binding keeps the lowering's dynamic representation
+        // unless the overlay annotates its declaration, and an authored
+        // `@type` is why the overlay left it alone. Its own literal stays
+        // dynamic with it: typing the literal would hand a record to a
+        // binding that holds a dynamic object, and a function inferred to
+        // take that record would receive a copy of the value the binding
+        // still holds.
+        const authored =
+          node.parent?.parent?.parent === sf && (packageDocOf(node).type || declTypeDoc(node, sf));
+        holdUntyped([...analysis.declValues(node)].filter((a) => authored || a.node !== own));
       }
       ts.forEachChild(node, (c) => {
         visit(c);

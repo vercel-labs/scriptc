@@ -4,6 +4,7 @@ Array replacers list the object keys to serialize, as in Node.js.
 Stored `JSON.stringify` functions accept numeric and string indentation; direct calls require literal indentation.
 
 Reviver source contexts are unsupported.
+A reviver that takes a rest parameter or reads `arguments` is refused with `SC2020`, because Node.js passes it the source context as a third argument.
 A reviver that deletes an array element throws, because checked arrays cannot represent holes.
 
 Callback values use checked storage.

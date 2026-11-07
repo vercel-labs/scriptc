@@ -164,11 +164,19 @@ import {
   recordClassWidthHelper,
   classStaticsProjection,
 } from "./coercions/structural.js";
+import { checkVariadicFunctions } from "./variadic-functions.js";
+import {
+  callbackReadsThis,
+  callbackTakesEveryArgument,
+  namesDeclaredFunction,
+} from "./callback-arg.js";
 import {
   funcReturnWidthAdapter,
   coercibleValue,
   cleanFuncAdaptable,
   funcCoerceAdapter,
+  adaptedFunction,
+  variadicBoundaryBlocker,
   sortComparatorResultAdapter,
   spawnResFnAdapterPlan,
   spawnResFnAdapter,
@@ -4109,6 +4117,15 @@ export class Lowerer {
    * without a diagnostic and the mismatch surfaces as a runtime release
    * trap instead. */
   readonly freshClosureAdapters = new Set<string>();
+  /** The stores of a variadic function under a fixed signature that no
+   * adapter marks in the IR (noteVariadicStore): each entry is the slot's
+   * type and the store's place, for variadic-functions.ts. */
+  readonly notedVariadicStores = new Set<string>();
+  /** The native calls that pass a function value more arguments than its
+   * type names, where only the call's own lowering knows how many it
+   * passes (noteLongerCall): the function's type, what it is handed to
+   * and the place, for variadic-functions.ts. */
+  readonly notedLongerCalls = new Set<string>();
   /** Symbols bound by `const process = globalThis.process` (and the other
    * stdlib-global snapshot spellings): pure alias plumbing — receiver
    * checks resolve through this map (stdlibGlobalNameOf), declarations
@@ -5019,6 +5036,8 @@ export class Lowerer {
       setTable("classMethodValueHelpers", this.classMethodValueHelpers),
       setTable("receiverReadingMethodValues", this.receiverReadingMethodValues),
       setTable("freshClosureAdapters", this.freshClosureAdapters),
+      setTable("notedVariadicStores", this.notedVariadicStores),
+      setTable("notedLongerCalls", this.notedLongerCalls),
       mapTable("iterDrainHelpers", this.iterDrainHelpers),
       mapTable("mapHofHelpers", this.mapHofHelpers),
       mapTable("setHofHelpers", this.setHofHelpers),
@@ -5451,6 +5470,12 @@ export class Lowerer {
     "fallibleFsCalls",
     "failureTouches",
     "partialHits",
+    // The slot-directed conversion in progress and the callers that state a
+    // declared slot (callListDeclared): each is restored when its conversion
+    // ends, so the lowering between two units finds them empty.
+    "slotSiteNode",
+    "slotSiteType",
+    "declaredCallLists",
     // Set by fieldInitStmts and restored after it, so the lowering that runs
     // between two units finds it null.
     "fieldInitializer",
@@ -6106,6 +6131,187 @@ export class Lowerer {
    * origin of the field being converted. */
   coercionFieldOrigin: string | null = null;
   private readonly recordOriginMemo = new Map<ts.Node, RecordOrigin | null>();
+
+  /** The slot-directed conversion in progress (coerceInto): the node whose
+   * value is converted and the slot's type. Null outside one. Read by
+   * callListDeclared; restored when the conversion ends. */
+  private slotSiteNode: ts.Node | null = null;
+  private slotSiteType: IrType | null = null;
+  /** Counts the callers that state their slot is a declared one
+   * (withDeclaredCallList). */
+  private declaredCallLists = 0;
+
+  /** Whether the conversion in progress goes into a slot whose function
+   * types are called with their declared parameters and nothing else
+   * (function-adapters.ts, THE RULE): the checker types the slot as the
+   * conversion's destination, or types the converted value itself as it (a
+   * value a declaration types, such as a package function's result). A
+   * slot lowering made for one of its own helpers is neither: its type is
+   * narrower than the checker's, or there is no slot-directed conversion
+   * at all. */
+  callListDeclared(): boolean {
+    if (this.declaredCallLists > 0) return true;
+    const node = this.slotSiteNode;
+    const slot = this.slotSiteType;
+    if (node === null || slot === null) return false;
+    const typedAs = (type: ts.Type | null | undefined): boolean => {
+      if (type === null || type === undefined) return false;
+      const mapped = panicSafe(() => this.mapTypeOf(type), null);
+      if (mapped === null) return false;
+      if (typeEquals(mapped, slot)) return true;
+      // The one function arm of an optional slot (`f?: F`), where the
+      // conversion goes into the arm.
+      return (
+        mapped.kind === "union" && slot.kind !== "union" && this.armTag(mapped.unionId, slot) >= 0
+      );
+    };
+    let context = panicSafe(() => this.checker.getContextualType(node as ts.Expression), null);
+    if (
+      context &&
+      context.isUnionType() &&
+      ts.constituentTypes(context).some((t) => ts.symbolNameOf(t.getSymbol()) === "PromiseLike")
+    )
+      context = this.checker.getAwaitedType(context) ?? context;
+    return typedAs(context) || typedAs(panicSafe(() => this.typeOf(node), null));
+  }
+
+  /** A function the program declares variadic that is held untyped (a
+   * constant bound to one is stored boxed), converted into a fixed
+   * signature: the checked function boundary calls it with the slot's
+   * parameters, as the adapter of a typed variadic function does
+   * (function-adapters.ts, THE RULE). A slot whose last parameter the
+   * checker declares optional is refused for the same reason as there: a
+   * call that omits it passes nothing, and the boundary passes a completed
+   * `undefined`. Every other such store is recorded for the check that
+   * runs when lowering ends (variadic-functions.ts). */
+  private noteUntypedVariadicStore(node: ts.Node, expr: IrExpr, expected: IrType): void {
+    if (expr.type.kind !== "dyn") return;
+    let slot: IrType | undefined = expected;
+    if (expected.kind === "union") {
+      const arms = this.unions.get(expected.unionId)?.arms.filter((arm) => arm.kind === "func");
+      slot = arms?.length === 1 ? arms[0] : undefined;
+    }
+    if (slot?.kind !== "func" || slot.rest === true) return;
+    if (!ts.isExpression(node) || !callbackTakesEveryArgument(this, node)) return;
+    const context = panicSafe(() => this.checker.getContextualType(node), null);
+    const optionalLast =
+      context !== null &&
+      context !== undefined &&
+      panicSafe(
+        () =>
+          this.checker
+            .getCallSignatures(this.checker.getNonNullableType(context))
+            .some((signature) => {
+              const last = signature.declaration?.parameters?.nodes.at(-1);
+              return (
+                last !== undefined &&
+                ts.isParameter(last) &&
+                (last.questionToken !== undefined || last.initializer !== undefined)
+              );
+            }),
+        false,
+      );
+    if (optionalLast)
+      this.unsupported(
+        "SC1090",
+        node,
+        `variadic function values where another signature is expected (into '${this.fmt(slot)}': the last parameter of the expected type is optional, and the function would receive 'undefined' where a call passes nothing)`,
+      );
+    this.noteVariadicStore(node, slot);
+  }
+
+  /** Records that the function value `node`, of the fixed signature
+   * `type`, is handed to `what`, which calls it natively with `passes`
+   * arguments, more than the type names. The declaration of such a library
+   * function says only that it may pass more (a rest parameter); its
+   * lowering knows the count. A function written in place or named by its
+   * declaration is not a slot's content and is not recorded. */
+  noteLongerCall(node: ts.Expression, type: IrType, what: string, passes: number): void {
+    if (type.kind !== "func" || type.rest === true || type.params.length >= passes) return;
+    if (namesDeclaredFunction(this, node)) return;
+    const loc = locOf(node);
+    this.notedLongerCalls.add(
+      [typeKey(type), what, loc.file, loc.start, loc.end, "arguments"].join("\u001f"),
+    );
+  }
+
+  /** Records that the function value `node` is handed to `what`, which
+   * Node.js calls with a receiver the native call does not pass (a timer,
+   * a process listener, a stream). A function whose own type shows that it
+   * reads `this` is refused there; one stored under a type that does not
+   * is what this records, for the stores of variadic functions that read
+   * `this` (noteReceiverReadingStore). */
+  noteReceiverCall(node: ts.Expression, what: string): void {
+    if (namesDeclaredFunction(this, node)) return;
+    const type = panicSafe(() => this.mapTypeOf(this.typeOf(node)), null);
+    const funcs =
+      type?.kind === "func"
+        ? [type]
+        : type?.kind === "union"
+          ? (this.unions.get(type.unionId)?.arms ?? []).filter((arm) => arm.kind === "func")
+          : [];
+    const loc = locOf(node);
+    for (const func of funcs)
+      if (func.kind === "func" && func.rest !== true)
+        this.notedLongerCalls.add(
+          [typeKey(func), what, loc.file, loc.start, loc.end, "receiver"].join("\u001f"),
+        );
+  }
+
+  /** A variadic function whose own body reads `this` (or whose signature
+   * declares a `this` parameter), stored under a fixed signature: the
+   * slot's type no longer shows the read, so a library function that
+   * passes no receiver cannot refuse it. Recorded for the check that runs
+   * when lowering ends (variadic-functions.ts). */
+  private noteReceiverReadingStore(node: ts.Node, expr: IrExpr, expected: IrType): void {
+    const variadic =
+      expr.type.kind === "dyn" ||
+      (expr.type.kind === "func" && expr.type.rest === true && expr.type.restAbi === undefined);
+    if (!variadic || !ts.isExpression(node)) return;
+    let slot: IrType | undefined = expected;
+    if (expected.kind === "union") {
+      const arms = this.unions.get(expected.unionId)?.arms.filter((arm) => arm.kind === "func");
+      slot = arms?.length === 1 ? arms[0] : undefined;
+    }
+    if (slot?.kind !== "func" || slot.rest === true) return;
+    if (!callbackTakesEveryArgument(this, node) || !callbackReadsThis(this, node)) return;
+    const loc = locOf(node);
+    this.notedVariadicStores.add(
+      [
+        typeKey(slot),
+        this.fmt(slot),
+        slot.params.length,
+        loc.file,
+        loc.start,
+        loc.end,
+        "receiver",
+      ].join("\u001f"),
+    );
+  }
+
+  /** Records a store of a variadic function under the fixed signature
+   * `slot`, one no adapter marks in the IR, for the check that runs when
+   * lowering ends (variadic-functions.ts). */
+  noteVariadicStore(node: ts.Node, slot: IrType & { kind: "func" }): void {
+    const loc = locOf(node);
+    this.notedVariadicStores.add(
+      [typeKey(slot), this.fmt(slot), slot.params.length, loc.file, loc.start, loc.end].join(
+        "\u001f",
+      ),
+    );
+  }
+
+  /** Runs `body` for a caller whose slot is a declared one although no
+   * slot-directed conversion says so: a function literal judged against
+   * its contextual type, a default for an optional callback. */
+  withDeclaredCallList<T>(body: () => T): T {
+    this.declaredCallLists++;
+    try {
+      return body();
+    } finally {
+      this.declaredCallLists--;
+    }
+  }
 
   /** The package-declared record type the current coercion converts to. */
   coercionRecordOrigin(): RecordOrigin | null {
@@ -11836,6 +12042,11 @@ export class Lowerer {
     // monomorphization worklists drained): an identity comparison against
     // one is exact only if the declaration is held at a single signature.
     checkGenericIdentityPins(this);
+    // Every function value and conversion is in the IR now: a variadic
+    // function must not reach a native call of fixed arity, and one stored
+    // as a fixed signature is exact only if no function of that type is
+    // handed to a caller with a longer argument list.
+    checkVariadicFunctions(this, functions);
     // Before the links are pruned to the observed ones: an unlinked copy
     // is a copy all the same.
     refuseSourceFieldDeletes(this, functions);
@@ -14751,6 +14962,38 @@ export class Lowerer {
         `structurally-typed class-value flows ('${this.fmt(actual)}' into a '${this.fmt(expected)}' slot: only a class and its subclasses share a slot — extend the base class)`,
       );
     }
+    // A variadic function beside a slot of another signature that the
+    // checked function boundary does not serve (variadicBoundaryBlocker).
+    // Before the union story: the pair is two function types whatever their
+    // parameters hold, and the plain type spelling drops the rest parameter,
+    // so name it.
+    if (
+      actual.kind === "func" &&
+      expected.kind === "func" &&
+      (actual.rest === true || expected.rest === true)
+    ) {
+      const spell = (t: IrType & { kind: "func" }): string => {
+        if (t.rest !== true) return this.fmt(t);
+        const fixed = t.restAbi === "typed" ? t.params.slice(0, -1) : t.params;
+        const rest = t.restAbi === "typed" ? this.fmt(t.params.at(-1)!) : "unknown[]";
+        return `(${[...fixed.map((p) => this.fmt(p)), `...${rest}`].join(", ")}) => ${this.fmt(t.ret)}`;
+      };
+      const blocker =
+        actual.rest === true && actual.restAbi === undefined
+          ? variadicBoundaryBlocker(this, actual, expected)
+          : null;
+      const why =
+        blocker === "count"
+          ? ": the last parameter of the expected type can hold an omitted argument, which the function would receive as 'undefined' where a call passes nothing"
+          : blocker === "domain"
+            ? ": a parameter or result type has no checked-dynamic form to cross the function boundary in"
+            : "";
+      this.unsupported(
+        "SC1090",
+        node,
+        `variadic function values where another signature is expected ('${spell(actual)}' into '${spell(expected)}'${why})`,
+      );
+    }
     // Union-involving mismatches first: a union flowing into a different
     // union's slot (even a superset) would need a runtime re-tag — its own
     // diagnostic, not the record one. Arm-into-union coercions were already
@@ -15318,9 +15561,7 @@ export class Lowerer {
     // their pointed shapes keep winning.
     if (expected.kind === "func" && expr.type.kind === "func" && !typeEquals(expr.type, expected)) {
       const adapter = this.funcCoerceAdapter(expr.type, expected, expr.loc);
-      if (adapter) {
-        return { kind: "call", callee: adapter, args: [expr], type: expected, loc: expr.loc };
-      }
+      if (adapter) return adaptedFunction(adapter, expr, expected, expr.loc);
     }
     // Derived-into-base widening: a legal implicit upcast (prefix layout —
     // a pointer reinterpret). Exactness stays required in every other
@@ -15868,6 +16109,24 @@ export class Lowerer {
    * check this coercion creates names the package declaration that types
    * the slot (decl-origin.ts). */
   coerceInto(node: ts.Node, expr: IrExpr, expected: IrType, payloadSite?: IrType): IrExpr {
+    const outerNode = this.slotSiteNode;
+    const outerType = this.slotSiteType;
+    this.slotSiteNode = node;
+    this.slotSiteType = expected;
+    try {
+      return this.coerceIntoOrigin(node, expr, expected, payloadSite);
+    } finally {
+      this.slotSiteNode = outerNode;
+      this.slotSiteType = outerType;
+    }
+  }
+
+  private coerceIntoOrigin(
+    node: ts.Node,
+    expr: IrExpr,
+    expected: IrType,
+    payloadSite?: IrType,
+  ): IrExpr {
     if (!this.inPackageFileOf(node)) return this.coerceIntoSlot(node, expr, expected, payloadSite);
     const outer = this.coercionOriginNode;
     const outerUnion = this.coercionOriginUnion;
@@ -16028,6 +16287,8 @@ export class Lowerer {
         }
       }
     }
+    this.noteUntypedVariadicStore(node, expr, expected);
+    this.noteReceiverReadingStore(node, expr, expected);
     let e = this.coerceToExpected(expr, expected, ownArmSite);
     // Keep storage intact when ordinary widening already accepts it. Only
     // a destination needing a more specific class layout uses the site's

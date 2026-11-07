@@ -317,15 +317,22 @@ interface LoadReads {
  * first.
  *
  * A module the build wrote for the program (`generated`: a constant or a
- * statement the island evaluates, by the path the probe loaded it from) is
- * not such a file. It is loaded once, where the program has it, after the
- * imports of the packages it names, so the package's files evaluated in
- * those imports and what the generated module read or did is its own
- * body's. It carries the reads and effects of the loads whose files it
- * loads and of the generated modules it imports (its value can come from
- * theirs), and gives its own to the generated modules that import it,
- * never to the packages: a statement of the program that prints through a
- * package's function has effects, and the package's import still waits. */
+ * statement the island evaluates, by the path the probe loaded it from)
+ * loads the files of the packages it names. A file it got from an earlier
+ * load evaluated in that load, so what the generated module read or did
+ * there is its own body's: it carries the reads and effects of the loads
+ * whose files it loads and of the generated modules it imports (its value
+ * can come from theirs), and gives its own to the generated modules that
+ * import it, not to those earlier loads. A statement of the program that
+ * prints through a package's function has effects, and the package's
+ * import, which evaluated the package's files quietly, still waits.
+ *
+ * A file that no earlier load lists evaluated in the generated module's
+ * own load (`results` is in the probe's order): the package's import comes
+ * later in the probe's order, or only a call of the generated module
+ * reaches the file. What the file read is then in the generated module's
+ * record, and every other load of that file shares it both ways, as two
+ * packages do. */
 function loadReads(
   results: ProbeResult[],
   publicEnv: ReadonlySet<string>,
@@ -333,35 +340,38 @@ function loadReads(
 ): Map<ProbeResult, LoadReads> {
   const parent = results.map((_, i) => i);
   const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i]!)));
+  /** The first load, in the probe's order, that lists each file: the load
+   * the file evaluated in. */
   const owner = new Map<string, number>();
   results.forEach((r, i) => {
-    if (generated.has(r.path)) return;
+    const own = generated.has(r.path);
     for (const f of r.files) {
       const j = owner.get(f);
       if (j === undefined) owner.set(f, i);
-      else parent[find(i)] = find(j);
+      else if (!own) parent[find(i)] = find(j);
     }
   });
-  const byPath = new Map(results.map((r, i) => [r.path, i]));
-  /** The loads whose reads and effects load `i` answers for, itself first. */
-  const groupOf = (i: number, seen = new Set<number>()): Set<number> => {
-    if (seen.has(i)) return seen;
-    seen.add(i);
-    if (!generated.has(results[i]!.path)) {
-      results.forEach((other, j) => {
-        if (!generated.has(other.path) && find(j) === find(i)) seen.add(j);
-      });
-      return seen;
-    }
+  /** Adds to `seen` the loads whose reads and effects load `i` answers
+   * for: the loads it shares a file with, and for a generated module the
+   * loads that evaluated the files it loads, with theirs. */
+  const collect = (i: number, seen: Set<number>): void => {
+    results.forEach((_, j) => {
+      if (find(j) === find(i)) seen.add(j);
+    });
+    if (!generated.has(results[i]!.path)) return;
     for (const f of results[i]!.files) {
-      const imported = generated.has(f) ? byPath.get(f) : owner.get(f);
-      if (imported !== undefined) groupOf(imported, seen);
+      const from = owner.get(f);
+      if (from === undefined || seen.has(from)) continue;
+      seen.add(from);
+      collect(from, seen);
     }
-    return seen;
   };
   const reads = new Map<ProbeResult, LoadReads>();
   results.forEach((r, i) => {
-    const group = [...groupOf(i)].map((j) => results[j]!);
+    // A module's own come first.
+    const seen = new Set([i]);
+    collect(i, seen);
+    const group = [...seen].map((j) => results[j]!);
     const env = new Map<string, string | null>();
     const tty = new Map<number, boolean>();
     const privateEnv = new Set<string>();

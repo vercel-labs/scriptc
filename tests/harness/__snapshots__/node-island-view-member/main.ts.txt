@@ -1,0 +1,53 @@
+node-island-view-member/main.ts:37:16 - error SC8010: an island object typed as the program record 'Listed', whose member 'list' is declared 'Inner[]' (an island array, tuple, Map, Set or library object has no native counterpart yet; declare the member with the island's type or 'unknown') cannot cross into or out of a Node island yet
+
+  36 | 
+  37 | const listed = make<Listed>();
+     |                ^~~~~~~~~~~~~~
+  38 | const counted = make<Counted>();
+
+  hint: pass primitives, strings, island objects or fresh object and array literals of those; callbacks, native objects and promises cross from NI-5 on
+
+node-island-view-member/main.ts:38:17 - error SC8010: an island object typed as the program record 'Counted', whose member 'counts' is declared 'number[]' (an island array, tuple, Map, Set or library object has no native counterpart yet; declare the member with the island's type or 'unknown') cannot cross into or out of a Node island yet
+
+  37 | const listed = make<Listed>();
+  38 | const counted = make<Counted>();
+     |                 ^~~~~~~~~~~~~~~
+  39 | const paired = make<Paired>();
+
+  hint: pass primitives, strings, island objects or fresh object and array literals of those; callbacks, native objects and promises cross from NI-5 on
+
+node-island-view-member/main.ts:39:16 - error SC8010: an island object typed as the program record 'Paired', whose member 'pair' is declared '[number, string]' (an island array, tuple, Map, Set or library object has no native counterpart yet; declare the member with the island's type or 'unknown') cannot cross into or out of a Node island yet
+
+  38 | const counted = make<Counted>();
+  39 | const paired = make<Paired>();
+     |                ^~~~~~~~~~~~~~
+  40 | const tabled = make<Tabled>();
+
+  hint: pass primitives, strings, island objects or fresh object and array literals of those; callbacks, native objects and promises cross from NI-5 on
+
+node-island-view-member/main.ts:40:16 - error SC8010: an island object typed as the program record 'Tabled', whose member 'table' is declared 'Map<string, number>' (an island array, tuple, Map, Set or library object has no native counterpart yet; declare the member with the island's type or 'unknown') cannot cross into or out of a Node island yet
+
+  39 | const paired = make<Paired>();
+  40 | const tabled = make<Tabled>();
+     |                ^~~~~~~~~~~~~~
+  41 | const dated = make<Dated>();
+
+  hint: pass primitives, strings, island objects or fresh object and array literals of those; callbacks, native objects and promises cross from NI-5 on
+
+node-island-view-member/main.ts:41:15 - error SC8010: an island object typed as the program record 'Dated', whose member 'deep.stamp.when' is declared 'Date' (an island array, tuple, Map, Set or library object has no native counterpart yet; declare the member with the island's type or 'unknown') cannot cross into or out of a Node island yet
+
+  40 | const tabled = make<Tabled>();
+  41 | const dated = make<Dated>();
+     |               ^~~~~~~~~~~~~
+  42 | const queued = make<Queued>();
+
+  hint: pass primitives, strings, island objects or fresh object and array literals of those; callbacks, native objects and promises cross from NI-5 on
+
+node-island-view-member/main.ts:42:16 - error SC8010: an island object typed as the program record 'Queued', whose member 'jobs' is declared 'Promise<Inner[]>' (an island array, tuple, Map, Set or library object has no native counterpart yet; declare the member with the island's type or 'unknown') cannot cross into or out of a Node island yet
+
+  41 | const dated = make<Dated>();
+  42 | const queued = make<Queued>();
+     |                ^~~~~~~~~~~~~~
+  43 | const fine = make<Fine>();
+
+  hint: pass primitives, strings, island objects or fresh object and array literals of those; callbacks, native objects and promises cross from NI-5 on

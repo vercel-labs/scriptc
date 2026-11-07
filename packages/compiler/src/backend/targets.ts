@@ -74,13 +74,40 @@ export function windowsSubsystemLinkerArgs(
  * functions it reaches (the --gc-sections this compiler asks for is a
  * GNU-flavor flag zig drops on that route). Asking for no debug info keeps
  * zig off that route, so a release hello is the runtime it uses rather than
- * the whole pack; dev keeps its debug info and the option to debug a build. */
+ * the whole pack; dev keeps its debug info and the option to debug a build.
+ *
+ * musl executables link zig's own build of musl statically, and its objects
+ * carry DWARF that names the build host's zig installation and the link's
+ * temporary directory. None of it describes the program: the runtime pack
+ * has no debug info, and a release program object has none either. Dropping
+ * it takes a release hello from 1.8 MB to 87 KB; dev keeps it beside the
+ * program's own line tables. zig has one strip setting and passes lld
+ * `--strip-all` for it, so the executable's symbol table goes with the
+ * debug sections. */
 export function executableOptimizationLinkerArgs(
   platform: string,
   optimization: NativeOptimization,
+  musl = false,
 ): string[] {
-  const stripped = platform === "wasi" || platform === "win32";
+  const stripped = platform === "wasi" || platform === "win32" || (platform === "linux" && musl);
   return stripped && optimization !== "dev" ? ["-Wl,--strip-debug"] : [];
+}
+
+/** Linker flags that harden an executable and cost nothing while it runs.
+ *
+ * A glibc executable resolves every imported function when it loads
+ * (`-z now`), after which the loader makes the tables that hold their
+ * addresses read-only (`-z relro`): a stray write can then no longer redirect
+ * a later libc call. Lazy binding would resolve each import on its first
+ * call instead, and leave the table writable for the life of the process.
+ * Resolving the imports a run never calls is the whole cost: nothing
+ * measurable in hello, and at most 18 microseconds of start-up (1%) in
+ * programs with 70 to 130 imports. Zig asks its linker for both by default,
+ * so glibc targets that zig links (cross-compiled ones) already have them;
+ * the host's clang does not. musl executables are static and import
+ * nothing. */
+export function executableHardeningLinkerArgs(platform: string, musl: boolean): string[] {
+  return platform === "linux" && !musl ? ["-Wl,-z,relro,-z,now"] : [];
 }
 
 /** Remove symbol/debug payload at link time so the executable cache stores
@@ -370,7 +397,13 @@ export const LINUX_X64_GNU_TARGET: NativeTargetSpec = {
   architecture: "x64",
   platform: "linux",
   outputSuffixes: { asm: ".s", obj: ".o", exe: "" },
-  executableLinkerArgs: ["-target", "x86_64-unknown-linux-gnu", "-pthread", "-Wl,--gc-sections"],
+  executableLinkerArgs: [
+    "-target",
+    "x86_64-unknown-linux-gnu",
+    "-pthread",
+    "-Wl,--gc-sections",
+    ...executableHardeningLinkerArgs("linux", false),
+  ],
   defaultLinker: "clang",
   defaultLinkerArgs: [],
   runtimeSystemLibraries: ["m"],
@@ -399,7 +432,13 @@ export const LINUX_ARM64_GNU_TARGET: NativeTargetSpec = {
   architecture: "arm64",
   platform: "linux",
   outputSuffixes: { asm: ".s", obj: ".o", exe: "" },
-  executableLinkerArgs: ["-target", "aarch64-unknown-linux-gnu", "-pthread", "-Wl,--gc-sections"],
+  executableLinkerArgs: [
+    "-target",
+    "aarch64-unknown-linux-gnu",
+    "-pthread",
+    "-Wl,--gc-sections",
+    ...executableHardeningLinkerArgs("linux", false),
+  ],
   defaultLinker: "clang",
   defaultLinkerArgs: [],
   runtimeSystemLibraries: ["m"],

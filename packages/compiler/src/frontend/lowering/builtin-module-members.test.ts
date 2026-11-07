@@ -7,6 +7,8 @@ import {
   builtinModuleHasMember,
   builtinModuleHasOwnMember,
   builtinModuleKeys,
+  builtinModuleMemberCensus,
+  builtinModuleOwnNames,
 } from "./builtin-module-members.js";
 
 describe("builtin module member census", () => {
@@ -45,6 +47,20 @@ describe("builtin module member census", () => {
     expect(builtinModuleHasMember("not-a-module", "cjs", "x")).toBeNull();
     expect(builtinModuleHasOwnMember("not-a-module", "esm", "x")).toBeNull();
     expect(builtinModuleKeys("not-a-module", "cjs")).toBeNull();
+  });
+
+  test("answers null for a namespace whose members are the platform's", () => {
+    // node:constants merges the platform's os, fs and crypto constant
+    // tables, so one census taken on Linux must not answer a program built
+    // for Darwin (which has O_SYMLINK) or Windows: every question returns
+    // null and the namespace's runtime member test answers instead.
+    expect(builtinModuleMemberCensus("constants")).toBeNull();
+    expect(builtinModuleKeys("constants", "cjs")).toBeNull();
+    expect(builtinModuleKeys("constants", "esm")).toBeNull();
+    expect(builtinModuleOwnNames("constants", "cjs")).toBeNull();
+    expect(builtinModuleHasMember("constants", "cjs", "O_SYMLINK")).toBeNull();
+    expect(builtinModuleHasMember("constants", "esm", "O_RDONLY")).toBeNull();
+    expect(builtinModuleHasOwnMember("constants", "cjs", "O_SYMLINK")).toBeNull();
   });
 });
 

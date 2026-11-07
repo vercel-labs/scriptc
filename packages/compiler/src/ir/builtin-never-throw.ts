@@ -16,6 +16,10 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "closure.shareIdentity",
   // Emitted as the constant false; there is no runtime call.
   "sea.isSea",
+  // scr_fs_exists_bytes turns the path bytes into a string and probes it; a
+  // path that is not there is the answer false, and the probe reports no
+  // error.
+  "fs.existsSyncBytes",
   // scr_insp_numeric_separator stores one flag and answers its previous
   // value.
   "insp.numericSeparator",

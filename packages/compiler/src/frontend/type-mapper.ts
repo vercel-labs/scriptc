@@ -223,6 +223,9 @@ export const FETCH_AMBIENT_TYPES = [
   "Headers",
   "ReadableStream",
   "ReadableStreamDefaultReader",
+  "ReadableStreamBYOBReader",
+  "ReadableByteStreamController",
+  "ReadableStreamBYOBRequest",
   "ReadableStreamDefaultController",
   "ReadableStreamReadResult",
   "ReadableStreamReadValueResult",
@@ -232,6 +235,11 @@ export const FETCH_AMBIENT_TYPES = [
   "WritableStream",
   "WritableStreamDefaultWriter",
   "WritableStreamDefaultController",
+  "CountQueuingStrategy",
+  "ByteLengthQueuingStrategy",
+  "TextEncoderStream",
+  "TextDecoderStream",
+  "QueuingStrategy",
   "Blob",
   "File",
   "BlobPropertyBag",
@@ -1665,21 +1673,14 @@ export interface TypeMapperCtx {
    * a slot holds a native stream (a boxed runtime stream, identity kept) or
    * a JavaScript stream object. Members dispatch per value at run time. */
   dynNodeStreams?: boolean;
-  /** The program's checked-dynamic async-iteration protocol slots
-   * (lowerToIr decides it per program): AsyncIterable<T>,
-   * AsyncIterableIterator<T> and AsyncIterator<T> map to the checked-dynamic
-   * value any implementor fits and `for await` runs the runtime's
-   * source-agnostic protocol, instead of the generator representation those
-   * spellings name. Off (the default), they keep the generator
-   * representation, so a program that only passes compiled async generators
-   * compiles exactly as it did before the dynamic form existed. */
-  dynAsyncProtocol?: boolean;
-  /** Called when one of those protocol spellings maps on a pass WITHOUT
-   * dynAsyncProtocol: the program has a slot the checked-dynamic form may
-   * answer, so lowerToIr tries a pass with the flag when this one fails to
-   * lower the program (Lowerer.requiresDynAsyncProtocol). A program that
-   * lowers on the first pass never consults it. */
-  noteAsyncProtocolSlot?: () => void;
+  /** Whether the async-iteration protocol types over an element type hold
+   * the checked-dynamic value (lowering/async-protocol-holders.ts):
+   * AsyncIterable<T>, AsyncIterableIterator<T> and AsyncIterator<T> are a
+   * compiled async generator unless the program moves another object into
+   * one of them. The argument is the interface's type argument, with a
+   * generic instance's type parameters bound. Absent, every protocol type is
+   * a generator. */
+  asyncProtocolHoldsImplementor?: (element: ts.Type | undefined) => boolean;
   /** Successful context-free mappings, keyed by the
    * TypeScript server's stable type id. A generated facade can reference the
    * same large record/function type thousands of times; remapping its full
@@ -4013,6 +4014,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     isStdlibInterface("ArrayBuffer") ||
     isStdlibInterface("SharedArrayBuffer") ||
     isStdlibInterface("PropertyDescriptor") ||
+    isStdlibInterface("PropertyDescriptorMap") ||
     isStdlibInterface("ProcessVersions") ||
     isStdlibInterface("ProcessRelease") ||
     isStdlibInterface("ProcessReport")
@@ -4709,34 +4711,31 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // Native collection iterators use checked runtime iterator objects.
   if (isStdlibInterface("MapIterator") || isStdlibInterface("SetIterator")) return DYN;
   // AsyncIterable<T>, AsyncIterableIterator<T> and AsyncIterator<T> as VALUE
-  // types name a protocol any object can implement. Under checked-dynamic
-  // protocol slots (TypeMapperCtx.dynAsyncProtocol) the value is the
-  // checked-dynamic one (like the Map/Set iterators above) and `for await`
-  // over it takes the runtime's source-agnostic async-iteration protocol
-  // (lowerForOfDyn): a compiled async generator steps natively, any other
-  // object through its Symbol.asyncIterator, and a synchronous iterable
-  // through its values awaited one by one.
-  //
-  // The flag is off for the program's first pass, where these spellings take
-  // the generator answer below (the iterators a program builds and `for
-  // await` consumes) so that a program passing only compiled async
-  // generators keeps the typed stepping path and compiles exactly as before.
-  // That pass notes the spelling (TypeMapperCtx.noteAsyncProtocolSlot) and
-  // lowerToIr lowers the program again with the flag when the first pass
-  // failed to resolve it — a value no compiled generator can hold (a class or
-  // object literal implementing the protocol) reaching one of these slots,
-  // or any other fence — and keeps that pass when it resolves the program.
-  // Answered BEFORE the generator spellings below because that pass must not
-  // type an implementor as a generator. An `async *` declaration whose return
-  // annotation is one of these spells the generator it builds, so
-  // function-returns.ts asks mapAsyncGeneratorAnnotation first.
+  // types name a protocol any object can implement. A protocol type the
+  // program moves such an object into (TypeMapperCtx.
+  // asyncProtocolHoldsImplementor) holds the checked-dynamic value, like the
+  // Map/Set iterators above, and `for await` over it takes the runtime's
+  // source-agnostic async-iteration protocol (lowerForOfDyn): a compiled
+  // async generator steps natively, any other object through its
+  // Symbol.asyncIterator, and a synchronous iterable through its values
+  // awaited one by one. Every other protocol type takes the generator
+  // answer below (the iterators a program builds and `for await` consumes)
+  // and its typed stepping. Answered BEFORE the generator spellings because
+  // an implementor must not be typed as a generator. An `async *`
+  // declaration whose return annotation is one of these spells the generator
+  // it builds, so function-returns.ts asks mapAsyncGeneratorAnnotation for it.
   if (
-    isStdlibInterface("AsyncIterable") ||
-    isStdlibInterface("AsyncIterableIterator") ||
-    isStdlibInterface("AsyncIterator")
+    ctx.asyncProtocolHoldsImplementor !== undefined &&
+    (isStdlibInterface("AsyncIterable") ||
+      isStdlibInterface("AsyncIterableIterator") ||
+      isStdlibInterface("AsyncIterator"))
   ) {
-    if (ctx.dynAsyncProtocol === true) return DYN;
-    ctx.noteAsyncProtocolSlot?.();
+    const argument = checker.getTypeArguments(widened as ts.TypeReference)[0];
+    const element =
+      argument !== undefined && (argument.flags & ts.TypeFlags.TypeParameter) !== 0
+        ? (ctx.resolveTypeParamTs?.(argument) ?? argument)
+        : argument;
+    if (ctx.asyncProtocolHoldsImplementor(element)) return DYN;
   }
   // Array iterators (`list.values()` and friends) are generators over the
   // live array: each step reads the current length and element. String

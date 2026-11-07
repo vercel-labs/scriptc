@@ -4,3 +4,7 @@ Some declarations differ from TypeScript's standard library or `@types/node`: `J
 A program that passes its project's TypeScript check may still use unsupported operations.
 A second preflight using the project's declarations distinguishes those sites from ordinary type errors and reports scriptc diagnostics with rewrite hints.
 Declared APIs without a compiler implementation, such as unsupported console members, produce `SC2020`.
+
+TypeScript keeps the type of an assignment across a call, so after `x = undefined` a read of `x` is typed `undefined` even when a function called in between assigns `x` again.
+scriptc reads the stored value there.
+A function without a declared return type that returns such a read is inferred to return `undefined`; scriptc refuses that return with `SC1090`, and a declared return type compiles.

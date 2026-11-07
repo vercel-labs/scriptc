@@ -129,6 +129,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "util.debounce": "scr_util_debounce",
   "util.throttle": "scr_util_throttle",
   "webstream.class": "scr_webstream_class",
+  "webstream.from": "scr_webstream_from",
   "webstream.instanceOf": "scr_webstream_instanceof",
   "webstream.install": "scr_webstream_install",
   "mime.typeNew": "scr_mime_type_new",
@@ -461,6 +462,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "date.toDateString": "scr_date_to_date_string",
   "date.toTimeString": "scr_date_to_time_string",
   "fs.existsSync": "scr_fs_exists",
+  "fs.existsSyncValue": "scr_fs_exists_value",
+  "fs.existsSyncBytes": "scr_fs_exists_bytes",
   // ── the throwing slice (MAY_THROW_LIB_FNS members): the generic path
   // emits the standard pending check after each — exprs.ts's finish.
   "process.cpuPrevValidate": "scr_cpu_prev_validate",
@@ -993,6 +996,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "stream.unboxDynStage": "scr_stream_unbox_dyn_stage",
   "stream.dynTransformResult": "scr_stream_dyn_transform_result",
   "stream.handleStream": "scr_stream_handle",
+  "stream.handleWritable": "scr_stream_handle",
   "stream.pipeDyn": "scr_stream_pipe_dyn",
   "stream.unpipeDyn": "scr_stream_unpipe_dyn",
   "process.kill": "scr_process_kill_named",

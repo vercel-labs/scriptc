@@ -582,6 +582,28 @@ exports.probe = function probe(input) {
     recording = true;
     try { exportsValue = createRequire(path)(path); } catch (e) { threw = String((e && e.message) || e); }
     recording = false;
+    // The load's closure also holds what it was handed without the resolve
+    // hook being asked: Node answers a relative request that another module
+    // of the same directory already made from a cache of its own, and a
+    // cached module's own requires do not run again. The modules a module
+    // required are its children, whoever evaluated them first, and what
+    // those files read when they evaluated is in what this load exports.
+    {
+      const reached = new Set();
+      const reach = (m) => {
+        if (m === undefined || m === null || reached.has(m)) return;
+        reached.add(m);
+        const file = m.filename;
+        if (typeof file === "string" && !files.has(file)) {
+          files.add(file);
+          const keys = envFiles.get(file);
+          if (keys !== undefined)
+            for (const k of keys) if (!envKeys.has(k)) envKeys.set(k, realEnv[k] === undefined ? null : String(realEnv[k]));
+        }
+        for (const child of m.children) reach(child);
+      };
+      for (const f of [...files]) reach(require.cache[f]);
+    }
     // What this load read is in what it exports: a later load that gets the
     // file from the module cache inherits the keys.
     for (const k of envKeys.keys()) saveEnvFile(path, k);

@@ -1922,7 +1922,8 @@ static ScrDyn *ws_iter_next(ScrClosure *closure, ScrDyn *const *args, size_t arg
     ws_iter_set_current(it, chained);
     result = scr_promise_retain(chained);
   } else if (!it->done && ws_dequeue_fast(it->reader->stream, &chunk)) {
-    ScrDyn *record = ws_read_result(chunk, false);
+    /* the buffered fast path's { done, value }, as in the reader's */
+    ScrDyn *record = ws_iter_result(false, chunk);
     scr_dyn_release(chunk);
     result = ws_promise_resolved(record);
     scr_dyn_release(record);
@@ -4449,7 +4450,8 @@ static ScrDyn *ws_reader_read(WsReader *r) {
   if (!r->stream) return ws_reader_detached();
   ScrDyn *chunk;
   if (ws_dequeue_fast(r->stream, &chunk)) {
-    ScrDyn *record = ws_read_result(chunk, false);
+    /* Node's fast path builds { done, value }; a read request { value, done } */
+    ScrDyn *record = ws_iter_result(false, chunk);
     scr_dyn_release(chunk);
     ScrPromise *p = ws_promise_resolved(record);
     scr_dyn_release(record);
